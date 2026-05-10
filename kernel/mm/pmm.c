@@ -97,6 +97,7 @@ static void zone_init(struct zone *z, const char *name, uint64_t start_pfn,
   z->end_pfn = end_pfn;
   z->free_pages = 0;
   z->bitmap = bitmap;
+  z->next_free_pfn = 0;
   spin_lock_init(&z->lock);
 
   /* Clear bitmap - all pages initially free */
@@ -183,11 +184,20 @@ static void *zone_alloc_page(struct zone *z) {
   uint64_t flags;
   spin_lock_irqsave(&z->lock, &flags);
 
-  int64_t pfn = bitmap_find_free(z->bitmap, 0, z->end_pfn - z->start_pfn);
+  uint64_t npages = z->end_pfn - z->start_pfn;
+  int64_t pfn = bitmap_find_free(z->bitmap, z->next_free_pfn, npages);
+  if (pfn < 0) {
+    /* Wrap around and search from the beginning */
+    pfn = bitmap_find_free(z->bitmap, 0, z->next_free_pfn);
+  }
+
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
     return NULL;
   }
+
+  /* Update next_free_pfn for next caller */
+  z->next_free_pfn = (pfn + 1) % npages;
 
   bitmap_set(z->bitmap, pfn);
   z->free_pages--;
@@ -202,6 +212,8 @@ static void *zone_alloc_page(struct zone *z) {
 
   void *addr = (void *)(MEMORY_BASE + pfn_to_phys(abs_pfn));
   memset(addr, 0, PAGE_SIZE);
+  arch_clean_cache_range_va(addr, PAGE_SIZE);
+  arch_dsb();
 
   __sync_fetch_and_sub(&free_pages, 1);
 
@@ -273,17 +285,26 @@ void pmm_free_page(void *page) {
     return;
 
   uint64_t phys = (uint64_t)page;
-  if (phys < MEMORY_BASE)
+  if (phys < MEMORY_BASE) {
+    pr_err("PMM: Attempt to free invalid address %p (below MEMORY_BASE)\n",
+           page);
     return;
+  }
 
   uint64_t pfn = phys_to_pfn(phys - MEMORY_BASE);
-  if (pfn >= total_pages)
+  if (pfn >= total_pages) {
+    pr_err("PMM: Attempt to free invalid address %p (out of bounds)\n", page);
     return;
+  }
 
   struct page *pg = &page_array[pfn];
   if (pg->flags & PG_RESERVED) {
     pr_warn("PMM: Attempt to free reserved page %016lx\n", phys);
     return;
+  }
+
+  if (pg->refcount == 0) {
+    panic("PMM: Refcount underflow for page %p", page);
   }
 
   if (--pg->refcount > 0)
@@ -304,10 +325,18 @@ void pmm_free_page(void *page) {
   uint64_t flags;
   spin_lock_irqsave(&z->lock, &flags);
 
+  if (!bitmap_test(z->bitmap, zone_pfn)) {
+    spin_unlock_irqrestore(&z->lock, flags);
+    panic("PMM: Double free detected at %p (PFN %lu)", page, pfn);
+  }
+
   bitmap_clear(z->bitmap, zone_pfn);
   z->free_pages++;
 
   spin_unlock_irqrestore(&z->lock, flags);
+
+  /* Poison memory to catch use-after-free bugs */
+  memset(page, 0xCC, PAGE_SIZE);
 
   __sync_fetch_and_add(&free_pages, 1);
 }
@@ -386,7 +415,7 @@ uint64_t pmm_get_free_pages(void) { return free_pages; }
 uint64_t pmm_get_total_pages(void) { return total_pages; }
 
 void pmm_dump_stats(void) {
-  pr_info("PMM Statistics:\n");
+  pr_info("%s", "PMM Statistics:\n");
   pr_info("  Total: %lu pages (%lu MB)\n", total_pages,
           total_pages * PAGE_SIZE / (1024 * 1024));
   pr_info("  Free:  %lu pages (%lu MB)\n", free_pages,

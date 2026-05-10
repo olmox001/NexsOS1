@@ -10,6 +10,7 @@ CROSS_COMPILE ?= aarch64-none-elf-
 
 # Tools
 CC      = $(CROSS_COMPILE)gcc
+CXX     = $(CROSS_COMPILE)g++
 AS      = $(CROSS_COMPILE)as
 LD      = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
@@ -20,33 +21,47 @@ KERNEL_DIR = kernel
 BOOT_DIR   = boot
 ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
 BUILD_DIR  = build
-INCLUDE    = -I$(KERNEL_DIR)/include
+USER_DIR   = user
+USER_LIB_DIR = $(USER_DIR)/lib
+USER_BIN_DIR = $(USER_DIR)/bin
+INCLUDE    = -I$(KERNEL_DIR)/include -I$(ARCH_DIR)/include -Iinclude/api
+CFLAGS += -DARCH_AARCH64
 
 # Output files
 BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
 BOOTLOADER_BIN = $(BUILD_DIR)/bootloader.bin
-KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN = $(BUILD_DIR)/kernel.bin
 USER_ELF   = $(BUILD_DIR)/init.elf
 
 
 # Compiler flags
-CFLAGS = -Wall -Wextra -Werror \
+CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
+         -Wmissing-prototypes -Wstrict-prototypes \
          -ffreestanding -fno-builtin -nostdlib -nostartfiles \
          -mcpu=cortex-a57 \
-         -fno-common -fno-stack-protector \
+         -fno-common -fstack-protector-strong \
          -fno-pic -fno-pie \
          -fno-omit-frame-pointer \
          -O2 -g \
          $(INCLUDE)
 
+CXXFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow \
+           -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+           -mcpu=cortex-a57 \
+           -fno-common -fstack-protector-strong \
+           -fno-pic -fno-pie \
+           -fno-omit-frame-pointer \
+           -fno-exceptions -fno-rtti \
+           -O2 -g \
+           $(INCLUDE)
+
 # Assembler flags
-ASFLAGS = -mcpu=cortex-a57 -g
+ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
 
 # Linker flags
 LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
-LDFLAGS_KERN = -nostdlib -static -T $(KERNEL_DIR)/kernel.ld
+LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
 
 # ==============================================================================
 # Source Files
@@ -72,6 +87,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
+    $(KERNEL_DIR)/drivers/gpu/gpu_core.c \
     $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
     $(KERNEL_DIR)/fs/gpt.c \
     $(KERNEL_DIR)/fs/ext4.c \
@@ -80,22 +96,30 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/mm/buffer.c \
     $(KERNEL_DIR)/lib/string.c \
     $(KERNEL_DIR)/lib/printk.c \
+    $(KERNEL_DIR)/lib/stack_protector.c \
+    $(KERNEL_DIR)/lib/math.c \
     $(KERNEL_DIR)/lib/math.c \
     $(KERNEL_DIR)/lib/kmalloc.c \
+    $(KERNEL_DIR)/lib/registry.c \
     $(KERNEL_DIR)/sched/process.c \
     $(KERNEL_DIR)/sched/elf.c \
     $(KERNEL_DIR)/graphics/graphics.c \
+    $(KERNEL_DIR)/graphics/region.c \
+    $(KERNEL_DIR)/graphics/gl.c \
     $(KERNEL_DIR)/graphics/font.c \
-    $(KERNEL_DIR)/graphics/draw2d.c \
-    $(KERNEL_DIR)/graphics/draw3d.c \
     $(KERNEL_DIR)/graphics/compositor.c \
-    $(KERNEL_DIR)/kernel.c
+    $(KERNEL_DIR)/main.c
+
+KERN_CPP_SOURCES = \
+    $(KERNEL_DIR)/drivers/cpp_test.cpp
 
 
 # Object files
 BOOT_OBJECTS = $(BOOT_SOURCES:%.S=$(BUILD_DIR)/%.o)
 KERN_ASM_OBJECTS = $(KERN_ASM_SOURCES:%.S=$(BUILD_DIR)/%.o)
 KERN_C_OBJECTS = $(KERN_C_SOURCES:%.c=$(BUILD_DIR)/%.o)
+# KERN_CPP_OBJECTS = $(KERN_CPP_SOURCES:%.cpp=$(BUILD_DIR)/%.o)
+
 KERN_OBJECTS = $(KERN_ASM_OBJECTS) $(KERN_C_OBJECTS)
 
 # Tools
@@ -114,11 +138,10 @@ DEPS = $(KERN_C_OBJECTS:.o=.d)
 all: dirs bootloader kernel user $(MKDISK) disk
 	@echo ""
 	@echo "Build complete!"
-
-	@echo "  Bootloader: $(BOOTLOADER_ELF)"
+	@echo "  Disk Image: build/disk.img"
 	@echo "  Kernel:     $(KERNEL_ELF)"
 	@echo ""
-	@echo "Run with: make run  (or ./build_iso.sh run)"
+	@echo "Run with: make run"
 	@echo ""
 
 # Create build directories
@@ -138,7 +161,8 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/lib
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/sched
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/graphics
-	@mkdir -p $(BUILD_DIR)/user
+	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/lib
+	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
 
 
 # ==============================================================================
@@ -175,45 +199,87 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # Userland
 # ==============================================================================
 
-user: $(USER_ELF) $(BUILD_DIR)/counter.elf $(BUILD_DIR)/shell.elf $(BUILD_DIR)/demo3d.elf
+USER_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/counter.elf $(BUILD_DIR)/shell.elf \
+            $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/ipc_recv.elf \
+            $(BUILD_DIR)/notification_server.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/regedit.elf \
+            $(BUILD_DIR)/writetest.elf
+
+user: $(USER_ELFS)
 
 # User Init
-USER_SRC = user/init.c user/lib.c
+USER_SRC = $(USER_BIN_DIR)/init.c $(USER_LIB_DIR)/lib.c
 USER_OBJ = $(USER_SRC:%.c=$(BUILD_DIR)/%.o)
 
 # User Counter
-COUNTER_SRC = user/counter.c user/lib.c
+COUNTER_SRC = $(USER_BIN_DIR)/counter.c $(USER_LIB_DIR)/lib.c
 COUNTER_OBJ = $(COUNTER_SRC:%.c=$(BUILD_DIR)/%.o)
 
 # User Shell
-SHELL_SRC = user/shell.c user/lib.c
+SHELL_SRC = $(USER_BIN_DIR)/shell.c $(USER_LIB_DIR)/lib.c $(USER_BIN_DIR)/proce.c
 SHELL_OBJ = $(SHELL_SRC:%.c=$(BUILD_DIR)/%.o)
 
 # User Demo3D
-DEMO3D_SRC = user/demo3d.c user/lib.c
+DEMO3D_SRC = $(USER_BIN_DIR)/demo3d.c $(USER_LIB_DIR)/lib.c
 DEMO3D_OBJ = $(DEMO3D_SRC:%.c=$(BUILD_DIR)/%.o)
 
-$(BUILD_DIR)/user/%.o: user/%.c
+$(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(USER_ELF): $(USER_OBJ)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e main -o $@ $^
+$(BUILD_DIR)/$(USER_DIR)/bin/%.o: $(USER_DIR)/bin/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(USER_ELF): $(USER_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 	@echo "Userland init size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
 
-$(BUILD_DIR)/counter.elf: $(COUNTER_OBJ)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e main -o $@ $^
+$(BUILD_DIR)/counter.elf: $(COUNTER_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 	@echo "Userland counter size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
 
-$(BUILD_DIR)/shell.elf: $(SHELL_OBJ)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e main -o $@ $^
+$(BUILD_DIR)/shell.elf: $(SHELL_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 	@echo "Userland shell size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
 
-$(BUILD_DIR)/demo3d.elf: $(DEMO3D_OBJ)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e main -o $@ $^
+$(BUILD_DIR)/demo3d.elf: $(DEMO3D_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 	@echo "Userland demo3d size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
 
+# IPC Send
+IPC_SEND_SRC = $(USER_BIN_DIR)/ipc_send.c $(USER_LIB_DIR)/lib.c
+IPC_SEND_OBJ = $(IPC_SEND_SRC:%.c=$(BUILD_DIR)/%.o)
+$(BUILD_DIR)/ipc_send.elf: $(IPC_SEND_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 
+# IPC Recv
+IPC_RECV_SRC = $(USER_BIN_DIR)/ipc_recv.c $(USER_LIB_DIR)/lib.c
+IPC_RECV_OBJ = $(IPC_RECV_SRC:%.c=$(BUILD_DIR)/%.o)
+$(BUILD_DIR)/ipc_recv.elf: $(IPC_RECV_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+
+# Notification Server
+NOTIFY_SRC = $(USER_BIN_DIR)/notification_server.c $(USER_LIB_DIR)/lib.c
+NOTIFY_OBJ = $(NOTIFY_SRC:%.c=$(BUILD_DIR)/%.o)
+$(BUILD_DIR)/notification_server.elf: $(NOTIFY_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+# Crash Test
+CRASH_SRC = $(USER_BIN_DIR)/crash.c $(USER_LIB_DIR)/lib.c
+CRASH_OBJ = $(CRASH_SRC:%.c=$(BUILD_DIR)/%.o)
+$(BUILD_DIR)/crash.elf: $(CRASH_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+
+# Registry Editor
+REGEDIT_SRC = $(USER_BIN_DIR)/regedit.c $(USER_LIB_DIR)/lib.c
+REGEDIT_OBJ = $(REGEDIT_SRC:%.c=$(BUILD_DIR)/%.o)
+$(BUILD_DIR)/regedit.elf: $(REGEDIT_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+
+# Write Test
+WRITETEST_SRC = $(USER_BIN_DIR)/writetest.c $(USER_LIB_DIR)/lib.c
+WRITETEST_OBJ = $(WRITETEST_SRC:%.c=$(BUILD_DIR)/%.o)
+$(BUILD_DIR)/writetest.elf: $(WRITETEST_OBJ) $(BUILD_DIR)/$(USER_LIB_DIR)/syscall.o
+	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 
 # ==============================================================================
 # Common compilation rules
@@ -222,13 +288,21 @@ $(BUILD_DIR)/demo3d.elf: $(DEMO3D_OBJ)
 
 # Compile assembly files
 $(BUILD_DIR)/%.o: %.S
+	@mkdir -p $(dir $@)
 	@echo "AS  $<"
 	@$(AS) $(ASFLAGS) -o $@ $<
 
 # Compile C files
 $(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+# Compile C++ files
+$(BUILD_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	@echo "CXX $<"
+	@$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
 
 # Include dependencies
 -include $(DEPS)
@@ -238,15 +312,24 @@ $(BUILD_DIR)/%.o: %.c
 # ==============================================================================
 
 QEMU = qemu-system-aarch64
-QEMU_FLAGS = -M virt -cpu cortex-a57 -m 1G -smp 4 -nographic -serial mon:stdio \
-             -device virtio-keyboard-device -device virtio-mouse-device
+QEMU_FLAGS = -M virt -cpu cortex-a57 -m 1G -smp 4 -serial mon:stdio \
+             -display default,show-cursor=on \
+             -device virtio-gpu-device \
+             -device virtio-keyboard-device -device virtio-mouse-device \
+             -drive if=none,file=build/disk.img,id=hd0 -device virtio-blk-device,drive=hd0
 
-# Run with ISO boot (full boot chain)
+# Run with the final disk image (Unified)
 run: all
-	@./build_iso.sh run
+	@echo ""
+	@echo "========================================"
+	@echo "  AArch64 Microkernel Boot"
+	@echo "========================================"
+	@echo ""
+	@echo "Starting QEMU with disk image..."
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
 
 # Run with direct kernel boot (faster, skips bootloader/ISO)
-run-direct: kernel
+run-direct: all
 	@echo ""
 	@echo "Starting QEMU (direct kernel boot)..."
 	@echo "Press Ctrl+C to exit"
@@ -255,7 +338,8 @@ run-direct: kernel
 
 # Debug with QEMU and GDB
 debug: all
-	@./build_iso.sh debug
+	@echo "Starting QEMU in debug mode (waiting for GDB on :1234)..."
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 
 # ==============================================================================
 # Analysis Tools
@@ -279,9 +363,9 @@ check:
 # ==============================================================================
 
 disk: $(MKDISK) kernel user bootloader
-	@echo "Creating disk image..."
+	@echo "Assembling final disk image (GPT + Ext4)..."
 	@mkdir -p $(BUILD_DIR)
-	@./$(MKDISK) $(BUILD_DIR)/disk.img
+	@./$(MKDISK) $(BUILD_DIR)/disk.img $(BOOTLOADER_BIN) $(KERNEL_BIN)
 
 $(MKDISK): tools/mkdisk.c
 	@mkdir -p tools

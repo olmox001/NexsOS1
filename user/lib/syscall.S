@@ -173,14 +173,27 @@ _sys_get_procs:
     ret
 
 
-/* int _sys_file_write(const char *path, const void *buf, int size) */
+/* int _sys_file_write(const char *path, const void *buf, int size, int offset) */
 _sys_file_write:
     mov x8, #251
     svc #0
     ret
 
-/* int _sys_file_read(const char *path, void *buf, int size) */
+/* int _sys_file_read(const char *path, void *buf, int size, int offset)  */
 _sys_file_read:
     mov x8, #252
+    svc #0
+    ret
+
+/* void _sys_set_focus(int pid) */
+.global _sys_set_focus
+_sys_set_focus:
+    mov x8, #232
+    svc #0
+    ret
+
+.global _sys_try_recv
+_sys_try_recv:
+    mov x8, #32
     svc #0
     ret

@@ -2,12 +2,15 @@
  * kernel/lib/string.c
  * String manipulation functions
  */
+#include <kernel/string.h>
 #include <kernel/types.h>
 
 /*
  * strlen - calculate string length
  */
 size_t strlen(const char *s) {
+  if (!s)
+    return 0;
   const char *p = s;
   while (*p)
     p++;
@@ -18,6 +21,8 @@ size_t strlen(const char *s) {
  * strnlen - calculate string length with limit
  */
 size_t strnlen(const char *s, size_t maxlen) {
+  if (!s)
+    return 0;
   const char *p = s;
   while (maxlen-- && *p)
     p++;
@@ -28,6 +33,8 @@ size_t strnlen(const char *s, size_t maxlen) {
  * strcmp - compare two strings
  */
 int strcmp(const char *s1, const char *s2) {
+  if (!s1 || !s2)
+    return (s1 == s2) ? 0 : (s1 ? 1 : -1);
   while (*s1 && *s1 == *s2) {
     s1++;
     s2++;
@@ -39,13 +46,14 @@ int strcmp(const char *s1, const char *s2) {
  * strncmp - compare two strings with limit
  */
 int strncmp(const char *s1, const char *s2, size_t n) {
-  while (n && *s1 && *s1 == *s2) {
-    s1++;
-    s2++;
-    n--;
-  }
   if (n == 0)
     return 0;
+  if (!s1 || !s2)
+    return (s1 == s2) ? 0 : (s1 ? 1 : -1);
+  while (n-- > 1 && *s1 && *s1 == *s2) {
+    s1++;
+    s2++;
+  }
   return (unsigned char)*s1 - (unsigned char)*s2;
 }
 
@@ -53,6 +61,8 @@ int strncmp(const char *s1, const char *s2, size_t n) {
  * strcpy - copy string
  */
 char *strcpy(char *dest, const char *src) {
+  if (!dest || !src)
+    return dest;
   char *d = dest;
   while ((*d++ = *src++) != '\0')
     ;
@@ -63,6 +73,8 @@ char *strcpy(char *dest, const char *src) {
  * strncpy - copy string with limit
  */
 char *strncpy(char *dest, const char *src, size_t n) {
+  if (!dest || !src || n == 0)
+    return dest;
   char *d = dest;
   while (n && (*d++ = *src++) != '\0')
     n--;
@@ -72,9 +84,24 @@ char *strncpy(char *dest, const char *src, size_t n) {
 }
 
 /*
+ * strlcpy - safer string copy
+ */
+size_t strlcpy(char *dest, const char *src, size_t size) {
+  size_t len = strlen(src);
+  if (size > 0) {
+    size_t n = (len >= size) ? size - 1 : len;
+    memcpy(dest, src, n);
+    dest[n] = '\0';
+  }
+  return len;
+}
+
+/*
  * strcat - concatenate strings
  */
 char *strcat(char *dest, const char *src) {
+  if (!dest || !src)
+    return dest;
   char *d = dest;
   while (*d)
     d++;
@@ -84,9 +111,39 @@ char *strcat(char *dest, const char *src) {
 }
 
 /*
+ * strncat - concatenate strings with limit
+ */
+char *strncat(char *dest, const char *src, size_t n) {
+  if (!dest || !src)
+    return dest;
+  char *d = dest;
+  while (*d)
+    d++;
+  while (n-- && (*d++ = *src++) != '\0')
+    ;
+  if (n == (size_t)-1)
+    *d = '\0';
+  return dest;
+}
+
+/*
+ * strlcat - safer string concatenation
+ */
+size_t strlcat(char *dest, const char *src, size_t size) {
+  size_t dlen = strnlen(dest, size);
+  size_t slen = strlen(src);
+  if (dlen < size) {
+    strlcpy(dest + dlen, src, size - dlen);
+  }
+  return dlen + slen;
+}
+
+/*
  * strchr - find character in string
  */
 char *strchr(const char *s, int c) {
+  if (!s)
+    return NULL;
   while (*s) {
     if (*s == (char)c)
       return (char *)s;
@@ -99,6 +156,8 @@ char *strchr(const char *s, int c) {
  * strrchr - find last occurrence of character
  */
 char *strrchr(const char *s, int c) {
+  if (!s)
+    return NULL;
   const char *last = NULL;
   while (*s) {
     if (*s == (char)c)
@@ -109,9 +168,28 @@ char *strrchr(const char *s, int c) {
 }
 
 /*
+ * strstr - find substring
+ */
+char *strstr(const char *haystack, const char *needle) {
+  if (!haystack || !needle)
+    return NULL;
+  size_t n = strlen(needle);
+  if (n == 0)
+    return (char *)haystack;
+  while (*haystack) {
+    if (memcmp(haystack, needle, n) == 0)
+      return (char *)haystack;
+    haystack++;
+  }
+  return NULL;
+}
+
+/*
  * memset - fill memory with value
  */
 void *memset(void *s, int c, size_t n) {
+  if (!s)
+    return s;
   unsigned char *p = s;
   while (n--)
     *p++ = (unsigned char)c;
@@ -122,6 +200,8 @@ void *memset(void *s, int c, size_t n) {
  * memcpy - copy memory
  */
 void *memcpy(void *dest, const void *src, size_t n) {
+  if (!dest || !src)
+    return dest;
   unsigned char *d = dest;
   const unsigned char *s = src;
   while (n--)
@@ -133,6 +213,8 @@ void *memcpy(void *dest, const void *src, size_t n) {
  * memmove - copy memory (overlapping safe)
  */
 void *memmove(void *dest, const void *src, size_t n) {
+  if (!dest || !src)
+    return dest;
   unsigned char *d = dest;
   const unsigned char *s = src;
 
@@ -152,12 +234,16 @@ void *memmove(void *dest, const void *src, size_t n) {
  * memcmp - compare memory
  */
 int memcmp(const void *s1, const void *s2, size_t n) {
+  if (n == 0)
+    return 0;
+  if (!s1 || !s2)
+    return (s1 == s2) ? 0 : (s1 ? 1 : -1);
   const unsigned char *p1 = s1;
   const unsigned char *p2 = s2;
 
   while (n--) {
     if (*p1 != *p2)
-      return *p1 - *p2;
+      return (int)*p1 - (int)*p2;
     p1++;
     p2++;
   }
@@ -168,6 +254,8 @@ int memcmp(const void *s1, const void *s2, size_t n) {
  * memchr - find byte in memory
  */
 void *memchr(const void *s, int c, size_t n) {
+  if (!s)
+    return NULL;
   const unsigned char *p = s;
   while (n--) {
     if (*p == (unsigned char)c)
@@ -180,4 +268,7 @@ void *memchr(const void *s, int c, size_t n) {
 /*
  * bzero - zero memory (BSD compatibility)
  */
-void bzero(void *s, size_t n) { memset(s, 0, n); }
+void bzero(void *s, size_t n) {
+  if (s)
+    memset(s, 0, n);
+}

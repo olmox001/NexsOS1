@@ -4,8 +4,10 @@
  *
  * Translates scancodes to ASCII and provides buffered input
  */
+#include <drivers/keyboard.h>
 #include <drivers/virtio_input.h>
 #include <kernel/printk.h>
+#include <kernel/sched.h>
 #include <kernel/types.h>
 
 /* Keyboard state */
@@ -72,7 +74,25 @@ void keyboard_init(void) {
   /* Initialize VirtIO Input driver */
   virtio_input_init();
 
-  pr_info("Keyboard: Initialized\n");
+  INIT_LIST_HEAD(&keyboard_wait_queue.task_list);
+  spin_lock_init(&keyboard_wait_queue.lock);
+
+  pr_info("%s", "Keyboard: Initialized\n");
+}
+
+/* Wait Queue for blocking reads */
+struct wait_queue_head keyboard_wait_queue;
+
+/*
+ * Notification from low-level driver
+ * Called from Interrupt Context (VirtIO Handler)
+ */
+void keyboard_notify_input(void) {
+  /* Poll hardware to transfer from VirtIO buffer to Keyboard buffer */
+  keyboard_poll();
+
+  /* Wake up waiting processes */
+  wake_up(&keyboard_wait_queue);
 }
 
 /*
@@ -133,13 +153,16 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
   else
     c = scancode_to_ascii[code];
 
-  /* Add to buffer if valid */
-  if (c != 0) {
-    uint32_t next = (kb_head + 1) % KB_BUFFER_SIZE;
-    if (next != kb_tail) {
-      kb_buffer[kb_head] = c;
-      kb_head = next;
-    }
+  /* Send IPC message if we have a focus PID */
+  if (c != 0 && keyboard_focus_pid > 0) {
+    struct ipc_message msg;
+    msg.from = 0; /* Kernel/Driver */
+    msg.type = IPC_TYPE_INPUT;
+    msg.data1 = (uint64_t)c;
+    msg.data2 = 0;
+    /* No payload needed for single char */
+
+    kernel_ipc_send(keyboard_focus_pid, &msg);
   }
 }
 
@@ -159,39 +182,16 @@ void keyboard_poll(void) {
 /*
  * Check if keyboard has buffered input
  */
-int keyboard_has_input(void) {
-  keyboard_poll(); /* Poll for new events */
-  return kb_head != kb_tail;
-}
+/*
+ * Read one character from keyboard buffer (non-blocking) - DEPRECATED
+ * Standard input should now be handled via IPC messages.
+ */
+int keyboard_read_char_nonblock(void) { return -1; }
 
 /*
- * Read one character from keyboard buffer (non-blocking)
- * Returns -1 if no input available
+ * Read one character from keyboard buffer (blocking) - DEPRECATED
  */
-int keyboard_read_char_nonblock(void) {
-  keyboard_poll();
-
-  if (kb_head == kb_tail)
-    return -1;
-
-  char c = kb_buffer[kb_tail];
-  kb_tail = (kb_tail + 1) % KB_BUFFER_SIZE;
-  return (int)(unsigned char)c;
-}
-
-/*
- * Read one character from keyboard buffer (blocking)
- */
-char keyboard_read_char(void) {
-  int c;
-
-  while ((c = keyboard_read_char_nonblock()) < 0) {
-    /* Busy wait - could be improved with sleep/wakeup */
-    __asm__ __volatile__("yield");
-  }
-
-  return (char)c;
-}
+char keyboard_read_char(void) { return 0; }
 
 /*
  * Read a line of input (blocking, with echo)

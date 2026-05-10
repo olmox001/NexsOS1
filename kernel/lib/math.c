@@ -132,8 +132,8 @@ int32_t k_sin_fp(int32_t x) {
   /* 1/6 ≈ 10923 in 16.16 */
   /* 1/120 ≈ 546 in 16.16 */
   int32_t term1 = x;
-  int32_t term2 = k_fixmul(x3, 10923) >> 16; /* x³/6 */
-  int32_t term3 = k_fixmul(x5, 546) >> 16;   /* x⁵/120 */
+  int32_t term2 = k_fixmul(x3, 10923); /* x³/6 */
+  int32_t term3 = k_fixmul(x5, 546);   /* x⁵/120 */
 
   return term1 - term2 + term3;
 }

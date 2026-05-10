@@ -8,16 +8,20 @@
 #include <kernel/printk.h>
 #include <kernel/string.h>
 
+#include <kernel/kmalloc.h>
+#include <kernel/spinlock.h>
+
 #define HASH_BUCKETS 64
 
 static struct list_head lru_list;
 static struct list_head hash_table[HASH_BUCKETS];
+static DEFINE_SPINLOCK(buffer_lock);
 
 /* Simple hash function */
 static uint32_t hash_block(uint64_t block) { return block % HASH_BUCKETS; }
 
 void buffer_init(void) {
-  pr_info("BufferCache: Initializing...\n");
+  pr_info("%s", "BufferCache: Initializing...\n");
   INIT_LIST_HEAD(&lru_list);
   for (int i = 0; i < HASH_BUCKETS; i++) {
     INIT_LIST_HEAD(&hash_table[i]);
@@ -37,6 +41,9 @@ static struct block_buffer *__lookup(uint64_t block) {
 }
 
 struct block_buffer *buffer_get(uint64_t block) {
+  uint64_t flags;
+  spin_lock_irqsave(&buffer_lock, &flags);
+
   /* 1. Check Cache */
   struct block_buffer *buf = __lookup(block);
 
@@ -46,30 +53,13 @@ struct block_buffer *buffer_get(uint64_t block) {
       list_move(&buf->list, &lru_list);
     }
     buf->ref_count++;
+    spin_unlock_irqrestore(&buffer_lock, flags);
     return buf;
   }
+  spin_unlock_irqrestore(&buffer_lock, flags);
 
   /* 2. Allocate New Buffer (Metadata) */
-  /* TODO: use slab allocator for struct block_buffer */
-  /* For now, hacking it by allocating a full page for one struct (WASTEFUL)
-     OR just allocate a small chunk if we had malloc.
-     Let's use a static pool or allow one page to hold many structs?
-     Simpler: For this stage, just alloc pointers.
-     Actually, `pmm_alloc_page()` gives 4KB. That's fine for DATA.
-     But for `struct block_buffer`?
-     Let's hack: Put the struct AT THE END of the data page?
-     No, data page must be 4KB aligned for hardware DMA?
-     VirtIO doesn't STRICTLY require 4KB alignment for buffers, but it's good
-     practice.
-
-     Let's implement a very simple `zalloc` (kernel malloc) placeholder or just
-     use 1 page for metadata for now (wasteful but works).
-  */
-
-  /* HACK: We need a way to alloc `struct block_buffer`.
-     Let's just use `pmm_alloc_page` for the struct too (checking size).
-  */
-  buf = (struct block_buffer *)pmm_alloc_page();
+  buf = (struct block_buffer *)kmalloc(sizeof(struct block_buffer));
   if (!buf)
     return NULL;
   memset(buf, 0, sizeof(*buf));
@@ -81,13 +71,13 @@ struct block_buffer *buffer_get(uint64_t block) {
     return NULL;
   }
 
-  /* 4. Read from Disk */
+  /* 4. Read from Disk (OUTSIDE lock to avoid blocking other CPUs) */
   /* Block is 4KB = 8 sectors */
   if (virtio_blk_read(buf->data, block * SECTORS_PER_BLOCK,
                       SECTORS_PER_BLOCK) != 0) {
-    pr_info("BufferCache: Disk read error block %ld\n", block);
+    pr_err("BufferCache: Disk read error block %ld\n", block);
     pmm_free_page(buf->data);
-    pmm_free_page(buf);
+    kfree(buf);
     return NULL;
   }
 
@@ -96,29 +86,48 @@ struct block_buffer *buffer_get(uint64_t block) {
   buf->ref_count = 1;
 
   /* 5. Insert into Hash and LRU */
+  spin_lock_irqsave(&buffer_lock, &flags);
+  /* Double check if someone else loaded it while we were reading */
+  struct block_buffer *exists = __lookup(block);
+  if (exists) {
+    pmm_free_page(buf->data);
+    kfree(buf);
+    exists->ref_count++;
+    spin_unlock_irqrestore(&buffer_lock, flags);
+    return exists;
+  }
+
   uint32_t bucket = hash_block(block);
   list_add(&buf->hash, &hash_table[bucket]);
   list_add(&buf->list, &lru_list);
+  spin_unlock_irqrestore(&buffer_lock, flags);
 
-  // pr_info("BufferCache: Read block %ld\n", block);
   return buf;
 }
 
 void buffer_put(struct block_buffer *buf) {
   if (!buf)
     return;
+  uint64_t flags;
+  spin_lock_irqsave(&buffer_lock, &flags);
   if (buf->ref_count > 0)
     buf->ref_count--;
+  spin_unlock_irqrestore(&buffer_lock, flags);
 }
 
 void buffer_sync(void) {
+  uint64_t flags;
+  spin_lock_irqsave(&buffer_lock, &flags);
   struct block_buffer *buf;
   /* Iterate LRU */
   list_for_each_entry(buf, &lru_list, list) {
     if (buf->flags & BUFFER_DIRTY) {
+      /* NOTE: We might want to unlock during I/O but for simplicity keep it for
+       * now. A production kernel would use a separate dirty list. */
       virtio_blk_write(buf->data, buf->block * SECTORS_PER_BLOCK,
                        SECTORS_PER_BLOCK);
       buf->flags &= ~BUFFER_DIRTY;
     }
   }
+  spin_unlock_irqrestore(&buffer_lock, flags);
 }

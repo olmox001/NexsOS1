@@ -2,10 +2,14 @@
  * kernel/arch/aarch64/cpu/exception.S
  * Exception vector table for AArch64
  *
- * Exception frame layout (288 bytes):
+ * Exception frame layout (816 bytes):
  *   0-240:  x0-x30
- *   248:    elr_el1
- *   256:    spsr_el1  
+ *   256:    elr_el1
+ *   264:    spsr_el1
+ *   272:    sp_el0
+ *   288-800: q0-q31 (FPU/SIMD)
+ *   800:    fpsr
+ *   804:    fpcr
  */
 
 .section .text
@@ -20,8 +24,8 @@
 .endm
 
 .macro vector_stub name
-    /* Allocate 288 byte exception frame (16-byte aligned) */
-    sub sp, sp, #288
+    /* Allocate 816 byte exception frame (16-byte aligned) */
+    sub sp, sp, #816
     
     /* Save general purpose registers x0-x30 */
     stp x0, x1, [sp, #0]
@@ -48,6 +52,30 @@
     str x0, [sp, #256] /* elr */
     str x1, [sp, #264] /* spsr */
     str x2, [sp, #272] /* sp_el0 */
+
+    /* Save FPU/SIMD registers q0-q31 */
+    stp q0, q1, [sp, #288]
+    stp q2, q3, [sp, #320]
+    stp q4, q5, [sp, #352]
+    stp q6, q7, [sp, #384]
+    stp q8, q9, [sp, #416]
+    stp q10, q11, [sp, #448]
+    stp q12, q13, [sp, #480]
+    stp q14, q15, [sp, #512]
+    stp q16, q17, [sp, #544]
+    stp q18, q19, [sp, #576]
+    stp q20, q21, [sp, #608]
+    stp q22, q23, [sp, #640]
+    stp q24, q25, [sp, #672]
+    stp q26, q27, [sp, #704]
+    stp q28, q29, [sp, #736]
+    stp q30, q31, [sp, #768]
+
+    /* Save FPU control/status */
+    mrs x0, fpsr
+    mrs x1, fpcr
+    str w0, [sp, #800]
+    str w1, [sp, #804]
     
     /* Call C handler with frame pointer */
     mov x0, sp
@@ -57,6 +85,9 @@
     /* Switch stack pointer to the new process's kernel stack */
     mov sp, x0
     
+    /* CRITICAL: Mask interrupts before restoring exception state to prevent races */
+    msr daifset, #3
+
     /* Restore exception state */
     ldr x0, [sp, #256]
     ldr x1, [sp, #264]
@@ -64,6 +95,30 @@
     msr elr_el1, x0
     msr spsr_el1, x1
     msr sp_el0, x2
+
+    /* Restore FPU/SIMD registers q0-q31 */
+    ldp q0, q1, [sp, #288]
+    ldp q2, q3, [sp, #320]
+    ldp q4, q5, [sp, #352]
+    ldp q6, q7, [sp, #384]
+    ldp q8, q9, [sp, #416]
+    ldp q10, q11, [sp, #448]
+    ldp q12, q13, [sp, #480]
+    ldp q14, q15, [sp, #512]
+    ldp q16, q17, [sp, #544]
+    ldp q18, q19, [sp, #576]
+    ldp q20, q21, [sp, #608]
+    ldp q22, q23, [sp, #640]
+    ldp q24, q25, [sp, #672]
+    ldp q26, q27, [sp, #704]
+    ldp q28, q29, [sp, #736]
+    ldp q30, q31, [sp, #768]
+
+    /* Restore FPU control/status */
+    ldr w0, [sp, #800]
+    ldr w1, [sp, #804]
+    msr fpsr, x0
+    msr fpcr, x1
     
     /* Restore general purpose registers */
     ldp x0, x1, [sp, #0]
@@ -84,7 +139,7 @@
     ldr x30, [sp, #240]
     
     /* Deallocate frame and return */
-    add sp, sp, #288
+    add sp, sp, #816
     eret
 .endm
 
@@ -92,7 +147,7 @@
  * IRQ stub (same frame layout)
  */
 .macro irq_stub
-    sub sp, sp, #288
+    sub sp, sp, #816
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
     stp x4, x5, [sp, #32]
@@ -116,6 +171,30 @@
     str x0, [sp, #256]
     str x1, [sp, #264]
     str x2, [sp, #272]
+
+    /* Save FPU/SIMD registers q0-q31 */
+    stp q0, q1, [sp, #288]
+    stp q2, q3, [sp, #320]
+    stp q4, q5, [sp, #352]
+    stp q6, q7, [sp, #384]
+    stp q8, q9, [sp, #416]
+    stp q10, q11, [sp, #448]
+    stp q12, q13, [sp, #480]
+    stp q14, q15, [sp, #512]
+    stp q16, q17, [sp, #544]
+    stp q18, q19, [sp, #576]
+    stp q20, q21, [sp, #608]
+    stp q22, q23, [sp, #640]
+    stp q24, q25, [sp, #672]
+    stp q26, q27, [sp, #704]
+    stp q28, q29, [sp, #736]
+    stp q30, q31, [sp, #768]
+
+    /* Save FPU control/status */
+    mrs x0, fpsr
+    mrs x1, fpcr
+    str w0, [sp, #800]
+    str w1, [sp, #804]
     
     /* Call IRQ handler */
     mov x0, sp
@@ -124,12 +203,40 @@
     /* Switch stack pointer */
     mov sp, x0
     
+    /* CRITICAL: Mask interrupts before restoring exception state */
+    msr daifset, #3
+
+    /* Restore exception state */
     ldr x0, [sp, #256]
     ldr x1, [sp, #264]
     ldr x2, [sp, #272]
     msr elr_el1, x0
     msr spsr_el1, x1
     msr sp_el0, x2
+
+    /* Restore FPU/SIMD registers q0-q31 */
+    ldp q0, q1, [sp, #288]
+    ldp q2, q3, [sp, #320]
+    ldp q4, q5, [sp, #352]
+    ldp q6, q7, [sp, #384]
+    ldp q8, q9, [sp, #416]
+    ldp q10, q11, [sp, #448]
+    ldp q12, q13, [sp, #480]
+    ldp q14, q15, [sp, #512]
+    ldp q16, q17, [sp, #544]
+    ldp q18, q19, [sp, #576]
+    ldp q20, q21, [sp, #608]
+    ldp q22, q23, [sp, #640]
+    ldp q24, q25, [sp, #672]
+    ldp q26, q27, [sp, #704]
+    ldp q28, q29, [sp, #736]
+    ldp q30, q31, [sp, #768]
+
+    /* Restore FPU control/status */
+    ldr w0, [sp, #800]
+    ldr w1, [sp, #804]
+    msr fpsr, x0
+    msr fpcr, x1
     
     ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
@@ -147,7 +254,7 @@
     ldp x26, x27, [sp, #208]
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
-    add sp, sp, #288
+    add sp, sp, #816
     
     eret
 .endm

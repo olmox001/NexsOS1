@@ -8,7 +8,8 @@
 /*
  * Draw Line (Bresenham's Algorithm)
  */
-void graphics_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
+void graphics_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
+                        uint32_t color) {
   int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
   int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
   int sx = (x0 < x1) ? 1 : -1;
@@ -16,7 +17,7 @@ void graphics_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
   int err = dx - dy;
 
   while (1) {
-    graphics_put_pixel(x0, y0, color);
+    graphics_draw_pixel(x0, y0, color);
 
     if (x0 == x1 && y0 == y1)
       break;
@@ -42,14 +43,14 @@ void graphics_draw_circle(int cx, int cy, int r, uint32_t color) {
   int err = 0;
 
   while (x >= y) {
-    graphics_put_pixel(cx + x, cy + y, color);
-    graphics_put_pixel(cx + y, cy + x, color);
-    graphics_put_pixel(cx - y, cy + x, color);
-    graphics_put_pixel(cx - x, cy + y, color);
-    graphics_put_pixel(cx - x, cy - y, color);
-    graphics_put_pixel(cx - y, cy - x, color);
-    graphics_put_pixel(cx + y, cy - x, color);
-    graphics_put_pixel(cx + x, cy - y, color);
+    graphics_draw_pixel(cx + x, cy + y, color);
+    graphics_draw_pixel(cx - x, cy + y, color);
+    graphics_draw_pixel(cx + x, cy - y, color);
+    graphics_draw_pixel(cx - x, cy - y, color);
+    graphics_draw_pixel(cx + y, cy + x, color);
+    graphics_draw_pixel(cx - y, cy + x, color);
+    graphics_draw_pixel(cx + y, cy - x, color);
+    graphics_draw_pixel(cx - y, cy - x, color);
 
     y++;
     err += 1 + 2 * y;
@@ -71,12 +72,12 @@ void graphics_fill_circle(int cx, int cy, int r, uint32_t color) {
   while (x >= y) {
     /* Draw horizontal lines for each octant pair */
     for (int i = cx - x; i <= cx + x; i++) {
-      graphics_put_pixel(i, cy + y, color);
-      graphics_put_pixel(i, cy - y, color);
+      graphics_draw_pixel(i, cy + y, color);
+      graphics_draw_pixel(i, cy - y, color);
     }
     for (int i = cx - y; i <= cx + y; i++) {
-      graphics_put_pixel(i, cy + x, color);
-      graphics_put_pixel(i, cy - x, color);
+      graphics_draw_pixel(i, cy + x, color);
+      graphics_draw_pixel(i, cy - x, color);
     }
 
     y++;
@@ -147,7 +148,7 @@ void graphics_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
       swap_int(&xa, &xb);
 
     for (int x = xa; x <= xb; x++) {
-      graphics_put_pixel(x, y, color);
+      graphics_draw_pixel(x, y, color);
     }
   }
 }
@@ -170,17 +171,17 @@ void graphics_draw_rounded_rect(int x, int y, int w, int h, int r,
 
   while (px >= py) {
     /* Top-left */
-    graphics_put_pixel(x + r - px, y + r - py, color);
-    graphics_put_pixel(x + r - py, y + r - px, color);
+    graphics_draw_pixel(x + r - px, y + r - py, color);
+    graphics_draw_pixel(x + r - py, y + r - px, color);
     /* Top-right */
-    graphics_put_pixel(x + w - r + px, y + r - py, color);
-    graphics_put_pixel(x + w - r + py, y + r - px, color);
+    graphics_draw_pixel(x + w - r + px, y + r - py, color);
+    graphics_draw_pixel(x + w - r + py, y + r - px, color);
     /* Bottom-left */
-    graphics_put_pixel(x + r - px, y + h - r + py, color);
-    graphics_put_pixel(x + r - py, y + h - r + px, color);
+    graphics_draw_pixel(x + r - px, y + h - r + py, color);
+    graphics_draw_pixel(x + r - py, y + h - r + px, color);
     /* Bottom-right */
-    graphics_put_pixel(x + w - r + px, y + h - r + py, color);
-    graphics_put_pixel(x + w - r + py, y + h - r + px, color);
+    graphics_draw_pixel(x + w - r + px, y + h - r + py, color);
+    graphics_draw_pixel(x + w - r + py, y + h - r + px, color);
 
     py++;
     err += 1 + 2 * py;
@@ -241,7 +242,7 @@ void graphics_draw_gradient_h(int x, int y, int w, int h, uint32_t color_left,
     uint32_t color = 0xFF000000 | (r << 16) | (g << 8) | b;
 
     for (int row = 0; row < h; row++) {
-      graphics_put_pixel(x + col, y + row, color);
+      graphics_draw_pixel(x + col, y + row, color);
     }
   }
 }

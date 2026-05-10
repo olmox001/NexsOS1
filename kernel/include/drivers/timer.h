@@ -15,15 +15,16 @@ extern uint64_t timer_freq;
 extern volatile uint64_t jiffies;
 
 /* Timer configuration */
-#define HZ 100 /* Timer ticks per second */
+#define HZ                                                                     \
+  100 /* Reduced frequency for better performance in non-optimized kernel */
 
 /* Time conversion macros */
 #define MSEC_PER_SEC 1000UL
 #define USEC_PER_SEC 1000000UL
 #define NSEC_PER_SEC 1000000000UL
 
-#define msecs_to_jiffies(m) ((m) * HZ / MSEC_PER_SEC)
-#define jiffies_to_msecs(j) ((j) * MSEC_PER_SEC / HZ)
+#define msecs_to_jiffies(m) ((uint64_t)(m) * HZ / MSEC_PER_SEC)
+#define jiffies_to_msecs(j) ((uint64_t)(j) * MSEC_PER_SEC / HZ)
 
 /* Functions */
 void timer_init(void);

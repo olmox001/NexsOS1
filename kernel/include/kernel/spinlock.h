@@ -5,6 +5,7 @@
 #ifndef _KERNEL_SPINLOCK_H
 #define _KERNEL_SPINLOCK_H
 
+#include <kernel/arch.h>
 #include <kernel/types.h>
 
 typedef struct {
@@ -16,48 +17,37 @@ typedef struct {
 
 static inline void spin_lock_init(spinlock_t *lock) { lock->lock = 0; }
 
-static inline void spin_lock(spinlock_t *lock) {
-  uint32_t tmp;
-  __asm__ __volatile__("   sevl\n"
-                       "1: wfe\n"
-                       "   ldaxr   %w0, [%1]\n"
-                       "   cbnz    %w0, 1b\n"
-                       "   stxr    %w0, %w2, [%1]\n"
-                       "   cbnz    %w0, 1b\n"
-                       : "=&r"(tmp)
-                       : "r"(&lock->lock), "r"(1)
-                       : "memory");
-}
+static inline void spin_lock(spinlock_t *lock) { arch_spin_lock(&lock->lock); }
 
 static inline void spin_unlock(spinlock_t *lock) {
-  __asm__ __volatile__("   stlr    %w0, [%1]\n"
-                       :
-                       : "r"(0), "r"(&lock->lock)
-                       : "memory");
+  arch_spin_unlock(&lock->lock);
 }
 
 static inline int spin_trylock(spinlock_t *lock) {
-  uint32_t tmp;
-  __asm__ __volatile__("   ldaxr   %w0, [%1]\n"
-                       "   cbnz    %w0, 1f\n"
-                       "   stxr    %w0, %w2, [%1]\n"
-                       "1:\n"
-                       : "=&r"(tmp)
-                       : "r"(&lock->lock), "r"(1)
-                       : "memory");
-  return tmp == 0;
+  return arch_spin_trylock(&lock->lock);
 }
 
 /* IRQ-safe spinlock */
 static inline void spin_lock_irqsave(spinlock_t *lock, uint64_t *flags) {
-  __asm__ __volatile__("mrs %0, daif" : "=r"(*flags));
-  __asm__ __volatile__("msr daifset, #3" ::: "memory");
+  arch_local_irq_save(flags);
+  /* The AArch64 internal implementation of local_irq_save already sets
+     DAIF appropriately (e.g. #3 or similar for masking).
+  */
   spin_lock(lock);
+}
+
+static inline int spin_trylock_irqsave(spinlock_t *lock, uint64_t *flags) {
+  arch_local_irq_save(flags);
+  if (spin_trylock(lock)) {
+    return 1;
+  }
+  arch_local_irq_restore(*flags);
+  return 0;
 }
 
 static inline void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags) {
   spin_unlock(lock);
-  __asm__ __volatile__("msr daif, %0" ::"r"(flags) : "memory");
+  arch_local_irq_restore(flags);
 }
 
 #endif /* _KERNEL_SPINLOCK_H */

@@ -138,6 +138,11 @@ int ext4_find_inode(const char *path, uint32_t *ino_out);
 int ext4_read_inode(uint32_t ino, uint32_t offset, uint8_t *buf, uint32_t size);
 
 /* Legacy wrapper (reads from count 0) */
-int ext4_read_file(const char *path, uint8_t *buf, uint32_t size);
+int ext4_read_file(const char *path, uint8_t *buf, uint32_t size,
+                   uint32_t offset);
+
+/* Write Data to File (Overwrite/Append) */
+int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size,
+                    uint32_t offset);
 
 #endif /* _KERNEL_EXT4_H */

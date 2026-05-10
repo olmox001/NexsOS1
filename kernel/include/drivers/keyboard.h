@@ -21,6 +21,13 @@ int keyboard_read_char_nonblock(void);
 char keyboard_read_char(void);
 
 /* Read a line of input (blocking, with echo) */
+/* Read a line of input (blocking, with echo) */
 int keyboard_read_line(char *buf, int max_len);
+
+/* Notification from low-level driver (VirtIO) */
+void keyboard_notify_input(void);
+
+#include <kernel/sched.h>
+extern struct wait_queue_head keyboard_wait_queue;
 
 #endif /* _DRIVERS_KEYBOARD_H */

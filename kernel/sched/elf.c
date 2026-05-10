@@ -2,6 +2,7 @@
  * kernel/sched/elf.c
  * ELF Loader (Identity Map / MMU-less optimized)
  */
+#include <kernel/arch.h>
 #include <kernel/elf.h>
 #include <kernel/ext4.h>
 #include <kernel/pmm.h>
@@ -20,14 +21,14 @@ int process_load_elf(struct process *proc, const char *path) {
   /* 1. Read ELF Header */
   Elf64_Ehdr ehdr;
   if (ext4_read_inode(ino, 0, (uint8_t *)&ehdr, sizeof(ehdr)) != sizeof(ehdr)) {
-    pr_err("ELF: Failed to read header\n");
+    pr_err("%s", "ELF: Failed to read header\n");
     return -1;
   }
 
   /* 2. Verify Header */
   if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
       ehdr.e_ident[EI_CLASS] != ELFCLASS64 || ehdr.e_machine != EM_AARCH64) {
-    pr_err("ELF: Invalid format\n");
+    pr_err("%s", "ELF: Invalid format\n");
     return -1;
   }
 
@@ -80,8 +81,11 @@ int process_load_elf(struct process *proc, const char *path) {
           return -1;
         }
 
+        /* Get Kernel Virtual Address for writing (Use Identity Map) */
+        void *kaddr = paddr;
+
         /* Zero the page content */
-        memset(paddr, 0, 4096);
+        memset(kaddr, 0, 4096);
 
         /* Copy data from file if within bounds */
         uint64_t seg_vstart = phdr.p_vaddr;
@@ -100,14 +104,14 @@ int process_load_elf(struct process *proc, const char *path) {
           uint64_t offset_in_file = phdr.p_offset + (copy_start - seg_vstart);
 
           ext4_read_inode(ino, offset_in_file,
-                          (uint8_t *)paddr + offset_in_page, copy_len);
+                          (uint8_t *)kaddr + offset_in_page, copy_len);
         }
 
         /* Clean DC to PoU and invalid IC for executable pages */
         if (phdr.p_flags & PF_X) {
           for (uint64_t line = 0; line < 4096; line += 64) {
-            uint64_t target = (uint64_t)paddr + line;
-            __asm__ __volatile__("dc cvau, %0" ::"r"(target) : "memory");
+            uint64_t target = (uint64_t)kaddr + line;
+            arch_clean_cache_va_pou((void *)target);
           }
         }
       }
@@ -122,12 +126,12 @@ int process_load_elf(struct process *proc, const char *path) {
        vaddr += 4096) {
     void *paddr = pmm_alloc_page();
     if (!paddr) {
-      pr_err("ELF: Failed to allocate stack page\n");
+      pr_err("%s", "ELF: Failed to allocate stack page\n");
       return -1;
     }
     if (vmm_map_page(proc->page_table, vaddr, (uint64_t)paddr, PAGE_USER) !=
         0) {
-      pr_err("ELF: Failed to map stack page\n");
+      pr_err("%s", "ELF: Failed to map stack page\n");
       pmm_free_page(paddr);
       return -1;
     }
@@ -140,18 +144,29 @@ int process_load_elf(struct process *proc, const char *path) {
   /* proc->context already points to the top of the kernel stack (set in
    * process_create) */
   if (proc->context) {
+    /* pr_info("ELF: Before init - PID %d context=%p ELR=0x%lx SP_EL0=0x%lx\n",
+            proc->pid, (void*)proc->context, proc->context->elr,
+       proc->context->sp_el0); */
+
     memset(proc->context, 0, sizeof(struct pt_regs));
     proc->context->elr = proc->user_entry;
     proc->context->sp_el0 = proc->user_stack;
     proc->context->spsr = 0; /* EL0t + Unmasked */
+
+    /* pr_info("ELF: After init - PID %d\n", proc->pid);
+    pr_info("ELF:   ELR=0x%lx\n", proc->context->elr);
+    pr_info("ELF:   SP_EL0=0x%lx\n", proc->context->sp_el0);
+    pr_info("ELF:   SPSR=0x%lx\n", proc->context->spsr); */
+
+    /* CRITICAL: Flush the register frame to PoC so the scheduled CPU sees it */
+    arch_clean_cache_range_va(proc->context, sizeof(struct pt_regs));
+  } else {
+    pr_err("%s", "ELF: proc->context is NULL!\n");
   }
 
   /* Flush I-Cache to ensure we execute what we just wrote */
-  __asm__ __volatile__("dsb ish\n"
-                       "ic iallu\n"
-                       "dsb ish\n"
-                       "isb\n" ::
-                           : "memory");
+  arch_dsb();
+  arch_isb();
 
   return 0;
 }

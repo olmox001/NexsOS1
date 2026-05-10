@@ -46,7 +46,11 @@ static void virtio_input_handler(uint32_t irq, void *data);
 /*
  * Add event to global buffer
  */
-void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value) {
+/*
+ * Add event to global buffer
+ */
+static void virtio_input_add_event(uint16_t type, uint16_t code,
+                                   int32_t value) {
   /* Debug buffer add */
   /* pr_info("Buffer Add: t=%d c=%d v=%d\n", type, code, value); */
   uint32_t next = (input_head + 1) % INPUT_BUFFER_SIZE;
@@ -182,8 +186,8 @@ static void virtio_input_handler(uint32_t irq, void *data) {
     struct virtio_input_event *evt = &dev->events[id];
 
     /* Log event - useful for debugging keyboard/mouse issues */
-    pr_info("Input: type=%d, code=%d, val=%d\n", evt->type, evt->code,
-            evt->value);
+    /* pr_info("Input: type=%d, code=%d, val=%d\n", evt->type, evt->code,
+            evt->value); */
 
     if (evt->type == EV_REL) {
       if (evt->code == REL_X) {
@@ -207,6 +211,9 @@ static void virtio_input_handler(uint32_t irq, void *data) {
         needs_render = 1; /* Click might change z-order/focus */
       } else {
         virtio_input_add_event(evt->type, evt->code, evt->value);
+        /* Notify upper layer (Keyboard) */
+        extern void keyboard_notify_input(void);
+        keyboard_notify_input();
       }
     }
 
@@ -218,7 +225,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
   }
 
   /* Notify device of new available buffers */
-  /* For V1: V_REG(dev->base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0; */
+  V_REG(dev->base, VIRTIO_MMIO_QUEUE_NOTIFY) = 0;
   /* For V2, using doorbell might be needed but V1 works for now since we
    * processed Used */
 
@@ -232,7 +239,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
  * Global Initialization
  */
 void virtio_input_init(void) {
-  pr_info("VirtIO-Input: Probing devices...\n");
+  pr_info("%s", "VirtIO-Input: Probing devices...\n");
 
   /* Probe MMIO range 0x0a003000 - 0x0a003e00 (8 slots) */
   for (uintptr_t addr = 0x0a003000; addr <= 0x0a003e00; addr += 0x200) {
