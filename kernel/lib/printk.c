@@ -13,6 +13,9 @@
 
 int console_loglevel = KERN_WARNING;
 
+/* Set by panic() to signal all CPUs to halt */
+volatile int panic_flag = 0;
+
 /* Internal output function */
 static void kputc(char c) { uart_putc(c); }
 
@@ -234,26 +237,32 @@ int vprintk(const char *fmt, va_list args) {
   uint64_t flags;
   int len;
 
-  /* Basic recursion check */
+  /* Acquire lock and disable IRQs BEFORE setting in_printk.
+   * Without this, the timer IRQ can preempt between in_printk=1 and the lock,
+   * switch to another task, and that task's next printk sees a stale in_printk=1
+   * on this CPU → false "[RECURSIVE PRINTK DETECTED]" spam. */
+  spin_lock_irqsave(&uart_lock, &flags);
+
   if (cpu->in_printk) {
-    /* We are already in printk on this CPU.
-     * This usually happens if vsnprintf faults or triggers a log.
-     * Emit a raw emergency message if possible, or just skip. */
+    spin_unlock_irqrestore(&uart_lock, flags);
     uart_puts("\n[RECURSIVE PRINTK DETECTED]\n");
     return 0;
   }
 
   cpu->in_printk = 1;
 
-  /* Format to per-CPU buffer (No locking needed for local buffer) */
-  len = vsnprintf(cpu->printk_buf, sizeof(cpu->printk_buf), fmt, args);
+  /* Prepend "[C%d] " CPU prefix for multi-CPU log disambiguation */
+  int pfx = snprintf(cpu->printk_buf, 8, "[C%u] ", cpu->cpu_id);
+  if (pfx < 0) pfx = 0;
 
-  /* Lock only for actual UART output */
-  spin_lock_irqsave(&uart_lock, &flags);
+  /* Format the actual message after the prefix */
+  len = vsnprintf(cpu->printk_buf + pfx,
+                  sizeof(cpu->printk_buf) - pfx, fmt, args);
+
   kputs(cpu->printk_buf);
-  spin_unlock_irqrestore(&uart_lock, flags);
 
   cpu->in_printk = 0;
+  spin_unlock_irqrestore(&uart_lock, flags);
 
   return len;
 }
@@ -273,10 +282,17 @@ int printk(const char *fmt, ...) {
 }
 
 /*
- * panic - halt system with message
+ * panic - halt ALL CPUs with message
  */
 void panic(const char *fmt, ...) {
   va_list args;
+
+  /* Signal all CPUs to stop BEFORE printing so no interleaving after this */
+  __sync_fetch_and_add(&panic_flag, 1);
+
+  /* Send IPI (SGI0) to halt all other CPUs */
+  extern void gic_send_ipi_all(void);
+  gic_send_ipi_all();
 
   printk("\n\n*** KERNEL PANIC ***\n");
 
@@ -286,11 +302,10 @@ void panic(const char *fmt, ...) {
 
   printk("\n\nSystem halted.\n");
 
-  /* Disable interrupts and halt */
+  /* Disable all exceptions and halt this CPU */
   uint64_t flags;
   arch_local_irq_save_all(&flags);
-  __asm__ __volatile__("1: wfe\n"
-                       "b 1b");
+  while (1) { __asm__ __volatile__("wfe"); }
 
   __builtin_unreachable();
 }

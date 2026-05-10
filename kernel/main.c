@@ -219,7 +219,9 @@ static void init_scheduler(void) {
       arch_dsb();
       arch_isb();
 
-      enqueue_task(idle);
+      /* Do NOT enqueue idle tasks — they are CPU-bound fallbacks only.
+       * Enqueueing them allows work-stealing to migrate them to the wrong CPU,
+       * causing two CPUs to share the same current_task and corrupt the context. */
     }
   }
 }

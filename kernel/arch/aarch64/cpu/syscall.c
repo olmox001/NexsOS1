@@ -252,15 +252,8 @@ void sys_exit(int status) {
   if (current_process) {
     pr_info("PID %d exiting with status %d\n", current_process->pid, status);
     process_terminate(current_process->pid);
-
-    /* We are now ZOMBIE (if terminate worked). Switch away immediately. */
-    /* Note: We use current_process->context which points to our kernel stack
-       frame. schedule() will save our state there (not strictly needed since we
-       are dead) and switch to next task. */
-    schedule(current_process->context);
-
-    /* Should never reach here */
-    panic("sys_exit returned");
+    /* Process is now ZOMBIE. Return here so the syscall handler's
+     * `return schedule(frame)` performs the actual context switch. */
   }
 }
 

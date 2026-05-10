@@ -353,9 +353,28 @@ int process_terminate(int pid) {
     return 0;
   }
 
+  /* Free IPC message queue to prevent leak */
+  {
+    struct list_head *pos, *q;
+    list_for_each_safe(pos, q, &proc->msg_queue) {
+      struct ipc_node *node = list_entry(pos, struct ipc_node, list);
+      list_del(pos);
+      kfree(node);
+    }
+  }
+
   proc->state = PROC_DEAD;
 
-  /* Remove from pool */
+  if (proc->on_cpu >= 0) {
+    /* Process is currently executing on another CPU.
+     * We cannot free its kernel stack while it's being used.
+     * Leave it in the pool as PROC_DEAD; schedule() on that CPU
+     * will perform the deferred free after switching away. */
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return 0;
+  }
+
+  /* Not running on any CPU — safe to free immediately */
   process_pool[slot] = NULL;
   active_count--;
 
@@ -404,6 +423,31 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   if (!cpu_ptr)
     return regs;
 
+  /* Deferred process free: safe to do here because we've already switched
+   * away from that process's kernel stack in the previous schedule() call. */
+  if (cpu_ptr->deferred_free_proc) {
+    struct process *to_free = cpu_ptr->deferred_free_proc;
+    cpu_ptr->deferred_free_proc = NULL;
+
+    /* Remove from pool */
+    uint64_t gflags;
+    spin_lock_irqsave(&sched_lock, &gflags);
+    for (int _i = 0; _i < MAX_PROCESSES; _i++) {
+      if (process_pool[_i] == to_free) {
+        process_pool[_i] = NULL;
+        active_count--;
+        break;
+      }
+    }
+    spin_unlock_irqrestore(&sched_lock, gflags);
+
+    if (to_free->kernel_stack)
+      pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
+    if (to_free->page_table)
+      vmm_destroy_pgd(to_free->page_table);
+    pmm_free_page(to_free);
+  }
+
   uint32_t cpu = cpu_ptr->cpu_id;
   struct process *prev = cpu_ptr->current_task;
   uint64_t flags;
@@ -418,11 +462,22 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
     /* 1. Handle Current Process */
     if (prev) {
+      /* Check if externally terminated while running on this CPU */
+      if (prev->state == PROC_DEAD) {
+        /* Cannot free kernel_stack here (we're standing on it).
+         * Defer the free to the NEXT schedule() call. */
+        prev->on_cpu = -1;
+        cpu_ptr->deferred_free_proc = prev;
+        cpu_ptr->current_task = NULL;
+        prev = NULL;
+        goto pick_next;
+      }
+
       /* Save current context if it was running */
       if (regs) {
         prev->context = regs;
       }
-      
+
       /* Clear first_run flag since it has now been scheduled and preempted/yielded */
       if (prev->first_run) {
         prev->first_run = 0;
@@ -443,11 +498,18 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
       if (prev->state == PROC_READY) {
         prev->on_cpu = -1;
-        __enqueue_task(prev);
+        /* Never re-enqueue the CPU-bound idle task. It must stay out of the
+         * runqueue to prevent work-stealing: two CPUs sharing one idle task's
+         * kernel stack causes context corruption (ELR=0 crashes). */
+        if (prev != cpu_ptr->idle_task) {
+          __enqueue_task(prev);
+        }
       } else {
         prev->on_cpu = -1;
       }
     }
+
+pick_next:;
 
   /* 2. Pick Next Process (O(1) Priority-based Selection) */
   struct process *next = NULL;
@@ -499,14 +561,14 @@ found:
             struct list_head *entry = other_cpu->runqueues[p].next;
             next = container_of(entry, struct process, run_list);
 
-            /* Only steal if not currently running on that CPU (redundant
-             * check if dequeued?) */
-            /* Actually dequeueing it makes it ours. */
-            /* But if it WAS running, it wouldn't be in runqueue (unless we
-             * re-queue running tasks?) */
-            /* The logic removes running task from queue usually? */
-            /* Checking `dequeue_task`: it uses `msg_queue`? No. */
-            /* We assume tasks in runqueue are READY and not RUNNING. */
+            /* Never steal idle tasks — they are CPU-bound and share a kernel
+             * stack with their owner CPU. Stealing causes two CPUs to run the
+             * same kernel stack simultaneously, corrupting context (ELR=0). */
+            if (next == other_cpu->idle_task) {
+              next = NULL;
+              spin_unlock(&other_cpu->sched_lock);
+              continue;
+            }
 
             /* Remove from other CPU */
             list_del_init(&next->run_list);
