@@ -29,14 +29,46 @@ int snprintf(char *buf, size_t size, const char *fmt, ...)
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list args);
 
 /* Convenience macros */
-#define pr_emerg(fmt, ...) printk("[EMERG] " fmt, ##__VA_ARGS__)
-#define pr_alert(fmt, ...) printk("[ALERT] " fmt, ##__VA_ARGS__)
-#define pr_crit(fmt, ...) printk("[CRIT] " fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) printk("[ERROR] " fmt, ##__VA_ARGS__)
-#define pr_warn(fmt, ...) printk("[WARN] " fmt, ##__VA_ARGS__)
-#define pr_notice(fmt, ...) printk("[NOTICE] " fmt, ##__VA_ARGS__)
-#define pr_info(fmt, ...) printk("[INFO] " fmt, ##__VA_ARGS__)
-#define pr_debug(fmt, ...) printk("[DEBUG] " fmt, ##__VA_ARGS__)
+#define pr_emerg(fmt, ...)                                                     \
+  do {                                                                         \
+    if (console_loglevel >= KERN_EMERG)                                        \
+      printk("[EMERG] " fmt, ##__VA_ARGS__);                                   \
+  } while (0)
+#define pr_alert(fmt, ...)                                                     \
+  do {                                                                         \
+    if (console_loglevel >= KERN_ALERT)                                        \
+      printk("[ALERT] " fmt, ##__VA_ARGS__);                                   \
+  } while (0)
+#define pr_crit(fmt, ...)                                                      \
+  do {                                                                         \
+    if (console_loglevel >= KERN_CRIT)                                         \
+      printk("[CRIT] " fmt, ##__VA_ARGS__);                                    \
+  } while (0)
+#define pr_err(fmt, ...)                                                       \
+  do {                                                                         \
+    if (console_loglevel >= KERN_ERR)                                          \
+      printk("[ERROR] " fmt, ##__VA_ARGS__);                                   \
+  } while (0)
+#define pr_warn(fmt, ...)                                                      \
+  do {                                                                         \
+    if (console_loglevel >= KERN_WARNING)                                      \
+      printk("[WARN] " fmt, ##__VA_ARGS__);                                    \
+  } while (0)
+#define pr_notice(fmt, ...)                                                    \
+  do {                                                                         \
+    if (console_loglevel >= KERN_NOTICE)                                       \
+      printk("[NOTICE] " fmt, ##__VA_ARGS__);                                  \
+  } while (0)
+#define pr_info(fmt, ...)                                                      \
+  do {                                                                         \
+    if (console_loglevel >= KERN_INFO)                                         \
+      printk("[INFO] " fmt, ##__VA_ARGS__);                                    \
+  } while (0)
+#define pr_debug(fmt, ...)                                                     \
+  do {                                                                         \
+    if (console_loglevel >= KERN_DEBUG)                                        \
+      printk("[DEBUG] " fmt, ##__VA_ARGS__);                                   \
+  } while (0)
 
 /* Panic - halt the system */
 void panic(const char *fmt, ...) __noreturn

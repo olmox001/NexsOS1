@@ -3,12 +3,15 @@
  * PL011 UART driver for ARM QEMU virt machine
  */
 #include <drivers/uart.h>
+#include <kernel/arch.h>
 #include <kernel/types.h>
+#include <stdint.h>
 
 /* MMIO access macros */
 #define UART_REG(offset) (*(volatile uint32_t *)(UART0_BASE + (offset)))
 
 #include <drivers/gic.h>
+#include <kernel/sched.h>
 
 /* Ring Buffer */
 #define RX_BUF_SIZE 128
@@ -38,6 +41,10 @@ static void uart_irq_handler(uint32_t irq, void *data) {
     }
     /* Clear interrupt */
     UART_REG(UART_ICR) = UART_ICR_RXIC;
+
+    /* Wake up waiting processes */
+    extern struct wait_queue_head keyboard_wait_queue;
+    wake_up(&keyboard_wait_queue);
   }
 }
 
@@ -95,7 +102,7 @@ char uart_getc(void) {
   while (rx_head == rx_tail) {
     /* Wait for interrupt (wfi) to save power? */
     /* Or just busy wait for now */
-    __asm__ __volatile__("wfi");
+    arch_wfi();
   }
 
   char c = rx_buf[rx_tail];

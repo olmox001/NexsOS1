@@ -4,15 +4,25 @@
  *
  * Manages windows and composites them to the screen.
  */
+#include <drivers/gpu/gpu.h>
+#include <graphics/gl.h>
+#include <kernel/arch.h>
+#include <kernel/cpu.h>
 #include <kernel/graphics.h>
 #include <kernel/kmalloc.h>
+
+/* Disable optimizations to ensure stack safety/debugging */
+
 #include <kernel/printk.h>
+#include <kernel/sched.h>
+#include <kernel/spinlock.h>
 #include <kernel/string.h>
 #include <kernel/types.h>
+#include <kernel/vmm.h>
+#include <stdint.h>
 
-#define MAX_WINDOWS 16
+#define MAX_WINDOWS 32
 
-/* Window Structure */
 struct window {
   int id;
   int x, y;
@@ -20,13 +30,18 @@ struct window {
   int z_order;
   int visible;
   int pid;
-  int protected;     /* If true, cannot be closed */
-  uint32_t *buffer;  /* Window's pixel buffer */
-  uint32_t bg_color; /* Background color */
+  int protected;          /* If true, cannot be closed */
+  int top_most;           /* If true, always on top and no decorations */
+  uint32_t *buffer;       /* Window's pixel buffer */
+  uint32_t bg_color;      /* Default background color */
+  uint32_t curr_bg_color; /* Current ANSI background color */
   char title[64];
 
   /* Terminal State */
   int cursor_x, cursor_y;
+  uint8_t *text_grid;  /* Character grid */
+  uint32_t *attr_grid; /* Attribute grid (colors) */
+  int grid_cols, grid_rows;
   uint32_t fg_color;
   int escape_state;
   char escape_buf[32];
@@ -36,7 +51,14 @@ struct window {
 /* Global State */
 static struct window windows[MAX_WINDOWS];
 static int window_count = 0;
-static int next_window_id = 1;
+static int next_window_id = 100;
+static volatile int compositor_dirty = 1;
+static DEFINE_SPINLOCK(compositor_lock);
+
+/* Pre-allocated buffers for rendering to avoid stack usage and kmalloc in IRQ
+ */
+static struct window *sorted_windows[MAX_WINDOWS];
+static struct region *visible_regions_store[MAX_WINDOWS];
 
 /* Mouse State */
 static int mouse_x = 400;
@@ -52,28 +74,51 @@ static int drag_off_y = 0;
 #define TITLE_BAR_HEIGHT 20
 #define CLOSE_BUTTON_SIZE 16
 
+/* Global backbuffer - pre-allocated to avoid IRQ malloc */
+static uint32_t *compositor_backbuffer = NULL;
+static int bb_width = 0;
+static int bb_height = 0;
+
 /*
  * Initialize Compositor
  */
 void compositor_init(void) {
   memset(windows, 0, sizeof(windows));
   window_count = 0;
-  next_window_id = 1;
-  pr_info("Compositor: Initialized\n");
+  next_window_id = 100;
+
+  /* Pre-allocate backbuffer for 720x1280 (can resize later) */
+  bb_width = 720;
+  bb_height = 1280;
+  compositor_backbuffer = kmalloc(bb_width * bb_height * 4);
+  if (!compositor_backbuffer) {
+    pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
+  }
+
+  pr_info("%s", "Compositor: Initialized\n");
 }
+
+/* Forward Declarations */
+static void compositor_render_internal(void);
+static void draw_rect_internal(int window_id, int x, int y, int w, int h,
+                               uint32_t color, int caller_pid);
 
 /*
  * Create Window
  */
-extern void local_irq_enable(void);
-extern void local_irq_disable(void);
+/*
+ * Interrupt Locking Helpers
+ * Prevent nested interrupts by saving/restoring PSTATE.DAIF
+ */
+/* Interrupt Locking Helpers from cpu.h */
 
 int compositor_create_window(int x, int y, int w, int h, const char *title,
                              int pid) {
-  local_irq_disable();
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
   if (window_count >= MAX_WINDOWS) {
-    pr_err("Compositor: Max windows reached\n");
-    local_irq_enable();
+    pr_err("%s", "Compositor: Max windows reached\n");
+    spin_unlock_irqrestore(&compositor_lock, flags);
     return -1;
   }
 
@@ -86,19 +131,23 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     }
   }
 
-  if (slot < 0)
+  if (slot < 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
     return -1;
+  }
 
   /* Allocate window buffer */
   size_t buffer_size = w * h * sizeof(uint32_t);
   uint32_t *buffer = (uint32_t *)kmalloc(buffer_size);
   if (!buffer) {
-    pr_err("Compositor: Failed to allocate window buffer\n");
+    pr_err("%s", "Compositor: Failed to allocate window buffer\n");
+    spin_unlock_irqrestore(&compositor_lock, flags);
     return -1;
   }
-  /* Initialize clear background */
+  /* Initialize clear background - use a consistent dark theme */
+  uint32_t default_bg = 0xFF1a1a2e;
   for (int i = 0; i < w * h; i++)
-    buffer[i] = 0xFF17171A;
+    buffer[i] = default_bg;
 
   /* Initialize window */
   windows[slot].id = next_window_id++;
@@ -110,7 +159,32 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   windows[slot].visible = 1;
   windows[slot].pid = pid;
   windows[slot].buffer = buffer;
-  windows[slot].bg_color = 0xFF17171A;
+  windows[slot].bg_color = default_bg;
+  windows[slot].curr_bg_color = default_bg;
+
+  /* Initialize text grids */
+  int char_w = 8;
+  int char_h = 16;
+  windows[slot].grid_cols = w / char_w;
+  windows[slot].grid_rows = h / char_h;
+  size_t grid_size = windows[slot].grid_cols * windows[slot].grid_rows;
+  windows[slot].text_grid = (uint8_t *)kmalloc(grid_size);
+  windows[slot].attr_grid = (uint32_t *)kmalloc(grid_size * 4);
+  if (windows[slot].text_grid && windows[slot].attr_grid) {
+    memset(windows[slot].text_grid, ' ', grid_size);
+    for (size_t i = 0; i < grid_size; i++)
+      windows[slot].attr_grid[i] = 0xFFFFFFFF;
+  } else {
+    /* Handle failure of grid allocation */
+    if (windows[slot].text_grid)
+      kfree(windows[slot].text_grid);
+    if (windows[slot].attr_grid)
+      kfree(windows[slot].attr_grid);
+    kfree(buffer);
+    windows[slot].id = 0;
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return -1;
+  }
   /* Copy title */
   int len = 0;
   while (title[len] && len < 63) {
@@ -133,12 +207,13 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
 
   /* Mark main shell (PID 2) as protected */
   windows[slot].protected = (pid == 2) ? 1 : 0;
+  windows[slot].top_most = 0;
 
   window_count++;
 
   pr_info("Compositor: Created window '%s' (%dx%d) at (%d,%d)\n", title, w, h,
           x, y);
-  local_irq_enable();
+  spin_unlock_irqrestore(&compositor_lock, flags);
   return windows[slot].id;
 }
 
@@ -146,16 +221,41 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
  * Destroy Window
  */
 void compositor_destroy_window(int window_id) {
+  uint64_t flags = local_irq_save();
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
+      if (windows[i].text_grid)
+        kfree(windows[i].text_grid);
+      if (windows[i].attr_grid)
+        kfree(windows[i].attr_grid);
       memset(&windows[i], 0, sizeof(struct window));
       window_count--;
+      local_irq_restore(flags);
       return;
     }
   }
+  /* Fallthrough if not found */
+  local_irq_restore(flags);
+}
+
+/*
+ * Destroy all windows owned by a specific PID
+ */
+void compositor_destroy_windows_by_pid(int pid) {
+  uint64_t flags = local_irq_save();
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id != 0 && windows[i].pid == pid) {
+      if (windows[i].buffer) {
+        kfree(windows[i].buffer);
+      }
+      memset(&windows[i], 0, sizeof(struct window));
+      window_count--;
+    }
+  }
+  local_irq_restore(flags);
 }
 
 /*
@@ -174,15 +274,15 @@ uint32_t *compositor_get_buffer(int window_id) {
  * Find window by PID
  */
 int compositor_get_window_by_pid(int pid) {
-  local_irq_disable();
+  uint64_t flags = local_irq_save();
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id != 0 && windows[i].pid == pid) {
       int id = windows[i].id;
-      local_irq_enable();
+      local_irq_restore(flags);
       return id;
     }
   }
-  local_irq_enable();
+  local_irq_restore(flags);
   return -1;
 }
 
@@ -190,7 +290,7 @@ int compositor_get_window_by_pid(int pid) {
  * Get PID of the focused window (top-most Z-order)
  */
 int compositor_get_focus_pid(void) {
-  local_irq_disable();
+  uint64_t flags = local_irq_save();
   int max_z = -1;
   int pid = -1;
 
@@ -202,7 +302,7 @@ int compositor_get_focus_pid(void) {
       }
     }
   }
-  local_irq_enable();
+  local_irq_restore(flags);
   return pid;
 }
 
@@ -242,94 +342,6 @@ static inline uint32_t blend_pixel(uint32_t fg, uint32_t bg) {
 /*
  * Draw Window Decorations (Title Bar)
  */
-static void draw_window_decorations(struct window *win) {
-  struct graphics_context *ctx = graphics_get_context();
-  if (!ctx || !ctx->buffer)
-    return;
-
-  int title_height = 20;
-  uint32_t title_color = 0xFF18181B; // Quasi nero puro
-  uint32_t border_color = 0xFF27272A;
-
-  /* Title bar */
-  for (int y = 0; y < title_height; y++) {
-    for (int x = 0; x < win->width + 2; x++) {
-      int px = win->x - 1 + x;
-      int py = win->y - title_height + y;
-      if (px >= 0 && px < (int)ctx->width && py >= 0 && py < (int)ctx->height) {
-        ctx->buffer[py * ctx->width + px] = title_color;
-      }
-    }
-  }
-
-  /* Draw title text */
-  int title_len = 0;
-  while (win->title[title_len])
-    title_len++;
-
-  int char_w = 8;
-  int text_w = title_len * char_w;
-  int start_x = win->x + (win->width - text_w) / 2;
-  int start_y = win->y - title_height + 2;
-
-  for (int i = 0; i < title_len; i++) {
-    graphics_draw_char(start_x + i * char_w, start_y, win->title[i],
-                       0xFFFFFFFF);
-  }
-
-  /* Border */
-  for (int y = -title_height; y <= win->height; y++) {
-    int px1 = win->x - 1;
-    int px2 = win->x + win->width;
-    int py = win->y + y;
-    if (py >= 0 && py < (int)ctx->height) {
-      if (px1 >= 0)
-        ctx->buffer[py * ctx->width + px1] = border_color;
-      if (px2 < (int)ctx->width)
-        ctx->buffer[py * ctx->width + px2] = border_color;
-    }
-  }
-  for (int x = -1; x <= win->width; x++) {
-    int px = win->x + x;
-    int py1 = win->y - title_height - 1;
-    int py2 = win->y + win->height;
-    if (px >= 0 && px < (int)ctx->width) {
-      if (py1 >= 0)
-        ctx->buffer[py1 * ctx->width + px] = border_color;
-      if (py2 < (int)ctx->height)
-        ctx->buffer[py2 * ctx->width + px] = border_color;
-    }
-  }
-
-  /* Draw close button [X] if not protected */
-  if (!win->protected) {
-    int btn_x = win->x + win->width - CLOSE_BUTTON_SIZE - 2;
-    int btn_y = win->y - title_height + 2;
-    /* Button background */
-    for (int by = 0; by < CLOSE_BUTTON_SIZE; by++) {
-      for (int bx = 0; bx < CLOSE_BUTTON_SIZE; bx++) {
-        int px = btn_x + bx;
-        int py = btn_y + by;
-        if (px >= 0 && px < (int)ctx->width && py >= 0 &&
-            py < (int)ctx->height) {
-          ctx->buffer[py * ctx->width + px] = 0xFFCC4444; /* Red background */
-        }
-      }
-    }
-    /* Draw X */
-    for (int d = 2; d < CLOSE_BUTTON_SIZE - 2; d++) {
-      int px1 = btn_x + d;
-      int py1 = btn_y + d;
-      int px2 = btn_x + CLOSE_BUTTON_SIZE - 1 - d;
-      if (px1 >= 0 && px1 < (int)ctx->width && py1 >= 0 &&
-          py1 < (int)ctx->height)
-        ctx->buffer[py1 * ctx->width + px1] = 0xFFFFFFFF;
-      if (px2 >= 0 && px2 < (int)ctx->width && py1 >= 0 &&
-          py1 < (int)ctx->height)
-        ctx->buffer[py1 * ctx->width + px2] = 0xFFFFFFFF;
-    }
-  }
-}
 
 /*
  * Process ANSI SGR (Select Graphic Rendition) parameters
@@ -349,21 +361,32 @@ static void handle_sgr(struct window *win) {
 
   if (val == 0) {
     win->fg_color = 0xFFFFFFFF;
+    win->curr_bg_color = win->bg_color;
   } else if (val >= 30 && val <= 37) {
     uint32_t colors[] = {0xFF000000, 0xFFBB0000, 0xFF00BB00, 0xFFBBBB00,
                          0xFF0000BB, 0xFFBB00BB, 0xFF00BBBB, 0xFFBBBBBB};
     win->fg_color = colors[val - 30];
+  } else if (val >= 40 && val <= 47) {
+    uint32_t colors[] = {0xFF000000, 0xFFBB0000, 0xFF00BB00, 0xFFBBBB00,
+                         0xFF0000BB, 0xFFBB00BB, 0xFF00BBBB, 0xFFBBBBBB};
+    win->curr_bg_color = colors[val - 40];
   } else if (val >= 90 && val <= 97) {
     uint32_t colors[] = {0xFF555555, 0xFFFF5555, 0xFF55FF55, 0xFFFFFF55,
                          0xFF5555FF, 0xFFFF55FF, 0xFF55FFFF, 0xFFFFFFFF};
     win->fg_color = colors[val - 90];
+  } else if (val >= 100 && val <= 107) {
+    uint32_t colors[] = {0xFF555555, 0xFFFF5555, 0xFF55FF55, 0xFFFFFF55,
+                         0xFF5555FF, 0xFFFF55FF, 0xFF55FFFF, 0xFFFFFFFF};
+    win->curr_bg_color = colors[val - 100];
   }
 }
 
 /*
- * Write text to a window (Terminal Emulator)
+ * Write text to a window (Terminal Emulator) - Uses GL
  */
 void compositor_window_write(int win_id, const char *buf, size_t count) {
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
   struct window *win = NULL;
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == win_id) {
@@ -371,25 +394,21 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
       break;
     }
   }
-  if (!win || !win->buffer)
+  if (win == NULL || win->buffer == NULL) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
     return;
-
-  local_irq_disable();
+  }
 
   int char_w = 8;
   int char_h = 16;
   int cols = win->width / char_w;
   int rows = win->height / char_h;
 
-  /* Temporarily swap context buffer to window buffer for drawing */
-  struct graphics_context *ctx = graphics_get_context();
-  uint32_t *screen_buffer = ctx->buffer;
-  uint32_t screen_width = ctx->width;
-  uint32_t screen_height = ctx->height;
-
-  ctx->buffer = win->buffer;
-  ctx->width = win->width;
-  ctx->height = win->height;
+  /* Create GL Surface wrappers for window buffer */
+  struct gl_surface win_surf = {.width = win->width,
+                                .height = win->height,
+                                .stride = win->width,
+                                .buffer = win->buffer};
 
   for (size_t i = 0; i < count; i++) {
     char c = buf[i];
@@ -407,13 +426,62 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
         if (win->cursor_x > 0)
           win->cursor_x--;
       } else if (c >= 32 && c < 127) {
-        /* Clear char background */
-        compositor_draw_rect(win_id, win->cursor_x * char_w,
-                             win->cursor_y * char_h, char_w, char_h,
-                             win->bg_color, win->pid);
+        /* Check bounds and wrap BEFORE writing */
+        if (win->cursor_x < 0)
+          win->cursor_x = 0;
+        if (win->cursor_y < 0)
+          win->cursor_y = 0;
+        if (win->cursor_x >= cols) {
+          win->cursor_x = 0;
+          win->cursor_y++;
+        }
+        if (win->cursor_y >= rows) {
+          /* Scroll Pixels buffer up by one line */
+          if (win->height > char_h) {
+            size_t line_size = win->width * char_h;
+            memmove(win->buffer, win->buffer + line_size,
+                    win->width * (win->height - char_h) * 4);
+          }
+          /* Clear last line in pixel buffer */
+          for (int p = win->width * (win->height - char_h);
+               p < win->width * win->height; p++) {
+            win->buffer[p] = win->bg_color;
+          }
 
-        graphics_draw_char(win->cursor_x * char_w, win->cursor_y * char_h, c,
-                           win->fg_color);
+          /* Scroll Text Grids */
+          if (win->text_grid && win->attr_grid) {
+            memmove(win->text_grid, win->text_grid + win->grid_cols,
+                    win->grid_cols * (win->grid_rows - 1));
+            memmove(win->attr_grid, win->attr_grid + win->grid_cols,
+                    win->grid_cols * (win->grid_rows - 1) * 4);
+            /* Clear last row in grids */
+            int last_row_start = win->grid_cols * (win->grid_rows - 1);
+            memset(win->text_grid + last_row_start, ' ', win->grid_cols);
+            for (int p = 0; p < win->grid_cols; p++)
+              win->attr_grid[last_row_start + p] = 0xFFFFFFFF;
+          }
+          win->cursor_y = rows - 1;
+        }
+
+        /* Clear char background */
+        /* Use internal unsafe draw (which writes to buffer) */
+        /* Pass caller_pid = 1 to bypass security check for kernel-internal
+         * write
+         */
+        draw_rect_internal(win_id, win->cursor_x * char_w,
+                           win->cursor_y * char_h, char_w, char_h,
+                           win->curr_bg_color, 1);
+
+        gl_draw_char(&win_surf, win->cursor_x * char_w, win->cursor_y * char_h,
+                     c, win->fg_color);
+        /* Update grids for persistence */
+        if (win->text_grid && win->attr_grid) {
+          int idx = win->cursor_y * win->grid_cols + win->cursor_x;
+          if (idx < win->grid_cols * win->grid_rows) {
+            win->text_grid[idx] = c;
+            win->attr_grid[idx] = win->fg_color;
+          }
+        }
 
         win->cursor_x++;
       }
@@ -428,10 +496,14 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
           handle_sgr(win);
         } else if (c == 'J') {
           for (int p = 0; p < win->width * win->height; p++)
-            win->buffer[p] = win->bg_color;
-          win->cursor_x = 0;
-          win->cursor_y = 0;
-        } else if (c == 'H') {
+            win->buffer[p] = win->curr_bg_color;
+
+          /* Also clear text grids */
+          if (win->text_grid && win->attr_grid) {
+            memset(win->text_grid, ' ', win->grid_cols * win->grid_rows);
+            for (int p = 0; p < win->grid_cols * win->grid_rows; p++)
+              win->attr_grid[p] = win->curr_bg_color;
+          }
           win->cursor_x = 0;
           win->cursor_y = 0;
         }
@@ -442,78 +514,16 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
         win->escape_state = 0;
       }
     }
-
-    if (win->cursor_x >= cols) {
-      win->cursor_x = 0;
-      win->cursor_y++;
-    }
-    if (win->cursor_y >= rows) {
-      /* Scroll buffer up by one line */
-      size_t line_size = win->width * char_h;
-      memmove(win->buffer, win->buffer + line_size,
-              win->width * (win->height - char_h) * 4);
-      /* Clear last line */
-      for (int p = win->width * (win->height - char_h);
-           p < win->width * win->height; p++) {
-        win->buffer[p] = win->bg_color;
-      }
-      win->cursor_y = rows - 1;
-    }
   }
 
-  /* Restore screen buffer */
-  ctx->buffer = screen_buffer;
-  ctx->width = screen_width;
-  ctx->height = screen_height;
-
-  /* Force compositor to refresh */
-  compositor_render();
-  local_irq_enable();
+  /* Mark compositor as needing redraw */
+  compositor_dirty = 1;
+  spin_unlock_irqrestore(&compositor_lock, flags);
 }
 
 /*
  * Draw simple mouse cursor
  */
-
-static void draw_mouse_cursor(struct graphics_context *ctx) {
-  /* Definiamo la forma del cursore in stile "Apple/Modern OS". */
-  static const char *cursor_shape[] = {
-      "X           ", "XX          ", "X.X         ", "X..X        ",
-      "X...X       ", "X....X      ", "X.....X     ", "X......X    ",
-      "X.......X   ", "X........X  ", "X.....XXXXX ", "X..X..X     ",
-      "X.X X..X    ", "XX  X..X    ", "X    XX     ", "     XX     "};
-
-  int height = 16; // Altezza della matrice sopra
-  int width = 12;  // Larghezza massima della matrice
-
-  // Colori in formato ARGB (Assumendo 0xAARRGGBB)
-  // Se il tuo sistema usa un formato diverso, modifica questi valori.
-  int border_color = 0xFFFFFFFF; // Bianco puro
-  int fill_color = 0xFF000000;   // Nero puro
-
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-      // Calcola la posizione assoluta nel buffer
-      int px = mouse_x + x;
-      int py = mouse_y + y;
-
-      // Controllo Bounds (per non scrivere fuori dallo schermo)
-      if (px >= 0 && px < (int)ctx->width && py >= 0 && py < (int)ctx->height) {
-
-        char pixel_type = cursor_shape[y][x];
-
-        if (pixel_type == 'X') {
-          // Disegna Bordo
-          ctx->buffer[py * ctx->width + px] = border_color;
-        } else if (pixel_type == '.') {
-          // Disegna Riempimento
-          ctx->buffer[py * ctx->width + px] = fill_color;
-        }
-        // Se è ' ', non facciamo nulla (trasparenza)
-      }
-    }
-  }
-}
 
 /*
  * Handle Mouse Click
@@ -569,9 +579,12 @@ void compositor_handle_click(int button, int state) {
           mouse_y >= btn_y && mouse_y < btn_y + CLOSE_BUTTON_SIZE) {
         pr_info("Compositor: Close button clicked on window %d (PID %d)\n",
                 hit->id, hit->pid);
-        /* TODO: Send kill signal to process hit->pid */
-        /* For now, just destroy the window */
+        /* Terminate the owning process */
+        extern int process_terminate(int pid);
+        process_terminate(hit->pid);
+        /* Destroy the window */
         compositor_destroy_window(hit->id);
+        compositor_dirty = 1;
         compositor_render();
         return;
       }
@@ -591,10 +604,16 @@ void compositor_handle_click(int button, int state) {
 /*
  * Update Mouse Position
  */
+
 void compositor_update_mouse(int dx, int dy, int absolute) {
-  struct graphics_context *ctx = graphics_get_context();
-  if (!ctx)
-    return;
+  struct gpu_device *dev = gpu_get_primary();
+  int width = 800; /* Fallback */
+  int height = 600;
+
+  if (dev) {
+    width = dev->width;
+    height = dev->height;
+  }
 
   if (absolute) {
     mouse_x = dx;
@@ -604,61 +623,84 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
     mouse_y += dy;
   }
 
+  /* Clamp to screen */
+  if (mouse_x < 0)
+    mouse_x = 0;
+  if (mouse_x >= width)
+    mouse_x = width - 1;
+  if (mouse_y < 0)
+    mouse_y = 0;
+  if (mouse_y >= height)
+    mouse_y = height - 1;
+
   /* Handle Dragging */
   if (dragging_window_id != -1) {
     for (int i = 0; i < MAX_WINDOWS; i++) {
       if (windows[i].id == dragging_window_id) {
         windows[i].x = mouse_x - drag_off_x;
         windows[i].y = mouse_y - drag_off_y;
-        /* Simple bounds check to keep title bar somewhat visible */
-        if (windows[i].y < 0)
-          windows[i].y = 0;
+        /* Enforce screen boundaries */
+        if (windows[i].x < 0)
+          windows[i].x = 0;
+        if (windows[i].x + windows[i].width > width)
+          windows[i].x = width - windows[i].width;
+        if (windows[i].y < TITLE_BAR_HEIGHT)
+          windows[i].y = TITLE_BAR_HEIGHT;
+        if (windows[i].y + windows[i].height > height)
+          windows[i].y = height - windows[i].height;
         break;
       }
     }
-    /* Force refresh during drag */
-    compositor_render();
   }
 
-  /* Clamp to screen */
-  if (mouse_x < 0)
-    mouse_x = 0;
-  if (mouse_x >= (int)ctx->width)
-    mouse_x = (int)ctx->width - 1;
-  if (mouse_y < 0)
-    mouse_y = 0;
-  if (mouse_y >= (int)ctx->height)
-    mouse_y = (int)ctx->height - 1;
+  /* Mark compositor as needing redraw - don't render from IRQ! */
+  compositor_dirty = 1;
 }
 
 /*
  * Composite All Windows to Screen
  */
-void compositor_render(void) {
-  struct graphics_context *ctx = graphics_get_context();
-  if (!ctx || !ctx->buffer)
+/*
+ * Compositor Render (HAL + GL)
+ */
+/*
+ * Compositor Render (Region-based / Front-to-Back with Occlusion Culling)
+ */
+#include <kernel/region.h>
+
+static void compositor_render_internal(void) {
+  struct gpu_device *dev = gpu_get_primary();
+  if (!dev || !compositor_backbuffer)
     return;
 
-  /* Clear to desktop background (gradient) */
-  for (uint32_t y = 0; y < ctx->height; y++) {
-    for (uint32_t x = 0; x < ctx->width; x++) {
-      /* Gradient from dark blue to lighter blue */
-      uint32_t r = 20;
-      uint32_t g = 40 + (y * 40 / ctx->height);
-      uint32_t b = 80 + (y * 80 / ctx->height);
-      ctx->buffer[y * ctx->width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
-    }
-  }
+  /* Use current buffer dimensions */
+  int bb_w = bb_width;
+  int bb_h = bb_height;
+  uint32_t *backbuffer = compositor_backbuffer;
 
-  /* Sort windows by z-order (simple bubble sort) */
-  struct window *sorted[MAX_WINDOWS];
+  /* Wrap backbuffer in GL Surface */
+  struct gl_surface screen = {
+      .width = bb_w, .height = bb_h, .stride = bb_w, .buffer = backbuffer};
+
+  /* Sort Windows by Z-Order (Bottom to Top) */
+  struct window **sorted = sorted_windows;
+  struct region **visible_regions = visible_regions_store;
+
+  memset(visible_regions, 0, sizeof(struct region *) * MAX_WINDOWS);
+
   int count = 0;
-  for (int i = 0; i < MAX_WINDOWS; i++) {
+  for (int i = 0; i < MAX_WINDOWS && count < MAX_WINDOWS; i++) {
     if (windows[i].id != 0 && windows[i].visible) {
+      /* Skip off-screen */
+      if (windows[i].x >= bb_w || windows[i].y >= bb_h ||
+          windows[i].x + windows[i].width <= 0 ||
+          windows[i].y + windows[i].height <= 0)
+        continue;
       sorted[count++] = &windows[i];
     }
   }
 
+  /* Bubble Sort */
   for (int i = 0; i < count - 1; i++) {
     for (int j = 0; j < count - i - 1; j++) {
       if (sorted[j]->z_order > sorted[j + 1]->z_order) {
@@ -669,45 +711,246 @@ void compositor_render(void) {
     }
   }
 
-  /* Render windows back to front */
-  for (int i = 0; i < count; i++) {
+  /* Top Most handling */
+  for (int i = 0; i < count - 1; i++) {
+    for (int j = 0; j < count - i - 1; j++) {
+      if (!sorted[j]->top_most && sorted[j + 1]->top_most) {
+        struct window *tmp = sorted[j];
+        sorted[j] = sorted[j + 1];
+        sorted[j + 1] = tmp;
+      }
+    }
+  }
+
+  /*
+   * Two-Pass Rendering Algorithm
+   * Pass 1: Visibility Calculation (Top-Down)
+   * computes what part of each window is visible.
+   */
+  struct region *occluded = region_create();
+  if (!occluded) {
+    return;
+  }
+
+  /* Iterate Top-to-Bottom for Occlusion */
+  for (int i = count - 1; i >= 0; i--) {
     struct window *win = sorted[i];
 
-    /* Draw decorations */
-    draw_window_decorations(win);
+    /* Calculate Full Window Bounds (Content + Decorations) */
+    int win_y = win->top_most ? win->y : win->y - TITLE_BAR_HEIGHT;
+    int win_h = win->top_most ? win->height : win->height + TITLE_BAR_HEIGHT;
 
-    /* Blit window content */
-    for (int wy = 0; wy < win->height; wy++) {
-      for (int wx = 0; wx < win->width; wx++) {
-        int px = win->x + wx;
-        int py = win->y + wy;
+    struct region *vis = region_create();
+    if (vis) {
+      region_add_rect(vis, win->x, win_y, win->width, win_h);
 
-        if (px >= 0 && px < (int)ctx->width && py >= 0 &&
-            py < (int)ctx->height) {
-          uint32_t src = win->buffer[wy * win->width + wx];
-          uint32_t dst = ctx->buffer[py * ctx->width + px];
-          ctx->buffer[py * ctx->width + px] = blend_pixel(src, dst);
+      /* Subtract currently occluded area */
+      for (int r = 0; r < occluded->count; r++) {
+        struct rect *or = &occluded->rects[r];
+        region_subtract(vis, or->x, or->y, or->w, or->h);
+      }
+
+      /* Clip to screen bounds */
+      region_intersect_rect(vis, 0, 0, bb_w, bb_h);
+    }
+
+    visible_regions[i] = vis;
+
+    /* Add Self to Occluded (Assuming Opaque) */
+    region_add_rect(occluded, win->x, win_y, win->width, win_h);
+  }
+
+  /* Calculate Background Region (Screen - Occluded) */
+  struct region *bg_region = region_create();
+  if (bg_region) {
+    region_add_rect(bg_region, 0, 0, bb_w, bb_h);
+    for (int r = 0; r < occluded->count; r++) {
+      struct rect *or = &occluded->rects[r];
+      region_subtract(bg_region, or->x, or->y, or->w, or->h);
+    }
+
+    /* Draw Background */
+    for (int r = 0; r < bg_region->count; r++) {
+      struct rect *bg = &bg_region->rects[r];
+      for (int y = 0; y < bg->h; y++) {
+        for (int x = 0; x < bg->w; x++) {
+          int sy = bg->y + y;
+          int sx = bg->x + x;
+          /* Proper Gradient Background */
+          uint32_t r_chk = 20;
+          uint32_t g_chk = 40 + (sy * 40 / bb_h);
+          uint32_t b_chk = 80 + (sy * 80 / bb_h);
+          backbuffer[sy * bb_w + sx] =
+              0xFF000000 | (r_chk << 16) | (g_chk << 8) | b_chk;
+        }
+      }
+    }
+    region_destroy(bg_region);
+  }
+  region_destroy(occluded);
+
+  /* Pass 2: Rendering (Bottom-Up) - Painter's Algorithm with Clipping */
+  for (int i = 0; i < count; i++) {
+    struct window *win = sorted[i];
+    struct region *vis = visible_regions[i];
+
+    /* Decoration Params */
+    int title_h = win->top_most ? 0 : TITLE_BAR_HEIGHT;
+    int content_y = win->y;
+    int decor_y = win->y - title_h;
+
+    if (vis) {
+      /* Iterate Visible Rects */
+      for (int r = 0; r < vis->count; r++) {
+        struct rect *vr = &vis->rects[r];
+
+        /* Draw pixels for this visible rect */
+        for (int dy = 0; dy < vr->h; dy++) {
+          for (int dx = 0; dx < vr->w; dx++) {
+            int screen_x = vr->x + dx;
+            int screen_y = vr->y + dy;
+            int screen_idx = screen_y * bb_w + screen_x;
+
+            /* Determine if we are in Decoration or Content */
+            if (screen_y < content_y) {
+              /* Decoration Area (Title Bar) */
+              if (screen_y >= decor_y) {
+                /* In Title Bar */
+                /* Check for Close Button */
+                int btn_start_x = win->x + win->width - CLOSE_BUTTON_SIZE - 2;
+                if (screen_x >= btn_start_x &&
+                    screen_x < btn_start_x + CLOSE_BUTTON_SIZE &&
+                    screen_y >= decor_y + 2 &&
+                    screen_y < decor_y + 2 + CLOSE_BUTTON_SIZE) {
+                  backbuffer[screen_idx] = 0xFFCC4444; /* Red Button */
+                } else {
+                  backbuffer[screen_idx] = 0xFF18181B; /* Dark Title Bar */
+                }
+              }
+            } else {
+              /* Content Area */
+              /* Map to Window Buffer Coords */
+              int win_local_x = screen_x - win->x;
+              int win_local_y = screen_y - win->y;
+
+              if (win_local_x >= 0 && win_local_x < win->width &&
+                  win_local_y >= 0 && win_local_y < win->height) {
+
+                if (win->buffer) {
+                  uint32_t pixel =
+                      win->buffer[win_local_y * win->width + win_local_x];
+                  backbuffer[screen_idx] =
+                      blend_pixel(pixel, backbuffer[screen_idx]);
+                } else {
+                  backbuffer[screen_idx] =
+                      blend_pixel(win->bg_color, backbuffer[screen_idx]);
+                }
+              }
+            }
+          } // dx
+        } // dy
+      }
+      region_destroy(vis);
+      visible_regions[i] = NULL;
+    }
+
+    /* Draw Title Text - Naive Unclipped (Relies on Painter's Algo overwriting)
+     */
+    if (!win->top_most) {
+      int title_len = 0;
+      while (win->title[title_len] && title_len < 63)
+        title_len++;
+
+      int char_w = 8;
+      int text_w = title_len * char_w;
+      int start_x = win->x + (win->width - text_w) / 2;
+      int start_y = decor_y + 2;
+
+      for (int c = 0; c < title_len; c++) {
+        if (start_x + c * char_w + char_w > 0 && start_x + c * char_w < bb_w) {
+          gl_draw_char(&screen, start_x + c * char_w, start_y, win->title[c],
+                       0xFFFFFFFF);
         }
       }
     }
   }
 
-  /* pr_info("Compositor: Rendering frame (mouse at %d,%d)\n", mouse_x,
-   * mouse_y); */
+  /* Cleanup any remaining regions in store */
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (visible_regions_store[i]) {
+      region_destroy(visible_regions_store[i]);
+      visible_regions_store[i] = NULL;
+    }
+  }
 
-  /* Draw Cursor */
-  draw_mouse_cursor(ctx);
+  /* Mouse Cursor (Always on top) */
+  /* ... (Existing mouse code) ... */
+  static const char *cursor_bits[] = {
+      "X           ", "XX          ", "X.X         ", "X..X        ",
+      "X...X       ", "X....X      ", "X.....X     ", "X......X    ",
+      "X.......X   ", "X........X  ", "X.....XXXXX ", "X..X..X     ",
+      "X.X X..X    ", "XX  X..X    ", "X    XX     ", "     XX     "};
+  int c_h = 16;
+  int c_w = 12;
+  for (int y = 0; y < c_h; y++) {
+    for (int x = 0; x < c_w; x++) {
+      int px = mouse_x + x;
+      int py = mouse_y + y;
+      if (px >= 0 && px < bb_w && py >= 0 && py < bb_h) {
+        char p = cursor_bits[y][x];
+        if (p == 'X')
+          backbuffer[py * bb_w + px] = 0xFFFFFFFF; // Border White
+        else if (p == '.')
+          backbuffer[py * bb_w + px] = 0xFF000000; // Fill Black
+      }
+    }
+  }
 
-  /* Flush to screen */
-  graphics_swap_buffers();
+  /* Flush */
+  if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
+    void *fb_va = dev->ops->get_framebuffer(dev, NULL);
+    if (fb_va) {
+      memcpy(fb_va, backbuffer, bb_w * bb_h * 4);
+      dev->ops->flush(dev, 0, 0, bb_w, bb_h);
+    }
+  }
+}
+
+/*
+ * Composite All Windows to Screen (Public - Locks)
+ */
+void compositor_render(void) {
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  compositor_render_internal();
+  compositor_dirty = 0;
+  spin_unlock_irqrestore(&compositor_lock, flags);
+}
+
+/*
+ * Compositor Tick - Called from timer interrupt
+ * Renders if dirty flag is set (avoids re-render on every event)
+ */
+void compositor_tick(void) {
+  uint64_t flags;
+  /* Use trylock to avoid blocking timer IRQ if compositor is busy */
+  if (spin_trylock_irqsave(&compositor_lock, &flags)) {
+    if (compositor_dirty) {
+      compositor_dirty = 0;
+      compositor_render_internal();
+    }
+    spin_unlock_irqrestore(&compositor_lock, flags);
+  }
 }
 
 /*
  * Draw to Window
  */
-void compositor_draw_rect(int window_id, int x, int y, int w, int h,
-                          uint32_t color, int caller_pid) {
-  local_irq_disable();
+/*
+ * Draw to Window (Internal - No Locking)
+ */
+static void draw_rect_internal(int window_id, int x, int y, int w, int h,
+                               uint32_t color, int caller_pid) {
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id && windows[i].buffer) {
       /* Process Isolation: Verify Ownership */
@@ -716,7 +959,6 @@ void compositor_draw_rect(int window_id, int x, int y, int w, int h,
         pr_warn(
             "Compositor: Process %d tried to draw to window %d (owned by %d)\n",
             caller_pid, window_id, windows[i].pid);
-        local_irq_enable();
         return;
       }
 
@@ -724,15 +966,103 @@ void compositor_draw_rect(int window_id, int x, int y, int w, int h,
         for (int dx = 0; dx < w; dx++) {
           int px = x + dx;
           int py = y + dy;
+          /* Strict bounds checking using window dimensions */
           if (px >= 0 && px < windows[i].width && py >= 0 &&
               py < windows[i].height) {
-            windows[i].buffer[py * windows[i].width + px] = color;
+            /* Final safety check: ensure window buffer is non-null */
+            if (windows[i].buffer) {
+              windows[i].buffer[py * windows[i].width + px] = color;
+            }
           }
         }
       }
-      local_irq_enable();
       return;
     }
   }
-  local_irq_enable();
+}
+
+/*
+ * Draw to Window (Public - Locks)
+ */
+void compositor_draw_rect(int window_id, int x, int y, int w, int h,
+                          uint32_t color, int caller_pid) {
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  draw_rect_internal(window_id, x, y, w, h, color, caller_pid);
+  spin_unlock_irqrestore(&compositor_lock, flags);
+}
+
+/*
+ * Blit user buffer to window
+ */
+void compositor_blit(int window_id, int x, int y, int w, int h,
+                     const uint32_t *user_buf, int caller_pid) {
+  // pr_info("BLIT: win=%d pid=%d buf=%p %dx%d\n", window_id, caller_pid,
+  // user_buf, w, h);
+  uint64_t flags = local_irq_save();
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == window_id && windows[i].buffer) {
+      /* Process Isolation: Verify Ownership */
+      if (windows[i].pid != caller_pid && caller_pid != 1) {
+        local_irq_restore(flags);
+        return;
+      }
+
+      /* Copy Logic: Row by Row for speed */
+      for (int dy = 0; dy < h; dy++) {
+        int py = y + dy;
+        /* Clip Y */
+        if (py < 0 || py >= windows[i].height)
+          continue;
+
+        /* Calculate source and dest pointers for the row */
+        /* We assume x=0 for full width blit usually, but handle x offset */
+
+        /* Clip X roughly: we support full width blit mainly */
+        /* If x < 0, we need to skip source pixels?
+           For this syscall, let's assume valid bounds or simple clipping. */
+
+        /* Destination X start */
+        int dest_x = x;
+        int src_x = 0;
+        int copy_w = w;
+
+        if (dest_x < 0) {
+          src_x += -dest_x;
+          copy_w -= -dest_x;
+          dest_x = 0;
+        }
+
+        if (dest_x + copy_w > windows[i].width) {
+          copy_w = windows[i].width - dest_x;
+        }
+
+        if (copy_w <= 0)
+          continue;
+
+        /* Use memcpy */
+        void *dst_ptr = &windows[i].buffer[py * windows[i].width + dest_x];
+        const void *src_ptr = &user_buf[dy * w + src_x];
+
+        memcpy(dst_ptr, src_ptr, copy_w * sizeof(uint32_t));
+      }
+      spin_unlock_irqrestore(&compositor_lock, flags);
+      return;
+    }
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+}
+
+void compositor_set_window_flags(int window_id, int flags_val) {
+  uint64_t flags = local_irq_save();
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == window_id) {
+      if (flags_val & 1)
+        windows[i].top_most = 1;
+      else
+        windows[i].top_most = 0;
+      break;
+    }
+  }
+  local_irq_restore(flags);
 }

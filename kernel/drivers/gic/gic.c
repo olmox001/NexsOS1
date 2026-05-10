@@ -8,6 +8,8 @@
 #include <kernel/timer.h>
 #include <kernel/types.h>
 
+/* Disable optimization to prevent register corruption in IRQ handler loop */
+
 /* MMIO access */
 #define GICD_REG(off) (*(volatile uint32_t *)(GICD_BASE + (off)))
 #define GICC_REG(off) (*(volatile uint32_t *)(GICC_BASE + (off)))
@@ -62,7 +64,7 @@ void gic_init(void) {
   /* Enable distributor */
   GICD_REG(GICD_CTLR) = 1;
 
-  pr_info("GIC: Distributor initialized\n");
+  pr_info("%s", "GIC: Distributor initialized\n");
 }
 
 /*
@@ -156,7 +158,12 @@ uint32_t gic_acknowledge_irq(void) { return GICC_REG(GICC_IAR) & 0x3FF; }
 /*
  * Signal end of interrupt
  */
-void gic_end_irq(uint32_t irq) { GICC_REG(GICC_EOIR) = irq; }
+void gic_end_irq(uint32_t irq) {
+  /* Explicitly load address to avoid register corruption/caching issues in IRQ
+   * loop */
+  volatile uint32_t *eoir_reg = (volatile uint32_t *)(GICC_BASE + GICC_EOIR);
+  *eoir_reg = irq;
+}
 
 /*
  * Send Software Generated Interrupt
@@ -220,10 +227,15 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
     /* Handle IRQ */
     if (irq == 27 || irq == 30) {
       /* Timer Interrupt - Special Case to pass regs and return new regs */
-      ret_regs = timer_handler(regs);
+      /* CRITICAL: If a context switch occurs, we must return the new regs
+       * immediately and not continue the loop, as the 'regs' pointer is now
+       * stale and the environment (stack, etc) might have changed for the new
+       * process. */
+      ret_regs = timer_handler(ret_regs);
+      gic_end_irq(irq);
+      return ret_regs;
     } else if (irq < GIC_MAX_IRQS && irq_handlers[irq].handler) {
       /* Standard Driver Handler */
-      /* pr_info("GIC: Handling IRQ %u\n", irq); */
       irq_handlers[irq].handler(irq, irq_handlers[irq].data);
     } else {
       pr_warn("GIC: Unhandled IRQ %u\n", irq);

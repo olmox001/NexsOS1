@@ -14,6 +14,7 @@ SECTIONS
         *(.text)
         *(.text.*)
     }
+    _etext = .;
     
     . = ALIGN(4096);
     

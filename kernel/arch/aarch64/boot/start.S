@@ -25,8 +25,11 @@ _start:
     /* CPU 0 does primary init */
     cbz x1, primary_init
     
-    /* Secondary CPUs wait */
-    b secondary_init
+    /* CPU 0 does primary init */
+    cbz x1, primary_init
+    
+    /* Secondary CPUs wait (PSCI handles this, but if we get here, hang) */
+    b halt
 
 /*
  * Primary CPU initialization
@@ -143,39 +146,73 @@ halt:
 /*
  * Secondary CPU initialization
  */
-secondary_init:
-    /* Wait for spin table */
-    adrp x2, cpu_spin_table
-    add x2, x2, :lo12:cpu_spin_table
-secondary_wait:
-    wfe
-    ldr x3, [x2, x1, lsl #3]    /* Load entry for this CPU */
-    cbz x3, secondary_wait
-    
-    /* Setup stack for this CPU */
-    adrp x4, cpu_stacks
-    add x4, x4, :lo12:cpu_stacks
-    ldr x0, [x4, x1, lsl #3]
+/*
+ * Secondary CPU startup (PSCI Entry Point)
+ * x0 = context_id (Stack Pointer)
+ */
+secondary_startup:
     mov sp, x0
     
-    /* Jump to entry point */
+    /* 1. Load Kernel PGD from secondary_ttbr0 */
+    /* Use adrp/add to get the physical address of secondary_ttbr0 */
+    adrp x4, secondary_ttbr0
+    add x4, x4, :lo12:secondary_ttbr0
+    ldr x4, [x4]
+    
+    msr ttbr0_el1, x4
+    
+    /* 2. Setup MAIR (Attr0=Normal, Attr1=Device) */
+    mov x4, #0xff
+    orr x4, x4, #(0x04 << 8)
+    msr mair_el1, x4
+    
+    /* 3. TCR_EL1 (40-bit PA, 48-bit VA, 4KB, Inner Shareable, WB/WA) */
+    /* (16<<0) | (3<<12) | (1<<10) | (1<<8) | (2<<32) */
+    mov x4, #0x3510
+    movk x4, #0x0002, lsl #32 /* IPS=2 */
+    msr tcr_el1, x4
+    
+    /* 4. SCTLR_EL1 (Enable M, C, I) */
+    mrs x4, sctlr_el1
+    orr x4, x4, #(1 << 0)  /* M */
+    orr x4, x4, #(1 << 2)  /* C */
+    orr x4, x4, #(1 << 12) /* I */
+    msr sctlr_el1, x4
+    
+    dsb ish
+    isb
+    
+    /* Jump to C code (Absolute Virtual Address) */
+    ldr x3, =secondary_cpu_entry
     br x3
+    b halt
 
 /*
  * Wake secondary CPU
  */
 .global cpu_wake_secondary
+/*
+ * Wake secondary CPU via PSCI
+ * x0 = cpu id
+ * x1 = entry point (user C function) - ignored, we use secondary_startup
+ * x2 = stack pointer - passed as context_id
+ */
+.global cpu_wake_secondary
 cpu_wake_secondary:
-    /* x0 = cpu id, x1 = entry point, x2 = stack */
-    adrp x3, cpu_spin_table
-    add x3, x3, :lo12:cpu_spin_table
-    str x1, [x3, x0, lsl #3]
+    mov x3, x2          /* x3 = context_id (stack) */
     
-    adrp x3, cpu_stacks
-    add x3, x3, :lo12:cpu_stacks
-    str x2, [x3, x0, lsl #3]
+    /* Calculate Physical Address of secondary_startup */
+    adrp x2, secondary_startup
+    add x2, x2, :lo12:secondary_startup
     
-    sev     /* Wake sleeping CPUs */
+    mov x1, x0          /* x1 = target_cpu (MPIDR) */
+    
+    /* Load PSCI_CPU_ON_64 (0xC4000003) */
+    mov x0, #0x0003
+    movk x0, #0xC400, lsl #16
+    
+    hvc #0              /* Call PSCI via HVC */
+    
     ret
 
 /*
@@ -206,3 +243,8 @@ __kernel_stack:
     .skip 65536 * 8     /* 8 CPUs * 64KB */
 .global __kernel_stack_top
 __kernel_stack_top:
+
+.section .data
+.align 3
+.global secondary_ttbr0
+secondary_ttbr0: .quad 0

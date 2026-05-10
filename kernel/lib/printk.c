@@ -3,11 +3,15 @@
  * Kernel printf implementation
  */
 #include <drivers/uart.h>
+#include <kernel/arch.h>
+#include <kernel/cpu.h>
 #include <kernel/printk.h>
+#include <kernel/sched.h>
+#include <kernel/string.h>
 #include <kernel/types.h>
 #include <stdarg.h>
 
-int console_loglevel = KERN_INFO;
+int console_loglevel = KERN_WARNING;
 
 /* Internal output function */
 static void kputc(char c) { uart_putc(c); }
@@ -222,12 +226,34 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
 /*
  * vprintk - print to console from va_list
  */
+/* Global UART lock for synchronized serial output */
+static spinlock_t uart_lock = SPINLOCK_INIT;
+
 int vprintk(const char *fmt, va_list args) {
-  char buf[512];
+  struct cpu_info *cpu = get_cpu_info();
+  uint64_t flags;
   int len;
 
-  len = vsnprintf(buf, sizeof(buf), fmt, args);
-  kputs(buf);
+  /* Basic recursion check */
+  if (cpu->in_printk) {
+    /* We are already in printk on this CPU.
+     * This usually happens if vsnprintf faults or triggers a log.
+     * Emit a raw emergency message if possible, or just skip. */
+    uart_puts("\n[RECURSIVE PRINTK DETECTED]\n");
+    return 0;
+  }
+
+  cpu->in_printk = 1;
+
+  /* Format to per-CPU buffer (No locking needed for local buffer) */
+  len = vsnprintf(cpu->printk_buf, sizeof(cpu->printk_buf), fmt, args);
+
+  /* Lock only for actual UART output */
+  spin_lock_irqsave(&uart_lock, &flags);
+  kputs(cpu->printk_buf);
+  spin_unlock_irqrestore(&uart_lock, flags);
+
+  cpu->in_printk = 0;
 
   return len;
 }
@@ -261,8 +287,9 @@ void panic(const char *fmt, ...) {
   printk("\n\nSystem halted.\n");
 
   /* Disable interrupts and halt */
-  __asm__ __volatile__("msr daifset, #0xf\n"
-                       "1: wfe\n"
+  uint64_t flags;
+  arch_local_irq_save_all(&flags);
+  __asm__ __volatile__("1: wfe\n"
                        "b 1b");
 
   __builtin_unreachable();

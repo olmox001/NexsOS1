@@ -45,11 +45,12 @@ struct page {
 /* Memory zone descriptor */
 struct zone {
   const char *name;
-  uint64_t start_pfn;  /* First page frame number */
-  uint64_t end_pfn;    /* Last page frame number */
-  uint64_t free_pages; /* Number of free pages */
-  uint64_t *bitmap;    /* Allocation bitmap */
-  spinlock_t lock;     /* Zone lock */
+  uint64_t start_pfn;     /* First page frame number */
+  uint64_t end_pfn;       /* Last page frame number */
+  uint64_t free_pages;    /* Number of free pages */
+  uint64_t *bitmap;       /* Allocation bitmap */
+  uint64_t next_free_pfn; /* Next-Fit optimization: last known free PFN */
+  spinlock_t lock;        /* Zone lock */
 };
 
 /* Memory region from bootloader/DTB */

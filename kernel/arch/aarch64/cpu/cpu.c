@@ -7,15 +7,10 @@
 #include <kernel/types.h>
 
 /* Exception frame structure */
+#include <kernel/cpu.h>
 #include <kernel/sched.h>
 
-/* Per-CPU data */
-struct cpu_info {
-  uint32_t cpu_id;
-  uint32_t online;
-  uint64_t stack_top;
-  void *current_task;
-};
+#include <kernel/arch.h>
 
 /* CPU info array (max 8 CPUs) */
 struct cpu_info cpu_data[8];
@@ -27,10 +22,22 @@ extern void exception_vectors_install(void);
 /*
  * Get current CPU ID
  */
-uint32_t cpu_id(void) {
-  uint64_t mpidr;
-  __asm__ __volatile__("mrs %0, mpidr_el1" : "=r"(mpidr));
-  return mpidr & 0xFF;
+uint32_t cpu_id(void) { return arch_get_cpu_id(); }
+
+/*
+ * Get current CPU info
+ */
+struct cpu_info *get_cpu_info(void) {
+  uint32_t id = cpu_id();
+  if (id >= 8) {
+    /* Manual panic to avoid infinite recursion if panic uses get_cpu_info logic
+     */
+    /* Just hang or try to output something simple */
+    /* uart_puts("CRITICAL: CPU ID OUT OF BOUNDS!\n"); */
+    while (1) {
+    }
+  }
+  return &cpu_data[id];
 }
 
 /*
@@ -46,23 +53,21 @@ void cpu_init(void) {
     nr_cpus = 1;
     pr_info("CPU: Primary core %u initialized\n", id);
   } else {
+    /* Avoid pr_info here as it might cause lock contention with primary core
+     * boot logs */
     nr_cpus++;
-    pr_info("CPU: Secondary core %u online\n", id);
   }
 
   /* Enable FPU/SIMD (NEON) - set CPACR_EL1.FPEN = 0b11 */
-  uint64_t cpacr;
-  __asm__ __volatile__("mrs %0, cpacr_el1" : "=r"(cpacr));
+  uint64_t cpacr = arch_get_cpacr();
   cpacr |= (3 << 20); /* FPEN bits [21:20] = 0b11 */
-  __asm__ __volatile__("msr cpacr_el1, %0" : : "r"(cpacr));
-  __asm__ __volatile__("isb");
+  arch_set_cpacr(cpacr);
+  arch_isb();
 
   /* Install exception vector table */
   exception_vectors_install();
 
-  uint64_t vbar;
-  __asm__ __volatile__("mrs %0, vbar_el1" : "=r"(vbar));
-  pr_info("CPU: VBAR_EL1 set to 0x%lx\n", vbar);
+  pr_info("CPU: VBAR_EL1 set to 0x%lx\n", arch_get_vbar());
 }
 
 /*
@@ -76,8 +81,8 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     return NULL;
 
   /* Read exception syndrome */
-  __asm__ __volatile__("mrs %0, esr_el1" : "=r"(esr));
-  __asm__ __volatile__("mrs %0, far_el1" : "=r"(far));
+  esr = arch_get_esr();
+  far = arch_get_far();
   elr = frame->elr;
 
   ec = (esr >> 26) & 0x3F;
@@ -110,8 +115,39 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
   }
 
   if (ec != 0x15) {
-    pr_err("SPSR=0x%016lx ESR=0x%016lx\n", frame->spsr, esr);
-    panic("Unrecoverable exception");
+    /* If fault came from EL0 (User Mode), terminate process instead of panic */
+    if ((frame->spsr & 0xF) == 0) {
+      pr_err("USER FAULT: EC=0x%x (0x%lx) FAR=0x%016lx ELR=0x%016lx\n", ec, esr,
+             far, elr);
+      pr_err("Terminating PID %d\n", current_process->pid);
+
+      /* Optional: notify server */
+      /* ... same logic as syscall_handler ... */
+
+      process_terminate(current_process->pid);
+      return schedule(frame);
+    }
+
+    pr_err("%s", "--- Kernel Exception Context Dump ---\n");
+    pr_err("Process: PID %d\n",
+           current_process ? (int)current_process->pid : -1);
+    pr_err("SPSR_EL1: 0x%016lx\n", frame->spsr);
+    pr_err("ELR_EL1:  0x%016lx\n", frame->elr);
+    pr_err("FAR_EL1:  0x%016lx\n", far);
+    pr_err("ESR_EL1:  0x%016lx\n", esr);
+    pr_err("EC: 0x%x, ISS: 0x%x\n", ec, (uint32_t)(esr & 0xFFFFFF));
+
+    for (int i = 0; i < 31; i += 2) {
+      if (i + 1 < 31) {
+        pr_err("X%02d: 0x%016lx  X%02d: 0x%016lx\n", i, frame->regs[i], i + 1,
+               frame->regs[i + 1]);
+      } else {
+        pr_err("X%02d: 0x%016lx\n", i, frame->regs[i]);
+      }
+    }
+    pr_err("SP_EL0:  0x%016lx\n", frame->sp_el0);
+    pr_err("%s", "-----------------------------\n");
+    panic("Unrecoverable kernel exception");
   }
 
   return frame;
@@ -121,9 +157,7 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
  * System error handler
  */
 struct pt_regs *serror_handler(struct pt_regs *frame) {
-  uint64_t esr;
-  __asm__ __volatile__("mrs %0, esr_el1" : "=r"(esr));
-  pr_err("SError at ELR=0x%016lx ESR=0x%016lx\n", frame->elr, esr);
+  pr_err("SError at ELR=0x%016lx ESR=0x%016lx\n", frame->elr, arch_get_esr());
   panic("SError exception");
 }
 
@@ -135,32 +169,23 @@ extern struct pt_regs *syscall_handler(struct pt_regs *frame);
 /*
  * Enable interrupts (only IRQ, keep SError masked)
  */
-void local_irq_enable(void) {
-  /* Clear I bit (IRQ) only, keep A bit (SError) masked */
-  __asm__ __volatile__("msr daifclr, #2" ::: "memory");
-}
+void local_irq_enable(void) { arch_local_irq_enable(); }
 
 /*
  * Disable interrupts
  */
-void local_irq_disable(void) {
-  __asm__ __volatile__("msr daifset, #2" ::: "memory");
-}
+void local_irq_disable(void) { arch_local_irq_disable(); }
 
 /*
  * Save and disable interrupts
  */
 uint64_t local_irq_save(void) {
   uint64_t flags;
-  __asm__ __volatile__("mrs %0, daif\n"
-                       "msr daifset, #2"
-                       : "=r"(flags)::"memory");
+  arch_local_irq_save(&flags);
   return flags;
 }
 
 /*
  * Restore interrupt state
  */
-void local_irq_restore(uint64_t flags) {
-  __asm__ __volatile__("msr daif, %0" ::"r"(flags) : "memory");
-}
+void local_irq_restore(uint64_t flags) { arch_local_irq_restore(flags); }

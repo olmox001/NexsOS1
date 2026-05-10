@@ -12,19 +12,19 @@ struct partition partitions[MAX_PARTITIONS];
 int num_partitions = 0;
 
 void gpt_init(void) {
-  pr_info("GPT: Initializing...\n");
+  pr_info("%s", "GPT: Initializing...\n");
 
   /* Allocate buffer for reading sectors */
   uint8_t *buf = (uint8_t *)pmm_alloc_page();
   if (!buf) {
-    pr_info("GPT: Failed to allocate buffer\n");
+    pr_info("%s", "GPT: Failed to allocate buffer\n");
     return;
   }
 
   /* 1. Read GPT Header (LBA 1) */
   /* LBA 0 is MBR, LBA 1 is GPT Header */
   if (virtio_blk_read(buf, 1, 1) != 0) {
-    pr_info("GPT: Failed to read GPT header\n");
+    pr_info("%s", "GPT: Failed to read GPT header\n");
     pmm_free_page(buf);
     return;
   }
@@ -57,7 +57,7 @@ void gpt_init(void) {
   /* We assume entries fit in one page (4096 bytes / 128 = 32 entries) */
   /* Read 8 sectors = 4096 bytes */
   if (virtio_blk_read(buf, entries_lba, 8) != 0) {
-    pr_info("GPT: Failed to read partition entries\n");
+    pr_info("%s", "GPT: Failed to read partition entries\n");
     pmm_free_page(buf);
     return;
   }

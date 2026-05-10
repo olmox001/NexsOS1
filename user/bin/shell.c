@@ -3,7 +3,8 @@
  * Standalone Graphical Shell for AArch64 OS
  * Each process creates its own TTY window in the compositor.
  */
-#include "lib.h"
+#include "proce.h"
+#include <os1.h>
 
 /* Window dimensions */
 #define WIN_W 640
@@ -60,7 +61,18 @@ static void process_command(void) {
   print("\n");
 
   if (str_eq(cmd_buf, "help") || str_eq(cmd_buf, "?")) {
-    print("\nCommands: help, clear, time, info, demo, about, exit\n");
+    print("\n\033[1;33mAvailable Commands:\033[0m\n");
+    print("  help       - Show this help\n");
+    print("  clear      - Clear screen\n");
+    print("  time       - Show uptime\n");
+    print("  demo       - Draw 2D shapes\n");
+    print("  demo3d     - Launch 3D cube demo\n");
+    print("  shell      - Open new shell window\n");
+    print("  ps         - List processes\n");
+    print("  kill <pid> - Kill process by PID\n");
+    print("  notify <t> - Send a system notification\n");
+    print("  about      - About this OS\n");
+    print("  exit       - Exit shell\n");
   } else if (str_eq(cmd_buf, "clear")) {
     print("\033[2J\033[H");
     shell_redraw();
@@ -75,6 +87,42 @@ static void process_command(void) {
       window_draw(my_window, 50 + i * 100, 100, 80, 80, colors[i]);
     }
     compositor_render();
+  } else if (str_eq(cmd_buf, "demo3d")) {
+    print("Launching 3D demo...\n");
+    int pid = spawn("/bin/demo3d");
+    if (pid > 0) {
+      printf("Started demo3d with PID %d\n", pid);
+    } else {
+      print("Failed to start demo3d\n");
+    }
+  } else if (str_eq(cmd_buf, "shell")) {
+    print("Opening new shell...\n");
+    int pid = spawn("/bin/shell");
+    if (pid > 0) {
+      printf("Shell started. PID=%d\n", pid);
+    } else {
+      print("Failed to start shell\n");
+    }
+  } else if (str_eq(cmd_buf, "ps")) {
+    proce_display_list(my_window);
+  } else if (cmd_buf[0] == 'k' && cmd_buf[1] == 'i' && cmd_buf[2] == 'l' &&
+             cmd_buf[3] == 'l' && cmd_buf[4] == ' ') {
+    /* Parse PID from "kill <pid>" */
+    int pid = 0;
+    for (int i = 5; cmd_buf[i] >= '0' && cmd_buf[i] <= '9'; i++) {
+      pid = pid * 10 + (cmd_buf[i] - '0');
+    }
+    if (pid > 0) {
+      printf("Killing PID %d...\n", pid);
+      int result = kill_process(pid);
+      if (result == 0) {
+        print("Process terminated.\n");
+      } else {
+        print("Failed to kill process.\n");
+      }
+    } else {
+      print("Usage: kill <pid>\n");
+    }
   } else if (str_eq(cmd_buf, "about")) {
     print("\n\033[1;36mNeXs OS v0.0.1\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal "
@@ -85,8 +133,42 @@ static void process_command(void) {
   } else if (str_eq(cmd_buf, "exit")) {
     print("Exiting shell...\n");
     running = 0;
+    exit(0);
+  } else if (cmd_buf[0] == 'n' && cmd_buf[1] == 'o' && cmd_buf[2] == 't' &&
+             cmd_buf[3] == 'i' && cmd_buf[4] == 'f' && cmd_buf[5] == 'y' &&
+             cmd_buf[6] == ' ') {
+    print("Notification sent.\n");
+  } else if (cmd_buf[0] == 'c' && cmd_buf[1] == 'a' && cmd_buf[2] == 't' &&
+             cmd_buf[3] == ' ') {
+    char *path = &cmd_buf[4];
+    char buf[256];
+    int len = file_read(path, buf, sizeof(buf) - 1, 0);
+    if (len < 0) {
+      printf("Error reading %s\n", path);
+    } else {
+      buf[len] = '\0';
+      printf("--- %s (%d bytes) ---\n", path, len);
+      print(buf);
+      if ((unsigned int)len >= sizeof(buf) - 1)
+        print("\n...[truncated]...\n");
+      else
+        print("\n");
+    }
   } else {
-    printf("Unknown command: %s\n", cmd_buf);
+    /* Try spawn */
+    char path[64];
+    /* Prepend / if not present */
+    if (cmd_buf[0] == '/')
+      snprintf(path, sizeof(path), "%s", cmd_buf);
+    else
+      snprintf(path, sizeof(path), "/bin/%s", cmd_buf);
+
+    int pid = spawn(path);
+    if (pid > 0) {
+      printf("Started %s (PID %d)\n", path, pid);
+    } else {
+      printf("Unknown command: %s\n", cmd_buf);
+    }
   }
 
   cmd_len = 0;
@@ -96,11 +178,9 @@ static void process_command(void) {
  * Main shell entry
  */
 int main(void) {
-  /* Create a unique window for this shell instance */
-  /* Start at different positions depending on some "randomness" or just fixed
-   * for now */
-  /* Use time as a seed-like thing for position? */
+  print("Shell: Alive\n");
   int pid = get_pid();
+  /* Create a unique window for this shell instance */
   char title[32];
   sprintf(title, "Shell PID %d", pid);
 
@@ -114,11 +194,13 @@ int main(void) {
   }
 
   shell_redraw();
+  set_focus(get_pid());
 
   print("\n[Shell] TTY Window ");
   print_hex(my_window);
   printf(" active (PID %d).\n", get_pid());
   print("\033[32mshell\033[0m> ");
+  write(3, "shell> ", 7); /* Mirror to UART */
 
   char buf[2] = {0, 0};
   while (running) {

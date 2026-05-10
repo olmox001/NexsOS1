@@ -7,6 +7,7 @@
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
+#include <kernel/vmm.h>
 
 /* Helper macros for MMIO usage */
 #define VIRTIO_REG(base, offset)                                               \
@@ -26,7 +27,7 @@ static struct vring_used *used;
  * Initialize VirtIO Block Device
  */
 void virtio_blk_init(void) {
-  pr_info("VirtIO: Probing for block device...\n");
+  pr_info("%s", "VirtIO: Probing for block device...\n");
 
   for (int i = 0; i < VIRTIO_COUNT; i++) {
     uint64_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STRIDE;
@@ -65,7 +66,7 @@ void virtio_blk_init(void) {
         VIRTIO_WRITE(base, VIRTIO_MMIO_STATUS, status);
         if (!(VIRTIO_READ(base, VIRTIO_MMIO_STATUS) &
               VIRTIO_STATUS_FEATURES_OK)) {
-          pr_info("VirtIO: Feature negotiation failed\n");
+          pr_info("%s", "VirtIO: Feature negotiation failed\n");
           return;
         }
       }
@@ -75,7 +76,7 @@ void virtio_blk_init(void) {
 
       uint32_t qmax = VIRTIO_READ(base, VIRTIO_MMIO_QUEUE_NUM_MAX);
       if (qmax == 0) {
-        pr_info("VirtIO: Queue 0 not available\n");
+        pr_info("%s", "VirtIO: Queue 0 not available\n");
         return;
       }
 
@@ -91,32 +92,31 @@ void virtio_blk_init(void) {
         /* Legacy: Set Page Size and PFN */
         VIRTIO_WRITE(base, VIRTIO_MMIO_GUEST_PAGE_SIZE, 4096);
 
-        /* Allocate memory for queue (must be physically contiguous) */
-        /* PMM gives us a 4K aligned page, which is enough */
-        /* Let's allocate 2 pages (8KB) just to be safe and use pmm_alloc_pages
-         */
-
         void *qmem = pmm_alloc_pages(2);
         if (!qmem) {
-          pr_info("VirtIO: Failed to alloc 2 pages\n");
+          pr_info("%s", "VirtIO: Failed to alloc 2 pages\n");
           return;
         }
-        memset(qmem, 0, 8192);
+        memset(qmem, 0, 4096 * 2);
+
+        /* Map rings as non-cacheable */
+        extern uint64_t *kernel_pgd;
+        vmm_map_page(kernel_pgd, (uint64_t)qmem, (uint64_t)qmem, PAGE_DEVICE);
+        vmm_map_page(kernel_pgd, (uint64_t)qmem + 4096, (uint64_t)qmem + 4096,
+                     PAGE_DEVICE);
 
         uint64_t q_phys = (uint64_t)qmem;
         VIRTIO_WRITE(base, VIRTIO_MMIO_QUEUE_PFN, q_phys >> 12);
 
         desc = (struct vring_desc *)qmem;
         avail = (struct vring_avail *)((uint8_t *)qmem + qsize * 16);
-
-        /* Used starts at next 4K boundary relative to start */
         used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
-        pr_info("VirtIO: Queue 0 setup (Legacy). Desc: %p, Used: %p\n", desc,
-                used);
+        pr_info("VirtIO: Queue 0 setup (Legacy). Desc: %p, Used: %p\n",
+                (void *)desc, (void *)used);
 
       } else {
-        pr_info("VirtIO: Modern not fully implemented yet\n");
+        pr_info("%s", "VirtIO: Modern not fully implemented yet\n");
         return;
       }
 
@@ -124,12 +124,12 @@ void virtio_blk_init(void) {
       status |= VIRTIO_STATUS_DRIVER_OK;
       VIRTIO_WRITE(base, VIRTIO_MMIO_STATUS, status);
 
-      pr_info("VirtIO: Block Device Initialized\n");
+      pr_info("%s", "VirtIO: Block Device Initialized\n");
       return;
     }
   }
 
-  pr_info("VirtIO: No block device found\n");
+  pr_info("%s", "VirtIO: No block device found\n");
 }
 
 /*
@@ -140,15 +140,8 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   if (!virtio_blk_base || !desc || !avail || !used)
     return -1;
 
-  /*
-   * Simple implementation: Use a static request struct and lock.
-   * TODO: Support concurrent requests using a free list of descriptors.
-   */
   static struct virtio_blk_req req;
   static uint8_t status;
-  //   static spinlock_t lock = SPINLOCK_INIT; // TODO: Add locking
-
-  //   spin_lock(&lock);
 
   req.type = VIRTIO_BLK_T_IN;
   req.reserved = 0;
@@ -182,50 +175,41 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   uint16_t idx = avail->idx % virtio_blk_qsize;
   avail->ring[idx] = 0; /* Head descriptor index is 0 */
 
-  /* Update Available Index */
-  /* Memory barrier needed here technically */
   __asm__ volatile("dmb sy" ::: "memory");
   avail->idx++;
   __asm__ volatile("dmb sy" ::: "memory");
 
-  /* Notify device */
-  /* For Legacy: Write queue index to QueueNotify (offset 0x050) */
+  /* Capture old index BEFORE notifying */
+  uint16_t old_idx = used->idx;
+  volatile uint16_t *used_idx_ptr = &used->idx;
+
+  /* Notify */
   VIRTIO_WRITE(virtio_blk_base, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
   /* Poll Used Ring (Busy Wait) */
-  /* Ideally we would wait for interrupt, but polling works for now */
-  /* We check if used->idx advances */
-  // uint16_t current_used_idx = used->idx;
-  // Note: This logic is flawed if we re-use the same descriptors multiple times
-  // quickly without tracking used_idx globally. Better: Snaphot used->idx
-  // before submitting? Actually we should track our `last_used_idx`. Since we
-  // are single threaded here (locked), we can just wait for used->idx !=
-  // old_idx.
-
-  // Wait, I need a global last_used_idx if I want to be correct.
-  // But for single request at a time:
-  uint16_t wait_idx = used->idx;
-  // Wait until used->idx increments.
-  while (used->idx == wait_idx) {
+  uint64_t timeout = 1000000;
+  while (*used_idx_ptr == old_idx && timeout > 0) {
     __asm__ volatile("nop");
+    timeout--;
+  }
+
+  if (timeout == 0) {
+    pr_err("VirtIO-Blk: Timeout waiting for device response! (used->idx=%d "
+           "old_idx=%d)\n",
+           *used_idx_ptr, old_idx);
+    return -1;
   }
 
   /* Check status */
   if (status != VIRTIO_BLK_S_OK) {
-    pr_info("VirtIO: Read/Write failed status=%d\n", status);
-    //       spin_unlock(&lock);
+    pr_info("VirtIO: Read failed status=%d\n", status);
     return -1;
   }
 
-  //   spin_unlock(&lock);
   return 0;
 }
 
 int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
-  /* Similar to read but with VIRTIO_BLK_T_OUT and different flags */
-  /* Reuse same static resources/lock -> dangerous if read/write concurrent?
-     Yes, need lock. */
-
   if (!virtio_blk_base || !desc || !avail || !used)
     return -1;
 
@@ -242,10 +226,10 @@ int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
   desc[0].flags = VRING_DESC_F_NEXT;
   desc[0].next = 1;
 
-  /* Buffer (Read-only for device) - different from READ! */
+  /* Buffer (Read-only for device) */
   desc[1].addr = (uint64_t)buf;
   desc[1].len = count * 512;
-  desc[1].flags = VRING_DESC_F_NEXT; /* Device reads from buf */
+  desc[1].flags = VRING_DESC_F_NEXT;
   desc[1].next = 2;
 
   /* Status (Write-only for device) */
@@ -263,12 +247,15 @@ int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
 
   VIRTIO_WRITE(virtio_blk_base, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 
-  uint16_t wait_idx = used->idx;
-  while (used->idx == wait_idx) {
+  volatile uint16_t *used_idx_ptr_w = &used->idx;
+  uint16_t last_wait_idx_w = *used_idx_ptr_w;
+  while (*used_idx_ptr_w == last_wait_idx_w) {
     __asm__ volatile("nop");
   }
 
-  if (status_w != VIRTIO_BLK_S_OK)
+  if (status_w != VIRTIO_BLK_S_OK) {
+    pr_info("VirtIO: Write failed status=%d\n", status_w);
     return -1;
+  }
   return 0;
 }
