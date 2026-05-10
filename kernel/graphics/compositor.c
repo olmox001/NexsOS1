@@ -550,19 +550,16 @@ void compositor_handle_click(int button, int state) {
   (void)button;
 
   if (state == 0) {
-    /* Release - Stop dragging */
     dragging_window_id = -1;
     return;
   }
 
-  if (state != 1) /* Only handle press down */
+  if (state != 1)
     return;
 
-  /* Debug click */
-  /* pr_info("Click: %d, %d\n", mouse_x, mouse_y); */
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
 
-  /* Check for window hit - include title bar area (y - TITLE_BAR_HEIGHT to y +
-   * height) */
   struct window *hit = NULL;
   int max_z = -1;
 
@@ -570,7 +567,8 @@ void compositor_handle_click(int button, int state) {
     if (windows[i].id != 0 && windows[i].visible) {
       int title_top = windows[i].y - TITLE_BAR_HEIGHT;
       if (mouse_x >= windows[i].x &&
-          mouse_x < windows[i].x + windows[i].width && mouse_y >= title_top &&
+          mouse_x < windows[i].x + windows[i].width &&
+          mouse_y >= title_top &&
           mouse_y < windows[i].y + windows[i].height) {
         if (windows[i].z_order > max_z) {
           max_z = windows[i].z_order;
@@ -580,43 +578,49 @@ void compositor_handle_click(int button, int state) {
     }
   }
 
-  if (hit) {
-    /* Bring to front */
-    int top_z = 0;
-    for (int i = 0; i < MAX_WINDOWS; i++) {
-      if (windows[i].id != 0 && windows[i].z_order > top_z)
-        top_z = windows[i].z_order;
-    }
-    hit->z_order = top_z + 1;
-
-    /* Check for close button click */
-    if (!hit->protected) {
-      int btn_x = hit->x + hit->width - CLOSE_BUTTON_SIZE - 2;
-      int btn_y = hit->y - TITLE_BAR_HEIGHT + 2;
-      if (mouse_x >= btn_x && mouse_x < btn_x + CLOSE_BUTTON_SIZE &&
-          mouse_y >= btn_y && mouse_y < btn_y + CLOSE_BUTTON_SIZE) {
-        pr_info("Compositor: Close button clicked on window %d (PID %d)\n",
-                hit->id, hit->pid);
-        /* Terminate the owning process */
-        extern int process_terminate(int pid);
-        process_terminate(hit->pid);
-        /* Destroy the window */
-        compositor_destroy_window(hit->id);
-        compositor_dirty = 1;
-        compositor_render();
-        return;
-      }
-    }
-
-    /* Check for drag start (Title bar area) */
-    if (mouse_y >= hit->y - TITLE_BAR_HEIGHT && mouse_y < hit->y) {
-      dragging_window_id = hit->id;
-      drag_off_x = mouse_x - hit->x;
-      drag_off_y = mouse_y - hit->y;
-    }
-
-    compositor_render();
+  if (!hit) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return;
   }
+
+  /* Bring to front */
+  int top_z = 0;
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id != 0 && windows[i].z_order > top_z)
+      top_z = windows[i].z_order;
+  }
+  hit->z_order = top_z + 1;
+
+  /* Check for close button — save pid/id, release lock before process_terminate */
+  if (!hit->protected) {
+    int btn_x = hit->x + hit->width - CLOSE_BUTTON_SIZE - 2;
+    int btn_y = hit->y - TITLE_BAR_HEIGHT + 2;
+    if (mouse_x >= btn_x && mouse_x < btn_x + CLOSE_BUTTON_SIZE &&
+        mouse_y >= btn_y && mouse_y < btn_y + CLOSE_BUTTON_SIZE) {
+      int close_pid = hit->pid;
+      int close_id  = hit->id;
+      spin_unlock_irqrestore(&compositor_lock, flags);
+
+      pr_info("Compositor: Close button PID %d window %d\n", close_pid, close_id);
+      /* process_terminate calls compositor_destroy_windows_by_pid internally */
+      extern int process_terminate(int pid);
+      process_terminate(close_pid);
+
+      /* Mark dirty — compositor_tick will re-render on next timer tick */
+      compositor_dirty = 1;
+      return;
+    }
+  }
+
+  /* Check for drag start */
+  if (mouse_y >= hit->y - TITLE_BAR_HEIGHT && mouse_y < hit->y) {
+    dragging_window_id = hit->id;
+    drag_off_x = mouse_x - hit->x;
+    drag_off_y = mouse_y - hit->y;
+  }
+
+  compositor_dirty = 1;
+  spin_unlock_irqrestore(&compositor_lock, flags);
 }
 
 /*

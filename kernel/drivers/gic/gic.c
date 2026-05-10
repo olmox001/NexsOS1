@@ -177,6 +177,15 @@ void gic_send_sgi(uint32_t irq, uint8_t target_list) {
 }
 
 /*
+ * Send SGI0 (halt IPI) to all CPUs except self.
+ * Uses TargetListFilter=0b01 (all except self) for simplicity.
+ */
+void gic_send_ipi_all(void) {
+  /* TargetListFilter bits[25:24] = 0b01 means "all CPUs except requestor" */
+  GICD_REG(GICD_SGIR) = (1U << 24) | 0; /* filter=broadcast-except-self, SGI0 */
+}
+
+/*
  * Register IRQ handler
  */
 int irq_register(uint32_t irq, irq_handler_t handler, void *data) {
@@ -214,6 +223,17 @@ void irq_unregister(uint32_t irq) {
 /*
  * Main IRQ handler (called from exception vector)
  */
+/* Halt this CPU in response to a panic IPI */
+static void cpu_halt_from_ipi(void) {
+  extern volatile int panic_flag;
+  panic_flag = 1;
+  /* Disable this CPU's virtual timer (CNTV_CTL_EL0 = 0) */
+  __asm__ volatile("msr cntv_ctl_el0, xzr" ::: "memory");
+  /* Mask all exceptions and park */
+  __asm__ volatile("msr daifset, #0xf" ::: "memory");
+  while (1) { __asm__ volatile("wfe"); }
+}
+
 struct pt_regs *irq_handler(struct pt_regs *regs) {
   uint32_t irq;
   struct pt_regs *ret_regs = regs;
@@ -223,6 +243,13 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
 
     if (irq == GIC_SPURIOUS_IRQ)
       break;
+
+    /* SGI0: panic halt IPI from another CPU */
+    if (irq == 0) {
+      gic_end_irq(irq);
+      cpu_halt_from_ipi();
+      /* never reached */
+    }
 
     /* Handle IRQ */
     if (irq == 27 || irq == 30) {

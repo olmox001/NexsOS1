@@ -26,6 +26,9 @@ struct cpu_info {
   char printk_buf[2048];
   char syscall_buf[2048];
   uint32_t in_printk;
+
+  /* Deferred process free: freed on next schedule() call after context switch */
+  struct process *deferred_free_proc;
 };
 
 /* API */

@@ -64,7 +64,17 @@ static inline void write_cntv_ctl(uint64_t val) {
  */
 extern void compositor_tick(void);
 
+/* Global panic flag set by panic() to halt all CPUs */
+extern volatile int panic_flag;
+
 struct pt_regs *timer_handler(struct pt_regs *regs) {
+  /* Halt this CPU if another CPU panicked */
+  if (panic_flag) {
+    write_cntv_ctl(0); /* Disable timer */
+    arch_local_irq_disable();
+    while (1) { __asm__ volatile("wfe"); }
+  }
+
   struct cpu_info *cpu = get_cpu_info();
   cpu->tick_count++;
 

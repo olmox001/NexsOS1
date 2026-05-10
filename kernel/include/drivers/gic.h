@@ -59,6 +59,7 @@ void gic_set_target(uint32_t irq, uint8_t cpu_mask);
 uint32_t gic_acknowledge_irq(void);
 void gic_end_irq(uint32_t irq);
 void gic_send_sgi(uint32_t irq, uint8_t target_list);
+void gic_send_ipi_all(void); /* Send SGI0 to all other CPUs (panic halt) */
 
 /* IRQ registration */
 int irq_register(uint32_t irq, irq_handler_t handler, void *data);
