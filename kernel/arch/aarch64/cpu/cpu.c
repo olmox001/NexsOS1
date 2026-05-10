@@ -158,6 +158,10 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
 
     if (elr == 0) {
         pr_err("%s", "CRITICAL: Kernel jumped to NULL! Check exception vector table and function pointers.\n");
+        pr_err("Stack at 0x%lx:\n", (uint64_t)frame);
+        for (int i = 0; i < 8; i++) {
+            pr_err("  [%p] 0x%016lx\n", (void*)&((uint64_t*)frame)[i*2], ((uint64_t*)frame)[i*2]);
+        }
     }
 
     for (int i = 0; i < 31; i += 2) {

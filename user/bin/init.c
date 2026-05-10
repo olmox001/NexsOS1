@@ -29,6 +29,9 @@ int main(void) {
     print("[Init] Failed to spawn Shell!\n");
   }
 
+  /* Test Notification IPC */
+  notify("System", "Boot Complete - Stability Optimized");
+
   flush();
 
   /* Supervisor loop: Monitor and respawn critical processes */

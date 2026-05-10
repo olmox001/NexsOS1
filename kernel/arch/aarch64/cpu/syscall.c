@@ -33,10 +33,18 @@ extern void compositor_set_window_flags(int window_id, int flags);
 
 /* Secure memory access helpers with Page Table Switching */
 int copy_from_user(void *dest, const void *src, size_t n) {
-  if (!vmm_is_user_addr((uint64_t)src) || !vmm_is_user_addr((uint64_t)src + n))
+  uint64_t src_addr = (uint64_t)src;
+  if (src_addr + n < src_addr)
+    return -1; /* Wrap around */
+
+  if (!vmm_is_user_addr(src_addr) || !vmm_is_user_addr(src_addr + n))
     return -1;
 
   if (!current_process || !current_process->page_table)
+    return -1;
+
+  /* Check if range is valid and mapped in user page table */
+  if (vmm_check_range(current_process->page_table, src_addr, n, PTE_VALID) != 0)
     return -1;
 
   /* Save and disable interrupts to prevent scheduler preemption */
@@ -68,11 +76,15 @@ int copy_from_user(void *dest, const void *src, size_t n) {
 }
 
 int copy_to_user(void *dest, const void *src, size_t n) {
-  if (!vmm_is_user_addr((uint64_t)dest) ||
-      !vmm_is_user_addr((uint64_t)dest + n))
+  uint64_t dest_addr = (uint64_t)dest;
+  if (dest_addr + n < dest_addr)
+    return -1; /* Wrap around */
+    
+  if (!vmm_is_user_addr(dest_addr) ||
+      !vmm_is_user_addr(dest_addr + n))
     return -1;
 
-  if (!current_process || !current_process->page_table)
+  if (vmm_check_range(current_process->page_table, dest_addr, n, PTE_VALID) != 0)
     return -1;
 
   uint64_t flagsptr = local_irq_save();
@@ -115,7 +127,12 @@ int copy_string_from_user(char *dest, const char *src, size_t max_len) {
   int ret = 0;
   size_t i;
   for (i = 0; i < max_len - 1; i++) {
-    /* Potential optimization: check page boundaries if max_len is large */
+    /* Check each page boundary for mapping if we cross it */
+    if (((uint64_t)&src[i] & 0xFFF) == 0) {
+       if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1, PTE_VALID) != 0)
+         goto out;
+    }
+    
     dest[i] = src[i];
     if (src[i] == '\0')
       goto out;

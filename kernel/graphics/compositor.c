@@ -765,7 +765,6 @@ static void compositor_render_internal(void) {
   }
 
   /* Iterate Top-to-Bottom for Occlusion */
-  /* Iterate Top-to-Bottom for Occlusion */
   for (int i = count - 1; i >= 0 && i < MAX_WINDOWS; i--) {
     struct window *win = sorted[i];
 
@@ -809,12 +808,16 @@ static void compositor_render_internal(void) {
         for (int x = 0; x < bg->w; x++) {
           int sy = bg->y + y;
           int sx = bg->x + x;
-          /* Proper Gradient Background */
+          
+          /* Final backbuffer bounds safety check */
+          if (sx >= 0 && sx < bb_w && sy >= 0 && sy < bb_h) {
+            /* Proper Gradient Background */
           uint32_t r_chk = 20;
           uint32_t g_chk = 40 + (sy * 40 / bb_h);
           uint32_t b_chk = 80 + (sy * 80 / bb_h);
           backbuffer[sy * bb_w + sx] =
               0xFF000000 | (r_chk << 16) | (g_chk << 8) | b_chk;
+          }
         }
       }
     }

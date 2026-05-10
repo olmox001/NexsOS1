@@ -27,21 +27,32 @@ void region_destroy(struct region *reg) {
   }
 }
 
+#define MAX_RECTS_PER_REGION 256
+
 void region_add_rect(struct region *reg, int x, int y, int w, int h) {
   if (w <= 0 || h <= 0)
     return;
 
+  if (reg->count >= MAX_RECTS_PER_REGION) {
+    /* Hard limit reached, stop adding to prevent runaway memory usage */
+    return;
+  }
+
   if (reg->count >= reg->capacity) {
-    reg->capacity *= 2;
+    int new_cap = reg->capacity * 2;
+    if (new_cap > MAX_RECTS_PER_REGION)
+      new_cap = MAX_RECTS_PER_REGION;
+
     /* Simple realloc equivalent since we don't have krealloc yet */
     struct rect *new_rects =
-        (struct rect *)kmalloc(sizeof(struct rect) * reg->capacity);
+        (struct rect *)kmalloc(sizeof(struct rect) * new_cap);
     if (new_rects) {
       /* memcpy */
       for (int i = 0; i < reg->count; i++)
         new_rects[i] = reg->rects[i];
       kfree(reg->rects);
       reg->rects = new_rects;
+      reg->capacity = new_cap;
     } else {
       return; /* Out of memory, drop rect */
     }

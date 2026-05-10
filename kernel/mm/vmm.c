@@ -140,6 +140,42 @@ int vmm_map_page_locked(struct process *proc, uint64_t virt, uint64_t phys,
 }
 
 /*
+ * Check if a range is fully mapped and has required flags
+ * Returns 0 if OK, -1 if any page is missing
+ */
+int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
+                   uint64_t flags_mask) {
+  uint64_t v = virt & ~0xFFFUL;
+  uint64_t e = (virt + size + 4095) & ~0xFFFUL;
+
+  while (v < e) {
+    uint64_t *pud, *pmd, *pt;
+
+    pud = get_next_table(pgd, PGD_INDEX(v), 0);
+    if (!pud)
+      return -1;
+
+    pmd = get_next_table(pud, PUD_INDEX(v), 0);
+    if (!pmd)
+      return -1;
+
+    pt = get_next_table(pmd, PMD_INDEX(v), 0);
+    if (!pt)
+      return -1;
+
+    uint64_t entry = pt[PT_INDEX(v)];
+    if (!(entry & PTE_VALID))
+      return -1;
+
+    if (flags_mask && (entry & flags_mask) != flags_mask)
+      return -1;
+
+    v += 4096;
+  }
+  return 0;
+}
+
+/*
  * Unmap a page
  */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt) {

@@ -104,6 +104,8 @@ void vmm_unmap_page_locked(struct process *proc, uint64_t virt);
 /* Range mapping helper */
 int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size,
             uint64_t flags);
+int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
+                    uint64_t flags_mask);
 
 /* Security: Check if address is in user range */
 static inline bool vmm_is_user_addr(uint64_t addr) {

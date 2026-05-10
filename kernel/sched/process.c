@@ -27,10 +27,11 @@ static int rr_cpu = 0;
 int keyboard_focus_pid = 7; /* Default to Shell PID */
 
 /* Helper: Add task to runqueue */
-void enqueue_task(struct process *p) {
+/* Internal helper: Add task to runqueue (Caller MUST hold target->sched_lock) */
+static void __enqueue_task(struct process *p) {
   int target_cpu = (int)p->on_cpu;
   if (target_cpu < 0)
-    target_cpu = 0; /* Fallback */
+    target_cpu = 0;
 
   struct cpu_info *target = &cpu_data[target_cpu];
 
@@ -44,7 +45,6 @@ void enqueue_task(struct process *p) {
   if (prio >= MAX_PRIO)
     prio = MAX_PRIO - 1;
 
-  /* Caller MUST hold target->sched_lock */
   list_add_tail(&p->run_list, &target->runqueues[prio]);
   target->prio_bitmap |= (1 << prio);
 
@@ -52,10 +52,23 @@ void enqueue_task(struct process *p) {
   arch_sev();
 }
 
-/* Helper: Remove task from runqueue */
-static void dequeue_task(struct process *p) {
-  struct cpu_info *cpu = get_cpu_info();
-  int target_cpu = (p->on_cpu >= 0) ? p->on_cpu : (int)cpu->cpu_id;
+/* Public API: Add task to runqueue (Safe for external calls) */
+void enqueue_task(struct process *p) {
+  int target_cpu = (int)p->on_cpu;
+  if (target_cpu < 0)
+    target_cpu = 0;
+
+  struct cpu_info *target = &cpu_data[target_cpu];
+
+  uint64_t flags;
+  spin_lock_irqsave(&target->sched_lock, &flags);
+  __enqueue_task(p);
+  spin_unlock_irqrestore(&target->sched_lock, flags);
+}
+
+/* Helper: Remove task from runqueue (Caller MUST hold target->sched_lock) */
+static void __dequeue_task(struct process *p) {
+  int target_cpu = (p->on_cpu >= 0) ? p->on_cpu : 0;
   struct cpu_info *target = &cpu_data[target_cpu];
 
   /* Paranoia check for corruption */
@@ -64,7 +77,7 @@ static void dequeue_task(struct process *p) {
   }
 
   list_del_init(&p->run_list);
-  if (list_empty(&target->runqueues[p->priority])) {
+  if (p->priority < MAX_PRIO && list_empty(&target->runqueues[p->priority])) {
     target->prio_bitmap &= ~(1 << p->priority);
   }
 }
@@ -121,7 +134,7 @@ void wake_up(struct wait_queue_head *wq) {
   struct cpu_info *target = &cpu_data[target_cpu];
 
   spin_lock_irqsave(&target->sched_lock, &flags);
-  enqueue_task(p);
+  __enqueue_task(p);
   spin_unlock_irqrestore(&target->sched_lock, flags);
 }
 
@@ -308,7 +321,15 @@ int process_terminate(int pid) {
     proc->wait_queue_ptr = NULL;
     spin_unlock(&wq->lock);
   } else if (proc->state == PROC_READY) {
-    dequeue_task(proc);
+    /* CRITICAL: Acquire target CPU's sched_lock before removing from its runqueue */
+    int t_id = (proc->on_cpu >= 0) ? proc->on_cpu : 0;
+    struct cpu_info *t_cpu = &cpu_data[t_id];
+    
+    /* We already hold the global sched_lock, but we must also hold the per-CPU lock 
+     * to prevent races with the scheduler on that CPU. */
+    spin_lock(&t_cpu->sched_lock);
+    __dequeue_task(proc);
+    spin_unlock(&t_cpu->sched_lock);
   }
 
   /* Cleanup resources */
@@ -422,7 +443,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
       if (prev->state == PROC_READY) {
         prev->on_cpu = -1;
-        enqueue_task(prev);
+        __enqueue_task(prev);
       } else {
         prev->on_cpu = -1;
       }
@@ -439,7 +460,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
       list_for_each_entry(it, &cpu_ptr->runqueues[p], run_list) {
         if ((int)it->pid == focus_pid) {
           next = it;
-          dequeue_task(next);
+          __dequeue_task(next);
           goto found;
         }
       }
@@ -453,7 +474,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
     if (best_prio < MAX_PRIO && !list_empty(&cpu_ptr->runqueues[best_prio])) {
       struct list_head *entry = cpu_ptr->runqueues[best_prio].next;
       next = container_of(entry, struct process, run_list);
-      dequeue_task(next);
+      __dequeue_task(next);
     }
   }
 
@@ -648,7 +669,7 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
     spin_lock_irqsave(&target_cpu->sched_lock, &flags);
     if (target->state == PROC_SLEEPING) {
       target->state = PROC_READY;
-      enqueue_task(target);
+      __enqueue_task(target);
     }
     spin_unlock_irqrestore(&target_cpu->sched_lock, flags);
     return 0;

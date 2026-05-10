@@ -206,12 +206,18 @@ static void init_scheduler(void) {
     if (idle) {
       idle->on_cpu = i; /* Bind to specific CPU */
       cpu_data[i].idle_task = idle;
+      
+      /* Explicitly initialize context to known state */
+      memset(idle->context, 0, sizeof(struct pt_regs));
       idle->context->elr = (uint64_t)idle_task_entry;
       idle->context->spsr = 0x05; /* EL1h + Unmasked */
       idle->context->sp_el0 = 0;
 
-      /* CRITICAL: Flush idle task context frame to POC */
+      /* CRITICAL: Flush idle task context frame and the process struct itself to POC */
+      arch_clean_cache_range_va(idle, sizeof(struct process));
       arch_clean_cache_range_va(idle->context, sizeof(struct pt_regs));
+      arch_dsb();
+      arch_isb();
 
       enqueue_task(idle);
     }
