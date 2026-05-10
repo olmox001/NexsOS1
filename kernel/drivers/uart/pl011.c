@@ -76,10 +76,9 @@ void uart_init(void) {
   UART_REG(UART_CR) = UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE;
 }
 
-/*
- * Send a character
- */
-void uart_putc(char c) {
+DEFINE_SPINLOCK(uart_lock);
+
+static void _uart_putc_unlocked(char c) {
   /* Wait until TX FIFO is not full */
   while (UART_REG(UART_FR) & UART_FR_TXFF)
     ;
@@ -92,6 +91,16 @@ void uart_putc(char c) {
       ;
     UART_REG(UART_DR) = '\r';
   }
+}
+
+/*
+ * Send a character
+ */
+void uart_putc(char c) {
+  uint64_t flags;
+  spin_lock_irqsave(&uart_lock, &flags);
+  _uart_putc_unlocked(c);
+  spin_unlock_irqrestore(&uart_lock, flags);
 }
 
 /*
@@ -127,8 +136,11 @@ int uart_getc_nonblock(void) {
  * Send a string
  */
 void uart_puts(const char *s) {
+  uint64_t flags;
+  spin_lock_irqsave(&uart_lock, &flags);
   while (*s)
-    uart_putc(*s++);
+    _uart_putc_unlocked(*s++);
+  spin_unlock_irqrestore(&uart_lock, flags);
 }
 
 /*
@@ -148,3 +160,4 @@ void uart_puthex(uint64_t val) {
   uart_puts("0x");
   uart_puts(buf);
 }
+

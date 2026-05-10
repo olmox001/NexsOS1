@@ -395,54 +395,38 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   extern int compositor_get_focus_pid(void);
   int focus_pid = compositor_get_focus_pid();
 
-  /* 1. Handle Current Process */
-  if (prev) {
-    /* Only save context if process has been running before
-     * first_run processes have their context initialized by ELF loader
-     * and should not be overwritten */
-    if (!prev->first_run) {
-      if (regs)
-        prev->context = regs; /* Save context */
-    } else {
-      /* First time this process is being scheduled
-       * CRITICAL: Only clear first_run if process was actually RUNNING
-       * (i.e., it executed user code). If it was just READY, it never
-       * ran, so keep first_run=1 to preserve ELF context */
-      if (prev->state == PROC_RUNNING) {
-        /* pr_info("SCHED: PID %d completed first run, clearing first_run
-           flag\n", prev->pid); */
+    /* 1. Handle Current Process */
+    if (prev) {
+      /* Save current context if it was running */
+      if (regs) {
+        prev->context = regs;
+      }
+      
+      /* Clear first_run flag since it has now been scheduled and preempted/yielded */
+      if (prev->first_run) {
         prev->first_run = 0;
-      } /* else {
-        pr_info("SCHED: SKIPPING context save for PID %d (first_run=1, never "
-                "ran)\n",
-                prev->pid);
       }
-      pr_info("SCHED:   Preserving ELF context=%p ELR=0x%lx SP_EL0=0x%lx\n",
-              (void *)prev->context, prev->context->elr, prev->context->sp_el0);
-    */
-    }
 
-    if (prev->state == PROC_RUNNING) {
-      prev->time_slice--;
+      if (prev->state == PROC_RUNNING) {
+        prev->time_slice--;
 
-      if (prev->time_slice <= 0) {
-        /* Quantum Exhausted */
-        prev->time_slice = prev->quantum_reset;
-        prev->state = PROC_READY;
+        if (prev->time_slice <= 0) {
+          /* Quantum Exhausted */
+          prev->time_slice = prev->quantum_reset;
+          prev->state = PROC_READY;
+        } else {
+          /* Preempted or yielded? Mark READY to allow others */
+          prev->state = PROC_READY;
+        }
+      }
+
+      if (prev->state == PROC_READY) {
+        prev->on_cpu = -1;
+        enqueue_task(prev);
       } else {
-        /* Preempted or yielded? Mark READY to allow others of same/higher prio
-         */
-        prev->state = PROC_READY;
+        prev->on_cpu = -1;
       }
     }
-
-    if (prev->state == PROC_READY) {
-      prev->on_cpu = -1;
-      enqueue_task(prev);
-    } else {
-      prev->on_cpu = -1;
-    }
-  }
 
   /* 2. Pick Next Process (O(1) Priority-based Selection) */
   struct process *next = NULL;

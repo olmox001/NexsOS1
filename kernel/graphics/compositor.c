@@ -737,13 +737,20 @@ static void compositor_render_internal(void) {
   }
 
   /* Top Most handling */
-  for (int i = 0; i < count - 1; i++) {
-    for (int j = 0; j < count - i - 1; j++) {
-      if (!sorted[j]->top_most && sorted[j + 1]->top_most) {
-        struct window *tmp = sorted[j];
-        sorted[j] = sorted[j + 1];
-        sorted[j + 1] = tmp;
+  /* Top Most handling: move all top-most windows to the end of the sorted list */
+  int current_count = count;
+  for (int i = 0; i < current_count; i++) {
+    if (sorted[i]->top_most) {
+      struct window *tmp = sorted[i];
+      /* Shift remaining windows left */
+      for (int k = i; k < current_count - 1; k++) {
+        sorted[k] = sorted[k + 1];
       }
+      sorted[current_count - 1] = tmp;
+      /* Decrement current_count so we don't re-process the window we just moved */
+      current_count--;
+      /* Decrement i to process the window that was shifted into the current slot */
+      i--;
     }
   }
 
@@ -758,7 +765,8 @@ static void compositor_render_internal(void) {
   }
 
   /* Iterate Top-to-Bottom for Occlusion */
-  for (int i = count - 1; i >= 0; i--) {
+  /* Iterate Top-to-Bottom for Occlusion */
+  for (int i = count - 1; i >= 0 && i < MAX_WINDOWS; i--) {
     struct window *win = sorted[i];
 
     /* Calculate Full Window Bounds (Content + Decorations) */
@@ -815,7 +823,7 @@ static void compositor_render_internal(void) {
   region_destroy(occluded);
 
   /* Pass 2: Rendering (Bottom-Up) - Painter's Algorithm with Clipping */
-  for (int i = 0; i < count; i++) {
+  for (int i = 0; i < count && i < MAX_WINDOWS; i++) {
     struct window *win = sorted[i];
     struct region *vis = visible_regions[i];
 
