@@ -55,7 +55,7 @@ void cpu_init(void) {
   } else {
     /* Avoid pr_info here as it might cause lock contention with primary core
      * boot logs */
-    nr_cpus++;
+    __sync_fetch_and_add(&nr_cpus, 1);
   }
 
   /* Enable FPU/SIMD (NEON) - set CPACR_EL1.FPEN = 0b11 */

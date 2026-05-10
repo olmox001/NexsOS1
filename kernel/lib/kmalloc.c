@@ -110,6 +110,9 @@ void *kmalloc(size_t size) {
   if (size == 0)
     return NULL;
 
+  if (size > (size_t)(-1) - sizeof(struct block_header))
+    return NULL;
+
   /* Add header overhead */
   size_t total_req = size + sizeof(struct block_header);
 
@@ -192,7 +195,9 @@ void *kmalloc(size_t size) {
  * Allocate zeroed memory
  */
 void *kcalloc(size_t nmemb, size_t size) {
-  size_t total = nmemb * size; // Check overflow?
+  if (nmemb && size > (size_t)(-1) / nmemb)
+    return NULL;
+  size_t total = nmemb * size;
   void *ptr = kmalloc(total);
   if (ptr) {
     memset(ptr, 0, total);

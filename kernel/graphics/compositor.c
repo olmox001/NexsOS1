@@ -116,6 +116,13 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
                              int pid) {
   uint64_t flags;
   spin_lock_irqsave(&compositor_lock, &flags);
+
+  if (w <= 0 || h <= 0 || w > 4096 || h > 4096) {
+    pr_err("Compositor: Invalid window dimensions %dx%d\n", w, h);
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return -1;
+  }
+
   if (window_count >= MAX_WINDOWS) {
     pr_err("%s", "Compositor: Max windows reached\n");
     spin_unlock_irqrestore(&compositor_lock, flags);
@@ -221,7 +228,8 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
  * Destroy Window
  */
 void compositor_destroy_window(int window_id) {
-  uint64_t flags = local_irq_save();
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
       if (windows[i].buffer) {
@@ -233,29 +241,35 @@ void compositor_destroy_window(int window_id) {
         kfree(windows[i].attr_grid);
       memset(&windows[i], 0, sizeof(struct window));
       window_count--;
-      local_irq_restore(flags);
+      spin_unlock_irqrestore(&compositor_lock, flags);
       return;
     }
   }
-  /* Fallthrough if not found */
-  local_irq_restore(flags);
+  spin_unlock_irqrestore(&compositor_lock, flags);
 }
 
 /*
  * Destroy all windows owned by a specific PID
  */
 void compositor_destroy_windows_by_pid(int pid) {
-  uint64_t flags = local_irq_save();
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id != 0 && windows[i].pid == pid) {
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
+      if (windows[i].text_grid) {
+        kfree(windows[i].text_grid);
+      }
+      if (windows[i].attr_grid) {
+        kfree(windows[i].attr_grid);
+      }
       memset(&windows[i], 0, sizeof(struct window));
       window_count--;
     }
   }
-  local_irq_restore(flags);
+  spin_unlock_irqrestore(&compositor_lock, flags);
 }
 
 /*
@@ -274,15 +288,16 @@ uint32_t *compositor_get_buffer(int window_id) {
  * Find window by PID
  */
 int compositor_get_window_by_pid(int pid) {
-  uint64_t flags = local_irq_save();
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id != 0 && windows[i].pid == pid) {
       int id = windows[i].id;
-      local_irq_restore(flags);
+      spin_unlock_irqrestore(&compositor_lock, flags);
       return id;
     }
   }
-  local_irq_restore(flags);
+  spin_unlock_irqrestore(&compositor_lock, flags);
   return -1;
 }
 
@@ -290,7 +305,10 @@ int compositor_get_window_by_pid(int pid) {
  * Get PID of the focused window (top-most Z-order)
  */
 int compositor_get_focus_pid(void) {
-  uint64_t flags = local_irq_save();
+  uint64_t flags;
+  /* Use trylock to avoid blocking in timer IRQ context */
+  if (!spin_trylock_irqsave(&compositor_lock, &flags))
+    return -1;
   int max_z = -1;
   int pid = -1;
 
@@ -302,7 +320,7 @@ int compositor_get_focus_pid(void) {
       }
     }
   }
-  local_irq_restore(flags);
+  spin_unlock_irqrestore(&compositor_lock, flags);
   return pid;
 }
 
@@ -999,12 +1017,13 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
                      const uint32_t *user_buf, int caller_pid) {
   // pr_info("BLIT: win=%d pid=%d buf=%p %dx%d\n", window_id, caller_pid,
   // user_buf, w, h);
-  uint64_t flags = local_irq_save();
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id && windows[i].buffer) {
       /* Process Isolation: Verify Ownership */
       if (windows[i].pid != caller_pid && caller_pid != 1) {
-        local_irq_restore(flags);
+        spin_unlock_irqrestore(&compositor_lock, flags);
         return;
       }
 
@@ -1054,15 +1073,17 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
 }
 
 void compositor_set_window_flags(int window_id, int flags_val) {
-  uint64_t flags = local_irq_save();
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
-      if (flags_val & 1)
-        windows[i].top_most = 1;
-      else
-        windows[i].top_most = 0;
+      windows[i].top_most = (flags_val & 1) ? 1 : 0;
+      if (flags_val & 4)
+        windows[i].visible = 0; /* bit 2: hide window */
+      else if (flags_val & 2)
+        windows[i].visible = 1; /* bit 1: show window */
       break;
     }
   }
-  local_irq_restore(flags);
+  spin_unlock_irqrestore(&compositor_lock, flags);
 }

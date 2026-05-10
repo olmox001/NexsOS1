@@ -67,7 +67,7 @@ struct block_buffer *buffer_get(uint64_t block) {
   /* 3. Allocate Data Page */
   buf->data = (uint8_t *)pmm_alloc_page();
   if (!buf->data) {
-    pmm_free_page(buf);
+    kfree(buf);
     return NULL;
   }
 
@@ -116,18 +116,28 @@ void buffer_put(struct block_buffer *buf) {
 }
 
 void buffer_sync(void) {
+#define MAX_DIRTY 64
+  struct block_buffer *dirty[MAX_DIRTY];
+  int ndirty = 0;
+
   uint64_t flags;
   spin_lock_irqsave(&buffer_lock, &flags);
   struct block_buffer *buf;
-  /* Iterate LRU */
   list_for_each_entry(buf, &lru_list, list) {
-    if (buf->flags & BUFFER_DIRTY) {
-      /* NOTE: We might want to unlock during I/O but for simplicity keep it for
-       * now. A production kernel would use a separate dirty list. */
-      virtio_blk_write(buf->data, buf->block * SECTORS_PER_BLOCK,
-                       SECTORS_PER_BLOCK);
-      buf->flags &= ~BUFFER_DIRTY;
+    if ((buf->flags & BUFFER_DIRTY) && ndirty < MAX_DIRTY) {
+      buf->ref_count++;
+      dirty[ndirty++] = buf;
     }
   }
   spin_unlock_irqrestore(&buffer_lock, flags);
+
+  for (int i = 0; i < ndirty; i++) {
+    virtio_blk_write(dirty[i]->data, dirty[i]->block * SECTORS_PER_BLOCK,
+                     SECTORS_PER_BLOCK);
+    spin_lock_irqsave(&buffer_lock, &flags);
+    dirty[i]->flags &= ~BUFFER_DIRTY;
+    if (dirty[i]->ref_count > 0)
+      dirty[i]->ref_count--;
+    spin_unlock_irqrestore(&buffer_lock, flags);
+  }
 }

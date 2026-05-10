@@ -1,2 +1,4 @@
 docs/Andrew-S.-Tanenbaum-OperatingSystems-Design-and-Implementation.pdf
 *.DS_Store
+*.o
+build/*

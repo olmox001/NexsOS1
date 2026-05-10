@@ -15,7 +15,5 @@ void __stack_chk_fail(void);
  */
 void __stack_chk_fail(void) {
   uint64_t ret_addr = (uint64_t)__builtin_return_address(0);
-  pr_err("SSP: Stack Smash at 0x%lx\n", ret_addr);
-  while (1)
-    ;
+  panic("SSP: Stack Smash at 0x%lx\n", ret_addr);
 }

@@ -233,10 +233,10 @@ struct process *process_create(const char *name, uint8_t priority,
 
   spin_unlock_irqrestore(&sched_lock, flags);
 
+  proc->page_table = vmm_create_pgd();
+
   pr_info("process_create: '%s' PID=%d slot=%d Prio=%d TTBR0=0x%lx\n", name,
           proc->pid, slot, proc->priority, virt_to_phys(proc->page_table));
-
-  proc->page_table = vmm_create_pgd();
 
   /* Allocate and Setup Kernel Stack (16KB) */
   void *kstack_base = pmm_alloc_pages(STACK_SIZE / 4096);
@@ -341,7 +341,7 @@ int process_terminate(int pid) {
   spin_unlock_irqrestore(&sched_lock, flags);
 
   if (proc->kernel_stack) {
-    pmm_free_page((void *)(proc->kernel_stack - 4096));
+    pmm_free_pages((void *)(proc->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
   }
   if (proc->page_table) {
     vmm_destroy_pgd(proc->page_table);
@@ -594,6 +594,9 @@ int process_wait(int pid) {
           if (proc->kernel_stack) {
             pmm_free_pages((void *)(proc->kernel_stack - STACK_SIZE),
                            STACK_SIZE / 4096);
+          }
+          if (proc->page_table) {
+            vmm_destroy_pgd(proc->page_table);
           }
           pmm_free_page(proc);
         }
