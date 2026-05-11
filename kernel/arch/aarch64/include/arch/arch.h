@@ -217,4 +217,6 @@ static inline void __arch_cntv_ctl_el0_write(uint64_t val) {
   __asm__ __volatile__("msr cntv_ctl_el0, %0" ::"r"(val));
 }
 
+#define ARCH_MEMORY_BASE 0x40000000UL
+
 #endif /* _ARCH_AARCH64_H */

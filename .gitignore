@@ -3,3 +3,4 @@ docs/Andrew-S.-Tanenbaum-OperatingSystems-Design-and-Implementation.pdf
 *.o
 build/*
 /scratch*
+.claude

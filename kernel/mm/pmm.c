@@ -1,21 +1,25 @@
-/*
- * kernel/mm/pmm.c
- * Physical Memory Manager
- *
- * Bitmap-based page frame allocator with zone support.
- */
+#include <arch/arch.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
 
-/* Memory configuration for QEMU virt */
-#define MEMORY_BASE 0x40000000UL  /* DRAM starts at 1GB */
-#define DMA_ZONE_END 0x41000000UL /* 16MB for DMA zone */
+/* Memory configuration from architecture */
+#define MEMORY_BASE ARCH_MEMORY_BASE
+#define DMA_ZONE_END (MEMORY_BASE + 0x1000000UL) /* 16MB for DMA zone */
 
 /* Maximum supported memory (1GB for now) */
 #define MAX_MEMORY (1UL << 30)
 #define MAX_PAGES (MAX_MEMORY / PAGE_SIZE)
+
+/* Forward declaration */
+void pmm_init_region(uint64_t base, uint64_t size);
+
+void pmm_init_region(uint64_t base, uint64_t size) {
+  /* Mark pages in this region as usable (they are already 0 in bitmap if zone_init was called) */
+  /* This is a placeholder; real implementation would manage multiple regions. */
+  pr_info("PMM: Region added 0x%lx - 0x%lx\n", base, base + size);
+}
 
 /* Page array - one descriptor per physical page */
 static struct page page_array[MAX_PAGES];

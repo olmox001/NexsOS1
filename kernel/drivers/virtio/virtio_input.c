@@ -239,8 +239,8 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 void virtio_input_init(void) {
   pr_info("%s", "VirtIO-Input: Probing devices...\n");
 
-  /* Probe MMIO range 0x0a003000 - 0x0a003e00 (8 slots) */
-  for (uintptr_t addr = 0x0a003000; addr <= 0x0a003e00; addr += 0x200) {
+  /* Probe all MMIO slots for VirtIO Input devices (Keyboard/Mouse) */
+  for (uintptr_t addr = 0x0a000000; addr <= 0x0a003e00; addr += 0x200) {
     uint32_t magic = V_REG(addr, 0);
     uint32_t devid = V_REG(addr, 8);
     if (magic == 0x74726976 && devid == 18) {

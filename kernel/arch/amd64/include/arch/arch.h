@@ -287,4 +287,6 @@ static inline void __arch_set_sctlr(uint64_t v) {
   __asm__ __volatile__("mov %0, %%cr0" ::"r"(v) : "memory");
 }
 
+#define ARCH_MEMORY_BASE 0x0UL
+
 #endif /* _ARCH_AMD64_H */

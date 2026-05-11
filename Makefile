@@ -5,8 +5,39 @@
 # Configuration
 # ==============================================================================
 
-# Cross-compiler prefix
+# Target Architecture (default to aarch64)
+ARCH ?= aarch64
+
+# ==============================================================================
+# Configuration
+# ==============================================================================
+
+ifeq ($(ARCH), amd64)
+# Cross-compiler prefix for AMD64
+CROSS_COMPILE ?= x86_64-elf-
+KERNEL_DIR = kernel
+BOOT_DIR   = boot/amd64
+ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
+CFLAGS += -DARCH_AMD64 -mno-red-zone -mcmodel=large
+# Assembler flags
+ASFLAGS = -g --fatal-warnings
+# Linker flags
+LDFLAGS_BOOT = -nostdlib -static
+LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
+
+else
+# Cross-compiler prefix for AArch64
 CROSS_COMPILE ?= aarch64-none-elf-
+KERNEL_DIR = kernel
+BOOT_DIR   = boot/aarch64
+ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
+CFLAGS += -DARCH_AARCH64 -mcpu=cortex-a57
+# Assembler flags
+ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
+# Linker flags
+LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
+LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
+endif
 
 # Tools
 CC      = $(CROSS_COMPILE)gcc
@@ -17,15 +48,11 @@ OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
 
 # Directories
-KERNEL_DIR = kernel
-BOOT_DIR   = boot
-ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
 BUILD_DIR  = build
 USER_DIR   = user
 USER_LIB_DIR = $(USER_DIR)/lib
 USER_BIN_DIR = $(USER_DIR)/bin
 INCLUDE    = -I$(KERNEL_DIR)/include -I$(ARCH_DIR)/include -Iinclude/api
-CFLAGS += -DARCH_AARCH64
 
 # Output files
 BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
@@ -35,11 +62,10 @@ KERNEL_BIN = $(BUILD_DIR)/kernel.bin
 USER_ELF   = $(BUILD_DIR)/init.elf
 
 
-# Compiler flags
-CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
+# Compiler flags (common)
+CFLAGS += -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
          -Wmissing-prototypes -Wstrict-prototypes \
          -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-         -mcpu=cortex-a57 \
          -fno-common -fstack-protector-strong \
          -fno-pic -fno-pie \
          -fno-omit-frame-pointer \
@@ -48,7 +74,6 @@ CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
 
 CXXFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow \
            -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-           -mcpu=cortex-a57 \
            -fno-common -fstack-protector-strong \
            -fno-pic -fno-pie \
            -fno-omit-frame-pointer \
@@ -56,24 +81,40 @@ CXXFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow \
            -O2 -g \
            $(INCLUDE)
 
-# Assembler flags
-ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
-
-# Linker flags
-LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
-LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
 
 # ==============================================================================
 # Source Files
 # ==============================================================================
 
+# Kernel assembly sources
+ifeq ($(ARCH), amd64)
+# No separate bootloader for AMD64, GRUB does it.
+BOOT_SOURCES = 
+
+KERN_ASM_SOURCES = \
+    $(BOOT_DIR)/boot.S \
+    $(ARCH_DIR)/cpu/isr_stubs.S \
+    $(ARCH_DIR)/cpu/syscall.S \
+    $(ARCH_DIR)/cpu/context.S
+
+KERN_C_SOURCES = \
+    $(ARCH_DIR)/cpu/cpu.c \
+    $(ARCH_DIR)/cpu/idt.c \
+    $(ARCH_DIR)/cpu/gdt.c \
+    $(ARCH_DIR)/cpu/msr.c \
+    $(ARCH_DIR)/cpu/syscall.c \
+    $(ARCH_DIR)/mm/mmu.c \
+    $(ARCH_DIR)/mm/uaccess.c \
+    $(ARCH_DIR)/drivers/uart_16550.c \
+    $(ARCH_DIR)/drivers/pic_pit.c \
+    $(ARCH_DIR)/platform/platform.c
+else
 # Bootloader sources
 BOOT_SOURCES = \
     $(BOOT_DIR)/header.S \
     $(BOOT_DIR)/stage1.S \
     $(BOOT_DIR)/stage2.S
 
-# Kernel assembly sources
 KERN_ASM_SOURCES = \
     $(ARCH_DIR)/boot/start.S \
     $(ARCH_DIR)/cpu/exception.S
@@ -84,7 +125,14 @@ KERN_C_SOURCES = \
     $(ARCH_DIR)/platform.c \
     $(KERNEL_DIR)/drivers/uart/pl011.c \
     $(KERNEL_DIR)/drivers/gic/gic.c \
-    $(KERNEL_DIR)/drivers/timer/timer.c \
+    $(KERNEL_DIR)/drivers/timer/timer.c
+endif
+
+KERN_C_SOURCES += \
+    $(KERNEL_DIR)/core/syscall_dispatch.c \
+    $(KERNEL_DIR)/drivers/console.c \
+    $(KERNEL_DIR)/drivers/irq_ctrl.c \
+    $(KERNEL_DIR)/drivers/sys_timer.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
@@ -138,6 +186,18 @@ DEPS = $(KERN_C_OBJECTS:.o=.d)
 
 .PHONY: all clean run run-direct debug disasm check dirs bootloader kernel iso
 
+ifeq ($(ARCH), amd64)
+# Default target - builds everything including ISO
+all: dirs kernel user $(MKDISK) disk
+	@echo ""
+	@echo "Build complete!"
+	@echo "  Disk Image: build/disk.img"
+	@echo "  Kernel:     $(KERNEL_ELF)"
+	@echo "  ISO Image:  build/os1test.iso"
+	@echo ""
+	@echo "Run with: make run"
+	@echo ""
+else
 # Default target - builds everything including ISO
 all: dirs bootloader kernel user $(MKDISK) disk
 	@echo ""
@@ -147,6 +207,7 @@ all: dirs bootloader kernel user $(MKDISK) disk
 	@echo ""
 	@echo "Run with: make run"
 	@echo ""
+endif
 
 # Create build directories
 dirs:
@@ -154,6 +215,8 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/boot
 	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/cpu
 	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/mm
+	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/platform
+	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/drivers
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/uart
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/gic
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/timer
@@ -166,6 +229,7 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/sched
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/graphics
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/irq
+	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/core
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/lib
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
 
@@ -174,6 +238,10 @@ dirs:
 # Bootloader
 # ==============================================================================
 
+ifeq ($(ARCH), amd64)
+bootloader:
+	@echo "Skipping bootloader for AMD64 (using GRUB)"
+else
 bootloader: $(BOOTLOADER_BIN)
 
 $(BOOTLOADER_ELF): $(BOOT_OBJECTS)
@@ -184,6 +252,7 @@ $(BOOTLOADER_ELF): $(BOOT_OBJECTS)
 $(BOOTLOADER_BIN): $(BOOTLOADER_ELF)
 	@echo "Creating bootloader binary..."
 	$(OBJCOPY) -O binary $< $@
+endif
 
 # ==============================================================================
 # Kernel
@@ -316,22 +385,35 @@ $(BUILD_DIR)/%.o: %.cpp
 # Run and Debug
 # ==============================================================================
 
+ifeq ($(ARCH), amd64)
+QEMU = qemu-system-x86_64
+QEMU_FLAGS = -m 1G -smp 4 -serial mon:stdio \
+             -display default,show-cursor=on \
+             -device virtio-gpu-pci \
+             -device virtio-keyboard-pci -device virtio-mouse-pci \
+             -drive if=none,file=build/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0
+else
 QEMU = qemu-system-aarch64
 QEMU_FLAGS = -M virt -cpu cortex-a57 -m 1G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \
-             -drive if=none,file=build/disk.img,id=hd0 -device virtio-blk-device,drive=hd0
+             -drive if=none,file=build/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0
+endif
 
 # Run with the final disk image (Unified)
 run: all
 	@echo ""
 	@echo "========================================"
-	@echo "  AArch64 Microkernel Boot"
+	@echo "  $(ARCH) Microkernel Boot"
 	@echo "========================================"
 	@echo ""
 	@echo "Starting QEMU with disk image..."
+ifeq ($(ARCH), amd64)
+	$(QEMU) $(QEMU_FLAGS) -cdrom build/os1test.iso
+else
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+endif
 
 # Run with direct kernel boot (faster, skips bootloader/ISO)
 run-direct: all
@@ -344,7 +426,11 @@ run-direct: all
 # Debug with QEMU and GDB
 debug: all
 	@echo "Starting QEMU in debug mode (waiting for GDB on :1234)..."
+ifeq ($(ARCH), amd64)
+	$(QEMU) $(QEMU_FLAGS) -cdrom build/os1test.iso -s -S
+else
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
+endif
 
 # ==============================================================================
 # Analysis Tools
@@ -371,6 +457,19 @@ disk: $(MKDISK) kernel user bootloader
 	@echo "Assembling final disk image (GPT + Ext4)..."
 	@mkdir -p $(BUILD_DIR)
 	@./$(MKDISK) $(BUILD_DIR)/disk.img $(BOOTLOADER_BIN) $(KERNEL_BIN)
+ifeq ($(ARCH), amd64)
+	@echo "Creating GRUB ISO..."
+	@mkdir -p $(BUILD_DIR)/iso/boot/grub
+	@cp $(KERNEL_ELF) $(BUILD_DIR)/iso/boot/kernel.elf
+	@echo "set timeout=0" > $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "set default=0" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "menuentry 'os1test amd64' {" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "  multiboot2 /boot/kernel.elf" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "  boot" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo "}" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@grub-mkrescue -o $(BUILD_DIR)/os1test.iso $(BUILD_DIR)/iso 2>/dev/null
+	@echo "ISO Created: build/os1test.iso"
+endif
 
 $(MKDISK): tools/mkdisk.c
 	@mkdir -p tools
@@ -386,7 +485,7 @@ clean:
 # ==============================================================================
 
 help:
-	@echo "AArch64 Kernel Build System"
+	@echo "$(ARCH) Kernel Build System"
 	@echo ""
 	@echo "Targets:"
 	@echo "  all        - Build bootloader and kernel (default)"

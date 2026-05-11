@@ -97,6 +97,10 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
     if (irq == 1023) /* Spurious or No more interrupts */
       break;
 
+    if (irq != IRQ_TIMER && irq != 30) {
+      pr_info("IRQ: Handling interrupt %u\n", irq);
+    }
+
     /* SGI0: panic halt IPI */
     if (irq == 0) {
       current_chip->end(irq);

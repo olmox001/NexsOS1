@@ -5,7 +5,9 @@
  * Provides uart_init/uart_putc/uart_puts for serial console output.
  */
 #include <kernel/types.h>
-#include <arch/arch.h>
+#include <kernel/arch.h>
+#include <arch/amd64_internal.h>
+#include <drivers/uart.h>
 
 #define COM1_PORT 0x3F8
 
@@ -63,9 +65,32 @@ void uart_puts(const char *s) {
   }
 }
 
-int uart_getc(void) {
+char uart_getc(void) {
+  /* Wait for data to be ready */
+  while ((inb(COM1_PORT + UART_LSR) & LSR_DATA_READY) == 0) {
+    arch_idle();
+  }
+  return (char)inb(COM1_PORT + UART_RBR);
+}
+
+int uart_getc_nonblock(void) {
   if (inb(COM1_PORT + UART_LSR) & LSR_DATA_READY) {
     return (int)inb(COM1_PORT + UART_RBR);
   }
   return -1;
+}
+
+void uart_puthex(uint64_t val) {
+  static const char hex[] = "0123456789abcdef";
+  char buf[17];
+  int i;
+
+  buf[16] = '\0';
+  for (i = 15; i >= 0; i--) {
+    buf[i] = hex[val & 0xF];
+    val >>= 4;
+  }
+
+  uart_puts("0x");
+  uart_puts(buf);
 }

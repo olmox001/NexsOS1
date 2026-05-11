@@ -2,9 +2,8 @@
  * kernel/kernel.c
  * Main kernel initialization and entry point
  */
+#include <kernel/drivers.h>
 #include <drivers/keyboard.h>
-#include <drivers/timer.h>
-#include <drivers/uart.h>
 #include <drivers/virtio_blk.h>
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
@@ -43,10 +42,11 @@ static void init_scheduler(void);
  */
 /* Forward declaration for kernel_main */
 void kernel_main(void);
+extern void timer_init_percpu(void);
 
 void kernel_main(void) {
   /* Initialize UART first for debug output */
-  uart_init();
+  driver_console_init();
 
   /* Print kernel banner */
   print_banner();
@@ -60,12 +60,13 @@ void kernel_main(void) {
 
   /* Platform-specific hardware registration */
   arch_platform_early_init();
+  driver_irq_init();
   irq_init();
   irq_init_percpu();
 
   /* System timer */
   pr_info("%s", "Initializing timer...\n");
-  timer_init();
+  driver_timer_init();
   timer_init_percpu();
 
   /* Memory management */

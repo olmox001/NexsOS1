@@ -5,6 +5,7 @@
 #include <kernel/types.h>
 #include <kernel/string.h>
 #include <arch/arch.h>
+#include <arch/amd64_internal.h>
 
 /* ─── GDT Segment Selectors ─── */
 #define GDT_NULL      0x00
