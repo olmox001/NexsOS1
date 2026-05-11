@@ -3,7 +3,8 @@
 ### Production-Ready AArch64 Microkernel with Graphics & Multitasking
 
 <div align="center">
-<img width="804" height="628" alt="Screenshot 2026-01-05 alle 08 31 27" src="https://github.com/user-attachments/assets/41c1673a-505f-4f9f-bf17-740ce49c9f47" />
+<img width="719" height="1018" alt="Screenshot 2026-05-11 alle 10 41 58" src="https://github.com/user-attachments/assets/eeefd28d-0009-4be7-bbf2-c3451cbe08d8" />
+
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-AArch64-green.svg)](https://developer.arm.com/architectures/learn-the-architecture/armv8-a-instruction-set-architecture)
