@@ -1,6 +1,7 @@
 #ifndef _KERNEL_CPU_H
 #define _KERNEL_CPU_H
 
+#ifndef __ASSEMBLER__
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
@@ -31,9 +32,11 @@ struct cpu_info {
   /* Deferred process free: freed on next schedule() call after context switch */
   struct process *deferred_free_proc;
 };
+#endif
 
-#define MAX_CPUS 8
+#define MAX_CPUS 16
 
+#ifndef __ASSEMBLER__
 /* API */
 extern struct cpu_info cpu_data[MAX_CPUS];
 struct cpu_info *get_cpu_info(void);
@@ -49,5 +52,6 @@ struct cpu_info *get_cpu_info(void);
 #define local_irq_restore(flags) arch_local_irq_restore(flags)
 struct pt_regs; /* forward decl */
 struct pt_regs *serror_handler(struct pt_regs *frame);
+#endif
 
 #endif /* _KERNEL_CPU_H */

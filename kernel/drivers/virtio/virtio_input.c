@@ -94,17 +94,14 @@ static void init_device(uintptr_t base, uint32_t irq, int is_pci) {
   dev->avail = (struct vring_avail *)((uint8_t *)qmem + INPUT_QSIZE * 16);
   dev->used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
-  /* Map rings for hardware visibility (Critical for AArch64) */
-  extern uint64_t *kernel_pgd;
-  vmm_map_page(kernel_pgd, (uint64_t)qmem, (uint64_t)qmem, PAGE_DEVICE);
-  vmm_map_page(kernel_pgd, (uint64_t)qmem + 4096, (uint64_t)qmem + 4096, PAGE_DEVICE);
+  /* Rings are already identity mapped */
 
   /* Use unified HAL API */
   virtio_setup_queue(base, 0, (uint64_t)dev->desc, (uint64_t)dev->avail, (uint64_t)dev->used);
 
   dev->events = (struct virtio_input_event *)pmm_alloc_page();
   memset(dev->events, 0, sizeof(struct virtio_input_event) * INPUT_QSIZE);
-  vmm_map_page(kernel_pgd, (uint64_t)dev->events, (uint64_t)dev->events, PAGE_DEVICE);
+  /* Events buffer is identity mapped */
 
   for (int i = 0; i < INPUT_QSIZE; i++) {
     dev->desc[i].addr = (uint64_t)&dev->events[i];

@@ -60,6 +60,36 @@ int pci_find_device(uint16_t vendor, uint16_t device_id) {
     return -1;
 }
 
+/* 
+ * Enumerate all PCI devices and call callback
+ */
+void pci_enumerate(void (*callback)(int bdf, uint16_t vendor, uint16_t device_id)) {
+    for (int bus = 0; bus < 256; bus++) {
+        for (int dev = 0; dev < 32; dev++) {
+            uint32_t reg0 = pci_config_read(bus, dev, 0, 0);
+            uint16_t v = reg0 & 0xFFFF;
+            uint16_t d = reg0 >> 16;
+            
+            if (v == 0xFFFF) continue;
+            
+            callback((bus << 16) | (dev << 8) | 0, v, d);
+            
+            /* Check if multi-function */
+            uint32_t header_type = pci_config_read(bus, dev, 0, 0x0C);
+            if (header_type & 0x80) {
+                for (int func = 1; func < 8; func++) {
+                    reg0 = pci_config_read(bus, dev, func, 0);
+                    v = reg0 & 0xFFFF;
+                    d = reg0 >> 16;
+                    if (v != 0xFFFF) {
+                        callback((bus << 16) | (dev << 8) | func, v, d);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* Get BAR address (simplistic) */
 uint32_t pci_get_bar(int bdf, int bar_index) {
     uint8_t bus = (bdf >> 16) & 0xFF;

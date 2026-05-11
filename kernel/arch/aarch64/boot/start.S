@@ -3,6 +3,8 @@
  * Kernel entry point
  */
 
+#include <kernel/cpu.h>
+
 .section .text.boot
 .global _start
 
@@ -236,10 +238,10 @@ boot_info:
     .quad 0
 
 cpu_spin_table:
-    .skip 8 * 8     /* 8 CPU entries */
+    .skip MAX_CPUS * 8     /* MAX_CPUS entries */
 
 cpu_stacks:
-    .skip 8 * 8     /* 8 stack pointers */
+    .skip MAX_CPUS * 8     /* MAX_CPUS stack pointers */
 
 /*
  * BSS section
@@ -250,7 +252,7 @@ cpu_stacks:
 /* Per-CPU stacks (128KB each) */
 .global __kernel_stack
 __kernel_stack:
-    .skip 131072 * 8     /* 8 CPUs * 128KB */
+    .skip 131072 * MAX_CPUS     /* MAX_CPUS * 128KB */
 .global __kernel_stack_top
 __kernel_stack_top:
 

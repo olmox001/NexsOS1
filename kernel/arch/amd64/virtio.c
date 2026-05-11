@@ -149,14 +149,16 @@ static uintptr_t register_vdev(uint32_t bdf, uint16_t v_id, int is_modern) {
     vdev->is_modern = is_modern;
 
     if (is_modern) {
+        uint8_t bus = (bdf >> 16) & 0xFF;
         uint8_t dev_pci = (bdf >> 8) & 0xFF;
+        uint8_t func = bdf & 0xFF;
         /* Modern: Scan capabilities for Common and Notify configs */
-        for (uint8_t ptr = pci_config_read(0, dev_pci, 0, 0x34) & 0xFF; ptr >= 0x40; ) {
-            uint32_t val = pci_config_read(0, dev_pci, 0, ptr);
+        for (uint8_t ptr = pci_config_read(bus, dev_pci, func, 0x34) & 0xFF; ptr >= 0x40; ) {
+            uint32_t val = pci_config_read(bus, dev_pci, func, ptr);
             if ((val & 0xFF) == 0x09) { /* Vendor Specific (VirtIO Capability) */
                 uint8_t type = (val >> 24) & 0xFF;
-                uint8_t bar = pci_config_read(0, dev_pci, 0, ptr + 4) & 0xFF;
-                uint32_t off = pci_config_read(0, dev_pci, 0, ptr + 8);
+                uint8_t bar = pci_config_read(bus, dev_pci, func, ptr + 4) & 0xFF;
+                uint32_t off = pci_config_read(bus, dev_pci, func, ptr + 8);
                 uintptr_t bar_phys = pci_get_bar(bdf, bar) & ~0xF;
                 uint32_t bar_size = pci_get_bar_size(bdf, bar);
 
@@ -169,7 +171,7 @@ static uintptr_t register_vdev(uint32_t bdf, uint16_t v_id, int is_modern) {
                 if (type == 1) vdev->common_base = bar_phys + off;
                 if (type == 2) {
                     vdev->notify_base = bar_phys + off;
-                    vdev->notify_off_multiplier = pci_config_read(0, dev_pci, 0, ptr + 12);
+                    vdev->notify_off_multiplier = pci_config_read(bus, dev_pci, func, ptr + 12);
                 }
             }
             ptr = (val >> 8) & 0xFF;
@@ -182,6 +184,14 @@ static uintptr_t register_vdev(uint32_t bdf, uint16_t v_id, int is_modern) {
         vdev->legacy_port = bar0 & ~3;
     }
 
+    /* Enable Bus Master, I/O Space and Memory Space in PCI Command register */
+    uint8_t bus = (bdf >> 16) & 0xFF;
+    uint8_t dev_pci = (bdf >> 8) & 0xFF;
+    uint8_t func = bdf & 0xFF;
+    uint32_t cmd = pci_config_read(bus, dev_pci, func, 0x04);
+    cmd |= 0x7; /* Bus Master (2) | Memory Space (1) | I/O Space (0) */
+    pci_config_write(bus, dev_pci, func, 0x04, cmd);
+
     uintptr_t handle = VIRTIO_HANDLE_FLAG | virtio_dev_count;
     vdev->device_id = v_id;
     vdev->irq = 32 + pci_get_interrupt(bdf);
@@ -189,41 +199,43 @@ static uintptr_t register_vdev(uint32_t bdf, uint16_t v_id, int is_modern) {
     return handle;
 }
 
+static void virtio_pci_callback(int bdf, uint16_t vendor, uint16_t device_id) {
+    if (vendor != 0x1AF4) return;
+
+    uint16_t v_id = 0;
+    int is_modern = 0;
+
+    /* VirtIO PCI IDs: 0x1000-0x103F (Legacy), 0x1040-0x107F (Modern) */
+    if (device_id >= 0x1040 && device_id <= 0x107F) {
+        v_id = device_id - 0x1040;
+        is_modern = 1;
+    } else if (device_id >= 0x1000 && device_id <= 0x103F) {
+        /* Subsystem ID usually contains the VirtIO Device ID for Legacy */
+        v_id = pci_config_read((bdf >> 16) & 0xFF, (bdf >> 8) & 0x1F, bdf & 0x7, 0x2C) >> 16;
+    }
+
+    if (v_id != 0) {
+        register_vdev(bdf, v_id, is_modern);
+    }
+}
+
 void arch_virtio_scan(void) {
     virtio_dev_count = 0;
-    for (int dev = 0; dev < 32; dev++) {
-        uint32_t bdf = (0 << 16) | (dev << 8) | 0;
-        uint32_t id = pci_config_read(0, dev, 0, 0);
-        if (id == 0xFFFFFFFF) continue;
-
-        uint16_t pci_devid = id >> 16;
-        uint16_t v_id = 0;
-        int is_modern = 0;
-
-        /* VirtIO PCI IDs: 0x1000-0x103F (Legacy), 0x1040-0x107F (Modern) */
-        if (pci_devid >= 0x1040 && pci_devid <= 0x107F) {
-            v_id = pci_devid - 0x1040;
-            is_modern = 1;
-        } else if (pci_devid >= 0x1000 && pci_devid <= 0x103F) {
-            v_id = pci_config_read(0, dev, 0, 0x2C) >> 16;
-        }
-
-        if (v_id != 0) {
-            register_vdev(bdf, v_id, is_modern);
-        }
-    }
+    pci_enumerate(virtio_pci_callback);
+    pr_info("VirtIO-PCI: Found %d devices via PCI scan\n", virtio_dev_count);
 }
 
 
 uintptr_t arch_virtio_register_pci(uint32_t bdf) {
-    /* Check if already registered */
-    /* (Not strictly needed if we scan all at boot) */
-    uint32_t id = pci_config_read(0, (bdf >> 8) & 0x1F, 0, 0);
+    uint8_t bus = (bdf >> 16) & 0xFF;
+    uint8_t dev = (bdf >> 8) & 0xFF;
+    uint8_t func = bdf & 0xFF;
+    uint32_t id = pci_config_read(bus, dev, func, 0);
     uint16_t pci_devid = id >> 16;
     uint16_t v_id = 0;
     int is_modern = 0;
     if (pci_devid >= 0x1040 && pci_devid <= 0x107F) { v_id = pci_devid - 0x1040; is_modern = 1; }
-    else if (pci_devid >= 0x1000 && pci_devid <= 0x103F) { v_id = pci_config_read(0, (bdf >> 8) & 0x1F, 0, 0x2C) >> 16; }
+    else if (pci_devid >= 0x1000 && pci_devid <= 0x103F) { v_id = pci_config_read(bus, dev, func, 0x2C) >> 16; }
     
     return register_vdev(bdf, v_id, is_modern);
 }

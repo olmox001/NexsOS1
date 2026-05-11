@@ -13,7 +13,7 @@
 #include <kernel/vmm.h>
 
 /* External definitions from core */
-extern struct cpu_info cpu_data[8];
+extern struct cpu_info cpu_data[MAX_CPUS];
 extern uint32_t nr_cpus;
 
 /* External functions from assembly */

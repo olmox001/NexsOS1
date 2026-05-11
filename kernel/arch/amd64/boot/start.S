@@ -52,23 +52,20 @@ mb2_header_end:
 .global _start_32
 _start_32:
     cli
-
-    /* Detect boot protocol: 
-       Multiboot2 (EAX=0x36d24269)
-       Multiboot1 (EAX=0x2BADB002)
-       PVH (EAX=0x336ec578) */
+    /* Save magic and info in a safe physical memory location (0x7FF0-0x7FFF) */
+    movl %eax, 0x7FF0
     
+    /* Detect boot protocol */
     cmpl $0x336ec578, %eax
-    je .pvh_boot
+    je .pvh_info_32
     
     /* Multiboot path */
-    movl %eax, (mb_magic_phys)
-    movl %ebx, (mb_info_ptr_phys)
+    movl %ebx, 0x7FF8
     jmp .prepare_paging
 
-.pvh_boot:
-    movl %eax, (mb_magic_phys)
-    movl %esi, (mb_info_ptr_phys)
+.pvh_info_32:
+    movl %esi, 0x7FF8
+    jmp .prepare_paging
 
 .prepare_paging:
     /* Clear boot page tables */
@@ -155,15 +152,23 @@ _start_64:
     jmp .bss_loop
 .bss_done:
 
-    /* Setup initial stack */
-    movabsq $_stack_top, %rsp
+    /* Setup initial stack (CPU 0) */
+    movabsq $__kernel_stack, %rsp
+    addq $131072, %rsp
     movq %rsp, %rbp
 
     /* Load final 64-bit GDT */
     lgdt (boot_gdtr)
 
-    /* Handover to C: RDI = Multiboot info pointer */
-    movq (mb_info_ptr), %rdi
+    /* 5. Load saved boot information into kernel variables */
+    movl 0x7FF0, %eax
+    movq %rax, mb_magic(%rip)
+    movl 0x7FF8, %eax
+    movq %rax, mb_info_ptr(%rip)
+    
+    /* 6. Handover to C: RDI = info, RSI = magic */
+    movq mb_info_ptr(%rip), %rdi
+    movq mb_magic(%rip), %rsi
     call kernel_main
 
 .halt:
@@ -175,10 +180,8 @@ _start_64:
 .align 8
 .global mb_info_ptr
 .global mb_magic
-mb_magic:
-mb_magic_phys: .quad 0
-mb_info_ptr:
-mb_info_ptr_phys: .quad 0
+mb_magic:    .quad 0
+mb_info_ptr: .quad 0
 
 .align 16
 boot_gdt:
@@ -209,8 +212,8 @@ boot_pd:   .skip 4096
 
 .section .bss
 .align 4096
-.global _stack_bottom
-_stack_bottom:
-    .skip 0x20000    /* 128KB stack */
-.global _stack_top
-_stack_top:
+.global __kernel_stack
+__kernel_stack:
+    .skip 131072 * 16     /* 128KB * MAX_CPUS (16) */
+.global __kernel_stack_top
+__kernel_stack_top:

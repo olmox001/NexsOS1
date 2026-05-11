@@ -130,11 +130,11 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
 
   virtio_notify(priv->base, 0);
 
-  uint64_t timeout = 100000000;
+  uint64_t timeout = 200000000;
   while (*idx_ptr == old_idx && timeout > 0) {
-    arch_yield();
     timeout--;
   }
+  virtio_read_reg(priv->base, VIRTIO_MMIO_INTERRUPT_ACK);
 
   if (timeout == 0) {
     pr_err("%s", "VirtIO-GPU: Timeout!\n");
@@ -198,9 +198,7 @@ void virtio_gpu_init(void) {
     avail = (struct vring_avail *)((uint8_t *)qmem + priv->qsize * 16);
     used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
-    vmm_map_page(kernel_pgd, (uint64_t)qmem, (uint64_t)qmem, PAGE_DEVICE);
-    vmm_map_page(kernel_pgd, (uint64_t)qmem + 4096, (uint64_t)qmem + 4096,
-                 PAGE_DEVICE);
+    /* Rings are identity mapped by default RAM mapping */
 
     /* Use unified HAL API for queue setup */
     virtio_setup_queue(base, 0, (uint64_t)desc, (uint64_t)avail, (uint64_t)used);
@@ -210,10 +208,7 @@ void virtio_gpu_init(void) {
     if (!gpu_resp_buf)
       gpu_resp_buf = pmm_alloc_page();
 
-    vmm_map_page(kernel_pgd, (uint64_t)gpu_cmd_buf, (uint64_t)gpu_cmd_buf,
-                 PAGE_DEVICE);
-    vmm_map_page(kernel_pgd, (uint64_t)gpu_resp_buf, (uint64_t)gpu_resp_buf,
-                 PAGE_DEVICE);
+    /* Buffers are identity mapped */
 
     /* Driver OK */
     virtio_write_reg(base, VIRTIO_MMIO_STATUS,
@@ -269,10 +264,7 @@ void virtio_gpu_init(void) {
     virtio_gpu_send(priv, scanout, sizeof(*scanout), resp_page,
                     sizeof(struct virtio_gpu_ctrl_hdr));
 
-    for (int p = 0; p < pages; p++) {
-      uint64_t vaddr = (uint64_t)priv->backing_store + p * 4096;
-      vmm_map_page(kernel_pgd, vaddr, vaddr, PAGE_DEVICE);
-    }
+    /* Backing store is identity mapped */
 
     pmm_free_page(cmd_page);
     pmm_free_page(resp_page);

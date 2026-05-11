@@ -3,7 +3,9 @@
 
 #include <arch/arch.h>
 
+#ifndef __ASSEMBLER__
 /* Generic interface for architecture-specific operations */
+#include <kernel/types.h>
 
 /* --- CPU and Interrupt HAL --- */
 #define arch_get_cpu_id() __arch_get_cpu_id()
@@ -15,12 +17,14 @@ uint64_t arch_get_boot_info(void);
 void *arch_get_kernel_stack(uint32_t cpu_id);
 void arch_cpu_switch_context(struct process *next);
 void arch_vmm_set_secondary_pgd(uint64_t pgd);
+#endif
 
 #define arch_local_irq_enable() __arch_local_irq_enable()
 #define arch_local_irq_disable() __arch_local_irq_disable()
 #define arch_local_irq_save(flags) __arch_local_irq_save(flags)
 #define arch_local_irq_restore(flags) __arch_local_irq_restore(flags)
 
+#ifndef __ASSEMBLER__
 static inline uint64_t __arch_local_irq_save_val(void) {
     uint64_t flags;
     __arch_local_irq_save(&flags);
@@ -31,6 +35,7 @@ static inline uint64_t __arch_local_irq_save_val(void) {
 int arch_copy_from_user(void *dest, const void *src, size_t n);
 int arch_copy_to_user(void *dest, const void *src, size_t n);
 int arch_copy_string_from_user(char *dest, const char *src, size_t max_len);
+#endif
 
 /* Disable ALL exceptions/interrupts (daifset 0xf on ARM) */
 #define arch_local_irq_disable_all() __arch_local_irq_disable_all()
@@ -51,12 +56,14 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len);
 #define arch_instr_barrier() arch_isb()
 #define arch_data_barrier()  arch_mb()
 
+#ifndef __ASSEMBLER__
 /* --- Memory Management (VMM/TLB/Cache) --- */
 void arch_vmm_init_hw(uint64_t kernel_pgd);
 void arch_vmm_map_mmio(uint64_t *pgd);
 int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags);
 int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, uint64_t flags);
 int arch_vmm_unmap(uint64_t pgd, uint64_t va);
+#endif
 
 #define ARCH_RAM_START __ARCH_RAM_START
 #define ARCH_RAM_SIZE  __ARCH_RAM_SIZE
@@ -99,10 +106,12 @@ int arch_vmm_unmap(uint64_t pgd, uint64_t va);
 #define arch_get_sctlr() __arch_get_sctlr()
 #define arch_set_sctlr(v) __arch_set_sctlr(v)
 
+#ifndef __ASSEMBLER__
 /* --- VirtIO HAL --- */
 uint32_t arch_virtio_read32(uintptr_t base, uint32_t offset);
 void arch_virtio_write32(uintptr_t base, uint32_t offset, uint32_t val);
 int arch_virtio_probe(uint32_t device_id, uintptr_t *out_base, uint32_t *out_irq);
+#endif
 
 /* --- Compatibility Aliases --- */
 #define arch_wfi() arch_idle()

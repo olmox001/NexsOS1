@@ -78,10 +78,7 @@ void virtio_blk_init(void) {
   avail = (struct vring_avail *)((uint8_t *)qmem + qsize * 16);
   used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
-  /* Map rings for hardware visibility (Critical for AArch64) */
-  extern uint64_t *kernel_pgd;
-  vmm_map_page(kernel_pgd, (uint64_t)qmem, (uint64_t)qmem, PAGE_DEVICE);
-  vmm_map_page(kernel_pgd, (uint64_t)qmem + 4096, (uint64_t)qmem + 4096, PAGE_DEVICE);
+  /* Rings are already identity mapped on both architectures by default RAM mapping */
 
   /* Unified HAL API handles Legacy/Modern address registration */
   virtio_setup_queue(base, 0, (uint64_t)desc, (uint64_t)avail, (uint64_t)used);
@@ -148,11 +145,13 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   virtio_notify(virtio_blk_base, 0);
 
   /* Poll Used Ring (Busy Wait) */
-  uint64_t timeout = 2000000;
+  uint64_t timeout = 10000000;
   while (*used_idx_ptr == old_idx && timeout > 0) {
-    arch_yield();
     timeout--;
   }
+
+  /* Clear interrupt status (Important for some Legacy PCI implementations) */
+  virtio_read_reg(virtio_blk_base, VIRTIO_MMIO_INTERRUPT_ACK);
 
   if (timeout == 0) {
     pr_err("VirtIO-Blk: Timeout waiting for device response! (used->idx=%d "
@@ -210,9 +209,11 @@ int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
 
   volatile uint16_t *used_idx_ptr_w = &used->idx;
   uint16_t last_wait_idx_w = *used_idx_ptr_w;
-  while (*used_idx_ptr_w == last_wait_idx_w) {
-    __asm__ volatile("nop");
+  uint64_t timeout_w = 10000000;
+  while (*used_idx_ptr_w == last_wait_idx_w && timeout_w > 0) {
+    timeout_w--;
   }
+  virtio_read_reg(virtio_blk_base, VIRTIO_MMIO_INTERRUPT_ACK);
 
   if (status_w != VIRTIO_BLK_S_OK) {
     pr_info("VirtIO: Write failed status=%d\n", status_w);

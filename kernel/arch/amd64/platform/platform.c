@@ -37,25 +37,7 @@ struct hvm_memmap_table_entry {
   uint32_t reserved;
 };
 
-struct mb2_tag {
-  uint32_t type;
-  uint32_t size;
-};
-
-struct mb2_mmap_entry {
-  uint64_t addr;
-  uint64_t len;
-  uint32_t type;
-  uint32_t zero;
-};
-
-struct mb2_tag_mmap {
-  uint32_t type;
-  uint32_t size;
-  uint32_t entry_size;
-  uint32_t entry_version;
-  struct mb2_mmap_entry entries[];
-};
+#include <kernel/multiboot2.h>
 
 struct mb1_info {
   uint32_t flags;
@@ -174,9 +156,6 @@ void arch_platform_early_init(void) {
       arch_mem_regions[0].type = MEM_REGION_USABLE;
       arch_region_count = 1;
   }
-
-  /* Initialize PMM with detected regions */
-  pmm_init(arch_mem_regions, arch_region_count);
 }
 
 uint64_t timer_get_us(void) {
@@ -195,21 +174,32 @@ void udelay(uint32_t us) {
 
 void arch_pci_init(void) { /* Minimal stub */ }
 
-/* Secondary CPU boot support (not implemented for single-core) */
-void arch_vmm_set_secondary_pgd(uint64_t pgd) { (void)pgd; }
+extern char __kernel_stack[];
+uint64_t secondary_ttbr0 = 0;
 
-/* Get kernel stack for a CPU (not implemented) */
-void *arch_get_kernel_stack(uint32_t cpu_id) {
-  (void)cpu_id;
-  return NULL;
+/* Secondary CPU boot support */
+void arch_vmm_set_secondary_pgd(uint64_t pgd) { 
+  secondary_ttbr0 = pgd;
 }
 
-/* Wake secondary CPU (not implemented) */
+/* Get kernel stack for a CPU */
+void *arch_get_kernel_stack(uint32_t cpu_id) {
+  if (cpu_id >= 16) return NULL;
+  return (void *)&__kernel_stack[cpu_id * 131072];
+}
+
+/* Wake secondary CPU */
 int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
-  (void)cpu_id;
   (void)entry;
   (void)stack;
-  return -1; /* Not implemented */
+  
+  if (cpu_id >= 16) return -1;
+
+  /* TODO: Send INIT-SIPI via APIC to wake up secondary cores.
+   * For now, we return 0 to indicate the system should continue, 
+   * even if only one core is actually running. */
+  pr_warn("AMD64: CPU %lu wakeup via APIC not yet implemented\n", cpu_id);
+  return 0; 
 }
 
 /* Get boot information from Multiboot2 */

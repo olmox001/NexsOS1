@@ -46,7 +46,7 @@ static void init_scheduler(void);
  */
 /* Forward declaration for kernel_main */
 #ifdef ARCH_AMD64
-void kernel_main(uint64_t mb_info_ptr_arg);
+void kernel_main(uint64_t mb_info_ptr_arg, uint64_t mb_magic_arg);
 #else
 void kernel_main(void);
 #endif
@@ -54,10 +54,12 @@ extern void timer_init_percpu(void);
 
 /* Kernel entry point - receives multiboot info pointer from bootloader */
 #ifdef ARCH_AMD64
-void kernel_main(uint64_t mb_info_ptr_arg) {
-  /* For AMD64, bootloader passes mb_info_ptr via RDI */
+void kernel_main(uint64_t mb_info_ptr_arg, uint64_t mb_magic_arg) {
+  /* For AMD64, bootloader passes mb_info_ptr via RDI, mb_magic via RSI */
   extern uint64_t mb_info_ptr;
+  extern uint64_t mb_magic;
   mb_info_ptr = mb_info_ptr_arg;
+  mb_magic = mb_magic_arg;
 #else
 void kernel_main(void) {
 #endif
@@ -106,7 +108,7 @@ void kernel_main(void) {
   uint64_t current_pgd = arch_vmm_get_pgd();
   arch_vmm_set_secondary_pgd(current_pgd);
 
-  for (int i = 1; i < 4; i++) {
+  for (int i = 1; i < MAX_CPUS; i++) {
     /* Calculate stack for secondary core */
     /* Use a generic helper if possible, but for now we rely on the 
      * HAL providing the stack base if needed, or we pass it. 
@@ -221,7 +223,7 @@ static void init_scheduler(void) {
 
   /* 2. Create 4 Idle Tasks - One for each CPU */
   extern void idle_task_entry(void);
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < MAX_CPUS; i++) {
     struct process *idle =
         process_create("idle", PROC_PRIO_IDLE, PROC_PERM_SYSTEM);
     if (idle) {
