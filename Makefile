@@ -410,27 +410,8 @@ QEMU_FLAGS = -M virt -cpu cortex-a57 -m 1G -smp 4 -serial mon:stdio \
              -drive if=none,file=$(BUILD_DIR)/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0
 endif
 
-# Run with the final disk image (Unified)
-run: all
-	@echo ""
-	@echo "========================================"
-	@echo "  $(ARCH) Microkernel Boot"
-	@echo "========================================"
-	@echo ""
-	@echo "Starting QEMU with disk image..."
-ifeq ($(ARCH), amd64)
-	$(QEMU) $(QEMU_FLAGS) -cdrom build/os1test.iso
-else
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-endif
-
-# Run with direct kernel boot (faster, skips bootloader/ISO)
-run-direct: all
-	@echo ""
-	@echo "Starting QEMU (direct kernel boot)..."
-	@echo "Press Ctrl+C to exit"
-	@echo ""
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+# ==============================================================================
+# Build rules
 
 # Debug with QEMU and GDB
 debug: all
@@ -476,17 +457,6 @@ disk: $(MKDISK) kernel rootfs bootloader
 	@mkdir -p $(BUILD_DIR)
 ifeq ($(ARCH), amd64)
 	@./$(MKDISK) $(BUILD_DIR)/disk.img none $(KERNEL_BIN) $(BUILD_DIR)/rootfs
-	@echo "Creating GRUB ISO..."
-	@mkdir -p $(BUILD_DIR)/iso/boot/grub
-	@cp $(KERNEL_ELF) $(BUILD_DIR)/iso/boot/kernel.elf
-	@echo "set timeout=0" > $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo "set default=0" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo "menuentry 'os1test amd64' {" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo "  multiboot2 /boot/kernel.elf" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo "  boot" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo "}" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@grub-mkrescue -o $(BUILD_DIR)/os1test.iso $(BUILD_DIR)/iso 2>/dev/null || echo "Warning: grub-mkrescue failed, ISO not created"
-	@echo "ISO Created: build/os1test.iso"
 else
 	@./$(MKDISK) $(BUILD_DIR)/disk.img $(BOOTLOADER_BIN) $(KERNEL_BIN) $(BUILD_DIR)/rootfs
 endif
@@ -497,12 +467,49 @@ $(MKDISK): tools/mkdisk.c
 	@gcc -o $(MKDISK) tools/mkdisk.c
 
 clean:
-	rm -rf $(BUILD_ROOT)
-	@echo "Build directory cleaned"
+	@echo "Cleaning up build artifacts..."
+	-@rm -rf build/aarch64 2>/dev/null || true
+	-@rm -rf build/amd64 2>/dev/null || true
+	-@rm -rf build/*.img build/*.iso 2>/dev/null || true
+	-@rm -rf $(BUILD_ROOT) 2>/dev/null || true
+	@echo "Clean complete."
 
-# ==============================================================================
-# Help
-# ==============================================================================
+# ISO generation for AMD64
+iso: kernel
+ifeq ($(ARCH), amd64)
+	@echo "Creating GRUB ISO..."
+	@mkdir -p $(BUILD_DIR)/iso/boot/grub
+	@cp $(KERNEL_ELF) $(BUILD_DIR)/iso/boot/kernel.elf
+	@echo 'set timeout=0' > $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo 'set default=0' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo 'menuentry "os1test" {' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo '  multiboot2 /boot/kernel.elf' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo '  boot' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@echo '}' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	@grub-mkrescue -o $(BUILD_DIR)/os1test.iso $(BUILD_DIR)/iso 2>/dev/null || \
+		echo "Warning: grub-mkrescue failed. Install xorriso and grub-common to create ISO."
+	@echo "ISO Created: $(BUILD_DIR)/os1test.iso"
+endif
+
+run: all iso
+	@echo ""
+	@echo "========================================"
+	@echo "  $(ARCH) Microkernel Boot"
+	@echo "========================================"
+	@echo ""
+ifeq ($(ARCH), aarch64)
+	@echo "Starting QEMU (aarch64 virt)..."
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+else
+	@echo "Starting QEMU with disk image..."
+	$(QEMU) $(QEMU_FLAGS) -cdrom $(BUILD_DIR)/os1test.iso
+endif
+
+run-direct: all
+	@echo "Starting QEMU (direct kernel boot)..."
+	@echo "Press Ctrl+C to exit"
+	@echo ""
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
 
 help:
 	@echo "$(ARCH) Kernel Build System"
@@ -518,3 +525,5 @@ help:
 	@echo "  clean      - Remove build artifacts"
 	@echo "  check      - Verify toolchain"
 	@echo "  help       - Show this help"
+
+.PHONY: all kernel clean run run-direct iso help

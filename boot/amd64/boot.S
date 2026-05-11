@@ -56,6 +56,17 @@ mb2_header:
     .long 8    /* size */
 mb2_header_end:
 
+/* ─── MULTIBOOT1 HEADER (for QEMU -kernel) ─── */
+.set MB1_MAGIC,    0x1BADB002
+.set MB1_FLAGS,    (1 << 0) | (1 << 1) /* ALIGN + MEMINFO */
+.set MB1_CHECKSUM, -(MB1_MAGIC + MB1_FLAGS)
+
+.section .multiboot, "a"
+.align 4
+    .long MB1_MAGIC
+    .long MB1_FLAGS
+    .long MB1_CHECKSUM
+
 /* ═══════════════════════════════════════════════════════════════════
    32-BIT ENTRY POINT
    ═══════════════════════════════════════════════════════════════════ */

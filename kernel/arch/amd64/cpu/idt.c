@@ -128,7 +128,11 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
         pr_err("RIP: 0x%lx, Error Code: 0x%lx\n", regs->rip, regs->err);
         __arch_cpu_halt();
       } else {
-        /* Hardware interrupt - to be routed via APIC/PIC */
+        /* Hardware interrupt - route via generic system */
+        extern void irq_dispatch(uint32_t irq);
+        irq_dispatch(vec);
+        
+        /* Send EOI via PIC chip if it was registered */
         extern void pic_send_eoi(uint8_t irq);
         pic_send_eoi(vec - 32);
       }

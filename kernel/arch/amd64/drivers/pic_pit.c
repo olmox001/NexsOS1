@@ -7,6 +7,9 @@
 #include <arch/amd64_internal.h>
 #include <kernel/printk.h>
 
+#include <kernel/irq.h>
+#include <arch/pt_regs.h>
+
 #define PIC1_CMD  0x20
 #define PIC1_DATA 0x21
 #define PIC2_CMD  0xA0
@@ -18,7 +21,44 @@
 extern volatile uint64_t jiffies;
 extern void timer_tick(void); /* generic scheduler tick */
 
+static void pic_chip_enable(uint32_t irq) {
+    /* PIC IRQs are 0-15. Input is 32+irq usually? 
+       Wait, the generic system uses the absolute IRQ number. 
+       On AMD64, we map IRQ 0-15 to 32-47. */
+    if (irq >= 32 && irq < 48) {
+        extern void pic_unmask(uint8_t irq);
+        pic_unmask(irq - 32);
+    }
+}
+
+static void pic_chip_disable(uint32_t irq) {
+    /* TODO: implement mask if needed */
+    (void)irq;
+}
+
+static uint32_t pic_chip_acknowledge(void) {
+    /* Not used by PIC on x86 because the vector is in pt_regs */
+    return 1023; 
+}
+
+static void pic_chip_end(uint32_t irq) {
+    if (irq >= 32 && irq < 48) {
+        extern void pic_send_eoi(uint8_t irq);
+        pic_send_eoi(irq - 32);
+    }
+}
+
+static struct irq_chip pic_chip = {
+    .name = "8259 PIC",
+    .init = NULL,
+    .enable = pic_chip_enable,
+    .disable = pic_chip_disable,
+    .acknowledge = pic_chip_acknowledge,
+    .end = pic_chip_end,
+};
+
 void pic_init(void) {
+    irq_register_chip(&pic_chip);
   /* Remap PIC IRQs 0-15 to interrupts 32-47 */
   outb(PIC1_CMD, 0x11); /* ICW1: Init + ICW4 */
   outb(PIC2_CMD, 0x11);
@@ -61,6 +101,20 @@ void pic_send_eoi(uint8_t irq) {
     outb(PIC2_CMD, 0x20);
   }
   outb(PIC1_CMD, 0x20);
+}
+
+void pic_unmask(uint8_t irq) {
+    uint16_t port;
+    uint8_t value;
+
+    if(irq < 8) {
+        port = PIC1_DATA;
+    } else {
+        port = PIC2_DATA;
+        irq -= 8;
+    }
+    value = inb(port) & ~(1 << irq);
+    outb(port, value);
 }
 
 struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs) {
