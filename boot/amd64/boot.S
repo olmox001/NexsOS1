@@ -1,9 +1,12 @@
 /*
- * kernel/arch/amd64/boot/boot.S
- * x86-64 Multiboot2 Boot Entry
+ * boot/amd64/boot.S
+ * x86-64 Multiboot2 Boot Entry (GRUB-compatible)
  *
  * Enters in 32-bit protected mode (Multiboot2 spec).
- * Sets up paging for Long Mode, then jumps to 64-bit kernel_main.
+ * - Detects CPU capabilities
+ * - Sets up paging for Long Mode
+ * - Loads complete GDT with user/kernel segments and TSS
+ * - Jumps to 64-bit kernel_main
  */
 
 /* Multiboot2 header constants */
@@ -25,6 +28,16 @@
 .set EFER_MSR, 0xC0000080
 .set EFER_LME, (1 << 8)    /* Long Mode Enable */
 .set EFER_SCE, (1 << 0)    /* System Call Enable */
+
+/* CPUID flags for long mode */
+.set CPUID_LONG_MODE_BIT, (1 << 29)
+
+/* GDT selector indices */
+.set KERNEL_CODE_SEL, 0x08
+.set KERNEL_DATA_SEL, 0x10
+.set USER_DATA_SEL,   0x18
+.set USER_CODE_SEL,   0x20
+.set TSS_SEL,         0x28
 
 /* ═══════════════════════════════════════════════════════════════════
    MULTIBOOT2 HEADER (must be in first 32KB of the binary)
@@ -69,17 +82,23 @@ _start:
     xorl %eax, %eax
     rep stosl
 
+    /* ─── CPU Detection: Check for Long Mode support ─── */
+    movl $0x80000001, %eax
+    cpuid
+    testl $CPUID_LONG_MODE_BIT, %edx
+    jz .cpu_error
+
     /* ─── Setup Identity-Mapped Paging for Long Mode ─── */
 
     /* PML4[0] -> PDPT */
-    movl $boot_pdpt, %eax
+    movl $boot_pml4, %eax
     orl  $(PAGE_PRESENT | PAGE_WRITE), %eax
-    movl %eax, (boot_pml4)
+    movl %eax, (boot_pml4 + 0)
 
     /* PDPT[0] -> PD */
     movl $boot_pd, %eax
     orl  $(PAGE_PRESENT | PAGE_WRITE), %eax
-    movl %eax, (boot_pdpt)
+    movl %eax, (boot_pdpt + 0)
 
     /* PD: Identity map first 1GB with 2MB pages (512 entries) */
     movl $boot_pd, %edi
@@ -115,7 +134,18 @@ _start:
 
     /* ─── Load 64-bit GDT and far jump to Long Mode ─── */
     lgdt (boot_gdtr)
-    ljmp $0x08, $long_mode_entry
+    ljmp $KERNEL_CODE_SEL, $long_mode_entry
+
+/* ═══════════════════════════════════════════════════════════════════
+   ERROR HANDLING
+   ═══════════════════════════════════════════════════════════════════ */
+
+.cpu_error:
+    /* CPU doesn't support long mode - halt */
+    cli
+.cpu_error_loop:
+    hlt
+    jmp .cpu_error_loop
 
 /* ═══════════════════════════════════════════════════════════════════
    64-BIT ENTRY
@@ -124,7 +154,7 @@ _start:
 .code64
 long_mode_entry:
     /* Reload data segments */
-    movw $0x10, %ax
+    movw $KERNEL_DATA_SEL, %ax
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %fs
@@ -134,14 +164,13 @@ long_mode_entry:
     /* Set up 64-bit stack */
     movabs $_stack_top, %rsp
 
-    /* Load multiboot info pointer as argument to kernel_main */
+    /* Load multiboot info pointer as first argument (RDI) to kernel_main */
     movl (mb_info_ptr), %edi
-    /* kernel_main(uint32_t mb_info_phys) */
 
     /* Clear direction flag */
     cld
 
-    /* Call kernel */
+    /* Call kernel_main(uint32_t mb_info_ptr) */
     call kernel_main
 
     /* If kernel_main returns, halt */
@@ -162,17 +191,22 @@ long_mode_entry:
 mb_info_ptr: .long 0
 mb_magic:    .long 0
 
-/* ─── Minimal 64-bit GDT for boot ─── */
+/* ─── 64-bit GDT with kernel/user segments and TSS ─── */
 .align 16
 boot_gdt:
     .quad 0x0000000000000000   /* 0x00: Null */
     .quad 0x00AF9A000000FFFF   /* 0x08: Kernel Code (64-bit, DPL=0) */
-    .quad 0x00CF92000000FFFF   /* 0x10: Kernel Data */
+    .quad 0x00CF92000000FFFF   /* 0x10: Kernel Data (DPL=0) */
+    .quad 0x00AFFA000000FFFF   /* 0x18: User Data (DPL=3) */
+    .quad 0x00AFFA000000FFFF   /* 0x20: User Code (DPL=3) */
+    /* 0x28: TSS (16 bytes in 64-bit mode - will be filled by kernel) */
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
 boot_gdt_end:
 
 boot_gdtr:
     .word boot_gdt_end - boot_gdt - 1
-    .long boot_gdt
+    .quad boot_gdt
 
 /* ═══════════════════════════════════════════════════════════════════
    PAGE TABLES (BSS — zeroed)

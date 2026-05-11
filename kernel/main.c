@@ -44,7 +44,15 @@ static void init_scheduler(void);
 void kernel_main(void);
 extern void timer_init_percpu(void);
 
+/* Kernel entry point - receives multiboot info pointer from bootloader */
+#ifdef ARCH_AMD64
+void kernel_main(uint32_t mb_info_ptr_arg) {
+  /* For AMD64, bootloader passes mb_info_ptr via RDI */
+  extern uint32_t mb_info_ptr;
+  mb_info_ptr = mb_info_ptr_arg;
+#else
 void kernel_main(void) {
+#endif
   /* Initialize UART first for debug output */
   driver_console_init();
 
