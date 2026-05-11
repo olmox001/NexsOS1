@@ -26,30 +26,15 @@ struct ipc_node {
   struct list_head list;
 };
 
-struct pt_regs;
+/* Architecture-specific register frame layout */
+#include <arch/pt_regs.h>
+
 #define DEFAULT_QUANTUM 10
 
 /* Wait Queue */
 struct wait_queue_head {
   struct list_head task_list;
   spinlock_t lock;
-};
-
-/* Task Context (Saved Registers) */
-/* Full Register State (Matching stack layout in exception.S) */
-struct pt_regs {
-  uint64_t regs[31]; /* x0-x30 */
-  uint64_t unused;   /* Padding to align to 16 bytes (32 * 8 = 256) */
-  uint64_t elr;      /* 256 */
-  uint64_t spsr;     /* 264 */
-  uint64_t sp_el0;   /* 272 */
-  uint64_t padding;  /* 280 */
-
-  /* FPU/SIMD State (NEON q0-q31 = 32 * 16 bytes = 512 bytes) */
-  __uint128_t qregs[32]; /* 288 - 800 */
-  uint32_t fpsr;         /* 800 */
-  uint32_t fpcr;         /* 804 */
-  uint64_t fpu_padding;  /* 808-816 */
 };
 
 /* Process Control Block */
