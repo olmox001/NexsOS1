@@ -382,7 +382,7 @@ $(BUILD_DIR)/writetest.elf: $(WRITETEST_OBJ) $(USER_SYSCALL_O)
 $(BUILD_DIR)/%.o: %.S
 	@mkdir -p $(dir $@)
 	@echo "AS  $<"
-	@$(AS) $(ASFLAGS) -o $@ $<
+	@$(CC) $(CFLAGS) -c -o $@ $<
 
 # Compile C files (Kernel/User)
 $(BUILD_DIR)/kernel/%.o: kernel/%.c

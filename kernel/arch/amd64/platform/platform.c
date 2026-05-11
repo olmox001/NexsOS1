@@ -2,12 +2,12 @@
  * kernel/arch/amd64/platform/platform.c
  * Platform initialization for AMD64
  */
-#include <kernel/types.h>
-#include <kernel/printk.h>
-#include <kernel/pmm.h>
-#include <kernel/platform.h>
-#include <arch/arch.h>
 #include <arch/amd64_internal.h>
+#include <arch/arch.h>
+#include <kernel/platform.h>
+#include <kernel/pmm.h>
+#include <kernel/printk.h>
+#include <kernel/types.h>
 
 extern void uart_init(void);
 extern void pic_init(void);
@@ -17,8 +17,8 @@ extern void pit_init(void);
 extern uint64_t mb_info_ptr;
 
 /* Minimal Multiboot2 tags we care about */
-#define MB2_TAG_TYPE_END         0
-#define MB2_TAG_TYPE_MMAP        6
+#define MB2_TAG_TYPE_END 0
+#define MB2_TAG_TYPE_MMAP 6
 #define MB2_TAG_TYPE_BASIC_MEMINFO 4
 
 struct mb2_tag {
@@ -76,33 +76,39 @@ void arch_platform_early_init(void) {
   while (tag->type != MB2_TAG_TYPE_END) {
     if (tag->type == MB2_TAG_TYPE_BASIC_MEMINFO) {
       struct mb2_tag_basic_meminfo *mem = (struct mb2_tag_basic_meminfo *)tag;
-      pr_info("Lower Memory: %u KB, Upper Memory: %u KB\n", mem->mem_lower, mem->mem_upper);
-    } 
-    else if (tag->type == MB2_TAG_TYPE_MMAP) {
+      pr_info("Lower Memory: %u KB, Upper Memory: %u KB\n", mem->mem_lower,
+              mem->mem_upper);
+    } else if (tag->type == MB2_TAG_TYPE_MMAP) {
       struct mb2_tag_mmap *mmap = (struct mb2_tag_mmap *)tag;
       uint32_t entry_size = mmap->entry_size;
-      uint32_t num_entries = (mmap->size - sizeof(struct mb2_tag_mmap)) / entry_size;
-      
+      uint32_t num_entries =
+          (mmap->size - sizeof(struct mb2_tag_mmap)) / entry_size;
+
       for (uint32_t i = 0; i < num_entries; i++) {
-        struct mb2_mmap_entry *entry = (struct mb2_mmap_entry *)((uint8_t *)mmap->entries + i * entry_size);
-        pr_info("MMAP: Base 0x%lx, Length 0x%lx, Type %u\n", entry->addr, entry->len, entry->type);
-        
+        struct mb2_mmap_entry *entry =
+            (struct mb2_mmap_entry *)((uint8_t *)mmap->entries +
+                                      i * entry_size);
+        pr_info("MMAP: Base 0x%lx, Length 0x%lx, Type %u\n", entry->addr,
+                entry->len, entry->type);
+
         /* Type 1 is available RAM */
         if (entry->type == 1) {
           uint64_t end = entry->addr + entry->len;
-          if (end > max_ram) max_ram = end;
+          if (end > max_ram)
+            max_ram = end;
         }
       }
     }
-    
+
     /* Align to 8 bytes */
     tag = (struct mb2_tag *)((uint8_t *)tag + ((tag->size + 7) & ~7));
   }
 
   pr_info("Detected Max RAM: %lu MB\n", max_ram / 1024 / 1024);
 
-  /* Set up PMM region. Kernel uses 0-1MB for boot logic, 1MB-? for kernel code/data.
-   * Assuming 1GB max for baremetal tests, we start giving out memory from 16MB. */
+  /* Set up PMM region. Kernel uses 0-1MB for boot logic, 1MB-? for kernel
+   * code/data. Assuming 1GB max for baremetal tests, we start giving out memory
+   * from 16MB. */
   if (max_ram > 0) {
     uint64_t pmm_start = 0x1000000; /* 16 MB */
     if (max_ram > pmm_start) {
@@ -125,14 +131,10 @@ void udelay(uint32_t us) {
   }
 }
 
-void arch_pci_init(void) {
-  /* Minimal stub */
-}
+void arch_pci_init(void) { /* Minimal stub */ }
 
 /* Secondary CPU boot support (not implemented for single-core) */
-void arch_vmm_set_secondary_pgd(uint64_t pgd) {
-  (void)pgd;
-}
+void arch_vmm_set_secondary_pgd(uint64_t pgd) { (void)pgd; }
 
 /* Get kernel stack for a CPU (not implemented) */
 void *arch_get_kernel_stack(uint32_t cpu_id) {
@@ -149,6 +151,4 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
 }
 
 /* Get boot information from Multiboot2 */
-uint64_t arch_get_boot_info(void) {
-  return (uint64_t)mb_info_ptr;
-}
+uint64_t arch_get_boot_info(void) { return (uint64_t)mb_info_ptr; }

@@ -1,49 +1,57 @@
 /*
  * kernel/arch/amd64/kernel.ld — x86-64 Linker Script
- * Link as 32-bit ELF to satisfy Multiboot loaders.
+ * Parity with aarch64 implementation
  */
 
-OUTPUT_FORMAT("elf32-i386")
+OUTPUT_FORMAT("elf64-x86-64")
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start_32)
 
+PHDRS
+{
+    multiboot PT_LOAD FLAGS(5); /* R+X */
+    note      PT_NOTE FLAGS(4); /* R */
+    text      PT_LOAD FLAGS(5); /* R+X */
+    data      PT_LOAD FLAGS(6); /* R+W */
+}
+
 SECTIONS {
+    /* PVH and Multiboot headers at 1MB */
     . = 1M;
     __kernel_start = .;
 
     .multiboot : ALIGN(8) {
         KEEP(*(.multiboot))
-    }
+    } :multiboot
+
+    .note.PVH : ALIGN(4) {
+        KEEP(*(.note.PVH))
+    } :note
 
     .text : ALIGN(4096) {
-        _text = .;
-        *(.text.boot)
+        KEEP(*(.text.boot))
         *(.text*)
-        _etext = .;
-    }
+    } :text
+    _etext = .;
 
     .rodata : ALIGN(4096) {
-        _rodata = .;
         *(.rodata*)
         . = ALIGN(8);
         __ktests_start = .;
         KEEP(*(.ktests))
         __ktests_end = .;
-        _erodata = .;
-    }
+    } :text
 
     .data : ALIGN(4096) {
-        _data = .;
         *(.data*)
-        _edata = .;
-    }
+    } :data
 
     .bss : ALIGN(4096) {
         __bss_start = .;
         *(.bss*)
         *(COMMON)
         __bss_end = .;
-    }
+    } :data
     __kernel_end = .;
 
     /DISCARD/ : {

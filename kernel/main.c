@@ -27,7 +27,11 @@
 #define KERNEL_VERSION_MAJOR 0
 #define KERNEL_VERSION_MINOR 1
 #define KERNEL_VERSION_PATCH 0
+#ifdef ARCH_AMD64
+#define KERNEL_NAME "AMD64 Microkernel"
+#else
 #define KERNEL_NAME "AArch64 Microkernel"
+#endif
 
 /* External symbols */
 extern void secondary_cpu_entry(void);
@@ -42,7 +46,7 @@ static void init_scheduler(void);
  */
 /* Forward declaration for kernel_main */
 #ifdef ARCH_AMD64
-void kernel_main(uint32_t mb_info_ptr_arg);
+void kernel_main(uint64_t mb_info_ptr_arg);
 #else
 void kernel_main(void);
 #endif
@@ -50,9 +54,9 @@ extern void timer_init_percpu(void);
 
 /* Kernel entry point - receives multiboot info pointer from bootloader */
 #ifdef ARCH_AMD64
-void kernel_main(uint32_t mb_info_ptr_arg) {
+void kernel_main(uint64_t mb_info_ptr_arg) {
   /* For AMD64, bootloader passes mb_info_ptr via RDI */
-  extern uint32_t mb_info_ptr;
+  extern uint64_t mb_info_ptr;
   mb_info_ptr = mb_info_ptr_arg;
 #else
 void kernel_main(void) {
@@ -143,7 +147,7 @@ static void print_banner(void) {
   printk("========================================\n");
   printk("  %s v%d.%d.%d\n", KERNEL_NAME, KERNEL_VERSION_MAJOR,
          KERNEL_VERSION_MINOR, KERNEL_VERSION_PATCH);
-  printk("  Production-Ready AArch64 Kernel\n");
+  printk("  Production-Ready Microkernel\n");
   printk("========================================\n");
   printk("\n");
 }
