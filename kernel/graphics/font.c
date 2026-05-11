@@ -614,18 +614,6 @@ void gl_draw_string(struct gl_surface *surf, int x, int y, const char *str,
 }
 
 /*
- * Draw string using legacy API (deprecated, calls gl_draw_string stub)
- */
-void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
-                          uint32_t color) {
-  /* Deprecated - use gl_draw_string with a gl_surface instead */
-  (void)x;
-  (void)y;
-  (void)str;
-  (void)color;
-}
-
-/*
  * Get string width in pixels
  */
 int graphics_string_width(const char *str) {

@@ -72,3 +72,10 @@ void graphics_draw_char(uint32_t x, uint32_t y, char c, uint32_t color) {
     gl_draw_char(surf, (int)x, (int)y, c, color);
   }
 }
+
+void graphics_draw_string(uint32_t x, uint32_t y, const char *str, uint32_t color) {
+  struct gl_surface *surf = graphics_get_screen_surface();
+  if (surf) {
+    gl_draw_string(surf, (int)x, (int)y, str, color);
+  }
+}
