@@ -652,7 +652,7 @@ int process_wait(int pid) {
     struct process *proc = process_pool[i];
     if (proc && (int)proc->pid == pid) {
       if (proc->state == PROC_DEAD || proc->state == PROC_ZOMBIE) {
-
+        pr_err("WAIT: PID %d found dead/zombie (state=%d)\n", pid, proc->state);
         if (proc->state == PROC_ZOMBIE) {
           /* Now we can safely free the zombie's resources */
           pr_info("Reaping zombie process %d\n", pid);
