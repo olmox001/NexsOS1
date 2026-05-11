@@ -48,21 +48,11 @@ static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
   uint64_t flags;
   spin_lock_irqsave(&gpu_lock, &flags);
 
-  struct virtio_gpu_resource_flush *cmd =
-      (struct virtio_gpu_resource_flush *)gpu_cmd_buf;
-  struct virtio_gpu_ctrl_hdr *resp = (struct virtio_gpu_ctrl_hdr *)gpu_resp_buf;
-
-  cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-  cmd->r.x = x;
-  cmd->r.y = y;
-  cmd->r.width = w;
-  cmd->r.height = h;
-  cmd->resource_id = priv->resource_id;
-
-  virtio_gpu_send(priv, cmd, sizeof(*cmd), resp, sizeof(*resp));
-
+  /* 1. Transfer guest memory to host resource */
   struct virtio_gpu_transfer_to_host_2d *cmd_xfer =
       (struct virtio_gpu_transfer_to_host_2d *)gpu_cmd_buf;
+  struct virtio_gpu_ctrl_hdr *resp = (struct virtio_gpu_ctrl_hdr *)gpu_resp_buf;
+
   cmd_xfer->hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
   cmd_xfer->r.x = x;
   cmd_xfer->r.y = y;
@@ -72,6 +62,19 @@ static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
   cmd_xfer->resource_id = priv->resource_id;
 
   virtio_gpu_send(priv, cmd_xfer, sizeof(*cmd_xfer), resp, sizeof(*resp));
+
+  /* 2. Flush host resource to display */
+  struct virtio_gpu_resource_flush *cmd =
+      (struct virtio_gpu_resource_flush *)gpu_cmd_buf;
+
+  cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+  cmd->r.x = x;
+  cmd->r.y = y;
+  cmd->r.width = w;
+  cmd->r.height = h;
+  cmd->resource_id = priv->resource_id;
+
+  virtio_gpu_send(priv, cmd, sizeof(*cmd), resp, sizeof(*resp));
 
   spin_unlock_irqrestore(&gpu_lock, flags);
   return 0;

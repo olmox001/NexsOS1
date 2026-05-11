@@ -59,6 +59,19 @@ static DEFINE_SPINLOCK(compositor_lock);
 static int damage_x1 = 0, damage_y1 = 0;
 static int damage_x2 = 0, damage_y2 = 0;
 
+/* Helper to expand damage region */
+static void expand_damage(int x, int y, int w, int h) {
+  if (x < damage_x1)
+    damage_x1 = x;
+  if (y < damage_y1)
+    damage_y1 = y;
+  if (x + w > damage_x2)
+    damage_x2 = x + w;
+  if (y + h > damage_y2)
+    damage_y2 = y + h;
+  compositor_dirty = 1;
+}
+
 /* Pre-allocated buffers for rendering to avoid stack usage and kmalloc in IRQ
  */
 static struct window *sorted_windows[MAX_WINDOWS];
@@ -111,15 +124,6 @@ static void compositor_render_internal(void);
 static void draw_rect_internal(int window_id, int x, int y, int w, int h,
                                uint32_t color, int caller_pid);
 
-/* Grow the damage bounding box to include the rectangle (x,y,w,h).
- * Safe to call without the compositor_lock (damage only grows). */
-static void expand_damage(int x, int y, int w, int h) {
-  if (w <= 0 || h <= 0) return;
-  if (x < damage_x1) damage_x1 = x;
-  if (y < damage_y1) damage_y1 = y;
-  if (x + w > damage_x2) damage_x2 = x + w;
-  if (y + h > damage_y2) damage_y2 = y + h;
-}
 
 /*
  * Create Window
@@ -1064,6 +1068,9 @@ static void draw_rect_internal(int window_id, int x, int y, int w, int h,
           }
         }
       }
+      /* Update damage region: Window relative -> Screen relative */
+      int win_y = windows[i].y + (windows[i].top_most ? 0 : TITLE_BAR_HEIGHT);
+      expand_damage(windows[i].x + x, win_y + y, w, h);
       return;
     }
   }
@@ -1129,12 +1136,21 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
         if (copy_w <= 0)
           continue;
 
-        /* Use memcpy */
+        /* Use copy_from_user instead of raw memcpy for security */
         void *dst_ptr = &windows[i].buffer[py * windows[i].width + dest_x];
         const void *src_ptr = &user_buf[dy * w + src_x];
 
-        memcpy(dst_ptr, src_ptr, copy_w * sizeof(uint32_t));
+        if (copy_from_user(dst_ptr, src_ptr, copy_w * sizeof(uint32_t)) != 0) {
+          /* Page fault or invalid access: abort blit */
+          spin_unlock_irqrestore(&compositor_lock, flags);
+          return;
+        }
       }
+
+      /* Update damage region: Window relative -> Screen relative */
+      int win_y = windows[i].y + (windows[i].top_most ? 0 : TITLE_BAR_HEIGHT);
+      expand_damage(windows[i].x + x, win_y + y, w, h);
+
       spin_unlock_irqrestore(&compositor_lock, flags);
       return;
     }

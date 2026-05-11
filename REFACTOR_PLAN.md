@@ -75,12 +75,13 @@ After Phase 0 eliminates the cascade, this may be a spurious secondary crash. Di
 - `compositor_render_internal()` calls `memcpy(fb_va, backbuffer, bb_w * bb_h * 4)` on every render even for 1-pixel change
 
 **Changes**:
+- `kernel/drivers/gpu/virtio_gpu.c`: 
+  - **CRITICAL**: Swap flush order — `TRANSFER_TO_HOST_2D` must precede `RESOURCE_FLUSH`.
+  - Fix command buffer race conditions (if any) using a per-device lock.
 - `kernel/graphics/compositor.c`: 
-  - Implement `region.c` damage merge (region_union) — currently TODO
-  - Only `memcpy` dirty rectangle rows, not full framebuffer
-  - Add double-buffering: swap backbuffer pointer atomically, let GPU DMA pull from the other
-- `kernel/drivers/timer/timer.c`: Lower compositor interval to achieve 30Hz, not 60Hz (saves cycles on virt QEMU)
-- `kernel/drivers/gpu/virtio_gpu.c`: Use `VIRTIO_GPU_CMD_RESOURCE_FLUSH` with clipped rect instead of full screen
+  - Implement `compositor_damage_rect(x, y, w, h)` and call it from all drawing syscalls (`blit`, `draw_rect`).
+  - Harden `compositor_blit` with `copy_from_user` to prevent kernel panics on invalid user pointers.
+  - Optimize `compositor_render_internal` to only `memcpy` dirty rectangle rows to the hardware framebuffer.
 
 **Exit criteria**: Screen refreshes at ~30fps during idle (visible with moving cursor). No regressions on shell/demo3d. CPU utilization lower than before.
 
