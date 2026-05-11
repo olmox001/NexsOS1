@@ -25,7 +25,7 @@ uint64_t timer_freq;
 /* Compositor refresh interval (jiffies) */
 static uint64_t compositor_interval =
     1; /* Default to every tick if init fails */
-#define COMPOSITOR_TARGET_FPS 60
+#define COMPOSITOR_TARGET_FPS 30
 
 /* System tick counter */
 volatile uint64_t jiffies = 0;

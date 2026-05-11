@@ -122,9 +122,9 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     if (is_user_fault || is_kernel_user_access_fault) {
       pr_err("[ERROR] KERNEL-USER FAULT: EC=0x%lx (0x%lx) FAR=0x%lx ELR=0x%lx PID=%d\n",
              (uint64_t)ec, esr, far, elr, current_process->pid);
-      pr_err("[DEBUG] Context: x0=0x%lx x1=0x%lx x2=0x%lx x3=0x%lx sp=0x%lx\n",
+      pr_err("[DEBUG] Context: x0=0x%lx x1=0x%lx x2=0x%lx x3=0x%lx sp=0x%lx spsr=0x%lx\n",
              frame->regs[0], frame->regs[1], frame->regs[2], frame->regs[3],
-             frame->sp_el0);
+             frame->sp_el0, frame->spsr);
       pr_err("Terminating PID %d\n", current_process->pid);
       
       if (elr == 0) {

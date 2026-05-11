@@ -55,6 +55,10 @@ static int next_window_id = 100;
 static volatile int compositor_dirty = 1;
 static DEFINE_SPINLOCK(compositor_lock);
 
+/* Damage rect: tracks the bounding box of pixels that need GPU upload */
+static int damage_x1 = 0, damage_y1 = 0;
+static int damage_x2 = 0, damage_y2 = 0;
+
 /* Pre-allocated buffers for rendering to avoid stack usage and kmalloc in IRQ
  */
 static struct window *sorted_windows[MAX_WINDOWS];
@@ -91,6 +95,10 @@ void compositor_init(void) {
   bb_width = 720;
   bb_height = 1280;
   compositor_backbuffer = kmalloc(bb_width * bb_height * 4);
+
+  /* Initialize damage rect to full screen so the first frame is fully uploaded */
+  damage_x1 = 0; damage_y1 = 0;
+  damage_x2 = bb_width; damage_y2 = bb_height;
   if (!compositor_backbuffer) {
     pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
   }
@@ -102,6 +110,16 @@ void compositor_init(void) {
 static void compositor_render_internal(void);
 static void draw_rect_internal(int window_id, int x, int y, int w, int h,
                                uint32_t color, int caller_pid);
+
+/* Grow the damage bounding box to include the rectangle (x,y,w,h).
+ * Safe to call without the compositor_lock (damage only grows). */
+static void expand_damage(int x, int y, int w, int h) {
+  if (w <= 0 || h <= 0) return;
+  if (x < damage_x1) damage_x1 = x;
+  if (y < damage_y1) damage_y1 = y;
+  if (x + w > damage_x2) damage_x2 = x + w;
+  if (y + h > damage_y2) damage_y2 = y + h;
+}
 
 /*
  * Create Window
@@ -534,7 +552,9 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
     }
   }
 
-  /* Mark compositor as needing redraw */
+  /* Mark compositor as needing redraw (window area including title bar) */
+  expand_damage(win->x, win->y - TITLE_BAR_HEIGHT,
+                win->width, win->height + TITLE_BAR_HEIGHT);
   compositor_dirty = 1;
   spin_unlock_irqrestore(&compositor_lock, flags);
 }
@@ -607,6 +627,7 @@ void compositor_handle_click(int button, int state) {
       process_terminate(close_pid);
 
       /* Mark dirty — compositor_tick will re-render on next timer tick */
+      expand_damage(0, 0, bb_width, bb_height);
       compositor_dirty = 1;
       return;
     }
@@ -619,6 +640,7 @@ void compositor_handle_click(int button, int state) {
     drag_off_y = mouse_y - hit->y;
   }
 
+  expand_damage(0, 0, bb_width, bb_height);
   compositor_dirty = 1;
   spin_unlock_irqrestore(&compositor_lock, flags);
 }
@@ -636,6 +658,8 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
     width = dev->width;
     height = dev->height;
   }
+
+  int old_mx = mouse_x, old_my = mouse_y;
 
   if (absolute) {
     mouse_x = dx;
@@ -676,6 +700,13 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
   }
 
   /* Mark compositor as needing redraw - don't render from IRQ! */
+  if (dragging_window_id != -1) {
+    expand_damage(0, 0, bb_width, bb_height);
+  } else {
+    /* Only the old and new cursor areas (12x16 + 1px border) */
+    expand_damage(old_mx - 1, old_my - 1, 14, 18);
+    expand_damage(mouse_x - 1, mouse_y - 1, 14, 18);
+  }
   compositor_dirty = 1;
 }
 
@@ -945,12 +976,28 @@ static void compositor_render_internal(void) {
     }
   }
 
-  /* Flush */
+  /* Flush — only upload the damage bounding box instead of the full framebuffer */
   if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
     void *fb_va = dev->ops->get_framebuffer(dev, NULL);
     if (fb_va) {
-      memcpy(fb_va, backbuffer, bb_w * bb_h * 4);
-      dev->ops->flush(dev, 0, 0, bb_w, bb_h);
+      int dx1 = damage_x1 < 0 ? 0 : damage_x1;
+      int dy1 = damage_y1 < 0 ? 0 : damage_y1;
+      int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
+      int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
+      if (dx1 < dx2 && dy1 < dy2) {
+        int row_bytes = (dx2 - dx1) * 4;
+        uint8_t *dst = (uint8_t *)fb_va;
+        const uint8_t *src = (const uint8_t *)backbuffer;
+        for (int row = dy1; row < dy2; row++) {
+          memcpy(dst + ((size_t)row * bb_w + dx1) * 4,
+                 src + ((size_t)row * bb_w + dx1) * 4,
+                 row_bytes);
+        }
+        dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
+      }
+      /* Reset damage: invalid state (x1>x2) means nothing to flush */
+      damage_x1 = bb_w; damage_y1 = bb_h;
+      damage_x2 = 0;    damage_y2 = 0;
     }
   }
 
