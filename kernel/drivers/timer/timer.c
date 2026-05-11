@@ -4,7 +4,7 @@
  *
  * Uses EL1 virtual timer (CNTV) - works in QEMU -kernel mode
  */
-#include <drivers/gic.h>
+#include <kernel/irq.h>
 #include <drivers/timer.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
@@ -191,7 +191,7 @@ void timer_init(void) {
 
   /* Register virtual timer interrupt (IRQ 27 on QEMU virt) */
   /* We handle IRQ 27 explicitly in gic.c dispatch to pass regs */
-  gic_enable_irq(IRQ_TIMER_VIRT);
+  irq_enable(IRQ_TIMER);
 }
 
 /*
@@ -211,11 +211,11 @@ void timer_init_percpu(void) {
   write_cntv_ctl(1);
 
   /* Enable virtual timer IRQ in GIC (PPI, already per-CPU) */
-  gic_enable_irq(IRQ_TIMER_VIRT);
+  irq_enable(IRQ_TIMER);
 
   pr_info("Timer: Per-CPU virtual timer enabled (IRQ %d). Next: 0x%lx, Ctl: "
           "0x1\n",
-          IRQ_TIMER_VIRT, cpu->next_tick_target);
+          IRQ_TIMER, cpu->next_tick_target);
 }
 
 /*

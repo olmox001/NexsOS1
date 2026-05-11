@@ -4,6 +4,8 @@
  */
 #include <drivers/virtio.h>
 #include <drivers/virtio_blk.h>
+#include <kernel/arch.h>
+#include <kernel/irq.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
@@ -175,9 +177,9 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   uint16_t idx = avail->idx % virtio_blk_qsize;
   avail->ring[idx] = 0; /* Head descriptor index is 0 */
 
-  __asm__ volatile("dmb sy" ::: "memory");
+  arch_data_barrier();
   avail->idx++;
-  __asm__ volatile("dmb sy" ::: "memory");
+  arch_data_barrier();
 
   /* Capture old index BEFORE notifying */
   uint16_t old_idx = used->idx;
@@ -241,9 +243,9 @@ int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
   uint16_t idx = avail->idx % virtio_blk_qsize;
   avail->ring[idx] = 0;
 
-  __asm__ volatile("dmb sy" ::: "memory");
+  arch_data_barrier();
   avail->idx++;
-  __asm__ volatile("dmb sy" ::: "memory");
+  arch_data_barrier();
 
   VIRTIO_WRITE(virtio_blk_base, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 

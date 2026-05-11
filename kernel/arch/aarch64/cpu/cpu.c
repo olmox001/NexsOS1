@@ -2,7 +2,6 @@
  * kernel/arch/aarch64/cpu/cpu.c
  * CPU and exception handling for AArch64
  */
-#include <drivers/gic.h>
 #include <kernel/printk.h>
 #include <kernel/types.h>
 

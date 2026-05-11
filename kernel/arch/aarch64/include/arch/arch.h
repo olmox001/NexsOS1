@@ -51,11 +51,12 @@ static inline void __arch_wfe(void) { __asm__ __volatile__("wfe"); }
 
 static inline void __arch_sev(void) { __asm__ __volatile__("sev"); }
 
-static inline void __arch_isb(void) { __asm__ __volatile__("isb"); }
-
-static inline void __arch_dsb(void) { __asm__ __volatile__("dsb sy"); }
-
-static inline void __arch_dmb(void) { __asm__ __volatile__("dmb sy"); }
+static inline void __arch_isb(void) { __asm__ __volatile__("isb" ::: "memory"); }
+static inline void __arch_dsb(void) { __asm__ __volatile__("dsb sy" ::: "memory"); }
+static inline void __arch_dmb(void) { __asm__ __volatile__("dmb sy" ::: "memory"); }
+static inline void __arch_mb(void)  { __asm__ __volatile__("dsb sy" ::: "memory"); }
+static inline void __arch_rmb(void) { __asm__ __volatile__("dsb ld" ::: "memory"); }
+static inline void __arch_wmb(void) { __asm__ __volatile__("dsb st" ::: "memory"); }
 
 static inline void __arch_yield(void) { __asm__ __volatile__("yield"); }
 

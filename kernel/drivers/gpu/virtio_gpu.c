@@ -5,6 +5,7 @@
 #include <drivers/gpu/gpu.h>
 #include <drivers/virtio.h>
 #include <drivers/virtio_gpu.h>
+#include <kernel/arch.h>
 #include <kernel/kmalloc.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -129,9 +130,9 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
   uint16_t idx = avail->idx % priv->qsize;
   avail->ring[idx] = 0;
 
-  __asm__ volatile("dmb sy" ::: "memory");
+  arch_data_barrier();
   avail->idx++;
-  __asm__ volatile("dmb sy" ::: "memory");
+  arch_data_barrier();
 
   VIRTIO_WRITE(priv->base, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
 

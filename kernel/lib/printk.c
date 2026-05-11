@@ -5,6 +5,7 @@
 #include <drivers/uart.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
+#include <kernel/irq.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/string.h>
@@ -291,8 +292,7 @@ void panic(const char *fmt, ...) {
   __sync_fetch_and_add(&panic_flag, 1);
 
   /* Send IPI (SGI0) to halt all other CPUs */
-  extern void gic_send_ipi_all(void);
-  gic_send_ipi_all();
+  irq_send_ipi_all();
 
   printk("\n\n*** KERNEL PANIC ***\n");
 

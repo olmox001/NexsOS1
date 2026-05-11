@@ -4,14 +4,14 @@
  */
 #include <drivers/uart.h>
 #include <kernel/arch.h>
+#include <kernel/irq.h>
+#include <kernel/platform.h>
+#include <kernel/sched.h>
 #include <kernel/types.h>
 #include <stdint.h>
 
 /* MMIO access macros */
-#define UART_REG(offset) (*(volatile uint32_t *)(UART0_BASE + (offset)))
-
-#include <drivers/gic.h>
-#include <kernel/sched.h>
+#define UART_REG(offset) (*(volatile uint32_t *)(PLATFORM_UART_BASE + (offset)))
 
 /* Ring Buffer */
 #define RX_BUF_SIZE 128
@@ -70,7 +70,7 @@ void uart_init(void) {
   UART_REG(UART_IMSC) = UART_IMSC_RXIM;
 
   /* Register IRQ */
-  irq_register(UART0_IRQ, uart_irq_handler, NULL);
+  irq_register(PLATFORM_IRQ_UART0, uart_irq_handler, NULL);
 
   /* Enable UART, TX and RX */
   UART_REG(UART_CR) = UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE;

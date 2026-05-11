@@ -3,22 +3,15 @@
  * ARM GICv2 Driver for QEMU virt machine
  */
 #include <drivers/gic.h>
+#include "gic_regs.h"
+#include <kernel/irq.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
-#include <kernel/timer.h>
 #include <kernel/types.h>
-
-/* Disable optimization to prevent register corruption in IRQ handler loop */
 
 /* MMIO access */
 #define GICD_REG(off) (*(volatile uint32_t *)(GICD_BASE + (off)))
 #define GICC_REG(off) (*(volatile uint32_t *)(GICC_BASE + (off)))
-
-/* IRQ handler table */
-static struct {
-  irq_handler_t handler;
-  void *data;
-} irq_handlers[GIC_MAX_IRQS];
 
 /* Number of interrupt lines */
 static uint32_t gic_num_irqs;
@@ -26,7 +19,7 @@ static uint32_t gic_num_irqs;
 /*
  * Initialize GIC distributor (called once on boot CPU)
  */
-void gic_init(void) {
+static void gic_init_dist(void) {
   uint32_t typer;
   uint32_t i;
 
@@ -70,7 +63,7 @@ void gic_init(void) {
 /*
  * Initialize GIC CPU interface (called on each CPU)
  */
-void gic_init_percpu(void) {
+static void gic_init_cpu(void) {
   uint32_t i;
 
   /* Disable all SGIs and PPIs */
@@ -93,7 +86,7 @@ void gic_init_percpu(void) {
 /*
  * Enable an interrupt
  */
-void gic_enable_irq(uint32_t irq) {
+static void gic_enable(uint32_t irq) {
   if (irq >= gic_num_irqs)
     return;
 
@@ -106,7 +99,7 @@ void gic_enable_irq(uint32_t irq) {
 /*
  * Disable an interrupt
  */
-void gic_disable_irq(uint32_t irq) {
+static void gic_disable(uint32_t irq) {
   if (irq >= gic_num_irqs)
     return;
 
@@ -116,10 +109,7 @@ void gic_disable_irq(uint32_t irq) {
   GICD_REG(GICD_ICENABLER(reg)) = (1U << bit);
 }
 
-/*
- * Set interrupt priority (0 = highest)
- */
-void gic_set_priority(uint32_t irq, uint8_t priority) {
+static void gic_set_prio(uint32_t irq, uint8_t priority) {
   if (irq >= gic_num_irqs)
     return;
 
@@ -133,142 +123,31 @@ void gic_set_priority(uint32_t irq, uint8_t priority) {
   GICD_REG(GICD_IPRIORITYR(reg)) = val;
 }
 
-/*
- * Set interrupt target CPUs
- */
-void gic_set_target(uint32_t irq, uint8_t cpu_mask) {
-  if (irq < GIC_SPI_START || irq >= gic_num_irqs)
-    return;
-
-  uint32_t reg = irq / 4;
-  uint32_t shift = (irq % 4) * 8;
-  uint32_t val = GICD_REG(GICD_ITARGETSR(reg));
-
-  val &= ~(0xFFU << shift);
-  val |= ((uint32_t)cpu_mask << shift);
-
-  GICD_REG(GICD_ITARGETSR(reg)) = val;
-}
-
-/*
- * Acknowledge interrupt (returns IRQ number)
- */
-uint32_t gic_acknowledge_irq(void) { return GICC_REG(GICC_IAR) & 0x3FF; }
-
-/*
- * Signal end of interrupt
- */
-void gic_end_irq(uint32_t irq) {
-  /* Explicitly load address to avoid register corruption/caching issues in IRQ
-   * loop */
-  volatile uint32_t *eoir_reg = (volatile uint32_t *)(GICC_BASE + GICC_EOIR);
-  *eoir_reg = irq;
-}
-
-/*
- * Send Software Generated Interrupt
- */
-void gic_send_sgi(uint32_t irq, uint8_t target_list) {
-  if (irq > 15)
-    return;
-
-  /* SGI: target list in bits 16-23, IRQ in bits 0-3 */
-  GICD_REG(GICD_SGIR) = ((uint32_t)target_list << 16) | irq;
-}
-
-/*
- * Send SGI0 (halt IPI) to all CPUs except self.
- * Uses TargetListFilter=0b01 (all except self) for simplicity.
- */
-void gic_send_ipi_all(void) {
+static void gic_send_ipi(void) {
   /* TargetListFilter bits[25:24] = 0b01 means "all CPUs except requestor" */
   GICD_REG(GICD_SGIR) = (1U << 24) | 0; /* filter=broadcast-except-self, SGI0 */
 }
 
-/*
- * Register IRQ handler
- */
-int irq_register(uint32_t irq, irq_handler_t handler, void *data) {
-  if (irq >= GIC_MAX_IRQS)
-    return -EINVAL;
+static uint32_t gic_ack(void) { return GICC_REG(GICC_IAR) & 0x3FF; }
 
-  if (irq_handlers[irq].handler)
-    return -EBUSY;
-
-  irq_handlers[irq].handler = handler;
-  irq_handlers[irq].data = data;
-
-  gic_enable_irq(irq);
-
-  return 0;
+static void gic_eoi(uint32_t irq) {
+  volatile uint32_t *eoir_reg = (volatile uint32_t *)(GICC_BASE + GICC_EOIR);
+  *eoir_reg = irq;
 }
 
-/*
- * Unregister IRQ handler
- */
-void irq_unregister(uint32_t irq) {
-  if (irq >= GIC_MAX_IRQS)
-    return;
+/* irq_chip implementation */
+static struct irq_chip gic_chip = {
+  .name = "ARM GICv2",
+  .init = gic_init_dist,
+  .init_percpu = gic_init_cpu,
+  .enable = gic_enable,
+  .disable = gic_disable,
+  .set_priority = gic_set_prio,
+  .send_ipi_all = gic_send_ipi,
+  .acknowledge = gic_ack,
+  .end = gic_eoi,
+};
 
-  gic_disable_irq(irq);
-
-  irq_handlers[irq].handler = NULL;
-  irq_handlers[irq].data = NULL;
-}
-
-#include <kernel/sched.h>
-
-/* ... */
-
-/*
- * Main IRQ handler (called from exception vector)
- */
-/* Halt this CPU in response to a panic IPI */
-static void cpu_halt_from_ipi(void) {
-  extern volatile int panic_flag;
-  panic_flag = 1;
-  /* Disable this CPU's virtual timer */
-  arch_timer_control(0);
-  /* Mask all exceptions and park */
-  arch_cpu_halt();
-}
-
-struct pt_regs *irq_handler(struct pt_regs *regs) {
-  uint32_t irq;
-  struct pt_regs *ret_regs = regs;
-
-  while (1) {
-    irq = gic_acknowledge_irq();
-
-    if (irq == GIC_SPURIOUS_IRQ)
-      break;
-
-    /* SGI0: panic halt IPI from another CPU */
-    if (irq == 0) {
-      gic_end_irq(irq);
-      cpu_halt_from_ipi();
-      /* never reached */
-    }
-
-    /* Handle IRQ */
-    if (irq == 27 || irq == 30) {
-      /* Timer Interrupt - Special Case to pass regs and return new regs */
-      /* CRITICAL: If a context switch occurs, we must return the new regs
-       * immediately and not continue the loop, as the 'regs' pointer is now
-       * stale and the environment (stack, etc) might have changed for the new
-       * process. */
-      ret_regs = timer_handler(ret_regs);
-      gic_end_irq(irq);
-      return ret_regs;
-    } else if (irq < GIC_MAX_IRQS && irq_handlers[irq].handler) {
-      /* Standard Driver Handler */
-      irq_handlers[irq].handler(irq, irq_handlers[irq].data);
-    } else {
-      pr_warn("GIC: Unhandled IRQ %u\n", irq);
-    }
-
-    gic_end_irq(irq);
-  }
-
-  return ret_regs;
+void gic_register(void) {
+  irq_register_chip(&gic_chip);
 }

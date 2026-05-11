@@ -3,7 +3,8 @@
  * VirtIO Input Device Driver (Keyboard/Mouse)
  * Full Virtqueue and Interrupt Implementation
  */
-#include <drivers/gic.h>
+#include <kernel/irq.h>
+#include <kernel/arch.h>
 #include <drivers/virtio.h>
 #include <drivers/virtio_input.h>
 #include <kernel/graphics.h>
@@ -143,9 +144,6 @@ static void init_device(uintptr_t base, uint32_t irq) {
 
   /* Register and Enable Interrupt */
   irq_register(irq, virtio_input_handler, dev);
-  gic_enable_irq(irq);
-  gic_set_priority(irq, 0x80); // Standard priority
-  gic_set_target(irq, 1);      // Target CPU 0
 
   /* Notify device */
   /* Notify device */
@@ -177,7 +175,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 
   while (dev->last_used_idx != dev->used->idx) {
     /* Ensure we see the updated ring index */
-    __asm__ volatile("dmb sy" ::: "memory");
+    arch_data_barrier();
 
     struct vring_used_elem *e =
         &dev->used->ring[dev->last_used_idx % INPUT_QSIZE];
@@ -219,7 +217,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 
     /* Return descriptor to available ring */
     dev->avail->ring[dev->avail->idx % INPUT_QSIZE] = id;
-    __asm__ volatile("dmb sy" ::: "memory");
+    arch_data_barrier();
     dev->avail->idx++;
     dev->last_used_idx++;
   }

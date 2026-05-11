@@ -24,8 +24,12 @@
 #define arch_cpu_halt() __arch_cpu_halt()
 
 /* --- Memory & Execution Barriers --- */
-#define arch_instr_barrier() __arch_isb() /* ISB on ARM, NOP/Serialize on x86 */
-#define arch_data_barrier() __arch_dsb()  /* DSB on ARM, MFENCE on x86 */
+#define arch_isb() __arch_isb()
+#define arch_mb()  __arch_mb()
+#define arch_rmb() __arch_rmb()
+#define arch_wmb() __arch_wmb()
+#define arch_instr_barrier() arch_isb()
+#define arch_data_barrier()  arch_mb()
 
 /* --- Memory Management (VMM/TLB/Cache) --- */
 /* Set Page Directory Base (CR3 on x86, TTBR0/1 on ARM) */
@@ -67,22 +71,10 @@
 #define arch_set_sctlr(v) __arch_set_sctlr(v)
 
 /* --- Backward Compatibility Aliases (To be migrated) --- */
-#define arch_isb() arch_instr_barrier()
-#define arch_dsb() arch_data_barrier()
-#define arch_dmb() __arch_dmb()
+#define arch_dsb() arch_mb()
+#define arch_dmb() arch_mb()
 #define arch_wfi() arch_idle()
 #define arch_wfe() __arch_wfe()
 #define arch_sev() __arch_sev()
-#define arch_set_ttbr0(v) arch_vmm_set_pgd(v)
-#define arch_get_ttbr0() arch_vmm_get_pgd()
-#define arch_set_vbar(v) arch_set_vector_table(v)
-#define arch_get_vbar() arch_get_vector_table()
-#define arch_clean_cache_va(v) arch_cache_clean_va(v)
-#define arch_clean_cache_va_pou(v) __arch_clean_cache_va_pou(v)
-#define arch_clean_cache_range_va(v, s) arch_cache_clean_range(v, s)
-#define arch_cntfrq_el0_read() arch_timer_get_freq()
-#define arch_cntvct_el0_read() arch_timer_get_count()
-#define arch_cntv_cval_el0_write(v) arch_timer_set_compare(v)
-#define arch_cntv_ctl_el0_write(v) arch_timer_control(v)
 
 #endif /* _KERNEL_ARCH_H */

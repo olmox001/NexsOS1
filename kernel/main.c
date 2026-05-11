@@ -2,13 +2,14 @@
  * kernel/kernel.c
  * Main kernel initialization and entry point
  */
-#include <drivers/gic.h>
 #include <drivers/keyboard.h>
 #include <drivers/timer.h>
 #include <drivers/uart.h>
 #include <drivers/virtio_blk.h>
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
+#include <kernel/irq.h>
+#include <kernel/platform.h>
 #include <kernel/buffer.h>
 #include <kernel/cpu.h>
 #include <kernel/ext4.h>
@@ -59,10 +60,10 @@ void kernel_main(void) {
   pr_info("%s", "Initializing CPU...\n");
   cpu_init();
 
-  /* Interrupt controller */
-  pr_info("%s", "Initializing GIC...\n");
-  gic_init();
-  gic_init_percpu();
+  /* Platform-specific hardware registration */
+  platform_early_init();
+  irq_init();
+  irq_init_percpu();
 
   /* System timer */
   pr_info("%s", "Initializing timer...\n");
@@ -232,7 +233,7 @@ void secondary_cpu_entry(void) {
 
   /* Initialize per-CPU state */
   cpu_init();
-  gic_init_percpu();
+  irq_init_percpu();
   timer_init_percpu();
 
   /* Enable interrupts */

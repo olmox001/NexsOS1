@@ -121,17 +121,33 @@ typedef struct {
 #define __weak __attribute__((weak))
 #define __always_inline inline __attribute__((always_inline))
 
-/* Memory barriers */
+/* Compiler barrier */
 #define barrier() __asm__ __volatile__("" : : : "memory")
-#define mb() __asm__ __volatile__("dsb sy" : : : "memory")
-#define rmb() __asm__ __volatile__("dsb ld" : : : "memory")
-#define wmb() __asm__ __volatile__("dsb st" : : : "memory")
-#define isb() __asm__ __volatile__("isb" : : : "memory")
+
+/* Memory barriers (Generic names, defined by HAL in arch.h) */
+#ifndef mb
+#define mb() arch_mb()
+#endif
+#ifndef rmb
+#define rmb() arch_rmb()
+#endif
+#ifndef wmb
+#define wmb() arch_wmb()
+#endif
+#ifndef isb
+#define isb() arch_isb()
+#endif
 
 /* SMP memory barriers */
-#define smp_mb() mb()
-#define smp_rmb() rmb()
-#define smp_wmb() wmb()
+#ifndef smp_mb
+#define smp_mb() arch_mb()
+#endif
+#ifndef smp_rmb
+#define smp_rmb() arch_rmb()
+#endif
+#ifndef smp_wmb
+#define smp_wmb() arch_wmb()
+#endif
 
 /* NULL */
 #ifndef NULL
