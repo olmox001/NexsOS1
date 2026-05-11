@@ -70,21 +70,21 @@ static size_t get_bucket_size(int idx) { return 16 << idx; }
  */
 void kmalloc_init(void) {
   uint64_t flags;
+  uint32_t pages;
+  
   spin_lock_irqsave(&kmalloc_lock, &flags);
 
   if (heap_initialized) {
-    spin_unlock_irqrestore(&kmalloc_lock, flags);
-    return;
+    goto out;
   }
 
   /* Allocate memory pool for small allocations */
-  uint32_t pages = (HEAP_SIZE + 4095) / 4096;
+  pages = (HEAP_SIZE + 4095) / 4096;
   heap_base = (uint8_t *)pmm_alloc_pages(pages);
 
   if (!heap_base) {
     pr_err("%s", "kmalloc: Failed to allocate heap\n");
-    spin_unlock_irqrestore(&kmalloc_lock, flags);
-    return;
+    goto out;
   }
 
   heap_end = heap_base + HEAP_SIZE;
@@ -98,6 +98,8 @@ void kmalloc_init(void) {
 
   pr_info("kmalloc: Initialized bucket allocator. Heap: %u MB at %p\n",
           HEAP_SIZE / (1024 * 1024), heap_base);
+
+out:
   spin_unlock_irqrestore(&kmalloc_lock, flags);
 }
 
@@ -105,8 +107,14 @@ void kmalloc_init(void) {
  * Allocate memory
  */
 void *kmalloc(size_t size) {
+  void *res = NULL;
+  uint64_t flags = 0;
+  int idx;
+  size_t total_req;
+
   if (!heap_initialized)
     kmalloc_init();
+
   if (size == 0)
     return NULL;
 
@@ -114,12 +122,11 @@ void *kmalloc(size_t size) {
     return NULL;
 
   /* Add header overhead */
-  size_t total_req = size + sizeof(struct block_header);
+  total_req = size + sizeof(struct block_header);
 
   /* Determine bucket */
-  int idx = get_bucket_index(total_req);
+  idx = get_bucket_index(total_req);
 
-  uint64_t flags;
   spin_lock_irqsave(&kmalloc_lock, &flags);
 
   if (idx >= 0) {
@@ -131,26 +138,16 @@ void *kmalloc(size_t size) {
       struct block_header *blk = buckets[idx];
       buckets[idx] = blk->next;
       blk->magic = BLOCK_MAGIC;
-      blk->size =
-          size; /* Store requested size for info, bucket size is implied */
+      blk->size = size;
       blk->next = NULL;
       blk->bucket_idx = idx;
 
-      spin_unlock_irqrestore(&kmalloc_lock, flags);
-      return (void *)(blk + 1);
+      res = (void *)(blk + 1);
+      goto out;
     }
 
     /* No free block, carve from heap_ptr */
-    /* Align to bucket size (optional but good for slab alignment) or just 16 */
-    /* Ensure sufficient space */
     size_t alloc_sz = bucket_sz;
-    /* Ensure header fits. bucket_sz always >= 16. Header is 16 bytes. */
-    /* Wait, if bucket is 16, header is 16, user gets 0?
-       Actually get_bucket_index(total_req) ensures total_req <= bucket_size.
-       So if user asks for 1 byte, total=17. bucket=32 (index 1).
-       If user asks for 16, total=32. bucket=32.
-    */
-
     if (heap_ptr + alloc_sz <= heap_end) {
       struct block_header *blk = (struct block_header *)heap_ptr;
       heap_ptr += alloc_sz;
@@ -160,23 +157,22 @@ void *kmalloc(size_t size) {
       blk->next = NULL;
       blk->bucket_idx = idx;
 
-      spin_unlock_irqrestore(&kmalloc_lock, flags);
-      return (void *)(blk + 1);
+      res = (void *)(blk + 1);
+      goto out;
     }
 
     /* Heap exhausted for small objects */
     pr_err("kmalloc: Small heap exhausted (request %lu)\n", size);
-    spin_unlock_irqrestore(&kmalloc_lock, flags);
-    return NULL;
+    res = NULL;
+    goto out;
 
   } else {
     /* Large allocation: via PMM directly */
-    /* We still need a header to track it for kfree?
-       Yes, otherwise kfree won't know size to free pages.
-    */
-    size_t pages = (total_req + 4095) / 4096;
-    spin_unlock_irqrestore(&kmalloc_lock, flags); /* PMM has its own lock */
+    /* Unlock before calling PMM to avoid nesting */
+    spin_unlock_irqrestore(&kmalloc_lock, flags);
+    flags = 0; // Prevent double unlock
 
+    size_t pages = (total_req + 4095) / 4096;
     void *ptr = pmm_alloc_pages(pages);
     if (!ptr)
       return NULL;
@@ -189,6 +185,12 @@ void *kmalloc(size_t size) {
 
     return (void *)(blk + 1);
   }
+
+out:
+  if (flags) {
+    spin_unlock_irqrestore(&kmalloc_lock, flags);
+  }
+  return res;
 }
 
 /*

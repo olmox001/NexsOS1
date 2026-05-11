@@ -8,29 +8,15 @@
 /*
  * Draw Line (Bresenham's Algorithm)
  */
+/*
+ * Draw Line (Bresenham's Algorithm)
+ */
 void graphics_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
                         uint32_t color) {
-  int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
-  int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
-  int sx = (x0 < x1) ? 1 : -1;
-  int sy = (y0 < y1) ? 1 : -1;
-  int err = dx - dy;
-
-  while (1) {
-    graphics_draw_pixel(x0, y0, color);
-
-    if (x0 == x1 && y0 == y1)
-      break;
-
-    int e2 = 2 * err;
-    if (e2 > -dy) {
-      err -= dy;
-      x0 += sx;
-    }
-    if (e2 < dx) {
-      err += dx;
-      y0 += sy;
-    }
+  /* Use GL implementation which handles clipping */
+  struct gl_surface *surf = graphics_get_screen_surface();
+  if (surf) {
+    gl_draw_line(surf, (int)x0, (int)y0, (int)x1, (int)y1, color);
   }
 }
 
@@ -38,19 +24,22 @@ void graphics_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
  * Draw Circle (Midpoint Algorithm)
  */
 void graphics_draw_circle(int cx, int cy, int r, uint32_t color) {
+  struct gl_surface *surf = graphics_get_screen_surface();
+  if (!surf) return;
+
   int x = r;
   int y = 0;
   int err = 0;
 
   while (x >= y) {
-    graphics_draw_pixel(cx + x, cy + y, color);
-    graphics_draw_pixel(cx - x, cy + y, color);
-    graphics_draw_pixel(cx + x, cy - y, color);
-    graphics_draw_pixel(cx - x, cy - y, color);
-    graphics_draw_pixel(cx + y, cy + x, color);
-    graphics_draw_pixel(cx - y, cy + x, color);
-    graphics_draw_pixel(cx + y, cy - x, color);
-    graphics_draw_pixel(cx - y, cy - x, color);
+    gl_draw_pixel(surf, cx + x, cy + y, color);
+    gl_draw_pixel(surf, cx - x, cy + y, color);
+    gl_draw_pixel(surf, cx + x, cy - y, color);
+    gl_draw_pixel(surf, cx - x, cy - y, color);
+    gl_draw_pixel(surf, cx + y, cy + x, color);
+    gl_draw_pixel(surf, cx - y, cy + x, color);
+    gl_draw_pixel(surf, cx + y, cy - x, color);
+    gl_draw_pixel(surf, cx - y, cy - x, color);
 
     y++;
     err += 1 + 2 * y;
@@ -65,19 +54,22 @@ void graphics_draw_circle(int cx, int cy, int r, uint32_t color) {
  * Fill Circle
  */
 void graphics_fill_circle(int cx, int cy, int r, uint32_t color) {
+  struct gl_surface *surf = graphics_get_screen_surface();
+  if (!surf) return;
+
   int x = r;
   int y = 0;
   int err = 0;
 
   while (x >= y) {
-    /* Draw horizontal lines for each octant pair */
+    /* Draw horizontal lines for each octant pair with clipping */
     for (int i = cx - x; i <= cx + x; i++) {
-      graphics_draw_pixel(i, cy + y, color);
-      graphics_draw_pixel(i, cy - y, color);
+      gl_draw_pixel(surf, i, cy + y, color);
+      gl_draw_pixel(surf, i, cy - y, color);
     }
     for (int i = cx - y; i <= cx + y; i++) {
-      graphics_draw_pixel(i, cy + x, color);
-      graphics_draw_pixel(i, cy - x, color);
+      gl_draw_pixel(surf, i, cy + x, color);
+      gl_draw_pixel(surf, i, cy - x, color);
     }
 
     y++;
@@ -113,6 +105,9 @@ static inline void swap_int(int *a, int *b) {
  */
 void graphics_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
                             uint32_t color) {
+  struct gl_surface *surf = graphics_get_screen_surface();
+  if (!surf) return;
+
   /* Sort by y coordinate */
   if (y0 > y1) {
     swap_int(&y0, &y1);
@@ -148,7 +143,7 @@ void graphics_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
       swap_int(&xa, &xb);
 
     for (int x = xa; x <= xb; x++) {
-      graphics_draw_pixel(x, y, color);
+      gl_draw_pixel(surf, x, y, color);
     }
   }
 }
@@ -158,6 +153,9 @@ void graphics_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
  */
 void graphics_draw_rounded_rect(int x, int y, int w, int h, int r,
                                 uint32_t color) {
+  struct gl_surface *surf = graphics_get_screen_surface();
+  if (!surf) return;
+
   /* Top and bottom lines */
   graphics_draw_line(x + r, y, x + w - r, y, color);
   graphics_draw_line(x + r, y + h, x + w - r, y + h, color);
@@ -171,17 +169,17 @@ void graphics_draw_rounded_rect(int x, int y, int w, int h, int r,
 
   while (px >= py) {
     /* Top-left */
-    graphics_draw_pixel(x + r - px, y + r - py, color);
-    graphics_draw_pixel(x + r - py, y + r - px, color);
+    gl_draw_pixel(surf, x + r - px, y + r - py, color);
+    gl_draw_pixel(surf, x + r - py, y + r - px, color);
     /* Top-right */
-    graphics_draw_pixel(x + w - r + px, y + r - py, color);
-    graphics_draw_pixel(x + w - r + py, y + r - px, color);
+    gl_draw_pixel(surf, x + w - r + px, y + r - py, color);
+    gl_draw_pixel(surf, x + w - r + py, y + r - px, color);
     /* Bottom-left */
-    graphics_draw_pixel(x + r - px, y + h - r + py, color);
-    graphics_draw_pixel(x + r - py, y + h - r + px, color);
+    gl_draw_pixel(surf, x + r - px, y + h - r + py, color);
+    gl_draw_pixel(surf, x + r - py, y + h - r + px, color);
     /* Bottom-right */
-    graphics_draw_pixel(x + w - r + px, y + h - r + py, color);
-    graphics_draw_pixel(x + w - r + py, y + h - r + px, color);
+    gl_draw_pixel(surf, x + w - r + px, y + h - r + py, color);
+    gl_draw_pixel(surf, x + w - r + py, y + h - r + px, color);
 
     py++;
     err += 1 + 2 * py;
@@ -194,28 +192,16 @@ void graphics_draw_rounded_rect(int x, int y, int w, int h, int r,
 
 /*
  * Alpha Blend Two Colors (ARGB8888)
- * Uses the formula: result = fg * alpha + bg * (1 - alpha)
  */
 uint32_t graphics_blend(uint32_t fg, uint32_t bg) {
   uint32_t alpha = (fg >> 24) & 0xFF;
-  if (alpha == 255)
-    return fg;
-  if (alpha == 0)
-    return bg;
+  if (alpha == 255) return fg;
+  if (alpha == 0) return bg;
 
   uint32_t inv_alpha = 255 - alpha;
-
-  uint32_t fg_r = (fg >> 16) & 0xFF;
-  uint32_t fg_g = (fg >> 8) & 0xFF;
-  uint32_t fg_b = fg & 0xFF;
-
-  uint32_t bg_r = (bg >> 16) & 0xFF;
-  uint32_t bg_g = (bg >> 8) & 0xFF;
-  uint32_t bg_b = bg & 0xFF;
-
-  uint32_t r = (fg_r * alpha + bg_r * inv_alpha) / 255;
-  uint32_t g = (fg_g * alpha + bg_g * inv_alpha) / 255;
-  uint32_t b = (fg_b * alpha + bg_b * inv_alpha) / 255;
+  uint32_t r = ((((fg >> 16) & 0xFF) * alpha) + (((bg >> 16) & 0xFF) * inv_alpha)) / 255;
+  uint32_t g = ((((fg >> 8) & 0xFF) * alpha) + (((bg >> 8) & 0xFF) * inv_alpha)) / 255;
+  uint32_t b = (((fg & 0xFF) * alpha) + ((bg & 0xFF) * inv_alpha)) / 255;
 
   return 0xFF000000 | (r << 16) | (g << 8) | b;
 }
@@ -225,24 +211,21 @@ uint32_t graphics_blend(uint32_t fg, uint32_t bg) {
  */
 void graphics_draw_gradient_h(int x, int y, int w, int h, uint32_t color_left,
                               uint32_t color_right) {
+  struct gl_surface *surf = graphics_get_screen_surface();
+  if (!surf) return;
+
   for (int col = 0; col < w; col++) {
-    /* Interpolate colors */
     uint32_t t = (col * 255) / (w > 1 ? w - 1 : 1);
     uint32_t inv_t = 255 - t;
 
-    uint32_t r = ((((color_left >> 16) & 0xFF) * inv_t) +
-                  (((color_right >> 16) & 0xFF) * t)) /
-                 255;
-    uint32_t g = ((((color_left >> 8) & 0xFF) * inv_t) +
-                  (((color_right >> 8) & 0xFF) * t)) /
-                 255;
-    uint32_t b =
-        (((color_left & 0xFF) * inv_t) + ((color_right & 0xFF) * t)) / 255;
+    uint32_t r = ((((color_left >> 16) & 0xFF) * inv_t) + (((color_right >> 16) & 0xFF) * t)) / 255;
+    uint32_t g = ((((color_left >> 8) & 0xFF) * inv_t) + (((color_right >> 8) & 0xFF) * t)) / 255;
+    uint32_t b = (((color_left & 0xFF) * inv_t) + ((color_right & 0xFF) * t)) / 255;
 
     uint32_t color = 0xFF000000 | (r << 16) | (g << 8) | b;
 
     for (int row = 0; row < h; row++) {
-      graphics_draw_pixel(x + col, y + row, color);
+      gl_draw_pixel(surf, x + col, y + row, color);
     }
   }
 }

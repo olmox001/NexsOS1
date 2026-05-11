@@ -26,7 +26,6 @@
 #define PT_INDEX(x) (((x) >> PT_SHIFT) & 0x1FF)
 
 /* Global Kernel PGD */
-/* Global Kernel PGD */
 uint64_t *kernel_pgd;
 
 #define PTE_ADDR_MASK 0x0000FFFFFFFFF000UL
@@ -330,9 +329,6 @@ void vmm_init(void) {
   pr_info("VMM: MMU Enabled. Kernel PGD at %p\n", (void *)kernel_pgd);
 }
 
-/*
- * Create a new PGD
- */
 /*
  * Create a new PGD
  */

@@ -198,8 +198,8 @@ secondary_startup:
  * x1 = entry point (user C function) - ignored, we use secondary_startup
  * x2 = stack pointer - passed as context_id
  */
-.global cpu_wake_secondary
-cpu_wake_secondary:
+.global arch_cpu_wake_secondary
+arch_cpu_wake_secondary:
     mov x3, x2          /* x3 = context_id (stack) */
     
     /* Calculate Physical Address of secondary_startup */
@@ -213,7 +213,16 @@ cpu_wake_secondary:
     movk x0, #0xC400, lsl #16
     
     hvc #0              /* Call PSCI via HVC */
-    
+    ret
+
+/*
+ * Get boot info pointer
+ */
+.global arch_get_boot_info
+arch_get_boot_info:
+    adrp x0, boot_info
+    add x0, x0, :lo12:boot_info
+    ldr x0, [x0]
     ret
 
 /*

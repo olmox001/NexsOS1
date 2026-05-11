@@ -40,15 +40,34 @@ static struct block_buffer *__lookup(uint64_t block) {
   return NULL;
 }
 
+#define MAX_BUFFERS 1024
+static int total_buffers = 0;
+
+static void __evict_buffers(void) {
+  struct block_buffer *pos, *n;
+  /* Evict oldest buffers first (LRU) */
+  list_for_each_entry_safe_reverse(pos, n, &lru_list, list) {
+    if (total_buffers <= MAX_BUFFERS / 2) break;
+    if (pos->ref_count == 0 && !(pos->flags & BUFFER_DIRTY)) {
+      list_del(&pos->hash);
+      list_del(&pos->list);
+      pmm_free_page(pos->data);
+      kfree(pos);
+      total_buffers--;
+    }
+  }
+}
+
 struct block_buffer *buffer_get(uint64_t block) {
   uint64_t flags;
+  struct block_buffer *buf = NULL;
+  struct block_buffer *exists = NULL;
+
   spin_lock_irqsave(&buffer_lock, &flags);
 
   /* 1. Check Cache */
-  struct block_buffer *buf = __lookup(block);
-
+  buf = __lookup(block);
   if (buf) {
-    /* Move to head of LRU (most recently used) */
     if (!list_empty(&buf->list)) {
       list_move(&buf->list, &lru_list);
     }
@@ -56,12 +75,16 @@ struct block_buffer *buffer_get(uint64_t block) {
     spin_unlock_irqrestore(&buffer_lock, flags);
     return buf;
   }
+
+  /* Check if we need to evict before allocating */
+  if (total_buffers >= MAX_BUFFERS) {
+    __evict_buffers();
+  }
   spin_unlock_irqrestore(&buffer_lock, flags);
 
   /* 2. Allocate New Buffer (Metadata) */
   buf = (struct block_buffer *)kmalloc(sizeof(struct block_buffer));
-  if (!buf)
-    return NULL;
+  if (!buf) return NULL;
   memset(buf, 0, sizeof(*buf));
 
   /* 3. Allocate Data Page */
@@ -71,8 +94,7 @@ struct block_buffer *buffer_get(uint64_t block) {
     return NULL;
   }
 
-  /* 4. Read from Disk (OUTSIDE lock to avoid blocking other CPUs) */
-  /* Block is 4KB = 8 sectors */
+  /* 4. Read from Disk (OUTSIDE lock) */
   if (virtio_blk_read(buf->data, block * SECTORS_PER_BLOCK,
                       SECTORS_PER_BLOCK) != 0) {
     pr_err("BufferCache: Disk read error block %ld\n", block);
@@ -87,9 +109,9 @@ struct block_buffer *buffer_get(uint64_t block) {
 
   /* 5. Insert into Hash and LRU */
   spin_lock_irqsave(&buffer_lock, &flags);
-  /* Double check if someone else loaded it while we were reading */
-  struct block_buffer *exists = __lookup(block);
+  exists = __lookup(block);
   if (exists) {
+    /* Someone else loaded it while we were reading */
     pmm_free_page(buf->data);
     kfree(buf);
     exists->ref_count++;
@@ -100,6 +122,7 @@ struct block_buffer *buffer_get(uint64_t block) {
   uint32_t bucket = hash_block(block);
   list_add(&buf->hash, &hash_table[bucket]);
   list_add(&buf->list, &lru_list);
+  total_buffers++;
   spin_unlock_irqrestore(&buffer_lock, flags);
 
   return buf;

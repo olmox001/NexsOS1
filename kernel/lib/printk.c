@@ -305,7 +305,7 @@ void panic(const char *fmt, ...) {
   /* Disable all exceptions and halt this CPU */
   uint64_t flags;
   arch_local_irq_save_all(&flags);
-  while (1) { __asm__ __volatile__("wfe"); }
+  while (1) { arch_idle(); }
 
   __builtin_unreachable();
 }

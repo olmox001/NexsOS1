@@ -22,6 +22,7 @@
 #include <kernel/string.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
+#include <kernel/test.h>
 
 /* Version */
 #define KERNEL_VERSION_MAJOR 0
@@ -30,13 +31,7 @@
 #define KERNEL_NAME "AArch64 Microkernel"
 
 /* External symbols */
-extern uint64_t boot_info;
-extern void cpu_init(void);
-extern int cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void),
-                              void *stack);
 extern void secondary_cpu_entry(void);
-extern char __kernel_stack[];
-extern uint64_t smp_boot_magic;
 
 /* Forward declarations */
 static void print_banner(void);
@@ -56,12 +51,15 @@ void kernel_main(void) {
   /* Print kernel banner */
   print_banner();
 
+  /* Run Unit Tests if enabled (can be gated by a flag) */
+  ktest_run_all();
+
   /* CPU initialization (exception vectors, per-CPU data) */
   pr_info("%s", "Initializing CPU...\n");
   cpu_init();
 
   /* Platform-specific hardware registration */
-  platform_early_init();
+  arch_platform_early_init();
   irq_init();
   irq_init_percpu();
 
@@ -87,17 +85,19 @@ void kernel_main(void) {
   /* Wake secondary CPUs (1-3) */
   pr_info("%s", "Waking secondary CPUs...\n");
 
-  /* Write TTBR0 for secondary cores */
-  extern uint64_t secondary_ttbr0;
+  /* Write TTBR0 for secondary cores via HAL */
   uint64_t current_pgd = arch_vmm_get_pgd();
-  secondary_ttbr0 = current_pgd;
-  /* Flush to PoC so secondary cores see it */
-  arch_cache_clean_va(&secondary_ttbr0);
-  arch_data_barrier();
+  arch_vmm_set_secondary_pgd(current_pgd);
 
   for (int i = 1; i < 4; i++) {
-    void *stack = (void *)&__kernel_stack[(i + 1) * 131072];
-    int ret = cpu_wake_secondary(i, secondary_cpu_entry, stack);
+    /* Calculate stack for secondary core */
+    /* Use a generic helper if possible, but for now we rely on the 
+     * HAL providing the stack base if needed, or we pass it. 
+     * Since __kernel_stack is in ARCH, we shouldn't touch it here.
+     * We'll need a HAL function to get per-cpu stack.
+     */
+    void *stack = arch_get_kernel_stack(i + 1);
+    int ret = arch_cpu_wake_secondary(i, secondary_cpu_entry, stack);
     if (ret != 0) {
       pr_err("Failed to wake CPU %d: ret=%d (0x%x)\n", i, ret, ret);
     } else {
@@ -110,7 +110,7 @@ void kernel_main(void) {
   local_irq_enable();
 
   pr_info("%s", "Kernel initialized successfully!\n");
-  pr_info("Boot info at: 0x%016lx\n", boot_info);
+  pr_info("Boot info at: 0x%016lx\n", arch_get_boot_info());
 
   /* Main kernel loop */
   pr_info("%s", "Entering idle loop...\n");

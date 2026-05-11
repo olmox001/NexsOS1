@@ -398,8 +398,8 @@ exception_vectors_install:
  * Enter User Mode
  * void enter_user_mode(uint64_t entry, uint64_t sp);
  */
-.global enter_user_mode
-enter_user_mode:
+.global arch_enter_user_mode
+arch_enter_user_mode:
     /* x0 = entry point (ELR_EL1) */
     /* x1 = stack pointer (SP_EL0) */
     /* x2 = kernel stack pointer (SP_EL1) */

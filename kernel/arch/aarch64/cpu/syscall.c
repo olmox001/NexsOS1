@@ -32,7 +32,7 @@ extern void compositor_render(void);
 extern void compositor_set_window_flags(int window_id, int flags);
 
 /* Secure memory access helpers with Page Table Switching */
-int copy_from_user(void *dest, const void *src, size_t n) {
+int arch_copy_from_user(void *dest, const void *src, size_t n) {
   uint64_t src_addr = (uint64_t)src;
   if (src_addr + n < src_addr)
     return -1; /* Wrap around */
@@ -75,7 +75,7 @@ int copy_from_user(void *dest, const void *src, size_t n) {
   return 0;
 }
 
-int copy_to_user(void *dest, const void *src, size_t n) {
+int arch_copy_to_user(void *dest, const void *src, size_t n) {
   uint64_t dest_addr = (uint64_t)dest;
   if (dest_addr + n < dest_addr)
     return -1; /* Wrap around */
@@ -109,7 +109,7 @@ int copy_to_user(void *dest, const void *src, size_t n) {
 
 /* Copy null-terminated string from user space safely with Page Table Switching
  */
-int copy_string_from_user(char *dest, const char *src, size_t max_len) {
+int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
   if (!vmm_is_user_addr((uint64_t)src))
     return -1;
 
@@ -192,8 +192,8 @@ struct pt_regs *sys_read(struct pt_regs *regs) {
   if (node) {
     if (node->msg.type == IPC_TYPE_INPUT) {
       char c = (char)node->msg.data1;
-      if (copy_to_user(buf, &c, 1) != 0) {
-        /* pr_err("%s", "sys_read: copy_to_user failed\n"); */
+      if (arch_copy_to_user(buf, &c, 1) != 0) {
+        /* pr_err("%s", "sys_read: arch_copy_to_user failed\n"); */
       }
       regs->regs[0] = 1;
       kfree(node);
@@ -225,7 +225,7 @@ long sys_write(int fd, const char *buf, size_t count) {
   size_t to_copy = (count > 1024) ? 1024 : count;
   /* pr_err("sys_write: fd=%d count=%lu\n", fd, count); */
 
-  if (copy_from_user(k_buf, buf, to_copy) != 0)
+  if (arch_copy_from_user(k_buf, buf, to_copy) != 0)
     return -1;
   k_buf[to_copy] = '\0';
 
@@ -364,7 +364,7 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
   {
     struct cpu_info *cpu = get_cpu_info();
     char *k_title = cpu->syscall_buf;
-    if (copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
+    if (arch_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
       frame->regs[0] = -1;
       break;
     }
@@ -398,7 +398,7 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
   {
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
-    if (copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       frame->regs[0] = -1;
       break;
     }
@@ -462,7 +462,7 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
   {
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
-    if (copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       frame->regs[0] = -1;
       break;
     }
@@ -474,7 +474,7 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
       break;
     }
 
-    if (copy_from_user(k_buf, (const void *)arg1, size) != 0) {
+    if (arch_copy_from_user(k_buf, (const void *)arg1, size) != 0) {
       kfree(k_buf);
       frame->regs[0] = -1;
       break;
@@ -487,7 +487,7 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
   case 252: /* FILE_READ */
   {
     char k_path[128];
-    if (copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       frame->regs[0] = -1;
       break;
     }
@@ -503,7 +503,7 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
     int bytes_read = ext4_read_file(k_path, k_buf, (uint32_t)size, offset);
 
     if (bytes_read >= 0) {
-      if (copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
+      if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
         bytes_read = -1;
       }
     }

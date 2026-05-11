@@ -99,9 +99,11 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/lib/printk.c \
     $(KERNEL_DIR)/lib/stack_protector.c \
     $(KERNEL_DIR)/lib/math.c \
-    $(KERNEL_DIR)/lib/math.c \
     $(KERNEL_DIR)/lib/kmalloc.c \
     $(KERNEL_DIR)/lib/registry.c \
+    $(KERNEL_DIR)/lib/ktest.c \
+    $(KERNEL_DIR)/lib/ktest_samples.c \
+    $(KERNEL_DIR)/cpu.c \
     $(KERNEL_DIR)/sched/process.c \
     $(KERNEL_DIR)/sched/elf.c \
     $(KERNEL_DIR)/graphics/graphics.c \

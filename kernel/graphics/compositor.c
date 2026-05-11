@@ -1140,7 +1140,7 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
         void *dst_ptr = &windows[i].buffer[py * windows[i].width + dest_x];
         const void *src_ptr = &user_buf[dy * w + src_x];
 
-        if (copy_from_user(dst_ptr, src_ptr, copy_w * sizeof(uint32_t)) != 0) {
+        if (vmm_copy_from_user(dst_ptr, src_ptr, copy_w * sizeof(uint32_t)) != 0) {
           /* Page fault or invalid access: abort blit */
           spin_unlock_irqrestore(&compositor_lock, flags);
           return;

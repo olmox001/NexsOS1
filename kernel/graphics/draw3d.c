@@ -168,10 +168,13 @@ static void project_to_screen(vec4_t v, int *sx, int *sy, int32_t *sz,
 }
 
 /*
- * Draw 3D Triangle with Z-buffer (Wireframe for now)
+ * Draw 3D Triangle with Z-buffer (Wireframe)
  */
 void render3d_triangle(vec4_t v0, vec4_t v1, vec4_t v2, mat4_t mvp,
                        uint32_t color, int screen_w, int screen_h) {
+  struct gl_surface *surf = graphics_get_screen_surface();
+  if (!surf) return;
+
   /* Transform vertices */
   vec4_t t0 = mat4_mul_vec(mvp, v0);
   vec4_t t1 = mat4_mul_vec(mvp, v1);
@@ -184,10 +187,10 @@ void render3d_triangle(vec4_t v0, vec4_t v1, vec4_t v2, mat4_t mvp,
   project_to_screen(t1, &sx1, &sy1, &sz1, screen_w, screen_h);
   project_to_screen(t2, &sx2, &sy2, &sz2, screen_w, screen_h);
 
-  /* Draw wireframe */
-  graphics_draw_line(sx0, sy0, sx1, sy1, color);
-  graphics_draw_line(sx1, sy1, sx2, sy2, color);
-  graphics_draw_line(sx2, sy2, sx0, sy0, color);
+  /* Draw wireframe using GL (handles clipping) */
+  gl_draw_line(surf, sx0, sy0, sx1, sy1, color);
+  gl_draw_line(surf, sx1, sy1, sx2, sy2, color);
+  gl_draw_line(surf, sx2, sy2, sx0, sy0, color);
 }
 
 /*

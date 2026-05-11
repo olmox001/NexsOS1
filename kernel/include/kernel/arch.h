@@ -5,11 +5,30 @@
 
 /* Generic interface for architecture-specific operations */
 
-/* --- Interrupt Control --- */
+/* --- CPU and Interrupt HAL --- */
+#define arch_get_cpu_id() __arch_get_cpu_id()
+void arch_cpu_init(void);
+int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack);
+void arch_enter_user_mode(uint64_t entry, uint64_t stack, uint64_t ksp);
+uint64_t arch_get_boot_info(void);
+void *arch_get_kernel_stack(uint32_t cpu_id);
+void arch_vmm_set_secondary_pgd(uint64_t pgd);
+
 #define arch_local_irq_enable() __arch_local_irq_enable()
 #define arch_local_irq_disable() __arch_local_irq_disable()
 #define arch_local_irq_save(flags) __arch_local_irq_save(flags)
 #define arch_local_irq_restore(flags) __arch_local_irq_restore(flags)
+
+static inline uint64_t __arch_local_irq_save_val(void) {
+    uint64_t flags;
+    __arch_local_irq_save(&flags);
+    return flags;
+}
+
+/* --- Memory Access HAL --- */
+int arch_copy_from_user(void *dest, const void *src, size_t n);
+int arch_copy_to_user(void *dest, const void *src, size_t n);
+int arch_copy_string_from_user(char *dest, const char *src, size_t max_len);
 
 /* Disable ALL exceptions/interrupts (daifset 0xf on ARM) */
 #define arch_local_irq_disable_all() __arch_local_irq_disable_all()

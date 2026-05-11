@@ -303,11 +303,8 @@ void pmm_free_page(void *page) {
     return;
   }
 
-  if (pg->refcount == 0) {
-    panic("PMM: Refcount underflow for page %p", page);
-  }
-
-  if (--pg->refcount > 0)
+  /* Atomic decrement and check if it was the last reference */
+  if (__sync_fetch_and_sub(&pg->refcount, 1) > 1)
     return;
 
   /* Find which zone this belongs to */

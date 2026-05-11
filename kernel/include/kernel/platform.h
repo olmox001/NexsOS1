@@ -17,6 +17,6 @@
 #define PLATFORM_GICC_BASE    0x08010000UL
 
 /* Platform Functions */
-void platform_early_init(void);
+void arch_platform_early_init(void);
 
 #endif /* _KERNEL_PLATFORM_H */

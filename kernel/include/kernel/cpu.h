@@ -33,15 +33,17 @@ struct cpu_info {
 
 /* API */
 extern struct cpu_info cpu_data[8];
-uint32_t cpu_id(void);
 struct cpu_info *get_cpu_info(void);
-void cpu_init(void);
 
-/* Interrupt/Exception handling */
-void local_irq_enable(void);
-void local_irq_disable(void);
-uint64_t local_irq_save(void);
-void local_irq_restore(uint64_t flags);
+/* These are now provided by arch.h HAL macros/functions */
+#include <kernel/arch.h>
+
+#define cpu_id() arch_get_cpu_id()
+#define cpu_init() arch_cpu_init()
+#define local_irq_enable() arch_local_irq_enable()
+#define local_irq_disable() arch_local_irq_disable()
+#define local_irq_save() __arch_local_irq_save_val()
+#define local_irq_restore(flags) arch_local_irq_restore(flags)
 struct pt_regs; /* forward decl */
 struct pt_regs *serror_handler(struct pt_regs *frame);
 

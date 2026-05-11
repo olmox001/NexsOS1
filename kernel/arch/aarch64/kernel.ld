@@ -22,6 +22,11 @@ SECTIONS
     .rodata : {
         *(.rodata)
         *(.rodata.*)
+        
+        . = ALIGN(8);
+        __ktests_start = .;
+        KEEP(*(.ktests))
+        __ktests_end = .;
     }
     
     . = ALIGN(4096);

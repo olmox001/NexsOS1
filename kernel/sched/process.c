@@ -405,9 +405,6 @@ int process_terminate(int pid) {
   return 0;
 }
 
-/* Assembly helper to jump to user mode */
-extern void enter_user_mode(uint64_t entry, uint64_t sp, uint64_t ksp);
-
 /*
  * This is called for the FIRST run of a process.
  */
@@ -426,7 +423,7 @@ void start_user_process(struct process *proc) {
 
   proc->state = PROC_RUNNING;
   proc->on_cpu = cpu_id();
-  enter_user_mode(proc->user_entry, proc->user_stack, proc->kernel_stack);
+  arch_enter_user_mode(proc->user_entry, proc->user_stack, proc->kernel_stack);
 }
 
 /*
@@ -771,8 +768,7 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
 
 int sys_ipc_send(int target_pid, void *msg_ptr) {
   struct ipc_message k_msg;
-  extern int copy_from_user(void *dest, const void *src, size_t n);
-  if (copy_from_user(&k_msg, msg_ptr, sizeof(struct ipc_message)) != 0) {
+  if (vmm_copy_from_user(&k_msg, msg_ptr, sizeof(struct ipc_message)) != 0) {
     return -1;
   }
   k_msg.from = current_process->pid;
@@ -783,8 +779,7 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
   /* 1. Try to pop an existing message */
   struct ipc_node *node = pop_message(current_process, src_pid);
   if (node) {
-    extern int copy_to_user(void *dest, const void *src, size_t n);
-    if (copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) != 0) {
+    if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) != 0) {
       /* Drop node and return error */
       kfree(node);
       return -1;
@@ -811,8 +806,7 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
 int sys_ipc_try_recv(int src_pid, void *msg_ptr) {
   struct ipc_node *node = pop_message(current_process, src_pid);
   if (node) {
-    extern int copy_to_user(void *dest, const void *src, size_t n);
-    if (copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) != 0) {
+    if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) != 0) {
       kfree(node);
       return -1;
     }
@@ -847,8 +841,7 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   }
   spin_unlock_irqrestore(&sched_lock, flags);
 
-  extern int copy_to_user(void *dest, const void *src, size_t n);
-  copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
+  vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
   kfree(k_buf);
   return count;
 }

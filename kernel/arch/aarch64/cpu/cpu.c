@@ -12,39 +12,18 @@
 #include <kernel/arch.h>
 #include <kernel/vmm.h>
 
-/* CPU info array (max 8 CPUs) */
-struct cpu_info cpu_data[8];
-uint32_t nr_cpus = 0;
+/* External definitions from core */
+extern struct cpu_info cpu_data[8];
+extern uint32_t nr_cpus;
 
 /* External functions from assembly */
 extern void exception_vectors_install(void);
 
 /*
- * Get current CPU ID
+ * Initialize CPU subsystem (HAL implementation)
  */
-uint32_t cpu_id(void) { return arch_get_cpu_id(); }
-
-/*
- * Get current CPU info
- */
-struct cpu_info *get_cpu_info(void) {
-  uint32_t id = cpu_id();
-  if (id >= 8) {
-    /* Manual panic to avoid infinite recursion if panic uses get_cpu_info logic
-     */
-    /* Just hang or try to output something simple */
-    /* uart_puts("CRITICAL: CPU ID OUT OF BOUNDS!\n"); */
-    while (1) {
-    }
-  }
-  return &cpu_data[id];
-}
-
-/*
- * Initialize CPU subsystem
- */
-void cpu_init(void) {
-  uint32_t id = cpu_id();
+void arch_cpu_init(void) {
+  uint32_t id = arch_get_cpu_id();
 
   cpu_data[id].cpu_id = id;
   cpu_data[id].online = 1;
@@ -180,38 +159,20 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
 }
 
 /*
- * System error handler
+ * Get kernel stack for a given CPU
  */
-struct pt_regs *serror_handler(struct pt_regs *frame) {
-  pr_err("SError at ELR=0x%016lx ESR=0x%016lx\n", frame->elr, arch_get_esr());
-  panic("SError exception");
+extern char __kernel_stack[];
+void *arch_get_kernel_stack(uint32_t cpu_id) {
+    /* Each CPU gets 128KB stack */
+    return (void *)&__kernel_stack[cpu_id * 131072];
 }
 
 /*
- * Syscall handler is defined in syscall.c
+ * Set PGD for secondary CPUs (used during boot)
  */
-extern struct pt_regs *syscall_handler(struct pt_regs *frame);
-
-/*
- * Enable interrupts (only IRQ, keep SError masked)
- */
-void local_irq_enable(void) { arch_local_irq_enable(); }
-
-/*
- * Disable interrupts
- */
-void local_irq_disable(void) { arch_local_irq_disable(); }
-
-/*
- * Save and disable interrupts
- */
-uint64_t local_irq_save(void) {
-  uint64_t flags;
-  arch_local_irq_save(&flags);
-  return flags;
+extern uint64_t secondary_ttbr0;
+void arch_vmm_set_secondary_pgd(uint64_t pgd) {
+    secondary_ttbr0 = pgd;
+    arch_cache_clean_va(&secondary_ttbr0);
+    arch_data_barrier();
 }
-
-/*
- * Restore interrupt state
- */
-void local_irq_restore(uint64_t flags) { arch_local_irq_restore(flags); }

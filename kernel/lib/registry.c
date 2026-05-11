@@ -13,9 +13,7 @@
 #include <kernel/vmm.h>
 #include <stdbool.h>
 
-extern int copy_from_user(void *dest, const void *src, size_t n);
-extern int copy_to_user(void *dest, const void *src, size_t n);
-extern int copy_string_from_user(char *dest, const char *src, size_t max_len);
+#include <kernel/vmm.h>
 
 static struct registry_entry registry_store[MAX_REGISTRY_KEYS];
 static int registry_count = 0;
@@ -99,14 +97,14 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
   char k_val[MAX_VAL_LEN];
 
   /* 1. Copy Key from User Space securely (stops at null!) */
-  if (copy_string_from_user(k_key, key, MAX_KEY_LEN) != 0) {
+  if (vmm_copy_string_from_user(k_key, key, MAX_KEY_LEN) != 0) {
     pr_err("%s", "sys_registry: Invalid key pointer\n");
     return -1;
   }
 
   if (op == REG_OP_WRITE) {
     /* 2. Copy Value from User Space securely (stops at null!) */
-    if (copy_string_from_user(k_val, value, MAX_VAL_LEN) != 0) {
+    if (vmm_copy_string_from_user(k_val, value, MAX_VAL_LEN) != 0) {
       pr_err("%s", "sys_registry: Invalid value pointer\n");
       return -1;
     }
@@ -118,7 +116,7 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
       if (copy_len > size)
         copy_len = size;
 
-      if (copy_to_user(value, k_val, copy_len) != 0) {
+      if (vmm_copy_to_user(value, k_val, copy_len) != 0) {
         pr_err("%s", "sys_registry: Failed to copy back to user\n");
         return -1;
       }

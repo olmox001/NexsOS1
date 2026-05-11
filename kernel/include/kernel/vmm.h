@@ -117,9 +117,11 @@ static inline bool vmm_is_user_addr(uint64_t addr) {
   return (addr >= 0x1000) && ((addr & 0xFFFF000000000000ULL) == 0);
 }
 
-/* User space access helpers */
-int copy_from_user(void *dest, const void *src, size_t n);
-int copy_to_user(void *dest, const void *src, size_t n);
-int copy_string_from_user(char *dest, const char *src, size_t max_len);
+/* User space access helpers (HAL) */
+#include <kernel/arch.h>
+#define vmm_copy_from_user(dest, src, n) arch_copy_from_user(dest, src, n)
+#define vmm_copy_to_user(dest, src, n) arch_copy_to_user(dest, src, n)
+#define vmm_copy_string_from_user(dest, src, max_len)                          \
+  arch_copy_string_from_user(dest, src, max_len)
 
 #endif /* _KERNEL_VMM_H */

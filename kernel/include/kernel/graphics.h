@@ -25,6 +25,7 @@ struct graphics_context {
 
 void graphics_init(void);
 struct graphics_context *graphics_get_context(void);
+struct gl_surface *graphics_get_screen_surface(void);
 void graphics_swap_buffers(void);
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,

@@ -6,7 +6,10 @@
 #include <drivers/gic.h>
 #include <drivers/uart.h>
 
-void platform_early_init(void) {
+/*
+ * Perform early platform initialization
+ */
+void arch_platform_early_init(void) {
     /* 
      * Register the Interrupt Controller.
      * In a real multi-platform build, this would be selected

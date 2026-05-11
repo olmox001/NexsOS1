@@ -99,4 +99,15 @@ list_move_tail(struct list_head *list, struct list_head *head) {
        &pos->member != (head);                                                 \
        pos = n, n = list_entry(n->member.next, typeof(*pos), member))
 
+#define list_for_each_entry_reverse(pos, head, member)                         \
+  for (pos = list_last_entry(head, typeof(*pos), member);                      \
+       &pos->member != (head);                                                 \
+       pos = list_entry(pos->member.prev, typeof(*pos), member))
+
+#define list_for_each_entry_safe_reverse(pos, n, head, member) \
+	for (pos = list_last_entry(head, typeof(*pos), member), \
+		n = list_entry(pos->member.prev, typeof(*pos), member); \
+		&pos->member != (head); \
+		pos = n, n = list_entry(n->member.prev, typeof(*pos), member))
+
 #endif /* _KERNEL_LIST_H */
