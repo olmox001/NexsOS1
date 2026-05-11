@@ -37,7 +37,7 @@ void irq_send_ipi_all(void);
 
 /* Main entry point from architecture exception vectors */
 struct pt_regs *irq_handler(struct pt_regs *regs);
-void irq_dispatch(uint32_t irq);
+struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs);
 
 #include <kernel/platform.h>
 

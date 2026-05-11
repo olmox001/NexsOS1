@@ -129,9 +129,9 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
         __arch_cpu_halt();
       } else {
         /* Hardware interrupt - route via generic system */
-        extern void irq_dispatch(uint32_t irq);
-        irq_dispatch(vec);
-        
+        extern struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs * regs);
+        regs = irq_dispatch(vec, regs);
+
         /* Send EOI via PIC chip if it was registered */
         extern void pic_send_eoi(uint8_t irq);
         pic_send_eoi(vec - 32);

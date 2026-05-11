@@ -8,6 +8,13 @@
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
 
+# Normalize ARCH typos (e.g. aaarch64 -> aarch64)
+ifeq ($(findstring aarch64,$(ARCH)),aarch64)
+    override ARCH := aarch64
+else ifeq ($(findstring amd64,$(ARCH)),amd64)
+    override ARCH := amd64
+endif
+
 # ==============================================================================
 # Configuration
 # ==============================================================================
@@ -501,15 +508,28 @@ ifeq ($(ARCH), aarch64)
 	@echo "Starting QEMU (aarch64 virt)..."
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
 else
-	@echo "Starting QEMU with disk image..."
-	$(QEMU) $(QEMU_FLAGS) -cdrom $(BUILD_DIR)/os1test.iso
+	@if [ -f $(BUILD_DIR)/os1test.iso ]; then \
+		echo "Starting QEMU with ISO image..."; \
+		$(QEMU) $(QEMU_FLAGS) -cdrom $(BUILD_DIR)/os1test.iso; \
+	else \
+		echo "ISO not found (grub-mkrescue failed)."; \
+		echo "Creating compatible 32-bit ELF for direct boot..."; \
+		$(OBJCOPY) -I elf64-x86-64 -O elf32-i386 $(KERNEL_ELF) $(BUILD_DIR)/kernel32.elf; \
+		echo "Starting QEMU via Multiboot..."; \
+		$(QEMU) $(QEMU_FLAGS) -kernel $(BUILD_DIR)/kernel32.elf; \
+	fi
 endif
 
 run-direct: all
 	@echo "Starting QEMU (direct kernel boot)..."
 	@echo "Press Ctrl+C to exit"
 	@echo ""
+ifeq ($(ARCH), aarch64)
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+else
+	$(OBJCOPY) -I elf64-x86-64 -O elf32-i386 $(KERNEL_ELF) $(BUILD_DIR)/kernel32.elf
+	$(QEMU) $(QEMU_FLAGS) -kernel $(BUILD_DIR)/kernel32.elf
+endif
 
 help:
 	@echo "$(ARCH) Kernel Build System"

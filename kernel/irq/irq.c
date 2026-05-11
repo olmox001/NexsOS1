@@ -126,10 +126,11 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
   return ret_regs;
 }
 
-void irq_dispatch(uint32_t irq) {
-    if (irq < MAX_IRQS && irq_handlers[irq].handler) {
-        irq_handlers[irq].handler(irq, irq_handlers[irq].data);
-    } else {
-        pr_warn("IRQ: Unhandled interrupt %u\n", irq);
-    }
+struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs) {
+  if (irq < MAX_IRQS && irq_handlers[irq].handler) {
+    irq_handlers[irq].handler(irq, irq_handlers[irq].data);
+  } else {
+    pr_warn("IRQ: Unhandled interrupt %u\n", irq);
+  }
+  return regs;
 }

@@ -23,9 +23,7 @@ int arch_copy_from_user(void *dest, const void *src, size_t n) {
   if (vmm_check_range(current_process->page_table, src_addr, n, PTE_VALID) != 0)
     return -1;
 
-  stac(); /* Disable SMAP protections */
   memcpy(dest, src, n);
-  clac(); /* Enable SMAP protections */
 
   return 0;
 }
@@ -39,9 +37,7 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
   if (vmm_check_range(current_process->page_table, dest_addr, n, PTE_VALID) != 0)
     return -1;
 
-  stac();
   memcpy(dest, src, n);
-  clac();
 
   return 0;
 }
@@ -50,7 +46,6 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
   if (!vmm_is_user_addr((uint64_t)src)) return -1;
   if (!current_process || !current_process->page_table) return -1;
 
-  stac();
   size_t i;
   int ret = 0;
   for (i = 0; i < max_len - 1; i++) {
@@ -64,7 +59,6 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
     if (src[i] == '\0') break;
   }
   dest[max_len - 1] = '\0';
-  clac();
 
   return ret;
 }

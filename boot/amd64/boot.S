@@ -208,7 +208,7 @@ boot_gdt:
     .quad 0x0000000000000000   /* 0x00: Null */
     .quad 0x00AF9A000000FFFF   /* 0x08: Kernel Code (64-bit, DPL=0) */
     .quad 0x00CF92000000FFFF   /* 0x10: Kernel Data (DPL=0) */
-    .quad 0x00AFFA000000FFFF   /* 0x18: User Data (DPL=3) */
+    .quad 0x00CFF2000000FFFF   /* 0x18: User Data (DPL=3) */
     .quad 0x00AFFA000000FFFF   /* 0x20: User Code (DPL=3) */
     /* 0x28: TSS (16 bytes in 64-bit mode - will be filled by kernel) */
     .quad 0x0000000000000000

@@ -12,10 +12,8 @@ SECTIONS {
     . = 1M;
     __kernel_start = .;
 
-    .multiboot : ALIGN(8) {
+    .multiboot : ALIGN(16) {
         KEEP(*(.multiboot))
-    }
-    .multiboot2 : ALIGN(8) {
         KEEP(*(.multiboot2))
     }
 

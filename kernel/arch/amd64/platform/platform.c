@@ -57,7 +57,7 @@ void arch_platform_early_init(void) {
 
   pic_init();
   pit_init();
-  __arch_local_irq_enable();
+  /* Interrupts will be enabled at the end of kernel_main */
 
   if (mb_info_ptr == 0) {
     pr_err("Multiboot2 info missing!\n");
