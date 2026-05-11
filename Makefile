@@ -48,7 +48,8 @@ OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
 
 # Directories
-BUILD_DIR  = build
+BUILD_ROOT = build
+BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
 USER_DIR   = user
 USER_LIB_DIR = $(USER_DIR)/lib
 USER_BIN_DIR = $(USER_DIR)/bin
@@ -61,6 +62,7 @@ BOOTLOADER_BIN = $(BUILD_DIR)/bootloader.bin
 KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN = $(BUILD_DIR)/kernel.bin
 USER_ELF   = $(BUILD_DIR)/init.elf
+DISK_IMG   = $(BUILD_ROOT)/disk.img
 
 
 # Compiler flags (common)
@@ -108,7 +110,8 @@ KERN_C_SOURCES = \
     $(ARCH_DIR)/mm/uaccess.c \
     $(ARCH_DIR)/drivers/uart_16550.c \
     $(ARCH_DIR)/drivers/pic_pit.c \
-    $(ARCH_DIR)/platform/platform.c
+    $(ARCH_DIR)/platform/platform.c \
+    $(KERNEL_DIR)/drivers/pci/pci.c
 else
 # Bootloader sources
 BOOT_SOURCES = \
@@ -204,10 +207,10 @@ else
 all: dirs bootloader kernel user $(MKDISK) disk
 	@echo ""
 	@echo "Build complete!"
-	@echo "  Disk Image: build/disk.img"
+	@echo "  Disk Image: $(BUILD_DIR)/disk.img"
 	@echo "  Kernel:     $(KERNEL_ELF)"
 	@echo ""
-	@echo "Run with: make run"
+	@echo "Run with: make run ARCH=$(ARCH)"
 	@echo ""
 endif
 
@@ -231,6 +234,7 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/sched
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/graphics
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/irq
+	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/pci
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/core
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/lib
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
@@ -396,14 +400,14 @@ QEMU_FLAGS = -m 1G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-pci \
              -device virtio-keyboard-pci -device virtio-mouse-pci \
-             -drive if=none,file=build/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0
+             -drive if=none,file=$(BUILD_DIR)/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0
 else
 QEMU = qemu-system-aarch64
 QEMU_FLAGS = -M virt -cpu cortex-a57 -m 1G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \
-             -drive if=none,file=build/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0
+             -drive if=none,file=$(BUILD_DIR)/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0
 endif
 
 # Run with the final disk image (Unified)
@@ -493,7 +497,7 @@ $(MKDISK): tools/mkdisk.c
 	@gcc -o $(MKDISK) tools/mkdisk.c
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_ROOT)
 	@echo "Build directory cleaned"
 
 # ==============================================================================
