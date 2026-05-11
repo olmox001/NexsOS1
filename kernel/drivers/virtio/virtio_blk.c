@@ -64,6 +64,10 @@ void virtio_blk_init(void) {
     qsize = qmax;
 
   virtio_blk_qsize = qsize;
+  if (virtio_blk_qsize == 0) {
+    pr_err("%s", "VirtIO-Blk: Invalid queue size (0)!\n");
+    return;
+  }
   virtio_write_reg(base, VIRTIO_MMIO_QUEUE_NUM, qsize);
 
   /* Legacy queue setup */
@@ -88,9 +92,9 @@ void virtio_blk_init(void) {
     used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
     uint64_t q_phys = (uint64_t)qmem;
+    pr_info("VirtIO: Queue 0 setup (Legacy). Desc: %p, PFN: 0x%lx, Size: %d\n", 
+            (void *)desc, q_phys >> 12, qsize);
     virtio_write_reg(base, VIRTIO_MMIO_QUEUE_PFN, q_phys >> 12);
-
-    pr_info("VirtIO: Queue 0 setup (Legacy). Desc: %p\n", (void *)desc);
   }
 
   /* Driver OK */
@@ -152,12 +156,12 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   volatile uint16_t *used_idx_ptr = &used->idx;
 
   /* Notify */
-  virtio_write_reg(virtio_blk_base, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+  virtio_notify(virtio_blk_base, 0);
 
   /* Poll Used Ring (Busy Wait) */
-  uint64_t timeout = 1000000;
+  uint64_t timeout = 2000000;
   while (*used_idx_ptr == old_idx && timeout > 0) {
-    __asm__ volatile("nop");
+    arch_yield();
     timeout--;
   }
 
@@ -213,7 +217,7 @@ int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
   avail->idx++;
   arch_data_barrier();
 
-  virtio_write_reg(virtio_blk_base, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+  virtio_notify(virtio_blk_base, 0);
 
   volatile uint16_t *used_idx_ptr_w = &used->idx;
   uint16_t last_wait_idx_w = *used_idx_ptr_w;

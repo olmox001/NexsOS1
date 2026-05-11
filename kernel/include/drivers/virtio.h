@@ -87,15 +87,12 @@ struct vring_used {
 };
 
 /* Arch abstraction */
-#ifdef ARCH_AARCH64
-#define virtio_read_reg arch_virtio_read32
-#define virtio_write_reg arch_virtio_write32
-#else
 uint32_t virtio_read_reg(uintptr_t base, uint32_t offset);
 void virtio_write_reg(uintptr_t base, uint32_t offset, uint32_t value);
-#endif
+void virtio_notify(uintptr_t base, uint32_t queue_idx);
 
 int arch_virtio_probe(uint32_t device_id, uintptr_t *out_base,
                       uint32_t *out_irq);
+uintptr_t arch_virtio_register_pci(uint32_t bdf);
 
 #endif /* _DRIVERS_VIRTIO_H */

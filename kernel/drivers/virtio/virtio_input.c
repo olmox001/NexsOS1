@@ -47,66 +47,9 @@ static volatile uint32_t input_tail = 0;
 static void virtio_input_handler(uint32_t irq, void *data);
 
 /* Helper macros / functions for transport abstraction */
-static inline uint32_t v_read32(struct virtio_input_dev *dev, uint32_t off) {
-#ifdef ARCH_AMD64
-  if (dev->is_pci) {
-    /* Legacy PCI I/O mapping */
-    uint16_t port = (uint16_t)dev->base;
-    switch (off) {
-    case VIRTIO_MMIO_MAGIC_VALUE:
-      return 0x74726976;
-    case VIRTIO_MMIO_VERSION:
-      return 1;
-    case VIRTIO_MMIO_DEVICE_ID:
-      return 18;
-    case VIRTIO_MMIO_STATUS:
-      return inb(port + 0x12);
-    case VIRTIO_MMIO_INTERRUPT_STATUS:
-      return inb(port + 0x13);
-    case VIRTIO_MMIO_QUEUE_NUM_MAX:
-      outw(port + 0x0E, 0); // Select queue 0
-      return inw(port + 0x0C);
-    }
-    return 0;
-  }
-#endif
-  return (*(volatile uint32_t *)((dev->base) + (off)));
-}
-
-static inline void v_write32(struct virtio_input_dev *dev, uint32_t off,
-                             uint32_t val) {
-#ifdef ARCH_AMD64
-  if (dev->is_pci) {
-    uint16_t port = (uint16_t)dev->base;
-    switch (off) {
-    case VIRTIO_MMIO_STATUS:
-      outb(port + 0x12, (uint8_t)val);
-      break;
-    case VIRTIO_MMIO_DRIVER_FEATURES:
-      outl(port + 0x04, val);
-      break;
-    case VIRTIO_MMIO_QUEUE_SEL:
-      outw(port + 0x0E, (uint16_t)val);
-      break;
-    case VIRTIO_MMIO_QUEUE_NUM:
-      outw(port + 0x0C, (uint16_t)val);
-      break;
-    case VIRTIO_MMIO_QUEUE_PFN:
-      outl(port + 0x08, val);
-      break;
-    case VIRTIO_MMIO_QUEUE_NOTIFY:
-      outw(port + 0x10, (uint16_t)val);
-      break;
-    case VIRTIO_MMIO_INTERRUPT_ACK:
-      /* Legacy PCI ACK is implicit on reading ISR status,
-         but we can write to it if needed. */
-      break;
-    }
-    return;
-  }
-#endif
-  (*(volatile uint32_t *)((dev->base) + (off)) = (val));
-}
+#define v_read32(dev, off) virtio_read_reg((dev)->base, (off))
+#define v_write32(dev, off, val) virtio_write_reg((dev)->base, (off), (val))
+#define v_notify(dev, q) virtio_notify((dev)->base, (q))
 
 static void virtio_input_add_event(uint16_t type, uint16_t code,
                                    int32_t value) {
@@ -196,10 +139,9 @@ static void init_device(uintptr_t base, uint32_t irq, int is_pci) {
   irq_register(irq, virtio_input_handler, dev);
 
   /* Notify device */
-  v_write32(dev, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+  v_notify(dev, 0);
 
   dev->active = 1;
-  pr_info("VirtIO-Input: Device at 0x%lx initialized, IRQ %u\n", base, irq);
 }
 
 static void virtio_input_handler(uint32_t irq, void *data) {
@@ -253,7 +195,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
     dev->last_used_idx++;
   }
 
-  v_write32(dev, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+  v_notify(dev, 0);
   if (needs_render) {
     compositor_render();
   }
@@ -264,29 +206,21 @@ void virtio_input_init(void) {
 
 #ifdef ARCH_AMD64
   /* Probe PCI for VirtIO Input devices */
-  /* Vendor 1AF4, Device 1000-103F. Legacy Input is usually around 0x1012 or
-   * matches subsystem. */
-  /* For QEMU, we scan all VirtIO devices and check their subsystem ID or Device
-   * ID. */
   for (int dev = 0; dev < 32; dev++) {
+    uint32_t bdf = (0 << 16) | (dev << 8) | 0;
     uint32_t id = pci_config_read(0, dev, 0, 0);
     if ((id & 0xFFFF) == 0x1AF4) {
       uint16_t devid = id >> 16;
-      /* Legacy VirtIO-PCI Device IDs: 0x1000-0x103F.
-         The actual device type is often in the Subsystem Device ID. */
       uint32_t subsys = pci_config_read(0, dev, 0, 0x2C);
       uint16_t virtio_id = subsys >> 16;
 
-      if (virtio_id == 18 || (devid >= 0x1000 && devid <= 0x103F &&
-                              (pci_config_read(0, dev, 0, 0x08) >> 24) == 0)) {
-        /* Found a potential VirtIO Input device */
-        uint32_t bar0 = pci_get_bar((0 << 16) | (dev << 8) | 0, 0);
-        if (bar0 & 1) { /* I/O BAR */
-          uintptr_t iobase = bar0 & ~3;
-          uint32_t irq = pci_get_interrupt((0 << 16) | (dev << 8) | 0);
-          /* In QEMU/x86 with PIC, we need to map the IRQ.
-             PCI IRQs are usually 10, 11, etc. */
-          init_device(iobase, 32 + irq, 1);
+      if (virtio_id == 18 || (devid >= 0x1040 && devid <= 0x107F && (devid - 0x1040) == 18) ||
+          (devid >= 0x1000 && devid <= 0x103F && (pci_config_read(0, dev, 0, 0x08) >> 24) == 0)) {
+        
+        uintptr_t handle = arch_virtio_register_pci(bdf);
+        if (handle) {
+          uint32_t irq = 32 + pci_get_interrupt(bdf);
+          init_device(handle, irq, 1);
         }
       }
     }
@@ -294,9 +228,8 @@ void virtio_input_init(void) {
 #else
   /* Probe MMIO slots for AArch64 */
   for (uintptr_t addr = 0x0a000000; addr <= 0x0a003e00; addr += 0x200) {
-    uint32_t magic = (*(volatile uint32_t *)(addr + 0));
-    uint32_t devid = (*(volatile uint32_t *)(addr + 8));
-    if (magic == 0x74726976 && devid == 18) {
+    if (virtio_read_reg(addr, VIRTIO_MMIO_MAGIC_VALUE) == 0x74726976 &&
+        virtio_read_reg(addr, VIRTIO_MMIO_DEVICE_ID) == 18) {
       uint32_t slot = (addr - 0x0a000000) / 0x200;
       init_device(addr, 48 + slot, 0);
     }

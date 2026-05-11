@@ -128,11 +128,11 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
   avail->idx++;
   arch_data_barrier();
 
-  virtio_write_reg(priv->base, VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+  virtio_notify(priv->base, 0);
 
   uint64_t timeout = 100000000;
   while (*idx_ptr == old_idx && timeout > 0) {
-    __asm__ volatile("nop");
+    arch_yield();
     timeout--;
   }
 
@@ -151,6 +151,16 @@ void virtio_gpu_init(void) {
 
   if (arch_virtio_probe(VIRTIO_DEV_GPU, &base, &irq) == 0) {
     pr_info("VirtIO-GPU: Found at 0x%016lx (IRQ %u)\n", base, irq);
+
+    /* Map MMIO if it's a Modern (MMIO) device */
+    if (base & (1ULL << 62)) {
+      uintptr_t phys = base & ~(1ULL << 62);
+      extern uint64_t *kernel_pgd;
+      for (int i = 0; i < 4; i++) {
+        vmm_map_page(kernel_pgd, phys + i * 4096, phys + i * 4096, PAGE_DEVICE);
+      }
+      pr_info("VirtIO-GPU: MMIO mapped at 0x%lx\n", phys);
+    }
 
     struct gpu_device *dev = kmalloc(sizeof(struct gpu_device));
     struct virtio_gpu_state *priv = kmalloc(sizeof(struct virtio_gpu_state));
