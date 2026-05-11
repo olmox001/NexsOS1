@@ -149,18 +149,8 @@ void virtio_gpu_init(void) {
   uintptr_t base = 0;
   uint32_t irq = 0;
 
-  if (arch_virtio_probe(VIRTIO_DEV_GPU, &base, &irq) == 0) {
-    pr_info("VirtIO-GPU: Found at 0x%016lx (IRQ %u)\n", base, irq);
-
-    /* Map MMIO if it's a Modern (MMIO) device */
-    if (base & (1ULL << 62)) {
-      uintptr_t phys = base & ~(1ULL << 62);
-      extern uint64_t *kernel_pgd;
-      for (int i = 0; i < 4; i++) {
-        vmm_map_page(kernel_pgd, phys + i * 4096, phys + i * 4096, PAGE_DEVICE);
-      }
-      pr_info("VirtIO-GPU: MMIO mapped at 0x%lx\n", phys);
-    }
+  if (arch_virtio_get_device(VIRTIO_DEV_GPU, 0, &base, &irq) == 0) {
+    pr_info("VirtIO-GPU: Found device at handle 0x%016lx (IRQ %u)\n", base, irq);
 
     struct gpu_device *dev = kmalloc(sizeof(struct gpu_device));
     struct virtio_gpu_state *priv = kmalloc(sizeof(struct virtio_gpu_state));
@@ -201,7 +191,6 @@ void virtio_gpu_init(void) {
     uint32_t qmax = virtio_read_reg(base, VIRTIO_MMIO_QUEUE_NUM_MAX);
     priv->qsize = (qmax > 16) ? 16 : qmax;
     virtio_write_reg(base, VIRTIO_MMIO_QUEUE_NUM, priv->qsize);
-    virtio_write_reg(base, VIRTIO_MMIO_GUEST_PAGE_SIZE, 4096);
 
     void *qmem = pmm_alloc_pages(2);
     memset(qmem, 0, 8192);
@@ -212,7 +201,9 @@ void virtio_gpu_init(void) {
     vmm_map_page(kernel_pgd, (uint64_t)qmem, (uint64_t)qmem, PAGE_DEVICE);
     vmm_map_page(kernel_pgd, (uint64_t)qmem + 4096, (uint64_t)qmem + 4096,
                  PAGE_DEVICE);
-    virtio_write_reg(base, VIRTIO_MMIO_QUEUE_PFN, (uint64_t)qmem >> 12);
+
+    /* Use unified HAL API for queue setup */
+    virtio_setup_queue(base, 0, (uint64_t)desc, (uint64_t)avail, (uint64_t)used);
 
     if (!gpu_cmd_buf)
       gpu_cmd_buf = pmm_alloc_page();

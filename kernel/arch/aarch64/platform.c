@@ -17,3 +17,8 @@ void arch_platform_early_init(void) {
      */
     gic_register();
 }
+
+struct mem_region *arch_platform_get_mem_regions(size_t *count) {
+    if (count) *count = 0;
+    return NULL;
+}

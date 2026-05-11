@@ -5,6 +5,7 @@
 #include <arch/amd64_internal.h>
 #include <arch/arch.h>
 #include <kernel/pmm.h>
+#include <kernel/platform.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
 #include <kernel/types.h>
@@ -42,6 +43,21 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
   /* Switch to the new kernel PML4 */
   arch_vmm_set_pgd(kernel_pgd);
   pr_info("AMD64 VMM: Switched to kernel PGD at %p\n", (void *)kernel_pgd);
+
+  /* Identity map all detected RAM regions */
+  size_t count = 0;
+  struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  for (size_t i = 0; i < count; i++) {
+    if (regions[i].type == MEM_REGION_USABLE) {
+      pr_info("AMD64 VMM: Identity mapping RAM 0x%lx - 0x%lx\n", 
+              regions[i].base, regions[i].base + regions[i].size);
+      arch_vmm_map_range(kernel_pgd, regions[i].base, regions[i].base, 
+                         regions[i].size, PTE_RW); /* Kernel RW */
+    }
+  }
+
+  /* Identity map MMIO regions (LAPIC, VirtIO) */
+  arch_vmm_map_mmio((uint64_t *)kernel_pgd);
 }
 
 void arch_vmm_map_mmio(uint64_t *pgd) {
@@ -80,6 +96,11 @@ int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags) {
   /* AArch64 uses PTE_UXN / PTE_PXN. If both are set, it's not executable. */
   if ((flags & PTE_UXN) && (flags & PTE_PXN))
     x86_flags |= X86_PTE_NX;
+
+  /* Handle Device attribute (uncached/write-through) */
+  if (((flags >> 2) & 0x7) == PTE_ATTR_DEVICE) {
+    x86_flags |= X86_PTE_PCD | X86_PTE_PWT;
+  }
 
   /* PML4 -> PDPT */
   int pml4_idx = PML4_INDEX(va);

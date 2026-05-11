@@ -91,8 +91,12 @@ uint32_t virtio_read_reg(uintptr_t base, uint32_t offset);
 void virtio_write_reg(uintptr_t base, uint32_t offset, uint32_t value);
 void virtio_notify(uintptr_t base, uint32_t queue_idx);
 
-int arch_virtio_probe(uint32_t device_id, uintptr_t *out_base,
-                      uint32_t *out_irq);
 uintptr_t arch_virtio_register_pci(uint32_t bdf);
+void arch_virtio_scan(void);
+void virtio_setup_queue(uintptr_t base, uint32_t queue_idx, uint64_t desc,
+                        uint64_t avail, uint64_t used);
+int arch_virtio_get_count(uint32_t device_id);
+int arch_virtio_get_device(uint32_t device_id, int index, uintptr_t *out_base,
+                           uint32_t *out_irq);
 
 #endif /* _DRIVERS_VIRTIO_H */

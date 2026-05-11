@@ -28,7 +28,7 @@ void virtio_blk_init(void) {
   uintptr_t base = 0;
   uint32_t irq = 0;
 
-  if (arch_virtio_probe(VIRTIO_DEV_BLOCK, &base, &irq) == 0) {
+  if (arch_virtio_get_device(VIRTIO_DEV_BLOCK, 0, &base, &irq) == 0) {
     pr_info("VirtIO: Found Block Device at 0x%016lx (IRQ %u)\n", base, irq);
     virtio_blk_base = base;
   } else {
@@ -59,10 +59,7 @@ void virtio_blk_init(void) {
   /* Queue 0 setup */
   virtio_write_reg(base, VIRTIO_MMIO_QUEUE_SEL, 0);
   uint32_t qmax = virtio_read_reg(base, VIRTIO_MMIO_QUEUE_NUM_MAX);
-  uint32_t qsize = 16;
-  if (qsize > qmax)
-    qsize = qmax;
-
+  uint32_t qsize = (qmax > 16) ? 16 : qmax;
   virtio_blk_qsize = qsize;
   if (virtio_blk_qsize == 0) {
     pr_err("%s", "VirtIO-Blk: Invalid queue size (0)!\n");
@@ -70,32 +67,24 @@ void virtio_blk_init(void) {
   }
   virtio_write_reg(base, VIRTIO_MMIO_QUEUE_NUM, qsize);
 
-  /* Legacy queue setup */
-  if (version == 1) {
-    virtio_write_reg(base, VIRTIO_MMIO_GUEST_PAGE_SIZE, 4096);
-
-    void *qmem = pmm_alloc_pages(2);
-    if (!qmem) {
-      pr_err("%s", "VirtIO: Failed to allocate queue memory\n");
-      return;
-    }
-    memset(qmem, 0, 8192);
-
-    /* Map rings */
-    extern uint64_t *kernel_pgd;
-    vmm_map_page(kernel_pgd, (uint64_t)qmem, (uint64_t)qmem, PAGE_DEVICE);
-    vmm_map_page(kernel_pgd, (uint64_t)qmem + 4096, (uint64_t)qmem + 4096,
-                 PAGE_DEVICE);
-
-    desc = (struct vring_desc *)qmem;
-    avail = (struct vring_avail *)((uint8_t *)qmem + qsize * 16);
-    used = (struct vring_used *)((uint8_t *)qmem + 4096);
-
-    uint64_t q_phys = (uint64_t)qmem;
-    pr_info("VirtIO: Queue 0 setup (Legacy). Desc: %p, PFN: 0x%lx, Size: %d\n", 
-            (void *)desc, q_phys >> 12, qsize);
-    virtio_write_reg(base, VIRTIO_MMIO_QUEUE_PFN, q_phys >> 12);
+  void *qmem = pmm_alloc_pages(2);
+  if (!qmem) {
+    pr_err("%s", "VirtIO: Failed to allocate queue memory\n");
+    return;
   }
+  memset(qmem, 0, 8192);
+
+  desc = (struct vring_desc *)qmem;
+  avail = (struct vring_avail *)((uint8_t *)qmem + qsize * 16);
+  used = (struct vring_used *)((uint8_t *)qmem + 4096);
+
+  /* Map rings for hardware visibility (Critical for AArch64) */
+  extern uint64_t *kernel_pgd;
+  vmm_map_page(kernel_pgd, (uint64_t)qmem, (uint64_t)qmem, PAGE_DEVICE);
+  vmm_map_page(kernel_pgd, (uint64_t)qmem + 4096, (uint64_t)qmem + 4096, PAGE_DEVICE);
+
+  /* Unified HAL API handles Legacy/Modern address registration */
+  virtio_setup_queue(base, 0, (uint64_t)desc, (uint64_t)avail, (uint64_t)used);
 
   /* Driver OK */
   status |= VIRTIO_STATUS_DRIVER_OK;

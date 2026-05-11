@@ -16,6 +16,8 @@ struct virtio_pci_dev {
     uint32_t notify_off_multiplier;
     uint8_t is_modern;
     uint16_t legacy_port;
+    uint16_t device_id;
+    uint32_t irq;
 };
 
 static struct virtio_pci_dev virtio_devices[MAX_VIRTIO_DEVS];
@@ -117,6 +119,29 @@ void virtio_notify(uintptr_t handle, uint32_t queue_idx) {
     }
 }
 
+static uint32_t pci_get_bar_size(uint32_t bdf, int bar_index) {
+    uint8_t bus = (bdf >> 16) & 0xFF;
+    uint8_t dev = (bdf >> 8) & 0xFF;
+    uint8_t func = bdf & 0xFF;
+    uint8_t offset = 0x10 + (bar_index * 4);
+    
+    uint32_t old = pci_config_read(bus, dev, func, offset);
+    pci_config_write(bus, dev, func, offset, 0xFFFFFFFF);
+    uint32_t size_mask = pci_config_read(bus, dev, func, offset);
+    pci_config_write(bus, dev, func, offset, old);
+
+    if (size_mask == 0) return 0;
+    
+    /* Clear flags */
+    if (size_mask & 1) { /* I/O */
+        size_mask &= ~0x3;
+    } else { /* Memory */
+        size_mask &= ~0xF;
+    }
+    
+    return ~size_mask + 1;
+}
+
 static uintptr_t register_vdev(uint32_t bdf, uint16_t v_id, int is_modern) {
     (void)v_id;
     if (virtio_dev_count >= MAX_VIRTIO_DEVS) return 0;
@@ -126,17 +151,20 @@ static uintptr_t register_vdev(uint32_t bdf, uint16_t v_id, int is_modern) {
     if (is_modern) {
         uint8_t dev_pci = (bdf >> 8) & 0xFF;
         /* Modern: Scan capabilities for Common and Notify configs */
-        for (uint8_t ptr = 0x40; ptr <= 0xFC; ptr++) {
+        for (uint8_t ptr = pci_config_read(0, dev_pci, 0, 0x34) & 0xFF; ptr >= 0x40; ) {
             uint32_t val = pci_config_read(0, dev_pci, 0, ptr);
-            if ((val & 0xFF) == 0x09) { /* Vendor Specific */
+            if ((val & 0xFF) == 0x09) { /* Vendor Specific (VirtIO Capability) */
                 uint8_t type = (val >> 24) & 0xFF;
                 uint8_t bar = pci_config_read(0, dev_pci, 0, ptr + 4) & 0xFF;
                 uint32_t off = pci_config_read(0, dev_pci, 0, ptr + 8);
                 uintptr_t bar_phys = pci_get_bar(bdf, bar) & ~0xF;
+                uint32_t bar_size = pci_get_bar_size(bdf, bar);
 
-                /* Map BAR for MMIO */
+                /* Map the whole BAR dynamically */
                 extern uint64_t *kernel_pgd;
-                for(int p=0; p<4; p++) vmm_map_page(kernel_pgd, bar_phys + p*4096, bar_phys + p*4096, PAGE_DEVICE);
+                for (uint32_t p = 0; p < bar_size; p += 4096) {
+                    vmm_map_page(kernel_pgd, bar_phys + p, bar_phys + p, PAGE_DEVICE);
+                }
 
                 if (type == 1) vdev->common_base = bar_phys + off;
                 if (type == 2) {
@@ -144,6 +172,7 @@ static uintptr_t register_vdev(uint32_t bdf, uint16_t v_id, int is_modern) {
                     vdev->notify_off_multiplier = pci_config_read(0, dev_pci, 0, ptr + 12);
                 }
             }
+            ptr = (val >> 8) & 0xFF;
         }
         if (!vdev->common_base) return 0;
     } else {
@@ -154,30 +183,14 @@ static uintptr_t register_vdev(uint32_t bdf, uint16_t v_id, int is_modern) {
     }
 
     uintptr_t handle = VIRTIO_HANDLE_FLAG | virtio_dev_count;
+    vdev->device_id = v_id;
+    vdev->irq = 32 + pci_get_interrupt(bdf);
     virtio_dev_count++;
     return handle;
 }
 
-uintptr_t arch_virtio_register_pci(uint32_t bdf) {
-    uint32_t id = pci_config_read(0, (bdf >> 8) & 0x1F, 0, 0);
-    if (id == 0xFFFFFFFF) return 0;
-
-    uint16_t pci_devid = id >> 16;
-    uint16_t v_id = 0;
-    int is_modern = 0;
-
-    if (pci_devid >= 0x1040 && pci_devid <= 0x107F) {
-        v_id = pci_devid - 0x1040;
-        is_modern = 1;
-    } else if (pci_devid >= 0x1000 && pci_devid <= 0x103F) {
-        v_id = pci_config_read(0, (bdf >> 8) & 0x1F, 0, 0x2C) >> 16;
-    }
-
-    if (v_id == 0) return 0;
-    return register_vdev(bdf, v_id, is_modern);
-}
-
-int arch_virtio_probe(uint32_t device_id, uintptr_t *out_handle, uint32_t *out_irq) {
+void arch_virtio_scan(void) {
+    virtio_dev_count = 0;
     for (int dev = 0; dev < 32; dev++) {
         uint32_t bdf = (0 << 16) | (dev << 8) | 0;
         uint32_t id = pci_config_read(0, dev, 0, 0);
@@ -187,6 +200,7 @@ int arch_virtio_probe(uint32_t device_id, uintptr_t *out_handle, uint32_t *out_i
         uint16_t v_id = 0;
         int is_modern = 0;
 
+        /* VirtIO PCI IDs: 0x1000-0x103F (Legacy), 0x1040-0x107F (Modern) */
         if (pci_devid >= 0x1040 && pci_devid <= 0x107F) {
             v_id = pci_devid - 0x1040;
             is_modern = 1;
@@ -194,13 +208,65 @@ int arch_virtio_probe(uint32_t device_id, uintptr_t *out_handle, uint32_t *out_i
             v_id = pci_config_read(0, dev, 0, 0x2C) >> 16;
         }
 
-        if (v_id == device_id) {
-            uintptr_t handle = register_vdev(bdf, v_id, is_modern);
-            if (!handle) return -1;
+        if (v_id != 0) {
+            register_vdev(bdf, v_id, is_modern);
+        }
+    }
+}
 
-            if (out_handle) *out_handle = handle;
-            if (out_irq) *out_irq = 32 + pci_get_interrupt(bdf);
-            return 0;
+
+uintptr_t arch_virtio_register_pci(uint32_t bdf) {
+    /* Check if already registered */
+    /* (Not strictly needed if we scan all at boot) */
+    uint32_t id = pci_config_read(0, (bdf >> 8) & 0x1F, 0, 0);
+    uint16_t pci_devid = id >> 16;
+    uint16_t v_id = 0;
+    int is_modern = 0;
+    if (pci_devid >= 0x1040 && pci_devid <= 0x107F) { v_id = pci_devid - 0x1040; is_modern = 1; }
+    else if (pci_devid >= 0x1000 && pci_devid <= 0x103F) { v_id = pci_config_read(0, (bdf >> 8) & 0x1F, 0, 0x2C) >> 16; }
+    
+    return register_vdev(bdf, v_id, is_modern);
+}
+void virtio_setup_queue(uintptr_t handle, uint32_t queue_idx, uint64_t desc_addr, uint64_t avail_addr, uint64_t used_addr) {
+    if (!(handle & VIRTIO_HANDLE_FLAG)) return;
+    int idx = handle & 0xFF;
+    struct virtio_pci_dev *dev = &virtio_devices[idx];
+
+    if (dev->is_modern) {
+        /* Write to Common Config */
+        *(volatile uint16_t *)(dev->common_base + 0x16) = (uint16_t)queue_idx; /* queue_select */
+        *(volatile uint32_t *)(dev->common_base + 0x20) = (uint32_t)(desc_addr & 0xFFFFFFFF);
+        *(volatile uint32_t *)(dev->common_base + 0x24) = (uint32_t)(desc_addr >> 32);
+        *(volatile uint32_t *)(dev->common_base + 0x28) = (uint32_t)(avail_addr & 0xFFFFFFFF);
+        *(volatile uint32_t *)(dev->common_base + 0x2C) = (uint32_t)(avail_addr >> 32);
+        *(volatile uint32_t *)(dev->common_base + 0x30) = (uint32_t)(used_addr & 0xFFFFFFFF);
+        *(volatile uint32_t *)(dev->common_base + 0x34) = (uint32_t)(used_addr >> 32);
+        *(volatile uint16_t *)(dev->common_base + 0x1C) = 1; /* queue_enable */
+    } else {
+        /* Legacy: Write to I/O Ports */
+        outw(dev->legacy_port + 0x0E, (uint16_t)queue_idx);
+        outl(dev->legacy_port + 0x08, (uint32_t)(desc_addr >> 12));
+    }
+}
+
+int arch_virtio_get_count(uint32_t device_id) {
+    int count = 0;
+    for (int i = 0; i < virtio_dev_count; i++) {
+        if (virtio_devices[i].device_id == device_id) count++;
+    }
+    return count;
+}
+
+int arch_virtio_get_device(uint32_t device_id, int index, uintptr_t *out_base, uint32_t *out_irq) {
+    int current = 0;
+    for (int i = 0; i < virtio_dev_count; i++) {
+        if (virtio_devices[i].device_id == device_id) {
+            if (current == index) {
+                if (out_base) *out_base = VIRTIO_HANDLE_FLAG | i;
+                if (out_irq) *out_irq = virtio_devices[i].irq;
+                return 0;
+            }
+            current++;
         }
     }
     return -1;

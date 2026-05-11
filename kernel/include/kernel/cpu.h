@@ -32,8 +32,10 @@ struct cpu_info {
   struct process *deferred_free_proc;
 };
 
+#define MAX_CPUS 8
+
 /* API */
-extern struct cpu_info cpu_data[8];
+extern struct cpu_info cpu_data[MAX_CPUS];
 struct cpu_info *get_cpu_info(void);
 
 /* These are now provided by arch.h HAL macros/functions */

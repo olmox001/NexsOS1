@@ -11,15 +11,31 @@
 
 extern void uart_init(void);
 extern void pic_init(void);
-extern void pit_init(void);
+extern void pit_init_hz(uint32_t hz);
 
 /* Defined in multiboot2 header passed by boot.S */
 extern uint64_t mb_info_ptr;
 
-/* Minimal Multiboot2 tags we care about */
-#define MB2_TAG_TYPE_END 0
-#define MB2_TAG_TYPE_MMAP 6
-#define MB2_TAG_TYPE_BASIC_MEMINFO 4
+/* PVH Start Info */
+struct hvm_start_info {
+  uint32_t magic;
+  uint32_t version;
+  uint32_t flags;
+  uint32_t nr_modules;
+  uint64_t modlist_paddr;
+  uint64_t cmdline_paddr;
+  uint64_t rsdp_paddr;
+  uint64_t memmap_paddr;
+  uint32_t memmap_entries;
+  uint32_t reserved;
+};
+
+struct hvm_memmap_table_entry {
+  uint64_t addr;
+  uint64_t len;
+  uint32_t type;
+  uint32_t reserved;
+};
 
 struct mb2_tag {
   uint32_t type;
@@ -41,81 +57,126 @@ struct mb2_tag_mmap {
   struct mb2_mmap_entry entries[];
 };
 
-struct mb2_tag_basic_meminfo {
-  uint32_t type;
-  uint32_t size;
+struct mb1_info {
+  uint32_t flags;
   uint32_t mem_lower;
   uint32_t mem_upper;
+  uint32_t boot_device;
+  uint32_t cmdline;
+  uint32_t mods_count;
+  uint32_t mods_addr;
+  uint32_t syms[4];
+  uint32_t mmap_len;
+  uint32_t mmap_addr;
 };
+
+/* Global memory regions for PMM */
+static struct mem_region arch_mem_regions[32];
+static size_t arch_region_count = 0;
+
+/* Minimal Multiboot2 tags we care about */
+#define MB2_TAG_TYPE_END 0
+#define MB2_TAG_TYPE_MMAP 6
+#define MB2_TAG_TYPE_BASIC_MEMINFO 4
+
+struct mem_region *arch_platform_get_mem_regions(size_t *count) {
+  if (count) *count = arch_region_count;
+  return arch_mem_regions;
+}
 
 /* Platform timer ticks (dummy for now) */
 volatile uint64_t jiffies = 0;
 
+extern uint64_t mb_magic;
+
 void arch_platform_early_init(void) {
   uart_init();
-  pr_info("AMD64 Platform Initialization\n");
+  pr_info("AMD64 Platform Initialization (Magic: 0x%lx)\n", mb_magic);
 
   pic_init();
-  pit_init();
-  /* Interrupts will be enabled at the end of kernel_main */
+  pit_init_hz(100);
 
   if (mb_info_ptr == 0) {
-    pr_warn("Multiboot2 info missing! Proceeding with fallback (128MB RAM).\n");
-    pmm_init_region(0x1000000, 128UL * 1024 * 1024 - 0x1000000);
-    return;
+    panic("Boot information missing!\n");
   }
 
-  uint8_t *mb_data = (uint8_t *)(uint64_t)mb_info_ptr;
-  uint32_t total_size = *(uint32_t *)mb_data;
-  pr_info("Multiboot2 structure size: %u bytes\n", total_size);
+  arch_region_count = 0;
 
-  /* PMM limits */
-  uint64_t max_ram = 0;
+  if (mb_magic == 0x2BADB002) {
+    /* Multiboot v1 */
+    struct mb1_info *mb1 = (struct mb1_info *)mb_info_ptr;
+    pr_info("Multiboot v1: Upper memory %u KB\n", mb1->mem_upper);
 
-  /* Parse tags */
-  struct mb2_tag *tag = (struct mb2_tag *)(mb_data + 8);
-  while (tag->type != MB2_TAG_TYPE_END) {
-    if (tag->type == MB2_TAG_TYPE_BASIC_MEMINFO) {
-      struct mb2_tag_basic_meminfo *mem = (struct mb2_tag_basic_meminfo *)tag;
-      pr_info("Lower Memory: %u KB, Upper Memory: %u KB\n", mem->mem_lower,
-              mem->mem_upper);
-    } else if (tag->type == MB2_TAG_TYPE_MMAP) {
-      struct mb2_tag_mmap *mmap = (struct mb2_tag_mmap *)tag;
-      uint32_t entry_size = mmap->entry_size;
-      uint32_t num_entries =
-          (mmap->size - sizeof(struct mb2_tag_mmap)) / entry_size;
-
-      for (uint32_t i = 0; i < num_entries; i++) {
-        struct mb2_mmap_entry *entry =
-            (struct mb2_mmap_entry *)((uint8_t *)mmap->entries +
-                                      i * entry_size);
-        pr_info("MMAP: Base 0x%lx, Length 0x%lx, Type %u\n", entry->addr,
-                entry->len, entry->type);
-
-        /* Type 1 is available RAM */
-        if (entry->type == 1) {
-          uint64_t end = entry->addr + entry->len;
-          if (end > max_ram)
-            max_ram = end;
+    if (mb1->flags & (1 << 6)) { /* MMAP available */
+      uint32_t mmap_ptr = mb1->mmap_addr;
+      uint32_t mmap_len = mb1->mmap_len;
+      uint32_t processed = 0;
+      
+      while (processed < mmap_len && arch_region_count < 32) {
+          /* MB1 entries have a size field at the beginning, followed by addr, len, type */
+          uint32_t size = *(uint32_t *)(uintptr_t)mmap_ptr;
+          struct mb2_mmap_entry *entry = (struct mb2_mmap_entry *)(uintptr_t)(mmap_ptr + 4);
+          
+          arch_mem_regions[arch_region_count].base = entry->addr;
+          arch_mem_regions[arch_region_count].size = entry->len;
+          arch_mem_regions[arch_region_count].type = (entry->type == 1) ? MEM_REGION_USABLE : MEM_REGION_RESERVED;
+          arch_region_count++;
+          
+          mmap_ptr += size + 4;
+          processed += size + 4;
+      }
+    } else {
+        /* Fallback if no mmap */
+        arch_mem_regions[0].base = 0;
+        arch_mem_regions[0].size = 640 * 1024;
+        arch_mem_regions[0].type = MEM_REGION_USABLE;
+        arch_mem_regions[1].base = 0x100000;
+        arch_mem_regions[1].size = (uint64_t)mb1->mem_upper * 1024;
+        arch_mem_regions[1].type = MEM_REGION_USABLE;
+        arch_region_count = 2;
+    }
+  } else if (mb_magic == 0x36d24269) {
+    /* Multiboot v2 */
+    uint8_t *mb_data = (uint8_t *)mb_info_ptr;
+    struct mb2_tag *tag = (struct mb2_tag *)(mb_data + 8);
+    while (tag->type != MB2_TAG_TYPE_END && arch_region_count < 32) {
+      if (tag->type == MB2_TAG_TYPE_MMAP) {
+        struct mb2_tag_mmap *mmap = (struct mb2_tag_mmap *)tag;
+        uint32_t entry_size = mmap->entry_size;
+        uint32_t num_entries = (mmap->size - sizeof(struct mb2_tag_mmap)) / entry_size;
+        for (uint32_t i = 0; i < num_entries && arch_region_count < 32; i++) {
+          struct mb2_mmap_entry *entry = (struct mb2_mmap_entry *)((uint8_t *)mmap->entries + i * entry_size);
+          arch_mem_regions[arch_region_count].base = entry->addr;
+          arch_mem_regions[arch_region_count].size = entry->len;
+          arch_mem_regions[arch_region_count].type = (entry->type == 1) ? MEM_REGION_USABLE : MEM_REGION_RESERVED;
+          arch_region_count++;
         }
       }
+      tag = (struct mb2_tag *)((uint8_t *)tag + ((tag->size + 7) & ~7));
     }
-
-    /* Align to 8 bytes */
-    tag = (struct mb2_tag *)((uint8_t *)tag + ((tag->size + 7) & ~7));
+  } else if (mb_magic == 0x336ec578) {
+    /* PVH boot */
+    struct hvm_start_info *pvh = (struct hvm_start_info *)mb_info_ptr;
+    pr_info("PVH: Memmap at 0x%lx, entries: %u\n", pvh->memmap_paddr, pvh->memmap_entries);
+    
+    struct hvm_memmap_table_entry *entries = (struct hvm_memmap_table_entry *)pvh->memmap_paddr;
+    for (uint32_t i = 0; i < pvh->memmap_entries && arch_region_count < 32; i++) {
+        arch_mem_regions[arch_region_count].base = entries[i].addr;
+        arch_mem_regions[arch_region_count].size = entries[i].len;
+        /* PVH type 1 is usable RAM */
+        arch_mem_regions[arch_region_count].type = (entries[i].type == 1) ? MEM_REGION_USABLE : MEM_REGION_RESERVED;
+        arch_region_count++;
+    }
+  } else {
+      pr_warn("Unknown boot protocol (Magic: 0x%lx). Using 128MB fallback.\n", mb_magic);
+      arch_mem_regions[0].base = 0x100000;
+      arch_mem_regions[0].size = 128ULL * 1024 * 1024;
+      arch_mem_regions[0].type = MEM_REGION_USABLE;
+      arch_region_count = 1;
   }
 
-  pr_info("Detected Max RAM: %lu MB\n", max_ram / 1024 / 1024);
-
-  /* Set up PMM region. Kernel uses 0-1MB for boot logic, 1MB-? for kernel
-   * code/data. Assuming 1GB max for baremetal tests, we start giving out memory
-   * from 16MB. */
-  if (max_ram > 0) {
-    uint64_t pmm_start = 0x1000000; /* 16 MB */
-    if (max_ram > pmm_start) {
-      pmm_init_region(pmm_start, max_ram - pmm_start);
-    }
-  }
+  /* Initialize PMM with detected regions */
+  pmm_init(arch_mem_regions, arch_region_count);
 }
 
 uint64_t timer_get_us(void) {

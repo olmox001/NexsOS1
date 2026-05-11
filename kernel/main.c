@@ -156,11 +156,16 @@ static void print_banner(void) {
  * Initialize memory subsystem
  */
 static void init_memory(void) {
-  /* Initialize physical memory manager */
-  pmm_init(NULL, 0); /* Use default 1GB memory detection */
+  /* Initialize physical memory manager with architecture-detected regions */
+  size_t count = 0;
+  struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  pmm_init(regions, count);
 
   /* Initialize virtual memory manager */
   vmm_init();
+
+  /* Perform hardware discovery for VirtIO devices */
+  arch_virtio_scan();
 
   /* Initialize VirtIO Block Driver */
   virtio_blk_init();

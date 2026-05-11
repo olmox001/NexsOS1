@@ -125,7 +125,7 @@ void wake_up(struct wait_queue_head *wq) {
     uint64_t global_flags;
     spin_lock_irqsave(&sched_lock, &global_flags);
     p->on_cpu = rr_cpu;
-    rr_cpu = (rr_cpu + 1) % 4;
+    rr_cpu = (rr_cpu + 1) % MAX_CPUS;
     spin_unlock_irqrestore(&sched_lock, global_flags);
   }
 
@@ -158,7 +158,7 @@ void process_init(void) {
   }
 
   /* Initialize ALL CPU Runqueues */
-  for (int c = 0; c < 8; c++) {
+  for (int c = 0; c < MAX_CPUS; c++) {
     for (int i = 0; i < MAX_PRIO; i++) {
       INIT_LIST_HEAD(&cpu_data[c].runqueues[i]);
     }
@@ -553,7 +553,7 @@ found:
 
   if (!next) {
     /* Work stealing from other CPUs */
-    for (uint32_t i = 0; i < 4; i++) {
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
       if (i == cpu_ptr->cpu_id)
         continue; /* Skip self */
 
