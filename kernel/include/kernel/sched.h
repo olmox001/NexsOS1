@@ -127,6 +127,7 @@ extern struct process *process_pool[MAX_PROCESSES];
 extern struct process *process_create(const char *name, uint8_t priority,
                                       uint32_t permissions);
 struct process *process_find_by_pid(int pid);
+struct process *__process_find_by_pid(int pid);
 int process_terminate(int pid);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */

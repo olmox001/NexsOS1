@@ -29,11 +29,11 @@ int keyboard_focus_pid = 7; /* Default to Shell PID */
 /* Helper: Add task to runqueue */
 /* Internal helper: Add task to runqueue (Caller MUST hold target->sched_lock) */
 static void __enqueue_task(struct process *p) {
-  int target_cpu = (int)p->on_cpu;
-  if (target_cpu < 0)
-    target_cpu = 0;
+  int target_cpu_id = (int)p->on_cpu;
+  if (target_cpu_id < 0)
+    target_cpu_id = 0;
 
-  struct cpu_info *target = &cpu_data[target_cpu];
+  struct cpu_info *target_cpu = &cpu_data[target_cpu_id];
 
   /* Skip if already on a runqueue */
   if (p->state == PROC_READY && p->run_list.next != &p->run_list) {
@@ -41,29 +41,28 @@ static void __enqueue_task(struct process *p) {
   }
 
   p->state = PROC_READY;
+  p->on_cpu = target_cpu_id; /* Track which CPU's runqueue we are on */
   int prio = p->priority;
   if (prio >= MAX_PRIO)
     prio = MAX_PRIO - 1;
 
-  list_add_tail(&p->run_list, &target->runqueues[prio]);
-  target->prio_bitmap |= (1 << prio);
+  list_add_tail(&p->run_list, &target_cpu->runqueues[prio]);
+  target_cpu->prio_bitmap |= (1 << prio);
 
   /* Wake up any idling CPUs */
   arch_sev();
 }
 
-/* Public API: Add task to runqueue (Safe for external calls) */
 void enqueue_task(struct process *p) {
-  int target_cpu = (int)p->on_cpu;
-  if (target_cpu < 0)
-    target_cpu = 0;
-
-  struct cpu_info *target = &cpu_data[target_cpu];
-
   uint64_t flags;
-  spin_lock_irqsave(&target->sched_lock, &flags);
+  int target_cpu_id = (int)p->on_cpu;
+  if (target_cpu_id < 0)
+    target_cpu_id = 0;
+
+  struct cpu_info *target_cpu = &cpu_data[target_cpu_id];
+  spin_lock_irqsave(&target_cpu->sched_lock, &flags);
   __enqueue_task(p);
-  spin_unlock_irqrestore(&target->sched_lock, flags);
+  spin_unlock_irqrestore(&target_cpu->sched_lock, flags);
 }
 
 /* Helper: Remove task from runqueue (Caller MUST hold target->sched_lock) */
@@ -182,12 +181,26 @@ static int find_free_slot(void) {
 /*
  * Find process by PID
  */
-struct process *process_find_by_pid(int pid) {
+/*
+ * Find process by PID (Internal - NO LOCK)
+ */
+struct process *__process_find_by_pid(int pid) {
   for (int i = 0; i < MAX_PROCESSES; i++) {
     if (process_pool[i] && (int)process_pool[i]->pid == pid)
       return process_pool[i];
   }
   return NULL;
+}
+
+/*
+ * Find process by PID (External - WITH LOCK)
+ */
+struct process *process_find_by_pid(int pid) {
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *proc = __process_find_by_pid(pid);
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return proc;
 }
 
 /*
@@ -288,7 +301,7 @@ int process_terminate(int pid) {
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
 
-  struct process *proc = process_find_by_pid(pid);
+  struct process *proc = __process_find_by_pid(pid);
   if (!proc) {
     spin_unlock_irqrestore(&sched_lock, flags);
     return -1;
@@ -497,7 +510,6 @@ struct pt_regs *schedule(struct pt_regs *regs) {
       }
 
       if (prev->state == PROC_READY) {
-        prev->on_cpu = -1;
         /* Never re-enqueue the CPU-bound idle task. It must stay out of the
          * runqueue to prevent work-stealing: two CPUs sharing one idle task's
          * kernel stack causes context corruption (ELR=0 crashes). */
@@ -505,7 +517,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
           __enqueue_task(prev);
         }
       } else {
-        prev->on_cpu = -1;
+        /* Task is sleeping or dying, keep on_cpu to indicate last CPU for affinity or tracking */
       }
     }
 
@@ -588,6 +600,10 @@ found:
     }
     /* If current task is still READY, just keep running it */
     if (prev && prev->state == PROC_RUNNING) {
+      if (regs->elr == 0) {
+        panic("SCHED: [CPU%d] BUG elr==0 on PROC_RUNNING fast-path, PID %d", cpu,
+              prev->pid);
+      }
       spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
       return regs;
     }
@@ -603,6 +619,10 @@ found:
 
   /* 3. Context Switch Logic */
   if (prev == next) {
+    if (regs->elr == 0) {
+      panic("SCHED: [CPU%d] BUG elr==0 on same-task return, PID %d", cpu,
+            prev->pid);
+    }
     next->state = PROC_RUNNING;
     next->on_cpu = cpu;
     spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
@@ -702,11 +722,6 @@ struct ipc_node *pop_message(struct process *proc, int src_pid) {
  * IPC Implementation (Internal)
  */
 int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
-  /* pr_err("kernel_ipc_send: target=%d type=%d\n", target_pid, msg->type); */
-  struct process *target = process_find_by_pid(target_pid);
-  if (!target)
-    return -1;
-
   struct ipc_node *node = (struct ipc_node *)kmalloc(sizeof(struct ipc_node));
   if (!node)
     return -1;
@@ -714,29 +729,42 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
   memcpy(&node->msg, msg, sizeof(struct ipc_message));
 
   uint64_t flags;
-  spin_lock_irqsave(&target->msg_lock, &flags);
-  list_add_tail(&node->list, &target->msg_queue);
+  spin_lock_irqsave(&sched_lock, &flags);
 
-  /* Check if target is waiting for THIS sender or ANY sender */
+  struct process *target = __process_find_by_pid(target_pid);
+  if (!target || target->state == PROC_DEAD || target->state == PROC_ZOMBIE) {
+    spin_unlock_irqrestore(&sched_lock, flags);
+    kfree(node);
+    return -1;
+  }
+
+  /* We must hold target->msg_lock while adding to its queue. 
+   * To avoid AB-BA deadlocks with sched_lock, we use trylock or 
+   * we ensure a fixed order: sched_lock -> target->msg_lock.
+   */
+  spin_lock(&target->msg_lock);
+  list_add_tail(&node->list, &target->msg_queue);
+  
+  /* Check if target is waiting */
   if (target->state == PROC_SLEEPING &&
       (target->ipc_target_pid == -1 ||
        target->ipc_target_pid == (int)msg->from)) {
-
-    spin_unlock_irqrestore(&target->msg_lock, flags);
-
-    /* Wake target: use its local sched_lock */
+    
+    /* Wake target: transition state while holding sched_lock is safe */
+    target->state = PROC_READY;
+    
+    /* To enqueue, we need target CPU's sched_lock */
     int t_id = (target->on_cpu >= 0) ? target->on_cpu : 0;
     struct cpu_info *target_cpu = &cpu_data[t_id];
-    spin_lock_irqsave(&target_cpu->sched_lock, &flags);
-    if (target->state == PROC_SLEEPING) {
-      target->state = PROC_READY;
-      __enqueue_task(target);
-    }
-    spin_unlock_irqrestore(&target_cpu->sched_lock, flags);
-    return 0;
+    
+    spin_lock(&target_cpu->sched_lock);
+    __enqueue_task(target);
+    spin_unlock(&target_cpu->sched_lock);
   }
-
-  spin_unlock_irqrestore(&target->msg_lock, flags);
+  
+  spin_unlock(&target->msg_lock);
+  spin_unlock_irqrestore(&sched_lock, flags);
+  
   return 0;
 }
 
