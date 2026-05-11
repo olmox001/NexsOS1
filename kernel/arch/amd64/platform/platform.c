@@ -14,7 +14,7 @@ extern void pic_init(void);
 extern void pit_init(void);
 
 /* Defined in multiboot2 header passed by boot.S */
-extern uint32_t mb_info_ptr;
+extern uint64_t mb_info_ptr;
 
 /* Minimal Multiboot2 tags we care about */
 #define MB2_TAG_TYPE_END         0

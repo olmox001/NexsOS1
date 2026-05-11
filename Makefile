@@ -29,8 +29,11 @@ CFLAGS += -DARCH_AMD64 -mno-red-zone -mcmodel=large
 # Assembler flags
 ASFLAGS = -g --fatal-warnings
 # Linker flags
-LDFLAGS_BOOT = -nostdlib -static
+LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
 LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
+
+# Bootloader specific C flags (must be 32-bit for Multiboot)
+CFLAGS_BOOT = $(filter-out -mcmodel=large,$(CFLAGS)) -m32
 
 else
 # Cross-compiler prefix for AArch64
@@ -98,11 +101,16 @@ CXXFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow \
 
 # Kernel assembly sources
 ifeq ($(ARCH), amd64)
-# No separate bootloader for AMD64, GRUB does it.
-BOOT_SOURCES = 
+# AMD64 Bootloader sources (now multi-stage)
+BOOT_SOURCES = \
+    $(BOOT_DIR)/header.S \
+    $(BOOT_DIR)/stage1.S \
+    $(BOOT_DIR)/stage2.S \
+    $(BOOT_DIR)/main.c \
+    $(BOOT_DIR)/serial.c
 
 KERN_ASM_SOURCES = \
-    $(BOOT_DIR)/boot.S \
+    $(ARCH_DIR)/boot/start.S \
     $(ARCH_DIR)/cpu/isr_stubs.S \
     $(ARCH_DIR)/cpu/syscall.S \
     $(ARCH_DIR)/cpu/context.S
@@ -115,8 +123,8 @@ KERN_C_SOURCES = \
     $(ARCH_DIR)/cpu/syscall.c \
     $(ARCH_DIR)/mm/mmu.c \
     $(ARCH_DIR)/mm/uaccess.c \
-    $(ARCH_DIR)/drivers/uart_16550.c \
-    $(ARCH_DIR)/drivers/pic_pit.c \
+    $(KERNEL_DIR)/drivers/uart/16550.c \
+    $(KERNEL_DIR)/drivers/timer/pic_pit.c \
     $(ARCH_DIR)/platform/platform.c \
     $(KERNEL_DIR)/drivers/pci/pci.c
 else
@@ -179,7 +187,9 @@ KERN_CPP_SOURCES = \
 
 
 # Object files
-BOOT_OBJECTS = $(BOOT_SOURCES:%.S=$(BUILD_DIR)/%.o)
+# Unified BOOT_OBJECTS for both assembly and C sources
+BOOT_OBJECTS = $(patsubst %.S,$(BUILD_DIR)/%.o,$(filter %.S,$(BOOT_SOURCES))) \
+               $(patsubst %.c,$(BUILD_DIR)/%.o,$(filter %.c,$(BOOT_SOURCES)))
 KERN_ASM_OBJECTS = $(KERN_ASM_SOURCES:%.S=$(BUILD_DIR)/%.o)
 KERN_C_OBJECTS = $(KERN_C_SOURCES:%.c=$(BUILD_DIR)/%.o)
 # KERN_CPP_OBJECTS = $(KERN_CPP_SOURCES:%.cpp=$(BUILD_DIR)/%.o)
@@ -252,10 +262,6 @@ dirs:
 # Bootloader
 # ==============================================================================
 
-ifeq ($(ARCH), amd64)
-bootloader:
-	@echo "Skipping bootloader for AMD64 (using GRUB)"
-else
 bootloader: $(BOOTLOADER_BIN)
 
 $(BOOTLOADER_ELF): $(BOOT_OBJECTS)
@@ -266,7 +272,6 @@ $(BOOTLOADER_ELF): $(BOOT_OBJECTS)
 $(BOOTLOADER_BIN): $(BOOTLOADER_ELF)
 	@echo "Creating bootloader binary..."
 	$(OBJCOPY) -O binary $< $@
-endif
 
 # ==============================================================================
 # Kernel
@@ -382,7 +387,24 @@ $(BUILD_DIR)/%.o: %.S
 	@echo "AS  $<"
 	@$(AS) $(ASFLAGS) -o $@ $<
 
-# Compile C files
+# Compile C files (Kernel/User)
+$(BUILD_DIR)/kernel/%.o: kernel/%.c
+	@mkdir -p $(dir $@)
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+$(BUILD_DIR)/user/%.o: user/%.c
+	@mkdir -p $(dir $@)
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+# Compile Bootloader C files (Special 32-bit handling for AMD64)
+$(BUILD_DIR)/boot/amd64/%.o: boot/amd64/%.c
+	@mkdir -p $(dir $@)
+	@echo "CC (32-bit) $<"
+	@$(CC) $(CFLAGS_BOOT) -MMD -MP -c -o $@ $<
+
+# Default C rule
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	@echo "CC  $<"
@@ -462,11 +484,7 @@ rootfs: user
 disk: $(MKDISK) kernel rootfs bootloader
 	@echo "Assembling final disk image (GPT + Ext4)..."
 	@mkdir -p $(BUILD_DIR)
-ifeq ($(ARCH), amd64)
-	@./$(MKDISK) $(BUILD_DIR)/disk.img none $(KERNEL_BIN) $(BUILD_DIR)/rootfs
-else
 	@./$(MKDISK) $(BUILD_DIR)/disk.img $(BOOTLOADER_BIN) $(KERNEL_BIN) $(BUILD_DIR)/rootfs
-endif
 
 $(MKDISK): tools/mkdisk.c
 	@mkdir -p tools
@@ -498,38 +516,20 @@ ifeq ($(ARCH), amd64)
 	@echo "ISO Created: $(BUILD_DIR)/os1test.iso"
 endif
 
-run: all iso
+run: all
 	@echo ""
 	@echo "========================================"
 	@echo "  $(ARCH) Microkernel Boot"
 	@echo "========================================"
 	@echo ""
-ifeq ($(ARCH), aarch64)
-	@echo "Starting QEMU (aarch64 virt)..."
+	@echo "Starting QEMU ($(ARCH))..."
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-else
-	@if [ -f $(BUILD_DIR)/os1test.iso ]; then \
-		echo "Starting QEMU with ISO image..."; \
-		$(QEMU) $(QEMU_FLAGS) -cdrom $(BUILD_DIR)/os1test.iso; \
-	else \
-		echo "ISO not found (grub-mkrescue failed)."; \
-		echo "Creating compatible 32-bit ELF for direct boot..."; \
-		$(OBJCOPY) -I elf64-x86-64 -O elf32-i386 $(KERNEL_ELF) $(BUILD_DIR)/kernel32.elf; \
-		echo "Starting QEMU via Multiboot..."; \
-		$(QEMU) $(QEMU_FLAGS) -kernel $(BUILD_DIR)/kernel32.elf; \
-	fi
-endif
 
 run-direct: all
 	@echo "Starting QEMU (direct kernel boot)..."
 	@echo "Press Ctrl+C to exit"
 	@echo ""
-ifeq ($(ARCH), aarch64)
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-else
-	$(OBJCOPY) -I elf64-x86-64 -O elf32-i386 $(KERNEL_ELF) $(BUILD_DIR)/kernel32.elf
-	$(QEMU) $(QEMU_FLAGS) -kernel $(BUILD_DIR)/kernel32.elf
-endif
 
 help:
 	@echo "$(ARCH) Kernel Build System"
