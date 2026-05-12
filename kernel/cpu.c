@@ -10,8 +10,6 @@
 struct cpu_info cpu_data[8];
 uint32_t nr_cpus = 0;
 
-/* Generic implementation (weak - can be overridden by arch-specific) */
-__attribute__((weak))
 struct cpu_info *get_cpu_info(void) {
   uint32_t id = arch_get_cpu_id();
   if (id >= 8) {

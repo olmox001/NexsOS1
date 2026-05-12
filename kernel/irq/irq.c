@@ -97,10 +97,6 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
     if (irq == 1023) /* Spurious or No more interrupts */
       break;
 
-    if (irq != IRQ_TIMER && irq != 30) {
-      pr_info("IRQ: Handling interrupt %u\n", irq);
-    }
-
     /* SGI0: panic halt IPI */
     if (irq == 0) {
       current_chip->end(irq);
@@ -124,13 +120,4 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
   }
 
   return ret_regs;
-}
-
-struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs) {
-  if (irq < MAX_IRQS && irq_handlers[irq].handler) {
-    irq_handlers[irq].handler(irq, irq_handlers[irq].data);
-  } else {
-    pr_warn("IRQ: Unhandled interrupt %u\n", irq);
-  }
-  return regs;
 }

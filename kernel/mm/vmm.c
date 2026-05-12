@@ -143,7 +143,7 @@ int vmm_map_page_locked(struct process *proc, uint64_t virt, uint64_t phys,
  * Returns 0 if OK, -1 if any page is missing
  */
 int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
-                    uint64_t flags_mask) {
+                   uint64_t flags_mask) {
   uint64_t v = virt & ~0xFFFUL;
   uint64_t e = (virt + size + 4095) & ~0xFFFUL;
 
@@ -247,48 +247,86 @@ void vmm_init(void) {
   /* 1. Map RAM with correct permissions */
   extern char _etext[];
   uint64_t etext_addr = (uint64_t)_etext;
-  uint64_t ram_start = ARCH_RAM_START;
-  uint64_t ram_size = ARCH_RAM_SIZE;
-  uint64_t alias_offset = ARCH_ALIAS_OFFSET;
+  uint64_t ram_start = 0x40000000UL;
+  uint64_t ram_size = 1024UL * 1024 * 1024; /* 1GB */
 
-  /* Map kernel image precisely with 4KB pages */
-  uint64_t kernel_map_end = ram_start + (128UL * 1024 * 1024); /* First 128MB */
-  if (kernel_map_end > ram_start + ram_size) kernel_map_end = ram_start + ram_size;
+  /* For simplicity, we still map RAM in 2MB blocks where possible,
+   * but we use 4KB pages for the transition between .text and .data
+   * to ensure exact protection boundaries.
+   * For now, let's just map the first 128MB with 4KB pages to be precise,
+   * and the rest with 2MB blocks as DATA.
+   */
 
-  for (uint64_t addr = ram_start; addr < kernel_map_end; addr += 4096) {
+  /* Map 0-128MB (Kernel region) precisely */
+  for (uint64_t addr = ram_start; addr < ram_start + (128UL * 1024 * 1024);
+       addr += 4096) {
     uint64_t flags = (addr < etext_addr) ? PAGE_KERNEL_EXEC : PAGE_KERNEL;
 
     /* Identity Map */
     vmm_map_page(kernel_pgd, addr, addr, flags);
 
     /* Alias Map (Higher half) */
-    if (alias_offset != 0) {
-      vmm_map_page(kernel_pgd, addr + alias_offset, addr, flags);
-    }
+    vmm_map_page(kernel_pgd, addr + 0x40000000, addr, flags);
   }
 
-  /* Map the rest of RAM using optimized range mapping */
-  if (ram_start + ram_size > kernel_map_end) {
-    uint64_t remaining_size = (ram_start + ram_size) - kernel_map_end;
-    
-    /* Identity Map */
-    arch_vmm_map_range((uint64_t)kernel_pgd, kernel_map_end, kernel_map_end, 
-                       remaining_size, PAGE_KERNEL);
-    
-    /* Alias Map (Higher half) */
-    if (alias_offset != 0) {
-      arch_vmm_map_range((uint64_t)kernel_pgd, kernel_map_end + alias_offset, 
-                         kernel_map_end, remaining_size, PAGE_KERNEL);
+  /* Map the rest (128MB - 1GB) as DATA using 2MB blocks for performance */
+  for (uint64_t addr = ram_start + (128UL * 1024 * 1024);
+       addr < ram_start + ram_size; addr += (2UL * 1024 * 1024)) {
+    uint64_t *pud = get_next_table(kernel_pgd, PGD_INDEX(addr), 1);
+    uint64_t *pmd = get_next_table(pud, PUD_INDEX(addr), 1);
+    if (pmd) {
+      pmd[PMD_INDEX(addr)] = addr | (PAGE_KERNEL & ~PTE_PAGE);
+
+      /* Alias Map */
+      uint64_t vaddr = addr + 0x40000000;
+      uint64_t *v_pud = get_next_table(kernel_pgd, PGD_INDEX(vaddr), 1);
+      uint64_t *v_pmd = get_next_table(v_pud, PUD_INDEX(vaddr), 1);
+      if (v_pmd) {
+        v_pmd[PMD_INDEX(vaddr)] = addr | (PAGE_KERNEL & ~PTE_PAGE);
+      }
     }
   }
-
   arch_data_barrier(); /* Wait for flushes */
 
-  /* 2. Platform-specific MMIO Identity Mapping */
-  arch_vmm_map_mmio(kernel_pgd);
+  /* 2. Identity Map MMIO (UART, GIC, VirtIO) */
+  /* 0x08000000 to 0x0A000000 covers typical QEMU virt devices */
+  for (uint64_t addr = 0x08000000UL; addr < 0x0A800000UL; addr += 4096) {
+    vmm_map_page(kernel_pgd, addr, addr, PAGE_DEVICE);
+  }
 
-  /* 3. Platform-specific hardware initialization (Enable MMU/Paging) */
-  arch_vmm_init_hw((uint64_t)kernel_pgd);
+  /* 3. Setup MAIR_EL1 (Memory Attribute Indirection Register) */
+  /* Index 0: Normal Memory, Inner/Outer Write-Back Non-transient,
+   * Read-Allocate, Write-Allocate */
+  /* Index 1: Device Memory, nGnRE (non-Gathering, non-Reordering, Early Write
+   * Acknowledgement) */
+  uint64_t mair = (0xFFUL << 0) | /* Index 0: Normal */
+                  (0x04UL << 8);  /* Index 1: Device nGnRE */
+  arch_set_mair(mair);
+
+  /* 4. Setup TCR_EL1 (Translation Control Register) */
+  /* TG0=0 (4KB), SH0=3 (Inner Shareable), ORGN0=1 (WB/WA), IRGN0=1 (WB/WA) */
+  /* T0SZ=16 (48-bit VA, 64 - 48 = 16) */
+  /* IPS=0 (32-bit PA) or 2 (40-bit PA). QEMU virt uses 40-bit or 32-bit? */
+  /* Let's use IPS=2 (40-bit) to be safe */
+  uint64_t tcr = (16UL << 0) | /* T0SZ */
+                 (3UL << 12) | /* SH0 Inner Shareable */
+                 (1UL << 10) | /* ORGN0 WB/WA */
+                 (1UL << 8) |  /* IRGN0 WB/WA */
+                 (2UL << 32);  /* IPS 40-bit */
+  arch_set_tcr(tcr);
+
+  /* 5. Set TTBR0_EL1 */
+  arch_vmm_set_pgd((uint64_t)kernel_pgd);
+
+  /* 6. Enable MMU in SCTLR_EL1 */
+  uint64_t sctlr = arch_get_sctlr();
+  sctlr |= (1UL << 0) |  /* M: MMU enable */
+           (1UL << 12) | /* I: Instruction cache enable */
+           (1UL << 2);   /* C: Data cache enable */
+  arch_set_sctlr(sctlr);
+  arch_instr_barrier();
+
+  pr_info("VMM: MMU Enabled. Kernel PGD at %p\n", (void *)kernel_pgd);
 }
 
 /*

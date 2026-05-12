@@ -22,8 +22,17 @@
 /* Timer frequency */
 uint64_t timer_freq;
 
+/* Compositor refresh interval (jiffies) */
+static uint64_t compositor_interval =
+    1; /* Default to every tick if init fails */
+#define COMPOSITOR_TARGET_FPS 30
+
 /* System tick counter */
 volatile uint64_t jiffies = 0;
+
+/* Software timer list */
+static LIST_HEAD(timer_list);
+static spinlock_t timer_lock = SPINLOCK_INIT;
 
 /*
  * Read counter frequency
@@ -58,15 +67,27 @@ extern void compositor_tick(void);
 /* Global panic flag set by panic() to halt all CPUs */
 extern volatile int panic_flag;
 
-extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
-
 struct pt_regs *timer_handler(struct pt_regs *regs) {
-  struct cpu_info *cpu = get_cpu_info();
+  /* Halt this CPU if another CPU panicked */
+  if (panic_flag) {
+    write_cntv_ctl(0); /* Disable timer */
+    arch_cpu_halt();
+  }
 
-  /* Precision Tick Logic for ARM Generic Timer */
+  struct cpu_info *cpu = get_cpu_info();
+  cpu->tick_count++;
+
+  struct timer *t, *tmp;
+
+  /* Update accumulated error */
+  // uint64_t interval = timer_freq / HZ;
+  // uint64_t remainder = timer_freq % HZ;
+  // Use precomputed values to avoid division in ISR
   extern uint64_t timer_tick_interval;
   extern uint64_t timer_tick_remainder;
 
+  /* Precision Tick Logic: Accumulate remainders to avoid frequency
+   * approximation drift */
   cpu->tick_error_acc += timer_tick_remainder;
   uint64_t interval = timer_tick_interval;
   if (cpu->tick_error_acc >= HZ) {
@@ -77,15 +98,62 @@ struct pt_regs *timer_handler(struct pt_regs *regs) {
   cpu->next_tick_target += interval;
   uint64_t now = read_cntvct();
 
-  /* Catch up logic */
+  /* Catch up logic: if we missed one or more ticks, realign to 'now' */
   if (cpu->next_tick_target <= now) {
     cpu->next_tick_target = now + interval;
   }
 
   write_cntv_cval(cpu->next_tick_target);
 
-  /* Call generic tick logic */
-  return kernel_timer_tick(regs);
+  /* Global jiffies incremented only by the primary core to avoid contention and
+   * double-counting */
+  if (cpu->cpu_id == 0) {
+    jiffies++;
+  }
+
+  /* Process expired software timers */
+  /* Note: In a multiprocessor system, software timers are usually tied to a
+   * specific CPU. For simplicity, we process them on CPU 0. */
+  if (cpu->cpu_id == 0) {
+    uint64_t flags;
+    spin_lock_irqsave(&timer_lock, &flags);
+    list_for_each_entry_safe(t, tmp, &timer_list, list) {
+      if (jiffies >= t->expires) {
+        list_del(&t->list);
+        t->pending = false;
+
+        /* Drop lock before callback to allow re-entrancy/long running */
+        spin_unlock_irqrestore(&timer_lock, flags);
+        if (t->callback)
+          t->callback(t->data);
+        spin_lock_irqsave(&timer_lock, &flags);
+
+        /* Must restart iteration? Safe iteration allows deletion, but
+           dropping lock invalidates 'tmp'.
+           We should restart or use a robust method.
+           Simplest for now: Don't drop lock, but assume callback is
+           fast/non-blocking. Actually, dropping lock inside list_for_each loops
+           is dangerous. Revert to holding lock, but ensure callback is fast. */
+      }
+    }
+    spin_unlock_irqrestore(&timer_lock, flags);
+  }
+
+  /* Compositor refresh at target FPS */
+  /* This is safe to call from IRQ since we removed kmalloc from render path */
+  if (cpu->cpu_id == 0 && (jiffies % compositor_interval) == 0) {
+    compositor_tick();
+  }
+
+  /* Heartbeat diagnostics - Disabled to save stack space in IRQ */
+  /* if (cpu->cpu_id == 0 && (jiffies % (HZ * 5)) == 0) {
+    pr_info("Heartbeat: Jiffies=%lu | CPU Ticks: 0:%lu, 1:%lu, 2:%lu, 3:%lu\n",
+            jiffies, cpu_data[0].tick_count, cpu_data[1].tick_count,
+            cpu_data[2].tick_count, cpu_data[3].tick_count);
+  } */
+
+  /* Call Scheduler for Preemption and return resulting context */
+  return schedule(regs);
 }
 
 /* Legacy static handler used by irq_register?
@@ -111,6 +179,15 @@ void timer_init(void) {
 
   pr_info("Timer: Frequency %lu Hz\n", timer_freq);
   pr_info("Timer: System tick rate %d Hz\n", HZ);
+
+  /* Calculate compositor interval */
+  if (HZ >= COMPOSITOR_TARGET_FPS) {
+    compositor_interval = HZ / COMPOSITOR_TARGET_FPS;
+  } else {
+    compositor_interval = 1; /* Best effort */
+  }
+  pr_info("Timer: Compositor Refresh every %lu ticks (~%d FPS)\n",
+          compositor_interval, HZ / (int)compositor_interval);
 
   /* Register virtual timer interrupt (IRQ 27 on QEMU virt) */
   /* We handle IRQ 27 explicitly in gic.c dispatch to pass regs */
@@ -169,4 +246,42 @@ void timer_delay_us(uint64_t us) {
  */
 void timer_delay_ms(uint64_t ms) { timer_delay_us(ms * 1000); }
 
-/* Software timer functions are now in kernel/core/timer.c */
+/*
+ * Initialize a software timer
+ */
+void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
+  INIT_LIST_HEAD(&t->list);
+  t->callback = callback;
+  t->data = data;
+  t->pending = false;
+}
+
+/*
+ * Add a software timer
+ */
+void timer_add(struct timer *t, uint64_t expires) {
+  uint64_t flags;
+  spin_lock_irqsave(&timer_lock, &flags);
+  t->expires = expires;
+  t->pending = true;
+  list_add_tail(&t->list, &timer_list);
+  spin_unlock_irqrestore(&timer_lock, flags);
+}
+
+/*
+ * Delete a software timer
+ */
+void timer_del(struct timer *t) {
+  uint64_t flags;
+  spin_lock_irqsave(&timer_lock, &flags);
+  if (t->pending) {
+    list_del(&t->list);
+    t->pending = false;
+  }
+  spin_unlock_irqrestore(&timer_lock, flags);
+}
+
+/*
+ * Check if timer is pending
+ */
+bool timer_pending(struct timer *t) { return t->pending; }

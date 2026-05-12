@@ -148,7 +148,124 @@ out:
   return ret;
 }
 
+extern uint64_t timer_get_us(void);
+static long sys_get_time(void) { return (long)(timer_get_us() / 1000); }
+
+/* Syscall Implementations */
+long sys_write(int fd, const char *buf, size_t count);
+struct pt_regs *sys_read(struct pt_regs *regs);
+long sys_get_pid(void);
+void sys_exit(int status);
+
+extern int keyboard_read_char_nonblock(void);
+
+long sys_get_pid(void) {
+  return current_process ? (long)current_process->pid : 0;
+}
+
+struct pt_regs *sys_read(struct pt_regs *regs) {
+  int fd = (int)regs->regs[0];
+  char *buf = (char *)regs->regs[1];
+  size_t count = (size_t)regs->regs[2];
+
+  /* pr_err("sys_read: fd=%d count=%lu\n", fd, count); */
+
+  if (fd != 0 || count == 0) {
+    regs->regs[0] = 0;
+    return regs;
+  }
+
+  /*
+   * Microkernel/Tanenbaum Style: Redirect stdin to IPC queue
+   * Standard reads from fd 0 now look for IPC_TYPE_INPUT messages.
+   */
+  extern struct ipc_node *pop_message(struct process * proc, int src_pid);
+
+  /* Try to pop an input message */
+  struct ipc_node *node = NULL;
+  uint64_t flags;
+  struct cpu_info *cpu = get_cpu_info();
+
+  /* Atomic check for message */
+  node = pop_message(current_process, -1); /* From ANY */
+
+  if (node) {
+    if (node->msg.type == IPC_TYPE_INPUT) {
+      char c = (char)node->msg.data1;
+      if (arch_copy_to_user(buf, &c, 1) != 0) {
+        /* pr_err("%s", "sys_read: arch_copy_to_user failed\n"); */
+      }
+      regs->regs[0] = 1;
+      kfree(node);
+      return regs;
+    }
+    /* If it wasn't input, put it back or drop?
+     * Ideally we should filter in pop_message or use a separate queue.
+     * For now, if it's not input, we drop it (should not happen for fd 0).
+     */
+    kfree(node);
+  }
+
+  /* Block until input available via IPC wake-up logic already in
+   * kernel_ipc_send */
+  spin_lock_irqsave(&cpu->sched_lock, &flags);
+  current_process->ipc_target_pid = -1; /* Waiting for ANY (input) */
+  current_process->state = PROC_SLEEPING;
+  spin_unlock_irqrestore(&cpu->sched_lock, flags);
+
+  regs->elr -= 4; /* Re-execute SVC */
+  return schedule(regs);
+}
+
+long sys_write(int fd, const char *buf, size_t count) {
+  if (count == 0)
+    return 0;
+  struct cpu_info *cpu = get_cpu_info();
+  char *k_buf = cpu->syscall_buf;
+  size_t to_copy = (count > 1024) ? 1024 : count;
+  /* pr_err("sys_write: fd=%d count=%lu\n", fd, count); */
+
+  if (arch_copy_from_user(k_buf, buf, to_copy) != 0)
+    return -1;
+  k_buf[to_copy] = '\0';
+
+  if (fd >= 100) { /* Handle window ID terminal output */
+    compositor_window_write(fd, k_buf, to_copy);
+    return (long)to_copy;
+  }
+
+  /* Standard output redirection */
+  if ((fd == 1 || fd == 2) && current_process) {
+    int win_id = compositor_get_window_by_pid(current_process->pid);
+    if (win_id > 0) {
+      compositor_window_write(win_id, k_buf, to_copy);
+      return (long)to_copy;
+    }
+  }
+
+  /* Default to UART for now (Legacy/Debug logs) */
+  uart_puts(k_buf);
+  return (long)to_copy;
+}
+
+void sys_exit(int status) {
+  if (current_process) {
+    pr_info("PID %d exiting with status %d\n", current_process->pid, status);
+    process_terminate(current_process->pid);
+    /* Process is now ZOMBIE. Return here so the syscall handler's
+     * `return schedule(frame)` performs the actual context switch. */
+  }
+}
+
 struct pt_regs *syscall_handler(struct pt_regs *frame) {
+  uint64_t syscall_num = frame->regs[8];
+  uint64_t arg0 = frame->regs[0];
+  uint64_t arg1 = frame->regs[1];
+  uint64_t arg2 = frame->regs[2];
+  uint64_t arg3 = frame->regs[3];
+  uint64_t arg4 = frame->regs[4];
+  uint64_t arg5 = frame->regs[5];
+
   /* Check Exception Syndrome to distinguish SVC from Aborts */
   uint64_t esr = arch_get_esr();
   uint64_t ec = (esr >> 26) & 0x3F;
@@ -202,7 +319,202 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
     }
   }
 
-  /* Dispatch via agnostic core */
-  extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *regs);
-  return kernel_syscall_dispatcher(frame);
+  switch (syscall_num) {
+  case 63: /* READ */
+    return sys_read(frame);
+  case 64: /* WRITE */
+  {
+    /* pr_info("Syscall: WRITE from PID %d, fd=%ld\n", current_process->pid,
+     * arg0); */
+    frame->regs[0] = sys_write((int)arg0, (const char *)arg1, (size_t)arg2);
+    break;
+  }
+  case 93: /* EXIT */
+    sys_exit((int)arg0);
+    return schedule(frame);
+  case 169: /* GET_TIME */
+    frame->regs[0] = sys_get_time();
+    break;
+  case 172: /* GETPID */
+    frame->regs[0] = sys_get_pid();
+    break;
+  case 30: /* IPC_SEND */
+    frame->regs[0] = sys_ipc_send((int)arg0, (void *)arg1);
+    break;
+  case 31: /* IPC_RECV */
+    frame->regs[0] = sys_ipc_recv((int)arg0, (void *)arg1);
+    break;
+  case 32: /* IPC_TRY_RECV */
+  {
+    extern int sys_ipc_try_recv(int src_pid,
+                                void *msg_ptr); /* Ensure proto visible */
+    frame->regs[0] = sys_ipc_try_recv((int)arg0, (void *)arg1);
+  } break;
+  case 200: /* DRAW */
+    graphics_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3,
+                       (uint32_t)arg4);
+    frame->regs[0] = 0;
+    break;
+  case 201: /* FLUSH */
+    compositor_render();
+    pr_info("%s", "SYSCALL: FLUSH done, returning to user\n");
+    frame->regs[0] = 0;
+    break;
+  case 210: /* CREATE_WINDOW */
+  {
+    struct cpu_info *cpu = get_cpu_info();
+    char *k_title = cpu->syscall_buf;
+    if (arch_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
+      frame->regs[0] = -1;
+      break;
+    }
+    frame->regs[0] =
+        compositor_create_window((int)arg0, (int)arg1, (int)arg2, (int)arg3,
+                                 k_title, current_process->pid);
+  } break;
+  case 211: /* WINDOW_DRAW */
+    compositor_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4,
+                         (uint32_t)arg5, current_process->pid);
+    frame->regs[0] = 0;
+    break;
+  case 212: /* COMPOSITOR_RENDER */
+    compositor_render();
+    frame->regs[0] = 0;
+    break;
+  case 213: /* WINDOW_BLIT */
+    compositor_blit((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4,
+                    (const uint32_t *)arg5, current_process->pid);
+    frame->regs[0] = 0;
+    break;
+  case 214: /* WINDOW_SET_FLAGS */
+    compositor_set_window_flags((int)arg0, (int)arg1);
+    frame->regs[0] = 0;
+    break;
+  case 215: /* DESTROY_WINDOW */
+    compositor_destroy_window((int)arg0);
+    frame->regs[0] = 0;
+    break;
+  case 220: /* SPAWN */
+  {
+    struct cpu_info *cpu = get_cpu_info();
+    char *k_path = cpu->syscall_buf;
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      frame->regs[0] = -1;
+      break;
+    }
+    arch_local_irq_disable();
+    struct process *new_proc =
+        process_create(k_path, PROC_PRIO_USER, PROC_PERM_USER);
+    if (new_proc) {
+      if (process_load_elf(new_proc, k_path) == 0) {
+        enqueue_task(new_proc);
+        frame->regs[0] = new_proc->pid;
+      } else {
+        process_terminate(new_proc->pid);
+        frame->regs[0] = -1;
+      }
+    } else {
+      frame->regs[0] = -1;
+    }
+    arch_local_irq_enable();
+  } break;
+  case 221: /* KILL */
+    frame->regs[0] = process_terminate((int)arg0);
+    break;
+  case 222: /* GETPROCS */
+  {
+    extern long sys_getprocs(struct ps_info * user_buf, size_t max_count);
+    frame->regs[0] = sys_getprocs((struct ps_info *)arg0, (size_t)arg1);
+  } break;
+  case 223: /* YIELD */
+    return schedule(frame);
+  case 230: /* SEND (IPC) */
+  {
+    extern int sys_ipc_send(int target_pid, void *msg_ptr);
+    frame->regs[0] = sys_ipc_send((int)arg0, (void *)arg1);
+    /* Yield after successful send to allow target to process message
+     * immediately */
+    if (frame->regs[0] == 0)
+      return schedule(frame);
+  } break;
+  case 231: /* RECV (IPC) */
+  {
+    extern int sys_ipc_recv(int src_pid, void *msg_ptr);
+    frame->regs[0] = sys_ipc_recv((int)arg0, (void *)arg1);
+    /* RECV blocks, so yield */
+    return schedule(frame);
+  } break;
+  case 232: /* SET_FOCUS */
+  {
+    extern int keyboard_focus_pid;
+    keyboard_focus_pid = (int)arg0;
+    frame->regs[0] = 0;
+    break;
+  }
+  case 247: /* WAIT */
+    frame->regs[0] = process_wait((int)arg0);
+    break;
+  case 250: /* REGISTRY */
+    frame->regs[0] =
+        sys_registry((int)arg0, (const char *)arg1, (char *)arg2, (size_t)arg3);
+    break;
+  case 251: /* FILE_WRITE */
+  {
+    struct cpu_info *cpu = get_cpu_info();
+    char *k_path = cpu->syscall_buf;
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      frame->regs[0] = -1;
+      break;
+    }
+
+    size_t size = (size_t)arg2;
+    uint8_t *k_buf = kmalloc(size);
+    if (!k_buf) {
+      frame->regs[0] = -1;
+      break;
+    }
+
+    if (arch_copy_from_user(k_buf, (const void *)arg1, size) != 0) {
+      kfree(k_buf);
+      frame->regs[0] = -1;
+      break;
+    }
+
+    uint32_t offset = (uint32_t)arg3;
+    frame->regs[0] = ext4_write_file(k_path, k_buf, (uint32_t)size, offset);
+    kfree(k_buf);
+  } break;
+  case 252: /* FILE_READ */
+  {
+    char k_path[128];
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      frame->regs[0] = -1;
+      break;
+    }
+    size_t size = (size_t)arg2;
+    uint32_t offset = (uint32_t)arg3;
+
+    uint8_t *k_buf = kmalloc(size);
+    if (!k_buf) {
+      frame->regs[0] = -1;
+      break;
+    }
+
+    int bytes_read = ext4_read_file(k_path, k_buf, (uint32_t)size, offset);
+
+    if (bytes_read >= 0) {
+      if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
+        bytes_read = -1;
+      }
+    }
+
+    kfree(k_buf);
+    frame->regs[0] = bytes_read;
+  } break;
+  default:
+    pr_warn("Unknown syscall: %ld\n", syscall_num);
+    frame->regs[0] = -1;
+    break;
+  }
+  return frame;
 }

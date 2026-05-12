@@ -13,7 +13,7 @@ int main(void) {
   /* Spawn Notification Server */
   /* Spawn Notification Server */
   printf("[Init] Spawning Notification Server...\n");
-  int pid_notify = spawn("/bin/notify_srv");
+  int pid_notify = spawn("/bin/notify_srv.elf");
   if (pid_notify > 0) {
     printf("[Init] Notification Server started (PID %d)\n", pid_notify);
   } else {
@@ -46,7 +46,7 @@ int main(void) {
     /* Check if notification server died and respawn */
     if (wait(pid_notify) == pid_notify) {
       print("[Init] Notification Server died! Respawning...\n");
-      pid_notify = spawn("/bin/notify_srv");
+      pid_notify = spawn("/bin/notify_srv.elf");
     }
 
     yield();

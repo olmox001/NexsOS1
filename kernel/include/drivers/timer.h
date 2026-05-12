@@ -37,7 +37,6 @@ void timer_delay_ms(uint64_t ms);
 /* Internal Handlers */
 struct pt_regs;
 struct pt_regs *timer_handler(struct pt_regs *regs);
-struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
 
 /* Timer callback type */
 typedef void (*timer_callback_t)(void *data);

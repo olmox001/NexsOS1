@@ -1,25 +1,21 @@
-#include <arch/arch.h>
+/*
+ * kernel/mm/pmm.c
+ * Physical Memory Manager
+ *
+ * Bitmap-based page frame allocator with zone support.
+ */
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
 
-/* Memory configuration from architecture */
-#define MEMORY_BASE ARCH_RAM_START
-#define DMA_ZONE_END (MEMORY_BASE + 0x1000000UL) /* 16MB for DMA zone */
+/* Memory configuration for QEMU virt */
+#define MEMORY_BASE 0x40000000UL  /* DRAM starts at 1GB */
+#define DMA_ZONE_END 0x41000000UL /* 16MB for DMA zone */
 
 /* Maximum supported memory (1GB for now) */
 #define MAX_MEMORY (1UL << 30)
 #define MAX_PAGES (MAX_MEMORY / PAGE_SIZE)
-
-/* Forward declaration */
-void pmm_init_region(uint64_t base, uint64_t size);
-
-void pmm_init_region(uint64_t base, uint64_t size) {
-  /* Mark pages in this region as usable (they are already 0 in bitmap if zone_init was called) */
-  /* This is a placeholder; real implementation would manage multiple regions. */
-  pr_info("PMM: Region added 0x%lx - 0x%lx\n", base, base + size);
-}
 
 /* Page array - one descriptor per physical page */
 static struct page page_array[MAX_PAGES];
@@ -289,13 +285,11 @@ void pmm_free_page(void *page) {
     return;
 
   uint64_t phys = (uint64_t)page;
-#if ARCH_MEMORY_BASE > 0
   if (phys < MEMORY_BASE) {
     pr_err("PMM: Attempt to free invalid address %p (below MEMORY_BASE)\n",
            page);
     return;
   }
-#endif
 
   uint64_t pfn = phys_to_pfn(phys - MEMORY_BASE);
   if (pfn >= total_pages) {
@@ -394,10 +388,8 @@ void *pmm_alloc_aligned(size_t size, size_t align) {
  * Get page descriptor for physical address
  */
 struct page *pmm_phys_to_page(uint64_t phys) {
-#if ARCH_MEMORY_BASE > 0
   if (phys < MEMORY_BASE)
     return NULL;
-#endif
   uint64_t pfn = phys_to_pfn(phys - MEMORY_BASE);
   if (pfn >= total_pages)
     return NULL;

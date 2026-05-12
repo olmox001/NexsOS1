@@ -284,6 +284,7 @@ struct process *process_create(const char *name, uint8_t priority,
   proc->context =
       (struct pt_regs *)(proc->kernel_stack - sizeof(struct pt_regs));
   memset(proc->context, 0, sizeof(struct pt_regs));
+  proc->context->spsr = 0x0;
 
   pr_info("process_create: PID %d context allocated at %p (kstack=%lx)\n",
           proc->pid, (void *)proc->context, proc->kernel_stack);
@@ -597,8 +598,8 @@ found:
     }
     /* If current task is still READY, just keep running it */
     if (prev && prev->state == PROC_RUNNING) {
-      if (pt_regs_pc(regs) == 0) {
-        panic("SCHED: [CPU%d] BUG pc==0 on PROC_RUNNING fast-path, PID %d", cpu,
+      if (regs->elr == 0) {
+        panic("SCHED: [CPU%d] BUG elr==0 on PROC_RUNNING fast-path, PID %d", cpu,
               prev->pid);
       }
       spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
@@ -616,8 +617,8 @@ found:
 
   /* 3. Context Switch Logic */
   if (prev == next) {
-    if (pt_regs_pc(regs) == 0) {
-      panic("SCHED: [CPU%d] BUG pc==0 on same-task return, PID %d", cpu,
+    if (regs->elr == 0) {
+      panic("SCHED: [CPU%d] BUG elr==0 on same-task return, PID %d", cpu,
             prev->pid);
     }
     next->state = PROC_RUNNING;
@@ -637,8 +638,10 @@ found:
   if (next->context == NULL) {
     panic("SCHED: Invalid context for PID %d", next->pid);
   }
-  if (pt_regs_pc(next->context) == 0) {
-    panic("SCHED: PC is 0 for PID %d (Name: %s)", next->pid, next->name);
+  if (next->context->elr == 0) {
+    /* Allow elr=0 if it's a kernel thread? No, kernel threads have function ptr
+     */
+    panic("SCHED: ELR is 0 for PID %d (Name: %s)", next->pid, next->name);
   }
 
   if (!prev || prev->page_table != next->page_table) {
@@ -649,9 +652,6 @@ found:
       arch_instr_barrier();
     }
   }
-
-  /* Final architecture-specific context switch hook */
-  arch_cpu_switch_context(next);
 
   spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
   return next->context;
@@ -797,8 +797,8 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
   current_process->state = PROC_SLEEPING;
   spin_unlock_irqrestore(&cpu->sched_lock, flags);
 
-  /* Retry the syscall instruction on wake-up */
-  pt_regs_retry_syscall(current_process->context);
+  /* Set ELR back 4 bytes to re-execute the SVC instruction on wake-up */
+  current_process->context->elr -= 4;
 
   return 0;
 }

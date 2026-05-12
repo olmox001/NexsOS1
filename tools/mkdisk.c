@@ -2,7 +2,6 @@
  * tools/mkdisk.c
  * Host tool to generate a GPT-partitioned disk image
  * Hardened and Standardized for Determinism
- * Recursive RootFS Support
  */
 #include <errno.h>
 #include <stdarg.h>
@@ -12,8 +11,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <dirent.h>
-#include <sys/stat.h>
 
 #define SECTOR_SIZE 512
 #define DISK_SIZE_MB 128
@@ -33,6 +30,13 @@
 #define EXT4_ROOT_INO 2
 
 /* Layout Calculation */
+/* Block 0: Boot + Superblock
+ * Block 1: Group Descriptors
+ * Block 2: Block Bitmap
+ * Block 3: Inode Bitmap
+ * Block 4..67: Inode Table (1024 inodes * 256 bytes = 256KB = 64 Blocks)
+ * Block 68+: Data
+ */
 #define BLK_GRP_DESC 1
 #define BLK_BLK_BITMAP 2
 #define BLK_INODE_BITMAP 3
@@ -49,9 +53,21 @@ struct guid {
 };
 
 /* Basic GUIDs */
-struct guid TYPE_BOOT = {0x21686148, 0x6449, 0x6E6F, {0x74, 0x4E, 0x65, 0x65, 0x64, 0x45, 0x46, 0x49}};
-struct guid TYPE_KERNEL = {0x0FC63DAF, 0x8483, 0x4772, {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}};
-struct guid TYPE_DATA = {0x0FC63DAF, 0x8483, 0x4772, {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}};
+struct guid TYPE_BOOT = {
+    0x21686148,
+    0x6449,
+    0x6E6F,
+    {0x74, 0x4E, 0x65, 0x65, 0x64, 0x45, 0x46, 0x49}}; /* BIOS Boot */
+struct guid TYPE_KERNEL = {
+    0x0FC63DAF,
+    0x8483,
+    0x4772,
+    {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}}; /* Linux Filesystem */
+struct guid TYPE_DATA = {
+    0x0FC63DAF,
+    0x8483,
+    0x4772,
+    {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}}; /* Linux Filesystem */
 
 struct gpt_header {
   uint64_t signature;
@@ -88,6 +104,7 @@ struct mbr_entry {
   uint32_t sectors;
 } __attribute__((packed));
 
+/* Simplified Ext4 Structures */
 struct ext4_superblock {
   uint32_t s_inodes_count;
   uint32_t s_blocks_count_lo;
@@ -184,14 +201,16 @@ struct ext4_dir_entry {
   char name[];
 } __attribute__((packed));
 
+/* Globals for Bitmaps */
 static uint8_t *block_bitmap = NULL;
 static uint8_t *inode_bitmap = NULL;
 static uint32_t next_free_block = BLK_DATA_START;
 static uint32_t current_free_inode = 11;
 static uint32_t total_blocks = 0;
 static uint32_t free_blocks_count = 0;
-static uint32_t free_inodes_count = 1014;
+static uint32_t free_inodes_count = 1014; /* 1024 - 10 reserved */
 
+/* CRC32 Implementation */
 uint32_t crc32(const void *data, size_t n_bytes) {
   uint32_t crc = 0xFFFFFFFF;
   const uint8_t *p = data;
@@ -204,21 +223,36 @@ uint32_t crc32(const void *data, size_t n_bytes) {
   return ~crc;
 }
 
+/* Hardened File I/O Checkers */
 void xseek(FILE *f, long offset, int whence) {
-  if (fseek(f, offset, whence) != 0) { perror("fseek"); exit(1); }
+  if (fseek(f, offset, whence) != 0) {
+    perror("fseek");
+    exit(1);
+  }
 }
 
 void xwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
-  if (fwrite(ptr, size, nmemb, stream) != nmemb) { perror("fwrite"); exit(1); }
+  if (fwrite(ptr, size, nmemb, stream) != nmemb) {
+    perror("fwrite");
+    exit(1);
+  }
 }
 
 void *xmalloc(size_t size) {
-  void *p = calloc(1, size);
-  if (!p) { perror("malloc"); exit(1); }
+  void *p = malloc(size);
+  if (!p) {
+    perror("malloc");
+    exit(1);
+  }
+  memset(p, 0, size);
   return p;
 }
 
 void mark_block_used(uint32_t block) {
+  if (block >= 8192) {
+    fprintf(stderr, "Error: Block %d out of range (max 8192)\n", block);
+    exit(1);
+  }
   int byte = block / 8;
   int bit = block % 8;
   block_bitmap[byte] |= (1 << bit);
@@ -226,216 +260,473 @@ void mark_block_used(uint32_t block) {
 }
 
 void mark_inode_used(uint32_t inode) {
+  // Inodes are 1-indexed. Bit 0 is Inode 1.
+  if (inode < 1 || inode > 1024) {
+    fprintf(stderr, "Error: Inode %d out of range\n", inode);
+    exit(1);
+  }
   int byte = (inode - 1) / 8;
   int bit = (inode - 1) % 8;
   inode_bitmap[byte] |= (1 << bit);
   free_inodes_count--;
 }
 
-void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inode_num, const char *src_path) {
-  uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE + (uint64_t)(inode_num - 1) * EXT4_INODE_SIZE;
+/* Helper: Add a file to the disk image */
+void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
+                         uint32_t inode_num, const char *src_path);
+
+void add_file_to_ext4(FILE *f, const char *src_path, const char *dest_name,
+                      uint64_t partition_offset_bytes) {
+  if (access(src_path, F_OK) == -1) {
+    printf("Skipping %s (not found)\n", src_path);
+    return;
+  }
+  printf("Adding %s to Ext4 as %s (Inode %d)...\n", src_path, dest_name,
+         current_free_inode);
+
+  write_file_to_inode(f, partition_offset_bytes, current_free_inode, src_path);
+  mark_inode_used(current_free_inode);
+  current_free_inode++;
+}
+
+void write_raw_to_partition(FILE *f, uint64_t start_lba, const char *src_path) {
+  if (!src_path || strlen(src_path) == 0)
+    return;
+
+  FILE *src = fopen(src_path, "rb");
+  if (!src) {
+    printf("Warning: Could not open %s for raw writing\n", src_path);
+    return;
+  }
+
+  fseek(src, 0, SEEK_END);
+  long size = ftell(src);
+  rewind(src);
+
+  uint8_t *buf = xmalloc(size);
+  if (fread(buf, 1, size, src) != (size_t)size) {
+    perror("fread");
+    exit(1);
+  }
+  fclose(src);
+
+  xseek(f, start_lba * SECTOR_SIZE, SEEK_SET);
+  xwrite(buf, 1, size, f);
+  free(buf);
+
+  printf("Ext4: Wrote %s to LBA %llu (%ld bytes)\n", src_path,
+         (unsigned long long)start_lba, size);
+}
+
+void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
+                         uint32_t inode_num, const char *src_path) {
+  uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE +
+                          (uint64_t)(inode_num - 1) * EXT4_INODE_SIZE;
+
   struct ext4_inode file_inode = {0};
-  file_inode.i_mode = 0x81C0;
+  file_inode.i_mode = 0x81C0; /* File | 644 */
   file_inode.i_links_count = 1;
 
   FILE *src = fopen(src_path, "rb");
-  if (!src) return;
-  fseek(src, 0, SEEK_END);
-  long src_size = ftell(src);
-  rewind(src);
-  uint8_t *buf = xmalloc(src_size);
-  if (fread(buf, 1, src_size, src) != (size_t)src_size) { perror("fread"); exit(1); }
-  fclose(src);
-
-  file_inode.i_size_lo = src_size;
-  int data_blocks = (src_size + EXT4_BLOCK_SIZE - 1) / EXT4_BLOCK_SIZE;
-
-  for (int i = 0; i < data_blocks && i < 12; i++) {
-    uint32_t b = next_free_block++;
-    mark_block_used(b);
-    file_inode.i_block[i] = b;
-    xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE, SEEK_SET);
-    uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE) ? (src_size % EXT4_BLOCK_SIZE) : EXT4_BLOCK_SIZE;
-    xwrite(buf + i * EXT4_BLOCK_SIZE, 1, to_write, f);
-  }
-
-  if (data_blocks > 12) {
-    uint32_t indir_blk = next_free_block++;
-    mark_block_used(indir_blk);
-    file_inode.i_block[12] = indir_blk;
-    uint32_t *indir_buf = xmalloc(EXT4_BLOCK_SIZE);
-    for (int i = 12; i < data_blocks; i++) {
-      uint32_t b = next_free_block++;
-      mark_block_used(b);
-      indir_buf[i - 12] = b;
-      xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE, SEEK_SET);
-      uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE) ? (src_size % EXT4_BLOCK_SIZE) : EXT4_BLOCK_SIZE;
-      xwrite(buf + i * EXT4_BLOCK_SIZE, 1, to_write, f);
+  /* Src must exist checked by caller, but safety first */
+  if (src) {
+    fseek(src, 0, SEEK_END);
+    long src_size = ftell(src);
+    rewind(src);
+    uint8_t *buf = xmalloc(src_size);
+    if (fread(buf, 1, src_size, src) != (size_t)src_size) {
+      perror("fread");
+      exit(1);
     }
-    xseek(f, partition_offset_bytes + (uint64_t)indir_blk * EXT4_BLOCK_SIZE, SEEK_SET);
-    xwrite(indir_buf, 1, EXT4_BLOCK_SIZE, f);
-    free(indir_buf);
-    file_inode.i_blocks_lo = (data_blocks + 1) * (EXT4_BLOCK_SIZE / 512);
-  } else {
-    file_inode.i_blocks_lo = data_blocks * (EXT4_BLOCK_SIZE / 512);
+    fclose(src);
+
+    file_inode.i_size_lo = src_size;
+    int data_blocks = (src_size + EXT4_BLOCK_SIZE - 1) / EXT4_BLOCK_SIZE;
+    int blocks_used = data_blocks;
+
+    uint32_t indir_block = 0;
+    if (data_blocks > 12) {
+      indir_block = next_free_block + data_blocks;
+      mark_block_used(indir_block);
+      blocks_used++;
+    }
+
+    /* 512-byte sectors count for i_blocks */
+    file_inode.i_blocks_lo = blocks_used * (EXT4_BLOCK_SIZE / 512);
+
+    for (int i = 0; i < data_blocks && i < 12; i++) {
+      file_inode.i_block[i] = next_free_block + i;
+      mark_block_used(next_free_block + i);
+    }
+
+    if (data_blocks > 12) {
+      file_inode.i_block[12] = indir_block;
+      uint32_t *indirect_buf = (uint32_t *)xmalloc(EXT4_BLOCK_SIZE);
+      for (int i = 12; i < data_blocks; i++) {
+        indirect_buf[i - 12] = next_free_block + i;
+        mark_block_used(next_free_block + i);
+      }
+      xseek(f, partition_offset_bytes + (uint64_t)indir_block * EXT4_BLOCK_SIZE,
+            SEEK_SET);
+      xwrite(indirect_buf, 1, EXT4_BLOCK_SIZE, f);
+      free(indirect_buf);
+    }
+
+    xseek(f, inode_offset, SEEK_SET);
+    xwrite(&file_inode, 1, sizeof(file_inode), f);
+
+    xseek(f,
+          partition_offset_bytes + (uint64_t)next_free_block * EXT4_BLOCK_SIZE,
+          SEEK_SET);
+    xwrite(buf, 1, src_size, f);
+    free(buf);
+    printf("Ext4: Added %s (Ino %d, %ld bytes, %d blocks)\n", src_path,
+           inode_num, src_size, blocks_used);
+
+    /* Advance Allocator to account for Data blocks AND Indirect block if used
+     */
+    next_free_block += blocks_used;
   }
-
-  xseek(f, inode_offset, SEEK_SET);
-  xwrite(&file_inode, 1, sizeof(file_inode), f);
-  free(buf);
-  printf("Ext4: Added %s (Ino %d, %ld bytes, %d blocks)\n", src_path, inode_num, src_size, data_blocks);
 }
 
-void write_directory_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inode_num, uint32_t data_block) {
-  uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE + (uint64_t)(inode_num - 1) * EXT4_INODE_SIZE;
-  struct ext4_inode inode = {0};
-  inode.i_mode = 0x41ED;
-  inode.i_links_count = 2;
-  inode.i_size_lo = 4096;
-  inode.i_blocks_lo = 8;
-  inode.i_block[0] = data_block;
-  xseek(f, inode_offset, SEEK_SET);
-  xwrite(&inode, 1, sizeof(inode), f);
-}
+void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors) {
+  uint64_t start_offset = start_lba * SECTOR_SIZE;
+  uint64_t size_bytes = size_sectors * SECTOR_SIZE;
+  total_blocks = size_bytes / EXT4_BLOCK_SIZE;
+  free_blocks_count = total_blocks;
 
-uint8_t get_ext4_type(mode_t mode) {
-    if (S_ISREG(mode)) return 1;
-    if (S_ISDIR(mode)) return 2;
-    return 1;
-}
+  /* Initialize Bitmaps */
+  block_bitmap = (uint8_t *)xmalloc(EXT4_BLOCK_SIZE);
+  inode_bitmap = (uint8_t *)xmalloc(EXT4_BLOCK_SIZE);
 
-void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode, uint32_t parent_inode, uint64_t partition_offset_bytes) {
-  DIR *dir = opendir(host_path);
-  if (!dir) return;
+  printf("Ext4: Formatting partition at LBA %llu (Size: %d MB)\n",
+         (unsigned long long)start_lba, (int)(size_bytes >> 20));
 
-  uint32_t data_blk_num = next_free_block++;
-  mark_block_used(data_blk_num);
-  write_directory_inode(f, partition_offset_bytes, dir_inode, data_blk_num);
+  /* Mark Metadata Blocks as used */
+  /* Block 0 (SB), 1 (GDT), 2 (BMap), 3 (IMap) */
+  for (int i = 0; i < 4; i++)
+    mark_block_used(i);
+  /* Mark Inode Table Blocks (4 to 67) */
+  for (int i = 0; i < INODE_TABLE_BLOCKS; i++)
+    mark_block_used(BLK_INODE_TABLE + i);
 
-  uint8_t *dir_blk = xmalloc(EXT4_BLOCK_SIZE);
+  /* Mark Reserved Inodes (1-10) */
+  for (int i = 1; i <= 10; i++)
+    mark_inode_used(i);
+
+  /* Allocator start after ITABLE */
+  next_free_block = BLK_DATA_START;
+
+  /* Prepare Directory Data Buffer */
+  uint8_t *dir_blk = (uint8_t *)xmalloc(EXT4_BLOCK_SIZE);
   int off = 0;
 
+  /* ---------------- ROOT DIR (Inode 2) ---------------- */
+  mark_inode_used(EXT4_ROOT_INO);
+  /* Root Dir Data at next_free_block */
+  uint32_t root_data_block = next_free_block++;
+  mark_block_used(root_data_block);
+
+  /* "." */
   struct ext4_dir_entry *de = (struct ext4_dir_entry *)&dir_blk[off];
-  de->inode = dir_inode; de->rec_len = 12; de->name_len = 1; de->file_type = 2; memcpy(de->name, ".", 1); off += 12;
+  de->inode = 2;
+  de->rec_len = 12;
+  de->name_len = 1;
+  de->file_type = 2;
+  memcpy(de->name, ".", 1);
+  off += de->rec_len;
+  /* ".." */
   de = (struct ext4_dir_entry *)&dir_blk[off];
-  de->inode = parent_inode; de->rec_len = 12; de->name_len = 2; de->file_type = 2; memcpy(de->name, "..", 2); off += 12;
+  de->inode = 2;
+  de->rec_len = 12;
+  de->name_len = 2;
+  de->file_type = 2;
+  memcpy(de->name, "..", 2);
+  off += de->rec_len;
+  /* "bin" (Inode 22) */
+  de = (struct ext4_dir_entry *)&dir_blk[off];
+  de->inode = 22;
+  de->rec_len = 12;
+  de->name_len = 3;
+  de->file_type = 2;
+  memcpy(de->name, "bin", 3);
+  off += de->rec_len;
+  /* "etc" (Inode 23) */
+  de = (struct ext4_dir_entry *)&dir_blk[off];
+  de->inode = 23;
+  de->rec_len = EXT4_BLOCK_SIZE - off;
+  de->name_len = 3;
+  de->file_type = 2;
+  memcpy(de->name, "etc", 3);
 
-  struct entry { char name[256]; uint32_t inode; uint8_t type; char path[1024]; } entries[64];
-  int count = 0;
-  struct dirent *ent;
-  while ((ent = readdir(dir)) && count < 64) {
-    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0 || ent->d_name[0] == '.') continue;
-    char p[1024]; snprintf(p, 1024, "%s/%s", host_path, ent->d_name);
-    struct stat st;
-    if (stat(p, &st) != 0) continue;
-    uint32_t ino = current_free_inode++;
-    mark_inode_used(ino);
-    strcpy(entries[count].name, ent->d_name);
-    entries[count].inode = ino;
-    entries[count].type = get_ext4_type(st.st_mode);
-    strcpy(entries[count].path, p);
-
-    de = (struct ext4_dir_entry *)&dir_blk[off];
-    de->inode = ino;
-    int nlen = strlen(ent->d_name);
-    de->rec_len = (8 + nlen + 3) & ~3;
-    de->name_len = nlen;
-    de->file_type = entries[count].type;
-    memcpy(de->name, ent->d_name, nlen);
-    off += de->rec_len;
-    count++;
-  }
-  if (off > 24) {
-      int last_off = 0, cur = 0;
-      while (cur < off) { last_off = cur; cur += ((struct ext4_dir_entry *)&dir_blk[cur])->rec_len; }
-      ((struct ext4_dir_entry *)&dir_blk[last_off])->rec_len = EXT4_BLOCK_SIZE - last_off;
-  } else {
-      ((struct ext4_dir_entry *)&dir_blk[12])->rec_len = EXT4_BLOCK_SIZE - 12;
-  }
-
-  xseek(f, partition_offset_bytes + (uint64_t)data_blk_num * EXT4_BLOCK_SIZE, SEEK_SET);
+  /* Write Root Dir Data */
+  xseek(f, start_offset + (uint64_t)root_data_block * EXT4_BLOCK_SIZE,
+        SEEK_SET);
   xwrite(dir_blk, 1, EXT4_BLOCK_SIZE, f);
-  free(dir_blk);
-  closedir(dir);
 
-  for (int i = 0; i < count; i++) {
-    if (entries[i].type == 2) populate_directory(f, entries[i].path, entries[i].inode, dir_inode, partition_offset_bytes);
-    else write_file_to_inode(f, partition_offset_bytes, entries[i].inode, entries[i].path);
+  /* Write Root Inode */
+  struct ext4_inode root = {0};
+  root.i_mode = 0x41ED;   /* Directory | 755 */
+  root.i_links_count = 3; // . .. bin etc
+  root.i_size_lo = 4096;
+  root.i_blocks_lo = 8;
+  root.i_block[0] = root_data_block;
+  xseek(f, start_offset + 4 * EXT4_BLOCK_SIZE + (2 - 1) * EXT4_INODE_SIZE,
+        SEEK_SET);
+  xwrite(&root, 1, sizeof(root), f);
+
+  /* ---------------- BIN DIR (Inode 22) ---------------- */
+  mark_inode_used(22);
+  uint32_t bin_data_block = next_free_block++;
+  mark_block_used(bin_data_block);
+
+  memset(dir_blk, 0, EXT4_BLOCK_SIZE);
+  off = 0;
+  /* "." */
+  de = (struct ext4_dir_entry *)&dir_blk[off];
+  de->inode = 22;
+  de->rec_len = 12;
+  de->name_len = 1;
+  de->file_type = 2;
+  memcpy(de->name, ".", 1);
+  off += de->rec_len;
+  /* ".." */
+  de = (struct ext4_dir_entry *)&dir_blk[off];
+  de->inode = 2;
+  de->rec_len = 12;
+  de->name_len = 2;
+  de->file_type = 2;
+  memcpy(de->name, "..", 2);
+  off += de->rec_len;
+
+  const char *bin_files[] = {"init",           "counter",  "shell",
+                             "demo3d",         "ipc_recv", "ipc_send",
+                             "notify_srv.elf", "regedit",  "writetest.elf"};
+  uint32_t bin_inodes[] = {11, 12, 13, 14, 15, 16, 17, 18, 19};
+  int num_bin = 9;
+
+  for (int i = 0; i < num_bin; i++) {
+    de = (struct ext4_dir_entry *)&dir_blk[off];
+    de->inode = bin_inodes[i];
+    int nlen = (int)strlen(bin_files[i]);
+    de->rec_len = (8 + nlen + 3) & ~3;
+    if (i == num_bin - 1)
+      de->rec_len = EXT4_BLOCK_SIZE - off;
+    de->name_len = nlen;
+    de->file_type = 1;
+    memcpy(de->name, bin_files[i], nlen);
+    off += de->rec_len;
   }
-}
+  xseek(f, start_offset + (uint64_t)bin_data_block * EXT4_BLOCK_SIZE, SEEK_SET);
+  xwrite(dir_blk, 1, EXT4_BLOCK_SIZE, f);
 
-void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors, const char *root_host) {
-  uint64_t start_off = start_lba * SECTOR_SIZE;
-  total_blocks = (size_sectors * SECTOR_SIZE) / EXT4_BLOCK_SIZE;
-  free_blocks_count = total_blocks;
-  block_bitmap = xmalloc(EXT4_BLOCK_SIZE);
-  inode_bitmap = xmalloc(EXT4_BLOCK_SIZE);
+  /* Write Bin Inode */
+  struct ext4_inode bin_inode = {0};
+  bin_inode.i_mode = 0x41ED;
+  bin_inode.i_links_count = 2;
+  bin_inode.i_size_lo = 4096;
+  bin_inode.i_blocks_lo = 8;
+  bin_inode.i_block[0] = bin_data_block;
+  xseek(f, start_offset + 4 * EXT4_BLOCK_SIZE + (22 - 1) * EXT4_INODE_SIZE,
+        SEEK_SET);
+  xwrite(&bin_inode, 1, sizeof(bin_inode), f);
 
-  for (int i = 0; i < 4; i++) mark_block_used(i);
-  for (int i = 0; i < INODE_TABLE_BLOCKS; i++) mark_block_used(BLK_INODE_TABLE + i);
-  for (int i = 1; i <= 10; i++) mark_inode_used(i);
+  /* ---------------- ETC DIR (Inode 23) ---------------- */
+  mark_inode_used(23);
+  uint32_t etc_data_block = next_free_block++;
+  mark_block_used(etc_data_block);
 
-  mark_inode_used(2);
-  populate_directory(f, root_host, 2, 2, start_off);
+  memset(dir_blk, 0, EXT4_BLOCK_SIZE);
+  off = 0;
+  /* "." */
+  de = (struct ext4_dir_entry *)&dir_blk[off];
+  de->inode = 23;
+  de->rec_len = 12;
+  de->name_len = 1;
+  de->file_type = 2;
+  memcpy(de->name, ".", 1);
+  off += de->rec_len;
+  /* ".." */
+  de = (struct ext4_dir_entry *)&dir_blk[off];
+  de->inode = 2;
+  de->rec_len = 12;
+  de->name_len = 2;
+  de->file_type = 2;
+  memcpy(de->name, "..", 2);
+  off += de->rec_len;
+  /* "init.cfg" (Inode 20) */
+  de = (struct ext4_dir_entry *)&dir_blk[off];
+  de->inode = 20;
+  de->rec_len = EXT4_BLOCK_SIZE - off;
+  de->name_len = 8;
+  de->file_type = 1;
+  memcpy(de->name, "init.cfg", 8);
 
-  xseek(f, start_off + EXT4_SUPERBLOCK_OFFSET, SEEK_SET);
+  xseek(f, start_offset + (uint64_t)etc_data_block * EXT4_BLOCK_SIZE, SEEK_SET);
+  xwrite(dir_blk, 1, EXT4_BLOCK_SIZE, f);
+
+  /* Write Etc Inode */
+  struct ext4_inode etc_inode = {0};
+  etc_inode.i_mode = 0x41ED;
+  etc_inode.i_links_count = 2;
+  etc_inode.i_size_lo = 4096;
+  etc_inode.i_blocks_lo = 8;
+  etc_inode.i_block[0] = etc_data_block;
+  xseek(f, start_offset + 4 * EXT4_BLOCK_SIZE + (23 - 1) * EXT4_INODE_SIZE,
+        SEEK_SET);
+  xwrite(&etc_inode, 1, sizeof(etc_inode), f);
+
+  free(dir_blk);
+
+  /* ---------------- WRITE FILES ---------------- */
+  current_free_inode = 11;
+  add_file_to_ext4(f, "build/init.elf", "init", start_offset);
+  add_file_to_ext4(f, "build/counter.elf", "counter", start_offset);
+  add_file_to_ext4(f, "build/shell.elf", "shell", start_offset);
+  add_file_to_ext4(f, "build/demo3d.elf", "demo3d", start_offset);
+  add_file_to_ext4(f, "build/ipc_recv.elf", "ipc_recv", start_offset);
+  add_file_to_ext4(f, "build/ipc_send.elf", "ipc_send", start_offset);
+  add_file_to_ext4(f, "build/notification_server.elf", "notify_srv.elf",
+                   start_offset);
+  add_file_to_ext4(f, "build/regedit.elf", "regedit", start_offset);
+  add_file_to_ext4(f, "build/writetest.elf", "writetest.elf", start_offset);
+  add_file_to_ext4(f, "user/bin/init.cfg", "init.cfg", start_offset);
+
+  /* ---------------- FINALIZE METADATA ---------------- */
+  /* Superblock */
+  xseek(f, start_offset + EXT4_SUPERBLOCK_OFFSET, SEEK_SET);
   struct ext4_superblock sb = {0};
-  sb.s_inodes_count = 1024; sb.s_blocks_count_lo = total_blocks; sb.s_free_blocks_count_lo = free_blocks_count;
-  sb.s_free_inodes_count = free_inodes_count; sb.s_log_block_size = 2; sb.s_magic = EXT4_MAGIC;
-  sb.s_state = 1; sb.s_rev_level = 1; sb.s_first_ino = 11; sb.s_inode_size = EXT4_INODE_SIZE;
+  sb.s_inodes_count = 1024;
+  sb.s_blocks_count_lo = total_blocks;
+  sb.s_free_blocks_count_lo = free_blocks_count;
+  sb.s_free_inodes_count = free_inodes_count;
+  sb.s_first_data_block = 0;
+  sb.s_log_block_size = 2; /* 4KB */
+  sb.s_blocks_per_group = 8192;
+  sb.s_clusters_per_group = 8192;
+  sb.s_inodes_per_group = 1024;
+  sb.s_magic = EXT4_MAGIC;
+  sb.s_state = 1;
+  sb.s_rev_level = 1;
+  sb.s_first_ino = 11;
+  sb.s_inode_size = EXT4_INODE_SIZE;
   xwrite(&sb, 1, sizeof(sb), f);
 
-  xseek(f, start_off + EXT4_BLOCK_SIZE, SEEK_SET);
+  /* Group Descriptor */
+  xseek(f, start_offset + EXT4_BLOCK_SIZE, SEEK_SET);
   struct ext4_group_desc bg = {0};
-  bg.bg_block_bitmap_lo = BLK_BLK_BITMAP; bg.bg_inode_bitmap_lo = BLK_INODE_BITMAP;
-  bg.bg_inode_table_lo = BLK_INODE_TABLE; bg.bg_free_blocks_count_lo = free_blocks_count;
+  bg.bg_block_bitmap_lo = BLK_BLK_BITMAP;
+  bg.bg_inode_bitmap_lo = BLK_INODE_BITMAP;
+  bg.bg_inode_table_lo = BLK_INODE_TABLE;
+  bg.bg_free_blocks_count_lo = free_blocks_count;
   bg.bg_free_inodes_count_lo = free_inodes_count;
+  bg.bg_used_dirs_count_lo = 3; /* Root, bin, etc */
   xwrite(&bg, 1, sizeof(bg), f);
 
-  xseek(f, start_off + BLK_BLK_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET); xwrite(block_bitmap, 1, EXT4_BLOCK_SIZE, f);
-  xseek(f, start_off + BLK_INODE_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET); xwrite(inode_bitmap, 1, EXT4_BLOCK_SIZE, f);
+  /* Block Bitmap */
+  xseek(f, start_offset + BLK_BLK_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET);
+  xwrite(block_bitmap, 1, EXT4_BLOCK_SIZE, f);
+  free(block_bitmap);
+
+  /* Inode Bitmap */
+  xseek(f, start_offset + BLK_INODE_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET);
+  xwrite(inode_bitmap, 1, EXT4_BLOCK_SIZE, f);
+  free(inode_bitmap);
+
+  printf("Ext4: Filesystem created. Free Blocks: %d, Free Inodes: %d\n",
+         free_blocks_count, free_inodes_count);
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 4) { fprintf(stderr, "Usage: %s <img.img> <boot.bin> <kernel.bin> <root_dir>\n", argv[0]); return 1; }
-  const char *boot_path = argv[2], *kern_path = argv[3], *root_dir = argv[4];
+  if (argc < 2) {
+    fprintf(stderr, "Usage: %s <output_file> [bootloader.bin] [kernel.bin]\n",
+            argv[0]);
+    return 1;
+  }
+  const char *bootloader_path = (argc > 2) ? argv[2] : NULL;
+  const char *kernel_path = (argc > 3) ? argv[3] : NULL;
 
   FILE *f = fopen(argv[1], "wb+");
-  xseek(f, DISK_SIZE_BYTES - 1, SEEK_SET); fputc(0, f); rewind(f);
+  if (!f) {
+    perror("fopen");
+    return 1;
+  }
 
-  uint8_t mbr[SECTOR_SIZE] = {0}; mbr[510] = 0x55; mbr[511] = 0xAA;
-  struct mbr_entry *me = (struct mbr_entry *)&mbr[446];
-  me->type = 0xEE; me->lba_start = 1; me->sectors = NUM_SECTORS - 1;
+  /* 1. Zero out disk */
+  printf("Creating %dMB disk image...\n", DISK_SIZE_MB);
+  xseek(f, DISK_SIZE_BYTES - 1, SEEK_SET);
+  fputc(0, f);
+  rewind(f);
+
+  /* 2. Protective MBR (LBA 0) */
+  uint8_t mbr[SECTOR_SIZE] = {0};
+  mbr[510] = 0x55;
+  mbr[511] = 0xAA;
+  struct mbr_entry *entry = (struct mbr_entry *)&mbr[446];
+  entry->status = 0x00;
+  entry->type = 0xEE; /* GPT Protective */
+  entry->lba_start = 1;
+  entry->sectors = NUM_SECTORS - 1;
   xwrite(mbr, 1, SECTOR_SIZE, f);
 
+  /* 3. Prepare Partition Entries */
   uint8_t *entries = xmalloc(128 * 128);
   struct gpt_partition_entry *e = (struct gpt_partition_entry *)entries;
-  e[0].type_guid = TYPE_BOOT; e[0].start_lba = 34; e[0].end_lba = 2081;
-  e[1].type_guid = TYPE_KERNEL; e[1].start_lba = 2082; e[1].end_lba = 34849;
-  e[2].type_guid = TYPE_DATA; e[2].start_lba = 34850; e[2].end_lba = NUM_SECTORS - 34;
 
-  struct gpt_header h = {0}; h.signature = GPT_SIGNATURE; h.revision = GPT_REVISION; h.header_size = 92;
-  h.my_lba = 1; h.alternate_lba = NUM_SECTORS - 1; h.first_usable_lba = 34; h.last_usable_lba = NUM_SECTORS - 34;
-  h.partition_entry_lba = 2; h.num_partition_entries = 128; h.partition_entry_size = 128;
-  h.partition_entry_crc32 = crc32(entries, 128 * 128); h.header_crc32 = crc32(&h, 92);
+  /* Partition 1: Boot (1MB) LBA 34 to 2081 */
+  e[0].type_guid = TYPE_BOOT;
+  e[0].start_lba = 34;
+  e[0].end_lba = 2081;
+
+  /* Partition 2: Kernel (16MB) LBA 2082 to 34849 */
+  e[1].type_guid = TYPE_KERNEL;
+  e[1].start_lba = 2082;
+  e[1].end_lba = 34849;
+
+  /* Partition 3: Userland (Rest) */
+  e[2].type_guid = TYPE_DATA;
+  e[2].start_lba = 34850;
+  e[2].end_lba = NUM_SECTORS - 34;
+
+  uint32_t entries_crc = crc32(entries, 128 * 128);
+
+  /* 4. Prepare GPT Header (LBA 1) */
+  struct gpt_header h = {0};
+  h.signature = GPT_SIGNATURE;
+  h.revision = GPT_REVISION;
+  h.header_size = 92;
+  h.my_lba = 1;
+  h.alternate_lba = NUM_SECTORS - 1;
+  h.first_usable_lba = 34;
+  h.last_usable_lba = NUM_SECTORS - 34;
+  h.partition_entry_lba = 2;
+  h.num_partition_entries = 128;
+  h.partition_entry_size = 128;
+  h.partition_entry_crc32 = entries_crc;
+  h.header_crc32 = 0;
+  h.header_crc32 = crc32(&h, 92);
+
+  /* Write GPT Header (LBA 1) */
   xwrite(&h, 1, sizeof(h), f);
-  uint8_t pad[SECTOR_SIZE - sizeof(h)] = {0}; xwrite(pad, 1, sizeof(pad), f);
-  xwrite(entries, 1, 128 * 128, f);
+  uint8_t pad[SECTOR_SIZE - sizeof(h)];
+  memset(pad, 0, sizeof(pad));
+  xwrite(pad, 1, sizeof(pad), f);
 
-  write_ext4_partition(f, e[2].start_lba, e[2].end_lba - e[2].start_lba + 1, root_dir);
-  if (strcmp(boot_path, "none") != 0) {
-      FILE *bs = fopen(boot_path, "rb");
-      if (bs) {
-          fseek(bs, 0, SEEK_END); long sz = ftell(bs); rewind(bs);
-          uint8_t *bb = xmalloc(sz); fread(bb, 1, sz, bs); fclose(bs);
-          xseek(f, e[0].start_lba * SECTOR_SIZE, SEEK_SET); xwrite(bb, 1, sz, f); free(bb);
-      }
-  }
-  FILE *ks = fopen(kern_path, "rb");
-  if (ks) {
-      fseek(ks, 0, SEEK_END); long sz = ftell(ks); rewind(ks);
-      uint8_t *kb = xmalloc(sz); fread(kb, 1, sz, ks); fclose(ks);
-      xseek(f, e[1].start_lba * SECTOR_SIZE, SEEK_SET); xwrite(kb, 1, sz, f); free(kb);
-  }
-  fclose(f); return 0;
+  /* Write Partition Entries (LBA 2 onwards) */
+  xwrite(entries, 1, 128 * 128, f);
+  free(entries);
+
+  printf("Disk image created successfully: %s\n", argv[1]);
+
+  /* Format Partition 3 as Ext4 */
+  write_ext4_partition(f, e[2].start_lba, e[2].end_lba - e[2].start_lba + 1);
+
+  /* Write raw binaries */
+  if (bootloader_path)
+    write_raw_to_partition(f, e[0].start_lba, bootloader_path);
+  if (kernel_path)
+    write_raw_to_partition(f, e[1].start_lba, kernel_path);
+
+  fclose(f);
+  return 0;
 }

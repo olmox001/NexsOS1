@@ -253,24 +253,19 @@ void compositor_destroy_window(int window_id) {
   uint64_t flags;
   spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
-      if (windows[i].id == window_id) {
-        if (windows[i].pid == keyboard_focus_pid) {
-          /* Focused window is being destroyed, reset focus to Shell (PID 7 or 2) */
-          /* In a more advanced system we would pick the next window in Z-order */
-          keyboard_focus_pid = 7; 
-        }
-        if (windows[i].buffer) {
-          kfree(windows[i].buffer);
-        }
-        if (windows[i].text_grid)
-          kfree(windows[i].text_grid);
-        if (windows[i].attr_grid)
-          kfree(windows[i].attr_grid);
-        memset(&windows[i], 0, sizeof(struct window));
-        window_count--;
-        spin_unlock_irqrestore(&compositor_lock, flags);
-        return;
+    if (windows[i].id == window_id) {
+      if (windows[i].buffer) {
+        kfree(windows[i].buffer);
       }
+      if (windows[i].text_grid)
+        kfree(windows[i].text_grid);
+      if (windows[i].attr_grid)
+        kfree(windows[i].attr_grid);
+      memset(&windows[i], 0, sizeof(struct window));
+      window_count--;
+      spin_unlock_irqrestore(&compositor_lock, flags);
+      return;
+    }
   }
   spin_unlock_irqrestore(&compositor_lock, flags);
 }
@@ -283,9 +278,6 @@ void compositor_destroy_windows_by_pid(int pid) {
   spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id != 0 && windows[i].pid == pid) {
-      if (windows[i].pid == keyboard_focus_pid) {
-        keyboard_focus_pid = 7;
-      }
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
@@ -622,12 +614,6 @@ void compositor_handle_click(int button, int state) {
       top_z = windows[i].z_order;
   }
   hit->z_order = top_z + 1;
-
-  /* Update keyboard focus to this process */
-  if (keyboard_focus_pid != hit->pid) {
-    pr_info("Compositor: Focus changed to PID %d (Window '%s')\n", hit->pid, hit->title);
-    keyboard_focus_pid = hit->pid;
-  }
 
   /* Check for close button — save pid/id, release lock before process_terminate */
   if (!hit->protected) {

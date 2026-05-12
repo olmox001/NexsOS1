@@ -12,8 +12,7 @@ struct process;
 struct cpu_info {
   uint32_t cpu_id;
   uint32_t online;
-  uint64_t stack_top;      /* Kernel Stack Top */
-  uint64_t user_stack_tmp; /* Temp storage for user RSP during syscall/interrupt */
+  uint64_t stack_top;
   struct process *current_task;
   uint64_t next_tick_target;
   uint64_t tick_error_acc;

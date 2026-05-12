@@ -149,7 +149,9 @@ int process_load_elf(struct process *proc, const char *path) {
        proc->context->sp_el0); */
 
     memset(proc->context, 0, sizeof(struct pt_regs));
-    pt_regs_init_user_task(proc->context, proc->user_entry, proc->user_stack);
+    proc->context->elr = proc->user_entry;
+    proc->context->sp_el0 = proc->user_stack;
+    proc->context->spsr = 0; /* EL0t + Unmasked */
 
     /* pr_info("ELF: After init - PID %d\n", proc->pid);
     pr_info("ELF:   ELR=0x%lx\n", proc->context->elr);
