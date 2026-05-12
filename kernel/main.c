@@ -124,8 +124,7 @@ void kernel_main(uint64_t x0_arg) {
 
   uint32_t cpu_count = fdt_count_cpus();
   if (cpu_count == 0) {
-    pr_warn("%s",
-            "CPU: FDT discovery failed, trying up to 4 cores fallback.\n");
+    pr_warn("%s", "CPU: FDT discovery failed, manual discovery whit woken\n");
     cpu_count = MAX_CPUS;
   }
   if (cpu_count > MAX_CPUS)

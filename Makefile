@@ -430,7 +430,7 @@ QEMU_FLAGS = -m 1G -smp 4 -serial mon:stdio \
              -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
 else
 QEMU = qemu-system-aarch64
-QEMU_FLAGS = -M virt -cpu cortex-a57 -m 2G -smp 4 -serial mon:stdio \
+QEMU_FLAGS = -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \
