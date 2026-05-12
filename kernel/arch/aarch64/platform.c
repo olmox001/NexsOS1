@@ -9,6 +9,7 @@
 #include <kernel/platform.h>
 #include <kernel/printk.h>
 #include <drivers/gic.h>
+#include <drivers/uart.h>
 
 /* Global memory regions for PMM */
 static struct mem_region arch_mem_regions[MAX_CPUS * 2]; /* Enough slots */
@@ -18,21 +19,21 @@ static size_t arch_region_count = 0;
  * Perform early platform initialization
  */
 void arch_platform_early_init(void) {
+    uart_puts("PLATFORM: arch_platform_early_init starting\n");
     /* 
      * Register the Interrupt Controller.
      */
     gic_register();
 
     /* Initialize FDT parser */
-    uint64_t boot_info_ptr = arch_get_boot_info();
-    if (boot_info_ptr) {
-        if (fdt_init(boot_info_ptr) == 0) {
-            pr_info("AArch64: FDT initialized from 0x%lx\n", boot_info_ptr);
+    if (boot_fdt_ptr) {
+        if (fdt_init(boot_fdt_ptr) == 0) {
+            pr_info("AArch64: FDT initialized from 0x%lx\n", boot_fdt_ptr);
         } else {
-            pr_warn("AArch64: Failed to initialize FDT from 0x%lx!\n", boot_info_ptr);
+            pr_warn("AArch64: Failed to initialize FDT from 0x%lx!\n", boot_fdt_ptr);
         }
     } else {
-        pr_warn("%s", "AArch64: No DTB pointer found in x0!\n");
+        pr_warn("%s", "AArch64: No DTB pointer found (boot_fdt_ptr is NULL)!\n");
     }
 }
 

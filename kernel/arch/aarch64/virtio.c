@@ -1,40 +1,46 @@
 #include <kernel/arch.h>
 #include <drivers/virtio.h>
 
-#define MAX_VIRTIO_DEVS 8
-
-struct virtio_device {
-    uintptr_t base;
-    uint32_t irq;
-    uint32_t device_id;
-};
+#define MAX_VIRTIO_DEVS 16
+#define VIRTIO_MMIO_BASE 0x0a000000
+#define VIRTIO_MMIO_STRIDE 0x200
+#define VIRTIO_COUNT 32
 
 static struct virtio_device virtio_devices[MAX_VIRTIO_DEVS];
 static int virtio_dev_count = 0;
 
-uint32_t virtio_read_reg(virtio_handle_t dev, uint32_t offset) {
+/* MMIO Implementation of Transport Ops */
+static uint32_t mmio_read32(struct virtio_device *dev, uint32_t offset) {
     return *(volatile uint32_t *)(dev->base + offset);
 }
 
-void virtio_write_reg(virtio_handle_t dev, uint32_t offset, uint32_t val) {
+static void mmio_write32(struct virtio_device *dev, uint32_t offset, uint32_t val) {
     *(volatile uint32_t *)(dev->base + offset) = val;
 }
 
-void virtio_notify(virtio_handle_t dev, uint32_t queue_idx) {
-    virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_NOTIFY, queue_idx);
+static void mmio_notify(struct virtio_device *dev, uint32_t queue_idx) {
+    mmio_write32(dev, VIRTIO_MMIO_QUEUE_NOTIFY, queue_idx);
 }
+
+static const struct virtio_transport_ops mmio_ops = {
+    .read32 = mmio_read32,
+    .write32 = mmio_write32,
+    .notify = mmio_notify
+};
 
 void arch_virtio_scan(void) {
     virtio_dev_count = 0;
     for (int i = 0; i < VIRTIO_COUNT; i++) {
         uintptr_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STRIDE;
-        struct virtio_device dummy = { .base = base };
-        if (virtio_read_reg(&dummy, VIRTIO_MMIO_MAGIC_VALUE) == 0x74726976) {
-            uint32_t dev_id = virtio_read_reg(&dummy, VIRTIO_MMIO_DEVICE_ID);
+        uint32_t magic = *(volatile uint32_t *)(base + VIRTIO_MMIO_MAGIC_VALUE);
+        
+        if (magic == 0x74726976) {
+            uint32_t dev_id = *(volatile uint32_t *)(base + VIRTIO_MMIO_DEVICE_ID);
             if (dev_id != 0 && virtio_dev_count < MAX_VIRTIO_DEVS) {
                 virtio_devices[virtio_dev_count].base = base;
                 virtio_devices[virtio_dev_count].irq = 48 + i;
                 virtio_devices[virtio_dev_count].device_id = dev_id;
+                virtio_devices[virtio_dev_count].ops = &mmio_ops;
                 virtio_dev_count++;
             }
         }
@@ -45,7 +51,8 @@ void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx, uint64_t desc_a
     (void)avail_addr;
     (void)used_addr;
     virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_SEL, queue_idx);
-    virtio_write_reg(dev, VIRTIO_MMIO_GUEST_PAGE_SIZE, 4096);
+    // VIRTIO_MMIO_GUEST_PAGE_SIZE is 0x028
+    *(volatile uint32_t *)(dev->base + 0x028) = 4096;
     virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_PFN, desc_addr >> 12);
 }
 

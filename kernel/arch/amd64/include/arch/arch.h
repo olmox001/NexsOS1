@@ -146,6 +146,48 @@ static inline uint64_t arch_impl_get_fault_address(void) {
   return cr2;
 }
 
+static inline uint64_t rdmsr(uint32_t msr) {
+  uint32_t low, high;
+  __asm__ __volatile__("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+  return ((uint64_t)high << 32) | low;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t val) {
+  uint32_t low = (uint32_t)val;
+  uint32_t high = (uint32_t)(val >> 32);
+  __asm__ __volatile__("wrmsr" : : "a"(low), "d"(high), "c"(msr));
+}
+
+static inline void outb(uint16_t port, uint8_t val) {
+  __asm__ __volatile__("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port) {
+  uint8_t val;
+  __asm__ __volatile__("inb %1, %0" : "=a"(val) : "Nd"(port));
+  return val;
+}
+
+static inline void outw(uint16_t port, uint16_t val) {
+  __asm__ __volatile__("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint16_t inw(uint16_t port) {
+  uint16_t val;
+  __asm__ __volatile__("inw %1, %0" : "=a"(val) : "Nd"(port));
+  return val;
+}
+
+static inline void outl(uint16_t port, uint32_t val) {
+  __asm__ __volatile__("outl %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint32_t inl(uint16_t port) {
+  uint32_t val;
+  __asm__ __volatile__("inl %1, %0" : "=a"(val) : "Nd"(port));
+  return val;
+}
+
 static inline uint64_t arch_impl_get_fault_status(void) {
   return 0; /* x86 uses error code on stack */
 }

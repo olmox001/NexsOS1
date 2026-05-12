@@ -18,6 +18,7 @@
  */
 _start:
     /* Save boot info (DTB pointer) immediately */
+    mov x20, x0
     adrp x1, boot_info
     str x0, [x1, :lo12:boot_info]
 
@@ -138,6 +139,7 @@ bss_done:
     isb
     
     /* Call kernel main */
+    mov x0, x20
     bl kernel_main
     
     /* Should never return */

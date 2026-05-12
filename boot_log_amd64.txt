@@ -1,0 +1,168 @@
+AS  kernel/arch/amd64/boot/start.S
+AS  kernel/arch/amd64/cpu/isr_stubs.S
+AS  kernel/arch/amd64/cpu/syscall.S
+AS  kernel/arch/amd64/cpu/context.S
+CC  kernel/arch/amd64/cpu/cpu.c
+CC  kernel/arch/amd64/cpu/idt.c
+CC  kernel/arch/amd64/cpu/gdt.c
+CC  kernel/arch/amd64/cpu/msr.c
+CC  kernel/arch/amd64/mm/mmu.c
+CC  kernel/arch/amd64/mm/uaccess.c
+CC  kernel/drivers/uart/16550.c
+CC  kernel/drivers/timer/pic_pit.c
+CC  kernel/arch/amd64/platform/platform.c
+CC  kernel/drivers/pci/pci.c
+CC  kernel/arch/amd64/virtio.c
+CC  kernel/core/syscall_dispatch.c
+CC  kernel/core/timer.c
+CC  kernel/drivers/console.c
+CC  kernel/drivers/irq_ctrl.c
+CC  kernel/drivers/sys_timer.c
+CC  kernel/drivers/virtio/virtio_blk.c
+CC  kernel/drivers/virtio/virtio_input.c
+CC  kernel/drivers/gpu/virtio_gpu.c
+CC  kernel/drivers/gpu/gpu_core.c
+CC  kernel/drivers/keyboard/keyboard.c
+CC  kernel/fs/gpt.c
+CC  kernel/fs/ext4.c
+CC  kernel/mm/pmm.c
+CC  kernel/mm/vmm.c
+CC  kernel/mm/buffer.c
+CC  kernel/lib/string.c
+CC  kernel/lib/printk.c
+CC  kernel/lib/stack_protector.c
+CC  kernel/lib/math.c
+CC  kernel/lib/kmalloc.c
+CC  kernel/lib/registry.c
+CC  kernel/lib/ktest.c
+CC  kernel/lib/ktest_samples.c
+CC  kernel/cpu.c
+CC  kernel/sched/process.c
+CC  kernel/sched/elf.c
+CC  kernel/graphics/graphics.c
+CC  kernel/graphics/region.c
+CC  kernel/graphics/gl.c
+CC  kernel/graphics/font.c
+CC  kernel/graphics/compositor.c
+CC  kernel/irq/irq.c
+CC  kernel/lib/fdt.c
+CC  kernel/main.c
+Linking kernel...
+x86_64-elf-ld -nostdlib -static -T kernel/arch/amd64/kernel.ld -Map build/kernel.map -o build/amd64/kernel.elf build/amd64/kernel/arch/amd64/boot/start.o build/amd64/kernel/arch/amd64/cpu/isr_stubs.o build/amd64/kernel/arch/amd64/cpu/syscall.o build/amd64/kernel/arch/amd64/cpu/context.o build/amd64/kernel/arch/amd64/cpu/cpu.o build/amd64/kernel/arch/amd64/cpu/idt.o build/amd64/kernel/arch/amd64/cpu/gdt.o build/amd64/kernel/arch/amd64/cpu/msr.o build/amd64/kernel/arch/amd64/mm/mmu.o build/amd64/kernel/arch/amd64/mm/uaccess.o build/amd64/kernel/drivers/uart/16550.o build/amd64/kernel/drivers/timer/pic_pit.o build/amd64/kernel/arch/amd64/platform/platform.o build/amd64/kernel/drivers/pci/pci.o build/amd64/kernel/arch/amd64/virtio.o build/amd64/kernel/core/syscall_dispatch.o build/amd64/kernel/core/timer.o build/amd64/kernel/drivers/console.o build/amd64/kernel/drivers/irq_ctrl.o build/amd64/kernel/drivers/sys_timer.o build/amd64/kernel/drivers/virtio/virtio_blk.o build/amd64/kernel/drivers/virtio/virtio_input.o build/amd64/kernel/drivers/gpu/virtio_gpu.o build/amd64/kernel/drivers/gpu/gpu_core.o build/amd64/kernel/drivers/keyboard/keyboard.o build/amd64/kernel/fs/gpt.o build/amd64/kernel/fs/ext4.o build/amd64/kernel/mm/pmm.o build/amd64/kernel/mm/vmm.o build/amd64/kernel/mm/buffer.o build/amd64/kernel/lib/string.o build/amd64/kernel/lib/printk.o build/amd64/kernel/lib/stack_protector.o build/amd64/kernel/lib/math.o build/amd64/kernel/lib/kmalloc.o build/amd64/kernel/lib/registry.o build/amd64/kernel/lib/ktest.o build/amd64/kernel/lib/ktest_samples.o build/amd64/kernel/cpu.o build/amd64/kernel/sched/process.o build/amd64/kernel/sched/elf.o build/amd64/kernel/graphics/graphics.o build/amd64/kernel/graphics/region.o build/amd64/kernel/graphics/gl.o build/amd64/kernel/graphics/font.o build/amd64/kernel/graphics/compositor.o build/amd64/kernel/irq/irq.o build/amd64/kernel/lib/fdt.o build/amd64/kernel/main.o
+x86_64-elf-ld: build/amd64/kernel.elf: warning: allocated section `.note.PVH' not in segment
+Kernel size: 558536 bytes
+Creating kernel binary...
+x86_64-elf-objcopy -O binary build/amd64/kernel.elf build/amd64/kernel.bin
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/init.c -o build/amd64/user/bin/init.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/lib/lib.c -o build/amd64/user/lib/lib.o
+AS  user/arch/amd64/syscall.S
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/init.elf build/amd64/user/bin/init.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+Userland init size: 40024 bytes
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/counter.c -o build/amd64/user/bin/counter.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/counter.elf build/amd64/user/bin/counter.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+Userland counter size: 39696 bytes
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/shell.c -o build/amd64/user/bin/shell.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/proce.c -o build/amd64/user/bin/proce.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/shell.elf build/amd64/user/bin/shell.o build/amd64/user/lib/lib.o build/amd64/user/bin/proce.o build/amd64/user/arch/amd64/syscall.o
+Userland shell size: 54344 bytes
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/demo3d.c -o build/amd64/user/bin/demo3d.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/demo3d.elf build/amd64/user/bin/demo3d.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+Userland demo3d size: 47168 bytes
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/ipc_send.c -o build/amd64/user/bin/ipc_send.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/ipc_send.elf build/amd64/user/bin/ipc_send.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/ipc_recv.c -o build/amd64/user/bin/ipc_recv.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/ipc_recv.elf build/amd64/user/bin/ipc_recv.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/notification_server.c -o build/amd64/user/bin/notification_server.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/notify_srv.elf build/amd64/user/bin/notification_server.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/crash.c -o build/amd64/user/bin/crash.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/crash.elf build/amd64/user/bin/crash.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/regedit.c -o build/amd64/user/bin/regedit.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/regedit.elf build/amd64/user/bin/regedit.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -c user/bin/writetest.c -o build/amd64/user/bin/writetest.o
+x86_64-elf-gcc -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/amd64/writetest.elf build/amd64/user/bin/writetest.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o
+Preparing RootFS directory...
+AS  boot/amd64/header.S
+AS  boot/amd64/stage1.S
+AS  boot/amd64/stage2.S
+Linking bootloader...
+x86_64-elf-ld -nostdlib -static -T boot/amd64/linker.ld -o build/amd64/bootloader.elf build/amd64/boot/amd64/header.o build/amd64/boot/amd64/stage1.o build/amd64/boot/amd64/stage2.o
+x86_64-elf-ld: warning: build/amd64/bootloader.elf has a LOAD segment with RWX permissions
+Bootloader size: 7560 bytes
+Creating bootloader binary...
+x86_64-elf-objcopy -O binary build/amd64/bootloader.elf build/amd64/bootloader.bin
+Assembling final disk image (GPT + Ext4)...
+Ext4: Added build/amd64/rootfs/bin/ipc_send (Ino 13, 41464 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/init (Ino 14, 40024 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/regedit (Ino 15, 39984 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/shell (Ino 16, 54344 bytes, 14 blocks)
+Ext4: Added build/amd64/rootfs/bin/ipc_recv (Ino 17, 39640 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/crash (Ino 18, 38240 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/demo3d (Ino 19, 47168 bytes, 12 blocks)
+Ext4: Added build/amd64/rootfs/bin/writetest (Ino 20, 39904 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/counter (Ino 21, 39696 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/notify_srv (Ino 22, 40480 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/etc/init.cfg (Ino 23, 189 bytes, 1 blocks)
+
+Build complete!
+  Disk Image: build/disk.img
+  Kernel:     build/amd64/kernel.elf
+  ISO Image:  build/os1test.iso
+
+Run with: make run
+
+
+========================================
+  amd64 Microkernel Boot
+========================================
+
+Starting QEMU (amd64)...
+qemu-system-x86_64 -m 1G -smp 4 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -drive if=none,file=build/amd64/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0 -kernel build/amd64/kernel.elf
+[C0] [INFO] Console driver initialized
+[C0] 
+[C0] ========================================
+[C0]   AMD64 Microkernel v0.1.0
+[C0]   Production-Ready Microkernel
+[C0] ========================================
+[C0] 
+[C0] 
+[KTEST] Starting Kernel Unit Tests (3 cases found)...
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 3 PASSED, 0 FAILED
+
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] AMD64 MSR SYSCALL configured
+[C0] [INFO] AMD64 CPU 0 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C0] [INFO] AMD64 Platform Initialization (Magic: 0x0, Info: 0x1580)
+[C0] [INFO] IRQ: Registered chip 8259 PIC
+[C0] [INFO] PIC Initialized and remapped to 32-47.
+[C0] [INFO] PIT Initialized at 100 Hz (divisor 11931).
+[C0] [WARN] Unknown boot protocol (Magic: 0x0). Using 1GB default fallback.
+[C0] [INFO] IRQ: Registered chip 8259 PIC
+[C0] [INFO] PIC Initialized and remapped to 32-47.
+[C0] [INFO] IRQ driver initialized
+[C0] [INFO] Initializing timer...
+[C0] [INFO] PIT Initialized at 100 Hz (divisor 11931).
+[C0] [INFO] Timer driver initialized
+[C0] [INFO] Initializing memory...
+[C0] [INFO] PMM: 1024 MB total, 1021 MB free
+[C0] [INFO] PMM: DMA zone: 3532 pages, Normal zone: 258048 pages
+[C0] [INFO] VMM: Initializing MMU...
+[C0] [INFO] AMD64 VMM: Switched to kernel PGD at 0x0000000001000000
+[C0] [INFO] AMD64 VMM: Identity mapping RAM 0x100000 - 0x40100000
+[C0] [INFO] VirtIO: Found Modern device at MMIO 0xfebf1000, ID 16
+[C0] [INFO] VirtIO: Found Modern device at MMIO 0xfebf2000, ID 18
+[C0] [INFO] VirtIO: Found Modern device at MMIO 0xfebf3000, ID 18
+[C0] [INFO] VirtIO: Found Legacy device at I/O 0xc000, ID 2
+[C0] [INFO] VirtIO: Probing for block device...
+[C0] [INFO] VirtIO: Found Block Device (IRQ 43)
+[C0] [INFO] VirtIO: Version 1
+[C0] [INFO] VirtIO: Setting Legacy PFN 0x1056 for queue 0 at 0xc000
+[C0] [INFO] VirtIO: Block Device Initialized successfully
+[C0] [INFO] VirtIO-GPU: Probing...
+[C0] [INFO] VirtIO-GPU: Found device (IRQ 43)
+[C0] [INFO] kmalloc: Initialized bucket allocator. Heap: 32 MB at 0x0000000001058000
+[C0] [ERROR] Unhandled CPU Exception: 0
+[C0] [ERROR] RIP: 0x106442, Error Code: 0x0
+make: *** [run] Killed: 9

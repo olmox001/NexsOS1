@@ -6,7 +6,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x40000000;
+    . = 0x40080000;
     
     /* Code section */
     .text : {
@@ -63,5 +63,5 @@ SECTIONS
 }
 
 /* Provide symbols for runtime */
-PROVIDE(__kernel_start = 0x40000000);
+PROVIDE(__kernel_start = 0x40080000);
 PROVIDE(__kernel_size = __kernel_end - __kernel_start);

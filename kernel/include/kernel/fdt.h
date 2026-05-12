@@ -5,6 +5,7 @@
 #include <kernel/pmm.h>
 
 #define FDT_MAGIC 0xd00dfeed
+extern uint64_t boot_fdt_ptr;
 
 struct fdt_header {
     uint32_t magic;
@@ -34,5 +35,5 @@ struct fdt_reserve_entry {
 int fdt_init(uintptr_t fdt_addr);
 int fdt_get_mem_regions(struct mem_region *regions, size_t max_count, size_t *count);
 uint32_t fdt_count_cpus(void);
-
+uintptr_t fdt_find_in_memory(uintptr_t start, uintptr_t end);
 #endif /* _KERNEL_FDT_H */

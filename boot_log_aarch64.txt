@@ -1,0 +1,219 @@
+Preparing RootFS directory...
+Assembling final disk image (GPT + Ext4)...
+Ext4: Added build/aarch64/rootfs/bin/ipc_send (Ino 13, 106576 bytes, 27 blocks)
+Ext4: Added build/aarch64/rootfs/bin/init (Ino 14, 106352 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/regedit (Ino 15, 106376 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/shell (Ino 16, 120368 bytes, 30 blocks)
+Ext4: Added build/aarch64/rootfs/bin/ipc_recv (Ino 17, 105912 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/crash (Ino 18, 104592 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/demo3d (Ino 19, 112168 bytes, 28 blocks)
+Ext4: Added build/aarch64/rootfs/bin/writetest (Ino 20, 106016 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/counter (Ino 21, 105864 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/notify_srv (Ino 22, 106624 bytes, 27 blocks)
+Ext4: Added build/aarch64/rootfs/etc/init.cfg (Ino 23, 189 bytes, 1 blocks)
+
+Build complete!
+  Disk Image: build/aarch64/disk.img
+  Kernel:     build/aarch64/kernel.elf
+
+Run with: make run ARCH=aarch64
+
+
+========================================
+  aarch64 Microkernel Boot
+========================================
+
+Starting QEMU (aarch64)...
+qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1G -smp 4 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=build/aarch64/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 -kernel build/aarch64/kernel.elf
+[C0] [INFO] Console driver initialized
+FDT: No address provided, scanning RAM...
+................................................................
+FDT: Scan failed, no DTB found.
+[C0] [INFO] Kernel: Entry x0 = 0x0
+[C0] 
+[C0] ========================================
+[C0]   AArch64 Microkernel v0.1.0
+[C0]   Production-Ready Microkernel
+[C0] ========================================
+[C0] 
+[C0] 
+[KTEST] Starting Kernel Unit Tests (3 cases found)...
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 3 PASSED, 0 FAILED
+
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] CPU: Primary core 0 initialized
+[C0] [INFO] CPU: Vector Table set to 0x40080800
+PLATFORM: arch_platform_early_init starting
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [WARN] AArch64: No DTB pointer found (boot_fdt_ptr is NULL)!
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [INFO] IRQ driver initialized
+[C0] [INFO] GIC: 256 interrupt lines
+[C0] [INFO] GIC: Distributor initialized
+[C0] [INFO] Initializing timer...
+[C0] [INFO] Timer: Frequency 62500000 Hz
+[C0] [INFO] Timer: System tick rate 100 Hz
+[C0] [INFO] Timer driver initialized
+[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x5d5d989, Ctl: 0x1
+[C0] [INFO] Initializing memory...
+[C0] [WARN] AArch64: FDT memory discovery failed! Using 1GB fallback.
+[C0] [INFO] PMM: 1024 MB total, 1013 MB free
+[C0] [INFO] PMM: DMA zone: 1474 pages, Normal zone: 258048 pages
+[C0] [INFO] VMM: Initializing MMU...
+[C0] [INFO] AArch64 VMM: MMU Enabled. PGD at 0x0000000041000000
+[C0] [INFO] VirtIO: Probing for block device...
+[C0] [INFO] VirtIO: Found Block Device (IRQ 76)
+[C0] [INFO] VirtIO: Version 1
+[C0] [INFO] VirtIO: Block Device Initialized successfully
+[C0] [INFO] VirtIO-GPU: Probing...
+[C0] [INFO] VirtIO-GPU: Found device (IRQ 79)
+[C0] [INFO] kmalloc: Initialized bucket allocator. Heap: 32 MB at 0x000000004109b000
+[C0] [INFO] GPU: Primary device set to VirtIO-GPU
+[C0] [INFO] GPU: Registered VirtIO-GPU
+[C0] [INFO] VirtIO-GPU: Done.
+[C0] [INFO] Graphics: Initialized via HAL (720x1280)
+[C0] [INFO] GPT: Initializing...
+[C0] [INFO] VirtIO-Blk: Reading LBA 1, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=1, old_idx=0, ISR=00
+[C0] [INFO] GPT: Valid signature found. Entries: 128 @ LBA 2
+[C0] [INFO] VirtIO-Blk: Reading LBA 2, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=1, old_idx=1, ISR=00
+[C0] [INFO] GPT: Partition 0: Start=34, Size=2048 sectors
+[C0] [INFO] GPT: Partition 1: Start=2082, Size=32768 sectors
+[C0] [INFO] GPT: Partition 2: Start=34850, Size=227261 sectors
+[C0] [INFO] GPT: Found 3 partitions
+[C0] [INFO] GPT: Done.
+[C0] [INFO] BufferCache: Initializing...
+[C0] [INFO] Buffer: Done.
+[C0] [INFO] Ext4: Found partition at LBA 34850
+[C0] [INFO] VirtIO-Blk: Reading LBA 34852, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=2, old_idx=2, ISR=00
+[C0] [INFO] Ext4: Mounted. Vol=, Inodes=1024
+[C0] [INFO] VirtIO-Blk: Reading LBA 34858, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=3, old_idx=3, ISR=00
+[C0] [INFO] Ext4: Group 0: Inode Table at Block 4
+[C0] [INFO] Ext4: Done.
+[C0] [INFO] VirtIO-Input: Probing devices...
+[C0] [INFO] Keyboard: Initialized
+[C0] [INFO] Registry: Initialized with 3 default keys.
+[C0] [INFO] Registry: Initialized.
+[C0] [INFO] Process: Initializing scheduler subsystem...
+[C0] [INFO] Scheduler: Initializing...
+[C0] [INFO] Compositor: Initialized
+[C0] [INFO] Scheduler: Spawning First-Stage Init...
+[C0] [INFO] Process: Creating 'init' (Prio=2)
+[C0] [INFO] process_create: 'init' PID=1 slot=0 Prio=2 TTBR0=0x437b0000
+[C0] [INFO] process_create: PID 1 context allocated at 0x00000000437d1cd0 (kstack=437d2000)
+[C0] [INFO] VirtIO-Blk: Reading LBA 34882, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=4, old_idx=4, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 34882, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=5, old_idx=5, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35394, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=6, old_idx=6, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 34887, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=7, old_idx=7, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 34887, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=8, old_idx=8, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35402, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=9, old_idx=9, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 34888, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=10, old_idx=10, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35634, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=11, old_idx=11, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 34888, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=12, old_idx=12, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35634, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=13, old_idx=13, ISR=00
+[C0] [INFO] ELF: Mapping Segment at 0x80000000 (FileSz: 0x1918, MemSz: 0x1918)
+[C0] [INFO] VirtIO-Blk: Reading LBA 34888, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=14, old_idx=14, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35730, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=15, old_idx=15, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35770, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=16, old_idx=16, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 34888, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=17, old_idx=17, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35730, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=18, old_idx=18, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35778, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=19, old_idx=19, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 34888, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=20, old_idx=20, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35634, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=21, old_idx=21, ISR=00
+[C0] [INFO] ELF: Mapping Segment at 0x80011918 (FileSz: 0x8, MemSz: 0x8)
+[C0] [INFO] VirtIO-Blk: Reading LBA 34888, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=22, old_idx=22, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35730, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=23, old_idx=23, ISR=00
+[C0] [INFO] VirtIO-Blk: Reading LBA 35778, notify dev 0xa003800
+[C0] [INFO] VirtIO-Blk: Polling... used->idx=24, old_idx=24, ISR=00
+[C0] [INFO] Scheduler: Initialized PID 1 (/init)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=2 slot=1 Prio=31 TTBR0=0x438da000
+[C0] [INFO] process_create: PID 2 context allocated at 0x00000000438fbcd0 (kstack=438fc000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=3 slot=2 Prio=31 TTBR0=0x438fd000
+[C0] [INFO] process_create: PID 3 context allocated at 0x000000004391ecd0 (kstack=4391f000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=4 slot=3 Prio=31 TTBR0=0x43920000
+[C0] [INFO] process_create: PID 4 context allocated at 0x0000000043941cd0 (kstack=43942000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=5 slot=4 Prio=31 TTBR0=0x43943000
+[C0] [INFO] process_create: PID 5 context allocated at 0x0000000043964cd0 (kstack=43965000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=6 slot=5 Prio=31 TTBR0=0x43966000
+[C0] [INFO] process_create: PID 6 context allocated at 0x0000000043987cd0 (kstack=43988000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=7 slot=6 Prio=31 TTBR0=0x43989000
+[C0] [INFO] process_create: PID 7 context allocated at 0x00000000439aacd0 (kstack=439ab000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=8 slot=7 Prio=31 TTBR0=0x439ac000
+[C0] [INFO] process_create: PID 8 context allocated at 0x00000000439cdcd0 (kstack=439ce000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=9 slot=8 Prio=31 TTBR0=0x439cf000
+[C0] [INFO] process_create: PID 9 context allocated at 0x00000000439f0cd0 (kstack=439f1000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=10 slot=9 Prio=31 TTBR0=0x439f2000
+[C0] [INFO] process_create: PID 10 context allocated at 0x0000000043a13cd0 (kstack=43a14000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=11 slot=10 Prio=31 TTBR0=0x43a15000
+[C0] [INFO] process_create: PID 11 context allocated at 0x0000000043a36cd0 (kstack=43a37000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=12 slot=11 Prio=31 TTBR0=0x43a38000
+[C0] [INFO] process_create: PID 12 context allocated at 0x0000000043a59cd0 (kstack=43a5a000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=13 slot=12 Prio=31 TTBR0=0x43a5b000
+[C0] [INFO] process_create: PID 13 context allocated at 0x0000000043a7ccd0 (kstack=43a7d000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=14 slot=13 Prio=31 TTBR0=0x43a7e000
+[C0] [INFO] process_create: PID 14 context allocated at 0x0000000043a9fcd0 (kstack=43aa0000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=15 slot=14 Prio=31 TTBR0=0x43aa1000
+[C0] [INFO] process_create: PID 15 context allocated at 0x0000000043ac2cd0 (kstack=43ac3000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=16 slot=15 Prio=31 TTBR0=0x43ac4000
+[C0] [INFO] process_create: PID 16 context allocated at 0x0000000043ae5cd0 (kstack=43ae6000)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=17 slot=16 Prio=31 TTBR0=0x43ae7000
+[C0] [INFO] process_create: PID 17 context allocated at 0x0000000043b08cd0 (kstack=43b09000)
+[C0] [INFO] Waking secondary CPUs...
+[C0] [WARN] CPU: FDT discovery failed, trying up to 4 cores fallback.
+[C0] [INFO] CPU: 4 cores detected via FDT
+[C0] [INFO] CPU 1 woken successfully
+[C1] [INFO] CPU: Vector Table set to 0x40080800
+[C2] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] CPU 2 woken successfully
+[C1] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xb246e2b, Ctl: 0x1
+[C3] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] CPU 3 woken successfully
+[C2] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xb244f29, Ctl: 0x1
+[C1] [INFO] Secondary CPU 1 online and ready
+[C0] [INFO] Enabling interrupts...
+[C3] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xb258289, Ctl: 0x1
+[C2] [INFO] Secondary CPU 2 online and ready
+[C3] [INFO] Secondary CPU 3 online and ready
+make: *** [run] Killed: 9

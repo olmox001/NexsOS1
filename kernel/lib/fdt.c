@@ -2,8 +2,10 @@
 #include <kernel/string.h>
 #include <kernel/printk.h>
 #include <kernel/pmm.h>
+#include <drivers/uart.h>
 
 static struct fdt_header *fdt_ptr = NULL;
+uint64_t boot_fdt_ptr = 0;
 
 static uint32_t fdt32_to_cpu(uint32_t val) {
     return ((val & 0xFF000000) >> 24) |
@@ -17,14 +19,65 @@ static uint64_t fdt64_to_cpu(uint64_t val) {
            fdt32_to_cpu(val >> 32);
 }
 
+#ifndef ARCH_AMD64
 int fdt_init(uintptr_t fdt_addr) {
+    if (fdt_addr == 0) {
+        uart_puts("FDT: No address provided, scanning RAM...\n");
+        /* Scan up to 1GB of RAM */
+        fdt_addr = fdt_find_in_memory(0x40000000, 0x80000000);
+        if (fdt_addr == 0) {
+            uart_puts("FDT: Scan failed, no DTB found.\n");
+            return -1;
+        }
+        /* Simple hex to string for uart_puts */
+        uart_puts("FDT: Found magic at 0x");
+        // ... just manual print for now to avoid dependency on sprintf if not ready
+        uart_puts("... (scanning succeeded)\n");
+    }
+
+    uart_puts("FDT: Probing... \n");
     struct fdt_header *hdr = (struct fdt_header *)fdt_addr;
-    if (fdt32_to_cpu(hdr->magic) != FDT_MAGIC) {
+    uint32_t magic = fdt32_to_cpu(hdr->magic);
+    if (magic != FDT_MAGIC) {
+        uart_puts("FDT: Invalid magic!\n");
         return -1;
     }
     fdt_ptr = hdr;
+    boot_fdt_ptr = fdt_addr;
+    uart_puts("FDT: Successfully initialized\n");
     return 0;
 }
+#else
+int fdt_init(uintptr_t fdt_addr) {
+    (void)fdt_addr;
+    return -1;
+}
+#endif
+
+#ifndef ARCH_AMD64
+uintptr_t fdt_find_in_memory(uintptr_t start, uintptr_t end) {
+    /* Scan at 8-byte aligned boundaries */
+    for (uintptr_t addr = start; addr < end; addr += 8) {
+        if ((addr & 0xFFFFFF) == 0) {
+            uart_puts("."); /* Progress indicator */
+        }
+        struct fdt_header *hdr = (struct fdt_header *)addr;
+        /* Check magic without conversion first for speed */
+        if (hdr->magic == 0xedfe0dd0) { /* BE 0xd00dfeed on LE machine */
+            uart_puts("\nFDT: Found candidate at 0x");
+            /* Success! */
+            return addr;
+        }
+    }
+    uart_puts("\n");
+    return 0;
+}
+#else
+uintptr_t fdt_find_in_memory(uintptr_t start, uintptr_t end) {
+    (void)start; (void)end;
+    return 0;
+}
+#endif
 
 static const char *fdt_get_string(uint32_t offset) {
     return (const char *)((uintptr_t)fdt_ptr + fdt32_to_cpu(fdt_ptr->off_dt_strings) + offset);

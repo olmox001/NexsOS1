@@ -1,43 +1,39 @@
-# PLAN_FAST.md - OS1TEST Evolution Plan
+# OS1TEST (NEXS) Stabilization Plan - Phase 3 & 4
 
-## Project Status Overview
+## Obiettivo
+Unificare le architetture AMD64 e AArch64 tramite una HAL coerente, implementare il rilevamento automatico dell'hardware (RAM/CPU) e astrarre i driver VirtIO per supportare MMIO e PCI in modo trasparente.
 
-- **Architecture**: Dual-arch Microkernel (AArch64 & AMD64).
-- **Core format**: ELF (non-converted to bin where possible to preserve structure).
-- **Memory**: PMM with zone support (DMA/Normal), VMM with 4-level tables.
-- **Drivers**: Multi-platform VirtIO support in progress.
-- **Boot**: Custom bootloader + QEMU `-kernel` support.
+## Riepilogo Progetto
+- **Core**: Microkernel AArch64/AMD64.
+- **Boot**: FDT (AArch64), Multiboot2 (AMD64).
+- **HAL**: Primitives unificate in `arch.h`.
+- **Driver**: VirtIO (Blk, GPU, Input).
+- **FS**: Ext4 (RootFS), GPT.
 
-## Phase 1: Infrastructure & Log Filtering
-> **Goal**: Improve debuggability by focusing on errors/warnings and finalize project documentation.
-- [ ] Modify `kernel/lib/printk.c` to set `console_loglevel = KERN_WARNING`.
-- [ ] Create `PLAN_FAST.md` (this document) and verify system state.
-- [ ] **Verification**: `make run ARCH=aarch64` should show significantly fewer `[INFO]` logs.
+## Piano a Fasi
 
-## Phase 2: HAL Abstraction & Unified Headers
-> **Goal**: Unify `arch.h` so that drivers and core code don't need arch-specific `#ifdef`s.
-- [ ] Refactor `kernel/include/kernel/arch.h` to use a generic naming convention for all hardware primitives.
-- [ ] Ensure `__arch_*` functions in `kernel/arch/*/include/arch/arch.h` perfectly map to the generic interface.
-- [ ] Implement generic `arch_virtio_read/write` that abstracts MMIO (ARM) vs Port I/O (x86).
-- [ ] **Verification**: Successful compilation and boot for both architectures.
+### Fase 3: Hardware Discovery (Completamento)
+- [x] **Parser FDT**: Implementato parser minimale per Device Tree (AArch64).
+- [x] **Rilevamento RAM**: Migrazione da hardcoded a parsing dinamico delle regioni 'memory' nel DTB.
+- [/] **Rilevamento CPU**: Utilizzo di `fdt_count_cpus()` per inizializzare i core secondari.
+    - *Stato*: Rilevamento 4 core riuscito via fallback, ma il parsing FDT necessita di correzione del puntatore DTB.
+- [ ] **Fix Puntatore DTB**: Risolvere il problema del puntatore nullo in `arch_platform_early_init`.
+- [ ] **Test**: `make run ARCH=aarch64` per confermare RAM e CPU dinamiche.
 
-## Phase 3: Automatic Hardware Discovery (RAM & CPUs)
-> **Goal**: Remove hardcoded memory limits and CPU counts.
-- [ ] **AArch64**: Implement a lightweight FDT (Device Tree) parser in `kernel/lib/fdt.c`.
-- [ ] **AArch64**: Use FDT to detect RAM regions and initialize PMM accordingly.
-- [ ] **AMD64**: Implement Multiboot2 memory map parsing in `platform.c`.
-- [ ] **Verification**: `make run` logs should show detected RAM matching QEMU `-m` parameter.
+### Fase 4: Astrazione HAL e Driver VirtIO
+- [ ] **Unificazione Header HAL**: Finalizzare `kernel/include/kernel/arch.h` come unico punto di riferimento dinamico.
+- [ ] **Unified VirtIO Handle**: Creare `struct virtio_device` comune con supporto per accesso MMIO e PCI.
+- [ ] **Driver Refactoring**: 
+    - Aggiornare `virtio_blk`, `virtio_gpu`, `virtio_input` per usare l'astrazione HAL.
+    - Implementare scansione PCI per AMD64 e MMIO per AArch64.
+- [ ] **Test**: `make run ARCH=aarch64` e `make run ARCH=amd64`.
 
-## Phase 4: Driver Refactoring (PCI vs VirtIO)
-> **Goal**: Enable VirtIO drivers to work on both PCI (x86) and MMIO (ARM).
-- [ ] Implement a unified `virtio_bus` abstraction.
-- [ ] Refactor `virtio_blk`, `virtio_gpu`, and `virtio_input` to use the bus abstraction.
-- [ ] Implement PCI scanning on AMD64 to find VirtIO devices.
-- [ ] **Verification**: Block and GPU drivers working on both platforms using the same core code.
+### Fase 5: ISO Boot & Build System
+- [ ] **Supporto ISO AArch64**: Integrare la creazione dell'ISO nel Makefile per AArch64.
+- [ ] **Bootloader Update**: Assicurarsi che il caricamento ELF avvenga correttamente da ISO.
+- [ ] **Test Finale**: Boot completo da ISO su entrambe le architetture.
 
-## Phase 5: ISO Boot & ELF Support
-> **Goal**: Support standard ISO boot without losing ELF structure.
-- [ ] Update `Makefile` to create an ISO for AArch64 using `grub-mkrescue` or `xorriso`.
-- [ ] Ensure the bootloader can load the `kernel.elf` directly from the ISO (preservando l'ELF).
-- [ ] Update `make run` to boot from the generated ISO.
-- [ ] **Verification**: `make run` boots from CD-ROM device in QEMU.
+---
+**Note Tecniche**:
+- Il caricamento avviene via ELF. Non cambieremo il formato a BIN.
+- Log level momentaneamente impostato a `KERN_INFO` per debug discovery.

@@ -1,0 +1,7 @@
+CC  kernel/lib/fdt.c
+CC  kernel/main.c
+kernel/main.c:28:2: error: #warning "MAIN.C: ARCH_AMD64 IS DEFINED" [-Werror=cpp]
+   28 | #warning "MAIN.C: ARCH_AMD64 IS DEFINED"
+      |  ^~~~~~~
+cc1: all warnings being treated as errors
+make: *** [build/amd64/kernel/main.o] Error 1

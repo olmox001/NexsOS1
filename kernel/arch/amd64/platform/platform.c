@@ -4,6 +4,7 @@
  */
 #include <arch/amd64_internal.h>
 #include <arch/arch.h>
+#include <kernel/arch.h>
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -170,7 +171,7 @@ void udelay(uint32_t us) {
   /* Stub */
   uint64_t end = timer_get_us() + us;
   while (timer_get_us() < end) {
-    __arch_yield();
+    arch_yield();
   }
 }
 

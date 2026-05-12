@@ -73,9 +73,9 @@ void pic_init(void) {
   outb(PIC1_DATA, 0x01); /* ICW4: 8086 mode */
   outb(PIC2_DATA, 0x01);
   
-  /* Start with all IRQs masked except cascade (IRQ2) */
-  outb(PIC1_DATA, 0xFB);
-  outb(PIC2_DATA, 0xFF);
+  /* Start with all IRQs unmasked for debug */
+  outb(PIC1_DATA, 0x00);
+  outb(PIC2_DATA, 0x00);
   
   pr_info("PIC Initialized and remapped to 32-47.\n");
 }

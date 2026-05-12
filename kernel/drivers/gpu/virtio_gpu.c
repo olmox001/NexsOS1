@@ -172,7 +172,8 @@ void virtio_gpu_init(void) {
     virtio_write_reg(dev_handle, VIRTIO_MMIO_STATUS, status);
 
     /* Feature negotiation */
-    uint32_t features = virtio_read_reg(dev_handle, VIRTIO_MMIO_DEVICE_FEATURES);
+    uint32_t features =
+        virtio_read_reg(dev_handle, VIRTIO_MMIO_DEVICE_FEATURES);
     virtio_write_reg(dev_handle, VIRTIO_MMIO_DRIVER_FEATURES, features);
 
     status |= VIRTIO_STATUS_FEATURES_OK;
@@ -199,7 +200,8 @@ void virtio_gpu_init(void) {
     used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
     /* Use unified HAL API for queue setup */
-    virtio_setup_queue(dev_handle, 0, (uint64_t)desc, (uint64_t)avail, (uint64_t)used);
+    virtio_setup_queue(dev_handle, 0, (uint64_t)desc, (uint64_t)avail,
+                       (uint64_t)used);
 
     if (!gpu_cmd_buf)
       gpu_cmd_buf = pmm_alloc_page();

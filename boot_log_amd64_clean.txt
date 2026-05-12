@@ -1,0 +1,69 @@
+Preparing RootFS directory...
+Assembling final disk image (GPT + Ext4)...
+Ext4: Added build/amd64/rootfs/bin/ipc_send (Ino 13, 41464 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/init (Ino 14, 40024 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/regedit (Ino 15, 39984 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/shell (Ino 16, 54344 bytes, 14 blocks)
+Ext4: Added build/amd64/rootfs/bin/ipc_recv (Ino 17, 39640 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/crash (Ino 18, 38240 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/demo3d (Ino 19, 47168 bytes, 12 blocks)
+Ext4: Added build/amd64/rootfs/bin/writetest (Ino 20, 39904 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/counter (Ino 21, 39696 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/notify_srv (Ino 22, 40480 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/etc/init.cfg (Ino 23, 189 bytes, 1 blocks)
+
+Build complete!
+  Disk Image: build/disk.img
+  Kernel:     build/amd64/kernel.elf
+  ISO Image:  build/os1test.iso
+
+Run with: make run
+
+
+========================================
+  amd64 Microkernel Boot
+========================================
+
+Starting QEMU (amd64)...
+qemu-system-x86_64 -m 1G -smp 4 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -drive if=none,file=build/amd64/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0 -kernel build/amd64/kernel.elf
+[C0] [INFO] Console driver initialized
+[C0] 
+[C0] ========================================
+[C0]   AMD64 Microkernel v0.1.0
+[C0]   Production-Ready Microkernel
+[C0] ========================================
+[C0] 
+[C0] 
+[KTEST] Starting Kernel Unit Tests (3 cases found)...
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 3 PASSED, 0 FAILED
+
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] AMD64 MSR SYSCALL configured
+[C0] [INFO] AMD64 CPU 0 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C0] [INFO] AMD64 Platform Initialization (Magic: 0x0, Info: 0x1580)
+[C0] [INFO] IRQ: Registered chip 8259 PIC
+[C0] [INFO] PIC Initialized and remapped to 32-47.
+[C0] [INFO] PIT Initialized at 100 Hz (divisor 11931).
+[C0] [WARN] Unknown boot protocol (Magic: 0x0). Using 1GB default fallback.
+[C0] [INFO] IRQ: Registered chip 8259 PIC
+[C0] [INFO] PIC Initialized and remapped to 32-47.
+[C0] [INFO] IRQ driver initialized
+[C0] [INFO] Initializing timer...
+[C0] [INFO] PIT Initialized at 100 Hz (divisor 11931).
+[C0] [INFO] Timer driver initialized
+[C0] [INFO] Initializing memory...
+[C0] [INFO] PMM: 1024 MB total, 1021 MB free
+[C0] [INFO] PMM: DMA zone: 3533 pages, Normal zone: 258048 pages
+[C0] [INFO] VMM: Initializing MMU...
+[C0] [INFO] AMD64 VMM: Switched to kernel PGD at 0x0000000001000000
+[C0] [INFO] AMD64 VMM: Identity mapping RAM 0x100000 - 0x40100000
+[C0] [INFO] VirtIO: Probing for block device...
+[C0] [INFO] VirtIO: No block device found
+[C0] [INFO] VirtIO-GPU: Probing...
+[C0] [INFO] VirtIO-GPU: Found device (IRQ 43)
+[C0] [INFO] kmalloc: Initialized bucket allocator. Heap: 32 MB at 0x0000000001048000
+[C0] [ERROR] Unhandled CPU Exception: 0
+[C0] [ERROR] RIP: 0x106062, Error Code: 0x0
