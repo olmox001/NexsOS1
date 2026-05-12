@@ -239,10 +239,10 @@ boot_info:
     .quad 0
 
 cpu_spin_table:
-    .skip MAX_CPUS * 8     /* MAX_CPUS entries */
+    .skip MAX_CPUS * 16     /* MAX_CPUS entries */
 
 cpu_stacks:
-    .skip MAX_CPUS * 8     /* MAX_CPUS stack pointers */
+    .skip MAX_CPUS * 16     /* MAX_CPUS stack pointers */
 
 /*
  * BSS section
