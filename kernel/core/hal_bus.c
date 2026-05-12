@@ -28,6 +28,17 @@ struct hal_device *hal_device_get(int index) {
     return &hal_devices[index];
 }
 
+struct hal_device *hal_device_find(uint16_t vendor, uint16_t device, int index) {
+    int found = 0;
+    for (int i = 0; i < hal_device_count; i++) {
+        if (hal_devices[i].vendor_id == vendor && hal_devices[i].device_id == device) {
+            if (found == index) return &hal_devices[i];
+            found++;
+        }
+    }
+    return NULL;
+}
+
 /* API for architecture-specific code to register devices found during scan */
 void hal_register_device(struct hal_device *dev) {
     if (hal_device_count >= MAX_HAL_DEVICES) {

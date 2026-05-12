@@ -61,3 +61,13 @@ void arch_bus_scan(void) {
     pr_info("%s", "HAL: Scanning PCI Bus...\n");
     pci_enumerate(amd64_pci_callback);
 }
+
+void arch_irq_init(void) {
+    extern void pic_init(void);
+    pic_init();
+}
+
+void arch_timer_init(void) {
+    extern void pit_init_hz(uint32_t hz);
+    pit_init_hz(100);
+}

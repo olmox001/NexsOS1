@@ -113,45 +113,32 @@ static const struct virtio_transport_ops hal_virtio_ops = {
 
 int arch_virtio_get_count(uint32_t device_id) {
     int count = 0;
-    int hal_count = hal_device_get_count();
-    for (int i = 0; i < hal_count; i++) {
-        struct hal_device *hdev = hal_device_get(i);
-        if (hdev->vendor_id == 0x1AF4 && hdev->device_id == (uint16_t)device_id) {
-            count++;
-        }
+    while (hal_device_find(0x1AF4, (uint16_t)device_id, count) != NULL) {
+        count++;
     }
     return count;
 }
 
 int arch_virtio_get_device(uint32_t device_id, int index,
                            virtio_handle_t *out_dev, uint32_t *out_irq) {
-    int current = 0;
-    int hal_count = hal_device_get_count();
+    struct hal_device *hdev = hal_device_find(0x1AF4, (uint16_t)device_id, index);
+    if (!hdev) return -1;
     
-    for (int i = 0; i < hal_count; i++) {
-        struct hal_device *hdev = hal_device_get(i);
-        if (hdev->vendor_id == 0x1AF4 && hdev->device_id == (uint16_t)device_id) {
-            if (current == index) {
-                if (virtio_dev_count >= MAX_VIRTIO_DEVS) return -1;
-                
-                struct virtio_device *vdev = &virtio_devices[virtio_dev_count++];
-                vdev->base = hdev->base;
-                vdev->irq = hdev->irq;
-                vdev->device_id = device_id;
-                vdev->ops = &hal_virtio_ops;
-                vdev->priv = hdev;
-                
-                /* Detect legacy from bus type or address range */
-                vdev->is_legacy = (hdev->base < 0x10000 && hdev->bus_type == HAL_BUS_TYPE_PCI); 
+    if (virtio_dev_count >= MAX_VIRTIO_DEVS) return -1;
+    
+    struct virtio_device *vdev = &virtio_devices[virtio_dev_count++];
+    vdev->base = hdev->base;
+    vdev->irq = hdev->irq;
+    vdev->device_id = device_id;
+    vdev->ops = &hal_virtio_ops;
+    vdev->priv = hdev;
+    
+    /* Detect legacy from bus type or address range */
+    vdev->is_legacy = (hdev->base < 0x10000 && hdev->bus_type == HAL_BUS_TYPE_PCI); 
 
-                if (out_dev) *out_dev = vdev;
-                if (out_irq) *out_irq = vdev->irq;
-                return 0;
-            }
-            current++;
-        }
-    }
-    return -1;
+    if (out_dev) *out_dev = vdev;
+    if (out_irq) *out_irq = vdev->irq;
+    return 0;
 }
 
 void arch_virtio_scan(void) {}

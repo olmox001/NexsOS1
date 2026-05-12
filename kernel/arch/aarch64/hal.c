@@ -37,3 +37,13 @@ void arch_bus_scan(void) {
         }
     }
 }
+
+void arch_irq_init(void) {
+    extern void gic_register(void);
+    gic_register();
+}
+
+void arch_timer_init(void) {
+    extern void timer_init(void);
+    timer_init();
+}

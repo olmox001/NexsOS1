@@ -32,10 +32,13 @@ struct hal_device {
 void hal_bus_init(void);
 int hal_device_get_count(void);
 struct hal_device *hal_device_get(int index);
+struct hal_device *hal_device_find(uint16_t vendor, uint16_t device, int index);
 
 /* Internal HAL APIs for architecture-specific code */
 void hal_register_device(struct hal_device *dev);
 void arch_bus_scan(void);
+void arch_irq_init(void);
+void arch_timer_init(void);
 
 /* --- Device Register Access (8, 16, 32 bit) --- */
 
