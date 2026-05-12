@@ -3,6 +3,8 @@
  * Kernel entry point
  */
 
+#include <kernel/cpu.h>
+
 .section .text.boot
 .global _start
 
@@ -15,6 +17,11 @@
  * QEMU virt machine starts kernel at EL1 directly
  */
 _start:
+    /* Save boot info (DTB pointer) immediately */
+    mov x20, x0
+    adrp x1, boot_info
+    str x0, [x1, :lo12:boot_info]
+
     /* Disable interrupts */
     msr daifset, #0xf
     
@@ -35,11 +42,6 @@ _start:
  * Primary CPU initialization
  */
 primary_init:
-    /* Save boot info (DTB pointer) */
-    adrp x19, boot_info
-    add x19, x19, :lo12:boot_info
-    str x0, [x19]
-    
     adrp x0, __kernel_stack
     add x0, x0, :lo12:__kernel_stack
     add x0, x0, #131072    /* Use first 128KB slice for CPU 0 */
@@ -137,6 +139,7 @@ bss_done:
     isb
     
     /* Call kernel main */
+    mov x0, x20
     bl kernel_main
     
     /* Should never return */
@@ -236,10 +239,10 @@ boot_info:
     .quad 0
 
 cpu_spin_table:
-    .skip 8 * 8     /* 8 CPU entries */
+    .skip MAX_CPUS * 16     /* MAX_CPUS entries */
 
 cpu_stacks:
-    .skip 8 * 8     /* 8 stack pointers */
+    .skip MAX_CPUS * 16     /* MAX_CPUS stack pointers */
 
 /*
  * BSS section
@@ -250,7 +253,7 @@ cpu_stacks:
 /* Per-CPU stacks (128KB each) */
 .global __kernel_stack
 __kernel_stack:
-    .skip 131072 * 8     /* 8 CPUs * 128KB */
+    .skip 131072 * MAX_CPUS     /* MAX_CPUS * 128KB */
 .global __kernel_stack_top
 __kernel_stack_top:
 

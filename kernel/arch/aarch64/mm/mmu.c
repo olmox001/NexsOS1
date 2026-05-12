@@ -27,13 +27,13 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
 
   memset(page, 0, 4096);
   arch_cache_clean_range(page, 4096);
-  arch_data_barrier();
+  arch_mb();
 
   table[index] = (uint64_t)page | PTE_TABLE | PTE_VALID | PTE_AF | PTE_INNER_SHARE |
                  PTE_RW | PTE_AP_EL1_RW | PTE_PXN;
 
-  arch_cache_clean_va(&table[index]);
-  arch_data_barrier();
+  arch_cache_clean_range(&table[index], 8);
+  arch_mb();
 
   return page;
 }
@@ -54,11 +54,11 @@ int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
   uint64_t *pt_entry = &pt[PT_INDEX(va)];
   *pt_entry = pa | flags;
   
-  arch_cache_clean_va(pt_entry);
-  arch_data_barrier();
+  arch_cache_clean_range(pt_entry, 8);
+  arch_mb();
   arch_tlb_flush_va(va);
-  arch_data_barrier();
-  arch_instr_barrier();
+  arch_mb();
+  arch_isb();
 
   return 0;
 }
@@ -79,11 +79,11 @@ int arch_vmm_unmap(uint64_t pgd_addr, uint64_t va) {
   uint64_t *pt_entry = &pt[PT_INDEX(va)];
   *pt_entry = 0;
 
-  arch_cache_clean_va(pt_entry);
-  arch_data_barrier();
+  arch_cache_clean_range(pt_entry, 8);
+  arch_mb();
   arch_tlb_flush_va(va);
-  arch_data_barrier();
-  arch_instr_barrier();
+  arch_mb();
+  arch_isb();
 
   return 0;
 }
@@ -115,7 +115,7 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
        */
       pmd[PMD_INDEX(v)] = p | (flags & ~0x2) | 0x1;
       
-      arch_cache_clean_va(&pmd[PMD_INDEX(v)]);
+      arch_cache_clean_range(&pmd[PMD_INDEX(v)], 8);
       v += 0x200000;
       p += 0x200000;
     } else {

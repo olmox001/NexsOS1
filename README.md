@@ -164,6 +164,8 @@
 ## 🚀 Quick Start
 
 ### 1. Install Dependencies
+**to change debug info**
+int console_loglevel = warning (o info)
 
 **Ubuntu/Debian:**
 ```bash

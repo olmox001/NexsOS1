@@ -20,6 +20,7 @@
 
 extern volatile uint64_t jiffies;
 extern void timer_tick(void); /* generic scheduler tick */
+void pit_init_hz(uint32_t hz);
 
 static void pic_chip_enable(uint32_t irq) {
     /* PIC IRQs are 0-15. Input is 32+irq usually? 
@@ -72,11 +73,11 @@ void pic_init(void) {
   outb(PIC1_DATA, 0x01); /* ICW4: 8086 mode */
   outb(PIC2_DATA, 0x01);
   
-  /* Mask all except IRQ0 (Timer) and IRQ1 (Keyboard) */
-  outb(PIC1_DATA, 0xFC);
-  outb(PIC2_DATA, 0xFF);
+  /* Start with all IRQs unmasked for debug */
+  outb(PIC1_DATA, 0x00);
+  outb(PIC2_DATA, 0x00);
   
-  pr_info("PIC Initialized. IRQs 0-1 mapped to 32-33.\n");
+  pr_info("PIC Initialized and remapped to 32-47.\n");
 }
 
 extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
@@ -86,14 +87,17 @@ struct pt_regs *amd64_timer_interrupt(struct pt_regs *regs) {
   return kernel_timer_tick(regs);
 }
 
-void pit_init(void) {
-  /* Frequency = 1193182 / divisor. For 100 Hz, divisor = 11932 */
-  uint16_t divisor = 11932;
+void pit_init_hz(uint32_t hz) {
+  /* Frequency = 1193182 / divisor */
+  if (hz == 0) hz = 100;
+  uint32_t divisor = 1193182 / hz;
+  if (divisor > 0xFFFF) divisor = 0xFFFF;
+  
   outb(PIT_CMD, 0x36); /* Channel 0, lobyte/hibyte, square wave */
   outb(PIT_CH0, (uint8_t)(divisor & 0xFF));
   outb(PIT_CH0, (uint8_t)((divisor >> 8) & 0xFF));
   
-  pr_info("PIT Initialized (100 Hz).\n");
+  pr_info("PIT Initialized at %u Hz (divisor %u).\n", hz, (uint16_t)divisor);
 }
 
 void pic_send_eoi(uint8_t irq) {

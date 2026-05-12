@@ -6,15 +6,15 @@
 #include <kernel/arch.h>
 #include <kernel/printk.h>
 
-/* CPU info array (max 8 CPUs) */
-struct cpu_info cpu_data[8];
+/* CPU info array */
+struct cpu_info cpu_data[MAX_CPUS];
 uint32_t nr_cpus = 0;
 
 /* Generic implementation (weak - can be overridden by arch-specific) */
 __attribute__((weak))
 struct cpu_info *get_cpu_info(void) {
   uint32_t id = arch_get_cpu_id();
-  if (id >= 8) {
+  if (id >= MAX_CPUS) {
     /* Critical failure if CPU ID is out of bounds */
     while (1);
   }

@@ -217,7 +217,7 @@ static void *zone_alloc_page(struct zone *z) {
   void *addr = (void *)(MEMORY_BASE + pfn_to_phys(abs_pfn));
   memset(addr, 0, PAGE_SIZE);
   arch_cache_clean_range(addr, PAGE_SIZE);
-  arch_data_barrier();
+  arch_mb();
 
   __sync_fetch_and_sub(&free_pages, 1);
 

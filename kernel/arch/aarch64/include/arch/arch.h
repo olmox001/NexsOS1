@@ -2,20 +2,20 @@
 #define _ARCH_AARCH64_H
 
 #include <stdint.h>
-
 #include <kernel/types.h>
 
-/* AArch64 specific implementations of architecture operations */
+/* AArch64 HAL Implementation Primitives */
 
-static inline void __arch_local_irq_enable(void) {
+/* --- Interrupt Control --- */
+static inline void arch_impl_irq_enable(void) {
   __asm__ __volatile__("msr daifclr, #2" ::: "memory");
 }
 
-static inline void __arch_local_irq_disable(void) {
+static inline void arch_impl_irq_disable(void) {
   __asm__ __volatile__("msr daifset, #2" ::: "memory");
 }
 
-static inline void __arch_local_irq_save(uint64_t *flags) {
+static inline void arch_impl_irq_save(uint64_t *flags) {
   __asm__ __volatile__("mrs %0, daif\n"
                        "msr daifset, #2"
                        : "=r"(*flags)
@@ -23,11 +23,11 @@ static inline void __arch_local_irq_save(uint64_t *flags) {
                        : "memory");
 }
 
-static inline void __arch_local_irq_restore(uint64_t flags) {
+static inline void arch_impl_irq_restore(uint64_t flags) {
   __asm__ __volatile__("msr daif, %0" ::"r"(flags) : "memory");
 }
 
-static inline void __arch_local_irq_save_all(uint64_t *flags) {
+static inline void arch_impl_irq_save_all(uint64_t *flags) {
   __asm__ __volatile__("mrs %0, daif\n"
                        "msr daifset, #0xf"
                        : "=r"(*flags)
@@ -35,136 +35,150 @@ static inline void __arch_local_irq_save_all(uint64_t *flags) {
                        : "memory");
 }
 
-static inline void __arch_local_irq_restore_all(uint64_t flags) {
+static inline void arch_impl_irq_restore_all(uint64_t flags) {
   __asm__ __volatile__("msr daif, %0" ::"r"(flags) : "memory");
 }
 
-static inline void __arch_local_irq_disable_all(void) {
+static inline void arch_impl_irq_disable_all(void) {
   __asm__ __volatile__("msr daifset, #0xf" ::: "memory");
 }
 
-static inline void __arch_nop(void) { __asm__ __volatile__("nop"); }
+/* --- CPU Control --- */
+static inline void arch_impl_nop(void) { __asm__ __volatile__("nop"); }
+static inline void arch_impl_idle(void) { __asm__ __volatile__("wfi"); }
+static inline void arch_impl_yield(void) { __asm__ __volatile__("yield"); }
+static inline void arch_impl_cpu_notify(void) { __asm__ __volatile__("sev"); }
 
-static inline void __arch_wfi(void) { __asm__ __volatile__("wfi"); }
+/* Barriers */
+static inline void arch_impl_isb(void) { __asm__ __volatile__("isb" ::: "memory"); }
+static inline void arch_impl_mb(void)  { __asm__ __volatile__("dsb sy" ::: "memory"); }
+static inline void arch_impl_rmb(void) { __asm__ __volatile__("dsb ld" ::: "memory"); }
+static inline void arch_impl_wmb(void) { __asm__ __volatile__("dsb st" ::: "memory"); }
 
-static inline void __arch_wfe(void) { __asm__ __volatile__("wfe"); }
-
-static inline void __arch_sev(void) { __asm__ __volatile__("sev"); }
-
-static inline void __arch_isb(void) { __asm__ __volatile__("isb" ::: "memory"); }
-static inline void __arch_dsb(void) { __asm__ __volatile__("dsb sy" ::: "memory"); }
-static inline void __arch_dmb(void) { __asm__ __volatile__("dmb sy" ::: "memory"); }
-static inline void __arch_mb(void)  { __asm__ __volatile__("dsb sy" ::: "memory"); }
-static inline void __arch_rmb(void) { __asm__ __volatile__("dsb ld" ::: "memory"); }
-static inline void __arch_wmb(void) { __asm__ __volatile__("dsb st" ::: "memory"); }
-
-static inline void __arch_yield(void) { __asm__ __volatile__("yield"); }
-
-static inline void __arch_cpu_halt(void) {
-  __arch_local_irq_disable_all();
-  while (1) {
-    __arch_wfe();
-  }
-}
-
-static inline uint32_t __arch_get_cpu_id(void) {
+static inline uint32_t arch_impl_get_cpu_id(void) {
   uint64_t mpidr;
   __asm__ __volatile__("mrs %0, mpidr_el1" : "=r"(mpidr));
   return (uint32_t)(mpidr & 0xFF);
 }
 
-static inline uint64_t __arch_get_esr(void) {
-  uint64_t esr;
-  __asm__ __volatile__("mrs %0, esr_el1" : "=r"(esr));
-  return esr;
+/* --- VMM / TLB --- */
+static inline void arch_impl_set_pgd(uint64_t pgd) {
+  __asm__ __volatile__("msr ttbr0_el1, %0" ::"r"(pgd));
 }
 
-static inline uint64_t __arch_get_far(void) {
-  uint64_t far;
-  __asm__ __volatile__("mrs %0, far_el1" : "=r"(far));
-  return far;
+static inline uint64_t arch_impl_get_pgd(void) {
+  uint64_t pgd;
+  __asm__ __volatile__("mrs %0, ttbr0_el1" : "=r"(pgd));
+  return pgd;
 }
 
-static inline uint64_t __arch_get_vbar(void) {
-  uint64_t vbar;
-  __asm__ __volatile__("mrs %0, vbar_el1" : "=r"(vbar));
-  return vbar;
-}
-
-static inline void __arch_set_vbar(uint64_t vbar) {
-  __asm__ __volatile__("msr vbar_el1, %0" ::"r"(vbar));
-}
-
-static inline uint64_t __arch_get_cpacr(void) {
-  uint64_t cpacr;
-  __asm__ __volatile__("mrs %0, cpacr_el1" : "=r"(cpacr));
-  return cpacr;
-}
-
-static inline void __arch_set_cpacr(uint64_t cpacr) {
-  __asm__ __volatile__("msr cpacr_el1, %0" ::"r"(cpacr));
-}
-
-static inline void __arch_set_ttbr0(uint64_t ttbr0) {
-  __asm__ __volatile__("msr ttbr0_el1, %0" ::"r"(ttbr0));
-}
-
-static inline void __arch_tlb_flush_local(void) {
+static inline void arch_impl_tlb_flush_local(void) {
   __asm__ __volatile__("tlbi vmalle1 \n dsb ish \n isb");
 }
 
-static inline void __arch_tlb_flush_all(void) {
+static inline void arch_impl_tlb_flush_all(void) {
   __asm__ __volatile__("tlbi vmalle1is \n dsb ish \n isb");
 }
 
-static inline void __arch_tlb_flush_va(uint64_t va) {
+static inline void arch_impl_tlb_flush_va(uintptr_t va) {
   __asm__ __volatile__("tlbi vaae1is, %0 \n dsb ish \n isb" ::"r"(va >> 12));
 }
 
-static inline void __arch_clean_cache_va(void *va) {
-  __asm__ __volatile__("dc cvac, %0" ::"r"(va) : "memory");
-}
-
-static inline void __arch_clean_cache_va_pou(void *va) {
-  __asm__ __volatile__("dc cvau, %0" ::"r"(va) : "memory");
-}
-
-static inline void __arch_clean_cache_range_va(void *start, uint64_t size) {
+/* Cache Control */
+static inline void arch_impl_cache_clean_range(void *start, size_t size) {
   uint64_t s = (uint64_t)start;
   uint64_t e = s + size;
-  /* Align to 64-byte cache line */
   s &= ~63UL;
   for (; s < e; s += 64) {
     __asm__ __volatile__("dc cvac, %0" ::"r"(s) : "memory");
   }
 }
 
-static inline uint64_t __arch_get_ttbr0(void) {
-  uint64_t ttbr0;
-  __asm__ __volatile__("mrs %0, ttbr0_el1" : "=r"(ttbr0));
-  return ttbr0;
+static inline void arch_impl_cache_sync_icache(void *start, size_t size) {
+  uint64_t s = (uint64_t)start;
+  uint64_t e = s + size;
+  s &= ~63UL;
+  for (; s < e; s += 64) {
+    __asm__ __volatile__("dc cvau, %0\n"
+                         "ic ivau, %0"
+                         ::"r"(s) : "memory");
+  }
+  __asm__ __volatile__("dsb ish\n isb" ::: "memory");
 }
 
-static inline void __arch_set_mair(uint64_t mair) {
-  __asm__ __volatile__("msr mair_el1, %0" ::"r"(mair));
+/* --- System Registers --- */
+static inline uint64_t arch_impl_get_fault_address(void) {
+  uint64_t far;
+  __asm__ __volatile__("mrs %0, far_el1" : "=r"(far));
+  return far;
 }
 
-static inline void __arch_set_tcr(uint64_t tcr) {
-  __asm__ __volatile__("msr tcr_el1, %0" ::"r"(tcr));
+static inline uint64_t arch_impl_get_fault_status(void) {
+  uint64_t esr;
+  __asm__ __volatile__("mrs %0, esr_el1" : "=r"(esr));
+  return esr;
 }
 
-static inline uint64_t __arch_get_sctlr(void) {
-  uint64_t sctlr;
-  __asm__ __volatile__("mrs %0, sctlr_el1" : "=r"(sctlr));
-  return sctlr;
+static inline uint64_t arch_impl_get_cpacr(void) {
+  uint64_t val;
+  __asm__ __volatile__("mrs %0, cpacr_el1" : "=r"(val));
+  return val;
 }
 
-static inline void __arch_set_sctlr(uint64_t sctlr) {
-  __asm__ __volatile__("msr sctlr_el1, %0" ::"r"(sctlr));
+static inline void arch_impl_set_cpacr(uint64_t val) {
+  __asm__ __volatile__("msr cpacr_el1, %0" ::"r"(val));
 }
 
-/* Spinlocks */
-static inline void __arch_spin_lock(volatile uint32_t *lock) {
+static inline void arch_impl_set_mair(uint64_t val) {
+  __asm__ __volatile__("msr mair_el1, %0" ::"r"(val));
+}
+
+static inline void arch_impl_set_tcr(uint64_t val) {
+  __asm__ __volatile__("msr tcr_el1, %0" ::"r"(val));
+}
+
+static inline uint64_t arch_impl_get_sctlr(void) {
+  uint64_t val;
+  __asm__ __volatile__("mrs %0, sctlr_el1" : "=r"(val));
+  return val;
+}
+
+static inline void arch_impl_set_sctlr(uint64_t val) {
+  __asm__ __volatile__("msr sctlr_el1, %0" ::"r"(val));
+}
+
+static inline uint64_t arch_impl_get_vbar(void) {
+  uint64_t val;
+  __asm__ __volatile__("mrs %0, vbar_el1" : "=r"(val));
+  return val;
+}
+
+static inline void arch_impl_set_vbar(uint64_t val) {
+  __asm__ __volatile__("msr vbar_el1, %0" ::"r"(val));
+}
+/* --- Timer --- */
+static inline uint64_t arch_impl_timer_get_freq(void) {
+  uint64_t val;
+  __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(val));
+  return val;
+}
+
+static inline uint64_t arch_impl_timer_get_count(void) {
+  uint64_t val;
+  __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(val));
+  return val;
+}
+
+static inline void arch_impl_timer_set_compare(uint64_t val) {
+  __asm__ __volatile__("msr cntv_cval_el0, %0" ::"r"(val));
+}
+
+static inline void arch_impl_timer_control(uint32_t val) {
+  __asm__ __volatile__("msr cntv_ctl_el0, %0" ::"r"((uint64_t)val));
+}
+
+/* --- Spinlocks --- */
+static inline void arch_impl_spin_lock(volatile uint32_t *lock) {
   uint32_t tmp;
   __asm__ __volatile__("   sevl\n"
                        "1: wfe\n"
@@ -177,14 +191,14 @@ static inline void __arch_spin_lock(volatile uint32_t *lock) {
                        : "memory");
 }
 
-static inline void __arch_spin_unlock(volatile uint32_t *lock) {
+static inline void arch_impl_spin_unlock(volatile uint32_t *lock) {
   __asm__ __volatile__("   stlr    %w0, [%1]\n"
                        :
                        : "r"(0), "r"(lock)
                        : "memory");
 }
 
-static inline int __arch_spin_trylock(volatile uint32_t *lock) {
+static inline int arch_impl_spin_trylock(volatile uint32_t *lock) {
   uint32_t tmp;
   __asm__ __volatile__("   ldaxr   %w0, [%1]\n"
                        "   cbnz    %w0, 1f\n"
@@ -196,29 +210,9 @@ static inline int __arch_spin_trylock(volatile uint32_t *lock) {
   return tmp == 0;
 }
 
-/* Timer Registers */
-static inline uint64_t __arch_cntfrq_el0_read(void) {
-  uint64_t val;
-  __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(val));
-  return val;
-}
-
-static inline uint64_t __arch_cntvct_el0_read(void) {
-  uint64_t val;
-  __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(val));
-  return val;
-}
-
-static inline void __arch_cntv_cval_el0_write(uint64_t val) {
-  __asm__ __volatile__("msr cntv_cval_el0, %0" ::"r"(val));
-}
-
-static inline void __arch_cntv_ctl_el0_write(uint64_t val) {
-  __asm__ __volatile__("msr cntv_ctl_el0, %0" ::"r"(val));
-}
-
-#define __ARCH_RAM_START 0x40000000UL
-#define __ARCH_RAM_SIZE  0x40000000UL /* 1GB */
-#define __ARCH_ALIAS_OFFSET 0x40000000UL
+/* --- Constants --- */
+#define HAL_RAM_START 0x40000000UL
+#define HAL_RAM_SIZE  0x40000000UL /* 1GB default */
+#define HAL_ALIAS_OFFSET 0x40000000UL
 
 #endif /* _ARCH_AARCH64_H */

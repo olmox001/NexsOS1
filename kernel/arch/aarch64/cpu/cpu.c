@@ -13,7 +13,7 @@
 #include <kernel/vmm.h>
 
 /* External definitions from core */
-extern struct cpu_info cpu_data[8];
+extern struct cpu_info cpu_data[MAX_CPUS];
 extern uint32_t nr_cpus;
 
 /* External functions from assembly */
@@ -38,15 +38,16 @@ void arch_cpu_init(void) {
   }
 
   /* Enable FPU/SIMD (NEON) - set CPACR_EL1.FPEN = 0b11 */
-  uint64_t cpacr = arch_get_cpacr();
+  uint64_t cpacr = arch_impl_get_cpacr();
   cpacr |= (3 << 20); /* FPEN bits [21:20] = 0b11 */
-  arch_set_cpacr(cpacr);
-  arch_instr_barrier();
+  arch_impl_set_cpacr(cpacr);
+  arch_impl_mb();
+  arch_impl_isb();
 
   /* Install exception vector table */
   exception_vectors_install();
 
-  pr_info("CPU: Vector Table set to 0x%lx\n", arch_get_vector_table());
+  pr_info("CPU: Vector Table set to 0x%lx\n", arch_impl_get_vbar());
 }
 
 /*
@@ -60,8 +61,8 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     return NULL;
 
   /* Read exception syndrome */
-  esr = arch_get_esr();
-  far = arch_get_far();
+  esr = arch_get_fault_status();
+  far = arch_get_fault_address();
   elr = frame->elr;
 
   ec = (esr >> 26) & 0x3F;
@@ -173,31 +174,32 @@ void *arch_get_kernel_stack(uint32_t cpu_id) {
 extern uint64_t secondary_ttbr0;
 void arch_vmm_set_secondary_pgd(uint64_t pgd) {
     secondary_ttbr0 = pgd;
-    arch_cache_clean_va(&secondary_ttbr0);
-    arch_data_barrier();
+    arch_cache_clean_range(&secondary_ttbr0, sizeof(secondary_ttbr0));
+    arch_mb();
 }
 
 void arch_vmm_init_hw(uint64_t kernel_pgd) {
   /* 1. Setup MAIR_EL1 (Memory Attribute Indirection Register) */
   /* Index 0: Normal Memory, Index 1: Device Memory nGnRE */
   uint64_t mair = (0xFFUL << 0) | (0x04UL << 8);
-  arch_set_mair(mair);
+  arch_impl_set_mair(mair);
 
   /* 2. Setup TCR_EL1 (Translation Control Register) */
   /* T0SZ=16 (48-bit VA), SH0=3 (Inner), ORGN0=1 (WB/WA), IRGN0=1 (WB/WA), IPS=2 (40-bit PA) */
   uint64_t tcr = (16UL << 0) | (3UL << 12) | (1UL << 10) | (1UL << 8) | (2UL << 32);
-  arch_set_tcr(tcr);
+  arch_impl_set_tcr(tcr);
 
   /* 3. Set TTBR0_EL1 */
   arch_vmm_set_pgd(kernel_pgd);
 
   /* 4. Enable MMU in SCTLR_EL1 */
-  uint64_t sctlr = arch_get_sctlr();
+  uint64_t sctlr = arch_impl_get_sctlr();
   sctlr |= (1UL << 0) |  /* M: MMU enable */
            (1UL << 12) | /* I: Instruction cache enable */
            (1UL << 2);   /* C: Data cache enable */
-  arch_set_sctlr(sctlr);
-  arch_instr_barrier();
+  arch_impl_set_sctlr(sctlr);
+  arch_impl_mb();
+  arch_impl_isb();
 
   pr_info("AArch64 VMM: MMU Enabled. PGD at %p\n", (void *)kernel_pgd);
 }

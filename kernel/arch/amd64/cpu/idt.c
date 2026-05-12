@@ -8,6 +8,7 @@
 #include <arch/pt_regs.h>
 #include <arch/arch.h>
 #include <arch/amd64_internal.h>
+#include <kernel/arch.h>
 
 #define IDT_ENTRIES 256
 
@@ -79,7 +80,7 @@ static void amd64_page_fault_handler(struct pt_regs *regs) {
          (error_code & 16) ? 1 : 0);
   pr_err("RIP: 0x%lx\n", regs->rip);
   
-  __arch_cpu_halt();
+  arch_cpu_halt();
 }
 
 /* General Protection Fault Handler */
@@ -87,7 +88,7 @@ static void amd64_gpf_handler(struct pt_regs *regs) {
   pr_err("GENERAL PROTECTION FAULT\n");
   pr_err("Error Code: 0x%lx\n", regs->err);
   pr_err("RIP: 0x%lx\n", regs->rip);
-  __arch_cpu_halt();
+        arch_cpu_halt();
 }
 
 /* Double Fault Handler */
@@ -95,7 +96,7 @@ static void amd64_double_fault_handler(struct pt_regs *regs) {
   pr_err("DOUBLE FAULT\n");
   pr_err("Error Code: 0x%lx\n", regs->err);
   pr_err("RIP: 0x%lx\n", regs->rip);
-  __arch_cpu_halt();
+        arch_cpu_halt();
 }
 
 extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *regs);
@@ -126,9 +127,10 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
       if (vec < 32) {
         pr_err("Unhandled CPU Exception: %ld\n", vec);
         pr_err("RIP: 0x%lx, Error Code: 0x%lx\n", regs->rip, regs->err);
-        __arch_cpu_halt();
+              arch_cpu_halt();
       } else {
         /* Hardware interrupt - route via generic system */
+        pr_info("IRQ: Received HW interrupt %ld\n", vec);
         extern struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs * regs);
         regs = irq_dispatch(vec, regs);
 

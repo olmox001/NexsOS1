@@ -1,26 +1,21 @@
-/*
- * kernel/arch/amd64/include/arch/arch.h
- * x86-64 architecture-specific inline primitives
- *
- * Provides the __arch_* functions consumed by kernel/include/kernel/arch.h
- */
 #ifndef _ARCH_AMD64_H
 #define _ARCH_AMD64_H
 
 #include <stdint.h>
 #include <kernel/types.h>
 
-/* ─── Interrupt Control ─── */
+/* AMD64 HAL Implementation Primitives */
 
-static inline void __arch_local_irq_enable(void) {
+/* --- Interrupt Control --- */
+static inline void arch_impl_irq_enable(void) {
   __asm__ __volatile__("sti" ::: "memory");
 }
 
-static inline void __arch_local_irq_disable(void) {
+static inline void arch_impl_irq_disable(void) {
   __asm__ __volatile__("cli" ::: "memory");
 }
 
-static inline void __arch_local_irq_save(uint64_t *flags) {
+static inline void arch_impl_irq_save(uint64_t *flags) {
   __asm__ __volatile__("pushfq\n\t"
                        "popq %0\n\t"
                        "cli"
@@ -29,7 +24,7 @@ static inline void __arch_local_irq_save(uint64_t *flags) {
                        : "memory");
 }
 
-static inline void __arch_local_irq_restore(uint64_t flags) {
+static inline void arch_impl_irq_restore(uint64_t flags) {
   __asm__ __volatile__("pushq %0\n\t"
                        "popfq"
                        :
@@ -37,120 +32,64 @@ static inline void __arch_local_irq_restore(uint64_t flags) {
                        : "memory", "cc");
 }
 
-/* On x86-64, all exceptions/interrupts are controlled via RFLAGS.IF only.
- * _save_all / _restore_all / _disable_all are equivalent to the irq variants.
- */
-static inline void __arch_local_irq_save_all(uint64_t *flags) {
-  __arch_local_irq_save(flags);
+static inline void arch_impl_irq_save_all(uint64_t *flags) {
+  arch_impl_irq_save(flags);
 }
 
-static inline void __arch_local_irq_restore_all(uint64_t flags) {
-  __arch_local_irq_restore(flags);
+static inline void arch_impl_irq_restore_all(uint64_t flags) {
+  arch_impl_irq_restore(flags);
 }
 
-static inline void __arch_local_irq_disable_all(void) {
-  __arch_local_irq_disable();
+static inline void arch_impl_irq_disable_all(void) {
+  arch_impl_irq_disable();
 }
 
-/* ─── CPU Control ─── */
+/* --- CPU Control --- */
+static inline void arch_impl_nop(void) { __asm__ __volatile__("nop"); }
+static inline void arch_impl_idle(void) { __asm__ __volatile__("hlt"); }
+static inline void arch_impl_yield(void) { __asm__ __volatile__("pause"); }
+static inline void arch_impl_cpu_notify(void) { /* NOP on x86 for now */ }
 
-static inline void __arch_nop(void) { __asm__ __volatile__("nop"); }
+/* Barriers */
+static inline void arch_impl_isb(void) { __asm__ __volatile__("mfence" ::: "memory"); }
+static inline void arch_impl_mb(void)  { __asm__ __volatile__("mfence" ::: "memory"); }
+static inline void arch_impl_rmb(void) { __asm__ __volatile__("lfence" ::: "memory"); }
+static inline void arch_impl_wmb(void) { __asm__ __volatile__("sfence" ::: "memory"); }
 
-/* x86 equivalent of ARM WFI — halt until interrupt */
-static inline void __arch_wfi(void) { __asm__ __volatile__("hlt"); }
-
-/* x86 equivalent of ARM WFE — use PAUSE for spinloop hint */
-static inline void __arch_wfe(void) { __asm__ __volatile__("pause"); }
-
-/* No direct SEV equivalent on x86; NOP stub */
-static inline void __arch_sev(void) { __asm__ __volatile__("nop"); }
-
-static inline void __arch_yield(void) { __asm__ __volatile__("pause"); }
-
-static inline void __arch_cpu_halt(void) {
-  __arch_local_irq_disable();
-  while (1) {
-    __asm__ __volatile__("hlt");
-  }
-}
-
-/* ─── CPU Identification ─── */
-
-static inline uint32_t __arch_get_cpu_id(void) {
-  /* Read LAPIC ID from IA32_APIC_BASE MSR or xAPIC MMIO.
-   * For boot CPU, CPUID leaf 0x1 EBX[31:24] gives initial APIC ID.
-   * Simplified: use CPUID for now. */
+static inline uint32_t arch_impl_get_cpu_id(void) {
   uint32_t ebx;
   __asm__ __volatile__("cpuid" : "=b"(ebx) : "a"(1) : "ecx", "edx");
   return (ebx >> 24) & 0xFF;
 }
 
-/* ─── Memory Barriers ─── */
-
-static inline void __arch_isb(void) {
-  /* x86 has no ISB; serializing via CPUID or just MFENCE */
-  __asm__ __volatile__("mfence" ::: "memory");
+/* --- VMM / TLB --- */
+static inline void arch_impl_set_pgd(uint64_t pgd) {
+  __asm__ __volatile__("mov %0, %%cr3" ::"r"(pgd) : "memory");
 }
 
-static inline void __arch_dsb(void) {
-  __asm__ __volatile__("mfence" ::: "memory");
+static inline uint64_t arch_impl_get_pgd(void) {
+  uint64_t pgd;
+  __asm__ __volatile__("mov %%cr3, %0" : "=r"(pgd));
+  return pgd;
 }
 
-static inline void __arch_dmb(void) {
-  __asm__ __volatile__("mfence" ::: "memory");
-}
-
-static inline void __arch_mb(void) {
-  __asm__ __volatile__("mfence" ::: "memory");
-}
-
-static inline void __arch_rmb(void) {
-  __asm__ __volatile__("lfence" ::: "memory");
-}
-
-static inline void __arch_wmb(void) {
-  __asm__ __volatile__("sfence" ::: "memory");
-}
-
-/* ─── Page Table / TLB ─── */
-
-static inline void __arch_set_ttbr0(uint64_t cr3_val) {
-  __asm__ __volatile__("mov %0, %%cr3" ::"r"(cr3_val) : "memory");
-}
-
-static inline uint64_t __arch_get_ttbr0(void) {
-  uint64_t cr3;
-  __asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3));
-  return cr3;
-}
-
-static inline void __arch_tlb_flush_local(void) {
+static inline void arch_impl_tlb_flush_local(void) {
   uint64_t cr3;
   __asm__ __volatile__("mov %%cr3, %0\n\t"
                        "mov %0, %%cr3"
                        : "=r"(cr3)::"memory");
 }
 
-static inline void __arch_tlb_flush_all(void) {
-  __arch_tlb_flush_local(); /* Single-core for now */
+static inline void arch_impl_tlb_flush_all(void) {
+  arch_impl_tlb_flush_local();
 }
 
-static inline void __arch_tlb_flush_va(uint64_t va) {
+static inline void arch_impl_tlb_flush_va(uintptr_t va) {
   __asm__ __volatile__("invlpg (%0)" ::"r"(va) : "memory");
 }
 
-/* ─── Cache Operations ─── */
-/* x86 caches are generally coherent; these are stubs/CLFLUSHes */
-
-static inline void __arch_clean_cache_va(void *va) {
-  __asm__ __volatile__("clflush (%0)" ::"r"(va) : "memory");
-}
-
-static inline void __arch_clean_cache_va_pou(void *va) {
-  __arch_clean_cache_va(va);
-}
-
-static inline void __arch_clean_cache_range_va(void *start, uint64_t size) {
+/* Cache Control */
+static inline void arch_impl_cache_clean_range(void *start, size_t size) {
   uint64_t s = (uint64_t)start;
   uint64_t e = s + size;
   s &= ~63UL;
@@ -159,146 +98,103 @@ static inline void __arch_clean_cache_range_va(void *start, uint64_t size) {
   }
 }
 
-/* ─── Spinlocks ─── */
-
-static inline void __arch_spin_lock(volatile uint32_t *lock) {
-  while (1) {
-    uint32_t old = 1;
-    __asm__ __volatile__("xchgl %0, %1"
-                         : "=r"(old), "+m"(*lock)
-                         : "0"(old)
-                         : "memory");
-    if (old == 0)
-      break;
-    /* Spin with PAUSE hint */
-    __asm__ __volatile__("pause");
-  }
+static inline void arch_impl_cache_sync_icache(void *start, size_t size) {
+  (void)start;
+  (void)size;
+  __asm__ __volatile__("mfence" ::: "memory");
 }
 
-static inline void __arch_spin_unlock(volatile uint32_t *lock) {
-  __asm__ __volatile__("" ::: "memory"); /* compiler barrier */
-  *lock = 0;
+/* --- Timer --- */
+static inline uint64_t arch_impl_timer_get_freq(void) {
+  return 1000000000ULL; /* Calibrated at boot usually */
 }
 
-static inline int __arch_spin_trylock(volatile uint32_t *lock) {
-  uint32_t old = 1;
-  __asm__ __volatile__("xchgl %0, %1"
-                       : "=r"(old), "+m"(*lock)
-                       : "0"(old)
-                       : "memory");
-  return old == 0; /* 1 if acquired, 0 if contended */
-}
-
-/* ─── Timer ─── */
-/* x86-64 uses APIC timer or TSC; provide TSC-based stubs */
-
-static inline uint64_t __arch_cntfrq_el0_read(void) {
-  /* TSC frequency; placeholder — calibrated at boot */
-  return 1000000000ULL; /* 1 GHz default */
-}
-
-static inline uint64_t __arch_cntvct_el0_read(void) {
+static inline uint64_t arch_impl_timer_get_count(void) {
   uint32_t lo, hi;
   __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
   return ((uint64_t)hi << 32) | lo;
 }
 
-static inline void __arch_cntv_cval_el0_write(uint64_t val) {
-  /* APIC timer compare — implemented in apic.c */
-  (void)val;
+static inline void arch_impl_timer_set_compare(uint64_t val) { (void)val; }
+static inline void arch_impl_timer_control(uint32_t val) { (void)val; }
+
+/* --- Spinlocks --- */
+static inline void arch_impl_spin_lock(volatile uint32_t *lock) {
+  while (1) {
+    uint32_t old = 1;
+    __asm__ __volatile__("xchgl %0, %1" : "=r"(old), "+m"(*lock) : "0"(old) : "memory");
+    if (old == 0) break;
+    __asm__ __volatile__("pause");
+  }
 }
 
-static inline void __arch_cntv_ctl_el0_write(uint64_t val) {
-  /* APIC timer control — implemented in apic.c */
-  (void)val;
+static inline void arch_impl_spin_unlock(volatile uint32_t *lock) {
+  __asm__ __volatile__("" ::: "memory");
+  *lock = 0;
 }
 
-/* ─── MSR Access ─── */
+static inline int arch_impl_spin_trylock(volatile uint32_t *lock) {
+  uint32_t old = 1;
+  __asm__ __volatile__("xchgl %0, %1" : "=r"(old), "+m"(*lock) : "0"(old) : "memory");
+  return old == 0;
+}
+
+/* --- System Registers --- */
+static inline uint64_t arch_impl_get_fault_address(void) {
+  uint64_t cr2;
+  __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
+  return cr2;
+}
 
 static inline uint64_t rdmsr(uint32_t msr) {
-  uint32_t lo, hi;
-  __asm__ __volatile__("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
-  return ((uint64_t)hi << 32) | lo;
+  uint32_t low, high;
+  __asm__ __volatile__("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+  return ((uint64_t)high << 32) | low;
 }
 
 static inline void wrmsr(uint32_t msr, uint64_t val) {
-  __asm__ __volatile__("wrmsr" ::"c"(msr), "a"((uint32_t)val),
-                       "d"((uint32_t)(val >> 32)));
+  uint32_t low = (uint32_t)val;
+  uint32_t high = (uint32_t)(val >> 32);
+  __asm__ __volatile__("wrmsr" : : "a"(low), "d"(high), "c"(msr));
 }
 
-/* ─── Port I/O ─── */
-
 static inline void outb(uint16_t port, uint8_t val) {
-  __asm__ __volatile__("outb %0, %1" ::"a"(val), "Nd"(port));
+  __asm__ __volatile__("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
 static inline uint8_t inb(uint16_t port) {
-  uint8_t ret;
-  __asm__ __volatile__("inb %1, %0" : "=a"(ret) : "Nd"(port));
-  return ret;
+  uint8_t val;
+  __asm__ __volatile__("inb %1, %0" : "=a"(val) : "Nd"(port));
+  return val;
 }
 
 static inline void outw(uint16_t port, uint16_t val) {
-  __asm__ __volatile__("outw %0, %1" ::"a"(val), "Nd"(port));
+  __asm__ __volatile__("outw %0, %1" : : "a"(val), "Nd"(port));
 }
 
 static inline uint16_t inw(uint16_t port) {
-  uint16_t ret;
-  __asm__ __volatile__("inw %1, %0" : "=a"(ret) : "Nd"(port));
-  return ret;
+  uint16_t val;
+  __asm__ __volatile__("inw %1, %0" : "=a"(val) : "Nd"(port));
+  return val;
 }
 
 static inline void outl(uint16_t port, uint32_t val) {
-  __asm__ __volatile__("outl %0, %1" ::"a"(val), "Nd"(port));
+  __asm__ __volatile__("outl %0, %1" : : "a"(val), "Nd"(port));
 }
 
 static inline uint32_t inl(uint16_t port) {
-  uint32_t ret;
-  __asm__ __volatile__("inl %1, %0" : "=a"(ret) : "Nd"(port));
-  return ret;
+  uint32_t val;
+  __asm__ __volatile__("inl %1, %0" : "=a"(val) : "Nd"(port));
+  return val;
 }
 
-/* ─── SMAP Control ─── */
-
-static inline void stac(void) {
-  __asm__ __volatile__(".byte 0x0f, 0x01, 0xcb" ::: "memory"); /* stac */
+static inline uint64_t arch_impl_get_fault_status(void) {
+  return 0; /* x86 uses error code on stack */
 }
 
-static inline void clac(void) {
-  __asm__ __volatile__(".byte 0x0f, 0x01, 0xca" ::: "memory"); /* clac */
-}
-
-/* ─── x86-64 specific system registers (mapped via kernel/arch.h) ─── */
-/* These ARM-named wrappers are stubs to satisfy arch.h macros.
- * The actual x86 register manipulation happens via dedicated functions. */
-
-static inline uint64_t __arch_get_esr(void) { return 0; } /* No ESR on x86 */
-static inline uint64_t __arch_get_far(void) {
-  uint64_t cr2;
-  __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
-  return cr2; /* CR2 = faulting address */
-}
-
-static inline uint64_t __arch_get_vbar(void) { return 0; } /* No VBAR on x86 */
-static inline void __arch_set_vbar(uint64_t vbar) {
-  (void)vbar;
-} /* IDT managed via lidt */
-
-static inline uint64_t __arch_get_cpacr(void) { return 0; }
-static inline void __arch_set_cpacr(uint64_t v) { (void)v; }
-static inline void __arch_set_mair(uint64_t v) { (void)v; }
-static inline void __arch_set_tcr(uint64_t v) { (void)v; }
-static inline uint64_t __arch_get_sctlr(void) {
-  uint64_t cr0;
-  __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
-  return cr0;
-}
-static inline void __arch_set_sctlr(uint64_t v) {
-  __asm__ __volatile__("mov %0, %%cr0" ::"r"(v) : "memory");
-}
-
-#define __ARCH_RAM_START 0x0UL
-#define __ARCH_RAM_SIZE  0x40000000UL /* 1GB */
-#define __ARCH_ALIAS_OFFSET 0x0UL      /* identity only for now */
+/* --- Constants --- */
+#define HAL_RAM_START 0x0UL
+#define HAL_RAM_SIZE  0x40000000UL
+#define HAL_ALIAS_OFFSET 0x0UL
 
 #endif /* _ARCH_AMD64_H */

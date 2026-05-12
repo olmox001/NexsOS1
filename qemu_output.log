@@ -1,54 +1,0 @@
-Assembling final disk image (GPT + Ext4)...
-Creating 128MB disk image...
-Disk image created successfully: build/disk.img
-Ext4: Formatting partition at LBA 34850 (Size: 110 MB)
-Adding build/init.elf to Ext4 as init (Inode 11)...
-Ext4: Added build/init.elf (Ino 11, 104888 bytes, 27 blocks)
-Adding build/counter.elf to Ext4 as counter (Inode 12)...
-Ext4: Added build/counter.elf (Ino 12, 104520 bytes, 27 blocks)
-Adding build/shell.elf to Ext4 as shell (Inode 13)...
-Ext4: Added build/shell.elf (Ino 13, 119032 bytes, 31 blocks)
-Adding build/demo3d.elf to Ext4 as demo3d (Inode 14)...
-Ext4: Added build/demo3d.elf (Ino 14, 110824 bytes, 29 blocks)
-Adding build/ipc_recv.elf to Ext4 as ipc_recv (Inode 15)...
-Ext4: Added build/ipc_recv.elf (Ino 15, 104568 bytes, 27 blocks)
-Adding build/ipc_send.elf to Ext4 as ipc_send (Inode 16)...
-Ext4: Added build/ipc_send.elf (Ino 16, 105224 bytes, 27 blocks)
-Adding build/notification_server.elf to Ext4 as notify_srv.elf (Inode 17)...
-Ext4: Added build/notification_server.elf (Ino 17, 105288 bytes, 27 blocks)
-Adding build/regedit.elf to Ext4 as regedit (Inode 18)...
-Ext4: Added build/regedit.elf (Ino 18, 105032 bytes, 27 blocks)
-Adding build/writetest.elf to Ext4 as writetest.elf (Inode 19)...
-Ext4: Added build/writetest.elf (Ino 19, 104680 bytes, 27 blocks)
-Adding user/bin/init.cfg to Ext4 as init.cfg (Inode 20)...
-Ext4: Added user/bin/init.cfg (Ino 20, 189 bytes, 1 blocks)
-Ext4: Filesystem created. Free Blocks: 28086, Free Inodes: 991
-Ext4: Wrote build/bootloader.bin to LBA 34 (1128 bytes)
-Ext4: Wrote build/kernel.bin to LBA 2082 (78076 bytes)
-
-Build complete!
-  Disk Image: build/disk.img
-  Kernel:     build/kernel.elf
-
-Run with: make run
-
-
-Starting QEMU (direct kernel boot)...
-Press Ctrl+C to exit
-
-qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1G -smp 4 -nographic -kernel build/kernel.elf
-
-========================================
-  AArch64 Microkernel v0.1.0
-  Production-Ready AArch64 Kernel
-========================================
-
-[ERROR] Ext4: Partition 2 not found!
-[ERROR] ELF: File not found: /bin/init
-
-
-*** KERNEL PANIC ***
-Failed to load /init
-
-System halted.
-

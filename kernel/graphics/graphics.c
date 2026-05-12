@@ -63,7 +63,7 @@ void graphics_clear(uint32_t color) {
 
 void graphics_swap_buffers(void) {
   /* In single-buffered modes, this is a flush/barrier */
-  arch_data_barrier();
+  arch_mb();
 }
 
 void graphics_draw_char(uint32_t x, uint32_t y, char c, uint32_t color) {

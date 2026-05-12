@@ -8,6 +8,7 @@
 #include <kernel/arch.h>
 #include <kernel/types.h>
 
+#ifndef __ASSEMBLER__
 typedef struct {
   volatile uint32_t lock;
 } spinlock_t;
@@ -49,5 +50,6 @@ static inline void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags) {
   spin_unlock(lock);
   arch_local_irq_restore(flags);
 }
+#endif
 
 #endif /* _KERNEL_SPINLOCK_H */

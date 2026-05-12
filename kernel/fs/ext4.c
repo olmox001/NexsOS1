@@ -235,7 +235,7 @@ static int ext4_update_inode(uint32_t ino, struct ext4_inode *inode) {
 
 /*
  * Public API: Read Data from Inode (Random Access)
- * Supports Direct Blocks (0-11). Does NOT yet support Indirect Blocks.
+ * Supports Direct Blocks (0-11) and Single Indirect Blocks (12).
  */
 int ext4_read_inode(uint32_t ino, uint32_t offset, uint8_t *buf,
                     uint32_t size) {
@@ -340,7 +340,7 @@ int ext4_read_inode(uint32_t ino, uint32_t offset, uint8_t *buf,
 }
 
 /*
- * Public API: Find Inode by Path (Root Directory Only for now)
+ * Public API: Find Inode by Path
  */
 /*
  * Helper: Find entry in a directory inode

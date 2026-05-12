@@ -109,10 +109,7 @@ int process_load_elf(struct process *proc, const char *path) {
 
         /* Clean DC to PoU and invalid IC for executable pages */
         if (phdr.p_flags & PF_X) {
-          for (uint64_t line = 0; line < 4096; line += 64) {
-            uint64_t target = (uint64_t)kaddr + line;
-            arch_cache_clean_pou((void *)target);
-          }
+          arch_cache_sync_icache(kaddr, 4096);
         }
       }
     }
@@ -163,8 +160,8 @@ int process_load_elf(struct process *proc, const char *path) {
   }
 
   /* Ensure context is visible before enqueueing */
-  arch_data_barrier();
-  arch_instr_barrier();
+  arch_mb();
+  arch_isb();
 
   return 0;
 }

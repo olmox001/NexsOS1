@@ -12,7 +12,7 @@
 #include <kernel/types.h>
 #include <stdarg.h>
 
-int console_loglevel = KERN_INFO;
+int console_loglevel = KERN_NOTICE;
 
 /* Set by panic() to signal all CPUs to halt */
 volatile int panic_flag = 0;
@@ -240,8 +240,8 @@ int vprintk(const char *fmt, va_list args) {
 
   /* Acquire lock and disable IRQs BEFORE setting in_printk.
    * Without this, the timer IRQ can preempt between in_printk=1 and the lock,
-   * switch to another task, and that task's next printk sees a stale in_printk=1
-   * on this CPU → false "[RECURSIVE PRINTK DETECTED]" spam. */
+   * switch to another task, and that task's next printk sees a stale
+   * in_printk=1 on this CPU → false "[RECURSIVE PRINTK DETECTED]" spam. */
   spin_lock_irqsave(&uart_lock, &flags);
 
   if (cpu->in_printk) {
@@ -254,11 +254,12 @@ int vprintk(const char *fmt, va_list args) {
 
   /* Prepend "[C%d] " CPU prefix for multi-CPU log disambiguation */
   int pfx = snprintf(cpu->printk_buf, 8, "[C%u] ", cpu->cpu_id);
-  if (pfx < 0) pfx = 0;
+  if (pfx < 0)
+    pfx = 0;
 
   /* Format the actual message after the prefix */
-  len = vsnprintf(cpu->printk_buf + pfx,
-                  sizeof(cpu->printk_buf) - pfx, fmt, args);
+  len = vsnprintf(cpu->printk_buf + pfx, sizeof(cpu->printk_buf) - pfx, fmt,
+                  args);
 
   kputs(cpu->printk_buf);
 
@@ -305,7 +306,9 @@ void panic(const char *fmt, ...) {
   /* Disable all exceptions and halt this CPU */
   uint64_t flags;
   arch_local_irq_save_all(&flags);
-  while (1) { arch_idle(); }
+  while (1) {
+    arch_idle();
+  }
 
   __builtin_unreachable();
 }

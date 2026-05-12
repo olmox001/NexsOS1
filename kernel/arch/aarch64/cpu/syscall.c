@@ -59,7 +59,7 @@ int arch_copy_from_user(void *dest, const void *src, size_t n) {
   /* Switch to user's page table (must use physical address) */
   arch_vmm_set_pgd(virt_to_phys(current_process->page_table));
   arch_tlb_flush_all();
-  arch_instr_barrier();
+  arch_isb();
 
   /* Perform copy while user space is mapped at TTBR0 */
   memcpy(dest, src, n);
@@ -67,7 +67,7 @@ int arch_copy_from_user(void *dest, const void *src, size_t n) {
   /* Restore kernel/previous TTBR0 */
   arch_vmm_set_pgd(old_pgd);
   arch_tlb_flush_all();
-  arch_instr_barrier();
+  arch_isb();
 
   spin_unlock(&current_process->mm_lock);
   local_irq_restore(flagsptr);
@@ -93,13 +93,13 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
   uint64_t old_pgd = arch_vmm_get_pgd();
   arch_vmm_set_pgd(virt_to_phys(current_process->page_table));
   arch_tlb_flush_all();
-  arch_instr_barrier();
+  arch_isb();
 
   memcpy(dest, src, n);
 
   arch_vmm_set_pgd(old_pgd);
   arch_tlb_flush_all();
-  arch_instr_barrier();
+  arch_isb();
 
   spin_unlock(&current_process->mm_lock);
   local_irq_restore(flagsptr);
@@ -122,7 +122,7 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
   uint64_t old_pgd = arch_vmm_get_pgd();
   arch_vmm_set_pgd(virt_to_phys(current_process->page_table));
   arch_tlb_flush_all();
-  arch_instr_barrier();
+  arch_isb();
 
   int ret = 0;
   size_t i;
@@ -142,7 +142,7 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
 out:
   arch_vmm_set_pgd(old_pgd);
   arch_tlb_flush_all();
-  arch_instr_barrier();
+  arch_isb();
   spin_unlock(&current_process->mm_lock);
   local_irq_restore(flagsptr);
   return ret;
@@ -150,12 +150,12 @@ out:
 
 struct pt_regs *syscall_handler(struct pt_regs *frame) {
   /* Check Exception Syndrome to distinguish SVC from Aborts */
-  uint64_t esr = arch_get_esr();
+  uint64_t esr = arch_get_fault_status();
   uint64_t ec = (esr >> 26) & 0x3F;
 
   /* EC 0x15 = SVC from AArch64 */
   if (ec != 0x15) {
-    uint64_t far = arch_get_far();
+    uint64_t far = arch_get_fault_address();
     uint64_t iss = esr & 0x1FFFFFF;
 
     pr_err(

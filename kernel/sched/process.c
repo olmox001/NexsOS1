@@ -50,7 +50,7 @@ static void __enqueue_task(struct process *p) {
   target_cpu->prio_bitmap |= (1 << prio);
 
   /* Wake up any idling CPUs */
-  arch_sev();
+  arch_cpu_notify();
 }
 
 void enqueue_task(struct process *p) {
@@ -125,7 +125,7 @@ void wake_up(struct wait_queue_head *wq) {
     uint64_t global_flags;
     spin_lock_irqsave(&sched_lock, &global_flags);
     p->on_cpu = rr_cpu;
-    rr_cpu = (rr_cpu + 1) % 4;
+    rr_cpu = (rr_cpu + 1) % MAX_CPUS;
     spin_unlock_irqrestore(&sched_lock, global_flags);
   }
 
@@ -141,7 +141,7 @@ void wake_up(struct wait_queue_head *wq) {
 void idle_task_entry(void) {
   while (1) {
     /* Wait for interrupt */
-    arch_wfi();
+    arch_idle();
     /* When we wake up, check if we need to reschedule?
        The interrupt handler (Timer) will have called schedule() if needed.
        If we are back here, it means no other task was ready.
@@ -158,7 +158,7 @@ void process_init(void) {
   }
 
   /* Initialize ALL CPU Runqueues */
-  for (int c = 0; c < 8; c++) {
+  for (int c = 0; c < MAX_CPUS; c++) {
     for (int i = 0; i < MAX_PRIO; i++) {
       INIT_LIST_HEAD(&cpu_data[c].runqueues[i]);
     }
@@ -418,7 +418,7 @@ void start_user_process(struct process *proc) {
   /* Set page table and flush TLB */
   arch_vmm_set_pgd(pgd_phys);
   arch_tlb_flush_all();
-  arch_instr_barrier();
+  arch_isb();
 
   proc->state = PROC_RUNNING;
   proc->on_cpu = cpu_id();
@@ -553,7 +553,7 @@ found:
 
   if (!next) {
     /* Work stealing from other CPUs */
-    for (uint32_t i = 0; i < 4; i++) {
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
       if (i == cpu_ptr->cpu_id)
         continue; /* Skip self */
 
@@ -646,7 +646,7 @@ found:
     if (next_pgd != 0) {
       arch_vmm_set_pgd(next_pgd);
       arch_tlb_flush_all();
-      arch_instr_barrier();
+      arch_isb();
     }
   }
 

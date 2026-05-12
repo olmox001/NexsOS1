@@ -67,14 +67,14 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
   /* Zero and Flush the new table page */
   memset(page, 0, 4096);
   arch_cache_clean_range(page, 4096);
-  arch_data_barrier();
+  arch_mb();
 
   table[index] = phys | PTE_TABLE | PTE_VALID | PTE_AF | PTE_INNER_SHARE |
                  PTE_RW | PTE_AP_EL1_RW | PTE_PXN;
 
   /* Flush the directory entry itself */
-  arch_cache_clean_va(&table[index]);
-  arch_data_barrier();
+  arch_cache_clean_range(&table[index], 8);
+  arch_mb();
 
   return page;
 }
@@ -117,13 +117,13 @@ int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags) {
   }
 
   *pt_entry = phys | flags;
-  arch_cache_clean_va(pt_entry);
-  arch_data_barrier();
+  arch_cache_clean_range(pt_entry, 8);
+  arch_mb();
 
   /* Flush TLB for this address to ensure consistency */
   arch_tlb_flush_va(virt);
-  arch_data_barrier();
-  arch_instr_barrier();
+  arch_mb();
+  arch_isb();
 
   return 0;
 }
@@ -194,13 +194,13 @@ void vmm_unmap_page(uint64_t *pgd, uint64_t virt) {
 
   uint64_t *pt_entry = &pt[PT_INDEX(virt)];
   *pt_entry = 0;
-  arch_cache_clean_va(pt_entry);
-  arch_data_barrier();
+  arch_cache_clean_range(pt_entry, 8);
+  arch_mb();
 
   /* TLB Invalidation */
   arch_tlb_flush_va(virt);
-  arch_data_barrier();
-  arch_instr_barrier();
+  arch_mb();
+  arch_isb();
 }
 
 /* Internal helper with locking */
@@ -282,7 +282,7 @@ void vmm_init(void) {
     }
   }
 
-  arch_data_barrier(); /* Wait for flushes */
+  arch_mb(); /* Wait for flushes */
 
   /* 2. Platform-specific MMIO Identity Mapping */
   arch_vmm_map_mmio(kernel_pgd);
@@ -322,7 +322,7 @@ uint64_t *vmm_create_pgd(void) {
       dst_pud[1] = src_pud[1];
       arch_cache_clean_range(dst_pud, 4096);
       pgd[0] = (uint64_t)dst_pud | (kernel_pgd[0] & ~PTE_ADDR_MASK);
-      arch_cache_clean_va(&pgd[0]);
+      arch_cache_clean_range(&pgd[0], 8);
     }
   }
 
@@ -330,9 +330,9 @@ uint64_t *vmm_create_pgd(void) {
   for (int i = 1; i < 512; i++) {
     pgd[i] = kernel_pgd[i];
     if (pgd[i])
-      arch_cache_clean_va(&pgd[i]);
+      arch_cache_clean_range(&pgd[i], 8);
   }
-  arch_data_barrier();
+  arch_mb();
 
   return pgd;
 }

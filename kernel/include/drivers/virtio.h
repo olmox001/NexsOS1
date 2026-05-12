@@ -1,6 +1,6 @@
 /*
  * kernel/include/drivers/virtio.h
- * VirtIO Common Definitions
+ * Unified VirtIO Driver Interface
  */
 #ifndef _DRIVERS_VIRTIO_H
 #define _DRIVERS_VIRTIO_H
@@ -62,6 +62,29 @@
 #define VRING_DESC_F_WRITE 2
 #define VRING_DESC_F_INDIRECT 4
 
+/* transport ops */
+struct virtio_device;
+struct virtio_transport_ops {
+  uint32_t (*read32)(struct virtio_device *dev, uint32_t offset);
+  void (*write32)(struct virtio_device *dev, uint32_t offset, uint32_t val);
+  void (*notify)(struct virtio_device *dev, uint32_t queue_idx);
+};
+
+struct virtio_device {
+  uintptr_t base;
+  uint32_t irq;
+  uint32_t device_id;
+  const struct virtio_transport_ops *ops;
+  void *priv;
+};
+
+typedef struct virtio_device *virtio_handle_t;
+
+/* VirtIO Ring Descriptors */
+#define VRING_DESC_F_NEXT 1
+#define VRING_DESC_F_WRITE 2
+#define VRING_DESC_F_INDIRECT 4
+
 struct vring_desc {
   uint64_t addr;
   uint32_t len;
@@ -85,5 +108,28 @@ struct vring_used {
   uint16_t idx;
   struct vring_used_elem ring[];
 };
+
+/* API */
+static inline uint32_t virtio_read_reg(virtio_handle_t dev, uint32_t offset) {
+  return dev->ops->read32(dev, offset);
+}
+
+static inline void virtio_write_reg(virtio_handle_t dev, uint32_t offset,
+                                    uint32_t val) {
+  dev->ops->write32(dev, offset, val);
+}
+
+static inline void virtio_notify(virtio_handle_t dev, uint32_t queue_idx) {
+  dev->ops->notify(dev, queue_idx);
+}
+
+/* Discovery & Setup */
+void arch_virtio_scan(void);
+int arch_virtio_get_count(uint32_t device_id);
+int arch_virtio_get_device(uint32_t device_id, int index,
+                           virtio_handle_t *out_dev, uint32_t *out_irq);
+void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
+                        uint64_t desc_addr, uint64_t avail_addr,
+                        uint64_t used_addr);
 
 #endif /* _DRIVERS_VIRTIO_H */

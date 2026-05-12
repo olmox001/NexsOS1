@@ -181,6 +181,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/graphics/font.c \
     $(KERNEL_DIR)/graphics/compositor.c \
     $(KERNEL_DIR)/irq/irq.c \
+    $(KERNEL_DIR)/lib/fdt.c \
     $(KERNEL_DIR)/main.c
 
 KERN_CPP_SOURCES = \

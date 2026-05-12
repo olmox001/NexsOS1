@@ -5,6 +5,8 @@
 #ifndef _KERNEL_PLATFORM_H
 #define _KERNEL_PLATFORM_H
 
+#include <kernel/pmm.h>
+
 /* IRQ numbers for QEMU virt machine */
 #define PLATFORM_IRQ_TIMER_VIRT 27
 #define PLATFORM_IRQ_TIMER_PHYS 30
@@ -18,5 +20,6 @@
 
 /* Platform Functions */
 void arch_platform_early_init(void);
+struct mem_region *arch_platform_get_mem_regions(size_t *count);
 
 #endif /* _KERNEL_PLATFORM_H */

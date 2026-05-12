@@ -4,10 +4,18 @@
  * Direct-Boot Architecture Parity with AArch64
  */
 
+#define MB1_MAGIC        0x1BADB002
+#define MB1_FLAGS        0x00000003 /* ALIGN + MEMINFO */
 #define MB2_MAGIC        0xE85250D6
 #define MB2_ARCH_I386    0
 
 .section .multiboot
+.align 4
+mb1_header:
+    .long MB1_MAGIC
+    .long MB1_FLAGS
+    .long -(MB1_MAGIC + MB1_FLAGS)
+
 .align 8
 mb2_header_start:
     .long MB2_MAGIC
@@ -44,17 +52,20 @@ mb2_header_end:
 .global _start_32
 _start_32:
     cli
-
-    /* Detect boot protocol: Multiboot2 (EAX=0x36d24269) vs PVH */
-    cmpl $0x36d24269, %eax
-    je .is_multiboot2
-
-    /* Assume PVH - ebx points to hvm_start_info */
-    movl $0, (mb_info_ptr_phys)
+    /* Save magic and info in a safe physical memory location (0x7FF0-0x7FFF) */
+    movl %eax, 0x7FF0
+    
+    /* Detect boot protocol */
+    cmpl $0x336ec578, %eax
+    je .pvh_info_32
+    
+    /* Multiboot path */
+    movl %ebx, 0x7FF8
     jmp .prepare_paging
 
-.is_multiboot2:
-    movl %ebx, (mb_info_ptr_phys)
+.pvh_info_32:
+    movl %esi, 0x7FF8
+    jmp .prepare_paging
 
 .prepare_paging:
     /* Clear boot page tables */
@@ -141,15 +152,23 @@ _start_64:
     jmp .bss_loop
 .bss_done:
 
-    /* Setup initial stack */
-    movabsq $_stack_top, %rsp
+    /* Setup initial stack (CPU 0) */
+    movabsq $__kernel_stack, %rsp
+    addq $131072, %rsp
     movq %rsp, %rbp
 
     /* Load final 64-bit GDT */
     lgdt (boot_gdtr)
 
-    /* Handover to C: RDI = Multiboot info pointer */
-    movq (mb_info_ptr), %rdi
+    /* 5. Load saved boot information into kernel variables */
+    movl 0x7FF0, %eax
+    movq %rax, mb_magic(%rip)
+    movl 0x7FF8, %eax
+    movq %rax, mb_info_ptr(%rip)
+    
+    /* 6. Handover to C: RDI = info, RSI = magic */
+    movq mb_info_ptr(%rip), %rdi
+    movq mb_magic(%rip), %rsi
     call kernel_main
 
 .halt:
@@ -160,8 +179,9 @@ _start_64:
 .section .data
 .align 8
 .global mb_info_ptr
-mb_info_ptr:
-mb_info_ptr_phys: .quad 0
+.global mb_magic
+mb_magic:    .quad 0
+mb_info_ptr: .quad 0
 
 .align 16
 boot_gdt:
@@ -192,8 +212,8 @@ boot_pd:   .skip 4096
 
 .section .bss
 .align 4096
-.global _stack_bottom
-_stack_bottom:
-    .skip 0x20000    /* 128KB stack */
-.global _stack_top
-_stack_top:
+.global __kernel_stack
+__kernel_stack:
+    .skip 131072 * 16     /* 128KB * MAX_CPUS (16) */
+.global __kernel_stack_top
+__kernel_stack_top:

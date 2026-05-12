@@ -65,7 +65,6 @@ extern void _sys_window_blit(int win_id, int x, int y, int w, int h,
 extern void _sys_compositor_render(void);
 extern void _sys_window_set_flags(int win_id, int flags);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
-extern long _sys_registry(int op, const char *key, char *value, size_t size);
 extern long _sys_get_procs(void *procs, size_t max_count);
 extern int _sys_file_write(const char *path, const void *buf, int size,
                            int offset);
@@ -148,8 +147,6 @@ int cos_fp(int x);
 int fixmul(int a, int b);
 
 /* Standard IO */
-int getchar(void);
-int putchar(int c);
 int getchar(void);
 int putchar(int c);
 char *gets(char *s, int size);

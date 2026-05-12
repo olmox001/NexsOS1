@@ -2,26 +2,27 @@
  * kernel/kernel.c
  * Main kernel initialization and entry point
  */
-#include <kernel/drivers.h>
 #include <drivers/keyboard.h>
 #include <drivers/virtio_blk.h>
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
-#include <kernel/irq.h>
-#include <kernel/platform.h>
 #include <kernel/buffer.h>
 #include <kernel/cpu.h>
+#include <kernel/drivers.h>
 #include <kernel/ext4.h>
+#include <kernel/fdt.h>
 #include <kernel/gpt.h>
 #include <kernel/graphics.h>
+#include <kernel/irq.h>
+#include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
 #include <kernel/sched.h>
 #include <kernel/string.h>
+#include <kernel/test.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
-#include <kernel/test.h>
 
 /* Version */
 #define KERNEL_VERSION_MAJOR 0
@@ -46,23 +47,35 @@ static void init_scheduler(void);
  */
 /* Forward declaration for kernel_main */
 #ifdef ARCH_AMD64
-void kernel_main(uint64_t mb_info_ptr_arg);
+void kernel_main(uint64_t mb_info_ptr_arg, uint64_t mb_magic_arg);
 #else
-void kernel_main(void);
+void kernel_main(uint64_t x0_arg);
 #endif
 extern void timer_init_percpu(void);
 
 /* Kernel entry point - receives multiboot info pointer from bootloader */
 #ifdef ARCH_AMD64
-void kernel_main(uint64_t mb_info_ptr_arg) {
-  /* For AMD64, bootloader passes mb_info_ptr via RDI */
+void kernel_main(uint64_t mb_info_ptr_arg, uint64_t mb_magic_arg) {
+  /* For AMD64, bootloader passes mb_info_ptr via RDI, mb_magic via RSI */
   extern uint64_t mb_info_ptr;
+  extern uint64_t mb_magic;
   mb_info_ptr = mb_info_ptr_arg;
+  mb_magic = mb_magic_arg;
 #else
-void kernel_main(void) {
+void kernel_main(uint64_t x0_arg) {
 #endif
   /* Initialize UART first for debug output */
   driver_console_init();
+
+#ifndef ARCH_AMD64
+  /* Ensure boot_fdt_ptr is set from the entry argument */
+  boot_fdt_ptr = x0_arg;
+  fdt_init(boot_fdt_ptr);
+  pr_info("Kernel: Entry x0 = 0x%lx\n", x0_arg);
+#else
+  boot_fdt_ptr = 0;
+  fdt_init(0);
+#endif
 
   /* Print kernel banner */
   print_banner();
@@ -106,17 +119,25 @@ void kernel_main(void) {
   uint64_t current_pgd = arch_vmm_get_pgd();
   arch_vmm_set_secondary_pgd(current_pgd);
 
-  for (int i = 1; i < 4; i++) {
-    /* Calculate stack for secondary core */
-    /* Use a generic helper if possible, but for now we rely on the 
-     * HAL providing the stack base if needed, or we pass it. 
-     * Since __kernel_stack is in ARCH, we shouldn't touch it here.
-     * We'll need a HAL function to get per-cpu stack.
-     */
-    void *stack = arch_get_kernel_stack(i + 1);
+  uint32_t cpu_count = fdt_count_cpus();
+  if (cpu_count == 0) {
+    pr_warn("%s",
+            "CPU: FDT discovery failed, trying up to 4 cores fallback.\n");
+    cpu_count = MAX_CPUS;
+  }
+  if (cpu_count > MAX_CPUS)
+    cpu_count = MAX_CPUS;
+
+  pr_info("CPU: %u cores detected via FDT\n", cpu_count);
+
+  for (uint32_t i = 1; i < cpu_count; i++) {
+    void *stack = arch_get_kernel_stack(i);
     int ret = arch_cpu_wake_secondary(i, secondary_cpu_entry, stack);
     if (ret != 0) {
-      pr_err("Failed to wake CPU %d: ret=%d (0x%x)\n", i, ret, ret);
+      /* If we fail to wake a CPU, assume no more CPUs are available or
+       * reachable. On ARM (PSCI), -2 usually means the CPU ID is invalid. */
+      pr_info("CPU: Woke %d secondary cores. Stop.\n", i - 1);
+      break;
     } else {
       pr_info("CPU %d woken successfully\n", i);
     }
@@ -156,11 +177,16 @@ static void print_banner(void) {
  * Initialize memory subsystem
  */
 static void init_memory(void) {
-  /* Initialize physical memory manager */
-  pmm_init(NULL, 0); /* Use default 1GB memory detection */
+  /* Initialize physical memory manager with architecture-detected regions */
+  size_t count = 0;
+  struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  pmm_init(regions, count);
 
   /* Initialize virtual memory manager */
   vmm_init();
+
+  /* Perform hardware discovery for VirtIO devices */
+  arch_virtio_scan();
 
   /* Initialize VirtIO Block Driver */
   virtio_blk_init();
@@ -191,7 +217,7 @@ static void init_memory(void) {
   registry_init();
   pr_info("%s", "Registry: Initialized.\n");
 
-  /* TODO: Initialize slab allocator */
+  /* Note: Slab allocator (kmalloc) is auto-initialized on first use. */
 }
 
 /*
@@ -216,27 +242,29 @@ static void init_scheduler(void) {
 
   /* 2. Create 4 Idle Tasks - One for each CPU */
   extern void idle_task_entry(void);
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < MAX_CPUS; i++) {
     struct process *idle =
         process_create("idle", PROC_PRIO_IDLE, PROC_PERM_SYSTEM);
     if (idle) {
       idle->on_cpu = i; /* Bind to specific CPU */
       cpu_data[i].idle_task = idle;
-      
+
       /* Explicitly initialize context to known state */
       memset(idle->context, 0, sizeof(struct pt_regs));
       pt_regs_init_kernel_task(idle->context, (uint64_t)idle_task_entry,
                                idle->kernel_stack);
 
-      /* CRITICAL: Flush idle task context frame and the process struct itself to POC */
+      /* CRITICAL: Flush idle task context frame and the process struct itself
+       * to POC */
       arch_cache_clean_range(idle, sizeof(struct process));
       arch_cache_clean_range(idle->context, sizeof(struct pt_regs));
-      arch_data_barrier();
-      arch_instr_barrier();
+      arch_mb();
+      arch_isb();
 
       /* Do NOT enqueue idle tasks — they are CPU-bound fallbacks only.
        * Enqueueing them allows work-stealing to migrate them to the wrong CPU,
-       * causing two CPUs to share the same current_task and corrupt the context. */
+       * causing two CPUs to share the same current_task and corrupt the
+       * context. */
     }
   }
 }
