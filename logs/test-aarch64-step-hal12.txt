@@ -1,125 +1,0 @@
-CC  kernel/core/hal_bus.c
-CC  kernel/drivers/virtio/virtio_hal.c
-CC  kernel/drivers/virtio/virtio_blk.c
-CC  kernel/drivers/virtio/virtio_input.c
-CC  kernel/drivers/gpu/virtio_gpu.c
-CC  kernel/fs/gpt.c
-CC  kernel/fs/ext4.c
-CC  kernel/mm/buffer.c
-CC  kernel/main.c
-Linking kernel...
-aarch64-none-elf-ld -nostdlib -static -T kernel/arch/aarch64/kernel.ld -Map build/kernel.map -o build/aarch64/kernel.elf build/aarch64/kernel/arch/aarch64/boot/start.o build/aarch64/kernel/arch/aarch64/cpu/exception.o build/aarch64/kernel/arch/aarch64/cpu/cpu.o build/aarch64/kernel/arch/aarch64/cpu/syscall.o build/aarch64/kernel/arch/aarch64/mm/mmu.o build/aarch64/kernel/arch/aarch64/platform.o build/aarch64/kernel/arch/aarch64/hal.o build/aarch64/kernel/drivers/uart/pl011.o build/aarch64/kernel/drivers/gic/gic.o build/aarch64/kernel/drivers/timer/timer.o build/aarch64/kernel/core/hal_bus.o build/aarch64/kernel/core/syscall_dispatch.o build/aarch64/kernel/core/timer.o build/aarch64/kernel/drivers/console.o build/aarch64/kernel/drivers/irq_ctrl.o build/aarch64/kernel/drivers/sys_timer.o build/aarch64/kernel/drivers/virtio/virtio_hal.o build/aarch64/kernel/drivers/virtio/virtio_blk.o build/aarch64/kernel/drivers/virtio/virtio_input.o build/aarch64/kernel/drivers/gpu/virtio_gpu.o build/aarch64/kernel/drivers/gpu/gpu_core.o build/aarch64/kernel/drivers/keyboard/keyboard.o build/aarch64/kernel/fs/gpt.o build/aarch64/kernel/fs/ext4.o build/aarch64/kernel/mm/pmm.o build/aarch64/kernel/mm/vmm.o build/aarch64/kernel/mm/buffer.o build/aarch64/kernel/lib/string.o build/aarch64/kernel/lib/printk.o build/aarch64/kernel/lib/stack_protector.o build/aarch64/kernel/lib/math.o build/aarch64/kernel/lib/kmalloc.o build/aarch64/kernel/lib/registry.o build/aarch64/kernel/lib/ktest.o build/aarch64/kernel/lib/ktest_samples.o build/aarch64/kernel/cpu.o build/aarch64/kernel/sched/process.o build/aarch64/kernel/sched/elf.o build/aarch64/kernel/graphics/graphics.o build/aarch64/kernel/graphics/region.o build/aarch64/kernel/graphics/gl.o build/aarch64/kernel/graphics/font.o build/aarch64/kernel/graphics/compositor.o build/aarch64/kernel/irq/irq.o build/aarch64/kernel/lib/fdt.o build/aarch64/kernel/main.o
-Kernel size: 617424 bytes
-Creating kernel binary...
-aarch64-none-elf-objcopy -O binary build/aarch64/kernel.elf build/aarch64/kernel.bin
-Preparing RootFS directory...
-Assembling final disk image (GPT + Ext4)...
-Ext4: Added build/aarch64/rootfs/bin/ipc_send (Ino 13, 106536 bytes, 27 blocks)
-Ext4: Added build/aarch64/rootfs/bin/init (Ino 14, 106312 bytes, 26 blocks)
-Ext4: Added build/aarch64/rootfs/bin/regedit (Ino 15, 106336 bytes, 26 blocks)
-Ext4: Added build/aarch64/rootfs/bin/shell (Ino 16, 120328 bytes, 30 blocks)
-Ext4: Added build/aarch64/rootfs/bin/ipc_recv (Ino 17, 105872 bytes, 26 blocks)
-Ext4: Added build/aarch64/rootfs/bin/crash (Ino 18, 104552 bytes, 26 blocks)
-Ext4: Added build/aarch64/rootfs/bin/demo3d (Ino 19, 112128 bytes, 28 blocks)
-Ext4: Added build/aarch64/rootfs/bin/writetest (Ino 20, 105976 bytes, 26 blocks)
-Ext4: Added build/aarch64/rootfs/bin/counter (Ino 21, 105824 bytes, 26 blocks)
-Ext4: Added build/aarch64/rootfs/bin/notify_srv (Ino 22, 106584 bytes, 27 blocks)
-Ext4: Added build/aarch64/rootfs/etc/init.cfg (Ino 23, 189 bytes, 1 blocks)
-
-Build complete!
-  Disk Image: build/aarch64/disk.img
-  Kernel:     build/aarch64/kernel.elf
-
-Run with: make run ARCH=aarch64
-
-
-========================================
-  aarch64 Microkernel Boot
-========================================
-
-Starting QEMU (aarch64)...
-qemu-system-aarch64 -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=build/aarch64/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 -kernel build/aarch64/kernel.elf
-[C0] [INFO] Console driver initialized
-FDT: No address provided, scanning RAM...
-................................................................
-FDT: Scan failed, no DTB found.
-[C0] [INFO] Kernel: Entry x0 = 0x0
-[C0] 
-[C0] ========================================
-[C0]   AArch64 Microkernel v0.1.0
-[C0]   Production-Ready Microkernel
-[C0] ========================================
-[C0] 
-[C0] 
-[KTEST] Starting Kernel Unit Tests (3 cases found)...
-[C0] [KTEST] Running: test_math_basic... [C0] PASS
-[C0] [KTEST] Running: test_string_compare... [C0] PASS
-[C0] [KTEST] Running: test_string_length... [C0] PASS
-[C0] [KTEST] Completed. Summary: 3 PASSED, 0 FAILED
-
-[C0] [INFO] Initializing CPU...
-[C0] [INFO] CPU: Primary core 0 initialized
-[C0] [INFO] CPU: Vector Table set to 0x40080800
-PLATFORM: arch_platform_early_init starting
-[C0] [INFO] IRQ: Registered chip ARM GICv2
-[C0] [WARN] AArch64: No DTB pointer found (boot_fdt_ptr is NULL)!
-[C0] [INFO] Initializing IRQ...
-[C0] [INFO] IRQ: Registered chip ARM GICv2
-[C0] [INFO] IRQ driver initialized
-[C0] [INFO] GIC: 256 interrupt lines
-[C0] [INFO] GIC: Distributor initialized
-[C0] [INFO] Initializing timer...
-[C0] [INFO] Timer: Frequency 62500000 Hz
-[C0] [INFO] Timer: System tick rate 100 Hz
-[C0] [INFO] Timer driver initialized
-[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x6094d69, Ctl: 0x1
-[C0] [INFO] Initializing memory...
-[C0] [WARN] AArch64: FDT memory discovery failed! Using 1GB fallback.
-[C0] [INFO] PMM: 1024 MB total, 1013 MB free
-[C0] [INFO] PMM: DMA zone: 1473 pages, Normal zone: 258048 pages
-[C0] [INFO] VMM: Initializing MMU...
-[C0] [INFO] AArch64 VMM: MMU Enabled. PGD at 0x0000000041000000
-[C0] [INFO] HAL: Initializing Bus Manager...
-[C0] [INFO] HAL: Scanning Platform Bus (MMIO)...
-[C0] [INFO] HAL: Registered device 'VirtIO-2' (Bus=2, ID=1af4:0002, Base=0xa003800, IRQ=76)
-[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Base=0xa003a00, IRQ=77)
-[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Base=0xa003c00, IRQ=78)
-[C0] [INFO] HAL: Registered device 'VirtIO-16' (Bus=2, ID=1af4:0010, Base=0xa003e00, IRQ=79)
-[C0] [INFO] VirtIO: Probing for block device...
-[C0] [INFO] VirtIO: Found Block Device (IRQ 76)
-[C0] [INFO] VirtIO: Version 2
-[C0] [ERROR] VirtIO-Blk: Invalid queue size (0)!
-[C0] [INFO] VirtIO-GPU: Probing...
-[C0] [INFO] VirtIO-GPU: Found device (IRQ 79)
-[C0] [INFO] kmalloc: Initialized bucket allocator. Heap: 32 MB at 0x000000004109a000
-[C0] [ERROR] VirtIO-GPU: Negotiation failed
-[C0] [INFO] VirtIO-GPU: Done.
-[C0] [ERROR] Graphics: No GPU device found!
-[C0] [INFO] GPT: Initializing...
-[C0] [INFO] GPT: Failed to read GPT header
-[C0] [INFO] GPT: Done.
-[C0] [INFO] BufferCache: Initializing...
-[C0] [INFO] Buffer: Done.
-[C0] [ERROR] Ext4: Partition 2 not found!
-[C0] [INFO] Ext4: Done.
-[C0] [INFO] VirtIO-Input: Probing devices...
-[C0] [INFO] Keyboard: Initialized
-[C0] [INFO] Registry: Initialized with 3 default keys.
-[C0] [INFO] Registry: Initialized.
-[C0] [INFO] Initializing processes...
-[C0] [INFO] Process: Initializing scheduler subsystem...
-[C0] [INFO] Initializing scheduler...
-[C0] [INFO] Scheduler: Initializing...
-[C0] [INFO] Compositor: Initialized
-[C0] [INFO] Scheduler: Spawning First-Stage Init...
-[C0] [INFO] Process: Creating 'init' (Prio=2)
-[C0] [INFO] process_create: 'init' PID=1 slot=0 Prio=2 PageTable=0x43426000
-[C0] [INFO] process_create: PID 1 context allocated at 0x0000000043447cd0 (kstack=43448000)
-[C0] [ERROR] ELF: File not found: /bin/init
-[C0] 
-
-*** KERNEL PANIC ***
-[C0] Failed to load /init[C0] 
-
-System halted.
-

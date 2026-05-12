@@ -1,8 +1,0 @@
-AS  kernel/arch/amd64/boot/start.S
-CC  kernel/arch/amd64/cpu/cpu.c
-CC  kernel/arch/amd64/cpu/idt.c
-kernel/arch/amd64/cpu/idt.c:31:20: error: 'idtr' defined but not used [-Werror=unused-variable]
-   31 | static struct idtr idtr;
-      |                    ^~~~
-cc1: all warnings being treated as errors
-make: *** [build/amd64/kernel/arch/amd64/cpu/idt.o] Error 1

@@ -1,7 +1,0 @@
-CC  kernel/arch/amd64/hal.c
-kernel/arch/amd64/hal.c: In function 'amd64_pci_callback':
-kernel/arch/amd64/hal.c:31:9: error: implicit declaration of function 'snprintk'; did you mean 'snprintf'? [-Wimplicit-function-declaration]
-   31 |         snprintk(dev.name, sizeof(dev.name), "VirtIO-%d", device_id);
-      |         ^~~~~~~~
-      |         snprintf
-make: *** [build/amd64/kernel/arch/amd64/hal.o] Error 1

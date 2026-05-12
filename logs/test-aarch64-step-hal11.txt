@@ -1,8 +1,0 @@
-CC  kernel/arch/aarch64/hal.c
-CC  kernel/core/hal_bus.c
-kernel/core/hal_bus.c: In function 'hal_bus_init':
-kernel/core/hal_bus.c:16:49: error: ISO C99 requires at least one argument for the "..." in a variadic macro [-Werror]
-     pr_info("HAL: Initializing Bus Manager...\n");
-                                                 ^
-cc1: all warnings being treated as errors
-make: *** [build/aarch64/kernel/core/hal_bus.o] Error 1

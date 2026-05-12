@@ -1,7 +1,0 @@
-AS  kernel/arch/amd64/boot/start.S
-CC  kernel/main.c
-kernel/main.c:278:6: error: no previous prototype for 'kernel_secondary_main' [-Werror=missing-prototypes]
-  278 | void kernel_secondary_main(void) {
-      |      ^~~~~~~~~~~~~~~~~~~~~
-cc1: all warnings being treated as errors
-make: *** [build/amd64/kernel/main.o] Error 1

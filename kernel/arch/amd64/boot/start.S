@@ -128,7 +128,9 @@ _start_32:
     movw $0x3f8, %dx
     outb %al, %dx
 
-    ljmp $0x08, $_start_64
+    pushl $0x08
+    pushl $_start_64
+    lret
 
 .code64
 _start_64:

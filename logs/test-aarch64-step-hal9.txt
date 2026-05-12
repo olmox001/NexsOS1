@@ -1,7 +1,0 @@
-CC  kernel/arch/aarch64/hal.c
-kernel/arch/aarch64/hal.c: In function 'arch_bus_scan':
-kernel/arch/aarch64/hal.c:15:53: error: ISO C99 requires at least one argument for the "..." in a variadic macro [-Werror]
-     pr_info("HAL: Scanning Platform Bus (MMIO)...\n");
-                                                     ^
-cc1: all warnings being treated as errors
-make: *** [build/aarch64/kernel/arch/aarch64/hal.o] Error 1
