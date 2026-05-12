@@ -109,16 +109,13 @@ void kernel_main(void) {
   arch_vmm_set_secondary_pgd(current_pgd);
 
   for (int i = 1; i < MAX_CPUS; i++) {
-    /* Calculate stack for secondary core */
-    /* Use a generic helper if possible, but for now we rely on the 
-     * HAL providing the stack base if needed, or we pass it. 
-     * Since __kernel_stack is in ARCH, we shouldn't touch it here.
-     * We'll need a HAL function to get per-cpu stack.
-     */
-    void *stack = arch_get_kernel_stack(i + 1);
+    void *stack = arch_get_kernel_stack(i);
     int ret = arch_cpu_wake_secondary(i, secondary_cpu_entry, stack);
     if (ret != 0) {
-      pr_err("Failed to wake CPU %d: ret=%d (0x%x)\n", i, ret, ret);
+      /* If we fail to wake a CPU, assume no more CPUs are available or reachable.
+       * On ARM (PSCI), -2 usually means the CPU ID is invalid. */
+      pr_info("CPU: Woke %d secondary cores. Stop.\n", i - 1);
+      break;
     } else {
       pr_info("CPU %d woken successfully\n", i);
     }
@@ -198,7 +195,7 @@ static void init_memory(void) {
   registry_init();
   pr_info("%s", "Registry: Initialized.\n");
 
-  /* TODO: Initialize slab allocator */
+  /* Note: Slab allocator (kmalloc) is auto-initialized on first use. */
 }
 
 /*

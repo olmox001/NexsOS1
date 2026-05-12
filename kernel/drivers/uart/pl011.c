@@ -109,8 +109,7 @@ void uart_putc(char c) {
 char uart_getc(void) {
   /* Wait for data in buffer */
   while (rx_head == rx_tail) {
-    /* Wait for interrupt (wfi) to save power? */
-    /* Or just busy wait for now */
+    /* Wait for interrupt (wfi/idle) to save power */
     arch_idle();
   }
 

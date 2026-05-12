@@ -427,7 +427,7 @@ QEMU_FLAGS = -m 1G -smp 4 -serial mon:stdio \
              -drive if=none,file=$(BUILD_DIR)/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0
 else
 QEMU = qemu-system-aarch64
-QEMU_FLAGS = -M virt -cpu cortex-a57 -m 1G -smp 8 -serial mon:stdio \
+QEMU_FLAGS = -M virt -cpu cortex-a57 -m 1G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \
