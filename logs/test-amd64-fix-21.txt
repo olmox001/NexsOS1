@@ -1,0 +1,36 @@
+AS  kernel/arch/amd64/boot/start.S
+Linking kernel...
+x86_64-elf-ld -nostdlib -static -T kernel/arch/amd64/kernel.ld -Map build/kernel.map -o build/amd64/kernel.elf build/amd64/kernel/arch/amd64/boot/start.o build/amd64/kernel/arch/amd64/cpu/isr_stubs.o build/amd64/kernel/arch/amd64/cpu/syscall.o build/amd64/kernel/arch/amd64/cpu/context.o build/amd64/kernel/arch/amd64/boot/trampoline.o build/amd64/kernel/arch/amd64/cpu/cpu.o build/amd64/kernel/arch/amd64/cpu/idt.o build/amd64/kernel/arch/amd64/cpu/gdt.o build/amd64/kernel/arch/amd64/cpu/msr.o build/amd64/kernel/arch/amd64/cpu/apic.o build/amd64/kernel/arch/amd64/mm/mmu.o build/amd64/kernel/arch/amd64/mm/uaccess.o build/amd64/kernel/drivers/uart/16550.o build/amd64/kernel/drivers/timer/pic_pit.o build/amd64/kernel/arch/amd64/platform/platform.o build/amd64/kernel/arch/amd64/hal.o build/amd64/kernel/drivers/pci/pci.o build/amd64/kernel/core/hal_bus.o build/amd64/kernel/core/syscall_dispatch.o build/amd64/kernel/core/timer.o build/amd64/kernel/drivers/console.o build/amd64/kernel/drivers/irq_ctrl.o build/amd64/kernel/drivers/sys_timer.o build/amd64/kernel/drivers/virtio/virtio_hal.o build/amd64/kernel/drivers/virtio/virtio_blk.o build/amd64/kernel/drivers/virtio/virtio_input.o build/amd64/kernel/drivers/gpu/virtio_gpu.o build/amd64/kernel/drivers/gpu/gpu_core.o build/amd64/kernel/drivers/keyboard/keyboard.o build/amd64/kernel/fs/gpt.o build/amd64/kernel/fs/ext4.o build/amd64/kernel/mm/pmm.o build/amd64/kernel/mm/vmm.o build/amd64/kernel/mm/buffer.o build/amd64/kernel/lib/string.o build/amd64/kernel/lib/printk.o build/amd64/kernel/lib/stack_protector.o build/amd64/kernel/lib/math.o build/amd64/kernel/lib/kmalloc.o build/amd64/kernel/lib/registry.o build/amd64/kernel/lib/ktest.o build/amd64/kernel/lib/ktest_samples.o build/amd64/kernel/cpu.o build/amd64/kernel/sched/process.o build/amd64/kernel/sched/elf.o build/amd64/kernel/graphics/graphics.o build/amd64/kernel/graphics/region.o build/amd64/kernel/graphics/gl.o build/amd64/kernel/graphics/font.o build/amd64/kernel/graphics/compositor.o build/amd64/kernel/irq/irq.o build/amd64/kernel/lib/fdt.o build/amd64/kernel/main.o
+x86_64-elf-ld: build/amd64/kernel.elf: warning: allocated section `.note.PVH' not in segment
+Kernel size: 565360 bytes
+Creating kernel binary...
+x86_64-elf-objcopy -O binary build/amd64/kernel.elf build/amd64/kernel.bin
+Preparing RootFS directory...
+Assembling final disk image (GPT + Ext4)...
+Ext4: Added build/amd64/rootfs/bin/ipc_send (Ino 13, 41384 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/init (Ino 14, 39944 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/regedit (Ino 15, 39904 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/shell (Ino 16, 54264 bytes, 14 blocks)
+Ext4: Added build/amd64/rootfs/bin/ipc_recv (Ino 17, 39560 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/crash (Ino 18, 38160 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/demo3d (Ino 19, 47088 bytes, 12 blocks)
+Ext4: Added build/amd64/rootfs/bin/writetest (Ino 20, 39824 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/counter (Ino 21, 39616 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/notify_srv (Ino 22, 40400 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/etc/init.cfg (Ino 23, 189 bytes, 1 blocks)
+
+Build complete!
+  Disk Image: build/disk.img
+  Kernel:     build/amd64/kernel.elf
+  ISO Image:  build/os1test.iso
+
+Run with: make run
+
+
+========================================
+  amd64 Microkernel Boot
+========================================
+
+Starting QEMU (amd64)...
+qemu-system-x86_64 -m 1G -smp 4 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-pci,disable-legacy=on,disable-modern=off -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off -device virtio-mouse-pci,disable-legacy=on,disable-modern=off -drive if=none,file=build/amd64/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off -kernel build/amd64/kernel.elf
+BCEBCEBCEBCEBCEBCEBCEBCEBCEBCE

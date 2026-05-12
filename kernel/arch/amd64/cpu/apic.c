@@ -14,6 +14,9 @@ static inline void lapic_write(uint32_t reg, uint32_t val) {
 }
 
 void lapic_init(void) {
+    /* Debug: Print 'L' */
+    __asm__ __volatile__("movb $'L', %al; outb %al, $0x3f8");
+
     /* Ensure APIC is enabled in MSR */
     uint64_t apic_msr = rdmsr(0x1B); /* IA32_APIC_BASE */
     if (!(apic_msr & 0x800)) {

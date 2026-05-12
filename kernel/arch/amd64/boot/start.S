@@ -134,6 +134,11 @@ _start_32:
 
 .code64
 _start_64:
+    /* Debug: Print 'E' */
+    movb $'E', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
+
     /* Segment registers to NULL */
     xorl %eax, %eax
     movw %ax, %ds
@@ -141,6 +146,11 @@ _start_64:
     movw %ax, %fs
     movw %ax, %gs
     movw %ax, %ss
+
+    /* Debug: Print 'F' */
+    movb $'F', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
 
     /* Clear BSS */
     movabsq $__bss_start, %rdi
@@ -150,6 +160,11 @@ _start_64:
     xorq %rax, %rax
     rep stosb
 .bss_done:
+
+    /* Debug: Print 'G' */
+    movb $'G', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
 
     movl %ebp, %eax
     movq %rax, mb_magic(%rip)
