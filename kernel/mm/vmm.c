@@ -86,49 +86,15 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
  * Map a page
  */
 int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags) {
-  // pr_info("VMM: Mapping 0x%lx -> 0x%lx (flags 0x%lx)\n", virt, phys, flags);
   if ((virt & 0xFFF) || (phys & 0xFFF)) {
     pr_err("VMM: Invalid alignment virt=%lx phys=%lx\n", virt, phys);
     return -1;
   }
 
-  uint64_t *pud, *pmd, *pt;
+  /* Extract existing mapping for warning if necessary */
+  /* (Optional: we can keep the warning logic here if arch_vmm_map doesn't warn) */
 
-  /* Level 0: PGD */
-  pud = get_next_table(pgd, PGD_INDEX(virt), 1);
-  if (!pud)
-    return -1;
-
-  /* Level 1: PUD */
-  pmd = get_next_table(pud, PUD_INDEX(virt), 1);
-  if (!pmd)
-    return -1;
-
-  /* Level 2: PMD */
-  pt = get_next_table(pmd, PMD_INDEX(virt), 1);
-  if (!pt)
-    return -1;
-
-  /* Level 3: PT */
-  uint64_t *pt_entry = &pt[PT_INDEX(virt)];
-  uint64_t current = *pt_entry;
-  if (current & PTE_VALID) {
-    if ((current & PTE_ADDR_MASK) != (phys & PTE_ADDR_MASK)) {
-      pr_warn("VMM: Remapping occupied VA %lx (Phys: %lx -> %lx)\n", virt,
-              current & PTE_ADDR_MASK, phys);
-    }
-  }
-
-  *pt_entry = phys | flags;
-  arch_cache_clean_range(pt_entry, 8);
-  arch_mb();
-
-  /* Flush TLB for this address to ensure consistency */
-  arch_tlb_flush_va(virt);
-  arch_mb();
-  arch_isb();
-
-  return 0;
+  return arch_vmm_map((uint64_t)pgd, virt, phys, flags);
 }
 
 /* Internal helper with locking */
@@ -181,29 +147,7 @@ int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
  * Unmap a page
  */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt) {
-  uint64_t *pud, *pmd, *pt;
-
-  pud = get_next_table(pgd, PGD_INDEX(virt), 0);
-  if (!pud)
-    return;
-
-  pmd = get_next_table(pud, PUD_INDEX(virt), 0);
-  if (!pmd)
-    return;
-
-  pt = get_next_table(pmd, PMD_INDEX(virt), 0);
-  if (!pt)
-    return;
-
-  uint64_t *pt_entry = &pt[PT_INDEX(virt)];
-  *pt_entry = 0;
-  arch_cache_clean_range(pt_entry, 8);
-  arch_mb();
-
-  /* TLB Invalidation */
-  arch_tlb_flush_va(virt);
-  arch_mb();
-  arch_isb();
+  arch_vmm_unmap((uint64_t)pgd, virt);
 }
 
 /* Internal helper with locking */
