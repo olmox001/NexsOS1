@@ -32,9 +32,6 @@ _start:
     /* CPU 0 does primary init */
     cbz x1, primary_init
     
-    /* CPU 0 does primary init */
-    cbz x1, primary_init
-    
     /* Secondary CPUs wait (PSCI handles this, but if we get here, hang) */
     b halt
 

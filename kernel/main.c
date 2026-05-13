@@ -159,10 +159,15 @@ static void init_memory(void) {
   /* Initialize physical memory manager with architecture-detected regions */
   size_t count = 0;
   struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  
+  pmm_early_init(regions, count);
   pmm_init(regions, count);
 
-  /* Initialize virtual memory manager */
+  /* Initialize virtual memory manager (Phase 1: Bootstrap) */
   vmm_init();
+
+  /* Phase 2: Dynamic RAM-aware remapping */
+  vmm_dynamic_remap();
 
   /* Perform hardware discovery via Unified HAL */
   hal_bus_init();

@@ -117,11 +117,37 @@ static void amd64_double_fault_handler(struct pt_regs *regs) {
 extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *regs);
 extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
 
+/* Global flags for safe memory probing */
+volatile bool probe_in_progress = false;
+volatile bool probe_failed = false;
+
 /* Main Exception/Interrupt Dispatcher (called from isr_stubs.S) */
 struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
   uint64_t vec = regs->vec;
 
   if (vec < 32) {
+    /* Check if this is a fault during a safe probe */
+    if (probe_in_progress && (vec == 14 || vec == 13)) {
+      probe_failed = true;
+      /* On x86, we need to adjust RIP to skip the faulting instruction.
+       * Most move instructions involved in the probe are 3-7 bytes.
+       * This is tricky without a full disassembler, but we can assume
+       * the probe uses a specific move format or we can use a simpler approach.
+       * 
+       * Actually, a better way for x86 is to use a specific assembly probe function
+       * that we know the length of.
+       */
+      
+      /* For now, let's try to handle it in platform.c with a setjmp-like mechanism
+       * or just by adjusting RIP if we know it's a 3-byte move (e.g. mov [rdx], rax)
+       * In platform.c: *ptr = 0x55AA... is typically 10 bytes (movabsq + mov)
+       */
+      
+      /* Let's assume the faulting instruction is a memory access. 
+       * We'll use a safer approach in platform.c. 
+       */
+    }
+
     /* Handle exceptions */
     switch (vec) {
       case 8: /* Double Fault */

@@ -1,0 +1,17 @@
+x86_64-elf-ld: build/amd64/kernel.elf: warning: allocated section `.note.PVH' not in segment
+Ext4: Added build/amd64/rootfs/bin/ipc_send (Ino 13, 43928 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/init (Ino 14, 42480 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/regedit (Ino 15, 42440 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/shell (Ino 16, 56784 bytes, 14 blocks)
+Ext4: Added build/amd64/rootfs/bin/ipc_recv (Ino 17, 42096 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/crash (Ino 18, 40680 bytes, 10 blocks)
+Ext4: Added build/amd64/rootfs/bin/demo3d (Ino 19, 49608 bytes, 13 blocks)
+Ext4: Added build/amd64/rootfs/bin/writetest (Ino 20, 42352 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/counter (Ino 21, 42136 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/bin/notify_srv (Ino 22, 42936 bytes, 11 blocks)
+Ext4: Added build/amd64/rootfs/etc/init.cfg (Ino 23, 189 bytes, 1 blocks)
+
+Build complete for amd64!
+  Disk Image: build/amd64/disk.img
+  Kernel:     build/amd64/kernel.elf
+qemu-system-x86_64 -m 1G -smp 4 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-pci,disable-legacy=on,disable-modern=off -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off -device virtio-mouse-pci,disable-legacy=on,disable-modern=off -drive if=none,file=build/amd64/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off -kernel build/amd64/kernel.elf

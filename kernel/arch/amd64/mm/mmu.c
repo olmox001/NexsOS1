@@ -225,13 +225,16 @@ uint64_t arch_vmm_create_process_pgd(void) {
   /* Link new PDPT to index 0 of PML4 */
   new_pml4[0] = new_pdpt_phys | X86_PTE_P | X86_PTE_RW | X86_PTE_US;
 
-  /* 3. Copy only the RAM Identity Map from the kernel's PDPT index 0.
-   * This covers 0 to 1GB, which is where the kernel image and low RAM live.
+  /* 3. Copy all RAM Identity Mappings from the kernel's PDPT index 0.
+   * This covers the entire range discovered during boot.
    */
   uint64_t *kern_pud0 = (uint64_t *)(kernel_pgd[0] & PTE_ADDR_MASK);
   if (kern_pud0) {
-    /* PDPT index 0: 0-1GB (Contains our identity RAM) */
-    new_pdpt[0] = kern_pud0[0];
+    for (int i = 0; i < 512; i++) {
+        if (kern_pud0[i] & X86_PTE_P) {
+            new_pdpt[i] = kern_pud0[i];
+        }
+    }
   }
 
   /* 4. Map MMIO ranges manually into the new PGD to ensure they have their own

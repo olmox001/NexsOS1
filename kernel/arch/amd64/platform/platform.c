@@ -158,12 +158,16 @@ void arch_platform_early_init(void) {
         arch_region_count++;
     }
   } else {
-      pr_warn("Unknown boot protocol (Magic: 0x%lx). Using 1GB default fallback.\n", mb_magic);
-      /* Use 1GB fallback for QEMU compatibility if magic is missing */
-      arch_mem_regions[0].base = 0x100000;
-      arch_mem_regions[0].size = 1024ULL * 1024 * 1024;
+      pr_warn("AMD64: [IDTF] Unknown boot protocol (Magic: 0x%lx). Using safe 1GB default.\n", mb_magic);
+      
+      /* Safe default for QEMU/Basic systems */
+      arch_mem_regions[0].base = 0;
+      arch_mem_regions[0].size = 640 * 1024;
       arch_mem_regions[0].type = MEM_REGION_USABLE;
-      arch_region_count = 1;
+      arch_mem_regions[1].base = 0x100000;
+      arch_mem_regions[1].size = (1024UL * 1024 * 1024) - 0x100000;
+      arch_mem_regions[1].type = MEM_REGION_USABLE;
+      arch_region_count = 2;
   }
 }
 
@@ -209,9 +213,11 @@ void arch_vmm_set_secondary_pgd(uint64_t pgd) {
 }
 
 /* Get kernel stack for a CPU */
+extern char __kernel_stack[];
 void *arch_get_kernel_stack(uint32_t cpu_id) {
   if (cpu_id >= MAX_CPUS) return NULL;
-  return (void *)&__kernel_stack[cpu_id * 131072];
+  /* Each CPU gets 128KB stack. We return the TOP of the stack (descending). */
+  return (void *)&__kernel_stack[(uint64_t)(cpu_id + 1) * 131072];
 }
 
 /* Wake secondary CPU */

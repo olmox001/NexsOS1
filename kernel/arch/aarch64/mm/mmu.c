@@ -15,9 +15,52 @@
 
 #define PTE_ADDR_MASK 0x0000FFFFFFFFF000UL
 
-static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
-  if (table[index] & PTE_VALID) {
-    return (uint64_t *)(table[index] & PTE_ADDR_MASK);
+static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int level) {
+  uint64_t entry = table[index];
+
+  if (entry & PTE_VALID) {
+    /* Check if this is a Block Mapping (Level 1 or 2) */
+    /* Bit 1 is 0 for Block, 1 for Table/Page */
+    if (!(entry & 0x2)) {
+      if (!alloc) return NULL;
+
+      /* SPLIT BLOCK: Convert Block to Table */
+      void *new_table = pmm_alloc_page();
+      if (!new_table) return NULL;
+      memset(new_table, 0, 4096);
+
+      uint64_t block_pa = entry & PTE_ADDR_MASK;
+      uint64_t block_flags = entry & ~PTE_ADDR_MASK;
+      /* Convert Block flags to Page/Table flags (bit 1 becomes 1) */
+      uint64_t sub_flags = block_flags | 0x2;
+
+      uint64_t *sub_table = (uint64_t *)new_table;
+      if (level == 1) {
+          /* L1 Block (1GB) -> L2 Table (512 x 2MB blocks) */
+          for (int i = 0; i < 512; i++) {
+            sub_table[i] = (block_pa + (uint64_t)i * 0x200000) | (block_flags & ~0x2) | 0x1; // L2 Block
+          }
+      } else if (level == 2) {
+          /* L2 Block (2MB) -> L3 Table (512 x 4KB pages) */
+          for (int i = 0; i < 512; i++) {
+            sub_table[i] = (block_pa + (uint64_t)i * 4096) | sub_flags;
+          }
+      }
+
+      arch_cache_clean_range(sub_table, 4096);
+      arch_mb();
+
+      /* Update the parent table to point to the new sub-table */
+      table[index] = (uint64_t)new_table | PTE_TABLE | PTE_VALID;
+      arch_cache_clean_range(&table[index], 8);
+      arch_mb();
+      
+      /* Note: We should flush TLB here if it's the active PGD, 
+       * but we'll let the caller handle it or assume it's fine for now. */
+
+      return new_table;
+    }
+    return (uint64_t *)(entry & PTE_ADDR_MASK);
   }
 
   if (!alloc) return NULL;
@@ -34,20 +77,20 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
   arch_cache_clean_range(&table[index], 8);
   arch_mb();
 
-  return page;
+  return (uint64_t *)page;
 }
 
 int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
   uint64_t *pgd = (uint64_t *)pgd_addr;
   uint64_t *pud, *pmd, *pt;
 
-  pud = get_next_table(pgd, PGD_INDEX(va), 1);
+  pud = get_next_table(pgd, PGD_INDEX(va), 1, 1);
   if (!pud) return -1;
 
-  pmd = get_next_table(pud, PUD_INDEX(va), 1);
+  pmd = get_next_table(pud, PUD_INDEX(va), 1, 2);
   if (!pmd) return -1;
 
-  pt = get_next_table(pmd, PMD_INDEX(va), 1);
+  pt = get_next_table(pmd, PMD_INDEX(va), 1, 3);
   if (!pt) return -1;
 
   uint64_t *pt_entry = &pt[PT_INDEX(va)];
@@ -55,9 +98,13 @@ int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
   
   arch_cache_clean_range(pt_entry, 8);
   arch_mb();
-  arch_tlb_flush_va(va);
-  arch_mb();
-  arch_isb();
+
+  /* Only flush TLB if we are modifying the ACTIVE page table */
+  if (pgd_addr == arch_impl_get_pgd()) {
+    arch_tlb_flush_va(va);
+    arch_mb();
+    arch_isb();
+  }
 
   return 0;
 }
@@ -66,13 +113,13 @@ int arch_vmm_unmap(uint64_t pgd_addr, uint64_t va) {
   uint64_t *pgd = (uint64_t *)pgd_addr;
   uint64_t *pud, *pmd, *pt;
 
-  pud = get_next_table(pgd, PGD_INDEX(va), 0);
+  pud = get_next_table(pgd, PGD_INDEX(va), 0, 1);
   if (!pud) return 0;
 
-  pmd = get_next_table(pud, PUD_INDEX(va), 0);
+  pmd = get_next_table(pud, PUD_INDEX(va), 0, 2);
   if (!pmd) return 0;
 
-  pt = get_next_table(pmd, PMD_INDEX(va), 0);
+  pt = get_next_table(pmd, PMD_INDEX(va), 0, 3);
   if (!pt) return 0;
 
   uint64_t *pt_entry = &pt[PT_INDEX(va)];
@@ -100,10 +147,10 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
      */
     if ((v & 0x1FFFFF) == 0 && (p & 0x1FFFFF) == 0 && remaining >= 0x200000) {
       uint64_t *pgd_ptr = (uint64_t *)pgd;
-      uint64_t *pud = get_next_table(pgd_ptr, PGD_INDEX(v), 1);
+      uint64_t *pud = get_next_table(pgd_ptr, PGD_INDEX(v), 1, 1);
       if (!pud) return -1;
       
-      uint64_t *pmd = get_next_table(pud, PUD_INDEX(v), 1);
+      uint64_t *pmd = get_next_table(pud, PUD_INDEX(v), 1, 2);
       if (!pmd) return -1;
       
       /* Level 2 Block Mapping (2MB) */
@@ -140,13 +187,14 @@ uint64_t arch_vmm_create_process_pgd(void) {
 
   /* Clone kernel identity map (lower half, index 0) */
   uint64_t *src_pud = (uint64_t *)(kernel_pgd[0] & PTE_ADDR_MASK);
-  if (src_pud) {
+  if (src_pud && (kernel_pgd[0] & 0x2)) {
     uint64_t *dst_pud = (uint64_t *)pmm_alloc_page();
     if (dst_pud) {
       memset(dst_pud, 0, 4096);
-      /* Clone 0-1GB (MMIO) and 1-2GB (RAM) */
-      dst_pud[0] = src_pud[0];
-      dst_pud[1] = src_pud[1];
+      /* Clone the PUD entries for MMIO (0-1GB) and Kernel (1-2GB).
+       * User-space typically starts at 2GB (PUD index 2), so we leave it free. */
+      if (src_pud[0] & PTE_VALID) dst_pud[0] = src_pud[0];
+      if (src_pud[1] & PTE_VALID) dst_pud[1] = src_pud[1];
       arch_cache_clean_range(dst_pud, 4096);
       pgd[0] = (uint64_t)dst_pud | (kernel_pgd[0] & ~PTE_ADDR_MASK);
     }

@@ -1,0 +1,64 @@
+Ext4: Added build/aarch64/rootfs/bin/ipc_send (Ino 13, 105120 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/init (Ino 14, 104904 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/regedit (Ino 15, 104928 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/shell (Ino 16, 118912 bytes, 30 blocks)
+Ext4: Added build/aarch64/rootfs/bin/ipc_recv (Ino 17, 104464 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/crash (Ino 18, 103144 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/demo3d (Ino 19, 110720 bytes, 28 blocks)
+Ext4: Added build/aarch64/rootfs/bin/writetest (Ino 20, 104568 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/counter (Ino 21, 104416 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/notify_srv (Ino 22, 105184 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/etc/init.cfg (Ino 23, 189 bytes, 1 blocks)
+
+Build complete for aarch64!
+  Disk Image: build/aarch64/disk.img
+  Kernel:     build/aarch64/kernel.bin (AArch64 Raw Binary)
+qemu-system-aarch64 -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=build/aarch64/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 -kernel build/aarch64/kernel.elf
+[C0] [INFO] Console driver initialized
+FDT: No address provided, scanning RAM...
+................................................................
+FDT: Scan failed, no DTB found.
+[C0] [INFO] Kernel: Entry x0 = 0x0
+[C0] 
+[C0] ========================================
+[C0]   AArch64 Microkernel v0.1.0
+[C0]   Production-Ready Microkernel
+[C0] ========================================
+[C0] 
+[C0] 
+[KTEST] Starting Kernel Unit Tests (3 cases found)...
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 3 PASSED, 0 FAILED
+
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] CPU: Primary core 0 initialized
+[C0] [INFO] CPU: Vector Table set to 0x40080800
+PLATFORM: arch_platform_early_init starting
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [WARN] AArch64: [IDTF] No Hardware Description Tree (DTB) found! System will attempt manual discovery.
+[C0] [INFO] Initializing IRQ...
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [INFO] IRQ driver initialized via HAL
+[C0] [INFO] GIC: 256 interrupt lines
+[C0] [INFO] GIC: Distributor initialized
+[C0] [INFO] Initializing timer...
+[C0] [INFO] Timer: Frequency 62500000 Hz
+[C0] [INFO] Timer: System tick rate 100 Hz
+[C0] [INFO] Timer driver initialized via HAL
+[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x69bcc57, Ctl: 0x1
+[C0] [INFO] Initializing memory...
+[C0] [WARN] AArch64: [IDTF] Memory discovery failed! Attempting manual page-by-page probe...
+[C0] [INFO] AArch64: Manual discovery found 1920 MB RAM
+[C0] [INFO] AArch64: Manual probe discovered 1919 MB RAM
+[C0] [INFO] PMM: Metadata initialized at 0x408f0000 (15420 KB)
+[C0] [INFO] PMM: Total detected RAM: 1919 MB
+[C0] [INFO] PMM: 1919 MB total, 1896 MB free (Safety Margin Enabled)
+[C0] [INFO] PMM: DMA zone: 128 pages, Normal zone: 485376 pages
+[C0] [INFO] VMM: Initializing MMU (Phase 1: Bootstrap)...
+[C0] [INFO] AArch64 VMM: Setting up MAIR (PGD at 0x417ff000)
+[C0] [INFO] AArch64 VMM: Setting up TCR
+[C0] [INFO] AArch64 VMM: Setting TTBR0
+[C0] [INFO] AArch64 VMM: Enabling SCTLR bits (MMU, Caches)
+
