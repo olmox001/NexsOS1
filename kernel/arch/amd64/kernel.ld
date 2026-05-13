@@ -46,6 +46,10 @@ SECTIONS {
         *(.data*)
     } :data
 
+    .boot_bss : ALIGN(4096) {
+        *(.boot_bss*)
+    } :data
+
     .bss : ALIGN(4096) {
         __bss_start = .;
         *(.bss*)

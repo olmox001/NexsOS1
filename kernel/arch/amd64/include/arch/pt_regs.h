@@ -104,6 +104,12 @@ static inline void pt_regs_init_user_task(struct pt_regs *r, uint64_t entry,
   r->rflags = 0x202;  /* IF + reserved */
   r->cs     = 0x23;   /* user code segment, ring 3 */
   r->ss     = 0x1B;   /* user data segment, ring 3 */
+  
+  /* For AMD64, SYSRET uses RCX for RIP and R11 for RFLAGS. 
+   * If we return via sysretq path (context switch during syscall),
+   * these must be correctly initialized. */
+  r->rcx = entry;
+  r->r11 = 0x202;
 }
 
 /* Initialize context for a kernel-mode thread */

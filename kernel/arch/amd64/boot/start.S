@@ -1,130 +1,145 @@
-/*
- * kernel/arch/amd64/boot/start.S
- * AMD64 Kernel Entry Point - Supports Multiboot2 and PVH
- * Direct-Boot Architecture Parity with AArch64
- */
+#include <kernel/cpu.h>
 
-#define MB1_MAGIC        0x1BADB002
-#define MB1_FLAGS        0x00000003 /* ALIGN + MEMINFO */
-#define MB2_MAGIC        0xE85250D6
-#define MB2_ARCH_I386    0
-
-.section .multiboot
-.align 4
-mb1_header:
-    .long MB1_MAGIC
-    .long MB1_FLAGS
-    .long -(MB1_MAGIC + MB1_FLAGS)
-
+.section .multiboot, "a"
 .align 8
-mb2_header_start:
-    .long MB2_MAGIC
-    .long MB2_ARCH_I386
-    .long mb2_header_end - mb2_header_start
-    .long -(MB2_MAGIC + MB2_ARCH_I386 + (mb2_header_end - mb2_header_start))
+multiboot2_header:
+    .long 0xe85250d6        /* Multiboot 2 Magic */
+    .long 0                 /* Architecture: i386 */
+    .long multiboot2_header_end - multiboot2_header
+    .long -(0xe85250d6 + 0 + (multiboot2_header_end - multiboot2_header))
 
-    /* Entry Address Tag (Type 5) */
     .align 8
-    .short 5
+    .short 3
     .short 0
     .long 12
     .long _start_32
 
-    /* End Tag */
     .align 8
     .short 0
     .short 0
     .long 8
-mb2_header_end:
+multiboot2_header_end:
 
-/* PVH ELF Note for QEMU direct -kernel loading */
-.section .note.PVH, "a", @note
+/* PVH Header */
+.section .note.PVH, "a"
 .align 4
-    .long 4
-    .long 4
-    .long 18
-    .asciz "Xen"
-    .align 4
-    .long _start_32
+    .long 4             /* Namesz */
+    .long 4             /* Descsz */
+    .long 18            /* Type (XEN_ELFNOTE_PHYS32_ENTRY) */
+    .ascii "Xen\0"      /* Name */
+    .long _start_32     /* Desc (Entry point) */
 
+.section .text.boot, "ax"
 .code32
-.section .text.boot
 .global _start_32
 _start_32:
+    /* Debug: Print 'B' to serial port 0x3f8 */
+    movb $'B', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
+
     cli
-    /* Save magic and info in a safe physical memory location (0x7FF0-0x7FFF) */
-    movl %eax, 0x7FF0
-    
-    /* Detect boot protocol */
-    cmpl $0x336ec578, %eax
-    je .pvh_info_32
-    
-    /* Multiboot path */
-    movl %ebx, 0x7FF8
-    jmp .prepare_paging
+    cld
 
-.pvh_info_32:
-    movl %esi, 0x7FF8
-    jmp .prepare_paging
+    /* 1. Setup minimal GDT for 32-bit mode */
+    lgdt (boot_gdtr_32)
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
+    movw %ax, %fs
+    movw %ax, %gs
 
-.prepare_paging:
-    /* Clear boot page tables */
+    /* Save magic and info for later */
+    movl %eax, %ebp
+    movl %ebx, %edx
+
+    /* 2. Setup temporary stack */
+    movl $boot_stack_top, %esp
+
+    /* 3. Clear Page Tables */
     movl $boot_pml4, %edi
     xorl %eax, %eax
-    movl $3072, %ecx /* PML4 + PDPT + PD (12KB) */
+    movl $4096, %ecx /* 4 pages * 1024 dwords each */
     rep stosl
 
-    /* Identity Map first 1GB with 2MB pages */
-    /* PML4[0] -> PDPT */
-    movl $boot_pml4, %edi
+    /* 4. Enable PAE */
+    movl %cr4, %eax
+    orl $(1 << 5), %eax
+    movl %eax, %cr4
+
+    /* 5. Setup Page Tables (Identity map first 1GB) */
     movl $boot_pdpt, %eax
-    orl  $0x3, %eax
-    movl %eax, (%edi)
+    orl $3, %eax
+    movl %eax, (boot_pml4)
+    movl $0, (boot_pml4 + 4)
 
-    /* PDPT[0] -> PD */
-    movl $boot_pdpt, %edi
     movl $boot_pd, %eax
-    orl  $0x3, %eax
-    movl %eax, (%edi)
+    orl $3, %eax
+    movl %eax, (boot_pdpt)
+    movl $0, (boot_pdpt + 4)
 
-    /* PD -> 512 * 2MB pages (1GB total) */
+    /* PDPT[3] = boot_pd_high (For 3GB-4GB) */
+    movl $boot_pd_high, %eax
+    orl $3, %eax
+    movl %eax, (boot_pdpt + 24)
+    movl $0, (boot_pdpt + 28)
+
+    /* PD[0..511] = 0, 2MB, 4MB, ... 1GB */
     movl $boot_pd, %edi
-    movl $0x83, %eax /* Present | RW | PageSize(2MB) */
+    movl $0x83, %eax
     movl $512, %ecx
 .fill_pd:
     movl %eax, (%edi)
+    movl $0, 4(%edi)
     addl $0x200000, %eax
     addl $8, %edi
     loop .fill_pd
 
-    /* Enable PAE */
-    movl %cr4, %eax
-    orl  $(1 << 5), %eax
-    movl %eax, %cr4
+    /* PD_HIGH (3GB-4GB) */
+    movl $boot_pd_high, %edi
+    movl $0xC0000083, %eax
+    movl $512, %ecx
+.fill_pd_high:
+    movl %eax, (%edi)
+    movl $0, 4(%edi)
+    addl $0x200000, %eax
+    addl $8, %edi
+    loop .fill_pd_high
 
-    /* Load CR3 (PML4) */
+    /* 6. Load PML4 */
     movl $boot_pml4, %eax
     movl %eax, %cr3
 
-    /* Enable Long Mode in EFER MSR */
+    /* 7. Enable Long Mode */
     movl $0xC0000080, %ecx
     rdmsr
-    orl  $(1 << 8), %eax /* LME */
+    orl $(1 << 8), %eax
     wrmsr
 
-    /* Enable Paging and Protected Mode */
+    /* 8. Enable Paging */
     movl %cr0, %eax
-    orl  $0x80000001, %eax /* PG | PE */
+    orl $(1 << 31 | 1 << 16), %eax
     movl %eax, %cr0
 
-    /* Load transition GDT and jump to 64-bit */
-    lgdt (boot_gdtr_32)
-    ljmp $0x08, $_start_64
+    /* 9. Jump to 64-bit */
+    /* Debug: Print 'C' */
+    movb $'C', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
+
+    pushl $0x08
+    pushl $_start_64
+    lret
 
 .code64
-.global _start_64
 _start_64:
-    /* Fully in 64-bit mode. Set segment registers to NULL (recommended) */
+    /* Debug: Print 'E' */
+    movb $'E', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
+
+    /* Segment registers to NULL */
     xorl %eax, %eax
     movw %ax, %ds
     movw %ax, %es
@@ -132,41 +147,36 @@ _start_64:
     movw %ax, %gs
     movw %ax, %ss
 
-    /* Enable SSE/AVX (Required for modern C toolchains) */
-    movq %cr0, %rax
-    andw $0xFFFB, %ax    /* Clear EM */
-    orw  $0x0002, %ax    /* Set MP */
-    movq %rax, %cr0
-    movq %cr4, %rax
-    orw  $(3 << 9), %ax  /* OSFXSR | OSXMMEXCPT */
-    movq %rax, %cr4
+    /* Debug: Print 'F' */
+    movb $'F', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
 
     /* Clear BSS */
     movabsq $__bss_start, %rdi
     movabsq $__bss_end, %rcx
-.bss_loop:
-    cmpq %rcx, %rdi
-    jae .bss_done
-    movb $0, (%rdi)
-    incq %rdi
-    jmp .bss_loop
+    subq %rdi, %rcx
+    jz .bss_done
+    xorq %rax, %rax
+    rep stosb
 .bss_done:
 
-    /* Setup initial stack (CPU 0) */
+    /* Debug: Print 'G' */
+    movb $'G', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
+
+    movl %ebp, %eax
+    movq %rax, mb_magic(%rip)
+    movl %edx, %eax
+    movq %rax, mb_info_ptr(%rip)
+
     movabsq $__kernel_stack, %rsp
     addq $131072, %rsp
     movq %rsp, %rbp
 
-    /* Load final 64-bit GDT */
-    lgdt (boot_gdtr)
-
-    /* 5. Load saved boot information into kernel variables */
-    movl 0x7FF0, %eax
-    movq %rax, mb_magic(%rip)
-    movl 0x7FF8, %eax
-    movq %rax, mb_info_ptr(%rip)
+    lgdt (boot_gdtr_64)
     
-    /* 6. Handover to C: RDI = info, RSI = magic */
     movq mb_info_ptr(%rip), %rdi
     movq mb_magic(%rip), %rsi
     call kernel_main
@@ -175,33 +185,61 @@ _start_64:
     hlt
     jmp .halt
 
-/* Boot data located in .data to survive BSS clearing */
-.section .data
-.align 8
-.global mb_info_ptr
-.global mb_magic
-mb_magic:    .quad 0
-mb_info_ptr: .quad 0
+.global secondary_cpu_entry
+secondary_cpu_entry:
+    /* Debug: Print 'S' */
+    movb $'S', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
+    cli
+    xorl %eax, %eax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+    movw %ax, %ss
+    call arch_cpu_init
+    call kernel_secondary_main
 
+.global arch_yield
+arch_yield:
+    pause
+    ret
+
+.global arch_impl_idle
+arch_impl_idle:
+    hlt
+    ret
+
+.section .data
 .align 16
 boot_gdt:
-    .quad 0x0000000000000000   /* 0x00: Null */
-    .quad 0x00AF9A000000FFFF   /* 0x08: Kernel Code */
-    .quad 0x00CF92000000FFFF   /* 0x10: Kernel Data */
-    .quad 0x00CFF2000000FFFF   /* 0x18: User Data */
-    .quad 0x00AFFA000000FFFF   /* 0x20: User Code */
+    .quad 0x0000000000000000 /* Null */
+    .quad 0x00af9a000000ffff /* Kernel Code 64 */
+    .quad 0x00cf92000000ffff /* Kernel Data 64 (Usable in 32-bit too) */
 boot_gdt_end:
-
-.global boot_gdtr
-boot_gdtr:
-    .word boot_gdt_end - boot_gdt - 1
-    .quad boot_gdt
 
 boot_gdtr_32:
     .word boot_gdt_end - boot_gdt - 1
     .long boot_gdt
 
-/* Initial Page Tables (Mapped 1:1 for 1GB) */
+boot_gdtr_64:
+    .word boot_gdt_end - boot_gdt - 1
+    .quad boot_gdt
+
+.global mb_magic, mb_info_ptr
+mb_magic:    .quad 0
+mb_info_ptr: .quad 0
+
+.global kernel_pgd_phys
+kernel_pgd_phys: .quad boot_pml4
+
+.section .boot_bss, "aw", @nobits
+.align 4096
+boot_stack:
+    .skip 4096
+boot_stack_top:
+
 .align 4096
 .global boot_pml4
 boot_pml4: .skip 4096
@@ -209,11 +247,13 @@ boot_pml4: .skip 4096
 boot_pdpt: .skip 4096
 .global boot_pd
 boot_pd:   .skip 4096
+.global boot_pd_high
+boot_pd_high: .skip 4096
 
 .section .bss
 .align 4096
 .global __kernel_stack
 __kernel_stack:
-    .skip 131072 * 16     /* 128KB * MAX_CPUS (16) */
+    .skip 131072 * MAX_CPUS
 .global __kernel_stack_top
 __kernel_stack_top:

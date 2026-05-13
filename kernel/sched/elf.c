@@ -27,8 +27,9 @@ int process_load_elf(struct process *proc, const char *path) {
 
   /* 2. Verify Header */
   if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
-      ehdr.e_ident[EI_CLASS] != ELFCLASS64 || ehdr.e_machine != EM_AARCH64) {
-    pr_err("%s", "ELF: Invalid format\n");
+      ehdr.e_ident[EI_CLASS] != ELFCLASS64 || ehdr.e_machine != ARCH_TYPE) {
+    pr_err("ELF: Invalid format (Machine: 0x%x, Expected: 0x%x)\n", 
+           ehdr.e_machine, ARCH_TYPE);
     return -1;
   }
 
@@ -44,8 +45,8 @@ int process_load_elf(struct process *proc, const char *path) {
     }
 
     if (phdr.p_type == PT_LOAD) {
-      /* Usage: USER | Valid | Access Flag | Inner Shareable */
-      uint64_t flags = PTE_VALID | PTE_AF | PTE_INNER_SHARE | PAGE_USER;
+      /* Generic User Mapping Flags */
+      uint64_t flags = PTE_USER | PTE_VALID;
 
       if (phdr.p_flags & PF_W) {
         flags |= PTE_RW;
@@ -53,9 +54,13 @@ int process_load_elf(struct process *proc, const char *path) {
         flags |= PTE_RO;
       }
 
+      /* AArch64 specific UXN/PXN handled via HAL-neutral flags if defined */
+#ifdef ARCH_AARCH64
+      flags |= PTE_VALID | PTE_PAGE | PTE_AF | PTE_INNER_SHARE;
       if (!(phdr.p_flags & PF_X)) {
         flags |= PTE_UXN;
       }
+#endif
 
       pr_info("ELF: Mapping Segment at 0x%lx (FileSz: 0x%lx, MemSz: 0x%lx)\n",
               phdr.p_vaddr, phdr.p_filesz, phdr.p_memsz);

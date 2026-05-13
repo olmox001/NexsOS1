@@ -30,25 +30,22 @@ static inline int spin_trylock(spinlock_t *lock) {
 
 /* IRQ-safe spinlock */
 static inline void spin_lock_irqsave(spinlock_t *lock, uint64_t *flags) {
-  arch_local_irq_save(flags);
-  /* The AArch64 internal implementation of local_irq_save already sets
-     DAIF appropriately (e.g. #3 or similar for masking).
-  */
+  hal_irq_save(flags);
   spin_lock(lock);
 }
 
 static inline int spin_trylock_irqsave(spinlock_t *lock, uint64_t *flags) {
-  arch_local_irq_save(flags);
+  hal_irq_save(flags);
   if (spin_trylock(lock)) {
     return 1;
   }
-  arch_local_irq_restore(*flags);
+  hal_irq_restore(*flags);
   return 0;
 }
 
 static inline void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags) {
   spin_unlock(lock);
-  arch_local_irq_restore(flags);
+  hal_irq_restore(flags);
 }
 #endif
 

@@ -125,37 +125,33 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   uint16_t idx = avail->idx % virtio_blk_qsize;
   avail->ring[idx] = 0;
 
-  arch_mb();
+  hal_mb();
   avail->idx++;
-  arch_mb();
+  hal_mb();
 
   uint16_t old_idx = used->idx;
   volatile uint16_t *used_idx_ptr = &used->idx;
 
   /* Notify */
   pr_info("VirtIO-Blk: Reading LBA %ld, notify dev 0x%lx\n", sector,
-          virtio_blk_dev->base);
+          virtio_blk_dev->hal_dev.base);
   virtio_notify(virtio_blk_dev, 0);
 
   /* Poll Used Ring (Busy Wait) */
-  uint64_t timeout = 500000000; /* Increased timeout */
+  uint64_t timeout = 1000000000; /* Increased timeout */
   while (*used_idx_ptr == old_idx && timeout > 0) {
-    if (timeout % 10000000 == 0) {
-      uint32_t isr = virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
-      pr_info("VirtIO-Blk: Polling... used->idx=%d, old_idx=%d, ISR=%02x\n",
-              *used_idx_ptr, old_idx, isr);
-    }
-    arch_yield();
+    hal_cpu_yield();
     timeout--;
   }
 
-  /* Clear interrupt status */
+  /* Clear interrupt status (Legacy VirtIO requirement) */
   virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
 
   if (timeout == 0) {
+    uint32_t isr = virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
     pr_err("VirtIO-Blk: Timeout waiting for device response! (used->idx=%d "
-           "old_idx=%d)\n",
-           *used_idx_ptr, old_idx);
+           "old_idx=%d, ISR=%02x)\n",
+           *used_idx_ptr, old_idx, isr);
     return -1;
   }
 
@@ -199,9 +195,9 @@ int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
   uint16_t idx = avail->idx % virtio_blk_qsize;
   avail->ring[idx] = 0;
 
-  arch_mb();
+  hal_mb();
   avail->idx++;
-  arch_mb();
+  hal_mb();
 
   uint16_t old_idx = used->idx;
   virtio_notify(virtio_blk_dev, 0);

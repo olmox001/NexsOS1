@@ -10,5 +10,6 @@ uint32_t pci_get_bar(int bdf, int bar_index);
 uint32_t pci_get_bar_size(int bdf, int bar_index);
 uint8_t pci_get_interrupt(int bdf);
 void pci_enumerate(void (*callback)(int bdf, uint16_t vendor, uint16_t device_id));
+void pci_scan_and_register(void);
 
 #endif

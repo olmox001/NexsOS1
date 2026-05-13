@@ -11,6 +11,7 @@ struct process;
 
 /* Per-CPU information structure */
 struct cpu_info {
+  struct cpu_info *self; /* Must be at offset 0 for %gs:0 access on x86_64 */
   uint32_t cpu_id;
   uint32_t online;
   uint64_t stack_top;      /* Kernel Stack Top */
@@ -34,22 +35,24 @@ struct cpu_info {
 };
 #endif
 
-#define MAX_CPUS 16
+#define MAX_CPUS 64
 
 #ifndef __ASSEMBLER__
 /* API */
 extern struct cpu_info cpu_data[MAX_CPUS];
 struct cpu_info *get_cpu_info(void);
+void smp_create_idle_task(uint32_t cpu_id);
 
 /* These are now provided by arch.h HAL macros/functions */
+#include <kernel/hal_unified.h>
 #include <kernel/arch.h>
 
-#define cpu_id() arch_get_cpu_id()
+#define cpu_id() hal_cpu_id()
 #define cpu_init() arch_cpu_init()
-#define local_irq_enable() arch_local_irq_enable()
-#define local_irq_disable() arch_local_irq_disable()
-#define local_irq_save() arch_local_irq_save_val()
-#define local_irq_restore(flags) arch_local_irq_restore(flags)
+#define local_irq_enable() hal_irq_enable()
+#define local_irq_disable() hal_irq_disable()
+#define local_irq_save() hal_irq_save_val()
+#define local_irq_restore(flags) hal_irq_restore(flags)
 struct pt_regs; /* forward decl */
 struct pt_regs *serror_handler(struct pt_regs *frame);
 #endif

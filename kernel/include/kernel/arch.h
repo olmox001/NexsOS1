@@ -6,6 +6,8 @@
 /* Architecture-specific primitives are included here.
  * They must define the arch_impl_* functions or macros. */
 #include <arch/arch.h>
+#include <kernel/hal_unified.h>
+
 
 #ifndef __ASSEMBLER__
 
@@ -14,6 +16,7 @@ struct process;
 
 /* Basic CPU operations */
 void arch_cpu_init(void);
+void arch_smp_init(void);
 int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack);
 void arch_cpu_switch_context(struct process *next);
 

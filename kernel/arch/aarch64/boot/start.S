@@ -187,7 +187,7 @@ secondary_startup:
     isb
     
     /* Jump to C code (Absolute Virtual Address) */
-    ldr x3, =secondary_cpu_entry
+    ldr x3, =kernel_secondary_main
     br x3
     b halt
 

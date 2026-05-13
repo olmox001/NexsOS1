@@ -1,4 +1,4 @@
-#include <kernel/arch.h>
+#include <kernel/hal.h>
 #include <drivers/virtio.h>
 
 #define MAX_VIRTIO_DEVS 16
@@ -11,11 +11,11 @@ static int virtio_dev_count = 0;
 
 /* MMIO Implementation of Transport Ops */
 static uint32_t mmio_read32(struct virtio_device *dev, uint32_t offset) {
-    return *(volatile uint32_t *)(dev->base + offset);
+    return hal_read32(dev->base + offset);
 }
 
 static void mmio_write32(struct virtio_device *dev, uint32_t offset, uint32_t val) {
-    *(volatile uint32_t *)(dev->base + offset) = val;
+    hal_write32(dev->base + offset, val);
 }
 
 static void mmio_notify(struct virtio_device *dev, uint32_t queue_idx) {
@@ -32,10 +32,10 @@ void arch_virtio_scan(void) {
     virtio_dev_count = 0;
     for (int i = 0; i < VIRTIO_COUNT; i++) {
         uintptr_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STRIDE;
-        uint32_t magic = *(volatile uint32_t *)(base + VIRTIO_MMIO_MAGIC_VALUE);
+        uint32_t magic = hal_read32(base + VIRTIO_MMIO_MAGIC_VALUE);
         
         if (magic == 0x74726976) {
-            uint32_t dev_id = *(volatile uint32_t *)(base + VIRTIO_MMIO_DEVICE_ID);
+            uint32_t dev_id = hal_read32(base + VIRTIO_MMIO_DEVICE_ID);
             if (dev_id != 0 && virtio_dev_count < MAX_VIRTIO_DEVS) {
                 virtio_devices[virtio_dev_count].base = base;
                 virtio_devices[virtio_dev_count].irq = 48 + i;
@@ -52,7 +52,7 @@ void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx, uint64_t desc_a
     (void)used_addr;
     virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_SEL, queue_idx);
     // VIRTIO_MMIO_GUEST_PAGE_SIZE is 0x028
-    *(volatile uint32_t *)(dev->base + 0x028) = 4096;
+    hal_write32(dev->base + 0x028, 4096);
     virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_PFN, desc_addr >> 12);
 }
 

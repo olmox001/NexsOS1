@@ -3,12 +3,16 @@
  * Legacy 8259 PIC and 8253 PIT initialization for x86-64
  */
 #include <kernel/types.h>
-#include <arch/arch.h>
-#include <arch/amd64_internal.h>
-#include <kernel/printk.h>
-
+#include <kernel/hal.h>
 #include <kernel/irq.h>
+#include <kernel/printk.h>
 #include <arch/pt_regs.h>
+
+/* Prototypes to satisfy -Wmissing-prototypes */
+void pic_init(void);
+void pic_send_eoi(uint8_t irq);
+struct pt_regs *amd64_timer_interrupt(struct pt_regs *regs);
+struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs);
 
 #define PIC1_CMD  0x20
 #define PIC1_DATA 0x21
@@ -22,19 +26,32 @@ extern volatile uint64_t jiffies;
 extern void timer_tick(void); /* generic scheduler tick */
 void pit_init_hz(uint32_t hz);
 
+void pic_unmask(uint8_t irq);
+void pic_mask(uint8_t irq);
+
 static void pic_chip_enable(uint32_t irq) {
-    /* PIC IRQs are 0-15. Input is 32+irq usually? 
-       Wait, the generic system uses the absolute IRQ number. 
-       On AMD64, we map IRQ 0-15 to 32-47. */
     if (irq >= 32 && irq < 48) {
-        extern void pic_unmask(uint8_t irq);
         pic_unmask(irq - 32);
     }
 }
 
+void pic_mask(uint8_t irq) {
+    uint16_t port;
+    uint8_t value;
+    if (irq < 8) {
+        port = PIC1_DATA;
+    } else {
+        port = PIC2_DATA;
+        irq -= 8;
+    }
+    value = hal_read8(port) | (1 << irq);
+    hal_write8(port, value);
+}
+
 static void pic_chip_disable(uint32_t irq) {
-    /* TODO: implement mask if needed */
-    (void)irq;
+    if (irq >= 32 && irq < 48) {
+        pic_mask(irq - 32);
+    }
 }
 
 static uint32_t pic_chip_acknowledge(void) {
@@ -44,7 +61,6 @@ static uint32_t pic_chip_acknowledge(void) {
 
 static void pic_chip_end(uint32_t irq) {
     if (irq >= 32 && irq < 48) {
-        extern void pic_send_eoi(uint8_t irq);
         pic_send_eoi(irq - 32);
     }
 }
@@ -61,31 +77,29 @@ static struct irq_chip pic_chip = {
 void pic_init(void) {
     irq_register_chip(&pic_chip);
   /* Remap PIC IRQs 0-15 to interrupts 32-47 */
-  outb(PIC1_CMD, 0x11); /* ICW1: Init + ICW4 */
-  outb(PIC2_CMD, 0x11);
+  hal_write8(PIC1_CMD, 0x11); /* ICW1: Init + ICW4 */
+  hal_write8(PIC2_CMD, 0x11);
   
-  outb(PIC1_DATA, 0x20); /* ICW2: PIC1 vector offset 32 */
-  outb(PIC2_DATA, 0x28); /* ICW2: PIC2 vector offset 40 */
+  hal_write8(PIC1_DATA, 0x20); /* ICW2: PIC1 vector offset 32 */
+  hal_write8(PIC2_DATA, 0x28); /* ICW2: PIC2 vector offset 40 */
   
-  outb(PIC1_DATA, 0x04); /* ICW3: PIC1 has slave on IRQ2 */
-  outb(PIC2_DATA, 0x02); /* ICW3: PIC2 cascade identity */
+  hal_write8(PIC1_DATA, 0x04); /* ICW3: PIC1 has slave on IRQ2 */
+  hal_write8(PIC2_DATA, 0x02); /* ICW3: PIC2 cascade identity */
   
-  outb(PIC1_DATA, 0x01); /* ICW4: 8086 mode */
-  outb(PIC2_DATA, 0x01);
+  hal_write8(PIC1_DATA, 0x01); /* ICW4: 8086 mode */
+  hal_write8(PIC2_DATA, 0x01);
   
-  /* Start with all IRQs unmasked for debug */
-  outb(PIC1_DATA, 0x00);
-  outb(PIC2_DATA, 0x00);
+  /* Start with all IRQs masked except slave cascade (IRQ 2) */
+  hal_write8(PIC1_DATA, 0xFB);
+  hal_write8(PIC2_DATA, 0xFF);
   
   pr_info("PIC Initialized and remapped to 32-47.\n");
 }
 
 extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
 
-struct pt_regs *amd64_timer_interrupt(struct pt_regs *regs) {
-  pic_send_eoi(0);
-  return kernel_timer_tick(regs);
-}
+/* The interrupt handlers amd64_timer_interrupt and amd64_keyboard_interrupt 
+ * have been moved to idt.c for unified LAPIC/PIC EOI management. */
 
 void pit_init_hz(uint32_t hz) {
   /* Frequency = 1193182 / divisor */
@@ -93,18 +107,18 @@ void pit_init_hz(uint32_t hz) {
   uint32_t divisor = 1193182 / hz;
   if (divisor > 0xFFFF) divisor = 0xFFFF;
   
-  outb(PIT_CMD, 0x36); /* Channel 0, lobyte/hibyte, square wave */
-  outb(PIT_CH0, (uint8_t)(divisor & 0xFF));
-  outb(PIT_CH0, (uint8_t)((divisor >> 8) & 0xFF));
+  hal_write8(PIT_CMD, 0x36); /* Channel 0, lobyte/hibyte, square wave */
+  hal_write8(PIT_CH0, (uint8_t)(divisor & 0xFF));
+  hal_write8(PIT_CH0, (uint8_t)((divisor >> 8) & 0xFF));
   
   pr_info("PIT Initialized at %u Hz (divisor %u).\n", hz, (uint16_t)divisor);
 }
 
 void pic_send_eoi(uint8_t irq) {
   if (irq >= 8) {
-    outb(PIC2_CMD, 0x20);
+    hal_write8(PIC2_CMD, 0x20);
   }
-  outb(PIC1_CMD, 0x20);
+  hal_write8(PIC1_CMD, 0x20);
 }
 
 void pic_unmask(uint8_t irq) {
@@ -117,14 +131,8 @@ void pic_unmask(uint8_t irq) {
         port = PIC2_DATA;
         irq -= 8;
     }
-    value = inb(port) & ~(1 << irq);
-    outb(port, value);
+    value = hal_read8(port) & ~(1 << irq);
+    hal_write8(port, value);
 }
 
-struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs) {
-  uint8_t scancode = inb(0x60);
-  /* TODO: Send scancode to keyboard driver / generic input queue */
-  (void)scancode;
-  pic_send_eoi(1);
-  return regs;
-}
+/* Keyboard interrupt is now handled in idt.c or via generic IRQ dispatch */

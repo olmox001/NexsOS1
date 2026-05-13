@@ -102,7 +102,7 @@ struct process {
 #define PROC_PERM_ROOT (1 << 1)   /* Can spawn and kill other processes */
 #define PROC_PERM_USER (1 << 2)   /* Standard user app permissions */
 
-#define MAX_PROCESSES 32
+#define MAX_PROCESSES 128
 extern struct process *process_pool[MAX_PROCESSES];
 
 /* API */

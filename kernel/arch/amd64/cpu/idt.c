@@ -28,7 +28,7 @@ struct idtr {
 } __packed;
 
 static struct idt_entry idt[IDT_ENTRIES] __aligned(16);
-static struct idtr idtr;
+/* static struct idtr idtr; - Removed, using local idtr in idt_init */
 
 /* Defined in isr_stubs.S */
 extern uint64_t isr_stub_table[];
@@ -43,24 +43,41 @@ static void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags
   idt[num].zero       = 0;
 }
 
-void idt_init(void) {
-  memset(&idt, 0, sizeof(struct idt_entry) * IDT_ENTRIES);
+static int idt_initialized = 0;
 
-  /* Set up IDT gates */
-  for (int i = 0; i < IDT_ENTRIES; i++) {
-    /* 0x8E = Present(1), DPL(00), Storage(0), GateType(1110 -> 32-bit Interrupt Gate)
-     * For x86-64, GateType 1110 = 64-bit Interrupt Gate */
-    idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E, 0);
+void idt_init(void) {
+  if (arch_get_cpu_id() == 0) {
+      memset(&idt, 0, sizeof(struct idt_entry) * IDT_ENTRIES);
+
+      /* Set up IDT gates */
+      for (int i = 0; i < IDT_ENTRIES; i++) {
+        idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E, 0);
+      }
+
+      /* Syscall via int 0x80 */
+      idt_set_gate(0x80, isr_stub_table[0x80], 0x08, 0xEE, 0);
+      
+      idt_initialized = 1;
   }
 
-  /* Syscall via int 0x80 (Legacy fallback, though we use MSR syscall) */
-  /* 0xEE = Present, DPL=3, Interrupt Gate */
-  idt_set_gate(0x80, isr_stub_table[0x80], 0x08, 0xEE, 0);
+  /* Wait for CPU 0 to finish if needed (not strictly necessary with sequential boot) */
+  while (!idt_initialized) arch_nop();
 
-  idtr.limit = sizeof(struct idt_entry) * IDT_ENTRIES - 1;
-  idtr.base  = (uint64_t)&idt;
+  struct idtr local_idtr;
+  local_idtr.limit = sizeof(struct idt_entry) * IDT_ENTRIES - 1;
+  local_idtr.base  = (uint64_t)&idt;
 
-  __asm__ __volatile__("lidt %0" : : "m"(idtr));
+  __asm__ __volatile__("lidt %0" : : "m"(local_idtr));
+}
+
+/* Detailed Register Dump */
+static void amd64_dump_regs(struct pt_regs *regs) {
+  pr_err("RIP: %016lx CS: %02lx RFLAGS: %016lx\n", regs->rip, regs->cs, regs->rflags);
+  pr_err("RAX: %016lx RBX: %016lx RCX: %016lx RDX: %016lx\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
+  pr_err("RSI: %016lx RDI: %016lx RBP: %016lx RSP: %016lx\n", regs->rsi, regs->rdi, regs->rbp, regs->rsp);
+  pr_err("R8:  %016lx R9:  %016lx R10: %016lx R11: %016lx\n", regs->r8, regs->r9, regs->r10, regs->r11);
+  pr_err("R12: %016lx R13: %016lx R14: %016lx R15: %016lx\n", regs->r12, regs->r13, regs->r14, regs->r15);
+  pr_err("Vector: %ld, Error Code: %lx\n", regs->vec, regs->err);
 }
 
 /* Page Fault Handler */
@@ -70,7 +87,7 @@ static void amd64_page_fault_handler(struct pt_regs *regs) {
   
   uint64_t error_code = regs->err;
   
-  pr_err("PAGE FAULT: Access to 0x%lx\n", cr2);
+  pr_err("\n[C%d] PAGE FAULT: Access to 0x%lx\n", arch_get_cpu_id(), cr2);
   pr_err("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n",
          error_code,
          (error_code & 1) ? 1 : 0,
@@ -78,67 +95,75 @@ static void amd64_page_fault_handler(struct pt_regs *regs) {
          (error_code & 4) ? 1 : 0,
          (error_code & 8) ? 1 : 0,
          (error_code & 16) ? 1 : 0);
-  pr_err("RIP: 0x%lx\n", regs->rip);
   
+  amd64_dump_regs(regs);
   arch_cpu_halt();
 }
 
 /* General Protection Fault Handler */
 static void amd64_gpf_handler(struct pt_regs *regs) {
-  pr_err("GENERAL PROTECTION FAULT\n");
-  pr_err("Error Code: 0x%lx\n", regs->err);
-  pr_err("RIP: 0x%lx\n", regs->rip);
-        arch_cpu_halt();
+  pr_err("\n[C%d] GENERAL PROTECTION FAULT\n", arch_get_cpu_id());
+  amd64_dump_regs(regs);
+  arch_cpu_halt();
 }
 
 /* Double Fault Handler */
 static void amd64_double_fault_handler(struct pt_regs *regs) {
-  pr_err("DOUBLE FAULT\n");
-  pr_err("Error Code: 0x%lx\n", regs->err);
-  pr_err("RIP: 0x%lx\n", regs->rip);
-        arch_cpu_halt();
+  pr_err("\n[C%d] DOUBLE FAULT\n", arch_get_cpu_id());
+  amd64_dump_regs(regs);
+  arch_cpu_halt();
 }
 
 extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *regs);
-extern struct pt_regs *amd64_timer_interrupt(struct pt_regs *regs);
-extern struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs);
+extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
 
 /* Main Exception/Interrupt Dispatcher (called from isr_stubs.S) */
 struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
   uint64_t vec = regs->vec;
 
-  switch (vec) {
-    case 8: /* Double Fault */
-      amd64_double_fault_handler(regs);
-      break;
-    case 13: /* General Protection Fault */
-      amd64_gpf_handler(regs);
-      break;
-    case 14: /* Page Fault */
-      amd64_page_fault_handler(regs);
-      break;
-    case 0x80: /* Legacy syscall (if used) */
-      return kernel_syscall_dispatcher(regs);
-    case 32: /* PIT Timer */
-      return amd64_timer_interrupt(regs);
-    case 33: /* Keyboard */
-      return amd64_keyboard_interrupt(regs);
-    default:
-      if (vec < 32) {
-        pr_err("Unhandled CPU Exception: %ld\n", vec);
-        pr_err("RIP: 0x%lx, Error Code: 0x%lx\n", regs->rip, regs->err);
-              arch_cpu_halt();
-      } else {
-        /* Hardware interrupt - route via generic system */
-        pr_info("IRQ: Received HW interrupt %ld\n", vec);
-        extern struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs * regs);
-        regs = irq_dispatch(vec, regs);
+  if (vec < 32) {
+    /* Handle exceptions */
+    switch (vec) {
+      case 8: /* Double Fault */
+        amd64_double_fault_handler(regs);
+        break;
+      case 13: /* General Protection Fault */
+        amd64_gpf_handler(regs);
+        break;
+      case 14: /* Page Fault */
+        amd64_page_fault_handler(regs);
+        break;
+      default:
+        pr_err("\n[C%d] Unhandled CPU Exception: %ld\n", arch_get_cpu_id(), vec);
+        amd64_dump_regs(regs);
+        arch_cpu_halt();
+        break;
+    }
+  } else if (vec == 0x80) {
+    /* Legacy syscall */
+    return kernel_syscall_dispatcher(regs);
+  } else {
+    /* Hardware interrupts (32-255) */
+    struct pt_regs *ret_regs = regs;
 
-        /* Send EOI via PIC chip if it was registered */
-        extern void pic_send_eoi(uint8_t irq);
+    if (vec == 32) {
+        /* Timer Interrupt (PIT or LAPIC) */
+        ret_regs = kernel_timer_tick(regs);
+    } else {
+        /* All other Hardware interrupts - route via generic system */
+        extern struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs * regs);
+        ret_regs = irq_dispatch(vec, regs);
+    }
+
+    /* Acknowledge LAPIC for all HW interrupts */
+    lapic_eoi();
+
+    /* Also acknowledge legacy PIC for its range (32-47) if active */
+    if (vec >= 32 && vec < 48) {
         pic_send_eoi(vec - 32);
-      }
-      break;
+    }
+
+    return ret_regs;
   }
   
   return regs;

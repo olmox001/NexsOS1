@@ -8,7 +8,11 @@
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
+#include <kernel/string.h>
 #include <kernel/types.h>
+#include <kernel/cpu.h>
+#include <kernel/hal.h>
+#include <arch/amd64/apic.h>
 
 extern void uart_init(void);
 extern void pic_init(void);
@@ -79,7 +83,6 @@ void arch_platform_early_init(void) {
   pr_info("AMD64 Platform Initialization (Magic: 0x%lx, Info: 0x%lx)\n", mb_magic, mb_info_ptr);
 
   pic_init();
-  pit_init_hz(HZ);
 
   if (mb_info_ptr == 0) {
     pr_warn("Boot information missing! Attempting to continue with fallback.\n");
@@ -187,23 +190,62 @@ void arch_vmm_set_secondary_pgd(uint64_t pgd) {
 
 /* Get kernel stack for a CPU */
 void *arch_get_kernel_stack(uint32_t cpu_id) {
-  if (cpu_id >= 16) return NULL;
+  if (cpu_id >= MAX_CPUS) return NULL;
   return (void *)&__kernel_stack[cpu_id * 131072];
 }
 
 /* Wake secondary CPU */
+extern char trampoline_start[], trampoline_end[];
+extern uint32_t trampoline_pml4;
+extern uint64_t trampoline_stack, trampoline_entry;
+extern uint64_t kernel_pgd_phys;
+extern void secondary_cpu_entry(void);
+
 int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
   (void)entry;
-  (void)stack;
   
-  if (cpu_id >= 16) return -1;
+  if (cpu_id >= MAX_CPUS) return -1;
 
-  /* TODO: Send INIT-SIPI via APIC to wake up secondary cores.
-   * For now, we return 0 to indicate the system should continue, 
-   * even if only one core is actually running. */
-  pr_warn("AMD64: CPU %lu wakeup via APIC not yet implemented\n", cpu_id);
+  /* 1. Copy trampoline to 0x1000 */
+  uint8_t *dest = (uint8_t *)0x1000;
+  size_t size = trampoline_end - trampoline_start;
+  memcpy(dest, trampoline_start, size);
+
+  /* 2. Setup trampoline parameters */
+  uint32_t *p_pml4 = (uint32_t *)(0x1000 + ((uintptr_t)&trampoline_pml4 - (uintptr_t)trampoline_start));
+  uint64_t *p_stack = (uint64_t *)(0x1000 + ((uintptr_t)&trampoline_stack - (uintptr_t)trampoline_start));
+  uint64_t *p_entry = (uint64_t *)(0x1000 + ((uintptr_t)&trampoline_entry - (uintptr_t)trampoline_start));
+
+  *p_pml4 = (uint32_t)kernel_pgd_phys;
+  *p_stack = (uint64_t)stack;
+  *p_entry = (uint64_t)secondary_cpu_entry;
+
+  /* 3. Send INIT IPI */
+  lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL | ICR_PHYSICAL);
+  
+  /* 4. Wait 10ms */
+  for (volatile int i = 0; i < 10000000; i++);
+
+  /* 5. Send STARTUP IPI (Vector 0x01 -> 0x1000) */
+  lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
+
+  pr_info("AMD64: Sent INIT-SIPI to CPU %lu\n", cpu_id);
   return 0; 
 }
 
 /* Get boot information from Multiboot2 */
 uint64_t arch_get_boot_info(void) { return (uint64_t)mb_info_ptr; }
+
+extern volatile uint32_t cpu_boot_ack;
+extern void secondary_cpu_entry(void);
+extern void smp_create_idle_task(uint32_t cpu_id);
+
+void arch_smp_init(void) {
+    pr_info("AMD64: SMP initialization temporarily disabled for stability verification.\n");
+    return;
+    /*
+    uint32_t cpu_count = MAX_CPUS;
+    ...
+    */
+}
+

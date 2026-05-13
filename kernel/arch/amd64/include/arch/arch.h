@@ -5,6 +5,8 @@
 #include <kernel/types.h>
 
 /* AMD64 HAL Implementation Primitives */
+#include <kernel/elf.h>
+#define ARCH_TYPE EM_X86_64
 
 /* --- Interrupt Control --- */
 static inline void arch_impl_irq_enable(void) {
@@ -57,9 +59,9 @@ static inline void arch_impl_rmb(void) { __asm__ __volatile__("lfence" ::: "memo
 static inline void arch_impl_wmb(void) { __asm__ __volatile__("sfence" ::: "memory"); }
 
 static inline uint32_t arch_impl_get_cpu_id(void) {
-  uint32_t ebx;
-  __asm__ __volatile__("cpuid" : "=b"(ebx) : "a"(1) : "ecx", "edx");
-  return (ebx >> 24) & 0xFF;
+  /* Use the actual LAPIC ID register for more accuracy than CPUID leaf 1.
+   * Assumes default base 0xFEE00000 is mapped (which it is in start.S). */
+  return (*(volatile uint32_t *)0xFEE00020UL) >> 24;
 }
 
 /* --- VMM / TLB --- */
@@ -120,23 +122,17 @@ static inline void arch_impl_timer_control(uint32_t val) { (void)val; }
 
 /* --- Spinlocks --- */
 static inline void arch_impl_spin_lock(volatile uint32_t *lock) {
-  while (1) {
-    uint32_t old = 1;
-    __asm__ __volatile__("xchgl %0, %1" : "=r"(old), "+m"(*lock) : "0"(old) : "memory");
-    if (old == 0) break;
-    __asm__ __volatile__("pause");
-  }
+    while (__sync_lock_test_and_set(lock, 1)) {
+        while (*lock) __asm__ __volatile__("pause");
+    }
 }
 
 static inline void arch_impl_spin_unlock(volatile uint32_t *lock) {
-  __asm__ __volatile__("" ::: "memory");
-  *lock = 0;
+    __sync_lock_release(lock);
 }
 
 static inline int arch_impl_spin_trylock(volatile uint32_t *lock) {
-  uint32_t old = 1;
-  __asm__ __volatile__("xchgl %0, %1" : "=r"(old), "+m"(*lock) : "0"(old) : "memory");
-  return old == 0;
+    return __sync_lock_test_and_set(lock, 1) == 0;
 }
 
 /* --- System Registers --- */

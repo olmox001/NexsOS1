@@ -15,7 +15,7 @@ Unificare le architetture AMD64 e AArch64 tramite una HAL coerente, implementare
 ### Fase 3: Hardware Discovery (Completamento)
 - [x] **Parser FDT**: Implementato parser minimale per Device Tree (AArch64).
 - [x] **Rilevamento RAM**: Migrazione da hardcoded a parsing dinamico delle regioni 'memory' nel DTB.
-- [/] **Rilevamento CPU**: Utilizzo di `fdt_count_cpus()` per inizializzare i core secondari.
+- [/] **Rilevamento CPU**: Utilizzo di `fdt_count_cpus()` per rilevamento max_core secondari.
     - *Stato*: Rilevamento 4 core riuscito via fallback, ma il parsing FDT necessita di correzione del puntatore DTB.
 - [ ] **Fix Puntatore DTB**: Risolvere il problema del puntatore nullo in `arch_platform_early_init`.
 - [ ] **Test**: `make run ARCH=aarch64` per confermare RAM e CPU dinamiche.

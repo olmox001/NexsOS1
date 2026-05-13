@@ -50,7 +50,7 @@ static void __enqueue_task(struct process *p) {
   target_cpu->prio_bitmap |= (1 << prio);
 
   /* Wake up any idling CPUs */
-  arch_cpu_notify();
+  hal_cpu_notify();
 }
 
 void enqueue_task(struct process *p) {
@@ -141,7 +141,7 @@ void wake_up(struct wait_queue_head *wq) {
 void idle_task_entry(void) {
   while (1) {
     /* Wait for interrupt */
-    arch_idle();
+    hal_cpu_idle();
     /* When we wake up, check if we need to reschedule?
        The interrupt handler (Timer) will have called schedule() if needed.
        If we are back here, it means no other task was ready.
@@ -261,8 +261,8 @@ struct process *process_create(const char *name, uint8_t priority,
 
   proc->page_table = vmm_create_pgd();
 
-  pr_info("process_create: '%s' PID=%d slot=%d Prio=%d TTBR0=0x%lx\n", name,
-          proc->pid, slot, proc->priority, virt_to_phys(proc->page_table));
+  pr_info("process_create: '%s' PID=%u slot=%u Prio=%d PageTable=%p\n", name,
+          (uint32_t)proc->pid, (uint32_t)slot, (int)proc->priority, (void*)proc->page_table);
 
   /* Allocate and Setup Kernel Stack (16KB) */
   void *kstack_base = pmm_alloc_pages(STACK_SIZE / 4096);
@@ -292,6 +292,34 @@ struct process *process_create(const char *name, uint8_t priority,
 
   return proc;
 }
+
+void smp_create_idle_task(uint32_t cpu_id) {
+  extern void idle_task_entry(void);
+  
+  if (cpu_id >= MAX_CPUS) return;
+
+  struct process *idle =
+      process_create("idle", PROC_PRIO_IDLE, PROC_PERM_SYSTEM);
+  
+  if (idle) {
+    idle->on_cpu = cpu_id;
+    
+    /* Ensure we are writing to the correct per-CPU structure */
+    struct cpu_info *info = &cpu_data[cpu_id];
+    info->idle_task = idle;
+
+    memset(idle->context, 0, sizeof(struct pt_regs));
+    pt_regs_init_kernel_task(idle->context, (uint64_t)idle_task_entry,
+                             idle->kernel_stack);
+
+    /* Memory barriers for multi-core visibility */
+    hal_cache_clean(idle, sizeof(struct process));
+    hal_cache_clean(idle->context, sizeof(struct pt_regs));
+    hal_mb();
+    hal_isb();
+  }
+}
+
 
 /*
  * Terminate a process and free its resources
@@ -416,9 +444,9 @@ void start_user_process(struct process *proc) {
 
   uint64_t pgd_phys = virt_to_phys(proc->page_table);
   /* Set page table and flush TLB */
-  arch_vmm_set_pgd(pgd_phys);
-  arch_tlb_flush_all();
-  arch_isb();
+  hal_vmm_set_pgd(pgd_phys);
+  hal_tlb_flush_all();
+  hal_isb();
 
   proc->state = PROC_RUNNING;
   proc->on_cpu = cpu_id();
@@ -430,8 +458,10 @@ void start_user_process(struct process *proc) {
  */
 struct pt_regs *schedule(struct pt_regs *regs) {
   struct cpu_info *cpu_ptr = get_cpu_info();
-  if (!cpu_ptr)
+  if (!cpu_ptr) {
+    if (regs && pt_regs_pc(regs) == 0) panic("SCHED: [EARLY] pc==0 on return");
     return regs;
+  }
 
   /* Deferred process free: safe to do here because we've already switched
    * away from that process's kernel stack in the previous schedule() call. */
@@ -609,6 +639,10 @@ found:
     next = cpu_ptr->idle_task;
     if (!next) {
       /* Absolute fallback if idle task not yet set */
+      if (regs && pt_regs_pc(regs) == 0) {
+        panic("SCHED: [CPU%d] BUG pc==0 on idle-fallback return, PID %d", cpu,
+              prev ? (int)prev->pid : -1);
+      }
       spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
       return regs;
     }
@@ -644,9 +678,9 @@ found:
   if (!prev || prev->page_table != next->page_table) {
     uint64_t next_pgd = virt_to_phys(next->page_table);
     if (next_pgd != 0) {
-      arch_vmm_set_pgd(next_pgd);
-      arch_tlb_flush_all();
-      arch_isb();
+      hal_vmm_set_pgd(next_pgd);
+      hal_tlb_flush_all();
+      hal_isb();
     }
   }
 

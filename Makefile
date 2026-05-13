@@ -19,35 +19,48 @@ endif
 # Configuration
 # ==============================================================================
 
+# Common Compiler Flags
+COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
+               -Wmissing-prototypes -Wstrict-prototypes \
+               -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+               -fno-common -fstack-protector-strong \
+               -fno-pic -fno-pie \
+               -fno-omit-frame-pointer \
+               -O2 -g
+
 ifeq ($(ARCH), amd64)
-# Cross-compiler prefix for AMD64
-CROSS_COMPILE ?= x86_64-elf-
-KERNEL_DIR = kernel
-BOOT_DIR   = boot/amd64
-ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
-CFLAGS += -DARCH_AMD64 -mno-red-zone -mcmodel=large
-# Assembler flags
-ASFLAGS = -g --fatal-warnings
-# Linker flags
-LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
-LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
-
-# Bootloader specific C flags (must be 32-bit for Multiboot)
-CFLAGS_BOOT = $(filter-out -mcmodel=large,$(CFLAGS)) -m32
-
+    # Cross-compiler prefix for AMD64
+    CROSS_COMPILE ?= x86_64-elf-
+    KERNEL_DIR = kernel
+    BOOT_DIR   = boot/amd64
+    ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
+    
+    ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large
+    ASFLAGS = -g --fatal-warnings
+    
+    LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
+    LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
+    
+    CFLAGS_BOOT = $(filter-out -mcmodel=large,$(COMMON_FLAGS)) $(INCLUDE) -m32
+    QEMU = qemu-system-x86_64
 else
-# Cross-compiler prefix for AArch64
-CROSS_COMPILE ?= aarch64-none-elf-
-KERNEL_DIR = kernel
-BOOT_DIR   = boot/aarch64
-ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
-CFLAGS += -DARCH_AARCH64 -mcpu=cortex-a57
-# Assembler flags
-ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
-# Linker flags
-LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
-LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
+    # Cross-compiler prefix for AArch64
+    CROSS_COMPILE ?= aarch64-none-elf-
+    KERNEL_DIR = kernel
+    BOOT_DIR   = boot/aarch64
+    ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
+    
+    ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57
+    ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
+    
+    LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
+    LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
+    
+    CFLAGS_BOOT = $(COMMON_FLAGS) $(INCLUDE)
+    QEMU = qemu-system-aarch64
 endif
+
+CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE)
 
 # Tools
 CC      = $(CROSS_COMPILE)gcc
@@ -75,24 +88,7 @@ USER_ELF   = $(BUILD_DIR)/init.elf
 DISK_IMG   = $(BUILD_ROOT)/disk.img
 
 
-# Compiler flags (common)
-CFLAGS += -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
-         -Wmissing-prototypes -Wstrict-prototypes \
-         -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-         -fno-common -fstack-protector-strong \
-         -fno-pic -fno-pie \
-         -fno-omit-frame-pointer \
-         -O2 -g \
-         $(INCLUDE)
-
-CXXFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow \
-           -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-           -fno-common -fstack-protector-strong \
-           -fno-pic -fno-pie \
-           -fno-omit-frame-pointer \
-           -fno-exceptions -fno-rtti \
-           -O2 -g \
-           $(INCLUDE)
+CXXFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) -fno-exceptions -fno-rtti
 
 
 # ==============================================================================
@@ -111,21 +107,23 @@ KERN_ASM_SOURCES = \
     $(ARCH_DIR)/boot/start.S \
     $(ARCH_DIR)/cpu/isr_stubs.S \
     $(ARCH_DIR)/cpu/syscall.S \
-    $(ARCH_DIR)/cpu/context.S
+    $(ARCH_DIR)/cpu/context.S \
+    $(ARCH_DIR)/boot/trampoline.S
 
 KERN_C_SOURCES = \
     $(ARCH_DIR)/cpu/cpu.c \
     $(ARCH_DIR)/cpu/idt.c \
     $(ARCH_DIR)/cpu/gdt.c \
     $(ARCH_DIR)/cpu/msr.c \
-    $(ARCH_DIR)/cpu/syscall.c \
+    $(ARCH_DIR)/cpu/syscall_hal.c \
+    $(ARCH_DIR)/cpu/apic.c \
     $(ARCH_DIR)/mm/mmu.c \
     $(ARCH_DIR)/mm/uaccess.c \
     $(KERNEL_DIR)/drivers/uart/16550.c \
     $(KERNEL_DIR)/drivers/timer/pic_pit.c \
     $(ARCH_DIR)/platform/platform.c \
-    $(KERNEL_DIR)/drivers/pci/pci.c \
-    $(ARCH_DIR)/virtio.c
+    $(ARCH_DIR)/hal.c \
+    $(KERNEL_DIR)/drivers/pci/pci.c
 else
 # Bootloader sources
 BOOT_SOURCES = \
@@ -142,18 +140,20 @@ KERN_C_SOURCES = \
     $(ARCH_DIR)/cpu/syscall.c \
     $(ARCH_DIR)/mm/mmu.c \
     $(ARCH_DIR)/platform.c \
-    $(ARCH_DIR)/virtio.c \
+    $(ARCH_DIR)/hal.c \
     $(KERNEL_DIR)/drivers/uart/pl011.c \
     $(KERNEL_DIR)/drivers/gic/gic.c \
     $(KERNEL_DIR)/drivers/timer/timer.c
 endif
 
 KERN_C_SOURCES += \
+    $(KERNEL_DIR)/core/hal_bus.c \
     $(KERNEL_DIR)/core/syscall_dispatch.c \
     $(KERNEL_DIR)/core/timer.c \
     $(KERNEL_DIR)/drivers/console.c \
     $(KERNEL_DIR)/drivers/irq_ctrl.c \
     $(KERNEL_DIR)/drivers/sys_timer.c \
+    $(KERNEL_DIR)/drivers/virtio/virtio_hal.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
@@ -423,12 +423,14 @@ ifeq ($(ARCH), amd64)
 QEMU = qemu-system-x86_64
 QEMU_FLAGS = -m 1G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
-             -device virtio-gpu-pci \
-             -device virtio-keyboard-pci -device virtio-mouse-pci \
-             -drive if=none,file=$(BUILD_DIR)/disk.img,id=hd0,format=raw -device virtio-blk-pci,drive=hd0
+             -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
+             -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
+             -device virtio-mouse-pci,disable-legacy=on,disable-modern=off \
+             -drive if=none,file=$(BUILD_DIR)/disk.img,id=hd0,format=raw \
+             -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
 else
 QEMU = qemu-system-aarch64
-QEMU_FLAGS = -M virt -cpu cortex-a57 -m 1G -smp 4 -serial mon:stdio \
+QEMU_FLAGS = -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \

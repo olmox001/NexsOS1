@@ -182,29 +182,58 @@ void arch_vmm_destroy_process_pgd(uint64_t pgd);
 
 /* Clone kernel mappings for a new process PML4 */
 uint64_t arch_vmm_create_process_pgd(void) {
-  uint64_t new_pml4 = (uint64_t)pmm_alloc_page();
-  if (!new_pml4)
+  uint64_t new_pml4_phys = (uint64_t)pmm_alloc_page();
+  if (!new_pml4_phys)
     return 0;
 
-  memset((void *)new_pml4, 0, PAGE_SIZE);
+  uint64_t *new_pml4 = (uint64_t *)new_pml4_phys;
+  memset(new_pml4, 0, PAGE_SIZE);
 
-  /* Copy kernel space mappings (upper half of PML4: indices 256-511)
-   * Since our kernel is at 1MB (lower half), we must copy identity mapping for
-   * now. To keep it simple: just copy the whole boot_pml4 and clear the user
-   * space part. Wait, os1test user space loads at 0x400000. That's index 0. We
-   * can copy the entire boot_pml4, which covers kernel at 0-1GB. Then map user
-   * space. It will overlap if user space uses the 0-1GB range! BUT! os1test
-   * processes load at 0x400000 (4MB). This is within the first 1GB. In aarch64
-   * we had TTBR0 and TTBR1. On x86-64 it's unified. To avoid the overlap, user
-   * space must not use the same VA as the kernel. We will map user programs
-   * where they request, since we identity map the kernel, we MUST NOT clear the
-   * first entry. However, if user space writes to kernel space it would fault
-   * if we set kernel pages to Supervisor-only (which we haven't strictly done
-   * in boot.S yet).
+  /* 
+   * AMD64 Paging Architecture:
+   * PML4 index 0 to 255: Lower Half (User Space + Identity Map Kernel)
+   * PML4 index 256 to 511: Higher Half (Kernel space / Alias)
    */
-  memcpy((void *)new_pml4, boot_pml4, PAGE_SIZE);
 
-  return new_pml4;
+  extern uint64_t *kernel_pgd;
+  
+  /* 1. Copy Higher Half (Indices 256-511) - These are fully shared kernel tables */
+  for (int i = 256; i < 512; i++) {
+    new_pml4[i] = kernel_pgd[i];
+  }
+
+  /* 
+   * 2. Handle Index 0 (Identity Map + User Space)
+   * We CANNOT share the PDPT at index 0 because it will be modified for user space.
+   * We must allocate a private PDPT for the new process and only copy the 
+   * kernel-specific identity mappings into it.
+   */
+  uint64_t new_pdpt_phys = (uint64_t)pmm_alloc_page();
+  if (!new_pdpt_phys) {
+    pmm_free_page((void *)new_pml4_phys);
+    return 0;
+  }
+  uint64_t *new_pdpt = (uint64_t *)new_pdpt_phys;
+  memset(new_pdpt, 0, PAGE_SIZE);
+  
+  /* Link new PDPT to index 0 of PML4 */
+  new_pml4[0] = new_pdpt_phys | X86_PTE_P | X86_PTE_RW | X86_PTE_US;
+
+  /* 3. Copy only the RAM Identity Map from the kernel's PDPT index 0.
+   * This covers 0 to 1GB, which is where the kernel image and low RAM live.
+   */
+  uint64_t *kern_pud0 = (uint64_t *)(kernel_pgd[0] & PTE_ADDR_MASK);
+  if (kern_pud0) {
+    /* PDPT index 0: 0-1GB (Contains our identity RAM) */
+    new_pdpt[0] = kern_pud0[0];
+  }
+
+  /* 4. Map MMIO ranges manually into the new PGD to ensure they have their own
+   * private path if they share a PDPT with user space.
+   */
+  arch_vmm_map_mmio(new_pml4);
+
+  return new_pml4_phys;
 }
 
 void arch_vmm_destroy_process_pgd(uint64_t pgd) {

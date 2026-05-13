@@ -30,7 +30,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
   arch_mb();
 
   table[index] = (uint64_t)page | PTE_TABLE | PTE_VALID | PTE_AF | PTE_INNER_SHARE |
-                 PTE_RW | PTE_AP_EL1_RW | PTE_PXN;
+                 PTE_AP_EL0_RW;
 
   arch_cache_clean_range(&table[index], 8);
   arch_mb();
@@ -126,4 +126,34 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
     }
   }
   return 0;
+}
+uint64_t arch_vmm_create_process_pgd(void) {
+  uint64_t *pgd = (uint64_t *)pmm_alloc_page();
+  if (!pgd) return 0;
+  memset(pgd, 0, 4096);
+
+  extern uint64_t *kernel_pgd;
+  
+  /* Copy kernel mappings (upper half) */
+  for (int i = 256; i < 512; i++) {
+    pgd[i] = kernel_pgd[i];
+  }
+
+  /* Clone kernel identity map (lower half, index 0) */
+  uint64_t *src_pud = (uint64_t *)(kernel_pgd[0] & PTE_ADDR_MASK);
+  if (src_pud) {
+    uint64_t *dst_pud = (uint64_t *)pmm_alloc_page();
+    if (dst_pud) {
+      memset(dst_pud, 0, 4096);
+      /* Clone 0-1GB (MMIO) and 1-2GB (RAM) */
+      dst_pud[0] = src_pud[0];
+      dst_pud[1] = src_pud[1];
+      arch_cache_clean_range(dst_pud, 4096);
+      pgd[0] = (uint64_t)dst_pud | (kernel_pgd[0] & ~PTE_ADDR_MASK);
+    }
+  }
+
+  arch_cache_clean_range(pgd, 4096);
+  arch_mb();
+  return (uint64_t)pgd;
 }

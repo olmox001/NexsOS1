@@ -124,8 +124,8 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
       irq_handlers[irq].handler(irq, irq_handlers[irq].data);
 
     } else {
-
       pr_warn("IRQ: Unhandled interrupt %u\n", irq);
+      irq_disable(irq); /* Prevent interrupt storm */
     }
 
     current_chip->end(irq);

@@ -1,10 +1,12 @@
 #ifndef _ARCH_AARCH64_H
 #define _ARCH_AARCH64_H
 
-#include <stdint.h>
 #include <kernel/types.h>
+#include <stdint.h>
 
 /* AArch64 HAL Implementation Primitives */
+#include <kernel/elf.h>
+#define ARCH_TYPE EM_AARCH64
 
 /* --- Interrupt Control --- */
 static inline void arch_impl_irq_enable(void) {
@@ -50,10 +52,18 @@ static inline void arch_impl_yield(void) { __asm__ __volatile__("yield"); }
 static inline void arch_impl_cpu_notify(void) { __asm__ __volatile__("sev"); }
 
 /* Barriers */
-static inline void arch_impl_isb(void) { __asm__ __volatile__("isb" ::: "memory"); }
-static inline void arch_impl_mb(void)  { __asm__ __volatile__("dsb sy" ::: "memory"); }
-static inline void arch_impl_rmb(void) { __asm__ __volatile__("dsb ld" ::: "memory"); }
-static inline void arch_impl_wmb(void) { __asm__ __volatile__("dsb st" ::: "memory"); }
+static inline void arch_impl_isb(void) {
+  __asm__ __volatile__("isb" ::: "memory");
+}
+static inline void arch_impl_mb(void) {
+  __asm__ __volatile__("dsb sy" ::: "memory");
+}
+static inline void arch_impl_rmb(void) {
+  __asm__ __volatile__("dsb ld" ::: "memory");
+}
+static inline void arch_impl_wmb(void) {
+  __asm__ __volatile__("dsb st" ::: "memory");
+}
 
 static inline uint32_t arch_impl_get_cpu_id(void) {
   uint64_t mpidr;
@@ -100,8 +110,8 @@ static inline void arch_impl_cache_sync_icache(void *start, size_t size) {
   s &= ~63UL;
   for (; s < e; s += 64) {
     __asm__ __volatile__("dc cvau, %0\n"
-                         "ic ivau, %0"
-                         ::"r"(s) : "memory");
+                         "ic ivau, %0" ::"r"(s)
+                         : "memory");
   }
   __asm__ __volatile__("dsb ish\n isb" ::: "memory");
 }
@@ -179,40 +189,23 @@ static inline void arch_impl_timer_control(uint32_t val) {
 
 /* --- Spinlocks --- */
 static inline void arch_impl_spin_lock(volatile uint32_t *lock) {
-  uint32_t tmp;
-  __asm__ __volatile__("   sevl\n"
-                       "1: wfe\n"
-                       "   ldaxr   %w0, [%1]\n"
-                       "   cbnz    %w0, 1b\n"
-                       "   stxr    %w0, %w2, [%1]\n"
-                       "   cbnz    %w0, 1b\n"
-                       : "=&r"(tmp)
-                       : "r"(lock), "r"(1)
-                       : "memory");
+  while (__sync_lock_test_and_set(lock, 1)) {
+    while (*lock)
+      __asm__ __volatile__("wfe");
+  }
 }
 
 static inline void arch_impl_spin_unlock(volatile uint32_t *lock) {
-  __asm__ __volatile__("   stlr    %w0, [%1]\n"
-                       :
-                       : "r"(0), "r"(lock)
-                       : "memory");
+  __sync_lock_release(lock);
 }
 
 static inline int arch_impl_spin_trylock(volatile uint32_t *lock) {
-  uint32_t tmp;
-  __asm__ __volatile__("   ldaxr   %w0, [%1]\n"
-                       "   cbnz    %w0, 1f\n"
-                       "   stxr    %w0, %w2, [%1]\n"
-                       "1:\n"
-                       : "=&r"(tmp)
-                       : "r"(lock), "r"(1)
-                       : "memory");
-  return tmp == 0;
+  return __sync_lock_test_and_set(lock, 1) == 0;
 }
 
 /* --- Constants --- */
 #define HAL_RAM_START 0x40000000UL
-#define HAL_RAM_SIZE  0x40000000UL /* 1GB default */
+#define HAL_RAM_SIZE 0x80000000UL /* 2GB */
 #define HAL_ALIAS_OFFSET 0x40000000UL
 
 #endif /* _ARCH_AARCH64_H */

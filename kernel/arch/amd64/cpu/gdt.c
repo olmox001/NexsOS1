@@ -4,32 +4,32 @@
  */
 #include <kernel/types.h>
 #include <kernel/string.h>
+#include <kernel/cpu.h>
 #include <arch/arch.h>
 #include <arch/amd64_internal.h>
+#include <kernel/printk.h>
 
 /* ─── GDT Segment Selectors ─── */
 #define GDT_NULL      0x00
 #define GDT_KERN_CODE 0x08
 #define GDT_KERN_DATA 0x10
-#define GDT_USER_DATA 0x18  /* Must be before USER_CODE for SYSRET */
+#define GDT_USER_DATA 0x18
 #define GDT_USER_CODE 0x20
 #define GDT_TSS       0x28
-#define GDT_ENTRIES   7     /* null + kcode + kdata + udata + ucode + tss(2) */
+#define GDT_ENTRIES   7
 
 /* ─── TSS ─── */
 struct tss64 {
   uint32_t reserved0;
-  uint64_t rsp0;    /* Ring 0 stack pointer */
+  uint64_t rsp0;
   uint64_t rsp1;
   uint64_t rsp2;
   uint64_t reserved1;
-  uint64_t ist[7];  /* Interrupt Stack Table */
+  uint64_t ist[7];
   uint64_t reserved2;
   uint16_t reserved3;
   uint16_t iopb_offset;
 } __packed;
-
-static struct tss64 tss __aligned(16);
 
 /* ─── GDT Entry ─── */
 struct gdt_entry {
@@ -41,7 +41,6 @@ struct gdt_entry {
   uint8_t  base_hi;
 } __packed;
 
-/* System segment (TSS) descriptor is 16 bytes in Long Mode */
 struct gdt_system_entry {
   uint16_t limit_lo;
   uint16_t base_lo;
@@ -58,11 +57,11 @@ struct gdtr {
   uint64_t base;
 } __packed;
 
-/* Raw GDT storage (7 * 8 = 56 bytes, but TSS takes 2 entries = 16 bytes) */
-static uint64_t gdt_raw[GDT_ENTRIES] __aligned(16);
+static struct tss64 tss_data[MAX_CPUS] __aligned(16);
+static uint64_t gdt_raw[MAX_CPUS][GDT_ENTRIES] __aligned(16);
 
-static void gdt_set_entry(int index, uint8_t access, uint8_t gran) {
-  struct gdt_entry *e = (struct gdt_entry *)&gdt_raw[index];
+static void gdt_set_entry(uint64_t *gdt, int index, uint8_t access, uint8_t gran) {
+  struct gdt_entry *e = (struct gdt_entry *)&gdt[index];
   e->limit_lo    = 0xFFFF;
   e->base_lo     = 0;
   e->base_mid    = 0;
@@ -71,12 +70,12 @@ static void gdt_set_entry(int index, uint8_t access, uint8_t gran) {
   e->base_hi     = 0;
 }
 
-static void gdt_set_tss(int index, uint64_t base, uint32_t limit) {
-  struct gdt_system_entry *e = (struct gdt_system_entry *)&gdt_raw[index];
+static void gdt_set_tss(uint64_t *gdt, int index, uint64_t base, uint32_t limit) {
+  struct gdt_system_entry *e = (struct gdt_system_entry *)&gdt[index];
   e->limit_lo    = (uint16_t)(limit & 0xFFFF);
   e->base_lo     = (uint16_t)(base & 0xFFFF);
   e->base_mid    = (uint8_t)((base >> 16) & 0xFF);
-  e->access      = 0x89; /* Present, 64-bit TSS (Available) */
+  e->access      = 0x89;
   e->granularity = (uint8_t)((limit >> 16) & 0x0F);
   e->base_hi     = (uint8_t)((base >> 24) & 0xFF);
   e->base_upper  = (uint32_t)(base >> 32);
@@ -84,62 +83,54 @@ static void gdt_set_tss(int index, uint64_t base, uint32_t limit) {
 }
 
 void gdt_init(void) {
-  memset(gdt_raw, 0, sizeof(gdt_raw));
+  uint32_t cpu_id = arch_get_cpu_id();
+  if (cpu_id >= MAX_CPUS) return;
 
-  /* 0x00: Null descriptor */
-  gdt_raw[0] = 0;
+  uint64_t *my_gdt = gdt_raw[cpu_id];
+  struct tss64 *my_tss = &tss_data[cpu_id];
 
-  /* 0x08: Kernel Code — 64-bit, DPL=0, Execute/Read */
-  gdt_set_entry(1, 0x9A, 0xAF); /* P=1, DPL=0, S=1, Type=A(Exec/Read), L=1(64-bit) */
+  memset(my_gdt, 0, GDT_ENTRIES * 8);
+  memset(my_tss, 0, sizeof(struct tss64));
 
-  /* 0x10: Kernel Data — DPL=0, Read/Write */
-  gdt_set_entry(2, 0x92, 0xCF); /* P=1, DPL=0, S=1, Type=2(Read/Write) */
+  gdt_set_entry(my_gdt, 1, 0x9A, 0xAF);
+  gdt_set_entry(my_gdt, 2, 0x92, 0xCF);
+  gdt_set_entry(my_gdt, 3, 0xF2, 0xCF);
+  gdt_set_entry(my_gdt, 4, 0xFA, 0xAF);
 
-  /* 0x18: User Data — DPL=3, Read/Write */
-  gdt_set_entry(3, 0xF2, 0xCF); /* P=1, DPL=3, S=1, Type=2(Read/Write) */
+  my_tss->iopb_offset = sizeof(struct tss64);
+  gdt_set_tss(my_gdt, 5, (uint64_t)my_tss, sizeof(struct tss64) - 1);
 
-  /* 0x20: User Code — 64-bit, DPL=3, Execute/Read */
-  gdt_set_entry(4, 0xFA, 0xAF); /* P=1, DPL=3, S=1, Type=A(Exec/Read), L=1 */
-
-  /* 0x28: TSS (occupies 2 GDT slots = 16 bytes) */
-  memset(&tss, 0, sizeof(tss));
-  tss.iopb_offset = sizeof(tss);
-  gdt_set_tss(5, (uint64_t)&tss, sizeof(tss) - 1);
-
-  /* Load GDT */
   struct gdtr gdtr = {
-    .limit = sizeof(gdt_raw) - 1,
-    .base  = (uint64_t)gdt_raw
+    .limit = (GDT_ENTRIES * 8) - 1,
+    .base  = (uint64_t)my_gdt
   };
 
+  pr_info("GDT: Loading GDTR...\n");
   __asm__ __volatile__(
     "lgdt %0\n\t"
-    /* Reload CS via far return */
-    "pushq $0x08\n\t"       /* Kernel Code selector */
+    "pushq $0x08\n\t"
     "leaq 1f(%%rip), %%rax\n\t"
     "pushq %%rax\n\t"
     "lretq\n\t"
     "1:\n\t"
-    /* Reload data segments */
-    "movw $0x10, %%ax\n\t"  /* Kernel Data selector */
+    "movw $0x10, %%ax\n\t"
     "movw %%ax, %%ds\n\t"
     "movw %%ax, %%es\n\t"
     "movw %%ax, %%fs\n\t"
-    "movw %%ax, %%gs\n\t"
     "movw %%ax, %%ss\n\t"
     :
     : "m"(gdtr)
     : "rax", "memory"
   );
 
-  /* Load TSS */
+  pr_info("GDT: Loading TSS...\n");
   __asm__ __volatile__("ltr %0" :: "r"((uint16_t)GDT_TSS));
+  pr_info("GDT: Done\n");
 }
 
-/*
- * Update RSP0 in TSS — called on every context switch
- * so Ring 3 -> Ring 0 transitions use the correct kernel stack.
- */
 void gdt_set_rsp0(uint64_t rsp0) {
-  tss.rsp0 = rsp0;
+  uint32_t cpu_id = arch_get_cpu_id();
+  if (cpu_id < MAX_CPUS) {
+    tss_data[cpu_id].rsp0 = rsp0;
+  }
 }
