@@ -8,9 +8,10 @@
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
 
-# Release Versioning (default V9.9.9, override with make release VERSION=0.1.2)
+# Release Versioning (default V9.9.9)
 VERSION ?= V9.9.9
-RELEASE_DIR = release/$(VERSION)
+RELEASE_BASE = release/$(VERSION)
+RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
 # Normalize ARCH typos
 ifeq ($(findstring aarch64,$(ARCH)),aarch64)
@@ -205,7 +206,11 @@ all: dirs bootloader kernel user $(MKDISK) disk
 	@echo ""
 	@echo "Build complete for $(ARCH)!"
 	@echo "  Disk Image: $(DISK_IMG)"
+ifeq ($(ARCH), amd64)
 	@echo "  Kernel:     $(KERNEL_ELF)"
+else
+	@echo "  Kernel:     $(KERNEL_BIN) (AArch64 Raw Binary)"
+endif
 
 # Create build directories
 dirs:
@@ -358,17 +363,26 @@ endif
 # Release Generation
 # ==============================================================================
 
-release: all
+release:
 	@echo "========================================"
-	@echo "  Building Release $(VERSION) for $(ARCH)"
+	@echo "  Creating Full Release $(VERSION)"
 	@echo "========================================"
+	@$(MAKE) ARCH=amd64 release-arch VERSION=$(VERSION)
+	@$(MAKE) ARCH=aarch64 release-arch VERSION=$(VERSION)
+	@echo "========================================"
+	@echo "✓ Full release $(VERSION) complete!"
+	@echo "  Location: $(RELEASE_BASE)"
+	@echo "========================================"
+
+release-arch: all
+	@echo "--> Building $(ARCH) release..."
+	@rm -rf $(RELEASE_DIR)
 	@mkdir -p $(RELEASE_DIR)
 ifeq ($(ARCH), amd64)
 	@rm -rf $(RELEASE_DIR)/iso
 	@mkdir -p $(RELEASE_DIR)/iso/boot/grub
 	
 	@cp $(KERNEL_ELF) $(RELEASE_DIR)/iso/boot/kernel.elf
-	# NON copiamo disk.img dentro la ISO, lo "flashiamo" come partizione
 	
 	@echo 'set timeout=0' > $(RELEASE_DIR)/iso/boot/grub/grub.cfg
 	@echo 'set default=0' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
@@ -377,38 +391,26 @@ ifeq ($(ARCH), amd64)
 	@echo '  boot' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
 	@echo '}' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
 	
-	# Estraiamo la partizione Ext4 dal disk.img (inizia a LBA 34850 come da tools/mkdisk.c)
 	@dd if=$(DISK_IMG) of=$(BUILD_DIR)/userland.img bs=512 skip=34850 status=none
 	
-	# Comando xorriso magico: 
-	# --append_partition 2 0x83 (ID per Linux/Ext4) carica il file come partizione reale
 	$(GRUB_MKRESCUE) -o $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso $(RELEASE_DIR)/iso \
 		-- -append_partition 2 0x83 $(BUILD_DIR)/userland.img
 	
-	@echo "✓ Hybrid ISO creata: Partizione 1 (Boot), Partizione 2 (Userland Ext4)"
+	@echo "✓ AMD64 Hybrid ISO: $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso"
 else
-	@cp $(KERNEL_ELF) $(RELEASE_DIR)/kernel.elf
-	@cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.bin
+	@cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img
 	@cp $(DISK_IMG) $(RELEASE_DIR)/disk.img
-	@echo "========================================"
-	@echo "  VERIFICA STRUTTURA RELEASE (TREE)"
-	@echo "========================================"
-	@tree $(RELEASE_DIR) || find $(RELEASE_DIR) -print
-	@echo "========================================"
-	@echo "✓ Release build complete!"
-	@echo "  [AArch64] Kernel ELF: $(RELEASE_DIR)/kernel.elf"
-	@echo "  [AArch64] Kernel BIN: $(RELEASE_DIR)/kernel.bin"
-	@echo "  [AArch64] User Disk:  $(RELEASE_DIR)/disk.img"
+	@echo "✓ AArch64 release files: kernel.img, disk.img"
 endif
 
-test-release: release
+test-release: release-arch
 	@echo "Starting QEMU Release Test for $(ARCH) (Version: $(VERSION))..."
 ifeq ($(ARCH), amd64)
 	$(QEMU) $(QEMU_RELEASE_FLAGS) \
 		-drive if=none,file=$(RELEASE_DIR)/os1test-amd64-$(VERSION).iso,id=hd0,format=raw \
 		-device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
 else
-	$(QEMU) $(QEMU_RELEASE_FLAGS) -kernel $(RELEASE_DIR)/kernel.elf
+	$(QEMU) $(QEMU_RELEASE_FLAGS) -kernel $(RELEASE_DIR)/kernel.img
 endif
 
 # ==============================================================================
