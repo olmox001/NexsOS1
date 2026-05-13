@@ -1,6 +1,0 @@
-CC  kernel/arch/amd64/cpu/gdt.c
-kernel/arch/amd64/cpu/gdt.c: In function 'gdt_init':
-kernel/arch/amd64/cpu/gdt.c:107:3: error: implicit declaration of function 'pr_info' [-Wimplicit-function-declaration]
-  107 |   pr_info("GDT: Loading GDTR...\n");
-      |   ^~~~~~~
-make: *** [build/amd64/kernel/arch/amd64/cpu/gdt.o] Error 1
