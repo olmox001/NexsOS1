@@ -213,7 +213,8 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
 }
 
 void arch_cpu_switch_context(struct process *next) {
-    (void)next;
-    /* AArch64 switch is handled by returning the new context frame to the
-     * assembly exit code, which restores SP_EL1. SP_EL0 is in pt_regs. */
+    /* Switch address space */
+    if (next->page_table) {
+        arch_vmm_set_pgd((uint64_t)next->page_table);
+    }
 }

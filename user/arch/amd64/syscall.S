@@ -12,23 +12,21 @@
 _start:
     /* SP is already set by kernel ELF loader */
     call main
-    /* Fall through to exit with main's return value */
+    /* Exit with main's return value */
     movq %rax, %rdi
-    call exit
+    call _sys_exit
 1:  hlt
     jmp 1b
 
 .global _sys_read
 _sys_read:
     movq $63, %rax
-    movq %rcx, %r10   /* arg3: rcx → r10 (syscall clobbers rcx) */
     syscall
     ret
 
 .global _sys_write
 _sys_write:
     movq $64, %rax
-    movq %rcx, %r10
     syscall
     ret
 
@@ -77,6 +75,7 @@ _sys_yield:
 .global _sys_draw
 _sys_draw:
     movq $200, %rax
+    movq %rcx, %r10   /* arg3: rcx → r10 */
     syscall
     ret
 
@@ -89,20 +88,21 @@ _sys_flush:
 .global _sys_create_window
 _sys_create_window:
     movq $210, %rax
+    movq %rcx, %r10   /* arg3: rcx → r10 */
     syscall
     ret
 
 .global _sys_window_draw
 _sys_window_draw:
     movq $211, %rax
-    movq %rcx, %r10
+    movq %rcx, %r10   /* arg3: rcx → r10 */
     syscall
     ret
 
 .global _sys_window_blit
 _sys_window_blit:
     movq $213, %rax
-    movq %rcx, %r10
+    movq %rcx, %r10   /* arg3: rcx → r10 */
     syscall
     ret
 
@@ -139,7 +139,7 @@ _sys_destroy_window:
 .global _sys_registry
 _sys_registry:
     movq $250, %rax
-    movq %rcx, %r10
+    movq %rcx, %r10   /* arg3: rcx → r10 */
     syscall
     ret
 
@@ -152,14 +152,14 @@ _sys_get_procs:
 .global _sys_file_write
 _sys_file_write:
     movq $251, %rax
-    movq %rcx, %r10
+    movq %rcx, %r10   /* arg3: rcx → r10 */
     syscall
     ret
 
 .global _sys_file_read
 _sys_file_read:
     movq $252, %rax
-    movq %rcx, %r10
+    movq %rcx, %r10   /* arg3: rcx → r10 */
     syscall
     ret
 

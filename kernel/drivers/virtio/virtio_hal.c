@@ -129,6 +129,7 @@ int arch_virtio_get_device(uint32_t device_id, int index,
     vdev->device_id = device_id;
     vdev->ops = &hal_virtio_ops;
     vdev->priv = hdev;
+    spin_lock_init(&vdev->lock);
     
     /* Detect legacy from bus type or address range */
     vdev->is_legacy = (hdev->base < 0x10000 && hdev->bus_type == HAL_BUS_TYPE_PCI); 
@@ -143,6 +144,8 @@ void arch_virtio_scan(void) {}
 void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
                         uint64_t desc_addr, uint64_t avail_addr,
                         uint64_t used_addr) {
+    uint64_t flags;
+    spin_lock_irqsave(&dev->lock, &flags);
     if (dev->is_legacy) {
         uint32_t pfn = (uint32_t)(desc_addr >> 12);
         hal_dev_write16(&dev->hal_dev, 0x0E, (uint16_t)queue_idx);
@@ -164,4 +167,5 @@ void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
         virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_PFN, desc_addr >> 12);
         virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_READY, 1);
     }
+    spin_unlock_irqrestore(&dev->lock, flags);
 }

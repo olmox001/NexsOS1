@@ -7,6 +7,7 @@
 
 #include <kernel/types.h>
 #include <kernel/hal_device.h>
+#include <kernel/spinlock.h>
 
 /* VirtIO MMIO Register Layout */
 #define VIRTIO_MMIO_MAGIC_VALUE 0x000
@@ -78,6 +79,7 @@ struct virtio_device {
   bool is_legacy;
   const struct virtio_transport_ops *ops;
   void *priv;
+  spinlock_t lock;
 };
 
 typedef struct virtio_device *virtio_handle_t;

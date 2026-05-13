@@ -11,14 +11,21 @@
 #define PCI_CONFIG_ADDR 0xCF8
 #define PCI_CONFIG_DATA 0xCFC
 
+static DEFINE_SPINLOCK(pci_lock);
+
 uint32_t pci_config_read(uint8_t bus, uint8_t device, uint8_t func, uint8_t offset) {
     uint32_t address = (uint32_t)((uint32_t)bus << 16) | 
                        (uint32_t)((uint32_t)device << 11) |
                        (uint32_t)((uint32_t)func << 8) | 
                        (offset & 0xFC) | 
                        ((uint32_t)0x80000000);
+    
+    uint64_t flags;
+    spin_lock_irqsave(&pci_lock, &flags);
     hal_write32(PCI_CONFIG_ADDR, address);
-    return hal_read32(PCI_CONFIG_DATA);
+    uint32_t val = hal_read32(PCI_CONFIG_DATA);
+    spin_unlock_irqrestore(&pci_lock, flags);
+    return val;
 }
 
 void pci_config_write(uint8_t bus, uint8_t device, uint8_t func, uint8_t offset, uint32_t value) {
@@ -27,8 +34,12 @@ void pci_config_write(uint8_t bus, uint8_t device, uint8_t func, uint8_t offset,
                        (uint32_t)((uint32_t)func << 8) | 
                        (offset & 0xFC) | 
                        ((uint32_t)0x80000000);
+    
+    uint64_t flags;
+    spin_lock_irqsave(&pci_lock, &flags);
     hal_write32(PCI_CONFIG_ADDR, address);
     hal_write32(PCI_CONFIG_DATA, value);
+    spin_unlock_irqrestore(&pci_lock, flags);
 }
 
 /* 

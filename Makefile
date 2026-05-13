@@ -115,7 +115,7 @@ KERN_C_SOURCES = \
     $(ARCH_DIR)/cpu/idt.c \
     $(ARCH_DIR)/cpu/gdt.c \
     $(ARCH_DIR)/cpu/msr.c \
-    $(ARCH_DIR)/cpu/syscall.c \
+    $(ARCH_DIR)/cpu/syscall_hal.c \
     $(ARCH_DIR)/cpu/apic.c \
     $(ARCH_DIR)/mm/mmu.c \
     $(ARCH_DIR)/mm/uaccess.c \

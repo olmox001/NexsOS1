@@ -62,15 +62,15 @@ syscall_entry:
     /* GP Registers */
     pushq %rax          /* System call number */
     pushq %rbx
-    pushq %rcx          /* RCX holds RIP, but we push it anyway */
+    pushq %rcx          /* User RIP (saved by syscall) */
     pushq %rdx          /* Arg 2 */
     pushq %rsi          /* Arg 1 */
     pushq %rdi          /* Arg 0 */
     pushq %rbp
     pushq %r8           /* Arg 4 */
     pushq %r9           /* Arg 5 */
-    pushq %r10          /* Arg 3 (R10 replaces RCX) */
-    pushq %r11          /* R11 holds RFLAGS */
+    pushq %r10          /* Arg 3 */
+    pushq %r11          /* User RFLAGS (saved by syscall) */
     pushq %r12
     pushq %r13
     pushq %r14
@@ -83,33 +83,25 @@ syscall_entry:
 
     /* Restore registers */
     /* Restore GP registers (Reverse order of pushes!) */
-    popq  %rax
-    popq  %rbx
-    popq  %rcx
-    popq  %rdx
-    popq  %rsi
-    popq  %rdi
-    popq  %rbp
-    popq  %r8
-    popq  %r9
-    popq  %r10
-    popq  %r11
-    popq  %r12
-    popq  %r13
-    popq  %r14
     popq  %r15
+    popq  %r14
+    popq  %r13
+    popq  %r12
+    popq  %r11
+    popq  %r10
+    popq  %r9
+    popq  %r8
+    popq  %rbp
+    popq  %rdi
+    popq  %rsi
+    popq  %rdx
+    popq  %rcx
+    popq  %rbx
+    popq  %rax
 
     /* Skip error code and vector */
     addq $16, %rsp
 
-    /* Pop iret frame manually for SYSRET */
-    popq %rcx           /* RIP */
-    addq $8, %rsp       /* Skip CS */
-    popq %r11           /* RFLAGS */
-    popq %rsp           /* User RSP */
-    /* SS is implicit in SYSRET */
-
-    /* Swap GS back to user data */
+    /* Return via iretq (more robust than sysretq for now) */
     swapgs
-
-    sysretq
+    iretq

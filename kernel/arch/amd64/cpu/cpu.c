@@ -2,6 +2,7 @@
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/string.h>
+#include <kernel/vmm.h>
 #include <arch/amd64_internal.h>
 #include <arch/amd64/apic.h>
 
@@ -80,6 +81,11 @@ void arch_cpu_switch_context(struct process *next) {
   /* Update per-CPU data for assembly stubs (syscall.S / isr_stubs.S) */
   cpu->stack_top = next->kernel_stack;
   cpu->current_task = next;
+
+  /* Switch address space */
+  if (next->page_table) {
+    arch_vmm_set_pgd((uint64_t)next->page_table);
+  }
 
   /* Update TSS RSP0 for interrupt stack switching */
   gdt_set_rsp0(next->kernel_stack);
