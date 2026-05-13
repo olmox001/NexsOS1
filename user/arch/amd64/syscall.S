@@ -174,3 +174,9 @@ _sys_try_recv:
     movq $32, %rax
     syscall
     ret
+
+.global _sys_sbrk
+_sys_sbrk:
+    movq $216, %rax
+    syscall
+    ret

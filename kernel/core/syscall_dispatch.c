@@ -119,6 +119,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     compositor_destroy_window((int)arg0);
     pt_regs_set_return(frame, 0);
     break;
+  case 216: /* SBRK */
+    pt_regs_set_return(frame, sys_sbrk((intptr_t)arg0));
+    break;
   case 220: /* SPAWN */
   {
     struct cpu_info *cpu = get_cpu_info();
@@ -199,20 +202,25 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     size_t size = (size_t)arg2;
     uint32_t offset = (uint32_t)arg3;
+    int bytes_read;
 
-    uint8_t *k_buf = kmalloc(size);
-    if (!k_buf) {
-      pt_regs_set_return(frame, -1);
-      break;
-    }
-
-    int bytes_read = ext4_read_file(k_path, k_buf, (uint32_t)size, offset);
-    if (bytes_read >= 0) {
-      if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
-        bytes_read = -1;
+    if (size == 0) {
+      bytes_read = ext4_read_file(k_path, NULL, 0, offset);
+    } else {
+      uint8_t *k_buf = kmalloc(size);
+      if (!k_buf) {
+        pt_regs_set_return(frame, -1);
+        break;
       }
+
+      bytes_read = ext4_read_file(k_path, k_buf, (uint32_t)size, offset);
+      if (bytes_read >= 0) {
+        if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
+          bytes_read = -1;
+        }
+      }
+      kfree(k_buf);
     }
-    kfree(k_buf);
     pt_regs_set_return(frame, bytes_read);
   } break;
   default:
@@ -276,11 +284,14 @@ long sys_write(int fd, const char *buf, size_t count) {
   if (count == 0) return 0;
   struct cpu_info *cpu = get_cpu_info();
   char *k_buf = cpu->syscall_buf;
-  size_t to_copy = (count > 1024) ? 1024 : count;
+  size_t to_copy = (count >= 1024) ? 1023 : count;
 
   if (arch_copy_from_user(k_buf, buf, to_copy) != 0)
     return -1;
   k_buf[to_copy] = '\0';
+
+  /* Debug: Always output to UART */
+  uart_puts(k_buf);
 
   if (fd >= 100) { 
     compositor_window_write(fd, k_buf, to_copy);
@@ -295,7 +306,6 @@ long sys_write(int fd, const char *buf, size_t count) {
     }
   }
 
-  uart_puts(k_buf);
   return (long)to_copy;
 }
 

@@ -197,3 +197,9 @@ _sys_try_recv:
     mov x8, #32
     svc #0
     ret
+
+.global _sys_sbrk
+_sys_sbrk:
+    mov x8, #216
+    svc #0
+    ret

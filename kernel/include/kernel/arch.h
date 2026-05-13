@@ -65,6 +65,7 @@ void arch_vmm_map_mmio(uint64_t *pgd);
 int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags);
 int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, uint64_t flags);
 int arch_vmm_unmap(uint64_t pgd, uint64_t va);
+uint64_t arch_vmm_get_physical(uint64_t pgd, uint64_t va);
 void arch_vmm_set_secondary_pgd(uint64_t pgd);
 
 static inline void arch_vmm_set_pgd(uint64_t pgd) { arch_impl_set_pgd(pgd); }

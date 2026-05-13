@@ -242,6 +242,8 @@ int ext4_read_inode(uint32_t ino, uint32_t offset, uint8_t *buf,
   }
 
   uint32_t file_size = inode.i_size_lo;
+  if (size == 0 || buf == NULL)
+    return file_size;
   if (offset >= file_size)
     return 0;
   if (offset + size > file_size)
@@ -276,38 +278,41 @@ int ext4_read_inode(uint32_t ino, uint32_t offset, uint8_t *buf,
     if (block_idx < 12) {
       /* Direct Block */
       phys_block = inode.i_block[block_idx];
-    } else {
-      /* Indirect Block (Index 12 points to block of pointers) */
+    } else if (block_idx < 12 + 1024) {
+      /* Indirect Block */
       uint32_t indirect_blk_num = inode.i_block[12];
-
       if (indirect_blk_num == 0) {
-        pr_err("%s", "Ext4: Indirect block not allocated!\n");
-        kfree(block_buf);
-        kfree(indirect_buf);
-        return -1;
+        kfree(block_buf); kfree(indirect_buf); return -1;
+      }
+      if (virtio_blk_read(indirect_buf, part_start_lba + (indirect_blk_num * 8), 8) != 0) {
+        kfree(block_buf); kfree(indirect_buf); return -1;
+      }
+      phys_block = ((uint32_t *)indirect_buf)[block_idx - 12];
+    } else {
+      /* Double Indirect Block */
+      uint32_t d_idx = block_idx - 12 - 1024;
+      uint32_t master_idx = d_idx / 1024;
+      uint32_t sub_idx = d_idx % 1024;
+
+      uint32_t double_indir_blk = inode.i_block[13];
+      if (double_indir_blk == 0 || master_idx >= 1024) {
+        kfree(block_buf); kfree(indirect_buf); return -1;
       }
 
-      /* Read Indirect Block */
-      uint64_t sector_indir = part_start_lba + (indirect_blk_num * 8);
-      if (virtio_blk_read(indirect_buf, sector_indir, 8) != 0) {
-        pr_err("Ext4: Failed to read Indirect Block at %d\n", indirect_blk_num);
-        kfree(block_buf);
-        kfree(indirect_buf);
-        return -1;
+      /* Read Master Block */
+      if (virtio_blk_read(indirect_buf, part_start_lba + (double_indir_blk * 8), 8) != 0) {
+        kfree(block_buf); kfree(indirect_buf); return -1;
+      }
+      uint32_t sub_indir_blk = ((uint32_t *)indirect_buf)[master_idx];
+      if (sub_indir_blk == 0) {
+        kfree(block_buf); kfree(indirect_buf); return -1;
       }
 
-      uint32_t *pointers = (uint32_t *)indirect_buf;
-      uint32_t indirect_idx = block_idx - 12;
-
-      if (indirect_idx >= 1024) { /* 4096 / 4 = 1024 pointers */
-        pr_err("Ext4: Double Indirect Blocks not supported (Index %d)\n",
-               block_idx);
-        kfree(block_buf);
-        kfree(indirect_buf);
-        return -1;
+      /* Read Sub Block */
+      if (virtio_blk_read(indirect_buf, part_start_lba + (sub_indir_blk * 8), 8) != 0) {
+        kfree(block_buf); kfree(indirect_buf); return -1;
       }
-
-      phys_block = pointers[indirect_idx];
+      phys_block = ((uint32_t *)indirect_buf)[sub_idx];
     }
 
     /* Read the Block */

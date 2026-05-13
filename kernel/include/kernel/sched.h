@@ -45,6 +45,8 @@ struct process {
   /* Memory */
   uint64_t *page_table;  /* Physical address of TTBR0_EL1 */
   uint64_t kernel_stack; /* Kernel stack top */
+  uint64_t heap_start;   /* Base address of user heap */
+  uint64_t heap_end;     /* Current end of user heap */
   spinlock_t mm_lock;    /* Protects page table modifications */
 
   /* Context for switching */
@@ -142,5 +144,6 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg);
 struct ipc_node *pop_message(struct process *proc, int src_pid);
 extern int keyboard_focus_pid;
 long sys_getprocs(struct ps_info *user_buf, size_t max_count);
+long sys_sbrk(intptr_t increment);
 
 #endif

@@ -36,6 +36,7 @@ _start:
 .global _sys_compositor_render
 .global _sys_file_write
 .global _sys_file_read
+.global _sys_sbrk
 
 /* 
  * Generic Syscall Wrapper Macros could be used, but manual is clearer for now
@@ -182,6 +183,12 @@ _sys_file_write:
 /* int _sys_file_read(const char *path, void *buf, int size, int offset)  */
 _sys_file_read:
     mov x8, #252
+    svc #0
+    ret
+
+/* void* _sys_sbrk(intptr_t increment) */
+_sys_sbrk:
+    mov x8, #216
     svc #0
     ret
 

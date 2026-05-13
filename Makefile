@@ -1,6 +1,5 @@
 # Makefile for OS1Test (AMD64 / AArch64)
 # Cross-compilation for bare-metal kernel
-
 # ==============================================================================
 # Configuration
 # ==============================================================================
@@ -260,11 +259,12 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_DIR)/lib/lib.o
+USER_MALLOC_O  = $(BUILD_DIR)/$(USER_DIR)/lib/malloc.o
 
 USER_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/counter.elf $(BUILD_DIR)/shell.elf \
             $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/ipc_recv.elf \
             $(BUILD_DIR)/notify_srv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/regedit.elf \
-            $(BUILD_DIR)/writetest.elf
+            $(BUILD_DIR)/writetest.elf $(BUILD_DIR)/doom.elf
 
 user: $(USER_ELFS)
 
@@ -278,16 +278,17 @@ $(BUILD_DIR)/$(USER_DIR)/bin/%.o: $(USER_DIR)/bin/%.c
 	@$(CC) $(CFLAGS) -c $< -o $@
 
 # Explicit dependencies for each user ELF
-$(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/bin/init.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/shell.elf: $(BUILD_DIR)/$(USER_DIR)/bin/shell.o $(BUILD_DIR)/$(USER_DIR)/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/notify_srv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/notification_server.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/regedit.elf: $(BUILD_DIR)/$(USER_DIR)/bin/regedit.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/bin/init.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/shell.elf: $(BUILD_DIR)/$(USER_DIR)/bin/shell.o $(BUILD_DIR)/$(USER_DIR)/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/notify_srv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/notification_server.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/regedit.elf: $(BUILD_DIR)/$(USER_DIR)/bin/regedit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
@@ -318,6 +319,13 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
 	@cp $(USER_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
+	@# Copy essential WAD files to the root and /bin for engine detection
+	@-cp user/bin/doomgeneric-master/DOOM_wads-master/doom.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
+	@-cp user/bin/doomgeneric-master/DOOM_wads-master/doom1.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
+	@-cp user/bin/doomgeneric-master/DOOM_wads-master/doom2.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
+	@-cp user/bin/doomgeneric-master/DOOM_wads-master/doom.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doomgeneric-master/DOOM_wads-master/doom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doomgeneric-master/DOOM_wads-master/doom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 
 disk: $(MKDISK) kernel rootfs bootloader
@@ -458,3 +466,24 @@ help:
 	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.1.2)"
 	@echo "  run          - Build and run kernel directly"
 	@echo "  clean        - Remove build artifacts"
+
+DOOM_DIR = user/bin/doomgeneric-master/doomgeneric
+DOOM_SRC = am_map.c doomdef.c doomstat.c dstrings.c d_event.c d_items.c d_iwad.c d_loop.c d_main.c d_mode.c d_net.c f_finale.c f_wipe.c g_game.c hu_lib.c hu_stuff.c info.c i_cdmus.c i_endoom.c i_joystick.c i_scale.c i_sound.c i_system.c i_timer.c memio.c m_argv.c m_bbox.c m_cheat.c m_config.c m_controls.c m_fixed.c m_menu.c m_misc.c m_random.c p_ceilng.c p_doors.c p_enemy.c p_floor.c p_inter.c p_lights.c p_map.c p_maputl.c p_mobj.c p_plats.c p_pspr.c p_saveg.c p_setup.c p_sight.c p_spec.c p_switch.c p_telept.c p_tick.c p_user.c r_bsp.c r_data.c r_draw.c r_main.c r_plane.c r_segs.c r_sky.c r_things.c sha1.c sounds.c statdump.c st_lib.c st_stuff.c s_sound.c tables.c v_video.c wi_stuff.c w_checksum.c w_file.c w_main.c w_wad.c z_zone.c w_file_stdc.c i_input.c i_video.c doomgeneric.c dummy.c
+DOOM_OBJS = $(addprefix $(BUILD_DIR)/$(DOOM_DIR)/, $(DOOM_SRC:.c=.o))
+DOOM_PLATFORM_OBJ = $(BUILD_DIR)/user/bin/doomgeneric_os1.o
+
+# Doom code is legacy, relax strict warnings
+DOOM_CFLAGS = -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g $(ARCH_CFLAGS) $(INCLUDE)
+DOOM_CFLAGS += -I$(DOOM_DIR) -DNORMALUNIX
+
+$(BUILD_DIR)/doom.elf: $(DOOM_OBJS) $(DOOM_PLATFORM_OBJ) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+	echo "[Linking Doom]"
+	$(CC) $(DOOM_CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+
+$(DOOM_PLATFORM_OBJ): user/bin/doomgeneric_os1.c
+	mkdir -p $(dir $@)
+	$(CC) $(DOOM_CFLAGS) -c $< -o $@
+
+$(DOOM_OBJS): $(BUILD_DIR)/$(DOOM_DIR)/%.o: $(DOOM_DIR)/%.c
+	mkdir -p $(dir $@)
+	$(CC) $(DOOM_CFLAGS) -I$(DOOM_DIR) -DNORMALUNIX -c $< -o $@
