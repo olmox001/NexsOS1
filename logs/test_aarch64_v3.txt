@@ -1,0 +1,6 @@
+build/aarch64/kernel/arch/aarch64/platform.o: In function `arch_smp_init':
+/Users/olmo/Documents/git/ostest1/os1test-dev/kernel/arch/aarch64/platform.c:139: undefined reference to `secondary_stacks'
+/Users/olmo/Documents/git/ostest1/os1test-dev/kernel/arch/aarch64/platform.c:139: undefined reference to `secondary_stacks'
+/Users/olmo/Documents/git/ostest1/os1test-dev/kernel/arch/aarch64/platform.c:167: undefined reference to `secondary_stacks'
+/Users/olmo/Documents/git/ostest1/os1test-dev/kernel/arch/aarch64/platform.c:167: undefined reference to `secondary_stacks'
+make: *** [build/aarch64/kernel.elf] Error 1

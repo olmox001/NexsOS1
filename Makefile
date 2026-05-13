@@ -163,6 +163,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/mm/vmm.c \
     $(KERNEL_DIR)/mm/buffer.c \
     $(KERNEL_DIR)/lib/string.c \
+    $(KERNEL_DIR)/lib/crc32.c \
     $(KERNEL_DIR)/lib/vsnprintf.c \
     $(KERNEL_DIR)/lib/printk.c \
     $(KERNEL_DIR)/lib/stack_protector.c \
@@ -332,7 +333,7 @@ $(MKDISK): tools/mkdisk.c
 # ==============================================================================
 
 ifeq ($(ARCH), amd64)
-QEMU_FLAGS = -m 1G -smp 4 -serial mon:stdio \
+QEMU_FLAGS = -m 3G -smp 8 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
              -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
@@ -340,19 +341,19 @@ QEMU_FLAGS = -m 1G -smp 4 -serial mon:stdio \
              -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
              -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
 
-QEMU_RELEASE_FLAGS = -m 1G -smp 4 -serial mon:stdio \
+QEMU_RELEASE_FLAGS = -m 3G -smp 8 -serial mon:stdio \
                      -display default,show-cursor=on \
                      -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
                      -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
                      -device virtio-mouse-pci,disable-legacy=on,disable-modern=off
 else
-QEMU_FLAGS = -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio \
+QEMU_FLAGS = -M virt -cpu cortex-a57 -m 3G -smp 8 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \
              -drive if=none,file=$(DISK_IMG),id=hd0,format=raw -device virtio-blk-device,drive=hd0
 
-QEMU_RELEASE_FLAGS = -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio \
+QEMU_RELEASE_FLAGS = -M virt -cpu cortex-a57 -m 3G -smp 8 -serial mon:stdio \
                      -display default,show-cursor=on \
                      -device virtio-gpu-device \
                      -device virtio-keyboard-device -device virtio-mouse-device \

@@ -80,36 +80,74 @@ void gpt_init(void) {
     return;
   }
 
+  /* 2.1 Verify Header CRC32 */
+  uint32_t orig_crc = header->header_crc32;
+  header->header_crc32 = 0;
+  uint32_t calc_crc = crc32(header, header->header_size);
+  header->header_crc32 = orig_crc;
+
+  if (calc_crc != orig_crc) {
+    pr_err("GPT: Header CRC mismatch! (calc: 0x%08x, orig: 0x%08x). Falling back to MBR.\n", calc_crc,
+           orig_crc);
+
+           if (virtio_blk_read(buf, 0, 1) != 0) {
+      pr_err("%s", "Partition: Failed to read LBA 0 (MBR fallback)\n");
+      pmm_free_page(buf);
+      return;
+    }
+    mbr_init(buf);
+    pmm_free_page(buf);
+    return; 
+  }  
+
   pr_info("GPT: Valid signature found. Entries: %d @ LBA %ld\n",
           header->num_partition_entries, header->partition_entry_lba);
 
   /* 3. Read Partition Entries */
-  /*
-   * Usually entries start at LBA 2.
-   * Entry size is usually 128 bytes.
-   * We need to read enough sectors to cover all entries we care about.
-   * Let's say we read 4 sectors (2048 bytes) -> 16 entries (128 bytes each).
-   */
-  /* 3. Read Partition Entries */
   uint64_t entries_lba = header->partition_entry_lba;
   uint32_t entry_size = header->partition_entry_size;
   uint32_t num_entries = header->num_partition_entries;
+  uint32_t entries_crc = header->partition_entry_crc32;
 
-  /* Reuse buffer to read entries */
-  /* We assume entries fit in one page (4096 bytes / 128 = 32 entries) */
-  /* Read 8 sectors = 4096 bytes */
-  if (virtio_blk_read(buf, entries_lba, 8) != 0) {
+  /* Calculate total size and pages needed */
+  uint32_t total_entries_size = num_entries * entry_size;
+  uint32_t num_pages = (total_entries_size + PAGE_SIZE - 1) / PAGE_SIZE;
+  uint32_t sectors_to_read = (total_entries_size + 511) / 512;
+
+  /* Allocate buffer for all partition entries if needed */
+  uint8_t *entries_buf = buf;
+  if (num_pages > 1) {
+    /* Allocate additional pages for partition entries */
+    entries_buf = (uint8_t *)pmm_alloc_pages(num_pages);
+    if (!entries_buf) {
+      pr_warn("GPT: Cannot allocate %u pages for entries, limiting to 32\n", num_pages);
+      total_entries_size = 32 * entry_size;
+      sectors_to_read = (total_entries_size + 511) / 512;
+      entries_buf = buf;
+    }
+  }
+
+  if (virtio_blk_read(entries_buf, entries_lba, sectors_to_read) != 0) {
     pr_info("%s", "GPT: Failed to read partition entries\n");
+    if (entries_buf != buf) pmm_free_pages(entries_buf, num_pages);
     pmm_free_page(buf);
     return;
   }
 
+  /* 3.1 Verify Partition Entries CRC32 */
+  uint32_t calc_entries_crc = crc32(entries_buf, total_entries_size);
+  if (calc_entries_crc != entries_crc) {
+    pr_err("GPT: Partition Entries CRC mismatch! (calc: 0x%08x, orig: 0x%08x)\n",
+           calc_entries_crc, entries_crc);
+  }
+
   /* Parse entries */
   num_partitions = 0;
+  uint32_t entries_to_read = total_entries_size / entry_size;
 
-  for (uint32_t i = 0; i < 32 && i < num_entries; i++) {
+  for (uint32_t i = 0; i < entries_to_read; i++) {
     struct gpt_partition_entry *entry =
-        (struct gpt_partition_entry *)(buf + i * entry_size);
+        (struct gpt_partition_entry *)(entries_buf + i * entry_size);
 
     /* Check if entry is used (Type GUID != 0) */
     int is_unused = 1;
@@ -139,6 +177,8 @@ void gpt_init(void) {
     num_partitions++;
   }
 
+  /* Cleanup allocated buffers */
+  if (entries_buf != buf) pmm_free_pages(entries_buf, num_pages);
   pmm_free_page(buf);
   pr_info("GPT: Found %d partitions\n", num_partitions);
 }

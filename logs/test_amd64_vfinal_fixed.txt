@@ -1,0 +1,13 @@
+kernel/arch/amd64/mm/mmu.c: In function 'get_next_table':
+kernel/arch/amd64/mm/mmu.c:98:16: error: unused variable 'sub_flags' [-Werror=unused-variable]
+   98 |       uint64_t sub_flags = (block_flags & ~0x080) | X86_PTE_P | X86_PTE_RW | X86_PTE_US;
+      |                ^~~~~~~~~
+kernel/arch/amd64/mm/mmu.c: In function 'arch_vmm_map_range':
+kernel/arch/amd64/mm/mmu.c:311:17: error: redefinition of 'pdpt'
+  311 |       uint64_t *pdpt = get_next_table(pml4, PML4_INDEX(v), 1, 0);
+      |                 ^~~~
+kernel/arch/amd64/mm/mmu.c:309:17: note: previous definition of 'pdpt' with type 'uint64_t *' {aka 'long unsigned int *'}
+  309 |       uint64_t *pdpt = (uint64_t *)(pml4[pml4_idx] & PTE_ADDR_MASK);
+      |                 ^~~~
+cc1: all warnings being treated as errors
+make: *** [build/amd64/kernel/arch/amd64/mm/mmu.o] Error 1

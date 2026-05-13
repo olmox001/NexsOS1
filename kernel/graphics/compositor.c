@@ -46,6 +46,10 @@ struct window {
   int escape_state;
   char escape_buf[32];
   int escape_len;
+
+  /* Compositor flags */
+  int has_alpha; /* Se 1, contiene trasparenze e non occlude i layer inferiori
+                  */
 };
 
 /* Global State */
@@ -109,9 +113,12 @@ void compositor_init(void) {
   bb_height = 1280;
   compositor_backbuffer = kmalloc(bb_width * bb_height * 4);
 
-  /* Initialize damage rect to full screen so the first frame is fully uploaded */
-  damage_x1 = 0; damage_y1 = 0;
-  damage_x2 = bb_width; damage_y2 = bb_height;
+  /* Initialize damage rect to full screen so the first frame is fully uploaded
+   */
+  damage_x1 = 0;
+  damage_y1 = 0;
+  damage_x2 = bb_width;
+  damage_y2 = bb_height;
   if (!compositor_backbuffer) {
     pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
   }
@@ -123,7 +130,6 @@ void compositor_init(void) {
 static void compositor_render_internal(void);
 static void draw_rect_internal(int window_id, int x, int y, int w, int h,
                                uint32_t color, int caller_pid);
-
 
 /*
  * Create Window
@@ -229,6 +235,9 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   windows[slot].escape_state = 0;
   windows[slot].escape_len = 0;
 
+  /* Attiva il supporto alpha blending per default */
+  windows[slot].has_alpha = 1;
+
   /* Clear buffer to background */
   for (int i = 0; i < w * h; i++) {
     buffer[i] = windows[slot].bg_color;
@@ -253,24 +262,25 @@ void compositor_destroy_window(int window_id) {
   uint64_t flags;
   spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
-      if (windows[i].id == window_id) {
-        if (windows[i].pid == keyboard_focus_pid) {
-          /* Focused window is being destroyed, reset focus to Shell (PID 7 or 2) */
-          /* In a more advanced system we would pick the next window in Z-order */
-          keyboard_focus_pid = 7; 
-        }
-        if (windows[i].buffer) {
-          kfree(windows[i].buffer);
-        }
-        if (windows[i].text_grid)
-          kfree(windows[i].text_grid);
-        if (windows[i].attr_grid)
-          kfree(windows[i].attr_grid);
-        memset(&windows[i], 0, sizeof(struct window));
-        window_count--;
-        spin_unlock_irqrestore(&compositor_lock, flags);
-        return;
+    if (windows[i].id == window_id) {
+      if (windows[i].pid == keyboard_focus_pid) {
+        /* Focused window is being destroyed, reset focus to Shell (PID 7 or 2)
+         */
+        /* In a more advanced system we would pick the next window in Z-order */
+        keyboard_focus_pid = 7;
       }
+      if (windows[i].buffer) {
+        kfree(windows[i].buffer);
+      }
+      if (windows[i].text_grid)
+        kfree(windows[i].text_grid);
+      if (windows[i].attr_grid)
+        kfree(windows[i].attr_grid);
+      memset(&windows[i], 0, sizeof(struct window));
+      window_count--;
+      spin_unlock_irqrestore(&compositor_lock, flags);
+      return;
+    }
   }
   spin_unlock_irqrestore(&compositor_lock, flags);
 }
@@ -565,8 +575,8 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
   }
 
   /* Mark compositor as needing redraw (window area including title bar) */
-  expand_damage(win->x, win->y - TITLE_BAR_HEIGHT,
-                win->width, win->height + TITLE_BAR_HEIGHT);
+  expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, win->width,
+                win->height + TITLE_BAR_HEIGHT);
   compositor_dirty = 1;
   spin_unlock_irqrestore(&compositor_lock, flags);
 }
@@ -599,8 +609,7 @@ void compositor_handle_click(int button, int state) {
     if (windows[i].id != 0 && windows[i].visible) {
       int title_top = windows[i].y - TITLE_BAR_HEIGHT;
       if (mouse_x >= windows[i].x &&
-          mouse_x < windows[i].x + windows[i].width &&
-          mouse_y >= title_top &&
+          mouse_x < windows[i].x + windows[i].width && mouse_y >= title_top &&
           mouse_y < windows[i].y + windows[i].height) {
         if (windows[i].z_order > max_z) {
           max_z = windows[i].z_order;
@@ -625,21 +634,24 @@ void compositor_handle_click(int button, int state) {
 
   /* Update keyboard focus to this process */
   if (keyboard_focus_pid != hit->pid) {
-    pr_info("Compositor: Focus changed to PID %d (Window '%s')\n", hit->pid, hit->title);
+    pr_info("Compositor: Focus changed to PID %d (Window '%s')\n", hit->pid,
+            hit->title);
     keyboard_focus_pid = hit->pid;
   }
 
-  /* Check for close button — save pid/id, release lock before process_terminate */
+  /* Check for close button — save pid/id, release lock before process_terminate
+   */
   if (!hit->protected) {
     int btn_x = hit->x + hit->width - CLOSE_BUTTON_SIZE - 2;
     int btn_y = hit->y - TITLE_BAR_HEIGHT + 2;
     if (mouse_x >= btn_x && mouse_x < btn_x + CLOSE_BUTTON_SIZE &&
         mouse_y >= btn_y && mouse_y < btn_y + CLOSE_BUTTON_SIZE) {
       int close_pid = hit->pid;
-      int close_id  = hit->id;
+      int close_id = hit->id;
       spin_unlock_irqrestore(&compositor_lock, flags);
 
-      pr_info("Compositor: Close button PID %d window %d\n", close_pid, close_id);
+      pr_info("Compositor: Close button PID %d window %d\n", close_pid,
+              close_id);
       /* process_terminate calls compositor_destroy_windows_by_pid internally */
       extern int process_terminate(int pid);
       process_terminate(close_pid);
@@ -790,7 +802,8 @@ static void compositor_render_internal(void) {
   }
 
   /* Top Most handling */
-  /* Top Most handling: move all top-most windows to the end of the sorted list */
+  /* Top Most handling: move all top-most windows to the end of the sorted list
+   */
   int current_count = count;
   for (int i = 0; i < current_count; i++) {
     if (sorted[i]->top_most) {
@@ -800,9 +813,11 @@ static void compositor_render_internal(void) {
         sorted[k] = sorted[k + 1];
       }
       sorted[current_count - 1] = tmp;
-      /* Decrement current_count so we don't re-process the window we just moved */
+      /* Decrement current_count so we don't re-process the window we just moved
+       */
       current_count--;
-      /* Decrement i to process the window that was shifted into the current slot */
+      /* Decrement i to process the window that was shifted into the current
+       * slot */
       i--;
     }
   }
@@ -841,8 +856,10 @@ static void compositor_render_internal(void) {
 
     visible_regions[i] = vis;
 
-    /* Add Self to Occluded (Assuming Opaque) */
-    region_add_rect(occluded, win->x, win_y, win->width, win_h);
+    /* Aggiungi a Occluded (Solo se la finestra non contiene trasparenze) */
+    if (!win->has_alpha) {
+      region_add_rect(occluded, win->x, win_y, win->width, win_h);
+    }
   }
 
   /* Calculate Background Region (Screen - Occluded) */
@@ -861,15 +878,15 @@ static void compositor_render_internal(void) {
         for (int x = 0; x < bg->w; x++) {
           int sy = bg->y + y;
           int sx = bg->x + x;
-          
+
           /* Final backbuffer bounds safety check */
           if (sx >= 0 && sx < bb_w && sy >= 0 && sy < bb_h) {
             /* Proper Gradient Background */
-          uint32_t r_chk = 20;
-          uint32_t g_chk = 40 + (sy * 40 / bb_h);
-          uint32_t b_chk = 80 + (sy * 80 / bb_h);
-          backbuffer[sy * bb_w + sx] =
-              0xFF000000 | (r_chk << 16) | (g_chk << 8) | b_chk;
+            uint32_t r_chk = 20;
+            uint32_t g_chk = 40 + (sy * 40 / bb_h);
+            uint32_t b_chk = 80 + (sy * 80 / bb_h);
+            backbuffer[sy * bb_w + sx] =
+                0xFF000000 | (r_chk << 16) | (g_chk << 8) | b_chk;
           }
         }
       }
@@ -994,7 +1011,8 @@ static void compositor_render_internal(void) {
     }
   }
 
-  /* Flush — only upload the damage bounding box instead of the full framebuffer */
+  /* Flush — only upload the damage bounding box instead of the full framebuffer
+   */
   if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
     void *fb_va = dev->ops->get_framebuffer(dev, NULL);
     if (fb_va) {
@@ -1008,14 +1026,15 @@ static void compositor_render_internal(void) {
         const uint8_t *src = (const uint8_t *)backbuffer;
         for (int row = dy1; row < dy2; row++) {
           memcpy(dst + ((size_t)row * bb_w + dx1) * 4,
-                 src + ((size_t)row * bb_w + dx1) * 4,
-                 row_bytes);
+                 src + ((size_t)row * bb_w + dx1) * 4, row_bytes);
         }
         dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
       }
       /* Reset damage: invalid state (x1>x2) means nothing to flush */
-      damage_x1 = bb_w; damage_y1 = bb_h;
-      damage_x2 = 0;    damage_y2 = 0;
+      damage_x1 = bb_w;
+      damage_y1 = bb_h;
+      damage_x2 = 0;
+      damage_y2 = 0;
     }
   }
 
@@ -1154,7 +1173,8 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
         void *dst_ptr = &windows[i].buffer[py * windows[i].width + dest_x];
         const void *src_ptr = &user_buf[dy * w + src_x];
 
-        if (vmm_copy_from_user(dst_ptr, src_ptr, copy_w * sizeof(uint32_t)) != 0) {
+        if (vmm_copy_from_user(dst_ptr, src_ptr, copy_w * sizeof(uint32_t)) !=
+            0) {
           /* Page fault or invalid access: abort blit */
           spin_unlock_irqrestore(&compositor_lock, flags);
           return;

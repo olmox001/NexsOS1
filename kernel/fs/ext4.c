@@ -14,6 +14,7 @@
 static uint64_t part_start_lba;
 static struct ext4_superblock sb;
 static struct ext4_group_desc bg;
+static DEFINE_SPINLOCK(ext4_lock);
 
 /*
  * Helper: Read/Write Sectors
@@ -41,8 +42,12 @@ static uint32_t ext4_alloc_block(void) {
   if (!bitmap)
     return 0;
 
+  uint64_t lock_flags;
+  spin_lock_irqsave(&ext4_lock, &lock_flags);
+
   /* Read Bitmap */
   if (ext4_bread(part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+    spin_unlock_irqrestore(&ext4_lock, lock_flags);
     kfree(bitmap);
     return 0;
   }
@@ -70,6 +75,7 @@ static uint32_t ext4_alloc_block(void) {
 
   if (!found) {
     pr_err("%s", "Ext4: Bitmap check failed (inconsistent with free_count)\n");
+    spin_unlock_irqrestore(&ext4_lock, lock_flags);
     kfree(bitmap);
     return 0;
   }
@@ -77,6 +83,7 @@ static uint32_t ext4_alloc_block(void) {
   /* Write Bitmap Back */
   if (ext4_bwrite(part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
     pr_err("%s", "Ext4: Failed to update Block Bitmap\n");
+    spin_unlock_irqrestore(&ext4_lock, lock_flags);
     kfree(bitmap);
     return 0;
   }
@@ -86,36 +93,20 @@ static uint32_t ext4_alloc_block(void) {
   bg.bg_free_blocks_count_lo--;
   sb.s_free_blocks_count_lo--;
 
-  /* Write Descriptor Back (Block 1) */
-  /* Re-use 'bitmap' buffer or alloc small temp? Alloc small. */
-  /* Actually, bg is small, just 1 sector RMW or direct 4096 write? */
-  /* Descriptor table is at Block 1. We have 'bg' struct locally. */
-  /* WARN: Descriptor table might contain multiple BGs. We only support BG0. */
-  /* We read 1 sector for BG0 in init. Let's write it back. */
-  /* Need to preserve other BGs? We only read 1 sector (512 bytes). */
-  /* Struct is 32/64 bytes. We read 512 bytes into 'bg'? No, we read into 'buf'
-   * then memcpy. */
-  /* We should read the sector block again to be safe, modify BG0, write back.
-   */
-
   uint8_t *bg_buf = kmalloc(512);
-  if (ext4_bread(part_start_lba + 8, 1, bg_buf) == 0) {
+  if (bg_buf && ext4_bread(part_start_lba + 8, 1, bg_buf) == 0) {
     memcpy(bg_buf, &bg, sizeof(bg)); /* Update BG0 in place */
     ext4_bwrite(part_start_lba + 8, 1, bg_buf);
   }
-  kfree(bg_buf);
+  if (bg_buf) kfree(bg_buf);
 
-  /* Write Superblock Back (LBA 2) */
   uint8_t *sb_buf = kmalloc(4096);
-  if (ext4_bread(part_start_lba + 2, 2, sb_buf) ==
-      0) { /* Read 1024-byte SB container */
-    /* Superblock is at offset 0 of this read/write (since LBA 2 is byte 1024)
-     */
-    /* In ext4_init we read 2 sectors (1024 bytes). */
+  if (sb_buf && ext4_bread(part_start_lba + 2, 2, sb_buf) == 0) {
     memcpy(sb_buf, &sb, sizeof(sb));
     ext4_bwrite(part_start_lba + 2, 2, sb_buf);
   }
-  kfree(sb_buf);
+  if (sb_buf) kfree(sb_buf);
+  spin_unlock_irqrestore(&ext4_lock, lock_flags);
 
   /* Return Absolute Block Number */
   /* For Group 0, this is just block_in_group */
@@ -222,13 +213,18 @@ static int ext4_update_inode(uint32_t ino, struct ext4_inode *inode) {
   uint8_t *k_buf = kmalloc(512);
   if (!k_buf)
     return -1;
+
+  uint64_t lock_flags;
+  spin_lock_irqsave(&ext4_lock, &lock_flags);
   if (virtio_blk_read(k_buf, sector, 1) != 0) {
+    spin_unlock_irqrestore(&ext4_lock, lock_flags);
     kfree(k_buf);
     return -1;
   }
 
   memcpy(k_buf + sector_off, inode, sizeof(struct ext4_inode));
   int ret = virtio_blk_write(k_buf, sector, 1);
+  spin_unlock_irqrestore(&ext4_lock, lock_flags);
   kfree(k_buf);
   return ret;
 }
@@ -457,11 +453,12 @@ int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size,
 
   uint32_t bytes_written = 0;
 
-  /* Use provided offset. If offset is valid, start there. */
-  /* Note: sparse files not fully supported, so gaps might trigger errors or be
-   * zeroed if we had that logic. */
-  /* For now, just trust offset is reasonable (<= size or slightly past for
-   * simple expansion) */
+  /* Validate offset */
+  if (offset > inode.i_size_lo + 1048576) {  /* Allow up to 1MB past current size for sparse files */
+    pr_err("EXT4: Write offset 0x%x exceeds reasonable bounds (i_size_lo=0x%x)\n", 
+           offset, inode.i_size_lo);
+    return -1;
+  }
 
   uint32_t current_offset = offset;
 

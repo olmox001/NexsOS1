@@ -1,4 +1,3 @@
-x86_64-elf-ld: build/amd64/kernel.elf: warning: allocated section `.note.PVH' not in segment
 Ext4: Added build/amd64/rootfs/bin/ipc_send (Ino 13, 43928 bytes, 11 blocks)
 Ext4: Added build/amd64/rootfs/bin/init (Ino 14, 42480 bytes, 11 blocks)
 Ext4: Added build/amd64/rootfs/bin/regedit (Ino 15, 42440 bytes, 11 blocks)
@@ -51,9 +50,9 @@ L[C0] [INFO] AMD64: LAPIC 0 initialized at 0xfee00000
 [C0] [INFO] Initializing timer...
 [C0] [INFO] HAL: Initializing global timer state (LAPIC calibration)
 [C0] [INFO] LAPIC: Calibrating timer against PIT...
-[C0] [INFO] LAPIC: Timer calibrated: 62712 ticks per ms
+[C0] [INFO] LAPIC: Timer calibrated: 62550 ticks per ms
 [C0] [INFO] Timer driver initialized via HAL
-[C0] [INFO] LAPIC: CPU 0 timer started at 100 Hz (627120 ticks/interval)
+[C0] [INFO] LAPIC: CPU 0 timer started at 100 Hz (625500 ticks/interval)
 [C0] [INFO] Initializing memory...
 [C0] [INFO] PMM: Metadata initialized at 0x932000 (8224 KB)
 [C0] [INFO] PMM: Total detected RAM: 1024 MB
@@ -150,7 +149,7 @@ L[C1] [INFO] AMD64: LAPIC 1 initialized at 0xfee00000
 [C1] [INFO] CPU: Initializing LAPIC...
 L[C1] [INFO] AMD64: LAPIC 1 initialized at 0xfee00000
 [C1] [INFO] AMD64 CPU 1 initialized (GDT, IDT, Syscall, SSE, GS enabled)
-[C1] [INFO] LAPIC: CPU 1 timer started at 100 Hz (627120 ticks/interval)
+[C1] [INFO] LAPIC: CPU 1 timer started at 100 Hz (625500 ticks/interval)
 [C1] [INFO] Secondary CPU 1 online and ready
 [C0] [INFO] AMD64: CPU 1 is online
 [C0] [INFO] Process: Creating 'idle' (Prio=31)
@@ -159,8 +158,8 @@ L[C1] [INFO] AMD64: LAPIC 1 initialized at 0xfee00000
 [Init] System Initialization Starting...
 [Init] Spawning Notification Server...
 [C1] [INFO] Process: Creating '/bin/notify_srv' (Prio=2)
-[C0] [INFO] AMD64: Sent INIT-SIPI to CPU 2
-S[C2] [INFO] CPU: Initializing GDT...
+[C0] [INFO] AMD64: Sent INIT-SIPI to CSPU 2
+[C2] [INFO] CPU: Initializing GDT...
 [C2] [INFO] GDT: Loading GDTR...
 [C2] [INFO] GDT: Loading TSS...
 [C2] [INFO] GDT: Done
@@ -180,7 +179,7 @@ L[C2] [INFO] AMD64: LAPIC 2 initialized at 0xfee00000
 [C2] [INFO] CPU: Initializing LAPIC...
 L[C2] [INFO] AMD64: LAPIC 2 initialized at 0xfee00000
 [C2] [INFO] AMD64 CPU 2 initialized (GDT, IDT, Syscall, SSE, GS enabled)
-[C2] [INFO] LAPIC: CPU 2 timer started at 100 Hz (627120 ticks/interval)
+[C2] [INFO] LAPIC: CPU 2 timer started at 100 Hz (625500 ticks/interval)
 [C2] [INFO] Secondary CPU 2 online and ready
 [C0] [INFO] AMD64: CPU 2 is online
 [C0] [INFO] Process: Creating 'idle' (Prio=31)
@@ -188,125 +187,125 @@ L[C2] [INFO] AMD64: LAPIC 2 initialized at 0xfee00000
 [C1] [INFO] process_create: PID 4 context allocated at 0x0000000003a51f50 (kstack=3a52000)
 [C1] [INFO] ELF: Mapping Segment at 0x7ffff000 (FileSz: 0x3324, MemSz: 0x3324)
 [C1] [INFO] ELF: Mapping Segment at 0x80003328 (FileSz: 0x8, MemSz: 0x8)
-[C1] [WARN] VMM: Remapping occupied VA c0000000 (Phys: 38e5000 -> 3a5b000)
-[C1] [WARN] VMM: Remapping occupied VA c0001000 (Phys: 38e7000 -> 3a5c000)
-[C1] [WARN] VMM: Remapping occupied VA c0002000 (Phys: 38e8000 -> 3a5d000)
-[C1] [WARN] VMM: Remapping occupied VA c0003000 (Phys: 38e9000 -> 3a5e000)
-[C1] [WARN] VMM: Remapping occupied VA c0004000 (Phys: 38ea000 -> 3a5f000)
-[C1] [WARN] VMM: Remapping occupied VA c0005000 (Phys: 38eb000 -> 3a60000)
-[C1] [WARN] VMM: Remapping occupied VA c0006000 (Phys: 38ec000 -> 3a61000)
-[C1] [WARN] VMM: Remapping occupied VA c0007000 (Phys: 38ed000 -> 3a62000)
-[C1] [WARN] VMM: Remapping occupied VA c0008000 (Phys: 38ee000 -> 3a63000)
-[C1] [WARN] VMM: Remapping occupied VA c0009000 (Phys: 38ef000 -> 3a64000)
-[C1] [WARN] VMM: Remapping occupied VA c000a000 (Phys: 38f0000 -> 3a65000)
-[C1] [WARN] VMM: Remapping occupied VA c000b000 (Phys: 38f1000 -> 3a66000)
-[C1] [WARN] VMM: Remapping occupied VA c000c000 (Phys: 38f2000 -> 3a67000)
-[C1] [WARN] VMM: Remapping occupied VA c000d000 (Phys: 38f3000 -> 3a68000)
-[C1] [WARN] VMM: Remapping occupied VA c000e000 (Phys: 38f4000 -> 3a69000)
-[C1] [WARN] VMM: Remapping occupied VA c000f000 (Phys: 38f5000 -> 3a6a000)
-[C1] [WARN] VMM: Remapping occupied VA c0010000 (Phys: 38f6000 -> 3a6b000)
-[C1] [WARN] VMM: Remapping occupied VA c0011000 (Phys: 38f7000 -> 3a6c000)
-[C1] [WARN] VMM: Remapping occupied VA c0012000 (Phys: 38f8000 -> 3a6d000)
-[C1] [WARN] VMM: Remapping occupied VA c0013000 (Phys: 38f9000 -> 3a6e000)
-[C1] [WARN] VMM: Remapping occupied VA c0014000 (Phys: 38fa000 -> 3a6f000)
-[C1] [WARN] VMM: Remapping occupied VA c0015000 (Phys: 38fb000 -> 3a70000)
-[C1] [WARN] VMM: Remapping occupied VA c0016000 (Phys: 38fc000 -> 3a71000)
-[C1] [WARN] VMM: Remapping occupied VA c0017000 (Phys: 38fd000 -> 3a72000)
-[C1] [WARN] VMM: Remapping occupied VA c0018000 (Phys: 38fe000 -> 3a73000)
-[C1] [WARN] VMM: Remapping occupied VA c0019000 (Phys: 38ff000 -> 3a74000)
-[C1] [WARN] VMM: Remapping occupied VA c001a000 (Phys: 3900000 -> 3a75000)
-[C1] [WARN] VMM: Remapping occupied VA c001b000 (Phys: 3901000 -> 3a76000)
-[C1] [WARN] VMM: Remapping occupied VA c001c000 (Phys: 3902000 -> 3a77000)
-[C1] [WARN] VMM: Remapping occupied VA c001d000 (Phys: 3903000 -> 3a78000)
-[C1] [WARN] VMM: Remapping occupied VA c001e000 (Phys: 3904000 -> 3a79000)
-[C1] [WARN] VMM: Remapping occupied VA c001f000 (Phys: 3905000 -> 3a7a000)
-[C1] [WARN] VMM: Remapping occupied VA c0020000 (Phys: 3906000 -> 3a7b000)
-[C1] [WARN] VMM: Remapping occupied VA c0021000 (Phys: 3907000 -> 3a7c000)
-[C1] [WARN] VMM: Remapping occupied VA c0022000 (Phys: 3908000 -> 3a7d000)
-[C1] [WARN] VMM: Remapping occupied VA c0023000 (Phys: 3909000 -> 3a7e000)
-[C1] [WARN] VMM: Remapping occupied VA c0024000 (Phys: 390a000 -> 3a7f000)
-[C1] [WARN] VMM: Remapping occupied VA c0025000 (Phys: 390b000 -> 3a80000)
-[C1] [WARN] VMM: Remapping occupied VA c0026000 (Phys: 390c000 -> 3a81000)
 [C0] [INFO] process_create: 'idle' PID=5 slot=4 Prio=31 PageTable=0x0000000003a30000
-[C1] [WARN] VMM: Remapping occupied VA c0027000 (Phys: 390d000 -> 3a82000)
-[C1] [WARN] VMM: Remapping occupied VA c0028000 (Phys: 390e000 -> 3aa3000)
-[C1] [WARN] VMM: Remapping occupied VA c0029000 (Phys: 390f000 -> 3aa4000)
-[C1] [WARN] VMM: Remapping occupied VA c002a000 (Phys: 3910000 -> 3aa5000)
-[C0] [INFO] process_create: PID 5 context allocated at 0x0000000003aa2f50 (kstack=3aa3000)
-[C1] [WARN] VMM: Remapping occupied VA c002b000 (Phys: 3911000 -> 3aa6000)
-[C1] [WARN] VMM: Remapping occupied VA c002c000 (Phys: 3912000 -> 3aa7000)
-[C1] [WARN] VMM: Remapping occupied VA c002d000 (Phys: 3913000 -> 3aa8000)
-[C1] [WARN] VMM: Remapping occupied VA c002e000 (Phys: 3914000 -> 3aa9000)
-[C1] [WARN] VMM: Remapping occupied VA c002f000 (Phys: 3915000 -> 3aaa000)
-[C1] [WARN] VMM: Remapping occupied VA c0030000 (Phys: 3916000 -> 3aab000)
-[C1] [WARN] VMM: Remapping occupied VA c0031000 (Phys: 3917000 -> 3aac000)
-[C1] [WARN] VMM: Remapping occupied VA c0032000 (Phys: 3918000 -> 3aad000)
-[C1] [WARN] VMM: Remapping occupied VA c0033000 (Phys: 3919000 -> 3aae000)
-[C1] [WARN] VMM: Remapping occupied VA c0034000 (Phys: 391a000 -> 3aaf000)
-[C1] [WARN] VMM: Remapping occupied VA c0035000 (Phys: 391b000 -> 3ab0000)
-[C1] [WARN] VMM: Remapping occupied VA c0036000 (Phys: 391c000 -> 3ab1000)
-[C1] [WARN] VMM: Remapping occupied VA c0037000 (Phys: 391d000 -> 3ab2000)
-[C1] [WARN] VMM: Remapping occupied VA c0038000 (Phys: 391e000 -> 3ab3000)
-[C1] [WARN] VMM: Remapping occupied VA c0039000 (Phys:S 391f000 -> 3ab4000)
+[C1] [WARN] VMM: Remapping occupied VA c0000000 (Phys: 38e5000 -> 3a5b000)
+[C1] [WARN] VMM: Remapping occupied VA c0001000 (Phys: 38e7000 -> 3a7c000)
+[C0] [INFO] process_create: PID 5 context allocated at 0x0000000003a7bf50 (kstack=3a7c000)
+[C1] [WARN] VMM: Remapping occupied VA c0002000 (Phys: 38e8000 -> 3a7d000)
+[C1] [WARN] VMM: Remapping occupied VA c0003000 (Phys: 38e9000 -> 3a7e000)
+[C1] [WARN] VMM: Remapping occupied VA c0004000 (Phys: 38ea000 -> 3a7f000)
+[C1] [WARN] VMM: Remapping Soccupied VA c0005000 (Phys: 38eb000 -> 3a80000)
+[C3] [INFO] CPU: Initializing GDT...
+[C1] [WARN] VMM: Remapping occupied VA c0006000 (Phys: 38ec000 -> 3a81000)
 [C0] [INFO] AMD64: Sent INIT-SIPI to CPU 3
-[C1] [WARN] VMM: Remapping occupied VA c003a000 (Phys: 3920000 -> 3ab5000)
-[C3] [INFO] CPU: Initializing GDT...
-[C1] [WARN] VMM: Remapping occupied VA c003b000 (Phys: 3921000 -> 3ab6000)
 [C3] [INFO] GDT: Loading GDTR...
+[C1] [WARN] VMM: Remapping occupied VA c0007000 (Phys: 38ed000 -> 3a82000)
 [C3] [INFO] GDT: Loading TSS...
-[C1] [WARN] VMM: Remapping occupied VA c003c000 (Phys: 3922000 -> 3ab7000)
 [C3] [INFO] GDT: Done
+[C1] [WARN] VMM: Remapping occupied VA c0008000 (Phys: 38ee000 -> 3a83000)
 [C3] [INFO] CPU: Initializing IDT...
+[C1] [WARN] VMM: Remapping occupied VA c0009000 (Phys: 38ef000 -> 3a84000)
 [C3] [INFO] CPU: Initializing Syscall...
+[C1] [WARN] VMM: Remapping occupied VA c000a000 (Phys: 38f0000 -> 3a85000)
 [C3] [INFO] AMD64 MSR SYSCALL configured
 [C3] [INFO] CPU: Initializing LAPIC...
-L[C1] [WARN] VMM: Remapping occupied VA c003d000 (Phys: 3923000 -> 3ab8000)
+L[C1] [WARN] VMM: Remapping occupied VA c000b000 (Phys: 38f1000 -> 3a86000)
 [C3] [INFO] AMD64: LAPIC 3 initialized at 0xfee00000
 [C3] [INFO] AMD64 CPU 3 initialized (GDT, IDT, Syscall, SSE, GS enabled)
-[C1] [WARN] VMM: Remapping occupied VA c003e000 (Phys: 3924000 -> 3ab9000)
+[C1] [WARN] VMM: Remapping occupied VA c000c000 (Phys: 38f2000 -> 3a87000)
 [C3] [INFO] CPU: Initializing GDT...
+[C1] [WARN] VMM: Remapping occupied VA c000d000 (Phys: 38f3000 -> 3a88000)
 [C3] [INFO] GDT: Loading GDTR...
+[C1] [WARN] VMM: Remapping occupied VA c000e000 (Phys: 38f4000 -> 3a89000)
 [C3] [INFO] GDT: Loading TSS...
-[C1] [WARN] VMM: Remapping occupied VA c003f000 (Phys: 3925000 -> 3aba000)
 [C3] [INFO] GDT: Done
 [C3] [INFO] CPU: Initializing IDT...
-[C1] [WARN] VMM: Remapping occupied VA c0040000 (Phys: 3926000 -> 3abb000)
+[C1] [WARN] VMM: Remapping occupied VA c000f000 (Phys: 38f5000 -> 3a8a000)
 [C3] [INFO] CPU: Initializing Syscall...
+[C1] [WARN] VMM: Remapping occupied VA c0010000 (Phys: 38f6000 -> 3a8b000)
 [C3] [INFO] AMD64 MSR SYSCALL configured
-[C1] [WARN] VMM: Remapping occupied VA c0041000 (Phys: 3927000 -> 3abc000)
 [C3] [INFO] CPU: Initializing LAPIC...
-L[C1] [WARN] VMM: Remapping occupied VA c0042000 (Phys: 3928000 -> 3abd000)
-[C3] [INFO] AMD64: LAPIC 3 initialized at 0xfee00000
+L[C3] [INFO] AMD64: LAPIC 3 initialized at 0xfee00000
 [C3] [INFO] AMD64 CPU 3 initialized (GDT, IDT, Syscall, SSE, GS enabled)
-[C1] [WARN] VMM: Remapping occupied VA c0043000 (Phys: 3929000 -> 3abe000)
-[C3] [INFO] LAPIC: CPU 3 timer started at 100 Hz (627120 ticks/interval)
+[C1] [WARN] VMM: Remapping occupied VA c0011000 (Phys: 38f7000 -> 3a8c000)
+[C3] [INFO] LAPIC: CPU 3 timer started at 100 Hz (625500 ticks/interval)
+[C1] [WARN] VMM: Remapping occupied VA c0012000 (Phys: 38f8000 -> 3a8d000)
 [C3] [INFO] Secondary CPU 3 online and ready
-[C1] [WARN] VMM: Remapping occupied VA c0044000 (Phys: 392a000 -> 3abf000)
-[C1] [WARN] VMM: Remapping occupied VA c0045000 (Phys: 392b000 -> 3ac0000)
-[C1] [WARN] VMM: Remapping occupied VA c0046000 (Phys: 392c000 -> 3ac1000)
 [C0] [INFO] AMD64: CPU 3 is online
-[C1] [WARN] VMM: Remapping occupied VA c0047000 (Phys: 392d000 -> 3ac2000)
 [C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C1] [WARN] VMM: Remapping occupied VA c0048000 (Phys: 392e000 -> 3ac3000)
+[C1] [WARN] VMM: Remapping occupied VA c0013000 (Phys: 38f9000 -> 3a8e000)
+[C1] [WARN] VMM: Remapping occupied VA c0014000 (Phys: 38fa000 -> 3a92000)
+[C1] [WARN] VMM: Remapping occupied VA c0015000 (Phys: 38fb000 -> 3a93000)
+[C1] [WARN] VMM: Remapping occupied VA c0016000 (Phys: 38fc000 -> 3a94000)
+[C3] [ERROR] 
+[C3] PAGE FAULT: Access to 0x10000005b
+[C1] [WARN] VMM: Remapping occupied VA c0017000 (Phys: 38fd000 -> 3a95000)
+[C3] [ERROR] Error Code: 0x0 (P:0, W:0, U:0, R:0, I:0)
+[C1] [WARN] VMM: Remapping occupied VA c0018000 (Phys: 38fe000 -> 3a96000)
+[C3] [ERROR] RIP: 000000000010fa18 CS: 08 RFLAGS: 0000000000010006
+[C1] [WARN] VMM: Remapping occupied VA c0019000 (Phys: 38ff000 -> 3a97000)
+[C3] [ERROR] RAX: 00000000ffffffff RBX: 0000000000000000 RCX: 0000000000928434 RDX: 00000000009306c0
+[C1] [WARN] VMM: Remapping occupied VA c001a000 (Phys: 3900000 -> 3a98000)
+[C3] [ERROR] RSI: 00000000ffffffff RDI: 00000000ffffffff RBP: 00000000001c1ee0 RSP: 00000000001c1e90
+[C1] [WARN] VMM: Remapping occupied VA c001b000 (Phys: 3901000 -> 3a99000)
+[C3] [ERROR] R8:  000000000092edb0 R9:  0000000000000046 R10: 0000000000000000 R11: 00000000ffffffff
+[C1] [WARN] VMM: Remapping occupied VA c001c000 (Phys: 3902000 -> 3a9a000)
+[C3] [ERROR] R12: 0000000000934e20 R13: 0000000000000000 R14: 0000000100000003 R15: 0000000000000000
+[C1] [WARN] VMM: Remapping occupied VA c001d000 (Phys: 3903000 -> 3a9b000)
+[C3] [ERROR] Vector: 14, Error Code: 0
+[C1] [WARN] VMM: Remapping occupied VA c001e000 (Phys: 3904000 -> 3a9c000)
+[C1] [WARN] VMM: Remapping occupied VA c001f000 (Phys: 3905000 -> 3a9d000)
+[C1] [WARN] VMM: Remapping occupied VA c0020000 (Phys: 3906000 -> 3a9e000)
+[C1] [WARN] VMM: Remapping occupied VA c0021000 (Phys: 3907000 -> 3a9f000)
+[C1] [WARN] VMM: Remapping occupied VA c0022000 (Phys: 3908000 -> 3aa0000)
+[C1] [WARN] VMM: Remapping occupied VA c0023000 (Phys: 3909000 -> 3aa1000)
+[C1] [WARN] VMM: Remapping occupied VA c0024000 (Phys: 390a000 -> 3aa2000)
+[C1] [WARN] VMM: Remapping occupied VA c0025000 (Phys: 390b000 -> 3aa3000)
+[C1] [WARN] VMM: Remapping occupied VA c0026000 (Phys: 390c000 -> 3aa4000)
+[C1] [WARN] VMM: Remapping occupied VA c0027000 (Phys: 390d000 -> 3aa5000)
+[C1] [WARN] VMM: Remapping occupied VA c0028000 (Phys: 390e000 -> 3aa6000)
+[C1] [WARN] VMM: Remapping occupied VA c0029000 (Phys: 390f000 -> 3aa7000)
+[C1] [WARN] VMM: Remapping occupied VA c002a000 (Phys: 3910000 -> 3aa8000)
+[C1] [WARN] VMM: Remapping occupied VA c002b000 (Phys: 3911000 -> 3aa9000)
+[C1] [WARN] VMM: Remapping occupied VA c002c000 (Phys: 3912000 -> 3aaa000)
+[C1] [WARN] VMM: Remapping occupied VA c002d000 (Phys: 3913000 -> 3aab000)
+[C1] [WARN] VMM: Remapping occupied VA c002e000 (Phys: 3914000 -> 3aac000)
+[C1] [WARN] VMM: Remapping occupied VA c002f000 (Phys: 3915000 -> 3aad000)
+[C1] [WARN] VMM: Remapping occupied VA c0030000 (Phys: 3916000 -> 3aae000)
+[C1] [WARN] VMM: Remapping occupied VA c0031000 (Phys: 3917000 -> 3aaf000)
+[C1] [WARN] VMM: Remapping occupied VA c0032000 (Phys: 3918000 -> 3ab0000)
+[C1] [WARN] VMM: Remapping occupied VA c0033000 (Phys: 3919000 -> 3ab1000)
+[C1] [WARN] VMM: Remapping occupied VA c0034000 (Phys: 391a000 -> 3ab2000)
+[C1] [WARN] VMM: Remapping occupied VA c0035000 (Phys: 391b000 -> 3ab3000)
+[C1] [WARN] VMM: Remapping occupied VA c0036000 (Phys: 391c000 -> 3ab4000)
+[C1] [WARN] VMM: Remapping occupied VA c0037000 (Phys: 391d000 -> 3ab5000)
+[C1] [WARN] VMM: Remapping occupied VA c0038000 (Phys: 391e000 -> 3ab6000)
+[C1] [WARN] VMM: Remapping occupied VA c0039000 (Phys: 391f000 -> 3ab7000)
+[C1] [WARN] VMM: Remapping occupied VA c003a000 (Phys: 3920000 -> 3ab8000)
+[C1] [WARN] VMM: Remapping occupied VA c003b000 (Phys: 3921000 -> 3ab9000)
+[C1] [WARN] VMM: Remapping occupied VA c003c000 (Phys: 3922000 -> 3aba000)
+[C1] [WARN] VMM: Remapping occupied VA c003d000 (Phys: 3923000 -> 3abb000)
+[C1] [WARN] VMM: Remapping occupied VA c003e000 (Phys: 3924000 -> 3abc000)
+[C1] [WARN] VMM: Remapping occupied VA c003f000 (Phys: 3925000 -> 3abd000)
+[C1] [WARN] VMM: Remapping occupied VA c0040000 (Phys: 3926000 -> 3abe000)
+[C1] [WARN] VMM: Remapping occupied VA c0041000 (Phys: 3927000 -> 3abf000)
+[C1] [WARN] VMM: Remapping occupied VA c0042000 (Phys: 3928000 -> 3ac0000)
+[C1] [WARN] VMM: Remapping occupied VA c0043000 (Phys: 3929000 -> 3ac1000)
+[C1] [WARN] VMM: Remapping occupied VA c0044000 (Phys: 392a000 -> 3ac2000)
+[C1] [WARN] VMM: Remapping occupied VA c0045000 (Phys: 392b000 -> 3ac3000)
+[C1] [WARN] VMM: Remapping occupied VA c0046000 (Phys: 392c000 -> 3ac4000)
+[C1] [WARN] VMM: Remapping occupied VA c0047000 (Phys: 392d000 -> 3ac5000)
+[C1] [WARN] VMM: Remapping occupied VA c0048000 (Phys: 392e000 -> 3ac6000)
 [C1] [WARN] VMM: Remapping occupied VA c0049000 (Phys: 392f000 -> 3ac7000)
 [C1] [WARN] VMM: Remapping occupied VA c004a000 (Phys: 3930000 -> 3ac8000)
 [C1] [WARN] VMM: Remapping occupied VA c004b000 (Phys: 3931000 -> 3ac9000)
-[C3] [ERROR] 
-[C3] PAGE FAULT: Access to 0x10000005b
 [C1] [WARN] VMM: Remapping occupied VA c004c000 (Phys: 3932000 -> 3aca000)
-[C3] [ERROR] Error Code: 0x0 (P:0, W:0, U:0, R:0, I:0)
 [C1] [WARN] VMM: Remapping occupied VA c004d000 (Phys: 3933000 -> 3acb000)
-[C3] [ERROR] RIP: 000000000010fa18 CS: 08 RFLAGS: 0000000000010006
 [C1] [WARN] VMM: Remapping occupied VA c004e000 (Phys: 3934000 -> 3acc000)
-[C3] [ERROR] RAX: 00000000ffffffff RBX: 0000000000000000 RCX: 0000000000928434 RDX: 00000000009306c0
 [C1] [WARN] VMM: Remapping occupied VA c004f000 (Phys: 3935000 -> 3acd000)
-[C3] [ERROR] RSI: 00000000ffffffff RDI: 00000000ffffffff RBP: 00000000001c1ee0 RSP: 00000000001c1e90
 [C1] [WARN] VMM: Remapping occupied VA c0050000 (Phys: 3936000 -> 3ace000)
-[C3] [ERROR] R8:  000000000092edb0 R9:  0000000000000046 R10: 0000000000000000 R11: 00000000ffffffff
 [C1] [WARN] VMM: Remapping occupied VA c0051000 (Phys: 3937000 -> 3acf000)
-[C3] [ERROR] R12: 0000000000934e20 R13: 0000000000000000 R14: 0000000100000003 R15: 0000000000000000
 [C1] [WARN] VMM: Remapping occupied VA c0052000 (Phys: 3938000 -> 3ad0000)
-[C3] [ERROR] Vector: 14, Error Code: 0
 [C1] [WARN] VMM: Remapping occupied VA c0053000 (Phys: 3939000 -> 3ad1000)
 [C1] [WARN] VMM: Remapping occupied VA c0054000 (Phys: 393a000 -> 3ad2000)
 [C1] [WARN] VMM: Remapping occupied VA c0055000 (Phys: 393b000 -> 3ad3000)
@@ -389,60 +388,60 @@ L[C1] [WARN] VMM: Remapping occupied VA c0042000 (Phys: 3928000 -> 3abd000)
 [C1] [WARN] VMM: Remapping occupied VA c00a2000 (Phys: 3988000 -> 3b20000)
 [C1] [WARN] VMM: Remapping occupied VA c00a3000 (Phys: 3989000 -> 3b21000)
 [C1] [WARN] VMM: Remapping occupied VA c00a4000 (Phys: 398a000 -> 3b22000)
+[C0] [INFO] process_create: 'idle' PID=6 slot=5 Prio=31 PageTable=0x0000000003a90000
 [C1] [WARN] VMM: Remapping occupied VA c00a5000 (Phys: 398b000 -> 3b23000)
-[C1] [WARN] VMM: Remapping occupied VA c00a6000 (Phys: 398c000 -> 3b24000)
-[C1] [WARN] VMM: Remapping occupied VA c00a7000 (Phys: 398d000 -> 3b25000)
-[C1] [WARN] VMM: Remapping occupied VA c00a8000 (Phys: 398e000 -> 3b26000)
-[C1] [WARN] VMM: Remapping occupied VA c00a9000 (Phys: 398f000 -> 3b27000)
-[C1] [WARN] VMM: Remapping occupied VA c00aa000 (Phys: 3990000 -> 3b28000)
-[C1] [WARN] VMM: Remapping occupied VA c00ab000 (Phys: 3991000 -> 3b29000)
-[C1] [WARN] VMM: Remapping occupied VA c00ac000 (Phys: 3992000 -> 3b2a000)
-[C1] [WARN] VMM: Remapping occupied VA c00ad000 (Phys: 3993000 -> 3b2b000)
-[C1] [WARN] VMM: Remapping occupied VA c00ae000 (Phys: 3994000 -> 3b2c000)
-[C1] [WARN] VMM: Remapping occupied VA c00af000 (Phys: 3995000 -> 3b2d000)
-[C1] [WARN] VMM: Remapping occupied VA c00b0000 (Phys: 3996000 -> 3b2e000)
-[C1] [WARN] VMM: Remapping occupied VA c00b1000 (Phys: 3997000 -> 3b2f000)
-[C1] [WARN] VMM: Remapping occupied VA c00b2000 (Phys: 3998000 -> 3b30000)
-[C1] [WARN] VMM: Remapping occupied VA c00b3000 (Phys: 3999000 -> 3b31000)
-[C1] [WARN] VMM: Remapping occupied VA c00b4000 (Phys: 399a000 -> 3b32000)
-[C1] [WARN] VMM: Remapping occupied VA c00b5000 (Phys: 399b000 -> 3b33000)
-[C1] [WARN] VMM: Remapping occupied VA c00b6000 (Phys: 399c000 -> 3b34000)
-[C1] [WARN] VMM: Remapping occupied VA c00b7000 (Phys: 399d000 -> 3b35000)
-[C1] [WARN] VMM: Remapping occupied VA c00b8000 (Phys: 399e000 -> 3b36000)
-[C1] [WARN] VMM: Remapping occupied VA c00b9000 (Phys: 399f000 -> 3b37000)
-[C1] [WARN] VMM: Remapping occupied VA c00ba000 (Phys: 39a0000 -> 3b38000)
-[C1] [WARN] VMM: Remapping occupied VA c00bb000 (Phys: 39a1000 -> 3b39000)
-[C1] [WARN] VMM: Remapping occupied VA c00bc000 (Phys: 39a2000 -> 3b3a000)
-[C1] [WARN] VMM: Remapping occupied VA c00bd000 (Phys: 39a3000 -> 3b3b000)
-[C1] [WARN] VMM: Remapping occupied VA c00be000 (Phys: 39a4000 -> 3b3c000)
-[C1] [WARN] VMM: Remapping occupied VA c00bf000 (Phys: 39a5000 -> 3b3d000)
-[C1] [WARN] VMM: Remapping occupied VA c00c0000 (Phys: 39a6000 -> 3b3e000)
-[C1] [WARN] VMM: Remapping occupied VA c00c1000 (Phys: 39a7000 -> 3b3f000)
-[C1] [WARN] VMM: Remapping occupied VA c00c2000 (Phys: 39a8000 -> 3b40000)
-[C1] [WARN] VMM: Remapping occupied VA c00c3000 (Phys: 39a9000 -> 3b41000)
-[C1] [WARN] VMM: Remapping occupied VA c00c4000 (Phys: 39aa000 -> 3b42000)
-[C1] [WARN] VMM: Remapping occupied VA c00c5000 (Phys: 39ab000 -> 3b43000)
-[C1] [WARN] VMM: Remapping occupied VA c00c6000 (Phys: 39ac000 -> 3b44000)
-[C1] [WARN] VMM: Remapping occupied VA c00c7000 (Phys: 39ad000 -> 3b45000)
-[C1] [WARN] VMM: Remapping occupied VA c00c8000 (Phys: 39ae000 -> 3b46000)
-[C1] [WARN] VMM: Remapping occupied VA c00c9000 (Phys: 39af000 -> 3b47000)
-[C1] [WARN] VMM: Remapping occupied VA c00ca000 (Phys: 39b0000 -> 3b48000)
-[C1] [WARN] VMM: Remapping occupied VA c00cb000 (Phys: 39b1000 -> 3b49000)
-[C1] [WARN] VMM: Remapping occupied VA c00cc000 (Phys: 39b2000 -> 3b4a000)
-[C1] [WARN] VMM: Remapping occupied VA c00cd000 (Phys: 39b3000 -> 3b4b000)
-[C1] [WARN] VMM: Remapping occupied VA c00ce000 (Phys: 39b4000 -> 3b4c000)
-[C1] [WARN] VMM: Remapping occupied VA c00cf000 (Phys: 39b5000 -> 3b4d000)
-[C1] [WARN] VMM: Remapping occupied VA c00d0000 (Phys: 39b6000 -> 3b4e000)
-[C1] [WARN] VMM: Remapping occupied VA c00d1000 (Phys: 39b7000 -> 3b4f000)
-[C1] [WARN] VMM: Remapping occupied VA c00d2000 (Phys: 39b8000 -> 3b50000)
-[C1] [WARN] VMM: Remapping occupied VA c00d3000 (Phys: 39b9000 -> 3b51000)
-[C1] [WARN] VMM: Remapping occupied VA c00d4000 (Phys: 39ba000 -> 3b52000)
-[C0] [INFO] process_create: 'idle' PID=6 slot=5 Prio=31 PageTable=0x0000000003ac5000
-[C1] [WARN] VMM: Remapping occupied VA c00d5000 (Phys: 39bb000 -> 3b53000)
-[C1] [WARN] VMM: Remapping occupied VA c00d6000 (Phys: 39bc000 -> 3b74000)
-[C0] [INFO] process_create: PID 6 context allocated at 0x0000000003b73f50 (kstack=3b74000)
-[C1] [WARN] VMM: Remapping occupied VA c00d7000 (Phys: 39bd000 -> 3b75000)
+[C1] [WARN] VMM: Remapping occupied VA c00a6000 (Phys: 398c000 -> 3b44000)
+[C0] [INFO] process_create: PID 6 context allocated at 0x0000000003b43f50 (kstack=3b44000)
+[C1] [WARN] VMM: Remapping occupied VA c00a7000 (Phys: 398d000 -> 3b45000)
 [C0] [INFO] Enabling interrupts...
+[C1] [WARN] VMM: Remapping occupied VA c00a8000 (Phys: 398e000 -> 3b46000)
+[C1] [WARN] VMM: Remapping occupied VA c00a9000 (Phys: 398f000 -> 3b47000)
+[C1] [WARN] VMM: Remapping occupied VA c00aa000 (Phys: 3990000 -> 3b48000)
+[C1] [WARN] VMM: Remapping occupied VA c00ab000 (Phys: 3991000 -> 3b49000)
+[C1] [WARN] VMM: Remapping occupied VA c00ac000 (Phys: 3992000 -> 3b4a000)
+[C1] [WARN] VMM: Remapping occupied VA c00ad000 (Phys: 3993000 -> 3b4b000)
+[C1] [WARN] VMM: Remapping occupied VA c00ae000 (Phys: 3994000 -> 3b4c000)
+[C1] [WARN] VMM: Remapping occupied VA c00af000 (Phys: 3995000 -> 3b4d000)
+[C1] [WARN] VMM: Remapping occupied VA c00b0000 (Phys: 3996000 -> 3b4e000)
+[C1] [WARN] VMM: Remapping occupied VA c00b1000 (Phys: 3997000 -> 3b4f000)
+[C1] [WARN] VMM: Remapping occupied VA c00b2000 (Phys: 3998000 -> 3b50000)
+[C1] [WARN] VMM: Remapping occupied VA c00b3000 (Phys: 3999000 -> 3b51000)
+[C1] [WARN] VMM: Remapping occupied VA c00b4000 (Phys: 399a000 -> 3b52000)
+[C1] [WARN] VMM: Remapping occupied VA c00b5000 (Phys: 399b000 -> 3b53000)
+[C1] [WARN] VMM: Remapping occupied VA c00b6000 (Phys: 399c000 -> 3b54000)
+[C1] [WARN] VMM: Remapping occupied VA c00b7000 (Phys: 399d000 -> 3b55000)
+[C1] [WARN] VMM: Remapping occupied VA c00b8000 (Phys: 399e000 -> 3b56000)
+[C1] [WARN] VMM: Remapping occupied VA c00b9000 (Phys: 399f000 -> 3b57000)
+[C1] [WARN] VMM: Remapping occupied VA c00ba000 (Phys: 39a0000 -> 3b58000)
+[C1] [WARN] VMM: Remapping occupied VA c00bb000 (Phys: 39a1000 -> 3b59000)
+[C1] [WARN] VMM: Remapping occupied VA c00bc000 (Phys: 39a2000 -> 3b5a000)
+[C1] [WARN] VMM: Remapping occupied VA c00bd000 (Phys: 39a3000 -> 3b5b000)
+[C1] [WARN] VMM: Remapping occupied VA c00be000 (Phys: 39a4000 -> 3b5c000)
+[C1] [WARN] VMM: Remapping occupied VA c00bf000 (Phys: 39a5000 -> 3b5d000)
+[C1] [WARN] VMM: Remapping occupied VA c00c0000 (Phys: 39a6000 -> 3b5e000)
+[C1] [WARN] VMM: Remapping occupied VA c00c1000 (Phys: 39a7000 -> 3b5f000)
+[C1] [WARN] VMM: Remapping occupied VA c00c2000 (Phys: 39a8000 -> 3b60000)
+[C1] [WARN] VMM: Remapping occupied VA c00c3000 (Phys: 39a9000 -> 3b61000)
+[C1] [WARN] VMM: Remapping occupied VA c00c4000 (Phys: 39aa000 -> 3b62000)
+[C1] [WARN] VMM: Remapping occupied VA c00c5000 (Phys: 39ab000 -> 3b63000)
+[C1] [WARN] VMM: Remapping occupied VA c00c6000 (Phys: 39ac000 -> 3b64000)
+[C1] [WARN] VMM: Remapping occupied VA c00c7000 (Phys: 39ad000 -> 3b65000)
+[C1] [WARN] VMM: Remapping occupied VA c00c8000 (Phys: 39ae000 -> 3b66000)
+[C1] [WARN] VMM: Remapping occupied VA c00c9000 (Phys: 39af000 -> 3b67000)
+[C1] [WARN] VMM: Remapping occupied VA c00ca000 (Phys: 39b0000 -> 3b68000)
+[C1] [WARN] VMM: Remapping occupied VA c00cb000 (Phys: 39b1000 -> 3b69000)
+[C1] [WARN] VMM: Remapping occupied VA c00cc000 (Phys: 39b2000 -> 3b6a000)
+[C1] [WARN] VMM: Remapping occupied VA c00cd000 (Phys: 39b3000 -> 3b6b000)
+[C1] [WARN] VMM: Remapping occupied VA c00ce000 (Phys: 39b4000 -> 3b6c000)
+[C1] [WARN] VMM: Remapping occupied VA c00cf000 (Phys: 39b5000 -> 3b6d000)
+[C1] [WARN] VMM: Remapping occupied VA c00d0000 (Phys: 39b6000 -> 3b6e000)
+[C1] [WARN] VMM: Remapping occupied VA c00d1000 (Phys: 39b7000 -> 3b6f000)
+[C1] [WARN] VMM: Remapping occupied VA c00d2000 (Phys: 39b8000 -> 3b70000)
+[C1] [WARN] VMM: Remapping occupied VA c00d3000 (Phys: 39b9000 -> 3b71000)
+[C1] [WARN] VMM: Remapping occupied VA c00d4000 (Phys: 39ba000 -> 3b72000)
+[C1] [WARN] VMM: Remapping occupied VA c00d5000 (Phys: 39bb000 -> 3b73000)
+[C1] [WARN] VMM: Remapping occupied VA c00d6000 (Phys: 39bc000 -> 3b74000)
+[C1] [WARN] VMM: Remapping occupied VA c00d7000 (Phys: 39bd000 -> 3b75000)
 [C1] [WARN] VMM: Remapping occupied VA c00d8000 (Phys: 39be000 -> 3b76000)
 [C1] [WARN] VMM: Remapping occupied VA c00d9000 (Phys: 39bf000 -> 3b77000)
 [C1] [WARN] VMM: Remapping occupied VA c00da000 (Phys: 39c0000 -> 3b78000)

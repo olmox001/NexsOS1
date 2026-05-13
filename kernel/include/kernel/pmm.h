@@ -68,6 +68,7 @@ struct mem_region {
 /* PMM API */
 
 /* Initialize PMM with memory regions */
+void pmm_early_init(struct mem_region *regions, size_t count);
 void pmm_init(struct mem_region *regions, size_t count);
 void pmm_init_region(uint64_t base, uint64_t size);
 

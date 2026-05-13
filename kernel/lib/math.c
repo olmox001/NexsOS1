@@ -13,11 +13,19 @@
 #endif
 
 /* Fixed-point constants (16.16) */
+#ifndef FP_SHIFT
 #define FP_SHIFT 16
-#define FP_ONE   (1 << FP_SHIFT)
-#define FP_HALF  (1 << (FP_SHIFT - 1))
-#define FP_PI    205887
-#define FP_2PI   411775
+#endif /* FP_SHIFT */
+#ifndef FP_ONE
+#define FP_ONE (1 << FP_SHIFT)
+#endif /* FP_ONE */
+#ifndef FP_HALF
+#define FP_HALF (1 << (FP_SHIFT - 1))
+#endif /* FP_HALF */
+#ifndef FP_PI
+#define FP_PI 205887
+#endif /* FP_PI */
+#define FP_2PI 411775
 
 /*
  * Integer Square Root (Newton-Raphson)
@@ -116,6 +124,16 @@ int32_t sin_fp(int32_t x) {
     x -= FP_2PI;
   while (x < -FP_PI)
     x += FP_2PI;
+
+  /* Reflect domain to -pi/2 to pi/2 range.
+   * Taylor series approximation accuracy diminishes rapidly beyond |x| > pi/2.
+   */
+  int32_t half_pi = 102944; /* PI / 2 represented in 16.16 fixed point */
+  if (x > half_pi) {
+    x = FP_PI - x;
+  } else if (x < -half_pi) {
+    x = -FP_PI - x;
+  }
 
   /* Taylor series: sin(x) ≈ x - x³/6 + x⁵/120 */
   int32_t x2 = fixmul(x, x);

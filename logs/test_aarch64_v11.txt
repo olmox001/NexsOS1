@@ -1,0 +1,6 @@
+kernel/arch/aarch64/mm/mmu.c: In function 'get_next_table':
+kernel/arch/aarch64/mm/mmu.c:38:16: error: unused variable 'step' [-Werror=unused-variable]
+       uint64_t step = (level == 1) ? 0x200000 : 0x1000; // Not perfectly accurate for all levels but good for L1->L2 and L2->L3
+                ^~~~
+cc1: all warnings being treated as errors
+make: *** [build/aarch64/kernel/arch/aarch64/mm/mmu.o] Error 1

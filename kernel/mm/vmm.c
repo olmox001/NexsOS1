@@ -12,6 +12,7 @@
 #include <kernel/string.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
+#include <kernel/platform.h>
 #include <stdint.h>
 
 /* Page Table Levels */
@@ -85,49 +86,15 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
  * Map a page
  */
 int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags) {
-  // pr_info("VMM: Mapping 0x%lx -> 0x%lx (flags 0x%lx)\n", virt, phys, flags);
   if ((virt & 0xFFF) || (phys & 0xFFF)) {
     pr_err("VMM: Invalid alignment virt=%lx phys=%lx\n", virt, phys);
     return -1;
   }
 
-  uint64_t *pud, *pmd, *pt;
+  /* Extract existing mapping for warning if necessary */
+  /* (Optional: we can keep the warning logic here if arch_vmm_map doesn't warn) */
 
-  /* Level 0: PGD */
-  pud = get_next_table(pgd, PGD_INDEX(virt), 1);
-  if (!pud)
-    return -1;
-
-  /* Level 1: PUD */
-  pmd = get_next_table(pud, PUD_INDEX(virt), 1);
-  if (!pmd)
-    return -1;
-
-  /* Level 2: PMD */
-  pt = get_next_table(pmd, PMD_INDEX(virt), 1);
-  if (!pt)
-    return -1;
-
-  /* Level 3: PT */
-  uint64_t *pt_entry = &pt[PT_INDEX(virt)];
-  uint64_t current = *pt_entry;
-  if (current & PTE_VALID) {
-    if ((current & PTE_ADDR_MASK) != (phys & PTE_ADDR_MASK)) {
-      pr_warn("VMM: Remapping occupied VA %lx (Phys: %lx -> %lx)\n", virt,
-              current & PTE_ADDR_MASK, phys);
-    }
-  }
-
-  *pt_entry = phys | flags;
-  arch_cache_clean_range(pt_entry, 8);
-  arch_mb();
-
-  /* Flush TLB for this address to ensure consistency */
-  arch_tlb_flush_va(virt);
-  arch_mb();
-  arch_isb();
-
-  return 0;
+  return arch_vmm_map((uint64_t)pgd, virt, phys, flags);
 }
 
 /* Internal helper with locking */
@@ -180,29 +147,7 @@ int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
  * Unmap a page
  */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt) {
-  uint64_t *pud, *pmd, *pt;
-
-  pud = get_next_table(pgd, PGD_INDEX(virt), 0);
-  if (!pud)
-    return;
-
-  pmd = get_next_table(pud, PUD_INDEX(virt), 0);
-  if (!pmd)
-    return;
-
-  pt = get_next_table(pmd, PMD_INDEX(virt), 0);
-  if (!pt)
-    return;
-
-  uint64_t *pt_entry = &pt[PT_INDEX(virt)];
-  *pt_entry = 0;
-  arch_cache_clean_range(pt_entry, 8);
-  arch_mb();
-
-  /* TLB Invalidation */
-  arch_tlb_flush_va(virt);
-  arch_mb();
-  arch_isb();
+  arch_vmm_unmap((uint64_t)pgd, virt);
 }
 
 /* Internal helper with locking */
@@ -236,7 +181,7 @@ int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size,
  * Initialize VMM and Enable MMU
  */
 void vmm_init(void) {
-  pr_info("%s", "VMM: Initializing MMU...\n");
+  pr_info("%s", "VMM: Initializing MMU (Phase 1: Bootstrap)...\n");
 
   /* Allocate Kernel PGD */
   kernel_pgd = pmm_alloc_page();
@@ -246,54 +191,68 @@ void vmm_init(void) {
   memset(kernel_pgd, 0, 4096);
   arch_cache_clean_range(kernel_pgd, 4096);
 
-  /* 1. Map RAM with correct permissions */
-  extern char _etext[];
-  uint64_t etext_addr = (uint64_t)_etext;
+  /* 1. Map RAM with correct permissions (Bootstrap 128MB) */
   uint64_t ram_start = ARCH_RAM_START;
-  uint64_t ram_size = ARCH_RAM_SIZE;
-  uint64_t alias_offset = ARCH_ALIAS_OFFSET;
+  uint64_t ram_size = 128UL * 1024 * 1024; /* Enough to boot */
+  
+  vmm_map(kernel_pgd, ram_start, ram_start, ram_size, PAGE_KERNEL_EXEC);
 
-  /* Map kernel image precisely with 4KB pages */
-  uint64_t kernel_map_end = ram_start + (128UL * 1024 * 1024); /* First 128MB */
-  if (kernel_map_end > ram_start + ram_size) kernel_map_end = ram_start + ram_size;
-
-  for (uint64_t addr = ram_start; addr < kernel_map_end; addr += 4096) {
-    uint64_t flags = (addr < etext_addr) ? PAGE_KERNEL_EXEC : PAGE_KERNEL;
-
-    /* Identity Map */
-    vmm_map_page(kernel_pgd, addr, addr, flags);
-
-    /* Alias Map (Higher half) */
-    if (alias_offset != 0) {
-      vmm_map_page(kernel_pgd, addr + alias_offset, addr, flags);
-    }
-  }
-
-  /* Map the rest of RAM using optimized range mapping */
-  if (ram_start + ram_size > kernel_map_end) {
-    uint64_t remaining_size = (ram_start + ram_size) - kernel_map_end;
-    
-    /* Identity Map */
-    arch_vmm_map_range((uint64_t)kernel_pgd, kernel_map_end, kernel_map_end, 
-                       remaining_size, PAGE_KERNEL);
-    
-    /* Alias Map (Higher half) */
-    if (alias_offset != 0) {
-      arch_vmm_map_range((uint64_t)kernel_pgd, kernel_map_end + alias_offset, 
-                         kernel_map_end, remaining_size, PAGE_KERNEL);
-    }
-  }
-
-  arch_mb(); /* Wait for flushes */
-
-  /* 2. Platform-specific MMIO Identity Mapping */
-  pr_info("%s", "VMM: Mapping MMIO...\n");
+  /* 2. Map MMIO */
   arch_vmm_map_mmio(kernel_pgd);
 
-  /* 3. Platform-specific hardware initialization (Enable MMU/Paging) */
-  pr_info("%s", "VMM: Enabling hardware MMU...\n");
-  arch_vmm_init_hw((uint64_t)kernel_pgd);
-  pr_info("%s", "VMM: MMU initialization complete.\n");
+  /* 3. Enable MMU */
+  arch_vmm_init_hw(virt_to_phys(kernel_pgd));
+
+  pr_info("%s", "VMM: Bootstrap complete.\n");
+}
+
+/*
+ * Dynamic remapping of all discovered RAM
+ */
+void vmm_dynamic_remap(void) {
+  pr_info("%s", "VMM: Performing RAM-aware dynamic remapping...\n");
+
+  /* Allocate a temporary PGD to build the new map */
+  uint64_t *new_pgd = pmm_alloc_page();
+  if (!new_pgd) panic("VMM: Failed to allocate new dynamic PGD");
+  memset(new_pgd, 0, 4096);
+
+  /* 1. Map all discovered memory regions */
+  size_t count = 0;
+  struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  for (size_t i = 0; i < count; i++) {
+    if (regions[i].type == MEM_REGION_USABLE) {
+      pr_info("VMM: Mapping region 0x%lx - 0x%lx\n", 
+              regions[i].base, regions[i].base + regions[i].size);
+      
+      /* Use the optimized arch_vmm_map_range which supports 2MB pages (Zero-Copy Table Linking)
+       * Now safe as get_next_table handles block-splitting. */
+      arch_vmm_map_range((uint64_t)new_pgd, regions[i].base, regions[i].base, 
+                         regions[i].size, PAGE_KERNEL_EXEC);
+    }
+  }
+
+  /* 2. Re-map MMIO */
+  arch_vmm_map_mmio(new_pgd);
+
+  /* 3. Atomically switch to the new PGD */
+  uint64_t new_phys = virt_to_phys(new_pgd);
+  
+  /* Swap the global kernel_pgd */
+  uint64_t *old_pgd = kernel_pgd;
+  kernel_pgd = new_pgd;
+  
+  arch_vmm_set_pgd(new_phys);
+  arch_mb();
+  arch_isb();
+
+  /* 4. Cleanup old table - currently deferred until all CPUs have switched to new PGD */
+  /* TODO: Implement proper synchronization (IPI broadcast) to safely free old_pgd
+   *       after all secondary CPUs have transitioned to the new kernel_pgd.
+   *       This requires arch_send_ipi and a TLB flush callback on all CPUs. */
+  (void)old_pgd;
+
+  pr_info("%s", "VMM: Dynamic remapping successful. All discovered RAM is now accessible.\n");
 }
 
 /*

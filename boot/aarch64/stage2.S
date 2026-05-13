@@ -88,5 +88,5 @@ kernel_multiboot_info_struct:
 // Stack kernel
 .balign 16
 __kernel_stack:
-    .skip 65536  // 64KB stack kernel
+    .skip 131072  // 128KB stack kernel
 __kernel_stack_top:

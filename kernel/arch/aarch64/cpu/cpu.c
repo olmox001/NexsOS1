@@ -50,6 +50,10 @@ void arch_cpu_init(void) {
   pr_info("CPU: Vector Table set to 0x%lx\n", arch_impl_get_vbar());
 }
 
+/* Global flags for safe memory probing */
+volatile bool probe_in_progress = false;
+volatile bool probe_failed = false;
+
 /*
  * Synchronous exception handler
  */
@@ -66,6 +70,14 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
   elr = frame->elr;
 
   ec = (esr >> 26) & 0x3F;
+
+  /* Check if this is a Data Abort or Instruction Abort during a safe probe */
+  if (probe_in_progress && (ec == 0x24 || ec == 0x25 || ec == 0x20 || ec == 0x21)) {
+    probe_failed = true;
+    /* Skip the faulting instruction (increment ELR by 4) */
+    frame->elr += 4;
+    return frame;
+  }
 
   switch (ec) {
   case 0x00: /* Unknown exception */
@@ -159,13 +171,45 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
   return frame;
 }
 
+void *arch_secondary_stacks[MAX_CPUS] = {0};
+extern char __kernel_stack[];
+
+/*
+ * Setup stacks for all detected cores.
+ * Dynamically allocates stacks beyond the first 8 cores.
+ */
+void arch_smp_setup_stacks(uint32_t cpu_count) {
+    if (cpu_count > MAX_CPUS) cpu_count = MAX_CPUS;
+    
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        if (i < 8) {
+            /* First 8 cores use the static BSS stack area (512KB reserved) */
+            arch_secondary_stacks[i] = (void *)&__kernel_stack[(uint64_t)(i + 1) * 131072];
+        } else {
+            /* Core 9+ needs dynamic allocation from PMM */
+            void *ptr = pmm_alloc_pages(131072 / 4096);
+            if (!ptr) {
+                pr_err("CPU: OOM! Cannot allocate stack for core %u\n", i);
+                break;
+            }
+            /* Stack grows down, return the TOP */
+            arch_secondary_stacks[i] = (void *)((uintptr_t)ptr + 131072);
+            pr_info("CPU: Core %u using dynamic stack at %p\n", i, arch_secondary_stacks[i]);
+        }
+    }
+}
+
 /*
  * Get kernel stack for a given CPU
  */
-extern char __kernel_stack[];
 void *arch_get_kernel_stack(uint32_t cpu_id) {
-    /* Each CPU gets 128KB stack */
-    return (void *)&__kernel_stack[cpu_id * 131072];
+    if (cpu_id >= MAX_CPUS) return NULL;
+    
+    /* If dynamic stacks are set up, use them */
+    if (arch_secondary_stacks[cpu_id]) return arch_secondary_stacks[cpu_id];
+    
+    /* Bootstrap fallback */
+    return (void *)&__kernel_stack[(uint64_t)(cpu_id + 1) * 131072];
 }
 
 /*
@@ -180,33 +224,44 @@ void arch_vmm_set_secondary_pgd(uint64_t pgd) {
 
 void arch_vmm_init_hw(uint64_t kernel_pgd) {
   pr_info("AArch64 VMM: Setting up MAIR (PGD at 0x%lx)\n", kernel_pgd);
+  
+  /* Ensure all previous writes are visible */
+  arch_impl_mb();
+  arch_impl_isb();
+
   /* 1. Setup MAIR_EL1 (Memory Attribute Indirection Register) */
-  /* Index 0: Normal Memory, Index 1: Device Memory nGnRE */
+  /* Index 0: Normal Memory WB/WA, Index 1: Device Memory nGnRE */
   uint64_t mair = (0xFFUL << 0) | (0x04UL << 8);
   arch_impl_set_mair(mair);
+  arch_impl_isb();
 
   pr_info("%s", "AArch64 VMM: Setting up TCR\n");
   /* 2. Setup TCR_EL1 (Translation Control Register) */
-  /* T0SZ=16 (48-bit VA), SH0=3 (Inner), ORGN0=1 (WB/WA), IRGN0=1 (WB/WA), IPS=2 (40-bit PA) */
-  /* EPD1=1 (Disable TTBR1) */
-  uint64_t tcr = (16UL << 0) | (3UL << 12) | (1UL << 10) | (1UL << 8) | (2UL << 32) | (1UL << 23);
+  /* T0SZ=16 (48-bit VA), SH0=3 (Inner), ORGN0=1 (WB/WA), IRGN0=1 (WB/WA) */
+  /* IPS=0 (32-bit PA, enough for 2GB at 0x40000000), TG0=0 (4KB), EPD1=1 (Disable TTBR1) */
+  uint64_t tcr = (16UL << 0) | (3UL << 12) | (1UL << 10) | (1UL << 8) | (0UL << 32) | (0UL << 14) | (1UL << 23);
   arch_impl_set_tcr(tcr);
   arch_impl_isb();
 
   pr_info("%s", "AArch64 VMM: Setting TTBR0\n");
   /* 3. Set TTBR0_EL1 */
+  arch_impl_tlb_flush_local();
   arch_vmm_set_pgd(kernel_pgd);
+  arch_impl_mb();
   arch_impl_isb();
 
   pr_info("%s", "AArch64 VMM: Enabling SCTLR bits (MMU, Caches)\n");
   /* 4. Enable MMU in SCTLR_EL1 */
   uint64_t sctlr = arch_impl_get_sctlr();
-  sctlr |= (1UL << 0) |  /* M: MMU enable */
-           (1UL << 12) | /* I: Instruction cache enable */
-           (1UL << 2);   /* C: Data cache enable */
   
-  /* Ensure reserved bits are set correctly (bit 29, 28, 23, 22, 20, 11 are RES1 in some versions) */
-  /* But let's stick to what was there, just adding barriers. */
+  /* Mandatory RES1 bits for EL1 SCTLR */
+  sctlr |= (1UL << 29) | (1UL << 28) | (1UL << 23) | (1UL << 22) | (1UL << 20) | (1UL << 11);
+  
+  /* Enable MMU (M), Instruction Cache (I), Data Cache (C) */
+  sctlr |= (1UL << 0) | (1UL << 12) | (1UL << 2);
+  
+  /* Disable Alignment Check (A) and Stack Alignment Check (SA) for now to be safe */
+  sctlr &= ~((1UL << 1) | (1UL << 3));
   
   arch_impl_mb();
   arch_impl_set_sctlr(sctlr);

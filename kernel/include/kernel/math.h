@@ -13,7 +13,7 @@
 #define FP_SHIFT 16
 #define FP_ONE (1 << FP_SHIFT)
 #define FP_HALF (1 << (FP_SHIFT - 1))
-#define FP_PI 205887 /* 3.14159 * 65536 */
+#define FP_PI 411775 /* 3.14159 * 131072 */
 
 /* Integer math */
 uint32_t k_isqrt(uint32_t n);

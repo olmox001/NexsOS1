@@ -47,7 +47,7 @@ qemu-system-aarch64 -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio -disp
 [C0] [INFO] Timer: Frequency 62500000 Hz
 [C0] [INFO] Timer: System tick rate 100 Hz
 [C0] [INFO] Timer driver initialized via HAL
-[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x7137007, Ctl: 0x1
+[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x5e7029a, Ctl: 0x1
 [C0] [INFO] Initializing memory...
 [C0] [WARN] AArch64: [IDTF] Memory discovery failed! Attempting manual page-by-page probe...
 [C0] [INFO] AArch64: Manual discovery found 1920 MB RAM
@@ -61,4 +61,9 @@ qemu-system-aarch64 -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio -disp
 [C0] [INFO] AArch64 VMM: Setting up TCR
 [C0] [INFO] AArch64 VMM: Setting TTBR0
 [C0] [INFO] AArch64 VMM: Enabling SCTLR bits (MMU, Caches)
+[C0] [INFO] AArch64 VMM: MMU Enabled. SCTLR=0x30d01805
+[C0] [INFO] VMM: Bootstrap complete.
+[C0] [INFO] VMM: Performing RAM-aware dynamic remapping...
+[C0] [INFO] VMM: Mapping region 0x40000000 - 0xb7fff000
+[C0] [INFO] VMM: Dynamic remapping successful. All discovered RAM is now accessible.
 

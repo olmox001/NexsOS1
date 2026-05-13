@@ -296,7 +296,7 @@ page_table_l3:
 // Stack per i core
 .balign 16
 __stack_base:
-    .skip 8 * 65536  // 8 core * 64KB ciascuno
+    .skip 8 * 131072  // 8 core * 128KB ciascuno
 __stack_top:
 
 // Entry points e stack per core secondari
