@@ -453,11 +453,12 @@ int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size,
 
   uint32_t bytes_written = 0;
 
-  /* Use provided offset. If offset is valid, start there. */
-  /* Note: sparse files not fully supported, so gaps might trigger errors or be
-   * zeroed if we had that logic. */
-  /* For now, just trust offset is reasonable (<= size or slightly past for
-   * simple expansion) */
+  /* Validate offset */
+  if (offset > inode.i_size_lo + 1048576) {  /* Allow up to 1MB past current size for sparse files */
+    pr_err("EXT4: Write offset 0x%x exceeds reasonable bounds (i_size_lo=0x%x)\n", 
+           offset, inode.i_size_lo);
+    return -1;
+  }
 
   uint32_t current_offset = offset;
 

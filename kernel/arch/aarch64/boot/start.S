@@ -131,7 +131,7 @@ bss_done:
     mov x0, #0
     bic x0, x0, #(1 << 12)   /* I-cache DISABLE */
     bic x0, x0, #(1 << 2)    /* D-cache DISABLE (avoid MMIO cache issues without MMU) */
-    bic x0, x0, #(1 << 0)    /* MMU disabled for now */
+    bic x0, x0, #(1 << 0)    /* MMU disabled: will be enabled by kernel_main after page tables setup */
     msr sctlr_el1, x0
     isb
     

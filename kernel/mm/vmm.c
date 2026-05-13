@@ -246,8 +246,10 @@ void vmm_dynamic_remap(void) {
   arch_mb();
   arch_isb();
 
-  /* 4. Cleanup old table (Optional, but safe if we are sure no one is using it) */
-  /* For now, we keep it to be safe until all cores are synced */
+  /* 4. Cleanup old table - currently deferred until all CPUs have switched to new PGD */
+  /* TODO: Implement proper synchronization (IPI broadcast) to safely free old_pgd
+   *       after all secondary CPUs have transitioned to the new kernel_pgd.
+   *       This requires arch_send_ipi and a TLB flush callback on all CPUs. */
   (void)old_pgd;
 
   pr_info("%s", "VMM: Dynamic remapping successful. All discovered RAM is now accessible.\n");
