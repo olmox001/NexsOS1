@@ -1,7 +1,7 @@
 /*
- * user/demo3d.c
- * High-Performance 3D Rotating Icosahedron Demo
- * Uses Software Rasterization and Batch Blitting
+ * user/bin/demo3d.c
+ * Solid 3D Cube Demo with Software Rasterization
+ * Implements Flat Shading and Backface Culling
  */
 #include <os1.h>
 
@@ -12,8 +12,6 @@
 #ifndef FP_ONE
 #define FP_ONE (1 << FP_SHIFT)
 #endif /* FP_ONE */
-
-/* Use long long for 64-bit integers to avoid stdint.h dependency issues */
 
 #define WIN_W 300
 #define WIN_H 250
@@ -27,36 +25,41 @@ typedef struct {
   int x, y, z; /* Fixed-point 16.16 */
 } vec3_t;
 
-/* Icosahedron: 12 vertices */
-#define NUM_VERTS 12
+/* Cube: 8 vertices */
+#define NUM_VERTS 8
 static vec3_t verts[NUM_VERTS];
 
-/* Vertices initialization (Golden Ratio based) */
-static void init_shape(int size) {
-  /* Golden Ratio phi = 1.61803... */
-  /* FP_ONE is 131072. phi_fp = 212078 */
-  int phi = 212078;
-  int s = size;
-  int phis = fixmul(size, phi);
-
-  /* (0, ±1, ±phi) */
-  verts[0] = (vec3_t){0, -s, -phis};
-  verts[1] = (vec3_t){0, -s, phis};
-  verts[2] = (vec3_t){0, s, -phis};
-  verts[3] = (vec3_t){0, s, phis};
-
-  /* (±1, ±phi, 0) */
-  verts[4] = (vec3_t){-s, -phis, 0};
-  verts[5] = (vec3_t){-s, phis, 0};
-  verts[6] = (vec3_t){s, -phis, 0};
-  verts[7] = (vec3_t){s, phis, 0};
-
-  /* (±phi, 0, ±1) */
-  verts[8] = (vec3_t){-phis, 0, -s};
-  verts[9] = (vec3_t){-phis, 0, s};
-  verts[10] = (vec3_t){phis, 0, -s};
-  verts[11] = (vec3_t){phis, 0, s};
+/* Initialize cube vertices */
+static void init_shape(int s) {
+  verts[0] = (vec3_t){-s, -s, -s};
+  verts[1] = (vec3_t){s, -s, -s};
+  verts[2] = (vec3_t){s, s, -s};
+  verts[3] = (vec3_t){-s, s, -s};
+  verts[4] = (vec3_t){-s, -s, s};
+  verts[5] = (vec3_t){s, -s, s};
+  verts[6] = (vec3_t){s, s, s};
+  verts[7] = (vec3_t){-s, s, s};
 }
+
+/* Face definition (counter-clockwise winding from outside) */
+static int faces[6][4] = {
+    {0, 3, 2, 1}, /* Front */
+    {4, 5, 6, 7}, /* Back */
+    {4, 7, 3, 0}, /* Left */
+    {1, 2, 6, 5}, /* Right */
+    {3, 7, 6, 2}, /* Top */
+    {4, 0, 1, 5}  /* Bottom */
+};
+
+/* Base colors for the 6 faces */
+static unsigned int face_colors[6] = {
+    0xFF3333, /* Red */
+    0x33FF33, /* Green */
+    0x3333FF, /* Blue */
+    0xFFFF33, /* Yellow */
+    0x33FFFF, /* Cyan */
+    0xFF33FF  /* Magenta */
+};
 
 /* Rotate point around Y axis */
 static vec3_t rotate_y(vec3_t p, int angle) {
@@ -84,59 +87,118 @@ static vec3_t rotate_x(vec3_t p, int angle) {
 
 /* Project 3D to 2D */
 static void project(vec3_t p, int *sx, int *sy) {
-  /* Camera offset */
   int dist = 3 * FP_ONE;
   int z_eff = p.z + dist;
   if (z_eff < 100)
     z_eff = 100;
 
-  /* Use 64-bit math to prevent overflow */
-  /* Projection formula: x_screen = (x * dist) / z */
-  /* We scale by shifting right to fit screen coordinates */
-  int64_t x_proj = ((int64_t)p.x * dist) / z_eff;
-  int64_t y_proj = ((int64_t)p.y * dist) / z_eff;
+  long long x_proj = ((long long)p.x * dist) / z_eff;
+  long long y_proj = ((long long)p.y * dist) / z_eff;
 
-  /* Centered on screen, scaling down from fixed point */
   *sx = WIN_W / 2 + (int)(x_proj >> 8);
   *sy = WIN_H / 2 - (int)(y_proj >> 8);
 }
 
-/* Fast Line Drawing to framebuffer */
-static void draw_line_buf(int x0, int y0, int x1, int y1, unsigned int color) {
-  int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
-  int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
-  int sx = (x0 < x1) ? 1 : -1;
-  int sy = (y0 < y1) ? 1 : -1;
-  int err = dx - dy;
+/* * Flat-shaded software triangle rasterizer
+ * Splits the generic triangle into top and bottom flat sections.
+ */
+static void fill_triangle(int x1, int y1, int x2, int y2, int x3, int y3,
+                          unsigned int color) {
+  /* Sort vertices by Y ascending */
+  if (y1 > y2) {
+    int t = x1;
+    x1 = x2;
+    x2 = t;
+    t = y1;
+    y1 = y2;
+    y2 = t;
+  }
+  if (y2 > y3) {
+    int t = x2;
+    x2 = x3;
+    x3 = t;
+    t = y2;
+    y2 = y3;
+    y3 = t;
+  }
+  if (y1 > y2) {
+    int t = x1;
+    x1 = x2;
+    x2 = t;
+    t = y1;
+    y1 = y2;
+    y2 = t;
+  }
 
-  while (1) {
-    if (x0 >= 0 && x0 < WIN_W && y0 >= 0 && y0 < WIN_H) {
-      framebuffer[y0 * WIN_W + x0] = color;
+  if (y1 == y3)
+    return; /* Degenerate */
+
+  long long dx13 = x3 - x1;
+  long long dy13 = y3 - y1;
+  long long step13 = dy13 ? (dx13 << 16) / dy13 : 0;
+
+  long long curx1 = (long long)x1 << 16;
+  long long curx2 = (long long)x1 << 16;
+
+  /* Top half */
+  if (y2 > y1) {
+    long long dx12 = x2 - x1;
+    long long dy12 = y2 - y1;
+    long long step12 = dy12 ? (dx12 << 16) / dy12 : 0;
+    for (int y = y1; y < y2; y++) {
+      int cx1 = curx1 >> 16;
+      int cx2 = curx2 >> 16;
+      if (cx1 > cx2) {
+        int t = cx1;
+        cx1 = cx2;
+        cx2 = t;
+      }
+
+      if (y >= 0 && y < WIN_H) {
+        int start = cx1 < 0 ? 0 : cx1;
+        int end = cx2 >= WIN_W ? WIN_W - 1 : cx2;
+        for (int x = start; x <= end; x++) {
+          framebuffer[y * WIN_W + x] = color;
+        }
+      }
+      curx1 += step13;
+      curx2 += step12;
     }
+  }
 
-    if (x0 == x1 && y0 == y1)
-      break;
+  /* Bottom half */
+  curx2 = (long long)x2 << 16;
+  if (y3 > y2) {
+    long long dx23 = x3 - x2;
+    long long dy23 = y3 - y2;
+    long long step23 = dy23 ? (dx23 << 16) / dy23 : 0;
+    for (int y = y2; y <= y3; y++) {
+      int cx1 = curx1 >> 16;
+      int cx2 = curx2 >> 16;
+      if (cx1 > cx2) {
+        int t = cx1;
+        cx1 = cx2;
+        cx2 = t;
+      }
 
-    int e2 = 2 * err;
-    if (e2 > -dy) {
-      err -= dy;
-      x0 += sx;
-    }
-    if (e2 < dx) {
-      err += dx;
-      y0 += sy;
+      if (y >= 0 && y < WIN_H) {
+        int start = cx1 < 0 ? 0 : cx1;
+        int end = cx2 >= WIN_W ? WIN_W - 1 : cx2;
+        for (int x = start; x <= end; x++) {
+          framebuffer[y * WIN_W + x] = color;
+        }
+      }
+      curx1 += step13;
+      curx2 += step23;
     }
   }
 }
 
 /* Clear framebuffer */
-/* Clear framebuffer */
 static void clear_buffer(unsigned int color) {
-  /* Use memset for black background (0) for maximum performance */
   if (color == 0) {
     memset(framebuffer, 0, BUFFER_SIZE * sizeof(unsigned int));
   } else {
-    /* Fallback to loop for specific color */
     unsigned int *ptr = framebuffer;
     int n = BUFFER_SIZE;
     while (n-- > 0)
@@ -147,7 +209,7 @@ static void clear_buffer(unsigned int color) {
 int main(void) {
   int pid = get_pid();
   char title[64];
-  sprintf(title, "3D Demo (Icosahedron) PID %d", pid);
+  sprintf(title, "3D Demo (Solid Cube) PID %d", pid);
 
   int win = create_window(50, 50, WIN_W, WIN_H, title);
   if (win <= 0) {
@@ -155,59 +217,83 @@ int main(void) {
     exit(1);
   }
 
-  printf("[Demo3D] High Performance Mode. PID %d\n", pid);
+  printf("[Demo3D] Real Solid GL Engine Init. PID %d\n", pid);
 
-  init_shape(FP_ONE); /* Size 1.0 */
+  /* Cube size scaled to fit window optimally */
+  init_shape(FP_ONE / 3);
 
   int angle_y = 0;
   int angle_x = 0;
 
   while (1) {
-    /* 1. Software Clear */
-    /* 1. Software Clear (Black) */
-    clear_buffer(0); /* Black to enable memset optimization */
+    clear_buffer(0); /* Dark gray background */
 
-    /* 2. Transform & Project */
+    vec3_t transformed[NUM_VERTS];
     int sx[NUM_VERTS], sy[NUM_VERTS];
+
+    /* Trasformazione e proiezione matematica dei vertici */
     for (int i = 0; i < NUM_VERTS; i++) {
       vec3_t v = verts[i];
       v = rotate_x(v, angle_x);
       v = rotate_y(v, angle_y);
+      transformed[i] = v;
       project(v, &sx[i], &sy[i]);
     }
 
-    /* 3. Draw Points (Vertices) */
-    for (int i = 0; i < NUM_VERTS; i++) {
-      /* Draw small 3x3 rect for vertex */
-      for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++)
-          draw_line_buf(sx[i] + dx, sy[i] + dy, sx[i] + dx, sy[i] + dy,
-                        0xFFFFFF00);
+    /* Rasterizzazione delle 6 facce */
+    for (int i = 0; i < 6; i++) {
+      vec3_t t0 = transformed[faces[i][0]];
+      vec3_t t1 = transformed[faces[i][1]];
+      vec3_t t2 = transformed[faces[i][2]];
+
+      /* Vettori sullo spazio 3D trasformato per cross product */
+      long long v1x = t1.x - t0.x;
+      long long v1y = t1.y - t0.y;
+      long long v2x = t2.x - t0.x;
+      long long v2y = t2.y - t0.y;
+
+      /* Calcolo normale Asse Z (Profondità) ridotto in scala */
+      long long nz = (v1x * v2y - v1y * v2x) >> FP_SHIFT;
+
+      /* Backface culling e Shading (nz < 0 = faccia rivolta alla telecamera) */
+      if (nz < 0) {
+        long long max_nz =
+            (4 * FP_ONE) /
+            9; /* Massima estensione derivata dalla scala FP_ONE / 3 */
+        if (max_nz == 0)
+          max_nz = 1;
+
+        int ambient = 40;
+        int intensity = ambient + (int)((-nz * (255 - ambient)) / max_nz);
+        if (intensity > 255)
+          intensity = 255;
+        if (intensity < 0)
+          intensity = 0;
+
+        /* Applicazione intensità Flat Shading sul colore base */
+        unsigned int base = face_colors[i];
+        int r = ((base >> 16) & 0xFF) * intensity / 255;
+        int g = ((base >> 8) & 0xFF) * intensity / 255;
+        int b = (base & 0xFF) * intensity / 255;
+        unsigned int shaded = 0xFF000000 | (r << 16) | (g << 8) | b;
+
+        int s0x = sx[faces[i][0]], s0y = sy[faces[i][0]];
+        int s1x = sx[faces[i][1]], s1y = sy[faces[i][1]];
+        int s2x = sx[faces[i][2]], s2y = sy[faces[i][2]];
+        int s3x = sx[faces[i][3]], s3y = sy[faces[i][3]];
+
+        /* Costruzione delle primitive a triangolo */
+        fill_triangle(s0x, s0y, s1x, s1y, s2x, s2y, shaded);
+        fill_triangle(s0x, s0y, s2x, s2y, s3x, s3y, shaded);
+      }
     }
 
-    /* 4. Draw Edges from Connectivity Array (Pseudo-Icosahedron wireframe loop)
-     */
-    for (int i = 0; i < NUM_VERTS; i++) {
-      int next = (i + 1) % NUM_VERTS;
-      /* Draw perimeter loop */
-      draw_line_buf(sx[i], sy[i], sx[next], sy[next], 0xFF00FF88);
-
-      /* Cross connections for complexity */
-      int cross = (i + 5) % NUM_VERTS;
-      draw_line_buf(sx[i], sy[i], sx[cross], sy[cross], 0xFF0088FF);
-
-      /* Another cross connection */
-      int cross2 = (i + 3) % NUM_VERTS;
-      draw_line_buf(sx[i], sy[i], sx[cross2], sy[cross2], 0xFFFF0088);
-    }
-
-    /* 5. Blit to Kernel Window (One Syscall!) */
+    /* Syscall di upload */
     window_blit(win, 0, 0, WIN_W, WIN_H, framebuffer);
-
-    /* 6. Compositor Render (Flush to Screen) */
     compositor_render();
 
-    /* Rotate */
+    /* Modifica i gradi di rotazione limitandoli a 360 per prevenire overflow
+     * numerici */
     angle_x = (angle_x + 1) % 360;
     angle_y = (angle_y + 2) % 360;
   }

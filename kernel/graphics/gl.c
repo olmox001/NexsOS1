@@ -11,11 +11,34 @@ static inline int clip(int val, int min, int max) {
   return val;
 }
 
+/*
+ * Alpha blend: composite src (ARGB8888) over opaque dst.
+ * Standard Porter-Duff "src over" for pre-multiplied-free ARGB:
+ *   out = (src * a + dst * (255 - a)) / 255
+ * Inline so the compiler can hoist it into the blit hot loop.
+ */
+static inline uint32_t blend_over(uint32_t src, uint32_t dst) {
+  uint32_t a = (src >> 24) & 0xFF;
+  uint32_t ia = 255 - a;
+
+  uint32_t r = (((src >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * ia) / 255;
+  uint32_t g = (((src >> 8) & 0xFF) * a + ((dst >> 8) & 0xFF) * ia) / 255;
+  uint32_t b = ((src & 0xFF) * a + (dst & 0xFF) * ia) / 255;
+
+  return 0xFF000000 | (r << 16) | (g << 8) | b;
+}
+
 void gl_clear(struct gl_surface *surf, uint32_t color) {
   if (!surf || !surf->buffer)
     return;
-  int size = surf->width * surf->height;
-  /* Optimized clear for 32-bit */
+
+  /*
+   * BUG FIX (minor): original used width*height, ignoring stride.
+   * If stride > width (e.g. pitch-aligned framebuffer) the padding columns
+   * between rows were never cleared, leaving stale data visible.
+   * Use stride*height to cover the full allocation.
+   */
+  int size = surf->stride * surf->height;
   for (int i = 0; i < size; i++)
     surf->buffer[i] = color;
 }
@@ -59,39 +82,64 @@ void gl_draw_rect_fill(struct gl_surface *surf, int x, int y, int w, int h,
                        uint32_t color) {
   if (!surf)
     return;
-  /* Clipping */
   if (x >= surf->width || y >= surf->height)
     return;
   if (x + w < 0 || y + h < 0)
     return;
 
-  int cx = (x < 0) ? 0 : x;
-  int cy = (y < 0) ? 0 : y;
-
-  /* Re-calc real width/height after clipping */
-  cx = clip(x, 0, surf->width - 1);
-  cy = clip(y, 0, surf->height - 1);
+  int cx = clip(x, 0, surf->width - 1);
+  int cy = clip(y, 0, surf->height - 1);
   int x2 = clip(x + w, 0, surf->width);
   int y2 = clip(y + h, 0, surf->height);
 
-  for (int j = cy; j < y2; j++) {
-    for (int i = cx; i < x2; i++) {
+  for (int j = cy; j < y2; j++)
+    for (int i = cx; i < x2; i++)
       surf->buffer[j * surf->stride + i] = color;
-    }
-  }
 }
 
+/*
+ * gl_blit — composite src surface onto dst at (dx, dy).
+ *
+ * BUG FIX (critical): The original implementation performed only an alpha
+ * TEST: any pixel with alpha == 0 was skipped, and every other pixel —
+ * regardless of its actual alpha value — was written at full opacity with
+ * gl_draw_pixel().  Semi-transparent pixels (0 < alpha < 255) were therefore
+ * composited as if they were completely opaque, corrupting the destination
+ * with raw source colours instead of a proper blend.  This is the root cause
+ * of the multicoloured artefact visible in the compositor output.
+ *
+ * Fix: three-way path keyed on the source alpha:
+ *   alpha == 0   → skip (fully transparent, nothing to draw)
+ *   alpha == 255 → fast copy (fully opaque, no arithmetic needed)
+ *   otherwise    → Porter-Duff "src over" blend with the destination pixel
+ */
 void gl_blit(struct gl_surface *dst, struct gl_surface *src, int dx, int dy) {
-  if (!dst || !src)
+  if (!dst || !src || !dst->buffer || !src->buffer)
     return;
 
   for (int y = 0; y < src->height; y++) {
+    int dsty = dy + y;
+    if (dsty < 0 || dsty >= dst->height)
+      continue;
+
     for (int x = 0; x < src->width; x++) {
-      uint32_t col = src->buffer[y * src->stride + x];
-      /* Simple Alpha Test (0 alpha = transparent/skip) */
-      if ((col & 0xFF000000) == 0)
+      int dstx = dx + x;
+      if (dstx < 0 || dstx >= dst->width)
         continue;
-      gl_draw_pixel(dst, dx + x, dy + y, col);
+
+      uint32_t col = src->buffer[y * src->stride + x];
+      uint32_t alpha = col >> 24;
+
+      if (alpha == 0)
+        continue; /* fully transparent — nothing to do */
+
+      uint32_t *dp = &dst->buffer[dsty * dst->stride + dstx];
+
+      if (alpha == 255) {
+        *dp = col; /* fully opaque — fast path, no blend math */
+      } else {
+        *dp = blend_over(col, *dp); /* semi-transparent — proper alpha blend */
+      }
     }
   }
 }
