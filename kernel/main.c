@@ -50,7 +50,7 @@ static void init_scheduler(void);
  */
 /* Forward declaration for kernel_main */
 #ifdef ARCH_AMD64
-void kernel_main(uint64_t mb_info_ptr_arg, uint64_t mb_magic_arg);
+void kernel_main(uint64_t magic, uint64_t mbi_ptr);
 #else
 void kernel_main(uint64_t x0_arg);
 #endif
@@ -58,12 +58,12 @@ extern void timer_init_percpu(void);
 
 /* Kernel entry point - receives multiboot info pointer from bootloader */
 #ifdef ARCH_AMD64
-void kernel_main(uint64_t mb_info_ptr_arg, uint64_t mb_magic_arg) {
-  /* For AMD64, bootloader passes mb_info_ptr via RDI, mb_magic via RSI */
+void kernel_main(uint64_t magic, uint64_t mbi_ptr) {
+  /* For AMD64, bootloader passes mb_magic via RDI, mb_info_ptr via RSI */
   extern uint64_t mb_info_ptr;
   extern uint64_t mb_magic;
-  mb_info_ptr = mb_info_ptr_arg;
-  mb_magic = mb_magic_arg;
+  mb_info_ptr = mbi_ptr;
+  mb_magic = magic;
 #else
 void kernel_main(uint64_t x0_arg) {
 #endif

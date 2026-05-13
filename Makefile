@@ -1,5 +1,5 @@
-# Makefile for AArch64 Production Kernel
-# Cross-compilation for ARM 64-bit bare-metal
+# Makefile for OS1Test (AMD64 / AArch64)
+# Cross-compilation for bare-metal kernel
 
 # ==============================================================================
 # Configuration
@@ -8,16 +8,17 @@
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
 
-# Normalize ARCH typos (e.g. aaarch64 -> aarch64)
+# Release Versioning (default V9.9.9)
+VERSION ?= V9.9.9
+RELEASE_BASE = release/$(VERSION)
+RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
+
+# Normalize ARCH typos
 ifeq ($(findstring aarch64,$(ARCH)),aarch64)
     override ARCH := aarch64
 else ifeq ($(findstring amd64,$(ARCH)),amd64)
     override ARCH := amd64
 endif
-
-# ==============================================================================
-# Configuration
-# ==============================================================================
 
 # Common Compiler Flags
 COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
@@ -29,7 +30,6 @@ COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
                -O2 -g
 
 ifeq ($(ARCH), amd64)
-    # Cross-compiler prefix for AMD64
     CROSS_COMPILE ?= x86_64-elf-
     KERNEL_DIR = kernel
     BOOT_DIR   = boot/amd64
@@ -38,13 +38,12 @@ ifeq ($(ARCH), amd64)
     ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large
     ASFLAGS = -g --fatal-warnings
     
-    LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
-    LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
+    LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
+    LDFLAGS_KERN = -nostdlib -static -z noexecstack -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
     
     CFLAGS_BOOT = $(filter-out -mcmodel=large,$(COMMON_FLAGS)) $(INCLUDE) -m32
     QEMU = qemu-system-x86_64
 else
-    # Cross-compiler prefix for AArch64
     CROSS_COMPILE ?= aarch64-none-elf-
     KERNEL_DIR = kernel
     BOOT_DIR   = boot/aarch64
@@ -53,14 +52,15 @@ else
     ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57
     ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
     
-    LDFLAGS_BOOT = -nostdlib -static -T $(BOOT_DIR)/linker.ld
-    LDFLAGS_KERN = -nostdlib -static -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
+    LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
+    LDFLAGS_KERN = -nostdlib -static -z noexecstack -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
     
     CFLAGS_BOOT = $(COMMON_FLAGS) $(INCLUDE)
     QEMU = qemu-system-aarch64
 endif
 
 CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE)
+CXXFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) -fno-exceptions -fno-rtti
 
 # Tools
 CC      = $(CROSS_COMPILE)gcc
@@ -69,6 +69,10 @@ AS      = $(CROSS_COMPILE)as
 LD      = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
+MKDISK  = tools/mkdisk
+
+# Resolve grub-mkrescue
+GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || command -v grub-mkrescue 2>/dev/null || echo "")
 
 # Directories
 BUILD_ROOT = build
@@ -85,19 +89,13 @@ BOOTLOADER_BIN = $(BUILD_DIR)/bootloader.bin
 KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN = $(BUILD_DIR)/kernel.bin
 USER_ELF   = $(BUILD_DIR)/init.elf
-DISK_IMG   = $(BUILD_ROOT)/disk.img
-
-
-CXXFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) -fno-exceptions -fno-rtti
-
+DISK_IMG   = $(BUILD_DIR)/disk.img
 
 # ==============================================================================
 # Source Files
 # ==============================================================================
 
-# Kernel assembly sources
 ifeq ($(ARCH), amd64)
-# AMD64 Bootloader sources (now multi-stage)
 BOOT_SOURCES = \
     $(BOOT_DIR)/header.S \
     $(BOOT_DIR)/stage1.S \
@@ -126,7 +124,6 @@ KERN_C_SOURCES = \
     $(ARCH_DIR)/virtio.c \
     $(KERNEL_DIR)/drivers/pci/pci.c
 else
-# Bootloader sources
 BOOT_SOURCES = \
     $(BOOT_DIR)/header.S \
     $(BOOT_DIR)/stage1.S \
@@ -189,18 +186,11 @@ KERN_C_SOURCES += \
 KERN_CPP_SOURCES = \
     $(KERNEL_DIR)/drivers/cpp_test.cpp
 
-
-# Object files
 # Object files
 BOOT_OBJECTS = $(patsubst %.S,$(BUILD_DIR)/%.o,$(BOOT_SOURCES))
 KERN_ASM_OBJECTS = $(KERN_ASM_SOURCES:%.S=$(BUILD_DIR)/%.o)
 KERN_C_OBJECTS = $(KERN_C_SOURCES:%.c=$(BUILD_DIR)/%.o)
-# KERN_CPP_OBJECTS = $(KERN_CPP_SOURCES:%.cpp=$(BUILD_DIR)/%.o)
-
 KERN_OBJECTS = $(KERN_ASM_OBJECTS) $(KERN_C_OBJECTS)
-
-# Tools
-MKDISK = tools/mkdisk
 
 # Dependency files
 DEPS = $(KERN_C_OBJECTS:.o=.d)
@@ -209,29 +199,17 @@ DEPS = $(KERN_C_OBJECTS:.o=.d)
 # Build Rules
 # ==============================================================================
 
-.PHONY: all clean run run-direct debug disasm check dirs bootloader kernel iso
+.PHONY: all clean run run-direct debug disasm check dirs bootloader kernel disk rootfs release test-release help
 
-ifeq ($(ARCH), amd64)
-# Default target - builds everything including ISO
-all: dirs kernel user $(MKDISK) disk
-	@echo ""
-	@echo "Build complete!"
-	@echo "  Disk Image: build/disk.img"
-	@echo "  Kernel:     $(KERNEL_ELF)"
-	@echo "  ISO Image:  build/os1test.iso"
-	@echo ""
-	@echo "Run with: make run"
-	@echo ""
-else
-# Default target - builds everything including ISO
+# Default target
 all: dirs bootloader kernel user $(MKDISK) disk
 	@echo ""
-	@echo "Build complete!"
-	@echo "  Disk Image: $(BUILD_DIR)/disk.img"
+	@echo "Build complete for $(ARCH)!"
+	@echo "  Disk Image: $(DISK_IMG)"
+ifeq ($(ARCH), amd64)
 	@echo "  Kernel:     $(KERNEL_ELF)"
-	@echo ""
-	@echo "Run with: make run ARCH=$(ARCH)"
-	@echo ""
+else
+	@echo "  Kernel:     $(KERNEL_BIN) (AArch64 Raw Binary)"
 endif
 
 # Create build directories
@@ -260,42 +238,27 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_ARCH_DIR)
 
-
-# ==============================================================================
 # Bootloader
-# ==============================================================================
-
 bootloader: $(BOOTLOADER_BIN)
 
 $(BOOTLOADER_ELF): $(BOOT_OBJECTS)
-	@echo "Linking bootloader..."
-	$(LD) $(LDFLAGS_BOOT) -o $@ $^
-	@echo "Bootloader size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
+	@$(LD) $(LDFLAGS_BOOT) -o $@ $^
 
 $(BOOTLOADER_BIN): $(BOOTLOADER_ELF)
-	@echo "Creating bootloader binary..."
-	$(OBJCOPY) -O binary $< $@
+	@$(OBJCOPY) -O binary $< $@
 
-# ==============================================================================
 # Kernel
-# ==============================================================================
-
 kernel: $(KERNEL_BIN)
 
 $(KERNEL_ELF): $(KERN_OBJECTS)
-	@echo "Linking kernel..."
-	$(LD) $(LDFLAGS_KERN) -o $@ $^
-	@echo "Kernel size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
+	@$(LD) $(LDFLAGS_KERN) -o $@ $^
 
 $(KERNEL_BIN): $(KERNEL_ELF)
-	@echo "Creating kernel binary..."
-	$(OBJCOPY) -O binary $< $@
+	@$(OBJCOPY) -O binary $< $@
 
-# ==============================================================================
 # Userland
-# ==============================================================================
-
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
+USER_LIB_O     = $(BUILD_DIR)/$(USER_DIR)/lib/lib.o
 
 USER_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/counter.elf $(BUILD_DIR)/shell.elf \
             $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/ipc_recv.elf \
@@ -304,246 +267,193 @@ USER_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/counter.elf $(BUILD_DIR)/shell.el
 
 user: $(USER_ELFS)
 
-# User Init
-USER_SRC = $(USER_BIN_DIR)/init.c $(USER_LIB_DIR)/lib.c
-USER_OBJ = $(USER_SRC:%.c=$(BUILD_DIR)/%.o)
-
-# User Counter
-COUNTER_SRC = $(USER_BIN_DIR)/counter.c $(USER_LIB_DIR)/lib.c
-COUNTER_OBJ = $(COUNTER_SRC:%.c=$(BUILD_DIR)/%.o)
-
-# User Shell
-SHELL_SRC = $(USER_BIN_DIR)/shell.c $(USER_LIB_DIR)/lib.c $(USER_BIN_DIR)/proce.c
-SHELL_OBJ = $(SHELL_SRC:%.c=$(BUILD_DIR)/%.o)
-
-# User Demo3D
-DEMO3D_SRC = $(USER_BIN_DIR)/demo3d.c $(USER_LIB_DIR)/lib.c
-DEMO3D_OBJ = $(DEMO3D_SRC:%.c=$(BUILD_DIR)/%.o)
-
+# User Compilations
 $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/bin/%.o: $(USER_DIR)/bin/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -c $< -o $@
 
-$(USER_ELF): $(USER_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-	@echo "Userland init size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
+# Explicit dependencies for each user ELF
+$(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/bin/init.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/shell.elf: $(BUILD_DIR)/$(USER_DIR)/bin/shell.o $(BUILD_DIR)/$(USER_DIR)/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/notify_srv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/notification_server.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/regedit.elf: $(BUILD_DIR)/$(USER_DIR)/bin/regedit.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O)
 
-$(BUILD_DIR)/counter.elf: $(COUNTER_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-	@echo "Userland counter size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
+# Linking rule for user ELFs
+$(BUILD_DIR)/%.elf:
+	@$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 
-$(BUILD_DIR)/shell.elf: $(SHELL_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-	@echo "Userland shell size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
-
-$(BUILD_DIR)/demo3d.elf: $(DEMO3D_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-	@echo "Userland demo3d size: $$(stat -f%z $@ 2>/dev/null || stat -c%s $@ 2>/dev/null) bytes"
-
-# IPC Send
-IPC_SEND_SRC = $(USER_BIN_DIR)/ipc_send.c $(USER_LIB_DIR)/lib.c
-IPC_SEND_OBJ = $(IPC_SEND_SRC:%.c=$(BUILD_DIR)/%.o)
-$(BUILD_DIR)/ipc_send.elf: $(IPC_SEND_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-
-# IPC Recv
-IPC_RECV_SRC = $(USER_BIN_DIR)/ipc_recv.c $(USER_LIB_DIR)/lib.c
-IPC_RECV_OBJ = $(IPC_RECV_SRC:%.c=$(BUILD_DIR)/%.o)
-$(BUILD_DIR)/ipc_recv.elf: $(IPC_RECV_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-
-# Notification Server
-NOTIFY_SRC = $(USER_BIN_DIR)/notification_server.c $(USER_LIB_DIR)/lib.c
-NOTIFY_OBJ = $(NOTIFY_SRC:%.c=$(BUILD_DIR)/%.o)
-$(BUILD_DIR)/notify_srv.elf: $(NOTIFY_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-# Crash Test
-CRASH_SRC = $(USER_BIN_DIR)/crash.c $(USER_LIB_DIR)/lib.c
-CRASH_OBJ = $(CRASH_SRC:%.c=$(BUILD_DIR)/%.o)
-$(BUILD_DIR)/crash.elf: $(CRASH_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-
-# Registry Editor
-REGEDIT_SRC = $(USER_BIN_DIR)/regedit.c $(USER_LIB_DIR)/lib.c
-REGEDIT_OBJ = $(REGEDIT_SRC:%.c=$(BUILD_DIR)/%.o)
-$(BUILD_DIR)/regedit.elf: $(REGEDIT_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-
-# Write Test
-WRITETEST_SRC = $(USER_BIN_DIR)/writetest.c $(USER_LIB_DIR)/lib.c
-WRITETEST_OBJ = $(WRITETEST_SRC:%.c=$(BUILD_DIR)/%.o)
-$(BUILD_DIR)/writetest.elf: $(WRITETEST_OBJ) $(USER_SYSCALL_O)
-	$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
-
-# ==============================================================================
 # Common compilation rules
-
-# ==============================================================================
-
-# Compile assembly files
 $(BUILD_DIR)/%.o: %.S
 	@mkdir -p $(dir $@)
-	@echo "AS  $<"
 	@$(CC) $(CFLAGS) -c -o $@ $<
 
-# Compile C files (Kernel/User)
 $(BUILD_DIR)/kernel/%.o: kernel/%.c
 	@mkdir -p $(dir $@)
-	@echo "CC  $<"
 	@$(CC) $(CFLAGS) -DKERNEL -MMD -MP -c -o $@ $<
 
-$(BUILD_DIR)/user/%.o: user/%.c
-	@mkdir -p $(dir $@)
-	@echo "CC  $<"
-	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
-
-
-# Default C rule
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	@echo "CC  $<"
 	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
-# Compile C++ files
 $(BUILD_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	@echo "CXX $<"
 	@$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
 
-# Include dependencies
 -include $(DEPS)
 
+# Disk Generation
+rootfs: user
+	@mkdir -p $(BUILD_DIR)/rootfs/bin
+	@mkdir -p $(BUILD_DIR)/rootfs/etc
+	@cp $(USER_ELFS) $(BUILD_DIR)/rootfs/bin/
+	@cp user/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
+	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
+
+disk: $(MKDISK) kernel rootfs bootloader
+	@mkdir -p $(BUILD_DIR)
+	@./$(MKDISK) $(DISK_IMG) $(BOOTLOADER_BIN) $(KERNEL_BIN) $(BUILD_DIR)/rootfs
+
+$(MKDISK): tools/mkdisk.c
+	@mkdir -p tools
+	@gcc -o $(MKDISK) tools/mkdisk.c
+
 # ==============================================================================
-# Run and Debug
+# QEMU Flags
 # ==============================================================================
 
 ifeq ($(ARCH), amd64)
-QEMU = qemu-system-x86_64
 QEMU_FLAGS = -m 1G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
              -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
              -device virtio-mouse-pci,disable-legacy=on,disable-modern=off \
-             -drive if=none,file=$(BUILD_DIR)/disk.img,id=hd0,format=raw \
+             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
              -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
+
+QEMU_RELEASE_FLAGS = -m 1G -smp 4 -serial mon:stdio \
+                     -display default,show-cursor=on \
+                     -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
+                     -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
+                     -device virtio-mouse-pci,disable-legacy=on,disable-modern=off
 else
-QEMU = qemu-system-aarch64
 QEMU_FLAGS = -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \
-             -drive if=none,file=$(BUILD_DIR)/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0
+             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw -device virtio-blk-device,drive=hd0
+
+QEMU_RELEASE_FLAGS = -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio \
+                     -display default,show-cursor=on \
+                     -device virtio-gpu-device \
+                     -device virtio-keyboard-device -device virtio-mouse-device \
+                     -drive if=none,file=$(RELEASE_DIR)/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0
 endif
 
 # ==============================================================================
-# Build rules
+# Release Generation
+# ==============================================================================
 
-# Debug with QEMU and GDB
-debug: all
-	@echo "Starting QEMU in debug mode (waiting for GDB on :1234)..."
+release:
+	@echo "========================================"
+	@echo "  Creating Full Release $(VERSION)"
+	@echo "========================================"
+	@$(MAKE) ARCH=amd64 release-arch VERSION=$(VERSION)
+	@$(MAKE) ARCH=aarch64 release-arch VERSION=$(VERSION)
+	@echo "========================================"
+	@echo "✓ Full release $(VERSION) complete!"
+	@echo "  Location: $(RELEASE_BASE)"
+	@echo "========================================"
+
+release-arch: all
+	@echo "--> Building $(ARCH) release..."
+	@rm -rf $(RELEASE_DIR)
+	@mkdir -p $(RELEASE_DIR)
 ifeq ($(ARCH), amd64)
-	$(QEMU) $(QEMU_FLAGS) -cdrom build/os1test.iso -s -S
+	@rm -rf $(RELEASE_DIR)/iso
+	@mkdir -p $(RELEASE_DIR)/iso/boot/grub
+	
+	@cp $(KERNEL_ELF) $(RELEASE_DIR)/iso/boot/kernel.elf
+	
+	@echo 'set timeout=0' > $(RELEASE_DIR)/iso/boot/grub/grub.cfg
+	@echo 'set default=0' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
+	@echo 'menuentry "OS1Test" {' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
+	@echo '  multiboot2 /boot/kernel.elf' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
+	@echo '  boot' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
+	@echo '}' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
+	
+	@dd if=$(DISK_IMG) of=$(BUILD_DIR)/userland.img bs=512 skip=34850 status=none
+	
+	$(GRUB_MKRESCUE) -o $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso $(RELEASE_DIR)/iso \
+		-- -append_partition 2 0x83 $(BUILD_DIR)/userland.img
+	
+	@echo "✓ AMD64 Hybrid ISO: $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso"
+else
+	@cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img
+	@cp $(DISK_IMG) $(RELEASE_DIR)/disk.img
+	@echo "✓ AArch64 release files: kernel.img, disk.img"
+endif
+
+test-release: release-arch
+	@echo "Starting QEMU Release Test for $(ARCH) (Version: $(VERSION))..."
+ifeq ($(ARCH), amd64)
+	$(QEMU) $(QEMU_RELEASE_FLAGS) \
+		-drive if=none,file=$(RELEASE_DIR)/os1test-amd64-$(VERSION).iso,id=hd0,format=raw \
+		-device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
+else
+	$(QEMU) $(QEMU_RELEASE_FLAGS) -kernel $(RELEASE_DIR)/kernel.img
+endif
+
+# ==============================================================================
+# Development Execution
+# ==============================================================================
+
+run: all
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+
+run-direct: run
+
+debug: all
+ifeq ($(ARCH), amd64)
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 else
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 endif
-
-# ==============================================================================
-# Analysis Tools
-# ==============================================================================
 
 disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 	$(OBJDUMP) -d $(KERNEL_ELF) > $(BUILD_DIR)/kernel.disasm
 	$(OBJDUMP) -d $(BOOTLOADER_ELF) > $(BUILD_DIR)/bootloader.disasm
 	$(OBJDUMP) -d $(USER_ELF) > $(BUILD_DIR)/init.disasm
-	@echo "Disassembly saved to $(BUILD_DIR)/"
 
 check:
-	@echo "Checking toolchain..."
 	@which $(CC) > /dev/null && echo "✓ CC: $(CC)" || echo "✗ CC not found"
 	@which $(AS) > /dev/null && echo "✓ AS: $(AS)" || echo "✗ AS not found"
 	@which $(LD) > /dev/null && echo "✓ LD: $(LD)" || echo "✗ LD not found"
 	@which $(QEMU) > /dev/null && echo "✓ QEMU: $(QEMU)" || echo "✗ QEMU not found"
-
-# ==============================================================================
-# Clean
-# ==============================================================================
-
-rootfs: user
-	@echo "Preparing RootFS directory..."
-	@mkdir -p $(BUILD_DIR)/rootfs/bin
-	@mkdir -p $(BUILD_DIR)/rootfs/etc
-	@cp $(USER_ELFS) $(BUILD_DIR)/rootfs/bin/
-	@cp user/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
-	@# Remove .elf extension from binaries in rootfs/bin for cleaner paths
-	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
-
-disk: $(MKDISK) kernel rootfs bootloader
-	@echo "Assembling final disk image (GPT + Ext4)..."
-	@mkdir -p $(BUILD_DIR)
-	@./$(MKDISK) $(BUILD_DIR)/disk.img $(BOOTLOADER_BIN) $(KERNEL_BIN) $(BUILD_DIR)/rootfs
-
-$(MKDISK): tools/mkdisk.c
-	@mkdir -p tools
-	@echo "CC  tools/mkdisk.c"
-	@gcc -o $(MKDISK) tools/mkdisk.c
+	@if [ -n "$(GRUB_MKRESCUE)" ]; then echo "✓ GRUB: $(GRUB_MKRESCUE)"; else echo "✗ GRUB mancante"; fi
 
 clean:
-	@echo "Cleaning up build artifacts..."
 	-@rm -rf build/aarch64 2>/dev/null || true
 	-@rm -rf build/amd64 2>/dev/null || true
 	-@rm -rf build/*.img build/*.iso 2>/dev/null || true
 	-@rm -rf $(BUILD_ROOT) 2>/dev/null || true
-	@echo "Clean complete."
-
-# ISO generation for AMD64
-iso: kernel
-ifeq ($(ARCH), amd64)
-	@echo "Creating GRUB ISO..."
-	@mkdir -p $(BUILD_DIR)/iso/boot/grub
-	@cp $(KERNEL_ELF) $(BUILD_DIR)/iso/boot/kernel.elf
-	@echo 'set timeout=0' > $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo 'set default=0' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo 'menuentry "os1test" {' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo '  multiboot2 /boot/kernel.elf' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo '  boot' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@echo '}' >> $(BUILD_DIR)/iso/boot/grub/grub.cfg
-	@grub-mkrescue -o $(BUILD_DIR)/os1test.iso $(BUILD_DIR)/iso 2>/dev/null || \
-		echo "Warning: grub-mkrescue failed. Install xorriso and grub-common to create ISO."
-	@echo "ISO Created: $(BUILD_DIR)/os1test.iso"
-endif
-
-run: all
-	@echo ""
-	@echo "========================================"
-	@echo "  $(ARCH) Microkernel Boot"
-	@echo "========================================"
-	@echo ""
-	@echo "Starting QEMU ($(ARCH))..."
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-
-run-direct: all
-	@echo "Starting QEMU (direct kernel boot)..."
-	@echo "Press Ctrl+C to exit"
-	@echo ""
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+	-@rm -rf release 2>/dev/null || true
+	-@rm $(MKDISK) 2>/dev/null || true
 
 help:
 	@echo "$(ARCH) Kernel Build System"
-	@echo ""
 	@echo "Targets:"
-	@echo "  all        - Build bootloader and kernel (default)"
-	@echo "  bootloader - Build only bootloader"
-	@echo "  kernel     - Build only kernel"
-	@echo "  run        - Build and run with ISO boot"
-	@echo "  run-direct - Build and run kernel directly"
-	@echo "  debug      - Run with GDB debug"
-	@echo "  disasm     - Generate disassembly"
-	@echo "  clean      - Remove build artifacts"
-	@echo "  check      - Verify toolchain"
-	@echo "  help       - Show this help"
-
-.PHONY: all kernel clean run run-direct iso help
+	@echo "  all          - Build bootloader, kernel, and disk image"
+	@echo "  release      - Build production files (Use: make release VERSION=0.1.2)"
+	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.1.2)"
+	@echo "  run          - Build and run kernel directly"
+	@echo "  clean        - Remove build artifacts"

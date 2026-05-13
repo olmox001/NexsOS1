@@ -16,7 +16,7 @@
 #include <sys/stat.h>
 
 #define SECTOR_SIZE 512
-#define DISK_SIZE_MB 128
+#define DISK_SIZE_MB 96
 #define DISK_SIZE_BYTES (DISK_SIZE_MB * 1024 * 1024)
 #define NUM_SECTORS (DISK_SIZE_BYTES / SECTOR_SIZE)
 

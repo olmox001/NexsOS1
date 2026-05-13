@@ -28,7 +28,6 @@ struct gpt_header {
   uint32_t partition_entry_crc32;
 } __attribute__((packed));
 
-/* GPT Partition Entry */
 struct gpt_partition_entry {
   uint8_t type_guid[16];
   uint8_t unique_guid[16];
@@ -37,6 +36,24 @@ struct gpt_partition_entry {
   uint64_t attributes;
   uint16_t partition_name[36]; /* UTF-16LE */
 } __attribute__((packed));
+
+/* Legacy MBR Definitions */
+struct mbr_entry {
+  uint8_t status;
+  uint8_t chs_start[3];
+  uint8_t type;
+  uint8_t chs_end[3];
+  uint32_t lba_start;
+  uint32_t sectors;
+} __attribute__((packed));
+
+struct mbr {
+  uint8_t boot_code[446];
+  struct mbr_entry partitions[4];
+  uint16_t signature;
+} __attribute__((packed));
+
+#define MBR_SIGNATURE 0xAA55
 
 /* In-memory partition info */
 struct partition {

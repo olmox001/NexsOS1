@@ -1,0 +1,606 @@
+AS  boot/aarch64/header.S
+AS  boot/aarch64/stage1.S
+AS  boot/aarch64/stage2.S
+Linking bootloader...
+aarch64-none-elf-ld -nostdlib -static -T boot/aarch64/linker.ld -o build/aarch64/bootloader.elf build/aarch64/boot/aarch64/header.o build/aarch64/boot/aarch64/stage1.o build/aarch64/boot/aarch64/stage2.o
+Bootloader size: 70776 bytes
+Creating bootloader binary...
+aarch64-none-elf-objcopy -O binary build/aarch64/bootloader.elf build/aarch64/bootloader.bin
+AS  kernel/arch/aarch64/boot/start.S
+AS  kernel/arch/aarch64/cpu/exception.S
+CC  kernel/arch/aarch64/cpu/cpu.c
+CC  kernel/arch/aarch64/cpu/syscall.c
+CC  kernel/arch/aarch64/mm/mmu.c
+CC  kernel/arch/aarch64/platform.c
+CC  kernel/arch/aarch64/hal.c
+CC  kernel/arch/aarch64/virtio.c
+CC  kernel/drivers/uart/pl011.c
+CC  kernel/drivers/gic/gic.c
+CC  kernel/drivers/timer/timer.c
+CC  kernel/core/hal_bus.c
+CC  kernel/core/syscall_dispatch.c
+CC  kernel/core/timer.c
+CC  kernel/drivers/console.c
+CC  kernel/drivers/irq_ctrl.c
+CC  kernel/drivers/sys_timer.c
+CC  kernel/drivers/virtio/virtio_blk.c
+CC  kernel/drivers/virtio/virtio_input.c
+CC  kernel/drivers/gpu/virtio_gpu.c
+CC  kernel/drivers/gpu/gpu_core.c
+CC  kernel/drivers/keyboard/keyboard.c
+CC  kernel/fs/gpt.c
+CC  kernel/fs/ext4.c
+CC  kernel/mm/pmm.c
+CC  kernel/mm/vmm.c
+CC  kernel/mm/buffer.c
+CC  kernel/lib/string.c
+CC  kernel/lib/vsnprintf.c
+CC  kernel/lib/printk.c
+CC  kernel/lib/stack_protector.c
+CC  kernel/lib/math.c
+CC  kernel/lib/kmalloc.c
+CC  kernel/lib/registry.c
+CC  kernel/lib/ktest.c
+CC  kernel/lib/ktest_samples.c
+CC  kernel/cpu.c
+CC  kernel/sched/process.c
+CC  kernel/sched/elf.c
+CC  kernel/graphics/graphics.c
+CC  kernel/graphics/region.c
+CC  kernel/graphics/gl.c
+CC  kernel/graphics/font.c
+CC  kernel/graphics/compositor.c
+CC  kernel/irq/irq.c
+CC  kernel/lib/fdt.c
+CC  kernel/main.c
+Linking kernel...
+aarch64-none-elf-ld -nostdlib -static -T kernel/arch/aarch64/kernel.ld -Map build/kernel.map -o build/aarch64/kernel.elf build/aarch64/kernel/arch/aarch64/boot/start.o build/aarch64/kernel/arch/aarch64/cpu/exception.o build/aarch64/kernel/arch/aarch64/cpu/cpu.o build/aarch64/kernel/arch/aarch64/cpu/syscall.o build/aarch64/kernel/arch/aarch64/mm/mmu.o build/aarch64/kernel/arch/aarch64/platform.o build/aarch64/kernel/arch/aarch64/hal.o build/aarch64/kernel/arch/aarch64/virtio.o build/aarch64/kernel/drivers/uart/pl011.o build/aarch64/kernel/drivers/gic/gic.o build/aarch64/kernel/drivers/timer/timer.o build/aarch64/kernel/core/hal_bus.o build/aarch64/kernel/core/syscall_dispatch.o build/aarch64/kernel/core/timer.o build/aarch64/kernel/drivers/console.o build/aarch64/kernel/drivers/irq_ctrl.o build/aarch64/kernel/drivers/sys_timer.o build/aarch64/kernel/drivers/virtio/virtio_blk.o build/aarch64/kernel/drivers/virtio/virtio_input.o build/aarch64/kernel/drivers/gpu/virtio_gpu.o build/aarch64/kernel/drivers/gpu/gpu_core.o build/aarch64/kernel/drivers/keyboard/keyboard.o build/aarch64/kernel/fs/gpt.o build/aarch64/kernel/fs/ext4.o build/aarch64/kernel/mm/pmm.o build/aarch64/kernel/mm/vmm.o build/aarch64/kernel/mm/buffer.o build/aarch64/kernel/lib/string.o build/aarch64/kernel/lib/vsnprintf.o build/aarch64/kernel/lib/printk.o build/aarch64/kernel/lib/stack_protector.o build/aarch64/kernel/lib/math.o build/aarch64/kernel/lib/kmalloc.o build/aarch64/kernel/lib/registry.o build/aarch64/kernel/lib/ktest.o build/aarch64/kernel/lib/ktest_samples.o build/aarch64/kernel/cpu.o build/aarch64/kernel/sched/process.o build/aarch64/kernel/sched/elf.o build/aarch64/kernel/graphics/graphics.o build/aarch64/kernel/graphics/region.o build/aarch64/kernel/graphics/gl.o build/aarch64/kernel/graphics/font.o build/aarch64/kernel/graphics/compositor.o build/aarch64/kernel/irq/irq.o build/aarch64/kernel/lib/fdt.o build/aarch64/kernel/main.o
+Kernel size: 609928 bytes
+Creating kernel binary...
+aarch64-none-elf-objcopy -O binary build/aarch64/kernel.elf build/aarch64/kernel.bin
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/init.c -o build/aarch64/user/bin/init.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/lib/lib.c -o build/aarch64/user/lib/lib.o
+AS  user/arch/aarch64/syscall.S
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/init.elf build/aarch64/user/bin/init.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+Userland init size: 104904 bytes
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/counter.c -o build/aarch64/user/bin/counter.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/counter.elf build/aarch64/user/bin/counter.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+Userland counter size: 104416 bytes
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/shell.c -o build/aarch64/user/bin/shell.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/proce.c -o build/aarch64/user/bin/proce.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/shell.elf build/aarch64/user/bin/shell.o build/aarch64/user/lib/lib.o build/aarch64/user/bin/proce.o build/aarch64/user/arch/aarch64/syscall.o
+Userland shell size: 118912 bytes
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/demo3d.c -o build/aarch64/user/bin/demo3d.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/demo3d.elf build/aarch64/user/bin/demo3d.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+Userland demo3d size: 110720 bytes
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/ipc_send.c -o build/aarch64/user/bin/ipc_send.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/ipc_send.elf build/aarch64/user/bin/ipc_send.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/ipc_recv.c -o build/aarch64/user/bin/ipc_recv.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/ipc_recv.elf build/aarch64/user/bin/ipc_recv.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/notification_server.c -o build/aarch64/user/bin/notification_server.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/notify_srv.elf build/aarch64/user/bin/notification_server.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/crash.c -o build/aarch64/user/bin/crash.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/crash.elf build/aarch64/user/bin/crash.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/regedit.c -o build/aarch64/user/bin/regedit.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/regedit.elf build/aarch64/user/bin/regedit.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -c user/bin/writetest.c -o build/aarch64/user/bin/writetest.o
+aarch64-none-elf-gcc -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/writetest.elf build/aarch64/user/bin/writetest.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o
+Preparing RootFS directory...
+Assembling final disk image (GPT + Ext4)...
+Ext4: Added build/aarch64/rootfs/bin/ipc_send (Ino 13, 105120 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/init (Ino 14, 104904 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/regedit (Ino 15, 104928 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/shell (Ino 16, 118912 bytes, 30 blocks)
+Ext4: Added build/aarch64/rootfs/bin/ipc_recv (Ino 17, 104464 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/crash (Ino 18, 103144 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/demo3d (Ino 19, 110720 bytes, 28 blocks)
+Ext4: Added build/aarch64/rootfs/bin/writetest (Ino 20, 104568 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/counter (Ino 21, 104416 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/bin/notify_srv (Ino 22, 105184 bytes, 26 blocks)
+Ext4: Added build/aarch64/rootfs/etc/init.cfg (Ino 23, 189 bytes, 1 blocks)
+
+Build complete!
+  Disk Image: build/aarch64/disk.img
+  Kernel:     build/aarch64/kernel.elf
+
+Run with: make run ARCH=aarch64
+
+
+========================================
+  aarch64 Microkernel Boot
+========================================
+
+Starting QEMU (aarch64)...
+qemu-system-aarch64 -M virt -cpu cortex-a57 -m 2G -smp 8 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=build/aarch64/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 -kernel build/aarch64/kernel.elf
+[C0] [INFO] Console driver initialized
+FDT: No address provided, scanning RAM...
+................................................................
+FDT: Scan failed, no DTB found.
+[C0] [INFO] Kernel: Entry x0 = 0x0
+[C0] 
+[C0] ========================================
+[C0]   AArch64 Microkernel v0.1.0
+[C0]   Production-Ready Microkernel
+[C0] ========================================
+[C0] 
+[C0] 
+[KTEST] Starting Kernel Unit Tests (3 cases found)...
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 3 PASSED, 0 FAILED
+
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] CPU: Primary core 0 initialized
+[C0] [INFO] CPU: Vector Table set to 0x40080800
+PLATFORM: arch_platform_early_init starting
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [WARN] AArch64: No DTB pointer found (boot_fdt_ptr is NULL)!
+[C0] [INFO] Initializing IRQ...
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [INFO] IRQ driver initialized via HAL
+[C0] [INFO] GIC: 256 interrupt lines
+[C0] [INFO] GIC: Distributor initialized
+[C0] [INFO] Initializing timer...
+[C0] [INFO] Timer: Frequency 62500000 Hz
+[C0] [INFO] Timer: System tick rate 100 Hz
+[C0] [INFO] Timer driver initialized via HAL
+[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x650c83d, Ctl: 0x1
+[C0] [INFO] Initializing memory...
+[C0] [WARN] AArch64: FDT memory discovery failed! Using 1GB fallback.
+[C0] [INFO] PMM: 1024 MB total, 1007 MB free
+[C0] [INFO] PMM: DMA zone: 128 pages, Normal zone: 257801 pages
+[C0] [INFO] VMM: Initializing MMU...
+[C0] [INFO] VMM: Mapping MMIO...
+[C0] [INFO] VMM: Enabling hardware MMU...
+[C0] [INFO] AArch64 VMM: Setting up MAIR (PGD at 0x410f7000)
+[C0] [INFO] AArch64 VMM: Setting up TCR
+[C0] [INFO] AArch64 VMM: Setting TTBR0
+[C0] [INFO] AArch64 VMM: Enabling SCTLR bits (MMU, Caches)
+[C0] [INFO] AArch64 VMM: MMU Enabled. SCTLR=0x1005
+[C0] [INFO] VMM: MMU initialization complete.
+[C0] [INFO] HAL: Initializing Bus Manager...
+[C0] [INFO] HAL: Scanning Platform Bus (MMIO)...
+[C0] [INFO] HAL: Registered device 'VirtIO-2' (Bus=2, ID=1af4:0002, Base=0xa003800, IRQ=76)
+[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Base=0xa003a00, IRQ=77)
+[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Base=0xa003c00, IRQ=78)
+[C0] [INFO] HAL: Registered device 'VirtIO-16' (Bus=2, ID=1af4:0010, Base=0xa003e00, IRQ=79)
+[C0] [INFO] VirtIO: Probing for block device...
+[C0] [INFO] VirtIO: Found Block Device (IRQ 76)
+[C0] [INFO] VirtIO: Version 1
+[C0] [INFO] VirtIO: Block Device Initialized successfully
+[C0] [INFO] VirtIO-GPU: Probing...
+[C0] [INFO] VirtIO-GPU: Found device (IRQ 79)
+[C0] [INFO] kmalloc: Initialized bucket allocator. Heap: 32 MB at 0x000000004117f000
+[C0] [INFO] GPU: Primary device set to VirtIO-GPU
+[C0] [INFO] GPU: Registered VirtIO-GPU
+[C0] [INFO] VirtIO-GPU: Done.
+[C0] [INFO] Graphics: Initialized via HAL (720x1280)
+[C0] [INFO] GPT: Initializing...
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 1, notify dev 0x0
+[C0] [INFO] GPT: Valid signature found. Entries: 128 @ LBA 2
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 2, notify dev 0x0
+[C0] [INFO] GPT: Partition 0: Start=34, Size=2048 sectors
+[C0] [INFO] GPT: Partition 1: Start=2082, Size=32768 sectors
+[C0] [INFO] GPT: Partition 2: Start=34850, Size=227261 sectors
+[C0] [INFO] GPT: Found 3 partitions
+[C0] [INFO] GPT: Done.
+[C0] [INFO] BufferCache: Initializing...
+[C0] [INFO] Buffer: Done.
+[C0] [INFO] Ext4: Found partition at LBA 34850
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34852, notify dev 0x0
+[C0] [INFO] Ext4: Mounted. Vol=, Inodes=1024
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34858, notify dev 0x0
+[C0] [INFO] Ext4: Group 0: Inode Table at Block 4
+[C0] [INFO] Ext4: Done.
+[C0] [INFO] VirtIO-Input: Probing devices...
+[C0] [INFO] Keyboard: Initialized
+[C0] [INFO] Registry: Initialized with 3 default keys.
+[C0] [INFO] Registry: Initialized.
+[C0] [INFO] Initializing processes...
+[C0] [INFO] Process: Initializing scheduler subsystem...
+[C0] [INFO] Initializing scheduler...
+[C0] [INFO] Scheduler: Initializing...
+[C0] [INFO] Compositor: Initialized
+[C0] [INFO] Scheduler: Spawning First-Stage Init...
+[C0] [INFO] Process: Creating 'init' (Prio=2)
+[C0] [INFO] process_create: 'init' PID=1 slot=0 Prio=2 PageTable=0x0000000043894000
+[C0] [INFO] process_create: PID 1 context allocated at 0x00000000438b5cd0 (kstack=438b6000)
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34882, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34882, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35394, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34887, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34887, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35402, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34888, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35626, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34888, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35626, notify dev 0x0
+[C0] [INFO] ELF: Mapping Segment at 0x80000000 (FileSz: 0x1948, MemSz: 0x1948)
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34888, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35722, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35762, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34888, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35722, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35770, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34888, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35626, notify dev 0x0
+[C0] [INFO] ELF: Mapping Segment at 0x80011948 (FileSz: 0x8, MemSz: 0x8)
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34888, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35722, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35770, notify dev 0x0
+[C0] [INFO] Scheduler: Initialized PID 1 (/init)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=2 slot=1 Prio=31 PageTable=0x00000000439be000
+[C0] [INFO] process_create: PID 2 context allocated at 0x00000000439dfcd0 (kstack=439e0000)
+[C0] [INFO] Waking secondary CPUs...
+[C0] [WARN] AArch64: FDT CPU discovery failed, probing up to 64 cores
+[C0] [INFO] AArch64: Starting SMP initialization for 64 potential cores
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C1] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] process_create: 'idle' PID=3 slot=2 Prio=31 PageTable=0x00000000439e1000
+[C1] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xebbd7cc, Ctl: 0x1
+[C1] [INFO] Secondary CPU 1 online and ready
+[C0] [INFO] process_create: PID 3 context allocated at 0x0000000043a02cd0 (kstack=43a03000)
+[C0] [INFO] AArch64: CPU 1 online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C2] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] process_create: 'idle' PID=4 slot=3 Prio=31 PageTable=0x0000000043a04000
+[C2] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xebd1a10, Ctl: 0x1
+[C2] [INFO] Secondary CPU 2 online and ready
+[C0] [INFO] process_create: PID 4 context allocated at 0x0000000043a25cd0 (kstack=43a26000)
+[C0] [INFO] AArch64: CPU 2 online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C3] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] process_create: 'idle' PID=5 slot=4 Prio=31 PageTable=0x0000000043a27000
+[C3] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xebe8a78, Ctl: 0x1
+[C3] [INFO] Secondary CPU 3 online and ready
+[C0] [INFO] process_create: PID 5 context allocated at 0x0000000043a48cd0 (kstack=43a49000)
+[C0] [INFO] AArch64: CPU 3 online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C4] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] process_create: 'idle' PID=6 slot=5 Prio=31 PageTable=0x0000000043a4a000
+[C4] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xec0032e, Ctl: 0x1
+[C4] [INFO] Secondary CPU 4 online and ready
+[C0] [INFO] process_create: PID 6 context allocated at 0x0000000043a6bcd0 (kstack=43a6c000)
+[C0] [INFO] AArch64: CPU 4 online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C5] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] process_create: 'idle' PID=7 slot=6 Prio=31 PageTable=0x0000000043a6d000
+[C5] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xec16cff, Ctl: 0x1
+[C5] [INFO] Secondary CPU 5 online and ready
+[C0] [INFO] process_create: PID 7 context allocated at 0x0000000043a8ecd0 (kstack=43a8f000)
+[C0] [INFO] AArch64: CPU 5 online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C6] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] process_create: 'idle' PID=8 slot=7 Prio=31 PageTable=0x0000000043a90000
+[C6] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xec2e0d2, Ctl: 0x1
+[C6] [INFO] Secondary CPU 6 online and ready
+[C0] [INFO] process_create: PID 8 context allocated at 0x0000000043ab1cd0 (kstack=43ab2000)
+[C0] [INFO] AArch64: CPU 6 online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C7] [INFO] CPU: Vector Table set to 0x40080800
+[C0] [INFO] process_create: 'idle' PID=9 slot=8 Prio=31 PageTable=0x0000000043ab3000
+[C7] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xec46540, Ctl: 0x1
+[C7] [INFO] Secondary CPU 7 online and ready
+[C0] [INFO] process_create: PID 9 context allocated at 0x0000000043ad4cd0 (kstack=43ad5000)
+[C0] [INFO] AArch64: CPU 7 online
+[C0] [INFO] Enabling interrupts...
+[Init] System Initialization Starting...
+[Init] Spawning Notification Server...
+[C0] [INFO] Process: Creating '/bin/notify_srv' (Prio=2)
+[C0] [INFO] process_create: '/bin/notify_srv' PID=10 slot=9 Prio=2 PageTable=0x0000000043ad6000
+[C0] [INFO] process_create: PID 10 context allocated at 0x0000000043af7cd0 (kstack=43af8000)
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34882, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34882, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35394, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34887, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34887, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 35402, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34892, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37402, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34892, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37402, notify dev 0x0
+[C0] [INFO] ELF: Mapping Segment at 0x80000000 (FileSz: 0x1848, MemSz: 0x1848)
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34892, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37498, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37538, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34892, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37498, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37546, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34892, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37402, notify dev 0x0
+[C0] [INFO] ELF: Mapping Segment at 0x80011848 (FileSz: 0x8, MemSz: 0x8)
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 34892, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37498, notify dev 0x0
+[C0] [DEBUG] VirtIO-Blk: Reading LBA 37546, notify dev 0x0
+[C0] [INFO] Compositor: Created window 'Notifiche' (250x60) at (460,10)
+[Init] Notification Server started (PID 10)
+[Init] Spawning Shell...
+[C5] [INFO] Process: Creating '/bin/shell' (Prio=2)
+[C5] [INFO] process_create: '/bin/shell' PID=11 slot=10 Prio=2 PageTable=0x0000000043c0f000
+[C5] [INFO] process_create: PID 11 context allocated at 0x0000000043c30cd0 (kstack=43c31000)
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34882, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34882, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 35394, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34887, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34887, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 35402, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34889, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36058, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34889, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36058, notify dev 0x0
+[C5] [INFO] ELF: Mapping Segment at 0x80000000 (FileSz: 0x28c0, MemSz: 0x28c0)
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34889, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36154, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36194, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34889, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36154, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36202, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34889, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36154, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36210, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34889, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36058, notify dev 0x0
+[C5] [INFO] ELF: Mapping Segment at 0x800128c0 (FileSz: 0x10, MemSz: 0x98)
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 34889, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36154, notify dev 0x0
+[C5] [DEBUG] VirtIO-Blk: Reading LBA 36210, notify dev 0x0
+Shell: Alive
+[Init] Shell started (PID 11)
+[C3] [INFO] Compositor: Created window 'Shell PID 11' (640x480) at (140,140)
+[Init] Entering supervisor loop
+shell> [C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=1 code=272 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-2
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-4
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-7
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-13
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-10
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-28
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-24
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-10
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-22
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-20
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-5
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-20
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-4
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-17
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-4
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-14
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-6
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-5
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-3
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-10
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-6
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-6
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-6
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-5
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-5
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-2
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-6
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-2
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-9
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-7
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=2
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-8
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=11
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-14
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=15
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-12
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=16
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-12
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=23
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-14
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=27
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-14
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=26
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-12
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=27
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-10
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=28
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-8
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=11
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=21
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-4
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=18
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=-1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=17
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=6
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=10
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=2
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=12
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=7
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=4
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=7
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=8
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=9
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-2
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=18
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-5
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=7
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-9
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=11
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-10
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=12
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-11
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=10
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-11
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=8
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-4
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=3
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-10
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=6
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-3
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=2
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-5
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=3
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-5
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=2
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-3
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=2
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-2
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=-1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=2 code=1 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=1 code=29 val=1
+[C0] [DEBUG] VirtIO-Input: KEY Event code=29 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=1 code=56 val=1
+[C0] [DEBUG] VirtIO-Input: KEY Event code=56 val=1
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=1 code=272 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=1 code=273 val=0
+[C0] [DEBUG] VirtIO-Input: KEY Event code=273 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=1 code=274 val=0
+[C0] [DEBUG] VirtIO-Input: KEY Event code=274 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=1 code=29 val=0
+[C0] [DEBUG] VirtIO-Input: KEY Event code=29 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+[C0] [DEBUG] VirtIO-Input: Interrupt! Status=0x1
+[C0] [DEBUG] VirtIO-Input: Event type=1 code=56 val=0
+[C0] [DEBUG] VirtIO-Input: KEY Event code=56 val=0
+[C0] [DEBUG] VirtIO-Input: Event type=0 code=0 val=0
+

@@ -14,10 +14,7 @@ static uint32_t fdt32_to_cpu(uint32_t val) {
            ((val & 0x000000FF) << 24);
 }
 
-static uint64_t fdt64_to_cpu(uint64_t val) {
-    return ((uint64_t)fdt32_to_cpu(val & 0xFFFFFFFF) << 32) |
-           fdt32_to_cpu(val >> 32);
-}
+
 
 #ifndef ARCH_AMD64
 int fdt_init(uintptr_t fdt_addr) {
@@ -83,6 +80,19 @@ static const char *fdt_get_string(uint32_t offset) {
     return (const char *)((uintptr_t)fdt_ptr + fdt32_to_cpu(fdt_ptr->off_dt_strings) + offset);
 }
 
+static uint32_t fdt_read32(uint32_t *p) {
+    /* Force 32-bit load to avoid alignment issues if compiler tries to optimize */
+    return fdt32_to_cpu(*(volatile uint32_t *)p);
+}
+
+static uint64_t fdt_read64(uint32_t *p) {
+    /* Force two 32-bit loads to avoid unaligned 64-bit load (LDR Xn) */
+    volatile uint32_t *vp = (volatile uint32_t *)p;
+    uint64_t high = fdt32_to_cpu(vp[0]);
+    uint64_t low = fdt32_to_cpu(vp[1]);
+    return (high << 32) | low;
+}
+
 int fdt_get_mem_regions(struct mem_region *regions, size_t max_count, size_t *count) {
     if (!fdt_ptr) return -1;
 
@@ -126,18 +136,26 @@ int fdt_get_mem_regions(struct mem_region *regions, size_t max_count, size_t *co
                 uint32_t *reg_p = p;
                 for (uint32_t i = 0; i < len / ((addr_cells + size_cells) * 4); i++) {
                     uint64_t base, size;
-                    if (addr_cells == 2) base = fdt64_to_cpu(*(uint64_t *)reg_p);
-                    else base = fdt32_to_cpu(*reg_p);
-                    reg_p += addr_cells;
+                    if (addr_cells == 2) {
+                        base = fdt_read64(reg_p);
+                        reg_p += 2;
+                    } else {
+                        base = fdt_read32(reg_p++);
+                    }
 
-                    if (size_cells == 2) size = fdt64_to_cpu(*(uint64_t *)reg_p);
-                    else size = fdt32_to_cpu(*reg_p);
-                    reg_p += size_cells;
+                    if (size_cells == 2) {
+                        size = fdt_read64(reg_p);
+                        reg_p += 2;
+                    } else {
+                        size = fdt_read32(reg_p++);
+                    }
 
-                    regions[found_count].base = base;
-                    regions[found_count].size = size;
-                    regions[found_count].type = MEM_REGION_USABLE;
-                    found_count++;
+                    if (found_count < max_count) {
+                        regions[found_count].base = base;
+                        regions[found_count].size = size;
+                        regions[found_count].type = MEM_REGION_USABLE;
+                        found_count++;
+                    }
                 }
             }
             p += (len + 3) / 4;

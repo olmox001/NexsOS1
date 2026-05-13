@@ -33,13 +33,15 @@ multiboot2_header_end:
 .code32
 .global _start_32
 _start_32:
-    /* Debug: Print 'B' to serial port 0x3f8 */
-    movb $'B', %al
-    movw $0x3f8, %dx
-    outb %al, %dx
-
     cli
     cld
+    
+    /* 2. Setup temporary stack */
+    movl $boot_stack_top, %esp
+
+    /* Save magic and info on stack */
+    pushl %eax
+    pushl %ebx
 
     /* 1. Setup minimal GDT for 32-bit mode */
     lgdt (boot_gdtr_32)
@@ -50,12 +52,7 @@ _start_32:
     movw %ax, %fs
     movw %ax, %gs
 
-    /* Save magic and info for later */
-    movl %eax, %ebp
-    movl %ebx, %edx
-
-    /* 2. Setup temporary stack */
-    movl $boot_stack_top, %esp
+    /* GDT already loaded, segments set */
 
     /* 3. Clear Page Tables */
     movl $boot_pml4, %edi
@@ -122,6 +119,10 @@ _start_32:
     orl $(1 << 31 | 1 << 16), %eax
     movl %eax, %cr0
 
+    /* Restore magic and info from stack */
+    popl %esi    /* Info */
+    popl %ebp    /* Magic */
+
     /* 9. Jump to 64-bit */
     /* Debug: Print 'C' */
     movb $'C', %al
@@ -134,6 +135,12 @@ _start_32:
 
 .code64
 _start_64:
+    /* Save magic and info IMMEDIATELY before registers are lost */
+    movl %ebp, %eax
+    movq %rax, mb_magic(%rip)
+    movl %esi, %eax
+    movq %rax, mb_info_ptr(%rip)
+
     /* Debug: Print 'E' */
     movb $'E', %al
     movw $0x3f8, %dx
@@ -166,19 +173,14 @@ _start_64:
     movw $0x3f8, %dx
     outb %al, %dx
 
-    movl %ebp, %eax
-    movq %rax, mb_magic(%rip)
-    movl %edx, %eax
-    movq %rax, mb_info_ptr(%rip)
-
     movabsq $__kernel_stack, %rsp
     addq $131072, %rsp
     movq %rsp, %rbp
 
     lgdt (boot_gdtr_64)
     
-    movq mb_info_ptr(%rip), %rdi
-    movq mb_magic(%rip), %rsi
+    movq mb_magic(%rip), %rdi
+    movq mb_info_ptr(%rip), %rsi
     call kernel_main
 
 .halt:

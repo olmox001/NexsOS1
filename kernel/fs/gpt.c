@@ -11,29 +11,71 @@
 struct partition partitions[MAX_PARTITIONS];
 int num_partitions = 0;
 
+static void mbr_init(uint8_t *buf) {
+  struct mbr *m = (struct mbr *)buf;
+  if (m->signature != MBR_SIGNATURE) {
+    pr_err("MBR: Invalid signature: 0x%04x\n", m->signature);
+    return;
+  }
+
+  pr_info("%s", "MBR: Valid signature found. Scanning partitions...\n");
+  num_partitions = 0;
+
+  for (int i = 0; i < 4; i++) {
+    struct mbr_entry *e = &m->partitions[i];
+    if (e->type == 0)
+      continue;
+
+    /* Map MBR partition 1..4 to our internal index 1..4 (or 0..3)
+     * For compatibility with ext4_init(2), we use the MBR slot index + 1. */
+    int idx = i + 1;
+    if (idx >= MAX_PARTITIONS)
+      continue;
+
+    struct partition *p = &partitions[idx];
+    p->index = idx;
+    p->start_lba = e->lba_start;
+    p->size_sectors = e->sectors;
+    p->end_lba = p->start_lba + p->size_sectors - 1;
+    memset(p->type_guid, 0, 16);
+    p->type_guid[0] = e->type;
+
+    pr_info("MBR: Partition %d: Type=0x%02x, Start=%ld, Size=%ld sectors\n", idx,
+            e->type, p->start_lba, p->size_sectors);
+
+    if (idx >= num_partitions)
+      num_partitions = idx + 1;
+  }
+}
+
 void gpt_init(void) {
-  pr_info("%s", "GPT: Initializing...\n");
+  pr_info("%s", "Partition: Initializing...\n");
 
   /* Allocate buffer for reading sectors */
   uint8_t *buf = (uint8_t *)pmm_alloc_page();
   if (!buf) {
-    pr_info("%s", "GPT: Failed to allocate buffer\n");
+    pr_info("%s", "Partition: Failed to allocate buffer\n");
     return;
   }
 
-  /* 1. Read GPT Header (LBA 1) */
-  /* LBA 0 is MBR, LBA 1 is GPT Header */
+  /* 1. Try reading GPT Header (LBA 1) */
   if (virtio_blk_read(buf, 1, 1) != 0) {
-    pr_info("%s", "GPT: Failed to read GPT header\n");
+    pr_info("%s", "Partition: Failed to read LBA 1\n");
     pmm_free_page(buf);
     return;
   }
 
   struct gpt_header *header = (struct gpt_header *)buf;
 
-  /* 2. Check Signature */
+  /* 2. Check GPT Signature. If not found, try MBR on LBA 0. */
   if (header->signature != GPT_SIGNATURE) {
-    pr_info("GPT: Invalid signature: 0x%016lx\n", header->signature);
+    pr_info("%s", "GPT: Invalid signature. Falling back to MBR...\n");
+    if (virtio_blk_read(buf, 0, 1) != 0) {
+      pr_err("%s", "Partition: Failed to read LBA 0 (MBR)\n");
+      pmm_free_page(buf);
+      return;
+    }
+    mbr_init(buf);
     pmm_free_page(buf);
     return;
   }

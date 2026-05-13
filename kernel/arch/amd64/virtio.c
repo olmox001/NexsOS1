@@ -1,5 +1,7 @@
 #include <drivers/pci.h>
 #include <drivers/virtio.h>
+#include <arch/arch.h>
+#include <arch/platform.h>
 #include <kernel/hal.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
@@ -73,7 +75,12 @@ static uint32_t modern_read32(struct virtio_device *dev, uint32_t offset) {
     if (dev->isr_base) {
       return hal_read8(dev->isr_base);
     }
-    return 0;
+    /* Fallback: try both 32-bit and 8-bit reads from standard MMIO offset */
+    uint32_t val32 = hal_read32(dev->base + 0x60);
+    if (val32 != 0)
+      return val32;
+    /* Try 8-bit read in case device uses narrow reads */
+    return hal_read8(dev->base + 0x60);
   }
 
   uint32_t mod_off = translate_modern(offset);
@@ -87,6 +94,9 @@ static void modern_write32(struct virtio_device *dev, uint32_t offset,
   if (offset == VIRTIO_MMIO_INTERRUPT_ACK) {
     if (dev->isr_base) {
       hal_read8(dev->isr_base); /* Reading ISR status acknowledges on PCI */
+    } else {
+      /* Fallback: write to standard MMIO offset 0x64 if isr_base not set */
+      hal_write32(dev->base + 0x64, val);
     }
     return;
   }
@@ -215,11 +225,37 @@ static void virtio_pci_init_device(struct hal_device *hdev) {
 
 void arch_virtio_scan(void) {
   virtio_dev_count = 0;
+  
+  /* Scan PCI-based VirtIO devices */
   int count = hal_device_get_count();
   for (int i = 0; i < count; i++) {
     struct hal_device *hdev = hal_device_get(i);
     if (hdev && hdev->vendor_id == 0x1AF4) {
       virtio_pci_init_device(hdev);
+    }
+  }
+  
+  /* Also scan fixed MMIO addresses (QEMU virt machine type) */
+  for (int i = 0; i < VIRTIO_COUNT && virtio_dev_count < MAX_VIRTIO_DEVS; i++) {
+    uintptr_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STRIDE;
+    uint32_t magic = hal_read32(base + VIRTIO_MMIO_MAGIC_VALUE);
+    
+    if (magic == 0x74726976) {  /* Magic: "virt" */
+      uint32_t dev_id = hal_read32(base + VIRTIO_MMIO_DEVICE_ID);
+      if (dev_id != 0) {
+        struct virtio_device *vdev = &virtio_devices[virtio_dev_count];
+        memset(vdev, 0, sizeof(struct virtio_device));
+        vdev->base = base;
+        vdev->irq = 48 + i;  /* VirtIO IRQs start at 48 */
+        vdev->device_id = dev_id;
+        vdev->ops = &modern_ops;  /* MMIO is always modern */
+        vdev->hal_dev.base = base;
+        vdev->hal_dev.irq = 48 + i;
+        vdev->hal_dev.bus_type = HAL_BUS_TYPE_VIRTIO_MMIO;
+        vdev->hal_dev.io_type = HAL_RES_MMIO;
+        vdev->is_legacy = 0;
+        virtio_dev_count++;
+      }
     }
   }
 }
