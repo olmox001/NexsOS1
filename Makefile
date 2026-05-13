@@ -163,6 +163,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/mm/vmm.c \
     $(KERNEL_DIR)/mm/buffer.c \
     $(KERNEL_DIR)/lib/string.c \
+    $(KERNEL_DIR)/lib/crc32.c \
     $(KERNEL_DIR)/lib/vsnprintf.c \
     $(KERNEL_DIR)/lib/printk.c \
     $(KERNEL_DIR)/lib/stack_protector.c \

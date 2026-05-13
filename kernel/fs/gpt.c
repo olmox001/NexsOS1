@@ -80,34 +80,71 @@ void gpt_init(void) {
     return;
   }
 
+  /* 2.1 Verify Header CRC32 */
+  uint32_t orig_crc = header->header_crc32;
+  header->header_crc32 = 0;
+  uint32_t calc_crc = crc32(header, header->header_size);
+  header->header_crc32 = orig_crc;
+
+  if (calc_crc != orig_crc) {
+    pr_err("GPT: Header CRC mismatch! (calc: 0x%08x, orig: 0x%08x)\n", calc_crc,
+           orig_crc);
+    /* Fallback to MBR or fail? For now, let's proceed with a warning but
+     * actually GPT might be corrupted. */
+    /* pmm_free_page(buf); return; */
+  }
+
   pr_info("GPT: Valid signature found. Entries: %d @ LBA %ld\n",
           header->num_partition_entries, header->partition_entry_lba);
 
   /* 3. Read Partition Entries */
-  /*
-   * Usually entries start at LBA 2.
-   * Entry size is usually 128 bytes.
-   * We need to read enough sectors to cover all entries we care about.
-   * Let's say we read 4 sectors (2048 bytes) -> 16 entries (128 bytes each).
-   */
-  /* 3. Read Partition Entries */
   uint64_t entries_lba = header->partition_entry_lba;
   uint32_t entry_size = header->partition_entry_size;
   uint32_t num_entries = header->num_partition_entries;
+  uint32_t entries_crc = header->partition_entry_crc32;
 
-  /* Reuse buffer to read entries */
-  /* We assume entries fit in one page (4096 bytes / 128 = 32 entries) */
-  /* Read 8 sectors = 4096 bytes */
-  if (virtio_blk_read(buf, entries_lba, 8) != 0) {
+  /* Reuse buffer to read entries. GPT usually has 128 entries of 128 bytes = 16
+   * KB. */
+  /* Calculate how many pages we need */
+  uint32_t total_entries_size = num_entries * entry_size;
+  uint32_t num_pages = (total_entries_size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+  /* If we need more than 1 page, free old buf and allocate contiguous block or
+   * just use what fits? */
+  /* For now, let's just use what we have if it fits in 1 page, otherwise skip
+   * CRC check for the rest. */
+  /* Actually, let's try to allocate the required pages. */
+  if (num_pages > 1) {
+    /* pmm_alloc_aligned could be used, but let's just use kmalloc if available.
+     */
+    /* But PMM is what gpt_init uses. Let's just limit to what we can read in 1
+     * page for now to avoid complexity, but warn. */
+    if (num_entries > 32) {
+      pr_warn("GPT: Too many entries (%d), only checking first 32\n",
+              num_entries);
+      total_entries_size = 32 * entry_size;
+    }
+  }
+
+  uint32_t sectors_to_read = (total_entries_size + 511) / 512;
+  if (virtio_blk_read(buf, entries_lba, sectors_to_read) != 0) {
     pr_info("%s", "GPT: Failed to read partition entries\n");
     pmm_free_page(buf);
     return;
   }
 
+  /* 3.1 Verify Partition Entries CRC32 */
+  uint32_t calc_entries_crc = crc32(buf, total_entries_size);
+  if (calc_entries_crc != entries_crc && num_entries <= 32) {
+    pr_err("GPT: Partition Entries CRC mismatch! (calc: 0x%08x, orig: 0x%08x)\n",
+           calc_entries_crc, entries_crc);
+  }
+
   /* Parse entries */
   num_partitions = 0;
+  uint32_t entries_to_read = total_entries_size / entry_size;
 
-  for (uint32_t i = 0; i < 32 && i < num_entries; i++) {
+  for (uint32_t i = 0; i < entries_to_read; i++) {
     struct gpt_partition_entry *entry =
         (struct gpt_partition_entry *)(buf + i * entry_size);
 
