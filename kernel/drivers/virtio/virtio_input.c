@@ -97,7 +97,8 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   /* Rings are already identity mapped */
 
   /* Use unified HAL API */
-  virtio_setup_queue(handle, 0, (uint64_t)dev->desc, (uint64_t)dev->avail, (uint64_t)dev->used);
+  virtio_setup_queue(handle, 0, (uint64_t)dev->desc, (uint64_t)dev->avail,
+                     (uint64_t)dev->used);
 
   dev->events = (struct virtio_input_event *)pmm_alloc_page();
   memset(dev->events, 0, sizeof(struct virtio_input_event) * INPUT_QSIZE);
@@ -130,6 +131,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
   (void)irq;
 
   uint32_t status = v_read32(dev, VIRTIO_MMIO_INTERRUPT_STATUS);
+  pr_debug("VirtIO-Input: Interrupt! Status=0x%x\n", status);
   v_write32(dev, VIRTIO_MMIO_INTERRUPT_ACK, status);
 
   if (status == 0)
@@ -137,11 +139,13 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 
   int needs_render = 0;
   while (dev->last_used_idx != dev->used->idx) {
-    arch_mb();
     struct vring_used_elem *e =
         &dev->used->ring[dev->last_used_idx % INPUT_QSIZE];
     uint32_t id = e->id;
     struct virtio_input_event *evt = &dev->events[id];
+
+    pr_debug("VirtIO-Input: Event type=%d code=%d val=%d\n", evt->type,
+             evt->code, evt->value);
 
     if (evt->type == EV_REL) {
       if (evt->code == REL_X) {
@@ -164,6 +168,8 @@ static void virtio_input_handler(uint32_t irq, void *data) {
         compositor_handle_click(evt->code, evt->value);
         needs_render = 1;
       } else {
+        pr_debug("VirtIO-Input: KEY Event code=%d val=%d\n", evt->code,
+                 evt->value);
         virtio_input_add_event(evt->type, evt->code, evt->value);
         extern void keyboard_notify_input(void);
         keyboard_notify_input();

@@ -179,37 +179,48 @@ void arch_vmm_set_secondary_pgd(uint64_t pgd) {
 }
 
 void arch_vmm_init_hw(uint64_t kernel_pgd) {
+  pr_info("AArch64 VMM: Setting up MAIR (PGD at 0x%lx)\n", kernel_pgd);
   /* 1. Setup MAIR_EL1 (Memory Attribute Indirection Register) */
   /* Index 0: Normal Memory, Index 1: Device Memory nGnRE */
   uint64_t mair = (0xFFUL << 0) | (0x04UL << 8);
   arch_impl_set_mair(mair);
 
+  pr_info("%s", "AArch64 VMM: Setting up TCR\n");
   /* 2. Setup TCR_EL1 (Translation Control Register) */
   /* T0SZ=16 (48-bit VA), SH0=3 (Inner), ORGN0=1 (WB/WA), IRGN0=1 (WB/WA), IPS=2 (40-bit PA) */
-  uint64_t tcr = (16UL << 0) | (3UL << 12) | (1UL << 10) | (1UL << 8) | (2UL << 32);
+  /* EPD1=1 (Disable TTBR1) */
+  uint64_t tcr = (16UL << 0) | (3UL << 12) | (1UL << 10) | (1UL << 8) | (2UL << 32) | (1UL << 23);
   arch_impl_set_tcr(tcr);
+  arch_impl_isb();
 
+  pr_info("%s", "AArch64 VMM: Setting TTBR0\n");
   /* 3. Set TTBR0_EL1 */
   arch_vmm_set_pgd(kernel_pgd);
+  arch_impl_isb();
 
+  pr_info("%s", "AArch64 VMM: Enabling SCTLR bits (MMU, Caches)\n");
   /* 4. Enable MMU in SCTLR_EL1 */
   uint64_t sctlr = arch_impl_get_sctlr();
   sctlr |= (1UL << 0) |  /* M: MMU enable */
            (1UL << 12) | /* I: Instruction cache enable */
            (1UL << 2);   /* C: Data cache enable */
+  
+  /* Ensure reserved bits are set correctly (bit 29, 28, 23, 22, 20, 11 are RES1 in some versions) */
+  /* But let's stick to what was there, just adding barriers. */
+  
+  arch_impl_mb();
   arch_impl_set_sctlr(sctlr);
   arch_impl_mb();
   arch_impl_isb();
 
-  pr_info("AArch64 VMM: MMU Enabled. PGD at %p\n", (void *)kernel_pgd);
+  pr_info("AArch64 VMM: MMU Enabled. SCTLR=0x%lx\n", sctlr);
 }
 
 void arch_vmm_map_mmio(uint64_t *pgd) {
-  /* 2. Identity Map MMIO (UART, GIC, VirtIO) */
-  /* 0x08000000 to 0x0A000000 covers typical QEMU virt devices */
-  for (uint64_t addr = 0x08000000UL; addr < 0x0A800000UL; addr += 4096) {
-    arch_vmm_map((uint64_t)pgd, addr, addr, PAGE_DEVICE);
-  }
+  /* Identity Map MMIO (UART, GIC, VirtIO) */
+  /* 0x08000000 to 0x0A800000 covers typical QEMU virt devices */
+  arch_vmm_map_range((uint64_t)pgd, 0x08000000UL, 0x08000000UL, 
+                     0x02800000UL, PAGE_DEVICE);
 }
 
 void arch_cpu_switch_context(struct process *next) {

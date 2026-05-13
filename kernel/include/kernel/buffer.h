@@ -9,7 +9,9 @@
 #include <kernel/types.h>
 
 #define BLOCK_SIZE 4096 /* Matches Page Size */
+#ifndef SECTOR_SIZE
 #define SECTOR_SIZE 512
+#endif /* SECTOR_SIZE */
 #define SECTORS_PER_BLOCK (BLOCK_SIZE / SECTOR_SIZE)
 
 #define BUFFER_UPTODATE 0x1

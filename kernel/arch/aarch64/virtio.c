@@ -1,11 +1,9 @@
-#include <kernel/hal.h>
+#include <arch/arch.h>
+#include <arch/platform.h>
 #include <drivers/virtio.h>
+#include <kernel/hal.h>
 
 #define MAX_VIRTIO_DEVS 16
-#define VIRTIO_MMIO_BASE 0x0a000000
-#define VIRTIO_MMIO_STRIDE 0x200
-#define VIRTIO_COUNT 32
-
 static struct virtio_device virtio_devices[MAX_VIRTIO_DEVS];
 static int virtio_dev_count = 0;
 

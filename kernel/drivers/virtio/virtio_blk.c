@@ -133,7 +133,7 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   volatile uint16_t *used_idx_ptr = &used->idx;
 
   /* Notify */
-  pr_info("VirtIO-Blk: Reading LBA %ld, notify dev 0x%lx\n", sector,
+  pr_debug("VirtIO-Blk: Reading LBA %ld, notify dev 0x%lx\n", sector,
           virtio_blk_dev->hal_dev.base);
   virtio_notify(virtio_blk_dev, 0);
 

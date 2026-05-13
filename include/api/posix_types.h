@@ -2,8 +2,8 @@
  * kernel/include/kernel/types.h
  * Core kernel types and definitions
  */
-#ifndef _KERNEL_TYPES_H
-#define _KERNEL_TYPES_H
+#ifndef _POSIX_TYPES_H
+#define _POSIX_TYPES_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -152,4 +152,4 @@ struct ipc_message {
   char payload[64];
 };
 
-#endif /* _KERNEL_TYPES_H */
+#endif /* _POSIX_TYPES_H */

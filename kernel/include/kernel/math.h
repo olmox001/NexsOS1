@@ -32,4 +32,10 @@ int32_t k_sin_fp(int32_t x);
 int32_t k_cos_fp(int32_t x);
 int32_t k_lerp_fp(int32_t a, int32_t b, int32_t t);
 
+/* Aliases for shared usage */
+int32_t fixmul(int32_t a, int32_t b);
+int32_t sin_fp(int32_t x);
+int32_t cos_fp(int32_t x);
+int32_t lerp_fp(int32_t a, int32_t b, int32_t t);
+
 #endif /* _KERNEL_MATH_H */

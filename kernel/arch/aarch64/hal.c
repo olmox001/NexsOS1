@@ -5,11 +5,8 @@
 #include <kernel/hal.h>
 #include <kernel/string.h>
 #include <kernel/printk.h>
+#include <arch/platform.h>
 #include <drivers/virtio.h>
-
-#define VIRTIO_MMIO_BASE 0x0a000000
-#define VIRTIO_MMIO_STRIDE 0x200
-#define VIRTIO_COUNT 32
 
 void arch_bus_scan(void) {
     pr_info("%s", "HAL: Scanning Platform Bus (MMIO)...\n");

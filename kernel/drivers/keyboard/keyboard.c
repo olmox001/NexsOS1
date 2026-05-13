@@ -154,7 +154,7 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
     c = scancode_to_ascii[code];
 
   if (c != 0) {
-    pr_info("Keyboard: Code=%d -> Char='%c' (target PID %d)\n", code, c, keyboard_focus_pid);
+    pr_info("Keyboard: Char='%c' -> PID %d\n", c, keyboard_focus_pid);
   }
 
   /* Send IPC message if we have a focus PID */

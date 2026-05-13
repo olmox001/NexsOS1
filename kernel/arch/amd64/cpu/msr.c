@@ -6,6 +6,7 @@
 #include <arch/arch.h>
 #include <arch/amd64_internal.h>
 #include <kernel/printk.h>
+#include "gdt_defs.h"
 
 #define IA32_EFER       0xC0000080
 #define IA32_STAR       0xC0000081
@@ -15,10 +16,14 @@
 #define EFER_SCE        0x01       /* System Call Enable */
 
 /* GDT Selectors (Must match gdt.c) */
-#define GDT_KERN_CODE   0x08
-#define GDT_KERN_DATA   0x10
-#define GDT_USER_DATA   0x18
-#define GDT_USER_CODE   0x20
+#ifndef GDT_KERN_CODE
+#endif /* GDT_KERN_CODE */
+#ifndef GDT_KERN_DATA
+#endif /* GDT_KERN_DATA */
+#ifndef GDT_USER_DATA
+#endif /* GDT_USER_DATA */
+#ifndef GDT_USER_CODE
+#endif /* GDT_USER_CODE */
 
 extern void syscall_entry(void);
 

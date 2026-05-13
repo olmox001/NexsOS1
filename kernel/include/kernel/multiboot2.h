@@ -3,10 +3,14 @@
 
 #include <kernel/types.h>
 
+#define MB1_MAGIC 0x2BADB002
 #define MB2_MAGIC 0x36d76289
+#define PVH_MAGIC 0x336ec578
+
 #define MB2_TAG_TYPE_END 0
 #define MB2_TAG_TYPE_MMAP 6
 #define MB2_TAG_TYPE_BASIC_MEMINFO 4
+#define MB2_TAG_TYPE_FRAMEBUFFER 8
 
 struct mb2_tag {
     uint32_t type;

@@ -8,13 +8,18 @@
 #include <arch/arch.h>
 #include <arch/amd64_internal.h>
 #include <kernel/printk.h>
+#include "gdt_defs.h"
 
 /* ─── GDT Segment Selectors ─── */
 #define GDT_NULL      0x00
-#define GDT_KERN_CODE 0x08
-#define GDT_KERN_DATA 0x10
-#define GDT_USER_DATA 0x18
-#define GDT_USER_CODE 0x20
+#ifndef GDT_KERN_CODE
+#endif /* GDT_KERN_CODE */
+#ifndef GDT_KERN_DATA
+#endif /* GDT_KERN_DATA */
+#ifndef GDT_USER_DATA
+#endif /* GDT_USER_DATA */
+#ifndef GDT_USER_CODE
+#endif /* GDT_USER_CODE */
 #define GDT_TSS       0x28
 #define GDT_ENTRIES   7
 

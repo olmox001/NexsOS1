@@ -62,6 +62,16 @@
 
 #define LAPIC_TIMER_DIV16   0x03
 
+#define LAPIC_DEFAULT_BASE  0xFEE00000UL
+
+static inline uint32_t lapic_read(uint32_t reg) {
+    return *(volatile uint32_t *)(LAPIC_DEFAULT_BASE + reg);
+}
+
+static inline void lapic_write(uint32_t reg, uint32_t val) {
+    *(volatile uint32_t *)(LAPIC_DEFAULT_BASE + reg) = val;
+}
+
 void lapic_init(void);
 void lapic_eoi(void);
 uint32_t lapic_get_id(void);

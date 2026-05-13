@@ -72,12 +72,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
    *          AP EL0 RW (bit 6-7, usually ignored for tables but safe).
    * AMD64:   Present (bit 0), RW (bit 1), User (bit 2).
    */
-  uint64_t table_flags = PTE_TABLE | PTE_VALID;
-#ifdef ARCH_AARCH64
-  table_flags |= PTE_AF | PTE_INNER_SHARE | PTE_AP_EL0_RW;
-#endif
-
-  table[index] = (uint64_t)page | table_flags;
+  table[index] = (uint64_t)page | PTE_TABLE | PTE_VALID;
 
   /* Flush the directory entry itself */
   arch_cache_clean_range(&table[index], 8);
@@ -292,10 +287,13 @@ void vmm_init(void) {
   arch_mb(); /* Wait for flushes */
 
   /* 2. Platform-specific MMIO Identity Mapping */
+  pr_info("%s", "VMM: Mapping MMIO...\n");
   arch_vmm_map_mmio(kernel_pgd);
 
   /* 3. Platform-specific hardware initialization (Enable MMU/Paging) */
+  pr_info("%s", "VMM: Enabling hardware MMU...\n");
   arch_vmm_init_hw((uint64_t)kernel_pgd);
+  pr_info("%s", "VMM: MMU initialization complete.\n");
 }
 
 /*

@@ -17,7 +17,6 @@
 #ifdef ARCH_AARCH64
 /* --- AArch64 Page Table Entry (PTE) Flags --- */
 #define PTE_VALID (1UL << 0)
-#define PTE_TABLE (1UL << 1) 
 #define PTE_PAGE  (1UL << 1)
 #define PTE_BLOCK (0UL << 1)
 
@@ -29,6 +28,8 @@
 #define PTE_RW       PTE_AP_EL1_RW
 #define PTE_USER     PTE_AP_EL0_RW
 #define PTE_RO       PTE_AP_EL1_RO
+
+#define PTE_TABLE    PTE_PAGE
 
 #define PTE_INNER_SHARE (3UL << 8)
 #define PTE_AF          (1UL << 10)
@@ -58,9 +59,10 @@
 #define PTE_PS    (1UL << 7) 
 #define PTE_NX    (1ULL << 63)
 
-#define PTE_TABLE (PTE_RW | PTE_USER)
 #define PTE_PAGE  (0UL) 
 #define PTE_RO    (0UL) 
+
+#define PTE_TABLE (PTE_RW | PTE_USER)
 
 #define PAGE_KERNEL      (PTE_VALID | PTE_RW)
 #define PAGE_KERNEL_EXEC (PTE_VALID | PTE_RW)

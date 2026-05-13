@@ -53,12 +53,6 @@
 #define VIRTIO_STATUS_DEVICE_NEEDS_RESET 64
 #define VIRTIO_STATUS_FAILED 128
 
-/* QEMU virt machine MMIO base addresses */
-#define VIRTIO_MMIO_BASE 0x0a000000
-#define VIRTIO_MMIO_SIZE 0x200
-#define VIRTIO_MMIO_STRIDE 0x200
-#define VIRTIO_COUNT 32
-
 /* VirtIO Ring Descriptors */
 #define VRING_DESC_F_NEXT 1
 #define VRING_DESC_F_WRITE 2
@@ -74,10 +68,13 @@ struct virtio_transport_ops {
 
 struct virtio_device {
   hal_device_t hal_dev;
+  uintptr_t base;
   uint32_t irq;
   uint32_t device_id;
   bool is_legacy;
   const struct virtio_transport_ops *ops;
+  uintptr_t isr_base;
+  uintptr_t notify_base;
   void *priv;
   spinlock_t lock;
 };

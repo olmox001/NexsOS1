@@ -29,6 +29,7 @@ static uint32_t translate_legacy(uint32_t offset) {
     return 0x10;
   case VIRTIO_MMIO_STATUS:
     return 0x12;
+  case VIRTIO_MMIO_INTERRUPT_STATUS:
   case VIRTIO_MMIO_INTERRUPT_ACK:
     return 0x13;
   default:
@@ -52,8 +53,10 @@ static uint32_t translate_modern(uint32_t offset) {
     return 0x14;
   case VIRTIO_MMIO_QUEUE_PFN:
     return 0x20; /* queue_desc_lo */
+  case VIRTIO_MMIO_INTERRUPT_STATUS:
+    return 0x60; /* Standard MMIO offset, might need adjustment for PCI */
   case VIRTIO_MMIO_INTERRUPT_ACK:
-    return 0xFFFFFFFF; /* Handle as NOP */
+    return 0x64;
   default:
     return 0xFFFFFFFF;
   }
@@ -65,6 +68,14 @@ static uint32_t modern_read32(struct virtio_device *dev, uint32_t offset) {
     return 0x74726976;
   if (offset == VIRTIO_MMIO_VERSION)
     return 2;
+  
+  if (offset == VIRTIO_MMIO_INTERRUPT_STATUS || offset == VIRTIO_MMIO_INTERRUPT_ACK) {
+    if (dev->isr_base) {
+      return hal_read8(dev->isr_base);
+    }
+    return 0;
+  }
+
   uint32_t mod_off = translate_modern(offset);
   if (mod_off == 0xFFFFFFFF)
     return 0;
@@ -73,6 +84,13 @@ static uint32_t modern_read32(struct virtio_device *dev, uint32_t offset) {
 
 static void modern_write32(struct virtio_device *dev, uint32_t offset,
                            uint32_t val) {
+  if (offset == VIRTIO_MMIO_INTERRUPT_ACK) {
+    if (dev->isr_base) {
+      hal_read8(dev->isr_base); /* Reading ISR status acknowledges on PCI */
+    }
+    return;
+  }
+
   uint32_t mod_off = translate_modern(offset);
   if (mod_off != 0xFFFFFFFF) {
     hal_write32(dev->base + mod_off, val);
@@ -80,11 +98,12 @@ static void modern_write32(struct virtio_device *dev, uint32_t offset,
 }
 
 static void modern_notify(struct virtio_device *dev, uint32_t queue_idx) {
-  uintptr_t notify_base = (uintptr_t)dev->priv;
-  if (notify_base == 0)
-    notify_base = dev->base + 0x3000; /* Fallback for QEMU default */
-  /* Simplified notify for now */
-  hal_write16(notify_base, (uint16_t)queue_idx);
+  if (dev->notify_base) {
+    hal_write16(dev->notify_base, (uint16_t)queue_idx);
+  } else {
+    /* Fallback if no notify capability found */
+    hal_write16(dev->base + 0x3000, (uint16_t)queue_idx);
+  }
 }
 
 /* Legacy (Port I/O) Implementation */
@@ -128,56 +147,81 @@ static const struct virtio_transport_ops legacy_ops = {
     legacy_read32, legacy_write32, legacy_notify};
 
 /* PCI Discovery Callback */
-static void virtio_pci_callback(int bdf, uint16_t vendor, uint16_t device_id) {
-  if (vendor != 0x1AF4 || virtio_dev_count >= MAX_VIRTIO_DEVS)
+static void virtio_pci_init_device(struct hal_device *hdev) {
+  if (virtio_dev_count >= MAX_VIRTIO_DEVS)
     return;
 
   struct virtio_device *vdev = &virtio_devices[virtio_dev_count];
-  
-  /* Modern devices have ID 0x1040-0x107F. Legacy have 0x1000-0x103F. */
-  bool is_modern = (device_id >= 0x1041); /* 0x1041 is block, 0x1042 is console, etc. */
-  
-  uint32_t bar0 = pci_get_bar(bdf, 0);
-  uint32_t bar4 = pci_get_bar(bdf, 4);
+  memset(vdev, 0, sizeof(struct virtio_device));
 
-  if (is_modern && bar4 != 0 && !(bar4 & 1)) {
-    vdev->base = bar4 & ~0xF;
+  /* Store HAL handle and basic info */
+  vdev->hal_dev.base = hdev->base;
+  vdev->hal_dev.irq = hdev->irq;
+  vdev->hal_dev.bus_type = hdev->bus_type;
+  vdev->hal_dev.io_type = (hdev->base < 0x10000) ? HAL_RES_PORT : HAL_RES_MMIO;
+
+  vdev->base = hdev->base;
+  vdev->irq = hdev->irq;
+  vdev->device_id = hdev->device_id;
+  vdev->is_legacy = (hdev->vendor_id == 0x1AF4 && hdev->device_id < 0x1000);
+
+  int bdf = hdev->pci_bdf;
+  uint8_t bus = (bdf >> 16) & 0xFF;
+  uint8_t dev_idx = (bdf >> 8) & 0xFF;
+  uint8_t func = bdf & 0x7;
+
+  /* Scans Capabilities for Modern Device */
+  bool is_modern = (hdev->vendor_id == 0x1AF4 && hdev->device_id >= 0x1); // Simplified check since IDs are already translated
+
+  if (is_modern && vdev->hal_dev.io_type == HAL_RES_MMIO) {
+    uint8_t cap_ptr = pci_config_read(bus, dev_idx, func, 0x34) & 0xFF;
+    while (cap_ptr != 0 && cap_ptr != 0xFF) {
+      uint32_t cap_header = pci_config_read(bus, dev_idx, func, cap_ptr);
+      uint8_t cap_id = cap_header & 0xFF;
+      uint8_t next_cap = (cap_header >> 8) & 0xFF;
+
+      if (cap_id == 0x09) { /* Vendor Specific (VirtIO) */
+        uint8_t type = (cap_header >> 24) & 0xFF;
+        uint8_t bar = pci_config_read(bus, dev_idx, func, cap_ptr + 4) & 0xFF;
+        uint32_t offset = pci_config_read(bus, dev_idx, func, cap_ptr + 8);
+
+        uintptr_t bar_addr = pci_get_bar(bdf, bar) & ~0xF;
+
+        if (type == 1) { /* Common Config */
+          vdev->base = bar_addr + offset;
+          vdev->hal_dev.base = vdev->base;
+        } else if (type == 2) { /* Notifications */
+          vdev->notify_base = bar_addr + offset;
+        } else if (type == 3) { /* ISR Status */
+          vdev->isr_base = bar_addr + offset;
+        } else if (type == 4) { /* Device Specific */
+          vdev->priv = (void *)(bar_addr + offset);
+        }
+      }
+      cap_ptr = next_cap;
+    }
     vdev->ops = &modern_ops;
-    vdev->device_id = device_id - 0x1040;
-    pr_info("VirtIO: Found Modern device (PCI) at MMIO 0x%lx, ID %d\n", vdev->base,
-            vdev->device_id);
-  } else if (bar0 & 1) { /* Legacy Port I/O */
-    vdev->base = bar0 & ~3;
-    vdev->ops = &legacy_ops;
-    /* Subsystem Device ID at 0x2C is used for legacy device type */
-    uint32_t sub_id = pci_config_read((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, 0x2C);
-    vdev->device_id = sub_id >> 16;
-    pr_info("VirtIO: Found Legacy device (PCI) at I/O 0x%lx, ID %d\n", vdev->base,
-            vdev->device_id);
-  } else if (bar0 != 0) { /* Modern MMIO on BAR0? */
-    vdev->base = bar0 & ~0xF;
-    vdev->ops = &modern_ops;
-    vdev->device_id = is_modern ? (device_id - 0x1040) : device_id;
-    pr_info("VirtIO: Found Modern device (PCI) at MMIO 0x%lx, ID %d\n", vdev->base,
-            vdev->device_id);
+    pr_info("VirtIO: Found Modern device (PCI) at Common=0x%lx, ISR=0x%lx, ID %d\n",
+            vdev->base, vdev->isr_base, vdev->device_id);
   } else {
-    return;
+    vdev->ops = &legacy_ops;
+    vdev->is_legacy = true;
+    pr_info("VirtIO: Found Legacy device (PCI) at 0x%lx, ID %d\n", vdev->base,
+            vdev->device_id);
   }
-
-  vdev->irq = 32 + pci_get_interrupt(bdf);
-
-  /* Enable PCI Bus Master and IO/Mem space */
-  uint32_t cmd =
-      pci_config_read((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, 0x04);
-  pci_config_write((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, 0x04,
-                   cmd | 0x7);
 
   virtio_dev_count++;
 }
 
 void arch_virtio_scan(void) {
   virtio_dev_count = 0;
-  pci_enumerate(virtio_pci_callback);
+  int count = hal_device_get_count();
+  for (int i = 0; i < count; i++) {
+    struct hal_device *hdev = hal_device_get(i);
+    if (hdev && hdev->vendor_id == 0x1AF4) {
+      virtio_pci_init_device(hdev);
+    }
+  }
 }
 
 int arch_virtio_get_count(uint32_t device_id) {

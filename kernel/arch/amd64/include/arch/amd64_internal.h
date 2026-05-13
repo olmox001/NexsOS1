@@ -1,5 +1,6 @@
 #ifndef AMD64_INTERNAL_H
 #define AMD64_INTERNAL_H
+#define TRAMPOLINE_BASE 0x1000
 
 #include <kernel/types.h>
 #include <arch/pt_regs.h>

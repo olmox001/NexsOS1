@@ -6,8 +6,12 @@
 #include <os1.h>
 
 /* Fixed-point 16.16 */
+#ifndef FP_SHIFT
 #define FP_SHIFT 16
+#endif /* FP_SHIFT */
+#ifndef FP_ONE
 #define FP_ONE (1 << FP_SHIFT)
+#endif /* FP_ONE */
 
 /* Use long long for 64-bit integers to avoid stdint.h dependency issues */
 

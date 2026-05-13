@@ -29,8 +29,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
   arch_cache_clean_range(page, 4096);
   arch_mb();
 
-  table[index] = (uint64_t)page | PTE_TABLE | PTE_VALID | PTE_AF | PTE_INNER_SHARE |
-                 PTE_AP_EL0_RW;
+  table[index] = (uint64_t)page | PTE_TABLE | PTE_VALID;
 
   arch_cache_clean_range(&table[index], 8);
   arch_mb();

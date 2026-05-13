@@ -2,7 +2,9 @@
 
 #define WIN_W 300
 #define WIN_H 250
+#ifndef BUFFER_SIZE
 #define BUFFER_SIZE (WIN_W * WIN_H)
+#endif /* BUFFER_SIZE */
 
 int main(void) {
   int win_id = create_window(100, 100, 400, 300, "Write Test");

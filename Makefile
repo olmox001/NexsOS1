@@ -123,6 +123,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/drivers/timer/pic_pit.c \
     $(ARCH_DIR)/platform/platform.c \
     $(ARCH_DIR)/hal.c \
+    $(ARCH_DIR)/virtio.c \
     $(KERNEL_DIR)/drivers/pci/pci.c
 else
 # Bootloader sources
@@ -141,6 +142,7 @@ KERN_C_SOURCES = \
     $(ARCH_DIR)/mm/mmu.c \
     $(ARCH_DIR)/platform.c \
     $(ARCH_DIR)/hal.c \
+    $(ARCH_DIR)/virtio.c \
     $(KERNEL_DIR)/drivers/uart/pl011.c \
     $(KERNEL_DIR)/drivers/gic/gic.c \
     $(KERNEL_DIR)/drivers/timer/timer.c
@@ -153,7 +155,6 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/drivers/console.c \
     $(KERNEL_DIR)/drivers/irq_ctrl.c \
     $(KERNEL_DIR)/drivers/sys_timer.c \
-    $(KERNEL_DIR)/drivers/virtio/virtio_hal.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
@@ -165,6 +166,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/mm/vmm.c \
     $(KERNEL_DIR)/mm/buffer.c \
     $(KERNEL_DIR)/lib/string.c \
+    $(KERNEL_DIR)/lib/vsnprintf.c \
     $(KERNEL_DIR)/lib/printk.c \
     $(KERNEL_DIR)/lib/stack_protector.c \
     $(KERNEL_DIR)/lib/math.c \
@@ -392,7 +394,7 @@ $(BUILD_DIR)/%.o: %.S
 $(BUILD_DIR)/kernel/%.o: kernel/%.c
 	@mkdir -p $(dir $@)
 	@echo "CC  $<"
-	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+	@$(CC) $(CFLAGS) -DKERNEL -MMD -MP -c -o $@ $<
 
 $(BUILD_DIR)/user/%.o: user/%.c
 	@mkdir -p $(dir $@)

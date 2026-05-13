@@ -160,185 +160,10 @@ void print_hex(unsigned long val) {
   write(1, buf, 18);
 }
 
-/*
- * vsnprintf: Safe version of vsprintf with buffer limit
- */
-static void itoa_buf(char *buf, size_t *idx, size_t size, long d, int base,
-                     int width, char pad, int left) {
-  char tmp[64];
-  int i = 0;
-  int neg = 0;
-  unsigned long u = d;
+/* vsnprintf implementation is shared with kernel */
+#include "../../kernel/lib/vsnprintf.c"
 
-  if (base == 10 && d < 0) {
-    neg = 1;
-    u = -d;
-  }
-
-  if (u == 0) {
-    tmp[i++] = '0';
-  } else {
-    while (u > 0) {
-      int rem = u % base;
-      tmp[i++] = (rem < 10) ? (rem + '0') : (rem - 10 + 'a');
-      u /= base;
-    }
-  }
-
-  if (neg && pad == '0') {
-    if (*idx < size - 1)
-      buf[(*idx)++] = '-';
-    neg = 0;
-    if (width > 0)
-      width--;
-  }
-
-  int len = i + (neg ? 1 : 0);
-  if (!left) {
-    while (len < width && *idx < size - 1) {
-      buf[(*idx)++] = pad;
-      len++;
-    }
-  }
-
-  if (neg && *idx < size - 1)
-    buf[(*idx)++] = '-';
-
-  while (i > 0 && *idx < size - 1) {
-    buf[(*idx)++] = tmp[--i];
-  }
-
-  if (left) {
-    while (len < width && *idx < size - 1) {
-      buf[(*idx)++] = ' ';
-      len++;
-    }
-  }
-}
-
-void vsnprintf(char *out, size_t size, const char *fmt,
-               __builtin_va_list args) {
-  size_t out_idx = 0;
-  if (size == 0)
-    return;
-
-  for (const char *p = fmt; *p; p++) {
-    if (out_idx >= size - 1)
-      break;
-
-    if (*p != '%') {
-      out[out_idx++] = *p;
-      continue;
-    }
-
-    p++; /* Skip % */
-    if (*p == '%') {
-      out[out_idx++] = '%';
-      continue;
-    }
-
-    int left = 0;
-    char pad = ' ';
-    if (*p == '-') {
-      left = 1;
-      p++;
-    }
-    if (*p == '0') {
-      pad = '0';
-      p++;
-    }
-
-    int width = 0;
-    int precision = -1;
-    if (*p == '.') {
-      p++;
-      precision = 0;
-      while (*p >= '0' && *p <= '9') {
-        precision = precision * 10 + (*p - '0');
-        p++;
-      }
-    } else {
-      while (*p >= '0' && *p <= '9') {
-        width = width * 10 + (*p - '0');
-        p++;
-      }
-      if (*p == '.') {
-        p++;
-        precision = 0;
-        while (*p >= '0' && *p <= '9') {
-          precision = precision * 10 + (*p - '0');
-          p++;
-        }
-      }
-    }
-
-    int is_long = 0;
-    if (*p == 'l') {
-      is_long = 1;
-      p++;
-    }
-
-    if (*p == 's') {
-      const char *s = __builtin_va_arg(args, const char *);
-      if (!s)
-        s = "(null)";
-      int len = 0;
-      while (s[len])
-        len++;
-      if (precision >= 0 && len > precision)
-        len = precision;
-
-      if (!left) {
-        while (len < width && out_idx < size - 1) {
-          out[out_idx++] = ' ';
-          len++;
-        }
-      }
-      int i = 0;
-      while (*s && out_idx < size - 1 && (precision < 0 || i < precision)) {
-        out[out_idx++] = *s++;
-        i++;
-      }
-      if (left) {
-        while (len < width && out_idx < size - 1) {
-          out[out_idx++] = ' ';
-          len++;
-        }
-      }
-    } else if (*p == 'd' || *p == 'i') {
-      long d =
-          is_long ? __builtin_va_arg(args, long) : __builtin_va_arg(args, int);
-      itoa_buf(out, &out_idx, size, d, 10, width, pad, left);
-    } else if (*p == 'u') {
-      unsigned long u = is_long ? __builtin_va_arg(args, unsigned long)
-                                : __builtin_va_arg(args, unsigned int);
-      itoa_buf(out, &out_idx, size, (long)u, 10, width, pad, left);
-    } else if (*p == 'x' || *p == 'p') {
-      unsigned long x;
-      if (*p == 'p') {
-        x = (unsigned long)__builtin_va_arg(args, void *);
-        if (out_idx < size - 1)
-          out[out_idx++] = '0';
-        if (out_idx < size - 1)
-          out[out_idx++] = 'x';
-        itoa_buf(out, &out_idx, size, x, 16, width - 2, pad, left);
-      } else {
-        x = is_long ? __builtin_va_arg(args, unsigned long)
-                    : __builtin_va_arg(args, unsigned int);
-        itoa_buf(out, &out_idx, size, x, 16, width, pad, left);
-      }
-    } else if (*p == 'c') {
-      int c = __builtin_va_arg(args, int);
-      out[out_idx++] = (char)c;
-    } else {
-      /* Unknown specifier, just copy character */
-      out[out_idx++] = *p;
-    }
-  }
-  out[out_idx] = '\0';
-}
-
-void vsprintf(char *out, const char *fmt, __builtin_va_list args) {
+void vsprintf(char *out, const char *fmt, va_list args) {
   /* Legacy wrapper - unsafe, but needed for backward compat if any calls
    * remain. We assume a large buffer if called directly. Ideally deprecated.
    */
@@ -347,35 +172,35 @@ void vsprintf(char *out, const char *fmt, __builtin_va_list args) {
 
 void printf(const char *fmt, ...) {
   char buf[256];
-  __builtin_va_list args;
-  __builtin_va_start(args, fmt);
+  va_list args;
+  va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
-  __builtin_va_end(args);
+  va_end(args);
   write(1, buf, strlen(buf));
 }
 
 void printf_win(int win_id, const char *fmt, ...) {
   char buf[512];
-  __builtin_va_list args;
-  __builtin_va_start(args, fmt);
+  va_list args;
+  va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
-  __builtin_va_end(args);
+  va_end(args);
   _sys_write(win_id, buf, strlen(buf));
 }
 
 void sprintf(char *out, const char *fmt, ...) {
-  __builtin_va_list args;
-  __builtin_va_start(args, fmt);
+  va_list args;
+  va_start(args, fmt);
   /* Still unsafe logic, user passes buffer. Forward to vsprintf */
   vsprintf(out, fmt, args);
-  __builtin_va_end(args);
+  va_end(args);
 }
 
 void snprintf(char *out, size_t size, const char *fmt, ...) {
-  __builtin_va_list args;
-  __builtin_va_start(args, fmt);
+  va_list args;
+  va_start(args, fmt);
   vsnprintf(out, size, fmt, args);
-  __builtin_va_end(args);
+  va_end(args);
 }
 
 /*
@@ -425,40 +250,8 @@ char *gets(char *s, int size) {
   return s;
 }
 
-/* Fixed-point multiplication (16.16) */
-int fixmul(int a, int b) {
-  long long res = (long long)a * b;
-  return (int)(res >> 16);
-}
-
-/* User-space fixed-point Sine (16.16) */
-int sin_fp(int x) {
-  const int PI = 205887;
-  const int TWO_PI = 411775;
-
-  /* Range reduction to -PI to PI */
-  while (x > PI)
-    x -= TWO_PI;
-  while (x < -PI)
-    x += TWO_PI;
-
-  /* Taylor series: sin(x) ≈ x - x^3/6 + x^5/120 */
-  int x2 = fixmul(x, x);
-  int x3 = fixmul(x2, x);
-  int x5 = fixmul(x3, x2);
-
-  int term1 = x;
-  int term2 = fixmul(x3, 10923); /* x^3 / 6 */
-  int term3 = fixmul(x5, 546);   /* x^5 / 120 */
-
-  return term1 - term2 + term3;
-}
-
-/* User-space fixed-point Cosine (16.16) */
-int cos_fp(int x) {
-  /* cos(x) = sin(x + PI/2) */
-  return sin_fp(x + 102944);
-}
+/* Math implementation is shared with kernel */
+#include "../../kernel/lib/math.c"
 
 /* Registry Wrappers */
 int registry_read(const char *key, char *buf, size_t size) {

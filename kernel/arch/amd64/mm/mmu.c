@@ -10,8 +10,10 @@
 #include <kernel/string.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
+#include "../../../include/kernel/pmm.h"
 
-#define PAGE_MASK (~(PAGE_SIZE - 1))
+#ifndef PAGE_MASK
+#endif /* PAGE_MASK */
 /* Page Table Entry Flags */
 #define X86_PTE_P 0x001         /* Present */
 #define X86_PTE_RW 0x002        /* Read/Write */
@@ -47,6 +49,10 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
   /* Identity map all detected RAM regions */
   size_t count = 0;
   struct mem_region *regions = arch_platform_get_mem_regions(&count);
+
+  /* Map low 1MB for SMP trampolines and legacy bios data */
+  arch_vmm_map_range(kernel_pgd, 0, 0, 0x100000, PTE_RW);
+
   for (size_t i = 0; i < count; i++) {
     if (regions[i].type == MEM_REGION_USABLE) {
       pr_info("AMD64 VMM: Identity mapping RAM 0x%lx - 0x%lx\n", 

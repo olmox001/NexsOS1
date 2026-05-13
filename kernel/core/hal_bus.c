@@ -1,10 +1,7 @@
-/*
- * kernel/core/hal_bus.c
- * Unified Bus & Device Manager
- */
 #include <kernel/hal.h>
 #include <kernel/string.h>
 #include <kernel/printk.h>
+#include <drivers/virtio.h>
 
 #define MAX_HAL_DEVICES 64
 
@@ -15,8 +12,11 @@ void hal_bus_init(void) {
     hal_device_count = 0;
     pr_info("%s", "HAL: Initializing Bus Manager...\n");
     
-    /* Architecture-specific bus discovery */
+    /* Architecture-specific bus discovery (PCI, Platform MMIO, etc) */
     arch_bus_scan();
+
+    /* Discover VirtIO devices based on found bus devices */
+    arch_virtio_scan();
 }
 
 int hal_device_get_count(void) {

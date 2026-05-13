@@ -131,6 +131,7 @@ void pic_unmask(uint8_t irq) {
         port = PIC2_DATA;
         irq -= 8;
     }
+    pr_info("PIC: Unmasking IRQ %u\n", irq);
     value = hal_read8(port) & ~(1 << irq);
     hal_write8(port, value);
 }

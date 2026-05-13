@@ -62,9 +62,12 @@ static struct mem_region arch_mem_regions[32];
 static size_t arch_region_count = 0;
 
 /* Minimal Multiboot2 tags we care about */
-#define MB2_TAG_TYPE_END 0
-#define MB2_TAG_TYPE_MMAP 6
-#define MB2_TAG_TYPE_BASIC_MEMINFO 4
+#ifndef MB2_TAG_TYPE_END
+#endif /* MB2_TAG_TYPE_END */
+#ifndef MB2_TAG_TYPE_MMAP
+#endif /* MB2_TAG_TYPE_MMAP */
+#ifndef MB2_TAG_TYPE_BASIC_MEMINFO
+#endif /* MB2_TAG_TYPE_BASIC_MEMINFO */
 
 struct mem_region *arch_platform_get_mem_regions(size_t *count) {
   if (count) *count = arch_region_count;
@@ -77,6 +80,7 @@ volatile uint64_t jiffies = 0;
 extern uint64_t mb_magic;
 
 #include <drivers/timer.h>
+#include "../../../include/kernel/multiboot2.h"
 
 void arch_platform_early_init(void) {
   uart_init();
@@ -90,7 +94,7 @@ void arch_platform_early_init(void) {
 
   arch_region_count = 0;
 
-  if (mb_magic == 0x2BADB002) {
+  if (mb_magic == MB1_MAGIC) {
     /* Multiboot v1 */
     struct mb1_info *mb1 = (struct mb1_info *)mb_info_ptr;
     pr_info("Multiboot v1: Upper memory %u KB\n", mb1->mem_upper);
@@ -122,7 +126,7 @@ void arch_platform_early_init(void) {
         arch_mem_regions[1].type = MEM_REGION_USABLE;
         arch_region_count = 2;
     }
-  } else if (mb_magic == 0x36d24269) {
+  } else if (mb_magic == MB2_MAGIC) {
     /* Multiboot v2 */
     uint8_t *mb_data = (uint8_t *)mb_info_ptr;
     struct mb2_tag *tag = (struct mb2_tag *)(mb_data + 8);
@@ -141,7 +145,7 @@ void arch_platform_early_init(void) {
       }
       tag = (struct mb2_tag *)((uint8_t *)tag + ((tag->size + 7) & ~7));
     }
-  } else if (mb_magic == 0x336ec578) {
+  } else if (mb_magic == PVH_MAGIC) {
     /* PVH boot */
     struct hvm_start_info *pvh = (struct hvm_start_info *)mb_info_ptr;
     pr_info("PVH: Memmap at 0x%lx, entries: %u\n", pvh->memmap_paddr, pvh->memmap_entries);
@@ -170,11 +174,27 @@ uint64_t timer_get_us(void) {
   return jiffies * 1000;
 }
 
+extern uint32_t ticks_per_ms;
 void udelay(uint32_t us) {
-  /* Stub */
-  uint64_t end = timer_get_us() + us;
-  while (timer_get_us() < end) {
-    arch_yield();
+  if (ticks_per_ms == 0) {
+    /* Fallback if not calibrated yet: rough I/O port delay */
+    for (uint32_t i = 0; i < us * 10; i++) {
+      outb(0x80, 0);
+    }
+    return;
+  }
+
+  uint32_t ticks_to_wait = (ticks_per_ms * us) / 1000;
+  if (ticks_to_wait == 0) ticks_to_wait = 1;
+
+  /* Use LAPIC Timer Current Count for delay */
+  /* Note: This assumes LAPIC timer is running or was at least started. */
+  uint32_t start = lapic_read(0x0390); /* LAPIC_TCC */
+  while (1) {
+    uint32_t current = lapic_read(0x0390);
+    uint32_t elapsed = (start > current) ? (start - current) : (0xFFFFFFFF - current + start);
+    if (elapsed >= ticks_to_wait) break;
+    arch_nop();
   }
 }
 
@@ -206,15 +226,15 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
   
   if (cpu_id >= MAX_CPUS) return -1;
 
-  /* 1. Copy trampoline to 0x1000 */
-  uint8_t *dest = (uint8_t *)0x1000;
+  /* 1. Copy trampoline to base */
+  uint8_t *dest = (uint8_t *)TRAMPOLINE_BASE;
   size_t size = trampoline_end - trampoline_start;
   memcpy(dest, trampoline_start, size);
 
   /* 2. Setup trampoline parameters */
-  uint32_t *p_pml4 = (uint32_t *)(0x1000 + ((uintptr_t)&trampoline_pml4 - (uintptr_t)trampoline_start));
-  uint64_t *p_stack = (uint64_t *)(0x1000 + ((uintptr_t)&trampoline_stack - (uintptr_t)trampoline_start));
-  uint64_t *p_entry = (uint64_t *)(0x1000 + ((uintptr_t)&trampoline_entry - (uintptr_t)trampoline_start));
+  uint32_t *p_pml4 = (uint32_t *)(TRAMPOLINE_BASE + ((uintptr_t)&trampoline_pml4 - (uintptr_t)trampoline_start));
+  uint64_t *p_stack = (uint64_t *)(TRAMPOLINE_BASE + ((uintptr_t)&trampoline_stack - (uintptr_t)trampoline_start));
+  uint64_t *p_entry = (uint64_t *)(TRAMPOLINE_BASE + ((uintptr_t)&trampoline_entry - (uintptr_t)trampoline_start));
 
   *p_pml4 = (uint32_t)kernel_pgd_phys;
   *p_stack = (uint64_t)stack;
@@ -224,7 +244,7 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
   lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL | ICR_PHYSICAL);
   
   /* 4. Wait 10ms */
-  for (volatile int i = 0; i < 10000000; i++);
+  udelay(10000);
 
   /* 5. Send STARTUP IPI (Vector 0x01 -> 0x1000) */
   lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
@@ -241,11 +261,33 @@ extern void secondary_cpu_entry(void);
 extern void smp_create_idle_task(uint32_t cpu_id);
 
 void arch_smp_init(void) {
-    pr_info("AMD64: SMP initialization temporarily disabled for stability verification.\n");
-    return;
-    /*
-    uint32_t cpu_count = MAX_CPUS;
-    ...
-    */
+    uint32_t bsp_id = (uint32_t)hal_cpu_id();
+    pr_info("AMD64: Initializing SMP (BSP ID: %u)\n", bsp_id);
+
+    /* For now, we attempt to wake up to 4 CPUs (matching QEMU config) */
+    /* In a production kernel, we would parse ACPI MADT here. */
+    for (uint32_t i = 0; i < 4; i++) {
+        if (i == bsp_id) continue;
+
+        cpu_boot_ack = 0;
+        void *stack_bottom = arch_get_kernel_stack(i);
+        void *stack_top = (void *)((uintptr_t)stack_bottom + 131072);
+        
+        if (arch_cpu_wake_secondary(i, secondary_cpu_entry, stack_top) == 0) {
+            /* Wait for ACK with timeout */
+            int timeout = 1000;
+            while (cpu_boot_ack != i && timeout > 0) {
+                udelay(1000);
+                timeout--;
+            }
+
+            if (cpu_boot_ack == i) {
+                pr_info("AMD64: CPU %u is online\n", i);
+                smp_create_idle_task(i);
+            } else {
+                pr_warn("AMD64: CPU %u failed to ACK boot\n", i);
+            }
+        }
+    }
 }
 

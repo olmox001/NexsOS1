@@ -3,16 +3,7 @@
 #include <kernel/arch.h>
 #include <arch/amd64_internal.h>
 
-static uintptr_t lapic_base = 0xFEE00000;
-static uint32_t ticks_per_ms = 0;
-
-static inline uint32_t lapic_read(uint32_t reg) {
-    return *(volatile uint32_t *)(lapic_base + reg);
-}
-
-static inline void lapic_write(uint32_t reg, uint32_t val) {
-    *(volatile uint32_t *)(lapic_base + reg) = val;
-}
+uint32_t ticks_per_ms = 0;
 
 void lapic_init(void) {
     /* Debug: Print 'L' using %dx for 16-bit port */
@@ -27,7 +18,10 @@ void lapic_init(void) {
     /* Set Spurious Interrupt Vector and enable APIC */
     lapic_write(LAPIC_SVR, lapic_read(LAPIC_SVR) | 0xFF | LAPIC_SVR_ENABLE);
     
-    pr_info("AMD64: LAPIC %u initialized at 0x%lx\n", lapic_get_id(), lapic_base);
+    /* Configure LINT0 for ExtINT (Legacy PIC) - necessary if no IOAPIC is used */
+    lapic_write(LAPIC_LVT_LINT0, 0x00000700); /* ExtINT, not masked */
+    
+    pr_info("AMD64: LAPIC %u initialized at 0x%lx\n", lapic_get_id(), LAPIC_DEFAULT_BASE);
 }
 
 void lapic_eoi(void) {
@@ -49,8 +43,12 @@ void lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
 }
 
 /* PIT Constants for calibration */
+#ifndef PIT_CH0
 #define PIT_CH0 0x40
+#endif /* PIT_CH0 */
+#ifndef PIT_CMD
 #define PIT_CMD 0x43
+#endif /* PIT_CMD */
 
 void lapic_timer_calibrate(void) {
     if (ticks_per_ms != 0) return;

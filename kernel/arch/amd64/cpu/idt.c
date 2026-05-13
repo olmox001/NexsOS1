@@ -151,6 +151,9 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
         ret_regs = kernel_timer_tick(regs);
     } else {
         /* All other Hardware interrupts - route via generic system */
+        if (vec != 32) {
+            pr_debug("AMD64: Hardware Interrupt Vector %lu triggered!\n", vec);
+        }
         extern struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs * regs);
         ret_regs = irq_dispatch(vec, regs);
     }

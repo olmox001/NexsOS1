@@ -803,7 +803,7 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
 int sys_ipc_send(int target_pid, void *msg_ptr) {
   struct ipc_message k_msg;
   if (vmm_copy_from_user(&k_msg, msg_ptr, sizeof(struct ipc_message)) != 0) {
-    return -1;
+    return -EINVAL;
   }
   k_msg.from = current_process->pid;
   return kernel_ipc_send(target_pid, &k_msg);
