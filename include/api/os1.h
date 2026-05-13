@@ -11,7 +11,7 @@
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
-#define STACK_SIZE       65536
+#define STACK_SIZE       131072
 #define MAX_PROCESSES    64
 
 /* --- Syscall Numbers --- */

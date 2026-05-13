@@ -13,10 +13,18 @@
 #endif
 
 /* Fixed-point constants (16.16) */
+#ifndef FP_SHIFT
 #define FP_SHIFT 16
+#endif /* FP_SHIFT */
+#ifndef FP_ONE
 #define FP_ONE   (1 << FP_SHIFT)
+#endif /* FP_ONE */
+#ifndef FP_HALF
 #define FP_HALF  (1 << (FP_SHIFT - 1))
+#endif /* FP_HALF */
+#ifndef FP_PI
 #define FP_PI    205887
+#endif /* FP_PI */
 #define FP_2PI   411775
 
 /*

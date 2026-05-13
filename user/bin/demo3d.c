@@ -34,8 +34,8 @@ static vec3_t verts[NUM_VERTS];
 /* Vertices initialization (Golden Ratio based) */
 static void init_shape(int size) {
   /* Golden Ratio phi = 1.61803... */
-  /* FP_ONE is 65536. phi_fp = 106039 */
-  int phi = 106039;
+  /* FP_ONE is 131072. phi_fp = 212078 */
+  int phi = 212078;
   int s = size;
   int phis = fixmul(size, phi);
 
