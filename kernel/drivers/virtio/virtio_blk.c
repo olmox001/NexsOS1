@@ -96,8 +96,8 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   if (!virtio_blk_dev || !desc || !avail || !used)
     return -1;
 
-  static struct virtio_blk_req req;
-  static uint8_t status;
+  struct virtio_blk_req req;
+  uint8_t status;
 
   req.type = VIRTIO_BLK_T_IN;
   req.reserved = 0;
@@ -133,12 +133,10 @@ int virtio_blk_read(void *buf, uint64_t sector, uint32_t count) {
   volatile uint16_t *used_idx_ptr = &used->idx;
 
   /* Notify */
-  pr_debug("VirtIO-Blk: Reading LBA %ld, notify dev 0x%lx\n", sector,
-          virtio_blk_dev->hal_dev.base);
   virtio_notify(virtio_blk_dev, 0);
 
   /* Poll Used Ring (Busy Wait) */
-  uint64_t timeout = 1000000000; /* Increased timeout */
+  uint64_t timeout = 1000000000;
   while (*used_idx_ptr == old_idx && timeout > 0) {
     hal_cpu_yield();
     timeout--;
@@ -167,8 +165,8 @@ int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
   if (!virtio_blk_dev || !desc || !avail || !used)
     return -1;
 
-  static struct virtio_blk_req req_w;
-  static uint8_t status_w;
+  struct virtio_blk_req req_w;
+  uint8_t status_w;
 
   req_w.type = VIRTIO_BLK_T_OUT;
   req_w.reserved = 0;
@@ -203,8 +201,9 @@ int virtio_blk_write(void *buf, uint64_t sector, uint32_t count) {
   virtio_notify(virtio_blk_dev, 0);
 
   volatile uint16_t *used_idx_ptr_w = &used->idx;
-  uint64_t timeout_w = 10000000;
+  uint64_t timeout_w = 1000000000;
   while (*used_idx_ptr_w == old_idx && timeout_w > 0) {
+    hal_cpu_yield();
     timeout_w--;
   }
   virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
