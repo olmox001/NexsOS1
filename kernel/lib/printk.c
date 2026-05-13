@@ -12,7 +12,7 @@
 #include <kernel/types.h>
 #include <stdarg.h>
 
-int console_loglevel = KERN_INFO;
+int console_loglevel = KERN_DEBUG;
 
 /* Set by panic() to signal all CPUs to halt */
 volatile int panic_flag = 0;

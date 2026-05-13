@@ -1,0 +1,42 @@
+AS  boot/aarch64/header.S
+AS  boot/aarch64/stage1.S
+AS  boot/aarch64/stage2.S
+Linking bootloader...
+aarch64-none-elf-ld -nostdlib -static -T boot/aarch64/linker.ld -o build/aarch64/bootloader.elf build/aarch64/boot/aarch64/header.o build/aarch64/boot/aarch64/stage1.o build/aarch64/boot/aarch64/stage2.o
+Bootloader size: 70776 bytes
+Creating bootloader binary...
+aarch64-none-elf-objcopy -O binary build/aarch64/bootloader.elf build/aarch64/bootloader.bin
+AS  kernel/arch/aarch64/boot/start.S
+AS  kernel/arch/aarch64/cpu/exception.S
+CC  kernel/arch/aarch64/cpu/cpu.c
+CC  kernel/arch/aarch64/cpu/syscall.c
+CC  kernel/arch/aarch64/mm/mmu.c
+CC  kernel/arch/aarch64/platform.c
+CC  kernel/arch/aarch64/hal.c
+CC  kernel/arch/aarch64/virtio.c
+CC  kernel/drivers/uart/pl011.c
+CC  kernel/drivers/gic/gic.c
+CC  kernel/drivers/timer/timer.c
+CC  kernel/core/hal_bus.c
+CC  kernel/core/syscall_dispatch.c
+CC  kernel/core/timer.c
+CC  kernel/drivers/console.c
+CC  kernel/drivers/irq_ctrl.c
+CC  kernel/drivers/sys_timer.c
+CC  kernel/drivers/virtio/virtio_blk.c
+CC  kernel/drivers/virtio/virtio_input.c
+CC  kernel/drivers/gpu/virtio_gpu.c
+CC  kernel/drivers/gpu/gpu_core.c
+CC  kernel/drivers/keyboard/keyboard.c
+CC  kernel/fs/gpt.c
+CC  kernel/fs/ext4.c
+CC  kernel/mm/pmm.c
+CC  kernel/mm/vmm.c
+CC  kernel/mm/buffer.c
+CC  kernel/lib/string.c
+CC  kernel/lib/vsnprintf.c
+CC  kernel/lib/printk.c
+kernel/lib/printk.c:15:22: error: expected '=', ',', ';', 'asm' or '__attribute__' before 'KERN_TRACE'
+ int console_loglevel KERN_TRACE;
+                      ^~~~~~~~~~
+make: *** [build/aarch64/kernel/lib/printk.o] Error 1
