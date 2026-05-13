@@ -132,12 +132,12 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 
   uint32_t status = v_read32(dev, VIRTIO_MMIO_INTERRUPT_STATUS);
   pr_debug("VirtIO-Input: Interrupt! Status=0x%x\n", status);
-  v_write32(dev, VIRTIO_MMIO_INTERRUPT_ACK, status);
 
-  if (status == 0)
-    return;
-
+  /* Process ring BEFORE ACking interrupt (avoid race conditions) */
   int needs_render = 0;
+  uint16_t processed_count = 0;
+  
+  /* Check for pending events even if status==0 (spurious int possible) */
   while (dev->last_used_idx != dev->used->idx) {
     struct vring_used_elem *e =
         &dev->used->ring[dev->last_used_idx % INPUT_QSIZE];
@@ -180,9 +180,22 @@ static void virtio_input_handler(uint32_t irq, void *data) {
     arch_mb();
     dev->avail->idx++;
     dev->last_used_idx++;
+    processed_count++;
   }
 
-  v_notify(dev, 0);
+  /* ACK interrupt AFTER processing all events */
+  if (status != 0) {
+    v_write32(dev, VIRTIO_MMIO_INTERRUPT_ACK, status);
+  } else if (processed_count == 0) {
+    /* Spurious interrupt with no events: still ACK to clear it */
+    v_read32(dev, VIRTIO_MMIO_INTERRUPT_ACK);
+  }
+
+  /* Only notify device if we actually processed buffers (prevents spurious ints) */
+  if (processed_count > 0) {
+    v_notify(dev, 0);
+  }
+  
   if (needs_render) {
     compositor_render();
   }
