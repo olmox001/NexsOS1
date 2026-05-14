@@ -69,8 +69,11 @@ static void process_command(void) {
     print("  demo3d     - Launch 3D cube demo\n");
     print("  shell      - Open new shell window\n");
     print("  ps         - List processes\n");
+    print("  ls [path]  - List directory contents\n");
+    print("  cd <path>  - Change directory\n");
+    print("  pwd        - Show current directory\n");
+    print("  cat <path> - Show file contents\n");
     print("  kill <pid> - Kill process by PID\n");
-    print("  notify <t> - Send a system notification\n");
     print("  about      - About this OS\n");
     print("  exit       - Exit shell\n");
   } else if (str_eq(cmd_buf, "clear")) {
@@ -105,6 +108,30 @@ static void process_command(void) {
     }
   } else if (str_eq(cmd_buf, "ps")) {
     proce_display_list(my_window);
+  } else if (str_eq(cmd_buf, "ls") || (cmd_buf[0] == 'l' && cmd_buf[1] == 's' && cmd_buf[2] == ' ')) {
+    const char *path = ".";
+    if (cmd_buf[2] == ' ') path = &cmd_buf[3];
+    char buf[1024];
+    int len = list_dir(path, buf, sizeof(buf));
+    if (len < 0) {
+      printf("Error listing %s\n", path);
+    } else {
+      print(buf);
+      print("\n");
+    }
+  } else if (str_eq(cmd_buf, "pwd")) {
+    char buf[128];
+    if (getcwd(buf, sizeof(buf)) == 0) {
+      printf("%s\n", buf);
+    } else {
+      print("Error getting CWD\n");
+    }
+  } else if (cmd_buf[0] == 'c' && cmd_buf[1] == 'd' && (cmd_buf[2] == ' ' || cmd_buf[2] == '\0')) {
+    const char *path = "/";
+    if (cmd_buf[2] == ' ') path = &cmd_buf[3];
+    if (chdir(path) != 0) {
+      printf("cd: no such directory: %s\n", path);
+    }
   } else if (cmd_buf[0] == 'k' && cmd_buf[1] == 'i' && cmd_buf[2] == 'l' &&
              cmd_buf[3] == 'l' && cmd_buf[4] == ' ') {
     /* Parse PID from "kill <pid>" */
@@ -199,7 +226,9 @@ int main(void) {
   print("\n[Shell] TTY Window ");
   print_hex(my_window);
   printf(" active (PID %d).\n", get_pid());
-  print("\033[32mshell\033[0m> ");
+  char cwd[128];
+  getcwd(cwd, sizeof(cwd));
+  printf("\033[32mshell\033[0m:\033[34m%s\033[0m> ", cwd);
   write(3, "shell> ", 7); /* Mirror to UART */
 
   char buf[2] = {0, 0};
@@ -211,8 +240,11 @@ int main(void) {
     char c = buf[0];
     if (c == '\n' || c == '\r') {
       process_command();
-      if (running)
-        print("\033[32mshell\033[0m> ");
+      if (running) {
+        char prompt_cwd[128];
+        getcwd(prompt_cwd, sizeof(prompt_cwd));
+        printf("\033[32mshell\033[0m:\033[34m%s\033[0m> ", prompt_cwd);
+      }
     } else if (c == '\b' || c == 127) {
       if (cmd_len > 0) {
         cmd_len--;

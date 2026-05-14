@@ -70,6 +70,9 @@ int set_font(void *data, size_t size) {
 }
 int file_write(const char *path, const void *buf, int size, int offset) { return _sys_file_write(path, buf, size, offset); }
 int file_read(const char *path, void *buf, int size, int offset) { return _sys_file_read(path, buf, size, offset); }
+int list_dir(const char *path, char *buf, size_t size) { return _sys_list_dir(path, buf, size); }
+int chdir(const char *path) { return _sys_chdir(path); }
+int getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
 
 /* --- Formatting & Printing --- */
 int vsprintf(char *out, const char *fmt, va_list args) { return vsnprintf(out, 65536, fmt, args); }

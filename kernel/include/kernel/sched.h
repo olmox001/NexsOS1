@@ -82,6 +82,9 @@ struct process {
 
   /* SMP state */
   int on_cpu; /* CPU ID running this process, -1 if none */
+
+  /* Filesystem state */
+  char cwd[128]; /* Current Working Directory */
 };
 
 /* Process States */

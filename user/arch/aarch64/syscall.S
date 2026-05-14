@@ -210,3 +210,21 @@ _sys_set_font:
     mov x8, #253
     svc #0
     ret
+
+.global _sys_list_dir
+_sys_list_dir:
+    mov x8, #254
+    svc #0
+    ret
+
+.global _sys_chdir
+_sys_chdir:
+    mov x8, #255
+    svc #0
+    ret
+
+.global _sys_getcwd
+_sys_getcwd:
+    mov x8, #256
+    svc #0
+    ret

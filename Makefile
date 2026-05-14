@@ -158,6 +158,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
     $(KERNEL_DIR)/fs/gpt.c \
     $(KERNEL_DIR)/fs/ext4.c \
+    $(KERNEL_DIR)/fs/vfs.c \
     $(KERNEL_DIR)/mm/pmm.c \
     $(KERNEL_DIR)/mm/vmm.c \
     $(KERNEL_DIR)/mm/buffer.c \

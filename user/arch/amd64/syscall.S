@@ -186,3 +186,21 @@ _sys_set_font:
     movq $253, %rax
     syscall
     ret
+
+.global _sys_list_dir
+_sys_list_dir:
+    movq $254, %rax
+    syscall
+    ret
+
+.global _sys_chdir
+_sys_chdir:
+    movq $255, %rax
+    syscall
+    ret
+
+.global _sys_getcwd
+_sys_getcwd:
+    movq $256, %rax
+    syscall
+    ret

@@ -253,6 +253,9 @@ struct process *process_create(const char *name, uint8_t priority,
   spin_lock_init(&proc->msg_lock);
   spin_lock_init(&proc->mm_lock);
 
+  /* Filesystem Init */
+  strncpy(proc->cwd, "/", sizeof(proc->cwd));
+
   /* Add to pool */
   process_pool[slot] = proc;
   active_count++;

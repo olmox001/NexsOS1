@@ -542,3 +542,61 @@ int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size,
 
   return bytes_written;
 }
+
+/*
+ * Public API: List directory contents
+ * Formats as a space-separated string of names
+ */
+int ext4_list_dir(const char *path, char *buf, uint32_t size) {
+  uint32_t dir_ino;
+  if (ext4_find_inode(path, &dir_ino) != 0)
+    return -1;
+
+  struct ext4_inode inode;
+  if (get_inode_struct(dir_ino, &inode) != 0)
+    return -1;
+
+  if (!((inode.i_mode >> 12) == 4)) { /* Check if directory */
+    return -2;
+  }
+
+  uint32_t dir_size = inode.i_size_lo;
+  uint32_t current_blk_off = 0;
+  uint8_t *dir_buf = kmalloc(4096);
+  if (!dir_buf)
+    return -1;
+
+  uint32_t buf_pos = 0;
+  if (size > 0) buf[0] = '\0';
+
+  while (current_blk_off < dir_size) {
+    if (ext4_read_inode(dir_ino, current_blk_off, dir_buf, 4096) <= 0) {
+      break;
+    }
+
+    struct ext4_dir_entry *de = (struct ext4_dir_entry *)dir_buf;
+    uint32_t offset = 0;
+    while (offset < 4096) {
+      if (de->inode == 0 || de->rec_len < 8)
+        break;
+
+      if (de->name_len > 0) {
+        /* Copy name + space */
+        if (buf_pos + de->name_len + 1 < size) {
+          memcpy(buf + buf_pos, de->name, de->name_len);
+          buf_pos += de->name_len;
+          buf[buf_pos++] = ' ';
+          buf[buf_pos] = '\0';
+        }
+      }
+      
+      offset += de->rec_len;
+      if (offset >= 4096) break;
+      de = (struct ext4_dir_entry *)((uint8_t *)de + de->rec_len);
+    }
+    current_blk_off += 4096;
+  }
+
+  kfree(dir_buf);
+  return (int)buf_pos;
+}

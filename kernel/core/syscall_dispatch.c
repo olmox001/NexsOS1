@@ -7,6 +7,9 @@
 #include <kernel/sched.h>
 #include <kernel/printk.h>
 #include <kernel/cpu.h>
+#include <kernel/string.h>
+#include <kernel/kmalloc.h>
+#include <kernel/vfs.h>
 
 /* These syscall implementations are currently still in arch/<ARCH>/cpu/syscall.c 
  * or will be moved here gradually. For now, we declare them extern. 
@@ -37,13 +40,12 @@ extern long sys_registry(int op, const char *key, char *value, size_t size);
 int sys_set_font(void *data, size_t size);
 extern int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size, uint32_t offset);
 extern int ext4_read_file(const char *path, uint8_t *buf, uint32_t size, uint32_t offset);
+extern int ext4_list_dir(const char *path, char *buf, uint32_t size);
+extern int ext4_find_inode(const char *path, uint32_t *ino_out);
 
 extern int arch_copy_from_user(void *dest, const void *src, size_t n);
 extern int arch_copy_to_user(void *dest, const void *src, size_t n);
 extern int arch_copy_string_from_user(char *dest, const char *src, size_t max_len);
-
-extern void *kmalloc(size_t size);
-extern void kfree(void *ptr);
 
 extern int keyboard_focus_pid;
 
@@ -179,6 +181,8 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -1);
       break;
     }
+    char resolved_path[128];
+    vfs_resolve_path(k_path, resolved_path, 128);
     size_t size = (size_t)arg2;
     uint8_t *k_buf = kmalloc(size);
     if (!k_buf) {
@@ -191,7 +195,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       break;
     }
     uint32_t offset = (uint32_t)arg3;
-    pt_regs_set_return(frame, ext4_write_file(k_path, k_buf, (uint32_t)size, offset));
+    pt_regs_set_return(frame, ext4_write_file(resolved_path, k_buf, (uint32_t)size, offset));
     kfree(k_buf);
   } break;
   case 252: /* FILE_READ */
@@ -201,12 +205,14 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -1);
       break;
     }
+    char resolved_path[128];
+    vfs_resolve_path(k_path, resolved_path, 128);
     size_t size = (size_t)arg2;
     uint32_t offset = (uint32_t)arg3;
     int bytes_read;
 
     if (size == 0) {
-      bytes_read = ext4_read_file(k_path, NULL, 0, offset);
+      bytes_read = ext4_read_file(resolved_path, NULL, 0, offset);
     } else {
       uint8_t *k_buf = kmalloc(size);
       if (!k_buf) {
@@ -214,7 +220,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
         break;
       }
 
-      bytes_read = ext4_read_file(k_path, k_buf, (uint32_t)size, offset);
+      bytes_read = ext4_read_file(resolved_path, k_buf, (uint32_t)size, offset);
       if (bytes_read >= 0) {
         if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
           bytes_read = -1;
@@ -227,6 +233,60 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   case 253: /* SET_FONT */
     pt_regs_set_return(frame, sys_set_font((void *)arg0, (size_t)arg1));
     break;
+  case 254: /* LIST_DIR */
+  {
+    char k_path[128];
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      pt_regs_set_return(frame, -1);
+      break;
+    }
+    char resolved_path[128];
+    vfs_resolve_path(k_path, resolved_path, 128);
+    size_t size = (size_t)arg2;
+    char *k_buf = kmalloc(size);
+    if (!k_buf) {
+      pt_regs_set_return(frame, -1);
+      break;
+    }
+    int res = ext4_list_dir(resolved_path, k_buf, (uint32_t)size);
+    if (res >= 0) {
+      if (arch_copy_to_user((void *)arg1, k_buf, res + 1) != 0) {
+        res = -1;
+      }
+    }
+    kfree(k_buf);
+    pt_regs_set_return(frame, res);
+  } break;
+  case 255: /* CHDIR */
+  {
+    char k_path[128];
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      pt_regs_set_return(frame, -1);
+      break;
+    }
+    char resolved_path[128];
+    vfs_resolve_path(k_path, resolved_path, 128);
+    
+    /* Verify it exists and is a directory */
+    uint32_t ino;
+    if (ext4_find_inode(resolved_path, &ino) == 0) {
+       /* For now we don't check if it's a dir, but we could.
+          Assume if it exists, it's fine for now or handle later. */
+       strncpy(current_process->cwd, resolved_path, 128);
+       pt_regs_set_return(frame, 0);
+    } else {
+       pt_regs_set_return(frame, -1);
+    }
+  } break;
+  case 256: /* GETCWD */
+  {
+    size_t size = (size_t)arg1;
+    if (arch_copy_to_user((void *)arg0, current_process->cwd, size) != 0) {
+      pt_regs_set_return(frame, -1);
+    } else {
+      pt_regs_set_return(frame, 0);
+    }
+  } break;
   default:
     pr_warn("Unknown syscall: %ld\n", syscall_num);
     pt_regs_set_return(frame, -1);

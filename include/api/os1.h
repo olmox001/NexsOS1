@@ -41,6 +41,9 @@
 #define SYS_FILE_WRITE         251
 #define SYS_FILE_READ          252
 #define SYS_SET_FONT           253
+#define SYS_LIST_DIR           254
+#define SYS_CHDIR              255
+#define SYS_GETCWD             256
 
 /* --- Data Structures --- */
 
@@ -81,6 +84,9 @@ extern int  _sys_file_write(const char *path, const void *buf, int size, int off
 extern int  _sys_file_read(const char *path, void *buf, int size, int offset);
 extern int  _sys_send(int pid, struct ipc_message *msg);
 extern int  _sys_recv(int pid, struct ipc_message *msg);
+extern int  _sys_list_dir(const char *path, char *buf, size_t size);
+extern int  _sys_chdir(const char *path);
+extern int  _sys_getcwd(char *buf, size_t size);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
@@ -126,6 +132,9 @@ int set_font(void *data, size_t size);
 /* Filesystem Helpers */
 int file_write(const char *path, const void *buf, int size, int offset);
 int file_read(const char *path, void *buf, int size, int offset);
+int list_dir(const char *path, char *buf, size_t size);
+int chdir(const char *path);
+int getcwd(char *buf, size_t size);
 
 /* Formatting & Printing */
 void print(const char *s);
