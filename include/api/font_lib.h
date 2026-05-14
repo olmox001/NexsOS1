@@ -12,7 +12,7 @@
 
 struct font_ctx {
     struct font_header header;
-    struct glyph_info *glyphs;
+    struct font_glyph_info *glyphs;
     uint8_t *bitmap;
     void *raw_data;
 };

@@ -54,13 +54,7 @@ int main(int argc, char **argv) {
     fprintf(out, "#define FONT_ASCENT %d\n", (int)(ascent * scale));
     fprintf(out, "#define FONT_DESCENT %d\n\n", (int)(-descent * scale));
 
-    /* We need to match the struct glyph_info in the kernel */
-    fprintf(out, "struct glyph_info {\n");
-    fprintf(out, "  int16_t x0, y0;\n");
-    fprintf(out, "  uint8_t width, height;\n");
-    fprintf(out, "  int16_t advance;\n");
-    fprintf(out, "  uint32_t data_offset;\n");
-    fprintf(out, "};\n\n");
+    /* We rely on the struct font_glyph_info defined in include/api/font.h */
 
     uint8_t *bitmaps[95];
     int widths[95], heights[95], xoffs[95], yoffs[95];
@@ -77,7 +71,7 @@ int main(int argc, char **argv) {
         total_bitmap_size += widths[i] * heights[i];
     }
 
-    fprintf(out, "static const struct glyph_info font_glyphs[FONT_NUM_CHARS] = {\n");
+    fprintf(out, "static const struct font_glyph_info font_glyphs[FONT_NUM_CHARS] = {\n");
     uint32_t current_offset = 0;
     for (int i = 0; i < num_chars; i++) {
         fprintf(out, "    {%d, %d, %d, %d, %d, %u}, /* '%c' */\n", 

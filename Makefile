@@ -341,6 +341,7 @@ rootfs: user
 	@-cp user/bin/doomgeneric-master/DOOM_wads-master/doom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/bin/fontman/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
+	@-cp user/bin/fontman/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 
 disk: $(MKDISK) kernel rootfs bootloader

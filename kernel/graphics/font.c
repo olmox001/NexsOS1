@@ -17,7 +17,7 @@ int utf8_decode(const char *s, uint32_t *code);
 /* Internal font state */
 static struct {
     struct font_header header;
-    const struct glyph_info *glyphs;
+    const struct font_glyph_info *glyphs;
     const uint8_t *bitmap;
     int is_dynamic;
 } current_font = {
@@ -46,7 +46,7 @@ void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
   if (idx < 0 || idx >= current_font.header.num_chars)
     return;
 
-  const struct glyph_info *gi = &current_font.glyphs[idx];
+  const struct font_glyph_info *gi = &current_font.glyphs[idx];
   const uint8_t *bitmap = current_font.bitmap + gi->data_offset;
 
   int start_x = x + gi->x0;
@@ -178,13 +178,13 @@ int sys_set_font(void *data, size_t size) {
     if (h->magic != FONT_MAGIC) return -2;
 
     size_t expected = sizeof(struct font_header) + 
-                     h->num_chars * sizeof(struct glyph_info) + 
+                     h->num_chars * sizeof(struct font_glyph_info) + 
                      h->bitmap_size;
     if (size < expected) return -3;
 
     current_font.header = *h;
-    current_font.glyphs = (struct glyph_info *)((uint8_t *)data + sizeof(struct font_header));
-    current_font.bitmap = (uint8_t *)current_font.glyphs + h->num_chars * sizeof(struct glyph_info);
+    current_font.glyphs = (struct font_glyph_info *)((uint8_t *)data + sizeof(struct font_header));
+    current_font.bitmap = (uint8_t *)current_font.glyphs + h->num_chars * sizeof(struct font_glyph_info);
     current_font.is_dynamic = 1;
 
     return 0;

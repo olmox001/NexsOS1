@@ -32,8 +32,8 @@ struct font_ctx *font_load(const char *path) {
     }
 
     ctx->header = *h;
-    ctx->glyphs = (struct glyph_info *)((uint8_t *)data + sizeof(struct font_header));
-    ctx->bitmap = (uint8_t *)ctx->glyphs + h->num_chars * sizeof(struct glyph_info);
+    ctx->glyphs = (struct font_glyph_info *)((uint8_t *)data + sizeof(struct font_header));
+    ctx->bitmap = (uint8_t *)ctx->glyphs + h->num_chars * sizeof(struct font_glyph_info);
     ctx->raw_data = data;
 
     return ctx;
@@ -50,7 +50,7 @@ static void draw_glyph(int win_id, struct font_ctx *ctx, int x, int y, uint32_t 
     int idx = (int)codepoint - ctx->header.first_char;
     if (idx < 0 || idx >= ctx->header.num_chars) return;
 
-    struct glyph_info *gi = &ctx->glyphs[idx];
+    struct font_glyph_info *gi = &ctx->glyphs[idx];
     uint8_t *bitmap = ctx->bitmap + gi->data_offset;
 
     int start_x = x + gi->x0;

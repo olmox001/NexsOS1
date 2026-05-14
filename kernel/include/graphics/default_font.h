@@ -7,14 +7,7 @@
 #define FONT_ASCENT 12
 #define FONT_DESCENT 3
 
-struct glyph_info {
-  int16_t x0, y0;
-  uint8_t width, height;
-  int16_t advance;
-  uint32_t data_offset;
-};
-
-static const struct glyph_info font_glyphs[FONT_NUM_CHARS] = {
+static const struct font_glyph_info font_glyphs[FONT_NUM_CHARS] = {
     {0, 0, 0, 0, 3, 0}, /* ' ' */
     {1, -9, 3, 10, 4, 0}, /* '!' */
     {0, -10, 5, 5, 5, 30}, /* '"' */
