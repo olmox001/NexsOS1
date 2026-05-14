@@ -247,43 +247,79 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inod
   if (fread(buf, 1, src_size, src) != (size_t)src_size) { perror("fread"); exit(1); }
   fclose(src);
 
-  file_inode.i_size_lo = src_size;
-  int data_blocks = (src_size + EXT4_BLOCK_SIZE - 1) / EXT4_BLOCK_SIZE;
+  file_inode.i_size_lo = (uint32_t)src_size;
+  uint32_t data_blocks = (src_size + EXT4_BLOCK_SIZE - 1) / EXT4_BLOCK_SIZE;
+  uint32_t total_meta_blocks = 0;
 
-  for (int i = 0; i < data_blocks && i < 12; i++) {
+  uint32_t *indir1 = NULL;
+  uint32_t *indir2 = NULL;
+  uint32_t *indir2_subs[1024] = {NULL};
+
+  for (uint32_t i = 0; i < data_blocks; i++) {
     uint32_t b = next_free_block++;
     mark_block_used(b);
-    file_inode.i_block[i] = b;
+
+    /* Write data block */
     xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE, SEEK_SET);
     uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE) ? (src_size % EXT4_BLOCK_SIZE) : EXT4_BLOCK_SIZE;
     xwrite(buf + i * EXT4_BLOCK_SIZE, 1, to_write, f);
+
+    if (i < 12) {
+      file_inode.i_block[i] = b;
+    } else if (i < 12 + 1024) {
+      if (!indir1) {
+        file_inode.i_block[12] = next_free_block++;
+        mark_block_used(file_inode.i_block[12]);
+        total_meta_blocks++;
+        indir1 = xmalloc(EXT4_BLOCK_SIZE);
+      }
+      indir1[i - 12] = b;
+    } else {
+      uint32_t d_idx = i - 12 - 1024;
+      uint32_t master_idx = d_idx / 1024;
+      uint32_t sub_idx = d_idx % 1024;
+
+      if (!indir2) {
+        file_inode.i_block[13] = next_free_block++;
+        mark_block_used(file_inode.i_block[13]);
+        total_meta_blocks++;
+        indir2 = xmalloc(EXT4_BLOCK_SIZE);
+      }
+      if (!indir2_subs[master_idx]) {
+        indir2[master_idx] = next_free_block++;
+        mark_block_used(indir2[master_idx]);
+        total_meta_blocks++;
+        indir2_subs[master_idx] = xmalloc(EXT4_BLOCK_SIZE);
+      }
+      indir2_subs[master_idx][sub_idx] = b;
+    }
   }
 
-  if (data_blocks > 12) {
-    uint32_t indir_blk = next_free_block++;
-    mark_block_used(indir_blk);
-    file_inode.i_block[12] = indir_blk;
-    uint32_t *indir_buf = xmalloc(EXT4_BLOCK_SIZE);
-    for (int i = 12; i < data_blocks; i++) {
-      uint32_t b = next_free_block++;
-      mark_block_used(b);
-      indir_buf[i - 12] = b;
-      xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE, SEEK_SET);
-      uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE) ? (src_size % EXT4_BLOCK_SIZE) : EXT4_BLOCK_SIZE;
-      xwrite(buf + i * EXT4_BLOCK_SIZE, 1, to_write, f);
-    }
-    xseek(f, partition_offset_bytes + (uint64_t)indir_blk * EXT4_BLOCK_SIZE, SEEK_SET);
-    xwrite(indir_buf, 1, EXT4_BLOCK_SIZE, f);
-    free(indir_buf);
-    file_inode.i_blocks_lo = (data_blocks + 1) * (EXT4_BLOCK_SIZE / 512);
-  } else {
-    file_inode.i_blocks_lo = data_blocks * (EXT4_BLOCK_SIZE / 512);
+  /* Flush Metadata Blocks */
+  if (indir1) {
+    xseek(f, partition_offset_bytes + (uint64_t)file_inode.i_block[12] * EXT4_BLOCK_SIZE, SEEK_SET);
+    xwrite(indir1, 1, EXT4_BLOCK_SIZE, f);
+    free(indir1);
   }
+  if (indir2) {
+    for (int i = 0; i < 1024; i++) {
+      if (indir2_subs[i]) {
+        xseek(f, partition_offset_bytes + (uint64_t)indir2[i] * EXT4_BLOCK_SIZE, SEEK_SET);
+        xwrite(indir2_subs[i], 1, EXT4_BLOCK_SIZE, f);
+        free(indir2_subs[i]);
+      }
+    }
+    xseek(f, partition_offset_bytes + (uint64_t)file_inode.i_block[13] * EXT4_BLOCK_SIZE, SEEK_SET);
+    xwrite(indir2, 1, EXT4_BLOCK_SIZE, f);
+    free(indir2);
+  }
+
+  file_inode.i_blocks_lo = (data_blocks + total_meta_blocks) * (EXT4_BLOCK_SIZE / 512);
 
   xseek(f, inode_offset, SEEK_SET);
   xwrite(&file_inode, 1, sizeof(file_inode), f);
   free(buf);
-  printf("Ext4: Added %s (Ino %d, %ld bytes, %d blocks)\n", src_path, inode_num, src_size, data_blocks);
+  printf("Ext4: Added %s (Ino %d, %ld bytes, %d data, %d meta blocks)\n", src_path, inode_num, src_size, data_blocks, total_meta_blocks);
 }
 
 void write_directory_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inode_num, uint32_t data_block) {

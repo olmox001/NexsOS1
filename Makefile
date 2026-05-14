@@ -1,6 +1,5 @@
 # Makefile for OS1Test (AMD64 / AArch64)
 # Cross-compilation for bare-metal kernel
-
 # ==============================================================================
 # Configuration
 # ==============================================================================
@@ -78,8 +77,9 @@ GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || comman
 BUILD_ROOT = build
 BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
 USER_DIR   = user
-USER_LIB_DIR = $(USER_DIR)/lib
-USER_BIN_DIR = $(USER_DIR)/bin
+USER_SYS_DIR = $(USER_DIR)/sys
+USER_LIB_DIR = $(USER_SYS_DIR)/lib
+USER_BIN_DIR = $(USER_SYS_DIR)/bin
 USER_ARCH_DIR = $(USER_DIR)/arch/$(ARCH)
 INCLUDE    = -I$(KERNEL_DIR)/include -I$(ARCH_DIR)/include -Iinclude/api
 
@@ -159,6 +159,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
     $(KERNEL_DIR)/fs/gpt.c \
     $(KERNEL_DIR)/fs/ext4.c \
+    $(KERNEL_DIR)/fs/vfs.c \
     $(KERNEL_DIR)/mm/pmm.c \
     $(KERNEL_DIR)/mm/vmm.c \
     $(KERNEL_DIR)/mm/buffer.c \
@@ -172,6 +173,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/lib/registry.c \
     $(KERNEL_DIR)/lib/ktest.c \
     $(KERNEL_DIR)/lib/ktest_samples.c \
+    $(KERNEL_DIR)/lib/utf8.c \
     $(KERNEL_DIR)/cpu.c \
     $(KERNEL_DIR)/sched/process.c \
     $(KERNEL_DIR)/sched/elf.c \
@@ -236,6 +238,8 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/pci
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/core
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/lib
+	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/lib
+	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_ARCH_DIR)
 
@@ -259,12 +263,19 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
-USER_LIB_O     = $(BUILD_DIR)/$(USER_DIR)/lib/lib.o
+USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o
+USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
-USER_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/counter.elf $(BUILD_DIR)/shell.elf \
-            $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/ipc_recv.elf \
-            $(BUILD_DIR)/notify_srv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/regedit.elf \
-            $(BUILD_DIR)/writetest.elf
+# System ELFs (placed in /sys/bin)
+SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf $(BUILD_DIR)/notify_srv.elf \
+           $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf
+
+# User ELFs (placed in /bin)
+BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf \
+           $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
+           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf
+
+USER_ELFS = $(SYS_ELFS) $(BIN_ELFS)
 
 user: $(USER_ELFS)
 
@@ -273,21 +284,36 @@ $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/$(USER_DIR)/bin/%.o: $(USER_DIR)/bin/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -c $< -o $@
+
 # Explicit dependencies for each user ELF
-$(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/bin/init.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/shell.elf: $(BUILD_DIR)/$(USER_DIR)/bin/shell.o $(BUILD_DIR)/$(USER_DIR)/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/notify_srv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/notification_server.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/regedit.elf: $(BUILD_DIR)/$(USER_DIR)/bin/regedit.o $(USER_LIB_O) $(USER_SYSCALL_O)
-$(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O)
+$(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/init.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/shell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/shell.o $(BUILD_DIR)/$(USER_DIR)/sys/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/notify_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/notification_server.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/regedit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/regedit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/fontman.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/fontman.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+$(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/%.o: $(USER_DIR)/sys/bin/fontman/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -c $< -o $@
+
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
@@ -314,10 +340,27 @@ $(BUILD_DIR)/%.o: %.cpp
 
 # Disk Generation
 rootfs: user
+	@rm -rf $(BUILD_DIR)/rootfs
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
-	@cp $(USER_ELFS) $(BUILD_DIR)/rootfs/bin/
-	@cp user/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
+	@mkdir -p $(BUILD_DIR)/rootfs/lib
+	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
+	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
+	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
+	@# Copy essential WAD files to the root and /bin for engine detection
+	@-cp user/bin/doom/doom.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
+	@-cp user/bin/doom/doom1.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
+	@-cp user/bin/doom/doom2.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
+	@-cp user/bin/doom/doom.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doom/doom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doom/doom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@mkdir -p $(BUILD_DIR)/rootfs/fonts
+	@-cp user/sys/bin/fontman/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
+	@-cp user/sys/bin/fontman/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
+	@# Remove .elf extensions in rootfs
+	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 
 disk: $(MKDISK) kernel rootfs bootloader
@@ -333,7 +376,7 @@ $(MKDISK): tools/mkdisk.c
 # ==============================================================================
 
 ifeq ($(ARCH), amd64)
-QEMU_FLAGS = -m 3G -smp 8 -serial mon:stdio \
+QEMU_FLAGS = -m 3G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
              -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
@@ -341,19 +384,19 @@ QEMU_FLAGS = -m 3G -smp 8 -serial mon:stdio \
              -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
              -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
 
-QEMU_RELEASE_FLAGS = -m 3G -smp 8 -serial mon:stdio \
+QEMU_RELEASE_FLAGS = -m 3G -smp 4 -serial mon:stdio \
                      -display default,show-cursor=on \
                      -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
                      -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
                      -device virtio-mouse-pci,disable-legacy=on,disable-modern=off
 else
-QEMU_FLAGS = -M virt -cpu cortex-a57 -m 3G -smp 8 -serial mon:stdio \
+QEMU_FLAGS = -M virt -cpu cortex-a57 -m 3G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \
              -drive if=none,file=$(DISK_IMG),id=hd0,format=raw -device virtio-blk-device,drive=hd0
 
-QEMU_RELEASE_FLAGS = -M virt -cpu cortex-a57 -m 3G -smp 8 -serial mon:stdio \
+QEMU_RELEASE_FLAGS = -M virt -cpu cortex-a57 -m 3G -smp 4 -serial mon:stdio \
                      -display default,show-cursor=on \
                      -device virtio-gpu-device \
                      -device virtio-keyboard-device -device virtio-mouse-device \
@@ -458,3 +501,10 @@ help:
 	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.1.2)"
 	@echo "  run          - Build and run kernel directly"
 	@echo "  clean        - Remove build artifacts"
+
+# Include architecture-specific Doom makefiles
+ifeq ($(ARCH), aarch64)
+    include user/bin/doom/doom-nexs-aarch64.make
+else ifeq ($(ARCH), amd64)
+    include user/bin/doom/doom-nexs-amd64.make
+endif

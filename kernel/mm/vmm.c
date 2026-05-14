@@ -143,6 +143,10 @@ int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
   return 0;
 }
 
+uint64_t vmm_get_phys(uint64_t *pgd, uint64_t virt) {
+  return arch_vmm_get_physical((uint64_t)pgd, virt);
+}
+
 /*
  * Unmap a page
  */

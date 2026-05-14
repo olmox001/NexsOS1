@@ -9,11 +9,45 @@
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/types.h>
+#include <kernel/string.h>
+#include <posix_types.h>
 
 /* Keyboard state */
 static int shift_pressed = 0;
 static int ctrl_pressed = 0;
 static int caps_lock = 0;
+
+typedef struct {
+    const char* name;
+    const char* ascii_map;
+    const char* shifted_map;
+    struct {
+        uint16_t code;
+        int shifted;
+        const char* utf8;
+    } utf8_overrides[16];
+} keyboard_layout_t;
+
+static const keyboard_layout_t layout_us = {
+    .name = "us",
+    /* uses standard tables below */
+};
+
+static const keyboard_layout_t layout_it = {
+    .name = "it",
+    .utf8_overrides = {
+        {40, 0, "\xC3\xA0"}, // à
+        {40, 1, "\xC3\x80"}, // À
+        {26, 0, "\xC3\xA8"}, // è
+        {26, 1, "\xC3\xA9"}, // é
+        {39, 0, "\xC3\xB2"}, // ò
+        {41, 0, "\xC3\xB9"}, // ù
+        {43, 0, "\xC3\xAC"}, // ì
+        {0, 0, NULL}
+    }
+};
+
+static const keyboard_layout_t *current_layout = &layout_us;
 
 /* Input buffer */
 #define KB_BUFFER_SIZE 256
@@ -74,10 +108,15 @@ void keyboard_init(void) {
   /* Initialize VirtIO Input driver */
   virtio_input_init();
 
+  /* Load layout from registry */
+  /* TODO: kernel_registry_get needs to be accessible here */
+  /* For now, default to IT if requested by user */
+  current_layout = &layout_it;
+
   INIT_LIST_HEAD(&keyboard_wait_queue.task_list);
   spin_lock_init(&keyboard_wait_queue.lock);
 
-  pr_info("%s", "Keyboard: Initialized\n");
+  pr_info("Keyboard: Initialized (Layout: %s)\n", current_layout->name);
 }
 
 /* Wait Queue for blocking reads */
@@ -117,12 +156,8 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
     return;
   }
 
-  /* Only process key presses, not releases */
-  if (value == 0)
-    return;
-
-  /* Check for Ctrl+C */
-  if (ctrl_pressed && code == KEY_C) {
+  /* Handle Ctrl+C */
+  if (ctrl_pressed && code == KEY_C && value != 0) {
     /* Add ETX (End of Text) to buffer */
     char c = 0x03;
     uint32_t next = (kb_head + 1) % KB_BUFFER_SIZE;
@@ -154,17 +189,34 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
     c = scancode_to_ascii[code];
 
   if (c != 0) {
-    pr_info("Keyboard: Char='%c' -> PID %d\n", c, keyboard_focus_pid);
+    pr_info("Keyboard: Char='%c' (val=%d) -> PID %d\n", c, value, keyboard_focus_pid);
   }
 
   /* Send IPC message if we have a focus PID */
-  if (c != 0 && keyboard_focus_pid > 0) {
+  if (keyboard_focus_pid > 0) {
     struct ipc_message msg;
+    memset(&msg, 0, sizeof(msg));
     msg.from = 0; /* Kernel/Driver */
     msg.type = IPC_TYPE_INPUT;
-    msg.data1 = (uint64_t)c;
-    msg.data2 = 0;
-    /* No payload needed for single char */
+    msg.data1 = ((uint64_t)code << 16) | (uint8_t)c;
+    msg.data2 = (uint64_t)value; /* 0=release, 1=press, 2=repeat */
+    
+    /* UTF-8 Handling */
+    if (c != 0) {
+      msg.payload[0] = c;
+      msg.payload[1] = '\0';
+    }
+
+    /* Apply Layout Overrides */
+    if (value != 0 && current_layout) {
+        for (int i = 0; i < 16 && current_layout->utf8_overrides[i].utf8 != NULL; i++) {
+            if (current_layout->utf8_overrides[i].code == code && 
+                current_layout->utf8_overrides[i].shifted == shift_pressed) {
+                strlcpy(msg.payload, current_layout->utf8_overrides[i].utf8, sizeof(msg.payload));
+                break;
+            }
+        }
+    }
 
     kernel_ipc_send(keyboard_focus_pid, &msg);
   }

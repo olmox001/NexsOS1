@@ -197,9 +197,9 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   windows[slot].bg_color = default_bg;
   windows[slot].curr_bg_color = default_bg;
 
-  /* Initialize text grids */
-  int char_w = 8;
-  int char_h = 16;
+  /* Initialize text grids using dynamic font metrics */
+  int char_w = graphics_font_max_width();
+  int char_h = graphics_font_height();
   windows[slot].grid_cols = w / char_w;
   windows[slot].grid_rows = h / char_h;
   size_t grid_size = windows[slot].grid_cols * windows[slot].grid_rows;
@@ -457,10 +457,10 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
     return;
   }
 
-  int char_w = 8;
-  int char_h = 16;
-  int cols = win->width / char_w;
-  int rows = win->height / char_h;
+  int char_w = graphics_font_max_width();
+  int char_h = graphics_font_height();
+  int cols = win->grid_cols; /* Use pre-calculated grid size */
+  int rows = win->grid_rows;
 
   /* Create GL Surface wrappers for window buffer */
   struct gl_surface win_surf = {.width = win->width,
@@ -637,6 +637,22 @@ void compositor_handle_click(int button, int state) {
     pr_info("Compositor: Focus changed to PID %d (Window '%s')\n", hit->pid,
             hit->title);
     keyboard_focus_pid = hit->pid;
+  }
+
+  /* Send mouse event to the focused process */
+  if (keyboard_focus_pid > 0) {
+    struct ipc_message msg;
+    msg.from = 0; /* Kernel */
+    msg.type = IPC_TYPE_MOUSE;
+    msg.data1 = (uint64_t)button;
+    msg.data2 = (uint64_t)state;
+    /* Store relative coordinates in payload */
+    int rel_x = mouse_x - hit->x;
+    int rel_y = mouse_y - hit->y;
+    memcpy(msg.payload, &rel_x, 4);
+    memcpy(msg.payload + 4, &rel_y, 4);
+
+    kernel_ipc_send(keyboard_focus_pid, &msg);
   }
 
   /* Check for close button — save pid/id, release lock before process_terminate
@@ -829,6 +845,7 @@ static void compositor_render_internal(void) {
    */
   struct region *occluded = region_create();
   if (!occluded) {
+    __sync_lock_release(&in_render);
     return;
   }
 
@@ -894,6 +911,7 @@ static void compositor_render_internal(void) {
     region_destroy(bg_region);
   }
   region_destroy(occluded);
+  occluded = NULL; /* prevent double-free: cleanup at end of function also calls region_destroy(occluded) */
 
   /* Pass 2: Rendering (Bottom-Up) - Painter's Algorithm with Clipping */
   for (int i = 0; i < count && i < MAX_WINDOWS; i++) {
@@ -967,17 +985,12 @@ static void compositor_render_internal(void) {
       while (win->title[title_len] && title_len < 63)
         title_len++;
 
-      int char_w = 8;
-      int text_w = title_len * char_w;
+      int char_h = graphics_font_height();
+      int text_w = graphics_string_width(win->title);
       int start_x = win->x + (win->width - text_w) / 2;
-      int start_y = decor_y + 2;
+      int start_y = decor_y + (20 - char_h) / 2; /* Center vertically in title bar */
 
-      for (int c = 0; c < title_len; c++) {
-        if (start_x + c * char_w + char_w > 0 && start_x + c * char_w < bb_w) {
-          gl_draw_char(&screen, start_x + c * char_w, start_y, win->title[c],
-                       0xFFFFFFFF);
-        }
-      }
+      gl_draw_string(&screen, start_x, start_y, win->title, 0xFFFFFFFF);
     }
   }
 
@@ -1035,6 +1048,14 @@ static void compositor_render_internal(void) {
       damage_y1 = bb_h;
       damage_x2 = 0;
       damage_y2 = 0;
+    }
+  }
+  /* Cleanup regions */
+  region_destroy(occluded);
+  for (int i = 0; i < count; i++) {
+    if (visible_regions[i]) {
+      region_destroy(visible_regions[i]);
+      visible_regions[i] = NULL;
     }
   }
 

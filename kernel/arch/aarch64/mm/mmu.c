@@ -133,6 +133,26 @@ int arch_vmm_unmap(uint64_t pgd_addr, uint64_t va) {
 
   return 0;
 }
+
+uint64_t arch_vmm_get_physical(uint64_t pgd_addr, uint64_t va) {
+  uint64_t *pgd = (uint64_t *)pgd_addr;
+  uint64_t *pud, *pmd, *pt;
+
+  pud = get_next_table(pgd, PGD_INDEX(va), 0, 1);
+  if (!pud) return 0;
+
+  pmd = get_next_table(pud, PUD_INDEX(va), 0, 2);
+  if (!pmd) return 0;
+
+  pt = get_next_table(pmd, PMD_INDEX(va), 0, 3);
+  if (!pt) return 0;
+
+  uint64_t entry = pt[PT_INDEX(va)];
+  if (!(entry & PTE_VALID)) return 0;
+
+  return (entry & PTE_ADDR_MASK) | (va & 0xFFF);
+}
+
 int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, uint64_t flags) {
   uint64_t v = va;
   uint64_t p = pa;

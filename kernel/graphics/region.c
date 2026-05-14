@@ -33,28 +33,42 @@ void region_add_rect(struct region *reg, int x, int y, int w, int h) {
   if (w <= 0 || h <= 0)
     return;
 
-  if (reg->count >= MAX_RECTS_PER_REGION) {
-    /* Hard limit reached, stop adding to prevent runaway memory usage */
-    return;
+  int x2 = x + w, y2 = y + h;
+
+  /* Skip if already fully covered by an existing rect */
+  for (int i = 0; i < reg->count; i++) {
+    struct rect *r = &reg->rects[i];
+    if (r->x <= x && r->y <= y && r->x + r->w >= x2 && r->y + r->h >= y2)
+      return;
   }
+
+  /* Absorb any existing rects fully covered by the new rect */
+  int j = 0;
+  for (int i = 0; i < reg->count; i++) {
+    struct rect *r = &reg->rects[i];
+    if (!(x <= r->x && y <= r->y && x2 >= r->x + r->w && y2 >= r->y + r->h))
+      reg->rects[j++] = reg->rects[i];
+  }
+  reg->count = j;
+
+  if (reg->count >= MAX_RECTS_PER_REGION)
+    return;
 
   if (reg->count >= reg->capacity) {
     int new_cap = reg->capacity * 2;
     if (new_cap > MAX_RECTS_PER_REGION)
       new_cap = MAX_RECTS_PER_REGION;
 
-    /* Simple realloc equivalent since we don't have krealloc yet */
     struct rect *new_rects =
         (struct rect *)kmalloc(sizeof(struct rect) * new_cap);
     if (new_rects) {
-      /* memcpy */
       for (int i = 0; i < reg->count; i++)
         new_rects[i] = reg->rects[i];
       kfree(reg->rects);
       reg->rects = new_rects;
       reg->capacity = new_cap;
     } else {
-      return; /* Out of memory, drop rect */
+      return;
     }
   }
   reg->rects[reg->count].x = x;
@@ -62,8 +76,6 @@ void region_add_rect(struct region *reg, int x, int y, int w, int h) {
   reg->rects[reg->count].w = w;
   reg->rects[reg->count].h = h;
   reg->count++;
-
-  /* TODO: Merge adjacent rectangles to optimize? */
 }
 
 /* Subtract rect (sub) from region (reg) */

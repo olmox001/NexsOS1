@@ -145,4 +145,7 @@ int ext4_read_file(const char *path, uint8_t *buf, uint32_t size,
 int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size,
                     uint32_t offset);
 
+/* List directory contents */
+int ext4_list_dir(const char *path, char *buf, uint32_t size);
+
 #endif /* _KERNEL_EXT4_H */

@@ -215,32 +215,34 @@ void kfree(void *ptr) {
     return;
 
   uint64_t flags;
-  /* Read header (unsafe if invalid ptr, but standard risk) */
   struct block_header *blk = ((struct block_header *)ptr) - 1;
 
+  /* Acquire lock BEFORE reading magic to prevent SMP double-free race:
+   * two CPUs could both see BLOCK_MAGIC and both proceed to free. */
+  spin_lock_irqsave(&kmalloc_lock, &flags);
+
   if (blk->magic != BLOCK_MAGIC) {
+    spin_unlock_irqrestore(&kmalloc_lock, flags);
     pr_err("kfree: Invalid magic %x at %p\n", blk->magic, ptr);
     return;
   }
 
   if (blk->bucket_idx == 0xFFFFFFFF) {
     /* Large allocation - free pages */
-    /* Recalculate pages */
     size_t total_req = blk->size + sizeof(struct block_header);
     size_t pages = (total_req + 4095) / 4096;
-
-    blk->magic = 0; /* Clear magic */
+    blk->magic = 0;
+    spin_unlock_irqrestore(&kmalloc_lock, flags);
     pmm_free_pages((void *)blk, pages);
     return;
   }
 
   /* Small allocation - return to bucket free list */
   if (blk->bucket_idx >= NUM_BUCKETS) {
+    spin_unlock_irqrestore(&kmalloc_lock, flags);
     pr_err("kfree: Invalid bucket index %d\n", blk->bucket_idx);
     return;
   }
-
-  spin_lock_irqsave(&kmalloc_lock, &flags);
 
   blk->magic = BLOCK_FREE;
   blk->next = buckets[blk->bucket_idx];
@@ -260,22 +262,22 @@ void *krealloc(void *ptr, size_t new_size) {
     return NULL;
   }
 
+  /* Read size while holding lock to avoid race with concurrent kfree */
+  uint64_t flags;
+  spin_lock_irqsave(&kmalloc_lock, &flags);
   struct block_header *blk = ((struct block_header *)ptr) - 1;
-  if (blk->magic != BLOCK_MAGIC)
+  if (blk->magic != BLOCK_MAGIC) {
+    spin_unlock_irqrestore(&kmalloc_lock, flags);
     return NULL;
-
-  /* If it fits in old block (and not shrinking too much to bother), return same
-   */
-  /* Actually with buckets, if new_size matches same bucket, we can keep it. */
-  /* But let's simplify: simple alloc+copy+free */
+  }
+  size_t old_size = blk->size;
+  spin_unlock_irqrestore(&kmalloc_lock, flags);
 
   void *new_ptr = kmalloc(new_size);
   if (!new_ptr)
     return NULL;
 
-  size_t old_size = blk->size;
   size_t copy_size = (old_size < new_size) ? old_size : new_size;
-
   memcpy(new_ptr, ptr, copy_size);
   kfree(ptr);
 

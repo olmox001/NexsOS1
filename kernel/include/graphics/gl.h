@@ -26,7 +26,7 @@ void gl_draw_rect(struct gl_surface *surf, int x, int y, int w, int h,
 void gl_draw_rect_fill(struct gl_surface *surf, int x, int y, int w, int h,
                        uint32_t color);
 void gl_blit(struct gl_surface *dst, struct gl_surface *src, int dx, int dy);
-void gl_draw_char(struct gl_surface *surf, int x, int y, char c,
+void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
                   uint32_t color);
 void gl_draw_string(struct gl_surface *surf, int x, int y, const char *str,
                     uint32_t color);

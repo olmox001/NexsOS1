@@ -34,6 +34,7 @@ int process_load_elf(struct process *proc, const char *path) {
   }
 
   /* 3. Load Segments */
+  uint64_t max_vaddr = 0;
   for (int i = 0; i < ehdr.e_phnum; i++) {
     Elf64_Phdr phdr;
     uint32_t ph_off = ehdr.e_phoff + (i * ehdr.e_phentsize);
@@ -68,6 +69,10 @@ int process_load_elf(struct process *proc, const char *path) {
       /* Allocate Pages for Memory Segment */
       uint64_t start_vpage = phdr.p_vaddr & ~(0xFFF);
       uint64_t end_vpage = (phdr.p_vaddr + phdr.p_memsz + 4095) & ~(0xFFF);
+
+      if (end_vpage > max_vaddr) {
+        max_vaddr = end_vpage;
+      }
 
       for (uint64_t vaddr = start_vpage; vaddr < end_vpage; vaddr += 4096) {
         /* Allocate physical page */
@@ -138,6 +143,9 @@ int process_load_elf(struct process *proc, const char *path) {
       return -1;
     }
   }
+
+  proc->heap_start = max_vaddr;
+  proc->heap_end = max_vaddr;
 
   proc->user_entry = ehdr.e_entry;
   proc->user_stack = stack_base + stack_size;

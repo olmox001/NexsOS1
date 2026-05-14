@@ -76,10 +76,15 @@ char *strncpy(char *dest, const char *src, size_t n) {
   if (!dest || !src || n == 0)
     return dest;
   char *d = dest;
-  while (n && (*d++ = *src++) != '\0')
+  while (n > 0) {
     n--;
-  while (n--)
+    if ((*d++ = *src++) == '\0')
+      break;
+  }
+  while (n > 0) {
+    n--;
     *d++ = '\0';
+  }
   return dest;
 }
 
@@ -271,4 +276,56 @@ void *memchr(const void *s, int c, size_t n) {
 void bzero(void *s, size_t n) {
   if (s)
     memset(s, 0, n);
+}
+
+static int to_lower(int c) {
+  if (c >= 'A' && c <= 'Z')
+    return c + ('a' - 'A');
+  return c;
+}
+
+int strcasecmp(const char *s1, const char *s2) {
+  if (!s1 || !s2)
+    return (s1 == s2) ? 0 : (s1 ? 1 : -1);
+  while (*s1 && *s2) {
+    if (to_lower((unsigned char)*s1) != to_lower((unsigned char)*s2))
+      break;
+    s1++;
+    s2++;
+  }
+  return to_lower((unsigned char)*s1) - to_lower((unsigned char)*s2);
+}
+
+int strncasecmp(const char *s1, const char *s2, size_t n) {
+  if (n == 0)
+    return 0;
+  if (!s1 || !s2)
+    return (s1 == s2) ? 0 : (s1 ? 1 : -1);
+  while (n-- > 1 && *s1 && *s2) {
+    if (to_lower((unsigned char)*s1) != to_lower((unsigned char)*s2))
+      break;
+    s1++;
+    s2++;
+  }
+  return to_lower((unsigned char)*s1) - to_lower((unsigned char)*s2);
+}
+
+int atoi(const char *s) {
+  if (!s)
+    return 0;
+  int res = 0;
+  int sign = 1;
+  while (*s == ' ')
+    s++;
+  if (*s == '-') {
+    sign = -1;
+    s++;
+  } else if (*s == '+') {
+    s++;
+  }
+  while (*s >= '0' && *s <= '9') {
+    res = res * 10 + (*s - '0');
+    s++;
+  }
+  return res * sign;
 }

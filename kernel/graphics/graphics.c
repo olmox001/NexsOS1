@@ -66,10 +66,10 @@ void graphics_swap_buffers(void) {
   arch_mb();
 }
 
-void graphics_draw_char(uint32_t x, uint32_t y, char c, uint32_t color) {
+void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t color) {
   struct gl_surface *surf = graphics_get_screen_surface();
   if (surf) {
-    gl_draw_char(surf, (int)x, (int)y, c, color);
+    gl_draw_char(surf, (int)x, (int)y, codepoint, color);
   }
 }
 

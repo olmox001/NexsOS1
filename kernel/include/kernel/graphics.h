@@ -30,18 +30,21 @@ void graphics_swap_buffers(void);
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                         uint32_t color);
-void graphics_draw_char(uint32_t x, uint32_t y, char c, uint32_t color);
+void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t color);
 void graphics_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
                         uint32_t color);
 void graphics_clear(uint32_t color);
 
 /* Font/String API */
-int graphics_char_width(char c);
+int graphics_char_width(uint32_t codepoint);
 int graphics_string_width(const char *str);
+int utf8_decode(const char *s, uint32_t *code);
 int graphics_font_height(void);
 int graphics_font_ascent(void);
+int graphics_font_max_width(void);
 void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
                           uint32_t color);
+int sys_set_font(void *data, size_t size);
 
 /* 3D Renderer API */
 void render3d_init(uint32_t width, uint32_t height);

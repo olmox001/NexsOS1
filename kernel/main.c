@@ -219,8 +219,8 @@ static void init_scheduler(void) {
   pr_info("%s", "Scheduler: Spawning First-Stage Init...\n");
   struct process *init =
       process_create("init", PROC_PRIO_USER, PROC_PERM_SYSTEM);
-  if (init && process_load_elf(init, "/bin/init") == 0) {
-    pr_info("Scheduler: Initialized PID %d (/init)\n", init->pid);
+  if (init && process_load_elf(init, "/sys/bin/init") == 0) {
+    pr_info("Scheduler: Initialized PID %d (/sys/bin/init)\n", init->pid);
     enqueue_task(init);
   } else {
     panic("Failed to load /init");

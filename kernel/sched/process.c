@@ -253,6 +253,9 @@ struct process *process_create(const char *name, uint8_t priority,
   spin_lock_init(&proc->msg_lock);
   spin_lock_init(&proc->mm_lock);
 
+  /* Filesystem Init */
+  strncpy(proc->cwd, "/", sizeof(proc->cwd));
+
   /* Add to pool */
   process_pool[slot] = proc;
   active_count++;
@@ -303,7 +306,16 @@ void smp_create_idle_task(uint32_t cpu_id) {
   
   if (idle) {
     idle->on_cpu = cpu_id;
-    
+
+    /* Idle tasks are pure kernel threads — they never run user code.
+     * Free the per-process PGD and use NULL: the scheduler and
+     * arch_cpu_switch_context both guard on page_table != NULL, so the
+     * current kernel CR3 stays active when an idle task is scheduled. */
+    if (idle->page_table) {
+      vmm_destroy_pgd(idle->page_table);
+      idle->page_table = NULL;
+    }
+
     /* Ensure we are writing to the correct per-CPU structure */
     struct cpu_info *info = &cpu_data[cpu_id];
     info->idle_task = idle;
@@ -878,4 +890,50 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
   kfree(k_buf);
   return count;
+}
+long sys_sbrk(intptr_t increment) {
+  struct process *proc = current_process;
+  uint64_t old_brk = proc->heap_end;
+  uint64_t new_brk = old_brk + increment;
+
+  if (increment == 0) {
+    return (long)old_brk;
+  }
+
+  if (increment > 0) {
+    /* Map from current end up to new end */
+    uint64_t start_map = (old_brk + 4095) & ~(4095ULL);
+    uint64_t end_map = (new_brk + 4095) & ~(4095ULL);
+
+    for (uint64_t vaddr = start_map; vaddr < end_map; vaddr += 4096) {
+      void *paddr = pmm_alloc_page();
+      if (!paddr) {
+        return -1;
+      }
+      memset(paddr, 0, 4096);
+      if (vmm_map_page_locked(proc, vaddr, (uint64_t)paddr, PAGE_USER) != 0) {
+        pmm_free_page(paddr);
+        return -1;
+      }
+    }
+  } else {
+    /* Shrinking the heap */
+    if (new_brk < proc->heap_start) {
+      return -1;
+    }
+
+    uint64_t start_unmap = (new_brk + 4095) & ~(4095ULL);
+    uint64_t end_unmap = (old_brk + 4095) & ~(4095ULL);
+
+    for (uint64_t vaddr = start_unmap; vaddr < end_unmap; vaddr += 4096) {
+      uint64_t paddr = vmm_get_phys(proc->page_table, vaddr);
+      if (paddr) {
+        vmm_unmap_page_locked(proc, vaddr);
+        pmm_free_page((void *)paddr);
+      }
+    }
+  }
+
+  proc->heap_end = new_brk;
+  return (long)old_brk;
 }

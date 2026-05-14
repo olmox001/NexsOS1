@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include "posix_types.h"
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
@@ -28,6 +29,7 @@
 #define SYS_WINDOW_BLIT        213
 #define SYS_WINDOW_SET_FLAGS   214
 #define SYS_DESTROY_WINDOW     215
+#define SYS_SBRK               216
 #define SYS_SPAWN              220
 #define SYS_KILL               221
 #define SYS_GETPROCS           222
@@ -36,21 +38,14 @@
 #define SYS_RECV               231
 #define SYS_WAIT               247
 #define SYS_REGISTRY           250
+#define SYS_FILE_WRITE         251
+#define SYS_FILE_READ          252
+#define SYS_SET_FONT           253
+#define SYS_LIST_DIR           254
+#define SYS_CHDIR              255
+#define SYS_GETCWD             256
 
 /* --- Data Structures --- */
-
-/* IPC message structure */
-#define IPC_TYPE_RAW     0
-#define IPC_TYPE_INPUT   1
-#define IPC_TYPE_NOTIFY  0x100
-
-struct ipc_message {
-    int from;
-    int type;
-    uint64_t data1;
-    uint64_t data2;
-    char payload[64];
-};
 
 /* Process information for diagnostics */
 struct ps_info {
@@ -82,12 +77,16 @@ extern void _sys_window_draw(int win_id, int x, int y, int w, int h, unsigned in
 extern void _sys_window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf);
 extern void _sys_compositor_render(void);
 extern void _sys_window_set_flags(int win_id, int flags);
+extern void* _sys_sbrk(intptr_t increment);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
 extern long _sys_get_procs(void *procs, size_t max_count);
 extern int  _sys_file_write(const char *path, const void *buf, int size, int offset);
 extern int  _sys_file_read(const char *path, void *buf, int size, int offset);
 extern int  _sys_send(int pid, struct ipc_message *msg);
 extern int  _sys_recv(int pid, struct ipc_message *msg);
+extern int  _sys_list_dir(const char *path, char *buf, size_t size);
+extern int  _sys_chdir(const char *path);
+extern int  _sys_getcwd(char *buf, size_t size);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
@@ -99,7 +98,14 @@ int  spawn(const char *path);
 int  kill_process(int pid);
 int  wait(int pid);
 void yield(void);
+int utf8_decode(const char *s, uint32_t *code);
 void sleep(int ticks);
+
+void *sbrk(intptr_t increment);
+void *malloc(size_t size);
+void  free(void *ptr);
+void *realloc(void *ptr, size_t size);
+void *calloc(size_t nmemb, size_t size);
 
 /* IPC API */
 int send(int pid, struct ipc_message *msg);
@@ -121,20 +127,24 @@ void flush(void);
 /* Registry API */
 int registry_read(const char *key, char *buf, size_t size);
 int registry_write(const char *key, const char *value);
+int set_font(void *data, size_t size);
 
 /* Filesystem Helpers */
 int file_write(const char *path, const void *buf, int size, int offset);
 int file_read(const char *path, void *buf, int size, int offset);
+int list_dir(const char *path, char *buf, size_t size);
+int chdir(const char *path);
+int getcwd(char *buf, size_t size);
 
 /* Formatting & Printing */
 void print(const char *s);
 void print_hex(unsigned long val);
-void printf(const char *fmt, ...);
+int  printf(const char *fmt, ...);
 void printf_win(int win_id, const char *fmt, ...);
-void sprintf(char *out, const char *fmt, ...);
-void snprintf(char *out, size_t size, const char *fmt, ...);
-int vsnprintf(char *out, size_t size, const char *fmt, va_list args);
-void vsprintf(char *out, const char *fmt, va_list args);
+int  sprintf(char *out, const char *fmt, ...);
+int  snprintf(char *out, size_t size, const char *fmt, ...);
+int  vsnprintf(char *out, size_t size, const char *fmt, va_list args);
+int  vsprintf(char *out, const char *fmt, va_list args);
 
 /* Fixed-point Math */
 int32_t fixmul(int32_t a, int32_t b);
@@ -142,7 +152,12 @@ int32_t sin_fp(int32_t x);
 int32_t cos_fp(int32_t x);
 int32_t lerp_fp(int32_t a, int32_t b, int32_t t);
 void *memset(void *s, int c, size_t n);
+void *memcpy(void *dest, const void *src, size_t n);
 size_t strlen(const char *s);
+char *strncpy(char *dest, const char *src, size_t n);
+int strncmp(const char *s1, const char *s2, size_t n);
+int strcasecmp(const char *s1, const char *s2);
+int atoi(const char *s);
 
 /* Standard I/O */
 int   getchar(void);
@@ -158,5 +173,7 @@ char *gets(char *s, int size);
 int sin_fp(int x);
 int cos_fp(int x);
 int fixmul(int a, int b);
+
+void __stack_chk_fail(void);
 
 #endif /* _OS1_API_H */

@@ -142,6 +142,7 @@ typedef struct {
 #define IPC_TYPE_RAW 0
 #define IPC_TYPE_INPUT 1
 #define IPC_TYPE_NOTIFY 0x100
+#define IPC_TYPE_MOUSE 4
 
 /* IPC message structure */
 struct ipc_message {

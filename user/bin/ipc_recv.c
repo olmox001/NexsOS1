@@ -1,7 +1,5 @@
 #include <os1.h>
 
-#include <os1.h>
-
 int main(void) {
   int win = create_window(50, 500, 300, 100, "IPC Recv");
   if (win <= 0)
