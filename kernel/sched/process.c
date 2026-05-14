@@ -303,7 +303,16 @@ void smp_create_idle_task(uint32_t cpu_id) {
   
   if (idle) {
     idle->on_cpu = cpu_id;
-    
+
+    /* Idle tasks are pure kernel threads — they never run user code.
+     * Free the per-process PGD and use NULL: the scheduler and
+     * arch_cpu_switch_context both guard on page_table != NULL, so the
+     * current kernel CR3 stays active when an idle task is scheduled. */
+    if (idle->page_table) {
+      vmm_destroy_pgd(idle->page_table);
+      idle->page_table = NULL;
+    }
+
     /* Ensure we are writing to the correct per-CPU structure */
     struct cpu_info *info = &cpu_data[cpu_id];
     info->idle_task = idle;

@@ -1,0 +1,584 @@
+x86_64-elf-ld: warning: build/amd64/bootloader.elf has a LOAD segment with RWX permissions
+x86_64-elf-ld: build/amd64/kernel.elf: warning: allocated section `.note.PVH' not in segment
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/am_map.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/am_map.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/doomdef.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/doomdef.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/doomstat.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/doomstat.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/dstrings.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/dstrings.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_event.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_event.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_items.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_items.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_iwad.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_iwad.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_loop.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_loop.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_main.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_main.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_mode.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_mode.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_net.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_net.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/f_finale.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/f_finale.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/f_wipe.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/f_wipe.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/g_game.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/g_game.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/hu_lib.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/hu_lib.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/hu_stuff.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/hu_stuff.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/info.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/info.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_cdmus.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_cdmus.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_endoom.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_endoom.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_joystick.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_joystick.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_scale.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_scale.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_sound.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_sound.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_system.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_system.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_timer.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_timer.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/memio.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/memio.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_argv.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_argv.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_bbox.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_bbox.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_cheat.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_cheat.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_config.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_config.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_controls.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_controls.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_fixed.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_fixed.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_menu.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_menu.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_misc.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_misc.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_random.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_random.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_ceilng.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_ceilng.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_doors.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_doors.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_enemy.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_enemy.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_floor.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_floor.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_inter.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_inter.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_lights.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_lights.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_map.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_map.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_maputl.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_maputl.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_mobj.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_mobj.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_plats.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_plats.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_pspr.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_pspr.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_saveg.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_saveg.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_setup.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_setup.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_sight.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_sight.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_spec.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_spec.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_switch.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_switch.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_telept.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_telept.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_tick.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_tick.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_user.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_user.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_bsp.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_bsp.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_data.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_data.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_draw.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_draw.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_main.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_main.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_plane.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_plane.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_segs.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_segs.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_sky.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_sky.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_things.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_things.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/sha1.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/sha1.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/sounds.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/sounds.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/statdump.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/statdump.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/st_lib.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/st_lib.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/st_stuff.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/st_stuff.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/s_sound.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/s_sound.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/tables.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/tables.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/v_video.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/v_video.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/wi_stuff.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/wi_stuff.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_checksum.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_checksum.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_file.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_file.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_main.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_main.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_wad.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_wad.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/z_zone.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/z_zone.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_file_stdc.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_file_stdc.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_input.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_input.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_video.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_video.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/doomgeneric.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/doomgeneric.o
+mkdir -p build/amd64/user/bin/doomgeneric-master/doomgeneric/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/dummy.c -o build/amd64/user/bin/doomgeneric-master/doomgeneric/dummy.o
+mkdir -p build/amd64/user/bin/
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric_os1.c -o build/amd64/user/bin/doomgeneric_os1.o
+echo "[Linking Doom]"
+[Linking Doom]
+x86_64-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AMD64 -mno-red-zone -mcmodel=large -Ikernel/include -Ikernel/arch/amd64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Wl,-Ttext=0x80000000 -e _start -o build/amd64/doom.elf build/amd64/user/bin/doomgeneric-master/doomgeneric/am_map.o build/amd64/user/bin/doomgeneric-master/doomgeneric/doomdef.o build/amd64/user/bin/doomgeneric-master/doomgeneric/doomstat.o build/amd64/user/bin/doomgeneric-master/doomgeneric/dstrings.o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_event.o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_items.o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_iwad.o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_loop.o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_main.o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_mode.o build/amd64/user/bin/doomgeneric-master/doomgeneric/d_net.o build/amd64/user/bin/doomgeneric-master/doomgeneric/f_finale.o build/amd64/user/bin/doomgeneric-master/doomgeneric/f_wipe.o build/amd64/user/bin/doomgeneric-master/doomgeneric/g_game.o build/amd64/user/bin/doomgeneric-master/doomgeneric/hu_lib.o build/amd64/user/bin/doomgeneric-master/doomgeneric/hu_stuff.o build/amd64/user/bin/doomgeneric-master/doomgeneric/info.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_cdmus.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_endoom.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_joystick.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_scale.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_sound.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_system.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_timer.o build/amd64/user/bin/doomgeneric-master/doomgeneric/memio.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_argv.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_bbox.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_cheat.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_config.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_controls.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_fixed.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_menu.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_misc.o build/amd64/user/bin/doomgeneric-master/doomgeneric/m_random.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_ceilng.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_doors.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_enemy.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_floor.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_inter.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_lights.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_map.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_maputl.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_mobj.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_plats.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_pspr.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_saveg.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_setup.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_sight.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_spec.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_switch.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_telept.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_tick.o build/amd64/user/bin/doomgeneric-master/doomgeneric/p_user.o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_bsp.o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_data.o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_draw.o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_main.o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_plane.o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_segs.o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_sky.o build/amd64/user/bin/doomgeneric-master/doomgeneric/r_things.o build/amd64/user/bin/doomgeneric-master/doomgeneric/sha1.o build/amd64/user/bin/doomgeneric-master/doomgeneric/sounds.o build/amd64/user/bin/doomgeneric-master/doomgeneric/statdump.o build/amd64/user/bin/doomgeneric-master/doomgeneric/st_lib.o build/amd64/user/bin/doomgeneric-master/doomgeneric/st_stuff.o build/amd64/user/bin/doomgeneric-master/doomgeneric/s_sound.o build/amd64/user/bin/doomgeneric-master/doomgeneric/tables.o build/amd64/user/bin/doomgeneric-master/doomgeneric/v_video.o build/amd64/user/bin/doomgeneric-master/doomgeneric/wi_stuff.o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_checksum.o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_file.o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_main.o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_wad.o build/amd64/user/bin/doomgeneric-master/doomgeneric/z_zone.o build/amd64/user/bin/doomgeneric-master/doomgeneric/w_file_stdc.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_input.o build/amd64/user/bin/doomgeneric-master/doomgeneric/i_video.o build/amd64/user/bin/doomgeneric-master/doomgeneric/doomgeneric.o build/amd64/user/bin/doomgeneric-master/doomgeneric/dummy.o build/amd64/user/bin/doomgeneric_os1.o build/amd64/user/lib/lib.o build/amd64/user/arch/amd64/syscall.o build/amd64/user/lib/malloc.o
+Ext4: Added build/amd64/rootfs/doom.wad (Ino 11, 11159840 bytes, 2725 data, 4 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/ipc_send (Ino 16, 74800 bytes, 19 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/init (Ino 17, 73352 bytes, 18 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/doom.wad (Ino 18, 11159840 bytes, 2725 data, 4 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/regedit (Ino 19, 73296 bytes, 18 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/shell (Ino 20, 87584 bytes, 22 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/ipc_recv (Ino 21, 72976 bytes, 18 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/crash (Ino 22, 71568 bytes, 18 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/demo3d (Ino 23, 90040 bytes, 22 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/doom (Ino 24, 1929176 bytes, 471 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/writetest (Ino 25, 73224 bytes, 18 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/counter (Ino 26, 73024 bytes, 18 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/notify_srv (Ino 27, 73808 bytes, 19 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/doom2.wad (Ino 28, 14604584 bytes, 3566 data, 5 meta blocks)
+Ext4: Added build/amd64/rootfs/bin/doom1.wad (Ino 29, 4196020 bytes, 1025 data, 1 meta blocks)
+Ext4: Added build/amd64/rootfs/etc/init.cfg (Ino 30, 189 bytes, 1 data, 0 meta blocks)
+Ext4: Added build/amd64/rootfs/doom2.wad (Ino 14, 14604584 bytes, 3566 data, 5 meta blocks)
+Ext4: Added build/amd64/rootfs/doom1.wad (Ino 15, 4196020 bytes, 1025 data, 1 meta blocks)
+
+Build complete for amd64!
+  Disk Image: build/amd64/disk.img
+  Kernel:     build/amd64/kernel.elf
+--> Building amd64 release...
+/usr/local/bin/i686-elf-grub-mkrescue -o release/V9.9.9/amd64/os1test-amd64-V9.9.9.iso release/V9.9.9/amd64/iso \
+		-- -append_partition 2 0x83 build/amd64/userland.img
+GNU xorriso 1.5.8.pl01 : RockRidge filesystem manipulator, libburnia project.
+
+Drive current: -outdev 'stdio:release/V9.9.9/amd64/os1test-amd64-V9.9.9.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data, 51.8g free
+Added to ISO image: directory '/'='/var/folders/tq/_vyjv8rj0gq0rjq6f_cxw4vw0000gn/T/grub.9STFNI'
+xorriso : UPDATE :     332 files added in 1 seconds
+Added to ISO image: directory '/'='/Users/olmo/Documents/git/ostest1/os1test-dev/release/V9.9.9/amd64/iso'
+xorriso : UPDATE :     336 files added in 1 seconds
+xorriso : NOTE : Copying to System Area: 512 bytes from file '/usr/local/Cellar/i686-elf-grub/2.12/lib/i686-elf/grub/i386-pc/boot_hybrid.img'
+xorriso : UPDATE :  98.98% done
+ISO image produced: 44745 sectors
+Written to medium : 44745 sectors at LBA 0
+Writing to 'stdio:release/V9.9.9/amd64/os1test-amd64-V9.9.9.iso' completed successfully.
+
+✓ AMD64 Hybrid ISO: release/V9.9.9/amd64/os1test-amd64-V9.9.9.iso
+Starting QEMU Release Test for amd64 (Version: V9.9.9)...
+qemu-system-x86_64 -m 3G -smp 8 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-pci,disable-legacy=on,disable-modern=off -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off -device virtio-mouse-pci,disable-legacy=on,disable-modern=off \
+		-drive if=none,file=release/V9.9.9/amd64/os1test-amd64-V9.9.9.iso,id=hd0,format=raw \
+		-device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
+CEFG[C0] [INFO] Console driver initialized
+[C0] 
+[C0] ========================================
+[C0]   AMD64 Microkernel v0.1.0
+[C0]   Production-Ready Microkernel
+[C0] ========================================
+[C0] 
+[C0] 
+[KTEST] Starting Kernel Unit Tests (3 cases found)...
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 3 PASSED, 0 FAILED
+
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] CPU: Initializing GDT...
+[C0] [INFO] GDT: Loading GDTR...
+[C0] [INFO] GDT: Loading TSS...
+[C0] [INFO] GDT: Done
+[C0] [INFO] CPU: Initializing IDT...
+[C0] [INFO] CPU: Initializing Syscall...
+[C0] [INFO] AMD64 MSR SYSCALL configured
+[C0] [INFO] CPU: Initializing LAPIC...
+L[C0] [INFO] AMD64: LAPIC 0 initialized at 0xfee00000
+[C0] [INFO] AMD64 CPU 0 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C0] [INFO] AMD64 Platform Initialization (Magic: 0x36d76289, Info: 0x9f0170)
+[C0] [INFO] IRQ: Registered chip 8259 PIC
+[C0] [INFO] PIC Initialized and remapped to 32-47.
+[C0] [INFO] Initializing IRQ...
+[C0] [INFO] IRQ: Registered chip 8259 PIC
+[C0] [INFO] PIC Initialized and remapped to 32-47.
+[C0] [INFO] IRQ driver initialized via HAL
+[C0] [INFO] Initializing timer...
+[C0] [INFO] HAL: Initializing global timer state (LAPIC calibration)
+[C0] [INFO] LAPIC: Calibrating timer against PIT...
+[C0] [INFO] LAPIC: Timer calibrated: 62400 ticks per ms
+[C0] [INFO] Timer driver initialized via HAL
+[C0] [INFO] LAPIC: CPU 0 timer started at 100 Hz (624000 ticks/interval)
+[C0] [INFO] Initializing memory...
+[C0] [INFO] PMM: Metadata initialized at 0x932000 (24672 KB)
+[C0] [INFO] PMM: Total detected RAM: 3071 MB
+[C0] [INFO] PMM: 3071 MB total, 3039 MB free (Safety Margin Enabled)
+[C0] [INFO] PMM: DMA zone: 239 pages, Normal zone: 777875 pages
+[C0] [INFO] VMM: Initializing MMU (Phase 1: Bootstrap)...
+[C0] [INFO] AMD64 VMM: Switched to kernel PGD at 0x000000000214a000
+[C0] [INFO] AMD64 VMM: Identity mapping RAM 0x0 - 0x9fc00
+[C0] [INFO] AMD64 VMM: Identity mapping RAM 0x100000 - 0xbffdd000
+[C0] [INFO] VMM: Bootstrap complete.
+[C0] [INFO] VMM: Performing RAM-aware dynamic remapping...
+[C0] [INFO] VMM: Mapping region 0x0 - 0x9fc00
+[C0] [INFO] VMM: Mapping region 0x100000 - 0xbffdd000
+[C0] [INFO] VMM: Dynamic remapping successful. All discovered RAM is now accessible.
+[C0] [INFO] HAL: Initializing Bus Manager...
+[C0] [INFO] HAL: Scanning PCI Bus...
+[C0] [INFO] HAL: Registered device 'PCI-8086:1237' (Bus=1, ID=8086:1237, Base=0x0, IRQ=32)
+[C0] [INFO] HAL: Registered device 'PCI-8086:7000' (Bus=1, ID=8086:7000, Base=0x0, IRQ=32)
+[C0] [INFO] HAL: Registered device 'PCI-1234:1111' (Bus=1, ID=1234:1111, Base=0xfd000000, IRQ=32)
+[C0] [INFO] HAL: Registered device 'PCI-8086:100e' (Bus=1, ID=8086:100e, Base=0xfebc0000, IRQ=43)
+[C0] [INFO] HAL: Registered device 'VirtIO-4176' (Bus=1, ID=1af4:0010, Base=0xfe000000, IRQ=43)
+[C0] [INFO] HAL: Registered device 'VirtIO-4178' (Bus=1, ID=1af4:0012, Base=0xfe004000, IRQ=42)
+[C0] [INFO] HAL: Registered device 'VirtIO-4178' (Bus=1, ID=1af4:0012, Base=0xfe008000, IRQ=42)
+[C0] [INFO] HAL: Registered device 'VirtIO-4162' (Bus=1, ID=1af4:0002, Base=0xfe00c000, IRQ=43)
+[C0] [INFO] VirtIO: Found Modern device (PCI) at Common=0xfe000000, ISR=0xfe001000, ID 16
+[C0] [INFO] VirtIO: Found Modern device (PCI) at Common=0xfe004000, ISR=0xfe005000, ID 18
+[C0] [INFO] VirtIO: Found Modern device (PCI) at Common=0xfe008000, ISR=0xfe009000, ID 18
+[C0] [INFO] VirtIO: Found Modern device (PCI) at Common=0xfe00c000, ISR=0xfe00d000, ID 2
+[C0] [INFO] VirtIO: Probing for block device...
+[C0] [INFO] VirtIO: Found Block Device (IRQ 43)
+[C0] [INFO] VirtIO: Version 2
+[C0] [INFO] VirtIO: Block Device Initialized successfully
+[C0] [INFO] VirtIO-GPU: Probing...
+[C0] [INFO] VirtIO-GPU: Found device (IRQ 43)
+[C0] [INFO] kmalloc: Initialized bucket allocator. Heap: 32 MB at 0x00000000021bb000
+[C0] [INFO] GPU: Primary device set to VirtIO-GPU
+[C0] [INFO] GPU: Registered VirtIO-GPU
+[C0] [INFO] VirtIO-GPU: Done.
+[C0] [INFO] Graphics: Initialized via HAL (720x1280)
+[C0] [INFO] Partition: Initializing...
+[C0] [INFO] GPT: Invalid signature. Falling back to MBR...
+[C0] [INFO] MBR: Valid signature found. Scanning partitions...
+[C0] [INFO] MBR: Partition 1: Type=0xcd, Start=1, Size=16619 sectors
+[C0] [INFO] MBR: Partition 2: Type=0x83, Start=16620, Size=161760 sectors
+[C0] [INFO] GPT: Done.
+[C0] [INFO] BufferCache: Initializing...
+[C0] [INFO] Buffer: Done.
+[C0] [INFO] Ext4: Found partition at LBA 16620
+[C0] [INFO] Ext4: Mounted. Vol=, Inodes=1024
+[C0] [INFO] Ext4: Group 0: Inode Table at Block 4
+[C0] [INFO] Ext4: Done.
+[C0] [INFO] VirtIO-Input: Probing devices...
+[C0] [INFO] PIC: Unmasking IRQ 2
+[C0] [INFO] Keyboard: Initialized
+[C0] [INFO] Registry: Initialized with 3 default keys.
+[C0] [INFO] Registry: Initialized.
+[C0] [INFO] Initializing processes...
+[C0] [INFO] Process: Initializing scheduler subsystem...
+[C0] [INFO] Initializing scheduler...
+[C0] [INFO] Scheduler: Initializing...
+[C0] [INFO] Compositor: Initialized
+[C0] [INFO] Scheduler: Spawning First-Stage Init...
+[C0] [INFO] Process: Creating 'init' (Prio=2)
+[C0] [INFO] process_create: 'init' PID=1 slot=0 Prio=2 PageTable=0x00000000048d0000
+[C0] [INFO] process_create: PID 1 context allocated at 0x0000000004902f50 (kstack=4903000)
+[C0] [INFO] ELF: Mapping Segment at 0x7ffff000 (FileSz: 0x4d60, MemSz: 0x4d60)
+[C0] [INFO] ELF: Mapping Segment at 0x80004d60 (FileSz: 0x8, MemSz: 0x18)
+[C0] [INFO] Scheduler: Initialized PID 1 (/init)
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=2 slot=1 Prio=31 PageTable=0x0000000004a0f000
+[C0] [INFO] process_create: PID 2 context allocated at 0x0000000004a41f50 (kstack=4a42000)
+[C0] [INFO] Waking secondary CPUs...
+[C0] [INFO] AMD64: Initializing SMP (BSP ID: 0)
+[C0] [INFO] AMD64: CPUID reports 8 logical processors
+[C0] [INFO] AMD64: Starting SMP initialization for 8 potential cores
+[C0] [INFO] AMD64: Sent INIT-SIPI to CPU 1
+S[C1] [INFO] CPU: Initializing GDT...
+[C1] [INFO] GDT: Loading GDTR...
+[C1] [INFO] GDT: Loading TSS...
+[C1] [INFO] GDT: Done
+[C1] [INFO] CPU: Initializing IDT...
+[C1] [INFO] CPU: Initializing Syscall...
+[C1] [INFO] AMD64 MSR SYSCALL configured
+[C1] [INFO] CPU: Initializing LAPIC...
+L[C1] [INFO] AMD64: LAPIC 1 initialized at 0xfee00000
+[C1] [INFO] AMD64 CPU 1 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C1] [INFO] CPU: Initializing GDT...
+[C1] [INFO] GDT: Loading GDTR...
+[C1] [INFO] GDT: Loading TSS...
+[C1] [INFO] GDT: Done
+[C1] [INFO] CPU: Initializing IDT...
+[C1] [INFO] CPU: Initializing Syscall...
+[C1] [INFO] AMD64 MSR SYSCALL configured
+[C1] [INFO] CPU: Initializing LAPIC...
+L[C1] [INFO] AMD64: LAPIC 1 initialized at 0xfee00000
+[C1] [INFO] AMD64 CPU 1 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C1] [INFO] LAPIC: CPU 1 timer started at 100 Hz (624000 ticks/interval)
+[C1] [INFO] Secondary CPU 1 online and ready
+[C0] [INFO] AMD64: CPU 1 is online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=3 slot=2 Prio=31 PageTable=0x0000000004a43000
+[C0] [INFO] process_create: PID 3 context allocated at 0x0000000004a75f50 (kstack=4a76000)
+[C0] [INFO] AMD64: Sent INIT-SIPI to CPU 2
+S[C2] [INFO] CPU: Initializing GDT...
+[C2] [INFO] GDT: Loading GDTR...
+[C2] [INFO] GDT: Loading TSS...
+[C2] [INFO] GDT: Done
+[C2] [INFO] CPU: Initializing IDT...
+[C2] [INFO] CPU: Initializing Syscall...
+[C2] [INFO] AMD64 MSR SYSCALL configured
+[C2] [INFO] CPU: Initializing LAPIC...
+L[C2] [INFO] AMD64: LAPIC 2 initialized at 0xfee00000
+[C2] [INFO] AMD64 CPU 2 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C2] [INFO] CPU: Initializing GDT...
+[C2] [INFO] GDT: Loading GDTR...
+[C2] [INFO] GDT: Loading TSS...
+[C2] [INFO] GDT: Done
+[C2] [INFO] CPU: Initializing IDT...
+[C2] [INFO] CPU: Initializing Syscall...
+[C2] [INFO] AMD64 MSR SYSCALL configured
+[C2] [INFO] CPU: Initializing LAPIC...
+L[C2] [INFO] AMD64: LAPIC 2 initialized at 0xfee00000
+[C2] [INFO] AMD64 CPU 2 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C2] [INFO] LAPIC: CPU 2 timer started at 100 Hz (624000 ticks/interval)
+[C2] [INFO] Secondary CPU 2 online and ready
+[C0] [INFO] AMD64: CPU 2 is online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[Init] System Initialization Starting...
+[Init] Spawning Notification Server...
+[C1] [INFO] Process: Creating '/bin/notify_srv' (Prio=2)
+[C0] [INFO] process_create: 'idle' PID=4 slot=3 Prio=31 PageTable=0x0000000004a77000
+[C0] [INFO] process_create: PID 4 context allocated at 0x0000000004ab6f50 (kstack=4ab7000)
+[C1] [INFO] process_create: '/bin/notify_srv' PID=5 slot=4 Prio=2 PageTable=0x0000000004a83000
+[C1] [INFO] process_create: PID 5 context allocated at 0x0000000004addf50 (kstack=4ade000)
+[C1] [INFO] ELF: Mapping Segment at 0x7ffff000 (FileSz: 0x4ca0, MemSz: 0x4ca0)
+[C0] [INFO] AMD64: Sent INIT-SIPI toS CPU 3
+[C3] [INFO] CPU: Initializing GDT...
+[C3] [INFO] GDT: Loading GDTR...
+[C3] [INFO] GDT: Loading TSS...
+[C3] [INFO] GDT: Done
+[C3] [INFO] CPU: Initializing IDT...
+[C3] [INFO] CPU: Initializing Syscall...
+[C3] [INFO] AMD64 MSR SYSCALL configured
+[C3] [INFO] CPU: Initializing LAPIC...
+L[C3] [INFO] AMD64: LAPIC 3 initialized at 0xfee00000
+[C3] [INFO] AMD64 CPU 3 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C3] [INFO] CPU: Initializing GDT...
+[C3] [INFO] GDT: Loading GDTR...
+[C3] [INFO] GDT: Loading TSS...
+[C3] [INFO] GDT: Done
+[C3] [INFO] CPU: Initializing IDT...
+[C3] [INFO] CPU: Initializing Syscall...
+[C3] [INFO] AMD64 MSR SYSCALL configured
+[C3] [INFO] CPU: Initializing LAPIC...
+L[C3] [INFO] AMD64: LAPIC 3 initialized at 0xfee00000
+[C3] [INFO] AMD64 CPU 3 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C3] [INFO] LAPIC: CPU 3 timer started at 100 Hz (624000 ticks/interval)
+[C3] [INFO] Secondary CPU 3 online and ready
+[C0] [INFO] AMD64: CPU 3 is online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C1] [INFO] ELF: Mapping Segment at 0x80004ca0 (FileSz: 0x8, MemSz: 0x18)
+[Init] Notification Server started (PID 5)
+[Init] Spawning Shell...
+[C1] [INFO] Process: Creating '/bin/shell' (Prio=2)
+[C0] [INFO] process_create: 'idle' PID=6 slot=5 Prio=31 PageTable=0x0000000004ae8000
+[C0] [INFO] process_create: PID 6 context allocated at 0x0000000004c21f50 (kstack=4c22000)
+[C1] [INFO] process_create: '/bin/shell' PID=7 slot=6 Prio=2 PageTable=0x0000000004bfe000
+[C3] [ERROR] 
+[C3] PAGE FAULT: Access to 0x10000006b
+[C1] [INFO] process_create: PID 7 context allocated at 0x0000000004c50f50 (kstack=4c51000)
+[C3] [ERROR] Error Code: 0x0 (P:0, W:0, U:0, R:0, I:0)
+[C3] [ERROR] RIP: 000000000010fc58 CS: 08 RFLAGS: 0000000000010006
+[C0] [INFO] AMD64: SentS INIT-SIPI to CPU 4
+[C4] [INFO] CPU: Initializing GDT...
+[C3] [ERROR] RAX: 00000000ffffffff RBX: 0000000000000000 RCX: 0000000000928434 RDX: 00000000009306c0
+[C4] [INFO] GDT: Loading GDTR...
+[C3] [ERROR] RSI: 00000000ffffffff RDI: 00000000ffffffff RBP: 00000000001c1ee0 RSP: 00000000001c1e90
+[C4] [INFO] GDT: Loading TSS...
+[C3] [ERROR] R8:  000000000092edb0 R9:  0000000000000046 R10: 0000000000000000 R11: 00000000ffffffff
+[C2] [INFO] Compositor: Created window 'Notifiche' (250x60) at (460,10)
+[C3] [ERROR] R12: 0000000000934e20 R13: 0000000000000000 R14: 0000000100000003 R15: 0000000000000000
+[C4] [INFO] GDT: Done
+[C4] [INFO] CPU: Initializing IDT...
+[C3] [ERROR] Vector: 14, Error Code: 0
+[C4] [INFO] CPU: Initializing Syscall...
+[C4] [INFO] AMD64 MSR SYSCALL configured
+[C4] [INFO] CPU: Initializing LAPIC...
+L[C4] [INFO] AMD64: LAPIC 4 initialized at 0xfee00000
+[C4] [INFO] AMD64 CPU 4 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C4] [INFO] CPU: Initializing GDT...
+[C4] [INFO] GDT: Loading GDTR...
+[C4] [INFO] GDT: Loading TSS...
+[C4] [INFO] GDT: Done
+[C4] [INFO] CPU: Initializing IDT...
+[C4] [INFO] CPU: Initializing Syscall...
+[C4] [INFO] AMD64 MSR SYSCALL configured
+[C4] [INFO] CPU: Initializing LAPIC...
+L[C4] [INFO] AMD64: LAPIC 4 initialized at 0xfee00000
+[C4] [INFO] AMD64 CPU 4 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C4] [INFO] LAPIC: CPU 4 timer started at 100 Hz (624000 ticks/interval)
+[C4] [INFO] Secondary CPU 4 online and ready
+[C1] [INFO] ELF: Mapping Segment at 0x7ffff000 (FileSz: 0x5e90, MemSz: 0x5e90)
+[C0] [INFO] AMD64: CPU 4 is online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C1] [INFO] ELF: Mapping Segment at 0x80005e90 (FileSz: 0x10, MemSz: 0xc0)
+[C0] [INFO] process_create: 'idle' PID=8 slot=7 Prio=31 PageTable=0x0000000004c55000
+[C0] [INFO] process_create: PID 8 context allocated at 0x0000000004cd2f50 (kstack=4cd3000)
+[Init] Shell started (PID 7)
+[C4] [ERROR] 
+[C4] PAGE FAULT: Access to 0x10000006b
+[C4] [ERROR] Error Code: 0x0 (P:0, W:0, U:0, R:0, I:0)
+[C4] [ERROR] RIP: 000000000010fc58 CS: 08 RFLAGS: 0000000000010006
+[C4] [ERROR] RAX: 00000000ffffffff RBX: 0000000000000000 RCX: 0000000000928434 RDX: 00000000009362c4
+[C4] [ERROR] RSI: 0000000000118999 RDI: 00000000ffffffff RBP: 00000000001e1ee0 RSP: 00000000001e1e90
+[C4] [ERROR] R8:  000000000092edb0 R9:  0000000000000046 R10: 00000000001e1f20 R11: 00000000ffffffff
+[C4] [ERROR] R12: 0000000000936080 R13: 0000000000000000 R14: 0000000100000003 R15: 0000000000000000
+[C4] [ERROR] Vector: 14, Error Code: 0
+[C0] [INFO] AMDS64: Sent INIT-SIPI to CPU 5
+[C5] [INFO] CPU: Initializing GDT...
+[C5] [INFO] GDT: Loading GDTR...
+[C5] [INFO] GDT: Loading TSS...
+[C5] [INFO] GDT: Done
+[C5] [INFO] CPU: Initializing IDT...
+[C5] [INFO] CPU: Initializing Syscall...
+[C5] [INFO] AMD64 MSR SYSCALL configured
+[C5] [INFO] CPU: Initializing LAPIC...
+L[C5] [INFO] AMD64: LAPIC 5 initialized at 0xfee00000
+[C5] [INFO] AMD64 CPU 5 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C5] [INFO] CPU: Initializing GDT...
+[C5] [INFO] GDT: Loading GDTR...
+[C5] [INFO] GDT: Loading TSS...
+[C5] [INFO] GDT: Done
+[C5] [INFO] CPU: Initializing IDT...
+[C5] [INFO] CPU: Initializing Syscall...
+[C5] [INFO] AMD64 MSR SYSCALL configured
+[C5] [INFO] CPU: Initializing LAPIC...
+L[C5] [INFO] AMD64: LAPIC 5 initialized at 0xfee00000
+[C5] [INFO] AMD64 CPU 5 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C5] [INFO] LAPIC: CPU 5 timer started at 100 Hz (624000 ticks/interval)
+[C5] [INFO] Secondary CPU 5 online and ready
+[C0] [INFO] AMD64: CPU 5 is online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=9 slot=8 Prio=31 PageTable=0x0000000004d92000
+[C0] [INFO] process_create: PID 9 context allocated at 0x0000000004dc4f50 (kstack=4dc5000)
+[C5] [ERROR] 
+[C5] PAGE FAULT: Access to 0x10000006b
+[C5] [ERROR] Error Code: 0x0 (P:0, W:0, U:0, R:0, I:0)
+[C5] [ERROR] RIP: 000000000010fc58 CSS: 08 RFLAGS: 0000000000010006
+[C5] [ERROR] RAX: 00000000ffffffff RBX: 0000000000000000 RCX: 0000000000928434 RDX: 0000000000937524
+[C5] [ERROR] RSI: 0000000000118999 RDI: 00000000ffffffff RBP: 0000000000201ee0 RSP: 0000000000201e90
+[C6] [INFO] CPU: Initializing GDT...
+[C5] [ERROR] R8:  000000000092edb0 R9:  0000000000000046 R10: 0000000000201f20 R11: 00000000ffffffff
+[C5] [ERROR] R12: 00000000009372e0 R13: 0000000000000000 R14: 0000000100000003 R15: 0000000000000000
+[C6] [INFO] GDT: Loading GDTR...
+[C6] [INFO] GDT: Loading TSS...
+[C6] [INFO] GDT: Done
+[C0] [INFO] AMD64: Sent INIT-SIPI to CPU 6
+[C6] [INFO] CPU: Initializing IDT...
+[C6] [INFO] CPU: Initializing Syscall...
+[C5] [ERROR] Vector: 14, Error Code: 0
+[C6] [INFO] AMD64 MSR SYSCALL configured
+[C6] [INFO] CPU: Initializing LAPIC...
+L[C6] [INFO] AMD64: LAPIC 6 initialized at 0xfee00000
+[C6] [INFO] AMD64 CPU 6 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C6] [INFO] CPU: Initializing GDT...
+[C6] [INFO] GDT: Loading GDTR...
+[C6] [INFO] GDT: Loading TSS...
+[C6] [INFO] GDT: Done
+[C6] [INFO] CPU: Initializing IDT...
+[C6] [INFO] CPU: Initializing Syscall...
+[C6] [INFO] AMD64 MSR SYSCALL configured
+[C6] [INFO] CPU: Initializing LAPIC...
+L[C6] [INFO] AMD64: LAPIC 6 initialized at 0xfee00000
+[C6] [INFO] AMD64 CPU 6 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C6] [INFO] LAPIC: CPU 6 timer started at 100 Hz (624000 ticks/interval)
+[C6] [INFO] Secondary CPU 6 online and ready
+[C0] [INFO] AMD64: CPU 6 is online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=10 slot=9 Prio=31 PageTable=0x0000000004dc6000
+[C0] [INFO] process_create: PID 10 context allocated at 0x0000000004df8f50 (kstack=4df9000)
+[C6] [ERROR] 
+[C6] PAGE FAULT: Access to 0x10000006b
+[C6] [ERROR] Error Code: 0x0 (P:0, W:0, U:0, R:0, I:0)
+[C6] [ERROR] RIP: 000000000010fc58 CS: 08 RFLAGS: 0000000000010006
+[C6] [ERROR] RAX: 00000000ffffffff RBX: 0000000000000000 RCX: 0000000000928434 RDX: 0000000000938784
+[C6] [ERROR] RSI: 0000000000118999 RDI: 00000000ffffffff RBP: 0000000000221ee0 RSP: 0000000000221e90
+[C6] [ERROR] R8:  000000000092edSb0 R9:  0000000000000046 R10: 0000000000221f20 R11: 00000000ffffffff
+[C7] [INFO] CPU: Initializing GDT...
+[C0] [INFO] AMD64: Sent INIT-SIPI to CPU 7
+[C6] [ERROR] R12: 0000000000938540 R13: 0000000000000000 R14: 0000000100000003 R15: 0000000000000000
+[C6] [ERROR] Vector: 14, Error Code: 0
+[C7] [INFO] GDT: Loading GDTR...
+[C7] [INFO] GDT: Loading TSS...
+[C7] [INFO] GDT: Done
+[C7] [INFO] CPU: Initializing IDT...
+[C7] [INFO] CPU: Initializing Syscall...
+[C7] [INFO] AMD64 MSR SYSCALL configured
+[C7] [INFO] CPU: Initializing LAPIC...
+L[C7] [INFO] AMD64: LAPIC 7 initialized at 0xfee00000
+[C7] [INFO] AMD64 CPU 7 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C7] [INFO] CPU: Initializing GDT...
+[C7] [INFO] GDT: Loading GDTR...
+[C7] [INFO] GDT: Loading TSS...
+[C7] [INFO] GDT: Done
+[C7] [INFO] CPU: Initializing IDT...
+[C7] [INFO] CPU: Initializing Syscall...
+[C7] [INFO] AMD64 MSR SYSCALL configured
+[C7] [INFO] CPU: Initializing LAPIC...
+L[C7] [INFO] AMD64: LAPIC 7 initialized at 0xfee00000
+[C7] [INFO] AMD64 CPU 7 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C7] [INFO] LAPIC: CPU 7 timer started at 100 Hz (624000 ticks/interval)
+[C7] [INFO] Secondary CPU 7 online and ready
+[C0] [INFO] AMD64: CPU 7 is online
+[C0] [INFO] Process: Creating 'idle' (Prio=31)
+[C0] [INFO] process_create: 'idle' PID=11 slot=10 Prio=31 PageTable=0x0000000004dfa000
+[C0] [INFO] process_create: PID 11 context allocated at 0x0000000004e2cf50 (kstack=4e2d000)
+[C0] [INFO] Enabling interrupts...
+Shell: Alive
+[C7] [ERROR] 
+[C7] PAGE FAULT: Access to 0x10000006b
+[C7] [ERROR] Error Code: 0x0 (P:0, W:0, U:0, R:0, I:0)
+[C7] [ERROR] RIP: 000000000010fc58 CS: 08 RFLAGS: 0000000000010006
+[C7] [ERROR] RAX: 00000000ffffffff RBX: 0000000000000000 RCX: 0000000000928434 RDX: 00000000009399e4
+[C7] [ERROR] RSI: 0000000000118999 RDI: 00000000ffffffff RBP: 0000000000241ee0 RSP: 0000000000241e90
+[C7] [ERROR] R8:  000000000092edb0 R9:  0000000000000046 R10: 0000000000241f20 R11: 00000000ffffffff
+[C7] [ERROR] R12: 00000000009397a0 R13: 0000000000000000 R14: 0000000100000003 R15: 0000000000000000
+[C7] [ERROR] Vector: 14, Error Code: 0
+[Notify] Server started (PID 5)
+[Init] Entering supervisor loop
+[C0] [INFO] Compositor: Created window 'Shell PID 7' (640x480) at (180,180)
+
+[Shell] TTY Window 0x0000000000000065 active (PID 7).
+[32mshell[0m> shell> qemu-system-x86_64: terminating on signal 15 from pid 43353 (<unknown process>)

@@ -248,16 +248,15 @@ struct pt_regs *sys_read(struct pt_regs *regs) {
   (void)count;
 
   if (fd == 0) { /* STDIN */
-    pt_regs_set_return(regs, 0);
-
+    /* Do NOT set return value here — pt_regs_retry_syscall re-executes the
+     * syscall instruction using whatever is in RAX.  If we write 0 into RAX
+     * now and then sleep, the retry fires with syscall 0 instead of 63. */
     extern struct ipc_node *pop_message(struct process * proc, int src_pid);
 
-    struct ipc_node *node = NULL;
-
-    node = pop_message(current_process, -1); /* From ANY */
+    struct ipc_node *node = pop_message(current_process, -1); /* From ANY */
 
     if (node) {
-      if (node->msg.type == IPC_TYPE_INPUT) { /* IPC_TYPE_INPUT */
+      if (node->msg.type == IPC_TYPE_INPUT) {
         char c = (char)node->msg.data1;
         if (arch_copy_to_user(buf, &c, 1) != 0) { }
         pt_regs_set_return(regs, 1);

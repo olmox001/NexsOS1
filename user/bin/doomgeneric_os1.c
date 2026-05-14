@@ -21,7 +21,6 @@ void DG_DrawFrame() {
     if (s_window >= 0 && DG_ScreenBuffer) {
         /* Blit the entire screen buffer to our window */
         window_blit(s_window, 0, 0, DOOMGENERIC_RESX, DOOMGENERIC_RESY, (const unsigned int*)DG_ScreenBuffer);
-        compositor_render();
     }
 }
 
@@ -41,7 +40,7 @@ int DG_GetKey(int* pressed, unsigned char* key) {
     /* Try to receive a key event from the kernel/compositor */
     if (try_recv(-1, &msg) == 0) {
         if (msg.type == 0x10) { /* IPC_TYPE_INPUT = 0x10 */
-            *pressed = 1;
+            *pressed = (int)msg.data2;
             char c = (char)msg.data1;
             
             /* DoomGeneric expects some specific keycodes. 
@@ -73,9 +72,17 @@ int main(int argc, char **argv) {
     doomgeneric_Create(argc, argv);
     
     printf("Doom engine initialized, starting tick loop...\n");
+    static int frame_count = 0;
     while (1) {
         /* Engine main loop step */
         doomgeneric_Tick();
+        
+        /* Yield to other processes to ensure system responsiveness */
+        yield();
+
+        if ((++frame_count % 350) == 0) {
+            printf("Doom: tick count %d\n", frame_count);
+        }
     }
     
     return 0;

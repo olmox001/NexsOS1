@@ -829,6 +829,7 @@ static void compositor_render_internal(void) {
    */
   struct region *occluded = region_create();
   if (!occluded) {
+    __sync_lock_release(&in_render);
     return;
   }
 
@@ -894,6 +895,7 @@ static void compositor_render_internal(void) {
     region_destroy(bg_region);
   }
   region_destroy(occluded);
+  occluded = NULL; /* prevent double-free: cleanup at end of function also calls region_destroy(occluded) */
 
   /* Pass 2: Rendering (Bottom-Up) - Painter's Algorithm with Clipping */
   for (int i = 0; i < count && i < MAX_WINDOWS; i++) {
@@ -1035,6 +1037,14 @@ static void compositor_render_internal(void) {
       damage_y1 = bb_h;
       damage_x2 = 0;
       damage_y2 = 0;
+    }
+  }
+  /* Cleanup regions */
+  region_destroy(occluded);
+  for (int i = 0; i < count; i++) {
+    if (visible_regions[i]) {
+      region_destroy(visible_regions[i]);
+      visible_regions[i] = NULL;
     }
   }
 
