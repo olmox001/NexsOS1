@@ -3,7 +3,8 @@
 ### Production-Ready AArch64 Microkernel with Graphics & Multitasking
 
 <div align="center">
-<img width="800" height="1118" alt="ezgif-26aed56fce4974ae" src="https://github.com/user-attachments/assets/21a3ab15-c950-4b4a-a15e-d4796557096b" />
+<img width="1281" height="1007" alt="Screenshot 2026-05-14 alle 05 02 06" src="https://github.com/user-attachments/assets/3bbb8715-55ad-489d-b2e6-e8404014c6a4" />
+
 
 
 
