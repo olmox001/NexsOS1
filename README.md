@@ -27,8 +27,8 @@ an interactive **TTY shell**.
 |---|---|---|
 | Builds clean (`-Werror -Wall -Wextra -Wpedantic -Wshadow`) | ✅ | ✅ |
 | Boots to a **TTY shell in a composited window** | ✅ | ✅ (at `-m 3G`) |
-| Dynamic RAM detection / MMU / **maps up to 4GB** | ✅ (3967 MB) | ⚠️ 1 GB on `-kernel`* |
-| **SMP** (multi-core bring-up) | ✅ (4/4 online) | ⚠️ boots; detection weak |
+| Dynamic RAM detection / MMU / **maps up to 4GB** | ✅  |  ✅   |
+| **SMP** (multi-core bring-up) | ✅ (4/4 online) |  ✅ |
 | VirtIO GPU / input / block · Ext4 mount · GPT+MBR | ✅ | ✅ (at 3G) |
 | Userland: ELF loader, IPC, windows, registry, fonts | ✅ | ✅ (at 3G) |
 
