@@ -152,8 +152,10 @@ delegated fix phase (Phase 3).
 
 ## 8. Phase 3 — fixes landed (branch `comprehensive-review`)
 
-Each verified by build (both arches) + headless QEMU runtime, committed separately,
-delegated one-agent-at-a-time and maintainer-verified before commit.
+Each verified by build (both arches) + headless QEMU runtime, committed separately.
+The boot/crash fixes were delegated one-agent-at-a-time and maintainer-verified before
+commit; the W3 issue-tier rows were agent self-verified under the authorized build+boot
+workflow (see the note below the table for their verification depth).
 
 | Commit | Fix | Issue |
 |---|---|---|
