@@ -232,7 +232,14 @@ void arch_platform_early_init(void) {
       }
       tag = (struct mb2_tag *)((uint8_t *)tag + ((tag->size + 7) & ~7));
     }
-  } else if (mb_magic == PVH_MAGIC) {
+  } else if (mb_magic == PVH_MAGIC ||
+             (mb_info_ptr &&
+              ((struct hvm_start_info *)mb_info_ptr)->magic == PVH_MAGIC)) {
+    /* FIX(BOOT-01/02): QEMU's PVH boot ('make run ARCH=amd64' via -kernel) sets
+     * %eax (mb_magic) to 0 and passes the hvm_start_info pointer in %ebx
+     * (mb_info_ptr); the identifying magic lives INSIDE the struct, not in a
+     * register. Detect PVH by the struct magic so the REAL memory map (up to
+     * 4GB) is parsed instead of the hardcoded 1GB fallback. */
     /* PVH boot: hvm_start_info at mb_info_ptr contains the E820/memmap.
      * NOTE(BOOT-01): On QEMU PVH boot mb_magic is 0, not PVH_MAGIC; this
      * branch is never reached.  mb_info_ptr would be the hvm_start_info PA
