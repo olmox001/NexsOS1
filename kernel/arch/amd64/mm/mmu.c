@@ -502,6 +502,20 @@ uint64_t arch_vmm_create_process_pgd(void) {
     }
   }
 
+  /* 5. Clone kernel device-MMIO entries from PML4 indices 1..255.
+   * Fix AMMU-07 (>4GB MMIO): when QEMU places a 64-bit virtio BAR above 4 GB
+   * (e.g. 0xc000000000 at -m 8G), arch_vmm_map_device() adds the mapping to
+   * kernel_pgd at PML4 index 1 (0xc000000000 >> 39 == 1).  Without this loop,
+   * process PML4s only clone index 0 and 256..511, leaving index 1 absent and
+   * causing a PAGE FAULT when the MMIO BAR is accessed from a process/AP
+   * address space.  Indices 1..255 are never used for user ELF/stack (those
+   * live in index 0, VA <= ~3 GB), so sharing these kernel entries is safe.
+   * Reference: AMMU-07 / >4GB MMIO fix. */
+  for (int i = 1; i < 256; i++) {
+    if (kernel_pgd[i] & X86_PTE_P)
+      new_pml4[i] = kernel_pgd[i];
+  }
+
   /* 4. Map MMIO ranges manually into the new PGD to ensure they have their own
    * private path if they share a PDPT with user space.
    */
