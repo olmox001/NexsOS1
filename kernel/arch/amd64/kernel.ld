@@ -53,6 +53,7 @@ SECTIONS {
     .bss : ALIGN(4096) {
         __bss_start = .;
         *(.bss*)
+        *(.lbss*)
         *(COMMON)
         __bss_end = .;
     } :data
