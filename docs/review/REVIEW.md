@@ -167,8 +167,14 @@ delegated one-agent-at-a-time and maintainer-verified before commit.
 virtio-blk + Ext4, 4 SMP cores, no faults); aarch64 FDT-driven (real RAM + CPU count),
 boots to the TTY shell.
 
-**Remaining (open):** IPC→64-bit (not started — the delegated agent stopped before
-editing; the system works without it); amd64 ACPI-MADT CPU count (ARCH-01), real
-PCI/ACPI (ARCH-02), user-vs-kernel fault isolation (EXC-AMD64-02); the kernel/userland
-higher-half **addressing rework**; and re-commenting the headers + `.S` files that were
-reverted in Phase 2 (the C sources are commented and committed).
+**IPC → 64-bit: already satisfied (verified).** `struct ipc_message`
+(`include/api/posix_types.h`) already carries `uint64_t data1; uint64_t data2; char
+payload[64];` — present since `main` — and all producers/consumers use 64-bit
+(keyboard packs `(uint64_t)code<<16`, `lib.c` reads `data1>>16`, `ipc_send`/`ipc_recv`
+use 64-bit). Exercised at runtime every boot (keyboard input + `notify()`). No change needed.
+
+**Remaining (open, future sessions — multi-step refactors, not concludable in one short pass):**
+amd64 ACPI-MADT CPU count (ARCH-01), real PCI/ACPI init (ARCH-02), user-vs-kernel
+fault isolation (EXC-AMD64-02); the kernel/userland higher-half **addressing rework**
+(the central PA==VA invariant); W^X (MM-VMM-01/AMMU-01); and re-commenting the headers
++ `.S` files reverted in Phase 2 (all C sources are commented and committed).
