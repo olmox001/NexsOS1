@@ -59,7 +59,25 @@
 #include <kernel/kmalloc.h>
 #include <kernel/vfs.h>
 
-/* These syscall implementations are currently still in arch/<ARCH>/cpu/syscall.c 
+/*
+ * FIX(EXT4-07): upper bound for kmalloc'd bounce buffers whose size comes
+ * straight from a user syscall argument (arg2) in FILE_WRITE/FILE_READ/LIST_DIR
+ * (cases 251/252/254).  Without a cap a process can pass size=4 GB and make the
+ * kernel attempt an enormous pmm_alloc_pages() — at best a slow contiguous scan
+ * that fails (NULL), at worst draining kernel RAM (there is no per-process
+ * quota) → OOM/DoS.
+ *
+ * 16 MiB sits above every legitimate single-syscall transfer: the largest
+ * routine read is a ~98 KB font (read whole-file at boot), DOOM reads WAD lumps
+ * individually (each well under 1 MB), and the ext4 driver's own single-indirect
+ * read ceiling is ~4 MB (double-indirect is unimplemented) — so this cap never
+ * truncates a read the driver could actually satisfy, while rejecting absurd
+ * allocations.  size==0 (the FILE_READ size-probe) is never > the cap, so it is
+ * unaffected.
+ */
+#define SYSCALL_MAX_IO_BYTES (16u * 1024u * 1024u)  /* 16 MiB */
+
+/* These syscall implementations are currently still in arch/<ARCH>/cpu/syscall.c
  * or will be moved here gradually. For now, we declare them extern. 
  */
 extern long sys_write(int fd, const char *buf, size_t count);
@@ -268,6 +286,10 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
     size_t size = (size_t)arg2;
+    if (size > SYSCALL_MAX_IO_BYTES) {  /* FIX(EXT4-07): reject absurd user size */
+      pt_regs_set_return(frame, -1);
+      break;
+    }
     uint8_t *k_buf = kmalloc(size);
     if (!k_buf) {
       pt_regs_set_return(frame, -1);
@@ -292,6 +314,10 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
     size_t size = (size_t)arg2;
+    if (size > SYSCALL_MAX_IO_BYTES) {  /* FIX(EXT4-07): reject absurd user size */
+      pt_regs_set_return(frame, -1);
+      break;
+    }
     uint32_t offset = (uint32_t)arg3;
     int bytes_read;
 
@@ -327,6 +353,10 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
     size_t size = (size_t)arg2;
+    if (size > SYSCALL_MAX_IO_BYTES) {  /* FIX(EXT4-07): reject absurd user size */
+      pt_regs_set_return(frame, -1);
+      break;
+    }
     char *k_buf = kmalloc(size);
     if (!k_buf) {
       pt_regs_set_return(frame, -1);
