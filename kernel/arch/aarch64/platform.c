@@ -241,11 +241,18 @@ void arch_smp_init(void) {
     uint64_t current_pgd = arch_vmm_get_pgd();
     arch_vmm_set_secondary_pgd(current_pgd);
 
-    /* Discover CPU count from FDT; fall back to MAX_CPUS if unavailable. */
+    /* Discover CPU count from FDT; fall back to a small sane cap if unavailable.
+     * Using MAX_CPUS (64) as a fallback would allocate 56 wasted dynamic stacks
+     * and attempt PSCI CPU_ON for 60 non-existent cores.  Instead, cap at 8 CPUs
+     * (the maximum supported by the pre-allocated BSS stacks in start.S), which
+     * avoids any dynamic stack allocation for the fallback path.  If FDT is
+     * working correctly (x0 set by QEMU -dtb), this branch is never taken. */
+#define AARCH64_FALLBACK_CPU_CAP 8
     uint32_t cpu_count = fdt_count_cpus();
     if (cpu_count == 0) {
-        pr_warn("AArch64: FDT CPU discovery failed, probing up to %d cores\n", MAX_CPUS);
-        cpu_count = MAX_CPUS;
+        pr_warn("AArch64: FDT CPU discovery failed, capping at %d cores (fallback)\n",
+                AARCH64_FALLBACK_CPU_CAP);
+        cpu_count = AARCH64_FALLBACK_CPU_CAP;
     }
     if (cpu_count > MAX_CPUS) cpu_count = MAX_CPUS;
 
