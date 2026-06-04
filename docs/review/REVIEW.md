@@ -154,8 +154,10 @@ delegated fix phase (Phase 3).
 
 Each verified by build (both arches) + headless QEMU runtime, committed separately.
 The boot/crash fixes were delegated one-agent-at-a-time and maintainer-verified before
-commit; the W3 issue-tier rows were agent self-verified under the authorized build+boot
-workflow (see the note below the table for their verification depth).
+commit. For the W3 issue-tier rows: #80/#62 were agent self-verified under the authorized
+build+boot workflow; #98/#59/#63/#42/#70/#50/#74 (this session) were each verified by an
+independent build on both arches + headless boot on both arches before commit (several were
+implemented by delegated sub-agents that did not commit), **pending maintainer review**.
 
 | Commit | Fix | Issue |
 |---|---|---|
@@ -167,11 +169,22 @@ workflow (see the note below the table for their verification depth).
 | `3f9f81f` | userland `calloc(nmemb,size)` integer-overflow guard (pre-multiply `size > SIZE_MAX/nmemb` check) | **#80** (W3) ✅ |
 | `c6c268a` | bound user-supplied I/O buffer size at 16 MiB before `kmalloc` (FILE_WRITE/READ/LIST_DIR, cases 251/252/254) | **#62** (W3) ✅ |
 | `6fd1b47` | graphics: capture the IPC message + close decision under `compositor_lock`, then **release it before** `kernel_ipc_send`/`process_terminate` in `compositor_handle_click` → resolves the AB-BA freeze on window-close/kill | **#100** (W4) ⚠️ freeze only |
+| `848d6c8` | sched: clamp `sys_getprocs` `max_count` to `MAX_PROCESSES` before `kmalloc` (unchecked multiply + unbounded alloc) | **#98** (W3) ✅ |
+| `8e01551` | fs: `struct ext4_group_desc` `padding[14]`→`[12]` (34→32 B, matches the on-disk GDT entry; stops multi-group write corruption) | **#59** (W3) ✅ |
+| `7839076` | fs: abort to the MBR parser on partition-entry CRC mismatch in `gpt_init` (mirrors the header-CRC fallback) | **#63** (W3) ✅ |
+| `0e6a790` | arch: null-guard `current_process` in aarch64 `arch_copy_to_user` (mirrors `arch_copy_from_user`) | **#42** (W3) ✅ |
+| `d02038d` | graphics: floor `graphics_font_height()` to the built-in default when `ascent+descent<=0` (compositor div-by-zero) | **#70** (W3) ✅ |
+| `392d7fc` | drivers: check `pmm_alloc_pages/_page` returns in `virtio_input` `init_device` (NULL-deref → graceful bail) | **#50** (W3) ✅ |
+| `94c936c` | lib: `ktest` counts real pass/fail via a `ktest_test_failed` flag set by `KASSERT` (was always N PASS / 0 FAIL) | **#74** (W3) ✅ |
 
-Rows `3f9f81f`/`c6c268a` begin the **W3 issue-tier** fix phase (smaller, correctness/security
-hardening on the issue backlog), distinct from the boot/crash fixes above. Both are pure
-additive guards verified by build (both arches) + boot (no regression); their capped/overflow
-paths are not exercised at boot, so they are build + no-regression + correct-by-inspection.
+Rows `3f9f81f` through `94c936c` are the **W3 issue-tier** fix phase — small, scoped, additive
+correctness/security hardening on the issue backlog, distinct from the boot/crash fixes above.
+Each was verified by build (both arches) + boot (no regression). Where the fixed path is not
+exercised at boot (the capped/overflow guards #80/#62/#98, the multi-group write #59, the
+CRC-mismatch fallback #63, the alloc-failure bails #50, the malformed-font floor #70, the
+aarch64 null guard #42), the standard is build + no-regression + correct-by-inspection.
+LIB-KTEST-01 (#74) additionally had its FAIL path proven by a throwaway broken assertion
+(→ 2 PASSED / 1 FAILED) before reverting.
 
 `6fd1b47` (GFX-COMP-13, **user-reported W4**) is a real SMP lock-ordering fix — verified by
 build (both arches) + boot. **It resolves only the freeze / AB-BA deadlock**; the companion
