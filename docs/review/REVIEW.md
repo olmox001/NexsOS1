@@ -166,11 +166,18 @@ workflow (see the note below the table for their verification depth).
 | `b3ea74f` | aarch64 real DTB via `-dtb`/raw `kernel.bin` (FDT works, `x0` set) + SMP fallback cap 64→8; `-m 5G` default both arches | runtime-discovered ✅ |
 | `3f9f81f` | userland `calloc(nmemb,size)` integer-overflow guard (pre-multiply `size > SIZE_MAX/nmemb` check) | **#80** (W3) ✅ |
 | `c6c268a` | bound user-supplied I/O buffer size at 16 MiB before `kmalloc` (FILE_WRITE/READ/LIST_DIR, cases 251/252/254) | **#62** (W3) ✅ |
+| `6fd1b47` | graphics: capture the IPC message + close decision under `compositor_lock`, then **release it before** `kernel_ipc_send`/`process_terminate` in `compositor_handle_click` → resolves the AB-BA freeze on window-close/kill | **#100** (W4) ⚠️ freeze only |
 
-The last two rows begin the **W3 issue-tier** fix phase (smaller, correctness/security
+Rows `3f9f81f`/`c6c268a` begin the **W3 issue-tier** fix phase (smaller, correctness/security
 hardening on the issue backlog), distinct from the boot/crash fixes above. Both are pure
 additive guards verified by build (both arches) + boot (no regression); their capped/overflow
 paths are not exercised at boot, so they are build + no-regression + correct-by-inspection.
+
+`6fd1b47` (GFX-COMP-13, **user-reported W4**) is a real SMP lock-ordering fix — verified by
+build (both arches) + boot. **It resolves only the freeze / AB-BA deadlock**; the companion
+zombie/no-reap symptom (when `process_terminate` runs from mouse-IRQ context) is a **separate,
+still-open** fix tracked via SCHED-03, and the underlying compositor↔sched coupling stays open
+as GFX-COMP-03 (#69).
 
 **Verified runtime status now:** amd64 boots clean at `-m 3G / 5G / 8G` (detects 6–9 GB,
 virtio-blk + Ext4, 4 SMP cores, no faults); aarch64 FDT-driven (real RAM + CPU count),

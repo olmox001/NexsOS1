@@ -114,6 +114,17 @@ A second theme — equally important for the stated seL4 extraction goal — is 
 | GFX-COMP-12 | W1 | DOC | `compositor.c:246` | Comment says "Mark main shell (PID 2) as protected" but `keyboard_focus_pid` defaults to 7 (`sched/process.c:27`); the "Shell PID 7" comment in `compositor_destroy_window:270` is the live path. |
 | GFX-GFX-01 | W0 | DOC | `graphics.c:30-40` | `graphics_get_screen_surface` returns a pointer to a `static` local; thread-safe under a single-core kernel but not under SMP if callers store the pointer across preemption. Worth a comment. |
 
+> **Post-review addendum — GFX-COMP-13 (user-reported, after the 2026-06-02 snapshot).**
+> W4 · BUG (SMP deadlock). `compositor_handle_click` held `compositor_lock` across
+> `kernel_ipc_send` / `process_terminate` (`compositor.c:655`, pre-fix) — an AB-BA inversion
+> vs `process_terminate` (which takes `sched_lock` → `compositor_lock`). On `-smp 4`, closing a
+> window then `kill`-ing the resulting process froze the machine with no panic. Filed as issue
+> **#100**, **fixed** in commit `6fd1b47` (capture the IPC message + close decision under the
+> lock, release it, then make the cross-subsystem calls). The fix resolves **only the freeze**;
+> the companion reap-from-IRQ-context symptom remains (tracked via SCHED-03), and the
+> design-level coupling itself is **GFX-COMP-03** above (still open). Belongs to the
+> SMP-correctness epic #96.
+
 ---
 
 ## 6. Detailed Entries (top findings)
