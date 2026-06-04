@@ -31,19 +31,15 @@
  *   from syscall context.  There is no synchronisation between them.
  *
  * Known issues:
- *   GFX-FONT-01 (W4 SECURITY BUG) sys_set_font stores the raw userland
- *               pointer 'data' directly into current_font.glyphs and
- *               current_font.bitmap without copy_from_user, address-space
- *               validation, or a kernel-heap copy.  These pointers are later
- *               dereferenced in gl_draw_char during IRQ-context rendering
- *               (compositor_tick).  Consequences: (a) process exit after
- *               set-font leaves dangling pointers — fault on next render;
- *               (b) a kernel-address passed as 'data' causes kernel-memory
- *               bytes to be rendered to the framebuffer (information
- *               disclosure); (c) if num_chars is near SIZE_MAX the expected
- *               size calculation overflows and size < expected passes
- *               spuriously.  Fix: copy the blob into kmalloc'd kernel memory
- *               inside sys_set_font, validate all internal offsets.
+ *   GFX-FONT-01 (W4 SECURITY BUG, FIXED) sys_set_font no longer stores the raw
+ *               userland pointer: it copies the whole blob into a kmalloc'd
+ *               kernel buffer, validates it against the kernel copy (magic,
+ *               metrics, per-glyph bitmap bounds), and publishes an immutable
+ *               descriptor behind font_lock, retiring the previous one.  This
+ *               removes the dangling-pointer use-after-free (process exit after
+ *               set-font), the kernel-memory info-leak (a kernel VA passed as
+ *               'data'), and the size-overflow path (num_chars is uint16 and
+ *               bitmap_size uint32, with the blob bounded by FONT_MAX_BLOB).
  *   GFX-FONT-02 (W3 BUG, FIXED) graphics_font_height() floors to the built-in
  *               default height when ascent+descent <= 0, so a malformed font
  *               (ascent=descent=0 via sys_set_font) can no longer divide-by-zero
@@ -52,6 +48,9 @@
 #include <graphics/gl.h>
 #include <kernel/graphics.h>
 #include <kernel/types.h>
+#include <kernel/arch.h>      /* arch_copy_from_user (GFX-FONT-01) */
+#include <kernel/kmalloc.h>   /* kmalloc/kfree (GFX-FONT-01) */
+#include <kernel/spinlock.h>  /* font_lock (GFX-FONT-01) */
 #include <font.h>
 #include <drivers/gpu/gpu.h>
 
@@ -65,25 +64,20 @@
 int utf8_decode(const char *s, uint32_t *code);
 
 /* Internal font state */
-/*
- * current_font: singleton active font state.
- *   header   — copy of font_header (magic, first_char, num_chars, ascent,
- *              descent, bitmap_size).
- *   glyphs   — pointer to glyph-info array (num_chars entries).
- *   bitmap   — pointer to packed alpha bitmap data.
- *   is_dynamic — 0 if glyphs/bitmap point into static default_font arrays;
- *               1 if they point into a user-supplied buffer (see sys_set_font).
- *
- * NOTE(GFX-FONT-01): when is_dynamic==1, glyphs and bitmap are raw userland
- * virtual addresses stored without copy_from_user; they may become dangling
- * after process exit and are dereferenced from IRQ context.
- */
-static struct {
+/* GFX-FONT-01: the active font is an immutable descriptor published behind
+ * font_lock as current_font.  sys_set_font builds a new descriptor in a single
+ * kmalloc block, swaps the pointer under the lock, and retires the previous
+ * block; readers hold font_lock while they touch the descriptor, so a retired
+ * buffer is never freed under a live reader.  heap_base is the kmalloc block to
+ * free on retire (NULL for the static built-in default, which is never freed). */
+struct font_state {
     struct font_header header;
     const struct font_glyph_info *glyphs;
     const uint8_t *bitmap;
-    int is_dynamic;
-} current_font = {
+    void *heap_base;
+};
+
+static struct font_state default_font = {
     .header = {
         .magic = FONT_MAGIC,
         .first_char = FONT_FIRST_CHAR,
@@ -94,8 +88,13 @@ static struct {
     },
     .glyphs = font_glyphs,
     .bitmap = font_bitmap,
-    .is_dynamic = 0
+    .heap_base = 0
 };
+
+static struct font_state *current_font = &default_font;
+static DEFINE_SPINLOCK(font_lock);
+
+#define FONT_MAX_BLOB (8u * 1024 * 1024)  /* upper bound on a user font blob */
 
 /*
  * gl_draw_char - render one Unicode codepoint from the active font onto surf.
@@ -117,12 +116,13 @@ static struct {
  *        specific alpha values (e.g. alpha=128, dst=255 → 127 vs 128).
  *   5. Per-pixel bounds check against surf->width/height before any write.
  *
- * NOTE(GFX-FONT-01): current_font.glyphs and current_font.bitmap may point
- *   into userland memory if sys_set_font was called; dereferencing them here
- *   from IRQ context (compositor_tick) is unsafe.
+ * GFX-FONT-01 (fixed): current_font.glyphs/bitmap now reference a kmalloc'd
+ *   kernel descriptor (never userland memory).
  *
- * Locking: none; called under compositor_lock from compositor_window_write
- *          and compositor_render_internal.
+ * Locking: takes font_lock across the blit so a concurrent sys_set_font cannot
+ *          retire/free the descriptor mid-read; also called under compositor_lock
+ *          from compositor_window_write and compositor_render_internal
+ *          (lock order: compositor_lock -> font_lock).
  * Side effects: writes pixels to surf->buffer.
  */
 /*
@@ -130,18 +130,31 @@ static struct {
  */
 void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
                   uint32_t color) {
-  if (!surf || !current_font.bitmap)
+  if (!surf)
     return;
 
-  int idx = (int)codepoint - current_font.header.first_char;
-  if (idx < 0 || idx >= current_font.header.num_chars)
-    return;
+  /* GFX-FONT-01: hold font_lock across the whole blit so a concurrent
+   * sys_set_font cannot free the descriptor's bitmap while we read it. */
+  uint64_t flags;
+  spin_lock_irqsave(&font_lock, &flags);
+  const struct font_state *f = current_font;
 
-  const struct font_glyph_info *gi = &current_font.glyphs[idx];
-  const uint8_t *bitmap = current_font.bitmap + gi->data_offset;
+  if (!f->bitmap) {
+    spin_unlock_irqrestore(&font_lock, flags);
+    return;
+  }
+
+  int idx = (int)codepoint - f->header.first_char;
+  if (idx < 0 || idx >= f->header.num_chars) {
+    spin_unlock_irqrestore(&font_lock, flags);
+    return;
+  }
+
+  const struct font_glyph_info *gi = &f->glyphs[idx];
+  const uint8_t *bitmap = f->bitmap + gi->data_offset;
 
   int start_x = x + gi->x0;
-  int start_y = y + current_font.header.ascent + gi->y0;
+  int start_y = y + f->header.ascent + gi->y0;
 
   uint32_t r_color = (color >> 16) & 0xFF;
   uint32_t g_color = (color >> 8) & 0xFF;
@@ -174,6 +187,7 @@ void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
       }
     }
   }
+  spin_unlock_irqrestore(&font_lock, flags);
 }
 
 /*
@@ -184,16 +198,19 @@ void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
  * the codepoint is outside [first_char, first_char+num_chars).
  * Used by gl_draw_string and graphics_string_width to advance the cursor.
  *
- * Locking: none; reads current_font.glyphs (see NOTE GFX-FONT-01).
+ * Locking: the active font is read under font_lock (GFX-FONT-01).
  */
 /*
  * Get character advance width
  */
 int graphics_char_width(uint32_t codepoint) {
-  int idx = (int)codepoint - current_font.header.first_char;
-  if (idx < 0 || idx >= current_font.header.num_chars)
-    return 0;
-  return current_font.glyphs[idx].advance;
+  uint64_t flags;
+  spin_lock_irqsave(&font_lock, &flags);
+  const struct font_state *f = current_font;
+  int idx = (int)codepoint - f->header.first_char;
+  int adv = (idx < 0 || idx >= f->header.num_chars) ? 0 : f->glyphs[idx].advance;
+  spin_unlock_irqrestore(&font_lock, flags);
+  return adv;
 }
 
 /*
@@ -240,7 +257,7 @@ void gl_draw_string(struct gl_surface *surf, int x, int y, const char *str,
  * Sums graphics_char_width for each decoded codepoint.  Mirrors the cursor
  * advance in gl_draw_string so callers can centre text (e.g. title bar).
  *
- * Locking: none; reads current_font.glyphs (see NOTE GFX-FONT-01).
+ * Locking: the active font is read under font_lock (GFX-FONT-01).
  */
 /*
  * Get string width in pixels (UTF-8 supported)
@@ -276,8 +293,7 @@ int graphics_string_width(const char *str) {
  *   sys_set_font) can no longer cause a divide-by-zero at
  *   compositor_create_window (h / char_h).
  *
- * Locking: none; reads current_font.header (not IRQ-safe under sys_set_font
- *          race, see GFX-FONT-01).
+ * Locking: reads current_font.header under font_lock (GFX-FONT-01).
  */
 /*
  * Get font height
@@ -287,8 +303,11 @@ int graphics_font_height(void) {
      * (ascent=descent=0 via sys_set_font) cannot make char_h==0 and trigger a
      * divide-by-zero in compositor row/scroll arithmetic — mirrors the
      * graphics_font_max_width() floor. */
-    int h = current_font.header.ascent + current_font.header.descent;
-    return h > 0 ? h : (FONT_ASCENT + FONT_DESCENT); 
+    uint64_t flags;
+    spin_lock_irqsave(&font_lock, &flags);
+    int h = current_font->header.ascent + current_font->header.descent;
+    spin_unlock_irqrestore(&font_lock, flags);
+    return h > 0 ? h : (FONT_ASCENT + FONT_DESCENT);
 }
 
 /*
@@ -297,24 +316,32 @@ int graphics_font_height(void) {
  * Ascent is the distance from the baseline to the top of the tallest glyph.
  * Used in gl_draw_char to compute start_y = y + ascent + gi->y0.
  *
- * Locking: none.
+ * Locking: reads current_font under font_lock (GFX-FONT-01).
  */
 /*
  * Get font ascent
  */
 int graphics_font_ascent(void) {
-    return current_font.header.ascent;
+    uint64_t flags;
+    spin_lock_irqsave(&font_lock, &flags);
+    int a = current_font->header.ascent;
+    spin_unlock_irqrestore(&font_lock, flags);
+    return a;
 }
 
 /*
  * Get max character width (for grid systems)
  */
 int graphics_font_max_width(void) {
+    uint64_t flags;
+    spin_lock_irqsave(&font_lock, &flags);
+    const struct font_state *f = current_font;
     int max_w = 0;
-    for (int i = 0; i < current_font.header.num_chars; i++) {
-        if (current_font.glyphs[i].advance > max_w)
-            max_w = current_font.glyphs[i].advance;
+    for (int i = 0; i < f->header.num_chars; i++) {
+        if (f->glyphs[i].advance > max_w)
+            max_w = f->glyphs[i].advance;
     }
+    spin_unlock_irqrestore(&font_lock, flags);
     return max_w > 0 ? max_w : 8;
 }
 
@@ -322,20 +349,84 @@ int graphics_font_max_width(void) {
  * System Call: Set Font
  */
 int sys_set_font(void *data, size_t size) {
-    if (!data || size < sizeof(struct font_header)) return -1;
+    /* GFX-FONT-01: 'data' is a raw userland pointer.  Copy the whole blob into a
+     * kmalloc'd kernel buffer, validate against the *kernel* copy, then publish an
+     * immutable descriptor behind font_lock and retire the previous one.  This
+     * removes the use-after-free (the old code stored interior pointers into user
+     * memory that dangled after the process exited) and the info-leak (a user
+     * could point 'data' at kernel VAs and read them back via the framebuffer). */
+    if (!data || size < sizeof(struct font_header))
+        return -1;
+    if (size > FONT_MAX_BLOB)            /* bound before kmalloc (cf. EXT4-07/#62) */
+        return -1;
 
-    struct font_header *h = (struct font_header *)data;
-    if (h->magic != FONT_MAGIC) return -2;
+    /* 1. Copy + validate the header alone first (never deref the user pointer). */
+    struct font_header h;
+    if (arch_copy_from_user(&h, data, sizeof(h)) != 0)
+        return -1;
+    if (h.magic != FONT_MAGIC)
+        return -2;
+    if (h.num_chars == 0 || (uint32_t)h.ascent + (uint32_t)h.descent == 0)
+        return -3;                        /* reject zero metrics (cf. GFX-FONT-02) */
 
-    size_t expected = sizeof(struct font_header) + 
-                     h->num_chars * sizeof(struct font_glyph_info) + 
-                     h->bitmap_size;
-    if (size < expected) return -3;
+    /* num_chars is uint16 and bitmap_size uint32, so this cannot overflow size_t
+     * on a 64-bit kernel; FONT_MAX_BLOB bounds the allocation. */
+    size_t glyphs_bytes = (size_t)h.num_chars * sizeof(struct font_glyph_info);
+    size_t blob = sizeof(struct font_header) + glyphs_bytes + (size_t)h.bitmap_size;
+    if (size < blob)
+        return -3;
 
-    current_font.header = *h;
-    current_font.glyphs = (struct font_glyph_info *)((uint8_t *)data + sizeof(struct font_header));
-    current_font.bitmap = (uint8_t *)current_font.glyphs + h->num_chars * sizeof(struct font_glyph_info);
-    current_font.is_dynamic = 1;
+    /* 2. One kmalloc block holds [font_state | header | glyphs | bitmap]; the
+     * block base is heap_base so retiring frees everything in one kfree. */
+    uint8_t *mem = (uint8_t *)kmalloc(sizeof(struct font_state) + blob);
+    if (!mem)
+        return -1;
+    struct font_state *ns = (struct font_state *)mem;
+    uint8_t *kblob = mem + sizeof(struct font_state);
+    if (arch_copy_from_user(kblob, data, blob) != 0) {
+        kfree(mem);
+        return -1;
+    }
+
+    /* 3. Re-validate against the kernel copy (defend against a TOCTOU header
+     * change between the two copies) and bound every glyph's bitmap span. */
+    struct font_header *kh = (struct font_header *)kblob;
+    if (kh->magic != FONT_MAGIC || kh->num_chars != h.num_chars ||
+        kh->bitmap_size != h.bitmap_size ||
+        (uint32_t)kh->ascent + (uint32_t)kh->descent == 0) {
+        kfree(mem);
+        return -3;
+    }
+    struct font_glyph_info *kglyphs =
+        (struct font_glyph_info *)(kblob + sizeof(struct font_header));
+    for (uint16_t i = 0; i < kh->num_chars; i++) {
+        uint32_t span = (uint32_t)kglyphs[i].width * (uint32_t)kglyphs[i].height;
+        if (kglyphs[i].data_offset > kh->bitmap_size ||
+            span > kh->bitmap_size - kglyphs[i].data_offset) {
+            kfree(mem);                   /* a glyph would read past the bitmap */
+            return -3;
+        }
+    }
+
+    /* 4. Build the immutable descriptor (pointers reference the kernel blob). */
+    ns->header = *kh;
+    ns->glyphs = kglyphs;
+    ns->bitmap = kblob + sizeof(struct font_header) + glyphs_bytes;
+    ns->heap_base = mem;
+
+    /* 5. Publish under the lock and retire the previous descriptor.  set_font
+     * holds font_lock to swap, so no reader is mid-descriptor; after the swap no
+     * new reader can obtain 'old' (they read the new pointer).  'old' therefore
+     * has no users once the lock is released, so it is safe to free.  The static
+     * default is never freed. */
+    uint64_t flags;
+    spin_lock_irqsave(&font_lock, &flags);
+    struct font_state *old = current_font;
+    current_font = ns;
+    spin_unlock_irqrestore(&font_lock, flags);
+
+    if (old != &default_font)
+        kfree(old->heap_base);            /* heap_base == old (single block) */
 
     return 0;
 }
