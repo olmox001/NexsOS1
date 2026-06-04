@@ -26,9 +26,9 @@
  *     init 0xFFFFFFFF, final XOR 0xFFFFFFFF — identical to mkdisk.c.
  *
  * Known issues:
- *   GPT-01  (W3 REFINE) Partition-entry CRC mismatch is logged but parsing
- *           continues; entries[] may contain corrupt start/end LBAs.  By
- *           contrast, header-CRC mismatch correctly aborts to MBR fallback.
+ *   GPT-01  (W3 REFINE, FIXED) Partition-entry CRC mismatch now aborts to the
+ *           MBR parser (matching header-CRC behaviour), instead of parsing
+ *           entries[] that may contain corrupt start/end LBAs.
  *   GPT-02  (W2 BAD-IMPL) MBR path fills partitions[i+1] (1-based); GPT path
  *           fills partitions[num_partitions] (0-based).  ext4_init(2) gets
  *           different physical partitions depending on the table type.
@@ -266,15 +266,24 @@ void gpt_init(void) {
 
   /* 3.1 Verify Partition Entries CRC32 */
   /* CRC computed over the exact total_entries_size bytes starting at
-   * entries_buf.  Note: unlike the header CRC check above, a mismatch here
-   * does NOT fall back to MBR — parsing continues with potentially corrupt
-   * start/end LBAs in the entries array.
-   * NOTE(GPT-01): this is a known defect; a return or MBR fallback should
-   * follow the pr_err to match the header-CRC behaviour at line 89. */
+   * entries_buf.  GPT-01 (fixed): a mismatch now aborts to the MBR parser,
+   * matching the header-CRC behaviour above, instead of parsing entries that
+   * may carry corrupt start/end LBAs. */
   uint32_t calc_entries_crc = crc32(entries_buf, total_entries_size);
   if (calc_entries_crc != entries_crc) {
-    pr_err("GPT: Partition Entries CRC mismatch! (calc: 0x%08x, orig: 0x%08x)\n",
+    pr_err("GPT: Partition Entries CRC mismatch! (calc: 0x%08x, orig: 0x%08x). Falling back to MBR.\n",
            calc_entries_crc, entries_crc);
+    /* GPT-01: the entries array is untrustworthy — do not parse it.  Abort to
+     * the MBR parser, mirroring the header-CRC fallback above. */
+    if (entries_buf != buf) pmm_free_pages(entries_buf, num_pages);
+    if (virtio_blk_read(buf, 0, 1) != 0) {
+      pr_err("%s", "Partition: Failed to read LBA 0 (MBR fallback)\n");
+      pmm_free_page(buf);
+      return;
+    }
+    mbr_init(buf);
+    pmm_free_page(buf);
+    return;
   }
 
   /* Parse entries */
