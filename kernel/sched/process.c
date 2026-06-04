@@ -1135,6 +1135,12 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   if (!user_buf)
     return -1;
 
+  /* SCHED-09 (#98): max_count is a raw user argument; the fill loop never
+   * writes more than MAX_PROCESSES entries. Clamp to that — this also makes
+   * the sizeof(struct ps_info) * max_count product unable to overflow. */
+  if (max_count > MAX_PROCESSES)
+    max_count = MAX_PROCESSES;
+
   struct ps_info *k_buf =
       (struct ps_info *)kmalloc(sizeof(struct ps_info) * max_count);
   if (!k_buf)
