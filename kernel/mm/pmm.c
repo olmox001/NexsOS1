@@ -1,3 +1,44 @@
+/*
+ * kernel/mm/pmm.c
+ * Physical Memory Manager (PMM)
+ *
+ * Implements the lowest layer of the OS1/NEXS memory subsystem: page-frame
+ * allocation over two zones (DMA and Normal).  The allocator is split into two
+ * phases:
+ *
+ *   pmm_early_init()  - probes the mem_region table supplied by the boot layer,
+ *                        calculates the size of per-frame metadata, and places
+ *                        the metadata (page_array + bitmaps) in the first
+ *                        usable physical region above the kernel image.  The
+ *                        MMU is NOT yet active at this point.
+ *
+ *   pmm_init()        - initialises the two zone descriptors, marks the kernel
+ *                        image and PMM metadata as reserved, and reserves any
+ *                        non-USABLE regions reported by the bootloader.
+ *
+ * Allocation primitives:
+ *   pmm_alloc_page()    - next-fit single page (Normal first, DMA fallback).
+ *   pmm_alloc_pages()   - contiguous multi-page block from ZONE_NORMAL only.
+ *   pmm_alloc_aligned() - aligned contiguous block from ZONE_NORMAL only.
+ *   pmm_free_page()     - returns a page; poisons it 0xCC; panics on double-free.
+ *
+ * Central invariant (IDENTITY MAP):
+ *   The kernel runs identity-mapped (kernel virtual address == physical address
+ *   for the entire RAM window).  pmm_alloc_page() returns
+ *   MEMORY_BASE + pfn_to_phys(pfn), and callers use that value directly as a
+ *   C pointer.  This is explicitly NOT a PA/VA-separated design.
+ *   See MM-PMM-07 and the subsystem analysis S.4 for details.
+ *
+ * Known issues:
+ *   MM-PMM-01  (W3 STUB)         pmm_init_region() is a no-op stub.
+ *   MM-PMM-02  (W3 BUG/SECURITY) pmm_alloc_pages/aligned skip cache-clean+barrier.
+ *   MM-PMM-03  (W2 PERF)         Contiguous alloc is an O(n) scan from PFN 0.
+ *   MM-PMM-04  (W2 WRONG-DESIGN) pmm_alloc_pages/aligned search ZONE_NORMAL only.
+ *   MM-PMM-05  (W2 BAD-IMPL)     global free_pages (atomic) vs per-zone free_pages
+ *                                (plain under lock) can desync.
+ *   MM-PMM-06  (W1 REFINE)       next_free_pfn is ignored by the contiguous path.
+ *   MM-PMM-07  (W2 WRONG-DESIGN) PA returned as pointer; identity-map undocumented.
+ */
 #include <arch/arch.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -11,6 +52,17 @@
 /* Forward declaration */
 void pmm_init_region(uint64_t base, uint64_t size);
 
+/*
+ * pmm_init_region - register an additional usable RAM region with the PMM.
+ *
+ * NOTE(MM-PMM-01): This function is a stub.  It prints the region address and
+ * returns without updating any zone bitmap or metadata.  Multi-region
+ * management beyond the single early-init scan is not implemented.
+ *
+ * Parameters:
+ *   base  - physical start address of the region.
+ *   size  - length in bytes.
+ */
 void pmm_init_region(uint64_t base, uint64_t size) {
   /* Mark pages in this region as usable (they are already 0 in bitmap if zone_init was called) */
   /* This is a placeholder; real implementation would manage multiple regions. */
@@ -18,17 +70,35 @@ void pmm_init_region(uint64_t base, uint64_t size) {
 }
 
 /* Pointers to dynamic metadata */
+/* page_array: flat array of struct page, one entry per page frame (PFN 0..total_pages-1).
+ * Placed immediately after the kernel image by pmm_early_init().
+ * Accessed under the appropriate zone lock (or atomically for free_pages).
+ *
+ * NOTE(MM-PMM-07): page_array is addressed using the identity-map assumption
+ * (the physical address returned by the boot stage IS the usable pointer). */
 static struct page *page_array = NULL;
 static struct zone zones[ZONE_COUNT];
+/* dma_bitmap / normal_bitmap: one bit per PFN in each zone; 1 = allocated/reserved, 0 = free.
+ * Stored contiguously in memory immediately after page_array. */
 static uint64_t *dma_bitmap = NULL;
 static uint64_t *normal_bitmap = NULL;
 
 /* Global statistics */
+/* total_pages: immutable after pmm_init(); no lock needed for reads after init. */
 static uint64_t total_pages;
+/* free_pages: updated with atomic GCC built-ins (__sync_fetch_and_{add,sub}).
+ * NOTE(MM-PMM-05): Per-zone zone->free_pages is updated under the zone spinlock
+ * (non-atomic), while this global is atomic.  The two counters can disagree
+ * transiently if a CPU is preempted between the two updates. */
 static uint64_t free_pages;
 
 /*
  * Mark a page as used in the bitmap
+ *
+ * bitmap_set - mark PFN 'bit' as allocated (1) in 'bitmap'.
+ *
+ * Must be called with the owning zone->lock held.
+ * Uses 64-bit words; 'bit' is a zone-relative PFN.
  */
 static void bitmap_set(uint64_t *bitmap, uint64_t bit) {
   bitmap[bit / 64] |= (1UL << (bit % 64));
@@ -36,6 +106,10 @@ static void bitmap_set(uint64_t *bitmap, uint64_t bit) {
 
 /*
  * Mark a page as free in the bitmap
+ *
+ * bitmap_clear - mark PFN 'bit' as free (0) in 'bitmap'.
+ *
+ * Must be called with the owning zone->lock held.
  */
 static void bitmap_clear(uint64_t *bitmap, uint64_t bit) {
   bitmap[bit / 64] &= ~(1UL << (bit % 64));
@@ -43,6 +117,10 @@ static void bitmap_clear(uint64_t *bitmap, uint64_t bit) {
 
 /*
  * Check if a page is free
+ *
+ * bitmap_test - return non-zero if PFN 'bit' is allocated (1), zero if free.
+ *
+ * Must be called with the owning zone->lock held.
  */
 static int bitmap_test(uint64_t *bitmap, uint64_t bit) {
   return (bitmap[bit / 64] & (1UL << (bit % 64))) != 0;
@@ -50,6 +128,13 @@ static int bitmap_test(uint64_t *bitmap, uint64_t bit) {
 
 /*
  * Find first free bit in bitmap
+ *
+ * bitmap_find_free - find the first free (0) bit in [start, end).
+ *
+ * Must be called with the owning zone->lock held.
+ * Returns the zone-relative PFN of the first free frame, or -1 if none.
+ * This is a linear O(n) scan.
+ * NOTE(MM-PMM-03): No word-level fast-path (e.g. ctzl); scans bit by bit.
  */
 static int64_t bitmap_find_free(uint64_t *bitmap, uint64_t start,
                                 uint64_t end) {
@@ -63,6 +148,17 @@ static int64_t bitmap_find_free(uint64_t *bitmap, uint64_t start,
 
 /*
  * Find contiguous free pages
+ *
+ * bitmap_find_contiguous - find a run of 'count' consecutive free bits
+ * in [start, end).
+ *
+ * Must be called with the owning zone->lock held.
+ * Returns the zone-relative PFN of the first frame in the run, or -1.
+ * NOTE(MM-PMM-03): O(n) scan from the given start every call; no buddy
+ * structure or run-length hint.
+ * NOTE(MM-PMM-06): next_free_pfn is ignored by callers of this function;
+ * the scan always begins at 'start' (typically 0), making next-fit only
+ * effective for single-page allocations via zone_alloc_page().
  */
 static int64_t bitmap_find_contiguous(uint64_t *bitmap, uint64_t start,
                                       uint64_t end, uint64_t count) {
@@ -85,6 +181,19 @@ static int64_t bitmap_find_contiguous(uint64_t *bitmap, uint64_t start,
 
 /*
  * Initialize a zone
+ *
+ * zone_init - initialise a struct zone descriptor for a contiguous PFN range.
+ *
+ * Parameters:
+ *   z         - zone descriptor to initialise.
+ *   name      - human-readable name (e.g. "DMA", "Normal").
+ *   start_pfn - first absolute PFN in this zone.
+ *   end_pfn   - one past the last absolute PFN in this zone.
+ *   bitmap    - pre-allocated bitmap storage (caller must size it as
+ *               ceil((end_pfn - start_pfn) / 64) * 8 bytes).
+ *
+ * Clears the bitmap (all pages initially free) and initialises the zone lock.
+ * Called from pmm_init() before any allocations are made.
  */
 static void zone_init(struct zone *z, const char *name, uint64_t start_pfn,
                       uint64_t end_pfn, uint64_t *bitmap) {
@@ -104,6 +213,30 @@ static void zone_init(struct zone *z, const char *name, uint64_t start_pfn,
 
 /*
  * Early PMM initialization - allocate metadata
+ *
+ * pmm_early_init - phase-1 PMM setup: discover RAM extent and place metadata.
+ *
+ * Called very early in boot, before the MMU is active and before any dynamic
+ * allocation is possible.  Scans the mem_region table to determine the highest
+ * usable physical address (clamped at 256 GB for metadata sanity), computes
+ * the sizes of page_array, dma_bitmap, and normal_bitmap, and places them
+ * contiguously in the first sufficiently large usable region at or above the
+ * kernel image end (__kernel_end).
+ *
+ * After this function returns:
+ *   - page_array, dma_bitmap, normal_bitmap global pointers are valid.
+ *   - total_pages is set.
+ *   - No zone is initialised; no allocations are possible yet.
+ *
+ * Locking: must be called single-threaded (before SMP init).
+ * IRQ context: IRQs are not enabled at call time.
+ *
+ * Parameters:
+ *   regions - array of mem_region entries from the boot platform.
+ *   count   - number of entries in 'regions'.
+ *
+ * NOTE(MM-PMM-07): All metadata pointers are derived from physical addresses
+ * and used as C pointers directly, relying on the identity-map invariant.
  */
 void pmm_early_init(struct mem_region *regions, size_t count) {
   uint64_t mem_end = MEMORY_BASE;
@@ -171,6 +304,17 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
 }
 
 /* Helper to reserve a range */
+/*
+ * pmm_reserve_range - mark [start_pfn, end_pfn) as PG_RESERVED | PG_KERNEL.
+ *
+ * Updates both the zone bitmap (under zone lock via bitmap_set) and the
+ * global atomic free_pages counter.  Silently skips PFNs already reserved
+ * or beyond total_pages.
+ *
+ * Called from pmm_init() to reserve the kernel image and PMM metadata pages.
+ * Must not be called after the system is fully booted (not SMP-safe if
+ * called concurrently with allocations outside the zone lock).
+ */
 static void pmm_reserve_range(uint64_t start_pfn, uint64_t end_pfn) {
   for (uint64_t pfn = start_pfn; pfn < end_pfn; pfn++) {
     if (pfn >= total_pages) break;
@@ -194,6 +338,19 @@ static void pmm_reserve_range(uint64_t start_pfn, uint64_t end_pfn) {
 
 /*
  * Initialize PMM with memory regions
+ *
+ * pmm_init - phase-2 PMM setup: zone construction and page reservation.
+ *
+ * Initialises ZONE_DMA (PFN 0..dma_end_pfn-1) and ZONE_NORMAL
+ * (dma_end_pfn..total_pages-1), then calls pmm_reserve_range() to mark the
+ * kernel image, PMM metadata, and any non-usable bootloader regions.
+ *
+ * If pmm_early_init() was not previously called (e.g. direct entry for
+ * testing), pmm_init() calls it here, but this path is not the normal flow.
+ *
+ * After this function returns all allocation primitives are usable.
+ *
+ * Locking: must be called single-threaded (before SMP init).
  */
 void pmm_init(struct mem_region *regions, size_t count) {
   /* If early_init wasn't called, we are in trouble, but let's try to handle it */
@@ -243,6 +400,25 @@ void pmm_init(struct mem_region *regions, size_t count) {
 
 /*
  * Allocate a single page from specified zone
+ *
+ * zone_alloc_page - allocate one page frame from zone 'z'.
+ *
+ * Uses next-fit: starts the bitmap scan at z->next_free_pfn, then wraps
+ * around to 0 if needed.  Updates z->next_free_pfn to hint the next call.
+ *
+ * After finding a free PFN:
+ *   - marks it allocated in the zone bitmap (under zone lock).
+ *   - decrements z->free_pages (under lock) and global free_pages (atomic).
+ *   - initialises struct page (flags=0, refcount=1).
+ *   - zeroes the page data (memset), cleans the D-cache line, issues a full
+ *     memory barrier (arch_mb).  This ensures DMA coherency for the caller.
+ *
+ * NOTE(MM-PMM-07): returns MEMORY_BASE + pfn_to_phys(abs_pfn), which is a
+ * physical address used directly as a pointer under the identity-map invariant.
+ *
+ * Returns: pointer to the zeroed page, or NULL if the zone is exhausted.
+ * Locking: takes and releases z->lock with IRQ save/restore.
+ * IRQ context: safe to call from IRQ-disabled context.
  */
 static void *zone_alloc_page(struct zone *z) {
   uint64_t flags;
@@ -286,6 +462,17 @@ static void *zone_alloc_page(struct zone *z) {
 
 /*
  * Allocate a single page
+ *
+ * pmm_alloc_page - allocate one 4KB page from the best available zone.
+ *
+ * Tries ZONE_NORMAL first (preferred to preserve DMA pages for constrained
+ * devices), falls back to ZONE_DMA if Normal is exhausted.
+ *
+ * The returned page is zeroed, cache-cleaned, and memory-barrier-fenced (done
+ * inside zone_alloc_page).
+ *
+ * Returns: pointer to a 4KB page, or NULL on global exhaustion.
+ * Locking: no caller lock required; zone locks are taken internally.
  */
 void *pmm_alloc_page(void) {
   /* Try normal zone first, then DMA */
@@ -298,6 +485,28 @@ void *pmm_alloc_page(void) {
 
 /*
  * Allocate multiple contiguous pages
+ *
+ * pmm_alloc_pages - allocate 'count' physically contiguous 4KB pages.
+ *
+ * Delegates to pmm_alloc_page() for count==1 (which includes cache-clean
+ * and barrier).  For count>1, searches ZONE_NORMAL only via a linear bitmap
+ * scan from PFN 0.
+ *
+ * NOTE(MM-PMM-04): Only ZONE_NORMAL is searched; there is no mechanism to
+ * allocate a contiguous DMA-zone block.  DMA device drivers that need
+ * physically contiguous memory below 16 MB cannot satisfy that requirement
+ * through this path.
+ *
+ * NOTE(MM-PMM-02): For count>1, the returned memory is zeroed (memset) but
+ * arch_cache_clean_range() and arch_mb() are NOT called.  Cache lines may be
+ * stale from a previous owner, which can cause DMA read errors when a device
+ * DMA-reads into these pages before the CPU writes the full block.
+ *
+ * NOTE(MM-PMM-03): The contiguous scan is O(n) from PFN 0 on every call;
+ * there is no buddy structure or run-length metadata to accelerate it.
+ *
+ * Returns: pointer to the first page of the contiguous run, or NULL.
+ * Locking: takes and releases ZONE_NORMAL's lock with IRQ save/restore.
  */
 void *pmm_alloc_pages(size_t count) {
   if (count == 0)
@@ -343,6 +552,23 @@ void *pmm_alloc_pages(size_t count) {
 
 /*
  * Free a single page
+ *
+ * pmm_free_page - release a single 4KB page back to its zone.
+ *
+ * Steps:
+ *   1. Validates the pointer is within [MEMORY_BASE, MEMORY_BASE+total_pages*PAGE_SIZE).
+ *   2. Checks PG_RESERVED; logs a warning and returns without freeing if set.
+ *   3. Atomically decrements struct page refcount; if still >0 after decrement,
+ *      another reference exists (shared page) -- no free is performed.
+ *   4. Acquires the zone lock; checks bitmap to detect double-free (panics).
+ *   5. Clears the bitmap bit and increments zone->free_pages (under lock).
+ *   6. Poisons the page with 0xCC to catch use-after-free dereferences.
+ *   7. Increments global free_pages atomically.
+ *
+ * The double-free check (step 4) is done under the lock, which prevents the
+ * race where two CPUs both see refcount==1 and both attempt to free.
+ *
+ * Locking: takes and releases the zone spinlock with IRQ save/restore.
  */
 void pmm_free_page(void *page) {
   if (!page)
@@ -406,6 +632,11 @@ void pmm_free_page(void *page) {
 
 /*
  * Free multiple contiguous pages
+ *
+ * pmm_free_pages - release 'count' contiguous pages starting at 'page'.
+ *
+ * Calls pmm_free_page() for each page sequentially.  Each call acquires and
+ * releases the zone lock independently, so this is not an atomic bulk free.
  */
 void pmm_free_pages(void *page, size_t count) {
   uint64_t phys = (uint64_t)page;
@@ -416,6 +647,26 @@ void pmm_free_pages(void *page, size_t count) {
 
 /*
  * Allocate with specific alignment (for block I/O)
+ *
+ * pmm_alloc_aligned - allocate 'size' bytes with at least 'align'-byte alignment.
+ *
+ * Allocates (pages + align_pages - 1) contiguous pages via pmm_alloc_pages()
+ * to guarantee an aligned sub-range exists within the block, then frees the
+ * unused leading and trailing pages.
+ *
+ * 'align' must be a power of two and a multiple of PAGE_SIZE for the bit-mask
+ * arithmetic to be correct (no validation is performed on 'align').
+ *
+ * NOTE(MM-PMM-04): Like pmm_alloc_pages(), this function searches ZONE_NORMAL
+ * only.  Aligned contiguous allocations in the DMA zone are not possible.
+ *
+ * NOTE(MM-PMM-02): The cache-clean+barrier omission from pmm_alloc_pages()
+ * propagates here; callers using this for DMA buffers must clean the cache
+ * themselves before initiating device DMA.
+ *
+ * Returns: aligned pointer, or NULL on failure.
+ * Locking: delegates to pmm_alloc_pages() and pmm_free_pages(); no additional
+ *          lock is held across the gap between those calls.
  */
 void *pmm_alloc_aligned(size_t size, size_t align) {
   size_t pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -452,6 +703,14 @@ void *pmm_alloc_aligned(size_t size, size_t align) {
 
 /*
  * Get page descriptor for physical address
+ *
+ * pmm_phys_to_page - return the struct page descriptor for a physical address.
+ *
+ * Returns NULL if 'phys' is below MEMORY_BASE (guarded by ARCH_MEMORY_BASE
+ * compile-time check) or beyond total_pages.
+ *
+ * NOTE(MM-PMM-07): 'phys' is expected to be an identity-mapped physical
+ * address (same as the pointer value under the current memory model).
  */
 struct page *pmm_phys_to_page(uint64_t phys) {
 #if ARCH_MEMORY_BASE > 0
@@ -466,6 +725,14 @@ struct page *pmm_phys_to_page(uint64_t phys) {
 
 /*
  * Get physical address for page descriptor
+ *
+ * pmm_page_to_phys - return the physical address corresponding to a struct page.
+ *
+ * Computes pfn = page - page_array, then returns MEMORY_BASE + pfn_to_phys(pfn).
+ * The caller is responsible for ensuring 'page' is a valid entry in page_array.
+ *
+ * NOTE(MM-PMM-07): The returned value is a physical address that is also valid
+ * as a pointer under the identity-map invariant.
  */
 uint64_t pmm_page_to_phys(struct page *page) {
   uint64_t pfn = page - page_array;
@@ -474,11 +741,24 @@ uint64_t pmm_page_to_phys(struct page *page) {
 
 /*
  * Statistics
+ *
+ * pmm_get_free_pages - return the approximate global count of free pages.
+ *
+ * NOTE(MM-PMM-05): The global free_pages counter is updated atomically, but
+ * per-zone free_pages counters are updated under individual zone locks.  The
+ * two can transiently disagree.  This function returns only the global counter.
  */
 uint64_t pmm_get_free_pages(void) { return free_pages; }
 
+/* pmm_get_total_pages - return total_pages (immutable after pmm_init). */
 uint64_t pmm_get_total_pages(void) { return total_pages; }
 
+/*
+ * pmm_dump_stats - print total/free/used page counts to the kernel log.
+ *
+ * Uses the global free_pages counter; see NOTE(MM-PMM-05) for caveats.
+ * Suitable for boot-time diagnostics only; takes no locks.
+ */
 void pmm_dump_stats(void) {
   pr_info("%s", "PMM Statistics:\n");
   pr_info("  Total: %lu pages (%lu MB)\n", total_pages,

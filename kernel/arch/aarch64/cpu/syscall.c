@@ -84,6 +84,11 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
       !vmm_is_user_addr(dest_addr + n))
     return -1;
 
+  /* UACC-AARCH64-01: guard current_process before dereferencing its
+   * page_table, matching arch_copy_from_user above. */
+  if (!current_process || !current_process->page_table)
+    return -1;
+
   if (vmm_check_range(current_process->page_table, dest_addr, n, PTE_VALID) != 0)
     return -1;
 

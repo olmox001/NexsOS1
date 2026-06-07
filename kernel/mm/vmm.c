@@ -3,6 +3,39 @@
  * Virtual Memory Manager
  *
  * AArch64 4-level page table management
+ *
+ * NOTE(MM-VMM-07): The file header says "AArch64" but this file is compiled
+ * for both AArch64 and AMD64.  The page-table index arithmetic (PGD/PUD/PMD/PT
+ * at 39/30/21/12 bit) matches 4-level tables on both architectures; the heavy
+ * lifting is delegated to arch_vmm_* hooks which differ per arch.
+ *
+ * Role:
+ *   This file provides two distinct services:
+ *   1. Page-table construction helpers (vmm_map_page, vmm_map, vmm_unmap_page,
+ *      vmm_check_range) that call arch_vmm_map/unmap under per-process mm_lock.
+ *   2. MMU lifecycle (vmm_init -> vmm_dynamic_remap) and per-process PGD
+ *      management (vmm_create_pgd / vmm_destroy_pgd).
+ *
+ * Central invariant (IDENTITY MAP):
+ *   The kernel runs identity-mapped (VA == PA for the RAM window).
+ *   phys_to_virt() and virt_to_phys() in vmm.h are identity casts.
+ *   get_next_table() casts a PTE physical address directly to a pointer;
+ *   vmm_map/vmm_init use pmm_alloc_page() results directly as pointers.
+ *   This model works under QEMU -kernel but contradicts the higher-half map
+ *   described in the vmm.h comment block.  See MM-VMM-02 and S.4 of the
+ *   subsystem analysis.
+ *
+ * Known issues:
+ *   MM-VMM-01  (W3 SECURITY)     All RAM mapped PAGE_KERNEL_EXEC; no W^X.
+ *   MM-VMM-02  (W3 WRONG-DESIGN) PTE physical addresses cast to pointers;
+ *                                 only valid under identity map.
+ *   MM-VMM-03  (W2 REFINE/TODO)  vmm_dynamic_remap leaks the old PGD.
+ *   MM-VMM-04  (W3 BUG)          vmm_destroy_pgd leaks user RAM frames and
+ *                                 contains a dead empty loop.
+ *   MM-VMM-05  (W3 BUG/SECURITY) No cross-CPU TLB shootdown on unmap/remap.
+ *   MM-VMM-06  (W2 REFINE)       Generic map path is 4KB-only; 2MB blocks
+ *                                 only via arch_vmm_map_range.
+ *   MM-VMM-07  (W1 DOC)          File header mentions only AArch64.
  */
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
@@ -16,6 +49,7 @@
 #include <stdint.h>
 
 /* Page Table Levels */
+/* 4-level walk (48-bit VA, 4KB granule on both arches). */
 #define PGD_SHIFT 39
 #define PUD_SHIFT 30
 #define PMD_SHIFT 21
@@ -27,12 +61,39 @@
 #define PT_INDEX(x) (((x) >> PT_SHIFT) & 0x1FF)
 
 /* Global Kernel PGD */
+/* kernel_pgd - physical address of the current kernel page-global directory.
+ * Under the identity-map invariant this value is also a valid C pointer.
+ * Updated atomically (pointer assignment) in vmm_dynamic_remap() after the
+ * hardware TTBR/CR3 has been switched; secondary CPUs read it after arch_mb(). */
 uint64_t *kernel_pgd;
 
 #define PTE_ADDR_MASK 0x0000FFFFFFFFF000UL
 
 /*
  * Get or create next level table
+ *
+ * get_next_table - walk one level of the page table, optionally allocating.
+ *
+ * Parameters:
+ *   table - pointer to the current-level page-table page (512 uint64_t entries).
+ *   index - 9-bit index into 'table' for the next level.
+ *   alloc - if non-zero and the entry is not present, allocate a new table page.
+ *
+ * Returns: pointer to the next-level table, or NULL if not present and
+ *          alloc==0, or NULL if pmm_alloc_page() fails.
+ *
+ * NOTE(MM-VMM-02): When an existing entry is present, the physical address is
+ * extracted from bits [47:12] of the PTE and cast DIRECTLY to a uint64_t *
+ * pointer.  This is only correct under the identity-map invariant (VA==PA).
+ * On a higher-half or KASLR kernel this would dereference a wrong address.
+ *
+ * NOTE(MM-VMM-02): When allocating a new table, pmm_alloc_page() returns a
+ * value that is simultaneously the physical address stored in the PTE AND the
+ * C pointer used to clear the page.  The in-code comments at lines 54-63
+ * of the original source acknowledge this confusion explicitly.
+ *
+ * Locking: caller must hold the relevant PGD/process mm_lock; this helper
+ * does not take any lock itself.
  */
 static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
   if (table[index] & PTE_VALID) {
@@ -84,6 +145,25 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
 
 /*
  * Map a page
+ *
+ * vmm_map_page - map a single 4KB page in the given page table.
+ *
+ * Validates page-size alignment of both 'virt' and 'phys', then delegates to
+ * arch_vmm_map() which performs the actual PTE write.
+ *
+ * NOTE(MM-VMM-06): This function always maps 4KB pages.  2MB huge-page
+ * mappings are only used through arch_vmm_map_range() called from
+ * vmm_dynamic_remap(); the generic path is inconsistent and slower for
+ * large contiguous ranges.
+ *
+ * Parameters:
+ *   pgd   - physical address of the PGD (also a valid pointer under identity map).
+ *   virt  - virtual address to map; must be 4KB-aligned.
+ *   phys  - physical address to map to; must be 4KB-aligned.
+ *   flags - PTE attribute flags (PAGE_KERNEL_EXEC, PAGE_USER, etc.).
+ *
+ * Returns: 0 on success, -1 on alignment error.
+ * Locking: caller must hold any required mm_lock.
  */
 int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags) {
   if ((virt & 0xFFF) || (phys & 0xFFF)) {
@@ -98,6 +178,16 @@ int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags) {
 }
 
 /* Internal helper with locking */
+/*
+ * vmm_map_page_locked - vmm_map_page() wrapped with proc->mm_lock.
+ *
+ * Acquires proc->mm_lock with IRQ save before calling vmm_map_page(), then
+ * releases it.  Use this variant when the caller does not already hold mm_lock.
+ *
+ * NOTE(MM-VMM-05): Even with mm_lock held, there is no TLB shootdown IPI sent
+ * to other CPUs after mapping.  On SMP, other CPUs may continue to use a
+ * stale TLB entry for this virtual address until their next context switch.
+ */
 int vmm_map_page_locked(struct process *proc, uint64_t virt, uint64_t phys,
                         uint64_t flags) {
   uint64_t lock_flags;
@@ -110,6 +200,25 @@ int vmm_map_page_locked(struct process *proc, uint64_t virt, uint64_t phys,
 /*
  * Check if a range is fully mapped and has required flags
  * Returns 0 if OK, -1 if any page is missing
+ *
+ * vmm_check_range - verify every page in [virt, virt+size) is mapped with
+ *                   all bits of 'flags_mask' set.
+ *
+ * Walks the four-level page table using get_next_table() with alloc=0.
+ * Returns 0 if every PTE is present and satisfies the flags_mask, or -1 as
+ * soon as any level is missing or a PTE fails the mask check.
+ *
+ * NOTE(MM-VMM-02): Internally calls get_next_table(), which casts PTE
+ * physical addresses to pointers under the identity-map assumption.
+ *
+ * Parameters:
+ *   pgd        - PGD to walk (physical address / identity-mapped pointer).
+ *   virt       - start virtual address (rounded down to 4KB boundary).
+ *   size       - length in bytes (rounded up to 4KB boundary).
+ *   flags_mask - set of PTE bits that must all be present; 0 skips flag check.
+ *
+ * Returns: 0 if fully mapped, -1 on first missing or non-conforming page.
+ * Locking: caller must ensure the page table is not concurrently modified.
  */
 int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
                     uint64_t flags_mask) {
@@ -143,18 +252,43 @@ int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
   return 0;
 }
 
+/*
+ * vmm_get_phys - translate a virtual address to its mapped physical address.
+ *
+ * Delegates entirely to arch_vmm_get_physical(); refer to the arch
+ * implementation for details on the walk and the identity-map assumptions.
+ *
+ * Returns the physical address, or 0 / arch-defined sentinel on unmapped VA.
+ */
 uint64_t vmm_get_phys(uint64_t *pgd, uint64_t virt) {
   return arch_vmm_get_physical((uint64_t)pgd, virt);
 }
 
 /*
  * Unmap a page
+ *
+ * vmm_unmap_page - remove a single page mapping from the given PGD.
+ *
+ * Delegates to arch_vmm_unmap(), which clears the PTE and performs a local
+ * TLB invalidation.
+ *
+ * NOTE(MM-VMM-05): Only the calling CPU's TLB is flushed.  No IPI is sent to
+ * other CPUs to invalidate their TLB entries for this VA.  On SMP, other cores
+ * may continue to use stale translations, creating a correctness and security
+ * hazard (stale translation could point to a page now assigned to another
+ * process).
  */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt) {
   arch_vmm_unmap((uint64_t)pgd, virt);
 }
 
 /* Internal helper with locking */
+/*
+ * vmm_unmap_page_locked - vmm_unmap_page() wrapped with proc->mm_lock.
+ *
+ * Acquires proc->mm_lock with IRQ save/restore around the unmap call.
+ * NOTE(MM-VMM-05): TLB shootdown is still absent even with the lock held.
+ */
 void vmm_unmap_page_locked(struct process *proc, uint64_t virt) {
   uint64_t lock_flags;
   spin_lock_irqsave(&proc->mm_lock, &lock_flags);
@@ -164,6 +298,17 @@ void vmm_unmap_page_locked(struct process *proc, uint64_t virt) {
 
 /*
  * Map a range of memory
+ *
+ * vmm_map - map a contiguous virtual range [virt, virt+size) to [phys, phys+size).
+ *
+ * Both 'virt' and 'phys' are rounded down to 4KB; 'size' is rounded up.
+ * Calls vmm_map_page() once per 4KB page, stopping and returning -1 on the
+ * first failure.  Partial mappings are not cleaned up on error.
+ *
+ * NOTE(MM-VMM-06): Always maps 4KB pages regardless of alignment or size.
+ *
+ * Returns: 0 on success, -1 if any page mapping fails.
+ * Locking: caller must hold any required mm_lock.
  */
 int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size,
             uint64_t flags) {
@@ -183,6 +328,25 @@ int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size,
 
 /*
  * Initialize VMM and Enable MMU
+ *
+ * vmm_init - phase-1 MMU bring-up: map a 128 MB bootstrap window and enable
+ *            the MMU.
+ *
+ * Steps:
+ *   1. Allocate and zero the kernel PGD from the PMM (sets global kernel_pgd).
+ *   2. Map [ARCH_RAM_START, ARCH_RAM_START+128MB) with PAGE_KERNEL_EXEC using
+ *      vmm_map() (4KB pages).
+ *   3. Map MMIO regions via arch_vmm_map_mmio().
+ *   4. Enable the MMU by passing virt_to_phys(kernel_pgd) to arch_vmm_init_hw().
+ *      Under identity map, virt_to_phys is a no-op cast.
+ *
+ * After vmm_init() the kernel executes with the MMU active.  Only the first
+ * 128 MB of RAM are accessible; vmm_dynamic_remap() extends coverage.
+ *
+ * NOTE(MM-VMM-01): The bootstrap window is mapped PAGE_KERNEL_EXEC, making
+ * the kernel heap, stack, and data pages executable.  There is no W^X split.
+ *
+ * Locking: must be called single-threaded before SMP bring-up.
  */
 void vmm_init(void) {
   pr_info("%s", "VMM: Initializing MMU (Phase 1: Bootstrap)...\n");
@@ -212,6 +376,28 @@ void vmm_init(void) {
 
 /*
  * Dynamic remapping of all discovered RAM
+ *
+ * vmm_dynamic_remap - phase-2 mapping: remap all discovered RAM into a new PGD.
+ *
+ * Builds a new PGD from scratch, using arch_vmm_map_range() (which uses 2MB
+ * block entries where possible) to map every MEM_REGION_USABLE region returned
+ * by arch_platform_get_mem_regions().  Re-maps MMIO.  Then atomically switches
+ * the hardware to the new PGD with arch_vmm_set_pgd() and updates kernel_pgd.
+ *
+ * NOTE(MM-VMM-01): All usable regions are mapped PAGE_KERNEL_EXEC.  The entire
+ * kernel heap, stacks, and PMM metadata are therefore executable.
+ *
+ * NOTE(MM-VMM-03): The old PGD (bootstrap) is stored in 'old_pgd' and then
+ * abandoned -- it is never freed.  A correct implementation would broadcast an
+ * IPI to all secondary CPUs, wait for them to switch, and only then return the
+ * old PGD pages to the PMM.  The (void)old_pgd suppresses the unused-variable
+ * warning.
+ *
+ * NOTE(MM-VMM-05): arch_vmm_set_pgd() flushes the local TLB; no IPI is sent
+ * to secondary CPUs.  If any secondary is running at this point it may access
+ * the old (now leaked) PGD's tables.
+ *
+ * Locking: must be called before SMP bring-up completes on secondary CPUs.
  */
 void vmm_dynamic_remap(void) {
   pr_info("%s", "VMM: Performing RAM-aware dynamic remapping...\n");
@@ -261,6 +447,14 @@ void vmm_dynamic_remap(void) {
 
 /*
  * Create a new PGD
+ *
+ * vmm_create_pgd - allocate a new process PGD with the kernel half pre-filled.
+ *
+ * Delegates to arch_vmm_create_process_pgd() which allocates a page, copies
+ * the upper-half (kernel) PGD entries from kernel_pgd by reference (not
+ * deep-copied), and leaves the lower-half zero for user-space mappings.
+ *
+ * Returns: physical address of the new PGD (also usable as a pointer).
  */
 uint64_t *vmm_create_pgd(void) {
   return (uint64_t *)arch_vmm_create_process_pgd();
@@ -268,6 +462,31 @@ uint64_t *vmm_create_pgd(void) {
 
 /*
  * Destroy a PGD and all mapped user-space page tables
+ *
+ * vmm_destroy_pgd - free the user-space page tables of a process PGD.
+ *
+ * Walks only the private user portion (PGD index 0, PUD indices 2-511) and
+ * frees the page-table pages (L2 PMD pages and L3 PTE pages).  The PUD page
+ * itself and the PGD page are freed last.
+ *
+ * NOTE(MM-VMM-04): This function DOES NOT free the physical RAM frames that
+ * the user process had mapped.  The comment in the source ("we don't free the
+ * actual RAM frames here as they might be shared") is the stated rationale, but
+ * there is no frame refcount integrated with map/unmap (struct page.refcount
+ * is not incremented on vmm_map_page).  As a result, every normal (non-shared)
+ * user page leaks on process exit.  Fix direction: per-frame refcounting in the
+ * PMM, decremented on unmap, freed when the count reaches zero.
+ *
+ * NOTE(MM-VMM-04): PGD entries 1-511 are iterated by the loop at the end of
+ * this function (lines 309-313 of the original), but that loop body is empty --
+ * it is a dead no-op.  Any user mapping that used a PGD index other than 0 is
+ * silently leaked.
+ *
+ * NOTE(MM-VMM-02): PTE physical addresses are cast directly to pointers
+ * (pud0, pmd, pte variables) under the identity-map assumption.
+ *
+ * Locking: caller must ensure no other CPU holds or will use this PGD
+ * (process must be fully stopped and de-scheduled before calling).
  */
 void vmm_destroy_pgd(uint64_t *pgd) {
   if (!pgd)

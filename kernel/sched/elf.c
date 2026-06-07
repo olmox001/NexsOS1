@@ -46,6 +46,22 @@ int process_load_elf(struct process *proc, const char *path) {
     }
 
     if (phdr.p_type == PT_LOAD) {
+      /* ELF-01: reject a PT_LOAD whose VA is not wholly inside the user window
+       * [0x70000000, 0xC0000000).  User ELFs link at 0x80000000 (Makefile
+       * -Wl,-Ttext); their lowest segment is the header page at 0x7ffff000 and
+       * the user stack base is 0xC0000000.  Under the PA==VA identity map a
+       * segment below this window (e.g. a binary mis-linked at the kernel base,
+       * 0x40080000) maps straight over kernel RAM and corrupts it.  Reject here,
+       * before allocating or mapping anything.  (Conservative interim bound: the
+       * precise per-arch limit is part of the higher-half / PA-VA rework.) */
+      if (phdr.p_vaddr < 0x70000000UL || phdr.p_vaddr >= 0xC0000000UL ||
+          phdr.p_memsz > 0xC0000000UL - phdr.p_vaddr) {
+        pr_err("ELF: PT_LOAD vaddr 0x%lx (memsz 0x%lx) outside user range "
+               "[0x70000000,0xC0000000) - rejecting (mis-linked binary?)\n",
+               phdr.p_vaddr, phdr.p_memsz);
+        return -1;
+      }
+
       /* Generic User Mapping Flags */
       uint64_t flags = PTE_USER | PTE_VALID;
 

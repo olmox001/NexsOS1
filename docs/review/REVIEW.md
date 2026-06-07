@@ -149,3 +149,100 @@ The W3+ actionable tier (**72 findings**) is filed as individual GitHub issues o
 Each issue body carries the `file:line` location, the finding text (maintainer-corrected),
 and a pointer to its subsystem doc + this index. They are the unit of work for the
 delegated fix phase (Phase 3).
+
+## 8. Phase 3 — fixes landed (branch `comprehensive-review`)
+
+Each verified by build (both arches) + headless QEMU runtime, committed separately.
+The boot/crash fixes were delegated one-agent-at-a-time and maintainer-verified before
+commit. For the W3 issue-tier rows: #80/#62 were agent self-verified under the authorized
+build+boot workflow; #98/#59/#63/#42/#70/#50/#74 (this session) were each verified by an
+independent build on both arches + headless boot on both arches before commit (several were
+implemented by delegated sub-agents that did not commit), **pending maintainer review**.
+
+| Commit | Fix | Issue |
+|---|---|---|
+| `0c5dc0a` | amd64 read full 64-bit PCI BAR (virtio.c + hal.c) + `arch_vmm_map_device` | **#44** (W5) ✅ |
+| `89c3a52` | amd64 clone high device-MMIO PML4 entries into process PGDs (fixes ≥4G `0xc0…` fault) | part of #94 ✅ |
+| `fedd9e2` | amd64 detect PVH via `hvm_start_info.magic` → real memory map (up to 4GB+) | **#28, #29** ✅ |
+| `8b03255` | amd64 `*(.lbss*)`→`.bss` so PMM metadata no longer overlaps `cpu_data` (SMP `current_task` page-fault) | runtime-discovered ✅ |
+| `b3ea74f` | aarch64 real DTB via `-dtb`/raw `kernel.bin` (FDT works, `x0` set) + SMP fallback cap 64→8; `-m 5G` default both arches | runtime-discovered ✅ |
+| `3f9f81f` | userland `calloc(nmemb,size)` integer-overflow guard (pre-multiply `size > SIZE_MAX/nmemb` check) | **#80** (W3) ✅ |
+| `c6c268a` | bound user-supplied I/O buffer size at 16 MiB before `kmalloc` (FILE_WRITE/READ/LIST_DIR, cases 251/252/254) | **#62** (W3) ✅ |
+| `6fd1b47` | graphics: capture the IPC message + close decision under `compositor_lock`, then **release it before** `kernel_ipc_send`/`process_terminate` in `compositor_handle_click` → resolves the AB-BA freeze on window-close/kill | **#100** (W4) ⚠️ freeze only |
+| `848d6c8` | sched: clamp `sys_getprocs` `max_count` to `MAX_PROCESSES` before `kmalloc` (unchecked multiply + unbounded alloc) | **#98** (W3) ✅ |
+| `8e01551` | fs: `struct ext4_group_desc` `padding[14]`→`[12]` (34→32 B, matches the on-disk GDT entry; stops multi-group write corruption) | **#59** (W3) ✅ |
+| `7839076` | fs: abort to the MBR parser on partition-entry CRC mismatch in `gpt_init` (mirrors the header-CRC fallback) | **#63** (W3) ✅ |
+| `0e6a790` | arch: null-guard `current_process` in aarch64 `arch_copy_to_user` (mirrors `arch_copy_from_user`) | **#42** (W3) ✅ |
+| `d02038d` | graphics: floor `graphics_font_height()` to the built-in default when `ascent+descent<=0` (compositor div-by-zero) | **#70** (W3) ✅ |
+| `392d7fc` | drivers: check `pmm_alloc_pages/_page` returns in `virtio_input` `init_device` (NULL-deref → graceful bail) | **#50** (W3) ✅ |
+| `94c936c` | lib: `ktest` counts real pass/fail via a `ktest_test_failed` flag set by `KASSERT` (was always N PASS / 0 FAIL) | **#74** (W3) ✅ |
+
+Rows `3f9f81f` through `94c936c` are the **W3 issue-tier** fix phase — small, scoped, additive
+correctness/security hardening on the issue backlog, distinct from the boot/crash fixes above.
+Each was verified by build (both arches) + boot (no regression). Where the fixed path is not
+exercised at boot (the capped/overflow guards #80/#62/#98, the multi-group write #59, the
+CRC-mismatch fallback #63, the alloc-failure bails #50, the malformed-font floor #70, the
+aarch64 null guard #42), the standard is build + no-regression + correct-by-inspection.
+LIB-KTEST-01 (#74) additionally had its FAIL path proven by a throwaway broken assertion
+(→ 2 PASSED / 1 FAILED) before reverting.
+
+`6fd1b47` (GFX-COMP-13, **user-reported W4**) is a real SMP lock-ordering fix — verified by
+build (both arches) + boot. **It resolves only the freeze / AB-BA deadlock**; the companion
+zombie/no-reap symptom (when `process_terminate` runs from mouse-IRQ context) is a **separate,
+still-open** fix tracked via SCHED-03, and the underlying compositor↔sched coupling stays open
+as GFX-COMP-03 (#69).
+
+**Verified runtime status now:** amd64 boots clean at `-m 3G / 5G / 8G` (detects 6–9 GB,
+virtio-blk + Ext4, 4 SMP cores, no faults); aarch64 FDT-driven (real RAM + CPU count),
+boots to the TTY shell.
+
+**IPC → 64-bit: already satisfied (verified).** `struct ipc_message`
+(`include/api/posix_types.h`) already carries `uint64_t data1; uint64_t data2; char
+payload[64];` — present since `main` — and all producers/consumers use 64-bit
+(keyboard packs `(uint64_t)code<<16`, `lib.c` reads `data1>>16`, `ipc_send`/`ipc_recv`
+use 64-bit). Exercised at runtime every boot (keyboard input + `notify()`). No change needed.
+
+**Remaining (open, future sessions — multi-step refactors, not concludable in one short pass):**
+amd64 ACPI-MADT CPU count (ARCH-01), real PCI/ACPI init (ARCH-02), user-vs-kernel
+fault isolation (EXC-AMD64-02); the kernel/userland higher-half **addressing rework**
+(the central PA==VA invariant); W^X (MM-VMM-01/AMMU-01); and re-commenting the headers
++ `.S` files reverted in Phase 2 (all C sources are commented and committed).
+
+## 9. amd64 runtime crashes — root-caused (fix pending)
+
+Two amd64 defects were precisely root-caused via headless QEMU + interactive `make run`
+(serial capture, `addr2line`, an in-#PF-handler PGD walk). Both remain **open**: the
+experimental fixes were **reverted** to keep the tree at the verified known-good state (the
+§8 fixes), because the teardown fix was only robust with debug-`printk` timing (a residual
+SMP race re-appeared once the markers were removed). Recorded here with the exact mechanism
+and fix direction for a focused follow-up.
+
+**SCHED-UAF-01 — process-teardown use-after-free; crash on window-close (both arches).**
+Closing a window (compositor close button → `process_terminate`) can leave the terminated
+process **still linked in a per-CPU runqueue** when its `struct process` page is freed (and
+PMM-poisoned `0xCC`). `schedule()`'s O(1) pick and the **work-stealing** path then
+dereference the freed node — `addr2line` pins the aarch64 fault to `schedule()` at
+`kernel/sched/process.c:937` (`next->priority` on a poisoned struct) → data-abort (aarch64)
+/ GPF→triple-fault→reboot (amd64). *Repro:* `make run`, spawn `demo3d`/`doom`, click its
+close (X). *Related:* the compositor calls `process_terminate` from **mouse-IRQ context**
+(its header says "IRQ context: no") — SCHED-03 / GFX-COMP-13 companion. *Fix direction:*
+remove the process from **all** runqueues (under the correct per-CPU `sched_lock`) and ensure
+no reference remains before the struct is freed (quiesce/epoch or refcount); refuse to
+(re)enqueue a DEAD/ZOMBIE process; pair with a **reliable non-IRQ reaper** (a kernel thread).
+A "defer the kill + drain in `idle_task_entry`" workaround is **insufficient** — the drain
+only runs when a CPU goes idle, so the close button silently does nothing when all CPUs are
+busy (observed on aarch64).
+
+**ARCH-AMD64-APPGD-01 — APs run on the stale boot PML4 → high device-MMIO faults.**
+`start.S` has `kernel_pgd_phys: .quad boot_pml4`, and `arch_cpu_wake_secondary`
+(`platform.c` ~:459) launches APs with CR3 = `kernel_pgd_phys`. But `arch_vmm_init_hw` /
+`vmm_dynamic_remap` switch the BSP to a **new dynamic `kernel_pgd`** (the one
+`arch_vmm_map_device` later populates with the >4GB virtio BARs at `PML4[1]`);
+`kernel_pgd_phys` is never updated. APs therefore run on **`boot_pml4`**, whose `PML4[1]` is
+absent → a device IRQ touching high MMIO from an AP/idle (e.g. the virtio-input ISR at
+`0xc000005000`) page-faults. *Confirmed:* an in-#PF PGD walk showed `cr3=boot_pml4
+(≠ kernel_pgd)`, `PML4[1]=0` while `kernel_pgd PML4[1]` is present. *Fix direction:* set the
+AP trampoline CR3 to the current dynamic `kernel_pgd` (`(uint32_t)(uintptr_t)kernel_pgd` —
+identity-mapped, VA==PA) in `arch_cpu_wake_secondary`, or update `kernel_pgd_phys` after the
+dynamic remap. (Verified no-regression in isolation — 4 APs still come online — but it was
+bundled with the reverted SCHED-UAF work, so it is not committed.)

@@ -1,11 +1,32 @@
 /*
  * user/bin/demo3d.c
- * Solid 3D Cube Demo with Software Rasterization
- * Implements Flat Shading and Backface Culling
+ * Solid 3D Cube Demo — fixed-point software rasterizer
+ *
+ * Implements a real-time rotating solid cube with:
+ *   - Fixed-point 16.16 arithmetic throughout (FP_SHIFT=16, FP_ONE=65536).
+ *   - Per-axis rotation (rotate_x, rotate_y) using cos_fp/sin_fp from
+ *     kernel/lib/math.c (included via lib.c).
+ *   - Perspective projection (project) with a focal distance of 3*FP_ONE;
+ *     z is clamped to 100 to prevent division by zero near the camera.
+ *   - Backface culling via the Z component of the cross product of two face
+ *     edge vectors (nz < 0 means the face is visible from the camera).
+ *   - Flat shading: intensity is proportional to -nz (more face-on = brighter).
+ *   - Scan-line fill (fill_triangle): splits each quadrilateral into two
+ *     triangles and fills each with an integer step-interpolation rasterizer.
+ *   - Double-buffer-style rendering: the full frame is composed into the
+ *     static framebuffer[] array and uploaded with a single window_blit() call.
+ *
+ * The Italian-language comments in the main loop and fill_triangle describe
+ * the mathematical steps in the original author's language; they are preserved
+ * here as written.
  */
 #include <os1.h>
 
-/* Fixed-point 16.16 */
+/* Fixed-point 16.16 format:
+ *   FP_SHIFT = 16: lower 16 bits are the fractional part.
+ *   FP_ONE   = 65536 = 1.0 in fixed-point.
+ * DEG_TO_FP_RAD, cos_fp, sin_fp, fixmul are defined in kernel/lib/math.c
+ * (included transitively via lib.c). */
 #ifndef FP_SHIFT
 #define FP_SHIFT 16
 #endif /* FP_SHIFT */
@@ -17,19 +38,31 @@
 #define WIN_H 250
 #define BUFFER_SIZE (WIN_W * WIN_H)
 
-/* Framebuffer */
+/* framebuffer: local ARGB32 pixel buffer for one frame.
+ * Composed CPU-side, then uploaded to the compositor in one window_blit() call
+ * per frame — avoids the O(w*h) window_draw() overhead. */
 static unsigned int framebuffer[BUFFER_SIZE];
 
-/* 3D Point */
+/* vec3_t: a 3D point in fixed-point 16.16 space.
+ * All arithmetic on these values uses fixmul() for multiplication and
+ * right-shifts for division by powers of two. */
 typedef struct {
   int x, y, z; /* Fixed-point 16.16 */
 } vec3_t;
 
-/* Cube: 8 vertices */
+/* NUM_VERTS=8: the 8 corners of a cube (+-s in each axis). */
 #define NUM_VERTS 8
 static vec3_t verts[NUM_VERTS];
 
-/* Initialize cube vertices */
+/*
+ * init_shape - populate the 8 cube vertices with half-size s.
+ *
+ * s is in fixed-point units.  The cube spans [-s, s] in all three axes.
+ * Vertices are enumerated in a consistent order that matches the face
+ * definitions in faces[][] below.
+ *
+ * Called once at startup with s = FP_ONE/3 (a cube of radius ~0.33 units).
+ */
 static void init_shape(int s) {
   verts[0] = (vec3_t){-s, -s, -s};
   verts[1] = (vec3_t){s, -s, -s};
@@ -41,7 +74,10 @@ static void init_shape(int s) {
   verts[7] = (vec3_t){-s, s, s};
 }
 
-/* Face definition (counter-clockwise winding from outside) */
+/* faces[6][4]: each row is one quad face, listing 4 vertex indices in
+ * counter-clockwise winding order as seen from outside the cube.
+ * The backface culling test uses the sign of the 3D cross-product Z component
+ * of the first two edges; CCW winding means nz < 0 -> face towards camera. */
 static int faces[6][4] = {
     {0, 3, 2, 1}, /* Front */
     {4, 5, 6, 7}, /* Back */
@@ -51,7 +87,8 @@ static int faces[6][4] = {
     {4, 0, 1, 5}  /* Bottom */
 };
 
-/* Base colors for the 6 faces */
+/* face_colors[6]: base RGB colour for each face; shaded at render time by the
+ * flat-shading intensity derived from the face normal's Z component. */
 static unsigned int face_colors[6] = {
     0xFF3333, /* Red */
     0x33FF33, /* Green */
@@ -61,7 +98,17 @@ static unsigned int face_colors[6] = {
     0xFF33FF  /* Magenta */
 };
 
-/* Rotate point around Y axis */
+/*
+ * rotate_y - rotate a fixed-point 3D point around the Y axis.
+ *
+ * angle: rotation angle in degrees (converted to fixed-point radians via
+ *        DEG_TO_FP_RAD before calling cos_fp/sin_fp).
+ *
+ * Standard 2D rotation of the xz plane:
+ *   x' = x*cos - z*sin
+ *   z' = x*sin + z*cos
+ * y is unchanged.  fixmul() performs 16.16 * 16.16 -> 16.16 multiplication.
+ */
 static vec3_t rotate_y(vec3_t p, int angle) {
   int rad = DEG_TO_FP_RAD(angle);
   int c = cos_fp(rad);
@@ -73,7 +120,14 @@ static vec3_t rotate_y(vec3_t p, int angle) {
   return r;
 }
 
-/* Rotate point around X axis */
+/*
+ * rotate_x - rotate a fixed-point 3D point around the X axis.
+ *
+ * Standard rotation of the yz plane:
+ *   y' = y*cos - z*sin
+ *   z' = y*sin + z*cos
+ * x is unchanged.
+ */
 static vec3_t rotate_x(vec3_t p, int angle) {
   int rad = DEG_TO_FP_RAD(angle);
   int c = cos_fp(rad);

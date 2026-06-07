@@ -1,17 +1,60 @@
 /*
- * user/init.c
- * Init Process - System Initialization
+ * user/sys/bin/init.c
+ * Process 1 — System Initializer and Service Supervisor
  *
- * TODO: Read /init.cfg when file syscalls are implemented.
- * For now, uses hardcoded spawn list.
+ * This is the first userland process launched by the kernel after boot.
+ * It is responsible for:
+ *   1. Spawning the two mandatory system services (notify_srv, shell) in order.
+ *   2. Sending the "Boot Complete" notification via IPC to notify_srv.
+ *   3. Running a non-blocking supervisor loop that detects child exits and
+ *      respawns the dead service immediately.
+ *
+ * Calling convention / runtime:
+ *   _start (user/arch/<arch>/syscall.S) sets up the stack and calls main();
+ *   main() never returns (the supervisor loop is infinite).
+ *
+ * Known issues:
+ *   USR-INIT-01  (W1 REFINE) Supervisor is a correct non-blocking poll today;
+ *                the PID-reuse hazard is NOT live — next_pid is a monotonic
+ *                counter (kernel/sched/process.c:20,233); PIDs are never
+ *                recycled.  A generation/owner check would be needed if PID
+ *                recycling is ever introduced.
+ *   USR-INIT-02  (W3 MISSING·DOC) init.cfg is never read despite the TODO
+ *                comment below being stale: file_read (lib.c:72) is fully
+ *                implemented and used elsewhere.  The paths in init.cfg
+ *                (/notify_srv.elf, /shell) do not match the actual rootfs
+ *                layout (/sys/bin/notify_srv, /sys/bin/shell).
+ *   USR-INIT-03  (W2 BAD-IMPL) No respawn rate-limiting: a service that
+ *                crashes immediately will be respawned in a tight loop,
+ *                saturating the process table (MAX_PROCESSES=64, os1.h:16)
+ *                with zombies until the system stalls.
+ *   USR-SEC-01   (W3 SECURITY) notify_srv writes its PID to the global registry
+ *                key "srv.notify_pid" with no authentication; any process can
+ *                overwrite that key to hijack all system notifications.
  */
 #include <os1.h>
 
+/*
+ * main - init entry point; never returns.
+ *
+ * Spawns notify_srv and shell, fires the "boot complete" notification, then
+ * enters the supervisor loop.
+ *
+ * No parameters, no meaningful return value (return 0 is unreachable dead code
+ * because the while(1) loop never exits).
+ *
+ * Side effects:
+ *   - Creates two child processes via SYS_SPAWN.
+ *   - Sends one IPC notify message to the notification server.
+ *   - Calls SYS_FLUSH to push any buffered output before entering the loop.
+ */
 int main(void) {
   print("[Init] System Initialization Starting...\n");
 
   /* Spawn Notification Server */
   /* Spawn Notification Server */
+  /* NOTE(USR-INIT-02): Hardcoded path.  init.cfg would provide this path but
+   * is never read; the cfg also lists wrong paths (see file header). */
   printf("[Init] Spawning Notification Server...\n");
   int pid_notify = spawn("/sys/bin/notify_srv");
   if (pid_notify > 0) {
@@ -30,25 +73,47 @@ int main(void) {
   }
 
   /* Test Notification IPC */
+  /* NOTE(USR-SEC-01): notify() reads srv.notify_pid from the global registry
+   * to find the target PID; no capability check prevents spoofing that key. */
   notify("System", "Boot Complete - Stability Optimized");
 
   flush();
 
-  /* Supervisor loop: Monitor and respawn critical processes */
+  /* Supervisor loop: Monitor and respawn critical processes.
+   *
+   * wait(pid) maps to _sys_wait which calls kernel process_wait()
+   * (kernel/sched/process.c:710-741).  process_wait() is NON-BLOCKING:
+   *   returns -1  if the named process is still alive,
+   *   returns pid if the process is a zombie (and reaps it),
+   *   returns -2  if not found.
+   * The conditional therefore triggers only on a genuine process exit.
+   *
+   * NOTE(USR-INIT-01): This is a correct poll loop.  PIDs are monotonic
+   * (next_pid, process.c:20/233) so a respawned service can never collide
+   * with the surviving service's PID.
+   *
+   * NOTE(USR-INIT-03): There is no respawn backoff or rate limit.  A crashing
+   * service is respawned immediately on every supervisor iteration, which can
+   * exhaust the process table with zombie entries before the system stabilises.
+   */
   print("[Init] Entering supervisor loop\n");
   while (1) {
-    /* Check if shell died and respawn */
+    /* Check if shell died and respawn.
+     * If wait() returns pid_shell the kernel has reaped the zombie;
+     * spawn() assigns a fresh monotonic PID and stores it in pid_shell. */
     if (wait(pid_shell) == pid_shell) {
       print("[Init] Shell terminated! Respawning...\n");
       pid_shell = spawn("/sys/bin/shell");
     }
 
-    /* Check if notification server died and respawn */
+    /* Check if notification server died and respawn. */
     if (wait(pid_notify) == pid_notify) {
       print("[Init] Notification Server died! Respawning...\n");
       pid_notify = spawn("/sys/bin/notify_srv");
     }
 
+    /* Yield to the scheduler; prevents busy-spinning on the two wait() calls
+     * when both child processes are alive (wait returns -1 each iteration). */
     yield();
   }
 

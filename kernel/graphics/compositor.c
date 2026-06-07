@@ -639,9 +639,22 @@ void compositor_handle_click(int button, int state) {
     keyboard_focus_pid = hit->pid;
   }
 
-  /* Send mouse event to the focused process */
+  /*
+   * FIX(GFX-COMP-03): never call kernel_ipc_send() or process_terminate() while
+   * holding compositor_lock.  compositor_handle_click runs in mouse-IRQ context;
+   * kernel_ipc_send() takes sched_lock, and process_terminate() takes sched_lock
+   * then re-enters the compositor (compositor_destroy_windows_by_pid ->
+   * compositor_lock).  Holding compositor_lock across either is the reverse of
+   * process_terminate's own sched_lock->compositor_lock order — an SMP AB-BA
+   * deadlock against a concurrent kill on another CPU (the observed "freeze on
+   * window-close/kill").  So we capture the work into locals under the lock and
+   * perform it AFTER the single unlock below.
+   */
+
+  /* Capture the mouse event to deliver to the focused process. */
+  int send_pid = -1;
+  struct ipc_message msg = {0};
   if (keyboard_focus_pid > 0) {
-    struct ipc_message msg;
     msg.from = 0; /* Kernel */
     msg.type = IPC_TYPE_MOUSE;
     msg.data1 = (uint64_t)button;
@@ -651,36 +664,24 @@ void compositor_handle_click(int button, int state) {
     int rel_y = mouse_y - hit->y;
     memcpy(msg.payload, &rel_x, 4);
     memcpy(msg.payload + 4, &rel_y, 4);
-
-    kernel_ipc_send(keyboard_focus_pid, &msg);
+    send_pid = keyboard_focus_pid;
   }
 
-  /* Check for close button — save pid/id, release lock before process_terminate
-   */
+  /* Capture a close-button hit; the terminate is deferred until after unlock. */
+  int do_close = 0;
+  int close_pid = 0;
   if (!hit->protected) {
     int btn_x = hit->x + hit->width - CLOSE_BUTTON_SIZE - 2;
     int btn_y = hit->y - TITLE_BAR_HEIGHT + 2;
     if (mouse_x >= btn_x && mouse_x < btn_x + CLOSE_BUTTON_SIZE &&
         mouse_y >= btn_y && mouse_y < btn_y + CLOSE_BUTTON_SIZE) {
-      int close_pid = hit->pid;
-      int close_id = hit->id;
-      spin_unlock_irqrestore(&compositor_lock, flags);
-
-      pr_info("Compositor: Close button PID %d window %d\n", close_pid,
-              close_id);
-      /* process_terminate calls compositor_destroy_windows_by_pid internally */
-      extern int process_terminate(int pid);
-      process_terminate(close_pid);
-
-      /* Mark dirty — compositor_tick will re-render on next timer tick */
-      expand_damage(0, 0, bb_width, bb_height);
-      compositor_dirty = 1;
-      return;
+      do_close = 1;
+      close_pid = hit->pid;
     }
   }
 
-  /* Check for drag start */
-  if (mouse_y >= hit->y - TITLE_BAR_HEIGHT && mouse_y < hit->y) {
+  /* Check for drag start (skipped when closing, matching the old early-return). */
+  if (!do_close && mouse_y >= hit->y - TITLE_BAR_HEIGHT && mouse_y < hit->y) {
     dragging_window_id = hit->id;
     drag_off_x = mouse_x - hit->x;
     drag_off_y = mouse_y - hit->y;
@@ -689,6 +690,22 @@ void compositor_handle_click(int button, int state) {
   expand_damage(0, 0, bb_width, bb_height);
   compositor_dirty = 1;
   spin_unlock_irqrestore(&compositor_lock, flags);
+
+  /*
+   * Cross-subsystem calls, now strictly OUTSIDE compositor_lock (FIX(GFX-COMP-03)).
+   * Both validate their target pid internally, so a window/process that changed
+   * between the unlock and here is handled gracefully (returns an error).
+   * NOTE: process_terminate still runs in mouse-IRQ context — this removes the
+   * freeze, but the zombie/no-reap behaviour for an IRQ-time kill is a separate
+   * follow-up (process_terminate must not run from IRQ; see SCHED-03).
+   */
+  if (send_pid > 0)
+    kernel_ipc_send(send_pid, &msg);
+  if (do_close) {
+    pr_info("Compositor: Close button -> terminate PID %d\n", close_pid);
+    extern int process_terminate(int pid);
+    process_terminate(close_pid);
+  }
 }
 
 /*

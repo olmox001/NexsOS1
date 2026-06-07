@@ -1,9 +1,44 @@
+/*
+ * user/sys/bin/proce.c
+ * Process List Utility (compiled into shell)
+ *
+ * Implements the `ps` command for the shell.  Calls SYS_GET_PS (#222) to
+ * retrieve a snapshot of up to 32 process descriptors from the kernel, then
+ * formats and renders them into the shell's compositor window using ANSI
+ * escape sequences (handled by the compositor's built-in terminal emulator).
+ *
+ * This file is not built as a standalone ELF; it is compiled together with
+ * shell.c (via proce.h declaration) so that process listing runs in-process.
+ *
+ * State integer to string mapping uses the values defined in the kernel's
+ * sched/process.h (PROC_CREATED=1, RUNNING=2, SLEEPING=3, ZOMBIE=4,
+ * DEAD=5, READY=6).  Any other value maps to "UNUSED".
+ */
 #include "proce.h"
 #include <os1.h>
 
-/* Real process list diagnostic using SYS_GET_PS */
+/*
+ * proce_display_list - render the current process table to a compositor window.
+ *
+ * win_id: compositor window ID to write into (passed by the shell's ps command).
+ *
+ * Calls _sys_get_procs() directly (SYS_GET_PS, syscall #222) to fill a
+ * local array of up to 32 struct ps_info entries.  Returns immediately on
+ * error.
+ *
+ * Output format (ANSI-coloured):
+ *   PID  NAME              STATE      PRIO CPU
+ *   ---- ----------------  ---------- ---- ---
+ *   ...
+ *
+ * Running processes are shown in bright green (\033[92m); sleeping in grey
+ * (\033[90m); all others in the terminal default colour.
+ *
+ * Side effects: writes ANSI sequences and formatted rows to win_id via
+ *   _sys_write() and printf_win().  No heap allocation.
+ */
 void proce_display_list(int win_id) {
-  struct ps_info procs[32];
+  struct ps_info procs[32]; /* Stack-allocated; max 32 processes queried */
 
   int count = _sys_get_procs(procs, 32);
   if (count < 0) {
@@ -20,6 +55,8 @@ void proce_display_list(int win_id) {
   _sys_write(win_id, "--------------------------------------------\n", 45);
 
   for (int i = 0; i < count; i++) {
+    /* Map numeric state to a human-readable string.
+     * Values match kernel enum proc_state (kernel/sched/process.h). */
     const char *state_str = "UNKNOWN";
     switch (procs[i].state) {
     case 1:

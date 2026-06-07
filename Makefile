@@ -90,6 +90,11 @@ KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN = $(BUILD_DIR)/kernel.bin
 USER_ELF   = $(BUILD_DIR)/init.elf
 DISK_IMG   = $(BUILD_DIR)/disk.img
+# AArch64 only: pre-generated QEMU virt DTB used to pass a valid x0 to the kernel.
+# QEMU does not set x0 for bare-metal ELF kernels (no Linux image magic), so we
+# generate the DTB for the exact machine config and pass it via -dtb.  QEMU then
+# loads it into RAM and sets x0 = dtb_load_address in the aarch64 boot stub.
+VIRT_DTB   = $(BUILD_DIR)/virt.dtb
 
 # ==============================================================================
 # Source Files
@@ -268,7 +273,7 @@ USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
 # System ELFs (placed in /sys/bin)
 SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf $(BUILD_DIR)/notify_srv.elf \
-           $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf
+           $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf  $(BUILD_DIR)/nexs-fm.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf \
@@ -309,6 +314,15 @@ $(BUILD_DIR)/regedit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/regedit.o $(USER_LIB_
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fontman.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/fontman.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+$(BUILD_DIR)/nexs-fm.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nexs-fm/main.o \
+                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nexs-fm/state.o \
+                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nexs-fm/sort.o \
+                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nexs-fm/ui.o \
+                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nexs-fm/draw.o \
+                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nexs-fm/events.o \
+                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nexs-fm/fileops.o \
+                          $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/%.o: $(USER_DIR)/sys/bin/fontman/%.c
 	@mkdir -p $(dir $@)
@@ -376,7 +390,7 @@ $(MKDISK): tools/mkdisk.c
 # ==============================================================================
 
 ifeq ($(ARCH), amd64)
-QEMU_FLAGS = -m 3G -smp 4 -serial mon:stdio \
+QEMU_FLAGS = -m 5G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
              -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
@@ -384,19 +398,23 @@ QEMU_FLAGS = -m 3G -smp 4 -serial mon:stdio \
              -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
              -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
 
-QEMU_RELEASE_FLAGS = -m 3G -smp 4 -serial mon:stdio \
+QEMU_RELEASE_FLAGS = -m 5G -smp 4 -serial mon:stdio \
                      -display default,show-cursor=on \
                      -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
                      -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
                      -device virtio-mouse-pci,disable-legacy=on,disable-modern=off
 else
-QEMU_FLAGS = -M virt -cpu cortex-a57 -m 3G -smp 4 -serial mon:stdio \
+# AArch64: pass -dtb $(VIRT_DTB) so QEMU loads the pre-generated device tree into RAM
+# and sets x0 = dtb_load_address in its aarch64 boot stub.  Without -dtb, QEMU does not
+# generate/load a DTB for bare-metal ELF kernels and x0 arrives as 0 at _start.
+QEMU_FLAGS = -M virt -cpu cortex-a57 -m 5G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
              -device virtio-gpu-device \
              -device virtio-keyboard-device -device virtio-mouse-device \
-             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw -device virtio-blk-device,drive=hd0
+             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
+             -dtb $(VIRT_DTB)
 
-QEMU_RELEASE_FLAGS = -M virt -cpu cortex-a57 -m 3G -smp 4 -serial mon:stdio \
+QEMU_RELEASE_FLAGS = -M virt -cpu cortex-a57 -m 5G -smp 4 -serial mon:stdio \
                      -display default,show-cursor=on \
                      -device virtio-gpu-device \
                      -device virtio-keyboard-device -device virtio-mouse-device \
@@ -461,15 +479,40 @@ endif
 # Development Execution
 # ==============================================================================
 
+# AArch64: generate the QEMU virt device tree for the exact machine configuration
+# used in the run target.  The DTB must match the devices, memory size, and SMP
+# count so that fdt_get_mem_regions() and fdt_count_cpus() see accurate data.
+# dumpdtb exits immediately after writing the DTB; no kernel is required.
+# amd64 does not use a DTB (discovery via multiboot2), so this target is aarch64-only.
+ifeq ($(ARCH), aarch64)
+$(VIRT_DTB): | $(BUILD_DIR)
+	@echo "  [DTB]    Generating QEMU virt device tree -> $@"
+	@$(QEMU) -M virt -cpu cortex-a57 -m 5G -smp 4 \
+	         -device virtio-gpu-device \
+	         -device virtio-keyboard-device -device virtio-mouse-device \
+	         -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
+	         -device virtio-blk-device,drive=hd0 \
+	         -machine dumpdtb=$@ 2>/dev/null
+	@echo "  [DTB]    Done ($$(stat -f%z $@ 2>/dev/null || stat -c%s $@) bytes)"
+
+# AArch64 run: use kernel.bin (raw binary) so QEMU's aarch64 boot stub sets x0 = dtb_addr.
+# A raw binary triggers QEMU's arm_load_kernel image-loading path; combined with -dtb,
+# QEMU loads the DTB into RAM and passes its address in x0 before jumping to the entry.
+# Using kernel.elf (ELF) without a Linux image header leaves x0=0 (no DTB handover).
+run: all $(VIRT_DTB)
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
+
+run-direct: run
+
+debug: all
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
+else
 run: all
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
 
 run-direct: run
 
 debug: all
-ifeq ($(ARCH), amd64)
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
-else
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 endif
 

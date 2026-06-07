@@ -1,6 +1,83 @@
 /*
  * kernel/fs/ext4.c
  * Simplified Read-Only Ext4 Driver (With Random Access)
+ *
+ * Purpose:
+ *   Mounts an ext4 partition (hardcoded as GPT/MBR index 2), reads the
+ *   superblock and group-0 descriptor, resolves paths to inodes by walking
+ *   directory entries, and provides read/write/list-dir operations.
+ *
+ * NOTE(EXT4-03): The file header "Read-Only" label is false — ext4_write_file
+ *   is a real, data-persisting implementation that calls virtio_blk_write.
+ *
+ * On-disk layout accessed (4096-byte blocks, 8 sectors each):
+ *   partition LBA 0        (LBA part+0)  : partition boot record (unused)
+ *   superblock offset 1024 (LBA part+2)  : struct ext4_superblock (1016 bytes
+ *                                           used; padded to 1024 by padding[])
+ *   GDT block 1            (LBA part+8)  : struct ext4_group_desc[0] at byte 0
+ *   Block bitmap           (LBA part + bg_block_bitmap_lo × 8) : 4096-byte map
+ *   Inode table            (LBA part + bg_inode_table_lo × 8)  : inode array
+ *   Data blocks            (LBA part + phys_block × 8) : 4096-byte data
+ *
+ * Sector arithmetic common pattern:
+ *   block N → sector = part_start_lba + (N × 8)   [8 = 4096 / 512]
+ *   inode K → byte offset in table = (K-1) × EXT4_INODE_SIZE (256)
+ *              sector = part_start_lba + (table_blk × 8) + (byte_off / 512)
+ *              offset within sector = byte_off % 512
+ *
+ * Key invariants:
+ *   - Only group 0 is used; multi-group images are not supported (EXT4-12/13).
+ *   - Only one partition (part_start_lba) and one group descriptor (bg) are
+ *     held globally; concurrent mounts are structurally impossible (EXT4-12).
+ *   - ext4_lock serialises block allocation (alloc block bitmap r-m-w, GDT
+ *     update, superblock update) and inode write-back (ext4_update_inode).
+ *   - The buffer cache (kernel/mm/buffer.c) is NOT used; all block I/O goes
+ *     directly through virtio_blk_{read,write} (EXT4-15).
+ *
+ * Known issues:
+ *   EXT4-01  (W5 BUG+MISSING) Extent-tree inode format (EXT4_EXTENTS_FL,
+ *            i_flags bit 0x80000) is never detected; i_flags is never read.
+ *            On any real ext4 image built with standard mkfs.ext4 (which
+ *            enables extents by default), i_block[] contains an extent-tree
+ *            header (magic 0xF30A) rather than block pointers — silent data
+ *            corruption or a virtio sector-address crash will result.  Safe
+ *            only on the custom mkdisk.c test image (block-mapped inodes).
+ *   EXT4-03  (W4 DOC+BUG) File header says "Read-Only"; ext4_write_file is
+ *            real and persists to disk.  The comment at ext4_read_inode also
+ *            says "Supports Direct and Single Indirect" but double-indirect
+ *            is fully implemented (blocks 1036–1 049 611).
+ *   EXT4-04  (W3 BUG, FIXED) struct ext4_group_desc was 34 bytes (20 named +
+ *            padding[14]); the on-disk GDT entry is 32 bytes, so the write-
+ *            back at ext4_alloc_block clobbered 2 bytes of GDT entry 1 on
+ *            multi-group images.  Now padding[12] => exactly 32 bytes.
+ *   EXT4-05  (W3 MISSING) Write path rejects block_idx >= 12; write ceiling
+ *            is 12 × 4096 = 49 152 bytes (48 KB).  Read supports up to ~4 GB.
+ *   EXT4-06  (W3 MISSING) s_feature_incompat and s_feature_ro_compat are
+ *            never read; incompatible features (extents, 64-bit, meta_csum)
+ *            are silently accepted.
+ *   EXT4-08  (W2 BUG) offset + size can overflow uint32 in ext4_read_inode if
+ *            both are near UINT32_MAX; the clamp condition passes and the read
+ *            proceeds with an oversized size.
+ *   EXT4-09  (W2 MISSING) ext4_list_dir checks i_mode>>12==4 for directory
+ *            type but returns -2 without syscall-layer translation; also does
+ *            not validate de->rec_len > 0 before advancing the pointer.
+ *   EXT4-10  (W2 MISSING) get_inode_struct reads only 1 sector (512 bytes).
+ *            EXT4_INODE_SIZE is 256; if sector_off == 384 the inode straddles
+ *            two 512-byte sectors (bytes 384–511 of sector N and 0–127 of
+ *            sector N+1) but only sector N is fetched — the inode tail is
+ *            wrong.  In practice sector_off = ((ino-1)×256) % 512 can be 0
+ *            or 256 only (256 mod 512 = 256; 512 mod 512 = 0), so the actual
+ *            worst case is sector_off=256 and sizeof(inode)=128 bytes read
+ *            up to byte 384 — within one sector.  With EXT4_INODE_SIZE=256
+ *            the actual straddle risk is real: sector_off=384 is reachable
+ *            when the inodes-per-sector count exceeds 2.
+ *   EXT4-11  (W2 PERF) Single-indirect and double-indirect pointer blocks are
+ *            re-read from disk on every 4 KB chunk loop iteration; no caching.
+ *   EXT4-12  (W2 WRONG-DESIGN) One partition and one group descriptor held
+ *            globally; multiple mounts are structurally impossible.
+ *   EXT4-13  (W2 MISSING) ext4_alloc_block always searches group 0; no
+ *            multi-group block allocation.
+ *   EXT4-15  (W1 MISSING) Buffer cache bypassed; all I/O direct to virtio.
  */
 #include <drivers/virtio_blk.h>
 #include <kernel/buffer.h>
@@ -11,25 +88,94 @@
 #include <kernel/string.h>
 
 /* Global State */
+/* part_start_lba: absolute LBA of the first sector of the mounted partition.
+ * Set once by ext4_init(); used in every sector address calculation as the
+ * base of the expression: sector = part_start_lba + (block_num × 8). */
 static uint64_t part_start_lba;
+/* sb: in-memory copy of the ext4 superblock (1016 bytes used out of 1024).
+ * Loaded from LBA part_start_lba+2 (byte offset 1024 = 2 × 512 sectors).
+ * NOTE(EXT4-06): sb.s_feature_incompat and sb.s_feature_ro_compat are
+ * modeled here but never read; incompatible features are silently accepted. */
 static struct ext4_superblock sb;
+/* bg: in-memory copy of block group descriptor 0.
+ * Loaded from LBA part_start_lba+8 (block 1 = bytes 4096–4095+512).
+ * EXT4-04 (fixed): sizeof(struct ext4_group_desc) == 32 bytes (padding[12]),
+ * matching the on-disk GDT entry; read and write-back no longer touch the
+ * adjacent GDT entry 1.
+ * NOTE(EXT4-12): only one group descriptor is held; multi-group images are
+ * not supported. */
 static struct ext4_group_desc bg;
+/* ext4_lock: spinlock protecting block allocation (bitmap r-m-w, GDT update,
+ * superblock update) and inode write-back (ext4_update_inode).  Held with
+ * IRQ save/restore to prevent re-entrance from interrupt context. */
 static DEFINE_SPINLOCK(ext4_lock);
 
 /*
  * Helper: Read/Write Sectors
  */
+/*
+ * ext4_bread - thin wrapper: read 'count' sectors starting at 'sector' into buf.
+ *
+ * @sector: absolute LBA (e.g. part_start_lba + block_num × 8).
+ * @count:  number of 512-byte sectors to read.
+ * @buf:    destination; caller must supply at least count × 512 bytes.
+ *
+ * Returns 0 on success, non-zero on virtio error.
+ * Side effects: issues one virtio_blk_read request (disk I/O).
+ * NOTE(EXT4-15): bypasses the buffer cache (kernel/mm/buffer.c).
+ */
 static int ext4_bread(uint64_t sector, uint32_t count, void *buf) {
   return virtio_blk_read(buf, sector, count);
 }
 
+/*
+ * ext4_bwrite - thin wrapper: write 'count' sectors from buf to 'sector'.
+ *
+ * @sector: absolute LBA.
+ * @count:  number of 512-byte sectors to write.
+ * @buf:    source; caller must provide count × 512 bytes of valid data.
+ *
+ * Returns 0 on success, non-zero on virtio error.
+ * Side effects: issues one virtio_blk_write request (disk write; persistent).
+ * NOTE(EXT4-03): confirms write capability; the "Read-Only" header is false.
+ */
 static int ext4_bwrite(uint64_t sector, uint32_t count, void *buf) {
   return virtio_blk_write(buf, sector, count);
 }
 
 /*
- * Allocator: Allocate a new block from Group 0
- * Returns Block Number (0 on failure)
+ * ext4_alloc_block - allocate one free block from block group 0.
+ *
+ * Algorithm:
+ *   1. Read the group-0 block bitmap (one 4096-byte block at LBA
+ *      part_start_lba + bg_block_bitmap_lo × 8) into a kmalloc'd buffer.
+ *   2. Under ext4_lock: scan 4096 bitmap bytes (32 768 bits) for the first
+ *      clear bit (LSB-first within each byte).  Clear bit at byte i, bit b
+ *      → block_in_group = i × 8 + b.
+ *   3. Set the bit (mark allocated) and write the bitmap back via ext4_bwrite.
+ *   4. Decrement bg.bg_free_blocks_count_lo and sb.s_free_blocks_count_lo.
+ *   5. Write-back the modified group descriptor (34 bytes into a 512-byte
+ *      sector at LBA part_start_lba + 8) and the superblock (1016 bytes into
+ *      a two-sector buffer at LBA part_start_lba + 2).
+ *   6. Release ext4_lock; zero the new block on disk (outside the lock).
+ *
+ * Preconditions:
+ *   - ext4_init() has completed successfully.
+ *   - bg.bg_free_blocks_count_lo > 0 (checked at entry; returns 0 if false).
+ *
+ * Returns: absolute block number (block_in_group for group 0) on success,
+ *          or 0 on failure (OOM, bitmap inconsistency, or I/O error).
+ *
+ * Side effects:
+ *   - Up to 4 virtio_blk_read + 4 virtio_blk_write calls.
+ *   - Modifies the global bg and sb structs.
+ *   - Acquires/releases ext4_lock with IRQ save/restore.
+ *
+ * EXT4-04 (fixed): memcpy(bg_buf, &bg, sizeof(bg)) now copies exactly 32
+ *   bytes into bg_buf[0..31], so the write-back no longer persists over
+ *   bg_block_bitmap_lo[0:1] of GDT entry 1 on multi-group images.
+ * NOTE(EXT4-13): Bitmap scan always searches group 0 regardless of
+ *   bg_free_blocks_count_lo; no multi-group allocation.
  */
 static uint32_t ext4_alloc_block(void) {
   if (bg.bg_free_blocks_count_lo == 0) {
@@ -37,15 +183,22 @@ static uint32_t ext4_alloc_block(void) {
     return 0;
   }
 
+  /* bitmap_blk: block number (0-based from partition start) of the group-0
+   * block bitmap.  Sector address = part_start_lba + bitmap_blk × 8. */
   uint64_t bitmap_blk = bg.bg_block_bitmap_lo;
+  /* Allocate a 4096-byte heap buffer for the full 4 KB bitmap block. */
   uint8_t *bitmap = kmalloc(4096);
   if (!bitmap)
     return 0;
 
   uint64_t lock_flags;
+  /* Acquire ext4_lock before the bitmap read to serialise the read-modify-
+   * write cycle; a second concurrent alloc could find and claim the same bit
+   * if the lock were taken only around the bit-set operation. */
   spin_lock_irqsave(&ext4_lock, &lock_flags);
 
   /* Read Bitmap */
+  /* 8 sectors = 4096 bytes = one full block-bitmap block. */
   if (ext4_bread(part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
     spin_unlock_irqrestore(&ext4_lock, lock_flags);
     kfree(bitmap);
@@ -55,6 +208,10 @@ static uint32_t ext4_alloc_block(void) {
   /* Find Free Bit */
   /* Note: Block 0 is Boot Block, usually reserved/used.
      We start searching from block 0 of the group. */
+  /* Scan 4096 × 8 = 32 768 bits (little-endian within each byte: bit 0 of
+   * byte i represents block i×8+0, bit 1 represents block i×8+1, etc.).
+   * On the first byte with a clear bit: set it (mark allocated) and record
+   * block_in_group = i × 8 + bit.  NOTE(EXT4-13): scans only group 0. */
   uint32_t block_in_group = 0;
   int found = 0;
   for (int i = 0; i < 4096; i++) {
@@ -93,6 +250,11 @@ static uint32_t ext4_alloc_block(void) {
   bg.bg_free_blocks_count_lo--;
   sb.s_free_blocks_count_lo--;
 
+  /* Write-back group descriptor 0: read the 512-byte GDT sector (LBA
+   * part_start_lba + 8), overwrite the first sizeof(bg)==32 bytes with the
+   * updated bg, then write the sector back.
+   * EXT4-04 (fixed): sizeof(struct ext4_group_desc)==32 now, matching the
+   * on-disk entry, so the copy no longer touches GDT entry 1. */
   uint8_t *bg_buf = kmalloc(512);
   if (bg_buf && ext4_bread(part_start_lba + 8, 1, bg_buf) == 0) {
     memcpy(bg_buf, &bg, sizeof(bg)); /* Update BG0 in place */
@@ -100,6 +262,10 @@ static uint32_t ext4_alloc_block(void) {
   }
   if (bg_buf) kfree(bg_buf);
 
+  /* Write-back superblock: read 2 sectors (1024 bytes) at LBA part_start_lba+2
+   * (byte offset 1024 from partition start), overwrite the first sizeof(sb)
+   * == 1016 bytes with the updated sb, then write back.
+   * (sizeof(ext4_superblock) = 356 named bytes + padding[660] = 1016 bytes.) */
   uint8_t *sb_buf = kmalloc(4096);
   if (sb_buf && ext4_bread(part_start_lba + 2, 2, sb_buf) == 0) {
     memcpy(sb_buf, &sb, sizeof(sb));
@@ -114,9 +280,14 @@ static uint32_t ext4_alloc_block(void) {
   /* So block_in_group IS the absolute block number for Group 0. */
 
   /* Zero out the new block content before returning? Security/Cleanliness. */
+  /* Zeroing is done outside ext4_lock: ownership of the block is now
+   * established (bit set in bitmap, persisted), so no concurrent allocator
+   * can claim it.  The 8-sector write (4096 bytes) clears stale data. */
   uint8_t *zero_buf = kmalloc(4096);
   if (zero_buf) {
     memset(zero_buf, 0, 4096);
+    /* block_in_group × 8 = sector offset from partition start (1 block = 8
+     * sectors of 512 bytes each = 4096 bytes). */
     ext4_bwrite(part_start_lba + (block_in_group * 8), 8, zero_buf);
     kfree(zero_buf);
   }
@@ -125,7 +296,36 @@ static uint32_t ext4_alloc_block(void) {
 }
 
 /*
- * Initialize Ext4
+ * ext4_init - mount the ext4 partition and load the superblock + GDT entry 0.
+ *
+ * Algorithm:
+ *   1. Call gpt_get_partition(2) to obtain the start LBA of the partition.
+ *      NOTE(GPT-02): index 2 means the 3rd GPT entry or the 2nd MBR slot
+ *      depending on which table was found by gpt_init().
+ *   2. Read 2 sectors (1024 bytes) from LBA part_start_lba + 2 into a 4096-
+ *      byte heap buffer.  The ext4 superblock is always at byte offset 1024
+ *      from the partition start, i.e. sectors 2–3 of the partition (0-based).
+ *      Sector calculation: byte_offset = 1024, sector = 1024 / 512 = 2.
+ *   3. memcpy the first sizeof(struct ext4_superblock) == 1016 bytes of the
+ *      buffer into the global sb.  Validate sb.s_magic == 0xEF53 (EXT4_MAGIC).
+ *   4. Read 1 sector from LBA part_start_lba + 8 (block 1, byte offset 4096,
+ *      sector = 4096 / 512 = 8).  The GDT starts at block 1 for 4 KB-block
+ *      filesystems (superblock in block 0 at offset 1024; GDT immediately
+ *      after the superblock block).
+ *   5. memcpy sizeof(struct ext4_group_desc) == 32 bytes into global bg,
+ *      matching the on-disk entry (EXT4-04 fixed; was 34 via padding[14]).
+ *
+ * Preconditions:
+ *   - gpt_init() must have completed and partitions[2] must be valid.
+ *   - virtio_blk_read() must be functional.
+ *
+ * Side effects:
+ *   - Sets part_start_lba, sb, bg (global state).
+ *   - Two virtio_blk_read() calls.
+ *
+ * NOTE(EXT4-06): s_feature_incompat and s_feature_ro_compat are read into sb
+ *   but never checked; incompatible features (extents, 64-bit, metadata_csum)
+ *   are silently accepted.  This is the structural companion to EXT4-01.
  */
 void ext4_init(void) {
   /* 1. Find Userland Partition (Index 2) */
@@ -138,6 +338,10 @@ void ext4_init(void) {
   pr_info("Ext4: Found partition at LBA %ld\n", part_start_lba);
 
   /* 2. Read Superblock (Offset 1024) - LBA + 2 */
+  /* Superblock byte offset from partition start: 1024 = 2 × 512-byte sectors.
+   * Reading 2 sectors (1024 bytes) covers the full 1024-byte superblock area.
+   * s_volume_name is at struct offset 0x78 (120 bytes) from the superblock
+   * start (verified by field arithmetic in ext4.h:51) — correct per spec. */
   uint8_t *k_buf = kmalloc(4096);
   if (!k_buf) {
     pr_err("%s", "Ext4: OOM allocating SB buffer\n");
@@ -162,6 +366,11 @@ void ext4_init(void) {
 
   /* 3. Read Block Group Descriptor 0 (Block 1) */
   /* GDT starts at Block 1 (Bytes 4096). 8 Sectors from start. */
+  /* Block 1 byte offset from partition start: 1 × 4096 = 4096 bytes
+   * = 4096 / 512 = 8 sectors from the partition's LBA 0.
+   * We read only 1 sector (512 bytes); GDT entry 0 occupies the first 32
+   * on-disk bytes, and sizeof(struct ext4_group_desc) == 32 now (EXT4-04
+   * fixed), so memcpy below ingests exactly the 32-byte entry. */
   if (virtio_blk_read(k_buf, part_start_lba + 8, 1) != 0) {
     pr_err("%s", "Ext4: Failed to read GDT\n");
     kfree(k_buf);

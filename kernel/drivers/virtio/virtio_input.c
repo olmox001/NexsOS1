@@ -89,6 +89,12 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   v_write32(dev, VIRTIO_MMIO_QUEUE_NUM, INPUT_QSIZE);
 
   void *qmem = pmm_alloc_pages(2);
+  if (!qmem) {
+    /* DRV-VIRTIO-07: bail out gracefully instead of NULL-dereferencing. */
+    pr_err("%s", "VirtIO-Input: failed to allocate virtqueue memory\n");
+    input_dev_count--;
+    return;
+  }
   memset(qmem, 0, 8192);
   dev->desc = (struct vring_desc *)qmem;
   dev->avail = (struct vring_avail *)((uint8_t *)qmem + INPUT_QSIZE * 16);
@@ -101,6 +107,13 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
                      (uint64_t)dev->used);
 
   dev->events = (struct virtio_input_event *)pmm_alloc_page();
+  if (!dev->events) {
+    /* DRV-VIRTIO-07: free the virtqueue memory and bail out gracefully. */
+    pr_err("%s", "VirtIO-Input: failed to allocate events buffer\n");
+    pmm_free_pages(qmem, 2);
+    input_dev_count--;
+    return;
+  }
   memset(dev->events, 0, sizeof(struct virtio_input_event) * INPUT_QSIZE);
   /* Events buffer is identity mapped */
 

@@ -13,6 +13,10 @@ typedef struct {
     void (*func)(void);
 } ktest_case_t;
 
+/* LIB-KTEST-01: set to 1 by KASSERT when an assertion fails, so ktest_run_all()
+ * can tell a real pass from an early return.  Defined in kernel/lib/ktest.c. */
+extern volatile int ktest_test_failed;
+
 /* 
  * Test Case Declaration Macro 
  * We use a special section to collect all test cases 
@@ -27,6 +31,7 @@ typedef struct {
 #define KASSERT(cond) \
     if (!(cond)) { \
         printk("[KTEST] FAIL: %s:%d: Assertion failed: %s\n", __FILE__, __LINE__, #cond); \
+        ktest_test_failed = 1; \
         return; \
     }
 

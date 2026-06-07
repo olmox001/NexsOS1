@@ -1,6 +1,27 @@
 /*
  * kernel/graphics/graphics.c
  * Graphics Subsystem (Bridging HAL and GL)
+ *
+ * Role:
+ *   Thin HAL bridge between the GPU device driver and the GL rasteriser.
+ *   Initialises a single global graphics_context (g_ctx) from the primary
+ *   GPU device obtained via gpu_get_primary(), then provides convenience
+ *   wrappers that acquire a gl_surface each call and forward to gl_*.
+ *
+ * Invariants:
+ *   - g_ctx is populated by graphics_init() and never mutated afterwards.
+ *   - All draw wrappers silently no-op if gpu_get_primary() returns NULL.
+ *   - graphics_swap_buffers() is a memory-barrier-only stub; the subsystem
+ *     operates in single-buffered mode (backbuffer lives in compositor.c).
+ *
+ * Known issues:
+ *   GFX-GFX-01 (W0 DOC) graphics_get_screen_surface() returns a pointer to a
+ *               function-static local.  The returned pointer is stable under a
+ *               uniprocessor kernel but is NOT safe if two CPUs call this
+ *               concurrently and both store the pointer across a preemption
+ *               window — the struct is silently overwritten by the second
+ *               caller.  Worth a comment at the call site; no functional bug
+ *               under the current single-core model.
  */
 #include <drivers/gpu/gpu.h>
 #include <graphics/gl.h>
@@ -8,8 +29,22 @@
 #include <kernel/graphics.h>
 #include <kernel/printk.h>
 
+/* g_ctx: singleton graphics context populated by graphics_init().
+ * Read-only after init; not protected by a lock because it is never mutated
+ * post-initialisation under the single-core kernel model. */
 static struct graphics_context g_ctx = {0};
 
+/*
+ * graphics_init - discover the primary GPU and populate g_ctx.
+ *
+ * Calls gpu_get_primary() (HAL) to obtain the device descriptor.  On success,
+ * copies width, height, and framebuffer_virt into g_ctx; logs failure and
+ * leaves g_ctx zeroed otherwise.
+ *
+ * Locking: none — intended to be called once during kernel init before SMP
+ *          or IRQs are active.
+ * Side effects: writes g_ctx; logs via pr_info/pr_err.
+ */
 void graphics_init(void) {
   struct gpu_device *dev = gpu_get_primary();
   if (dev) {
@@ -22,10 +57,29 @@ void graphics_init(void) {
   }
 }
 
+/*
+ * graphics_get_context - return the global graphics context.
+ *
+ * Returns a pointer to the static g_ctx populated by graphics_init().
+ * Callers must not free or mutate the returned struct.
+ */
 struct graphics_context *graphics_get_context(void) { return &g_ctx; }
 
 /* 
  * Helper to get a GL surface wrapping the main screen
+ */
+/*
+ * graphics_get_screen_surface - build a gl_surface over the HAL framebuffer.
+ *
+ * Re-queries gpu_get_primary() on every call to pick up any device change.
+ * Fills a function-static gl_surface and returns its address.
+ *
+ * NOTE(GFX-GFX-01): The returned pointer is to a function-static local.
+ * Concurrent SMP callers would silently overwrite the same struct; safe only
+ * under the current uniprocessor model.  Callers must not cache this pointer
+ * across a preemption window.
+ *
+ * Returns: pointer to screen gl_surface, or NULL if no GPU device is present.
  */
 struct gl_surface *graphics_get_screen_surface(void) {
   static struct gl_surface screen_surf;
@@ -39,6 +93,14 @@ struct gl_surface *graphics_get_screen_surface(void) {
   return &screen_surf;
 }
 
+/*
+ * graphics_draw_pixel - write a single pixel to the screen framebuffer.
+ *
+ * Params: x, y — screen coordinates (clamped/rejected by gl_draw_pixel if
+ *         out of surface bounds).  color — ARGB8888.
+ * Side effects: writes one pixel to the HAL framebuffer via gl_draw_pixel.
+ * Locking: none; wraps gl_draw_pixel which is not IRQ-safe.
+ */
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
   struct gl_surface *surf = graphics_get_screen_surface();
   if (surf) {
@@ -46,6 +108,14 @@ void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
   }
 }
 
+/*
+ * graphics_draw_rect - fill an axis-aligned rectangle on the screen.
+ *
+ * Params: x, y — top-left corner; w, h — dimensions; color — ARGB8888.
+ * Clips to screen surface bounds via gl_draw_rect_fill.
+ * Side effects: writes pixels to the HAL framebuffer.
+ * Locking: none.
+ */
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                         uint32_t color) {
   struct gl_surface *surf = graphics_get_screen_surface();
@@ -54,6 +124,14 @@ void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
   }
 }
 
+/*
+ * graphics_clear - fill the entire screen with a solid colour.
+ *
+ * Param: color — ARGB8888 fill value.
+ * Side effects: overwrites every pixel in the HAL framebuffer (stride*height
+ *               words) via gl_clear.
+ * Locking: none.
+ */
 void graphics_clear(uint32_t color) {
   struct gl_surface *surf = graphics_get_screen_surface();
   if (surf) {
@@ -61,11 +139,31 @@ void graphics_clear(uint32_t color) {
   }
 }
 
+/*
+ * graphics_swap_buffers - issue a full memory barrier to commit pending writes.
+ *
+ * The system runs in single-buffered mode: there is no second framebuffer to
+ * swap.  This function exists as an API hook for future double-buffered support.
+ * Currently it only issues arch_mb() to ensure all preceding pixel writes are
+ * visible to the GPU DMA engine before any following flush.
+ *
+ * Side effects: arch_mb() — a full store/load barrier on the current arch.
+ * Locking: none required; barrier is inherently CPU-local.
+ */
 void graphics_swap_buffers(void) {
   /* In single-buffered modes, this is a flush/barrier */
   arch_mb();
 }
 
+/*
+ * graphics_draw_char - render one Unicode codepoint to the screen framebuffer.
+ *
+ * Params: x, y — baseline-relative top-left; codepoint — Unicode scalar value;
+ *         color — ARGB8888 foreground.
+ * Delegates to gl_draw_char (font.c) which performs per-glyph alpha blending.
+ * Side effects: writes pixels to the HAL framebuffer.
+ * Locking: none; must not be called from IRQ without holding compositor_lock.
+ */
 void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t color) {
   struct gl_surface *surf = graphics_get_screen_surface();
   if (surf) {
@@ -73,6 +171,15 @@ void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t col
   }
 }
 
+/*
+ * graphics_draw_string - render a UTF-8 string to the screen framebuffer.
+ *
+ * Params: x, y — origin; str — null-terminated UTF-8 string; color — ARGB8888.
+ * Delegates to gl_draw_string (font.c) which advances the cursor by each
+ * glyph's advance width after calling gl_draw_char.
+ * Side effects: writes pixels to the HAL framebuffer.
+ * Locking: none; must not be called from IRQ without holding compositor_lock.
+ */
 void graphics_draw_string(uint32_t x, uint32_t y, const char *str, uint32_t color) {
   struct gl_surface *surf = graphics_get_screen_surface();
   if (surf) {

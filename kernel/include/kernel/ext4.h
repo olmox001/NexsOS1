@@ -85,7 +85,7 @@ struct ext4_group_desc {
   uint16_t bg_free_inodes_count_lo;
   uint16_t bg_used_dirs_count_lo;
   uint16_t bg_flags;
-  uint8_t padding[14]; /* Pad to 32 bytes */
+  uint8_t padding[12]; /* EXT4-04: 20 named + 12 = 32 bytes, the on-disk GDT entry size */
 } __attribute__((packed));
 
 /* Inode */

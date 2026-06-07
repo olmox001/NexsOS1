@@ -195,7 +195,19 @@ static void virtio_pci_init_device(struct hal_device *hdev) {
         uint8_t bar = pci_config_read(bus, dev_idx, func, cap_ptr + 4) & 0xFF;
         uint32_t offset = pci_config_read(bus, dev_idx, func, cap_ptr + 8);
 
-        uintptr_t bar_addr = pci_get_bar(bdf, bar) & ~0xF;
+        /* FIX(DRV-VIRTIO-01): read the FULL 64-bit BAR. pci_get_bar() returns
+         * only the low 32 bits; a 64-bit memory BAR (type bits [2:1]==0b10) has
+         * its high dword in the next BAR slot. Truncating it yields a wrong
+         * config base when QEMU places the BAR above 4GB ('-m 4G') -> virtio
+         * reads QUEUE_NUM_MAX from the wrong address as 0 -> divide-by-zero. */
+        uint32_t bar_lo = pci_get_bar(bdf, bar);
+        uintptr_t bar_addr = (uintptr_t)(bar_lo & ~0xFU);
+        if ((bar_lo & 0x6) == 0x4)
+          bar_addr |= ((uintptr_t)pci_get_bar(bdf, bar + 1) << 32);
+        /* FIX(AMMU-07): map the BAR MMIO so the config structs are reachable
+         * even above 4GB (the fixed 0xFE000000-0xFFFFFFFF window misses it). */
+        extern int arch_vmm_map_device(uint64_t base, uint64_t size);
+        arch_vmm_map_device(bar_addr, 0x10000);
 
         if (type == 1) { /* Common Config */
           vdev->base = bar_addr + offset;
