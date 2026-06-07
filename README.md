@@ -1,6 +1,6 @@
 # OS1 / NEXS
 
-### A dual-architecture (AArch64 + x86-64) graphical micro-OS for QEMU `virt`/`q35`
+### A from-scratch graphical microkernel operating system supporting both AArch64 and x86-64, with SMP, VirtIO devices, Ext4, composited windows, ELF user-space processes and multiple interactive applications.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE.md)
 [![Arch](https://img.shields.io/badge/arch-aarch64%20%7C%20amd64-green.svg)](#)
@@ -61,6 +61,37 @@ falls back to a hardcoded 1 GB; the full memory map / 4 GB works via the **GRUB-
 
 > Many of these (compositor, fonts, VFS, registry) currently live **in the kernel**; the
 > roadmap moves them into isolated userland services (see the charter).
+
+## Highlights
+
+- ✅ Native support for AMD64 and AArch64
+- ✅ SMP (4+ cores)
+- ✅ User-space ELF64 applications
+- ✅ Ext4 filesystem
+- ✅ GPT partition support
+- ✅ VirtIO GPU / Input / Block
+- ✅ Graphical compositor and window manager
+- ✅ Multi-window desktop
+- ✅ TTY shell
+- ✅ Doom running as a user-space process
+- ✅ 3D rendering demo
+- ✅ Microkernel architecture
+
+## Verified Runtime
+
+Successfully tested on:
+
+| Platform | Status |
+|-----------|---------|
+| QEMU AArch64 virt | ✅ |
+| QEMU AMD64 q35 (instability of closing process) | ⚠️ |
+| SMP (4 cores) | ✅ |
+| VirtIO GPU | ✅ |
+| VirtIO Keyboard | ✅ |
+| VirtIO Mouse | ✅ |
+| VirtIO Block | ✅ |
+| GPT | ✅ |
+| Ext4 | ✅ |
 
 ---
 
