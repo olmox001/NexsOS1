@@ -1,6 +1,6 @@
 # OS1 / NEXS
 
-### A dual-architecture (AArch64 + x86-64) graphical micro-OS for QEMU `virt`/`q35`
+### A from-scratch graphical microkernel operating system supporting both AArch64 and x86-64, with SMP, VirtIO devices, Ext4, composited windows, ELF user-space processes and multiple interactive applications.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE.md)
 [![Arch](https://img.shields.io/badge/arch-aarch64%20%7C%20amd64-green.svg)](#)
@@ -20,6 +20,10 @@ an interactive **TTY shell**.
 > [`LICENSE.md`](LICENSE.md)); earlier docs mislabeled it MIT.
 
 ---
+<img width="373" height="670" alt="Screenshot 2026-06-07 alle 08 32 59" src="https://github.com/user-attachments/assets/2a948015-c28a-42e1-9dc3-1906bb170fe2" />
+
+
+---
 
 ## Status (verified by building & running, 2026-06)
 
@@ -37,6 +41,26 @@ falls back to a hardcoded 1 GB; the full memory map / 4 GB works via the **GRUB-
 (`make release`) path. This is a known defect — see issues
 [#94 (amd64 boot/4GB)](https://github.com/olmox001/os1test-dev/issues/94) and the W5
 [#…(DRV-VIRTIO-01)]. **AArch64 is the reference "correct" platform.**
+
+---
+
+## Features (what actually runs)
+
+**Kernel**
+- Physical memory manager: per-zone (DMA ≤16 MB / Normal) bitmap allocator, dynamic RAM discovery.
+- Virtual memory: two-phase MMU bring-up (bootstrap → RAM-aware remap), per-process page tables, 2 MB block mappings.
+- Preemptive **SMP scheduler**: per-CPU O(1) priority run-queues with work-stealing; ELF64 loader.
+- Message-passing **IPC**; a fixed-size system **registry**; kernel heap (`kmalloc`).
+- **VirtIO** drivers: GPU (framebuffer), input (keyboard/mouse), block.
+- Per-arch: GICv2 + ARM generic timer + PL011 (AArch64); LAPIC/IOAPIC + PIT + 16550 (amd64).
+- **Ext4** (read + limited write), **GPT** with **MBR** fallback, buffer cache.
+
+**Graphics & userland**
+- Window **compositor** (overlap, Z-order, drag, focus), TTF font rendering, 2D/3D fixed-point engines.
+- Userland: `init`, `shell` (TTY), `notify_srv`, `regedit`, `fontman`, plus demo apps and a DOOM port.
+
+> Many of these (compositor, fonts, VFS, registry) currently live **in the kernel**; the
+> roadmap moves them into isolated userland services (see the charter).
 
 ## Highlights
 
@@ -60,7 +84,7 @@ Successfully tested on:
 | Platform | Status |
 |-----------|---------|
 | QEMU AArch64 virt | ✅ |
-| QEMU AMD64 q35 | ⚠️ | (instability of closing process)
+| QEMU AMD64 q35 (instability of closing process) | ⚠️ |
 | SMP (4 cores) | ✅ |
 | VirtIO GPU | ✅ |
 | VirtIO Keyboard | ✅ |
@@ -69,29 +93,12 @@ Successfully tested on:
 | GPT | ✅ |
 | Ext4 | ✅ |
 
-## Features (what actually runs)
-
-**Kernel**
-- Physical memory manager: per-zone (DMA ≤16 MB / Normal) bitmap allocator, dynamic RAM discovery.
-- Virtual memory: two-phase MMU bring-up (bootstrap → RAM-aware remap), per-process page tables, 2 MB block mappings.
-- Preemptive **SMP scheduler**: per-CPU O(1) priority run-queues with work-stealing; ELF64 loader.
-- Message-passing **IPC**; a fixed-size system **registry**; kernel heap (`kmalloc`).
-- **VirtIO** drivers: GPU (framebuffer), input (keyboard/mouse), block.
-- Per-arch: GICv2 + ARM generic timer + PL011 (AArch64); LAPIC/IOAPIC + PIT + 16550 (amd64).
-- **Ext4** (read + limited write), **GPT** with **MBR** fallback, buffer cache.
-
-**Graphics & userland**
-- Window **compositor** (overlap, Z-order, drag, focus), TTF font rendering, 2D/3D fixed-point engines.
-- Userland: `init`, `shell` (TTY), `notify_srv`, `regedit`, `fontman`, plus demo apps and a DOOM port.
-
-> Many of these (compositor, fonts, VFS, registry) currently live **in the kernel**; the
-> roadmap moves them into isolated userland services (see the charter).
-
 ---
 
 ## Quick start
 
-### 1. Toolchain (bare-metal cross compilers + QEMU)
+### 1. Toolchain (bare-metal cross compilers + QEMU) 
+**NOTE** Compilation tested only on macOS Intel
 
 **macOS (Homebrew):**
 ```bash
