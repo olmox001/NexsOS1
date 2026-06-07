@@ -545,13 +545,34 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
  * L0 PGD).  The caller (schedule / ctx_switch) is responsible for saving and
  * restoring the general-purpose register context (via ctx_switch in context.S).
  *
- * If next->page_table is NULL (e.g., a kernel thread with no user address space),
- * the TTBR0 switch is skipped and the previous process's mapping remains active.
- * This is safe for kernel threads that never access user VA.
+ * A kernel thread (e.g. idle) has no private address space (page_table == NULL):
+ * switch it onto the shared kernel_pgd instead of leaving the PREVIOUS process's
+ * PGD active in TTBR0_EL1.
+ *
+ * SCHED-UAF-01 (interactive-close residual, aarch64 HAL): the whole aarch64
+ * kernel runs from TTBR0 only (EPD1=1, no TTBR1 higher-half — see
+ * arch_vmm_init_hw).  If a CPU keeps a terminated process's PGD in TTBR0 —
+ * because it switched prev->idle and we skipped the reload — then when that
+ * process is reaped and its PGD pages are freed, the CPU is left executing on a
+ * freed PGD.  Its identity map (including printk) vanishes and the next fetch
+ * faults, mirroring the amd64 triple-fault-on-window-close failure.  Load the
+ * shared kernel_pgd for NULL page_table to keep the kernel mapping live.
+ *
+ * This is now the SINGLE source of truth for the scheduler address-space switch
+ * (the redundant hal_vmm_set_pgd block in schedule() was removed), so the TLB
+ * flush + DSB/ISB that the scheduler block used to issue are performed here:
+ * arch_vmm_set_pgd is a bare "msr ttbr0_el1" (arch.h) with no implicit barriers.
  */
 void arch_cpu_switch_context(struct process *next) {
-    /* Switch address space */
-    if (next->page_table) {
-        arch_vmm_set_pgd((uint64_t)next->page_table);
+    extern uint64_t *kernel_pgd;
+    /* kernel_pgd is identity-mapped (virt == phys), so its pointer value IS the
+     * physical TTBR0 base; next->page_table is likewise passed as a PA, matching
+     * the existing arch_vmm_set_pgd callers in this file. */
+    uint64_t pgd = next->page_table ? (uint64_t)next->page_table
+                                    : (uint64_t)(uintptr_t)kernel_pgd;
+    if (pgd) {
+        arch_vmm_set_pgd(pgd);
+        arch_tlb_flush_all();
+        arch_isb();
     }
 }

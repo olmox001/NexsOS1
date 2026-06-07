@@ -1015,16 +1015,15 @@ found:
     panic("SCHED: PC is 0 for PID %d (Name: %s)", next->pid, next->name);
   }
 
-  if (!prev || prev->page_table != next->page_table) {
-    uint64_t next_pgd = virt_to_phys(next->page_table);
-    if (next_pgd != 0) {
-      hal_vmm_set_pgd(next_pgd);
-      hal_tlb_flush_all();
-      hal_isb();
-    }
-  }
-
-  /* Final architecture-specific context switch hook */
+  /* Address-space switch is delegated entirely to arch_cpu_switch_context()
+   * below — it is the SINGLE source of truth for both arches.  The previous
+   * hal_vmm_set_pgd() block here was redundant AND buggy: next_pgd =
+   * virt_to_phys(next->page_table) is 0 when page_table == NULL (kernel thread /
+   * idle), so it SKIPPED the reload and left the previous (soon-to-be-freed)
+   * process PGD active (SCHED-UAF-01).  arch_cpu_switch_context now loads the
+   * shared kernel_pgd for NULL page_table on both amd64 and aarch64, and carries
+   * the per-arch TLB flush / barriers.  This call is unconditional on the switch
+   * path (the prev == next case returned early above). */
   arch_cpu_switch_context(next);
 
   spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
