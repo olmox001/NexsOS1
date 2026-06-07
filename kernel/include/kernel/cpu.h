@@ -30,7 +30,10 @@ struct cpu_info {
   char syscall_buf[2048];
   uint32_t in_printk;
 
-  /* Deferred process free: freed on next schedule() call after context switch */
+  /* Reap stack head (SCHED-UAF-01): processes terminated by process_terminate()
+   * awaiting deferred destruction, chained via the legacy process.next field;
+   * drained at the top of the next schedule() on this CPU, after we have
+   * switched away from them. */
   struct process *deferred_free_proc;
 };
 #endif

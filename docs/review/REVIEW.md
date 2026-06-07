@@ -112,6 +112,9 @@ was published — recorded for transparency:
   **W2 latent** (only consumer `draw3d.c` is not compiled).
 - **New cross-cutting finding surfaced:** orphaned/uncompiled source files exist in-tree
   (`graphics/draw3d.c`, `bin/test_init.c`, the dead `user/sys/lib/syscall.S`) — dead code.
+- **Retraction (post-fix, maintainer-corrected):** SCHED-UAF-01's *aarch64* crash trace (the
+  `addr2line` hit at `process.c:937`) was a **false trace from a drafted-but-unapplied fix** and
+  does not reproduce; the teardown use-after-free is **amd64-only** (§9 corrected accordingly).
 
 Provenance: docs **01, 02, 09** hand-written by maintainer; **03–08** agent-generated and
 maintainer spot-checked (top/critical findings verified against source; **07, 08** carry
@@ -210,28 +213,34 @@ fault isolation (EXC-AMD64-02); the kernel/userland higher-half **addressing rew
 
 ## 9. amd64 runtime crashes — root-caused (fix pending)
 
-Two amd64 defects were precisely root-caused via headless QEMU + interactive `make run`
-(serial capture, `addr2line`, an in-#PF-handler PGD walk). Both remain **open**: the
-experimental fixes were **reverted** to keep the tree at the verified known-good state (the
-§8 fixes), because the teardown fix was only robust with debug-`printk` timing (a residual
-SMP race re-appeared once the markers were removed). Recorded here with the exact mechanism
-and fix direction for a focused follow-up.
+Two amd64 runtime defects were precisely root-caused via headless QEMU + interactive
+`make run` (serial capture, an in-#PF-handler PGD walk). **SCHED-UAF-01 is now fixed**
+(below, verified by build + boot + a kill-stress on both arches); **ARCH-AMD64-APPGD-01
+remains open**, recorded here with its exact mechanism and fix direction for a focused
+follow-up.
 
-**SCHED-UAF-01 — process-teardown use-after-free; crash on window-close (both arches).**
-Closing a window (compositor close button → `process_terminate`) can leave the terminated
-process **still linked in a per-CPU runqueue** when its `struct process` page is freed (and
-PMM-poisoned `0xCC`). `schedule()`'s O(1) pick and the **work-stealing** path then
-dereference the freed node — `addr2line` pins the aarch64 fault to `schedule()` at
-`kernel/sched/process.c:937` (`next->priority` on a poisoned struct) → data-abort (aarch64)
-/ GPF→triple-fault→reboot (amd64). *Repro:* `make run`, spawn `demo3d`/`doom`, click its
-close (X). *Related:* the compositor calls `process_terminate` from **mouse-IRQ context**
-(its header says "IRQ context: no") — SCHED-03 / GFX-COMP-13 companion. *Fix direction:*
-remove the process from **all** runqueues (under the correct per-CPU `sched_lock`) and ensure
-no reference remains before the struct is freed (quiesce/epoch or refcount); refuse to
-(re)enqueue a DEAD/ZOMBIE process; pair with a **reliable non-IRQ reaper** (a kernel thread).
-A "defer the kill + drain in `idle_task_entry`" workaround is **insufficient** — the drain
-only runs when a CPU goes idle, so the close button silently does nothing when all CPUs are
-busy (observed on aarch64).
+**SCHED-UAF-01 — process-teardown use-after-free; crash on window-close (amd64). [FIXED]**
+*Mechanism:* closing a window (compositor close button → `process_terminate`) could leave the
+terminated process **still linked in a per-CPU runqueue** when its `struct process` page was
+freed (and PMM-poisoned `0xCC`); `schedule()`'s O(1) pick and the **work-stealing** path then
+dereferenced the freed node (`next->priority` on a poisoned struct) → GPF → triple-fault →
+reboot on amd64. *Root cause:* `process_terminate` mutated `state`/`run_list`/`on_cpu` under
+the **global** `sched_lock`, while `schedule()` mutates them under the **per-CPU** `sched_lock`
+— not mutually exclusive, so a victim could be re-enqueued (resurrected), left DEAD-but-queued,
+or freed while still referenced.
+*Fix (landed in `kernel/sched/process.c`):* the scheduler is now the sole owner of runqueue
+membership and of freeing runnable processes. `process_terminate` marks a RUNNING/READY victim
+**sticky `PROC_DEAD` under the owning CPU's `sched_lock`** (re-validating `on_cpu`) and never
+frees or dequeues it; the scheduler reaps it — a running victim via the `prev==DEAD` path, a
+queued victim via a new `pick==DEAD` path — both feeding a per-CPU **reap stack** (chained via
+the unused legacy `process.next`) drained at the top of `schedule()` outside the lock.
+`__enqueue_task` refuses `DEAD/ZOMBIE` (no resurrection) and work-stealing skips corpses.
+Sleeping/created victims are freed immediately under the global lock; self-exit stays ZOMBIE.
+*Verified:* clean build + boot on both arches, plus a kill-stress driving `process_terminate`
+of RUNNING `demo3d` victims across `-smp 4` (50× to completion on aarch64, 11× on amd64) with
+**no crash / PAGE FAULT / triple-fault / corrupt run_list**. Interactive close-button
+(mouse-IRQ) confirmation pending maintainer. *Related (still open):* the compositor calls
+`process_terminate` from mouse-IRQ context — design coupling tracked as SCHED-03 / GFX-COMP-03.
 
 **ARCH-AMD64-APPGD-01 — APs run on the stale boot PML4 → high device-MMIO faults.**
 `start.S` has `kernel_pgd_phys: .quad boot_pml4`, and `arch_cpu_wake_secondary`

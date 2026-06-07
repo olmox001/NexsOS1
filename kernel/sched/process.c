@@ -106,8 +106,31 @@ int keyboard_focus_pid = 7; /* Default to Shell PID */
  * Locking: caller must hold target_cpu->sched_lock (irqsave).
  */
 /* Helper: Add task to runqueue */
+/* reap_push - queue a terminated process for deferred destruction on this CPU.
+ *
+ * The process must already be off every runqueue and must not be current_task
+ * on any CPU.  Nodes are chained through the otherwise-unused legacy `next`
+ * field and drained at the top of the next schedule() on this CPU (outside
+ * sched_lock), where the kernel stack, PGD and struct page are freed.
+ *
+ * Part of the SCHED-UAF-01 fix: process_terminate() never frees a runnable
+ * victim; the scheduler reaps it here once it is provably no longer in use.
+ *
+ * Locking: caller MUST hold cpu->sched_lock.
+ */
+static void reap_push(struct cpu_info *cpu, struct process *p) {
+  p->next = cpu->deferred_free_proc;
+  cpu->deferred_free_proc = p;
+}
+
 /* Internal helper: Add task to runqueue (Caller MUST hold target->sched_lock) */
 static void __enqueue_task(struct process *p) {
+  /* SCHED-UAF-01: never (re)enqueue a terminated process.  process_terminate()
+   * marks a victim PROC_DEAD under the owning CPU's sched_lock; this guard
+   * stops a concurrent schedule() from resurrecting it via re-enqueue. */
+  if (p->state == PROC_DEAD || p->state == PROC_ZOMBIE)
+    return;
+
   int target_cpu_id = (int)p->on_cpu;
   if (target_cpu_id < 0)
     target_cpu_id = 0;
@@ -580,72 +603,91 @@ int process_terminate(int pid) {
 
   pr_info("Terminating process '%s' PID=%d\n", proc->name, pid);
 
-  /* Remove from Runqueue OR Waitqueue if it was there */
+  /* Tear down any windows this process owns (compositor uses trylock, so this
+   * is safe to call while holding sched_lock). */
+  extern void compositor_destroy_windows_by_pid(int pid);
+  compositor_destroy_windows_by_pid(pid);
+
+  /* Self-termination: we are standing on this process's kernel stack, so we
+   * cannot free it now.  Mark ZOMBIE; the caller (sys_exit) MUST call
+   * schedule() to switch away, and process_wait() reaps the zombie.
+   * NOTE(SCHED-03): an unwaited zombie keeps its pool slot until reaped. */
+  if (current_process == proc) {
+    proc->state = PROC_ZOMBIE;
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return 0;
+  }
+
+  /* Drain the incoming IPC queue (the victim will never read it).  Held under
+   * msg_lock to serialise against a concurrent pop_message() on the victim's
+   * CPU. */
+  {
+    struct list_head *pos, *q;
+    spin_lock(&proc->msg_lock);
+    list_for_each_safe(pos, q, &proc->msg_queue) {
+      struct ipc_node *node = list_entry(pos, struct ipc_node, list);
+      list_del(pos);
+      kfree(node);
+    }
+    spin_unlock(&proc->msg_lock);
+  }
+
+  /*
+   * SCHED-UAF-01: do NOT free a process that may still be executing on, or be
+   * queued on, another CPU — that is the use-after-free that crashes window
+   * close on amd64.  Mark it PROC_DEAD and let the scheduler reap it once it is
+   * provably no longer in use:
+   *
+   *   - On a wait queue: detach it (under wq->lock) and mark DEAD.  It is not
+   *     on a runqueue and (we hold the global sched_lock, which kernel_ipc_send
+   *     must also take) cannot be woken; left for the reaper.
+   *   - PROC_READY / PROC_RUNNING: mark DEAD under the OWNING CPU's sched_lock.
+   *     That serialises with the CPU's schedule(), preventing both resurrection
+   *     (re-enqueue) and a free-while-referenced.  A running victim is reaped
+   *     via schedule()'s prev==DEAD path; a queued victim via its pick==DEAD
+   *     path.  We deliberately do not touch its runqueue or free it here.
+   *   - PROC_CREATED (never scheduled) or otherwise idle: free immediately —
+   *     it is not current_task anywhere and not on any runqueue.
+   */
   if (proc->wait_queue_ptr) {
     struct wait_queue_head *wq = proc->wait_queue_ptr;
     spin_lock(&wq->lock);
     list_del_init(&proc->run_list);
     proc->wait_queue_ptr = NULL;
     spin_unlock(&wq->lock);
-  } else if (proc->state == PROC_READY) {
-    /* CRITICAL: Acquire target CPU's sched_lock before removing from its runqueue */
-    int t_id = (proc->on_cpu >= 0) ? proc->on_cpu : 0;
-    struct cpu_info *t_cpu = &cpu_data[t_id];
-    
-    /* We already hold the global sched_lock, but we must also hold the per-CPU lock 
-     * to prevent races with the scheduler on that CPU. */
-    spin_lock(&t_cpu->sched_lock);
-    __dequeue_task(proc);
-    spin_unlock(&t_cpu->sched_lock);
-  }
-
-  /* Cleanup resources */
-  extern void compositor_destroy_windows_by_pid(int pid);
-  compositor_destroy_windows_by_pid(pid);
-
-  /* If we are terminating OURSELVES */
-  if (current_process == proc) {
-    proc->state = PROC_ZOMBIE;
-
-    /* If this is a user process without a parent or it is a system-level init,
-     * we should just mark it for cleanup. For now, we free the slot if it's
-     * not PID 1. */
+    proc->state = PROC_DEAD;
     spin_unlock_irqrestore(&sched_lock, flags);
-
-    /* We cannot free our own stack/pgd while running on it.
-   * We just return 0. The caller (sys_exit) MUST call schedule().
-   * schedule() will see we are ZOMBIE and switch away.
-   * The reaper (process_wait) will free us later.
-   * NOTE(SCHED-03): if no process calls process_wait(pid), this zombie
-   * occupies its pool slot forever. */
     return 0;
   }
 
-  /* Free IPC message queue to prevent leak */
-  {
-    struct list_head *pos, *q;
-    list_for_each_safe(pos, q, &proc->msg_queue) {
-      struct ipc_node *node = list_entry(pos, struct ipc_node, list);
-      list_del(pos);
-      kfree(node);
+  if (proc->state == PROC_READY || proc->state == PROC_RUNNING) {
+    /* Mark DEAD under the owning CPU's sched_lock.  Re-validate on_cpu after
+     * taking the lock: while held, the victim cannot migrate (work stealing
+     * needs the same lock via trylock), so the mark is ordered against that
+     * CPU's schedule(). */
+    for (;;) {
+      int vcpu = (proc->on_cpu >= 0) ? proc->on_cpu : 0;
+      struct cpu_info *vc = &cpu_data[vcpu];
+      spin_lock(&vc->sched_lock);
+      int now = (proc->on_cpu >= 0) ? proc->on_cpu : 0;
+      if (now != vcpu) {
+        spin_unlock(&vc->sched_lock);
+        continue;
+      }
+      proc->state = PROC_DEAD;
+      spin_unlock(&vc->sched_lock);
+      break;
     }
-  }
-
-  proc->state = PROC_DEAD;
-
-  if (proc->on_cpu >= 0) {
-    /* Process is currently executing on another CPU.
-     * We cannot free its kernel stack while it's being used.
-     * Leave it in the pool as PROC_DEAD; schedule() on that CPU
-     * will perform the deferred free after switching away. */
     spin_unlock_irqrestore(&sched_lock, flags);
     return 0;
   }
 
-  /* Not running on any CPU — safe to free immediately */
-  process_pool[slot] = NULL;
-  active_count--;
-
+  /* Not runnable and not running anywhere — safe to free immediately. */
+  proc->state = PROC_DEAD;
+  if (slot >= 0) {
+    process_pool[slot] = NULL;
+    active_count--;
+  }
   spin_unlock_irqrestore(&sched_lock, flags);
 
   if (proc->kernel_stack) {
@@ -654,7 +696,6 @@ int process_terminate(int pid) {
   if (proc->page_table) {
     vmm_destroy_pgd(proc->page_table);
   }
-
   pmm_free_page(proc);
 
   return 0;
@@ -741,9 +782,10 @@ struct pt_regs *schedule(struct pt_regs *regs) {
    * PGD that was still in use during the previous schedule() call.  By the
    * time we reach here on this CPU, we have already context-switched to a
    * different task and are no longer touching the old stack. */
-  if (cpu_ptr->deferred_free_proc) {
+  while (cpu_ptr->deferred_free_proc) {
     struct process *to_free = cpu_ptr->deferred_free_proc;
-    cpu_ptr->deferred_free_proc = NULL;
+    cpu_ptr->deferred_free_proc = to_free->next;
+    to_free->next = NULL;
 
     /* Remove from pool */
     uint64_t gflags;
@@ -784,9 +826,10 @@ struct pt_regs *schedule(struct pt_regs *regs) {
       /* Check if externally terminated while running on this CPU */
       if (prev->state == PROC_DEAD) {
         /* Cannot free kernel_stack here (we're standing on it).
-         * Defer the free to the NEXT schedule() call. */
+         * Queue it on the reap stack; the NEXT schedule() frees it after we
+         * have switched away. */
         prev->on_cpu = -1;
-        cpu_ptr->deferred_free_proc = prev;
+        reap_push(cpu_ptr, prev);
         cpu_ptr->current_task = NULL;
         prev = NULL;
         goto pick_next;
@@ -832,6 +875,9 @@ pick_next:;
   /* 2. Pick Next Process (O(1) Priority-based Selection) */
   struct process *next = NULL;
 
+pick_local_retry:
+  next = NULL;
+
   if (focus_pid > 0) {
     for (int p = 0; p < MAX_PRIO; p++) {
       if (list_empty(&cpu_ptr->runqueues[p]))
@@ -841,13 +887,15 @@ pick_next:;
         if ((int)it->pid == focus_pid) {
           next = it;
           __dequeue_task(next);
-          goto found;
+          break;
         }
       }
+      if (next)
+        break;
     }
   }
 
-  if (cpu_ptr->prio_bitmap != 0) {
+  if (!next && cpu_ptr->prio_bitmap != 0) {
     /* O(1) pick: __builtin_ctz finds the index of the lowest set bit, which
      * corresponds to the highest-priority non-empty queue (lower index = higher
      * priority).  This is the core of the O(1) priority scheduler. */
@@ -858,6 +906,15 @@ pick_next:;
       next = container_of(entry, struct process, run_list);
       __dequeue_task(next);
     }
+  }
+
+  /* SCHED-UAF-01: a terminated process may still be sitting in a runqueue
+   * (process_terminate() marks it DEAD without dequeuing).  Never run a corpse
+   * — a fault in it would halt amd64 (EXC-AMD64-02).  Reap it and pick again. */
+  if (next && next->state == PROC_DEAD) {
+    reap_push(cpu_ptr, next);
+    next = NULL;
+    goto pick_local_retry;
   }
 
 found:
@@ -883,8 +940,10 @@ found:
 
             /* Never steal idle-priority tasks — they are CPU-bound and share a
              * kernel stack with their owner CPU. Check priority, not pointer,
-             * so this also catches any idle task that migrated via wake_up. */
-            if (next->priority == PROC_PRIO_IDLE) {
+             * so this also catches any idle task that migrated via wake_up.
+             * SCHED-UAF-01: also never steal a terminated process — leave the
+             * corpse for its owner CPU to reap via the pick==DEAD path. */
+            if (next->priority == PROC_PRIO_IDLE || next->state == PROC_DEAD) {
               next = NULL;
               spin_unlock(&other_cpu->sched_lock);
               continue;
