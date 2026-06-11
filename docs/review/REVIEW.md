@@ -187,6 +187,12 @@ implemented by delegated sub-agents that did not commit), **pending maintainer r
 | `d6f03e9` | **Phase A** steps 8-10: user-vs-kernel isolation — generic `fault_handle_user_or_panic`; amd64 user faults terminate+schedule (**EXC-AMD64-02 / #36**); uaccess windows flagged on both arches (**CPU-AARCH64-01**, **SYS-AARCH64-02**).  Verified: `crash` from the shell terminates PID, shell survives, `counter` runs after — both arches | **#36** + 2 ✅ |
 | `ac4d76f` | **Phase A** steps 11-12: symbolized backtrace — fp walker + kallsyms-style `.ksyms` blob (two-pass link, survives aarch64 `objcopy -O binary`).  Verified: `kernel_main+0x3e3` matches addr2line; live symbols from raw kernel.bin | Phase A ✅ |
 | `6bed3cf` | **Phase A** step 13: total aarch64 vector coverage — all 8 `b .` silent-hang vectors (FIQ, EL0-AArch32) now report + terminate/panic | Phase A ✅ |
+| `b9aad52` | sched: **auto-reap zombies** in `schedule()` (SCHED-03 mitigated — shell never WAITs; doom/demo3d leaked slot+stack+PGD per exit); `process_wait` → pure reporter (double-free hazard); parked-sleeper corpse leak in `process_terminate` closed.  Verified: `crash` → `ps` shows no zombie, next spawn reuses the freed slot — both arches | SCHED-03 ✅ |
+| `dc8a3db` | virtio-blk: **serialise requests** (driver spinlock — torn-descriptor SMP race was the `Read failed status=1` / doom `W_ReadLump` failure in the external traces); static DMA targets (DRV-VIRTIO-03); pre-publish `used->idx` snapshot (DRV-VIRTIO-04).  Verified: aarch64 `counter`+`doom` → full WAD load, 0 failures | DRV-VIRTIO-03/04 ✅ |
+| `9bf27af` | **Phase A step 14**: PIT halted after LAPIC calibration → vector 32 single-source (EXC-AMD64-03; LINT0 stays ExtINT — it carries PCI INTx); dead amd64 probe block + flags removed (EXC-AMD64-01) | EXC-AMD64-01/03 ✅ |
+| `2212423` | **Phase A step 15**: `irq_handlers[]` lock (IRQ-02/#55, pair copied under lock); chip-owned EOI via `irq_chip_end` → `pic_chip_end` does LAPIC+8259 (IRQ-01/#47); spurious 8259 IRQ7/IRQ15 + LAPIC 0xFF filtered before dispatch (kills the "Unhandled interrupt 47" flood AND the wrong slave EOI it sent) | **#47, #55** ✅ |
+| `166887a` | sched: **SCHED-IRQ-01** — `schedule()` masks IRQs itself before `get_cpu_info()`; no-switch exits restore, switch exit returns masked (IRET/ERET loads next frame's flags).  Closes the nested-schedule class for every syscall entry state | SCHED-IRQ-01 ✅ |
+| `db503a3` | gui/input: focus reset on window destroy → top-most surviving window by Z-order (was hardcoded PID 7); per-keystroke IRQ-context log → pr_debug | trace triage ✅ |
 
 Rows `3f9f81f` through `94c936c` are the **W3 issue-tier** fix phase — small, scoped, additive
 correctness/security hardening on the issue backlog, distinct from the boot/crash fixes above.
@@ -214,13 +220,17 @@ payload[64];` — present since `main` — and all producers/consumers use 64-bi
 use 64-bit). Exercised at runtime every boot (keyboard input + `notify()`). No change needed.
 
 **Remaining (open, future sessions — multi-step refactors, not concludable in one short pass):**
-amd64 ACPI-MADT CPU count (ARCH-01), real PCI/ACPI init (ARCH-02); Phase A residuals:
-step 14 (EXC-AMD64-03 double timer tick + EXC-AMD64-01 dead probe block) and step 15
-(IRQ-01/IRQ-02 dispatch races); **SCHED-IRQ-01** (no IRQ-state contract on `schedule()` —
-syscall paths enter it with IRQs enabled; see addendum 10 §3); the kernel/userland
+amd64 ACPI-MADT CPU count (ARCH-01), real PCI/ACPI init (ARCH-02); async block I/O
+(DRV-VIRTIO-08 — reads still busy-wait, now with IRQs masked under the blk lock);
+blocking `wait()` + exit-status collection (needs SCHED-06 parent/child links);
+legacy virtio-pci transport hang (addendum 11 §2.4); the kernel/userland
 higher-half **addressing rework** (the central PA==VA invariant); W^X (MM-VMM-01/AMMU-01);
 and re-commenting the headers + `.S` files reverted in Phase 2 (all C sources are
-commented and committed).  EXC-AMD64-02 (#36) is now **fixed** (Phase A, `d6f03e9`).
+commented and committed).  **All Phase A residuals are now closed**: step 14
+(`9bf27af`), step 15 (`2212423`), SCHED-IRQ-01 (`166887a`); EXC-AMD64-02 (#36) fixed in
+`d6f03e9`.  The external boot-trace triage (zombie leak, virtio-blk race, focus reset,
+spurious-IRQ flood — what was confirmed, what was misread) is
+[analysis/11-addendum-2026-06-11](analysis/11-addendum-2026-06-11-external-trace-triage.md).
 
 ## 9. amd64 runtime crashes — root-caused (both FIXED)
 
