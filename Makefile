@@ -69,6 +69,9 @@ LD      = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
 MKDISK  = tools/mkdisk
+# Rootfs inode layout: --extents (mkfs.ext4-like, default) or --legacy
+# (direct/indirect pointer blocks, the pre-B1 format kept for regression).
+MKDISK_LAYOUT ?= --extents
 
 # Resolve grub-mkrescue
 GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || command -v grub-mkrescue 2>/dev/null || echo "")
@@ -400,7 +403,7 @@ rootfs: user
 
 disk: $(MKDISK) kernel rootfs bootloader
 	@mkdir -p $(BUILD_DIR)
-	@./$(MKDISK) $(DISK_IMG) $(BOOTLOADER_BIN) $(KERNEL_BIN) $(BUILD_DIR)/rootfs
+	@./$(MKDISK) $(DISK_IMG) $(BOOTLOADER_BIN) $(KERNEL_BIN) $(BUILD_DIR)/rootfs $(MKDISK_LAYOUT)
 
 $(MKDISK): tools/mkdisk.c
 	@mkdir -p tools
