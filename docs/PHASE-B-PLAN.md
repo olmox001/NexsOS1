@@ -162,26 +162,20 @@ AB-BA chain SCHED-05, legacy virtio-pci transport (addendum 11 §2.5).
 
 ---
 
-## 4. GitHub issues — status updates to apply
+## 4. GitHub issues — DONE (2026-06-11)
 
-`gh` is not installed on this machine and no API token is available
-non-interactively.  After `brew install gh && gh auth login`, apply:
+`gh` is installed and authenticated as `olmox001`.  Closed with fix
+comments: **#36** (EXC-AMD64-02, `d6f03e9`), **#37** (EXC-AMD64-03,
+`9bf27af`), **#46** (DRV-VIRTIO-03, `dc8a3db`), **#47** (IRQ-01,
+`2212423`), **#55** (IRQ-02, `2212423`), **#101** (SCHED-UAF-01,
+`3296ce1`/`db4eb4c`/`3509a4f` + lifecycle hardening), **#102**
+(ARCH-AMD64-APPGD-01, `3296ce1`).  Phase A status comment posted on the
+tracking issue **#19**, including the Phase B pointer.
 
-```sh
-R=olmox001/os1test-dev
-gh issue comment 36 -R $R -b "Fixed on comprehensive-review in d6f03e9 (Phase A steps 8-10): every vector routes through fault_handle_user_or_panic; user faults terminate the process and the shell survives (verified both arches, QMP crash test). Closing on merge."
-gh issue comment 47 -R $R -b "Fixed on comprehensive-review in 2212423 (Phase A step 15): EOI is chip-owned (irq_chip_end -> pic_chip_end does the full LAPIC+8259 sequence); the amd64 acknowledge-loop bypass is documented as by-design (vectored dispatch). Spurious IRQ7/IRQ15 now filtered via ISR before dispatch."
-gh issue comment 55 -R $R -b "Fixed on comprehensive-review in 2212423 (Phase A step 15): irq_handlers[] guarded by irq_table_lock; both dispatch paths copy (handler,data) under the lock and invoke outside it."
-# then: gh issue close 36 47 55 -R $R   (or close on merge, maintainer's call)
-# Find the issue numbers for the other fixes of this batch (if filed):
-gh issue list -R $R --label code-review --search "SCHED-03 zombie" 
-gh issue list -R $R --label code-review --search "virtio stack DMA"
-```
-
-Fixes from this batch without a known issue number (covered by REVIEW.md §8
-rows): SCHED-03 (`b9aad52`+`f37d137`), DRV-VIRTIO-03/04 (`dc8a3db`),
-EXC-AMD64-01/03 (`9bf27af`), SCHED-IRQ-01 (`166887a`), focus reset
-(`db503a3`).
+Fixes from this batch without a dedicated issue (covered by REVIEW.md §8
+rows): SCHED-03 zombie reaping (`b9aad52`+`f37d137`), DRV-VIRTIO-04
+(`dc8a3db`), EXC-AMD64-01 (`9bf27af`), SCHED-IRQ-01 (`166887a`), focus
+reset (`db503a3`).
 
 ---
 
