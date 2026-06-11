@@ -46,7 +46,23 @@
 #include <kernel/vmm.h>
 #include <kernel/string.h>
 #include <kernel/sched.h>
+#include <kernel/fault.h>
 #include <arch/arch.h>
+
+/*
+ * arch_uaccess_fault_fixup - release the uaccess critical section after a
+ * #PF inside one of the copy windows below (kernel/core/fault.c).
+ *
+ * On amd64 the copies hold only IRQs-masked + uaccess_active (unified address
+ * space: no TTBR swap, no mm_lock).  The faulting context is being discarded
+ * (process terminated) and schedule() returns a frame whose saved RFLAGS
+ * govern the next task, so only the flag needs clearing.
+ */
+void arch_uaccess_fault_fixup(void) {
+  struct cpu_info *ci = arch_cpu_info_fault_safe();
+  if (ci)
+    ci->uaccess_active = 0;
+}
 
 /*
  * AMD64 uses a unified address space: the user PML4 is already in CR3 when
@@ -86,7 +102,17 @@ int arch_copy_from_user(void *dest, const void *src, size_t n) {
   if (vmm_check_range(current_process->page_table, src_addr, n, PTE_VALID) != 0)
     return -1;
 
+  /* uaccess window (Phase A step 9/10): flag the copy so the fault classifier
+   * treats a #PF on a user VA here as recoverable (terminate the process)
+   * rather than a kernel bug.  IRQs are masked so the flag cannot leak to a
+   * different task via preemption; aarch64 already masks for its TTBR swap. */
+  uint64_t uflags = local_irq_save();
+  get_cpu_info()->uaccess_active = 1;
+
   memcpy(dest, src, n); /* NOTE(UACC-AMD64-01): no stac/clac bracketing */
+
+  get_cpu_info()->uaccess_active = 0;
+  local_irq_restore(uflags);
 
   return 0;
 }
@@ -112,7 +138,14 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
   if (vmm_check_range(current_process->page_table, dest_addr, n, PTE_VALID) != 0)
     return -1;
 
+  /* uaccess window — see arch_copy_from_user */
+  uint64_t uflags = local_irq_save();
+  get_cpu_info()->uaccess_active = 1;
+
   memcpy(dest, src, n); /* NOTE(UACC-AMD64-01): no stac/clac bracketing */
+
+  get_cpu_info()->uaccess_active = 0;
+  local_irq_restore(uflags);
 
   return 0;
 }
@@ -143,6 +176,10 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
   if (!vmm_is_user_addr((uint64_t)src)) return -1;
   if (!current_process || !current_process->page_table) return -1;
 
+  /* uaccess window — see arch_copy_from_user */
+  uint64_t uflags = local_irq_save();
+  get_cpu_info()->uaccess_active = 1;
+
   size_t i;
   int ret = 0;
   for (i = 0; i < max_len - 1; i++) {
@@ -161,6 +198,9 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
     if (src[i] == '\0') break;
   }
   dest[max_len - 1] = '\0';
+
+  get_cpu_info()->uaccess_active = 0;
+  local_irq_restore(uflags);
 
   return ret;
 }

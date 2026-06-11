@@ -222,13 +222,22 @@ static void amd64_dump_regs(struct pt_regs *regs) {
  * signal to the user process.  Fix: if (regs->cs & 3) == 3, call
  * process_terminate(current_process) + schedule() instead of halting.
  */
-static void amd64_page_fault_handler(struct pt_regs *regs) {
+static struct pt_regs *amd64_page_fault_handler(struct pt_regs *regs) {
   uint64_t cr2;
   __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
 
   uint64_t error_code = regs->err;
 
-  fault_printf("\n[C%d] PAGE FAULT: Access to 0x%lx\n", fault_cpu_id(), cr2);
+  /* EXC-AMD64-02 resolved: user #PF (or a fault inside the explicit
+   * user-copy window) terminates the process and schedules a successor —
+   * it no longer halts the kernel. */
+  struct pt_regs *next =
+      fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, cr2, regs->rip,
+                                 "PAGE FAULT");
+  if (next)
+    return next;
+
+  fault_printf("\n[C%d] KERNEL PAGE FAULT: Access to 0x%lx\n", fault_cpu_id(), cr2);
   fault_printf("Frame: %p (IST1 fault stack)\n", (void *)regs);
   fault_printf("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n",
                error_code,
@@ -239,7 +248,7 @@ static void amd64_page_fault_handler(struct pt_regs *regs) {
                (error_code & 16) ? 1 : 0);
 
   amd64_dump_regs(regs);
-  arch_cpu_halt();
+  panic("Unrecoverable kernel #PF at RIP 0x%lx (CR2 0x%lx)", regs->rip, cr2);
 }
 
 /*
@@ -249,10 +258,16 @@ static void amd64_page_fault_handler(struct pt_regs *regs) {
  * invalid IOPL instructions, or non-canonical addresses.
  * NOTE(EXC-AMD64-02): No user-vs-kernel discrimination; both halt the kernel.
  */
-static void amd64_gpf_handler(struct pt_regs *regs) {
-  fault_printf("\n[C%d] GENERAL PROTECTION FAULT\n", fault_cpu_id());
+static struct pt_regs *amd64_gpf_handler(struct pt_regs *regs) {
+  struct pt_regs *next =
+      fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, 0, regs->rip,
+                                 "GENERAL PROTECTION FAULT");
+  if (next)
+    return next;
+
+  fault_printf("\n[C%d] KERNEL GENERAL PROTECTION FAULT\n", fault_cpu_id());
   amd64_dump_regs(regs);
-  arch_cpu_halt();
+  panic("Unrecoverable kernel #GP at RIP 0x%lx (err 0x%lx)", regs->rip, regs->err);
 }
 
 /*
@@ -351,31 +366,31 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
        */
     }
 
-    /* Handle exceptions.
-     * NOTE(EXC-AMD64-02): The default branch halts the kernel for ANY unhandled
-     * vector including those caused by user-space code (divide-by-zero, invalid
-     * opcode, etc.).  Should check regs->cs & 3 to discriminate. */
+    /* Handle exceptions (EXC-AMD64-02 resolved): user-attributable faults —
+     * any vector 0-31 from CS RPL 3, e.g. #DE, #UD, #PF, #GP — terminate the
+     * process via fault_handle_user_or_panic and return the next task's
+     * frame.  Kernel faults dump and panic.  #DF never attempts recovery:
+     * machine state is not trustworthy by definition. */
     switch (vec) {
       case 8: /* Double Fault (#DF) */
         amd64_double_fault_handler(regs);
         break;
       case 13: /* General Protection Fault (#GP) */
-        amd64_gpf_handler(regs);
-        break;
+        return amd64_gpf_handler(regs);
       case 14: /* Page Fault (#PF) — CR2 holds faulting address */
-        amd64_page_fault_handler(regs);
-        break;
-      default:
-        fault_printf("\n[C%d] Unhandled CPU Exception: %ld\n", fault_cpu_id(), vec);
+        return amd64_page_fault_handler(regs);
+      default: {
+        struct pt_regs *next =
+            fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, 0, regs->rip,
+                                       "CPU EXCEPTION");
+        if (next)
+          return next;
+        fault_printf("\n[C%d] Unhandled kernel CPU Exception: %ld\n",
+                     fault_cpu_id(), vec);
         amd64_dump_regs(regs);
-        arch_cpu_halt();
-        break;
+        panic("Unrecoverable kernel exception (vec %lu) at RIP 0x%lx", vec, regs->rip);
+      }
     }
-
-    /* Currently unreachable (every vec<32 path halts); kept so that when a
-     * recovery path is added (user-fault termination, probe fixup) the
-     * recursion depth is correctly unwound. */
-    fault_exit();
   } else if (vec == 0x80) {
     /* Legacy syscall via int 0x80 (DPL=3 gate installed in idt_init).
      * NOTE(SYS-AMD64-03): second syscall surface alongside LSTAR. */

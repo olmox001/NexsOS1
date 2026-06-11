@@ -68,4 +68,26 @@ struct cpu_info *arch_cpu_info_fault_safe(void);
  */
 int arch_frame_on_fault_stack(const void *frame);
 
+/*
+ * fault_handle_user_or_panic - generic user-vs-kernel fault decision
+ * (kernel/core/fault.c, Phase A step 8).
+ *
+ * Returns the next frame to restore (the fault was user-attributable: the
+ * process was terminated and schedule() picked a successor), or NULL (kernel
+ * bug: the caller must dump its arch state and panic).  user_mode is the
+ * arch's privilege test at fault time (CS RPL / SPSR.M); fault_addr is
+ * CR2/FAR (0 when the vector has no fault address).
+ */
+struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
+                                           uint64_t fault_addr, uint64_t fault_pc,
+                                           const char *desc);
+
+/*
+ * arch_uaccess_fault_fixup - per-HAL: release the arch_copy_{from,to}_user
+ * critical section after a fault inside the copy window (clear the per-CPU
+ * uaccess_active flag, drop mm_lock / restore IRQ state where the arch holds
+ * them).  Called only by fault_handle_user_or_panic on the uaccess path.
+ */
+void arch_uaccess_fault_fixup(void);
+
 #endif /* _KERNEL_FAULT_H */

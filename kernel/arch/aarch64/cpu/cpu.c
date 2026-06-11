@@ -307,52 +307,18 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
   }
 
   {
-    /* Determine the fault origin to choose between process termination and panic.
-     *
-     * is_user_fault: SPSR.M[3:0] encodes the EL and SP at the time of exception.
-     *   0b0000 = EL0t (user space).  Any other value means EL1 (kernel).
-     *   NOTE: bits [3:0] of SPSR_EL1 == 0x0 is the AArch64 EL0t encoding.
-     *
-     * is_kernel_user_access_fault: kernel was at EL1 but FAR points into user VA.
-     *   This happens when arch_copy_from/to_user switches TTBR0 and a page fault
-     *   fires before the copy completes.
-     *   NOTE(CPU-AARCH64-01): A kernel NULL dereference or wild pointer that
-     *   coincidentally maps to user VA range would be misclassified here. [static] */
-    bool is_user_fault = ((frame->spsr & 0xF) == 0);
-    bool is_kernel_user_access_fault = (current_process != NULL && vmm_is_user_addr(far));
-
-    if (is_user_fault || is_kernel_user_access_fault) {
-      pr_err("[ERROR] KERNEL-USER FAULT: EC=0x%lx (0x%lx) FAR=0x%lx ELR=0x%lx PID=%d\n",
-             (uint64_t)ec, esr, far, elr, current_process->pid);
-      pr_err("[DEBUG] Context: x0=0x%lx x1=0x%lx x2=0x%lx x3=0x%lx sp=0x%lx spsr=0x%lx\n",
-             frame->regs[0], frame->regs[1], frame->regs[2], frame->regs[3],
-             frame->sp_el0, frame->spsr);
-      pr_err("Terminating PID %d\n", current_process->pid);
-      
-      if (elr == 0) {
-        pr_err("CRITICAL: Process PID %d jumped to NULL (ELR=0).\n",
-               current_process->pid);
-      }
-
-      /* If it was a kernel-user access fault, we are holding mm_lock and have IRQs disabled!
-       * We MUST release them to avoid system deadlock.
-       * NOTE(SYS-AARCH64-02): This assumes the uaccess critical section (syscall.c:
-       * arch_copy_from/to_user) always holds exactly mm_lock with IRQs saved when a
-       * fault fires.  Any refactor of that critical section must keep this coupling
-       * in sync.  The current pairing is: syscall.c acquires IRQ-save then mm_lock;
-       * we release mm_lock then IRQ-enable here (reverse order). [static]
-       */
-      if (is_kernel_user_access_fault) {
-        spin_unlock(&current_process->mm_lock);
-        local_irq_enable();
-      }
-
-      pr_err("Terminating PID %d\n", current_process->pid);
-
-      process_terminate(current_process->pid);
-      fault_exit(); /* fault handled — unwind the recursion guard */
-      return schedule(frame);
-    }
+    /* User-vs-kernel decision (Phase A steps 8/10): delegated to the generic
+     * helper.  is_user_fault = SPSR.M[3:0] == 0b0000 (EL0t).  The old
+     * "FAR in user VA implies a uaccess fault" heuristic (CPU-AARCH64-01) is
+     * gone: the helper recovers ONLY when the per-CPU uaccess_active flag —
+     * set exclusively inside arch_copy_{from,to,string_from}_user — marks the
+     * dereference window; the mm_lock/IRQ unwind (SYS-AARCH64-02) lives in
+     * arch_uaccess_fault_fixup next to the code that takes those locks.
+     * A wild kernel pointer that merely lands in user VA now panics below. */
+    struct pt_regs *next = fault_handle_user_or_panic(
+        frame, (frame->spsr & 0xF) == 0, far, elr, "SYNC EXCEPTION");
+    if (next)
+      return next;
 
 
     /* Kernel fault: the address space may be compromised — every line below

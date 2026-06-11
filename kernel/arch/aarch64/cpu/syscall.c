@@ -6,6 +6,7 @@
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
 #include <kernel/ext4.h>
+#include <kernel/fault.h>
 #include <kernel/graphics.h>
 #include <kernel/kmalloc.h>
 #include <kernel/printk.h>
@@ -61,8 +62,13 @@ int arch_copy_from_user(void *dest, const void *src, size_t n) {
   arch_tlb_flush_all();
   arch_isb();
 
-  /* Perform copy while user space is mapped at TTBR0 */
+  /* Perform copy while user space is mapped at TTBR0.  uaccess_active flags
+   * the dereference window for the fault classifier (kernel/core/fault.c):
+   * an abort here is recoverable (terminate the process via
+   * arch_uaccess_fault_fixup), anywhere else it is a kernel bug. */
+  get_cpu_info()->uaccess_active = 1;
   memcpy(dest, src, n);
+  get_cpu_info()->uaccess_active = 0;
 
   /* Restore kernel/previous TTBR0 */
   arch_vmm_set_pgd(old_pgd);
@@ -100,7 +106,10 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
   arch_tlb_flush_all();
   arch_isb();
 
+  /* uaccess window — see arch_copy_from_user */
+  get_cpu_info()->uaccess_active = 1;
   memcpy(dest, src, n);
+  get_cpu_info()->uaccess_active = 0;
 
   arch_vmm_set_pgd(old_pgd);
   arch_tlb_flush_all();
@@ -110,6 +119,27 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
   local_irq_restore(flagsptr);
 
   return 0;
+}
+
+/*
+ * arch_uaccess_fault_fixup - release the uaccess critical section after an
+ * abort inside one of the copy windows above (kernel/core/fault.c).
+ *
+ * The copies hold: IRQs masked (local_irq_save), current_process->mm_lock,
+ * TTBR0 = the user PGD, and uaccess_active = 1.  The faulting context is
+ * being discarded (process terminated), so: clear the flag, drop mm_lock,
+ * re-enable IRQs (SYS-AARCH64-02 made explicit in ONE place).  TTBR0 is NOT
+ * restored here — the scheduler loads the next task's PGD unconditionally on
+ * the switch (SCHED-UAF-01 fix).
+ */
+void arch_uaccess_fault_fixup(void) {
+  struct cpu_info *ci = arch_cpu_info_fault_safe();
+  if (ci) {
+    ci->uaccess_active = 0;
+    if (ci->current_task)
+      spin_unlock(&ci->current_task->mm_lock);
+  }
+  local_irq_enable();
 }
 
 /* Copy null-terminated string from user space safely with Page Table Switching
@@ -129,6 +159,9 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
   arch_tlb_flush_all();
   arch_isb();
 
+  /* uaccess window — see arch_copy_from_user */
+  get_cpu_info()->uaccess_active = 1;
+
   int ret = 0;
   size_t i;
   for (i = 0; i < max_len - 1; i++) {
@@ -137,7 +170,7 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
        if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1, PTE_VALID) != 0)
          goto out;
     }
-    
+
     dest[i] = src[i];
     if (src[i] == '\0')
       goto out;
@@ -145,6 +178,7 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
   dest[max_len - 1] = '\0';
 
 out:
+  get_cpu_info()->uaccess_active = 0;
   arch_vmm_set_pgd(old_pgd);
   arch_tlb_flush_all();
   arch_isb();
@@ -162,6 +196,15 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
   if (ec != 0x15) {
     uint64_t far = arch_get_fault_address();
     uint64_t iss = esr & 0x1FFFFFF;
+
+    /* Recursion guard (Phase A step 7): a fault while handling this EL0
+     * fault arrives as an EL1 sync abort, but guard this path too so e.g. a
+     * fault inside process_terminate stops cleanly. */
+    if (fault_enter() > 1) {
+      fault_printf("\n[FATAL] NESTED EXCEPTION in EL0-fault path EC=0x%lx ELR=%016lx — halting\n",
+                   ec, frame->elr);
+      arch_cpu_halt();
+    }
 
     pr_err(
         "PID %d EXCEPTION: EC=0x%lx ESR=0x%lx FAR=0x%lx ELR=0x%lx ISS=0x%lx\n",
@@ -194,16 +237,16 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
     }
     pr_err("Exception Class: %s (0x%lx)\n", ec_name, ec);
 
-    if (current_process) {
-      pr_err("Terminating PID %d due to fatal exception\n",
-             current_process->pid);
-      process_terminate(current_process->pid);
-      return schedule(frame);
-    } else {
-      /* Kernel Fault? This function is only for Lower EL Sync though... */
-      /* But if VBAR points here for EL1 Sync? No, distinct vectors. */
-      /* If we are here, it SHOULD be User Fault. */
-      panic("Fatal Exception in Kernel Thread Context");
+    /* This vector (el0_64_sync) only fires for EL0-origin exceptions:
+     * always user-attributable — route through the generic decision
+     * (kernel/core/fault.c).  NULL return = no current task, which on this
+     * vector means scheduler-state corruption: panic. */
+    {
+      struct pt_regs *next =
+          fault_handle_user_or_panic(frame, 1, far, frame->elr, ec_name);
+      if (next)
+        return next;
+      panic("Fatal EL0 exception with no current task (EC=0x%lx)", ec);
     }
   }
 
