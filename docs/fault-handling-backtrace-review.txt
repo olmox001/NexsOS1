@@ -1,0 +1,175 @@
+This is a crucial landmine for the plan: arch_impl_get_cpu_id() on amd64 dereferences LAPIC MMIO at 0xFEE00020. If a fault occurs while the CPU is on a freed/compromised PGD, the LAPIC mapping may be gone, so calling arch_get_cpu_id() inside the fault handler (which amd64_page_fault_handler does at idt.c:202) can itself fault — compounding the recursion. The fault handler must read the CPU id from %gs: (cpu_info) instead, which is set via MSR and doesn't require a page-table walk.
+
+I now have a complete and verified picture. Let me compile the final report.
+
+FINDINGS REPORT + REFACTOR PLAN: Precise Fault/Exception/Interrupt Handling for NEXS (amd64 + aarch64)
+PART 1 — CURRENT-STATE MAP (per arch, cited)
+1A. amd64 exception/IRQ entry → save → dispatch → handle
+Entry & register save — kernel/arch/amd64/cpu/isr_stubs.S
+
+256 stubs (isr_stub_0..255); error-code vectors are correct (HAS_ERR, lines 14, 54-76). Each stub pushes dummy err (if needed) + vector, jumps to common_isr_entry (line 87).
+common_isr_entry (line 87): conditional swapgs based on testb $3, 24(%rsp) (CS&3) at lines 90-92; saves 15 GP regs (lines 95-109); calls amd64_isr_dispatch with %rsp in RDI; sets %rsp = %rax on return (lines 112-114) — this is the context-switch mechanism. No FXSAVE/XMM save (CPU-AMD64-01).
+pt_regs layout matches the stub exactly (kernel/arch/amd64/include/arch/pt_regs.h): 15 GP regs, then vec/err, then CPU iret frame (rip/cs/rflags/rsp/ss).
+TSS / fault stack — kernel/arch/amd64/cpu/gdt.c
+
+Per-CPU TSS (line 139). Only rsp0 (line 280) and iopb_offset (line 234) are written at runtime. ist[7] is left entirely zero (struct at line 81; never populated). No IST is configured for any vector — IDT installs every gate with ist=0 (idt.c:143, 149). Confirmed in idt.c double-fault comment (line 234): "IST=0 here, so it shares the TSS RSP0 stack — risky."
+Consequence: a fault from kernel mode reuses the current kernel RSP. A fault from Ring 3 switches to tss.rsp0 = the current task's kernel stack. There is no dedicated, always-mapped fault stack. This is the direct enabler of the triple-fault: recursive #PF on the same stack → overflow → #DF (also ist=0) → triple fault.
+Dispatch — amd64_isr_dispatch (idt.c:284)
+
+vec < 32: dead probe block (lines 292-311, EXC-AMD64-01); then switch(vec) handles only 8/13/14; everything else → "Unhandled CPU Exception" → amd64_dump_regs + arch_cpu_halt() (lines 327-331).
+vec == 0x80: legacy syscall.
+vec >= 32: timer (32) → kernel_timer_tick; else irq_dispatch; then lapic_eoi() (line 359) + pic_send_eoi for 32-47.
+Handlers — all halt, none recover, none distinguish user vs kernel:
+
+amd64_page_fault_handler (idt.c:196): reads CR2, calls pr_err/amd64_dump_regs (which call printk), then arch_cpu_halt(). No regs->cs & 3 check, no IST, no recursion guard. This is the exact function in the root-caused bug.
+amd64_gpf_handler (idt.c:222), amd64_double_fault_handler (idt.c:236): same pattern, halt.
+amd64_dump_regs (idt.c:171) + every handler call arch_get_cpu_id() → *(volatile uint32_t*)0xFEE00020 (LAPIC MMIO) (arch.h:64). If the address space is compromised, this read itself faults.
+Symbolization / backtrace — none. Handlers print raw regs->rip. No frame-pointer walk, no symbol table. Only __builtin_return_address(0) use is in stack_protector.c:64.
+
+1B. aarch64 exception/IRQ entry → save → dispatch → handle
+Vector table & save — kernel/arch/aarch64/cpu/exception.S
+
+16-entry VBAR table (line 272), correctly 0x800-aligned, all 4 EL groups present. el*_*_fiq and all el0_32_* are b . infinite-loop stubs (lines 283, 297, 311, 319-328) — AArch32 from EL0 and all FIQs are silent hangs (acceptable: kernel is AArch64-only, FIQ unused, but technically a silent halt).
+vector_stub (line 26) and irq_stub (line 149) allocate an 816-byte frame and save x0-x30 + ELR/SPSR/SP_EL0 + full q0-q31 + FPSR/FPCR (much more complete than amd64 — FPU IS saved here). Calls <name>_handler, then mov sp, x0 (line 86) for context switch, msr daifset, #3 before restore (line 89).
+The per-vector handlers (lines 333-383) have dead debug breadcrumbs (mov x0, #0x09000000; mov w1, #NN; /* str commented out */) — harmless but dead.
+Fault stack — start.S sets SPSel=1 (line 48), so EL1 runs on SP_EL1 = the per-CPU 128KB kernel stack. EL1→EL1 exceptions take the el1_spx_* vectors and sub sp, sp, #816 on the same kernel stack. No separate EL1 fault/abort stack — a recursive abort overflows the kernel stack exactly like amd64. (The el1_sp0_* vectors exist but the kernel never runs with SPSel=0 after boot.)
+
+Dispatch — sync_handler (cpu.c:178)
+
+Decodes ESR_EL1.EC (line 191). Probe-recovery advances ELR by 4 (lines 199-204, this path IS live on aarch64, unlike amd64).
+DOES distinguish user vs kernel (lines 245-248): is_user_fault = (spsr & 0xF)==0 (EL0t), is_kernel_user_access_fault = vmm_is_user_addr(far). User/uaccess faults → process_terminate(current_process->pid) + schedule(frame) (lines 276-277). Kernel faults → full register dump + panic() (line 308). This is the behavior amd64 lacks.
+Two correctness bugs noted: CPU-AARCH64-01 (wild kernel pointer in user VA range misclassified as user fault → wrongly terminates instead of panicking, cpu.c:246) and SYS-AARCH64-02 (unconditional mm_lock unlock, cpu.c:269-272).
+IRQ path — irq_handler (irq.c:258) drives the GIC acknowledge/EOI loop; SGI0 = panic-halt IPI; timer → timer_handler; unhandled → pr_warn + irq_disable (no silent fall-through — better than amd64's pr_debug).
+
+Symbolization / backtrace — none. sync_handler prints raw ELR/registers; no FP walk, no symbol table.
+
+1C. Shared: printk safety, panic, linker scripts, userspace
+printk (kernel/lib/printk.c) — NOT safe from a compromised-address-space fault handler:
+
+Acquires global uart_lock via spin_lock_irqsave (line 141). A fault while another CPU (or this CPU) holds uart_lock → deadlock or lock-recursion.
+Per-CPU in_printk recursion guard (lines 143-147) emits [RECURSIVE PRINTK DETECTED] and returns — but this requires get_cpu_info() to work. On amd64 get_cpu_info → arch_get_cpu_id → LAPIC MMIO read (the unmapped-at-fault-time hazard). On a compromised PGD the guard itself faults before it can trip.
+printk writes to cpu->printk_buf (in .bss, identity-mapped) and uart_putc (MMIO). The crash is not printk's text path per se — it is that calling printk at all requires %gs/cpu_info and the low-half identity to be intact, which is exactly what a freed-PGD fault destroys.
+panic() (line 215) calls irq_send_ipi_all() then printk — fine in a healthy address space, fatal in a compromised one.
+Linker scripts — no symbol-table section in either:
+
+kernel/arch/amd64/kernel.ld and kernel/arch/aarch64/kernel.ld both /DISCARD/ .note*, .eh_frame*. Neither emits a .symtab-derived runtime table. kernel.elf retains DWARF (built with -g, Makefile:29) for offline addr2line, but the running kernel has no in-memory symbol map.
+amd64 ships kernel.elf (has symbols); aarch64 ships kernel.bin (raw objcopy -O binary, Makefile:266-267) — all symbols stripped from the running image. Offline symbolization still works against kernel.elf in both cases.
+Userspace (user/sys/lib/lib.c) — user faults never return to userspace: the kernel terminates the process (aarch64) or halts (amd64). There is no signal/SIGSEGV delivery, no userspace fault handler, no abort path beyond exit() (line 104) and the __stack_chk_fail stub (line 152). crash.c writes to address 0 expecting the kernel to fault-terminate it.
+
+Toolchain — x86_64-elf-nm, aarch64-none-elf-nm, objcopy, addr2line all present. -fno-omit-frame-pointer is in COMMON_FLAGS (Makefile:28) → reliable FP chain (rbp / x29) in C code.
+
+PART 2 — GAP ANALYSIS vs the 4 target behaviors
+Target	amd64 status	aarch64 status
+(1) Symbolized backtrace to exact faulting function	MISSING. Raw RIP only. No FP walk, no symbol table.	MISSING. Raw ELR only. No FP walk, no symbol table.
+(2) User-vs-kernel isolation	MISSING — EXC-AMD64-02 (#36). All exceptions halt; user crash kills the kernel.	PARTIAL — done (cpu.c:245-277), but misclassifies kernel-wild-pointers (CPU-AARCH64-01) and has fragile lock handling (SYS-AARCH64-02).
+(3) Un-faultable handlers (dedicated stack + no unmappable deps)	MISSING. No IST (gdt.c ist[]=0); handlers call printk + LAPIC-MMIO arch_get_cpu_id; the proven triple-fault path.	MISSING. EL1 aborts reuse the kernel stack (no fault stack); handlers call printk/panic which need intact TTBR0.
+(4) Total vector/IRQ coverage, no silent halt/reboot	PARTIAL. Vectors 0-31 covered but default = halt; silent triple-fault on recursion is the real coverage hole. IRQ unhandled = pr_warn (ok). EXC-AMD64-03 (#37) double-tick; IRQ-01(#47)/IRQ-02(#55) dispatch/lock issues.	PARTIAL. b . silent hangs on FIQ + EL0-AArch32 vectors. Unhandled IRQ = pr_warn+disable (ok).
+The aarch64 teardown residual — CONFIRMED, it is the SAME bug fixed on amd64:
+
+amd64 was fixed in arch_cpu_switch_context (cpu.c:206-212): kernel threads (page_table==NULL) now adopt kernel_pgd instead of leaving the dead process's CR3.
+aarch64 arch_cpu_switch_context (cpu.c:552-557) still has the unfixed pattern: if (next->page_table) arch_vmm_set_pgd(...) — when page_table==NULL it skips the TTBR0 reload, leaving the previous (possibly freed) process PGD in TTBR0.
+The generic schedule() has the identical hole at process.c:1018-1025: if (next_pgd != 0) hal_vmm_set_pgd(...). virt_to_phys(NULL)==0 (vmm.h:144), so for an idle/kernel-thread target the reload is skipped on both arches.
+aarch64 idle tasks are created with page_table=NULL (process.c:519-526) — exactly the trigger.
+The whole aarch64 kernel runs from TTBR0 only (TCR EPD1=1, no TTBR1; cpu.c:471, arch.h:75-77). So a stale freed PGD in TTBR0 unmaps the kernel's own code/data → next fetch faults → sync_handler runs → calls pr_err/panic (needs intact mappings) → recursive abort on the kernel stack → overflow → silent death. This precisely matches the maintainer's "aarch64 eventually crashes silently." It is not yet fixed because the amd64 patch was confined to amd64's arch_cpu_switch_context.
+PART 3 — ORDERED REFACTOR PLAN (incremental, boot never broken)
+Steps are ordered so each is independently verifiable and the boot stays green. I mark each [ARCH-HAL-LOCAL] or [GENERIC]. amd64 and aarch64 are mirrored. Verify every step with make all ARCH=amd64 and make all ARCH=aarch64 + a headless boot (28s timeout) and, where relevant, the crash.elf repro and qemu -d int,cpu_reset.
+
+Phase 0 — Stop the bleeding: fix the teardown residual (highest priority, smallest change)
+Step 1 [ARCH-HAL-LOCAL, aarch64] — Mirror the amd64 PGD-lifetime fix.
+
+File/fn: kernel/arch/aarch64/cpu/cpu.c → arch_cpu_switch_context (line 552-557).
+Approach: when next->page_table == NULL, load the shared kernel PGD into TTBR0 instead of skipping. Mirror amd64 cpu.c:206-212 exactly: pgd = next->page_table ? virt_to_phys(next->page_table) : kernel_pgd_phys; arch_vmm_set_pgd(pgd); tlbi+dsb+isb. Needs a handle to the kernel PGD physical address on aarch64 — verify whether a kernel_pgd global exists for aarch64 (amd64 uses extern uint64_t *kernel_pgd); if not, capture it in arch_vmm_init_hw (cpu.c:448, the function already receives kernel_pgd).
+Verify: boot aarch64 headless; spawn + close a window / run crash.elf; confirm no silent death. Compare TTBR0 behavior with -d int (no abort chain after process exit).
+Step 2 [GENERIC] — Close the same hole in the scheduler for both arches.
+
+File/fn: kernel/sched/process.c → schedule() (lines 1018-1025).
+Approach: the if (next_pgd != 0) guard silently skips kernel-thread targets. Either (a) make arch_cpu_switch_context the single source of truth for PGD loading (preferred — it now handles NULL correctly on both arches after Step 1 / existing amd64 fix) and remove the redundant hal_vmm_set_pgd here, OR (b) load the kernel PGD when next->page_table==NULL. Must be GENERIC because this is shared scheduler code. Call out: removing the block at 1018-1025 in favor of arch_cpu_switch_context (line 1028) is the cleanest and avoids double-loading TTBR0/CR3.
+Verify: both arches boot, window open/close stress, idle scheduling stable; -d int,cpu_reset shows no cpu_reset.
+Phase 1 — Un-faultable handler infrastructure (dedicated fault stack)
+Step 3 [ARCH-HAL-LOCAL, amd64] — Add IST fault stacks via the TSS.
+
+Files/fns: kernel/arch/amd64/cpu/gdt.c (struct tss64.ist[] already exists, line 81; gdt_init line 216) and kernel/arch/amd64/cpu/idt.c (idt_set_gate, the idt_init gate loop line 142-149).
+Approach: allocate per-CPU IST stacks (static __aligned(16) arrays, e.g. 16KB each, in .bss so always identity-mapped). Populate tss.ist[0] (and ideally a separate ist[1]) with their tops in gdt_init. Set the IDT gate ist field = 1 for #DF (8), #PF (14), #GP (13), NMI (2), #MC (18) — at minimum #DF and #PF. Use a separate IST index for #DF than #PF so a #PF-storm cannot clobber the #DF stack.
+Landmine: IST stacks must be sized for the deepest handler call chain incl. the backtrace walk; 16KB is safe. They are per-CPU (MAX_CPUS) — watch total .bss size.
+Verify: boot amd64; deliberately trigger a kernel #PF (temporary test hook) and confirm the handler runs on the IST stack (check RSP in dump is inside the IST region) and prints rather than triple-faulting. -d int shows a single #PF, no #DF/reset.
+Step 4 [ARCH-HAL-LOCAL, aarch64] — Add a dedicated EL1 abort stack.
+
+Files/fns: kernel/arch/aarch64/cpu/exception.S (the el1_spx_sync/el1_spx_serror paths, lines 290-300, 347-364) and a small assist in kernel/arch/aarch64/cpu/cpu.c.
+Approach: aarch64 has no IST; emulate it. Reserve a per-CPU abort stack (static .bss). In the EL1-from-EL1 sync/serror vector entry, before sub sp, sp, #816, switch SP to the per-CPU abort stack top (save the original SP into the frame so the dump shows the real faulting SP). The simplest robust approach: a tiny asm prologue that, on the el1_spx_sync vector only, loads the abort-stack pointer (indexed by mpidr_el1 & 0xFF) and switches to it. Keep EL0-origin faults on the normal kernel stack (they have a fresh kernel stack via the per-task SP_EL1).
+Landmine: re-entrancy — if the abort handler itself aborts, it will reuse the abort stack; add a per-CPU "in_fault" depth guard (Step 7) to convert a nested fault into an immediate wfi-halt with a one-line raw-UART message rather than infinite recursion.
+Verify: boot aarch64; trigger a kernel data abort (temp hook); confirm handler runs on abort stack and reports; no silent hang.
+Phase 2 — Fault-safe reporting primitives (no unmappable dependencies)
+Step 5 [ARCH-HAL-LOCAL, amd64] — Make in-fault CPU-id and logging not depend on LAPIC MMIO.
+
+Files/fns: kernel/arch/amd64/cpu/idt.c (amd64_dump_regs line 171, all three handlers, the dispatch default) — replace arch_get_cpu_id() (which reads LAPIC MMIO 0xFEE00020, arch.h:64) with a read of %gs:cpu_id (cpu_info, set via MSR, no page-table walk).
+Approach: add a tiny arch_fault_cpu_id() that reads %gs:8 (cpu_id offset, cpu.h:14) — but note %gs validity depends on swapgs having run correctly (it has, for kernel entries swapgs is skipped and GS already = kernel base; for user entries swapgs ran). Safe in both cases. This removes one fault-in-fault vector.
+Verify: kernel #PF on a compromised PGD (simulate by temporarily not adopting kernel_pgd) still prints its banner.
+Step 6 [GENERIC] — A fault-safe emergency print path (fault_puts).
+
+File: new tiny helper, callable from both HALs — put it in a GENERIC location (e.g. extend kernel/lib/printk.c or a new kernel/lib/fault_print.c; this MUST be generic because both arches' handlers use it).
+Approach: a printk-independent emergency writer that (a) does not take uart_lock (uses arch_spin_trylock with a bounded spin, then writes regardless), (b) takes no per-CPU buffer / no get_cpu_info, (c) formats via the stateless vsnprintf into a stack buffer, (d) writes via uart_putc directly. Handlers use fault_puts/fault_printf instead of pr_err once the address space may be compromised. Keep panic() for the healthy-kernel case but have it fall back to fault_puts if in_fault depth > 0.
+Landmine: vsnprintf must be confirmed lock-free and re-entrant (it is — printk.c:82 "vsnprintf is stateless"). uart_putc is MMIO to an always-mapped device window.
+Verify: call fault_printf from a handler while uart_lock is held by a stuck CPU (temp test) — output still appears, no deadlock.
+Step 7 [GENERIC] — Per-CPU fault recursion guard.
+
+File: kernel/include/kernel/cpu.h (struct cpu_info, add uint32_t in_fault;) + both HAL dispatchers.
+Approach: at the top of amd64_isr_dispatch (vec<32 path) and aarch64 sync_handler/serror_handler, increment in_fault; if it was already >0 (nested fault), emit one raw fault_puts("DOUBLE FAULT IN HANDLER\n") with the raw PC and halt immediately (no printk, no backtrace) — converting any residual recursion into a clean stop instead of a triple-fault/silent-hang. Decrement on the recovery path. Must touch generic cpu_info but the increment/check is in arch code.
+Verify: force a nested fault (temp: deref bad ptr inside the handler) → single "DOUBLE FAULT IN HANDLER" line + halt, no reset.
+Phase 3 — User-vs-kernel isolation (behavior #2)
+Step 8 [GENERIC] — A shared fault-decision + process-termination helper.
+
+File: new generic function, e.g. kernel/sched/process.c or kernel/core/: struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, bool from_user, uint64_t fault_addr, const char *desc). MUST be generic — it is the shared user-vs-kernel decision + process_terminate+schedule the maintainer called out as legitimately generic.
+Approach: encapsulate aarch64's existing logic (cpu.c:245-277) into this helper: if from_user, log via fault_printf, process_terminate(current_process->pid), return schedule(regs); else dump + backtrace + panic. Both arches call it.
+Verify: aarch64 behavior unchanged (refactor parity); amd64 gains it in Step 9.
+Step 9 [ARCH-HAL-LOCAL, amd64] — Wire user-vs-kernel into amd64 (resolves EXC-AMD64-02 / #36).
+
+Files/fns: kernel/arch/amd64/cpu/idt.c — amd64_page_fault_handler (196), amd64_gpf_handler (222), and the default exception branch (327).
+Approach: compute from_user = (regs->cs & 3) == 3; call the Step-8 generic helper. User #PF/#GP/#UD/#DE now terminate the process and schedule(); kernel faults panic with backtrace. Apply to all vectors 0-31 (the default branch must route through the helper too, so e.g. user divide-by-zero (#DE, vec 0) or invalid-opcode (#UD, vec 6) no longer halt the kernel).
+Landmine: amd64_isr_dispatch returns pt_regs* and the stub does movq %rax,%rsp — returning schedule()'s new frame works (same mechanism as timer preempt). Ensure the swapgs-on-exit test (isr_stubs.S:134) still matches the new frame's CS.
+Verify: run crash.elf on amd64 → process terminates, shell survives (this is the headline repro). -d int,cpu_reset shows one #PF, no reset.
+Step 10 [ARCH-HAL-LOCAL, aarch64] — Fix the misclassification + lock fragility.
+
+File/fn: kernel/arch/aarch64/cpu/cpu.c sync_handler (245-272).
+Approach: fix CPU-AARCH64-01 — distinguish a genuine uaccess fault (kernel was inside arch_copy_*_user, tracked by an explicit per-CPU "uaccess_active" flag set/cleared around the copy) from a wild kernel pointer that merely happens to land in user VA. Only treat it as user-recoverable when the flag is set; otherwise panic. Fix SYS-AARCH64-02 — only unlock mm_lock/re-enable IRQs when that flag indicates the copy held them. Route through the Step-8 helper.
+Verify: kernel NULL-deref test now panics with backtrace (not silent process kill); legitimate copy_from_user of a bad user ptr still terminates the process.
+Phase 4 — Symbolized backtrace (behavior #1)
+Step 11 [GENERIC] — Frame-pointer backtrace walker.
+
+File: new kernel/lib/backtrace.c (generic API void backtrace_from(uint64_t pc, uint64_t fp, void (*emit)(uint64_t))), with two thin arch shims for "get current fp" (amd64 rbp, aarch64 x29) and the frame layout. The walker itself is generic; frame chain format is identical (saved-fp at [fp], saved-lr/ret at [fp+8]) thanks to -fno-omit-frame-pointer.
+Approach: seed from the fault frame (regs->rbp/regs->rip on amd64; frame->regs[29]/frame->elr on aarch64), walk N frames with bounds checks (fp must be in a valid kernel-stack range, monotonically increasing, 16-byte aligned), emit each return address. Stop at NULL fp or range violation.
+Landmines: (a) asm boundaries — isr_stubs.S/exception.S/context.S/syscall.S don't maintain a standard frame; the walk should start from the C handler's caller chain or from regs directly (use regs->rip as frame 0, then walk regs->rbp). (b) Leaf functions / -O2 tail-calls may skip a frame — acceptable, document it. (c) Bound every dereference (a fault during the walk must hit the Step-7 guard, not recurse).
+Verify: trigger a known-depth kernel fault; confirm the printed return-address chain matches objdump/addr2line of kernel.elf.
+Step 12 [GENERIC + per-arch linker] — In-kernel symbol table for live symbolization.
+
+Files: kernel/arch/amd64/kernel.ld, kernel/arch/aarch64/kernel.ld, and Makefile rule for kernel.elf/kernel.bin.
+Approach (kallsyms-style, two-pass link): after the first link, run nm -n kernel.elf → generate a compact sorted {addr, name} blob → compile into a .ksyms section → relink. Provide const char *ksym_lookup(uint64_t addr, uint64_t *off) (generic) that binary-searches the blob. The backtrace emitter (Step 11) calls it to print func+0xoff instead of a raw address. Add a __ksyms_start/__ksyms_end pair in both linker scripts (next to the existing __ktests_* pattern, amd64 kernel.ld:40-42 / aarch64 kernel.ld:27-29).
+Critical for aarch64: it ships kernel.bin (raw, symbols stripped, Makefile:266). The .ksyms blob must be an allocated section so it survives objcopy -O binary (placed in .rodata, which it already keeps). This is the only way aarch64 gets live symbolization.
+Landmines: symbol-table size (full nm can be large — filter to T/t text symbols, compress names); two-pass link complexity (gate behind a build var, keep single-pass default working so boot never breaks mid-step); address ranges must use link addresses (1M+ amd64, 0x40080000 aarch64 — both identity-mapped, so link addr == runtime addr, which makes lookup trivial).
+Verify: trigger a kernel fault; the dump prints function_name+offset matching addr2line -e kernel.elf. Confirm kernel.bin (aarch64) still boots and the blob is present (readelf -S before objcopy; verify the running kernel resolves a known symbol).
+Phase 5 — Coverage hardening (behavior #4) — lower priority, after the above
+Step 13 [ARCH-HAL-LOCAL, aarch64] — replace the b . silent stubs (exception.S:283,297,311,319-328) for FIQ and EL0-AArch32 with a handler that reports via fault_printf + halts (no silent hang). [ARCH-HAL-LOCAL, amd64] — route the dispatch default (idt.c:327) fully through the Step-8 helper (done in Step 9) so no vector silently halts.
+
+Step 14 [ARCH-HAL-LOCAL, amd64] — resolve EXC-AMD64-03 (#37): silence the legacy PIC before lapic_timer_setup (apic.c:75 LINT0 ExtINT vs vector 32) to stop the double timer tick; remove dead probe block (idt.c:292-311, EXC-AMD64-01) and the volatile bool probe_in_progress that is never set on amd64.
+
+Step 15 [GENERIC, optional] — IRQ-02 (#55): add a lock (or RCU-style) around irq_handlers[] (irq.c:47-50) to fix the SMP register/dispatch race; IRQ-01 (#47): reconcile the amd64 irq_dispatch vs chip-EOI contract. These are robustness, not fault-recovery; sequence last.
+
+Issues resolved by this plan: EXC-AMD64-02/#36 (Step 9), EXC-AMD64-01 (Step 14), EXC-AMD64-03/#37 (Step 14), CPU-AARCH64-01 + SYS-AARCH64-02 (Step 10), the aarch64 teardown residual = SCHED-UAF-01 on aarch64 (Steps 1-2), IRQ-01/#47 + IRQ-02/#55 (Step 15). CPU-AMD64-01/#38 (FXSAVE) is out of scope for fault-recovery but noted as a landmine for Step 9 (see Risks).
+
+PART 4 — RISKS / LANDMINES
+IST stack sizing & count (amd64, Step 3). Too-small IST → the fault handler + backtrace walk overflows the IST itself → #DF on the #DF stack → triple fault. Use ≥16KB, and a separate IST index for #DF vs #PF. Per-CPU × MAX_CPUS(64) inflates .bss — consider sizing IST arrays to nr_cpus actually used, or a smaller MAX for IST.
+swapgs on nested faults (amd64). If a fault occurs in kernel mode between swapgs and the GS-based logic (or in the syscall entry window), %gs may be the user base. The Step-5 %gs:cpu_id read and the in_fault guard assume kernel GS. An IST entry does not auto-swapgs. Document that fault handlers must not assume GS is kernel unless swapgs ran; prefer reading cpu_id from a source that works regardless, or gate on CS. NMI is the classic case — if NMI is given an IST, its swapgs handling needs the "fault from kernel that already had kernel GS" paranoia (Linux's paranoid-entry pattern). Keep NMI out of scope unless needed.
+FXSAVE/XMM in the fault path (CPU-AMD64-01, interacts with Step 9). amd64 common_isr_entry saves no XMM. When a user fault now calls schedule() → context switch (Step 9), XMM state of the preempted/terminated task isn't saved — for a terminated task that's harmless, but if the helper ever returns to a live task via schedule on a preempt path, XMM could corrupt. Confine Step 9's schedule() return to the terminate path; do not introduce new preemptive switches without addressing FXSAVE.
+Frame-pointer reliability across asm boundaries (Step 11). isr_stubs.S, exception.S, context.S, syscall.S don't build standard frames; ctx_switch (context.S:12) saves rbp but doesn't chain it as a frame. Seed the walk from regs (rip+rbp), not from the handler's own frame, and stop cleanly when fp leaves the kernel-stack range. -O2 may elide frames for small/leaf fns despite -fno-omit-frame-pointer (the flag forces the prologue but tail-calls still merge frames) — accept occasional skipped frames.
+Symbol-table size & placement (Step 12). Full .symtab is large; filter to text symbols and compress. The blob must be ALLOC + in .rodata or aarch64's objcopy -O binary kernel.bin drops it (the running aarch64 image is raw binary). Two-pass link can break the build mid-development — gate it so the default single-pass build always boots.
+Backtrace dereferences faulting (Steps 11/12). The walk reads stack memory and the symbol blob; a bad fp must hit the Step-7 in_fault guard (clean halt), never recurse. Bound-check every fp before dereference.
+aarch64 abort-stack switch (Step 4). Switching SP in the vector before saving the frame means the original faulting SP must be captured into the frame for an accurate dump; and the abort stack is itself re-entrant — rely on the in_fault guard to stop a second-level abort.
+Generic schedule() PGD change (Step 2) affects both arches at once. A mistake here breaks both boots simultaneously. Land Step 1 (aarch64 HAL) first and verify, then make the generic change with both arches tested in the same commit.
+uart_lock-free emergency path (Step 6) can interleave with a concurrent normal printk on another CPU (garbled output). That's an acceptable trade for never deadlocking in a fault; the panic IPI (panic() line 222) should still quiesce other CPUs first when the kernel is healthy enough to send it.
+Maintainer constraint: do not touch kernel/arch/amd64/platform/platform.c. None of the steps above require it. Generic changes (Steps 2, 6, 7, 8, 11, 12, 15) are explicitly flagged and are the only non-HAL edits; all are in shared subsystems where the logic genuinely belongs.
+Critical Files for Implementation
+/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/arch/amd64/cpu/idt.c
+/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/arch/amd64/cpu/gdt.c
+/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/arch/aarch64/cpu/cpu.c
+/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/arch/aarch64/cpu/exception.S
+/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/sched/process.c
+(Plus, for Phase 2/4 generic mechanisms: kernel/lib/printk.c, the two kernel/arch/*/kernel.ld, and the new kernel/lib/backtrace.c.)

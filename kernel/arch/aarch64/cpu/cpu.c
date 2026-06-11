@@ -43,10 +43,12 @@
  *            sections could silently violate this coupling.
  */
 #include <kernel/printk.h>
+#include <kernel/string.h>
 #include <kernel/types.h>
 
 /* Exception frame structure */
 #include <kernel/cpu.h>
+#include <kernel/fault.h>
 #include <kernel/sched.h>
 
 #include <kernel/arch.h>
@@ -55,6 +57,48 @@
 /* External definitions from core */
 extern struct cpu_info cpu_data[MAX_CPUS];
 extern uint32_t nr_cpus;
+
+/*
+ * Per-CPU EL1 fault (abort) stacks — Phase A step 4.
+ *
+ * aarch64 has no IST: an EL1-from-EL1 sync abort or SError re-uses SP_EL1,
+ * so a kernel-stack overflow or a fault with a wild SP recursed until silent
+ * death.  handle_el1_spx_sync/serror (exception.S) switch onto
+ * arch_fault_stack_top[cpu] before building the 816-byte frame; the original
+ * SP is parked in the 16-byte slot directly above the frame so the C handler
+ * can both report it and copy the frame back for resuming paths (probe fixup).
+ *
+ * 16KB per CPU sized for: sync_handler + classification + fault_printf dump +
+ * the backtrace walk, with margin.  In .bss → identity-mapped in kernel_pgd.
+ */
+#define FAULT_STACK_SIZE 16384
+static uint8_t fault_stacks[MAX_CPUS][FAULT_STACK_SIZE] __attribute__((aligned(16)));
+uint64_t arch_fault_stack_top[MAX_CPUS]; /* read by exception.S vectors */
+
+/*
+ * arch_frame_on_fault_stack - is this exception frame on a per-CPU fault stack?
+ * Used by sync_handler to know whether the parked-SP slot at frame+816 exists
+ * and whether a resuming path must copy the frame back to the original stack.
+ */
+int arch_frame_on_fault_stack(const void *frame) {
+  uintptr_t p = (uintptr_t)frame;
+  uintptr_t base = (uintptr_t)fault_stacks;
+  return p >= base && p < base + sizeof(fault_stacks);
+}
+
+/*
+ * arch_cpu_info_fault_safe - per-CPU info with no faultable dependencies
+ * (kernel/fault.h, Phase A step 5).
+ *
+ * On aarch64 the CPU id comes from MPIDR_EL1 — a system-register read that
+ * cannot fault — so this is simply the bounds-checked cpu_data[] lookup.
+ */
+struct cpu_info *arch_cpu_info_fault_safe(void) {
+  uint32_t id = arch_impl_get_cpu_id();
+  if (id >= MAX_CPUS)
+    return NULL;
+  return &cpu_data[id];
+}
 
 /* External functions from assembly */
 extern void exception_vectors_install(void);
@@ -80,6 +124,11 @@ void arch_cpu_init(void) {
 
   cpu_data[id].cpu_id = id;
   cpu_data[id].online = 1;
+
+  /* Publish this CPU's EL1 fault-stack top BEFORE installing the vectors:
+   * from the first VBAR exception onward, handle_el1_spx_sync/serror switch
+   * onto it (a zero entry makes the vector stay on the current stack). */
+  arch_fault_stack_top[id] = (uint64_t)&fault_stacks[id][FAULT_STACK_SIZE];
 
   if (id == 0) {
     nr_cpus = 1;
@@ -190,6 +239,22 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
   /* ESR_EL1[31:26]: Exception Class — identifies the exception type */
   ec = (esr >> 26) & 0x3F;
 
+  /* SVC from EL0 is a syscall, not a fault: bypass the recursion guard and
+   * every fault-path primitive entirely. */
+  if (ec == 0x15)
+    return syscall_handler(frame);
+
+  /* Fault recursion guard (Phase A step 7): an abort inside this handler used
+   * to recurse on the kernel stack until silent death.  Detect nesting FIRST
+   * — before anything that could itself abort — and stop with one raw line.
+   * fault_exit() runs on every resuming path below; the panic path keeps the
+   * depth elevated so panic() selects its fault-safe output mode. */
+  if (fault_enter() > 1) {
+    fault_printf("\n[FATAL] NESTED EL1 EXCEPTION EC=0x%x ELR=%016lx FAR=%016lx — halting\n",
+                 ec, elr, far);
+    arch_cpu_halt();
+  }
+
   /* Probe recovery: if a Data Abort (EC=0x24/0x25) or Instruction Abort
    * (EC=0x20/0x21) fires while a RAM probe is in progress, set probe_failed
    * and skip the faulting instruction by advancing ELR_EL1 by 4.
@@ -200,115 +265,153 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     probe_failed = true;
     /* Skip the faulting instruction (increment ELR by 4) */
     frame->elr += 4;
+    fault_exit();
+    /* If the vector switched us onto the per-CPU fault stack, the eret
+     * epilogue computes the final SP as frame+816 — which would resume the
+     * probe loop ON the fault stack.  Rebuild the frame just below the
+     * original SP (free space: stacks grow down) and return that instead,
+     * so execution resumes with SP exactly as it was at the abort. */
+    if (arch_frame_on_fault_stack(frame)) {
+      uint64_t old_sp = *(uint64_t *)((char *)frame + 816) + 16; /* +16: scratch push */
+      struct pt_regs *orig = (struct pt_regs *)(old_sp - 816);
+      memcpy(orig, frame, sizeof(*frame));
+      return orig;
+    }
     return frame;
   }
 
+  /* One-line classification banner.  fault_printf (not printk): the address
+   * space and lock state are unknown at this point for EL1-origin faults. */
   switch (ec) {
   case 0x00: /* Unknown exception — ESR does not encode a specific cause */
-    pr_err("Unknown exception at 0x%016lx\n", elr);
+    fault_printf("Unknown exception at 0x%016lx\n", elr);
     break;
-
-  case 0x15: /* SVC instruction from AArch64 EL0 — syscall entry point */
-    return syscall_handler(frame);
 
   case 0x20: /* Instruction abort from lower EL (EL0 code page not mapped) */
   case 0x21: /* Instruction abort from same EL (EL1 instruction fault — kernel bug) */
-    pr_err("Instruction abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
+    fault_printf("Instruction abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
     break;
 
   case 0x24: /* Data abort from lower EL (EL0 load/store to unmapped/protected addr) */
   case 0x25: /* Data abort from same EL (EL1 load/store fault — kernel bug or probe) */
-    pr_err("Data abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
+    fault_printf("Data abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
     break;
 
   case 0x26: /* SP alignment fault — SP not 16-byte aligned on exception entry */
-    pr_err("SP alignment fault at 0x%016lx\n", elr);
+    fault_printf("SP alignment fault at 0x%016lx\n", elr);
     break;
 
   default:
-    pr_err("Unhandled exception EC=0x%x at 0x%016lx\n", ec, elr);
+    fault_printf("Unhandled exception EC=0x%x at 0x%016lx\n", ec, elr);
     break;
   }
 
-  if (ec != 0x15) {
-    /* Determine the fault origin to choose between process termination and panic.
-     *
-     * is_user_fault: SPSR.M[3:0] encodes the EL and SP at the time of exception.
-     *   0b0000 = EL0t (user space).  Any other value means EL1 (kernel).
-     *   NOTE: bits [3:0] of SPSR_EL1 == 0x0 is the AArch64 EL0t encoding.
-     *
-     * is_kernel_user_access_fault: kernel was at EL1 but FAR points into user VA.
-     *   This happens when arch_copy_from/to_user switches TTBR0 and a page fault
-     *   fires before the copy completes.
-     *   NOTE(CPU-AARCH64-01): A kernel NULL dereference or wild pointer that
-     *   coincidentally maps to user VA range would be misclassified here. [static] */
-    bool is_user_fault = ((frame->spsr & 0xF) == 0);
-    bool is_kernel_user_access_fault = (current_process != NULL && vmm_is_user_addr(far));
+  {
+    /* User-vs-kernel decision (Phase A steps 8/10): delegated to the generic
+     * helper.  is_user_fault = SPSR.M[3:0] == 0b0000 (EL0t).  The old
+     * "FAR in user VA implies a uaccess fault" heuristic (CPU-AARCH64-01) is
+     * gone: the helper recovers ONLY when the per-CPU uaccess_active flag —
+     * set exclusively inside arch_copy_{from,to,string_from}_user — marks the
+     * dereference window; the mm_lock/IRQ unwind (SYS-AARCH64-02) lives in
+     * arch_uaccess_fault_fixup next to the code that takes those locks.
+     * A wild kernel pointer that merely lands in user VA now panics below. */
+    struct pt_regs *next = fault_handle_user_or_panic(
+        frame, (frame->spsr & 0xF) == 0, far, elr, "SYNC EXCEPTION");
+    if (next)
+      return next;
 
-    if (is_user_fault || is_kernel_user_access_fault) {
-      pr_err("[ERROR] KERNEL-USER FAULT: EC=0x%lx (0x%lx) FAR=0x%lx ELR=0x%lx PID=%d\n",
-             (uint64_t)ec, esr, far, elr, current_process->pid);
-      pr_err("[DEBUG] Context: x0=0x%lx x1=0x%lx x2=0x%lx x3=0x%lx sp=0x%lx spsr=0x%lx\n",
-             frame->regs[0], frame->regs[1], frame->regs[2], frame->regs[3],
-             frame->sp_el0, frame->spsr);
-      pr_err("Terminating PID %d\n", current_process->pid);
-      
-      if (elr == 0) {
-        pr_err("CRITICAL: Process PID %d jumped to NULL (ELR=0).\n",
-               current_process->pid);
-      }
 
-      /* If it was a kernel-user access fault, we are holding mm_lock and have IRQs disabled!
-       * We MUST release them to avoid system deadlock.
-       * NOTE(SYS-AARCH64-02): This assumes the uaccess critical section (syscall.c:
-       * arch_copy_from/to_user) always holds exactly mm_lock with IRQs saved when a
-       * fault fires.  Any refactor of that critical section must keep this coupling
-       * in sync.  The current pairing is: syscall.c acquires IRQ-save then mm_lock;
-       * we release mm_lock then IRQ-enable here (reverse order). [static]
-       */
-      if (is_kernel_user_access_fault) {
-        spin_unlock(&current_process->mm_lock);
-        local_irq_enable();
-      }
-
-      pr_err("Terminating PID %d\n", current_process->pid);
-
-      process_terminate(current_process->pid);
-      return schedule(frame);
+    /* Kernel fault: the address space may be compromised — every line below
+     * goes through fault_printf (lock-free, no per-CPU buffer).  panic() at
+     * the end sees fault_depth() > 0 and uses its fault-safe output mode. */
+    fault_printf("%s", "--- Kernel Exception Context Dump ---\n");
+    fault_printf("Process: PID %d\n",
+                 current_process ? (int)current_process->pid : -1);
+    fault_printf("SPSR_EL1: 0x%016lx\n", frame->spsr);
+    fault_printf("ELR_EL1:  0x%016lx\n", frame->elr);
+    fault_printf("FAR_EL1:  0x%016lx\n", far);
+    fault_printf("ESR_EL1:  0x%016lx\n", esr);
+    fault_printf("EC: 0x%x, ISS: 0x%x\n", ec, (uint32_t)(esr & 0xFFFFFF));
+    if (arch_frame_on_fault_stack(frame)) {
+      /* The vector switched us onto the per-CPU fault stack; the SP at the
+       * moment of the abort was parked just above the frame. */
+      fault_printf("Frame: %p (per-CPU fault stack), faulting SP: 0x%016lx\n",
+                   (void *)frame, *(uint64_t *)((char *)frame + 816) + 16);
+    } else {
+      fault_printf("Frame: %p (faulting kernel stack)\n", (void *)frame);
     }
 
-
-    pr_err("%s", "--- Kernel Exception Context Dump ---\n");
-    pr_err("Process: PID %d\n",
-           current_process ? (int)current_process->pid : -1);
-    pr_err("SPSR_EL1: 0x%016lx\n", frame->spsr);
-    pr_err("ELR_EL1:  0x%016lx\n", frame->elr);
-    pr_err("FAR_EL1:  0x%016lx\n", far);
-    pr_err("ESR_EL1:  0x%016lx\n", esr);
-    pr_err("EC: 0x%x, ISS: 0x%x\n", ec, (uint32_t)(esr & 0xFFFFFF));
-
     if (elr == 0) {
-        pr_err("%s", "CRITICAL: Kernel jumped to NULL! Check exception vector table and function pointers.\n");
-        pr_err("Stack at 0x%lx:\n", (uint64_t)frame);
+        fault_printf("%s", "CRITICAL: Kernel jumped to NULL! Check exception vector table and function pointers.\n");
+        fault_printf("Stack at 0x%lx:\n", (uint64_t)frame);
         for (int i = 0; i < 8; i++) {
-            pr_err("  [%p] 0x%016lx\n", (void*)&((uint64_t*)frame)[i*2], ((uint64_t*)frame)[i*2]);
+            fault_printf("  [%p] 0x%016lx\n", (void*)&((uint64_t*)frame)[i*2], ((uint64_t*)frame)[i*2]);
         }
     }
 
     for (int i = 0; i < 31; i += 2) {
       if (i + 1 < 31) {
-        pr_err("X%02d: 0x%016lx  X%02d: 0x%016lx\n", i, frame->regs[i], i + 1,
-               frame->regs[i + 1]);
+        fault_printf("X%02d: 0x%016lx  X%02d: 0x%016lx\n", i, frame->regs[i], i + 1,
+                     frame->regs[i + 1]);
       } else {
-        pr_err("X%02d: 0x%016lx\n", i, frame->regs[i]);
+        fault_printf("X%02d: 0x%016lx\n", i, frame->regs[i]);
       }
     }
-    pr_err("SP_EL0:  0x%016lx\n", frame->sp_el0);
-    pr_err("%s", "-----------------------------\n");
+    fault_printf("SP_EL0:  0x%016lx\n", frame->sp_el0);
+    fault_printf("%s", "-----------------------------\n");
+    backtrace_regs(frame->elr, frame->regs[29]);
     panic("Unrecoverable kernel exception");
   }
 
+  /* Unreachable today (the block above either schedules or panics); kept so
+   * any future early-return path unwinds the recursion guard correctly. */
+  fault_exit();
   return frame;
+}
+
+/*
+ * fiq_handler - unexpected FIQ (Phase A step 13).
+ *
+ * This kernel never configures FIQ sources; the vectors used to be `b .`
+ * silent hangs.  An EL0-origin FIQ terminates the task (something user-
+ * triggerable raised it); an EL1-origin FIQ means misconfigured hardware or
+ * vector corruption — panic with the full diagnostic.
+ */
+struct pt_regs *fiq_handler(struct pt_regs *frame) {
+  if (fault_enter() > 1) {
+    fault_printf("\n[FATAL] NESTED FIQ ELR=%016lx — halting\n", frame->elr);
+    arch_cpu_halt();
+  }
+  fault_printf("\n[FIQ] Unexpected FIQ: ELR=%016lx SPSR=%016lx (FIQ is never enabled)\n",
+               frame->elr, frame->spsr);
+  struct pt_regs *next = fault_handle_user_or_panic(
+      frame, (frame->spsr & 0xF) == 0, 0, frame->elr, "UNEXPECTED FIQ");
+  if (next)
+    return next;
+  backtrace_regs(frame->elr, frame->regs[29]);
+  panic("Unexpected FIQ at EL1 (ELR 0x%lx)", frame->elr);
+}
+
+/*
+ * aarch32_handler - exception from AArch32 EL0 (Phase A step 13).
+ *
+ * The kernel only loads AArch64 ELFs, so this means a process switched to
+ * AArch32 state (or SPSR corruption).  Terminate it; if the frame claims EL1
+ * origin the vector table itself is suspect — panic.
+ */
+struct pt_regs *aarch32_handler(struct pt_regs *frame) {
+  if (fault_enter() > 1) {
+    fault_printf("\n[FATAL] NESTED AArch32 exception ELR=%016lx — halting\n", frame->elr);
+    arch_cpu_halt();
+  }
+  fault_printf("\n[EL0-32] AArch32 EL0 exception: ELR=%016lx SPSR=%016lx (unsupported)\n",
+               frame->elr, frame->spsr);
+  struct pt_regs *next = fault_handle_user_or_panic(
+      frame, 1, 0, frame->elr, "AARCH32 EL0 EXCEPTION");
+  if (next)
+    return next;
+  backtrace_regs(frame->elr, frame->regs[29]);
+  panic("AArch32 exception with no current task (ELR 0x%lx)", frame->elr);
 }
 
 /*
@@ -545,13 +648,35 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
  * L0 PGD).  The caller (schedule / ctx_switch) is responsible for saving and
  * restoring the general-purpose register context (via ctx_switch in context.S).
  *
- * If next->page_table is NULL (e.g., a kernel thread with no user address space),
- * the TTBR0 switch is skipped and the previous process's mapping remains active.
- * This is safe for kernel threads that never access user VA.
+ * A kernel thread (e.g. idle) has no private address space (page_table == NULL):
+ * switch it onto the shared kernel_pgd instead of leaving the PREVIOUS process's
+ * PGD active in TTBR0_EL1.
+ *
+ * SCHED-UAF-01 (interactive-close residual, aarch64 HAL): the whole aarch64
+ * kernel runs from TTBR0 only (EPD1=1, no TTBR1 higher-half — see
+ * arch_vmm_init_hw).  If a CPU keeps a terminated process's PGD in TTBR0 —
+ * because it switched prev->idle and we skipped the reload — then when that
+ * process is reaped and its PGD pages are freed, the CPU is left executing on a
+ * freed PGD.  Its identity map (including printk) vanishes and the next fetch
+ * faults, mirroring the amd64 triple-fault-on-window-close failure.  Load the
+ * shared kernel_pgd for NULL page_table to keep the kernel mapping live.
+ *
+ * This is now the SINGLE source of truth for the scheduler address-space switch
+ * (the redundant hal_vmm_set_pgd block in schedule() was removed), so the TLB
+ * maintenance the scheduler block used to issue is performed here:
+ * arch_vmm_set_pgd is a bare "msr ttbr0_el1" (arch.h) with no implicit
+ * barriers, and arch_tlb_flush_all already ends with DSB ISH + ISB (arch.h),
+ * which completes the switch — no further barrier is needed after it.
  */
 void arch_cpu_switch_context(struct process *next) {
-    /* Switch address space */
-    if (next->page_table) {
-        arch_vmm_set_pgd((uint64_t)next->page_table);
+    extern uint64_t *kernel_pgd;
+    /* kernel_pgd is identity-mapped (virt == phys), so its pointer value IS the
+     * physical TTBR0 base; next->page_table is likewise passed as a PA, matching
+     * the existing arch_vmm_set_pgd callers in this file. */
+    uint64_t pgd = next->page_table ? (uint64_t)next->page_table
+                                    : (uint64_t)(uintptr_t)kernel_pgd;
+    if (pgd) {
+        arch_vmm_set_pgd(pgd);
+        arch_tlb_flush_all();
     }
 }

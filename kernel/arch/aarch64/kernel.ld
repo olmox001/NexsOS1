@@ -22,11 +22,20 @@ SECTIONS
     .rodata : {
         *(.rodata)
         *(.rodata.*)
-        
+
         . = ALIGN(8);
         __ktests_start = .;
         KEEP(*(.ktests))
         __ktests_end = .;
+
+        /* In-kernel symbol table (tools/gen_ksyms.sh, two-pass link).
+         * MUST be an allocated section inside .rodata: kernel.bin is produced
+         * with objcopy -O binary, which keeps only allocated sections — this
+         * is the only way the running aarch64 image gets live symbolization. */
+        . = ALIGN(8);
+        __ksyms_start = .;
+        KEEP(*(.ksyms))
+        __ksyms_end = .;
     }
     
     . = ALIGN(4096);

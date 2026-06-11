@@ -22,10 +22,10 @@
  *     declared here but the x86 RIP-advance logic is unimplemented; the block
  *     falls through to the exception handler which halts.  The aarch64 path
  *     correctly advances ELR_EL1 (:cpu.c:75-79).  Dead code on amd64.
- *   EXC-AMD64-02 (W3 MISSING) No user-vs-kernel discrimination for exception
- *     vectors 0-31 (except 8/13/14).  A divide-by-zero in a user ELF causes
- *     the kernel to halt rather than terminating the process.  Fix: check
- *     regs->cs & 3; if Ring 3, call process_terminate + schedule.
+ *   EXC-AMD64-02 RESOLVED (Phase A): every vector 0-31 routes through
+ *     fault_handle_user_or_panic (kernel/core/fault.c) — user faults
+ *     terminate the process and schedule a successor; kernel faults dump,
+ *     print a symbolized backtrace and panic on the IST fault stacks.
  *   EXC-AMD64-04 (W2 BUG) idt_initialized is a plain static int with no
  *     volatile qualifier and no memory barrier.  APs spinning on
  *     while (!idt_initialized) may cache a stale zero indefinitely; a release
@@ -40,6 +40,8 @@
 #include <kernel/types.h>
 #include <kernel/string.h>
 #include <kernel/printk.h>
+#include <kernel/cpu.h>
+#include <kernel/fault.h>
 #include <arch/pt_regs.h>
 #include <arch/arch.h>
 #include <arch/amd64_internal.h>
@@ -148,6 +150,18 @@ void idt_init(void) {
        * NOTE(SYS-AMD64-03): This is an additional (legacy) syscall surface. */
       idt_set_gate(0x80, isr_stub_table[0x80], 0x08, 0xEE, 0);
 
+      /* Dedicated IST fault stacks (Phase A step 3; stacks live in gdt.c):
+       *   IST1 -> #GP (13) and #PF (14): the handler always runs on a fresh,
+       *           always-mapped stack even if the faulting RSP is wild or the
+       *           task kernel stack has overflowed.
+       *   IST2 -> #DF (8): separate index so that even a #PF/#GP storm that
+       *           clobbers IST1 cannot take down double-fault reporting.
+       * NMI (2) deliberately stays IST=0: an IST NMI needs the paranoid
+       * swapgs-entry pattern, out of scope here (see Phase A plan, Risks). */
+      idt_set_gate(8,  isr_stub_table[8],  0x08, 0x8E, 2);
+      idt_set_gate(13, isr_stub_table[13], 0x08, 0x8E, 1);
+      idt_set_gate(14, isr_stub_table[14], 0x08, 0x8E, 1);
+
       idt_initialized = 1;
   }
 
@@ -162,19 +176,34 @@ void idt_init(void) {
 }
 
 /*
+ * fault_cpu_id - CPU id for fault banners, via the MSR-based safe path.
+ * Returns -1 when the per-CPU structure cannot be located (early boot or
+ * corrupted GS); never touches LAPIC MMIO (kernel/fault.h, step 5).
+ */
+static int fault_cpu_id(void) {
+  struct cpu_info *ci = arch_cpu_info_fault_safe();
+  return ci ? (int)ci->cpu_id : -1;
+}
+
+/*
  * amd64_dump_regs - print all saved registers from the exception frame.
  *
  * Params:
  *   regs - pointer to the pt_regs struct built by common_isr_entry.
  * Called unconditionally before halting on any unhandled exception.
+ *
+ * Uses fault_printf (lock-free, no per-CPU buffer, no LAPIC reads): by the
+ * time this runs the address space and lock state may be arbitrary, and a
+ * printk here is exactly the recursive-fault chain that used to end in a
+ * triple fault (SCHED-UAF-01 post-mortem).
  */
 static void amd64_dump_regs(struct pt_regs *regs) {
-  pr_err("RIP: %016lx CS: %02lx RFLAGS: %016lx\n", regs->rip, regs->cs, regs->rflags);
-  pr_err("RAX: %016lx RBX: %016lx RCX: %016lx RDX: %016lx\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
-  pr_err("RSI: %016lx RDI: %016lx RBP: %016lx RSP: %016lx\n", regs->rsi, regs->rdi, regs->rbp, regs->rsp);
-  pr_err("R8:  %016lx R9:  %016lx R10: %016lx R11: %016lx\n", regs->r8, regs->r9, regs->r10, regs->r11);
-  pr_err("R12: %016lx R13: %016lx R14: %016lx R15: %016lx\n", regs->r12, regs->r13, regs->r14, regs->r15);
-  pr_err("Vector: %ld, Error Code: %lx\n", regs->vec, regs->err);
+  fault_printf("RIP: %016lx CS: %02lx RFLAGS: %016lx\n", regs->rip, regs->cs, regs->rflags);
+  fault_printf("RAX: %016lx RBX: %016lx RCX: %016lx RDX: %016lx\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
+  fault_printf("RSI: %016lx RDI: %016lx RBP: %016lx RSP: %016lx\n", regs->rsi, regs->rdi, regs->rbp, regs->rsp);
+  fault_printf("R8:  %016lx R9:  %016lx R10: %016lx R11: %016lx\n", regs->r8, regs->r9, regs->r10, regs->r11);
+  fault_printf("R12: %016lx R13: %016lx R14: %016lx R15: %016lx\n", regs->r12, regs->r13, regs->r14, regs->r15);
+  fault_printf("Vector: %ld, Error Code: %lx\n", regs->vec, regs->err);
 }
 
 /*
@@ -193,23 +222,34 @@ static void amd64_dump_regs(struct pt_regs *regs) {
  * signal to the user process.  Fix: if (regs->cs & 3) == 3, call
  * process_terminate(current_process) + schedule() instead of halting.
  */
-static void amd64_page_fault_handler(struct pt_regs *regs) {
+static struct pt_regs *amd64_page_fault_handler(struct pt_regs *regs) {
   uint64_t cr2;
   __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
 
   uint64_t error_code = regs->err;
 
-  pr_err("\n[C%d] PAGE FAULT: Access to 0x%lx\n", arch_get_cpu_id(), cr2);
-  pr_err("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n",
-         error_code,
-         (error_code & 1) ? 1 : 0,
-         (error_code & 2) ? 1 : 0,
-         (error_code & 4) ? 1 : 0,
-         (error_code & 8) ? 1 : 0,
-         (error_code & 16) ? 1 : 0);
+  /* EXC-AMD64-02 resolved: user #PF (or a fault inside the explicit
+   * user-copy window) terminates the process and schedules a successor —
+   * it no longer halts the kernel. */
+  struct pt_regs *next =
+      fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, cr2, regs->rip,
+                                 "PAGE FAULT");
+  if (next)
+    return next;
+
+  fault_printf("\n[C%d] KERNEL PAGE FAULT: Access to 0x%lx\n", fault_cpu_id(), cr2);
+  fault_printf("Frame: %p (IST1 fault stack)\n", (void *)regs);
+  fault_printf("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n",
+               error_code,
+               (error_code & 1) ? 1 : 0,
+               (error_code & 2) ? 1 : 0,
+               (error_code & 4) ? 1 : 0,
+               (error_code & 8) ? 1 : 0,
+               (error_code & 16) ? 1 : 0);
 
   amd64_dump_regs(regs);
-  arch_cpu_halt();
+  backtrace_regs(regs->rip, regs->rbp);
+  panic("Unrecoverable kernel #PF at RIP 0x%lx (CR2 0x%lx)", regs->rip, cr2);
 }
 
 /*
@@ -219,10 +259,17 @@ static void amd64_page_fault_handler(struct pt_regs *regs) {
  * invalid IOPL instructions, or non-canonical addresses.
  * NOTE(EXC-AMD64-02): No user-vs-kernel discrimination; both halt the kernel.
  */
-static void amd64_gpf_handler(struct pt_regs *regs) {
-  pr_err("\n[C%d] GENERAL PROTECTION FAULT\n", arch_get_cpu_id());
+static struct pt_regs *amd64_gpf_handler(struct pt_regs *regs) {
+  struct pt_regs *next =
+      fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, 0, regs->rip,
+                                 "GENERAL PROTECTION FAULT");
+  if (next)
+    return next;
+
+  fault_printf("\n[C%d] KERNEL GENERAL PROTECTION FAULT\n", fault_cpu_id());
   amd64_dump_regs(regs);
-  arch_cpu_halt();
+  backtrace_regs(regs->rip, regs->rbp);
+  panic("Unrecoverable kernel #GP at RIP 0x%lx (err 0x%lx)", regs->rip, regs->err);
 }
 
 /*
@@ -234,8 +281,9 @@ static void amd64_gpf_handler(struct pt_regs *regs) {
  * recursion (IST=0 here, so it shares the TSS RSP0 stack — risky).
  */
 static void amd64_double_fault_handler(struct pt_regs *regs) {
-  pr_err("\n[C%d] DOUBLE FAULT\n", arch_get_cpu_id());
+  fault_printf("\n[C%d] DOUBLE FAULT\n", fault_cpu_id());
   amd64_dump_regs(regs);
+  backtrace_regs(regs->rip, regs->rbp);
   arch_cpu_halt();
 }
 
@@ -285,6 +333,17 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
   uint64_t vec = regs->vec;
 
   if (vec < 32) {
+    /* Fault recursion guard (Phase A step 7): a fault inside a fault handler
+     * used to recurse on the same stack until #DF -> triple fault.  Detect
+     * the nesting FIRST — before any code that could itself fault — and stop
+     * with one raw line.  fault_exit() runs on every path below that resumes
+     * execution; the halting paths deliberately keep the depth elevated. */
+    if (fault_enter() > 1) {
+      fault_printf("\n[C%d] NESTED CPU EXCEPTION vec=%lu err=0x%lx rip=%016lx — halting\n",
+                   fault_cpu_id(), vec, regs->err, regs->rip);
+      arch_cpu_halt();
+    }
+
     /* Check if this is a fault during a safe probe.
      * NOTE(EXC-AMD64-01): probe_in_progress is never set on amd64; this
      * entire block is unreachable dead code.  The intended RIP fixup is
@@ -310,25 +369,31 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
        */
     }
 
-    /* Handle exceptions.
-     * NOTE(EXC-AMD64-02): The default branch halts the kernel for ANY unhandled
-     * vector including those caused by user-space code (divide-by-zero, invalid
-     * opcode, etc.).  Should check regs->cs & 3 to discriminate. */
+    /* Handle exceptions (EXC-AMD64-02 resolved): user-attributable faults —
+     * any vector 0-31 from CS RPL 3, e.g. #DE, #UD, #PF, #GP — terminate the
+     * process via fault_handle_user_or_panic and return the next task's
+     * frame.  Kernel faults dump and panic.  #DF never attempts recovery:
+     * machine state is not trustworthy by definition. */
     switch (vec) {
       case 8: /* Double Fault (#DF) */
         amd64_double_fault_handler(regs);
         break;
       case 13: /* General Protection Fault (#GP) */
-        amd64_gpf_handler(regs);
-        break;
+        return amd64_gpf_handler(regs);
       case 14: /* Page Fault (#PF) — CR2 holds faulting address */
-        amd64_page_fault_handler(regs);
-        break;
-      default:
-        pr_err("\n[C%d] Unhandled CPU Exception: %ld\n", arch_get_cpu_id(), vec);
+        return amd64_page_fault_handler(regs);
+      default: {
+        struct pt_regs *next =
+            fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, 0, regs->rip,
+                                       "CPU EXCEPTION");
+        if (next)
+          return next;
+        fault_printf("\n[C%d] Unhandled kernel CPU Exception: %ld\n",
+                     fault_cpu_id(), vec);
         amd64_dump_regs(regs);
-        arch_cpu_halt();
-        break;
+        backtrace_regs(regs->rip, regs->rbp);
+        panic("Unrecoverable kernel exception (vec %lu) at RIP 0x%lx", vec, regs->rip);
+      }
     }
   } else if (vec == 0x80) {
     /* Legacy syscall via int 0x80 (DPL=3 gate installed in idt_init).

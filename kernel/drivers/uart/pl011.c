@@ -231,6 +231,15 @@ void uart_putc(char c) {
 }
 
 /*
+ * uart_putc_emergency - lock-free TX for fault context (kernel/fault.h).
+ *
+ * Bypasses uart_lock by design: a fault handler must never block on a lock
+ * that another (possibly wedged) CPU holds.  Interleaving with concurrent
+ * normal output is the accepted trade for guaranteed progress.
+ */
+void uart_putc_emergency(char c) { _uart_putc_unlocked(c); }
+
+/*
  * uart_getc - receive one character (blocking).
  *
  * Spins calling arch_idle() (WFI) until rx_head != rx_tail, then reads one

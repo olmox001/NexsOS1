@@ -30,6 +30,19 @@ struct cpu_info {
   char syscall_buf[2048];
   uint32_t in_printk;
 
+  /* Fault recursion depth (Phase A, kernel/fault.h).  Incremented by
+   * fault_enter() at exception-dispatch entry; depth > 1 means a fault
+   * occurred inside a fault handler — the dispatcher emits one raw line via
+   * fault_printf and halts instead of recursing to a triple fault. */
+  uint32_t in_fault;
+
+  /* Set while arch_copy_{from,to}_user is dereferencing user memory.  The
+   * fault classifier treats a kernel-mode fault on a user VA as a recoverable
+   * uaccess fault ONLY when this is set (CPU-AARCH64-01: a wild kernel
+   * pointer that merely lands in user VA range must panic, not silently
+   * terminate the current process). */
+  uint32_t uaccess_active;
+
   /* Reap stack head (SCHED-UAF-01): processes terminated by process_terminate()
    * awaiting deferred destruction, chained via the legacy process.next field;
    * drained at the top of the next schedule() on this CPU, after we have
@@ -58,6 +71,9 @@ void smp_create_idle_task(uint32_t cpu_id);
 #define local_irq_restore(flags) hal_irq_restore(flags)
 struct pt_regs; /* forward decl */
 struct pt_regs *serror_handler(struct pt_regs *frame);
+/* aarch64 coverage handlers (exception.S, Phase A step 13) */
+struct pt_regs *fiq_handler(struct pt_regs *frame);
+struct pt_regs *aarch32_handler(struct pt_regs *frame);
 #endif
 
 #endif /* _KERNEL_CPU_H */

@@ -213,6 +213,24 @@ static void gdt_set_tss(uint64_t *gdt, int index, uint64_t base, uint32_t limit)
  * as Busy.  RSP0 in the TSS is initially 0; it is set by the first call to
  * gdt_set_rsp0 before the first Ring-3 entry.
  */
+/*
+ * Per-CPU IST fault stacks — Phase A step 3.
+ *
+ * Without IST every exception reuses the current RSP (kernel fault) or
+ * TSS.RSP0 = the current task's kernel stack (user fault): a recursive #PF
+ * overflowed that stack into #DF (also IST=0) and triple-faulted — the
+ * SCHED-UAF-01 failure signature.  idt_init points #PF/#GP at IST1 and #DF at
+ * IST2 (separate, so a #PF storm cannot clobber the #DF stack).
+ *
+ * 16KB per stack, sized for handler + fault_printf dump + backtrace walk.
+ * In .bss → always mapped in kernel_pgd.  A nested fault on the same IST
+ * index re-enters at the top and clobbers the outer frame; that is caught
+ * immediately by the fault_enter() depth guard before any state is trusted.
+ */
+#define IST_STACK_SIZE 16384
+static uint8_t ist1_fault_stacks[MAX_CPUS][IST_STACK_SIZE] __aligned(16);
+static uint8_t ist2_df_stacks[MAX_CPUS][IST_STACK_SIZE] __aligned(16);
+
 void gdt_init(void) {
   uint32_t cpu_id = arch_get_cpu_id();
   if (cpu_id >= MAX_CPUS) return;
@@ -222,6 +240,11 @@ void gdt_init(void) {
 
   memset(my_gdt, 0, GDT_ENTRIES * 8);
   memset(my_tss, 0, sizeof(struct tss64));
+
+  /* IST entries are 1-based in the IDT gate; ist[0] here is IST1.
+   * IST1 = #PF/#GP fault stack, IST2 = #DF stack (see idt_init). */
+  my_tss->ist[0] = (uint64_t)&ist1_fault_stacks[cpu_id][IST_STACK_SIZE];
+  my_tss->ist[1] = (uint64_t)&ist2_df_stacks[cpu_id][IST_STACK_SIZE];
 
   /* NOTE(GDT-AMD64-01): user-data (idx 3, sel 0x18) is before user-code
    * (idx 4, sel 0x20).  This is internally consistent with msr.c STAR and

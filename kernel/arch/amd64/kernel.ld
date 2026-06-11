@@ -40,6 +40,13 @@ SECTIONS {
         __ktests_start = .;
         KEEP(*(.ktests))
         __ktests_end = .;
+        /* In-kernel symbol table (tools/gen_ksyms.sh, two-pass link).
+         * Placed after .text so a populated table never shifts text
+         * addresses between the two link passes. */
+        . = ALIGN(8);
+        __ksyms_start = .;
+        KEEP(*(.ksyms))
+        __ksyms_end = .;
     } :text
 
     .data : ALIGN(4096) {

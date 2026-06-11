@@ -153,6 +153,7 @@ endif
 KERN_C_SOURCES += \
     $(KERNEL_DIR)/core/hal_bus.c \
     $(KERNEL_DIR)/core/syscall_dispatch.c \
+    $(KERNEL_DIR)/core/fault.c \
     $(KERNEL_DIR)/core/timer.c \
     $(KERNEL_DIR)/drivers/console.c \
     $(KERNEL_DIR)/drivers/irq_ctrl.c \
@@ -172,6 +173,8 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/lib/crc32.c \
     $(KERNEL_DIR)/lib/vsnprintf.c \
     $(KERNEL_DIR)/lib/printk.c \
+    $(KERNEL_DIR)/lib/fault_print.c \
+    $(KERNEL_DIR)/lib/backtrace.c \
     $(KERNEL_DIR)/lib/stack_protector.c \
     $(KERNEL_DIR)/lib/math.c \
     $(KERNEL_DIR)/lib/kmalloc.c \
@@ -260,7 +263,25 @@ $(BOOTLOADER_BIN): $(BOOTLOADER_ELF)
 # Kernel
 kernel: $(KERNEL_BIN)
 
-$(KERNEL_ELF): $(KERN_OBJECTS)
+# Two-pass link for the in-kernel symbol table (Phase A, kernel/lib/backtrace.c):
+# pass 1 links without .ksyms, gen_ksyms.sh derives the table from `nm -n` of
+# pass 1, pass 2 relinks with it.  .ksyms sits after .text in both kernel.ld
+# scripts, so text addresses are identical across the passes (the table stays
+# valid).  If generation ever fails the empty-table fallback in backtrace.c
+# keeps the kernel functional (raw addresses).
+NM = $(CROSS_COMPILE)nm
+KERNEL_PRE = $(BUILD_DIR)/kernel.pre.elf
+KSYMS_S    = $(BUILD_DIR)/ksyms.S
+KSYMS_O    = $(BUILD_DIR)/ksyms.o
+
+$(KERNEL_PRE): $(KERN_OBJECTS)
+	@$(LD) $(LDFLAGS_KERN) -o $@ $^
+
+$(KSYMS_O): $(KERNEL_PRE) tools/gen_ksyms.sh
+	@tools/gen_ksyms.sh "$(NM)" $(KERNEL_PRE) $(KSYMS_S)
+	@$(CC) $(CFLAGS) -c -o $@ $(KSYMS_S)
+
+$(KERNEL_ELF): $(KERN_OBJECTS) $(KSYMS_O)
 	@$(LD) $(LDFLAGS_KERN) -o $@ $^
 
 $(KERNEL_BIN): $(KERNEL_ELF)

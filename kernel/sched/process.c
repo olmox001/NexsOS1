@@ -494,8 +494,9 @@ struct process *process_create(const char *name, uint8_t priority,
  * Called from the per-CPU bring-up path (CPU 0 creates tasks for all CPUs
  * before releasing secondaries).  The idle task is a pure kernel thread:
  * it never runs user code, so its PGD is destroyed and set to NULL —
- * arch_cpu_switch_context guards on page_table != NULL to skip CR3/TTBR0
- * updates when scheduling the idle task.
+ * arch_cpu_switch_context loads the shared kernel_pgd when page_table is
+ * NULL (SCHED-UAF-01), so the idle task always runs on a live kernel
+ * address space and never inherits a terminated process's PGD.
  *
  * The context is initialised to start at idle_task_entry() on the idle
  * task's kernel stack.  Memory barriers (hal_mb, hal_isb) and a D-cache
@@ -517,9 +518,9 @@ void smp_create_idle_task(uint32_t cpu_id) {
     idle->on_cpu = cpu_id;
 
     /* Idle tasks are pure kernel threads — they never run user code.
-     * Free the per-process PGD and use NULL: the scheduler and
-     * arch_cpu_switch_context both guard on page_table != NULL, so the
-     * current kernel CR3 stays active when an idle task is scheduled. */
+     * Free the per-process PGD and use NULL: arch_cpu_switch_context loads
+     * the shared kernel_pgd for NULL page_table (SCHED-UAF-01 — it must NOT
+     * leave the previous process's possibly-freed PGD active). */
     if (idle->page_table) {
       vmm_destroy_pgd(idle->page_table);
       idle->page_table = NULL;
@@ -781,7 +782,16 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   /* Deferred process free: the only safe point to release a kernel stack and
    * PGD that was still in use during the previous schedule() call.  By the
    * time we reach here on this CPU, we have already context-switched to a
-   * different task and are no longer touching the old stack. */
+   * different task and are no longer touching the old stack.
+   *
+   * IRQs MUST be masked for the whole drain (SCHED-UAF-02): schedule() can be
+   * entered with IRQs enabled (the syscall paths re-enable them before
+   * yielding, e.g. sys_getchar in syscall_dispatch.c), and this list is popped
+   * without a lock.  A timer IRQ nesting here would re-enter schedule() on the
+   * same CPU, drain the same node, and double-free the kernel stack, PGD and
+   * struct process.  The list is strictly per-CPU (reap_push only ever runs on
+   * the owning CPU), so masking local IRQs is sufficient — no spinlock needed. */
+  uint64_t drain_flags = local_irq_save();
   while (cpu_ptr->deferred_free_proc) {
     struct process *to_free = cpu_ptr->deferred_free_proc;
     cpu_ptr->deferred_free_proc = to_free->next;
@@ -805,9 +815,11 @@ struct pt_regs *schedule(struct pt_regs *regs) {
       vmm_destroy_pgd(to_free->page_table);
     pmm_free_page(to_free);
   }
+  local_irq_restore(drain_flags);
 
   uint32_t cpu = cpu_ptr->cpu_id;
   struct process *prev = cpu_ptr->current_task;
+  int prev_reaped = 0; /* set when prev is pushed on the reap list below */
   uint64_t flags;
 
   /* Use local lock for runqueue modifications */
@@ -832,6 +844,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
         reap_push(cpu_ptr, prev);
         cpu_ptr->current_task = NULL;
         prev = NULL;
+        prev_reaped = 1;
         goto pick_next;
       }
 
@@ -978,7 +991,14 @@ found:
     /* Otherwise, mandatory fallback to IDLE task */
     next = cpu_ptr->idle_task;
     if (!next) {
-      /* Absolute fallback if idle task not yet set */
+      /* Absolute fallback if idle task not yet set.  Returning regs here
+       * resumes whatever was interrupted — that is only legal if prev is
+       * still alive.  If prev was just reaped (SCHED-UAF-01 family), resuming
+       * it would run a corpse whose stack and PGD the next drain frees while
+       * they are still in use; that state machine breakage must be fatal. */
+      if (prev_reaped) {
+        panic("SCHED: [CPU%d] reaped current task with no idle task to switch to", cpu);
+      }
       if (regs && pt_regs_pc(regs) == 0) {
         panic("SCHED: [CPU%d] BUG pc==0 on idle-fallback return, PID %d", cpu,
               prev ? (int)prev->pid : -1);
@@ -1015,16 +1035,15 @@ found:
     panic("SCHED: PC is 0 for PID %d (Name: %s)", next->pid, next->name);
   }
 
-  if (!prev || prev->page_table != next->page_table) {
-    uint64_t next_pgd = virt_to_phys(next->page_table);
-    if (next_pgd != 0) {
-      hal_vmm_set_pgd(next_pgd);
-      hal_tlb_flush_all();
-      hal_isb();
-    }
-  }
-
-  /* Final architecture-specific context switch hook */
+  /* Address-space switch is delegated entirely to arch_cpu_switch_context()
+   * below — it is the SINGLE source of truth for both arches.  The previous
+   * hal_vmm_set_pgd() block here was redundant AND buggy: next_pgd =
+   * virt_to_phys(next->page_table) is 0 when page_table == NULL (kernel thread /
+   * idle), so it SKIPPED the reload and left the previous (soon-to-be-freed)
+   * process PGD active (SCHED-UAF-01).  arch_cpu_switch_context now loads the
+   * shared kernel_pgd for NULL page_table on both amd64 and aarch64, and carries
+   * the per-arch TLB flush / barriers.  This call is unconditional on the switch
+   * path (the prev == next case returned early above). */
   arch_cpu_switch_context(next);
 
   spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);

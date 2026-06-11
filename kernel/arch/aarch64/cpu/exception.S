@@ -280,7 +280,7 @@ el1_sp0_irq:
     b handle_el1_sp0_irq
 .balign 128
 el1_sp0_fiq:
-    b .
+    b handle_unexpected_fiq
 .balign 128
 el1_sp0_serror:
     b handle_el1_sp0_serror
@@ -294,7 +294,7 @@ el1_spx_irq:
     b handle_el1_spx_irq
 .balign 128
 el1_spx_fiq:
-    b .
+    b handle_unexpected_fiq
 .balign 128
 el1_spx_serror:
     b handle_el1_spx_serror
@@ -308,24 +308,25 @@ el0_64_irq:
     b handle_el0_64_irq
 .balign 128
 el0_64_fiq:
-    b .
+    b handle_unexpected_fiq
 .balign 128
 el0_64_serror:
     b handle_el0_64_serror
 
-/* Lower EL using AArch32 */
+/* Lower EL using AArch32 (unsupported: kernel runs AArch64-only user code).
+ * Phase A step 13: these were silent `b .` hangs — now reported + handled. */
 .balign 128
 el0_32_sync:
-    b .
+    b handle_el0_aarch32
 .balign 128
 el0_32_irq:
-    b .
+    b handle_el0_aarch32
 .balign 128
 el0_32_fiq:
-    b .
+    b handle_el0_aarch32
 .balign 128
 el0_32_serror:
-    b .
+    b handle_el0_aarch32
 
 /* 
  * Actual Handlers (Outside the table)
@@ -344,12 +345,37 @@ handle_el1_sp0_irq:
 handle_el1_sp0_serror:
     vector_stub serror
 
+/*
+ * EL1-from-EL1 synchronous abort (Phase A step 4): run the handler on the
+ * per-CPU fault stack so a kernel-stack overflow or wild SP cannot recurse.
+ *
+ * The original SP is parked in the 16-byte slot directly above the 816-byte
+ * frame (i.e. at frame+816): sync_handler reads it for diagnostics and, on
+ * the only resuming path (probe fixup), copies the frame back below the
+ * original SP so the eret epilogue (mov sp, x0 ... add sp, #816) leaves SP
+ * exactly where the faulting code expects it.
+ *
+ * The 16-byte scratch push on the old SP is the unavoidable minimum — if even
+ * that aborts, the CPU was unrecoverable before this code ran.  A nested
+ * abort while already on the fault stack re-parks at the top and clobbers the
+ * outer frame; that is caught immediately by the fault_enter() depth guard.
+ */
 handle_el1_spx_sync:
     stp x0, x1, [sp, #-16]!
-    mov x0, #0x09000000
-    mov w1, #107
-    /* str w1, [x0] */
+    mrs x0, mpidr_el1
+    and x0, x0, #0xFF
+    adrp x1, arch_fault_stack_top
+    add  x1, x1, :lo12:arch_fault_stack_top
+    ldr  x1, [x1, x0, lsl #3]
+    cbz  x1, 1f                  /* fault stack not published yet: stay */
+    mov  x0, sp                  /* x0 = old SP (after the 16-byte push)  */
+    str  x0, [x1, #-16]!         /* park it; x1 -> top-16                 */
+    mov  sp, x1                  /* switch to the fault stack             */
+    ldp  x0, x1, [x0]            /* restore scratch from the old stack    */
+    b    2f
+1:
     ldp x0, x1, [sp], #16
+2:
     vector_stub sync
 
 handle_el1_spx_irq:
@@ -360,7 +386,24 @@ handle_el1_spx_irq:
     ldp x0, x1, [sp], #16
     irq_stub
 
+/* EL1-from-EL1 SError: same fault-stack switch as el1_spx_sync.  The SError
+ * handler never resumes (panic), so no copy-back path is needed here. */
 handle_el1_spx_serror:
+    stp x0, x1, [sp, #-16]!
+    mrs x0, mpidr_el1
+    and x0, x0, #0xFF
+    adrp x1, arch_fault_stack_top
+    add  x1, x1, :lo12:arch_fault_stack_top
+    ldr  x1, [x1, x0, lsl #3]
+    cbz  x1, 1f
+    mov  x0, sp
+    str  x0, [x1, #-16]!
+    mov  sp, x1
+    ldp  x0, x1, [x0]
+    b    2f
+1:
+    ldp x0, x1, [sp], #16
+2:
     vector_stub serror
 
 handle_el0_64_sync:
@@ -381,6 +424,16 @@ handle_el0_64_irq:
 
 handle_el0_64_serror:
     vector_stub serror
+
+/* Phase A step 13: no silent halts.  FIQ is never configured by this kernel
+ * and AArch32 EL0 is unsupported; both were `b .` infinite loops (a wedged
+ * core with no diagnostic).  Build the standard frame and report via the
+ * fault-path C handlers (terminate the offending EL0 task / panic for EL1). */
+handle_unexpected_fiq:
+    vector_stub fiq
+
+handle_el0_aarch32:
+    vector_stub aarch32
 
 /*
  * Install exception vector table

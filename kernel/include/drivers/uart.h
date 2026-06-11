@@ -51,4 +51,10 @@ int uart_getc_nonblock(void);
 void uart_puts(const char *s);
 void uart_puthex(uint64_t val);
 
+/* uart_putc_emergency - lock-free TX for fault context (see kernel/fault.h).
+ * Identical output path to uart_putc but never takes a spinlock: usable from
+ * an exception handler even when uart_lock is held by a wedged CPU.  May
+ * interleave with concurrent normal output. */
+void uart_putc_emergency(char c);
+
 #endif /* _DRIVERS_UART_H */

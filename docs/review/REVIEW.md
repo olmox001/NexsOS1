@@ -179,6 +179,14 @@ implemented by delegated sub-agents that did not commit), **pending maintainer r
 | `d02038d` | graphics: floor `graphics_font_height()` to the built-in default when `ascent+descent<=0` (compositor div-by-zero) | **#70** (W3) ✅ |
 | `392d7fc` | drivers: check `pmm_alloc_pages/_page` returns in `virtio_input` `init_device` (NULL-deref → graceful bail) | **#50** (W3) ✅ |
 | `94c936c` | lib: `ktest` counts real pass/fail via a `ktest_test_failed` flag set by `KASSERT` (was always N PASS / 0 FAIL) | **#74** (W3) ✅ |
+| `3296ce1` | amd64: window-close triple-fault root-cause fixes + **AP adoption of the live `kernel_pgd` in `arch_cpu_init`** (ARCH-AMD64-APPGD-01; platform.c untouched); toolchain pin script | **#101, #102** ✅ |
+| `db4eb4c` | sched + aarch64: `arch_cpu_switch_context` loads the shared `kernel_pgd` when `page_table == NULL` on **both arches** (SCHED-UAF-01 idle/kernel-thread residual); removes the redundant-and-buggy `hal_vmm_set_pgd` block in `schedule()` | SCHED-UAF-01 ✅ |
+| `3509a4f` | follow-up review fixes: IRQ-masked deferred-free drain (SCHED-UAF-02), reaped-corpse fallback guard (SCHED-UAF-03), stale-comment rewrite, APPGD reuse of `arch_vmm_set_pgd`, aarch64 redundant ISB, toolchain-script probe/Apple-Silicon guards, ignore `tools/mkdisk` — see [analysis/10-addendum-2026-06-11](analysis/10-addendum-2026-06-11-sched-uaf-followup.md) | addendum 10 ✅ |
+| `12843d4` | **Phase A** steps 5-7: fault-safe reporting (`fault_printf` lock-free, `uart_putc_emergency`, MSR/MPIDR `arch_cpu_info_fault_safe`, per-CPU `in_fault` recursion guard, fault-context `panic()` mode) | Phase A ✅ |
+| `61c871b` | **Phase A** steps 3-4: dedicated fault stacks — amd64 IST1 (#PF/#GP) + IST2 (#DF) via TSS; aarch64 per-CPU EL1 abort stack with parked-SP + probe copy-back.  Verified by fault injection: nested #PF = one clean line + halt, 0 cpu_resets (was triple-fault) | Phase A ✅ |
+| `d6f03e9` | **Phase A** steps 8-10: user-vs-kernel isolation — generic `fault_handle_user_or_panic`; amd64 user faults terminate+schedule (**EXC-AMD64-02 / #36**); uaccess windows flagged on both arches (**CPU-AARCH64-01**, **SYS-AARCH64-02**).  Verified: `crash` from the shell terminates PID, shell survives, `counter` runs after — both arches | **#36** + 2 ✅ |
+| `ac4d76f` | **Phase A** steps 11-12: symbolized backtrace — fp walker + kallsyms-style `.ksyms` blob (two-pass link, survives aarch64 `objcopy -O binary`).  Verified: `kernel_main+0x3e3` matches addr2line; live symbols from raw kernel.bin | Phase A ✅ |
+| `6bed3cf` | **Phase A** step 13: total aarch64 vector coverage — all 8 `b .` silent-hang vectors (FIQ, EL0-AArch32) now report + terminate/panic | Phase A ✅ |
 
 Rows `3f9f81f` through `94c936c` are the **W3 issue-tier** fix phase — small, scoped, additive
 correctness/security hardening on the issue backlog, distinct from the boot/crash fixes above.
@@ -206,18 +214,24 @@ payload[64];` — present since `main` — and all producers/consumers use 64-bi
 use 64-bit). Exercised at runtime every boot (keyboard input + `notify()`). No change needed.
 
 **Remaining (open, future sessions — multi-step refactors, not concludable in one short pass):**
-amd64 ACPI-MADT CPU count (ARCH-01), real PCI/ACPI init (ARCH-02), user-vs-kernel
-fault isolation (EXC-AMD64-02); the kernel/userland higher-half **addressing rework**
-(the central PA==VA invariant); W^X (MM-VMM-01/AMMU-01); and re-commenting the headers
-+ `.S` files reverted in Phase 2 (all C sources are commented and committed).
+amd64 ACPI-MADT CPU count (ARCH-01), real PCI/ACPI init (ARCH-02); Phase A residuals:
+step 14 (EXC-AMD64-03 double timer tick + EXC-AMD64-01 dead probe block) and step 15
+(IRQ-01/IRQ-02 dispatch races); **SCHED-IRQ-01** (no IRQ-state contract on `schedule()` —
+syscall paths enter it with IRQs enabled; see addendum 10 §3); the kernel/userland
+higher-half **addressing rework** (the central PA==VA invariant); W^X (MM-VMM-01/AMMU-01);
+and re-commenting the headers + `.S` files reverted in Phase 2 (all C sources are
+commented and committed).  EXC-AMD64-02 (#36) is now **fixed** (Phase A, `d6f03e9`).
 
-## 9. amd64 runtime crashes — root-caused (fix pending)
+## 9. amd64 runtime crashes — root-caused (both FIXED)
 
 Two amd64 runtime defects were precisely root-caused via headless QEMU + interactive
-`make run` (serial capture, an in-#PF-handler PGD walk). **SCHED-UAF-01 is now fixed**
-(below, verified by build + boot + a kill-stress on both arches); **ARCH-AMD64-APPGD-01
-remains open**, recorded here with its exact mechanism and fix direction for a focused
-follow-up.
+`make run` (serial capture, an in-#PF-handler PGD walk). **Both are now fixed:**
+SCHED-UAF-01 (below, verified by build + boot + a kill-stress on both arches; the
+idle/kernel-thread residual closed on both arches in `db4eb4c`) and
+ARCH-AMD64-APPGD-01 (closed in `3296ce1`, see status under its entry). The follow-up
+recall review of that fix branch — what it verified, the two new SCHED-UAF-0x findings
+it fixed (`3509a4f`), and the residual/undetected-issues catalog — is
+[analysis/10-addendum-2026-06-11](analysis/10-addendum-2026-06-11-sched-uaf-followup.md).
 
 **SCHED-UAF-01 — process-teardown use-after-free; crash on window-close (amd64). [FIXED]**
 *Mechanism:* closing a window (compositor close button → `process_terminate`) could leave the
@@ -242,7 +256,13 @@ of RUNNING `demo3d` victims across `-smp 4` (50× to completion on aarch64, 11×
 (mouse-IRQ) confirmation pending maintainer. *Related (still open):* the compositor calls
 `process_terminate` from mouse-IRQ context — design coupling tracked as SCHED-03 / GFX-COMP-03.
 
-**ARCH-AMD64-APPGD-01 — APs run on the stale boot PML4 → high device-MMIO faults.**
+**ARCH-AMD64-APPGD-01 — APs run on the stale boot PML4 → high device-MMIO faults. [FIXED in `3296ce1`]**
+*Fix as landed:* each AP adopts the live dynamic `kernel_pgd` at the end of `arch_cpu_init`
+(amd64 HAL, via `arch_vmm_set_pgd`; no-op on the BSP's early call where `kernel_pgd` is still
+NULL). This is safe because `init_memory()` (→ `vmm_dynamic_remap`) runs before
+`arch_smp_init()` (`main.c:107` vs `:123`) and APs enable IRQs only after `cpu_init()` —
+so no device IRQ can be taken before adoption. `platform.c` / the trampoline are untouched
+(the original fix direction below was superseded for that reason). Original root-cause record:
 `start.S` has `kernel_pgd_phys: .quad boot_pml4`, and `arch_cpu_wake_secondary`
 (`platform.c` ~:459) launches APs with CR3 = `kernel_pgd_phys`. But `arch_vmm_init_hw` /
 `vmm_dynamic_remap` switch the BSP to a **new dynamic `kernel_pgd`** (the one

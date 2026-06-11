@@ -122,6 +122,19 @@ void uart_putc(char c) {
 }
 
 /*
+ * uart_putc_emergency - fault-context TX (kernel/fault.h).
+ *
+ * On the 16550 the normal path is already lock-free port I/O (no page-table
+ * walk, no spinlock), so the emergency path is the same; CR is inserted for
+ * newlines because fault_printf bypasses uart_puts' expansion.
+ */
+void uart_putc_emergency(char c) {
+  if (c == '\n')
+    uart_putc('\r');
+  uart_putc(c);
+}
+
+/*
  * uart_puts - transmit a NUL-terminated string with CR+LF expansion.
  *
  * @s: NUL-terminated string to transmit.

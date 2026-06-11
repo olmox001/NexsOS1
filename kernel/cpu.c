@@ -4,6 +4,7 @@
  */
 #include <kernel/cpu.h>
 #include <kernel/arch.h>
+#include <kernel/fault.h>
 #include <kernel/printk.h>
 
 /* CPU info array */
@@ -21,11 +22,18 @@ struct cpu_info *get_cpu_info(void) {
   return &cpu_data[id];
 }
 
-/* 
- * Generic Exception Wrappers 
+/*
+ * Generic Exception Wrappers
  */
 struct pt_regs *serror_handler(struct pt_regs *frame) {
-  pr_err("SError at ELR=0x%016lx\n", (uint64_t)frame);
+  /* SError = asynchronous external abort: the machine state is suspect by
+   * definition.  Recursion guard + lock-free output only (kernel/fault.h);
+   * panic() sees fault_depth() > 0 and uses its fault-safe mode. */
+  if (fault_enter() > 1) {
+    fault_printf("\n[FATAL] NESTED SError frame=%016lx — halting\n", (uint64_t)frame);
+    arch_cpu_halt();
+  }
+  fault_printf("SError at frame=0x%016lx\n", (uint64_t)frame);
   panic("SError exception");
   return frame;
 }
