@@ -17,11 +17,14 @@
  *     and the ref_count and flags fields of every struct block_buffer.
  *
  * Known issues:
- *   MM-BUF-01  (W3 BUG)         __evict_buffers() skips referenced/dirty
- *                                buffers; if all MAX_BUFFERS slots are dirty or
- *                                referenced, eviction frees nothing but
- *                                buffer_get() continues allocating -- MAX_BUFFERS
- *                                is not a hard cap.
+ *   MM-BUF-01  RESOLVED (Phase B2): MAX_BUFFERS is now a hard cap.  buffer_get()
+ *                                reserves its slot in total_buffers under
+ *                                buffer_lock before allocating; if eviction
+ *                                frees nothing because every buffer is dirty,
+ *                                it flushes via buffer_sync() and retries; if
+ *                                everything is still referenced the request
+ *                                fails loudly with NULL instead of growing
+ *                                without bound.
  *   MM-BUF-02  (W2 PERF)        Two CPUs missing the same block both allocate
  *                                a buffer and both issue a disk read; the loser
  *                                is discarded after the lock is re-acquired.
@@ -94,7 +97,9 @@ static struct block_buffer *__lookup(uint64_t block) {
   return NULL;
 }
 
-/* MAX_BUFFERS: target eviction threshold; NOT a hard cap (see MM-BUF-01). */
+/* MAX_BUFFERS: hard cap on cached blocks (FIX MM-BUF-01).  buffer_get()
+ * reserves its slot in total_buffers under buffer_lock BEFORE allocating, so
+ * the cache can never exceed MAX_BUFFERS entries (4 MB of data pages). */
 #define MAX_BUFFERS 1024
 static int total_buffers = 0;
 
@@ -106,10 +111,10 @@ static int total_buffers = 0;
  *
  * Must be called with buffer_lock held.
  *
- * NOTE(MM-BUF-01): If all buffers above MAX_BUFFERS/2 are referenced (ref_count>0)
- * or dirty, the loop exits without freeing anything.  The caller (buffer_get())
- * then continues to allocate additional buffers beyond MAX_BUFFERS, so the cap
- * is not enforced.  Over time this can exhaust PMM pages.
+ * May free nothing if every evictable candidate is referenced or dirty;
+ * buffer_get() handles that by flushing dirty buffers (buffer_sync) and
+ * retrying, and finally failing the request rather than exceeding the cap
+ * (FIX MM-BUF-01).
  */
 static void __evict_buffers(void) {
   struct block_buffer *pos, *n;
@@ -132,14 +137,20 @@ static void __evict_buffers(void) {
  * Protocol:
  *   1. Acquire buffer_lock; look up block in hash table.
  *      Hit: move to LRU head, bump ref_count, release lock, return.
- *   2. If total_buffers >= MAX_BUFFERS, call __evict_buffers() (see MM-BUF-01).
+ *   2. Enforce the hard cap (FIX MM-BUF-01): if total_buffers >= MAX_BUFFERS,
+ *      run __evict_buffers(); if that freed nothing (all dirty/referenced),
+ *      drop the lock, flush dirty buffers with buffer_sync(), re-acquire and
+ *      evict again.  If the cache is STILL full, fail with NULL — the cap is
+ *      never exceeded.  Otherwise reserve this allocation's slot by
+ *      incrementing total_buffers before dropping the lock.
  *   3. Release lock; allocate struct block_buffer (kmalloc) and data page (PMM).
+ *      Failure paths release the reserved slot under the lock.
  *   4. Issue virtio_blk_read() WITHOUT the lock to avoid holding the spinlock
  *      across potentially-blocking disk I/O.
  *   5. Re-acquire lock; re-check hash table for a race winner (MM-BUF-02).
  *      If another CPU loaded the same block while we were reading, discard our
- *      buffer and return the winner's.
- *   6. Insert into hash table and LRU, increment total_buffers, release lock.
+ *      buffer (and its slot reservation) and return the winner's.
+ *   6. Insert into hash table and LRU (slot already counted), release lock.
  *
  * NOTE(MM-BUF-02): If two CPUs concurrently miss on the same block, both
  * allocate a page and both issue a disk read.  The loser's page is freed after
@@ -171,22 +182,38 @@ struct block_buffer *buffer_get(uint64_t block) {
     return buf;
   }
 
-  /* Check if we need to evict before allocating */
+  /* Hard cap enforcement (FIX MM-BUF-01).  Eviction first; if everything is
+   * dirty, flush and retry once; if everything is referenced, refuse. */
   if (total_buffers >= MAX_BUFFERS) {
     __evict_buffers();
+    if (total_buffers >= MAX_BUFFERS) {
+      spin_unlock_irqrestore(&buffer_lock, flags);
+      buffer_sync(); /* makes dirty buffers evictable (no locks held here) */
+      spin_lock_irqsave(&buffer_lock, &flags);
+      __evict_buffers();
+    }
+    if (total_buffers >= MAX_BUFFERS) {
+      spin_unlock_irqrestore(&buffer_lock, flags);
+      pr_err("BufferCache: cap reached (%d buffers all busy), refusing block %ld\n",
+             MAX_BUFFERS, block);
+      return NULL;
+    }
   }
+  /* Reserve this allocation's slot while still holding the lock, so
+   * concurrent misses cannot collectively overshoot the cap. */
+  total_buffers++;
   spin_unlock_irqrestore(&buffer_lock, flags);
 
   /* 2. Allocate New Buffer (Metadata) */
   buf = (struct block_buffer *)kmalloc(sizeof(struct block_buffer));
-  if (!buf) return NULL;
+  if (!buf) goto fail_release_slot;
   memset(buf, 0, sizeof(*buf));
 
   /* 3. Allocate Data Page */
   buf->data = (uint8_t *)pmm_alloc_page();
   if (!buf->data) {
     kfree(buf);
-    return NULL;
+    goto fail_release_slot;
   }
 
   /* 4. Read from Disk (OUTSIDE lock) */
@@ -195,7 +222,7 @@ struct block_buffer *buffer_get(uint64_t block) {
     pr_err("BufferCache: Disk read error block %ld\n", block);
     pmm_free_page(buf->data);
     kfree(buf);
-    return NULL;
+    goto fail_release_slot;
   }
 
   buf->block = block;
@@ -209,6 +236,7 @@ struct block_buffer *buffer_get(uint64_t block) {
     /* Someone else loaded it while we were reading */
     pmm_free_page(buf->data);
     kfree(buf);
+    total_buffers--; /* release our reserved slot; the winner owns its own */
     exists->ref_count++;
     spin_unlock_irqrestore(&buffer_lock, flags);
     return exists;
@@ -217,10 +245,16 @@ struct block_buffer *buffer_get(uint64_t block) {
   uint32_t bucket = hash_block(block);
   list_add(&buf->hash, &hash_table[bucket]);
   list_add(&buf->list, &lru_list);
-  total_buffers++;
+  /* total_buffers already counts this buffer (slot reserved above) */
   spin_unlock_irqrestore(&buffer_lock, flags);
 
   return buf;
+
+fail_release_slot:
+  spin_lock_irqsave(&buffer_lock, &flags);
+  total_buffers--;
+  spin_unlock_irqrestore(&buffer_lock, flags);
+  return NULL;
 }
 
 /*
