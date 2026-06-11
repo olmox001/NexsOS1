@@ -232,6 +232,8 @@ commented and committed).  **All Phase A residuals are now closed**: step 14
 `d6f03e9`.  The external boot-trace triage (zombie leak, virtio-blk race, focus reset,
 spurious-IRQ flood — what was confirmed, what was misread) is
 [analysis/11-addendum-2026-06-11](analysis/11-addendum-2026-06-11-external-trace-triage.md).
+The Phase B microphase plan + fresh-session handoff (build/test playbook, B1–B6
+scope and acceptance criteria) is [docs/PHASE-B-PLAN.md](../PHASE-B-PLAN.md).
 
 ## 9. amd64 runtime crashes — root-caused (both FIXED)
 
