@@ -12,7 +12,7 @@
  * Role / layering:
  *   userland svc/syscall -> arch entry (context.S / cpu.c)
  *                        -> kernel_syscall_dispatcher()  [this file]
- *                        -> sys_* / process_* / compositor_* / ext4_*
+ *                        -> sys_* / process_* / compositor_* / vfs_*
  *   Returns a pt_regs* to restore; may differ from the input frame when
  *   schedule() performs a context switch (IPC block, exit, yield).
  *
@@ -104,10 +104,8 @@ extern int process_load_elf(struct process *proc, const char *path);
 
 extern long sys_registry(int op, const char *key, char *value, size_t size);
 int sys_set_font(void *data, size_t size);
-extern int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size, uint32_t offset);
-extern int ext4_read_file(const char *path, uint8_t *buf, uint32_t size, uint32_t offset);
-extern int ext4_list_dir(const char *path, char *buf, uint32_t size);
-extern int ext4_find_inode(const char *path, uint32_t *ino_out);
+/* Filesystem access goes through the VFS contract only (<kernel/vfs.h>);
+ * no direct ext4_* calls (VFS-01 resolved). */
 
 extern int arch_copy_from_user(void *dest, const void *src, size_t n);
 extern int arch_copy_to_user(void *dest, const void *src, size_t n);
@@ -301,7 +299,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       break;
     }
     uint32_t offset = (uint32_t)arg3;
-    pt_regs_set_return(frame, ext4_write_file(resolved_path, k_buf, (uint32_t)size, offset));
+    pt_regs_set_return(frame, vfs_write_file(resolved_path, k_buf, (uint32_t)size, offset));
     kfree(k_buf);
   } break;
   case 252: /* FILE_READ */
@@ -322,7 +320,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     int bytes_read;
 
     if (size == 0) {
-      bytes_read = ext4_read_file(resolved_path, NULL, 0, offset);
+      bytes_read = vfs_read_file(resolved_path, NULL, 0, offset);
     } else {
       uint8_t *k_buf = kmalloc(size);
       if (!k_buf) {
@@ -330,7 +328,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
         break;
       }
 
-      bytes_read = ext4_read_file(resolved_path, k_buf, (uint32_t)size, offset);
+      bytes_read = vfs_read_file(resolved_path, k_buf, (uint32_t)size, offset);
       if (bytes_read >= 0) {
         if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
           bytes_read = -1;
@@ -362,7 +360,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -1);
       break;
     }
-    int res = ext4_list_dir(resolved_path, k_buf, (uint32_t)size);
+    int res = vfs_list_dir(resolved_path, k_buf, (uint32_t)size);
     if (res >= 0) {
       if (arch_copy_to_user((void *)arg1, k_buf, res + 1) != 0) {
         res = -1;
@@ -381,11 +379,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
     
-    /* Verify it exists and is a directory */
-    uint32_t ino;
-    if (ext4_find_inode(resolved_path, &ino) == 0) {
-       /* For now we don't check if it's a dir, but we could.
-          Assume if it exists, it's fine for now or handle later. */
+    /* Verify it exists and is a directory. */
+    struct vfs_stat st;
+    if (vfs_stat(resolved_path, &st) == 0 && st.type == VFS_TYPE_DIR) {
        strncpy(current_process->cwd, resolved_path, 128);
        pt_regs_set_return(frame, 0);
     } else {

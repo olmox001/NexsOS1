@@ -1,31 +1,32 @@
 /*
  * kernel/fs/vfs.c
- * Virtual Filesystem Switch — Path Normalisation Shim
+ * Virtual Filesystem Switch — provider registry, mount table, dispatch.
  *
- * Purpose:
- *   Provides vfs_resolve_path(), the sole VFS-layer entry point.  It converts
- *   a raw user-supplied path (absolute or relative) into a canonical absolute
- *   path string suitable for passing to ext4_find_inode().
+ * Purpose (VFS-01 resolved):
+ *   The kernel-core side of the filesystem provider contract defined in
+ *   <kernel/vfs.h>.  Holds the registered fs drivers and the mount table,
+ *   probes partitions at vfs_init(), and dispatches the vfs_* API through
+ *   the mounted provider's fs_ops.  Also provides vfs_resolve_path(), the
+ *   path canonicalisation helper used by the syscall layer.
  *
- * Role in the stack:
- *   Called exclusively from syscall_dispatch.c (cases 251–256) before each
- *   ext4_* call.  The caller then invokes ext4_find_inode / ext4_read_inode /
- *   ext4_write_file directly — there is no vnode table, no mount table, and
- *   no filesystem-type abstraction between this shim and the ext4 driver.
+ * Role in the stack (ASTRA, docs/ASTRA.md):
+ *   syscall_dispatch.c / elf.c  →  vfs_* (this file)  →  fs_ops provider
+ *   (ext4 today).  No caller outside kernel/fs/ touches ext4_* anymore.
+ *
+ * Resolution model:
+ *   Single root mount ("/"): the first registered provider that successfully
+ *   mounts a partition (probed in partition-table order) becomes the root.
+ *   Multiple mounts/mountpoints are a later step (the table is already
+ *   sized for them).
  *
  * Key invariants:
- *   - Output buffer is always NUL-terminated (explicit out[size-1]='\0' at L58).
+ *   - vfs_resolve_path output is always NUL-terminated.
  *   - Normalisation is done entirely in-place on a stack copy; the original
  *     'in' string is never modified.
  *   - parts[] stores interior pointers into temp[]; they remain valid for the
  *     lifetime of the normalisation loop because temp[] is on the same frame.
  *
  * Known issues:
- *   VFS-01  (W5 WRONG-DESIGN) The VFS layer is a single path-normalisation
- *           function.  There is no vnode, no mount table, and no file_ops
- *           dispatch.  All FS syscalls reach ext4_* directly via extern
- *           declarations.  This is the primary structural blocker to the
- *           stated Plan 9 / seL4-capability goal.
  *   VFS-02  (W3 SECURITY+MISSING) current_process is dereferenced without a
  *           NULL guard.  Safe only because all callers are on validated syscall
  *           paths; the function itself has no protection.
@@ -39,8 +40,151 @@
 #include <kernel/sched.h>
 #include <kernel/string.h>
 #include <kernel/vfs.h>
+#include <kernel/gpt.h>
 #include <kernel/kmalloc.h>
 #include <kernel/printk.h>
+
+/* Registered filesystem drivers (providers).  Registration happens at boot,
+ * single-threaded, before vfs_init(); no locking needed. */
+#define VFS_MAX_FS 4
+static const struct fs_ops *fs_drivers[VFS_MAX_FS];
+static int fs_driver_count;
+
+/* Mount table.  mounts[0] is the root mount; further slots are reserved for
+ * future mountpoints.  Mounts are created once at vfs_init() and never torn
+ * down, so readers need no locking. */
+#define VFS_MAX_MOUNTS 4
+static struct vfs_mount mounts[VFS_MAX_MOUNTS];
+
+/*
+ * vfs_register_fs - register a filesystem provider.
+ * Returns 0, or -1 if the driver table is full or ops is malformed.
+ */
+int vfs_register_fs(const struct fs_ops *ops) {
+  if (!ops || !ops->mount || !ops->open || !ops->read) {
+    pr_err("%s", "VFS: rejecting malformed fs_ops registration\n");
+    return -1;
+  }
+  if (fs_driver_count >= VFS_MAX_FS) {
+    pr_err("%s", "VFS: fs driver table full\n");
+    return -1;
+  }
+  fs_drivers[fs_driver_count++] = ops;
+  return 0;
+}
+
+/*
+ * vfs_init - probe partitions and establish the root mount.
+ *
+ * For each partition (table order), each registered provider gets a chance
+ * to mount it.  The first success becomes the root.  Providers must probe
+ * quietly (a partition that is simply not their format is normal) and fail
+ * loudly only on recognised-but-unsupported filesystems.
+ */
+void vfs_init(void) {
+  if (fs_driver_count == 0) {
+    pr_err("%s", "VFS: no filesystem providers registered\n");
+    return;
+  }
+  for (int i = 0; i < num_partitions; i++) {
+    struct partition *p = gpt_get_partition(i);
+    if (!p)
+      continue;
+    for (int d = 0; d < fs_driver_count; d++) {
+      struct vfs_mount *mnt = &mounts[0];
+      mnt->ops = fs_drivers[d];
+      mnt->part_index = (uint32_t)i;
+      mnt->fs_private = NULL;
+      if (fs_drivers[d]->mount(mnt, p) == 0) {
+        mnt->in_use = 1;
+        pr_info("VFS: mounted %s on partition %d as /\n",
+                fs_drivers[d]->name, i);
+        return;
+      }
+      mnt->ops = NULL;
+    }
+  }
+  pr_err("%s", "VFS: no mountable filesystem found on any partition\n");
+}
+
+/* Root mount accessor; NULL if vfs_init found nothing. */
+static struct vfs_mount *vfs_root(void) {
+  return mounts[0].in_use ? &mounts[0] : NULL;
+}
+
+/*
+ * vfs_open - resolve an absolute normalized path to a vfs_node.
+ * Returns 0 on success, negative on error/not-found.
+ */
+int vfs_open(const char *path, struct vfs_node *out) {
+  struct vfs_mount *mnt = vfs_root();
+  if (!mnt || !path || !out)
+    return -1;
+  return mnt->ops->open(mnt, path, out);
+}
+
+/*
+ * vfs_read - random-access read from an open node.
+ * Returns bytes read (clamped at EOF) or negative on error.
+ */
+int vfs_read(struct vfs_node *node, uint64_t offset, void *buf,
+             uint32_t size) {
+  if (!node || !node->mnt || !node->mnt->ops->read)
+    return -1;
+  return node->mnt->ops->read(node, offset, buf, size);
+}
+
+/*
+ * vfs_read_file - path-based convenience read.
+ * buf==NULL or size==0 returns the file size without reading (userland ABI
+ * of SYS_FILE_READ — see user/sys/lib/lib.c file_read).
+ */
+int vfs_read_file(const char *path, void *buf, uint32_t size,
+                  uint64_t offset) {
+  struct vfs_node node;
+  if (vfs_open(path, &node) != 0)
+    return -1;
+  if (buf == NULL || size == 0)
+    return (int)node.size;
+  return vfs_read(&node, offset, buf, size);
+}
+
+/*
+ * vfs_write_file - path-based write through the provider.
+ * Returns bytes written or negative; -1 if the provider has no write support.
+ */
+int vfs_write_file(const char *path, const void *buf, uint32_t size,
+                   uint64_t offset) {
+  struct vfs_mount *mnt = vfs_root();
+  if (!mnt || !mnt->ops->write)
+    return -1;
+  return mnt->ops->write(mnt, path, offset, buf, size);
+}
+
+/*
+ * vfs_list_dir - list a directory through the provider.
+ * Returns the formatted length, -1 not found, -2 not a directory.
+ */
+int vfs_list_dir(const char *path, char *buf, uint32_t size) {
+  struct vfs_mount *mnt = vfs_root();
+  if (!mnt || !mnt->ops->list)
+    return -1;
+  return mnt->ops->list(mnt, path, buf, size);
+}
+
+/*
+ * vfs_stat - fill st with size/type for path.  0 on success, -1 otherwise.
+ */
+int vfs_stat(const char *path, struct vfs_stat *st) {
+  struct vfs_node node;
+  if (vfs_open(path, &node) != 0)
+    return -1;
+  if (st) {
+    st->size = node.size;
+    st->type = node.type;
+  }
+  return 0;
+}
 
 /*
  * vfs_resolve_path - canonicalise a raw user path into an absolute path string.
