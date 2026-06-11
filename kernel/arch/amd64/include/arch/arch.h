@@ -90,6 +90,20 @@ static inline void arch_impl_tlb_flush_va(uintptr_t va) {
   __asm__ __volatile__("invlpg (%0)" ::"r"(va) : "memory");
 }
 
+/* SMP TLB shootdown (MM-VMM-05/AMMU-08): invlpg and CR3 reloads are strictly
+ * LOCAL on x86 — there is no hardware broadcast like AArch64's TLBI *IS.
+ * Implemented in kernel/arch/amd64/mm/tlb.c with a fixed-vector LAPIC IPI
+ * (vector 0xFD) and bounded acknowledgement wait. */
+void amd64_tlb_shootdown_va(uintptr_t va);
+void amd64_tlb_shootdown_all(void);
+void amd64_tlb_ipi_init(void);
+static inline void arch_impl_tlb_shootdown_va(uintptr_t va) {
+  amd64_tlb_shootdown_va(va);
+}
+static inline void arch_impl_tlb_shootdown_all(void) {
+  amd64_tlb_shootdown_all();
+}
+
 /* Cache Control */
 static inline void arch_impl_cache_clean_range(void *start, size_t size) {
   uint64_t s = (uint64_t)start;

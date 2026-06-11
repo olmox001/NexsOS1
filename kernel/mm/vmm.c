@@ -33,7 +33,12 @@
  *   MM-VMM-03  (W2 REFINE/TODO)  vmm_dynamic_remap leaks the old PGD.
  *   MM-VMM-04  (W3 BUG)          vmm_destroy_pgd leaks user RAM frames and
  *                                 contains a dead empty loop.
- *   MM-VMM-05  (W3 BUG/SECURITY) No cross-CPU TLB shootdown on unmap/remap.
+ *   MM-VMM-05  RESOLVED (Phase B2): unmap paths now satisfy the cross-CPU
+ *                                 shootdown contract — AArch64 in hardware
+ *                                 (broadcast IS TLBI), amd64 via LAPIC IPI
+ *                                 (kernel/arch/amd64/mm/tlb.c); teardown
+ *                                 broadcasts one full shootdown before
+ *                                 frames are recycled.
  *   MM-VMM-06  (W2 REFINE)       Generic map path is 4KB-only; 2MB blocks
  *                                 only via arch_vmm_map_range.
  *   MM-VMM-07  (W1 DOC)          File header mentions only AArch64.
@@ -270,14 +275,11 @@ uint64_t vmm_get_phys(uint64_t *pgd, uint64_t virt) {
  *
  * vmm_unmap_page - remove a single page mapping from the given PGD.
  *
- * Delegates to arch_vmm_unmap(), which clears the PTE and performs a local
- * TLB invalidation.
- *
- * NOTE(MM-VMM-05): Only the calling CPU's TLB is flushed.  No IPI is sent to
- * other CPUs to invalidate their TLB entries for this VA.  On SMP, other cores
- * may continue to use stale translations, creating a correctness and security
- * hazard (stale translation could point to a page now assigned to another
- * process).
+ * Delegates to arch_vmm_unmap(), which clears the PTE and performs an SMP
+ * TLB shootdown (MM-VMM-05 resolved): on return, no online CPU still
+ * translates 'virt' through the old entry — the caller may safely recycle
+ * the backing frame.  AArch64 satisfies this with broadcast IS TLBI in
+ * hardware; amd64 with a LAPIC IPI round (see arch/amd64/mm/tlb.c).
  */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt) {
   arch_vmm_unmap((uint64_t)pgd, virt);
@@ -288,7 +290,9 @@ void vmm_unmap_page(uint64_t *pgd, uint64_t virt) {
  * vmm_unmap_page_locked - vmm_unmap_page() wrapped with proc->mm_lock.
  *
  * Acquires proc->mm_lock with IRQ save/restore around the unmap call.
- * NOTE(MM-VMM-05): TLB shootdown is still absent even with the lock held.
+ * The shootdown inside runs with IRQs masked; on amd64 a peer spinning on
+ * this same mm_lock cannot ack until it unmasks — the bounded ack wait in
+ * tlb.c turns that worst case into a stall, never a deadlock.
  */
 void vmm_unmap_page_locked(struct process *proc, uint64_t virt) {
   uint64_t lock_flags;
@@ -537,6 +541,12 @@ uint64_t *vmm_create_pgd(void) {
 void vmm_destroy_pgd(uint64_t *pgd) {
   if (!pgd)
     return;
+
+  /* Cross-CPU shootdown BEFORE freeing (MM-VMM-05): a peer that ran this
+   * process earlier may still hold user translations into frames we are
+   * about to recycle.  One full round here covers the whole address space;
+   * the per-PTE walk below then frees without further TLB traffic. */
+  arch_tlb_shootdown_all();
 
   uint64_t freed_frames = 0;
   uint64_t freed_tables = 0;

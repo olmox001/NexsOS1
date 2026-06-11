@@ -124,6 +124,7 @@ KERN_C_SOURCES = \
     $(ARCH_DIR)/cpu/syscall_hal.c \
     $(ARCH_DIR)/cpu/apic.c \
     $(ARCH_DIR)/mm/mmu.c \
+    $(ARCH_DIR)/mm/tlb.c \
     $(ARCH_DIR)/mm/uaccess.c \
     $(KERNEL_DIR)/drivers/uart/16550.c \
     $(KERNEL_DIR)/drivers/timer/pic_pit.c \

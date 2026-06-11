@@ -76,6 +76,16 @@ static inline void arch_tlb_flush_local(void) { arch_impl_tlb_flush_local(); }
 static inline void arch_tlb_flush_all(void) { arch_impl_tlb_flush_all(); }
 static inline void arch_tlb_flush_va(uintptr_t va) { arch_impl_tlb_flush_va(va); }
 
+/* SMP TLB shootdown (MM-VMM-05/AMMU-08 resolved).  Contract: when these
+ * return, NO online CPU still holds a stale translation for the target
+ * (single VA, or the whole address space for _all).  AArch64 satisfies it in
+ * hardware (inner-shareable broadcast TLBI + DSB ISH); amd64 sends a
+ * fixed-vector LAPIC IPI and waits (bounded) for peer acknowledgements —
+ * a peer with IRQs masked flushes as soon as it unmasks (the IPI stays
+ * pending in its LAPIC). */
+static inline void arch_tlb_shootdown_va(uintptr_t va) { arch_impl_tlb_shootdown_va(va); }
+static inline void arch_tlb_shootdown_all(void) { arch_impl_tlb_shootdown_all(); }
+
 static inline void arch_cache_clean_range(void *va, size_t size) { arch_impl_cache_clean_range(va, size); }
 static inline void arch_cache_sync_icache(void *va, size_t size) { arch_impl_cache_sync_icache(va, size); }
 

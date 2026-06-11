@@ -187,8 +187,8 @@ void vmm_init(void);
 void vmm_dynamic_remap(void);
 /* vmm_map_page: map one 4KB page; delegates to arch_vmm_map(). */
 int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags);
-/* vmm_unmap_page: unmap one page; local TLB flush only.
- * NOTE(MM-VMM-05): no cross-CPU TLB shootdown. */
+/* vmm_unmap_page: unmap one page with cross-CPU TLB shootdown (MM-VMM-05
+ * resolved): on return no online CPU translates 'virt' via the old entry. */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt);
 uint64_t vmm_get_phys(uint64_t *pgd, uint64_t virt);
 

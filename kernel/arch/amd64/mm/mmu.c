@@ -45,10 +45,12 @@
  *     or a pre-computed PDPT entry would suffice.
  *   AMMU-07 (W2 PERF/REFINE) MMIO identity-mapped only for 0xFE000000–
  *     0xFFFFFFFF.  Devices with BAR addresses outside this window are unmapped.
- *   AMMU-08 (W2 BUG) TLB invalidation (invlpg in arch_vmm_map, arch_tlb_flush_va
- *     in arch_vmm_unmap) is local to the modifying CPU only.  No IPI-based TLB
- *     shootdown to peer CPUs; stale TLB entries on other CPUs can cause them to
- *     access freed/remapped pages.
+ *   AMMU-08 RESOLVED (Phase B2): arch_vmm_unmap performs an IPI-based SMP
+ *     shootdown (amd64_tlb_shootdown_va, kernel/arch/amd64/mm/tlb.c) so peer
+ *     CPUs cannot keep using a cleared mapping.  arch_vmm_map keeps its local
+ *     invlpg only: x86 TLBs do not cache not-present entries, so mapping a
+ *     previously-absent VA needs no remote flush, and today's callers never
+ *     live-remap a VA that another CPU is concurrently using.
  */
 #include <arch/amd64_internal.h>
 #include <arch/arch.h>
@@ -122,6 +124,10 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
   /* Switch to the new kernel PML4 */
   arch_vmm_set_pgd(kernel_pgd);
   pr_info("AMD64 VMM: Switched to kernel PGD at %p\n", (void *)kernel_pgd);
+
+  /* Register the TLB shootdown IPI (MM-VMM-05/AMMU-08).  Before this point
+   * only the BSP runs, so local flushes were sufficient. */
+  amd64_tlb_ipi_init();
 
   /* Identity map all detected RAM regions */
   size_t count = 0;
@@ -317,8 +323,9 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
  * invlpg flushes the single VA's TLB entry.  If modifying a different PGD
  * (e.g. a new process), no flush is issued for this CPU — correct, since the
  * modified PGD is not loaded.
- * NOTE(AMMU-08): No IPI is sent to peer CPUs; their TLB entries for 'va' in
- * the same PGD remain valid until they execute their own CR3 reload or invlpg.
+ * No IPI is sent on map: x86 TLBs do not cache not-present entries, so a
+ * fresh mapping cannot be stale anywhere; live remaps do not exist in
+ * today's callers (see AMMU-08 note in the file header).
  *
  * Returns 0 on success, -1 if any page-table page allocation fails.
  */
@@ -357,7 +364,7 @@ int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags) {
   pt[PT_INDEX(va)] = (pa & PTE_ADDR_MASK) | x86_flags;
 
   /* Optimized TLB flush: only if we are modifying the ACTIVE address space.
-   * NOTE(AMMU-08): No SMP TLB shootdown; peer CPUs may have stale entries. */
+   * Local-only by design — fresh mappings are never cached remotely. */
   uint64_t current_cr3;
   __asm__ volatile("mov %%cr3, %0" : "=r"(current_cr3));
   if ((pgd & PTE_ADDR_MASK) == (current_cr3 & PTE_ADDR_MASK)) {
@@ -372,12 +379,13 @@ int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags) {
  *
  * Walks PML4→PDPT→PD→PT without allocating; if any level is absent (not
  * present), returns 0 silently (idempotent).  On success, zeroes the leaf
- * PTE and calls arch_tlb_flush_va(va) (invlpg on the local CPU only).
+ * PTE and performs an SMP TLB shootdown for the VA (AMMU-08 resolved): when
+ * this returns, no online CPU still translates 'va' through the old entry,
+ * so the caller may safely recycle the backing frame.
  *
  * NOTE(AMMU-03): Does not free the physical frame that was backing 'va'.
  *   Frame lifecycle is tracked in process.c; this function only clears the
  *   page-table entry.
- * NOTE(AMMU-08): TLB flush is local only; SMP peers retain stale mappings.
  *
  * Returns 0 always (no failure path for missing entries).
  */
@@ -397,7 +405,7 @@ int arch_vmm_unmap(uint64_t pgd, uint64_t va) {
   uint64_t *pt = (uint64_t *)(pd[PD_INDEX(va)] & PTE_ADDR_MASK);
 
   pt[PT_INDEX(va)] = 0;
-  arch_tlb_flush_va(va);
+  amd64_tlb_shootdown_va(va); /* local invlpg + IPI to online peers */
   return 0;
 }
 
@@ -566,9 +574,9 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
  *     2MB large page in the PD (PS bit = 0x080, level 2 in PD) without a PT.
  *   - Otherwise: falls through to arch_vmm_map for 4KB granularity.
  *
- * After the loop, arch_tlb_flush_all() (write to CR3) flushes the entire TLB.
- * NOTE(AMMU-08): CR3 write flushes the local CPU's TLB; peer CPUs are not
- * notified.
+ * After the loop, arch_tlb_flush_all() (write to CR3) flushes the entire
+ * local TLB.  Local-only is correct here: map_range is used at boot (before
+ * SMP) and for fresh ranges, never to live-remap pages another CPU uses.
  *
  * The 2MB path builds the PD entry with PS|P|RW (and optionally US) but does
  * NOT set NX, because PTE_UXN/PTE_PXN flags are not in the arch_vmm_map_range

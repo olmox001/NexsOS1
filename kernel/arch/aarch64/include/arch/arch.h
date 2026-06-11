@@ -94,6 +94,19 @@ static inline void arch_impl_tlb_flush_va(uintptr_t va) {
   __asm__ __volatile__("tlbi vaae1is, %0 \n dsb ish \n isb" ::"r"(va >> 12));
 }
 
+/* SMP TLB shootdown (MM-VMM-05/AMMU-08): the two flushes above use the
+ * *IS (inner-shareable) TLBI variants, which the hardware DVM broadcasts to
+ * every PE in the inner-shareable domain; the DSB ISH then waits for
+ * completion on ALL PEs, not just the local one.  The cross-CPU shootdown
+ * contract is therefore already satisfied without IPIs — these are aliases,
+ * not stubs. */
+static inline void arch_impl_tlb_shootdown_va(uintptr_t va) {
+  arch_impl_tlb_flush_va(va);
+}
+static inline void arch_impl_tlb_shootdown_all(void) {
+  arch_impl_tlb_flush_all();
+}
+
 /* Cache Control */
 static inline void arch_impl_cache_clean_range(void *start, size_t size) {
   uint64_t s = (uint64_t)start;

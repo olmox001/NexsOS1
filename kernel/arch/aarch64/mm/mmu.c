@@ -27,12 +27,14 @@
  *   physical mapping at the next level.
  *
  * Known issues:
- *   AMMU-01 (W3 SECURITY) Normal RAM is mapped executable (no W^X): PAGE_KERNEL
- *            does not set UXN/PXN for RAM pages; only device pages have UXN set.
- *            A kernel code injection via a write to RAM is not prevented. [static]
- *   AMMU-08 (W2 BUG) arch_vmm_map issues a local TLB flush only (arch_tlb_flush_va);
- *            no SMP IPI shootdown is sent to sibling CPUs.  Stale TLB entries on
- *            other CPUs may cause them to use invalidated mappings. [static]
+ *   AMMU-01 RESOLVED (Phase B2, b745a74): PAGE_KERNEL is RW+UXN+PXN; kernel
+ *            text is mapped PAGE_KERNEL_RX and rodata PAGE_KERNEL_RO by
+ *            vmm_map_ram_wx() — W^X holds for all RAM.
+ *   AMMU-08 RESOLVED (Phase B2): not by new code but by the ISA — the TLB
+ *            flush primitives in arch/arch.h use the inner-shareable TLBI
+ *            variants (vaae1is/vmalle1is), which the hardware DVM broadcasts
+ *            to every PE; DSB ISH waits for global completion.  The older
+ *            "local-only" notes in this file were factually wrong.
  */
 #include <kernel/arch.h>
 #include <kernel/pmm.h>
@@ -94,8 +96,8 @@
  *     4. Write the parent entry as a table descriptor pointing to the new sub-table.
  *
  *   NOTE: No TLB flush is issued here; the caller (arch_vmm_map) handles the
- *   TLB invalidation for the specific VA being modified, but sibling CPUs are
- *   not shot down (AMMU-08).
+ *   TLB invalidation for the specific VA being modified (broadcast IS TLBI,
+ *   so siblings are covered — AMMU-08 resolved).
  *
  * Fresh-allocation path (entry == 0, alloc == 1):
  *   Allocate and zero a new 4KB page; write as a table descriptor; cache-clean.
@@ -150,9 +152,10 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
       arch_cache_clean_range(&table[index], 8); /* write back parent entry */
       arch_mb();
 
-      /* NOTE(AMMU-08): TLB for any VA covered by the old block is now stale on
-       * CPUs other than this one.  The caller issues a local TLB flush for the
-       * specific VA being mapped but does not broadcast an SMP shootdown. */
+      /* The caller's TLBI for the VA being mapped is the broadcast (IS)
+       * variant; the block-split itself preserves the old translations
+       * (same PA, same attributes at finer grain), so no extra flush is
+       * required here. */
 
       return new_table;
     }
@@ -205,8 +208,8 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
  *   the currently loaded TTBR0_EL1 (i.e., this is the active address space).
  *   Mappings in inactive PGDs do not require a TLB flush at map time because
  *   they are not cached in any CPU's TLB yet.
- *   NOTE(AMMU-08): The flush is LOCAL only (arch_tlb_flush_va = TLBI VAE1 or
- *   equivalent); no SMP shootdown IPI is issued. [static]
+ *   arch_tlb_flush_va is TLBI VAAE1IS: broadcast to every PE in the
+ *   inner-shareable domain by hardware (AMMU-08 resolved — no IPI needed).
  */
 int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
   uint64_t *pgd = (uint64_t *)pgd_addr;
@@ -230,7 +233,7 @@ int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
   arch_mb(); /* DSB ISH: ensure entry visible to all observers before TLB op */
 
   /* Flush TLB for this VA only if this PGD is currently loaded in TTBR0_EL1.
-   * NOTE(AMMU-08): local-only TLBI; sibling CPUs may still hold stale entries. */
+   * The TLBI is the broadcast (IS) variant: siblings are covered too. */
   if (pgd_addr == arch_impl_get_pgd()) {
     arch_tlb_flush_va(va);
     arch_mb();
@@ -258,9 +261,9 @@ int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
  * become entirely empty after the unmap.  This means unmapping many individual
  * pages from a large process VA space accumulates empty page-table pages.
  *
- * NOTE(AMMU-08): arch_tlb_flush_va is a local-only TLBI.  Sibling CPUs may
- * continue to use a stale TLB entry for va until their next context switch or
- * explicit TLBI broadcast. [static]
+ * arch_tlb_flush_va is TLBI VAAE1IS + DSB ISH: the invalidation is broadcast
+ * to all PEs and awaited globally (AMMU-08 resolved) — when this returns no
+ * sibling CPU still translates 'va' through the cleared entry.
  */
 int arch_vmm_unmap(uint64_t pgd_addr, uint64_t va) {
   uint64_t *pgd = (uint64_t *)pgd_addr;
