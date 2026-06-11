@@ -147,12 +147,18 @@ path still legacy-only/48 KB (EXT4-05), no caching (EXT4-11).
 - **Acceptance**: shell + doom + counter from an extents rootfs on both
   arches; no direct `ext4_*` call left outside the VFS layer.
 
-### B2 — Epic #92: memory/address-space rework (largest, most invasive)
-Higher-half kernel, W^X (MM-VMM-01/AMMU-01), real PA/VA separation
-(`virt_to_phys` is identity today — `vmm.h`), allocator hardening, full
-teardown paths.  Prereq for ASLR/KASLR.  Touches every arch boundary: keep
-the per-arch work inside `kernel/arch/<arch>/` (HAL isolation rule; do not
-touch `kernel/arch/amd64/platform/platform.c`).
+### B2 — Epic #92: memory/address-space rework (IN PROGRESS, 2026-06-12)
+**Landed**: `f4ad8fa` full teardown (MM-VMM-04 #24, AMMU-03 #35 — user
+frames + private tables freed, leak-free spawn/exit verified both arches;
+aarch64 header-page cross-process aliasing fixed) and `b745a74` W^X
+(MM-VMM-01 #22, AMMU-01 #33, ELF-02 #87 — text RX, rodata RO+NX, all other
+RAM RW+NX, EFER.NXE, user stack/heap never executable; `nxtest` proves the
+fault path).
+**Remaining in the epic**: MM-VMM-02 identity-only walker + higher-half /
+real PA-VA separation (`virt_to_phys` is identity — `vmm.h`; dedicated
+session, prereq for ASLR/KASLR), MM-VMM-05 TLB shootdown, AMMU-02
+arch_vmm_protect stub, MM-KM-01 kmalloc growth/free, MM-PMM-02, MM-BUF-01.
+HAL isolation rule still applies (no `platform.c` edits).
 
 ### B3 — Epic #93: coherent ABI + capabilities
 Single syscall numbering (ABI-01), errno model (ABI-02), per-process fd
