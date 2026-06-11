@@ -190,9 +190,12 @@ static void init_memory(void) {
   buffer_init();
   pr_info("%s", "Buffer: Done.\n");
 
-  /* Initialize Ext4 */
-  ext4_init();
-  pr_info("%s", "Ext4: Done.\n");
+  /* Mount the root filesystem: register providers, then probe partitions.
+   * Composition root (ASTRA): the wiring fs-driver → VFS happens here only;
+   * the rest of the kernel consumes the <kernel/vfs.h> contract. */
+  vfs_register_fs(&ext4_fs_ops);
+  vfs_init();
+  pr_info("%s", "VFS: Done.\n");
 
   /* Initialize Keyboard */
   keyboard_init();

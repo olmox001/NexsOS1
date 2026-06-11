@@ -1,19 +1,17 @@
 /*
  * kernel/fs/ext4.c
- * Simplified Read-Only Ext4 Driver (With Random Access)
+ * Simplified Ext4 Driver — VFS provider (read + limited write)
  *
- * Purpose:
- *   Mounts an ext4 partition (hardcoded as GPT/MBR index 2), reads the
- *   superblock and group-0 descriptor, resolves paths to inodes by walking
- *   directory entries, and provides read/write/list-dir operations.
- *
- * NOTE(EXT4-03): The file header "Read-Only" label is false — ext4_write_file
- *   is a real, data-persisting implementation that calls virtio_blk_write.
+ * Role in the stack (ASTRA, docs/ASTRA.md):
+ *   This driver is a filesystem PROVIDER behind the <kernel/vfs.h> contract.
+ *   The only kernel-facing symbol is ext4_fs_ops; nothing outside kernel/fs/
+ *   calls ext4_* anymore (VFS-01 resolved).  Per-mount state lives in a
+ *   kmalloc'd struct ext4_fs hung off vfs_mount.fs_private (EXT4-12: multiple
+ *   mounts are now structurally possible, though vfs_init mounts one root).
  *
  * On-disk layout accessed (4096-byte blocks, 8 sectors each):
  *   partition LBA 0        (LBA part+0)  : partition boot record (unused)
- *   superblock offset 1024 (LBA part+2)  : struct ext4_superblock (1016 bytes
- *                                           used; padded to 1024 by padding[])
+ *   superblock offset 1024 (LBA part+2)  : struct ext4_superblock
  *   GDT block 1            (LBA part+8)  : struct ext4_group_desc[0] at byte 0
  *   Block bitmap           (LBA part + bg_block_bitmap_lo × 8) : 4096-byte map
  *   Inode table            (LBA part + bg_inode_table_lo × 8)  : inode array
@@ -21,63 +19,44 @@
  *
  * Sector arithmetic common pattern:
  *   block N → sector = part_start_lba + (N × 8)   [8 = 4096 / 512]
- *   inode K → byte offset in table = (K-1) × EXT4_INODE_SIZE (256)
- *              sector = part_start_lba + (table_blk × 8) + (byte_off / 512)
- *              offset within sector = byte_off % 512
+ *   inode K → byte offset in table = (K-1) × inode_size (from superblock)
+ *
+ * Block mapping (EXT4-01 resolved):
+ *   ext4_bmap() dispatches on i_flags & EXT4_EXTENTS_FL:
+ *     - extent inodes: walk the extent tree rooted in i_block[] (any depth;
+ *       unwritten extents and gaps read as zeros);
+ *     - legacy inodes: direct (0-11), single-indirect (12), double-indirect
+ *       (13) pointer blocks, as before.
+ *
+ * Mount-time enforcement (EXT4-06 resolved):
+ *   - quiet probe failure when s_magic doesn't match (the VFS probes every
+ *     partition; not-ext4 is normal);
+ *   - LOUD rejection of: block size ≠ 4096, unsupported INCOMPAT features
+ *     (64bit, dirty journal, anything unknown), multi-group images
+ *     (EXT4-12/13 made explicit instead of silently misreading);
+ *   - unknown RO_COMPAT features (e.g. metadata_csum, gdt_csum) force a
+ *     read-only mount: our writer maintains no checksums, so writing would
+ *     corrupt the image's self-consistency.
  *
  * Key invariants:
- *   - Only group 0 is used; multi-group images are not supported (EXT4-12/13).
- *   - Only one partition (part_start_lba) and one group descriptor (bg) are
- *     held globally; concurrent mounts are structurally impossible (EXT4-12).
- *   - ext4_lock serialises block allocation (alloc block bitmap r-m-w, GDT
+ *   - fs->lock serialises block allocation (alloc block bitmap r-m-w, GDT
  *     update, superblock update) and inode write-back (ext4_update_inode).
+ *   - fs->sb/fs->bg/fs->part_start_lba are immutable after mount except for
+ *     the allocation counters mutated under fs->lock.
  *   - The buffer cache (kernel/mm/buffer.c) is NOT used; all block I/O goes
  *     directly through virtio_blk_{read,write} (EXT4-15).
  *
- * Known issues:
- *   EXT4-01  (W5 BUG+MISSING) Extent-tree inode format (EXT4_EXTENTS_FL,
- *            i_flags bit 0x80000) is never detected; i_flags is never read.
- *            On any real ext4 image built with standard mkfs.ext4 (which
- *            enables extents by default), i_block[] contains an extent-tree
- *            header (magic 0xF30A) rather than block pointers — silent data
- *            corruption or a virtio sector-address crash will result.  Safe
- *            only on the custom mkdisk.c test image (block-mapped inodes).
- *   EXT4-03  (W4 DOC+BUG) File header says "Read-Only"; ext4_write_file is
- *            real and persists to disk.  The comment at ext4_read_inode also
- *            says "Supports Direct and Single Indirect" but double-indirect
- *            is fully implemented (blocks 1036–1 049 611).
- *   EXT4-04  (W3 BUG, FIXED) struct ext4_group_desc was 34 bytes (20 named +
- *            padding[14]); the on-disk GDT entry is 32 bytes, so the write-
- *            back at ext4_alloc_block clobbered 2 bytes of GDT entry 1 on
- *            multi-group images.  Now padding[12] => exactly 32 bytes.
- *   EXT4-05  (W3 MISSING) Write path rejects block_idx >= 12; write ceiling
- *            is 12 × 4096 = 49 152 bytes (48 KB).  Read supports up to ~4 GB.
- *   EXT4-06  (W3 MISSING) s_feature_incompat and s_feature_ro_compat are
- *            never read; incompatible features (extents, 64-bit, meta_csum)
- *            are silently accepted.
- *   EXT4-08  (W2 BUG) offset + size can overflow uint32 in ext4_read_inode if
- *            both are near UINT32_MAX; the clamp condition passes and the read
- *            proceeds with an oversized size.
- *   EXT4-09  (W2 MISSING) ext4_list_dir checks i_mode>>12==4 for directory
- *            type but returns -2 without syscall-layer translation; also does
- *            not validate de->rec_len > 0 before advancing the pointer.
- *   EXT4-10  (W2 MISSING) get_inode_struct reads only 1 sector (512 bytes).
- *            EXT4_INODE_SIZE is 256; if sector_off == 384 the inode straddles
- *            two 512-byte sectors (bytes 384–511 of sector N and 0–127 of
- *            sector N+1) but only sector N is fetched — the inode tail is
- *            wrong.  In practice sector_off = ((ino-1)×256) % 512 can be 0
- *            or 256 only (256 mod 512 = 256; 512 mod 512 = 0), so the actual
- *            worst case is sector_off=256 and sizeof(inode)=128 bytes read
- *            up to byte 384 — within one sector.  With EXT4_INODE_SIZE=256
- *            the actual straddle risk is real: sector_off=384 is reachable
- *            when the inodes-per-sector count exceeds 2.
- *   EXT4-11  (W2 PERF) Single-indirect and double-indirect pointer blocks are
- *            re-read from disk on every 4 KB chunk loop iteration; no caching.
- *   EXT4-12  (W2 WRONG-DESIGN) One partition and one group descriptor held
- *            globally; multiple mounts are structurally impossible.
- *   EXT4-13  (W2 MISSING) ext4_alloc_block always searches group 0; no
- *            multi-group block allocation.
+ * Known issues (still open):
+ *   EXT4-05  (W3 MISSING, partially lifted) Write supports: overwrite of any
+ *            mapped block; growth on depth-0 extent roots with a free slot;
+ *            growth through the legacy single-indirect range (~4.2 MB).
+ *            Still rejected loudly: extent-tree growth (depth>0, full root,
+ *            mid-hole insert), double-indirect allocation, file creation.
+ *   EXT4-09  (W2 MISSING) ext4_list returns -2 without syscall-layer errno
+ *            translation.
  *   EXT4-15  (W1 MISSING) Buffer cache bypassed; all I/O direct to virtio.
+ *            (EXT4-11 resolved: per-loop interior-block cache, see
+ *            struct ext4_icache.)
  */
 #include <drivers/virtio_blk.h>
 #include <kernel/buffer.h>
@@ -85,60 +64,28 @@
 #include <kernel/gpt.h>
 #include <kernel/kmalloc.h>
 #include <kernel/printk.h>
+#include <kernel/spinlock.h>
 #include <kernel/string.h>
+#include <kernel/vfs.h>
 
-/* Global State */
-/* part_start_lba: absolute LBA of the first sector of the mounted partition.
- * Set once by ext4_init(); used in every sector address calculation as the
- * base of the expression: sector = part_start_lba + (block_num × 8). */
-static uint64_t part_start_lba;
-/* sb: in-memory copy of the ext4 superblock (1016 bytes used out of 1024).
- * Loaded from LBA part_start_lba+2 (byte offset 1024 = 2 × 512 sectors).
- * NOTE(EXT4-06): sb.s_feature_incompat and sb.s_feature_ro_compat are
- * modeled here but never read; incompatible features are silently accepted. */
-static struct ext4_superblock sb;
-/* bg: in-memory copy of block group descriptor 0.
- * Loaded from LBA part_start_lba+8 (block 1 = bytes 4096–4095+512).
- * EXT4-04 (fixed): sizeof(struct ext4_group_desc) == 32 bytes (padding[12]),
- * matching the on-disk GDT entry; read and write-back no longer touch the
- * adjacent GDT entry 1.
- * NOTE(EXT4-12): only one group descriptor is held; multi-group images are
- * not supported. */
-static struct ext4_group_desc bg;
-/* ext4_lock: spinlock protecting block allocation (bitmap r-m-w, GDT update,
- * superblock update) and inode write-back (ext4_update_inode).  Held with
- * IRQ save/restore to prevent re-entrance from interrupt context. */
-static DEFINE_SPINLOCK(ext4_lock);
+/* Per-mount driver state (vfs_mount.fs_private). */
+struct ext4_fs {
+  uint64_t part_start_lba; /* absolute LBA of the partition's first sector */
+  uint32_t inode_size;     /* on-disk inode record size (sb.s_inode_size) */
+  int read_only;           /* set at mount for unknown RO_COMPAT features */
+  struct ext4_superblock sb;
+  struct ext4_group_desc bg; /* group 0 descriptor (single-group images) */
+  spinlock_t lock;
+};
 
 /*
- * Helper: Read/Write Sectors
- */
-/*
- * ext4_bread - thin wrapper: read 'count' sectors starting at 'sector' into buf.
- *
- * @sector: absolute LBA (e.g. part_start_lba + block_num × 8).
- * @count:  number of 512-byte sectors to read.
- * @buf:    destination; caller must supply at least count × 512 bytes.
- *
- * Returns 0 on success, non-zero on virtio error.
- * Side effects: issues one virtio_blk_read request (disk I/O).
+ * Helper: Read/Write Sectors (absolute LBA; thin virtio wrappers).
  * NOTE(EXT4-15): bypasses the buffer cache (kernel/mm/buffer.c).
  */
 static int ext4_bread(uint64_t sector, uint32_t count, void *buf) {
   return virtio_blk_read(buf, sector, count);
 }
 
-/*
- * ext4_bwrite - thin wrapper: write 'count' sectors from buf to 'sector'.
- *
- * @sector: absolute LBA.
- * @count:  number of 512-byte sectors to write.
- * @buf:    source; caller must provide count × 512 bytes of valid data.
- *
- * Returns 0 on success, non-zero on virtio error.
- * Side effects: issues one virtio_blk_write request (disk write; persistent).
- * NOTE(EXT4-03): confirms write capability; the "Read-Only" header is false.
- */
 static int ext4_bwrite(uint64_t sector, uint32_t count, void *buf) {
   return virtio_blk_write(buf, sector, count);
 }
@@ -147,78 +94,44 @@ static int ext4_bwrite(uint64_t sector, uint32_t count, void *buf) {
  * ext4_alloc_block - allocate one free block from block group 0.
  *
  * Algorithm:
- *   1. Read the group-0 block bitmap (one 4096-byte block at LBA
- *      part_start_lba + bg_block_bitmap_lo × 8) into a kmalloc'd buffer.
- *   2. Under ext4_lock: scan 4096 bitmap bytes (32 768 bits) for the first
- *      clear bit (LSB-first within each byte).  Clear bit at byte i, bit b
- *      → block_in_group = i × 8 + b.
- *   3. Set the bit (mark allocated) and write the bitmap back via ext4_bwrite.
- *   4. Decrement bg.bg_free_blocks_count_lo and sb.s_free_blocks_count_lo.
- *   5. Write-back the modified group descriptor (34 bytes into a 512-byte
- *      sector at LBA part_start_lba + 8) and the superblock (1016 bytes into
- *      a two-sector buffer at LBA part_start_lba + 2).
- *   6. Release ext4_lock; zero the new block on disk (outside the lock).
+ *   1. Read the group-0 block bitmap (one 4096-byte block) into a heap buffer.
+ *   2. Under fs->lock: scan for the first clear bit (LSB-first per byte),
+ *      set it, write the bitmap back.
+ *   3. Decrement bg/sb free counters and write both back.
+ *   4. Zero the new block on disk outside the lock (ownership established).
  *
- * Preconditions:
- *   - ext4_init() has completed successfully.
- *   - bg.bg_free_blocks_count_lo > 0 (checked at entry; returns 0 if false).
- *
- * Returns: absolute block number (block_in_group for group 0) on success,
- *          or 0 on failure (OOM, bitmap inconsistency, or I/O error).
- *
- * Side effects:
- *   - Up to 4 virtio_blk_read + 4 virtio_blk_write calls.
- *   - Modifies the global bg and sb structs.
- *   - Acquires/releases ext4_lock with IRQ save/restore.
- *
- * EXT4-04 (fixed): memcpy(bg_buf, &bg, sizeof(bg)) now copies exactly 32
- *   bytes into bg_buf[0..31], so the write-back no longer persists over
- *   bg_block_bitmap_lo[0:1] of GDT entry 1 on multi-group images.
- * NOTE(EXT4-13): Bitmap scan always searches group 0 regardless of
- *   bg_free_blocks_count_lo; no multi-group allocation.
+ * Returns: absolute block number on success, 0 on failure (OOM, bitmap
+ * inconsistency, or I/O error).
  */
-static uint32_t ext4_alloc_block(void) {
-  if (bg.bg_free_blocks_count_lo == 0) {
+static uint32_t ext4_alloc_block(struct ext4_fs *fs) {
+  if (fs->bg.bg_free_blocks_count_lo == 0) {
     pr_err("%s", "Ext4: No free blocks in Group 0!\n");
     return 0;
   }
 
-  /* bitmap_blk: block number (0-based from partition start) of the group-0
-   * block bitmap.  Sector address = part_start_lba + bitmap_blk × 8. */
-  uint64_t bitmap_blk = bg.bg_block_bitmap_lo;
-  /* Allocate a 4096-byte heap buffer for the full 4 KB bitmap block. */
+  uint64_t bitmap_blk = fs->bg.bg_block_bitmap_lo;
   uint8_t *bitmap = kmalloc(4096);
   if (!bitmap)
     return 0;
 
   uint64_t lock_flags;
-  /* Acquire ext4_lock before the bitmap read to serialise the read-modify-
-   * write cycle; a second concurrent alloc could find and claim the same bit
-   * if the lock were taken only around the bit-set operation. */
-  spin_lock_irqsave(&ext4_lock, &lock_flags);
+  /* Lock before the bitmap read to serialise the whole read-modify-write
+   * cycle; locking only the bit-set would let two allocators claim one bit. */
+  spin_lock_irqsave(&fs->lock, &lock_flags);
 
-  /* Read Bitmap */
-  /* 8 sectors = 4096 bytes = one full block-bitmap block. */
-  if (ext4_bread(part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
-    spin_unlock_irqrestore(&ext4_lock, lock_flags);
+  if (ext4_bread(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
     kfree(bitmap);
     return 0;
   }
 
-  /* Find Free Bit */
-  /* Note: Block 0 is Boot Block, usually reserved/used.
-     We start searching from block 0 of the group. */
-  /* Scan 4096 × 8 = 32 768 bits (little-endian within each byte: bit 0 of
-   * byte i represents block i×8+0, bit 1 represents block i×8+1, etc.).
-   * On the first byte with a clear bit: set it (mark allocated) and record
-   * block_in_group = i × 8 + bit.  NOTE(EXT4-13): scans only group 0. */
+  /* Scan 32768 bits, LSB-first within each byte. */
   uint32_t block_in_group = 0;
   int found = 0;
   for (int i = 0; i < 4096; i++) {
     if (bitmap[i] != 0xFF) {
       for (int bit = 0; bit < 8; bit++) {
         if (!((bitmap[i] >> bit) & 1)) {
-          /* Found free bit */
           bitmap[i] |= (1 << bit);
           block_in_group = (i * 8) + bit;
           found = 1;
@@ -232,63 +145,47 @@ static uint32_t ext4_alloc_block(void) {
 
   if (!found) {
     pr_err("%s", "Ext4: Bitmap check failed (inconsistent with free_count)\n");
-    spin_unlock_irqrestore(&ext4_lock, lock_flags);
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
     kfree(bitmap);
     return 0;
   }
 
-  /* Write Bitmap Back */
-  if (ext4_bwrite(part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+  if (ext4_bwrite(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
     pr_err("%s", "Ext4: Failed to update Block Bitmap\n");
-    spin_unlock_irqrestore(&ext4_lock, lock_flags);
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
     kfree(bitmap);
     return 0;
   }
   kfree(bitmap);
 
-  /* Update Descriptor & Superblock */
-  bg.bg_free_blocks_count_lo--;
-  sb.s_free_blocks_count_lo--;
+  fs->bg.bg_free_blocks_count_lo--;
+  fs->sb.s_free_blocks_count_lo--;
 
-  /* Write-back group descriptor 0: read the 512-byte GDT sector (LBA
-   * part_start_lba + 8), overwrite the first sizeof(bg)==32 bytes with the
-   * updated bg, then write the sector back.
-   * EXT4-04 (fixed): sizeof(struct ext4_group_desc)==32 now, matching the
-   * on-disk entry, so the copy no longer touches GDT entry 1. */
+  /* Write-back group descriptor 0 (32 bytes at the head of the GDT sector). */
   uint8_t *bg_buf = kmalloc(512);
-  if (bg_buf && ext4_bread(part_start_lba + 8, 1, bg_buf) == 0) {
-    memcpy(bg_buf, &bg, sizeof(bg)); /* Update BG0 in place */
-    ext4_bwrite(part_start_lba + 8, 1, bg_buf);
+  if (bg_buf && ext4_bread(fs->part_start_lba + 8, 1, bg_buf) == 0) {
+    memcpy(bg_buf, &fs->bg, sizeof(fs->bg));
+    ext4_bwrite(fs->part_start_lba + 8, 1, bg_buf);
   }
-  if (bg_buf) kfree(bg_buf);
+  if (bg_buf)
+    kfree(bg_buf);
 
-  /* Write-back superblock: read 2 sectors (1024 bytes) at LBA part_start_lba+2
-   * (byte offset 1024 from partition start), overwrite the first sizeof(sb)
-   * == 1016 bytes with the updated sb, then write back.
-   * (sizeof(ext4_superblock) = 356 named bytes + padding[660] = 1016 bytes.) */
+  /* Write-back superblock (1016 bytes at byte offset 1024). */
   uint8_t *sb_buf = kmalloc(4096);
-  if (sb_buf && ext4_bread(part_start_lba + 2, 2, sb_buf) == 0) {
-    memcpy(sb_buf, &sb, sizeof(sb));
-    ext4_bwrite(part_start_lba + 2, 2, sb_buf);
+  if (sb_buf && ext4_bread(fs->part_start_lba + 2, 2, sb_buf) == 0) {
+    memcpy(sb_buf, &fs->sb, sizeof(fs->sb));
+    ext4_bwrite(fs->part_start_lba + 2, 2, sb_buf);
   }
-  if (sb_buf) kfree(sb_buf);
-  spin_unlock_irqrestore(&ext4_lock, lock_flags);
+  if (sb_buf)
+    kfree(sb_buf);
+  spin_unlock_irqrestore(&fs->lock, lock_flags);
 
-  /* Return Absolute Block Number */
-  /* For Group 0, this is just block_in_group */
-  /* Actually first blocks are metadata. The bitmap tracks them as used. */
-  /* So block_in_group IS the absolute block number for Group 0. */
-
-  /* Zero out the new block content before returning? Security/Cleanliness. */
-  /* Zeroing is done outside ext4_lock: ownership of the block is now
-   * established (bit set in bitmap, persisted), so no concurrent allocator
-   * can claim it.  The 8-sector write (4096 bytes) clears stale data. */
+  /* Zero the new block outside the lock: ownership is established (bit set
+   * and persisted), no concurrent allocator can claim it. */
   uint8_t *zero_buf = kmalloc(4096);
   if (zero_buf) {
     memset(zero_buf, 0, 4096);
-    /* block_in_group × 8 = sector offset from partition start (1 block = 8
-     * sectors of 512 bytes each = 4096 bytes). */
-    ext4_bwrite(part_start_lba + (block_in_group * 8), 8, zero_buf);
+    ext4_bwrite(fs->part_start_lba + (block_in_group * 8), 8, zero_buf);
     kfree(zero_buf);
   }
 
@@ -296,102 +193,21 @@ static uint32_t ext4_alloc_block(void) {
 }
 
 /*
- * ext4_init - mount the ext4 partition and load the superblock + GDT entry 0.
+ * get_inode_struct - read inode 'ino' from the group-0 inode table.
  *
- * Algorithm:
- *   1. Call gpt_get_partition(2) to obtain the start LBA of the partition.
- *      NOTE(GPT-02): index 2 means the 3rd GPT entry or the 2nd MBR slot
- *      depending on which table was found by gpt_init().
- *   2. Read 2 sectors (1024 bytes) from LBA part_start_lba + 2 into a 4096-
- *      byte heap buffer.  The ext4 superblock is always at byte offset 1024
- *      from the partition start, i.e. sectors 2–3 of the partition (0-based).
- *      Sector calculation: byte_offset = 1024, sector = 1024 / 512 = 2.
- *   3. memcpy the first sizeof(struct ext4_superblock) == 1016 bytes of the
- *      buffer into the global sb.  Validate sb.s_magic == 0xEF53 (EXT4_MAGIC).
- *   4. Read 1 sector from LBA part_start_lba + 8 (block 1, byte offset 4096,
- *      sector = 4096 / 512 = 8).  The GDT starts at block 1 for 4 KB-block
- *      filesystems (superblock in block 0 at offset 1024; GDT immediately
- *      after the superblock block).
- *   5. memcpy sizeof(struct ext4_group_desc) == 32 bytes into global bg,
- *      matching the on-disk entry (EXT4-04 fixed; was 34 via padding[14]).
- *
- * Preconditions:
- *   - gpt_init() must have completed and partitions[2] must be valid.
- *   - virtio_blk_read() must be functional.
- *
- * Side effects:
- *   - Sets part_start_lba, sb, bg (global state).
- *   - Two virtio_blk_read() calls.
- *
- * NOTE(EXT4-06): s_feature_incompat and s_feature_ro_compat are read into sb
- *   but never checked; incompatible features (extents, 64-bit, metadata_csum)
- *   are silently accepted.  This is the structural companion to EXT4-01.
+ * Copies sizeof(struct ext4_inode) == 128 bytes.  With inode_size 128 or 256
+ * the record offset within its 512-byte sector is always a multiple of 128
+ * with 128 bytes available before the boundary, so a single-sector read never
+ * straddles (EXT4-10 resolved by construction; inode_size is validated at
+ * mount to be a multiple of 128).
  */
-void ext4_init(void) {
-  /* 1. Find Userland Partition (Index 2) */
-  struct partition *p = gpt_get_partition(2);
-  if (!p) {
-    pr_err("%s", "Ext4: Partition 2 not found!\n");
-    return;
-  }
-  part_start_lba = p->start_lba;
-  pr_info("Ext4: Found partition at LBA %ld\n", part_start_lba);
-
-  /* 2. Read Superblock (Offset 1024) - LBA + 2 */
-  /* Superblock byte offset from partition start: 1024 = 2 × 512-byte sectors.
-   * Reading 2 sectors (1024 bytes) covers the full 1024-byte superblock area.
-   * s_volume_name is at struct offset 0x78 (120 bytes) from the superblock
-   * start (verified by field arithmetic in ext4.h:51) — correct per spec. */
-  uint8_t *k_buf = kmalloc(4096);
-  if (!k_buf) {
-    pr_err("%s", "Ext4: OOM allocating SB buffer\n");
-    return;
-  }
-  if (virtio_blk_read(k_buf, part_start_lba + 2, 2) != 0) {
-    pr_err("%s", "Ext4: Failed to read Superblock\n");
-    kfree(k_buf);
-    return;
-  }
-  memcpy(&sb, k_buf, sizeof(sb));
-
-  if (sb.s_magic != EXT4_MAGIC) {
-    pr_err("Ext4: Invalid Magic: 0x%04x at LBA %ld\n", sb.s_magic,
-           part_start_lba + 2);
-    kfree(k_buf);
-    return;
-  }
-
-  pr_info("Ext4: Mounted. Vol=%s, Inodes=%d\n", sb.s_volume_name,
-          sb.s_inodes_count);
-
-  /* 3. Read Block Group Descriptor 0 (Block 1) */
-  /* GDT starts at Block 1 (Bytes 4096). 8 Sectors from start. */
-  /* Block 1 byte offset from partition start: 1 × 4096 = 4096 bytes
-   * = 4096 / 512 = 8 sectors from the partition's LBA 0.
-   * We read only 1 sector (512 bytes); GDT entry 0 occupies the first 32
-   * on-disk bytes, and sizeof(struct ext4_group_desc) == 32 now (EXT4-04
-   * fixed), so memcpy below ingests exactly the 32-byte entry. */
-  if (virtio_blk_read(k_buf, part_start_lba + 8, 1) != 0) {
-    pr_err("%s", "Ext4: Failed to read GDT\n");
-    kfree(k_buf);
-    return;
-  }
-  memcpy(&bg, k_buf, sizeof(bg));
-  kfree(k_buf);
-
-  pr_info("Ext4: Group 0: Inode Table at Block %d\n", bg.bg_inode_table_lo);
-}
-
-/*
- * Helper: Read an Inode Structure from Table
- */
-static int get_inode_struct(uint32_t ino, struct ext4_inode *inode_out) {
-  /* Inode Table Block */
-  uint64_t table_blk = bg.bg_inode_table_lo;
+static int get_inode_struct(struct ext4_fs *fs, uint32_t ino,
+                            struct ext4_inode *inode_out) {
+  uint64_t table_blk = fs->bg.bg_inode_table_lo;
   uint64_t table_byte_offset = table_blk * 4096;
-  uint64_t inode_offset = table_byte_offset + (ino - 1) * EXT4_INODE_SIZE;
+  uint64_t inode_offset = table_byte_offset + (uint64_t)(ino - 1) * fs->inode_size;
 
-  uint64_t sector = part_start_lba + (inode_offset / 512);
+  uint64_t sector = fs->part_start_lba + (inode_offset / 512);
   uint32_t sector_off = inode_offset % 512;
 
   uint8_t *k_buf = kmalloc(512);
@@ -408,157 +224,301 @@ static int get_inode_struct(uint32_t ino, struct ext4_inode *inode_out) {
 }
 
 /*
- * Helper: Write an Inode Structure to Table
+ * ext4_update_inode - read-modify-write inode 'ino' back to the table.
+ * Serialised by fs->lock (shared with the allocator's metadata writes).
  */
-static int ext4_update_inode(uint32_t ino, struct ext4_inode *inode) {
-  uint64_t table_blk = bg.bg_inode_table_lo;
+static int ext4_update_inode(struct ext4_fs *fs, uint32_t ino,
+                             struct ext4_inode *inode) {
+  uint64_t table_blk = fs->bg.bg_inode_table_lo;
   uint64_t table_byte_offset = table_blk * 4096;
-  uint64_t inode_offset = table_byte_offset + (ino - 1) * EXT4_INODE_SIZE;
+  uint64_t inode_offset = table_byte_offset + (uint64_t)(ino - 1) * fs->inode_size;
 
-  uint64_t sector = part_start_lba + (inode_offset / 512);
+  uint64_t sector = fs->part_start_lba + (inode_offset / 512);
   uint32_t sector_off = inode_offset % 512;
 
-  /* Read-Modify-Write */
   uint8_t *k_buf = kmalloc(512);
   if (!k_buf)
     return -1;
 
   uint64_t lock_flags;
-  spin_lock_irqsave(&ext4_lock, &lock_flags);
+  spin_lock_irqsave(&fs->lock, &lock_flags);
   if (virtio_blk_read(k_buf, sector, 1) != 0) {
-    spin_unlock_irqrestore(&ext4_lock, lock_flags);
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
     kfree(k_buf);
     return -1;
   }
 
   memcpy(k_buf + sector_off, inode, sizeof(struct ext4_inode));
   int ret = virtio_blk_write(k_buf, sector, 1);
-  spin_unlock_irqrestore(&ext4_lock, lock_flags);
+  spin_unlock_irqrestore(&fs->lock, lock_flags);
   kfree(k_buf);
   return ret;
 }
 
 /*
- * Public API: Read Data from Inode (Random Access)
- * Supports Direct Blocks (0-11) and Single Indirect Blocks (12).
+ * Interior-block cache (EXT4-11 resolved).
+ *
+ * A read/write loop calls ext4_bmap once per 4 KB chunk; without caching,
+ * every call re-reads the same interior metadata blocks (indirect pointer
+ * blocks, extent index/leaf nodes) from disk.  An ext4_icache lives on the
+ * caller's frame for the duration of one loop and holds the last interior
+ * block seen per tree level (two levels cover double-indirect and
+ * depth-2 extent trees; deeper levels share slot 1).  Sequential access —
+ * the dominant pattern (ELF load, WAD streaming, dir scans) — then reads
+ * each metadata block once instead of once per chunk.
+ *
+ * Writers that modify mapping metadata on disk must icache_invalidate()
+ * so later lookups in the same loop re-read the updated block.
  */
-int ext4_read_inode(uint32_t ino, uint32_t offset, uint8_t *buf,
-                    uint32_t size) {
-  struct ext4_inode inode;
-  if (get_inode_struct(ino, &inode) != 0) {
-    pr_err("Ext4: Failed to get inode struct for ino %d\n", ino);
-    return -1;
+struct ext4_icache {
+  uint64_t blk[2]; /* cached block number per level; 0 = empty slot */
+  uint8_t *buf[2]; /* lazily allocated 4 KB buffers */
+};
+
+static void icache_release(struct ext4_icache *c) {
+  for (int i = 0; i < 2; i++) {
+    if (c->buf[i])
+      kfree(c->buf[i]);
+    c->buf[i] = NULL;
+    c->blk[i] = 0;
+  }
+}
+
+static void icache_invalidate(struct ext4_icache *c) {
+  c->blk[0] = 0;
+  c->blk[1] = 0;
+}
+
+/* Return the contents of interior block 'blk' via the level slot, reading
+ * from disk only on a cache miss.  NULL on OOM or I/O error. */
+static uint8_t *icache_get(struct ext4_fs *fs, struct ext4_icache *c,
+                           int level, uint64_t blk) {
+  if (level > 1)
+    level = 1;
+  if (c->buf[level] && c->blk[level] == blk)
+    return c->buf[level];
+  if (!c->buf[level]) {
+    c->buf[level] = kmalloc(4096);
+    if (!c->buf[level])
+      return NULL;
+  }
+  if (ext4_bread(fs->part_start_lba + blk * 8, 8, c->buf[level]) != 0) {
+    c->blk[level] = 0;
+    return NULL;
+  }
+  c->blk[level] = blk;
+  return c->buf[level];
+}
+
+/*
+ * ext4_extent_lookup - map logical block → physical block via the extent
+ * tree rooted in i_block[] (EXT4_EXTENTS_FL inodes).
+ *
+ * Walks interior nodes (eh_depth > 0: ext4_extent_idx records, sorted by
+ * ei_block; the child covering 'blk' is the last entry with ei_block <= blk)
+ * down to the leaf (ext4_extent records).  Holes — logical blocks covered by
+ * no extent — and unwritten extents (ee_len > EXT4_EXT_UNWRITTEN_LEN) yield
+ * *phys_out = 0, which the read loop turns into zeros, matching sparse-file
+ * semantics of the legacy path.
+ *
+ * Returns 0 on success (*phys_out set; 0 means "reads as zeros"),
+ * -1 on a structurally invalid tree or I/O error.
+ */
+static int ext4_extent_lookup(struct ext4_fs *fs,
+                              const struct ext4_inode *inode, uint32_t blk,
+                              uint64_t *phys_out, struct ext4_icache *cache) {
+  const struct ext4_extent_header *eh =
+      (const struct ext4_extent_header *)inode->i_block;
+  /* Max records per node: 4 in the 60-byte i_block root, 340 in a 4 KB
+   * block ((4096-12)/12).  Used to bound eh_entries before scanning. */
+  uint16_t max_entries = 4;
+  *phys_out = 0;
+
+  /* eh_depth is bounded by 5 in the format; the guard catches cycles. */
+  for (int level = 0; level < 6; level++) {
+    if (eh->eh_magic != EXT4_EXT_MAGIC || eh->eh_entries > eh->eh_max ||
+        eh->eh_entries > max_entries) {
+      pr_err("Ext4: invalid extent node (magic=0x%x entries=%d max=%d)\n",
+             eh->eh_magic, eh->eh_entries, eh->eh_max);
+      return -1;
+    }
+
+    if (eh->eh_depth > 0) {
+      /* Interior node: descend into the last child with ei_block <= blk. */
+      const struct ext4_extent_idx *ix =
+          (const struct ext4_extent_idx *)(eh + 1);
+      int sel = -1;
+      for (int i = 0; i < eh->eh_entries; i++) {
+        if (ix[i].ei_block <= blk)
+          sel = i;
+        else
+          break;
+      }
+      if (sel < 0)
+        return 0; /* blk precedes the first mapped range: hole. */
+      uint64_t child =
+          ix[sel].ei_leaf_lo | ((uint64_t)ix[sel].ei_leaf_hi << 32);
+      const uint8_t *node = icache_get(fs, cache, level, child);
+      if (!node)
+        return -1;
+      eh = (const struct ext4_extent_header *)node;
+      max_entries = (4096 - sizeof(*eh)) / sizeof(struct ext4_extent);
+      continue;
+    }
+
+    /* Leaf node: find the extent covering blk. */
+    const struct ext4_extent *ex = (const struct ext4_extent *)(eh + 1);
+    for (int i = 0; i < eh->eh_entries; i++) {
+      uint32_t start = ex[i].ee_block;
+      int unwritten = ex[i].ee_len > EXT4_EXT_UNWRITTEN_LEN;
+      uint32_t len =
+          unwritten ? ex[i].ee_len - EXT4_EXT_UNWRITTEN_LEN : ex[i].ee_len;
+      if (blk >= start && blk < start + len) {
+        if (!unwritten)
+          *phys_out = (ex[i].ee_start_lo |
+                       ((uint64_t)ex[i].ee_start_hi << 32)) +
+                      (blk - start);
+        break; /* unwritten: leave *phys_out = 0 → reads as zeros */
+      }
+    }
+    return 0; /* no covering extent: hole → zeros */
   }
 
-  uint32_t file_size = inode.i_size_lo;
+  pr_err("%s", "Ext4: extent tree deeper than 5 levels (corrupt?)\n");
+  return -1;
+}
+
+/*
+ * ext4_bmap - map logical file block → physical block.
+ * Dispatches on EXT4_EXTENTS_FL (EXT4-01); the legacy path supports direct
+ * (0-11), single-indirect (12) and double-indirect (13) pointers.
+ * *phys_out == 0 means "hole: reads as zeros".  Returns 0 / -1.
+ * Interior metadata blocks go through the caller's icache (EXT4-11).
+ */
+static int ext4_bmap(struct ext4_fs *fs, const struct ext4_inode *inode,
+                     uint32_t block_idx, uint64_t *phys_out,
+                     struct ext4_icache *cache) {
+  if (inode->i_flags & EXT4_EXTENTS_FL)
+    return ext4_extent_lookup(fs, inode, block_idx, phys_out, cache);
+
+  *phys_out = 0;
+  if (block_idx < 12) {
+    *phys_out = inode->i_block[block_idx];
+    return 0;
+  }
+
+  if (block_idx < 12 + 1024) {
+    uint32_t indirect_blk_num = inode->i_block[12];
+    if (indirect_blk_num == 0)
+      return 0; /* unallocated pointer block: hole */
+    const uint8_t *ind = icache_get(fs, cache, 0, indirect_blk_num);
+    if (!ind)
+      return -1;
+    *phys_out = ((const uint32_t *)ind)[block_idx - 12];
+    return 0;
+  }
+
+  uint32_t d_idx = block_idx - 12 - 1024;
+  uint32_t master_idx = d_idx / 1024;
+  uint32_t sub_idx = d_idx % 1024;
+  uint32_t double_indir_blk = inode->i_block[13];
+
+  if (double_indir_blk == 0 || master_idx >= 1024)
+    return double_indir_blk == 0 ? 0 : -1;
+  const uint8_t *master = icache_get(fs, cache, 0, double_indir_blk);
+  if (!master)
+    return -1;
+  uint32_t sub_indir_blk = ((const uint32_t *)master)[master_idx];
+  if (sub_indir_blk == 0)
+    return 0; /* hole */
+  const uint8_t *sub = icache_get(fs, cache, 1, sub_indir_blk);
+  if (!sub)
+    return -1;
+  *phys_out = ((const uint32_t *)sub)[sub_idx];
+  return 0;
+}
+
+/*
+ * ext4_read_data - random-access read from an already-fetched inode.
+ * 64-bit offset/file-size arithmetic (EXT4-08 resolved).
+ * Returns bytes read (clamped at EOF) or -1.
+ */
+static int ext4_read_data(struct ext4_fs *fs, const struct ext4_inode *inode,
+                          uint64_t offset, uint8_t *buf, uint32_t size) {
+  uint64_t file_size =
+      inode->i_size_lo | ((uint64_t)inode->i_size_high << 32);
   if (size == 0 || buf == NULL)
-    return file_size;
+    return 0;
   if (offset >= file_size)
     return 0;
   if (offset + size > file_size)
-    size = file_size - offset;
+    size = (uint32_t)(file_size - offset);
 
   uint32_t bytes_read = 0;
-  uint32_t current_offset = offset;
+  uint64_t current_offset = offset;
+  struct ext4_icache cache = {{0, 0}, {NULL, NULL}};
 
-  /* Allocate buffers on heap to save stack space */
   uint8_t *block_buf = kmalloc(4096);
-  uint8_t *indirect_buf = kmalloc(4096);
-
-  if (!block_buf || !indirect_buf) {
-    if (block_buf)
-      kfree(block_buf);
-    if (indirect_buf)
-      kfree(indirect_buf);
+  if (!block_buf)
     return -1;
-  }
 
   while (bytes_read < size) {
-    /* Calculate Block Index in File */
-    uint32_t block_idx = current_offset / 4096;
+    uint32_t block_idx = (uint32_t)(current_offset / 4096);
     uint32_t block_off = current_offset % 4096;
     uint32_t to_copy = 4096 - block_off;
     if (to_copy > (size - bytes_read))
       to_copy = size - bytes_read;
 
-    /* Get Physical Block Number */
-    uint32_t phys_block = 0;
-
-    if (block_idx < 12) {
-      /* Direct Block */
-      phys_block = inode.i_block[block_idx];
-    } else if (block_idx < 12 + 1024) {
-      /* Indirect Block */
-      uint32_t indirect_blk_num = inode.i_block[12];
-      if (indirect_blk_num == 0) {
-        kfree(block_buf); kfree(indirect_buf); return -1;
-      }
-      if (virtio_blk_read(indirect_buf, part_start_lba + (indirect_blk_num * 8), 8) != 0) {
-        kfree(block_buf); kfree(indirect_buf); return -1;
-      }
-      phys_block = ((uint32_t *)indirect_buf)[block_idx - 12];
-    } else {
-      /* Double Indirect Block */
-      uint32_t d_idx = block_idx - 12 - 1024;
-      uint32_t master_idx = d_idx / 1024;
-      uint32_t sub_idx = d_idx % 1024;
-
-      uint32_t double_indir_blk = inode.i_block[13];
-      if (double_indir_blk == 0 || master_idx >= 1024) {
-        kfree(block_buf); kfree(indirect_buf); return -1;
-      }
-
-      /* Read Master Block */
-      if (virtio_blk_read(indirect_buf, part_start_lba + (double_indir_blk * 8), 8) != 0) {
-        kfree(block_buf); kfree(indirect_buf); return -1;
-      }
-      uint32_t sub_indir_blk = ((uint32_t *)indirect_buf)[master_idx];
-      if (sub_indir_blk == 0) {
-        kfree(block_buf); kfree(indirect_buf); return -1;
-      }
-
-      /* Read Sub Block */
-      if (virtio_blk_read(indirect_buf, part_start_lba + (sub_indir_blk * 8), 8) != 0) {
-        kfree(block_buf); kfree(indirect_buf); return -1;
-      }
-      phys_block = ((uint32_t *)indirect_buf)[sub_idx];
+    uint64_t phys_block;
+    if (ext4_bmap(fs, inode, block_idx, &phys_block, &cache) != 0) {
+      kfree(block_buf);
+      icache_release(&cache);
+      return -1;
     }
 
-    /* Read the Block */
     if (phys_block == 0) {
-      /* Sparse hole */
+      /* Sparse hole / unwritten extent. */
       memset(block_buf, 0, 4096);
     } else {
-      uint64_t sector = part_start_lba + (phys_block * 8);
+      uint64_t sector = fs->part_start_lba + (phys_block * 8);
       if (virtio_blk_read(block_buf, sector, 8) != 0) {
         kfree(block_buf);
-        kfree(indirect_buf);
+        icache_release(&cache);
         return -1;
       }
     }
 
-    /* Copy Data */
     memcpy(buf + bytes_read, block_buf + block_off, to_copy);
-
     bytes_read += to_copy;
     current_offset += to_copy;
   }
 
   kfree(block_buf);
-  kfree(indirect_buf);
+  icache_release(&cache);
   return bytes_read;
 }
 
 /*
- * Public API: Find Inode by Path
+ * read_inode_data - convenience: fetch inode 'ino' then read its data.
  */
-/*
- * Helper: Find entry in a directory inode
- */
-static int ext4_lookup_in_dir(uint32_t dir_ino, const char *name,
-                              uint32_t name_len, uint32_t *ino_out) {
+static int read_inode_data(struct ext4_fs *fs, uint32_t ino, uint64_t offset,
+                           uint8_t *buf, uint32_t size) {
   struct ext4_inode inode;
-  if (get_inode_struct(dir_ino, &inode) != 0)
+  if (get_inode_struct(fs, ino, &inode) != 0) {
+    pr_err("Ext4: Failed to get inode struct for ino %d\n", ino);
+    return -1;
+  }
+  return ext4_read_data(fs, &inode, offset, buf, size);
+}
+
+/*
+ * ext4_lookup_in_dir - find 'name' in directory inode dir_ino.
+ */
+static int ext4_lookup_in_dir(struct ext4_fs *fs, uint32_t dir_ino,
+                              const char *name, uint32_t name_len,
+                              uint32_t *ino_out) {
+  struct ext4_inode inode;
+  if (get_inode_struct(fs, dir_ino, &inode) != 0)
     return -1;
 
   uint32_t dir_size = inode.i_size_lo;
@@ -568,9 +528,8 @@ static int ext4_lookup_in_dir(uint32_t dir_ino, const char *name,
     return -1;
 
   while (current_blk_off < dir_size) {
-    if (ext4_read_inode(dir_ino, current_blk_off, dir_buf, 4096) <= 0) {
+    if (ext4_read_data(fs, &inode, current_blk_off, dir_buf, 4096) <= 0)
       break;
-    }
 
     struct ext4_dir_entry *de = (struct ext4_dir_entry *)dir_buf;
     uint32_t offset = 0;
@@ -597,18 +556,18 @@ static int ext4_lookup_in_dir(uint32_t dir_ino, const char *name,
 }
 
 /*
- * Public API: Find Inode by Path (Recursive)
+ * ext4_find_ino - resolve an absolute path to an inode number (walk from
+ * the root inode, component by component).
  */
-int ext4_find_inode(const char *path, uint32_t *ino_out) {
-  uint32_t current_ino = 2; /* Start at Root */
+static int ext4_find_ino(struct ext4_fs *fs, const char *path,
+                         uint32_t *ino_out) {
+  uint32_t current_ino = EXT4_ROOT_INO;
   const char *p = path;
 
-  /* Skip leading slash */
   if (*p == '/')
     p++;
 
   while (*p) {
-    /* Find next segment */
     const char *start = p;
     while (*p && *p != '/')
       p++;
@@ -616,13 +575,11 @@ int ext4_find_inode(const char *path, uint32_t *ino_out) {
 
     if (len > 0) {
       uint32_t next_ino;
-      if (ext4_lookup_in_dir(current_ino, start, len, &next_ino) != 0) {
+      if (ext4_lookup_in_dir(fs, current_ino, start, len, &next_ino) != 0)
         return -1;
-      }
       current_ino = next_ino;
     }
 
-    /* Skip slash */
     if (*p == '/')
       p++;
   }
@@ -631,54 +588,247 @@ int ext4_find_inode(const char *path, uint32_t *ino_out) {
   return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* VFS provider entry points (the fs_ops contract)                    */
+/* ------------------------------------------------------------------ */
+
 /*
- * Legacy Wrapper
+ * ext4_mount - probe + mount the partition (fs_ops.mount).
+ * Quiet on "not ext4" (the VFS probes every partition); loud on recognised-
+ * but-unsupported images.  See the file header for the enforcement matrix.
  */
-/*
- * Legacy Wrapper
- */
-int ext4_read_file(const char *path, uint8_t *buf, uint32_t size,
-                   uint32_t offset) {
-  uint32_t ino;
-  if (ext4_find_inode(path, &ino) != 0) {
-    pr_err("Ext4: File not found: %s\n", path);
+static int ext4_mount(struct vfs_mount *mnt, struct partition *p) {
+  uint8_t *k_buf = kmalloc(4096);
+  if (!k_buf)
+    return -1;
+
+  /* Superblock lives at byte offset 1024 = sector 2 of the partition. */
+  if (virtio_blk_read(k_buf, p->start_lba + 2, 2) != 0) {
+    kfree(k_buf);
     return -1;
   }
-  return ext4_read_inode(ino, offset, buf, size);
+
+  struct ext4_fs *fs = kmalloc(sizeof(struct ext4_fs));
+  if (!fs) {
+    kfree(k_buf);
+    return -1;
+  }
+  memset(fs, 0, sizeof(*fs));
+  memcpy(&fs->sb, k_buf, sizeof(fs->sb));
+
+  if (fs->sb.s_magic != EXT4_MAGIC) {
+    /* Not an ext4 partition: quiet probe failure. */
+    kfree(k_buf);
+    kfree(fs);
+    return -1;
+  }
+
+  /* From here on the partition IS ext4: unsupported features fail loudly. */
+  int reject = 0;
+
+  if (fs->sb.s_log_block_size != 2) {
+    pr_err("Ext4: unsupported block size (log=%d, only 4096 supported)\n",
+           fs->sb.s_log_block_size);
+    reject = 1;
+  }
+
+  uint32_t bad_incompat = fs->sb.s_feature_incompat & ~EXT4_INCOMPAT_SUPPORTED;
+  if (!reject && bad_incompat) {
+    pr_err("Ext4: unsupported INCOMPAT features 0x%x (supported mask 0x%x) - "
+           "refusing to mount\n",
+           bad_incompat, EXT4_INCOMPAT_SUPPORTED);
+    reject = 1;
+  }
+
+  /* Single-group images only: group-0 GDT/bitmaps/inode-table are the only
+   * metadata this driver reads (EXT4-12/13 enforced instead of misreading). */
+  uint32_t bpg = fs->sb.s_blocks_per_group ? fs->sb.s_blocks_per_group : 32768;
+  if (!reject &&
+      (fs->sb.s_blocks_count_hi != 0 || fs->sb.s_blocks_count_lo > bpg)) {
+    pr_err("Ext4: multi-group image (%d blocks, %d per group) unsupported\n",
+           fs->sb.s_blocks_count_lo, bpg);
+    reject = 1;
+  }
+
+  /* Inode record size: rev0 fixes it at 128; rev1+ reads s_inode_size.
+   * Must be a multiple of 128 ≥ sizeof(struct ext4_inode) so table records
+   * never straddle a 512-byte sector read (see get_inode_struct). */
+  fs->inode_size = (fs->sb.s_rev_level == 0) ? 128 : fs->sb.s_inode_size;
+  if (!reject &&
+      (fs->inode_size < 128 || fs->inode_size > 4096 ||
+       (fs->inode_size % 128) != 0)) {
+    pr_err("Ext4: invalid inode size %d\n", fs->inode_size);
+    reject = 1;
+  }
+
+  if (reject) {
+    kfree(k_buf);
+    kfree(fs);
+    return -1;
+  }
+
+  uint32_t bad_rocompat =
+      fs->sb.s_feature_ro_compat & ~EXT4_RO_COMPAT_WRITE_SAFE;
+  if (bad_rocompat) {
+    pr_warn("Ext4: RO_COMPAT features 0x%x not write-safe - mounting "
+            "read-only\n",
+            bad_rocompat);
+    fs->read_only = 1;
+  }
+
+  /* Group descriptor 0: block 1 = byte 4096 = sector 8. */
+  if (virtio_blk_read(k_buf, p->start_lba + 8, 1) != 0) {
+    pr_err("%s", "Ext4: Failed to read GDT\n");
+    kfree(k_buf);
+    kfree(fs);
+    return -1;
+  }
+  memcpy(&fs->bg, k_buf, sizeof(fs->bg));
+  kfree(k_buf);
+
+  fs->part_start_lba = p->start_lba;
+  spin_lock_init(&fs->lock);
+  mnt->fs_private = fs;
+
+  pr_info("Ext4: Mounted. Vol=%s, Inodes=%d, features incompat=0x%x%s\n",
+          fs->sb.s_volume_name, fs->sb.s_inodes_count,
+          fs->sb.s_feature_incompat, fs->read_only ? " (read-only)" : "");
+  return 0;
 }
 
 /*
- * Public API: Write Data to File (Overwrite/Append)
+ * ext4_open - path → vfs_node (fs_ops.open).
  */
-/*
- * Public API: Write Data to File (Overwrite/Append)
- */
-int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size,
-                    uint32_t offset) {
+static int ext4_open(struct vfs_mount *mnt, const char *path,
+                     struct vfs_node *out) {
+  struct ext4_fs *fs = mnt->fs_private;
   uint32_t ino;
-  if (ext4_find_inode(path, &ino) != 0) {
+  struct ext4_inode inode;
+
+  if (ext4_find_ino(fs, path, &ino) != 0)
+    return -1;
+  if (get_inode_struct(fs, ino, &inode) != 0)
+    return -1;
+
+  out->mnt = mnt;
+  out->id = ino;
+  out->size = inode.i_size_lo | ((uint64_t)inode.i_size_high << 32);
+  out->type = ((inode.i_mode >> 12) == 4) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+  return 0;
+}
+
+/*
+ * ext4_read - random-access read from an open node (fs_ops.read).
+ */
+static int ext4_read(struct vfs_node *node, uint64_t offset, void *buf,
+                     uint32_t size) {
+  struct ext4_fs *fs = node->mnt->fs_private;
+  return read_inode_data(fs, (uint32_t)node->id, offset, buf, size);
+}
+
+/*
+ * ext4_extent_can_append - can a new block mapping for 'logical' be added
+ * to the inode's extent tree?  Conservative: only depth-0 roots with a free
+ * record slot and logical positions at/after the current end are accepted
+ * (mid-hole inserts would need record shifting; a full root would need tree
+ * growth — both still EXT4-05 territory).
+ */
+static int ext4_extent_can_append(const struct ext4_inode *inode,
+                                  uint32_t logical) {
+  const struct ext4_extent_header *eh =
+      (const struct ext4_extent_header *)inode->i_block;
+  const struct ext4_extent *ex = (const struct ext4_extent *)(eh + 1);
+
+  if (eh->eh_magic != EXT4_EXT_MAGIC || eh->eh_depth != 0)
+    return 0;
+  if (eh->eh_entries > 0) {
+    const struct ext4_extent *last = &ex[eh->eh_entries - 1];
+    uint32_t len = last->ee_len > EXT4_EXT_UNWRITTEN_LEN
+                       ? last->ee_len - EXT4_EXT_UNWRITTEN_LEN
+                       : last->ee_len;
+    if (logical < last->ee_block + len)
+      return 0; /* would be a mid-hole insert */
+  }
+  return eh->eh_entries < eh->eh_max;
+}
+
+/*
+ * ext4_extent_do_append - record the mapping logical→phys in a depth-0 root
+ * previously validated by ext4_extent_can_append.  Extends the last extent
+ * when physically contiguous, else appends a new record (sorted order is
+ * preserved because logical >= last end).
+ */
+static void ext4_extent_do_append(struct ext4_inode *inode, uint32_t logical,
+                                  uint32_t phys) {
+  struct ext4_extent_header *eh =
+      (struct ext4_extent_header *)inode->i_block;
+  struct ext4_extent *ex = (struct ext4_extent *)(eh + 1);
+
+  if (eh->eh_entries > 0) {
+    struct ext4_extent *last = &ex[eh->eh_entries - 1];
+    if (last->ee_len < EXT4_EXT_UNWRITTEN_LEN - 1 &&
+        logical == last->ee_block + last->ee_len &&
+        phys == last->ee_start_lo + last->ee_len && last->ee_start_hi == 0) {
+      last->ee_len++;
+      return;
+    }
+  }
+  ex[eh->eh_entries].ee_block = logical;
+  ex[eh->eh_entries].ee_len = 1;
+  ex[eh->eh_entries].ee_start_hi = 0;
+  ex[eh->eh_entries].ee_start_lo = phys;
+  eh->eh_entries++;
+}
+
+/*
+ * ext4_write - path-based write (fs_ops.write; overwrite/append).
+ *
+ * Supported (EXT4-05 partially lifted):
+ *   - overwrite of any already-mapped block (extent trees of any depth,
+ *     legacy direct/indirect/double-indirect) — no metadata change;
+ *   - growth on extent inodes with a depth-0 root and a free record slot
+ *     (extend-if-contiguous, else new extent; sparse tail writes OK);
+ *   - growth on legacy inodes through the single-indirect range
+ *     (12+1024 blocks ≈ 4.2 MB), allocating the pointer block on demand.
+ * Still rejected loudly: read-only mounts, extent-tree growth (depth>0 /
+ * full root / mid-hole insert), double-indirect allocation, file creation.
+ */
+static int ext4_write(struct vfs_mount *mnt, const char *path,
+                      uint64_t offset64, const void *vbuf, uint32_t size) {
+  struct ext4_fs *fs = mnt->fs_private;
+  const uint8_t *buf = vbuf;
+
+  if (fs->read_only) {
+    pr_err("%s", "Ext4: write rejected (read-only mount)\n");
+    return -1;
+  }
+
+  uint32_t ino;
+  if (ext4_find_ino(fs, path, &ino) != 0) {
     pr_err("Ext4: File not found: %s\n", path);
     return -1;
   }
 
   struct ext4_inode inode;
-  if (get_inode_struct(ino, &inode) != 0)
+  if (get_inode_struct(fs, ino, &inode) != 0)
     return -1;
 
-  uint32_t bytes_written = 0;
+  int is_extent = (inode.i_flags & EXT4_EXTENTS_FL) != 0;
 
-  /* Validate offset */
-  if (offset > inode.i_size_lo + 1048576) {  /* Allow up to 1MB past current size for sparse files */
-    pr_err("EXT4: Write offset 0x%x exceeds reasonable bounds (i_size_lo=0x%x)\n", 
-           offset, inode.i_size_lo);
+  /* 32-bit write path; bound offset before narrowing. */
+  if (offset64 > 0xFFFFFFFFULL ||
+      offset64 > (uint64_t)inode.i_size_lo + 1048576) {
+    pr_err("EXT4: Write offset 0x%lx exceeds reasonable bounds "
+           "(i_size_lo=0x%x)\n",
+           (unsigned long)offset64, inode.i_size_lo);
     return -1;
   }
+  uint32_t offset = (uint32_t)offset64;
 
+  uint32_t bytes_written = 0;
   uint32_t current_offset = offset;
+  struct ext4_icache cache = {{0, 0}, {NULL, NULL}};
 
-  /* Check if we need to append (current_offset + size > i_size) */
-
-  /* Buffer allocation */
   uint8_t *block_buf = kmalloc(4096);
   if (!block_buf)
     return -1;
@@ -690,84 +840,124 @@ int ext4_write_file(const char *path, const uint8_t *buf, uint32_t size,
     if (to_copy > (size - bytes_written))
       to_copy = size - bytes_written;
 
-    /* Check/Alloc Block */
-    if (block_idx >= 12) {
-      pr_err("%s", "Ext4: Indirect block write not supported yet\n");
-      kfree(block_buf);
-      return -1;
-    }
+    uint64_t phys_block;
+    if (ext4_bmap(fs, &inode, block_idx, &phys_block, &cache) != 0)
+      goto fail;
 
-    uint32_t phys_block = inode.i_block[block_idx];
     if (phys_block == 0) {
-      /* Allocate new block */
-      phys_block = ext4_alloc_block();
-      if (phys_block == 0) {
+      /* Unmapped block: validate the mapping is recordable BEFORE
+       * allocating, so a reject never leaks a bitmap bit. */
+      if (is_extent && !ext4_extent_can_append(&inode, block_idx)) {
+        pr_err("%s", "Ext4: extent-tree growth (depth>0, full root or "
+                     "mid-hole insert) not supported yet\n");
+        goto fail;
+      }
+      if (!is_extent && block_idx >= 12 + 1024) {
+        pr_err("%s", "Ext4: double-indirect block write not supported yet\n");
+        goto fail;
+      }
+
+      uint32_t nb = ext4_alloc_block(fs);
+      if (nb == 0) {
         pr_err("%s", "Ext4: Block allocation failed\n");
-        kfree(block_buf);
-        return -1;
+        goto fail;
       }
-      inode.i_block[block_idx] = phys_block;
 
-      /* Calculate 512-byte sectors used */
-      /* Ext4 i_blocks is in 512-bit sectors? Yes usually. */
+      if (is_extent) {
+        ext4_extent_do_append(&inode, block_idx, nb);
+      } else if (block_idx < 12) {
+        inode.i_block[block_idx] = nb;
+      } else {
+        /* Single-indirect: allocate the pointer block on demand (it comes
+         * back zeroed from ext4_alloc_block = all slots NULL), then install
+         * the new pointer with a sector-granular read-modify-write. */
+        uint32_t ind = inode.i_block[12];
+        if (ind == 0) {
+          ind = ext4_alloc_block(fs);
+          if (ind == 0) {
+            pr_err("%s", "Ext4: Block allocation failed\n");
+            goto fail;
+          }
+          inode.i_block[12] = ind;
+          inode.i_blocks_lo += (4096 / 512);
+        }
+        uint64_t slot_off = (uint64_t)ind * 4096 + (block_idx - 12) * 4;
+        uint64_t slot_sector = fs->part_start_lba + slot_off / 512;
+        uint8_t *secbuf = kmalloc(512);
+        if (!secbuf)
+          goto fail;
+        if (ext4_bread(slot_sector, 1, secbuf) != 0) {
+          kfree(secbuf);
+          goto fail;
+        }
+        *(uint32_t *)(secbuf + (slot_off % 512)) = nb;
+        if (ext4_bwrite(slot_sector, 1, secbuf) != 0) {
+          kfree(secbuf);
+          goto fail;
+        }
+        kfree(secbuf);
+        /* The pointer block changed on disk: drop cached copies. */
+        icache_invalidate(&cache);
+      }
+
+      /* i_blocks_lo counts 512-byte sectors. */
       inode.i_blocks_lo += (4096 / 512);
-
-      /* Clear new block on disk was done in alloc */
+      phys_block = nb;
     }
 
-    /* Read Block (for partial write) */
+    /* Read-modify-write for partial blocks. */
     if (block_off != 0 || to_copy != 4096) {
-      if (ext4_bread(part_start_lba + (phys_block * 8), 8, block_buf) != 0) {
-        kfree(block_buf);
-        return -1;
-      }
+      if (ext4_bread(fs->part_start_lba + (phys_block * 8), 8, block_buf) !=
+          0)
+        goto fail;
     }
 
-    /* Modify Buffer */
     memcpy(block_buf + block_off, buf + bytes_written, to_copy);
 
-    /* Write Block Back */
-    if (ext4_bwrite(part_start_lba + (phys_block * 8), 8, block_buf) != 0) {
-      kfree(block_buf);
-      return -1;
-    }
+    if (ext4_bwrite(fs->part_start_lba + (phys_block * 8), 8, block_buf) !=
+        0)
+      goto fail;
 
     bytes_written += to_copy;
     current_offset += to_copy;
   }
 
   kfree(block_buf);
+  icache_release(&cache);
 
-  /* Update File Size if grew */
-  if (current_offset > inode.i_size_lo) {
+  if (current_offset > inode.i_size_lo)
     inode.i_size_lo = current_offset;
-  }
 
-  /* Persist Inode */
-  if (ext4_update_inode(ino, &inode) != 0) {
+  if (ext4_update_inode(fs, ino, &inode) != 0) {
     pr_err("%s", "Ext4: Failed to update inode\n");
     return -1;
   }
 
   return bytes_written;
+
+fail:
+  kfree(block_buf);
+  icache_release(&cache);
+  return -1;
 }
 
 /*
- * Public API: List directory contents
- * Formats as a space-separated string of names
+ * ext4_list - directory listing as a space-separated string (fs_ops.list).
+ * Returns the formatted length, -1 not found, -2 not a directory (EXT4-09).
  */
-int ext4_list_dir(const char *path, char *buf, uint32_t size) {
+static int ext4_list(struct vfs_mount *mnt, const char *path, char *buf,
+                     uint32_t size) {
+  struct ext4_fs *fs = mnt->fs_private;
   uint32_t dir_ino;
-  if (ext4_find_inode(path, &dir_ino) != 0)
+  if (ext4_find_ino(fs, path, &dir_ino) != 0)
     return -1;
 
   struct ext4_inode inode;
-  if (get_inode_struct(dir_ino, &inode) != 0)
+  if (get_inode_struct(fs, dir_ino, &inode) != 0)
     return -1;
 
-  if (!((inode.i_mode >> 12) == 4)) { /* Check if directory */
+  if (!((inode.i_mode >> 12) == 4))
     return -2;
-  }
 
   uint32_t dir_size = inode.i_size_lo;
   uint32_t current_blk_off = 0;
@@ -776,12 +966,12 @@ int ext4_list_dir(const char *path, char *buf, uint32_t size) {
     return -1;
 
   uint32_t buf_pos = 0;
-  if (size > 0) buf[0] = '\0';
+  if (size > 0)
+    buf[0] = '\0';
 
   while (current_blk_off < dir_size) {
-    if (ext4_read_inode(dir_ino, current_blk_off, dir_buf, 4096) <= 0) {
+    if (ext4_read_data(fs, &inode, current_blk_off, dir_buf, 4096) <= 0)
       break;
-    }
 
     struct ext4_dir_entry *de = (struct ext4_dir_entry *)dir_buf;
     uint32_t offset = 0;
@@ -790,7 +980,6 @@ int ext4_list_dir(const char *path, char *buf, uint32_t size) {
         break;
 
       if (de->name_len > 0) {
-        /* Copy name + space */
         if (buf_pos + de->name_len + 1 < size) {
           memcpy(buf + buf_pos, de->name, de->name_len);
           buf_pos += de->name_len;
@@ -798,9 +987,10 @@ int ext4_list_dir(const char *path, char *buf, uint32_t size) {
           buf[buf_pos] = '\0';
         }
       }
-      
+
       offset += de->rec_len;
-      if (offset >= 4096) break;
+      if (offset >= 4096)
+        break;
       de = (struct ext4_dir_entry *)((uint8_t *)de + de->rec_len);
     }
     current_blk_off += 4096;
@@ -809,3 +999,12 @@ int ext4_list_dir(const char *path, char *buf, uint32_t size) {
   kfree(dir_buf);
   return (int)buf_pos;
 }
+
+const struct fs_ops ext4_fs_ops = {
+    .name = "ext4",
+    .mount = ext4_mount,
+    .open = ext4_open,
+    .read = ext4_read,
+    .write = ext4_write,
+    .list = ext4_list,
+};

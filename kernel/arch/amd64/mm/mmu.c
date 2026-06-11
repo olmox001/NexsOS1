@@ -9,8 +9,8 @@
  *     4KB operations that walk/allocate/free PML4→PDPT→PD→PT chains.
  *   - arch_vmm_map_range: bulk mapping using 2MB large pages where alignment
  *     and size permit, falling back to 4KB pages.
- *   - arch_vmm_create_process_pgd / arch_vmm_destroy_process_pgd: process
- *     address-space lifecycle (PML4 clone + teardown).
+ *   - arch_vmm_create_process_pgd: process address-space creation (PML4
+ *     clone; teardown is the generic vmm_destroy_pgd in kernel/mm/vmm.c).
  *   - arch_vmm_protect: stub (returns 0 without updating PTEs).
  *   - arch_vmm_map_mmio: identity-maps the PCI/LAPIC/MMIO window at
  *     0xFE000000–0xFFFFFFFF (8192 × 4KB pages per PGD setup call).
@@ -29,9 +29,9 @@
  *     never satisfied for kernel pages (which pass PTE_RW, not PTE_PXN).
  *   AMMU-02 (W3 STUB/SECURITY) arch_vmm_protect is a no-op stub; runtime
  *     permission changes (mprotect, code-signing) are silently ignored.
- *   AMMU-03 (W3 BUG) arch_vmm_destroy_process_pgd frees only the PML4 page;
- *     user-space PDPT/PD/PT pages and user data frames leak on process exit.
- *     Cross-ref: vmm.c:272-316 has a separate (also incomplete) teardown path.
+ *   AMMU-03 (FIXED) the divergent arch teardown was removed; the single
+ *     path is vmm_destroy_pgd() in kernel/mm/vmm.c, which frees private
+ *     table pages and PTE_USER frames (see its ownership rules).
  *   AMMU-04 (W2 BUG) get_next_table's large-page split code never runs in
  *     arch_vmm_map (which passes level=0 for the PML4→PDPT step, skipping the
  *     block-split branch); the vmm.c generic walker does not understand 2MB/1GB
@@ -427,7 +427,6 @@ uint64_t arch_vmm_get_physical(uint64_t pgd, uint64_t va) {
 }
 
 uint64_t arch_vmm_create_process_pgd(void);
-void arch_vmm_destroy_process_pgd(uint64_t pgd);
 
 /*
  * arch_vmm_create_process_pgd - allocate a PML4 for a new user process.
@@ -446,9 +445,8 @@ void arch_vmm_destroy_process_pgd(uint64_t pgd);
  *   4. Map the MMIO window into the new PML4 so the new process can access
  *      device registers without separate per-process MMIO setup.
  *
- * NOTE(AMMU-03): The teardown path (arch_vmm_destroy_process_pgd) only frees
- * the PML4 page itself; the private PDPT allocated here, and all user-space
- * PD/PT pages and data frames, are never reclaimed.  Process page leak.
+ * Teardown: the generic vmm_destroy_pgd() (kernel/mm/vmm.c) walks the
+ * private index-0 subtree built here and reclaims table pages + user frames.
  *
  * Returns the physical address of the new PML4, or 0 on allocation failure.
  */
@@ -524,33 +522,12 @@ uint64_t arch_vmm_create_process_pgd(void) {
   return new_pml4_phys;
 }
 
-/*
- * arch_vmm_destroy_process_pgd - release the PML4 page on process exit.
- *
- * NOTE(AMMU-03): This function only frees the PML4 page itself.  All
- * intermediate page-table pages (private PDPT allocated in
- * arch_vmm_create_process_pgd, plus any PD/PT pages allocated during
- * arch_vmm_map calls for user-space) are NOT freed here.  Their physical
- * frames leak permanently.  The comment below explains the constraint:
- * index 0 PDPT is private, but indices 256-511 point to shared kernel PDs
- * that must NOT be freed.  A correct teardown must walk only lower-half
- * (private) entries and free their sub-tables before freeing the PML4.
- *
- * The actual user data frames are freed separately via the per-process frame
- * list in process.c; only the page-table meta-pages are leaked here.
- */
-void arch_vmm_destroy_process_pgd(uint64_t pgd) {
-  if (!pgd)
-    return;
-
-  /* Only free user space mappings (lower half). BUT wait, we shared the first
-   * GB. If we recursively free, we will free kernel pages! So we should ONLY
-   * free user pages (from PMM list tracked by process, which we do in
-   * process.c). Here we just free the PML4 table itself. A full tree-walk free
-   * needs to carefully avoid kernel PDs.
-   * NOTE(AMMU-03): Private PDPT and all user PD/PT pages leak here. */
-  pmm_free_page((void *)pgd);
-}
+/* AMMU-03 resolved: the divergent arch teardown (which freed only the PML4
+ * page and leaked the private PDPT + all PD/PT pages and user frames) has
+ * been removed — it had no callers.  The single teardown path is the generic
+ * vmm_destroy_pgd() (kernel/mm/vmm.c), which walks the private index-0
+ * subtree, frees process-private table pages and PTE_USER leaf frames, and
+ * skips entries shared by value with kernel_pgd. */
 
 /*
  * arch_vmm_protect - change PTE flags for a virtual address range.

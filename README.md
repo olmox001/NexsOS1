@@ -25,22 +25,23 @@ an interactive **TTY shell**.
 
 ---
 
-## Status (verified by building & running, 2026-06)
+## Status (verified by building & running, 2026-06-11)
 
 | Capability | AArch64 (`make run`) | amd64 (`make run`) |
 |---|---|---|
 | Builds clean (`-Werror -Wall -Wextra -Wpedantic -Wshadow`) | ✅ | ✅ |
-| Boots to a **TTY shell in a composited window** | ✅ | ✅ (at `-m 3G`) |
-| Dynamic RAM detection / MMU / **maps up to 4GB** | ✅  |  ✅   |
+| Boots to a **TTY shell in a composited window** | ✅ | ✅ |
+| Dynamic RAM detection / MMU / **maps up to 4GB** | ✅  |  ✅\*   |
 | **SMP** (multi-core bring-up) | ✅ (4/4 online) |  ✅ |
-| VirtIO GPU / input / block · Ext4 mount · GPT+MBR | ✅ | ✅ (at 3G) |
-| Userland: ELF loader, IPC, windows, registry, fonts | ✅ | ✅ (at 3G) |
+| VirtIO GPU / input / block · Ext4 mount · GPT+MBR | ✅ | ✅ |
+| Userland: ELF loader, IPC, windows, registry, fonts | ✅ | ✅ |
+| **Fault isolation**: user crash never kills the kernel; symbolized backtraces | ✅ | ✅ |
 
 \* On amd64 the `make run` (`-kernel`) path does not receive a boot-protocol memory map and
 falls back to a hardcoded 1 GB; the full memory map / 4 GB works via the **GRUB-ISO**
-(`make release`) path. This is a known defect — see issues
-[#94 (amd64 boot/4GB)](https://github.com/olmox001/os1test-dev/issues/94) and the W5
-[#…(DRV-VIRTIO-01)]. **AArch64 is the reference "correct" platform.**
+(`make release`) path. This is a known defect — see the epic
+[#94 (amd64 boot/4GB)](https://github.com/olmox001/os1test-dev/issues/94).
+**AArch64 is the reference "correct" platform.**
 
 ---
 
@@ -54,6 +55,11 @@ falls back to a hardcoded 1 GB; the full memory map / 4 GB works via the **GRUB-
 - **VirtIO** drivers: GPU (framebuffer), input (keyboard/mouse), block.
 - Per-arch: GICv2 + ARM generic timer + PL011 (AArch64); LAPIC/IOAPIC + PIT + 16550 (amd64).
 - **Ext4** (read + limited write), **GPT** with **MBR** fallback, buffer cache.
+- **Fault/trace foundation** (2026-06): fault-safe reporting on dedicated fault stacks, total
+  vector coverage on both arches, user/kernel fault isolation (a crashing app terminates
+  cleanly, the kernel and shell survive), symbolized in-kernel backtraces (`.ksyms`).
+- Leak-free process lifecycle: zombies auto-reaped by the scheduler, single-owner corpse
+  freeing, deterministic service respawn by `init`.
 
 **Graphics & userland**
 - Window **compositor** (overlap, Z-order, drag, focus), TTF font rendering, 2D/3D fixed-point engines.
@@ -75,6 +81,7 @@ falls back to a hardcoded 1 GB; the full memory map / 4 GB works via the **GRUB-
 - ✅ TTY shell
 - ✅ Doom running as a user-space process
 - ✅ 3D rendering demo
+- ✅ Recoverable fault handling (user faults isolated, symbolized backtraces)
 - ✅ Microkernel architecture
 
 ## Verified Runtime
@@ -84,7 +91,7 @@ Successfully tested on:
 | Platform | Status |
 |-----------|---------|
 | QEMU AArch64 virt | ✅ |
-| QEMU AMD64 q35 (instability of closing process) | ✅ |
+| QEMU AMD64 q35 | ✅ |
 | SMP (4 cores) | ✅ |
 | VirtIO GPU | ✅ |
 | VirtIO Keyboard | ✅ |
@@ -117,7 +124,7 @@ make check ARCH=amd64
 ### 2. Build & run
 ```bash
 make run ARCH=aarch64     # ARM64 — full path (4GB, SMP, graphical TTY)
-make run ARCH=amd64       # x86-64 — boots to shell at the default -m 3G
+make run ARCH=amd64       # x86-64 — same graphical shell (1 GB map on the -kernel path, see #94)
 ```
 `make run` builds the bootloader, kernel, userland, and a 96 MB Ext4 disk image, then
 launches QEMU with VirtIO GPU/input/block and a graphical display. A window with a TTY
@@ -173,6 +180,12 @@ docs/                        # review/ (this audit), PROJECT_CHARTER.md, report/
   [tracking epic #19](https://github.com/olmox001/os1test-dev/issues/19).
 
 ## Roadmap (foundations, dependency-ordered)
+
+> **Phase A (fault/trace foundation) is complete** — see
+> [`docs/review/REVIEW.md`](docs/review/REVIEW.md) §8 for the commit catalog. The next
+> phase (STUB demolition, epics #92–#96) is planned in
+> [`docs/PHASE-B-PLAN.md`](docs/PHASE-B-PLAN.md); the architectural guidelines it follows
+> are in [`docs/ASTRA.md`](docs/ASTRA.md).
 
 1. A documented PA/VA model and **W^X**.
 2. A coherent, **capability-checked** syscall ABI.

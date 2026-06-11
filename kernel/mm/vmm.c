@@ -461,75 +461,98 @@ uint64_t *vmm_create_pgd(void) {
 }
 
 /*
- * Destroy a PGD and all mapped user-space page tables
+ * Destroy a PGD: free private page-table pages AND user RAM frames
  *
- * vmm_destroy_pgd - free the user-space page tables of a process PGD.
+ * vmm_destroy_pgd - tear down the process-private half of a PGD
+ * (MM-VMM-04 + AMMU-03 resolved).
  *
- * Walks only the private user portion (PGD index 0, PUD indices 2-511) and
- * frees the page-table pages (L2 PMD pages and L3 PTE pages).  The PUD page
- * itself and the PGD page are freed last.
+ * Ownership rules (what may be freed):
+ *   - Only the subtree under PGD/PML4 index 0 is walked: that is the only
+ *     entry arch_vmm_create_process_pgd() builds privately; every other
+ *     populated index (aarch64 256-511, amd64 1-255 MMIO + 256-511) is a
+ *     by-value copy of a kernel_pgd entry and must not be touched.
+ *   - Inside the walk, any directory entry whose VALUE equals the kernel's
+ *     entry at the same position is shared (the create path copies kernel
+ *     entries by value: aarch64 MMIO/RAM PUD slots and 2MB RAM blocks in
+ *     the deep-copied PMD; amd64 PDPT[0]).  Shared entries are skipped.
+ *   - Block entries (PTE_IS_TABLE false) are never descended: user mappings
+ *     are always 4KB pages, so a differing block is still kernel memory
+ *     (e.g. the kernel remapped after the by-value copy).
+ *   - Leaf frames are freed only when the PTE carries PTE_USER: a private
+ *     PT may also hold kernel PTEs (a kernel 2MB block split around the ELF
+ *     header page at 0x7ffff000) whose frames belong to the kernel.
+ *   - Differing table pages (PMD/PT/PUD) were allocated for this process by
+ *     get_next_table()/the arch splitter and are freed unconditionally.
  *
- * NOTE(MM-VMM-04): This function DOES NOT free the physical RAM frames that
- * the user process had mapped.  The comment in the source ("we don't free the
- * actual RAM frames here as they might be shared") is the stated rationale, but
- * there is no frame refcount integrated with map/unmap (struct page.refcount
- * is not incremented on vmm_map_page).  As a result, every normal (non-shared)
- * user page leaks on process exit.  Fix direction: per-frame refcounting in the
- * PMM, decremented on unmap, freed when the count reaches zero.
+ * There is no frame refcounting: user frames are never shared between
+ * processes today (ELF loader and sbrk map freshly allocated frames; IPC,
+ * blits and font loads copy by value).  Revisit when shared mappings arrive.
  *
- * NOTE(MM-VMM-04): PGD entries 1-511 are iterated by the loop at the end of
- * this function (lines 309-313 of the original), but that loop body is empty --
- * it is a dead no-op.  Any user mapping that used a PGD index other than 0 is
- * silently leaked.
- *
- * NOTE(MM-VMM-02): PTE physical addresses are cast directly to pointers
- * (pud0, pmd, pte variables) under the identity-map assumption.
+ * NOTE(MM-VMM-02): table physical addresses are cast to pointers under the
+ * identity-map invariant.
  *
  * Locking: caller must ensure no other CPU holds or will use this PGD
- * (process must be fully stopped and de-scheduled before calling).
+ * (process fully stopped and de-scheduled; see the scheduler reaper).
  */
 void vmm_destroy_pgd(uint64_t *pgd) {
   if (!pgd)
     return;
 
-  /* We only need to free user space tables (indices 256-511 for higher half,
-   * but our user space is 0x0... which is 0-255)
-   * WAIT: Our user map is 0x0 - 0x0000_FFFF_FFFF_FFFF.
-   * That corresponds to indices 0 to 255 in PGD.
-   * However, index 0 is SHARED (with private PUD).
-   */
+  uint64_t freed_frames = 0;
+  uint64_t freed_tables = 0;
 
-  /* 1. Handle Private PUD at Index 0 */
-  uint64_t *pud0 = (uint64_t *)(pgd[0] & PTE_ADDR_MASK);
-  uint64_t *k_pud0 = (uint64_t *)(kernel_pgd[0] & PTE_ADDR_MASK);
+  uint64_t *pud0 =
+      (pgd[0] & PTE_VALID) ? (uint64_t *)(pgd[0] & PTE_ADDR_MASK) : NULL;
+  uint64_t *k_pud0 = (kernel_pgd[0] & PTE_VALID)
+                         ? (uint64_t *)(kernel_pgd[0] & PTE_ADDR_MASK)
+                         : NULL;
+
   if (pud0 && pud0 != k_pud0) {
-    /* Recursively free PUD0 entries starting from index 2 (User space) */
-    for (int i = 2; i < 512; i++) {
-      if (pud0[i] & PTE_VALID) {
-        uint64_t *pmd = (uint64_t *)(pud0[i] & PTE_ADDR_MASK);
-        /* Free PMD and its tables */
-        for (int j = 0; j < 512; j++) {
-          if (pmd[j] & PTE_VALID) {
-            if (!(pmd[j] & PTE_TABLE))
-              continue; // Skip blocks
-            uint64_t *pte = (uint64_t *)(pmd[j] & PTE_ADDR_MASK);
-            /* Free L3 PTE pages (frame pointers)? No, we don't free the actual
-               RAM frames here as they might be shared. But we MUST free the
-               table pages. */
-            pmm_free_page(pte);
+    for (int i = 0; i < 512; i++) {
+      uint64_t pud_e = pud0[i];
+      if (!(pud_e & PTE_VALID))
+        continue;
+      if (k_pud0 && pud_e == k_pud0[i])
+        continue; /* shared kernel entry (MMIO block, kernel RAM table) */
+      if (!PTE_IS_TABLE(pud_e))
+        continue; /* 1GB block: never a user mapping */
+
+      uint64_t *pmd = (uint64_t *)(pud_e & PTE_ADDR_MASK);
+      uint64_t *k_pmd = NULL;
+      if (k_pud0 && (k_pud0[i] & PTE_VALID) && PTE_IS_TABLE(k_pud0[i]))
+        k_pmd = (uint64_t *)(k_pud0[i] & PTE_ADDR_MASK);
+
+      for (int j = 0; j < 512; j++) {
+        uint64_t pmd_e = pmd[j];
+        if (!(pmd_e & PTE_VALID))
+          continue;
+        if (k_pmd && pmd_e == k_pmd[j])
+          continue; /* by-value copy of a kernel entry (2MB RAM block) */
+        if (!PTE_IS_TABLE(pmd_e))
+          continue; /* private 2MB block: not user (user maps 4KB only) */
+
+        uint64_t *pt = (uint64_t *)(pmd_e & PTE_ADDR_MASK);
+        for (int k = 0; k < 512; k++) {
+          uint64_t pte = pt[k];
+          if ((pte & PTE_VALID) && (pte & PTE_USER)) {
+            pmm_free_page((void *)(pte & PTE_ADDR_MASK));
+            freed_frames++;
           }
         }
-        pmm_free_page(pmd);
+        pmm_free_page(pt);
+        freed_tables++;
       }
+      pmm_free_page(pmd);
+      freed_tables++;
     }
     pmm_free_page(pud0);
-  }
-
-  /* 2. Free other PGD entries (if any were used for user space) */
-  for (int i = 1; i < 512; i++) {
-    /* If we used higher PGD indices for user space, they would be here.
-       In our current model, only index 0's PUD is cloned. */
+    freed_tables++;
   }
 
   pmm_free_page((void *)pgd);
+  freed_tables++;
+
+  pr_info("VMM: PGD %p destroyed: freed %lu user frames, %lu table pages "
+          "(free now %lu)\n",
+          (void *)pgd, freed_frames, freed_tables, pmm_get_free_pages());
 }

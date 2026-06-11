@@ -455,7 +455,31 @@ uint64_t arch_vmm_create_process_pgd(void) {
       /* Clone the PUD entries for MMIO (0-1GB) and Kernel (1-2GB).
        * User-space typically starts at 2GB (PUD index 2), so we leave it free. */
       if (src_pud[0] & PTE_VALID) dst_pud[0] = src_pud[0]; /* MMIO 1GB block */
-      if (src_pud[1] & PTE_VALID) dst_pud[1] = src_pud[1]; /* kernel RAM 1GB block */
+      /* PUD[1] covers 1..2GB: kernel RAM identity AND the bottom of the user
+       * window (the ELF header page at 0x7ffff000 lands here).  If the kernel
+       * entry is a table, DEEP-COPY its PMD page: installing a user PTE (by
+       * splitting a kernel 2MB block) must happen in a process-private table.
+       * Sharing the kernel's PMD here let every process write the same split
+       * PT — all processes (and the kernel) aliased one 0x7ffff000 page, and
+       * any teardown freeing it would free a live frame of another process. */
+      if (src_pud[1] & PTE_VALID) {
+        if (PTE_IS_TABLE(src_pud[1])) {
+          uint64_t *src_pmd = (uint64_t *)(src_pud[1] & PTE_ADDR_MASK);
+          uint64_t *dst_pmd = (uint64_t *)pmm_alloc_page();
+          if (!dst_pmd) {
+            pmm_free_page(dst_pud);
+            pmm_free_page(pgd);
+            return 0;
+          }
+          memcpy(dst_pmd, src_pmd, 4096);
+          arch_cache_clean_range(dst_pmd, 4096);
+          dst_pud[1] = (uint64_t)dst_pmd | (src_pud[1] & ~PTE_ADDR_MASK);
+        } else {
+          /* 1GB block: copied by value; a future split allocates private
+           * tables because it rewrites this private PUD entry. */
+          dst_pud[1] = src_pud[1];
+        }
+      }
       arch_cache_clean_range(dst_pud, 4096);
       /* Install new PUD as table descriptor; preserve attribute bits from kernel_pgd[0]. */
       pgd[0] = (uint64_t)dst_pud | (kernel_pgd[0] & ~PTE_ADDR_MASK);

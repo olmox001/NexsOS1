@@ -184,6 +184,34 @@ struct ext4_dir_entry {
   char name[];
 } __attribute__((packed));
 
+/* Extent tree on-disk format (mirrors kernel/include/kernel/ext4.h) */
+#define EXT4_EXT_MAGIC 0xF30A
+#define EXT4_EXTENTS_FL 0x00080000
+#define EXT4_FEATURE_INCOMPAT_FILETYPE 0x0002
+#define EXT4_FEATURE_INCOMPAT_EXTENTS 0x0040
+
+struct ext4_extent_header {
+  uint16_t eh_magic;
+  uint16_t eh_entries;
+  uint16_t eh_max;
+  uint16_t eh_depth;
+  uint32_t eh_generation;
+} __attribute__((packed));
+
+struct ext4_extent_idx {
+  uint32_t ei_block;
+  uint32_t ei_leaf_lo;
+  uint16_t ei_leaf_hi;
+  uint16_t ei_unused;
+} __attribute__((packed));
+
+struct ext4_extent {
+  uint32_t ee_block;
+  uint16_t ee_len;
+  uint16_t ee_start_hi;
+  uint32_t ee_start_lo;
+} __attribute__((packed));
+
 static uint8_t *block_bitmap = NULL;
 static uint8_t *inode_bitmap = NULL;
 static uint32_t next_free_block = BLK_DATA_START;
@@ -191,6 +219,9 @@ static uint32_t current_free_inode = 11;
 static uint32_t total_blocks = 0;
 static uint32_t free_blocks_count = 0;
 static uint32_t free_inodes_count = 1014;
+/* Inode layout: 1 = extent trees (mkfs.ext4 default, what the kernel must
+ * handle on real images), 0 = legacy direct/indirect pointers (--legacy). */
+static int use_extents = 1;
 
 uint32_t crc32(const void *data, size_t n_bytes) {
   uint32_t crc = 0xFFFFFFFF;
@@ -232,6 +263,87 @@ void mark_inode_used(uint32_t inode) {
   free_inodes_count--;
 }
 
+/*
+ * build_extent_tree - describe the contiguous run [first_block,
+ * first_block+nblocks) as an extent tree rooted in i_block[].
+ *
+ * Extent length is capped at 8 blocks for files larger than 32 blocks so
+ * big files (ELFs, the doom WAD) get enough extents to need a depth-1 tree
+ * — this makes the kernel's index-node walk a tested path instead of dead
+ * code.  Small files stay depth 0 with a single inline extent.
+ */
+void build_extent_tree(FILE *f, uint64_t partition_offset_bytes,
+                       struct ext4_inode *ino, uint32_t first_block,
+                       uint32_t nblocks, uint32_t *meta_blocks) {
+  struct ext4_extent_header *eh = (struct ext4_extent_header *)ino->i_block;
+  uint32_t cap = (nblocks > 32) ? 8 : 32768;
+  uint32_t n_ext = (nblocks + cap - 1) / cap;
+
+  ino->i_flags |= EXT4_EXTENTS_FL;
+  eh->eh_magic = EXT4_EXT_MAGIC;
+  eh->eh_max = 4;
+  eh->eh_generation = 0;
+
+  if (n_ext <= 4) {
+    /* Depth 0: extents inline in the inode. */
+    eh->eh_entries = n_ext;
+    eh->eh_depth = 0;
+    struct ext4_extent *ex = (struct ext4_extent *)(eh + 1);
+    for (uint32_t i = 0; i < n_ext; i++) {
+      ex[i].ee_block = i * cap;
+      ex[i].ee_len = (i == n_ext - 1) ? (nblocks - i * cap) : cap;
+      ex[i].ee_start_hi = 0;
+      ex[i].ee_start_lo = first_block + i * cap;
+    }
+    return;
+  }
+
+  /* Depth 1: the inode root holds index records pointing at leaf blocks. */
+  uint32_t per_leaf = (EXT4_BLOCK_SIZE - sizeof(struct ext4_extent_header)) /
+                      sizeof(struct ext4_extent); /* 340 */
+  uint32_t n_leaf = (n_ext + per_leaf - 1) / per_leaf;
+  if (n_leaf > 4) {
+    fprintf(stderr, "mkdisk: file needs %u extent leaves (max 4)\n", n_leaf);
+    exit(1);
+  }
+  eh->eh_entries = n_leaf;
+  eh->eh_depth = 1;
+  struct ext4_extent_idx *ix = (struct ext4_extent_idx *)(eh + 1);
+
+  uint32_t ei = 0;
+  for (uint32_t l = 0; l < n_leaf; l++) {
+    uint32_t leaf_blk = next_free_block++;
+    mark_block_used(leaf_blk);
+    (*meta_blocks)++;
+
+    uint8_t *lb = xmalloc(EXT4_BLOCK_SIZE);
+    struct ext4_extent_header *lh = (struct ext4_extent_header *)lb;
+    uint32_t count = (n_ext - ei < per_leaf) ? (n_ext - ei) : per_leaf;
+    lh->eh_magic = EXT4_EXT_MAGIC;
+    lh->eh_entries = count;
+    lh->eh_max = per_leaf;
+    lh->eh_depth = 0;
+    lh->eh_generation = 0;
+
+    ix[l].ei_block = ei * cap;
+    ix[l].ei_leaf_lo = leaf_blk;
+    ix[l].ei_leaf_hi = 0;
+    ix[l].ei_unused = 0;
+
+    struct ext4_extent *ex = (struct ext4_extent *)(lh + 1);
+    for (uint32_t k = 0; k < count; k++, ei++) {
+      ex[k].ee_block = ei * cap;
+      ex[k].ee_len = (ei == n_ext - 1) ? (nblocks - ei * cap) : cap;
+      ex[k].ee_start_hi = 0;
+      ex[k].ee_start_lo = first_block + ei * cap;
+    }
+
+    xseek(f, partition_offset_bytes + (uint64_t)leaf_blk * EXT4_BLOCK_SIZE, SEEK_SET);
+    xwrite(lb, 1, EXT4_BLOCK_SIZE, f);
+    free(lb);
+  }
+}
+
 void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inode_num, const char *src_path) {
   uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE + (uint64_t)(inode_num - 1) * EXT4_INODE_SIZE;
   struct ext4_inode file_inode = {0};
@@ -254,6 +366,27 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inod
   uint32_t *indir1 = NULL;
   uint32_t *indir2 = NULL;
   uint32_t *indir2_subs[1024] = {NULL};
+
+  if (use_extents) {
+    /* Extent layout: write the data as one contiguous run, then describe it
+     * with an extent tree in i_block[] (no indirect pointer blocks). */
+    uint32_t first_block = next_free_block;
+    for (uint32_t i = 0; i < data_blocks; i++) {
+      uint32_t b = next_free_block++;
+      mark_block_used(b);
+      xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE, SEEK_SET);
+      uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE) ? (src_size % EXT4_BLOCK_SIZE) : EXT4_BLOCK_SIZE;
+      xwrite(buf + i * EXT4_BLOCK_SIZE, 1, to_write, f);
+    }
+    build_extent_tree(f, partition_offset_bytes, &file_inode, first_block, data_blocks, &total_meta_blocks);
+
+    file_inode.i_blocks_lo = (data_blocks + total_meta_blocks) * (EXT4_BLOCK_SIZE / 512);
+    xseek(f, inode_offset, SEEK_SET);
+    xwrite(&file_inode, 1, sizeof(file_inode), f);
+    free(buf);
+    printf("Ext4: Added %s (Ino %d, %ld bytes, %d data, %d meta blocks, extents)\n", src_path, inode_num, src_size, data_blocks, total_meta_blocks);
+    return;
+  }
 
   for (uint32_t i = 0; i < data_blocks; i++) {
     uint32_t b = next_free_block++;
@@ -329,7 +462,12 @@ void write_directory_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t in
   inode.i_links_count = 2;
   inode.i_size_lo = 4096;
   inode.i_blocks_lo = 8;
-  inode.i_block[0] = data_block;
+  if (use_extents) {
+    uint32_t meta = 0;
+    build_extent_tree(f, partition_offset_bytes, &inode, data_block, 1, &meta);
+  } else {
+    inode.i_block[0] = data_block;
+  }
   xseek(f, inode_offset, SEEK_SET);
   xwrite(&inode, 1, sizeof(inode), f);
 }
@@ -419,6 +557,10 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors, co
   sb.s_inodes_count = 1024; sb.s_blocks_count_lo = total_blocks; sb.s_free_blocks_count_lo = free_blocks_count;
   sb.s_free_inodes_count = free_inodes_count; sb.s_log_block_size = 2; sb.s_magic = EXT4_MAGIC;
   sb.s_state = 1; sb.s_rev_level = 1; sb.s_first_ino = 11; sb.s_inode_size = EXT4_INODE_SIZE;
+  /* Declare what the image actually uses so the kernel's INCOMPAT whitelist
+   * is a tested path (extent inodes + typed directory entries). */
+  if (use_extents)
+    sb.s_feature_incompat = EXT4_FEATURE_INCOMPAT_FILETYPE | EXT4_FEATURE_INCOMPAT_EXTENTS;
   xwrite(&sb, 1, sizeof(sb), f);
 
   xseek(f, start_off + EXT4_BLOCK_SIZE, SEEK_SET);
@@ -433,8 +575,10 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors, co
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 4) { fprintf(stderr, "Usage: %s <img.img> <boot.bin> <kernel.bin> <root_dir>\n", argv[0]); return 1; }
+  if (argc < 5) { fprintf(stderr, "Usage: %s <img.img> <boot.bin> <kernel.bin> <root_dir> [--legacy|--extents]\n", argv[0]); return 1; }
   const char *boot_path = argv[2], *kern_path = argv[3], *root_dir = argv[4];
+  if (argc > 5 && strcmp(argv[5], "--legacy") == 0) use_extents = 0;
+  printf("mkdisk: inode layout = %s\n", use_extents ? "extents" : "legacy (indirect blocks)");
 
   FILE *f = fopen(argv[1], "wb+");
   xseek(f, DISK_SIZE_BYTES - 1, SEEK_SET); fputc(0, f); rewind(f);

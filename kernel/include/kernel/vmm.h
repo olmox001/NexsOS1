@@ -59,6 +59,10 @@
 
 #define PTE_TABLE    PTE_PAGE
 
+/* PTE_IS_TABLE: does this VALID directory entry point to a next-level table?
+ * AArch64: bits[1:0] == 0b11 → table; 0b01 → block. */
+#define PTE_IS_TABLE(e) (((e) & 0x3UL) == 0x3UL)
+
 #define PTE_INNER_SHARE (3UL << 8)
 #define PTE_AF          (1UL << 10)
 
@@ -98,10 +102,15 @@
 #define PTE_PS    (1UL << 7) 
 #define PTE_NX    (1ULL << 63)
 
-#define PTE_PAGE  (0UL) 
-#define PTE_RO    (0UL) 
+#define PTE_PAGE  (0UL)
+#define PTE_RO    (0UL)
 
 #define PTE_TABLE (PTE_RW | PTE_USER)
+
+/* PTE_IS_TABLE: does this VALID directory entry point to a next-level table?
+ * AMD64: PS (bit 7) clear → table; PS set → 2MB/1GB page.  (PTE_TABLE above
+ * is NOT usable for this test — it is an RW|US flag combo for new tables.) */
+#define PTE_IS_TABLE(e) (!((e) & PTE_PS))
 
 #define PAGE_KERNEL      (PTE_VALID | PTE_RW)
 #define PAGE_KERNEL_EXEC (PTE_VALID | PTE_RW)
@@ -146,8 +155,9 @@ static inline uint64_t virt_to_phys(void *virt) { return (uint64_t)virt; }
 /* vmm_create_pgd: allocate a new process PGD with kernel half pre-filled. */
 uint64_t *vmm_create_pgd(void);
 uint64_t arch_vmm_create_process_pgd(void);
-/* vmm_destroy_pgd: free user-space page-table pages for 'pgd'.
- * NOTE(MM-VMM-04): does NOT free user RAM frames; they leak on process exit. */
+/* vmm_destroy_pgd: free the process-private page-table pages AND the user
+ * RAM frames (PTEs carrying PTE_USER) of 'pgd' (MM-VMM-04 resolved).
+ * Entries shared with kernel_pgd (compared by value) are never touched. */
 void vmm_destroy_pgd(uint64_t *pgd);
 
 /* vmm_init: phase-1 MMU bring-up; maps 128 MB bootstrap window; enables MMU. */
