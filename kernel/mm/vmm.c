@@ -26,7 +26,8 @@
  *   subsystem analysis.
  *
  * Known issues:
- *   MM-VMM-01  (W3 SECURITY)     All RAM mapped PAGE_KERNEL_EXEC; no W^X.
+ *   MM-VMM-01  (FIXED)           W^X enforced via vmm_map_ram_wx(): kernel
+ *                                 text RX, rodata RO+NX, all other RAM RW+NX.
  *   MM-VMM-02  (W3 WRONG-DESIGN) PTE physical addresses cast to pointers;
  *                                 only valid under identity map.
  *   MM-VMM-03  (W2 REFINE/TODO)  vmm_dynamic_remap leaks the old PGD.
@@ -327,6 +328,52 @@ int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size,
 }
 
 /*
+ * vmm_map_ram_wx - identity-map RAM with the W^X section split
+ * (MM-VMM-01 / AMMU-01 resolved).
+ *
+ * The kernel image layout (kernel.ld, both arches) is:
+ *   [__kernel_start, _etext)    text (+ amd64 multiboot/PVH headers)  → RX
+ *   [_etext≈, __erodata)        rodata, .ktests, .ksyms               → RO+NX
+ *   everything else              data/bss/heap/stacks/DTB/user pool    → RW+NX
+ * Boundaries are page-rounded; the linker aligns sections to 4 KB so the
+ * windows never overlap.  arch_vmm_map_range still uses 2MB blocks inside
+ * each window where alignment permits.
+ *
+ * Enforcement: aarch64 PXN/UXN bits (always honoured at EL1);
+ * amd64 PTE_NX (EFER.NXE set at boot) + CR0.WP for the read-only text.
+ */
+void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size) {
+  extern char __kernel_start[], _etext[], __erodata[];
+  uint64_t tx_s = (uint64_t)__kernel_start & ~0xFFFUL;
+  uint64_t tx_e = ((uint64_t)_etext + 4095) & ~0xFFFUL;
+  uint64_t ro_e = ((uint64_t)__erodata + 4095) & ~0xFFFUL;
+  uint64_t end = base + size;
+  uint64_t cur = base;
+
+  while (cur < end) {
+    uint64_t flags;
+    if (cur >= tx_s && cur < tx_e)
+      flags = PAGE_KERNEL_RX;
+    else if (cur >= tx_e && cur < ro_e)
+      flags = PAGE_KERNEL_RO;
+    else
+      flags = PAGE_KERNEL;
+
+    /* Map up to the next window boundary (or the range end). */
+    uint64_t next = end;
+    if (tx_s > cur && tx_s < next)
+      next = tx_s;
+    if (tx_e > cur && tx_e < next)
+      next = tx_e;
+    if (ro_e > cur && ro_e < next)
+      next = ro_e;
+
+    arch_vmm_map_range((uint64_t)pgd, cur, cur, next - cur, flags);
+    cur = next;
+  }
+}
+
+/*
  * Initialize VMM and Enable MMU
  *
  * vmm_init - phase-1 MMU bring-up: map a 128 MB bootstrap window and enable
@@ -334,17 +381,14 @@ int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size,
  *
  * Steps:
  *   1. Allocate and zero the kernel PGD from the PMM (sets global kernel_pgd).
- *   2. Map [ARCH_RAM_START, ARCH_RAM_START+128MB) with PAGE_KERNEL_EXEC using
- *      vmm_map() (4KB pages).
+ *   2. Map [ARCH_RAM_START, ARCH_RAM_START+128MB) via vmm_map_ram_wx()
+ *      (W^X section split).
  *   3. Map MMIO regions via arch_vmm_map_mmio().
  *   4. Enable the MMU by passing virt_to_phys(kernel_pgd) to arch_vmm_init_hw().
  *      Under identity map, virt_to_phys is a no-op cast.
  *
  * After vmm_init() the kernel executes with the MMU active.  Only the first
  * 128 MB of RAM are accessible; vmm_dynamic_remap() extends coverage.
- *
- * NOTE(MM-VMM-01): The bootstrap window is mapped PAGE_KERNEL_EXEC, making
- * the kernel heap, stack, and data pages executable.  There is no W^X split.
  *
  * Locking: must be called single-threaded before SMP bring-up.
  */
@@ -359,11 +403,12 @@ void vmm_init(void) {
   memset(kernel_pgd, 0, 4096);
   arch_cache_clean_range(kernel_pgd, 4096);
 
-  /* 1. Map RAM with correct permissions (Bootstrap 128MB) */
+  /* 1. Map RAM (bootstrap 128MB) with the W^X section split: text RX,
+   * rodata RO+NX, the rest RW+NX (MM-VMM-01). */
   uint64_t ram_start = ARCH_RAM_START;
   uint64_t ram_size = 128UL * 1024 * 1024; /* Enough to boot */
-  
-  vmm_map(kernel_pgd, ram_start, ram_start, ram_size, PAGE_KERNEL_EXEC);
+
+  vmm_map_ram_wx(kernel_pgd, ram_start, ram_size);
 
   /* 2. Map MMIO */
   arch_vmm_map_mmio(kernel_pgd);
@@ -383,9 +428,6 @@ void vmm_init(void) {
  * block entries where possible) to map every MEM_REGION_USABLE region returned
  * by arch_platform_get_mem_regions().  Re-maps MMIO.  Then atomically switches
  * the hardware to the new PGD with arch_vmm_set_pgd() and updates kernel_pgd.
- *
- * NOTE(MM-VMM-01): All usable regions are mapped PAGE_KERNEL_EXEC.  The entire
- * kernel heap, stacks, and PMM metadata are therefore executable.
  *
  * NOTE(MM-VMM-03): The old PGD (bootstrap) is stored in 'old_pgd' and then
  * abandoned -- it is never freed.  A correct implementation would broadcast an
@@ -407,18 +449,16 @@ void vmm_dynamic_remap(void) {
   if (!new_pgd) panic("VMM: Failed to allocate new dynamic PGD");
   memset(new_pgd, 0, 4096);
 
-  /* 1. Map all discovered memory regions */
+  /* 1. Map all discovered memory regions with the W^X section split
+   * (text RX, rodata RO+NX, all other RAM RW+NX — MM-VMM-01 resolved).
+   * arch_vmm_map_range still uses 2MB blocks inside each window. */
   size_t count = 0;
   struct mem_region *regions = arch_platform_get_mem_regions(&count);
   for (size_t i = 0; i < count; i++) {
     if (regions[i].type == MEM_REGION_USABLE) {
-      pr_info("VMM: Mapping region 0x%lx - 0x%lx\n", 
+      pr_info("VMM: Mapping region 0x%lx - 0x%lx\n",
               regions[i].base, regions[i].base + regions[i].size);
-      
-      /* Use the optimized arch_vmm_map_range which supports 2MB pages (Zero-Copy Table Linking)
-       * Now safe as get_next_table handles block-splitting. */
-      arch_vmm_map_range((uint64_t)new_pgd, regions[i].base, regions[i].base, 
-                         regions[i].size, PAGE_KERNEL_EXEC);
+      vmm_map_ram_wx(new_pgd, regions[i].base, regions[i].size);
     }
   }
 

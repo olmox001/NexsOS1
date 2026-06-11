@@ -66,24 +66,36 @@
 #define PTE_INNER_SHARE (3UL << 8)
 #define PTE_AF          (1UL << 10)
 
-/* PAGE_KERNEL: kernel RW, not executable (PXN+UXN set). */
+/* PAGE_KERNEL: kernel RW, not executable (PXN+UXN set).  This is the W^X
+ * default for all RAM (MM-VMM-01 resolved); only the kernel text window is
+ * mapped PAGE_KERNEL_RX by vmm_map_ram_wx(). */
 #define PAGE_KERNEL \
     (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
      PTE_AF | PTE_AP_EL1_RW | PTE_UXN | PTE_PXN)
-/* PAGE_KERNEL_EXEC: kernel RW + executable (PXN clear, UXN set).
- * NOTE(MM-VMM-01): vmm_init() and vmm_dynamic_remap() use this flag for ALL
- * RAM, making heap, stacks, and data pages executable -- no W^X enforcement. */
+/* PAGE_KERNEL_EXEC: kernel RW + executable.  W^X-violating by definition;
+ * kept only for exceptional uses — no RAM-wide mapping uses it anymore. */
 #define PAGE_KERNEL_EXEC \
     (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
      PTE_AF | PTE_AP_EL1_RW | PTE_UXN)
+/* PAGE_KERNEL_RX: kernel text — read-only at EL1, executable at EL1 only. */
+#define PAGE_KERNEL_RX \
+    (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
+     PTE_AF | PTE_AP_EL1_RO | PTE_UXN)
+/* PAGE_KERNEL_RO: kernel rodata — read-only, never executable. */
+#define PAGE_KERNEL_RO \
+    (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
+     PTE_AF | PTE_AP_EL1_RO | PTE_UXN | PTE_PXN)
 /* PAGE_DEVICE: strongly-ordered Device-nGnRnE memory, not executable. */
 #define PAGE_DEVICE \
     (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_DEVICE) | PTE_INNER_SHARE | \
      PTE_AF | PTE_AP_EL1_RW | PTE_UXN | PTE_PXN)
-/* PAGE_USER: EL0 (user) RW, not executable at EL1. */
+/* PAGE_USER: EL0 (user) RW, not executable at EL1.  EL0-executable: use for
+ * ELF code segments only. */
 #define PAGE_USER \
     (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
      PTE_AF | PTE_AP_EL0_RW | PTE_PXN)
+/* PAGE_USER_DATA: user RW data (stack/heap) — never executable (W^X). */
+#define PAGE_USER_DATA (PAGE_USER | PTE_UXN)
 
 #elif defined(ARCH_AMD64)
 /* --- AMD64 Page Table Entry (PTE) Flags --- */
@@ -112,10 +124,17 @@
  * is NOT usable for this test — it is an RW|US flag combo for new tables.) */
 #define PTE_IS_TABLE(e) (!((e) & PTE_PS))
 
-#define PAGE_KERNEL      (PTE_VALID | PTE_RW)
-#define PAGE_KERNEL_EXEC (PTE_VALID | PTE_RW)
-#define PAGE_DEVICE      (PTE_VALID | PTE_RW | PTE_PCD | PTE_PWT)
+/* W^X page profiles (MM-VMM-01/AMMU-01 resolved).  PTE_NX requires
+ * IA32_EFER.NXE=1, set next to LME in start.S (BSP) and trampoline.S (APs);
+ * CR0.WP is set at boot so the kernel honours read-only PTEs. */
+#define PAGE_KERNEL      (PTE_VALID | PTE_RW | PTE_NX)
+#define PAGE_KERNEL_EXEC (PTE_VALID | PTE_RW) /* W+X: no RAM-wide user left */
+#define PAGE_KERNEL_RX   (PTE_VALID)               /* text: RO + executable */
+#define PAGE_KERNEL_RO   (PTE_VALID | PTE_NX)      /* rodata: RO, no exec */
+#define PAGE_DEVICE      (PTE_VALID | PTE_RW | PTE_PCD | PTE_PWT | PTE_NX)
 #define PAGE_USER        (PTE_VALID | PTE_RW | PTE_USER)
+/* PAGE_USER_DATA: user RW data (stack/heap) — never executable (W^X). */
+#define PAGE_USER_DATA   (PAGE_USER | PTE_NX)
 
 #endif
 
@@ -181,6 +200,9 @@ void vmm_unmap_page_locked(struct process *proc, uint64_t virt);
 
 /* vmm_map: map a contiguous range; 4KB pages only; partial on error (no rollback). */
 int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags);
+/* vmm_map_ram_wx: identity-map a usable RAM range with the W^X section split:
+ * kernel text RX, rodata RO+NX, everything else RW+NX (MM-VMM-01/AMMU-01). */
+void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size);
 /* vmm_check_range: verify all pages in range are mapped with required flags. */
 int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size, uint64_t flags_mask);
 

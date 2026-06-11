@@ -1323,7 +1323,8 @@ long sys_sbrk(intptr_t increment) {
         return -1;
       }
       memset(paddr, 0, 4096);
-      if (vmm_map_page_locked(proc, vaddr, (uint64_t)paddr, PAGE_USER) != 0) {
+      /* PAGE_USER_DATA: the user heap is never executable (W^X, ELF-02). */
+      if (vmm_map_page_locked(proc, vaddr, (uint64_t)paddr, PAGE_USER_DATA) != 0) {
         pmm_free_page(paddr);
         return -1;
       }

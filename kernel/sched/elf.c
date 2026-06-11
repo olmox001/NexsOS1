@@ -70,11 +70,15 @@ int process_load_elf(struct process *proc, const char *path) {
         flags |= PTE_RO;
       }
 
-      /* AArch64 specific UXN/PXN handled via HAL-neutral flags if defined */
+      /* W^X (ELF-02): non-executable unless PF_X — per-arch NX encoding. */
 #ifdef ARCH_AARCH64
       flags |= PTE_VALID | PTE_PAGE | PTE_AF | PTE_INNER_SHARE;
       if (!(phdr.p_flags & PF_X)) {
         flags |= PTE_UXN;
+      }
+#elif defined(ARCH_AMD64)
+      if (!(phdr.p_flags & PF_X)) {
+        flags |= PTE_NX;
       }
 #endif
 
@@ -151,8 +155,9 @@ int process_load_elf(struct process *proc, const char *path) {
       pr_err("%s", "ELF: Failed to allocate stack page\n");
       return -1;
     }
-    if (vmm_map_page(proc->page_table, vaddr, (uint64_t)paddr, PAGE_USER) !=
-        0) {
+    /* PAGE_USER_DATA: the user stack is never executable (W^X, ELF-02). */
+    if (vmm_map_page(proc->page_table, vaddr, (uint64_t)paddr,
+                     PAGE_USER_DATA) != 0) {
       pr_err("%s", "ELF: Failed to map stack page\n");
       pmm_free_page(paddr);
       return -1;

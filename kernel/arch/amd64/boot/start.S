@@ -108,10 +108,11 @@ _start_32:
     movl $boot_pml4, %eax
     movl %eax, %cr3
 
-    /* 7. Enable Long Mode */
+    /* 7. Enable Long Mode + NXE (PTE bit 63 — W^X needs it; without NXE a
+     * set NX bit is a reserved-bit #PF) */
     movl $0xC0000080, %ecx
     rdmsr
-    orl $(1 << 8), %eax
+    orl $(1 << 8 | 1 << 11), %eax
     wrmsr
 
     /* 8. Enable Paging */

@@ -129,16 +129,20 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
 
   /* Map low 1MB for SMP trampolines and legacy BIOS data areas.
    * TRAMPOLINE_BASE (0x1000) must be writable so arch_cpu_wake_secondary
-   * can copy trampoline code there and patch the PML4/stack/entry fields. */
-  arch_vmm_map_range(kernel_pgd, 0, 0, 0x100000, PTE_RW);
+   * can copy trampoline code there and patch the PML4/stack/entry fields.
+   * NX is safe here: APs execute the trampoline in real mode (paging off)
+   * and the long-mode stub runs on trampoline_pml4 (its own tables), never
+   * on kernel_pgd. */
+  arch_vmm_map_range(kernel_pgd, 0, 0, 0x100000, PAGE_KERNEL);
 
   for (size_t i = 0; i < count; i++) {
     if (regions[i].type == MEM_REGION_USABLE) {
       pr_info("AMD64 VMM: Identity mapping RAM 0x%lx - 0x%lx\n",
               regions[i].base, regions[i].base + regions[i].size);
-      /* NOTE(AMMU-01): PTE_RW with no NX → mapped W+X; no W^X enforcement. */
-      arch_vmm_map_range(kernel_pgd, regions[i].base, regions[i].base,
-                         regions[i].size, PTE_RW); /* Kernel RW */
+      /* W^X section split (AMMU-01 resolved): text RX, rodata RO+NX,
+       * the rest RW+NX. */
+      vmm_map_ram_wx((uint64_t *)kernel_pgd, regions[i].base,
+                     regions[i].size);
     }
   }
 
@@ -170,7 +174,7 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
    * Covers PCI devices, LAPIC, IOAPIC, and upper BIOS ranges.
    * NOTE(AMMU-06): ~8192 individual 4KB map calls per PGD — inefficient. */
   for (uint64_t addr = 0xFE000000UL; addr < 0xFFFFFFFFUL; addr += 4096) {
-    arch_vmm_map((uint64_t)pgd, addr, addr, X86_PTE_P | X86_PTE_RW | X86_PTE_PCD | X86_PTE_PWT);
+    arch_vmm_map((uint64_t)pgd, addr, addr, PAGE_DEVICE);
   }
 }
 
@@ -191,8 +195,7 @@ int arch_vmm_map_device(uint64_t base, uint64_t size) {
   uint64_t start = base & ~0xFFFUL;
   uint64_t end = (base + size + 0xFFFUL) & ~0xFFFUL;
   for (uint64_t a = start; a < end; a += 4096) {
-    arch_vmm_map((uint64_t)kernel_pgd, a, a,
-                 X86_PTE_P | X86_PTE_RW | X86_PTE_PCD | X86_PTE_PWT);
+    arch_vmm_map((uint64_t)kernel_pgd, a, a, PAGE_DEVICE);
   }
   arch_tlb_flush_all();
   return 0;
@@ -323,17 +326,22 @@ int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags) {
   uint64_t *pml4 = (uint64_t *)pgd;
   uint64_t x86_flags = X86_PTE_P;
 
+  /* Flag translation (AMMU-01 resolved): callers pass the amd64 PTE/PAGE
+   * profiles from vmm.h, which carry the final x86 bits — translate them
+   * explicitly.  Writability is now OPT-IN (PTE_RW present), so read-only
+   * user segments and kernel text are actually read-only (CR0.WP is set).
+   * NX is honoured both natively (PTE_NX) and from the arch-neutral
+   * UXN+PXN encoding used by shared code. */
   if (flags & PTE_USER)
     x86_flags |= X86_PTE_US;
-  if (!(flags & PTE_RO))
+  if (flags & PTE_RW)
     x86_flags |= X86_PTE_RW;
-  /* NOTE(AMMU-01): NX only set when BOTH UXN and PXN flags are present.
-   * Kernel mappings (PTE_RW only) never set NX → all kernel pages are W+X. */
-  if ((flags & PTE_UXN) && (flags & PTE_PXN))
+  if (flags & PTE_PWT)
+    x86_flags |= X86_PTE_PWT;
+  if (flags & PTE_PCD)
+    x86_flags |= X86_PTE_PCD;
+  if ((flags & PTE_NX) || ((flags & PTE_UXN) && (flags & PTE_PXN)))
     x86_flags |= X86_PTE_NX;
-  if (((flags >> 2) & 0x7) == PTE_ATTR_DEVICE) {
-    x86_flags |= X86_PTE_PCD | X86_PTE_PWT; /* uncached for MMIO */
-  }
 
   /* Walk (and allocate if absent) PML4 → PDPT → PD → PT */
   uint64_t *pdpt = get_next_table(pml4, PML4_INDEX(va), 1, 0);
@@ -584,10 +592,13 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
       uint64_t *pd = get_next_table(pdpt, PDPT_INDEX(v), 1, 1);
       if (!pd) return -1;
 
-      /* Level 2 2MB Page Mapping */
+      /* Level 2 2MB Page Mapping — same explicit translation as
+       * arch_vmm_map (opt-in RW, NX from PTE_NX or UXN+PXN). */
       uint64_t x86_flags = X86_PTE_P | 0x080; /* PS bit for 2MB */
       if (flags & PTE_USER) x86_flags |= X86_PTE_US;
-      if (!(flags & PTE_RO)) x86_flags |= X86_PTE_RW;
+      if (flags & PTE_RW) x86_flags |= X86_PTE_RW;
+      if ((flags & PTE_NX) || ((flags & PTE_UXN) && (flags & PTE_PXN)))
+        x86_flags |= X86_PTE_NX;
 
       pd[PD_INDEX(v)] = (p & PTE_ADDR_MASK) | x86_flags;
       v += 0x200000;

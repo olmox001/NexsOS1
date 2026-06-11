@@ -37,9 +37,10 @@ SECTIONS
         KEEP(*(.ksyms))
         __ksyms_end = .;
     }
-    
+    __erodata = .;
+
     . = ALIGN(4096);
-    
+
     /* Read-write data */
     .data : {
         *(.data)

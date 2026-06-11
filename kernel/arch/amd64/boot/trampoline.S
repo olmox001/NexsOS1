@@ -45,10 +45,11 @@ trampoline_pm:
     mov (trampoline_pml4 - trampoline_start + 0x1000), %eax
     mov %eax, %cr3
 
-    /* Enable Long Mode in EFER */
+    /* Enable Long Mode + NXE in EFER (APs must match the BSP: kernel_pgd
+     * PTEs carry the NX bit) */
     mov $0xC0000080, %ecx
     rdmsr
-    or $(1 << 8), %eax
+    or $(1 << 8 | 1 << 11), %eax
     wrmsr
 
     /* Enable Paging and Write Protect */

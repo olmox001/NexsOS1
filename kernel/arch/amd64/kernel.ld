@@ -48,6 +48,7 @@ SECTIONS {
         KEEP(*(.ksyms))
         __ksyms_end = .;
     } :text
+    __erodata = .;
 
     .data : ALIGN(4096) {
         *(.data*)
