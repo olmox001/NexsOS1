@@ -84,7 +84,7 @@ Successfully tested on:
 | Platform | Status |
 |-----------|---------|
 | QEMU AArch64 virt | ✅ |
-| QEMU AMD64 q35 (instability of closing process) | ⚠️ |
+| QEMU AMD64 q35 (instability of closing process) | ✅ |
 | SMP (4 cores) | ✅ |
 | VirtIO GPU | ✅ |
 | VirtIO Keyboard | ✅ |
