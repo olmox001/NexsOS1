@@ -560,8 +560,10 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
  *
  * This is now the SINGLE source of truth for the scheduler address-space switch
  * (the redundant hal_vmm_set_pgd block in schedule() was removed), so the TLB
- * flush + DSB/ISB that the scheduler block used to issue are performed here:
- * arch_vmm_set_pgd is a bare "msr ttbr0_el1" (arch.h) with no implicit barriers.
+ * maintenance the scheduler block used to issue is performed here:
+ * arch_vmm_set_pgd is a bare "msr ttbr0_el1" (arch.h) with no implicit
+ * barriers, and arch_tlb_flush_all already ends with DSB ISH + ISB (arch.h),
+ * which completes the switch — no further barrier is needed after it.
  */
 void arch_cpu_switch_context(struct process *next) {
     extern uint64_t *kernel_pgd;
@@ -573,6 +575,5 @@ void arch_cpu_switch_context(struct process *next) {
     if (pgd) {
         arch_vmm_set_pgd(pgd);
         arch_tlb_flush_all();
-        arch_isb();
     }
 }

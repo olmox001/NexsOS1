@@ -34,6 +34,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 1. Preconditions ------------------------------------------------------------
 [ "$(uname -s)" = "Darwin" ] || fail "This script targets macOS (Darwin)."
 command -v brew >/dev/null 2>&1 || fail "Homebrew not found — install from https://brew.sh and re-run."
+if [ "$(uname -m)" = "arm64" ]; then
+  warn "Apple Silicon host: sergiobenitez/osxct ships aarch64-none-elf as an x86_64 binary."
+  warn "It requires Rosetta 2 ('softwareupdate --install-rosetta --agree-to-license') and may"
+  warn "need an Intel Homebrew under /usr/local (invoke it via 'arch -x86_64 brew ...')."
+  warn "Proceeding — if the aarch64 install fails, set up Rosetta/Intel-brew and re-run."
+fi
 if ! xcode-select -p >/dev/null 2>&1; then
   warn "Xcode Command Line Tools not detected — triggering install (a GUI dialog may appear)."
   xcode-select --install || true
@@ -80,7 +86,11 @@ qemu-system-x86_64  --version  2>/dev/null | head -1 || warn "qemu-system-x86_64
 qemu-system-aarch64 --version  2>/dev/null | head -1 || warn "qemu-system-aarch64 missing"
 
 # Sanity: 7.2.0 must NOT emit outline-atomics (the marker of a too-new aarch64 GCC).
-if echo 'int x;int f(void){return __atomic_add_fetch(&x,1,5);}' \
+# Guard on the compiler existing first: with it missing, the probe pipeline would
+# produce no output, grep would not match, and we would falsely report success.
+if ! command -v aarch64-none-elf-gcc >/dev/null 2>&1; then
+  warn "aarch64-none-elf-gcc not found — skipping the outline-atomics sanity check."
+elif echo 'int x;int f(void){return __atomic_add_fetch(&x,1,5);}' \
      | aarch64-none-elf-gcc -O2 -S -o - -xc - 2>/dev/null | grep -q '__aarch64_'; then
   warn "aarch64 gcc emits outline-atomics — WRONG version (need 7.2.0 from osxct, not aarch64-elf 16/Arm 14)."
 else

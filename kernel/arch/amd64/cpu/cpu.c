@@ -140,8 +140,7 @@ void arch_cpu_init(void) {
   {
     extern uint64_t *kernel_pgd;
     if (kernel_pgd)
-      __asm__ __volatile__("mov %0, %%cr3"
-                           :: "r"((uint64_t)(uintptr_t)kernel_pgd) : "memory");
+      arch_vmm_set_pgd((uint64_t)(uintptr_t)kernel_pgd);
   }
 }
 
@@ -170,9 +169,10 @@ struct cpu_info *get_cpu_info(void) {
  *                      on the SYSCALL fast path.
  *   cpu->current_task: used by the generic scheduler and kernel_syscall_dispatcher
  *                      to find current_process.
- *   CR3:               loaded with next->page_table (physical PA of PML4) to
- *                      switch the address space.  Skipped if page_table is NULL
- *                      (kernel thread with no private address space).
+ *   CR3:               loaded with next->page_table (physical PA of PML4), or
+ *                      with the shared kernel_pgd when page_table is NULL
+ *                      (kernel thread — SCHED-UAF-01: never leave the previous
+ *                      process's possibly-freed PGD active).
  *   TSS RSP0:          updated via gdt_set_rsp0 so that hardware interrupt
  *                      delivery from Ring 3 uses the correct kernel stack.
  *
