@@ -182,6 +182,11 @@ implemented by delegated sub-agents that did not commit), **pending maintainer r
 | `3296ce1` | amd64: window-close triple-fault root-cause fixes + **AP adoption of the live `kernel_pgd` in `arch_cpu_init`** (ARCH-AMD64-APPGD-01; platform.c untouched); toolchain pin script | **#101, #102** ✅ |
 | `db4eb4c` | sched + aarch64: `arch_cpu_switch_context` loads the shared `kernel_pgd` when `page_table == NULL` on **both arches** (SCHED-UAF-01 idle/kernel-thread residual); removes the redundant-and-buggy `hal_vmm_set_pgd` block in `schedule()` | SCHED-UAF-01 ✅ |
 | `3509a4f` | follow-up review fixes: IRQ-masked deferred-free drain (SCHED-UAF-02), reaped-corpse fallback guard (SCHED-UAF-03), stale-comment rewrite, APPGD reuse of `arch_vmm_set_pgd`, aarch64 redundant ISB, toolchain-script probe/Apple-Silicon guards, ignore `tools/mkdisk` — see [analysis/10-addendum-2026-06-11](analysis/10-addendum-2026-06-11-sched-uaf-followup.md) | addendum 10 ✅ |
+| `12843d4` | **Phase A** steps 5-7: fault-safe reporting (`fault_printf` lock-free, `uart_putc_emergency`, MSR/MPIDR `arch_cpu_info_fault_safe`, per-CPU `in_fault` recursion guard, fault-context `panic()` mode) | Phase A ✅ |
+| `61c871b` | **Phase A** steps 3-4: dedicated fault stacks — amd64 IST1 (#PF/#GP) + IST2 (#DF) via TSS; aarch64 per-CPU EL1 abort stack with parked-SP + probe copy-back.  Verified by fault injection: nested #PF = one clean line + halt, 0 cpu_resets (was triple-fault) | Phase A ✅ |
+| `d6f03e9` | **Phase A** steps 8-10: user-vs-kernel isolation — generic `fault_handle_user_or_panic`; amd64 user faults terminate+schedule (**EXC-AMD64-02 / #36**); uaccess windows flagged on both arches (**CPU-AARCH64-01**, **SYS-AARCH64-02**).  Verified: `crash` from the shell terminates PID, shell survives, `counter` runs after — both arches | **#36** + 2 ✅ |
+| `ac4d76f` | **Phase A** steps 11-12: symbolized backtrace — fp walker + kallsyms-style `.ksyms` blob (two-pass link, survives aarch64 `objcopy -O binary`).  Verified: `kernel_main+0x3e3` matches addr2line; live symbols from raw kernel.bin | Phase A ✅ |
+| `6bed3cf` | **Phase A** step 13: total aarch64 vector coverage — all 8 `b .` silent-hang vectors (FIQ, EL0-AArch32) now report + terminate/panic | Phase A ✅ |
 
 Rows `3f9f81f` through `94c936c` are the **W3 issue-tier** fix phase — small, scoped, additive
 correctness/security hardening on the issue backlog, distinct from the boot/crash fixes above.
@@ -209,12 +214,13 @@ payload[64];` — present since `main` — and all producers/consumers use 64-bi
 use 64-bit). Exercised at runtime every boot (keyboard input + `notify()`). No change needed.
 
 **Remaining (open, future sessions — multi-step refactors, not concludable in one short pass):**
-amd64 ACPI-MADT CPU count (ARCH-01), real PCI/ACPI init (ARCH-02), user-vs-kernel
-fault isolation (EXC-AMD64-02); **SCHED-IRQ-01** (no IRQ-state contract on `schedule()` —
+amd64 ACPI-MADT CPU count (ARCH-01), real PCI/ACPI init (ARCH-02); Phase A residuals:
+step 14 (EXC-AMD64-03 double timer tick + EXC-AMD64-01 dead probe block) and step 15
+(IRQ-01/IRQ-02 dispatch races); **SCHED-IRQ-01** (no IRQ-state contract on `schedule()` —
 syscall paths enter it with IRQs enabled; see addendum 10 §3); the kernel/userland
 higher-half **addressing rework** (the central PA==VA invariant); W^X (MM-VMM-01/AMMU-01);
 and re-commenting the headers + `.S` files reverted in Phase 2 (all C sources are
-commented and committed).
+commented and committed).  EXC-AMD64-02 (#36) is now **fixed** (Phase A, `d6f03e9`).
 
 ## 9. amd64 runtime crashes — root-caused (both FIXED)
 

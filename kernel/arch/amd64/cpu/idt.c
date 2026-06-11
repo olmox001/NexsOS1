@@ -22,10 +22,10 @@
  *     declared here but the x86 RIP-advance logic is unimplemented; the block
  *     falls through to the exception handler which halts.  The aarch64 path
  *     correctly advances ELR_EL1 (:cpu.c:75-79).  Dead code on amd64.
- *   EXC-AMD64-02 (W3 MISSING) No user-vs-kernel discrimination for exception
- *     vectors 0-31 (except 8/13/14).  A divide-by-zero in a user ELF causes
- *     the kernel to halt rather than terminating the process.  Fix: check
- *     regs->cs & 3; if Ring 3, call process_terminate + schedule.
+ *   EXC-AMD64-02 RESOLVED (Phase A): every vector 0-31 routes through
+ *     fault_handle_user_or_panic (kernel/core/fault.c) — user faults
+ *     terminate the process and schedule a successor; kernel faults dump,
+ *     print a symbolized backtrace and panic on the IST fault stacks.
  *   EXC-AMD64-04 (W2 BUG) idt_initialized is a plain static int with no
  *     volatile qualifier and no memory barrier.  APs spinning on
  *     while (!idt_initialized) may cache a stale zero indefinitely; a release
