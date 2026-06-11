@@ -150,6 +150,18 @@ void idt_init(void) {
        * NOTE(SYS-AMD64-03): This is an additional (legacy) syscall surface. */
       idt_set_gate(0x80, isr_stub_table[0x80], 0x08, 0xEE, 0);
 
+      /* Dedicated IST fault stacks (Phase A step 3; stacks live in gdt.c):
+       *   IST1 -> #GP (13) and #PF (14): the handler always runs on a fresh,
+       *           always-mapped stack even if the faulting RSP is wild or the
+       *           task kernel stack has overflowed.
+       *   IST2 -> #DF (8): separate index so that even a #PF/#GP storm that
+       *           clobbers IST1 cannot take down double-fault reporting.
+       * NMI (2) deliberately stays IST=0: an IST NMI needs the paranoid
+       * swapgs-entry pattern, out of scope here (see Phase A plan, Risks). */
+      idt_set_gate(8,  isr_stub_table[8],  0x08, 0x8E, 2);
+      idt_set_gate(13, isr_stub_table[13], 0x08, 0x8E, 1);
+      idt_set_gate(14, isr_stub_table[14], 0x08, 0x8E, 1);
+
       idt_initialized = 1;
   }
 
@@ -217,6 +229,7 @@ static void amd64_page_fault_handler(struct pt_regs *regs) {
   uint64_t error_code = regs->err;
 
   fault_printf("\n[C%d] PAGE FAULT: Access to 0x%lx\n", fault_cpu_id(), cr2);
+  fault_printf("Frame: %p (IST1 fault stack)\n", (void *)regs);
   fault_printf("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n",
                error_code,
                (error_code & 1) ? 1 : 0,

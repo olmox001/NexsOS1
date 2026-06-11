@@ -60,4 +60,12 @@ unsigned fault_depth(void);
  */
 struct cpu_info *arch_cpu_info_fault_safe(void);
 
+/*
+ * arch_frame_on_fault_stack - aarch64 HAL: whether an exception frame lives
+ * on one of the per-CPU EL1 fault stacks (i.e. the vector switched stacks and
+ * parked the original SP at frame+816).  amd64 does not define it — the IST
+ * mechanism is transparent there.
+ */
+int arch_frame_on_fault_stack(const void *frame);
+
 #endif /* _KERNEL_FAULT_H */

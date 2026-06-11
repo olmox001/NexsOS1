@@ -43,6 +43,7 @@
  *            sections could silently violate this coupling.
  */
 #include <kernel/printk.h>
+#include <kernel/string.h>
 #include <kernel/types.h>
 
 /* Exception frame structure */
@@ -56,6 +57,34 @@
 /* External definitions from core */
 extern struct cpu_info cpu_data[MAX_CPUS];
 extern uint32_t nr_cpus;
+
+/*
+ * Per-CPU EL1 fault (abort) stacks — Phase A step 4.
+ *
+ * aarch64 has no IST: an EL1-from-EL1 sync abort or SError re-uses SP_EL1,
+ * so a kernel-stack overflow or a fault with a wild SP recursed until silent
+ * death.  handle_el1_spx_sync/serror (exception.S) switch onto
+ * arch_fault_stack_top[cpu] before building the 816-byte frame; the original
+ * SP is parked in the 16-byte slot directly above the frame so the C handler
+ * can both report it and copy the frame back for resuming paths (probe fixup).
+ *
+ * 16KB per CPU sized for: sync_handler + classification + fault_printf dump +
+ * the backtrace walk, with margin.  In .bss → identity-mapped in kernel_pgd.
+ */
+#define FAULT_STACK_SIZE 16384
+static uint8_t fault_stacks[MAX_CPUS][FAULT_STACK_SIZE] __attribute__((aligned(16)));
+uint64_t arch_fault_stack_top[MAX_CPUS]; /* read by exception.S vectors */
+
+/*
+ * arch_frame_on_fault_stack - is this exception frame on a per-CPU fault stack?
+ * Used by sync_handler to know whether the parked-SP slot at frame+816 exists
+ * and whether a resuming path must copy the frame back to the original stack.
+ */
+int arch_frame_on_fault_stack(const void *frame) {
+  uintptr_t p = (uintptr_t)frame;
+  uintptr_t base = (uintptr_t)fault_stacks;
+  return p >= base && p < base + sizeof(fault_stacks);
+}
 
 /*
  * arch_cpu_info_fault_safe - per-CPU info with no faultable dependencies
@@ -95,6 +124,11 @@ void arch_cpu_init(void) {
 
   cpu_data[id].cpu_id = id;
   cpu_data[id].online = 1;
+
+  /* Publish this CPU's EL1 fault-stack top BEFORE installing the vectors:
+   * from the first VBAR exception onward, handle_el1_spx_sync/serror switch
+   * onto it (a zero entry makes the vector stay on the current stack). */
+  arch_fault_stack_top[id] = (uint64_t)&fault_stacks[id][FAULT_STACK_SIZE];
 
   if (id == 0) {
     nr_cpus = 1;
@@ -232,6 +266,17 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     /* Skip the faulting instruction (increment ELR by 4) */
     frame->elr += 4;
     fault_exit();
+    /* If the vector switched us onto the per-CPU fault stack, the eret
+     * epilogue computes the final SP as frame+816 — which would resume the
+     * probe loop ON the fault stack.  Rebuild the frame just below the
+     * original SP (free space: stacks grow down) and return that instead,
+     * so execution resumes with SP exactly as it was at the abort. */
+    if (arch_frame_on_fault_stack(frame)) {
+      uint64_t old_sp = *(uint64_t *)((char *)frame + 816) + 16; /* +16: scratch push */
+      struct pt_regs *orig = (struct pt_regs *)(old_sp - 816);
+      memcpy(orig, frame, sizeof(*frame));
+      return orig;
+    }
     return frame;
   }
 
@@ -321,6 +366,14 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     fault_printf("FAR_EL1:  0x%016lx\n", far);
     fault_printf("ESR_EL1:  0x%016lx\n", esr);
     fault_printf("EC: 0x%x, ISS: 0x%x\n", ec, (uint32_t)(esr & 0xFFFFFF));
+    if (arch_frame_on_fault_stack(frame)) {
+      /* The vector switched us onto the per-CPU fault stack; the SP at the
+       * moment of the abort was parked just above the frame. */
+      fault_printf("Frame: %p (per-CPU fault stack), faulting SP: 0x%016lx\n",
+                   (void *)frame, *(uint64_t *)((char *)frame + 816) + 16);
+    } else {
+      fault_printf("Frame: %p (faulting kernel stack)\n", (void *)frame);
+    }
 
     if (elr == 0) {
         fault_printf("%s", "CRITICAL: Kernel jumped to NULL! Check exception vector table and function pointers.\n");

@@ -344,12 +344,37 @@ handle_el1_sp0_irq:
 handle_el1_sp0_serror:
     vector_stub serror
 
+/*
+ * EL1-from-EL1 synchronous abort (Phase A step 4): run the handler on the
+ * per-CPU fault stack so a kernel-stack overflow or wild SP cannot recurse.
+ *
+ * The original SP is parked in the 16-byte slot directly above the 816-byte
+ * frame (i.e. at frame+816): sync_handler reads it for diagnostics and, on
+ * the only resuming path (probe fixup), copies the frame back below the
+ * original SP so the eret epilogue (mov sp, x0 ... add sp, #816) leaves SP
+ * exactly where the faulting code expects it.
+ *
+ * The 16-byte scratch push on the old SP is the unavoidable minimum — if even
+ * that aborts, the CPU was unrecoverable before this code ran.  A nested
+ * abort while already on the fault stack re-parks at the top and clobbers the
+ * outer frame; that is caught immediately by the fault_enter() depth guard.
+ */
 handle_el1_spx_sync:
     stp x0, x1, [sp, #-16]!
-    mov x0, #0x09000000
-    mov w1, #107
-    /* str w1, [x0] */
+    mrs x0, mpidr_el1
+    and x0, x0, #0xFF
+    adrp x1, arch_fault_stack_top
+    add  x1, x1, :lo12:arch_fault_stack_top
+    ldr  x1, [x1, x0, lsl #3]
+    cbz  x1, 1f                  /* fault stack not published yet: stay */
+    mov  x0, sp                  /* x0 = old SP (after the 16-byte push)  */
+    str  x0, [x1, #-16]!         /* park it; x1 -> top-16                 */
+    mov  sp, x1                  /* switch to the fault stack             */
+    ldp  x0, x1, [x0]            /* restore scratch from the old stack    */
+    b    2f
+1:
     ldp x0, x1, [sp], #16
+2:
     vector_stub sync
 
 handle_el1_spx_irq:
@@ -360,7 +385,24 @@ handle_el1_spx_irq:
     ldp x0, x1, [sp], #16
     irq_stub
 
+/* EL1-from-EL1 SError: same fault-stack switch as el1_spx_sync.  The SError
+ * handler never resumes (panic), so no copy-back path is needed here. */
 handle_el1_spx_serror:
+    stp x0, x1, [sp, #-16]!
+    mrs x0, mpidr_el1
+    and x0, x0, #0xFF
+    adrp x1, arch_fault_stack_top
+    add  x1, x1, :lo12:arch_fault_stack_top
+    ldr  x1, [x1, x0, lsl #3]
+    cbz  x1, 1f
+    mov  x0, sp
+    str  x0, [x1, #-16]!
+    mov  sp, x1
+    ldp  x0, x1, [x0]
+    b    2f
+1:
+    ldp x0, x1, [sp], #16
+2:
     vector_stub serror
 
 handle_el0_64_sync:
