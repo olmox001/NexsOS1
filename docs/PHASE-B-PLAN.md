@@ -119,8 +119,14 @@ Severity-ordered per the review (`docs/review/REVIEW.md` §2/§4, taxonomy in
 > application and §5 for the per-commit rules; ASTRA §4 sketches a possible
 > Phase C (userspace ELF driver services).
 
-### B1 — Filesystem W5 criticals (FIRST; awaiting confirmation)
+### B1 — Filesystem W5 criticals — **DONE (2026-06-11)**
 **Scope**: VFS-01 (#64) + EXT4-01 (#56) — the two open W5 findings.
+**Landed**: `e64756e` (VFS provider contract + ext4 extents + INCOMPAT
+enforcement) and `db04684` (mkdisk extent layout by default, `--legacy`
+opt-out).  Acceptance met on both arches: shell/counter/doom from an
+extents rootfs; zero `ext4_*` calls outside `kernel/fs/`; poisoned
+INCOMPAT bit refused loudly.  Residuals noted in ext4.c header: write
+path still legacy-only/48 KB (EXT4-05), no caching (EXT4-11).
 - Today: `kernel/fs/vfs.c` is 149 lines of path-string normalisation only;
   every syscall calls `ext4_*` directly; `kernel/fs/ext4.c` (811 lines)
   supports only the legacy indirect-block layout — **extent-tree inodes
