@@ -81,33 +81,42 @@ int main(void) {
 
   /* Supervisor loop: Monitor and respawn critical processes.
    *
-   * wait(pid) maps to _sys_wait which calls kernel process_wait()
-   * (kernel/sched/process.c:710-741).  process_wait() is NON-BLOCKING:
+   * wait(pid) maps to _sys_wait which calls kernel process_wait().
+   * process_wait() is NON-BLOCKING and a PURE REPORTER:
    *   returns -1  if the named process is still alive,
-   *   returns pid if the process is a zombie (and reaps it),
-   *   returns -2  if not found.
-   * The conditional therefore triggers only on a genuine process exit.
+   *   returns pid if the process is a corpse not yet drained by the
+   *               scheduler's reaper,
+   *   returns -2  if not found — either it never existed or it was ALREADY
+   *               auto-reaped by schedule() (the kernel frees corpses on its
+   *               own since the zombie-leak fix; a victim killed while
+   *               parked is freed immediately and never appears as a
+   *               waitable corpse).
+   * Both pid and -2 therefore mean "child is gone": testing only ==pid made
+   * the respawn a race against the kernel reaper (won on some boots/arches,
+   * lost on others — the amd64 no-respawn report).
    *
    * NOTE(USR-INIT-01): This is a correct poll loop.  PIDs are monotonic
-   * (next_pid, process.c:20/233) so a respawned service can never collide
-   * with the surviving service's PID.
+   * (next_pid, process.c) so a respawned service can never collide with the
+   * surviving service's PID.  A failed spawn (pid <= 0) also yields -2 and
+   * is retried on the next iteration.
    *
    * NOTE(USR-INIT-03): There is no respawn backoff or rate limit.  A crashing
    * service is respawned immediately on every supervisor iteration, which can
-   * exhaust the process table with zombie entries before the system stabilises.
+   * exhaust the process table before the system stabilises.
    */
   print("[Init] Entering supervisor loop\n");
   while (1) {
-    /* Check if shell died and respawn.
-     * If wait() returns pid_shell the kernel has reaped the zombie;
-     * spawn() assigns a fresh monotonic PID and stores it in pid_shell. */
-    if (wait(pid_shell) == pid_shell) {
+    /* Respawn the shell when it is gone (freshly dead corpse OR already
+     * reaped by the kernel).  spawn() assigns a fresh monotonic PID. */
+    int r = wait(pid_shell);
+    if (r == pid_shell || r == -2) {
       print("[Init] Shell terminated! Respawning...\n");
       pid_shell = spawn("/sys/bin/shell");
     }
 
     /* Check if notification server died and respawn. */
-    if (wait(pid_notify) == pid_notify) {
+    r = wait(pid_notify);
+    if (r == pid_notify || r == -2) {
       print("[Init] Notification Server died! Respawning...\n");
       pid_notify = spawn("/sys/bin/notify_srv");
     }

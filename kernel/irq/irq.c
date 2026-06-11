@@ -21,33 +21,43 @@
  *     bypasses the irq_handlers[] table.
  *
  * Known issues:
- *   IRQ-01  (W4 WRONG-DESIGN) On amd64 pic_chip->acknowledge() always returns
- *           1023; irq_handler() exits immediately on the first iteration and
- *           is therefore a permanent no-op on x86.  Actual dispatch is done by
- *           irq_dispatch() from idt.c, which also issues lapic_eoi() itself,
- *           bypassing chip->end() entirely.  The two paths are irreconcilable
- *           without a chip-aware IDT handler or a chip that correctly
- *           participates in the acknowledge loop.
- *   IRQ-02  (W3 WRONG-DESIGN) irq_handlers[] has no lock.  Concurrent
- *           irq_register / irq_unregister from different CPUs and the dispatch
- *           path reading handler pointers can race, producing a stale function
- *           pointer dereference on SMP.
+ *   IRQ-01  RESOLVED (Phase A step 15, by contract redefinition): the two
+ *           dispatch models are now explicit.  aarch64 enters through
+ *           irq_handler() (GIC acknowledge-loop, vector from GICC_IAR);
+ *           amd64 enters through irq_dispatch() (vector already known from
+ *           the IDT stub — an IAR-style acknowledge() makes no sense on x86,
+ *           exactly as in other kernels' vectored dispatch).  What WAS broken
+ *           is fixed: EOI on amd64 no longer bypasses the chip — the IDT
+ *           handler calls irq_chip_end(), and pic_chip->end() owns the full
+ *           LAPIC+PIC EOI sequence.  pic_chip_acknowledge() keeps returning
+ *           1023 so a stray irq_handler() call on amd64 stays a no-op.
+ *   IRQ-02  RESOLVED (Phase A step 15): irq_table_lock protects
+ *           irq_handlers[]; dispatch paths copy the (handler, data) pair
+ *           under the lock and invoke the handler outside it, so a concurrent
+ *           irq_unregister can no longer produce a torn pair or a stale
+ *           pointer dereference.
  */
 #include <kernel/irq.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
+#include <kernel/spinlock.h>
 #include <kernel/types.h>
 
 #define MAX_IRQS 256
 
 /* irq_handlers[]: sparse table mapping IRQ number -> (handler, opaque data).
  * Entries are set by irq_register() and cleared by irq_unregister().
- * NOTE(IRQ-02): No lock protects this table; concurrent register/unregister
- * and dispatch reads are an SMP data race. */
+ * FIX(IRQ-02): guarded by irq_table_lock; dispatchers copy the pair under
+ * the lock and call the handler after dropping it (a handler may re-register
+ * or disable lines without self-deadlocking). */
 static struct {
   irq_handler_t handler;
   void *data;
 } irq_handlers[MAX_IRQS];
+
+/* irq_table_lock: protects irq_handlers[] against concurrent
+ * register/unregister/dispatch across CPUs (IRQ-02). */
+static DEFINE_SPINLOCK(irq_table_lock);
 
 /* current_chip: pointer to the active irq_chip implementation.
  * Set once at boot via irq_register_chip(); never changed afterwards.
@@ -111,22 +121,27 @@ void irq_init_percpu(void) {
  * registered.  After storing the handler, calls chip->enable(irq) to unmask
  * the line in the interrupt controller.
  *
- * Locking: NOT safe for concurrent use; see NOTE(IRQ-02).
+ * Locking: irq_table_lock (irqsave) for the table slot; the chip->enable()
+ *          MMIO write happens after the slot is visible, so the line is
+ *          never unmasked with an empty handler entry.
  * IRQ context: must NOT be called from an IRQ handler.
- *
- * NOTE(IRQ-02): irq_handlers[] write and the chip->enable() call are not
- * protected by any lock; a concurrent irq_unregister() or dispatch read
- * would be a data race on SMP.
  */
 int irq_register(uint32_t irq, irq_handler_t handler, void *data) {
   if (irq >= MAX_IRQS)
     return -EINVAL;
 
-  if (irq_handlers[irq].handler)
+  uint64_t flags;
+  spin_lock_irqsave(&irq_table_lock, &flags);
+
+  if (irq_handlers[irq].handler) {
+    spin_unlock_irqrestore(&irq_table_lock, flags);
     return -EBUSY;
+  }
 
   irq_handlers[irq].handler = handler;
   irq_handlers[irq].data = data;
+
+  spin_unlock_irqrestore(&irq_table_lock, flags);
 
   if (current_chip && current_chip->enable) {
     current_chip->enable(irq);
@@ -144,10 +159,11 @@ int irq_register(uint32_t irq, irq_handler_t handler, void *data) {
  * clears the handler and data pointers in irq_handlers[].  Silently returns
  * if irq >= MAX_IRQS.
  *
- * Locking: NOT safe for concurrent use; see NOTE(IRQ-02).
+ * Locking: irq_table_lock (irqsave) for the table slot.  A dispatch that
+ *          already copied the pair may still complete one final handler call
+ *          after unregister returns (no synchronize_irq yet); the line is
+ *          masked first, so no NEW interrupts dispatch the stale entry.
  * IRQ context: must NOT be called from an IRQ handler.
- *
- * NOTE(IRQ-02): same race as irq_register — no lock protecting the table.
  */
 void irq_unregister(uint32_t irq) {
   if (irq >= MAX_IRQS)
@@ -157,8 +173,11 @@ void irq_unregister(uint32_t irq) {
     current_chip->disable(irq);
   }
 
+  uint64_t flags;
+  spin_lock_irqsave(&irq_table_lock, &flags);
   irq_handlers[irq].handler = NULL;
   irq_handlers[irq].data = NULL;
+  spin_unlock_irqrestore(&irq_table_lock, flags);
 }
 
 /*
@@ -246,13 +265,12 @@ static void cpu_halt_from_ipi(void) {
  *
  * Returns the (potentially new) register state for the resumed context.
  *
- * NOTE(IRQ-01): On amd64 pic_chip->acknowledge() immediately returns 1023,
- * so this entire loop is a no-op on x86.  Actual dispatch is performed by
- * irq_dispatch() from idt.c.
- * NOTE(IRQ-02): irq_handlers[] is read without a lock here; concurrent
- * irq_unregister() from another CPU is a data race.
+ * NOTE(IRQ-01, resolved): this loop is the aarch64 (GIC) entry point only;
+ * amd64 is vectored and enters through irq_dispatch() + irq_chip_end().
+ * FIX(IRQ-02): the (handler, data) pair is copied under irq_table_lock and
+ * invoked after dropping it.
  *
- * Locking: runs with IRQs implicitly masked (exception entry); no spinlock.
+ * Locking: runs with IRQs implicitly masked (exception entry).
  * IRQ context: YES — this IS the IRQ entry point on aarch64.
  */
 struct pt_regs *irq_handler(struct pt_regs *regs) {
@@ -289,11 +307,20 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
 
       current_chip->end(irq);
       return ret_regs;
+    }
 
-    } else if (irq < MAX_IRQS && irq_handlers[irq].handler) {
+    /* FIX(IRQ-02): snapshot the pair under the lock, call outside it. */
+    irq_handler_t handler = NULL;
+    void *data = NULL;
+    if (irq < MAX_IRQS) {
+      spin_lock(&irq_table_lock);
+      handler = irq_handlers[irq].handler;
+      data = irq_handlers[irq].data;
+      spin_unlock(&irq_table_lock);
+    }
 
-      irq_handlers[irq].handler(irq, irq_handlers[irq].data);
-
+    if (handler) {
+      handler(irq, data);
     } else {
       pr_warn("IRQ: Unhandled interrupt %u\n", irq);
       irq_disable(irq); /* Prevent interrupt storm */
@@ -311,29 +338,53 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
  * @irq:  interrupt vector number derived from the IDT stub (0..255).
  * @regs: saved register state from the IDT common handler.
  *
- * Called by the amd64 IDT common handler in idt.c after it has issued
- * lapic_eoi() and pic_send_eoi() directly.  Looks up irq_handlers[irq]
- * and invokes the registered callback if present; logs a warning otherwise.
+ * Called by the amd64 IDT common handler in idt.c; the IDT handler then
+ * issues the EOI through irq_chip_end() (chip-owned EOI — IRQ-01 fix).
+ * Looks up irq_handlers[irq] and invokes the registered callback if present;
+ * logs a warning otherwise.
  *
  * Returns @regs unchanged (no context-switch support on this path; scheduler
  * preemption on amd64 happens through a separate mechanism).
  *
- * NOTE(IRQ-01): This function completely bypasses current_chip->acknowledge()
- * and current_chip->end().  The chip EOI contract is not honoured here;
- * lapic_eoi() is called by the IDT handler directly.
- * NOTE(IRQ-02): irq_handlers[] read without a lock; same SMP race as in
- * irq_handler().
+ * NOTE(IRQ-01, resolved): acknowledge() is N/A on a vectored architecture —
+ * the vector arrives with the frame.  EOI goes through the chip now.
+ * FIX(IRQ-02): (handler, data) copied under irq_table_lock, called outside.
  *
- * Locking: IRQs are masked by the CPU at IDT entry; no spinlock needed
- *          for the dispatch itself, but the table access is still unguarded
- *          against concurrent register/unregister.
+ * Locking: IRQs are masked by the CPU at IDT entry; irq_table_lock guards
+ *          the table read against concurrent register/unregister.
  * IRQ context: YES — called from the amd64 IDT handler.
  */
 struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs) {
-  if (irq < MAX_IRQS && irq_handlers[irq].handler) {
-    irq_handlers[irq].handler(irq, irq_handlers[irq].data);
+  irq_handler_t handler = NULL;
+  void *data = NULL;
+
+  if (irq < MAX_IRQS) {
+    spin_lock(&irq_table_lock);
+    handler = irq_handlers[irq].handler;
+    data = irq_handlers[irq].data;
+    spin_unlock(&irq_table_lock);
+  }
+
+  if (handler) {
+    handler(irq, data);
   } else {
     pr_warn("IRQ: Unhandled interrupt %u\n", irq);
   }
   return regs;
+}
+
+/*
+ * irq_chip_end - single EOI mechanism for vectored dispatchers (IRQ-01 fix).
+ *
+ * Routes the end-of-interrupt through the registered chip: on amd64 the
+ * pic_chip->end() implementation owns the complete LAPIC + 8259 sequence,
+ * so idt.c no longer hand-rolls EOI writes behind the chip's back.
+ *
+ * Locking: none; chip->end() is a self-contained MMIO/port write sequence.
+ * IRQ context: YES.
+ */
+void irq_chip_end(uint32_t irq) {
+  if (current_chip && current_chip->end) {
+    current_chip->end(irq);
+  }
 }

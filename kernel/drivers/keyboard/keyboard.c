@@ -188,8 +188,12 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
   else
     c = scancode_to_ascii[code];
 
+  /* Per-keystroke logging is debug-only: at pr_info level every press AND
+   * release printed a line from IRQ context, flooding the serial log and
+   * serialising all CPUs on the printk path while typing. */
   if (c != 0) {
-    pr_info("Keyboard: Char='%c' (val=%d) -> PID %d\n", c, value, keyboard_focus_pid);
+    pr_debug("Keyboard: Char='%c' (val=%d) -> PID %d\n", c, value,
+             keyboard_focus_pid);
   }
 
   /* Send IPC message if we have a focus PID */

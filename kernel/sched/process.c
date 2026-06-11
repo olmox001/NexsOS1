@@ -34,9 +34,11 @@
  *             compositor, inverting the correct dependency.
  *   SCHED-02  (W2 BAD-IMPL) schedule() is large and intricate; many pc==0
  *             panic guards betray past context-corruption bugs.
- *   SCHED-03  (W2 WRONG-DESIGN) process_wait() is non-blocking (returns -1
- *             while target is alive); zombies are only reaped via process_wait,
- *             so unwaited children permanently leak process pool slots.
+ *   SCHED-03  (W2 WRONG-DESIGN, MITIGATED) process_wait() is non-blocking
+ *             (returns -1 while target is alive).  Zombies are now auto-reaped
+ *             by schedule() (prev==ZOMBIE -> reap stack), so unwaited children
+ *             no longer leak pool slots; exit-status collection for a future
+ *             blocking wait() still needs parent/child links (SCHED-06).
  *   SCHED-04  (W2 BUG/DOC) Comment in process_create says "Kernel Stack (16KB)"
  *             but STACK_SIZE is 128KB.
  *   SCHED-05  (W3 BUG/SECURITY) kernel_ipc_send() nests sched_lock -> msg_lock
@@ -553,11 +555,16 @@ void smp_create_idle_task(uint32_t cpu_id) {
  *
  * If the process is terminating itself (current_process == proc), it is
  * marked PROC_ZOMBIE; the caller (sys_exit) must immediately call schedule()
- * to switch away.  Zombie resources are freed by process_wait().
+ * to switch away.  schedule() auto-reaps the zombie via the deferred-free
+ * stack on its next pass (process_wait() can still reap it first).
  *
- * If the process is not running on any CPU (on_cpu < 0), resources are freed
- * immediately: kernel stack (pmm_free_pages), page table (vmm_destroy_pgd),
- * and the struct process page (pmm_free_page).
+ * If the process is neither READY/RUNNING nor self-terminating (SLEEPING on
+ * a wait queue or in IPC, or CREATED-never-scheduled), it is detached from
+ * any wait queue and marked DEAD; if it is provably parked (not current_task
+ * on its CPU, checked under that CPU's sched_lock) its resources are freed
+ * immediately, otherwise the owning CPU's schedule() reaps it (prev==DEAD).
+ * Supervisors polling process_wait() must treat -2 as "child gone": an
+ * immediately-freed victim never appears as a waitable corpse.
  *
  * System processes (PROC_PERM_SYSTEM) cannot be terminated.
  *
@@ -570,8 +577,8 @@ void smp_create_idle_task(uint32_t cpu_id) {
  * IRQ context: no.
  * Returns: 0 on success, -1 if not found or protected.
  *
- * NOTE(SCHED-03): Zombies are only reaped via process_wait(); without an
- *          explicit waiter the pool slot is leaked permanently. [W2]
+ * NOTE(SCHED-03, mitigated): zombies are auto-reaped by schedule(); the
+ *          historical pool-slot leak no longer occurs without a waiter.
  * NOTE(ABI-04): The PROC_PERM_SYSTEM check is the only access-control gate;
  *          any user process may kill any non-system PID. [W4 SECURITY]
  */
@@ -611,8 +618,8 @@ int process_terminate(int pid) {
 
   /* Self-termination: we are standing on this process's kernel stack, so we
    * cannot free it now.  Mark ZOMBIE; the caller (sys_exit) MUST call
-   * schedule() to switch away, and process_wait() reaps the zombie.
-   * NOTE(SCHED-03): an unwaited zombie keeps its pool slot until reaped. */
+   * schedule() to switch away — schedule() then auto-reaps the zombie via
+   * the per-CPU deferred-free stack (SCHED-03 mitigation). */
   if (current_process == proc) {
     proc->state = PROC_ZOMBIE;
     spin_unlock_irqrestore(&sched_lock, flags);
@@ -651,14 +658,14 @@ int process_terminate(int pid) {
    *     it is not current_task anywhere and not on any runqueue.
    */
   if (proc->wait_queue_ptr) {
+    /* Detach from the wait queue first so a concurrent wake_up() can never
+     * resurrect the victim; the parked-vs-running decision is made by the
+     * common tail below, exactly as for IPC sleepers. */
     struct wait_queue_head *wq = proc->wait_queue_ptr;
     spin_lock(&wq->lock);
     list_del_init(&proc->run_list);
     proc->wait_queue_ptr = NULL;
     spin_unlock(&wq->lock);
-    proc->state = PROC_DEAD;
-    spin_unlock_irqrestore(&sched_lock, flags);
-    return 0;
   }
 
   if (proc->state == PROC_READY || proc->state == PROC_RUNNING) {
@@ -683,8 +690,33 @@ int process_terminate(int pid) {
     return 0;
   }
 
-  /* Not runnable and not running anywhere — safe to free immediately. */
+  /* Common tail: not on a runqueue and not READY/RUNNING — the victim is
+   * SLEEPING (wait-queue sleeper detached above, or an IPC sleeper from
+   * sys_ipc_recv) or CREATED-never-scheduled.
+   *
+   * Mark DEAD first, then decide WHO frees.  A sleeper that has set
+   * PROC_SLEEPING but not yet switched away is still current_task on its
+   * CPU — sys_ipc_recv returns to user mode and only parks at the next
+   * tick — so freeing it here would pull the kernel stack and PGD out from
+   * under a CPU that is still executing on them (SCHED-UAF family).  That
+   * case is left to the owning CPU's schedule(), which reaps it via the
+   * prev==DEAD path.  Only a fully parked corpse (its CPU has provably
+   * moved on, checked under that CPU's sched_lock) is freed immediately;
+   * immediate freeing also means the pool slot disappears right away, so
+   * supervisors must treat process_wait()==-2 as "child gone". */
   proc->state = PROC_DEAD;
+  {
+    int vcpu = (proc->on_cpu >= 0) ? proc->on_cpu : 0;
+    struct cpu_info *vc = &cpu_data[vcpu];
+    spin_lock(&vc->sched_lock);
+    int still_current = (vc->current_task == proc);
+    spin_unlock(&vc->sched_lock);
+    if (still_current) {
+      spin_unlock_irqrestore(&sched_lock, flags);
+      return 0;
+    }
+  }
+
   if (slot >= 0) {
     process_pool[slot] = NULL;
     active_count--;
@@ -762,9 +794,12 @@ void start_user_process(struct process *proc) {
  *          1-5; temporarily acquires other_cpu->sched_lock (trylock) during
  *          work stealing; acquires sched_lock (irqsave) during deferred free.
  *          Releases all locks before returning.
- * IRQ context: yes when called from the timer IRQ; no when called from a
- *          syscall.  The function is safe in both contexts because it uses
- *          irqsave variants.
+ * IRQ contract (SCHED-IRQ-01): schedule() masks IRQs itself at entry and is
+ *          therefore safe to call with IRQs in ANY state (timer IRQ path:
+ *          already masked; syscall paths: historically enabled).  No-switch
+ *          exits restore the caller's IRQ state; the context-switch exit
+ *          returns with IRQs masked and the dispatcher's IRET/ERET loads the
+ *          next context's saved flags.
  *
  * NOTE(SCHED-01): compositor_get_focus_pid() is called on every schedule()
  *          invocation — the kernel scheduler has a compile-time dependency on
@@ -773,9 +808,21 @@ void start_user_process(struct process *proc) {
  *          bugs; the function is large and hard to audit. [W2 BAD-IMPL]
  */
 struct pt_regs *schedule(struct pt_regs *regs) {
+  /* SCHED-IRQ-01: schedule() owns its IRQ state.  Syscall paths used to
+   * enter with IRQs enabled; a timer IRQ nesting anywhere in this function
+   * could re-enter schedule() on the same CPU — double-draining the
+   * deferred-free list (SCHED-UAF-02 family), corrupting the runqueue walk,
+   * or leaving cpu_ptr stale if the preemption migrated the task.  Mask for
+   * the WHOLE function (before even get_cpu_info(), so cpu_ptr cannot go
+   * stale): the non-switch exits restore the caller's IRQ state; the
+   * context-switch exit deliberately returns with IRQs masked — the
+   * dispatcher's IRET/ERET then loads the next context's saved flags. */
+  uint64_t sched_irq_flags = local_irq_save();
+
   struct cpu_info *cpu_ptr = get_cpu_info();
   if (!cpu_ptr) {
     if (regs && pt_regs_pc(regs) == 0) panic("SCHED: [EARLY] pc==0 on return");
+    local_irq_restore(sched_irq_flags);
     return regs;
   }
 
@@ -784,14 +831,9 @@ struct pt_regs *schedule(struct pt_regs *regs) {
    * time we reach here on this CPU, we have already context-switched to a
    * different task and are no longer touching the old stack.
    *
-   * IRQs MUST be masked for the whole drain (SCHED-UAF-02): schedule() can be
-   * entered with IRQs enabled (the syscall paths re-enable them before
-   * yielding, e.g. sys_getchar in syscall_dispatch.c), and this list is popped
-   * without a lock.  A timer IRQ nesting here would re-enter schedule() on the
-   * same CPU, drain the same node, and double-free the kernel stack, PGD and
-   * struct process.  The list is strictly per-CPU (reap_push only ever runs on
-   * the owning CPU), so masking local IRQs is sufficient — no spinlock needed. */
-  uint64_t drain_flags = local_irq_save();
+   * The list is popped without a lock: it is strictly per-CPU (reap_push
+   * only ever runs on the owning CPU) and the function-wide IRQ mask above
+   * (SCHED-IRQ-01) prevents a nested schedule() from double-draining it. */
   while (cpu_ptr->deferred_free_proc) {
     struct process *to_free = cpu_ptr->deferred_free_proc;
     cpu_ptr->deferred_free_proc = to_free->next;
@@ -809,13 +851,25 @@ struct pt_regs *schedule(struct pt_regs *regs) {
     }
     spin_unlock_irqrestore(&sched_lock, gflags);
 
+    /* Drain leftover IPC messages.  The external-terminate path drains the
+     * queue in process_terminate(), but a self-terminated zombie keeps any
+     * already-queued nodes.  No lock needed: kernel_ipc_send() refuses
+     * DEAD/ZOMBIE targets, so the queue is stable by the time we get here. */
+    {
+      struct list_head *pos, *q;
+      list_for_each_safe(pos, q, &to_free->msg_queue) {
+        struct ipc_node *node = list_entry(pos, struct ipc_node, list);
+        list_del(pos);
+        kfree(node);
+      }
+    }
+
     if (to_free->kernel_stack)
       pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
     if (to_free->page_table)
       vmm_destroy_pgd(to_free->page_table);
     pmm_free_page(to_free);
   }
-  local_irq_restore(drain_flags);
 
   uint32_t cpu = cpu_ptr->cpu_id;
   struct process *prev = cpu_ptr->current_task;
@@ -835,11 +889,17 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
     /* 1. Handle Current Process */
     if (prev) {
-      /* Check if externally terminated while running on this CPU */
-      if (prev->state == PROC_DEAD) {
-        /* Cannot free kernel_stack here (we're standing on it).
-         * Queue it on the reap stack; the NEXT schedule() frees it after we
-         * have switched away. */
+      /* PROC_DEAD: externally terminated while running on this CPU.
+       * PROC_ZOMBIE: terminated itself (sys_exit or fault-path kill) and
+       * entered schedule() to switch away.  Both are corpses standing on
+       * their own kernel stack, so neither can be freed here: queue on the
+       * reap stack; the NEXT schedule() on this CPU frees them after the
+       * switch.  Auto-reaping zombies here (instead of waiting for a
+       * process_wait() that the shell never issues) closes the SCHED-03
+       * pool-slot/PGD leak: doom/demo3d no longer linger as ZOMBIE.
+       * Idle tasks never reach this point (they never exit and are
+       * PROC_PERM_SYSTEM-protected from process_terminate). */
+      if (prev->state == PROC_DEAD || prev->state == PROC_ZOMBIE) {
         prev->on_cpu = -1;
         reap_push(cpu_ptr, prev);
         cpu_ptr->current_task = NULL;
@@ -985,6 +1045,7 @@ found:
               prev->pid);
       }
       spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
+      local_irq_restore(sched_irq_flags); /* SCHED-IRQ-01: no-switch exit */
       return regs;
     }
 
@@ -1004,6 +1065,7 @@ found:
               prev ? (int)prev->pid : -1);
       }
       spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
+      local_irq_restore(sched_irq_flags); /* SCHED-IRQ-01: no-switch exit */
       return regs;
     }
   }
@@ -1017,6 +1079,7 @@ found:
     next->state = PROC_RUNNING;
     next->on_cpu = cpu;
     spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
+    local_irq_restore(sched_irq_flags); /* SCHED-IRQ-01: no-switch exit */
     return regs;
   }
 
@@ -1047,12 +1110,19 @@ found:
   arch_cpu_switch_context(next);
 
   spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
+  /* SCHED-IRQ-01: context-switch exit — deliberately NO local_irq_restore.
+   * We are about to unwind into the dispatcher with another task's frame;
+   * IRQs stay masked until IRET/ERET loads the flags saved in that frame.
+   * (The flags captured at entry belong to the PREVIOUS task's kernel
+   * context and are restored when that context is eventually resumed.) */
   return next->context;
 }
 
 /*
  * Wait for a process (non-blocking)
- * Returns PID if terminated, -1 if still running, -2 if not found
+ * Returns PID if terminated (corpse still pending reap), -1 if still
+ * running, -2 if not found (never existed, or already auto-reaped by the
+ * scheduler).  Pure reporter: freeing belongs to the schedule() reaper.
  */
 int process_wait(int pid) {
   uint64_t flags;
@@ -1061,22 +1131,11 @@ int process_wait(int pid) {
     struct process *proc = process_pool[i];
     if (proc && (int)proc->pid == pid) {
       if (proc->state == PROC_DEAD || proc->state == PROC_ZOMBIE) {
-        if (proc->state == PROC_ZOMBIE) {
-          /* Now we can safely free the zombie's resources */
-          pr_info("Reaping zombie process %d\n", pid);
-          if (proc->kernel_stack) {
-            pmm_free_pages((void *)(proc->kernel_stack - STACK_SIZE),
-                           STACK_SIZE / 4096);
-          }
-          if (proc->page_table) {
-            vmm_destroy_pgd(proc->page_table);
-          }
-          pmm_free_page(proc);
-        }
-
-        /* Resource cleanup should have happened */
-        process_pool[i] = NULL;
-        active_count--;
+        /* Corpse freeing is owned EXCLUSIVELY by the scheduler reaper
+         * (per-CPU deferred-free stack): a zombie seen here is typically
+         * already queued for reaping on its CPU, so freeing it now —
+         * as this function historically did — would be a double free.
+         * Just report the termination; the slot disappears once drained. */
         spin_unlock_irqrestore(&sched_lock, flags);
         return pid;
       }

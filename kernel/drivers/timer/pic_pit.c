@@ -19,34 +19,34 @@
  *   (vector 32).  On QEMU the LAPIC timer supersedes the PIT for SMP, but
  *   pic_send_eoi is still needed for PIC IRQ acknowledgement.
  *
- * pic_chip and the IRQ-01 design problem:
+ * pic_chip and the dispatch contract (IRQ-01, resolved):
  *   pic_chip is registered as current_chip in irq.c via irq_register_chip().
- *   However, pic_chip_acknowledge() always returns 1023, which causes
- *   irq_handler() to exit immediately on the first iteration — making the
- *   generic dispatch loop a permanent no-op on amd64.  Actual IRQ dispatch
- *   is performed by irq_dispatch() called from the IDT common handler in
- *   idt.c, which also issues lapic_eoi() and pic_send_eoi() directly,
- *   bypassing chip->end() entirely.
+ *   amd64 is a VECTORED architecture: the vector arrives with the trap frame,
+ *   so a GIC-style acknowledge() loop makes no sense — pic_chip_acknowledge()
+ *   returns 1023 by design so a stray irq_handler() call stays a no-op.
+ *   Dispatch happens in idt.c via irq_dispatch(); the EOI is chip-owned:
+ *   idt.c calls irq_chip_end(vec) and pic_chip_end() performs the complete
+ *   LAPIC + 8259 sequence (nothing bypasses the chip anymore).
  *
  * Invariants:
  *   - pic_init() must be called before any device IRQ is unmasked on amd64.
- *   - IRQ numbers passed to pic_chip_enable/disable are in the range 32-47
- *     (IDT vector space); the PIC hardware line = irq - 32.
- *
- * Known issues:
- *   IRQ-01  (W4 WRONG-DESIGN) pic_chip_acknowledge() returns 1023;
- *           irq_handler()'s generic chip loop is dead on amd64.  Actual
- *           dispatch bypasses the chip contract.  See file header above.
+ *   - IRQ numbers passed to pic_chip_enable/disable/end are in the range
+ *     32-47 (IDT vector space); the PIC hardware line = irq - 32.
+ *   - Spurious IRQ7/IRQ15 (vectors 39/47) must be filtered with
+ *     pic_handle_spurious() BEFORE dispatch: they are not real interrupts
+ *     and their EOI rules differ (none for IRQ7; master-only for IRQ15).
  */
 #include <kernel/types.h>
 #include <kernel/hal.h>
 #include <kernel/irq.h>
 #include <kernel/printk.h>
 #include <arch/pt_regs.h>
+#include <arch/amd64_internal.h>
 
 /* Prototypes to satisfy -Wmissing-prototypes */
 void pic_init(void);
 void pic_send_eoi(uint8_t irq);
+int pic_handle_spurious(uint32_t vec);
 struct pt_regs *amd64_timer_interrupt(struct pt_regs *regs);
 struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs);
 
@@ -134,17 +134,13 @@ static void pic_chip_disable(uint32_t irq) {
 /*
  * pic_chip_acknowledge - chip->acknowledge() for the amd64 PIC path.
  *
- * Returns 1023 unconditionally.
- *
- * NOTE(IRQ-01): This is the root of the dead-irq_handler() problem on amd64.
- * irq_handler() treats 1023 as "no more interrupts" and exits immediately.
- * On x86, the IDT stub delivers the vector in pt_regs before even reaching
- * this function, so there is no IAR-equivalent read needed; but the chip
- * contract requires acknowledge() to return the vector, not a sentinel.
- * Returning 1023 permanently breaks the generic dispatch loop for x86.
+ * Returns 1023 unconditionally — BY DESIGN (IRQ-01 resolution): amd64 is
+ * vectored, the vector arrives with the trap frame, so there is no
+ * IAR-equivalent register to read.  The sentinel keeps a stray
+ * irq_handler() call (the aarch64 acknowledge-loop entry) a safe no-op.
  *
  * Locking: none.
- * IRQ context: safe (but irrelevant — this is never called in the hot path).
+ * IRQ context: safe (never called in the amd64 hot path).
  */
 static uint32_t pic_chip_acknowledge(void) {
     /* Not used by PIC on x86 because the vector is in pt_regs */
@@ -152,19 +148,23 @@ static uint32_t pic_chip_acknowledge(void) {
 }
 
 /*
- * pic_chip_end - send End-Of-Interrupt to the PIC (chip->end for amd64).
+ * pic_chip_end - chip-owned End-Of-Interrupt for amd64 (IRQ-01 fix).
  *
- * @irq: IDT vector number (32-47).
+ * @irq: IDT vector number (32-255).
  *
- * Translates to hardware IRQ line and calls pic_send_eoi().  This would be
- * correct EOI path if irq_handler() were used on amd64, but per IRQ-01 it
- * is not.  The actual EOI on amd64 is issued by the IDT common handler.
+ * Owns the COMPLETE amd64 EOI sequence — called via irq_chip_end() from the
+ * IDT common handler for every hardware vector:
+ *   1. lapic_eoi(): required for LAPIC-delivered vectors (timer, IPIs, MSI);
+ *      harmless no-op for ExtINT-delivered PIC lines.
+ *   2. pic_send_eoi(): only for the legacy PIC range (vectors 32-47).
+ * Nothing outside this function issues EOI writes on amd64 anymore.
  *
- * I/O side effects: same as pic_send_eoi.
+ * I/O side effects: LAPIC_EOI MMIO write; PIC1/PIC2 CMD port writes (32-47).
  * Locking: none.
- * IRQ context: safe.
+ * IRQ context: YES — IDT path.
  */
 static void pic_chip_end(uint32_t irq) {
+    lapic_eoi();
     if (irq >= 32 && irq < 48) {
         pic_send_eoi(irq - 32);
     }
@@ -173,7 +173,7 @@ static void pic_chip_end(uint32_t irq) {
 /* pic_chip: irq_chip implementation for the 8259A PIC pair.
  * .init is NULL because pic_init() itself calls irq_register_chip() and
  * then initialises the PIC; there is no separate init() callback needed.
- * NOTE(IRQ-01): .acknowledge always returns 1023 — see pic_chip_acknowledge. */
+ * .acknowledge returns 1023 by design (vectored dispatch — see above). */
 static struct irq_chip pic_chip = {
     .name = "8259 PIC",
     .init = NULL,
@@ -275,6 +275,54 @@ void pic_send_eoi(uint8_t irq) {
     hal_write8(PIC2_CMD, 0x20);
   }
   hal_write8(PIC1_CMD, 0x20);
+}
+
+/*
+ * pic_handle_spurious - detect and absorb 8259 spurious IRQ7/IRQ15.
+ *
+ * @vec: IDT vector number (only 39 and 47 are meaningful).
+ *
+ * A level pulse that deasserts before the CPU's INTA cycle makes the 8259
+ * report its lowest-priority line: IRQ7 on the master (vector 39) or IRQ15
+ * on the slave (vector 47).  Virtio INTx lines ACKed quickly by polling
+ * drivers produce these in bursts ("IRQ: Unhandled interrupt 47" flood
+ * during disk I/O).  A spurious IRQ is identified by its In-Service
+ * Register bit being CLEAR (OCW3 0x0B selects ISR for the next read).
+ *
+ * EOI rules differ from real interrupts — this is why the check must run
+ * BEFORE dispatch:
+ *   spurious IRQ7:  no EOI at all (nothing is in service on the master).
+ *   spurious IRQ15: EOI to the MASTER only (the cascade line IRQ2 was a
+ *                   real in-service interrupt on the master); a slave EOI
+ *                   here would wrongly clear a genuine in-service slave bit.
+ *
+ * Returns 1 if the vector was a spurious interrupt and has been fully
+ * handled (caller must not dispatch nor EOI), 0 for a real interrupt.
+ *
+ * I/O side effects: OCW3 write + ISR read on the affected PIC; possibly
+ *                   master EOI.
+ * Locking: none.
+ * IRQ context: YES — called from the IDT path before irq_dispatch().
+ */
+int pic_handle_spurious(uint32_t vec) {
+    if (vec == 39) { /* master IRQ7 */
+        hal_write8(PIC1_CMD, 0x0B); /* OCW3: read ISR on next read */
+        uint8_t isr = hal_read8(PIC1_CMD);
+        if (!(isr & 0x80)) {
+            return 1; /* spurious: no EOI */
+        }
+        return 0;
+    }
+    if (vec == 47) { /* slave IRQ15 */
+        hal_write8(PIC2_CMD, 0x0B);
+        uint8_t isr = hal_read8(PIC2_CMD);
+        if (!(isr & 0x80)) {
+            hal_write8(PIC1_CMD, 0x20); /* EOI the master's cascade (IRQ2) */
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
 }
 
 /*

@@ -15,6 +15,7 @@ void arch_vmm_init(void);
 void lapic_eoi(void);
 void pic_init(void);
 void pic_send_eoi(uint8_t irq);
+int pic_handle_spurious(uint32_t vec);
 void pic_unmask(uint8_t irq);
 void pic_mask(uint8_t irq);
 void pit_init(void);

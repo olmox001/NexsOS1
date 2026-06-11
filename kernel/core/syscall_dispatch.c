@@ -553,13 +553,13 @@ long sys_write(int fd, const char *buf, size_t count) {
  * Calls process_terminate(current_process->pid), which marks the process
  * PROC_ZOMBIE and returns immediately (it cannot free its own kernel stack).
  * The caller (case 93 in kernel_syscall_dispatcher) MUST call schedule()
- * after sys_exit() to switch away from this process; the zombie is reaped
- * later by process_wait().
+ * after sys_exit() to switch away from this process; that schedule() call
+ * auto-reaps the zombie via the per-CPU deferred-free stack.
  *
  * Locking: delegates to process_terminate() which acquires sched_lock.
  * IRQ context: no.
- * NOTE(SCHED-03): Zombies accumulate in the process pool until a parent calls
- *          process_wait(); unwaited children leak pool slots permanently.
+ * NOTE(SCHED-03, mitigated): zombies no longer accumulate — schedule()
+ *          reaps them without requiring a process_wait() caller.
  */
 void sys_exit(int status) {
   if (current_process) {

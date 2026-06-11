@@ -23,12 +23,13 @@
  *     the guard 'if (ticks_per_ms != 0) return' makes calibration idempotent.
  *
  * Known issues:
- *   EXC-AMD64-03 (W3 BAD-IMPL) LAPIC LINT0 is configured as ExtINT (not
- *     masked) at lapic_init:22 so legacy PIC IRQ 0 (timer) is delivered on
- *     vector 32.  lapic_timer_setup also programs vector 32 as the LAPIC
- *     periodic timer.  If both the PIC and the LAPIC timer are simultaneously
- *     active, two kernel_timer_tick calls fire per interval.  [inferred: only
- *     if the PIC timer is not silenced before lapic_timer_setup runs]
+ *   EXC-AMD64-03 RESOLVED (Phase A step 14): the double-tick hazard came
+ *     from the PIT being left free-running (mode 2) after calibration while
+ *     LINT0 ExtINT can deliver PIC IRQ 0 on vector 32 — the same vector as
+ *     the LAPIC periodic timer.  lapic_timer_calibrate() now halts the PIT
+ *     (mode-0 control word, no count) before the LAPIC timer starts; PIC
+ *     IRQ 0 additionally stays masked (pic_init).  LINT0 remains ExtINT on
+ *     purpose: it is the only delivery path for legacy PIC lines (PCI INTx).
  */
 #include <arch/amd64/apic.h>
 #include <kernel/printk.h>
@@ -49,8 +50,8 @@ uint32_t ticks_per_ms = 0;
  *      legacy 8259 PIC can deliver its IRQs via the LAPIC when no I/O APIC
  *      is present.
  *
- * NOTE(EXC-AMD64-03): LINT0 ExtINT + LAPIC periodic timer both deliver to
- * vector 32 → potential double timer tick.
+ * NOTE(EXC-AMD64-03, resolved): the PIT is halted after calibration and PIC
+ * IRQ 0 stays masked, so vector 32 only ever comes from the LAPIC timer.
  *
  * The 'outb L' at the start is a debug breadcrumb on COM1 serial port
  * (0x3F8 = COM1 data register).
@@ -70,8 +71,8 @@ void lapic_init(void) {
 
     /* Configure LINT0 for ExtINT (Legacy PIC) — necessary if no IOAPIC is used.
      * Delivery mode 0x700 = ExtINT; not masked (bit 16 = 0).
-     * NOTE(EXC-AMD64-03): This allows PIC IRQ 0 to reach vector 32, the same
-     * vector used by the LAPIC periodic timer → possible double tick. */
+     * NOTE(EXC-AMD64-03, resolved): PIC IRQ 0 could reach vector 32 through
+     * here, but the PIT is halted after calibration and IRQ 0 stays masked. */
     lapic_write(LAPIC_LVT_LINT0, 0x00000700); /* ExtINT, not masked */
 
     pr_info("AMD64: LAPIC %u initialized at 0x%lx\n", lapic_get_id(), LAPIC_DEFAULT_BASE);
@@ -188,6 +189,16 @@ void lapic_timer_calibrate(void) {
     uint32_t ticks = 0xFFFFFFFF - lapic_read(LAPIC_TCC);
     ticks_per_ms = ticks / 10; /* elapsed in 10 ms → convert to per-ms */
 
+    /* FIX(EXC-AMD64-03): silence the PIT now that calibration is done.
+     * Mode 2 left the counter free-running, pulsing the IRQ0 line forever;
+     * vector 32 must come from the LAPIC periodic timer ONLY.  Writing the
+     * mode-0 control word without loading a count halts the counter (the
+     * 8254 waits for a count after a control-word write), so the line stays
+     * quiet even if PIC IRQ0 were ever unmasked.  LINT0 stays ExtINT — it is
+     * the delivery path for every legacy PIC line (PCI INTx included) and
+     * must NOT be masked. */
+    outb(PIT_CMD, 0x30); /* channel 0, lobyte/hibyte, mode 0, no count loaded */
+
     pr_info("LAPIC: Timer calibrated: %u ticks per ms\n", ticks_per_ms);
 }
 
@@ -198,9 +209,8 @@ void lapic_timer_calibrate(void) {
  * Programs LVT timer register with vector 32, periodic mode, divisor /16.
  * Sets the initial count to ticks_per_ms * (1000/hz).
  *
- * NOTE(EXC-AMD64-03): vector 32 is also delivered via LINT0 ExtINT from the
- * legacy 8259 PIC.  If the PIC is still generating interrupts when the LAPIC
- * timer starts, both sources fire on the same vector → double timer tick.
+ * NOTE(EXC-AMD64-03, resolved): by the time this runs the PIT has been
+ * halted by lapic_timer_calibrate(), so vector 32 has a single source.
  *
  * Params:
  *   hz - desired interrupt frequency (e.g. HZ = 1000 for 1 kHz timer).

@@ -256,6 +256,31 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
 }
 
 /*
+ * __focus_topmost_locked - re-point keyboard focus after a window goes away.
+ *
+ * Picks the top-most remaining visible window (highest z_order) and gives it
+ * keyboard focus; falls back to the shell default (PID 7) when no window is
+ * left.  Replaces the old hardcoded 'keyboard_focus_pid = 7' reset, which
+ * sent input to a stale/wrong PID whenever the shell was not PID 7 (PID
+ * numbering depends on boot service order) and ignored Z-order entirely.
+ *
+ * Caller MUST hold compositor_lock; destroyed slots are already zeroed and
+ * thus excluded by the id != 0 check.
+ */
+static void __focus_topmost_locked(void) {
+  int max_z = -1;
+  int pid = 7; /* shell default when no window remains */
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id != 0 && windows[i].visible && windows[i].z_order > max_z) {
+      max_z = windows[i].z_order;
+      pid = windows[i].pid;
+    }
+  }
+  keyboard_focus_pid = pid;
+  pr_debug("Compositor: Focus reset to PID %d\n", pid);
+}
+
+/*
  * Destroy Window
  */
 void compositor_destroy_window(int window_id) {
@@ -263,12 +288,7 @@ void compositor_destroy_window(int window_id) {
   spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
-      if (windows[i].pid == keyboard_focus_pid) {
-        /* Focused window is being destroyed, reset focus to Shell (PID 7 or 2)
-         */
-        /* In a more advanced system we would pick the next window in Z-order */
-        keyboard_focus_pid = 7;
-      }
+      int refocus = (windows[i].pid == keyboard_focus_pid);
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
@@ -278,6 +298,10 @@ void compositor_destroy_window(int window_id) {
         kfree(windows[i].attr_grid);
       memset(&windows[i], 0, sizeof(struct window));
       window_count--;
+      if (refocus) {
+        /* The focused window is gone: hand focus to the next in Z-order. */
+        __focus_topmost_locked();
+      }
       spin_unlock_irqrestore(&compositor_lock, flags);
       return;
     }
@@ -290,11 +314,12 @@ void compositor_destroy_window(int window_id) {
  */
 void compositor_destroy_windows_by_pid(int pid) {
   uint64_t flags;
+  int refocus = 0;
   spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id != 0 && windows[i].pid == pid) {
       if (windows[i].pid == keyboard_focus_pid) {
-        keyboard_focus_pid = 7;
+        refocus = 1;
       }
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
@@ -308,6 +333,11 @@ void compositor_destroy_windows_by_pid(int pid) {
       memset(&windows[i], 0, sizeof(struct window));
       window_count--;
     }
+  }
+  if (refocus) {
+    /* All of the dying PID's windows are zeroed by now, so the scan picks
+     * the top-most SURVIVING window (or the shell default). */
+    __focus_topmost_locked();
   }
   spin_unlock_irqrestore(&compositor_lock, flags);
 }

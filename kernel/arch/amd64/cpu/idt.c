@@ -14,14 +14,17 @@
  * Invariants:
  *   - The IDT is a single shared array; all CPUs load the same base address.
  *     Only CPU 0 fills the table (guarded by idt_initialized).  APs spin-wait.
- *   - Every hardware IRQ (vec 32-255) ends with lapic_eoi(); legacy PIC range
- *     (32-47) additionally calls pic_send_eoi() to deassert the 8259 output.
+ *   - Every hardware IRQ (vec 32-255) ends through irq_chip_end(): the chip
+ *     (pic_chip_end) owns the full LAPIC + 8259 EOI sequence.  Spurious
+ *     IRQ7/IRQ15 (vec 39/47) and the LAPIC spurious vector (0xFF) are
+ *     filtered before dispatch and follow their own EOI rules.
  *
  * Known issues:
- *   EXC-AMD64-01 (W2 MISSING/STUB) probe_in_progress / probe_failed are
- *     declared here but the x86 RIP-advance logic is unimplemented; the block
- *     falls through to the exception handler which halts.  The aarch64 path
- *     correctly advances ELR_EL1 (:cpu.c:75-79).  Dead code on amd64.
+ *   EXC-AMD64-01 RESOLVED (Phase A step 14): the dead probe-recovery block
+ *     and the amd64-local probe_in_progress/probe_failed flags were removed.
+ *     Memory probing is an aarch64-only fallback (FDT parse failure); its
+ *     flags and the working ELR_EL1 fixup live in aarch64/cpu/cpu.c.  amd64
+ *     gets its memory map from PVH/multiboot and never probes.
  *   EXC-AMD64-02 RESOLVED (Phase A): every vector 0-31 routes through
  *     fault_handle_user_or_panic (kernel/core/fault.c) — user faults
  *     terminate the process and schedule a successor; kernel faults dump,
@@ -42,6 +45,7 @@
 #include <kernel/printk.h>
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
+#include <kernel/irq.h>
 #include <arch/pt_regs.h>
 #include <arch/arch.h>
 #include <arch/amd64_internal.h>
@@ -290,18 +294,6 @@ static void amd64_double_fault_handler(struct pt_regs *regs) {
 extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *regs);
 extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
 
-/* probe_in_progress / probe_failed — flags for safe memory probing.
- * NOTE(EXC-AMD64-01): probe_in_progress is never set to true on amd64
- * (only aarch64/platform.c:63 sets it).  The probe-recovery block below
- * (vec==14||vec==13 while probe_in_progress) is therefore unreachable dead
- * code.  Furthermore even if reached, no RIP adjustment is performed — the
- * code falls through to the normal exception handler and halts.  The aarch64
- * counterpart correctly increments ELR_EL1 by 4 to resume after the probe.
- * Fix: implement a fixup table or fixed-size probe stub so RIP can be advanced
- * by a known constant, then return regs instead of halting. */
-volatile bool probe_in_progress = false;
-volatile bool probe_failed = false;
-
 /*
  * amd64_isr_dispatch - central exception and interrupt dispatcher.
  *
@@ -311,17 +303,15 @@ volatile bool probe_failed = false;
  * switch by returning a different task's frame.
  *
  * Dispatch logic:
- *   vec < 32  : CPU exceptions.  Probe-recovery check (NOTE EXC-AMD64-01:
- *               dead on amd64), then switch on vec 8/13/14; all other vectors
- *               print and halt.  NOTE(EXC-AMD64-02): No user-vs-kernel split —
- *               user exceptions also halt the kernel.
+ *   vec < 32  : CPU exceptions.  Recursion guard (fault_enter), then switch
+ *               on vec 8/13/14; every vector routes through
+ *               fault_handle_user_or_panic (user → terminate, kernel → panic).
  *   vec == 0x80: Legacy int 0x80 syscall → kernel_syscall_dispatcher.
- *   vec 32-255: Hardware IRQs.  vec==32 (timer) → kernel_timer_tick; others →
- *               irq_dispatch.  All end with lapic_eoi(); vectors 32-47 also
- *               call pic_send_eoi() to satisfy the legacy 8259 PIC.
- *               NOTE(EXC-AMD64-03): LAPIC LINT0 is configured as ExtINT in
- *               apic.c:22, so legacy PIC IRQ 0 (vec==32) may fire simultaneously
- *               with the LAPIC periodic timer at vec==32 → double timer tick.
+ *   vec 32-255: Hardware IRQs.  Spurious 39/47/0xFF filtered first; vec==32
+ *               (timer) → kernel_timer_tick; others → irq_dispatch.  All end
+ *               through irq_chip_end() (chip-owned LAPIC + PIC EOI).
+ *               NOTE(EXC-AMD64-03, resolved): the PIT is halted after LAPIC
+ *               calibration, so vec 32 has a single source (LAPIC timer).
  *
  * Calling convention: called from assembly with a C ABI call; RDI = &pt_regs.
  * Returns RAX = new RSP (next task's pt_regs or the same regs on no-switch).
@@ -342,31 +332,6 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
       fault_printf("\n[C%d] NESTED CPU EXCEPTION vec=%lu err=0x%lx rip=%016lx — halting\n",
                    fault_cpu_id(), vec, regs->err, regs->rip);
       arch_cpu_halt();
-    }
-
-    /* Check if this is a fault during a safe probe.
-     * NOTE(EXC-AMD64-01): probe_in_progress is never set on amd64; this
-     * entire block is unreachable dead code.  The intended RIP fixup is
-     * also unimplemented — falls through to the normal handler below. */
-    if (probe_in_progress && (vec == 14 || vec == 13)) {
-      probe_failed = true;
-      /* On x86, we need to adjust RIP to skip the faulting instruction.
-       * Most move instructions involved in the probe are 3-7 bytes.
-       * This is tricky without a full disassembler, but we can assume
-       * the probe uses a specific move format or we can use a simpler approach.
-       *
-       * Actually, a better way for x86 is to use a specific assembly probe function
-       * that we know the length of.
-       */
-
-      /* For now, let's try to handle it in platform.c with a setjmp-like mechanism
-       * or just by adjusting RIP if we know it's a 3-byte move (e.g. mov [rdx], rax)
-       * In platform.c: *ptr = 0x55AA... is typically 10 bytes (movabsq + mov)
-       */
-
-      /* Let's assume the faulting instruction is a memory access.
-       * We'll use a safer approach in platform.c.
-       */
     }
 
     /* Handle exceptions (EXC-AMD64-02 resolved): user-attributable faults —
@@ -403,32 +368,34 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
     /* Hardware interrupts (32-255) */
     struct pt_regs *ret_regs = regs;
 
+    /* 8259 spurious IRQ7/IRQ15 (vectors 39/47): not real interrupts — a
+     * level pulse deasserted before INTA.  Filtered BEFORE dispatch because
+     * their EOI rules differ (none / master-only); pic_handle_spurious()
+     * performs what is needed.  Likewise the LAPIC spurious vector (0xFF,
+     * set in SVR) requires no EOI and no dispatch. */
+    if ((vec == 39 || vec == 47) && pic_handle_spurious((uint32_t)vec)) {
+        return ret_regs;
+    }
+    if (vec == 0xFF) {
+        return ret_regs;
+    }
+
     if (vec == 32) {
-        /* Timer Interrupt (PIT or LAPIC periodic, vector 32).
-         * NOTE(EXC-AMD64-03): If LAPIC LINT0 (ExtINT) and the LAPIC periodic
-         * timer both fire at vec==32, kernel_timer_tick runs twice per interval.
+        /* Timer Interrupt (LAPIC periodic, vector 32; the PIT is halted
+         * after calibration — EXC-AMD64-03 resolved).
          * NOTE(CPU-AMD64-01): No FPU save; ctx_switch on this path risks XMM
          * corruption between concurrently running kernel tasks. */
         ret_regs = kernel_timer_tick(regs);
     } else {
         /* All other Hardware interrupts - route via generic system */
-        if (vec != 32) {
-            pr_debug("AMD64: Hardware Interrupt Vector %lu triggered!\n", vec);
-        }
+        pr_debug("AMD64: Hardware Interrupt Vector %lu triggered!\n", vec);
         extern struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs * regs);
         ret_regs = irq_dispatch(vec, regs);
     }
 
-    /* Acknowledge LAPIC for all HW interrupts.
-     * Writing 0 to the EOI register signals end-of-interrupt. */
-    lapic_eoi();
-
-    /* Also acknowledge legacy PIC for its range (32-47) if active.
-     * Vectors 32-47 correspond to 8259 IRQs 0-15; the PIC requires its own
-     * EOI sequence in addition to the LAPIC EOI. */
-    if (vec >= 32 && vec < 48) {
-        pic_send_eoi(vec - 32);
-    }
+    /* End-of-interrupt through the chip (IRQ-01 fix): pic_chip_end() owns
+     * the complete LAPIC + 8259 sequence; nothing here EOIs by hand. */
+    irq_chip_end((uint32_t)vec);
 
     return ret_regs;
   }

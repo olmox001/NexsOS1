@@ -39,6 +39,11 @@ void irq_send_ipi_all(void);
 struct pt_regs *irq_handler(struct pt_regs *regs);
 struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs);
 
+/* irq_chip_end - route an end-of-interrupt through the registered chip.
+ * The single EOI mechanism for vectored dispatchers (amd64 IDT path);
+ * the aarch64 acknowledge-loop calls chip->end() directly. */
+void irq_chip_end(uint32_t irq);
+
 #include <kernel/platform.h>
 
 /* Architecture-specific but generic-mapped IRQ numbers */
