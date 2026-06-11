@@ -370,6 +370,51 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
 }
 
 /*
+ * fiq_handler - unexpected FIQ (Phase A step 13).
+ *
+ * This kernel never configures FIQ sources; the vectors used to be `b .`
+ * silent hangs.  An EL0-origin FIQ terminates the task (something user-
+ * triggerable raised it); an EL1-origin FIQ means misconfigured hardware or
+ * vector corruption — panic with the full diagnostic.
+ */
+struct pt_regs *fiq_handler(struct pt_regs *frame) {
+  if (fault_enter() > 1) {
+    fault_printf("\n[FATAL] NESTED FIQ ELR=%016lx — halting\n", frame->elr);
+    arch_cpu_halt();
+  }
+  fault_printf("\n[FIQ] Unexpected FIQ: ELR=%016lx SPSR=%016lx (FIQ is never enabled)\n",
+               frame->elr, frame->spsr);
+  struct pt_regs *next = fault_handle_user_or_panic(
+      frame, (frame->spsr & 0xF) == 0, 0, frame->elr, "UNEXPECTED FIQ");
+  if (next)
+    return next;
+  backtrace_regs(frame->elr, frame->regs[29]);
+  panic("Unexpected FIQ at EL1 (ELR 0x%lx)", frame->elr);
+}
+
+/*
+ * aarch32_handler - exception from AArch32 EL0 (Phase A step 13).
+ *
+ * The kernel only loads AArch64 ELFs, so this means a process switched to
+ * AArch32 state (or SPSR corruption).  Terminate it; if the frame claims EL1
+ * origin the vector table itself is suspect — panic.
+ */
+struct pt_regs *aarch32_handler(struct pt_regs *frame) {
+  if (fault_enter() > 1) {
+    fault_printf("\n[FATAL] NESTED AArch32 exception ELR=%016lx — halting\n", frame->elr);
+    arch_cpu_halt();
+  }
+  fault_printf("\n[EL0-32] AArch32 EL0 exception: ELR=%016lx SPSR=%016lx (unsupported)\n",
+               frame->elr, frame->spsr);
+  struct pt_regs *next = fault_handle_user_or_panic(
+      frame, 1, 0, frame->elr, "AARCH32 EL0 EXCEPTION");
+  if (next)
+    return next;
+  backtrace_regs(frame->elr, frame->regs[29]);
+  panic("AArch32 exception with no current task (ELR 0x%lx)", frame->elr);
+}
+
+/*
  * arch_secondary_stacks[] - per-CPU kernel stack top pointers for CPUs 0..MAX_CPUS-1.
  * Index i holds the TOP (highest address) of the 128KB kernel stack for CPU i,
  * because AArch64 stacks grow downward.

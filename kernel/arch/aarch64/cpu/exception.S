@@ -280,7 +280,7 @@ el1_sp0_irq:
     b handle_el1_sp0_irq
 .balign 128
 el1_sp0_fiq:
-    b .
+    b handle_unexpected_fiq
 .balign 128
 el1_sp0_serror:
     b handle_el1_sp0_serror
@@ -294,7 +294,7 @@ el1_spx_irq:
     b handle_el1_spx_irq
 .balign 128
 el1_spx_fiq:
-    b .
+    b handle_unexpected_fiq
 .balign 128
 el1_spx_serror:
     b handle_el1_spx_serror
@@ -308,24 +308,25 @@ el0_64_irq:
     b handle_el0_64_irq
 .balign 128
 el0_64_fiq:
-    b .
+    b handle_unexpected_fiq
 .balign 128
 el0_64_serror:
     b handle_el0_64_serror
 
-/* Lower EL using AArch32 */
+/* Lower EL using AArch32 (unsupported: kernel runs AArch64-only user code).
+ * Phase A step 13: these were silent `b .` hangs — now reported + handled. */
 .balign 128
 el0_32_sync:
-    b .
+    b handle_el0_aarch32
 .balign 128
 el0_32_irq:
-    b .
+    b handle_el0_aarch32
 .balign 128
 el0_32_fiq:
-    b .
+    b handle_el0_aarch32
 .balign 128
 el0_32_serror:
-    b .
+    b handle_el0_aarch32
 
 /* 
  * Actual Handlers (Outside the table)
@@ -423,6 +424,16 @@ handle_el0_64_irq:
 
 handle_el0_64_serror:
     vector_stub serror
+
+/* Phase A step 13: no silent halts.  FIQ is never configured by this kernel
+ * and AArch32 EL0 is unsupported; both were `b .` infinite loops (a wedged
+ * core with no diagnostic).  Build the standard frame and report via the
+ * fault-path C handlers (terminate the offending EL0 task / panic for EL1). */
+handle_unexpected_fiq:
+    vector_stub fiq
+
+handle_el0_aarch32:
+    vector_stub aarch32
 
 /*
  * Install exception vector table

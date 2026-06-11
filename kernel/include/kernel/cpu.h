@@ -71,6 +71,9 @@ void smp_create_idle_task(uint32_t cpu_id);
 #define local_irq_restore(flags) hal_irq_restore(flags)
 struct pt_regs; /* forward decl */
 struct pt_regs *serror_handler(struct pt_regs *frame);
+/* aarch64 coverage handlers (exception.S, Phase A step 13) */
+struct pt_regs *fiq_handler(struct pt_regs *frame);
+struct pt_regs *aarch32_handler(struct pt_regs *frame);
 #endif
 
 #endif /* _KERNEL_CPU_H */
