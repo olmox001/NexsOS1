@@ -200,8 +200,16 @@ owner-only (`compositor_window_owner`); FILE_WRITE denies /bin + /sys to
 non-SYSTEM (EXT4-02 #57); registry first-writer-wins key ownership
 (LIB-REG-02 #73, USR-SEC-01 #77).  Smoke-tested live on both arches
 (kill init/notify denied, kill own child allowed).
-**Remaining**: per-process fd table (ABI-03 #90), formal IPC API,
-sandboxing (USR-SEC-03 #79 — epic-level outcome).
+**Batch 3 (`f9a0b09`)**: per-process **fd table** (ABI-03 #90) —
+`kernel/fd.h` (0=kbd stdin, 1/2=own window, FD_FILE ≥3, private offset),
+`open`/`close`/`lseek` = 56/57/62, read/write via the table (file I/O
+through capped bounce buffers, window writes keep the 1023 cap ABI-06),
+write-open ACL on /bin+/sys, O_CREAT → -EINVAL; legacy fd≥100 window
+alias kept; `/bin/fdtest` 8/8 on both arches + writetest regression.
+**Remaining**: formal IPC API (sender auth; IPC-01 #85 lost-wakeup),
+sandboxing (USR-SEC-03 #79 — epic-level outcome), spawn quotas /
+dynamic process limit (SCHED-DOS-01 #122, maintainer fork-bomb report
+crash1/crash2: pool exhaustion blocks even kill).
 
 ### B4 — Epic #94: amd64 parity (ACPI-MADT CPU count ARCH-01, real
 PCI/ACPI init ARCH-02, FPU/XMM save on context switch CPU-AMD64-01,
