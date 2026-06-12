@@ -70,6 +70,11 @@ struct process {
    * capability check (ABI-04): a process may kill itself, its children,
    * or anything if it holds PROC_PERM_SYSTEM/ROOT. */
   int parent_pid;
+  /* child_count: live (not yet reaped) children of this process
+   * (SCHED-DOS-01 #122).  Incremented by process_create() on the creator,
+   * decremented when a child's pool slot is released (terminate immediate
+   * free / scheduler reap).  Protected by sched_lock. */
+  int child_count;
 
   /* Scheduler List */
   struct list_head run_list;
@@ -121,6 +126,16 @@ struct process {
 
 #define MAX_PROCESSES 128
 extern struct process *process_pool[MAX_PROCESSES];
+
+/* SCHED-DOS-01 (#122): anti fork-bomb quotas.  MAX_PROCESSES is only the
+ * pool ARRAY bound; the effective limit is derived from usable memory at
+ * process_init() (see proc_limit in process.c) and these gates keep a
+ * single unprivileged process from exhausting it:
+ *   MAX_PROCS_PER_PARENT  live-children quota for non-SYSTEM/ROOT creators;
+ *   RESERVED_PROC_SLOTS   slots only SYSTEM/ROOT creators may dig into, so
+ *                         kill/respawn recovery stays possible at saturation. */
+#define MAX_PROCS_PER_PARENT 32
+#define RESERVED_PROC_SLOTS 8
 
 /* API */
 #include <kernel/cpu.h>

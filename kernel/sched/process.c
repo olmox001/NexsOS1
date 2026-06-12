@@ -75,6 +75,24 @@ struct process *process_pool[MAX_PROCESSES];
 static int active_count = 0; /* Number of active processes */
 static int next_pid = 1;     /* Global PID counter (never resets) */
 
+/* SCHED-DOS-01 (#122): effective process limit, derived from usable memory
+ * in process_init() (MAX_PROCESSES is only the pool array bound).  The
+ * per-process budget below is the kernel-side floor of one process: 128KB
+ * kernel stack + descriptor + page tables + a minimal user image ≈ 1 MB. */
+#define PROC_MEM_BUDGET_PAGES 256
+static int proc_limit = MAX_PROCESSES;
+
+/* __child_count_dec - drop a dying process from its parent's live-children
+ * quota (SCHED-DOS-01 #122).  Caller must hold sched_lock.  PIDs are never
+ * reused, so a stale parent_pid (parent already gone) finds nothing. */
+static void __child_count_dec(struct process *dead) {
+  if (dead->parent_pid <= 0)
+    return;
+  struct process *parent = __process_find_by_pid(dead->parent_pid);
+  if (parent && parent->child_count > 0)
+    parent->child_count--;
+}
+
 /* Global scheduler lock - still used for process_pool and PID allocation */
 /* sched_lock: global spinlock protecting process_pool[], active_count,
  * next_pid, rr_cpu, and the outer section of kernel_ipc_send().
@@ -324,6 +342,22 @@ void process_init(void) {
     process_pool[i] = NULL;
   }
 
+  /* SCHED-DOS-01 (#122): derive the effective process limit from the memory
+   * actually available instead of trusting the hardcoded pool size.  The
+   * per-process budget is deliberately generous (kernel stack 128KB +
+   * descriptor + page tables + a minimal user image ≈ 1 MB) so the cap
+   * shrinks on small-RAM configurations; MAX_PROCESSES stays the array
+   * bound.  Floor of 8 keeps init+services+shell bootable regardless. */
+  uint64_t budget_pages = pmm_get_free_pages() / PROC_MEM_BUDGET_PAGES;
+  proc_limit = (budget_pages < MAX_PROCESSES) ? (int)budget_pages
+                                              : MAX_PROCESSES;
+  if (proc_limit < 8)
+    proc_limit = 8;
+  pr_info("Process: limit %d (pool %d, %d reserved for SYSTEM/ROOT, "
+          "%d children max per user process)\n",
+          proc_limit, MAX_PROCESSES, RESERVED_PROC_SLOTS,
+          MAX_PROCS_PER_PARENT);
+
   /* Initialize ALL CPU Runqueues */
   for (int c = 0; c < MAX_CPUS; c++) {
     for (int i = 0; i < MAX_PRIO; i++) {
@@ -451,6 +485,36 @@ struct process *process_create(const char *name, uint8_t priority,
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
 
+  /* SCHED-DOS-01 (#122): quotas BEFORE claiming a slot.  Privileged
+   * creators (kernel boot, SYSTEM/ROOT services) bypass the child quota
+   * and may dig into the reserved tail, so recovery — init respawning the
+   * shell, the shell killing the bomber — keeps working even when an
+   * unprivileged fork bomb has saturated everything else.  pr_debug, not
+   * pr_warn: a bomb hitting the quota thousands of times per second must
+   * not turn the UART into a second DoS. */
+  struct process *creator = current_process;
+  int privileged =
+      !creator || (creator->permissions & (PROC_PERM_SYSTEM | PROC_PERM_ROOT));
+  if (active_count >= proc_limit) {
+    spin_unlock_irqrestore(&sched_lock, flags);
+    pr_debug("Process: limit %d reached, refusing '%s'\n", proc_limit, name);
+    return NULL;
+  }
+  if (!privileged) {
+    if (creator->child_count >= MAX_PROCS_PER_PARENT) {
+      spin_unlock_irqrestore(&sched_lock, flags);
+      pr_debug("Process: PID %d hit the %d-children quota, refusing '%s'\n",
+               creator->pid, MAX_PROCS_PER_PARENT, name);
+      return NULL;
+    }
+    if (active_count >= proc_limit - RESERVED_PROC_SLOTS) {
+      spin_unlock_irqrestore(&sched_lock, flags);
+      pr_debug("Process: only reserved slots left, refusing user '%s'\n",
+               name);
+      return NULL;
+    }
+  }
+
   int slot = find_free_slot();
   if (slot < 0) {
     spin_unlock_irqrestore(&sched_lock, flags);
@@ -502,6 +566,8 @@ struct process *process_create(const char *name, uint8_t priority,
   /* Add to pool */
   process_pool[slot] = proc;
   active_count++;
+  if (creator)
+    creator->child_count++; /* paired with __child_count_dec at release */
 
   spin_unlock_irqrestore(&sched_lock, flags);
 
@@ -520,6 +586,7 @@ struct process *process_create(const char *name, uint8_t priority,
                       &flags); // Re-acquire lock to modify shared state
     process_pool[slot] = NULL;
     active_count--;
+    __child_count_dec(proc);
     spin_unlock_irqrestore(&sched_lock, flags); // Release lock
     pmm_free_page(proc);
     return NULL;
@@ -769,6 +836,7 @@ int process_terminate(int pid) {
   if (slot >= 0) {
     process_pool[slot] = NULL;
     active_count--;
+    __child_count_dec(proc);
   }
   spin_unlock_irqrestore(&sched_lock, flags);
 
@@ -895,6 +963,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
       if (process_pool[_i] == to_free) {
         process_pool[_i] = NULL;
         active_count--;
+        __child_count_dec(to_free);
         break;
       }
     }
