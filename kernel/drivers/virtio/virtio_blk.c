@@ -97,8 +97,10 @@ void virtio_blk_init(void) {
   avail = (struct vring_avail *)((uint8_t *)qmem + qsize * 16);
   used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
-  /* Unified HAL API handles Legacy/Modern address registration */
-  virtio_setup_queue(dev, 0, (uint64_t)desc, (uint64_t)avail, (uint64_t)used);
+  /* Unified HAL API handles Legacy/Modern address registration.
+   * The device needs PHYSICAL ring addresses (virt_to_phys). */
+  virtio_setup_queue(dev, 0, virt_to_phys(desc), virt_to_phys(avail),
+                     virt_to_phys(used));
 
   /* Driver OK */
   status |= VIRTIO_STATUS_DRIVER_OK;
@@ -129,20 +131,21 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
   blk_req.sector = sector;
   blk_status = 0xFF; /* poisoned: device must overwrite it on completion */
 
+  /* Descriptor addresses are PHYSICAL (DMA): virt_to_phys on kernel ptrs. */
   /* Header (read-only for the device) */
-  desc[0].addr = (uint64_t)&blk_req;
+  desc[0].addr = virt_to_phys(&blk_req);
   desc[0].len = sizeof(struct virtio_blk_req);
   desc[0].flags = VRING_DESC_F_NEXT;
   desc[0].next = 1;
 
   /* Data buffer (device writes it on reads, reads it on writes) */
-  desc[1].addr = (uint64_t)buf;
+  desc[1].addr = virt_to_phys(buf);
   desc[1].len = count * 512;
   desc[1].flags = (write ? 0 : VRING_DESC_F_WRITE) | VRING_DESC_F_NEXT;
   desc[1].next = 2;
 
   /* Status byte (write-only for the device) */
-  desc[2].addr = (uint64_t)&blk_status;
+  desc[2].addr = virt_to_phys((void *)&blk_status);
   desc[2].len = 1;
   desc[2].flags = VRING_DESC_F_WRITE;
   desc[2].next = 0;

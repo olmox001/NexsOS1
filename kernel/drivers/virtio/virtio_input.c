@@ -100,11 +100,9 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   dev->avail = (struct vring_avail *)((uint8_t *)qmem + INPUT_QSIZE * 16);
   dev->used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
-  /* Rings are already identity mapped */
-
-  /* Use unified HAL API */
-  virtio_setup_queue(handle, 0, (uint64_t)dev->desc, (uint64_t)dev->avail,
-                     (uint64_t)dev->used);
+  /* Use unified HAL API; the device needs PHYSICAL ring addresses. */
+  virtio_setup_queue(handle, 0, virt_to_phys(dev->desc),
+                     virt_to_phys(dev->avail), virt_to_phys(dev->used));
 
   dev->events = (struct virtio_input_event *)pmm_alloc_page();
   if (!dev->events) {
@@ -115,10 +113,10 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
     return;
   }
   memset(dev->events, 0, sizeof(struct virtio_input_event) * INPUT_QSIZE);
-  /* Events buffer is identity mapped */
 
   for (int i = 0; i < INPUT_QSIZE; i++) {
-    dev->desc[i].addr = (uint64_t)&dev->events[i];
+    /* Descriptor addresses are PHYSICAL (DMA). */
+    dev->desc[i].addr = virt_to_phys(&dev->events[i]);
     dev->desc[i].len = sizeof(struct virtio_input_event);
     dev->desc[i].flags = VRING_DESC_F_WRITE;
     dev->avail->ring[i] = i;

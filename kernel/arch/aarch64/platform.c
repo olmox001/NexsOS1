@@ -31,6 +31,7 @@
 #include <kernel/fdt.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
+#include <kernel/memlayout.h>
 #include <kernel/pmm.h>
 #include <kernel/platform.h>
 #include <kernel/printk.h>
@@ -155,7 +156,9 @@ struct mem_region *arch_platform_get_mem_regions(size_t *count) {
             /* Issue the probe load; if addr is unmapped, a Data Abort fires.
              * sync_handler sets probe_failed=true and increments ELR_EL1 by 4
              * to skip this instruction, then returns to the instruction below. */
-            volatile uint64_t *ptr = (volatile uint64_t *)addr;
+            /* 'addr' is a PHYSICAL address; probe through its direct-map
+             * VA (identity while KERNEL_VIRT_BASE == 0). */
+            volatile uint64_t *ptr = (volatile uint64_t *)phys_to_virt(addr);
             (void)*ptr;
 
             arch_mb(); /* DSB: ensure probe_failed is current after handler runs */
@@ -236,9 +239,10 @@ extern void smp_create_idle_task(uint32_t cpu_id);
  * the emulator. [static, not verified on real hardware]
  */
 void arch_smp_init(void) {
-    /* Publish kernel PGD to secondary_ttbr0 before waking any secondary CPU.
-     * secondary_startup (start.S:159) reads this value to load TTBR0_EL1. */
-    uint64_t current_pgd = arch_vmm_get_pgd();
+    /* Publish the KERNEL PGD (TTBR1 root) before waking any secondary CPU.
+     * secondary_startup (start.S) reads secondary_ttbr1 and loads it into
+     * TTBR1_EL1; TTBR0 (user half) gets the boot identity tables. */
+    uint64_t current_pgd = arch_vmm_get_kernel_pgd();
     arch_vmm_set_secondary_pgd(current_pgd);
 
     /* Discover CPU count from FDT; fall back to a small sane cap if unavailable.

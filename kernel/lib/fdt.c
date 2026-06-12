@@ -45,6 +45,7 @@
  *               fully available at the point fdt_init is called.
  */
 #include <kernel/fdt.h>
+#include <kernel/memlayout.h>
 #include <kernel/string.h>
 #include <kernel/printk.h>
 #include <kernel/pmm.h>
@@ -119,7 +120,10 @@ int fdt_init(uintptr_t fdt_addr) {
     }
 
     uart_puts("FDT: Probing... \n");
-    struct fdt_header *hdr = (struct fdt_header *)fdt_addr;
+    /* fdt_addr is the DTB's PHYSICAL address (x0 from QEMU); parse it
+     * through the direct map (identity while KERNEL_VIRT_BASE == 0).
+     * boot_fdt_ptr keeps exporting the physical address. */
+    struct fdt_header *hdr = (struct fdt_header *)phys_to_virt(fdt_addr);
     uint32_t magic = fdt32_to_cpu(hdr->magic);
     if (magic != FDT_MAGIC) {
         uart_puts("FDT: Invalid magic!\n");
@@ -169,7 +173,8 @@ uintptr_t fdt_find_in_memory(uintptr_t start, uintptr_t end) {
         if ((addr & 0xFFFFFF) == 0) {
             uart_puts("."); /* Progress indicator */
         }
-        struct fdt_header *hdr = (struct fdt_header *)addr;
+        /* 'addr' iterates PHYSICAL addresses; deref via the direct map. */
+        struct fdt_header *hdr = (struct fdt_header *)phys_to_virt(addr);
         /* Check magic without conversion first for speed.
          * 0xedfe0dd0 is the big-endian value 0xd00dfeed (FDT_MAGIC) stored in
          * little-endian byte order as it appears in raw memory. */

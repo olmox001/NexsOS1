@@ -25,30 +25,41 @@
  *   - cpu->syscall_buf (a per-CPU scratch buffer) is used for path/title copies;
  *     only one such copy is in flight per CPU at any time.
  *
+ * ABI (Phase B3):
+ *   Numbering (ABI-01/ABI-SYS-01 RESOLVED): the switch uses the SYS_*
+ *   macros from include/api/syscall_nums.h — the same header the userland
+ *   stubs assemble against, so the two sides cannot drift.  The legacy
+ *   duplicate IPC numbers (30/31/32) are gone (SEND/RECV/TRY_RECV =
+ *   230/231/233).
+ *   Error model (ABI-02 RESOLVED): failures return negative errno values
+ *   from posix_types.h (-EFAULT for bad user pointers, -ENOMEM, -EINVAL,
+ *   -ENOSYS for unknown numbers...); >= 0 means success.  VFS-layer calls
+ *   still return their own negatives (mapped to -EIO/-ENOENT where the
+ *   cause is unambiguous).
+ *
+ * Capability checks (ABI-04, B3 batch 2):
+ *   SYS_KILL         caller must be SYSTEM/ROOT, the target itself, or the
+ *                    target's parent (process_kill_allowed) — else -EPERM.
+ *   SYS_SET_FOCUS    self-focus only for user processes — else -EPERM.
+ *   SYS_DESTROY_WINDOW  owner or SYSTEM only — else -EPERM.
+ *   SYS_FILE_WRITE   the /bin and /sys trees are write-protected for
+ *                    non-SYSTEM callers (EXT4-02) — else -EACCES.
+ *   SYS_REGISTRY     write ownership enforced in registry_set
+ *                    (LIB-REG-02/USR-SEC-01) — foreign keys give -EACCES.
+ *   Kernel-internal paths (compositor close button, init supervision,
+ *   process teardown) call the underlying functions directly and bypass
+ *   these checks by design.
+ *
  * Known issues:
- *   ABI-01  (W3 WRONG-DESIGN) Incoherent numbering: Linux-aarch64 numbers
- *           (63/64/93/247) mixed with ad-hoc numbers (200-256); IPC is
- *           duplicated at both 30/31/32 and 230/231; 30/31/32 are not in os1.h.
- *   ABI-02  (W3 MISSING) No errno: all failures return bare -1; only
- *           sys_ipc_send is the exception (-EINVAL).  Callers cannot
- *           distinguish error codes.
  *   ABI-03  (W3 WRONG-DESIGN) No per-process fd table: fd 0=stdin(IPC),
  *           1/2=window-by-pid, >=100=window id.  Neither POSIX nor Plan 9.
- *   ABI-04  (W4 SECURITY) No capability/permission checks: any process may
- *           kill any non-system PID (case 221), steal keyboard focus (case 232),
- *           destroy any window (case 215), or write any file (case 251).
- *   ABI-05  (W2 BUG) case 230 (SEND): the self-admitted broken reschedule
- *           logic — comment in code says "pt_regs_arg is read-only … I'll fix
- *           it below" and the post-switch comment at line 296-298 confirms it.
  *   ABI-06  (W2 BUG/PERF) sys_write() silently truncates writes > 1023 bytes
  *           and unconditionally echoes every write to the UART (debug leftover).
- *   ABI-07  (W2 BUG) case 220 (SPAWN): disables IRQs across process_create +
+ *   ABI-07  (W2 BUG) SYS_SPAWN disables IRQs across process_create +
  *           process_load_elf, which may trigger blocking virtio/ext4 disk I/O.
- *   GFX-FONT-01  (W4 SECURITY/BUG) case 253 (SET_FONT): stores a raw user
+ *   GFX-FONT-01  (W4 SECURITY/BUG) SYS_SET_FONT: stores a raw user
  *           pointer into kernel globals; dereferenced in IRQ-context rendering
  *           (sys_set_font in graphics/font.c) → UAF / info-leak.
- *   EXT4-02  (W4 SECURITY) case 251 (FILE_WRITE): no access control;
- *           any PID can overwrite any file, including /init.
  */
 #include <kernel/types.h>
 #include <arch/pt_regs.h>
@@ -58,6 +69,7 @@
 #include <kernel/string.h>
 #include <kernel/kmalloc.h>
 #include <kernel/vfs.h>
+#include <syscall_nums.h>
 
 /*
  * FIX(EXT4-07): upper bound for kmalloc'd bounce buffers whose size comes
@@ -149,76 +161,78 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   uint64_t arg5 = pt_regs_arg(frame, 5);
 
   switch (syscall_num) {
-  case 63: /* READ */
+  case SYS_READ:
     return sys_read(frame);
-  case 64: /* WRITE */
+  case SYS_WRITE:
     pt_regs_set_return(frame, sys_write((int)arg0, (const char *)arg1, (size_t)arg2));
     break;
-  case 93: /* EXIT */
+  case SYS_EXIT:
     sys_exit((int)arg0);
     return schedule(frame);
-  case 169: /* GET_TIME */
+  case SYS_GET_TIME:
     pt_regs_set_return(frame, sys_get_time());
     break;
-  case 172: /* GETPID */
+  case SYS_GETPID:
     pt_regs_set_return(frame, sys_get_pid());
     break;
-  case 30: /* IPC_SEND */
-    pt_regs_set_return(frame, sys_ipc_send((int)arg0, (void *)arg1));
-    break;
-  case 31: /* IPC_RECV */
-    pt_regs_set_return(frame, sys_ipc_recv((int)arg0, (void *)arg1));
-    break;
-  case 32: /* IPC_TRY_RECV */
-    pt_regs_set_return(frame, sys_ipc_try_recv((int)arg0, (void *)arg1));
-    break;
-  case 200: /* DRAW */
+  case SYS_DRAW:
     graphics_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (uint32_t)arg4);
     pt_regs_set_return(frame, 0);
     break;
-  case 201: /* FLUSH */
+  case SYS_FLUSH:
     compositor_render();
     pt_regs_set_return(frame, 0);
     break;
-  case 210: /* CREATE_WINDOW */
+  case SYS_CREATE_WINDOW:
   {
     struct cpu_info *cpu = get_cpu_info();
     char *k_title = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EFAULT);
       break;
     }
     pt_regs_set_return(frame, compositor_create_window((int)arg0, (int)arg1, (int)arg2, (int)arg3, k_title, current_process->pid));
   } break;
-  case 211: /* WINDOW_DRAW */
+  case SYS_WINDOW_DRAW:
     compositor_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4, (uint32_t)arg5, current_process->pid);
     pt_regs_set_return(frame, 0);
     break;
-  case 212: /* COMPOSITOR_RENDER */
+  case SYS_COMPOSITOR_RENDER:
     compositor_render();
     pt_regs_set_return(frame, 0);
     break;
-  case 213: /* WINDOW_BLIT */
+  case SYS_WINDOW_BLIT:
     compositor_blit((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4, (const uint32_t *)arg5, current_process->pid);
     pt_regs_set_return(frame, 0);
     break;
-  case 214: /* WINDOW_SET_FLAGS */
+  case SYS_WINDOW_SET_FLAGS:
     compositor_set_window_flags((int)arg0, (int)arg1);
     pt_regs_set_return(frame, 0);
     break;
-  case 215: /* DESTROY_WINDOW */
+  case SYS_DESTROY_WINDOW:
+  {
+    /* ABI-04: only the window's owner (or a system process) may destroy it.
+     * Kernel-internal teardown (close button, process exit) calls
+     * compositor_destroy_window() directly and is unaffected. */
+    extern int compositor_window_owner(int window_id);
+    int owner = compositor_window_owner((int)arg0);
+    if (owner >= 0 && owner != (int)current_process->pid &&
+        !(current_process->permissions & PROC_PERM_SYSTEM)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     compositor_destroy_window((int)arg0);
     pt_regs_set_return(frame, 0);
-    break;
-  case 216: /* SBRK */
+  } break;
+  case SYS_SBRK:
     pt_regs_set_return(frame, sys_sbrk((intptr_t)arg0));
     break;
-  case 220: /* SPAWN */
+  case SYS_SPAWN:
   {
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EFAULT);
       break;
     }
     arch_local_irq_disable();
@@ -229,182 +243,218 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
         pt_regs_set_return(frame, new_proc->pid);
       } else {
         process_terminate(new_proc->pid);
-        pt_regs_set_return(frame, -1);
+        pt_regs_set_return(frame, -ENOENT); /* path missing or unloadable ELF */
       }
     } else {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EAGAIN); /* process table exhausted */
     }
     arch_local_irq_enable();
   } break;
-  case 221: /* KILL */
+  case SYS_KILL:
+    /* ABI-04: a process may kill itself or its direct children; SYSTEM/ROOT
+     * may kill anything (process_terminate still protects SYSTEM targets). */
+    if (!process_kill_allowed(current_process, (int)arg0)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     pt_regs_set_return(frame, process_terminate((int)arg0));
     break;
-  case 222: /* GETPROCS */
+  case SYS_GETPROCS:
     pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));
     break;
-  case 223: /* YIELD */
+  case SYS_YIELD:
     return schedule(frame);
-  case 230: /* SEND (IPC) */
-    /* NOTE(ABI-05): The intent is to yield after a successful send so the
-     * receiver can run, but pt_regs_arg() reads the original arg register,
-     * not the return value we just wrote.  The reschedule condition is
-     * therefore always false (original arg0 is the target PID, not 0).
-     * The post-switch comment at the bottom of this function acknowledges the
-     * same defect.  The send itself succeeds; the yield does not. */
-    pt_regs_set_return(frame, sys_ipc_send((int)arg0, (void *)arg1));
-    if (pt_regs_arg(frame, 0) == 0) return schedule(frame); /* pt_regs_arg is read-only. I mean checking the return we just set. */
+  case SYS_SEND:
+  {
+    /* ABI-05 RESOLVED: capture the result in a local instead of trying to
+     * re-read it through the (read-only) argument accessors, so the
+     * yield-after-successful-send actually happens and the receiver gets
+     * a chance to run immediately. */
+    long rc = sys_ipc_send((int)arg0, (void *)arg1);
+    pt_regs_set_return(frame, rc);
+    if (rc == 0)
+      return schedule(frame);
     break;
-  case 231: /* RECV (IPC) */
-    /* NOTE(IPC-02): Unlike case 31 (IPC_RECV), this variant unconditionally
-     * calls schedule() after sys_ipc_recv(), even if a message was already
-     * available.  sys_ipc_recv() returns 0 whether it received or blocked,
-     * so the caller cannot distinguish the two outcomes. */
+  }
+  case SYS_RECV:
+    /* NOTE(IPC-02): unconditionally calls schedule() after sys_ipc_recv(),
+     * even if a message was already available.  sys_ipc_recv() returns 0
+     * whether it received or blocked, so the caller cannot distinguish the
+     * two outcomes. */
     pt_regs_set_return(frame, sys_ipc_recv((int)arg0, (void *)arg1));
     return schedule(frame);
-  case 232: /* SET_FOCUS */
-    /* NOTE(ABI-04): No permission check; any user process can redirect the
-     * global keyboard focus to any PID, including system processes. */
+  case SYS_TRY_RECV:
+    pt_regs_set_return(frame, sys_ipc_try_recv((int)arg0, (void *)arg1));
+    break;
+  case SYS_SET_FOCUS:
+    /* ABI-04: a process may only claim focus for ITSELF (every userland
+     * caller does set_focus(get_pid())); redirecting input to/from another
+     * PID — i.e. keystroke stealing — needs PROC_PERM_SYSTEM. */
+    if ((int)arg0 != (int)current_process->pid &&
+        !(current_process->permissions & PROC_PERM_SYSTEM)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     keyboard_focus_pid = (int)arg0;
     pt_regs_set_return(frame, 0);
     break;
-  case 247: /* WAIT */
+  case SYS_WAIT:
     pt_regs_set_return(frame, process_wait((int)arg0));
     break;
-  case 250: /* REGISTRY */
+  case SYS_REGISTRY:
     pt_regs_set_return(frame, sys_registry((int)arg0, (const char *)arg1, (char *)arg2, (size_t)arg3));
     break;
-  case 251: /* FILE_WRITE */
+  case SYS_FILE_WRITE:
   {
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EFAULT);
       break;
     }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
+    /* EXT4-02 (ABI-04 family): the binary trees are write-protected for
+     * non-system processes — a user process must not be able to overwrite
+     * anything under /bin or /sys (services, init chain).  Config/data
+     * files (/etc, user files) stay writable. */
+    if (!(current_process->permissions & PROC_PERM_SYSTEM) &&
+        (strncmp(resolved_path, "/sys/", 5) == 0 ||
+         strncmp(resolved_path, "/bin/", 5) == 0)) {
+      pr_warn("FILE_WRITE: PID %d denied write to protected path '%s'\n",
+              current_process->pid, resolved_path);
+      pt_regs_set_return(frame, -EACCES);
+      break;
+    }
     size_t size = (size_t)arg2;
     if (size > SYSCALL_MAX_IO_BYTES) {  /* FIX(EXT4-07): reject absurd user size */
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EINVAL);
       break;
     }
     uint8_t *k_buf = kmalloc(size);
     if (!k_buf) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -ENOMEM);
       break;
     }
     if (arch_copy_from_user(k_buf, (const void *)arg1, size) != 0) {
       kfree(k_buf);
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EFAULT);
       break;
     }
     uint32_t offset = (uint32_t)arg3;
-    pt_regs_set_return(frame, vfs_write_file(resolved_path, k_buf, (uint32_t)size, offset));
+    int wr = vfs_write_file(resolved_path, k_buf, (uint32_t)size, offset);
+    pt_regs_set_return(frame, wr < 0 ? -EIO : wr);
     kfree(k_buf);
   } break;
-  case 252: /* FILE_READ */
+  case SYS_FILE_READ:
   {
     char k_path[128];
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EFAULT);
       break;
     }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
     size_t size = (size_t)arg2;
     if (size > SYSCALL_MAX_IO_BYTES) {  /* FIX(EXT4-07): reject absurd user size */
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EINVAL);
       break;
     }
     uint32_t offset = (uint32_t)arg3;
-    int bytes_read;
+    long ret;
 
     if (size == 0) {
-      bytes_read = vfs_read_file(resolved_path, NULL, 0, offset);
+      int probed = vfs_read_file(resolved_path, NULL, 0, offset);
+      ret = probed < 0 ? -ENOENT : probed;
     } else {
       uint8_t *k_buf = kmalloc(size);
       if (!k_buf) {
-        pt_regs_set_return(frame, -1);
+        pt_regs_set_return(frame, -ENOMEM);
         break;
       }
 
-      bytes_read = vfs_read_file(resolved_path, k_buf, (uint32_t)size, offset);
-      if (bytes_read >= 0) {
-        if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
-          bytes_read = -1;
-        }
+      int bytes_read = vfs_read_file(resolved_path, k_buf, (uint32_t)size, offset);
+      if (bytes_read < 0) {
+        ret = -ENOENT; /* missing path is by far the dominant failure */
+      } else if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
+        ret = -EFAULT;
+      } else {
+        ret = bytes_read;
       }
       kfree(k_buf);
     }
-    pt_regs_set_return(frame, bytes_read);
+    pt_regs_set_return(frame, ret);
   } break;
-  case 253: /* SET_FONT */
+  case SYS_SET_FONT:
     pt_regs_set_return(frame, sys_set_font((void *)arg0, (size_t)arg1));
     break;
-  case 254: /* LIST_DIR */
+  case SYS_LIST_DIR:
   {
     char k_path[128];
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EFAULT);
       break;
     }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
     size_t size = (size_t)arg2;
     if (size > SYSCALL_MAX_IO_BYTES) {  /* FIX(EXT4-07): reject absurd user size */
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EINVAL);
       break;
     }
     char *k_buf = kmalloc(size);
     if (!k_buf) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -ENOMEM);
       break;
     }
+    long ret;
     int res = vfs_list_dir(resolved_path, k_buf, (uint32_t)size);
-    if (res >= 0) {
-      if (arch_copy_to_user((void *)arg1, k_buf, res + 1) != 0) {
-        res = -1;
-      }
+    if (res < 0) {
+      ret = -ENOENT;
+    } else if (arch_copy_to_user((void *)arg1, k_buf, res + 1) != 0) {
+      ret = -EFAULT;
+    } else {
+      ret = res;
     }
     kfree(k_buf);
-    pt_regs_set_return(frame, res);
+    pt_regs_set_return(frame, ret);
   } break;
-  case 255: /* CHDIR */
+  case SYS_CHDIR:
   {
     char k_path[128];
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EFAULT);
       break;
     }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
-    
+
     /* Verify it exists and is a directory. */
     struct vfs_stat st;
-    if (vfs_stat(resolved_path, &st) == 0 && st.type == VFS_TYPE_DIR) {
+    if (vfs_stat(resolved_path, &st) != 0) {
+       pt_regs_set_return(frame, -ENOENT);
+    } else if (st.type != VFS_TYPE_DIR) {
+       pt_regs_set_return(frame, -ENOTDIR);
+    } else {
        strncpy(current_process->cwd, resolved_path, 128);
        pt_regs_set_return(frame, 0);
-    } else {
-       pt_regs_set_return(frame, -1);
     }
   } break;
-  case 256: /* GETCWD */
+  case SYS_GETCWD:
   {
     size_t size = (size_t)arg1;
     if (arch_copy_to_user((void *)arg0, current_process->cwd, size) != 0) {
-      pt_regs_set_return(frame, -1);
+      pt_regs_set_return(frame, -EFAULT);
     } else {
       pt_regs_set_return(frame, 0);
     }
   } break;
   default:
     pr_warn("Unknown syscall: %ld\n", syscall_num);
-    pt_regs_set_return(frame, -1);
+    pt_regs_set_return(frame, -ENOSYS);
     break;
   }
 
-  /* For IPC SEND: if we returned 0, we should yield, but since I can't read the return easily,
-     I'll fix it below */
   return frame;
 }
 

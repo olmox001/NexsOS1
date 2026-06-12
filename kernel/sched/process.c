@@ -380,6 +380,35 @@ struct process *process_find_by_pid(int pid) {
 }
 
 /*
+ * process_kill_allowed - ABI-04 capability check for SYS_KILL.
+ *
+ * Policy (checked under sched_lock so the target cannot be recycled
+ * mid-decision):
+ *   - PROC_PERM_SYSTEM / PROC_PERM_ROOT callers may kill anything
+ *     (process_terminate itself still refuses SYSTEM targets);
+ *   - any process may kill itself (exit alias) and its DIRECT children
+ *     (parent_pid == caller->pid);
+ *   - everything else is denied.
+ * A missing target is "allowed": process_terminate() reports the real
+ * -ESRCH-equivalent and keeps the historical return value for it.
+ */
+int process_kill_allowed(struct process *caller, int target_pid) {
+  if (!caller)
+    return 1; /* kernel context */
+  if (caller->permissions & (PROC_PERM_SYSTEM | PROC_PERM_ROOT))
+    return 1;
+  if ((int)caller->pid == target_pid)
+    return 1;
+
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *target = __process_find_by_pid(target_pid);
+  int allowed = !target || target->parent_pid == (int)caller->pid;
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return allowed;
+}
+
+/*
  * process_create - allocate and initialise a new process descriptor.
  *
  * Allocates a single PMM page for the struct process, assigns a PID from
@@ -432,6 +461,9 @@ struct process *process_create(const char *name, uint8_t priority,
   proc->priority = priority;
 
   proc->permissions = permissions;
+  /* Parentage for the SYS_KILL capability check (ABI-04): the spawner is
+   * whatever process is current on this CPU; kernel/boot creations get 0. */
+  proc->parent_pid = current_process ? (int)current_process->pid : 0;
 
   /* Init Scheduler Info */
   proc->state = PROC_CREATED;
@@ -1303,6 +1335,12 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   kfree(k_buf);
   return count;
 }
+/* SBRK_HEAP_LIMIT: hard ceiling for the user heap.  The user stack lives at
+ * [0xC0000000, 0xC0100000); without a bound a process could sbrk() its heap
+ * straight into (or past) the stack mappings.  16MB of guard gap below the
+ * stack base. */
+#define SBRK_HEAP_LIMIT 0xBF000000UL
+
 long sys_sbrk(intptr_t increment) {
   struct process *proc = current_process;
   uint64_t old_brk = proc->heap_end;
@@ -1313,6 +1351,10 @@ long sys_sbrk(intptr_t increment) {
   }
 
   if (increment > 0) {
+    /* Bound the heap: no overflow past the guard below the user stack. */
+    if (new_brk < old_brk || new_brk > SBRK_HEAP_LIMIT) {
+      return -ENOMEM;
+    }
     /* Map from current end up to new end */
     uint64_t start_map = (old_brk + 4095) & ~(4095ULL);
     uint64_t end_map = (new_brk + 4095) & ~(4095ULL);
@@ -1320,18 +1362,19 @@ long sys_sbrk(intptr_t increment) {
     for (uint64_t vaddr = start_map; vaddr < end_map; vaddr += 4096) {
       void *paddr = pmm_alloc_page();
       if (!paddr) {
-        return -1;
+        return -ENOMEM;
       }
       memset(paddr, 0, 4096);
-      if (vmm_map_page_locked(proc, vaddr, (uint64_t)paddr, PAGE_USER) != 0) {
+      /* PAGE_USER_DATA: the user heap is never executable (W^X, ELF-02). */
+      if (vmm_map_page_locked(proc, vaddr, virt_to_phys(paddr), PAGE_USER_DATA) != 0) {
         pmm_free_page(paddr);
-        return -1;
+        return -ENOMEM;
       }
     }
   } else {
     /* Shrinking the heap */
     if (new_brk < proc->heap_start) {
-      return -1;
+      return -EINVAL;
     }
 
     uint64_t start_unmap = (new_brk + 4095) & ~(4095ULL);
@@ -1341,7 +1384,7 @@ long sys_sbrk(intptr_t increment) {
       uint64_t paddr = vmm_get_phys(proc->page_table, vaddr);
       if (paddr) {
         vmm_unmap_page_locked(proc, vaddr);
-        pmm_free_page((void *)paddr);
+        pmm_free_page(phys_to_virt(paddr));
       }
     }
   }

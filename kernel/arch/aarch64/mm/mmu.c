@@ -5,8 +5,9 @@
  * Role:
  *   Provides the arch_vmm_* interface required by the generic VMM layer
  *   (kernel/mm/vmm.c) and by the kernel boot path (cpu.c:arch_vmm_init_hw).
- *   All operations are in terms of physical addresses because the kernel
- *   identity-maps itself via TTBR0_EL1 for the low 4GB.
+ *   PGD arguments are PHYSICAL addresses; table memory is dereferenced
+ *   through phys_to_virt() (higher-half direct map, kernel/memlayout.h).
+ *   The kernel half lives in TTBR1_EL1; per-process user tables in TTBR0.
  *
  * Page table layout (ARMv8-A 48-bit VA, 4KB granule, TCR.T0SZ=16):
  *   Level 0 (PGD) — 9 bits [47:39] — table descriptor only (512 entries × 8B).
@@ -27,12 +28,14 @@
  *   physical mapping at the next level.
  *
  * Known issues:
- *   AMMU-01 (W3 SECURITY) Normal RAM is mapped executable (no W^X): PAGE_KERNEL
- *            does not set UXN/PXN for RAM pages; only device pages have UXN set.
- *            A kernel code injection via a write to RAM is not prevented. [static]
- *   AMMU-08 (W2 BUG) arch_vmm_map issues a local TLB flush only (arch_tlb_flush_va);
- *            no SMP IPI shootdown is sent to sibling CPUs.  Stale TLB entries on
- *            other CPUs may cause them to use invalidated mappings. [static]
+ *   AMMU-01 RESOLVED (Phase B2, b745a74): PAGE_KERNEL is RW+UXN+PXN; kernel
+ *            text is mapped PAGE_KERNEL_RX and rodata PAGE_KERNEL_RO by
+ *            vmm_map_ram_wx() — W^X holds for all RAM.
+ *   AMMU-08 RESOLVED (Phase B2): not by new code but by the ISA — the TLB
+ *            flush primitives in arch/arch.h use the inner-shareable TLBI
+ *            variants (vaae1is/vmalle1is), which the hardware DVM broadcasts
+ *            to every PE; DSB ISH waits for global completion.  The older
+ *            "local-only" notes in this file were factually wrong.
  */
 #include <kernel/arch.h>
 #include <kernel/pmm.h>
@@ -77,7 +80,7 @@
  *          when alloc==0.
  *
  * Fast path (table entry already a table descriptor):
- *   entry & PTE_VALID && entry & 0x2 → return (uint64_t *)(entry & PTE_ADDR_MASK).
+ *   entry & PTE_VALID && entry & 0x2 → return (uint64_t *)phys_to_virt(entry & PTE_ADDR_MASK).
  *
  * Block-split path (entry valid but bit 1 == 0, i.e. a block descriptor):
  *   Called when arch_vmm_map needs to place a 4KB page inside an existing
@@ -94,8 +97,8 @@
  *     4. Write the parent entry as a table descriptor pointing to the new sub-table.
  *
  *   NOTE: No TLB flush is issued here; the caller (arch_vmm_map) handles the
- *   TLB invalidation for the specific VA being modified, but sibling CPUs are
- *   not shot down (AMMU-08).
+ *   TLB invalidation for the specific VA being modified (broadcast IS TLBI,
+ *   so siblings are covered — AMMU-08 resolved).
  *
  * Fresh-allocation path (entry == 0, alloc == 1):
  *   Allocate and zero a new 4KB page; write as a table descriptor; cache-clean.
@@ -128,36 +131,51 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
       uint64_t sub_flags = block_flags | 0x2;
 
       uint64_t *sub_table = (uint64_t *)new_table;
-      if (level == 1) {
+      /* 'level' is the level of the table being RETURNED (call sites pass
+       * 1/2/3 for the L0→L1, L1→L2, L2→L3 steps).  A block found at the
+       * L1→L2 step (level==2) is a 1GB L1 block; one found at the L2→L3
+       * step (level==3) is a 2MB L2 block.  FIX: the branches previously
+       * tested level==1/level==2, so a 2MB block was "split" into an EMPTY
+       * L3 table — silently unmapping the other 511 pages of the block (the
+       * ELF header-page map at 0x7ffff000 hit exactly this; benign only
+       * because no PMM frame from that physical range was ever handed out). */
+      if (level == 2) {
           /* L1 Block (1GB) -> L2 Table (512 x 2MB blocks).
            * Each child is a 2MB block, so bit 1 stays 0 (block); bit 0 stays 1. */
           for (int i = 0; i < 512; i++) {
             sub_table[i] = (block_pa + (uint64_t)i * 0x200000) | (block_flags & ~0x2) | 0x1;
           }
-      } else if (level == 2) {
+      } else if (level == 3) {
           /* L2 Block (2MB) -> L3 Table (512 x 4KB pages).
            * Each child is an L3 page descriptor (bit 1 = 1). */
           for (int i = 0; i < 512; i++) {
             sub_table[i] = (block_pa + (uint64_t)i * 4096) | sub_flags;
           }
+      } else {
+          /* L0 entries are architecturally always table descriptors; a
+           * "block" here means corruption — refuse instead of fabricating
+           * an empty table. */
+          pmm_free_page(new_table);
+          return NULL;
       }
 
       arch_cache_clean_range(sub_table, 4096); /* write back new sub-table to DRAM */
       arch_mb(); /* DSB: ensure sub-table is visible before parent entry update */
 
       /* Update the parent table to point to the new sub-table (table descriptor). */
-      table[index] = (uint64_t)new_table | PTE_TABLE | PTE_VALID;
+      table[index] = virt_to_phys(new_table) | PTE_TABLE | PTE_VALID;
       arch_cache_clean_range(&table[index], 8); /* write back parent entry */
       arch_mb();
 
-      /* NOTE(AMMU-08): TLB for any VA covered by the old block is now stale on
-       * CPUs other than this one.  The caller issues a local TLB flush for the
-       * specific VA being mapped but does not broadcast an SMP shootdown. */
+      /* The caller's TLBI for the VA being mapped is the broadcast (IS)
+       * variant; the block-split itself preserves the old translations
+       * (same PA, same attributes at finer grain), so no extra flush is
+       * required here. */
 
       return new_table;
     }
     /* Existing table descriptor: extract next-level table pointer from OA field. */
-    return (uint64_t *)(entry & PTE_ADDR_MASK);
+    return (uint64_t *)phys_to_virt(entry & PTE_ADDR_MASK);
   }
 
   /* Entry is absent (not valid); allocate a new table page if permitted. */
@@ -171,7 +189,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
   arch_mb();
 
   /* Install the new table as a table descriptor (PTE_TABLE | PTE_VALID). */
-  table[index] = (uint64_t)page | PTE_TABLE | PTE_VALID;
+  table[index] = virt_to_phys(page) | PTE_TABLE | PTE_VALID;
 
   arch_cache_clean_range(&table[index], 8);
   arch_mb();
@@ -205,11 +223,11 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
  *   the currently loaded TTBR0_EL1 (i.e., this is the active address space).
  *   Mappings in inactive PGDs do not require a TLB flush at map time because
  *   they are not cached in any CPU's TLB yet.
- *   NOTE(AMMU-08): The flush is LOCAL only (arch_tlb_flush_va = TLBI VAE1 or
- *   equivalent); no SMP shootdown IPI is issued. [static]
+ *   arch_tlb_flush_va is TLBI VAAE1IS: broadcast to every PE in the
+ *   inner-shareable domain by hardware (AMMU-08 resolved — no IPI needed).
  */
 int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
-  uint64_t *pgd = (uint64_t *)pgd_addr;
+  uint64_t *pgd = (uint64_t *)phys_to_virt(pgd_addr);
   uint64_t *pud, *pmd, *pt;
 
   pud = get_next_table(pgd, PGD_INDEX(va), 1, 1); /* L0 → L1 */
@@ -229,9 +247,11 @@ int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
   arch_cache_clean_range(pt_entry, 8); /* flush PT entry to PoC for page walker */
   arch_mb(); /* DSB ISH: ensure entry visible to all observers before TLB op */
 
-  /* Flush TLB for this VA only if this PGD is currently loaded in TTBR0_EL1.
-   * NOTE(AMMU-08): local-only TLBI; sibling CPUs may still hold stale entries. */
-  if (pgd_addr == arch_impl_get_pgd()) {
+  /* Flush TLB for this VA only if this PGD is currently live — in TTBR0
+   * (a process half) or TTBR1 (the kernel half).  The TLBI is the
+   * broadcast (IS) variant: siblings are covered too. */
+  if (pgd_addr == arch_impl_get_pgd() ||
+      pgd_addr == arch_impl_get_kernel_pgd()) {
     arch_tlb_flush_va(va);
     arch_mb();
     arch_isb();
@@ -258,12 +278,12 @@ int arch_vmm_map(uint64_t pgd_addr, uint64_t va, uint64_t pa, uint64_t flags) {
  * become entirely empty after the unmap.  This means unmapping many individual
  * pages from a large process VA space accumulates empty page-table pages.
  *
- * NOTE(AMMU-08): arch_tlb_flush_va is a local-only TLBI.  Sibling CPUs may
- * continue to use a stale TLB entry for va until their next context switch or
- * explicit TLBI broadcast. [static]
+ * arch_tlb_flush_va is TLBI VAAE1IS + DSB ISH: the invalidation is broadcast
+ * to all PEs and awaited globally (AMMU-08 resolved) — when this returns no
+ * sibling CPU still translates 'va' through the cleared entry.
  */
 int arch_vmm_unmap(uint64_t pgd_addr, uint64_t va) {
-  uint64_t *pgd = (uint64_t *)pgd_addr;
+  uint64_t *pgd = (uint64_t *)phys_to_virt(pgd_addr);
   uint64_t *pud, *pmd, *pt;
 
   pud = get_next_table(pgd, PGD_INDEX(va), 0, 1); /* no alloc */
@@ -288,6 +308,73 @@ int arch_vmm_unmap(uint64_t pgd_addr, uint64_t va) {
 }
 
 /*
+ * arch_vmm_protect - rewrite the attributes of existing 4KB mappings (AMMU-02).
+ *
+ * Parameters:
+ *   pgd_addr  Physical address of the L0 page table.
+ *   va, size  Range to change; rounded outward to page boundaries.
+ *   flags     FULL aarch64 page profile (PAGE_KERNEL / PAGE_KERNEL_RO /
+ *             PAGE_USER_DATA ... — the same vocabulary arch_vmm_map takes):
+ *             every attribute bit of each leaf PTE is replaced; only the
+ *             output address is preserved.
+ *
+ * A 1GB/2MB block covering part of the range is first split into the next
+ * finer granularity (get_next_table with alloc=1) so the change applies with
+ * 4KB precision; translations outside the requested range are preserved
+ * bit-identically by the split.
+ *
+ * Returns 0 on success; -1 if any page in the range is unmapped or a split
+ * allocation fails (pages BEFORE the failure keep the new attributes — the
+ * TLB flush below runs on both paths so the PTEs already rewritten are
+ * never left visible only in stale TLB copies).
+ *
+ * TLB: one broadcast invalidate-all (TLBI VMALLE1IS via arch_tlb_flush_all)
+ * after the loop — cross-CPU by hardware, no IPI needed.
+ */
+int arch_vmm_protect(uint64_t pgd_addr, uint64_t va, uint64_t size, uint64_t flags) {
+  uint64_t *pgd = (uint64_t *)phys_to_virt(pgd_addr);
+  uint64_t v = va & ~0xFFFUL;
+  uint64_t end = (va + size + 0xFFFUL) & ~0xFFFUL;
+  int rc = 0;
+
+  for (; v < end; v += 4096) {
+    uint64_t pgde = pgd[PGD_INDEX(v)];
+    if (!(pgde & PTE_VALID)) { rc = -1; break; }
+    uint64_t *pud = (uint64_t *)phys_to_virt(pgde & PTE_ADDR_MASK); /* L0: always a table */
+
+    uint64_t pude = pud[PUD_INDEX(v)];
+    if (!(pude & PTE_VALID)) { rc = -1; break; }
+    uint64_t *pmd;
+    if (!(pude & 0x2)) {
+      pmd = get_next_table(pud, PUD_INDEX(v), 1, 2); /* split 1GB block */
+      if (!pmd) { rc = -1; break; }
+    } else {
+      pmd = (uint64_t *)phys_to_virt(pude & PTE_ADDR_MASK);
+    }
+
+    uint64_t pmde = pmd[PMD_INDEX(v)];
+    if (!(pmde & PTE_VALID)) { rc = -1; break; }
+    uint64_t *pt;
+    if (!(pmde & 0x2)) {
+      pt = get_next_table(pmd, PMD_INDEX(v), 1, 3); /* split 2MB block */
+      if (!pt) { rc = -1; break; }
+    } else {
+      pt = (uint64_t *)phys_to_virt(pmde & PTE_ADDR_MASK);
+    }
+
+    uint64_t *pte = &pt[PT_INDEX(v)];
+    if (!(*pte & PTE_VALID)) { rc = -1; break; }
+    *pte = (*pte & PTE_ADDR_MASK) | flags;
+    arch_cache_clean_range(pte, 8); /* visible to the hardware walker */
+  }
+
+  arch_mb();            /* DSB ISH: PTE writes complete before TLBI */
+  arch_tlb_flush_all(); /* TLBI VMALLE1IS: broadcast to all PEs */
+  arch_isb();
+  return rc;
+}
+
+/*
  * arch_vmm_get_physical - translate a virtual address to its physical address.
  *
  * Parameters:
@@ -303,23 +390,29 @@ int arch_vmm_unmap(uint64_t pgd_addr, uint64_t va) {
  * where PTE_ADDR_MASK extracts the OA [47:12] and (va & 0xFFF) restores the
  * 12-bit page offset from the original virtual address.
  *
- * Note: This function does not handle block mappings (L1/L2 blocks).  If a
- * block mapping exists at L1 or L2, get_next_table with alloc=0 returns NULL
- * for the "is this a block?" check, and the function returns 0. [static, known
- * limitation — see get_next_table for block handling when alloc=1]
+ * Handles 1GB (L1) and 2MB (L2) block descriptors by combining the block
+ * base OA with the in-block offset of 'va' — previously a block anywhere on
+ * the walk made the function return 0 (get_next_table with alloc=0 refuses
+ * blocks), so lookups inside the 2MB-block RAM identity map always failed.
  */
 uint64_t arch_vmm_get_physical(uint64_t pgd_addr, uint64_t va) {
-  uint64_t *pgd = (uint64_t *)pgd_addr;
-  uint64_t *pud, *pmd, *pt;
+  uint64_t *pgd = (uint64_t *)phys_to_virt(pgd_addr);
 
-  pud = get_next_table(pgd, PGD_INDEX(va), 0, 1);
-  if (!pud) return 0;
+  uint64_t pgde = pgd[PGD_INDEX(va)];
+  if (!(pgde & PTE_VALID)) return 0;
+  uint64_t *pud = (uint64_t *)phys_to_virt(pgde & PTE_ADDR_MASK); /* L0: always a table */
 
-  pmd = get_next_table(pud, PUD_INDEX(va), 0, 2);
-  if (!pmd) return 0;
+  uint64_t pude = pud[PUD_INDEX(va)];
+  if (!(pude & PTE_VALID)) return 0;
+  if (!(pude & 0x2)) /* 1GB L1 block */
+    return ((pude & PTE_ADDR_MASK) & ~0x3FFFFFFFUL) | (va & 0x3FFFFFFFUL);
+  uint64_t *pmd = (uint64_t *)phys_to_virt(pude & PTE_ADDR_MASK);
 
-  pt = get_next_table(pmd, PMD_INDEX(va), 0, 3);
-  if (!pt) return 0;
+  uint64_t pmde = pmd[PMD_INDEX(va)];
+  if (!(pmde & PTE_VALID)) return 0;
+  if (!(pmde & 0x2)) /* 2MB L2 block */
+    return ((pmde & PTE_ADDR_MASK) & ~0x1FFFFFUL) | (va & 0x1FFFFFUL);
+  uint64_t *pt = (uint64_t *)phys_to_virt(pmde & PTE_ADDR_MASK);
 
   uint64_t entry = pt[PT_INDEX(va)];
   if (!(entry & PTE_VALID)) return 0;
@@ -370,7 +463,7 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
     /* 2MB block optimisation: use an L2 block descriptor when both VA and PA
      * are 2MB-aligned and at least 2MB remains unmapped. */
     if ((v & 0x1FFFFF) == 0 && (p & 0x1FFFFF) == 0 && remaining >= 0x200000) {
-      uint64_t *pgd_ptr = (uint64_t *)pgd;
+      uint64_t *pgd_ptr = (uint64_t *)phys_to_virt(pgd);
       uint64_t *pud = get_next_table(pgd_ptr, PGD_INDEX(v), 1, 1);
       if (!pud) return -1;
 
@@ -398,95 +491,26 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
   return 0;
 }
 /*
- * arch_vmm_create_process_pgd - allocate and populate a new per-process PGD.
+ * arch_vmm_create_process_pgd - allocate a new per-process (TTBR0) PGD.
  *
  * Returns: physical address of the new L0 page table, or 0 on PMM exhaustion.
  *
- * A process PGD is constructed by:
- *   1. Allocating a fresh, zeroed 4KB page as the L0 table.
- *   2. Copying kernel mappings (PGD entries 256..511, the "upper half"):
- *      In a 48-bit VA layout with T0SZ=16, the kernel lives above
- *      0x0000_8000_0000_0000 (bit 47 set), which maps to PGD indices 256–511.
- *      These entries are shared (not copied by value of the sub-tables; the same
- *      L1 table pointers are placed in the new PGD), so all processes share the
- *      kernel virtual mapping.
- *   3. Cloning the lower-half identity map (PGD index 0):
- *      The kernel's L0[0] points to a PUD covering the low 512GB (0..511 GB).
- *      To avoid sharing the user-space portion of that PUD, a new PUD is
- *      allocated and only entries 0 and 1 (covering 0..2GB: MMIO at 0..1GB,
- *      kernel RAM identity-map at 1..2GB) are copied from the kernel PUD.
- *      PUD index 2 and above (covering 2GB..512GB, the user VA region starting
- *      at 0x80000000) are left as zero, so each process gets its own private
- *      user address space.
- *
- * After this function returns, user-space mappings are installed into the new
- * PGD via arch_vmm_map() / arch_vmm_map_range() with the process's own PGD addr.
- *
- * NOTE: The upper-half kernel PGD entries (256..511) are copied by value, meaning
- * each process's L0 table directly points to the same L1 tables as kernel_pgd.
- * Any new kernel L1/L2/L3 entries added after process creation will automatically
- * be visible to all processes (desired behaviour for kernel mappings).
+ * Higher-half model: the kernel lives entirely in TTBR1 (image, direct map
+ * and MMIO at KERNEL_VIRT_BASE + PA — see memlayout.h), which the hardware
+ * uses for every VA whose top bits are set.  A process PGD therefore
+ * contains ONLY user mappings: it starts out completely empty and the ELF
+ * loader / sbrk fill it via arch_vmm_map().  Nothing is shared with
+ * kernel_pgd, which makes vmm_destroy_pgd's ownership rules trivial — every
+ * table page reachable from this PGD belongs to the process.
  */
 uint64_t arch_vmm_create_process_pgd(void) {
   uint64_t *pgd = (uint64_t *)pmm_alloc_page();
   if (!pgd) return 0;
   memset(pgd, 0, 4096);
 
-  extern uint64_t *kernel_pgd;
-
-  /* Copy kernel mappings (upper half: PGD indices 256..511).
-   * PGD index i covers VA [i * 512GB .. (i+1) * 512GB).
-   * Indices 256..511 cover VA ≥ 0x8000_0000_0000 — the kernel virtual range. */
-  for (int i = 256; i < 512; i++) {
-    pgd[i] = kernel_pgd[i];
-  }
-
-  /* Clone kernel identity map (lower half, PGD index 0).
-   * kernel_pgd[0] is a table descriptor pointing to a PUD.
-   * We allocate a NEW PUD for the process and selectively copy only:
-   *   PUD[0]: MMIO region (0x0000_0000 .. 0x4000_0000, 1GB).
-   *   PUD[1]: Kernel RAM identity map (0x4000_0000 .. 0x8000_0000, 1GB).
-   * PUD[2..511] (user VA from 0x80000000 upward) are left at zero (private). */
-  uint64_t *src_pud = (uint64_t *)(kernel_pgd[0] & PTE_ADDR_MASK);
-  if (src_pud && (kernel_pgd[0] & 0x2)) { /* verify kernel_pgd[0] is a table descriptor */
-    uint64_t *dst_pud = (uint64_t *)pmm_alloc_page();
-    if (dst_pud) {
-      memset(dst_pud, 0, 4096);
-      /* Clone the PUD entries for MMIO (0-1GB) and Kernel (1-2GB).
-       * User-space typically starts at 2GB (PUD index 2), so we leave it free. */
-      if (src_pud[0] & PTE_VALID) dst_pud[0] = src_pud[0]; /* MMIO 1GB block */
-      /* PUD[1] covers 1..2GB: kernel RAM identity AND the bottom of the user
-       * window (the ELF header page at 0x7ffff000 lands here).  If the kernel
-       * entry is a table, DEEP-COPY its PMD page: installing a user PTE (by
-       * splitting a kernel 2MB block) must happen in a process-private table.
-       * Sharing the kernel's PMD here let every process write the same split
-       * PT — all processes (and the kernel) aliased one 0x7ffff000 page, and
-       * any teardown freeing it would free a live frame of another process. */
-      if (src_pud[1] & PTE_VALID) {
-        if (PTE_IS_TABLE(src_pud[1])) {
-          uint64_t *src_pmd = (uint64_t *)(src_pud[1] & PTE_ADDR_MASK);
-          uint64_t *dst_pmd = (uint64_t *)pmm_alloc_page();
-          if (!dst_pmd) {
-            pmm_free_page(dst_pud);
-            pmm_free_page(pgd);
-            return 0;
-          }
-          memcpy(dst_pmd, src_pmd, 4096);
-          arch_cache_clean_range(dst_pmd, 4096);
-          dst_pud[1] = (uint64_t)dst_pmd | (src_pud[1] & ~PTE_ADDR_MASK);
-        } else {
-          /* 1GB block: copied by value; a future split allocates private
-           * tables because it rewrites this private PUD entry. */
-          dst_pud[1] = src_pud[1];
-        }
-      }
-      arch_cache_clean_range(dst_pud, 4096);
-      /* Install new PUD as table descriptor; preserve attribute bits from kernel_pgd[0]. */
-      pgd[0] = (uint64_t)dst_pud | (kernel_pgd[0] & ~PTE_ADDR_MASK);
-    }
-  }
-
   arch_cache_clean_range(pgd, 4096);
   arch_mb();
-  return (uint64_t)pgd;
+  /* Contract: the arch layer returns the PGD's PHYSICAL address;
+   * vmm_create_pgd() converts back to a pointer. */
+  return virt_to_phys(pgd);
 }

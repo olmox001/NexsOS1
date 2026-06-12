@@ -147,18 +147,58 @@ path still legacy-only/48 KB (EXT4-05), no caching (EXT4-11).
 - **Acceptance**: shell + doom + counter from an extents rootfs on both
   arches; no direct `ext4_*` call left outside the VFS layer.
 
-### B2 — Epic #92: memory/address-space rework (largest, most invasive)
-Higher-half kernel, W^X (MM-VMM-01/AMMU-01), real PA/VA separation
-(`virt_to_phys` is identity today — `vmm.h`), allocator hardening, full
-teardown paths.  Prereq for ASLR/KASLR.  Touches every arch boundary: keep
-the per-arch work inside `kernel/arch/<arch>/` (HAL isolation rule; do not
-touch `kernel/arch/amd64/platform/platform.c`).
+### B2 — Epic #92: memory/address-space rework — **DONE (2026-06-12), findings closed; higher-half LANDED same day**
+**Batch 1**: `f4ad8fa` full teardown (MM-VMM-04 #24, AMMU-03 #35 — user
+frames + private tables freed, leak-free spawn/exit verified both arches;
+aarch64 header-page cross-process aliasing fixed) and `b745a74` W^X
+(MM-VMM-01 #22, AMMU-01 #33, ELF-02 #87 — text RX, rodata RO+NX, all other
+RAM RW+NX, EFER.NXE, user stack/heap never executable; `nxtest` proves the
+fault path).
+**Batch 2**: `0b9f6d5` MM-PMM-02 #21 (multi-page DMA cache-clean+fence);
+`29bb092` VFS-02 #65 (resolve-path NULL guard); `508c734` MM-BUF-01 #26
+(hard buffer-cache cap: slot reservation + sync-retry + loud refusal);
+`67ff898` MM-KM-01 #27 (kmalloc grows by 4 MB PMM chunks; ktest proves
+growth); `06f017a` MM-VMM-05/AMMU-08 #25 (cross-CPU TLB shootdown
+contract: aarch64 = hardware IS TLBI, amd64 = LAPIC IPI round on vector
+0xFD wired into unmap/teardown; bonus amd64 panic-halt IPI 0xFE);
+`834e347` AMMU-02 #34 (real arch_vmm_protect both arches + two latent
+walker bugs: aarch64 block-split level off-by-one that emptied L3 tables,
+block-blind get_physical); `cf8fca1` MM-VMM-02 walker half #23 (all
+walkers via phys_to_virt/virt_to_phys — identity assumption centralized
+in vmm.h).  Also closed as already-fixed-by-B1: #58 #60 #61.
+**Higher-half/PA-VA migration (LANDED 2026-06-12, same-day follow-up)**:
+`fb4506a` PA/VA contract sweep behind `KERNEL_VIRT_BASE` (memlayout.h;
+MM-PMM-07 #—: PMM returns direct-map pointers, every PA↔pointer crossing
+through phys_to_virt/virt_to_phys, MMIO accessors translated, identity-
+neutral); `8b401f5` aarch64 flip (image at 0xFFFF000040080000, TTBR0/TTBR1
+split: kernel half permanently in TTBR1, pure-user process PGDs, empty
+idle TTBR0, MMU+caches enabled in start.S boot tables, PSCI entry PA
+conversion, fixes latent TCR.IPS=0 32-bit-PA bug); `56dddcf` amd64 flip
+(image at 0xFFFF800000200000 with low boot stub at 1MB VA==PA, PML4[256]
+alias in boot tables, APs boot on boot_pml4 then adopt kernel_pgd,
+pure-user+high-copy process PML4s, pre-populated kernel slots 256..259,
+low-2MB identity window for the trampoline kept in every kernel PGD).
+Full matrix green on both arches: KTEST 5/5, writetest 3/3, nxtest W^X
+kill, crash isolation leak-free, doom, 0 panics.  Unlocks ASLR/KASLR.
+W2-class refinements (AMMU-04..07, MM-KM-02..06, MM-PMM-03..06,
+MM-BUF-02..05) remain open under the epic.  HAL isolation held: zero
+`platform.c` edits (amd64).
 
-### B3 — Epic #93: coherent ABI + capabilities
-Single syscall numbering (ABI-01), errno model (ABI-02), per-process fd
-table (ABI-03), capability checks killing ABI-04 (any process can kill PIDs,
-steal focus via syscall 232, overwrite files), formal IPC API (the external
-review's "no IPC model" point), registry auth (USR-SEC-01).
+### B3 — Epic #93: coherent ABI + capabilities — **IN PROGRESS (2026-06-12)**
+**Batch 1 (`0bef4c3`)**: single syscall numbering in
+`include/api/syscall_nums.h` shared by kernel switch + userland .S stubs
+(ABI-01 #88, ABI-SYS-01 #75; duplicate IPC 30/31/32 removed, TRY_RECV→233,
+SET_FOCUS finally public); negative-errno model kernel-wide (ABI-02 #89);
+ABI-05 yield-after-send fixed; sbrk heap ceiling 0xBF000000 (stack guard).
+**Batch 2 (`11f642a`)**: capability layer at the dispatcher — KILL =
+self/children/SYSTEM-ROOT via new `parent_pid` + `process_kill_allowed`
+(ABI-04 #91, USR-SEC-02 #78); SET_FOCUS self-only; DESTROY_WINDOW
+owner-only (`compositor_window_owner`); FILE_WRITE denies /bin + /sys to
+non-SYSTEM (EXT4-02 #57); registry first-writer-wins key ownership
+(LIB-REG-02 #73, USR-SEC-01 #77).  Smoke-tested live on both arches
+(kill init/notify denied, kill own child allowed).
+**Remaining**: per-process fd table (ABI-03 #90), formal IPC API,
+sandboxing (USR-SEC-03 #79 — epic-level outcome).
 
 ### B4 — Epic #94: amd64 parity (ACPI-MADT CPU count ARCH-01, real
 PCI/ACPI init ARCH-02, FPU/XMM save on context switch CPU-AMD64-01,

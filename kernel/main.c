@@ -83,9 +83,6 @@ void kernel_main(uint64_t x0_arg) {
   /* Print kernel banner */
   print_banner();
 
-  /* Run Unit Tests if enabled (can be gated by a flag) */
-  ktest_run_all();
-
   /* CPU initialization (exception vectors, per-CPU data) */
   pr_info("%s", "Initializing CPU...\n");
   cpu_init();
@@ -168,6 +165,11 @@ static void init_memory(void) {
 
   /* Phase 2: Dynamic RAM-aware remapping */
   vmm_dynamic_remap();
+
+  /* Run unit tests now that PMM/VMM/kmalloc are live: memory tests (kmalloc
+   * growth, vmm_protect) need real allocators, so the runner sits after the
+   * MM bring-up instead of right after the banner. */
+  ktest_run_all();
 
   /* Perform hardware discovery via Unified HAL */
   hal_bus_init();

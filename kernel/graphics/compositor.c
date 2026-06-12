@@ -281,6 +281,26 @@ static void __focus_topmost_locked(void) {
 }
 
 /*
+ * compositor_window_owner - return the owning PID of a window, or -1 if the
+ * window id does not exist.  Used by the syscall layer for the ABI-04
+ * ownership check on SYS_DESTROY_WINDOW (kernel-internal callers like the
+ * close button or process teardown bypass the check by design).
+ */
+int compositor_window_owner(int window_id) {
+  uint64_t flags;
+  int owner = -1;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == window_id) {
+      owner = windows[i].pid;
+      break;
+    }
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  return owner;
+}
+
+/*
  * Destroy Window
  */
 void compositor_destroy_window(int window_id) {

@@ -84,10 +84,10 @@ void registry_init(void) {
   memset(registry_store, 0, sizeof(registry_store));
   registry_count = 0;
 
-  /* Set default values */
-  registry_set("theme.color", "dark");
-  registry_set("system.hostname", "NeXs");
-  registry_set("mouse.sensitivity", "1.0");
+  /* Set default values (owner 0 = kernel/system) */
+  registry_set("theme.color", "dark", 0);
+  registry_set("system.hostname", "NeXs", 0);
+  registry_set("mouse.sensitivity", "1.0", 0);
 
   pr_info("Registry: Initialized with %d default keys.\n", registry_count);
 }
@@ -103,15 +103,19 @@ void registry_init(void) {
  *
  * NOTE(LIB-REG-01): two sequential O(n) scans; at 128 entries this is fine,
  *   but does not scale to a large store.
- * NOTE(LIB-REG-02): no permission check; any caller can write any key.
+ * LIB-REG-02 RESOLVED: first-writer-wins ownership — an existing key may be
+ *   overwritten only by its creator PID or by a kernel/system caller
+ *   (owner_pid 0); everyone else gets -EACCES.
  *
  * Params:
- *   key   - NUL-terminated key string; must be non-NULL.
- *   value - NUL-terminated value string; must be non-NULL.
- * Returns: 0 on success, -1 if key or value is NULL or store is full.
+ *   key       - NUL-terminated key string; must be non-NULL.
+ *   value     - NUL-terminated value string; must be non-NULL.
+ *   owner_pid - caller identity: 0 = kernel/system, otherwise the PID.
+ * Returns: 0 on success, -EACCES on ownership violation, -1 if key or value
+ *          is NULL or the store is full.
  * Locking: acquires registry_lock with IRQ save/restore.
  */
-int registry_set(const char *key, const char *value) {
+int registry_set(const char *key, const char *value, int owner_pid) {
   if (!key || !value)
     return -1;
 
@@ -121,6 +125,16 @@ int registry_set(const char *key, const char *value) {
   /* Search for existing key to update */
   for (int i = 0; i < MAX_REGISTRY_KEYS; i++) {
     if (registry_store[i].used && strcmp(registry_store[i].key, key) == 0) {
+      /* Ownership check (LIB-REG-02/USR-SEC-01): only the creator of the
+       * key — or a kernel/system caller (owner_pid 0) — may overwrite it.
+       * This makes service-routing keys (e.g. notify_srv's PID) unforgeable
+       * by other processes: first writer wins. */
+      if (owner_pid != 0 && registry_store[i].owner_pid != owner_pid) {
+        spin_unlock_irqrestore(&registry_lock, flags);
+        pr_warn("registry: PID %d denied write to '%s' (owner PID %d)\n",
+                owner_pid, key, registry_store[i].owner_pid);
+        return -EACCES;
+      }
       strncpy(registry_store[i].value, value, MAX_VAL_LEN - 1);
       registry_store[i].value[MAX_VAL_LEN - 1] = '\0';
       spin_unlock_irqrestore(&registry_lock, flags);
@@ -137,6 +151,7 @@ int registry_set(const char *key, const char *value) {
       strncpy(registry_store[i].value, value, MAX_VAL_LEN - 1);
       registry_store[i].value[MAX_VAL_LEN - 1] = '\0';
 
+      registry_store[i].owner_pid = owner_pid;
       registry_store[i].used = 1;
       registry_count++;
       spin_unlock_irqrestore(&registry_lock, flags);
@@ -199,10 +214,11 @@ int registry_get(const char *key, char *buffer, size_t size) {
  *   2. Calls registry_get() to fetch the value into a kernel buffer.
  *   3. Copies at most min(strlen+1, size) bytes back to user-space 'value'.
  *
- * NOTE(LIB-REG-02): No permission check on writes.  Any process at any
- *   privilege level can overwrite any key, including "system.hostname".
- *   The sched.h include is present for a future check using
- *   current_process->permissions, which has not been implemented.
+ * LIB-REG-02/USR-SEC-01 RESOLVED: writes carry the caller's identity
+ *   (PID, or 0 for PROC_PERM_SYSTEM processes) into registry_set(), which
+ *   enforces first-writer-wins ownership: overwriting someone else's key
+ *   returns -EACCES.  Kernel-seeded keys (owner 0) are only writable by
+ *   system processes.
  *
  * NOTE(LIB-REG-04): No enumeration op.  Userland must know keys in advance.
  *
@@ -223,16 +239,23 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
   /* 1. Copy Key from User Space securely (stops at null!) */
   if (vmm_copy_string_from_user(k_key, key, MAX_KEY_LEN) != 0) {
     pr_err("%s", "sys_registry: Invalid key pointer\n");
-    return -1;
+    return -EFAULT;
   }
 
   if (op == REG_OP_WRITE) {
     /* 2. Copy Value from User Space securely (stops at null!) */
     if (vmm_copy_string_from_user(k_val, value, MAX_VAL_LEN) != 0) {
       pr_err("%s", "sys_registry: Invalid value pointer\n");
-      return -1;
+      return -EFAULT;
     }
-    return registry_set(k_key, k_val);
+    /* Caller identity for the ownership check (LIB-REG-02/USR-SEC-01):
+     * system processes write as owner 0 (full rights, e.g. init seeding
+     * defaults); everyone else writes as their own PID. */
+    int owner = (current_process &&
+                 !(current_process->permissions & PROC_PERM_SYSTEM))
+                    ? (int)current_process->pid
+                    : 0;
+    return registry_set(k_key, k_val, owner);
   } else if (op == REG_OP_READ) {
     if (registry_get(k_key, k_val, sizeof(k_val)) == 0) {
       /* 3. Copy Result to User Space securely */
@@ -242,12 +265,12 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
 
       if (vmm_copy_to_user(value, k_val, copy_len) != 0) {
         pr_err("%s", "sys_registry: Failed to copy back to user\n");
-        return -1;
+        return -EFAULT;
       }
       return 0;
     }
-    return -1;
+    return -ENOENT;
   }
 
-  return -2; /* Invalid op */
+  return -EINVAL; /* Invalid op */
 }

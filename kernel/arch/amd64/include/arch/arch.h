@@ -2,6 +2,7 @@
 #define _ARCH_AMD64_H
 
 #include <stdint.h>
+#include <kernel/memlayout.h>
 #include <kernel/types.h>
 
 /* AMD64 HAL Implementation Primitives */
@@ -60,8 +61,11 @@ static inline void arch_impl_wmb(void) { __asm__ __volatile__("sfence" ::: "memo
 
 static inline uint32_t arch_impl_get_cpu_id(void) {
   /* Use the actual LAPIC ID register for more accuracy than CPUID leaf 1.
-   * Assumes default base 0xFEE00000 is mapped (which it is in start.S). */
-  return (*(volatile uint32_t *)0xFEE00020UL) >> 24;
+   * 0xFEE00020 is the LAPIC-ID PHYSICAL address; access it through the
+   * direct map (KERNEL_VIRT_BASE offset — identity while it is 0).  The
+   * constant is open-coded instead of using phys_to_virt() to keep this
+   * header free of include cycles with memlayout.h users. */
+  return (*(volatile uint32_t *)(uintptr_t)(0xFEE00020UL + KERNEL_VIRT_BASE)) >> 24;
 }
 
 /* --- VMM / TLB --- */
@@ -73,6 +77,18 @@ static inline uint64_t arch_impl_get_pgd(void) {
   uint64_t pgd;
   __asm__ __volatile__("mov %%cr3, %0" : "=r"(pgd));
   return pgd;
+}
+
+/* On amd64 the kernel half lives in the same PML4 (indices 256..511), so
+ * the "kernel root" accessors are simple aliases of the CR3 ones.  They
+ * exist so shared code can address the kernel address-space root without
+ * caring that aarch64 keeps it in a separate register (TTBR1). */
+static inline void arch_impl_set_kernel_pgd(uint64_t pgd) {
+  arch_impl_set_pgd(pgd);
+}
+
+static inline uint64_t arch_impl_get_kernel_pgd(void) {
+  return arch_impl_get_pgd();
 }
 
 static inline void arch_impl_tlb_flush_local(void) {
@@ -88,6 +104,20 @@ static inline void arch_impl_tlb_flush_all(void) {
 
 static inline void arch_impl_tlb_flush_va(uintptr_t va) {
   __asm__ __volatile__("invlpg (%0)" ::"r"(va) : "memory");
+}
+
+/* SMP TLB shootdown (MM-VMM-05/AMMU-08): invlpg and CR3 reloads are strictly
+ * LOCAL on x86 — there is no hardware broadcast like AArch64's TLBI *IS.
+ * Implemented in kernel/arch/amd64/mm/tlb.c with a fixed-vector LAPIC IPI
+ * (vector 0xFD) and bounded acknowledgement wait. */
+void amd64_tlb_shootdown_va(uintptr_t va);
+void amd64_tlb_shootdown_all(void);
+void amd64_tlb_ipi_init(void);
+static inline void arch_impl_tlb_shootdown_va(uintptr_t va) {
+  amd64_tlb_shootdown_va(va);
+}
+static inline void arch_impl_tlb_shootdown_all(void) {
+  amd64_tlb_shootdown_all();
 }
 
 /* Cache Control */

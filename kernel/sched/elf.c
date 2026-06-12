@@ -48,11 +48,12 @@ int process_load_elf(struct process *proc, const char *path) {
       /* ELF-01: reject a PT_LOAD whose VA is not wholly inside the user window
        * [0x70000000, 0xC0000000).  User ELFs link at 0x80000000 (Makefile
        * -Wl,-Ttext); their lowest segment is the header page at 0x7ffff000 and
-       * the user stack base is 0xC0000000.  Under the PA==VA identity map a
-       * segment below this window (e.g. a binary mis-linked at the kernel base,
-       * 0x40080000) maps straight over kernel RAM and corrupts it.  Reject here,
-       * before allocating or mapping anything.  (Conservative interim bound: the
-       * precise per-arch limit is part of the higher-half / PA-VA rework.) */
+       * the user stack base is 0xC0000000.  With the higher-half split the
+       * kernel no longer lives in the low half at all, but the window check
+       * stays: it rejects mis-linked binaries outright, keeps segments clear
+       * of the stack area, and on amd64 prevents a crafted p_vaddr with high
+       * bits set from indexing the COPIED kernel PML4 entries (256..511) and
+       * writing through the shared kernel PDPTs. */
       if (phdr.p_vaddr < 0x70000000UL || phdr.p_vaddr >= 0xC0000000UL ||
           phdr.p_memsz > 0xC0000000UL - phdr.p_vaddr) {
         pr_err("ELF: PT_LOAD vaddr 0x%lx (memsz 0x%lx) outside user range "
@@ -70,11 +71,15 @@ int process_load_elf(struct process *proc, const char *path) {
         flags |= PTE_RO;
       }
 
-      /* AArch64 specific UXN/PXN handled via HAL-neutral flags if defined */
+      /* W^X (ELF-02): non-executable unless PF_X — per-arch NX encoding. */
 #ifdef ARCH_AARCH64
       flags |= PTE_VALID | PTE_PAGE | PTE_AF | PTE_INNER_SHARE;
       if (!(phdr.p_flags & PF_X)) {
         flags |= PTE_UXN;
+      }
+#elif defined(ARCH_AMD64)
+      if (!(phdr.p_flags & PF_X)) {
+        flags |= PTE_NX;
       }
 #endif
 
@@ -98,15 +103,16 @@ int process_load_elf(struct process *proc, const char *path) {
           return -1;
         }
 
-        /* Map page in process address space */
-        if (vmm_map_page(proc->page_table, vaddr, (uint64_t)paddr, flags) !=
-            0) {
+        /* Map page in process address space (PTE wants the frame's
+         * PHYSICAL address; pmm returned the kernel pointer). */
+        if (vmm_map_page(proc->page_table, vaddr, virt_to_phys(paddr),
+                         flags) != 0) {
           pr_err("ELF: Failed to map page at 0x%lx\n", vaddr);
           pmm_free_page(paddr);
           return -1;
         }
 
-        /* Get Kernel Virtual Address for writing (Use Identity Map) */
+        /* Kernel virtual address for writing (direct-map pointer) */
         void *kaddr = paddr;
 
         /* Zero the page content */
@@ -151,8 +157,9 @@ int process_load_elf(struct process *proc, const char *path) {
       pr_err("%s", "ELF: Failed to allocate stack page\n");
       return -1;
     }
-    if (vmm_map_page(proc->page_table, vaddr, (uint64_t)paddr, PAGE_USER) !=
-        0) {
+    /* PAGE_USER_DATA: the user stack is never executable (W^X, ELF-02). */
+    if (vmm_map_page(proc->page_table, vaddr, virt_to_phys(paddr),
+                     PAGE_USER_DATA) != 0) {
       pr_err("%s", "ELF: Failed to map stack page\n");
       pmm_free_page(paddr);
       return -1;

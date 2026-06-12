@@ -72,6 +72,10 @@ static inline uint32_t arch_impl_get_cpu_id(void) {
 }
 
 /* --- VMM / TLB --- */
+/* TTBR0 = USER half (per-process tables, VA bit 47 clear); TTBR1 = KERNEL
+ * half (higher-half image + direct map, VA top bits set — see memlayout.h).
+ * arch_impl_set_pgd/get_pgd keep their historical meaning of "the process
+ * address-space root" (TTBR0); the kernel root has its own accessors. */
 static inline void arch_impl_set_pgd(uint64_t pgd) {
   __asm__ __volatile__("msr ttbr0_el1, %0" ::"r"(pgd));
 }
@@ -79,6 +83,16 @@ static inline void arch_impl_set_pgd(uint64_t pgd) {
 static inline uint64_t arch_impl_get_pgd(void) {
   uint64_t pgd;
   __asm__ __volatile__("mrs %0, ttbr0_el1" : "=r"(pgd));
+  return pgd;
+}
+
+static inline void arch_impl_set_kernel_pgd(uint64_t pgd) {
+  __asm__ __volatile__("msr ttbr1_el1, %0" ::"r"(pgd));
+}
+
+static inline uint64_t arch_impl_get_kernel_pgd(void) {
+  uint64_t pgd;
+  __asm__ __volatile__("mrs %0, ttbr1_el1" : "=r"(pgd));
   return pgd;
 }
 
@@ -92,6 +106,19 @@ static inline void arch_impl_tlb_flush_all(void) {
 
 static inline void arch_impl_tlb_flush_va(uintptr_t va) {
   __asm__ __volatile__("tlbi vaae1is, %0 \n dsb ish \n isb" ::"r"(va >> 12));
+}
+
+/* SMP TLB shootdown (MM-VMM-05/AMMU-08): the two flushes above use the
+ * *IS (inner-shareable) TLBI variants, which the hardware DVM broadcasts to
+ * every PE in the inner-shareable domain; the DSB ISH then waits for
+ * completion on ALL PEs, not just the local one.  The cross-CPU shootdown
+ * contract is therefore already satisfied without IPIs — these are aliases,
+ * not stubs. */
+static inline void arch_impl_tlb_shootdown_va(uintptr_t va) {
+  arch_impl_tlb_flush_va(va);
+}
+static inline void arch_impl_tlb_shootdown_all(void) {
+  arch_impl_tlb_flush_all();
 }
 
 /* Cache Control */

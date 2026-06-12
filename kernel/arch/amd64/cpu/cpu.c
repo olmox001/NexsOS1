@@ -141,7 +141,7 @@ void arch_cpu_init(void) {
   {
     extern uint64_t *kernel_pgd;
     if (kernel_pgd)
-      arch_vmm_set_pgd((uint64_t)(uintptr_t)kernel_pgd);
+      arch_vmm_set_pgd(virt_to_phys(kernel_pgd)); /* CR3 takes the PA */
   }
 }
 
@@ -232,8 +232,10 @@ void arch_cpu_switch_context(struct process *next) {
    * ... PID" -> instant reboot seen on window close.  Confined to the amd64 HAL. */
   {
     extern uint64_t *kernel_pgd;
-    uint64_t pgd = next->page_table ? (uint64_t)next->page_table
-                                    : (uint64_t)(uintptr_t)kernel_pgd;
+    /* page_table / kernel_pgd are kernel virtual pointers; CR3 takes the
+     * PHYSICAL PML4 base — translate with virt_to_phys. */
+    uint64_t pgd = next->page_table ? virt_to_phys(next->page_table)
+                                    : (kernel_pgd ? virt_to_phys(kernel_pgd) : 0);
     if (pgd)
       arch_vmm_set_pgd(pgd);
   }

@@ -55,6 +55,9 @@ void compositor_init(void);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
                              int pid);
 void compositor_destroy_window(int window_id);
+/* compositor_window_owner: owning PID of a window id, -1 if not found.
+ * Used by the SYS_DESTROY_WINDOW capability check (ABI-04). */
+int compositor_window_owner(int window_id);
 uint32_t *compositor_get_buffer(int window_id);
 void compositor_move_window(int window_id, int x, int y);
 void compositor_render(void);

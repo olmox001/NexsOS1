@@ -27,9 +27,9 @@
  *     lifetime of the normalisation loop because temp[] is on the same frame.
  *
  * Known issues:
- *   VFS-02  (W3 SECURITY+MISSING) current_process is dereferenced without a
- *           NULL guard.  Safe only because all callers are on validated syscall
- *           paths; the function itself has no protection.
+ *   VFS-02  RESOLVED (Phase B2): vfs_resolve_path() guards current_process;
+ *           a relative path resolved from kernel context (no process) is now
+ *           treated as relative to "/".
  *   VFS-03  (W2 BAD-IMPL) parts[32] limits the resolved path to 32 components;
  *           deeper paths are silently truncated with no error returned.
  *   VFS-04  (W1 REFINE) temp[256] and normalized[256] are both stack-allocated.
@@ -195,9 +195,9 @@ int vfs_stat(const char *path, struct vfs_stat *st) {
  *
  * Preconditions:
  *   - out != NULL, size >= 1.
- *   - If in is relative, current_process must be non-NULL and
- *     current_process->cwd must be a valid NUL-terminated string.
- *     NOTE(VFS-02): neither current_process nor cwd is null-checked here.
+ *   - If in is relative and a current process exists, its cwd must be a
+ *     valid NUL-terminated string.  Without a current process (kernel
+ *     context) relative paths resolve from "/" (FIX VFS-02).
  *
  * Algorithm:
  *   1. Build temp[] = (absolute ? in : cwd + "/" + in), truncated to 255 chars.
@@ -230,8 +230,13 @@ void vfs_resolve_path(const char *in, char *out, size_t size) {
         strncpy(temp, in, sizeof(temp));
     } else {
         /* Relative path: prepend current working directory.
-         * NOTE(VFS-02): current_process not null-checked before deref. */
-        strncpy(temp, current_process->cwd, sizeof(temp));
+         * FIX(VFS-02): kernel-context callers (boot, no current process) have
+         * no cwd — resolve relative to "/" instead of dereferencing NULL. */
+        if (current_process) {
+            strncpy(temp, current_process->cwd, sizeof(temp));
+        } else {
+            strncpy(temp, "/", sizeof(temp));
+        }
         size_t len = strlen(temp);
         /* Ensure exactly one '/' separator between CWD and 'in'. */
         if (len > 0 && temp[len-1] != '/') {

@@ -108,7 +108,8 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
   if (!priv->handle)
     return -1;
 
-  desc[0].addr = (uint64_t)cmd;
+  /* Descriptor addresses are PHYSICAL (DMA). */
+  desc[0].addr = virt_to_phys(cmd);
   desc[0].len = cmd_len;
   desc[0].flags = VRING_DESC_F_NEXT;
   desc[0].next = 1;
@@ -116,7 +117,7 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
   volatile uint16_t *idx_ptr = &used->idx;
   uint16_t old_idx = *idx_ptr;
 
-  desc[1].addr = (uint64_t)resp;
+  desc[1].addr = virt_to_phys(resp);
   desc[1].len = resp_len;
   desc[1].flags = VRING_DESC_F_WRITE;
   desc[1].next = 0;
@@ -199,9 +200,9 @@ void virtio_gpu_init(void) {
     avail = (struct vring_avail *)((uint8_t *)qmem + priv->qsize * 16);
     used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
-    /* Use unified HAL API for queue setup */
-    virtio_setup_queue(dev_handle, 0, (uint64_t)desc, (uint64_t)avail,
-                       (uint64_t)used);
+    /* Use unified HAL API for queue setup (physical ring addresses) */
+    virtio_setup_queue(dev_handle, 0, virt_to_phys(desc), virt_to_phys(avail),
+                       virt_to_phys(used));
 
     if (!gpu_cmd_buf)
       gpu_cmd_buf = pmm_alloc_page();
@@ -247,7 +248,7 @@ void virtio_gpu_init(void) {
     attach->hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
     attach->resource_id = priv->resource_id;
     attach->nr_entries = 1;
-    ents[0].addr = (uint64_t)priv->backing_store;
+    ents[0].addr = virt_to_phys(priv->backing_store); /* device DMA: PA */
     ents[0].length = dev->framebuffer_size;
     virtio_gpu_send(priv, attach, sizeof(*attach) + sizeof(*ents), resp_page,
                     sizeof(struct virtio_gpu_ctrl_hdr));

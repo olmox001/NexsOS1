@@ -64,6 +64,11 @@ struct process {
   int quantum_reset; /* Reset value */
 
   uint32_t permissions;
+  /* parent_pid: PID of the process that spawned this one (0 = kernel/boot).
+   * Set by process_create() from current_process; used by the SYS_KILL
+   * capability check (ABI-04): a process may kill itself, its children,
+   * or anything if it holds PROC_PERM_SYSTEM/ROOT. */
+  int parent_pid;
 
   /* Scheduler List */
   struct list_head run_list;
@@ -118,6 +123,12 @@ extern struct process *process_create(const char *name, uint8_t priority,
                                       uint32_t permissions);
 struct process *process_find_by_pid(int pid);
 struct process *__process_find_by_pid(int pid);
+/* process_kill_allowed: ABI-04 capability check for SYS_KILL.  Returns
+ * non-zero if 'caller' may terminate 'target_pid': itself, a direct child,
+ * or anything when it holds PROC_PERM_SYSTEM/PROC_PERM_ROOT.  Kernel-internal
+ * terminate paths (compositor close, init supervision) bypass this and call
+ * process_terminate() directly. */
+int process_kill_allowed(struct process *caller, int target_pid);
 int process_terminate(int pid);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */

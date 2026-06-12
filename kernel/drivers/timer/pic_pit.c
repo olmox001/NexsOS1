@@ -40,8 +40,10 @@
 #include <kernel/hal.h>
 #include <kernel/irq.h>
 #include <kernel/printk.h>
+#include <kernel/arch.h>
 #include <arch/pt_regs.h>
 #include <arch/amd64_internal.h>
+#include <arch/amd64/apic.h>
 
 /* Prototypes to satisfy -Wmissing-prototypes */
 void pic_init(void);
@@ -170,6 +172,39 @@ static void pic_chip_end(uint32_t irq) {
     }
 }
 
+/* HALT_IPI_VECTOR: fixed LAPIC vector for the panic-halt broadcast.  The
+ * GIC counterpart is SGI0 (gic_send_ipi); the amd64 chip previously left
+ * send_ipi_all NULL, so panic() never stopped the other CPUs — they kept
+ * running against a dying kernel. */
+#define HALT_IPI_VECTOR 0xFE
+
+/*
+ * halt_ipi_handler - peer-CPU side of the panic-halt broadcast.
+ *
+ * Mirrors cpu_halt_from_ipi() on the aarch64/GIC path (irq.c): set the
+ * global panic flag, stop the local timer, halt forever.  Never returns,
+ * so no EOI is issued — irrelevant during a panic.
+ */
+static void halt_ipi_handler(uint32_t irq, void *data) {
+    (void)irq;
+    (void)data;
+    extern volatile int panic_flag;
+    panic_flag = 1;
+    arch_timer_control(0);
+    arch_cpu_halt();
+}
+
+/*
+ * pic_chip_send_ipi_all - broadcast the panic-halt IPI to all other CPUs.
+ *
+ * LAPIC fixed-vector IPI with the all-excluding-self shorthand (the ICR
+ * destination field is ignored when a shorthand is used).
+ */
+static void pic_chip_send_ipi_all(void) {
+    lapic_send_ipi(0, ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF |
+                          HALT_IPI_VECTOR);
+}
+
 /* pic_chip: irq_chip implementation for the 8259A PIC pair.
  * .init is NULL because pic_init() itself calls irq_register_chip() and
  * then initialises the PIC; there is no separate init() callback needed.
@@ -180,6 +215,7 @@ static struct irq_chip pic_chip = {
     .enable = pic_chip_enable,
     .disable = pic_chip_disable,
     .acknowledge = pic_chip_acknowledge,
+    .send_ipi_all = pic_chip_send_ipi_all,
     .end = pic_chip_end,
 };
 
@@ -217,6 +253,10 @@ void pic_init(void) {
   /* Start with all IRQs masked except slave cascade (IRQ 2) */
   hal_write8(PIC1_DATA, 0xFB);
   hal_write8(PIC2_DATA, 0xFF);
+
+  /* Panic-halt IPI receiver (LAPIC fixed vector; pic_chip_enable ignores
+   * vectors >= 48, so this touches no 8259 mask). */
+  irq_register(HALT_IPI_VECTOR, halt_ipi_handler, NULL);
 
   pr_info("PIC Initialized and remapped to 32-47.\n");
 }

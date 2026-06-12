@@ -7,11 +7,15 @@
  *
  * Architecture:
  *   Small allocations (user-size + header <= 4096 bytes) are served from a
- *   32 MB bump-pointer pool (heap_base..heap_end) carved from contiguous PMM
- *   pages at init time.  Nine power-of-two buckets (16, 32, 64, 128, 256,
- *   512, 1024, 2048, 4096 bytes) each maintain a LIFO free list of returned
- *   blocks.  A freed small block goes onto the head of its bucket's list and
- *   is reused by the next same-size request.
+ *   GROWABLE bump-pointer pool built from 4 MB PMM chunks (FIX MM-KM-01).
+ *   The active chunk is delimited by heap_ptr..heap_end; when it is
+ *   exhausted and the bucket free list is empty, kmalloc() allocates a new
+ *   chunk from the PMM and continues there (at most one bucket slot, < 4 KB,
+ *   is abandoned at each chunk tail).  Nine power-of-two buckets (16, 32,
+ *   64, 128, 256, 512, 1024, 2048, 4096 bytes) each maintain a LIFO free
+ *   list of returned blocks.  A freed small block goes onto the head of its
+ *   bucket's list and is reused by the next same-size request; chunks are
+ *   never returned to the PMM (they become the warm pool of the kernel).
  *
  *   Large allocations (user-size + header > 4096 bytes) are served directly
  *   from pmm_alloc_pages(); freed large blocks are returned to the PMM.
@@ -20,11 +24,10 @@
  *   (sizeof = 20 bytes, but __attribute__((aligned(16))) pads to 32 bytes).
  *
  * Known issues:
- *   MM-KM-01  (W3 MISSING/WRONG-DESIGN) Bump-pointer only grows; freed small
- *             blocks stay in per-bucket lists and are NEVER returned to the PMM.
- *             Once heap_ptr reaches heap_end, small allocs fail permanently even
- *             if free lists contain blocks of other sizes.  Not suitable for
- *             long-running workloads.
+ *   MM-KM-01  RESOLVED (Phase B2): the pool grows by 4 MB PMM chunks on
+ *             exhaustion; small allocations no longer fail permanently.
+ *             Small-bucket memory still never returns to the PMM (that
+ *             requires per-chunk accounting + coalescing — see MM-KM-02).
  *   MM-KM-02  (W2 WRONG-DESIGN) No cross-bucket reuse: a freed 512B block
  *             cannot satisfy a 256B request; structural fragmentation is baked
  *             into the design.
@@ -45,7 +48,9 @@
 #include <kernel/string.h>
 #include <kernel/types.h>
 
-#define HEAP_SIZE (32 * 1024 * 1024) /* Increased to 32 MB heap */
+/* KMALLOC_CHUNK_SIZE: granule of pool growth (FIX MM-KM-01).  The initial
+ * pool and every later expansion are one contiguous PMM chunk of this size. */
+#define KMALLOC_CHUNK_SIZE (4 * 1024 * 1024)
 #define MIN_BUCKET_SIZE 16
 #define MAX_BUCKET_SIZE 4096
 #define NUM_BUCKETS 9 /* 16, 32, 64, 128, 256, 512, 1024, 2048, 4096 */
@@ -89,13 +94,14 @@ struct block_header {
 /* We allocate heap pages from PMM for small objects.
  * Large objects go directly to PMM.
  */
-/* heap_base/heap_ptr/heap_end: delimit the 32 MB bump-pointer pool.
- * heap_ptr advances on every small allocation carved from the pool.
- * NOTE(MM-KM-01): heap_ptr never retreats; once it reaches heap_end the pool
- * is permanently exhausted, even if free lists contain many returned blocks. */
-static uint8_t *heap_base = NULL;
+/* heap_ptr/heap_end: delimit the ACTIVE bump chunk; heap_ptr advances on
+ * every small allocation carved from it.  When exhausted, kmalloc() installs
+ * a fresh KMALLOC_CHUNK_SIZE chunk here (FIX MM-KM-01); old chunks survive
+ * through the blocks already carved from them (headers are self-describing).
+ * heap_total: cumulative pool size across all chunks (statistics/log). */
 static uint8_t *heap_ptr = NULL;
 static uint8_t *heap_end = NULL;
+static size_t heap_total = 0;
 
 /* buckets[i]: head of the LIFO free list for bucket index i.
  * NOTE(MM-KM-02): Blocks freed to bucket[i] can only satisfy future requests
@@ -150,40 +156,41 @@ static size_t get_bucket_size(int idx) { return 16 << idx; }
 /*
  * Initialize kernel heap
  *
- * kmalloc_init - allocate the 32 MB small-object heap from the PMM.
+ * kmalloc_init - allocate the first small-object heap chunk from the PMM.
  *
- * Calls pmm_alloc_pages() to obtain HEAP_SIZE/PAGE_SIZE contiguous pages.
- * Sets heap_base, heap_ptr, heap_end, and clears all bucket free-list heads.
+ * Calls pmm_alloc_pages() to obtain KMALLOC_CHUNK_SIZE/PAGE_SIZE contiguous
+ * pages.  Sets heap_ptr, heap_end, and clears all bucket free-list heads.
  * Sets heap_initialized = 1 to skip re-init on subsequent calls.
+ *
+ * Later exhaustion is handled inside kmalloc() by installing additional
+ * chunks (FIX MM-KM-01); this function only seeds the first one.
  *
  * Locking: acquires kmalloc_lock with IRQ save/restore; safe to call before
  *          SMP is active or after (idempotent via heap_initialized guard).
- *
- * NOTE(MM-KM-06): The heap is a single 32 MB PMM allocation; it is NOT
- * grown later.  If the bump pointer reaches heap_end all subsequent small
- * allocations fail permanently (see MM-KM-01).
  */
 void kmalloc_init(void) {
   uint64_t flags;
   uint32_t pages;
-  
+  uint8_t *chunk;
+
   spin_lock_irqsave(&kmalloc_lock, &flags);
 
   if (heap_initialized) {
     goto out;
   }
 
-  /* Allocate memory pool for small allocations */
-  pages = (HEAP_SIZE + 4095) / 4096;
-  heap_base = (uint8_t *)pmm_alloc_pages(pages);
+  /* Allocate the first chunk for small allocations */
+  pages = (KMALLOC_CHUNK_SIZE + 4095) / 4096;
+  chunk = (uint8_t *)pmm_alloc_pages(pages);
 
-  if (!heap_base) {
+  if (!chunk) {
     pr_err("%s", "kmalloc: Failed to allocate heap\n");
     goto out;
   }
 
-  heap_end = heap_base + HEAP_SIZE;
-  heap_ptr = heap_base;
+  heap_ptr = chunk;
+  heap_end = chunk + KMALLOC_CHUNK_SIZE;
+  heap_total = KMALLOC_CHUNK_SIZE;
 
   for (int i = 0; i < NUM_BUCKETS; i++) {
     buckets[i] = NULL;
@@ -191,8 +198,8 @@ void kmalloc_init(void) {
 
   heap_initialized = 1;
 
-  pr_info("kmalloc: Initialized bucket allocator. Heap: %u MB at %p\n",
-          HEAP_SIZE / (1024 * 1024), heap_base);
+  pr_info("kmalloc: Initialized bucket allocator. Chunk: %u MB at %p (growable)\n",
+          KMALLOC_CHUNK_SIZE / (1024 * 1024), chunk);
 
 out:
   spin_unlock_irqrestore(&kmalloc_lock, flags);
@@ -206,9 +213,14 @@ out:
  * Small path (total_req = size + sizeof(block_header) <= 4096):
  *   1. Compute bucket index and slot size.
  *   2. Under kmalloc_lock: pop the bucket free list if non-empty (reuse).
- *   3. Otherwise: advance heap_ptr by slot size; fail if heap exhausted.
- *   4. Initialise block_header (magic=BLOCK_MAGIC, size, bucket_idx).
- *   5. Return pointer to byte immediately after the header (user payload).
+ *   3. Otherwise: advance heap_ptr by slot size within the active chunk.
+ *   4. If the chunk is exhausted (FIX MM-KM-01): drop the lock, allocate a
+ *      fresh KMALLOC_CHUNK_SIZE chunk from the PMM, re-acquire and re-check
+ *      (another CPU may have grown or freed meanwhile — then donate our
+ *      chunk back), install it as the active chunk, and retry.  Allocation
+ *      fails only when the PMM itself is exhausted.
+ *   5. Initialise block_header (magic=BLOCK_MAGIC, size, bucket_idx).
+ *   6. Return pointer to byte immediately after the header (user payload).
  *
  * Large path (total_req > 4096):
  *   Releases kmalloc_lock before calling pmm_alloc_pages() to avoid holding
@@ -216,13 +228,10 @@ out:
  *   NOTE(MM-KM-03): Returns (block_header *)ptr + 1 = ptr + 32, which is
  *   not page-aligned.  Callers expecting page alignment will be misled.
  *
- * NOTE(MM-KM-01): Freed small blocks returned to bucket free lists are NEVER
- * given back to the PMM.  Once heap_ptr reaches heap_end the allocator fails
- * permanently for small objects, even if free lists are non-empty.
- *
  * NOTE(MM-KM-06): kmalloc_lock is a global spinlock; all CPUs serialise here.
  *
- * Returns: pointer to user payload, or NULL on size 0, overflow, or exhaustion.
+ * Returns: pointer to user payload, or NULL on size 0, overflow, or PMM
+ *          exhaustion.
  */
 void *kmalloc(size_t size) {
   void *res = NULL;
@@ -251,38 +260,67 @@ void *kmalloc(size_t size) {
     /* Small allocation from bucket */
     size_t bucket_sz = get_bucket_size(idx);
 
-    /* Check free list for this bucket */
-    if (buckets[idx]) {
-      struct block_header *blk = buckets[idx];
-      buckets[idx] = blk->next;
-      blk->magic = BLOCK_MAGIC;
-      blk->size = size;
-      blk->next = NULL;
-      blk->bucket_idx = idx;
+    for (;;) {
+      /* Check free list for this bucket */
+      if (buckets[idx]) {
+        struct block_header *blk = buckets[idx];
+        buckets[idx] = blk->next;
+        blk->magic = BLOCK_MAGIC;
+        blk->size = size;
+        blk->next = NULL;
+        blk->bucket_idx = idx;
 
-      res = (void *)(blk + 1);
-      goto out;
+        res = (void *)(blk + 1);
+        goto out;
+      }
+
+      /* No free block, carve from the active chunk */
+      if (heap_ptr + bucket_sz <= heap_end) {
+        struct block_header *blk = (struct block_header *)heap_ptr;
+        heap_ptr += bucket_sz;
+
+        blk->magic = BLOCK_MAGIC;
+        blk->size = size;
+        blk->next = NULL;
+        blk->bucket_idx = idx;
+
+        res = (void *)(blk + 1);
+        goto out;
+      }
+
+      /* Active chunk exhausted: grow the pool (FIX MM-KM-01).  The lock is
+       * dropped across the PMM call (consistent with the large path); after
+       * re-acquiring, re-check — another CPU may have grown the pool or
+       * freed a block while we were unlocked. */
+      spin_unlock_irqrestore(&kmalloc_lock, flags);
+      uint8_t *chunk = (uint8_t *)pmm_alloc_pages(KMALLOC_CHUNK_SIZE / 4096);
+      spin_lock_irqsave(&kmalloc_lock, &flags);
+
+      if (!chunk) {
+        if (buckets[idx] || heap_ptr + bucket_sz <= heap_end)
+          continue; /* progress happened while unlocked; retry without chunk */
+        pr_err("kmalloc: PMM exhausted growing heap (request %lu)\n", size);
+        res = NULL;
+        goto out;
+      }
+
+      if (heap_ptr + bucket_sz <= heap_end) {
+        /* Lost the grow race: the pool already has room again.  Donate our
+         * chunk back instead of abandoning the active chunk's free tail. */
+        spin_unlock_irqrestore(&kmalloc_lock, flags);
+        pmm_free_pages(chunk, KMALLOC_CHUNK_SIZE / 4096);
+        spin_lock_irqsave(&kmalloc_lock, &flags);
+        continue;
+      }
+
+      /* Install the fresh chunk as the active bump area (the old chunk's
+       * tail, < one bucket slot, is abandoned). */
+      heap_ptr = chunk;
+      heap_end = chunk + KMALLOC_CHUNK_SIZE;
+      heap_total += KMALLOC_CHUNK_SIZE;
+      pr_info("kmalloc: heap grown to %lu MB (new chunk at %p)\n",
+              heap_total / (1024 * 1024), chunk);
     }
-
-    /* No free block, carve from heap_ptr */
-    size_t alloc_sz = bucket_sz;
-    if (heap_ptr + alloc_sz <= heap_end) {
-      struct block_header *blk = (struct block_header *)heap_ptr;
-      heap_ptr += alloc_sz;
-
-      blk->magic = BLOCK_MAGIC;
-      blk->size = size;
-      blk->next = NULL;
-      blk->bucket_idx = idx;
-
-      res = (void *)(blk + 1);
-      goto out;
-    }
-
-    /* Heap exhausted for small objects */
-    pr_err("kmalloc: Small heap exhausted (request %lu)\n", size);
-    res = NULL;
-    goto out;
 
   } else {
     /* Large allocation: via PMM directly */
@@ -345,10 +383,10 @@ void *kcalloc(size_t nmemb, size_t size) {
  *
  * Small allocations: write magic=BLOCK_FREE, push block onto the bucket free
  * list head (LIFO), release lock.
- * NOTE(MM-KM-01): The freed block is placed in the bucket free list only;
- * it is never returned to the PMM bump pool.
- * NOTE(MM-KM-02): The block is returned to its original bucket only; it
- * cannot be reused by a request for a different bucket size.
+ * NOTE(MM-KM-02): The block is returned to its original bucket only; it is
+ * never given back to the PMM and cannot be reused by a request for a
+ * different bucket size (the pool now grows on demand, so this costs RAM
+ * but no longer causes allocation failure — see MM-KM-01 resolution).
  *
  * Locking: acquires/releases kmalloc_lock; NOT safe to call from NMI context.
  */

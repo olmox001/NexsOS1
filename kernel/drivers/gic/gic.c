@@ -35,16 +35,19 @@
 #include <drivers/gic.h>
 #include "gic_regs.h"
 #include <kernel/irq.h>
+#include <kernel/memlayout.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/types.h>
 
 /* GICD_REG(off): dereference GICD MMIO register at GICD_BASE + off (32-bit).
  * GICC_REG(off): dereference GICC MMIO register at GICC_BASE + off (32-bit).
- * Both bases come from gic_regs.h which sources them from platform.h. */
+ * Both bases come from gic_regs.h (physical addresses); the access happens
+ * at their direct-map kernel VA via phys_to_virt (identity while
+ * KERNEL_VIRT_BASE == 0). */
 /* MMIO access */
-#define GICD_REG(off) (*(volatile uint32_t *)(GICD_BASE + (off)))
-#define GICC_REG(off) (*(volatile uint32_t *)(GICC_BASE + (off)))
+#define GICD_REG(off) (*(volatile uint32_t *)phys_to_virt(GICD_BASE + (off)))
+#define GICC_REG(off) (*(volatile uint32_t *)phys_to_virt(GICC_BASE + (off)))
 
 /* gic_num_irqs: total interrupt lines reported by GICD_TYPER, clamped to
  * GIC_MAX_IRQS.  Set once in gic_init_dist(); read-only thereafter. */
@@ -304,7 +307,8 @@ static uint32_t gic_ack(void) { return GICC_REG(GICC_IAR) & 0x3FF; }
  * IRQ context: YES — must be called from the IRQ dispatch path.
  */
 static void gic_eoi(uint32_t irq) {
-  volatile uint32_t *eoir_reg = (volatile uint32_t *)(GICC_BASE + GICC_EOIR);
+  volatile uint32_t *eoir_reg =
+      (volatile uint32_t *)phys_to_virt(GICC_BASE + GICC_EOIR);
   *eoir_reg = irq;
 }
 

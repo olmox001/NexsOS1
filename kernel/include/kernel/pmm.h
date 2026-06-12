@@ -11,12 +11,15 @@
  *               reserved for devices requiring sub-16MB DMA addresses.
  *   ZONE_NORMAL (dma_end_pfn .. total_pages-1): general-purpose allocation.
  *
- * Central invariant: the kernel runs identity-mapped (VA == PA for the RAM
- * window).  Pointers returned by pmm_alloc_page() are physical addresses used
- * directly as C pointers.  See MM-PMM-07 and the subsystem analysis S.4.
+ * PA/VA contract (MM-PMM-07 resolved, see kernel/memlayout.h):
+ *   pmm_alloc_*() return kernel VIRTUAL pointers (direct map,
+ *   phys_to_virt of the frame address); pmm_free_*() take the same
+ *   pointers back.  Callers needing the frame's PHYSICAL address (page
+ *   table entries, DMA descriptors, TTBR/CR3) must use virt_to_phys().
+ *   pmm_phys_to_page()/pmm_page_to_phys() speak physical addresses only.
  *
  * Known issues (see docs/review/analysis/01-mm-memory-management.md):
- *   MM-PMM-01 through MM-PMM-07.
+ *   MM-PMM-01 through MM-PMM-06 (07 resolved).
  */
 #ifndef _KERNEL_PMM_H
 #define _KERNEL_PMM_H

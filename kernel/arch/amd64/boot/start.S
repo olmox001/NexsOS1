@@ -1,3 +1,22 @@
+/*
+ * kernel/arch/amd64/boot/start.S — higher-half bring-up.
+ *
+ * The .text.boot code below is linked at VA == PA (1MB, see kernel.ld)
+ * because it runs in 32-bit protected mode and during the paging switch.
+ * The kernel proper is linked at KERNEL_VIRT_BASE + 2MB (memlayout.h).
+ *
+ * Boot page tables (in .boot_bss, low):
+ *   boot_pml4[0]   -> boot_pdpt   identity:    VA 0..1GB  -> PA 0..1GB
+ *   boot_pml4[256] -> boot_pdpt   higher half: KVB+0..1GB -> PA 0..1GB
+ *   boot_pdpt[0]   -> boot_pd       (2MB pages, PA 0..1GB)
+ *   boot_pdpt[3]   -> boot_pd_high  (2MB pages, PA 3..4GB: LAPIC/MMIO,
+ *                                    visible both identity and at KVB+3GB)
+ * Sharing boot_pdpt between PML4[0] and PML4[256] gives the direct map
+ * and the identity map for free with one set of tables.  APs boot on the
+ * same boot_pml4 (kernel_pgd_phys is patched into the trampoline), so
+ * they can reach the high secondary_cpu_entry before adopting the real
+ * kernel PGD in arch_cpu_init.
+ */
 #include <kernel/cpu.h>
 
 .section .multiboot, "a"
@@ -35,7 +54,7 @@ multiboot2_header_end:
 _start_32:
     cli
     cld
-    
+
     /* 2. Setup temporary stack */
     movl $boot_stack_top, %esp
 
@@ -65,18 +84,20 @@ _start_32:
     orl $(1 << 5), %eax
     movl %eax, %cr4
 
-    /* 5. Setup Page Tables (Identity map first 1GB) */
+    /* 5. Setup Page Tables (identity 1GB + higher-half alias) */
     movl $boot_pdpt, %eax
     orl $3, %eax
-    movl %eax, (boot_pml4)
+    movl %eax, (boot_pml4)          /* PML4[0]:   identity low */
     movl $0, (boot_pml4 + 4)
+    movl %eax, (boot_pml4 + 2048)   /* PML4[256]: KERNEL_VIRT_BASE alias */
+    movl $0, (boot_pml4 + 2052)
 
     movl $boot_pd, %eax
     orl $3, %eax
     movl %eax, (boot_pdpt)
     movl $0, (boot_pdpt + 4)
 
-    /* PDPT[3] = boot_pd_high (For 3GB-4GB) */
+    /* PDPT[3] = boot_pd_high (for 3GB-4GB: LAPIC and friends) */
     movl $boot_pd_high, %eax
     orl $3, %eax
     movl %eax, (boot_pdpt + 24)
@@ -108,10 +129,11 @@ _start_32:
     movl $boot_pml4, %eax
     movl %eax, %cr3
 
-    /* 7. Enable Long Mode */
+    /* 7. Enable Long Mode + NXE (PTE bit 63 — W^X needs it; without NXE a
+     * set NX bit is a reserved-bit #PF) */
     movl $0xC0000080, %ecx
     rdmsr
-    orl $(1 << 8), %eax
+    orl $(1 << 8 | 1 << 11), %eax
     wrmsr
 
     /* 8. Enable Paging */
@@ -123,28 +145,20 @@ _start_32:
     popl %esi    /* Info */
     popl %ebp    /* Magic */
 
-    /* 9. Jump to 64-bit */
+    /* 9. Jump to 64-bit (still in the low boot section) */
     /* Debug: Print 'C' */
     movb $'C', %al
     movw $0x3f8, %dx
     outb %al, %dx
 
     pushl $0x08
-    pushl $_start_64
+    pushl $_start_64_low
     lret
 
 .code64
-_start_64:
-    /* Save magic and info IMMEDIATELY before registers are lost */
-    movl %ebp, %eax
-    movq %rax, mb_magic(%rip)
-    movl %esi, %eax
-    movq %rax, mb_info_ptr(%rip)
-
-    /* Debug: Print 'E' */
-    movb $'E', %al
-    movw $0x3f8, %dx
-    outb %al, %dx
+_start_64_low:
+    /* Reload GDTR with the 64-bit descriptor (same boot GDT) */
+    lgdt (boot_gdtr_64)
 
     /* Segment registers to NULL */
     xorl %eax, %eax
@@ -154,6 +168,28 @@ _start_64:
     movw %ax, %gs
     movw %ax, %ss
 
+    /* Save magic and info to the (high) kernel .data while both the
+     * identity and the higher-half mappings are live */
+    movl %ebp, %eax
+    movabsq $mb_magic, %rcx
+    movq %rax, (%rcx)
+    movl %esi, %eax
+    movabsq $mb_info_ptr, %rcx
+    movq %rax, (%rcx)
+
+    /* Debug: Print 'E' */
+    movb $'E', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
+
+    /* Jump to the link address (higher half) */
+    movabsq $_start_64_high, %rax
+    jmp *%rax
+
+/* ── Higher half from here on ──────────────────────────────────────── */
+.section .text
+.code64
+_start_64_high:
     /* Debug: Print 'F' */
     movb $'F', %al
     movw $0x3f8, %dx
@@ -177,8 +213,6 @@ _start_64:
     addq $131072, %rsp
     movq %rsp, %rbp
 
-    lgdt (boot_gdtr_64)
-    
     movq mb_magic(%rip), %rdi
     movq mb_info_ptr(%rip), %rsi
     call kernel_main
@@ -213,29 +247,8 @@ arch_impl_idle:
     hlt
     ret
 
-.section .data
-.align 16
-boot_gdt:
-    .quad 0x0000000000000000 /* Null */
-    .quad 0x00af9a000000ffff /* Kernel Code 64 */
-    .quad 0x00cf92000000ffff /* Kernel Data 64 (Usable in 32-bit too) */
-boot_gdt_end:
-
-boot_gdtr_32:
-    .word boot_gdt_end - boot_gdt - 1
-    .long boot_gdt
-
-boot_gdtr_64:
-    .word boot_gdt_end - boot_gdt - 1
-    .quad boot_gdt
-
-.global mb_magic, mb_info_ptr
-mb_magic:    .quad 0
-mb_info_ptr: .quad 0
-
-.global kernel_pgd_phys
-kernel_pgd_phys: .quad boot_pml4
-
+/* Boot GDT must stay in the low region: the 32-bit lgdt runs pre-paging
+ * and the descriptor bases are physical addresses. */
 .section .boot_bss, "aw", @nobits
 .align 4096
 boot_stack:
@@ -251,6 +264,31 @@ boot_pdpt: .skip 4096
 boot_pd:   .skip 4096
 .global boot_pd_high
 boot_pd_high: .skip 4096
+
+.section .text.boot, "ax"
+.align 16
+boot_gdt:
+    .quad 0x0000000000000000 /* Null */
+    .quad 0x00af9a000000ffff /* Kernel Code 64 */
+    .quad 0x00cf92000000ffff /* Kernel Data 64 (Usable in 32-bit too) */
+boot_gdt_end:
+
+boot_gdtr_32:
+    .word boot_gdt_end - boot_gdt - 1
+    .long boot_gdt
+
+boot_gdtr_64:
+    .word boot_gdt_end - boot_gdt - 1
+    .quad boot_gdt
+
+/* Kernel proper data (higher half) */
+.section .data
+.global mb_magic, mb_info_ptr
+mb_magic:    .quad 0
+mb_info_ptr: .quad 0
+
+.global kernel_pgd_phys
+kernel_pgd_phys: .quad boot_pml4
 
 .section .bss
 .align 4096

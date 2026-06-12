@@ -9,41 +9,16 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include "posix_types.h"
+/* Syscall numbers: single source of truth shared with the kernel dispatch
+ * switch and the .S stubs (ABI-01/ABI-SYS-01).
+ * Error model (ABI-02): syscalls return negative errno values from
+ * posix_types.h on failure (-EFAULT, -ENOMEM, ...), >= 0 on success. */
+#include "syscall_nums.h"
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
 #define STACK_SIZE       131072
 #define MAX_PROCESSES    64
-
-/* --- Syscall Numbers --- */
-#define SYS_READ               63
-#define SYS_WRITE              64
-#define SYS_EXIT               93
-#define SYS_GET_TIME           169
-#define SYS_GETPID             172
-#define SYS_DRAW               200
-#define SYS_FLUSH              201
-#define SYS_CREATE_WINDOW      210
-#define SYS_WINDOW_DRAW        211
-#define SYS_COMPOSITOR_RENDER  212
-#define SYS_WINDOW_BLIT        213
-#define SYS_WINDOW_SET_FLAGS   214
-#define SYS_DESTROY_WINDOW     215
-#define SYS_SBRK               216
-#define SYS_SPAWN              220
-#define SYS_KILL               221
-#define SYS_GETPROCS           222
-#define SYS_YIELD              223
-#define SYS_SEND               230
-#define SYS_RECV               231
-#define SYS_WAIT               247
-#define SYS_REGISTRY           250
-#define SYS_FILE_WRITE         251
-#define SYS_FILE_READ          252
-#define SYS_SET_FONT           253
-#define SYS_LIST_DIR           254
-#define SYS_CHDIR              255
-#define SYS_GETCWD             256
 
 /* --- Data Structures --- */
 

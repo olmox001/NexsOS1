@@ -485,133 +485,73 @@ void *arch_get_kernel_stack(uint32_t cpu_id) {
 }
 
 /*
- * arch_vmm_set_secondary_pgd - publish the primary CPU's PGD to secondary CPUs.
+ * arch_vmm_set_secondary_pgd - publish the KERNEL PGD to secondary CPUs.
  *
  * Parameters:
- *   pgd  Physical address of the kernel L0 page table to share.
+ *   pgd  Physical address of the kernel L0 page table (the TTBR1 root).
  *
- * secondary_ttbr0 (defined in start.S .data) is read by secondary_startup in
- * start.S before the secondary CPU has its own MMU enabled.  Writing the value
- * and then cache-cleaning it (arch_cache_clean_range) ensures the physical
- * cache line is written back to DRAM so that the secondary CPU's uncached read
- * sees the correct value.
- *
- * NOTE(AMMU-08): No DSB/SMP shootdown is issued here beyond the cache clean +
- * arch_mb(); secondary CPUs must perform their own ISB after loading TTBR0_EL1
- * (done in secondary_startup, start.S:163-183). [static]
+ * secondary_ttbr1 (defined in start.S .data) is read by secondary_startup
+ * in start.S before the secondary CPU has its own MMU enabled and loaded
+ * into TTBR1_EL1 (the kernel half; TTBR0 gets the boot identity tables).
+ * Writing the value and then cache-cleaning it ensures the physical cache
+ * line is written back to DRAM so that the secondary CPU's pre-MMU
+ * (uncached) read sees the correct value.
  */
-extern uint64_t secondary_ttbr0;
+extern uint64_t secondary_ttbr1;
 void arch_vmm_set_secondary_pgd(uint64_t pgd) {
-    secondary_ttbr0 = pgd;
-    arch_cache_clean_range(&secondary_ttbr0, sizeof(secondary_ttbr0));
+    secondary_ttbr1 = pgd;
+    arch_cache_clean_range(&secondary_ttbr1, sizeof(secondary_ttbr1));
     arch_mb();
 }
 
 /*
- * arch_vmm_init_hw - program MAIR, TCR, TTBR0, SCTLR and enable the MMU.
+ * arch_vmm_init_hw - install the kernel PGD in TTBR1_EL1.
  *
  * Parameters:
- *   kernel_pgd  Physical address of the L0 (PGD) page table for the kernel.
- *               Built by arch_vmm_map_range() / arch_vmm_create_process_pgd()
- *               in mmu.c before this function is called.
+ *   kernel_pgd  Physical address of the kernel L0 page table (higher-half
+ *               direct map + image, built by vmm_init via vmm_map_ram_wx).
  *
- * Sequence (ARM64 Reference Manual, D5-2 required order):
- *   1. MAIR_EL1  — memory attribute palette used by page-table attribute indices.
- *      Attr0 (index 0) = 0xFF = Normal Write-Back/Write-Allocate (cacheable).
- *      Attr1 (index 1) = 0x04 = Device nGnRE (non-gathering, non-reordering,
- *                                early-acknowledgement; used for MMIO).
+ * Higher-half model (see memlayout.h / boot/start.S): the MMU, caches,
+ * MAIR and TCR (48/48 TTBR0/TTBR1 split, 4KB granules, IPS=40-bit) are
+ * already configured by start.S before any C runs — the kernel executes
+ * at its link address through TTBR1 boot tables.  This function only
+ * swaps the boot TTBR1 tables for the real kernel PGD.
  *
- *   2. TCR_EL1   — translation control (VA size, granule, cacheability).
- *      T0SZ  [5:0]  = 16 → TTBR0 covers 2^(64-16) = 48-bit VA.
- *      IRGN0 [9:8]  = 0b01 → inner write-back/write-allocate (cacheable walks).
- *      ORGN0 [11:10]= 0b01 → outer write-back/write-allocate.
- *      SH0   [13:12]= 0b11 → inner-shareable page table walks.
- *      TG0   [15:14]= 0b00 → 4KB granule for TTBR0.
- *      EPD1  [23]   = 1    → disable TTBR1 translation (no higher-half split yet).
- *      IPS   [34:32]= 0    → 32-bit PA (sufficient for QEMU virt at 0x40000000;
- *                            limits PA to 4GB, undersized for real hardware).
- *
- *   3. TTBR0_EL1 — install the kernel PGD; TLB flushed before and after.
- *
- *   4. SCTLR_EL1 — enable MMU (M=1), D-cache (C=1), I-cache (I=1).
- *      RES1 bits [29,28,23,22,20,11] are set as required by the architecture.
- *      Alignment check (A, bit 1) and stack alignment check (SA, bit 3) are
- *      disabled for compatibility with existing kernel code that does not
- *      guarantee 16-byte aligned stack access on every path.
- *
- * Side effects: MAIR_EL1, TCR_EL1, TTBR0_EL1, SCTLR_EL1 are written; TLB is
- *               flushed; MMU is enabled by the end of this function.
- *               After return, all accesses go through the installed page tables.
- *
- * NOTE(AMMU-01): mmu.c maps RAM with PAGE_KERNEL which sets PTE_UXN|PTE_PXN
- *   only for device pages; normal RAM is executable (no W^X enforcement).
- * NOTE(AMMU-08): This function runs on the primary CPU only; secondaries set up
- *   their own MAIR/TCR/SCTLR in secondary_startup (start.S:165-183). [static]
+ * TTBR0 is the USER half: it keeps the boot identity tables until the
+ * scheduler loads the first process PGD (or the idle user PGD allocated
+ * here, which contains no mappings at all).
  */
+static uint64_t *aarch64_idle_user_pgd;
+
 void arch_vmm_init_hw(uint64_t kernel_pgd) {
-  pr_info("AArch64 VMM: Setting up MAIR (PGD at 0x%lx)\n", kernel_pgd);
+  pr_info("AArch64 VMM: Installing kernel PGD 0x%lx in TTBR1\n", kernel_pgd);
 
-  /* Ensure all previous writes are visible before touching system registers */
+  /* Idle/kernel-thread TTBR0: an empty L0 table, so a CPU parked on a
+   * kernel thread maps NO user half at all (instead of a stale process
+   * PGD — SCHED-UAF-01 — or the kernel PGD aliased into the low half). */
+  if (!aarch64_idle_user_pgd) {
+    aarch64_idle_user_pgd = pmm_alloc_page();
+    if (aarch64_idle_user_pgd) {
+      memset(aarch64_idle_user_pgd, 0, 4096);
+      arch_cache_clean_range(aarch64_idle_user_pgd, 4096);
+    }
+  }
+
+  /* Ensure the new tables are visible to the walker, then switch TTBR1. */
   arch_impl_mb();
-  arch_impl_isb();
-
-  /* 1. Setup MAIR_EL1 (Memory Attribute Indirection Register).
-   * Attr0 [7:0]  = 0xFF = Normal WB/WA Inner+Outer (used for RAM pages).
-   * Attr1 [15:8] = 0x04 = Device nGnRE (used for MMIO pages).
-   * All other attribute indices are left as zero (unused). */
-  uint64_t mair = (0xFFUL << 0) | (0x04UL << 8);
-  arch_impl_set_mair(mair);
-  arch_impl_isb(); /* barrier required before TTBR/TCR changes */
-
-  pr_info("%s", "AArch64 VMM: Setting up TCR\n");
-  /* 2. Setup TCR_EL1 (Translation Control Register).
-   * Bit breakdown:
-   *   [5:0]  T0SZ = 16  → 48-bit VA space under TTBR0 (covers [0, 2^48)).
-   *   [9:8]  IRGN0 = 1  → inner WB/WA cache for page table walks.
-   *   [11:10]ORGN0 = 1  → outer WB/WA cache for page table walks.
-   *   [13:12]SH0   = 3  → inner-shareable domain for page table walks.
-   *   [15:14]TG0   = 0  → 4KB translation granule.
-   *   [23]   EPD1  = 1  → disable TTBR1 (no separate kernel higher-half).
-   *   [34:32]IPS   = 0  → 32-bit physical address space (4GB max).
-   * The (0UL << 32) term is a no-op; left for readability against the IPS field. */
-  uint64_t tcr = (16UL << 0) | (3UL << 12) | (1UL << 10) | (1UL << 8) | (0UL << 32) | (0UL << 14) | (1UL << 23);
-  arch_impl_set_tcr(tcr);
-  arch_impl_isb();
-
-  pr_info("%s", "AArch64 VMM: Setting TTBR0\n");
-  /* 3. Set TTBR0_EL1: flush TLB first (vmalle1) to eliminate stale entries,
-   * write the new PGD physical address, then fence with DSB+ISB so subsequent
-   * instruction fetches see the new translation. */
   arch_impl_tlb_flush_local();
-  arch_vmm_set_pgd(kernel_pgd);
+  arch_vmm_set_kernel_pgd(kernel_pgd);
   arch_impl_mb();
+  arch_impl_tlb_flush_local();
   arch_impl_isb();
 
-  pr_info("%s", "AArch64 VMM: Enabling SCTLR bits (MMU, Caches)\n");
-  /* 4. Enable MMU in SCTLR_EL1.
-   * Read-modify-write to preserve any existing configuration bits. */
-  uint64_t sctlr = arch_impl_get_sctlr();
+  pr_info("%s", "AArch64 VMM: Kernel PGD active (TTBR1).\n");
+}
 
-  /* Mandatory RES1 bits for EL1 SCTLR (ARM DDI 0487 D5.2.88):
-   * [29] LSMAOE, [28] nTLSMD, [23] SPAN, [22] EIS, [20] TSCXT, [11] EOS.
-   * These must be 1 for correct operation; writing 0 is UNPREDICTABLE. */
-  sctlr |= (1UL << 29) | (1UL << 28) | (1UL << 23) | (1UL << 22) | (1UL << 20) | (1UL << 11);
-
-  /* Enable MMU (M=bit0), Instruction Cache (I=bit12), Data Cache (C=bit2).
-   * Enabling all three at once; the page tables must be correct before this. */
-  sctlr |= (1UL << 0) | (1UL << 12) | (1UL << 2);
-
-  /* Disable Alignment Check (A=bit1) and Stack Alignment Check (SA=bit3).
-   * Leaving these enabled would require all kernel stack frames and loads to
-   * be naturally aligned; existing code does not guarantee this. */
-  sctlr &= ~((1UL << 1) | (1UL << 3));
-
-  arch_impl_mb();
-  arch_impl_set_sctlr(sctlr); /* MMU enable; instruction stream continues via TLB */
-  arch_impl_mb();
-  arch_impl_isb(); /* pipeline synchronisation after MMU enable */
-
-  pr_info("AArch64 VMM: MMU Enabled. SCTLR=0x%lx\n", sctlr);
+/* idle_user_pgd_phys - PA of the empty TTBR0 table for kernel threads;
+ * 0 if not yet allocated (pre-VMM). */
+static uint64_t idle_user_pgd_phys(void) {
+  return aarch64_idle_user_pgd ? virt_to_phys(aarch64_idle_user_pgd) : 0;
 }
 
 /*
@@ -632,9 +572,11 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
  * PGD and each process PGD (via arch_vmm_create_process_pgd -> arch_vmm_map_mmio).
  */
 void arch_vmm_map_mmio(uint64_t *pgd) {
-  /* Identity Map MMIO (UART, GIC, VirtIO) */
-  /* 0x08000000 to 0x0A800000 covers typical QEMU virt devices */
-  arch_vmm_map_range((uint64_t)pgd, 0x08000000UL, 0x08000000UL,
+  /* Map MMIO (UART, GIC, VirtIO) at its direct-map VA (phys_to_virt;
+   * identity while KERNEL_VIRT_BASE == 0).
+   * 0x08000000 to 0x0A800000 covers typical QEMU virt devices. */
+  arch_vmm_map_range(virt_to_phys(pgd),
+                     (uint64_t)phys_to_virt(0x08000000UL), 0x08000000UL,
                      0x02800000UL, PAGE_DEVICE);
 }
 
@@ -669,12 +611,12 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
  * which completes the switch — no further barrier is needed after it.
  */
 void arch_cpu_switch_context(struct process *next) {
-    extern uint64_t *kernel_pgd;
-    /* kernel_pgd is identity-mapped (virt == phys), so its pointer value IS the
-     * physical TTBR0 base; next->page_table is likewise passed as a PA, matching
-     * the existing arch_vmm_set_pgd callers in this file. */
-    uint64_t pgd = next->page_table ? (uint64_t)next->page_table
-                                    : (uint64_t)(uintptr_t)kernel_pgd;
+    /* TTBR0 is the USER half only (the kernel lives in TTBR1).  A process
+     * gets its own PGD; a kernel thread (idle) gets the EMPTY idle user
+     * PGD — never a stale process PGD (SCHED-UAF-01) and never the kernel
+     * PGD (which would alias all RAM into the user VA range). */
+    uint64_t pgd = next->page_table ? virt_to_phys(next->page_table)
+                                    : idle_user_pgd_phys();
     if (pgd) {
         arch_vmm_set_pgd(pgd);
         arch_tlb_flush_all();

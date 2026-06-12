@@ -6,12 +6,15 @@
  * AArch64 and AMD64.  The constants are mutually exclusive between arches
  * via the ARCH_AARCH64 / ARCH_AMD64 preprocessor guards.
  *
- * Central invariant (IDENTITY MAP):
- *   phys_to_virt() and virt_to_phys() below are identity casts -- they return
- *   their argument unchanged.  This correctly models the current runtime where
- *   kernel VA == PA for the RAM window.
- *   NOTE(MM-VMM-02): any code that calls these and relies on them being no-ops
- *   will break if a higher-half or offset-mapped kernel is ever introduced.
+ * Central invariant (DIRECT MAP, see kernel/memlayout.h):
+ *   phys_to_virt()/virt_to_phys() are a single-offset translation
+ *   (KERNEL_VIRT_BASE; 0 == identity while the higher-half flip is staged).
+ *
+ *   MM-VMM-02 + MM-PMM-07 (contract sweep, Phase B2): every PA-to-pointer
+ *   crossing in the tree goes through that pair — page-table walkers,
+ *   PMM returns/frees, process PGD loads (TTBR0/CR3), user-frame maps,
+ *   virtio DMA addresses, MMIO accessors.  Flipping KERNEL_VIRT_BASE plus
+ *   the boot/linker changes is all that remains for the higher half.
  *
  * Known issues (see docs/review/analysis/01-mm-memory-management.md):
  *   MM-VMM-01 through MM-VMM-07.
@@ -19,6 +22,7 @@
 #ifndef _KERNEL_VMM_H
 #define _KERNEL_VMM_H
 
+#include <kernel/memlayout.h>
 #include <kernel/pmm.h>
 #include <kernel/types.h>
 
@@ -27,11 +31,10 @@
  * 0x0000_0000_0000_0000 - 0x0000_FFFF_FFFF_FFFF : User Space (256 TB)
  * 0xFFFF_0000_0000_0000 - 0xFFFF_FFFF_FFFF_FFFF : Kernel Space (256 TB)
  *
- * NOTE(MM-VMM-02): This higher-half layout is the INTENDED future design.
- * The kernel currently runs IDENTITY-MAPPED (kernel VA == PA), so the
- * 0xFFFF_... kernel-space range is NOT used today.  phys_to_virt() and
- * virt_to_phys() are identity casts, not the offset translations that a
- * real higher-half split would require.
+ * MM-VMM-02 RESOLVED: this layout is now LIVE on both arches.  The kernel
+ * image and the direct map of all RAM/MMIO live at KERNEL_VIRT_BASE + PA
+ * (memlayout.h); user space owns the low half exclusively (aarch64: TTBR0
+ * per process; amd64: PML4 entries 0..255 private per process).
  */
 
 /* PTE flag constants -- selected by arch at compile time. */
@@ -66,24 +69,36 @@
 #define PTE_INNER_SHARE (3UL << 8)
 #define PTE_AF          (1UL << 10)
 
-/* PAGE_KERNEL: kernel RW, not executable (PXN+UXN set). */
+/* PAGE_KERNEL: kernel RW, not executable (PXN+UXN set).  This is the W^X
+ * default for all RAM (MM-VMM-01 resolved); only the kernel text window is
+ * mapped PAGE_KERNEL_RX by vmm_map_ram_wx(). */
 #define PAGE_KERNEL \
     (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
      PTE_AF | PTE_AP_EL1_RW | PTE_UXN | PTE_PXN)
-/* PAGE_KERNEL_EXEC: kernel RW + executable (PXN clear, UXN set).
- * NOTE(MM-VMM-01): vmm_init() and vmm_dynamic_remap() use this flag for ALL
- * RAM, making heap, stacks, and data pages executable -- no W^X enforcement. */
+/* PAGE_KERNEL_EXEC: kernel RW + executable.  W^X-violating by definition;
+ * kept only for exceptional uses — no RAM-wide mapping uses it anymore. */
 #define PAGE_KERNEL_EXEC \
     (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
      PTE_AF | PTE_AP_EL1_RW | PTE_UXN)
+/* PAGE_KERNEL_RX: kernel text — read-only at EL1, executable at EL1 only. */
+#define PAGE_KERNEL_RX \
+    (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
+     PTE_AF | PTE_AP_EL1_RO | PTE_UXN)
+/* PAGE_KERNEL_RO: kernel rodata — read-only, never executable. */
+#define PAGE_KERNEL_RO \
+    (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
+     PTE_AF | PTE_AP_EL1_RO | PTE_UXN | PTE_PXN)
 /* PAGE_DEVICE: strongly-ordered Device-nGnRnE memory, not executable. */
 #define PAGE_DEVICE \
     (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_DEVICE) | PTE_INNER_SHARE | \
      PTE_AF | PTE_AP_EL1_RW | PTE_UXN | PTE_PXN)
-/* PAGE_USER: EL0 (user) RW, not executable at EL1. */
+/* PAGE_USER: EL0 (user) RW, not executable at EL1.  EL0-executable: use for
+ * ELF code segments only. */
 #define PAGE_USER \
     (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
      PTE_AF | PTE_AP_EL0_RW | PTE_PXN)
+/* PAGE_USER_DATA: user RW data (stack/heap) — never executable (W^X). */
+#define PAGE_USER_DATA (PAGE_USER | PTE_UXN)
 
 #elif defined(ARCH_AMD64)
 /* --- AMD64 Page Table Entry (PTE) Flags --- */
@@ -112,10 +127,17 @@
  * is NOT usable for this test — it is an RW|US flag combo for new tables.) */
 #define PTE_IS_TABLE(e) (!((e) & PTE_PS))
 
-#define PAGE_KERNEL      (PTE_VALID | PTE_RW)
-#define PAGE_KERNEL_EXEC (PTE_VALID | PTE_RW)
-#define PAGE_DEVICE      (PTE_VALID | PTE_RW | PTE_PCD | PTE_PWT)
+/* W^X page profiles (MM-VMM-01/AMMU-01 resolved).  PTE_NX requires
+ * IA32_EFER.NXE=1, set next to LME in start.S (BSP) and trampoline.S (APs);
+ * CR0.WP is set at boot so the kernel honours read-only PTEs. */
+#define PAGE_KERNEL      (PTE_VALID | PTE_RW | PTE_NX)
+#define PAGE_KERNEL_EXEC (PTE_VALID | PTE_RW) /* W+X: no RAM-wide user left */
+#define PAGE_KERNEL_RX   (PTE_VALID)               /* text: RO + executable */
+#define PAGE_KERNEL_RO   (PTE_VALID | PTE_NX)      /* rodata: RO, no exec */
+#define PAGE_DEVICE      (PTE_VALID | PTE_RW | PTE_PCD | PTE_PWT | PTE_NX)
 #define PAGE_USER        (PTE_VALID | PTE_RW | PTE_USER)
+/* PAGE_USER_DATA: user RW data (stack/heap) — never executable (W^X). */
+#define PAGE_USER_DATA   (PAGE_USER | PTE_NX)
 
 #endif
 
@@ -140,17 +162,9 @@ typedef uint64_t pte_t;
  * gpa_t = guest/kernel physical address
  * pte_t = raw page table entry value */
 
-/* Address Translation */
-/*
- * Address Translation helpers.
- *
- * NOTE(MM-VMM-02): Both functions are identity casts; they return their
- * argument unchanged.  This is correct only under the identity-map invariant
- * (kernel VA == PA).  They do NOT implement a higher-half offset.  Any future
- * shift to a non-identity map must replace these with real translations.
- */
-static inline void *phys_to_virt(uint64_t phys) { return (void *)phys; }
-static inline uint64_t virt_to_phys(void *virt) { return (uint64_t)virt; }
+/* Address Translation: phys_to_virt()/virt_to_phys() live in
+ * kernel/memlayout.h (single KERNEL_VIRT_BASE offset, identity while the
+ * offset is 0).  Included above so all existing users keep compiling. */
 
 /* vmm_create_pgd: allocate a new process PGD with kernel half pre-filled. */
 uint64_t *vmm_create_pgd(void);
@@ -168,9 +182,14 @@ void vmm_init(void);
 void vmm_dynamic_remap(void);
 /* vmm_map_page: map one 4KB page; delegates to arch_vmm_map(). */
 int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags);
-/* vmm_unmap_page: unmap one page; local TLB flush only.
- * NOTE(MM-VMM-05): no cross-CPU TLB shootdown. */
+/* vmm_unmap_page: unmap one page with cross-CPU TLB shootdown (MM-VMM-05
+ * resolved): on return no online CPU translates 'virt' via the old entry. */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt);
+/* vmm_protect: rewrite the attributes of existing mappings in [virt,
+ * virt+size) to the given PAGE/PTE profile (AMMU-02 resolved).  Frame
+ * addresses are preserved; large pages are split for 4KB precision; ends
+ * with a cross-CPU TLB shootdown.  Returns 0, or -1 on a hole in range. */
+int vmm_protect(uint64_t *pgd, uint64_t virt, uint64_t size, uint64_t flags);
 uint64_t vmm_get_phys(uint64_t *pgd, uint64_t virt);
 
 struct process;
@@ -181,6 +200,10 @@ void vmm_unmap_page_locked(struct process *proc, uint64_t virt);
 
 /* vmm_map: map a contiguous range; 4KB pages only; partial on error (no rollback). */
 int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags);
+/* vmm_map_ram_wx: map a usable RAM range at its direct-map VA with the W^X
+ * split: kernel text RX, rodata RO+NX, everything else RW+NX
+ * (MM-VMM-01/AMMU-01). */
+void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size);
 /* vmm_check_range: verify all pages in range are mapped with required flags. */
 int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size, uint64_t flags_mask);
 

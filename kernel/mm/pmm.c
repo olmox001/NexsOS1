@@ -22,24 +22,30 @@
  *   pmm_alloc_aligned() - aligned contiguous block from ZONE_NORMAL only.
  *   pmm_free_page()     - returns a page; poisons it 0xCC; panics on double-free.
  *
- * Central invariant (IDENTITY MAP):
- *   The kernel runs identity-mapped (kernel virtual address == physical address
- *   for the entire RAM window).  pmm_alloc_page() returns
- *   MEMORY_BASE + pfn_to_phys(pfn), and callers use that value directly as a
- *   C pointer.  This is explicitly NOT a PA/VA-separated design.
- *   See MM-PMM-07 and the subsystem analysis S.4 for details.
+ * PA/VA contract (MM-PMM-07 RESOLVED, Phase B2 sweep):
+ *   pmm_alloc_*() return KERNEL VIRTUAL pointers obtained through
+ *   phys_to_virt(MEMORY_BASE + pfn_to_phys(pfn)); pmm_free_*() accept the
+ *   same pointers and translate back with virt_to_phys().  Callers that
+ *   need the physical address (PTE output addresses, DMA descriptors)
+ *   must use virt_to_phys() explicitly.  All PMM metadata (page_array,
+ *   zone bitmaps) is addressed through phys_to_virt() as well.  With
+ *   KERNEL_VIRT_BASE == 0 (memlayout.h) this is bit-identical to the old
+ *   identity behaviour.
  *
  * Known issues:
  *   MM-PMM-01  (W3 STUB)         pmm_init_region() is a no-op stub.
- *   MM-PMM-02  (W3 BUG/SECURITY) pmm_alloc_pages/aligned skip cache-clean+barrier.
+ *   MM-PMM-02  RESOLVED (Phase B2): pmm_alloc_pages (and therefore
+ *                                pmm_alloc_aligned) now clean+fence like the
+ *                                single-page path; safe for DMA buffers.
  *   MM-PMM-03  (W2 PERF)         Contiguous alloc is an O(n) scan from PFN 0.
  *   MM-PMM-04  (W2 WRONG-DESIGN) pmm_alloc_pages/aligned search ZONE_NORMAL only.
  *   MM-PMM-05  (W2 BAD-IMPL)     global free_pages (atomic) vs per-zone free_pages
  *                                (plain under lock) can desync.
  *   MM-PMM-06  (W1 REFINE)       next_free_pfn is ignored by the contiguous path.
- *   MM-PMM-07  (W2 WRONG-DESIGN) PA returned as pointer; identity-map undocumented.
+ *   MM-PMM-07  RESOLVED (Phase B2): VA/PA separation via memlayout.h (see above).
  */
 #include <arch/arch.h>
+#include <kernel/memlayout.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/spinlock.h>
@@ -276,7 +282,9 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
   for (size_t i = 0; i < count; i++) {
     if (regions[i].type == MEM_REGION_USABLE && regions[i].size >= total_metadata_size) {
       extern char __kernel_end[];
-      uint64_t kernel_limit = PAGE_ALIGN((uintptr_t)__kernel_end);
+      /* __kernel_end is a link-address (virtual) symbol; compare in the
+       * physical domain. */
+      uint64_t kernel_limit = PAGE_ALIGN(virt_to_phys(__kernel_end));
       uint64_t target = regions[i].base;
       if (target < kernel_limit) target = kernel_limit;
       
@@ -291,13 +299,14 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
     panic("PMM: Failed to allocate metadata area (%lu KB needed)", total_metadata_size / 1024);
   }
 
-  /* 4. Map pointers */
-  page_array = (struct page *)metadata_phys;
+  /* 4. Map pointers (kernel VAs via the direct map; identity while
+   * KERNEL_VIRT_BASE == 0) */
+  page_array = (struct page *)phys_to_virt(metadata_phys);
   dma_bitmap = (uint64_t *)((uintptr_t)page_array + page_array_size);
   normal_bitmap = (uint64_t *)((uintptr_t)dma_bitmap + dma_bitmap_size);
 
   /* 5. Zero out metadata */
-  memset((void *)metadata_phys, 0, total_metadata_size);
+  memset(phys_to_virt(metadata_phys), 0, total_metadata_size);
   
   pr_info("PMM: Metadata initialized at 0x%lx (%lu KB)\n", metadata_phys, total_metadata_size / 1024);
   pr_info("PMM: Total detected RAM: %lu MB\n", (mem_end - MEMORY_BASE) / (1024 * 1024));
@@ -367,17 +376,18 @@ void pmm_init(struct mem_region *regions, size_t count) {
 
   free_pages = zones[ZONE_DMA].free_pages + zones[ZONE_NORMAL].free_pages;
 
-  /* Mark kernel pages as reserved */
+  /* Mark kernel pages as reserved (image symbols are virtual; PFNs are
+   * physical — translate first). */
   extern char __kernel_start[], __kernel_end[];
-  uint64_t kernel_start_pfn = phys_to_pfn((uint64_t)__kernel_start - MEMORY_BASE);
-  uint64_t kernel_end_pfn = phys_to_pfn(PAGE_ALIGN((uint64_t)__kernel_end) - MEMORY_BASE);
+  uint64_t kernel_start_pfn = phys_to_pfn(virt_to_phys(__kernel_start) - MEMORY_BASE);
+  uint64_t kernel_end_pfn = phys_to_pfn(PAGE_ALIGN(virt_to_phys(__kernel_end)) - MEMORY_BASE);
 
   /* Also reserve the metadata itself! */
-  uint64_t metadata_start_pfn = phys_to_pfn((uintptr_t)page_array - MEMORY_BASE);
+  uint64_t metadata_start_pfn = phys_to_pfn(virt_to_phys(page_array) - MEMORY_BASE);
   size_t page_array_size = total_pages * sizeof(struct page);
   size_t dma_bitmap_size = (dma_end_pfn + 63) / 64 * 8;
   size_t normal_bitmap_size = (total_pages - dma_end_pfn + 63) / 64 * 8;
-  uint64_t metadata_end_pfn = phys_to_pfn(PAGE_ALIGN((uintptr_t)page_array + page_array_size + dma_bitmap_size + normal_bitmap_size) - MEMORY_BASE);
+  uint64_t metadata_end_pfn = phys_to_pfn(PAGE_ALIGN(virt_to_phys(page_array) + page_array_size + dma_bitmap_size + normal_bitmap_size) - MEMORY_BASE);
 
   pmm_reserve_range(kernel_start_pfn, kernel_end_pfn);
   pmm_reserve_range(metadata_start_pfn, metadata_end_pfn);
@@ -413,8 +423,8 @@ void pmm_init(struct mem_region *regions, size_t count) {
  *   - zeroes the page data (memset), cleans the D-cache line, issues a full
  *     memory barrier (arch_mb).  This ensures DMA coherency for the caller.
  *
- * NOTE(MM-PMM-07): returns MEMORY_BASE + pfn_to_phys(abs_pfn), which is a
- * physical address used directly as a pointer under the identity-map invariant.
+ * Returns phys_to_virt(MEMORY_BASE + pfn_to_phys(abs_pfn)): the page's
+ * kernel virtual address in the direct map (MM-PMM-07 resolved).
  *
  * Returns: pointer to the zeroed page, or NULL if the zone is exhausted.
  * Locking: takes and releases z->lock with IRQ save/restore.
@@ -444,13 +454,14 @@ static void *zone_alloc_page(struct zone *z) {
 
   spin_unlock_irqrestore(&z->lock, flags);
 
-  /* Convert to absolute PFN and get physical address */
+  /* Convert to absolute PFN, then to the page's kernel virtual address
+   * (direct map; identity while KERNEL_VIRT_BASE == 0). */
   uint64_t abs_pfn = z->start_pfn + pfn;
   struct page *pg = &page_array[abs_pfn];
   pg->flags = 0;
   pg->refcount = 1;
 
-  void *addr = (void *)(MEMORY_BASE + pfn_to_phys(abs_pfn));
+  void *addr = phys_to_virt(MEMORY_BASE + pfn_to_phys(abs_pfn));
   memset(addr, 0, PAGE_SIZE);
   arch_cache_clean_range(addr, PAGE_SIZE);
   arch_mb();
@@ -497,10 +508,10 @@ void *pmm_alloc_page(void) {
  * physically contiguous memory below 16 MB cannot satisfy that requirement
  * through this path.
  *
- * NOTE(MM-PMM-02): For count>1, the returned memory is zeroed (memset) but
- * arch_cache_clean_range() and arch_mb() are NOT called.  Cache lines may be
- * stale from a previous owner, which can cause DMA read errors when a device
- * DMA-reads into these pages before the CPU writes the full block.
+ * Like the single-page path, the returned memory is zeroed, cache-cleaned
+ * (arch_cache_clean_range) and barrier-fenced (arch_mb) so a device can DMA
+ * to/from it immediately (MM-PMM-02 resolved; pmm_alloc_aligned inherits the
+ * guarantee since it carves from this function).
  *
  * NOTE(MM-PMM-03): The contiguous scan is O(n) from PFN 0 on every call;
  * there is no buddy structure or run-length metadata to accelerate it.
@@ -542,8 +553,10 @@ void *pmm_alloc_pages(size_t count) {
     pg->refcount = 1;
   }
 
-  void *addr = (void *)(MEMORY_BASE + pfn_to_phys(abs_pfn));
+  void *addr = phys_to_virt(MEMORY_BASE + pfn_to_phys(abs_pfn));
   memset(addr, 0, PAGE_SIZE * count);
+  arch_cache_clean_range(addr, PAGE_SIZE * count);
+  arch_mb();
 
   __sync_fetch_and_sub(&free_pages, count);
 
@@ -574,7 +587,7 @@ void pmm_free_page(void *page) {
   if (!page)
     return;
 
-  uint64_t phys = (uint64_t)page;
+  uint64_t phys = virt_to_phys(page);
 #if ARCH_MEMORY_BASE > 0
   if (phys < MEMORY_BASE) {
     pr_err("PMM: Attempt to free invalid address %p (below MEMORY_BASE)\n",
@@ -639,9 +652,9 @@ void pmm_free_page(void *page) {
  * releases the zone lock independently, so this is not an atomic bulk free.
  */
 void pmm_free_pages(void *page, size_t count) {
-  uint64_t phys = (uint64_t)page;
+  uint8_t *va = (uint8_t *)page;
   for (size_t i = 0; i < count; i++) {
-    pmm_free_page((void *)(phys + i * PAGE_SIZE));
+    pmm_free_page(va + i * PAGE_SIZE);
   }
 }
 
@@ -660,9 +673,9 @@ void pmm_free_pages(void *page, size_t count) {
  * NOTE(MM-PMM-04): Like pmm_alloc_pages(), this function searches ZONE_NORMAL
  * only.  Aligned contiguous allocations in the DMA zone are not possible.
  *
- * NOTE(MM-PMM-02): The cache-clean+barrier omission from pmm_alloc_pages()
- * propagates here; callers using this for DMA buffers must clean the cache
- * themselves before initiating device DMA.
+ * Cache coherency: inherited from pmm_alloc_pages(), which cleans and fences
+ * the whole run before returning (MM-PMM-02 resolved) — the aligned sub-range
+ * is therefore DMA-safe as returned.
  *
  * Returns: aligned pointer, or NULL on failure.
  * Locking: delegates to pmm_alloc_pages() and pmm_free_pages(); no additional
@@ -709,8 +722,7 @@ void *pmm_alloc_aligned(size_t size, size_t align) {
  * Returns NULL if 'phys' is below MEMORY_BASE (guarded by ARCH_MEMORY_BASE
  * compile-time check) or beyond total_pages.
  *
- * NOTE(MM-PMM-07): 'phys' is expected to be an identity-mapped physical
- * address (same as the pointer value under the current memory model).
+ * 'phys' is a PHYSICAL address; pointer callers must virt_to_phys() first.
  */
 struct page *pmm_phys_to_page(uint64_t phys) {
 #if ARCH_MEMORY_BASE > 0
@@ -731,8 +743,8 @@ struct page *pmm_phys_to_page(uint64_t phys) {
  * Computes pfn = page - page_array, then returns MEMORY_BASE + pfn_to_phys(pfn).
  * The caller is responsible for ensuring 'page' is a valid entry in page_array.
  *
- * NOTE(MM-PMM-07): The returned value is a physical address that is also valid
- * as a pointer under the identity-map invariant.
+ * The returned value is a PHYSICAL address; use phys_to_virt() to get a
+ * dereferenceable pointer.
  */
 uint64_t pmm_page_to_phys(struct page *page) {
   uint64_t pfn = page - page_array;

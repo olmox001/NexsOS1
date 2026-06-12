@@ -1,6 +1,7 @@
 #ifndef ARCH_AMD64_APIC_H
 #define ARCH_AMD64_APIC_H
 
+#include <kernel/memlayout.h>
 #include <kernel/types.h>
 
 /* Local APIC Register Offsets */
@@ -64,12 +65,14 @@
 
 #define LAPIC_DEFAULT_BASE  0xFEE00000UL
 
+/* LAPIC_DEFAULT_BASE is a physical address; registers are accessed at its
+ * direct-map kernel VA (phys_to_virt — identity while KERNEL_VIRT_BASE==0). */
 static inline uint32_t lapic_read(uint32_t reg) {
-    return *(volatile uint32_t *)(LAPIC_DEFAULT_BASE + reg);
+    return *(volatile uint32_t *)phys_to_virt(LAPIC_DEFAULT_BASE + reg);
 }
 
 static inline void lapic_write(uint32_t reg, uint32_t val) {
-    *(volatile uint32_t *)(LAPIC_DEFAULT_BASE + reg) = val;
+    *(volatile uint32_t *)phys_to_virt(LAPIC_DEFAULT_BASE + reg) = val;
 }
 
 void lapic_init(void);

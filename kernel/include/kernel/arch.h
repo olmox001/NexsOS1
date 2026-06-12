@@ -65,16 +65,40 @@ void arch_vmm_map_mmio(uint64_t *pgd);
 int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags);
 int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, uint64_t flags);
 int arch_vmm_unmap(uint64_t pgd, uint64_t va);
+/* arch_vmm_protect: rewrite the attributes of existing 4KB mappings in
+ * [va, va+size).  'flags' is the arch's PAGE/PTE profile (same vocabulary
+ * as arch_vmm_map); the frame address is preserved, every attribute bit is
+ * replaced.  Large pages covering the range are split first.  Ends with a
+ * cross-CPU TLB shootdown.  Returns 0, or -1 on a hole in the range
+ * (already-rewritten pages keep the new attributes). */
+int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags);
 uint64_t arch_vmm_get_physical(uint64_t pgd, uint64_t va);
 void arch_vmm_set_secondary_pgd(uint64_t pgd);
 
 static inline void arch_vmm_set_pgd(uint64_t pgd) { arch_impl_set_pgd(pgd); }
 static inline uint64_t arch_vmm_get_pgd(void) { return arch_impl_get_pgd(); }
 
+/* Kernel address-space root: TTBR1 on aarch64 (separate from the per-
+ * process TTBR0), CR3 alias on amd64 (kernel half shared via PML4 high
+ * entries).  Used by vmm_init/vmm_dynamic_remap when installing the
+ * kernel PGD. */
+static inline void arch_vmm_set_kernel_pgd(uint64_t pgd) { arch_impl_set_kernel_pgd(pgd); }
+static inline uint64_t arch_vmm_get_kernel_pgd(void) { return arch_impl_get_kernel_pgd(); }
+
 /* TLB and Cache Control */
 static inline void arch_tlb_flush_local(void) { arch_impl_tlb_flush_local(); }
 static inline void arch_tlb_flush_all(void) { arch_impl_tlb_flush_all(); }
 static inline void arch_tlb_flush_va(uintptr_t va) { arch_impl_tlb_flush_va(va); }
+
+/* SMP TLB shootdown (MM-VMM-05/AMMU-08 resolved).  Contract: when these
+ * return, NO online CPU still holds a stale translation for the target
+ * (single VA, or the whole address space for _all).  AArch64 satisfies it in
+ * hardware (inner-shareable broadcast TLBI + DSB ISH); amd64 sends a
+ * fixed-vector LAPIC IPI and waits (bounded) for peer acknowledgements —
+ * a peer with IRQs masked flushes as soon as it unmasks (the IPI stays
+ * pending in its LAPIC). */
+static inline void arch_tlb_shootdown_va(uintptr_t va) { arch_impl_tlb_shootdown_va(va); }
+static inline void arch_tlb_shootdown_all(void) { arch_impl_tlb_shootdown_all(); }
 
 static inline void arch_cache_clean_range(void *va, size_t size) { arch_impl_cache_clean_range(va, size); }
 static inline void arch_cache_sync_icache(void *va, size_t size) { arch_impl_cache_sync_icache(va, size); }

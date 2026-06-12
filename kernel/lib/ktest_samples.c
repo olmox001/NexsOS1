@@ -30,6 +30,9 @@
  */
 #include <kernel/test.h>
 #include <kernel/string.h>
+#include <kernel/kmalloc.h>
+#include <kernel/pmm.h>
+#include <kernel/vmm.h>
 
 /* test_string_length - verify strlen() for a literal and an empty string.
  * Failure: KASSERT_EQ prints the mismatch and returns (see LIB-KTEST-01). */
@@ -52,4 +55,77 @@ KTEST_CASE(test_math_basic) {
     int a = 10;
     int b = 20;
     KASSERT_EQ(a + b, 30);
+}
+
+/* test_kmalloc_growth - prove the small-object pool grows past one chunk
+ * (MM-KM-01).  1100 blocks in the 4096-byte bucket exceed a 4 MB chunk
+ * regardless of how full the active chunk already is, so at least one
+ * growth must succeed for every allocation to come back non-NULL.  Each
+ * block is touched (write+readback) and everything is freed to the bucket
+ * lists afterwards, where it stays reusable. */
+#define KMG_BLOCKS 1100
+static void *kmg_ptrs[KMG_BLOCKS];
+KTEST_CASE(test_kmalloc_growth) {
+    int i;
+    for (i = 0; i < KMG_BLOCKS; i++) {
+        kmg_ptrs[i] = kmalloc(4000);
+        if (!kmg_ptrs[i]) break;
+        ((uint8_t *)kmg_ptrs[i])[0] = (uint8_t)i;
+        ((uint8_t *)kmg_ptrs[i])[3999] = (uint8_t)(i ^ 0xFF);
+    }
+    int allocated = i;
+    int corrupt = 0;
+    for (i = 0; i < allocated; i++) {
+        if (((uint8_t *)kmg_ptrs[i])[0] != (uint8_t)i ||
+            ((uint8_t *)kmg_ptrs[i])[3999] != (uint8_t)(i ^ 0xFF))
+            corrupt++;
+        kfree(kmg_ptrs[i]);
+    }
+    KASSERT_EQ(allocated, KMG_BLOCKS);
+    KASSERT_EQ(corrupt, 0);
+}
+
+/* test_vmm_protect - prove arch_vmm_protect rewrites live PTEs (AMMU-02).
+ * Takes a fresh PMM page (mapped RW+NX inside a 2MB kernel RAM block),
+ * flips it to PAGE_KERNEL_RO and back, and checks via PTE readback
+ * (vmm_check_range) and PA readback (vmm_get_phys) that only the attribute
+ * bits changed.  Exercises the 2MB→4KB block split on both arches and the
+ * unmapped-hole error path on the NULL page.  Runs on the BSP before SMP,
+ * so splitting the live kernel map here is single-threaded. */
+KTEST_CASE(test_vmm_protect) {
+    extern uint64_t *kernel_pgd;
+    uint8_t *page = (uint8_t *)pmm_alloc_page();
+    KASSERT(page != NULL);
+    page[0] = 0xAB; /* RW works while PAGE_KERNEL */
+    uint64_t pa_before = vmm_get_phys(kernel_pgd, (uint64_t)page);
+    KASSERT(pa_before != 0);
+
+    /* Hole detection: a high user-half VA no map ever touches (the NULL
+     * page would not do — amd64 identity-maps the low 1MB for the SMP
+     * trampoline, so VA 0 is mapped there). */
+    KASSERT(vmm_protect(kernel_pgd, 0x700000000000UL, 4096, PAGE_KERNEL_RO) != 0);
+
+    /* RW+NX → RO+NX */
+    KASSERT_EQ(vmm_protect(kernel_pgd, (uint64_t)page, 4096, PAGE_KERNEL_RO), 0);
+#ifdef ARCH_AARCH64
+    /* AP[7:6] = 0b10 (EL1 read-only) must now be set */
+    KASSERT_EQ(vmm_check_range(kernel_pgd, (uint64_t)page, 4096, PTE_AP_EL1_RO), 0);
+#else
+    /* NX must be set, and the RW bit must be GONE */
+    KASSERT_EQ(vmm_check_range(kernel_pgd, (uint64_t)page, 4096, PTE_NX), 0);
+    KASSERT(vmm_check_range(kernel_pgd, (uint64_t)page, 4096, PTE_RW) != 0);
+#endif
+    /* Frame address preserved; content still readable */
+    KASSERT_EQ(vmm_get_phys(kernel_pgd, (uint64_t)page), pa_before);
+    KASSERT_EQ(page[0], 0xAB);
+
+    /* back to RW+NX, prove writes work again */
+    KASSERT_EQ(vmm_protect(kernel_pgd, (uint64_t)page, 4096, PAGE_KERNEL), 0);
+#ifndef ARCH_AARCH64
+    KASSERT_EQ(vmm_check_range(kernel_pgd, (uint64_t)page, 4096, PTE_RW), 0);
+#endif
+    page[1] = 0xCD;
+    KASSERT_EQ(page[0], 0xAB);
+    KASSERT_EQ(page[1], 0xCD);
+    pmm_free_page(page);
 }

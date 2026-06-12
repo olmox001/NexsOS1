@@ -38,16 +38,18 @@
 #include <drivers/uart.h>
 #include <kernel/arch.h>
 #include <kernel/irq.h>
+#include <kernel/memlayout.h>
 #include <kernel/platform.h>
 #include <kernel/sched.h>
 #include <kernel/types.h>
 #include <stdint.h>
 
 /* UART_REG(offset): dereference a 32-bit PL011 MMIO register at
- * PLATFORM_UART_BASE + offset.  All PL011 registers are 32-bit wide with the
- * upper bits reserved; reads/writes must be 32-bit aligned. */
+ * PLATFORM_UART_BASE + offset (a physical address) through its direct-map
+ * kernel VA (phys_to_virt; identity while KERNEL_VIRT_BASE == 0).  All
+ * PL011 registers are 32-bit wide with the upper bits reserved. */
 /* MMIO access macros */
-#define UART_REG(offset) (*(volatile uint32_t *)(PLATFORM_UART_BASE + (offset)))
+#define UART_REG(offset) (*(volatile uint32_t *)phys_to_virt(PLATFORM_UART_BASE + (offset)))
 
 /* rx_buf[]: circular ring buffer for characters received via IRQ.
  * rx_head: write index, advanced by uart_irq_handler (IRQ context).
