@@ -1,6 +1,7 @@
 #ifndef _KERNEL_SCHED_H
 #define _KERNEL_SCHED_H
 
+#include <kernel/fd.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
@@ -90,6 +91,12 @@ struct process {
 
   /* Filesystem state */
   char cwd[128]; /* Current Working Directory */
+
+  /* File-descriptor table (ABI-03, kernel/fd.h).  0/1/2 pre-opened by
+   * process_create(); entries hold no kernel-owned resources, so teardown
+   * needs no cleanup pass.  Touched only by the owning process from
+   * syscall context — no lock. */
+  struct fd_entry fds[NPROC_FDS];
 };
 
 /* Process States */

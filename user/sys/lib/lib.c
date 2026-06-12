@@ -51,6 +51,7 @@
 #include <os1.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <input.h>
@@ -181,6 +182,13 @@ int file_read(const char *path, void *buf, int size, int offset) { return _sys_f
 int list_dir(const char *path, char *buf, size_t size) { return _sys_list_dir(path, buf, size); }
 int chdir(const char *path) { return _sys_chdir(path); }
 int getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
+
+/* POSIX-style fd I/O (ABI-03 fd table).  open() matches the variadic
+ * declaration in fcntl.h; the optional mode argument is ignored because the
+ * VFS cannot create files yet (the kernel rejects O_CREAT with -EINVAL). */
+int open(const char *pathname, int flags, ...) { return _sys_open(pathname, flags); }
+int close(int fd) { return _sys_close(fd); }
+long lseek(int fd, long offset, int whence) { return _sys_lseek(fd, offset, whence); }
 
 /* --- Formatting & Printing ---
  * All formatting functions delegate to vsnprintf() from kernel/lib/vsnprintf.c

@@ -50,11 +50,17 @@
  *   process teardown) call the underlying functions directly and bypass
  *   these checks by design.
  *
+ * Fd model (ABI-03 RESOLVED, B3 batch 3): every process has a real fd table
+ *   (kernel/fd.h) — 0=keyboard stdin, 1/2=own window, open() hands out
+ *   FD_FILE descriptors >= 3 with a private offset (open/close/lseek =
+ *   56/57/62).  The historical "fd >= 100 is a window id" write path
+ *   remains as a compatibility alias until the window ABI moves onto the
+ *   table.
+ *
  * Known issues:
- *   ABI-03  (W3 WRONG-DESIGN) No per-process fd table: fd 0=stdin(IPC),
- *           1/2=window-by-pid, >=100=window id.  Neither POSIX nor Plan 9.
- *   ABI-06  (W2 BUG/PERF) sys_write() silently truncates writes > 1023 bytes
- *           and unconditionally echoes every write to the UART (debug leftover).
+ *   ABI-06  (W2 BUG/PERF) sys_write() silently truncates WINDOW writes
+ *           > 1023 bytes and echoes window text to the UART (file writes
+ *           via FD_FILE are exempt from both).
  *   ABI-07  (W2 BUG) SYS_SPAWN disables IRQs across process_create +
  *           process_load_elf, which may trigger blocking virtio/ext4 disk I/O.
  *   GFX-FONT-01  (W4 SECURITY/BUG) SYS_SET_FONT: stores a raw user
@@ -142,10 +148,6 @@ extern int keyboard_focus_pid;
  * IRQ context: no — syscalls run in kernel mode with IRQs enabled (normal
  *          exception-level transition on aarch64; ring 3->0 on amd64).
  *
- * NOTE(ABI-01): The switch uses a mix of Linux-aarch64 numbers and ad-hoc
- *          numbers; IPC is duplicated at 30/31/32 and 230/231.
- * NOTE(ABI-04): There are no capability checks at the dispatch boundary;
- *          any user process may invoke any case.
  * NOTE(ABI-07): case 220 (SPAWN) calls arch_local_irq_disable() before
  *          process_create + process_load_elf, which may block on virtio I/O.
  */
@@ -161,6 +163,119 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   uint64_t arg5 = pt_regs_arg(frame, 5);
 
   switch (syscall_num) {
+  case SYS_OPEN:
+  {
+    /* open(path, flags) -> fd (ABI-03).  Only the O_ACCMODE bits are
+     * supported: the VFS cannot create or truncate files yet, so any other
+     * flag (O_CREAT, O_APPEND, ...) is an explicit -EINVAL, never silently
+     * ignored. */
+    if (!current_process) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    int flags = (int)arg1;
+    if (flags & ~O_ACCMODE) {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    char k_path[FD_PATH_MAX];
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, FD_PATH_MAX) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    char resolved[FD_PATH_MAX];
+    vfs_resolve_path(k_path, resolved, FD_PATH_MAX);
+    /* Same write ACL as SYS_FILE_WRITE (EXT4-02): the /bin and /sys trees
+     * are read-only for non-SYSTEM processes. */
+    if ((flags & O_ACCMODE) != O_RDONLY &&
+        !(current_process->permissions & PROC_PERM_SYSTEM) &&
+        (strncmp(resolved, "/sys/", 5) == 0 ||
+         strncmp(resolved, "/bin/", 5) == 0)) {
+      pt_regs_set_return(frame, -EACCES);
+      break;
+    }
+    struct vfs_node node;
+    if (vfs_open(resolved, &node) != 0) {
+      pt_regs_set_return(frame, -ENOENT);
+      break;
+    }
+    if (node.type != VFS_TYPE_FILE) {
+      pt_regs_set_return(frame, -EISDIR);
+      break;
+    }
+    int newfd = -1;
+    for (int i = 0; i < NPROC_FDS; i++) {
+      if (current_process->fds[i].type == FD_NONE) {
+        newfd = i;
+        break;
+      }
+    }
+    if (newfd < 0) {
+      pt_regs_set_return(frame, -EMFILE);
+      break;
+    }
+    struct fd_entry *e = &current_process->fds[newfd];
+    memset(e, 0, sizeof(*e));
+    e->type = FD_FILE;
+    e->mode = ((flags & O_ACCMODE) == O_RDONLY)   ? FD_MODE_READ
+              : ((flags & O_ACCMODE) == O_WRONLY) ? FD_MODE_WRITE
+                                                  : (FD_MODE_READ | FD_MODE_WRITE);
+    e->node = node;
+    e->offset = 0;
+    strncpy(e->path, resolved, FD_PATH_MAX - 1);
+    pt_regs_set_return(frame, newfd);
+  } break;
+  case SYS_CLOSE:
+  {
+    int fd = (int)arg0;
+    if (!current_process || fd < 0 || fd >= NPROC_FDS ||
+        current_process->fds[fd].type == FD_NONE) {
+      pt_regs_set_return(frame, -EBADF);
+      break;
+    }
+    /* Entries hold no kernel-owned resources (vfs_node is a value type) —
+     * clearing the slot IS the close. */
+    memset(&current_process->fds[fd], 0, sizeof(struct fd_entry));
+    pt_regs_set_return(frame, 0);
+  } break;
+  case SYS_LSEEK:
+  {
+    int fd = (int)arg0;
+    long off = (long)arg1;
+    int whence = (int)arg2;
+    if (!current_process || fd < 0 || fd >= NPROC_FDS ||
+        current_process->fds[fd].type == FD_NONE) {
+      pt_regs_set_return(frame, -EBADF);
+      break;
+    }
+    struct fd_entry *e = &current_process->fds[fd];
+    if (e->type != FD_FILE) {
+      pt_regs_set_return(frame, -ESPIPE); /* KBD/WIN streams cannot seek */
+      break;
+    }
+    long base;
+    if (whence == SEEK_SET) {
+      base = 0;
+    } else if (whence == SEEK_CUR) {
+      base = (long)e->offset;
+    } else if (whence == SEEK_END) {
+      /* stat the path: e->node.size is the open-time size and another fd
+       * may have grown the file since */
+      struct vfs_stat st;
+      base = (vfs_stat(e->path, &st) == 0) ? (long)st.size
+                                           : (long)e->node.size;
+    } else {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    long npos = base + off;
+    if (npos < 0) {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    e->offset = (uint64_t)npos;
+    pt_regs_set_return(frame, npos);
+  } break;
   case SYS_READ:
     return sys_read(frame);
   case SYS_WRITE:
@@ -482,54 +597,100 @@ long sys_get_pid(void) {
 }
 
 /*
- * sys_read - blocking read implementation (syscall 63, fd=0 stdin only).
+ * sys_read - read from a file descriptor (syscall 63).
  *
- * Drains the calling process's IPC message queue looking for IPC_TYPE_INPUT
- * messages (keyboard events).  Returns the key character of the first pressed
- * or repeated event (data2 != 0); ignores key-release events (data2 == 0).
+ * Routes through the per-process fd table (ABI-03 RESOLVED, kernel/fd.h):
  *
- * If no ready input message is found, the process is put to sleep
- * (PROC_SLEEPING, ipc_target_pid=-1) with a retry annotation
- * (pt_regs_retry_syscall) so the syscall instruction is re-executed when the
- * process wakes up, and schedule() is called to switch to another task.
+ *   FD_KBD   drains the IPC queue for IPC_TYPE_INPUT messages (keyboard
+ *            events); returns the key character of the first pressed or
+ *            repeated event (data2 != 0), ignores releases.  If nothing is
+ *            pending the process sleeps (PROC_SLEEPING, ipc_target_pid=-1)
+ *            with a retry annotation (pt_regs_retry_syscall) so the syscall
+ *            re-executes on wakeup.
+ *   FD_FILE  VFS read at the fd's private offset (bounce buffer, capped at
+ *            SYSCALL_MAX_IO_BYTES); advances the offset; 0 at EOF.
+ *   FD_WIN   not readable: -EINVAL.
+ *   invalid  -EBADF.
  *
- * Non-stdin fds: unhandled; falls through to the sleep path regardless.
- *
- * NOTE(ABI-03): fd 0 is overloaded as IPC channel, not a real file descriptor.
- *
- * Locking: process sleeps after a short IRQ-disable window to set state;
+ * Locking: FD_KBD sleeps after a short IRQ-disable window to set state;
  *          no spinlock held across the sleep.
  * IRQ context: no — called from the syscall dispatcher.
- * Returns: regs (with return value set) on a hit; schedule(regs) on a miss.
+ * Returns: regs (with return value set), or schedule(regs) when blocking.
  */
 struct pt_regs *sys_read(struct pt_regs *regs) {
   int fd = (int)pt_regs_arg(regs, 0);
   char *buf = (char *)pt_regs_arg(regs, 1);
   size_t count = (size_t)pt_regs_arg(regs, 2);
-  (void)count;
 
-  if (fd == 0) { /* STDIN */
-    while (1) {
-      extern struct ipc_node *pop_message(struct process * proc, int src_pid);
-      struct ipc_node *node = pop_message(current_process, -1); /* From ANY */
+  struct fd_entry *e = NULL;
+  if (current_process && fd >= 0 && fd < NPROC_FDS &&
+      current_process->fds[fd].type != FD_NONE)
+    e = &current_process->fds[fd];
+  if (!e) {
+    pt_regs_set_return(regs, -EBADF);
+    return regs;
+  }
 
-      if (!node)
-        break;
-
-      if (node->msg.type == IPC_TYPE_INPUT) {
-        /* Only return pressed (1) or repeat (2) events to standard read()
-         * Release (0) events are ignored for compatibility with shell/etc.
-         */
-        if (node->msg.data2 != 0) {
-          char c = (char)node->msg.data1;
-          if (arch_copy_to_user(buf, &c, 1) != 0) { }
-          pt_regs_set_return(regs, 1);
-          kfree(node);
-          return regs;
-        }
-      }
-      kfree(node);
+  if (e->type == FD_FILE) {
+    if (!(e->mode & FD_MODE_READ)) {
+      pt_regs_set_return(regs, -EBADF);
+      return regs;
     }
+    if (count > SYSCALL_MAX_IO_BYTES) { /* FIX(EXT4-07) */
+      pt_regs_set_return(regs, -EINVAL);
+      return regs;
+    }
+    if (count == 0) {
+      pt_regs_set_return(regs, 0);
+      return regs;
+    }
+    uint8_t *k_buf = kmalloc(count);
+    if (!k_buf) {
+      pt_regs_set_return(regs, -ENOMEM);
+      return regs;
+    }
+    long ret;
+    int n = vfs_read(&e->node, e->offset, k_buf, (uint32_t)count);
+    if (n < 0) {
+      ret = -EIO;
+    } else if (n > 0 && arch_copy_to_user(buf, k_buf, (size_t)n) != 0) {
+      ret = -EFAULT;
+    } else {
+      e->offset += (uint64_t)n;
+      ret = n;
+    }
+    kfree(k_buf);
+    pt_regs_set_return(regs, ret);
+    return regs;
+  }
+
+  if (e->type != FD_KBD) { /* FD_WIN: a window text sink is not readable */
+    pt_regs_set_return(regs, -EINVAL);
+    return regs;
+  }
+
+  /* FD_KBD (stdin) */
+  (void)count;
+  while (1) {
+    extern struct ipc_node *pop_message(struct process * proc, int src_pid);
+    struct ipc_node *node = pop_message(current_process, -1); /* From ANY */
+
+    if (!node)
+      break;
+
+    if (node->msg.type == IPC_TYPE_INPUT) {
+      /* Only return pressed (1) or repeat (2) events to standard read()
+       * Release (0) events are ignored for compatibility with shell/etc.
+       */
+      if (node->msg.data2 != 0) {
+        char c = (char)node->msg.data1;
+        if (arch_copy_to_user(buf, &c, 1) != 0) { }
+        pt_regs_set_return(regs, 1);
+        kfree(node);
+        return regs;
+      }
+    }
+    kfree(node);
   }
 
   arch_local_irq_disable();
@@ -547,50 +708,91 @@ extern void uart_puts(const char *str);
 /*
  * sys_write - write to a file descriptor.
  *
- * Copies up to min(count, 1023) bytes from user space into the per-CPU
- * syscall_buf scratch buffer, then:
- *   fd >= 100: routes directly to compositor_window_write(fd, ...).
- *   fd == 1 or 2: looks up the calling process's compositor window and
- *                 writes there; falls through to UART echo if no window.
- *   other fds: not handled; returns to_copy after UART echo only.
+ * Routes through the per-process fd table (ABI-03 RESOLVED, kernel/fd.h):
  *
- * NOTE(ABI-06): Silently truncates writes > 1023 bytes with no error.
- *              Unconditionally echoes every write to the UART regardless of
- *              fd — debug behaviour left on a hot code path. [static]
- * NOTE(ABI-03): fd 1/2 are window-by-pid, not stdout/stderr file descriptors.
+ *   fd >= 100  legacy window-id alias: writes to that compositor window
+ *              directly (kept until the window ABI moves onto the table).
+ *   FD_WIN     window text sink: copies up to min(count, 1023) bytes into
+ *              the per-CPU syscall_buf, echoes to the UART (the serial
+ *              mirror of on-screen text), resolves win_id==-1 to the
+ *              caller's own window by PID, and appends to the window.
+ *   FD_FILE    VFS write at the fd's private offset (bounce buffer, capped
+ *              at SYSCALL_MAX_IO_BYTES — no 1023-byte truncation); advances
+ *              the offset and refreshes the cached node size.
+ *   FD_KBD     not writable: -EINVAL.
+ *   invalid    -EBADF.
+ *
+ * NOTE(ABI-06, window path only): silently truncates window writes > 1023
+ *              bytes; file writes are NOT truncated anymore.
  *
  * Locking: none (cpu->syscall_buf is per-CPU, safe without a lock during a
  *          syscall because the calling process is pinned to this CPU).
  * IRQ context: no.
- * Returns: number of bytes written (to_copy), or -1 on uaccess failure.
+ * Returns: bytes written, or a negative errno.
  */
 long sys_write(int fd, const char *buf, size_t count) {
   if (count == 0) return 0;
-  struct cpu_info *cpu = get_cpu_info();
-  char *k_buf = cpu->syscall_buf;
-  size_t to_copy = (count >= 1024) ? 1023 : count;
 
-  if (arch_copy_from_user(k_buf, buf, to_copy) != 0)
-    return -1;
-  k_buf[to_copy] = '\0';
-
-  /* Debug: Always output to UART */
-  uart_puts(k_buf);
-
-  if (fd >= 100) { 
+  /* Legacy window-id alias (fd >= 100). */
+  if (fd >= 100) {
+    struct cpu_info *cpu = get_cpu_info();
+    char *k_buf = cpu->syscall_buf;
+    size_t to_copy = (count >= 1024) ? 1023 : count;
+    if (arch_copy_from_user(k_buf, buf, to_copy) != 0)
+      return -EFAULT;
+    k_buf[to_copy] = '\0';
+    uart_puts(k_buf);
     compositor_window_write(fd, k_buf, to_copy);
     return (long)to_copy;
   }
 
-  if ((fd == 1 || fd == 2) && current_process) {
-    int win_id = compositor_get_window_by_pid(current_process->pid);
-    if (win_id > 0) {
+  struct fd_entry *e = NULL;
+  if (current_process && fd >= 0 && fd < NPROC_FDS &&
+      current_process->fds[fd].type != FD_NONE)
+    e = &current_process->fds[fd];
+  if (!e)
+    return -EBADF;
+
+  if (e->type == FD_WIN) {
+    struct cpu_info *cpu = get_cpu_info();
+    char *k_buf = cpu->syscall_buf;
+    size_t to_copy = (count >= 1024) ? 1023 : count; /* NOTE(ABI-06) */
+    if (arch_copy_from_user(k_buf, buf, to_copy) != 0)
+      return -EFAULT;
+    k_buf[to_copy] = '\0';
+    uart_puts(k_buf);
+    int win_id = e->win_id;
+    if (win_id < 0)
+      win_id = compositor_get_window_by_pid(current_process->pid);
+    if (win_id > 0)
       compositor_window_write(win_id, k_buf, to_copy);
-      return (long)to_copy;
-    }
+    return (long)to_copy;
   }
 
-  return (long)to_copy;
+  if (e->type == FD_FILE) {
+    if (!(e->mode & FD_MODE_WRITE))
+      return -EBADF;
+    if (count > SYSCALL_MAX_IO_BYTES) /* FIX(EXT4-07) */
+      return -EINVAL;
+    uint8_t *k_buf = kmalloc(count);
+    if (!k_buf)
+      return -ENOMEM;
+    if (arch_copy_from_user(k_buf, buf, count) != 0) {
+      kfree(k_buf);
+      return -EFAULT;
+    }
+    int wr = vfs_write_file(e->path, k_buf, (uint32_t)count, e->offset);
+    kfree(k_buf);
+    if (wr < 0)
+      return -EIO;
+    e->offset += (uint64_t)wr;
+    /* The write may have grown the file: refresh the cached node so reads
+     * through this fd see the new size. */
+    (void)vfs_open(e->path, &e->node);
+    return wr;
+  }
+
+  return -EINVAL; /* FD_KBD is not writable */
 }
 
 /*

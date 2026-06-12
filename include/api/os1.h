@@ -62,6 +62,9 @@ extern int  _sys_recv(int pid, struct ipc_message *msg);
 extern int  _sys_list_dir(const char *path, char *buf, size_t size);
 extern int  _sys_chdir(const char *path);
 extern int  _sys_getcwd(char *buf, size_t size);
+extern int  _sys_open(const char *path, int flags);
+extern int  _sys_close(int fd);
+extern long _sys_lseek(int fd, long offset, int whence);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
@@ -110,6 +113,12 @@ int file_read(const char *path, void *buf, int size, int offset);
 int list_dir(const char *path, char *buf, size_t size);
 int chdir(const char *path);
 int getcwd(char *buf, size_t size);
+
+/* POSIX-style fd I/O (ABI-03 fd table; open() is declared in fcntl.h, the
+ * O_ and SEEK_ values in posix_types.h).  read()/write() above work on any
+ * fd: 0=stdin, 1/2=own window, open()ed files >= 3. */
+int  close(int fd);
+long lseek(int fd, long offset, int whence);
 
 /* Formatting & Printing */
 void print(const char *s);

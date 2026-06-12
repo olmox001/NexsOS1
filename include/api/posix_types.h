@@ -108,6 +108,26 @@ typedef struct {
 /* Success */
 #define EOK 0
 
+/* open(2) flags (ABI-03 fd table).  Only the access mode is supported for
+ * now: the VFS cannot create or truncate files yet, so O_CREAT/O_TRUNC/
+ * O_APPEND are rejected with -EINVAL rather than silently ignored.
+ * Guarded: userland fcntl.h/stdio.h carry the same values. */
+#ifndef O_RDONLY
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_RDWR 2
+#endif
+#ifndef O_ACCMODE
+#define O_ACCMODE 3
+#endif
+
+/* lseek(2) whence */
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#endif
+
 /* Likely/Unlikely branch hints */
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)

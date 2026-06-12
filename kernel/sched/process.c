@@ -409,6 +409,22 @@ int process_kill_allowed(struct process *caller, int target_pid) {
 }
 
 /*
+ * process_fd_init - reset the fd table and pre-open the standard trio
+ * (ABI-03, kernel/fd.h): fd 0 = keyboard stdin, fd 1/2 = the process's own
+ * compositor window (win_id -1, resolved by PID at write time because the
+ * window is usually created after spawn).  Entries hold no kernel-owned
+ * resources, so there is no matching teardown pass.
+ */
+void process_fd_init(struct process *proc) {
+  memset(proc->fds, 0, sizeof(proc->fds));
+  proc->fds[0].type = FD_KBD;
+  proc->fds[1].type = FD_WIN;
+  proc->fds[1].win_id = -1;
+  proc->fds[2].type = FD_WIN;
+  proc->fds[2].win_id = -1;
+}
+
+/*
  * process_create - allocate and initialise a new process descriptor.
  *
  * Allocates a single PMM page for the struct process, assigns a PID from
@@ -481,6 +497,7 @@ struct process *process_create(const char *name, uint8_t priority,
 
   /* Filesystem Init */
   strncpy(proc->cwd, "/", sizeof(proc->cwd));
+  process_fd_init(proc);
 
   /* Add to pool */
   process_pool[slot] = proc;

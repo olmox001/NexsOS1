@@ -26,6 +26,9 @@
 #define _SYSCALL_NUMS_H
 
 /* --- POSIX-shaped --- */
+#define SYS_OPEN               56  /* open(path, flags) -> fd (ABI-03) */
+#define SYS_CLOSE              57
+#define SYS_LSEEK              62
 #define SYS_READ               63
 #define SYS_WRITE              64
 #define SYS_EXIT               93

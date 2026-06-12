@@ -22,6 +22,24 @@ _start:
 1:  hlt
     jmp 1b
 
+.global _sys_open
+_sys_open:
+    movq $SYS_OPEN, %rax
+    syscall
+    ret
+
+.global _sys_close
+_sys_close:
+    movq $SYS_CLOSE, %rax
+    syscall
+    ret
+
+.global _sys_lseek
+_sys_lseek:
+    movq $SYS_LSEEK, %rax
+    syscall
+    ret
+
 .global _sys_read
 _sys_read:
     movq $SYS_READ, %rax

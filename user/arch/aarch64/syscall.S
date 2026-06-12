@@ -21,6 +21,9 @@ _start:
     /* Should never reach here */
 1:  b 1b
 
+.global _sys_open
+.global _sys_close
+.global _sys_lseek
 .global _sys_read
 .global _sys_write
 .global _sys_get_pid
@@ -45,6 +48,24 @@ _start:
 /* 
  * Generic Syscall Wrapper Macros could be used, but manual is clearer for now
  */
+
+/* int _sys_open(const char *path, int flags) */
+_sys_open:
+    mov x8, #SYS_OPEN
+    svc #0
+    ret
+
+/* int _sys_close(int fd) */
+_sys_close:
+    mov x8, #SYS_CLOSE
+    svc #0
+    ret
+
+/* long _sys_lseek(int fd, long off, int whence) */
+_sys_lseek:
+    mov x8, #SYS_LSEEK
+    svc #0
+    ret
 
 /* long _sys_read(int fd, char *buf, unsigned long count) */
 /* x0=fd, x1=buf, x2=count */
