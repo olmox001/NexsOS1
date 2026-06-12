@@ -4,10 +4,13 @@
 > start Phase B microphase B1 immediately.  Read this + the linked review
 > docs; everything else is derivable from the repo.
 >
-> **Status**: Phase A is **100% complete** (core + residuals + external-trace
-> fixes + the supervisor-respawn fix).  All work lives on branch
-> `comprehensive-review` (pushed to origin); the maintainer merges to `main`
-> himself.
+> **Status (2026-06-12)**: Phase A is **100% complete**.  Phase B: **B1 DONE**
+> (VFS + ext4 extents + residuals), **B2 DONE** (epic #92 closed — W^X,
+> teardown, allocators, TLB shootdown, **higher-half kernel landed on both
+> arches**), **B3 IN PROGRESS** (epic #93 — numbering+errno and the first
+> capability layer landed; fd table #90, formal IPC, sandboxing #79 remain).
+> All work lives on branch `comprehensive-review` (pushed to origin); the
+> maintainer merges to `main` himself.
 
 ---
 

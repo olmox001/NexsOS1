@@ -60,7 +60,7 @@ Key make targets: `all`, `run`, `debug`, `release`, `test-release`, `clean`, `ch
 
 ```bash
 make run ARCH=aarch64        # graphical; window with TTY shell appears after boot
-make run ARCH=amd64          # boots to shell at the default -m 3G
+make run ARCH=amd64          # boots to shell (default -m 5G)
 make debug ARCH=<arch>       # same, plus QEMU gdb stub (-s -S): connect with gdb, target remote :1234
 ```
 
@@ -73,10 +73,12 @@ qemu-system-aarch64 -M virt -cpu cortex-a57 -m 4G -smp 4 -display none \
   -kernel build/aarch64/kernel.elf
 ```
 
-**amd64 caveat:** the `-kernel` path (what `make run` uses) does not deliver a boot-protocol
-memory map; the platform falls back to **1 GB** and **crashes at `-m 4G`**. Use `-m 3G` (the
-default), or the GRUB-ISO path (`make release ARCH=amd64`) for the full memory map. See
-`REVIEW.md` BOOT-01/02 and DRV-VIRTIO-01.
+**amd64 caveats:** the `-kernel` path (what `make run` uses) boots via **PVH** and now
+parses the real memory map (the old "1 GB fallback", BOOT-01/02, is fixed). Two things
+remain: (a) virtio-pci devices **must** be declared with `disable-legacy=on` — the legacy
+transport hangs at the first block read; (b) total-RAM accounting derives `total_pages`
+from the highest region end address, so with `-m 5G` the log reports 6144 MB and the
+3–4 GB PCI hole is treated as allocatable RAM (epic #94).
 
 ## 4. Boot flow
 
@@ -114,18 +116,22 @@ over a `struct page` array placed in early RAM. `pmm_alloc_page` (next-fit) /
 Frees and double-frees are checked.
 
 **Virtual (VMM, `kernel/mm/vmm.c` + `arch/*/mm/mmu.c`).** 4-level tables (identical index
-math on both arches). Two-phase: `vmm_init` maps a 128 MB bootstrap window and enables the
-MMU; `vmm_dynamic_remap` rebuilds the map for all discovered RAM using 2 MB blocks. Per
-process: `vmm_create_pgd` clones the kernel half by reference; user space is the low half.
+math on both arches). Two-phase: `vmm_init` maps a bootstrap window; `vmm_dynamic_remap`
+rebuilds the map for all discovered RAM using 2 MB blocks. Per process the page tables are
+**pure-user**: on aarch64 the kernel half lives permanently in **TTBR1** and process PGDs
+(TTBR0) contain zero kernel entries; on amd64 process PML4s copy only the high slots
+(256..511, pre-populated shared PDPTs).
 
-> **Central invariant:** the kernel currently runs **identity-mapped** (kernel VA == PA for
-> the RAM window) and maps **all RAM executable** (no W^X). This is the root assumption
-> behind several findings (REVIEW: MM-VMM-01/02, AMMU-01/02) and the first thing the
-> refactor addresses.
+> **Central invariant (since 2026-06-12):** the kernel runs **higher-half** with a uniform
+> direct map: `VA = PA + KERNEL_VIRT_BASE` (`0xFFFF000000000000` aarch64,
+> `0xFFFF800000000000` amd64) for the image, all RAM and MMIO. Every PA↔pointer crossing
+> goes through `phys_to_virt`/`virt_to_phys` (`kernel/include/kernel/memlayout.h` is the
+> single flip point). **W^X is enforced**: text RX, rodata RO+NX, all other RAM RW+NX,
+> user stack/heap never executable. User space owns the low half exclusively.
 
-**Kernel heap (`kernel/lib/kmalloc.c`).** Power-of-two buckets (16 B–4 KB) over a 32 MB
-pool; larger requests go straight to the PMM. Note: freed memory is not returned to the PMM
-and the pool does not grow (MM-KM-01).
+**Kernel heap (`kernel/lib/kmalloc.c`).** Power-of-two buckets (16 B–4 KB); the pool starts
+at 32 MB and **grows by 4 MB PMM chunks** on exhaustion (MM-KM-01 fixed). Freed memory is
+still not returned to the PMM.
 
 **User heap.** `sys_sbrk` grows/shrinks a per-process heap; `user/sys/lib/malloc.c` is a
 first-fit allocator with forward coalescing on top of `sbrk`.
@@ -140,46 +146,55 @@ priority, and an IPC message queue.
   across CPUs; 100 Hz preemption. (It also consults the compositor for focus-based boosting —
   a coupling the refactor removes: SCHED-01.)
 - **Lifecycle:** `process_create` → `process_load_elf` → `enqueue_task`; `process_terminate`
-  (zombie → reaped by `process_wait`, which is **non-blocking**); deferred free in `schedule`.
-- **ELF loading (`elf.c`):** maps each `PT_LOAD` segment, a 1 MB stack at `0xC0000000`, sets
-  the entry point. (No `p_vaddr` validation yet — ELF-01.)
+  (zombie → **auto-reaped by the scheduler**; `process_wait` is a non-blocking pure
+  reporter, `-2` = child gone). Teardown frees user frames + private tables (leak-free).
+  Each process records its `parent_pid`; `kill` is capability-checked
+  (self/children/SYSTEM).
+- **ELF loading (`elf.c`):** maps each `PT_LOAD` segment (with a user-window guard on
+  `p_vaddr`), a 1 MB stack at `0xC0000000`, sets the entry point. `sbrk` is capped below
+  the stack.
 - **IPC:** `kernel_ipc_send` copies a message into the target's queue and wakes it;
   `sys_ipc_recv` pops or sleeps. (Has a lost-wakeup race and unbounded queue — IPC-01,
-  SCHED-05.)
+  SCHED-05; the formal authenticated IPC API is the open B3 item.)
 
 ## 7. Syscall ABI reference
 
 Userland calls go through `user/arch/<arch>/syscall.S` (SVC on AArch64 in `x8`+`x0..x5`;
 `SYSCALL` on amd64 in `rax`+`rdi,rsi,rdx,r10,r8,r9`) into
-`kernel/core/syscall_dispatch.c`. Numbers and wrappers are declared in `include/api/os1.h`.
+`kernel/core/syscall_dispatch.c`. The **single source of numbers** is
+`include/api/syscall_nums.h` (#define-only), compiled into both the kernel dispatcher and
+the preprocessed userland stubs; wrappers are declared in `include/api/os1.h`. Failures
+return **negative errno** (`-EPERM`, `-EFAULT`, …; codes in `include/api/posix_types.h`).
 
 | # | Name | Wrapper | Notes |
 |---|---|---|---|
 | 63 | READ | `read(fd,buf,n)` | fd 0 = stdin (keyboard IPC); blocks |
-| 64 | WRITE | `write(fd,buf,n)` | fd 1/2 → focused window; fd≥100 → window id; **truncates >1023 B**, also echoes UART |
+| 64 | WRITE | `write(fd,buf,n)` | fd 1/2 → window-by-pid; fd≥100 → window id; **truncates >1023 B**, also echoes UART |
 | 93 | EXIT | `exit(status)` | |
 | 169 | GET_TIME | `get_time()` | ms (from a stubbed timer on amd64) |
 | 172 | GETPID | `get_pid()` | |
 | 200 | DRAW | `draw(x,y,w,h,color)` | raw framebuffer rect |
 | 201 | FLUSH | `flush()` | compositor render |
 | 210 | CREATE_WINDOW | `create_window(x,y,w,h,title)` | |
-| 211–215 | WINDOW_DRAW/RENDER/BLIT/SET_FLAGS/DESTROY | `window_*` | |
-| 216 | SBRK | `sbrk(incr)` | heap grow/shrink |
-| 220 | SPAWN | `spawn(path)` | loads+runs an ELF |
-| 221 | KILL | `kill_process(pid)` | **no permission check** (ABI-04) |
+| 211–215 | WINDOW_DRAW/RENDER/BLIT/SET_FLAGS/DESTROY | `window_*` | DESTROY is **owner-only** |
+| 216 | SBRK | `sbrk(incr)` | heap grow/shrink; capped below the user stack |
+| 220 | SPAWN | `spawn(path)` | loads+runs an ELF; records `parent_pid` |
+| 221 | KILL | `kill_process(pid)` | **capability-checked**: self/children/SYSTEM |
 | 222 | GETPROCS | `get_procs(buf,n)` | `struct ps_info[]` |
 | 223 | YIELD | `yield()` | |
-| 230/231 | SEND/RECV | `send/recv(pid,msg)` | also aliased at 30/31/32 (ABI-01) |
-| 232 | SET_FOCUS | `set_focus(pid)` | |
-| 247 | WAIT | `wait(pid)` | non-blocking: pid if dead, -1 if alive |
-| 250 | REGISTRY | `registry_read/write` | flat K/V store |
-| 251/252 | FILE_WRITE/READ | `file_write/read(path,...)` | ext4; write capped 48 KB |
+| 230/231 | SEND/RECV | `send/recv(pid,msg)` | blocking; single numbering (old 30/31/32 aliases removed) |
+| 232 | SET_FOCUS | `set_focus(pid)` | self-only (or SYSTEM) |
+| 233 | TRY_RECV | `try_recv(&msg)` | non-blocking; `-EAGAIN` when empty |
+| 247 | WAIT | `wait(pid)` | non-blocking: pid if dead, -1 alive, -2 gone |
+| 250 | REGISTRY | `registry_read/write` | K/V store; **first-writer-wins key ownership** |
+| 251/252 | FILE_WRITE/READ | `file_write/read(path,...)` | via VFS; `/bin` `/sys` write-protected for non-SYSTEM |
 | 253 | SET_FONT | `set_font(data,size)` | **passes a raw user pointer to the kernel** (GFX-FONT-01) |
 | 254 | LIST_DIR | `list_dir(path,buf,size)` | |
 | 255/256 | CHDIR/GETCWD | `chdir/getcwd` | |
 
-> The ABI is **not yet coherent or capability-checked** (mixed numbering, no `errno`, no fd
-> table, no access control). Treat it as evolving; see epics #93 (ABI) / REVIEW ABI-01..04.
+> Numbering, errno and the first capability layer landed with epic #93 (B3). Still open:
+> a real per-process **fd table** (fd is overloaded today — ABI-03 #90), the formal
+> authenticated IPC API, and sandboxing (USR-SEC-03 #79).
 
 ## 8. Drivers & the HAL
 
@@ -198,16 +213,17 @@ open (see `area:drivers` issues).
 
 - **Partitioning (`fs/gpt.c`):** GPT parser with a legacy **MBR** fallback (for hybrid ISOs);
   CRC32 verified for the header.
-- **Ext4 (`fs/ext4.c`):** reads the superblock, group descriptor, inodes and directory
-  entries; supports direct + single/double-indirect block maps. **Write** is implemented but
-  capped at 48 KB (12 direct blocks). It does **not** yet handle extent-format inodes, so it
-  only mounts images built by `tools/mkdisk.c` (block-mapped), not standard `mkfs.ext4 -O
-  extent` images (EXT4-01).
-- **VFS (`fs/vfs.c`):** currently only path normalisation; syscalls call `ext4_*` directly.
-  A real vnode/mount layer is the target (VFS-01).
+- **Ext4 (`fs/ext4.c`):** reads the superblock, group descriptors, inodes and directory
+  entries; supports **extent-tree inodes (any depth)** plus the legacy direct/indirect
+  block maps, with INCOMPAT feature enforcement at mount (unknown RO_COMPAT ⇒ read-only;
+  unknown INCOMPAT ⇒ loud refusal). **Write** supports legacy single-indirect (~4.2 MB)
+  and extent depth-0 append; an interior-block cache speeds tree walks.
+- **VFS (`fs/vfs.c`):** real provider layer — `struct fs_ops` + a mount table (GPT
+  partition → fs driver); all file syscalls and the ELF loader route through it. Zero
+  `ext4_*` calls outside `kernel/fs/`.
 - **Disk image:** `tools/mkdisk.c` builds a 96 MB image: bootloader + kernel + a GPT/MBR
   Ext4 partition populated from `build/<arch>/rootfs/` (`/sys/bin`, `/bin`, `/etc`, `/fonts`,
-  and DOOM WADs). `make rootfs` stages it.
+  and DOOM WADs). Extent-tree inodes by default (`--legacy` opt-out). `make rootfs` stages it.
 
 ## 10. Graphics & windowing
 
@@ -237,11 +253,13 @@ today and are prime candidates for extraction into userland services (epic #95).
 3. `make run` — `mkdisk` copies it into `/bin`; launch from the shell (`spawn /bin/myapp`).
 
 **Add a syscall**
-1. Pick an unused number; `#define SYS_FOO` + declare the wrapper in `include/api/os1.h`.
-2. Add the wrapper in `user/arch/<arch>/syscall.S` (both arches) and a convenience fn in
-   `lib.c`.
-3. Handle the case in `kernel/core/syscall_dispatch.c`, using `arch_copy_*_user` for any
-   user pointers. (When the coherent-ABI work lands, register it in the unified table.)
+1. Pick an unused number; `#define SYS_FOO` in `include/api/syscall_nums.h` (the single
+   source for kernel and userland) and declare the wrapper in `include/api/os1.h`.
+2. Add the stub in `user/arch/<arch>/syscall.S` (both arches, use the `SYS_FOO` macro —
+   the stubs are preprocessed) and a convenience fn in `lib.c`.
+3. Handle the `case SYS_FOO` in `kernel/core/syscall_dispatch.c`, using `arch_copy_*_user`
+   for any user pointers; return 0/positive on success, **negative errno** on failure;
+   add a capability check if the call acts on another process's resources.
 
 **Add a driver**
 1. Implement under `kernel/drivers/<class>/`; discover via `hal_device_find` after
@@ -253,25 +271,32 @@ today and are prime candidates for extraction into userland services (epic #95).
 
 - `printk` with levels (`pr_info`/`pr_warn`/`pr_err`/`pr_debug`); `console_loglevel`
   gates output. All output also goes to the serial console (`-serial`).
-- Boot-time unit tests: `ktest_run_all()` runs cases from the `.ktests` section. (Note: the
-  runner currently always reports PASS — LIB-KTEST-01 — so treat it as a smoke test only.)
+- Unit tests: `ktest_run_all()` runs cases from the `.ktests` section **after memory
+  init** and reports real PASS/FAIL counts (LIB-KTEST-01 fixed); 5 cases today (string ×2,
+  math, kmalloc growth, vmm_protect).
 - `make debug` exposes a gdb stub: `gdb build/<arch>/kernel.elf` then `target remote :1234`.
 - `panic()` prints a register/stack dump and (on amd64) halts the CPU.
 
 ## 14. Known limitations
 
 The authoritative, severity-ranked list is [`review/REVIEW.md`](review/REVIEW.md) and the
-GitHub issues (`code-review` label). Highlights:
+GitHub issues (`code-review` label). Highlights (post B1/B2, mid-B3, 2026-06-12):
 
-- **amd64 `make run`**: 1 GB only; crashes at `-m 4G` (use 3G or the ISO path). *(W5/W4)*
-- **No W^X**; identity-mapped kernel; user-frame leak on exit. *(W3)*
-- **No capability checks**: any process can kill/overwrite anything. *(W4)*
-- **VFS** is a stub; **Ext4** can't read standard (extent) images; write capped at 48 KB.
+- **amd64 RAM accounting** counts the 3–4 GB PCI hole as allocatable RAM (`-m 5G` reports
+  6144 MB); amd64 parity gaps (ACPI/MADT CPU count, FPU context, PCI init) — epic #94.
+- **No fd table**: fd is an overloaded integer (0=stdin, 1/2=window-by-pid, ≥100=window
+  id) — ABI-03 #90. **No sandboxing** yet (USR-SEC-03 #79); IPC has a lost-wakeup race
+  (IPC-01 #85) and no sender authentication.
 - **set_font** hands a raw user pointer to the kernel (UAF risk). *(W4)*
-- Several **SMP data races** (uaccess TOCTOU, lock-free shared state, no TLB shootdown).
-- Allocators don't reclaim; userland binaries are large.
+- Several **SMP data races** remain in drivers/compositor (uaccess TOCTOU, lock-free
+  shared state — see `area:drivers`/`area:graphics` issues).
+- Compositor/graphics: hardcoded resolution, damage tracking misses programmatic updates,
+  windows of dead processes linger until hovered; notification popups unreliable.
+- Allocators don't reclaim to the PMM; userland binaries are large; the userland libc is
+  minimal and not POSIX-conformant.
 
-These are the subject of the planned refactor (see `PROJECT_CHARTER.md` and the epics).
+These are the subject of the ongoing refactor (see `PROJECT_CHARTER.md`,
+`PHASE-B-PLAN.md` and the epics #93–#96).
 
 ---
 

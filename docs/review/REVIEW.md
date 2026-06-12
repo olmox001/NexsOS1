@@ -7,6 +7,11 @@
 >
 > Review date: 2026-06-02 · Branch: `comprehensive-review` · Build: **[verified]** both arches.
 > All 9 subsystems analysed (fs included). Agent-delegated docs are maintainer spot-checked.
+>
+> **Note (2026-06-12):** §§1–7 are the snapshot *at review date*; much has been fixed
+> since (Phase A complete; B1, B2 incl. the higher-half kernel done; B3 in progress).
+> §8 is the authoritative commit-by-commit catalog of what landed; current status lives
+> in [`../PHASE-B-PLAN.md`](../PHASE-B-PLAN.md) and the GitHub epics #92–#96.
 
 ---
 

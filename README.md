@@ -25,22 +25,24 @@ an interactive **TTY shell**.
 
 ---
 
-## Status (verified by building & running, 2026-06-11)
+## Status (verified by building & running, 2026-06-12)
 
 | Capability | AArch64 (`make run`) | amd64 (`make run`) |
 |---|---|---|
 | Builds clean (`-Werror -Wall -Wextra -Wpedantic -Wshadow`) | ✅ | ✅ |
 | Boots to a **TTY shell in a composited window** | ✅ | ✅ |
-| Dynamic RAM detection / MMU / **maps up to 4GB** | ✅  |  ✅\*   |
+| **Higher-half kernel** (PA/VA contract, direct map, **W^X**) | ✅ `0xFFFF0000...` | ✅ `0xFFFF8000...` |
+| Dynamic RAM detection / full boot-protocol memory map | ✅ (DTB) | ✅\* (PVH/MB1/MB2) |
 | **SMP** (multi-core bring-up) | ✅ (4/4 online) |  ✅ |
-| VirtIO GPU / input / block · Ext4 mount · GPT+MBR | ✅ | ✅ |
+| VirtIO GPU / input / block · **Ext4 (extents)** mount · GPT+MBR | ✅ | ✅ |
 | Userland: ELF loader, IPC, windows, registry, fonts | ✅ | ✅ |
 | **Fault isolation**: user crash never kills the kernel; symbolized backtraces | ✅ | ✅ |
+| Coherent syscall ABI (single numbering, negative `errno`) + first **capability checks** | ✅ | ✅ |
 
-\* On amd64 the `make run` (`-kernel`) path does not receive a boot-protocol memory map and
-falls back to a hardcoded 1 GB; the full memory map / 4 GB works via the **GRUB-ISO**
-(`make release`) path. This is a known defect — see the epic
-[#94 (amd64 boot/4GB)](https://github.com/olmox001/os1test-dev/issues/94).
+\* The amd64 `-kernel` path now parses the real PVH memory map (the old "1 GB fallback"
+is fixed). One accounting defect remains: total RAM is derived from the highest region
+end address, so the 3–4 GB PCI hole is counted (and treated) as RAM — see the epic
+[#94 (amd64 boot parity)](https://github.com/olmox001/os1test-dev/issues/94).
 **AArch64 is the reference "correct" platform.**
 
 ---
@@ -49,12 +51,21 @@ falls back to a hardcoded 1 GB; the full memory map / 4 GB works via the **GRUB-
 
 **Kernel**
 - Physical memory manager: per-zone (DMA ≤16 MB / Normal) bitmap allocator, dynamic RAM discovery.
-- Virtual memory: two-phase MMU bring-up (bootstrap → RAM-aware remap), per-process page tables, 2 MB block mappings.
-- Preemptive **SMP scheduler**: per-CPU O(1) priority run-queues with work-stealing; ELF64 loader.
-- Message-passing **IPC**; a fixed-size system **registry**; kernel heap (`kmalloc`).
+- **Higher-half virtual memory** (2026-06): kernel image + direct map at `KERNEL_VIRT_BASE`
+  (`0xFFFF000000000000` aarch64 via TTBR1, `0xFFFF800000000000` amd64), documented PA/VA
+  contract (`phys_to_virt`/`virt_to_phys`), pure-user low half, **W^X enforced** (text RX,
+  rodata RO+NX, everything else RW+NX), cross-CPU TLB shootdown.
+- Preemptive **SMP scheduler**: per-CPU O(1) priority run-queues with work-stealing; ELF64
+  loader; leak-free, race-free process teardown.
+- Message-passing **IPC**; a system **registry** with per-key write ownership; growable
+  kernel heap (`kmalloc`).
+- **Coherent syscall ABI** (2026-06): single numbering (`include/api/syscall_nums.h`
+  compiled into both the kernel dispatcher and the userland stubs), negative-`errno`
+  returns, first **capability layer** (kill/focus/window/file-write/registry checks).
 - **VirtIO** drivers: GPU (framebuffer), input (keyboard/mouse), block.
 - Per-arch: GICv2 + ARM generic timer + PL011 (AArch64); LAPIC/IOAPIC + PIT + 16550 (amd64).
-- **Ext4** (read + limited write), **GPT** with **MBR** fallback, buffer cache.
+- **VFS** (mount table + `fs_ops` providers) over **Ext4** (extent-tree + legacy reads,
+  INCOMPAT enforcement, extended write paths), **GPT** with **MBR** fallback, buffer cache.
 - **Fault/trace foundation** (2026-06): fault-safe reporting on dedicated fault stacks, total
   vector coverage on both arches, user/kernel fault isolation (a crashing app terminates
   cleanly, the kernel and shell survive), symbolized in-kernel backtraces (`.ksyms`).
@@ -123,8 +134,8 @@ make check ARCH=amd64
 
 ### 2. Build & run
 ```bash
-make run ARCH=aarch64     # ARM64 — full path (4GB, SMP, graphical TTY)
-make run ARCH=amd64       # x86-64 — same graphical shell (1 GB map on the -kernel path, see #94)
+make run ARCH=aarch64     # ARM64 — full path (SMP, graphical TTY)
+make run ARCH=amd64       # x86-64 — same graphical shell (PVH memory map, see #94 for parity gaps)
 ```
 `make run` builds the bootloader, kernel, userland, and a 96 MB Ext4 disk image, then
 launches QEMU with VirtIO GPU/input/block and a graphical display. A window with a TTY
@@ -181,17 +192,19 @@ docs/                        # review/ (this audit), PROJECT_CHARTER.md, report/
 
 ## Roadmap (foundations, dependency-ordered)
 
-> **Phase A (fault/trace foundation) is complete** — see
-> [`docs/review/REVIEW.md`](docs/review/REVIEW.md) §8 for the commit catalog. The next
-> phase (STUB demolition, epics #92–#96) is planned in
-> [`docs/PHASE-B-PLAN.md`](docs/PHASE-B-PLAN.md); the architectural guidelines it follows
-> are in [`docs/ASTRA.md`](docs/ASTRA.md).
+> **Phase A (fault/trace foundation) is complete**; Phase B is under way — **B1
+> (VFS/ext4-extents) and B2 (memory: W^X, teardown, allocators, higher-half — epic #92)
+> are done**, **B3 (coherent ABI + capabilities, epic #93) is in progress**. See
+> [`docs/review/REVIEW.md`](docs/review/REVIEW.md) §8 for the commit catalog and
+> [`docs/PHASE-B-PLAN.md`](docs/PHASE-B-PLAN.md) for the plan; the architectural
+> guidelines are in [`docs/ASTRA.md`](docs/ASTRA.md).
 
-1. A documented PA/VA model and **W^X**.
-2. A coherent, **capability-checked** syscall ABI.
-3. Real allocators (buddy PMM + growable slab).
-4. Stable boot on both arches via a GPLv2-compatible loader; real-memory map on amd64.
-5. A thin (Plan 9-style) HAL; fuller drivers + device tree.
+1. ~~A documented PA/VA model and **W^X**~~ — **done** (higher-half kernel, epic #92).
+2. A coherent, **capability-checked** syscall ABI — **in progress** (numbering + errno +
+   first capability layer landed; fd table, formal IPC and sandboxing remain — epic #93).
+3. Real allocators (buddy PMM + growable slab) — kmalloc now grows; buddy PMM pending.
+4. Stable boot on both arches via a GPLv2-compatible loader; amd64 parity (epic #94).
+5. A thin (Plan 9-style) HAL; fuller drivers + device tree (epic #95).
 6. **Service isolation** (seL4): move VFS/compositor/fonts to sandboxed userland.
 7. Plan 9 file-namespace registry; then networking and real hardware.
 

@@ -5,7 +5,8 @@
 > says *where we are*, this says *where we are going and why*. Aspirational items
 > are marked **[goal]**; verified current capabilities are marked **[now]**.
 >
-> Status date: 2026-06-02. Authoritative over the legacy README until that is rewritten.
+> Status date: 2026-06-12 (originally 2026-06-02). The README has since been rewritten to
+> the verified state; this document remains the north star.
 
 ---
 
@@ -34,22 +35,25 @@ Confirmed by building and running this revision (headless QEMU, serial capture):
 | Capability | aarch64 | amd64 |
 |---|---|---|
 | Builds clean (`-Werror -Wall -Wextra -Wpedantic -Wshadow`) | ✅ | ✅ |
-| Boots to interactive **TTY shell** in a composited window | ✅ | ✅ (`-m 3G`) |
-| Dynamic RAM discovery, MMU + remap | ✅ **~4GB** | ⚠️ **1GB hardcoded** on `make run` |
-| SMP (multi-core bring-up, work-stealing scheduler) | ✅ (4/4) | ⚠️ boots; weak CPU detection |
-| VirtIO GPU / input / block, Ext4 (RO) mount, GPT+MBR parse | ✅ | ✅ at 3G |
-| Userland: ELF loader, IPC, windows, registry, fonts, DOOM | ✅ | ✅ at 3G |
+| Boots to interactive **TTY shell** in a composited window | ✅ | ✅ |
+| **Higher-half kernel**, documented PA/VA contract, **W^X** | ✅ | ✅ |
+| Dynamic RAM discovery (boot-protocol memory map), MMU + remap | ✅ | ✅ (PVH/MB; PCI-hole accounting defect, #94) |
+| SMP (multi-core bring-up, work-stealing scheduler) | ✅ (4/4) | ✅ (4/4; CPUID-based count, #30) |
+| VirtIO GPU / input / block, **VFS + Ext4 (extents)**, GPT+MBR | ✅ | ✅ |
+| Userland: ELF loader, IPC, windows, registry, fonts, DOOM | ✅ | ✅ |
+| Coherent ABI (single numbering, negative errno) + first capability checks | ✅ | ✅ |
+| **Fault isolation** (user crash never kills the kernel; symbolized backtraces) | ✅ | ✅ |
 
-The amd64 gaps are **understood and root-caused** (boot-protocol handling, see
-review `02`); they are not mysteries. **The aarch64 path is the reference of
-"correct".**
+Remaining amd64 gaps are **understood and root-caused** (epic #94). **The aarch64
+path is the reference of "correct".**
 
 ## 3. Purpose & guiding principles
 
 1. **Isolation by capability (seL4-inspired).** Authority is conferred by
    unforgeable handles, not ambient identity. A process can only touch what it has
-   been given a capability to. *Today there are zero capability checks — this is the
-   single most important architectural change.*
+   been given a capability to. *The first permission layer (kill/focus/window/
+   file-write/registry checks) landed with epic #93; unforgeable handles and
+   sandboxing are still the single most important architectural change.*
 2. **Everything is a file (Plan 9-inspired).** Resources — devices, services,
    the registry, IPC channels, windows — are named in a per-process **namespace**
    and accessed through a uniform `open/read/write/close`-style interface. *Today
@@ -62,8 +66,9 @@ review `02`); they are not mysteries. **The aarch64 path is the reference of
    stack, and drivers (where feasible) are **userland servers** in their own
    address spaces, supervised and restartable. *Today they are in-kernel.*
 5. **A coherent, versioned ABI.** One syscall numbering scheme, negative-errno
-   semantics, a real handle table, stable struct layouts. *Today the ABI mixes
-   Linux and ad-hoc numbers, duplicates IPC calls, and returns bare `-1`.*
+   semantics, a real handle table, stable struct layouts. *Numbering and errno landed
+   (single `syscall_nums.h` compiled into both sides); the handle/fd table is the
+   open item (ABI-03).*
 6. **Honesty over marketing.** Documentation states verified vs. aspirational.
    (The legacy README's "Production-Ready" / "Military Grade" / MIT-license claims
    are inaccurate and will be corrected — the project is **GPLv2**.)
@@ -90,13 +95,15 @@ review `02`); they are not mysteries. **The aarch64 path is the reference of
 The review's findings cluster into the foundations this target needs, in
 dependency order:
 
-1. **Define & document the PA/VA model + enforce W^X** (mm/arch). Everything else
-   assumes a sane address-space story; today it silently relies on identity mapping
-   and maps all RAM executable.
-2. **A coherent, capability-checked ABI** (syscall table, errno, handle table).
-   Prerequisite for any real isolation.
+1. ~~**Define & document the PA/VA model + enforce W^X**~~ — **done 2026-06** (epic #92:
+   higher-half kernel on both arches, single `KERNEL_VIRT_BASE` flip point, W^X, full
+   teardown, TLB shootdown).
+2. **A coherent, capability-checked ABI** (syscall table, errno, handle table) —
+   **in progress** (epic #93: single numbering, negative errno and the first capability
+   layer landed; fd/handle table, authenticated IPC and sandboxing remain).
 3. **Complete the allocators** (buddy PMM + growable slab kmalloc; finish userland
-   malloc) so long-lived services don't exhaust fixed pools.
+   malloc) so long-lived services don't exhaust fixed pools. kmalloc now grows;
+   multi-region PMM (holes!) and reclaim are open.
 4. **Stabilise boot on both arches** via a real loader (GPLv2-compatible) — fixes
    the amd64 4GB/`make run` gap and prepares real hardware.
 5. **Slim the HAL** to direct primitives; flesh out drivers/device-tree.
