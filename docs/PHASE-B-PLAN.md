@@ -147,18 +147,31 @@ path still legacy-only/48 KB (EXT4-05), no caching (EXT4-11).
 - **Acceptance**: shell + doom + counter from an extents rootfs on both
   arches; no direct `ext4_*` call left outside the VFS layer.
 
-### B2 — Epic #92: memory/address-space rework (IN PROGRESS, 2026-06-12)
-**Landed**: `f4ad8fa` full teardown (MM-VMM-04 #24, AMMU-03 #35 — user
+### B2 — Epic #92: memory/address-space rework — **DONE (2026-06-12), findings closed; higher-half migration deferred**
+**Batch 1**: `f4ad8fa` full teardown (MM-VMM-04 #24, AMMU-03 #35 — user
 frames + private tables freed, leak-free spawn/exit verified both arches;
 aarch64 header-page cross-process aliasing fixed) and `b745a74` W^X
 (MM-VMM-01 #22, AMMU-01 #33, ELF-02 #87 — text RX, rodata RO+NX, all other
 RAM RW+NX, EFER.NXE, user stack/heap never executable; `nxtest` proves the
 fault path).
-**Remaining in the epic**: MM-VMM-02 identity-only walker + higher-half /
-real PA-VA separation (`virt_to_phys` is identity — `vmm.h`; dedicated
-session, prereq for ASLR/KASLR), MM-VMM-05 TLB shootdown, AMMU-02
-arch_vmm_protect stub, MM-KM-01 kmalloc growth/free, MM-PMM-02, MM-BUF-01.
-HAL isolation rule still applies (no `platform.c` edits).
+**Batch 2**: `0b9f6d5` MM-PMM-02 #21 (multi-page DMA cache-clean+fence);
+`29bb092` VFS-02 #65 (resolve-path NULL guard); `508c734` MM-BUF-01 #26
+(hard buffer-cache cap: slot reservation + sync-retry + loud refusal);
+`67ff898` MM-KM-01 #27 (kmalloc grows by 4 MB PMM chunks; ktest proves
+growth); `06f017a` MM-VMM-05/AMMU-08 #25 (cross-CPU TLB shootdown
+contract: aarch64 = hardware IS TLBI, amd64 = LAPIC IPI round on vector
+0xFD wired into unmap/teardown; bonus amd64 panic-halt IPI 0xFE);
+`834e347` AMMU-02 #34 (real arch_vmm_protect both arches + two latent
+walker bugs: aarch64 block-split level off-by-one that emptied L3 tables,
+block-blind get_physical); `cf8fca1` MM-VMM-02 walker half #23 (all
+walkers via phys_to_virt/virt_to_phys — identity assumption centralized
+in vmm.h).  Also closed as already-fixed-by-B1: #58 #60 #61.
+**Deferred (dedicated session)**: the higher-half/PA-VA migration proper
+(kernel link address, real phys_to_virt offset, PMM pointer semantics
+MM-PMM-07; prereq for ASLR/KASLR) — most invasive change in the codebase;
+the walker abstraction gives it a single starting point.  W2-class
+refinements (AMMU-04..07, MM-KM-02..06, MM-PMM-03..06, MM-BUF-02..05)
+remain open under the epic.  HAL isolation held: zero `platform.c` edits.
 
 ### B3 — Epic #93: coherent ABI + capabilities
 Single syscall numbering (ABI-01), errno model (ABI-02), per-process fd
