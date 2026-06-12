@@ -1,6 +1,0 @@
-kernel/arch/aarch64/platform.c: In function 'arch_smp_init':
-kernel/arch/aarch64/platform.c:138:13: error: 'secondary_stacks' undeclared (first use in this function)
-             secondary_stacks[i] = (uint64_t)stack;
-             ^~~~~~~~~~~~~~~~
-kernel/arch/aarch64/platform.c:138:13: note: each undeclared identifier is reported only once for each function it appears in
-make: *** [build/aarch64/kernel/arch/aarch64/platform.o] Error 1
