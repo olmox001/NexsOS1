@@ -1,404 +1,0 @@
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/am_map.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/am_map.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/doomdef.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/doomdef.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/doomstat.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/doomstat.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/dstrings.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/dstrings.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_event.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_event.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_items.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_items.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_iwad.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_iwad.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_loop.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_loop.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_main.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_main.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_mode.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_mode.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/d_net.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_net.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/f_finale.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/f_finale.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/f_wipe.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/f_wipe.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/g_game.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/g_game.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/hu_lib.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/hu_lib.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/hu_stuff.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/hu_stuff.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/info.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/info.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_cdmus.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_cdmus.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_endoom.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_endoom.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_joystick.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_joystick.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_scale.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_scale.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_sound.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_sound.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_system.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_system.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_timer.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_timer.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/memio.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/memio.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_argv.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_argv.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_bbox.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_bbox.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_cheat.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_cheat.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_config.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_config.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_controls.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_controls.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_fixed.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_fixed.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_menu.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_menu.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_misc.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_misc.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/m_random.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_random.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_ceilng.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_ceilng.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_doors.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_doors.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_enemy.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_enemy.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_floor.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_floor.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_inter.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_inter.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_lights.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_lights.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_map.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_map.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_maputl.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_maputl.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_mobj.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_mobj.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_plats.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_plats.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_pspr.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_pspr.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_saveg.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_saveg.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_setup.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_setup.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_sight.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_sight.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_spec.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_spec.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_switch.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_switch.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_telept.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_telept.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_tick.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_tick.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/p_user.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_user.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_bsp.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_bsp.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_data.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_data.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_draw.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_draw.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_main.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_main.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_plane.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_plane.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_segs.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_segs.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_sky.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_sky.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/r_things.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_things.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/sha1.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/sha1.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/sounds.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/sounds.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/statdump.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/statdump.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/st_lib.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/st_lib.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/st_stuff.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/st_stuff.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/s_sound.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/s_sound.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/tables.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/tables.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/v_video.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/v_video.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/wi_stuff.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/wi_stuff.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_checksum.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_checksum.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_file.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_file.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_main.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_main.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_wad.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_wad.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/z_zone.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/z_zone.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/w_file_stdc.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_file_stdc.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_input.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_input.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/i_video.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_video.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/doomgeneric.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/doomgeneric.o
-mkdir -p build/aarch64/user/bin/doomgeneric-master/doomgeneric/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric-master/doomgeneric/dummy.c -o build/aarch64/user/bin/doomgeneric-master/doomgeneric/dummy.o
-mkdir -p build/aarch64/user/bin/
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -c user/bin/doomgeneric_os1.c -o build/aarch64/user/bin/doomgeneric_os1.o
-echo "[Linking Doom]"
-[Linking Doom]
-aarch64-none-elf-gcc -w -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common -O2 -g -DARCH_AARCH64 -mcpu=cortex-a57 -Ikernel/include -Ikernel/arch/aarch64/include -Iinclude/api -Iuser/bin/doomgeneric-master/doomgeneric -DNORMALUNIX -Wl,-Ttext=0x80000000 -e _start -o build/aarch64/doom.elf build/aarch64/user/bin/doomgeneric-master/doomgeneric/am_map.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/doomdef.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/doomstat.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/dstrings.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_event.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_items.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_iwad.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_loop.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_main.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_mode.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/d_net.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/f_finale.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/f_wipe.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/g_game.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/hu_lib.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/hu_stuff.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/info.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_cdmus.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_endoom.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_joystick.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_scale.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_sound.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_system.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_timer.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/memio.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_argv.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_bbox.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_cheat.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_config.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_controls.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_fixed.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_menu.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_misc.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/m_random.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_ceilng.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_doors.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_enemy.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_floor.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_inter.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_lights.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_map.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_maputl.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_mobj.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_plats.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_pspr.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_saveg.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_setup.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_sight.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_spec.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_switch.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_telept.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_tick.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/p_user.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_bsp.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_data.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_draw.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_main.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_plane.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_segs.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_sky.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/r_things.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/sha1.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/sounds.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/statdump.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/st_lib.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/st_stuff.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/s_sound.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/tables.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/v_video.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/wi_stuff.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_checksum.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_file.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_main.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_wad.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/z_zone.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/w_file_stdc.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_input.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/i_video.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/doomgeneric.o build/aarch64/user/bin/doomgeneric-master/doomgeneric/dummy.o build/aarch64/user/bin/doomgeneric_os1.o build/aarch64/user/lib/lib.o build/aarch64/user/arch/aarch64/syscall.o build/aarch64/user/lib/malloc.o
-Ext4: Added build/aarch64/rootfs/doom.wad (Ino 11, 11159840 bytes, 2725 data, 4 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/ipc_send (Ino 16, 142600 bytes, 35 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/init (Ino 17, 142344 bytes, 35 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/doom.wad (Ino 18, 11159840 bytes, 2725 data, 4 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/regedit (Ino 19, 142400 bytes, 35 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/shell (Ino 20, 156248 bytes, 39 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/ipc_recv (Ino 21, 141928 bytes, 35 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/crash (Ino 22, 140584 bytes, 35 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/demo3d (Ino 23, 157792 bytes, 39 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/doom (Ino 24, 2156312 bytes, 527 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/writetest (Ino 25, 142016 bytes, 35 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/counter (Ino 26, 141872 bytes, 35 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/notify_srv (Ino 27, 142632 bytes, 35 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/doom2.wad (Ino 28, 14604584 bytes, 3566 data, 5 meta blocks)
-Ext4: Added build/aarch64/rootfs/bin/doom1.wad (Ino 29, 4196020 bytes, 1025 data, 1 meta blocks)
-Ext4: Added build/aarch64/rootfs/etc/init.cfg (Ino 30, 189 bytes, 1 data, 0 meta blocks)
-Ext4: Added build/aarch64/rootfs/doom2.wad (Ino 14, 14604584 bytes, 3566 data, 5 meta blocks)
-Ext4: Added build/aarch64/rootfs/doom1.wad (Ino 15, 4196020 bytes, 1025 data, 1 meta blocks)
-
-Build complete for aarch64!
-  Disk Image: build/aarch64/disk.img
-  Kernel:     build/aarch64/kernel.bin (AArch64 Raw Binary)
---> Building aarch64 release...
-✓ AArch64 release files: kernel.img, disk.img
-Starting QEMU Release Test for aarch64 (Version: V9.9.9)...
-qemu-system-aarch64 -M virt -cpu cortex-a57 -m 3G -smp 8 -serial mon:stdio -display default,show-cursor=on -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=release/V9.9.9/aarch64/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 -kernel release/V9.9.9/aarch64/kernel.img
-[C0] [INFO] Console driver initialized
-FDT: Probing... 
-FDT: Successfully initialized
-[C0] [INFO] Kernel: Entry x0 = 0x48000000
-[C0] 
-[C0] ========================================
-[C0]   AArch64 Microkernel v0.1.0
-[C0]   Production-Ready Microkernel
-[C0] ========================================
-[C0] 
-[C0] 
-[KTEST] Starting Kernel Unit Tests (3 cases found)...
-[C0] [KTEST] Running: test_math_basic... [C0] PASS
-[C0] [KTEST] Running: test_string_compare... [C0] PASS
-[C0] [KTEST] Running: test_string_length... [C0] PASS
-[C0] [KTEST] Completed. Summary: 3 PASSED, 0 FAILED
-
-[C0] [INFO] Initializing CPU...
-[C0] [INFO] CPU: Primary core 0 initialized
-[C0] [INFO] CPU: Vector Table set to 0x40080800
-PLATFORM: arch_platform_early_init starting
-[C0] [INFO] IRQ: Registered chip ARM GICv2
-FDT: Probing... 
-FDT: Successfully initialized
-[C0] [INFO] AArch64: IDTF/FDT initialized from 0x48000000
-[C0] [INFO] Initializing IRQ...
-[C0] [INFO] IRQ: Registered chip ARM GICv2
-[C0] [INFO] IRQ driver initialized via HAL
-[C0] [INFO] GIC: 256 interrupt lines
-[C0] [INFO] GIC: Distributor initialized
-[C0] [INFO] Initializing timer...
-[C0] [INFO] Timer: Frequency 62500000 Hz
-[C0] [INFO] Timer: System tick rate 100 Hz
-[C0] [INFO] Timer driver initialized via HAL
-[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0xf0ca55, Ctl: 0x1
-[C0] [INFO] Initializing memory...
-[C0] [INFO] AArch64: IDTF RAM Region [0]: 0x40000000 - 0x100000000
-[C0] [INFO] PMM: Metadata initialized at 0x408f0000 (24672 KB)
-[C0] [INFO] PMM: Total detected RAM: 3072 MB
-[C0] [INFO] PMM: 3072 MB total, 3039 MB free (Safety Margin Enabled)
-[C0] [INFO] PMM: DMA zone: 128 pages, Normal zone: 777976 pages
-[C0] [INFO] VMM: Initializing MMU (Phase 1: Bootstrap)...
-[C0] [INFO] AArch64 VMM: Setting up MAIR (PGD at 0x42108000)
-[C0] [INFO] AArch64 VMM: Setting up TCR
-[C0] [INFO] AArch64 VMM: Setting TTBR0
-[C0] [INFO] AArch64 VMM: Enabling SCTLR bits (MMU, Caches)
-[C0] [INFO] AArch64 VMM: MMU Enabled. SCTLR=0x30d01805
-[C0] [INFO] VMM: Bootstrap complete.
-[C0] [INFO] VMM: Performing RAM-aware dynamic remapping...
-[C0] [INFO] VMM: Mapping region 0x40000000 - 0x100000000
-[C0] [INFO] VMM: Dynamic remapping successful. All discovered RAM is now accessible.
-[C0] [INFO] HAL: Initializing Bus Manager...
-[C0] [INFO] HAL: Scanning Platform Bus (MMIO)...
-[C0] [INFO] HAL: Registered device 'VirtIO-2' (Bus=2, ID=1af4:0002, Base=0xa003800, IRQ=76)
-[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Base=0xa003a00, IRQ=77)
-[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Base=0xa003c00, IRQ=78)
-[C0] [INFO] HAL: Registered device 'VirtIO-16' (Bus=2, ID=1af4:0010, Base=0xa003e00, IRQ=79)
-[C0] [INFO] VirtIO: Probing for block device...
-[C0] [INFO] VirtIO: Found Block Device (IRQ 76)
-[C0] [INFO] VirtIO: Version 1
-[C0] [INFO] VirtIO: Block Device Initialized successfully
-[C0] [INFO] VirtIO-GPU: Probing...
-[C0] [INFO] VirtIO-GPU: Found device (IRQ 79)
-[C0] [INFO] kmalloc: Initialized bucket allocator. Heap: 32 MB at 0x0000000042154000
-[C0] [INFO] GPU: Primary device set to VirtIO-GPU
-[C0] [INFO] GPU: Registered VirtIO-GPU
-[C0] [INFO] VirtIO-GPU: Done.
-[C0] [INFO] Graphics: Initialized via HAL (720x1280)
-[C0] [INFO] Partition: Initializing...
-[C0] [INFO] GPT: Valid signature found. Entries: 128 @ LBA 2
-[C0] [INFO] GPT: Partition 0: Start=34, Size=2048 sectors
-[C0] [INFO] GPT: Partition 1: Start=2082, Size=32768 sectors
-[C0] [INFO] GPT: Partition 2: Start=34850, Size=161725 sectors
-[C0] [INFO] GPT: Found 3 partitions
-[C0] [INFO] GPT: Done.
-[C0] [INFO] BufferCache: Initializing...
-[C0] [INFO] Buffer: Done.
-[C0] [INFO] Ext4: Found partition at LBA 34850
-[C0] [INFO] Ext4: Mounted. Vol=, Inodes=1024
-[C0] [INFO] Ext4: Group 0: Inode Table at Block 4
-[C0] [INFO] Ext4: Done.
-[C0] [INFO] VirtIO-Input: Probing devices...
-[C0] [INFO] Keyboard: Initialized
-[C0] [INFO] Registry: Initialized with 3 default keys.
-[C0] [INFO] Registry: Initialized.
-[C0] [INFO] Initializing processes...
-[C0] [INFO] Process: Initializing scheduler subsystem...
-[C0] [INFO] Initializing scheduler...
-[C0] [INFO] Scheduler: Initializing...
-[C0] [INFO] Compositor: Initialized
-[C0] [INFO] Scheduler: Spawning First-Stage Init...
-[C0] [INFO] Process: Creating 'init' (Prio=2)
-[C0] [INFO] process_create: 'init' PID=1 slot=0 Prio=2 PageTable=0x0000000044869000
-[C0] [INFO] process_create: PID 1 context allocated at 0x000000004488acd0 (kstack=4488b000)
-[C0] [INFO] ELF: Mapping Segment at 0x80000000 (FileSz: 0x2d10, MemSz: 0x2d10)
-[C0] [INFO] ELF: Mapping Segment at 0x80012d10 (FileSz: 0x8, MemSz: 0x18)
-[C0] [INFO] Scheduler: Initialized PID 1 (/init)
-[C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C0] [INFO] process_create: 'idle' PID=2 slot=1 Prio=31 PageTable=0x0000000044994000
-[C0] [INFO] process_create: PID 2 context allocated at 0x00000000449b5cd0 (kstack=449b6000)
-[C0] [INFO] Waking secondary CPUs...
-[C0] [INFO] AArch64: Starting SMP initialization for 8 potential cores
-[C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C1] [INFO] CPU: Vector Table set to 0x40080800
-[C0] [INFO] process_create: 'idle' PID=3 slot=2 Prio=31 PageTable=0x00000000449b7000
-[C1] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x21034f2, Ctl: 0x1
-[C1] [INFO] Secondary CPU 1 online and ready
-[C0] [INFO] process_create: PID 3 context allocated at 0x00000000449d8cd0 (kstack=449d9000)
-[C0] [INFO] AArch64: CPU 1 online
-[C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C2] [INFO] CPU: Vector Table set to 0x40080800
-[C0] [INFO] process_create: 'idle' PID=4 slot=3 Prio=31 PageTable=0x00000000449da000
-[C2] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x2117969, Ctl: 0x1
-[C2] [INFO] Secondary CPU 2 online and ready
-[C0] [INFO] process_create: PID 4 context allocated at 0x00000000449fbcd0 (kstack=449fc000)
-[C0] [INFO] AArch64: CPU 2 online
-[C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C3] [INFO] CPU: Vector Table set to 0x40080800
-[C0] [INFO] process_create: 'idle' PID=5 slot=4 Prio=31 PageTable=0x00000000449fd000
-[C3] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x2130662, Ctl: 0x1
-[C3] [INFO] Secondary CPU 3 online and ready
-[C0] [INFO] process_create: PID 5 context allocated at 0x0000000044a1ecd0 (kstack=44a1f000)
-[C0] [INFO] AArch64: CPU 3 online
-[C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C4] [INFO] CPU: Vector Table set to 0x40080800
-[C0] [INFO] process_create: 'idle' PID=6 slot=5 Prio=31 PageTable=0x0000000044a20000
-[C4] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x2147f94, Ctl: 0x1
-[C4] [INFO] Secondary CPU 4 online and ready
-[C0] [INFO] process_create: PID 6 context allocated at 0x0000000044a41cd0 (kstack=44a42000)
-[C0] [INFO] AArch64: CPU 4 online
-[C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C5] [INFO] CPU: Vector Table set to 0x40080800
-[C0] [INFO] process_create: 'idle' PID=7 slot=6 Prio=31 PageTable=0x0000000044a43000
-[C5] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x2160440, Ctl: 0x1
-[C5] [INFO] Secondary CPU 5 online and ready
-[C0] [INFO] process_create: PID 7 context allocated at 0x0000000044a64cd0 (kstack=44a65000)
-[C0] [INFO] AArch64: CPU 5 online
-[C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C6] [INFO] CPU: Vector Table set to 0x40080800
-[C0] [INFO] process_create: 'idle' PID=8 slot=7 Prio=31 PageTable=0x0000000044a66000
-[C6] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x2178fc2, Ctl: 0x1
-[C6] [INFO] Secondary CPU 6 online and ready
-[C0] [INFO] process_create: PID 8 context allocated at 0x0000000044a87cd0 (kstack=44a88000)
-[C0] [INFO] AArch64: CPU 6 online
-[C0] [INFO] Process: Creating 'idle' (Prio=31)
-[C7] [INFO] CPU: Vector Table set to 0x40080800
-[C0] [INFO] process_create: 'idle' PID=9 slot=8 Prio=31 PageTable=0x0000000044a89000
-[C7] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x2191a0c, Ctl: 0x1
-[C7] [INFO] Secondary CPU 7 online and ready
-[C0] [INFO] process_create: PID 9 context allocated at 0x0000000044aaacd0 (kstack=44aab000)
-[C0] [INFO] AArch64: CPU 7 online
-[C0] [INFO] Enabling interrupts...
-[Init] System Initialization Starting...
-[Init] Spawning Notification Server...
-[C0] [INFO] Process: Creating '/bin/notify_srv' (Prio=2)
-[C0] [INFO] process_create: '/bin/notify_srv' PID=10 slot=9 Prio=2 PageTable=0x0000000044aac000
-[C0] [INFO] process_create: PID 10 context allocated at 0x0000000044acdcd0 (kstack=44ace000)
-[C0] [INFO] ELF: Mapping Segment at 0x80000000 (FileSz: 0x2c08, MemSz: 0x2c08)
-[C0] [INFO] ELF: Mapping Segment at 0x80012c08 (FileSz: 0x8, MemSz: 0x18)
-[Init] Notification Server started (PID 10)
-[C0] [INFO] Compositor: Created window 'Notifiche' (250x60) at (460,10)
-[Init] Spawning Shell...
-[C4] [INFO] Process: Creating '/bin/shell' (Prio=2)
-[C4] [INFO] process_create: '/bin/shell' PID=11 slot=10 Prio=2 PageTable=0x0000000044be6000
-[C4] [INFO] process_create: PID 11 context allocated at 0x0000000044c07cd0 (kstack=44c08000)
-[C4] [INFO] ELF: Mapping Segment at 0x80000000 (FileSz: 0x3c88, MemSz: 0x3c88)
-[C4] [INFO] ELF: Mapping Segment at 0x80013c88 (FileSz: 0x10, MemSz: 0xa0)
-[Init] Shell started (PID 11)
-Shell: Alive
-[Notify] Server started (PID 10)
-[Init] Entering supervisor loop
-[C1] [INFO] Compositor: Created window 'Shell PID 11' (640x480) at (140,140)
-
-[Shell] TTY Window 0x0000000000000065 active (PID 11).
-[32mshell[0m> shell> [C0] [INFO] Keyboard: Char='d' -> PID 11
-d[C0] [INFO] Keyboard: Char='o' -> PID 11
-o[C0] [INFO] Keyboard: Char='o' -> PID 11
-o[C0] [INFO] Keyboard: Char='m' -> PID 11
-m[C0] [INFO] Keyboard: Char='
-' -> PID 11
-
-[C3] [INFO] Process: Creating '/bin/doom' (Prio=2)
-[C3] [INFO] process_create: '/bin/doom' PID=12 slot=11 Prio=2 PageTable=0x0000000044e42000
-[C3] [INFO] process_create: PID 12 context allocated at 0x0000000044e63cd0 (kstack=44e64000)
-[C3] [INFO] ELF: Mapping Segment at 0x80000000 (FileSz: 0x4eaa0, MemSz: 0x4eaa0)
-[C3] [INFO] ELF: Mapping Segment at 0x8005eaa0 (FileSz: 0x13628, MemSz: 0x554a8)
-Started /bin/doom (PID 12)
-[32mshell[0m> Doom starting (argc=0)...
-DG_Init: Creating window...
-[C0] [INFO] Compositor: Created window 'DoomGeneric OS1' (640x400) at (50,50)
-DG_Init: Window created, id=102
-                           Doom Generic 0.1
-Z_Init: Init zone memory allocation daemon. 
-zone memory: 0x00000000801ae068, 600000 allocated for zone
-Using . for configuration and saves
-V_Init: allocate screens.
-M_LoadDefaults: Load system defaults.
-saving config in .default.cfg
--iwad not specified, trying a few iwad names
-Trying IWAD file:doom2.wad
-W_Init: Init WADfiles.
- adding doom2.wad
-Using ./.savegame/ for savegames
-===========================================================================
-                         DOOM 2: Hell on Earth
-===========================================================================
- Doom Generic is free software, covered by the GNU General Public
- License.  There is NO warranty; not even for MERCHANTABILITY or FITNESS
- FOR A PARTICULAR PURPOSE. You are welcome to change and distribute
- copies under certain conditions. See the source===========================================================================
-I_Init: Setting up machine state.
-M_Init: Init miscellaneous info.
-R_Init: Init DOOM refresh daemon - .............................qemu-system-aarch64: terminating on signal 15 from pid 36056 (<unknown process>)
