@@ -206,10 +206,13 @@ non-SYSTEM (EXT4-02 #57); registry first-writer-wins key ownership
 through capped bounce buffers, window writes keep the 1023 cap ABI-06),
 write-open ACL on /bin+/sys, O_CREAT → -EINVAL; legacy fd≥100 window
 alias kept; `/bin/fdtest` 8/8 on both arches + writetest regression.
+**Batch 4 (`51c3179`)**: anti fork-bomb quotas (SCHED-DOS-01 #122,
+maintainer crash1/crash2 report) — memory-derived `proc_limit`,
+`MAX_PROCS_PER_PARENT`=32 (new `child_count`), `RESERVED_PROC_SLOTS`=8
+for privileged recovery; `/bin/forkbomb` plateaus at 32 and the shell
+kills it. Per-window/per-IPC-queue quotas still open under #122.
 **Remaining**: formal IPC API (sender auth; IPC-01 #85 lost-wakeup),
-sandboxing (USR-SEC-03 #79 — epic-level outcome), spawn quotas /
-dynamic process limit (SCHED-DOS-01 #122, maintainer fork-bomb report
-crash1/crash2: pool exhaustion blocks even kill).
+sandboxing (USR-SEC-03 #79 — epic-level outcome).
 
 ### B4 — Epic #94: amd64 parity (ACPI-MADT CPU count ARCH-01, real
 PCI/ACPI init ARCH-02, FPU/XMM save on context switch CPU-AMD64-01,
