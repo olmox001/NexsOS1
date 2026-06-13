@@ -1,14 +1,16 @@
-# B3 closing plan — kernel sandboxing primitive (USR-SEC-03 #79)
+# B3 closing plan — privilege levels, capabilities & legacy purge
 
 > **Purpose**: self-contained handoff to finish Phase B microphase **B3**
-> (epic #93). Batches 1–5 have landed; the only open member of #93 is
-> **USR-SEC-03 #79 (no sandboxing)**. This document specifies the last two
-> batches — a *kernel-level* capability primitive — and draws the line
-> between what B3 delivers and what belongs to the B5 isolation epic (#95).
+> (epic #93). Batches 1–5 have landed; this document specifies the final
+> batches: a **4-level privilege model** with fine-grained capabilities
+> (closing USR-SEC-03 #79) **plus the full userland legacy purge** so B3
+> leaves nothing in legacy. It draws the line between what B3 delivers and
+> what belongs to the onion epic #120 / the B5 isolation epic (#95).
 >
-> **Status (2026-06-13)**: PROPOSED, not started. Stop point agreed with
-> maintainer; implementation begins on confirmation of the three open
-> decisions in §6.
+> **Status (2026-06-13)**: design CONFIRMED by maintainer (the three §6
+> decisions are answered below). Scope = sandboxing + legacy purge.
+> Maintainer's process-area WIP (forkbomb/top/busybox) is done; work may
+> proceed to completion without coordination stalls.
 
 ---
 
@@ -29,205 +31,211 @@ Epic #93 ("Coherent ABI & capability-based access control") member status:
 | SCHED-DOS-01 #122 | anti fork-bomb quotas | ◑ batch 4 (`51c3179`) — per-window/IPC quotas open |
 | SCHED-DOS-02 #122 | orphan reparenting + descendant kill | ✅ batch 5 (`5f5ae7e`) |
 | IPC-01 #85 | blocking-recv lost wakeup + arg clobber | ✅ batch 5 (`225e294`) |
-| **USR-SEC-03 #79** | **no sandboxing at any layer** | **❌ this plan** |
+| **USR-SEC-03 #79** | **no sandboxing at any layer** | **❌ batch 6 (this plan)** |
+| **USR-TTY-01 #123** | **stdout → UART, no shell inheritance; legacy ABI** | **❌ batch 7 (this plan)** |
 | ELF-01 | crafted ELF maps into kernel page tables | tracked separately (mm/elf) |
 
-So B3's last deliverable is the sandboxing primitive. Everything else in
-#93 is done.
+## 2. Scope (CONFIRMED) — B3 = sandbox + legacy purge
 
-## 2. Scope boundary — what B3 delivers vs. what B5 owns
+Maintainer decision: **B3 delivers the sandboxing primitive AND purges all
+userland legacy** so nothing legacy is left after B3. The onion/POSIX work
+(#120) and Plan-9 namespaces / seL4 tokens (B5 #95) remain separate.
 
-The B5 epic (#95) is literally titled *"Service isolation (seL4) & Plan 9
-namespace"*. To avoid building the same thing twice, B3 delivers the
-**kernel primitive** (a capability mask enforced at the syscall boundary,
-monotonic across the process tree). B5 builds the **policy and topology**
-on top of it.
+**In scope (batches 6 + 7):**
+- **Batch 6 — privilege model:** a 4-level hierarchy (§3.1) with per-level
+  capability presets and ceilings, replacing the flat 3-bit `permissions`;
+  monotonic spawn (§3.3); enforcement at the already-gated syscall surfaces
+  (§3.2); `spawn_level`/`spawn_caps` syscall; `/bin/sandboxtest`.
+- **Batch 7 — legacy purge:** remove the `fd ≥ 100` window-id write alias;
+  remove the 1023-byte window-write truncation (ABI-06) via bounce buffer;
+  delete the stale unbuilt `user/sys/lib/syscall.S`; **stdout inheritance**
+  so a child spawned by the shell prints into the shell's terminal, not its
+  own window / UART-only (USR-TTY-01 #123 problem 1).
 
-**In scope (B3 batch 6+7):**
-- A fine-grained capability mask on `struct process`, replacing the flat
-  3-bit `permissions` with named capabilities (the existing SYSTEM/ROOT/USER
-  profiles become composed aliases — zero behavioural change for current
-  callers).
-- Enforcement at the **already-gated** syscall surfaces (spawn, FS write,
-  IPC send, window/focus, registry write).
-- **Monotonicity**: a child's capabilities are `requested & parent's` — you
-  can only *drop* capabilities down the tree, never gain them. No escalation
-  is possible by construction. SYSTEM bypasses, as today.
-- A `spawn_caps(path, caps)` syscall for restricted spawn; plain `spawn`
-  stays a full-USER spawn (no breaking change).
-- `/bin/sandboxtest` proving each gate denies (-EPERM) and the monotonic cut.
-
-**Out of scope (deferred to B5 #95, noted on #79):**
-- Plan 9 per-process namespaces / mount views.
-- Transferable seL4-style capability tokens (these need an object table;
-  the bitmask is the precursor).
-- Per-syscall seccomp-style filters.
-- Per-window (#68/#69) and per-IPC-queue (#84/#85) quotas — the remaining
-  half of #122; natural to do alongside the B5 compositor/IPC decoupling.
-- ELF-01 (ELF mapping into kernel page tables) — an mm/loader fix, not a
-  capability question.
+**Out of scope (deferred):**
+- Modern terminal protocol (xterm/VT, scrollback, truecolor) — USR-TTY-01
+  #123 *problem 2*, explicitly post-B3 (with #120 / B5).
+- Plan 9 per-process namespaces / mount views; transferable seL4 tokens — B5
+  #95 (the bitmask + level model here is the precursor).
+- Per-syscall seccomp filters; per-window (#68/#69) and per-IPC-queue
+  (#84/#85) quotas (the #122 residue) — B5.
+- Full POSIX libc on services (the "onion") — epic #120.
+- ELF-01 — an mm/loader fix, not a capability question.
 
 ## 3. Design
 
-### 3.1 Capability mask
+### 3.1 Privilege levels (the resolver foundation)
 
-Today (`kernel/include/kernel/sched.h:123-125`):
-
-```c
-#define PROC_PERM_SYSTEM (1 << 0) /* Cannot be killed, has kernel access */
-#define PROC_PERM_ROOT   (1 << 1) /* Can spawn and kill other processes */
-#define PROC_PERM_USER   (1 << 2) /* Standard user app permissions */
-```
-
-`struct process.permissions` is read in 5 places in the dispatcher and in
-`process_kill_allowed`. Proposal: keep the field, widen its meaning to a
-32-bit capability set, and define the three legacy names as composed
-aliases so every existing test (`x & PROC_PERM_SYSTEM`, etc.) keeps working.
+A process has exactly one **privilege level**. This is the root of the
+capability tree and the resolver for the future multi-user model.
 
 ```c
-/* Fine-grained capabilities (B3 batch 6, USR-SEC-03 #79). */
-#define CAP_SPAWN     (1u << 3)  /* SYS_SPAWN / spawn_caps */
-#define CAP_FS_WRITE  (1u << 4)  /* SYS_FILE_WRITE + open-for-write */
-#define CAP_IPC_ANY   (1u << 5)  /* SYS_SEND to non-relatives */
-#define CAP_WINDOW    (1u << 6)  /* SYS_CREATE_WINDOW + SET_FOCUS(self) */
-#define CAP_REG_WRITE (1u << 7)  /* SYS_REGISTRY write op */
-
-/* Profiles = composed aliases (existing bit tests unchanged). */
-#define CAP_USER_DEFAULT \
-  (PROC_PERM_USER | CAP_SPAWN | CAP_FS_WRITE | CAP_IPC_ANY | \
-   CAP_WINDOW | CAP_REG_WRITE)
+/* Privilege levels (B3, USR-SEC-03 #79). Lower number = more privilege. */
+#define PLVL_MACHINE 0  /* the machine's own identity — NOT a login user;
+                         * unkillable, bypasses capability checks, root of
+                         * the tree and resolver for future real users */
+#define PLVL_ROOT    1  /* administrator */
+#define PLVL_USER    2  /* standard application */
+#define PLVL_GUEST   3  /* least privilege */
 ```
 
-SYSTEM and ROOT keep their bypass semantics. A plain USER spawn grants
-`CAP_USER_DEFAULT` so today's apps (shell, writetest, fdtest, doom, …) are
-unaffected.
+`machine` is deliberately not loginable: it is the kernel/system identity
+(today's `init`, `notify_srv`, the kernel-internal `current_process == NULL`
+path). When real users land, login sessions slot in at `root`/`user`/`guest`
+and resolve their machine-level services through `machine`.
 
-### 3.2 Enforcement points
+### 3.2 Capabilities and per-level presets/ceilings
+
+Five fine-grained capabilities, one per already-gated syscall surface:
+
+```c
+#define CAP_SPAWN     (1u << 0)  /* SYS_SPAWN / spawn_level / spawn_caps   */
+#define CAP_FS_WRITE  (1u << 1)  /* SYS_FILE_WRITE + open-for-write        */
+#define CAP_IPC_ANY   (1u << 2)  /* SYS_SEND to non-relatives              */
+#define CAP_WINDOW    (1u << 3)  /* SYS_CREATE_WINDOW + SET_FOCUS(self)    */
+#define CAP_REG_WRITE (1u << 4)  /* SYS_REGISTRY write op                  */
+#define CAP_ALL       (CAP_SPAWN|CAP_FS_WRITE|CAP_IPC_ANY|CAP_WINDOW|CAP_REG_WRITE)
+```
+
+Each level has a **ceiling** (max grantable) and a **default preset** (what
+a process gets if the spawner doesn't specify):
+
+| Level | Ceiling | Default preset | Notes |
+|---|---|---|---|
+| `machine` | CAP_ALL (+bypass) | CAP_ALL | unkillable; checks bypassed |
+| `root` | CAP_ALL | CAP_ALL | admin |
+| `user` | CAP_ALL | CAP_ALL | preserves today's behaviour |
+| `guest` | CAP_WINDOW | CAP_WINDOW | can draw; no spawn/fs-write/reg-write/arbitrary-IPC |
+
+`user`'s ceiling stays CAP_ALL so every current app (shell, writetest,
+fdtest, doom, …) is unchanged — `SYS_SPAWN` yields a full `user`. Tightening
+is opt-in via `spawn_level`/`spawn_caps`. Mapping to the flat aliases kept
+for source compatibility: `PROC_PERM_SYSTEM`→`machine`, `PROC_PERM_ROOT`→
+`root`, `PROC_PERM_USER`→`user`.
+
+### 3.2.1 Enforcement points
 
 Each gate is a surface *already* validated in the dispatcher — we only add a
-capability test. Mapping:
+capability test:
 
-| Capability | Gate (file:symbol) | Denied behaviour |
+| Capability | Gate (file:symbol) | Denied |
 |---|---|---|
-| `CAP_SPAWN` | `syscall_dispatch.c` `SYS_SPAWN` / `spawn_caps`, before the quota gates | -EPERM |
-| `CAP_FS_WRITE` | `SYS_FILE_WRITE`; `sys_write` FD_FILE path; `SYS_OPEN` write mode | -EPERM (the /bin+/sys ACL still applies *on top* for holders) |
-| `CAP_IPC_ANY` | `SYS_SEND` (`sys_ipc_send`) | restrict to parent + descendants; else -EPERM |
+| `CAP_SPAWN` | `SYS_SPAWN`/`spawn_*`, before quota gates | -EPERM |
+| `CAP_FS_WRITE` | `SYS_FILE_WRITE`; `sys_write` FD_FILE; `SYS_OPEN` write mode | -EPERM (the /bin+/sys ACL still applies on top) |
+| `CAP_IPC_ANY` | `SYS_SEND` (`sys_ipc_send`) | restrict to parent + descendants (batch-5 ancestry walk); else -EPERM |
 | `CAP_WINDOW` | `SYS_CREATE_WINDOW`, `SYS_SET_FOCUS` | -EPERM |
-| `CAP_REG_WRITE` | `SYS_REGISTRY` op==write (`registry_set` owner path) | -EPERM (reads stay open) |
+| `CAP_REG_WRITE` | `SYS_REGISTRY` write op | -EPERM (reads open) |
 
-**Kill needs no capability**: the descendant model from batch 5
-(`process_kill_allowed` ancestry walk) is already the capability-correct
-policy.
-
-`CAP_IPC_ANY` is the one new *relationship* check: without it, a process may
-only `send()` to its parent or a descendant (reuse the ancestry walk added
-in batch 5). This is what makes a sandboxed worker unable to talk to
-arbitrary system services.
+Kill needs no capability: the batch-5 descendant model is already the
+capability-correct policy.
 
 ### 3.3 Monotonicity (the single security invariant)
 
-In `process_create()` (`kernel/sched/process.c:531`), when a non-SYSTEM
-creator requests a capability set for a child:
+In `process_create()`, for a non-`machine` spawner requesting `(level, caps)`
+for a child:
 
 ```c
-child->permissions = requested_caps & creator->permissions;
+child->level = max(req_level, creator->level);          /* never more privileged */
+child->caps  = req_caps & level_ceiling[child->level] & creator->caps;
 ```
 
-A child can never hold a capability its creator lacks. The whole tree is
-therefore bounded by the root grant; there is no path to escalation. SYSTEM
-creators (and the kernel-internal `current_process == NULL` path) bypass the
-mask.
+Three clamps, all in one place: a child is **never more privileged** than its
+creator (level can only move toward `guest`), **never exceeds its level's
+ceiling**, and **never holds a capability the creator lacks**. Escalation is
+impossible by construction. `machine` creators (and `current_process == NULL`)
+bypass.
 
-### 3.4 New syscall: `spawn_caps`
+### 3.4 New syscall: restricted spawn
 
-`SYS_SPAWN` stays **byte-for-byte compatible** (one argument, grants
-`CAP_USER_DEFAULT`). Restricted spawn gets a new number in the NEXS-private
-range (≥234, next to `TRY_RECV`=233 / `SET_FOCUS`=232):
+`SYS_SPAWN` stays byte-for-byte compatible (one argument; yields a full
+`user`). Restricted spawn gets a new NEXS-private number (≥234, next to
+`TRY_RECV`=233 / `SET_FOCUS`=232):
 
 ```c
 #define SYS_SPAWN_CAPS 234
-long spawn_caps(const char *path, unsigned long caps);  /* userland */
+/* userland */
+long spawn_level(const char *path, int level);              /* preset for level */
+long spawn_caps (const char *path, int level, unsigned long caps); /* explicit */
 ```
 
-**Why a new syscall and not a second argument on `SYS_SPAWN`:** existing
-callers invoke `spawn(path)` with whatever garbage sits in arg1; reusing it
-as a capability mask would silently sandbox every legacy caller. A distinct
-number is unambiguous and keeps the diff additive (mirrors how `open` was
-added in batch 3).
+A distinct number (not a second arg on `SYS_SPAWN`) avoids silently
+sandboxing legacy callers that pass garbage in arg1 — mirrors how `open` was
+added in batch 3.
 
 ## 4. Batches
 
-### Batch 6 — kernel primitive (~300–400 LOC)
+### Batch 6 — privilege levels + capability primitive (kernel)
 
-1. `sched.h`: capability defines + `CAP_USER_DEFAULT` alias; doc comment.
-2. `process.c` `process_create`: monotonic `requested & creator` cut;
-   `process_init` unchanged.
-3. `syscall_dispatch.c`: the 5 capability tests at the table above;
-   `SYS_SPAWN` grants `CAP_USER_DEFAULT`; new `SYS_SPAWN_CAPS` case applying
-   the requested mask through the monotonic cut.
-4. `sys_ipc_send`: relative-only send when `!CAP_IPC_ANY` (ancestry walk).
-5. `include/api/syscall_nums.h`: `SYS_SPAWN_CAPS 234`.
-6. userland: `_sys_spawn_caps` stub in **both** `user/arch/aarch64/syscall.S`
-   and `user/arch/amd64/syscall.S` (and the stale `user/sys/lib/syscall.S`
-   for consistency); `spawn_caps` wrapper + `CAP_*` defines exposed in
-   `include/api/os1.h`.
-7. `user/bin/sandboxtest.c` + Makefile (BIN_ELFS + link rule, mirror
-   `fdtest.elf`): spawn a child with `caps = CAP_WINDOW` only and assert
-   - `spawn()` of a grandchild → -EPERM (no CAP_SPAWN),
-   - `file write` → -EPERM (no CAP_FS_WRITE),
-   - `send()` to a non-relative service PID → -EPERM (no CAP_IPC_ANY),
-   - a *permitted* op still works,
-   - a child requesting MORE than the parent holds gets the parent's subset
-     (monotonic cut visible).
+1. `sched.h`: `PLVL_*`, `CAP_*`, `level_ceiling[]`/preset table; add
+   `uint8_t level; uint32_t caps;` to `struct process` (keep `permissions`
+   as a compat alias of `caps`, or migrate the 5 readers). Flat
+   `PROC_PERM_*` become aliases.
+2. `process.c` `process_create`: the three-clamp monotonic cut (§3.3);
+   privileged checks switch from `permissions & (SYSTEM|ROOT)` to
+   `level <= PLVL_ROOT`; unkillable check → `level == PLVL_MACHINE`.
+3. `syscall_dispatch.c`: the 5 capability tests (§3.2.1); `SYS_SPAWN` →
+   full `user`; new `SYS_SPAWN_CAPS` applying `(level, caps)` through the cut.
+4. `sys_ipc_send`: relative-only send when `!(caps & CAP_IPC_ANY)` (reuse the
+   batch-5 ancestry walk).
+5. `syscall_nums.h`: `SYS_SPAWN_CAPS 234`.
+6. userland: `_sys_spawn_caps` stub in **both** arch `syscall.S` (+ the stale
+   one if not yet deleted); `spawn_level`/`spawn_caps` wrappers + `PLVL_*`/
+   `CAP_*` in `include/api/os1.h`.
+7. `user/bin/sandboxtest.c` + Makefile: spawn a `guest` child and assert
+   `spawn`/`file write`/`send`-to-non-relative all → -EPERM, a permitted op
+   works, and a child requesting more than the level/parent allows gets the
+   clamped subset.
 
-**Verification (mandatory, as every batch):** build BOTH arches
-(-Werror clean), headless QMP boot BOTH; `sandboxtest` all-pass; regression
-`fdtest` 8/8, `writetest` 3/3, `forkbomb` plateau 32, `ipc_send`/`ipc_recv`
-delivery, KTEST 5/5, zero panics. Closes the kernel half of #79.
+**Verify (mandatory):** build BOTH arches (-Werror), headless QMP boot BOTH;
+`sandboxtest` all-pass; regression `fdtest` 8/8, `writetest` 3/3, `forkbomb`
+plateau 32, `ipc_send`/`ipc_recv` delivery, KTEST 5/5, zero panics.
 
-### Batch 7 — integration + epic closure (small)
+### Batch 7 — userland legacy purge
 
-1. `init` assigns reduced profiles to system services it spawns
-   (e.g. `notify_srv` without `CAP_SPAWN`/`CAP_FS_WRITE`) — proves the
-   primitive in the real boot path. Gate behind a check that the services
-   still function (notify_srv only needs IPC recv + window).
-2. Docs: MANUAL §6 (process model) + §7 (syscall table) gain the capability
-   model; PHASE-B-PLAN B3 batch 6/7 entries; PROJECT_CHARTER capability row;
-   REVIEW §8 commit rows.
-3. **Close epic #93** with the batch 1–7 summary.
-4. Comment on #79: kernel primitive done; the namespace/isolation half is
-   re-slotted under B5 epic #95 (with the per-window/IPC quota residue of
-   #122).
+1. **Remove `fd ≥ 100` window-id alias** in `sys_write`; any remaining caller
+   migrates to the fd table / `printf_win`.
+2. **Remove the 1023-byte truncation** on `FD_WIN` writes — use a kmalloc
+   bounce buffer capped at `SYSCALL_MAX_IO_BYTES` like the FD_FILE path
+   (retires ABI-06).
+3. **Delete `user/sys/lib/syscall.S`** (stale unbuilt aarch64 duplicate).
+4. **stdout inheritance (USR-TTY-01 #123 problem 1):** at spawn, a child
+   inherits the parent's fd 1/2 *target window* (the shell's TTY), so output
+   from a shell-launched program lands in the shell terminal instead of the
+   child's own window / UART-only. UART mirror kept as the serial log.
+   `create_window` still lets a program open its own surface and repoint its
+   stdout. Verify: a CLI program run from the shell prints in the shell
+   window on both arches; windowed apps unaffected.
+5. Docs: MANUAL §6/§7, PHASE-B-PLAN B3 batch 6/7, CHARTER, REVIEW §8; close
+   epic #93; comment #79 (kernel primitive done) and #123 (problem 1 done,
+   problem 2 = protocol, post-B3).
 
 ## 5. Risks & notes
 
-- **ABI-07** (`SYS_SPAWN` runs `process_create` + `process_load_elf` with
-  IRQs disabled across blocking disk I/O) is pre-existing; `spawn_caps`
-  shares the path and must **not** make it worse — copy the structure
-  verbatim, don't extend the critical section.
-- The legacy `fd≥100` window-write alias and the window text-sink path are
-  unaffected (no FS write).
-- `registry` reads must stay open (services read `srv.*` keys); only the
-  write op is gated.
-- Repeat-error class to watch (documented across sessions): `*/` or `/*`
-  sequences inside C comments when writing `CAP_*` lists; spawned apps steal
-  keyboard focus, so QMP-typed shell commands after a spawn go to the app —
-  use `counter`/non-focus bins or kill the child first.
+- **ABI-07**: `SYS_SPAWN` runs `process_create`+`process_load_elf` with IRQs
+  disabled across blocking disk I/O. `spawn_caps` shares the path — copy the
+  structure verbatim, don't widen the critical section.
+- stdout inheritance interacts with focus/compositor: the child writes into
+  the shell's window while the shell also renders its prompt — interleaving
+  is expected (that's how a real TTY foreground process behaves). Keep it
+  simple; full job control is out of scope.
+- `registry` reads must stay open; only the write op is gated.
+- Repeat-error class: `*/` or `/*` inside C comments when writing `CAP_*`
+  lists; spawned apps steal keyboard focus, so QMP-typed shell commands after
+  a spawn go to the app — use non-focus bins or kill the child first.
 
-## 6. Open decisions (need maintainer confirmation before coding)
+## 6. Decisions — RESOLVED (2026-06-13, maintainer)
 
-1. **Granularity** — the 5 capabilities above *(recommended)*, or finer
-   (per-path FS, per-service IPC)? Finer needs an object/namespace table →
-   that is B5, not B3.
-2. **Shell default** — spawned apps stay full-USER *(recommended: opt-in
-   sandbox via `spawn_caps`, zero breakage)*, or sandbox-by-default (safer
-   but immediately breaks writetest/fdtest/doom and any writer)?
-3. **Ordering** — start batch 6 now, or land the visible graphics bugfix
-   first (#118: windows don't repaint without mouse / dead windows linger)
-   and do batch 6 after?
+1. **B3 scope** → **sandbox + legacy purge** (this doc). #120 onion stays
+   separate.
+2. **Privilege model** → **4 levels** `machine`/`root`/`user`/`guest` with
+   per-level capability presets, changeable by a higher level up to that
+   level's ceiling. `machine` is not a login user — it is the machine's
+   identity and the resolver for future real users.
+3. **Ordering** → start now; maintainer's process-area WIP is finished, no
+   coordination stall; carry through to completion.
 
 ---
 
-*Linked: `docs/PHASE-B-PLAN.md` (B3 batches 1–5), `docs/review/REVIEW.md` §8
-(commit table), `docs/ASTRA.md` (implementation method). Issue #79 (this
-work), epic #93 (B3), epic #95 (B5 isolation).*
+*Linked: `docs/PHASE-B-PLAN.md` (B3 batches 1–5), `docs/review/REVIEW.md` §8,
+`docs/ASTRA.md`. Issues: #79 (sandbox), #123 (TTY/printing), epic #93 (B3),
+#120 (onion userland), epic #95 (B5 isolation).*
