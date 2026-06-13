@@ -211,8 +211,18 @@ maintainer crash1/crash2 report) — memory-derived `proc_limit`,
 `MAX_PROCS_PER_PARENT`=32 (new `child_count`), `RESERVED_PROC_SLOTS`=8
 for privileged recovery; `/bin/forkbomb` plateaus at 32 and the shell
 kills it. Per-window/per-IPC-queue quotas still open under #122.
-**Remaining**: formal IPC API (sender auth; IPC-01 #85 lost-wakeup),
-sandboxing (USR-SEC-03 #79 — epic-level outcome).
+**Batch 5 (`5f5ae7e` + `225e294`)**: SCHED-DOS-02 follow-up — a dead
+bomber's children were unkillable orphans evading the quota; now
+`__reparent_children()` re-homes them to the nearest live ancestor
+(charging its `child_count`) and the kill capability covers all
+DESCENDANTS.  IPC-01 #85 closed: blocking recv had never worked — the
+reviewed lost-wakeup (fixed re-checking the queue under `msg_lock`)
+plus an aarch64-specific arg clobber (return written into x0 = arg0
+after the armed syscall retry → recv re-ran with src_pid=0 and slept
+unwakeable; `IPC_RECV_RETRY` sentinel keeps the frame untouched).
+Sender auth was already in place (`msg.from` kernel-stamped).
+**Remaining**: sandboxing (USR-SEC-03 #79 — epic-level outcome, needs
+maintainer direction); SCHED-05 AB-BA lock chain stays slotted in B6.
 
 ### B4 — Epic #94: amd64 parity (ACPI-MADT CPU count ARCH-01, real
 PCI/ACPI init ARCH-02, FPU/XMM save on context switch CPU-AMD64-01,
@@ -230,8 +240,9 @@ GFX-DYN-01 #121 (dynamic resolution / resize / font alpha / stb images).
 ### B6 — Epic #96: SMP/races sweep + leftovers: async block I/O
 (DRV-VIRTIO-08 — busy-wait now runs with IRQs masked under the blk lock;
 correct but throughput-hostile), blocking `wait()` + exit status
-(needs SCHED-06 parent/child), IPC lost-wakeup IPC-01, kernel_ipc_send
+(needs SCHED-06 parent/child), kernel_ipc_send
 AB-BA chain SCHED-05, legacy virtio-pci transport (addendum 11 §2.5).
+(IPC-01 lost-wakeup: già chiuso in B3 batch 5, `225e294`.)
 
 ### Maintainer-reported issues (2026-06-12) — slotting
 
