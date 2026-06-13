@@ -44,6 +44,16 @@ static void ps2_write_data(uint8_t data) {
   outb(0x60, data);
 }
 
+/* Send a byte to the SECOND port (mouse/AUX): the 8042 routes the next 0x60
+ * write to the mouse only after the 0xD4 controller command.  Without it every
+ * "mouse" byte goes to the keyboard, so the mouse is never enabled.  Returns
+ * the device's reply (ACK 0xFA on success). */
+static uint8_t ps2_mouse_cmd(uint8_t cmd) {
+  ps2_write_cmd(0xD4);
+  ps2_write_data(cmd);
+  return ps2_read_data();
+}
+
 /* ==================== KEYBOARD ==================== */
 static void ps2_keyboard_handler(uint32_t irq, void *data) {
   (void)irq;
@@ -107,21 +117,24 @@ void ps2_init(void) {
   ps2_write_cmd(0x60);
   ps2_write_data(cmd);
 
-  ps2_write_cmd(0xAE);
-  ps2_write_cmd(0xA8);
+  ps2_write_cmd(0xAE); /* enable keyboard port */
+  ps2_write_cmd(0xA8); /* enable mouse (AUX) port */
 
-  ps2_write_data(0xF4);
-  ps2_read_data(); /* ACK */
+  /* Mouse setup — every byte goes through 0xD4 (ps2_mouse_cmd), or it would
+   * be delivered to the keyboard and the mouse would never report. */
+  ps2_mouse_cmd(0xF6); /* set defaults */
+  ps2_mouse_cmd(0xF4); /* enable data reporting */
 
-  /* IntelliMouse wheel */
-  ps2_write_data(0xF3);
-  ps2_write_data(200);
-  ps2_write_data(0xF3);
-  ps2_write_data(100);
-  ps2_write_data(0xF3);
-  ps2_write_data(80);
-  ps2_write_data(0xF2);
-  if (ps2_read_data() == 0x03) {
+  /* IntelliMouse 3-button + wheel "magic knock": sample rates 200/100/80,
+   * then read the device id; 0x03 means the wheel is active. */
+  ps2_mouse_cmd(0xF3);
+  ps2_mouse_cmd(200);
+  ps2_mouse_cmd(0xF3);
+  ps2_mouse_cmd(100);
+  ps2_mouse_cmd(0xF3);
+  ps2_mouse_cmd(80);
+  ps2_mouse_cmd(0xF2);          /* get device id: returns ACK ... */
+  if (ps2_read_data() == 0x03) { /* ... then the id byte */
     mouse_has_wheel = 1;
     pr_info("PS/2: Mouse with scroll wheel detected\n");
   }
