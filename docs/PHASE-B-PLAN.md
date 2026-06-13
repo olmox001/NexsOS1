@@ -234,15 +234,17 @@ write and non-relative IPC (`process_ipc_allowed`).  New `SYS_SPAWN_CAPS`=234
 + `spawn_caps`/`spawn_level`; plain `spawn` still yields a full user (no
 break).  `/bin/sandboxtest`+`sandboxchild` prove the guest denials and that
 the guest ceiling clamped a CAP_ALL request to CAP_WINDOW.
-**Batch 7 (`02f7e3b`)**: userland legacy purge + stdout inheritance
-(USR-TTY-01 #123 problem 1) — removed the `fd>=100` write overload
-(→ `SYS_WINDOW_WRITE`=217 + `window_write()`; `printf_win` and all callers,
-incl. the maintainer's forkbomb/top, migrated), removed the 1023-byte
-window-write truncation (shared `window_text_write` bounce, retires ABI-06 on
-the window path), and made a child inherit its spawner's stdout window so a
-shell-launched program prints in the shell terminal instead of UART-only.
-Deleted the stale `user/sys/lib/syscall.S`.  The modern terminal protocol
-(#123 problem 2) stays post-B3.
+**Batch 7 (`02f7e3b`)**: userland legacy purge (USR-TTY-01 #123) — removed the
+`fd>=100` write overload (→ `SYS_WINDOW_WRITE`=217 + `window_write()`;
+`printf_win` and all callers, incl. the maintainer's forkbomb/top, migrated),
+removed the 1023-byte window-write truncation (shared `window_text_write`
+bounce, retires ABI-06 on the window path), deleted the stale
+`user/sys/lib/syscall.S`.  An initial stdout-inheritance attempt (child writes
+into the spawner's window) was **reverted** in `61675d8`: it conflicted with
+the one-window-per-app model (doom/top/forkbomb must render in their own
+window).  The correct fix is the window-MODE system (integrated / separate-
+terminal / graphics) — designed next, not a default.  Modern terminal
+protocol (#123 problem 2) stays post-B3.
 **Closed**: epic #93 fully done; SCHED-05 AB-BA lock chain stays slotted in
 B6; per-window/per-IPC quotas (#122 residue) stay in B5.
 

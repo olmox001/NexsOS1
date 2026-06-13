@@ -183,7 +183,7 @@ return **negative errno** (`-EPERM`, `-EFAULT`, …; codes in `include/api/posix
 |---|---|---|---|
 | 56/57/62 | OPEN/CLOSE/LSEEK | `open/close/lseek` | per-process fd table (ABI-03); open-for-write needs CAP_FS_WRITE |
 | 63 | READ | `read(fd,buf,n)` | fd 0 = stdin (keyboard IPC); fd≥3 = file at private offset; blocks |
-| 64 | WRITE | `write(fd,buf,n)` | fd 1/2 = stdout (own window, **inherited from the spawner's terminal**); fd≥3 = file; no truncation, also echoes UART |
+| 64 | WRITE | `write(fd,buf,n)` | fd 1/2 = stdout (the caller's **own** window, by PID — a child does not inherit the spawner's); fd≥3 = file; no truncation, also echoes UART |
 | 93 | EXIT | `exit(status)` | |
 | 169 | GET_TIME | `get_time()` | ms (from a stubbed timer on amd64) |
 | 172 | GETPID | `get_pid()` | |
