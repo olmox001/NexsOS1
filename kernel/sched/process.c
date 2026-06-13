@@ -51,9 +51,12 @@
  *             with the fixed user stack at 0xC0000000.
  *   SCHED-08  (W1 PERF) process_create() zeros the PMM page with memset()
  *             even though pmm_alloc_page() already zeroes it.
- *   IPC-01    (W3 BUG) Lost-wakeup race: sender wakes target only if it reads
- *             PROC_SLEEPING; a receiver that has checked the queue but not yet
- *             set SLEEPING can sleep indefinitely with a message waiting.
+ *   IPC-01    RESOLVED — lost-wakeup race: the sender wakes a target only if
+ *             it reads PROC_SLEEPING, so a receiver between its failed queue
+ *             check and setting SLEEPING could sleep forever on a non-empty
+ *             queue.  sys_ipc_recv() now re-checks the queue under msg_lock
+ *             (the lock the sender appends under) and sleeps only if still
+ *             empty.
  */
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
@@ -1400,25 +1403,52 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
     if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) != 0) {
       /* Drop node and return error */
       kfree(node);
-      return -1;
+      return -EFAULT;
     }
     kfree(node);
     return 0;
   }
 
-  /* 2. No message ready, block */
+  /* 2. No message ready: commit to sleep.  The gap between the failed pop
+   * above and setting PROC_SLEEPING was the IPC-01 lost wakeup: a sender
+   * appending in that window saw us still RUNNING and skipped the wake, and
+   * we then slept on a non-empty queue with nobody left to wake us.  Close
+   * it by re-checking the queue under msg_lock — the same lock
+   * kernel_ipc_send() holds while appending and testing our state — and
+   * sleeping only if it is still empty.  Lock order msg_lock ->
+   * cpu->sched_lock matches the sender's msg_lock -> target-CPU sched_lock
+   * (see the locking hierarchy in the file header). */
   uint64_t flags;
-  struct cpu_info *cpu = get_cpu_info();
+  spin_lock_irqsave(&current_process->msg_lock, &flags);
 
-  spin_lock_irqsave(&cpu->sched_lock, &flags);
-  current_process->ipc_target_pid = src_pid;
-  current_process->state = PROC_SLEEPING;
-  spin_unlock_irqrestore(&cpu->sched_lock, flags);
+  int have_msg = 0;
+  struct list_head *pos;
+  list_for_each(pos, &current_process->msg_queue) {
+    struct ipc_node *tmp = list_entry(pos, struct ipc_node, list);
+    if (src_pid == -1 || tmp->msg.from == (int)src_pid) {
+      have_msg = 1;
+      break;
+    }
+  }
 
-  /* Retry the syscall instruction on wake-up */
+  if (!have_msg) {
+    struct cpu_info *cpu = get_cpu_info();
+    spin_lock(&cpu->sched_lock);
+    current_process->ipc_target_pid = src_pid;
+    current_process->state = PROC_SLEEPING;
+    spin_unlock(&cpu->sched_lock);
+  }
+  spin_unlock_irqrestore(&current_process->msg_lock, flags);
+
+  /* Retry the syscall instruction on wake-up.  If a message slipped in
+   * during the window we stayed RUNNING: the dispatcher's schedule() simply
+   * re-runs us and the retried pop succeeds immediately.
+   *
+   * IPC_RECV_RETRY tells the dispatcher the retry is armed and the trap
+   * frame's argument registers must survive untouched (see sched.h). */
   pt_regs_retry_syscall(current_process->context);
 
-  return 0;
+  return IPC_RECV_RETRY;
 }
 
 int sys_ipc_try_recv(int src_pid, void *msg_ptr) {

@@ -392,13 +392,19 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       return schedule(frame);
     break;
   }
-  case SYS_RECV:
-    /* NOTE(IPC-02): unconditionally calls schedule() after sys_ipc_recv(),
-     * even if a message was already available.  sys_ipc_recv() returns 0
-     * whether it received or blocked, so the caller cannot distinguish the
-     * two outcomes. */
-    pt_regs_set_return(frame, sys_ipc_recv((int)arg0, (void *)arg1));
+  case SYS_RECV: {
+    /* IPC-01: when sys_ipc_recv() blocks it arms a syscall retry (PC rewound
+     * to the SVC/SYSCALL).  The return value must NOT be written then — on
+     * aarch64 x0 is both the return register and arg0, so writing it would
+     * clobber src_pid for the re-executed syscall (the receiver re-armed
+     * with src_pid=0 and slept forever on a non-empty queue).
+     * NOTE(IPC-02): still unconditionally schedules — a delivered message
+     * costs an extra yield. */
+    long rc = sys_ipc_recv((int)arg0, (void *)arg1);
+    if (rc != IPC_RECV_RETRY)
+      pt_regs_set_return(frame, rc);
     return schedule(frame);
+  }
   case SYS_TRY_RECV:
     pt_regs_set_return(frame, sys_ipc_try_recv((int)arg0, (void *)arg1));
     break;

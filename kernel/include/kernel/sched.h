@@ -174,6 +174,13 @@ void idle_task_entry(void);
 
 /* Syscalls */
 int sys_ipc_send(int target_pid, void *msg_ptr);
+/* sys_ipc_recv returns IPC_RECV_RETRY when it annotated a syscall retry
+ * (blocked, or a message slipped in during the sleep window).  The
+ * dispatcher must NOT write a return value in that case: on aarch64 x0 is
+ * both the return register and arg0, so writing it clobbers src_pid for
+ * the re-executed SVC (the receiver re-armed with src_pid=0 and slept
+ * forever on a non-empty queue — the visible half of IPC-01). */
+#define IPC_RECV_RETRY 1
 int sys_ipc_recv(int src_pid, void *msg_ptr);
 int sys_ipc_try_recv(int src_pid, void *msg_ptr);
 int kernel_ipc_send(int target_pid, struct ipc_message *msg);

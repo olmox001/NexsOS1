@@ -8,6 +8,24 @@ int main(void) {
   window_draw(win, 0, 0, 300, 100, 0xFF333333);
   flush();
 
+  /* Publish our PID so ipc_send can find us: it reads demo.ipc_recv_pid and
+   * falls back to PID 3 (an idle task) when unset, which made the pair
+   * useless as an end-to-end test. */
+  {
+    char pid_buf[16];
+    int pid = get_pid();
+    int n = 0;
+    char rev[16];
+    do {
+      rev[n++] = '0' + (pid % 10);
+      pid /= 10;
+    } while (pid > 0 && n < 15);
+    for (int j = 0; j < n; j++)
+      pid_buf[j] = rev[n - 1 - j];
+    pid_buf[n] = '\0';
+    registry_write("demo.ipc_recv_pid", pid_buf);
+  }
+
   struct ipc_message msg;
   printf("[IPC Recv] Waiting for any message...\n");
 
