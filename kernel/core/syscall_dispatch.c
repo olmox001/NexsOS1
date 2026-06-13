@@ -38,8 +38,8 @@
  *   cause is unambiguous).
  *
  * Capability checks (ABI-04, B3 batch 2):
- *   SYS_KILL         caller must be SYSTEM/ROOT, the target itself, or the
- *                    target's parent (process_kill_allowed) — else -EPERM.
+ *   SYS_KILL         caller must be SYSTEM/ROOT, the target itself, or an
+ *                    ancestor of it (process_kill_allowed) — else -EPERM.
  *   SYS_SET_FOCUS    self-focus only for user processes — else -EPERM.
  *   SYS_DESTROY_WINDOW  owner or SYSTEM only — else -EPERM.
  *   SYS_FILE_WRITE   the /bin and /sys trees are write-protected for
@@ -366,7 +366,8 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     arch_local_irq_enable();
   } break;
   case SYS_KILL:
-    /* ABI-04: a process may kill itself or its direct children; SYSTEM/ROOT
+    /* ABI-04: a process may kill itself or its descendants (orphans are
+     * re-homed to a live ancestor at reap time, SCHED-DOS-02); SYSTEM/ROOT
      * may kill anything (process_terminate still protects SYSTEM targets). */
     if (!process_kill_allowed(current_process, (int)arg0)) {
       pt_regs_set_return(frame, -EPERM);

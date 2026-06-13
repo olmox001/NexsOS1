@@ -93,6 +93,38 @@ static void __child_count_dec(struct process *dead) {
     parent->child_count--;
 }
 
+/* __reparent_children - re-home a dying process's live children to its
+ * nearest live ancestor (SCHED-DOS-02 #122 follow-up).  Caller must hold
+ * sched_lock, and must have already removed `dead` from process_pool so the
+ * scan cannot find it.
+ *
+ * Without this, children of a dead parent become permanent orphans: nobody
+ * passes the descendant test in process_kill_allowed() (the shell could not
+ * kill a dead fork-bomb's children, wedging their pool slots forever) and
+ * their cost vanishes from every child_count, so a spawn-and-exit loop
+ * evades MAX_PROCS_PER_PARENT.  Adopting them — preferring the dead
+ * process's own parent, falling back to init (PID 1) — keeps them killable
+ * from the ancestor's shell and keeps the quota charged to a live process.
+ * The heir's child_count may transiently exceed MAX_PROCS_PER_PARENT; that
+ * only blocks new spawns until the adoptees die, which is the point. */
+static void __reparent_children(struct process *dead) {
+  struct process *heir = NULL;
+  if (dead->parent_pid > 0)
+    heir = __process_find_by_pid(dead->parent_pid);
+  if (!heir && dead->pid != 1)
+    heir = __process_find_by_pid(1);
+  int heir_pid = heir ? (int)heir->pid : 0;
+
+  for (int i = 0; i < MAX_PROCESSES; i++) {
+    struct process *p = process_pool[i];
+    if (!p || p == dead || p->parent_pid != (int)dead->pid)
+      continue;
+    p->parent_pid = heir_pid;
+    if (heir)
+      heir->child_count++;
+  }
+}
+
 /* Global scheduler lock - still used for process_pool and PID allocation */
 /* sched_lock: global spinlock protecting process_pool[], active_count,
  * next_pid, rr_cpu, and the outer section of kernel_ipc_send().
@@ -420,8 +452,11 @@ struct process *process_find_by_pid(int pid) {
  * mid-decision):
  *   - PROC_PERM_SYSTEM / PROC_PERM_ROOT callers may kill anything
  *     (process_terminate itself still refuses SYSTEM targets);
- *   - any process may kill itself (exit alias) and its DIRECT children
- *     (parent_pid == caller->pid);
+ *   - any process may kill itself (exit alias) and its DESCENDANTS — the
+ *     parent chain is walked, so grandchildren count too.  A dead link in
+ *     the chain cannot hide a descendant: __reparent_children() re-homes
+ *     orphans to the nearest live ancestor at reap time (the shell can
+ *     always clean up after a dead fork-bomb, SCHED-DOS-02);
  *   - everything else is denied.
  * A missing target is "allowed": process_terminate() reports the real
  * -ESRCH-equivalent and keeps the historical return value for it.
@@ -437,7 +472,18 @@ int process_kill_allowed(struct process *caller, int target_pid) {
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
   struct process *target = __process_find_by_pid(target_pid);
-  int allowed = !target || target->parent_pid == (int)caller->pid;
+  int allowed = !target;
+  /* Ancestry walk: a parent always has an older (smaller) PID, so the chain
+   * is acyclic and strictly decreasing; the depth bound is belt-and-braces. */
+  for (int depth = 0; target && depth < MAX_PROCESSES; depth++) {
+    if (target->parent_pid == (int)caller->pid) {
+      allowed = 1;
+      break;
+    }
+    if (target->parent_pid <= 0)
+      break;
+    target = __process_find_by_pid(target->parent_pid);
+  }
   spin_unlock_irqrestore(&sched_lock, flags);
   return allowed;
 }
@@ -837,6 +883,7 @@ int process_terminate(int pid) {
     process_pool[slot] = NULL;
     active_count--;
     __child_count_dec(proc);
+    __reparent_children(proc);
   }
   spin_unlock_irqrestore(&sched_lock, flags);
 
@@ -964,6 +1011,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
         process_pool[_i] = NULL;
         active_count--;
         __child_count_dec(to_free);
+        __reparent_children(to_free);
         break;
       }
     }
