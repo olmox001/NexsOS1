@@ -40,7 +40,7 @@
  *           boundary.  For non-standard larger entry sizes the fallback would
  *           read more bytes than buf[] holds.
  */
-#include <drivers/virtio_blk.h>
+#include <kernel/block.h>
 #include <kernel/gpt.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -124,7 +124,7 @@ static void mbr_init(uint8_t *buf) {
 /*
  * gpt_init - detect and parse the partition table from the block device.
  *
- * Reads LBA 1 (512 bytes) via virtio_blk_read(), attempts to validate the
+ * Reads LBA 1 (512 bytes) via block_read(), attempts to validate the
  * GPT header signature ("EFI PART", 0x5452415020494645) and its CRC32, then
  * reads and validates the partition entries.  Falls back to the MBR parser
  * (mbr_init()) if the GPT signature is absent or the header CRC32 does not
@@ -161,7 +161,7 @@ static void mbr_init(uint8_t *buf) {
  *
  * Side effects:
  *   Writes partitions[] and num_partitions (global state).
- *   Two or more virtio_blk_read() calls; one or more PMM alloc/free cycles.
+ *   Two or more block_read() calls; one or more PMM alloc/free cycles.
  *
  * Returns: void; callers use gpt_get_partition() to query results.
  */
@@ -176,7 +176,7 @@ void gpt_init(void) {
   }
 
   /* 1. Try reading GPT Header (LBA 1) */
-  if (virtio_blk_read(buf, 1, 1) != 0) {
+  if (block_read(buf, 1, 1) != 0) {
     pr_info("%s", "Partition: Failed to read LBA 1\n");
     pmm_free_page(buf);
     return;
@@ -187,7 +187,7 @@ void gpt_init(void) {
   /* 2. Check GPT Signature. If not found, try MBR on LBA 0. */
   if (header->signature != GPT_SIGNATURE) {
     pr_info("%s", "GPT: Invalid signature. Falling back to MBR...\n");
-    if (virtio_blk_read(buf, 0, 1) != 0) {
+    if (block_read(buf, 0, 1) != 0) {
       pr_err("%s", "Partition: Failed to read LBA 0 (MBR)\n");
       pmm_free_page(buf);
       return;
@@ -211,7 +211,7 @@ void gpt_init(void) {
     pr_err("GPT: Header CRC mismatch! (calc: 0x%08x, orig: 0x%08x). Falling back to MBR.\n", calc_crc,
            orig_crc);
 
-           if (virtio_blk_read(buf, 0, 1) != 0) {
+           if (block_read(buf, 0, 1) != 0) {
       pr_err("%s", "Partition: Failed to read LBA 0 (MBR fallback)\n");
       pmm_free_page(buf);
       return;
@@ -257,7 +257,7 @@ void gpt_init(void) {
     }
   }
 
-  if (virtio_blk_read(entries_buf, entries_lba, sectors_to_read) != 0) {
+  if (block_read(entries_buf, entries_lba, sectors_to_read) != 0) {
     pr_info("%s", "GPT: Failed to read partition entries\n");
     if (entries_buf != buf) pmm_free_pages(entries_buf, num_pages);
     pmm_free_page(buf);
@@ -276,7 +276,7 @@ void gpt_init(void) {
     /* GPT-01: the entries array is untrustworthy — do not parse it.  Abort to
      * the MBR parser, mirroring the header-CRC fallback above. */
     if (entries_buf != buf) pmm_free_pages(entries_buf, num_pages);
-    if (virtio_blk_read(buf, 0, 1) != 0) {
+    if (block_read(buf, 0, 1) != 0) {
       pr_err("%s", "Partition: Failed to read LBA 0 (MBR fallback)\n");
       pmm_free_page(buf);
       return;

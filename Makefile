@@ -162,6 +162,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/drivers/console.c \
     $(KERNEL_DIR)/drivers/irq_ctrl.c \
     $(KERNEL_DIR)/drivers/sys_timer.c \
+    $(KERNEL_DIR)/drivers/block/block.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
@@ -479,11 +480,16 @@ release-arch: all
 		set -e; \
 		mkdir -p $(RELEASE_DIR)/boot/grub; \
 		cp $(KERNEL_ELF) $(RELEASE_DIR)/boot/kernel.elf; \
-		cp $(DISK_IMG)   $(RELEASE_DIR)/boot/disk.img; \
-		echo 'set timeout=0'        >  $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo 'set default=0'        >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		cp $(DISK_IMG) $(RELEASE_DIR)/boot/disk.img; \
+		echo 'set timeout=0' > $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo 'set default=0' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo 'menuentry "OS1Test" {' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    insmod part_gpt' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    insmod ext2' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    insmod loopback' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    multiboot2 /boot/kernel.elf' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    loopback loop /boot/disk.img' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    ls (loop,gpt3)/' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    module2 /boot/disk.img diskimg' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    boot' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '}' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
@@ -492,9 +498,14 @@ release-arch: all
 		cp -r $(RELEASE_DIR)/boot/* $(RELEASE_DIR)/iso/boot/; \
 		GRUB_MKRESCUE=""; \
 		for c in i686-elf-grub-mkrescue grub-mkrescue; do \
-			if command -v $$c >/dev/null 2>&1; then GRUB_MKRESCUE=$$c; break; fi; \
+			if command -v $$c >/dev/null 2>&1; then \
+				GRUB_MKRESCUE=$$c; break; \
+			fi; \
 		done; \
-		if [ -z "$$GRUB_MKRESCUE" ]; then echo "Errore: grub-mkrescue non trovato"; exit 1; fi; \
+		if [ -z "$$GRUB_MKRESCUE" ]; then \
+			echo "Errore: grub-mkrescue non trovato"; \
+			exit 1; \
+		fi; \
 		echo "-> Creo ISO con $$GRUB_MKRESCUE..."; \
 		$$GRUB_MKRESCUE -o $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso $(RELEASE_DIR)/iso; \
 		echo "-> Rimuovo MBR hybrid per renderla leggibile da macOS..."; \
@@ -502,7 +513,7 @@ release-arch: all
 		echo "ISO creata: $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso"; \
 	else \
 		cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img; \
-		cp $(DISK_IMG)   $(RELEASE_DIR)/disk.img; \
+		cp $(DISK_IMG) $(RELEASE_DIR)/disk.img; \
 		echo "AArch64 release: kernel.img + disk.img"; \
 	fi
 

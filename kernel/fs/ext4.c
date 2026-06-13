@@ -58,7 +58,7 @@
  *            (EXT4-11 resolved: per-loop interior-block cache, see
  *            struct ext4_icache.)
  */
-#include <drivers/virtio_blk.h>
+#include <kernel/block.h>
 #include <kernel/buffer.h>
 #include <kernel/ext4.h>
 #include <kernel/gpt.h>
@@ -83,11 +83,11 @@ struct ext4_fs {
  * NOTE(EXT4-15): bypasses the buffer cache (kernel/mm/buffer.c).
  */
 static int ext4_bread(uint64_t sector, uint32_t count, void *buf) {
-  return virtio_blk_read(buf, sector, count);
+  return block_read(buf, sector, count);
 }
 
 static int ext4_bwrite(uint64_t sector, uint32_t count, void *buf) {
-  return virtio_blk_write(buf, sector, count);
+  return block_write(buf, sector, count);
 }
 
 /*
@@ -213,7 +213,7 @@ static int get_inode_struct(struct ext4_fs *fs, uint32_t ino,
   uint8_t *k_buf = kmalloc(512);
   if (!k_buf)
     return -1;
-  if (virtio_blk_read(k_buf, sector, 1) != 0) {
+  if (block_read(k_buf, sector, 1) != 0) {
     kfree(k_buf);
     return -1;
   }
@@ -242,14 +242,14 @@ static int ext4_update_inode(struct ext4_fs *fs, uint32_t ino,
 
   uint64_t lock_flags;
   spin_lock_irqsave(&fs->lock, &lock_flags);
-  if (virtio_blk_read(k_buf, sector, 1) != 0) {
+  if (block_read(k_buf, sector, 1) != 0) {
     spin_unlock_irqrestore(&fs->lock, lock_flags);
     kfree(k_buf);
     return -1;
   }
 
   memcpy(k_buf + sector_off, inode, sizeof(struct ext4_inode));
-  int ret = virtio_blk_write(k_buf, sector, 1);
+  int ret = block_write(k_buf, sector, 1);
   spin_unlock_irqrestore(&fs->lock, lock_flags);
   kfree(k_buf);
   return ret;
@@ -481,7 +481,7 @@ static int ext4_read_data(struct ext4_fs *fs, const struct ext4_inode *inode,
       memset(block_buf, 0, 4096);
     } else {
       uint64_t sector = fs->part_start_lba + (phys_block * 8);
-      if (virtio_blk_read(block_buf, sector, 8) != 0) {
+      if (block_read(block_buf, sector, 8) != 0) {
         kfree(block_buf);
         icache_release(&cache);
         return -1;
@@ -603,7 +603,7 @@ static int ext4_mount(struct vfs_mount *mnt, struct partition *p) {
     return -1;
 
   /* Superblock lives at byte offset 1024 = sector 2 of the partition. */
-  if (virtio_blk_read(k_buf, p->start_lba + 2, 2) != 0) {
+  if (block_read(k_buf, p->start_lba + 2, 2) != 0) {
     kfree(k_buf);
     return -1;
   }
@@ -677,7 +677,7 @@ static int ext4_mount(struct vfs_mount *mnt, struct partition *p) {
   }
 
   /* Group descriptor 0: block 1 = byte 4096 = sector 8. */
-  if (virtio_blk_read(k_buf, p->start_lba + 8, 1) != 0) {
+  if (block_read(k_buf, p->start_lba + 8, 1) != 0) {
     pr_err("%s", "Ext4: Failed to read GDT\n");
     kfree(k_buf);
     kfree(fs);

@@ -5,6 +5,7 @@
 #include <drivers/virtio.h>
 #include <drivers/virtio_blk.h>
 #include <kernel/arch.h>
+#include <kernel/block.h>
 #include <kernel/irq.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -107,6 +108,12 @@ void virtio_blk_init(void) {
   virtio_write_reg(dev, VIRTIO_MMIO_STATUS, status);
 
   pr_info("%s", "VirtIO: Block Device Initialized successfully\n");
+
+  /* Register as the active block backend (ASTRA block contract).  A boot
+   * module, if present, overrides this later in main.c. */
+  static const struct block_dev virtio_blk_bdev = {
+      "virtio-blk", virtio_blk_read, virtio_blk_write};
+  block_register(&virtio_blk_bdev);
 }
 
 /*

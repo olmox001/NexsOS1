@@ -71,20 +71,41 @@ Layering (simplicity at the centre, complexity at the edges):
 
 ## 3. Phased plan
 
-**R1 — standard disk.img + ramdisk module boot (fixes the panic).**
-1. `mkdisk`/Makefile: build a **rootfs-only** `disk.img` (drop the redundant
-   bootloader+kernel partitions from the release image; keep GPT+ext4 so the
-   block path is unchanged).  `disk.img` becomes a standard data image.
-2. `arch/amd64/platform`: parse MB2 tag type 3 (MODULE) → store
-   `rootfs_mod_base/size`; reserve the region in the memmap so the PMM does
-   not hand it out.
-3. Core: a **ramdisk block provider** over `[base,size)`, registered when a
-   module is present; GPT/ext4/VFS mount it.  Block-device probe order:
-   virtio-blk first, ramdisk fallback (so `make run` keeps using virtio-blk,
-   the ISO uses the module).
-4. Fix the release: stop `dd`-zeroing the MBR (keep the ISO bootable as CD);
-   `test-release` boots via `-cdrom` (El-Torito), no virtio-blk drive needed.
-   Acceptance: the ISO boots to the shell on both `-cdrom` and (hybrid) HDD.
+**R1 — block contract + ramdisk module boot (fixes the panic).**
+
+Chain analysis (verified in source, no assumptions):
+- `tools/mkdisk.c`: GPT, 3 partitions — BOOT (LBA 34–2081), KERNEL
+  (2082–34849, **redundant** on the module path), DATA/ext4 rootfs at
+  **partition index 2** (34850+).  512-byte sectors.
+- **No block abstraction exists**: `kernel/fs/gpt.c`, `kernel/fs/ext4.c`,
+  `kernel/mm/buffer.c` call `virtio_blk_read/write(buf, sector, count)`
+  **directly** — 20 call sites, `int` return (0=ok).  This is the missing
+  contract.
+- `kernel/arch/amd64/platform/platform.c` walks MB2 tags but handles **only
+  MMAP** (type 6); the **MODULE tag (type 3) is ignored** (`nr_modules`
+  counted, never used).  `multiboot2.h` doesn't even define MODULE.
+- MB2 module tag = `{ u32 type=3, u32 size, u32 mod_start, u32 mod_end,
+  char string[] }`.
+
+Steps:
+1. **Block contract** — new `kernel/drivers/block/block.{c,h}`:
+   `block_read/block_write(buf, sector, count)` dispatch to an active
+   `struct block_backend { int (*read)(...); int (*write)(...); }`.  virtio-blk
+   registers as the default backend.  Replace the 20 direct
+   `virtio_blk_read/write` calls in gpt/ext4/buffer with `block_read/write`.
+   **Checkpoint:** `make run` (virtio-blk) must be byte-identical behaviour on
+   both arches before adding the ramdisk.
+2. **MODULE parse** — `multiboot2.h`: add `MB2_TAG_TYPE_MODULE 3` +
+   `struct mb2_tag_module`.  `platform.c`: capture `(mod_start, mod_end)` and
+   reserve the region (MEM_REGION_RESERVED) so the PMM never hands it out.
+3. **ramdisk backend** — `kernel/drivers/block/ramdisk.c`: read/write over
+   `phys_to_virt(mod_start) + sector*512`.  `main.c`: if a module is present,
+   activate the ramdisk backend (else virtio-blk) BEFORE partition/VFS init;
+   GPT→ext4→VFS mount it unchanged.
+4. **mkdisk/Makefile**: a **rootfs-only** `disk.img` for the release (drop the
+   boot+kernel partitions; keep GPT+ext4 so the block path is identical).
+5. **Release**: stop `dd`-zeroing the MBR; `test-release` boots via `-cdrom`.
+   Acceptance: the ISO boots to the shell headless.
 
 **R2 — tmpfs.** RAM-backed fs provider behind VFS; mount `/tmp` and
 `/sys/log` (the per-process `log <pid>` tee from queue item 2 writes here).
