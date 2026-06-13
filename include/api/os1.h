@@ -14,6 +14,8 @@
  * Error model (ABI-02): syscalls return negative errno values from
  * posix_types.h on failure (-EFAULT, -ENOMEM, ...), >= 0 on success. */
 #include "syscall_nums.h"
+/* Privilege levels (PLVL_*) and capabilities (CAP_*) for spawn_caps (#79). */
+#include "caps.h"
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
@@ -41,6 +43,7 @@ extern long _sys_get_time(void);
 extern int  _sys_get_pid(void);
 extern void _sys_exit(int status);
 extern int  _sys_spawn(const char *path);
+extern long _sys_spawn_caps(const char *path, int level, unsigned long caps);
 extern int  _sys_kill(int pid);
 extern int  _sys_wait(int pid);
 extern void _sys_yield(void);
@@ -73,6 +76,12 @@ long get_time(void);
 int  get_pid(void);
 void exit(int status);
 int  spawn(const char *path);
+/* Sandboxed spawn (USR-SEC-03 #79).  level = PLVL_*; caps = OR of CAP_*.
+ * The kernel clamps both: a child is never more privileged than its parent,
+ * never above the level's ceiling, never more than the parent holds.
+ * spawn_level() uses the level's default capability preset. */
+long spawn_caps(const char *path, int level, unsigned long caps);
+long spawn_level(const char *path, int level);
 int  kill_process(int pid);
 int  wait(int pid);
 void yield(void);

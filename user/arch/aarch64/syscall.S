@@ -30,6 +30,7 @@ _start:
 .global _sys_exit
 .global _sys_get_time
 .global _sys_spawn
+.global _sys_spawn_caps
 .global _sys_kill
 .global _sys_wait
 .global _sys_yield
@@ -101,6 +102,12 @@ _sys_exit:
 /* int _sys_spawn(const char *path) */
 _sys_spawn:
     mov x8, #SYS_SPAWN
+    svc #0
+    ret
+
+/* long _sys_spawn_caps(const char *path, int level, unsigned long caps) */
+_sys_spawn_caps:
+    mov x8, #SYS_SPAWN_CAPS
     svc #0
     ret
 

@@ -243,16 +243,19 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
   }
 
   if (op == REG_OP_WRITE) {
+    /* USR-SEC-03 #79: writing the registry needs CAP_REG_WRITE (reads are
+     * open to everyone). */
+    if (!proc_has_cap(current_process, CAP_REG_WRITE))
+      return -EPERM;
     /* 2. Copy Value from User Space securely (stops at null!) */
     if (vmm_copy_string_from_user(k_val, value, MAX_VAL_LEN) != 0) {
       pr_err("%s", "sys_registry: Invalid value pointer\n");
       return -EFAULT;
     }
     /* Caller identity for the ownership check (LIB-REG-02/USR-SEC-01):
-     * system processes write as owner 0 (full rights, e.g. init seeding
-     * defaults); everyone else writes as their own PID. */
-    int owner = (current_process &&
-                 !(current_process->permissions & PROC_PERM_SYSTEM))
+     * machine-level processes write as owner 0 (full rights, e.g. init
+     * seeding defaults); everyone else writes as their own PID. */
+    int owner = !proc_is_machine(current_process)
                     ? (int)current_process->pid
                     : 0;
     return registry_set(k_key, k_val, owner);

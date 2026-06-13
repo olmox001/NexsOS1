@@ -76,6 +76,12 @@ _sys_spawn:
     syscall
     ret
 
+.global _sys_spawn_caps
+_sys_spawn_caps:
+    movq $SYS_SPAWN_CAPS, %rax
+    syscall
+    ret
+
 .global _sys_kill
 _sys_kill:
     movq $SYS_KILL, %rax

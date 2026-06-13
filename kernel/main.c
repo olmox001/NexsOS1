@@ -223,7 +223,7 @@ static void init_scheduler(void) {
   /* 1. Spawn the First-Stage Init Process (Must be PID 1) */
   pr_info("%s", "Scheduler: Spawning First-Stage Init...\n");
   struct process *init =
-      process_create("init", PROC_PRIO_USER, PROC_PERM_SYSTEM);
+      process_create("init", PROC_PRIO_USER, PLVL_MACHINE);
   if (init && process_load_elf(init, "/sys/bin/init") == 0) {
     pr_info("Scheduler: Initialized PID %d (/sys/bin/init)\n", init->pid);
     enqueue_task(init);

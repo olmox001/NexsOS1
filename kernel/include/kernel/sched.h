@@ -64,11 +64,12 @@ struct process {
   int time_slice;    /* Ticks remaining */
   int quantum_reset; /* Reset value */
 
-  uint32_t permissions;
+  uint8_t level;  /* privilege level (PLVL_*) — see the capability model below */
+  uint32_t caps;  /* capability mask (CAP_*); machine level bypasses checks */
   /* parent_pid: PID of the process that spawned this one (0 = kernel/boot).
    * Set by process_create() from current_process; used by the SYS_KILL
-   * capability check (ABI-04): a process may kill itself, its children,
-   * or anything if it holds PROC_PERM_SYSTEM/ROOT. */
+   * capability check (ABI-04): a process may kill itself or any descendant,
+   * and a privileged (machine/root) process may kill anything. */
   int parent_pid;
   /* child_count: live (not yet reaped) children of this process
    * (SCHED-DOS-01 #122).  Incremented by process_create() on the creator,
@@ -119,10 +120,22 @@ struct process {
 #define PROC_PRIO_USER 2   /* User applications */
 #define PROC_PRIO_IDLE 31  /* Idle task */
 
-/* Process Permissions */
-#define PROC_PERM_SYSTEM (1 << 0) /* Cannot be killed, has kernel access */
-#define PROC_PERM_ROOT (1 << 1)   /* Can spawn and kill other processes */
-#define PROC_PERM_USER (1 << 2)   /* Standard user app permissions */
+/* Capability & privilege-level model (B3, USR-SEC-03 #79).  Levels (PLVL_*)
+ * and capability bits (CAP_*) live in the shared api header so the kernel and
+ * userland cannot drift. */
+#include <caps.h>
+
+/* Capability helpers.  A NULL process is the kernel-internal context and is
+ * treated as fully privileged, matching the historical bypass. */
+static inline int proc_is_machine(const struct process *p) {
+  return !p || p->level == PLVL_MACHINE;
+}
+static inline int proc_is_privileged(const struct process *p) {
+  return !p || p->level <= PLVL_ROOT;
+}
+static inline int proc_has_cap(const struct process *p, uint32_t cap) {
+  return !p || p->level == PLVL_MACHINE || (p->caps & cap) == cap;
+}
 
 #define MAX_PROCESSES 128
 extern struct process *process_pool[MAX_PROCESSES];
@@ -141,16 +154,27 @@ extern struct process *process_pool[MAX_PROCESSES];
 #include <kernel/cpu.h>
 #define current_process (get_cpu_info()->current_task)
 
+/* process_create: spawn at 'level' with that level's default capability
+ * preset, clamped monotonically against the creator (see process.c).
+ * process_create_caps: same, with an explicit requested capability mask
+ * (used by SYS_SPAWN_CAPS) — also clamped to the level ceiling and the
+ * creator's caps. */
 extern struct process *process_create(const char *name, uint8_t priority,
-                                      uint32_t permissions);
+                                      uint8_t level);
+extern struct process *process_create_caps(const char *name, uint8_t priority,
+                                           uint8_t level, uint32_t req_caps);
 struct process *process_find_by_pid(int pid);
 struct process *__process_find_by_pid(int pid);
 /* process_kill_allowed: ABI-04 capability check for SYS_KILL.  Returns
- * non-zero if 'caller' may terminate 'target_pid': itself, a direct child,
- * or anything when it holds PROC_PERM_SYSTEM/PROC_PERM_ROOT.  Kernel-internal
+ * non-zero if 'caller' may terminate 'target_pid': itself, any descendant,
+ * or anything when it is privileged (machine/root).  Kernel-internal
  * terminate paths (compositor close, init supervision) bypass this and call
  * process_terminate() directly. */
 int process_kill_allowed(struct process *caller, int target_pid);
+/* process_ipc_allowed: may 'caller' send IPC to target_pid?  True if the
+ * caller holds CAP_IPC_ANY, or target is the caller's parent or a
+ * descendant.  Acquires sched_lock internally. */
+int process_ipc_allowed(struct process *caller, int target_pid);
 int process_terminate(int pid);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */

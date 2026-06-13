@@ -37,15 +37,22 @@
  *   still return their own negatives (mapped to -EIO/-ENOENT where the
  *   cause is unambiguous).
  *
- * Capability checks (ABI-04, B3 batch 2):
- *   SYS_KILL         caller must be SYSTEM/ROOT, the target itself, or an
+ * Capability checks (ABI-04 batch 2 + USR-SEC-03 #79 batch 6):
+ *   Privilege levels: machine (bypasses all checks, unkillable) > root >
+ *   user > guest.  Fine-grained caps (CAP_*) gate each surface; the cut at
+ *   spawn is monotonic (a child is never more privileged than its creator).
+ *   SYS_SPAWN / SYS_SPAWN_CAPS  need CAP_SPAWN — else -EPERM.
+ *   SYS_KILL         caller must be privileged, the target itself, or an
  *                    ancestor of it (process_kill_allowed) — else -EPERM.
- *   SYS_SET_FOCUS    self-focus only for user processes — else -EPERM.
- *   SYS_DESTROY_WINDOW  owner or SYSTEM only — else -EPERM.
- *   SYS_FILE_WRITE   the /bin and /sys trees are write-protected for
- *                    non-SYSTEM callers (EXT4-02) — else -EACCES.
- *   SYS_REGISTRY     write ownership enforced in registry_set
- *                    (LIB-REG-02/USR-SEC-01) — foreign keys give -EACCES.
+ *   SYS_CREATE_WINDOW / SYS_SET_FOCUS  need CAP_WINDOW — else -EPERM;
+ *                    cross-PID focus still needs machine level.
+ *   SYS_DESTROY_WINDOW  owner or machine only — else -EPERM.
+ *   SYS_OPEN(write) / SYS_FILE_WRITE  need CAP_FS_WRITE; the /bin and /sys
+ *                    trees stay machine-only (EXT4-02) — else -EPERM/-EACCES.
+ *   SYS_SEND         need CAP_IPC_ANY for non-relatives (process_ipc_allowed);
+ *                    parent/descendants always allowed — else -EPERM.
+ *   SYS_REGISTRY     write needs CAP_REG_WRITE; ownership enforced in
+ *                    registry_set (LIB-REG-02/USR-SEC-01) — else -EPERM/-EACCES.
  *   Kernel-internal paths (compositor close button, init supervision,
  *   process teardown) call the underlying functions directly and bypass
  *   these checks by design.
@@ -153,6 +160,33 @@ extern int keyboard_focus_pid;
  */
 struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame);
 
+/* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
+ *
+ * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
+ * across blocking virtio/ext4 disk I/O.  Pre-existing; kept verbatim so the
+ * new capability path does not widen the critical section. */
+static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
+                           int use_caps) {
+  arch_local_irq_disable();
+  struct process *p =
+      use_caps ? process_create_caps(path, PROC_PRIO_USER, level, caps)
+               : process_create(path, PROC_PRIO_USER, level);
+  long ret;
+  if (p) {
+    if (process_load_elf(p, path) == 0) {
+      enqueue_task(p);
+      ret = (long)p->pid;
+    } else {
+      process_terminate(p->pid);
+      ret = -ENOENT; /* path missing or unloadable ELF */
+    }
+  } else {
+    ret = -EAGAIN; /* quota hit or process table exhausted */
+  }
+  arch_local_irq_enable();
+  return ret;
+}
+
 struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   uint64_t syscall_num = pt_regs_syscall_num(frame);
   uint64_t arg0 = pt_regs_arg(frame, 0);
@@ -185,14 +219,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     char resolved[FD_PATH_MAX];
     vfs_resolve_path(k_path, resolved, FD_PATH_MAX);
-    /* Same write ACL as SYS_FILE_WRITE (EXT4-02): the /bin and /sys trees
-     * are read-only for non-SYSTEM processes. */
-    if ((flags & O_ACCMODE) != O_RDONLY &&
-        !(current_process->permissions & PROC_PERM_SYSTEM) &&
-        (strncmp(resolved, "/sys/", 5) == 0 ||
-         strncmp(resolved, "/bin/", 5) == 0)) {
-      pt_regs_set_return(frame, -EACCES);
-      break;
+    if ((flags & O_ACCMODE) != O_RDONLY) {
+      /* USR-SEC-03 #79: any write needs CAP_FS_WRITE. */
+      if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
+        pt_regs_set_return(frame, -EPERM);
+        break;
+      }
+      /* Same write ACL as SYS_FILE_WRITE (EXT4-02): the /bin and /sys trees
+       * are read-only for non-machine processes even with CAP_FS_WRITE. */
+      if (!proc_is_machine(current_process) &&
+          (strncmp(resolved, "/sys/", 5) == 0 ||
+           strncmp(resolved, "/bin/", 5) == 0)) {
+        pt_regs_set_return(frame, -EACCES);
+        break;
+      }
     }
     struct vfs_node node;
     if (vfs_open(resolved, &node) != 0) {
@@ -300,6 +340,11 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   case SYS_CREATE_WINDOW:
   {
+    /* USR-SEC-03 #79: drawing a window needs CAP_WINDOW. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     struct cpu_info *cpu = get_cpu_info();
     char *k_title = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
@@ -332,7 +377,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     extern int compositor_window_owner(int window_id);
     int owner = compositor_window_owner((int)arg0);
     if (owner >= 0 && owner != (int)current_process->pid &&
-        !(current_process->permissions & PROC_PERM_SYSTEM)) {
+        !proc_is_machine(current_process)) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
@@ -344,26 +389,38 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   case SYS_SPAWN:
   {
+    /* USR-SEC-03 #79: spawning needs CAP_SPAWN.  A plain spawn yields a full
+     * PLVL_USER child (clamped to the creator), preserving today's behaviour. */
+    if (!proc_has_cap(current_process, CAP_SPAWN)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
-    arch_local_irq_disable();
-    struct process *new_proc = process_create(k_path, PROC_PRIO_USER, PROC_PERM_USER);
-    if (new_proc) {
-      if (process_load_elf(new_proc, k_path) == 0) {
-        enqueue_task(new_proc);
-        pt_regs_set_return(frame, new_proc->pid);
-      } else {
-        process_terminate(new_proc->pid);
-        pt_regs_set_return(frame, -ENOENT); /* path missing or unloadable ELF */
-      }
-    } else {
-      pt_regs_set_return(frame, -EAGAIN); /* process table exhausted */
+    pt_regs_set_return(frame, dispatch_spawn(k_path, PLVL_USER, 0, 0));
+  } break;
+  case SYS_SPAWN_CAPS:
+  {
+    /* spawn_caps(path, level, caps) — restricted spawn.  The requested level
+     * and caps are clamped monotonically in process_create_caps (never more
+     * privileged than the creator, never above the level ceiling, never more
+     * than the creator holds). */
+    if (!proc_has_cap(current_process, CAP_SPAWN)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
     }
-    arch_local_irq_enable();
+    struct cpu_info *cpu = get_cpu_info();
+    char *k_path = cpu->syscall_buf;
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    pt_regs_set_return(frame,
+                       dispatch_spawn(k_path, (uint8_t)arg1, (uint32_t)arg2, 1));
   } break;
   case SYS_KILL:
     /* ABI-04: a process may kill itself or its descendants (orphans are
@@ -409,11 +466,16 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, sys_ipc_try_recv((int)arg0, (void *)arg1));
     break;
   case SYS_SET_FOCUS:
-    /* ABI-04: a process may only claim focus for ITSELF (every userland
-     * caller does set_focus(get_pid())); redirecting input to/from another
-     * PID — i.e. keystroke stealing — needs PROC_PERM_SYSTEM. */
+    /* ABI-04 / USR-SEC-03 #79: claiming focus needs CAP_WINDOW; a process may
+     * only claim focus for ITSELF (every userland caller does
+     * set_focus(get_pid())); redirecting input to/from another PID — i.e.
+     * keystroke stealing — needs machine level. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     if ((int)arg0 != (int)current_process->pid &&
-        !(current_process->permissions & PROC_PERM_SYSTEM)) {
+        !proc_is_machine(current_process)) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
@@ -434,13 +496,18 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
+    /* USR-SEC-03 #79: any write needs CAP_FS_WRITE. */
+    if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
     /* EXT4-02 (ABI-04 family): the binary trees are write-protected for
-     * non-system processes — a user process must not be able to overwrite
+     * non-machine processes — a user process must not be able to overwrite
      * anything under /bin or /sys (services, init chain).  Config/data
      * files (/etc, user files) stay writable. */
-    if (!(current_process->permissions & PROC_PERM_SYSTEM) &&
+    if (!proc_is_machine(current_process) &&
         (strncmp(resolved_path, "/sys/", 5) == 0 ||
          strncmp(resolved_path, "/bin/", 5) == 0)) {
       pr_warn("FILE_WRITE: PID %d denied write to protected path '%s'\n",

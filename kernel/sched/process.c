@@ -453,8 +453,8 @@ struct process *process_find_by_pid(int pid) {
  *
  * Policy (checked under sched_lock so the target cannot be recycled
  * mid-decision):
- *   - PROC_PERM_SYSTEM / PROC_PERM_ROOT callers may kill anything
- *     (process_terminate itself still refuses SYSTEM targets);
+ *   - privileged callers (machine/root) may kill anything
+ *     (process_terminate itself still refuses machine targets);
  *   - any process may kill itself (exit alias) and its DESCENDANTS — the
  *     parent chain is walked, so grandchildren count too.  A dead link in
  *     the chain cannot hide a descendant: __reparent_children() re-homes
@@ -467,7 +467,7 @@ struct process *process_find_by_pid(int pid) {
 int process_kill_allowed(struct process *caller, int target_pid) {
   if (!caller)
     return 1; /* kernel context */
-  if (caller->permissions & (PROC_PERM_SYSTEM | PROC_PERM_ROOT))
+  if (proc_is_privileged(caller))
     return 1;
   if ((int)caller->pid == target_pid)
     return 1;
@@ -486,6 +486,37 @@ int process_kill_allowed(struct process *caller, int target_pid) {
     if (target->parent_pid <= 0)
       break;
     target = __process_find_by_pid(target->parent_pid);
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return allowed;
+}
+
+/*
+ * process_ipc_allowed - may 'caller' send IPC to target_pid without
+ * CAP_IPC_ANY?  Allowed to the caller's parent or any descendant; the
+ * descendant test reuses the acyclic ancestry walk (parent PID < child PID).
+ * Acquires sched_lock internally; callers must NOT already hold it.
+ */
+int process_ipc_allowed(struct process *caller, int target_pid) {
+  if (proc_has_cap(caller, CAP_IPC_ANY))
+    return 1; /* machine/kernel and CAP_IPC_ANY holders: unrestricted */
+  if ((int)caller->pid == target_pid)
+    return 1; /* self-send */
+  if (caller->parent_pid == target_pid)
+    return 1; /* to parent */
+
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *t = __process_find_by_pid(target_pid);
+  int allowed = 0;
+  for (int depth = 0; t && depth < MAX_PROCESSES; depth++) {
+    if (t->parent_pid == (int)caller->pid) {
+      allowed = 1;
+      break;
+    }
+    if (t->parent_pid <= 0)
+      break;
+    t = __process_find_by_pid(t->parent_pid);
   }
   spin_unlock_irqrestore(&sched_lock, flags);
   return allowed;
@@ -528,22 +559,39 @@ void process_fd_init(struct process *proc) {
  * NOTE(SCHED-08): memset() zeroes the PMM page even though pmm_alloc_page()
  *          already zeroes; double-zero is harmless but wasteful. [W1 PERF]
  */
+/* Per-level capability ceiling = maximum grantable at that level, and also
+ * the default preset (a process gets its level's ceiling unless the spawner
+ * asks for less via SYS_SPAWN_CAPS).  machine/root/user get everything so
+ * today's apps are unchanged; guest is draw-only. */
+static const uint32_t level_ceiling[PLVL_COUNT] = {
+    [PLVL_MACHINE] = CAP_ALL,
+    [PLVL_ROOT] = CAP_ALL,
+    [PLVL_USER] = CAP_ALL,
+    [PLVL_GUEST] = CAP_WINDOW,
+};
+
+/* process_create - spawn at 'level' with that level's default preset. */
 struct process *process_create(const char *name, uint8_t priority,
-                               uint32_t permissions) {
+                               uint8_t level) {
+  uint8_t lvl = (level < PLVL_COUNT) ? level : PLVL_GUEST;
+  return process_create_caps(name, priority, lvl, level_ceiling[lvl]);
+}
+
+struct process *process_create_caps(const char *name, uint8_t priority,
+                                    uint8_t level, uint32_t req_caps) {
   pr_info("Process: Creating '%s' (Prio=%d)\n", name, priority);
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
 
   /* SCHED-DOS-01 (#122): quotas BEFORE claiming a slot.  Privileged
-   * creators (kernel boot, SYSTEM/ROOT services) bypass the child quota
+   * creators (kernel boot, machine/root services) bypass the child quota
    * and may dig into the reserved tail, so recovery — init respawning the
    * shell, the shell killing the bomber — keeps working even when an
    * unprivileged fork bomb has saturated everything else.  pr_debug, not
    * pr_warn: a bomb hitting the quota thousands of times per second must
    * not turn the UART into a second DoS. */
   struct process *creator = current_process;
-  int privileged =
-      !creator || (creator->permissions & (PROC_PERM_SYSTEM | PROC_PERM_ROOT));
+  int privileged = proc_is_privileged(creator);
   if (active_count >= proc_limit) {
     spin_unlock_irqrestore(&sched_lock, flags);
     pr_debug("Process: limit %d reached, refusing '%s'\n", proc_limit, name);
@@ -589,7 +637,21 @@ struct process *process_create(const char *name, uint8_t priority,
     priority = MAX_PRIO - 1;
   proc->priority = priority;
 
-  proc->permissions = permissions;
+  /* Capability/level monotonic cut (USR-SEC-03 #79): the child is never more
+   * privileged than its creator (level can only move toward guest), never
+   * exceeds its level's ceiling, and never holds a capability the creator
+   * lacks.  Escalation is impossible by construction.  A machine creator
+   * (and the kernel-internal NULL creator) bypasses the caps clamp. */
+  {
+    uint8_t lvl = (level < PLVL_COUNT) ? level : PLVL_GUEST;
+    if (creator && creator->level > lvl)
+      lvl = creator->level;
+    uint32_t caps = req_caps & level_ceiling[lvl];
+    if (creator && !proc_is_machine(creator))
+      caps &= creator->caps;
+    proc->level = lvl;
+    proc->caps = caps;
+  }
   /* Parentage for the SYS_KILL capability check (ABI-04): the spawner is
    * whatever process is current on this CPU; kernel/boot creations get 0. */
   proc->parent_pid = current_process ? (int)current_process->pid : 0;
@@ -679,7 +741,7 @@ void smp_create_idle_task(uint32_t cpu_id) {
   if (cpu_id >= MAX_CPUS) return;
 
   struct process *idle =
-      process_create("idle", PROC_PRIO_IDLE, PROC_PERM_SYSTEM);
+      process_create("idle", PROC_PRIO_IDLE, PLVL_MACHINE);
   
   if (idle) {
     idle->on_cpu = cpu_id;
@@ -731,7 +793,7 @@ void smp_create_idle_task(uint32_t cpu_id) {
  * Supervisors polling process_wait() must treat -2 as "child gone": an
  * immediately-freed victim never appears as a waitable corpse.
  *
- * System processes (PROC_PERM_SYSTEM) cannot be terminated.
+ * Machine-level processes cannot be terminated.
  *
  * IPC message queue is drained (kfree'd) before marking PROC_DEAD for
  * non-current, non-running processes.
@@ -744,8 +806,9 @@ void smp_create_idle_task(uint32_t cpu_id) {
  *
  * NOTE(SCHED-03, mitigated): zombies are auto-reaped by schedule(); the
  *          historical pool-slot leak no longer occurs without a waiter.
- * NOTE(ABI-04): The PROC_PERM_SYSTEM check is the only access-control gate;
- *          any user process may kill any non-system PID. [W4 SECURITY]
+ * NOTE(ABI-04): the machine-level check here is the last-resort protection;
+ *          the SYS_KILL dispatcher gate (process_kill_allowed) restricts a
+ *          user process to itself and its descendants.
  */
 int process_terminate(int pid) {
   uint64_t flags;
@@ -757,8 +820,8 @@ int process_terminate(int pid) {
     return -1;
   }
 
-  /* Don't allow terminating system-protected processes */
-  if (proc->permissions & PROC_PERM_SYSTEM) {
+  /* Don't allow terminating machine-level (system-protected) processes */
+  if (proc_is_machine(proc)) {
     pr_warn("Cannot terminate protected process '%s' (PID %d)\n", proc->name,
             pid);
     spin_unlock_irqrestore(&sched_lock, flags);
@@ -1067,7 +1130,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
        * process_wait() that the shell never issues) closes the SCHED-03
        * pool-slot/PGD leak: doom/demo3d no longer linger as ZOMBIE.
        * Idle tasks never reach this point (they never exit and are
-       * PROC_PERM_SYSTEM-protected from process_terminate). */
+       * machine-level-protected from process_terminate). */
       if (prev->state == PROC_DEAD || prev->state == PROC_ZOMBIE) {
         prev->on_cpu = -1;
         reap_push(cpu_ptr, prev);
@@ -1392,6 +1455,10 @@ int sys_ipc_send(int target_pid, void *msg_ptr) {
   if (vmm_copy_from_user(&k_msg, msg_ptr, sizeof(struct ipc_message)) != 0) {
     return -EINVAL;
   }
+  /* USR-SEC-03 #79: without CAP_IPC_ANY a process may only message its parent
+   * or a descendant — a sandboxed worker cannot poke arbitrary services. */
+  if (!process_ipc_allowed(current_process, target_pid))
+    return -EPERM;
   k_msg.from = current_process->pid;
   return kernel_ipc_send(target_pid, &k_msg);
 }

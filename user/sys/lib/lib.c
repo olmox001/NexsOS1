@@ -104,6 +104,10 @@ int get_pid(void) { return _sys_get_pid(); }
  * the "noreturn" warning in compilers that do not see svc #0 as a terminator. */
 void exit(int status) { _sys_exit(status); while(1); }
 int spawn(const char *path) { return _sys_spawn(path); }
+/* spawn_caps: explicit capability mask; spawn_level: the level's default
+ * preset (request CAP_ALL and let the kernel clamp to the level ceiling). */
+long spawn_caps(const char *path, int level, unsigned long caps) { return _sys_spawn_caps(path, level, caps); }
+long spawn_level(const char *path, int level) { return _sys_spawn_caps(path, level, CAP_ALL); }
 int kill_process(int pid) { return _sys_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:
  * returns -1 if the process is alive, pid if reaped, -2 if not found. */
