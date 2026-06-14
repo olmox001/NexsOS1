@@ -32,6 +32,15 @@ All work is on branch **`comprehensive-review`** (pushed to `origin`).
   - IPC is **already 64-bit** (`struct ipc_message` has `uint64_t data1/data2` + `payload[64]`) — no change needed.
 - Both arches build clean (strict `-Werror -Wall -Wextra -Wpedantic -Wshadow`) and boot to a TTY
   shell (amd64 verified to 8GB; aarch64 FDT-driven).
+- **Drivers (2026-06): device manager + USB + non-blocking PS/2.** `d0791db`/`14f2744`: PCI
+  driver-binding (`driver_register`/`driver_match_all`), arch-neutral PCI (CF8/CFC + AArch64
+  **ECAM** + kernel BAR assignment), full polled **USB stack** (xHCI/EHCI/UHCI/hub/HID), unified
+  `input_report` sink (virtio-input/PS-2/USB-HID), input decoupled from the compositor render.
+  PS/2 bring-up is now **presence-probed + non-blocking** (it was hanging UTM's BIOS-less boot at
+  an unbounded 8042 flush loop). The active plan is
+  [`docs/PIANO-DRIVER-MATURITY.md`](../PIANO-DRIVER-MATURITY.md) (Fase 0→6: non-blocking error
+  handling, hotplug/recognition, compositor↔process decoupling #83, userland cleanup, real B3
+  closure).
 
 ## 2. HOW to work here (discipline — follow it)
 1. **Verify everything YOURSELF before committing.** Delegated agents have broken arch code,

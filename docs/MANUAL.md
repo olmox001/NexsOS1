@@ -168,7 +168,8 @@ CWD, priority, an IPC message queue, a per-process **fd table**, a privilege **l
   `sys_ipc_recv` pops or sleeps (the lost-wakeup race is fixed, IPC-01: recv re-checks the
   queue under `msg_lock` before sleeping). `msg.from` is kernel-stamped (sender auth);
   without `CAP_IPC_ANY` a process may only message its parent or descendants. The queue is
-  still unbounded (SCHED-05/per-queue quota → B5/B6).
+  still unbounded (SCHED-05/per-queue quota → B5/B6). The whole IPC path is **arch-neutral C —
+  identical and verified on amd64 and AArch64** (no arch `#ifdef`).
 
 ## 7. Syscall ABI reference
 
@@ -217,15 +218,33 @@ return **negative errno** (`-EPERM`, `-EFAULT`, …; codes in `include/api/posix
 
 ## 8. Drivers & the HAL
 
-`kernel/core/hal_bus.c` is a thin **device registry**: `arch_bus_scan` (PCI on amd64, MMIO
-probe on AArch64) + `arch_virtio_scan` populate `hal_device[]`; drivers find devices via
-`hal_device_find(vendor, device, idx)`. (The register-access macros in `hal.h` are heavier
-than the registry and are slated to be thinned — HAL-01.)
+`kernel/core/hal_bus.c` is a thin **device registry** + **driver-binding** layer:
+`arch_bus_scan` (PCI on amd64, ECAM/MMIO on AArch64) + `arch_virtio_scan` populate
+`hal_device[]` (each entry carries its PCI **class triplet**); `hal_device_find(vendor,
+device, idx)` and `hal_device_find_class(class, subclass, prog_if, idx)` look devices up. A
+driver declares a `struct device_driver` (`kernel/include/kernel/driver.h`) matching by
+**vendor:device** or by **PCI class**, and `driver_register()` + `driver_match_all()` bind it
+to every matching device — this is the "device manager". Discovery is one-shot at boot today;
+runtime **hotplug** is Fase 2.
 
-Drivers: VirtIO **block** (`drivers/virtio/virtio_blk.c`), **input**
-(`virtio_input.c`), **GPU** (`drivers/gpu/`), plus per-arch UART (`pl011`/`16550`),
-interrupt controller (`gic`/`apic`), timer, and PS/2-style keyboard mapping. Interrupts are
-routed via `kernel/irq/irq.c` (+ arch dispatch). Real-hardware and many robustness items are
+**Arch-neutral PCI (`drivers/pci/pci.c`):** config access is pluggable (`pci_config_ops`) —
+CF8/CFC port I/O on amd64, **ECAM MMIO** on AArch64. On bare-metal QEMU `virt` (no firmware to
+program BARs) the kernel assigns BARs from MMIO windows (`pci_set_mmio_windows` /
+`pci_alloc_mmio`) and maps them via `arch_vmm_map_device`, so the **same PCI providers run on
+both architectures**.
+
+**Drivers:** VirtIO **block** (a provider behind the `block_register` contract), **input** and
+**GPU**; a full polled **USB stack** (`drivers/usb/`): `usb_core` enumeration + HCDs **xHCI
+(3.0)**, **EHCI (2.0)**, **UHCI (1.1)**, the **hub** class (route strings / TT) and **HID
+boot** keyboard/mouse; per-arch UART (`pl011`/`16550`), interrupt controller (`gic`/`apic`),
+timer, and **PS/2** (8042, amd64 only — bring-up is presence-probed and **non-blocking**, so an
+absent controller never hangs the boot).
+
+**Unified input:** every provider (virtio-input, PS/2, USB-HID) feeds the single sink
+`input_report(type, code, value)` ([keyboard.c](../kernel/drivers/keyboard/keyboard.c)) with
+evdev events; keys go through the layout + IPC to the focused process, pointer events update
+the compositor (repainted on its own ~30 Hz tick, never from the input path). Interrupts are
+routed via `kernel/irq/irq.c` (+ arch dispatch). Real-hardware and robustness items remain
 open (see `area:drivers` issues).
 
 ## 9. Filesystem & disk image
@@ -246,11 +265,19 @@ open (see `area:drivers` issues).
 
 ## 10. Graphics & windowing
 
-`kernel/graphics/`. `graphics_init` brings up the VirtIO-GPU framebuffer (720×1280 today).
-`compositor.c` manages overlapping windows (Z-order, drag, focus, damage tracking, TTY
-windows for shells). `font.c` renders TTF glyphs (uploaded by `fontman` via `set_font`);
-`gl.c` provides 2D/3D fixed-point primitives. The compositor and font engine are in-kernel
-today and are prime candidates for extraction into userland services (epic #95).
+`kernel/graphics/`. `graphics_init` brings up the **VirtIO-GPU** framebuffer (720×1280 today;
+this is the only GPU provider — there is no VGA/VBE/Bochs-DISPI provider yet, planned).
+Rendering is CPU-side: `compositor.c` manages overlapping windows (Z-order, drag, focus,
+damage tracking, TTY windows for shells); `font.c` renders TTF glyphs (uploaded by `fontman`
+via `set_font`); `gl.c` provides 2D/3D fixed-point primitives. The compositor and font engine
+are in-kernel today and are prime candidates for extraction into userland services (epic #95).
+
+Rendering works, but several **drawing bugs are known and tracked** in
+[`review/analysis/06-graphics.md`](review/analysis/06-graphics.md): damage/redraw is
+incomplete (windows don't refresh until the mouse passes over; dead-process windows linger —
+GFX-COMP-04 #118), the damage region is a coarse bounding box (GFX-COMP-09), titles are drawn
+unclipped (GFX-COMP-10), and the mouse path mutates window state from IRQ context without a
+lock (GFX-COMP-02). These are scheduled for Fase 3/Fase 5.
 
 ## 11. Userland
 
@@ -281,10 +308,13 @@ today and are prime candidates for extraction into userland services (epic #95).
    add a capability check if the call acts on another process's resources.
 
 **Add a driver**
-1. Implement under `kernel/drivers/<class>/`; discover via `hal_device_find` after
-   `hal_bus_init`.
+1. Implement under `kernel/drivers/<class>/`. Either look the device up directly
+   (`hal_device_find` / `hal_device_find_class` after `hal_bus_init`), or — preferred —
+   declare a `struct device_driver` (match by vendor:device or PCI class) and call
+   `driver_register()` so the device manager binds it automatically.
 2. Register an IRQ handler with `irq_register`; add the source file to the `Makefile`
-   `KERN_C_SOURCES`.
+   `KERN_C_SOURCES`. Keep bring-up **non-blocking** — bounded waits, graceful skip when the
+   hardware is absent (see `drivers/ps2/ps2.c`).
 
 ## 13. Logging & diagnostics
 
