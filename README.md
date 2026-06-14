@@ -221,5 +221,5 @@ integrated (boot loader, libraries, drivers) must be GPLv2-compatible.
 
 ## Acknowledgments
 
-ARM & Intel architecture references, the OSDev wiki, the QEMU project, the VirtIO
-specification, and the Linux kernel (design inspiration, e.g. intrusive lists).
+Open Source Comunity, the OSDev wiki, the QEMU project, the VirtIO
+specification, and the Linux kernel, the plan9 operate system, and the sel4 microkernel project (design inspiration, e.g. intrusive lists),  std_libs standalone implementation developer, the open gl developer, atirex (for kilo texteditor) and the doom port developer  .
