@@ -5,6 +5,7 @@
  * Manages windows and composites them to the screen.
  */
 #include <drivers/gpu/gpu.h>
+#include <drivers/virtio_input.h>
 #include <graphics/gl.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
@@ -39,6 +40,7 @@ struct window {
 
   /* Terminal State */
   int cursor_x, cursor_y;
+  int cursor_visible;  /* VT100 DECTCEM (\x1b[?25h/l); 1 = draw the caret */
   uint8_t *text_grid;  /* Character grid */
   uint32_t *attr_grid; /* Attribute grid (colors) */
   int grid_cols, grid_rows;
@@ -231,6 +233,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   /* Initialize terminal state */
   windows[slot].cursor_x = 0;
   windows[slot].cursor_y = 0;
+  windows[slot].cursor_visible = 1;
   windows[slot].fg_color = 0xFFFFFFFF;
   windows[slot].escape_state = 0;
   windows[slot].escape_len = 0;
@@ -298,6 +301,32 @@ int compositor_window_owner(int window_id) {
   }
   spin_unlock_irqrestore(&compositor_lock, flags);
   return owner;
+}
+
+/*
+ * compositor_window_grid - report a window's terminal grid (cols x rows).
+ *
+ * The terminal cell size derives from the active font (proportional fonts
+ * give a cell == max glyph advance), so a windowed TTY app cannot assume a
+ * fixed 80x25.  Returns 0 and fills cols/rows on success, -1 if the window
+ * id does not exist.  Backs SYS_WINDOW_GRID.
+ */
+int compositor_window_grid(int window_id, int *cols, int *rows) {
+  uint64_t flags;
+  int found = -1;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == window_id) {
+      if (cols)
+        *cols = windows[i].grid_cols;
+      if (rows)
+        *rows = windows[i].grid_rows;
+      found = 0;
+      break;
+    }
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  return found;
 }
 
 /*
@@ -470,6 +499,10 @@ static void handle_sgr(struct window *win) {
   if (val == 0) {
     win->fg_color = 0xFFFFFFFF;
     win->curr_bg_color = win->bg_color;
+  } else if (val == 39) {
+    win->fg_color = 0xFFFFFFFF; /* default foreground */
+  } else if (val == 49) {
+    win->curr_bg_color = win->bg_color; /* default background */
   } else if (val >= 30 && val <= 37) {
     uint32_t colors[] = {0xFF000000, 0xFFBB0000, 0xFF00BB00, 0xFFBBBB00,
                          0xFF0000BB, 0xFFBB00BB, 0xFF00BBBB, 0xFFBBBBBB};
@@ -486,6 +519,132 @@ static void handle_sgr(struct window *win) {
     uint32_t colors[] = {0xFF555555, 0xFFFF5555, 0xFF55FF55, 0xFFFFFF55,
                          0xFF5555FF, 0xFFFF55FF, 0xFF55FFFF, 0xFFFFFFFF};
     win->curr_bg_color = colors[val - 100];
+  }
+}
+
+/* Parse up to two decimal CSI parameters separated by ';' from buf[0..len).
+ * Returns how many parameters were present (0, 1 or 2); a and b receive their
+ * values (0 when omitted). */
+static int csi_params(const char *buf, int len, int *a, int *b) {
+  int vals[2] = {0, 0};
+  int which = 0, have = 0;
+  for (int i = 0; i < len; i++) {
+    char c = buf[i];
+    if (c >= '0' && c <= '9') {
+      vals[which] = vals[which] * 10 + (c - '0');
+      have = 1;
+    } else if (c == ';' && which < 1) {
+      which++;
+    }
+  }
+  *a = vals[0];
+  *b = vals[1];
+  return have ? which + 1 : 0;
+}
+
+/* Clear one terminal cell to the current background (pixels + grids). */
+static void term_clear_cell(int win_id, struct window *win, int cx, int cy,
+                            int char_w, int char_h) {
+  if (cx < 0 || cy < 0 || cx >= win->grid_cols || cy >= win->grid_rows)
+    return;
+  draw_rect_internal(win_id, cx * char_w, cy * char_h, char_w, char_h,
+                     win->curr_bg_color, 1);
+  if (win->text_grid && win->attr_grid) {
+    int idx = cy * win->grid_cols + cx;
+    win->text_grid[idx] = ' ';
+    win->attr_grid[idx] = win->curr_bg_color;
+  }
+}
+
+/* Draw the text caret as a semi-transparent green block at the cursor cell
+ * (if visible).  The colour is the shell accent (0x00FF88) at 50% alpha,
+ * blended over the cell so the glyph underneath stays readable.  Called once
+ * per write batch; kilo repaints the whole frame each refresh, so the previous
+ * caret cell is overwritten before this redraws the new one. */
+static void term_draw_cursor(int win_id, struct window *win,
+                             struct gl_surface *surf, int char_w, int char_h) {
+  (void)win_id;
+  if (!win->cursor_visible)
+    return;
+  int cx = win->cursor_x, cy = win->cursor_y;
+  if (cx < 0 || cy < 0 || cx >= win->grid_cols || cy >= win->grid_rows)
+    return;
+
+  const uint32_t caret = 0x8000FF88; /* ARGB: 50% alpha, shell green */
+  int px0 = cx * char_w, py0 = cy * char_h;
+  for (int y = 0; y < char_h; y++) {
+    int sy = py0 + y;
+    if (sy < 0 || sy >= win->height)
+      continue;
+    for (int x = 0; x < char_w; x++) {
+      int sx = px0 + x;
+      if (sx < 0 || sx >= win->width)
+        continue;
+      uint32_t *p = &surf->buffer[sy * surf->stride + sx];
+      *p = blend_pixel(caret, *p);
+    }
+  }
+}
+
+/*
+ * handle_csi - dispatch a complete CSI sequence (ESC [ ... <final>).
+ *
+ * Supports the subset a full-screen TTY app (kilo) needs: H/f (cursor
+ * position, 1-based), K (erase in line), J (erase screen), m (SGR colours),
+ * and the private DECTCEM ?25 h/l (cursor visibility).  Unknown finals are
+ * ignored.  win->escape_buf holds the bytes between '[' and <final>.
+ */
+static void handle_csi(int win_id, struct window *win, char final, int char_w,
+                       int char_h) {
+  const char *eb = win->escape_buf;
+  int len = win->escape_len;
+
+  /* Private mode: ESC [ ? Pn h/l — we honour 25 (show/hide caret). */
+  if (len > 0 && eb[0] == '?') {
+    int a, b;
+    csi_params(eb + 1, len - 1, &a, &b);
+    if (a == 25)
+      win->cursor_visible = (final == 'h');
+    return;
+  }
+
+  if (final == 'm') {
+    handle_sgr(win);
+    return;
+  }
+
+  int a, b;
+  int n = csi_params(eb, len, &a, &b);
+
+  if (final == 'H' || final == 'f') {
+    int row = (n >= 1 && a > 0) ? a - 1 : 0;
+    int col = (n >= 2 && b > 0) ? b - 1 : 0;
+    if (row >= win->grid_rows)
+      row = win->grid_rows - 1;
+    if (col >= win->grid_cols)
+      col = win->grid_cols - 1;
+    win->cursor_y = row < 0 ? 0 : row;
+    win->cursor_x = col < 0 ? 0 : col;
+  } else if (final == 'K') {
+    int mode = (n >= 1) ? a : 0;
+    int x0 = (mode == 1) ? 0 : win->cursor_x;
+    int x1 = (mode == 0) ? win->grid_cols - 1 : win->cursor_x;
+    if (mode == 2) {
+      x0 = 0;
+      x1 = win->grid_cols - 1;
+    }
+    for (int x = x0; x <= x1; x++)
+      term_clear_cell(win_id, win, x, win->cursor_y, char_w, char_h);
+  } else if (final == 'J') {
+    for (int p = 0; p < win->width * win->height; p++)
+      win->buffer[p] = win->curr_bg_color;
+    if (win->text_grid && win->attr_grid) {
+      memset(win->text_grid, ' ', win->grid_cols * win->grid_rows);
+      for (int p = 0; p < win->grid_cols * win->grid_rows; p++)
+        win->attr_grid[p] = win->curr_bg_color;
+    }
+    win->cursor_x = 0;
+    win->cursor_y = 0;
   }
 }
 
@@ -599,22 +758,10 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
       else
         win->escape_state = 0;
     } else if (win->escape_state == 2) {
+      /* Final byte is a letter (CSI dispatch) or '@'; '?' and digits/';' are
+       * parameter bytes accumulated in escape_buf. */
       if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
-        if (c == 'm') {
-          handle_sgr(win);
-        } else if (c == 'J') {
-          for (int p = 0; p < win->width * win->height; p++)
-            win->buffer[p] = win->curr_bg_color;
-
-          /* Also clear text grids */
-          if (win->text_grid && win->attr_grid) {
-            memset(win->text_grid, ' ', win->grid_cols * win->grid_rows);
-            for (int p = 0; p < win->grid_cols * win->grid_rows; p++)
-              win->attr_grid[p] = win->curr_bg_color;
-          }
-          win->cursor_x = 0;
-          win->cursor_y = 0;
-        }
+        handle_csi(win_id, win, c, char_w, char_h);
         win->escape_state = 0;
       } else if (win->escape_len < 31) {
         win->escape_buf[win->escape_len++] = c;
@@ -623,6 +770,9 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
       }
     }
   }
+
+  /* Draw the text caret at its final position for this batch. */
+  term_draw_cursor(win_id, win, &win_surf, char_w, char_h);
 
   /* Mark compositor as needing redraw (window area including title bar) */
   expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, win->width,
@@ -775,8 +925,15 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
   int old_mx = mouse_x, old_my = mouse_y;
 
   if (absolute) {
-    mouse_x = dx;
-    mouse_y = dy;
+    /* Absolute pointer: events carry one axis at a time, so a negative component
+     * means "leave this axis unchanged". Values are normalized to
+     * [0, INPUT_ABS_MAX]; scale to framebuffer pixels. This is what makes the
+     * cursor track 1:1 under absolute hosts like UTM (DRV-INPUT-01 #125), instead
+     * of a relative device saturating at a screen edge. */
+    if (dx >= 0)
+      mouse_x = (int)(((long)dx * (width - 1)) / INPUT_ABS_MAX);
+    if (dy >= 0)
+      mouse_y = (int)(((long)dy * (height - 1)) / INPUT_ABS_MAX);
   } else {
     mouse_x += dx;
     mouse_y += dy;

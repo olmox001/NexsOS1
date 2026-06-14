@@ -103,7 +103,10 @@ int get_pid(void) { return _sys_get_pid(); }
 /* exit: the while(1) after _sys_exit() is unreachable dead code that silences
  * the "noreturn" warning in compilers that do not see svc #0 as a terminator. */
 void exit(int status) { _sys_exit(status); while(1); }
-int spawn(const char *path) { return _sys_spawn(path); }
+int spawn(const char *path) { return _sys_spawn(path, 0, 0); }
+int spawn_args(const char *path, int argc, char *const argv[]) {
+  return _sys_spawn(path, argc, argv);
+}
 /* spawn_caps: explicit capability mask; spawn_level: the level's default
  * preset (request CAP_ALL and let the kernel clamp to the level ceiling). */
 long spawn_caps(const char *path, int level, unsigned long caps) { return _sys_spawn_caps(path, level, caps); }
@@ -215,6 +218,16 @@ int vsprintf(char *out, const char *fmt, va_list args) { return vsnprintf(out, 6
 int printf(const char *fmt, ...) { char buf[256]; va_list args; va_start(args, fmt); int res = vsnprintf(buf, sizeof(buf), fmt, args); va_end(args); write(1, buf, strlen(buf)); return res; }
 void window_write(int win_id, const char *buf, unsigned long count) { _sys_window_write(win_id, buf, count); }
 int window_of_pid(int pid) { return _sys_window_of_pid(pid); }
+int window_grid(int win_id, int *cols, int *rows) {
+  long r = _sys_window_grid(win_id);
+  if (r < 0)
+    return (int)r;
+  if (cols)
+    *cols = (int)((r >> 16) & 0xFFFF);
+  if (rows)
+    *rows = (int)(r & 0xFFFF);
+  return 0;
+}
 void printf_win(int win_id, const char *fmt, ...) { char buf[512]; va_list args; va_start(args, fmt); vsnprintf(buf, sizeof(buf), fmt, args); va_end(args); _sys_window_write(win_id, buf, strlen(buf)); }
 int sprintf(char *out, const char *fmt, ...) { va_list args; va_start(args, fmt); int res = vsnprintf(out, 65536, fmt, args); va_end(args); return res; }
 int snprintf(char *out, size_t size, const char *fmt, ...) { va_list args; va_start(args, fmt); int res = vsnprintf(out, size, fmt, args); va_end(args); return res; }

@@ -170,6 +170,13 @@ _sys_window_of_pid:
     svc #0
     ret
 
+/* long _sys_window_grid(int win_id) */
+.global _sys_window_grid
+_sys_window_grid:
+    mov x8, #SYS_WINDOW_GRID
+    svc #0
+    ret
+
 /* void _sys_window_blit(int win_id, int x, int y, int w, int h, const uint *buf) */
 _sys_window_blit:
     mov x8, #SYS_WINDOW_BLIT

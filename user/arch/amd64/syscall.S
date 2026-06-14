@@ -141,6 +141,13 @@ _sys_window_of_pid:
     syscall
     ret
 
+/* long _sys_window_grid(int win_id) */
+.global _sys_window_grid
+_sys_window_grid:
+    movq $SYS_WINDOW_GRID, %rax
+    syscall
+    ret
+
 .global _sys_window_blit
 _sys_window_blit:
     movq $SYS_WINDOW_BLIT, %rax

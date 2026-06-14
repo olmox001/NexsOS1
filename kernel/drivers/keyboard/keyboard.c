@@ -30,24 +30,6 @@ typedef struct {
   } utf8_overrides[16];
 } keyboard_layout_t;
 
-static const keyboard_layout_t layout_us = {
-    .name = "us",
-    /* uses standard tables below */
-};
-
-static const keyboard_layout_t layout_it = {
-    .name = "it",
-    .utf8_overrides = {{40, 0, "\xC3\xA0"}, // à
-                       {40, 1, "\xC3\x80"}, // À
-                       {26, 0, "\xC3\xA8"}, // è
-                       {26, 1, "\xC3\xA9"}, // é
-                       {39, 0, "\xC3\xB2"}, // ò
-                       {41, 0, "\xC3\xB9"}, // ù
-                       {43, 0, "\xC3\xAC"}, // ì
-                       {0, 0, NULL}}};
-
-static const keyboard_layout_t *current_layout = &layout_us;
-
 /* Scancode to ASCII table (US layout) */
 static const char scancode_to_ascii[128] = {
     0,    0,   '1', '2',  '3',  '4', '5',  '6',  /* 0-7 */
@@ -87,6 +69,32 @@ static const char scancode_to_ascii_shift[128] = {
     0,   0,   0,   0,   0,    0,   0,    0,    /* 112-119 */
     0,   0,   0,   0,   0,    0,   0,    0     /* 120-127 */
 };
+
+/* Keyboard layouts.  Each layout supplies the base scancode->ASCII maps (so a
+ * future layout can remap keys without touching the driver) plus optional
+ * UTF-8 overrides for accented keys.  The driver consults current_layout for
+ * every keystroke (KBD-LAYOUT-01): previously these maps were unused and the
+ * static US tables were read directly. */
+static const keyboard_layout_t layout_us = {
+    .name = "us",
+    .ascii_map = scancode_to_ascii,
+    .shifted_map = scancode_to_ascii_shift,
+};
+
+static const keyboard_layout_t layout_it = {
+    .name = "it",
+    .ascii_map = scancode_to_ascii,
+    .shifted_map = scancode_to_ascii_shift,
+    .utf8_overrides = {{40, 0, "\xC3\xA0"}, // à
+                       {40, 1, "\xC3\x80"}, // À
+                       {26, 0, "\xC3\xA8"}, // è
+                       {26, 1, "\xC3\xA9"}, // é
+                       {39, 0, "\xC3\xB2"}, // ò
+                       {41, 0, "\xC3\xB9"}, // ù
+                       {43, 0, "\xC3\xAC"}, // ì
+                       {0, 0, NULL}}};
+
+static const keyboard_layout_t *current_layout = &layout_us;
 
 /*
  * Initialize keyboard subsystem
@@ -152,25 +160,6 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
     return;
   }
 
-  /* Handle Ctrl+C: deliver ETX (0x03) to the focused process through the
-   * SAME IPC path as normal keys, so read(0)/try_recv see it (the old
-   * kb_buffer path was never drained by the fd-based read).  The shell turns
-   * a foreground job's Ctrl+C into a kill (USR-TTY-01 #123). */
-  if (ctrl_pressed && code == KEY_C && value != 0) {
-    if (keyboard_focus_pid > 0) {
-      struct ipc_message msg;
-      memset(&msg, 0, sizeof(msg));
-      msg.from = 0; /* Kernel/Driver */
-      msg.type = IPC_TYPE_INPUT;
-      msg.data1 = ((uint64_t)code << 16) | 0x03;
-      msg.data2 = 1; /* press */
-      msg.payload[0] = 0x03;
-      msg.payload[1] = '\0';
-      kernel_ipc_send(keyboard_focus_pid, &msg);
-    }
-    return;
-  }
-
   /* Convert scancode to ASCII */
   if (code >= 128)
     return;
@@ -186,10 +175,38 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
   if (code >= KEY_Z && code <= KEY_M)
     use_shift ^= caps_lock;
 
+  /* Read the ASCII from the active layout's maps (KBD-LAYOUT-01), falling back
+   * to the built-in US tables if a layout omits them. */
+  const char *amap =
+      (current_layout && current_layout->ascii_map) ? current_layout->ascii_map
+                                                     : scancode_to_ascii;
+  const char *smap = (current_layout && current_layout->shifted_map)
+                         ? current_layout->shifted_map
+                         : scancode_to_ascii_shift;
   if (use_shift)
-    c = scancode_to_ascii_shift[code];
+    c = smap[code];
   else
-    c = scancode_to_ascii[code];
+    c = amap[code];
+
+  /* Ctrl + key -> control code (TTY semantics): Ctrl-A..Ctrl-Z => 0x01..0x1A,
+   * Ctrl-@..Ctrl-_ => 0x00..0x1F.  Generalises the old Ctrl-C-only path so
+   * full-screen apps (kilo: Ctrl-S/Q/F) and the shell's Ctrl-C all work
+   * uniformly.  When folding to a control code we skip the UTF-8 override
+   * pass below (a control char is never an accented glyph). */
+  int is_ctrl_combo = 0;
+  if (ctrl_pressed && c) {
+    unsigned char uc = (unsigned char)c;
+    if (uc >= 'a' && uc <= 'z') {
+      c = (char)(uc - 'a' + 1);
+      is_ctrl_combo = 1;
+    } else if (uc >= 'A' && uc <= 'Z') {
+      c = (char)(uc - 'A' + 1);
+      is_ctrl_combo = 1;
+    } else if (uc >= '@' && uc <= '_') {
+      c = (char)(uc - '@');
+      is_ctrl_combo = 1;
+    }
+  }
 
   /* Per-keystroke logging is debug-only: at pr_info level every press AND
    * release printed a line from IRQ context, flooding the serial log and
@@ -214,8 +231,8 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
       msg.payload[1] = '\0';
     }
 
-    /* Apply Layout Overrides */
-    if (value != 0 && current_layout) {
+    /* Apply Layout Overrides (skipped for Ctrl-folded control codes) */
+    if (value != 0 && current_layout && !is_ctrl_combo) {
       for (int i = 0; i < 16 && current_layout->utf8_overrides[i].utf8 != NULL;
            i++) {
         if (current_layout->utf8_overrides[i].code == code &&
@@ -266,8 +283,11 @@ void input_report(uint16_t type, uint16_t code, int32_t value) {
     /* REL_WHEEL has no consumer yet. */
     break;
   case EV_ABS:
-    if (code == 0) compositor_update_mouse(value, -1, 1);
-    else if (code == 1) compositor_update_mouse(-1, value, 1);
+    /* Absolute pointer (e.g. virtio-tablet): one axis per event, so pass -1 for
+     * the other axis to leave it unchanged. Values are normalized to
+     * [0, INPUT_ABS_MAX]; the compositor scales them to framebuffer pixels. */
+    if (code == ABS_X) compositor_update_mouse(value, -1, 1);
+    else if (code == ABS_Y) compositor_update_mouse(-1, value, 1);
     break;
   default: /* EV_SYN and others: nothing to do; the tick repaints. */
     break;

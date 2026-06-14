@@ -42,7 +42,7 @@ extern void _sys_write(int fd, const char *buf, size_t count);
 extern long _sys_get_time(void);
 extern int  _sys_get_pid(void);
 extern void _sys_exit(int status);
-extern int  _sys_spawn(const char *path);
+extern int  _sys_spawn(const char *path, int argc, char *const argv[]);
 extern long _sys_spawn_caps(const char *path, int level, unsigned long caps);
 extern int  _sys_kill(int pid);
 extern int  _sys_wait(int pid);
@@ -54,6 +54,7 @@ extern void _sys_destroy_window(int win_id);
 extern void _sys_window_draw(int win_id, int x, int y, int w, int h, unsigned int color);
 extern long _sys_window_write(int win_id, const char *buf, unsigned long count);
 extern int  _sys_window_of_pid(int pid);
+extern long _sys_window_grid(int win_id);
 extern void _sys_window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf);
 extern void _sys_compositor_render(void);
 extern void _sys_window_set_flags(int win_id, int flags);
@@ -78,6 +79,12 @@ long get_time(void);
 int  get_pid(void);
 void exit(int status);
 int  spawn(const char *path);
+/* spawn_args: like spawn(), but hands the child an argv vector (the shell
+ * uses it to pass a filename, e.g. `kilo notes.txt`).  argv[0] is the program
+ * name as invoked; argv[argc] need not be NULL (the kernel terminates the
+ * copy at argc).  The kernel marshals the strings onto the child's stack and
+ * sets argc/argv as main()'s first two arguments per the C ABI. */
+int  spawn_args(const char *path, int argc, char *const argv[]);
 /* Sandboxed spawn (USR-SEC-03 #79).  level = PLVL_*; caps = OR of CAP_*.
  * The kernel clamps both: a child is never more privileged than its parent,
  * never above the level's ceiling, never more than the parent holds.
@@ -142,6 +149,10 @@ void window_write(int win_id, const char *buf, unsigned long count);
 /* window_of_pid: compositor window id of a pid, 0 if it has none (#123).
  * The shell uses it to run windowless programs in-shell (foreground). */
 int  window_of_pid(int pid);
+/* window_grid: terminal character grid of a window you own, as (cols<<16)|rows
+ * (the compositor terminal cell size depends on the active font, so a windowed
+ * TTY app must query this instead of assuming a fixed 80x25).  < 0 on error. */
+int  window_grid(int win_id, int *cols, int *rows);
 int  sprintf(char *out, const char *fmt, ...);
 int  snprintf(char *out, size_t size, const char *fmt, ...);
 int  vsnprintf(char *out, size_t size, const char *fmt, va_list args);

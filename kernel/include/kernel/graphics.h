@@ -58,6 +58,9 @@ void compositor_destroy_window(int window_id);
 /* compositor_window_owner: owning PID of a window id, -1 if not found.
  * Used by the SYS_DESTROY_WINDOW capability check (ABI-04). */
 int compositor_window_owner(int window_id);
+/* compositor_window_grid: terminal grid (cols x rows) of a window; 0 on
+ * success (fills cols/rows), -1 if the id is unknown.  Backs SYS_WINDOW_GRID. */
+int compositor_window_grid(int window_id, int *cols, int *rows);
 uint32_t *compositor_get_buffer(int window_id);
 void compositor_move_window(int window_id, int x, int y);
 void compositor_render(void);

@@ -46,6 +46,7 @@
 #define SYS_DESTROY_WINDOW     215
 #define SYS_WINDOW_WRITE       217  /* write text to a window by id (#123) */
 #define SYS_WINDOW_OF_PID      218  /* window id of a pid, 0 if none (#123) */
+#define SYS_WINDOW_GRID        219  /* terminal grid of a window: (cols<<16)|rows */
 
 /* --- Memory --- */
 #define SYS_SBRK               216

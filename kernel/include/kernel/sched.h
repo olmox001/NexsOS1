@@ -185,6 +185,11 @@ int process_terminate(int pid);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */
 extern int process_load_elf(struct process *proc, const char *path);
+/* Like process_load_elf(), but marshals an argv vector onto the new task's
+ * stack and seeds main()'s argc/argv (kargv holds kernel-side string copies;
+ * pass argc=0/kargv=NULL for no arguments). */
+extern int process_load_elf_args(struct process *proc, const char *path,
+                                 int argc, char *const kargv[]);
 void start_user_process(struct process *proc);
 void process_init(void);
 struct pt_regs *schedule(struct pt_regs *regs);

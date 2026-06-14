@@ -11,7 +11,60 @@
 #include <kernel/vfs.h>
 #include <kernel/vmm.h>
 
+/* Largest argv vector marshalled onto a new task's stack.  Kept in lockstep
+ * with SPAWN_MAX_ARGS in the syscall dispatcher (the source clamps argc). */
+#define ELF_MAX_ARGS 16
+
+/*
+ * setup_user_args - lay out argc/argv at the top of the user stack.
+ *
+ * top_kaddr is the kernel direct-map pointer to the page backing the highest
+ * stack page [stack_top-4096, stack_top).  We copy the argument strings just
+ * below stack_top, then an array of argc+1 user pointers (NULL-terminated),
+ * and return a 16-byte-aligned user SP pointing at that array.  *out_argv_uva
+ * receives the user virtual address of the argv array (== the returned SP).
+ *
+ * argc is assumed already clamped to <= ELF_MAX_ARGS; the whole block fits in
+ * one page (16 * 128 strings + 17 pointers < 4096).
+ */
+static uint64_t setup_user_args(void *top_kaddr, uint64_t stack_top, int argc,
+                                char *const kargv[], uint64_t *out_argv_uva) {
+  const uint64_t page_uva = stack_top - 4096;
+  uint8_t *kpage = (uint8_t *)top_kaddr;
+  uint64_t str_uva[ELF_MAX_ARGS];
+  uint64_t uptr = stack_top;
+
+  /* Strings, packed downward from the top of the page. */
+  for (int i = argc - 1; i >= 0; i--) {
+    size_t len = strlen(kargv[i]) + 1;
+    uptr -= len;
+    memcpy(kpage + (uptr - page_uva), kargv[i], len);
+    str_uva[i] = uptr;
+  }
+
+  /* argv[] array of (argc + 1) user pointers, 16-byte aligned == the SP. */
+  uptr &= ~(uint64_t)7;
+  uptr -= (uint64_t)(argc + 1) * sizeof(uint64_t);
+  uptr &= ~(uint64_t)15;
+  uint64_t *uargv = (uint64_t *)(kpage + (uptr - page_uva));
+  for (int i = 0; i < argc; i++)
+    uargv[i] = str_uva[i];
+  uargv[argc] = 0;
+
+  *out_argv_uva = uptr;
+  return uptr;
+}
+
 int process_load_elf(struct process *proc, const char *path) {
+  return process_load_elf_args(proc, path, 0, NULL);
+}
+
+int process_load_elf_args(struct process *proc, const char *path, int argc,
+                          char *const kargv[]) {
+  if (argc < 0)
+    argc = 0;
+  if (argc > ELF_MAX_ARGS)
+    argc = ELF_MAX_ARGS;
   struct vfs_node exe;
   if (vfs_open(path, &exe) != 0) {
     pr_err("ELF: File not found: %s\n", path);
@@ -149,9 +202,10 @@ int process_load_elf(struct process *proc, const char *path) {
   /* 4. Setup Stack (1MB at 0xC0000000) */
   uint64_t stack_base = 0xC0000000;
   uint64_t stack_size = 0x100000; // 1MB
+  uint64_t stack_top = stack_base + stack_size;
+  void *top_kaddr = NULL; /* kernel pointer to the highest stack page */
 
-  for (uint64_t vaddr = stack_base; vaddr < stack_base + stack_size;
-       vaddr += 4096) {
+  for (uint64_t vaddr = stack_base; vaddr < stack_top; vaddr += 4096) {
     void *paddr = pmm_alloc_page();
     if (!paddr) {
       pr_err("%s", "ELF: Failed to allocate stack page\n");
@@ -164,13 +218,22 @@ int process_load_elf(struct process *proc, const char *path) {
       pmm_free_page(paddr);
       return -1;
     }
+    if (vaddr == stack_top - 4096)
+      top_kaddr = paddr; /* argv block goes here (direct-map writable) */
   }
 
   proc->heap_start = max_vaddr;
   proc->heap_end = max_vaddr;
 
   proc->user_entry = ehdr.e_entry;
-  proc->user_stack = stack_base + stack_size;
+  proc->user_stack = stack_top;
+
+  /* Marshal argc/argv onto the top stack page (no-op when argc == 0). */
+  uint64_t argv_uva = 0;
+  if (argc > 0 && top_kaddr) {
+    proc->user_stack =
+        setup_user_args(top_kaddr, stack_top, argc, kargv, &argv_uva);
+  }
 
   /* Initialize Saved Context for Scheduler */
   /* proc->context already points to the top of the kernel stack (set in
@@ -182,6 +245,8 @@ int process_load_elf(struct process *proc, const char *path) {
 
     memset(proc->context, 0, sizeof(struct pt_regs));
     pt_regs_init_user_task(proc->context, proc->user_entry, proc->user_stack);
+    /* main(argc, argv) — argv_uva is 0 (NULL) when no arguments were given. */
+    pt_regs_set_user_args(proc->context, (uint64_t)argc, argv_uva);
 
     /* pr_info("ELF: After init - PID %d\n", proc->pid);
     pr_info("ELF:   ELR=0x%lx\n", proc->context->elr);

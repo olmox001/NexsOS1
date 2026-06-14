@@ -316,7 +316,8 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_sen
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
            $(BUILD_DIR)/sandboxtest.elf $(BUILD_DIR)/sandboxchild.elf \
-           $(BUILD_DIR)/hello.elf
+           $(BUILD_DIR)/hello.elf \
+		   $(BUILD_DIR)/kilo.elf
 
 USER_ELFS = $(SYS_ELFS) $(BIN_ELFS)
 
@@ -344,6 +345,7 @@ $(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/init.o $(USER_LIB_O) $(U
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/shell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/shell.o $(BUILD_DIR)/$(USER_DIR)/sys/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/notify_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/notification_server.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -373,10 +375,14 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/%.o: $(USER_DIR)/sys/bin/fontman/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -c $< -o $@
 
+# kilo is linked like every other user ELF (prereqs declared above, generic
+# linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
 	@$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+
+
 
 # Common compilation rules
 $(BUILD_DIR)/%.o: %.S

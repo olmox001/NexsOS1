@@ -160,20 +160,25 @@ extern int keyboard_focus_pid;
  */
 struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame);
 
+/* argv marshalling limits for SYS_SPAWN.  ELF_MAX_ARGS in elf.c must be >=
+ * SPAWN_MAX_ARGS; SPAWN_ARG_LEN bounds each NUL-terminated argument. */
+#define SPAWN_MAX_ARGS 16
+#define SPAWN_ARG_LEN  128
+
 /* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
  *
  * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
  * across blocking virtio/ext4 disk I/O.  Pre-existing; kept verbatim so the
  * new capability path does not widen the critical section. */
 static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
-                           int use_caps) {
+                           int use_caps, int argc, char *const kargv[]) {
   arch_local_irq_disable();
   struct process *p =
       use_caps ? process_create_caps(path, PROC_PRIO_USER, level, caps)
                : process_create(path, PROC_PRIO_USER, level);
   long ret;
   if (p) {
-    if (process_load_elf(p, path) == 0) {
+    if (process_load_elf_args(p, path, argc, kargv) == 0) {
       enqueue_task(p);
       ret = (long)p->pid;
     } else {
@@ -402,6 +407,18 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, w > 0 ? w : 0);
     break;
   }
+  case SYS_WINDOW_GRID: {
+    /* Read-only: terminal character grid of a window, packed (cols<<16)|rows.
+     * A windowed TTY app (kilo) queries this to size itself to the compositor
+     * font cell instead of assuming a fixed 80x25.  -EINVAL if no such window. */
+    extern int compositor_window_grid(int win_id, int *cols, int *rows);
+    int cols = 0, rows = 0;
+    if (compositor_window_grid((int)arg0, &cols, &rows) != 0)
+      pt_regs_set_return(frame, -EINVAL);
+    else
+      pt_regs_set_return(frame, ((long)(cols & 0xFFFF) << 16) | (rows & 0xFFFF));
+    break;
+  }
   case SYS_COMPOSITOR_RENDER:
     compositor_render();
     pt_regs_set_return(frame, 0);
@@ -446,7 +463,47 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
-    pt_regs_set_return(frame, dispatch_spawn(k_path, PLVL_USER, 0, 0));
+    /* Optional argv vector: arg1 = argc, arg2 = user array of char* (#kilo).
+     * Copy the pointer array and each string into kernel memory before the
+     * spawn so process_load_elf_args() can place them on the child's stack. */
+    int argc = (int)arg1;
+    if (argc < 0)
+      argc = 0;
+    if (argc > SPAWN_MAX_ARGS)
+      argc = SPAWN_MAX_ARGS;
+    char *kargv[SPAWN_MAX_ARGS];
+    char *argv_store = NULL;
+    if (argc > 0) {
+      void *uptrs[SPAWN_MAX_ARGS];
+      if (arch_copy_from_user(uptrs, (const void *)arg2,
+                              (size_t)argc * sizeof(void *)) != 0) {
+        pt_regs_set_return(frame, -EFAULT);
+        break;
+      }
+      argv_store = kmalloc((size_t)argc * SPAWN_ARG_LEN);
+      if (!argv_store) {
+        pt_regs_set_return(frame, -ENOMEM);
+        break;
+      }
+      int bad = 0;
+      for (int i = 0; i < argc; i++) {
+        kargv[i] = argv_store + (size_t)i * SPAWN_ARG_LEN;
+        if (arch_copy_string_from_user(kargv[i], (const char *)uptrs[i],
+                                       SPAWN_ARG_LEN) != 0) {
+          bad = 1;
+          break;
+        }
+      }
+      if (bad) {
+        kfree(argv_store);
+        pt_regs_set_return(frame, -EFAULT);
+        break;
+      }
+    }
+    long sret = dispatch_spawn(k_path, PLVL_USER, 0, 0, argc, kargv);
+    if (argv_store)
+      kfree(argv_store);
+    pt_regs_set_return(frame, sret);
   } break;
   case SYS_SPAWN_CAPS:
   {
@@ -464,8 +521,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
-    pt_regs_set_return(frame,
-                       dispatch_spawn(k_path, (uint8_t)arg1, (uint32_t)arg2, 1));
+    pt_regs_set_return(
+        frame, dispatch_spawn(k_path, (uint8_t)arg1, (uint32_t)arg2, 1, 0,
+                              NULL));
   } break;
   case SYS_KILL:
     /* ABI-04: a process may kill itself or its descendants (orphans are
