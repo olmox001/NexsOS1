@@ -231,28 +231,28 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
   }
 }
 
-/* Compositor sinks for pointer events (graphics layer). */
+/* Compositor sinks for pointer events (graphics layer). These only update
+ * state + mark the compositor dirty (with damage rectangles); the actual
+ * repaint is done by compositor_tick() at ~30 Hz. We deliberately never render
+ * from here — rendering per input event (full-frame, from IRQ/tick context) is
+ * exactly what made the cursor lag. */
 extern void compositor_update_mouse(int dx, int dy, int absolute);
 extern void compositor_handle_click(int button, int state);
-extern void compositor_render(void);
 
 /*
  * input_report - the single dispatch point for every input provider.
  *
  * virtio-input, PS/2 and USB HID all call this with evdev events; nobody
  * dispatches on its own anymore. Keys go through the layout + IPC to the
- * focused process; pointer motion/buttons go to the compositor. A pointer
- * report ends with EV_SYN, which is when we repaint (so PS/2 — whose EV_REL
- * events used to be dropped by the buffer drain — now moves the cursor too).
+ * focused process; pointer motion/buttons update the compositor's state and
+ * damage, which it repaints on its own 30 Hz tick. (This is also what fixes
+ * the PS/2 mouse, whose EV_REL events used to be buffered and dropped.)
  */
 void input_report(uint16_t type, uint16_t code, int32_t value) {
-  static int mouse_dirty = 0;
-
   switch (type) {
   case EV_KEY:
     if (code == BTN_LEFT) {
       compositor_handle_click(BTN_LEFT, value);
-      mouse_dirty = 1;
     } else if (code == BTN_RIGHT || code == BTN_MIDDLE) {
       /* No compositor consumer for these yet; ignore (was already the case). */
     } else {
@@ -261,16 +261,15 @@ void input_report(uint16_t type, uint16_t code, int32_t value) {
     }
     break;
   case EV_REL:
-    if (code == REL_X) { compositor_update_mouse(value, 0, 0); mouse_dirty = 1; }
-    else if (code == REL_Y) { compositor_update_mouse(0, value, 0); mouse_dirty = 1; }
+    if (code == REL_X) compositor_update_mouse(value, 0, 0);
+    else if (code == REL_Y) compositor_update_mouse(0, value, 0);
     /* REL_WHEEL has no consumer yet. */
     break;
   case EV_ABS:
-    if (code == 0) { compositor_update_mouse(value, -1, 1); mouse_dirty = 1; }
-    else if (code == 1) { compositor_update_mouse(-1, value, 1); mouse_dirty = 1; }
+    if (code == 0) compositor_update_mouse(value, -1, 1);
+    else if (code == 1) compositor_update_mouse(-1, value, 1);
     break;
-  case EV_SYN:
-    if (mouse_dirty) { compositor_render(); mouse_dirty = 0; }
+  default: /* EV_SYN and others: nothing to do; the tick repaints. */
     break;
   }
 }
