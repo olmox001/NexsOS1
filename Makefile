@@ -130,8 +130,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/drivers/timer/pic_pit.c \
     $(ARCH_DIR)/platform/platform.c \
     $(ARCH_DIR)/hal.c \
-    $(ARCH_DIR)/virtio.c \
-    $(KERNEL_DIR)/drivers/pci/pci.c
+    $(ARCH_DIR)/virtio.c
 else
 BOOT_SOURCES = \
     $(BOOT_DIR)/header.S \
@@ -168,6 +167,12 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
     $(KERNEL_DIR)/drivers/gpu/gpu_core.c \
+    $(KERNEL_DIR)/drivers/pci/pci.c \
+    $(KERNEL_DIR)/drivers/usb/usb_core.c \
+    $(KERNEL_DIR)/drivers/usb/usb_hid.c \
+    $(KERNEL_DIR)/drivers/usb/xhci.c \
+    $(KERNEL_DIR)/drivers/usb/ehci.c \
+    $(KERNEL_DIR)/drivers/usb/uhci.c \
     $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
     $(KERNEL_DIR)/fs/gpt.c \
     $(KERNEL_DIR)/fs/ext4.c \
@@ -259,6 +264,7 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(USER_ARCH_DIR)
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/block
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/ps2
+	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/usb
 # Bootloader
 bootloader: $(BOOTLOADER_BIN)
 

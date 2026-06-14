@@ -6,6 +6,7 @@
  */
 #include <drivers/keyboard.h>
 #include <drivers/ps2.h>
+#include <drivers/usb/usb.h>
 #include <drivers/virtio_input.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
@@ -97,21 +98,14 @@ void keyboard_init(void) {
 
   pr_info("%s", "Input: Initializing input subsystem...\n");
 
-  virtio_input_init();
-
-  /* Rilevamento automatico + supporto architetture */
-#ifdef ARCH_AMD64
-  if (virtio_input_get_dev_count() == 0) {
-    pr_info("Input: No VirtIO input → enabling PS/2 fallback\n");
-    ps2_init();
-  } else {
-    pr_info("Input: VirtIO detected (%d) + PS/2 support\n",
-            virtio_input_get_dev_count());
-    ps2_init(); // Ibrido: meglio avere entrambi su QEMU amd64
-  }
-#else
-  pr_info("%s", "Input: VirtIO only (AArch64 - PS/2 not available)\n");
-#endif
+  /* Device-manager-driven bring-up: probe every input provider; each one
+   * detects its own hardware and feeds the unified input_report() core. No
+   * hardcoded per-arch "virtio or PS/2" selection anymore — whatever is
+   * actually present (virtio-input, USB HID, legacy PS/2) becomes active, on
+   * both architectures. Absent providers no-op (e.g. PS/2 on aarch64). */
+  virtio_input_init(); /* virtio-input: MMIO on aarch64, PCI on amd64 */
+  usb_init();          /* xHCI/EHCI/UHCI via the PCI driver manager + USB HID */
+  ps2_init();          /* legacy 8042 (amd64 only; no-op elsewhere) */
 
   current_layout = &layout_it;
 
@@ -234,6 +228,50 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
     }
 
     kernel_ipc_send(keyboard_focus_pid, &msg);
+  }
+}
+
+/* Compositor sinks for pointer events (graphics layer). */
+extern void compositor_update_mouse(int dx, int dy, int absolute);
+extern void compositor_handle_click(int button, int state);
+extern void compositor_render(void);
+
+/*
+ * input_report - the single dispatch point for every input provider.
+ *
+ * virtio-input, PS/2 and USB HID all call this with evdev events; nobody
+ * dispatches on its own anymore. Keys go through the layout + IPC to the
+ * focused process; pointer motion/buttons go to the compositor. A pointer
+ * report ends with EV_SYN, which is when we repaint (so PS/2 — whose EV_REL
+ * events used to be dropped by the buffer drain — now moves the cursor too).
+ */
+void input_report(uint16_t type, uint16_t code, int32_t value) {
+  static int mouse_dirty = 0;
+
+  switch (type) {
+  case EV_KEY:
+    if (code == BTN_LEFT) {
+      compositor_handle_click(BTN_LEFT, value);
+      mouse_dirty = 1;
+    } else if (code == BTN_RIGHT || code == BTN_MIDDLE) {
+      /* No compositor consumer for these yet; ignore (was already the case). */
+    } else {
+      keyboard_process_key(code, value);
+      wake_up(&keyboard_wait_queue);
+    }
+    break;
+  case EV_REL:
+    if (code == REL_X) { compositor_update_mouse(value, 0, 0); mouse_dirty = 1; }
+    else if (code == REL_Y) { compositor_update_mouse(0, value, 0); mouse_dirty = 1; }
+    /* REL_WHEEL has no consumer yet. */
+    break;
+  case EV_ABS:
+    if (code == 0) { compositor_update_mouse(value, -1, 1); mouse_dirty = 1; }
+    else if (code == 1) { compositor_update_mouse(-1, value, 1); mouse_dirty = 1; }
+    break;
+  case EV_SYN:
+    if (mouse_dirty) { compositor_render(); mouse_dirty = 0; }
+    break;
   }
 }
 

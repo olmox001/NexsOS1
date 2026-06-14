@@ -31,6 +31,7 @@
  *           on every MMIO access; not a defect in this file.
  */
 #include <kernel/hal.h>
+#include <kernel/driver.h>
 #include <kernel/string.h>
 #include <kernel/printk.h>
 #include <drivers/virtio.h>
@@ -113,6 +114,73 @@ struct hal_device *hal_device_find(uint16_t vendor, uint16_t device, int index) 
 }
 
 /*
+ * hal_device_find_class - find the Nth device matching a PCI class triplet.
+ *
+ * Each of class_code/subclass/prog_if may be DRV_ANY_CLASS (0xFF) to act as a
+ * wildcard on that field. Used by class-based driver probes (xHCI, AHCI, VGA)
+ * to locate their controller without a vendor:device list.
+ */
+struct hal_device *hal_device_find_class(uint8_t class_code, uint8_t subclass,
+                                         uint8_t prog_if, int index) {
+    int found = 0;
+    for (int i = 0; i < hal_device_count; i++) {
+        struct hal_device *d = &hal_devices[i];
+        if (class_code != DRV_ANY_CLASS && d->class_code != class_code) continue;
+        if (subclass   != DRV_ANY_CLASS && d->subclass   != subclass)   continue;
+        if (prog_if    != DRV_ANY_CLASS && d->prog_if    != prog_if)    continue;
+        if (found == index) return d;
+        found++;
+    }
+    return NULL;
+}
+
+/* --- Driver-binding layer (kernel/driver.h) --- */
+
+/* driver_list: head of the registered-driver chain. Mutated only during
+ * single-threaded boot, like hal_devices[]; no lock taken. */
+static struct device_driver *driver_list = NULL;
+
+static int driver_matches(const struct device_driver *drv,
+                          const struct hal_device *dev) {
+    /* ID match takes priority when the driver specifies a concrete vendor. */
+    if (drv->vendor != DRV_ANY_ID) {
+        if (dev->vendor_id != drv->vendor) return 0;
+        if (drv->device != DRV_ANY_ID && dev->device_id != drv->device) return 0;
+        return 1;
+    }
+    /* Otherwise fall back to class match (any field may be wildcard). */
+    if (drv->class_code != DRV_ANY_CLASS && dev->class_code != drv->class_code) return 0;
+    if (drv->subclass   != DRV_ANY_CLASS && dev->subclass   != drv->subclass)   return 0;
+    if (drv->prog_if    != DRV_ANY_CLASS && dev->prog_if    != drv->prog_if)    return 0;
+    /* A driver that wildcards everything would match all devices; require it to
+     * pin at least one of class_code or vendor to avoid accidental capture. */
+    if (drv->class_code == DRV_ANY_CLASS) return 0;
+    return 1;
+}
+
+void driver_register(struct device_driver *drv) {
+    if (!drv) return;
+    drv->next = driver_list;
+    driver_list = drv;
+}
+
+void driver_match_all(void) {
+    for (int i = 0; i < hal_device_count; i++) {
+        struct hal_device *dev = &hal_devices[i];
+        if (dev->driver) continue; /* already bound */
+        for (struct device_driver *drv = driver_list; drv; drv = drv->next) {
+            if (!driver_matches(drv, dev)) continue;
+            if (drv->probe && drv->probe(dev) == 0) {
+                dev->driver = drv;
+                pr_info("HAL: bound driver '%s' to device '%s'\n",
+                        drv->name, dev->name);
+                break; /* device claimed */
+            }
+        }
+    }
+}
+
+/*
  * hal_register_device - add a device descriptor to the global registry.
  *
  * Called by arch_bus_scan() / arch_virtio_scan() for each discovered device.
@@ -133,7 +201,8 @@ void hal_register_device(struct hal_device *dev) {
     }
     
     hal_devices[hal_device_count] = *dev;
-    pr_info("HAL: Registered device '%s' (Bus=%d, ID=%04x:%04x, Base=0x%lx, IRQ=%u)\n",
-            dev->name, dev->bus_type, dev->vendor_id, dev->device_id, dev->base, dev->irq);
+    pr_info("HAL: Registered device '%s' (Bus=%d, ID=%04x:%04x, Class=%02x:%02x:%02x, Base=0x%lx, IRQ=%u)\n",
+            dev->name, dev->bus_type, dev->vendor_id, dev->device_id,
+            dev->class_code, dev->subclass, dev->prog_if, dev->base, dev->irq);
     hal_device_count++;
 }

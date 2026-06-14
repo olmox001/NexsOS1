@@ -80,6 +80,14 @@ static void amd64_pci_callback(int bdf, uint16_t vendor, uint16_t device_id) {
     dev.device_id = device_id;
     dev.pci_bdf = (uint32_t)bdf;
 
+    /* Class triplet (offset 0x08): lets the driver-binding layer match generic
+     * controllers (xHCI/AHCI/VGA/NVMe) by function instead of vendor:device. */
+    uint32_t cls = pci_get_class(bdf);
+    dev.class_code  = (cls >> 24) & 0xFF;
+    dev.subclass    = (cls >> 16) & 0xFF;
+    dev.prog_if     = (cls >> 8)  & 0xFF;
+    dev.header_type = pci_get_header_type(bdf);
+
     /* Enable PCI Bus Master and IO/Mem space */
     uint32_t cmd = pci_config_read((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, 0x04);
     pci_config_write((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, 0x04, cmd | 0x7);

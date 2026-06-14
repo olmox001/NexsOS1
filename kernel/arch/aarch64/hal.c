@@ -27,6 +27,31 @@
 #include <kernel/platform.h>
 #include <arch/platform.h>
 #include <drivers/virtio.h>
+#include <drivers/pci.h>
+
+/* QEMU virt PCIe ECAM (compatible "pci-host-ecam-generic"). Base taken from the
+ * board DTB pcie node: reg = <0x40 0x10000000 ...> -> 0x4010000000, 256 MB,
+ * bus-range 0..255. Standard ECAM addressing: base + (bus<<20|dev<<15|fn<<12).
+ *
+ * NOTE(ASTRA-VIOLATION): base is hardcoded for the QEMU virt board; derive it
+ * from the FDT pcie node once an FDT parser exists. Only the first buses are
+ * populated on virt, so we map and bound the scan to a 16 MB window. */
+#define VIRT_ECAM_BASE  0x4010000000UL
+#define VIRT_ECAM_BUSES 16
+
+static uint32_t ecam_off(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
+  return ((uint32_t)bus << 20) | ((uint32_t)dev << 15) |
+         ((uint32_t)fn << 12) | (off & 0xFFC);
+}
+static uint32_t ecam_read32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
+  if (bus >= VIRT_ECAM_BUSES) return 0xFFFFFFFF;
+  return *(volatile uint32_t *)phys_to_virt(VIRT_ECAM_BASE + ecam_off(bus, dev, fn, off));
+}
+static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t v) {
+  if (bus >= VIRT_ECAM_BUSES) return;
+  *(volatile uint32_t *)phys_to_virt(VIRT_ECAM_BASE + ecam_off(bus, dev, fn, off)) = v;
+}
+static struct pci_config_ops ecam_ops = { ecam_read32, ecam_write32 };
 
 /* arch_platform_get_boot_module (HAL contract, platform.h): aarch64 boots a
  * raw kernel + a virtio-blk disk, with no GRUB/initrd module today.  Returns
@@ -83,6 +108,19 @@ void arch_bus_scan(void) {
             }
         }
     }
+
+    /* Unify with amd64: bring up the PCIe ECAM bus so the same PCI providers
+     * (xHCI/VGA/...) enumerate here too. virtio stays on MMIO above; this adds
+     * the PCI side (e.g. -device qemu-xhci) behind the same HAL registry. */
+    extern int arch_vmm_map_device(uint64_t base, uint64_t size);
+    arch_vmm_map_device(VIRT_ECAM_BASE, (uint64_t)VIRT_ECAM_BUSES << 20);
+    pci_set_config_ops(&ecam_ops);
+    /* PCI MMIO windows from the virt DTB pcie ranges (32-bit @ 0x10000000,
+     * 64-bit @ 0x80_00000000), used to assign BARs the (absent) firmware did
+     * not program. */
+    pci_set_mmio_windows(0x10000000UL, 0x2eff0000UL,
+                         0x8000000000UL, 0x8000000000UL);
+    pci_scan_and_register();
 }
 
 /*

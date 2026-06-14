@@ -42,6 +42,9 @@
 #include <kernel/spinlock.h>
 
 extern void compositor_tick(void);
+/* USB has no IRQ wired (polled HCDs); the tick drives HID input on CPU 0 so it
+ * works even when no virtio/PS-2 interrupt ever fires (e.g. UTM, real HW). */
+extern void usb_hid_poll(void);
 extern volatile int panic_flag;
 /* compositor_interval: tick stride between compositor_tick() calls; set once
  * from HZ and COMPOSITOR_TARGET_FPS on the first tick processed by CPU 0. */
@@ -133,6 +136,11 @@ struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
       }
     }
     spin_unlock_irqrestore(&timer_lock, flags);
+
+    /* Poll USB HID every tick (CPU 0): keyboard events feed the evdev buffer,
+     * pointer motion goes straight to the compositor. Cheap when idle (just an
+     * event-ring head check per device). */
+    usb_hid_poll();
 
     /* Calculate compositor interval once: HZ/30 ticks (or 1 if HZ < 30).
      * interval_init guards against re-computation on every tick. */

@@ -8,6 +8,8 @@
 
 /* --- Device & Bus Abstraction --- */
 
+struct device_driver; /* forward decl; full contract in kernel/driver.h */
+
 struct hal_device {
     char name[32];
     hal_bus_type_t bus_type;
@@ -15,16 +17,33 @@ struct hal_device {
     uint32_t irq;
     uint16_t vendor_id;
     uint16_t device_id;
-    union {
-        uint32_t pci_bdf;
-        void *priv;
-    };
+    /* PCI class triplet (config offset 0x08); 0 on non-PCI buses. The
+     * driver-binding layer (driver.h) matches generic controllers
+     * (xHCI/AHCI/VGA/NVMe/...) by this function code instead of by a
+     * hardcoded vendor:device list — the ASTRA way (a board is just a bag
+     * of class-identified providers on a bus). */
+    uint8_t class_code;
+    uint8_t subclass;
+    uint8_t prog_if;
+    uint8_t header_type;
+    /* pci_bdf and priv used to share a union; they are now independent so a
+     * bound driver can stash private state (priv) on a PCI device while the
+     * bus address (pci_bdf) stays valid for further config-space access. */
+    uint32_t pci_bdf;
+    void *priv;
+    /* Bound driver (set by driver_match_all on a successful probe); NULL while
+     * unbound. Used to avoid probing the same device twice. */
+    struct device_driver *driver;
 };
 
 void hal_bus_init(void);
 int hal_device_get_count(void);
 struct hal_device *hal_device_get(int index);
 struct hal_device *hal_device_find(uint16_t vendor, uint16_t device, int index);
+/* Find the Nth device whose PCI class triplet matches (0xFF = wildcard on any
+ * field). Returns NULL if fewer than index+1 matches exist. */
+struct hal_device *hal_device_find_class(uint8_t class_code, uint8_t subclass,
+                                         uint8_t prog_if, int index);
 
 /* Internal HAL APIs for architecture-specific code */
 void hal_register_device(struct hal_device *dev);

@@ -5,6 +5,7 @@
  */
 #include <drivers/virtio.h>
 #include <drivers/virtio_input.h>
+#include <drivers/keyboard.h>
 #include <kernel/arch.h>
 #include <kernel/graphics.h>
 #include <kernel/irq.h>
@@ -140,7 +141,6 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
 
 static void virtio_input_handler(uint32_t irq, void *data) {
   (void)data; /* Parametro ignorato a favore del polling vettoriale */
-  int needs_render = 0;
 
   for (int i = 0; i < input_dev_count; i++) {
     struct virtio_input_dev *dev = &input_devs[i];
@@ -159,32 +159,9 @@ static void virtio_input_handler(uint32_t irq, void *data) {
       uint32_t id = e->id;
       struct virtio_input_event *evt = &dev->events[id];
 
-      if (evt->type == EV_REL) {
-        if (evt->code == REL_X) {
-          compositor_update_mouse(evt->value, 0, 0);
-          needs_render = 1;
-        } else if (evt->code == REL_Y) {
-          compositor_update_mouse(0, evt->value, 0);
-          needs_render = 1;
-        }
-      } else if (evt->type == EV_ABS) {
-        if (evt->code == 0) {
-          compositor_update_mouse(evt->value, -1, 1);
-          needs_render = 1;
-        } else if (evt->code == 1) {
-          compositor_update_mouse(-1, evt->value, 1);
-          needs_render = 1;
-        }
-      } else if (evt->type == EV_KEY) {
-        if (evt->code == 272) {
-          compositor_handle_click(evt->code, evt->value);
-          needs_render = 1;
-        } else {
-          virtio_input_add_event(evt->type, evt->code, evt->value);
-          extern void keyboard_notify_input(void);
-          keyboard_notify_input();
-        }
-      }
+      /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
+       * EV_SYN -> repaint. Same path PS/2 and USB HID use now. */
+      input_report(evt->type, evt->code, evt->value);
 
       dev->avail->ring[dev->avail->idx % INPUT_QSIZE] = id;
       arch_mb();
@@ -202,10 +179,6 @@ static void virtio_input_handler(uint32_t irq, void *data) {
     if (processed_count > 0) {
       v_notify(dev, 0);
     }
-  }
-
-  if (needs_render) {
-    compositor_render();
   }
 }
 

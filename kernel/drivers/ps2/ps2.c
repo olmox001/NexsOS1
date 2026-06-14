@@ -63,8 +63,8 @@ static void ps2_keyboard_handler(uint32_t irq, void *data) {
   uint16_t code = scancode & 0x7F;
   int pressed = (scancode & 0x80) == 0;
 
-  virtio_input_add_event(EV_KEY, code, pressed ? 1 : 0);
-  keyboard_notify_input();
+  input_report(EV_KEY, code, pressed ? 1 : 0);
+  input_report(EV_SYN, 0, 0);
 }
 
 /* ==================== MOUSE ==================== */
@@ -85,20 +85,20 @@ static void ps2_mouse_handler(uint32_t irq, void *data) {
     int dx = (int8_t)mouse_packet[1];
     int dy = -(int8_t)mouse_packet[2];
 
-    virtio_input_add_event(EV_KEY, BTN_LEFT, (status & 0x01));
-    virtio_input_add_event(EV_KEY, BTN_RIGHT, (status & 0x02));
-    virtio_input_add_event(EV_KEY, BTN_MIDDLE, (status & 0x04));
+    input_report(EV_KEY, BTN_LEFT, (status & 0x01) ? 1 : 0);
+    input_report(EV_KEY, BTN_RIGHT, (status & 0x02) ? 1 : 0);
+    input_report(EV_KEY, BTN_MIDDLE, (status & 0x04) ? 1 : 0);
 
     if (dx)
-      virtio_input_add_event(EV_REL, REL_X, dx);
+      input_report(EV_REL, REL_X, dx);
     if (dy)
-      virtio_input_add_event(EV_REL, REL_Y, dy);
+      input_report(EV_REL, REL_Y, dy);
 
     if (mouse_has_wheel && mouse_packet[3] != 0) {
-      virtio_input_add_event(EV_REL, REL_WHEEL, (int8_t)mouse_packet[3]);
+      input_report(EV_REL, REL_WHEEL, (int8_t)mouse_packet[3]);
     }
 
-    keyboard_notify_input();
+    input_report(EV_SYN, 0, 0);
     mouse_byte = 0;
   }
 }
