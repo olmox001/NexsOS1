@@ -1,24 +1,20 @@
-/*
- * user/bin/hello.c
- * Minimal windowless CLI demo (USR-TTY-01 #123).
- *
- * Opens NO compositor window, so when launched from the shell it runs as a
- * foreground job: its stdout lands in the shell's window (the controlling
- * terminal, resolved kernel-side), and Ctrl+C terminates it.  It loops
- * forever printing a heartbeat so the in-shell + Ctrl+C path is observable.
- */
 #include <os1.h>
 
 int main(void) {
-  printf("hello: running in the shell (PID %d) — press Ctrl+C to stop\n",
-         get_pid());
+  int my_win;
 
-  unsigned long i = 0;
-  while (1) {
-    printf("hello #%lu\n", i++);
-    /* Slow the heartbeat down: yield a lot between lines. */
-    for (int d = 0; d < 400; d++)
-      yield();
+  my_win = _sys_create_window(100, 100, 400, 300, "Hello Window");
+  if (my_win < 0) {
+    print("window creation failed\n");
+    return 1;
   }
+
+  _sys_window_write(my_win, "ciao mondo", 10);
+
+  /* Mantieni il processo vivo senza CPU burn */
+  while (1) {
+    yield();
+  }
+
   return 0;
 }
