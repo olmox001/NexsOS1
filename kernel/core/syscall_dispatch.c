@@ -583,6 +583,11 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       break;
     }
     keyboard_focus_pid = (int)arg0;
+    /* Caret follows the input window: clear it off whoever just lost focus. */
+    {
+      extern void compositor_focus_changed(int new_pid);
+      compositor_focus_changed((int)arg0);
+    }
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WAIT:

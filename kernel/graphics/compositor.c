@@ -41,6 +41,8 @@ struct window {
   /* Terminal State */
   int cursor_x, cursor_y;
   int cursor_visible;  /* VT100 DECTCEM (\x1b[?25h/l); 1 = draw the caret */
+  int caret_px, caret_py; /* cell where the caret was last painted */
+  int caret_shown;        /* 1 = a caret is currently baked at caret_px/py */
   uint8_t *text_grid;  /* Character grid */
   uint32_t *attr_grid; /* Attribute grid (colors) */
   int grid_cols, grid_rows;
@@ -234,6 +236,9 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   windows[slot].cursor_x = 0;
   windows[slot].cursor_y = 0;
   windows[slot].cursor_visible = 1;
+  windows[slot].caret_shown = 0;
+  windows[slot].caret_px = 0;
+  windows[slot].caret_py = 0;
   windows[slot].fg_color = 0xFFFFFFFF;
   windows[slot].escape_state = 0;
   windows[slot].escape_len = 0;
@@ -270,6 +275,10 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
  * Caller MUST hold compositor_lock; destroyed slots are already zeroed and
  * thus excluded by the id != 0 check.
  */
+/* Erase the caret on every window not owned by keep_pid (caller holds
+ * compositor_lock).  Keeps the caret on the input window only. */
+static void __clear_other_carets_locked(int keep_pid);
+
 static void __focus_topmost_locked(void) {
   int max_z = -1;
   int pid = 7; /* shell default when no window remains */
@@ -280,6 +289,7 @@ static void __focus_topmost_locked(void) {
     }
   }
   keyboard_focus_pid = pid;
+  __clear_other_carets_locked(pid);
   pr_debug("Compositor: Focus reset to PID %d\n", pid);
 }
 
@@ -556,21 +566,46 @@ static void term_clear_cell(int win_id, struct window *win, int cx, int cy,
   }
 }
 
-/* Draw the text caret as a semi-transparent green block at the cursor cell
- * (if visible).  The colour is the shell accent (0x00FF88) at 50% alpha,
- * blended over the cell so the glyph underneath stays readable.  Called once
- * per write batch; kilo repaints the whole frame each refresh, so the previous
- * caret cell is overwritten before this redraws the new one. */
+/* Erase a previously painted caret by repainting its cell from the text/attr
+ * grid (background + glyph).  Idempotent; clears caret_shown.  This is what
+ * prevents stray green blocks after the cursor moves (newline/scroll): the old
+ * caret cell is always restored before a new one is drawn. */
+static void term_erase_caret(int win_id, struct window *win,
+                             struct gl_surface *surf, int char_w, int char_h) {
+  if (!win->caret_shown)
+    return;
+  int px = win->caret_px, py = win->caret_py;
+  win->caret_shown = 0;
+  if (px < 0 || py < 0 || px >= win->grid_cols || py >= win->grid_rows)
+    return;
+  draw_rect_internal(win_id, px * char_w, py * char_h, char_w, char_h,
+                     win->bg_color, 1);
+  if (win->text_grid && win->attr_grid) {
+    int idx = py * win->grid_cols + px;
+    char ch = (char)win->text_grid[idx];
+    if (ch >= 32 && ch < 127)
+      gl_draw_char(surf, px * char_w, py * char_h, ch, win->attr_grid[idx]);
+  }
+}
+
+/* Draw the text caret as a 25%-transparent green block (shell accent 0x00FF88)
+ * at the cursor cell, blended over the cell so the glyph stays readable.  Only
+ * the window that owns keyboard focus — i.e. the one the user is typing into —
+ * gets a caret; a notification or a print-only window never shows one.  The
+ * previous caret (this window's) is erased first so movement leaves no trail. */
 static void term_draw_cursor(int win_id, struct window *win,
                              struct gl_surface *surf, int char_w, int char_h) {
-  (void)win_id;
-  if (!win->cursor_visible)
+  extern int keyboard_focus_pid;
+
+  term_erase_caret(win_id, win, surf, char_w, char_h);
+
+  if (!win->cursor_visible || win->pid != keyboard_focus_pid)
     return;
   int cx = win->cursor_x, cy = win->cursor_y;
   if (cx < 0 || cy < 0 || cx >= win->grid_cols || cy >= win->grid_rows)
     return;
 
-  const uint32_t caret = 0x8000FF88; /* ARGB: 50% alpha, shell green */
+  const uint32_t caret = 0xC000FF88; /* ARGB: 75% alpha (25% transparent) */
   int px0 = cx * char_w, py0 = cy * char_h;
   for (int y = 0; y < char_h; y++) {
     int sy = py0 + y;
@@ -584,6 +619,39 @@ static void term_draw_cursor(int win_id, struct window *win,
       *p = blend_pixel(caret, *p);
     }
   }
+  win->caret_px = cx;
+  win->caret_py = cy;
+  win->caret_shown = 1;
+}
+
+/* Erase carets on every window not owned by keep_pid; marks damage so they
+ * repaint.  Caller holds compositor_lock.  Used on focus changes so the caret
+ * follows the input window instead of lingering on the one that lost focus. */
+static void __clear_other_carets_locked(int keep_pid) {
+  int char_w = graphics_font_max_width();
+  int char_h = graphics_font_height();
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    struct window *win = &windows[i];
+    if (win->id == 0 || !win->caret_shown || win->pid == keep_pid)
+      continue;
+    struct gl_surface s = {.width = win->width,
+                           .height = win->height,
+                           .stride = win->width,
+                           .buffer = win->buffer};
+    term_erase_caret(win->id, win, &s, char_w, char_h);
+    expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, win->width,
+                  win->height + TITLE_BAR_HEIGHT);
+    compositor_dirty = 1;
+  }
+}
+
+/* compositor_focus_changed - public hook for SYS_SET_FOCUS: wipe the caret off
+ * windows that just lost keyboard focus. */
+void compositor_focus_changed(int new_pid) {
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  __clear_other_carets_locked(new_pid);
+  spin_unlock_irqrestore(&compositor_lock, flags);
 }
 
 /*

@@ -61,6 +61,10 @@ int compositor_window_owner(int window_id);
 /* compositor_window_grid: terminal grid (cols x rows) of a window; 0 on
  * success (fills cols/rows), -1 if the id is unknown.  Backs SYS_WINDOW_GRID. */
 int compositor_window_grid(int window_id, int *cols, int *rows);
+/* compositor_focus_changed: erase the terminal caret off windows that no
+ * longer own keyboard focus (new_pid is the new focus owner).  Called by
+ * SYS_SET_FOCUS so the caret tracks the window the user types into. */
+void compositor_focus_changed(int new_pid);
 uint32_t *compositor_get_buffer(int window_id);
 void compositor_move_window(int window_id, int x, int y);
 void compositor_render(void);
