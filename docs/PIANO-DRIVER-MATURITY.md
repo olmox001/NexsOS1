@@ -23,7 +23,13 @@
   **FATTO**: USB-HID assoluto (report-protocol) — `usb_parse_hid` accetta HID non-boot, parser
   del report descriptor (X/Y assoluti + bottoni), handler tablet → `EV_ABS` normalizzato.
   Verificato su QEMU **xHCI (USB3) ed EHCI (USB2)** con `usb-tablet` (parse: X@8 Y@24 16bit max
-  32767; decodifica esatta). Controller-agnostico (vale anche UHCI).
+  32767; decodifica esatta). Verificato anche su **UHCI** (il controller di UTM).
+- **USB su UHCI/UTM (DRV-USB-UTM-01 #130)**: il report descriptor va richiesto alla
+  **lunghezza esatta** (`wDescriptorLength` dal descriptor HID 0x21) — l'over-request (256B)
+  terminava con uno short packet e la control UHCI ritornava -1 (su xHCI/EHCI era tollerato).
+  Con il fix il tablet enumera anche su UHCI (`rl=74 abs=1`). Aggiunto anche, in
+  `usb_register_hcd`, un **settle + poll bounded** del connect per porta + log `connected=N`
+  (UTM/HVF alza il connect in ritardo; il re-scan a runtime è la Fase 2).
 - **PS/2 mouse drift (DRV-INPUT-01 #125)**: l'handler non sincronizzava il pacchetto → stream
   disallineato → `dx` leggeva il byte sbagliato → cursore trascinato di lato (anche con grab).
   Fix: resync sul bit 3 dello status + drain a fine init + scarto pacchetti con overflow.
