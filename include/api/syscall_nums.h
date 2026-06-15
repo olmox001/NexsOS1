@@ -73,5 +73,6 @@
 #define SYS_LIST_DIR           254
 #define SYS_CHDIR              255
 #define SYS_GETCWD             256
+#define SYS_NANOSLEEP          257  /* real blocking sleep (POSIX nanosleep); arg0 = nanoseconds */
 
 #endif /* _SYSCALL_NUMS_H */

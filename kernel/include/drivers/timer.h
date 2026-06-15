@@ -45,10 +45,11 @@ typedef void (*timer_callback_t)(void *data);
 /* Software timer structure */
 struct timer {
   struct list_head list;
-  uint64_t expires; /* Expiration time in jiffies */
+  uint64_t expires; /* Expiration time in jiffies (global monotonic base) */
   timer_callback_t callback;
   void *data;
   bool pending;
+  int cpu; /* CPU whose per-CPU timer_list this timer is armed on (-1 = none) */
 };
 
 /* Software timer functions */

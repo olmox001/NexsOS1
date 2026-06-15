@@ -49,6 +49,7 @@
  *   USR-BLOAT-02 (W2 BAD-IMPL) -g DWARF retained in every ELF; not stripped.
  */
 #include <os1.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -122,9 +123,20 @@ void destroy_window(int win_id) { _sys_destroy_window(win_id); }
 void window_draw(int win_id, int x, int y, int w, int h, unsigned int color) { _sys_window_draw(win_id, x, y, w, h, color); }
 void window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf) { _sys_window_blit(win_id, x, y, w, h, buf); }
 void yield(void) { _sys_yield(); }
-/* sleep: busy-waits by polling get_time() in a yield loop.
- * 'ticks' is in jiffies (100 Hz on the reference timer -> 1 tick ≈ 10 ms). */
-void sleep(int ticks) { long end = get_time() + ticks; while (get_time() < end) yield(); }
+/* sleep: block for `ms` milliseconds via the REAL kernel timer (SYS_NANOSLEEP).
+ * The process is descheduled (no busy-wait) and woken by its core's tick, so it
+ * no longer monopolises a core while idle. The parameter is kept named "ticks"
+ * for source compatibility but its unit is milliseconds — same wall-clock
+ * behaviour as the previous get_time()-based implementation. */
+void sleep(int ticks) {
+  if (ticks > 0)
+    _sys_nanosleep((unsigned long long)ticks * 1000000ULL);
+}
+/* usleep: POSIX microsecond sleep (real, blocking). Returns 0. */
+int usleep(unsigned int usec) {
+  _sys_nanosleep((unsigned long long)usec * 1000ULL);
+  return 0;
+}
 void compositor_render(void) { _sys_compositor_render(); }
 /* send/recv: IPC syscalls; pid==-1 means "any sender" in recv/try_recv. */
 int send(int pid, struct ipc_message *msg) { return _sys_send(pid, msg); }

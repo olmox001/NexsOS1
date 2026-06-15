@@ -47,6 +47,7 @@ extern long _sys_spawn_caps(const char *path, int level, unsigned long caps);
 extern int  _sys_kill(int pid);
 extern int  _sys_wait(int pid);
 extern void _sys_yield(void);
+extern void _sys_nanosleep(unsigned long long ns);
 extern void _sys_draw(int x, int y, int w, int h, int color);
 extern void _sys_flush(void);
 extern int  _sys_create_window(int x, int y, int w, int h, const char *title);

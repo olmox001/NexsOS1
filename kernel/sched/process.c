@@ -407,6 +407,8 @@ void process_init(void) {
     }
     cpu_data[c].prio_bitmap = 0;
     spin_lock_init(&cpu_data[c].sched_lock);
+    INIT_LIST_HEAD(&cpu_data[c].timer_list);
+    spin_lock_init(&cpu_data[c].timer_lock);
   }
 }
 
@@ -881,6 +883,11 @@ int process_terminate(int pid) {
     spin_unlock_irqrestore(&sched_lock, flags);
     return 0;
   }
+
+  /* Cancel any pending timed-sleep timer (embedded in struct process) so its
+   * callback cannot fire on the victim after it is freed. No-op if not armed.
+   * Lock order holds: global sched_lock > per-CPU timer_lock. */
+  timer_del(&proc->sleep_timer);
 
   /* Drain the incoming IPC queue (the victim will never read it).  Held under
    * msg_lock to serialise against a concurrent pop_message() on the victim's

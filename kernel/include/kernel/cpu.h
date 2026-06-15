@@ -26,6 +26,14 @@ struct cpu_info {
   uint32_t prio_bitmap;
   spinlock_t sched_lock; /* Local runqueue protection */
   struct process *idle_task;
+
+  /* Per-CPU software timer wheel (kernel/core/timer.c): each CPU fires its OWN
+   * timers in kernel_timer_tick against the global jiffies clock, so a process
+   * sleeping on this core is woken locally — no cross-CPU dependency, no global
+   * timer-lock contention. */
+  struct list_head timer_list;
+  spinlock_t timer_lock;
+
   char printk_buf[2048];
   char syscall_buf[2048];
   uint32_t in_printk;

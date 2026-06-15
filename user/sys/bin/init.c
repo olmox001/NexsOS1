@@ -121,9 +121,11 @@ int main(void) {
       pid_notify = spawn("/sys/bin/notify_srv");
     }
 
-    /* Yield to the scheduler; prevents busy-spinning on the two wait() calls
-     * when both child processes are alive (wait returns -1 each iteration). */
-    yield();
+    /* Sleep between supervisor passes instead of busy-spinning: with the real
+     * kernel timer (SYS_NANOSLEEP) init is descheduled (~0% CPU) and woken by
+     * its core's tick, so it can no longer monopolise a core while all children
+     * are alive. 50 ms respawn latency is imperceptible. */
+    sleep(50);
   }
 
   return 0;

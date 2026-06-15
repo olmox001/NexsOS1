@@ -84,6 +84,9 @@
 #include <kernel/vfs.h>
 #include <syscall_nums.h>
 
+/* Defined below (after sys_get_time); used by the SYS_NANOSLEEP dispatch case. */
+static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns);
+
 /*
  * FIX(EXT4-07): upper bound for kmalloc'd bounce buffers whose size comes
  * straight from a user syscall argument (arg2) in FILE_WRITE/FILE_READ/LIST_DIR
@@ -540,6 +543,8 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   case SYS_YIELD:
     return schedule(frame);
+  case SYS_NANOSLEEP:
+    return sys_nanosleep(frame, arg0);
   case SYS_SEND:
   {
     /* ABI-05 RESOLVED: capture the result in a local instead of trying to
@@ -766,6 +771,58 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
  */
 extern uint64_t timer_get_us(void);
 long sys_get_time(void) { return (long)(timer_get_us() / 1000); }
+
+/* Global monotonic tick counter (drivers/timer.c / platform.c). */
+extern volatile uint64_t jiffies;
+
+/*
+ * proc_sleep_wake - per-process sleep timer callback (fired by the owning core's
+ * tick when the deadline is reached). Makes the sleeper runnable again; it will
+ * re-run sys_nanosleep (retry), observe jiffies >= wake_jiffies, and return.
+ * Runs under that CPU's timer_lock; enqueue_task takes only a per-CPU sched_lock
+ * (lock order timer_lock > per-CPU sched_lock — no inversion).
+ */
+static void proc_sleep_wake(void *data) {
+  struct process *p = (struct process *)data;
+  if (p && p->state == PROC_SLEEPING)
+    enqueue_task(p);
+}
+
+/*
+ * sys_nanosleep - block the caller for `ns` nanoseconds (POSIX nanosleep core).
+ *
+ * Arms a per-process software timer on the running core (so the wakeup is local
+ * to the core that holds the process); the process sleeps and is re-run on
+ * expiry. Retry-based like the blocking read: re-entered on each wakeup, with
+ * the deadline kept in p->wake_jiffies so a spurious early wake just re-sleeps.
+ * ns is rounded up to whole ticks (minimum one), the jiffies granularity.
+ */
+static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
+  struct process *p = current_process;
+  if (!p || ns == 0) {
+    pt_regs_set_return(regs, 0);
+    return regs;
+  }
+  if (p->wake_jiffies == 0) {
+    uint64_t ticks = (ns * (uint64_t)HZ + 999999999ULL) / 1000000000ULL;
+    if (ticks == 0)
+      ticks = 1;
+    p->wake_jiffies = jiffies + ticks;
+    timer_setup(&p->sleep_timer, proc_sleep_wake, p);
+    timer_add(&p->sleep_timer, p->wake_jiffies);
+  }
+  if (jiffies >= p->wake_jiffies) {
+    p->wake_jiffies = 0;
+    timer_del(&p->sleep_timer); /* cancel if somehow still pending */
+    pt_regs_set_return(regs, 0);
+    return regs;
+  }
+  arch_local_irq_disable();
+  p->state = PROC_SLEEPING;
+  arch_local_irq_enable();
+  pt_regs_retry_syscall(regs);
+  return schedule(regs);
+}
 
 /*
  * sys_get_pid - return the PID of the calling process.

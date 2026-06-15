@@ -100,6 +100,12 @@ _sys_yield:
     syscall
     ret
 
+.global _sys_nanosleep
+_sys_nanosleep:
+    movq $SYS_NANOSLEEP, %rax
+    syscall
+    ret
+
 .global _sys_draw
 _sys_draw:
     movq $SYS_DRAW, %rax

@@ -1,6 +1,7 @@
 #ifndef _KERNEL_SCHED_H
 #define _KERNEL_SCHED_H
 
+#include <drivers/timer.h>
 #include <kernel/fd.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
@@ -90,6 +91,12 @@ struct process {
   /* Wait Queue (for sleeping) */
   struct wait_queue_head *wait_queue_ptr;
   struct wait_queue_head wait_queue;
+
+  /* Timed sleep (POSIX nanosleep / proc_sleep): a per-process software timer,
+   * armed on the running core, wakes the process at wake_jiffies. 0 = not in a
+   * timed sleep. */
+  uint64_t wake_jiffies;
+  struct timer sleep_timer;
 
   /* IPC state */
   int ipc_target_pid; /* PID we want to talk to (-1 for ANY) */

@@ -51,12 +51,12 @@ extern volatile int panic_flag;
 static uint64_t compositor_interval = 1;
 #define COMPOSITOR_TARGET_FPS 30
 
-/* timer_list: doubly-linked list of pending software timers, sorted by
- * insertion order (not expiry order — O(n) scan on each tick).
- * Protected by timer_lock. */
-static LIST_HEAD(timer_list);
-/* timer_lock: guards timer_list; held while firing callbacks. */
-static spinlock_t timer_lock = SPINLOCK_INIT;
+/* Software timers are PER-CPU: each CPU owns a timer_list + timer_lock in its
+ * struct cpu_info (kernel/cpu.h), fired by that CPU in kernel_timer_tick against
+ * the global jiffies clock. timer_add() arms on the current CPU and the timer
+ * records its owner CPU (t->cpu) so timer_del() removes it from the right list.
+ * This keeps a process's sleep timer on the core that holds it: local wakeup, no
+ * cross-CPU dependency and no global timer-lock contention. */
 
 /* jiffies and timer_freq are defined in drivers/timer/timer.c for AArch64
  * or in arch/amd64/platform/platform.c for AMD64. */
@@ -119,24 +119,28 @@ struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
     jiffies++;
   }
 
-  /* Process software timers and compositor on CPU 0 */
-  if (cpu->cpu_id == 0) {
+  /* Fire THIS CPU's expired software timers — every CPU, against the global
+   * jiffies clock — so a process that slept on this core is woken here, locally.
+   * Callbacks run inside this CPU's timer_lock and must not call timer_add/_del
+   * or anything that re-acquires it. */
+  {
     struct timer *t, *tmp;
-    uint64_t flags;
-    spin_lock_irqsave(&timer_lock, &flags);
-    /* Walk the list safely (list_for_each_entry_safe allows deletion).
-     * Callbacks are fired *inside* timer_lock — they must not call
-     * timer_add/timer_del or any function that acquires timer_lock. */
-    list_for_each_entry_safe(t, tmp, &timer_list, list) {
+    uint64_t tflags;
+    spin_lock_irqsave(&cpu->timer_lock, &tflags);
+    list_for_each_entry_safe(t, tmp, &cpu->timer_list, list) {
       if (jiffies >= t->expires) {
         list_del(&t->list);
         t->pending = false;
+        t->cpu = -1;
         if (t->callback)
           t->callback(t->data);
       }
     }
-    spin_unlock_irqrestore(&timer_lock, flags);
+    spin_unlock_irqrestore(&cpu->timer_lock, tflags);
+  }
 
+  /* CPU 0 only: input polling + compositor. */
+  if (cpu->cpu_id == 0) {
     /* Poll USB HID every tick (CPU 0): keyboard events feed the evdev buffer,
      * pointer motion goes straight to the compositor. Cheap when idle (just an
      * event-ring head check per device). */
@@ -178,6 +182,7 @@ void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
   t->callback = callback;
   t->data = data;
   t->pending = false;
+  t->cpu = -1; /* not armed on any CPU yet */
 }
 
 /*
@@ -194,12 +199,14 @@ void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
  * Side effects: sets t->pending = true.
  */
 void timer_add(struct timer *t, uint64_t expires) {
+  struct cpu_info *c = get_cpu_info();
   uint64_t flags;
-  spin_lock_irqsave(&timer_lock, &flags);
+  spin_lock_irqsave(&c->timer_lock, &flags);
   t->expires = expires;
   t->pending = true;
-  list_add_tail(&t->list, &timer_list);
-  spin_unlock_irqrestore(&timer_lock, flags);
+  t->cpu = (int)c->cpu_id; /* armed on the current core; fired by its tick */
+  list_add_tail(&t->list, &c->timer_list);
+  spin_unlock_irqrestore(&c->timer_lock, flags);
 }
 
 /*
@@ -213,13 +220,19 @@ void timer_add(struct timer *t, uint64_t expires) {
  * Side effects: sets t->pending = false.
  */
 void timer_del(struct timer *t) {
+  int cpu = t->cpu;
+  if (cpu < 0 || cpu >= MAX_CPUS) {
+    t->pending = false; /* already fired (and cleared by the tick) or never armed */
+    return;
+  }
   uint64_t flags;
-  spin_lock_irqsave(&timer_lock, &flags);
+  spin_lock_irqsave(&cpu_data[cpu].timer_lock, &flags);
   if (t->pending) {
     list_del(&t->list);
     t->pending = false;
+    t->cpu = -1;
   }
-  spin_unlock_irqrestore(&timer_lock, flags);
+  spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
 }
 
 /*
