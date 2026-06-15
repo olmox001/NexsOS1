@@ -30,6 +30,20 @@
   Con il fix il tablet enumera anche su UHCI (`rl=74 abs=1`). Aggiunto anche, in
   `usb_register_hcd`, un **settle + poll bounded** del connect per porta + log `connected=N`
   (UTM/HVF alza il connect in ritardo; il re-scan a runtime è la Fase 2).
+- **Freeze mono-core + modello timer per-CPU (SCHED-01 #83)**: con 1 core, aprire un 2°
+  programma CPU-bound *focalizzato* freezava tutto lo userspace (shell/init compresi) — il
+  focus boost sceglieva il PID focalizzato ad OGNI `schedule()` → monopolio del core; in più
+  init/notify busy-spinano (il `sleep()` libc era un yield-spin). Fix in due parti:
+  1) **focus boost limitato** (`FOCUS_BOOST_MAX=4` per-CPU; commit `0218414`) — nessun processo
+     può bloccare un core, focus boost mantenuto;
+  2) **timer software PER-CPU** (lista+lock in `struct cpu_info`, fired dal tick di ogni CPU su
+     `jiffies` globale; `t->cpu` ricorda il core) + **sleep bloccante reale** (`SYS_NANOSLEEP`,
+     timer per-processo armato sul core corrente, risveglio locale via `enqueue_task`,
+     `timer_del` nel teardown anti-UAF; `usleep` in `unistd.h`, `sleep` reale in `lib.c`; init
+     usa `sleep(50)`) — commit `00a83e6`. Conforme HAL/ASTRA (arch=tick, core=logica timer).
+  Verificato QEMU `-smp 1`: init da 200/400 schedule (spin) a ~0 (dorme); `top` focalizzato
+  CPU-bound non freeza più (top 80%, init/notify il loro share). **Follow-up**: `notify_srv`
+  busy-spin ancora (applicare `sleep`/`recv` bloccante — file del maintainer).
 - **PS/2 mouse drift (DRV-INPUT-01 #125)**: l'handler non sincronizzava il pacchetto → stream
   disallineato → `dx` leggeva il byte sbagliato → cursore trascinato di lato (anche con grab).
   Fix: resync sul bit 3 dello status + drain a fine init + scarto pacchetti con overflow.

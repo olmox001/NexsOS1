@@ -145,8 +145,16 @@ CWD, priority, an IPC message queue, a per-process **fd table**, a privilege **l
 **capability mask**.
 
 - **Scheduler:** per-CPU priority run-queues with an `O(1)` bitmap pick and **work-stealing**
-  across CPUs; 100 Hz preemption. (It also consults the compositor for focus-based boosting —
-  a coupling the refactor removes: SCHED-01.)
+  across CPUs; 100 Hz preemption. The focused window's process gets a **bounded** priority
+  boost (capped per-CPU at `FOCUS_BOOST_MAX`) so the foreground stays responsive but can never
+  monopolise a core and starve the rest — opening a CPU-bound focused program no longer freezes
+  userspace on a single core (SCHED-01; fully decoupling the scheduler from the compositor is
+  Fase 3).
+- **Timers & sleep:** software timers are **per-CPU** (each core fires its own `timer_list`
+  against the global `jiffies` clock, so a sleeper is woken on the core that holds it — no
+  global lock, no cross-CPU wake). `sleep()`/`usleep()` (and the `SYS_NANOSLEEP`/nanosleep
+  primitive) **block** — a per-process timer armed on the running core — instead of busy-waiting
+  via yield; idle services no longer spin a core.
 - **Lifecycle:** `process_create` → `process_load_elf` → `enqueue_task`; `process_terminate`
   (zombie → **auto-reaped by the scheduler**; `process_wait` is a non-blocking pure
   reporter, `-2` = child gone). Teardown frees user frames + private tables (leak-free).
@@ -187,6 +195,7 @@ return **negative errno** (`-EPERM`, `-EFAULT`, …; codes in `include/api/posix
 | 64 | WRITE | `write(fd,buf,n)` | fd 1/2 = stdout (the caller's **own** window, by PID — a child does not inherit the spawner's); fd≥3 = file; no truncation, also echoes UART |
 | 93 | EXIT | `exit(status)` | |
 | 169 | GET_TIME | `get_time()` | ms (from a stubbed timer on amd64) |
+| 257 | NANOSLEEP | `sleep(ms)`/`usleep(us)`/`nanosleep` | **real blocking** sleep (arg0 = ns); per-process timer armed on the running core, woken locally — no busy-wait |
 | 172 | GETPID | `get_pid()` | |
 | 200 | DRAW | `draw(x,y,w,h,color)` | raw framebuffer rect |
 | 201 | FLUSH | `flush()` | compositor render |
