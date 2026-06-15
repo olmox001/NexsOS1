@@ -86,7 +86,7 @@ int main(void) {
 
   struct ipc_message msg;
   long last_notify_time = 0;
-  int is_visible = 0;    /* Tracks whether the window is currently shown */
+  int is_visible = 0; /* Tracks whether the window is currently shown */
 
   while (1) {
     /* Non-blocking receive: try_recv returns 0 if a message was dequeued,
@@ -95,7 +95,7 @@ int main(void) {
     if (try_recv(-1, &msg) == 0) {
       if (msg.type == IPC_TYPE_NOTIFY || msg.type == IPC_TYPE_RAW) {
         /* Render notification background and payload text. */
-        window_draw(win_id, 0, 0, NOTIFY_WIDTH, NOTIFY_HEIGHT, 0xEE222222);
+        window_draw(win_id, 0, 0, NOTIFY_WIDTH, NOTIFY_HEIGHT, 0xFFFCFCFD);
         printf_win(win_id, "\033[H\033[1;93m [System Notification]\033[0m\n ");
         /* Limit payload to 64 bytes to avoid over-running the window. */
         printf_win(win_id, "%.64s\n", msg.payload);

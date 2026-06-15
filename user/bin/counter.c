@@ -54,7 +54,7 @@ int main(void) {
   int i = 0;
   while (1) {
     /* Draw Background */
-    window_draw(win, 0, 0, 200, 100, 0xFF222222);
+    window_draw(win, 0, 0, 200, 100, 0xFFFCFCFD);
 
     /* Draw Count */
     /* Crude digit drawing or assume window_draw handles text? No, it's just
