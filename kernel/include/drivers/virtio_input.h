@@ -19,6 +19,17 @@
 #define REL_Y 0x01
 #define REL_WHEEL 0x08
 
+/* Absolute Axes */
+#define ABS_X 0x00
+#define ABS_Y 0x01
+
+/* Input contract for absolute pointers: EV_ABS values are normalized to
+ * [0, INPUT_ABS_MAX]. A provider scales its device's logical range to this; the
+ * consumer (the compositor) scales [0, INPUT_ABS_MAX] to framebuffer pixels.
+ * QEMU's virtio-input/tablet already reports absolute axes in this range, so the
+ * virtio-input driver forwards them unchanged. */
+#define INPUT_ABS_MAX 0x7FFF
+
 /* Mouse Buttons */
 #define BTN_MOUSE 0x110
 #define BTN_LEFT 0x110
@@ -111,5 +122,7 @@ struct virtio_input_event {
 void virtio_input_init(void);
 int virtio_input_poll(struct virtio_input_event *event);
 int virtio_input_has_event(void);
+void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value);
+int virtio_input_get_dev_count(void);
 
 #endif /* _DRIVERS_VIRTIO_INPUT_H */

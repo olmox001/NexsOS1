@@ -1,6 +1,7 @@
 #ifndef _KERNEL_SCHED_H
 #define _KERNEL_SCHED_H
 
+#include <kernel/fd.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
@@ -63,12 +64,24 @@ struct process {
   int time_slice;    /* Ticks remaining */
   int quantum_reset; /* Reset value */
 
-  uint32_t permissions;
+  uint8_t level;  /* privilege level (PLVL_*) — see the capability model below */
+  uint32_t caps;  /* capability mask (CAP_*); machine level bypasses checks */
+  /* ctty_win: controlling-terminal window (USR-TTY-01 #123).  Inherited from
+   * the spawner at process_create: the launching shell's window.  A process
+   * with NO window of its own (a POSIX-like CLI tool) writes stdout here, so
+   * it runs "in the shell"; a process that opens its own window renders there
+   * instead (own-window-first in sys_write).  -1 = none. */
+  int ctty_win;
   /* parent_pid: PID of the process that spawned this one (0 = kernel/boot).
    * Set by process_create() from current_process; used by the SYS_KILL
-   * capability check (ABI-04): a process may kill itself, its children,
-   * or anything if it holds PROC_PERM_SYSTEM/ROOT. */
+   * capability check (ABI-04): a process may kill itself or any descendant,
+   * and a privileged (machine/root) process may kill anything. */
   int parent_pid;
+  /* child_count: live (not yet reaped) children of this process
+   * (SCHED-DOS-01 #122).  Incremented by process_create() on the creator,
+   * decremented when a child's pool slot is released (terminate immediate
+   * free / scheduler reap).  Protected by sched_lock. */
+  int child_count;
 
   /* Scheduler List */
   struct list_head run_list;
@@ -90,6 +103,12 @@ struct process {
 
   /* Filesystem state */
   char cwd[128]; /* Current Working Directory */
+
+  /* File-descriptor table (ABI-03, kernel/fd.h).  0/1/2 pre-opened by
+   * process_create(); entries hold no kernel-owned resources, so teardown
+   * needs no cleanup pass.  Touched only by the owning process from
+   * syscall context — no lock. */
+  struct fd_entry fds[NPROC_FDS];
 };
 
 /* Process States */
@@ -107,32 +126,70 @@ struct process {
 #define PROC_PRIO_USER 2   /* User applications */
 #define PROC_PRIO_IDLE 31  /* Idle task */
 
-/* Process Permissions */
-#define PROC_PERM_SYSTEM (1 << 0) /* Cannot be killed, has kernel access */
-#define PROC_PERM_ROOT (1 << 1)   /* Can spawn and kill other processes */
-#define PROC_PERM_USER (1 << 2)   /* Standard user app permissions */
+/* Capability & privilege-level model (B3, USR-SEC-03 #79).  Levels (PLVL_*)
+ * and capability bits (CAP_*) live in the shared api header so the kernel and
+ * userland cannot drift. */
+#include <caps.h>
+
+/* Capability helpers.  A NULL process is the kernel-internal context and is
+ * treated as fully privileged, matching the historical bypass. */
+static inline int proc_is_machine(const struct process *p) {
+  return !p || p->level == PLVL_MACHINE;
+}
+static inline int proc_is_privileged(const struct process *p) {
+  return !p || p->level <= PLVL_ROOT;
+}
+static inline int proc_has_cap(const struct process *p, uint32_t cap) {
+  return !p || p->level == PLVL_MACHINE || (p->caps & cap) == cap;
+}
 
 #define MAX_PROCESSES 128
 extern struct process *process_pool[MAX_PROCESSES];
+
+/* SCHED-DOS-01 (#122): anti fork-bomb quotas.  MAX_PROCESSES is only the
+ * pool ARRAY bound; the effective limit is derived from usable memory at
+ * process_init() (see proc_limit in process.c) and these gates keep a
+ * single unprivileged process from exhausting it:
+ *   MAX_PROCS_PER_PARENT  live-children quota for non-SYSTEM/ROOT creators;
+ *   RESERVED_PROC_SLOTS   slots only SYSTEM/ROOT creators may dig into, so
+ *                         kill/respawn recovery stays possible at saturation. */
+#define MAX_PROCS_PER_PARENT 32
+#define RESERVED_PROC_SLOTS 8
 
 /* API */
 #include <kernel/cpu.h>
 #define current_process (get_cpu_info()->current_task)
 
+/* process_create: spawn at 'level' with that level's default capability
+ * preset, clamped monotonically against the creator (see process.c).
+ * process_create_caps: same, with an explicit requested capability mask
+ * (used by SYS_SPAWN_CAPS) — also clamped to the level ceiling and the
+ * creator's caps. */
 extern struct process *process_create(const char *name, uint8_t priority,
-                                      uint32_t permissions);
+                                      uint8_t level);
+extern struct process *process_create_caps(const char *name, uint8_t priority,
+                                           uint8_t level, uint32_t req_caps);
 struct process *process_find_by_pid(int pid);
 struct process *__process_find_by_pid(int pid);
 /* process_kill_allowed: ABI-04 capability check for SYS_KILL.  Returns
- * non-zero if 'caller' may terminate 'target_pid': itself, a direct child,
- * or anything when it holds PROC_PERM_SYSTEM/PROC_PERM_ROOT.  Kernel-internal
+ * non-zero if 'caller' may terminate 'target_pid': itself, any descendant,
+ * or anything when it is privileged (machine/root).  Kernel-internal
  * terminate paths (compositor close, init supervision) bypass this and call
  * process_terminate() directly. */
 int process_kill_allowed(struct process *caller, int target_pid);
+/* process_ipc_allowed: may 'caller' send IPC to target_pid?  True if the
+ * caller holds CAP_IPC_ANY, or target is the caller's parent or a
+ * descendant.  Acquires sched_lock internally. */
+int process_ipc_allowed(struct process *caller, int target_pid);
 int process_terminate(int pid);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */
 extern int process_load_elf(struct process *proc, const char *path);
+/* Like process_load_elf(), but marshals an argv vector onto the new task's
+ * stack and seeds main()'s argc/argv (kargv holds kernel-side string copies;
+ * pass argc=0/kargv=NULL for no arguments). */
+extern int process_load_elf_args(struct process *proc, const char *path,
+                                 int argc, char *const kargv[]);
 void start_user_process(struct process *proc);
 void process_init(void);
 struct pt_regs *schedule(struct pt_regs *regs);
@@ -152,6 +209,13 @@ void idle_task_entry(void);
 
 /* Syscalls */
 int sys_ipc_send(int target_pid, void *msg_ptr);
+/* sys_ipc_recv returns IPC_RECV_RETRY when it annotated a syscall retry
+ * (blocked, or a message slipped in during the sleep window).  The
+ * dispatcher must NOT write a return value in that case: on aarch64 x0 is
+ * both the return register and arg0, so writing it clobbers src_pid for
+ * the re-executed SVC (the receiver re-armed with src_pid=0 and slept
+ * forever on a non-empty queue — the visible half of IPC-01). */
+#define IPC_RECV_RETRY 1
 int sys_ipc_recv(int src_pid, void *msg_ptr);
 int sys_ipc_try_recv(int src_pid, void *msg_ptr);
 int kernel_ipc_send(int target_pid, struct ipc_message *msg);

@@ -35,7 +35,7 @@
  *                                buffers per call; excess remain dirty.
  *   MM-BUF-05  (W1 REFINE)      Weak hash (block % 64) and fixed bucket count.
  */
-#include <drivers/virtio_blk.h>
+#include <kernel/block.h>
 #include <kernel/buffer.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -145,7 +145,7 @@ static void __evict_buffers(void) {
  *      incrementing total_buffers before dropping the lock.
  *   3. Release lock; allocate struct block_buffer (kmalloc) and data page (PMM).
  *      Failure paths release the reserved slot under the lock.
- *   4. Issue virtio_blk_read() WITHOUT the lock to avoid holding the spinlock
+ *   4. Issue block_read() WITHOUT the lock to avoid holding the spinlock
  *      across potentially-blocking disk I/O.
  *   5. Re-acquire lock; re-check hash table for a race winner (MM-BUF-02).
  *      If another CPU loaded the same block while we were reading, discard our
@@ -217,7 +217,7 @@ struct block_buffer *buffer_get(uint64_t block) {
   }
 
   /* 4. Read from Disk (OUTSIDE lock) */
-  if (virtio_blk_read(buf->data, block * SECTORS_PER_BLOCK,
+  if (block_read(buf->data, block * SECTORS_PER_BLOCK,
                       SECTORS_PER_BLOCK) != 0) {
     pr_err("BufferCache: Disk read error block %ld\n", block);
     pmm_free_page(buf->data);
@@ -281,7 +281,7 @@ void buffer_put(struct block_buffer *buf) {
  *
  * Collects up to MAX_DIRTY (64) dirty buffers under buffer_lock, temporarily
  * incrementing their ref_count to pin them.  Then, for each dirty buffer,
- * issues a virtio_blk_write() WITHOUT buffer_lock to avoid holding the spinlock
+ * issues a block_write() WITHOUT buffer_lock to avoid holding the spinlock
  * during I/O.  Clears BUFFER_DIRTY and decrements ref_count under the lock
  * after each write.
  *
@@ -289,7 +289,7 @@ void buffer_put(struct block_buffer *buf) {
  * buffers are dirty, the remainder are silently left dirty until the next
  * buffer_sync() call.
  *
- * NOTE(MM-BUF-03): Writing buf->data (virtio_blk_write) while another CPU
+ * NOTE(MM-BUF-03): Writing buf->data (block_write) while another CPU
  * reads it (e.g. an ext4 path that already holds a reference) constitutes an
  * unsynchronised data race.  There is no per-buffer content lock.
  *
@@ -313,7 +313,7 @@ void buffer_sync(void) {
   spin_unlock_irqrestore(&buffer_lock, flags);
 
   for (int i = 0; i < ndirty; i++) {
-    virtio_blk_write(dirty[i]->data, dirty[i]->block * SECTORS_PER_BLOCK,
+    block_write(dirty[i]->data, dirty[i]->block * SECTORS_PER_BLOCK,
                      SECTORS_PER_BLOCK);
     spin_lock_irqsave(&buffer_lock, &flags);
     dirty[i]->flags &= ~BUFFER_DIRTY;

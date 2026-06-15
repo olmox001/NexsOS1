@@ -13,6 +13,9 @@ QCODE["-"] = "minus"
 QCODE["/"] = "slash"
 QCODE["."] = "dot"
 
+# Characters that need shift held (guest keymap is US-style: '_' = Shift+'-')
+SHIFTED = {"_": "minus", ":": "semicolon", "!": "1", "?": "slash"}
+
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock_path)
 f = s.makefile("rw")
@@ -32,13 +35,21 @@ f.readline()  # greeting
 cmd({"execute": "qmp_capabilities"})
 time.sleep(delay_first)  # wait for the shell window to be up and focused
 
+def send_key(q, down):
+    cmd({"execute": "input-send-event", "arguments": {"events": [
+        {"type": "key", "data": {"down": down,
+                                 "key": {"type": "qcode", "data": q}}}]}})
+    time.sleep(0.05)
+
 for ch in text:
-    q = QCODE[ch]
+    shifted = ch in SHIFTED
+    q = SHIFTED[ch] if shifted else QCODE[ch]
+    if shifted:
+        send_key("shift", True)
     for down in (True, False):
-        cmd({"execute": "input-send-event", "arguments": {"events": [
-            {"type": "key", "data": {"down": down,
-                                     "key": {"type": "qcode", "data": q}}}]}})
-        time.sleep(0.05)
+        send_key(q, down)
+    if shifted:
+        send_key("shift", False)
     time.sleep(0.15)
 
 print("typed:", repr(text))

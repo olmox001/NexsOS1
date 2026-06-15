@@ -8,13 +8,24 @@
 #define PVH_MAGIC 0x336ec578
 
 #define MB2_TAG_TYPE_END 0
-#define MB2_TAG_TYPE_MMAP 6
+#define MB2_TAG_TYPE_MODULE 3
 #define MB2_TAG_TYPE_BASIC_MEMINFO 4
+#define MB2_TAG_TYPE_MMAP 6
 #define MB2_TAG_TYPE_FRAMEBUFFER 8
 
 struct mb2_tag {
     uint32_t type;
     uint32_t size;
+};
+
+/* MODULE tag (type 3): GRUB-loaded module (our rootfs disk.img). mod_start/
+ * mod_end are 32-bit PHYSICAL addresses of the module in RAM. */
+struct mb2_tag_module {
+    uint32_t type;
+    uint32_t size;
+    uint32_t mod_start;
+    uint32_t mod_end;
+    char string[];
 };
 
 struct mb2_mmap_entry {

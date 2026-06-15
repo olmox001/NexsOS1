@@ -1,0 +1,79 @@
+/*Sì, da quello che descrivi hai ottenuto una classica **resource
+exhaustion**: non è un "kernel exploit", ma un test di robustezza utile. Se un
+singolo processo può saturare l'intero sistema creando processi, finestre o
+altri oggetti fino al riempimento delle pool, allora mancano quote, limiti per
+utente/processo o meccanismi di backpressure.
+
+Quello che mostrano i log:
+
+* il kernel continua a liberare le page table correttamente;
+* non sembra esserci double-free;
+* il sistema però diventa inutilizzabile perché una risorsa globale viene
+esaurita.
+
+Questa è una vulnerabilità DoS (Denial of Service), non un'escalation.
+
+### Le contromisure tipiche sono:
+
+```c
+#define MAX_PROCS_PER_PARENT 32
+#define MAX_WINDOWS_PER_PID 4
+#define MAX_PENDING_IPC 128
+```
+
+e prima di allocare:
+
+```c
+if (proc->child_count >= MAX_PROCS_PER_PARENT)
+    return -ENOMEM;
+```
+
+oppure:
+
+```c
+if (window_count_of(pid) >= MAX_WINDOWS_PER_PID)
+    return -ENOSPC;
+```
+
+o ancora limiti globali con attese e timeout.
+
+---
+
+Dai log che hai mostrato, il comportamento interessante è che il kernel
+**rimane vivo ma satura le pool**. Questo suggerisce che:
+
+* VMM e destroy sembrano funzionare.
+* Il problema è probabilmente nel compositor, scheduler o allocatore di
+oggetti.
+* Manca isolamento tra processi.
+
+Se l'obiettivo è fare stress test del tuo OS e trovare punti veramente
+critici, sarebbe molto più interessante guardare direttamente:
+
+* `process_create()`
+* `process_destroy()`
+* `create_window()`
+* `window_destroy()`
+* l'allocatore slab/pool
+* le code IPC
+
+e costruire test mirati sulle strutture interne anziché aumentare
+semplicemente il volume di allocazioni. In questo modo puoi distinguere un
+semplice esaurimento di risorse da bug più profondi come use-after-free, race
+condition o corruzioni di strutture dati.
+*/                                                                             \
+#include<os1.h>
+
+int main(void) {
+  printf("[forkbomb]\n");
+
+  while (1) {
+    int pid1 = spawn("/bin/crash");
+    int pid2 = spawn("/bin/crash");
+
+    if (pid1 > 0)
+      kill_process(pid1);
+    if (pid2 > 0)
+      kill_process(pid2);
+  }
+}

@@ -37,6 +37,7 @@
  */
 #include <drivers/uart.h>
 #include <kernel/arch.h>
+#include <kernel/io_poll.h>
 #include <kernel/irq.h>
 #include <kernel/memlayout.h>
 #include <kernel/platform.h>
@@ -197,16 +198,15 @@ DEFINE_SPINLOCK(uart_lock);
  * IRQ context: safe (called under uart_lock with IRQs saved).
  */
 static void _uart_putc_unlocked(char c) {
-  /* Wait until TX FIFO is not full */
-  while (UART_REG(UART_FR) & UART_FR_TXFF)
-    ;
+  /* Bounded: an absent/wedged UART must not hang printk — after the budget, drop
+   * the byte instead of spinning forever (io_poll.h). */
+  spin_until(!(UART_REG(UART_FR) & UART_FR_TXFF), POLL_SPINS_DEFAULT);
 
   UART_REG(UART_DR) = c;
 
   /* Add carriage return for newline */
   if (c == '\n') {
-    while (UART_REG(UART_FR) & UART_FR_TXFF)
-      ;
+    spin_until(!(UART_REG(UART_FR) & UART_FR_TXFF), POLL_SPINS_DEFAULT);
     UART_REG(UART_DR) = '\r';
   }
 }

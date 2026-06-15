@@ -5,11 +5,13 @@
  * Translates scancodes to ASCII and provides buffered input
  */
 #include <drivers/keyboard.h>
+#include <drivers/ps2.h>
+#include <drivers/usb/usb.h>
 #include <drivers/virtio_input.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
-#include <kernel/types.h>
 #include <kernel/string.h>
+#include <kernel/types.h>
 #include <posix_types.h>
 
 /* Keyboard state */
@@ -18,42 +20,15 @@ static int ctrl_pressed = 0;
 static int caps_lock = 0;
 
 typedef struct {
-    const char* name;
-    const char* ascii_map;
-    const char* shifted_map;
-    struct {
-        uint16_t code;
-        int shifted;
-        const char* utf8;
-    } utf8_overrides[16];
+  const char *name;
+  const char *ascii_map;
+  const char *shifted_map;
+  struct {
+    uint16_t code;
+    int shifted;
+    const char *utf8;
+  } utf8_overrides[16];
 } keyboard_layout_t;
-
-static const keyboard_layout_t layout_us = {
-    .name = "us",
-    /* uses standard tables below */
-};
-
-static const keyboard_layout_t layout_it = {
-    .name = "it",
-    .utf8_overrides = {
-        {40, 0, "\xC3\xA0"}, // à
-        {40, 1, "\xC3\x80"}, // À
-        {26, 0, "\xC3\xA8"}, // è
-        {26, 1, "\xC3\xA9"}, // é
-        {39, 0, "\xC3\xB2"}, // ò
-        {41, 0, "\xC3\xB9"}, // ù
-        {43, 0, "\xC3\xAC"}, // ì
-        {0, 0, NULL}
-    }
-};
-
-static const keyboard_layout_t *current_layout = &layout_us;
-
-/* Input buffer */
-#define KB_BUFFER_SIZE 256
-static char kb_buffer[KB_BUFFER_SIZE];
-static volatile uint32_t kb_head = 0;
-static volatile uint32_t kb_tail = 0;
 
 /* Scancode to ASCII table (US layout) */
 static const char scancode_to_ascii[128] = {
@@ -95,22 +70,51 @@ static const char scancode_to_ascii_shift[128] = {
     0,   0,   0,   0,   0,    0,   0,    0     /* 120-127 */
 };
 
+/* Keyboard layouts.  Each layout supplies the base scancode->ASCII maps (so a
+ * future layout can remap keys without touching the driver) plus optional
+ * UTF-8 overrides for accented keys.  The driver consults current_layout for
+ * every keystroke (KBD-LAYOUT-01): previously these maps were unused and the
+ * static US tables were read directly. */
+static const keyboard_layout_t layout_us = {
+    .name = "us",
+    .ascii_map = scancode_to_ascii,
+    .shifted_map = scancode_to_ascii_shift,
+};
+
+static const keyboard_layout_t layout_it = {
+    .name = "it",
+    .ascii_map = scancode_to_ascii,
+    .shifted_map = scancode_to_ascii_shift,
+    .utf8_overrides = {{40, 0, "\xC3\xA0"}, // à
+                       {40, 1, "\xC3\x80"}, // À
+                       {26, 0, "\xC3\xA8"}, // è
+                       {26, 1, "\xC3\xA9"}, // é
+                       {39, 0, "\xC3\xB2"}, // ò
+                       {41, 0, "\xC3\xB9"}, // ù
+                       {43, 0, "\xC3\xAC"}, // ì
+                       {0, 0, NULL}}};
+
+static const keyboard_layout_t *current_layout = &layout_us;
+
 /*
  * Initialize keyboard subsystem
  */
 void keyboard_init(void) {
-  kb_head = 0;
-  kb_tail = 0;
   shift_pressed = 0;
   ctrl_pressed = 0;
   caps_lock = 0;
 
-  /* Initialize VirtIO Input driver */
-  virtio_input_init();
+  pr_info("%s", "Input: Initializing input subsystem...\n");
 
-  /* Load layout from registry */
-  /* TODO: kernel_registry_get needs to be accessible here */
-  /* For now, default to IT if requested by user */
+  /* Device-manager-driven bring-up: probe every input provider; each one
+   * detects its own hardware and feeds the unified input_report() core. No
+   * hardcoded per-arch "virtio or PS/2" selection anymore — whatever is
+   * actually present (virtio-input, USB HID, legacy PS/2) becomes active, on
+   * both architectures. Absent providers no-op (e.g. PS/2 on aarch64). */
+  virtio_input_init(); /* virtio-input: MMIO on aarch64, PCI on amd64 */
+  usb_init();          /* xHCI/EHCI/UHCI via the PCI driver manager + USB HID */
+  ps2_init();          /* legacy 8042 (amd64 only; no-op elsewhere) */
+
   current_layout = &layout_it;
 
   INIT_LIST_HEAD(&keyboard_wait_queue.task_list);
@@ -156,18 +160,6 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
     return;
   }
 
-  /* Handle Ctrl+C */
-  if (ctrl_pressed && code == KEY_C && value != 0) {
-    /* Add ETX (End of Text) to buffer */
-    char c = 0x03;
-    uint32_t next = (kb_head + 1) % KB_BUFFER_SIZE;
-    if (next != kb_tail) {
-      kb_buffer[kb_head] = c;
-      kb_head = next;
-    }
-    return;
-  }
-
   /* Convert scancode to ASCII */
   if (code >= 128)
     return;
@@ -183,10 +175,38 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
   if (code >= KEY_Z && code <= KEY_M)
     use_shift ^= caps_lock;
 
+  /* Read the ASCII from the active layout's maps (KBD-LAYOUT-01), falling back
+   * to the built-in US tables if a layout omits them. */
+  const char *amap =
+      (current_layout && current_layout->ascii_map) ? current_layout->ascii_map
+                                                     : scancode_to_ascii;
+  const char *smap = (current_layout && current_layout->shifted_map)
+                         ? current_layout->shifted_map
+                         : scancode_to_ascii_shift;
   if (use_shift)
-    c = scancode_to_ascii_shift[code];
+    c = smap[code];
   else
-    c = scancode_to_ascii[code];
+    c = amap[code];
+
+  /* Ctrl + key -> control code (TTY semantics): Ctrl-A..Ctrl-Z => 0x01..0x1A,
+   * Ctrl-@..Ctrl-_ => 0x00..0x1F.  Generalises the old Ctrl-C-only path so
+   * full-screen apps (kilo: Ctrl-S/Q/F) and the shell's Ctrl-C all work
+   * uniformly.  When folding to a control code we skip the UTF-8 override
+   * pass below (a control char is never an accented glyph). */
+  int is_ctrl_combo = 0;
+  if (ctrl_pressed && c) {
+    unsigned char uc = (unsigned char)c;
+    if (uc >= 'a' && uc <= 'z') {
+      c = (char)(uc - 'a' + 1);
+      is_ctrl_combo = 1;
+    } else if (uc >= 'A' && uc <= 'Z') {
+      c = (char)(uc - 'A' + 1);
+      is_ctrl_combo = 1;
+    } else if (uc >= '@' && uc <= '_') {
+      c = (char)(uc - '@');
+      is_ctrl_combo = 1;
+    }
+  }
 
   /* Per-keystroke logging is debug-only: at pr_info level every press AND
    * release printed a line from IRQ context, flooding the serial log and
@@ -204,25 +224,73 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
     msg.type = IPC_TYPE_INPUT;
     msg.data1 = ((uint64_t)code << 16) | (uint8_t)c;
     msg.data2 = (uint64_t)value; /* 0=release, 1=press, 2=repeat */
-    
+
     /* UTF-8 Handling */
     if (c != 0) {
       msg.payload[0] = c;
       msg.payload[1] = '\0';
     }
 
-    /* Apply Layout Overrides */
-    if (value != 0 && current_layout) {
-        for (int i = 0; i < 16 && current_layout->utf8_overrides[i].utf8 != NULL; i++) {
-            if (current_layout->utf8_overrides[i].code == code && 
-                current_layout->utf8_overrides[i].shifted == shift_pressed) {
-                strlcpy(msg.payload, current_layout->utf8_overrides[i].utf8, sizeof(msg.payload));
-                break;
-            }
+    /* Apply Layout Overrides (skipped for Ctrl-folded control codes) */
+    if (value != 0 && current_layout && !is_ctrl_combo) {
+      for (int i = 0; i < 16 && current_layout->utf8_overrides[i].utf8 != NULL;
+           i++) {
+        if (current_layout->utf8_overrides[i].code == code &&
+            current_layout->utf8_overrides[i].shifted == shift_pressed) {
+          strlcpy(msg.payload, current_layout->utf8_overrides[i].utf8,
+                  sizeof(msg.payload));
+          break;
         }
+      }
     }
 
     kernel_ipc_send(keyboard_focus_pid, &msg);
+  }
+}
+
+/* Compositor sinks for pointer events (graphics layer). These only update
+ * state + mark the compositor dirty (with damage rectangles); the actual
+ * repaint is done by compositor_tick() at ~30 Hz. We deliberately never render
+ * from here — rendering per input event (full-frame, from IRQ/tick context) is
+ * exactly what made the cursor lag. */
+extern void compositor_update_mouse(int dx, int dy, int absolute);
+extern void compositor_handle_click(int button, int state);
+
+/*
+ * input_report - the single dispatch point for every input provider.
+ *
+ * virtio-input, PS/2 and USB HID all call this with evdev events; nobody
+ * dispatches on its own anymore. Keys go through the layout + IPC to the
+ * focused process; pointer motion/buttons update the compositor's state and
+ * damage, which it repaints on its own 30 Hz tick. (This is also what fixes
+ * the PS/2 mouse, whose EV_REL events used to be buffered and dropped.)
+ */
+void input_report(uint16_t type, uint16_t code, int32_t value) {
+  switch (type) {
+  case EV_KEY:
+    if (code == BTN_LEFT) {
+      compositor_handle_click(BTN_LEFT, value);
+    } else if (code == BTN_RIGHT || code == BTN_MIDDLE) {
+      /* No compositor consumer for these yet; ignore (was already the case). */
+    } else {
+      keyboard_process_key(code, value);
+      wake_up(&keyboard_wait_queue);
+    }
+    break;
+  case EV_REL:
+    if (code == REL_X) compositor_update_mouse(value, 0, 0);
+    else if (code == REL_Y) compositor_update_mouse(0, value, 0);
+    /* REL_WHEEL has no consumer yet. */
+    break;
+  case EV_ABS:
+    /* Absolute pointer (e.g. virtio-tablet): one axis per event, so pass -1 for
+     * the other axis to leave it unchanged. Values are normalized to
+     * [0, INPUT_ABS_MAX]; the compositor scales them to framebuffer pixels. */
+    if (code == ABS_X) compositor_update_mouse(value, -1, 1);
+    else if (code == ABS_Y) compositor_update_mouse(-1, value, 1);
+    break;
+  default: /* EV_SYN and others: nothing to do; the tick repaints. */
+    break;
   }
 }
 

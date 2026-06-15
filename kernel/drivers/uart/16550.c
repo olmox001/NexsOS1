@@ -37,6 +37,7 @@
 #include <kernel/arch.h>
 #include <arch/amd64_internal.h>
 #include <drivers/uart.h>
+#include <kernel/io_poll.h>
 
 /* COM1_PORT: I/O base address of the first serial port (COM1) on x86 PC. */
 #define COM1_PORT 0x3F8
@@ -115,9 +116,9 @@ void uart_init(void) {
  * IRQ context: technically safe on single-core QEMU; SMP-unsafe.
  */
 void uart_putc(char c) {
-  /* Wait for transmit buffer to be empty */
-  while ((inb(COM1_PORT + UART_LSR) & LSR_THRE) == 0)
-    ;
+  /* Bounded: an absent/wedged UART must not hang printk — after the budget, drop
+   * the byte instead of spinning forever (io_poll.h). */
+  spin_until(inb(COM1_PORT + UART_LSR) & LSR_THRE, POLL_SPINS_DEFAULT);
   outb(COM1_PORT + UART_THR, (uint8_t)c);
 }
 

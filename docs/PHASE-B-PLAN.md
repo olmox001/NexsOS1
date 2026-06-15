@@ -4,10 +4,21 @@
 > start Phase B microphase B1 immediately.  Read this + the linked review
 > docs; everything else is derivable from the repo.
 >
-> **Status**: Phase A is **100% complete** (core + residuals + external-trace
-> fixes + the supervisor-respawn fix).  All work lives on branch
-> `comprehensive-review` (pushed to origin); the maintainer merges to `main`
-> himself.
+> **Status (2026-06-12)**: Phase A is **100% complete**.  Phase B: **B1 DONE**
+> (VFS + ext4 extents + residuals), **B2 DONE** (epic #92 closed — W^X,
+> teardown, allocators, TLB shootdown, **higher-half kernel landed on both
+> arches**), **B3 DONE** (epic #93 closed — numbering+errno, capabilities,
+> fd table #90, IPC-01 #85, the 4-level privilege/capability sandbox #79, and
+> the userland legacy purge #123 all landed).
+> **Release/storage interlude (2026-06-13, `docs/MICROSCOPE-RELEASE-STORAGE.md`)**:
+> the **block contract** (ASTRA seam) landed and the amd64 **release ISO now
+> boots self-contained** via a RAM-backed ramdisk over a GRUB module
+> (userland-only `disk.img`); plus a working **PS/2 keyboard+mouse** driver
+> (amd64) for real-HW/UTM input.  Remaining there: aarch64 unification + GRUB
+> ISO, free the module RAM, tmpfs/xfs.  The B3-polish/TTY queue
+> (`docs/B3-POLISH-QUEUE.md`) is paused behind it.
+> All work lives on branch `comprehensive-review` (pushed to origin); the
+> maintainer merges to `main` himself.
 
 ---
 
@@ -184,7 +195,7 @@ W2-class refinements (AMMU-04..07, MM-KM-02..06, MM-PMM-03..06,
 MM-BUF-02..05) remain open under the epic.  HAL isolation held: zero
 `platform.c` edits (amd64).
 
-### B3 — Epic #93: coherent ABI + capabilities — **IN PROGRESS (2026-06-12)**
+### B3 — Epic #93: coherent ABI + capabilities — **DONE (2026-06-13)**
 **Batch 1 (`0bef4c3`)**: single syscall numbering in
 `include/api/syscall_nums.h` shared by kernel switch + userland .S stubs
 (ABI-01 #88, ABI-SYS-01 #75; duplicate IPC 30/31/32 removed, TRY_RECV→233,
@@ -197,22 +208,84 @@ owner-only (`compositor_window_owner`); FILE_WRITE denies /bin + /sys to
 non-SYSTEM (EXT4-02 #57); registry first-writer-wins key ownership
 (LIB-REG-02 #73, USR-SEC-01 #77).  Smoke-tested live on both arches
 (kill init/notify denied, kill own child allowed).
-**Remaining**: per-process fd table (ABI-03 #90), formal IPC API,
-sandboxing (USR-SEC-03 #79 — epic-level outcome).
+**Batch 3 (`f9a0b09`)**: per-process **fd table** (ABI-03 #90) —
+`kernel/fd.h` (0=kbd stdin, 1/2=own window, FD_FILE ≥3, private offset),
+`open`/`close`/`lseek` = 56/57/62, read/write via the table (file I/O
+through capped bounce buffers, window writes keep the 1023 cap ABI-06),
+write-open ACL on /bin+/sys, O_CREAT → -EINVAL; legacy fd≥100 window
+alias kept; `/bin/fdtest` 8/8 on both arches + writetest regression.
+**Batch 4 (`51c3179`)**: anti fork-bomb quotas (SCHED-DOS-01 #122,
+maintainer crash1/crash2 report) — memory-derived `proc_limit`,
+`MAX_PROCS_PER_PARENT`=32 (new `child_count`), `RESERVED_PROC_SLOTS`=8
+for privileged recovery; `/bin/forkbomb` plateaus at 32 and the shell
+kills it. Per-window/per-IPC-queue quotas still open under #122.
+**Batch 5 (`5f5ae7e` + `225e294`)**: SCHED-DOS-02 follow-up — a dead
+bomber's children were unkillable orphans evading the quota; now
+`__reparent_children()` re-homes them to the nearest live ancestor
+(charging its `child_count`) and the kill capability covers all
+DESCENDANTS.  IPC-01 #85 closed: blocking recv had never worked — the
+reviewed lost-wakeup (fixed re-checking the queue under `msg_lock`)
+plus an aarch64-specific arg clobber (return written into x0 = arg0
+after the armed syscall retry → recv re-ran with src_pid=0 and slept
+unwakeable; `IPC_RECV_RETRY` sentinel keeps the frame untouched).
+Sender auth was already in place (`msg.from` kernel-stamped).
+**Batch 6 (`24fab00`)**: sandboxing primitive (USR-SEC-03 #79) — the flat
+3-bit `PROC_PERM_*` becomes a privilege **LEVEL** (machine/root/user/guest)
+plus a fine-grained **CAP_*** mask (SPAWN/FS_WRITE/IPC_ANY/WINDOW/REG_WRITE),
+shared kernel↔userland in `include/api/caps.h`.  `process_create_caps` does
+the monotonic cut (never more privileged than the creator, never above the
+level ceiling, never more than the creator holds — escalation impossible by
+construction); machine bypasses and is unkillable; it is the resolver for the
+future multi-user model.  Caps gate spawn/window/focus/file-write/registry-
+write and non-relative IPC (`process_ipc_allowed`).  New `SYS_SPAWN_CAPS`=234
++ `spawn_caps`/`spawn_level`; plain `spawn` still yields a full user (no
+break).  `/bin/sandboxtest`+`sandboxchild` prove the guest denials and that
+the guest ceiling clamped a CAP_ALL request to CAP_WINDOW.
+**Batch 7 (`02f7e3b`)**: userland legacy purge (USR-TTY-01 #123) — removed the
+`fd>=100` write overload (→ `SYS_WINDOW_WRITE`=217 + `window_write()`;
+`printf_win` and all callers, incl. the maintainer's forkbomb/top, migrated),
+removed the 1023-byte window-write truncation (shared `window_text_write`
+bounce, retires ABI-06 on the window path), deleted the stale
+`user/sys/lib/syscall.S`.  An initial stdout-inheritance attempt (child writes
+into the spawner's window) was **reverted** in `61675d8`: it conflicted with
+the one-window-per-app model (doom/top/forkbomb must render in their own
+window).  The correct fix is the window-MODE system (integrated / separate-
+terminal / graphics) — designed next, not a default.  Modern terminal
+protocol (#123 problem 2) stays post-B3.
+**Closed**: epic #93 fully done; SCHED-05 AB-BA lock chain stays slotted in
+B6; per-window/per-IPC quotas (#122 residue) stay in B5.
 
 ### B4 — Epic #94: amd64 parity (ACPI-MADT CPU count ARCH-01, real
 PCI/ACPI init ARCH-02, FPU/XMM save on context switch CPU-AMD64-01,
 IST-NMI paranoid entry, remove int 0x80 surface SYS-AMD64-03).
+Related: MM-PMM-08 #117 (PCI-hole RAM accounting — generic mm fix,
+can land ahead of B4).
 
 ### B5 — Epic #95: services/HAL + Plan 9 namespace (compositor→sched
 decoupling SCHED-01/GFX-COMP-03 #69, init.cfg actually read USR-INIT-02,
 service supervision rate-limit USR-INIT-03, HAL unification).
+Related maintainer reports: GFX-COMP-04 #118 (damage/redraw),
+USR-NOTIFY-01 #119 (notification popups + kernel-log bridge),
+GFX-DYN-01 #121 (dynamic resolution / resize / font alpha / stb images).
 
 ### B6 — Epic #96: SMP/races sweep + leftovers: async block I/O
 (DRV-VIRTIO-08 — busy-wait now runs with IRQs masked under the blk lock;
 correct but throughput-hostile), blocking `wait()` + exit status
-(needs SCHED-06 parent/child), IPC lost-wakeup IPC-01, kernel_ipc_send
+(needs SCHED-06 parent/child), kernel_ipc_send
 AB-BA chain SCHED-05, legacy virtio-pci transport (addendum 11 §2.5).
+(IPC-01 lost-wakeup: già chiuso in B3 batch 5, `225e294`.)
+
+### Maintainer-reported issues (2026-06-12) — slotting
+
+Five reports filed after live use of the higher-half build:
+
+| Issue | What | Slot |
+|---|---|---|
+| **#117** MM-PMM-08 | `-m 5G` ⇒ "6144 MB": total RAM from highest region END; the 3–4 GB amd64 PCI hole is **counted and allocatable as RAM** (not just a log error) | mm fix, land ASAP (pre-B4; related #20, epic #94) |
+| **#118** GFX-COMP-04 | windows only repaint under the mouse; **dead processes' windows linger** until hovered (damage not fed by programmatic updates / destroy) | B5 (graphics); bugfix can land earlier |
+| **#119** USR-NOTIFY-01 | notification popup never appears; kernel/user warnings+errors should surface as notifications (needs a log→notify bridge) | B5 (services; related #76, #81) |
+| **#120** EPIC userland | layered "onion" userland per ASTRA: custom posix-like kernel ABI → POSIX-as-user-services → conformant libc; GDK-like layered 2D toolkit; OpenGL/Mesa-like 3D; busybox philosophy (standards, no reinvention) | new epic, after/with B5 (needs fd table #90) |
+| **#121** GFX-DYN-01 | no hardcoded resolution/values anywhere; virtio-gpu auto resolution (#54, #49); desktop/window resize; font alpha/scaling; stb image formats | B5 (graphics+drivers, under epic #120 umbrella) |
 
 ---
 

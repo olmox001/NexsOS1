@@ -21,12 +21,16 @@ _start:
     /* Should never reach here */
 1:  b 1b
 
+.global _sys_open
+.global _sys_close
+.global _sys_lseek
 .global _sys_read
 .global _sys_write
 .global _sys_get_pid
 .global _sys_exit
 .global _sys_get_time
 .global _sys_spawn
+.global _sys_spawn_caps
 .global _sys_kill
 .global _sys_wait
 .global _sys_yield
@@ -36,6 +40,8 @@ _start:
 .global _sys_flush
 .global _sys_create_window
 .global _sys_window_draw
+.global _sys_window_write
+.global _sys_window_of_pid
 .global _sys_window_blit
 .global _sys_compositor_render
 .global _sys_file_write
@@ -45,6 +51,24 @@ _start:
 /* 
  * Generic Syscall Wrapper Macros could be used, but manual is clearer for now
  */
+
+/* int _sys_open(const char *path, int flags) */
+_sys_open:
+    mov x8, #SYS_OPEN
+    svc #0
+    ret
+
+/* int _sys_close(int fd) */
+_sys_close:
+    mov x8, #SYS_CLOSE
+    svc #0
+    ret
+
+/* long _sys_lseek(int fd, long off, int whence) */
+_sys_lseek:
+    mov x8, #SYS_LSEEK
+    svc #0
+    ret
 
 /* long _sys_read(int fd, char *buf, unsigned long count) */
 /* x0=fd, x1=buf, x2=count */
@@ -80,6 +104,12 @@ _sys_exit:
 /* int _sys_spawn(const char *path) */
 _sys_spawn:
     mov x8, #SYS_SPAWN
+    svc #0
+    ret
+
+/* long _sys_spawn_caps(const char *path, int level, unsigned long caps) */
+_sys_spawn_caps:
+    mov x8, #SYS_SPAWN_CAPS
     svc #0
     ret
 
@@ -125,6 +155,25 @@ _sys_create_window:
 /* Args: x0..x5 */
 _sys_window_draw:
     mov x8, #SYS_WINDOW_DRAW
+    svc #0
+    ret
+
+/* long _sys_window_write(int win_id, const char *buf, unsigned long count) */
+_sys_window_write:
+    mov x8, #SYS_WINDOW_WRITE
+    svc #0
+    ret
+
+/* int _sys_window_of_pid(int pid) */
+_sys_window_of_pid:
+    mov x8, #SYS_WINDOW_OF_PID
+    svc #0
+    ret
+
+/* long _sys_window_grid(int win_id) */
+.global _sys_window_grid
+_sys_window_grid:
+    mov x8, #SYS_WINDOW_GRID
     svc #0
     ret
 

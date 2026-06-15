@@ -13,6 +13,19 @@
 #define KEY_PRESSED  1
 #define KEY_REPEAT   2
 
+/* evdev scancodes for special (non-ASCII) keys, reported in
+ * input_event_t.keyboard.scancode.  Windowed apps that need cursor/navigation
+ * keys match on these (the ASCII .key byte is 0 for them).  Values mirror the
+ * Linux/virtio-input keycodes the driver emits. */
+#define INPUT_KEY_ESC        1
+#define INPUT_KEY_BACKSPACE  14
+#define INPUT_KEY_TAB        15
+#define INPUT_KEY_ENTER      28
+#define INPUT_KEY_UP         103
+#define INPUT_KEY_LEFT       105
+#define INPUT_KEY_RIGHT      106
+#define INPUT_KEY_DOWN       108
+
 typedef struct {
     int type;
     union {

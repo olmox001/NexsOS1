@@ -43,6 +43,13 @@
  *                                (plain under lock) can desync.
  *   MM-PMM-06  (W1 REFINE)       next_free_pfn is ignored by the contiguous path.
  *   MM-PMM-07  RESOLVED (Phase B2): VA/PA separation via memlayout.h (see above).
+ *   MM-PMM-08  RESOLVED (#117):  total_pages spans up to the HIGHEST usable end
+ *                                address, so address-space holes inside the span
+ *                                (amd64 PCI hole 3..4GB, VGA/BIOS 640KB..1MB)
+ *                                used to be free allocatable "RAM".  pmm_init()
+ *                                now reserves every PFN not covered by a USABLE
+ *                                region; the boot log reports the real usable
+ *                                sum next to the span.
  */
 #include <arch/arch.h>
 #include <kernel/memlayout.h>
@@ -97,6 +104,17 @@ static uint64_t total_pages;
  * (non-atomic), while this global is atomic.  The two counters can disagree
  * transiently if a CPU is preempted between the two updates. */
 static uint64_t free_pages;
+/* usable_pages: sum of the USABLE boot regions in pages (MM-PMM-08 #117).
+ * total_pages is the metadata SPAN (up to the highest usable end address) and
+ * may exceed this when the map has holes; immutable after pmm_early_init(). */
+static uint64_t usable_pages;
+/* pmm_metadata_end_phys: physical end of the page_array + bitmaps, set in
+ * pmm_early_init().  vmm_init() maps the bootstrap window up to here so the
+ * metadata is reachable after the CR3/TTBR switch even when a boot module
+ * pushed it far past the kernel image. */
+static uint64_t pmm_metadata_end_phys;
+
+uint64_t pmm_metadata_top(void) { return pmm_metadata_end_phys; }
 
 /*
  * Mark a page as used in the bitmap
@@ -248,17 +266,25 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
   uint64_t mem_end = MEMORY_BASE;
   uint64_t max_detected = 0;
 
-  /* 1. Discover total RAM */
+  /* 1. Discover total RAM.  max_detected = highest usable END address (the
+   * metadata span); usable_bytes = real RAM sum (MM-PMM-08 #117: with -m 5G
+   * QEMU amd64 splits RAM around the 3..4GB PCI hole, so span 6GB != RAM 5GB). */
+  uint64_t usable_bytes = 0;
   if (regions && count > 0) {
     for (size_t i = 0; i < count; i++) {
       if (regions[i].type == MEM_REGION_USABLE) {
         uint64_t end = regions[i].base + regions[i].size;
         if (end > max_detected) max_detected = end;
+        if (end > MEMORY_BASE)
+          usable_bytes += end - (regions[i].base > MEMORY_BASE
+                                     ? regions[i].base
+                                     : MEMORY_BASE);
       }
     }
   } else {
     /* Fallback to 1GB if no regions provided */
     max_detected = MEMORY_BASE + (1UL << 30);
+    usable_bytes = (1UL << 30);
     pr_warn("%s", "PMM: No memory regions detected, falling back to 1GB\n");
   }
 
@@ -269,6 +295,8 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
   
   mem_end = max_detected;
   total_pages = (mem_end - MEMORY_BASE) / PAGE_SIZE;
+  usable_pages = usable_bytes / PAGE_SIZE;
+  if (usable_pages > total_pages) usable_pages = total_pages;
 
   /* 2. Calculate metadata sizes */
   size_t page_array_size = total_pages * sizeof(struct page);
@@ -287,7 +315,27 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
       uint64_t kernel_limit = PAGE_ALIGN(virt_to_phys(__kernel_end));
       uint64_t target = regions[i].base;
       if (target < kernel_limit) target = kernel_limit;
-      
+
+      /* Must not land on any RESERVED region.  A GRUB boot module (the
+       * release rootfs) is loaded right after the kernel — exactly where
+       * the metadata wants to go — so bump 'target' past every reserved
+       * region it would overlap.  The table is unsorted, so iterate to a
+       * fixpoint. */
+      int bumped = 1;
+      while (bumped) {
+        bumped = 0;
+        for (size_t j = 0; j < count; j++) {
+          if (regions[j].type == MEM_REGION_USABLE)
+            continue;
+          uint64_t r_start = regions[j].base;
+          uint64_t r_end = PAGE_ALIGN(regions[j].base + regions[j].size);
+          if (target < r_end && target + total_metadata_size > r_start) {
+            target = r_end;
+            bumped = 1;
+          }
+        }
+      }
+
       if (target + total_metadata_size <= regions[i].base + regions[i].size) {
         metadata_phys = target;
         break;
@@ -299,6 +347,11 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
     panic("PMM: Failed to allocate metadata area (%lu KB needed)", total_metadata_size / 1024);
   }
 
+  /* Physical end of the metadata, so vmm_init can ensure the bootstrap map
+   * covers it wherever it landed (a boot module can push it well past the
+   * kernel image). */
+  pmm_metadata_end_phys = metadata_phys + total_metadata_size;
+
   /* 4. Map pointers (kernel VAs via the direct map; identity while
    * KERNEL_VIRT_BASE == 0) */
   page_array = (struct page *)phys_to_virt(metadata_phys);
@@ -309,7 +362,9 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
   memset(phys_to_virt(metadata_phys), 0, total_metadata_size);
   
   pr_info("PMM: Metadata initialized at 0x%lx (%lu KB)\n", metadata_phys, total_metadata_size / 1024);
-  pr_info("PMM: Total detected RAM: %lu MB\n", (mem_end - MEMORY_BASE) / (1024 * 1024));
+  pr_info("PMM: Usable RAM: %lu MB (address span %lu MB)\n",
+          usable_pages * PAGE_SIZE / (1024 * 1024),
+          (mem_end - MEMORY_BASE) / (1024 * 1024));
 }
 
 /* Helper to reserve a range */
@@ -401,9 +456,46 @@ void pmm_init(struct mem_region *regions, size_t count) {
     }
   }
 
-  pr_info("PMM: %lu MB total, %lu MB free (Safety Margin Enabled)\n",
-          total_pages * PAGE_SIZE / (1024 * 1024),
-          free_pages * PAGE_SIZE / (1024 * 1024));
+  /* MM-PMM-08 (#117): total_pages spans up to the HIGHEST usable end address.
+   * Holes inside that span (amd64 PCI hole 3..4GB, VGA/BIOS 640KB..1MB) are
+   * usually ABSENT from the boot memmap — neither usable nor reserved — so
+   * the loop above never touches them and they would be handed out as RAM.
+   * Walk the usable regions in address order (pick-min, the table may be
+   * unsorted) and reserve every PFN they do not cover.  Rounding is
+   * conservative: partial pages at region edges are reserved. */
+  if (regions && count > 0) {
+    uint64_t cursor = MEMORY_BASE;
+    int done = 0;
+    while (!done) {
+      uint64_t next_base = (uint64_t)-1;
+      uint64_t next_end = 0;
+      for (size_t i = 0; i < count; i++) {
+        if (regions[i].type != MEM_REGION_USABLE) continue;
+        uint64_t base = regions[i].base;
+        uint64_t end = regions[i].base + regions[i].size;
+        if (end <= cursor) continue; /* already behind the cursor */
+        if (base < cursor) base = cursor;
+        if (base < next_base) {
+          next_base = base;
+          next_end = end;
+        }
+      }
+      if (next_base == (uint64_t)-1) { /* no usable RAM past cursor */
+        next_base = MEMORY_BASE + total_pages * PAGE_SIZE;
+        done = 1;
+      }
+      if (next_base > cursor) {
+        pmm_reserve_range(phys_to_pfn(cursor - MEMORY_BASE),
+                          phys_to_pfn(PAGE_ALIGN(next_base) - MEMORY_BASE));
+      }
+      if (!done) cursor = next_end;
+    }
+  }
+
+  pr_info("PMM: %lu MB usable, %lu MB free (span %lu MB; gaps reserved)\n",
+          usable_pages * PAGE_SIZE / (1024 * 1024),
+          free_pages * PAGE_SIZE / (1024 * 1024),
+          total_pages * PAGE_SIZE / (1024 * 1024));
   pr_info("PMM: DMA zone: %lu pages, Normal zone: %lu pages\n",
           zones[ZONE_DMA].free_pages, zones[ZONE_NORMAL].free_pages);
 }

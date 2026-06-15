@@ -37,24 +37,37 @@
  *   still return their own negatives (mapped to -EIO/-ENOENT where the
  *   cause is unambiguous).
  *
- * Capability checks (ABI-04, B3 batch 2):
- *   SYS_KILL         caller must be SYSTEM/ROOT, the target itself, or the
- *                    target's parent (process_kill_allowed) — else -EPERM.
- *   SYS_SET_FOCUS    self-focus only for user processes — else -EPERM.
- *   SYS_DESTROY_WINDOW  owner or SYSTEM only — else -EPERM.
- *   SYS_FILE_WRITE   the /bin and /sys trees are write-protected for
- *                    non-SYSTEM callers (EXT4-02) — else -EACCES.
- *   SYS_REGISTRY     write ownership enforced in registry_set
- *                    (LIB-REG-02/USR-SEC-01) — foreign keys give -EACCES.
+ * Capability checks (ABI-04 batch 2 + USR-SEC-03 #79 batch 6):
+ *   Privilege levels: machine (bypasses all checks, unkillable) > root >
+ *   user > guest.  Fine-grained caps (CAP_*) gate each surface; the cut at
+ *   spawn is monotonic (a child is never more privileged than its creator).
+ *   SYS_SPAWN / SYS_SPAWN_CAPS  need CAP_SPAWN — else -EPERM.
+ *   SYS_KILL         caller must be privileged, the target itself, or an
+ *                    ancestor of it (process_kill_allowed) — else -EPERM.
+ *   SYS_CREATE_WINDOW / SYS_SET_FOCUS  need CAP_WINDOW — else -EPERM;
+ *                    cross-PID focus still needs machine level.
+ *   SYS_DESTROY_WINDOW  owner or machine only — else -EPERM.
+ *   SYS_OPEN(write) / SYS_FILE_WRITE  need CAP_FS_WRITE; the /bin and /sys
+ *                    trees stay machine-only (EXT4-02) — else -EPERM/-EACCES.
+ *   SYS_SEND         need CAP_IPC_ANY for non-relatives (process_ipc_allowed);
+ *                    parent/descendants always allowed — else -EPERM.
+ *   SYS_REGISTRY     write needs CAP_REG_WRITE; ownership enforced in
+ *                    registry_set (LIB-REG-02/USR-SEC-01) — else -EPERM/-EACCES.
  *   Kernel-internal paths (compositor close button, init supervision,
  *   process teardown) call the underlying functions directly and bypass
  *   these checks by design.
  *
+ * Fd model (ABI-03 RESOLVED, B3 batch 3): every process has a real fd table
+ *   (kernel/fd.h) — 0=keyboard stdin, 1/2=own window, open() hands out
+ *   FD_FILE descriptors >= 3 with a private offset (open/close/lseek =
+ *   56/57/62).  The historical "fd >= 100 is a window id" write path
+ *   remains as a compatibility alias until the window ABI moves onto the
+ *   table.
+ *
  * Known issues:
- *   ABI-03  (W3 WRONG-DESIGN) No per-process fd table: fd 0=stdin(IPC),
- *           1/2=window-by-pid, >=100=window id.  Neither POSIX nor Plan 9.
- *   ABI-06  (W2 BUG/PERF) sys_write() silently truncates writes > 1023 bytes
- *           and unconditionally echoes every write to the UART (debug leftover).
+ *   ABI-06  (W2 BUG/PERF) sys_write() silently truncates WINDOW writes
+ *           > 1023 bytes and echoes window text to the UART (file writes
+ *           via FD_FILE are exempt from both).
  *   ABI-07  (W2 BUG) SYS_SPAWN disables IRQs across process_create +
  *           process_load_elf, which may trigger blocking virtio/ext4 disk I/O.
  *   GFX-FONT-01  (W4 SECURITY/BUG) SYS_SET_FONT: stores a raw user
@@ -142,14 +155,68 @@ extern int keyboard_focus_pid;
  * IRQ context: no — syscalls run in kernel mode with IRQs enabled (normal
  *          exception-level transition on aarch64; ring 3->0 on amd64).
  *
- * NOTE(ABI-01): The switch uses a mix of Linux-aarch64 numbers and ad-hoc
- *          numbers; IPC is duplicated at 30/31/32 and 230/231.
- * NOTE(ABI-04): There are no capability checks at the dispatch boundary;
- *          any user process may invoke any case.
  * NOTE(ABI-07): case 220 (SPAWN) calls arch_local_irq_disable() before
  *          process_create + process_load_elf, which may block on virtio I/O.
  */
 struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame);
+
+/* argv marshalling limits for SYS_SPAWN.  ELF_MAX_ARGS in elf.c must be >=
+ * SPAWN_MAX_ARGS; SPAWN_ARG_LEN bounds each NUL-terminated argument. */
+#define SPAWN_MAX_ARGS 16
+#define SPAWN_ARG_LEN  128
+
+/* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
+ *
+ * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
+ * across blocking virtio/ext4 disk I/O.  Pre-existing; kept verbatim so the
+ * new capability path does not widen the critical section. */
+static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
+                           int use_caps, int argc, char *const kargv[]) {
+  arch_local_irq_disable();
+  struct process *p =
+      use_caps ? process_create_caps(path, PROC_PRIO_USER, level, caps)
+               : process_create(path, PROC_PRIO_USER, level);
+  long ret;
+  if (p) {
+    if (process_load_elf_args(p, path, argc, kargv) == 0) {
+      enqueue_task(p);
+      ret = (long)p->pid;
+    } else {
+      process_terminate(p->pid);
+      ret = -ENOENT; /* path missing or unloadable ELF */
+    }
+  } else {
+    ret = -EAGAIN; /* quota hit or process table exhausted */
+  }
+  arch_local_irq_enable();
+  return ret;
+}
+
+/* window_text_write - copy a user text buffer into a kmalloc bounce (no
+ * truncation; capped at SYSCALL_MAX_IO_BYTES), mirror it to the UART serial
+ * log, and append it to compositor window win_id.  Shared by the FD_WIN
+ * stdout sink and SYS_WINDOW_WRITE (#123).  Replaces the old 1023-byte
+ * syscall_buf truncation (retires ABI-06 on the window path). */
+extern void uart_puts(const char *str);
+static long window_text_write(int win_id, const char *ubuf, size_t count) {
+  if (count == 0)
+    return 0;
+  if (count > SYSCALL_MAX_IO_BYTES)
+    return -EINVAL;
+  char *k = kmalloc(count + 1);
+  if (!k)
+    return -ENOMEM;
+  if (arch_copy_from_user(k, ubuf, count) != 0) {
+    kfree(k);
+    return -EFAULT;
+  }
+  k[count] = '\0';
+  uart_puts(k);
+  if (win_id > 0)
+    compositor_window_write(win_id, k, count);
+  kfree(k);
+  return (long)count;
+}
 
 struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   uint64_t syscall_num = pt_regs_syscall_num(frame);
@@ -161,6 +228,125 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   uint64_t arg5 = pt_regs_arg(frame, 5);
 
   switch (syscall_num) {
+  case SYS_OPEN:
+  {
+    /* open(path, flags) -> fd (ABI-03).  Only the O_ACCMODE bits are
+     * supported: the VFS cannot create or truncate files yet, so any other
+     * flag (O_CREAT, O_APPEND, ...) is an explicit -EINVAL, never silently
+     * ignored. */
+    if (!current_process) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    int flags = (int)arg1;
+    if (flags & ~O_ACCMODE) {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    char k_path[FD_PATH_MAX];
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, FD_PATH_MAX) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    char resolved[FD_PATH_MAX];
+    vfs_resolve_path(k_path, resolved, FD_PATH_MAX);
+    if ((flags & O_ACCMODE) != O_RDONLY) {
+      /* USR-SEC-03 #79: any write needs CAP_FS_WRITE. */
+      if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
+        pt_regs_set_return(frame, -EPERM);
+        break;
+      }
+      /* Same write ACL as SYS_FILE_WRITE (EXT4-02): the /bin and /sys trees
+       * are read-only for non-machine processes even with CAP_FS_WRITE. */
+      if (!proc_is_machine(current_process) &&
+          (strncmp(resolved, "/sys/", 5) == 0 ||
+           strncmp(resolved, "/bin/", 5) == 0)) {
+        pt_regs_set_return(frame, -EACCES);
+        break;
+      }
+    }
+    struct vfs_node node;
+    if (vfs_open(resolved, &node) != 0) {
+      pt_regs_set_return(frame, -ENOENT);
+      break;
+    }
+    if (node.type != VFS_TYPE_FILE) {
+      pt_regs_set_return(frame, -EISDIR);
+      break;
+    }
+    int newfd = -1;
+    for (int i = 0; i < NPROC_FDS; i++) {
+      if (current_process->fds[i].type == FD_NONE) {
+        newfd = i;
+        break;
+      }
+    }
+    if (newfd < 0) {
+      pt_regs_set_return(frame, -EMFILE);
+      break;
+    }
+    struct fd_entry *e = &current_process->fds[newfd];
+    memset(e, 0, sizeof(*e));
+    e->type = FD_FILE;
+    e->mode = ((flags & O_ACCMODE) == O_RDONLY)   ? FD_MODE_READ
+              : ((flags & O_ACCMODE) == O_WRONLY) ? FD_MODE_WRITE
+                                                  : (FD_MODE_READ | FD_MODE_WRITE);
+    e->node = node;
+    e->offset = 0;
+    strncpy(e->path, resolved, FD_PATH_MAX - 1);
+    pt_regs_set_return(frame, newfd);
+  } break;
+  case SYS_CLOSE:
+  {
+    int fd = (int)arg0;
+    if (!current_process || fd < 0 || fd >= NPROC_FDS ||
+        current_process->fds[fd].type == FD_NONE) {
+      pt_regs_set_return(frame, -EBADF);
+      break;
+    }
+    /* Entries hold no kernel-owned resources (vfs_node is a value type) —
+     * clearing the slot IS the close. */
+    memset(&current_process->fds[fd], 0, sizeof(struct fd_entry));
+    pt_regs_set_return(frame, 0);
+  } break;
+  case SYS_LSEEK:
+  {
+    int fd = (int)arg0;
+    long off = (long)arg1;
+    int whence = (int)arg2;
+    if (!current_process || fd < 0 || fd >= NPROC_FDS ||
+        current_process->fds[fd].type == FD_NONE) {
+      pt_regs_set_return(frame, -EBADF);
+      break;
+    }
+    struct fd_entry *e = &current_process->fds[fd];
+    if (e->type != FD_FILE) {
+      pt_regs_set_return(frame, -ESPIPE); /* KBD/WIN streams cannot seek */
+      break;
+    }
+    long base;
+    if (whence == SEEK_SET) {
+      base = 0;
+    } else if (whence == SEEK_CUR) {
+      base = (long)e->offset;
+    } else if (whence == SEEK_END) {
+      /* stat the path: e->node.size is the open-time size and another fd
+       * may have grown the file since */
+      struct vfs_stat st;
+      base = (vfs_stat(e->path, &st) == 0) ? (long)st.size
+                                           : (long)e->node.size;
+    } else {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    long npos = base + off;
+    if (npos < 0) {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    e->offset = (uint64_t)npos;
+    pt_regs_set_return(frame, npos);
+  } break;
   case SYS_READ:
     return sys_read(frame);
   case SYS_WRITE:
@@ -185,6 +371,11 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   case SYS_CREATE_WINDOW:
   {
+    /* USR-SEC-03 #79: drawing a window needs CAP_WINDOW. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     struct cpu_info *cpu = get_cpu_info();
     char *k_title = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
@@ -197,6 +388,37 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     compositor_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4, (uint32_t)arg5, current_process->pid);
     pt_regs_set_return(frame, 0);
     break;
+  case SYS_WINDOW_WRITE:
+    /* write text to a window by id (#123) — needs CAP_WINDOW.  Replaces the
+     * old fd>=100 overload on write(). */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    pt_regs_set_return(
+        frame, window_text_write((int)arg0, (const char *)arg1, (size_t)arg2));
+    break;
+  case SYS_WINDOW_OF_PID: {
+    /* Read-only: the compositor window id of a pid, or 0 if it has none.
+     * The shell uses it to tell a windowless (run-in-shell) program from one
+     * that opened its own window (#123).  No capability needed. */
+    extern int compositor_get_window_by_pid(int pid);
+    int w = compositor_get_window_by_pid((int)arg0);
+    pt_regs_set_return(frame, w > 0 ? w : 0);
+    break;
+  }
+  case SYS_WINDOW_GRID: {
+    /* Read-only: terminal character grid of a window, packed (cols<<16)|rows.
+     * A windowed TTY app (kilo) queries this to size itself to the compositor
+     * font cell instead of assuming a fixed 80x25.  -EINVAL if no such window. */
+    extern int compositor_window_grid(int win_id, int *cols, int *rows);
+    int cols = 0, rows = 0;
+    if (compositor_window_grid((int)arg0, &cols, &rows) != 0)
+      pt_regs_set_return(frame, -EINVAL);
+    else
+      pt_regs_set_return(frame, ((long)(cols & 0xFFFF) << 16) | (rows & 0xFFFF));
+    break;
+  }
   case SYS_COMPOSITOR_RENDER:
     compositor_render();
     pt_regs_set_return(frame, 0);
@@ -217,7 +439,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     extern int compositor_window_owner(int window_id);
     int owner = compositor_window_owner((int)arg0);
     if (owner >= 0 && owner != (int)current_process->pid &&
-        !(current_process->permissions & PROC_PERM_SYSTEM)) {
+        !proc_is_machine(current_process)) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
@@ -229,29 +451,83 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   case SYS_SPAWN:
   {
+    /* USR-SEC-03 #79: spawning needs CAP_SPAWN.  A plain spawn yields a full
+     * PLVL_USER child (clamped to the creator), preserving today's behaviour. */
+    if (!proc_has_cap(current_process, CAP_SPAWN)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
-    arch_local_irq_disable();
-    struct process *new_proc = process_create(k_path, PROC_PRIO_USER, PROC_PERM_USER);
-    if (new_proc) {
-      if (process_load_elf(new_proc, k_path) == 0) {
-        enqueue_task(new_proc);
-        pt_regs_set_return(frame, new_proc->pid);
-      } else {
-        process_terminate(new_proc->pid);
-        pt_regs_set_return(frame, -ENOENT); /* path missing or unloadable ELF */
+    /* Optional argv vector: arg1 = argc, arg2 = user array of char* (#kilo).
+     * Copy the pointer array and each string into kernel memory before the
+     * spawn so process_load_elf_args() can place them on the child's stack. */
+    int argc = (int)arg1;
+    if (argc < 0)
+      argc = 0;
+    if (argc > SPAWN_MAX_ARGS)
+      argc = SPAWN_MAX_ARGS;
+    char *kargv[SPAWN_MAX_ARGS];
+    char *argv_store = NULL;
+    if (argc > 0) {
+      void *uptrs[SPAWN_MAX_ARGS];
+      if (arch_copy_from_user(uptrs, (const void *)arg2,
+                              (size_t)argc * sizeof(void *)) != 0) {
+        pt_regs_set_return(frame, -EFAULT);
+        break;
       }
-    } else {
-      pt_regs_set_return(frame, -EAGAIN); /* process table exhausted */
+      argv_store = kmalloc((size_t)argc * SPAWN_ARG_LEN);
+      if (!argv_store) {
+        pt_regs_set_return(frame, -ENOMEM);
+        break;
+      }
+      int bad = 0;
+      for (int i = 0; i < argc; i++) {
+        kargv[i] = argv_store + (size_t)i * SPAWN_ARG_LEN;
+        if (arch_copy_string_from_user(kargv[i], (const char *)uptrs[i],
+                                       SPAWN_ARG_LEN) != 0) {
+          bad = 1;
+          break;
+        }
+      }
+      if (bad) {
+        kfree(argv_store);
+        pt_regs_set_return(frame, -EFAULT);
+        break;
+      }
     }
-    arch_local_irq_enable();
+    long sret = dispatch_spawn(k_path, PLVL_USER, 0, 0, argc, kargv);
+    if (argv_store)
+      kfree(argv_store);
+    pt_regs_set_return(frame, sret);
+  } break;
+  case SYS_SPAWN_CAPS:
+  {
+    /* spawn_caps(path, level, caps) — restricted spawn.  The requested level
+     * and caps are clamped monotonically in process_create_caps (never more
+     * privileged than the creator, never above the level ceiling, never more
+     * than the creator holds). */
+    if (!proc_has_cap(current_process, CAP_SPAWN)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    struct cpu_info *cpu = get_cpu_info();
+    char *k_path = cpu->syscall_buf;
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    pt_regs_set_return(
+        frame, dispatch_spawn(k_path, (uint8_t)arg1, (uint32_t)arg2, 1, 0,
+                              NULL));
   } break;
   case SYS_KILL:
-    /* ABI-04: a process may kill itself or its direct children; SYSTEM/ROOT
+    /* ABI-04: a process may kill itself or its descendants (orphans are
+     * re-homed to a live ancestor at reap time, SCHED-DOS-02); SYSTEM/ROOT
      * may kill anything (process_terminate still protects SYSTEM targets). */
     if (!process_kill_allowed(current_process, (int)arg0)) {
       pt_regs_set_return(frame, -EPERM);
@@ -276,26 +552,42 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       return schedule(frame);
     break;
   }
-  case SYS_RECV:
-    /* NOTE(IPC-02): unconditionally calls schedule() after sys_ipc_recv(),
-     * even if a message was already available.  sys_ipc_recv() returns 0
-     * whether it received or blocked, so the caller cannot distinguish the
-     * two outcomes. */
-    pt_regs_set_return(frame, sys_ipc_recv((int)arg0, (void *)arg1));
+  case SYS_RECV: {
+    /* IPC-01: when sys_ipc_recv() blocks it arms a syscall retry (PC rewound
+     * to the SVC/SYSCALL).  The return value must NOT be written then — on
+     * aarch64 x0 is both the return register and arg0, so writing it would
+     * clobber src_pid for the re-executed syscall (the receiver re-armed
+     * with src_pid=0 and slept forever on a non-empty queue).
+     * NOTE(IPC-02): still unconditionally schedules — a delivered message
+     * costs an extra yield. */
+    long rc = sys_ipc_recv((int)arg0, (void *)arg1);
+    if (rc != IPC_RECV_RETRY)
+      pt_regs_set_return(frame, rc);
     return schedule(frame);
+  }
   case SYS_TRY_RECV:
     pt_regs_set_return(frame, sys_ipc_try_recv((int)arg0, (void *)arg1));
     break;
   case SYS_SET_FOCUS:
-    /* ABI-04: a process may only claim focus for ITSELF (every userland
-     * caller does set_focus(get_pid())); redirecting input to/from another
-     * PID — i.e. keystroke stealing — needs PROC_PERM_SYSTEM. */
+    /* ABI-04 / USR-SEC-03 #79: claiming focus needs CAP_WINDOW; a process may
+     * only claim focus for ITSELF (every userland caller does
+     * set_focus(get_pid())); redirecting input to/from another PID — i.e.
+     * keystroke stealing — needs machine level. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     if ((int)arg0 != (int)current_process->pid &&
-        !(current_process->permissions & PROC_PERM_SYSTEM)) {
+        !proc_is_machine(current_process)) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
     keyboard_focus_pid = (int)arg0;
+    /* Caret follows the input window: clear it off whoever just lost focus. */
+    {
+      extern void compositor_focus_changed(int new_pid);
+      compositor_focus_changed((int)arg0);
+    }
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WAIT:
@@ -312,13 +604,18 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
+    /* USR-SEC-03 #79: any write needs CAP_FS_WRITE. */
+    if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
     /* EXT4-02 (ABI-04 family): the binary trees are write-protected for
-     * non-system processes — a user process must not be able to overwrite
+     * non-machine processes — a user process must not be able to overwrite
      * anything under /bin or /sys (services, init chain).  Config/data
      * files (/etc, user files) stay writable. */
-    if (!(current_process->permissions & PROC_PERM_SYSTEM) &&
+    if (!proc_is_machine(current_process) &&
         (strncmp(resolved_path, "/sys/", 5) == 0 ||
          strncmp(resolved_path, "/bin/", 5) == 0)) {
       pr_warn("FILE_WRITE: PID %d denied write to protected path '%s'\n",
@@ -482,54 +779,100 @@ long sys_get_pid(void) {
 }
 
 /*
- * sys_read - blocking read implementation (syscall 63, fd=0 stdin only).
+ * sys_read - read from a file descriptor (syscall 63).
  *
- * Drains the calling process's IPC message queue looking for IPC_TYPE_INPUT
- * messages (keyboard events).  Returns the key character of the first pressed
- * or repeated event (data2 != 0); ignores key-release events (data2 == 0).
+ * Routes through the per-process fd table (ABI-03 RESOLVED, kernel/fd.h):
  *
- * If no ready input message is found, the process is put to sleep
- * (PROC_SLEEPING, ipc_target_pid=-1) with a retry annotation
- * (pt_regs_retry_syscall) so the syscall instruction is re-executed when the
- * process wakes up, and schedule() is called to switch to another task.
+ *   FD_KBD   drains the IPC queue for IPC_TYPE_INPUT messages (keyboard
+ *            events); returns the key character of the first pressed or
+ *            repeated event (data2 != 0), ignores releases.  If nothing is
+ *            pending the process sleeps (PROC_SLEEPING, ipc_target_pid=-1)
+ *            with a retry annotation (pt_regs_retry_syscall) so the syscall
+ *            re-executes on wakeup.
+ *   FD_FILE  VFS read at the fd's private offset (bounce buffer, capped at
+ *            SYSCALL_MAX_IO_BYTES); advances the offset; 0 at EOF.
+ *   FD_WIN   not readable: -EINVAL.
+ *   invalid  -EBADF.
  *
- * Non-stdin fds: unhandled; falls through to the sleep path regardless.
- *
- * NOTE(ABI-03): fd 0 is overloaded as IPC channel, not a real file descriptor.
- *
- * Locking: process sleeps after a short IRQ-disable window to set state;
+ * Locking: FD_KBD sleeps after a short IRQ-disable window to set state;
  *          no spinlock held across the sleep.
  * IRQ context: no — called from the syscall dispatcher.
- * Returns: regs (with return value set) on a hit; schedule(regs) on a miss.
+ * Returns: regs (with return value set), or schedule(regs) when blocking.
  */
 struct pt_regs *sys_read(struct pt_regs *regs) {
   int fd = (int)pt_regs_arg(regs, 0);
   char *buf = (char *)pt_regs_arg(regs, 1);
   size_t count = (size_t)pt_regs_arg(regs, 2);
-  (void)count;
 
-  if (fd == 0) { /* STDIN */
-    while (1) {
-      extern struct ipc_node *pop_message(struct process * proc, int src_pid);
-      struct ipc_node *node = pop_message(current_process, -1); /* From ANY */
+  struct fd_entry *e = NULL;
+  if (current_process && fd >= 0 && fd < NPROC_FDS &&
+      current_process->fds[fd].type != FD_NONE)
+    e = &current_process->fds[fd];
+  if (!e) {
+    pt_regs_set_return(regs, -EBADF);
+    return regs;
+  }
 
-      if (!node)
-        break;
-
-      if (node->msg.type == IPC_TYPE_INPUT) {
-        /* Only return pressed (1) or repeat (2) events to standard read()
-         * Release (0) events are ignored for compatibility with shell/etc.
-         */
-        if (node->msg.data2 != 0) {
-          char c = (char)node->msg.data1;
-          if (arch_copy_to_user(buf, &c, 1) != 0) { }
-          pt_regs_set_return(regs, 1);
-          kfree(node);
-          return regs;
-        }
-      }
-      kfree(node);
+  if (e->type == FD_FILE) {
+    if (!(e->mode & FD_MODE_READ)) {
+      pt_regs_set_return(regs, -EBADF);
+      return regs;
     }
+    if (count > SYSCALL_MAX_IO_BYTES) { /* FIX(EXT4-07) */
+      pt_regs_set_return(regs, -EINVAL);
+      return regs;
+    }
+    if (count == 0) {
+      pt_regs_set_return(regs, 0);
+      return regs;
+    }
+    uint8_t *k_buf = kmalloc(count);
+    if (!k_buf) {
+      pt_regs_set_return(regs, -ENOMEM);
+      return regs;
+    }
+    long ret;
+    int n = vfs_read(&e->node, e->offset, k_buf, (uint32_t)count);
+    if (n < 0) {
+      ret = -EIO;
+    } else if (n > 0 && arch_copy_to_user(buf, k_buf, (size_t)n) != 0) {
+      ret = -EFAULT;
+    } else {
+      e->offset += (uint64_t)n;
+      ret = n;
+    }
+    kfree(k_buf);
+    pt_regs_set_return(regs, ret);
+    return regs;
+  }
+
+  if (e->type != FD_KBD) { /* FD_WIN: a window text sink is not readable */
+    pt_regs_set_return(regs, -EINVAL);
+    return regs;
+  }
+
+  /* FD_KBD (stdin) */
+  (void)count;
+  while (1) {
+    extern struct ipc_node *pop_message(struct process * proc, int src_pid);
+    struct ipc_node *node = pop_message(current_process, -1); /* From ANY */
+
+    if (!node)
+      break;
+
+    if (node->msg.type == IPC_TYPE_INPUT) {
+      /* Only return pressed (1) or repeat (2) events to standard read()
+       * Release (0) events are ignored for compatibility with shell/etc.
+       */
+      if (node->msg.data2 != 0) {
+        char c = (char)node->msg.data1;
+        if (arch_copy_to_user(buf, &c, 1) != 0) { }
+        pt_regs_set_return(regs, 1);
+        kfree(node);
+        return regs;
+      }
+    }
+    kfree(node);
   }
 
   arch_local_irq_disable();
@@ -547,50 +890,73 @@ extern void uart_puts(const char *str);
 /*
  * sys_write - write to a file descriptor.
  *
- * Copies up to min(count, 1023) bytes from user space into the per-CPU
- * syscall_buf scratch buffer, then:
- *   fd >= 100: routes directly to compositor_window_write(fd, ...).
- *   fd == 1 or 2: looks up the calling process's compositor window and
- *                 writes there; falls through to UART echo if no window.
- *   other fds: not handled; returns to_copy after UART echo only.
+ * Routes through the per-process fd table (ABI-03 RESOLVED, kernel/fd.h):
  *
- * NOTE(ABI-06): Silently truncates writes > 1023 bytes with no error.
- *              Unconditionally echoes every write to the UART regardless of
- *              fd — debug behaviour left on a hot code path. [static]
- * NOTE(ABI-03): fd 1/2 are window-by-pid, not stdout/stderr file descriptors.
+ *   FD_WIN     window text sink (stdout): bounce-buffers the data (no
+ *              truncation, capped at SYSCALL_MAX_IO_BYTES), echoes to the
+ *              UART (serial mirror), and appends to the caller's OWN window
+ *              (resolved by PID; a child does not inherit the spawner's).
+ *   FD_FILE    VFS write at the fd's private offset (bounce buffer, capped
+ *              at SYSCALL_MAX_IO_BYTES); advances the offset and refreshes
+ *              the cached node size.
+ *   FD_KBD     not writable: -EINVAL.
+ *   invalid    -EBADF.
+ *
+ * Writing to a specific window by id (not stdout) is SYS_WINDOW_WRITE; the
+ * old fd>=100 overload on write() is gone (#123).
  *
  * Locking: none (cpu->syscall_buf is per-CPU, safe without a lock during a
  *          syscall because the calling process is pinned to this CPU).
  * IRQ context: no.
- * Returns: number of bytes written (to_copy), or -1 on uaccess failure.
+ * Returns: bytes written, or a negative errno.
  */
 long sys_write(int fd, const char *buf, size_t count) {
   if (count == 0) return 0;
-  struct cpu_info *cpu = get_cpu_info();
-  char *k_buf = cpu->syscall_buf;
-  size_t to_copy = (count >= 1024) ? 1023 : count;
 
-  if (arch_copy_from_user(k_buf, buf, to_copy) != 0)
-    return -1;
-  k_buf[to_copy] = '\0';
+  struct fd_entry *e = NULL;
+  if (current_process && fd >= 0 && fd < NPROC_FDS &&
+      current_process->fds[fd].type != FD_NONE)
+    e = &current_process->fds[fd];
+  if (!e)
+    return -EBADF;
 
-  /* Debug: Always output to UART */
-  uart_puts(k_buf);
-
-  if (fd >= 100) { 
-    compositor_window_write(fd, k_buf, to_copy);
-    return (long)to_copy;
+  if (e->type == FD_WIN) {
+    /* stdout sink (USR-TTY-01 #123): resolve the caller's OWN window first;
+     * a process with its own window (doom, top, forkbomb) renders there.  A
+     * windowless CLI tool falls back to its controlling terminal (the
+     * launching shell), so it runs "in the shell" POSIX-style. */
+    int win_id = e->win_id;
+    if (win_id < 0)
+      win_id = compositor_get_window_by_pid(current_process->pid);
+    if (win_id <= 0)
+      win_id = current_process->ctty_win;
+    return window_text_write(win_id, buf, count);
   }
 
-  if ((fd == 1 || fd == 2) && current_process) {
-    int win_id = compositor_get_window_by_pid(current_process->pid);
-    if (win_id > 0) {
-      compositor_window_write(win_id, k_buf, to_copy);
-      return (long)to_copy;
+  if (e->type == FD_FILE) {
+    if (!(e->mode & FD_MODE_WRITE))
+      return -EBADF;
+    if (count > SYSCALL_MAX_IO_BYTES) /* FIX(EXT4-07) */
+      return -EINVAL;
+    uint8_t *k_buf = kmalloc(count);
+    if (!k_buf)
+      return -ENOMEM;
+    if (arch_copy_from_user(k_buf, buf, count) != 0) {
+      kfree(k_buf);
+      return -EFAULT;
     }
+    int wr = vfs_write_file(e->path, k_buf, (uint32_t)count, e->offset);
+    kfree(k_buf);
+    if (wr < 0)
+      return -EIO;
+    e->offset += (uint64_t)wr;
+    /* The write may have grown the file: refresh the cached node so reads
+     * through this fd see the new size. */
+    (void)vfs_open(e->path, &e->node);
+    return wr;
   }
 
-  return (long)to_copy;
+  return -EINVAL; /* FD_KBD is not writable */
 }
 
 /*

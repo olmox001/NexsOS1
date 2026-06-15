@@ -26,6 +26,9 @@
 #define _SYSCALL_NUMS_H
 
 /* --- POSIX-shaped --- */
+#define SYS_OPEN               56  /* open(path, flags) -> fd (ABI-03) */
+#define SYS_CLOSE              57
+#define SYS_LSEEK              62
 #define SYS_READ               63
 #define SYS_WRITE              64
 #define SYS_EXIT               93
@@ -41,6 +44,9 @@
 #define SYS_WINDOW_BLIT        213
 #define SYS_WINDOW_SET_FLAGS   214
 #define SYS_DESTROY_WINDOW     215
+#define SYS_WINDOW_WRITE       217  /* write text to a window by id (#123) */
+#define SYS_WINDOW_OF_PID      218  /* window id of a pid, 0 if none (#123) */
+#define SYS_WINDOW_GRID        219  /* terminal grid of a window: (cols<<16)|rows */
 
 /* --- Memory --- */
 #define SYS_SBRK               216
@@ -50,6 +56,7 @@
 #define SYS_KILL               221
 #define SYS_GETPROCS           222
 #define SYS_YIELD              223
+#define SYS_SPAWN_CAPS         234  /* spawn_caps(path, level, caps) — USR-SEC-03 #79 */
 #define SYS_WAIT               247
 
 /* --- IPC --- */

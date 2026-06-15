@@ -5,6 +5,7 @@
  */
 #include <drivers/virtio.h>
 #include <drivers/virtio_input.h>
+#include <drivers/keyboard.h>
 #include <kernel/arch.h>
 #include <kernel/graphics.h>
 #include <kernel/irq.h>
@@ -22,6 +23,8 @@ extern void compositor_update_mouse(int dx, int dy, int absolute);
 
 #define MAX_INPUT_DEVS 2
 #define INPUT_QSIZE 16
+
+void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value);
 
 struct virtio_input_dev {
   virtio_handle_t handle;
@@ -52,8 +55,7 @@ static void virtio_input_handler(uint32_t irq, void *data);
 #define v_write32(dev, off, val) virtio_write_reg((dev)->handle, (off), (val))
 #define v_notify(dev, q) virtio_notify((dev)->handle, (q))
 
-static void virtio_input_add_event(uint16_t type, uint16_t code,
-                                   int32_t value) {
+void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value) {
   uint32_t next = (input_head + 1) % INPUT_BUFFER_SIZE;
   if (next == input_tail) {
     input_tail = (input_tail + 1) % INPUT_BUFFER_SIZE;
@@ -139,7 +141,6 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
 
 static void virtio_input_handler(uint32_t irq, void *data) {
   (void)data; /* Parametro ignorato a favore del polling vettoriale */
-  int needs_render = 0;
 
   for (int i = 0; i < input_dev_count; i++) {
     struct virtio_input_dev *dev = &input_devs[i];
@@ -158,32 +159,9 @@ static void virtio_input_handler(uint32_t irq, void *data) {
       uint32_t id = e->id;
       struct virtio_input_event *evt = &dev->events[id];
 
-      if (evt->type == EV_REL) {
-        if (evt->code == REL_X) {
-          compositor_update_mouse(evt->value, 0, 0);
-          needs_render = 1;
-        } else if (evt->code == REL_Y) {
-          compositor_update_mouse(0, evt->value, 0);
-          needs_render = 1;
-        }
-      } else if (evt->type == EV_ABS) {
-        if (evt->code == 0) {
-          compositor_update_mouse(evt->value, -1, 1);
-          needs_render = 1;
-        } else if (evt->code == 1) {
-          compositor_update_mouse(-1, evt->value, 1);
-          needs_render = 1;
-        }
-      } else if (evt->type == EV_KEY) {
-        if (evt->code == 272) {
-          compositor_handle_click(evt->code, evt->value);
-          needs_render = 1;
-        } else {
-          virtio_input_add_event(evt->type, evt->code, evt->value);
-          extern void keyboard_notify_input(void);
-          keyboard_notify_input();
-        }
-      }
+      /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
+       * EV_SYN -> repaint. Same path PS/2 and USB HID use now. */
+      input_report(evt->type, evt->code, evt->value);
 
       dev->avail->ring[dev->avail->idx % INPUT_QSIZE] = id;
       arch_mb();
@@ -202,14 +180,11 @@ static void virtio_input_handler(uint32_t irq, void *data) {
       v_notify(dev, 0);
     }
   }
-
-  if (needs_render) {
-    compositor_render();
-  }
 }
 
 void virtio_input_init(void) {
   pr_info("%s", "VirtIO-Input: Probing devices...\n");
+  input_dev_count = 0; // reset
 
   int count = arch_virtio_get_count(VIRTIO_DEV_INPUT);
   for (int i = 0; i < count; i++) {
@@ -219,7 +194,12 @@ void virtio_input_init(void) {
       init_device(dev, irq, 0);
     }
   }
+
+  if (input_dev_count > 0) {
+    pr_info("VirtIO-Input: %d input device(s) initialized\n", input_dev_count);
+  }
 }
+int virtio_input_get_dev_count(void) { return input_dev_count; }
 
 int virtio_input_poll(struct virtio_input_event *event) {
   if (input_head == input_tail)

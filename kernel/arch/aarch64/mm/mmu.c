@@ -490,6 +490,31 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
   }
   return 0;
 }
+
+/*
+ * arch_vmm_map_device - map a device MMIO region [base, base+size) into the
+ * kernel's higher-half direct map as Device-nGnRnE memory (PAGE_DEVICE).
+ *
+ * Mirrors the amd64 contract used by the PCI scan / USB-xHCI BAR mapping. On
+ * aarch64 the MMIO direct map lives at KERNEL_VIRT_BASE + PA, so the mapping
+ * is VA = phys_to_virt(PA) -> PA, exactly what drivers dereference after
+ * phys_to_virt(bar). Needed for the PCIe-ECAM bring-up and any PCI BAR above
+ * the boot-time MMIO window.
+ */
+int arch_vmm_map_device(uint64_t base, uint64_t size);
+int arch_vmm_map_device(uint64_t base, uint64_t size) {
+  if (!base || !size)
+    return -1;
+  uint64_t pgd = arch_impl_get_kernel_pgd();
+  uint64_t start = base & ~0xFFFUL;
+  uint64_t end = (base + size + 0xFFFUL) & ~0xFFFUL;
+  for (uint64_t a = start; a < end; a += 4096) {
+    arch_vmm_map(pgd, (uint64_t)phys_to_virt(a), a, PAGE_DEVICE);
+  }
+  arch_tlb_flush_all();
+  return 0;
+}
+
 /*
  * arch_vmm_create_process_pgd - allocate a new per-process (TTBR0) PGD.
  *

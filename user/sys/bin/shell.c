@@ -104,35 +104,64 @@ static void shell_redraw(void) {
 }
 
 /*
- * spawn_search - try to spawn 'name' searching /bin/ then /sys/bin/.
+ * Program launch helpers.  spawn_search_args() resolves a program name against
+ * /bin then /sys/bin (absolute paths bypass the search) and hands the child an
+ * argv vector via spawn_args(); tokenize() splits a command line into that
+ * vector.  *out_path (size SPAWN_PATH_MAX) receives the last path tried.
  *
- * If name starts with '/' it is used as an absolute path directly.
- * Otherwise the function tries "/bin/<name>" first; if spawn() returns
- * <= 0 it retries with "/sys/bin/<name>".
- *
- * On success, *out_path (size PATH_MAX=64) is filled with the resolved
- * path and the PID is returned.  On failure returns <= 0 and *out_path
- * holds the last attempted path (useful for error messages).
- *
- * NOTE(USR-SEC-03): spawn() grants the new process full ambient authority;
+ * NOTE(USR-SEC-03): spawn_args() grants the new process full ambient authority;
  * no sandboxing applies regardless of the directory searched.
  */
 #define SPAWN_PATH_MAX 64
-static int spawn_search(const char *name, char *out_path) {
+#define MAX_ARGV 16
+
+/*
+ * tokenize - split a command line into argv in place (USR-SHELL-01 follow-up).
+ *
+ * Whitespace runs are collapsed; each token is NUL-terminated inside 's'
+ * (which is mutated).  Returns argc (0..max); argv[i] point into 's'.  This is
+ * the minimal splitter needed to pass arguments to spawned programs, e.g.
+ * `kilo notes.txt` -> argv = {"kilo", "notes.txt"}.  No quoting/escaping yet.
+ */
+static int tokenize(char *s, char *argv[], int max) {
+  int argc = 0;
+  while (*s && argc < max) {
+    while (*s == ' ')
+      s++; /* skip leading spaces */
+    if (!*s)
+      break;
+    argv[argc++] = s;
+    while (*s && *s != ' ')
+      s++; /* consume the token */
+    if (*s)
+      *s++ = '\0';
+  }
+  return argc;
+}
+
+/*
+ * spawn_search_args - spawn argv[0] (probing /bin then /sys/bin) with argv.
+ *
+ * Probes /bin/<argv[0]> then /sys/bin/<argv[0]> and hands the child the full
+ * argv vector via spawn_args().  argv[0] is the program name as typed; absolute
+ * names (leading '/') bypass the search.  Returns the PID or <= 0 on failure.
+ */
+static int spawn_search_args(int argc, char *argv[], char *out_path) {
+  const char *name = argv[0];
   if (name[0] == '/') {
     snprintf(out_path, SPAWN_PATH_MAX, "%s", name);
-    return spawn(out_path);
+    return spawn_args(out_path, argc, argv);
   }
 
   /* Try /bin/ first */
   snprintf(out_path, SPAWN_PATH_MAX, "/bin/%s", name);
-  int pid = spawn(out_path);
+  int pid = spawn_args(out_path, argc, argv);
   if (pid > 0)
     return pid;
 
   /* Fall back to /sys/bin/ */
   snprintf(out_path, SPAWN_PATH_MAX, "/sys/bin/%s", name);
-  return spawn(out_path);
+  return spawn_args(out_path, argc, argv);
 }
 
 /*
@@ -147,13 +176,47 @@ static int spawn_search(const char *name, char *out_path) {
  *     detect the command prefix by inspecting individual characters
  *     (cmd_buf[0..N]) and extract the argument via hardcoded byte offsets.
  *     There is no tokeniser.
- *   - Unknown tokens are tried as ELF names via spawn_search(), which probes
+ *   - Unknown tokens are tokenized and tried as ELF names via spawn_search_args(),
  *     /bin/ then /sys/bin/ before reporting failure.
  *
  * On return, cmd_len is reset to 0 (erases the accumulated line).
  *
  * Side effects: writes to UART/window, may spawn processes, may call exit().
  */
+/*
+ * run_foreground - run a freshly-spawned child as a foreground shell job
+ * (USR-TTY-01 #123, POSIX-like).
+ *
+ * A windowless CLI program writes its stdout into THIS shell's window (its
+ * controlling terminal, resolved kernel-side), so it runs "in the shell".
+ * We poll until it exits or the user presses Ctrl+C (ETX 0x03, delivered as
+ * a keyboard IPC press), which kills it.  If the child opens its OWN window
+ * it is a graphical/TTY app (doom, top, forkbomb): it detaches and we return
+ * to the prompt immediately, leaving it running in its own window.
+ *
+ * Priorities are untouched: the child is a normal independent process; this
+ * loop only watches it and yields.  stdin is not yet forwarded to the job
+ * (CLI tools that read input are a follow-up); other keystrokes are consumed.
+ */
+static void run_foreground(int pid) {
+  if (pid <= 0)
+    return;
+  while (1) {
+    if (window_of_pid(pid) > 0)
+      break; /* child opened its own window -> detached */
+    if (wait(pid) != -1)
+      break; /* child finished (dead/zombie/gone) */
+    struct ipc_message m;
+    if (try_recv(-1, &m) == 0 && m.type == IPC_TYPE_INPUT && m.data2 != 0 &&
+        m.payload[0] == 0x03) {
+      kill_process(pid);
+      print("^C\n");
+      break;
+    }
+    yield();
+  }
+}
+
 static void process_command(void) {
   cmd_buf[cmd_len] = '\0';
   if (cmd_len == 0)
@@ -314,16 +377,17 @@ static void process_command(void) {
      */
   } else if (cmd_buf[0] == 'e' && cmd_buf[1] == 'x' && cmd_buf[2] == 'e' &&
              cmd_buf[3] == 'c' && cmd_buf[4] == ' ') {
-    char *arg = &cmd_buf[5];
-    if (*arg == '\0') {
-      print("Usage: exec <program>\n");
+    char *argv[MAX_ARGV];
+    int argc = tokenize(&cmd_buf[5], argv, MAX_ARGV);
+    if (argc == 0) {
+      print("Usage: exec <program> [args...]\n");
     } else {
       char path[SPAWN_PATH_MAX];
-      int pid = spawn_search(arg, path);
+      int pid = spawn_search_args(argc, argv, path);
       if (pid > 0) {
-        printf("Started %s (PID %d)\n", path, pid);
+        run_foreground(pid); /* in-shell if windowless, else detaches */
       } else {
-        printf("exec: not found: %s\n", arg);
+        printf("exec: not found: %s\n", argv[0]);
       }
     }
 
@@ -331,19 +395,23 @@ static void process_command(void) {
     /*
      * Unknown command: try to spawn it as an ELF name.
      *
-     * spawn_search() probes /bin/<name> first, then /sys/bin/<name>.
+     * spawn_search_args() probes /bin first, then /sys/bin, with argv.
      * Absolute paths (starting with '/') are passed directly to spawn().
      * There is no further PATH search and no shell scripting.
      *
      * NOTE(USR-SEC-03): spawn() grants the new process full ambient authority
      * (arbitrary IPC, kill, registry, spawn); no sandboxing applies.
      */
-    char path[SPAWN_PATH_MAX];
-    int pid = spawn_search(cmd_buf, path);
-    if (pid > 0) {
-      printf("Started %s (PID %d)\n", path, pid);
-    } else {
-      printf("Unknown command: %s\n", cmd_buf);
+    char *argv[MAX_ARGV];
+    int argc = tokenize(cmd_buf, argv, MAX_ARGV);
+    if (argc > 0) {
+      char path[SPAWN_PATH_MAX];
+      int pid = spawn_search_args(argc, argv, path);
+      if (pid > 0) {
+        run_foreground(pid); /* in-shell if windowless, else detaches */
+      } else {
+        printf("Unknown command: %s\n", argv[0]);
+      }
     }
   }
 

@@ -29,8 +29,47 @@
 #include <drivers/pci.h>
 #include <kernel/string.h>
 #include <kernel/printk.h>
+#include <kernel/platform.h>
+#include <kernel/multiboot2.h>
 #include <drivers/timer.h>
 #include <arch/amd64/apic.h>
+
+/* arch_platform_get_boot_module (HAL contract, platform.h): walk the GRUB
+ * multiboot2 tag chain for a MODULE (the release rootfs disk.img loaded into
+ * RAM).  Cached on first call (invoked early, before the identity map is torn
+ * down) so later callers — the ramdisk backend after vmm_init — still get it.
+ * mb_magic / arch_get_boot_info() come from this arch's boot stub. */
+extern uint64_t mb_magic;
+uint64_t arch_get_boot_info(void);
+
+int arch_platform_get_boot_module(uint64_t *base, uint64_t *size) {
+  static int probed = 0;
+  static uint64_t mod_base, mod_size;
+  if (!probed) {
+    probed = 1;
+    if (mb_magic == MB2_MAGIC) {
+      uint8_t *d = (uint8_t *)arch_get_boot_info();
+      if (d) {
+        struct mb2_tag *tag = (struct mb2_tag *)(d + 8);
+        while (tag->type != MB2_TAG_TYPE_END) {
+          if (tag->type == MB2_TAG_TYPE_MODULE) {
+            struct mb2_tag_module *m = (struct mb2_tag_module *)tag;
+            mod_base = m->mod_start;
+            mod_size = (uint64_t)m->mod_end - m->mod_start;
+            break;
+          }
+          tag = (struct mb2_tag *)((uint8_t *)tag + ((tag->size + 7) & ~7u));
+        }
+      }
+    }
+  }
+  if (mod_base) {
+    if (base) *base = mod_base;
+    if (size) *size = mod_size;
+    return 1;
+  }
+  return 0;
+}
 
 static void amd64_pci_callback(int bdf, uint16_t vendor, uint16_t device_id) {
     struct hal_device dev;
@@ -40,6 +79,14 @@ static void amd64_pci_callback(int bdf, uint16_t vendor, uint16_t device_id) {
     dev.vendor_id = vendor;
     dev.device_id = device_id;
     dev.pci_bdf = (uint32_t)bdf;
+
+    /* Class triplet (offset 0x08): lets the driver-binding layer match generic
+     * controllers (xHCI/AHCI/VGA/NVMe) by function instead of vendor:device. */
+    uint32_t cls = pci_get_class(bdf);
+    dev.class_code  = (cls >> 24) & 0xFF;
+    dev.subclass    = (cls >> 16) & 0xFF;
+    dev.prog_if     = (cls >> 8)  & 0xFF;
+    dev.header_type = pci_get_header_type(bdf);
 
     /* Enable PCI Bus Master and IO/Mem space */
     uint32_t cmd = pci_config_read((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, 0x04);

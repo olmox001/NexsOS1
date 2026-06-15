@@ -51,6 +51,7 @@
 #include <os1.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <input.h>
@@ -102,7 +103,14 @@ int get_pid(void) { return _sys_get_pid(); }
 /* exit: the while(1) after _sys_exit() is unreachable dead code that silences
  * the "noreturn" warning in compilers that do not see svc #0 as a terminator. */
 void exit(int status) { _sys_exit(status); while(1); }
-int spawn(const char *path) { return _sys_spawn(path); }
+int spawn(const char *path) { return _sys_spawn(path, 0, 0); }
+int spawn_args(const char *path, int argc, char *const argv[]) {
+  return _sys_spawn(path, argc, argv);
+}
+/* spawn_caps: explicit capability mask; spawn_level: the level's default
+ * preset (request CAP_ALL and let the kernel clamp to the level ceiling). */
+long spawn_caps(const char *path, int level, unsigned long caps) { return _sys_spawn_caps(path, level, caps); }
+long spawn_level(const char *path, int level) { return _sys_spawn_caps(path, level, CAP_ALL); }
 int kill_process(int pid) { return _sys_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:
  * returns -1 if the process is alive, pid if reaped, -2 if not found. */
@@ -121,9 +129,8 @@ void compositor_render(void) { _sys_compositor_render(); }
 /* send/recv: IPC syscalls; pid==-1 means "any sender" in recv/try_recv. */
 int send(int pid, struct ipc_message *msg) { return _sys_send(pid, msg); }
 int recv(int pid, struct ipc_message *msg) { return _sys_recv(pid, msg); }
-/* try_recv: non-blocking variant of recv (syscall #32); returns <0 if no
- * message is waiting, 0 on success.  Forward-declared here because the arch
- * syscall.S may not have a .global for it in the dead user/sys/lib/syscall.S. */
+/* try_recv: non-blocking variant of recv (SYS_TRY_RECV); returns <0 if no
+ * message is waiting, 0 on success. */
 int try_recv(int pid, struct ipc_message *msg) { extern int _sys_try_recv(int pid, void *msg); return _sys_try_recv(pid, msg); }
 void set_window_flags(int win_id, int flags) { _sys_window_set_flags(win_id, flags); }
 void set_focus(int pid) { extern void _sys_set_focus(int pid); _sys_set_focus(pid); }
@@ -182,6 +189,13 @@ int list_dir(const char *path, char *buf, size_t size) { return _sys_list_dir(pa
 int chdir(const char *path) { return _sys_chdir(path); }
 int getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
 
+/* POSIX-style fd I/O (ABI-03 fd table).  open() matches the variadic
+ * declaration in fcntl.h; the optional mode argument is ignored because the
+ * VFS cannot create files yet (the kernel rejects O_CREAT with -EINVAL). */
+int open(const char *pathname, int flags, ...) { return _sys_open(pathname, flags); }
+int close(int fd) { return _sys_close(fd); }
+long lseek(int fd, long offset, int whence) { return _sys_lseek(fd, offset, whence); }
+
 /* --- Formatting & Printing ---
  * All formatting functions delegate to vsnprintf() from kernel/lib/vsnprintf.c
  * (included above).  Output goes to fd 1 (the shell/window TTY) via write().
@@ -189,8 +203,9 @@ int getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
  * printf: uses a 256-byte stack buffer; output longer than 255 chars is
  * silently truncated by vsnprintf.
  *
- * printf_win: like printf but writes to a compositor window's fd (win_id)
- * via _sys_write, which routes to the compositor terminal emulator.
+ * printf_win: like printf but writes to a specific compositor window by id
+ * via window_write() (the dedicated SYS_WINDOW_WRITE, #123) — no longer the
+ * fd>=100 overload on write().
  *
  * vsprintf/sprintf: pass 65536 as the size limit — effectively unbounded.
  * Callers are responsible for providing a large enough destination buffer;
@@ -201,7 +216,19 @@ int getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
  */
 int vsprintf(char *out, const char *fmt, va_list args) { return vsnprintf(out, 65536, fmt, args); }
 int printf(const char *fmt, ...) { char buf[256]; va_list args; va_start(args, fmt); int res = vsnprintf(buf, sizeof(buf), fmt, args); va_end(args); write(1, buf, strlen(buf)); return res; }
-void printf_win(int win_id, const char *fmt, ...) { char buf[512]; va_list args; va_start(args, fmt); vsnprintf(buf, sizeof(buf), fmt, args); va_end(args); _sys_write(win_id, buf, strlen(buf)); }
+void window_write(int win_id, const char *buf, unsigned long count) { _sys_window_write(win_id, buf, count); }
+int window_of_pid(int pid) { return _sys_window_of_pid(pid); }
+int window_grid(int win_id, int *cols, int *rows) {
+  long r = _sys_window_grid(win_id);
+  if (r < 0)
+    return (int)r;
+  if (cols)
+    *cols = (int)((r >> 16) & 0xFFFF);
+  if (rows)
+    *rows = (int)(r & 0xFFFF);
+  return 0;
+}
+void printf_win(int win_id, const char *fmt, ...) { char buf[512]; va_list args; va_start(args, fmt); vsnprintf(buf, sizeof(buf), fmt, args); va_end(args); _sys_window_write(win_id, buf, strlen(buf)); }
 int sprintf(char *out, const char *fmt, ...) { va_list args; va_start(args, fmt); int res = vsnprintf(out, 65536, fmt, args); va_end(args); return res; }
 int snprintf(char *out, size_t size, const char *fmt, ...) { va_list args; va_start(args, fmt); int res = vsnprintf(out, size, fmt, args); va_end(args); return res; }
 void print(const char *s) { write(1, s, strlen(s)); }
@@ -468,8 +495,8 @@ int graphics_draw_text(int win_id, int x, int y, const char *text, uint32_t colo
 
   /* stb_easy_font returns quads, but the quad-to-pixel rendering loop is not
    * implemented.  Fall back to the compositor's built-in terminal font via
-   * _sys_write, losing x/y positioning and color control. */
-  _sys_write(win_id, text, strlen(text)); /* Uses compositor terminal emulator */
+   * window_write, losing x/y positioning and color control. */
+  _sys_window_write(win_id, text, strlen(text)); /* compositor terminal emulator */
   return strlen(text) * 8;
 }
 

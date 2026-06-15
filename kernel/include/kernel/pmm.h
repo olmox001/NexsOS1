@@ -127,6 +127,9 @@ struct mem_region {
 /* Initialize PMM with memory regions */
 void pmm_early_init(struct mem_region *regions, size_t count);
 void pmm_init(struct mem_region *regions, size_t count);
+/* Physical end address of the PMM metadata (page_array + bitmaps), valid after
+ * pmm_early_init(); vmm_init() maps the bootstrap window up to here. */
+uint64_t pmm_metadata_top(void);
 /* NOTE(MM-PMM-01): pmm_init_region() is a stub; it only prints and returns. */
 void pmm_init_region(uint64_t base, uint64_t size);
 

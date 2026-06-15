@@ -22,6 +22,24 @@ _start:
 1:  hlt
     jmp 1b
 
+.global _sys_open
+_sys_open:
+    movq $SYS_OPEN, %rax
+    syscall
+    ret
+
+.global _sys_close
+_sys_close:
+    movq $SYS_CLOSE, %rax
+    syscall
+    ret
+
+.global _sys_lseek
+_sys_lseek:
+    movq $SYS_LSEEK, %rax
+    syscall
+    ret
+
 .global _sys_read
 _sys_read:
     movq $SYS_READ, %rax
@@ -55,6 +73,12 @@ _sys_exit:
 .global _sys_spawn
 _sys_spawn:
     movq $SYS_SPAWN, %rax
+    syscall
+    ret
+
+.global _sys_spawn_caps
+_sys_spawn_caps:
+    movq $SYS_SPAWN_CAPS, %rax
     syscall
     ret
 
@@ -100,6 +124,27 @@ _sys_create_window:
 _sys_window_draw:
     movq $SYS_WINDOW_DRAW, %rax
     movq %rcx, %r10   /* arg3: rcx → r10 */
+    syscall
+    ret
+
+/* long _sys_window_write(int win_id, const char *buf, unsigned long count) */
+.global _sys_window_write
+_sys_window_write:
+    movq $SYS_WINDOW_WRITE, %rax
+    syscall
+    ret
+
+/* int _sys_window_of_pid(int pid) */
+.global _sys_window_of_pid
+_sys_window_of_pid:
+    movq $SYS_WINDOW_OF_PID, %rax
+    syscall
+    ret
+
+/* long _sys_window_grid(int win_id) */
+.global _sys_window_grid
+_sys_window_grid:
+    movq $SYS_WINDOW_GRID, %rax
     syscall
     ret
 

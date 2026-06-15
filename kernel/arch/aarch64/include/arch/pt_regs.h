@@ -71,6 +71,14 @@ static inline void pt_regs_init_user_task(struct pt_regs *r, uint64_t entry,
   r->spsr   = 0; /* EL0t, IRQs unmasked */
 }
 
+/* Pass main()'s argc/argv to a fresh user task (AArch64 AAPCS: x0, x1).
+ * Call after pt_regs_init_user_task(); argv is a user virtual address. */
+static inline void pt_regs_set_user_args(struct pt_regs *r, uint64_t argc,
+                                         uint64_t argv) {
+  r->regs[0] = argc;
+  r->regs[1] = argv;
+}
+
 /* Initialize context for a kernel-mode thread (ksp unused on AArch64) */
 static inline void pt_regs_init_kernel_task(struct pt_regs *r, uint64_t entry,
                                              uint64_t ksp) {

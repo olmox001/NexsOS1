@@ -14,6 +14,7 @@
 #include <kernel/gpt.h>
 #include <kernel/graphics.h>
 #include <kernel/irq.h>
+#include <kernel/bootmodule.h>
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -156,7 +157,21 @@ static void init_memory(void) {
   /* Initialize physical memory manager with architecture-detected regions */
   size_t count = 0;
   struct mem_region *regions = arch_platform_get_mem_regions(&count);
-  
+
+  /* Reserve a boot module (the release rootfs disk.img, loaded into RAM by
+   * GRUB) BEFORE the PMM is built, so it is never handed out as free RAM and
+   * the metadata is placed clear of it.  No-op when there is no module
+   * (aarch64, or the virtio-blk dev loop). */
+  {
+    uint64_t mb_base, mb_size;
+    if (arch_platform_get_boot_module(&mb_base, &mb_size) && count < 32) {
+      regions[count].base = mb_base;
+      regions[count].size = mb_size;
+      regions[count].type = MEM_REGION_RESERVED;
+      count++;
+    }
+  }
+
   pmm_early_init(regions, count);
   pmm_init(regions, count);
 
@@ -176,6 +191,10 @@ static void init_memory(void) {
 
   /* Initialize VirtIO Block Driver */
   virtio_blk_init();
+
+  /* If the rootfs arrived as a boot module (release ISO), register the
+   * RAM-backed ramdisk as the active block backend, overriding virtio-blk. */
+  ramdisk_init();
 
   /* Initialize VirtIO GPU Driver */
   virtio_gpu_init();
@@ -223,7 +242,7 @@ static void init_scheduler(void) {
   /* 1. Spawn the First-Stage Init Process (Must be PID 1) */
   pr_info("%s", "Scheduler: Spawning First-Stage Init...\n");
   struct process *init =
-      process_create("init", PROC_PRIO_USER, PROC_PERM_SYSTEM);
+      process_create("init", PROC_PRIO_USER, PLVL_MACHINE);
   if (init && process_load_elf(init, "/sys/bin/init") == 0) {
     pr_info("Scheduler: Initialized PID %d (/sys/bin/init)\n", init->pid);
     enqueue_task(init);

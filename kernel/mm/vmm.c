@@ -412,10 +412,21 @@ void vmm_init(void) {
   memset(kernel_pgd, 0, 4096);
   arch_cache_clean_range(kernel_pgd, 4096);
 
-  /* 1. Map RAM (bootstrap 128MB) with the W^X section split: text RX,
-   * rodata RO+NX, the rest RW+NX (MM-VMM-01). */
+  /* 1. Map RAM (bootstrap) with the W^X section split: text RX, rodata RO+NX,
+   * the rest RW+NX (MM-VMM-01).  Map at least 128MB, but always far enough to
+   * cover the PMM metadata: arch_vmm_init_hw() switches the page table and then
+   * touches page_array via pmm_alloc_page(), so the metadata must be mapped in
+   * THIS pgd.  A boot module (release rootfs) can push the metadata well past
+   * the kernel image, so a fixed 128MB window is not enough — extend to the
+   * metadata top. */
   uint64_t ram_start = ARCH_RAM_START;
   uint64_t ram_size = 128UL * 1024 * 1024; /* Enough to boot */
+  uint64_t meta_top = pmm_metadata_top();
+  if (meta_top > ram_start) {
+    uint64_t need = PAGE_ALIGN(meta_top - ram_start + 2UL * 1024 * 1024);
+    if (need > ram_size)
+      ram_size = need;
+  }
 
   vmm_map_ram_wx(kernel_pgd, ram_start, ram_size);
 

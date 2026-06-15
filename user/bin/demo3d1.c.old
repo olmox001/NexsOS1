@@ -1,0 +1,426 @@
+/*
+ * user/bin/demo3d.c
+ * Solid 3D Purple "X" Demo — fixed-point software rasterizer
+ *
+ * La "X" e' formata da due bracci (parallelepipedi) ottenuti dalla STESSA
+ * geometria di base del cubo (s = FP_ONE/3, identica scala -> stessi
+ * margini di sicurezza per fixmul su questa API embrionale), ruotati
+ * rispettivamente di +45 e -45 gradi attorno a Z.
+ *
+ * Vincoli mantenuti dal cubo originale:
+ *   - s = FP_ONE/3: i prodotti in fixmul() restano nel range sicuro
+ *     gia' validato dal cubo (niente overflow su int a 32 bit).
+ *   - faces[12][4] e face_colors[12] sono array 2D di SOLI letterali
+ *     interi costanti a tempo di compilazione (nessun initializer 2D
+ *     costruito da variabili runtime).
+ *   - verts[] e' riempito con assegnazioni scalari individuali
+ *     (vec3_t per vertice), come init_shape() del cubo.
+ *   - max_nz e' una costante derivata via macro (sole costanti FP_ONE),
+ *     non calcolata a runtime.
+ *
+ * NUOVO rispetto al cubo: con due bracci che si incrociano, le facce dei
+ * due bracci possono sovrapporsi in profondita' nella zona centrale.
+ * Non esistendo uno z-buffer, si applica un painter's algorithm: le facce
+ * visibili vengono raccolte, ordinate per profondita' media (z piu' grande
+ * = piu' lontano dalla camera = disegnato per primo) e poi rasterizzate in
+ * quell'ordine. Questo e' il fix specifico che risolve l'effetto "segmenti
+ * separati" all'incrocio.
+ *
+ * Rotazione: solo orizzontale (rotate_y animato); rotate_x resta definita
+ * ma applicata con un tilt fisso (TILT_X) solo per dare profondita' alla
+ * vista.
+ *
+ * Il resto (project, fill_triangle, clear_buffer, formato 16.16) e'
+ * invariato rispetto al cubo originale.
+ */
+#include <os1.h>
+
+#ifndef FP_SHIFT
+#define FP_SHIFT 16
+#endif /* FP_SHIFT */
+#ifndef FP_ONE
+#define FP_ONE (1 << FP_SHIFT)
+#endif /* FP_ONE */
+
+#define WIN_W 300
+#define WIN_H 250
+#define BUFFER_SIZE (WIN_W * WIN_H)
+
+/* Tilt fisso (gradi) attorno all'asse X, solo per dare profondita' alla
+ * vista. La X ruota SOLO orizzontalmente (rotate_y animato). */
+#define TILT_X 18
+
+/* Massima estensione del prodotto vettoriale, derivata dalla scala del
+ * solido (s = FP_ONE/3, wa = s/3): cross_z di una faccia "larga"
+ * (2s x 2wa) vale circa (2s * 2wa) / FP_ONE. Costante a tempo di
+ * compilazione, sole macro -> nessuna divisione runtime "magica". */
+#define MAX_NZ (((2 * FP_ONE / 3) * (2 * FP_ONE / 9)) >> FP_SHIFT)
+
+/* framebuffer: local ARGB32 pixel buffer for one frame. */
+static unsigned int framebuffer[BUFFER_SIZE];
+
+typedef struct {
+  int x, y, z; /* Fixed-point 16.16 */
+} vec3_t;
+
+/* NUM_VERTS=16: due bracci da 8 vertici ciascuno (verts[0..7] braccio +45,
+ * verts[8..15] braccio -45). */
+#define NUM_VERTS 16
+static vec3_t verts[NUM_VERTS];
+
+/* faces[12][4] e face_colors[12]: SOLI letterali costanti, come nel cubo.
+ * Le facce del braccio 2 ripetono lo schema del braccio 1 con indici +8. */
+static int faces[12][4] = {
+    /* Braccio 1 (+45 gradi) */
+    {0, 3, 2, 1}, /* Fronte */
+    {4, 5, 6, 7}, /* Retro */
+    {4, 7, 3, 0}, /* Sinistra */
+    {1, 2, 6, 5}, /* Destra */
+    {3, 7, 6, 2}, /* Sopra */
+    {4, 0, 1, 5}, /* Sotto */
+    /* Braccio 2 (-45 gradi) */
+    {8, 11, 10, 9},
+    {12, 13, 14, 15},
+    {12, 15, 11, 8},
+    {9, 10, 14, 13},
+    {11, 15, 14, 10},
+    {12, 8, 9, 13}};
+
+static unsigned int face_colors[12] = {
+    0x8A2BE2, /* BlueViolet */
+    0x9400D3, /* DarkViolet */
+    0x9932CC, /* DarkOrchid */
+    0xBA55D3, /* MediumOrchid */
+    0x800080, /* Purple */
+    0x6A0DAD, /* Viola scuro */
+    0x9370DB, /* MediumPurple */
+    0x7B68EE, /* MediumSlateBlue */
+    0xA020F0, /* Purple vivido */
+    0x8B008B, /* DarkMagenta */
+    0xB266FF, /* Viola chiaro */
+    0x6600CC  /* Viola intenso */
+};
+
+/*
+ * rotz - ruota un punto (u,v,w) attorno all'asse Z usando coseno/seno
+ * gia' calcolati. Stessa struttura di rotate_x/rotate_y (vec3_t r locale,
+ * campi assegnati uno a uno, return r), per restare coerente con i pattern
+ * gia' validati su questa API.
+ */
+static vec3_t rotz(int u, int v, int w, int c, int s) {
+  vec3_t r;
+  r.x = fixmul(u, c) - fixmul(v, s);
+  r.y = fixmul(u, s) + fixmul(v, c);
+  r.z = w;
+  return r;
+}
+
+/*
+ * init_shape - costruisce i due bracci della X.
+ *
+ * s  : semilunghezza di ciascun braccio (stessa scala del cubo, FP_ONE/3).
+ * wa : s/3, semi-larghezza/sezione del braccio.
+ * da : s/3, semi-spessore lungo Z.
+ *
+ * Ogni vertice viene assegnato individualmente (come init_shape() del
+ * cubo), nessun initializer 2D costruito da variabili runtime.
+ */
+static void init_shape(int s) {
+  int wa = s / 3;
+  int da = s / 3;
+
+  int rad = DEG_TO_FP_RAD(45);
+  int c45 = cos_fp(rad);
+  int s45 = sin_fp(rad);
+
+  /* Braccio 1: ruotato di +45 gradi */
+  verts[0] = rotz(-s, -wa, -da, c45, s45);
+  verts[1] = rotz(s, -wa, -da, c45, s45);
+  verts[2] = rotz(s, wa, -da, c45, s45);
+  verts[3] = rotz(-s, wa, -da, c45, s45);
+  verts[4] = rotz(-s, -wa, da, c45, s45);
+  verts[5] = rotz(s, -wa, da, c45, s45);
+  verts[6] = rotz(s, wa, da, c45, s45);
+  verts[7] = rotz(-s, wa, da, c45, s45);
+
+  /* Braccio 2: ruotato di -45 gradi (seno negato) */
+  verts[8] = rotz(-s, -wa, -da, c45, -s45);
+  verts[9] = rotz(s, -wa, -da, c45, -s45);
+  verts[10] = rotz(s, wa, -da, c45, -s45);
+  verts[11] = rotz(-s, wa, -da, c45, -s45);
+  verts[12] = rotz(-s, -wa, da, c45, -s45);
+  verts[13] = rotz(s, -wa, da, c45, -s45);
+  verts[14] = rotz(s, wa, da, c45, -s45);
+  verts[15] = rotz(-s, wa, da, c45, -s45);
+}
+
+/*
+ * rotate_y - rotazione 16.16 attorno a Y (invariata).
+ */
+static vec3_t rotate_y(vec3_t p, int angle) {
+  int rad = DEG_TO_FP_RAD(angle);
+  int c = cos_fp(rad);
+  int s = sin_fp(rad);
+  vec3_t r;
+  r.x = fixmul(p.x, c) - fixmul(p.z, s);
+  r.y = p.y;
+  r.z = fixmul(p.x, s) + fixmul(p.z, c);
+  return r;
+}
+
+/*
+ * rotate_x - rotazione 16.16 attorno a X (invariata). Usata solo con
+ * angolo costante TILT_X.
+ */
+static vec3_t rotate_x(vec3_t p, int angle) {
+  int rad = DEG_TO_FP_RAD(angle);
+  int c = cos_fp(rad);
+  int s = sin_fp(rad);
+  vec3_t r;
+  r.x = p.x;
+  r.y = fixmul(p.y, c) - fixmul(p.z, s);
+  r.z = fixmul(p.y, s) + fixmul(p.z, c);
+  return r;
+}
+
+/* Project 3D to 2D — invariata */
+static void project(vec3_t p, int *sx, int *sy) {
+  int dist = 3 * FP_ONE;
+  int z_eff = p.z + dist;
+  if (z_eff < 100)
+    z_eff = 100;
+
+  long long x_proj = ((long long)p.x * dist) / z_eff;
+  long long y_proj = ((long long)p.y * dist) / z_eff;
+
+  int proj_x = (int)(x_proj >> 8);
+  int proj_y = (int)(y_proj >> 8);
+
+  *sx = WIN_W / 2 + (proj_x * 3) / 4;
+  *sy = WIN_H / 2 - (proj_y * 3) / 4;
+}
+
+/* fill_triangle — invariata, identica al cubo */
+static void fill_triangle(int x1, int y1, int x2, int y2, int x3, int y3,
+                          unsigned int color) {
+  if (y1 > y2) {
+    int t = x1;
+    x1 = x2;
+    x2 = t;
+    t = y1;
+    y1 = y2;
+    y2 = t;
+  }
+  if (y2 > y3) {
+    int t = x2;
+    x2 = x3;
+    x3 = t;
+    t = y2;
+    y2 = y3;
+    y3 = t;
+  }
+  if (y1 > y2) {
+    int t = x1;
+    x1 = x2;
+    x2 = t;
+    t = y1;
+    y1 = y2;
+    y2 = t;
+  }
+
+  if (y1 == y3)
+    return;
+
+  long long dx13 = x3 - x1;
+  long long dy13 = y3 - y1;
+  long long step13 = dy13 ? (dx13 << 16) / dy13 : 0;
+
+  long long curx1 = (long long)x1 << 16;
+  long long curx2 = (long long)x1 << 16;
+
+  if (y2 > y1) {
+    long long dx12 = x2 - x1;
+    long long dy12 = y2 - y1;
+    long long step12 = dy12 ? (dx12 << 16) / dy12 : 0;
+    for (int y = y1; y < y2; y++) {
+      int cx1 = curx1 >> 16;
+      int cx2 = curx2 >> 16;
+      if (cx1 > cx2) {
+        int t = cx1;
+        cx1 = cx2;
+        cx2 = t;
+      }
+      if (y >= 0 && y < WIN_H) {
+        int start = cx1 < 0 ? 0 : cx1;
+        int end = cx2 >= WIN_W ? WIN_W - 1 : cx2;
+        for (int x = start; x <= end; x++) {
+          framebuffer[y * WIN_W + x] = color;
+        }
+      }
+      curx1 += step13;
+      curx2 += step12;
+    }
+  }
+
+  curx2 = (long long)x2 << 16;
+  if (y3 > y2) {
+    long long dx23 = x3 - x2;
+    long long dy23 = y3 - y2;
+    long long step23 = dy23 ? (dx23 << 16) / dy23 : 0;
+    for (int y = y2; y <= y3; y++) {
+      int cx1 = curx1 >> 16;
+      int cx2 = curx2 >> 16;
+      if (cx1 > cx2) {
+        int t = cx1;
+        cx1 = cx2;
+        cx2 = t;
+      }
+      if (y >= 0 && y < WIN_H) {
+        int start = cx1 < 0 ? 0 : cx1;
+        int end = cx2 >= WIN_W ? WIN_W - 1 : cx2;
+        for (int x = start; x <= end; x++) {
+          framebuffer[y * WIN_W + x] = color;
+        }
+      }
+      curx1 += step13;
+      curx2 += step23;
+    }
+  }
+}
+
+/* Clear framebuffer — invariata */
+static void clear_buffer(unsigned int color) {
+  if (color == 0) {
+    memset(framebuffer, 0, BUFFER_SIZE * sizeof(unsigned int));
+  } else {
+    unsigned int *ptr = framebuffer;
+    int n = BUFFER_SIZE;
+    while (n-- > 0)
+      *ptr++ = color;
+  }
+}
+
+/*
+ * draw_face_t - dati di una faccia visibile, raccolti nel primo passaggio
+ * e poi ordinati per profondita' (painter's algorithm) prima del disegno.
+ * Nessun initializer aggregato: i campi vengono riempiti via assegnazione.
+ */
+typedef struct {
+  int sx0, sy0, sx1, sy1, sx2, sy2, sx3, sy3;
+  unsigned int color;
+  int depth; /* somma delle z trasformate dei 4 vertici */
+} draw_face_t;
+
+int main(void) {
+  int pid = get_pid();
+  char title[64];
+  sprintf(title, "3D Demo (Solid Purple X) PID %d", pid);
+
+  int win = create_window(50, 50, WIN_W, WIN_H, title);
+  if (win <= 0) {
+    print("[Demo3D] Error creating window\n");
+    exit(1);
+  }
+
+  printf("[Demo3D] Real Solid GL Engine Init (Purple X). PID %d\n", pid);
+
+  /* Stessa scala del cubo: FP_ONE/3 */
+  init_shape(FP_ONE / 3);
+
+  int angle_y = 0;
+
+  while (1) {
+    clear_buffer(0);
+
+    vec3_t transformed[NUM_VERTS];
+    int sx[NUM_VERTS], sy[NUM_VERTS];
+
+    /* Tilt fisso su X, rotazione animata SOLO su Y */
+    for (int i = 0; i < NUM_VERTS; i++) {
+      vec3_t v = verts[i];
+      v = rotate_x(v, TILT_X);
+      v = rotate_y(v, angle_y);
+      transformed[i] = v;
+      project(v, &sx[i], &sy[i]);
+    }
+
+    /* Primo passaggio: culling + shading, raccolta facce visibili */
+    draw_face_t draws[12];
+    int n_draw = 0;
+
+    for (int i = 0; i < 12; i++) {
+      vec3_t t0 = transformed[faces[i][0]];
+      vec3_t t1 = transformed[faces[i][1]];
+      vec3_t t2 = transformed[faces[i][2]];
+      vec3_t t3 = transformed[faces[i][3]];
+
+      long long v1x = t1.x - t0.x;
+      long long v1y = t1.y - t0.y;
+      long long v2x = t2.x - t0.x;
+      long long v2y = t2.y - t0.y;
+
+      long long nz = (v1x * v2y - v1y * v2x) >> FP_SHIFT;
+
+      if (nz < 0) {
+        long long max_nz = MAX_NZ;
+        if (max_nz == 0)
+          max_nz = 1;
+
+        int ambient = 40;
+        int intensity = ambient + (int)((-nz * (255 - ambient)) / max_nz);
+        if (intensity > 255)
+          intensity = 255;
+        if (intensity < 0)
+          intensity = 0;
+
+        unsigned int base = face_colors[i];
+        int r = ((base >> 16) & 0xFF) * intensity / 255;
+        int g = ((base >> 8) & 0xFF) * intensity / 255;
+        int b = (base & 0xFF) * intensity / 255;
+        unsigned int shaded = 0xFF000000 | (r << 16) | (g << 8) | b;
+
+        draws[n_draw].sx0 = sx[faces[i][0]];
+        draws[n_draw].sy0 = sy[faces[i][0]];
+        draws[n_draw].sx1 = sx[faces[i][1]];
+        draws[n_draw].sy1 = sy[faces[i][1]];
+        draws[n_draw].sx2 = sx[faces[i][2]];
+        draws[n_draw].sy2 = sy[faces[i][2]];
+        draws[n_draw].sx3 = sx[faces[i][3]];
+        draws[n_draw].sy3 = sy[faces[i][3]];
+        draws[n_draw].color = shaded;
+        draws[n_draw].depth = t0.z + t1.z + t2.z + t3.z;
+        n_draw++;
+      }
+    }
+
+    /* Painter's algorithm: ordina per profondita' decrescente (piu'
+     * lontano dalla camera = z piu' grande = disegnato per primo).
+     * Bubble sort: n_draw <= 12, costo trascurabile, nessuna libreria
+     * esterna richiesta. */
+    for (int a = 0; a < n_draw - 1; a++) {
+      for (int b = 0; b < n_draw - 1 - a; b++) {
+        if (draws[b].depth < draws[b + 1].depth) {
+          draw_face_t tmp = draws[b];
+          draws[b] = draws[b + 1];
+          draws[b + 1] = tmp;
+        }
+      }
+    }
+
+    /* Secondo passaggio: rasterizzazione nell'ordine corretto */
+    for (int i = 0; i < n_draw; i++) {
+      fill_triangle(draws[i].sx0, draws[i].sy0, draws[i].sx1, draws[i].sy1,
+                    draws[i].sx2, draws[i].sy2, draws[i].color);
+      fill_triangle(draws[i].sx0, draws[i].sy0, draws[i].sx2, draws[i].sy2,
+                    draws[i].sx3, draws[i].sy3, draws[i].color);
+    }
+
+    window_blit(win, 0, 0, WIN_W, WIN_H, framebuffer);
+    compositor_render();
+
+    angle_y = (angle_y + 2) % 360;
+  }
+
+  exit(0);
+  return 0;
+}

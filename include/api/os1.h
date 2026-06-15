@@ -14,6 +14,8 @@
  * Error model (ABI-02): syscalls return negative errno values from
  * posix_types.h on failure (-EFAULT, -ENOMEM, ...), >= 0 on success. */
 #include "syscall_nums.h"
+/* Privilege levels (PLVL_*) and capabilities (CAP_*) for spawn_caps (#79). */
+#include "caps.h"
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
@@ -40,7 +42,8 @@ extern void _sys_write(int fd, const char *buf, size_t count);
 extern long _sys_get_time(void);
 extern int  _sys_get_pid(void);
 extern void _sys_exit(int status);
-extern int  _sys_spawn(const char *path);
+extern int  _sys_spawn(const char *path, int argc, char *const argv[]);
+extern long _sys_spawn_caps(const char *path, int level, unsigned long caps);
 extern int  _sys_kill(int pid);
 extern int  _sys_wait(int pid);
 extern void _sys_yield(void);
@@ -49,6 +52,9 @@ extern void _sys_flush(void);
 extern int  _sys_create_window(int x, int y, int w, int h, const char *title);
 extern void _sys_destroy_window(int win_id);
 extern void _sys_window_draw(int win_id, int x, int y, int w, int h, unsigned int color);
+extern long _sys_window_write(int win_id, const char *buf, unsigned long count);
+extern int  _sys_window_of_pid(int pid);
+extern long _sys_window_grid(int win_id);
 extern void _sys_window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf);
 extern void _sys_compositor_render(void);
 extern void _sys_window_set_flags(int win_id, int flags);
@@ -62,6 +68,9 @@ extern int  _sys_recv(int pid, struct ipc_message *msg);
 extern int  _sys_list_dir(const char *path, char *buf, size_t size);
 extern int  _sys_chdir(const char *path);
 extern int  _sys_getcwd(char *buf, size_t size);
+extern int  _sys_open(const char *path, int flags);
+extern int  _sys_close(int fd);
+extern long _sys_lseek(int fd, long offset, int whence);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
@@ -70,6 +79,18 @@ long get_time(void);
 int  get_pid(void);
 void exit(int status);
 int  spawn(const char *path);
+/* spawn_args: like spawn(), but hands the child an argv vector (the shell
+ * uses it to pass a filename, e.g. `kilo notes.txt`).  argv[0] is the program
+ * name as invoked; argv[argc] need not be NULL (the kernel terminates the
+ * copy at argc).  The kernel marshals the strings onto the child's stack and
+ * sets argc/argv as main()'s first two arguments per the C ABI. */
+int  spawn_args(const char *path, int argc, char *const argv[]);
+/* Sandboxed spawn (USR-SEC-03 #79).  level = PLVL_*; caps = OR of CAP_*.
+ * The kernel clamps both: a child is never more privileged than its parent,
+ * never above the level's ceiling, never more than the parent holds.
+ * spawn_level() uses the level's default capability preset. */
+long spawn_caps(const char *path, int level, unsigned long caps);
+long spawn_level(const char *path, int level);
 int  kill_process(int pid);
 int  wait(int pid);
 void yield(void);
@@ -111,11 +132,27 @@ int list_dir(const char *path, char *buf, size_t size);
 int chdir(const char *path);
 int getcwd(char *buf, size_t size);
 
+/* POSIX-style fd I/O (ABI-03 fd table; open() is declared in fcntl.h, the
+ * O_ and SEEK_ values in posix_types.h).  read()/write() above work on any
+ * fd: 0=stdin, 1/2=own window, open()ed files >= 3. */
+int  close(int fd);
+long lseek(int fd, long offset, int whence);
+
 /* Formatting & Printing */
 void print(const char *s);
 void print_hex(unsigned long val);
 int  printf(const char *fmt, ...);
 void printf_win(int win_id, const char *fmt, ...);
+/* window_write: write text straight to a window you own, by id (#123).
+ * Replaces the old fd>=100 overload on write(). */
+void window_write(int win_id, const char *buf, unsigned long count);
+/* window_of_pid: compositor window id of a pid, 0 if it has none (#123).
+ * The shell uses it to run windowless programs in-shell (foreground). */
+int  window_of_pid(int pid);
+/* window_grid: terminal character grid of a window you own, as (cols<<16)|rows
+ * (the compositor terminal cell size depends on the active font, so a windowed
+ * TTY app must query this instead of assuming a fixed 80x25).  < 0 on error. */
+int  window_grid(int win_id, int *cols, int *rows);
 int  sprintf(char *out, const char *fmt, ...);
 int  snprintf(char *out, size_t size, const char *fmt, ...);
 int  vsnprintf(char *out, size_t size, const char *fmt, va_list args);

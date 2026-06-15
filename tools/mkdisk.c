@@ -588,11 +588,17 @@ int main(int argc, char *argv[]) {
   me->type = 0xEE; me->lba_start = 1; me->sectors = NUM_SECTORS - 1;
   xwrite(mbr, 1, SECTOR_SIZE, f);
 
+  /* Userland-only standard image: a single ext4 rootfs partition.  The old
+   * BOOT and KERNEL partitions were dead weight — QEMU always boots the kernel
+   * via -kernel (dev) or GRUB (release); the kernel is never read from this
+   * image.  The rootfs is mounted from this partition through the block
+   * contract (virtio-blk today, any block backend tomorrow).  boot_path and
+   * kern_path are still accepted for Makefile compatibility but ignored. */
+  (void)boot_path;
+  (void)kern_path;
   uint8_t *entries = xmalloc(128 * 128);
   struct gpt_partition_entry *e = (struct gpt_partition_entry *)entries;
-  e[0].type_guid = TYPE_BOOT; e[0].start_lba = 34; e[0].end_lba = 2081;
-  e[1].type_guid = TYPE_KERNEL; e[1].start_lba = 2082; e[1].end_lba = 34849;
-  e[2].type_guid = TYPE_DATA; e[2].start_lba = 34850; e[2].end_lba = NUM_SECTORS - 34;
+  e[0].type_guid = TYPE_DATA; e[0].start_lba = 34; e[0].end_lba = NUM_SECTORS - 34;
 
   struct gpt_header h = {0}; h.signature = GPT_SIGNATURE; h.revision = GPT_REVISION; h.header_size = 92;
   h.my_lba = 1; h.alternate_lba = NUM_SECTORS - 1; h.first_usable_lba = 34; h.last_usable_lba = NUM_SECTORS - 34;
@@ -602,20 +608,6 @@ int main(int argc, char *argv[]) {
   uint8_t pad[SECTOR_SIZE - sizeof(h)] = {0}; xwrite(pad, 1, sizeof(pad), f);
   xwrite(entries, 1, 128 * 128, f);
 
-  write_ext4_partition(f, e[2].start_lba, e[2].end_lba - e[2].start_lba + 1, root_dir);
-  if (strcmp(boot_path, "none") != 0) {
-      FILE *bs = fopen(boot_path, "rb");
-      if (bs) {
-          fseek(bs, 0, SEEK_END); long sz = ftell(bs); rewind(bs);
-          uint8_t *bb = xmalloc(sz); fread(bb, 1, sz, bs); fclose(bs);
-          xseek(f, e[0].start_lba * SECTOR_SIZE, SEEK_SET); xwrite(bb, 1, sz, f); free(bb);
-      }
-  }
-  FILE *ks = fopen(kern_path, "rb");
-  if (ks) {
-      fseek(ks, 0, SEEK_END); long sz = ftell(ks); rewind(ks);
-      uint8_t *kb = xmalloc(sz); fread(kb, 1, sz, ks); fclose(ks);
-      xseek(f, e[1].start_lba * SECTOR_SIZE, SEEK_SET); xwrite(kb, 1, sz, f); free(kb);
-  }
+  write_ext4_partition(f, e[0].start_lba, e[0].end_lba - e[0].start_lba + 1, root_dir);
   fclose(f); return 0;
 }

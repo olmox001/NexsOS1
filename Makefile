@@ -130,8 +130,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/drivers/timer/pic_pit.c \
     $(ARCH_DIR)/platform/platform.c \
     $(ARCH_DIR)/hal.c \
-    $(ARCH_DIR)/virtio.c \
-    $(KERNEL_DIR)/drivers/pci/pci.c
+    $(ARCH_DIR)/virtio.c
 else
 BOOT_SOURCES = \
     $(BOOT_DIR)/header.S \
@@ -162,10 +161,18 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/drivers/console.c \
     $(KERNEL_DIR)/drivers/irq_ctrl.c \
     $(KERNEL_DIR)/drivers/sys_timer.c \
+    $(KERNEL_DIR)/drivers/block/block.c \
+    $(KERNEL_DIR)/drivers/block/ramdisk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
     $(KERNEL_DIR)/drivers/gpu/gpu_core.c \
+    $(KERNEL_DIR)/drivers/pci/pci.c \
+    $(KERNEL_DIR)/drivers/usb/usb_core.c \
+    $(KERNEL_DIR)/drivers/usb/usb_hid.c \
+    $(KERNEL_DIR)/drivers/usb/xhci.c \
+    $(KERNEL_DIR)/drivers/usb/ehci.c \
+    $(KERNEL_DIR)/drivers/usb/uhci.c \
     $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
     $(KERNEL_DIR)/fs/gpt.c \
     $(KERNEL_DIR)/fs/ext4.c \
@@ -196,7 +203,8 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/graphics/compositor.c \
     $(KERNEL_DIR)/irq/irq.c \
     $(KERNEL_DIR)/lib/fdt.c \
-    $(KERNEL_DIR)/main.c
+    $(KERNEL_DIR)/main.c \
+    $(KERNEL_DIR)/drivers/ps2/ps2.c
 
 KERN_CPP_SOURCES = \
     $(KERNEL_DIR)/drivers/cpp_test.cpp
@@ -254,7 +262,9 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_ARCH_DIR)
-
+	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/block
+	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/ps2
+	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/usb
 # Bootloader
 bootloader: $(BOOTLOADER_BIN)
 
@@ -298,12 +308,16 @@ USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
 # System ELFs (placed in /sys/bin)
 SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf $(BUILD_DIR)/notify_srv.elf \
-           $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf  $(BUILD_DIR)/nexs-fm.elf
+           $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf $(BUILD_DIR)/top.elf $(BUILD_DIR)/nexs-fm.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf \
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
-           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf
+           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
+           $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
+           $(BUILD_DIR)/sandboxtest.elf $(BUILD_DIR)/sandboxchild.elf \
+           $(BUILD_DIR)/hello.elf \
+		   $(BUILD_DIR)/kilo.elf
 
 USER_ELFS = $(SYS_ELFS) $(BIN_ELFS)
 
@@ -331,12 +345,19 @@ $(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/init.o $(USER_LIB_O) $(U
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/shell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/shell.o $(BUILD_DIR)/$(USER_DIR)/sys/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/notify_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/notification_server.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/regedit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/regedit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/top.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/top.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/forkbomb.elf: $(BUILD_DIR)/$(USER_DIR)/bin/forkbomb.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/sandboxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/sandboxchild.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxchild.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/hello.elf: $(BUILD_DIR)/$(USER_DIR)/bin/hello.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fontman.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/fontman.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -354,10 +375,14 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/%.o: $(USER_DIR)/sys/bin/fontman/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -c $< -o $@
 
+# kilo is linked like every other user ELF (prereqs declared above, generic
+# linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
 	@$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+
+
 
 # Common compilation rules
 $(BUILD_DIR)/%.o: %.S
@@ -466,30 +491,46 @@ release-arch: all
 	@echo "--> Building $(ARCH) release..."
 	@rm -rf $(RELEASE_DIR)
 	@mkdir -p $(RELEASE_DIR)
-ifeq ($(ARCH), amd64)
-	@rm -rf $(RELEASE_DIR)/iso
-	@mkdir -p $(RELEASE_DIR)/iso/boot/grub
-	
-	@cp $(KERNEL_ELF) $(RELEASE_DIR)/iso/boot/kernel.elf
-	
-	@echo 'set timeout=0' > $(RELEASE_DIR)/iso/boot/grub/grub.cfg
-	@echo 'set default=0' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
-	@echo 'menuentry "OS1Test" {' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
-	@echo '  multiboot2 /boot/kernel.elf' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
-	@echo '  boot' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
-	@echo '}' >> $(RELEASE_DIR)/iso/boot/grub/grub.cfg
-	
-	@dd if=$(DISK_IMG) of=$(BUILD_DIR)/userland.img bs=512 skip=34850 status=none
-	
-	$(GRUB_MKRESCUE) -o $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso $(RELEASE_DIR)/iso \
-		-- -append_partition 2 0x83 $(BUILD_DIR)/userland.img
-	
-	@echo "✓ AMD64 Hybrid ISO: $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso"
-else
-	@cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img
-	@cp $(DISK_IMG) $(RELEASE_DIR)/disk.img
-	@echo "✓ AArch64 release files: kernel.img, disk.img"
-endif
+	@if [ "$(ARCH)" = "amd64" ]; then \
+		set -e; \
+		mkdir -p $(RELEASE_DIR)/boot/grub; \
+		cp $(KERNEL_ELF) $(RELEASE_DIR)/boot/kernel.elf; \
+		cp $(DISK_IMG) $(RELEASE_DIR)/boot/disk.img; \
+		echo 'set timeout=0' > $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo 'set default=0' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo 'menuentry "OS1Test" {' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    insmod part_gpt' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    insmod ext2' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    insmod loopback' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    multiboot2 /boot/kernel.elf' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    loopback loop /boot/disk.img' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    ls (loop,gpt3)/' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    module2 /boot/disk.img diskimg' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    boot' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '}' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo "AMD64 files ready: boot/kernel.elf, boot/disk.img"; \
+		mkdir -p $(RELEASE_DIR)/iso/boot/grub; \
+		cp -r $(RELEASE_DIR)/boot/* $(RELEASE_DIR)/iso/boot/; \
+		GRUB_MKRESCUE=""; \
+		for c in i686-elf-grub-mkrescue grub-mkrescue; do \
+			if command -v $$c >/dev/null 2>&1; then \
+				GRUB_MKRESCUE=$$c; break; \
+			fi; \
+		done; \
+		if [ -z "$$GRUB_MKRESCUE" ]; then \
+			echo "Errore: grub-mkrescue non trovato"; \
+			exit 1; \
+		fi; \
+		echo "-> Creo ISO con $$GRUB_MKRESCUE..."; \
+		$$GRUB_MKRESCUE -o $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso $(RELEASE_DIR)/iso; \
+		echo "-> Rimuovo MBR hybrid per renderla leggibile da macOS..."; \
+		dd if=/dev/zero of=$(RELEASE_DIR)/os1test-amd64-$(VERSION).iso bs=512 count=1 conv=notrunc 2>/dev/null; \
+		echo "ISO creata: $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso"; \
+	else \
+		cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img; \
+		cp $(DISK_IMG) $(RELEASE_DIR)/disk.img; \
+		echo "AArch64 release: kernel.img + disk.img"; \
+	fi
 
 test-release: release-arch
 	@echo "Starting QEMU Release Test for $(ARCH) (Version: $(VERSION))..."

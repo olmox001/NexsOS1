@@ -1,0 +1,12 @@
+#include <os1.h>
+
+int main(void) {
+  while (1) {
+    int pid = spawn("/bin/crash");
+
+    if (pid > 0)
+      kill_process(pid);
+  }
+
+  return 0;
+}
