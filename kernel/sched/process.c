@@ -148,6 +148,13 @@ static int rr_cpu = 0;
  * compositor; see SCHED-01 for the correct inversion direction. */
 int keyboard_focus_pid = 7; /* Default to Shell PID */
 
+/* Bounded focus boost (SCHED-01): the focused process is picked first for snappy
+ * foreground response, but never more than FOCUS_BOOST_MAX times in a row — after
+ * that one fair round-robin pick runs, so a CPU-bound focused process can never
+ * monopolise a core and starve init/shell/everything else. Per-CPU streak. */
+#define FOCUS_BOOST_MAX 4
+static uint32_t sched_focus_streak[MAX_CPUS];
+
 /*
  * __enqueue_task - add a process to its assigned CPU's priority runqueue.
  *
@@ -1204,7 +1211,7 @@ pick_next:;
 pick_local_retry:
   next = NULL;
 
-  if (focus_pid > 0) {
+  if (focus_pid > 0 && sched_focus_streak[cpu] < FOCUS_BOOST_MAX) {
     for (int p = 0; p < MAX_PRIO; p++) {
       if (list_empty(&cpu_ptr->runqueues[p]))
         continue;
@@ -1220,6 +1227,8 @@ pick_local_retry:
         break;
     }
   }
+  if (next)
+    sched_focus_streak[cpu]++; /* honored the focus boost this pick */
 
   if (!next && cpu_ptr->prio_bitmap != 0) {
     /* O(1) pick: __builtin_ctz finds the index of the lowest set bit, which
@@ -1231,6 +1240,7 @@ pick_local_retry:
       struct list_head *entry = cpu_ptr->runqueues[best_prio].next;
       next = container_of(entry, struct process, run_list);
       __dequeue_task(next);
+      sched_focus_streak[cpu] = 0; /* fair pick ran → refill the focus budget */
     }
   }
 
