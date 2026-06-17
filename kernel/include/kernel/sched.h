@@ -253,6 +253,10 @@ struct ipc_node *pop_message(struct process *proc, int src_pid);
 extern int keyboard_focus_pid;
 void sched_set_focus_pid(int pid);
 int sched_get_focus_pid(void);
+/* window_request_close: window-close intent seam (GFX-COMP-03 #69) — the
+ * compositor calls this instead of process_terminate() so graphics does not
+ * drive process lifecycle directly. */
+void window_request_close(int pid);
 long sys_getprocs(struct ps_info *user_buf, size_t max_count);
 long sys_sbrk(intptr_t increment);
 

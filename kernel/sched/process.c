@@ -156,6 +156,16 @@ void sched_set_focus_pid(int pid) { keyboard_focus_pid = pid; }
 /* sched_get_focus_pid - lockless snapshot of the focus hint. */
 int sched_get_focus_pid(void) { return keyboard_focus_pid; }
 
+/* window_request_close - window-close INTENT seam, owned by the process layer
+ * (GFX-COMP-03 #69). The compositor (graphics) must NOT drive process lifecycle
+ * directly: it calls this instead of process_terminate(), so the compositor no
+ * longer references the process API and there is one place to evolve the policy.
+ * Today it force-terminates to preserve the close-button behaviour. DIR-02
+ * target: deliver a CLOSE event to the window owner for a graceful quit and
+ * force-kill only on timeout, and run the kill OUTSIDE mouse-IRQ context
+ * (the IRQ-time process_terminate is the separate SCHED-03 follow-up). */
+void window_request_close(int pid) { process_terminate(pid); }
+
 /* Bounded focus boost (SCHED-01): the focused process is picked first for snappy
  * foreground response, but never more than FOCUS_BOOST_MAX times in a row — after
  * that one fair round-robin pick runs, so a CPU-bound focused process can never

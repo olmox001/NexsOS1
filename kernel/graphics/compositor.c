@@ -1133,17 +1133,18 @@ void compositor_handle_click(int button, int state) {
    * Cross-subsystem calls, now strictly OUTSIDE compositor_lock
    * (FIX(GFX-COMP-03)). Both validate their target pid internally, so a
    * window/process that changed between the unlock and here is handled
-   * gracefully (returns an error). NOTE: process_terminate still runs in
-   * mouse-IRQ context — this removes the freeze, but the zombie/no-reap
-   * behaviour for an IRQ-time kill is a separate follow-up (process_terminate
-   * must not run from IRQ; see SCHED-03).
-   */
+   * gracefully. Input delivery uses the same kernel_ipc_send transport the
+   * keyboard driver uses. Window close goes through the process-layer intent
+   * seam window_request_close() (#69) — the compositor no longer references
+   * process_terminate, so graphics does not drive process lifecycle directly.
+   * NOTE: the close still force-terminates in mouse-IRQ context; deferring it to
+   * a safe context is the separate SCHED-03 follow-up, now localised behind the
+   * seam. */
   if (send_pid > 0)
     kernel_ipc_send(send_pid, &msg);
   if (do_close) {
-    pr_info("Compositor: Close button -> terminate PID %d\n", close_pid);
-    extern int process_terminate(int pid);
-    process_terminate(close_pid);
+    pr_info("Compositor: Close button -> request close of PID %d\n", close_pid);
+    window_request_close(close_pid);
   }
 }
 
