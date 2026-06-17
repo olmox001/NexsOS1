@@ -86,6 +86,8 @@
 
 /* Defined below (after sys_get_time); used by the SYS_NANOSLEEP dispatch case. */
 static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns);
+/* Yield with per-process anti-spin throttle; used by the SYS_YIELD case. */
+static struct pt_regs *sys_yield(struct pt_regs *regs);
 
 /*
  * FIX(EXT4-07): upper bound for kmalloc'd bounce buffers whose size comes
@@ -546,7 +548,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));
     break;
   case SYS_YIELD:
-    return schedule(frame);
+    return sys_yield(frame);
   case SYS_NANOSLEEP:
     return sys_nanosleep(frame, arg0);
   case SYS_SEND:
@@ -852,6 +854,65 @@ static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
   p->state = PROC_SLEEPING;
   arch_local_irq_enable();
   pt_regs_retry_syscall(regs);
+  return schedule(regs);
+}
+
+/* YIELD_SPIN_BUDGET: how many yield() calls a process may make within a single
+ * tick (10 ms at HZ=100) before it is treated as busy-spinning. A program doing
+ * real work between yields never approaches this; a `while(1) yield()` spinner
+ * (an unoptimised app, or an old-style poll loop) trips it and is descheduled
+ * to the next tick, capping its duty cycle so it cannot keep a core at 100% and
+ * freeze the system. The bounded focus boost (process.c) stops a focused
+ * CPU-hog from STARVING others; this stops a yield-spinner from SATURATING a
+ * core. */
+#define YIELD_SPIN_BUDGET 64
+
+/*
+ * sys_yield - cooperative yield with a per-process anti-spin throttle (SYS_YIELD,
+ * docs/TIMER-MODEL.md §4).
+ *
+ * Normally just reschedules (gives up the rest of the slice). But it counts
+ * yields within the current tick; once a process exceeds YIELD_SPIN_BUDGET it is
+ * busy-spinning on yield(), so instead of an immediate reschedule it is put to
+ * sleep until the next tick via its per-process timer (sleep_timer) — the same
+ * mechanism nanosleep uses. The spinner therefore relinquishes the core for a
+ * full tick, dropping its CPU duty cycle to near zero. The counter resets each
+ * tick (and after a throttle), so legitimate cooperative yielding is untouched.
+ *
+ * Note: this does NOT touch wake_ns (the nanosleep deadline) — a process cannot
+ * be both yielding and nanosleeping. On wake the yield() simply returns.
+ */
+static struct pt_regs *sys_yield(struct pt_regs *regs) {
+  struct process *p = current_process;
+  if (!p)
+    return schedule(regs);
+
+  if (p->yield_jiffy != jiffies) {
+    p->yield_jiffy = jiffies;
+    p->yield_count = 0;
+  }
+
+  if (++p->yield_count > YIELD_SPIN_BUDGET) {
+    /* Busy-spinning on yield() this tick — throttle to a 1-tick per-process
+     * timed sleep. Reset the budget; it refills next tick on wake. */
+    p->yield_count = 0;
+    /* TIMER-UAF-01: only (re)arm when the per-process timer is NOT already
+     * queued — exactly like sys_nanosleep. The sleeper can have been force-woken
+     * by a non-timer path (kernel_ipc_send flips PROC_SLEEPING->READY WITHOUT
+     * cancelling sleep_timer, process.c) with its timer still linked; calling
+     * timer_setup()/INIT_LIST_HEAD on that still-linked node re-initialises a
+     * live list entry and corrupts the per-CPU timer_list, later faulting in
+     * kernel_timer_tick() as a double list_del. If it is already pending, the
+     * existing 1-tick trigger will wake us, so we just re-sleep. */
+    if (!timer_pending(&p->sleep_timer)) {
+      timer_setup(&p->sleep_timer, proc_sleep_wake, p);
+      timer_add(&p->sleep_timer, jiffies + 1);
+    }
+    arch_local_irq_disable();
+    p->state = PROC_SLEEPING;
+    arch_local_irq_enable();
+  }
+
   return schedule(regs);
 }
 

@@ -305,6 +305,17 @@ void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
  * Side effects: sets t->pending = true.
  */
 void timer_add(struct timer *t, uint64_t expires) {
+  /* Defence in depth (TIMER-UAF-01): never link the same node twice.  If the
+   * timer is somehow still queued — a re-arm of a not-yet-fired timer, or a
+   * caller that bypassed timer_pending() — unlink it from its current CPU
+   * FIRST.  A double list_add_tail() (or a timer_setup()/INIT_LIST_HEAD on a
+   * still-linked node) corrupts the per-CPU timer_list and later crashes
+   * kernel_timer_tick() with a double list_del (write to NULL+8 on aarch64,
+   * a clobbered return address -> #GP on amd64).  timer_del() takes the owner
+   * CPU's timer_lock, which we do not hold here, so there is no recursion. */
+  if (t->pending)
+    timer_del(t);
+
   struct cpu_info *c = get_cpu_info();
   uint64_t flags;
   spin_lock_irqsave(&c->timer_lock, &flags);

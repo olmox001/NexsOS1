@@ -1131,6 +1131,16 @@ struct pt_regs *schedule(struct pt_regs *regs) {
       }
     }
 
+    /* Cancel any pending per-process timed-sleep timer BEFORE freeing the PCB,
+     * so its callback (proc_sleep_wake) can never fire on freed memory. The
+     * external-kill path already does this in process_terminate(), and a process
+     * with an armed timer is PROC_SLEEPING (so it cannot self-exit) — but this
+     * defensive cancel makes the no-UAF invariant hold on EVERY free path
+     * (self-exit zombie, fault-kill, deferred reap) regardless. No-op if the
+     * timer is not armed; takes the owner CPU's timer_lock (no lock held here,
+     * no inversion). */
+    timer_del(&to_free->sleep_timer);
+
     if (to_free->kernel_stack)
       pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
     if (to_free->page_table)

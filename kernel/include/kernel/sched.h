@@ -105,6 +105,15 @@ struct process {
   uint64_t cpu_time_counts;
   struct timer sleep_timer;
 
+  /* Yield-throttle anti-spin (per-process, docs/TIMER-MODEL.md §4): yield()
+   * calls within the current tick are counted in yield_count (for the tick
+   * yield_jiffy). Beyond YIELD_SPIN_BUDGET the process is busy-spinning on
+   * yield() rather than doing work and is put to sleep until the next tick via
+   * sleep_timer, so an unoptimised program cannot keep a core at 100% and freeze
+   * the system. */
+  uint64_t yield_jiffy;
+  uint32_t yield_count;
+
   /* IPC state */
   int ipc_target_pid; /* PID we want to talk to (-1 for ANY) */
   struct ipc_message
