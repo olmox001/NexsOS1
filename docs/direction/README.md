@@ -11,14 +11,17 @@ like UNIX.** Not "become more POSIX" but the opposite — a system centred on th
 *everything is a service and everything communicates by events*. POSIX/libc is a
 compatibility layer built ON TOP of the proprietary OS1 base API, never the core.
 
-| Doc | Theme | Proposed issue |
+| Doc | Theme | Tracking issue |
 |-----|-------|----------------|
-| [DIR-01](DIR-01-naming-and-objects.md) | OS1_/POSIX naming split + object handles | NEXS-DIR-01 |
-| [DIR-02](DIR-02-compositor-decoupling.md) | Compositor ↔ process/scheduler decoupling; compositor in the HAL | NEXS-DIR-02 (extends #83/#67/#69) |
-| [DIR-03](DIR-03-unified-events.md) | One `event_wait()` model (key/mouse/IPC/timer/window/process) | NEXS-DIR-03 |
-| [DIR-04](DIR-04-capabilities-and-services.md) | Capabilities not privileges; service-family syscalls; no `fork()` | NEXS-DIR-04 (extends #79) |
-| [DIR-05](DIR-05-fault-recovery-and-debugger.md) | C-line backtrace, kernel recovery mode, on-screen panic | NEXS-DIR-05 |
-| [DIR-06](DIR-06-hal-conformance.md) | ALL kernel code through the HAL; kill arch divergence | NEXS-DIR-06 (HAL-ARCH-01) |
+| [DIR-01](DIR-01-naming-and-objects.md) | OS1_/POSIX naming split + object handles | #137 |
+| [DIR-02](DIR-02-compositor-decoupling.md) | Compositor ↔ process/scheduler decoupling; compositor in the HAL | #83 / #69 / #67 |
+| [DIR-03](DIR-03-unified-events.md) | One `event_wait()` model (key/mouse/IPC/timer/window/process) | #138 |
+| [DIR-04](DIR-04-capabilities-and-services.md) | Capabilities not privileges; service-family syscalls; no `fork()` | #79 / #95 / #120 |
+| [DIR-05](DIR-05-fault-recovery-and-debugger.md) | C-line backtrace, kernel recovery mode, on-screen panic | #139 |
+| [DIR-06](DIR-06-hal-conformance.md) | ALL kernel code through the HAL; kill arch divergence (HAL-ARCH-01) | #140 |
+
+The fault that triggered this review is tracked + resolved in #136
+(`docs/report/TIMER-UAF-01-CERTIFIED-FIX.md`).
 
 ## Sequencing
 
