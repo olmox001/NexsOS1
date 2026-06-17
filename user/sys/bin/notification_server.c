@@ -2,10 +2,16 @@
  * user/sys/bin/notification_server.c
  * System-wide Notification Server (IPC-based popup service)
  *
- * Maintains a small always-on-top compositor window in the top-right corner
- * of the screen.  The window is initially hidden; it becomes visible when an
- * IPC message of type IPC_TYPE_NOTIFY or IPC_TYPE_RAW arrives, and is
- * automatically hidden again after 5 seconds of inactivity.
+ * Maintains a small always-on-top, PASSIVE (click-through) compositor window in
+ * the top-right corner of the screen.  The window is initially hidden; it
+ * becomes visible when an IPC message of type IPC_TYPE_NOTIFY arrives, and is
+ * automatically hidden again after 2 seconds.
+ *
+ * Render gating (USR-NOTIFY-03): the popup is shown ONLY on a freshly received
+ * NOTIFY (gated on the recv return code), never on msg.type alone — IPC_TYPE_RAW
+ * is 0 and collides with a "nothing waiting" buffer, which used to re-render the
+ * stale payload forever (the popup never auto-hid) and turned a click (delivered
+ * as IPC_TYPE_MOUSE) into a stray rendered glyph.
  *
  * Discovery mechanism (see USR-SEC-01):
  *   On startup, notify_srv writes its own PID as a decimal string to the
@@ -18,7 +24,7 @@
  *   Idle, the loop BLOCKS on recv(-1, &msg) so it consumes ~0% CPU until a
  *   notification arrives (the old try_recv()+yield() loop busy-spun a core).
  *   While the popup is visible it polls with try_recv() and a real blocking
- *   sleep(100) so the 5 s auto-hide can still fire, then drops back to the
+ *   OS1_sleep(100) so the 5 s auto-hide can still fire, then drops back to the
  *   blocking branch. A recv-with-timeout (issue #135) would unify both.
  *
  * Known issues:
@@ -70,10 +76,13 @@ int main(void) {
     return 1;
   }
 
-  /* Set as top-most and HIDDEN initially.
+  /* Set as top-most, HIDDEN initially, and PASSIVE (non-interactive).
    * Flag bits: 1 = top_most (always rendered above other windows),
-   *            4 = hidden (window not shown until a notification arrives). */
-  set_window_flags(win_id, 1 | 4); /* 1=top_most, 4=hidden */
+   *            4 = hidden (window not shown until a notification arrives),
+   *            8 = passive (click-through: never takes focus or input, so a
+   *                click on the popup neither steals the caret nor delivers a
+   *                mouse event to this server). */
+  set_window_flags(win_id, 1 | 4 | 8); /* 1=top_most, 4=hidden, 8=passive */
   compositor_render();
 
   printf("[Notify] Server started (PID %d)\n", get_pid());
@@ -94,40 +103,48 @@ int main(void) {
    *     consumes ~0% CPU until a notification actually arrives. This is the
    *     server pattern (real blocking IPC, like init's blocking sleep).
    *   - Visible (auto-hide pending): we cannot block forever or the 5 s hide
-   *     would never fire, so poll with try_recv() and a REAL blocking sleep(100)
+   *     would never fire, so poll with try_recv() and a REAL blocking OS1_sleep(100)
    *     — 10 wakeups/s, not a yield-spin — until the window hides and we drop
    *     back to the blocking branch.
    * A recv-with-timeout would collapse both branches; that needs the capability
    * timer objects of issue #135. */
   while (1) {
+    /* `got` is true ONLY when a message was actually received this round.
+     * Gate the popup on the receive RETURN CODE, never on msg.type alone:
+     * IPC_TYPE_RAW == 0 (posix_types.h) collides with a zeroed / "nothing
+     * waiting" buffer, so the old `msg.type == IPC_TYPE_RAW` test re-rendered
+     * the STALE payload on every empty poll — the popup never auto-hid (each
+     * re-render reset last_notify_time), and a click on the popup delivered an
+     * IPC_TYPE_MOUSE message whose coordinate bytes were then rendered as a
+     * stray glyph. */
+    int got;
     if (!is_visible) {
-      /* Block until a notification arrives — zero CPU while idle. */
-      if (recv(-1, &msg) != 0)
-        continue; /* spurious/error wake: re-block */
+      /* Idle: block until a message arrives — zero CPU while hidden. */
+      got = (recv(-1, &msg) == 0);
     } else {
-      /* Visible: non-blocking check, then a real sleep below. */
-      if (try_recv(-1, &msg) != 0)
-        msg.type = 0; /* nothing waiting this round */
+      /* Visible: non-blocking poll so the 2 s auto-hide can still fire. */
+      got = (try_recv(-1, &msg) == 0);
     }
 
-    if (msg.type == IPC_TYPE_NOTIFY || msg.type == IPC_TYPE_RAW) {
-      /* Render notification background and payload text. */
+    /* Only a freshly-received NOTIFY shows the popup. Any other message type
+     * (e.g. IPC_TYPE_MOUSE from a click on the window) is drained and ignored. */
+    if (got && msg.type == IPC_TYPE_NOTIFY) {
       window_draw(win_id, 0, 0, NOTIFY_WIDTH, NOTIFY_HEIGHT, 0xFFFCFCFD);
       printf_win(win_id, "\033[H\033[1;93m [System Notification]\033[0m\n ");
       /* Limit payload to 64 bytes to avoid over-running the window. */
       printf_win(win_id, "%.64s\n", msg.payload);
 
-      /* Show window: flag 2 = visible. */
-      set_window_flags(win_id, 1 | 2); /* 1=top_most, 2=visible */
+      /* Show window: 1=top_most, 2=visible, 8=passive (click-through, no focus). */
+      set_window_flags(win_id, 1 | 2 | 8);
       is_visible = 1;
       last_notify_time = get_time();
       compositor_render();
     }
 
-    /* Auto-hide check: hide 5 s (5000 ms, get_time() is real ms) after the last
-     * notification, then the next loop iteration blocks on recv() again. */
-    if (is_visible && (get_time() - last_notify_time > 5000)) {
-      set_window_flags(win_id, 1 | 4); /* 1=top_most, 4=hidden */
+    /* Auto-hide 2 s (2000 ms; get_time() is real ms) after the last
+     * notification, then the next iteration blocks on recv() again. */
+    if (is_visible && (get_time() - last_notify_time >= 2000)) {
+      set_window_flags(win_id, 1 | 4 | 8); /* 1=top_most, 4=hidden, 8=passive */
       is_visible = 0;
       compositor_render();
     }
@@ -136,7 +153,7 @@ int main(void) {
      * (descheduled, no busy-wait). Skipped once we are hidden — that path blocks
      * on recv() at the top instead. */
     if (is_visible)
-      sleep(100);
+      OS1_sleep(100);
   }
 
   return 0;
