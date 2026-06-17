@@ -144,12 +144,12 @@ explicit correction notes). Every finding cites `file:line`.
 ## 7. Issues (GitHub)
 
 The W3+ actionable tier (**72 findings**) is filed as individual GitHub issues on
-`olmox001/os1test-dev`, labeled by severity (`w3`/`w4`/`w5`), kind (`bug`, `security`,
+`olmox001/NexsOS1`, labeled by severity (`w3`/`w4`/`w5`), kind (`bug`, `security`,
 `wrong-design`, `missing`, `stub`, `bad-impl`, `refine`, `perf`, `review-doc`) and
 `area:*`, all tagged `code-review`. W0–W2 findings remain in the per-subsystem docs above.
 
-- **Tracking epic:** [#19](https://github.com/olmox001/os1test-dev/issues/19)
-- **Per-finding issues:** [#20–#91](https://github.com/olmox001/os1test-dev/issues?q=is%3Aissue+is%3Aopen+label%3Acode-review) (72)
+- **Tracking epic:** [#19](https://github.com/olmox001/NexsOS1/issues/19)
+- **Per-finding issues:** [#20–#91](https://github.com/olmox001/NexsOS1/issues?q=is%3Aissue+is%3Aopen+label%3Acode-review) (72)
 - **Cross-cutting epics:** #92 Memory & address-space · #93 ABI & capabilities ·
   #94 amd64 boot/4GB · #95 Service isolation (seL4/Plan 9) · #96 SMP correctness
 - Filter examples: `gh issue list --label code-review`, `--label w5`, `--label area:fs`.

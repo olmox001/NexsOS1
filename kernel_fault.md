@@ -13,8 +13,8 @@ FDT: Successfully initialized
 [C0] [INFO] Kernel: Entry x0 = 0x48000000
 [C0] 
 [C0] ========================================
-[C0]   AArch64 Microkernel v0.1.0
-[C0]   Production-Ready Microkernel
+[C0]   AArch64 HybridKernel HybridKernel MicroKernel ispired ispired v0.1.0
+[C0]   Production-Ready HybridKernel MicroKernel ispired
 [C0] ========================================
 [C0] 
 [C0] [INFO] Initializing CPU...
@@ -202,4 +202,4 @@ Backtrace (fp chain, max 24):
   #1  ffff0000400933d0 panic+0xd0
 
 System halted.
-shsh@MacBook-Pro-di-shsh os1test-dev % 
+shsh@MacBook-Pro-di-shsh NexsOS1 % 

@@ -167,9 +167,9 @@ Generic schedule() PGD change (Step 2) affects both arches at once. A mistake he
 uart_lock-free emergency path (Step 6) can interleave with a concurrent normal printk on another CPU (garbled output). That's an acceptable trade for never deadlocking in a fault; the panic IPI (panic() line 222) should still quiesce other CPUs first when the kernel is healthy enough to send it.
 Maintainer constraint: do not touch kernel/arch/amd64/platform/platform.c. None of the steps above require it. Generic changes (Steps 2, 6, 7, 8, 11, 12, 15) are explicitly flagged and are the only non-HAL edits; all are in shared subsystems where the logic genuinely belongs.
 Critical Files for Implementation
-/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/arch/amd64/cpu/idt.c
-/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/arch/amd64/cpu/gdt.c
-/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/arch/aarch64/cpu/cpu.c
-/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/arch/aarch64/cpu/exception.S
-/Users/shsh/Documents/github/NexsOS1/os1test-dev/kernel/sched/process.c
+/Users/shsh/Documents/github/NexsOS1/NexsOS1/kernel/arch/amd64/cpu/idt.c
+/Users/shsh/Documents/github/NexsOS1/NexsOS1/kernel/arch/amd64/cpu/gdt.c
+/Users/shsh/Documents/github/NexsOS1/NexsOS1/kernel/arch/aarch64/cpu/cpu.c
+/Users/shsh/Documents/github/NexsOS1/NexsOS1/kernel/arch/aarch64/cpu/exception.S
+/Users/shsh/Documents/github/NexsOS1/NexsOS1/kernel/sched/process.c
 (Plus, for Phase 2/4 generic mechanisms: kernel/lib/printk.c, the two kernel/arch/*/kernel.ld, and the new kernel/lib/backtrace.c.)

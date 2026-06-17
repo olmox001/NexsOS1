@@ -6,6 +6,7 @@
 #include <drivers/virtio_blk.h>
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
+#include <kernel/bootmodule.h>
 #include <kernel/buffer.h>
 #include <kernel/cpu.h>
 #include <kernel/drivers.h>
@@ -13,8 +14,8 @@
 #include <kernel/fdt.h>
 #include <kernel/gpt.h>
 #include <kernel/graphics.h>
+#include <kernel/hal.h>
 #include <kernel/irq.h>
-#include <kernel/bootmodule.h>
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -24,16 +25,15 @@
 #include <kernel/test.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
-#include <kernel/hal.h>
 
 /* Version */
 #define KERNEL_VERSION_MAJOR 0
 #define KERNEL_VERSION_MINOR 1
 #define KERNEL_VERSION_PATCH 0
 #ifdef ARCH_AMD64
-#define KERNEL_NAME "AMD64 Microkernel"
+#define KERNEL_NAME "AMD64 HybridKernel MicroKernel ispired"
 #else
-#define KERNEL_NAME "AArch64 Microkernel"
+#define KERNEL_NAME "AArch64 HybridKernel MicroKernel ispired"
 #endif
 
 /* External symbols */
@@ -145,7 +145,7 @@ static void print_banner(void) {
   printk("========================================\n");
   printk("  %s v%d.%d.%d\n", KERNEL_NAME, KERNEL_VERSION_MAJOR,
          KERNEL_VERSION_MINOR, KERNEL_VERSION_PATCH);
-  printk("  Production-Ready Microkernel\n");
+  printk("  Production-Ready HybridKernel MicroKernel ispired\n");
   printk("========================================\n");
   printk("\n");
 }
@@ -241,8 +241,7 @@ static void init_scheduler(void) {
 
   /* 1. Spawn the First-Stage Init Process (Must be PID 1) */
   pr_info("%s", "Scheduler: Spawning First-Stage Init...\n");
-  struct process *init =
-      process_create("init", PROC_PRIO_USER, PLVL_MACHINE);
+  struct process *init = process_create("init", PROC_PRIO_USER, PLVL_MACHINE);
   if (init && process_load_elf(init, "/sys/bin/init") == 0) {
     pr_info("Scheduler: Initialized PID %d (/sys/bin/init)\n", init->pid);
     enqueue_task(init);
