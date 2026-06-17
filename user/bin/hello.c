@@ -11,9 +11,10 @@ int main(void) {
 
   _sys_window_write(my_win, "ciao mondo", 10);
 
-  /* Mantieni il processo vivo senza CPU burn */
+  /* Mantieni il processo vivo senza CPU burn: sleep bloccante reale
+   * (SYS_NANOSLEEP) invece di yield()-spin, che bruciava un core. */
   while (1) {
-    yield();
+    sleep(1000);
   }
 
   return 0;

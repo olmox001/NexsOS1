@@ -245,7 +245,7 @@ static void process_command(void) {
     print("\033[2J\033[H");
     shell_redraw();
   } else if (str_eq(cmd_buf, "time")) {
-    printf("Uptime: %d seconds (%x jiffies)\n", (int)(get_time() / 100),
+    printf("Uptime: %d seconds (%x ms)\n", (int)(get_time() / 1000),
            get_time());
   } else if (str_eq(cmd_buf, "demo")) {
     print("Drawing demo shapes in window...\n");

@@ -14,11 +14,12 @@
  *   to that PID.  There is no authentication: any process can overwrite
  *   "srv.notify_pid" and redirect all notifications to itself.
  *
- * Event loop design:
- *   try_recv(-1, &msg) is the NON-BLOCKING IPC check (syscall #32).
- *   Returns 0 on success (message available), negative if no message is
- *   waiting.  The loop then checks the auto-hide timer and calls yield().
- *   This is a correct, non-busy-spinning event loop.
+ * Event loop design (USR-NOTIFY-02 #134):
+ *   Idle, the loop BLOCKS on recv(-1, &msg) so it consumes ~0% CPU until a
+ *   notification arrives (the old try_recv()+yield() loop busy-spun a core).
+ *   While the popup is visible it polls with try_recv() and a real blocking
+ *   sleep(100) so the 5 s auto-hide can still fire, then drops back to the
+ *   blocking branch. A recv-with-timeout (issue #135) would unify both.
  *
  * Known issues:
  *   USR-SEC-01  (W3 SECURITY) registry_write("srv.notify_pid", ...) has no
@@ -88,36 +89,54 @@ int main(void) {
   long last_notify_time = 0;
   int is_visible = 0; /* Tracks whether the window is currently shown */
 
+  /* Event loop (USR-NOTIFY-02 #134): never busy-spin.
+   *   - Idle (window hidden): BLOCK on recv() — the process is descheduled and
+   *     consumes ~0% CPU until a notification actually arrives. This is the
+   *     server pattern (real blocking IPC, like init's blocking sleep).
+   *   - Visible (auto-hide pending): we cannot block forever or the 5 s hide
+   *     would never fire, so poll with try_recv() and a REAL blocking sleep(100)
+   *     — 10 wakeups/s, not a yield-spin — until the window hides and we drop
+   *     back to the blocking branch.
+   * A recv-with-timeout would collapse both branches; that needs the capability
+   * timer objects of issue #135. */
   while (1) {
-    /* Non-blocking receive: try_recv returns 0 if a message was dequeued,
-     * negative if the queue is empty.  This avoids blocking the auto-hide
-     * timer check below. */
-    if (try_recv(-1, &msg) == 0) {
-      if (msg.type == IPC_TYPE_NOTIFY || msg.type == IPC_TYPE_RAW) {
-        /* Render notification background and payload text. */
-        window_draw(win_id, 0, 0, NOTIFY_WIDTH, NOTIFY_HEIGHT, 0xFFFCFCFD);
-        printf_win(win_id, "\033[H\033[1;93m [System Notification]\033[0m\n ");
-        /* Limit payload to 64 bytes to avoid over-running the window. */
-        printf_win(win_id, "%.64s\n", msg.payload);
-
-        /* Show window: flag 2 = visible. */
-        set_window_flags(win_id, 1 | 2); /* 1=top_most, 2=visible */
-        is_visible = 1;
-        last_notify_time = get_time();
-        compositor_render();
-      }
+    if (!is_visible) {
+      /* Block until a notification arrives — zero CPU while idle. */
+      if (recv(-1, &msg) != 0)
+        continue; /* spurious/error wake: re-block */
+    } else {
+      /* Visible: non-blocking check, then a real sleep below. */
+      if (try_recv(-1, &msg) != 0)
+        msg.type = 0; /* nothing waiting this round */
     }
 
-    /* Auto-hide check: Hide after 5 seconds (5000 jiffies at 100 Hz timer). */
+    if (msg.type == IPC_TYPE_NOTIFY || msg.type == IPC_TYPE_RAW) {
+      /* Render notification background and payload text. */
+      window_draw(win_id, 0, 0, NOTIFY_WIDTH, NOTIFY_HEIGHT, 0xFFFCFCFD);
+      printf_win(win_id, "\033[H\033[1;93m [System Notification]\033[0m\n ");
+      /* Limit payload to 64 bytes to avoid over-running the window. */
+      printf_win(win_id, "%.64s\n", msg.payload);
+
+      /* Show window: flag 2 = visible. */
+      set_window_flags(win_id, 1 | 2); /* 1=top_most, 2=visible */
+      is_visible = 1;
+      last_notify_time = get_time();
+      compositor_render();
+    }
+
+    /* Auto-hide check: hide 5 s (5000 ms, get_time() is real ms) after the last
+     * notification, then the next loop iteration blocks on recv() again. */
     if (is_visible && (get_time() - last_notify_time > 5000)) {
       set_window_flags(win_id, 1 | 4); /* 1=top_most, 4=hidden */
       is_visible = 0;
       compositor_render();
     }
 
-    /* Yield to prevent CPU hogging; allows other processes to run between
-     * non-blocking poll iterations. */
-    yield();
+    /* While the popup is up, pace the auto-hide poll with a real blocking sleep
+     * (descheduled, no busy-wait). Skipped once we are hidden — that path blocks
+     * on recv() at the top instead. */
+    if (is_visible)
+      sleep(100);
   }
 
   return 0;

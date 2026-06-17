@@ -1,5 +1,6 @@
 #include "doomgeneric.h"
 #include <os1.h>
+#include <unistd.h>   /* usleep() — real microsecond blocking sleep */
 #include <input.h>
 #include <graphics.h>
 #include <stddef.h>
@@ -32,9 +33,12 @@ void DG_DrawFrame() {
 }
 
 void DG_SleepMs(uint32_t ms) {
-    /* OS1 ticks are roughly 10ms. Sleep(1) is 10ms. */
-    if (ms < 10) yield();
-    else sleep(ms / 10);
+    /* sleep()/usleep() now block in real wall-clock time (SYS_NANOSLEEP).
+     * Wait exactly `ms` milliseconds; usleep() gives finer-than-tick
+     * granularity for the short sub-frame waits doom requests. A zero
+     * request just yields the rest of our slice. */
+    if (ms) usleep(ms * 1000);
+    else yield();
 }
 
 uint32_t DG_GetTicksMs() {

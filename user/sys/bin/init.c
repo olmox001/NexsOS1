@@ -72,12 +72,15 @@ int main(void) {
     print("[Init] Failed to spawn Shell!\n");
   }
 
-  /* Test Notification IPC */
-  /* NOTE(USR-SEC-01): notify() reads srv.notify_pid from the global registry
-   * to find the target PID; no capability check prevents spoofing that key. */
-  notify("System", "Boot Complete - Stability Optimized");
-
   flush();
+
+  /* The "Boot Complete" notification is sent from the supervisor loop below,
+   * NOT here: notify() resolves the target from the registry key
+   * "srv.notify_pid", which notify_srv writes only AFTER it has created its
+   * window and is ready to recv(). Sending immediately raced that write — the
+   * message went to the fallback PID and was lost, so the popup never appeared
+   * at boot. We now wait for the key to exist, then send exactly once. */
+  int boot_notified = 0;
 
   /* Supervisor loop: Monitor and respawn critical processes.
    *
@@ -106,6 +109,17 @@ int main(void) {
    */
   print("[Init] Entering supervisor loop\n");
   while (1) {
+    /* Fire the boot notification once notify_srv has registered its endpoint
+     * (srv.notify_pid present in the registry). This makes the popup actually
+     * appear at startup instead of racing notify_srv's registration. */
+    if (!boot_notified) {
+      char npid[16];
+      if (registry_read("srv.notify_pid", npid, sizeof(npid)) == 0) {
+        notify("System", "Boot Complete - NEXS");
+        boot_notified = 1;
+      }
+    }
+
     /* Respawn the shell when it is gone (freshly dead corpse OR already
      * reaped by the kernel).  spawn() assigns a fresh monotonic PID. */
     int r = wait(pid_shell);

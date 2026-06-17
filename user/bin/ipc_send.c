@@ -33,12 +33,12 @@ int main(void) {
     printf("[IPC Send] Message sent successfully!\n");
     window_draw(win, 0, 0, 300, 100, 0xFF00AA00); /* Green */
     compositor_render();
-    sleep(100);
+    sleep(1000); /* keep the result window up ~1s (sleep() is now ms) */
   } else {
     printf("[IPC Send] Send failed.\n");
     window_draw(win, 0, 0, 300, 100, 0xFFAA0000); /* Red */
     compositor_render();
-    sleep(100);
+    sleep(1000); /* keep the result window up ~1s (sleep() is now ms) */
   }
 
   return 0;
