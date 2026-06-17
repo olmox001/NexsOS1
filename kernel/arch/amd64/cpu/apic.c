@@ -34,11 +34,26 @@
 #include <arch/amd64/apic.h>
 #include <kernel/printk.h>
 #include <kernel/arch.h>
+#include <kernel/cpu.h>
+#include <drivers/timer.h>
 #include <arch/amd64_internal.h>
 
 /* ticks_per_ms: LAPIC timer decrements per millisecond at LAPIC_TIMER_DIV16.
  * Set by lapic_timer_calibrate(); used by lapic_timer_setup() and udelay(). */
 uint32_t ticks_per_ms = 0;
+
+/* tsc_hz: measured TSC frequency in counts/second (docs/TIMER-MODEL.md §1).
+ * This is the real-time reference the whole 3-tier clock is built on:
+ * arch_impl_timer_get_freq() (arch/arch.h) returns it, and the arch-neutral
+ * mono_ns() in kernel/core/timer.c divides the free-running RDTSC by it.
+ *
+ * Set ONCE on the BSP by tsc_calibrate() (called from lapic_timer_calibrate())
+ * against the same 8254 PIT window the LAPIC timer is calibrated with.  Until
+ * that runs, arch_impl_timer_get_freq() returns a safe 1 GHz fallback so early
+ * callers never divide by zero; tsc_calibrate() then publishes the real value.
+ * The 0 sentinel makes calibration idempotent (APs reuse the BSP value; the
+ * invariant/constant TSC of the QEMU targets makes that correct). */
+uint64_t tsc_hz = 0;
 
 /*
  * lapic_init - enable and configure the LAPIC for the calling CPU.
@@ -137,6 +152,105 @@ void lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
 #endif /* PIT_CMD */
 
 /*
+ * rdtsc64 - read the 64-bit Time Stamp Counter.
+ *
+ * Returns the current TSC value (EDX:EAX).  This is the same free-running
+ * counter arch_impl_timer_get_count() exposes; sampled here across a known
+ * PIT window to derive its frequency.
+ *
+ * IRQ context: safe (plain register read, no side effects).
+ */
+static inline uint64_t rdtsc64(void) {
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/*
+ * tsc_calibrate - measure the TSC frequency against the 8254 PIT.
+ *
+ * Critical for docs/TIMER-MODEL.md §1: until this runs,
+ * arch_impl_timer_get_freq() returns a hardcoded 1 GHz fallback and every
+ * derived clock (mono_ns, jiffies reconciliation, nanosleep deadlines) is
+ * wrong.  This publishes the *measured* TSC rate into the global tsc_hz.
+ *
+ * Algorithm (mirrors lapic_timer_calibrate's PIT-window technique):
+ *   1. Program PIT Channel 0 in Rate Generator mode (mode 2), count 0xFFFF.
+ *   2. Sample RDTSC, then busy-poll the PIT until it has counted down by
+ *      11932 ticks (11932 / 1193.18 kHz ≈ 10 ms), then sample RDTSC again.
+ *   3. tsc_hz = (tsc_end - tsc_start) * 100  (the 10 ms window is 1/100 s).
+ *   4. Halt the PIT (mode-0 control word, no count) so its IRQ0 line stays
+ *      quiet — same EXC-AMD64-03 hazard lapic_timer_calibrate() guards.
+ *
+ * Idempotent: returns immediately if tsc_hz is already non-zero.  Called once
+ * on the BSP from lapic_timer_calibrate() (before the LAPIC timer starts);
+ * APs reuse the published value (constant/invariant TSC assumed on the QEMU
+ * targets — CPUID 0x80000007 EDX[8] is checked and a warning logged when the
+ * TSC is *not* advertised invariant, but calibration proceeds regardless).
+ *
+ * All math is native 64-bit: the multiply by 100 cannot overflow for any sane
+ * host TSC (a 184-EHz TSC would be needed to wrap), and there is no 128-bit
+ * division — the toolchain links with no libgcc, so __udivti3 is unavailable.
+ *
+ * Locking: none; BSP-only, before SMP.  IRQ context: NO (busy-polls ~10 ms
+ * with the PIT; must run with the timer IRQ not yet started).
+ */
+void tsc_calibrate(void) {
+    if (tsc_hz != 0) return;
+
+    /* Invariant-TSC advisory (CPUID 0x80000007 EDX bit 8).  When clear, the
+     * TSC may change rate with P-states / deep C-states and the single BSP
+     * calibration shared by all APs is theoretically unsafe.  QEMU advertises
+     * invariant TSC; we still proceed if it does not, but warn loudly. */
+    {
+        uint32_t eax, ebx, ecx, edx;
+        __asm__ __volatile__("cpuid"
+                             : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                             : "a"(0x80000000U));
+        if (eax >= 0x80000007U) {
+            __asm__ __volatile__("cpuid"
+                                 : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                                 : "a"(0x80000007U));
+            if (!(edx & (1U << 8))) {
+                pr_info("TSC: WARNING — invariant TSC not advertised "
+                        "(CPUID 80000007 EDX[8]=0); using shared BSP "
+                        "calibration anyway\n");
+            }
+        }
+    }
+
+    pr_info("TSC: Calibrating against PIT...\n");
+
+    /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2). */
+    outb(PIT_CMD, 0x34);
+    outb(PIT_CH0, 0xFF); /* low byte of initial count  */
+    outb(PIT_CH0, 0xFF); /* high byte of initial count */
+
+    uint16_t start_tick = 0xFFFF;
+
+    uint64_t tsc_start = rdtsc64();
+
+    /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms). */
+    uint16_t current_tick;
+    do {
+        outb(PIT_CMD, 0x00); /* latch Channel 0 count */
+        current_tick = inb(PIT_CH0);
+        current_tick |= (inb(PIT_CH0) << 8);
+    } while ((uint16_t)(start_tick - current_tick) < 11932);
+
+    uint64_t tsc_end = rdtsc64();
+
+    /* 10 ms window → multiply the delta by 100 to get counts per second. */
+    tsc_hz = (tsc_end - tsc_start) * 100UL;
+
+    /* Halt the PIT (mode 0, no count loaded) so its IRQ0 line stays quiet —
+     * same EXC-AMD64-03 double-tick hazard lapic_timer_calibrate() guards. */
+    outb(PIT_CMD, 0x30);
+
+    pr_info("TSC: Calibrated: %lu Hz (%lu MHz)\n", tsc_hz, tsc_hz / 1000000UL);
+}
+
+/*
  * lapic_timer_calibrate - determine LAPIC timer frequency using the PIT.
  *
  * Algorithm:
@@ -158,6 +272,13 @@ void lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
  */
 void lapic_timer_calibrate(void) {
     if (ticks_per_ms != 0) return;
+
+    /* Measure the TSC frequency first (docs/TIMER-MODEL.md §1): this must be
+     * published into tsc_hz before the LAPIC timer starts, because the
+     * arch-neutral mono_ns()/jiffies reconciliation begins on the first tick.
+     * Idempotent and BSP-only — its own ~10 ms PIT window runs before the one
+     * below, both with the timer IRQ still off. */
+    tsc_calibrate();
 
     pr_info("LAPIC: Calibrating timer against PIT...\n");
 
@@ -232,6 +353,13 @@ void lapic_timer_setup(uint32_t hz) {
     /* Calculate ticks per interrupt: at hz=1000, interval_ms=1 */
     uint32_t interval_ms = 1000 / hz;
     lapic_write(LAPIC_TIC, ticks_per_ms * interval_ms);
+
+    /* Seed the Tier-2 per-CPU software schedule via the arch-neutral, HAL-driven
+     * timer_percpu_arm() (kernel/core/timer.c), exactly as aarch64's
+     * timer_init_percpu() does. The vector-32 ISR then calls timer_percpu_tick()
+     * to advance it against the free-running TSC so a starved core recovers lost
+     * time. arch_timer_set_compare() inside is a no-op (LAPIC is periodic). */
+    timer_percpu_arm(get_cpu_info());
 
     pr_info("LAPIC: CPU %u timer started at %u Hz (%u ticks/interval)\n",
             lapic_get_id(), hz, ticks_per_ms * interval_ms);

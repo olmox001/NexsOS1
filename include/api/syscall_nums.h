@@ -74,5 +74,6 @@
 #define SYS_CHDIR              255
 #define SYS_GETCWD             256
 #define SYS_NANOSLEEP          257  /* real blocking sleep (POSIX nanosleep); arg0 = nanoseconds */
+#define SYS_CLOCK_GETTIME      258  /* Tier 3 clock; arg0: 0=MONOTONIC ns, 1=process CPU ns; returns ns */
 
 #endif /* _SYSCALL_NUMS_H */

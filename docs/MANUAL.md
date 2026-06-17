@@ -150,11 +150,19 @@ CWD, priority, an IPC message queue, a per-process **fd table**, a privilege **l
   monopolise a core and starve the rest — opening a CPU-bound focused program no longer freezes
   userspace on a single core (SCHED-01; fully decoupling the scheduler from the compositor is
   Fase 3).
-- **Timers & sleep:** software timers are **per-CPU** (each core fires its own `timer_list`
-  against the global `jiffies` clock, so a sleeper is woken on the core that holds it — no
-  global lock, no cross-CPU wake). `sleep()`/`usleep()` (and the `SYS_NANOSLEEP`/nanosleep
-  primitive) **block** — a per-process timer armed on the running core — instead of busy-waiting
-  via yield; idle services no longer spin a core.
+- **Timers & sleep — three-tier model** (`docs/TIMER-MODEL.md`): one real-time reference,
+  `mono_ns()`, is derived from the free-running hardware counter (CNTVCT on aarch64, calibrated
+  TSC on amd64 — the old `jiffies*1000` stub is gone). **(1) Global clock:** CPU 0 reconciles
+  `jiffies` against `mono_ns()` every tick instead of a blind `++`, so dropped ticks (IRQ
+  latency, a CPU-bound focused task) are *recovered* and the clock tracks wall time. **(2)
+  Per-CPU clock:** each core corrects its own tick cadence against the counter (aarch64
+  fractional drift accounting; amd64 at parity). **(3) Per-process clock:** software timers are
+  **per-CPU** (each core fires its own `timer_list`, a sleeper is woken on the core that holds
+  it — no global lock, no cross-CPU wake), and sleep deadlines are **absolute real time**
+  (`wake_ns`), so `sleep()`/`usleep()`/`nanosleep` **block** and wake at the right wall-clock
+  instant even under load. Per-process CPU time (`cpu_time_ns`) is accumulated from `mono_ns()`
+  deltas. Userland reads time via `os1_mono_ns()`/`os1_cpu_ns()` (os1.h) and POSIX
+  `clock_gettime()` (`<time.h>`) built on top; capability timer objects are issue #135.
 - **Lifecycle:** `process_create` → `process_load_elf` → `enqueue_task`; `process_terminate`
   (zombie → **auto-reaped by the scheduler**; `process_wait` is a non-blocking pure
   reporter, `-2` = child gone). Teardown frees user frames + private tables (leak-free).
@@ -194,8 +202,9 @@ return **negative errno** (`-EPERM`, `-EFAULT`, …; codes in `include/api/posix
 | 63 | READ | `read(fd,buf,n)` | fd 0 = stdin (keyboard IPC); fd≥3 = file at private offset; blocks |
 | 64 | WRITE | `write(fd,buf,n)` | fd 1/2 = stdout (the caller's **own** window, by PID — a child does not inherit the spawner's); fd≥3 = file; no truncation, also echoes UART |
 | 93 | EXIT | `exit(status)` | |
-| 169 | GET_TIME | `get_time()` | ms (from a stubbed timer on amd64) |
-| 257 | NANOSLEEP | `sleep(ms)`/`usleep(us)`/`nanosleep` | **real blocking** sleep (arg0 = ns); per-process timer armed on the running core, woken locally — no busy-wait |
+| 169 | GET_TIME | `get_time()` | ms; real-time on **both** arches (`mono_ns()/1e6`, amd64 stub retired) |
+| 257 | NANOSLEEP | `sleep(ms)`/`usleep(us)`/`nanosleep` | **real blocking** sleep (arg0 = ns); per-process timer armed on the running core, **absolute real-time deadline** (`wake_ns`), woken locally — no busy-wait |
+| 258 | CLOCK_GETTIME | `os1_mono_ns()`/`os1_cpu_ns()`, `clock_gettime()` | Tier 3 clock; arg0: 0=monotonic ns, 1=process CPU ns; returns ns (`docs/TIMER-MODEL.md`) |
 | 172 | GETPID | `get_pid()` | |
 | 200 | DRAW | `draw(x,y,w,h,color)` | raw framebuffer rect |
 | 201 | FLUSH | `flush()` | compositor render |

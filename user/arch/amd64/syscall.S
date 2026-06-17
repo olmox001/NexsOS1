@@ -106,6 +106,13 @@ _sys_nanosleep:
     syscall
     ret
 
+/* long _sys_clock_gettime(int clk)  — clk in edi, returns ns in rax */
+.global _sys_clock_gettime
+_sys_clock_gettime:
+    movq $SYS_CLOCK_GETTIME, %rax
+    syscall
+    ret
+
 .global _sys_draw
 _sys_draw:
     movq $SYS_DRAW, %rax

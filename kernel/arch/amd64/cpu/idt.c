@@ -46,6 +46,7 @@
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
 #include <kernel/irq.h>
+#include <drivers/timer.h> /* HZ, for Tier-2 per-CPU tick accounting */
 #include <arch/pt_regs.h>
 #include <arch/arch.h>
 #include <arch/amd64_internal.h>
@@ -385,6 +386,14 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
          * after calibration — EXC-AMD64-03 resolved).
          * NOTE(CPU-AMD64-01): No FPU save; ctx_switch on this path risks XMM
          * corruption between concurrently running kernel tasks. */
+
+        /* Tier-2 per-CPU drift accounting (docs/TIMER-MODEL.md §3): the
+         * arch-neutral, HAL-driven timer_percpu_tick() advances the software
+         * per-CPU schedule against the free-running TSC so lost ticks are
+         * recovered per core. arch_timer_set_compare() is a no-op here (the
+         * LAPIC stays periodic). Done BEFORE the tick so it reflects this IRQ. */
+        timer_percpu_tick(get_cpu_info());
+
         ret_regs = kernel_timer_tick(regs);
     } else {
         /* All other Hardware interrupts - route via generic system */

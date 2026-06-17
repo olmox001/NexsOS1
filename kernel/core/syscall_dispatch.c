@@ -113,6 +113,7 @@ extern struct pt_regs *sys_read(struct pt_regs *regs);
 extern long sys_get_pid(void);
 extern void sys_exit(int status);
 extern long sys_get_time(void);
+long sys_clock_gettime(int clk);
 
 extern void graphics_draw_rect(int x, int y, int w, int h, uint32_t color);
 extern void compositor_render(void);
@@ -360,6 +361,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     return schedule(frame);
   case SYS_GET_TIME:
     pt_regs_set_return(frame, sys_get_time());
+    break;
+  case SYS_CLOCK_GETTIME:
+    pt_regs_set_return(frame, sys_clock_gettime((int)arg0));
     break;
   case SYS_GETPID:
     pt_regs_set_return(frame, sys_get_pid());
@@ -761,24 +765,42 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
 }
 
 /*
- * sys_get_time - return current time in milliseconds.
+ * sys_get_time - return monotonic time in milliseconds.
  *
- * Divides timer_get_us() by 1000.  On aarch64 this is accurate (arch counter).
- * On amd64 timer_get_us() returns jiffies*1000, so the result has 1ms
- * resolution only (ARCH-03).
+ * Derived from mono_ns() (the real-time hardware-counter clock, docs/
+ * TIMER-MODEL.md), so it is accurate on BOTH arches — amd64 no longer returns
+ * the jiffies*1000 stub (ARCH-03 retired for the real-time path).
  *
  * Locking: none.  IRQ context: no.
  */
-extern uint64_t timer_get_us(void);
-long sys_get_time(void) { return (long)(timer_get_us() / 1000); }
+long sys_get_time(void) { return (long)(mono_ns() / 1000000ULL); }
+
+/*
+ * sys_clock_gettime - Tier 3 userland clock (SYS_CLOCK_GETTIME).
+ *
+ * Returns a 64-bit nanosecond value directly (both arches return 64 bits):
+ *   clk == 0 (MONOTONIC)  : mono_ns() — monotonic ns since boot.
+ *   clk == 1 (PROCESS_CPU): the caller's consumed CPU time in real ns.
+ * Any other clock id falls back to MONOTONIC. This is the minimal seL4-style
+ * mechanism; POSIX clock_gettime() is built on top in <time.h>. Capability
+ * timer OBJECTS (arm-and-notify) are issue #135.
+ */
+long sys_clock_gettime(int clk) {
+  if (clk == 1) {
+    struct process *p = current_process;
+    return p ? (long)timer_counts_to_ns(p->cpu_time_counts) : 0;
+  }
+  return (long)mono_ns();
+}
 
 /* Global monotonic tick counter (drivers/timer.c / platform.c). */
 extern volatile uint64_t jiffies;
 
 /*
  * proc_sleep_wake - per-process sleep timer callback (fired by the owning core's
- * tick when the deadline is reached). Makes the sleeper runnable again; it will
- * re-run sys_nanosleep (retry), observe jiffies >= wake_jiffies, and return.
+ * tick when the coarse deadline is reached). Makes the sleeper runnable again;
+ * it will re-run sys_nanosleep (retry), test mono_ns() >= wake_ns, and either
+ * return (deadline reached) or re-arm and sleep again (woken a tick early).
  * Runs under that CPU's timer_lock; enqueue_task takes only a per-CPU sched_lock
  * (lock order timer_lock > per-CPU sched_lock — no inversion).
  */
@@ -789,13 +811,15 @@ static void proc_sleep_wake(void *data) {
 }
 
 /*
- * sys_nanosleep - block the caller for `ns` nanoseconds (POSIX nanosleep core).
+ * sys_nanosleep - block the caller for `ns` nanoseconds (POSIX nanosleep core,
+ * Tier 3 of docs/TIMER-MODEL.md).
  *
- * Arms a per-process software timer on the running core (so the wakeup is local
- * to the core that holds the process); the process sleeps and is re-run on
- * expiry. Retry-based like the blocking read: re-entered on each wakeup, with
- * the deadline kept in p->wake_jiffies so a spurious early wake just re-sleeps.
- * ns is rounded up to whole ticks (minimum one), the jiffies granularity.
+ * The deadline is stored as an ABSOLUTE real-time instant (p->wake_ns, mono_ns
+ * base) on first entry, so the sleep recovers lost time: the per-CPU software
+ * timer is only a coarse jiffies-edge trigger, and the precise wake condition is
+ * mono_ns() >= wake_ns. Retry-based like the blocking read — re-entered on each
+ * wakeup. If the coarse timer fires a tick early, mono_ns() is still short of
+ * wake_ns, so we re-arm and sleep again; a genuine deadline returns 0.
  */
 static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
   struct process *p = current_process;
@@ -803,20 +827,27 @@ static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
     pt_regs_set_return(regs, 0);
     return regs;
   }
-  if (p->wake_jiffies == 0) {
-    uint64_t ticks = (ns * (uint64_t)HZ + 999999999ULL) / 1000000000ULL;
-    if (ticks == 0)
-      ticks = 1;
-    p->wake_jiffies = jiffies + ticks;
-    timer_setup(&p->sleep_timer, proc_sleep_wake, p);
-    timer_add(&p->sleep_timer, p->wake_jiffies);
-  }
-  if (jiffies >= p->wake_jiffies) {
-    p->wake_jiffies = 0;
+  if (p->wake_ns == 0)
+    p->wake_ns = mono_ns() + ns; /* absolute real-time deadline */
+
+  uint64_t now = mono_ns();
+  if (now >= p->wake_ns) {
+    p->wake_ns = 0;
     timer_del(&p->sleep_timer); /* cancel if somehow still pending */
     pt_regs_set_return(regs, 0);
     return regs;
   }
+
+  /* (Re)arm the coarse wheel trigger at the deadline's tick. Rounding up by one
+   * tick keeps us from busy-spinning if mono_ns() is just shy of wake_ns. */
+  if (!timer_pending(&p->sleep_timer)) {
+    uint64_t ticks = (p->wake_ns - now + (NS_PER_TICK - 1)) / NS_PER_TICK;
+    if (ticks == 0)
+      ticks = 1;
+    timer_setup(&p->sleep_timer, proc_sleep_wake, p);
+    timer_add(&p->sleep_timer, jiffies + ticks);
+  }
+
   arch_local_irq_disable();
   p->state = PROC_SLEEPING;
   arch_local_irq_enable();

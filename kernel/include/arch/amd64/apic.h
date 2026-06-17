@@ -83,4 +83,11 @@ void lapic_timer_calibrate(void);
 void lapic_timer_setup(uint32_t hz);
 void lapic_timer_stop(void);
 
+/* tsc_calibrate: measure the TSC frequency against the PIT and publish it into
+ * tsc_hz (docs/TIMER-MODEL.md §1).  Called once on the BSP from
+ * lapic_timer_calibrate(); idempotent.  tsc_hz is read by
+ * arch_impl_timer_get_freq() (arch/arch.h) to feed the arch-neutral mono_ns(). */
+void tsc_calibrate(void);
+extern uint64_t tsc_hz;
+
 #endif /* ARCH_AMD64_APIC_H */

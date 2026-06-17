@@ -50,6 +50,7 @@
  */
 #include <os1.h>
 #include <unistd.h>
+#include <time.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -100,6 +101,24 @@ int errno = 0;
 long read(int fd, char *buf, unsigned long count) { return _sys_read(fd, buf, count); }
 void write(int fd, const char *buf, size_t count) { _sys_write(fd, buf, count); }
 long get_time(void) { return _sys_get_time(); }
+/* Tier 3 os1 time primitives (docs/TIMER-MODEL.md §4); SYS_CLOCK_GETTIME
+ * clk 0 = monotonic ns since boot, clk 1 = this process's CPU time in ns. */
+unsigned long long os1_mono_ns(void) {
+  return (unsigned long long)_sys_clock_gettime(0);
+}
+unsigned long long os1_cpu_ns(void) {
+  return (unsigned long long)_sys_clock_gettime(1);
+}
+/* clock_gettime: POSIX layer over the os1 primitives (<time.h>). */
+int clock_gettime(int clk, struct timespec *ts) {
+  if (!ts)
+    return -1;
+  unsigned long long ns =
+      (clk == CLOCK_PROCESS_CPUTIME_ID) ? os1_cpu_ns() : os1_mono_ns();
+  ts->tv_sec = (time_t)(ns / 1000000000ULL);
+  ts->tv_nsec = (long)(ns % 1000000000ULL);
+  return 0;
+}
 int get_pid(void) { return _sys_get_pid(); }
 /* exit: the while(1) after _sys_exit() is unreachable dead code that silences
  * the "noreturn" warning in compilers that do not see svc #0 as a terminator. */
@@ -299,11 +318,17 @@ int notify(const char *title, const char *msg) {
   imsg.payload[i++] = ':'; imsg.payload[i++] = ' ';
   while (*msg && i < 63) imsg.payload[i++] = *msg++;
   imsg.payload[i] = '\0';
+  /* Resolve the notify_srv endpoint from the registry. If the key is absent
+   * (notify_srv not up / not yet registered) FAIL instead of sending to a
+   * guessed PID — the old pid=2 fallback delivered a stray IPC message to
+   * whatever process happened to hold PID 2 and the notification was lost
+   * anyway. Callers that need the boot popup wait for the key (see init.c). */
   char pid_buf[16];
-  int pid = 2;  /* Default: notify_srv is typically the second process spawned */
-  if (registry_read("srv.notify_pid", pid_buf, sizeof(pid_buf)) == 0) {
-    pid = atoi(pid_buf);
-  }
+  if (registry_read("srv.notify_pid", pid_buf, sizeof(pid_buf)) != 0)
+    return -1;
+  int pid = atoi(pid_buf);
+  if (pid <= 0)
+    return -1;
   return send(pid, &imsg);
 }
 

@@ -35,6 +35,7 @@ _start:
 .global _sys_wait
 .global _sys_yield
 .global _sys_nanosleep
+.global _sys_clock_gettime
 .global _sys_send
 .global _sys_recv
 .global _sys_draw
@@ -135,6 +136,12 @@ _sys_yield:
 /* void _sys_nanosleep(uint64_t ns)  — ns in x0 */
 _sys_nanosleep:
     mov x8, #SYS_NANOSLEEP
+    svc #0
+    ret
+
+/* long _sys_clock_gettime(int clk)  — clk in x0, returns ns in x0 */
+_sys_clock_gettime:
+    mov x8, #SYS_CLOCK_GETTIME
     svc #0
     ret
 

@@ -1143,6 +1143,18 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   int prev_reaped = 0; /* set when prev is pushed on the reap list below */
   uint64_t flags;
 
+  /* Tier 3 CPU-time accounting (docs/TIMER-MODEL.md §4): charge the raw counter
+   * delta since the last schedule on this CPU to whoever was running (prev),
+   * then mark the start count for the task we are about to pick. A bare counter
+   * read + subtraction — no divide in the hot path; conversion to ns happens
+   * only when the value is read. arch_timer_get_count() is lock-free/IRQ-safe. */
+  {
+    uint64_t now_cnt = arch_timer_get_count();
+    if (prev && cpu_ptr->sched_run_count)
+      prev->cpu_time_counts += now_cnt - cpu_ptr->sched_run_count;
+    cpu_ptr->sched_run_count = now_cnt;
+  }
+
   /* Use local lock for runqueue modifications */
   spin_lock_irqsave(&cpu_ptr->sched_lock, &flags);
 
@@ -1593,7 +1605,9 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
       strncpy(k_buf[count].name, process_pool[i]->name, 32);
       k_buf[count].state = process_pool[i]->state;
       k_buf[count].priority = process_pool[i]->priority;
-      k_buf[count].cpu_time = 0; /* Placeholder */
+      k_buf[count].cpu_time =
+          timer_counts_to_ns(process_pool[i]->cpu_time_counts) /
+          1000000ULL; /* real CPU time, ms */
       k_buf[count].on_cpu = process_pool[i]->on_cpu;
       count++;
     }

@@ -92,10 +92,17 @@ struct process {
   struct wait_queue_head *wait_queue_ptr;
   struct wait_queue_head wait_queue;
 
-  /* Timed sleep (POSIX nanosleep / proc_sleep): a per-process software timer,
-   * armed on the running core, wakes the process at wake_jiffies. 0 = not in a
-   * timed sleep. */
-  uint64_t wake_jiffies;
+  /* Tier 3 timed sleep (docs/TIMER-MODEL.md §4): a per-process software timer,
+   * armed on the running core, wakes the process at the ABSOLUTE real-time
+   * deadline wake_ns (mono_ns base). The wheel fires on a coarse jiffies edge;
+   * the fine wake condition is mono_ns() >= wake_ns, so the process wakes at the
+   * right wall-clock instant even if ticks were dropped. 0 = not sleeping.
+   * cpu_time_counts: CPU time consumed by this process, accumulated in RAW
+   * hardware-counter units across context switches (a cheap subtraction in the
+   * scheduler hot path — no divide). Converted to ns only on read via
+   * timer_counts_to_ns() for os1_cpu_ns()/ps_info. */
+  uint64_t wake_ns;
+  uint64_t cpu_time_counts;
   struct timer sleep_timer;
 
   /* IPC state */

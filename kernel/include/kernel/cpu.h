@@ -20,6 +20,11 @@ struct cpu_info {
   uint64_t next_tick_target;
   uint64_t tick_error_acc;
   uint64_t tick_count;
+  /* Raw hardware-counter value at which the current task last started running on
+   * this CPU; schedule() charges (arch_timer_get_count() - sched_run_count) to
+   * the outgoing task's cpu_time_counts (Tier 3 per-process CPU time, converted
+   * to ns only on read — docs/TIMER-MODEL.md §4). */
+  uint64_t sched_run_count;
 
   /* Scheduler Local Data (Multicore Optimization) */
   struct list_head runqueues[32];

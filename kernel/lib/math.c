@@ -310,3 +310,75 @@ int32_t lerp_fp(int32_t a, int32_t b, int32_t t) {
 #ifdef KERNEL
 int32_t k_lerp_fp(int32_t a, int32_t b, int32_t t) { return lerp_fp(a, b, t); }
 #endif
+
+/* ---------------------------------------------------------------------------
+ * 128-bit integer runtime support (__int128 ABI helpers)
+ *
+ * Both the kernel and userland link -nostdlib with NO libgcc, so the compiler
+ * intrinsics it emits for __int128 division/multiplication (__udivti3,
+ * __umodti3, __multi3) would be undefined symbols at link time. Providing them
+ * here — in the shared math library compiled into both the kernel and lib.o —
+ * makes __uint128_t a first-class type across the codebase (e.g. the real-time
+ * clock mono_ns() in kernel/core/timer.c can use the natural
+ * (__uint128_t)delta * NSEC_PER_SEC / freq form). Add/sub/shift/compare on
+ * __int128 are emitted inline by the compiler and need no helper.
+ *
+ * All three are implemented with only 64-bit operations so they are themselves
+ * self-contained (no recursive intrinsic emission).
+ * ------------------------------------------------------------------------- */
+
+/* Use the GCC predefined 128-bit typedefs (__uint128_t / __int128_t) rather
+ * than the bare `__int128` keyword: the keyword trips -Wpedantic/-Werror in
+ * this ISO-C build, the predefined typedefs do not (the same reason pt_regs.h
+ * and mono_ns() use __uint128_t). The libgcc ABI is identical either way. */
+
+/* u128_divmod - unsigned 128-bit division with remainder (binary long division,
+ * O(128)). Returns the quotient; *rem (if non-NULL) receives the remainder.
+ * Division by zero returns all-ones / zero remainder rather than trapping. */
+static __uint128_t u128_divmod(__uint128_t num, __uint128_t den,
+                               __uint128_t *rem) {
+  if (den == 0) { /* mirror hardware-less UB choice: avoid a fault */
+    if (rem)
+      *rem = 0;
+    return ~(__uint128_t)0;
+  }
+  __uint128_t q = 0, r = 0;
+  for (int i = 127; i >= 0; i--) {
+    r = (r << 1) | ((num >> i) & 1);
+    if (r >= den) {
+      r -= den;
+      q |= ((__uint128_t)1 << i);
+    }
+  }
+  if (rem)
+    *rem = r;
+  return q;
+}
+
+/* libgcc-compatible signatures. Declared before definition to satisfy
+ * -Wmissing-prototypes; the compiler emits calls to these by name. */
+__uint128_t __udivti3(__uint128_t a, __uint128_t b);
+__uint128_t __umodti3(__uint128_t a, __uint128_t b);
+__int128_t __multi3(__int128_t a, __int128_t b);
+
+__uint128_t __udivti3(__uint128_t a, __uint128_t b) {
+  return u128_divmod(a, b, 0);
+}
+
+__uint128_t __umodti3(__uint128_t a, __uint128_t b) {
+  __uint128_t r;
+  u128_divmod(a, b, &r);
+  return r;
+}
+
+__int128_t __multi3(__int128_t a, __int128_t b) {
+  /* Split into 64-bit halves; each partial product is a 64x64→128 widening
+   * multiply, which the compiler does inline (no __multi3 recursion). Only the
+   * low 128 bits are defined, which is all the ABI requires. */
+  __uint128_t ua = (__uint128_t)a, ub = (__uint128_t)b;
+  uint64_t alo = (uint64_t)ua, ahi = (uint64_t)(ua >> 64);
+  uint64_t blo = (uint64_t)ub, bhi = (uint64_t)(ub >> 64);
+  __uint128_t lo = (__uint128_t)alo * blo;
+  __uint128_t mid = (__uint128_t)alo * bhi + (__uint128_t)ahi * blo;
+  return (__int128_t)(lo + (mid << 64));
+}
