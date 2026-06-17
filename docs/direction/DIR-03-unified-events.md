@@ -1,0 +1,46 @@
+# NEXS-DIR-03 — One event model: `event_wait()`
+
+## Problem
+Waiting is fragmented across three unrelated primitives:
+* input → `read(0)`
+* IPC → `try_recv()`
+* timer → `OS1_sleep()` / nanosleep
+
+An app that wants to react to a key, a message, and a timeout must juggle three
+mechanisms (and today often busy-polls, which is exactly what produced the
+notify_srv re-render and the yield-spin throttle that TIMER-UAF-01 exercised).
+
+## Direction
+Collapse all blocking into a single event primitive:
+
+```c
+OS1_event ev;
+OS1_event_wait(&ev);   // blocks until ONE event is ready, ~0% CPU idle
+
+enum {
+  EVENT_KEY, EVENT_MOUSE, EVENT_IPC,
+  EVENT_TIMER, EVENT_WINDOW, EVENT_PROCESS,
+};
+```
+
+A single event loop replaces input/IPC/timer/window/process polling. This is the
+userland counterpart of the kernel's `io_poll` bring-up contract and the recv +
+real-blocking-sleep work already landed; it generalises a future
+**recv-with-timeout** (issue #135) into one call.
+
+Benefits:
+* One idiom for every app and service (notify_srv, shell, editors, browser).
+* No busy-poll loops by construction — removes whole classes of the
+  yield-spin / re-render defects.
+* Natural fit with the compositor (`EVENT_WINDOW`: resize/expose/close) and the
+  service model (`EVENT_IPC`, `EVENT_PROCESS`).
+
+## Migration
+1. Implement `OS1_event_wait` over the existing blocking IPC + the per-process
+   timer (sleep deadline as `EVENT_TIMER`) + input fd readiness.
+2. Port notify_srv and the shell to the single loop as the reference adopters.
+3. Deprecate direct `read(0)`/`try_recv()`/sleep-poll patterns in app code.
+
+## Acceptance
+* notify_srv and shell run on a single `OS1_event_wait` loop, no `try_recv`+sleep poll.
+* A timeout is expressible as `EVENT_TIMER`, removing the visible-branch poll in notify_srv.
