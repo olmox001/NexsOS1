@@ -28,10 +28,11 @@
  *   - PIDs are assigned from next_pid (monotonically increasing, never reused).
  *
  * Known issues:
- *   SCHED-01  (W3 WRONG-DESIGN) schedule() calls compositor_get_focus_pid()
- *             and gives the focused window's process priority access to the
- *             runqueue — the kernel scheduler depends on the graphics
- *             compositor, inverting the correct dependency.
+ *   SCHED-01  (#83 RESOLVED) schedule() no longer calls compositor_get_focus_pid():
+ *             the focus boost reads the scheduler-owned keyboard_focus_pid hint
+ *             directly (the compositor + SYS_SET_FOCUS push updates to it), so the
+ *             kernel scheduler no longer depends on the graphics compositor. The
+ *             deeper "userland focus-policy via capability" remains future work.
  *   SCHED-02  (W2 BAD-IMPL) schedule() is large and intricate; many pc==0
  *             panic guards betray past context-corruption bugs.
  *   SCHED-03  (W2 WRONG-DESIGN, MITIGATED) process_wait() is non-blocking
@@ -1044,8 +1045,9 @@ void start_user_process(struct process *proc) {
  *     stack we were standing on.
  *  1. Save current context (regs) and re-enqueue prev if PROC_RUNNING;
  *     idle tasks are never re-enqueued (they are not on any runqueue).
- *  2. Focus boost (SCHED-01): call compositor_get_focus_pid() and search
- *     all priority levels for the focused PID first.
+ *  2. Focus boost (SCHED-01, #83): read the scheduler-owned focus hint
+ *     (keyboard_focus_pid) directly and search all priority levels for that PID
+ *     first — no call into the compositor.
  *  3. O(1) pick: __builtin_ctz(prio_bitmap) finds the lowest-numbered
  *     non-empty priority queue in one instruction; pop the head task.
  *  4. Work stealing: if local runqueue is empty, iterate over other CPUs
@@ -1066,9 +1068,10 @@ void start_user_process(struct process *proc) {
  *          returns with IRQs masked and the dispatcher's IRET/ERET loads the
  *          next context's saved flags.
  *
- * NOTE(SCHED-01): compositor_get_focus_pid() is called on every schedule()
- *          invocation — the kernel scheduler has a compile-time dependency on
- *          the graphics compositor. [W3 WRONG-DESIGN]
+ * SCHED-01 (#83) RESOLVED: the scheduler no longer calls into the compositor.
+ *          The focus boost reads the scheduler-owned keyboard_focus_pid hint
+ *          directly (compositor + SYS_SET_FOCUS push updates to it), removing the
+ *          kernel->compositor dependency and the per-schedule compositor_lock.
  * NOTE(SCHED-02): Many pc==0 panic guards reflect past context-corruption
  *          bugs; the function is large and hard to audit. [W2 BAD-IMPL]
  */
@@ -1169,12 +1172,14 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   spin_lock_irqsave(&cpu_ptr->sched_lock, &flags);
 
   /* if (cpu == 0) pr_info("Schedule Core 0\n"); */
-  /* Priority Boosting: identify the focused process from the compositor.
-   * NOTE(SCHED-01): This call creates a kernel scheduler -> compositor
-   * dependency.  The correct design inverts this: a userland policy server
-   * adjusts priority via a capability. [W3 WRONG-DESIGN] */
-  extern int compositor_get_focus_pid(void);
-  int focus_pid = compositor_get_focus_pid();
+  /* Priority Boosting: focus hint.
+   * SCHED-01 (#83) resolved — dependency inverted: the scheduler no longer calls
+   * INTO the compositor. It reads the scheduler-owned focus hint (keyboard_focus_pid,
+   * defined in this file) directly; the compositor and SYS_SET_FOCUS PUSH updates to
+   * it. This also drops compositor_get_focus_pid()'s compositor_lock acquisition from
+   * the schedule() hot path. The read is intentionally lockless: a stale value only
+   * mis-targets one boost for one tick, which is harmless for a priority hint. */
+  int focus_pid = keyboard_focus_pid;
 
     /* 1. Handle Current Process */
     if (prev) {
