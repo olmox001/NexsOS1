@@ -29,4 +29,11 @@ typedef int clockid_t;
  * -1 if ts is NULL. Backed by os1_mono_ns() / os1_cpu_ns(). */
 int clock_gettime(clockid_t clk, struct timespec *ts);
 
+/* nanosleep: POSIX blocking sleep for req->tv_sec + req->tv_nsec, on top of the
+ * SYS_NANOSLEEP primitive (the caller is descheduled, no busy-wait). Sleeps are
+ * not interruptible here, so they always run to completion: *rem (if non-NULL)
+ * is zeroed and 0 is returned. -1 on a NULL/invalid req. The kernel rounds the
+ * deadline up to the tick (~10 ms at HZ=100) but tracks it in real wall time. */
+int nanosleep(const struct timespec *req, struct timespec *rem);
+
 #endif /* _TIME_H */

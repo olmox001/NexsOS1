@@ -36,7 +36,7 @@ void DG_DrawFrame() {
 }
 
 void DG_SleepMs(uint32_t ms) {
-  /* sleep()/usleep() now block in real wall-clock time (SYS_NANOSLEEP).
+  /* OS1_sleep()/usleep() now block in real wall-clock time (SYS_NANOSLEEP).
    * Wait exactly `ms` milliseconds; usleep() gives finer-than-tick
    * granularity for the short sub-frame waits doom requests. A zero
    * request just yields the rest of our slice. */

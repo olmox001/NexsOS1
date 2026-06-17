@@ -97,7 +97,11 @@ int  kill_process(int pid);
 int  wait(int pid);
 void yield(void);
 int utf8_decode(const char *s, uint32_t *code);
-void sleep(int ticks);
+/* OS1_sleep: proprietary BASE-API blocking sleep, in MILLISECONDS (NOT POSIX
+ * seconds). Prefixed OS1_ to keep the NEXS base API distinct from the POSIX/libc
+ * surface built on top of it (usleep/nanosleep in <unistd.h>/<time.h>); the bare
+ * name `sleep` is reserved for a future real POSIX sleep(unsigned seconds). */
+void OS1_sleep(int ms);
 
 /* Tier 3 time primitives (docs/TIMER-MODEL.md §4). os1.h is the proprietary
  * base API; POSIX clock_gettime() (<time.h>) is built on top of these.

@@ -358,7 +358,7 @@ int main(void) {
 
     /* Frame pacing ~60 FPS via il timer reale (sleep bloccante in ms): senza
      * questo il loop di rendering girava a CPU piena. */
-    sleep(16);
+    OS1_sleep(16);
   }
 
   exit(0);

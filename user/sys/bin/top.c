@@ -153,7 +153,7 @@ int main(void) {
 
     /* 5. REFRESH RATE (1Hz): block for one second via the real kernel timer
      * instead of busy-spinning yield(), so top no longer burns a core idling. */
-    sleep(1000);
+    OS1_sleep(1000);
   }
 
   return 0;

@@ -14,7 +14,7 @@ int main(void) {
   /* Mantieni il processo vivo senza CPU burn: sleep bloccante reale
    * (SYS_NANOSLEEP) invece di yield()-spin, che bruciava un core. */
   while (1) {
-    sleep(1000);
+    OS1_sleep(1000);
   }
 
   return 0;

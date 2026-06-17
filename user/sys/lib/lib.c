@@ -12,18 +12,15 @@
  *   - Formatting (printf, snprintf, sprintf, vsnprintf, vsscanf, sscanf).
  *   - Input event decoding (input_poll_event: keyboard and mouse IPC msgs).
  *   - Graphics helpers (graphics_draw_rect, graphics_blit, graphics_draw_text,
- *     graphics_load_image).
+ *     graphics_text_width, graphics_load_image).
  *   - Partial POSIX-like shims (strdup, strtol, abs, fabs, atof, getenv,
  *     mkdir, system, stat, puts, fflush, remove, rename, vfprintf).
  *   - UTF-8 decoder (utf8_decode).
  *   - Stack smash protector stub (__stack_chk_guard, __stack_chk_fail).
  *
  * STB libraries (NOTE USR-BLOAT-01/02):
- *   STB_EASY_FONT_IMPLEMENTATION and STB_IMAGE_IMPLEMENTATION are compiled
- *   unconditionally here, adding ~52KB of text to lib.o.  With no
- *   --gc-sections in the link step every ELF (including 9-line crash.c)
- *   carries the full JPEG/PNG/GIF/BMP decoder stack (~500KB ELF total, 70%
- *   of which is DWARF debug data from -g).
+ *   STB_IMAGE_IMPLEMENTATION is compiled unconditionally here. Text rendering
+ *   now uses the OS1 packed bitmap font path instead of stb_easy_font.
  *
  * Kernel source inclusion (NOTE USR-LIB-01):
  *   vsnprintf.c, math.c, string.c are sourced directly from kernel/lib/ via
@@ -35,8 +32,8 @@
  *               breaks the userland/kernel boundary.
  *   USR-LIB-02  (W2 BAD-IMPL) fclose() guards against NULL with
  *               `(size_t)fp > 10`, a fragile magic-value check.
- *   USR-LIB-03  (W1 BAD-IMPL) graphics_draw_text declares a 100KB static
- *               buffer, inflating .bss in every linked binary.
+ *   USR-LIB-03  (fixed locally) graphics_draw_text used to declare a 100KB
+ *               static buffer and fall back to terminal text rendering.
  *   USR-LIB-04  (W1 STUB) mkdir/system/getenv are no-ops; atof truncates
  *               decimal fractions via (double)atoi().
  *   USR-LIB-05  (W1 DOC) vfprintf ignores the stream arg and always writes
@@ -56,22 +53,15 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <input.h>
 #include <graphics.h>
 
-/*
- * STB_EASY_FONT_IMPLEMENTATION: embed the stb_easy_font rasterizer.
- * NOTE(USR-BLOAT-01): Compiled unconditionally; linked into every ELF even
- * when no text rendering is used.  Suppressed warnings are normal for STB
- * single-header libs (unused static functions, missing prototypes).
- */
-#define STB_EASY_FONT_IMPLEMENTATION
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wimplicit-function-declaration"
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #pragma GCC diagnostic ignored "-Wmissing-braces"
-#include <stb_easy_font.h>
 /*
  * STB_IMAGE_IMPLEMENTATION: embed the full stb_image decoder.
  * STBI_NO_STDIO/LINEAR/HDR disable file-I/O and HDR format support that
@@ -119,6 +109,21 @@ int clock_gettime(int clk, struct timespec *ts) {
   ts->tv_nsec = (long)(ns % 1000000000ULL);
   return 0;
 }
+
+/* nanosleep: POSIX blocking sleep over the SYS_NANOSLEEP primitive (<time.h>).
+ * Not interruptible here, so it always completes: *rem is zeroed, returns 0. */
+int nanosleep(const struct timespec *req, struct timespec *rem) {
+  if (!req || req->tv_nsec < 0 || req->tv_nsec >= 1000000000L)
+    return -1;
+  unsigned long long ns =
+      (unsigned long long)req->tv_sec * 1000000000ULL + (unsigned long long)req->tv_nsec;
+  _sys_nanosleep(ns);
+  if (rem) {
+    rem->tv_sec = 0;
+    rem->tv_nsec = 0;
+  }
+  return 0;
+}
 int get_pid(void) { return _sys_get_pid(); }
 /* exit: the while(1) after _sys_exit() is unreachable dead code that silences
  * the "noreturn" warning in compilers that do not see svc #0 as a terminator. */
@@ -142,14 +147,14 @@ void destroy_window(int win_id) { _sys_destroy_window(win_id); }
 void window_draw(int win_id, int x, int y, int w, int h, unsigned int color) { _sys_window_draw(win_id, x, y, w, h, color); }
 void window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf) { _sys_window_blit(win_id, x, y, w, h, buf); }
 void yield(void) { _sys_yield(); }
-/* sleep: block for `ms` milliseconds via the REAL kernel timer (SYS_NANOSLEEP).
- * The process is descheduled (no busy-wait) and woken by its core's tick, so it
- * no longer monopolises a core while idle. The parameter is kept named "ticks"
- * for source compatibility but its unit is milliseconds — same wall-clock
- * behaviour as the previous get_time()-based implementation. */
-void sleep(int ticks) {
-  if (ticks > 0)
-    _sys_nanosleep((unsigned long long)ticks * 1000000ULL);
+/* OS1_sleep: block for `ms` milliseconds via the REAL kernel timer
+ * (SYS_NANOSLEEP). The process is descheduled (no busy-wait) and woken by its
+ * core's tick, so it no longer monopolises a core while idle. This is the NEXS
+ * proprietary base API (milliseconds), deliberately distinct from POSIX
+ * sleep(seconds); see <unistd.h>/<time.h> for the POSIX usleep/nanosleep. */
+void OS1_sleep(int ms) {
+  if (ms > 0)
+    _sys_nanosleep((unsigned long long)ms * 1000000ULL);
 }
 /* usleep: POSIX microsecond sleep (real, blocking). Returns 0. */
 int usleep(unsigned int usec) {
@@ -177,6 +182,17 @@ void set_focus(int pid) { extern void _sys_set_focus(int pid); _sys_set_focus(pi
 #include "../../kernel/lib/math.c"
 #include "../../kernel/lib/string.c"
 #include "font_lib.c"
+
+static struct font_ctx *graphics_default_font;
+static int graphics_default_font_attempted;
+
+static struct font_ctx *graphics_get_default_font(void) {
+  if (!graphics_default_font && !graphics_default_font_attempted) {
+    graphics_default_font_attempted = 1;
+    graphics_default_font = font_load("/fonts/Rewir-Light.off");
+  }
+  return graphics_default_font;
+}
 
 /* --- Stack protector support ---
  * __stack_chk_guard: canary value written by the compiler before local arrays
@@ -512,29 +528,35 @@ void graphics_blit(int win_id, int x, int y, int w, int h, const uint32_t *buffe
 /*
  * graphics_draw_text - render text into a compositor window.
  *
- * NOTE(USR-LIB-03): Declares `static char buffer[99999]` — a 100KB static
- * BSS allocation present in every binary that links lib.o, regardless of
- * whether this function is ever called (no --gc-sections).
+ * Uses the OS1 packed bitmap font path when /fonts/Rewir-Light.off is present,
+ * preserving x/y positioning and color. If the font is unavailable, falls back
+ * to the compositor terminal writer for bootstrapping compatibility.
  *
- * The stb_easy_font geometry is computed but discarded; rendering falls back
- * to _sys_write (the compositor terminal emulator font) because the quad-to-
- * pixel blitting loop is not yet implemented.  The x, y, and color arguments
- * are therefore ignored (marked void to suppress warnings).
- *
- * Returns an estimate of the rendered width (strlen * 8 pixels), which is
- * inaccurate for proportional fonts.
+ * Returns the rendered advance in pixels, or 0 for invalid input.
  */
 int graphics_draw_text(int win_id, int x, int y, const char *text, uint32_t color) {
-  (void)color; (void)x; (void)y;
-  static char buffer[99999]; /* NOTE(USR-LIB-03): 100KB static buffer in .bss */
-  int num_quads = stb_easy_font_print(0, 0, (char*)text, NULL, buffer, sizeof(buffer));
-  (void)num_quads;
+  if (win_id < 0 || !text) return 0;
 
-  /* stb_easy_font returns quads, but the quad-to-pixel rendering loop is not
-   * implemented.  Fall back to the compositor's built-in terminal font via
-   * window_write, losing x/y positioning and color control. */
-  _sys_window_write(win_id, text, strlen(text)); /* compositor terminal emulator */
-  return strlen(text) * 8;
+  struct font_ctx *font = graphics_get_default_font();
+  if (font) {
+    font_draw_string(win_id, font, x, y, text, color);
+    return font_string_width(font, text);
+  }
+
+  (void)x; (void)y; (void)color;
+  _sys_window_write(win_id, text, strlen(text));
+  return (int)strlen(text) * 8;
+}
+
+int graphics_text_width(const char *text) {
+  if (!text) return 0;
+
+  struct font_ctx *font = graphics_get_default_font();
+  if (font) {
+    return font_string_width(font, text);
+  }
+
+  return (int)strlen(text) * 8;
 }
 
 /*

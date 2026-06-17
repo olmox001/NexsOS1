@@ -81,8 +81,8 @@ int main(void) {
     }
     i++;
 
-    /* Sleep ~100ms between frames (sleep() now takes milliseconds). */
-    sleep(100);
+    /* Sleep ~100ms between frames (OS1_sleep() now takes milliseconds). */
+    OS1_sleep(100);
   }
 
   return 0;

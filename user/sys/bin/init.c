@@ -139,7 +139,7 @@ int main(void) {
      * kernel timer (SYS_NANOSLEEP) init is descheduled (~0% CPU) and woken by
      * its core's tick, so it can no longer monopolise a core while all children
      * are alive. 50 ms respawn latency is imperceptible. */
-    sleep(50);
+    OS1_sleep(50);
   }
 
   return 0;
