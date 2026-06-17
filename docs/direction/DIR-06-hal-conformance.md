@@ -30,6 +30,32 @@ arches. Bring the rest of the kernel to the same standard.
   should differ ONLY in the ISA trap entry; the accounting + scheduler tick is
   already shared — keep it that way and forbid regressions.
 
+## Audit — first pass (results)
+Swept `kernel/` for ISA leakage OUTSIDE `kernel/arch/`:
+* **Core is clean.** No inline asm, no `rdmsr/outb/cntvct/CR`/LAPIC/GIC MMIO and
+  no raw chip calls in `kernel/core`, `kernel/sched`, `kernel/mm`, `kernel/irq`.
+* **IRQ EOI is already contracted — NOT a leak.** Core issues EOI via
+  `irq_chip_end()` → `current_chip->end()`; `pic_chip_end` is the amd64 chip's
+  *implementation* of that contract (it owns the full LAPIC+8259 sequence), and
+  aarch64 supplies its own `->end`. The contract is uniform; only the providers
+  differ, which is correct.
+* **FIXED — `kernel/sched/elf.c` PTE encoding.** The ELF loader (arch-neutral
+  core) hand-encoded per-arch PTE bits under `#ifdef ARCH_AARCH64/AMD64`. Now it
+  selects among four arch-neutral VMM profiles — `PAGE_USER` (RW+X),
+  `PAGE_USER_DATA` (RW), `PAGE_USER_RX` (RO+X text), `PAGE_USER_RO` (RO rodata) —
+  added to `vmm.h` for both arches. No `#ifdef` in the loader; amd64 bits are
+  identical, aarch64 gains the (correct) PXN hardening so the kernel can never
+  execute a user page. Verified: both arches build + boot, all user ELFs
+  (init/notify_srv/shell) execute, W^X intact, 0 PANIC.
+
+Remaining (low priority, tracked here):
+* `kernel/main.c` — `kernel_main` signature differs per arch (amd64 multiboot
+  magic+mbi vs aarch64 x0/FDT). Legitimate boot-ABI difference; could be hidden
+  behind a thin `arch_boot_args()` shim but is not a core-logic leak.
+* `kernel/drivers/ps2/ps2.c` — PS/2 is x86-only hardware; the `#ifdef ARCH_AMD64`
+  is a provider gate, acceptable. `virtio_input.c` ifdef to review.
+* `platform.c` (`timer_get_us` dummy on amd64, ARCH-03) — frozen until B4.
+
 ## Method (per ASTRA / docs/nexs-astra-guidelines)
 1. Define the contract (`*_ops`/`*_chip`) in `kernel/include/kernel/`.
 2. Move the implementation next to its provider/driver, not under `kernel/arch/`.
