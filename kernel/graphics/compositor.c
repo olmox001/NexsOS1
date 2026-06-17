@@ -450,7 +450,8 @@ static void __focus_topmost_locked(void) {
       pid = windows[i].pid;
     }
   }
-  keyboard_focus_pid = pid;
+  sched_set_focus_pid(pid); /* push the focus hint down (#67); never write the
+                               scheduler's global directly */
   __clear_other_carets_locked(pid);
   pr_debug("Compositor: Focus reset to PID %d\n", pid);
 }
@@ -1067,11 +1068,11 @@ void compositor_handle_click(int button, int state) {
   }
   hit->z_order = top_z + 1;
 
-  /* Update keyboard focus to this process */
+  /* Update keyboard focus to this process — push the hint down (#67). */
   if (keyboard_focus_pid != hit->pid) {
     pr_info("Compositor: Focus changed to PID %d (Window '%s')\n", hit->pid,
             hit->title);
-    keyboard_focus_pid = hit->pid;
+    sched_set_focus_pid(hit->pid);
   }
 
   /*

@@ -142,12 +142,19 @@ DEFINE_SPINLOCK(sched_lock);
 static int rr_cpu = 0;
 
 /* Keyboard Focus Management */
-/* keyboard_focus_pid: PID of the process that currently holds keyboard focus.
- * Written by syscall 232 (SET_FOCUS) from userland; read by schedule() every
- * tick to bias runqueue selection.
- * NOTE(SCHED-01): This global couples the scheduler directly to the graphics
- * compositor; see SCHED-01 for the correct inversion direction. */
+/* keyboard_focus_pid: scheduler-owned focus HINT — which PID keystrokes route to
+ * (keyboard driver) and which the schedule() focus boost favours. Pushed down by
+ * the compositor (window activate/close) and by SYS_SET_FOCUS; the scheduler only
+ * reads it (#83). Mutate ONLY via sched_set_focus_pid() (GFX-COMP-01 #67) so the
+ * scheduler is the single owner and the compositor never writes this global
+ * directly. A single int ⇒ atomic access ⇒ lockless reads (it is a hint). */
 int keyboard_focus_pid = 7; /* Default to Shell PID */
+
+/* sched_set_focus_pid - the ONE mutation point for keyboard_focus_pid.
+ * Callers: compositor (focus change / window teardown) and SYS_SET_FOCUS. */
+void sched_set_focus_pid(int pid) { keyboard_focus_pid = pid; }
+/* sched_get_focus_pid - lockless snapshot of the focus hint. */
+int sched_get_focus_pid(void) { return keyboard_focus_pid; }
 
 /* Bounded focus boost (SCHED-01): the focused process is picked first for snappy
  * foreground response, but never more than FOCUS_BOOST_MAX times in a row — after

@@ -211,13 +211,17 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
   /* Per-keystroke logging is debug-only: at pr_info level every press AND
    * release printed a line from IRQ context, flooding the serial log and
    * serialising all CPUs on the printk path while typing. */
+  /* Snapshot the focus hint ONCE (#67): route this keystroke to a single,
+   * consistent target instead of re-reading the shared global between the test
+   * and the send (where the compositor could change it). */
+  int focus_pid = sched_get_focus_pid();
+
   if (c != 0) {
-    pr_debug("Keyboard: Char='%c' (val=%d) -> PID %d\n", c, value,
-             keyboard_focus_pid);
+    pr_debug("Keyboard: Char='%c' (val=%d) -> PID %d\n", c, value, focus_pid);
   }
 
   /* Send IPC message if we have a focus PID */
-  if (keyboard_focus_pid > 0) {
+  if (focus_pid > 0) {
     struct ipc_message msg;
     memset(&msg, 0, sizeof(msg));
     msg.from = 0; /* Kernel/Driver */
@@ -244,7 +248,7 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
       }
     }
 
-    kernel_ipc_send(keyboard_focus_pid, &msg);
+    kernel_ipc_send(focus_pid, &msg);
   }
 }
 

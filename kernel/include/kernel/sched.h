@@ -243,7 +243,16 @@ int sys_ipc_recv(int src_pid, void *msg_ptr);
 int sys_ipc_try_recv(int src_pid, void *msg_ptr);
 int kernel_ipc_send(int target_pid, struct ipc_message *msg);
 struct ipc_node *pop_message(struct process *proc, int src_pid);
+/* keyboard_focus_pid: scheduler-owned focus HINT (which PID keystrokes route to
+ * and the schedule() focus boost favours). MUTATE ONLY via sched_set_focus_pid()
+ * — the compositor and SYS_SET_FOCUS PUSH changes down to the scheduler
+ * (GFX-COMP-01 #67); the compositor no longer writes this global directly. It is
+ * a single int, so accesses are atomic and reads are lockless: it is a hint,
+ * never load-bearing for correctness. Read via sched_get_focus_pid() (snapshot)
+ * outside the compositor's own render path. */
 extern int keyboard_focus_pid;
+void sched_set_focus_pid(int pid);
+int sched_get_focus_pid(void);
 long sys_getprocs(struct ps_info *user_buf, size_t max_count);
 long sys_sbrk(intptr_t increment);
 

@@ -593,7 +593,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
-    keyboard_focus_pid = (int)arg0;
+    sched_set_focus_pid((int)arg0); /* push the focus hint to the scheduler (#67) */
     /* Caret follows the input window: clear it off whoever just lost focus. */
     {
       extern void compositor_focus_changed(int new_pid);
