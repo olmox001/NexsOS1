@@ -9,6 +9,7 @@ fm_state_t fm_state = {0};
 void fm_state_init(void) {
     fm_state.window_id = -1;
     fm_state.running = 1;
+    fm_state.needs_redraw = 1;
     fm_state.sort_mode = SORT_NAME;
     fm_state.sort_reverse = 0;
     fm_state.view_mode = VIEW_LIST;
@@ -17,6 +18,9 @@ void fm_state_init(void) {
     fm_state.show_statusbar = 1;
     fm_state.menu_open = 0;
     fm_state.search_active = 0;
+    fm_state.context_menu_active = 0;
+    fm_state.context_menu_x = 0;
+    fm_state.context_menu_y = 0;
     fm_state.file_count = 0;
     fm_state.selected_count = 0;
     fm_state.scroll_offset = 0;
@@ -133,6 +137,7 @@ void fm_state_select_all(void) {
             fm_state.selected_size += fm_state.files[i].size;
         }
     }
+    fm_state.needs_redraw = 1;
 }
 
 void fm_state_deselect_all(void) {
@@ -141,6 +146,7 @@ void fm_state_deselect_all(void) {
     }
     fm_state.selected_count = 0;
     fm_state.selected_size = 0;
+    fm_state.needs_redraw = 1;
 }
 
 void fm_state_toggle_select(int index) {
@@ -162,6 +168,7 @@ void fm_state_toggle_select(int index) {
             fm_state.selected_size -= f->size;
         }
     }
+    fm_state.needs_redraw = 1;
 }
 
 void fm_state_update_sidebar(void) {
@@ -171,4 +178,5 @@ void fm_state_update_sidebar(void) {
             fm_state.total_size += fm_state.files[i].size;
         }
     }
+    fm_state.needs_redraw = 1;
 }

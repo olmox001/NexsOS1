@@ -32,14 +32,18 @@ void fm_draw_rect_outline(int x, int y, int w, int h, uint32_t color, int thickn
 }
 
 void fm_draw_text(int x, int y, const char *text, uint32_t color) {
+    if (!text) return;
+
     graphics_draw_text(fm_state.window_id, x, y, text, color);
 }
 
 void fm_draw_centered_text(int x, int y, int w, int h, const char *text, uint32_t color) {
-    int text_len = strlen(text);
-    int text_w = text_len * 8;
+    if (!text) return;
+
+    int text_w = graphics_text_width(text);
     int text_x = x + (w - text_w) / 2;
-    int text_y = y + (h - 14) / 2;
+    int text_h = 14;
+    int text_y = y + (h - text_h) / 2;
     if (text_x < x) text_x = x;
     if (text_y < y) text_y = y;
     fm_draw_text(text_x, text_y, text, color);

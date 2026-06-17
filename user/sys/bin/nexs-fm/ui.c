@@ -193,13 +193,18 @@ void fm_draw_statusbar(void) {
 
 void fm_draw_full_ui(void) {
     fm_draw_rect(0, 0, FM_WIN_W, FM_WIN_H, FM_COLOR_BG);
-    
+
     fm_draw_menu();
     fm_draw_toolbar();
     fm_draw_sidebar();
     fm_draw_content();
     fm_draw_statusbar();
-    
+
+    /* Context menu (render DOPO tutto il resto, così sta in primo piano). */
+    if (fm_state.context_menu_active) {
+        fm_draw_context_menu(fm_state.context_menu_x, fm_state.context_menu_y);
+    }
+
     compositor_render();
 }
 
