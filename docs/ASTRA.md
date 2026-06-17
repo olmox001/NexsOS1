@@ -27,6 +27,9 @@
 ──────────── Infrastructure Providers ────────────
   APIC/IOAPIC · GICv2 · PIT/HPET · ARM Generic
   Timer · ACPI · FDT · PCI · VirtIO-MMIO
+
+--------------------hal-------------------
+All abstractions of the ISA implementation are managed and pass from the HAL layer in Aarch to uniformly abstract the kernel for both architectures
                          │
 ──────────────────── ISA ─────────────────────────
   x86_64 · AArch64  (context switch, trap entry,
@@ -41,11 +44,21 @@ Rules that follow from the model:
 2. **There are no "platforms", only providers.** A PC is {APIC, IOAPIC, PIT,
    ACPI, PCI}; QEMU virt is {GICv2, ARM generic timer, FDT, VirtIO-MMIO}.
    The kernel core never knows which combination it is running on.
-3. **The ISA layer is minimal**: context switch, trap entry, page-table walks,
+3. **The ISA layer is minimal,Abstract logic in the HAL layer**: context switch, trap entry, page-table walks,
    TLB maintenance. Everything else that today lives under `kernel/arch/` is
-   really a provider and must migrate behind a contract over time.
+   really a provider and must migrate behind a contract over time, All architectural implementations must be abstracted in the HAL.
 4. Contracts (the `*_ops`/`*_chip` structs) live in `kernel/include/kernel/`;
    provider implementations live with the driver, not with the arch.
+5. **The HAL is the seam, and divergence is a bug.** Core code calls only HAL
+   primitives and never the ISA layer directly; if the same logic must observe
+   *which* arch it runs on, that logic belongs behind a HAL contract. The
+   three-tier timer is the reference implementation: `kernel_timer_tick` +
+   `timer_percpu_tick`/`timer_percpu_arm` drive both arches identically over
+   `arch_timer_get_count/_get_freq/_set_compare`, so the only per-arch code left
+   is the trap entry. When one root cause produces *different symptoms per arch*
+   (see `docs/report/TIMER-UAF-01-CERTIFIED-FIX.md`), treat it as residual ISA
+   leakage to migrate behind the HAL — the conformance backlog is tracked in
+   `docs/direction/DIR-06-hal-conformance.md`.
 
 ## 2. Where NEXS stands today
 

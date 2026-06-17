@@ -10,10 +10,12 @@
 #include <string.h>
 #include <input.h>
 #include <graphics.h>
+#include <sys/stat.h>
+#include <time.h>
 
 /* ===== WINDOW & UI CONSTANTS ===== */
-#define FM_WIN_W 720
-#define FM_WIN_H 1280
+#define FM_WIN_W 640
+#define FM_WIN_H 480
 #define FM_MENU_HEIGHT 28
 #define FM_TOOLBAR_HEIGHT 56
 #define FM_SIDEBAR_WIDTH 180
@@ -49,22 +51,35 @@
 #define FM_MENU_TEXT FM_COLOR_FG
 #define FM_MENU_HOVER FM_COLOR_SURFACE1
 
-/* ===== KEY CODES ===== */
-/* BUG FIX: i codici originali 'A' (0x41) e 'B' (0x42) per le frecce
-   confliggevano con i tasti alfabetici. Usiamo valori < 0x20 che non
-   collidono con nessun carattere stampabile. Adattare se il sistema OS1
-   usa codici diversi per i tasti speciali. */
+/* ===== KEY CODES =====
+ * Le frecce arrivano dal driver virtio-input come scancode evdev:
+ *   UP=103, LEFT=105, RIGHT=106, DOWN=108 (vedi <input.h>).
+ * input.h li ridefinisce in INPUT_KEY_*: li riusiamo per le frecce. */
 #ifndef KEY_UP
-#define KEY_UP   0x11   /* Tasto freccia su   */
+#define KEY_UP    INPUT_KEY_UP
 #endif
 #ifndef KEY_DOWN
-#define KEY_DOWN 0x12   /* Tasto freccia giù  */
+#define KEY_DOWN  INPUT_KEY_DOWN
 #endif
 #ifndef KEY_LEFT
-#define KEY_LEFT 0x13   /* Tasto freccia sinistra */
+#define KEY_LEFT  INPUT_KEY_LEFT
 #endif
 #ifndef KEY_RIGHT
-#define KEY_RIGHT 0x14  /* Tasto freccia destra   */
+#define KEY_RIGHT INPUT_KEY_RIGHT
+#endif
+
+/* ===== MOUSE BUTTON CODES =====
+ * Il compositor passa `mouse.button` = evdev BTN_* code (vedi
+ * kernel/include/drivers/virtio_input.h). Sono KEY CODE, non bitmask,
+ * quindi si confrontano con `==`, non con `&`. */
+#ifndef MOUSE_BTN_LEFT
+#define MOUSE_BTN_LEFT   0x110
+#endif
+#ifndef MOUSE_BTN_RIGHT
+#define MOUSE_BTN_RIGHT  0x111
+#endif
+#ifndef MOUSE_BTN_MIDDLE
+#define MOUSE_BTN_MIDDLE 0x112
 #endif
 
 /* ===== FILE ENTRY STRUCTURE ===== */
@@ -131,6 +146,7 @@ typedef struct {
 typedef struct {
     int window_id;
     int running;
+    int needs_redraw;
     
     char current_path[FM_PATH_MAX];
     char home_path[FM_PATH_MAX];
@@ -142,7 +158,7 @@ typedef struct {
     int scroll_offset;
     int highlighted_item;
     int last_click_item;
-    long last_click_time;
+    long long last_click_time; /* millisecondi monotonic (clock_gettime) */
     
     fm_sort_mode_t sort_mode;
     int sort_reverse;
@@ -157,7 +173,12 @@ typedef struct {
     int show_hidden;
     int show_sidebar;
     int show_statusbar;
-    
+
+    /* Context menu (click destro sulla lista file) */
+    int context_menu_active;
+    int context_menu_x;
+    int context_menu_y;
+
     fm_menu_item_t menus[50];
     int menu_count;
     fm_button_t buttons[20];
@@ -223,6 +244,7 @@ void fm_clipboard_cut(void);
 void fm_clipboard_paste(void);
 int fm_get_file_size(const char *path);
 long fm_get_file_mtime(const char *path);
+int fm_classify_icon(const char *name);
 
 /* state.c */
 extern fm_state_t fm_state;

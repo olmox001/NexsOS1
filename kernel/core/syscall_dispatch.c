@@ -84,6 +84,11 @@
 #include <kernel/vfs.h>
 #include <syscall_nums.h>
 
+/* Defined below (after sys_get_time); used by the SYS_NANOSLEEP dispatch case. */
+static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns);
+/* Yield with per-process anti-spin throttle; used by the SYS_YIELD case. */
+static struct pt_regs *sys_yield(struct pt_regs *regs);
+
 /*
  * FIX(EXT4-07): upper bound for kmalloc'd bounce buffers whose size comes
  * straight from a user syscall argument (arg2) in FILE_WRITE/FILE_READ/LIST_DIR
@@ -110,6 +115,7 @@ extern struct pt_regs *sys_read(struct pt_regs *regs);
 extern long sys_get_pid(void);
 extern void sys_exit(int status);
 extern long sys_get_time(void);
+long sys_clock_gettime(int clk);
 
 extern void graphics_draw_rect(int x, int y, int w, int h, uint32_t color);
 extern void compositor_render(void);
@@ -358,6 +364,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   case SYS_GET_TIME:
     pt_regs_set_return(frame, sys_get_time());
     break;
+  case SYS_CLOCK_GETTIME:
+    pt_regs_set_return(frame, sys_clock_gettime((int)arg0));
+    break;
   case SYS_GETPID:
     pt_regs_set_return(frame, sys_get_pid());
     break;
@@ -539,7 +548,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));
     break;
   case SYS_YIELD:
-    return schedule(frame);
+    return sys_yield(frame);
+  case SYS_NANOSLEEP:
+    return sys_nanosleep(frame, arg0);
   case SYS_SEND:
   {
     /* ABI-05 RESOLVED: capture the result in a local instead of trying to
@@ -582,7 +593,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
-    keyboard_focus_pid = (int)arg0;
+    sched_set_focus_pid((int)arg0); /* push the focus hint to the scheduler (#67) */
     /* Caret follows the input window: clear it off whoever just lost focus. */
     {
       extern void compositor_focus_changed(int new_pid);
@@ -756,16 +767,154 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
 }
 
 /*
- * sys_get_time - return current time in milliseconds.
+ * sys_get_time - return monotonic time in milliseconds.
  *
- * Divides timer_get_us() by 1000.  On aarch64 this is accurate (arch counter).
- * On amd64 timer_get_us() returns jiffies*1000, so the result has 1ms
- * resolution only (ARCH-03).
+ * Derived from mono_ns() (the real-time hardware-counter clock, docs/
+ * TIMER-MODEL.md), so it is accurate on BOTH arches — amd64 no longer returns
+ * the jiffies*1000 stub (ARCH-03 retired for the real-time path).
  *
  * Locking: none.  IRQ context: no.
  */
-extern uint64_t timer_get_us(void);
-long sys_get_time(void) { return (long)(timer_get_us() / 1000); }
+long sys_get_time(void) { return (long)(mono_ns() / 1000000ULL); }
+
+/*
+ * sys_clock_gettime - Tier 3 userland clock (SYS_CLOCK_GETTIME).
+ *
+ * Returns a 64-bit nanosecond value directly (both arches return 64 bits):
+ *   clk == 0 (MONOTONIC)  : mono_ns() — monotonic ns since boot.
+ *   clk == 1 (PROCESS_CPU): the caller's consumed CPU time in real ns.
+ * Any other clock id falls back to MONOTONIC. This is the minimal seL4-style
+ * mechanism; POSIX clock_gettime() is built on top in <time.h>. Capability
+ * timer OBJECTS (arm-and-notify) are issue #135.
+ */
+long sys_clock_gettime(int clk) {
+  if (clk == 1) {
+    struct process *p = current_process;
+    return p ? (long)timer_counts_to_ns(p->cpu_time_counts) : 0;
+  }
+  return (long)mono_ns();
+}
+
+/* Global monotonic tick counter (drivers/timer.c / platform.c). */
+extern volatile uint64_t jiffies;
+
+/*
+ * proc_sleep_wake - per-process sleep timer callback (fired by the owning core's
+ * tick when the coarse deadline is reached). Makes the sleeper runnable again;
+ * it will re-run sys_nanosleep (retry), test mono_ns() >= wake_ns, and either
+ * return (deadline reached) or re-arm and sleep again (woken a tick early).
+ * Runs under that CPU's timer_lock; enqueue_task takes only a per-CPU sched_lock
+ * (lock order timer_lock > per-CPU sched_lock — no inversion).
+ */
+static void proc_sleep_wake(void *data) {
+  struct process *p = (struct process *)data;
+  if (p && p->state == PROC_SLEEPING)
+    enqueue_task(p);
+}
+
+/*
+ * sys_nanosleep - block the caller for `ns` nanoseconds (POSIX nanosleep core,
+ * Tier 3 of docs/TIMER-MODEL.md).
+ *
+ * The deadline is stored as an ABSOLUTE real-time instant (p->wake_ns, mono_ns
+ * base) on first entry, so the sleep recovers lost time: the per-CPU software
+ * timer is only a coarse jiffies-edge trigger, and the precise wake condition is
+ * mono_ns() >= wake_ns. Retry-based like the blocking read — re-entered on each
+ * wakeup. If the coarse timer fires a tick early, mono_ns() is still short of
+ * wake_ns, so we re-arm and sleep again; a genuine deadline returns 0.
+ */
+static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
+  struct process *p = current_process;
+  if (!p || ns == 0) {
+    pt_regs_set_return(regs, 0);
+    return regs;
+  }
+  if (p->wake_ns == 0)
+    p->wake_ns = mono_ns() + ns; /* absolute real-time deadline */
+
+  uint64_t now = mono_ns();
+  if (now >= p->wake_ns) {
+    p->wake_ns = 0;
+    timer_del(&p->sleep_timer); /* cancel if somehow still pending */
+    pt_regs_set_return(regs, 0);
+    return regs;
+  }
+
+  /* (Re)arm the coarse wheel trigger at the deadline's tick. Rounding up by one
+   * tick keeps us from busy-spinning if mono_ns() is just shy of wake_ns. */
+  if (!timer_pending(&p->sleep_timer)) {
+    uint64_t ticks = (p->wake_ns - now + (NS_PER_TICK - 1)) / NS_PER_TICK;
+    if (ticks == 0)
+      ticks = 1;
+    timer_setup(&p->sleep_timer, proc_sleep_wake, p);
+    timer_add(&p->sleep_timer, jiffies + ticks);
+  }
+
+  arch_local_irq_disable();
+  p->state = PROC_SLEEPING;
+  arch_local_irq_enable();
+  pt_regs_retry_syscall(regs);
+  return schedule(regs);
+}
+
+/* YIELD_SPIN_BUDGET: how many yield() calls a process may make within a single
+ * tick (10 ms at HZ=100) before it is treated as busy-spinning. A program doing
+ * real work between yields never approaches this; a `while(1) yield()` spinner
+ * (an unoptimised app, or an old-style poll loop) trips it and is descheduled
+ * to the next tick, capping its duty cycle so it cannot keep a core at 100% and
+ * freeze the system. The bounded focus boost (process.c) stops a focused
+ * CPU-hog from STARVING others; this stops a yield-spinner from SATURATING a
+ * core. */
+#define YIELD_SPIN_BUDGET 64
+
+/*
+ * sys_yield - cooperative yield with a per-process anti-spin throttle (SYS_YIELD,
+ * docs/TIMER-MODEL.md §4).
+ *
+ * Normally just reschedules (gives up the rest of the slice). But it counts
+ * yields within the current tick; once a process exceeds YIELD_SPIN_BUDGET it is
+ * busy-spinning on yield(), so instead of an immediate reschedule it is put to
+ * sleep until the next tick via its per-process timer (sleep_timer) — the same
+ * mechanism nanosleep uses. The spinner therefore relinquishes the core for a
+ * full tick, dropping its CPU duty cycle to near zero. The counter resets each
+ * tick (and after a throttle), so legitimate cooperative yielding is untouched.
+ *
+ * Note: this does NOT touch wake_ns (the nanosleep deadline) — a process cannot
+ * be both yielding and nanosleeping. On wake the yield() simply returns.
+ */
+static struct pt_regs *sys_yield(struct pt_regs *regs) {
+  struct process *p = current_process;
+  if (!p)
+    return schedule(regs);
+
+  if (p->yield_jiffy != jiffies) {
+    p->yield_jiffy = jiffies;
+    p->yield_count = 0;
+  }
+
+  if (++p->yield_count > YIELD_SPIN_BUDGET) {
+    /* Busy-spinning on yield() this tick — throttle to a 1-tick per-process
+     * timed sleep. Reset the budget; it refills next tick on wake. */
+    p->yield_count = 0;
+    /* TIMER-UAF-01: only (re)arm when the per-process timer is NOT already
+     * queued — exactly like sys_nanosleep. The sleeper can have been force-woken
+     * by a non-timer path (kernel_ipc_send flips PROC_SLEEPING->READY WITHOUT
+     * cancelling sleep_timer, process.c) with its timer still linked; calling
+     * timer_setup()/INIT_LIST_HEAD on that still-linked node re-initialises a
+     * live list entry and corrupts the per-CPU timer_list, later faulting in
+     * kernel_timer_tick() as a double list_del. If it is already pending, the
+     * existing 1-tick trigger will wake us, so we just re-sleep. */
+    if (!timer_pending(&p->sleep_timer)) {
+      timer_setup(&p->sleep_timer, proc_sleep_wake, p);
+      timer_add(&p->sleep_timer, jiffies + 1);
+    }
+    arch_local_irq_disable();
+    p->state = PROC_SLEEPING;
+    arch_local_irq_enable();
+  }
+
+  return schedule(regs);
+}
 
 /*
  * sys_get_pid - return the PID of the calling process.

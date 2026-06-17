@@ -1,5 +1,5 @@
 # Technical Report: AMD64 Hybrid Boot Stabilization
-**Project**: OS1 Microkernel
+**Project**: OS1 HybridKernel MicroKernel ispired
 **Date**: May 13, 2026
 **Subject**: Stabilization of Hybrid ISO Boot and Userland Mounting
 

@@ -1,6 +1,7 @@
 #ifndef _KERNEL_SCHED_H
 #define _KERNEL_SCHED_H
 
+#include <drivers/timer.h>
 #include <kernel/fd.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
@@ -90,6 +91,28 @@ struct process {
   /* Wait Queue (for sleeping) */
   struct wait_queue_head *wait_queue_ptr;
   struct wait_queue_head wait_queue;
+
+  /* Tier 3 timed sleep (docs/TIMER-MODEL.md §4): a per-process software timer,
+   * armed on the running core, wakes the process at the ABSOLUTE real-time
+   * deadline wake_ns (mono_ns base). The wheel fires on a coarse jiffies edge;
+   * the fine wake condition is mono_ns() >= wake_ns, so the process wakes at the
+   * right wall-clock instant even if ticks were dropped. 0 = not sleeping.
+   * cpu_time_counts: CPU time consumed by this process, accumulated in RAW
+   * hardware-counter units across context switches (a cheap subtraction in the
+   * scheduler hot path — no divide). Converted to ns only on read via
+   * timer_counts_to_ns() for os1_cpu_ns()/ps_info. */
+  uint64_t wake_ns;
+  uint64_t cpu_time_counts;
+  struct timer sleep_timer;
+
+  /* Yield-throttle anti-spin (per-process, docs/TIMER-MODEL.md §4): yield()
+   * calls within the current tick are counted in yield_count (for the tick
+   * yield_jiffy). Beyond YIELD_SPIN_BUDGET the process is busy-spinning on
+   * yield() rather than doing work and is put to sleep until the next tick via
+   * sleep_timer, so an unoptimised program cannot keep a core at 100% and freeze
+   * the system. */
+  uint64_t yield_jiffy;
+  uint32_t yield_count;
 
   /* IPC state */
   int ipc_target_pid; /* PID we want to talk to (-1 for ANY) */
@@ -220,7 +243,20 @@ int sys_ipc_recv(int src_pid, void *msg_ptr);
 int sys_ipc_try_recv(int src_pid, void *msg_ptr);
 int kernel_ipc_send(int target_pid, struct ipc_message *msg);
 struct ipc_node *pop_message(struct process *proc, int src_pid);
+/* keyboard_focus_pid: scheduler-owned focus HINT (which PID keystrokes route to
+ * and the schedule() focus boost favours). MUTATE ONLY via sched_set_focus_pid()
+ * — the compositor and SYS_SET_FOCUS PUSH changes down to the scheduler
+ * (GFX-COMP-01 #67); the compositor no longer writes this global directly. It is
+ * a single int, so accesses are atomic and reads are lockless: it is a hint,
+ * never load-bearing for correctness. Read via sched_get_focus_pid() (snapshot)
+ * outside the compositor's own render path. */
 extern int keyboard_focus_pid;
+void sched_set_focus_pid(int pid);
+int sched_get_focus_pid(void);
+/* window_request_close: window-close intent seam (GFX-COMP-03 #69) — the
+ * compositor calls this instead of process_terminate() so graphics does not
+ * drive process lifecycle directly. */
+void window_request_close(int pid);
 long sys_getprocs(struct ps_info *user_buf, size_t max_count);
 long sys_sbrk(intptr_t increment);
 

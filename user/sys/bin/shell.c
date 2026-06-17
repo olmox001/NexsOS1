@@ -39,7 +39,7 @@
 #define WIN_H 480
 
 /* Colors */
-#define COLOR_BG 0xFF1a1a2e
+#define COLOR_BG 0xFFFCFCFD
 #define COLOR_FG 0xFFe0e0e0
 #define COLOR_PROMPT 0xFF00ff88
 
@@ -176,8 +176,8 @@ static int spawn_search_args(int argc, char *argv[], char *out_path) {
  *     detect the command prefix by inspecting individual characters
  *     (cmd_buf[0..N]) and extract the argument via hardcoded byte offsets.
  *     There is no tokeniser.
- *   - Unknown tokens are tokenized and tried as ELF names via spawn_search_args(),
- *     /bin/ then /sys/bin/ before reporting failure.
+ *   - Unknown tokens are tokenized and tried as ELF names via
+ * spawn_search_args(), /bin/ then /sys/bin/ before reporting failure.
  *
  * On return, cmd_len is reset to 0 (erases the accumulated line).
  *
@@ -245,7 +245,7 @@ static void process_command(void) {
     print("\033[2J\033[H");
     shell_redraw();
   } else if (str_eq(cmd_buf, "time")) {
-    printf("Uptime: %d seconds (%x jiffies)\n", (int)(get_time() / 100),
+    printf("Uptime: %d seconds (%x ms)\n", (int)(get_time() / 1000),
            get_time());
   } else if (str_eq(cmd_buf, "demo")) {
     print("Drawing demo shapes in window...\n");

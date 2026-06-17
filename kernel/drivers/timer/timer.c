@@ -7,16 +7,16 @@
  * the physical counter so that the driver works correctly in QEMU -kernel
  * mode where the hypervisor timer may not be accessible.
  *
- * Architecture:
- *   - timer_init() reads the counter frequency (CNTFRQ_EL0) and precomputes
- *     timer_tick_interval (ticks/jiffy) and timer_tick_remainder to support
- *     sub-tick fractional correction for accurate HZ scheduling.
- *   - timer_init_percpu() arms the EL1 virtual timer on each CPU by writing
- *     CNTV_CVAL_EL0 (compare value) and enabling the timer via CNTV_CTL_EL0.
+ * Architecture (this file is now a thin ARM provider; the tick accounting is
+ * arch-neutral in kernel/core/timer.c, driven through the HAL timer primitives):
+ *   - timer_init() reads the counter frequency (CNTFRQ_EL0) into timer_freq,
+ *     consumed by the arch-neutral timer_percpu_tick()/mono_ns().
+ *   - timer_init_percpu() arms the EL1 virtual timer on each CPU via
+ *     timer_percpu_arm() (sets CNTV_CVAL) and enables it via CNTV_CTL_EL0.
  *   - timer_handler() is called directly from irq_handler() in irq.c when
- *     IRQ_TIMER (PPI 27) fires.  It advances next_tick_target with
- *     fractional error accumulation (cpu->tick_error_acc), reprogs the
- *     compare register, and calls kernel_timer_tick() for scheduling.
+ *     IRQ_TIMER (PPI 27) fires; it calls timer_percpu_tick() (fractional drift
+ *     accounting + CNTV_CVAL reprogram via arch_timer_set_compare) then
+ *     kernel_timer_tick() for scheduling.
  *
  * Timer register access is via arch_ wrappers (arch_timer_get_freq,
  * arch_timer_get_count, arch_timer_set_compare, arch_timer_control) which
@@ -132,17 +132,10 @@ extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
  * @regs: saved register state from the exception entry; passed through to
  *        kernel_timer_tick() for potential context-switch use.
  *
- * Called directly from irq_handler() in irq.c when irq == IRQ_TIMER (27)
- * or 30.  Performs precision tick accounting:
- *
- *   1. Accumulate timer_tick_remainder into cpu->tick_error_acc.
- *   2. If the accumulated error >= HZ, add 1 extra tick to the interval
- *      and subtract HZ from the accumulator (one-tick correction).
- *   3. Advance cpu->next_tick_target by the corrected interval.
- *   4. If next_tick_target has already been passed (catch-up), reset to
- *      now + interval to avoid a burst of back-to-back ticks.
- *   5. Write the new compare value to CNTV_CVAL_EL0.
- *   6. Call kernel_timer_tick(regs) for scheduler tick + preemption.
+ * Called directly from irq_handler() in irq.c when irq == IRQ_TIMER (27) or 30.
+ * Delegates the precision per-CPU tick accounting + CNTV_CVAL reprogram to the
+ * arch-neutral, HAL-driven timer_percpu_tick() (kernel/core/timer.c), then runs
+ * kernel_timer_tick(regs) for the scheduler tick + preemption.
  *
  * Returns the (potentially switched) register state from kernel_timer_tick().
  *
@@ -150,30 +143,12 @@ extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
  * IRQ context: YES — called from the IRQ dispatch loop in irq_handler().
  */
 struct pt_regs *timer_handler(struct pt_regs *regs) {
-  struct cpu_info *cpu = get_cpu_info();
-
-  /* Precision Tick Logic for ARM Generic Timer */
-  extern uint64_t timer_tick_interval;
-  extern uint64_t timer_tick_remainder;
-
-  cpu->tick_error_acc += timer_tick_remainder;
-  uint64_t interval = timer_tick_interval;
-  if (cpu->tick_error_acc >= HZ) {
-    interval += 1;
-    cpu->tick_error_acc -= HZ;
-  }
-
-  cpu->next_tick_target += interval;
-  uint64_t now = read_cntvct();
-
-  /* Catch up logic */
-  if (cpu->next_tick_target <= now) {
-    cpu->next_tick_target = now + interval;
-  }
-
-  write_cntv_cval(cpu->next_tick_target);
-
-  /* Call generic tick logic */
+  /* Tier 2 per-CPU drift accounting + CNTV_CVAL reprogram is the arch-neutral,
+   * HAL-driven timer_percpu_tick() (kernel/core/timer.c): it advances
+   * next_tick_target against CNTVCT with fractional correction and a catch-up
+   * clamp, then arch_timer_set_compare() writes CNTV_CVAL. The arch handler is
+   * now just: account, then run the generic scheduler tick. */
+  timer_percpu_tick(get_cpu_info());
   return kernel_timer_tick(regs);
 }
 
@@ -186,20 +161,13 @@ struct pt_regs *timer_handler(struct pt_regs *regs) {
 /*
  * Initialize timer (called once on boot CPU)
  */
-/* timer_tick_interval: integer ticks per jiffy = timer_freq / HZ.
- * timer_tick_remainder: fractional remainder = timer_freq % HZ, accumulated
- *   per tick in cpu->tick_error_acc to keep long-term rate accurate. */
-/* Precomputed timer values */
-uint64_t timer_tick_interval = 0;
-uint64_t timer_tick_remainder = 0;
-
 /*
  * timer_init - initialise the ARM generic timer on the boot CPU.
  *
- * Reads CNTFRQ_EL0 into timer_freq, precomputes timer_tick_interval and
- * timer_tick_remainder, and enables IRQ_TIMER (PPI 27) at the GIC via
- * irq_enable().  Does NOT arm the per-CPU compare register; that is done by
- * timer_init_percpu() on each CPU.
+ * Reads CNTFRQ_EL0 into timer_freq (the HAL counter frequency consumed by the
+ * arch-neutral timer_percpu_tick()/mono_ns()) and enables IRQ_TIMER (PPI 27)
+ * at the GIC via irq_enable(). Does NOT arm the per-CPU compare register; that
+ * is done by timer_init_percpu() on each CPU.
  *
  * NOTE(IRQ-03): The comment "We handle IRQ 27 explicitly in gic.c dispatch"
  * is stale — the special handling is in irq_handler() in irq.c, not gic.c.
@@ -207,13 +175,8 @@ uint64_t timer_tick_remainder = 0;
  * Locking: none; called once from boot CPU before SMP.
  * IRQ context: NO.
  */
-/*
- * Initialize timer (called once on boot CPU)
- */
 void timer_init(void) {
   timer_freq = read_cntfrq();
-  timer_tick_interval = timer_freq / HZ;
-  timer_tick_remainder = timer_freq % HZ;
 
   pr_info("Timer: Frequency %lu Hz\n", timer_freq);
   pr_info("Timer: System tick rate %d Hz\n", HZ);
@@ -247,10 +210,9 @@ void timer_init(void) {
 void timer_init_percpu(void) {
   struct cpu_info *cpu = get_cpu_info();
 
-  /* Set up first timer interrupt using virtual timer */
-  cpu->next_tick_target = read_cntvct() + (timer_freq / HZ);
-  cpu->tick_error_acc = 0;
-  write_cntv_cval(cpu->next_tick_target);
+  /* Seed the per-CPU tick schedule + first CNTV_CVAL via the arch-neutral
+   * HAL-driven helper (kernel/core/timer.c). */
+  timer_percpu_arm(cpu);
 
   /* Enable virtual timer (ENABLE=1, IMASK=0) */
   write_cntv_ctl(1);

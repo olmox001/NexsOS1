@@ -137,8 +137,20 @@ static inline void arch_impl_cache_sync_icache(void *start, size_t size) {
 }
 
 /* --- Timer --- */
+/* tsc_hz: measured TSC frequency, published by tsc_calibrate() in
+ * kernel/arch/amd64/cpu/apic.c (declared there and in arch/amd64/apic.h;
+ * re-declared here so this header has no include dependency on apic.h).
+ * Zero until calibration runs on the BSP. */
+extern uint64_t tsc_hz;
+
+/* arch_impl_timer_get_freq - the HAL real-time-reference frequency (Hz).
+ *
+ * Returns the calibrated TSC frequency (tsc_hz).  Before tsc_calibrate() runs
+ * on the BSP, tsc_hz is 0; this returns a SAFE 1 GHz fallback so early callers
+ * of the arch-neutral mono_ns() (kernel/core/timer.c) never divide by zero.
+ * After calibration the real measured value is returned. */
 static inline uint64_t arch_impl_timer_get_freq(void) {
-  return 1000000000ULL; /* Calibrated at boot usually */
+  return tsc_hz ? tsc_hz : 1000000000ULL; /* fallback until BSP calibration */
 }
 
 static inline uint64_t arch_impl_timer_get_count(void) {

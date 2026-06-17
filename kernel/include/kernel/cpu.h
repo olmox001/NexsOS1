@@ -20,12 +20,25 @@ struct cpu_info {
   uint64_t next_tick_target;
   uint64_t tick_error_acc;
   uint64_t tick_count;
+  /* Raw hardware-counter value at which the current task last started running on
+   * this CPU; schedule() charges (arch_timer_get_count() - sched_run_count) to
+   * the outgoing task's cpu_time_counts (Tier 3 per-process CPU time, converted
+   * to ns only on read — docs/TIMER-MODEL.md §4). */
+  uint64_t sched_run_count;
 
   /* Scheduler Local Data (Multicore Optimization) */
   struct list_head runqueues[32];
   uint32_t prio_bitmap;
   spinlock_t sched_lock; /* Local runqueue protection */
   struct process *idle_task;
+
+  /* Per-CPU software timer wheel (kernel/core/timer.c): each CPU fires its OWN
+   * timers in kernel_timer_tick against the global jiffies clock, so a process
+   * sleeping on this core is woken locally — no cross-CPU dependency, no global
+   * timer-lock contention. */
+  struct list_head timer_list;
+  spinlock_t timer_lock;
+
   char printk_buf[2048];
   char syscall_buf[2048];
   uint32_t in_printk;

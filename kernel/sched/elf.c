@@ -115,26 +115,16 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
         return -1;
       }
 
-      /* Generic User Mapping Flags */
-      uint64_t flags = PTE_USER | PTE_VALID;
-
-      if (phdr.p_flags & PF_W) {
-        flags |= PTE_RW;
-      } else {
-        flags |= PTE_RO;
-      }
-
-      /* W^X (ELF-02): non-executable unless PF_X — per-arch NX encoding. */
-#ifdef ARCH_AARCH64
-      flags |= PTE_VALID | PTE_PAGE | PTE_AF | PTE_INNER_SHARE;
-      if (!(phdr.p_flags & PF_X)) {
-        flags |= PTE_UXN;
-      }
-#elif defined(ARCH_AMD64)
-      if (!(phdr.p_flags & PF_X)) {
-        flags |= PTE_NX;
-      }
-#endif
+      /* User segment protection via the arch-neutral VMM page profiles
+       * (HAL conformance #140 / DIR-06): the ELF loader is arch-neutral core
+       * and must NOT hand-encode per-arch PTE bits. The VMM contract (vmm.h)
+       * supplies the four W^X user profiles; the loader only maps ELF PF_W/PF_X
+       * onto them. W^X (ELF-02): a segment is executable only when PF_X is set. */
+      uint64_t flags;
+      if (phdr.p_flags & PF_W)
+        flags = (phdr.p_flags & PF_X) ? PAGE_USER : PAGE_USER_DATA;  /* RW+X : RW */
+      else
+        flags = (phdr.p_flags & PF_X) ? PAGE_USER_RX : PAGE_USER_RO; /* RO+X : RO */
 
       pr_info("ELF: Mapping Segment at 0x%lx (FileSz: 0x%lx, MemSz: 0x%lx)\n",
               phdr.p_vaddr, phdr.p_filesz, phdr.p_memsz);

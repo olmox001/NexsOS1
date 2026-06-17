@@ -51,16 +51,115 @@ extern volatile int panic_flag;
 static uint64_t compositor_interval = 1;
 #define COMPOSITOR_TARGET_FPS 30
 
-/* timer_list: doubly-linked list of pending software timers, sorted by
- * insertion order (not expiry order — O(n) scan on each tick).
- * Protected by timer_lock. */
-static LIST_HEAD(timer_list);
-/* timer_lock: guards timer_list; held while firing callbacks. */
-static spinlock_t timer_lock = SPINLOCK_INIT;
+/* Software timers are PER-CPU: each CPU owns a timer_list + timer_lock in its
+ * struct cpu_info (kernel/cpu.h), fired by that CPU in kernel_timer_tick against
+ * the global jiffies clock. timer_add() arms on the current CPU and the timer
+ * records its owner CPU (t->cpu) so timer_del() removes it from the right list.
+ * This keeps a process's sleep timer on the core that holds it: local wakeup, no
+ * cross-CPU dependency and no global timer-lock contention. */
 
 /* jiffies and timer_freq are defined in drivers/timer/timer.c for AArch64
  * or in arch/amd64/platform/platform.c for AMD64. */
 extern volatile uint64_t jiffies;
+
+/* ---------------------------------------------------------------------------
+ * Real-time reference (docs/TIMER-MODEL.md §1)
+ *
+ * mono_ns() is the single source of truth: monotonic nanoseconds since boot,
+ * computed from the free-running hardware counter (CNTVCT on aarch64, TSC on
+ * amd64) and its frequency, both arch HAL primitives. jiffies is a cheap
+ * integer view that CPU 0 reconciles against mono_ns() every tick so dropped
+ * ticks are recovered (Tier 1).
+ *
+ * Only the EPOCH (clk_boot_count) is captured once, lazily, on the first call.
+ * The frequency is re-read fresh every call (a cheap inline counter accessor),
+ * deliberately NOT latched: on amd64 arch_timer_get_freq() returns a 1 GHz
+ * fallback until the TSC is calibrated, and latching that stale value would
+ * permanently skew the clock. Reading it live means the clock self-corrects the
+ * instant calibration publishes the real frequency. In practice the first call
+ * already happens after calibration (it runs in early arch init, before any
+ * scheduling or timer tick), so no skew is observed.
+ * ------------------------------------------------------------------------- */
+static uint64_t clk_boot_count;
+static volatile int clk_ready;
+
+/* timer_counts_to_ns - convert a hardware-counter delta to nanoseconds.
+ *
+ * The single place that scales counter units to ns: counts * 1e9 / freq via a
+ * 128-bit intermediate (counts * 1e9 needs > 64 bits within minutes). Backed by
+ * __udivti3/__multi3 in kernel/lib/math.c (no libgcc in this -nostdlib build).
+ * Used by mono_ns() and by the per-process CPU-time read path, which accumulates
+ * raw counts in the scheduler hot path and converts only when queried. */
+uint64_t timer_counts_to_ns(uint64_t counts) {
+  uint64_t freq = arch_timer_get_freq();
+  if (freq == 0)
+    freq = 1; /* guard div-by-zero before any frequency source is up */
+  return (uint64_t)(((__uint128_t)counts * NSEC_PER_SEC) / freq);
+}
+
+uint64_t mono_ns(void) {
+  if (!clk_ready) {
+    clk_boot_count = arch_timer_get_count();
+    clk_ready = 1;
+  }
+  return timer_counts_to_ns(arch_timer_get_count() - clk_boot_count);
+}
+
+uint64_t timer_get_ns(void) { return mono_ns(); }
+
+/*
+ * timer_percpu_tick - Tier 2 per-CPU clock accounting + rearm (HAL-driven).
+ *
+ * One arch-neutral routine replaces the previously duplicated per-arch drift
+ * logic (aarch64 timer_handler, amd64 idt.c). Everything is expressed in
+ * HARDWARE COUNTER units via the HAL timer primitives:
+ *   1. interval = freq/HZ; accumulate the freq%HZ remainder in tick_error_acc
+ *      and add one extra count when it crosses HZ (long-term-rate exact).
+ *   2. Advance cpu->next_tick_target by the corrected interval.
+ *   3. Catch-up clamp: if the target already fell behind the live counter
+ *      (ticks lost to IRQ latency / a long critical section), reset to
+ *      now + interval — the per-CPU "compare against real time to recover lost
+ *      time" rule, instead of replaying a burst.
+ *   4. Reprogram the compare via arch_timer_set_compare(): a real reprogram on
+ *      one-shot timers (aarch64 CNTV_CVAL), a no-op on periodic timers (amd64
+ *      LAPIC), so this serves both arches unchanged.
+ *
+ * Locking: touches only this CPU's cpu_info; no lock. IRQ context: YES.
+ */
+void timer_percpu_tick(struct cpu_info *cpu) {
+  uint64_t freq = arch_timer_get_freq();
+  uint64_t interval = freq / HZ;
+  uint64_t remainder = freq % HZ;
+
+  cpu->tick_error_acc += remainder;
+  if (cpu->tick_error_acc >= HZ) {
+    interval += 1;
+    cpu->tick_error_acc -= HZ;
+  }
+
+  cpu->next_tick_target += interval;
+  uint64_t now = arch_timer_get_count();
+  if (cpu->next_tick_target <= now)
+    cpu->next_tick_target = now + interval;
+
+  arch_timer_set_compare(cpu->next_tick_target);
+}
+
+/*
+ * timer_percpu_arm - seed this CPU's tick schedule on timer bring-up.
+ *
+ * Sets next_tick_target one interval out from the live counter, clears the
+ * fractional accumulator, and programs the first compare via the HAL. Called
+ * once per CPU from the arch per-CPU timer init (aarch64 timer_init_percpu,
+ * amd64 lapic_timer_setup); the arch path still owns enabling the timer and
+ * unmasking its IRQ.
+ */
+void timer_percpu_arm(struct cpu_info *cpu) {
+  uint64_t freq = arch_timer_get_freq();
+  cpu->next_tick_target = arch_timer_get_count() + freq / HZ;
+  cpu->tick_error_acc = 0;
+  arch_timer_set_compare(cpu->next_tick_target);
+}
 
 /* Weak stubs for arch-specific timer functions (can be overridden) */
 /*
@@ -114,29 +213,40 @@ struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
   struct cpu_info *cpu = get_cpu_info();
   cpu->tick_count++;
 
-  /* Global jiffies incremented only by the primary core */
+  /* Tier 1 — global clock (docs/TIMER-MODEL.md §2): only CPU 0 writes jiffies
+   * (no SMP write race), and instead of a blind ++ it reconciles jiffies with
+   * real time. If ticks were dropped (IRQ latency, a long critical section, a
+   * CPU-bound focused task), 'expected' jumps ahead and jiffies catches up in
+   * one step. The guard keeps it monotonic; steady state advances by exactly 1
+   * per tick, so normal behaviour is unchanged. */
   if (cpu->cpu_id == 0) {
-    jiffies++;
+    uint64_t expected = mono_ns() / NS_PER_TICK;
+    if (expected > jiffies)
+      jiffies = expected;
   }
 
-  /* Process software timers and compositor on CPU 0 */
-  if (cpu->cpu_id == 0) {
+  /* Fire THIS CPU's expired software timers — every CPU, against the global
+   * jiffies clock — so a process that slept on this core is woken here, locally.
+   * Callbacks run inside this CPU's timer_lock and must not call timer_add/_del
+   * or anything that re-acquires it. */
+  {
     struct timer *t, *tmp;
-    uint64_t flags;
-    spin_lock_irqsave(&timer_lock, &flags);
-    /* Walk the list safely (list_for_each_entry_safe allows deletion).
-     * Callbacks are fired *inside* timer_lock — they must not call
-     * timer_add/timer_del or any function that acquires timer_lock. */
-    list_for_each_entry_safe(t, tmp, &timer_list, list) {
+    uint64_t tflags;
+    spin_lock_irqsave(&cpu->timer_lock, &tflags);
+    list_for_each_entry_safe(t, tmp, &cpu->timer_list, list) {
       if (jiffies >= t->expires) {
         list_del(&t->list);
         t->pending = false;
+        t->cpu = -1;
         if (t->callback)
           t->callback(t->data);
       }
     }
-    spin_unlock_irqrestore(&timer_lock, flags);
+    spin_unlock_irqrestore(&cpu->timer_lock, tflags);
+  }
 
+  /* CPU 0 only: input polling + compositor. */
+  if (cpu->cpu_id == 0) {
     /* Poll USB HID every tick (CPU 0): keyboard events feed the evdev buffer,
      * pointer motion goes straight to the compositor. Cheap when idle (just an
      * event-ring head check per device). */
@@ -178,6 +288,7 @@ void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
   t->callback = callback;
   t->data = data;
   t->pending = false;
+  t->cpu = -1; /* not armed on any CPU yet */
 }
 
 /*
@@ -194,12 +305,25 @@ void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
  * Side effects: sets t->pending = true.
  */
 void timer_add(struct timer *t, uint64_t expires) {
+  /* Defence in depth (TIMER-UAF-01): never link the same node twice.  If the
+   * timer is somehow still queued — a re-arm of a not-yet-fired timer, or a
+   * caller that bypassed timer_pending() — unlink it from its current CPU
+   * FIRST.  A double list_add_tail() (or a timer_setup()/INIT_LIST_HEAD on a
+   * still-linked node) corrupts the per-CPU timer_list and later crashes
+   * kernel_timer_tick() with a double list_del (write to NULL+8 on aarch64,
+   * a clobbered return address -> #GP on amd64).  timer_del() takes the owner
+   * CPU's timer_lock, which we do not hold here, so there is no recursion. */
+  if (t->pending)
+    timer_del(t);
+
+  struct cpu_info *c = get_cpu_info();
   uint64_t flags;
-  spin_lock_irqsave(&timer_lock, &flags);
+  spin_lock_irqsave(&c->timer_lock, &flags);
   t->expires = expires;
   t->pending = true;
-  list_add_tail(&t->list, &timer_list);
-  spin_unlock_irqrestore(&timer_lock, flags);
+  t->cpu = (int)c->cpu_id; /* armed on the current core; fired by its tick */
+  list_add_tail(&t->list, &c->timer_list);
+  spin_unlock_irqrestore(&c->timer_lock, flags);
 }
 
 /*
@@ -213,13 +337,19 @@ void timer_add(struct timer *t, uint64_t expires) {
  * Side effects: sets t->pending = false.
  */
 void timer_del(struct timer *t) {
+  int cpu = t->cpu;
+  if (cpu < 0 || cpu >= MAX_CPUS) {
+    t->pending = false; /* already fired (and cleared by the tick) or never armed */
+    return;
+  }
   uint64_t flags;
-  spin_lock_irqsave(&timer_lock, &flags);
+  spin_lock_irqsave(&cpu_data[cpu].timer_lock, &flags);
   if (t->pending) {
     list_del(&t->list);
     t->pending = false;
+    t->cpu = -1;
   }
-  spin_unlock_irqrestore(&timer_lock, flags);
+  spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
 }
 
 /*

@@ -28,10 +28,11 @@
  *   - PIDs are assigned from next_pid (monotonically increasing, never reused).
  *
  * Known issues:
- *   SCHED-01  (W3 WRONG-DESIGN) schedule() calls compositor_get_focus_pid()
- *             and gives the focused window's process priority access to the
- *             runqueue — the kernel scheduler depends on the graphics
- *             compositor, inverting the correct dependency.
+ *   SCHED-01  (#83 RESOLVED) schedule() no longer calls compositor_get_focus_pid():
+ *             the focus boost reads the scheduler-owned keyboard_focus_pid hint
+ *             directly (the compositor + SYS_SET_FOCUS push updates to it), so the
+ *             kernel scheduler no longer depends on the graphics compositor. The
+ *             deeper "userland focus-policy via capability" remains future work.
  *   SCHED-02  (W2 BAD-IMPL) schedule() is large and intricate; many pc==0
  *             panic guards betray past context-corruption bugs.
  *   SCHED-03  (W2 WRONG-DESIGN, MITIGATED) process_wait() is non-blocking
@@ -141,12 +142,36 @@ DEFINE_SPINLOCK(sched_lock);
 static int rr_cpu = 0;
 
 /* Keyboard Focus Management */
-/* keyboard_focus_pid: PID of the process that currently holds keyboard focus.
- * Written by syscall 232 (SET_FOCUS) from userland; read by schedule() every
- * tick to bias runqueue selection.
- * NOTE(SCHED-01): This global couples the scheduler directly to the graphics
- * compositor; see SCHED-01 for the correct inversion direction. */
+/* keyboard_focus_pid: scheduler-owned focus HINT — which PID keystrokes route to
+ * (keyboard driver) and which the schedule() focus boost favours. Pushed down by
+ * the compositor (window activate/close) and by SYS_SET_FOCUS; the scheduler only
+ * reads it (#83). Mutate ONLY via sched_set_focus_pid() (GFX-COMP-01 #67) so the
+ * scheduler is the single owner and the compositor never writes this global
+ * directly. A single int ⇒ atomic access ⇒ lockless reads (it is a hint). */
 int keyboard_focus_pid = 7; /* Default to Shell PID */
+
+/* sched_set_focus_pid - the ONE mutation point for keyboard_focus_pid.
+ * Callers: compositor (focus change / window teardown) and SYS_SET_FOCUS. */
+void sched_set_focus_pid(int pid) { keyboard_focus_pid = pid; }
+/* sched_get_focus_pid - lockless snapshot of the focus hint. */
+int sched_get_focus_pid(void) { return keyboard_focus_pid; }
+
+/* window_request_close - window-close INTENT seam, owned by the process layer
+ * (GFX-COMP-03 #69). The compositor (graphics) must NOT drive process lifecycle
+ * directly: it calls this instead of process_terminate(), so the compositor no
+ * longer references the process API and there is one place to evolve the policy.
+ * Today it force-terminates to preserve the close-button behaviour. DIR-02
+ * target: deliver a CLOSE event to the window owner for a graceful quit and
+ * force-kill only on timeout, and run the kill OUTSIDE mouse-IRQ context
+ * (the IRQ-time process_terminate is the separate SCHED-03 follow-up). */
+void window_request_close(int pid) { process_terminate(pid); }
+
+/* Bounded focus boost (SCHED-01): the focused process is picked first for snappy
+ * foreground response, but never more than FOCUS_BOOST_MAX times in a row — after
+ * that one fair round-robin pick runs, so a CPU-bound focused process can never
+ * monopolise a core and starve init/shell/everything else. Per-CPU streak. */
+#define FOCUS_BOOST_MAX 4
+static uint32_t sched_focus_streak[MAX_CPUS];
 
 /*
  * __enqueue_task - add a process to its assigned CPU's priority runqueue.
@@ -400,6 +425,8 @@ void process_init(void) {
     }
     cpu_data[c].prio_bitmap = 0;
     spin_lock_init(&cpu_data[c].sched_lock);
+    INIT_LIST_HEAD(&cpu_data[c].timer_list);
+    spin_lock_init(&cpu_data[c].timer_lock);
   }
 }
 
@@ -875,6 +902,11 @@ int process_terminate(int pid) {
     return 0;
   }
 
+  /* Cancel any pending timed-sleep timer (embedded in struct process) so its
+   * callback cannot fire on the victim after it is freed. No-op if not armed.
+   * Lock order holds: global sched_lock > per-CPU timer_lock. */
+  timer_del(&proc->sleep_timer);
+
   /* Drain the incoming IPC queue (the victim will never read it).  Held under
    * msg_lock to serialise against a concurrent pop_message() on the victim's
    * CPU. */
@@ -1030,8 +1062,9 @@ void start_user_process(struct process *proc) {
  *     stack we were standing on.
  *  1. Save current context (regs) and re-enqueue prev if PROC_RUNNING;
  *     idle tasks are never re-enqueued (they are not on any runqueue).
- *  2. Focus boost (SCHED-01): call compositor_get_focus_pid() and search
- *     all priority levels for the focused PID first.
+ *  2. Focus boost (SCHED-01, #83): read the scheduler-owned focus hint
+ *     (keyboard_focus_pid) directly and search all priority levels for that PID
+ *     first — no call into the compositor.
  *  3. O(1) pick: __builtin_ctz(prio_bitmap) finds the lowest-numbered
  *     non-empty priority queue in one instruction; pop the head task.
  *  4. Work stealing: if local runqueue is empty, iterate over other CPUs
@@ -1052,9 +1085,10 @@ void start_user_process(struct process *proc) {
  *          returns with IRQs masked and the dispatcher's IRET/ERET loads the
  *          next context's saved flags.
  *
- * NOTE(SCHED-01): compositor_get_focus_pid() is called on every schedule()
- *          invocation — the kernel scheduler has a compile-time dependency on
- *          the graphics compositor. [W3 WRONG-DESIGN]
+ * SCHED-01 (#83) RESOLVED: the scheduler no longer calls into the compositor.
+ *          The focus boost reads the scheduler-owned keyboard_focus_pid hint
+ *          directly (compositor + SYS_SET_FOCUS push updates to it), removing the
+ *          kernel->compositor dependency and the per-schedule compositor_lock.
  * NOTE(SCHED-02): Many pc==0 panic guards reflect past context-corruption
  *          bugs; the function is large and hard to audit. [W2 BAD-IMPL]
  */
@@ -1117,6 +1151,16 @@ struct pt_regs *schedule(struct pt_regs *regs) {
       }
     }
 
+    /* Cancel any pending per-process timed-sleep timer BEFORE freeing the PCB,
+     * so its callback (proc_sleep_wake) can never fire on freed memory. The
+     * external-kill path already does this in process_terminate(), and a process
+     * with an armed timer is PROC_SLEEPING (so it cannot self-exit) — but this
+     * defensive cancel makes the no-UAF invariant hold on EVERY free path
+     * (self-exit zombie, fault-kill, deferred reap) regardless. No-op if the
+     * timer is not armed; takes the owner CPU's timer_lock (no lock held here,
+     * no inversion). */
+    timer_del(&to_free->sleep_timer);
+
     if (to_free->kernel_stack)
       pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
     if (to_free->page_table)
@@ -1129,16 +1173,30 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   int prev_reaped = 0; /* set when prev is pushed on the reap list below */
   uint64_t flags;
 
+  /* Tier 3 CPU-time accounting (docs/TIMER-MODEL.md §4): charge the raw counter
+   * delta since the last schedule on this CPU to whoever was running (prev),
+   * then mark the start count for the task we are about to pick. A bare counter
+   * read + subtraction — no divide in the hot path; conversion to ns happens
+   * only when the value is read. arch_timer_get_count() is lock-free/IRQ-safe. */
+  {
+    uint64_t now_cnt = arch_timer_get_count();
+    if (prev && cpu_ptr->sched_run_count)
+      prev->cpu_time_counts += now_cnt - cpu_ptr->sched_run_count;
+    cpu_ptr->sched_run_count = now_cnt;
+  }
+
   /* Use local lock for runqueue modifications */
   spin_lock_irqsave(&cpu_ptr->sched_lock, &flags);
 
   /* if (cpu == 0) pr_info("Schedule Core 0\n"); */
-  /* Priority Boosting: identify the focused process from the compositor.
-   * NOTE(SCHED-01): This call creates a kernel scheduler -> compositor
-   * dependency.  The correct design inverts this: a userland policy server
-   * adjusts priority via a capability. [W3 WRONG-DESIGN] */
-  extern int compositor_get_focus_pid(void);
-  int focus_pid = compositor_get_focus_pid();
+  /* Priority Boosting: focus hint.
+   * SCHED-01 (#83) resolved — dependency inverted: the scheduler no longer calls
+   * INTO the compositor. It reads the scheduler-owned focus hint (keyboard_focus_pid,
+   * defined in this file) directly; the compositor and SYS_SET_FOCUS PUSH updates to
+   * it. This also drops compositor_get_focus_pid()'s compositor_lock acquisition from
+   * the schedule() hot path. The read is intentionally lockless: a stale value only
+   * mis-targets one boost for one tick, which is harmless for a priority hint. */
+  int focus_pid = keyboard_focus_pid;
 
     /* 1. Handle Current Process */
     if (prev) {
@@ -1204,7 +1262,7 @@ pick_next:;
 pick_local_retry:
   next = NULL;
 
-  if (focus_pid > 0) {
+  if (focus_pid > 0 && sched_focus_streak[cpu] < FOCUS_BOOST_MAX) {
     for (int p = 0; p < MAX_PRIO; p++) {
       if (list_empty(&cpu_ptr->runqueues[p]))
         continue;
@@ -1220,6 +1278,8 @@ pick_local_retry:
         break;
     }
   }
+  if (next)
+    sched_focus_streak[cpu]++; /* honored the focus boost this pick */
 
   if (!next && cpu_ptr->prio_bitmap != 0) {
     /* O(1) pick: __builtin_ctz finds the index of the lowest set bit, which
@@ -1231,6 +1291,7 @@ pick_local_retry:
       struct list_head *entry = cpu_ptr->runqueues[best_prio].next;
       next = container_of(entry, struct process, run_list);
       __dequeue_task(next);
+      sched_focus_streak[cpu] = 0; /* fair pick ran → refill the focus budget */
     }
   }
 
@@ -1576,7 +1637,9 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
       strncpy(k_buf[count].name, process_pool[i]->name, 32);
       k_buf[count].state = process_pool[i]->state;
       k_buf[count].priority = process_pool[i]->priority;
-      k_buf[count].cpu_time = 0; /* Placeholder */
+      k_buf[count].cpu_time =
+          timer_counts_to_ns(process_pool[i]->cpu_time_counts) /
+          1000000ULL; /* real CPU time, ms */
       k_buf[count].on_cpu = process_pool[i]->on_cpu;
       count++;
     }

@@ -47,6 +47,8 @@ extern long _sys_spawn_caps(const char *path, int level, unsigned long caps);
 extern int  _sys_kill(int pid);
 extern int  _sys_wait(int pid);
 extern void _sys_yield(void);
+extern void _sys_nanosleep(unsigned long long ns);
+extern long _sys_clock_gettime(int clk);
 extern void _sys_draw(int x, int y, int w, int h, int color);
 extern void _sys_flush(void);
 extern int  _sys_create_window(int x, int y, int w, int h, const char *title);
@@ -95,7 +97,18 @@ int  kill_process(int pid);
 int  wait(int pid);
 void yield(void);
 int utf8_decode(const char *s, uint32_t *code);
-void sleep(int ticks);
+/* OS1_sleep: proprietary BASE-API blocking sleep, in MILLISECONDS (NOT POSIX
+ * seconds). Prefixed OS1_ to keep the NEXS base API distinct from the POSIX/libc
+ * surface built on top of it (usleep/nanosleep in <unistd.h>/<time.h>); the bare
+ * name `sleep` is reserved for a future real POSIX sleep(unsigned seconds). */
+void OS1_sleep(int ms);
+
+/* Tier 3 time primitives (docs/TIMER-MODEL.md §4). os1.h is the proprietary
+ * base API; POSIX clock_gettime() (<time.h>) is built on top of these.
+ *   os1_mono_ns(): monotonic nanoseconds since boot (real-time, both arches).
+ *   os1_cpu_ns():  this process's consumed CPU time in real nanoseconds. */
+unsigned long long os1_mono_ns(void);
+unsigned long long os1_cpu_ns(void);
 
 void *sbrk(intptr_t increment);
 void *malloc(size_t size);

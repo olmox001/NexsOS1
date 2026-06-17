@@ -99,6 +99,13 @@
      PTE_AF | PTE_AP_EL0_RW | PTE_PXN)
 /* PAGE_USER_DATA: user RW data (stack/heap) — never executable (W^X). */
 #define PAGE_USER_DATA (PAGE_USER | PTE_UXN)
+/* PAGE_USER_RX: user read-only + EL0-executable (ELF text). PXN keeps it
+ * non-executable at EL1 — the kernel must never execute a user page. */
+#define PAGE_USER_RX \
+    (PTE_VALID | PTE_PAGE | PTE_ATTR_INDX(PTE_ATTR_NORMAL) | PTE_INNER_SHARE | \
+     PTE_AF | PTE_AP_EL0_RO | PTE_PXN)
+/* PAGE_USER_RO: user read-only data (ELF rodata) — never executable (W^X). */
+#define PAGE_USER_RO (PAGE_USER_RX | PTE_UXN)
 
 #elif defined(ARCH_AMD64)
 /* --- AMD64 Page Table Entry (PTE) Flags --- */
@@ -138,6 +145,10 @@
 #define PAGE_USER        (PTE_VALID | PTE_RW | PTE_USER)
 /* PAGE_USER_DATA: user RW data (stack/heap) — never executable (W^X). */
 #define PAGE_USER_DATA   (PAGE_USER | PTE_NX)
+/* PAGE_USER_RX: user read-only + executable (ELF text). */
+#define PAGE_USER_RX     (PTE_VALID | PTE_USER)
+/* PAGE_USER_RO: user read-only data (ELF rodata) — never executable (W^X). */
+#define PAGE_USER_RO     (PTE_VALID | PTE_USER | PTE_NX)
 
 #endif
 

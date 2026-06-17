@@ -161,6 +161,7 @@ struct usb_device {
     uint8_t  hid_interval;
     uint8_t  hid_protocol;    /* HID_PROTOCOL_KEYBOARD / _MOUSE (boot) */
     int      hid_use_report;  /* 1 = report-protocol HID (non-boot, e.g. tablet) */
+    int      hid_report_len;  /* report-descriptor length (HID desc wDescriptorLength) */
     /* Absolute pointer, parsed from the HID report descriptor (USB tablet). */
     int      hid_is_abs;      /* 1 = reports absolute X/Y */
     uint16_t hid_abs_x_off;   /* bit offset of X within the input report */

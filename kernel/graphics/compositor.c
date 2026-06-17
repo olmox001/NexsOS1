@@ -24,6 +24,137 @@
 
 #define MAX_WINDOWS 32
 
+/* Desktop */
+/* ========================================================================= */
+/* Desktop background                                                        */
+/* ========================================================================= */
+
+#define COLOR_BG_TOP 0xFFF2F2F7
+#define COLOR_BG_BOTTOM 0xFFECEFF1
+
+/* ========================================================================= */
+/* Window                                                                    */
+/* ========================================================================= */
+
+#define COLOR_WIN_BG 0xFFFCFCFD
+
+/* ========================================================================= */
+/* Title bar                                                                 */
+/* ========================================================================= */
+
+#define COLOR_TITLE_ACTIVE 0xFFEFEFF4
+#define COLOR_TITLE_INACTIVE 0xFFE5E5EA
+
+#define COLOR_TITLE_TEXT_ACTIVE 0xFF000000
+#define COLOR_TITLE_TEXT_INACTIVE 0xFF8E8E93
+
+/* macOS close button */
+#define COLOR_CLOSE_BTN 0xFFFF5F57
+
+/* ========================================================================= */
+/* Text                                                                       */
+/* ========================================================================= */
+
+#define COLOR_FG 0xFF212121
+#define COLOR_FG_SECONDARY 0xFF757575
+#define COLOR_FG_DISABLED 0xFFBDBDBD
+
+/* ========================================================================= */
+/* Caret / selection                                                          */
+/* ========================================================================= */
+
+#define COLOR_CARET 0x40007AFF
+#define COLOR_SELECTION 0x40007AFF
+#define COLOR_SELECTION_ACTIVE 0xFF007AFF
+
+/* ========================================================================= */
+/* Borders                                                                    */
+/* ========================================================================= */
+
+#define COLOR_BORDER 0xFFD1D1D6
+#define COLOR_BORDER_LIGHT 0xFFE5E5EA
+#define COLOR_BORDER_DARK 0xFFC7C7CC
+
+/* ========================================================================= */
+/* Buttons                                                                    */
+/* ========================================================================= */
+
+#define COLOR_BUTTON_BG 0xFFFFFFFF
+#define COLOR_BUTTON_HOVER 0xFFF5F5F5
+#define COLOR_BUTTON_PRESSED 0xFFE0E0E0
+
+#define COLOR_BUTTON_TEXT 0xFF000000
+#define COLOR_BUTTON_DISABLED 0xFFFAFAFA
+
+/* ========================================================================= */
+/* Input fields                                                               */
+/* ========================================================================= */
+
+#define COLOR_INPUT_BG 0xFFFFFFFF
+#define COLOR_INPUT_BORDER 0xFFD1D1D6
+#define COLOR_INPUT_BORDER_ACTIVE 0xFF007AFF
+
+/* ========================================================================= */
+/* Menus */
+/* ========================================================================= */
+
+#define COLOR_MENU_BG 0xFFFFFFFF
+#define COLOR_MENU_HOVER 0xFFF5F5F5
+#define COLOR_MENU_SELECTED 0xFFE3F2FD
+
+/* ========================================================================= */
+/* Scrollbars */
+/* ========================================================================= */
+
+#define COLOR_SCROLL_TRACK 0xFFF2F2F7
+#define COLOR_SCROLL_THUMB 0xFFC7C7CC
+#define COLOR_SCROLL_THUMB_HOVER 0xFF8E8E93
+
+/* ========================================================================= */
+/* Tooltip */
+/* ========================================================================= */
+
+#define COLOR_TOOLTIP_BG 0xFF212121
+#define COLOR_TOOLTIP_TEXT 0xFFFFFFFF
+
+/* ========================================================================= */
+/* Shadows */
+/* ========================================================================= */
+
+#define COLOR_SHADOW 0x20000000
+#define COLOR_SHADOW_STRONG 0x40000000
+
+/* ========================================================================= */
+/* Status colors */
+/* ========================================================================= */
+
+#define COLOR_SUCCESS 0xFF34C759
+#define COLOR_WARNING 0xFFFF9500
+#define COLOR_ERROR 0xFFFF3B30
+#define COLOR_INFO 0xFF007AFF
+
+/* ========================================================================= */
+/* Terminal colors */
+/* ========================================================================= */
+
+#define COLOR_TERM_BLACK 0xFF1C1C1E
+#define COLOR_TERM_RED 0xFFFF3B30
+#define COLOR_TERM_GREEN 0xFF34C759
+#define COLOR_TERM_YELLOW 0xFFFFCC00
+#define COLOR_TERM_BLUE 0xFF007AFF
+#define COLOR_TERM_MAGENTA 0xFFAF52DE
+#define COLOR_TERM_CYAN 0xFF5AC8FA
+#define COLOR_TERM_WHITE 0xFFF2F2F7
+
+#define COLOR_TERM_BRIGHT_BLACK 0xFF8E8E93
+#define COLOR_TERM_BRIGHT_RED 0xFFFF6961
+#define COLOR_TERM_BRIGHT_GREEN 0xFF30D158
+#define COLOR_TERM_BRIGHT_YELLOW 0xFFFFD60A
+#define COLOR_TERM_BRIGHT_BLUE 0xFF409CFF
+#define COLOR_TERM_BRIGHT_MAGENTA 0xFFBF5AF2
+#define COLOR_TERM_BRIGHT_CYAN 0xFF64D2FF
+#define COLOR_TERM_BRIGHT_WHITE 0xFFFFFFFF
+
 struct window {
   int id;
   int x, y;
@@ -33,18 +164,22 @@ struct window {
   int pid;
   int protected;          /* If true, cannot be closed */
   int top_most;           /* If true, always on top and no decorations */
+  int passive;            /* If true, click-through: never focused, never hit-tested
+                             for input (system popups e.g. notifications). */
   uint32_t *buffer;       /* Window's pixel buffer */
   uint32_t bg_color;      /* Default background color */
   uint32_t curr_bg_color; /* Current ANSI background color */
   char title[64];
+  int radius;
+  int has_rounded_corners;
 
   /* Terminal State */
   int cursor_x, cursor_y;
-  int cursor_visible;  /* VT100 DECTCEM (\x1b[?25h/l); 1 = draw the caret */
+  int cursor_visible;     /* VT100 DECTCEM (\x1b[?25h/l); 1 = draw the caret */
   int caret_px, caret_py; /* cell where the caret was last painted */
   int caret_shown;        /* 1 = a caret is currently baked at caret_px/py */
-  uint8_t *text_grid;  /* Character grid */
-  uint32_t *attr_grid; /* Attribute grid (colors) */
+  uint8_t *text_grid;     /* Character grid */
+  uint32_t *attr_grid;    /* Attribute grid (colors) */
   int grid_cols, grid_rows;
   uint32_t fg_color;
   int escape_state;
@@ -175,6 +310,31 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     return -1;
   }
 
+  /*
+   * FIX(GFX-COMP-NEWWIN-01): clamp the initial position so a newly created
+   * window (including its title bar / close button) lands fully on-screen.
+   * compositor_update_mouse() already enforces these same bounds while
+   * dragging a window; without this check here, a window created near a
+   * screen edge (or larger than the screen) would have its title bar and
+   * close button off-screen until the user dragged it at least once.
+   * Mirrors the clamp order used in compositor_update_mouse().
+   */
+  {
+    struct gpu_device *screen_dev = gpu_get_primary();
+    int screen_w = screen_dev ? screen_dev->width : 800;
+    int screen_h = screen_dev ? screen_dev->height : 600;
+
+    if (x + w > screen_w)
+      x = screen_w - w;
+    if (x < 0)
+      x = 0;
+
+    if (y + h > screen_h)
+      y = screen_h - h;
+    if (y < TITLE_BAR_HEIGHT)
+      y = TITLE_BAR_HEIGHT;
+  }
+
   /* Allocate window buffer */
   size_t buffer_size = w * h * sizeof(uint32_t);
   uint32_t *buffer = (uint32_t *)kmalloc(buffer_size);
@@ -184,7 +344,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     return -1;
   }
   /* Initialize clear background - use a consistent dark theme */
-  uint32_t default_bg = 0xFF1a1a2e;
+  uint32_t default_bg = COLOR_WIN_BG;
   for (int i = 0; i < w * h; i++)
     buffer[i] = default_bg;
 
@@ -212,7 +372,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   if (windows[slot].text_grid && windows[slot].attr_grid) {
     memset(windows[slot].text_grid, ' ', grid_size);
     for (size_t i = 0; i < grid_size; i++)
-      windows[slot].attr_grid[i] = 0xFFFFFFFF;
+      windows[slot].attr_grid[i] = COLOR_FG;
   } else {
     /* Handle failure of grid allocation */
     if (windows[slot].text_grid)
@@ -239,7 +399,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   windows[slot].caret_shown = 0;
   windows[slot].caret_px = 0;
   windows[slot].caret_py = 0;
-  windows[slot].fg_color = 0xFFFFFFFF;
+  windows[slot].fg_color = COLOR_FG;
   windows[slot].escape_state = 0;
   windows[slot].escape_len = 0;
 
@@ -254,6 +414,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   /* Mark main shell (PID 2) as protected */
   windows[slot].protected = (pid == 2) ? 1 : 0;
   windows[slot].top_most = 0;
+  windows[slot].passive = 0;
 
   window_count++;
 
@@ -283,12 +444,14 @@ static void __focus_topmost_locked(void) {
   int max_z = -1;
   int pid = 7; /* shell default when no window remains */
   for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id != 0 && windows[i].visible && windows[i].z_order > max_z) {
+    if (windows[i].id != 0 && windows[i].visible &&
+        windows[i].z_order > max_z) {
       max_z = windows[i].z_order;
       pid = windows[i].pid;
     }
   }
-  keyboard_focus_pid = pid;
+  sched_set_focus_pid(pid); /* push the focus hint down (#67); never write the
+                               scheduler's global directly */
   __clear_other_carets_locked(pid);
   pr_debug("Compositor: Focus reset to PID %d\n", pid);
 }
@@ -495,7 +658,7 @@ static inline uint32_t blend_pixel(uint32_t fg, uint32_t bg) {
  */
 static void handle_sgr(struct window *win) {
   if (win->escape_len == 0) {
-    win->fg_color = 0xFFFFFFFF;
+    win->fg_color = COLOR_FG;
     return;
   }
 
@@ -507,10 +670,10 @@ static void handle_sgr(struct window *win) {
   }
 
   if (val == 0) {
-    win->fg_color = 0xFFFFFFFF;
+    win->fg_color = COLOR_FG;
     win->curr_bg_color = win->bg_color;
   } else if (val == 39) {
-    win->fg_color = 0xFFFFFFFF; /* default foreground */
+    win->fg_color = COLOR_FG; /* default foreground */
   } else if (val == 49) {
     win->curr_bg_color = win->bg_color; /* default background */
   } else if (val >= 30 && val <= 37) {
@@ -568,8 +731,8 @@ static void term_clear_cell(int win_id, struct window *win, int cx, int cy,
 
 /* Erase a previously painted caret by repainting its cell from the text/attr
  * grid (background + glyph).  Idempotent; clears caret_shown.  This is what
- * prevents stray green blocks after the cursor moves (newline/scroll): the old
- * caret cell is always restored before a new one is drawn. */
+ * prevents stray cursor blocks after the cursor moves (newline/scroll): the
+ * old caret cell is always restored before a new one is drawn. */
 static void term_erase_caret(int win_id, struct window *win,
                              struct gl_surface *surf, int char_w, int char_h) {
   if (!win->caret_shown)
@@ -588,11 +751,12 @@ static void term_erase_caret(int win_id, struct window *win,
   }
 }
 
-/* Draw the text caret as a 25%-transparent green block (shell accent 0x00FF88)
- * at the cursor cell, blended over the cell so the glyph stays readable.  Only
+/* Draw the text caret as a 25%-transparent systemBlue block (COLOR_CARET) at
+ * the cursor cell, blended over the cell so the glyph stays readable.  Only
  * the window that owns keyboard focus — i.e. the one the user is typing into —
  * gets a caret; a notification or a print-only window never shows one.  The
- * previous caret (this window's) is erased first so movement leaves no trail. */
+ * previous caret (this window's) is erased first so movement leaves no trail.
+ */
 static void term_draw_cursor(int win_id, struct window *win,
                              struct gl_surface *surf, int char_w, int char_h) {
   extern int keyboard_focus_pid;
@@ -605,7 +769,7 @@ static void term_draw_cursor(int win_id, struct window *win,
   if (cx < 0 || cy < 0 || cx >= win->grid_cols || cy >= win->grid_rows)
     return;
 
-  const uint32_t caret = 0x4000FF88; /* ARGB: 25% alpha (25% opaque), shell green */
+  const uint32_t caret = COLOR_CARET; /* ARGB: 25% alpha, systemBlue */
   int px0 = cx * char_w, py0 = cy * char_h;
   for (int y = 0; y < char_h; y++) {
     int sy = py0 + y;
@@ -793,7 +957,7 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
             int last_row_start = win->grid_cols * (win->grid_rows - 1);
             memset(win->text_grid + last_row_start, ' ', win->grid_cols);
             for (int p = 0; p < win->grid_cols; p++)
-              win->attr_grid[last_row_start + p] = 0xFFFFFFFF;
+              win->attr_grid[last_row_start + p] = COLOR_FG;
           }
           win->cursor_y = rows - 1;
         }
@@ -809,6 +973,7 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
 
         gl_draw_char(&win_surf, win->cursor_x * char_w, win->cursor_y * char_h,
                      c, win->fg_color);
+
         /* Update grids for persistence */
         if (win->text_grid && win->attr_grid) {
           int idx = win->cursor_y * win->grid_cols + win->cursor_x;
@@ -874,7 +1039,10 @@ void compositor_handle_click(int button, int state) {
   int max_z = -1;
 
   for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id != 0 && windows[i].visible) {
+    /* Passive windows (system notifications) are click-through: never hit-tested,
+     * so a click on the popup passes to whatever is beneath it and the popup
+     * neither steals focus/caret nor receives an IPC_TYPE_MOUSE event. */
+    if (windows[i].id != 0 && windows[i].visible && !windows[i].passive) {
       int title_top = windows[i].y - TITLE_BAR_HEIGHT;
       if (mouse_x >= windows[i].x &&
           mouse_x < windows[i].x + windows[i].width && mouse_y >= title_top &&
@@ -900,20 +1068,20 @@ void compositor_handle_click(int button, int state) {
   }
   hit->z_order = top_z + 1;
 
-  /* Update keyboard focus to this process */
+  /* Update keyboard focus to this process — push the hint down (#67). */
   if (keyboard_focus_pid != hit->pid) {
     pr_info("Compositor: Focus changed to PID %d (Window '%s')\n", hit->pid,
             hit->title);
-    keyboard_focus_pid = hit->pid;
+    sched_set_focus_pid(hit->pid);
   }
 
   /*
    * FIX(GFX-COMP-03): never call kernel_ipc_send() or process_terminate() while
-   * holding compositor_lock.  compositor_handle_click runs in mouse-IRQ context;
-   * kernel_ipc_send() takes sched_lock, and process_terminate() takes sched_lock
-   * then re-enters the compositor (compositor_destroy_windows_by_pid ->
-   * compositor_lock).  Holding compositor_lock across either is the reverse of
-   * process_terminate's own sched_lock->compositor_lock order — an SMP AB-BA
+   * holding compositor_lock.  compositor_handle_click runs in mouse-IRQ
+   * context; kernel_ipc_send() takes sched_lock, and process_terminate() takes
+   * sched_lock then re-enters the compositor (compositor_destroy_windows_by_pid
+   * -> compositor_lock).  Holding compositor_lock across either is the reverse
+   * of process_terminate's own sched_lock->compositor_lock order — an SMP AB-BA
    * deadlock against a concurrent kill on another CPU (the observed "freeze on
    * window-close/kill").  So we capture the work into locals under the lock and
    * perform it AFTER the single unlock below.
@@ -935,7 +1103,8 @@ void compositor_handle_click(int button, int state) {
     send_pid = keyboard_focus_pid;
   }
 
-  /* Capture a close-button hit; the terminate is deferred until after unlock. */
+  /* Capture a close-button hit; the terminate is deferred until after unlock.
+   */
   int do_close = 0;
   int close_pid = 0;
   if (!hit->protected) {
@@ -948,7 +1117,8 @@ void compositor_handle_click(int button, int state) {
     }
   }
 
-  /* Check for drag start (skipped when closing, matching the old early-return). */
+  /* Check for drag start (skipped when closing, matching the old early-return).
+   */
   if (!do_close && mouse_y >= hit->y - TITLE_BAR_HEIGHT && mouse_y < hit->y) {
     dragging_window_id = hit->id;
     drag_off_x = mouse_x - hit->x;
@@ -960,19 +1130,21 @@ void compositor_handle_click(int button, int state) {
   spin_unlock_irqrestore(&compositor_lock, flags);
 
   /*
-   * Cross-subsystem calls, now strictly OUTSIDE compositor_lock (FIX(GFX-COMP-03)).
-   * Both validate their target pid internally, so a window/process that changed
-   * between the unlock and here is handled gracefully (returns an error).
-   * NOTE: process_terminate still runs in mouse-IRQ context — this removes the
-   * freeze, but the zombie/no-reap behaviour for an IRQ-time kill is a separate
-   * follow-up (process_terminate must not run from IRQ; see SCHED-03).
-   */
+   * Cross-subsystem calls, now strictly OUTSIDE compositor_lock
+   * (FIX(GFX-COMP-03)). Both validate their target pid internally, so a
+   * window/process that changed between the unlock and here is handled
+   * gracefully. Input delivery uses the same kernel_ipc_send transport the
+   * keyboard driver uses. Window close goes through the process-layer intent
+   * seam window_request_close() (#69) — the compositor no longer references
+   * process_terminate, so graphics does not drive process lifecycle directly.
+   * NOTE: the close still force-terminates in mouse-IRQ context; deferring it to
+   * a safe context is the separate SCHED-03 follow-up, now localised behind the
+   * seam. */
   if (send_pid > 0)
     kernel_ipc_send(send_pid, &msg);
   if (do_close) {
-    pr_info("Compositor: Close button -> terminate PID %d\n", close_pid);
-    extern int process_terminate(int pid);
-    process_terminate(close_pid);
+    pr_info("Compositor: Close button -> request close of PID %d\n", close_pid);
+    window_request_close(close_pid);
   }
 }
 
@@ -993,11 +1165,11 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
   int old_mx = mouse_x, old_my = mouse_y;
 
   if (absolute) {
-    /* Absolute pointer: events carry one axis at a time, so a negative component
-     * means "leave this axis unchanged". Values are normalized to
-     * [0, INPUT_ABS_MAX]; scale to framebuffer pixels. This is what makes the
-     * cursor track 1:1 under absolute hosts like UTM (DRV-INPUT-01 #125), instead
-     * of a relative device saturating at a screen edge. */
+    /* Absolute pointer: events carry one axis at a time, so a negative
+     * component means "leave this axis unchanged". Values are normalized to [0,
+     * INPUT_ABS_MAX]; scale to framebuffer pixels. This is what makes the
+     * cursor track 1:1 under absolute hosts like UTM (DRV-INPUT-01 #125),
+     * instead of a relative device saturating at a screen edge. */
     if (dx >= 0)
       mouse_x = (int)(((long)dx * (width - 1)) / INPUT_ABS_MAX);
     if (dy >= 0)
@@ -1180,7 +1352,8 @@ static void compositor_render_internal(void) {
       region_subtract(bg_region, or->x, or->y, or->w, or->h);
     }
 
-    /* Draw Background */
+    /* Draw Background — gradiente verticale macOS-style, calcolato una volta
+     * per riga (COLOR_BG_TOP -> COLOR_BG_BOTTOM) invece che per pixel. */
     for (int r = 0; r < bg_region->count; r++) {
       struct rect *bg = &bg_region->rects[r];
       for (int y = 0; y < bg->h; y++) {
@@ -1203,7 +1376,8 @@ static void compositor_render_internal(void) {
     region_destroy(bg_region);
   }
   region_destroy(occluded);
-  occluded = NULL; /* prevent double-free: cleanup at end of function also calls region_destroy(occluded) */
+  occluded = NULL; /* prevent double-free: cleanup at end of function also calls
+                      region_destroy(occluded) */
 
   /* Pass 2: Rendering (Bottom-Up) - Painter's Algorithm with Clipping */
   for (int i = 0; i < count && i < MAX_WINDOWS; i++) {
@@ -1231,17 +1405,28 @@ static void compositor_render_internal(void) {
             if (screen_y < content_y) {
               /* Decoration Area (Title Bar) */
               if (screen_y >= decor_y) {
-                /* In Title Bar */
-                /* Check for Close Button */
-                int btn_start_x = win->x + win->width - CLOSE_BUTTON_SIZE - 2;
-                if (screen_x >= btn_start_x &&
-                    screen_x < btn_start_x + CLOSE_BUTTON_SIZE &&
-                    screen_y >= decor_y + 2 &&
-                    screen_y < decor_y + 2 + CLOSE_BUTTON_SIZE) {
-                  backbuffer[screen_idx] = 0xFFCC4444; /* Red Button */
-                } else {
-                  backbuffer[screen_idx] = 0xFF18181B; /* Dark Title Bar */
+                /* In Title Bar — macOS-style: la finestra a fuoco ha una
+                 * title bar piu' chiara, le altre restano piu' scure. */
+                uint32_t title_color = (win->pid == keyboard_focus_pid)
+                                           ? COLOR_TITLE_ACTIVE
+                                           : COLOR_TITLE_INACTIVE;
+
+                /* Close button: cerchio pieno rosso (stile traffic light
+                 * macOS), disegnato solo se la finestra non e' protetta —
+                 * coerente con compositor_handle_click che ignora il
+                 * bottone su hit->protected. */
+                if (!win->protected) {
+                  int btn_cx = win->x + win->width - 2 - CLOSE_BUTTON_SIZE / 2;
+                  int btn_cy = decor_y + 2 + CLOSE_BUTTON_SIZE / 2;
+                  int ddx = screen_x - btn_cx;
+                  int ddy = screen_y - btn_cy;
+                  int radius = CLOSE_BUTTON_SIZE / 2 - 1;
+                  if (ddx * ddx + ddy * ddy <= radius * radius) {
+                    title_color = COLOR_CLOSE_BTN;
+                  }
                 }
+
+                backbuffer[screen_idx] = title_color;
               }
             } else {
               /* Content Area */
@@ -1280,9 +1465,16 @@ static void compositor_render_internal(void) {
       int char_h = graphics_font_height();
       int text_w = graphics_string_width(win->title);
       int start_x = win->x + (win->width - text_w) / 2;
-      int start_y = decor_y + (20 - char_h) / 2; /* Center vertically in title bar */
+      int start_y =
+          decor_y + (20 - char_h) / 2; /* Center vertically in title bar */
 
-      gl_draw_string(&screen, start_x, start_y, win->title, 0xFFFFFFFF);
+      /* macOS-style: il titolo della finestra a fuoco e' piu' luminoso,
+       * quello delle finestre inattive e' attenuato (systemGray). */
+      uint32_t text_color = (win->pid == keyboard_focus_pid)
+                                ? COLOR_TITLE_TEXT_ACTIVE
+                                : COLOR_TITLE_TEXT_INACTIVE;
+
+      gl_draw_string(&screen, start_x, start_y, win->title, text_color);
     }
   }
 
@@ -1511,6 +1703,7 @@ void compositor_set_window_flags(int window_id, int flags_val) {
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
       windows[i].top_most = (flags_val & 1) ? 1 : 0;
+      windows[i].passive = (flags_val & 8) ? 1 : 0; /* bit 3: click-through */
       if (flags_val & 4)
         windows[i].visible = 0; /* bit 2: hide window */
       else if (flags_val & 2)

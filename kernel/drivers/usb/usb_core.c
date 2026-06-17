@@ -72,6 +72,11 @@ static int usb_parse_hid(struct usb_device *dev, const uint8_t *cfg, int len) {
                            (id->bInterfaceProtocol == HID_PROTOCOL_KEYBOARD ||
                             id->bInterfaceProtocol == HID_PROTOCOL_MOUSE));
             cur_proto = id->bInterfaceProtocol;
+        } else if (btype == USB_DT_HID && cur_is_hid && blen >= 9) {
+            /* HID descriptor: capture the report-descriptor length so we request
+             * exactly that many bytes — UHCI's control path can't tolerate an
+             * over-sized IN request that the device ends with a short packet. */
+            dev->hid_report_len = cfg[i + 7] | (cfg[i + 8] << 8);
         } else if (btype == USB_DT_ENDPOINT && cur_is_hid && dev->hid_iface < 0 &&
                    blen >= sizeof(struct usb_endpoint_descriptor)) {
             const struct usb_endpoint_descriptor *ed =
@@ -224,9 +229,11 @@ static void usb_setup_device(struct usb_device *dev) {
          * descriptor to locate absolute X/Y, then run it in report protocol. */
         uint8_t rd[256];
         memset(rd, 0, sizeof(rd));
+        int want = dev->hid_report_len;
+        if (want <= 0 || want > (int)sizeof(rd)) want = sizeof(rd);
         int rl = usb_control(dev, USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_INTERFACE,
                              USB_REQ_GET_DESCRIPTOR, (USB_DT_HID_REPORT << 8),
-                             dev->hid_iface, rd, sizeof(rd));
+                             dev->hid_iface, rd, want);
         if (rl > 0)
             usb_hid_parse_report_desc(dev, rd, rl);
         usb_control(dev, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
@@ -341,8 +348,22 @@ void usb_register_hcd(struct usb_hcd *hcd) {
     int nports = hcd->ops->num_ports ? hcd->ops->num_ports(hcd) : 0;
     pr_info("USB: %s registered, %d root ports\n", hcd->name, nports);
 
+    /* Let the root ports settle before this one-shot scan: some emulated
+     * controllers (notably under UTM/HVF) raise the connect bit a little after
+     * the controller is started, so an immediate scan misses a present device.
+     * Runtime hotplug / re-scan is Fase 2. */
+    for (volatile long s = 0; s < 3000000L; s++) { }
+
     for (int port = 0; port < nports; port++) {
-        if (hcd->ops->port_connected && !hcd->ops->port_connected(hcd, port))
+        /* Poll the connect bit a few times (bounded) before giving up. */
+        int conn = !hcd->ops->port_connected;
+        for (int t = 0; t < 8 && !conn; t++) {
+            conn = hcd->ops->port_connected(hcd, port);
+            if (!conn)
+                for (volatile long s = 0; s < 500000L; s++) { }
+        }
+        pr_info("USB: %s port %d connected=%d\n", hcd->name, port, conn);
+        if (!conn)
             continue;
         struct usb_device *dev = usb_alloc_device();
         if (!dev) {

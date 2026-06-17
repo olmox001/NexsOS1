@@ -1,6 +1,6 @@
 # OS1 / NEXS
 
-### A from-scratch graphical microkernel operating system supporting both AArch64 and x86-64, with SMP, VirtIO devices, Ext4, composited windows, ELF user-space processes and multiple interactive applications.
+### Multi-architecture open-source hybrid-kernel operating system
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE.md)
 [![Arch](https://img.shields.io/badge/arch-aarch64%20%7C%20amd64-green.svg)](#)
@@ -15,7 +15,7 @@ an interactive **TTY shell**.
 > **Honesty note.** This README describes the *verified* state. For the complete,
 > evidence-based picture — including bugs, gaps, and severity — see
 > [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going*
-> (a seL4-style, Plan 9-inspired microkernel), see
+> (a seL4-style, Plan 9-inspired HybridKernel MicroKernel ispired), see
 > [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is **GPL v2** (see
 > [`LICENSE.md`](LICENSE.md)); earlier docs mislabeled it MIT.
 
@@ -42,7 +42,7 @@ an interactive **TTY shell**.
 \* The amd64 `-kernel` path now parses the real PVH memory map (the old "1 GB fallback"
 is fixed). One accounting defect remains: total RAM is derived from the highest region
 end address, so the 3–4 GB PCI hole is counted (and treated) as RAM — see the epic
-[#94 (amd64 boot parity)](https://github.com/olmox001/os1test-dev/issues/94).
+[#94 (amd64 boot parity)](https://github.com/olmox001/NexsOS1/issues/94).
 **AArch64 is the reference "correct" platform.**
 
 ---
@@ -93,7 +93,7 @@ end address, so the 3–4 GB PCI hole is counted (and treated) as RAM — see th
 - ✅ Doom running as a user-space process
 - ✅ 3D rendering demo
 - ✅ Recoverable fault handling (user faults isolated, symbolized backtraces)
-- ✅ Microkernel architecture
+- ✅ HybridKernel MicroKernel ispired architecture
 
 ## Verified Runtime
 
@@ -188,7 +188,7 @@ docs/                        # review/ (this audit), PROJECT_CHARTER.md, report/
   seL4/Plan 9 target architecture.
 - **Issues** — the actionable (W3+) findings are tracked as GitHub issues (labels
   `code-review`, `w3`/`w4`/`w5`, `area:*`); see the
-  [tracking epic #19](https://github.com/olmox001/os1test-dev/issues/19).
+  [tracking epic #19](https://github.com/olmox001/NexsOS1/issues/19).
 
 ## Roadmap (foundations, dependency-ordered)
 

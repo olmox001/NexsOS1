@@ -13,7 +13,7 @@ All work is on branch **`comprehensive-review`** (pushed to `origin`).
 - `docs/MANUAL.md` — build/run, boot flow, memory model, syscall ABI, how-to-extend.
 - `docs/review/analysis/01..09-*.md` — per-subsystem deep analysis (every finding cites file:line).
 - `docs/review/TAXONOMY.md` — severity/kind scheme used everywhere.
-- GitHub issues (`olmox001/os1test-dev`): label `code-review` = 72 per-finding issues + 5 epics
+- GitHub issues (`olmox001/NexsOS1`): label `code-review` = 72 per-finding issues + 5 epics
   + tracking #19. Each issue has file:line + a fix direction.
 
 ## 1. Current state (all committed + pushed)

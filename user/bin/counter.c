@@ -36,7 +36,7 @@
  *      indicator cycling every 100 increments.
  *   3. Calls flush() (-> SYS_FLUSH/#201) to push the update to the display.
  *   4. Every 256 iterations prints the counter to UART for serial monitoring.
- *   5. Sleeps 10 jiffies (~100ms at 100Hz) between frames.
+ *   5. Sleeps ~100ms (real milliseconds) between frames.
  *
  * Returns 1 if window creation fails; never returns otherwise.
  */
@@ -54,7 +54,7 @@ int main(void) {
   int i = 0;
   while (1) {
     /* Draw Background */
-    window_draw(win, 0, 0, 200, 100, 0xFF222222);
+    window_draw(win, 0, 0, 200, 100, 0xFFFCFCFD);
 
     /* Draw Count */
     /* Crude digit drawing or assume window_draw handles text? No, it's just
@@ -81,8 +81,8 @@ int main(void) {
     }
     i++;
 
-    /* Sleep ~100ms between frames (10 jiffies at the 100Hz system timer). */
-    sleep(10);
+    /* Sleep ~100ms between frames (OS1_sleep() now takes milliseconds). */
+    OS1_sleep(100);
   }
 
   return 0;

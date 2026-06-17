@@ -38,13 +38,13 @@ int main(void) {
                 0xFF00AA00); /* Green background on success */
     flush();
 
-    // Keep window open for a bit
-    sleep(200);
+    // Keep window open for a bit (~2s; OS1_sleep() is now milliseconds)
+    OS1_sleep(2000);
   } else {
     printf("[IPC Recv] Receive failed.\n");
     window_draw(win, 0, 0, 300, 100, 0xFFAA0000); /* Red on failure */
     flush();
-    sleep(100);
+    OS1_sleep(1000); /* ~1s; OS1_sleep() is now milliseconds */
   }
 
   return 0;

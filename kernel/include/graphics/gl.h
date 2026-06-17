@@ -14,6 +14,7 @@ struct gl_surface {
   int height;
   int stride; /* in pixels, usually width */
   uint32_t *buffer;
+  uint8_t *alpha_mask;
 };
 
 /* Primitives */

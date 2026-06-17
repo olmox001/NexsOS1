@@ -355,6 +355,10 @@ int main(void) {
      * numerici */
     angle_x = (angle_x + 1) % 360;
     angle_y = (angle_y + 2) % 360;
+
+    /* Frame pacing ~60 FPS via il timer reale (sleep bloccante in ms): senza
+     * questo il loop di rendering girava a CPU piena. */
+    OS1_sleep(16);
   }
 
   exit(0);
