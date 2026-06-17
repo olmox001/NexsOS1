@@ -415,12 +415,11 @@ rootfs: user
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
 	@# Copy essential WAD files to the root and /bin for engine detection
-	@-cp user/bin/doom/doom.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
-	@-cp user/bin/doom/doom1.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
-	@-cp user/bin/doom/doom2.wad $(BUILD_DIR)/rootfs/ 2>/dev/null || true
-	@-cp user/bin/doom/doom.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/bin/doom/doom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/bin/doom/doom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doom/freedoom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doom/doomsav0.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doom/doomsav1.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/doom/doomsav2.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/sys/bin/fontman/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
 	@-cp user/sys/bin/fontman/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true

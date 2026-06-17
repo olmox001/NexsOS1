@@ -277,11 +277,16 @@ void graphics_blit(int win_id, int x, int y, int w, int h,
                    const uint32_t *buffer);
 
 /**
- * Draw text in a window using stb_easy_font.
+ * Draw text in a window using the default OS1 UI font.
  * Returns the number of pixels wide the text was.
  */
 int graphics_draw_text(int win_id, int x, int y, const char *text,
                        uint32_t color);
+
+/**
+ * Measure text using the default OS1 UI font.
+ */
+int graphics_text_width(const char *text);
 
 /**
  * Load an image from file using stb_image.

@@ -13,12 +13,9 @@
  * (raw_data) allocated by font_load().
  *
  * Rendering path (draw_glyph):
- *   For each pixel in the glyph bitmap, if alpha > 128 a single 1x1 rectangle
- *   is drawn via window_draw() (SYS_WINDOW_DRAW, syscall #211).  This is
- *   O(width * height) syscalls per glyph — very slow for any real text
- *   workload.  The comment in draw_glyph acknowledges this; the fix is to
- *   composite into a local ARGB framebuffer and blit the whole glyph with one
- *   window_blit() call.
+ *   Each glyph row is converted into horizontal opaque spans and each span is
+ *   drawn with one window_draw() call. This preserves transparent backgrounds
+ *   while avoiding the old one-syscall-per-lit-pixel path.
  *
  * UTF-8 iteration (font_draw_string, font_string_width):
  *   Calls utf8_decode() (lib.c) per character; advances by the byte count
@@ -33,6 +30,42 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+
+static int add_overflows_size(size_t a, size_t b) {
+    return a > ((size_t)-1) - b;
+}
+
+static int mul_overflows_size(size_t a, size_t b) {
+    return b != 0 && a > ((size_t)-1) / b;
+}
+
+static int font_validate_buffer(const void *data, size_t size) {
+    if (!data || size < sizeof(struct font_header)) return 0;
+
+    const struct font_header *h = (const struct font_header *)data;
+    if (h->magic != FONT_MAGIC) return 0;
+    if (h->num_chars == 0) return 0;
+    if ((uint32_t)h->ascent + (uint32_t)h->descent == 0) return 0;
+
+    if (mul_overflows_size(h->num_chars, sizeof(struct font_glyph_info))) return 0;
+    size_t glyph_bytes = (size_t)h->num_chars * sizeof(struct font_glyph_info);
+    if (add_overflows_size(sizeof(struct font_header), glyph_bytes)) return 0;
+    size_t bitmap_offset = sizeof(struct font_header) + glyph_bytes;
+    if (add_overflows_size(bitmap_offset, h->bitmap_size)) return 0;
+    if (bitmap_offset + h->bitmap_size > size) return 0;
+
+    const struct font_glyph_info *glyphs =
+        (const struct font_glyph_info *)((const uint8_t *)data + sizeof(struct font_header));
+    for (uint16_t i = 0; i < h->num_chars; i++) {
+        const struct font_glyph_info *gi = &glyphs[i];
+        if (mul_overflows_size(gi->width, gi->height)) return 0;
+        size_t glyph_size = (size_t)gi->width * (size_t)gi->height;
+        if (add_overflows_size(gi->data_offset, glyph_size)) return 0;
+        if (gi->data_offset + glyph_size > h->bitmap_size) return 0;
+    }
+
+    return 1;
+}
 
 /*
  * font_load - read a packed font file and set up a font_ctx.
@@ -63,12 +96,12 @@ struct font_ctx *font_load(const char *path) {
         return NULL;
     }
 
-    struct font_header *h = (struct font_header *)data;
-    if (h->magic != FONT_MAGIC) {
+    if (!font_validate_buffer(data, (size_t)size)) {
         free(data);
         return NULL;
     }
 
+    struct font_header *h = (struct font_header *)data;
     struct font_ctx *ctx = malloc(sizeof(struct font_ctx));
     if (!ctx) {
         free(data);
@@ -110,8 +143,7 @@ void font_free(struct font_ctx *ctx) {
  * color:     ARGB foreground colour (0xAARRGGBB).
  *
  * The glyph bitmap is a row-major alpha (grayscale) image; each byte is an
- * opacity value 0..255.  Pixels with alpha > 128 are drawn as filled 1x1
- * rectangles.  Pixels with alpha <= 128 are transparent (skipped).
+ * opacity value 0..255. Pixels with alpha > 128 are drawn as filled spans.
  *
  * start_y accounts for the font ascent so that the baseline is at y + ascent
  * and gi->y0 is a signed offset from that baseline.
@@ -119,10 +151,9 @@ void font_free(struct font_ctx *ctx) {
  * Codepoints outside the font's first_char..first_char+num_chars range are
  * silently skipped (no replacement glyph).
  *
- * Performance note: O(w * h) window_draw() syscalls per glyph; for a 12px
- * font an average glyph of 6x12 pixels costs ~72 syscalls.  Callers that
- * need acceptable throughput should composite into a local uint32_t[]
- * framebuffer and use a single window_blit() call.
+ * Performance note: contiguous pixels on the same row are coalesced into a
+ * single rectangle, which keeps text transparent while sharply reducing
+ * compositor syscalls for normal glyphs.
  */
 static void draw_glyph(int win_id, struct font_ctx *ctx, int x, int y, uint32_t codepoint, uint32_t color) {
     int idx = (int)codepoint - ctx->header.first_char;
@@ -135,15 +166,21 @@ static void draw_glyph(int win_id, struct font_ctx *ctx, int x, int y, uint32_t 
     int start_x = x + gi->x0;
     int start_y = y + ctx->header.ascent + gi->y0;
 
-    /*
-     * Note: This is slow because it calls window_draw for each pixel.
-     * Real apps should use window_blit with a local buffer.
-     */
     for (int gy = 0; gy < gi->height; gy++) {
-        for (int gx = 0; gx < gi->width; gx++) {
-            uint8_t alpha = bitmap[gy * gi->width + gx];
-            if (alpha > 128) { /* Simple threshold for now: treat as binary */
-                window_draw(win_id, start_x + gx, start_y + gy, 1, 1, color);
+        int gx = 0;
+        while (gx < gi->width) {
+            while (gx < gi->width && bitmap[gy * gi->width + gx] <= 128) {
+                gx++;
+            }
+
+            int span_start = gx;
+            while (gx < gi->width && bitmap[gy * gi->width + gx] > 128) {
+                gx++;
+            }
+
+            if (gx > span_start) {
+                window_draw(win_id, start_x + span_start, start_y + gy,
+                            gx - span_start, 1, color);
             }
         }
     }
