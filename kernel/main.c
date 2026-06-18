@@ -31,9 +31,9 @@
 #define KERNEL_VERSION_MINOR 1
 #define KERNEL_VERSION_PATCH 0
 #ifdef ARCH_AMD64
-#define KERNEL_NAME "AMD64 HybridKernel MicroKernel ispired"
+#define KERNEL_NAME "AMD64 NexsOS1"
 #else
-#define KERNEL_NAME "AArch64 HybridKernel MicroKernel ispired"
+#define KERNEL_NAME "AArch64 NexsOS1"
 #endif
 
 /* External symbols */
@@ -145,7 +145,7 @@ static void print_banner(void) {
   printk("========================================\n");
   printk("  %s v%d.%d.%d\n", KERNEL_NAME, KERNEL_VERSION_MAJOR,
          KERNEL_VERSION_MINOR, KERNEL_VERSION_PATCH);
-  printk("  Production-Ready HybridKernel MicroKernel ispired\n");
+  printk("  NeXsOS1\n");
   printk("========================================\n");
   printk("\n");
 }

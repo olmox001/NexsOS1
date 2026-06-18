@@ -13,8 +13,7 @@ FDT: Successfully initialized
 [C0] [INFO] Kernel: Entry x0 = 0x48000000
 [C0] 
 [C0] ========================================
-[C0]   AArch64 HybridKernel HybridKernel MicroKernel ispired ispired v0.1.0
-[C0]   Production-Ready HybridKernel MicroKernel ispired
+[C0]   AArch64 NexsOS1 v0.1.0
 [C0] ========================================
 [C0] 
 [C0] [INFO] Initializing CPU...

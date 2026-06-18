@@ -22,7 +22,7 @@ It is simultaneously two things, and the tension between them defines the roadma
 - **[now]** A *working graphical OS asset*: it really boots, detects CPUs and RAM,
   enables the MMU, mounts an Ext4 root, composites windows, and runs userland ELF
   programs (shell, a notification server, a font manager, demos, a DOOM port).
-- **[goal]** A *principled HybridKernel MicroKernel ispired* in the lineage of **seL4** (capability-based
+- **[goal]** A *principled MicroKernel ispired* in the lineage of **seL4** (capability-based
   isolation) and **Plan 9** (everything is a file, thin portable core). Today most
   "services" (compositor, fonts, VFS/Ext4, registry) live **inside the kernel**;
   the project's purpose is to move them **out** into sandboxed userland services
@@ -82,7 +82,7 @@ path is the reference of "correct".**
                  └───────▲───────────────────────────────────────────┘
                          │  IPC = read/write on capability-named channels (Plan 9 9P-like)
                  ┌───────┴───────────────────────────────────────────┐
-  HybridKernel MicroKernel ispired    │  caps · scheduling · address spaces · IPC · IRQ    │  ← minimal TCB
+  MicroKernel ispired    │  caps · scheduling · address spaces · IPC · IRQ    │  ← minimal TCB
                  └───────▲───────────────────────────────────────────┘
                  ┌───────┴───────────────────────────────────────────┐
   thin HAL       │  per-arch: MMU ops, traps, timer, MMIO/port, SMP   │

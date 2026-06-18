@@ -15,7 +15,7 @@ an interactive **TTY shell**.
 > **Honesty note.** This README describes the *verified* state. For the complete,
 > evidence-based picture — including bugs, gaps, and severity — see
 > [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going*
-> (a seL4-style, Plan 9-inspired HybridKernel MicroKernel ispired), see
+> (a seL4-style, Plan 9-inspired MicroKernel ispired), see
 > [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is **GPL v2** (see
 > [`LICENSE.md`](LICENSE.md)); earlier docs mislabeled it MIT.
 
@@ -97,7 +97,7 @@ end address, so the 3–4 GB PCI hole is counted (and treated) as RAM — see th
 - ✅ Doom running as a user-space process
 - ✅ 3D rendering demo
 - ✅ Recoverable fault handling (user faults isolated, symbolized backtraces)
-- ✅ HybridKernel MicroKernel ispired architecture
+- ✅ MicroKernel ispired architecture
 
 ## Verified Runtime
 
