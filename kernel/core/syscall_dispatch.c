@@ -508,6 +508,16 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, rc);
     break;
   }
+  case SYS_SET_ZOOM: {
+    /* Desktop zoom percent (HiDPI/zoom, F2).  Needs CAP_WINDOW. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    extern int compositor_set_zoom(int percent);
+    pt_regs_set_return(frame, compositor_set_zoom((int)arg0));
+    break;
+  }
   case SYS_COMPOSITOR_RENDER:
     compositor_render();
     pt_regs_set_return(frame, 0);

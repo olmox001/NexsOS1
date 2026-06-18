@@ -196,6 +196,13 @@ _sys_set_style:
     syscall
     ret
 
+/* int _sys_set_zoom(int percent) — desktop HiDPI/zoom */
+.global _sys_set_zoom
+_sys_set_zoom:
+    movq $SYS_SET_ZOOM, %rax
+    syscall
+    ret
+
 .global _sys_window_blit
 _sys_window_blit:
     movq $SYS_WINDOW_BLIT, %rax

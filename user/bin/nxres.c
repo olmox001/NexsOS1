@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
     int w = (int)((info >> 16) & 0xFFFF);
     int h = (int)(info & 0xFFFF);
     printf("nxres: current desktop %dx%d\n", w, h);
-    printf("usage: nxres <w> <h> | nxres style <name> | nxres theme <name>\n");
+    printf("usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme <name>\n");
     return 0;
   }
 
@@ -59,6 +59,17 @@ int main(int argc, char **argv) {
       return 0;
     }
     printf("nxres: set_style failed\n");
+    return 1;
+  }
+
+  /* nxres zoom <percent> */
+  if (argc >= 3 && strncmp(argv[1], "zoom", 5) == 0) {
+    int p = atoi(argv[2]);
+    if (_sys_set_zoom(p) == 0) {
+      printf("nxres: zoom -> %d%%\n", p);
+      return 0;
+    }
+    printf("nxres: set_zoom failed\n");
     return 1;
   }
 
@@ -95,6 +106,6 @@ int main(int argc, char **argv) {
   }
 
   printf("nxres: bad arguments\n");
-  printf("usage: nxres <w> <h> | nxres style <name> | nxres theme <name>\n");
+  printf("usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme <name>\n");
   return 1;
 }

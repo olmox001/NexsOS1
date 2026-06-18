@@ -66,6 +66,7 @@ extern int  _sys_set_display_mode(int w, int h);  /* set resolution; desktop ada
 extern int  _sys_window_resize(int win_id, int w, int h); /* resize own window surface */
 extern int  _sys_display_poll(void);              /* apply pending host resize; 1 if changed */
 extern int  _sys_set_style(int style_id, int theme_id); /* compositor look; -1 = keep */
+extern int  _sys_set_zoom(int percent);           /* desktop HiDPI/zoom percent */
 extern void* _sys_sbrk(intptr_t increment);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
 extern long _sys_get_procs(void *procs, size_t max_count);

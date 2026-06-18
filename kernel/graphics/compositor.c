@@ -259,9 +259,36 @@ static int resize_orig_w = 0, resize_orig_h = 0, resize_orig_x = 0;
 #define COMPOSITOR_MAX_H 1080
 
 static uint32_t *compositor_backbuffer = NULL;
-static int bb_width = 0;
-static int bb_height = 0;
-static size_t bb_capacity_px = 0; /* pixels actually allocated */
+static int bb_width = 0;  /* desktop-virtual width (what apps + windows see)   */
+static int bb_height = 0; /* desktop-virtual height                            */
+static size_t bb_capacity_px = 0; /* pixels actually allocated                 */
+
+/* F2: the desktop-virtual surface (backbuffer) is independent of the physical
+ * scanout (phys_w/phys_h, the GPU mode).  desktop_zoom is a percent: the virtual
+ * size = physical * 100 / zoom, so zoom>100 enlarges everything (HiDPI), zoom<100
+ * fits more desktop into the same panel.  When virtual != physical the flush
+ * stage nearest-scales the backbuffer onto the scanout. */
+static int phys_w = 0, phys_h = 0;
+static int desktop_zoom = 100;
+
+/* Compute the desktop-virtual size for a physical size + the current zoom,
+ * clamped so it always fits the pre-allocated backbuffer capacity. */
+static void compositor_virtual_for(int pw, int ph, int *vw, int *vh) {
+  int z = desktop_zoom > 0 ? desktop_zoom : 100;
+  long w = (long)pw * 100 / z;
+  long h = (long)ph * 100 / z;
+  if (w < 1)
+    w = 1;
+  if (h < 1)
+    h = 1;
+  /* Clamp area to capacity (bounds zoom-out where virtual > physical). */
+  if (bb_capacity_px && (size_t)(w * h) > bb_capacity_px) {
+    while ((size_t)(w * h) > bb_capacity_px && h > 1)
+      h--;
+  }
+  *vw = (int)w;
+  *vh = (int)h;
+}
 
 /*
  * Initialize Compositor
@@ -271,10 +298,14 @@ void compositor_init(void) {
   window_count = 0;
   next_window_id = 100;
 
-  /* Backbuffer dimensions follow the primary GPU (no hard-coded size). */
+  /* Physical scanout + desktop-virtual both follow the primary GPU at boot
+   * (zoom 100 ⇒ virtual == physical; no hard-coded size). */
   struct gpu_device *dev = gpu_get_primary();
-  bb_width = dev ? dev->width : COMPOSITOR_FALLBACK_W;
-  bb_height = dev ? dev->height : COMPOSITOR_FALLBACK_H;
+  phys_w = dev ? dev->width : COMPOSITOR_FALLBACK_W;
+  phys_h = dev ? dev->height : COMPOSITOR_FALLBACK_H;
+  desktop_zoom = 100;
+  bb_width = phys_w;
+  bb_height = phys_h;
 
   /* Allocate to a capacity covering the current mode and up to MAX_WxMAX_H so
    * runtime resizes (host display-change / set_mode) need no reallocation. */
@@ -325,40 +356,13 @@ void compositor_get_size(int *w, int *h) {
     *h = bb_height;
 }
 
-/*
- * compositor_resize - retarget the desktop/backbuffer to a new size.
- *
- * Capacity-bounded and allocation-free, so it is safe from any context
- * (including the timer IRQ on a host display-change).  The caller is
- * responsible for having already reconfigured the GPU scanout (gpu_set_mode)
- * to the same size so the next flush's strides match.  Existing windows are
- * clamped so their title bars stay reachable; the whole desktop is repainted.
- */
-void compositor_resize(int w, int h) {
-  if (w <= 0 || h <= 0)
+/* Apply a new desktop-virtual size (caller holds compositor_lock): set the
+ * backbuffer dims, keep windows on-screen, full repaint.  Allocation-free. */
+static void apply_virtual_size_locked(int vw, int vh) {
+  if (vw <= 0 || vh <= 0)
     return;
-  uint64_t flags;
-  spin_lock_irqsave(&compositor_lock, &flags);
-  if (!compositor_backbuffer || bb_capacity_px == 0) {
-    spin_unlock_irqrestore(&compositor_lock, flags);
-    return;
-  }
-  if ((size_t)w * h > bb_capacity_px) {
-    /* Larger than the pre-allocation: clamp height to fit the buffer rather
-     * than allocate in a possibly-IRQ context. */
-    int max_h = (int)(bb_capacity_px / (size_t)w);
-    if (max_h <= 0) {
-      spin_unlock_irqrestore(&compositor_lock, flags);
-      pr_warn("Compositor: resize %dx%d exceeds capacity, ignored\n", w, h);
-      return;
-    }
-    pr_warn("Compositor: resize %dx%d clamped to %dx%d (capacity)\n", w, h, w,
-            max_h);
-    h = max_h;
-  }
-
-  bb_width = w;
-  bb_height = h;
+  bb_width = vw;
+  bb_height = vh;
 
   /* Keep every window's title bar / close button on-screen. */
   for (int i = 0; i < MAX_WINDOWS; i++) {
@@ -374,15 +378,60 @@ void compositor_resize(int w, int h) {
       windows[i].y = compositor_titlebar_height();
   }
 
-  /* Full repaint at the new size. */
   damage_x1 = 0;
   damage_y1 = 0;
   damage_x2 = bb_width;
   damage_y2 = bb_height;
   compositor_dirty = 1;
-  spin_unlock_irqrestore(&compositor_lock, flags);
+}
 
-  pr_info("Compositor: resized to %dx%d\n", bb_width, bb_height);
+/*
+ * compositor_resize - the physical scanout changed (gpu_set_mode already ran).
+ *
+ * Records the new physical size and recomputes the desktop-virtual size for the
+ * current zoom.  Capacity-bounded and allocation-free, so it is safe from any
+ * context (including the timer-IRQ host display-change path).
+ */
+void compositor_resize(int w, int h) {
+  if (w <= 0 || h <= 0)
+    return;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  if (!compositor_backbuffer || bb_capacity_px == 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return;
+  }
+  phys_w = w;
+  phys_h = h;
+  int vw, vh;
+  compositor_virtual_for(w, h, &vw, &vh);
+  apply_virtual_size_locked(vw, vh);
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  pr_info("Compositor: scanout %dx%d, desktop %dx%d (zoom %d%%)\n", w, h, vw, vh,
+          desktop_zoom);
+}
+
+/* compositor_set_zoom - set the desktop zoom percent (HiDPI/zoom): the virtual
+ * desktop = physical * 100 / zoom.  Clamped to [25,400].  Backs SYS_SET_ZOOM. */
+int compositor_set_zoom(int percent) {
+  if (percent < 25)
+    percent = 25;
+  if (percent > 400)
+    percent = 400;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  if (!compositor_backbuffer || phys_w <= 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return -1;
+  }
+  desktop_zoom = percent;
+  int vw, vh;
+  compositor_virtual_for(phys_w, phys_h, &vw, &vh);
+  apply_virtual_size_locked(vw, vh);
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  pr_info("Compositor: zoom %d%% -> desktop %dx%d (scanout %dx%d)\n", percent, vw,
+          vh, phys_w, phys_h);
+  return 0;
 }
 
 /* Forward Declarations */
@@ -440,9 +489,11 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
    * Mirrors the clamp order used in compositor_update_mouse().
    */
   {
-    struct gpu_device *screen_dev = gpu_get_primary();
-    int screen_w = screen_dev ? screen_dev->width : 800;
-    int screen_h = screen_dev ? screen_dev->height : 600;
+    /* Clamp into the desktop-virtual area (where windows live), not the physical
+     * scanout — they differ under zoom (F2).  We already hold compositor_lock,
+     * so read bb_width/bb_height directly (compositor_get_size would re-lock). */
+    int screen_w = bb_width > 0 ? bb_width : 800;
+    int screen_h = bb_height > 0 ? bb_height : 600;
 
     if (x + w > screen_w)
       x = screen_w - w;
@@ -1066,14 +1117,10 @@ void compositor_handle_click(int button, int state) {
  */
 
 void compositor_update_mouse(int dx, int dy, int absolute) {
-  struct gpu_device *dev = gpu_get_primary();
-  int width = 800; /* Fallback */
-  int height = 600;
-
-  if (dev) {
-    width = dev->width;
-    height = dev->height;
-  }
+  /* The cursor lives in desktop-virtual space (the backbuffer), which equals the
+   * physical scanout at zoom 100 but differs under HiDPI/zoom (F2). */
+  int width = bb_width > 0 ? bb_width : 800;
+  int height = bb_height > 0 ? bb_height : 600;
 
   int old_mx = mouse_x, old_my = mouse_y;
 
@@ -1486,19 +1533,41 @@ static void compositor_render_internal(void) {
   if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
     void *fb_va = dev->ops->get_framebuffer(dev, NULL);
     if (fb_va) {
-      int dx1 = damage_x1 < 0 ? 0 : damage_x1;
-      int dy1 = damage_y1 < 0 ? 0 : damage_y1;
-      int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
-      int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
-      if (dx1 < dx2 && dy1 < dy2) {
-        int row_bytes = (dx2 - dx1) * 4;
-        uint8_t *dst = (uint8_t *)fb_va;
-        const uint8_t *src = (const uint8_t *)backbuffer;
-        for (int row = dy1; row < dy2; row++) {
-          memcpy(dst + ((size_t)row * bb_w + dx1) * 4,
-                 src + ((size_t)row * bb_w + dx1) * 4, row_bytes);
+      if (bb_w == dev->width && bb_h == dev->height) {
+        /* Desktop-virtual == physical: fast damage-region copy. */
+        int dx1 = damage_x1 < 0 ? 0 : damage_x1;
+        int dy1 = damage_y1 < 0 ? 0 : damage_y1;
+        int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
+        int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
+        if (dx1 < dx2 && dy1 < dy2) {
+          int row_bytes = (dx2 - dx1) * 4;
+          uint8_t *dst = (uint8_t *)fb_va;
+          const uint8_t *src = (const uint8_t *)backbuffer;
+          for (int row = dy1; row < dy2; row++) {
+            memcpy(dst + ((size_t)row * bb_w + dx1) * 4,
+                   src + ((size_t)row * bb_w + dx1) * 4, row_bytes);
+          }
+          dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
         }
-        dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
+      } else if (damage_x1 < damage_x2 && damage_y1 < damage_y2) {
+        /* F2: desktop-virtual != physical scanout — nearest-scale the whole
+         * backbuffer onto the scanout, then flush the full physical frame. */
+        int pw = dev->width, ph = dev->height;
+        uint32_t *dst = (uint32_t *)fb_va;
+        for (int py = 0; py < ph; py++) {
+          int sy = (int)((int64_t)py * bb_h / ph);
+          if (sy >= bb_h)
+            sy = bb_h - 1;
+          const uint32_t *srow = backbuffer + (size_t)sy * bb_w;
+          uint32_t *drow = dst + (size_t)py * pw;
+          for (int px = 0; px < pw; px++) {
+            int sx = (int)((int64_t)px * bb_w / pw);
+            if (sx >= bb_w)
+              sx = bb_w - 1;
+            drow[px] = srow[sx];
+          }
+        }
+        dev->ops->flush(dev, 0, 0, pw, ph);
       }
       /* Reset damage: invalid state (x1>x2) means nothing to flush */
       damage_x1 = bb_w;

@@ -226,6 +226,13 @@ _sys_set_style:
     svc #0
     ret
 
+/* int _sys_set_zoom(int percent) — desktop HiDPI/zoom */
+.global _sys_set_zoom
+_sys_set_zoom:
+    mov x8, #SYS_SET_ZOOM
+    svc #0
+    ret
+
 /* void _sys_window_blit(int win_id, int x, int y, int w, int h, const uint *buf) */
 _sys_window_blit:
     mov x8, #SYS_WINDOW_BLIT
