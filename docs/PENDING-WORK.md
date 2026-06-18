@@ -119,6 +119,12 @@ Salvati anche in memoria; ripetuti per trasparenza:
 
 ---
 
+## Chiuso (sessione 2026-06-18)
+- **#71 LIB-SSP-01** ✓ — canary SSP randomizzato al boot da `entropy_u64()` unificato
+  (HW RNG `arch_hw_random` RNDR/RDRAND + fallback cycle-counter splitmix64); commit `36fa344`.
+- **#51 DRV-PCI-01** ✓ — già implementato: `pci_scan_and_register()` definita
+  (`pci.c:272`) e chiamata su aarch64 (`hal.c:123`); amd64 via callback virtio + BAR firmware.
+
 ## Backlog di progetto (fuori dallo scope di questa sessione, qui per completezza)
 Tracciato in GitHub e in `docs/review/REVIEW.md` (#19, ~220 finding). Epic e cluster aperti:
 - **#19** Comprehensive Code Review (tracking, ~220 finding).
@@ -127,11 +133,11 @@ Tracciato in GitHub e in `docs/review/REVIEW.md` (#19, ~220 finding). Epic e clu
 - **Grafica:** #118 damage/redraw incompleto · #121 GFX-DYN (de-hardcode risoluzione) ·
   #128 caret per-frame · #131 GFX-PERF cursore · #133 cursore UTM assoluto.
 - **Input/Driver:** #125 pointer assoluto UTM · #129 scancode mancanti · #130 USB UTM ·
-  #124 PS/2 senza 8042 · #48 GIC affinity · #51/#53/#54/#49/#45 virtio/gpu/pci · #52 UART lock.
+  #124 PS/2 senza 8042 · #48 GIC affinity · #53/#54/#49/#45 virtio/gpu/pci (#51 ✓) · #52 UART lock.
 - **FS:** #126 creazione file ext4 · #127 truncate mancante.
 - **Userland:** #123 ereditarietà stdout/TTY · #76 init.cfg · #81 regedit recv · #82 fontman.
 - **Sched/arch/mm:** #84 AB-BA lock · #38 CPU-AMD64-01 FPU su preempt · #122 quota figli
   (fork-bomb) · #39/#40/#41/#43 TOCTOU uaccess · #30/#31/#32 ARCH/HAL boot · #20 PMM multi-region ·
-  #71/#72 SSP/registry · #106 doom fire button.
+  #72 registry (#71 SSP ✓) · #106 doom fire button.
 
 > Questo registro va aggiornato man mano che gli item vengono chiusi.
