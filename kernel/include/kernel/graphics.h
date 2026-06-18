@@ -52,6 +52,11 @@ void render3d_clear_zbuffer(void);
 
 /* Compositor API */
 void compositor_init(void);
+/* compositor_resize: retarget the desktop/backbuffer to w x h (GFX-DYN-01).
+ * Allocation-free (capacity pre-allocated at init) so it is safe from any
+ * context.  The caller must have already set the GPU scanout to the same size
+ * (gpu_set_mode) so the next flush strides match. */
+void compositor_resize(int w, int h);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
                              int pid);
 void compositor_destroy_window(int window_id);

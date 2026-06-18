@@ -14,6 +14,7 @@
 
 /* Disable optimizations to ensure stack safety/debugging */
 
+#include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
@@ -224,10 +225,20 @@ static int drag_off_y = 0;
 #define TITLE_BAR_HEIGHT 20
 #define CLOSE_BUTTON_SIZE 16
 
-/* Global backbuffer - pre-allocated to avoid IRQ malloc */
+/* Compositor backbuffer == the "compositor FB" / desktop-virtual surface
+ * (GFX-DYN-01).  Its size follows the GPU, no longer a hard-coded 720x1280.
+ * It is pre-allocated once to a CAPACITY that covers the current mode plus
+ * reasonable runtime growth, so compositor_resize() never allocates and is
+ * therefore safe to call from the timer-IRQ tick (host display-change path). */
+#define COMPOSITOR_FALLBACK_W 1024
+#define COMPOSITOR_FALLBACK_H 768
+#define COMPOSITOR_MAX_W 1920
+#define COMPOSITOR_MAX_H 1080
+
 static uint32_t *compositor_backbuffer = NULL;
 static int bb_width = 0;
 static int bb_height = 0;
+static size_t bb_capacity_px = 0; /* pixels actually allocated */
 
 /*
  * Initialize Compositor
@@ -237,22 +248,96 @@ void compositor_init(void) {
   window_count = 0;
   next_window_id = 100;
 
-  /* Pre-allocate backbuffer for 720x1280 (can resize later) */
-  bb_width = 720;
-  bb_height = 1280;
-  compositor_backbuffer = kmalloc(bb_width * bb_height * 4);
+  /* Backbuffer dimensions follow the primary GPU (no hard-coded size). */
+  struct gpu_device *dev = gpu_get_primary();
+  bb_width = dev ? dev->width : COMPOSITOR_FALLBACK_W;
+  bb_height = dev ? dev->height : COMPOSITOR_FALLBACK_H;
 
-  /* Initialize damage rect to full screen so the first frame is fully uploaded
-   */
+  /* Allocate to a capacity covering the current mode and up to MAX_WxMAX_H so
+   * runtime resizes (host display-change / set_mode) need no reallocation. */
+  size_t cap = (size_t)bb_width * bb_height;
+  size_t want = (size_t)COMPOSITOR_MAX_W * COMPOSITOR_MAX_H;
+  if (want > cap)
+    cap = want;
+  int pages = (int)((cap * 4 + 4095) / 4096);
+  compositor_backbuffer = pmm_alloc_pages(pages);
+  if (!compositor_backbuffer) {
+    pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
+    bb_capacity_px = 0;
+    bb_width = 0;
+    bb_height = 0;
+    return;
+  }
+  bb_capacity_px = cap;
+
+  /* First frame is a full upload. */
   damage_x1 = 0;
   damage_y1 = 0;
   damage_x2 = bb_width;
   damage_y2 = bb_height;
-  if (!compositor_backbuffer) {
-    pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
+
+  pr_info("Compositor: Initialized (%dx%d, capacity %d px)\n", bb_width,
+          bb_height, (int)bb_capacity_px);
+}
+
+/*
+ * compositor_resize - retarget the desktop/backbuffer to a new size.
+ *
+ * Capacity-bounded and allocation-free, so it is safe from any context
+ * (including the timer IRQ on a host display-change).  The caller is
+ * responsible for having already reconfigured the GPU scanout (gpu_set_mode)
+ * to the same size so the next flush's strides match.  Existing windows are
+ * clamped so their title bars stay reachable; the whole desktop is repainted.
+ */
+void compositor_resize(int w, int h) {
+  if (w <= 0 || h <= 0)
+    return;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  if (!compositor_backbuffer || bb_capacity_px == 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return;
+  }
+  if ((size_t)w * h > bb_capacity_px) {
+    /* Larger than the pre-allocation: clamp height to fit the buffer rather
+     * than allocate in a possibly-IRQ context. */
+    int max_h = (int)(bb_capacity_px / (size_t)w);
+    if (max_h <= 0) {
+      spin_unlock_irqrestore(&compositor_lock, flags);
+      pr_warn("Compositor: resize %dx%d exceeds capacity, ignored\n", w, h);
+      return;
+    }
+    pr_warn("Compositor: resize %dx%d clamped to %dx%d (capacity)\n", w, h, w,
+            max_h);
+    h = max_h;
   }
 
-  pr_info("%s", "Compositor: Initialized\n");
+  bb_width = w;
+  bb_height = h;
+
+  /* Keep every window's title bar / close button on-screen. */
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == 0)
+      continue;
+    if (windows[i].x > bb_width - 40)
+      windows[i].x = bb_width - 40;
+    if (windows[i].x < 0)
+      windows[i].x = 0;
+    if (windows[i].y > bb_height - 20)
+      windows[i].y = bb_height - 20;
+    if (windows[i].y < TITLE_BAR_HEIGHT)
+      windows[i].y = TITLE_BAR_HEIGHT;
+  }
+
+  /* Full repaint at the new size. */
+  damage_x1 = 0;
+  damage_y1 = 0;
+  damage_x2 = bb_width;
+  damage_y2 = bb_height;
+  compositor_dirty = 1;
+  spin_unlock_irqrestore(&compositor_lock, flags);
+
+  pr_info("Compositor: resized to %dx%d\n", bb_width, bb_height);
 }
 
 /* Forward Declarations */
