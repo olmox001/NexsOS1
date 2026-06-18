@@ -428,6 +428,69 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, ((long)(cols & 0xFFFF) << 16) | (rows & 0xFFFF));
     break;
   }
+  case SYS_DISPLAY_INFO: {
+    /* Read-only: current desktop size, packed (w<<16)|h (GFX-DYN-01). */
+    extern void compositor_get_size(int *w, int *h);
+    int w = 0, h = 0;
+    compositor_get_size(&w, &h);
+    pt_regs_set_return(frame, ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF));
+    break;
+  }
+  case SYS_SET_DISPLAY_MODE: {
+    /* GFX-DYN-01: change resolution at runtime; the desktop adapts.  A
+     * system-level action → needs CAP_WINDOW. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    extern int gpu_set_mode(int w, int h);
+    extern void compositor_resize(int w, int h);
+    int r = gpu_set_mode((int)arg0, (int)arg1);
+    if (r == 0)
+      compositor_resize((int)arg0, (int)arg1);
+    pt_regs_set_return(frame, r);
+    break;
+  }
+  case SYS_WINDOW_RESIZE: {
+    /* Resize a window's logical surface.  Needs CAP_WINDOW and ownership
+     * (owner or machine), mirroring SYS_DESTROY_WINDOW's ABI-04 check. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    extern int compositor_window_owner(int window_id);
+    extern int compositor_resize_window(int window_id, int w, int h);
+    int owner = compositor_window_owner((int)arg0);
+    if (owner >= 0 && owner != (int)current_process->pid &&
+        !proc_is_machine(current_process)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    pt_regs_set_return(
+        frame, compositor_resize_window((int)arg0, (int)arg1, (int)arg2));
+    break;
+  }
+  case SYS_DISPLAY_POLL: {
+    /* Apply a pending host display-change in process context (init's supervisor
+     * loop polls this so the heavy set_mode/realloc never runs in the IRQ tick).
+     * Machine-level only.  Returns 1 if the desktop was resized, else 0. */
+    if (!proc_is_machine(current_process)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    extern int gpu_poll_events(int *w, int *h);
+    extern int gpu_set_mode(int w, int h);
+    extern void compositor_resize(int w, int h);
+    int w = 0, h = 0;
+    if (gpu_poll_events(&w, &h) == 1) {
+      if (gpu_set_mode(w, h) == 0)
+        compositor_resize(w, h);
+      pt_regs_set_return(frame, 1);
+    } else {
+      pt_regs_set_return(frame, 0);
+    }
+    break;
+  }
   case SYS_COMPOSITOR_RENDER:
     compositor_render();
     pt_regs_set_return(frame, 0);

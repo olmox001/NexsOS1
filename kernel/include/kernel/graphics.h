@@ -57,6 +57,8 @@ void compositor_init(void);
  * context.  The caller must have already set the GPU scanout to the same size
  * (gpu_set_mode) so the next flush strides match. */
 void compositor_resize(int w, int h);
+/* compositor_get_size: current desktop (backbuffer) size. Backs SYS_DISPLAY_INFO. */
+void compositor_get_size(int *w, int *h);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
                              int pid);
 void compositor_destroy_window(int window_id);

@@ -135,6 +135,12 @@ int main(void) {
       pid_notify = spawn("/sys/bin/notify_srv");
     }
 
+    /* GFX-DYN-01: apply a pending host display-change (the desktop follows the
+     * QEMU window size).  Done here in process context so the heavy
+     * set_mode/backbuffer work never runs in the timer-IRQ compositor tick. */
+    if (_sys_display_poll() == 1)
+      print("[Init] Display resized to match host\n");
+
     /* Sleep between supervisor passes instead of busy-spinning: with the real
      * kernel timer (SYS_NANOSLEEP) init is descheduled (~0% CPU) and woken by
      * its core's tick, so it can no longer monopolise a core while all children

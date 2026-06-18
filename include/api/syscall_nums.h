@@ -47,6 +47,12 @@
 #define SYS_WINDOW_WRITE       217  /* write text to a window by id (#123) */
 #define SYS_WINDOW_OF_PID      218  /* window id of a pid, 0 if none (#123) */
 #define SYS_WINDOW_GRID        219  /* terminal grid of a window: (cols<<16)|rows */
+#define SYS_WINDOW_RESIZE      272  /* resize a window's logical surface (w,h) — GFX-DYN-01 */
+
+/* --- Display / framebuffer (GFX-DYN-01) --- */
+#define SYS_DISPLAY_INFO       270  /* current desktop size, packed (w<<16)|h */
+#define SYS_SET_DISPLAY_MODE   271  /* set resolution (w,h); desktop adapts; CAP_MACHINE */
+#define SYS_DISPLAY_POLL       273  /* apply a pending host display-change; returns 1 if resized */
 
 /* --- Memory --- */
 #define SYS_SBRK               216

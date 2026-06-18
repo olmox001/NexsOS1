@@ -285,6 +285,15 @@ void compositor_init(void) {
           bb_height, (int)bb_capacity_px);
 }
 
+/* Report the current desktop (compositor backbuffer) size.  Backs
+ * SYS_DISPLAY_INFO. */
+void compositor_get_size(int *w, int *h) {
+  if (w)
+    *w = bb_width;
+  if (h)
+    *h = bb_height;
+}
+
 /*
  * compositor_resize - retarget the desktop/backbuffer to a new size.
  *
@@ -719,10 +728,21 @@ int compositor_resize_window(int window_id, int w, int h) {
   /* Damage the NEW footprint and repaint. */
   expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, w, h + TITLE_BAR_HEIGHT);
   compositor_dirty = 1;
+  int owner = win->pid;
   spin_unlock_irqrestore(&compositor_lock, flags);
 
   if (obuf)
     kfree(obuf);
+
+  /* Notify the owner of its new logical size (outside the lock: kernel_ipc_send
+   * takes sched_lock — never nest it under compositor_lock, cf. GFX-COMP-03). */
+  if (owner > 0) {
+    struct ipc_message msg = {0};
+    msg.type = IPC_TYPE_RESIZE;
+    msg.data1 = (uint64_t)w;
+    msg.data2 = (uint64_t)h;
+    kernel_ipc_send(owner, &msg);
+  }
   return 0;
 }
 

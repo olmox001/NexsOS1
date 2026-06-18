@@ -191,6 +191,34 @@ _sys_window_grid:
     svc #0
     ret
 
+/* long _sys_display_info(void) — packed (w<<16)|h (GFX-DYN-01) */
+.global _sys_display_info
+_sys_display_info:
+    mov x8, #SYS_DISPLAY_INFO
+    svc #0
+    ret
+
+/* int _sys_set_display_mode(int w, int h) */
+.global _sys_set_display_mode
+_sys_set_display_mode:
+    mov x8, #SYS_SET_DISPLAY_MODE
+    svc #0
+    ret
+
+/* int _sys_window_resize(int win_id, int w, int h) */
+.global _sys_window_resize
+_sys_window_resize:
+    mov x8, #SYS_WINDOW_RESIZE
+    svc #0
+    ret
+
+/* int _sys_display_poll(void) — returns 1 if a host display-change was applied */
+.global _sys_display_poll
+_sys_display_poll:
+    mov x8, #SYS_DISPLAY_POLL
+    svc #0
+    ret
+
 /* void _sys_window_blit(int win_id, int x, int y, int w, int h, const uint *buf) */
 _sys_window_blit:
     mov x8, #SYS_WINDOW_BLIT

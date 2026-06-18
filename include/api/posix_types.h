@@ -163,6 +163,7 @@ typedef struct {
 #define IPC_TYPE_INPUT 1
 #define IPC_TYPE_NOTIFY 0x100
 #define IPC_TYPE_MOUSE 4
+#define IPC_TYPE_RESIZE 0x200 /* window/desktop resize: data1=w, data2=h (GFX-DYN-01) */
 
 /* IPC message structure */
 struct ipc_message {
