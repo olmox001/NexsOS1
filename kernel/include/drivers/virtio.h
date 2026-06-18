@@ -124,6 +124,14 @@ static inline void virtio_notify(virtio_handle_t dev, uint32_t queue_idx) {
   dev->ops->notify(dev, queue_idx);
 }
 
+/* Device-config space access (GFX-DYN-01 F7): reads/writes a device's
+ * device-specific configuration at byte 'offset', transport-agnostically.
+ * On VirtIO-MMIO this is base+VIRTIO_MMIO_CONFIG+offset; on VirtIO-PCI modern it
+ * is the device-specific capability region.  Implemented by the arch transport
+ * so drivers (e.g. virtio-gpu events) need not know the transport. */
+uint32_t virtio_config_read32(virtio_handle_t dev, uint32_t offset);
+void virtio_config_write32(virtio_handle_t dev, uint32_t offset, uint32_t val);
+
 /* Discovery & Setup */
 void arch_virtio_scan(void);
 int arch_virtio_get_count(uint32_t device_id);

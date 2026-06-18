@@ -34,10 +34,10 @@
 #define VGPU_DEFAULT_W 1024
 #define VGPU_DEFAULT_H 768
 
-/* virtio-gpu device config (events) lives at VIRTIO_MMIO_CONFIG; field offsets
- * mirror struct virtio_gpu_config. */
-#define VGPU_CFG_EVENTS_READ (VIRTIO_MMIO_CONFIG + 0)
-#define VGPU_CFG_EVENTS_CLEAR (VIRTIO_MMIO_CONFIG + 4)
+/* virtio-gpu device-config field offsets (struct virtio_gpu_config), read via
+ * the transport-agnostic virtio_config_read32/write32 (works on MMIO + PCI). */
+#define VGPU_CFG_EVENTS_READ 0
+#define VGPU_CFG_EVENTS_CLEAR 4
 
 struct virtio_gpu_state {
   virtio_handle_t handle;
@@ -275,23 +275,21 @@ static int vgpu_get_display_info(struct gpu_device *dev, int *width,
 
 /* Poll the device-config events register for a host-initiated display change.
  * Returns 1 (and the new size) if the host resized the output to a different
- * resolution, 0 if nothing changed.  Reads config via the transport contract
- * (virtio_read_reg at VIRTIO_MMIO_CONFIG): this resolves on VirtIO-MMIO
- * (aarch64).  On VirtIO-PCI the modern transport does not map device-config
- * through this path, so amd64 currently relies on the explicit set_mode path
- * (the nxres userland tool) — see DIR-07. */
+ * resolution, 0 if nothing changed.  Reads device config via the
+ * transport-agnostic virtio_config_read32/write32 (F7), so host-driven
+ * auto-resize works on both VirtIO-MMIO (aarch64) and VirtIO-PCI (amd64). */
 static int vgpu_poll_events(struct gpu_device *dev, int *new_w, int *new_h) {
   if (!dev || !dev->priv)
     return -1;
   struct virtio_gpu_state *priv = (struct virtio_gpu_state *)dev->priv;
 
-  uint32_t events = virtio_read_reg(priv->handle, VGPU_CFG_EVENTS_READ);
+  uint32_t events = virtio_config_read32(priv->handle, VGPU_CFG_EVENTS_READ);
   if (!(events & VIRTIO_GPU_EVENT_DISPLAY))
     return 0;
 
   /* Acknowledge the event. */
-  virtio_write_reg(priv->handle, VGPU_CFG_EVENTS_CLEAR,
-                   VIRTIO_GPU_EVENT_DISPLAY);
+  virtio_config_write32(priv->handle, VGPU_CFG_EVENTS_CLEAR,
+                        VIRTIO_GPU_EVENT_DISPLAY);
 
   int w = 0, h = 0;
   uint64_t flags;

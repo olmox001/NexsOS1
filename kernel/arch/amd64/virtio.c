@@ -272,6 +272,23 @@ void arch_virtio_scan(void) {
   }
 }
 
+/* Device-config access (GFX-DYN-01 F7).  On a modern PCI device the device-
+ * specific config region was captured into dev->priv (cap type 4) during probe;
+ * read it directly.  Otherwise (MMIO-on-amd64 fallback) config is at
+ * base+VIRTIO_MMIO_CONFIG. */
+uint32_t virtio_config_read32(virtio_handle_t dev, uint32_t offset) {
+  if (dev->priv)
+    return hal_read32((uintptr_t)dev->priv + offset);
+  return hal_read32(dev->base + VIRTIO_MMIO_CONFIG + offset);
+}
+
+void virtio_config_write32(virtio_handle_t dev, uint32_t offset, uint32_t val) {
+  if (dev->priv)
+    hal_write32((uintptr_t)dev->priv + offset, val);
+  else
+    hal_write32(dev->base + VIRTIO_MMIO_CONFIG + offset, val);
+}
+
 int arch_virtio_get_count(uint32_t device_id) {
   int count = 0;
   for (int i = 0; i < virtio_dev_count; i++) {
