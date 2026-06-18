@@ -227,6 +227,22 @@ static int dragging_window_id = -1;
 static int drag_off_x = 0;
 static int drag_off_y = 0;
 
+/* Interactive resize state (edge/corner grip — GFX-DYN-01 F1).  While resizing
+ * we only change the on-screen draw size (draw_w/draw_h): the compositor scales
+ * the logical surface for fluidity (no per-frame realloc in IRQ).  On release we
+ * send the owner an INPUT_TYPE_RESIZE event so it can reallocate a crisp buffer
+ * (apps that ignore it just stay scaled). */
+#define RESIZE_GRIP 6 /* px hot zone along window edges */
+#define RESIZE_MIN_W 120
+#define RESIZE_MIN_H 80
+#define RESIZE_EDGE_R 1
+#define RESIZE_EDGE_B 2
+#define RESIZE_EDGE_L 4
+static int resizing_window_id = -1;
+static int resize_edge = 0;
+static int resize_start_mx = 0, resize_start_my = 0;
+static int resize_orig_w = 0, resize_orig_h = 0, resize_orig_x = 0;
+
 /* Title-bar height now comes from the active style (compositor_titlebar_height,
  * Phase 5): 20 by default, 0 for the chrome-less Minimal style.  The close
  * button size stays fixed. */
@@ -712,6 +728,15 @@ int compositor_resize_window(int window_id, int w, int h) {
     return -1;
   }
 
+  /* No-op if already at this logical size: keeps the grip-resize release path
+   * (which echoes an INPUT_TYPE_RESIZE) from looping when the app re-applies the
+   * same size. */
+  if (win->width == w && win->height == h && win->draw_w == w &&
+      win->draw_h == h) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return 0;
+  }
+
   /* Allocate the new surface before touching the live one. */
   uint32_t *nbuf = (uint32_t *)kmalloc((size_t)w * h * 4);
   if (!nbuf) {
@@ -844,7 +869,33 @@ void compositor_handle_click(int button, int state) {
   (void)button;
 
   if (state == 0) {
+    /* Button up: end drag/resize.  If we were resizing, tell the window owner
+     * its new size so it can reallocate a crisp buffer (it may ignore it and
+     * stay scaled). */
+    int notify_pid = -1, nw = 0, nh = 0;
+    uint64_t rflags;
+    spin_lock_irqsave(&compositor_lock, &rflags);
     dragging_window_id = -1;
+    if (resizing_window_id != -1) {
+      for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (windows[i].id == resizing_window_id) {
+          notify_pid = windows[i].pid;
+          nw = windows[i].draw_w;
+          nh = windows[i].draw_h;
+          break;
+        }
+      }
+      resizing_window_id = -1;
+      resize_edge = 0;
+    }
+    spin_unlock_irqrestore(&compositor_lock, rflags);
+    if (notify_pid > 0) {
+      struct ipc_message msg = {0};
+      msg.type = IPC_TYPE_RESIZE;
+      msg.data1 = (uint64_t)nw;
+      msg.data2 = (uint64_t)nh;
+      kernel_ipc_send(notify_pid, &msg);
+    }
     return;
   }
 
@@ -893,6 +944,40 @@ void compositor_handle_click(int button, int state) {
     pr_info("Compositor: Focus changed to PID %d (Window '%s')\n", hit->pid,
             hit->title);
     sched_set_focus_pid(hit->pid);
+  }
+
+  /* Interactive resize (F1): a press within RESIZE_GRIP of the left/right/bottom
+   * edge starts an edge/corner resize.  The top edge stays drag-only (title
+   * bar).  Protected windows are not grip-resizable.  While resizing we change
+   * only draw_w/draw_h (compositor scales); the crisp realloc happens when the
+   * app handles the INPUT_TYPE_RESIZE sent on release. */
+  {
+    int dw = hit->draw_w > 0 ? hit->draw_w : hit->width;
+    int dh = hit->draw_h > 0 ? hit->draw_h : hit->height;
+    int edge = 0;
+    if (mouse_y >= hit->y && mouse_y < hit->y + dh) {
+      if (mouse_x >= hit->x + dw - RESIZE_GRIP && mouse_x < hit->x + dw)
+        edge |= RESIZE_EDGE_R;
+      else if (mouse_x >= hit->x && mouse_x < hit->x + RESIZE_GRIP)
+        edge |= RESIZE_EDGE_L;
+    }
+    if (mouse_x >= hit->x && mouse_x < hit->x + dw &&
+        mouse_y >= hit->y + dh - RESIZE_GRIP && mouse_y < hit->y + dh)
+      edge |= RESIZE_EDGE_B;
+
+    if (edge && !hit->protected) {
+      resizing_window_id = hit->id;
+      resize_edge = edge;
+      resize_start_mx = mouse_x;
+      resize_start_my = mouse_y;
+      resize_orig_w = dw;
+      resize_orig_h = dh;
+      resize_orig_x = hit->x;
+      expand_damage(0, 0, bb_width, bb_height);
+      compositor_dirty = 1;
+      spin_unlock_irqrestore(&compositor_lock, flags);
+      return;
+    }
   }
 
   /*
@@ -1039,8 +1124,39 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
     }
   }
 
+  /* Handle interactive resize (F1): adjust the on-screen draw size from the
+   * mouse delta + grabbed edge; the compositor scales the logical surface. */
+  if (resizing_window_id != -1) {
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+      if (windows[i].id != resizing_window_id)
+        continue;
+      int ddx = mouse_x - resize_start_mx;
+      int ddy = mouse_y - resize_start_my;
+      int nw = resize_orig_w, nh = resize_orig_h, nx = resize_orig_x;
+      if (resize_edge & RESIZE_EDGE_R)
+        nw = resize_orig_w + ddx;
+      if (resize_edge & RESIZE_EDGE_L) {
+        nw = resize_orig_w - ddx;
+        nx = resize_orig_x + ddx;
+      }
+      if (resize_edge & RESIZE_EDGE_B)
+        nh = resize_orig_h + ddy;
+      if (nw < RESIZE_MIN_W) {
+        if (resize_edge & RESIZE_EDGE_L) /* keep right edge fixed when clamping */
+          nx = resize_orig_x + (resize_orig_w - RESIZE_MIN_W);
+        nw = RESIZE_MIN_W;
+      }
+      if (nh < RESIZE_MIN_H)
+        nh = RESIZE_MIN_H;
+      windows[i].draw_w = nw;
+      windows[i].draw_h = nh;
+      windows[i].x = nx < 0 ? 0 : nx;
+      break;
+    }
+  }
+
   /* Mark compositor as needing redraw - don't render from IRQ! */
-  if (dragging_window_id != -1) {
+  if (dragging_window_id != -1 || resizing_window_id != -1) {
     expand_damage(0, 0, bb_width, bb_height);
   } else {
     /* Only the old and new cursor areas (12x16 + 1px border) */
