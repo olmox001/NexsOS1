@@ -131,6 +131,13 @@ struct virtio_gpu_resource_flush {
   uint32_t padding;
 } __attribute__((packed));
 
+/* Resource Unref (release a host resource on mode change) */
+struct virtio_gpu_resource_unref {
+  struct virtio_gpu_ctrl_hdr hdr;
+  uint32_t resource_id;
+  uint32_t padding;
+} __attribute__((packed));
+
 /* Driver API */
 void virtio_gpu_init(void);
 
