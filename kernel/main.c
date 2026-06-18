@@ -21,6 +21,7 @@
 #include <kernel/printk.h>
 #include <kernel/registry.h>
 #include <kernel/sched.h>
+#include <kernel/ssp.h>
 #include <kernel/string.h>
 #include <kernel/test.h>
 #include <kernel/types.h>
@@ -83,6 +84,12 @@ void kernel_main(uint64_t x0_arg) {
 
   /* Print kernel banner */
   print_banner();
+
+  /* Reseed the SSP stack canary from arch entropy before any deep call chain
+   * runs (LIB-SSP-01 / #71).  Safe here: kernel_main never returns through a
+   * canary-checked epilogue, so replacing the global guard mid-boot cannot
+   * trip a stale-canary check on a frame already on the stack. */
+  stack_guard_init();
 
   /* CPU initialization (exception vectors, per-CPU data) */
   pr_info("%s", "Initializing CPU...\n");

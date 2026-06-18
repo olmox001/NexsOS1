@@ -109,6 +109,13 @@ static inline void arch_mb(void) { arch_impl_mb(); }
 static inline void arch_rmb(void) { arch_impl_rmb(); }
 static inline void arch_wmb(void) { arch_impl_wmb(); }
 
+/* --- Entropy HAL --- */
+/* arch_hw_random: one attempt at the CPU's hardware RNG (RNDR on AArch64
+ * FEAT_RNG, RDRAND on AMD64).  Returns 1 and writes *out on success, 0 if the
+ * instruction is unavailable or transiently failed.  ISA-only primitive; the
+ * unified retry/mix policy lives in entropy_u64() (kernel/lib/entropy.c). */
+static inline int arch_hw_random(uint64_t *out) { return arch_impl_hw_random(out); }
+
 /* --- System State & Debug --- */
 static inline uint64_t arch_get_fault_address(void) { return arch_impl_get_fault_address(); }
 static inline uint64_t arch_get_fault_status(void) { return arch_impl_get_fault_status(); }

@@ -214,6 +214,27 @@ static inline void arch_impl_timer_control(uint32_t val) {
   __asm__ __volatile__("msr cntv_ctl_el0, %0" ::"r"((uint64_t)val));
 }
 
+/* --- Entropy (ISA primitive) --- */
+/* arch_impl_hw_random: one attempt at the architected RNG (FEAT_RNG / RNDR).
+ * Returns 1 and writes *out on success; 0 if FEAT_RNG is absent (e.g. the
+ * QEMU virt cortex-a57 default, which is ARMv8.0) or the read transiently
+ * failed.  Pure ISA wrapper: the retry/mix policy lives in the generic
+ * entropy layer (kernel/lib/entropy.c). */
+static inline int arch_impl_hw_random(uint64_t *out) {
+  uint64_t isar0;
+  __asm__ __volatile__("mrs %0, id_aa64isar0_el1" : "=r"(isar0));
+  if (((isar0 >> 60) & 0xf) == 0)
+    return 0; /* no FEAT_RNG */
+  uint64_t r, nzcv;
+  __asm__ __volatile__("mrs %0, s3_3_c2_c4_0\n\t" /* RNDR */
+                       "mrs %1, nzcv\n\t"
+                       : "=r"(r), "=r"(nzcv));
+  if (nzcv & (1ULL << 30))
+    return 0; /* PSTATE.Z set => transient failure */
+  *out = r;
+  return 1;
+}
+
 /* --- Spinlocks --- */
 static inline void arch_impl_spin_lock(volatile uint32_t *lock) {
   while (__sync_lock_test_and_set(lock, 1)) {

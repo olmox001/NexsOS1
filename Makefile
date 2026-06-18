@@ -187,6 +187,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/lib/fault_print.c \
     $(KERNEL_DIR)/lib/backtrace.c \
     $(KERNEL_DIR)/lib/stack_protector.c \
+    $(KERNEL_DIR)/lib/entropy.c \
     $(KERNEL_DIR)/lib/math.c \
     $(KERNEL_DIR)/lib/kmalloc.c \
     $(KERNEL_DIR)/lib/registry.c \
@@ -200,6 +201,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/graphics/region.c \
     $(KERNEL_DIR)/graphics/gl.c \
     $(KERNEL_DIR)/graphics/font.c \
+    $(KERNEL_DIR)/graphics/term.c \
     $(KERNEL_DIR)/graphics/compositor.c \
     $(KERNEL_DIR)/irq/irq.c \
     $(KERNEL_DIR)/lib/fdt.c \
