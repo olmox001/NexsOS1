@@ -8,7 +8,7 @@
 ARCH ?= aarch64
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V9.9.9
+VERSION ?= V0.0.4
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -187,6 +187,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/lib/fault_print.c \
     $(KERNEL_DIR)/lib/backtrace.c \
     $(KERNEL_DIR)/lib/stack_protector.c \
+    $(KERNEL_DIR)/lib/entropy.c \
     $(KERNEL_DIR)/lib/math.c \
     $(KERNEL_DIR)/lib/kmalloc.c \
     $(KERNEL_DIR)/lib/registry.c \
@@ -200,6 +201,8 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/graphics/region.c \
     $(KERNEL_DIR)/graphics/gl.c \
     $(KERNEL_DIR)/graphics/font.c \
+    $(KERNEL_DIR)/graphics/term.c \
+    $(KERNEL_DIR)/graphics/compositor_style.c \
     $(KERNEL_DIR)/graphics/compositor.c \
     $(KERNEL_DIR)/irq/irq.c \
     $(KERNEL_DIR)/lib/fdt.c \
@@ -307,7 +310,7 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o
 USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
 # System ELFs (placed in /sys/bin)
-SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf $(BUILD_DIR)/notify_srv.elf \
+SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf $(BUILD_DIR)/notify_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf $(BUILD_DIR)/top.elf $(BUILD_DIR)/nexs-fm.elf
 
 # User ELFs (placed in /bin)
@@ -358,6 +361,7 @@ $(BUILD_DIR)/forkbomb.elf: $(BUILD_DIR)/$(USER_DIR)/bin/forkbomb.o $(USER_LIB_O)
 $(BUILD_DIR)/sandboxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/sandboxchild.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxchild.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/hello.elf: $(BUILD_DIR)/$(USER_DIR)/bin/hello.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fontman.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/fontman.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -417,6 +421,7 @@ rootfs: user
 	@# Copy essential WAD files to the root and /bin for engine detection
 	@-cp user/bin/doom/freedoom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/bin/globe.png $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/bin/doom/doomsav0.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/bin/doom/doomsav1.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/bin/doom/doomsav2.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true

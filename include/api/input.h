@@ -7,6 +7,7 @@
 /* Input event types */
 #define INPUT_TYPE_KEYBOARD 1
 #define INPUT_TYPE_MOUSE    2
+#define INPUT_TYPE_RESIZE   3  /* window/desktop resized: event.resize.w/h (GFX-DYN-01) */
 
 /* Key states */
 #define KEY_RELEASED 0
@@ -40,6 +41,9 @@ typedef struct {
             int state;
             int x, y;
         } mouse;
+        struct {
+            int w, h; /* new logical size of the window (or desktop) */
+        } resize;
     };
 } input_event_t;
 

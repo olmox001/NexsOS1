@@ -53,3 +53,27 @@ void gpu_unregister(struct gpu_device *dev) {
 }
 
 struct gpu_device *gpu_get_primary(void) { return primary_gpu; }
+
+/* Contract wrappers over the primary GPU (GFX-DYN-01).  Each is a no-op
+ * returning -1 if there is no primary device or the driver does not implement
+ * the op, so the compositor can call them unconditionally. */
+int gpu_set_mode(int width, int height) {
+  struct gpu_device *dev = primary_gpu;
+  if (!dev || !dev->ops || !dev->ops->set_mode)
+    return -1;
+  return dev->ops->set_mode(dev, width, height);
+}
+
+int gpu_get_display_info(int *width, int *height) {
+  struct gpu_device *dev = primary_gpu;
+  if (!dev || !dev->ops || !dev->ops->get_display_info)
+    return -1;
+  return dev->ops->get_display_info(dev, width, height);
+}
+
+int gpu_poll_events(int *new_w, int *new_h) {
+  struct gpu_device *dev = primary_gpu;
+  if (!dev || !dev->ops || !dev->ops->poll_events)
+    return -1;
+  return dev->ops->poll_events(dev, new_w, new_h);
+}

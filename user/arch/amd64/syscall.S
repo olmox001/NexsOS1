@@ -161,6 +161,48 @@ _sys_window_grid:
     syscall
     ret
 
+/* long _sys_display_info(void) — packed (w<<16)|h (GFX-DYN-01) */
+.global _sys_display_info
+_sys_display_info:
+    movq $SYS_DISPLAY_INFO, %rax
+    syscall
+    ret
+
+/* int _sys_set_display_mode(int w, int h) */
+.global _sys_set_display_mode
+_sys_set_display_mode:
+    movq $SYS_SET_DISPLAY_MODE, %rax
+    syscall
+    ret
+
+/* int _sys_window_resize(int win_id, int w, int h) */
+.global _sys_window_resize
+_sys_window_resize:
+    movq $SYS_WINDOW_RESIZE, %rax
+    syscall
+    ret
+
+/* int _sys_display_poll(void) — returns 1 if a host display-change was applied */
+.global _sys_display_poll
+_sys_display_poll:
+    movq $SYS_DISPLAY_POLL, %rax
+    syscall
+    ret
+
+/* int _sys_set_style(int style_id, int theme_id) — -1 = keep */
+.global _sys_set_style
+_sys_set_style:
+    movq $SYS_SET_STYLE, %rax
+    syscall
+    ret
+
+/* int _sys_set_zoom(int percent) — desktop HiDPI/zoom */
+.global _sys_set_zoom
+_sys_set_zoom:
+    movq $SYS_SET_ZOOM, %rax
+    syscall
+    ret
+
 .global _sys_window_blit
 _sys_window_blit:
     movq $SYS_WINDOW_BLIT, %rax

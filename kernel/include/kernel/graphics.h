@@ -52,6 +52,16 @@ void render3d_clear_zbuffer(void);
 
 /* Compositor API */
 void compositor_init(void);
+/* compositor_resize: retarget the desktop/backbuffer to w x h (GFX-DYN-01).
+ * Allocation-free (capacity pre-allocated at init) so it is safe from any
+ * context.  The caller must have already set the GPU scanout to the same size
+ * (gpu_set_mode) so the next flush strides match. */
+void compositor_resize(int w, int h);
+/* compositor_get_size: current desktop (backbuffer) size. Backs SYS_DISPLAY_INFO. */
+void compositor_get_size(int *w, int *h);
+/* compositor_set_zoom: desktop zoom percent (HiDPI/zoom, F2). virtual desktop =
+ * physical*100/percent; the flush nearest-scales backbuffer→scanout. 0/-1. */
+int compositor_set_zoom(int percent);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
                              int pid);
 void compositor_destroy_window(int window_id);
@@ -67,6 +77,10 @@ int compositor_window_grid(int window_id, int *cols, int *rows);
 void compositor_focus_changed(int new_pid);
 uint32_t *compositor_get_buffer(int window_id);
 void compositor_move_window(int window_id, int x, int y);
+/* compositor_resize_window: resize a window's logical surface to w x h
+ * (reallocates the buffer, reflows the terminal).  Process context only.
+ * Returns 0 on success, -1 on failure.  Backs SYS_WINDOW_RESIZE (GFX-DYN-01). */
+int compositor_resize_window(int window_id, int w, int h);
 void compositor_render(void);
 void compositor_handle_click(int button, int state);
 void compositor_update_mouse(int dx, int dy, int absolute);
@@ -79,10 +93,23 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
                      const uint32_t *user_buf, int caller_pid);
 void compositor_set_window_flags(int window_id, int flags);
 
-/* Process/System API */
+/* Process/System seam (DIR-02).
+ *
+ * The compositor↔scheduler dependency is inverted: the scheduler owns the
+ * keyboard-focus hint (keyboard_focus_pid) and the compositor only *pushes* it
+ * down via sched_set_focus_pid() (#67/#83) — schedule() never calls back into
+ * the compositor.  The remaining PID↔window relation is kept explicit here:
+ *   - compositor_destroy_windows_by_pid(): process teardown closes its windows.
+ *   - compositor_get_window_by_pid(): the one PID→primary-window lookup.
+ * compositor_get_focus_pid() was removed (dead after SCHED-01): focus is read
+ * from the scheduler's published hint, not queried from the compositor. */
 void compositor_destroy_windows_by_pid(int pid);
 int compositor_get_window_by_pid(int pid);
-int compositor_get_focus_pid(void);
+/* Alias documenting the relation as window-centric (DIR-02): the primary
+ * window owned by a process, or -1 if it has none. */
+static inline int compositor_primary_window_of_pid(int pid) {
+  return compositor_get_window_by_pid(pid);
+}
 void compositor_tick(void);
 
 #endif /* _KERNEL_GRAPHICS_H */

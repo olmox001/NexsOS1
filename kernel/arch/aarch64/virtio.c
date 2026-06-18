@@ -175,6 +175,16 @@ int arch_virtio_get_count(uint32_t device_id) {
  *   out_irq    Output: IRQ number for the device, or unchanged if -1.
  * Returns: 0 if found, -1 if no device of that type at that index.
  */
+/* Device-config access on VirtIO-MMIO: config space is at base+VIRTIO_MMIO_CONFIG
+ * (0x100).  (GFX-DYN-01 F7) */
+uint32_t virtio_config_read32(virtio_handle_t dev, uint32_t offset) {
+    return hal_read32(dev->base + VIRTIO_MMIO_CONFIG + offset);
+}
+
+void virtio_config_write32(virtio_handle_t dev, uint32_t offset, uint32_t val) {
+    hal_write32(dev->base + VIRTIO_MMIO_CONFIG + offset, val);
+}
+
 int arch_virtio_get_device(uint32_t device_id, int index, virtio_handle_t *out_dev, uint32_t *out_irq) {
     int current = 0;
     for (int i = 0; i < virtio_dev_count; i++) {

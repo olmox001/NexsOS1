@@ -103,7 +103,7 @@ The amd64 implementations of `fdt_init` and `fdt_find_in_memory` are explicit st
 | LIB-VSNPRINTF-03 | W0 | MISSING | `kernel/lib/vsnprintf.c` | `%o` (octal) and `%e`/`%f` format specifiers are absent. Octal affects kernel use; float is reasonable to omit (no FPU in kernel). |
 | LIB-VSNPRINTF-04 | W1 | BAD-IMPL | `kernel/lib/vsnprintf.c:176-177` | `%p` hardcodes 16-digit field width regardless of `size - written`; on a near-full buffer the width guards prevent writing `0x` but the `print_num` call still runs with a near-zero `size` argument. |
 | LIB-PRINTK-01 | W2 | REFINE | `kernel/lib/printk.c:70,75` | `cpu->printk_buf` is 2048 bytes (`cpu.h:29`). Prefix is 6 bytes. `vsnprintf` receives `2048 - pfx` which for long messages silently truncates without any indication. No counter for dropped/truncated messages. |
-| LIB-SSP-01 | W3 | SECURITY | `kernel/lib/stack_protector.c:9` | `__stack_chk_guard` is a compile-time constant (`0x595e9fbd94fda766`). It is never randomized at boot, negating SSP against an attacker who knows the binary. |
+| LIB-SSP-01 | W3 | SECURITY | `kernel/lib/stack_protector.c:9` | `__stack_chk_guard` is a compile-time constant (`0x595e9fbd94fda766`). It is never randomized at boot, negating SSP against an attacker who knows the binary. ***RESOLVED (#71, `36fa344`)*** — `stack_guard_init()` reseeds the canary early in `kernel_main` from the unified `entropy_u64()` (HW RNG via `arch_hw_random` with a cycle-counter/splitmix64 fallback); NUL low byte + never-zero. |
 | LIB-MATH-03 | W1 | REFINE | `kernel/lib/math.c:123-126` | `sin_fp` range-reduces with linear subtraction of 2π; for very large inputs this is O(n) rather than a single modulo. |
 | LIB-REG-01 | W3 | WRONG-DESIGN | `kernel/lib/registry.c:18-19` + `kernel/include/kernel/registry.h:6-8` | Flat fixed-size store (128 slots, 64-byte keys, 128-byte values): no tree, no enumeration, no file semantics, no permissions. See §5.1 detailed entry. |
 | LIB-REG-02 | W3 | SECURITY | `kernel/lib/registry.c:10` | No permission check on registry writes. Any process can call `sys_registry(REG_OP_WRITE, "system.hostname", ...)` and overwrite system configuration. The comment defers this to "if needed later." |
@@ -281,7 +281,7 @@ Userland (`os1.h:170`) defines `FP_PI 205887` (correct). Math is correct in user
 | Finding | Fix |
 |---|---|
 | LIB-MATH-01 | Change `kernel/include/kernel/math.h:16` to `#define FP_PI 205887` (π × 2^16). Verify `sin_fp` correctness with a ktest. |
-| LIB-SSP-01 | Read a hardware entropy source (RNDR on AArch64, RDRAND on AMD64) at boot and XOR the result into `__stack_chk_guard`. |
+| LIB-SSP-01 | ***DONE (#71, `36fa344`)*** — Unified `entropy_u64()` (`kernel/lib/entropy.c`) reseeds `__stack_chk_guard` at boot over the `arch_hw_random` HAL primitive (RNDR / RDRAND) with a cycle-counter (`arch_timer_get_count`) splitmix64 fallback. |
 | LIB-KTEST-01 | Add a `ktest_failed` counter; set it in `KASSERT`; decrement `passed` if the test exits via `KASSERT`. Report the real counts. |
 | LIB-UTF8-01 | Add a `len` parameter to `utf8_decode` or document that it requires a NUL-terminated string with at least 4 bytes of read-ahead. |
 | LIB-REG-02 | Enforce permissions in `sys_registry`: check `current_process->permissions & PROC_PERM_ROOT` before allowing writes to keys prefixed `system.` or `kernel.`. |

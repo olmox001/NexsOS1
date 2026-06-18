@@ -162,6 +162,27 @@ static inline uint64_t arch_impl_timer_get_count(void) {
 static inline void arch_impl_timer_set_compare(uint64_t val) { (void)val; }
 static inline void arch_impl_timer_control(uint32_t val) { (void)val; }
 
+/* --- Entropy (ISA primitive) --- */
+/* arch_impl_hw_random: one attempt at RDRAND (the on-chip DRBG).  Returns 1 and
+ * writes *out on success; 0 if CPUID.01h:ECX[30] does not advertise RDRAND (the
+ * default QEMU CPU model) or the read transiently failed.  Pure ISA wrapper:
+ * the retry/mix policy lives in the generic entropy layer (kernel/lib/entropy.c). */
+static inline int arch_impl_hw_random(uint64_t *out) {
+    uint32_t a, b, c, d;
+    __asm__ __volatile__("cpuid"
+                         : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                         : "0"(1u), "2"(0u));
+    if (!(c & (1u << 30)))
+        return 0; /* no RDRAND */
+    uint64_t r;
+    unsigned char ok;
+    __asm__ __volatile__("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
+    if (!ok)
+        return 0; /* transient failure */
+    *out = r;
+    return 1;
+}
+
 /* --- Spinlocks --- */
 static inline void arch_impl_spin_lock(volatile uint32_t *lock) {
     while (__sync_lock_test_and_set(lock, 1)) {

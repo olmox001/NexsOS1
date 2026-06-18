@@ -175,13 +175,14 @@ void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
           continue;
         }
 
-        /* Alpha blending approximation using shifts */
+        /* Proper coverage blend: round-to-nearest /255 (not >>8), so anti-
+         * aliased glyph edges are full-strength, not dimmed (GFX-DYN-01 #121.4). */
         uint32_t bg = surf->buffer[py * surf->stride + px];
         uint32_t inv_alpha = 255 - alpha;
 
-        uint32_t r = (r_color * alpha + ((bg >> 16) & 0xFF) * inv_alpha) >> 8;
-        uint32_t gr = (g_color * alpha + ((bg >> 8) & 0xFF) * inv_alpha) >> 8;
-        uint32_t b = (b_color * alpha + (bg & 0xFF) * inv_alpha) >> 8;
+        uint32_t r = gl_div255(r_color * alpha + ((bg >> 16) & 0xFF) * inv_alpha);
+        uint32_t gr = gl_div255(g_color * alpha + ((bg >> 8) & 0xFF) * inv_alpha);
+        uint32_t b = gl_div255(b_color * alpha + (bg & 0xFF) * inv_alpha);
 
         surf->buffer[py * surf->stride + px] = 0xFF000000 | (r << 16) | (gr << 8) | b;
       }

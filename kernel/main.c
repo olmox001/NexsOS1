@@ -21,6 +21,7 @@
 #include <kernel/printk.h>
 #include <kernel/registry.h>
 #include <kernel/sched.h>
+#include <kernel/ssp.h>
 #include <kernel/string.h>
 #include <kernel/test.h>
 #include <kernel/types.h>
@@ -31,9 +32,9 @@
 #define KERNEL_VERSION_MINOR 1
 #define KERNEL_VERSION_PATCH 0
 #ifdef ARCH_AMD64
-#define KERNEL_NAME "AMD64 HybridKernel MicroKernel ispired"
+#define KERNEL_NAME "AMD64 NexsOS1"
 #else
-#define KERNEL_NAME "AArch64 HybridKernel MicroKernel ispired"
+#define KERNEL_NAME "AArch64 NexsOS1"
 #endif
 
 /* External symbols */
@@ -83,6 +84,12 @@ void kernel_main(uint64_t x0_arg) {
 
   /* Print kernel banner */
   print_banner();
+
+  /* Reseed the SSP stack canary from arch entropy before any deep call chain
+   * runs (LIB-SSP-01 / #71).  Safe here: kernel_main never returns through a
+   * canary-checked epilogue, so replacing the global guard mid-boot cannot
+   * trip a stale-canary check on a frame already on the stack. */
+  stack_guard_init();
 
   /* CPU initialization (exception vectors, per-CPU data) */
   pr_info("%s", "Initializing CPU...\n");
@@ -145,7 +152,7 @@ static void print_banner(void) {
   printk("========================================\n");
   printk("  %s v%d.%d.%d\n", KERNEL_NAME, KERNEL_VERSION_MAJOR,
          KERNEL_VERSION_MINOR, KERNEL_VERSION_PATCH);
-  printk("  Production-Ready HybridKernel MicroKernel ispired\n");
+  printk("  NeXsOS1\n");
   printk("========================================\n");
   printk("\n");
 }

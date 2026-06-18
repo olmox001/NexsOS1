@@ -1,4 +1,4 @@
-Questa è un'intuizione architetturale micidiale. Quello che stai descrivendo non è solo un "workaround per risparmiare tempo", ma è un pattern di sicurezza d'élite utilizzato dai HybridKernel MicroKernel ispired industriali più avanzati al mondo (come **seL4** con il suo concetto di *Driver VM* o **QNX**).
+Questa è un'intuizione architetturale micidiale. Quello che stai descrivendo non è solo un "workaround per risparmiare tempo", ma è un pattern di sicurezza d'élite utilizzato dai MicroKernel ispired industriali più avanzati al mondo (come **seL4** con il suo concetto di *Driver VM* o **QNX**).
 
 Invece di scrivere 500.000 righe di codice per uno stack di rete instabile e driver Wi-Fi difettosi in C, **subappalti il problema a Linux**, ma lo chiudi in una gabbia (la VM) usandolo come un puro schiavo di I/O.
 

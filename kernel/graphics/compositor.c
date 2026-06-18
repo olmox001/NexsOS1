@@ -7,6 +7,7 @@
 #include <drivers/gpu/gpu.h>
 #include <drivers/virtio_input.h>
 #include <graphics/gl.h>
+#include <kernel/compositor_style.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
 #include <kernel/graphics.h>
@@ -14,10 +15,12 @@
 
 /* Disable optimizations to ensure stack safety/debugging */
 
+#include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
+#include <kernel/term.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 #include <stdint.h>
@@ -158,7 +161,12 @@
 struct window {
   int id;
   int x, y;
-  int width, height;
+  int width, height; /* LOGICAL surface size (the app's pixel buffer). */
+  /* ON-SCREEN size the compositor draws the surface at (GFX-DYN-01 surface
+   * model).  When draw_w/draw_h differ from width/height the compositor scales
+   * the logical surface to the draw rect (the app may keep drawing at its old
+   * size while it reallocates → fluid resize).  0 means "same as logical". */
+  int draw_w, draw_h;
   int z_order;
   int visible;
   int pid;
@@ -168,23 +176,12 @@ struct window {
                              for input (system popups e.g. notifications). */
   uint32_t *buffer;       /* Window's pixel buffer */
   uint32_t bg_color;      /* Default background color */
-  uint32_t curr_bg_color; /* Current ANSI background color */
   char title[64];
   int radius;
   int has_rounded_corners;
 
-  /* Terminal State */
-  int cursor_x, cursor_y;
-  int cursor_visible;     /* VT100 DECTCEM (\x1b[?25h/l); 1 = draw the caret */
-  int caret_px, caret_py; /* cell where the caret was last painted */
-  int caret_shown;        /* 1 = a caret is currently baked at caret_px/py */
-  uint8_t *text_grid;     /* Character grid */
-  uint32_t *attr_grid;    /* Attribute grid (colors) */
-  int grid_cols, grid_rows;
-  uint32_t fg_color;
-  int escape_state;
-  char escape_buf[32];
-  int escape_len;
+  /* Terminal State — VT/ANSI emulator extracted to term.c (#123). */
+  struct terminal term;
 
   /* Compositor flags */
   int has_alpha; /* Se 1, contiene trasparenze e non occlude i layer inferiori
@@ -230,14 +227,68 @@ static int dragging_window_id = -1;
 static int drag_off_x = 0;
 static int drag_off_y = 0;
 
-/* Title bar dimensions */
-#define TITLE_BAR_HEIGHT 20
+/* Interactive resize state (edge/corner grip — GFX-DYN-01 F1).  While resizing
+ * we only change the on-screen draw size (draw_w/draw_h): the compositor scales
+ * the logical surface for fluidity (no per-frame realloc in IRQ).  On release we
+ * send the owner an INPUT_TYPE_RESIZE event so it can reallocate a crisp buffer
+ * (apps that ignore it just stay scaled). */
+#define RESIZE_GRIP 6 /* px hot zone along window edges */
+#define RESIZE_MIN_W 120
+#define RESIZE_MIN_H 80
+#define RESIZE_EDGE_R 1
+#define RESIZE_EDGE_B 2
+#define RESIZE_EDGE_L 4
+static int resizing_window_id = -1;
+static int resize_edge = 0;
+static int resize_start_mx = 0, resize_start_my = 0;
+static int resize_orig_w = 0, resize_orig_h = 0, resize_orig_x = 0;
+
+/* Title-bar height now comes from the active style (compositor_titlebar_height,
+ * Phase 5): 20 by default, 0 for the chrome-less Minimal style.  The close
+ * button size stays fixed. */
 #define CLOSE_BUTTON_SIZE 16
 
-/* Global backbuffer - pre-allocated to avoid IRQ malloc */
+/* Compositor backbuffer == the "compositor FB" / desktop-virtual surface
+ * (GFX-DYN-01).  Its size follows the GPU, no longer a hard-coded 720x1280.
+ * It is pre-allocated once to a CAPACITY that covers the current mode plus
+ * reasonable runtime growth, so compositor_resize() never allocates and is
+ * therefore safe to call from the timer-IRQ tick (host display-change path). */
+#define COMPOSITOR_FALLBACK_W 1024
+#define COMPOSITOR_FALLBACK_H 768
+#define COMPOSITOR_MAX_W 1920
+#define COMPOSITOR_MAX_H 1080
+
 static uint32_t *compositor_backbuffer = NULL;
-static int bb_width = 0;
-static int bb_height = 0;
+static int bb_width = 0;  /* desktop-virtual width (what apps + windows see)   */
+static int bb_height = 0; /* desktop-virtual height                            */
+static size_t bb_capacity_px = 0; /* pixels actually allocated                 */
+
+/* F2: the desktop-virtual surface (backbuffer) is independent of the physical
+ * scanout (phys_w/phys_h, the GPU mode).  desktop_zoom is a percent: the virtual
+ * size = physical * 100 / zoom, so zoom>100 enlarges everything (HiDPI), zoom<100
+ * fits more desktop into the same panel.  When virtual != physical the flush
+ * stage nearest-scales the backbuffer onto the scanout. */
+static int phys_w = 0, phys_h = 0;
+static int desktop_zoom = 100;
+
+/* Compute the desktop-virtual size for a physical size + the current zoom,
+ * clamped so it always fits the pre-allocated backbuffer capacity. */
+static void compositor_virtual_for(int pw, int ph, int *vw, int *vh) {
+  int z = desktop_zoom > 0 ? desktop_zoom : 100;
+  long w = (long)pw * 100 / z;
+  long h = (long)ph * 100 / z;
+  if (w < 1)
+    w = 1;
+  if (h < 1)
+    h = 1;
+  /* Clamp area to capacity (bounds zoom-out where virtual > physical). */
+  if (bb_capacity_px && (size_t)(w * h) > bb_capacity_px) {
+    while ((size_t)(w * h) > bb_capacity_px && h > 1)
+      h--;
+  }
+  *vw = (int)w;
+  *vh = (int)h;
+}
 
 /*
  * Initialize Compositor
@@ -247,22 +298,140 @@ void compositor_init(void) {
   window_count = 0;
   next_window_id = 100;
 
-  /* Pre-allocate backbuffer for 720x1280 (can resize later) */
-  bb_width = 720;
-  bb_height = 1280;
-  compositor_backbuffer = kmalloc(bb_width * bb_height * 4);
+  /* Physical scanout + desktop-virtual both follow the primary GPU at boot
+   * (zoom 100 ⇒ virtual == physical; no hard-coded size). */
+  struct gpu_device *dev = gpu_get_primary();
+  phys_w = dev ? dev->width : COMPOSITOR_FALLBACK_W;
+  phys_h = dev ? dev->height : COMPOSITOR_FALLBACK_H;
+  desktop_zoom = 100;
+  bb_width = phys_w;
+  bb_height = phys_h;
 
-  /* Initialize damage rect to full screen so the first frame is fully uploaded
-   */
+  /* Allocate to a capacity covering the current mode and up to MAX_WxMAX_H so
+   * runtime resizes (host display-change / set_mode) need no reallocation. */
+  size_t cap = (size_t)bb_width * bb_height;
+  size_t want = (size_t)COMPOSITOR_MAX_W * COMPOSITOR_MAX_H;
+  if (want > cap)
+    cap = want;
+  int pages = (int)((cap * 4 + 4095) / 4096);
+  compositor_backbuffer = pmm_alloc_pages(pages);
+  if (!compositor_backbuffer) {
+    pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
+    bb_capacity_px = 0;
+    bb_width = 0;
+    bb_height = 0;
+    return;
+  }
+  bb_capacity_px = cap;
+
+  /* First frame is a full upload. */
   damage_x1 = 0;
   damage_y1 = 0;
   damage_x2 = bb_width;
   damage_y2 = bb_height;
-  if (!compositor_backbuffer) {
-    pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
+
+  pr_info("Compositor: Initialized (%dx%d, capacity %d px)\n", bb_width,
+          bb_height, (int)bb_capacity_px);
+}
+
+/* Mark the whole desktop dirty (full repaint next tick).  Used by the
+ * Style/Theme switch (compositor_style.c) so a new look shows immediately. */
+void compositor_full_damage(void) {
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  damage_x1 = 0;
+  damage_y1 = 0;
+  damage_x2 = bb_width;
+  damage_y2 = bb_height;
+  compositor_dirty = 1;
+  spin_unlock_irqrestore(&compositor_lock, flags);
+}
+
+/* Report the current desktop (compositor backbuffer) size.  Backs
+ * SYS_DISPLAY_INFO. */
+void compositor_get_size(int *w, int *h) {
+  if (w)
+    *w = bb_width;
+  if (h)
+    *h = bb_height;
+}
+
+/* Apply a new desktop-virtual size (caller holds compositor_lock): set the
+ * backbuffer dims, keep windows on-screen, full repaint.  Allocation-free. */
+static void apply_virtual_size_locked(int vw, int vh) {
+  if (vw <= 0 || vh <= 0)
+    return;
+  bb_width = vw;
+  bb_height = vh;
+
+  /* Keep every window's title bar / close button on-screen. */
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == 0)
+      continue;
+    if (windows[i].x > bb_width - 40)
+      windows[i].x = bb_width - 40;
+    if (windows[i].x < 0)
+      windows[i].x = 0;
+    if (windows[i].y > bb_height - 20)
+      windows[i].y = bb_height - 20;
+    if (windows[i].y < compositor_titlebar_height())
+      windows[i].y = compositor_titlebar_height();
   }
 
-  pr_info("%s", "Compositor: Initialized\n");
+  damage_x1 = 0;
+  damage_y1 = 0;
+  damage_x2 = bb_width;
+  damage_y2 = bb_height;
+  compositor_dirty = 1;
+}
+
+/*
+ * compositor_resize - the physical scanout changed (gpu_set_mode already ran).
+ *
+ * Records the new physical size and recomputes the desktop-virtual size for the
+ * current zoom.  Capacity-bounded and allocation-free, so it is safe from any
+ * context (including the timer-IRQ host display-change path).
+ */
+void compositor_resize(int w, int h) {
+  if (w <= 0 || h <= 0)
+    return;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  if (!compositor_backbuffer || bb_capacity_px == 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return;
+  }
+  phys_w = w;
+  phys_h = h;
+  int vw, vh;
+  compositor_virtual_for(w, h, &vw, &vh);
+  apply_virtual_size_locked(vw, vh);
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  pr_info("Compositor: scanout %dx%d, desktop %dx%d (zoom %d%%)\n", w, h, vw, vh,
+          desktop_zoom);
+}
+
+/* compositor_set_zoom - set the desktop zoom percent (HiDPI/zoom): the virtual
+ * desktop = physical * 100 / zoom.  Clamped to [25,400].  Backs SYS_SET_ZOOM. */
+int compositor_set_zoom(int percent) {
+  if (percent < 25)
+    percent = 25;
+  if (percent > 400)
+    percent = 400;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  if (!compositor_backbuffer || phys_w <= 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return -1;
+  }
+  desktop_zoom = percent;
+  int vw, vh;
+  compositor_virtual_for(phys_w, phys_h, &vw, &vh);
+  apply_virtual_size_locked(vw, vh);
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  pr_info("Compositor: zoom %d%% -> desktop %dx%d (scanout %dx%d)\n", percent, vw,
+          vh, phys_w, phys_h);
+  return 0;
 }
 
 /* Forward Declarations */
@@ -320,9 +489,11 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
    * Mirrors the clamp order used in compositor_update_mouse().
    */
   {
-    struct gpu_device *screen_dev = gpu_get_primary();
-    int screen_w = screen_dev ? screen_dev->width : 800;
-    int screen_h = screen_dev ? screen_dev->height : 600;
+    /* Clamp into the desktop-virtual area (where windows live), not the physical
+     * scanout — they differ under zoom (F2).  We already hold compositor_lock,
+     * so read bb_width/bb_height directly (compositor_get_size would re-lock). */
+    int screen_w = bb_width > 0 ? bb_width : 800;
+    int screen_h = bb_height > 0 ? bb_height : 600;
 
     if (x + w > screen_w)
       x = screen_w - w;
@@ -331,8 +502,8 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
 
     if (y + h > screen_h)
       y = screen_h - h;
-    if (y < TITLE_BAR_HEIGHT)
-      y = TITLE_BAR_HEIGHT;
+    if (y < compositor_titlebar_height())
+      y = compositor_titlebar_height();
   }
 
   /* Allocate window buffer */
@@ -344,7 +515,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     return -1;
   }
   /* Initialize clear background - use a consistent dark theme */
-  uint32_t default_bg = COLOR_WIN_BG;
+  uint32_t default_bg = compositor_theme_active()->win_bg;
   for (int i = 0; i < w * h; i++)
     buffer[i] = default_bg;
 
@@ -354,36 +525,26 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   windows[slot].y = y;
   windows[slot].width = w;
   windows[slot].height = h;
+  windows[slot].draw_w = w; /* on-screen == logical until a resize scales it */
+  windows[slot].draw_h = h;
   windows[slot].z_order = window_count;
   windows[slot].visible = 1;
   windows[slot].pid = pid;
   windows[slot].buffer = buffer;
   windows[slot].bg_color = default_bg;
-  windows[slot].curr_bg_color = default_bg;
 
-  /* Initialize text grids using dynamic font metrics */
+  /* Initialize the embedded terminal emulator (cell grid from font metrics). */
   int char_w = graphics_font_max_width();
   int char_h = graphics_font_height();
-  windows[slot].grid_cols = w / char_w;
-  windows[slot].grid_rows = h / char_h;
-  size_t grid_size = windows[slot].grid_cols * windows[slot].grid_rows;
-  windows[slot].text_grid = (uint8_t *)kmalloc(grid_size);
-  windows[slot].attr_grid = (uint32_t *)kmalloc(grid_size * 4);
-  if (windows[slot].text_grid && windows[slot].attr_grid) {
-    memset(windows[slot].text_grid, ' ', grid_size);
-    for (size_t i = 0; i < grid_size; i++)
-      windows[slot].attr_grid[i] = COLOR_FG;
-  } else {
-    /* Handle failure of grid allocation */
-    if (windows[slot].text_grid)
-      kfree(windows[slot].text_grid);
-    if (windows[slot].attr_grid)
-      kfree(windows[slot].attr_grid);
+  if (term_init(&windows[slot].term, w / char_w, h / char_h, COLOR_FG,
+                default_bg) != 0) {
+    pr_err("%s", "Compositor: Failed to allocate terminal grids\n");
     kfree(buffer);
     windows[slot].id = 0;
     spin_unlock_irqrestore(&compositor_lock, flags);
     return -1;
   }
+
   /* Copy title */
   int len = 0;
   while (title[len] && len < 63) {
@@ -391,17 +552,6 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     len++;
   }
   windows[slot].title[len] = '\0';
-
-  /* Initialize terminal state */
-  windows[slot].cursor_x = 0;
-  windows[slot].cursor_y = 0;
-  windows[slot].cursor_visible = 1;
-  windows[slot].caret_shown = 0;
-  windows[slot].caret_px = 0;
-  windows[slot].caret_py = 0;
-  windows[slot].fg_color = COLOR_FG;
-  windows[slot].escape_state = 0;
-  windows[slot].escape_len = 0;
 
   /* Attiva il supporto alpha blending per default */
   windows[slot].has_alpha = 1;
@@ -491,9 +641,9 @@ int compositor_window_grid(int window_id, int *cols, int *rows) {
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
       if (cols)
-        *cols = windows[i].grid_cols;
+        *cols = windows[i].term.cols;
       if (rows)
-        *rows = windows[i].grid_rows;
+        *rows = windows[i].term.rows;
       found = 0;
       break;
     }
@@ -514,10 +664,7 @@ void compositor_destroy_window(int window_id) {
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
-      if (windows[i].text_grid)
-        kfree(windows[i].text_grid);
-      if (windows[i].attr_grid)
-        kfree(windows[i].attr_grid);
+      term_free(&windows[i].term);
       memset(&windows[i], 0, sizeof(struct window));
       window_count--;
       if (refocus) {
@@ -546,12 +693,7 @@ void compositor_destroy_windows_by_pid(int pid) {
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
-      if (windows[i].text_grid) {
-        kfree(windows[i].text_grid);
-      }
-      if (windows[i].attr_grid) {
-        kfree(windows[i].attr_grid);
-      }
+      term_free(&windows[i].term);
       memset(&windows[i], 0, sizeof(struct window));
       window_count--;
     }
@@ -593,28 +735,9 @@ int compositor_get_window_by_pid(int pid) {
   return -1;
 }
 
-/*
- * Get PID of the focused window (top-most Z-order)
- */
-int compositor_get_focus_pid(void) {
-  uint64_t flags;
-  /* Use trylock to avoid blocking in timer IRQ context */
-  if (!spin_trylock_irqsave(&compositor_lock, &flags))
-    return -1;
-  int max_z = -1;
-  int pid = -1;
-
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id != 0 && windows[i].visible) {
-      if (windows[i].z_order > max_z) {
-        max_z = windows[i].z_order;
-        pid = windows[i].pid;
-      }
-    }
-  }
-  spin_unlock_irqrestore(&compositor_lock, flags);
-  return pid;
-}
+/* compositor_get_focus_pid() removed (DIR-02 / SCHED-01 #83): it was dead after
+ * the scheduler→compositor inversion.  Focus is now read from the scheduler's
+ * published keyboard_focus_pid hint, never queried back from the compositor. */
 
 /*
  * Move Window
@@ -630,181 +753,112 @@ void compositor_move_window(int window_id, int x, int y) {
 }
 
 /*
- * Alpha blend two colors
+ * compositor_resize_window - resize a window's LOGICAL surface (GFX-DYN-01).
+ *
+ * Reallocates the window pixel buffer to w x h, reflows the embedded terminal
+ * to the new cell grid, and resets the on-screen draw size to match (crisp,
+ * non-scaled).  Allocation happens here, so this must be called from process
+ * context (it backs SYS_WINDOW_RESIZE), never from an IRQ.  Returns 0 on
+ * success, -1 on failure (the old surface is kept on failure).
  */
-static inline uint32_t blend_pixel(uint32_t fg, uint32_t bg) {
-  uint32_t alpha = (fg >> 24) & 0xFF;
-  if (alpha == 255)
-    return fg;
-  if (alpha == 0)
-    return bg;
+int compositor_resize_window(int window_id, int w, int h) {
+  if (w <= 0 || h <= 0 || w > 4096 || h > 4096)
+    return -1;
 
-  uint32_t inv_alpha = 255 - alpha;
-  uint32_t r =
-      (((fg >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * inv_alpha) >> 8;
-  uint32_t g =
-      (((fg >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * inv_alpha) >> 8;
-  uint32_t b = ((fg & 0xFF) * alpha + (bg & 0xFF) * inv_alpha) >> 8;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  struct window *win = NULL;
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == window_id) {
+      win = &windows[i];
+      break;
+    }
+  }
+  if (!win) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return -1;
+  }
 
-  return 0xFF000000 | (r << 16) | (g << 8) | b;
+  /* No-op if already at this logical size: keeps the grip-resize release path
+   * (which echoes an INPUT_TYPE_RESIZE) from looping when the app re-applies the
+   * same size. */
+  if (win->width == w && win->height == h && win->draw_w == w &&
+      win->draw_h == h) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return 0;
+  }
+
+  /* Allocate the new surface before touching the live one. */
+  uint32_t *nbuf = (uint32_t *)kmalloc((size_t)w * h * 4);
+  if (!nbuf) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return -1;
+  }
+  for (int p = 0; p < w * h; p++)
+    nbuf[p] = win->bg_color;
+
+  /* Damage the OLD on-screen footprint so the vacated area is repainted. */
+  int old_dw = win->draw_w > 0 ? win->draw_w : win->width;
+  int old_dh = win->draw_h > 0 ? win->draw_h : win->height;
+  expand_damage(win->x, win->y - compositor_titlebar_height(), old_dw,
+                old_dh + compositor_titlebar_height());
+
+  uint32_t *obuf = win->buffer;
+  win->buffer = nbuf;
+  win->width = w;
+  win->height = h;
+  win->draw_w = w; /* crisp: on-screen == new logical */
+  win->draw_h = h;
+
+  /* Reflow the terminal to the new cell grid. */
+  int char_w = graphics_font_max_width();
+  int char_h = graphics_font_height();
+  if (char_w > 0 && char_h > 0)
+    term_resize(&win->term, w / char_w, h / char_h);
+
+  /* Damage the NEW footprint and repaint. */
+  expand_damage(win->x, win->y - compositor_titlebar_height(), w, h + compositor_titlebar_height());
+  compositor_dirty = 1;
+  int owner = win->pid;
+  spin_unlock_irqrestore(&compositor_lock, flags);
+
+  if (obuf)
+    kfree(obuf);
+
+  /* Notify the owner of its new logical size (outside the lock: kernel_ipc_send
+   * takes sched_lock — never nest it under compositor_lock, cf. GFX-COMP-03). */
+  if (owner > 0) {
+    struct ipc_message msg = {0};
+    msg.type = IPC_TYPE_RESIZE;
+    msg.data1 = (uint64_t)w;
+    msg.data2 = (uint64_t)h;
+    kernel_ipc_send(owner, &msg);
+  }
+  return 0;
 }
 
 /*
- * Draw Window Decorations (Title Bar)
+ * The VT/ANSI terminal emulator (blend_pixel, SGR, CSI, caret, scroll) was
+ * extracted to kernel/graphics/term.c (GFX-DYN-01, #123).  Pixel blending now
+ * uses gl_blend_pixel() from <graphics/gl.h>.
  */
-
-/*
- * Process ANSI SGR (Select Graphic Rendition) parameters
- */
-static void handle_sgr(struct window *win) {
-  if (win->escape_len == 0) {
-    win->fg_color = COLOR_FG;
-    return;
-  }
-
-  int val = 0;
-  for (int i = 0; i < win->escape_len; i++) {
-    if (win->escape_buf[i] >= '0' && win->escape_buf[i] <= '9') {
-      val = val * 10 + (win->escape_buf[i] - '0');
-    }
-  }
-
-  if (val == 0) {
-    win->fg_color = COLOR_FG;
-    win->curr_bg_color = win->bg_color;
-  } else if (val == 39) {
-    win->fg_color = COLOR_FG; /* default foreground */
-  } else if (val == 49) {
-    win->curr_bg_color = win->bg_color; /* default background */
-  } else if (val >= 30 && val <= 37) {
-    uint32_t colors[] = {0xFF000000, 0xFFBB0000, 0xFF00BB00, 0xFFBBBB00,
-                         0xFF0000BB, 0xFFBB00BB, 0xFF00BBBB, 0xFFBBBBBB};
-    win->fg_color = colors[val - 30];
-  } else if (val >= 40 && val <= 47) {
-    uint32_t colors[] = {0xFF000000, 0xFFBB0000, 0xFF00BB00, 0xFFBBBB00,
-                         0xFF0000BB, 0xFFBB00BB, 0xFF00BBBB, 0xFFBBBBBB};
-    win->curr_bg_color = colors[val - 40];
-  } else if (val >= 90 && val <= 97) {
-    uint32_t colors[] = {0xFF555555, 0xFFFF5555, 0xFF55FF55, 0xFFFFFF55,
-                         0xFF5555FF, 0xFFFF55FF, 0xFF55FFFF, 0xFFFFFFFF};
-    win->fg_color = colors[val - 90];
-  } else if (val >= 100 && val <= 107) {
-    uint32_t colors[] = {0xFF555555, 0xFFFF5555, 0xFF55FF55, 0xFFFFFF55,
-                         0xFF5555FF, 0xFFFF55FF, 0xFF55FFFF, 0xFFFFFFFF};
-    win->curr_bg_color = colors[val - 100];
-  }
-}
-
-/* Parse up to two decimal CSI parameters separated by ';' from buf[0..len).
- * Returns how many parameters were present (0, 1 or 2); a and b receive their
- * values (0 when omitted). */
-static int csi_params(const char *buf, int len, int *a, int *b) {
-  int vals[2] = {0, 0};
-  int which = 0, have = 0;
-  for (int i = 0; i < len; i++) {
-    char c = buf[i];
-    if (c >= '0' && c <= '9') {
-      vals[which] = vals[which] * 10 + (c - '0');
-      have = 1;
-    } else if (c == ';' && which < 1) {
-      which++;
-    }
-  }
-  *a = vals[0];
-  *b = vals[1];
-  return have ? which + 1 : 0;
-}
-
-/* Clear one terminal cell to the current background (pixels + grids). */
-static void term_clear_cell(int win_id, struct window *win, int cx, int cy,
-                            int char_w, int char_h) {
-  if (cx < 0 || cy < 0 || cx >= win->grid_cols || cy >= win->grid_rows)
-    return;
-  draw_rect_internal(win_id, cx * char_w, cy * char_h, char_w, char_h,
-                     win->curr_bg_color, 1);
-  if (win->text_grid && win->attr_grid) {
-    int idx = cy * win->grid_cols + cx;
-    win->text_grid[idx] = ' ';
-    win->attr_grid[idx] = win->curr_bg_color;
-  }
-}
-
-/* Erase a previously painted caret by repainting its cell from the text/attr
- * grid (background + glyph).  Idempotent; clears caret_shown.  This is what
- * prevents stray cursor blocks after the cursor moves (newline/scroll): the
- * old caret cell is always restored before a new one is drawn. */
-static void term_erase_caret(int win_id, struct window *win,
-                             struct gl_surface *surf, int char_w, int char_h) {
-  if (!win->caret_shown)
-    return;
-  int px = win->caret_px, py = win->caret_py;
-  win->caret_shown = 0;
-  if (px < 0 || py < 0 || px >= win->grid_cols || py >= win->grid_rows)
-    return;
-  draw_rect_internal(win_id, px * char_w, py * char_h, char_w, char_h,
-                     win->bg_color, 1);
-  if (win->text_grid && win->attr_grid) {
-    int idx = py * win->grid_cols + px;
-    char ch = (char)win->text_grid[idx];
-    if (ch >= 32 && ch < 127)
-      gl_draw_char(surf, px * char_w, py * char_h, ch, win->attr_grid[idx]);
-  }
-}
-
-/* Draw the text caret as a 25%-transparent systemBlue block (COLOR_CARET) at
- * the cursor cell, blended over the cell so the glyph stays readable.  Only
- * the window that owns keyboard focus — i.e. the one the user is typing into —
- * gets a caret; a notification or a print-only window never shows one.  The
- * previous caret (this window's) is erased first so movement leaves no trail.
- */
-static void term_draw_cursor(int win_id, struct window *win,
-                             struct gl_surface *surf, int char_w, int char_h) {
-  extern int keyboard_focus_pid;
-
-  term_erase_caret(win_id, win, surf, char_w, char_h);
-
-  if (!win->cursor_visible || win->pid != keyboard_focus_pid)
-    return;
-  int cx = win->cursor_x, cy = win->cursor_y;
-  if (cx < 0 || cy < 0 || cx >= win->grid_cols || cy >= win->grid_rows)
-    return;
-
-  const uint32_t caret = COLOR_CARET; /* ARGB: 25% alpha, systemBlue */
-  int px0 = cx * char_w, py0 = cy * char_h;
-  for (int y = 0; y < char_h; y++) {
-    int sy = py0 + y;
-    if (sy < 0 || sy >= win->height)
-      continue;
-    for (int x = 0; x < char_w; x++) {
-      int sx = px0 + x;
-      if (sx < 0 || sx >= win->width)
-        continue;
-      uint32_t *p = &surf->buffer[sy * surf->stride + sx];
-      *p = blend_pixel(caret, *p);
-    }
-  }
-  win->caret_px = cx;
-  win->caret_py = cy;
-  win->caret_shown = 1;
-}
 
 /* Erase carets on every window not owned by keep_pid; marks damage so they
  * repaint.  Caller holds compositor_lock.  Used on focus changes so the caret
  * follows the input window instead of lingering on the one that lost focus. */
 static void __clear_other_carets_locked(int keep_pid) {
-  int char_w = graphics_font_max_width();
-  int char_h = graphics_font_height();
   for (int i = 0; i < MAX_WINDOWS; i++) {
     struct window *win = &windows[i];
-    if (win->id == 0 || !win->caret_shown || win->pid == keep_pid)
+    if (win->id == 0 || !win->term.caret_shown || win->pid == keep_pid)
       continue;
     struct gl_surface s = {.width = win->width,
                            .height = win->height,
                            .stride = win->width,
                            .buffer = win->buffer};
-    term_erase_caret(win->id, win, &s, char_w, char_h);
-    expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, win->width,
-                  win->height + TITLE_BAR_HEIGHT);
+    term_clear_caret(&win->term, &s);
+    win->term.focused = 0;
+    expand_damage(win->x, win->y - compositor_titlebar_height(), win->width,
+                  win->height + compositor_titlebar_height());
     compositor_dirty = 1;
   }
 }
@@ -819,69 +873,10 @@ void compositor_focus_changed(int new_pid) {
 }
 
 /*
- * handle_csi - dispatch a complete CSI sequence (ESC [ ... <final>).
- *
- * Supports the subset a full-screen TTY app (kilo) needs: H/f (cursor
- * position, 1-based), K (erase in line), J (erase screen), m (SGR colours),
- * and the private DECTCEM ?25 h/l (cursor visibility).  Unknown finals are
- * ignored.  win->escape_buf holds the bytes between '[' and <final>.
- */
-static void handle_csi(int win_id, struct window *win, char final, int char_w,
-                       int char_h) {
-  const char *eb = win->escape_buf;
-  int len = win->escape_len;
-
-  /* Private mode: ESC [ ? Pn h/l — we honour 25 (show/hide caret). */
-  if (len > 0 && eb[0] == '?') {
-    int a, b;
-    csi_params(eb + 1, len - 1, &a, &b);
-    if (a == 25)
-      win->cursor_visible = (final == 'h');
-    return;
-  }
-
-  if (final == 'm') {
-    handle_sgr(win);
-    return;
-  }
-
-  int a, b;
-  int n = csi_params(eb, len, &a, &b);
-
-  if (final == 'H' || final == 'f') {
-    int row = (n >= 1 && a > 0) ? a - 1 : 0;
-    int col = (n >= 2 && b > 0) ? b - 1 : 0;
-    if (row >= win->grid_rows)
-      row = win->grid_rows - 1;
-    if (col >= win->grid_cols)
-      col = win->grid_cols - 1;
-    win->cursor_y = row < 0 ? 0 : row;
-    win->cursor_x = col < 0 ? 0 : col;
-  } else if (final == 'K') {
-    int mode = (n >= 1) ? a : 0;
-    int x0 = (mode == 1) ? 0 : win->cursor_x;
-    int x1 = (mode == 0) ? win->grid_cols - 1 : win->cursor_x;
-    if (mode == 2) {
-      x0 = 0;
-      x1 = win->grid_cols - 1;
-    }
-    for (int x = x0; x <= x1; x++)
-      term_clear_cell(win_id, win, x, win->cursor_y, char_w, char_h);
-  } else if (final == 'J') {
-    for (int p = 0; p < win->width * win->height; p++)
-      win->buffer[p] = win->curr_bg_color;
-    if (win->text_grid && win->attr_grid) {
-      memset(win->text_grid, ' ', win->grid_cols * win->grid_rows);
-      for (int p = 0; p < win->grid_cols * win->grid_rows; p++)
-        win->attr_grid[p] = win->curr_bg_color;
-    }
-    win->cursor_x = 0;
-    win->cursor_y = 0;
-  }
-}
-
-/*
- * Write text to a window (Terminal Emulator) - Uses GL
+ * Write text to a window's terminal emulator.  Thin compositor seam over the
+ * extracted VT engine (term.c, #123): look up the window, hand the terminal the
+ * window's content surface, mark damage.  ANSI parsing, caret, scroll and SGR
+ * all live in term_write().
  */
 void compositor_window_write(int win_id, const char *buf, size_t count) {
   uint64_t flags;
@@ -898,118 +893,18 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
     return;
   }
 
-  int char_w = graphics_font_max_width();
-  int char_h = graphics_font_height();
-  int cols = win->grid_cols; /* Use pre-calculated grid size */
-  int rows = win->grid_rows;
-
-  /* Create GL Surface wrappers for window buffer */
   struct gl_surface win_surf = {.width = win->width,
                                 .height = win->height,
                                 .stride = win->width,
                                 .buffer = win->buffer};
 
-  for (size_t i = 0; i < count; i++) {
-    char c = buf[i];
-
-    if (win->escape_state == 0) {
-      if (c == '\033') {
-        win->escape_state = 1;
-        win->escape_len = 0;
-      } else if (c == '\n') {
-        win->cursor_x = 0;
-        win->cursor_y++;
-      } else if (c == '\r') {
-        win->cursor_x = 0;
-      } else if (c == '\b' || c == 127) {
-        if (win->cursor_x > 0)
-          win->cursor_x--;
-      } else if (c >= 32 && c < 127) {
-        /* Check bounds and wrap BEFORE writing */
-        if (win->cursor_x < 0)
-          win->cursor_x = 0;
-        if (win->cursor_y < 0)
-          win->cursor_y = 0;
-        if (win->cursor_x >= cols) {
-          win->cursor_x = 0;
-          win->cursor_y++;
-        }
-        if (win->cursor_y >= rows) {
-          /* Scroll Pixels buffer up by one line */
-          if (win->height > char_h) {
-            size_t line_size = win->width * char_h;
-            memmove(win->buffer, win->buffer + line_size,
-                    win->width * (win->height - char_h) * 4);
-          }
-          /* Clear last line in pixel buffer */
-          for (int p = win->width * (win->height - char_h);
-               p < win->width * win->height; p++) {
-            win->buffer[p] = win->bg_color;
-          }
-
-          /* Scroll Text Grids */
-          if (win->text_grid && win->attr_grid) {
-            memmove(win->text_grid, win->text_grid + win->grid_cols,
-                    win->grid_cols * (win->grid_rows - 1));
-            memmove(win->attr_grid, win->attr_grid + win->grid_cols,
-                    win->grid_cols * (win->grid_rows - 1) * 4);
-            /* Clear last row in grids */
-            int last_row_start = win->grid_cols * (win->grid_rows - 1);
-            memset(win->text_grid + last_row_start, ' ', win->grid_cols);
-            for (int p = 0; p < win->grid_cols; p++)
-              win->attr_grid[last_row_start + p] = COLOR_FG;
-          }
-          win->cursor_y = rows - 1;
-        }
-
-        /* Clear char background */
-        /* Use internal unsafe draw (which writes to buffer) */
-        /* Pass caller_pid = 1 to bypass security check for kernel-internal
-         * write
-         */
-        draw_rect_internal(win_id, win->cursor_x * char_w,
-                           win->cursor_y * char_h, char_w, char_h,
-                           win->curr_bg_color, 1);
-
-        gl_draw_char(&win_surf, win->cursor_x * char_w, win->cursor_y * char_h,
-                     c, win->fg_color);
-
-        /* Update grids for persistence */
-        if (win->text_grid && win->attr_grid) {
-          int idx = win->cursor_y * win->grid_cols + win->cursor_x;
-          if (idx < win->grid_cols * win->grid_rows) {
-            win->text_grid[idx] = c;
-            win->attr_grid[idx] = win->fg_color;
-          }
-        }
-
-        win->cursor_x++;
-      }
-    } else if (win->escape_state == 1) {
-      if (c == '[')
-        win->escape_state = 2;
-      else
-        win->escape_state = 0;
-    } else if (win->escape_state == 2) {
-      /* Final byte is a letter (CSI dispatch) or '@'; '?' and digits/';' are
-       * parameter bytes accumulated in escape_buf. */
-      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
-        handle_csi(win_id, win, c, char_w, char_h);
-        win->escape_state = 0;
-      } else if (win->escape_len < 31) {
-        win->escape_buf[win->escape_len++] = c;
-      } else {
-        win->escape_state = 0;
-      }
-    }
-  }
-
-  /* Draw the text caret at its final position for this batch. */
-  term_draw_cursor(win_id, win, &win_surf, char_w, char_h);
+  /* The caret is drawn only on the window that currently owns keyboard input. */
+  win->term.focused = (win->pid == keyboard_focus_pid);
+  term_write(&win->term, &win_surf, buf, count);
 
   /* Mark compositor as needing redraw (window area including title bar) */
-  expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, win->width,
-                win->height + TITLE_BAR_HEIGHT);
+  expand_damage(win->x, win->y - compositor_titlebar_height(), win->width,
+                win->height + compositor_titlebar_height());
   compositor_dirty = 1;
   spin_unlock_irqrestore(&compositor_lock, flags);
 }
@@ -1025,7 +920,33 @@ void compositor_handle_click(int button, int state) {
   (void)button;
 
   if (state == 0) {
+    /* Button up: end drag/resize.  If we were resizing, tell the window owner
+     * its new size so it can reallocate a crisp buffer (it may ignore it and
+     * stay scaled). */
+    int notify_pid = -1, nw = 0, nh = 0;
+    uint64_t rflags;
+    spin_lock_irqsave(&compositor_lock, &rflags);
     dragging_window_id = -1;
+    if (resizing_window_id != -1) {
+      for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (windows[i].id == resizing_window_id) {
+          notify_pid = windows[i].pid;
+          nw = windows[i].draw_w;
+          nh = windows[i].draw_h;
+          break;
+        }
+      }
+      resizing_window_id = -1;
+      resize_edge = 0;
+    }
+    spin_unlock_irqrestore(&compositor_lock, rflags);
+    if (notify_pid > 0) {
+      struct ipc_message msg = {0};
+      msg.type = IPC_TYPE_RESIZE;
+      msg.data1 = (uint64_t)nw;
+      msg.data2 = (uint64_t)nh;
+      kernel_ipc_send(notify_pid, &msg);
+    }
     return;
   }
 
@@ -1043,10 +964,11 @@ void compositor_handle_click(int button, int state) {
      * so a click on the popup passes to whatever is beneath it and the popup
      * neither steals focus/caret nor receives an IPC_TYPE_MOUSE event. */
     if (windows[i].id != 0 && windows[i].visible && !windows[i].passive) {
-      int title_top = windows[i].y - TITLE_BAR_HEIGHT;
-      if (mouse_x >= windows[i].x &&
-          mouse_x < windows[i].x + windows[i].width && mouse_y >= title_top &&
-          mouse_y < windows[i].y + windows[i].height) {
+      int dw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+      int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+      int title_top = windows[i].y - compositor_titlebar_height();
+      if (mouse_x >= windows[i].x && mouse_x < windows[i].x + dw &&
+          mouse_y >= title_top && mouse_y < windows[i].y + dh) {
         if (windows[i].z_order > max_z) {
           max_z = windows[i].z_order;
           hit = &windows[i];
@@ -1075,6 +997,40 @@ void compositor_handle_click(int button, int state) {
     sched_set_focus_pid(hit->pid);
   }
 
+  /* Interactive resize (F1): a press within RESIZE_GRIP of the left/right/bottom
+   * edge starts an edge/corner resize.  The top edge stays drag-only (title
+   * bar).  Protected windows are not grip-resizable.  While resizing we change
+   * only draw_w/draw_h (compositor scales); the crisp realloc happens when the
+   * app handles the INPUT_TYPE_RESIZE sent on release. */
+  {
+    int dw = hit->draw_w > 0 ? hit->draw_w : hit->width;
+    int dh = hit->draw_h > 0 ? hit->draw_h : hit->height;
+    int edge = 0;
+    if (mouse_y >= hit->y && mouse_y < hit->y + dh) {
+      if (mouse_x >= hit->x + dw - RESIZE_GRIP && mouse_x < hit->x + dw)
+        edge |= RESIZE_EDGE_R;
+      else if (mouse_x >= hit->x && mouse_x < hit->x + RESIZE_GRIP)
+        edge |= RESIZE_EDGE_L;
+    }
+    if (mouse_x >= hit->x && mouse_x < hit->x + dw &&
+        mouse_y >= hit->y + dh - RESIZE_GRIP && mouse_y < hit->y + dh)
+      edge |= RESIZE_EDGE_B;
+
+    if (edge && !hit->protected) {
+      resizing_window_id = hit->id;
+      resize_edge = edge;
+      resize_start_mx = mouse_x;
+      resize_start_my = mouse_y;
+      resize_orig_w = dw;
+      resize_orig_h = dh;
+      resize_orig_x = hit->x;
+      expand_damage(0, 0, bb_width, bb_height);
+      compositor_dirty = 1;
+      spin_unlock_irqrestore(&compositor_lock, flags);
+      return;
+    }
+  }
+
   /*
    * FIX(GFX-COMP-03): never call kernel_ipc_send() or process_terminate() while
    * holding compositor_lock.  compositor_handle_click runs in mouse-IRQ
@@ -1095,9 +1051,16 @@ void compositor_handle_click(int button, int state) {
     msg.type = IPC_TYPE_MOUSE;
     msg.data1 = (uint64_t)button;
     msg.data2 = (uint64_t)state;
-    /* Store relative coordinates in payload */
+    /* Store relative coordinates in payload, mapped from the on-screen draw
+     * rect back to the app's LOGICAL surface so the app sees its own coords. */
+    int hdw = hit->draw_w > 0 ? hit->draw_w : hit->width;
+    int hdh = hit->draw_h > 0 ? hit->draw_h : hit->height;
     int rel_x = mouse_x - hit->x;
     int rel_y = mouse_y - hit->y;
+    if (hdw > 0 && hdw != hit->width)
+      rel_x = (int)((int64_t)rel_x * hit->width / hdw);
+    if (hdh > 0 && hdh != hit->height)
+      rel_y = (int)((int64_t)rel_y * hit->height / hdh);
     memcpy(msg.payload, &rel_x, 4);
     memcpy(msg.payload + 4, &rel_y, 4);
     send_pid = keyboard_focus_pid;
@@ -1108,8 +1071,9 @@ void compositor_handle_click(int button, int state) {
   int do_close = 0;
   int close_pid = 0;
   if (!hit->protected) {
-    int btn_x = hit->x + hit->width - CLOSE_BUTTON_SIZE - 2;
-    int btn_y = hit->y - TITLE_BAR_HEIGHT + 2;
+    int hdw = hit->draw_w > 0 ? hit->draw_w : hit->width;
+    int btn_x = hit->x + hdw - CLOSE_BUTTON_SIZE - 2;
+    int btn_y = hit->y - compositor_titlebar_height() + 2;
     if (mouse_x >= btn_x && mouse_x < btn_x + CLOSE_BUTTON_SIZE &&
         mouse_y >= btn_y && mouse_y < btn_y + CLOSE_BUTTON_SIZE) {
       do_close = 1;
@@ -1119,7 +1083,7 @@ void compositor_handle_click(int button, int state) {
 
   /* Check for drag start (skipped when closing, matching the old early-return).
    */
-  if (!do_close && mouse_y >= hit->y - TITLE_BAR_HEIGHT && mouse_y < hit->y) {
+  if (!do_close && mouse_y >= hit->y - compositor_titlebar_height() && mouse_y < hit->y) {
     dragging_window_id = hit->id;
     drag_off_x = mouse_x - hit->x;
     drag_off_y = mouse_y - hit->y;
@@ -1153,14 +1117,10 @@ void compositor_handle_click(int button, int state) {
  */
 
 void compositor_update_mouse(int dx, int dy, int absolute) {
-  struct gpu_device *dev = gpu_get_primary();
-  int width = 800; /* Fallback */
-  int height = 600;
-
-  if (dev) {
-    width = dev->width;
-    height = dev->height;
-  }
+  /* The cursor lives in desktop-virtual space (the backbuffer), which equals the
+   * physical scanout at zoom 100 but differs under HiDPI/zoom (F2). */
+  int width = bb_width > 0 ? bb_width : 800;
+  int height = bb_height > 0 ? bb_height : 600;
 
   int old_mx = mouse_x, old_my = mouse_y;
 
@@ -1193,24 +1153,57 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
   if (dragging_window_id != -1) {
     for (int i = 0; i < MAX_WINDOWS; i++) {
       if (windows[i].id == dragging_window_id) {
+        int dw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+        int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
         windows[i].x = mouse_x - drag_off_x;
         windows[i].y = mouse_y - drag_off_y;
-        /* Enforce screen boundaries */
+        /* Enforce screen boundaries (use on-screen draw size) */
         if (windows[i].x < 0)
           windows[i].x = 0;
-        if (windows[i].x + windows[i].width > width)
-          windows[i].x = width - windows[i].width;
-        if (windows[i].y < TITLE_BAR_HEIGHT)
-          windows[i].y = TITLE_BAR_HEIGHT;
-        if (windows[i].y + windows[i].height > height)
-          windows[i].y = height - windows[i].height;
+        if (windows[i].x + dw > width)
+          windows[i].x = width - dw;
+        if (windows[i].y < compositor_titlebar_height())
+          windows[i].y = compositor_titlebar_height();
+        if (windows[i].y + dh > height)
+          windows[i].y = height - dh;
         break;
       }
     }
   }
 
+  /* Handle interactive resize (F1): adjust the on-screen draw size from the
+   * mouse delta + grabbed edge; the compositor scales the logical surface. */
+  if (resizing_window_id != -1) {
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+      if (windows[i].id != resizing_window_id)
+        continue;
+      int ddx = mouse_x - resize_start_mx;
+      int ddy = mouse_y - resize_start_my;
+      int nw = resize_orig_w, nh = resize_orig_h, nx = resize_orig_x;
+      if (resize_edge & RESIZE_EDGE_R)
+        nw = resize_orig_w + ddx;
+      if (resize_edge & RESIZE_EDGE_L) {
+        nw = resize_orig_w - ddx;
+        nx = resize_orig_x + ddx;
+      }
+      if (resize_edge & RESIZE_EDGE_B)
+        nh = resize_orig_h + ddy;
+      if (nw < RESIZE_MIN_W) {
+        if (resize_edge & RESIZE_EDGE_L) /* keep right edge fixed when clamping */
+          nx = resize_orig_x + (resize_orig_w - RESIZE_MIN_W);
+        nw = RESIZE_MIN_W;
+      }
+      if (nh < RESIZE_MIN_H)
+        nh = RESIZE_MIN_H;
+      windows[i].draw_w = nw;
+      windows[i].draw_h = nh;
+      windows[i].x = nx < 0 ? 0 : nx;
+      break;
+    }
+  }
+
   /* Mark compositor as needing redraw - don't render from IRQ! */
-  if (dragging_window_id != -1) {
+  if (dragging_window_id != -1 || resizing_window_id != -1) {
     expand_damage(0, 0, bb_width, bb_height);
   } else {
     /* Only the old and new cursor areas (12x16 + 1px border) */
@@ -1231,6 +1224,33 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
  */
 #include <kernel/region.h>
 
+/* Rounded-rect membership test (F3): is local pixel (lx,ly) inside a w*h rect
+ * with corner radius r?  Only the four r*r corner squares are tested; the bulk
+ * is a trivial inside.  r<=0 ⇒ always inside (square corners). */
+static inline int rrect_inside(int lx, int ly, int w, int h, int r) {
+  if (r <= 0)
+    return 1;
+  if (lx < 0 || ly < 0 || lx >= w || ly >= h)
+    return 0;
+  int cx, cy;
+  if (lx < r && ly < r) {
+    cx = r - 1 - lx;
+    cy = r - 1 - ly;
+  } else if (lx >= w - r && ly < r) {
+    cx = lx - (w - r);
+    cy = r - 1 - ly;
+  } else if (lx < r && ly >= h - r) {
+    cx = r - 1 - lx;
+    cy = ly - (h - r);
+  } else if (lx >= w - r && ly >= h - r) {
+    cx = lx - (w - r);
+    cy = ly - (h - r);
+  } else {
+    return 1; /* not in a corner square */
+  }
+  return (cx * cx + cy * cy) <= (r * r);
+}
+
 static volatile int in_render = 0;
 static void compositor_render_internal(void) {
   /* Atomic guard against concurrent rendering (multi-CPU or IRQ re-entrancy) */
@@ -1248,6 +1268,10 @@ static void compositor_render_internal(void) {
   int bb_h = bb_height;
   uint32_t *backbuffer = compositor_backbuffer;
 
+  /* Active theme (colours) + style (form) — read once per frame (Phase 5/F3). */
+  const compositor_theme_t *th = compositor_theme_active();
+  const compositor_style_t *st = compositor_style_active();
+
   /* Wrap backbuffer in GL Surface */
   struct gl_surface screen = {
       .width = bb_w, .height = bb_h, .stride = bb_w, .buffer = backbuffer};
@@ -1261,10 +1285,11 @@ static void compositor_render_internal(void) {
   int count = 0;
   for (int i = 0; i < MAX_WINDOWS && count < MAX_WINDOWS; i++) {
     if (windows[i].id != 0 && windows[i].visible) {
-      /* Skip off-screen */
+      int dw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+      int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+      /* Skip off-screen (use on-screen draw size) */
       if (windows[i].x >= bb_w || windows[i].y >= bb_h ||
-          windows[i].x + windows[i].width <= 0 ||
-          windows[i].y + windows[i].height <= 0)
+          windows[i].x + dw <= 0 || windows[i].y + dh <= 0)
         continue;
       sorted[count++] = &windows[i];
     }
@@ -1317,13 +1342,17 @@ static void compositor_render_internal(void) {
   for (int i = count - 1; i >= 0 && i < MAX_WINDOWS; i--) {
     struct window *win = sorted[i];
 
+    /* On-screen draw size (== logical unless the surface is being scaled). */
+    int dw = win->draw_w > 0 ? win->draw_w : win->width;
+    int dh = win->draw_h > 0 ? win->draw_h : win->height;
+
     /* Calculate Full Window Bounds (Content + Decorations) */
-    int win_y = win->top_most ? win->y : win->y - TITLE_BAR_HEIGHT;
-    int win_h = win->top_most ? win->height : win->height + TITLE_BAR_HEIGHT;
+    int win_y = win->top_most ? win->y : win->y - compositor_titlebar_height();
+    int win_h = win->top_most ? dh : dh + compositor_titlebar_height();
 
     struct region *vis = region_create();
     if (vis) {
-      region_add_rect(vis, win->x, win_y, win->width, win_h);
+      region_add_rect(vis, win->x, win_y, dw, win_h);
 
       /* Subtract currently occluded area */
       for (int r = 0; r < occluded->count; r++) {
@@ -1339,7 +1368,7 @@ static void compositor_render_internal(void) {
 
     /* Aggiungi a Occluded (Solo se la finestra non contiene trasparenze) */
     if (!win->has_alpha) {
-      region_add_rect(occluded, win->x, win_y, win->width, win_h);
+      region_add_rect(occluded, win->x, win_y, dw, win_h);
     }
   }
 
@@ -1352,24 +1381,28 @@ static void compositor_render_internal(void) {
       region_subtract(bg_region, or->x, or->y, or->w, or->h);
     }
 
-    /* Draw Background — gradiente verticale macOS-style, calcolato una volta
-     * per riga (COLOR_BG_TOP -> COLOR_BG_BOTTOM) invece che per pixel. */
+    /* Draw Background — vertical gradient from the active theme
+     * (th->bg_top -> th->bg_bottom), interpolated per row. */
+    uint32_t t_r = (th->bg_top >> 16) & 0xFF, t_g = (th->bg_top >> 8) & 0xFF,
+             t_b = th->bg_top & 0xFF;
+    uint32_t b_r = (th->bg_bottom >> 16) & 0xFF, b_g = (th->bg_bottom >> 8) & 0xFF,
+             b_b = th->bg_bottom & 0xFF;
     for (int r = 0; r < bg_region->count; r++) {
       struct rect *bg = &bg_region->rects[r];
       for (int y = 0; y < bg->h; y++) {
+        int sy = bg->y + y;
+        if (sy < 0 || sy >= bb_h)
+          continue;
+        /* Row colour: linear blend top->bottom by sy/bb_h. */
+        int denom = bb_h > 1 ? bb_h - 1 : 1;
+        uint32_t rr = t_r + (int)(b_r - t_r) * sy / denom;
+        uint32_t gg = t_g + (int)(b_g - t_g) * sy / denom;
+        uint32_t bb = t_b + (int)(b_b - t_b) * sy / denom;
+        uint32_t row_color = 0xFF000000 | (rr << 16) | (gg << 8) | bb;
         for (int x = 0; x < bg->w; x++) {
-          int sy = bg->y + y;
           int sx = bg->x + x;
-
-          /* Final backbuffer bounds safety check */
-          if (sx >= 0 && sx < bb_w && sy >= 0 && sy < bb_h) {
-            /* Proper Gradient Background */
-            uint32_t r_chk = 20;
-            uint32_t g_chk = 40 + (sy * 40 / bb_h);
-            uint32_t b_chk = 80 + (sy * 80 / bb_h);
-            backbuffer[sy * bb_w + sx] =
-                0xFF000000 | (r_chk << 16) | (g_chk << 8) | b_chk;
-          }
+          if (sx >= 0 && sx < bb_w)
+            backbuffer[sy * bb_w + sx] = row_color;
         }
       }
     }
@@ -1384,10 +1417,41 @@ static void compositor_render_internal(void) {
     struct window *win = sorted[i];
     struct region *vis = visible_regions[i];
 
+    /* On-screen draw size + whether the logical surface needs scaling. */
+    int dw = win->draw_w > 0 ? win->draw_w : win->width;
+    int dh = win->draw_h > 0 ? win->draw_h : win->height;
+    int scaled = (dw != win->width || dh != win->height);
+
     /* Decoration Params */
-    int title_h = win->top_most ? 0 : TITLE_BAR_HEIGHT;
+    int title_h = win->top_most ? 0 : compositor_titlebar_height();
     int content_y = win->y;
     int decor_y = win->y - title_h;
+
+    /* Style (F3): rounded corners + border applied to the full window rect
+     * (title + content); shadows drawn under the window.  top_most overlays
+     * (notifications, cursor layers) keep square, chrome-less. */
+    int full_h = title_h + dh;
+    int rr = (st->rounded_corners && !win->top_most) ? st->border_radius : 0;
+
+    /* Drop shadow: a translucent rect offset down-right, drawn before the
+     * window so only the fringe shows after the window paints over it. */
+    if (st->shadows && st->shadow_size > 0 && !win->top_most) {
+      int so = st->shadow_size;
+      for (int sy = 0; sy < full_h; sy++) {
+        int py = decor_y + so + sy;
+        if (py < 0 || py >= bb_h)
+          continue;
+        for (int sx = 0; sx < dw; sx++) {
+          int px = win->x + so + sx;
+          if (px < 0 || px >= bb_w)
+            continue;
+          if (!rrect_inside(sx, sy, dw, full_h, rr))
+            continue;
+          backbuffer[py * bb_w + px] =
+              gl_blend_pixel(0x40000000, backbuffer[py * bb_w + px]);
+        }
+      }
+    }
 
     if (vis) {
       /* Iterate Visible Rects */
@@ -1408,43 +1472,59 @@ static void compositor_render_internal(void) {
                 /* In Title Bar — macOS-style: la finestra a fuoco ha una
                  * title bar piu' chiara, le altre restano piu' scure. */
                 uint32_t title_color = (win->pid == keyboard_focus_pid)
-                                           ? COLOR_TITLE_ACTIVE
-                                           : COLOR_TITLE_INACTIVE;
+                                           ? th->title_active
+                                           : th->title_inactive;
 
-                /* Close button: cerchio pieno rosso (stile traffic light
-                 * macOS), disegnato solo se la finestra non e' protetta —
-                 * coerente con compositor_handle_click che ignora il
-                 * bottone su hit->protected. */
+                /* Close button: filled disc (macOS traffic-light style), drawn
+                 * only when the window is not protected — consistent with
+                 * compositor_handle_click ignoring the button on hit->protected. */
                 if (!win->protected) {
-                  int btn_cx = win->x + win->width - 2 - CLOSE_BUTTON_SIZE / 2;
+                  int btn_cx = win->x + dw - 2 - CLOSE_BUTTON_SIZE / 2;
                   int btn_cy = decor_y + 2 + CLOSE_BUTTON_SIZE / 2;
                   int ddx = screen_x - btn_cx;
                   int ddy = screen_y - btn_cy;
                   int radius = CLOSE_BUTTON_SIZE / 2 - 1;
                   if (ddx * ddx + ddy * ddy <= radius * radius) {
-                    title_color = COLOR_CLOSE_BTN;
+                    title_color = th->close_btn;
                   }
                 }
 
-                backbuffer[screen_idx] = title_color;
+                /* Round the top corners (F3). */
+                if (rr == 0 ||
+                    rrect_inside(screen_x - win->x, screen_y - decor_y, dw,
+                                 full_h, rr))
+                  backbuffer[screen_idx] = title_color;
               }
             } else {
-              /* Content Area */
-              /* Map to Window Buffer Coords */
-              int win_local_x = screen_x - win->x;
-              int win_local_y = screen_y - win->y;
+              /* Content Area.  Position within the on-screen draw rect... */
+              int draw_x = screen_x - win->x;
+              int draw_y = screen_y - win->y;
 
-              if (win_local_x >= 0 && win_local_x < win->width &&
-                  win_local_y >= 0 && win_local_y < win->height) {
+              if (draw_x >= 0 && draw_x < dw && draw_y >= 0 && draw_y < dh &&
+                  (rr == 0 || rrect_inside(screen_x - win->x,
+                                           screen_y - decor_y, dw, full_h, rr))) {
+                /* ...mapped back to the logical surface (nearest-sample scale
+                 * when draw size != logical size — GFX-DYN-01 surface model). */
+                int sx = scaled ? (int)((int64_t)draw_x * win->width / dw)
+                                : draw_x;
+                int sy = scaled ? (int)((int64_t)draw_y * win->height / dh)
+                                : draw_y;
+                if (sx < 0)
+                  sx = 0;
+                else if (sx >= win->width)
+                  sx = win->width - 1;
+                if (sy < 0)
+                  sy = 0;
+                else if (sy >= win->height)
+                  sy = win->height - 1;
 
                 if (win->buffer) {
-                  uint32_t pixel =
-                      win->buffer[win_local_y * win->width + win_local_x];
+                  uint32_t pixel = win->buffer[sy * win->width + sx];
                   backbuffer[screen_idx] =
-                      blend_pixel(pixel, backbuffer[screen_idx]);
+                      gl_blend_pixel(pixel, backbuffer[screen_idx]);
                 } else {
                   backbuffer[screen_idx] =
-                      blend_pixel(win->bg_color, backbuffer[screen_idx]);
+                      gl_blend_pixel(win->bg_color, backbuffer[screen_idx]);
                 }
               }
             }
@@ -1464,17 +1544,42 @@ static void compositor_render_internal(void) {
 
       int char_h = graphics_font_height();
       int text_w = graphics_string_width(win->title);
-      int start_x = win->x + (win->width - text_w) / 2;
+      int start_x = win->x + (dw - text_w) / 2;
       int start_y =
           decor_y + (20 - char_h) / 2; /* Center vertically in title bar */
 
       /* macOS-style: il titolo della finestra a fuoco e' piu' luminoso,
        * quello delle finestre inattive e' attenuato (systemGray). */
       uint32_t text_color = (win->pid == keyboard_focus_pid)
-                                ? COLOR_TITLE_TEXT_ACTIVE
-                                : COLOR_TITLE_TEXT_INACTIVE;
+                                ? th->title_text_active
+                                : th->title_text_inactive;
 
       gl_draw_string(&screen, start_x, start_y, win->title, text_color);
+    }
+
+    /* Window border (F3): 1px outline around the full window rect, following the
+     * rounded corners.  Drawn last so it sits on top of content + title. */
+    if (st->window_borders && !win->top_most) {
+      uint32_t bc = th->border;
+      for (int ly = 0; ly < full_h; ly++) {
+        int py = decor_y + ly;
+        if (py < 0 || py >= bb_h)
+          continue;
+        for (int lx = 0; lx < dw; lx++) {
+          /* perimeter pixels only */
+          int on_edge = (lx == 0 || ly == 0 || lx == dw - 1 || ly == full_h - 1);
+          /* for rounded corners, also treat the rounded boundary as edge */
+          int inside = rrect_inside(lx, ly, dw, full_h, rr);
+          int inside_inset =
+              rr ? rrect_inside(lx - 1, ly - 1, dw - 2, full_h - 2, rr > 0 ? rr - 1 : 0)
+                 : (lx > 0 && ly > 0 && lx < dw - 1 && ly < full_h - 1);
+          if (inside && (on_edge || !inside_inset)) {
+            int px = win->x + lx;
+            if (px >= 0 && px < bb_w)
+              backbuffer[py * bb_w + px] = bc;
+          }
+        }
+      }
     }
   }
 
@@ -1513,19 +1618,41 @@ static void compositor_render_internal(void) {
   if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
     void *fb_va = dev->ops->get_framebuffer(dev, NULL);
     if (fb_va) {
-      int dx1 = damage_x1 < 0 ? 0 : damage_x1;
-      int dy1 = damage_y1 < 0 ? 0 : damage_y1;
-      int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
-      int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
-      if (dx1 < dx2 && dy1 < dy2) {
-        int row_bytes = (dx2 - dx1) * 4;
-        uint8_t *dst = (uint8_t *)fb_va;
-        const uint8_t *src = (const uint8_t *)backbuffer;
-        for (int row = dy1; row < dy2; row++) {
-          memcpy(dst + ((size_t)row * bb_w + dx1) * 4,
-                 src + ((size_t)row * bb_w + dx1) * 4, row_bytes);
+      if (bb_w == dev->width && bb_h == dev->height) {
+        /* Desktop-virtual == physical: fast damage-region copy. */
+        int dx1 = damage_x1 < 0 ? 0 : damage_x1;
+        int dy1 = damage_y1 < 0 ? 0 : damage_y1;
+        int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
+        int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
+        if (dx1 < dx2 && dy1 < dy2) {
+          int row_bytes = (dx2 - dx1) * 4;
+          uint8_t *dst = (uint8_t *)fb_va;
+          const uint8_t *src = (const uint8_t *)backbuffer;
+          for (int row = dy1; row < dy2; row++) {
+            memcpy(dst + ((size_t)row * bb_w + dx1) * 4,
+                   src + ((size_t)row * bb_w + dx1) * 4, row_bytes);
+          }
+          dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
         }
-        dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
+      } else if (damage_x1 < damage_x2 && damage_y1 < damage_y2) {
+        /* F2: desktop-virtual != physical scanout — nearest-scale the whole
+         * backbuffer onto the scanout, then flush the full physical frame. */
+        int pw = dev->width, ph = dev->height;
+        uint32_t *dst = (uint32_t *)fb_va;
+        for (int py = 0; py < ph; py++) {
+          int sy = (int)((int64_t)py * bb_h / ph);
+          if (sy >= bb_h)
+            sy = bb_h - 1;
+          const uint32_t *srow = backbuffer + (size_t)sy * bb_w;
+          uint32_t *drow = dst + (size_t)py * pw;
+          for (int px = 0; px < pw; px++) {
+            int sx = (int)((int64_t)px * bb_w / pw);
+            if (sx >= bb_w)
+              sx = bb_w - 1;
+            drow[px] = srow[sx];
+          }
+        }
+        dev->ops->flush(dev, 0, 0, pw, ph);
       }
       /* Reset damage: invalid state (x1>x2) means nothing to flush */
       damage_x1 = bb_w;
@@ -1607,7 +1734,7 @@ static void draw_rect_internal(int window_id, int x, int y, int w, int h,
         }
       }
       /* Update damage region: Window relative -> Screen relative */
-      int win_y = windows[i].y + (windows[i].top_most ? 0 : TITLE_BAR_HEIGHT);
+      int win_y = windows[i].y + (windows[i].top_most ? 0 : compositor_titlebar_height());
       expand_damage(windows[i].x + x, win_y + y, w, h);
       return;
     }
@@ -1687,7 +1814,7 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
       }
 
       /* Update damage region: Window relative -> Screen relative */
-      int win_y = windows[i].y + (windows[i].top_most ? 0 : TITLE_BAR_HEIGHT);
+      int win_y = windows[i].y + (windows[i].top_most ? 0 : compositor_titlebar_height());
       expand_damage(windows[i].x + x, win_y + y, w, h);
 
       spin_unlock_irqrestore(&compositor_lock, flags);

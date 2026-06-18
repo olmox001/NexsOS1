@@ -497,6 +497,12 @@ int input_poll_event(input_event_t *event) {
     memcpy(&event->mouse.x, msg.payload, 4);
     memcpy(&event->mouse.y, msg.payload + 4, 4);
     return 1;
+  } else if (msg.type == IPC_TYPE_RESIZE) {
+    /* GFX-DYN-01: the compositor told us our window's new logical size. */
+    event->type = INPUT_TYPE_RESIZE;
+    event->resize.w = (int)msg.data1;
+    event->resize.h = (int)msg.data2;
+    return 1;
   }
   return 0;
 }

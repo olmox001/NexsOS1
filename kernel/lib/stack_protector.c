@@ -31,15 +31,40 @@
  *               RNDR (AArch64) or RDRAND (AMD64) during early init and XOR the
  *               result into __stack_chk_guard before any guarded function runs.
  */
+#include <kernel/entropy.h>
 #include <kernel/printk.h>
+#include <kernel/ssp.h>
 #include <stdint.h>
 
 /* __stack_chk_guard - the canary value inserted by the compiler into protected
  * stack frames.  GCC/Clang load this symbol by name; it must be a global.
- * NOTE(LIB-SSP-01): this value is a static constant; it is NOT randomised at
- * boot.  SSP protection is therefore weakened against attackers who know the
- * binary image. */
+ * The compile-time value is a placeholder; stack_guard_init() reseeds it from a
+ * hardware/jitter entropy source before deep boot (LIB-SSP-01 / #71). */
 uintptr_t __stack_chk_guard = 0x595e9fbd94fda766;
+
+/*
+ * stack_guard_init - reseed the SSP canary from per-arch entropy.
+ *
+ * Replaces the compile-time constant with arch_entropy_u64() so an attacker who
+ * knows the binary image cannot predict the canary.  The low byte is forced to
+ * 0x00 (the classic terminator-canary trick: a string-based overflow cannot
+ * write past the NUL without supplying a terminator), and an all-zero result is
+ * rejected so the guard is never trivially defeatable.
+ *
+ * Safety: this routine takes no address of a local and declares no array, so
+ * -fstack-protector-strong inserts no canary in its own frame; it can therefore
+ * mutate the global guard and return without tripping a stale-canary check.  It
+ * must run before any still-executing caller that captured the OLD canary in
+ * its prologue would reach its epilogue — see kernel/include/kernel/ssp.h.
+ */
+void stack_guard_init(void) {
+  uintptr_t g = (uintptr_t)entropy_u64();
+  g &= ~(uintptr_t)0xff; /* terminator canary: NUL low byte */
+  if (g == 0)
+    g = 0x595e9fbd94fda700; /* never leave the guard all-zero */
+  __stack_chk_guard = g;
+  pr_info("%s", "SSP: stack canary reseeded from arch entropy\n");
+}
 
 /* Forward declaration required before the definition because the compiler may
  * insert a call to __stack_chk_fail inside its own prolog/epilog for this

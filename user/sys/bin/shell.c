@@ -329,7 +329,7 @@ static void process_command(void) {
       print("Usage: kill <pid>\n");
     }
   } else if (str_eq(cmd_buf, "about")) {
-    print("\n\033[1;36mNeXs OS v0.0.1\033[0m\n");
+    print("\n\033[1;36mNeXs OS v0.0.4\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal "
           "Emulator\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");

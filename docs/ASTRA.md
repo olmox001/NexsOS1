@@ -103,6 +103,11 @@ Violations the phases must fix (worst first):
   tree so that primitives (IRQ/Timer/Bus/DMA/Console) and providers
   (APIC/GIC/timers/PCI/VirtIO-MMIO/ACPI/FDT) are explicit; decouple
   compositor↔sched (SCHED-01) so graphics can later leave the kernel.
+  *Progress (GFX-DYN-01, DIR-07):* the virtio-gpu driver is one provider over
+  the HAL transport on both MMIO and PCI, exposing a `gpu_ops` capability
+  contract (display info / set mode) the compositor consumes — no resolution
+  magic numbers in the core; the terminal emulator is extracted to `term.c`;
+  compositor↔sched stays inverted.
 - **B6 — SMP sweep (#96)**: per-CPU bring-up and IPIs behind a CPU/SMP
   primitive; async block I/O (DRV-VIRTIO-08) becomes the block provider's
   internal concern.

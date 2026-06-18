@@ -15,17 +15,20 @@ an interactive **TTY shell**.
 > **Honesty note.** This README describes the *verified* state. For the complete,
 > evidence-based picture — including bugs, gaps, and severity — see
 > [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going*
-> (a seL4-style, Plan 9-inspired HybridKernel MicroKernel ispired), see
+> (a seL4-style, Plan 9-inspired MicroKernel ispired), see
 > [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is **GPL v2** (see
 > [`LICENSE.md`](LICENSE.md)); earlier docs mislabeled it MIT.
 
 ---
-<img width="1826" height="1105" alt="Screenshot 2026-06-19 alle 00 21 41" src="https://github.com/user-attachments/assets/0db790dd-4ffa-4ed6-8169-2bc23d8a6731" />
+<img width="1826" height="1105" alt="Screenshot 2026-06-19 alle 00 21 41" src="https://github.com/user-attachments/assets/87d9597b-d542-4940-8752-eff2a6a3534a" />
 
 
 
 
 ---
+
+
+> simple test the amd64 iso release in UTM (virtio-pci-gpu /ps2 input)
 
 ## Status (verified by building & running, 2026-06-12)
 
@@ -95,7 +98,7 @@ end address, so the 3–4 GB PCI hole is counted (and treated) as RAM — see th
 - ✅ Doom running as a user-space process
 - ✅ 3D rendering demo
 - ✅ Recoverable fault handling (user faults isolated, symbolized backtraces)
-- ✅ HybridKernel MicroKernel ispired architecture
+- ✅ MicroKernel ispired architecture
 
 ## Verified Runtime
 
@@ -225,3 +228,8 @@ integrated (boot loader, libraries, drivers) must be GPLv2-compatible.
 
 ARM & Intel architecture references, the OSDev wiki, the QEMU project, the VirtIO
 specification, and the Linux/plan9/sel4kernel (design inspiration, e.g. intrusive lists).
+
+
+## NOTE
+
+if I had to stop to document everything I do I would go crazy, excuse me if some descriptions are dated, Sorry for my spaghetti-eating English too
