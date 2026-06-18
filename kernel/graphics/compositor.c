@@ -1224,6 +1224,33 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
  */
 #include <kernel/region.h>
 
+/* Rounded-rect membership test (F3): is local pixel (lx,ly) inside a w*h rect
+ * with corner radius r?  Only the four r*r corner squares are tested; the bulk
+ * is a trivial inside.  r<=0 ⇒ always inside (square corners). */
+static inline int rrect_inside(int lx, int ly, int w, int h, int r) {
+  if (r <= 0)
+    return 1;
+  if (lx < 0 || ly < 0 || lx >= w || ly >= h)
+    return 0;
+  int cx, cy;
+  if (lx < r && ly < r) {
+    cx = r - 1 - lx;
+    cy = r - 1 - ly;
+  } else if (lx >= w - r && ly < r) {
+    cx = lx - (w - r);
+    cy = r - 1 - ly;
+  } else if (lx < r && ly >= h - r) {
+    cx = r - 1 - lx;
+    cy = ly - (h - r);
+  } else if (lx >= w - r && ly >= h - r) {
+    cx = lx - (w - r);
+    cy = ly - (h - r);
+  } else {
+    return 1; /* not in a corner square */
+  }
+  return (cx * cx + cy * cy) <= (r * r);
+}
+
 static volatile int in_render = 0;
 static void compositor_render_internal(void) {
   /* Atomic guard against concurrent rendering (multi-CPU or IRQ re-entrancy) */
@@ -1241,8 +1268,9 @@ static void compositor_render_internal(void) {
   int bb_h = bb_height;
   uint32_t *backbuffer = compositor_backbuffer;
 
-  /* Active theme (colours) — read once per frame (Phase 5). */
+  /* Active theme (colours) + style (form) — read once per frame (Phase 5/F3). */
   const compositor_theme_t *th = compositor_theme_active();
+  const compositor_style_t *st = compositor_style_active();
 
   /* Wrap backbuffer in GL Surface */
   struct gl_surface screen = {
@@ -1399,6 +1427,32 @@ static void compositor_render_internal(void) {
     int content_y = win->y;
     int decor_y = win->y - title_h;
 
+    /* Style (F3): rounded corners + border applied to the full window rect
+     * (title + content); shadows drawn under the window.  top_most overlays
+     * (notifications, cursor layers) keep square, chrome-less. */
+    int full_h = title_h + dh;
+    int rr = (st->rounded_corners && !win->top_most) ? st->border_radius : 0;
+
+    /* Drop shadow: a translucent rect offset down-right, drawn before the
+     * window so only the fringe shows after the window paints over it. */
+    if (st->shadows && st->shadow_size > 0 && !win->top_most) {
+      int so = st->shadow_size;
+      for (int sy = 0; sy < full_h; sy++) {
+        int py = decor_y + so + sy;
+        if (py < 0 || py >= bb_h)
+          continue;
+        for (int sx = 0; sx < dw; sx++) {
+          int px = win->x + so + sx;
+          if (px < 0 || px >= bb_w)
+            continue;
+          if (!rrect_inside(sx, sy, dw, full_h, rr))
+            continue;
+          backbuffer[py * bb_w + px] =
+              gl_blend_pixel(0x40000000, backbuffer[py * bb_w + px]);
+        }
+      }
+    }
+
     if (vis) {
       /* Iterate Visible Rects */
       for (int r = 0; r < vis->count; r++) {
@@ -1435,14 +1489,20 @@ static void compositor_render_internal(void) {
                   }
                 }
 
-                backbuffer[screen_idx] = title_color;
+                /* Round the top corners (F3). */
+                if (rr == 0 ||
+                    rrect_inside(screen_x - win->x, screen_y - decor_y, dw,
+                                 full_h, rr))
+                  backbuffer[screen_idx] = title_color;
               }
             } else {
               /* Content Area.  Position within the on-screen draw rect... */
               int draw_x = screen_x - win->x;
               int draw_y = screen_y - win->y;
 
-              if (draw_x >= 0 && draw_x < dw && draw_y >= 0 && draw_y < dh) {
+              if (draw_x >= 0 && draw_x < dw && draw_y >= 0 && draw_y < dh &&
+                  (rr == 0 || rrect_inside(screen_x - win->x,
+                                           screen_y - decor_y, dw, full_h, rr))) {
                 /* ...mapped back to the logical surface (nearest-sample scale
                  * when draw size != logical size — GFX-DYN-01 surface model). */
                 int sx = scaled ? (int)((int64_t)draw_x * win->width / dw)
@@ -1495,6 +1555,31 @@ static void compositor_render_internal(void) {
                                 : th->title_text_inactive;
 
       gl_draw_string(&screen, start_x, start_y, win->title, text_color);
+    }
+
+    /* Window border (F3): 1px outline around the full window rect, following the
+     * rounded corners.  Drawn last so it sits on top of content + title. */
+    if (st->window_borders && !win->top_most) {
+      uint32_t bc = th->border;
+      for (int ly = 0; ly < full_h; ly++) {
+        int py = decor_y + ly;
+        if (py < 0 || py >= bb_h)
+          continue;
+        for (int lx = 0; lx < dw; lx++) {
+          /* perimeter pixels only */
+          int on_edge = (lx == 0 || ly == 0 || lx == dw - 1 || ly == full_h - 1);
+          /* for rounded corners, also treat the rounded boundary as edge */
+          int inside = rrect_inside(lx, ly, dw, full_h, rr);
+          int inside_inset =
+              rr ? rrect_inside(lx - 1, ly - 1, dw - 2, full_h - 2, rr > 0 ? rr - 1 : 0)
+                 : (lx > 0 && ly > 0 && lx < dw - 1 && ly < full_h - 1);
+          if (inside && (on_edge || !inside_inset)) {
+            int px = win->x + lx;
+            if (px >= 0 && px < bb_w)
+              backbuffer[py * bb_w + px] = bc;
+          }
+        }
+      }
     }
   }
 
