@@ -26,6 +26,9 @@ an interactive **TTY shell**.
 
 ---
 
+
+> simple test the amd64 iso release in UTM (virtio-pci-gpu /ps2 input)
+
 ## Status (verified by building & running, 2026-06-12)
 
 | Capability | AArch64 (`make run`) | amd64 (`make run`) |
