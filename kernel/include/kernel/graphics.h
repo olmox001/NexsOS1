@@ -79,10 +79,23 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
                      const uint32_t *user_buf, int caller_pid);
 void compositor_set_window_flags(int window_id, int flags);
 
-/* Process/System API */
+/* Process/System seam (DIR-02).
+ *
+ * The compositor↔scheduler dependency is inverted: the scheduler owns the
+ * keyboard-focus hint (keyboard_focus_pid) and the compositor only *pushes* it
+ * down via sched_set_focus_pid() (#67/#83) — schedule() never calls back into
+ * the compositor.  The remaining PID↔window relation is kept explicit here:
+ *   - compositor_destroy_windows_by_pid(): process teardown closes its windows.
+ *   - compositor_get_window_by_pid(): the one PID→primary-window lookup.
+ * compositor_get_focus_pid() was removed (dead after SCHED-01): focus is read
+ * from the scheduler's published hint, not queried from the compositor. */
 void compositor_destroy_windows_by_pid(int pid);
 int compositor_get_window_by_pid(int pid);
-int compositor_get_focus_pid(void);
+/* Alias documenting the relation as window-centric (DIR-02): the primary
+ * window owned by a process, or -1 if it has none. */
+static inline int compositor_primary_window_of_pid(int pid) {
+  return compositor_get_window_by_pid(pid);
+}
 void compositor_tick(void);
 
 #endif /* _KERNEL_GRAPHICS_H */

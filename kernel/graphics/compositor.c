@@ -552,28 +552,9 @@ int compositor_get_window_by_pid(int pid) {
   return -1;
 }
 
-/*
- * Get PID of the focused window (top-most Z-order)
- */
-int compositor_get_focus_pid(void) {
-  uint64_t flags;
-  /* Use trylock to avoid blocking in timer IRQ context */
-  if (!spin_trylock_irqsave(&compositor_lock, &flags))
-    return -1;
-  int max_z = -1;
-  int pid = -1;
-
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id != 0 && windows[i].visible) {
-      if (windows[i].z_order > max_z) {
-        max_z = windows[i].z_order;
-        pid = windows[i].pid;
-      }
-    }
-  }
-  spin_unlock_irqrestore(&compositor_lock, flags);
-  return pid;
-}
+/* compositor_get_focus_pid() removed (DIR-02 / SCHED-01 #83): it was dead after
+ * the scheduler→compositor inversion.  Focus is now read from the scheduler's
+ * published keyboard_focus_pid hint, never queried back from the compositor. */
 
 /*
  * Move Window
