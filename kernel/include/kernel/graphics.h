@@ -72,6 +72,10 @@ int compositor_window_grid(int window_id, int *cols, int *rows);
 void compositor_focus_changed(int new_pid);
 uint32_t *compositor_get_buffer(int window_id);
 void compositor_move_window(int window_id, int x, int y);
+/* compositor_resize_window: resize a window's logical surface to w x h
+ * (reallocates the buffer, reflows the terminal).  Process context only.
+ * Returns 0 on success, -1 on failure.  Backs SYS_WINDOW_RESIZE (GFX-DYN-01). */
+int compositor_resize_window(int window_id, int w, int h);
 void compositor_render(void);
 void compositor_handle_click(int button, int state);
 void compositor_update_mouse(int dx, int dy, int absolute);
