@@ -17,6 +17,14 @@ struct gl_surface {
   uint8_t *alpha_mask;
 };
 
+/* Exact round-to-nearest divide-by-255 for x in [0, ~65790] (classic identity,
+ * no integer division).  Replaces the ">>8" (÷256) approximation that dimmed
+ * blended pixels — GFX-DYN-01 #121.4. */
+static inline uint32_t gl_div255(uint32_t x) {
+  x += 128;
+  return (x + (x >> 8)) >> 8;
+}
+
 /* Alpha-blend a source ARGB pixel over a destination ARGB pixel (straight
  * over operator, opaque result).  Shared by the compositor and the terminal
  * emulator so both use one definition. */
@@ -28,10 +36,10 @@ static inline uint32_t gl_blend_pixel(uint32_t fg, uint32_t bg) {
     return bg;
   uint32_t inv_alpha = 255 - alpha;
   uint32_t r =
-      (((fg >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * inv_alpha) >> 8;
+      gl_div255(((fg >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * inv_alpha);
   uint32_t g =
-      (((fg >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * inv_alpha) >> 8;
-  uint32_t b = ((fg & 0xFF) * alpha + (bg & 0xFF) * inv_alpha) >> 8;
+      gl_div255(((fg >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * inv_alpha);
+  uint32_t b = gl_div255((fg & 0xFF) * alpha + (bg & 0xFF) * inv_alpha);
   return 0xFF000000 | (r << 16) | (g << 8) | b;
 }
 
