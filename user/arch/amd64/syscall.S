@@ -189,6 +189,13 @@ _sys_display_poll:
     syscall
     ret
 
+/* int _sys_set_style(int style_id, int theme_id) — -1 = keep */
+.global _sys_set_style
+_sys_set_style:
+    movq $SYS_SET_STYLE, %rax
+    syscall
+    ret
+
 .global _sys_window_blit
 _sys_window_blit:
     movq $SYS_WINDOW_BLIT, %rax

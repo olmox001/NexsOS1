@@ -491,6 +491,23 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     break;
   }
+  case SYS_SET_STYLE: {
+    /* Switch the compositor look (Style/Theme).  Needs CAP_WINDOW.  arg0 =
+     * style id, arg1 = theme id; pass -1 to leave one unchanged. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    extern int compositor_set_style(int style_id);
+    extern int compositor_set_theme(int theme_id);
+    int rc = 0;
+    if ((int)arg0 >= 0)
+      rc |= compositor_set_style((int)arg0);
+    if ((int)arg1 >= 0)
+      rc |= compositor_set_theme((int)arg1);
+    pt_regs_set_return(frame, rc);
+    break;
+  }
   case SYS_COMPOSITOR_RENDER:
     compositor_render();
     pt_regs_set_return(frame, 0);

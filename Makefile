@@ -202,6 +202,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/graphics/gl.c \
     $(KERNEL_DIR)/graphics/font.c \
     $(KERNEL_DIR)/graphics/term.c \
+    $(KERNEL_DIR)/graphics/compositor_style.c \
     $(KERNEL_DIR)/graphics/compositor.c \
     $(KERNEL_DIR)/irq/irq.c \
     $(KERNEL_DIR)/lib/fdt.c \

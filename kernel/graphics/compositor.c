@@ -7,6 +7,7 @@
 #include <drivers/gpu/gpu.h>
 #include <drivers/virtio_input.h>
 #include <graphics/gl.h>
+#include <kernel/compositor_style.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
 #include <kernel/graphics.h>
@@ -226,8 +227,9 @@ static int dragging_window_id = -1;
 static int drag_off_x = 0;
 static int drag_off_y = 0;
 
-/* Title bar dimensions */
-#define TITLE_BAR_HEIGHT 20
+/* Title-bar height now comes from the active style (compositor_titlebar_height,
+ * Phase 5): 20 by default, 0 for the chrome-less Minimal style.  The close
+ * button size stays fixed. */
 #define CLOSE_BUTTON_SIZE 16
 
 /* Compositor backbuffer == the "compositor FB" / desktop-virtual surface
@@ -285,6 +287,19 @@ void compositor_init(void) {
           bb_height, (int)bb_capacity_px);
 }
 
+/* Mark the whole desktop dirty (full repaint next tick).  Used by the
+ * Style/Theme switch (compositor_style.c) so a new look shows immediately. */
+void compositor_full_damage(void) {
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  damage_x1 = 0;
+  damage_y1 = 0;
+  damage_x2 = bb_width;
+  damage_y2 = bb_height;
+  compositor_dirty = 1;
+  spin_unlock_irqrestore(&compositor_lock, flags);
+}
+
 /* Report the current desktop (compositor backbuffer) size.  Backs
  * SYS_DISPLAY_INFO. */
 void compositor_get_size(int *w, int *h) {
@@ -339,8 +354,8 @@ void compositor_resize(int w, int h) {
       windows[i].x = 0;
     if (windows[i].y > bb_height - 20)
       windows[i].y = bb_height - 20;
-    if (windows[i].y < TITLE_BAR_HEIGHT)
-      windows[i].y = TITLE_BAR_HEIGHT;
+    if (windows[i].y < compositor_titlebar_height())
+      windows[i].y = compositor_titlebar_height();
   }
 
   /* Full repaint at the new size. */
@@ -420,8 +435,8 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
 
     if (y + h > screen_h)
       y = screen_h - h;
-    if (y < TITLE_BAR_HEIGHT)
-      y = TITLE_BAR_HEIGHT;
+    if (y < compositor_titlebar_height())
+      y = compositor_titlebar_height();
   }
 
   /* Allocate window buffer */
@@ -433,7 +448,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     return -1;
   }
   /* Initialize clear background - use a consistent dark theme */
-  uint32_t default_bg = COLOR_WIN_BG;
+  uint32_t default_bg = compositor_theme_active()->win_bg;
   for (int i = 0; i < w * h; i++)
     buffer[i] = default_bg;
 
@@ -709,8 +724,8 @@ int compositor_resize_window(int window_id, int w, int h) {
   /* Damage the OLD on-screen footprint so the vacated area is repainted. */
   int old_dw = win->draw_w > 0 ? win->draw_w : win->width;
   int old_dh = win->draw_h > 0 ? win->draw_h : win->height;
-  expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, old_dw,
-                old_dh + TITLE_BAR_HEIGHT);
+  expand_damage(win->x, win->y - compositor_titlebar_height(), old_dw,
+                old_dh + compositor_titlebar_height());
 
   uint32_t *obuf = win->buffer;
   win->buffer = nbuf;
@@ -726,7 +741,7 @@ int compositor_resize_window(int window_id, int w, int h) {
     term_resize(&win->term, w / char_w, h / char_h);
 
   /* Damage the NEW footprint and repaint. */
-  expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, w, h + TITLE_BAR_HEIGHT);
+  expand_damage(win->x, win->y - compositor_titlebar_height(), w, h + compositor_titlebar_height());
   compositor_dirty = 1;
   int owner = win->pid;
   spin_unlock_irqrestore(&compositor_lock, flags);
@@ -766,8 +781,8 @@ static void __clear_other_carets_locked(int keep_pid) {
                            .buffer = win->buffer};
     term_clear_caret(&win->term, &s);
     win->term.focused = 0;
-    expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, win->width,
-                  win->height + TITLE_BAR_HEIGHT);
+    expand_damage(win->x, win->y - compositor_titlebar_height(), win->width,
+                  win->height + compositor_titlebar_height());
     compositor_dirty = 1;
   }
 }
@@ -812,8 +827,8 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
   term_write(&win->term, &win_surf, buf, count);
 
   /* Mark compositor as needing redraw (window area including title bar) */
-  expand_damage(win->x, win->y - TITLE_BAR_HEIGHT, win->width,
-                win->height + TITLE_BAR_HEIGHT);
+  expand_damage(win->x, win->y - compositor_titlebar_height(), win->width,
+                win->height + compositor_titlebar_height());
   compositor_dirty = 1;
   spin_unlock_irqrestore(&compositor_lock, flags);
 }
@@ -849,7 +864,7 @@ void compositor_handle_click(int button, int state) {
     if (windows[i].id != 0 && windows[i].visible && !windows[i].passive) {
       int dw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
       int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
-      int title_top = windows[i].y - TITLE_BAR_HEIGHT;
+      int title_top = windows[i].y - compositor_titlebar_height();
       if (mouse_x >= windows[i].x && mouse_x < windows[i].x + dw &&
           mouse_y >= title_top && mouse_y < windows[i].y + dh) {
         if (windows[i].z_order > max_z) {
@@ -922,7 +937,7 @@ void compositor_handle_click(int button, int state) {
   if (!hit->protected) {
     int hdw = hit->draw_w > 0 ? hit->draw_w : hit->width;
     int btn_x = hit->x + hdw - CLOSE_BUTTON_SIZE - 2;
-    int btn_y = hit->y - TITLE_BAR_HEIGHT + 2;
+    int btn_y = hit->y - compositor_titlebar_height() + 2;
     if (mouse_x >= btn_x && mouse_x < btn_x + CLOSE_BUTTON_SIZE &&
         mouse_y >= btn_y && mouse_y < btn_y + CLOSE_BUTTON_SIZE) {
       do_close = 1;
@@ -932,7 +947,7 @@ void compositor_handle_click(int button, int state) {
 
   /* Check for drag start (skipped when closing, matching the old early-return).
    */
-  if (!do_close && mouse_y >= hit->y - TITLE_BAR_HEIGHT && mouse_y < hit->y) {
+  if (!do_close && mouse_y >= hit->y - compositor_titlebar_height() && mouse_y < hit->y) {
     dragging_window_id = hit->id;
     drag_off_x = mouse_x - hit->x;
     drag_off_y = mouse_y - hit->y;
@@ -1015,8 +1030,8 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
           windows[i].x = 0;
         if (windows[i].x + dw > width)
           windows[i].x = width - dw;
-        if (windows[i].y < TITLE_BAR_HEIGHT)
-          windows[i].y = TITLE_BAR_HEIGHT;
+        if (windows[i].y < compositor_titlebar_height())
+          windows[i].y = compositor_titlebar_height();
         if (windows[i].y + dh > height)
           windows[i].y = height - dh;
         break;
@@ -1062,6 +1077,9 @@ static void compositor_render_internal(void) {
   int bb_w = bb_width;
   int bb_h = bb_height;
   uint32_t *backbuffer = compositor_backbuffer;
+
+  /* Active theme (colours) — read once per frame (Phase 5). */
+  const compositor_theme_t *th = compositor_theme_active();
 
   /* Wrap backbuffer in GL Surface */
   struct gl_surface screen = {
@@ -1138,8 +1156,8 @@ static void compositor_render_internal(void) {
     int dh = win->draw_h > 0 ? win->draw_h : win->height;
 
     /* Calculate Full Window Bounds (Content + Decorations) */
-    int win_y = win->top_most ? win->y : win->y - TITLE_BAR_HEIGHT;
-    int win_h = win->top_most ? dh : dh + TITLE_BAR_HEIGHT;
+    int win_y = win->top_most ? win->y : win->y - compositor_titlebar_height();
+    int win_h = win->top_most ? dh : dh + compositor_titlebar_height();
 
     struct region *vis = region_create();
     if (vis) {
@@ -1172,24 +1190,28 @@ static void compositor_render_internal(void) {
       region_subtract(bg_region, or->x, or->y, or->w, or->h);
     }
 
-    /* Draw Background — gradiente verticale macOS-style, calcolato una volta
-     * per riga (COLOR_BG_TOP -> COLOR_BG_BOTTOM) invece che per pixel. */
+    /* Draw Background — vertical gradient from the active theme
+     * (th->bg_top -> th->bg_bottom), interpolated per row. */
+    uint32_t t_r = (th->bg_top >> 16) & 0xFF, t_g = (th->bg_top >> 8) & 0xFF,
+             t_b = th->bg_top & 0xFF;
+    uint32_t b_r = (th->bg_bottom >> 16) & 0xFF, b_g = (th->bg_bottom >> 8) & 0xFF,
+             b_b = th->bg_bottom & 0xFF;
     for (int r = 0; r < bg_region->count; r++) {
       struct rect *bg = &bg_region->rects[r];
       for (int y = 0; y < bg->h; y++) {
+        int sy = bg->y + y;
+        if (sy < 0 || sy >= bb_h)
+          continue;
+        /* Row colour: linear blend top->bottom by sy/bb_h. */
+        int denom = bb_h > 1 ? bb_h - 1 : 1;
+        uint32_t rr = t_r + (int)(b_r - t_r) * sy / denom;
+        uint32_t gg = t_g + (int)(b_g - t_g) * sy / denom;
+        uint32_t bb = t_b + (int)(b_b - t_b) * sy / denom;
+        uint32_t row_color = 0xFF000000 | (rr << 16) | (gg << 8) | bb;
         for (int x = 0; x < bg->w; x++) {
-          int sy = bg->y + y;
           int sx = bg->x + x;
-
-          /* Final backbuffer bounds safety check */
-          if (sx >= 0 && sx < bb_w && sy >= 0 && sy < bb_h) {
-            /* Proper Gradient Background */
-            uint32_t r_chk = 20;
-            uint32_t g_chk = 40 + (sy * 40 / bb_h);
-            uint32_t b_chk = 80 + (sy * 80 / bb_h);
-            backbuffer[sy * bb_w + sx] =
-                0xFF000000 | (r_chk << 16) | (g_chk << 8) | b_chk;
-          }
+          if (sx >= 0 && sx < bb_w)
+            backbuffer[sy * bb_w + sx] = row_color;
         }
       }
     }
@@ -1210,7 +1232,7 @@ static void compositor_render_internal(void) {
     int scaled = (dw != win->width || dh != win->height);
 
     /* Decoration Params */
-    int title_h = win->top_most ? 0 : TITLE_BAR_HEIGHT;
+    int title_h = win->top_most ? 0 : compositor_titlebar_height();
     int content_y = win->y;
     int decor_y = win->y - title_h;
 
@@ -1233,13 +1255,12 @@ static void compositor_render_internal(void) {
                 /* In Title Bar — macOS-style: la finestra a fuoco ha una
                  * title bar piu' chiara, le altre restano piu' scure. */
                 uint32_t title_color = (win->pid == keyboard_focus_pid)
-                                           ? COLOR_TITLE_ACTIVE
-                                           : COLOR_TITLE_INACTIVE;
+                                           ? th->title_active
+                                           : th->title_inactive;
 
-                /* Close button: cerchio pieno rosso (stile traffic light
-                 * macOS), disegnato solo se la finestra non e' protetta —
-                 * coerente con compositor_handle_click che ignora il
-                 * bottone su hit->protected. */
+                /* Close button: filled disc (macOS traffic-light style), drawn
+                 * only when the window is not protected — consistent with
+                 * compositor_handle_click ignoring the button on hit->protected. */
                 if (!win->protected) {
                   int btn_cx = win->x + dw - 2 - CLOSE_BUTTON_SIZE / 2;
                   int btn_cy = decor_y + 2 + CLOSE_BUTTON_SIZE / 2;
@@ -1247,7 +1268,7 @@ static void compositor_render_internal(void) {
                   int ddy = screen_y - btn_cy;
                   int radius = CLOSE_BUTTON_SIZE / 2 - 1;
                   if (ddx * ddx + ddy * ddy <= radius * radius) {
-                    title_color = COLOR_CLOSE_BTN;
+                    title_color = th->close_btn;
                   }
                 }
 
@@ -1307,8 +1328,8 @@ static void compositor_render_internal(void) {
       /* macOS-style: il titolo della finestra a fuoco e' piu' luminoso,
        * quello delle finestre inattive e' attenuato (systemGray). */
       uint32_t text_color = (win->pid == keyboard_focus_pid)
-                                ? COLOR_TITLE_TEXT_ACTIVE
-                                : COLOR_TITLE_TEXT_INACTIVE;
+                                ? th->title_text_active
+                                : th->title_text_inactive;
 
       gl_draw_string(&screen, start_x, start_y, win->title, text_color);
     }
@@ -1443,7 +1464,7 @@ static void draw_rect_internal(int window_id, int x, int y, int w, int h,
         }
       }
       /* Update damage region: Window relative -> Screen relative */
-      int win_y = windows[i].y + (windows[i].top_most ? 0 : TITLE_BAR_HEIGHT);
+      int win_y = windows[i].y + (windows[i].top_most ? 0 : compositor_titlebar_height());
       expand_damage(windows[i].x + x, win_y + y, w, h);
       return;
     }
@@ -1523,7 +1544,7 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
       }
 
       /* Update damage region: Window relative -> Screen relative */
-      int win_y = windows[i].y + (windows[i].top_most ? 0 : TITLE_BAR_HEIGHT);
+      int win_y = windows[i].y + (windows[i].top_most ? 0 : compositor_titlebar_height());
       expand_damage(windows[i].x + x, win_y + y, w, h);
 
       spin_unlock_irqrestore(&compositor_lock, flags);
