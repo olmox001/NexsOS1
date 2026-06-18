@@ -227,3 +227,8 @@ integrated (boot loader, libraries, drivers) must be GPLv2-compatible.
 
 ARM & Intel architecture references, the OSDev wiki, the QEMU project, the VirtIO
 specification, and the Linux/plan9/sel4kernel (design inspiration, e.g. intrusive lists).
+
+
+## NOTE
+
+if I had to stop to document everything I do I would go crazy, excuse me if some descriptions are dated, Sorry for my spaghetti-eating English too
