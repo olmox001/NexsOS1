@@ -1,5 +1,5 @@
 /*
- * user/bin/nxres.c
+ * user/sys/bin/nxres.c
  * NEXS display + compositor-look tool (GFX-DYN-01 / DIR-07).
  *
  * Usage:
@@ -43,7 +43,8 @@ int main(int argc, char **argv) {
     int w = (int)((info >> 16) & 0xFFFF);
     int h = (int)(info & 0xFFFF);
     printf("nxres: current desktop %dx%d\n", w, h);
-    printf("usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme <name>\n");
+    printf(
+        "usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme <name>\n");
     return 0;
   }
 
@@ -106,6 +107,7 @@ int main(int argc, char **argv) {
   }
 
   printf("nxres: bad arguments\n");
-  printf("usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme <name>\n");
+  printf(
+      "usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme <name>\n");
   return 1;
 }
