@@ -33,43 +33,84 @@ static void term_fill_rect(struct gl_surface *surf, int x, int y, int w, int h,
   }
 }
 
-/* Process an ANSI SGR (Select Graphic Rendition) parameter. */
+/* xterm 256-colour palette → ARGB (16 base + 6x6x6 cube + 24 grays). */
+static uint32_t term_xterm256(int n) {
+  static const uint32_t base16[16] = {
+      0xFF000000, 0xFFBB0000, 0xFF00BB00, 0xFFBBBB00, 0xFF0000BB, 0xFFBB00BB,
+      0xFF00BBBB, 0xFFBBBBBB, 0xFF555555, 0xFFFF5555, 0xFF55FF55, 0xFFFFFF55,
+      0xFF5555FF, 0xFFFF55FF, 0xFF55FFFF, 0xFFFFFFFF};
+  if (n < 0)
+    n = 0;
+  if (n < 16)
+    return base16[n];
+  if (n < 232) {
+    int c = n - 16;
+    int r = c / 36, g = (c / 6) % 6, b = c % 6;
+    int R = r ? 55 + r * 40 : 0, G = g ? 55 + g * 40 : 0, B = b ? 55 + b * 40 : 0;
+    return 0xFF000000u | ((uint32_t)R << 16) | ((uint32_t)G << 8) | (uint32_t)B;
+  }
+  if (n > 255)
+    n = 255;
+  int v = 8 + (n - 232) * 10;
+  return 0xFF000000u | ((uint32_t)v << 16) | ((uint32_t)v << 8) | (uint32_t)v;
+}
+
+/* Process an ANSI SGR (Select Graphic Rendition) parameter list. */
 static void handle_sgr(struct terminal *t) {
-  if (t->escape_len == 0) {
+  int vals[16];
+  int n = 0, cur = 0, have = 0;
+  for (int i = 0; i < t->escape_len && n < 16; i++) {
+    char c = t->escape_buf[i];
+    if (c >= '0' && c <= '9') {
+      cur = cur * 10 + (c - '0');
+      have = 1;
+    } else if (c == ';') {
+      vals[n++] = cur;
+      cur = 0;
+    }
+  }
+  if (n < 16 && (have || t->escape_len == 0))
+    vals[n++] = cur;
+  if (n == 0) { /* ESC[m == reset */
     t->fg_color = t->default_fg;
+    t->curr_bg_color = t->bg_color;
+    t->bold = 0;
     return;
   }
 
-  int val = 0;
-  for (int i = 0; i < t->escape_len; i++) {
-    if (t->escape_buf[i] >= '0' && t->escape_buf[i] <= '9') {
-      val = val * 10 + (t->escape_buf[i] - '0');
+  for (int i = 0; i < n; i++) {
+    int v = vals[i];
+    if (v == 0) {
+      t->fg_color = t->default_fg;
+      t->curr_bg_color = t->bg_color;
+      t->bold = 0;
+    } else if (v == 1) {
+      t->bold = 1;
+    } else if (v == 22) {
+      t->bold = 0;
+    } else if (v == 39) {
+      t->fg_color = t->default_fg;
+    } else if (v == 49) {
+      t->curr_bg_color = t->bg_color;
+    } else if (v >= 30 && v <= 37) {
+      t->fg_color = term_xterm256(v - 30 + (t->bold ? 8 : 0));
+    } else if (v >= 90 && v <= 97) {
+      t->fg_color = term_xterm256(v - 90 + 8);
+    } else if (v >= 40 && v <= 47) {
+      t->curr_bg_color = term_xterm256(v - 40);
+    } else if (v >= 100 && v <= 107) {
+      t->curr_bg_color = term_xterm256(v - 100 + 8);
+    } else if (v == 38 || v == 48) {
+      uint32_t *tgt = (v == 38) ? &t->fg_color : &t->curr_bg_color;
+      if (i + 2 < n && vals[i + 1] == 5) { /* 256-colour: 38;5;N */
+        *tgt = term_xterm256(vals[i + 2]);
+        i += 2;
+      } else if (i + 4 < n && vals[i + 1] == 2) { /* truecolour: 38;2;r;g;b */
+        *tgt = 0xFF000000u | ((uint32_t)(vals[i + 2] & 0xFF) << 16) |
+               ((uint32_t)(vals[i + 3] & 0xFF) << 8) | (uint32_t)(vals[i + 4] & 0xFF);
+        i += 4;
+      }
     }
-  }
-
-  if (val == 0) {
-    t->fg_color = t->default_fg;
-    t->curr_bg_color = t->bg_color;
-  } else if (val == 39) {
-    t->fg_color = t->default_fg; /* default foreground */
-  } else if (val == 49) {
-    t->curr_bg_color = t->bg_color; /* default background */
-  } else if (val >= 30 && val <= 37) {
-    uint32_t colors[] = {0xFF000000, 0xFFBB0000, 0xFF00BB00, 0xFFBBBB00,
-                         0xFF0000BB, 0xFFBB00BB, 0xFF00BBBB, 0xFFBBBBBB};
-    t->fg_color = colors[val - 30];
-  } else if (val >= 40 && val <= 47) {
-    uint32_t colors[] = {0xFF000000, 0xFFBB0000, 0xFF00BB00, 0xFFBBBB00,
-                         0xFF0000BB, 0xFFBB00BB, 0xFF00BBBB, 0xFFBBBBBB};
-    t->curr_bg_color = colors[val - 40];
-  } else if (val >= 90 && val <= 97) {
-    uint32_t colors[] = {0xFF555555, 0xFFFF5555, 0xFF55FF55, 0xFFFFFF55,
-                         0xFF5555FF, 0xFFFF55FF, 0xFF55FFFF, 0xFFFFFFFF};
-    t->fg_color = colors[val - 90];
-  } else if (val >= 100 && val <= 107) {
-    uint32_t colors[] = {0xFF555555, 0xFFFF5555, 0xFF55FF55, 0xFFFFFF55,
-                         0xFF5555FF, 0xFFFF55FF, 0xFF55FFFF, 0xFFFFFFFF};
-    t->curr_bg_color = colors[val - 100];
   }
 }
 
@@ -210,6 +251,39 @@ static void handle_csi(struct terminal *t, struct gl_surface *surf, char final,
     }
     t->cursor_x = 0;
     t->cursor_y = 0;
+  } else if (final == 'A' || final == 'B' || final == 'C' || final == 'D') {
+    /* Cursor up/down/right/left by N (default 1). */
+    int d = (n >= 1 && a > 0) ? a : 1;
+    if (final == 'A')
+      t->cursor_y -= d;
+    else if (final == 'B')
+      t->cursor_y += d;
+    else if (final == 'C')
+      t->cursor_x += d;
+    else
+      t->cursor_x -= d;
+    if (t->cursor_x < 0)
+      t->cursor_x = 0;
+    if (t->cursor_y < 0)
+      t->cursor_y = 0;
+    if (t->cursor_x >= t->cols)
+      t->cursor_x = t->cols - 1;
+    if (t->cursor_y >= t->rows)
+      t->cursor_y = t->rows - 1;
+  } else if (final == 'G') {
+    /* Cursor to column N (1-based). */
+    int col = (n >= 1 && a > 0) ? a - 1 : 0;
+    t->cursor_x = col < 0 ? 0 : (col >= t->cols ? t->cols - 1 : col);
+  } else if (final == 'd') {
+    /* Cursor to row N (1-based). */
+    int row = (n >= 1 && a > 0) ? a - 1 : 0;
+    t->cursor_y = row < 0 ? 0 : (row >= t->rows ? t->rows - 1 : row);
+  } else if (final == 's') {
+    t->saved_x = t->cursor_x;
+    t->saved_y = t->cursor_y;
+  } else if (final == 'u') {
+    t->cursor_x = t->saved_x;
+    t->cursor_y = t->saved_y;
   }
 }
 
@@ -232,6 +306,9 @@ int term_init(struct terminal *t, int cols, int rows, uint32_t fg,
   t->default_fg = fg;
   t->bg_color = bg;
   t->curr_bg_color = bg;
+  t->bold = 0;
+  t->saved_x = 0;
+  t->saved_y = 0;
   t->escape_state = 0;
   t->escape_len = 0;
 
