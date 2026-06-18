@@ -20,7 +20,8 @@ an interactive **TTY shell**.
 > [`LICENSE.md`](LICENSE.md)); earlier docs mislabeled it MIT.
 
 ---
-<img width="363" height="667" alt="Screenshot 2026-06-18 alle 00 03 23" src="https://github.com/user-attachments/assets/df8318e5-e818-40b5-b0e0-aeebb8bca535" />
+<img width="1826" height="1105" alt="Screenshot 2026-06-19 alle 00 21 41" src="https://github.com/user-attachments/assets/87d9597b-d542-4940-8752-eff2a6a3534a" />
+
 
 
 
