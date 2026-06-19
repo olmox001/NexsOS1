@@ -124,6 +124,8 @@ Salvati anche in memoria; ripetuti per trasparenza:
   (HW RNG `arch_hw_random` RNDR/RDRAND + fallback cycle-counter splitmix64); commit `36fa344`.
 - **#51 DRV-PCI-01** ✓ — già implementato: `pci_scan_and_register()` definita
   (`pci.c:272`) e chiamata su aarch64 (`hal.c:123`); amd64 via callback virtio + BAR firmware.
+- **#52 DRV-UART-01** ✓ — ring RX del PL011 (aarch64) ora sotto `rx_lock` dedicato
+  (spinlock+irqsave) in produttore e consumatori; idle fuori dal lock; commit `f4b1458`.
 
 ## Backlog di progetto (fuori dallo scope di questa sessione, qui per completezza)
 Tracciato in GitHub e in `docs/review/REVIEW.md` (#19, ~220 finding). Epic e cluster aperti:
@@ -133,7 +135,7 @@ Tracciato in GitHub e in `docs/review/REVIEW.md` (#19, ~220 finding). Epic e clu
 - **Grafica:** #118 damage/redraw incompleto · #121 GFX-DYN (de-hardcode risoluzione) ·
   #128 caret per-frame · #131 GFX-PERF cursore · #133 cursore UTM assoluto.
 - **Input/Driver:** #125 pointer assoluto UTM · #129 scancode mancanti · #130 USB UTM ·
-  #124 PS/2 senza 8042 · #48 GIC affinity · #53/#54/#49/#45 virtio/gpu/pci (#51 ✓) · #52 UART lock.
+  #124 PS/2 senza 8042 · #48 GIC affinity · #53/#54/#49/#45 virtio/gpu/pci (#51 ✓) · UART lock (#52 ✓).
 - **FS:** #126 creazione file ext4 · #127 truncate mancante.
 - **Userland:** #123 ereditarietà stdout/TTY · #76 init.cfg · #81 regedit recv · #82 fontman.
 - **Sched/arch/mm:** #84 AB-BA lock · #38 CPU-AMD64-01 FPU su preempt · #122 quota figli
