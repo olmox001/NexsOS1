@@ -59,9 +59,12 @@ void compositor_init(void);
 void compositor_resize(int w, int h);
 /* compositor_get_size: current desktop (backbuffer) size. Backs SYS_DISPLAY_INFO. */
 void compositor_get_size(int *w, int *h);
-/* compositor_set_zoom: desktop zoom percent (HiDPI/zoom, F2). virtual desktop =
- * physical*100/percent; the flush nearest-scales backbuffer→scanout. 0/-1. */
+/* compositor_set_zoom: desktop zoom percent (HiDPI, F2). Resizes the GPU scanout
+ * to native*100/percent; QEMU stretches it to the host window. 0/-1. */
 int compositor_set_zoom(int percent);
+/* compositor_set_native_mode: record a real resolution change as the zoom-100
+ * reference (resets zoom). Call alongside gpu_set_mode + compositor_resize. */
+void compositor_set_native_mode(int w, int h);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
                              int pid);
 void compositor_destroy_window(int window_id);

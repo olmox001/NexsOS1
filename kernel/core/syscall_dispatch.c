@@ -445,9 +445,12 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     extern int gpu_set_mode(int w, int h);
     extern void compositor_resize(int w, int h);
+    extern void compositor_set_native_mode(int w, int h);
     int r = gpu_set_mode((int)arg0, (int)arg1);
-    if (r == 0)
+    if (r == 0) {
+      compositor_set_native_mode((int)arg0, (int)arg1); /* new zoom-100 reference */
       compositor_resize((int)arg0, (int)arg1);
+    }
     pt_regs_set_return(frame, r);
     break;
   }
@@ -481,10 +484,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     extern int gpu_poll_events(int *w, int *h);
     extern int gpu_set_mode(int w, int h);
     extern void compositor_resize(int w, int h);
+    extern void compositor_set_native_mode(int w, int h);
     int w = 0, h = 0;
     if (gpu_poll_events(&w, &h) == 1) {
-      if (gpu_set_mode(w, h) == 0)
+      if (gpu_set_mode(w, h) == 0) {
+        compositor_set_native_mode(w, h);
         compositor_resize(w, h);
+      }
       pt_regs_set_return(frame, 1);
     } else {
       pt_regs_set_return(frame, 0);
