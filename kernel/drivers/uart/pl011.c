@@ -25,15 +25,16 @@
  *   - UART_CR must be cleared (UART disabled) before changing IBRD/FBRD/LCR_H.
  *   - All TX paths hold uart_lock; _uart_putc_unlocked is called only while
  *     uart_lock is held.
+ *   - All RX-ring accesses (rx_buf/rx_head/rx_tail) hold rx_lock.
  *
- * Known issues:
- *   DRV-UART-01  (W3 BUG/SECURITY) uart_getc and uart_getc_nonblock read
- *                rx_tail without a lock; uart_irq_handler writes rx_buf[] and
- *                rx_head without a lock.  On SMP the aarch64 weak memory model
- *                requires at minimum a dmb/stlr to order the rx_buf store
- *                before the rx_head store and to order the rx_head load before
- *                the rx_buf load on the consumer side.  Two concurrent readers
- *                also corrupt rx_tail.
+ * Resolved issues:
+ *   DRV-UART-01  (W3 BUG/SECURITY, #52) RESOLVED.  uart_irq_handler (producer)
+ *                and uart_getc / uart_getc_nonblock (consumers) all access the
+ *                RX ring under rx_lock (spinlock + IRQ save).  The lock both
+ *                provides the SMP ordering the bare volatiles lacked (buffer
+ *                store before head advance; head load before buffer load) and
+ *                serialises concurrent consumers, so rx_tail can no longer be
+ *                corrupted.  rx_lock is distinct from uart_lock (TX).
  */
 #include <drivers/uart.h>
 #include <kernel/arch.h>
@@ -56,13 +57,17 @@
  * rx_head: write index, advanced by uart_irq_handler (IRQ context).
  * rx_tail: read index, advanced by uart_getc / uart_getc_nonblock (any ctx).
  * Buffer is full when (rx_head + 1) % RX_BUF_SIZE == rx_tail.
- * NOTE(DRV-UART-01): both indices are volatile but not protected by a lock;
- * this is unsafe on SMP (see file header). */
+ * DRV-UART-01 (#52): rx_buf[], rx_head and rx_tail are all accessed under
+ * rx_lock (spinlock + IRQ save).  The lock orders the producer's buffer store
+ * before its head advance and serialises concurrent consumers, so it provides
+ * the SMP ordering the bare volatiles could not.  rx_lock is separate from
+ * uart_lock (TX) so RX IRQ servicing never waits behind a long TX string. */
 /* Ring Buffer */
 #define RX_BUF_SIZE 128
 static char rx_buf[RX_BUF_SIZE];
 static volatile int rx_head = 0;
 static volatile int rx_tail = 0;
+static DEFINE_SPINLOCK(rx_lock);
 
 /* UART_IMSC_RXIM: Receive Interrupt Mask bit in UART_IMSC (offset 0x038).
  *   Bit 4 = RXIM: assert interrupt when RX FIFO reaches trigger level.
@@ -90,14 +95,11 @@ static volatile int rx_tail = 0;
  *   UART_DR   (0x000) read  — data register; reading drains one byte from FIFO.
  *   UART_ICR  (0x044) write — interrupt clear register; write 1 to clear.
  *
- * Locking: none (see NOTE DRV-UART-01).  Called from IRQ context; must not
- *          sleep or acquire a sleeping lock.
+ * Locking: acquires rx_lock (spinlock + IRQ save) around the FIFO drain so the
+ *          rx_buf store is ordered before the rx_head advance and consumers see
+ *          a consistent ring (DRV-UART-01 / #52).  rx_lock is a non-sleeping
+ *          spinlock, valid in IRQ context.
  * IRQ context: YES — this is an IRQ handler registered with irq_register().
- *
- * NOTE(DRV-UART-01): rx_head and rx_buf[] are written here without a lock.
- * On SMP, concurrent readers of rx_tail (uart_getc / uart_getc_nonblock) and
- * a concurrent second IRQ handler invocation (if IRQ nesting were enabled)
- * would produce a data race.
  */
 static void uart_irq_handler(uint32_t irq, void *data) {
   (void)irq;
@@ -105,7 +107,10 @@ static void uart_irq_handler(uint32_t irq, void *data) {
 
   /* Check masked status */
   if (UART_REG(UART_MIS) & UART_IMSC_RXIM) {
-    /* Read until FIFO empty or buffer full */
+    /* Drain the RX FIFO into the ring under rx_lock so the buffer store is
+     * ordered before the head advance and no consumer observes a torn ring. */
+    uint64_t flags;
+    spin_lock_irqsave(&rx_lock, &flags);
     while (!(UART_REG(UART_FR) & UART_FR_RXFE)) {
       char c = (char)(UART_REG(UART_DR) & 0xFF);
 
@@ -115,6 +120,8 @@ static void uart_irq_handler(uint32_t irq, void *data) {
         rx_head = next;
       }
     }
+    spin_unlock_irqrestore(&rx_lock, flags);
+
     /* Clear interrupt */
     UART_REG(UART_ICR) = UART_ICR_RXIC;
 
@@ -249,25 +256,29 @@ void uart_putc_emergency(char c) { _uart_putc_unlocked(c); }
  *
  * Returns: the received character.
  *
- * Locking: none (see NOTE DRV-UART-01); rx_tail modified without a lock.
- * IRQ context: NO — may sleep (WFI); must not be called from IRQ context.
- *
- * NOTE(DRV-UART-01): rx_tail is read and written without a lock; a concurrent
- * uart_getc() on another CPU would corrupt rx_tail.
+ * Locking: takes rx_lock only around the ring check + pop; the idle/WFI wait
+ *          runs with the lock released so the RX IRQ can fill the ring
+ *          (DRV-UART-01 / #52).
+ * IRQ context: NO — may idle (WFI); must not be called from IRQ context.
  */
 /*
  * Receive a character (blocking)
  */
 char uart_getc(void) {
-  /* Wait for data in buffer */
-  while (rx_head == rx_tail) {
-    /* Wait for interrupt (wfi/idle) to save power */
+  for (;;) {
+    uint64_t flags;
+    spin_lock_irqsave(&rx_lock, &flags);
+    if (rx_head != rx_tail) {
+      char c = rx_buf[rx_tail];
+      rx_tail = (rx_tail + 1) % RX_BUF_SIZE;
+      spin_unlock_irqrestore(&rx_lock, flags);
+      return c;
+    }
+    spin_unlock_irqrestore(&rx_lock, flags);
+    /* Wait for interrupt (wfi/idle) to save power — never while holding the
+     * lock, so the RX IRQ can fill the ring. */
     arch_idle();
   }
-
-  char c = rx_buf[rx_tail];
-  rx_tail = (rx_tail + 1) % RX_BUF_SIZE;
-  return c;
 }
 
 /*
@@ -276,21 +287,25 @@ char uart_getc(void) {
  * Returns the next character from the RX ring buffer, or -1 if the buffer
  * is empty (rx_head == rx_tail).
  *
- * Locking: none (see NOTE DRV-UART-01).
- * IRQ context: technically callable from IRQ context but unsafe on SMP due
- *              to unprotected rx_tail access (DRV-UART-01).
+ * Locking: acquires rx_lock (spinlock + IRQ save) around the ring access
+ *          (DRV-UART-01 / #52).
+ * IRQ context: safe — rx_lock is a non-sleeping spinlock.
  */
 /*
  * Receive a character (non-blocking)
  * Returns -1 if no character available
  */
 int uart_getc_nonblock(void) {
-  if (rx_head == rx_tail)
-    return -1;
-
-  char c = rx_buf[rx_tail];
-  rx_tail = (rx_tail + 1) % RX_BUF_SIZE;
-  return (int)c;
+  uint64_t flags;
+  int ret = -1;
+  spin_lock_irqsave(&rx_lock, &flags);
+  if (rx_head != rx_tail) {
+    char c = rx_buf[rx_tail];
+    rx_tail = (rx_tail + 1) % RX_BUF_SIZE;
+    ret = (int)c;
+  }
+  spin_unlock_irqrestore(&rx_lock, flags);
+  return ret;
 }
 
 /*
