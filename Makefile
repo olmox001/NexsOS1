@@ -1,4 +1,4 @@
-# Makefile for OS1Test (AMD64 / AArch64)
+# Makefile for NexsOS1 (AMD64 / AArch64)
 # Cross-compilation for bare-metal kernel
 # ==============================================================================
 # Configuration
@@ -502,7 +502,7 @@ release-arch: all
 		cp $(DISK_IMG) $(RELEASE_DIR)/boot/disk.img; \
 		echo 'set timeout=0' > $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo 'set default=0' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo 'menuentry "OS1Test" {' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo 'menuentry "NexsOS1" {' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    insmod part_gpt' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    insmod ext2' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    insmod loopback' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
@@ -526,10 +526,10 @@ release-arch: all
 			exit 1; \
 		fi; \
 		echo "-> Creo ISO con $$GRUB_MKRESCUE..."; \
-		$$GRUB_MKRESCUE -o $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso $(RELEASE_DIR)/iso; \
+		$$GRUB_MKRESCUE -o $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso $(RELEASE_DIR)/iso; \
 		echo "-> Rimuovo MBR hybrid per renderla leggibile da macOS..."; \
-		dd if=/dev/zero of=$(RELEASE_DIR)/os1test-amd64-$(VERSION).iso bs=512 count=1 conv=notrunc 2>/dev/null; \
-		echo "ISO creata: $(RELEASE_DIR)/os1test-amd64-$(VERSION).iso"; \
+		dd if=/dev/zero of=$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso bs=512 count=1 conv=notrunc 2>/dev/null; \
+		echo "ISO creata: $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso"; \
 	else \
 		cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img; \
 		cp $(DISK_IMG) $(RELEASE_DIR)/disk.img; \
@@ -540,7 +540,7 @@ test-release: release-arch
 	@echo "Starting QEMU Release Test for $(ARCH) (Version: $(VERSION))..."
 ifeq ($(ARCH), amd64)
 	$(QEMU) $(QEMU_RELEASE_FLAGS) \
-		-drive if=none,file=$(RELEASE_DIR)/os1test-amd64-$(VERSION).iso,id=hd0,format=raw \
+		-drive if=none,file=$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso,id=hd0,format=raw \
 		-device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
 else
 	$(QEMU) $(QEMU_RELEASE_FLAGS) -kernel $(RELEASE_DIR)/kernel.img

@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # tools/make-bootable-img.sh
-# Bootable Disk Image Generator for os1test (Limine multiboot2)
+# Bootable Disk Image Generator for NexsOS1 (Limine multiboot2)
 # Creates MBR-partitioned FAT32 disk image
 # Supports: AMD64 (AArch64 support requires different approach)
 # =============================================================================
@@ -21,7 +21,7 @@ NC='\033[0m' # No Color
 ARCH="${1:-amd64}"
 BUILD_DIR="build/$ARCH"
 KERNEL_ELF="$BUILD_DIR/kernel.elf"
-OUT_IMG="$BUILD_DIR/os1test.img"
+OUT_IMG="$BUILD_DIR/NexsOS1.img"
 IMG_SIZE_MB=256  # Size in MB
 ISO_ROOT="$BUILD_DIR/iso_stage_img"  # Staging for MBR version
 
@@ -132,7 +132,7 @@ if [ "$USE_MTOOLS" -eq 1 ]; then
     
     # Initialize as FAT32 filesystem (without partition table)
     # This works better on macOS than mpartition
-    mformat -i "$OUT_IMG" -F -v "os1test" 2>/dev/null || {
+    mformat -i "$OUT_IMG" -F -v "NexsOS1" 2>/dev/null || {
         echo -e "${RED}[ERROR]${NC} mformat failed"
         exit 1
     }
@@ -144,7 +144,7 @@ if [ "$USE_MTOOLS" -eq 1 ]; then
     
     # Copy kernel
     echo -e "${YELLOW}[*]${NC} Copying kernel to disk..."
-    mcopy -i "$OUT_IMG" "$KERNEL_ELF" ::/os1test.elf
+    mcopy -i "$OUT_IMG" "$KERNEL_ELF" ::/NexsOS1.elf
     
     # Copy Limine BIOS
     echo -e "${YELLOW}[*]${NC} Copying Limine bootloader..."
@@ -157,9 +157,9 @@ TIMEOUT=0
 SERIAL=yes
 VERBOSE=yes
 
-:os1test OS - AMD64 (Bootable IMG)
+:NexsOS1 OS - AMD64 (Bootable IMG)
     PROTOCOL=multiboot2
-    KERNEL_PATH=boot():/os1test.elf
+    KERNEL_PATH=boot():/NexsOS1.elf
 EOF
     
     echo -e "${YELLOW}[*]${NC} Creating limine.conf..."
