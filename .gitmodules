@@ -2,3 +2,11 @@
 	path = user/bin/base-nexs
 	url = https://github.com/olmox001/base-nexs.git
 	branch = os1-support
+[submodule "user/bin/kilo"]
+	path = user/bin/kilo
+	url = https://github.com/olmox001/kilo.git
+	branch = nexsos-port
+[submodule "user/bin/doom"]
+	path = user/bin/doom
+	url = https://github.com/olmox001/doomgeneric.git
+	branch = nexsos-port
