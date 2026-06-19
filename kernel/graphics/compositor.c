@@ -653,6 +653,13 @@ void compositor_destroy_window(int window_id) {
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
       int refocus = (windows[i].pid == keyboard_focus_pid);
+      /* #118: damage the vacated footprint BEFORE zeroing so the area under the
+       * window (and lower windows) is recomposited at the next tick — no ghost. */
+      int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+      int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+      expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
+                    ddw, ddh + compositor_titlebar_height());
+      compositor_dirty = 1;
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
@@ -682,6 +689,12 @@ void compositor_destroy_windows_by_pid(int pid) {
       if (windows[i].pid == keyboard_focus_pid) {
         refocus = 1;
       }
+      /* #118: damage the vacated footprint before zeroing (no ghost window). */
+      int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+      int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+      expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
+                    ddw, ddh + compositor_titlebar_height());
+      compositor_dirty = 1;
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
