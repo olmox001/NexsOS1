@@ -89,6 +89,41 @@ void region_destroy(struct region *reg) {
  * worst-case memory and O(n) scan cost per compositor frame. */
 #define MAX_RECTS_PER_REGION 256
 
+/* GFX-PERF-01 (#131 / GFX-COMP-07): region_subtract / region_intersect_rect used
+ * to region_create() a scratch region on EVERY call — i.e. a kmalloc/kfree pair
+ * per occluder per window per frame, all from the timer-IRQ compositor tick.
+ * Instead they now build into a single static scratch (fixed array, never
+ * reallocated — region_add_rect's MAX cap prevents growth) and copy the result
+ * back, so the steady state does no per-frame allocation.  Safe because both run
+ * serially under compositor_lock. */
+static struct rect g_scratch_rects[MAX_RECTS_PER_REGION];
+static struct region g_scratch = {.rects = g_scratch_rects,
+                                  .count = 0,
+                                  .capacity = MAX_RECTS_PER_REGION};
+
+static struct region *region_scratch_reset(void) {
+  g_scratch.count = 0;
+  return &g_scratch;
+}
+
+/* Copy src's rects into dst, growing dst->rects once if needed (rare; reaches a
+ * steady capacity after warmup, then never allocates). */
+static void region_copy_into(struct region *dst, const struct region *src) {
+  if (dst->capacity < src->count) {
+    int new_cap = src->count;
+    struct rect *nr = (struct rect *)kmalloc(sizeof(struct rect) * new_cap);
+    if (!nr)
+      return; /* keep dst unchanged on OOM */
+    if (dst->rects)
+      kfree(dst->rects);
+    dst->rects = nr;
+    dst->capacity = new_cap;
+  }
+  for (int i = 0; i < src->count; i++)
+    dst->rects[i] = src->rects[i];
+  dst->count = src->count;
+}
+
 /*
  * region_add_rect - add an axis-aligned rectangle to the region.
  *
@@ -196,9 +231,7 @@ void region_subtract(struct region *reg, int x, int y, int w, int h) {
   if (w <= 0 || h <= 0)
     return;
 
-  struct region *new_reg = region_create();
-  if (!new_reg)
-    return;
+  struct region *new_reg = region_scratch_reset();
 
   for (int i = 0; i < reg->count; i++) {
     struct rect r = reg->rects[i];
@@ -240,13 +273,8 @@ void region_subtract(struct region *reg, int x, int y, int w, int h) {
     }
   }
 
-  /* Swap rects */
-  kfree(reg->rects);
-  reg->rects = new_reg->rects;
-  reg->count = new_reg->count;
-  reg->capacity = new_reg->capacity;
-  /* Manually free container of new_reg but not its rects which we took */
-  kfree(new_reg);
+  /* Copy the scratch result back into reg (no per-call allocation). */
+  region_copy_into(reg, new_reg);
 }
 
 /*
@@ -266,9 +294,7 @@ void region_subtract(struct region *reg, int x, int y, int w, int h) {
  */
 void region_intersect_rect(struct region *reg, int x, int y, int w, int h) {
   struct rect clip = {x, y, w, h};
-  struct region *new_reg = region_create();
-  if (!new_reg)
-    return;
+  struct region *new_reg = region_scratch_reset();
 
   for (int i = 0; i < reg->count; i++) {
     struct rect r = reg->rects[i];
@@ -286,11 +312,7 @@ void region_intersect_rect(struct region *reg, int x, int y, int w, int h) {
     }
   }
 
-  kfree(reg->rects);
-  reg->rects = new_reg->rects;
-  reg->count = new_reg->count;
-  reg->capacity = new_reg->capacity;
-  kfree(new_reg);
+  region_copy_into(reg, new_reg);
 }
 
 /*
