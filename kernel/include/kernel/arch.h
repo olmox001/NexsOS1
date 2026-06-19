@@ -27,11 +27,6 @@ static inline void arch_yield(void) { arch_impl_yield(); }
 static inline void arch_idle(void) { arch_impl_idle(); }
 static inline void arch_cpu_notify(void) { arch_impl_cpu_notify(); }
 
-/* arch_fpu_init_process: initialise a new process's FPU/SSE save state to a
- * clean default (CPU-AMD64-01 #38).  amd64 seeds the 512-byte FXSAVE area;
- * aarch64 is a no-op (NEON state is carried in the exception frame). */
-void arch_fpu_init_process(struct process *p);
-
 /* Context Switching & User Mode */
 void arch_enter_user_mode(uint64_t entry, uint64_t stack, uint64_t ksp);
 void *arch_get_kernel_stack(uint32_t cpu_id);

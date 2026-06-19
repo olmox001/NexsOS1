@@ -54,14 +54,6 @@ struct process {
   /* Context for switching */
   struct pt_regs *context;
 
-  /* FPU/SSE state (CPU-AMD64-01 #38).  amd64: 512-byte FXSAVE area saved/
-   * restored by arch_cpu_switch_context (the ISR frame only carries GP regs);
-   * initialised to a clean state by arch_fpu_init_process().  16-byte aligned
-   * as FXSAVE/FXRSTOR require; struct process is page-allocated so the field is
-   * suitably aligned.  aarch64 does not use this — exception.S already saves the
-   * full NEON register set (q0–q31, FPSR, FPCR) in the exception frame. */
-  uint8_t fpu_state[512] __attribute__((aligned(16)));
-
   /* User Context (Initial) */
   uint64_t user_entry;
   uint64_t user_stack;

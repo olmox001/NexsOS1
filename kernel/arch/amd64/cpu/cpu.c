@@ -50,12 +50,6 @@ extern void gdt_init(void);
 extern void idt_init(void);
 extern void amd64_syscall_init(void);
 
-/* CPU-AMD64-01 (#38): a clean FXSAVE image captured once at boot and copied
- * into every new process (arch_fpu_init_process), so the first FXRSTOR of a
- * fresh task loads a valid FPU/SSE state (default FCW 0x037F, MXCSR 0x1FBF)
- * instead of zeroes.  16-byte aligned as FXSAVE/FXRSTOR require. */
-static uint8_t default_fpu_state[512] __attribute__((aligned(16)));
-
 
 /*
  * arch_cpu_init - per-CPU initialization entry point.
@@ -96,23 +90,14 @@ void arch_cpu_init(void) {
   cr0 |= (1 << 1);  /* Set MP (Monitor co-processor) */
   __asm__ __volatile__("mov %0, %%cr0" :: "r"(cr0));
 
-  /* OSFXSR+OSXMMEXCPT enable fxsave/fxrstor and unmasked SIMD FP exceptions.
-   * CPU-AMD64-01 (#38): FXSAVE/FXRSTOR is now done per-task in
-   * arch_cpu_switch_context (the ISR frame still carries only GP regs — see the
-   * NOTE there for the residual kernel-side clobber window, #167).
-   * CR4.SMAP is intentionally NOT set here — uaccess.c's claim of SMAP
-   * protection is therefore inaccurate (UACC-AMD64-01). */
+  /* NOTE(CPU-AMD64-01): OSFXSR+OSXMMEXCPT enable fxsave/fxrstor and unmasked
+   * SIMD FP exceptions, but no FXSAVE is inserted in ctx_switch or the ISR
+   * entry path.  CR4.SMAP is intentionally NOT set here — uaccess.c's claim
+   * of SMAP protection is therefore inaccurate (UACC-AMD64-01). */
   __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4));
   cr4 |= (1 << 9);  /* OSFXSR (OS support for fxsave/fxrstor) */
   cr4 |= (1 << 10); /* OSXMMEXCPT (OS support for unmasked simd fp exceptions) */
   __asm__ __volatile__("mov %0, %%cr4" :: "r"(cr4));
-
-  /* Capture the clean default FPU/SSE state once (BSP), used to seed new
-   * processes.  fninit gives a defined FPU state; fxsave records it. */
-  if (id == 0) {
-    __asm__ __volatile__("fninit");
-    __asm__ __volatile__("fxsave %0" : "=m"(default_fpu_state));
-  }
 
   struct cpu_info *cpu = &cpu_data[id];
   cpu->self = cpu;
@@ -226,27 +211,8 @@ struct cpu_info *arch_cpu_info_fault_safe(void) {
  * a cooperative switch is safe.  The hazard is preemptive switches via the
  * timer ISR in common_isr_entry, which does not save/restore XMM state.
  */
-/* arch_fpu_init_process (CPU-AMD64-01 #38): seed a new task's FPU/SSE save area
- * with the captured clean state so its first FXRSTOR loads a valid image. */
-void arch_fpu_init_process(struct process *p) {
-  if (p)
-    memcpy(p->fpu_state, default_fpu_state, sizeof(p->fpu_state));
-}
-
 void arch_cpu_switch_context(struct process *next) {
   struct cpu_info *cpu = get_cpu_info();
-
-  /* CPU-AMD64-01 (#38): save the outgoing task's FPU/SSE registers and restore
-   * the incoming task's, since the ISR/syscall entry frames carry only GP regs.
-   * prev is the still-current task (before we overwrite cpu->current_task).
-   * NOTE(CPU-AMD64-01): this is an eager save at the switch point, which fully
-   * covers kernel↔kernel and cooperative switches; a preempted USER task's XMM
-   * could in principle be clobbered by kernel SSE (compiler-emitted) between IRQ
-   * entry and this point.  Closing that window needs an entry-time save or lazy
-   * (#NM/CR0.TS) FPU — tracked in #167. */
-  struct process *prev = cpu->current_task;
-  if (prev)
-    __asm__ __volatile__("fxsave %0" : "=m"(prev->fpu_state));
 
   /* Update per-CPU data for assembly stubs (syscall.S / isr_stubs.S) */
   cpu->stack_top = next->kernel_stack;
@@ -276,7 +242,4 @@ void arch_cpu_switch_context(struct process *next) {
 
   /* Update TSS RSP0 for interrupt stack switching */
   gdt_set_rsp0(next->kernel_stack);
-
-  /* Restore the incoming task's FPU/SSE registers (CPU-AMD64-01 #38). */
-  __asm__ __volatile__("fxrstor %0" : : "m"(next->fpu_state));
 }

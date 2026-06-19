@@ -653,7 +653,6 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   }
 
   memset(proc, 0, sizeof(struct process)); // Safe Clear
-  arch_fpu_init_process(proc); /* seed clean FPU/SSE state (CPU-AMD64-01 #38) */
   strncpy(proc->name, name, 15);
   proc->name[15] = '\0';
 

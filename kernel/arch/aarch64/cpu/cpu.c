@@ -119,11 +119,6 @@ extern void exception_vectors_install(void);
  * EL context: called at EL1 (MMU may or may not be active; called both pre- and
  *             post-MMU during primary and secondary CPU bring-up).
  */
-/* arch_fpu_init_process (CPU-AMD64-01 #38): no-op on aarch64 — the full NEON
- * register set (q0–q31, FPSR, FPCR) is saved/restored in the exception frame by
- * exception.S, so there is no separate per-process FPU save area to seed. */
-void arch_fpu_init_process(struct process *p) { (void)p; }
-
 void arch_cpu_init(void) {
   uint32_t id = arch_get_cpu_id();
 
