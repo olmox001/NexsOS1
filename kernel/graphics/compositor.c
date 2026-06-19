@@ -259,36 +259,17 @@ static int resize_orig_w = 0, resize_orig_h = 0, resize_orig_x = 0;
 #define COMPOSITOR_MAX_H 1080
 
 static uint32_t *compositor_backbuffer = NULL;
-static int bb_width = 0;  /* desktop-virtual width (what apps + windows see)   */
-static int bb_height = 0; /* desktop-virtual height                            */
-static size_t bb_capacity_px = 0; /* pixels actually allocated                 */
+static int bb_width = 0;  /* render/scanout width (== GPU mode; what apps see) */
+static int bb_height = 0; /* render/scanout height                            */
+static int bb_pages = 0;  /* pages backing compositor_backbuffer              */
 
-/* F2: the desktop-virtual surface (backbuffer) is independent of the physical
- * scanout (phys_w/phys_h, the GPU mode).  desktop_zoom is a percent: the virtual
- * size = physical * 100 / zoom, so zoom>100 enlarges everything (HiDPI), zoom<100
- * fits more desktop into the same panel.  When virtual != physical the flush
- * stage nearest-scales the backbuffer onto the scanout. */
-static int phys_w = 0, phys_h = 0;
+/* Desktop zoom / HiDPI (F2, reworked).  We do NOT scale in software: the GPU
+ * scanout RESOURCE is resized to native*100/zoom and QEMU stretches that to the
+ * host window (which is exactly what the manual set-mode path does).  The
+ * backbuffer == the scanout size; native_w/h is the zoom-100 reference (the
+ * host display size).  zoom>100 ⇒ smaller scanout, QEMU upscales ⇒ HiDPI. */
+static int native_w = 0, native_h = 0;
 static int desktop_zoom = 100;
-
-/* Compute the desktop-virtual size for a physical size + the current zoom,
- * clamped so it always fits the pre-allocated backbuffer capacity. */
-static void compositor_virtual_for(int pw, int ph, int *vw, int *vh) {
-  int z = desktop_zoom > 0 ? desktop_zoom : 100;
-  long w = (long)pw * 100 / z;
-  long h = (long)ph * 100 / z;
-  if (w < 1)
-    w = 1;
-  if (h < 1)
-    h = 1;
-  /* Clamp area to capacity (bounds zoom-out where virtual > physical). */
-  if (bb_capacity_px && (size_t)(w * h) > bb_capacity_px) {
-    while ((size_t)(w * h) > bb_capacity_px && h > 1)
-      h--;
-  }
-  *vw = (int)w;
-  *vh = (int)h;
-}
 
 /*
  * Initialize Compositor
@@ -298,31 +279,25 @@ void compositor_init(void) {
   window_count = 0;
   next_window_id = 100;
 
-  /* Physical scanout + desktop-virtual both follow the primary GPU at boot
-   * (zoom 100 ⇒ virtual == physical; no hard-coded size). */
+  /* Backbuffer == the GPU scanout size at boot (no hard-coded size). */
   struct gpu_device *dev = gpu_get_primary();
-  phys_w = dev ? dev->width : COMPOSITOR_FALLBACK_W;
-  phys_h = dev ? dev->height : COMPOSITOR_FALLBACK_H;
+  int w = dev ? dev->width : COMPOSITOR_FALLBACK_W;
+  int h = dev ? dev->height : COMPOSITOR_FALLBACK_H;
+  native_w = w;
+  native_h = h;
   desktop_zoom = 100;
-  bb_width = phys_w;
-  bb_height = phys_h;
 
-  /* Allocate to a capacity covering the current mode and up to MAX_WxMAX_H so
-   * runtime resizes (host display-change / set_mode) need no reallocation. */
-  size_t cap = (size_t)bb_width * bb_height;
-  size_t want = (size_t)COMPOSITOR_MAX_W * COMPOSITOR_MAX_H;
-  if (want > cap)
-    cap = want;
-  int pages = (int)((cap * 4 + 4095) / 4096);
-  compositor_backbuffer = pmm_alloc_pages(pages);
+  bb_pages = (int)(((size_t)w * h * 4 + 4095) / 4096);
+  compositor_backbuffer = pmm_alloc_pages(bb_pages);
   if (!compositor_backbuffer) {
     pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
-    bb_capacity_px = 0;
+    bb_pages = 0;
     bb_width = 0;
     bb_height = 0;
     return;
   }
-  bb_capacity_px = cap;
+  bb_width = w;
+  bb_height = h;
 
   /* First frame is a full upload. */
   damage_x1 = 0;
@@ -330,8 +305,7 @@ void compositor_init(void) {
   damage_x2 = bb_width;
   damage_y2 = bb_height;
 
-  pr_info("Compositor: Initialized (%dx%d, capacity %d px)\n", bb_width,
-          bb_height, (int)bb_capacity_px);
+  pr_info("Compositor: Initialized (%dx%d)\n", bb_width, bb_height);
 }
 
 /* Mark the whole desktop dirty (full repaint next tick).  Used by the
@@ -356,15 +330,41 @@ void compositor_get_size(int *w, int *h) {
     *h = bb_height;
 }
 
-/* Apply a new desktop-virtual size (caller holds compositor_lock): set the
- * backbuffer dims, keep windows on-screen, full repaint.  Allocation-free. */
-static void apply_virtual_size_locked(int vw, int vh) {
-  if (vw <= 0 || vh <= 0)
+/*
+ * compositor_resize - retarget the backbuffer to the scanout's new w x h.
+ *
+ * The caller must have already resized the GPU scanout (gpu_set_mode) to the
+ * SAME size; the backbuffer always matches the scanout, and QEMU stretches the
+ * scanout to the host window (no software scaling here).  Reallocates the
+ * backbuffer to exactly w*h — so it must run in process context (it does:
+ * SYS_SET_DISPLAY_MODE / SYS_SET_ZOOM / SYS_DISPLAY_POLL), never the IRQ tick.
+ * The new buffer is allocated before the lock and the old one freed after, to
+ * keep the compositor_lock hold (shared with the render tick) short.
+ */
+void compositor_resize(int w, int h) {
+  if (w <= 0 || h <= 0)
     return;
-  bb_width = vw;
-  bb_height = vh;
+  if (w == bb_width && h == bb_height)
+    return; /* nothing to do */
 
-  /* Keep every window's title bar / close button on-screen. */
+  int npages = (int)(((size_t)w * h * 4 + 4095) / 4096);
+  uint32_t *nbuf = pmm_alloc_pages(npages);
+  if (!nbuf) {
+    pr_err("Compositor: resize %dx%d: out of memory\n", w, h);
+    return;
+  }
+  memset(nbuf, 0, (size_t)npages * 4096);
+
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  uint32_t *obuf = compositor_backbuffer;
+  int opages = bb_pages;
+  compositor_backbuffer = nbuf;
+  bb_pages = npages;
+  bb_width = w;
+  bb_height = h;
+
+  /* Keep every window's title bar / close button on-screen at the new size. */
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == 0)
       continue;
@@ -383,54 +383,46 @@ static void apply_virtual_size_locked(int vw, int vh) {
   damage_x2 = bb_width;
   damage_y2 = bb_height;
   compositor_dirty = 1;
-}
-
-/*
- * compositor_resize - the physical scanout changed (gpu_set_mode already ran).
- *
- * Records the new physical size and recomputes the desktop-virtual size for the
- * current zoom.  Capacity-bounded and allocation-free, so it is safe from any
- * context (including the timer-IRQ host display-change path).
- */
-void compositor_resize(int w, int h) {
-  if (w <= 0 || h <= 0)
-    return;
-  uint64_t flags;
-  spin_lock_irqsave(&compositor_lock, &flags);
-  if (!compositor_backbuffer || bb_capacity_px == 0) {
-    spin_unlock_irqrestore(&compositor_lock, flags);
-    return;
-  }
-  phys_w = w;
-  phys_h = h;
-  int vw, vh;
-  compositor_virtual_for(w, h, &vw, &vh);
-  apply_virtual_size_locked(vw, vh);
   spin_unlock_irqrestore(&compositor_lock, flags);
-  pr_info("Compositor: scanout %dx%d, desktop %dx%d (zoom %d%%)\n", w, h, vw, vh,
-          desktop_zoom);
+
+  if (obuf)
+    pmm_free_pages(obuf, opages);
+  pr_info("Compositor: resized to %dx%d\n", bb_width, bb_height);
 }
 
-/* compositor_set_zoom - set the desktop zoom percent (HiDPI/zoom): the virtual
- * desktop = physical * 100 / zoom.  Clamped to [25,400].  Backs SYS_SET_ZOOM. */
+/* compositor_set_native_mode - record a real mode change (the user/host set a
+ * concrete resolution): this becomes the zoom-100 reference and resets zoom. */
+void compositor_set_native_mode(int w, int h) {
+  if (w > 0 && h > 0) {
+    native_w = w;
+    native_h = h;
+    desktop_zoom = 100;
+  }
+}
+
+/* compositor_set_zoom - desktop HiDPI/zoom (F2).  Resizes the actual GPU scanout
+ * resource to native*100/zoom and lets QEMU stretch it to the host window; the
+ * backbuffer follows.  Clamped to [100,400] (zoom-in only — zoom-out would need
+ * a scanout larger than the panel).  Backs SYS_SET_ZOOM. */
 int compositor_set_zoom(int percent) {
-  if (percent < 25)
-    percent = 25;
+  if (percent < 100)
+    percent = 100;
   if (percent > 400)
     percent = 400;
-  uint64_t flags;
-  spin_lock_irqsave(&compositor_lock, &flags);
-  if (!compositor_backbuffer || phys_w <= 0) {
-    spin_unlock_irqrestore(&compositor_lock, flags);
+  if (native_w <= 0 || native_h <= 0)
     return -1;
-  }
+
+  int nw = (int)((long)native_w * 100 / percent);
+  int nh = (int)((long)native_h * 100 / percent);
+  if (nw < 1 || nh < 1)
+    return -1;
+
   desktop_zoom = percent;
-  int vw, vh;
-  compositor_virtual_for(phys_w, phys_h, &vw, &vh);
-  apply_virtual_size_locked(vw, vh);
-  spin_unlock_irqrestore(&compositor_lock, flags);
-  pr_info("Compositor: zoom %d%% -> desktop %dx%d (scanout %dx%d)\n", percent, vw,
-          vh, phys_w, phys_h);
+  if (gpu_set_mode(nw, nh) != 0)
+    return -1;
+  compositor_resize(nw, nh);
+  pr_info("Compositor: zoom %d%% -> scanout %dx%d (native %dx%d)\n", percent, nw,
+          nh, native_w, native_h);
   return 0;
 }
 
@@ -661,6 +653,13 @@ void compositor_destroy_window(int window_id) {
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
       int refocus = (windows[i].pid == keyboard_focus_pid);
+      /* #118: damage the vacated footprint BEFORE zeroing so the area under the
+       * window (and lower windows) is recomposited at the next tick — no ghost. */
+      int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+      int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+      expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
+                    ddw, ddh + compositor_titlebar_height());
+      compositor_dirty = 1;
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
@@ -690,6 +689,12 @@ void compositor_destroy_windows_by_pid(int pid) {
       if (windows[i].pid == keyboard_focus_pid) {
         refocus = 1;
       }
+      /* #118: damage the vacated footprint before zeroing (no ghost window). */
+      int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+      int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+      expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
+                    ddw, ddh + compositor_titlebar_height());
+      compositor_dirty = 1;
       if (windows[i].buffer) {
         kfree(windows[i].buffer);
       }
@@ -1617,42 +1622,22 @@ static void compositor_render_internal(void) {
    */
   if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
     void *fb_va = dev->ops->get_framebuffer(dev, NULL);
-    if (fb_va) {
-      if (bb_w == dev->width && bb_h == dev->height) {
-        /* Desktop-virtual == physical: fast damage-region copy. */
-        int dx1 = damage_x1 < 0 ? 0 : damage_x1;
-        int dy1 = damage_y1 < 0 ? 0 : damage_y1;
-        int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
-        int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
-        if (dx1 < dx2 && dy1 < dy2) {
-          int row_bytes = (dx2 - dx1) * 4;
-          uint8_t *dst = (uint8_t *)fb_va;
-          const uint8_t *src = (const uint8_t *)backbuffer;
-          for (int row = dy1; row < dy2; row++) {
-            memcpy(dst + ((size_t)row * bb_w + dx1) * 4,
-                   src + ((size_t)row * bb_w + dx1) * 4, row_bytes);
-          }
-          dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
+    /* Backbuffer == scanout (zoom resizes the scanout itself; QEMU stretches it
+     * to the host window).  Upload only the damage bounding box. */
+    if (fb_va && bb_w == dev->width && bb_h == dev->height) {
+      int dx1 = damage_x1 < 0 ? 0 : damage_x1;
+      int dy1 = damage_y1 < 0 ? 0 : damage_y1;
+      int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
+      int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
+      if (dx1 < dx2 && dy1 < dy2) {
+        int row_bytes = (dx2 - dx1) * 4;
+        uint8_t *dst = (uint8_t *)fb_va;
+        const uint8_t *src = (const uint8_t *)backbuffer;
+        for (int row = dy1; row < dy2; row++) {
+          memcpy(dst + ((size_t)row * bb_w + dx1) * 4,
+                 src + ((size_t)row * bb_w + dx1) * 4, row_bytes);
         }
-      } else if (damage_x1 < damage_x2 && damage_y1 < damage_y2) {
-        /* F2: desktop-virtual != physical scanout — nearest-scale the whole
-         * backbuffer onto the scanout, then flush the full physical frame. */
-        int pw = dev->width, ph = dev->height;
-        uint32_t *dst = (uint32_t *)fb_va;
-        for (int py = 0; py < ph; py++) {
-          int sy = (int)((int64_t)py * bb_h / ph);
-          if (sy >= bb_h)
-            sy = bb_h - 1;
-          const uint32_t *srow = backbuffer + (size_t)sy * bb_w;
-          uint32_t *drow = dst + (size_t)py * pw;
-          for (int px = 0; px < pw; px++) {
-            int sx = (int)((int64_t)px * bb_w / pw);
-            if (sx >= bb_w)
-              sx = bb_w - 1;
-            drow[px] = srow[sx];
-          }
-        }
-        dev->ops->flush(dev, 0, 0, pw, ph);
+        dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
       }
       /* Reset damage: invalid state (x1>x2) means nothing to flush */
       damage_x1 = bb_w;

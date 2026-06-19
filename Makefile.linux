@@ -1,11 +1,3 @@
-ifeq ($(shell uname -s),Linux)
-%:
-	@$(MAKE) -f Makefile.linux $@
-all:
-	@$(MAKE) -f Makefile.linux all
-
-else
-
 # Makefile for NexsOS1 (AMD64 / AArch64)
 # Cross-compilation for bare-metal kernel
 # ==============================================================================
@@ -51,12 +43,12 @@ ifeq ($(ARCH), amd64)
     CFLAGS_BOOT = $(filter-out -mcmodel=large,$(COMMON_FLAGS)) $(INCLUDE) -m32
     QEMU = qemu-system-x86_64
 else
-    CROSS_COMPILE ?= aarch64-none-elf-
+    CROSS_COMPILE ?= aarch64-linux-gnu-
     KERNEL_DIR = kernel
     BOOT_DIR   = boot/aarch64
     ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
     
-    ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57
+    ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57 -mno-outline-atomics
     ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
     
     LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
@@ -629,5 +621,4 @@ ifeq ($(ARCH), aarch64)
     include user/bin/doom/doom-nexs-aarch64.make
 else ifeq ($(ARCH), amd64)
     include user/bin/doom/doom-nexs-amd64.make
-endif
 endif

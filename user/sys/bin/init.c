@@ -135,11 +135,11 @@ int main(void) {
       pid_notify = spawn("/sys/bin/notify_srv");
     }
 
-    /* GFX-DYN-01: apply a pending host display-change (the desktop follows the
-     * QEMU window size).  Done here in process context so the heavy
-     * set_mode/backbuffer work never runs in the timer-IRQ compositor tick. */
-    if (_sys_display_poll() == 1)
-      print("[Init] Display resized to match host\n");
+    /* NOTE(GFX-DYN-01): host display-change auto-resize is intentionally NOT
+     * polled here — a per-iteration poll wastes cycles.  It will be re-added
+     * event-driven (virtio-gpu display-change IRQ → deferred handler).  The
+     * manual path (nxres / SYS_SET_DISPLAY_MODE) remains.  SYS_DISPLAY_POLL is
+     * kept for that future event-driven caller. */
 
     /* Sleep between supervisor passes instead of busy-spinning: with the real
      * kernel timer (SYS_NANOSLEEP) init is descheduled (~0% CPU) and woken by

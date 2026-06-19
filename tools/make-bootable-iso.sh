@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # tools/make-bootable-iso.sh
-# Bootable ISO Generator for os1test (Limine multiboot2)
+# Bootable ISO Generator for NexsOS1 (Limine multiboot2)
 # Supports: AMD64 and AArch64
 # =============================================================================
 
@@ -20,7 +20,7 @@ NC='\033[0m' # No Color
 ARCH="${1:-amd64}"
 BUILD_DIR="build/$ARCH"
 KERNEL_ELF="$BUILD_DIR/kernel.elf"
-OUT_ISO="$BUILD_DIR/os1test.iso"
+OUT_ISO="$BUILD_DIR/NexsOS1.iso"
 ISO_ROOT="$BUILD_DIR/iso_stage"
 
 # Detect Limine installation
@@ -127,8 +127,8 @@ mkdir -p "$ISO_ROOT/boot"
 # ============================================================================
 
 echo -e "${YELLOW}[*]${NC} Copying kernel..."
-cp "$KERNEL_ELF" "$ISO_ROOT/os1test.elf"
-ls -lh "$ISO_ROOT/os1test.elf"
+cp "$KERNEL_ELF" "$ISO_ROOT/NexsOS1.elf"
+ls -lh "$ISO_ROOT/NexsOS1.elf"
 
 # ============================================================================
 # Copy Limine files (architecture-specific)
@@ -170,9 +170,9 @@ TIMEOUT=0
 SERIAL=yes
 VERBOSE=yes
 
-:os1test OS - AMD64
+:NexsOS1 OS - AMD64
     PROTOCOL=multiboot2
-    KERNEL_PATH=boot():/os1test.elf
+    KERNEL_PATH=boot():/NexsOS1.elf
 EOF
         ;;
     aarch64)
@@ -181,9 +181,9 @@ TIMEOUT=0
 SERIAL=yes
 VERBOSE=yes
 
-:os1test OS - AArch64
+:NexsOS1 OS - AArch64
     PROTOCOL=limine
-    KERNEL_PATH=boot():/os1test.elf
+    KERNEL_PATH=boot():/NexsOS1.elf
 EOF
         ;;
     *)
@@ -204,7 +204,7 @@ case "$ARCH" in
     amd64)
         # BIOS boot for x86-64
         xorriso -as mkisofs \
-            -R -J -V "os1test_boot" \
+            -R -J -V "NexsOS1_boot" \
             -b limine/limine-bios-cd.bin \
             -no-emul-boot \
             -boot-load-size 4 \
@@ -215,7 +215,7 @@ case "$ARCH" in
     aarch64)
         # UEFI boot for AArch64
         xorriso -as mkisofs \
-            -R -J -V "os1test_boot" \
+            -R -J -V "NexsOS1_boot" \
             -b limine/limine-uefi-cd.bin \
             -no-emul-boot \
             -boot-load-size 4 \

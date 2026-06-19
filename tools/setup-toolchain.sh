@@ -31,6 +31,9 @@ fail()  { printf '\033[1;31m[toolchain]\033[0m %s\n' "$*" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+info "Initializing git submodules..."
+(cd "$REPO_ROOT" && git submodule update --init --recursive) || warn "Failed to initialize submodules."
+
 # 1. Preconditions ------------------------------------------------------------
 [ "$(uname -s)" = "Darwin" ] || fail "This script targets macOS (Darwin)."
 command -v brew >/dev/null 2>&1 || fail "Homebrew not found — install from https://brew.sh and re-run."
