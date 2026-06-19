@@ -38,7 +38,7 @@ struct ps_info {
 
 /* Syscall Wrappers (Low-level) */
 extern long _sys_read(int fd, char *buf, unsigned long count);
-extern void _sys_write(int fd, const char *buf, size_t count);
+extern long _sys_write(int fd, const char *buf, size_t count);
 extern long _sys_get_time(void);
 extern int  _sys_get_pid(void);
 extern void _sys_exit(int status);
@@ -83,7 +83,10 @@ extern long _sys_lseek(int fd, long offset, int whence);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
-void write(int fd, const char *buf, size_t count);
+/* write: returns the number of bytes written (POSIX ssize_t-style), matching
+ * read().  Was void; widened to long so ported POSIX code can check the count
+ * (libc-layer change only — the SYS_WRITE syscall already returns it). */
+long write(int fd, const char *buf, size_t count);
 long get_time(void);
 int  get_pid(void);
 void exit(int status);

@@ -56,6 +56,15 @@
 #include <math.h>
 #include <input.h>
 #include <graphics.h>
+#include <errno.h>
+/* POSIX compatibility shims implemented at the bottom of this file (the OS1
+ * onion-userland libc layer, epic #120; no new OS1 syscalls). */
+#include <termios.h>
+#include <poll.h>
+#include <signal.h>
+#include <dirent.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -89,7 +98,7 @@ int errno = 0;
  * and paths with no capability check; any process has full authority.
  */
 long read(int fd, char *buf, unsigned long count) { return _sys_read(fd, buf, count); }
-void write(int fd, const char *buf, size_t count) { _sys_write(fd, buf, count); }
+long write(int fd, const char *buf, size_t count) { return _sys_write(fd, buf, count); }
 long get_time(void) { return _sys_get_time(); }
 /* Tier 3 os1 time primitives (docs/TIMER-MODEL.md §4); SYS_CLOCK_GETTIME
  * clk 0 = monotonic ns since boot, clk 1 = this process's CPU time in ns. */
@@ -812,4 +821,274 @@ int utf8_decode(const char *s, uint32_t *code) {
     return 4;
   }
   return 0;  /* Unrecognised lead byte (invalid UTF-8) */
+}
+
+/* ============================================================================
+ * POSIX compatibility shims — OS1 "onion userland" libc layer (epic #120).
+ *
+ * These complete the POSIX/libc surface entirely in userland over the OS1 base
+ * API; NO new OS1 syscalls are added (the maintainer's directive: "il resto va
+ * portato nella libc e in posix, non in os1").  strcat/strncat/memchr/atoi/...
+ * live in kernel/lib/string.c (#included above); the functions here are the
+ * remainder needed to build ported POSIX programs (base-nexs first, kilo/doom).
+ * ========================================================================== */
+
+/* --- <string.h> --- */
+char *strtok_r(char *str, const char *delim, char **saveptr) {
+  char *s = str ? str : *saveptr;
+  if (!s)
+    return NULL;
+  while (*s && strchr(delim, (int)(unsigned char)*s))
+    s++;
+  if (*s == '\0') {
+    *saveptr = s;
+    return NULL;
+  }
+  char *tok = s;
+  while (*s && !strchr(delim, (int)(unsigned char)*s))
+    s++;
+  if (*s) {
+    *s = '\0';
+    s++;
+  }
+  *saveptr = s;
+  return tok;
+}
+
+char *strtok(char *str, const char *delim) {
+  static char *saved_tok;
+  return strtok_r(str, delim, &saved_tok);
+}
+
+char *strerror(int errnum) {
+  switch (errnum) {
+  case 0:       return (char *)"Success";
+  case ENOENT:  return (char *)"No such file or directory";
+  case EBADF:   return (char *)"Bad file descriptor";
+  case EACCES:  return (char *)"Permission denied";
+  case EEXIST:  return (char *)"File exists";
+  case ENOTDIR: return (char *)"Not a directory";
+  case EISDIR:  return (char *)"Is a directory";
+  case EINVAL:  return (char *)"Invalid argument";
+  case ENOSPC:  return (char *)"No space left on device";
+  case ENOMEM:  return (char *)"Cannot allocate memory";
+  case EFAULT:  return (char *)"Bad address";
+  case ENOSYS:  return (char *)"Function not implemented";
+  default:      return (char *)"Unknown error";
+  }
+}
+
+/* --- <stdlib.h> --- */
+long atol(const char *nptr) { return strtol(nptr, NULL, 10); }
+
+/* long is 64-bit on both OS1 targets (LP64), so long long shares its range. */
+long long strtoll(const char *nptr, char **endptr, int base) {
+  return (long long)strtol(nptr, endptr, base);
+}
+
+long long atoll(const char *nptr) { return strtoll(nptr, NULL, 10); }
+
+long labs(long j) { return j < 0 ? -j : j; }
+
+void abort(void) { exit(1); }
+
+/* qsort: in-place insertion sort with byte-wise swaps (no temp buffer / VLA,
+ * no recursion).  O(n^2) but adequate for the small arrays NEXS sorts. */
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *)) {
+  char *arr = (char *)base;
+  for (size_t i = 1; i < nmemb; i++) {
+    for (size_t j = i;
+         j > 0 && compar(arr + (j - 1) * size, arr + j * size) > 0; j--) {
+      char *a = arr + (j - 1) * size;
+      char *b = arr + j * size;
+      for (size_t k = 0; k < size; k++) {
+        char t = a[k];
+        a[k] = b[k];
+        b[k] = t;
+      }
+    }
+  }
+}
+
+/* --- <stdio.h> ---
+ * The std streams are encoded as (FILE*)0/1/2 (stdin/stdout/stderr); fread/
+ * fwrite reject those (they need fp->path), so route them straight to the
+ * fd-based read()/write().  Real fopen()ed handles (addr > 2) use fread/fwrite. */
+static int file_fd(FILE *fp) {
+  size_t v = (size_t)fp;
+  return v <= 2 ? (int)v : -1;
+}
+
+int fputc(int c, FILE *fp) {
+  unsigned char ch = (unsigned char)c;
+  int fd = file_fd(fp);
+  if (fd >= 0) {
+    write(fd, (const char *)&ch, 1);
+    return (int)ch;
+  }
+  if (fwrite(&ch, 1, 1, fp) != 1)
+    return EOF;
+  return (int)ch;
+}
+
+int fputs(const char *s, FILE *fp) {
+  size_t len = strlen(s);
+  int fd = file_fd(fp);
+  if (fd >= 0) {
+    if (len)
+      write(fd, s, len);
+    return 0;
+  }
+  if (len && fwrite(s, 1, len, fp) != len)
+    return EOF;
+  return 0;
+}
+
+int fgetc(FILE *fp) {
+  unsigned char ch;
+  int fd = file_fd(fp);
+  if (fd >= 0) {
+    if (read(fd, (char *)&ch, 1) != 1)
+      return EOF;
+    return (int)ch;
+  }
+  if (fread(&ch, 1, 1, fp) != 1)
+    return EOF;
+  return (int)ch;
+}
+
+char *fgets(char *s, int size, FILE *fp) {
+  if (size <= 0)
+    return NULL;
+  int i = 0;
+  while (i < size - 1) {
+    int c = fgetc(fp);
+    if (c == EOF) {
+      if (i == 0)
+        return NULL;
+      break;
+    }
+    s[i++] = (char)c;
+    if (c == '\n')
+      break;
+  }
+  s[i] = '\0';
+  return s;
+}
+
+void perror(const char *s) {
+  if (s && *s)
+    printf("%s: %s\n", s, strerror(errno));
+  else
+    printf("%s\n", strerror(errno));
+}
+
+/* --- <termios.h> --- OS1 windows have no line discipline; raw mode is the
+ * native behaviour, so these succeed as no-ops (see include/api/termios.h). */
+int tcgetattr(int fd, struct termios *termios_p) {
+  (void)fd;
+  if (termios_p)
+    memset(termios_p, 0, sizeof(*termios_p));
+  return 0;
+}
+
+int tcsetattr(int fd, int optional_actions, const struct termios *termios_p) {
+  (void)fd;
+  (void)optional_actions;
+  (void)termios_p;
+  return 0;
+}
+
+/* --- <poll.h> --- no pollable fd set; report a clean timeout (0 ready). */
+int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+  (void)timeout;
+  if (fds)
+    for (nfds_t i = 0; i < nfds; i++)
+      fds[i].revents = 0;
+  return 0;
+}
+
+/* --- <signal.h> --- OS1 has no signal delivery; installing a handler is a
+ * no-op that reports the previous (always default) disposition. */
+sighandler_t signal(int signum, sighandler_t handler) {
+  (void)signum;
+  (void)handler;
+  return SIG_DFL;
+}
+
+/* --- <sys/mman.h> --- anonymous mappings are backed by the userspace heap. */
+void *mmap(void *addr, size_t length, int prot, int flags, int fd,
+           off_t offset) {
+  (void)addr;
+  (void)prot;
+  (void)flags;
+  (void)fd;
+  (void)offset;
+  if (length == 0)
+    return MAP_FAILED;
+  void *p = malloc(length);
+  return p ? p : MAP_FAILED;
+}
+
+int munmap(void *addr, size_t length) {
+  (void)length;
+  free(addr);
+  return 0;
+}
+
+/* --- <sys/ioctl.h> --- only TIOCGWINSZ, answered from the window grid. */
+int ioctl(int fd, unsigned long request, ...) {
+  (void)fd;
+  if (request == TIOCGWINSZ) {
+    va_list ap;
+    va_start(ap, request);
+    struct winsize *ws = va_arg(ap, struct winsize *);
+    va_end(ap);
+    int cols = 0, rows = 0;
+    int wid = window_of_pid(get_pid());
+    if (ws && wid > 0 && window_grid(wid, &cols, &rows) == 0) {
+      ws->ws_col = (unsigned short)cols;
+      ws->ws_row = (unsigned short)rows;
+      ws->ws_xpixel = 0;
+      ws->ws_ypixel = 0;
+      return 0;
+    }
+  }
+  return -1;
+}
+
+/* --- <dirent.h> --- over list_dir() (space-separated names from ext4_list). */
+DIR *opendir(const char *name) {
+  DIR *d = malloc(sizeof(DIR));
+  if (!d)
+    return NULL;
+  if (list_dir(name, d->buf, sizeof(d->buf)) < 0) {
+    free(d);
+    return NULL;
+  }
+  d->pos = 0;
+  return d;
+}
+
+struct dirent *readdir(DIR *dirp) {
+  if (!dirp)
+    return NULL;
+  while (dirp->buf[dirp->pos] == ' ')
+    dirp->pos++;
+  if (dirp->buf[dirp->pos] == '\0')
+    return NULL;
+  int i = 0;
+  while (dirp->buf[dirp->pos] != ' ' && dirp->buf[dirp->pos] != '\0' &&
+         i < (int)sizeof(dirp->ent.d_name) - 1)
+    dirp->ent.d_name[i++] = dirp->buf[dirp->pos++];
+  dirp->ent.d_name[i] = '\0';
+  dirp->ent.d_ino = 0;
+  dirp->ent.d_type = DT_UNKNOWN;
+  return &dirp->ent;
+}
+
+int closedir(DIR *dirp) {
+  free(dirp);
+  return 0;
 }

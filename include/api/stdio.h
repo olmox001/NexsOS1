@@ -26,6 +26,7 @@ typedef struct {
 #endif
 
 FILE *fopen(const char *path, const char *mode);
+FILE *fdopen(int fd, const char *mode);
 int fclose(FILE *fp);
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp);
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp);
@@ -49,6 +50,15 @@ int vsscanf(const char *str, const char *format, va_list ap);
 int puts(const char *s);
 int putchar(int c);
 int getchar(void);
+
+int fputc(int c, FILE *fp);
+int fputs(const char *s, FILE *fp);
+int fgetc(FILE *fp);
+char *fgets(char *s, int size, FILE *fp);
+void perror(const char *s);
+
+#define getc(fp)    fgetc(fp)
+#define putc(c, fp) fputc((c), (fp))
 
 #define fprintf(f, ...) printf(__VA_ARGS__)
 
