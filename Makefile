@@ -164,6 +164,7 @@ endif
 KERN_C_SOURCES += \
     $(KERNEL_DIR)/core/hal_bus.c \
     $(KERNEL_DIR)/core/syscall_dispatch.c \
+    $(KERNEL_DIR)/core/object.c \
     $(KERNEL_DIR)/core/fault.c \
     $(KERNEL_DIR)/core/timer.c \
     $(KERNEL_DIR)/drivers/console.c \
@@ -326,6 +327,8 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_sen
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
+           $(BUILD_DIR)/captest.elf \
+           $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
            $(BUILD_DIR)/sandboxtest.elf $(BUILD_DIR)/sandboxchild.elf \
            $(BUILD_DIR)/hello.elf \
 		   $(BUILD_DIR)/kilo.elf
@@ -365,6 +368,9 @@ $(BUILD_DIR)/regedit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/regedit.o $(USER_LIB_
 $(BUILD_DIR)/top.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/top.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/capipc.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/capipc_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/forkbomb.elf: $(BUILD_DIR)/$(USER_DIR)/bin/forkbomb.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/sandboxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/sandboxchild.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxchild.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)

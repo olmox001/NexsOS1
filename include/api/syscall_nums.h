@@ -67,6 +67,20 @@
 #define SYS_SPAWN_CAPS         234  /* spawn_caps(path, level, caps) — USR-SEC-03 #79 */
 #define SYS_WAIT               247
 
+/* --- Object / handle / capability ABI (ASTRA §6.1/6.2/6.5) ---
+ * The real capability layer: unforgeable per-process handles to refcounted
+ * kernel objects, with separable/attenuable rights.  See include/api/object.h.
+ * OS1low_ = low-level stable ABI (handle/cap primitives); OS1_object_* = the
+ * uniform object I/O surface. */
+#define SYS_HANDLE_CREATE      235  /* OS1low_handle_create(ns, path, rights, type) -> handle */
+#define SYS_HANDLE_DUP         236  /* OS1low_handle_duplicate(handle, new_rights) -> handle */
+#define SYS_HANDLE_CLOSE       237  /* OS1low_handle_close(handle) -> 0 */
+#define SYS_CAP_QUERY          238  /* OS1low_cap_query(handle) -> (type<<24)|rights */
+#define SYS_CAP_GRANT          239  /* OS1low_cap_grant(target_pid, handle, rights) -> 0 */
+#define SYS_OBJECT_READ        240  /* OS1_object_read(handle, buf, n) -> bytes */
+#define SYS_OBJECT_WRITE       241  /* OS1_object_write(handle, buf, n) -> bytes */
+#define SYS_OBJECT_WAIT        242  /* OS1_object_wait(handle, arg) -> object-specific */
+
 /* --- IPC --- */
 #define SYS_SEND               230
 #define SYS_RECV               231

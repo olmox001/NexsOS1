@@ -308,3 +308,55 @@ _sys_getcwd:
     movq $SYS_GETCWD, %rax
     syscall
     ret
+
+/* --- Object / capability ABI (ASTRA §6.1/6.2/6.5) --- */
+/* long _sys_handle_create(int ns, const char *path, unsigned rights, int type)
+ * 4 args: the 4th (type) arrives in %rcx but the syscall ABI wants it in %r10. */
+.global _sys_handle_create
+_sys_handle_create:
+    movq $SYS_HANDLE_CREATE, %rax
+    movq %rcx, %r10      /* arg3 (type): rcx -> r10 */
+    syscall
+    ret
+
+.global _sys_handle_dup
+_sys_handle_dup:
+    movq $SYS_HANDLE_DUP, %rax
+    syscall
+    ret
+
+.global _sys_handle_close
+_sys_handle_close:
+    movq $SYS_HANDLE_CLOSE, %rax
+    syscall
+    ret
+
+.global _sys_cap_query
+_sys_cap_query:
+    movq $SYS_CAP_QUERY, %rax
+    syscall
+    ret
+
+.global _sys_cap_grant
+_sys_cap_grant:
+    movq $SYS_CAP_GRANT, %rax
+    syscall
+    ret
+
+.global _sys_object_read
+_sys_object_read:
+    movq $SYS_OBJECT_READ, %rax
+    syscall
+    ret
+
+.global _sys_object_write
+_sys_object_write:
+    movq $SYS_OBJECT_WRITE, %rax
+    syscall
+    ret
+
+.global _sys_object_wait
+_sys_object_wait:
+    movq $SYS_OBJECT_WAIT, %rax
+    syscall
+    ret

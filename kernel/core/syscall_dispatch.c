@@ -82,6 +82,7 @@
 #include <kernel/string.h>
 #include <kernel/kmalloc.h>
 #include <kernel/vfs.h>
+#include <kernel/object.h>
 #include <syscall_nums.h>
 
 /* Defined below (after sys_get_time); used by the SYS_NANOSLEEP dispatch case. */
@@ -853,6 +854,38 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, 0);
     }
   } break;
+  /* --- Object / capability ABI (ASTRA §6.1/6.2/6.5, kernel/object.h) ---
+   * The real capability layer: unforgeable per-process handles to refcounted
+   * kernel objects with separable/attenuable rights.  User pointers (path,
+   * buf) are validated inside each backend via arch_copy_*_user. */
+  case SYS_HANDLE_CREATE:
+    pt_regs_set_return(frame, sys_handle_create((int)arg0, (const char *)arg1,
+                                                (uint32_t)arg2, (int)arg3));
+    break;
+  case SYS_HANDLE_DUP:
+    pt_regs_set_return(frame, sys_handle_dup((int)arg0, (uint32_t)arg1));
+    break;
+  case SYS_HANDLE_CLOSE:
+    pt_regs_set_return(frame, sys_handle_close((int)arg0));
+    break;
+  case SYS_CAP_QUERY:
+    pt_regs_set_return(frame, sys_cap_query((int)arg0));
+    break;
+  case SYS_CAP_GRANT:
+    pt_regs_set_return(frame,
+                       sys_cap_grant((int)arg0, (int)arg1, (uint32_t)arg2));
+    break;
+  case SYS_OBJECT_READ:
+    pt_regs_set_return(frame,
+                       sys_object_read((int)arg0, (void *)arg1, (size_t)arg2));
+    break;
+  case SYS_OBJECT_WRITE:
+    pt_regs_set_return(
+        frame, sys_object_write((int)arg0, (const void *)arg1, (size_t)arg2));
+    break;
+  case SYS_OBJECT_WAIT:
+    pt_regs_set_return(frame, sys_object_wait((int)arg0, (long)arg1));
+    break;
   default:
     pr_warn("Unknown syscall: %ld\n", syscall_num);
     pt_regs_set_return(frame, -ENOSYS);

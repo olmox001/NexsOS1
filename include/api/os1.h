@@ -16,6 +16,9 @@
 #include "syscall_nums.h"
 /* Privilege levels (PLVL_*) and capabilities (CAP_*) for spawn_caps (#79). */
 #include "caps.h"
+/* Object/handle/capability ABI (OBJ_TYPE_*, OS1_RIGHT_*, OS1_NS_*) — ASTRA
+ * §6.1/6.2/6.5. The OS1low_/OS1_object_ surface below operates on these. */
+#include "object.h"
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
@@ -80,6 +83,15 @@ extern int  _sys_getcwd(char *buf, size_t size);
 extern int  _sys_open(const char *path, int flags);
 extern int  _sys_close(int fd);
 extern long _sys_lseek(int fd, long offset, int whence);
+/* Object / capability ABI low-level stubs (ASTRA §6.1/6.2/6.5). */
+extern long _sys_handle_create(int ns, const char *path, unsigned int rights, int type);
+extern long _sys_handle_dup(int handle, unsigned int new_rights);
+extern long _sys_handle_close(int handle);
+extern long _sys_cap_query(int handle);
+extern long _sys_cap_grant(int target_pid, int handle, unsigned int rights);
+extern long _sys_object_read(int handle, void *buf, unsigned long n);
+extern long _sys_object_write(int handle, const void *buf, unsigned long n);
+extern long _sys_object_wait(int handle, long arg);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
@@ -160,6 +172,20 @@ int getcwd(char *buf, size_t size);
  * fd: 0=stdin, 1/2=own window, open()ed files >= 3. */
 int  close(int fd);
 long lseek(int fd, long offset, int whence);
+
+/* Object / capability API (ASTRA §6.1/6.2) — the OS1 NATIVE base surface.
+ * Authority is an unforgeable handle to a kernel object, not a PID/ambient
+ * mask.  OS1low_ = stable low-level primitives; OS1_object_* = uniform object
+ * I/O.  POSIX (open/read/write) is a personality layered ON TOP of these, not
+ * the reverse.  ns/rights/type constants live in <object.h>. */
+long OS1low_handle_create(int ns, const char *path, unsigned int rights, int type);
+long OS1low_handle_duplicate(int handle, unsigned int new_rights);
+long OS1low_handle_close(int handle);
+long OS1low_cap_query(int handle);
+long OS1low_cap_grant(int target_pid, int handle, unsigned int rights);
+long OS1_object_read(int handle, void *buf, unsigned long n);
+long OS1_object_write(int handle, const void *buf, unsigned long n);
+long OS1_object_wait(int handle, long arg);
 
 /* Formatting & Printing */
 void print(const char *s);

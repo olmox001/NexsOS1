@@ -145,6 +145,18 @@ int spawn_args(const char *path, int argc, char *const argv[]) {
  * preset (request CAP_ALL and let the kernel clamp to the level ceiling). */
 long spawn_caps(const char *path, int level, unsigned long caps) { return _sys_spawn_caps(path, level, caps); }
 long spawn_level(const char *path, int level) { return _sys_spawn_caps(path, level, CAP_ALL); }
+
+/* Object / capability API (ASTRA §6.1/6.2) — thin veneers over the _sys_ stubs.
+ * OS1 native base surface; POSIX layers on top of these, not vice versa. */
+long OS1low_handle_create(int ns, const char *path, unsigned int rights, int type) { return _sys_handle_create(ns, path, rights, type); }
+long OS1low_handle_duplicate(int handle, unsigned int new_rights) { return _sys_handle_dup(handle, new_rights); }
+long OS1low_handle_close(int handle) { return _sys_handle_close(handle); }
+long OS1low_cap_query(int handle) { return _sys_cap_query(handle); }
+long OS1low_cap_grant(int target_pid, int handle, unsigned int rights) { return _sys_cap_grant(target_pid, handle, rights); }
+long OS1_object_read(int handle, void *buf, unsigned long n) { return _sys_object_read(handle, buf, n); }
+long OS1_object_write(int handle, const void *buf, unsigned long n) { return _sys_object_write(handle, buf, n); }
+long OS1_object_wait(int handle, long arg) { return _sys_object_wait(handle, arg); }
+
 int kill_process(int pid) { return _sys_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:
  * returns -1 if the process is alive, pid if reaped, -2 if not found. */

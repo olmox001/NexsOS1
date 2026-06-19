@@ -63,6 +63,7 @@
 #include <kernel/cpu.h>
 #include <kernel/kmalloc.h>
 #include <kernel/list.h>
+#include <kernel/object.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
@@ -1006,6 +1007,7 @@ int process_terminate(int pid) {
   }
   spin_unlock_irqrestore(&sched_lock, flags);
 
+  process_handles_destroy(proc); /* close capability handles, free objects */
   if (proc->kernel_stack) {
     pmm_free_pages((void *)(proc->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
   }
@@ -1161,6 +1163,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
      * no inversion). */
     timer_del(&to_free->sleep_timer);
 
+    process_handles_destroy(to_free); /* close capability handles, free objects */
     if (to_free->kernel_stack)
       pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
     if (to_free->page_table)
