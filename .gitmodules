@@ -1,0 +1,4 @@
+[submodule "user/bin/base-nexs"]
+	path = user/bin/base-nexs
+	url = https://github.com/olmox001/base-nexs.git
+	branch = os1-support
