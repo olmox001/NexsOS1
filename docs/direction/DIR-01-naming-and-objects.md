@@ -133,3 +133,20 @@ OBJ-WIN-FOCUS); `draw`/`flush`/`compositor_render`→`OS1_gfx_draw/_flush/_rende
 **process (pilot)** → time → ipc → memory → registry → display → filesystem →
 window/graphics (largest, last). Per family, M4.5 capability routing follows the
 M4 rename only where the table marks a path.
+
+### Status — M4 DONE (2026-06-20)
+The full M4 rename pass is **complete and pushed** on `comprehensive-review`; the
+whole libos1 call surface now has OS1_/OS1low_ canonical names with bare-name compat
+shims, build-green on both arches, boot 0-panic, captest+capkill clean throughout:
+
+| family | commit | family | commit |
+|---|---|---|---|
+| (execution map) | `5bb569e` | memory + filesystem | `cac28f4` |
+| process (pilot) | `ed0f1ba` | display (+ callers migrated) | `a4398f9` |
+| time + ipc + registry | `3302c11` | window / graphics | `0a1bf80` |
+
+**Remaining = M4.5** (capability/object routing, real behaviour not just names) only
+where the per-family table marks a path: filesystem → `OBJ_TYPE_FILE`/`OS1_NS_FS`;
+process `wait` → `OS1_object_wait` on a PROCESS handle; IPC → `OBJ_TYPE_PORT`
+(reserved, not yet implemented); memory → `OS1low_vm_map/_unmap/_protect`. (process
+`kill` → `OBJ_CTL_KILL` and registry → `OBJ_TYPE_REGKEY` already shipped pre-F4.)
