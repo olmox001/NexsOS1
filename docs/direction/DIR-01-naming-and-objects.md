@@ -64,3 +64,72 @@ rename/unification** is still pending — mass-prefix the remaining base-API ver
 `OS1_`, add POSIX bare-name shims, and fold the legacy syscalls/verbs onto the
 `OS1_`/`OS1low_` + capability model so the whole surface is consistent (read the
 ASTRA §6.1 ABI tables first so the final names match and the work isn't done twice).
+
+## F4 execution map (2026-06-20) — the family-by-family rename/capability pass
+
+The concrete, audited mapping that drives the remaining work (ASTRA §7.6). It
+refines the §6.1 ABI tables against the **actual** symbols in `include/api/os1.h`
+today. Convention (from §6 header): **`OS1low_`** = direct kernel entry (stable,
+minimal); **`OS1_`** = high-level libos1/SRL surface (versionable). The legacy
+POSIX bare names (`open/close/read/write/lseek/exit`) stay as the personality
+layer and are **not** renamed.
+
+**Method, one family per micro-phase** (build-green both arches + boot 0-panic +
+capability regression `captest`/`capkill`, then commit+push):
+1. add the canonical name in `os1.h`, implement in `lib.c` — it wraps the existing
+   `_sys_*` stub, so **no new syscall and no behaviour change**;
+2. rewrite the bare verb as a one-line **compat shim** calling the canonical
+   (zero userland breakage — every existing caller keeps compiling);
+3. callers migrate opportunistically, never in a flag-day.
+
+The `M4.5` column marks where the verb later *also* gains a capability/object
+path (the ambient-PID path stays as the convenience shim).
+
+### Process — `OS1low_process_*`  **[pilot]**
+| bare today | canonical | M4.5 capability path |
+|---|---|---|
+| `spawn`, `spawn_args` | `OS1low_process_spawn(path,argc,argv)` | — |
+| `spawn_caps`, `spawn_level` | `OS1low_process_spawn_caps(path,level,caps)` | — |
+| `kill_process` | `OS1low_process_kill(pid)` | `OBJ_CTL_KILL` (done) |
+| `wait` | `OS1low_process_wait(pid)` | `OS1_object_wait` on PROCESS |
+| `yield` | `OS1low_process_yield()` | — |
+| `get_pid` | `OS1low_process_self()` | — |
+| `exit` | `OS1low_process_exit(status)` | — (bare `exit` also kept, POSIX) |
+| `get_procs` | `OS1_process_enum(buf,max)` | — (high-level introspection) |
+
+### Time — mostly done
+`OS1_sleep`, `os1_mono_ns`, `os1_cpu_ns` already prefixed. `get_time` →
+`OS1_time_now()`. POSIX `nanosleep`/`clock_gettime` stay (personality).
+
+### IPC — `OS1low_ipc_*`
+`send`→`OS1low_ipc_send`, `recv`→`OS1low_ipc_recv`, `try_recv`→
+`OS1low_ipc_try_recv` (M4.5: PORT objects, `OBJ_TYPE_PORT` reserved).
+`notify`→`OS1_notify_post` (high-level SRL).
+
+### Window / graphics — `OS1_window_*` / `OS1_gfx_*`
+`create_window`/`destroy_window`/`window_draw`/`window_blit`/`window_write`/
+`window_of_pid`/`window_grid`/`set_window_flags`→`OS1_window_*`;
+`set_focus`→`OS1_window_set_focus` (unify with `OBJ_CTL_FOCUS`, closes
+OBJ-WIN-FOCUS); `draw`/`flush`/`compositor_render`→`OS1_gfx_draw/_flush/_render`.
+(enum/minimize/restore/focus/close already `OS1_window_*`.)
+
+### Display — `OS1_display_*` (today `_sys_*` only, no bare wrapper)
+`display_info`→`OS1_display_info`, `set_display_mode`→`OS1_display_set_mode`,
+`display_poll`→`OS1_display_poll`, `window_resize`→`OS1_window_resize`,
+`set_style`→`OS1_display_set_style`, `set_zoom`→`OS1_display_set_zoom`.
+
+### Registry — `OS1_registry_*` (M4.5 path = REGKEY, done)
+`registry_read`→`OS1_registry_get`, `registry_write`→`OS1_registry_set`,
+`registry_enum`→`OS1_registry_enum`. `set_font`→`OS1_display_set_font`.
+
+### Filesystem — `OS1_fs_*` (M4.5 path = `OBJ_TYPE_FILE`, `OS1_NS_FS` exists)
+`file_write`→`OS1_fs_write`, `file_read`→`OS1_fs_read`, `list_dir`→
+`OS1_fs_list`, `chdir`→`OS1_fs_chdir`, `getcwd`→`OS1_fs_getcwd`.
+
+### Memory — `OS1low_vm_*`
+`sbrk`→`OS1low_vm_sbrk` (M4.5: `OS1low_vm_map/_unmap/_protect`).
+
+### Order
+**process (pilot)** → time → ipc → memory → registry → display → filesystem →
+window/graphics (largest, last). Per family, M4.5 capability routing follows the
+M4 rename only where the table marks a path.
