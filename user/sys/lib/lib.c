@@ -133,18 +133,32 @@ int nanosleep(const struct timespec *req, struct timespec *rem) {
   }
   return 0;
 }
-int get_pid(void) { return _sys_get_pid(); }
-/* exit: the while(1) after _sys_exit() is unreachable dead code that silences
- * the "noreturn" warning in compilers that do not see svc #0 as a terminator. */
-void exit(int status) { _sys_exit(status); while(1); }
-int spawn(const char *path) { return _sys_spawn(path, 0, 0); }
+/* --- Process control: OS1low_ canonical primitives (ASTRA §6.1, DIR-01 F4) ---
+ * The stable low-level process surface; each just wraps a _sys_ stub, so there
+ * is no new syscall and no behaviour change.  The bare verbs below are
+ * zero-breakage compat shims forwarding here (kill_process/wait/yield are shims
+ * defined further down, next to their original neighbours).  exit keeps the
+ * while(1): unreachable dead code that silences the "noreturn" warning in
+ * compilers that do not see svc #0 as a terminator. */
+long OS1low_process_spawn(const char *path, int argc, char *const argv[]) { return _sys_spawn(path, argc, argv); }
+long OS1low_process_spawn_caps(const char *path, int level, unsigned long caps) { return _sys_spawn_caps(path, level, caps); }
+int  OS1low_process_kill(int pid) { return _sys_kill(pid); }
+int  OS1low_process_wait(int pid) { return _sys_wait(pid); }
+void OS1low_process_yield(void) { _sys_yield(); }
+int  OS1low_process_self(void) { return _sys_get_pid(); }
+void OS1low_process_exit(int status) { _sys_exit(status); while (1); }
+
+/* Bare-name compat shims (DIR-01). */
+int get_pid(void) { return OS1low_process_self(); }
+void exit(int status) { OS1low_process_exit(status); }
+int spawn(const char *path) { return (int)OS1low_process_spawn(path, 0, 0); }
 int spawn_args(const char *path, int argc, char *const argv[]) {
-  return _sys_spawn(path, argc, argv);
+  return (int)OS1low_process_spawn(path, argc, argv);
 }
 /* spawn_caps: explicit capability mask; spawn_level: the level's default
  * preset (request CAP_ALL and let the kernel clamp to the level ceiling). */
-long spawn_caps(const char *path, int level, unsigned long caps) { return _sys_spawn_caps(path, level, caps); }
-long spawn_level(const char *path, int level) { return _sys_spawn_caps(path, level, CAP_ALL); }
+long spawn_caps(const char *path, int level, unsigned long caps) { return OS1low_process_spawn_caps(path, level, caps); }
+long spawn_level(const char *path, int level) { return OS1low_process_spawn_caps(path, level, CAP_ALL); }
 
 /* Object / capability API (ASTRA §6.1/6.2) — thin veneers over the _sys_ stubs.
  * OS1 native base surface; POSIX layers on top of these, not vice versa. */
@@ -194,17 +208,17 @@ int OS1_identity(int *level, unsigned int *mask) {
 }
 int OS1_level(void) { return (int)((_sys_get_identity() >> 16) & 0xFF); }
 
-int kill_process(int pid) { return _sys_kill(pid); }
+int kill_process(int pid) { return OS1low_process_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:
  * returns -1 if the process is alive, pid if reaped, -2 if not found. */
-int wait(int pid) { return _sys_wait(pid); }
+int wait(int pid) { return OS1low_process_wait(pid); }
 void draw(int x, int y, int w, int h, int color) { _sys_draw(x, y, w, h, color); }
 void flush(void) { _sys_flush(); }
 int create_window(int x, int y, int w, int h, const char *title) { return _sys_create_window(x, y, w, h, title); }
 void destroy_window(int win_id) { _sys_destroy_window(win_id); }
 void window_draw(int win_id, int x, int y, int w, int h, unsigned int color) { _sys_window_draw(win_id, x, y, w, h, color); }
 void window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf) { _sys_window_blit(win_id, x, y, w, h, buf); }
-void yield(void) { _sys_yield(); }
+void yield(void) { OS1low_process_yield(); }
 /* OS1_sleep: block for `ms` milliseconds via the REAL kernel timer
  * (SYS_NANOSLEEP). The process is descheduled (no busy-wait) and woken by its
  * core's tick, so it no longer monopolises a core while idle. This is the NEXS

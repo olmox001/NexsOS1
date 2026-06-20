@@ -121,6 +121,20 @@ long spawn_level(const char *path, int level);
 int  kill_process(int pid);
 int  wait(int pid);
 void yield(void);
+
+/* --- Process control: OS1low_ canonical primitives (ASTRA §6.1, DIR-01 F4) ---
+ * The stable low-level process surface.  The bare verbs above
+ * (spawn/spawn_args/spawn_caps/spawn_level/kill_process/wait/yield/get_pid/exit)
+ * are kept as zero-breakage compat shims that forward to these — every existing
+ * caller keeps compiling, while new code should prefer the OS1low_ names. */
+long OS1low_process_spawn(const char *path, int argc, char *const argv[]);
+long OS1low_process_spawn_caps(const char *path, int level, unsigned long caps);
+int  OS1low_process_kill(int pid);
+int  OS1low_process_wait(int pid);
+void OS1low_process_yield(void);
+int  OS1low_process_self(void);
+void OS1low_process_exit(int status);
+
 int utf8_decode(const char *s, uint32_t *code);
 /* OS1_sleep: proprietary BASE-API blocking sleep, in MILLISECONDS (NOT POSIX
  * seconds). Prefixed OS1_ to keep the NEXS base API distinct from the POSIX/libc
