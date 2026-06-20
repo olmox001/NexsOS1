@@ -170,8 +170,14 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     int pid = atoi(kpath); /* libkernel parser (kernel/lib/string.c) */
     if (pid <= 0)
       return -EINVAL;
-    /* Acquisition policy: name a process you could act on (kill semantics). */
-    if (!process_kill_allowed(cur, pid))
+    /* Acquisition policy (seL4 separable rights, F4 M4.5): a DESTRUCTIVE handle —
+     * one that can kill (DESTROY) or IPC-send (WRITE) — still needs kill authority.
+     * A non-destructive WAIT/READ-only handle (status query, the OS1_object_wait
+     * path behind OS1low_process_wait) only needs the process to exist, matching
+     * the permissive ambient SYS_WAIT.  This separates wait-right from kill-right
+     * without widening kill/send acquisition. */
+    int destructive = (rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) != 0;
+    if (destructive && !process_kill_allowed(cur, pid))
       return -EPERM;
     if (!process_find_by_pid(pid))
       return -ESRCH;

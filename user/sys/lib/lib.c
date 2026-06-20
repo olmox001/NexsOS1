@@ -144,7 +144,20 @@ int nanosleep(const struct timespec *req, struct timespec *rem) {
 long OS1low_process_spawn(const char *path, int argc, char *const argv[]) { return _sys_spawn(path, argc, argv); }
 long OS1low_process_spawn_caps(const char *path, int level, unsigned long caps) { return _sys_spawn_caps(path, level, caps); }
 int  OS1low_process_kill(int pid) { return _sys_kill(pid); }
-int  OS1low_process_wait(int pid) { return _sys_wait(pid); }
+/* OS1low_process_wait (F4 M4.5): wait via a PROCESS capability + OS1_object_wait.
+ * A WAIT-only handle is acquirable for any live process (wait-right is separable
+ * from kill-right); if the process is already gone, acquisition fails and we fall
+ * back to the ambient SYS_WAIT so the legacy "not found" (-2) result is preserved. */
+int  OS1low_process_wait(int pid) {
+  char idbuf[16];
+  sprintf(idbuf, "%d", pid);
+  long h = OS1low_handle_create(OS1_NS_PROC, idbuf, OS1_RIGHT_WAIT, OBJ_TYPE_PROCESS);
+  if (h < 0)
+    return _sys_wait(pid);
+  long r = OS1_object_wait((int)h, 0);
+  OS1low_handle_close((int)h);
+  return (int)r;
+}
 void OS1low_process_yield(void) { _sys_yield(); }
 int  OS1low_process_self(void) { return _sys_get_pid(); }
 void OS1low_process_exit(int status) { _sys_exit(status); while (1); }
