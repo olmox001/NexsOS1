@@ -99,7 +99,8 @@ int errno = 0;
  */
 long read(int fd, char *buf, unsigned long count) { return _sys_read(fd, buf, count); }
 long write(int fd, const char *buf, size_t count) { return _sys_write(fd, buf, count); }
-long get_time(void) { return _sys_get_time(); }
+long OS1_time_now(void) { return _sys_get_time(); }
+long get_time(void) { return OS1_time_now(); } /* compat shim (DIR-01 F4) */
 /* Tier 3 os1 time primitives (docs/TIMER-MODEL.md §4); SYS_CLOCK_GETTIME
  * clk 0 = monotonic ns since boot, clk 1 = this process's CPU time in ns. */
 unsigned long long os1_mono_ns(void) {
@@ -234,12 +235,15 @@ int usleep(unsigned int usec) {
   return 0;
 }
 void compositor_render(void) { _sys_compositor_render(); }
-/* send/recv: IPC syscalls; pid==-1 means "any sender" in recv/try_recv. */
-int send(int pid, struct ipc_message *msg) { return _sys_send(pid, msg); }
-int recv(int pid, struct ipc_message *msg) { return _sys_recv(pid, msg); }
-/* try_recv: non-blocking variant of recv (SYS_TRY_RECV); returns <0 if no
- * message is waiting, 0 on success. */
-int try_recv(int pid, struct ipc_message *msg) { extern int _sys_try_recv(int pid, void *msg); return _sys_try_recv(pid, msg); }
+/* OS1low_ipc_*: canonical low-level IPC primitives (ASTRA §6.1); pid==-1 means
+ * "any sender" in recv/try_recv.  The bare send/recv/try_recv are compat shims
+ * (DIR-01 F4).  try_recv (SYS_TRY_RECV) is non-blocking: <0 if none waiting. */
+long OS1low_ipc_send(int pid, struct ipc_message *msg) { return _sys_send(pid, msg); }
+long OS1low_ipc_recv(int pid, struct ipc_message *msg) { return _sys_recv(pid, msg); }
+long OS1low_ipc_try_recv(int pid, struct ipc_message *msg) { extern int _sys_try_recv(int pid, void *msg); return _sys_try_recv(pid, msg); }
+int send(int pid, struct ipc_message *msg) { return (int)OS1low_ipc_send(pid, msg); }
+int recv(int pid, struct ipc_message *msg) { return (int)OS1low_ipc_recv(pid, msg); }
+int try_recv(int pid, struct ipc_message *msg) { return (int)OS1low_ipc_try_recv(pid, msg); }
 void set_window_flags(int win_id, int flags) { _sys_window_set_flags(win_id, flags); }
 void set_focus(int pid) { extern void _sys_set_focus(int pid); _sys_set_focus(pid); }
 
@@ -284,10 +288,14 @@ void __stack_chk_fail(void) { printf("Stack smashing detected!\n"); exit(1); }
  * NOTE(USR-SEC-01): No authentication; any process can read or overwrite any
  * key.  In particular, overwriting "srv.notify_pid" hijacks all notifications.
  */
-int registry_read(const char *key, char *buf, size_t size) { return (int)_sys_registry(0, key, buf, size); }
-int registry_write(const char *key, const char *value) { return (int)_sys_registry(1, key, (char *)value, strlen(value)); }
+/* OS1_registry_*: canonical (ASTRA §6.6); registry_read/_write/_enum are shims. */
+int OS1_registry_get(const char *key, char *buf, size_t size) { return (int)_sys_registry(0, key, buf, size); }
+int OS1_registry_set(const char *key, const char *value) { return (int)_sys_registry(1, key, (char *)value, strlen(value)); }
+int registry_read(const char *key, char *buf, size_t size) { return OS1_registry_get(key, buf, size); }
+int registry_write(const char *key, const char *value) { return OS1_registry_set(key, value); }
 /* registry_enum: REG_OP_ENUM (2), no key — lists keys into buf (LIB-REG-04). */
-int registry_enum(char *buf, size_t size) { return (int)_sys_registry(2, 0, buf, size); }
+int OS1_registry_enum(char *buf, size_t size) { return (int)_sys_registry(2, 0, buf, size); }
+int registry_enum(char *buf, size_t size) { return OS1_registry_enum(buf, size); } /* compat shim (DIR-01 F4) */
 
 /*
  * set_font - transfer a packed font buffer to the kernel (SYS_SET_FONT #253).
@@ -396,7 +404,7 @@ char *gets(char *s, int size) {
  *
  * Returns the result of send() (0 on success, negative on failure).
  */
-int notify(const char *title, const char *msg) {
+int OS1_notify_post(const char *title, const char *msg) {
   struct ipc_message imsg;
   imsg.type = IPC_TYPE_NOTIFY;
   imsg.data1 = 0;
@@ -414,13 +422,14 @@ int notify(const char *title, const char *msg) {
    * whatever process happened to hold PID 2 and the notification was lost
    * anyway. Callers that need the boot popup wait for the key (see init.c). */
   char pid_buf[16];
-  if (registry_read("srv.notify_pid", pid_buf, sizeof(pid_buf)) != 0)
+  if (OS1_registry_get("srv.notify_pid", pid_buf, sizeof(pid_buf)) != 0)
     return -1;
   int pid = atoi(pid_buf);
   if (pid <= 0)
     return -1;
-  return send(pid, &imsg);
+  return (int)OS1low_ipc_send(pid, &imsg);
 }
+int notify(const char *title, const char *msg) { return OS1_notify_post(title, msg); } /* compat shim (DIR-01 F4) */
 
 /* --- Doom/LibC Compatibility ---
  * FILE emulation: a FILE* is a heap-allocated struct (defined in os1.h) that

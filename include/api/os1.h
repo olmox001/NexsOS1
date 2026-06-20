@@ -102,7 +102,7 @@ long read(int fd, char *buf, unsigned long count);
  * read().  Was void; widened to long so ported POSIX code can check the count
  * (libc-layer change only — the SYS_WRITE syscall already returns it). */
 long write(int fd, const char *buf, size_t count);
-long get_time(void);
+long get_time(void);   /* compat shim for OS1_time_now() (DIR-01 F4) */
 int  get_pid(void);
 void exit(int status);
 int  spawn(const char *path);
@@ -148,6 +148,9 @@ void OS1_sleep(int ms);
  *   os1_cpu_ns():  this process's consumed CPU time in real nanoseconds. */
 unsigned long long os1_mono_ns(void);
 unsigned long long os1_cpu_ns(void);
+/* OS1_time_now: wall-clock seconds (the OS1_ canonical for the bare get_time;
+ * DIR-01 F4). os1_mono_ns/os1_cpu_ns above are the low-level ns primitives. */
+long OS1_time_now(void);
 
 void *sbrk(intptr_t increment);
 void *malloc(size_t size);
@@ -155,7 +158,13 @@ void  free(void *ptr);
 void *realloc(void *ptr, size_t size);
 void *calloc(size_t nmemb, size_t size);
 
-/* IPC API */
+/* IPC API.  OS1low_ipc_* are the canonical low-level primitives (ASTRA §6.1);
+ * OS1_notify_post is the high-level SRL notification verb.  The bare names
+ * (send/recv/try_recv/notify) are zero-breakage compat shims (DIR-01 F4). */
+long OS1low_ipc_send(int pid, struct ipc_message *msg);
+long OS1low_ipc_recv(int pid, struct ipc_message *msg);
+long OS1low_ipc_try_recv(int pid, struct ipc_message *msg);
+int  OS1_notify_post(const char *title, const char *msg);
 int send(int pid, struct ipc_message *msg);
 int recv(int pid, struct ipc_message *msg);
 int try_recv(int pid, struct ipc_message *msg);
@@ -185,7 +194,12 @@ int  OS1_window_restore(int win_id);
 int  OS1_window_focus(int win_id);
 int  OS1_window_close(int win_id);
 
-/* Registry API */
+/* Registry API.  OS1_registry_get/_set/_enum are the canonical high-level names
+ * (ASTRA §6.6; the capability path is OBJ_TYPE_REGKEY).  registry_read/_write/
+ * _enum are zero-breakage compat shims (DIR-01 F4). */
+int OS1_registry_get(const char *key, char *buf, size_t size);
+int OS1_registry_set(const char *key, const char *value);
+int OS1_registry_enum(char *buf, size_t size);
 int registry_read(const char *key, char *buf, size_t size);
 int registry_write(const char *key, const char *value);
 /* registry_enum: list all keys, newline-separated, into buf (LIB-REG-04). */
