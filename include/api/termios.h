@@ -28,6 +28,20 @@ struct termios {
   speed_t c_ospeed;
 };
 
+/* c_iflag bits */
+#define BRKINT 0x00000002
+#define INPCK  0x00000010
+#define ISTRIP 0x00000020
+#define ICRNL  0x00000100
+#define IXON   0x00000400
+
+/* c_oflag bits */
+#define OPOST  0x00000001
+
+/* c_cflag bits */
+#define CSIZE  0x00000030
+#define CS8    0x00000030
+
 /* c_lflag bits */
 #define ISIG   0x00000001
 #define ICANON 0x00000002

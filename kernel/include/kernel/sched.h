@@ -39,6 +39,8 @@ struct wait_queue_head {
   spinlock_t lock;
 };
 
+struct handle_entry; /* kernel/object.h — capability handle table slot */
+
 /* Process Control Block */
 struct process {
   uint32_t pid;
@@ -132,6 +134,13 @@ struct process {
    * needs no cleanup pass.  Touched only by the owning process from
    * syscall context — no lock. */
   struct fd_entry fds[NPROC_FDS];
+
+  /* Capability handle table (object/capability ABI, kernel/object.h).  NULL
+   * until the process first uses the object syscalls (zeroed by the create-time
+   * memset), lazily allocated then, freed by process_handles_destroy() at
+   * teardown.  Generalizes the fd table above into unforgeable handles to
+   * refcounted kernel objects with attenuable rights (ASTRA §6.1/6.2/6.5). */
+  struct handle_entry *handles;
 };
 
 /* Process States */

@@ -16,6 +16,9 @@
 #include "syscall_nums.h"
 /* Privilege levels (PLVL_*) and capabilities (CAP_*) for spawn_caps (#79). */
 #include "caps.h"
+/* Object/handle/capability ABI (OBJ_TYPE_*, OS1_RIGHT_*, OS1_NS_*) — ASTRA
+ * §6.1/6.2/6.5. The OS1low_/OS1_object_ surface below operates on these. */
+#include "object.h"
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
@@ -38,7 +41,7 @@ struct ps_info {
 
 /* Syscall Wrappers (Low-level) */
 extern long _sys_read(int fd, char *buf, unsigned long count);
-extern void _sys_write(int fd, const char *buf, size_t count);
+extern long _sys_write(int fd, const char *buf, size_t count);
 extern long _sys_get_time(void);
 extern int  _sys_get_pid(void);
 extern void _sys_exit(int status);
@@ -80,10 +83,24 @@ extern int  _sys_getcwd(char *buf, size_t size);
 extern int  _sys_open(const char *path, int flags);
 extern int  _sys_close(int fd);
 extern long _sys_lseek(int fd, long offset, int whence);
+/* Object / capability ABI low-level stubs (ASTRA §6.1/6.2/6.5). */
+extern long _sys_handle_create(int ns, const char *path, unsigned int rights, int type);
+extern long _sys_handle_dup(int handle, unsigned int new_rights);
+extern long _sys_handle_close(int handle);
+extern long _sys_cap_query(int handle);
+extern long _sys_cap_grant(int target_pid, int handle, unsigned int rights);
+extern long _sys_object_read(int handle, void *buf, unsigned long n);
+extern long _sys_object_write(int handle, const void *buf, unsigned long n);
+extern long _sys_object_wait(int handle, long arg);
+extern long _sys_object_ctl(int handle, int cmd, long arg);
+extern long _sys_window_enum(struct window_info *buf, unsigned long max);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
-void write(int fd, const char *buf, size_t count);
+/* write: returns the number of bytes written (POSIX ssize_t-style), matching
+ * read().  Was void; widened to long so ported POSIX code can check the count
+ * (libc-layer change only — the SYS_WRITE syscall already returns it). */
+long write(int fd, const char *buf, size_t count);
 long get_time(void);
 int  get_pid(void);
 void exit(int status);
@@ -140,9 +157,24 @@ void set_focus(int pid);
 void draw(int x, int y, int w, int h, int color);
 void flush(void);
 
+/* Window manager surface (ASTRA §6.7: windows as objects).  OS1_window_enum
+ * snapshots all windows into buf (returns the count, or a negative errno).  The
+ * control wrappers act through an OBJ_TYPE_WINDOW capability (handle_create →
+ * object_ctl → handle_close): an app may always drive its OWN window, while
+ * driving another process's window needs window-manager authority (machine/root)
+ * — used by the dock /sys/bin/nxui.  They return 0 on success or a negative
+ * errno (e.g. -EPERM without authority, -ESRCH for an unknown window). */
+long OS1_window_enum(struct window_info *buf, unsigned long max);
+int  OS1_window_minimize(int win_id);
+int  OS1_window_restore(int win_id);
+int  OS1_window_focus(int win_id);
+int  OS1_window_close(int win_id);
+
 /* Registry API */
 int registry_read(const char *key, char *buf, size_t size);
 int registry_write(const char *key, const char *value);
+/* registry_enum: list all keys, newline-separated, into buf (LIB-REG-04). */
+int registry_enum(char *buf, size_t size);
 int set_font(void *data, size_t size);
 
 /* Filesystem Helpers */
@@ -157,6 +189,21 @@ int getcwd(char *buf, size_t size);
  * fd: 0=stdin, 1/2=own window, open()ed files >= 3. */
 int  close(int fd);
 long lseek(int fd, long offset, int whence);
+
+/* Object / capability API (ASTRA §6.1/6.2) — the OS1 NATIVE base surface.
+ * Authority is an unforgeable handle to a kernel object, not a PID/ambient
+ * mask.  OS1low_ = stable low-level primitives; OS1_object_* = uniform object
+ * I/O.  POSIX (open/read/write) is a personality layered ON TOP of these, not
+ * the reverse.  ns/rights/type constants live in <object.h>. */
+long OS1low_handle_create(int ns, const char *path, unsigned int rights, int type);
+long OS1low_handle_duplicate(int handle, unsigned int new_rights);
+long OS1low_handle_close(int handle);
+long OS1low_cap_query(int handle);
+long OS1low_cap_grant(int target_pid, int handle, unsigned int rights);
+long OS1_object_read(int handle, void *buf, unsigned long n);
+long OS1_object_write(int handle, const void *buf, unsigned long n);
+long OS1_object_wait(int handle, long arg);
+long OS1_object_ctl(int handle, int cmd, long arg);
 
 /* Formatting & Printing */
 void print(const char *s);

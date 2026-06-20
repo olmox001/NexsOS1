@@ -53,3 +53,28 @@ processes → syscalls → kernel
 * Authority calls are capability-checked, not privilege/uid-checked.
 * Syscalls are organised into the `proc_*/fs_*/window_*/input_*` families.
 * No `fork()` primitive exists or is planned; `spawn*` is the only process-creation path.
+
+## Status (2026-06-20)
+
+**DONE** (ASTRA §7.1/§7.2/§7.4):
+
+* **Real capability layer** (§1 of this doc). Authority is now an unforgeable handle to
+  a kernel object with separable/attenuable rights, not an ambient PID/level identity —
+  `OS1low_handle_create/_duplicate/_close`, `OS1low_cap_query/_grant`,
+  `OS1_object_read/_write/_wait/_ctl` over `OBJ_TYPE_FILE/PROCESS/REGKEY/WINDOW`
+  (`include/api/object.h`). Acquisition is ambient-gated (`CAP_*`), use is
+  capability-based; a granted handle delegates exactly its (only-shrinkable) rights.
+* **Per-path capability presets** (§4 Application-vs-Kernel separation in practice): a
+  binary's VFS location sets its privilege preset — `/sys/bin` = ROOT, `/bin` = USER —
+  under the monotonic creator-clamp (no escalation); `/sys/bin` is write-protected.
+* **Stratified SRL services**: every system CLI is a reusable helper + thin frontend,
+  **secure-by-caller** because the helper only wraps kernel-gated syscalls (adds no
+  ambient checks). Examples: `nxres` (display/style/theme), `nxproc` (process mgmt —
+  `user/sys/bin/nxproc.h` helper consumed by the CLI and by the shell's `ps`/`top`).
+* **No `fork()`** (§3) holds: `spawn*`/`spawn_caps` remain the only process-creation path.
+
+**Remaining**: per-service capability **refinement** (today `/sys/bin` services all start
+at the ROOT preset, not yet a reduced per-service mask); the explicit **SRL/HAL
+source-tree split** (B5); the consistent `proc_*/fs_*/window_*/input_*` family naming
+(§2, pairs with the DIR-01 call-surface refactor); and the planned `nxinfo`/`nxperms`
+services on the same stratified pattern.

@@ -17,4 +17,20 @@
  *   declared here to avoid silently changing the unit of existing callers. */
 int usleep(unsigned int usec);
 
+/* Standard file descriptors. */
+#define STDIN_FILENO  0
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+
+/* Thin POSIX shims over the OS1 base API (implemented in user/sys/lib/lib.c,
+ * epic #120 onion-userland libc — no new OS1 syscalls).
+ *   isatty: true for the std stream fds (0/1/2).
+ *   getpid: alias of the OS1 get_pid().
+ *   pipe:   OS1 has no anonymous pipes — always fails (callers fall back).
+ *   unlink: no VFS delete syscall yet — accepted no-op for temp-file cleanup. */
+int isatty(int fd);
+int getpid(void);
+int pipe(int pipefd[2]);
+int unlink(const char *pathname);
+
 #endif

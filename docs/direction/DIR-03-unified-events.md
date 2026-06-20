@@ -44,3 +44,21 @@ Benefits:
 ## Acceptance
 * notify_srv and shell run on a single `OS1_event_wait` loop, no `try_recv`+sleep poll.
 * A timeout is expressible as `EVENT_TIMER`, removing the visible-branch poll in notify_srv.
+
+## Status (2026-06-20)
+
+**DONE — input base** (ASTRA §7.5, header `include/api/input.h`): windowed apps now
+read keyboard, mouse and resize through **one** API, `input_poll_event(input_event_t *)`.
+The single `input_event_t` union carries all three (`INPUT_TYPE_KEYBOARD/MOUSE/RESIZE`),
+decoded from the underlying IPC transport types `IPC_TYPE_INPUT` / `IPC_TYPE_MOUSE` /
+`IPC_TYPE_RESIZE`. Mouse buttons are the shared evdev codes `MOUSE_BTN_LEFT/RIGHT/MIDDLE`
+and key states `KEY_PRESSED/RELEASED/REPEAT`, centralised in `input.h` so every app
+matches the same constants. The compositor delivers events to the **focused** window.
+
+This is the unified *input* leg of `OS1_event_wait`: one poll covers key+mouse+resize
+instead of three primitives. The full blocking `OS1_event_wait` that also folds in IPC,
+timer, window and process readiness (~0% idle, no busy-poll) is still the target.
+
+**Remaining**: per-window mouse delivery **beyond the focused window**; a system-driven
+**desktop-resize broadcast** to apps (tracked with DIR-07); and the unified blocking
+`OS1_event_wait` loop with the `EVENT_*` set above (notify_srv/shell as adopters).

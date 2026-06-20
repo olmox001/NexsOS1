@@ -96,6 +96,17 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
                      const uint32_t *user_buf, int caller_pid);
 void compositor_set_window_flags(int window_id, int flags);
 
+/* Window state control + enumeration (ASTRA §6.7: windows as objects).  Back the
+ * OBJ_TYPE_WINDOW capability (kernel/core/object.c), SYS_WINDOW_ENUM and the
+ * titlebar background button.  minimize/restore/focus return 0 or -ESRCH;
+ * sys_window_enum returns the window count (or a negative errno). */
+struct window_info; /* defined in include/api/object.h (shared ABI) */
+int compositor_minimize_window(int window_id);
+int compositor_restore_window(int window_id);
+int compositor_focus_window(int window_id);
+int compositor_window_info(int window_id, struct window_info *out);
+long sys_window_enum(struct window_info *ubuf, size_t max);
+
 /* Process/System seam (DIR-02).
  *
  * The compositor↔scheduler dependency is inverted: the scheduler owns the

@@ -40,6 +40,7 @@
  *               discover registry contents without knowing key names in advance.
  */
 
+#include <kernel/kmalloc.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
 #include <kernel/sched.h> /* For current_process/permissions check if needed later */
@@ -198,6 +199,40 @@ int registry_get(const char *key, char *buffer, size_t size) {
 }
 
 /*
+ * registry_enum - list all used keys (LIB-REG-04).
+ *
+ * Writes the newline-separated key names into 'buf', NUL-terminated and bounded
+ * by 'size'.  Returns the number of bytes written (excluding the NUL), or -1 on
+ * bad args.  This is the enumeration API that was missing — userland can now
+ * discover registry contents without knowing key names in advance.
+ *
+ * Locking: acquires registry_lock with IRQ save/restore.
+ */
+int registry_enum(char *buf, size_t size) {
+  if (!buf || size == 0)
+    return -1;
+
+  uint64_t flags;
+  spin_lock_irqsave(&registry_lock, &flags);
+
+  size_t off = 0;
+  for (int i = 0; i < MAX_REGISTRY_KEYS; i++) {
+    if (!registry_store[i].used)
+      continue;
+    size_t klen = strlen(registry_store[i].key);
+    if (off + klen + 2 > size) /* key + '\n' + room for the NUL */
+      break;
+    memcpy(buf + off, registry_store[i].key, klen);
+    off += klen;
+    buf[off++] = '\n';
+  }
+  buf[off] = '\0';
+
+  spin_unlock_irqrestore(&registry_lock, flags);
+  return (int)off;
+}
+
+/*
  * sys_registry - syscall handler for registry access (syscall 250).
  *
  * Mediates userland access to the kernel registry via secure user-space
@@ -235,6 +270,29 @@ int registry_get(const char *key, char *buffer, size_t size) {
 long sys_registry(int op, const char *key, char *value, size_t size) {
   char k_key[MAX_KEY_LEN];
   char k_val[MAX_VAL_LEN];
+
+  if (op == REG_OP_ENUM) {
+    /* LIB-REG-04: enumerate keys into the user 'value' buffer.  No key arg;
+     * reads are open to everyone (no capability required). */
+    if (!value || size == 0)
+      return -EINVAL;
+    size_t cap = size > 4096 ? 4096 : size;
+    char *kbuf = kmalloc(cap);
+    if (!kbuf)
+      return -ENOMEM;
+    int n = registry_enum(kbuf, cap);
+    long ret;
+    if (n < 0) {
+      ret = -EINVAL;
+    } else {
+      size_t clen = (size_t)n + 1; /* include the NUL */
+      if (clen > cap)
+        clen = cap;
+      ret = (vmm_copy_to_user(value, kbuf, clen) != 0) ? -EFAULT : (long)n;
+    }
+    kfree(kbuf);
+    return ret;
+  }
 
   /* 1. Copy Key from User Space securely (stops at null!) */
   if (vmm_copy_string_from_user(k_key, key, MAX_KEY_LEN) != 0) {

@@ -56,6 +56,15 @@
 #include <math.h>
 #include <input.h>
 #include <graphics.h>
+#include <errno.h>
+/* POSIX compatibility shims implemented at the bottom of this file (the OS1
+ * onion-userland libc layer, epic #120; no new OS1 syscalls). */
+#include <termios.h>
+#include <poll.h>
+#include <signal.h>
+#include <dirent.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -89,7 +98,7 @@ int errno = 0;
  * and paths with no capability check; any process has full authority.
  */
 long read(int fd, char *buf, unsigned long count) { return _sys_read(fd, buf, count); }
-void write(int fd, const char *buf, size_t count) { _sys_write(fd, buf, count); }
+long write(int fd, const char *buf, size_t count) { return _sys_write(fd, buf, count); }
 long get_time(void) { return _sys_get_time(); }
 /* Tier 3 os1 time primitives (docs/TIMER-MODEL.md §4); SYS_CLOCK_GETTIME
  * clk 0 = monotonic ns since boot, clk 1 = this process's CPU time in ns. */
@@ -136,6 +145,43 @@ int spawn_args(const char *path, int argc, char *const argv[]) {
  * preset (request CAP_ALL and let the kernel clamp to the level ceiling). */
 long spawn_caps(const char *path, int level, unsigned long caps) { return _sys_spawn_caps(path, level, caps); }
 long spawn_level(const char *path, int level) { return _sys_spawn_caps(path, level, CAP_ALL); }
+
+/* Object / capability API (ASTRA §6.1/6.2) — thin veneers over the _sys_ stubs.
+ * OS1 native base surface; POSIX layers on top of these, not vice versa. */
+long OS1low_handle_create(int ns, const char *path, unsigned int rights, int type) { return _sys_handle_create(ns, path, rights, type); }
+long OS1low_handle_duplicate(int handle, unsigned int new_rights) { return _sys_handle_dup(handle, new_rights); }
+long OS1low_handle_close(int handle) { return _sys_handle_close(handle); }
+long OS1low_cap_query(int handle) { return _sys_cap_query(handle); }
+long OS1low_cap_grant(int target_pid, int handle, unsigned int rights) { return _sys_cap_grant(target_pid, handle, rights); }
+long OS1_object_read(int handle, void *buf, unsigned long n) { return _sys_object_read(handle, buf, n); }
+long OS1_object_write(int handle, const void *buf, unsigned long n) { return _sys_object_write(handle, buf, n); }
+long OS1_object_wait(int handle, long arg) { return _sys_object_wait(handle, arg); }
+long OS1_object_ctl(int handle, int cmd, long arg) { return _sys_object_ctl(handle, cmd, arg); }
+
+/* Window manager surface (ASTRA §6.7: windows as objects).  Enumeration is a
+ * direct read syscall; control goes through an OBJ_TYPE_WINDOW capability
+ * (acquire → ctl → close), so authority is the unforgeable handle, not ambient
+ * identity — an app drives its OWN window freely, a WM drives any window. */
+long OS1_window_enum(struct window_info *buf, unsigned long max) { return _sys_window_enum(buf, max); }
+
+/* __win_ctl - acquire a WINDOW capability with the rights a verb needs, issue the
+ * control verb, then release the handle.  WRITE for minimize/restore/focus,
+ * DESTROY for close. */
+static int __win_ctl(int win_id, unsigned int rights, int cmd) {
+  char idbuf[16];
+  sprintf(idbuf, "%d", win_id);
+  long h = _sys_handle_create(OS1_NS_WIN, idbuf, rights, OBJ_TYPE_WINDOW);
+  if (h < 0)
+    return (int)h;
+  long r = _sys_object_ctl((int)h, cmd, 0);
+  _sys_handle_close((int)h);
+  return (int)r;
+}
+int OS1_window_minimize(int win_id) { return __win_ctl(win_id, OS1_RIGHT_WRITE, OBJ_CTL_MINIMIZE); }
+int OS1_window_restore(int win_id)  { return __win_ctl(win_id, OS1_RIGHT_WRITE, OBJ_CTL_RESTORE); }
+int OS1_window_focus(int win_id)    { return __win_ctl(win_id, OS1_RIGHT_READ, OBJ_CTL_FOCUS); }
+int OS1_window_close(int win_id)    { return __win_ctl(win_id, OS1_RIGHT_DESTROY, OBJ_CTL_CLOSE); }
+
 int kill_process(int pid) { return _sys_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:
  * returns -1 if the process is alive, pid if reaped, -2 if not found. */
@@ -214,6 +260,8 @@ void __stack_chk_fail(void) { printf("Stack smashing detected!\n"); exit(1); }
  */
 int registry_read(const char *key, char *buf, size_t size) { return (int)_sys_registry(0, key, buf, size); }
 int registry_write(const char *key, const char *value) { return (int)_sys_registry(1, key, (char *)value, strlen(value)); }
+/* registry_enum: REG_OP_ENUM (2), no key — lists keys into buf (LIB-REG-04). */
+int registry_enum(char *buf, size_t size) { return (int)_sys_registry(2, 0, buf, size); }
 
 /*
  * set_font - transfer a packed font buffer to the kernel (SYS_SET_FONT #253).
@@ -812,4 +860,274 @@ int utf8_decode(const char *s, uint32_t *code) {
     return 4;
   }
   return 0;  /* Unrecognised lead byte (invalid UTF-8) */
+}
+
+/* ============================================================================
+ * POSIX compatibility shims — OS1 "onion userland" libc layer (epic #120).
+ *
+ * These complete the POSIX/libc surface entirely in userland over the OS1 base
+ * API; NO new OS1 syscalls are added (the maintainer's directive: "il resto va
+ * portato nella libc e in posix, non in os1").  strcat/strncat/memchr/atoi/...
+ * live in kernel/lib/string.c (#included above); the functions here are the
+ * remainder needed to build ported POSIX programs (base-nexs first, kilo/doom).
+ * ========================================================================== */
+
+/* --- <string.h> --- */
+char *strtok_r(char *str, const char *delim, char **saveptr) {
+  char *s = str ? str : *saveptr;
+  if (!s)
+    return NULL;
+  while (*s && strchr(delim, (int)(unsigned char)*s))
+    s++;
+  if (*s == '\0') {
+    *saveptr = s;
+    return NULL;
+  }
+  char *tok = s;
+  while (*s && !strchr(delim, (int)(unsigned char)*s))
+    s++;
+  if (*s) {
+    *s = '\0';
+    s++;
+  }
+  *saveptr = s;
+  return tok;
+}
+
+char *strtok(char *str, const char *delim) {
+  static char *saved_tok;
+  return strtok_r(str, delim, &saved_tok);
+}
+
+char *strerror(int errnum) {
+  switch (errnum) {
+  case 0:       return (char *)"Success";
+  case ENOENT:  return (char *)"No such file or directory";
+  case EBADF:   return (char *)"Bad file descriptor";
+  case EACCES:  return (char *)"Permission denied";
+  case EEXIST:  return (char *)"File exists";
+  case ENOTDIR: return (char *)"Not a directory";
+  case EISDIR:  return (char *)"Is a directory";
+  case EINVAL:  return (char *)"Invalid argument";
+  case ENOSPC:  return (char *)"No space left on device";
+  case ENOMEM:  return (char *)"Cannot allocate memory";
+  case EFAULT:  return (char *)"Bad address";
+  case ENOSYS:  return (char *)"Function not implemented";
+  default:      return (char *)"Unknown error";
+  }
+}
+
+/* --- <stdlib.h> --- */
+long atol(const char *nptr) { return strtol(nptr, NULL, 10); }
+
+/* long is 64-bit on both OS1 targets (LP64), so long long shares its range. */
+long long strtoll(const char *nptr, char **endptr, int base) {
+  return (long long)strtol(nptr, endptr, base);
+}
+
+long long atoll(const char *nptr) { return strtoll(nptr, NULL, 10); }
+
+long labs(long j) { return j < 0 ? -j : j; }
+
+void abort(void) { exit(1); }
+
+/* qsort: in-place insertion sort with byte-wise swaps (no temp buffer / VLA,
+ * no recursion).  O(n^2) but adequate for the small arrays NEXS sorts. */
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *)) {
+  char *arr = (char *)base;
+  for (size_t i = 1; i < nmemb; i++) {
+    for (size_t j = i;
+         j > 0 && compar(arr + (j - 1) * size, arr + j * size) > 0; j--) {
+      char *a = arr + (j - 1) * size;
+      char *b = arr + j * size;
+      for (size_t k = 0; k < size; k++) {
+        char t = a[k];
+        a[k] = b[k];
+        b[k] = t;
+      }
+    }
+  }
+}
+
+/* --- <stdio.h> ---
+ * The std streams are encoded as (FILE*)0/1/2 (stdin/stdout/stderr); fread/
+ * fwrite reject those (they need fp->path), so route them straight to the
+ * fd-based read()/write().  Real fopen()ed handles (addr > 2) use fread/fwrite. */
+static int file_fd(FILE *fp) {
+  size_t v = (size_t)fp;
+  return v <= 2 ? (int)v : -1;
+}
+
+int fputc(int c, FILE *fp) {
+  unsigned char ch = (unsigned char)c;
+  int fd = file_fd(fp);
+  if (fd >= 0) {
+    write(fd, (const char *)&ch, 1);
+    return (int)ch;
+  }
+  if (fwrite(&ch, 1, 1, fp) != 1)
+    return EOF;
+  return (int)ch;
+}
+
+int fputs(const char *s, FILE *fp) {
+  size_t len = strlen(s);
+  int fd = file_fd(fp);
+  if (fd >= 0) {
+    if (len)
+      write(fd, s, len);
+    return 0;
+  }
+  if (len && fwrite(s, 1, len, fp) != len)
+    return EOF;
+  return 0;
+}
+
+int fgetc(FILE *fp) {
+  unsigned char ch;
+  int fd = file_fd(fp);
+  if (fd >= 0) {
+    if (read(fd, (char *)&ch, 1) != 1)
+      return EOF;
+    return (int)ch;
+  }
+  if (fread(&ch, 1, 1, fp) != 1)
+    return EOF;
+  return (int)ch;
+}
+
+char *fgets(char *s, int size, FILE *fp) {
+  if (size <= 0)
+    return NULL;
+  int i = 0;
+  while (i < size - 1) {
+    int c = fgetc(fp);
+    if (c == EOF) {
+      if (i == 0)
+        return NULL;
+      break;
+    }
+    s[i++] = (char)c;
+    if (c == '\n')
+      break;
+  }
+  s[i] = '\0';
+  return s;
+}
+
+void perror(const char *s) {
+  if (s && *s)
+    printf("%s: %s\n", s, strerror(errno));
+  else
+    printf("%s\n", strerror(errno));
+}
+
+/* --- <termios.h> --- OS1 windows have no line discipline; raw mode is the
+ * native behaviour, so these succeed as no-ops (see include/api/termios.h). */
+int tcgetattr(int fd, struct termios *termios_p) {
+  (void)fd;
+  if (termios_p)
+    memset(termios_p, 0, sizeof(*termios_p));
+  return 0;
+}
+
+int tcsetattr(int fd, int optional_actions, const struct termios *termios_p) {
+  (void)fd;
+  (void)optional_actions;
+  (void)termios_p;
+  return 0;
+}
+
+/* --- <poll.h> --- no pollable fd set; report a clean timeout (0 ready). */
+int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+  (void)timeout;
+  if (fds)
+    for (nfds_t i = 0; i < nfds; i++)
+      fds[i].revents = 0;
+  return 0;
+}
+
+/* --- <signal.h> --- OS1 has no signal delivery; installing a handler is a
+ * no-op that reports the previous (always default) disposition. */
+sighandler_t signal(int signum, sighandler_t handler) {
+  (void)signum;
+  (void)handler;
+  return SIG_DFL;
+}
+
+/* --- <sys/mman.h> --- anonymous mappings are backed by the userspace heap. */
+void *mmap(void *addr, size_t length, int prot, int flags, int fd,
+           off_t offset) {
+  (void)addr;
+  (void)prot;
+  (void)flags;
+  (void)fd;
+  (void)offset;
+  if (length == 0)
+    return MAP_FAILED;
+  void *p = malloc(length);
+  return p ? p : MAP_FAILED;
+}
+
+int munmap(void *addr, size_t length) {
+  (void)length;
+  free(addr);
+  return 0;
+}
+
+/* --- <sys/ioctl.h> --- only TIOCGWINSZ, answered from the window grid. */
+int ioctl(int fd, unsigned long request, ...) {
+  (void)fd;
+  if (request == TIOCGWINSZ) {
+    va_list ap;
+    va_start(ap, request);
+    struct winsize *ws = va_arg(ap, struct winsize *);
+    va_end(ap);
+    int cols = 0, rows = 0;
+    int wid = window_of_pid(get_pid());
+    if (ws && wid > 0 && window_grid(wid, &cols, &rows) == 0) {
+      ws->ws_col = (unsigned short)cols;
+      ws->ws_row = (unsigned short)rows;
+      ws->ws_xpixel = 0;
+      ws->ws_ypixel = 0;
+      return 0;
+    }
+  }
+  return -1;
+}
+
+/* --- <dirent.h> --- over list_dir() (space-separated names from ext4_list). */
+DIR *opendir(const char *name) {
+  DIR *d = malloc(sizeof(DIR));
+  if (!d)
+    return NULL;
+  if (list_dir(name, d->buf, sizeof(d->buf)) < 0) {
+    free(d);
+    return NULL;
+  }
+  d->pos = 0;
+  return d;
+}
+
+struct dirent *readdir(DIR *dirp) {
+  if (!dirp)
+    return NULL;
+  while (dirp->buf[dirp->pos] == ' ')
+    dirp->pos++;
+  if (dirp->buf[dirp->pos] == '\0')
+    return NULL;
+  int i = 0;
+  while (dirp->buf[dirp->pos] != ' ' && dirp->buf[dirp->pos] != '\0' &&
+         i < (int)sizeof(dirp->ent.d_name) - 1)
+    dirp->ent.d_name[i++] = dirp->buf[dirp->pos++];
+  dirp->ent.d_name[i] = '\0';
+  dirp->ent.d_ino = 0;
+  dirp->ent.d_type = DT_UNKNOWN;
+  return &dirp->ent;
+}
+
+int closedir(DIR *dirp) {
+  free(dirp);
+  return 0;
 }

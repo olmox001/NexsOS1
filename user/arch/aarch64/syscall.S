@@ -337,3 +337,65 @@ _sys_getcwd:
     mov x8, #SYS_GETCWD
     svc #0
     ret
+
+/* --- Object / capability ABI (ASTRA §6.1/6.2/6.5) --- */
+.global _sys_handle_create
+_sys_handle_create:
+    mov x8, #SYS_HANDLE_CREATE
+    svc #0
+    ret
+
+.global _sys_handle_dup
+_sys_handle_dup:
+    mov x8, #SYS_HANDLE_DUP
+    svc #0
+    ret
+
+.global _sys_handle_close
+_sys_handle_close:
+    mov x8, #SYS_HANDLE_CLOSE
+    svc #0
+    ret
+
+.global _sys_cap_query
+_sys_cap_query:
+    mov x8, #SYS_CAP_QUERY
+    svc #0
+    ret
+
+.global _sys_cap_grant
+_sys_cap_grant:
+    mov x8, #SYS_CAP_GRANT
+    svc #0
+    ret
+
+.global _sys_object_read
+_sys_object_read:
+    mov x8, #SYS_OBJECT_READ
+    svc #0
+    ret
+
+.global _sys_object_write
+_sys_object_write:
+    mov x8, #SYS_OBJECT_WRITE
+    svc #0
+    ret
+
+.global _sys_object_wait
+_sys_object_wait:
+    mov x8, #SYS_OBJECT_WAIT
+    svc #0
+    ret
+
+.global _sys_object_ctl
+_sys_object_ctl:
+    mov x8, #SYS_OBJECT_CTL
+    svc #0
+    ret
+
+/* long _sys_window_enum(struct window_info *buf, unsigned long max) */
+.global _sys_window_enum
+_sys_window_enum:
+    mov x8, #SYS_WINDOW_ENUM
+    svc #0
+    ret

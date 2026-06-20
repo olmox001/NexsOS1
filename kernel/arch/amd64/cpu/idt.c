@@ -5,10 +5,10 @@
  * Responsibilities:
  *   - Define the 256-entry 64-bit IDT (struct idt_entry, 16 bytes each).
  *   - Install all 256 ISR stubs (from isr_stub_table[] in isr_stubs.S) as
- *     kernel-only interrupt gates (DPL=0, type=0x8E) except vector 0x80
- *     which is a user-callable trap gate (DPL=3, type=0xEE).
- *   - Dispatch CPU exceptions (vectors 0-31), legacy syscalls (0x80), and
- *     hardware IRQs (32-255) from the single C entry point amd64_isr_dispatch.
+ *     kernel-only interrupt gates (DPL=0, type=0x8E).  There is no user-callable
+ *     gate: the only syscall entry is syscall/sysret via LSTAR (SYS-AMD64-03).
+ *   - Dispatch CPU exceptions (vectors 0-31) and hardware IRQs (32-255) from the
+ *     single C entry point amd64_isr_dispatch.
  *   - Acknowledge the LAPIC and legacy 8259 PIC after hardware IRQs.
  *
  * Invariants:
@@ -33,12 +33,13 @@
  *     volatile qualifier and no memory barrier.  APs spinning on
  *     while (!idt_initialized) may cache a stale zero indefinitely; a release
  *     barrier on the write side and a load-acquire on the read side are needed.
- *   SYS-AMD64-03 (W2 REFINE) int 0x80 gate (DPL=3) installs a second syscall
- *     surface alongside the LSTAR fast path.  If the ABI goal is SYSCALL-only,
- *     this gate should be removed or explicitly documented.
- *   CPU-AMD64-01 (W3 MISSING) common_isr_entry in isr_stubs.S saves only 15
- *     GP registers; no FXSAVE of XMM state.  See isr_stubs.S:95-109 and the
- *     cross-ref in cpu.c Known issues.
+ *   SYS-AMD64-03 RESOLVED (#168): the legacy int 0x80 gate (DPL=3) was removed.
+ *     Vector 0x80 is now a kernel-only gate like every other; syscall/sysret via
+ *     LSTAR is the sole syscall surface.  A userland int 0x80 raises #GP and is
+ *     handled as a user fault.
+ *   CPU-AMD64-01 RESOLVED (#38): FPU/SSE state is saved/restored per task in
+ *     arch_cpu_switch_context (cpu.c).  common_isr_entry still saves only GP
+ *     regs; the residual kernel-clobber window is tracked in #167.
  */
 #include <kernel/types.h>
 #include <kernel/string.h>
@@ -130,12 +131,10 @@ static int idt_initialized = 0;
 /*
  * idt_init - initialise and load the IDT for the calling CPU.
  *
- * CPU 0 path: fills all 256 entries with DPL-0 interrupt gates, then
- * overwrites vector 0x80 with a DPL-3 trap gate for the legacy int 0x80
- * syscall path.  Sets idt_initialized = 1 when done.
- * NOTE(SYS-AMD64-03): The int 0x80 gate (DPL=3) provides a second syscall
- * surface in addition to the LSTAR fast path.  If the ABI goal is
- * SYSCALL-only this gate should be removed.
+ * CPU 0 path: fills all 256 entries with DPL-0 interrupt gates and sets
+ * idt_initialized = 1 when done.  SYS-AMD64-03 (#168): no DPL-3 gate is
+ * installed — the legacy int 0x80 syscall surface was removed; syscall/sysret
+ * via LSTAR is the sole syscall entry.
  *
  * AP path: spins on idt_initialized (NOTE EXC-AMD64-04: no memory barrier),
  * then executes lidt with a CPU-local idtr pointing at the shared idt[].
@@ -150,10 +149,10 @@ void idt_init(void) {
         idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E, 0);
       }
 
-      /* Syscall via int 0x80: override with DPL=3 trap gate (0xEE) so user
-       * space can invoke vector 0x80 without triggering a GPF.
-       * NOTE(SYS-AMD64-03): This is an additional (legacy) syscall surface. */
-      idt_set_gate(0x80, isr_stub_table[0x80], 0x08, 0xEE, 0);
+      /* SYS-AMD64-03 (#168): vector 0x80 intentionally stays a kernel-only gate
+       * (DPL=0, set by the loop above).  The legacy int 0x80 syscall surface is
+       * removed; the only syscall entry is syscall/sysret via LSTAR.  A userland
+       * int 0x80 now raises #GP and is handled as a user fault. */
 
       /* Dedicated IST fault stacks (Phase A step 3; stacks live in gdt.c):
        *   IST1 -> #GP (13) and #PF (14): the handler always runs on a fresh,
@@ -292,7 +291,8 @@ static void amd64_double_fault_handler(struct pt_regs *regs) {
   arch_cpu_halt();
 }
 
-extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *regs);
+/* kernel_syscall_dispatcher: reached only via syscall/sysret (syscall.S) since
+ * the legacy int 0x80 gate was removed (SYS-AMD64-03 #168). */
 extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
 
 /*
@@ -307,7 +307,8 @@ extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
  *   vec < 32  : CPU exceptions.  Recursion guard (fault_enter), then switch
  *               on vec 8/13/14; every vector routes through
  *               fault_handle_user_or_panic (user → terminate, kernel → panic).
- *   vec == 0x80: Legacy int 0x80 syscall → kernel_syscall_dispatcher.
+ *   (vector 0x80 is a kernel-only gate now — the legacy int 0x80 syscall
+ *    surface was removed, SYS-AMD64-03 #168; syscalls use syscall/sysret.)
  *   vec 32-255: Hardware IRQs.  Spurious 39/47/0xFF filtered first; vec==32
  *               (timer) → kernel_timer_tick; others → irq_dispatch.  All end
  *               through irq_chip_end() (chip-owned LAPIC + PIC EOI).
@@ -361,12 +362,11 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
         panic("Unrecoverable kernel exception (vec %lu) at RIP 0x%lx", vec, regs->rip);
       }
     }
-  } else if (vec == 0x80) {
-    /* Legacy syscall via int 0x80 (DPL=3 gate installed in idt_init).
-     * NOTE(SYS-AMD64-03): second syscall surface alongside LSTAR. */
-    return kernel_syscall_dispatcher(regs);
   } else {
-    /* Hardware interrupts (32-255) */
+    /* Hardware interrupts (32-255).  SYS-AMD64-03 (#168): the legacy int 0x80
+     * syscall surface was removed — vector 0x80 is now a kernel-only gate, so a
+     * userland int 0x80 raises #GP (handled as a user fault) and the only
+     * syscall entry is syscall/sysret via LSTAR. */
     struct pt_regs *ret_regs = regs;
 
     /* 8259 spurious IRQ7/IRQ15 (vectors 39/47): not real interrupts — a
