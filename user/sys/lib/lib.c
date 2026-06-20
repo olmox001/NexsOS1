@@ -363,8 +363,29 @@ int set_font(void *data, size_t size) { return OS1_display_set_font(data, size);
  * used by fopen() to probe file size before allocating a read buffer. */
 /* OS1_fs_ functions: canonical (ASTRA §6.3); the bare file_write/file_read/
  * list_dir/chdir/getcwd below are compat shims (DIR-01 F4). */
-int OS1_fs_write(const char *path, const void *buf, int size, int offset) { return _sys_file_write(path, buf, size, offset); }
-int OS1_fs_read(const char *path, void *buf, int size, int offset) { return _sys_file_read(path, buf, size, offset); }
+int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
+  /* NOTE(M4.5-FS-WRITE): capability-routed write is a follow-up.  handle_create(FS)
+   * requires the file to already exist (vfs_open), so routing here would break file
+   * CREATION; it needs handle_create O_CREAT support (ASTRA 6.8 open(O_CREAT) ->
+   * handle_create).  Until then write stays on the ambient path. */
+  return _sys_file_write(path, buf, size, offset);
+}
+/* OS1_fs_read (F4 M4.5): data reads routed through a FILE capability
+ * (handle_create(FS,READ) -> OBJ_CTL_SEEK(offset) -> object_read -> close).  A
+ * size<=0 / NULL-buf call is a metadata size-probe (returns the file size) which the
+ * object read does not do, so it stays on the ambient SYS_FILE_READ path. */
+int OS1_fs_read(const char *path, void *buf, int size, int offset) {
+  if (size <= 0 || !buf)
+    return _sys_file_read(path, buf, size, offset);
+  long h = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
+  if (h < 0)
+    return (int)h;
+  if (offset > 0)
+    OS1_object_ctl((int)h, OBJ_CTL_SEEK, offset);
+  long r = OS1_object_read((int)h, buf, (unsigned long)size);
+  OS1low_handle_close((int)h);
+  return (int)r;
+}
 int OS1_fs_list(const char *path, char *buf, size_t size) { return _sys_list_dir(path, buf, size); }
 int OS1_fs_chdir(const char *path) { return _sys_chdir(path); }
 int OS1_fs_getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }

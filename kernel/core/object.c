@@ -640,6 +640,25 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     return ret;
   }
 
+  /* FILE: seek the object's shared byte offset (F4 M4.5).  Positioning needs only
+   * the handle itself (any FILE capability), so write-at-offset works on a
+   * WRITE-only handle too.  arg = absolute offset; returns the new offset. */
+  if (cmd == OBJ_CTL_SEEK) {
+    long err = 0;
+    struct kobject *o = pin_handle(handle, 0, &err);
+    if (!o)
+      return err;
+    long ret;
+    if (o->type != OBJ_TYPE_FILE || arg < 0) {
+      ret = -EINVAL;
+    } else {
+      o->offset = (uint64_t)arg;
+      ret = (long)o->offset;
+    }
+    obj_unref(o);
+    return ret;
+  }
+
   return -EINVAL;
 }
 

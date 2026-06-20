@@ -52,6 +52,7 @@
 #define OBJ_CTL_FOCUS    4 /* WINDOW: give keyboard focus + raise (RIGHT_READ — focus is
                             * unprivileged, matching the compositor's open click-to-focus) */
 #define OBJ_CTL_CLOSE    5 /* WINDOW: destroy just this window (RIGHT_DESTROY)          */
+#define OBJ_CTL_SEEK     6 /* FILE: set the object's byte offset to arg; returns it     */
 
 /* Namespaces for handle_create: how the `path` argument is interpreted. */
 #define OS1_NS_FS   1 /* path is a filesystem path → OBJ_TYPE_FILE            */
