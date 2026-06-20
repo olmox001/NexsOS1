@@ -197,6 +197,33 @@ int OS1_window_restore(int win_id)  { return __win_ctl(win_id, OS1_RIGHT_WRITE, 
 int OS1_window_focus(int win_id)    { return __win_ctl(win_id, OS1_RIGHT_READ, OBJ_CTL_FOCUS); }
 int OS1_window_close(int win_id)    { return __win_ctl(win_id, OS1_RIGHT_DESTROY, OBJ_CTL_CLOSE); }
 
+/* Window / graphics canonical names (ASTRA §6.7, DIR-01 F4): thin veneers over the
+ * _sys_ stubs.  The bare verbs (create_window/destroy_window/window_draw/blit/
+ * write/of_pid/grid/set_window_flags/set_focus/draw/flush/compositor_render) are
+ * compat shims forwarding here. */
+int  OS1_window_create(int x, int y, int w, int h, const char *title) { return _sys_create_window(x, y, w, h, title); }
+void OS1_window_destroy(int win_id) { _sys_destroy_window(win_id); }
+void OS1_window_draw(int win_id, int x, int y, int w, int h, unsigned int color) { _sys_window_draw(win_id, x, y, w, h, color); }
+void OS1_window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf) { _sys_window_blit(win_id, x, y, w, h, buf); }
+void OS1_window_write(int win_id, const char *buf, unsigned long count) { _sys_window_write(win_id, buf, count); }
+int  OS1_window_of_pid(int pid) { return _sys_window_of_pid(pid); }
+int  OS1_window_grid(int win_id, int *cols, int *rows) {
+  long r = _sys_window_grid(win_id);
+  if (r < 0)
+    return (int)r;
+  if (cols)
+    *cols = (int)((r >> 16) & 0xFFFF);
+  if (rows)
+    *rows = (int)(r & 0xFFFF);
+  return 0;
+}
+void OS1_window_set_flags(int win_id, int flags) { _sys_window_set_flags(win_id, flags); }
+void OS1_window_set_focus(int pid) { extern void _sys_set_focus(int pid); _sys_set_focus(pid); }
+int  OS1_window_resize(int win_id, int w, int h) { return _sys_window_resize(win_id, w, h); }
+void OS1_gfx_draw(int x, int y, int w, int h, int color) { _sys_draw(x, y, w, h, color); }
+void OS1_gfx_flush(void) { _sys_flush(); }
+void OS1_gfx_render(void) { _sys_compositor_render(); }
+
 /* Identity / privilege introspection (nxperm foundation): the caller's own
  * level + cap mask, unpacked from the (level<<16)|caps syscall return. */
 int OS1_identity(int *level, unsigned int *mask) {
@@ -213,12 +240,13 @@ int kill_process(int pid) { return OS1low_process_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:
  * returns -1 if the process is alive, pid if reaped, -2 if not found. */
 int wait(int pid) { return OS1low_process_wait(pid); }
-void draw(int x, int y, int w, int h, int color) { _sys_draw(x, y, w, h, color); }
-void flush(void) { _sys_flush(); }
-int create_window(int x, int y, int w, int h, const char *title) { return _sys_create_window(x, y, w, h, title); }
-void destroy_window(int win_id) { _sys_destroy_window(win_id); }
-void window_draw(int win_id, int x, int y, int w, int h, unsigned int color) { _sys_window_draw(win_id, x, y, w, h, color); }
-void window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf) { _sys_window_blit(win_id, x, y, w, h, buf); }
+/* Bare-name window/graphics compat shims (DIR-01 F4). */
+void draw(int x, int y, int w, int h, int color) { OS1_gfx_draw(x, y, w, h, color); }
+void flush(void) { OS1_gfx_flush(); }
+int create_window(int x, int y, int w, int h, const char *title) { return OS1_window_create(x, y, w, h, title); }
+void destroy_window(int win_id) { OS1_window_destroy(win_id); }
+void window_draw(int win_id, int x, int y, int w, int h, unsigned int color) { OS1_window_draw(win_id, x, y, w, h, color); }
+void window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf) { OS1_window_blit(win_id, x, y, w, h, buf); }
 void yield(void) { OS1low_process_yield(); }
 /* OS1_sleep: block for `ms` milliseconds via the REAL kernel timer
  * (SYS_NANOSLEEP). The process is descheduled (no busy-wait) and woken by its
@@ -234,7 +262,7 @@ int usleep(unsigned int usec) {
   _sys_nanosleep((unsigned long long)usec * 1000ULL);
   return 0;
 }
-void compositor_render(void) { _sys_compositor_render(); }
+void compositor_render(void) { OS1_gfx_render(); }
 /* OS1low_ipc_*: canonical low-level IPC primitives (ASTRA §6.1); pid==-1 means
  * "any sender" in recv/try_recv.  The bare send/recv/try_recv are compat shims
  * (DIR-01 F4).  try_recv (SYS_TRY_RECV) is non-blocking: <0 if none waiting. */
@@ -244,8 +272,8 @@ long OS1low_ipc_try_recv(int pid, struct ipc_message *msg) { extern int _sys_try
 int send(int pid, struct ipc_message *msg) { return (int)OS1low_ipc_send(pid, msg); }
 int recv(int pid, struct ipc_message *msg) { return (int)OS1low_ipc_recv(pid, msg); }
 int try_recv(int pid, struct ipc_message *msg) { return (int)OS1low_ipc_try_recv(pid, msg); }
-void set_window_flags(int win_id, int flags) { _sys_window_set_flags(win_id, flags); }
-void set_focus(int pid) { extern void _sys_set_focus(int pid); _sys_set_focus(pid); }
+void set_window_flags(int win_id, int flags) { OS1_window_set_flags(win_id, flags); }
+void set_focus(int pid) { OS1_window_set_focus(pid); }
 
 /* --- Shared Implementations (from kernel library) ---
  * NOTE(USR-LIB-01): These are direct source-level #includes of kernel
@@ -360,18 +388,9 @@ long lseek(int fd, long offset, int whence) { return _sys_lseek(fd, offset, when
  */
 int vsprintf(char *out, const char *fmt, va_list args) { return vsnprintf(out, 65536, fmt, args); }
 int printf(const char *fmt, ...) { char buf[256]; va_list args; va_start(args, fmt); int res = vsnprintf(buf, sizeof(buf), fmt, args); va_end(args); write(1, buf, strlen(buf)); return res; }
-void window_write(int win_id, const char *buf, unsigned long count) { _sys_window_write(win_id, buf, count); }
-int window_of_pid(int pid) { return _sys_window_of_pid(pid); }
-int window_grid(int win_id, int *cols, int *rows) {
-  long r = _sys_window_grid(win_id);
-  if (r < 0)
-    return (int)r;
-  if (cols)
-    *cols = (int)((r >> 16) & 0xFFFF);
-  if (rows)
-    *rows = (int)(r & 0xFFFF);
-  return 0;
-}
+void window_write(int win_id, const char *buf, unsigned long count) { OS1_window_write(win_id, buf, count); }
+int window_of_pid(int pid) { return OS1_window_of_pid(pid); }
+int window_grid(int win_id, int *cols, int *rows) { return OS1_window_grid(win_id, cols, rows); }
 void printf_win(int win_id, const char *fmt, ...) { char buf[512]; va_list args; va_start(args, fmt); vsnprintf(buf, sizeof(buf), fmt, args); va_end(args); _sys_window_write(win_id, buf, strlen(buf)); }
 int sprintf(char *out, const char *fmt, ...) { va_list args; va_start(args, fmt); int res = vsnprintf(out, 65536, fmt, args); va_end(args); return res; }
 int snprintf(char *out, size_t size, const char *fmt, ...) { va_list args; va_start(args, fmt); int res = vsnprintf(out, size, fmt, args); va_end(args); return res; }

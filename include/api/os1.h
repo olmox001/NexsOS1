@@ -182,6 +182,24 @@ void set_focus(int pid);
 void draw(int x, int y, int w, int h, int color);
 void flush(void);
 
+/* Window / graphics: OS1_window_ and OS1_gfx_ canonical names (ASTRA section 6.7,
+ * DIR-01 F4).  The bare verbs above (and window_write/_of_pid/_grid below) are kept
+ * as zero-breakage compat shims forwarding to these.  set_focus -> OS1_window_set_focus
+ * will later unify with the OBJ_CTL_FOCUS capability path (OBJ-WIN-FOCUS, M4.5). */
+int  OS1_window_create(int x, int y, int w, int h, const char *title);
+void OS1_window_destroy(int win_id);
+void OS1_window_draw(int win_id, int x, int y, int w, int h, unsigned int color);
+void OS1_window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf);
+void OS1_window_write(int win_id, const char *buf, unsigned long count);
+int  OS1_window_of_pid(int pid);
+int  OS1_window_grid(int win_id, int *cols, int *rows);
+void OS1_window_set_flags(int win_id, int flags);
+void OS1_window_set_focus(int pid);
+int  OS1_window_resize(int win_id, int w, int h);
+void OS1_gfx_draw(int x, int y, int w, int h, int color);
+void OS1_gfx_flush(void);
+void OS1_gfx_render(void);
+
 /* Window manager surface (ASTRA §6.7: windows as objects).  OS1_window_enum
  * snapshots all windows into buf (returns the count, or a negative errno).  The
  * control wrappers act through an OBJ_TYPE_WINDOW capability (handle_create →
