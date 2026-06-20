@@ -14,6 +14,15 @@
 #define KEY_PRESSED  1
 #define KEY_REPEAT   2
 
+/* Mouse buttons — evdev BTN_* codes as delivered in input_event_t.mouse.button
+ * (the compositor forwards the raw evdev code, NOT a 0/1/2 index).  Shared here
+ * so every app matches the same constants instead of redefining them. */
+#ifndef MOUSE_BTN_LEFT
+#define MOUSE_BTN_LEFT   0x110
+#define MOUSE_BTN_RIGHT  0x111
+#define MOUSE_BTN_MIDDLE 0x112
+#endif
+
 /* evdev scancodes for special (non-ASCII) keys, reported in
  * input_event_t.keyboard.scancode.  Windowed apps that need cursor/navigation
  * keys match on these (the ASCII .key byte is 0 for them).  Values mirror the
