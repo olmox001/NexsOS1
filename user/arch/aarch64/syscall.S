@@ -386,3 +386,9 @@ _sys_object_wait:
     mov x8, #SYS_OBJECT_WAIT
     svc #0
     ret
+
+.global _sys_object_ctl
+_sys_object_ctl:
+    mov x8, #SYS_OBJECT_CTL
+    svc #0
+    ret

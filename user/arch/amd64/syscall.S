@@ -360,3 +360,9 @@ _sys_object_wait:
     movq $SYS_OBJECT_WAIT, %rax
     syscall
     ret
+
+.global _sys_object_ctl
+_sys_object_ctl:
+    movq $SYS_OBJECT_CTL, %rax
+    syscall
+    ret

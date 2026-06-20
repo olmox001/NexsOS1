@@ -156,6 +156,7 @@ long OS1low_cap_grant(int target_pid, int handle, unsigned int rights) { return 
 long OS1_object_read(int handle, void *buf, unsigned long n) { return _sys_object_read(handle, buf, n); }
 long OS1_object_write(int handle, const void *buf, unsigned long n) { return _sys_object_write(handle, buf, n); }
 long OS1_object_wait(int handle, long arg) { return _sys_object_wait(handle, arg); }
+long OS1_object_ctl(int handle, int cmd, long arg) { return _sys_object_ctl(handle, cmd, arg); }
 
 int kill_process(int pid) { return _sys_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:

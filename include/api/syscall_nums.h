@@ -80,6 +80,7 @@
 #define SYS_OBJECT_READ        240  /* OS1_object_read(handle, buf, n) -> bytes */
 #define SYS_OBJECT_WRITE       241  /* OS1_object_write(handle, buf, n) -> bytes */
 #define SYS_OBJECT_WAIT        242  /* OS1_object_wait(handle, arg) -> object-specific */
+#define SYS_OBJECT_CTL         243  /* OS1_object_ctl(handle, cmd, arg) — e.g. KILL a process */
 
 /* --- IPC --- */
 #define SYS_SEND               230

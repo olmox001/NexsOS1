@@ -71,5 +71,6 @@ long sys_cap_grant(int target_pid, int handle, uint32_t rights);
 long sys_object_read(int handle, void *ubuf, size_t n);
 long sys_object_write(int handle, const void *ubuf, size_t n);
 long sys_object_wait(int handle, long arg);
+long sys_object_ctl(int handle, int cmd, long arg);
 
 #endif /* _KERNEL_OBJECT_H */

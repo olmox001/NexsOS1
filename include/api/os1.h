@@ -92,6 +92,7 @@ extern long _sys_cap_grant(int target_pid, int handle, unsigned int rights);
 extern long _sys_object_read(int handle, void *buf, unsigned long n);
 extern long _sys_object_write(int handle, const void *buf, unsigned long n);
 extern long _sys_object_wait(int handle, long arg);
+extern long _sys_object_ctl(int handle, int cmd, long arg);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
@@ -188,6 +189,7 @@ long OS1low_cap_grant(int target_pid, int handle, unsigned int rights);
 long OS1_object_read(int handle, void *buf, unsigned long n);
 long OS1_object_write(int handle, const void *buf, unsigned long n);
 long OS1_object_wait(int handle, long arg);
+long OS1_object_ctl(int handle, int cmd, long arg);
 
 /* Formatting & Printing */
 void print(const char *s);

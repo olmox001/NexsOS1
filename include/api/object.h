@@ -43,6 +43,10 @@
   (OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_WAIT | OS1_RIGHT_DUPLICATE |   \
    OS1_RIGHT_TRANSFER | OS1_RIGHT_DESTROY)
 
+/* Control verbs for OS1_object_ctl(handle, cmd, arg) — type-specific actions
+ * on an object you hold a capability to (seL4: the right IS the authority). */
+#define OBJ_CTL_KILL 1 /* PROCESS: terminate the target (needs OS1_RIGHT_DESTROY) */
+
 /* Namespaces for handle_create: how the `path` argument is interpreted. */
 #define OS1_NS_FS   1 /* path is a filesystem path → OBJ_TYPE_FILE            */
 #define OS1_NS_PROC 2 /* path is a decimal PID string → OBJ_TYPE_PROCESS      */

@@ -886,6 +886,10 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   case SYS_OBJECT_WAIT:
     pt_regs_set_return(frame, sys_object_wait((int)arg0, (long)arg1));
     break;
+  case SYS_OBJECT_CTL:
+    pt_regs_set_return(frame,
+                       sys_object_ctl((int)arg0, (int)arg1, (long)arg2));
+    break;
   default:
     pr_warn("Unknown syscall: %ld\n", syscall_num);
     pt_regs_set_return(frame, -ENOSYS);

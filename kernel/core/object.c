@@ -525,6 +525,30 @@ long sys_object_wait(int handle, long arg) {
 }
 
 /*
+ * sys_object_ctl - OS1_object_ctl(handle, cmd, arg).
+ * Type-specific control verbs on an object you hold a capability to.
+ * PROCESS + OBJ_CTL_KILL needs OS1_RIGHT_DESTROY and terminates the target
+ * (machine-level processes stay protected inside process_terminate).  Holding a
+ * DESTROY capability IS the authority — a GRANTED destroy handle lets its holder
+ * kill a process it could not reach by process_kill_allowed (seL4 delegation of
+ * the kill right; acquisition was gated at handle_create time).
+ */
+long sys_object_ctl(int handle, int cmd, long arg) {
+  (void)arg;
+  if (cmd == OBJ_CTL_KILL) {
+    long err = 0;
+    struct kobject *o = pin_handle(handle, OS1_RIGHT_DESTROY, &err);
+    if (!o)
+      return err;
+    long ret = (o->type == OBJ_TYPE_PROCESS) ? (long)process_terminate(o->pid)
+                                             : -EINVAL;
+    obj_unref(o);
+    return ret;
+  }
+  return -EINVAL;
+}
+
+/*
  * process_handles_destroy - close every handle a dying process holds and free
  * its table.  Called from BOTH process free sites (immediate teardown and the
  * deferred reaper) before the struct process page is freed.  NULL-safe.
