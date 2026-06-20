@@ -152,6 +152,7 @@ unsigned long long os1_cpu_ns(void);
  * DIR-01 F4). os1_mono_ns/os1_cpu_ns above are the low-level ns primitives. */
 long OS1_time_now(void);
 
+void *OS1low_vm_sbrk(intptr_t increment); /* canonical; sbrk is its shim (DIR-01 F4) */
 void *sbrk(intptr_t increment);
 void *malloc(size_t size);
 void  free(void *ptr);
@@ -206,7 +207,15 @@ int registry_write(const char *key, const char *value);
 int registry_enum(char *buf, size_t size);
 int set_font(void *data, size_t size);
 
-/* Filesystem Helpers */
+/* Filesystem Helpers.  OS1_fs_* are the canonical high-level names (ASTRA §6.3;
+ * the capability path is OBJ_TYPE_FILE / OS1_NS_FS).  The bare names
+ * (file_write/file_read/list_dir/chdir/getcwd) are zero-breakage compat shims
+ * (DIR-01 F4). */
+int OS1_fs_write(const char *path, const void *buf, int size, int offset);
+int OS1_fs_read(const char *path, void *buf, int size, int offset);
+int OS1_fs_list(const char *path, char *buf, size_t size);
+int OS1_fs_chdir(const char *path);
+int OS1_fs_getcwd(char *buf, size_t size);
 int file_write(const char *path, const void *buf, int size, int offset);
 int file_read(const char *path, void *buf, int size, int offset);
 int list_dir(const char *path, char *buf, size_t size);

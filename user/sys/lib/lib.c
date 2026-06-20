@@ -312,11 +312,18 @@ int set_font(void *data, size_t size) {
 }
 /* file_read: buf==NULL / size==0 returns the file size without reading data;
  * used by fopen() to probe file size before allocating a read buffer. */
-int file_write(const char *path, const void *buf, int size, int offset) { return _sys_file_write(path, buf, size, offset); }
-int file_read(const char *path, void *buf, int size, int offset) { return _sys_file_read(path, buf, size, offset); }
-int list_dir(const char *path, char *buf, size_t size) { return _sys_list_dir(path, buf, size); }
-int chdir(const char *path) { return _sys_chdir(path); }
-int getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
+/* OS1_fs_ functions: canonical (ASTRA §6.3); the bare file_write/file_read/
+ * list_dir/chdir/getcwd below are compat shims (DIR-01 F4). */
+int OS1_fs_write(const char *path, const void *buf, int size, int offset) { return _sys_file_write(path, buf, size, offset); }
+int OS1_fs_read(const char *path, void *buf, int size, int offset) { return _sys_file_read(path, buf, size, offset); }
+int OS1_fs_list(const char *path, char *buf, size_t size) { return _sys_list_dir(path, buf, size); }
+int OS1_fs_chdir(const char *path) { return _sys_chdir(path); }
+int OS1_fs_getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
+int file_write(const char *path, const void *buf, int size, int offset) { return OS1_fs_write(path, buf, size, offset); }
+int file_read(const char *path, void *buf, int size, int offset) { return OS1_fs_read(path, buf, size, offset); }
+int list_dir(const char *path, char *buf, size_t size) { return OS1_fs_list(path, buf, size); }
+int chdir(const char *path) { return OS1_fs_chdir(path); }
+int getcwd(char *buf, size_t size) { return OS1_fs_getcwd(buf, size); }
 
 /* POSIX-style fd I/O (ABI-03 fd table).  open() matches the variadic
  * declaration in fcntl.h; the optional mode argument is ignored because the

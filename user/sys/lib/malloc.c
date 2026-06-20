@@ -75,9 +75,11 @@ static block_header_t *free_list = NULL;
  * NOTE(USR-MALLOC-04): Heap pages obtained via sbrk are never returned to the
  * kernel; the heap grows monotonically for the lifetime of the process.
  */
-void *sbrk(intptr_t increment) {
+void *OS1low_vm_sbrk(intptr_t increment) {
     return _sys_sbrk(increment);
 }
+/* sbrk: bare-name compat shim over the OS1low_ canonical (DIR-01 F4). */
+void *sbrk(intptr_t increment) { return OS1low_vm_sbrk(increment); }
 
 /*
  * malloc - allocate at least 'size' bytes from the userland heap.
