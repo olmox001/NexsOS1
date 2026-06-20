@@ -306,10 +306,18 @@ int registry_enum(char *buf, size_t size) { return OS1_registry_enum(buf, size);
  * NOTE(USR-FONTMAN-01): The kernel stores 'data' as a raw pointer; the caller
  * must keep the buffer alive indefinitely (fontman uses while(1) yield()).
  */
-int set_font(void *data, size_t size) {
+/* Display / compositor control (ASTRA §6.7): canonical OS1_display_* over the raw
+ * _sys_ stubs.  set_font keeps a bare shim; the others had no bare name. */
+long OS1_display_info(void) { return _sys_display_info(); }
+int  OS1_display_set_mode(int w, int h) { return _sys_set_display_mode(w, h); }
+int  OS1_display_poll(void) { return _sys_display_poll(); }
+int  OS1_display_set_style(int style_id, int theme_id) { return _sys_set_style(style_id, theme_id); }
+int  OS1_display_set_zoom(int percent) { return _sys_set_zoom(percent); }
+int  OS1_display_set_font(void *data, size_t size) {
   extern int _sys_set_font(void *data, size_t size);
   return _sys_set_font(data, size);
 }
+int set_font(void *data, size_t size) { return OS1_display_set_font(data, size); } /* compat shim (DIR-01 F4) */
 /* file_read: buf==NULL / size==0 returns the file size without reading data;
  * used by fopen() to probe file size before allocating a read buffer. */
 /* OS1_fs_ functions: canonical (ASTRA §6.3); the bare file_write/file_read/

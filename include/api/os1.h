@@ -195,6 +195,16 @@ int  OS1_window_restore(int win_id);
 int  OS1_window_focus(int win_id);
 int  OS1_window_close(int win_id);
 
+/* Display / compositor control (ASTRA §6.7) — canonical OS1_display_* names over
+ * the raw _sys_ stubs (which had no bare wrapper; callers used _sys_ directly).
+ * DIR-01 F4. */
+long OS1_display_info(void);                  /* current desktop, packed (w<<16)|h */
+int  OS1_display_set_mode(int w, int h);      /* set resolution; desktop adapts */
+int  OS1_display_poll(void);                  /* apply pending host resize; 1 if changed */
+int  OS1_display_set_style(int style_id, int theme_id); /* -1 = keep */
+int  OS1_display_set_zoom(int percent);       /* desktop HiDPI/zoom percent */
+int  OS1_display_set_font(void *data, size_t size);     /* set_font is its shim */
+
 /* Registry API.  OS1_registry_get/_set/_enum are the canonical high-level names
  * (ASTRA §6.6; the capability path is OBJ_TYPE_REGKEY).  registry_read/_write/
  * _enum are zero-breakage compat shims (DIR-01 F4). */

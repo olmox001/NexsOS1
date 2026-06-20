@@ -66,11 +66,11 @@ static inline int nxinfo_proc_count(void) {
  * w/out, h/out: optional out-params; either may be NULL if the caller only
  *               wants the other dimension (or just the side effect of probing).
  *
- * Thin wrapper over _sys_display_info(), which returns the packed value
+ * Thin wrapper over OS1_display_info(), which returns the packed value
  * ((w << 16) | h).  Unpacks the two 16-bit fields into *w and *h.
  */
 static inline void nxinfo_display(int *w, int *h) {
-  long info = _sys_display_info();
+  long info = OS1_display_info();
   if (w)
     *w = (int)((info >> 16) & 0xFFFF);
   if (h)

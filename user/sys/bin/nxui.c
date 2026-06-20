@@ -213,7 +213,7 @@ int main(void) {
         return 0; /* another nxui is already up */
   }
 
-  long di = _sys_display_info();
+  long di = OS1_display_info();
   int sw = (int)((di >> 16) & 0xFFFF);
   int sh = (int)(di & 0xFFFF);
   if (sw <= 0)
@@ -234,7 +234,7 @@ int main(void) {
   for (;;) {
     /* adapt to a desktop resolution change (polled — works even before the
      * event-driven INPUT_TYPE_RESIZE path below is wired system-wide). */
-    long d = _sys_display_info();
+    long d = OS1_display_info();
     int cw = (int)((d >> 16) & 0xFFFF), ch = (int)(d & 0xFFFF);
     if (cw > 0 && ch > 0 && (cw != g_sw || ch != g_sh))
       dock_reinit(cw, ch);
@@ -254,7 +254,7 @@ int main(void) {
         }
       } else if (ev.type == INPUT_TYPE_RESIZE) {
         /* event-driven adaptation: the system told us the geometry changed. */
-        long d2 = _sys_display_info();
+        long d2 = OS1_display_info();
         int rw = (int)((d2 >> 16) & 0xFFFF), rh = (int)(d2 & 0xFFFF);
         if (rw > 0 && rh > 0)
           dock_reinit(rw, rh);
