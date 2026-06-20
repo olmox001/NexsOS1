@@ -145,8 +145,21 @@ shims, build-green on both arches, boot 0-panic, captest+capkill clean throughou
 | process (pilot) | `ed0f1ba` | display (+ callers migrated) | `a4398f9` |
 | time + ipc + registry | `3302c11` | window / graphics | `0a1bf80` |
 
-**Remaining = M4.5** (capability/object routing, real behaviour not just names) only
-where the per-family table marks a path: filesystem → `OBJ_TYPE_FILE`/`OS1_NS_FS`;
-process `wait` → `OS1_object_wait` on a PROCESS handle; IPC → `OBJ_TYPE_PORT`
-(reserved, not yet implemented); memory → `OS1low_vm_map/_unmap/_protect`. (process
-`kill` → `OBJ_CTL_KILL` and registry → `OBJ_TYPE_REGKEY` already shipped pre-F4.)
+### Status — M4.5 easy wins DONE (2026-06-20)
+The low-risk capability/object routing (real behaviour, not just names) is shipped for
+the two families whose objects already existed:
+
+| step | commit | what changed |
+|---|---|---|
+| process `wait` → capability | `5711cc0` | `OS1low_process_wait` acquires a WAIT-only PROCESS handle + `OS1_object_wait`; kernel separated wait-right from kill-right (seL4) so a non-destructive handle no longer needs kill authority. kill/IPC-send acquisition stays gated (capkill/capipc still pass). |
+| file read → capability | `95565da` | `OS1_fs_read` (size>0) routes through `handle_create(FS,READ)` + new `OBJ_CTL_SEEK` + `object_read`; size-probe stays ambient. `OBJ_CTL_SEEK` completes the FILE capability for random access. |
+
+(process `kill` → `OBJ_CTL_KILL` and registry → `OBJ_TYPE_REGKEY` already shipped pre-F4.)
+
+**Remaining M4.5 = the larger sub-projects** (deferred, deliberately not "easy wins"):
+- **file write → capability** — blocked on `handle_create(FS)` requiring an existing
+  file (vfs_open); needs O_CREAT support so routing write doesn't break file creation
+  (`NOTE(M4.5-FS-WRITE)`, ASTRA §6.8 `open(O_CREAT)` → `handle_create`).
+- **IPC → `OBJ_TYPE_PORT`** — Mach-style first-class ports; the type is reserved but
+  not implemented. A real new kernel subsystem (closer to Phase C).
+- **memory → `OS1low_vm_map/_unmap/_protect`** — depends on the B2 VM model maturing.
