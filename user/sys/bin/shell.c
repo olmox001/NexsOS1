@@ -231,17 +231,21 @@ static void process_command(void) {
     print("  time            - Show uptime\n");
     print("  demo            - Draw 2D shapes\n");
     print("  demo3d          - Launch 3D cube demo\n");
+    print("  doom            - Launch doom\n");
     print("  shell           - Open new shell window\n");
     print("  ps              - List processes\n");
     print("  ls [path]       - List directory contents\n");
     print("  cd <path>       - Change directory\n");
     print("  pwd             - Show current directory\n");
     print("  cat <path>      - Show file contents\n");
+    print("  nxres <x> <y>   - set resolution, zoom, style and theme ");
+    print("  nxproc          - Realtime list processes\n");
     print("  kill <pid>      - Kill process by PID\n");
     print("  wins            - List windows (id/pid/state/title)\n");
     print("  focus <id>      - Focus a window by id (no mouse needed)\n");
     print("  exec <program>  - Execute program (searches /bin, /sys/bin)\n");
     print("  about           - About this OS\n");
+    print("  <program>       - Execute program (searches /bin, /sys/bin)\n");
     print("  exit            - Exit shell\n");
   } else if (str_eq(cmd_buf, "clear")) {
     print("\033[2J\033[H");

@@ -633,8 +633,8 @@ help:
 	@echo "$(ARCH) Kernel Build System"
 	@echo "Targets:"
 	@echo "  all          - Build bootloader, kernel, and disk image"
-	@echo "  release      - Build production files (Use: make release VERSION=0.1.2)"
-	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.1.2)"
+	@echo "  release      - Build production files (Use: make release VERSION=0.4.1)"
+	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.4.1)"
 	@echo "  run          - Build and run kernel directly"
 	@echo "  clean        - Remove build artifacts"
 
