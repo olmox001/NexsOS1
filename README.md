@@ -1,3 +1,4 @@
+<img width="1888" height="1250" alt="Screenshot 2026-06-20 alle 04 17 16" src="https://github.com/user-attachments/assets/e36defce-72ae-45c4-a65f-226839712773" />
 # OS1 / NEXS
 
 ### Multi-architecture open-source hybrid-kernel operating system
@@ -21,6 +22,7 @@ an interactive **TTY shell**.
 
 ---
 <img width="1826" height="1105" alt="Screenshot 2026-06-19 alle 00 21 41" src="https://github.com/user-attachments/assets/87d9597b-d542-4940-8752-eff2a6a3534a" />
+<img width="1888" height="1250" alt="Screenshot 2026-06-20 alle 04 17 16" src="https://github.com/user-attachments/assets/a61cf335-a23c-459f-a522-6a629c3bc632" />
 
 
 
