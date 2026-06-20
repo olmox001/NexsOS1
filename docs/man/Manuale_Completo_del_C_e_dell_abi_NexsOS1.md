@@ -1520,6 +1520,8 @@ I programmi **windowed** scrivono sulla propria finestra; quelli **windowless** 
 
 I livelli (PLVL_MACHINE=0 … PLVL_GUEST=3) sono il *root* del modello: PLVL_MACHINE bypassa ogni capability check (è il kernel/init/servizi); gli altri sono soggetti alla maschera.
 
+La maschera `CAP_*` è l’autorità **ambientale** che gate l’*acquisizione* delle capability; sopra di essa, dal 2026-06-20, c’è il **layer a oggetti**: handle non falsificabili a oggetti del kernel, con diritti separabili e attenuabili (Capitolo 23-bis). Inoltre la **posizione di un binario nel VFS** ne fissa il preset di privilegio (`/sys/bin` = ROOT, `/bin` = USER), sempre soggetta al creator-clamp monotono (vedi 23-bis.6).
+
 ---
 
 ## Capitolo 23 · Syscall reference (numerica)
@@ -1622,6 +1624,163 @@ if (p == (void *)-1) { /* errore */ }
 | 257 | `SYS_NANOSLEEP`        | `void _sys_nanosleep(unsigned long long ns)` | precisione ~tick |
 | 258 | `SYS_CLOCK_GETTIME`    | `long _sys_clock_gettime(int clk)` | 0=monotonic, 1=cpu |
 
+### 23.7 Oggetti / handle / capability (235..243 + 202)
+
+Il **layer a capability reale** (ASTRA §6.1/6.2/6.5, stabilizzato 2026-06-20). Le firme e le costanti vengono da `include/api/object.h`; il modello è descritto nel Capitolo 23-bis.
+
+| # | Nome | Firma | Rit | Note |
+|---|---|---|---|---|
+| 202 | `SYS_WINDOW_ENUM`  | `long OS1_window_enum(struct window_info *buf, unsigned long max)` | conteggio finestre / `-errno` | snapshot di tutte le finestre |
+| 235 | `SYS_HANDLE_CREATE`| `long OS1low_handle_create(int ns, const char *path, unsigned int rights, int type)` | handle ≥ 0 / `-errno` | `ns` = `OS1_NS_*` |
+| 236 | `SYS_HANDLE_DUP`   | `long OS1low_handle_duplicate(int handle, unsigned int new_rights)` | nuovo handle / `-errno` | `new_rights ⊆` diritti correnti |
+| 237 | `SYS_HANDLE_CLOSE` | `long OS1low_handle_close(int handle)` | 0 / `-errno` | libera lo slot |
+| 238 | `SYS_CAP_QUERY`    | `long OS1low_cap_query(int handle)` | `(type<<24)|rights` / `-errno` | usa le macro `OS1_CAPQ_*` |
+| 239 | `SYS_CAP_GRANT`    | `long OS1low_cap_grant(int target_pid, int handle, unsigned int rights)` | 0 / `-errno` | richiede `OS1_RIGHT_TRANSFER` |
+| 240 | `SYS_OBJECT_READ`  | `long OS1_object_read(int handle, void *buf, unsigned long n)` | byte / `-errno` | richiede `OS1_RIGHT_READ` |
+| 241 | `SYS_OBJECT_WRITE` | `long OS1_object_write(int handle, const void *buf, unsigned long n)` | byte / `-errno` | richiede `OS1_RIGHT_WRITE` |
+| 242 | `SYS_OBJECT_WAIT`  | `long OS1_object_wait(int handle, long arg)` | object-specific / `-errno` | richiede `OS1_RIGHT_WAIT` |
+| 243 | `SYS_OBJECT_CTL`   | `long OS1_object_ctl(int handle, int cmd, long arg)` | object-specific / `-errno` | verbi `OBJ_CTL_*` |
+
+---
+
+## Capitolo 23-bis · Oggetti, handle e capability (modello a oggetti)
+
+> **Stato (2026-06-20)**: layer implementato e stabile (ASTRA §7.1). È la generalizzazione del "seme" B3 (la fd-table per-processo) in un vero modello a capability stile seL4/Mach: l’autorità non è più un’identità ambientale (PID + maschera di livello), ma un **handle non falsificabile** verso un **oggetto** del kernel. Header: `include/api/object.h` (condiviso kernel↔userland). Test di regressione: `/bin/{captest,capipc,capreg,capkill}`.
+
+### 23-bis.1 Il modello in tre frasi
+
+1. Una risorsa del kernel (file, processo, chiave di registry, finestra) è un **oggetto** refcontato. Un processo lo nomina solo tramite un **handle**: un piccolo intero, indice in una tabella **privata** del processo. Lo stesso numero in un altro processo non significa nulla, e un valore senza slot installato è `-EBADF` — non si può "indovinare" autorità.
+2. Ogni handle porta un sottoinsieme di **diritti** (`OS1_RIGHT_*`). I diritti sono **separabili** (un handle può avere READ senza WRITE) e **attenuabili**: `duplicate`/`grant` possono solo *togliere* diritti, mai aggiungerne. L’escalation è impossibile per costruzione.
+3. **Acquisire** una capability è gated dall’autorità ambientale (es. `CAP_FS_WRITE` + l’ACL `/sys,/bin` per aprire un file in scrittura; autorità di window-manager per controllare la finestra di un altro processo); **usarla** dipende solo dai diritti dell’handle. Un handle *concesso* delega quell’autorità (grant Mach/seL4).
+
+Relazione con `<caps.h>` (Capitolo 22.4): la maschera `CAP_*` è l’autorità **ambientale** che gate l’*acquisizione* di una capability; `<object.h>` è la capability **per-oggetto** che poi possiedi e deleghi.
+
+### 23-bis.2 Tipi di oggetto e namespace
+
+`OS1low_handle_create(ns, path, rights, type)` crea un handle; `ns` dice come interpretare `path`:
+
+| `type` (`OBJ_TYPE_*`) | `ns` (`OS1_NS_*`) | `path` | Oggetto |
+|---|---|---|---|
+| `OBJ_TYPE_FILE` (1)    | `OS1_NS_FS` (1)   | path filesystem        | file VFS (read/write/seek) |
+| `OBJ_TYPE_PROCESS` (2) | `OS1_NS_PROC` (2) | PID in decimale (stringa) | processo (wait, IPC a capability, kill via `OBJ_CTL_KILL`) |
+| `OBJ_TYPE_REGKEY` (3)  | `OS1_NS_REG` (3)  | chiave dotted          | chiave di registry (get/set, §6.6) |
+| `OBJ_TYPE_WINDOW` (4)  | `OS1_NS_WIN` (4)  | id finestra in decimale | finestra del compositor (vedi 23-bis.5) |
+
+### 23-bis.3 Diritti (`OS1_RIGHT_*`)
+
+| Bit | Nome | Cosa abilita |
+|---|---|---|
+| `1 << 0` | `OS1_RIGHT_READ`      | `OS1_object_read` |
+| `1 << 1` | `OS1_RIGHT_WRITE`     | `OS1_object_write` |
+| `1 << 2` | `OS1_RIGHT_WAIT`      | `OS1_object_wait` |
+| `1 << 3` | `OS1_RIGHT_DUPLICATE` | `OS1low_handle_duplicate` |
+| `1 << 4` | `OS1_RIGHT_TRANSFER`  | `OS1low_cap_grant` verso un altro processo |
+| `1 << 5` | `OS1_RIGHT_DESTROY`   | distruggere l’oggetto sottostante |
+
+`OS1_RIGHT_ALL` è l’OR di tutti. `OS1low_cap_query(handle)` ritorna `(type<<24)|rights`; estrai i campi con `OS1_CAPQ_TYPE(v)` / `OS1_CAPQ_RIGHTS(v)` (un ritorno negativo è un `-errno`).
+
+### 23-bis.4 Verbi di controllo (`OBJ_CTL_*`)
+
+`OS1_object_ctl(handle, cmd, arg)` esegue un’azione type-specific sull’oggetto (il diritto **è** l’autorità):
+
+| `cmd` | Valore | Oggetto | Effetto | Diritto richiesto |
+|---|---|---|---|---|
+| `OBJ_CTL_KILL`     | 1 | PROCESS | termina il target           | `OS1_RIGHT_DESTROY` |
+| `OBJ_CTL_MINIMIZE` | 2 | WINDOW  | manda in background (dock-restorabile) | `OS1_RIGHT_WRITE` |
+| `OBJ_CTL_RESTORE`  | 3 | WINDOW  | mostra + alza + focus       | `OS1_RIGHT_WRITE` |
+| `OBJ_CTL_FOCUS`    | 4 | WINDOW  | dà il focus tastiera + alza | `OS1_RIGHT_READ` (il focus è non privilegiato, come il click-to-focus del compositor) |
+| `OBJ_CTL_CLOSE`    | 5 | WINDOW  | distrugge solo questa finestra | `OS1_RIGHT_DESTROY` |
+
+**Esempio — terminare un processo via capability (non via PID ambientale):**
+
+```c
+char pidstr[12];
+snprintf(pidstr, sizeof(pidstr), "%d", target_pid);
+long h = OS1low_handle_create(OS1_NS_PROC, pidstr, OS1_RIGHT_DESTROY, OBJ_TYPE_PROCESS);
+if (h < 0) return h;                 /* -EPERM se non hai autorità di kill */
+long r = OS1_object_ctl((int)h, OBJ_CTL_KILL, 0);
+OS1low_handle_close((int)h);
+```
+
+**Esempio — delegare un file in sola lettura a un altro processo:**
+
+```c
+long h = OS1low_handle_create(OS1_NS_FS, "/etc/motd",
+                              OS1_RIGHT_READ | OS1_RIGHT_TRANSFER, OBJ_TYPE_FILE);
+/* il destinatario riceverà SOLO READ: i diritti possono solo restringersi */
+OS1low_cap_grant(other_pid, (int)h, OS1_RIGHT_READ);
+OS1low_handle_close((int)h);
+```
+
+### 23-bis.5 Le finestre come oggetti — Window Manager API
+
+Una finestra è una capability di prima classe (`OBJ_TYPE_WINDOW` + `OS1_NS_WIN`, ASTRA §6.7/§7.3). Il compositor resta puro *meccanismo*; la *politica* di gestione finestre vive in un servizio userland (il dock `/sys/bin/nxui`).
+
+`OS1_object_read` su un handle finestra riempie una `struct window_info`:
+
+```c
+struct window_info {
+  int id;             /* id finestra del compositor          */
+  int pid;            /* processo proprietario               */
+  int x, y;           /* posizione a schermo                 */
+  int w, h;           /* dimensione di disegno a schermo     */
+  unsigned int flags; /* maschera WININFO_*                  */
+  char title[64];     /* titolo della finestra               */
+};
+```
+
+Bit di stato (`flags`):
+
+| Bit | Nome | Significato |
+|---|---|---|
+| `1 << 0` | `WININFO_VISIBLE`   | attualmente composita (mostrata) |
+| `1 << 1` | `WININFO_MINIMIZED` | mandata in background, restorabile dal dock |
+| `1 << 2` | `WININFO_TOPMOST`   | sempre sopra, senza decorazioni |
+| `1 << 3` | `WININFO_FOCUSED`   | possiede il focus tastiera |
+| `1 << 4` | `WININFO_PASSIVE`   | click-through (popup di sistema) |
+
+Per enumerare e controllare le finestre la libreria offre dei wrapper di comodità sopra il modello a capability (`handle_create → object_ctl → handle_close`):
+
+```c
+long OS1_window_enum(struct window_info *buf, unsigned long max); /* SYS_WINDOW_ENUM (202) */
+int  OS1_window_minimize(int win_id);   /* OBJ_CTL_MINIMIZE */
+int  OS1_window_restore(int win_id);    /* OBJ_CTL_RESTORE  */
+int  OS1_window_focus(int win_id);      /* OBJ_CTL_FOCUS    */
+int  OS1_window_close(int win_id);      /* OBJ_CTL_CLOSE    */
+```
+
+`OS1_window_enum` ritorna il numero di finestre scritte in `buf` (o un `-errno`). I wrapper di controllo ritornano `0` o un `-errno` (`-EPERM` senza autorità, `-ESRCH` per una finestra inesistente). **Regola di autorità**: un’app può sempre pilotare la **propria** finestra; pilotare quella di un altro processo richiede autorità di window-manager (machine/root) — è ciò che usa il dock. Il `FOCUS` è l’eccezione: richiede solo READ, coerente col click-to-focus aperto del compositor.
+
+**Esempio — un mini dock che elenca e ripristina le finestre:**
+
+```c
+struct window_info win[32];
+long n = OS1_window_enum(win, 32);
+for (long i = 0; i < n; i++) {
+    if (win[i].flags & WININFO_MINIMIZED)
+        OS1_window_restore(win[i].id);   /* la riporta in primo piano */
+}
+```
+
+### 23-bis.6 Preset di capability per percorso (VFS)
+
+La **posizione di un binario nel VFS ne fissa il preset di privilegio** (ASTRA §7.2):
+
+- `/sys/bin/*` → spawnato a **ROOT** (autorità di sistema; la rifinitura per-servizio è un follow-up);
+- tutto il resto, in particolare `/bin/*` → **USER**.
+
+È un *tetto + default*, **non** un’escalation: il **creator-clamp monotono** (`process_create_caps`) vieta comunque a un figlio di essere più privilegiato del suo creatore. Quindi una shell USER che lancia un binario di `/sys/bin` **non** diventa root. Inoltre `/sys/bin` è write-protected (il kernel nega le scritture non-machine sotto `/sys` e `/bin`): i binari che reggono il preset sono **immutabili**.
+
+### 23-bis.7 Il pattern dei servizi stratificati (SRL)
+
+Ogni CLI/controllo di sistema è costruito come **layer helper riutilizzabile + frontend sottile**, usabile sia da app utente che da app di sistema (ASTRA §7.4). L’helper **non aggiunge controlli ambientali**: si limita a wrappare syscall che il kernel **già** gate per chiamante, quindi il servizio è **sicuro-per-chiamante** automaticamente (un’app USER e un servizio ROOT ottengono esattamente i propri diritti).
+
+- Esempio header riusabile: `user/sys/bin/nxproc.h` (gestione processi). Il CLI `nxproc` e i comandi `ps`/`top` della shell consumano lo **stesso** helper.
+- Altro esempio: `nxres` (risoluzione/stile/tema del desktop).
+- Pianificati, stesso pattern: `nxinfo` (info di sistema) e `nxperms` (autorizzazioni a livello utente).
+
+Se scrivi un tuo strumento di sistema, segui lo stesso schema: metti la logica in un `.h`/`.c` helper che chiama solo syscall gated, e tieni il `main()` del CLI come una buccia che fa il parsing degli argomenti. La sicurezza la fa il kernel sul chiamante, non l’helper.
+
 ---
 
 ## Capitolo 24 · Header di OS1 in dettaglio
@@ -1668,6 +1827,10 @@ Contiene:
 #define CAP_REG_WRITE (1u << 4)
 #define CAP_ALL (CAP_SPAWN|CAP_FS_WRITE|CAP_IPC_ANY|CAP_WINDOW|CAP_REG_WRITE)
 ```
+
+### 24.3-bis `<object.h>`
+
+L’ABI a oggetti/handle/capability (incluso da `<os1.h>`). Definisce i tipi di oggetto `OBJ_TYPE_*`, i diritti `OS1_RIGHT_*`, i namespace `OS1_NS_*`, i verbi `OBJ_CTL_*`, i flag `WININFO_*`, `struct window_info` e le macro `OS1_CAPQ_*`. Le funzioni `OS1low_handle_*` / `OS1low_cap_*` / `OS1_object_*` e `OS1_window_*` operano su queste costanti. Modello e firme: Capitolo 23-bis.
 
 ### 24.4 `<input.h>`
 
@@ -1964,23 +2127,25 @@ OS1 ha una piccola libc POSIX-like. La regola pratica:
 ### 29.1 Capability già implementate
 
 - `kill_process` verifica che il chiamante possa terminare il target (controllo di capability).
-- `registry_write` è per-cap.
+- `registry_write` è per-cap (proprietà della chiave: first-writer-wins).
 - `open` con `O_CREAT` richiede `CAP_FS_WRITE`.
 - `spawn` richiede `CAP_SPAWN` per il path di destinazione.
 - Le syscall window-richiedono `CAP_WINDOW`.
+- **Layer a oggetti reale** (ASTRA §7.1): handle non falsificabili a oggetti del kernel, con diritti separabili e attenuabili; l’escalation è impossibile per costruzione (`dup`/`grant` possono solo restringere). Vedi Capitolo 23-bis. Regressioni: `/bin/{captest,capipc,capreg,capkill}`.
+- **Preset di privilegio per percorso** (ASTRA §7.2): `/sys/bin` spawna a ROOT, `/bin` a USER, sempre soggetti al creator-clamp monotono; `/sys/bin` è write-protected (binari immutabili).
 
 ### 29.2 Cose *non* ancora sicure (TODO noti nel codice)
 
-- `kill` nello shell (`shell.c`) accetta un PID qualsiasi dall’utente senza controllo capability. È un bug aperto: `USR-SEC-02`.
-- `registry_write` non ha autenticazione. `notify_srv` ci scrive il suo PID: chiunque può sovrascriverlo e dirottare le notifiche (`USR-SEC-01`).
-- Lo spawn di nuovi processi ha piena autorità (`USR-SEC-03`).
-- Non c’è un modello di file/diritti.
+- La rifinitura **per-servizio** delle capability è un follow-up: oggi i binari di `/sys/bin` partono tutti al preset ROOT, senza ancora una maschera ridotta per singolo servizio.
+- L’enforcement VFS read-only (oltre al gate sulle scritture) è ancora da completare.
+- Manca ancora il **refactor della call-surface** (DIR-01): non tutte le syscall/verbi legacy sono già unificati sul modello `OS1_`/`OS1low_` + capability (vedi 23-bis e DIR-01).
+- Un modello di permessi a livello utente multi-utente (futuro `nxperms`) non esiste ancora.
 
 ### 29.3 Buone pratiche utente
 
 - Scrivi i tuoi servizi con il livello di privilegio **minimo necessario**: se un tool non deve scrivere sulla registry, spawnalo con `PLVL_USER` e senza `CAP_REG_WRITE`.
 - Non fidarti dei path assoluti dagli argomenti: controlla che siano sotto una directory attesa prima di operare.
-- Non chiamare `kill_process` su PID letti dall’esterno senza un controllo di capability (quando il modello sarà completato).
+- Non chiamare `kill_process` su PID letti dall’esterno senza un controllo di capability. Quando vuoi delegare/limitare l’autorità, preferisci il modello a oggetti: crea un handle `OBJ_TYPE_PROCESS` con solo i diritti necessari e agisci via `OS1_object_ctl(..., OBJ_CTL_KILL, ...)` (Capitolo 23-bis).
 
 ---
 
@@ -2032,6 +2197,10 @@ OS1 ha una piccola libc POSIX-like. La regola pratica:
 | `window_draw`/`window_blit` | os1.h | disegno |
 | `compositor_render` | os1.h | pubblica |
 | `input_poll_event` | input.h | tastiera/mouse/resize |
+| `OS1low_handle_create`/`_duplicate`/`_close` | os1.h (object.h) | handle a oggetti del kernel |
+| `OS1low_cap_query`/`_grant` | os1.h (object.h) | interroga/concede i diritti di un handle |
+| `OS1_object_read`/`_write`/`_wait`/`_ctl` | os1.h (object.h) | I/O e controllo uniforme di un oggetto |
+| `OS1_window_enum`/`_minimize`/`_restore`/`_focus`/`_close` | os1.h (object.h) | window manager (dock) |
 | `registry_read`/`registry_write` | os1.h | configurazione |
 | `file_read`/`file_write`/`list_dir` | os1.h | file system |
 | `OS1_sleep` | os1.h | sleep in ms |

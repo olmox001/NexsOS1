@@ -17,6 +17,18 @@
 > (amd64) for real-HW/UTM input.  Remaining there: aarch64 unification + GRUB
 > ISO, free the module RAM, tmpfs/xfs.  The B3-polish/TTY queue
 > (`docs/B3-POLISH-QUEUE.md`) is paused behind it.
+> **Capability/object/window batch (2026-06-20, ASTRA §7 is the source of truth)**:
+> the **B3 capability layer** is now a real object manager — **DONE** — unforgeable
+> per-process handles to refcounted kernel objects with separable/attenuable rights
+> (`OS1low_handle_*`/`OS1_object_*`, syscalls 235..243; §7.1); **window objects
+> (`OBJ_TYPE_WINDOW`) DONE** — windows as capabilities + the `/sys/bin/nxui` dock as a
+> supervised userland Window Server (§7.3); **per-path capability presets DONE** —
+> `/sys/bin`=ROOT, `/bin`=USER under the monotonic creator-clamp, `/sys/bin`
+> write-protected (§7.2); plus the stratified SRL service pattern (`nxres`, `nxproc`;
+> §7.4) and the unified input-event ABI (§7.5).  Builds `-Werror` both arches, boots
+> 0 panics; `captest` 9/9, `capkill` 5/5.  **Remaining**: per-service cap refinement,
+> the desktop-resize broadcast, `nxinfo`/`nxperms`, a single `nxui` singleton, and the
+> DIR-01 call-surface capability refactor.
 > All work lives on branch `comprehensive-review` (pushed to origin); the
 > maintainer merges to `main` himself.
 

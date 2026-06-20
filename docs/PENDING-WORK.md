@@ -24,6 +24,11 @@ e i doc di direzione `docs/direction/DIR-01..06`.
 - **Resta:** shim POSIX/libc coi nomi nudi dove esiste l'equivalente; handle tipizzati
   a oggetti (`OS1_window_t`, `OS1_surface_t`, `OS1_process_t`, `OS1_file_t`,
   `OS1_socket_t`, `OS1_service_t`, `OS1_handle_t`).
+- **Aggiornamento (2026-06-20, ASTRA §7.1):** la metà "tutto è un oggetto" è atterrata
+  come **layer a capability reale** (handle non falsificabili + diritti separabili/
+  attenuabili, `OS1low_handle_*`/`OS1_object_*`, `include/api/object.h`) — è l'`OS1_handle_t`
+  generico sotto i tipi sopra. Resta il **refactor della call-surface** (#164): prefissare/
+  unificare *tutte* le syscall/verbi legacy sul modello `OS1_`/`OS1low_` + capability.
 - **Doc:** `docs/direction/DIR-01-naming-and-objects.md`.
 
 ## 2. Conformità HAL completa — **PARZIALE** · DIR-06 / #140 (HAL-ARCH-01)
@@ -55,17 +60,31 @@ e i doc di direzione `docs/direction/DIR-01..06`.
     da `compositor.c` + `graphics.h` (cleanup).
 - **Doc:** `docs/direction/DIR-02-compositor-decoupling.md`.
 
-## 4. Modello eventi unico `event_wait()` — **NON INIZIATO** · DIR-03 / #138
+## 4. Modello eventi unico `event_wait()` — **PARZIALE** · DIR-03 / #138
 - `OS1_event_wait(&ev)` che unifica `EVENT_KEY/MOUSE/IPC/TIMER/WINDOW/PROCESS`;
   un solo event loop, niente busy-poll per costruzione; generalizza il
   recv-with-timeout (#135). Porting di notify_srv e shell come adopter di riferimento.
+- **Fatto (2026-06-20, ASTRA §7.5):** la gamba **input** è unificata —
+  `input_poll_event(input_event_t*)` copre tastiera/mouse/resize in un solo evento
+  (`INPUT_TYPE_KEYBOARD/MOUSE/RESIZE` dai transport IPC `IPC_TYPE_INPUT/MOUSE/RESIZE`),
+  costanti centralizzate in `include/api/input.h` (`MOUSE_BTN_*`, `KEY_*`).
+- **Resta:** il `OS1_event_wait` bloccante completo (anche IPC/timer/window/process,
+  ~0% idle); consegna mouse oltre la finestra in focus; broadcast desktop-resize.
 - **Doc:** `docs/direction/DIR-03-unified-events.md`.
 
-## 5. Capabilities / servizi / no-fork / App-Model vs Kernel-ABI — **NON INIZIATO** · DIR-04
-- Capability al posto dei privilegi su ogni chiamata autoritativa;
-- famiglie di syscall coerenti `proc_*` / `fs_*` / `window_*` / `input_*`;
-- mai `fork()` (solo `spawn*`);
-- separazione **Application-Model** (userlib stabile) vs **Kernel-ABI** (interno, minimale).
+## 5. Capabilities / servizi / no-fork / App-Model vs Kernel-ABI — **PARZIALE** · DIR-04
+- **Fatto (2026-06-20, ASTRA §7):** **layer a capability reale** — handle non
+  falsificabili a oggetti del kernel con diritti separabili/attenuabili
+  (`OS1low_handle_*`/`OS1_object_*`, syscall 235..243, `include/api/object.h`; §7.1);
+  **preset di privilegio per percorso** (`/sys/bin`=ROOT, `/bin`=USER, creator-clamp
+  monotono, `/sys/bin` write-protected; §7.2); **servizi SRL stratificati** sicuri-per-
+  chiamante (helper riusabile + frontend sottile: `nxres`, `nxproc`/`nxproc.h`; §7.4).
+  `fork()` resta inesistente (solo `spawn*`/`spawn_caps`).
+- **Resta:** rifinitura **per-servizio** delle capability (oggi i servizi `/sys/bin`
+  partono tutti al preset ROOT); famiglie di syscall coerenti `proc_*` / `fs_*` /
+  `window_*` / `input_*` (legato al refactor della call-surface DIR-01); separazione
+  piena **Application-Model** (userlib stabile) vs **Kernel-ABI** (interno, minimale);
+  servizi pianificati `nxinfo` / `nxperms`.
 - Estende #79 / #95 / #120. **Doc:** `docs/direction/DIR-04-capabilities-and-services.md`.
 
 ## 6. Trace debugger / recovery — **NON INIZIATO** · DIR-05 / #139
@@ -118,6 +137,23 @@ Salvati anche in memoria; ripetuti per trasparenza:
 3. **Leggere i documenti** (README, `docs/`, ASTRA) PRIMA di iniziare a lavorare.
 
 ---
+
+## Chiuso / aggiornato (sessione 2026-06-20) — batch capability/oggetti
+Fonte autorevole: `docs/ASTRA.md` §7 (build `-Werror` su 2 arch, 0 panic; `captest` 9/9,
+`capkill` 5/5).
+- **Layer a capability reale** ✓ (§7.1) — object manager: handle non falsificabili a
+  oggetti refcontati, diritti separabili/attenuabili; syscall 235..243 (`OS1low_handle_*`,
+  `OS1_object_*`), `include/api/object.h`. Chiude la parte "oggetti" di DIR-01/#164 (item 1).
+- **Window objects (`OBJ_TYPE_WINDOW`) + dock** ✓ (§7.3) — finestre come capability
+  (`OS1_window_enum`/`_minimize`/`_restore`/`_focus`/`_close`, `SYS_WINDOW_ENUM` 202,
+  `struct window_info`/`WININFO_*`); il **Window Server `/sys/bin/nxui`** come servizio
+  ROOT userland supervisionato da init. Compositor lasciato minimale.
+- **Preset di capability per percorso** ✓ (§7.2) — `/sys/bin`=ROOT, `/bin`=USER, sotto
+  creator-clamp monotono; `/sys/bin` write-protected (binari immutabili).
+- **Servizi SRL stratificati** ✓ (§7.4) e **ABI input unificata** ✓ (§7.5) — vedi item 4/5.
+- **Resta (prossimi):** rifinitura cap **per-servizio**; **broadcast desktop-resize** alle
+  app (DIR-03/DIR-07); servizi `nxinfo`/`nxperms`; **singleton `nxui`** (una sola istanza
+  del dock); **refactor della call-surface** su `OS1_`/`OS1low_` + capability (DIR-01/#164).
 
 ## Chiuso (sessione 2026-06-18)
 - **#71 LIB-SSP-01** ✓ — canary SSP randomizzato al boot da `entropy_u64()` unificato

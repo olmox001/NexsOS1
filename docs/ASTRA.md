@@ -77,7 +77,7 @@ Violations the phases must fix (worst first):
 |---|---|---|
 | Syscalls and the ELF loader call `ext4_*` directly — no FS contract at all (`vfs.c` is only path normalization) | `kernel/fs/` | **B1** (#64/#56) |
 | `virt_to_phys` is identity; no PA/VA model, no W^X — the "VM primitive" doesn't exist as a contract | `kernel/mm/`, `vmm.h` | **B2** (#92) |
-| No capability layer: any process can kill PIDs, steal focus (syscall 232), overwrite registry keys — providers cannot be wired safely without it | ABI | **B3** (#93) |
+| ~~No capability layer: any process can kill PIDs, steal focus (syscall 232), overwrite registry keys~~ — **RESOLVED**: real object manager + unforgeable per-process handles with attenuable rights now back kill/IPC/registry/windows (see §7) | ABI | **B3 ✅** (§7) |
 | Boot-protocol parsing and the 1 GB fallback are monolithic platform code instead of ACPI/Multiboot *providers* | `kernel/arch/amd64/platform/platform.c` (frozen file — do not touch until B4 replaces it behind a contract) | **B4** (#94) |
 | Compositor/fonts/registry live in the kernel core and reach into sched (focus boost) — a service living below its layer | `kernel/graphics/` | **B5** (#95) |
 
@@ -372,3 +372,102 @@ Bionic         → Android layer → libos1 → OS1low_ → Kernel
 | Binder (Android) | OS1 IPC (`OS1low_ipc_*`) |
 | SurfaceFlinger (Android) | OS1 compositor (SRL) |
 | AudioFlinger (Android) | OS1 audio (SRL) |
+
+---
+
+# 7. Implementation status (updated 2026-06-20)
+
+§1–§6 describe the target; this section records what is **actually implemented**
+in the tree today, so the structural work ahead starts from fact. Everything
+below is verified building `-Werror` on both arches (aarch64 + amd64) and booting
+with 0 panics; capability regression `captest` 9/9, `capkill` 5/5.
+
+## 7.1 Capability layer — the real object manager (§6.1/6.2/6.5) ✅ DONE
+
+The B3 "seed" has been generalized into a real, unforgeable-handle capability
+layer — no longer ambient `proc_has_cap()` identity for the object surface.
+
+- **Model**: a kernel resource is a refcounted `struct kobject`; a process names
+  it only through a **handle** — a private integer index into its per-process
+  handle table. A handle with no installed slot is `-EBADF` (unforgeable).
+  Rights are a **separable, attenuable** subset (`dup`/`grant` can only shrink),
+  so privilege escalation is impossible by construction (seL4 semantics).
+- **Acquisition is ambient-gated, use is capability-based**: getting a write FILE
+  cap needs `CAP_FS_WRITE` + the `/sys,/bin` ACL; a PROCESS cap needs kill
+  authority; a cross-process WINDOW control cap needs window-manager authority.
+  Once held, the handle's rights are the only authority that matters — a granted
+  handle delegates that authority (Mach/seL4 grant).
+- **Object types**: `OBJ_TYPE_FILE` (VFS read/write/seek), `OBJ_TYPE_PROCESS`
+  (wait, capability IPC send, kill via `OBJ_CTL_KILL`), `OBJ_TYPE_REGKEY`
+  (registry get/set — §6.6, first-writer-wins, `registry_enum`),
+  `OBJ_TYPE_WINDOW` (§7.3).
+- **ABI**: syscalls `235..243` (`SYS_HANDLE_CREATE/_DUP/_CLOSE`, `SYS_CAP_QUERY/
+  _GRANT`, `SYS_OBJECT_READ/_WRITE/_WAIT/_CTL`) + `SYS_WINDOW_ENUM 202`.
+  Userland: `OS1low_handle_create/_duplicate/_close`, `OS1low_cap_query/_grant`,
+  `OS1_object_read/_write/_wait/_ctl`. Namespaces `OS1_NS_FS/PROC/REG/WIN`.
+- **Files**: `include/api/object.h` (shared ABI), `kernel/core/object.c`,
+  `kernel/include/kernel/object.h`. Handle tables are lazily allocated and freed
+  at process teardown (`process_handles_destroy`). Tests: `/bin/{captest,capipc,
+  capreg,capkill}`.
+
+## 7.2 Per-path capability presets — VFS stratification (§6.3) ✅ DONE
+
+A binary's **location in the VFS sets its privilege preset** (`level_for_path`
+in `dispatch_spawn`): `/sys/bin/*` spawns at **ROOT** (system authority,
+per-service refinement is a follow-up), everything else (notably `/bin/*`) at
+**USER**. This is a ceiling + default, **not** an escalation: the monotonic
+creator-clamp in `process_create_caps` still forbids a child being more
+privileged than its creator, so a USER shell launching a `/sys/bin` binary does
+NOT gain root. `/sys/bin` is write-protected (object.c denies non-machine writes
+under `/sys`,`/bin`) → the binaries backing the preset are immutable. Follow-up:
+per-service cap refinement and VFS-level read-only enforcement.
+
+## 7.3 Window objects + native window server (§6.7) ✅ DONE (base)
+
+Windows are first-class capability objects. The compositor stays the pure
+*mechanism*; window-management *policy* lives in a userland service.
+
+- `OBJ_TYPE_WINDOW` + `OS1_NS_WIN`: a window handle with `OS1_object_read` →
+  `struct window_info`, and `OS1_object_ctl` verbs `OBJ_CTL_MINIMIZE/_RESTORE/
+  _FOCUS/_CLOSE`. Acquisition: your own window is free; cross-process WRITE/
+  DESTROY needs ROOT/machine (window-manager authority); FOCUS needs only READ,
+  matching the compositor's unprivileged click-to-focus.
+- `SYS_WINDOW_ENUM` → `struct window_info[]` (id/pid/geometry/flags/title).
+- Compositor: a `minimized` window state + a titlebar **background button**;
+  `compositor_minimize/restore/focus/window_info`.
+- **/sys/bin/nxui** — the **dock** = the Window Server (SRL) as a userland ROOT
+  service, supervised by init: enumerates windows, draws a tile per app, click
+  focuses/restores/backgrounds via `OS1_window_*`. The compositor itself is left
+  minimal.
+- Files: `kernel/graphics/compositor.c`, `kernel/include/kernel/graphics.h`,
+  `user/sys/bin/nxui.c`, libos1 `OS1_window_enum/_minimize/_restore/_focus/_close`.
+
+## 7.4 Stratified SRL services (§6.4) ✅ pattern established
+
+Every system CLI/control is built as **a reusable helper layer + a thin
+frontend**, usable by both user and system apps. The helper adds **no ambient
+checks**: it only wraps syscalls the kernel already gates per caller, so the
+service is **secure-by-caller** automatically (a USER app and a ROOT service get
+exactly their own rights). Established examples: `nxres` (display/style/theme),
+`nxproc` (process management — `nxproc.h` helper + `nxproc` CLI; the shell `ps`
+and `top` consume the same helper, `top` de-spinbombed to render only on change).
+Planned, same pattern: **nxinfo** (system info) and **nxperms** (user-level
+authorizations).
+
+## 7.5 Unified input event ABI (§6.2 input objects / DIR-03) ✅ base
+
+Window apps read input through one API: `input_poll_event(input_event_t*)` —
+keyboard (`IPC_TYPE_INPUT`), mouse (`IPC_TYPE_MOUSE`, evdev `MOUSE_BTN_*` codes,
+logical window coords), and window/desktop resize (`IPC_TYPE_RESIZE`). The
+compositor delivers events to the focused window. `MOUSE_BTN_*` are centralised
+in `include/api/input.h`. **Open**: per-window mouse delivery beyond the focused
+window and a desktop-resize broadcast are tracked follow-ups (DIR-03/DIR-07).
+
+## 7.6 What remains structural (next)
+
+The **call-surface refactor** (DIR-01/#164) is the next structural work:
+unify/standardise **all** existing syscalls/verbs onto the OS1_/OS1low_ +
+capability model (not just renaming) — read the §6.1 ABI tables first so the
+final names/shape match the documented surface and the work is not done twice.
+Then the explicit **SRL/HAL source-tree split** (§6.4, B5) and Phase C device
+primitives (§4).

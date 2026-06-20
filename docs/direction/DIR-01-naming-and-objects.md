@@ -45,3 +45,22 @@ GUI/proc/fs/input families become consistent (see DIR-04):
 ## Acceptance
 * `grep -rE "\bsleep\(" user include` returns only POSIX-layer references. ✅ (pilot)
 * Base API verbs are `OS1_`-prefixed; POSIX shims keep bare names; both arches build.
+
+## Status (2026-06-20)
+
+**DONE** (ASTRA §7.1, header `include/api/object.h`): the "everything is an object"
+half of this direction landed as a real, unforgeable-handle capability layer —
+not a rename, but the actual object surface this doc called for. Shipped:
+
+* `OS1low_handle_create/_duplicate/_close`, `OS1low_cap_query/_grant`,
+  `OS1_object_read/_write/_wait/_ctl` (syscalls 235..243) — a uniform object I/O
+  surface over typed kernel objects.
+* Object types `OBJ_TYPE_FILE/PROCESS/REGKEY/WINDOW` with namespaces
+  `OS1_NS_FS/PROC/REG/WIN`; separable/attenuable rights `OS1_RIGHT_*`. This is the
+  generic `OS1_handle_t`-underneath the typed handles in this doc were sketching.
+
+**Remaining (the next structural step, DIR-01/#164)**: the full **call-surface
+rename/unification** is still pending — mass-prefix the remaining base-API verbs to
+`OS1_`, add POSIX bare-name shims, and fold the legacy syscalls/verbs onto the
+`OS1_`/`OS1low_` + capability model so the whole surface is consistent (read the
+ASTRA §6.1 ABI tables first so the final names match and the work isn't done twice).

@@ -124,6 +124,30 @@ path (`nxres`) for now.  Wiring PCI device-config reads is a follow-up.
 - Built and booted on **both** arches (aarch64 `aarch64-none-elf-gcc` 7.2.0,
   amd64 `x86_64-elf-gcc`).
 
+## Status (2026-06-20)
+
+**DONE — window objects + dock** (ASTRA §7.3): windows became first-class capability
+objects (`OBJ_TYPE_WINDOW` + `OS1_NS_WIN`), the userland-policy half this doc set up.
+The compositor stays the pure mechanism; window-management *policy* lives in a userland
+ROOT service. Shipped:
+
+* `SYS_WINDOW_ENUM` (202) → `struct window_info[]` (id/pid/geometry/`WININFO_*` flags/title)
+  via `OS1_window_enum`; per-window control through an `OBJ_TYPE_WINDOW` handle with verbs
+  `OBJ_CTL_MINIMIZE/_RESTORE/_FOCUS/_CLOSE` (wrappers `OS1_window_minimize/_restore/_focus/_close`).
+  Your own window is free; cross-process WRITE/DESTROY needs window-manager (machine/root)
+  authority; FOCUS needs only READ. Headers: `include/api/object.h`.
+* **`/sys/bin/nxui`** — the dock = the Window Server as a supervised userland ROOT service:
+  enumerates windows, draws a tile per app, and click-focuses/restores/backgrounds them via
+  the `OS1_window_*` surface. A `minimized` window state + a titlebar background button were
+  added to the compositor.
+* **Resolution-adapt**: the dock re-lays out as the desktop resolution changes (builds on the
+  `compositor_resize` / `gpu_set_mode` flows above).
+
+**Remaining**: the **system-driven desktop-resize notification to apps** — a broadcast of the
+new desktop size to every window (today the `IPC_TYPE_RESIZE` → `INPUT_TYPE_RESIZE` event is
+delivered per-window on `SYS_WINDOW_RESIZE`, not as a global desktop-change fan-out); tracked
+jointly with DIR-03. Plus the rendering follow-ups already listed below.
+
 ## Follow-ups (not in this pass)
 
 - Interactive edge-grip window resize (drag) using the surface-scaling path.
