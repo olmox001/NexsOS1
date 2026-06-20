@@ -238,7 +238,7 @@ static void process_command(void) {
     print("  cd <path>       - Change directory\n");
     print("  pwd             - Show current directory\n");
     print("  cat <path>      - Show file contents\n");
-    print("  nxres <x> <y>   - set resolution, zoom, style and theme ");
+    print("  nxres <x> <y>   - set resolution, zoom, style and theme \n");
     print("  nxproc          - Realtime list processes\n");
     print("  kill <pid>      - Kill process by PID\n");
     print("  wins            - List windows (id/pid/state/title)\n");
