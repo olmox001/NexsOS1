@@ -1,4 +1,3 @@
-<img width="1888" height="1250" alt="Screenshot 2026-06-20 alle 04 17 16" src="https://github.com/user-attachments/assets/e36defce-72ae-45c4-a65f-226839712773" />
 # OS1 / NEXS
 
 ### Multi-architecture open-source hybrid-kernel operating system
