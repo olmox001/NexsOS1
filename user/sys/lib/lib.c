@@ -235,6 +235,8 @@ void __stack_chk_fail(void) { printf("Stack smashing detected!\n"); exit(1); }
  */
 int registry_read(const char *key, char *buf, size_t size) { return (int)_sys_registry(0, key, buf, size); }
 int registry_write(const char *key, const char *value) { return (int)_sys_registry(1, key, (char *)value, strlen(value)); }
+/* registry_enum: REG_OP_ENUM (2), no key — lists keys into buf (LIB-REG-04). */
+int registry_enum(char *buf, size_t size) { return (int)_sys_registry(2, 0, buf, size); }
 
 /*
  * set_font - transfer a packed font buffer to the kernel (SYS_SET_FONT #253).

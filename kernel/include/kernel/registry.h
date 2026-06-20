@@ -10,6 +10,7 @@
 /* Registry Operations */
 #define REG_OP_READ 0
 #define REG_OP_WRITE 1
+#define REG_OP_ENUM 2 /* enumerate keys into 'value' buffer (LIB-REG-04) */
 
 struct registry_entry {
   char key[MAX_KEY_LEN];
@@ -28,6 +29,10 @@ void registry_init(void);
  * a service's routing key cannot be hijacked by another process). */
 int registry_set(const char *key, const char *value, int owner_pid);
 int registry_get(const char *key, char *buffer, size_t size);
+/* registry_enum: write the newline-separated list of all used keys into 'buf'
+ * (NUL-terminated, bounded by 'size'); returns the number of bytes written
+ * (excluding the NUL), or -1 on bad args (LIB-REG-04). */
+int registry_enum(char *buf, size_t size);
 
 /* Syscall Handler */
 long sys_registry(int op, const char *key, char *value, size_t size);

@@ -31,6 +31,7 @@
 #include <kernel/string.h>
 #include <kernel/printk.h>
 #include <kernel/vfs.h>
+#include <kernel/registry.h>
 
 /* Upper bound for a single object read/write bounce buffer (mirrors the
  * dispatcher's SYSCALL_MAX_IO_BYTES so a user size argument cannot ask the
@@ -178,6 +179,33 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     if (!o)
       return -ENOMEM;
     o->pid = pid;
+
+    uint64_t flags;
+    spin_lock_irqsave(&object_lock, &flags);
+    int h = handle_install_locked(cur, o, rights);
+    spin_unlock_irqrestore(&object_lock, flags);
+    if (h < 0) {
+      kfree(o);
+      return h;
+    }
+    return h;
+  }
+
+  if (ns == OS1_NS_REG && type == OBJ_TYPE_REGKEY) {
+    /* A registry key is a capability too (ASTRA §6.6: every node has an
+     * associated capability).  A WRITE handle needs CAP_REG_WRITE to acquire
+     * (mirrors sys_registry); reads are open.  The key is stored in the
+     * kobject's path field, capped at the registry key length so create/get/set
+     * all agree on the same string. */
+    if ((rights & OS1_RIGHT_WRITE) && !proc_has_cap(cur, CAP_REG_WRITE))
+      return -EPERM;
+    if (kpath[0] == '\0')
+      return -EINVAL;
+    struct kobject *o = kobj_alloc(OBJ_TYPE_REGKEY);
+    if (!o)
+      return -ENOMEM;
+    strncpy(o->path, kpath, MAX_KEY_LEN - 1);
+    o->path[MAX_KEY_LEN - 1] = '\0';
 
     uint64_t flags;
     spin_lock_irqsave(&object_lock, &flags);
@@ -373,6 +401,18 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
         kfree(kb);
       }
     }
+  } else if (o->type == OBJ_TYPE_REGKEY) {
+    /* read = registry_get the key's value (ASTRA §6.6) */
+    char val[MAX_VAL_LEN];
+    if (registry_get(o->path, val, sizeof(val)) != 0) {
+      ret = -ENOENT;
+    } else {
+      size_t vlen = strlen(val) + 1; /* include NUL */
+      if (vlen > n)
+        vlen = n;
+      ret = (vlen > 0 && arch_copy_to_user(ubuf, val, vlen) != 0) ? -EFAULT
+                                                                  : (long)vlen;
+    }
   } else {
     ret = -EINVAL; /* PROCESS object is not byte-readable */
   }
@@ -433,6 +473,25 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
       } else {
         m.from = current_process ? (int)current_process->pid : 0;
         ret = (kernel_ipc_send(o->pid, &m) == 0) ? 0 : -ESRCH;
+      }
+    }
+  } else if (o->type == OBJ_TYPE_REGKEY) {
+    /* write = registry_set the key's value (ASTRA §6.6).  Ownership stays
+     * first-writer-wins (registry_set), so a granted REGKEY cannot hijack
+     * another owner's key. */
+    if (n == 0 || n > MAX_VAL_LEN) {
+      ret = -EINVAL;
+    } else {
+      size_t cn = (n < MAX_VAL_LEN) ? n : (MAX_VAL_LEN - 1);
+      char val[MAX_VAL_LEN];
+      if (arch_copy_from_user(val, ubuf, cn) != 0) {
+        ret = -EFAULT;
+      } else {
+        val[cn] = '\0';
+        int owner =
+            proc_is_machine(current_process) ? 0 : (int)current_process->pid;
+        int rc = registry_set(o->path, val, owner);
+        ret = (rc == 0) ? (long)n : (rc == -EACCES ? -EACCES : -EINVAL);
       }
     }
   } else {

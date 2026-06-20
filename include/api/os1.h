@@ -158,6 +158,8 @@ void flush(void);
 /* Registry API */
 int registry_read(const char *key, char *buf, size_t size);
 int registry_write(const char *key, const char *value);
+/* registry_enum: list all keys, newline-separated, into buf (LIB-REG-04). */
+int registry_enum(char *buf, size_t size);
 int set_font(void *data, size_t size);
 
 /* Filesystem Helpers */

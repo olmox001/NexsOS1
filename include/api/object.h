@@ -27,9 +27,9 @@
 /* Object types (kobject.type and the `type` argument of handle_create). */
 #define OBJ_TYPE_NONE    0
 #define OBJ_TYPE_FILE    1 /* a VFS-backed file (read/write/seek by offset)   */
-#define OBJ_TYPE_PROCESS 2 /* a process: wait on exit, query identity         */
-/* Reserved for later migrations (ASTRA §6.2/§6.7): ports, windows, gpu, audio.
- * #define OBJ_TYPE_PORT    3
+#define OBJ_TYPE_PROCESS 2 /* a process: wait on exit, query, capability IPC  */
+#define OBJ_TYPE_REGKEY  3 /* a registry key: read/write its value (§6.6)     */
+/* Reserved for later migrations (ASTRA §6.2/§6.7): windows, gpu, audio.
  * #define OBJ_TYPE_WINDOW  4 */
 
 /* Access rights — a per-handle subset, separable and attenuable (seL4). */
@@ -46,6 +46,7 @@
 /* Namespaces for handle_create: how the `path` argument is interpreted. */
 #define OS1_NS_FS   1 /* path is a filesystem path → OBJ_TYPE_FILE            */
 #define OS1_NS_PROC 2 /* path is a decimal PID string → OBJ_TYPE_PROCESS      */
+#define OS1_NS_REG  3 /* path is a registry key (dotted) → OBJ_TYPE_REGKEY    */
 
 /* cap_query packs the object type and the held rights into one return value:
  * (type << 24) | rights.  A negative return is an errno (-EBADF). */
