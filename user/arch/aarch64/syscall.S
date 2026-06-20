@@ -282,6 +282,13 @@ _sys_get_procs:
     svc #0
     ret
 
+/* long _sys_get_identity(void) -> (level<<16)|caps */
+.global _sys_get_identity
+_sys_get_identity:
+    mov x8, #SYS_GET_IDENTITY
+    svc #0
+    ret
+
 
 /* int _sys_file_write(const char *path, const void *buf, int size, int offset) */
 _sys_file_write:

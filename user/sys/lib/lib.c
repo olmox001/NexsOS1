@@ -182,6 +182,18 @@ int OS1_window_restore(int win_id)  { return __win_ctl(win_id, OS1_RIGHT_WRITE, 
 int OS1_window_focus(int win_id)    { return __win_ctl(win_id, OS1_RIGHT_READ, OBJ_CTL_FOCUS); }
 int OS1_window_close(int win_id)    { return __win_ctl(win_id, OS1_RIGHT_DESTROY, OBJ_CTL_CLOSE); }
 
+/* Identity / privilege introspection (nxperm foundation): the caller's own
+ * level + cap mask, unpacked from the (level<<16)|caps syscall return. */
+int OS1_identity(int *level, unsigned int *mask) {
+  long r = _sys_get_identity();
+  if (level)
+    *level = (int)((r >> 16) & 0xFF);
+  if (mask)
+    *mask = (unsigned int)(r & 0xFFFF);
+  return 0;
+}
+int OS1_level(void) { return (int)((_sys_get_identity() >> 16) & 0xFF); }
+
 int kill_process(int pid) { return _sys_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:
  * returns -1 if the process is alive, pid if reaped, -2 if not found. */

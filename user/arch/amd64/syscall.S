@@ -253,6 +253,13 @@ _sys_get_procs:
     syscall
     ret
 
+/* long _sys_get_identity(void) -> (level<<16)|caps */
+.global _sys_get_identity
+_sys_get_identity:
+    movq $SYS_GET_IDENTITY, %rax
+    syscall
+    ret
+
 .global _sys_file_write
 _sys_file_write:
     movq $SYS_FILE_WRITE, %rax

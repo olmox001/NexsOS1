@@ -73,6 +73,7 @@ extern int  _sys_set_zoom(int percent);           /* desktop HiDPI/zoom percent 
 extern void* _sys_sbrk(intptr_t increment);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
 extern long _sys_get_procs(void *procs, size_t max_count);
+extern long _sys_get_identity(void);
 extern int  _sys_file_write(const char *path, const void *buf, int size, int offset);
 extern int  _sys_file_read(const char *path, void *buf, int size, int offset);
 extern int  _sys_send(int pid, struct ipc_message *msg);
@@ -204,6 +205,15 @@ long OS1_object_read(int handle, void *buf, unsigned long n);
 long OS1_object_write(int handle, const void *buf, unsigned long n);
 long OS1_object_wait(int handle, long arg);
 long OS1_object_ctl(int handle, int cmd, long arg);
+
+/* Identity / privilege introspection (ASTRA users/permissions foundation).
+ * OS1_identity fills the caller's OWN privilege level (PLVL_*) and capability
+ * mask (CAP_*) — a process may always read its own identity.  This is the
+ * primitive behind the level-based permission view (the gestore nxperm): apps
+ * are meant to reason in terms of a LEVEL (machine/root/user/guest), not the raw
+ * capability bits.  Returns 0. */
+int OS1_identity(int *level, unsigned int *mask);
+int OS1_level(void); /* shorthand: just the privilege level (PLVL_*) */
 
 /* Formatting & Printing */
 void print(const char *s);

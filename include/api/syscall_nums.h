@@ -65,6 +65,7 @@
 #define SYS_KILL               221
 #define SYS_GETPROCS           222
 #define SYS_YIELD              223
+#define SYS_GET_IDENTITY       224  /* self privilege level + cap mask: (level<<16)|caps */
 #define SYS_SPAWN_CAPS         234  /* spawn_caps(path, level, caps) — USR-SEC-03 #79 */
 #define SYS_WAIT               247
 

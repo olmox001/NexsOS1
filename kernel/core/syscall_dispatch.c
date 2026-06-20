@@ -674,6 +674,17 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   case SYS_GETPROCS:
     pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));
     break;
+  case SYS_GET_IDENTITY: {
+    /* Read-only self-introspection: the caller's own privilege LEVEL and
+     * capability mask, packed (level<<16)|caps.  Ungated — a process may always
+     * learn its OWN identity.  Backs OS1_identity()/nxperm and lets userland
+     * present a level-based view (machine/root/user/guest) without exposing the
+     * raw capability bits to applications. */
+    int lvl = current_process ? (int)current_process->level : PLVL_GUEST;
+    unsigned int cps = current_process ? current_process->caps : 0u;
+    pt_regs_set_return(frame, ((long)(lvl & 0xFF) << 16) | (long)(cps & 0xFFFF));
+    break;
+  }
   case SYS_YIELD:
     return sys_yield(frame);
   case SYS_NANOSLEEP:
