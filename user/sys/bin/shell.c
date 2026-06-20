@@ -238,6 +238,8 @@ static void process_command(void) {
     print("  pwd             - Show current directory\n");
     print("  cat <path>      - Show file contents\n");
     print("  kill <pid>      - Kill process by PID\n");
+    print("  wins            - List windows (id/pid/state/title)\n");
+    print("  focus <id>      - Focus a window by id (no mouse needed)\n");
     print("  exec <program>  - Execute program (searches /bin, /sys/bin)\n");
     print("  about           - About this OS\n");
     print("  exit            - Exit shell\n");
@@ -327,6 +329,40 @@ static void process_command(void) {
       }
     } else {
       print("Usage: kill <pid>\n");
+    }
+  } else if (str_eq(cmd_buf, "wins")) {
+    /* List compositor windows (ASTRA §6.7) — the textual twin of the dock
+     * /sys/bin/nxui, backed by the same SYS_WINDOW_ENUM. */
+    struct window_info wi[32];
+    int n = (int)OS1_window_enum(wi, 32);
+    if (n < 0) {
+      print("Error enumerating windows\n");
+    } else {
+      print("\033[1;33mID   PID  STATE   TITLE\033[0m\n");
+      for (int i = 0; i < n; i++) {
+        const char *st = (wi[i].flags & WININFO_MINIMIZED) ? "min"
+                         : (wi[i].flags & WININFO_FOCUSED) ? "focus"
+                         : (wi[i].flags & WININFO_VISIBLE) ? "shown"
+                                                           : "hidden";
+        printf("%d  %d  %s  %s\n", wi[i].id, wi[i].pid, st, wi[i].title);
+      }
+    }
+  } else if (cmd_buf[0] == 'f' && cmd_buf[1] == 'o' && cmd_buf[2] == 'c' &&
+             cmd_buf[3] == 'u' && cmd_buf[4] == 's' && cmd_buf[5] == ' ') {
+    /* focus <window-id>: give a window keyboard focus (reveals it if it was
+     * backgrounded) — switch windows without a mouse.  Goes through an
+     * OBJ_TYPE_WINDOW capability (OS1_window_focus). */
+    int id = 0;
+    for (int i = 6; cmd_buf[i] >= '0' && cmd_buf[i] <= '9'; i++)
+      id = id * 10 + (cmd_buf[i] - '0');
+    if (id > 0) {
+      int r = OS1_window_focus(id);
+      if (r == 0)
+        printf("Focused window %d\n", id);
+      else
+        printf("focus failed (%d)\n", r);
+    } else {
+      print("Usage: focus <window-id>\n");
     }
   } else if (str_eq(cmd_buf, "about")) {
     print("\n\033[1;36mNeXs OS v0.0.4\033[0m\n");

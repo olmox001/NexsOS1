@@ -93,6 +93,7 @@ extern long _sys_object_read(int handle, void *buf, unsigned long n);
 extern long _sys_object_write(int handle, const void *buf, unsigned long n);
 extern long _sys_object_wait(int handle, long arg);
 extern long _sys_object_ctl(int handle, int cmd, long arg);
+extern long _sys_window_enum(struct window_info *buf, unsigned long max);
 
 /* Standard C-like Library Functions */
 long read(int fd, char *buf, unsigned long count);
@@ -155,6 +156,19 @@ void set_window_flags(int win_id, int flags);
 void set_focus(int pid);
 void draw(int x, int y, int w, int h, int color);
 void flush(void);
+
+/* Window manager surface (ASTRA §6.7: windows as objects).  OS1_window_enum
+ * snapshots all windows into buf (returns the count, or a negative errno).  The
+ * control wrappers act through an OBJ_TYPE_WINDOW capability (handle_create →
+ * object_ctl → handle_close): an app may always drive its OWN window, while
+ * driving another process's window needs window-manager authority (machine/root)
+ * — used by the dock /sys/bin/nxui.  They return 0 on success or a negative
+ * errno (e.g. -EPERM without authority, -ESRCH for an unknown window). */
+long OS1_window_enum(struct window_info *buf, unsigned long max);
+int  OS1_window_minimize(int win_id);
+int  OS1_window_restore(int win_id);
+int  OS1_window_focus(int win_id);
+int  OS1_window_close(int win_id);
 
 /* Registry API */
 int registry_read(const char *key, char *buf, size_t size);

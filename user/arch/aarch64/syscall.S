@@ -392,3 +392,10 @@ _sys_object_ctl:
     mov x8, #SYS_OBJECT_CTL
     svc #0
     ret
+
+/* long _sys_window_enum(struct window_info *buf, unsigned long max) */
+.global _sys_window_enum
+_sys_window_enum:
+    mov x8, #SYS_WINDOW_ENUM
+    svc #0
+    ret

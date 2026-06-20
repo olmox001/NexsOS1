@@ -379,6 +379,14 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     compositor_render();
     pt_regs_set_return(frame, 0);
     break;
+  case SYS_WINDOW_ENUM: {
+    /* Read-only window enumeration → struct window_info[] (ASTRA §6.7); ungated
+     * like SYS_GETPROCS.  The dock /sys/bin/nxui lays out its app list from it. */
+    extern long sys_window_enum(struct window_info * ubuf, size_t max);
+    pt_regs_set_return(
+        frame, sys_window_enum((struct window_info *)arg0, (size_t)arg1));
+    break;
+  }
   case SYS_CREATE_WINDOW:
   {
     /* USR-SEC-03 #79: drawing a window needs CAP_WINDOW. */

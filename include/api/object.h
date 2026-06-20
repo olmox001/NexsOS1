@@ -29,8 +29,9 @@
 #define OBJ_TYPE_FILE    1 /* a VFS-backed file (read/write/seek by offset)   */
 #define OBJ_TYPE_PROCESS 2 /* a process: wait on exit, query, capability IPC  */
 #define OBJ_TYPE_REGKEY  3 /* a registry key: read/write its value (§6.6)     */
-/* Reserved for later migrations (ASTRA §6.2/§6.7): windows, gpu, audio.
- * #define OBJ_TYPE_WINDOW  4 */
+#define OBJ_TYPE_WINDOW  4 /* a compositor window: read info / minimize / restore /
+                            * focus / close via a handle (ASTRA §6.7)         */
+/* Reserved for later migrations (ASTRA §6.2/§6.7): gpu, audio. */
 
 /* Access rights — a per-handle subset, separable and attenuable (seL4). */
 #define OS1_RIGHT_READ      (1u << 0) /* OS1_object_read                       */
@@ -45,17 +46,44 @@
 
 /* Control verbs for OS1_object_ctl(handle, cmd, arg) — type-specific actions
  * on an object you hold a capability to (seL4: the right IS the authority). */
-#define OBJ_CTL_KILL 1 /* PROCESS: terminate the target (needs OS1_RIGHT_DESTROY) */
+#define OBJ_CTL_KILL     1 /* PROCESS: terminate the target (needs OS1_RIGHT_DESTROY)  */
+#define OBJ_CTL_MINIMIZE 2 /* WINDOW: hide to background, dock-restorable (RIGHT_WRITE) */
+#define OBJ_CTL_RESTORE  3 /* WINDOW: show + raise + focus (RIGHT_WRITE)                */
+#define OBJ_CTL_FOCUS    4 /* WINDOW: give keyboard focus + raise (RIGHT_READ — focus is
+                            * unprivileged, matching the compositor's open click-to-focus) */
+#define OBJ_CTL_CLOSE    5 /* WINDOW: destroy just this window (RIGHT_DESTROY)          */
 
 /* Namespaces for handle_create: how the `path` argument is interpreted. */
 #define OS1_NS_FS   1 /* path is a filesystem path → OBJ_TYPE_FILE            */
 #define OS1_NS_PROC 2 /* path is a decimal PID string → OBJ_TYPE_PROCESS      */
 #define OS1_NS_REG  3 /* path is a registry key (dotted) → OBJ_TYPE_REGKEY    */
+#define OS1_NS_WIN  4 /* path is a decimal window id → OBJ_TYPE_WINDOW        */
 
 /* cap_query packs the object type and the held rights into one return value:
  * (type << 24) | rights.  A negative return is an errno (-EBADF). */
 #define OS1_CAPQ_PACK(type, rights) (((long)((type) & 0xFF) << 24) | ((rights) & 0x00FFFFFF))
 #define OS1_CAPQ_TYPE(v)            (((v) >> 24) & 0xFF)
 #define OS1_CAPQ_RIGHTS(v)          ((v) & 0x00FFFFFF)
+
+/* Window state bits for struct window_info.flags (ASTRA §6.7: windows as
+ * objects).  A window manager (e.g. /sys/bin/nxui, the dock) reads these to lay
+ * out its app list; an app reads its own window's bits via OS1_object_read. */
+#define WININFO_VISIBLE   (1u << 0) /* currently composited (shown)             */
+#define WININFO_MINIMIZED (1u << 1) /* sent to background, dock-restorable      */
+#define WININFO_TOPMOST   (1u << 2) /* always-on-top overlay, no decorations    */
+#define WININFO_FOCUSED   (1u << 3) /* owns keyboard focus                      */
+#define WININFO_PASSIVE   (1u << 4) /* click-through (system popup)             */
+
+/* One enumerated window.  Returned in bulk by SYS_WINDOW_ENUM / OS1_window_enum
+ * and singly by OS1_object_read() on an OBJ_TYPE_WINDOW handle.  `title` mirrors
+ * struct window.title[64] in the compositor. */
+struct window_info {
+  int id;             /* compositor window id                  */
+  int pid;            /* owning process                        */
+  int x, y;           /* on-screen position                    */
+  int w, h;           /* on-screen draw size                   */
+  unsigned int flags; /* WININFO_* bitmask                     */
+  char title[64];     /* window title                          */
+};
 
 #endif /* NEXS_API_OBJECT_H */

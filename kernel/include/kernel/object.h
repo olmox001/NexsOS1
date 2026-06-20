@@ -43,8 +43,11 @@ struct kobject {
   uint64_t offset;                /* shared file position */
   char path[OBJ_FILE_PATH_MAX];   /* resolved path (VFS write contract is path-based) */
 
-  /* OBJ_TYPE_PROCESS */
+  /* OBJ_TYPE_PROCESS (also the owning pid for OBJ_TYPE_WINDOW) */
   int pid;
+
+  /* OBJ_TYPE_WINDOW */
+  int window_id;
 };
 
 /* A handle-table slot: a capability = (object, held rights). */

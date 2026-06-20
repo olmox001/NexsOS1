@@ -38,6 +38,7 @@
 /* --- Graphics / compositor --- */
 #define SYS_DRAW               200
 #define SYS_FLUSH              201
+#define SYS_WINDOW_ENUM        202  /* enumerate windows → struct window_info[]; returns count */
 #define SYS_CREATE_WINDOW      210
 #define SYS_WINDOW_DRAW        211
 #define SYS_COMPOSITOR_RENDER  212

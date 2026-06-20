@@ -32,6 +32,7 @@
 #include <kernel/printk.h>
 #include <kernel/vfs.h>
 #include <kernel/registry.h>
+#include <kernel/graphics.h> /* OBJ_TYPE_WINDOW backends: compositor_* (§6.7) */
 
 /* Upper bound for a single object read/write bounce buffer (mirrors the
  * dispatcher's SYSCALL_MAX_IO_BYTES so a user size argument cannot ask the
@@ -206,6 +207,41 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
       return -ENOMEM;
     strncpy(o->path, kpath, MAX_KEY_LEN - 1);
     o->path[MAX_KEY_LEN - 1] = '\0';
+
+    uint64_t flags;
+    spin_lock_irqsave(&object_lock, &flags);
+    int h = handle_install_locked(cur, o, rights);
+    spin_unlock_irqrestore(&object_lock, flags);
+    if (h < 0) {
+      kfree(o);
+      return h;
+    }
+    return h;
+  }
+
+  if (ns == OS1_NS_WIN && type == OBJ_TYPE_WINDOW) {
+    /* A compositor window is a capability object (ASTRA §6.7).  Acquisition is
+     * ambient-gated like the other types: a handle to YOUR OWN window is free;
+     * a WRITE/DESTROY handle to ANOTHER process's window is window-manager
+     * authority (machine/root only) — that is how /sys/bin/nxui (the dock) can
+     * minimize/restore/focus/close any app.  READ stays open (inspect).  Once
+     * held, the handle's rights are the only authority that matters. */
+    int wid = atoi(kpath);
+    if (wid <= 0)
+      return -EINVAL;
+    int owner = compositor_window_owner(wid);
+    if (owner < 0)
+      return -ESRCH;
+    if (owner != (int)cur->pid &&
+        (rights & (OS1_RIGHT_WRITE | OS1_RIGHT_DESTROY)) &&
+        !proc_is_machine(cur) && cur->level > PLVL_ROOT)
+      return -EPERM;
+
+    struct kobject *o = kobj_alloc(OBJ_TYPE_WINDOW);
+    if (!o)
+      return -ENOMEM;
+    o->window_id = wid;
+    o->pid = owner;
 
     uint64_t flags;
     spin_lock_irqsave(&object_lock, &flags);
@@ -413,6 +449,19 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
       ret = (vlen > 0 && arch_copy_to_user(ubuf, val, vlen) != 0) ? -EFAULT
                                                                   : (long)vlen;
     }
+  } else if (o->type == OBJ_TYPE_WINDOW) {
+    /* read = this window's info record (ASTRA §6.7).  A short read (n <
+     * sizeof) copies a prefix, like the other object reads. */
+    struct window_info wi;
+    if (compositor_window_info(o->window_id, &wi) != 0) {
+      ret = -ESRCH;
+    } else {
+      size_t cn = sizeof(wi);
+      if (cn > n)
+        cn = n;
+      ret = (cn > 0 && arch_copy_to_user(ubuf, &wi, cn) != 0) ? -EFAULT
+                                                              : (long)cn;
+    }
   } else {
     ret = -EINVAL; /* PROCESS object is not byte-readable */
   }
@@ -535,6 +584,8 @@ long sys_object_wait(int handle, long arg) {
  */
 long sys_object_ctl(int handle, int cmd, long arg) {
   (void)arg;
+
+  /* PROCESS: terminate via a DESTROY capability (seL4 delegable kill). */
   if (cmd == OBJ_CTL_KILL) {
     long err = 0;
     struct kobject *o = pin_handle(handle, OS1_RIGHT_DESTROY, &err);
@@ -545,6 +596,44 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     obj_unref(o);
     return ret;
   }
+
+  /* WINDOW control (ASTRA §6.7): minimize/restore/focus need OS1_RIGHT_WRITE,
+   * close needs OS1_RIGHT_DESTROY.  The right IS the authority — a granted
+   * window capability lets its holder (e.g. the dock /sys/bin/nxui) drive a
+   * window it does not own; acquisition was gated at handle_create. */
+  if (cmd == OBJ_CTL_MINIMIZE || cmd == OBJ_CTL_RESTORE ||
+      cmd == OBJ_CTL_FOCUS || cmd == OBJ_CTL_CLOSE) {
+    /* NOTE(OBJ-WIN-FOCUS): FOCUS needs only READ, so a READ-only window handle —
+     * which handle_create hands out for ANY window, ungated — can redirect
+     * keyboard focus.  This deliberately mirrors the compositor's unprivileged
+     * click-to-focus (any user may focus any window with the mouse) so the
+     * keyboard `focus` path is as open as the mouse.  minimize/restore/close stay
+     * window-manager authority (WRITE/DESTROY, gated at handle_create).  Unifying
+     * this with SYS_SET_FOCUS's stricter cross-pid rule is a security-phase item. */
+    uint32_t need = (cmd == OBJ_CTL_CLOSE)  ? OS1_RIGHT_DESTROY
+                    : (cmd == OBJ_CTL_FOCUS) ? OS1_RIGHT_READ
+                                             : OS1_RIGHT_WRITE;
+    long err = 0;
+    struct kobject *o = pin_handle(handle, need, &err);
+    if (!o)
+      return err;
+    long ret;
+    if (o->type != OBJ_TYPE_WINDOW) {
+      ret = -EINVAL;
+    } else if (cmd == OBJ_CTL_MINIMIZE) {
+      ret = compositor_minimize_window(o->window_id);
+    } else if (cmd == OBJ_CTL_RESTORE) {
+      ret = compositor_restore_window(o->window_id);
+    } else if (cmd == OBJ_CTL_FOCUS) {
+      ret = compositor_focus_window(o->window_id);
+    } else { /* OBJ_CTL_CLOSE */
+      compositor_destroy_window(o->window_id);
+      ret = 0;
+    }
+    obj_unref(o);
+    return ret;
+  }
+
   return -EINVAL;
 }
 

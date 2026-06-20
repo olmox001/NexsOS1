@@ -366,3 +366,10 @@ _sys_object_ctl:
     movq $SYS_OBJECT_CTL, %rax
     syscall
     ret
+
+/* long _sys_window_enum(struct window_info *buf, unsigned long max) */
+.global _sys_window_enum
+_sys_window_enum:
+    movq $SYS_WINDOW_ENUM, %rax
+    syscall
+    ret

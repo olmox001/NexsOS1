@@ -158,6 +158,30 @@ long OS1_object_write(int handle, const void *buf, unsigned long n) { return _sy
 long OS1_object_wait(int handle, long arg) { return _sys_object_wait(handle, arg); }
 long OS1_object_ctl(int handle, int cmd, long arg) { return _sys_object_ctl(handle, cmd, arg); }
 
+/* Window manager surface (ASTRA §6.7: windows as objects).  Enumeration is a
+ * direct read syscall; control goes through an OBJ_TYPE_WINDOW capability
+ * (acquire → ctl → close), so authority is the unforgeable handle, not ambient
+ * identity — an app drives its OWN window freely, a WM drives any window. */
+long OS1_window_enum(struct window_info *buf, unsigned long max) { return _sys_window_enum(buf, max); }
+
+/* __win_ctl - acquire a WINDOW capability with the rights a verb needs, issue the
+ * control verb, then release the handle.  WRITE for minimize/restore/focus,
+ * DESTROY for close. */
+static int __win_ctl(int win_id, unsigned int rights, int cmd) {
+  char idbuf[16];
+  sprintf(idbuf, "%d", win_id);
+  long h = _sys_handle_create(OS1_NS_WIN, idbuf, rights, OBJ_TYPE_WINDOW);
+  if (h < 0)
+    return (int)h;
+  long r = _sys_object_ctl((int)h, cmd, 0);
+  _sys_handle_close((int)h);
+  return (int)r;
+}
+int OS1_window_minimize(int win_id) { return __win_ctl(win_id, OS1_RIGHT_WRITE, OBJ_CTL_MINIMIZE); }
+int OS1_window_restore(int win_id)  { return __win_ctl(win_id, OS1_RIGHT_WRITE, OBJ_CTL_RESTORE); }
+int OS1_window_focus(int win_id)    { return __win_ctl(win_id, OS1_RIGHT_READ, OBJ_CTL_FOCUS); }
+int OS1_window_close(int win_id)    { return __win_ctl(win_id, OS1_RIGHT_DESTROY, OBJ_CTL_CLOSE); }
+
 int kill_process(int pid) { return _sys_kill(pid); }
 /* wait: maps to process_wait() in the kernel, which is NON-BLOCKING:
  * returns -1 if the process is alive, pid if reaped, -2 if not found. */

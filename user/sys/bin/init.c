@@ -72,6 +72,19 @@ int main(void) {
     print("[Init] Failed to spawn Shell!\n");
   }
 
+  /* Spawn the dock (window-manager UI).  Machine level: nxui acquires
+   * OBJ_TYPE_WINDOW control capabilities to ANY app's window (focus / minimize /
+   * restore), which is window-manager authority.  NOTE(GFX-NXUI-03): PLVL_ROOT
+   * would be tighter once the root level's default CAP_WINDOW preset is
+   * confirmed; machine level guarantees window create + cross-window control. */
+  printf("[Init] Spawning Dock (nxui)...\n");
+  int pid_nxui = spawn_level("/sys/bin/nxui", PLVL_MACHINE);
+  if (pid_nxui > 0) {
+    printf("[Init] Dock started (PID %d)\n", pid_nxui);
+  } else {
+    print("[Init] Failed to spawn Dock!\n");
+  }
+
   flush();
 
   /* The "Boot Complete" notification is sent from the supervisor loop below,
@@ -133,6 +146,13 @@ int main(void) {
     if (r == pid_notify || r == -2) {
       print("[Init] Notification Server died! Respawning...\n");
       pid_notify = spawn("/sys/bin/notify_srv");
+    }
+
+    /* Respawn the dock if it dies (machine level, as above). */
+    r = wait(pid_nxui);
+    if (r == pid_nxui || r == -2) {
+      print("[Init] Dock died! Respawning...\n");
+      pid_nxui = spawn_level("/sys/bin/nxui", PLVL_MACHINE);
     }
 
     /* NOTE(GFX-DYN-01): host display-change auto-resize is intentionally NOT
