@@ -172,6 +172,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame);
 #define SPAWN_MAX_ARGS 16
 #define SPAWN_ARG_LEN  128
 
+/* level_for_path - the capability PRESET a binary gets from its location in the
+ * VFS (ASTRA per-path stratification, F1): a /sys/bin service runs at ROOT
+ * (system authority — refined per service later), everything else (notably /bin)
+ * at USER.  This is a CEILING + default, NOT an escalation: process_create_caps
+ * still clamps the child to no more privileged than its creator, so a USER shell
+ * launching a /sys/bin binary does NOT gain root.  /sys/bin is also write-
+ * protected (object.c handle_create denies non-machine writes under /sys,/bin),
+ * so the binaries backing this preset are immutable. */
+static uint8_t level_for_path(const char *path) {
+  if (path && strncmp(path, "/sys/bin/", 9) == 0)
+    return PLVL_ROOT;
+  return PLVL_USER;
+}
+
 /* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
  *
  * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
@@ -179,6 +193,14 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame);
  * new capability path does not widen the critical section. */
 static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
                            int use_caps, int argc, char *const kargv[]) {
+  /* ASTRA per-path preset (F1): plain spawn() takes the path's level; spawn_caps
+   * may only DROP privilege below it (a request more privileged than the path is
+   * capped to the path).  The creator-clamp in process_create_caps then forbids
+   * any escalation regardless. */
+  uint8_t path_lvl = level_for_path(path);
+  if (!use_caps || level < path_lvl)
+    level = path_lvl;
+
   arch_local_irq_disable();
   struct process *p =
       use_caps ? process_create_caps(path, PROC_PRIO_USER, level, caps)

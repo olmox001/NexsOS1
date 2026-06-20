@@ -72,13 +72,13 @@ int main(void) {
     print("[Init] Failed to spawn Shell!\n");
   }
 
-  /* Spawn the dock (window-manager UI).  Machine level: nxui acquires
-   * OBJ_TYPE_WINDOW control capabilities to ANY app's window (focus / minimize /
-   * restore), which is window-manager authority.  NOTE(GFX-NXUI-03): PLVL_ROOT
-   * would be tighter once the root level's default CAP_WINDOW preset is
-   * confirmed; machine level guarantees window create + cross-window control. */
+  /* Spawn the dock (window-manager UI).  Plain spawn(): the ASTRA per-path
+   * preset gives any /sys/bin binary ROOT authority (F1), which is exactly what
+   * a window manager needs to acquire OBJ_TYPE_WINDOW control capabilities to
+   * any app's window (focus / minimize / restore).  ROOT (not machine) keeps the
+   * dock killable + respawnable like the shell. */
   printf("[Init] Spawning Dock (nxui)...\n");
-  int pid_nxui = spawn_level("/sys/bin/nxui", PLVL_MACHINE);
+  int pid_nxui = spawn("/sys/bin/nxui");
   if (pid_nxui > 0) {
     printf("[Init] Dock started (PID %d)\n", pid_nxui);
   } else {
@@ -148,11 +148,11 @@ int main(void) {
       pid_notify = spawn("/sys/bin/notify_srv");
     }
 
-    /* Respawn the dock if it dies (machine level, as above). */
+    /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as above). */
     r = wait(pid_nxui);
     if (r == pid_nxui || r == -2) {
       print("[Init] Dock died! Respawning...\n");
-      pid_nxui = spawn_level("/sys/bin/nxui", PLVL_MACHINE);
+      pid_nxui = spawn("/sys/bin/nxui");
     }
 
     /* NOTE(GFX-DYN-01): host display-change auto-resize is intentionally NOT
