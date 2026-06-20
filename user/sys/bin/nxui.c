@@ -201,6 +201,18 @@ static void act(int id) {
 }
 
 int main(void) {
+  /* Singleton: only one dock may run.  If a window titled "nxui" already exists
+   * (another live instance), bow out.  init respawns the dock when it dies, and
+   * a dead process's windows are destroyed by the compositor, so a legitimate
+   * respawn finds none and proceeds. */
+  {
+    struct window_info wi[MAX_TILES];
+    int n = (int)OS1_window_enum(wi, MAX_TILES);
+    for (int i = 0; i < n; i++)
+      if (strncmp(wi[i].title, "nxui", 5) == 0)
+        return 0; /* another nxui is already up */
+  }
+
   long di = _sys_display_info();
   int sw = (int)((di >> 16) & 0xFFFF);
   int sh = (int)(di & 0xFFFF);
