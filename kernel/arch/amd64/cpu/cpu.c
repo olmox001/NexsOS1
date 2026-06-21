@@ -106,20 +106,22 @@ void arch_cpu_init(void) {
   __asm__ __volatile__("mov %0, %%cr4" :: "r"(cr4));
 
   /* PCID-tagged TLB (perf §3, DIR-06): enable CR4.PCIDE per-CPU iff the CPU
-   * supports PCID (CPUID.01h:ECX[17]) AND INVPCID (CPUID.07h:EBX[10]) — the
-   * latter is needed for the all-context flush teardown relies on.  CR4.PCIDE
-   * may only be set while CR3[11:0]==0, which holds here (boot CR3 is page-
-   * aligned).  Portable: a CPU lacking either feature keeps flush-on-switch.
-   * Runs on every CPU (BSP + APs), so each enables its own CR4.PCIDE before it
-   * ever runs the scheduler; the global flag is published for the fast paths. */
+   * supports PCID (CPUID.01h:ECX[17]).  INVPCID is NOT required — the teardown
+   * all-PCID flush uses a CR4.PGE toggle instead (see amd64_flush_all_pcids in
+   * arch.h), so PCID activates on the common CPUs/hypervisors that expose PCID
+   * but not INVPCID (e.g. HVF here).  CR4.PCIDE may only be set while
+   * CR3[11:0]==0, which holds here (boot CR3 is page-aligned).  Portable: a CPU
+   * without PCID keeps flush-on-switch.  Runs on every CPU (BSP + APs), so each
+   * enables its own CR4.PCIDE before it ever runs the scheduler; the global flag
+   * is published for the fast paths. */
   {
     unsigned int eax, ebx, ecx, edx;
     int has_pcid = 0, has_invpcid = 0;
     if (__get_cpuid(1, &eax, &ebx, &ecx, &edx))
       has_pcid = (ecx >> 17) & 1;
     if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx))
-      has_invpcid = (ebx >> 10) & 1;
-    if (has_pcid && has_invpcid) {
+      has_invpcid = (ebx >> 10) & 1; /* informational only (diagnostic below) */
+    if (has_pcid) {
       uint64_t cr4now;
       __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4now));
       cr4now |= (1UL << 17); /* CR4.PCIDE */

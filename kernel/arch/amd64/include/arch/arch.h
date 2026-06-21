@@ -92,22 +92,29 @@ static inline uint64_t arch_impl_get_kernel_pgd(void) {
 }
 
 /* PCID-tagged TLB (perf §3, DIR-06): set in cpu.c arch_cpu_init when CPUID
- * reports PCID + INVPCID.  When PCID is enabled, a CR3 reload only flushes the
- * CURRENT PCID's entries, so the full-flush primitive — which the SMP teardown
- * shootdown (arch_tlb_shootdown_all in vmm_destroy_pgd) relies on to clear a
- * dying address space before its tag is recycled — must use INVPCID type 2
- * (all contexts, including globals) to drop EVERY address-space tag. */
+ * reports PCID.  When PCID is enabled, a CR3 reload only flushes the CURRENT
+ * PCID's entries, so the full-flush primitive — which the SMP teardown shootdown
+ * (arch_tlb_shootdown_all in vmm_destroy_pgd) relies on to clear a dying address
+ * space before its tag is recycled — must drop EVERY tag. */
 extern int amd64_pcid_enabled;
 
-static inline void amd64_invpcid_all_contexts(void) {
-  struct { uint64_t pcid; uint64_t addr; } desc = {0, 0};
-  /* INVPCID type 2 = all-context-including-globals; the descriptor is ignored. */
-  __asm__ __volatile__("invpcid %0, %1" ::"m"(desc), "r"((uint64_t)2) : "memory");
+/* Flush ALL TLB entries — every PCID plus globals — WITHOUT needing INVPCID
+ * (PCID-capable CPUs/hypervisors do not always expose INVPCID; e.g. HVF here
+ * reports pcid=1 invpcid=0).  Any MOV-to-CR4 that CHANGES CR4.PGE flushes the
+ * whole TLB including globals, so flip PGE then restore it: two full flushes
+ * that leave CR4 (and PCIDE) unchanged.  A transient interrupt during the flip
+ * only sees PGE momentarily toggled, which is harmless (it affects nothing in
+ * the two-instruction window). */
+static inline void amd64_flush_all_pcids(void) {
+  uint64_t cr4;
+  __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4));
+  __asm__ __volatile__("mov %0, %%cr4" ::"r"(cr4 ^ (1UL << 7)) : "memory");
+  __asm__ __volatile__("mov %0, %%cr4" ::"r"(cr4) : "memory");
 }
 
 static inline void arch_impl_tlb_flush_local(void) {
   if (amd64_pcid_enabled) {
-    amd64_invpcid_all_contexts();
+    amd64_flush_all_pcids();
     return;
   }
   uint64_t cr3;
