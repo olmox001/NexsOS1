@@ -128,9 +128,26 @@ static DEFINE_SPINLOCK(font_lock);
 /*
  * Draw character using GL
  */
-void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
-                  uint32_t color) {
+/* gl_draw_char_clipped - blit one glyph, writing only pixels inside the clip
+ * box [cx1,cx2) x [cy1,cy2).  gl_draw_char passes the full surface as the clip
+ * box; the compositor passes the per-frame damage box (GFX-COMP-03 damage clip)
+ * so title text never paints outside the changed region. */
+static void gl_draw_char_clipped(struct gl_surface *surf, int x, int y,
+                                 uint32_t codepoint, uint32_t color, int cx1,
+                                 int cy1, int cx2, int cy2) {
   if (!surf)
+    return;
+
+  /* Intersect the requested clip box with the surface bounds. */
+  if (cx1 < 0)
+    cx1 = 0;
+  if (cy1 < 0)
+    cy1 = 0;
+  if (cx2 > (int)surf->width)
+    cx2 = (int)surf->width;
+  if (cy2 > (int)surf->height)
+    cy2 = (int)surf->height;
+  if (cx1 >= cx2 || cy1 >= cy2)
     return;
 
   /* GFX-FONT-01: hold font_lock across the whole blit so a concurrent
@@ -169,7 +186,7 @@ void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
       int px = start_x + gx;
       int py = start_y + gy;
 
-      if (px >= 0 && px < (int)surf->width && py >= 0 && py < (int)surf->height) {
+      if (px >= cx1 && px < cx2 && py >= cy1 && py < cy2) {
         if (alpha == 255) {
           surf->buffer[py * surf->stride + px] = color;
           continue;
@@ -189,6 +206,14 @@ void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
     }
   }
   spin_unlock_irqrestore(&font_lock, flags);
+}
+
+void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
+                  uint32_t color) {
+  if (!surf)
+    return;
+  gl_draw_char_clipped(surf, x, y, codepoint, color, 0, 0, (int)surf->width,
+                       (int)surf->height);
 }
 
 /*
@@ -250,6 +275,33 @@ void gl_draw_string(struct gl_surface *surf, int x, int y, const char *str,
         continue;
     }
     gl_draw_char(surf, cursor_x, y, codepoint, color);
+    cursor_x += graphics_char_width(codepoint);
+    str += consumed;
+    rem -= consumed;
+  }
+}
+
+void gl_draw_string_clipped(struct gl_surface *surf, int x, int y,
+                            const char *str, uint32_t color, int cx1, int cy1,
+                            int cx2, int cy2) {
+  if (!surf || !str)
+    return;
+
+  int cursor_x = x;
+  uint32_t codepoint;
+  int consumed;
+  size_t rem = 0;
+  const char *p = str;
+  while (*p) { p++; rem++; }
+
+  while (*str) {
+    consumed = utf8_decode(str, rem, &codepoint);
+    if (consumed <= 0) {
+        str++;
+        rem--;
+        continue;
+    }
+    gl_draw_char_clipped(surf, cursor_x, y, codepoint, color, cx1, cy1, cx2, cy2);
     cursor_x += graphics_char_width(codepoint);
     str += consumed;
     rem -= consumed;

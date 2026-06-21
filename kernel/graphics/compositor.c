@@ -1677,8 +1677,12 @@ static void compositor_render_internal(void) {
       int wth = win->top_most ? 0 : compositor_titlebar_height();
       int wy = win->y - wth;
       int wfh = dh + wth;
-      if (win->x >= clip_x2 || win->x + dw <= clip_x1 || wy >= clip_y2 ||
-          wy + wfh <= clip_y1)
+      /* Include the drop-shadow's down-right fringe in the footprint so a window
+       * whose body is just outside the damage box but whose shadow reaches into
+       * it is still reprocessed (otherwise the shadow band is left stale). */
+      int so = (st->shadows && !win->top_most) ? st->shadow_size : 0;
+      if (win->x >= clip_x2 || win->x + dw + so <= clip_x1 || wy >= clip_y2 ||
+          wy + wfh + so <= clip_y1)
         continue;
     }
 
@@ -1701,9 +1705,16 @@ static void compositor_render_internal(void) {
         int py = decor_y + so + sy;
         if (py < 0 || py >= bb_h)
           continue;
+        /* Damage clip (GFX-COMP-03): the shadow is a translucent blend, so
+         * painting it outside the changed region would re-darken pixels that are
+         * not being recomposited this frame (shadow "in front of" windows). */
+        if (py < clip_y1 || py >= clip_y2)
+          continue;
         for (int sx = 0; sx < dw; sx++) {
           int px = win->x + so + sx;
           if (px < 0 || px >= bb_w)
+            continue;
+          if (px < clip_x1 || px >= clip_x2)
             continue;
           if (!rrect_inside(sx, sy, dw, full_h, rr))
             continue;
@@ -1859,7 +1870,11 @@ static void compositor_render_internal(void) {
                                 ? th->title_text_active
                                 : th->title_text_inactive;
 
-      gl_draw_string(&screen, start_x, start_y, win->title, text_color);
+      /* Damage clip (GFX-COMP-03): title text is drawn unoccluded over the
+       * titlebar, so it must be confined to this frame's damage box or it would
+       * overpaint pixels outside the recomposited region. */
+      gl_draw_string_clipped(&screen, start_x, start_y, win->title, text_color,
+                             clip_x1, clip_y1, clip_x2, clip_y2);
     }
 
     /* Window border (F3): 1px outline around the full window rect, following
@@ -1869,6 +1884,9 @@ static void compositor_render_internal(void) {
       for (int ly = 0; ly < full_h; ly++) {
         int py = decor_y + ly;
         if (py < 0 || py >= bb_h)
+          continue;
+        /* Damage clip (GFX-COMP-03): keep the border inside this frame's box. */
+        if (py < clip_y1 || py >= clip_y2)
           continue;
         for (int lx = 0; lx < dw; lx++) {
           /* perimeter pixels only */
@@ -1882,7 +1900,7 @@ static void compositor_render_internal(void) {
                  : (lx > 0 && ly > 0 && lx < dw - 1 && ly < full_h - 1);
           if (inside && (on_edge || !inside_inset)) {
             int px = win->x + lx;
-            if (px >= 0 && px < bb_w)
+            if (px >= 0 && px < bb_w && px >= clip_x1 && px < clip_x2)
               backbuffer[py * bb_w + px] = bc;
           }
         }

@@ -57,6 +57,12 @@ void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
                   uint32_t color);
 void gl_draw_string(struct gl_surface *surf, int x, int y, const char *str,
                     uint32_t color);
+/* Clipped variant: identical to gl_draw_string but writes only pixels inside
+ * [cx1,cx2) x [cy1,cy2).  Used by the damage-clipped compositor so title text
+ * never paints outside the per-frame damage box. */
+void gl_draw_string_clipped(struct gl_surface *surf, int x, int y,
+                            const char *str, uint32_t color, int cx1, int cy1,
+                            int cx2, int cy2);
 void gl_swizzle_bgr(
     struct gl_surface *surf); /* Convert ABGR to ARGB if needed */
 
