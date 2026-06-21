@@ -664,8 +664,14 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     } else if (cmd == OBJ_CTL_FOCUS) {
       ret = compositor_focus_window(o->window_id);
     } else { /* OBJ_CTL_CLOSE */
-      compositor_destroy_window(o->window_id);
-      ret = 0;
+      /* Close TERMINATES the owning process, consistent with the titlebar red
+       * button (window_request_close -> process_terminate).  Previously this
+       * only destroyed the WINDOW (compositor_destroy_window), so an app closed
+       * from the dock vanished from screen/dock but kept running headless in the
+       * background (visible in nxproc) — the "close does not kill" bug.
+       * process_terminate's teardown destroys the process's windows; machine-
+       * level owners stay protected inside process_terminate. */
+      ret = (long)process_terminate(o->pid);
     }
     obj_unref(o);
     return ret;
