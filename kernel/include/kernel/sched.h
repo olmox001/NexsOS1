@@ -229,6 +229,16 @@ int process_kill_allowed(struct process *caller, int target_pid);
  * descendant.  Acquires sched_lock internally. */
 int process_ipc_allowed(struct process *caller, int target_pid);
 int process_terminate(int pid);
+/* process_terminate_subtree - EXTERNAL-kill semantics: terminate `pid` plus the
+ * WINDOWLESS part of its descendant subtree.  Used by the window close button,
+ * OBJ_CTL_CLOSE/KILL and SYS_KILL of another process.  The root is always
+ * killed; a descendant is killed only if it does NOT own a top-level window (an
+ * in-shell / foreground job like stress) — a descendant that owns its own
+ * window is independent and is left running (and its subtree spared) for the
+ * user to close manually (e.g. forkbomb's per-child counter windows).  Self-exit
+ * keeps single-process orphan-reparent semantics and does NOT use this.
+ * Returns 0 if the root was terminated. */
+int process_terminate_subtree(int pid);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */
 extern int process_load_elf(struct process *proc, const char *path);

@@ -669,7 +669,18 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
-    pt_regs_set_return(frame, process_terminate((int)arg0));
+    {
+      /* Killing ANOTHER process (Ctrl+C of a foreground job, `nxproc kill`,
+       * closing a launcher) reclaims its whole subtree, so in-shell children
+       * die with their parent.  Self-kill stays single-process (exit-like:
+       * orphans reparent), so a process asking to die does not drag down
+       * children it deliberately detached. */
+      int tgt = (int)arg0;
+      long r = (current_process && (int)current_process->pid == tgt)
+                   ? process_terminate(tgt)
+                   : process_terminate_subtree(tgt);
+      pt_regs_set_return(frame, r);
+    }
     break;
   case SYS_GETPROCS:
     pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));

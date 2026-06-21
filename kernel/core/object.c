@@ -628,8 +628,9 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     struct kobject *o = pin_handle(handle, OS1_RIGHT_DESTROY, &err);
     if (!o)
       return err;
-    long ret = (o->type == OBJ_TYPE_PROCESS) ? (long)process_terminate(o->pid)
-                                             : -EINVAL;
+    long ret = (o->type == OBJ_TYPE_PROCESS)
+                   ? (long)process_terminate_subtree(o->pid)
+                   : -EINVAL;
     obj_unref(o);
     return ret;
   }
@@ -670,8 +671,10 @@ long sys_object_ctl(int handle, int cmd, long arg) {
        * from the dock vanished from screen/dock but kept running headless in the
        * background (visible in nxproc) — the "close does not kill" bug.
        * process_terminate's teardown destroys the process's windows; machine-
-       * level owners stay protected inside process_terminate. */
-      ret = (long)process_terminate(o->pid);
+       * level owners stay protected inside process_terminate.  Subtree variant:
+       * closing an app reclaims the child jobs it spawned (close-the-shell ->
+       * its in-shell children die), not just the app itself. */
+      ret = (long)process_terminate_subtree(o->pid);
     }
     obj_unref(o);
     return ret;

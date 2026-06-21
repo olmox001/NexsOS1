@@ -175,7 +175,7 @@ int sched_get_focus_pid(void) { return keyboard_focus_pid; }
  * target: deliver a CLOSE event to the window owner for a graceful quit and
  * force-kill only on timeout, and run the kill OUTSIDE mouse-IRQ context
  * (the IRQ-time process_terminate is the separate SCHED-03 follow-up). */
-void window_request_close(int pid) { process_terminate(pid); }
+void window_request_close(int pid) { process_terminate_subtree(pid); }
 
 /* Bounded focus boost (SCHED-01): the focused process is picked first for snappy
  * foreground response, but never more than FOCUS_BOOST_MAX times in a row — after
@@ -1037,6 +1037,105 @@ int process_terminate(int pid) {
   pmm_free_page(proc);
 
   return 0;
+}
+
+/*
+ * process_terminate_subtree - terminate `root_pid` plus the WINDOWLESS part of
+ * its descendant subtree.  See the contract in sched.h.  This is the
+ * EXTERNAL-kill path (window close button / OBJ_CTL_CLOSE/KILL / SYS_KILL of
+ * another process).
+ *
+ * Window-ownership distinction (the existing per-process signal — a process is
+ * "graphical/detached" iff it owns a top-level compositor window):
+ *   - The root (the explicit target) is ALWAYS terminated.
+ *   - A descendant WITHOUT its own window is an in-shell / foreground job (a CLI
+ *     job, a spawn driver like stress); it is terminated, and we recurse into
+ *     its children.  This is why closing the shell stops stress.
+ *   - A descendant that owns its OWN window is independent; it (and its whole
+ *     subtree) is SPARED and left running for the user to close manually.  This
+ *     is why terminating forkbomb leaves its per-child counter windows open.
+ *
+ * Three phases, to respect the locking hierarchy:
+ *   1. Under sched_lock, snapshot every live process's (pid, parent_pid).
+ *      process_create() inserts under sched_lock, so the adjacency is
+ *      internally consistent.  We do NOT touch the compositor here:
+ *      compositor_get_window_by_pid() takes compositor_lock, and
+ *      sched_lock -> blocking compositor_lock is exactly the AB-BA inversion
+ *      process_terminate() is careful to avoid.
+ *   2. Lock-free BFS over the snapshot, consulting compositor_get_window_by_pid()
+ *      to prune windowed descendants.
+ *   3. process_terminate() each selected pid, root FIRST (stop the spawner).
+ *      PIDs are never reused, so a pid that exited meanwhile just returns -1.
+ */
+int process_terminate_subtree(int root_pid) {
+  extern int compositor_get_window_by_pid(int pid);
+  if (root_pid <= 0)
+    return -1;
+
+  /* Phase 1: snapshot (pid, parent_pid) for every live, non-machine process. */
+  struct {
+    int pid;
+    int ppid;
+  } snap[MAX_PROCESSES];
+  int sn = 0;
+  int root_found = 0, root_machine = 0;
+
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int s = 0; s < MAX_PROCESSES; s++) {
+    struct process *p = process_pool[s];
+    if (!p)
+      continue;
+    if ((int)p->pid == root_pid) {
+      root_found = 1;
+      root_machine = proc_is_machine(p);
+    }
+    if (proc_is_machine(p))
+      continue; /* never collect protected processes */
+    snap[sn].pid = (int)p->pid;
+    snap[sn].ppid = p->parent_pid;
+    sn++;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+
+  if (!root_found || root_machine)
+    return process_terminate(root_pid); /* not found / protected: same -1/warn */
+
+  /* Phase 2: BFS from root.  Root is always included; a child that owns its own
+   * window is skipped (spared, and not recursed into). */
+  int kill_pids[MAX_PROCESSES];
+  int kn = 0;
+  kill_pids[kn++] = root_pid;
+  for (int i = 0; i < kn; i++) {
+    int parent = kill_pids[i];
+    for (int s = 0; s < sn; s++) {
+      if (snap[s].ppid != parent)
+        continue;
+      int cpid = snap[s].pid;
+      int dup = 0;
+      for (int k = 0; k < kn; k++)
+        if (kill_pids[k] == cpid) {
+          dup = 1;
+          break;
+        }
+      if (dup)
+        continue;
+      /* Independent windowed app: leave it (and its subtree) running. */
+      if (compositor_get_window_by_pid(cpid) > 0)
+        continue;
+      if (kn < MAX_PROCESSES)
+        kill_pids[kn++] = cpid;
+    }
+  }
+
+  /* Phase 3: terminate, root first (stops the spawner before draining). */
+  int root_ret = -1;
+  for (int i = 0; i < kn; i++) {
+    int r = process_terminate(kill_pids[i]);
+    if (i == 0)
+      root_ret = r;
+  }
+  return root_ret;
 }
 
 /*
