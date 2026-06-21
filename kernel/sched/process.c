@@ -673,6 +673,13 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   /* Assign unique PID */
   proc->pid = next_pid++;
 
+  /* Address-space tag for TLB-tagged switches (perf §3): the pool slot+1, so it
+   * is unique among all live address spaces (slots are unique while occupied).
+   * 0 is reserved for the kernel/idle space.  The ISA layer (ASID on aarch64 /
+   * PCID on amd64) consumes this via arch_cpu_switch_context to switch without a
+   * full TLB flush; teardown clears the tag before the slot is recycled. */
+  proc->asid = (uint16_t)(slot + 1);
+
   /* Priority normalization */
   if (priority >= MAX_PRIO)
     priority = MAX_PRIO - 1;

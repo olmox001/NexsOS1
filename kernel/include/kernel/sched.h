@@ -48,6 +48,15 @@ struct process {
 
   /* Memory */
   uint64_t *page_table;  /* Physical address of TTBR0_EL1 */
+  /* Address-space tag for TLB-tagged context switches (perf §3 / DIR-06 HAL).
+   * Architecture-neutral name: the ISA layer maps it to its native tag — ASID
+   * on aarch64 (TTBR0_EL1[63:48]), PCID on amd64 (CR3[11:0]).  Assigned in
+   * process_create() as (pool slot + 1), so it is unique among the <= MAX_PROCESSES
+   * live address spaces by construction (no generation/rollover needed); 0 is
+   * reserved for the kernel/idle address space.  The HAL uses it to switch
+   * address space WITHOUT a full TLB flush; teardown's arch_tlb_shootdown_all()
+   * clears the tag before its slot is recycled. */
+  uint16_t asid;
   uint64_t kernel_stack; /* Kernel stack top */
   uint64_t heap_start;   /* Base address of user heap */
   uint64_t heap_end;     /* Current end of user heap */

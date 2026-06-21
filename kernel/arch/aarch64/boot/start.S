@@ -33,8 +33,10 @@
 
 /* TCR_EL1: T0SZ=16, T1SZ=16 (48-bit both halves), 4KB granules
  * (TG0=0, TG1=2), inner WB/WA + inner-shareable walks on both halves,
- * IPS=2 (40-bit PA — RAM tops out below 1TB on QEMU virt). */
-#define BOOT_TCR 0x2B5103510
+ * IPS=2 (40-bit PA — RAM tops out below 1TB on QEMU virt).
+ * AS=1 (bit 36): 16-bit ASID — TTBR0_EL1[63:48] tags each address space for
+ *   flush-free context switches (perf §3).  A1=0 (TTBR0 defines the ASID). */
+#define BOOT_TCR 0x12B5103510
 
 /* Block descriptors: VALID | AF | attrs (level-1 1GB blocks, bit1 = 0). */
 #define BLK_DEVICE 0x405       /* AttrIndx=1 (Device nGnRE), AF */

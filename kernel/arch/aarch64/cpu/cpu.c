@@ -614,11 +614,22 @@ void arch_cpu_switch_context(struct process *next) {
     /* TTBR0 is the USER half only (the kernel lives in TTBR1).  A process
      * gets its own PGD; a kernel thread (idle) gets the EMPTY idle user
      * PGD — never a stale process PGD (SCHED-UAF-01) and never the kernel
-     * PGD (which would alias all RAM into the user VA range). */
+     * PGD (which would alias all RAM into the user VA range).
+     *
+     * ASID-TAGGED SWITCH (perf §3, DIR-06): TTBR0_EL1[63:48] carries the
+     * address-space ASID (next->asid, assigned in process_create; 16-bit since
+     * TCR_EL1.AS=1).  Because every TLB entry is tagged with its ASID, the
+     * switch needs NO TLB flush: entries for other ASIDs stay valid, and this
+     * ASID's entries were cleared at the previous owner's teardown
+     * (arch_tlb_shootdown_all on PGD destroy) before the pool slot — hence the
+     * ASID — was recycled.  Kernel threads use the idle user PGD with ASID 0.
+     * An ISB after the TTBR0 write makes the new regime effective for the kernel
+     * epilogue; the ERET back to user is itself context-synchronizing. */
     uint64_t pgd = next->page_table ? virt_to_phys(next->page_table)
                                     : idle_user_pgd_phys();
     if (pgd) {
-        arch_vmm_set_pgd(pgd);
-        arch_tlb_flush_all();
+        uint64_t asid = next->page_table ? (uint64_t)next->asid : 0;
+        arch_vmm_set_pgd(pgd | (asid << 48));
+        arch_isb();
     }
 }

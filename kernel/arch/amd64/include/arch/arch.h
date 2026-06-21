@@ -91,7 +91,25 @@ static inline uint64_t arch_impl_get_kernel_pgd(void) {
   return arch_impl_get_pgd();
 }
 
+/* PCID-tagged TLB (perf §3, DIR-06): set in cpu.c arch_cpu_init when CPUID
+ * reports PCID + INVPCID.  When PCID is enabled, a CR3 reload only flushes the
+ * CURRENT PCID's entries, so the full-flush primitive — which the SMP teardown
+ * shootdown (arch_tlb_shootdown_all in vmm_destroy_pgd) relies on to clear a
+ * dying address space before its tag is recycled — must use INVPCID type 2
+ * (all contexts, including globals) to drop EVERY address-space tag. */
+extern int amd64_pcid_enabled;
+
+static inline void amd64_invpcid_all_contexts(void) {
+  struct { uint64_t pcid; uint64_t addr; } desc = {0, 0};
+  /* INVPCID type 2 = all-context-including-globals; the descriptor is ignored. */
+  __asm__ __volatile__("invpcid %0, %1" ::"m"(desc), "r"((uint64_t)2) : "memory");
+}
+
 static inline void arch_impl_tlb_flush_local(void) {
+  if (amd64_pcid_enabled) {
+    amd64_invpcid_all_contexts();
+    return;
+  }
   uint64_t cr3;
   __asm__ __volatile__("mov %%cr3, %0\n\t"
                        "mov %0, %%cr3"

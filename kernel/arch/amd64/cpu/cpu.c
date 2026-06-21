@@ -46,6 +46,12 @@
 extern struct cpu_info cpu_data[MAX_CPUS];
 extern uint32_t nr_cpus;
 
+/* PCID-tagged TLB support (perf §3, DIR-06): 1 once CPUID has confirmed PCID +
+ * INVPCID and CR4.PCIDE has been enabled.  Read by the arch.h flush primitives
+ * and arch_cpu_switch_context; 0 (default) keeps the legacy flush-on-switch
+ * behaviour so the build stays portable on CPUs without PCID. */
+int amd64_pcid_enabled = 0;
+
 extern void gdt_init(void);
 extern void idt_init(void);
 extern void amd64_syscall_init(void);
@@ -98,6 +104,33 @@ void arch_cpu_init(void) {
   cr4 |= (1 << 9);  /* OSFXSR (OS support for fxsave/fxrstor) */
   cr4 |= (1 << 10); /* OSXMMEXCPT (OS support for unmasked simd fp exceptions) */
   __asm__ __volatile__("mov %0, %%cr4" :: "r"(cr4));
+
+  /* PCID-tagged TLB (perf §3, DIR-06): enable CR4.PCIDE per-CPU iff the CPU
+   * supports PCID (CPUID.01h:ECX[17]) AND INVPCID (CPUID.07h:EBX[10]) — the
+   * latter is needed for the all-context flush teardown relies on.  CR4.PCIDE
+   * may only be set while CR3[11:0]==0, which holds here (boot CR3 is page-
+   * aligned).  Portable: a CPU lacking either feature keeps flush-on-switch.
+   * Runs on every CPU (BSP + APs), so each enables its own CR4.PCIDE before it
+   * ever runs the scheduler; the global flag is published for the fast paths. */
+  {
+    unsigned int eax, ebx, ecx, edx;
+    int has_pcid = 0, has_invpcid = 0;
+    if (__get_cpuid(1, &eax, &ebx, &ecx, &edx))
+      has_pcid = (ecx >> 17) & 1;
+    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx))
+      has_invpcid = (ebx >> 10) & 1;
+    if (has_pcid && has_invpcid) {
+      uint64_t cr4now;
+      __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4now));
+      cr4now |= (1UL << 17); /* CR4.PCIDE */
+      __asm__ __volatile__("mov %0, %%cr4" ::"r"(cr4now));
+      amd64_pcid_enabled = 1;
+    }
+    if (id == 0) /* one-shot boot diagnostic (not a hot path) */
+      pr_info("CPU: PCID-tagged TLB %s (pcid=%d invpcid=%d)\n",
+              amd64_pcid_enabled ? "ENABLED" : "disabled (flush-on-switch)",
+              has_pcid, has_invpcid);
+  }
 
   struct cpu_info *cpu = &cpu_data[id];
   cpu->self = cpu;
@@ -236,8 +269,19 @@ void arch_cpu_switch_context(struct process *next) {
      * PHYSICAL PML4 base — translate with virt_to_phys. */
     uint64_t pgd = next->page_table ? virt_to_phys(next->page_table)
                                     : (kernel_pgd ? virt_to_phys(kernel_pgd) : 0);
-    if (pgd)
-      arch_vmm_set_pgd(pgd);
+    if (pgd) {
+      if (amd64_pcid_enabled) {
+        /* PCID-tagged, flush-free switch (perf §3, DIR-06): CR3[11:0] = PCID
+         * (next->asid; 0 for kernel/idle), bit 63 set = PRESERVE this PCID's
+         * cached TLB entries (no flush) — the entries are this address space's
+         * own and were cleared at the previous owner's teardown before the tag
+         * was recycled.  Mirrors the aarch64 ASID-tagged TTBR0 switch. */
+        uint64_t pcid = next->page_table ? (uint64_t)next->asid : 0;
+        arch_vmm_set_pgd(pgd | pcid | (1ULL << 63));
+      } else {
+        arch_vmm_set_pgd(pgd); /* legacy: CR3 reload implicitly flushes */
+      }
+    }
   }
 
   /* Update TSS RSP0 for interrupt stack switching */
