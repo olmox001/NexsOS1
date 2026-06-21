@@ -180,11 +180,13 @@ void fm_navigate_up(void) {
 
   if (last_slash == NULL || last_slash == parent) {
     /* Path tipo "/foo": il padre è root */
-    strcpy(parent, "/");
+    strncpy(parent, "/", FM_PATH_MAX - 1);
+    parent[FM_PATH_MAX - 1] = '\0';
   } else {
     *last_slash = '\0';
     if (parent[0] == '\0') {
-      strcpy(parent, "/");
+      strncpy(parent, "/", FM_PATH_MAX - 1);
+      parent[FM_PATH_MAX - 1] = '\0';
     }
   }
 

@@ -50,12 +50,14 @@ void fm_state_init(void) {
         fm_state.home_path[1] = '\0';
     }
 
-    strcpy(fm_state.current_path, fm_state.home_path);
+    strncpy(fm_state.current_path, fm_state.home_path, FM_PATH_MAX - 1);
+    fm_state.current_path[FM_PATH_MAX - 1] = '\0';
 
     /* BUG FIX (history): inserisci il path iniziale come entry [0]
        così fm_navigate_back() dopo la prima navigazione torna al punto
        di partenza invece di saltare a una stringa vuota. */
-    strcpy(fm_state.history[0], fm_state.home_path);
+    strncpy(fm_state.history[0], fm_state.home_path, FM_PATH_MAX - 1);
+    fm_state.history[0][FM_PATH_MAX - 1] = '\0';
     fm_state.history_count = 1;
     fm_state.history_pos = 0;
 }
@@ -76,13 +78,15 @@ void fm_state_add_to_history(const char *path) {
     if (fm_state.history_count >= FM_HISTORY_MAX) {
         int i;
         for (i = 0; i < fm_state.history_count - 1; i++) {
-            strcpy(fm_state.history[i], fm_state.history[i + 1]);
+            strncpy(fm_state.history[i], fm_state.history[i + 1], FM_PATH_MAX - 1);
+            fm_state.history[i][FM_PATH_MAX - 1] = '\0';
         }
         fm_state.history_count--;
         if (fm_state.history_pos > 0) fm_state.history_pos--;
     }
 
-    strcpy(fm_state.history[fm_state.history_count], path);
+    strncpy(fm_state.history[fm_state.history_count], path, FM_PATH_MAX - 1);
+    fm_state.history[fm_state.history_count][FM_PATH_MAX - 1] = '\0';
     fm_state.history_count++;
     fm_state.history_pos = fm_state.history_count - 1;
 }
