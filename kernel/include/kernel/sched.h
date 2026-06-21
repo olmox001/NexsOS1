@@ -31,7 +31,13 @@ struct ipc_node {
 /* Architecture-specific register frame layout */
 #include <arch/pt_regs.h>
 
-#define DEFAULT_QUANTUM 10
+/* Scheduler time-slice in ticks (HZ=100 -> 10ms/tick).  Lowered from 10 (100ms)
+ * to 3 (30ms): the old quantum let a CPU-bound task hog a core for 100ms before
+ * an interactive task could preempt it (a real responsiveness tax).  ASID/PCID-
+ * tagged switches (perf §3) made context switches cheap, so the finer quantum's
+ * extra switches are nearly free — better interactivity at negligible throughput
+ * cost. */
+#define DEFAULT_QUANTUM 3
 
 /* Wait Queue */
 struct wait_queue_head {
