@@ -126,8 +126,8 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
       else
         flags = (phdr.p_flags & PF_X) ? PAGE_USER_RX : PAGE_USER_RO; /* RO+X : RO */
 
-      pr_info("ELF: Mapping Segment at 0x%lx (FileSz: 0x%lx, MemSz: 0x%lx)\n",
-              phdr.p_vaddr, phdr.p_filesz, phdr.p_memsz);
+      pr_debug("ELF: Mapping Segment at 0x%lx (FileSz: 0x%lx, MemSz: 0x%lx)\n",
+              phdr.p_vaddr, phdr.p_filesz, phdr.p_memsz); /* hot path: demoted (perf §1) */
 
       /* Allocate Pages for Memory Segment */
       uint64_t start_vpage = phdr.p_vaddr & ~(0xFFF);

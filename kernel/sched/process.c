@@ -617,7 +617,7 @@ struct process *process_create(const char *name, uint8_t priority,
 
 struct process *process_create_caps(const char *name, uint8_t priority,
                                     uint8_t level, uint32_t req_caps) {
-  pr_info("Process: Creating '%s' (Prio=%d)\n", name, priority);
+  pr_debug("Process: Creating '%s' (Prio=%d)\n", name, priority); /* hot path: demoted (perf §1) */
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
 
@@ -663,7 +663,10 @@ struct process *process_create_caps(const char *name, uint8_t priority,
     return NULL;
   }
 
-  memset(proc, 0, sizeof(struct process)); // Safe Clear
+  /* No memset here: pmm_alloc_page() already returns a fully zeroed page
+   * (zone_alloc_page memsets PAGE_SIZE) and struct process fits in one page,
+   * so the old memset(proc,0,sizeof) was a redundant second zeroing of the
+   * same page on every spawn (SCHED-08, perf §1). */
   strncpy(proc->name, name, 15);
   proc->name[15] = '\0';
 
@@ -743,7 +746,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
 
   proc->page_table = vmm_create_pgd();
 
-  pr_info("process_create: '%s' PID=%u slot=%u Prio=%d PageTable=%p\n", name,
+  pr_debug("process_create: '%s' PID=%u slot=%u Prio=%d PageTable=%p\n", name,
           (uint32_t)proc->pid, (uint32_t)slot, (int)proc->priority, (void*)proc->page_table);
 
   /* Allocate and Setup Kernel Stack (16KB) */
@@ -768,7 +771,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
       (struct pt_regs *)(proc->kernel_stack - sizeof(struct pt_regs));
   memset(proc->context, 0, sizeof(struct pt_regs));
 
-  pr_info("process_create: PID %d context allocated at %p (kstack=%lx)\n",
+  pr_debug("process_create: PID %d context allocated at %p (kstack=%lx)\n",
           proc->pid, (void *)proc->context, proc->kernel_stack);
 
   proc->on_cpu = -1; /* Not running on any CPU */
@@ -896,7 +899,7 @@ int process_terminate(int pid) {
     }
   }
 
-  pr_info("Terminating process '%s' PID=%d\n", proc->name, pid);
+  pr_debug("Terminating process '%s' PID=%d\n", proc->name, pid); /* hot path: demoted (perf §1) */
 
   /* Tear down any windows this process owns (compositor uses trylock, so this
    * is safe to call while holding sched_lock). */

@@ -168,15 +168,33 @@ static int bitmap_test(uint64_t *bitmap, uint64_t bit) {
  *
  * Must be called with the owning zone->lock held.
  * Returns the zone-relative PFN of the first free frame, or -1 if none.
- * This is a linear O(n) scan.
- * NOTE(MM-PMM-03): No word-level fast-path (e.g. ctzl); scans bit by bit.
+ *
+ * MM-PMM-03 RESOLVED (perf §3.1): word-level fast path.  A fully-allocated
+ * 64-bit word (== ~0) is skipped in one compare instead of 64 bit tests, so the
+ * scan cost tracks the number of *occupied words* before the first hole, not the
+ * absolute PFN.  The first non-full word's free bit is located with a single
+ * __builtin_ctzll(~w).  Sub-word head/tail are handled bit-by-bit.
  */
 static int64_t bitmap_find_free(uint64_t *bitmap, uint64_t start,
                                 uint64_t end) {
-  for (uint64_t i = start; i < end; i++) {
-    if (!bitmap_test(bitmap, i)) {
-      return i;
-    }
+  uint64_t i = start;
+
+  /* Head: advance to a word boundary one bit at a time (< 64 iterations). */
+  while (i < end && (i & 63)) {
+    if (!bitmap_test(bitmap, i))
+      return (int64_t)i;
+    i++;
+  }
+  /* Body: whole 64-bit words.  Skip fully-allocated words in one compare. */
+  for (; i + 64 <= end; i += 64) {
+    uint64_t w = bitmap[i / 64];
+    if (w != ~0ULL)
+      return (int64_t)(i + (uint64_t)__builtin_ctzll(~w));
+  }
+  /* Tail: remaining < 64 bits. */
+  for (; i < end; i++) {
+    if (!bitmap_test(bitmap, i))
+      return (int64_t)i;
   }
   return -1;
 }
@@ -189,27 +207,39 @@ static int64_t bitmap_find_free(uint64_t *bitmap, uint64_t start,
  *
  * Must be called with the owning zone->lock held.
  * Returns the zone-relative PFN of the first frame in the run, or -1.
- * NOTE(MM-PMM-03): O(n) scan from the given start every call; no buddy
- * structure or run-length hint.
- * NOTE(MM-PMM-06): next_free_pfn is ignored by callers of this function;
- * the scan always begins at 'start' (typically 0), making next-fit only
- * effective for single-page allocations via zone_alloc_page().
+ *
+ * MM-PMM-03 (partial, perf §3.1): a fully-allocated 64-bit word (== ~0) that is
+ * word-aligned and breaks the current run is skipped in one compare instead of
+ * 64 bit tests — the dominant cost when scanning past occupied memory.  The
+ * run accounting stays bit-exact across word boundaries (a partial or non-full
+ * word is still walked bit-by-bit), so correctness is unchanged.
+ * NOTE(MM-PMM-06): still scans from 'start' (callers pass 0); a next_free_pfn
+ * hint for the contiguous path is a further refinement, not done here.
  */
 static int64_t bitmap_find_contiguous(uint64_t *bitmap, uint64_t start,
                                       uint64_t end, uint64_t count) {
   uint64_t found = 0;
   uint64_t first = 0;
+  uint64_t i = start;
 
-  for (uint64_t i = start; i < end; i++) {
+  while (i < end) {
+    /* Run is broken and we're at a word boundary: skip a fully-allocated word
+     * in one compare. */
+    if (found == 0 && (i & 63) == 0 && i + 64 <= end &&
+        bitmap[i / 64] == ~0ULL) {
+      i += 64;
+      continue;
+    }
     if (!bitmap_test(bitmap, i)) {
       if (found == 0)
         first = i;
       found++;
       if (found == count)
-        return first;
+        return (int64_t)first;
     } else {
       found = 0;
     }
+    i++;
   }
   return -1;
 }

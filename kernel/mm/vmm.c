@@ -626,7 +626,7 @@ void vmm_destroy_pgd(uint64_t *pgd) {
   pmm_free_page((void *)pgd);
   freed_tables++;
 
-  pr_info("VMM: PGD %p destroyed: freed %lu user frames, %lu table pages "
+  pr_debug("VMM: PGD %p destroyed: freed %lu user frames, %lu table pages "
           "(free now %lu)\n",
-          (void *)pgd, freed_frames, freed_tables, pmm_get_free_pages());
+          (void *)pgd, freed_frames, freed_tables, pmm_get_free_pages()); /* hot path: demoted (perf §1) */
 }
