@@ -1485,6 +1485,25 @@ static void compositor_render_internal(void) {
   int bb_h = bb_height;
   uint32_t *backbuffer = compositor_backbuffer;
 
+  /* Damage clip for this frame (perf §3.4): composite ONLY the changed region
+   * instead of the full scene.  Snapshot the accumulated damage (reset later at
+   * the flush) clamped to the screen.  The damage tracking is already complete —
+   * mouse-move damages the old+new cursor rects, drag/resize/window-ops
+   * full-damage — so this box always covers everything that changed.  The
+   * backbuffer persists between frames, so pixels outside the clip stay valid
+   * and are never re-touched (and the flush already uploads only this box).
+   * Cutting the per-frame composite to the damage box is the main fix for the
+   * "scattoso" jank: a cursor move now recomposites ~2 tiny rects, not 1280x800,
+   * and the render no longer stalls CPU0's timer IRQ for a full-scene pass. */
+  int clip_x1 = damage_x1 < 0 ? 0 : damage_x1;
+  int clip_y1 = damage_y1 < 0 ? 0 : damage_y1;
+  int clip_x2 = damage_x2 > bb_w ? bb_w : damage_x2;
+  int clip_y2 = damage_y2 > bb_h ? bb_h : damage_y2;
+  if (clip_x2 < clip_x1) clip_x2 = clip_x1;
+  if (clip_y2 < clip_y1) clip_y2 = clip_y1;
+  int clip_w = clip_x2 - clip_x1;
+  int clip_h = clip_y2 - clip_y1;
+
   /* Active theme (colours) + style (form) — read once per frame (Phase 5/F3).
    */
   const compositor_theme_t *th = compositor_theme_active();
@@ -1580,6 +1599,9 @@ static void compositor_render_internal(void) {
 
       /* Clip to screen bounds */
       region_intersect_rect(vis, 0, 0, bb_w, bb_h);
+      /* Clip to this frame's damage box (perf §3.4): only the changed area is
+       * recomposited; the rest of the backbuffer persists from last frame. */
+      region_intersect_rect(vis, clip_x1, clip_y1, clip_w, clip_h);
     }
 
     visible_regions[i] = vis;
@@ -1598,6 +1620,8 @@ static void compositor_render_internal(void) {
       struct rect *or = &occluded->rects[r];
       region_subtract(bg_region, or->x, or->y, or->w, or->h);
     }
+    /* Only repaint the background within this frame's damage box (perf §3.4). */
+    region_intersect_rect(bg_region, clip_x1, clip_y1, clip_w, clip_h);
 
     /* Draw Background — vertical gradient from the active theme
      * (th->bg_top -> th->bg_bottom), interpolated per row. */
@@ -1639,6 +1663,20 @@ static void compositor_render_internal(void) {
     int dw = win->draw_w > 0 ? win->draw_w : win->width;
     int dh = win->draw_h > 0 ? win->draw_h : win->height;
     int scaled = (dw != win->width || dh != win->height);
+
+    /* Skip windows entirely outside this frame's damage box (perf §3.4): their
+     * content (vis is already clipped to empty) AND chrome (title text / border /
+     * shadow drawn below) need not be repainted — that part of the backbuffer is
+     * unchanged.  Any leftover vis region is freed by the end-of-function
+     * cleanup loop, so the early continue does not leak. */
+    {
+      int wth = win->top_most ? 0 : compositor_titlebar_height();
+      int wy = win->y - wth;
+      int wfh = dh + wth;
+      if (win->x >= clip_x2 || win->x + dw <= clip_x1 || wy >= clip_y2 ||
+          wy + wfh <= clip_y1)
+        continue;
+    }
 
     /* Decoration Params */
     int title_h = win->top_most ? 0 : compositor_titlebar_height();
