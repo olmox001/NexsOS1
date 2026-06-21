@@ -90,7 +90,7 @@ static const compositor_theme_t themes[THEME_COUNT] = {
                     .accent = 0xFF0A84FF},
 };
 
-static int active_style = STYLE_CLASSIC;
+static int active_style = STYLE_GLASS;
 static int active_theme = THEME_LIGHT;
 
 const compositor_style_t *compositor_style_active(void) {
