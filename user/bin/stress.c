@@ -96,33 +96,22 @@ int main(int argc, char *argv[]) {
 
   printf("[stress] start seed=0x%lx dur=%lus interval=%lus fault=%d%% lanes=0x%x\n",
          (unsigned long)seed, (unsigned long)dur_s, (unsigned long)interval_s, fault_pct, lanes);
-  printf("MEMSTAT,t_s,free,lcr,runs,alloc_calls,free_calls,search_ns_total,search_ns_max,"
-         "km_inuse,km_hi,km_live,ctxsw,runnable,zomb,objF,objP,objR,objW,cycles\n");
+  /* Stats CSV is emitted by /sys/bin/nxmemstat --log (a ROOT NX service): the
+   * OS1_sys_stats syscall is ROOT-gated, and stress runs as an unprivileged /bin
+   * USER process, so it only DRIVES load here.  run-stress.sh starts nxmemstat
+   * --log alongside; this loop just prints a periodic liveness heartbeat. */
 
   for (;;) {
     unsigned long long now = os1_mono_ns();
     unsigned long long elapsed = now - start;
     if (elapsed >= dur_ns) break;
 
-    /* periodic stats sample */
+    /* periodic liveness heartbeat (load counts only; no privileged stats) */
     if (elapsed >= next_stat) {
-      struct os1_sysstats s;
-      if (OS1_sys_stats(&s) > 0) {
-        printf("MEMSTAT,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
-               (unsigned long)(elapsed / 1000000000ULL),
-               (unsigned long)s.pmm_free_pages, (unsigned long)s.pmm_largest_contig_run,
-               (unsigned long)s.pmm_free_run_count, (unsigned long)s.pmm_alloc_calls,
-               (unsigned long)s.pmm_free_calls, (unsigned long)s.pmm_alloc_search_ns_total,
-               (unsigned long)s.pmm_alloc_search_ns_max, (unsigned long)s.km_bytes_in_use,
-               (unsigned long)s.km_high_water_bytes, (unsigned long)s.km_live_allocs,
-               (unsigned long)s.sched_ctx_switches, (unsigned long)s.sched_runnable,
-               (unsigned long)s.sched_zombie_count,
-               (unsigned long)s.obj_live_by_type[OBJ_TYPE_FILE],
-               (unsigned long)s.obj_live_by_type[OBJ_TYPE_PROCESS],
-               (unsigned long)s.obj_live_by_type[OBJ_TYPE_REGKEY],
-               (unsigned long)s.obj_live_by_type[OBJ_TYPE_WINDOW],
-               (unsigned long)cycles);
-      }
+      printf("[stress] t=%lus cycles=%lu spawns=%lu faults=%lu allocs=%lu files=%lu guis=%lu errs=%lu\n",
+             (unsigned long)(elapsed / 1000000000ULL), (unsigned long)cycles,
+             (unsigned long)spawns, (unsigned long)faults, (unsigned long)allocs,
+             (unsigned long)files, (unsigned long)guis, (unsigned long)errs);
       next_stat = elapsed + interval_ns;
     }
 

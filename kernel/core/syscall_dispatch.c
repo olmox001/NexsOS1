@@ -675,7 +675,14 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));
     break;
   case SYS_SYSSTATS:
-    /* OS1_sys_stats(buf, buf_size): one os1_sysstats snapshot (perf §1). */
+    /* OS1_sys_stats(buf, buf_size): one os1_sysstats snapshot (perf §1).
+     * PRIVILEGED introspection: only ROOT/machine NX services (e.g.
+     * /sys/bin/nxmemstat) may read the raw stats; USER apps go through the
+     * service's exposed interface, never this syscall directly. */
+    if (!current_process || current_process->level > PLVL_ROOT) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     pt_regs_set_return(frame, sys_sysstats((void *)arg0, (size_t)arg1));
     break;
   case SYS_GET_IDENTITY: {

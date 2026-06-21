@@ -51,8 +51,11 @@ trap 'kill $QPID 2>/dev/null' EXIT INT TERM
 
 echo "[run-stress] booting (waiting 25s) ..."
 sleep 25
-echo "[run-stress] launching: stress --dur $DUR $EXTRA"
-python3 tools/qmp_type.py "$SOCK" "stress --dur ${DUR} ${EXTRA}"$'\n' 1 || {
+# nxmemstat (ROOT /sys/bin service) does the privileged stats CSV logging AND
+# spawns the USER load driver (/bin/stress) via --run, because OS1_sys_stats is
+# ROOT-gated and the foreground-only shell can't co-run two long commands.
+echo "[run-stress] launching: nxmemstat --log 60 --run /bin/stress --dur $DUR $EXTRA"
+python3 tools/qmp_type.py "$SOCK" "nxmemstat --log 60 --run /bin/stress --dur ${DUR} ${EXTRA}"$'\n' 1 || {
   echo "[run-stress] qmp_type failed — is the guest at a shell prompt?"; }
 
 # wait the run duration + a margin for boot/teardown
@@ -67,7 +70,7 @@ echo "===================== RESULTS ($ARCH) ====================="
 echo "-- health (PANIC/NESTED/Unhandled count, expect 0) --"
 grep -acE 'PANIC|NESTED|Unhandled' "$LOG"
 echo "-- PCID/boot --"; grep -aE "PCID-tagged TLB|Boot Complete" "$LOG" | head -2
-echo "-- stress summary --"; grep -aE "\[stress\] (start|DONE)" "$LOG"
+echo "-- stress summary --"; grep -aE "\[nxmemstat\]|\[stress\] (start|DONE)" "$LOG"
 echo "-- drift analysis (warmup=1 drops boot transient) --"
 python3 tools/analyze_drift.py "$LOG" --warmup 1
 echo "Full serial log: $LOG"

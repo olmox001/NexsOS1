@@ -322,7 +322,7 @@ USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf $(BUILD_DIR)/notify_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf $(BUILD_DIR)/top.elf $(BUILD_DIR)/nexs-fm.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
-           $(BUILD_DIR)/nxperm.elf
+           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf \
@@ -335,7 +335,6 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_sen
            $(BUILD_DIR)/capkill.elf $(BUILD_DIR)/capkill_child.elf \
            $(BUILD_DIR)/sandboxtest.elf $(BUILD_DIR)/sandboxchild.elf \
            $(BUILD_DIR)/hello.elf \
-           $(BUILD_DIR)/memstat.elf \
            $(BUILD_DIR)/stress.elf \
 		   $(BUILD_DIR)/kilo.elf
 
@@ -388,7 +387,7 @@ $(BUILD_DIR)/forkbomb.elf: $(BUILD_DIR)/$(USER_DIR)/bin/forkbomb.o $(USER_LIB_O)
 $(BUILD_DIR)/sandboxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/sandboxchild.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxchild.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/hello.elf: $(BUILD_DIR)/$(USER_DIR)/bin/hello.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/memstat.elf: $(BUILD_DIR)/$(USER_DIR)/bin/memstat.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxmemstat.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxmemstat.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/stress.elf: $(BUILD_DIR)/$(USER_DIR)/bin/stress.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
