@@ -50,8 +50,9 @@ void fault_exit(void) {
   if (ci) {
     if (ci->in_fault)
       ci->in_fault--;
-  } else if (fault_depth_fallback) {
-    __sync_sub_and_fetch(&fault_depth_fallback, 1);
+  } else {
+    uint32_t prev = __sync_sub_and_fetch(&fault_depth_fallback, 1);
+    if (prev == UINT32_MAX) __sync_add_and_fetch(&fault_depth_fallback, 1);
   }
 }
 

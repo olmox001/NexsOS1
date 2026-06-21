@@ -1,0 +1,44 @@
+#ifndef _KERNEL_REGISTRY_H
+#define _KERNEL_REGISTRY_H
+
+#include <kernel/types.h>
+
+#define MAX_KEY_LEN 64
+#define MAX_VAL_LEN 128
+
+/* Registry Operations */
+#define REG_OP_READ 0
+#define REG_OP_WRITE 1
+#define REG_OP_ENUM 2 /* enumerate keys into 'value' buffer (LIB-REG-04) */
+
+/*
+ * Registry data model (Phase 4.1 A-tree-1): a hierarchical TREE of dynamically
+ * allocated nodes, NOT a flat array.  Dotted keys ("theme.color") are namespace
+ * PATHS: each segment is a node, leaves carry a value (a "file"), interior nodes
+ * are directories.  Children are kept sorted by name (ordered listing + search).
+ * This is the in-kernel coherent namespace ("/reg") the rest of the system reads;
+ * because it supervises the system it must scale — lookup is O(depth × children),
+ * not the old O(128) flat scan, and the key count is no longer capped.
+ * Each node is reachable as a capability object (OBJ_TYPE_REGKEY); writes are
+ * first-writer-wins by owner_pid (LIB-REG-02) and gated by CAP_REG_WRITE.
+ */
+
+void registry_init(void);
+/* registry_set: create or update a key.  'owner_pid' identifies the caller:
+ * 0 for kernel/system (full rights), a PID for user processes.  Updating an
+ * existing key owned by someone else returns -EACCES (first-writer-wins —
+ * a service's routing key cannot be hijacked by another process). */
+int registry_set(const char *key, const char *value, int owner_pid);
+int registry_get(const char *key, char *buffer, size_t size);
+/* registry_enum: write the newline-separated list of used keys into 'buf'
+ * (NUL-terminated, bounded by 'size'); returns the number of bytes written
+ * (excluding the NUL), or -1 on bad args (LIB-REG-04).  Keys are emitted in
+ * sorted order (the tree keeps children sorted).
+ * 'prefix' filters to keys that begin with it — the "list a namespace directory"
+ * primitive (Phase 4.1 A1a); NULL or "" lists ALL keys. */
+int registry_enum(const char *prefix, char *buf, size_t size);
+
+/* Syscall Handler */
+long sys_registry(int op, const char *key, char *value, size_t size);
+
+#endif

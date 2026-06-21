@@ -135,6 +135,16 @@ int vprintk(const char *fmt, va_list args) {
   uint64_t flags;
   int len;
 
+  if (!cpu) {
+      char buf[512];
+      len = vsnprintf(buf, sizeof(buf), fmt, args);
+      spin_lock_irqsave(&uart_lock, &flags);
+      kputs("[BOOT] ");
+      kputs(buf);
+      spin_unlock_irqrestore(&uart_lock, flags);
+      return len;
+  }
+
   /* Acquire lock and disable IRQs BEFORE setting in_printk.
    * Without this, the timer IRQ can preempt between in_printk=1 and the lock,
    * switch to another task, and that task's next printk sees a stale
@@ -155,8 +165,17 @@ int vprintk(const char *fmt, va_list args) {
     pfx = 0;
 
   /* Format the actual message after the prefix */
-  len = vsnprintf(cpu->printk_buf + pfx, sizeof(cpu->printk_buf) - pfx, fmt,
-                  args);
+  len = vsnprintf(cpu->printk_buf + pfx, sizeof(cpu->printk_buf) - pfx, fmt, args);
+
+  if (len >= (int)(sizeof(cpu->printk_buf) - pfx - 1)) {
+      cpu->printk_dropped++;
+      int t_len = 11;
+      if (sizeof(cpu->printk_buf) > (size_t)t_len) {
+          char *end = cpu->printk_buf + sizeof(cpu->printk_buf) - t_len - 1;
+          /* strcpy is safe here, but we can just loop or memcpy */
+          memcpy(end, "...[TRUNC]\n", 12);
+      }
+  }
 
   kputs(cpu->printk_buf);
 

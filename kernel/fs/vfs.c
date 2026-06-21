@@ -285,7 +285,7 @@ void vfs_resolve_path(const char *in, char *out, size_t size) {
     }
 
     /* Reassemble: start with root '/' then append each component. */
-    strcpy(normalized, "/");
+    strlcpy(normalized, "/", sizeof(normalized));
     for (int i = 0; i < part_count; i++) {
         strncat(normalized, parts[i], sizeof(normalized) - strlen(normalized) - 1);
         /* Insert '/' between components but not after the last one. */

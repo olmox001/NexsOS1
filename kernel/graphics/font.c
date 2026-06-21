@@ -61,7 +61,7 @@
 /* utf8_decode: defined in kernel/lib/utf8.c (or equivalent); advances 's' by
  * the byte width of the first codepoint and writes the decoded value to *code.
  * Returns byte count consumed (1..4), or <= 0 on invalid sequence. */
-int utf8_decode(const char *s, uint32_t *code);
+int utf8_decode(const char *s, size_t len, uint32_t *code);
 
 /* Internal font state */
 /* GFX-FONT-01: the active font is an immutable descriptor published behind
@@ -238,16 +238,21 @@ void gl_draw_string(struct gl_surface *surf, int x, int y, const char *str,
   int cursor_x = x;
   uint32_t codepoint;
   int consumed;
+  size_t rem = 0;
+  const char *p = str;
+  while (*p) { p++; rem++; }
 
   while (*str) {
-    consumed = utf8_decode(str, &codepoint);
+    consumed = utf8_decode(str, rem, &codepoint);
     if (consumed <= 0) {
         str++;
+        rem--;
         continue;
     }
     gl_draw_char(surf, cursor_x, y, codepoint, color);
     cursor_x += graphics_char_width(codepoint);
     str += consumed;
+    rem -= consumed;
   }
 }
 
@@ -270,15 +275,20 @@ int graphics_string_width(const char *str) {
   int width = 0;
   uint32_t codepoint;
   int consumed;
+  size_t rem = 0;
+  const char *p = str;
+  while (*p) { p++; rem++; }
 
   while (*str) {
-    consumed = utf8_decode(str, &codepoint);
+    consumed = utf8_decode(str, rem, &codepoint);
     if (consumed <= 0) {
         str++;
+        rem--;
         continue;
     }
     width += graphics_char_width(codepoint);
     str += consumed;
+    rem -= consumed;
   }
   return width;
 }

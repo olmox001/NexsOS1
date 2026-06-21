@@ -536,8 +536,12 @@ int atoi(const char *s) {
   } else if (*s == '+') {
     s++;
   }
+  int int_max = 2147483647;
+  int int_min = -2147483648;
   while (*s >= '0' && *s <= '9') {
-    res = res * 10 + (*s - '0');
+    int digit = *s - '0';
+    if (res > (int_max - digit) / 10) return (sign > 0) ? int_max : int_min;
+    res = res * 10 + digit;
     s++;
   }
   return res * sign;

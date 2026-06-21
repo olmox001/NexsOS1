@@ -56,8 +56,8 @@
  *          invalid lead byte, or bad continuation byte).
  * Locking: none (stateless).
  */
-int utf8_decode(const char *s, uint32_t *code) {
-  if (!s || !code) return 0;
+int utf8_decode(const char *s, size_t len, uint32_t *code) {
+  if (!s || !code || len == 0) return 0;
   unsigned char c = (unsigned char)s[0];
 
   if (c < 0x80) {
@@ -65,26 +65,25 @@ int utf8_decode(const char *s, uint32_t *code) {
     *code = c;
     return 1;
   } else if ((c & 0xE0) == 0xC0) {
-    /* 2-byte sequence: U+0080..U+07FF
-     * Lead: 110xxxxx; continuation: 10xxxxxx
-     * NOTE(LIB-UTF8-01): s[1] read without bounds check; may read past buffer end. */
-    if ((s[1] & 0xC0) != 0x80) return 0;
+    /* 2-byte sequence: U+0080..U+07FF */
+    if (len < 2 || (s[1] & 0xC0) != 0x80) return 0;
     *code = ((uint32_t)(c & 0x1F) << 6) | (uint32_t)(s[1] & 0x3F);
+    if (*code < 0x80) return 0;
     return 2;
   } else if ((c & 0xF0) == 0xE0) {
-    /* 3-byte sequence: U+0800..U+FFFF
-     * Lead: 1110xxxx; continuations: 10xxxxxx 10xxxxxx
-     * NOTE(LIB-UTF8-01): s[1], s[2] read without bounds check. */
-    if ((s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80) return 0;
+    /* 3-byte sequence: U+0800..U+FFFF */
+    if (len < 3 || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80) return 0;
     *code = ((uint32_t)(c & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (uint32_t)(s[2] & 0x3F);
+    if (*code < 0x800) return 0;
+    if (*code >= 0xD800 && *code <= 0xDFFF) return 0;
     return 3;
   } else if ((c & 0xF8) == 0xF0) {
-    /* 4-byte sequence: U+10000..U+10FFFF
-     * Lead: 11110xxx; continuations: 10xxxxxx 10xxxxxx 10xxxxxx
-     * NOTE(LIB-UTF8-01): s[1], s[2], s[3] read without bounds check. */
-    if ((s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80 || (s[3] & 0xC0) != 0x80) return 0;
+    /* 4-byte sequence: U+10000..U+10FFFF */
+    if (len < 4 || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80 || (s[3] & 0xC0) != 0x80) return 0;
     *code = ((uint32_t)(c & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12) |
             ((uint32_t)(s[2] & 0x3F) << 6) | (uint32_t)(s[3] & 0x3F);
+    if (*code < 0x10000) return 0;
+    if (*code > 0x10FFFF) return 0;
     return 4;
   }
   /* Invalid lead byte (e.g. continuation byte used as lead, or 0xFF/0xFE) */

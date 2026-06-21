@@ -38,7 +38,7 @@ void graphics_clear(uint32_t color);
 /* Font/String API */
 int graphics_char_width(uint32_t codepoint);
 int graphics_string_width(const char *str);
-int utf8_decode(const char *s, uint32_t *code);
+int utf8_decode(const char *s, size_t len, uint32_t *code);
 int graphics_font_height(void);
 int graphics_font_ascent(void);
 int graphics_font_max_width(void);

@@ -202,23 +202,28 @@ static void draw_glyph(int win_id, struct font_ctx *ctx, int x, int y, uint32_t 
 void font_draw_string(int win_id, struct font_ctx *ctx, int x, int y, const char *str, uint32_t color) {
     if (!ctx || !str) return;
 
-    int cursor_x = x;
-    uint32_t codepoint;
-    int consumed;
+  int cursor_x = x;
+  uint32_t codepoint;
+  int consumed;
+  size_t rem = 0;
+  const char *p = str;
+  while (*p) { p++; rem++; }
 
-    while (*str) {
-        consumed = utf8_decode(str, &codepoint);
-        if (consumed <= 0) {
-            str++;  /* Skip invalid byte to avoid infinite loop */
-            continue;
-        }
-        draw_glyph(win_id, ctx, cursor_x, y, codepoint, color);
-        int idx = (int)codepoint - ctx->header.first_char;
-        if (idx >= 0 && idx < ctx->header.num_chars) {
-            cursor_x += ctx->glyphs[idx].advance;
-        }
-        str += consumed;
-    }
+  while (*str) {
+      consumed = utf8_decode(str, rem, &codepoint);
+      if (consumed <= 0) {
+          str++;  /* Skip invalid byte to avoid infinite loop */
+          rem--;
+          continue;
+      }
+      draw_glyph(win_id, ctx, cursor_x, y, codepoint, color);
+      int idx = (int)codepoint - ctx->header.first_char;
+      if (idx >= 0 && idx < ctx->header.num_chars) {
+          cursor_x += ctx->glyphs[idx].advance;
+      }
+      str += consumed;
+      rem -= consumed;
+  }
 }
 
 /*
@@ -235,21 +240,26 @@ void font_draw_string(int win_id, struct font_ctx *ctx, int x, int y, const char
 int font_string_width(struct font_ctx *ctx, const char *str) {
     if (!ctx || !str) return 0;
 
-    int width = 0;
-    uint32_t codepoint;
-    int consumed;
+  int width = 0;
+  uint32_t codepoint;
+  int consumed;
+  size_t rem = 0;
+  const char *p = str;
+  while (*p) { p++; rem++; }
 
-    while (*str) {
-        consumed = utf8_decode(str, &codepoint);
-        if (consumed <= 0) {
-            str++;  /* Skip invalid byte */
-            continue;
-        }
-        int idx = (int)codepoint - ctx->header.first_char;
-        if (idx >= 0 && idx < ctx->header.num_chars) {
-            width += ctx->glyphs[idx].advance;
-        }
-        str += consumed;
-    }
+  while (*str) {
+      consumed = utf8_decode(str, rem, &codepoint);
+      if (consumed <= 0) {
+          str++;  /* Skip invalid byte */
+          rem--;
+          continue;
+      }
+      int idx = (int)codepoint - ctx->header.first_char;
+      if (idx >= 0 && idx < ctx->header.num_chars) {
+          width += ctx->glyphs[idx].advance;
+      }
+      str += consumed;
+      rem -= consumed;
+  }
     return width;
 }

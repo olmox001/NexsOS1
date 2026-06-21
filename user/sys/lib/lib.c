@@ -942,29 +942,33 @@ int puts(const char *s) { write(1, s, strlen(s)); write(1, "\n", 1); return 0; }
  *
  * Used by font_lib.c:font_draw_string() to iterate a UTF-8 string glyph by glyph.
  */
-int utf8_decode(const char *s, uint32_t *code) {
-  if (!s || !code) return 0;
+int utf8_decode(const char *s, size_t len, uint32_t *code) {
+  if (!s || !code || len == 0) return 0;
   unsigned char c = (unsigned char)s[0];
 
   if (c < 0x80) {
-    /* Single-byte ASCII codepoint */
     *code = c;
     return 1;
   } else if ((c & 0xE0) == 0xC0) {
-    /* 2-byte sequence: 110xxxxx 10xxxxxx */
+    if (len < 2 || (s[1] & 0xC0) != 0x80) return 0;
     *code = ((uint32_t)(c & 0x1F) << 6) | (uint32_t)(s[1] & 0x3F);
+    if (*code < 0x80) return 0;
     return 2;
   } else if ((c & 0xF0) == 0xE0) {
-    /* 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx */
+    if (len < 3 || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80) return 0;
     *code = ((uint32_t)(c & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (uint32_t)(s[2] & 0x3F);
+    if (*code < 0x800) return 0;
+    if (*code >= 0xD800 && *code <= 0xDFFF) return 0;
     return 3;
   } else if ((c & 0xF8) == 0xF0) {
-    /* 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx */
+    if (len < 4 || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80 || (s[3] & 0xC0) != 0x80) return 0;
     *code = ((uint32_t)(c & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12) |
             ((uint32_t)(s[2] & 0x3F) << 6) | (uint32_t)(s[3] & 0x3F);
+    if (*code < 0x10000) return 0;
+    if (*code > 0x10FFFF) return 0;
     return 4;
   }
-  return 0;  /* Unrecognised lead byte (invalid UTF-8) */
+  return 0;
 }
 
 /* ============================================================================

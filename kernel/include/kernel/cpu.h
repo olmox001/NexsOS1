@@ -42,6 +42,7 @@ struct cpu_info {
   char printk_buf[2048];
   char syscall_buf[2048];
   uint32_t in_printk;
+  uint32_t printk_dropped;
 
   /* Fault recursion depth (Phase A, kernel/fault.h).  Incremented by
    * fault_enter() at exception-dispatch entry; depth > 1 means a fault

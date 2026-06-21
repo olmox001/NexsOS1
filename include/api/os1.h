@@ -135,7 +135,7 @@ void OS1low_process_yield(void);
 int  OS1low_process_self(void);
 void OS1low_process_exit(int status);
 
-int utf8_decode(const char *s, uint32_t *code);
+int utf8_decode(const char *s, size_t len, uint32_t *code);
 /* OS1_sleep: proprietary BASE-API blocking sleep, in MILLISECONDS (NOT POSIX
  * seconds). Prefixed OS1_ to keep the NEXS base API distinct from the POSIX/libc
  * surface built on top of it (usleep/nanosleep in <unistd.h>/<time.h>); the bare

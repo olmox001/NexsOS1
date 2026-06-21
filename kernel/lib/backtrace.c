@@ -54,9 +54,11 @@ static int text_addr_valid(uint64_t pc) {
 static int fp_addr_valid(uint64_t fp) {
   if (fp == 0 || (fp & 7) != 0)
     return 0;
+  if (fp + 15 < fp)
+    return 0;
   if (fp < (uint64_t)(uintptr_t)__kernel_start)
     return 0;
-  if (fp > (uint64_t)(uintptr_t)__kernel_end + FP_RANGE_LIMIT)
+  if (fp + 15 > (uint64_t)(uintptr_t)__kernel_end + FP_RANGE_LIMIT)
     return 0;
   return 1;
 }
@@ -93,9 +95,10 @@ const char *ksym_lookup(uint64_t addr, uint64_t *off) {
     return NULL;
   lo--;
 
-  const char *name = names + name_offs[lo];
-  if (name >= __ksyms_end)
+  uint32_t off_val = name_offs[lo];
+  if ((uint64_t)off_val >= (uint64_t)(__ksyms_end - names))
     return NULL;
+  const char *name = names + off_val;
   if (off)
     *off = addr - addrs[lo];
   return name;

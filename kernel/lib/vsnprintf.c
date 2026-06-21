@@ -95,11 +95,10 @@ static int print_num(char *buf, size_t size, uint64_t num, int base, int width, 
     static const char digits_upper[] = "0123456789ABCDEF";
     const char *digits = (flags & FLAG_UPPERCASE) ? digits_upper : digits_lower;
 
-    /* tmp[]: digits stored in reverse (least-significant first); up to 64 bits
-     * in base 2 = 64 digits + possible overflow byte = 66 is a safe bound. */
     char tmp[66];
     int i = 0;
     int written = 0;
+    int needed = 0;
 
     if (num == 0) {
         tmp[i++] = '0';
@@ -110,47 +109,57 @@ static int print_num(char *buf, size_t size, uint64_t num, int base, int width, 
         }
     }
 
-    /* Precision: pad digit string with leading '0's to reach minimum digit count.
-     * The extra '0' bytes go into tmp[] alongside the real digits. */
     while (i < precision && i < 64) {
         tmp[i++] = '0';
     }
 
-    /* width now holds the net padding remaining after the digits are accounted for.
-     * NOTE(LIB-VSNPRINTF-01): sign char (1 byte) is NOT subtracted from width here,
-     * so FLAG_ZEROPAD output is one character wider than the requested field. */
     width -= i;
-
-    /* Right-justify with space padding (only when neither zero-pad nor left-align) */
-    if (!(flags & (FLAG_ZEROPAD | FLAG_LEFT))) {
-        while (width-- > 0 && written < (int)size - 1) buf[written++] = ' ';
+    if (flags & (FLAG_SIGN | FLAG_PLUS | FLAG_SPACE)) {
+        width--;
     }
 
-    /* Sign / prefix character */
+    if (!(flags & (FLAG_ZEROPAD | FLAG_LEFT))) {
+        while (width > 0) {
+            if (written < (int)size - 1) buf[written++] = ' ';
+            needed++;
+            width--;
+        }
+    }
+
     if (flags & FLAG_SIGN) {
         if (written < (int)size - 1) buf[written++] = '-';
+        needed++;
     } else if (flags & FLAG_PLUS) {
         if (written < (int)size - 1) buf[written++] = '+';
+        needed++;
     } else if (flags & FLAG_SPACE) {
         if (written < (int)size - 1) buf[written++] = ' ';
+        needed++;
     }
 
-    /* Zero-pad between sign and digits when FLAG_ZEROPAD is active */
     if (flags & FLAG_ZEROPAD) {
-        while (width-- > 0 && written < (int)size - 1) buf[written++] = '0';
+        while (width > 0) {
+            if (written < (int)size - 1) buf[written++] = '0';
+            needed++;
+            width--;
+        }
     }
 
-    /* Emit digits in correct (forward) order by reading tmp[] in reverse */
-    while (i > 0 && written < (int)size - 1) {
-        buf[written++] = tmp[--i];
+    while (i > 0) {
+        if (written < (int)size - 1) buf[written++] = tmp[--i];
+        else i--;
+        needed++;
     }
 
-    /* Left-justify trailing space padding */
     if (flags & FLAG_LEFT) {
-        while (width-- > 0 && written < (int)size - 1) buf[written++] = ' ';
+        while (width > 0) {
+            if (written < (int)size - 1) buf[written++] = ' ';
+            needed++;
+            width--;
+        }
     }
 
-    return written;
+    return needed;
 }
 
 /*
@@ -184,16 +193,19 @@ static int print_num(char *buf, size_t size, uint64_t num, int base, int width, 
  */
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
     int written = 0;
+    int needed = 0;
     int width, precision;
     int flags;
     uint64_t num;
     const char *s;
 
-    if (size == 0) return 0;
+    if (size == 0 && buf != NULL) return 0; /* POSIX allows buf=NULL, size=0 */
 
-    while (*fmt && written < (int)size - 1) {
+    while (*fmt) {
         if (*fmt != '%') {
-            buf[written++] = *fmt++;
+            if (size > 0 && written < (int)size - 1) buf[written++] = *fmt;
+            needed++;
+            fmt++;
             continue;
         }
 
@@ -250,20 +262,38 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
         /* Conversion specifier */
         switch (*fmt) {
             case 'c':
-                /* char is promoted to int through va_arg */
-                if (written < (int)size - 1) buf[written++] = (char)va_arg(args, int);
+                if (size > 0 && written < (int)size - 1) buf[written++] = (char)va_arg(args, int);
+                needed++;
                 break;
 
             case 's':
                 s = va_arg(args, const char *);
                 if (!s) s = "(null)";
-                /* NOTE: width and precision are not applied to %s in this implementation */
-                while (*s && written < (int)size - 1) buf[written++] = *s++;
+                int len = 0;
+                while (s[len]) {
+                    if (precision >= 0 && len >= precision) break;
+                    len++;
+                }
+                if (!(flags & FLAG_LEFT)) {
+                    while (len < width) {
+                        if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                        needed++;
+                        width--;
+                    }
+                }
+                for (int j = 0; j < len; j++) {
+                    if (size > 0 && written < (int)size - 1) buf[written++] = s[j];
+                    needed++;
+                }
+                while (len < width) {
+                    if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                    needed++;
+                    width--;
+                }
                 break;
 
             case 'd':
             case 'i':
-                /* Signed integer: extract sign bit, negate, then format unsigned */
                 if (is_long == 2)      num = va_arg(args, int64_t);
                 else if (is_long == 1) num = va_arg(args, long);
                 else                  num = va_arg(args, int);
@@ -272,51 +302,63 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                     flags |= FLAG_SIGN;
                     num = -(int64_t)num;
                 }
-                written += print_num(buf + written, size - written, num, 10, width, precision, flags);
+                needed += print_num(size > 0 ? buf + written : NULL, size > (size_t)written ? size - written : 0, num, 10, width, precision, flags);
+                if (size > 0 && written < (int)size - 1) {
+                    int add = size - 1 - written;
+                    int added = print_num(buf + written, size - written, num, 10, width, precision, flags);
+                    written += added < add ? added : add;
+                } else {
+                    written += 0;
+                }
                 break;
 
             case 'u':
             case 'x':
             case 'X':
-                /* Unsigned integer or hex: fetch without sign extension */
                 if (is_long == 2)      num = va_arg(args, uint64_t);
                 else if (is_long == 1) num = va_arg(args, unsigned long);
                 else                  num = va_arg(args, unsigned int);
 
                 if (*fmt == 'X') flags |= FLAG_UPPERCASE;
-                written += print_num(buf + written, size - written, num, (*fmt == 'u' ? 10 : 16), width, precision, flags);
+                
+                int n_added = print_num(size > 0 ? buf + written : NULL, size > (size_t)written ? size - written : 0, num, (*fmt == 'u' ? 10 : 16), width, precision, flags);
+                needed += n_added;
+                if (size > 0 && written < (int)size - 1) {
+                    int add = size - 1 - written;
+                    written += n_added < add ? n_added : add;
+                }
                 break;
 
             case 'p':
-                /* Pointer: emit "0x" prefix then 16 zero-padded hex digits.
-                 * NOTE(LIB-VSNPRINTF-04): width is hardcoded to 16; the guard
-                 *   `written < (int)size - 2` prevents writing "0x" near a full
-                 *   buffer, but print_num still runs with near-zero remaining
-                 *   capacity.  The 0x prefix may be omitted while digits still
-                 *   appear, corrupting the pointer representation. */
                 num = (uint64_t)va_arg(args, void *);
-                if (written < (int)size - 2) {
-                    buf[written++] = '0';
-                    buf[written++] = 'x';
+                if (size > 0 && written < (int)size - 1) buf[written++] = '0';
+                needed++;
+                if (size > 0 && written < (int)size - 1) buf[written++] = 'x';
+                needed++;
+                
+                int p_added = print_num(size > 0 ? buf + written : NULL, size > (size_t)written ? size - written : 0, num, 16, width > 0 ? width : 16, precision, FLAG_ZEROPAD);
+                needed += p_added;
+                if (size > 0 && written < (int)size - 1) {
+                    int add = size - 1 - written;
+                    written += p_added < add ? p_added : add;
                 }
-                written += print_num(buf + written, size - written, num, 16, 16, 16, FLAG_ZEROPAD);
                 break;
 
             case '%':
-                if (written < (int)size - 1) buf[written++] = '%';
+                if (size > 0 && written < (int)size - 1) buf[written++] = '%';
+                needed++;
                 break;
 
             default:
-                /* Unknown specifier: pass through literally as "%<char>" */
-                if (written < (int)size - 1) buf[written++] = '%';
-                if (written < (int)size - 1) buf[written++] = *fmt;
+                if (size > 0 && written < (int)size - 1) buf[written++] = '%';
+                needed++;
+                if (size > 0 && written < (int)size - 1) buf[written++] = *fmt;
+                needed++;
                 break;
         }
         fmt++;
     }
 
-    /* Always NUL-terminate; buf[written] is guaranteed in-bounds because
-     * the loop condition is `written < (int)size - 1`. */
-    buf[written] = '\0';
-    return written;
+    if (size > 0) buf[written] = '\0';
+    return needed;
 }

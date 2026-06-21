@@ -400,7 +400,7 @@ void virtio_gpu_init(void) {
   priv->dev = dev;
   dev->priv = priv;
   dev->ops = &vgpu_ops;
-  strcpy(dev->name, "VirtIO-GPU");
+  strlcpy(dev->name, "VirtIO-GPU", sizeof(dev->name));
 
   /* Reset + Acknowledge + Driver. */
   virtio_write_reg(dev_handle, VIRTIO_MMIO_STATUS, 0);
