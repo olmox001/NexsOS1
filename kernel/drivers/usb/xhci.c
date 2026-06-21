@@ -146,7 +146,7 @@ static inline void wr64(volatile uint8_t *p, uint32_t off, uint64_t v) {
 
 static void *alloc_zeroed_page(uint64_t *phys_out) {
     if (phys_out) *phys_out = 0;
-    void *p = pmm_alloc_page();
+    void *p = pmm_alloc_page_dma();
     if (!p) return NULL;
     memset(p, 0, PAGE_SIZE);
     if (phys_out) *phys_out = virt_to_phys(p);

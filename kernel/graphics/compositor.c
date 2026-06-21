@@ -298,7 +298,7 @@ void compositor_init(void) {
   desktop_zoom = 100;
 
   bb_pages = (int)(((size_t)w * h * 4 + 4095) / 4096);
-  compositor_backbuffer = pmm_alloc_pages(bb_pages);
+  compositor_backbuffer = pmm_alloc_pages_dma(bb_pages);
   if (!compositor_backbuffer) {
     pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
     bb_pages = 0;
@@ -358,7 +358,7 @@ void compositor_resize(int w, int h) {
     return; /* nothing to do */
 
   int npages = (int)(((size_t)w * h * 4 + 4095) / 4096);
-  uint32_t *nbuf = pmm_alloc_pages(npages);
+  uint32_t *nbuf = pmm_alloc_pages_dma(npages);
   if (!nbuf) {
     pr_err("Compositor: resize %dx%d: out of memory\n", w, h);
     return;

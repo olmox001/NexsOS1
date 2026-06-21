@@ -87,7 +87,7 @@ void virtio_blk_init(void) {
   }
   virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_NUM, qsize);
 
-  void *qmem = pmm_alloc_pages(2);
+  void *qmem = pmm_alloc_pages_dma(2);
   if (!qmem) {
     pr_err("%s", "VirtIO: Failed to allocate queue memory\n");
     return;

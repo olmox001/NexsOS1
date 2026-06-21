@@ -563,7 +563,7 @@ void pmm_init(struct mem_region *regions, size_t count) {
  * Locking: takes and releases z->lock with IRQ save/restore.
  * IRQ context: safe to call from IRQ-disabled context.
  */
-static void *zone_alloc_page(struct zone *z) {
+static void *zone_alloc_page(struct zone *z, int dma) {
   uint64_t flags;
   spin_lock_irqsave(&z->lock, &flags);
 
@@ -598,8 +598,15 @@ static void *zone_alloc_page(struct zone *z) {
 
   void *addr = phys_to_virt(MEMORY_BASE + pfn_to_phys(abs_pfn));
   memset(addr, 0, PAGE_SIZE);
-  arch_cache_clean_range(addr, PAGE_SIZE);
-  arch_mb();
+  if (dma) {
+    /* DMA-coherency prep (perf §3.1): make the zeroed page visible to a device
+     * that may not snoop the CPU caches.  ONLY DMA allocations pay this — the
+     * vast majority (page tables, kernel stacks, struct process, user/sbrk
+     * pages, kmalloc chunks) are CPU-only and skip the per-page DC CVAC loop +
+     * full barrier, the dominant fixed cost on the spawn hot path. */
+    arch_cache_clean_range(addr, PAGE_SIZE);
+    arch_mb();
+  }
 
   __sync_fetch_and_sub(&free_pages, 1);
 
@@ -628,10 +635,25 @@ static void *zone_alloc_page(struct zone *z) {
  * Locking: no caller lock required; zone locks are taken internally.
  */
 void *pmm_alloc_page(void) {
-  /* Try normal zone first, then DMA */
-  void *page = zone_alloc_page(&zones[ZONE_NORMAL]);
+  /* Try normal zone first, then DMA.  CPU-only page (no cache-clean) — see
+   * pmm_alloc_page_dma() for device-DMA buffers. */
+  void *page = zone_alloc_page(&zones[ZONE_NORMAL], 0);
   if (!page) {
-    page = zone_alloc_page(&zones[ZONE_DMA]);
+    page = zone_alloc_page(&zones[ZONE_DMA], 0);
+  }
+  return page;
+}
+
+/*
+ * pmm_alloc_page_dma - like pmm_alloc_page() but cache-cleaned + fenced so the
+ * page is coherent for a device that may not snoop the CPU caches (perf §3.1).
+ * Use ONLY for buffers a device DMAs to/from (virtqueues, ring/cmd buffers,
+ * GPU backing).  Ordinary kernel allocations must use pmm_alloc_page().
+ */
+void *pmm_alloc_page_dma(void) {
+  void *page = zone_alloc_page(&zones[ZONE_NORMAL], 1);
+  if (!page) {
+    page = zone_alloc_page(&zones[ZONE_DMA], 1);
   }
   return page;
 }
@@ -661,11 +683,11 @@ void *pmm_alloc_page(void) {
  * Returns: pointer to the first page of the contiguous run, or NULL.
  * Locking: takes and releases ZONE_NORMAL's lock with IRQ save/restore.
  */
-void *pmm_alloc_pages(size_t count) {
+static void *alloc_pages_impl(size_t count, int dma) {
   if (count == 0)
     return NULL;
   if (count == 1)
-    return pmm_alloc_page();
+    return dma ? pmm_alloc_page_dma() : pmm_alloc_page();
 
   struct zone *z = &zones[ZONE_NORMAL];
   uint64_t flags;
@@ -699,8 +721,11 @@ void *pmm_alloc_pages(size_t count) {
 
   void *addr = phys_to_virt(MEMORY_BASE + pfn_to_phys(abs_pfn));
   memset(addr, 0, PAGE_SIZE * count);
-  arch_cache_clean_range(addr, PAGE_SIZE * count);
-  arch_mb();
+  if (dma) {
+    /* DMA-coherency prep — only for device buffers (perf §3.1). */
+    arch_cache_clean_range(addr, PAGE_SIZE * count);
+    arch_mb();
+  }
 
   __sync_fetch_and_sub(&free_pages, count);
 
@@ -713,6 +738,13 @@ void *pmm_alloc_pages(size_t count) {
 
   return addr;
 }
+
+/* pmm_alloc_pages - 'count' contiguous CPU-only pages (no cache-clean). */
+void *pmm_alloc_pages(size_t count) { return alloc_pages_impl(count, 0); }
+
+/* pmm_alloc_pages_dma - 'count' contiguous pages, cache-cleaned + fenced for
+ * device DMA (perf §3.1).  Use ONLY for buffers a device DMAs to/from. */
+void *pmm_alloc_pages_dma(size_t count) { return alloc_pages_impl(count, 1); }
 
 /*
  * Free a single page
@@ -838,12 +870,14 @@ void *pmm_alloc_aligned(size_t size, size_t align) {
   size_t align_pages = (align + PAGE_SIZE - 1) / PAGE_SIZE;
 
   if (align_pages <= 1) {
-    return pmm_alloc_pages(pages);
+    return pmm_alloc_pages_dma(pages); /* aligned allocs are DMA-safe by contract */
   }
 
-  /* Allocate extra pages to ensure alignment */
+  /* Allocate extra pages to ensure alignment.  DMA path: this API is documented
+   * DMA-safe (block I/O), so it cleans+fences even though pmm_alloc_pages no
+   * longer does (perf §3.1).  No current callers, but keep the contract. */
   size_t total = pages + align_pages - 1;
-  void *mem = pmm_alloc_pages(total);
+  void *mem = pmm_alloc_pages_dma(total);
   if (!mem)
     return NULL;
 

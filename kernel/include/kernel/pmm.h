@@ -134,9 +134,17 @@ uint64_t pmm_metadata_top(void);
 void pmm_init_region(uint64_t base, uint64_t size);
 
 /* Allocate a single page */
-/* Allocate a single page -- zeroed, cache-cleaned, memory-barrier-fenced.
- * Returns NULL if all zones are exhausted. */
+/* Allocate a single zeroed, CPU-only page (NO cache-clean/fence — perf §3.1).
+ * Returns NULL if all zones are exhausted.  For device-DMA buffers use
+ * pmm_alloc_page_dma(). */
 void *pmm_alloc_page(void);
+
+/* DMA variant: zeroed + cache-cleaned + memory-barrier-fenced so the page is
+ * coherent for a device that may not snoop the CPU caches.  Use ONLY for
+ * buffers a device DMAs to/from (virtqueues, ring/cmd/resp buffers, GPU
+ * backing).  Ordinary kernel allocations must use pmm_alloc_page(). */
+void *pmm_alloc_page_dma(void);
+void *pmm_alloc_pages_dma(size_t count);
 
 /* Allocate multiple contiguous pages */
 /* Allocate 'count' physically contiguous pages from ZONE_NORMAL.

@@ -216,7 +216,7 @@ static int vgpu_set_mode(struct gpu_device *dev, int width, int height) {
 
   size_t new_size = (size_t)width * height * 4;
   int new_pages = (new_size + 4095) / 4096;
-  void *new_backing = pmm_alloc_pages(new_pages);
+  void *new_backing = pmm_alloc_pages_dma(new_pages);
   if (!new_backing) {
     pr_err("VirtIO-GPU: set_mode %dx%d: out of memory\n", width, height);
     return -1;
@@ -426,7 +426,7 @@ void virtio_gpu_init(void) {
   priv->qsize = (qmax > 16) ? 16 : qmax;
   virtio_write_reg(dev_handle, VIRTIO_MMIO_QUEUE_NUM, priv->qsize);
 
-  void *qmem = pmm_alloc_pages(2);
+  void *qmem = pmm_alloc_pages_dma(2);
   memset(qmem, 0, 8192);
   priv->desc = (struct vring_desc *)qmem;
   priv->avail = (struct vring_avail *)((uint8_t *)qmem + priv->qsize * 16);
@@ -435,8 +435,8 @@ void virtio_gpu_init(void) {
   virtio_setup_queue(dev_handle, 0, virt_to_phys(priv->desc),
                      virt_to_phys(priv->avail), virt_to_phys(priv->used));
 
-  priv->cmd_buf = pmm_alloc_page();
-  priv->resp_buf = pmm_alloc_page();
+  priv->cmd_buf = pmm_alloc_page_dma();
+  priv->resp_buf = pmm_alloc_page_dma();
 
   /* Driver OK. */
   virtio_write_reg(dev_handle, VIRTIO_MMIO_STATUS,
@@ -459,7 +459,7 @@ void virtio_gpu_init(void) {
   dev->framebuffer_size = (size_t)qw * qh * 4;
 
   int pages = (dev->framebuffer_size + 4095) / 4096;
-  priv->backing_store = pmm_alloc_pages(pages);
+  priv->backing_store = pmm_alloc_pages_dma(pages);
   memset(priv->backing_store, 0, dev->framebuffer_size);
 
   priv->resource_id = 1;
