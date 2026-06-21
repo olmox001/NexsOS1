@@ -184,4 +184,12 @@ uint64_t pmm_get_free_pages(void);
 uint64_t pmm_get_total_pages(void);
 void pmm_dump_stats(void);
 
+/* Instrumentation (perf brief §1; surfaced via OS1_sys_stats).
+ * pmm_get_counters: cumulative alloc/free counts and raw bitmap-search ticks
+ *   (convert with timer_counts_to_ns()).  pmm_get_fragmentation: instantaneous
+ *   ZONE_NORMAL largest free run + free-run count.  All out-params NULL-skippable. */
+void pmm_get_counters(uint64_t *alloc_calls, uint64_t *free_calls,
+                      uint64_t *search_ticks_total, uint64_t *search_ticks_max);
+void pmm_get_fragmentation(uint64_t *largest_run, uint64_t *run_count);
+
 #endif /* _KERNEL_PMM_H */

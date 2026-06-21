@@ -192,6 +192,13 @@ long OS1_object_ctl(int handle, int cmd, long arg) { return _sys_object_ctl(hand
  * identity — an app drives its OWN window freely, a WM drives any window. */
 long OS1_window_enum(struct window_info *buf, unsigned long max) { return _sys_window_enum(buf, max); }
 
+/* System statistics snapshot (perf §1).  Forwards to the SYS_SYSSTATS stub,
+ * passing sizeof so the kernel can copy the prefix this build understands. */
+long OS1_sys_stats(struct os1_sysstats *out) {
+  if (!out) return -1;
+  return _sys_sysstats(out, sizeof(*out));
+}
+
 /* __win_ctl - acquire a WINDOW capability with the rights a verb needs, issue the
  * control verb, then release the handle.  WRITE for minimize/restore/focus,
  * DESTROY for close. */

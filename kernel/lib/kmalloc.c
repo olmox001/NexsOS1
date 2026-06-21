@@ -113,6 +113,28 @@ static int heap_initialized = 0;
  * NOTE(MM-KM-06): A single lock serialises all allocators on all CPUs. */
 static DEFINE_SPINLOCK(kmalloc_lock);
 
+/* --- Instrumentation (perf brief §1/§2.2; surfaced via OS1_sys_stats).
+ * Tracks live user bytes, live allocation count, and the high-water mark of
+ * bytes_in_use (never reclaimed today — chunks stay; see MM-KM-01).  Relaxed
+ * atomics so they are correct regardless of whether kmalloc_lock is held (the
+ * large path drops it across the PMM call).  high_water uses a benign racy
+ * compare. */
+static uint64_t stat_bytes_in_use;
+static uint64_t stat_high_water;
+static uint64_t stat_live_allocs;
+
+static inline void km_stat_alloc(size_t size) {
+  uint64_t n = __sync_add_and_fetch(&stat_bytes_in_use, size);
+  __sync_fetch_and_add(&stat_live_allocs, 1);
+  if (n > stat_high_water)
+    stat_high_water = n;
+}
+
+static inline void km_stat_free(size_t size) {
+  __sync_fetch_and_sub(&stat_bytes_in_use, size);
+  __sync_fetch_and_sub(&stat_live_allocs, 1);
+}
+
 /* Convert size to bucket index. Returns -1 if too large. */
 /*
  * get_bucket_index - map a total allocation size (user + header) to a bucket.
@@ -339,6 +361,7 @@ void *kmalloc(size_t size) {
     blk->next = NULL;
     blk->bucket_idx = 0xFFFFFFFF; // Mark as large
 
+    km_stat_alloc(size); /* perf brief §1: account live bytes (large path) */
     return (void *)(blk + 1);
   }
 
@@ -346,6 +369,8 @@ out:
   if (flags) {
     spin_unlock_irqrestore(&kmalloc_lock, flags);
   }
+  if (res)
+    km_stat_alloc(size); /* perf brief §1: account live bytes (small path) */
   return res;
 }
 
@@ -411,6 +436,7 @@ void kfree(void *ptr) {
     /* Large allocation - free pages */
     size_t total_req = blk->size + sizeof(struct block_header);
     size_t pages = (total_req + 4095) / 4096;
+    km_stat_free(blk->size); /* perf brief §1 */
     blk->magic = 0;
     spin_unlock_irqrestore(&kmalloc_lock, flags);
     pmm_free_pages((void *)blk, pages);
@@ -424,6 +450,7 @@ void kfree(void *ptr) {
     return;
   }
 
+  km_stat_free(blk->size); /* perf brief §1 */
   blk->magic = BLOCK_FREE;
   blk->next = buckets[blk->bucket_idx];
   buckets[blk->bucket_idx] = blk;
@@ -481,4 +508,19 @@ void *krealloc(void *ptr, size_t new_size) {
   kfree(ptr);
 
   return new_ptr;
+}
+
+/*
+ * kmalloc_get_stats - read the heap instrumentation counters (perf brief §1).
+ *
+ * heap_total_bytes: cumulative pool size (grows by KMALLOC_CHUNK_SIZE, never
+ *   shrinks — see MM-KM-01).  bytes_in_use/live_allocs: current live totals.
+ *   high_water_bytes: peak bytes_in_use since boot.  All out-params NULL-skippable.
+ */
+void kmalloc_get_stats(uint64_t *heap_total_bytes, uint64_t *bytes_in_use,
+                       uint64_t *high_water_bytes, uint64_t *live_allocs) {
+  if (heap_total_bytes) *heap_total_bytes = heap_total;
+  if (bytes_in_use)     *bytes_in_use = stat_bytes_in_use;
+  if (high_water_bytes) *high_water_bytes = stat_high_water;
+  if (live_allocs)      *live_allocs = stat_live_allocs;
 }

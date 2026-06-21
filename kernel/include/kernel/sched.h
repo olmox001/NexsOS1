@@ -267,6 +267,11 @@ int sched_get_focus_pid(void);
  * drive process lifecycle directly. */
 void window_request_close(int pid);
 long sys_getprocs(struct ps_info *user_buf, size_t max_count);
+/* OS1_sys_stats backend: one struct os1_sysstats snapshot to userland (perf
+ * brief §1 instrumentation surface).  Forward-declared struct; the full layout
+ * lives in include/api/sysstats.h. */
+struct os1_sysstats;
+long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size);
 long sys_sbrk(intptr_t increment);
 
 #endif

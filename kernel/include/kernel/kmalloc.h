@@ -43,6 +43,13 @@ void *krealloc(void *ptr, size_t new_size);
  * Panics/logs on invalid magic or out-of-range bucket_idx. */
 void kfree(void *ptr);
 
+/* Instrumentation (perf brief §1/§2.2; surfaced via OS1_sys_stats).
+ * Reports cumulative pool size (never shrinks today), current live user bytes,
+ * the high-water mark of live bytes, and the live allocation count.  All
+ * out-params are NULL-skippable. */
+void kmalloc_get_stats(uint64_t *heap_total_bytes, uint64_t *bytes_in_use,
+                       uint64_t *high_water_bytes, uint64_t *live_allocs);
+
 /* Macros for stb_truetype compatibility */
 /* Redirect stb heap calls to kmalloc/kfree. */
 #define STBTT_malloc(x, u) ((void)(u), kmalloc(x))

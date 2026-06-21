@@ -19,6 +19,9 @@
 /* Object/handle/capability ABI (OBJ_TYPE_*, OS1_RIGHT_*, OS1_NS_*) — ASTRA
  * §6.1/6.2/6.5. The OS1low_/OS1_object_ surface below operates on these. */
 #include "object.h"
+/* System statistics snapshot ABI (struct os1_sysstats) — perf §1 instrumentation
+ * surface, read via OS1_sys_stats() below. */
+#include "sysstats.h"
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
@@ -74,6 +77,7 @@ extern void* _sys_sbrk(intptr_t increment);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
 extern long _sys_get_procs(void *procs, size_t max_count);
 extern long _sys_get_identity(void);
+extern long _sys_sysstats(void *buf, size_t buf_size);
 extern int  _sys_file_write(const char *path, const void *buf, int size, int offset);
 extern int  _sys_file_read(const char *path, void *buf, int size, int offset);
 extern int  _sys_send(int pid, struct ipc_message *msg);
@@ -208,6 +212,12 @@ void OS1_gfx_render(void);
  * — used by the dock /sys/bin/nxui.  They return 0 on success or a negative
  * errno (e.g. -EPERM without authority, -ESRCH for an unknown window). */
 long OS1_window_enum(struct window_info *buf, unsigned long max);
+
+/* System statistics (perf §1 instrumentation): fill *out with one snapshot.
+ * Returns the number of bytes written (>0) or a negative errno.  Ungated —
+ * aggregate stats expose no per-object authority.  Read by /bin/memstat. */
+long OS1_sys_stats(struct os1_sysstats *out);
+
 int  OS1_window_minimize(int win_id);
 int  OS1_window_restore(int win_id);
 int  OS1_window_focus(int win_id);

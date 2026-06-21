@@ -71,6 +71,7 @@
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 #include <stdint.h>
+#include <sysstats.h> /* struct os1_sysstats — shared OS1_sys_stats ABI */
 
 /* Process pool - slots can be NULL if process terminated */
 /* process_pool[]: fixed-size table of active process descriptors.
@@ -79,6 +80,15 @@
 struct process *process_pool[MAX_PROCESSES];
 static int active_count = 0; /* Number of active processes */
 static int next_pid = 1;     /* Global PID counter (never resets) */
+
+/* Real online-CPU count (kernel/cpu.c), set during SMP bring-up.  Reported by
+ * sys_sysstats as sched_ncpu — the stats surface never hardcodes a CPU count. */
+extern uint32_t nr_cpus;
+
+/* Instrumentation (perf brief §1): cumulative real context switches (prev !=
+ * next path only).  Directly tests the "full TLB flush per switch" thesis —
+ * switches/sec is what that fixed tax is paid against.  Relaxed atomic. */
+static uint64_t stat_ctx_switches;
 
 /* SCHED-DOS-01 (#122): effective process limit, derived from usable memory
  * in process_init() (MAX_PROCESSES is only the pool array bound).  The
@@ -1424,6 +1434,7 @@ found:
    * shared kernel_pgd for NULL page_table on both amd64 and aarch64, and carries
    * the per-arch TLB flush / barriers.  This call is unconditional on the switch
    * path (the prev == next case returned early above). */
+  __sync_fetch_and_add(&stat_ctx_switches, 1); /* perf brief §1 */
   arch_cpu_switch_context(next);
 
   spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
@@ -1653,6 +1664,118 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   kfree(k_buf);
   return count;
 }
+
+/*
+ * sys_sysstats - OS1_sys_stats(buf, buf_size): copy one struct os1_sysstats
+ * snapshot to userland (perf brief §1 instrumentation surface).  Sibling of
+ * sys_getprocs/sys_get_identity; high-level OS1_ introspection, ungated (a
+ * process may always read aggregate system stats; no per-object authority is
+ * exposed).  Assembles the snapshot from the per-subsystem accessors
+ * (pmm/kmalloc/object) plus a single process_pool walk for scheduler load.
+ *
+ * Forward-compatible: copies min(sizeof(struct os1_sysstats), buf_size) so an
+ * older/newer poller still gets the prefix it understands; the struct carries
+ * its own version + struct_size.  Returns bytes copied, or -1 on bad pointer.
+ *
+ * NO HARDCODED CPU COUNT: sched_ncpu is the real nr_cpus; per-CPU load is
+ * bucketed by the real on_cpu field into a MAX_CPUS-sized scratch (the real
+ * kernel CPU bound), then reduced to runnable-total + deepest-runqueue.
+ */
+long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size) {
+  if (!user_buf)
+    return -1;
+
+  struct os1_sysstats s;
+  memset(&s, 0, sizeof(s));
+  s.version = OS1_SYSSTATS_VERSION;
+  s.struct_size = (unsigned int)sizeof(s);
+  s.uptime_ns = timer_counts_to_ns(arch_timer_get_count());
+
+  /* PMM.  Local uint64_t temporaries: the ABI struct uses unsigned long long
+   * (dependency-free, identical 8-byte layout on both arches) while the kernel
+   * accessors take uint64_t (== unsigned long here) — distinct types under
+   * -Werror, so pass temporaries and assign (scalar conversion is fine). */
+  s.pmm_total_pages = pmm_get_total_pages();
+  s.pmm_free_pages = pmm_get_free_pages();
+  {
+    uint64_t frag_largest = 0, frag_runs = 0;
+    pmm_get_fragmentation(&frag_largest, &frag_runs);
+    s.pmm_largest_contig_run = frag_largest;
+    s.pmm_free_run_count = frag_runs;
+
+    uint64_t a_calls = 0, f_calls = 0, st_total = 0, st_max = 0;
+    pmm_get_counters(&a_calls, &f_calls, &st_total, &st_max);
+    s.pmm_alloc_calls = a_calls;
+    s.pmm_free_calls = f_calls;
+    s.pmm_alloc_search_ns_total = timer_counts_to_ns(st_total);
+    s.pmm_alloc_search_ns_max = timer_counts_to_ns(st_max);
+  }
+
+  /* kmalloc */
+  {
+    uint64_t km_total = 0, km_inuse = 0, km_hw = 0, km_live = 0;
+    kmalloc_get_stats(&km_total, &km_inuse, &km_hw, &km_live);
+    s.km_heap_total_bytes = km_total;
+    s.km_bytes_in_use = km_inuse;
+    s.km_high_water_bytes = km_hw;
+    s.km_live_allocs = km_live;
+  }
+
+  /* object / capability layer */
+  {
+    uint64_t live[OBJ_TYPE_COUNT];
+    object_get_live_counts(live, OBJ_TYPE_COUNT);
+    for (int i = 0; i < OBJ_TYPE_COUNT; i++)
+      s.obj_live_by_type[i] = live[i];
+  }
+
+  /* scheduler: one process_pool walk under sched_lock; bucket runnable tasks
+   * by their real on_cpu into MAX_CPUS scratch (no ABI CPU constant). */
+  {
+    uint32_t per_cpu[MAX_CPUS];
+    memset(per_cpu, 0, sizeof(per_cpu));
+    uint32_t nproc = 0, zombie = 0, runnable = 0;
+    uint64_t flags;
+    spin_lock_irqsave(&sched_lock, &flags);
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+      struct process *p = process_pool[i];
+      if (!p)
+        continue;
+      nproc++;
+      if (p->state == PROC_DEAD || p->state == PROC_ZOMBIE)
+        zombie++;
+      if (p->state == PROC_READY || p->state == PROC_RUNNING) {
+        runnable++;
+        if (p->on_cpu >= 0 && p->on_cpu < MAX_CPUS)
+          per_cpu[p->on_cpu]++;
+      }
+    }
+    spin_unlock_irqrestore(&sched_lock, flags);
+
+    uint32_t nc = nr_cpus;
+    if (nc > MAX_CPUS)
+      nc = MAX_CPUS;
+    uint32_t runq_max = 0;
+    for (uint32_t c = 0; c < nc; c++)
+      if (per_cpu[c] > runq_max)
+        runq_max = per_cpu[c];
+
+    s.sched_ctx_switches = stat_ctx_switches;
+    s.sched_nproc = nproc;
+    s.sched_zombie_count = zombie;
+    s.sched_ncpu = nr_cpus;
+    s.sched_runnable = runnable;
+    s.sched_runq_max = runq_max;
+  }
+
+  size_t n = sizeof(s);
+  if (buf_size && buf_size < n)
+    n = buf_size; /* forward-compat: hand the poller the prefix it asked for */
+  if (vmm_copy_to_user(user_buf, &s, n) != 0)
+    return -1;
+  return (long)n;
+}
+
 /* SBRK_HEAP_LIMIT: hard ceiling for the user heap.  The user stack lives at
  * [0xC0000000, 0xC0100000); without a bound a process could sbrk() its heap
  * straight into (or past) the stack mappings.  16MB of guard gap below the

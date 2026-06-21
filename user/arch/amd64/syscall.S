@@ -260,6 +260,14 @@ _sys_get_identity:
     syscall
     ret
 
+/* long _sys_sysstats(void *buf, size_t buf_size) -> bytes written, or <0.
+ * 2 args (rdi, rsi); no rcx->r10 fixup needed (that is only for a 4th arg). */
+.global _sys_sysstats
+_sys_sysstats:
+    movq $SYS_SYSSTATS, %rax
+    syscall
+    ret
+
 .global _sys_file_write
 _sys_file_write:
     movq $SYS_FILE_WRITE, %rax

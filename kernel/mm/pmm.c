@@ -114,6 +114,17 @@ static uint64_t usable_pages;
  * pushed it far past the kernel image. */
 static uint64_t pmm_metadata_end_phys;
 
+/* --- Instrumentation counters (perf brief §1; surfaced via OS1_sys_stats).
+ * Updated with relaxed atomics off the lock so the hot path pays only a single
+ * fetch-and-add; *_max uses a racy compare (a lost update on a stat is benign).
+ * search_ticks_* are raw arch_timer_get_count() ticks; the collector converts
+ * to ns via timer_counts_to_ns().  These measure the bitmap-SEARCH cost only —
+ * the fragmentation-sensitive part — not the memset/cache-clean tail. */
+static uint64_t stat_alloc_calls;
+static uint64_t stat_free_calls;
+static uint64_t stat_alloc_search_ticks_total;
+static uint64_t stat_alloc_search_ticks_max;
+
 uint64_t pmm_metadata_top(void) { return pmm_metadata_end_phys; }
 
 /*
@@ -527,11 +538,13 @@ static void *zone_alloc_page(struct zone *z) {
   spin_lock_irqsave(&z->lock, &flags);
 
   uint64_t npages = z->end_pfn - z->start_pfn;
+  uint64_t search_t0 = arch_timer_get_count();
   int64_t pfn = bitmap_find_free(z->bitmap, z->next_free_pfn, npages);
   if (pfn < 0) {
     /* Wrap around and search from the beginning */
     pfn = bitmap_find_free(z->bitmap, 0, z->next_free_pfn);
   }
+  uint64_t search_ticks = arch_timer_get_count() - search_t0;
 
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
@@ -559,6 +572,13 @@ static void *zone_alloc_page(struct zone *z) {
   arch_mb();
 
   __sync_fetch_and_sub(&free_pages, 1);
+
+  /* Instrumentation (perf brief §1): count this allocation and fold in its
+   * bitmap-search cost.  Relaxed atomics; the max is a benign racy compare. */
+  __sync_fetch_and_add(&stat_alloc_calls, 1);
+  __sync_fetch_and_add(&stat_alloc_search_ticks_total, search_ticks);
+  if (search_ticks > stat_alloc_search_ticks_max)
+    stat_alloc_search_ticks_max = search_ticks;
 
   return addr;
 }
@@ -622,8 +642,10 @@ void *pmm_alloc_pages(size_t count) {
 
   spin_lock_irqsave(&z->lock, &flags);
 
+  uint64_t search_t0 = arch_timer_get_count();
   int64_t pfn =
       bitmap_find_contiguous(z->bitmap, 0, z->end_pfn - z->start_pfn, count);
+  uint64_t search_ticks = arch_timer_get_count() - search_t0;
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
     return NULL;
@@ -651,6 +673,13 @@ void *pmm_alloc_pages(size_t count) {
   arch_mb();
 
   __sync_fetch_and_sub(&free_pages, count);
+
+  /* Instrumentation (perf brief §1): the contiguous multi-page path is the
+   * O(n)-from-0 scan (MM-PMM-03/06) — fold its search cost in too. */
+  __sync_fetch_and_add(&stat_alloc_calls, 1);
+  __sync_fetch_and_add(&stat_alloc_search_ticks_total, search_ticks);
+  if (search_ticks > stat_alloc_search_ticks_max)
+    stat_alloc_search_ticks_max = search_ticks;
 
   return addr;
 }
@@ -733,6 +762,7 @@ void pmm_free_page(void *page) {
   memset(page, 0xCC, PAGE_SIZE);
 
   __sync_fetch_and_add(&free_pages, 1);
+  __sync_fetch_and_add(&stat_free_calls, 1); /* perf brief §1 */
 }
 
 /*
@@ -871,4 +901,68 @@ void pmm_dump_stats(void) {
           free_pages * PAGE_SIZE / (1024 * 1024));
   pr_info("  Used:  %lu pages (%lu MB)\n", total_pages - free_pages,
           (total_pages - free_pages) * PAGE_SIZE / (1024 * 1024));
+}
+
+/*
+ * pmm_get_counters - read the cumulative allocator counters (perf brief §1).
+ *
+ * search_ticks_* are raw arch_timer_get_count() ticks; the caller converts to
+ * ns via timer_counts_to_ns().  All four out-params are optional (NULL-skip).
+ * Lock-free reads of relaxed atomics — values are a coherent-enough snapshot.
+ */
+void pmm_get_counters(uint64_t *alloc_calls, uint64_t *free_calls,
+                      uint64_t *search_ticks_total, uint64_t *search_ticks_max) {
+  if (alloc_calls)       *alloc_calls = stat_alloc_calls;
+  if (free_calls)        *free_calls = stat_free_calls;
+  if (search_ticks_total) *search_ticks_total = stat_alloc_search_ticks_total;
+  if (search_ticks_max)  *search_ticks_max = stat_alloc_search_ticks_max;
+}
+
+/*
+ * pmm_get_fragmentation - instantaneous ZONE_NORMAL fragmentation snapshot
+ * (perf brief §1/§2.1): the largest contiguous free run (pages) and the number
+ * of distinct free runs.  A shrinking largest_run while free_pages stays flat
+ * is the fragmentation signature.  Word-level scan with all-free / all-allocated
+ * fast paths; taken under the zone lock (on-demand at ~1 Hz poll, off the hot
+ * path).  Either out-param may be NULL.
+ */
+void pmm_get_fragmentation(uint64_t *largest_run, uint64_t *run_count) {
+  struct zone *z = &zones[ZONE_NORMAL];
+  uint64_t flags;
+  uint64_t cur = 0, max = 0, runs = 0;
+  int in_run = 0;
+
+  spin_lock_irqsave(&z->lock, &flags);
+  uint64_t npages = z->end_pfn - z->start_pfn;
+  uint64_t nwords = (npages + 63) / 64;
+  for (uint64_t wi = 0; wi < nwords; wi++) {
+    uint64_t w = z->bitmap[wi];
+    uint64_t bits = 64;
+    if (wi == nwords - 1 && (npages % 64))
+      bits = npages % 64;
+
+    if (w == 0 && bits == 64) {
+      /* whole word free — extend (or start) the current run */
+      if (!in_run) { in_run = 1; runs++; cur = 0; }
+      cur += 64;
+      if (cur > max) max = cur;
+    } else if (w == ~0ULL) {
+      /* whole word allocated — close any run */
+      in_run = 0; cur = 0;
+    } else {
+      for (uint64_t b = 0; b < bits; b++) {
+        if (!(w & (1ULL << b))) {
+          if (!in_run) { in_run = 1; runs++; cur = 0; }
+          cur++;
+          if (cur > max) max = cur;
+        } else {
+          in_run = 0; cur = 0;
+        }
+      }
+    }
+  }
+  spin_unlock_irqrestore(&z->lock, flags);
+
+  if (largest_run) *largest_run = max;
+  if (run_count)   *run_count = runs;
 }

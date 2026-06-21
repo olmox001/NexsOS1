@@ -289,6 +289,13 @@ _sys_get_identity:
     svc #0
     ret
 
+/* long _sys_sysstats(void *buf, size_t buf_size) -> bytes written, or <0 */
+.global _sys_sysstats
+_sys_sysstats:
+    mov x8, #SYS_SYSSTATS
+    svc #0
+    ret
+
 
 /* int _sys_file_write(const char *path, const void *buf, int size, int offset) */
 _sys_file_write:

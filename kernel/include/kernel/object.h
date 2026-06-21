@@ -63,6 +63,10 @@ struct process;
  * Called from BOTH process free sites (immediate teardown + deferred reap). */
 void process_handles_destroy(struct process *p);
 
+/* Instrumentation (perf brief §1/§2.6; surfaced via OS1_sys_stats): copy the
+ * per-type live-kobject counts into out[0..min(max,OBJ_TYPE_COUNT)). */
+void object_get_live_counts(uint64_t *out, int max);
+
 /* Syscall backends (dispatched from kernel/core/syscall_dispatch.c).  The
  * caller is current_process; user pointers are copied with arch_copy_*_user
  * inside.  Return >= 0 on success, negative errno on failure. */

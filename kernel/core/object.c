@@ -46,6 +46,16 @@ extern int arch_copy_string_from_user(char *dest, const char *src, size_t max_le
 /* Serialises refcount changes and handle-table slot mutations. */
 static DEFINE_SPINLOCK(object_lock);
 
+/* Live-object instrumentation (perf brief §1/§2.6; surfaced via OS1_sys_stats).
+ * The capability layer is the newest, least-tested subsystem and the highest-
+ * leverage leak suspect: a missed decref on process teardown leaks the kobject
+ * even after the handle table is freed.  Every kobject is born in kobj_alloc()
+ * and dies in kobj_free(); routing all frees through one wrapper keeps the
+ * per-type live count exactly symmetric regardless of which free path runs
+ * (never-installed cleanup, handle_close, or process_handles_destroy).
+ * Relaxed atomics — independent of object_lock. */
+static uint64_t obj_live_count[OBJ_TYPE_COUNT];
+
 /* kobj_alloc - allocate a zeroed kobject of 'type'.  refcount starts at 0; the
  * first handle_install_locked() that succeeds takes it to 1. */
 static struct kobject *kobj_alloc(uint8_t type) {
@@ -55,7 +65,28 @@ static struct kobject *kobj_alloc(uint8_t type) {
   memset(o, 0, sizeof(*o));
   o->type = type;
   o->refcount = 0;
+  if (type < OBJ_TYPE_COUNT)
+    __sync_fetch_and_add(&obj_live_count[type], 1);
   return o;
+}
+
+/* kobj_free - the single free path for a kobject; keeps the live-object count
+ * symmetric with kobj_alloc().  Replaces every bare kfree() of a kobject. */
+static void kobj_free(struct kobject *o) {
+  if (!o)
+    return;
+  if (o->type < OBJ_TYPE_COUNT)
+    __sync_fetch_and_sub(&obj_live_count[o->type], 1);
+  kfree(o);
+}
+
+/* object_get_live_counts - copy the per-type live-kobject counts (perf brief
+ * §1/§2.6).  'out' is filled for indices [0, min(max, OBJ_TYPE_COUNT)). */
+void object_get_live_counts(uint64_t *out, int max) {
+  if (!out)
+    return;
+  for (int i = 0; i < max && i < OBJ_TYPE_COUNT; i++)
+    out[i] = obj_live_count[i];
 }
 
 /* handles_ensure - lazily allocate the caller's (or a target's) handle table.
@@ -109,7 +140,7 @@ static void obj_unref(struct kobject *o) {
     to_free = o;
   spin_unlock_irqrestore(&object_lock, flags);
   if (to_free)
-    kfree(to_free);
+    kobj_free(to_free);
 }
 
 /*
@@ -160,7 +191,7 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     int h = handle_install_locked(cur, o, rights);
     spin_unlock_irqrestore(&object_lock, flags);
     if (h < 0) {
-      kfree(o); /* never installed: refcount stayed 0 */
+      kobj_free(o); /* never installed: refcount stayed 0 */
       return h;
     }
     return h;
@@ -192,7 +223,7 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     int h = handle_install_locked(cur, o, rights);
     spin_unlock_irqrestore(&object_lock, flags);
     if (h < 0) {
-      kfree(o);
+      kobj_free(o); /* never installed: refcount stayed 0 */
       return h;
     }
     return h;
@@ -219,7 +250,7 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     int h = handle_install_locked(cur, o, rights);
     spin_unlock_irqrestore(&object_lock, flags);
     if (h < 0) {
-      kfree(o);
+      kobj_free(o); /* never installed: refcount stayed 0 */
       return h;
     }
     return h;
@@ -254,7 +285,7 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     int h = handle_install_locked(cur, o, rights);
     spin_unlock_irqrestore(&object_lock, flags);
     if (h < 0) {
-      kfree(o);
+      kobj_free(o); /* never installed: refcount stayed 0 */
       return h;
     }
     return h;
@@ -315,7 +346,7 @@ long sys_handle_close(int handle) {
     to_free = o;
   spin_unlock_irqrestore(&object_lock, flags);
   if (to_free)
-    kfree(to_free);
+    kobj_free(to_free);
   return 0;
 }
 
@@ -684,7 +715,7 @@ void process_handles_destroy(struct process *p) {
       continue;
     tbl[i].obj = NULL;
     if (--o->refcount <= 0)
-      kfree(o); /* object_lock -> kmalloc_lock order is consistent */
+      kobj_free(o); /* object_lock -> kmalloc_lock order is consistent */
   }
   spin_unlock_irqrestore(&object_lock, flags);
   kfree(tbl);
