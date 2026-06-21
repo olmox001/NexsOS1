@@ -573,7 +573,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   window_count++;
 
   pr_debug("Compositor: Created window '%s' (%dx%d) at (%d,%d)\n", title, w, h,
-          x, y); /* hot path under GUI churn: demoted (perf §1) */
+           x, y); /* hot path under GUI churn: demoted (perf §1) */
   spin_unlock_irqrestore(&compositor_lock, flags);
   return windows[slot].id;
 }
@@ -1487,20 +1487,23 @@ static void compositor_render_internal(void) {
 
   /* Damage clip for this frame (perf §3.4): composite ONLY the changed region
    * instead of the full scene.  Snapshot the accumulated damage (reset later at
-   * the flush) clamped to the screen.  The damage tracking is already complete —
-   * mouse-move damages the old+new cursor rects, drag/resize/window-ops
+   * the flush) clamped to the screen.  The damage tracking is already complete
+   * — mouse-move damages the old+new cursor rects, drag/resize/window-ops
    * full-damage — so this box always covers everything that changed.  The
    * backbuffer persists between frames, so pixels outside the clip stay valid
    * and are never re-touched (and the flush already uploads only this box).
    * Cutting the per-frame composite to the damage box is the main fix for the
-   * "scattoso" jank: a cursor move now recomposites ~2 tiny rects, not 1280x800,
-   * and the render no longer stalls CPU0's timer IRQ for a full-scene pass. */
+   * "scattoso" jank: a cursor move now recomposites ~2 tiny rects, not
+   * 1280x800, and the render no longer stalls CPU0's timer IRQ for a full-scene
+   * pass. */
   int clip_x1 = damage_x1 < 0 ? 0 : damage_x1;
   int clip_y1 = damage_y1 < 0 ? 0 : damage_y1;
   int clip_x2 = damage_x2 > bb_w ? bb_w : damage_x2;
   int clip_y2 = damage_y2 > bb_h ? bb_h : damage_y2;
-  if (clip_x2 < clip_x1) clip_x2 = clip_x1;
-  if (clip_y2 < clip_y1) clip_y2 = clip_y1;
+  if (clip_x2 < clip_x1)
+    clip_x2 = clip_x1;
+  if (clip_y2 < clip_y1)
+    clip_y2 = clip_y1;
   int clip_w = clip_x2 - clip_x1;
   int clip_h = clip_y2 - clip_y1;
 
@@ -1620,7 +1623,8 @@ static void compositor_render_internal(void) {
       struct rect *or = &occluded->rects[r];
       region_subtract(bg_region, or->x, or->y, or->w, or->h);
     }
-    /* Only repaint the background within this frame's damage box (perf §3.4). */
+    /* Only repaint the background within this frame's damage box (perf §3.4).
+     */
     region_intersect_rect(bg_region, clip_x1, clip_y1, clip_w, clip_h);
 
     /* Draw Background — vertical gradient from the active theme
@@ -1665,9 +1669,9 @@ static void compositor_render_internal(void) {
     int scaled = (dw != win->width || dh != win->height);
 
     /* Skip windows entirely outside this frame's damage box (perf §3.4): their
-     * content (vis is already clipped to empty) AND chrome (title text / border /
-     * shadow drawn below) need not be repainted — that part of the backbuffer is
-     * unchanged.  Any leftover vis region is freed by the end-of-function
+     * content (vis is already clipped to empty) AND chrome (title text / border
+     * / shadow drawn below) need not be repainted — that part of the backbuffer
+     * is unchanged.  Any leftover vis region is freed by the end-of-function
      * cleanup loop, so the early continue does not leak. */
     {
       int wth = win->top_most ? 0 : compositor_titlebar_height();
@@ -1737,18 +1741,56 @@ static void compositor_render_internal(void) {
                  * hit->protected. Right-aligned
                  * [background(yellow)][close(red)]; geometry mirrors the
                  * hit-test in compositor_handle_click. */
+                /* Titlebar buttons - shape from style */
                 if (!win->protected) {
-                  int radius = CLOSE_BUTTON_SIZE / 2 - 1;
-                  int btn_cy = decor_y + 2 + CLOSE_BUTTON_SIZE / 2;
-                  int close_cx = win->x + dw - 2 - CLOSE_BUTTON_SIZE / 2;
-                  int bg_cx = close_cx - CLOSE_BUTTON_SIZE - BG_BUTTON_GAP;
-                  int ddy = screen_y - btn_cy;
-                  int dcx = screen_x - close_cx;
-                  int dbx = screen_x - bg_cx;
-                  if (dcx * dcx + ddy * ddy <= radius * radius)
-                    title_color = th->close_btn;
-                  else if (dbx * dbx + ddy * ddy <= radius * radius)
-                    title_color = COLOR_MIN_BTN;
+                  int btn_size = CLOSE_BUTTON_SIZE; // 16px default
+
+                  /* Pulsanti più piccoli per stili square/rounded */
+                  if (st->button_shape == 1 || st->button_shape == 2)
+                    btn_size -= 2; // 14x14
+
+                  /* Centraggio verticale nella titlebar */
+                  int btn_top = decor_y + (title_h - btn_size) / 2;
+
+                  int close_right = win->x + dw - 4;
+                  int close_cx = close_right - btn_size / 2;
+                  int bg_cx = close_cx - btn_size - BG_BUTTON_GAP;
+
+                  int local_y = screen_y - btn_top;
+                  int local_x_close = screen_x - close_cx + (btn_size / 2);
+                  int local_x_bg = screen_x - bg_cx + (btn_size / 2);
+
+                  if (st->button_shape == 1) {
+                    /* Square puro */
+                    if (local_x_close >= 0 && local_x_close < btn_size &&
+                        local_y >= 0 && local_y < btn_size)
+                      title_color = th->close_btn;
+                    else if (local_x_bg >= 0 && local_x_bg < btn_size &&
+                             local_y >= 0 && local_y < btn_size)
+                      title_color = COLOR_MIN_BTN;
+
+                  } else if (st->button_shape == 2) {
+                    /* Rounded Square - Material */
+                    int corner_radius = 6;
+                    if (rrect_inside(local_x_close, local_y, btn_size, btn_size,
+                                     corner_radius))
+                      title_color = th->close_btn;
+                    else if (rrect_inside(local_x_bg, local_y, btn_size,
+                                          btn_size, corner_radius))
+                      title_color = COLOR_MIN_BTN;
+
+                  } else {
+                    /* Cerchi classici */
+                    int radius = btn_size / 2 - 1;
+                    int ddy = screen_y - (btn_top + btn_size / 2);
+                    int dcx = screen_x - close_cx;
+                    int dbx = screen_x - bg_cx;
+
+                    if (dcx * dcx + ddy * ddy <= radius * radius)
+                      title_color = th->close_btn;
+                    else if (dbx * dbx + ddy * ddy <= radius * radius)
+                      title_color = COLOR_MIN_BTN;
+                  }
                 }
 
                 /* Round the top corners (F3). */

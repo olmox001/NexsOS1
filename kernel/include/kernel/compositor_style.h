@@ -36,20 +36,21 @@ typedef struct compositor_style {
   int titlebar_height; /* px; 0 ⇒ no chrome regardless of `titlebar`       */
   int border_radius;   /* px corner radius when rounded_corners            */
   int shadow_size;     /* px shadow spread when shadows                    */
+  int button_shape;    /* 0 = circle (macOS), 1 = square (Retro/Win95) */
 } compositor_style_t;
 
 /* Theme = colour palette (ARGB8888). */
 typedef struct compositor_theme {
-  uint32_t bg_top;             /* desktop gradient top                     */
-  uint32_t bg_bottom;          /* desktop gradient bottom                  */
-  uint32_t win_bg;             /* default window background                */
-  uint32_t title_active;       /* focused title bar                        */
-  uint32_t title_inactive;     /* unfocused title bar                      */
-  uint32_t title_text_active;  /* focused title text                       */
-  uint32_t title_text_inactive;/* unfocused title text                     */
-  uint32_t close_btn;          /* close button                             */
-  uint32_t border;             /* window border                            */
-  uint32_t accent;             /* accent (caret/selection)                 */
+  uint32_t bg_top;              /* desktop gradient top                     */
+  uint32_t bg_bottom;           /* desktop gradient bottom                  */
+  uint32_t win_bg;              /* default window background                */
+  uint32_t title_active;        /* focused title bar                        */
+  uint32_t title_inactive;      /* unfocused title bar                      */
+  uint32_t title_text_active;   /* focused title text                       */
+  uint32_t title_text_inactive; /* unfocused title text                     */
+  uint32_t close_btn;           /* close button                             */
+  uint32_t border;              /* window border                            */
+  uint32_t accent;              /* accent (caret/selection)                 */
 } compositor_theme_t;
 
 /* Preset identifiers (stable small ints — also the SYS_SET_STYLE args). */
