@@ -447,6 +447,10 @@ rootfs: user
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
+	@# Pre-create a 16KB scratch file for the /bin/stress file lane: the FS has no
+	@# runtime file creation (O_CREAT -> -EINVAL), and file_write only extends an
+	@# EXISTING file, so ship one (perf §6 stress harness).
+	@dd if=/dev/zero of=$(BUILD_DIR)/rootfs/etc/stress.tmp bs=1024 count=16 2>/dev/null
 	@# Copy essential WAD files to the root and /bin for engine detection
 	@-cp user/bin/doom/freedoom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true

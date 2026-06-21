@@ -805,7 +805,11 @@ static int ext4_write(struct vfs_mount *mnt, const char *path,
 
   uint32_t ino;
   if (ext4_find_ino(fs, path, &ino) != 0) {
-    pr_err("Ext4: File not found: %s\n", path);
+    /* A missing file is a NORMAL negative result of a userland open(), not a
+     * kernel error — log at debug so a process probing paths (or the stress
+     * file lane) cannot spam the console (perf §1; Linux likewise never printk's
+     * on ENOENT). */
+    pr_debug("Ext4: File not found: %s\n", path);
     return -1;
   }
 

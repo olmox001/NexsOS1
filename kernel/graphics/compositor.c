@@ -572,8 +572,8 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
 
   window_count++;
 
-  pr_info("Compositor: Created window '%s' (%dx%d) at (%d,%d)\n", title, w, h,
-          x, y);
+  pr_debug("Compositor: Created window '%s' (%dx%d) at (%d,%d)\n", title, w, h,
+          x, y); /* hot path under GUI churn: demoted (perf §1) */
   spin_unlock_irqrestore(&compositor_lock, flags);
   return windows[slot].id;
 }

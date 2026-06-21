@@ -1302,7 +1302,7 @@ long sys_write(int fd, const char *buf, size_t count) {
  */
 void sys_exit(int status) {
   if (current_process) {
-    pr_info("PID %d exiting with status %d\n", current_process->pid, status);
+    pr_debug("PID %d exiting with status %d\n", current_process->pid, status); /* hot path: demoted (perf §1) */
     process_terminate(current_process->pid);
   }
 }
