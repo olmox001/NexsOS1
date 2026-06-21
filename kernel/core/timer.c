@@ -337,19 +337,41 @@ void timer_add(struct timer *t, uint64_t expires) {
  * Side effects: sets t->pending = false.
  */
 void timer_del(struct timer *t) {
-  int cpu = t->cpu;
-  if (cpu < 0 || cpu >= MAX_CPUS) {
-    t->pending = false; /* already fired (and cleared by the tick) or never armed */
+  uint64_t flags;
+  /* TIMER-UAF-02: t->cpu is read WITHOUT a lock (we don't know which CPU's
+   * timer_lock to take until we read it).  Under SMP that snapshot can be stale
+   * vs. a concurrent timer_add() on the owning core, which publishes
+   * t->pending=true BEFORE t->cpu — so an unlocked reader may momentarily see
+   * (pending=true, cpu=-1).  The previous code took the cpu<0 fast path here and
+   * cleared t->pending WITHOUT unlinking; that broke the pending<=>linked
+   * invariant, after which the post-DEAD reaper's timer_del() trusted
+   * pending==false and skipped list_del() too, leaving a still-linked timer on a
+   * process that was then freed and poisoned (0xCC) — the kernel_timer_tick UAF.
+   *
+   * Fix: (1) never clear t->pending in the unlocked cpu<0 branch — leaving the
+   * invariant intact means a later timer_del()/timer_add() still cancels it
+   * correctly; (2) re-validate t->cpu UNDER the owning timer_lock and retry if it
+   * moved, so the unlink always happens against the list the node is really on. */
+  for (;;) {
+    int cpu = t->cpu;
+    if (cpu < 0 || cpu >= MAX_CPUS)
+      return; /* not armed on a valid CPU (or arm mid-publish): leave pending */
+
+    spin_lock_irqsave(&cpu_data[cpu].timer_lock, &flags);
+    if (t->cpu != cpu) {
+      /* fired (tick set cpu=-1) or re-armed on another core meanwhile —
+       * re-snapshot and decide again with the correct lock. */
+      spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
+      continue;
+    }
+    if (t->pending) {
+      list_del(&t->list);
+      t->pending = false;
+      t->cpu = -1;
+    }
+    spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
     return;
   }
-  uint64_t flags;
-  spin_lock_irqsave(&cpu_data[cpu].timer_lock, &flags);
-  if (t->pending) {
-    list_del(&t->list);
-    t->pending = false;
-    t->cpu = -1;
-  }
-  spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
 }
 
 /*
