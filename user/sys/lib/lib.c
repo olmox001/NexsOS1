@@ -336,6 +336,8 @@ int registry_read(const char *key, char *buf, size_t size) { return OS1_registry
 int registry_write(const char *key, const char *value) { return OS1_registry_set(key, value); }
 /* registry_enum: REG_OP_ENUM (2), no key — lists keys into buf (LIB-REG-04). */
 int OS1_registry_enum(char *buf, size_t size) { return (int)_sys_registry(2, 0, buf, size); }
+/* OS1_registry_enum_under (Phase 4.1 A1a): list only keys under 'prefix'. */
+int OS1_registry_enum_under(const char *prefix, char *buf, size_t size) { return (int)_sys_registry(2, prefix, buf, size); }
 int registry_enum(char *buf, size_t size) { return OS1_registry_enum(buf, size); } /* compat shim (DIR-01 F4) */
 
 /*

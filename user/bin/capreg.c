@@ -72,6 +72,16 @@ int main(void) {
   ok = en > 0 && contains(buf, "capreg.test") && contains(buf, "system.hostname");
   check(win, "registry-enum", ok);
 
+  /* 6. namespace enumeration under a prefix (Phase 4.1 A1a): only matching keys
+   * are listed; out-of-namespace keys (system.hostname) must NOT appear. */
+  OS1_registry_set("ns4test.alpha", "1");
+  OS1_registry_set("ns4test.beta", "2");
+  memset(buf, 0, sizeof(buf));
+  int un = OS1_registry_enum_under("ns4test.", buf, sizeof(buf));
+  ok = un > 0 && contains(buf, "ns4test.alpha") && contains(buf, "ns4test.beta") &&
+       !contains(buf, "system.hostname");
+  check(win, "registry-enum-under", ok);
+
   if (hr >= 0)
     OS1low_handle_close(hr);
   if (hw >= 0)

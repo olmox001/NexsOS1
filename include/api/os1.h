@@ -229,6 +229,9 @@ int  OS1_display_set_font(void *data, size_t size);     /* set_font is its shim 
 int OS1_registry_get(const char *key, char *buf, size_t size);
 int OS1_registry_set(const char *key, const char *value);
 int OS1_registry_enum(char *buf, size_t size);
+/* OS1_registry_enum_under: list only keys beginning with 'prefix' — the
+ * "list a namespace directory" primitive (Phase 4.1 A1a). */
+int OS1_registry_enum_under(const char *prefix, char *buf, size_t size);
 int registry_read(const char *key, char *buf, size_t size);
 int registry_write(const char *key, const char *value);
 /* registry_enum: list all keys, newline-separated, into buf (LIB-REG-04). */

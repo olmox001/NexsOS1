@@ -208,9 +208,13 @@ int registry_get(const char *key, char *buffer, size_t size) {
  *
  * Locking: acquires registry_lock with IRQ save/restore.
  */
-int registry_enum(char *buf, size_t size) {
+int registry_enum(const char *prefix, char *buf, size_t size) {
   if (!buf || size == 0)
     return -1;
+
+  /* Namespace-directory filter (Phase 4.1 A1a): only keys beginning with
+   * 'prefix' are listed.  NULL or "" lists everything (backward-compatible). */
+  size_t plen = prefix ? strlen(prefix) : 0;
 
   uint64_t flags;
   spin_lock_irqsave(&registry_lock, &flags);
@@ -218,6 +222,8 @@ int registry_enum(char *buf, size_t size) {
   size_t off = 0;
   for (int i = 0; i < MAX_REGISTRY_KEYS; i++) {
     if (!registry_store[i].used)
+      continue;
+    if (plen && strncmp(registry_store[i].key, prefix, plen) != 0)
       continue;
     size_t klen = strlen(registry_store[i].key);
     if (off + klen + 2 > size) /* key + '\n' + room for the NUL */
@@ -272,15 +278,23 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
   char k_val[MAX_VAL_LEN];
 
   if (op == REG_OP_ENUM) {
-    /* LIB-REG-04: enumerate keys into the user 'value' buffer.  No key arg;
-     * reads are open to everyone (no capability required). */
+    /* LIB-REG-04: enumerate keys into the user 'value' buffer.  Reads are open
+     * to everyone (no capability required).  Phase 4.1 A1a: 'key' is an OPTIONAL
+     * namespace prefix (NULL lists all keys — the legacy behaviour). */
     if (!value || size == 0)
       return -EINVAL;
+    char k_prefix[MAX_KEY_LEN];
+    const char *prefix = NULL;
+    if (key) {
+      if (vmm_copy_string_from_user(k_prefix, key, MAX_KEY_LEN) != 0)
+        return -EFAULT;
+      prefix = k_prefix;
+    }
     size_t cap = size > 4096 ? 4096 : size;
     char *kbuf = kmalloc(cap);
     if (!kbuf)
       return -ENOMEM;
-    int n = registry_enum(kbuf, cap);
+    int n = registry_enum(prefix, kbuf, cap);
     long ret;
     if (n < 0) {
       ret = -EINVAL;

@@ -29,10 +29,12 @@ void registry_init(void);
  * a service's routing key cannot be hijacked by another process). */
 int registry_set(const char *key, const char *value, int owner_pid);
 int registry_get(const char *key, char *buffer, size_t size);
-/* registry_enum: write the newline-separated list of all used keys into 'buf'
+/* registry_enum: write the newline-separated list of used keys into 'buf'
  * (NUL-terminated, bounded by 'size'); returns the number of bytes written
- * (excluding the NUL), or -1 on bad args (LIB-REG-04). */
-int registry_enum(char *buf, size_t size);
+ * (excluding the NUL), or -1 on bad args (LIB-REG-04).
+ * 'prefix' filters to keys that begin with it — the "list a namespace directory"
+ * primitive (Phase 4.1 A1a); NULL or "" lists ALL keys (backward-compatible). */
+int registry_enum(const char *prefix, char *buf, size_t size);
 
 /* Syscall Handler */
 long sys_registry(int op, const char *key, char *value, size_t size);
