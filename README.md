@@ -20,8 +20,10 @@ an interactive **TTY shell**.
 > [`LICENSE.md`](LICENSE.md)); earlier docs mislabeled it MIT.
 
 ---
-<img width="1826" height="1105" alt="Screenshot 2026-06-19 alle 00 21 41" src="https://github.com/user-attachments/assets/87d9597b-d542-4940-8752-eff2a6a3534a" />
-<img width="1888" height="1250" alt="Screenshot 2026-06-20 alle 04 17 16" src="https://github.com/user-attachments/assets/a61cf335-a23c-459f-a522-6a629c3bc632" />
+variable theme & style now support:
+<img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 11 24" src="https://github.com/user-attachments/assets/b63535f3-50ea-45fc-98aa-4fb84fd0e602" />
+<img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 10 22" src="https://github.com/user-attachments/assets/137020f5-9ca3-45a5-a330-ac891b4dc0e1" />
+<img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 06 55" src="https://github.com/user-attachments/assets/66467cb1-aff1-45ed-be96-49a83b91e875" />
 
 
 
