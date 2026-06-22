@@ -232,12 +232,65 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size,
  * vfs_list_dir - list a directory through the provider.
  * Returns the formatted length, -1 not found, -2 not a directory.
  */
+/* mount_child_of - if mount path 'mp' sits DIRECTLY inside directory 'dir', copy
+ * its leaf name into 'leaf' and return 1; else 0.  Makes a mount visible in its
+ * parent's listing (Plan 9: "ls /" shows "reg" for the /reg mount). */
+static int mount_child_of(const char *mp, const char *dir, char *leaf,
+                          size_t leafsize) {
+  const char *last = mp;
+  for (const char *p = mp; *p; p++)
+    if (*p == '/')
+      last = p;
+  if (last == mp) { /* mp like "/reg": parent is "/" */
+    if (strcmp(dir, "/") != 0)
+      return 0;
+  } else {
+    size_t plen = (size_t)(last - mp);
+    char parent[128];
+    if (plen >= sizeof(parent))
+      plen = sizeof(parent) - 1;
+    memcpy(parent, mp, plen);
+    parent[plen] = '\0';
+    if (strcmp(parent, dir) != 0)
+      return 0;
+  }
+  const char *name = last + 1;
+  if (!*name)
+    return 0;
+  strncpy(leaf, name, leafsize - 1);
+  leaf[leafsize - 1] = '\0';
+  return 1;
+}
+
 int vfs_list_dir(const char *path, char *buf, uint32_t size) {
   const char *rel;
   struct vfs_mount *mnt = vfs_resolve(path, &rel);
   if (!mnt || !mnt->ops->list)
     return -1;
-  return mnt->ops->list(mnt, rel, buf, size);
+  int res = mnt->ops->list(mnt, rel, buf, size);
+  if (res < 0)
+    return res;
+
+  /* Append any mounts that live directly under 'path' so they show up in the
+   * listing (a synthetic mount like /reg is not in its parent provider's dir). */
+  size_t off = (size_t)res;
+  for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
+    if (!mounts[i].in_use || !mounts[i].mountpoint || &mounts[i] == mnt)
+      continue;
+    char leaf[64];
+    if (!mount_child_of(mounts[i].mountpoint, path, leaf, sizeof(leaf)))
+      continue;
+    size_t ll = strlen(leaf);
+    if (off + ll + 2 >= size)
+      break;
+    if (off && buf[off - 1] != ' ')
+      buf[off++] = ' ';
+    memcpy(buf + off, leaf, ll);
+    off += ll;
+    buf[off++] = ' ';
+    buf[off] = '\0';
+  }
+  return (int)off;
 }
 
 /*
