@@ -233,19 +233,13 @@ int  OS1_display_set_style(int style_id, int theme_id); /* -1 = keep */
 int  OS1_display_set_zoom(int percent);       /* desktop HiDPI/zoom percent */
 int  OS1_display_set_font(void *data, size_t size);     /* set_font is its shim */
 
-/* Registry API.  OS1_registry_get/_set/_enum are the canonical high-level names
- * (ASTRA §6.6; the capability path is OBJ_TYPE_REGKEY).  registry_read/_write/
- * _enum are zero-breakage compat shims (DIR-01 F4). */
+/* Registry API (ASTRA §6.6; the capability path is OBJ_TYPE_REGKEY). */
 int OS1_registry_get(const char *key, char *buf, size_t size);
 int OS1_registry_set(const char *key, const char *value);
-int OS1_registry_enum(char *buf, size_t size);
+int OS1_registry_enum(char *buf, size_t size); /* all keys, newline-separated */
 /* OS1_registry_enum_under: list only keys beginning with 'prefix' — the
  * "list a namespace directory" primitive (Phase 4.1 A1a). */
 int OS1_registry_enum_under(const char *prefix, char *buf, size_t size);
-int registry_read(const char *key, char *buf, size_t size);
-int registry_write(const char *key, const char *value);
-/* registry_enum: list all keys, newline-separated, into buf (LIB-REG-04). */
-int registry_enum(char *buf, size_t size);
 int set_font(void *data, size_t size);
 
 /* Filesystem Helpers.  OS1_fs_* are the canonical high-level names (ASTRA §6.3;

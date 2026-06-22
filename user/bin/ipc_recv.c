@@ -23,7 +23,7 @@ int main(void) {
     for (int j = 0; j < n; j++)
       pid_buf[j] = rev[n - 1 - j];
     pid_buf[n] = '\0';
-    registry_write("demo.ipc_recv_pid", pid_buf);
+    OS1_registry_set("demo.ipc_recv_pid", pid_buf);
   }
 
   struct ipc_message msg;

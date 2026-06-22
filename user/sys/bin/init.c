@@ -127,7 +127,7 @@ int main(void) {
      * appear at startup instead of racing notify_srv's registration. */
     if (!boot_notified) {
       char npid[16];
-      if (registry_read("srv.notify_pid", npid, sizeof(npid)) == 0) {
+      if (OS1_registry_get("srv.notify_pid", npid, sizeof(npid)) == 0) {
         notify("System", "Boot Complete - NEXS");
         boot_notified = 1;
       }

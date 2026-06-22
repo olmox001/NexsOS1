@@ -68,7 +68,7 @@ int main(void) {
 
   /* 5. enumerate keys (LIB-REG-04): our key must appear */
   memset(buf, 0, sizeof(buf));
-  int en = registry_enum(buf, sizeof(buf));
+  int en = OS1_registry_enum(buf, sizeof(buf));
   ok = en > 0 && contains(buf, "capreg.test") && contains(buf, "system.hostname");
   check(win, "registry-enum", ok);
 

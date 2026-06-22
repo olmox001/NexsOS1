@@ -92,7 +92,7 @@ int main(void) {
    * to redirect all system notifications to itself. */
   char pid_str[16];
   snprintf(pid_str, sizeof(pid_str), "%d", get_pid());
-  registry_write("srv.notify_pid", pid_str);
+  OS1_registry_set("srv.notify_pid", pid_str);
 
   struct ipc_message msg;
   long last_notify_time = 0;
