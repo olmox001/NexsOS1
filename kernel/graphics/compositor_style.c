@@ -23,7 +23,7 @@ static const compositor_style_t styles[STYLE_COUNT] = {
                     .rounded_corners = 1,
                     .shadows = 1,
                     .animations = 0,
-                    .titlebar_height = 20,
+                    .titlebar_height = 24,
                     .border_radius = 10,
                     .button_shape = 2,
                     .button_side = 1,
@@ -107,9 +107,9 @@ static const compositor_theme_t themes[THEME_COUNT] = {
                      .border = 0xFFD1D1D6,
                      .accent = 0xFF007AFF},
     /* THEME_DARK — dark palette. */
-    [THEME_DARK] = {.bg_top = 0xFF101015,
-                    .bg_bottom = 0xFF1C1C2A,
-                    .win_bg = 0xFF1C1C1E,
+    [THEME_DARK] = {.bg_top = 0xFF142850,
+                    .bg_bottom = 0xFF1450A0,
+                    .win_bg = 0xFFFCFCFD,
                     .title_active = 0xFF2C2C2E,
                     .title_inactive = 0xFF1F1F22,
                     .title_text_active = 0xFFF2F2F7,
@@ -120,7 +120,7 @@ static const compositor_theme_t themes[THEME_COUNT] = {
 };
 
 static int active_style = STYLE_NEXS;
-static int active_theme = THEME_LIGHT;
+static int active_theme = THEME_DARK;
 
 const compositor_style_t *compositor_style_active(void) {
   return &styles[active_style];
