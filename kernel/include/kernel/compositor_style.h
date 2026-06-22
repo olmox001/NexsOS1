@@ -36,6 +36,7 @@ typedef struct compositor_style {
   int titlebar_height; /* px; 0 ⇒ no chrome regardless of `titlebar`       */
   int border_radius;   /* px corner radius when rounded_corners            */
   int shadow_size;     /* px shadow spread when shadows                    */
+  int shadow_type;     /* 0=solid win_bg (Retro), 1=fast SDF, 2=premium grad.  */
   int button_shape;    /* 0 = circle (macOS), 1 = square (Retro/Win95) */
   int button_side;     /* 0 = left, 1 = right */
 } compositor_style_t;
@@ -56,11 +57,12 @@ typedef struct compositor_theme {
 
 /* Preset identifiers (stable small ints — also the SYS_SET_STYLE args). */
 enum {
-  STYLE_CLASSIC = 0, /* X11/Motif: square, no shadow                       */
-  STYLE_MATERIAL,    /* Android/Material 3: rounded, soft shadow           */
-  STYLE_GLASS,       /* macOS/Win11: rounded, thin border                  */
-  STYLE_MINIMAL,     /* tiling WM: no chrome                               */
-  STYLE_RETRO,       /* CDE/Win95: bold square borders                     */
+  STYLE_NEXS = 0, /* NEXS default                     */
+  STYLE_CLASSIC,  /* X11/Motif: square, no shadow                       */
+  STYLE_MATERIAL, /* Android/Material 3: rounded, soft shadow           */
+  STYLE_GLASS,    /* macOS/Win11: rounded, thin border                  */
+  STYLE_MINIMAL,  /* tiling WM: no chrome                               */
+  STYLE_RETRO,    /* CDE/Win95: bold square borders                     */
   STYLE_COUNT
 };
 enum { THEME_LIGHT = 0, THEME_DARK, THEME_COUNT };

@@ -15,7 +15,7 @@
 #include <os1.h>
 
 /* Style ids must match enum in kernel/include/kernel/compositor_style.h. */
-static const char *style_names[] = {"classic", "material", "glass", "minimal",
+static const char *style_names[] = {"nexs", "classic", "material", "glass", "minimal",
                                     "retro"};
 static const char *theme_names[] = {"light", "dark"};
 
@@ -50,7 +50,7 @@ int main(int argc, char **argv) {
 
   /* nxres style <name> */
   if (argc >= 3 && strncmp(argv[1], "style", 6) == 0) {
-    int sid = name_to_id(argv[2], style_names, 5);
+    int sid = name_to_id(argv[2], style_names, 6);
     if (sid < 0) {
       printf("nxres: unknown style '%s'\n", argv[2]);
       return 1;
