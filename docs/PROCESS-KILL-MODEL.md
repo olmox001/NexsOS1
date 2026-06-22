@@ -202,10 +202,16 @@ before commit) to read pids/decisions from the serial log.
 
 ## 7. Prior attempt (PRESERVED — reference only, do not merge)
 
-- Branch: **`wip/process-kill-model`** (pushed) — commit `0c31f89` on top of
-  `b5f4b96`.
-- Patches: **`../nexs-kill-wip-backup/`** (sibling of the repo) —
-  `0001-…subtree…patch`, `0002-…full-delta…diff`, `0003-…CREATED-uaf-fix.diff`.
+Preserved as patches in **`../nexs-kill-wip-backup/`** (sibling of the repo on
+the maintainer's machine):
+- `0001-…subtree…patch` — the committed subtree-kill.
+- `0002-…full-delta…diff` — the complete delta from `fa9414a` (everything,
+  incl. the PROC_CREATED UAF guard).
+- `0003-…CREATED-uaf-fix.diff` — just the PROC_CREATED-mid-load UAF guard.
+
+(The throwaway `wip/process-kill-model` branch was deleted after backup; the
+patches above are the record. Re-implement cleanly from this spec — do not try
+to replay the patches verbatim.)
 
 What it got RIGHT (reuse): the window-aware subtree BFS (snapshot-then-check,
 Pitfall A), and the `kill_pending` + `process_finalize_spawn`/`process_abort_spawn`
