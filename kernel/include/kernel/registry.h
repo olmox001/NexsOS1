@@ -39,4 +39,8 @@ int registry_enum(const char *prefix, char *buf, size_t size);
 /* Syscall Handler */
 long sys_registry(int op, const char *key, char *value, size_t size);
 
+/* registry_mount_vfs: mount the registry as the "/reg" file namespace (regfs).
+ * Call from the composition root after vfs_init() + registry_init(). */
+void registry_mount_vfs(void);
+
 #endif

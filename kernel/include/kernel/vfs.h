@@ -69,14 +69,21 @@ struct fs_ops {
 
 struct vfs_mount {
   const struct fs_ops *ops;
-  void *fs_private;    /* provider state, owned by ops->mount */
-  uint32_t part_index; /* GPT/MBR partition index backing this mount */
+  void *fs_private;        /* provider state, owned by ops->mount */
+  const char *mountpoint;  /* absolute mount path ("/", "/reg", ...) — Plan 9 namespace */
+  uint32_t part_index;     /* GPT/MBR partition index backing this mount (0 = synthetic) */
   int in_use;
 };
 
 /* Provider registration + mounting (called from the composition root) */
 int vfs_register_fs(const struct fs_ops *ops);
 void vfs_init(void);
+/* vfs_mount_at - mount a provider at an absolute path (Plan 9-style namespace
+ * mount).  'fs_private' is the provider's state (NULL for a stateless synthetic
+ * server like regfs).  Path resolution routes by LONGEST matching mountpoint;
+ * the root "/" mount is the fallback.  Returns 0, or -1 if the table is full /
+ * args are bad.  Called from the composition root, single-threaded. */
+int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops, void *fs_private);
 
 /* Core-facing API (the only filesystem surface outside kernel/fs/) */
 int vfs_open(const char *path, struct vfs_node *out);

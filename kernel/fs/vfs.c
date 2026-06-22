@@ -95,6 +95,7 @@ void vfs_init(void) {
       mnt->ops = fs_drivers[d];
       mnt->part_index = (uint32_t)i;
       mnt->fs_private = NULL;
+      mnt->mountpoint = "/"; /* the root mount (Plan 9 namespace fallback) */
       if (fs_drivers[d]->mount(mnt, p) == 0) {
         mnt->in_use = 1;
         pr_info("VFS: mounted %s on partition %d as /\n",
@@ -107,9 +108,71 @@ void vfs_init(void) {
   pr_err("%s", "VFS: no mountable filesystem found on any partition\n");
 }
 
-/* Root mount accessor; NULL if vfs_init found nothing. */
-static struct vfs_mount *vfs_root(void) {
-  return mounts[0].in_use ? &mounts[0] : NULL;
+/*
+ * vfs_mount_at - mount a provider at an absolute path (Plan 9 namespace mount).
+ * mounts[0] is the root; further slots take synthetic/extra mounts.  Stateless
+ * synthetic servers (e.g. regfs) pass fs_private = NULL and need no ops->mount.
+ */
+int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops,
+                 void *fs_private) {
+  if (!mountpoint || !ops || !ops->open) {
+    pr_err("%s", "VFS: rejecting malformed vfs_mount_at\n");
+    return -1;
+  }
+  for (int i = 1; i < VFS_MAX_MOUNTS; i++) { /* slot 0 is the root */
+    if (mounts[i].in_use)
+      continue;
+    mounts[i].ops = ops;
+    mounts[i].fs_private = fs_private;
+    mounts[i].mountpoint = mountpoint;
+    mounts[i].part_index = 0;
+    mounts[i].in_use = 1;
+    pr_info("VFS: mounted %s at %s\n", ops->name, mountpoint);
+    return 0;
+  }
+  pr_err("%s", "VFS: mount table full\n");
+  return -1;
+}
+
+/*
+ * vfs_resolve - find the mount responsible for 'path' (LONGEST matching
+ * mountpoint; the root "/" is the fallback) and hand back the path relative to
+ * that mount (always with a leading '/'; the root mount passes the path through
+ * unchanged so existing providers see absolute paths exactly as before).
+ * Matching is component-aware: "/reg" matches "/reg" and "/reg/x", not "/regfoo".
+ */
+static struct vfs_mount *vfs_resolve(const char *path, const char **rel) {
+  struct vfs_mount *best = NULL;
+  size_t best_len = 0;
+  for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
+    if (!mounts[i].in_use || !mounts[i].mountpoint)
+      continue;
+    const char *mp = mounts[i].mountpoint;
+    size_t mlen = strlen(mp);
+    int match;
+    if (mlen == 1 && mp[0] == '/') {
+      match = 1; /* root matches everything */
+    } else {
+      match = (strncmp(path, mp, mlen) == 0 &&
+               (path[mlen] == '/' || path[mlen] == '\0'));
+    }
+    if (match && (best == NULL || mlen >= best_len)) {
+      best = &mounts[i];
+      best_len = mlen;
+    }
+  }
+  if (!best) {
+    *rel = path;
+    return NULL;
+  }
+  if (best_len <= 1) {
+    *rel = path; /* root "/": providers keep seeing the full absolute path */
+  } else {
+    *rel = path + best_len;   /* "/reg/x" -> "/x"; "/reg" -> "" */
+    if (**rel == '\0')
+      *rel = "/";
+  }
+  return best;
 }
 
 /*
@@ -117,10 +180,13 @@ static struct vfs_mount *vfs_root(void) {
  * Returns 0 on success, negative on error/not-found.
  */
 int vfs_open(const char *path, struct vfs_node *out) {
-  struct vfs_mount *mnt = vfs_root();
-  if (!mnt || !path || !out)
+  if (!path || !out)
     return -1;
-  return mnt->ops->open(mnt, path, out);
+  const char *rel;
+  struct vfs_mount *mnt = vfs_resolve(path, &rel);
+  if (!mnt || !mnt->ops->open)
+    return -1;
+  return mnt->ops->open(mnt, rel, out);
 }
 
 /*
@@ -155,10 +221,11 @@ int vfs_read_file(const char *path, void *buf, uint32_t size,
  */
 int vfs_write_file(const char *path, const void *buf, uint32_t size,
                    uint64_t offset) {
-  struct vfs_mount *mnt = vfs_root();
+  const char *rel;
+  struct vfs_mount *mnt = vfs_resolve(path, &rel);
   if (!mnt || !mnt->ops->write)
     return -1;
-  return mnt->ops->write(mnt, path, offset, buf, size);
+  return mnt->ops->write(mnt, rel, offset, buf, size);
 }
 
 /*
@@ -166,10 +233,11 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size,
  * Returns the formatted length, -1 not found, -2 not a directory.
  */
 int vfs_list_dir(const char *path, char *buf, uint32_t size) {
-  struct vfs_mount *mnt = vfs_root();
+  const char *rel;
+  struct vfs_mount *mnt = vfs_resolve(path, &rel);
   if (!mnt || !mnt->ops->list)
     return -1;
-  return mnt->ops->list(mnt, path, buf, size);
+  return mnt->ops->list(mnt, rel, buf, size);
 }
 
 /*

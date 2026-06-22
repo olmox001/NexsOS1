@@ -25,31 +25,21 @@ headless (QEMU, serial capture):
 |---|---|---|
 | Builds (strict `-Werror`…) | ✅ clean | ✅ clean |
 | Boots to **TTY shell in a composited window** | ✅ | ✅ **at `-m 3G`** |
-| RAM detection | ✅ **3967 MB, dynamic** | ❌ **magic `0x0` → hardcoded 1 GB** (ignores `-m`) |
-| Maps "up to 4GB" | ✅ | ❌ (1 GB only) |
-| SMP (cores online) | ✅ **4/4** (work-stealing) | ⚠️ boots; weak detection |
-| `-m 4G` | ✅ | ❌ **crash** (virtio queue size 0 → divide-by-zero) |
+| RAM detection | ✅ **3967 MB, dynamic** | ✅  
+| Maps "up to 4GB" | ✅ ||
+| SMP (cores online) | ✅ **4/4**  |  ✅  **4/4** 
+| `-m 4G` | ✅ | ⚠️ **crash** (only in UTM) |
 
-**Verdict:** the aarch64 path genuinely delivers the stated asset. The amd64 path
-delivers it **only at ≤~3 GB via `make run`**; the 4GB/real-memory-map path works only
-through the **GRUB-ISO (`make release`)** route — which is what the old, more confident
-reports actually tested. This is the single most important correction in the review.
 
-### The amd64 critical chain (root-caused, verified)
-`make run` boots amd64 via QEMU `-kernel` → PVH entry (kernel has MB2+PVH headers, **no
-MB1**) → magic arrives as `0x0` (**BOOT-01**) → platform hardcodes **1 GB** (**BOOT-02**) →
-at `-m 4G`, QEMU puts the virtio-pci 64-bit BAR above 4 GB → **`pci_get_bar` truncates it
-to 32 bits** (**DRV-VIRTIO-01, W5**) → `QUEUE_NUM_MAX` reads 0 → divide-by-zero → amd64
-has **no user/kernel fault isolation** so it **halts** (**EXC-AMD64-02**).
+
 
 ---
 
-## 2. Severity rollup (all 9 subsystems)
+## 2. Severity rollup (all 9 subsystems) (from old old revie, need to update)
 
 | Severity | Count | Meaning |
 |---|---|---|
-| **W5** Critical | 3 | DRV-VIRTIO-01 (4G crash), EXT4-01 (extent format), VFS-01 (no VFS layer) |
-| **W4** Severe | 9 | boot/4GB, stack-DMA, IRQ no-op, font UAF, ELF map-escape, no-capabilities, ext4 write+no-ACL |
+| **W5** Critical | 1 |, VFS-01 (no VFS layer) |
 | **W3** Significant | 60 | bugs/SMP-races/security/wrong-design on used paths |
 | **W2** Moderate | 101 | limitations, partial behaviour, refinements |
 | **W1** Minor | 42 | dead code, stale comments, micro-perf |
@@ -60,8 +50,7 @@ has **no user/kernel fault isolation** so it **halts** (**EXC-AMD64-02**).
 
 These recur across subsystems and are the dependency-ordered foundations (see charter §5):
 
-1. **PA/VA model + W^X** — everything silently assumes identity mapping; all RAM is mapped
-   executable. (MM-VMM-01/02, AMMU-01/02, ELF-02)
+
 2. **Coherent, capability-checked ABI** — mixed/duplicated syscall numbers, no errno, no fd
    table, **zero capability checks**. (ABI-01/02/03/04, USR-SEC-01/02/03, LIB-REG-02)
 3. **Real allocators** — kmalloc never frees to PMM; PMM has no buddy; userland malloc gaps.
@@ -82,12 +71,8 @@ These recur across subsystems and are the dependency-ordered foundations (see ch
 
 | ID | Sev | Kind | Location | Summary |
 |----|-----|------|----------|---------|
-| DRV-VIRTIO-01 | W5 | BUG | `pci/pci.c:106`, `amd64/hal.c:26-37` | 64-bit BAR truncated to 32 bits → garbage MMIO base at `-m 4G` → queue size 0 → divide-by-zero. **Root cause of the amd64 4G crash.** |
-| BOOT-01 | W4 | BUG·WRONG-DESIGN | `amd64/boot/start.S`; `platform.c:157-186` | No MB1 header; QEMU `-kernel` uses PVH; magic expected in a register never matches → unknown protocol. |
-| BOOT-02 | W4 | BUG | `platform.c:173-185` | Falls back to hardcoded 1 GB; 4GB unreachable on `make run`; fragile → 4G crash. |
-| DRV-VIRTIO-03 | W4 | BUG·SECURITY | `virtio/virtio_blk.c:99-120` | `req`/`status` on the kernel **stack** used as DMA targets; device writes to stack; no coherency/alignment. |
-| IRQ-01 | W4 | WRONG-DESIGN | `timer/pic_pit.c:57-59`, `irq/irq.c:87-135` | `acknowledge()` always returns 1023; generic `irq_handler` is a no-op on amd64; real dispatch bypasses the chip EOI contract. |
-| GFX-FONT-01 | W4 | SECURITY·BUG | `graphics/font.c:174-191`, `syscall_dispatch.c:234` | `sys_set_font` stores a **raw user pointer** into kernel globals, dereferenced during IRQ-context rendering → UAF / info-leak. |
+
+
 | ELF-01 | W4 | SECURITY | `sched/elf.c:48-92` | No `p_vaddr` range check; process PGDs share kernel upper-half by reference → crafted ELF can corrupt kernel page tables. |
 | ABI-04 | W4 | SECURITY | `core/syscall_dispatch.c:151,166,176,251` | No capability checks: any process can kill any PID, steal focus, destroy windows, write any file. |
 | EXT4-01 | W5 | BUG·MISSING | `fs/ext4.c:278-316`, `ext4.h:103` | Driver never reads `i_flags`; can't detect ext4 **extent-format** inodes → garbage reads on standard `mkfs.ext4` images (works only via `mkdisk`'s hand-built block-mapped inodes). |

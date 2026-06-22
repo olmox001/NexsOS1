@@ -36,6 +36,7 @@
 #include <kernel/sched.h> /* current_process / proc_has_cap / proc_is_machine */
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
+#include <kernel/vfs.h> /* regfs: the registry mounted as a /reg file namespace */
 #include <kernel/vmm.h>
 #include <stdbool.h>
 
@@ -282,6 +283,147 @@ int registry_enum(const char *prefix, char *buf, size_t size) {
   spin_unlock_irqrestore(&registry_lock, flags);
   return (int)off;
 }
+
+/* ------------------------------------------------------------------------- *
+ * regfs — the registry mounted as a "/reg" file namespace (Phase 4.1 A1b).
+ * A synthetic VFS provider (no partition) over the registry tree: a key path
+ * "/reg/system/hostname" is the registry key "system.hostname".  This realises
+ * "everything is a file": registry state is read/written/listed through the
+ * uniform VFS, and "/reg" is the first non-block server in the Plan 9 namespace.
+ * ------------------------------------------------------------------------- */
+
+/* regfs_path_to_key - mount-relative path ("/system/hostname") -> dotted key
+ * ("system.hostname"): drop leading slashes, collapse each '/' run to one '.'. */
+static void regfs_path_to_key(const char *relpath, char *key, size_t n) {
+  size_t k = 0;
+  const char *p = relpath;
+  while (*p == '/')
+    p++;
+  while (*p && k + 1 < n) {
+    if (*p == '/') {
+      while (*p == '/')
+        p++;
+      if (*p && k + 1 < n)
+        key[k++] = '.';
+    } else {
+      key[k++] = *p++;
+    }
+  }
+  key[k] = '\0';
+}
+
+static int regfs_mount(struct vfs_mount *mnt, struct partition *p) {
+  (void)mnt;
+  (void)p; /* synthetic server: nothing to probe */
+  return 0;
+}
+
+static int regfs_open(struct vfs_mount *mnt, const char *path,
+                      struct vfs_node *out) {
+  char key[MAX_KEY_LEN];
+  regfs_path_to_key(path, key, sizeof(key));
+
+  uint64_t flags;
+  spin_lock_irqsave(&registry_lock, &flags);
+  struct reg_node *n = key[0] ? walk_path(key, 0) : reg_root;
+  if (!n) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    return -1;
+  }
+  out->mnt = mnt;
+  out->id = (uint64_t)(uintptr_t)n; /* nodes are never freed -> stable handle */
+  out->type = n->is_leaf ? VFS_TYPE_FILE : VFS_TYPE_DIR;
+  out->size = n->is_leaf ? (uint64_t)strlen(n->value) : 0;
+  spin_unlock_irqrestore(&registry_lock, flags);
+  return 0;
+}
+
+static int regfs_read(struct vfs_node *node, uint64_t offset, void *buf,
+                      uint32_t size) {
+  struct reg_node *n = (struct reg_node *)(uintptr_t)node->id;
+  if (!n)
+    return -1;
+  uint64_t flags;
+  spin_lock_irqsave(&registry_lock, &flags);
+  if (!n->is_leaf) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    return -1;
+  }
+  size_t vlen = strlen(n->value);
+  if (offset >= vlen) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    return 0;
+  }
+  size_t avail = vlen - (size_t)offset;
+  size_t cnt = size < avail ? size : avail;
+  memcpy(buf, n->value + (size_t)offset, cnt);
+  spin_unlock_irqrestore(&registry_lock, flags);
+  return (int)cnt;
+}
+
+static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
+                       const void *buf, uint32_t size) {
+  (void)mnt;
+  (void)offset;
+  /* Writing the registry needs CAP_REG_WRITE (uniform with sys_registry), in
+   * addition to the CAP_FS_WRITE the SYS_FILE_WRITE path already checked. */
+  if (current_process && !proc_has_cap(current_process, CAP_REG_WRITE))
+    return -EPERM;
+  char key[MAX_KEY_LEN];
+  regfs_path_to_key(path, key, sizeof(key));
+  if (!key[0])
+    return -1;
+  char val[MAX_VAL_LEN];
+  size_t cnt = size < MAX_VAL_LEN - 1 ? size : MAX_VAL_LEN - 1;
+  memcpy(val, buf, cnt);
+  val[cnt] = '\0';
+  int owner =
+      (current_process && !proc_is_machine(current_process)) ? (int)current_process->pid : 0;
+  return registry_set(key, val, owner) == 0 ? (int)cnt : -1;
+}
+
+/* regfs_list - space-separated immediate child names of the node at 'path'
+ * (the VFS directory-listing contract). */
+static int regfs_list(struct vfs_mount *mnt, const char *path, char *buf,
+                      uint32_t size) {
+  (void)mnt;
+  char key[MAX_KEY_LEN];
+  regfs_path_to_key(path, key, sizeof(key));
+
+  uint64_t flags;
+  spin_lock_irqsave(&registry_lock, &flags);
+  struct reg_node *n = key[0] ? walk_path(key, 0) : reg_root;
+  if (!n) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    return -1;
+  }
+  size_t off = 0;
+  for (int i = 0; i < n->n_children; i++) {
+    size_t nl = strlen(n->children[i]->name);
+    if (off + nl + 2 > size)
+      break;
+    if (off)
+      buf[off++] = ' ';
+    memcpy(buf + off, n->children[i]->name, nl);
+    off += nl;
+  }
+  buf[off] = '\0';
+  spin_unlock_irqrestore(&registry_lock, flags);
+  return (int)off;
+}
+
+static const struct fs_ops regfs_ops = {
+    .name = "regfs",
+    .mount = regfs_mount,
+    .open = regfs_open,
+    .read = regfs_read,
+    .write = regfs_write,
+    .list = regfs_list,
+};
+
+/* registry_mount_vfs - mount the registry as the "/reg" namespace.  Call from
+ * the composition root after vfs_init() + registry_init(). */
+void registry_mount_vfs(void) { vfs_mount_at("/reg", &regfs_ops, NULL); }
 
 /*
  * sys_registry - syscall handler for registry access (syscall 250).

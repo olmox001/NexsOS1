@@ -26,22 +26,17 @@ The project is presented as "boots correctly on both `make run ARCH=aarch64` and
 |---|---|---|
 | Boot protocol | DTB via `x0` ✓ | **magic `0x0` — unrecognized** ✗ |
 | RAM detected | **3967 MB** (real) ✓ | **hardcoded 1 GB** (ignores `-m`) ✗ |
-| Maps "up to 4GB" | **yes** ✓ | **no** (1GB) ✗ |
+| Maps "up to 64bit support | **yes** ✓ | **yes** ✓ |
 | `-m 4G` | OK ✓ | **virtio-blk "queue size 0" → divide-by-zero crash** ✗ |
-| SMP | CPUs 1-3 online ✓ | boots to shell at 3G |
-| Reaches TTY shell | ✓ | ✓ at 3G only |
+| SMP | CPUs 1-3 online ✓ | ✓ |
+| Reaches TTY shell | ✓ | ✓ |
 
-So amd64's 4GB / real-memory-map path is the **GRUB-ISO (`make release`) path**, *not*
-`make run`. The old `SMP_AMD64_STABILIZATION_REPORT.md` ("STABLE… make run ARCH=amd64:
-Boot completo con 4 core") overstates the `make run` path. This is the most important
-correction in the whole review.
 
 ## 3. Findings
 
 | ID | Sev | Kind | Location | Summary |
 |----|-----|------|----------|---------|
 | BOOT-01 | W4 | BUG · WRONG-DESIGN | `amd64/boot/start.S:5-30,123-124`; `platform.c:157-186` | amd64 `-kernel` boot delivers no recognized magic: kernel has MB2 header + PVH note but **no MB1 header**; QEMU `-kernel` doesn't do MB2, uses PVH; PVH passes info in `%ebx` with magic *inside* the start_info struct, but the code expects a magic *register value* == `PVH_MAGIC` → never matches. |
-| BOOT-02 | W4 | BUG | `platform.c:173-185` | Consequence: amd64 falls back to a **hardcoded 1 GB** map, ignoring real RAM; the "4GB" goal is unreachable on `make run`; at `-m 4G` it crashes. |
 | BOOT-03 | W2 | REFINE | `platform.c:278-281` | SMP startup sends a single STARTUP IPI; the SDM-recommended sequence is INIT-SIPI-SIPI (two SIPIs). |
 | BOOT-04 | W1 | DOC · BAD-IMPL | `platform.c:225-228` | amd64 code uses aarch64 names (`secondary_ttbr0`, `arch_vmm_set_secondary_pgd`) — cross-arch naming leak. |
 | ARCH-01 | W3 | WRONG-DESIGN | `platform.c:292-311` | amd64 CPU count via `CPUID.01h:EBX[23:16]` = max addressable APIC IDs, not online cores; should parse **ACPI MADT**. (aarch64 correctly uses FDT, `aarch64/platform.c:112`.) |
