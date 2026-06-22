@@ -40,15 +40,17 @@
 #include <stdbool.h>
 
 /* reg_node - one namespace node.  A node is a directory (has children) and/or a
- * leaf (is_leaf, carries a value).  Children form a singly-linked list kept
- * sorted by name (ordered listing + early-stop search). */
+ * leaf (is_leaf, carries a value).  Children live in a SORTED dynamic array of
+ * pointers (by name) → O(log n) binary-search lookup and ordered listing; the
+ * array grows by doubling (kmalloc, no krealloc in the kernel). */
 struct reg_node {
-  char name[MAX_KEY_LEN];   /* this path segment */
-  char value[MAX_VAL_LEN];  /* leaf value (valid when is_leaf) */
-  int owner_pid;            /* first-writer-wins owner of the leaf */
-  int is_leaf;              /* 1 = carries a value */
-  struct reg_node *child;   /* first child (sorted by name) */
-  struct reg_node *sibling; /* next sibling (sorted by name) */
+  char name[MAX_KEY_LEN];      /* this path segment */
+  char value[MAX_VAL_LEN];     /* leaf value (valid when is_leaf) */
+  int owner_pid;               /* first-writer-wins owner of the leaf */
+  int is_leaf;                 /* 1 = carries a value */
+  struct reg_node **children;  /* sorted array of child pointers (by name) */
+  int n_children;              /* number of children */
+  int cap_children;            /* allocated capacity of children[] */
 };
 
 /* The root is the unnamed anchor; statically allocated (BSS-zeroed), its
@@ -69,35 +71,60 @@ static struct reg_node *node_alloc(const char *seg) {
   return n;
 }
 
-/* node_find_child - sorted-list lookup of immediate child 'seg' (lock held).
- * Stops early once a sibling name sorts past 'seg' (ordered search). */
+/* node_find_child - BINARY SEARCH of immediate child 'seg' in the sorted
+ * children[] array (lock held).  O(log n_children). */
 static struct reg_node *node_find_child(struct reg_node *p, const char *seg) {
-  for (struct reg_node *c = p->child; c; c = c->sibling) {
-    int cmp = strcmp(c->name, seg);
+  int lo = 0, hi = p->n_children - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    int cmp = strcmp(p->children[mid]->name, seg);
     if (cmp == 0)
-      return c;
-    if (cmp > 0)
-      break;
+      return p->children[mid];
+    if (cmp < 0)
+      lo = mid + 1;
+    else
+      hi = mid - 1;
   }
   return NULL;
 }
 
-/* node_get_or_add - find or sorted-insert child 'seg'.  NULL on OOM (lock held). */
+/* node_get_or_add - BINARY SEARCH child 'seg'; return it if present, else insert
+ * it at the sorted position (growing children[] by doubling).  NULL on OOM
+ * (lock held). */
 static struct reg_node *node_get_or_add(struct reg_node *p, const char *seg) {
-  struct reg_node **link = &p->child;
-  while (*link) {
-    int cmp = strcmp((*link)->name, seg);
+  /* Binary search for either the match or the insertion point 'lo'. */
+  int lo = 0, hi = p->n_children - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    int cmp = strcmp(p->children[mid]->name, seg);
     if (cmp == 0)
-      return *link;
-    if (cmp > 0)
-      break;
-    link = &(*link)->sibling;
+      return p->children[mid];
+    if (cmp < 0)
+      lo = mid + 1;
+    else
+      hi = mid - 1;
+  }
+  /* Grow children[] if full (double, min 4; no krealloc in-kernel). */
+  if (p->n_children == p->cap_children) {
+    int newcap = p->cap_children ? p->cap_children * 2 : 4;
+    struct reg_node **arr = kmalloc(sizeof(struct reg_node *) * (size_t)newcap);
+    if (!arr)
+      return NULL;
+    if (p->children) {
+      memcpy(arr, p->children, sizeof(struct reg_node *) * (size_t)p->n_children);
+      kfree(p->children);
+    }
+    p->children = arr;
+    p->cap_children = newcap;
   }
   struct reg_node *n = node_alloc(seg);
   if (!n)
     return NULL;
-  n->sibling = *link;
-  *link = n;
+  /* Insert at 'lo', shifting the larger names right (keeps the array sorted). */
+  for (int i = p->n_children; i > lo; i--)
+    p->children[i] = p->children[i - 1];
+  p->children[lo] = n;
+  p->n_children++;
   return n;
 }
 
@@ -208,7 +235,8 @@ int registry_get(const char *key, char *buffer, size_t size) {
 static void enum_dfs(struct reg_node *n, char *path, size_t path_len,
                      size_t path_cap, const char *prefix, size_t prefix_len,
                      char *buf, size_t size, size_t *off) {
-  for (struct reg_node *c = n->child; c; c = c->sibling) {
+  for (int ci = 0; ci < n->n_children; ci++) {
+    struct reg_node *c = n->children[ci];
     size_t saved = path_len;
     size_t cl = path_len;
     if (cl && cl + 1 < path_cap)
