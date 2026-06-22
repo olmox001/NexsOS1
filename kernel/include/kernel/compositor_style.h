@@ -37,6 +37,7 @@ typedef struct compositor_style {
   int border_radius;   /* px corner radius when rounded_corners            */
   int shadow_size;     /* px shadow spread when shadows                    */
   int button_shape;    /* 0 = circle (macOS), 1 = square (Retro/Win95) */
+  int button_side;     /* 0 = left, 1 = right */
 } compositor_style_t;
 
 /* Theme = colour palette (ARGB8888). */

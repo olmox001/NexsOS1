@@ -1677,9 +1677,10 @@ static void compositor_render_internal(void) {
       int wth = win->top_most ? 0 : compositor_titlebar_height();
       int wy = win->y - wth;
       int wfh = dh + wth;
-      /* Include the drop-shadow's down-right fringe in the footprint so a window
-       * whose body is just outside the damage box but whose shadow reaches into
-       * it is still reprocessed (otherwise the shadow band is left stale). */
+      /* Include the drop-shadow's down-right fringe in the footprint so a
+       * window whose body is just outside the damage box but whose shadow
+       * reaches into it is still reprocessed (otherwise the shadow band is left
+       * stale). */
       int so = (st->shadows && !win->top_most) ? st->shadow_size : 0;
       if (win->x >= clip_x2 || win->x + dw + so <= clip_x1 || wy >= clip_y2 ||
           wy + wfh + so <= clip_y1)
@@ -1706,8 +1707,9 @@ static void compositor_render_internal(void) {
         if (py < 0 || py >= bb_h)
           continue;
         /* Damage clip (GFX-COMP-03): the shadow is a translucent blend, so
-         * painting it outside the changed region would re-darken pixels that are
-         * not being recomposited this frame (shadow "in front of" windows). */
+         * painting it outside the changed region would re-darken pixels that
+         * are not being recomposited this frame (shadow "in front of" windows).
+         */
         if (py < clip_y1 || py >= clip_y2)
           continue;
         for (int sx = 0; sx < dw; sx++) {
@@ -1763,9 +1765,22 @@ static void compositor_render_internal(void) {
                   /* Centraggio verticale nella titlebar */
                   int btn_top = decor_y + (title_h - btn_size) / 2;
 
-                  int close_right = win->x + dw - 4;
-                  int close_cx = close_right - btn_size / 2;
-                  int bg_cx = close_cx - btn_size - BG_BUTTON_GAP;
+                  int close_cx;
+                  int bg_cx;
+
+                  if (st->button_side == 0) {
+                    /* Pulsanti a sinistra */
+                    int close_left = win->x + 4;
+
+                    close_cx = close_left + btn_size / 2;
+                    bg_cx = close_cx + btn_size + BG_BUTTON_GAP;
+                  } else {
+                    /* Pulsanti a destra */
+                    int close_right = win->x + dw - 4;
+
+                    close_cx = close_right - btn_size / 2;
+                    bg_cx = close_cx - btn_size - BG_BUTTON_GAP;
+                  }
 
                   int local_y = screen_y - btn_top;
                   int local_x_close = screen_x - close_cx + (btn_size / 2);
@@ -1885,7 +1900,8 @@ static void compositor_render_internal(void) {
         int py = decor_y + ly;
         if (py < 0 || py >= bb_h)
           continue;
-        /* Damage clip (GFX-COMP-03): keep the border inside this frame's box. */
+        /* Damage clip (GFX-COMP-03): keep the border inside this frame's box.
+         */
         if (py < clip_y1 || py >= clip_y2)
           continue;
         for (int lx = 0; lx < dw; lx++) {
