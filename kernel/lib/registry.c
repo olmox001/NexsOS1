@@ -1,120 +1,154 @@
 /*
  * kernel/lib/registry.c
- * Dynamic System Registry (Key-Value Store)
- * "Military Grade" Implementation: Fixed memory, no dynamic allocation, strict
- * bounds.
+ * System Registry — hierarchical namespace TREE (Phase 4.1 A-tree-1).
  *
  * Purpose:
- *   Provides a global flat key-value store for kernel and userland configuration.
- *   Keys use dotted-path notation (e.g. "theme.color", "system.hostname").
- *   The store is pre-populated with three default entries at init time.
+ *   The in-kernel COHERENT NAMESPACE: every piece of system state is a path.
+ *   Dotted keys ("theme.color", "srv.notify_pid") are namespace PATHS — each
+ *   segment is a node; a leaf carries a value (a "file"), an interior node is a
+ *   directory.  This is the "tmpvfs"/ground-truth state services read at init,
+ *   and the seam for "/reg" as a VFS file namespace (A1b) and for blocks/
+ *   services/devices to attach as tree nodes (A-tree-3 mount).
  *
  * Role:
- *   Exposed to userland via the sys_registry() syscall (op=REG_OP_READ/WRITE).
- *   Used internally by the desktop/UI layer for theme and system settings.
- *   The sched.h include is present for a planned but not yet implemented
- *   permission check on writes.
+ *   Exposed to userland via sys_registry() (REG_OP_READ/WRITE/ENUM) and as
+ *   capability objects (OBJ_TYPE_REGKEY, kernel/core/object.c).  Used by the
+ *   desktop/UI for theme/system settings and by services for routing keys.
  *
- * Data Model:
- *   A static array of MAX_REGISTRY_KEYS (128) struct registry_entry, each
- *   holding a key[64], value[128], and used flag.  Total static cost: 128 ×
- *   (64 + 128 + 4) = ~24 KB of BSS.  No heap allocation is used.
+ * Data model (replaces the old flat 128-slot array, LIB-REG-01):
+ *   A tree of DYNAMICALLY allocated `struct reg_node`.  Children are kept SORTED
+ *   by name, so lookup is O(depth × children-scanned-with-early-stop) and listing
+ *   is ordered — it scales as the supervisory namespace grows, instead of the old
+ *   O(128) scan, and the key count is no longer capped.  kmalloc is lazily
+ *   initialised (safe at registry_init: PMM is up first), nodes live for the
+ *   kernel lifetime (registry keys are not deleted today).
  *
- * Lookup:
- *   O(n) linear scan of registry_store[] on every read and write.  At 128
- *   entries this is negligible in practice.
+ * Security (LIB-REG-02): writes are first-writer-wins by owner_pid and gated by
+ *   CAP_REG_WRITE (sys_registry) — a service's routing key cannot be hijacked.
  *
- * Known issues:
- *   LIB-REG-01  (W3 WRONG-DESIGN)  The store is a flat 128-slot array with no
- *               tree, no enumeration, no file semantics, and no permissions.
- *               Dotted-key notation suggests hierarchy, but lookup is a flat scan.
- *               See docs/review/analysis/07-lib-headers.md §5 for the Plan 9 gap
- *               analysis.  The correct architecture is a /reg synthetic VFS node.
- *   LIB-REG-02  (W3 SECURITY)  No permission check on writes.  Any process can
- *               call sys_registry(REG_OP_WRITE, "system.hostname", ...) and
- *               overwrite system-level entries.  The sched.h include and comment
- *               "if needed later" mark this as deferred; it has not been done.
- *   LIB-REG-03  (W1 BAD-IMPL)  <kernel/vmm.h> is included twice (lines 13 and
- *               16 of the original file, both unconditional).
- *   LIB-REG-04  (W2 MISSING)   No API to enumerate keys.  Userland cannot
- *               discover registry contents without knowing key names in advance.
+ * Locking: one registry_lock (IRQ-safe) guards the tree; critical sections are
+ *   short (tree ops, not a full scan).  Per-subtree locking is a later refinement.
  */
 
 #include <kernel/kmalloc.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
-#include <kernel/sched.h> /* For current_process/permissions check if needed later */
+#include <kernel/sched.h> /* current_process / proc_has_cap / proc_is_machine */
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
 #include <kernel/vmm.h>
 #include <stdbool.h>
 
-/* NOTE(LIB-REG-03): <kernel/vmm.h> is included a second time here.
- * The duplicate is harmless (include guards prevent double-declaration) but
- * is a code-quality defect.  It should be removed. */
-#include <kernel/vmm.h>
+/* reg_node - one namespace node.  A node is a directory (has children) and/or a
+ * leaf (is_leaf, carries a value).  Children form a singly-linked list kept
+ * sorted by name (ordered listing + early-stop search). */
+struct reg_node {
+  char name[MAX_KEY_LEN];   /* this path segment */
+  char value[MAX_VAL_LEN];  /* leaf value (valid when is_leaf) */
+  int owner_pid;            /* first-writer-wins owner of the leaf */
+  int is_leaf;              /* 1 = carries a value */
+  struct reg_node *child;   /* first child (sorted by name) */
+  struct reg_node *sibling; /* next sibling (sorted by name) */
+};
 
-/* registry_store[]: the flat static key-value table.
- * Capacity: MAX_REGISTRY_KEYS (128) entries, each 196 bytes; ~24 KB total BSS.
- * NOTE(LIB-REG-01): flat array — no tree, no hierarchy, O(n) scan per op. */
-static struct registry_entry registry_store[MAX_REGISTRY_KEYS];
-/* registry_count: number of slots currently marked used (informational; used
- * only for the init log message; not consulted during lookup or insert). */
+/* The root is the unnamed anchor; statically allocated (BSS-zeroed), its
+ * children are kmalloc'd.  registry_count = number of leaves (init log). */
+static struct reg_node reg_root_storage;
+static struct reg_node *const reg_root = &reg_root_storage;
 static int registry_count = 0;
-/* registry_lock: global spinlock protecting registry_store[] and registry_count.
- * Acquired with IRQ save/restore so the store is safe to access from IRQ context.
- * NOTE(LIB-REG-02): the lock protects data integrity but not access permissions;
- * any caller (any privilege level) can write any key. */
 static DEFINE_SPINLOCK(registry_lock);
 
-/*
- * registry_init - zero the store and install default entries.
- *
- * Must be called once during early kernel init, before any other registry
- * or syscall operation.  Not thread-safe on re-entry (no guard); assumed to
- * run single-threaded before SMP is active.
- *
- * Default entries: "theme.color"="dark", "system.hostname"="NeXs",
- * "mouse.sensitivity"="1.0".
- *
- * Locking: calls registry_set() which acquires registry_lock per call.
- * Side effects: zeroes registry_store[] BSS; increments registry_count
- *               for each default entry added.
- */
-void registry_init(void) {
-  memset(registry_store, 0, sizeof(registry_store));
-  registry_count = 0;
+/* node_alloc - kmalloc + init a node for segment 'seg'.  NULL on OOM. */
+static struct reg_node *node_alloc(const char *seg) {
+  struct reg_node *n = kmalloc(sizeof(*n));
+  if (!n)
+    return NULL;
+  memset(n, 0, sizeof(*n));
+  strncpy(n->name, seg, MAX_KEY_LEN - 1);
+  n->name[MAX_KEY_LEN - 1] = '\0';
+  return n;
+}
 
-  /* Set default values (owner 0 = kernel/system) */
-  registry_set("theme.color", "dark", 0);
-  registry_set("system.hostname", "NeXs", 0);
-  registry_set("mouse.sensitivity", "1.0", 0);
+/* node_find_child - sorted-list lookup of immediate child 'seg' (lock held).
+ * Stops early once a sibling name sorts past 'seg' (ordered search). */
+static struct reg_node *node_find_child(struct reg_node *p, const char *seg) {
+  for (struct reg_node *c = p->child; c; c = c->sibling) {
+    int cmp = strcmp(c->name, seg);
+    if (cmp == 0)
+      return c;
+    if (cmp > 0)
+      break;
+  }
+  return NULL;
+}
 
-  pr_info("Registry: Initialized with %d default keys.\n", registry_count);
+/* node_get_or_add - find or sorted-insert child 'seg'.  NULL on OOM (lock held). */
+static struct reg_node *node_get_or_add(struct reg_node *p, const char *seg) {
+  struct reg_node **link = &p->child;
+  while (*link) {
+    int cmp = strcmp((*link)->name, seg);
+    if (cmp == 0)
+      return *link;
+    if (cmp > 0)
+      break;
+    link = &(*link)->sibling;
+  }
+  struct reg_node *n = node_alloc(seg);
+  if (!n)
+    return NULL;
+  n->sibling = *link;
+  *link = n;
+  return n;
+}
+
+/* walk_path - resolve dotted 'key' to its node, creating the path when 'create'.
+ * Returns the final node, or NULL (not found / OOM / empty key).  Lock held. */
+static struct reg_node *walk_path(const char *key, int create) {
+  struct reg_node *n = reg_root;
+  const char *p = key;
+  int any = 0;
+  while (*p) {
+    char seg[MAX_KEY_LEN];
+    int i = 0;
+    while (*p && *p != '.' && i < MAX_KEY_LEN - 1)
+      seg[i++] = *p++;
+    seg[i] = '\0';
+    while (*p && *p != '.') /* drop any overflow tail of an over-long segment */
+      p++;
+    if (*p == '.')
+      p++;
+    if (seg[0] == '\0')
+      continue; /* skip empty segment (leading/trailing/double dot) */
+    struct reg_node *c =
+        create ? node_get_or_add(n, seg) : node_find_child(n, seg);
+    if (!c)
+      return NULL;
+    n = c;
+    any = 1;
+  }
+  return any ? n : NULL;
 }
 
 /*
- * registry_set - create or update a key-value pair.
- *
- * First scans for an existing entry with the matching key (O(n)); if found,
- * updates its value in place.  Otherwise, scans for a free slot (second O(n)
- * pass) and inserts a new entry.  Both key and value are truncated to
- * (MAX_KEY_LEN - 1) and (MAX_VAL_LEN - 1) characters respectively, and are
- * always NUL-terminated.
- *
- * NOTE(LIB-REG-01): two sequential O(n) scans; at 128 entries this is fine,
- *   but does not scale to a large store.
- * LIB-REG-02 RESOLVED: first-writer-wins ownership — an existing key may be
- *   overwritten only by its creator PID or by a kernel/system caller
- *   (owner_pid 0); everyone else gets -EACCES.
- *
- * Params:
- *   key       - NUL-terminated key string; must be non-NULL.
- *   value     - NUL-terminated value string; must be non-NULL.
- *   owner_pid - caller identity: 0 = kernel/system, otherwise the PID.
- * Returns: 0 on success, -EACCES on ownership violation, -1 if key or value
- *          is NULL or the store is full.
- * Locking: acquires registry_lock with IRQ save/restore.
+ * registry_init - seed the default entries.  reg_root is BSS-zeroed; kmalloc is
+ * lazily initialised on the first node alloc (PMM is already up at this point).
+ * Defaults: "theme.color"="dark", "system.hostname"="NeXs",
+ * "mouse.sensitivity"="1.0".  Single-threaded before SMP.
+ */
+void registry_init(void) {
+  registry_count = 0;
+  registry_set("theme.color", "dark", 0);
+  registry_set("system.hostname", "NeXs", 0);
+  registry_set("mouse.sensitivity", "1.0", 0);
+  pr_info("Registry: Initialized with %d default keys (namespace tree).\n",
+          registry_count);
+}
+
+/*
+ * registry_set - create or update a key.  Walks/creates the path, then sets the
+ * leaf value.  First-writer-wins: an existing leaf owned by someone else (and
+ * owner_pid != 0) returns -EACCES.  owner_pid 0 = kernel/system (full rights).
+ * Returns 0, -EACCES on ownership violation, -1 on bad args / OOM.
  */
 int registry_set(const char *key, const char *value, int owner_pid) {
   if (!key || !value)
@@ -123,117 +157,100 @@ int registry_set(const char *key, const char *value, int owner_pid) {
   uint64_t flags;
   spin_lock_irqsave(&registry_lock, &flags);
 
-  /* Search for existing key to update */
-  for (int i = 0; i < MAX_REGISTRY_KEYS; i++) {
-    if (registry_store[i].used && strcmp(registry_store[i].key, key) == 0) {
-      /* Ownership check (LIB-REG-02/USR-SEC-01): only the creator of the
-       * key — or a kernel/system caller (owner_pid 0) — may overwrite it.
-       * This makes service-routing keys (e.g. notify_srv's PID) unforgeable
-       * by other processes: first writer wins. */
-      if (owner_pid != 0 && registry_store[i].owner_pid != owner_pid) {
-        spin_unlock_irqrestore(&registry_lock, flags);
-        pr_warn("registry: PID %d denied write to '%s' (owner PID %d)\n",
-                owner_pid, key, registry_store[i].owner_pid);
-        return -EACCES;
-      }
-      strncpy(registry_store[i].value, value, MAX_VAL_LEN - 1);
-      registry_store[i].value[MAX_VAL_LEN - 1] = '\0';
-      spin_unlock_irqrestore(&registry_lock, flags);
-      return 0;
-    }
+  struct reg_node *n = walk_path(key, 1);
+  if (!n) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    return -1; /* empty key or OOM */
   }
-
-  /* Find free slot */
-  for (int i = 0; i < MAX_REGISTRY_KEYS; i++) {
-    if (!registry_store[i].used) {
-      strncpy(registry_store[i].key, key, MAX_KEY_LEN - 1);
-      registry_store[i].key[MAX_KEY_LEN - 1] = '\0';
-
-      strncpy(registry_store[i].value, value, MAX_VAL_LEN - 1);
-      registry_store[i].value[MAX_VAL_LEN - 1] = '\0';
-
-      registry_store[i].owner_pid = owner_pid;
-      registry_store[i].used = 1;
-      registry_count++;
-      spin_unlock_irqrestore(&registry_lock, flags);
-      return 0;
-    }
+  if (n->is_leaf && owner_pid != 0 && n->owner_pid != owner_pid) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    pr_warn("registry: PID %d denied write to '%s' (owner PID %d)\n", owner_pid,
+            key, n->owner_pid);
+    return -EACCES;
   }
-
-  pr_err("Registry: Storage full! Cannot add '%s'\n", key);
+  strncpy(n->value, value, MAX_VAL_LEN - 1);
+  n->value[MAX_VAL_LEN - 1] = '\0';
+  if (!n->is_leaf) {
+    n->is_leaf = 1;
+    n->owner_pid = owner_pid;
+    registry_count++;
+  }
   spin_unlock_irqrestore(&registry_lock, flags);
-  return -1;
+  return 0;
 }
 
 /*
- * registry_get - look up a key and copy its value into a caller buffer.
- *
- * O(n) linear scan.  On hit, copies at most (size - 1) bytes of the value
- * and NUL-terminates buffer.
- *
- * Params:
- *   key    - NUL-terminated key to look up; must be non-NULL.
- *   buffer - output buffer of at least 'size' bytes; must be non-NULL.
- *   size   - capacity of buffer including NUL slot; must be > 0.
- * Returns: 0 on success (key found and value copied), -1 if not found or
- *          if key or buffer is NULL.
- * Locking: acquires registry_lock with IRQ save/restore.
+ * registry_get - resolve a key to its leaf and copy the value.
+ * Returns 0 on success, -1 if not found / not a leaf / bad args.
  */
 int registry_get(const char *key, char *buffer, size_t size) {
-  if (!key || !buffer)
+  if (!key || !buffer || size == 0)
     return -1;
 
   uint64_t flags;
   spin_lock_irqsave(&registry_lock, &flags);
 
-  for (int i = 0; i < MAX_REGISTRY_KEYS; i++) {
-    if (registry_store[i].used && strcmp(registry_store[i].key, key) == 0) {
-      strncpy(buffer, registry_store[i].value, size - 1);
-      buffer[size - 1] = '\0';
-      spin_unlock_irqrestore(&registry_lock, flags);
-      return 0;
-    }
+  struct reg_node *n = walk_path(key, 0);
+  if (!n || !n->is_leaf) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    return -1;
   }
+  strncpy(buffer, n->value, size - 1);
+  buffer[size - 1] = '\0';
   spin_unlock_irqrestore(&registry_lock, flags);
-  return -1; /* Not found */
+  return 0;
+}
+
+/* enum_dfs - depth-first walk emitting full dotted keys of LEAF nodes that match
+ * 'prefix', in sorted order.  'path' is the shared path buffer (length path_len),
+ * mutated as we descend and restored for each sibling so per-frame stack stays
+ * small (depth-bounded recursion).  Lock held. */
+static void enum_dfs(struct reg_node *n, char *path, size_t path_len,
+                     size_t path_cap, const char *prefix, size_t prefix_len,
+                     char *buf, size_t size, size_t *off) {
+  for (struct reg_node *c = n->child; c; c = c->sibling) {
+    size_t saved = path_len;
+    size_t cl = path_len;
+    if (cl && cl + 1 < path_cap)
+      path[cl++] = '.';
+    for (size_t k = 0; c->name[k] && cl + 1 < path_cap; k++)
+      path[cl++] = c->name[k];
+    path[cl] = '\0';
+
+    if (c->is_leaf &&
+        (prefix_len == 0 ||
+         (cl >= prefix_len && strncmp(path, prefix, prefix_len) == 0))) {
+      if (*off + cl + 2 <= size) { /* key + '\n' + room for the NUL */
+        memcpy(buf + *off, path, cl);
+        *off += cl;
+        buf[(*off)++] = '\n';
+      }
+    }
+    enum_dfs(c, path, cl, path_cap, prefix, prefix_len, buf, size, off);
+    path[saved] = '\0'; /* restore for the next sibling */
+  }
 }
 
 /*
- * registry_enum - list all used keys (LIB-REG-04).
- *
- * Writes the newline-separated key names into 'buf', NUL-terminated and bounded
- * by 'size'.  Returns the number of bytes written (excluding the NUL), or -1 on
- * bad args.  This is the enumeration API that was missing — userland can now
- * discover registry contents without knowing key names in advance.
- *
- * Locking: acquires registry_lock with IRQ save/restore.
+ * registry_enum - list used keys, newline-separated, into 'buf' (NUL-terminated,
+ * bounded by 'size'); returns bytes written excluding the NUL, -1 on bad args.
+ * Keys come out in sorted order (children are kept sorted).  'prefix' (NULL/"" =
+ * all) filters to keys beginning with it — the "list a namespace directory"
+ * primitive (Phase 4.1 A1a).
  */
 int registry_enum(const char *prefix, char *buf, size_t size) {
   if (!buf || size == 0)
     return -1;
 
-  /* Namespace-directory filter (Phase 4.1 A1a): only keys beginning with
-   * 'prefix' are listed.  NULL or "" lists everything (backward-compatible). */
-  size_t plen = prefix ? strlen(prefix) : 0;
+  size_t prefix_len = prefix ? strlen(prefix) : 0;
+  char path[256];
+  path[0] = '\0';
 
   uint64_t flags;
   spin_lock_irqsave(&registry_lock, &flags);
-
   size_t off = 0;
-  for (int i = 0; i < MAX_REGISTRY_KEYS; i++) {
-    if (!registry_store[i].used)
-      continue;
-    if (plen && strncmp(registry_store[i].key, prefix, plen) != 0)
-      continue;
-    size_t klen = strlen(registry_store[i].key);
-    if (off + klen + 2 > size) /* key + '\n' + room for the NUL */
-      break;
-    memcpy(buf + off, registry_store[i].key, klen);
-    off += klen;
-    buf[off++] = '\n';
-  }
+  enum_dfs(reg_root, path, 0, sizeof(path), prefix, prefix_len, buf, size, &off);
   buf[off] = '\0';
-
   spin_unlock_irqrestore(&registry_lock, flags);
   return (int)off;
 }
@@ -241,37 +258,16 @@ int registry_enum(const char *prefix, char *buf, size_t size) {
 /*
  * sys_registry - syscall handler for registry access (syscall 250).
  *
- * Mediates userland access to the kernel registry via secure user-space
- * copy helpers.  All pointer arguments are validated through vmm before
- * any data is consumed.
+ * Mediates userland access via secure user-space copy helpers; all pointer
+ * arguments are validated through vmm before any data is consumed.
  *
- * op == REG_OP_WRITE (1):
- *   1. Copies 'key' string from user-space (up to MAX_KEY_LEN bytes).
- *   2. Copies 'value' string from user-space (up to MAX_VAL_LEN bytes).
- *   3. Calls registry_set() to create or update the entry.
+ * REG_OP_ENUM: 'key' is an OPTIONAL namespace prefix (NULL = all keys).  Reads
+ *   are open to everyone.
+ * REG_OP_WRITE: needs CAP_REG_WRITE; carries the caller's identity (PID, or 0
+ *   for machine/system) into registry_set() for first-writer-wins ownership.
+ * REG_OP_READ: copies the value back (open to everyone).
  *
- * op == REG_OP_READ (0):
- *   1. Copies 'key' string from user-space.
- *   2. Calls registry_get() to fetch the value into a kernel buffer.
- *   3. Copies at most min(strlen+1, size) bytes back to user-space 'value'.
- *
- * LIB-REG-02/USR-SEC-01 RESOLVED: writes carry the caller's identity
- *   (PID, or 0 for PROC_PERM_SYSTEM processes) into registry_set(), which
- *   enforces first-writer-wins ownership: overwriting someone else's key
- *   returns -EACCES.  Kernel-seeded keys (owner 0) are only writable by
- *   system processes.
- *
- * NOTE(LIB-REG-04): No enumeration op.  Userland must know keys in advance.
- *
- * Params:
- *   op    - REG_OP_READ (0) or REG_OP_WRITE (1).
- *   key   - user-space pointer to NUL-terminated key string.
- *   value - user-space pointer to value buffer (read: output; write: input).
- *   size  - capacity of user-space value buffer (bytes).
- * Returns: 0 on success; -1 on invalid pointer, key not found, or store full;
- *          -2 on unrecognised op.
- * Locking: does not hold any lock across the vmm copy calls; registry_set/get
- *          each internally acquire registry_lock.
+ * Returns 0 on success; negative errno on failure; -EINVAL on unknown op.
  */
 long sys_registry(int op, const char *key, char *value, size_t size) {
   char k_key[MAX_KEY_LEN];
@@ -327,9 +323,7 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
     /* Caller identity for the ownership check (LIB-REG-02/USR-SEC-01):
      * machine-level processes write as owner 0 (full rights, e.g. init
      * seeding defaults); everyone else writes as their own PID. */
-    int owner = !proc_is_machine(current_process)
-                    ? (int)current_process->pid
-                    : 0;
+    int owner = !proc_is_machine(current_process) ? (int)current_process->pid : 0;
     return registry_set(k_key, k_val, owner);
   } else if (op == REG_OP_READ) {
     if (registry_get(k_key, k_val, sizeof(k_val)) == 0) {
