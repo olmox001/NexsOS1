@@ -1708,7 +1708,7 @@ static void compositor_render_internal(void) {
         margin_r = so * 2;
         margin_t = so * 2;
         margin_b = so * 2 + so;
-      } else if (st->shadow_type == 0) {
+      } else if (st->shadow_type == 1) {
         margin_l = so;
         margin_r = so;
         margin_t = so;
@@ -1735,8 +1735,8 @@ static void compositor_render_internal(void) {
     if (st->shadows && st->shadow_size > 0 && !win->top_most) {
       int so = st->shadow_size;
 
-      if (st->shadow_type == 1) {
-        /* ── Type 1: solid win_bg ─────────────────────────────────────────
+      if (st->shadow_type == 0) {
+        /* ── Type 0: solid win_bg ─────────────────────────────────────────
          * Rettangolo pieno con colore win_bg del tema, nessuna trasparenza.
          * Serve da "backing" opaco disegnato ESATTAMENTE sotto la finestra
          * (nessun offset), combaciando coi limiti della finestra. */
@@ -1848,8 +1848,8 @@ static void compositor_render_internal(void) {
           }
         }
 
-      } else {
-        /* ── Type 0: ombra veloce (Fast gradient shadow) ───────────────────
+      } else if (st->shadow_type == 1) {
+        /* ── Type 1: ombra veloce (Fast gradient shadow) ───────────────────
          * Simile alla Type 2 ma con un solo layer (diffuse), nessun offset
          * e calcolo semplificato per massime prestazioni pur restando centrata
          * e con angoli proporzionalmente curvi tramite SDF a passata singola. */
@@ -1923,6 +1923,17 @@ static void compositor_render_internal(void) {
                 uint32_t title_color = (win->pid == keyboard_focus_pid)
                                            ? th->title_active
                                            : th->title_inactive;
+                                           
+                if (st->shadows && title_h > 0) {
+                  if (st->shadow_type == 1) {
+                    if (screen_y == decor_y) title_color = gl_blend_pixel(0x20FFFFFF, title_color);
+                  } else if (st->shadow_type == 2) {
+                    if (screen_y == decor_y) title_color = gl_blend_pixel(0x40FFFFFF, title_color);
+                    int th_y = screen_y - decor_y;
+                    int grad = (th_y * 24) / title_h;
+                    if (grad > 0) title_color = gl_blend_pixel((grad << 24) | 0x000000, title_color);
+                  }
+                }
 
                 /* Titlebar buttons: filled discs (macOS traffic-light style),
                  * drawn only when the window is not protected — consistent with
@@ -1970,6 +1981,10 @@ static void compositor_render_internal(void) {
                     else if (local_x_bg >= 0 && local_x_bg < btn_size &&
                              local_y >= 0 && local_y < btn_size)
                       title_color = COLOR_MIN_BTN;
+                    else if (st->shadows && st->shadow_type == 2) {
+                      if (local_y == btn_size && local_x_close >= 0 && local_x_close < btn_size) title_color = gl_blend_pixel(0x60000000, title_color);
+                      else if (local_y == btn_size && local_x_bg >= 0 && local_x_bg < btn_size) title_color = gl_blend_pixel(0x60000000, title_color);
+                    }
 
                   } else if (st->button_shape == 2) {
                     /* Rounded Square - Material */
@@ -1980,6 +1995,10 @@ static void compositor_render_internal(void) {
                     else if (rrect_inside(local_x_bg, local_y, btn_size,
                                           btn_size, corner_radius))
                       title_color = COLOR_MIN_BTN;
+                    else if (st->shadows && st->shadow_type == 2) {
+                      if (rrect_inside(local_x_close, local_y - 1, btn_size, btn_size, corner_radius)) title_color = gl_blend_pixel(0x50000000, title_color);
+                      else if (rrect_inside(local_x_bg, local_y - 1, btn_size, btn_size, corner_radius)) title_color = gl_blend_pixel(0x50000000, title_color);
+                    }
 
                   } else {
                     /* Cerchi classici */
@@ -1992,6 +2011,11 @@ static void compositor_render_internal(void) {
                       title_color = th->close_btn;
                     else if (dbx * dbx + ddy * ddy <= radius * radius)
                       title_color = COLOR_MIN_BTN;
+                    else if (st->shadows && st->shadow_type == 2) {
+                      int ddy_s = ddy - 1;
+                      if (dcx * dcx + ddy_s * ddy_s <= radius * radius + 2) title_color = gl_blend_pixel(0x40000000, title_color);
+                      else if (dbx * dbx + ddy_s * ddy_s <= radius * radius + 2) title_color = gl_blend_pixel(0x40000000, title_color);
+                    }
                   }
                 }
 
@@ -2032,6 +2056,19 @@ static void compositor_render_internal(void) {
                 } else {
                   backbuffer[screen_idx] =
                       gl_blend_pixel(win->bg_color, backbuffer[screen_idx]);
+                }
+                
+                /* Inner shadow / separator under titlebar */
+                if (st->shadows && title_h > 0) {
+                  if (st->shadow_type == 0 && draw_y == 0) {
+                     backbuffer[screen_idx] = gl_blend_pixel(0x20000000, backbuffer[screen_idx]);
+                  } else if (st->shadow_type == 1) {
+                     if (draw_y == 0) backbuffer[screen_idx] = gl_blend_pixel(0x30000000, backbuffer[screen_idx]);
+                     else if (draw_y == 1) backbuffer[screen_idx] = gl_blend_pixel(0x10000000, backbuffer[screen_idx]);
+                  } else if (st->shadow_type == 2 && draw_y < 4) {
+                     int a = (4 - draw_y) * 16;
+                     backbuffer[screen_idx] = gl_blend_pixel((a << 24) | 0x000000, backbuffer[screen_idx]);
+                  }
                 }
               }
             }

@@ -28,7 +28,7 @@ static const compositor_style_t styles[STYLE_COUNT] = {
                     .button_shape = 2,
                     .button_side = 1,
                     .shadow_size = 6,
-                    .shadow_type = 0},
+                    .shadow_type = 1},
     /* STYLE_CLASSIC — X11/Motif: square, no shadow . */
     [STYLE_CLASSIC] = {.titlebar = 1,
                        .window_borders = 1,
@@ -40,7 +40,7 @@ static const compositor_style_t styles[STYLE_COUNT] = {
                        .button_shape = 0,
                        .button_side = 1,
                        .shadow_size = 4,
-                       .shadow_type = 0},
+                       .shadow_type = 1},
     /* STYLE_MATERIAL — Android/Material 3: rounded, soft shadow, animations. */
     [STYLE_MATERIAL] = {.titlebar = 1,
                         .window_borders = 1,
@@ -88,7 +88,7 @@ static const compositor_style_t styles[STYLE_COUNT] = {
                      .button_shape = 1,
                      .button_side = 1,
                      .shadow_size = 4,
-                     .shadow_type = 1},
+                     .shadow_type = 0},
 
 };
 
