@@ -16,8 +16,57 @@
 
 /* Built-in styles, indexed by STYLE_* ids. */
 static const compositor_style_t styles[STYLE_COUNT] = {
-    /* STYLE_CLASSIC — X11/Motif: square, no shadow (the NEXS default look). */
+
+    /* STYLE_NEXS — */
+    [STYLE_NEXS] = {.titlebar = 1,
+                    .window_borders = 0,
+                    .rounded_corners = 1,
+                    .shadows = 1,
+                    .animations = 0,
+                    .titlebar_height = 20,
+                    .border_radius = 10,
+                    .button_shape = 2,
+                    .button_side = 1,
+                    .shadow_size = 6,
+                    .shadow_type = 1},
+    /* STYLE_CLASSIC — X11/Motif: square, no shadow . */
     [STYLE_CLASSIC] = {.titlebar = 1,
+                       .window_borders = 1,
+                       .rounded_corners = 1,
+                       .shadows = 1,
+                       .animations = 0,
+                       .titlebar_height = 20,
+                       .border_radius = 10,
+                       .button_shape = 0,
+                       .button_side = 1,
+                       .shadow_size = 4,
+                       .shadow_type = 1},
+    /* STYLE_MATERIAL — Android/Material 3: rounded, soft shadow, animations. */
+    [STYLE_MATERIAL] = {.titlebar = 1,
+                        .window_borders = 1,
+                        .rounded_corners = 1,
+                        .shadows = 1,
+                        .animations = 1,
+                        .titlebar_height = 24,
+                        .border_radius = 12,
+                        .button_shape = 2,
+                        .button_side = 1,
+                        .shadow_size = 6,
+                        .shadow_type = 2},
+    /* STYLE_GLASS — macOS/Win11: rounded, thin border, blur (future). */
+    [STYLE_GLASS] = {.titlebar = 1,
+                     .window_borders = 0,
+                     .rounded_corners = 1,
+                     .shadows = 1,
+                     .animations = 1,
+                     .titlebar_height = 22,
+                     .border_radius = 10,
+                     .button_shape = 0,
+                     .button_side = 0,
+                     .shadow_size = 6,
+                     .shadow_type = 2},
+    /* STYLE_MINIMAL — */
+    [STYLE_MINIMAL] = {.titlebar = 1,
                        .window_borders = 0,
                        .rounded_corners = 1,
                        .shadows = 0,
@@ -25,47 +74,21 @@ static const compositor_style_t styles[STYLE_COUNT] = {
                        .titlebar_height = 20,
                        .border_radius = 10,
                        .button_shape = 2,
-                       .shadow_size = 0},
-    /* STYLE_MATERIAL — Android/Material 3: rounded, soft shadow, animations. */
-    [STYLE_MATERIAL] = {.titlebar = 1,
-                        .window_borders = 0,
-                        .rounded_corners = 1,
-                        .shadows = 1,
-                        .animations = 1,
-                        .titlebar_height = 24,
-                        .border_radius = 8,
-                        .button_shape = 2,
-                        .shadow_size = 6},
-    /* STYLE_GLASS — macOS/Win11: rounded, thin border, blur (future). */
-    [STYLE_GLASS] = {.titlebar = 1,
-                     .window_borders = 1,
-                     .rounded_corners = 1,
-                     .shadows = 1,
-                     .animations = 1,
-                     .titlebar_height = 22,
-                     .border_radius = 10,
-                     .button_shape = 0,
-                     .shadow_size = 4},
-    /* STYLE_MINIMAL — tiling WM: no chrome at all. */
-    [STYLE_MINIMAL] = {.titlebar = 0,
-                       .window_borders = 0,
-                       .rounded_corners = 0,
-                       .shadows = 0,
-                       .animations = 0,
-                       .titlebar_height = 0,
-                       .border_radius = 0,
-                       .button_shape = 1,
-                       .shadow_size = 0},
+                       .button_side = 1,
+                       .shadow_size = 0,
+                       .shadow_type = 0},
     /* STYLE_RETRO — CDE/Win95: bold square borders. */
     [STYLE_RETRO] = {.titlebar = 1,
                      .window_borders = 1,
                      .rounded_corners = 0,
-                     .shadows = 0,
+                     .shadows = 1,
                      .animations = 0,
                      .titlebar_height = 20,
-                     .border_radius = 6,
+                     .border_radius = 10,
                      .button_shape = 1,
-                     .shadow_size = 0},
+                     .button_side = 1,
+                     .shadow_size = 4,
+                     .shadow_type = 0},
 
 };
 
@@ -96,7 +119,7 @@ static const compositor_theme_t themes[THEME_COUNT] = {
                     .accent = 0xFF0A84FF},
 };
 
-static int active_style = STYLE_CLASSIC;
+static int active_style = STYLE_NEXS;
 static int active_theme = THEME_LIGHT;
 
 const compositor_style_t *compositor_style_active(void) {
