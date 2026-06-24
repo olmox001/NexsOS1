@@ -433,19 +433,33 @@ static int regfs_read(struct vfs_node *node, uint64_t offset, void *buf,
 static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
                        const void *buf, uint32_t size) {
   (void)mnt;
-  (void)offset;
   /* Writing the registry needs CAP_REG_WRITE (uniform with sys_registry), in
-   * addition to the CAP_FS_WRITE the SYS_FILE_WRITE path already checked. */
+   * addition to the CAP_FS_WRITE the SYS_FILE_WRITE path already checked — the
+   * two caps layer (VFS-write authority + registry-write authority). */
   if (current_process && !proc_has_cap(current_process, CAP_REG_WRITE))
     return -EPERM;
   char key[MAX_KEY_LEN];
   regfs_path_to_key(path, key, sizeof(key));
-  if (!key[0])
+  if (!key[0] || offset >= MAX_VAL_LEN - 1)
     return -1;
+
+  size_t off = (size_t)offset;
+  size_t cnt = size;
+  if (off + cnt > MAX_VAL_LEN - 1)
+    cnt = MAX_VAL_LEN - 1 - off;
+
+  /* Read-modify-write so a non-zero offset OVERLAYS/extends the value instead of
+   * replacing it (offset 0 stays a plain full write).  Pad a gap past the end. */
   char val[MAX_VAL_LEN];
-  size_t cnt = size < MAX_VAL_LEN - 1 ? size : MAX_VAL_LEN - 1;
-  memcpy(val, buf, cnt);
-  val[cnt] = '\0';
+  if (registry_get(key, val, sizeof(val)) != 0)
+    val[0] = '\0';
+  size_t curlen = strlen(val);
+  for (size_t i = curlen; i < off; i++)
+    val[i] = ' ';
+  memcpy(val + off, buf, cnt);
+  if (off + cnt >= curlen)
+    val[off + cnt] = '\0';
+
   int owner =
       (current_process && !proc_is_machine(current_process)) ? (int)current_process->pid : 0;
   return registry_set(key, val, owner) == 0 ? (int)cnt : -1;

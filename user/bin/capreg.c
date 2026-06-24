@@ -105,6 +105,25 @@ int main(void) {
   }
   check(win, "vfs-unlink-/reg", ok);
 
+  /* 9. VFS write to /reg (Phase 4.1 A-gap2): write a new key via the file path,
+   * then overlay at an offset; both reflect in the registry. */
+  ok = OS1_fs_write("/reg/ns4test/delta", "abc", 3, 0) == 3;
+  if (ok) {
+    char v[8];
+    memset(v, 0, sizeof(v));
+    ok = OS1_registry_get("ns4test.delta", v, sizeof(v)) == 0 &&
+         strncmp(v, "abc", 3) == 0;
+  }
+  if (ok)
+    ok = OS1_fs_write("/reg/ns4test/delta", "XY", 2, 1) == 2; /* overlay -> aXY */
+  if (ok) {
+    char v[8];
+    memset(v, 0, sizeof(v));
+    ok = OS1_registry_get("ns4test.delta", v, sizeof(v)) == 0 &&
+         strncmp(v, "aXY", 3) == 0;
+  }
+  check(win, "vfs-write-/reg", ok);
+
   if (hr >= 0)
     OS1low_handle_close(hr);
   if (hw >= 0)
