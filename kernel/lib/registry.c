@@ -49,6 +49,7 @@ struct reg_node {
   char value[MAX_VAL_LEN];     /* leaf value (valid when is_leaf) */
   int owner_pid;               /* first-writer-wins owner of the leaf */
   int is_leaf;                 /* 1 = carries a value */
+  struct reg_node *parent;     /* owning directory (NULL for the root) */
   struct reg_node **children;  /* sorted array of child pointers (by name) */
   int n_children;              /* number of children */
   int cap_children;            /* allocated capacity of children[] */
@@ -121,6 +122,7 @@ static struct reg_node *node_get_or_add(struct reg_node *p, const char *seg) {
   struct reg_node *n = node_alloc(seg);
   if (!n)
     return NULL;
+  n->parent = p;
   /* Insert at 'lo', shifting the larger names right (keeps the array sorted). */
   for (int i = p->n_children; i > lo; i--)
     p->children[i] = p->children[i - 1];
@@ -225,6 +227,73 @@ int registry_get(const char *key, char *buffer, size_t size) {
   }
   strncpy(buffer, n->value, size - 1);
   buffer[size - 1] = '\0';
+  spin_unlock_irqrestore(&registry_lock, flags);
+  return 0;
+}
+
+/* node_remove_child - unlink 'child' from parent 'p' (binary search) and free it
+ * (and its now-unused children array).  Lock held; child must have no children. */
+static void node_remove_child(struct reg_node *p, struct reg_node *child) {
+  int lo = 0, hi = p->n_children - 1, idx = -1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    int cmp = strcmp(p->children[mid]->name, child->name);
+    if (cmp == 0) {
+      idx = mid;
+      break;
+    }
+    if (cmp < 0)
+      lo = mid + 1;
+    else
+      hi = mid - 1;
+  }
+  if (idx < 0)
+    return; /* not found (should not happen) */
+  if (child->children)
+    kfree(child->children);
+  kfree(child);
+  for (int i = idx; i < p->n_children - 1; i++)
+    p->children[i] = p->children[i + 1];
+  p->n_children--;
+}
+
+/*
+ * registry_del - remove a key.  Clears the leaf, then prunes every now-empty
+ * ancestor directory (freeing the nodes), so deleting "a.b.c" reclaims "c", then
+ * "b", then "a" if they become empty.  First-writer-wins: owner_pid != 0 may
+ * delete only its own key.  Returns 0, -ENOENT if absent/not a leaf, -EACCES on
+ * ownership violation.
+ */
+int registry_del(const char *key, int owner_pid) {
+  if (!key)
+    return -1;
+
+  uint64_t flags;
+  spin_lock_irqsave(&registry_lock, &flags);
+
+  struct reg_node *n = walk_path(key, 0);
+  if (!n || n == reg_root || !n->is_leaf) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    return -ENOENT;
+  }
+  if (owner_pid != 0 && n->owner_pid != owner_pid) {
+    spin_unlock_irqrestore(&registry_lock, flags);
+    return -EACCES;
+  }
+
+  n->is_leaf = 0;
+  n->value[0] = '\0';
+  n->owner_pid = 0;
+  registry_count--;
+
+  /* Prune empty nodes up the chain (a node with no children and no value is a
+   * dead directory). */
+  while (n != reg_root && n->n_children == 0 && !n->is_leaf) {
+    struct reg_node *p = n->parent;
+    node_remove_child(p, n);
+    n = p;
+  }
+
   spin_unlock_irqrestore(&registry_lock, flags);
   return 0;
 }
@@ -509,6 +578,13 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
       return 0;
     }
     return -ENOENT;
+  } else if (op == REG_OP_DEL) {
+    /* Deleting needs CAP_REG_WRITE; first-writer-wins owner is enforced in
+     * registry_del (machine processes delete as owner 0 = full rights). */
+    if (!proc_has_cap(current_process, CAP_REG_WRITE))
+      return -EPERM;
+    int owner = !proc_is_machine(current_process) ? (int)current_process->pid : 0;
+    return registry_del(k_key, owner);
   }
 
   return -EINVAL; /* Invalid op */

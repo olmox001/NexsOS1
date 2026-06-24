@@ -10,6 +10,7 @@
 #define REG_OP_READ 0
 #define REG_OP_WRITE 1
 #define REG_OP_ENUM 2 /* enumerate keys into 'value' buffer (LIB-REG-04) */
+#define REG_OP_DEL 3  /* remove a key (frees the node + prunes empty parents) */
 
 void registry_init(void);
 /* registry_set: create or update a key.  'owner_pid' identifies the caller:
@@ -24,6 +25,9 @@ int registry_get(const char *key, char *buffer, size_t size);
  * 'prefix' filters to keys that begin with it — the "list a namespace directory"
  * primitive (Phase 4.1 A1a); NULL or "" lists ALL keys (backward-compatible). */
 int registry_enum(const char *prefix, char *buf, size_t size);
+/* registry_del: remove 'key', free its node, and prune now-empty parent dirs.
+ * First-writer-wins (owner_pid 0 = kernel/system).  0, -ENOENT, or -EACCES. */
+int registry_del(const char *key, int owner_pid);
 
 /* Syscall Handler */
 long sys_registry(int op, const char *key, char *value, size_t size);

@@ -240,6 +240,8 @@ int OS1_registry_enum(char *buf, size_t size); /* all keys, newline-separated */
 /* OS1_registry_enum_under: list only keys beginning with 'prefix' — the
  * "list a namespace directory" primitive (Phase 4.1 A1a). */
 int OS1_registry_enum_under(const char *prefix, char *buf, size_t size);
+/* OS1_registry_del: remove a key (frees the node; first-writer-wins owner). */
+int OS1_registry_del(const char *key);
 int set_font(void *data, size_t size);
 
 /* Filesystem Helpers.  OS1_fs_* are the canonical high-level names (ASTRA §6.3;

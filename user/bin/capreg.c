@@ -82,6 +82,20 @@ int main(void) {
        !contains(buf, "system.hostname");
   check(win, "registry-enum-under", ok);
 
+  /* 7. deletion (Phase 4.1 A-gap1): delete one key — it disappears (get fails,
+   * enum omits it) while the sibling survives. */
+  ok = OS1_registry_del("ns4test.alpha") == 0;
+  if (ok) {
+    char tmp[8];
+    ok = OS1_registry_get("ns4test.alpha", tmp, sizeof(tmp)) != 0; /* now absent */
+  }
+  if (ok) {
+    memset(buf, 0, sizeof(buf));
+    OS1_registry_enum_under("ns4test.", buf, sizeof(buf));
+    ok = !contains(buf, "ns4test.alpha") && contains(buf, "ns4test.beta");
+  }
+  check(win, "registry-del", ok);
+
   if (hr >= 0)
     OS1low_handle_close(hr);
   if (hw >= 0)

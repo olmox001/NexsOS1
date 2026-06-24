@@ -337,6 +337,8 @@ int OS1_registry_set(const char *key, const char *value) { return (int)_sys_regi
 int OS1_registry_enum(char *buf, size_t size) { return (int)_sys_registry(2, 0, buf, size); }
 /* OS1_registry_enum_under (Phase 4.1 A1a): list only keys under 'prefix'. */
 int OS1_registry_enum_under(const char *prefix, char *buf, size_t size) { return (int)_sys_registry(2, prefix, buf, size); }
+/* OS1_registry_del (Phase 4.1 A-gap1): remove a key. */
+int OS1_registry_del(const char *key) { return (int)_sys_registry(3, key, 0, 0); }
 
 /*
  * set_font - transfer a packed font buffer to the kernel (SYS_SET_FONT #253).
