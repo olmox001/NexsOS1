@@ -61,4 +61,4 @@ timer, window and process readiness (~0% idle, no busy-poll) is still the target
 
 **Remaining**: per-window mouse delivery **beyond the focused window**; a system-driven
 **desktop-resize broadcast** to apps (tracked with DIR-07); and the unified blocking
-`OS1_event_wait` loop with the `EVENT_*` set above (notify_srv/shell as adopters).
+`OS1_event_wait` loop with the `EVENT_*` set above (notify_srv/nxshell as adopters).

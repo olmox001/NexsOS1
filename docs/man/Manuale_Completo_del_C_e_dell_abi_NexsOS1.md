@@ -902,7 +902,7 @@ while (1) {
     int r = wait(pid_shell);
     if (r == pid_shell || r == -2) {
         /* è morto, riavvialo */
-        pid_shell = spawn("/bin/shell");
+        pid_shell = spawn("/bin/nxshell");
     }
     OS1_sleep(50);  /* non busy-waitare */
 }
@@ -920,7 +920,7 @@ int  getcwd(char *buf, size_t size);
 
 ### 13.5 Esercizio
 
-Scrivi un programma `monitor` che fa `spawn("/bin/shell")` in un ciclo, aspettando con `wait` e rilanciando se muore. Stampa su stdout ogni riavvio. Confronta con `init.c` nel bundle.
+Scrivi un programma `monitor` che fa `spawn("/bin/nxshell")` in un ciclo, aspettando con `wait` e rilanciando se muore. Stampa su stdout ogni riavvio. Confronta con `init.c` nel bundle.
 
 ---
 

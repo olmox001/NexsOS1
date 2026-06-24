@@ -85,6 +85,7 @@ extern int  _sys_recv(int pid, struct ipc_message *msg);
 extern int  _sys_list_dir(const char *path, char *buf, size_t size);
 extern int  _sys_chdir(const char *path);
 extern int  _sys_getcwd(char *buf, size_t size);
+extern int  _sys_unlink(const char *path);
 extern int  _sys_open(const char *path, int flags);
 extern int  _sys_close(int fd);
 extern long _sys_lseek(int fd, long offset, int whence);
@@ -233,19 +234,15 @@ int  OS1_display_set_style(int style_id, int theme_id); /* -1 = keep */
 int  OS1_display_set_zoom(int percent);       /* desktop HiDPI/zoom percent */
 int  OS1_display_set_font(void *data, size_t size);     /* set_font is its shim */
 
-/* Registry API.  OS1_registry_get/_set/_enum are the canonical high-level names
- * (ASTRA §6.6; the capability path is OBJ_TYPE_REGKEY).  registry_read/_write/
- * _enum are zero-breakage compat shims (DIR-01 F4). */
+/* Registry API (ASTRA §6.6; the capability path is OBJ_TYPE_REGKEY). */
 int OS1_registry_get(const char *key, char *buf, size_t size);
 int OS1_registry_set(const char *key, const char *value);
-int OS1_registry_enum(char *buf, size_t size);
+int OS1_registry_enum(char *buf, size_t size); /* all keys, newline-separated */
 /* OS1_registry_enum_under: list only keys beginning with 'prefix' — the
  * "list a namespace directory" primitive (Phase 4.1 A1a). */
 int OS1_registry_enum_under(const char *prefix, char *buf, size_t size);
-int registry_read(const char *key, char *buf, size_t size);
-int registry_write(const char *key, const char *value);
-/* registry_enum: list all keys, newline-separated, into buf (LIB-REG-04). */
-int registry_enum(char *buf, size_t size);
+/* OS1_registry_del: remove a key (frees the node; first-writer-wins owner). */
+int OS1_registry_del(const char *key);
 int set_font(void *data, size_t size);
 
 /* Filesystem Helpers.  OS1_fs_* are the canonical high-level names (ASTRA §6.3;
@@ -257,6 +254,7 @@ int OS1_fs_read(const char *path, void *buf, int size, int offset);
 int OS1_fs_list(const char *path, char *buf, size_t size);
 int OS1_fs_chdir(const char *path);
 int OS1_fs_getcwd(char *buf, size_t size);
+int OS1_fs_unlink(const char *path); /* remove a file/node by path (VFS unlink) */
 int file_write(const char *path, const void *buf, int size, int offset);
 int file_read(const char *path, void *buf, int size, int offset);
 int list_dir(const char *path, char *buf, size_t size);

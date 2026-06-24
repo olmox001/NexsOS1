@@ -13,7 +13,7 @@
 | | |
 |---|---|
 | **Subsystem** | Userland: init, services, user library, apps |
-| **Sources** | `user/sys/bin/init.c` (56), `user/sys/bin/shell.c` (263), `user/sys/bin/proce.c/.h`, `user/sys/bin/notification_server.c` (68), `user/sys/bin/regedit.c` (68), `user/sys/bin/fontman/fontman.c` (169), `user/sys/lib/lib.c` (413), `user/sys/lib/lib.h`, `user/sys/lib/malloc.c` (114), `user/sys/lib/font_lib.c` (115), `user/sys/lib/syscall.S` (207), `user/arch/aarch64/syscall.S` (231), `user/arch/amd64/syscall.S` (207), `user/bin/counter.c` (48), `user/bin/crash.c` (9), `user/bin/demo3d.c` (308), `user/bin/ipc_send.c` (45), `user/bin/ipc_recv.c` (33), `user/bin/input_test.c` (59), `user/bin/writetest.c` (38), `user/bin/test_init.c` (10) |
+| **Sources** | `user/sys/bin/init.c` (56), `user/sys/bin/nxshell.c` (263), `user/sys/bin/proce.c/.h`, `user/sys/bin/notification_server.c` (68), `user/sys/bin/regedit.c` (68), `user/sys/bin/fontman/fontman.c` (169), `user/sys/lib/lib.c` (413), `user/sys/lib/lib.h`, `user/sys/lib/malloc.c` (114), `user/sys/lib/font_lib.c` (115), `user/sys/lib/syscall.S` (207), `user/arch/aarch64/syscall.S` (231), `user/arch/amd64/syscall.S` (207), `user/bin/counter.c` (48), `user/bin/crash.c` (9), `user/bin/demo3d.c` (308), `user/bin/ipc_send.c` (45), `user/bin/ipc_recv.c` (33), `user/bin/input_test.c` (59), `user/bin/writetest.c` (38), `user/bin/test_init.c` (10) |
 | **Headers** | `include/api/os1.h` (179), `user/sys/lib/lib.h` |
 | **Build** | `Makefile` (CFLAGS: `-O2 -g -fno-omit-frame-pointer`, no `--gc-sections`, links `USER_LIB_O` into every ELF) |
 | **Build artifacts** | **[verified]** `build/aarch64/counter.elf` = 503,712 bytes; `build/aarch64/crash.elf` = 502,432 bytes; `build/aarch64/init.elf` = 504,192 bytes. |
@@ -77,7 +77,7 @@ Kernel ELF loader
 | ID | Sev | Kind | Location | Summary |
 |----|-----|------|----------|---------|
 | USR-INIT-01 | W1 | REFINE | `init.c:39–53` | Supervisor loop is a **correct** non-blocking poll today. *Maintainer correction:* the PID-reuse hazard the draft flagged is **not live** — `next_pid` is monotonic (`process.c:20,233`), PIDs are never reused, and init is single-threaded with cooperative `yield`. Residual (defensive): the loop assumes monotonic PIDs and would need a generation/owner check if PID recycling is ever introduced. |
-| USR-INIT-02 | W3 | MISSING · DOC | `init.c:5–6`; `init.cfg:6,9` | `init.cfg` is never read despite file_read existing; the cfg paths (`/notify_srv.elf`, `/shell`) don't match actual rootfs layout (`/sys/bin/notify_srv`, `/sys/bin/shell`). Dead config file, ignored by code. |
+| USR-INIT-02 | W3 | MISSING · DOC | `init.c:5–6`; `init.cfg:6,9` | `init.cfg` is never read despite file_read existing; the cfg paths (`/notify_srv.elf`, `/nxshell`) don't match actual rootfs layout (`/sys/bin/notify_srv`, `/sys/bin/nxshell`). Dead config file, ignored by code. |
 | USR-INIT-03 | W2 | BAD-IMPL | `init.c:39–53` | No mechanism to limit respawn rate: a crashing service respawns immediately and unconditionally; a tight crash-respawn loop will saturate the process table (`MAX_PROCESSES = 64`, `os1.h:16`) with zombies. |
 | USR-SEC-01 | W3 | SECURITY | `lib.c:64–65`, `notification_server.c:33`, `lib.c:115` | Global registry has no caller authentication. `notify_srv` writes its PID to `srv.notify_pid`; `notify()` reads that key to route messages. Any process can overwrite `srv.notify_pid` and intercept or forge system notifications. |
 | USR-SEC-02 | W3 | SECURITY | `lib.c:47–48`, `shell.c:135–149` | `send()` and `kill_process()` accept arbitrary PIDs with no capability check. Shell parses a decimal argument directly from user input and passes it to `kill_process` (shell.c:139–148), allowing any user to kill any system service. |
@@ -114,7 +114,7 @@ Kernel ELF loader
 ```
 while (1) {
     if (wait(pid_shell) == pid_shell) {   // L41
-        pid_shell = spawn("/sys/bin/shell"); // L43
+        pid_shell = spawn("/sys/bin/nxshell"); // L43
     }
     if (wait(pid_notify) == pid_notify) { // L47
         pid_notify = spawn("/sys/bin/notify_srv"); // L49
@@ -152,10 +152,10 @@ below for context only:
 The shipped `init.cfg` (`init.cfg:6,9`) lists:
 ```
 /notify_srv.elf
-/shell
+/nxshell
 ```
 
-These paths are wrong for the current rootfs layout. `Makefile:363` strips `.elf` extensions; `Makefile:349` places system binaries in `/sys/bin/`. The working paths are `/sys/bin/notify_srv` and `/sys/bin/shell`. `init.cfg` is copied to `/etc/` in the rootfs (`Makefile:351`) but is never opened by init.
+These paths are wrong for the current rootfs layout. `Makefile:363` strips `.elf` extensions; `Makefile:349` places system binaries in `/sys/bin/`. The working paths are `/sys/bin/notify_srv` and `/sys/bin/nxshell`. `init.cfg` is copied to `/etc/` in the rootfs (`Makefile:351`) but is never opened by init.
 
 ---
 

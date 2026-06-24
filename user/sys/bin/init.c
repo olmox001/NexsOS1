@@ -22,8 +22,8 @@
  *   USR-INIT-02  (W3 MISSING·DOC) init.cfg is never read despite the TODO
  *                comment below being stale: file_read (lib.c:72) is fully
  *                implemented and used elsewhere.  The paths in init.cfg
- *                (/notify_srv.elf, /shell) do not match the actual rootfs
- *                layout (/sys/bin/notify_srv, /sys/bin/shell).
+ *                (/notify_srv.elf, /nxshell) do not match the actual rootfs
+ *                layout (/sys/bin/notify_srv, /sys/bin/nxshell).
  *   USR-INIT-03  (W2 BAD-IMPL) No respawn rate-limiting: a service that
  *                crashes immediately will be respawned in a tight loop,
  *                saturating the process table (MAX_PROCESSES=64, os1.h:16)
@@ -64,19 +64,19 @@ int main(void) {
   }
 
   /* Spawn Shell */
-  printf("[Init] Spawning Shell...\n");
-  int pid_shell = spawn("/sys/bin/shell");
+  printf("[Init] Spawning Nxshell...\n");
+  int pid_shell = spawn("/sys/bin/nxshell");
   if (pid_shell > 0) {
-    printf("[Init] Shell started (PID %d)\n", pid_shell);
+    printf("[Init] NXShell started (PID %d)\n", pid_shell);
   } else {
-    print("[Init] Failed to spawn Shell!\n");
+    print("[Init] Failed to spawn NXShell!\n");
   }
 
   /* Spawn the dock (window-manager UI).  Plain spawn(): the ASTRA per-path
    * preset gives any /sys/bin binary ROOT authority (F1), which is exactly what
    * a window manager needs to acquire OBJ_TYPE_WINDOW control capabilities to
-   * any app's window (focus / minimize / restore).  ROOT (not machine) keeps the
-   * dock killable + respawnable like the shell. */
+   * any app's window (focus / minimize / restore).  ROOT (not machine) keeps
+   * the dock killable + respawnable like the shell. */
   printf("[Init] Spawning Dock (nxui)...\n");
   int pid_nxui = spawn("/sys/bin/nxui");
   if (pid_nxui > 0) {
@@ -127,7 +127,7 @@ int main(void) {
      * appear at startup instead of racing notify_srv's registration. */
     if (!boot_notified) {
       char npid[16];
-      if (registry_read("srv.notify_pid", npid, sizeof(npid)) == 0) {
+      if (OS1_registry_get("srv.notify_pid", npid, sizeof(npid)) == 0) {
         notify("System", "Boot Complete - NEXS");
         boot_notified = 1;
       }
@@ -137,8 +137,8 @@ int main(void) {
      * reaped by the kernel).  spawn() assigns a fresh monotonic PID. */
     int r = wait(pid_shell);
     if (r == pid_shell || r == -2) {
-      print("[Init] Shell terminated! Respawning...\n");
-      pid_shell = spawn("/sys/bin/shell");
+      print("[Init] NXShell terminated! Respawning...\n");
+      pid_shell = spawn("/sys/bin/nxshell");
     }
 
     /* Check if notification server died and respawn. */
@@ -148,7 +148,8 @@ int main(void) {
       pid_notify = spawn("/sys/bin/notify_srv");
     }
 
-    /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as above). */
+    /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as
+     * above). */
     r = wait(pid_nxui);
     if (r == pid_nxui || r == -2) {
       print("[Init] Dock died! Respawning...\n");

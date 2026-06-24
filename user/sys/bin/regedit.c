@@ -81,7 +81,7 @@ int main(void) {
 
       /* Fetch Value from global registry.
        * registry_read returns 0 on success, negative on not-found. */
-      if (registry_read(keys[i], val_buf, sizeof(val_buf)) == 0) {
+      if (OS1_registry_get(keys[i], val_buf, sizeof(val_buf)) == 0) {
         /* Display Key */
         // window_print(win_id, PADDING + 5, y + 5, keys[i], 0xFF000000);
         /* Display Value */

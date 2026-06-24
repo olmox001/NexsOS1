@@ -696,6 +696,26 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     return ret;
   }
 
+  /* FILE: report the CURRENT size in bytes (Stage 4: lseek SEEK_END / stat via the
+   * object, so a FILE handle can fully back open()/read()/write()/lseek()).  Reads
+   * the live size (another handle may have grown the file), falling back to the
+   * cached open-time size. */
+  if (cmd == OBJ_CTL_STAT) {
+    long err = 0;
+    struct kobject *o = pin_handle(handle, 0, &err);
+    if (!o)
+      return err;
+    long ret;
+    if (o->type != OBJ_TYPE_FILE) {
+      ret = -EINVAL;
+    } else {
+      struct vfs_stat st;
+      ret = (vfs_stat(o->path, &st) == 0) ? (long)st.size : (long)o->node.size;
+    }
+    obj_unref(o);
+    return ret;
+  }
+
   return -EINVAL;
 }
 

@@ -230,6 +230,9 @@ static void init_memory(void) {
 
   /* Initialize System Registry */
   registry_init();
+  /* Mount it as the "/reg" file namespace (Plan 9-style): registry state is now
+   * reachable through the uniform VFS (e.g. cat /reg/system/hostname). */
+  registry_mount_vfs();
   pr_info("%s", "Registry: Initialized.\n");
 
   /* Note: Slab allocator (kmalloc) is auto-initialized on first use. */

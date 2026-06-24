@@ -2,6 +2,8 @@
 
 ### Multi-architecture open-source hybrid-kernel operating system
 
+###NOTE: the make system is obsolete and not tested on linux, the official toolchain requires macos, for a quick test use the release iso
+
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE.md)
 [![Arch](https://img.shields.io/badge/arch-aarch64%20%7C%20amd64-green.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-QEMU-orange.svg)](https://www.qemu.org/)

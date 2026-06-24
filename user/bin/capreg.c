@@ -68,7 +68,7 @@ int main(void) {
 
   /* 5. enumerate keys (LIB-REG-04): our key must appear */
   memset(buf, 0, sizeof(buf));
-  int en = registry_enum(buf, sizeof(buf));
+  int en = OS1_registry_enum(buf, sizeof(buf));
   ok = en > 0 && contains(buf, "capreg.test") && contains(buf, "system.hostname");
   check(win, "registry-enum", ok);
 
@@ -82,10 +82,72 @@ int main(void) {
        !contains(buf, "system.hostname");
   check(win, "registry-enum-under", ok);
 
+  /* 7. deletion (Phase 4.1 A-gap1): delete one key — it disappears (get fails,
+   * enum omits it) while the sibling survives. */
+  ok = OS1_registry_del("ns4test.alpha") == 0;
+  if (ok) {
+    char tmp[8];
+    ok = OS1_registry_get("ns4test.alpha", tmp, sizeof(tmp)) != 0; /* now absent */
+  }
+  if (ok) {
+    memset(buf, 0, sizeof(buf));
+    OS1_registry_enum_under("ns4test.", buf, sizeof(buf));
+    ok = !contains(buf, "ns4test.alpha") && contains(buf, "ns4test.beta");
+  }
+  check(win, "registry-del", ok);
+
+  /* 8. VFS unlink (Phase 4.1 A-gap1): remove a /reg key via the file path. */
+  OS1_registry_set("ns4test.gamma", "3");
+  ok = OS1_fs_unlink("/reg/ns4test/gamma") == 0;
+  if (ok) {
+    char tmp[8];
+    ok = OS1_registry_get("ns4test.gamma", tmp, sizeof(tmp)) != 0; /* gone */
+  }
+  check(win, "vfs-unlink-/reg", ok);
+
+  /* 9. VFS write to /reg (Phase 4.1 A-gap2): write a new key via the file path,
+   * then overlay at an offset; both reflect in the registry. */
+  ok = OS1_fs_write("/reg/ns4test/delta", "abc", 3, 0) == 3;
+  if (ok) {
+    char v[8];
+    memset(v, 0, sizeof(v));
+    ok = OS1_registry_get("ns4test.delta", v, sizeof(v)) == 0 &&
+         strncmp(v, "abc", 3) == 0;
+  }
+  if (ok)
+    ok = OS1_fs_write("/reg/ns4test/delta", "XY", 2, 1) == 2; /* overlay -> aXY */
+  if (ok) {
+    char v[8];
+    memset(v, 0, sizeof(v));
+    ok = OS1_registry_get("ns4test.delta", v, sizeof(v)) == 0 &&
+         strncmp(v, "aXY", 3) == 0;
+  }
+  check(win, "vfs-write-/reg", ok);
+
+  /* 10. FILE-object stat (Stage 4): OBJ_CTL_STAT reports the file size, matching
+   * the path-based size probe — a FILE handle can now report its own size. */
+  {
+    int hf = (int)OS1low_handle_create(OS1_NS_FS, "/etc/init.cfg",
+                                       OS1_RIGHT_READ, OBJ_TYPE_FILE);
+    long sz_obj = (hf >= 0) ? OS1_object_ctl(hf, OBJ_CTL_STAT, 0) : -1;
+    int sz_path = OS1_fs_read("/etc/init.cfg", 0, 0, 0); /* size probe */
+    ok = hf >= 0 && sz_obj > 0 && sz_obj == (long)sz_path;
+    check(win, "file-stat-object", ok);
+    if (hf >= 0)
+      OS1low_handle_close(hf);
+  }
+
   if (hr >= 0)
     OS1low_handle_close(hr);
   if (hw >= 0)
     OS1low_handle_close(hw);
+
+  /* Clean up the keys we created this run (we own them) so re-running the test
+   * starts from a clean registry — first-writer-wins would otherwise reject the
+   * second run's writes to keys owned by this now-dead process. */
+  OS1_registry_del("capreg.test");
+  OS1_registry_del("ns4test.beta");
+  OS1_registry_del("ns4test.delta");
 
   printf("[capreg] done: %d failure(s)\n", failures);
   printf_win(win, "done: %d failure(s)\n", failures);

@@ -329,23 +329,16 @@ static struct font_ctx *graphics_get_default_font(void) {
 uintptr_t __stack_chk_guard = 0x595e9eda;
 void __stack_chk_fail(void) { printf("Stack smashing detected!\n"); exit(1); }
 
-/* --- Registry Wrappers ---
- * op=0 (SYS_REGISTRY): read value for 'key' into buf (size bytes).
- * op=1 (SYS_REGISTRY): write value for 'key'; size = strlen(value).
- *
- * NOTE(USR-SEC-01): No authentication; any process can read or overwrite any
- * key.  In particular, overwriting "srv.notify_pid" hijacks all notifications.
- */
-/* OS1_registry_*: canonical (ASTRA §6.6); registry_read/_write/_enum are shims. */
+/* --- Registry Wrappers (OS1_registry_*, ASTRA §6.6) ---
+ * op=0 read 'key' into buf; op=1 write 'key' (kernel-side CAP_REG_WRITE +
+ * first-writer-wins ownership); op=2 enumerate, optionally under a prefix. */
 int OS1_registry_get(const char *key, char *buf, size_t size) { return (int)_sys_registry(0, key, buf, size); }
 int OS1_registry_set(const char *key, const char *value) { return (int)_sys_registry(1, key, (char *)value, strlen(value)); }
-int registry_read(const char *key, char *buf, size_t size) { return OS1_registry_get(key, buf, size); }
-int registry_write(const char *key, const char *value) { return OS1_registry_set(key, value); }
-/* registry_enum: REG_OP_ENUM (2), no key — lists keys into buf (LIB-REG-04). */
 int OS1_registry_enum(char *buf, size_t size) { return (int)_sys_registry(2, 0, buf, size); }
 /* OS1_registry_enum_under (Phase 4.1 A1a): list only keys under 'prefix'. */
 int OS1_registry_enum_under(const char *prefix, char *buf, size_t size) { return (int)_sys_registry(2, prefix, buf, size); }
-int registry_enum(char *buf, size_t size) { return OS1_registry_enum(buf, size); } /* compat shim (DIR-01 F4) */
+/* OS1_registry_del (Phase 4.1 A-gap1): remove a key. */
+int OS1_registry_del(const char *key) { return (int)_sys_registry(3, key, 0, 0); }
 
 /*
  * set_font - transfer a packed font buffer to the kernel (SYS_SET_FONT #253).
@@ -398,6 +391,7 @@ int OS1_fs_read(const char *path, void *buf, int size, int offset) {
 int OS1_fs_list(const char *path, char *buf, size_t size) { return _sys_list_dir(path, buf, size); }
 int OS1_fs_chdir(const char *path) { return _sys_chdir(path); }
 int OS1_fs_getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
+int OS1_fs_unlink(const char *path) { return _sys_unlink(path); }
 int file_write(const char *path, const void *buf, int size, int offset) { return OS1_fs_write(path, buf, size, offset); }
 int file_read(const char *path, void *buf, int size, int offset) { return OS1_fs_read(path, buf, size, offset); }
 int list_dir(const char *path, char *buf, size_t size) { return OS1_fs_list(path, buf, size); }

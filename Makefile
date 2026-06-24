@@ -319,7 +319,7 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o
 USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
 # System ELFs (placed in /sys/bin)
-SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/shell.elf $(BUILD_DIR)/notify_srv.elf $(BUILD_DIR)/nxres.elf \
+SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/notify_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf $(BUILD_DIR)/top.elf $(BUILD_DIR)/nexs-fm.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf
@@ -362,7 +362,7 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
 # Explicit dependencies for each user ELF
 $(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/init.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/shell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/shell.o $(BUILD_DIR)/$(USER_DIR)/sys/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(BUILD_DIR)/$(USER_DIR)/sys/bin/proce.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)

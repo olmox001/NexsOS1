@@ -46,7 +46,7 @@ Swept `kernel/` for ISA leakage OUTSIDE `kernel/arch/`:
   added to `vmm.h` for both arches. No `#ifdef` in the loader; amd64 bits are
   identical, aarch64 gains the (correct) PXN hardening so the kernel can never
   execute a user page. Verified: both arches build + boot, all user ELFs
-  (init/notify_srv/shell) execute, W^X intact, 0 PANIC.
+  (init/notify_srv/nxshell) execute, W^X intact, 0 PANIC.
 
 Remaining (low priority, tracked here):
 * `kernel/main.c` — `kernel_main` signature differs per arch (amd64 multiboot

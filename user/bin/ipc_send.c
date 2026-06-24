@@ -20,7 +20,7 @@ int main(void) {
   /* Get IPC recv PID from registry or use default */
   char pid_buf[16];
   int target_pid = 3; /* Default */
-  if (registry_read("demo.ipc_recv_pid", pid_buf, sizeof(pid_buf)) == 0) {
+  if (OS1_registry_get("demo.ipc_recv_pid", pid_buf, sizeof(pid_buf)) == 0) {
     target_pid = 0;
     for (int j = 0; pid_buf[j] >= '0' && pid_buf[j] <= '9'; j++) {
       target_pid = target_pid * 10 + (pid_buf[j] - '0');
