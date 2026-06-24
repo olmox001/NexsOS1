@@ -1,5 +1,5 @@
 /*
- * user/sys/bin/shell.c
+ * user/sys/bin/nxshell.c
  * Interactive Graphical Shell
  *
  * Creates a compositor window that acts as a TTY.  Reads single characters
@@ -11,7 +11,7 @@
  * than splitting tokens — the pattern `cmd_buf[2] == ' '` / `&cmd_buf[3]`
  * appears for ls, cd, cat, kill, notify.
  *
- * The shell accepts arbitrary PID arguments to kill without any privilege
+ * The nxshell accepts arbitrary PID arguments to kill without any privilege
  * check; see USR-SEC-02.
  *
  * Known issues:
@@ -44,7 +44,7 @@
 #define COLOR_PROMPT 0xFF00ff88
 
 /*
- * Shell state — module-level globals (one set per shell process since there
+ * Nxshell state — module-level globals (one set per shell process since there
  * is no shared-library mechanism; each shell ELF has its own BSS).
  *
  * my_window: compositor window ID for this shell instance; -1 until created.
@@ -232,7 +232,7 @@ static void process_command(void) {
     print("  demo            - Draw 2D shapes\n");
     print("  demo3d          - Launch 3D cube demo\n");
     print("  doom            - Launch doom\n");
-    print("  shell           - Open new shell window\n");
+    print("  nxshell           - Open new shell window\n");
     print("  ps              - List processes\n");
     print("  ls [path]       - List directory contents\n");
     print("  cd <path>       - Change directory\n");
@@ -270,12 +270,12 @@ static void process_command(void) {
       print("Failed to start demo3d\n");
     }
   } else if (str_eq(cmd_buf, "shell")) {
-    print("Opening new shell...\n");
-    int pid = spawn("/sys/bin/shell");
+    print("Opening new NXShell...\n");
+    int pid = spawn("/sys/bin/nxshell");
     if (pid > 0) {
-      printf("Shell started. PID=%d\n", pid);
+      printf("Nxshell started. PID=%d\n", pid);
     } else {
-      print("Failed to start shell\n");
+      print("Failed to start NXShell\n");
     }
   } else if (str_eq(cmd_buf, "ps")) {
     proce_display_list(my_window);
@@ -376,7 +376,7 @@ static void process_command(void) {
     print("\033[32mLibrary:\033[0m POSIX-like userlib with printf support\n");
     print("\nSystem reported: OK\n");
   } else if (str_eq(cmd_buf, "exit")) {
-    print("Exiting shell...\n");
+    print("Exiting NXShell...\n");
     running = 0;
     exit(0);
   } else if (cmd_buf[0] == 'n' && cmd_buf[1] == 'o' && cmd_buf[2] == 't' &&
@@ -476,33 +476,33 @@ static void process_command(void) {
  *   fd 1 (window/TTY), fd 3 (UART mirror), and calls process_command().
  */
 int main(void) {
-  print("Shell: Alive\n");
+  print("NXShell: Alive\n");
   int pid = get_pid();
   /* Create a unique window for this shell instance.
    * x_off/y_off stagger multiple shell windows by pid so they do not
    * stack exactly on top of each other. */
   char title[32];
-  sprintf(title, "Shell PID %d", pid);
+  sprintf(title, "NXShell PID %d", pid);
 
   int x_off = (pid * 40) % 200;
   int y_off = (pid * 40) % 200;
   my_window = create_window(100 + x_off, 100 + y_off, WIN_W, WIN_H, title);
 
   if (my_window <= 0) {
-    print("[Shell] Error creating window\n");
+    print("[NXShell] Error creating window\n");
     exit(1);
   }
 
   shell_redraw();
   set_focus(get_pid());
 
-  print("\n[Shell] TTY Window ");
+  print("\n[NXShell] TTY Window ");
   print_hex(my_window);
   printf(" active (PID %d).\n", get_pid());
   char cwd[128];
   getcwd(cwd, sizeof(cwd));
-  printf("\033[32mshell\033[0m:\033[34m%s\033[0m> ", cwd);
-  write(3, "shell> ", 7); /* Mirror to UART */
+  printf("\033[32mNXShell\033[0m:\033[34m%s\033[0m> ", cwd);
+  write(3, "NXShell> ", 7); /* Mirror to UART */
 
   /* buf[1] always stays NUL so print(buf) terminates correctly after echoing
    * a single printable character without calling strlen on uninitialized data.
@@ -520,7 +520,7 @@ int main(void) {
       if (running) {
         char prompt_cwd[128];
         getcwd(prompt_cwd, sizeof(prompt_cwd));
-        printf("\033[32mshell\033[0m:\033[34m%s\033[0m> ", prompt_cwd);
+        printf("\033[32mNXShell\033[0m:\033[34m%s\033[0m> ", prompt_cwd);
       }
     } else if (c == '\b' || c == 127) {
       /* Backspace (0x08) or DEL (0x7F): erase last character.

@@ -123,7 +123,7 @@ explicit correction notes). Every finding cites `file:line`.
 | [05-fs](analysis/05-fs.md) | vfs/ext4/gpt | agent, vetted (2×W5) |
 | [06-graphics](analysis/06-graphics.md) | compositor/font/gl/region | agent, vetted |
 | [07-lib-headers](analysis/07-lib-headers.md) | kernel lib + ABI headers + registry | agent, vetted+corrected |
-| [08-userland](analysis/08-userland.md) | init/shell/services/libs/apps | agent, vetted+corrected |
+| [08-userland](analysis/08-userland.md) | init/nxshell/services/libs/apps | agent, vetted+corrected |
 | [09-sched-process-ipc-abi](analysis/09-sched-process-ipc-abi.md) | scheduler/process/IPC/ABI | maintainer |
 
 ## 7. Issues (GitHub)

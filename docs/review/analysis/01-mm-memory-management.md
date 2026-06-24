@@ -45,7 +45,7 @@ arch_platform_get_mem_regions ──▶ pmm_early_init (size metadata, place it)
 ## 3. What Works (verified vs static)
 
 - **[verified]** Both kernels build and link with this allocator; userland ELFs
-  load (init/shell present in the rootfs image).
+  load (init/nxshell present in the rootfs image).
 - **[static]** RAM discovery is dynamic and not hard-capped at 1GB:
   `pmm_early_init` scans `mem_region`s and clamps only at 256GB
   (`pmm.c:108-171`). This is the mechanism behind "map memory up to 4GB".

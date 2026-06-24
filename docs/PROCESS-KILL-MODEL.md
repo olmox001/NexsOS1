@@ -159,7 +159,7 @@ rapid multi-process termination is panic-free on **both** arches.
 
 - **Ctrl+C on a foreground job doesn't fire.** Delivery is fine (keyboard folds
   Ctrl-C → `0x03` `IPC_TYPE_INPUT` to the focus pid; `run_foreground` in
-  user/sys/bin/shell.c matches it; `process_wait` is non-blocking;
+  user/sys/bin/nxshell.c matches it; `process_wait` is non-blocking;
   `create_window` does not steal focus). The break is `run_foreground` **falsely
   detaching** when it catches one of `stress`'s back-to-back transient gui-lane
   windows via `window_of_pid` (shell.c:205). Fix = debounce the detach (don't

@@ -12,7 +12,7 @@
  *      file_read size probe);
  *   3. open(O_RDWR): write at offset 0 through the fd, lseek back, read
  *      back and compare, then restore the original bytes;
- *   4. denials: open("/bin/shell", O_WRONLY) -> -EACCES (user process),
+ *   4. denials: open("/bin/nxshell", O_WRONLY) -> -EACCES (user process),
  *      open missing path -> -ENOENT, read/lseek on a closed fd -> -EBADF,
  *      write on an O_RDONLY fd -> -EBADF, O_CREAT -> -EINVAL.
  * Results go to the window AND the serial console (printf).
@@ -79,7 +79,7 @@ int main(void) {
   check(win_id, "rdwr-write-readback", ok);
 
   /* 4a. capability: /bin is read-only for user processes */
-  ok = open("/bin/shell", O_WRONLY) == -EACCES;
+  ok = open("/bin/nxshell", O_WRONLY) == -EACCES;
   check(win_id, "deny-bin-wronly", ok);
 
   /* 4b. missing path, closed fd, mode and flag misuse */

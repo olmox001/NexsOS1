@@ -28,11 +28,11 @@
  *   - PIDs are assigned from next_pid (monotonically increasing, never reused).
  *
  * Known issues:
- *   SCHED-01  (#83 RESOLVED) schedule() no longer calls compositor_get_focus_pid():
- *             the focus boost reads the scheduler-owned keyboard_focus_pid hint
- *             directly (the compositor + SYS_SET_FOCUS push updates to it), so the
- *             kernel scheduler no longer depends on the graphics compositor. The
- *             deeper "userland focus-policy via capability" remains future work.
+ *   SCHED-01  (#83 RESOLVED) schedule() no longer calls
+ * compositor_get_focus_pid(): the focus boost reads the scheduler-owned
+ * keyboard_focus_pid hint directly (the compositor + SYS_SET_FOCUS push updates
+ * to it), so the kernel scheduler no longer depends on the graphics compositor.
+ * The deeper "userland focus-policy via capability" remains future work.
  *   SCHED-02  (W2 BAD-IMPL) schedule() is large and intricate; many pc==0
  *             panic guards betray past context-corruption bugs.
  *   SCHED-03  (W2 WRONG-DESIGN, MITIGATED) process_wait() is non-blocking
@@ -82,7 +82,8 @@ static int active_count = 0; /* Number of active processes */
 static int next_pid = 1;     /* Global PID counter (never resets) */
 
 /* Real online-CPU count (kernel/cpu.c), set during SMP bring-up.  Reported by
- * sys_sysstats as sched_ncpu — the stats surface never hardcodes a CPU count. */
+ * sys_sysstats as sched_ncpu — the stats surface never hardcodes a CPU count.
+ */
 extern uint32_t nr_cpus;
 
 /* Instrumentation (perf brief §1): cumulative real context switches (prev !=
@@ -153,12 +154,13 @@ DEFINE_SPINLOCK(sched_lock);
 static int rr_cpu = 0;
 
 /* Keyboard Focus Management */
-/* keyboard_focus_pid: scheduler-owned focus HINT — which PID keystrokes route to
- * (keyboard driver) and which the schedule() focus boost favours. Pushed down by
- * the compositor (window activate/close) and by SYS_SET_FOCUS; the scheduler only
- * reads it (#83). Mutate ONLY via sched_set_focus_pid() (GFX-COMP-01 #67) so the
- * scheduler is the single owner and the compositor never writes this global
- * directly. A single int ⇒ atomic access ⇒ lockless reads (it is a hint). */
+/* keyboard_focus_pid: scheduler-owned focus HINT — which PID keystrokes route
+ * to (keyboard driver) and which the schedule() focus boost favours. Pushed
+ * down by the compositor (window activate/close) and by SYS_SET_FOCUS; the
+ * scheduler only reads it (#83). Mutate ONLY via sched_set_focus_pid()
+ * (GFX-COMP-01 #67) so the scheduler is the single owner and the compositor
+ * never writes this global directly. A single int ⇒ atomic access ⇒ lockless
+ * reads (it is a hint). */
 int keyboard_focus_pid = 7; /* Default to Shell PID */
 
 /* sched_set_focus_pid - the ONE mutation point for keyboard_focus_pid.
@@ -170,17 +172,18 @@ int sched_get_focus_pid(void) { return keyboard_focus_pid; }
 /* window_request_close - window-close INTENT seam, owned by the process layer
  * (GFX-COMP-03 #69). The compositor (graphics) must NOT drive process lifecycle
  * directly: it calls this instead of process_terminate(), so the compositor no
- * longer references the process API and there is one place to evolve the policy.
- * Today it force-terminates to preserve the close-button behaviour. DIR-02
- * target: deliver a CLOSE event to the window owner for a graceful quit and
- * force-kill only on timeout, and run the kill OUTSIDE mouse-IRQ context
+ * longer references the process API and there is one place to evolve the
+ * policy. Today it force-terminates to preserve the close-button behaviour.
+ * DIR-02 target: deliver a CLOSE event to the window owner for a graceful quit
+ * and force-kill only on timeout, and run the kill OUTSIDE mouse-IRQ context
  * (the IRQ-time process_terminate is the separate SCHED-03 follow-up). */
 void window_request_close(int pid) { process_terminate(pid); }
 
-/* Bounded focus boost (SCHED-01): the focused process is picked first for snappy
- * foreground response, but never more than FOCUS_BOOST_MAX times in a row — after
- * that one fair round-robin pick runs, so a CPU-bound focused process can never
- * monopolise a core and starve init/shell/everything else. Per-CPU streak. */
+/* Bounded focus boost (SCHED-01): the focused process is picked first for
+ * snappy foreground response, but never more than FOCUS_BOOST_MAX times in a
+ * row — after that one fair round-robin pick runs, so a CPU-bound focused
+ * process can never monopolise a core and starve init/nxshell/everything else.
+ * Per-CPU streak. */
 #define FOCUS_BOOST_MAX 4
 static uint32_t sched_focus_streak[MAX_CPUS];
 
@@ -214,7 +217,8 @@ static void reap_push(struct cpu_info *cpu, struct process *p) {
   cpu->deferred_free_proc = p;
 }
 
-/* Internal helper: Add task to runqueue (Caller MUST hold target->sched_lock) */
+/* Internal helper: Add task to runqueue (Caller MUST hold target->sched_lock)
+ */
 static void __enqueue_task(struct process *p) {
   /* SCHED-UAF-01: never (re)enqueue a terminated process.  process_terminate()
    * marks a victim PROC_DEAD under the owning CPU's sched_lock; this guard
@@ -420,14 +424,13 @@ void process_init(void) {
    * shrinks on small-RAM configurations; MAX_PROCESSES stays the array
    * bound.  Floor of 8 keeps init+services+shell bootable regardless. */
   uint64_t budget_pages = pmm_get_free_pages() / PROC_MEM_BUDGET_PAGES;
-  proc_limit = (budget_pages < MAX_PROCESSES) ? (int)budget_pages
-                                              : MAX_PROCESSES;
+  proc_limit =
+      (budget_pages < MAX_PROCESSES) ? (int)budget_pages : MAX_PROCESSES;
   if (proc_limit < 8)
     proc_limit = 8;
   pr_info("Process: limit %d (pool %d, %d reserved for SYSTEM/ROOT, "
           "%d children max per user process)\n",
-          proc_limit, MAX_PROCESSES, RESERVED_PROC_SLOTS,
-          MAX_PROCS_PER_PARENT);
+          proc_limit, MAX_PROCESSES, RESERVED_PROC_SLOTS, MAX_PROCS_PER_PARENT);
 
   /* Initialize ALL CPU Runqueues */
   for (int c = 0; c < MAX_CPUS; c++) {
@@ -617,7 +620,8 @@ struct process *process_create(const char *name, uint8_t priority,
 
 struct process *process_create_caps(const char *name, uint8_t priority,
                                     uint8_t level, uint32_t req_caps) {
-  pr_debug("Process: Creating '%s' (Prio=%d)\n", name, priority); /* hot path: demoted (perf §1) */
+  pr_debug("Process: Creating '%s' (Prio=%d)\n", name,
+           priority); /* hot path: demoted (perf §1) */
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
 
@@ -644,8 +648,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
     }
     if (active_count >= proc_limit - RESERVED_PROC_SLOTS) {
       spin_unlock_irqrestore(&sched_lock, flags);
-      pr_debug("Process: only reserved slots left, refusing user '%s'\n",
-               name);
+      pr_debug("Process: only reserved slots left, refusing user '%s'\n", name);
       return NULL;
     }
   }
@@ -676,8 +679,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   /* Address-space tag for TLB-tagged switches (perf §3): the pool slot+1, so it
    * is unique among all live address spaces (slots are unique while occupied).
    * 0 is reserved for the kernel/idle space.  The ISA layer (ASID on aarch64 /
-   * PCID on amd64) consumes this via arch_cpu_switch_context to switch without a
-   * full TLB flush; teardown clears the tag before the slot is recycled. */
+   * PCID on amd64) consumes this via arch_cpu_switch_context to switch without
+   * a full TLB flush; teardown clears the tag before the slot is recycled. */
   proc->asid = (uint16_t)(slot + 1);
 
   /* Priority normalization */
@@ -754,7 +757,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   proc->page_table = vmm_create_pgd();
 
   pr_debug("process_create: '%s' PID=%u slot=%u Prio=%d PageTable=%p\n", name,
-          (uint32_t)proc->pid, (uint32_t)slot, (int)proc->priority, (void*)proc->page_table);
+           (uint32_t)proc->pid, (uint32_t)slot, (int)proc->priority,
+           (void *)proc->page_table);
 
   /* Allocate and Setup Kernel Stack (16KB) */
   void *kstack_base = pmm_alloc_pages(STACK_SIZE / 4096);
@@ -779,7 +783,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   memset(proc->context, 0, sizeof(struct pt_regs));
 
   pr_debug("process_create: PID %d context allocated at %p (kstack=%lx)\n",
-          proc->pid, (void *)proc->context, proc->kernel_stack);
+           proc->pid, (void *)proc->context, proc->kernel_stack);
 
   proc->on_cpu = -1; /* Not running on any CPU */
 
@@ -806,12 +810,12 @@ struct process *process_create_caps(const char *name, uint8_t priority,
  */
 void smp_create_idle_task(uint32_t cpu_id) {
   extern void idle_task_entry(void);
-  
-  if (cpu_id >= MAX_CPUS) return;
 
-  struct process *idle =
-      process_create("idle", PROC_PRIO_IDLE, PLVL_MACHINE);
-  
+  if (cpu_id >= MAX_CPUS)
+    return;
+
+  struct process *idle = process_create("idle", PROC_PRIO_IDLE, PLVL_MACHINE);
+
   if (idle) {
     idle->on_cpu = cpu_id;
 
@@ -839,7 +843,6 @@ void smp_create_idle_task(uint32_t cpu_id) {
     hal_isb();
   }
 }
-
 
 /*
  * process_terminate - remove a process from the scheduler and free resources.
@@ -906,7 +909,8 @@ int process_terminate(int pid) {
     }
   }
 
-  pr_debug("Terminating process '%s' PID=%d\n", proc->name, pid); /* hot path: demoted (perf §1) */
+  pr_debug("Terminating process '%s' PID=%d\n", proc->name,
+           pid); /* hot path: demoted (perf §1) */
 
   /* Tear down any windows this process owns (compositor uses trylock, so this
    * is safe to call while holding sched_lock). */
@@ -1029,7 +1033,8 @@ int process_terminate(int pid) {
 
   process_handles_destroy(proc); /* close capability handles, free objects */
   if (proc->kernel_stack) {
-    pmm_free_pages((void *)(proc->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
+    pmm_free_pages((void *)(proc->kernel_stack - STACK_SIZE),
+                   STACK_SIZE / 4096);
   }
   if (proc->page_table) {
     vmm_destroy_pgd(proc->page_table);
@@ -1109,8 +1114,8 @@ void start_user_process(struct process *proc) {
  *
  * SCHED-01 (#83) RESOLVED: the scheduler no longer calls into the compositor.
  *          The focus boost reads the scheduler-owned keyboard_focus_pid hint
- *          directly (compositor + SYS_SET_FOCUS push updates to it), removing the
- *          kernel->compositor dependency and the per-schedule compositor_lock.
+ *          directly (compositor + SYS_SET_FOCUS push updates to it), removing
+ * the kernel->compositor dependency and the per-schedule compositor_lock.
  * NOTE(SCHED-02): Many pc==0 panic guards reflect past context-corruption
  *          bugs; the function is large and hard to audit. [W2 BAD-IMPL]
  */
@@ -1128,7 +1133,8 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
   struct cpu_info *cpu_ptr = get_cpu_info();
   if (!cpu_ptr) {
-    if (regs && pt_regs_pc(regs) == 0) panic("SCHED: [EARLY] pc==0 on return");
+    if (regs && pt_regs_pc(regs) == 0)
+      panic("SCHED: [EARLY] pc==0 on return");
     local_irq_restore(sched_irq_flags);
     return regs;
   }
@@ -1175,17 +1181,19 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
     /* Cancel any pending per-process timed-sleep timer BEFORE freeing the PCB,
      * so its callback (proc_sleep_wake) can never fire on freed memory. The
-     * external-kill path already does this in process_terminate(), and a process
-     * with an armed timer is PROC_SLEEPING (so it cannot self-exit) — but this
-     * defensive cancel makes the no-UAF invariant hold on EVERY free path
-     * (self-exit zombie, fault-kill, deferred reap) regardless. No-op if the
-     * timer is not armed; takes the owner CPU's timer_lock (no lock held here,
-     * no inversion). */
+     * external-kill path already does this in process_terminate(), and a
+     * process with an armed timer is PROC_SLEEPING (so it cannot self-exit) —
+     * but this defensive cancel makes the no-UAF invariant hold on EVERY free
+     * path (self-exit zombie, fault-kill, deferred reap) regardless. No-op if
+     * the timer is not armed; takes the owner CPU's timer_lock (no lock held
+     * here, no inversion). */
     timer_del(&to_free->sleep_timer);
 
-    process_handles_destroy(to_free); /* close capability handles, free objects */
+    process_handles_destroy(
+        to_free); /* close capability handles, free objects */
     if (to_free->kernel_stack)
-      pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
+      pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE),
+                     STACK_SIZE / 4096);
     if (to_free->page_table)
       vmm_destroy_pgd(to_free->page_table);
     pmm_free_page(to_free);
@@ -1200,7 +1208,8 @@ struct pt_regs *schedule(struct pt_regs *regs) {
    * delta since the last schedule on this CPU to whoever was running (prev),
    * then mark the start count for the task we are about to pick. A bare counter
    * read + subtraction — no divide in the hot path; conversion to ns happens
-   * only when the value is read. arch_timer_get_count() is lock-free/IRQ-safe. */
+   * only when the value is read. arch_timer_get_count() is lock-free/IRQ-safe.
+   */
   {
     uint64_t now_cnt = arch_timer_get_count();
     if (prev && cpu_ptr->sched_run_count)
@@ -1213,69 +1222,73 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
   /* if (cpu == 0) pr_info("Schedule Core 0\n"); */
   /* Priority Boosting: focus hint.
-   * SCHED-01 (#83) resolved — dependency inverted: the scheduler no longer calls
-   * INTO the compositor. It reads the scheduler-owned focus hint (keyboard_focus_pid,
-   * defined in this file) directly; the compositor and SYS_SET_FOCUS PUSH updates to
-   * it. This also drops compositor_get_focus_pid()'s compositor_lock acquisition from
-   * the schedule() hot path. The read is intentionally lockless: a stale value only
-   * mis-targets one boost for one tick, which is harmless for a priority hint. */
+   * SCHED-01 (#83) resolved — dependency inverted: the scheduler no longer
+   * calls INTO the compositor. It reads the scheduler-owned focus hint
+   * (keyboard_focus_pid, defined in this file) directly; the compositor and
+   * SYS_SET_FOCUS PUSH updates to it. This also drops
+   * compositor_get_focus_pid()'s compositor_lock acquisition from the
+   * schedule() hot path. The read is intentionally lockless: a stale value only
+   * mis-targets one boost for one tick, which is harmless for a priority hint.
+   */
   int focus_pid = keyboard_focus_pid;
 
-    /* 1. Handle Current Process */
-    if (prev) {
-      /* PROC_DEAD: externally terminated while running on this CPU.
-       * PROC_ZOMBIE: terminated itself (sys_exit or fault-path kill) and
-       * entered schedule() to switch away.  Both are corpses standing on
-       * their own kernel stack, so neither can be freed here: queue on the
-       * reap stack; the NEXT schedule() on this CPU frees them after the
-       * switch.  Auto-reaping zombies here (instead of waiting for a
-       * process_wait() that the shell never issues) closes the SCHED-03
-       * pool-slot/PGD leak: doom/demo3d no longer linger as ZOMBIE.
-       * Idle tasks never reach this point (they never exit and are
-       * machine-level-protected from process_terminate). */
-      if (prev->state == PROC_DEAD || prev->state == PROC_ZOMBIE) {
-        prev->on_cpu = -1;
-        reap_push(cpu_ptr, prev);
-        cpu_ptr->current_task = NULL;
-        prev = NULL;
-        prev_reaped = 1;
-        goto pick_next;
-      }
+  /* 1. Handle Current Process */
+  if (prev) {
+    /* PROC_DEAD: externally terminated while running on this CPU.
+     * PROC_ZOMBIE: terminated itself (sys_exit or fault-path kill) and
+     * entered schedule() to switch away.  Both are corpses standing on
+     * their own kernel stack, so neither can be freed here: queue on the
+     * reap stack; the NEXT schedule() on this CPU frees them after the
+     * switch.  Auto-reaping zombies here (instead of waiting for a
+     * process_wait() that the shell never issues) closes the SCHED-03
+     * pool-slot/PGD leak: doom/demo3d no longer linger as ZOMBIE.
+     * Idle tasks never reach this point (they never exit and are
+     * machine-level-protected from process_terminate). */
+    if (prev->state == PROC_DEAD || prev->state == PROC_ZOMBIE) {
+      prev->on_cpu = -1;
+      reap_push(cpu_ptr, prev);
+      cpu_ptr->current_task = NULL;
+      prev = NULL;
+      prev_reaped = 1;
+      goto pick_next;
+    }
 
-      /* Save current context if it was running */
-      if (regs) {
-        prev->context = regs;
-      }
+    /* Save current context if it was running */
+    if (regs) {
+      prev->context = regs;
+    }
 
-      /* Clear first_run flag since it has now been scheduled and preempted/yielded */
-      if (prev->first_run) {
-        prev->first_run = 0;
-      }
+    /* Clear first_run flag since it has now been scheduled and
+     * preempted/yielded */
+    if (prev->first_run) {
+      prev->first_run = 0;
+    }
 
-      if (prev->state == PROC_RUNNING) {
-        prev->time_slice--;
+    if (prev->state == PROC_RUNNING) {
+      prev->time_slice--;
 
-        if (prev->time_slice <= 0) {
-          /* Quantum Exhausted */
-          prev->time_slice = prev->quantum_reset;
-          prev->state = PROC_READY;
-        } else {
-          /* Preempted or yielded? Mark READY to allow others */
-          prev->state = PROC_READY;
-        }
-      }
-
-      if (prev->state == PROC_READY) {
-        /* Never re-enqueue the CPU-bound idle task. It must stay out of the
-         * runqueue to prevent work-stealing: two CPUs sharing one idle task's
-         * kernel stack causes context corruption (ELR=0 crashes). */
-        if (prev->priority != PROC_PRIO_IDLE) {
-          __enqueue_task(prev);
-        }
+      if (prev->time_slice <= 0) {
+        /* Quantum Exhausted */
+        prev->time_slice = prev->quantum_reset;
+        prev->state = PROC_READY;
       } else {
-        /* Task is sleeping or dying, keep on_cpu to indicate last CPU for affinity or tracking */
+        /* Preempted or yielded? Mark READY to allow others */
+        prev->state = PROC_READY;
       }
     }
+
+    if (prev->state == PROC_READY) {
+      /* Never re-enqueue the CPU-bound idle task. It must stay out of the
+       * runqueue to prevent work-stealing: two CPUs sharing one idle task's
+       * kernel stack causes context corruption (ELR=0 crashes). */
+      if (prev->priority != PROC_PRIO_IDLE) {
+        __enqueue_task(prev);
+      }
+    } else {
+      /* Task is sleeping or dying, keep on_cpu to indicate last CPU for
+       * affinity or tracking */
+    }
+  }
 
 pick_next:;
 
@@ -1320,7 +1333,8 @@ pick_local_retry:
 
   /* SCHED-UAF-01: a terminated process may still be sitting in a runqueue
    * (process_terminate() marks it DEAD without dequeuing).  Never run a corpse
-   * — a fault in it would halt amd64 (EXC-AMD64-02).  Reap it and pick again. */
+   * — a fault in it would halt amd64 (EXC-AMD64-02).  Reap it and pick again.
+   */
   if (next && next->state == PROC_DEAD) {
     reap_push(cpu_ptr, next);
     next = NULL;
@@ -1395,7 +1409,9 @@ found:
        * it would run a corpse whose stack and PGD the next drain frees while
        * they are still in use; that state machine breakage must be fatal. */
       if (prev_reaped) {
-        panic("SCHED: [CPU%d] reaped current task with no idle task to switch to", cpu);
+        panic(
+            "SCHED: [CPU%d] reaped current task with no idle task to switch to",
+            cpu);
       }
       if (regs && pt_regs_pc(regs) == 0) {
         panic("SCHED: [CPU%d] BUG pc==0 on idle-fallback return, PID %d", cpu,
@@ -1438,12 +1454,12 @@ found:
   /* Address-space switch is delegated entirely to arch_cpu_switch_context()
    * below — it is the SINGLE source of truth for both arches.  The previous
    * hal_vmm_set_pgd() block here was redundant AND buggy: next_pgd =
-   * virt_to_phys(next->page_table) is 0 when page_table == NULL (kernel thread /
-   * idle), so it SKIPPED the reload and left the previous (soon-to-be-freed)
+   * virt_to_phys(next->page_table) is 0 when page_table == NULL (kernel thread
+   * / idle), so it SKIPPED the reload and left the previous (soon-to-be-freed)
    * process PGD active (SCHED-UAF-01).  arch_cpu_switch_context now loads the
-   * shared kernel_pgd for NULL page_table on both amd64 and aarch64, and carries
-   * the per-arch TLB flush / barriers.  This call is unconditional on the switch
-   * path (the prev == next case returned early above). */
+   * shared kernel_pgd for NULL page_table on both amd64 and aarch64, and
+   * carries the per-arch TLB flush / barriers.  This call is unconditional on
+   * the switch path (the prev == next case returned early above). */
   __sync_fetch_and_add(&stat_ctx_switches, 1); /* perf brief §1 */
   arch_cpu_switch_context(next);
 
@@ -1526,33 +1542,33 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
     return -1;
   }
 
-  /* We must hold target->msg_lock while adding to its queue. 
-   * To avoid AB-BA deadlocks with sched_lock, we use trylock or 
+  /* We must hold target->msg_lock while adding to its queue.
+   * To avoid AB-BA deadlocks with sched_lock, we use trylock or
    * we ensure a fixed order: sched_lock -> target->msg_lock.
    */
   spin_lock(&target->msg_lock);
   list_add_tail(&node->list, &target->msg_queue);
-  
+
   /* Check if target is waiting */
   if (target->state == PROC_SLEEPING &&
       (target->ipc_target_pid == -1 ||
        target->ipc_target_pid == (int)msg->from)) {
-    
+
     /* Wake target: transition state while holding sched_lock is safe */
     target->state = PROC_READY;
-    
+
     /* To enqueue, we need target CPU's sched_lock */
     int t_id = (target->on_cpu >= 0) ? target->on_cpu : 0;
     struct cpu_info *target_cpu = &cpu_data[t_id];
-    
+
     spin_lock(&target_cpu->sched_lock);
     __enqueue_task(target);
     spin_unlock(&target_cpu->sched_lock);
   }
-  
+
   spin_unlock(&target->msg_lock);
   spin_unlock_irqrestore(&sched_lock, flags);
-  
+
   return 0;
 }
 
@@ -1573,7 +1589,8 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
   /* 1. Try to pop an existing message */
   struct ipc_node *node = pop_message(current_process, src_pid);
   if (node) {
-    if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) != 0) {
+    if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) !=
+        0) {
       /* Drop node and return error */
       kfree(node);
       return -EFAULT;
@@ -1627,7 +1644,8 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
 int sys_ipc_try_recv(int src_pid, void *msg_ptr) {
   struct ipc_node *node = pop_message(current_process, src_pid);
   if (node) {
-    if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) != 0) {
+    if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) !=
+        0) {
       kfree(node);
       return -1;
     }
@@ -1817,7 +1835,8 @@ long sys_sbrk(intptr_t increment) {
       }
       memset(paddr, 0, 4096);
       /* PAGE_USER_DATA: the user heap is never executable (W^X, ELF-02). */
-      if (vmm_map_page_locked(proc, vaddr, virt_to_phys(paddr), PAGE_USER_DATA) != 0) {
+      if (vmm_map_page_locked(proc, vaddr, virt_to_phys(paddr),
+                              PAGE_USER_DATA) != 0) {
         pmm_free_page(paddr);
         return -ENOMEM;
       }
