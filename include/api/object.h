@@ -56,6 +56,7 @@
                             * unprivileged, matching the compositor's open click-to-focus) */
 #define OBJ_CTL_CLOSE    5 /* WINDOW: destroy just this window (RIGHT_DESTROY)          */
 #define OBJ_CTL_SEEK     6 /* FILE: set the object's byte offset to arg; returns it     */
+#define OBJ_CTL_STAT     7 /* FILE: return the current size in bytes (lseek/stat)       */
 
 /* Namespaces for handle_create: how the `path` argument is interpreted. */
 #define OS1_NS_FS   1 /* path is a filesystem path → OBJ_TYPE_FILE            */

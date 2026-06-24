@@ -124,6 +124,19 @@ int main(void) {
   }
   check(win, "vfs-write-/reg", ok);
 
+  /* 10. FILE-object stat (Stage 4): OBJ_CTL_STAT reports the file size, matching
+   * the path-based size probe — a FILE handle can now report its own size. */
+  {
+    int hf = (int)OS1low_handle_create(OS1_NS_FS, "/etc/init.cfg",
+                                       OS1_RIGHT_READ, OBJ_TYPE_FILE);
+    long sz_obj = (hf >= 0) ? OS1_object_ctl(hf, OBJ_CTL_STAT, 0) : -1;
+    int sz_path = OS1_fs_read("/etc/init.cfg", 0, 0, 0); /* size probe */
+    ok = hf >= 0 && sz_obj > 0 && sz_obj == (long)sz_path;
+    check(win, "file-stat-object", ok);
+    if (hf >= 0)
+      OS1low_handle_close(hf);
+  }
+
   if (hr >= 0)
     OS1low_handle_close(hr);
   if (hw >= 0)
