@@ -129,6 +129,13 @@ int main(void) {
   if (hw >= 0)
     OS1low_handle_close(hw);
 
+  /* Clean up the keys we created this run (we own them) so re-running the test
+   * starts from a clean registry — first-writer-wins would otherwise reject the
+   * second run's writes to keys owned by this now-dead process. */
+  OS1_registry_del("capreg.test");
+  OS1_registry_del("ns4test.beta");
+  OS1_registry_del("ns4test.delta");
+
   printf("[capreg] done: %d failure(s)\n", failures);
   printf_win(win, "done: %d failure(s)\n", failures);
   for (int i = 0; i < 150; i++)

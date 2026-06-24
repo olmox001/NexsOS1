@@ -26,8 +26,10 @@
  * Security (LIB-REG-02): writes are first-writer-wins by owner_pid and gated by
  *   CAP_REG_WRITE (sys_registry) — a service's routing key cannot be hijacked.
  *
- * Locking: one registry_lock (IRQ-safe) guards the tree; critical sections are
- *   short (tree ops, not a full scan).  Per-subtree locking is a later refinement.
+ * Locking: a reader/writer lock — readers (get/enum/regfs reads) run
+ *   CONCURRENTLY, writers (set/del) are exclusive — so the read-heavy supervisory
+ *   namespace is not serialized.  IRQ-safe (sections run IRQs-off); per-subtree
+ *   locking is a later refinement.
  */
 
 #include <kernel/kmalloc.h>
@@ -60,7 +62,37 @@ struct reg_node {
 static struct reg_node reg_root_storage;
 static struct reg_node *const reg_root = &reg_root_storage;
 static int registry_count = 0;
-static DEFINE_SPINLOCK(registry_lock);
+
+/* Registry reader/writer lock (Phase 4.1 A-gap3): the supervisory namespace is
+ * read-heavy, so readers run CONCURRENTLY and only writers are exclusive — the
+ * registry is no longer serialized on every access (the old single spinlock).
+ * Critical sections run with IRQs disabled (an IRQ handler never reenters
+ * mid-section); registry writes never originate from IRQ context.
+ *   reg_res_lock — the shared resource: held by a writer, or collectively by the
+ *                  readers (first reader takes it, last reader releases it).
+ *   reg_cnt_lock — guards reg_readers across the reader lock/unlock transitions. */
+static DEFINE_SPINLOCK(reg_cnt_lock);
+static DEFINE_SPINLOCK(reg_res_lock);
+static int reg_readers;
+
+static void reg_read_lock(uint64_t *flags) {
+  spin_lock_irqsave(&reg_cnt_lock, flags);
+  if (++reg_readers == 1)
+    spin_lock(&reg_res_lock);  /* first reader excludes writers */
+  spin_unlock(&reg_cnt_lock);  /* keep IRQs off until reg_read_unlock */
+}
+static void reg_read_unlock(uint64_t flags) {
+  spin_lock(&reg_cnt_lock);    /* IRQs already disabled */
+  if (--reg_readers == 0)
+    spin_unlock(&reg_res_lock); /* last reader admits writers */
+  spin_unlock_irqrestore(&reg_cnt_lock, flags);
+}
+static void reg_write_lock(uint64_t *flags) {
+  spin_lock_irqsave(&reg_res_lock, flags); /* exclusive: waits out readers/writers */
+}
+static void reg_write_unlock(uint64_t flags) {
+  spin_unlock_irqrestore(&reg_res_lock, flags);
+}
 
 /* node_alloc - kmalloc + init a node for segment 'seg'.  NULL on OOM. */
 static struct reg_node *node_alloc(const char *seg) {
@@ -185,15 +217,15 @@ int registry_set(const char *key, const char *value, int owner_pid) {
     return -1;
 
   uint64_t flags;
-  spin_lock_irqsave(&registry_lock, &flags);
+  reg_write_lock(&flags);
 
   struct reg_node *n = walk_path(key, 1);
   if (!n) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_write_unlock(flags);
     return -1; /* empty key or OOM */
   }
   if (n->is_leaf && owner_pid != 0 && n->owner_pid != owner_pid) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_write_unlock(flags);
     pr_warn("registry: PID %d denied write to '%s' (owner PID %d)\n", owner_pid,
             key, n->owner_pid);
     return -EACCES;
@@ -205,7 +237,7 @@ int registry_set(const char *key, const char *value, int owner_pid) {
     n->owner_pid = owner_pid;
     registry_count++;
   }
-  spin_unlock_irqrestore(&registry_lock, flags);
+  reg_write_unlock(flags);
   return 0;
 }
 
@@ -218,16 +250,16 @@ int registry_get(const char *key, char *buffer, size_t size) {
     return -1;
 
   uint64_t flags;
-  spin_lock_irqsave(&registry_lock, &flags);
+  reg_read_lock(&flags);
 
   struct reg_node *n = walk_path(key, 0);
   if (!n || !n->is_leaf) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_read_unlock(flags);
     return -1;
   }
   strncpy(buffer, n->value, size - 1);
   buffer[size - 1] = '\0';
-  spin_unlock_irqrestore(&registry_lock, flags);
+  reg_read_unlock(flags);
   return 0;
 }
 
@@ -269,15 +301,15 @@ int registry_del(const char *key, int owner_pid) {
     return -1;
 
   uint64_t flags;
-  spin_lock_irqsave(&registry_lock, &flags);
+  reg_write_lock(&flags);
 
   struct reg_node *n = walk_path(key, 0);
   if (!n || n == reg_root || !n->is_leaf) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_write_unlock(flags);
     return -ENOENT;
   }
   if (owner_pid != 0 && n->owner_pid != owner_pid) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_write_unlock(flags);
     return -EACCES;
   }
 
@@ -294,7 +326,7 @@ int registry_del(const char *key, int owner_pid) {
     n = p;
   }
 
-  spin_unlock_irqrestore(&registry_lock, flags);
+  reg_write_unlock(flags);
   return 0;
 }
 
@@ -345,11 +377,11 @@ int registry_enum(const char *prefix, char *buf, size_t size) {
   path[0] = '\0';
 
   uint64_t flags;
-  spin_lock_irqsave(&registry_lock, &flags);
+  reg_read_lock(&flags);
   size_t off = 0;
   enum_dfs(reg_root, path, 0, sizeof(path), prefix, prefix_len, buf, size, &off);
   buf[off] = '\0';
-  spin_unlock_irqrestore(&registry_lock, flags);
+  reg_read_unlock(flags);
   return (int)off;
 }
 
@@ -393,17 +425,17 @@ static int regfs_open(struct vfs_mount *mnt, const char *path,
   regfs_path_to_key(path, key, sizeof(key));
 
   uint64_t flags;
-  spin_lock_irqsave(&registry_lock, &flags);
+  reg_read_lock(&flags);
   struct reg_node *n = key[0] ? walk_path(key, 0) : reg_root;
   if (!n) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_read_unlock(flags);
     return -1;
   }
   out->mnt = mnt;
   out->id = (uint64_t)(uintptr_t)n; /* nodes are never freed -> stable handle */
   out->type = n->is_leaf ? VFS_TYPE_FILE : VFS_TYPE_DIR;
   out->size = n->is_leaf ? (uint64_t)strlen(n->value) : 0;
-  spin_unlock_irqrestore(&registry_lock, flags);
+  reg_read_unlock(flags);
   return 0;
 }
 
@@ -413,20 +445,20 @@ static int regfs_read(struct vfs_node *node, uint64_t offset, void *buf,
   if (!n)
     return -1;
   uint64_t flags;
-  spin_lock_irqsave(&registry_lock, &flags);
+  reg_read_lock(&flags);
   if (!n->is_leaf) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_read_unlock(flags);
     return -1;
   }
   size_t vlen = strlen(n->value);
   if (offset >= vlen) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_read_unlock(flags);
     return 0;
   }
   size_t avail = vlen - (size_t)offset;
   size_t cnt = size < avail ? size : avail;
   memcpy(buf, n->value + (size_t)offset, cnt);
-  spin_unlock_irqrestore(&registry_lock, flags);
+  reg_read_unlock(flags);
   return (int)cnt;
 }
 
@@ -474,10 +506,10 @@ static int regfs_list(struct vfs_mount *mnt, const char *path, char *buf,
   regfs_path_to_key(path, key, sizeof(key));
 
   uint64_t flags;
-  spin_lock_irqsave(&registry_lock, &flags);
+  reg_read_lock(&flags);
   struct reg_node *n = key[0] ? walk_path(key, 0) : reg_root;
   if (!n) {
-    spin_unlock_irqrestore(&registry_lock, flags);
+    reg_read_unlock(flags);
     return -1;
   }
   size_t off = 0;
@@ -491,7 +523,7 @@ static int regfs_list(struct vfs_mount *mnt, const char *path, char *buf,
     off += nl;
   }
   buf[off] = '\0';
-  spin_unlock_irqrestore(&registry_lock, flags);
+  reg_read_unlock(flags);
   return (int)off;
 }
 
