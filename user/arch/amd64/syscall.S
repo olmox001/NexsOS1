@@ -318,6 +318,12 @@ _sys_chdir:
     syscall
     ret
 
+.global _sys_unlink
+_sys_unlink:
+    movq $SYS_UNLINK, %rax
+    syscall
+    ret
+
 .global _sys_getcwd
 _sys_getcwd:
     movq $SYS_GETCWD, %rax

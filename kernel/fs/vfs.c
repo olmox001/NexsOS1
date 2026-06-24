@@ -294,6 +294,18 @@ int vfs_list_dir(const char *path, char *buf, uint32_t size) {
 }
 
 /*
+ * vfs_unlink - remove the file/node at 'path' through the responsible mount.
+ * Returns 0, or negative (provider has no unlink, or its own error).
+ */
+int vfs_unlink(const char *path) {
+  const char *rel;
+  struct vfs_mount *mnt = vfs_resolve(path, &rel);
+  if (!mnt || !mnt->ops->unlink)
+    return -1;
+  return mnt->ops->unlink(mnt, rel);
+}
+
+/*
  * vfs_stat - fill st with size/type for path.  0 on success, -1 otherwise.
  */
 int vfs_stat(const char *path, struct vfs_stat *st) {

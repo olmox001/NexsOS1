@@ -481,6 +481,20 @@ static int regfs_list(struct vfs_mount *mnt, const char *path, char *buf,
   return (int)off;
 }
 
+/* regfs_unlink - remove the registry key at 'path' (rm /reg/...). */
+static int regfs_unlink(struct vfs_mount *mnt, const char *path) {
+  (void)mnt;
+  if (current_process && !proc_has_cap(current_process, CAP_REG_WRITE))
+    return -EPERM;
+  char key[MAX_KEY_LEN];
+  regfs_path_to_key(path, key, sizeof(key));
+  if (!key[0])
+    return -1;
+  int owner =
+      (current_process && !proc_is_machine(current_process)) ? (int)current_process->pid : 0;
+  return registry_del(key, owner);
+}
+
 static const struct fs_ops regfs_ops = {
     .name = "regfs",
     .mount = regfs_mount,
@@ -488,6 +502,7 @@ static const struct fs_ops regfs_ops = {
     .read = regfs_read,
     .write = regfs_write,
     .list = regfs_list,
+    .unlink = regfs_unlink,
 };
 
 /* registry_mount_vfs - mount the registry as the "/reg" namespace.  Call from

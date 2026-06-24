@@ -906,6 +906,17 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, 0);
     }
   } break;
+  case SYS_UNLINK:
+  {
+    char k_path[128];
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    char resolved_path[128];
+    vfs_resolve_path(k_path, resolved_path, 128);
+    pt_regs_set_return(frame, vfs_unlink(resolved_path));
+  } break;
   /* --- Object / capability ABI (ASTRA §6.1/6.2/6.5, kernel/object.h) ---
    * The real capability layer: unforgeable per-process handles to refcounted
    * kernel objects with separable/attenuable rights.  User pointers (path,

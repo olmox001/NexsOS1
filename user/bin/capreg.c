@@ -96,6 +96,15 @@ int main(void) {
   }
   check(win, "registry-del", ok);
 
+  /* 8. VFS unlink (Phase 4.1 A-gap1): remove a /reg key via the file path. */
+  OS1_registry_set("ns4test.gamma", "3");
+  ok = OS1_fs_unlink("/reg/ns4test/gamma") == 0;
+  if (ok) {
+    char tmp[8];
+    ok = OS1_registry_get("ns4test.gamma", tmp, sizeof(tmp)) != 0; /* gone */
+  }
+  check(win, "vfs-unlink-/reg", ok);
+
   if (hr >= 0)
     OS1low_handle_close(hr);
   if (hw >= 0)

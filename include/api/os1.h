@@ -85,6 +85,7 @@ extern int  _sys_recv(int pid, struct ipc_message *msg);
 extern int  _sys_list_dir(const char *path, char *buf, size_t size);
 extern int  _sys_chdir(const char *path);
 extern int  _sys_getcwd(char *buf, size_t size);
+extern int  _sys_unlink(const char *path);
 extern int  _sys_open(const char *path, int flags);
 extern int  _sys_close(int fd);
 extern long _sys_lseek(int fd, long offset, int whence);
@@ -253,6 +254,7 @@ int OS1_fs_read(const char *path, void *buf, int size, int offset);
 int OS1_fs_list(const char *path, char *buf, size_t size);
 int OS1_fs_chdir(const char *path);
 int OS1_fs_getcwd(char *buf, size_t size);
+int OS1_fs_unlink(const char *path); /* remove a file/node by path (VFS unlink) */
 int file_write(const char *path, const void *buf, int size, int offset);
 int file_read(const char *path, void *buf, int size, int offset);
 int list_dir(const char *path, char *buf, size_t size);
