@@ -1,0 +1,22 @@
+ifndef NEXSOS_SHARED_MAKE
+NEXSOS_SHARED_MAKE := 1
+include Makefile
+else
+
+# macOS host compatibility defaults.
+#
+# Keep project build logic in Makefile. This file should only describe the
+# toolchain/host differences needed to run the shared targets on Darwin.
+#
+# Ported from the old macOS Makefile body:
+# - aarch64 uses the Homebrew/osxct aarch64-none-elf toolchain
+# - no extra aarch64 atomics flag is needed with the pinned GCC 7.2.0 toolchain
+# - stat uses the BSD -f%z syntax
+
+AMD64_CROSS_COMPILE ?= x86_64-elf-
+AARCH64_CROSS_COMPILE ?= aarch64-none-elf-
+AARCH64_ARCH_CFLAGS_EXTRA ?=
+
+STAT_SIZE = stat -f%z
+
+endif

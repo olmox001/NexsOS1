@@ -1,16 +1,18 @@
-ifeq ($(shell uname -s),Linux)
-%:
-	@$(MAKE) -f Makefile.linux $@
-all:
-	@$(MAKE) -f Makefile.linux all
-
-else
-
 # Makefile for NexsOS1 (AMD64 / AArch64)
 # Cross-compilation for bare-metal kernel
 # ==============================================================================
 # Configuration
 # ==============================================================================
+
+NEXSOS_SHARED_MAKE := 1
+HOST_OS ?= $(shell uname -s)
+ifeq ($(HOST_OS),Linux)
+    include Makefile.linux
+else ifeq ($(HOST_OS),Darwin)
+    include Makefile.macos
+else
+    $(error Unsupported host OS "$(HOST_OS)"; add a host compatibility file)
+endif
 
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
@@ -37,7 +39,7 @@ COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
                -O2 -g
 
 ifeq ($(ARCH), amd64)
-    CROSS_COMPILE ?= x86_64-elf-
+    CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
     KERNEL_DIR = kernel
     BOOT_DIR   = boot/amd64
     ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
@@ -51,12 +53,12 @@ ifeq ($(ARCH), amd64)
     CFLAGS_BOOT = $(filter-out -mcmodel=large,$(COMMON_FLAGS)) $(INCLUDE) -m32
     QEMU = qemu-system-x86_64
 else
-    CROSS_COMPILE ?= aarch64-none-elf-
+    CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
     KERNEL_DIR = kernel
     BOOT_DIR   = boot/aarch64
     ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
     
-    ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57
+    ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57 $(AARCH64_ARCH_CFLAGS_EXTRA)
     ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
     
     LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
@@ -596,7 +598,7 @@ $(VIRT_DTB): | $(BUILD_DIR)
 	         -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
 	         -device virtio-blk-device,drive=hd0 \
 	         -machine dumpdtb=$@ 2>/dev/null
-	@echo "  [DTB]    Done ($$(stat -f%z $@ 2>/dev/null || stat -c%s $@) bytes)"
+	@echo "  [DTB]    Done ($$($(STAT_SIZE) $@) bytes)"
 
 # AArch64 run: use kernel.bin (raw binary) so QEMU's aarch64 boot stub sets x0 = dtb_addr.
 # A raw binary triggers QEMU's arm_load_kernel image-loading path; combined with -dtb,
@@ -653,5 +655,4 @@ ifeq ($(ARCH), aarch64)
     include user/bin/doom/doom-nexs-aarch64.make
 else ifeq ($(ARCH), amd64)
     include user/bin/doom/doom-nexs-amd64.make
-endif
 endif

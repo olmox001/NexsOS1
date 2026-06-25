@@ -29,6 +29,18 @@ warn()  { printf '\033[1;33m[toolchain]\033[0m %s\n' "$*"; }
 fail()  { printf '\033[1;31m[toolchain]\033[0m %s\n' "$*" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ "$(id -u)" = "0" ]; then
+    SUDO=()
+else
+    command -v sudo >/dev/null 2>&1 || fail "sudo not found; install sudo or run as root."
+    SUDO=(sudo)
+fi
+
+init_submodules() {
+    info "Initializing git submodules..."
+    (cd "$REPO_ROOT" && git submodule sync --recursive) || warn "Failed to sync submodules."
+    (cd "$REPO_ROOT" && git submodule update --init --recursive) || warn "Failed to initialize submodules."
+}
 
 # ==============================================================================
 # Configuration — bump these to upgrade the cross toolchain
@@ -60,9 +72,10 @@ install_packages() {
     case "$DISTRO" in
         ubuntu|debian|linuxmint|pop)
             info "Installing build dependencies and tools via apt..."
-            sudo apt-get update
-            sudo apt-get install -y \
+            "${SUDO[@]}" apt-get update
+            "${SUDO[@]}" apt-get install -y \
                 build-essential \
+                file \
                 bison flex \
                 libgmp-dev libmpc-dev libmpfr-dev \
                 texinfo \
@@ -75,8 +88,9 @@ install_packages() {
             ;;
         arch|manjaro|endeavouros)
             info "Installing build dependencies and tools via pacman..."
-            sudo pacman -Syu --noconfirm --needed \
+            "${SUDO[@]}" pacman -Syu --noconfirm --needed \
                 base-devel \
+                file \
                 gmp libmpc mpfr \
                 texinfo \
                 aarch64-linux-gnu-gcc \
@@ -86,9 +100,10 @@ install_packages() {
             ;;
         alpine)
             info "Installing build dependencies and tools via apk..."
-            sudo apk update
-            sudo apk add \
+            "${SUDO[@]}" apk update
+            "${SUDO[@]}" apk add \
                 build-base \
+                file \
                 bison flex \
                 gmp-dev mpc1-dev mpfr-dev \
                 texinfo \
@@ -148,7 +163,7 @@ build_cross_toolchain() {
     info "Building binutils (${JOBS} jobs)..."
     make -j"${JOBS}" -s
     info "Installing binutils..."
-    sudo make install -s
+    "${SUDO[@]}" make install -s
     cd "$BUILD_DIR"
 
     # --- gcc ---
@@ -170,22 +185,14 @@ build_cross_toolchain() {
     make all-gcc -j"${JOBS}" -s
     make all-target-libgcc -j"${JOBS}" -s
     info "Installing gcc..."
-    sudo make install-gcc -s
-    sudo make install-target-libgcc -s
+    "${SUDO[@]}" make install-gcc -s
+    "${SUDO[@]}" make install-target-libgcc -s
     cd "$BUILD_DIR"
 
     # Cleanup
     info "Cleaning up build directory..."
     rm -rf "$BUILD_DIR"
     info "${TARGET}-gcc ${GCC_VERSION} installed to ${PREFIX}."
-}
-
-# ==============================================================================
-# 3. Git submodules
-# ==============================================================================
-init_submodules() {
-    info "Initializing git submodules..."
-    (cd "$REPO_ROOT" && git submodule update --init --recursive) || warn "Failed to initialize submodules."
 }
 
 # ==============================================================================
@@ -211,9 +218,9 @@ verify_toolchain() {
     fi
 
     echo
-    info "make check ARCH=amd64:";   make -C "$REPO_ROOT" -f Makefile.linux check ARCH=amd64   || true
+    info "make check ARCH=amd64:";   make -C "$REPO_ROOT" check ARCH=amd64   || true
     echo
-    info "make check ARCH=aarch64:"; make -C "$REPO_ROOT" -f Makefile.linux check ARCH=aarch64 || true
+    info "make check ARCH=aarch64:"; make -C "$REPO_ROOT" check ARCH=aarch64 || true
     echo
     info "Toolchain ready. Build:  make all ARCH=amd64   |   make all ARCH=aarch64"
 }
@@ -224,6 +231,6 @@ verify_toolchain() {
 [ "$(uname -s)" = "Linux" ] || fail "This script targets Linux only."
 
 install_packages
-build_cross_toolchain
 init_submodules
+build_cross_toolchain
 verify_toolchain
