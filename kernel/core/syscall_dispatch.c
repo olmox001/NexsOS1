@@ -498,9 +498,22 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WINDOW_SET_FLAGS:
+  {
+    /* Window flags (top-most / hide / click-through) are a property of the
+     * window: only its owner — or a machine process — may set them, mirroring
+     * SYS_DESTROY_WINDOW.  Previously ungated, so any process could top-most or
+     * hide any window.  All legitimate callers (nxui/nxlauncher/notify_srv) set
+     * flags on their OWN window, so the owner check breaks nothing. */
+    extern int compositor_window_owner(int window_id);
+    int fowner = compositor_window_owner((int)arg0);
+    if (fowner >= 0 && fowner != (int)current_process->pid &&
+        !proc_is_machine(current_process)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     compositor_set_window_flags((int)arg0, (int)arg1);
     pt_regs_set_return(frame, 0);
-    break;
+  } break;
   case SYS_DESTROY_WINDOW:
   {
     /* ABI-04: only the window's owner (or a system process) may destroy it.
