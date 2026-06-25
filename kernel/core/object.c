@@ -522,8 +522,31 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
         kfree(node); /* release event / non-input: discard */
       }
     }
+  } else if (o->type == OBJ_TYPE_PROCESS) {
+    /* read = the process's live state as a text status block.  The process
+     * object NOTIFIES its state THROUGH the unified object mechanism (parallels
+     * OBJ_TYPE_WINDOW returning window_info) — not a side-channel.  Acquiring a
+     * READ handle is the ambient "status query" gate (sys_handle_create PROC
+     * branch); this is its payload.  A short buffer truncates, like the
+     * REGKEY/WINDOW reads. */
+    struct ps_info pi;
+    if (proc_get_info(o->pid, &pi) != 0) {
+      ret = -ESRCH;
+    } else {
+      char stbuf[256];
+      int len = snprintf(
+          stbuf, sizeof(stbuf),
+          "pid=%d\nname=%s\nstate=%s\nprio=%d\ncpu_ms=%llu\noncpu=%d\n", pi.pid,
+          pi.name, proc_state_name(pi.state), pi.priority,
+          (unsigned long long)pi.cpu_time, pi.on_cpu);
+      size_t cn = (len > 0) ? (size_t)len : 0;
+      if (cn > n)
+        cn = n;
+      ret = (cn > 0 && arch_copy_to_user(ubuf, stbuf, cn) != 0) ? -EFAULT
+                                                                : (long)cn;
+    }
   } else {
-    ret = -EINVAL; /* PROCESS object is not byte-readable */
+    ret = -EINVAL;
   }
 
   obj_unref(o);

@@ -1692,6 +1692,60 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
 }
 
 /*
+ * proc_state_name - human-readable scheduler state (PROC_*).  Used by the
+ * OBJ_TYPE_PROCESS object read: a process reports its live state THROUGH the
+ * unified object mechanism (sys_object_read), not a side-channel.
+ */
+const char *proc_state_name(int state) {
+  switch (state) {
+  case PROC_CREATED:
+    return "created";
+  case PROC_RUNNING:
+    return "running";
+  case PROC_SLEEPING:
+    return "sleeping";
+  case PROC_ZOMBIE:
+    return "zombie";
+  case PROC_DEAD:
+    return "dead";
+  case PROC_READY:
+    return "ready";
+  default:
+    return "unused";
+  }
+}
+
+/*
+ * proc_get_info - snapshot one live process by pid into *out (same fields as
+ * sys_getprocs).  Returns 0, or -1 if no such live process.  Takes sched_lock.
+ * The kernel-side accessor the OBJ_TYPE_PROCESS object read uses to expose a
+ * process's state (object.c cannot touch process_pool/sched_lock directly).
+ */
+int proc_get_info(int pid, struct ps_info *out) {
+  if (!out)
+    return -1;
+  int rc = -1;
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int i = 0; i < MAX_PROCESSES; i++) {
+    struct process *p = process_pool[i];
+    if (p && (int)p->pid == pid) {
+      out->pid = (int)p->pid;
+      strncpy(out->name, p->name, sizeof(out->name) - 1);
+      out->name[sizeof(out->name) - 1] = '\0';
+      out->state = p->state;
+      out->priority = p->priority;
+      out->cpu_time = timer_counts_to_ns(p->cpu_time_counts) / 1000000ULL;
+      out->on_cpu = p->on_cpu;
+      rc = 0;
+      break;
+    }
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return rc;
+}
+
+/*
  * sys_sysstats - OS1_sys_stats(buf, buf_size): copy one struct os1_sysstats
  * snapshot to userland (perf brief §1 instrumentation surface).  Sibling of
  * sys_getprocs/sys_get_identity; high-level OS1_ introspection, ungated (a

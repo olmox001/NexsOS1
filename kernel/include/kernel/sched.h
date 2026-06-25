@@ -277,6 +277,12 @@ int sched_get_focus_pid(void);
  * drive process lifecycle directly. */
 void window_request_close(int pid);
 long sys_getprocs(struct ps_info *user_buf, size_t max_count);
+/* Kernel-internal process introspection backing the OBJ_TYPE_PROCESS object read
+ * (a process reports its state through the object mechanism, kernel/core/object.c).
+ * proc_get_info: snapshot one pid into *out (0, or -1 if no such live proc).
+ * proc_state_name: human-readable PROC_* state. */
+int proc_get_info(int pid, struct ps_info *out);
+const char *proc_state_name(int state);
 /* OS1_sys_stats backend: one struct os1_sysstats snapshot to userland (perf
  * brief §1 instrumentation surface).  Forward-declared struct; the full layout
  * lives in include/api/sysstats.h. */
