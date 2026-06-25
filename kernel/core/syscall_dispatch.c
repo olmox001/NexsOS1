@@ -849,6 +849,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
+    /* unlink is a write-class modification: same capability gate as
+     * SYS_FILE_WRITE / open(write) — CAP_FS_WRITE plus the /sys,/bin read-only
+     * ACL for non-machine processes.  Closes the asymmetry (USR-SEC) where any
+     * process could unlink a path it was not allowed to write. */
+    if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    if (!proc_is_machine(current_process) &&
+        (strncmp(resolved_path, "/sys/", 5) == 0 ||
+         strncmp(resolved_path, "/bin/", 5) == 0)) {
+      pt_regs_set_return(frame, -EACCES);
+      break;
+    }
     pt_regs_set_return(frame, vfs_unlink(resolved_path));
   } break;
   /* --- Object / capability ABI (ASTRA §6.1/6.2/6.5, kernel/object.h) ---

@@ -105,6 +105,12 @@ int main(void) {
   }
   check(win, "vfs-unlink-/reg", ok);
 
+  /* 8b. unlink is capability-gated (uniform with file-write): a non-machine
+   * process cannot unlink under the read-only /sys,/bin trees even with
+   * CAP_FS_WRITE — closes the asymmetry where unlink bypassed the write ACL. */
+  ok = OS1_fs_unlink("/sys/bin/nxui") == -EACCES;
+  check(win, "deny-unlink-/sys", ok);
+
   /* 9. VFS write to /reg (Phase 4.1 A-gap2): write a new key via the file path,
    * then overlay at an offset; both reflect in the registry. */
   ok = OS1_fs_write("/reg/ns4test/delta", "abc", 3, 0) == 3;
