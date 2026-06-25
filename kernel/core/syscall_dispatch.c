@@ -777,6 +777,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, ret);
   } break;
   case SYS_SET_FONT:
+    /* Replacing the GLOBAL system font is a desktop-wide display change (it
+     * affects every window): same capability gate as set_style/set_zoom
+     * (CAP_WINDOW).  Previously ungated — any process could restyle the desktop. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     pt_regs_set_return(frame, sys_set_font((void *)arg0, (size_t)arg1));
     break;
   case SYS_LIST_DIR:
