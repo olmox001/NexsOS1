@@ -283,6 +283,7 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count);
  * proc_state_name: human-readable PROC_* state. */
 int proc_get_info(int pid, struct ps_info *out);
 const char *proc_state_name(int state);
+int proc_enum_pids(int *pids, int max); /* live pids -> 'pids' (cap 'max'); /proc listing */
 /* OS1_sys_stats backend: one struct os1_sysstats snapshot to userland (perf
  * brief §1 instrumentation surface).  Forward-declared struct; the full layout
  * lives in include/api/sysstats.h. */

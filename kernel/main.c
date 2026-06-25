@@ -20,6 +20,7 @@
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
+#include <kernel/procfs.h>
 #include <kernel/sched.h>
 #include <kernel/ssp.h>
 #include <kernel/string.h>
@@ -233,6 +234,9 @@ static void init_memory(void) {
   /* Mount it as the "/reg" file namespace (Plan 9-style): registry state is now
    * reachable through the uniform VFS (e.g. cat /reg/system/hostname). */
   registry_mount_vfs();
+  /* Mount /proc: live processes as TYPED capability objects in the namespace
+   * (open /proc/<pid> -> an OBJ_TYPE_PROCESS object). */
+  procfs_init();
   pr_info("%s", "Registry: Initialized.\n");
 
   /* Note: Slab allocator (kmalloc) is auto-initialized on first use. */

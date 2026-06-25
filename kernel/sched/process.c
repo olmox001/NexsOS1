@@ -1746,6 +1746,24 @@ int proc_get_info(int pid, struct ps_info *out) {
 }
 
 /*
+ * proc_enum_pids - fill 'pids' with up to 'max' live process ids; returns the
+ * count.  Backs the /proc namespace directory listing (each pid is a PROCESS
+ * capability object).  Takes sched_lock.
+ */
+int proc_enum_pids(int *pids, int max) {
+  if (!pids || max <= 0)
+    return 0;
+  int n = 0;
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int i = 0; i < MAX_PROCESSES && n < max; i++)
+    if (process_pool[i])
+      pids[n++] = (int)process_pool[i]->pid;
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return n;
+}
+
+/*
  * sys_sysstats - OS1_sys_stats(buf, buf_size): copy one struct os1_sysstats
  * snapshot to userland (perf brief §1 instrumentation surface).  Sibling of
  * sys_getprocs/sys_get_identity; high-level OS1_ introspection, ungated (a

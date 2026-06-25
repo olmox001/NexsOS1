@@ -190,6 +190,34 @@ int vfs_open(const char *path, struct vfs_node *out) {
 }
 
 /*
+ * vfs_resolve_object - resolve a path to the TYPED object it names.  A provider
+ * with an object_at op maps the path to its native object type (e.g. /proc/<pid>
+ * -> OBJ_TYPE_PROCESS); a provider without one (ext4, regfs) yields a plain FILE
+ * object via open().  This is the namespace→object bridge behind open() ≡
+ * handle_create(OS1_NS_FS): everything resolvable in the namespace is an object.
+ * Returns 0 (out filled), -1 not found, -2 the path is a directory.
+ */
+int vfs_resolve_object(const char *path, struct vfs_objref *out) {
+  if (!path || !out)
+    return -1;
+  const char *rel;
+  struct vfs_mount *mnt = vfs_resolve(path, &rel);
+  if (!mnt || !mnt->ops)
+    return -1;
+  if (mnt->ops->object_at)
+    return mnt->ops->object_at(mnt, rel, out);
+  /* Default: the provider's paths are plain FILE objects. */
+  if (!mnt->ops->open)
+    return -1;
+  struct vfs_node node;
+  if (mnt->ops->open(mnt, rel, &node) != 0)
+    return -1;
+  out->obj_type = OBJ_TYPE_FILE;
+  out->node = node;
+  return (node.type == VFS_TYPE_DIR) ? -2 : 0;
+}
+
+/*
  * vfs_read - random-access read from an open node.
  * Returns bytes read (clamped at EOF) or negative on error.
  */

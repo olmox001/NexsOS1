@@ -160,31 +160,54 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
   if (handles_ensure(cur) != 0)
     return -ENOMEM;
 
-  if (ns == OS1_NS_FS && type == OBJ_TYPE_FILE) {
+  if (ns == OS1_NS_FS) {
+    /* open() ≡ handle_create(OS1_NS_FS): the PATH'S PROVIDER decides the object
+     * TYPE (FILE for ext4/regfs, PROCESS for /proc/<pid>, …) — the namespace IS
+     * the object space.  The 'type' argument is only a hint; the resolution is
+     * the single source of truth. */
+    (void)type;
     char resolved[OBJ_FILE_PATH_MAX];
     vfs_resolve_path(kpath, resolved, OBJ_FILE_PATH_MAX);
-    /* Ambient gate to ACQUIRE a write capability: identical to SYS_OPEN. */
-    if (rights & OS1_RIGHT_WRITE) {
-      if (!proc_has_cap(cur, CAP_FS_WRITE))
-        return -EPERM;
-      if (!proc_is_machine(cur) &&
-          (strncmp(resolved, "/sys/", 5) == 0 ||
-           strncmp(resolved, "/bin/", 5) == 0))
-        return -EACCES;
-    }
-    struct vfs_node node;
-    if (vfs_open(resolved, &node) != 0)
-      return -ENOENT;
-    if (node.type != VFS_TYPE_FILE)
+    struct vfs_objref ref;
+    memset(&ref, 0, sizeof(ref));
+    int rr = vfs_resolve_object(resolved, &ref);
+    if (rr == -2)
       return -EISDIR;
+    if (rr != 0)
+      return -ENOENT;
 
-    struct kobject *o = kobj_alloc(OBJ_TYPE_FILE);
-    if (!o)
-      return -ENOMEM;
-    o->node = node;
-    o->offset = 0;
-    strncpy(o->path, resolved, OBJ_FILE_PATH_MAX - 1);
-    o->path[OBJ_FILE_PATH_MAX - 1] = '\0';
+    struct kobject *o;
+    if (ref.obj_type == OBJ_TYPE_FILE) {
+      /* Ambient gate to ACQUIRE a write capability: identical to SYS_OPEN. */
+      if (rights & OS1_RIGHT_WRITE) {
+        if (!proc_has_cap(cur, CAP_FS_WRITE))
+          return -EPERM;
+        if (!proc_is_machine(cur) &&
+            (strncmp(resolved, "/sys/", 5) == 0 ||
+             strncmp(resolved, "/bin/", 5) == 0))
+          return -EACCES;
+      }
+      o = kobj_alloc(OBJ_TYPE_FILE);
+      if (!o)
+        return -ENOMEM;
+      o->node = ref.node;
+      o->offset = 0;
+      strncpy(o->path, resolved, OBJ_FILE_PATH_MAX - 1);
+      o->path[OBJ_FILE_PATH_MAX - 1] = '\0';
+    } else if (ref.obj_type == OBJ_TYPE_PROCESS) {
+      /* Same acquisition gate as OS1_NS_PROC: a destructive handle (kill /
+       * IPC-send) needs kill authority; a READ/WAIT status handle only needs the
+       * process to exist (object_at already verified it). */
+      if ((rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) &&
+          !process_kill_allowed(cur, ref.pid))
+        return -EPERM;
+      o = kobj_alloc(OBJ_TYPE_PROCESS);
+      if (!o)
+        return -ENOMEM;
+      o->pid = ref.pid;
+    } else {
+      return -EINVAL; /* namespace path resolved to an unsupported type */
+    }
 
     uint64_t flags;
     spin_lock_irqsave(&object_lock, &flags);
