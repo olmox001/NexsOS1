@@ -564,22 +564,6 @@ int process_ipc_allowed(struct process *caller, int target_pid) {
 }
 
 /*
- * process_fd_init - reset the fd table and pre-open the standard trio
- * (ABI-03, kernel/fd.h): fd 0 = keyboard stdin, fd 1/2 = the process's own
- * compositor window (win_id -1, resolved by PID at write time because the
- * window is usually created after spawn).  Entries hold no kernel-owned
- * resources, so there is no matching teardown pass.
- */
-void process_fd_init(struct process *proc) {
-  memset(proc->fds, 0, sizeof(proc->fds));
-  proc->fds[0].type = FD_KBD;
-  proc->fds[1].type = FD_WIN;
-  proc->fds[1].win_id = -1;
-  proc->fds[2].type = FD_WIN;
-  proc->fds[2].win_id = -1;
-}
-
-/*
  * process_create - allocate and initialise a new process descriptor.
  *
  * Allocates a single PMM page for the struct process, assigns a PID from
@@ -729,7 +713,6 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   else
     strncpy(proc->cwd, "/", sizeof(proc->cwd));
   proc->cwd[sizeof(proc->cwd) - 1] = '\0';
-  process_fd_init(proc);
 
   /* Add to pool */
   process_pool[slot] = proc;
@@ -752,6 +735,21 @@ struct process *process_create_caps(const char *name, uint8_t priority,
     extern int compositor_get_window_by_pid(int pid);
     int term = compositor_get_window_by_pid((int)creator->pid);
     proc->ctty_win = (term > 0) ? term : creator->ctty_win;
+  }
+
+  /* stdin/stdout/stderr as capability handles 0/1/2 (ASTRA §6.2: the fd table
+   * folded into the object table — replaces the old process_fd_init).  Done
+   * outside sched_lock (it kmalloc's the handle table + console object, taking
+   * object_lock) — after ctty so the console's stdout resolves correctly.  On
+   * OOM roll back the pool slot exactly like the kernel-stack failure path. */
+  if (process_install_stdio(proc) != 0) {
+    spin_lock_irqsave(&sched_lock, &flags);
+    process_pool[slot] = NULL;
+    active_count--;
+    __child_count_dec(proc);
+    spin_unlock_irqrestore(&sched_lock, flags);
+    pmm_free_page(proc);
+    return NULL;
   }
 
   proc->page_table = vmm_create_pgd();

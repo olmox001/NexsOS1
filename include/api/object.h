@@ -31,7 +31,12 @@
 #define OBJ_TYPE_REGKEY  3 /* a registry key: read/write its value (§6.6)     */
 #define OBJ_TYPE_WINDOW  4 /* a compositor window: read info / minimize / restore /
                             * focus / close via a handle (ASTRA §6.7)         */
-#define OBJ_TYPE_COUNT   5 /* number of distinct OBJ_TYPE_* values (NONE..WINDOW);
+#define OBJ_TYPE_CONSOLE 5 /* a controlling-terminal stream (stdin/stdout/stderr):
+                            * read() drains keyboard input, write() goes to the
+                            * caller's window/ctty.  Handles 0/1/2 are pre-installed
+                            * as this (ASTRA §6.2 "Input device" + window-stream);
+                            * the per-process fd table folded into it.         */
+#define OBJ_TYPE_COUNT   6 /* number of distinct OBJ_TYPE_* values (NONE..CONSOLE);
                             * sizes per-type accounting arrays (e.g. live-object
                             * stats in include/api/sysstats.h)                 */
 /* Reserved for later migrations (ASTRA §6.2/§6.7): gpu, audio. */

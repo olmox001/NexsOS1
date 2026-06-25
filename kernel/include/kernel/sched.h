@@ -2,7 +2,6 @@
 #define _KERNEL_SCHED_H
 
 #include <drivers/timer.h>
-#include <kernel/fd.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
@@ -144,17 +143,13 @@ struct process {
   /* Filesystem state */
   char cwd[128]; /* Current Working Directory */
 
-  /* File-descriptor table (ABI-03, kernel/fd.h).  0/1/2 pre-opened by
-   * process_create(); entries hold no kernel-owned resources, so teardown
-   * needs no cleanup pass.  Touched only by the owning process from
-   * syscall context — no lock. */
-  struct fd_entry fds[NPROC_FDS];
-
-  /* Capability handle table (object/capability ABI, kernel/object.h).  NULL
-   * until the process first uses the object syscalls (zeroed by the create-time
-   * memset), lazily allocated then, freed by process_handles_destroy() at
-   * teardown.  Generalizes the fd table above into unforgeable handles to
-   * refcounted kernel objects with attenuable rights (ASTRA §6.1/6.2/6.5). */
+  /* Capability handle table (object/capability ABI, kernel/object.h) — the ONE
+   * per-process descriptor table (ASTRA §6.2: the fd table folded into it).  A
+   * POSIX fd IS a handle (fd N == handle N): process_create() pre-installs
+   * handles 0/1/2 as the stdin/stdout/stderr CONSOLE object, open() installs
+   * FILE handles >= 3, and the object syscalls share the same table.
+   * Unforgeable handles to refcounted kernel objects with attenuable rights;
+   * freed by process_handles_destroy() at teardown. */
   struct handle_entry *handles;
 };
 

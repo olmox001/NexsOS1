@@ -499,6 +499,29 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
       ret = (cn > 0 && arch_copy_to_user(ubuf, &wi, cn) != 0) ? -EFAULT
                                                               : (long)cn;
     }
+  } else if (o->type == OBJ_TYPE_CONSOLE) {
+    /* stdin: drain the IPC input queue for one pressed/repeat key (the folded-in
+     * FD_KBD path).  Release events and non-input messages are discarded, as
+     * before.  When nothing is pending we return -EAGAIN; the SYS_READ
+     * dispatcher turns that into a blocking sleep — rescheduling needs the trap
+     * frame, which lives in the dispatcher, not here. */
+    if (n == 0) {
+      ret = 0;
+    } else {
+      ret = -EAGAIN;
+      while (1) {
+        struct ipc_node *node = pop_message(current_process, -1); /* from ANY */
+        if (!node)
+          break; /* queue empty → -EAGAIN, caller blocks */
+        if (node->msg.type == IPC_TYPE_INPUT && node->msg.data2 != 0) {
+          char c = (char)node->msg.data1;
+          ret = (arch_copy_to_user(ubuf, &c, 1) != 0) ? -EFAULT : 1;
+          kfree(node);
+          break;
+        }
+        kfree(node); /* release event / non-input: discard */
+      }
+    }
   } else {
     ret = -EINVAL; /* PROCESS object is not byte-readable */
   }
@@ -580,6 +603,17 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
         ret = (rc == 0) ? (long)n : (rc == -EACCES ? -EACCES : -EINVAL);
       }
     }
+  } else if (o->type == OBJ_TYPE_CONSOLE) {
+    /* stdout/stderr: resolve the caller's OWN window first (a process with its
+     * own window renders there), else its controlling terminal (the launching
+     * shell) — the folded-in FD_WIN path.  window_text_write copies the user
+     * buffer and mirrors it to the UART. */
+    int win_id = current_process
+                     ? compositor_get_window_by_pid((int)current_process->pid)
+                     : -1;
+    if (win_id <= 0 && current_process)
+      win_id = current_process->ctty_win;
+    ret = window_text_write(win_id, (const char *)ubuf, n);
   } else {
     ret = -EINVAL;
   }
@@ -717,6 +751,81 @@ long sys_object_ctl(int handle, int cmd, long arg) {
   }
 
   return -EINVAL;
+}
+
+/*
+ * sys_object_lseek - POSIX lseek(2) on a FILE handle: reposition the shared byte
+ * offset per 'whence' and return the new absolute position.  SEEK_END reads the
+ * live size (vfs_stat) so it tracks growth by another handle.  A non-seekable
+ * object (CONSOLE stdin/stdout/stderr, …) returns -ESPIPE.  Positioning needs
+ * only the handle itself (no rights), matching OBJ_CTL_SEEK.
+ */
+long sys_object_lseek(int handle, long off, int whence) {
+  long err = 0;
+  struct kobject *o = pin_handle(handle, 0, &err);
+  if (!o)
+    return err;
+  long ret;
+  if (o->type != OBJ_TYPE_FILE) {
+    ret = -ESPIPE; /* streams cannot seek */
+  } else {
+    long base;
+    if (whence == SEEK_SET) {
+      base = 0;
+    } else if (whence == SEEK_CUR) {
+      base = (long)o->offset;
+    } else if (whence == SEEK_END) {
+      struct vfs_stat st;
+      base = (vfs_stat(o->path, &st) == 0) ? (long)st.size : (long)o->node.size;
+    } else {
+      base = -1; /* invalid whence */
+    }
+    if (base < 0) {
+      ret = -EINVAL;
+    } else {
+      long npos = base + off;
+      if (npos < 0) {
+        ret = -EINVAL;
+      } else {
+        o->offset = (uint64_t)npos;
+        ret = npos;
+      }
+    }
+  }
+  obj_unref(o);
+  return ret;
+}
+
+/*
+ * process_install_stdio - give a freshly created process its stdin/stdout/stderr
+ * as capability handles (ASTRA §6.2: the fd table folds into the object table).
+ * Handles 0/1/2 share ONE refcounted CONSOLE object — a process has a single
+ * controlling terminal: handle 0 holds READ (stdin keyboard drain), handles 1/2
+ * hold WRITE (stdout/stderr → the process's own window, else its ctty).  The
+ * table is allocated eagerly so every process is born with the trio, replacing
+ * the old fd-table pre-open.  Returns 0, or -ENOMEM.
+ */
+int process_install_stdio(struct process *p) {
+  if (!p)
+    return -EINVAL;
+  if (handles_ensure(p) != 0)
+    return -ENOMEM;
+  struct kobject *con = kobj_alloc(OBJ_TYPE_CONSOLE);
+  if (!con)
+    return -ENOMEM;
+  uint64_t flags;
+  spin_lock_irqsave(&object_lock, &flags);
+  /* Slots 0/1/2 of a just-allocated table are free; install the shared console
+   * directly (not via the find-free path, which is for handles >= 3). */
+  p->handles[0].obj = con;
+  p->handles[0].rights = OS1_RIGHT_READ;
+  p->handles[1].obj = con;
+  p->handles[1].rights = OS1_RIGHT_WRITE;
+  p->handles[2].obj = con;
+  p->handles[2].rights = OS1_RIGHT_WRITE;
+  con->refcount = 3; /* three handles reference it */
+  spin_unlock_irqrestore(&object_lock, flags);
+  return 0;
 }
 
 /*
