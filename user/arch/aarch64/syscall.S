@@ -39,7 +39,6 @@ _start:
 .global _sys_send
 .global _sys_recv
 .global _sys_draw
-.global _sys_flush
 .global _sys_create_window
 .global _sys_window_draw
 .global _sys_window_write
@@ -149,12 +148,6 @@ _sys_clock_gettime:
 /* Args: x0, x1, x2, x3, x4 */
 _sys_draw:
     mov x8, #SYS_DRAW
-    svc #0
-    ret
-
-/* void _sys_flush(void) */
-_sys_flush:
-    mov x8, #SYS_FLUSH
     svc #0
     ret
 

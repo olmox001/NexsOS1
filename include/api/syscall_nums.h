@@ -37,7 +37,8 @@
 
 /* --- Graphics / compositor --- */
 #define SYS_DRAW               200
-#define SYS_FLUSH              201
+/* 201 retired: SYS_FLUSH was a duplicate of SYS_COMPOSITOR_RENDER (212) — both
+ * just pushed the compositor.  Unified onto 212; flush() now routes there. */
 #define SYS_WINDOW_ENUM        202  /* enumerate windows → struct window_info[]; returns count */
 #define SYS_CREATE_WINDOW      210
 #define SYS_WINDOW_DRAW        211

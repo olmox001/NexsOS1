@@ -120,12 +120,6 @@ _sys_draw:
     syscall
     ret
 
-.global _sys_flush
-_sys_flush:
-    movq $SYS_FLUSH, %rax
-    syscall
-    ret
-
 .global _sys_create_window
 _sys_create_window:
     movq $SYS_CREATE_WINDOW, %rax

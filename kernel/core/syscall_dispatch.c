@@ -331,10 +331,6 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     graphics_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (uint32_t)arg4);
     pt_regs_set_return(frame, 0);
     break;
-  case SYS_FLUSH:
-    compositor_render();
-    pt_regs_set_return(frame, 0);
-    break;
   case SYS_WINDOW_ENUM: {
     /* Read-only window enumeration → struct window_info[] (ASTRA §6.7); ungated
      * like SYS_GETPROCS.  The dock /sys/bin/nxui lays out its app list from it. */
@@ -490,6 +486,15 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   }
   case SYS_COMPOSITOR_RENDER:
+    /* The single compositor-push syscall (the duplicate SYS_FLUSH was retired
+     * and folded here).  Forcing a global re-render is a display effect: gated by
+     * CAP_WINDOW, so a capability-stripped worker (spawned without CAP_WINDOW)
+     * cannot drive the compositor.  Every default preset (incl. GUEST) holds
+     * CAP_WINDOW, and machine processes bypass — so nothing legitimate breaks. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     compositor_render();
     pt_regs_set_return(frame, 0);
     break;
