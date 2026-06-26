@@ -358,6 +358,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
+    /* SCHED-UAF: a process being torn down must not create a NEW window after
+     * process_terminate already destroyed its windows — it would be orphaned
+     * (owner dead -> un-closeable).  The killer sets ->dying before the teardown. */
+    if (current_process->dying) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     struct cpu_info *cpu = get_cpu_info();
     char *k_title = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {

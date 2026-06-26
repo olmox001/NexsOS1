@@ -86,6 +86,10 @@ struct process {
                       * deferred reaper (reap_push); a second push (prev==DEAD on
                       * one CPU racing a stale runqueue pick on another) is
                       * dropped, so its pages are never double-freed. */
+  uint8_t dying;     /* set by process_terminate BEFORE it tears down this
+                      * process's windows; SYS_CREATE_WINDOW refuses for a dying
+                      * process, so it cannot orphan a fresh window created after
+                      * the teardown (the un-closeable-window leak). */
   int priority;      /* 0 (High) - 31 (Low) */
   int time_slice;    /* Ticks remaining */
   int quantum_reset; /* Reset value */

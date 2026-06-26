@@ -995,8 +995,15 @@ int process_terminate(int pid) {
   pr_debug("Terminating process '%s' PID=%d\n", proc->name,
            pid); /* hot path: demoted (perf §1) */
 
-  /* Tear down any windows this process owns (compositor uses trylock, so this
-   * is safe to call while holding sched_lock). */
+  /* Tear down any windows this process owns.  Mark ->dying FIRST so a racing
+   * SYS_CREATE_WINDOW on this process's own CPU is refused — otherwise it could
+   * create a fresh window AFTER this teardown, leaving an orphan whose owner is
+   * already dead (un-closeable by the red button: the maintainer's leak).
+   * compositor_destroy_windows_by_pid takes compositor_lock (BLOCKING) — this is
+   * the sched_lock -> compositor_lock order (Pitfall A); nothing may take the two
+   * in reverse, which is why the compositor never reaps orphans by calling back
+   * into the scheduler. */
+  proc->dying = 1;
   extern void compositor_destroy_windows_by_pid(int pid);
   compositor_destroy_windows_by_pid(pid);
 
