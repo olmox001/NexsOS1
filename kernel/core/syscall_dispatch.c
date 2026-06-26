@@ -633,7 +633,15 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
-    pt_regs_set_return(frame, process_terminate((int)arg0));
+    /* External kill of ANOTHER process is window-aware (kill the target + its
+     * windowless/in-shell descendants, SPARE windowed apps — PROCESS-KILL-MODEL).
+     * Killing SELF stays single-process, like exit. */
+    if (current_process && (int)arg0 == (int)current_process->pid) {
+      pt_regs_set_return(frame, process_terminate((int)arg0));
+    } else {
+      process_kill_subtree((int)arg0);
+      pt_regs_set_return(frame, 0);
+    }
     break;
   case SYS_GETPROCS:
     pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));

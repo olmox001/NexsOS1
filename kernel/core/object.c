@@ -708,8 +708,15 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     struct kobject *o = pin_handle(handle, OS1_RIGHT_DESTROY, &err);
     if (!o)
       return err;
-    long ret = (o->type == OBJ_TYPE_PROCESS) ? (long)process_terminate(o->pid)
-                                             : -EINVAL;
+    long ret;
+    if (o->type == OBJ_TYPE_PROCESS) {
+      /* window-aware kill: the target + its windowless helpers die; its own
+       * windowed children are spared (docs/PROCESS-KILL-MODEL.md). */
+      process_kill_subtree(o->pid);
+      ret = 0;
+    } else {
+      ret = -EINVAL;
+    }
     obj_unref(o);
     return ret;
   }
@@ -744,14 +751,15 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     } else if (cmd == OBJ_CTL_FOCUS) {
       ret = compositor_focus_window(o->window_id);
     } else { /* OBJ_CTL_CLOSE */
-      /* Close TERMINATES the owning process, consistent with the titlebar red
-       * button (window_request_close -> process_terminate).  Previously this
-       * only destroyed the WINDOW (compositor_destroy_window), so an app closed
-       * from the dock vanished from screen/dock but kept running headless in the
-       * background (visible in nxproc) — the "close does not kill" bug.
-       * process_terminate's teardown destroys the process's windows; machine-
-       * level owners stay protected inside process_terminate. */
-      ret = (long)process_terminate(o->pid);
+      /* Close TERMINATES the owning process (window-aware, docs/PROCESS-KILL-
+       * MODEL.md): the target app and its windowless helpers die, while its own
+       * windowed children are SPARED (the user closes those via their red
+       * button).  Consistent with the titlebar red button (window_request_close).
+       * Previously a plain process_terminate; before THAT it only destroyed the
+       * WINDOW, leaving the app headless ("close does not kill").  Machine-level
+       * owners stay protected inside process_terminate. */
+      process_kill_subtree(o->pid);
+      ret = 0;
     }
     obj_unref(o);
     return ret;

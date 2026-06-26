@@ -177,7 +177,7 @@ int sched_get_focus_pid(void) { return keyboard_focus_pid; }
  * DIR-02 target: deliver a CLOSE event to the window owner for a graceful quit
  * and force-kill only on timeout, and run the kill OUTSIDE mouse-IRQ context
  * (the IRQ-time process_terminate is the separate SCHED-03 follow-up). */
-void window_request_close(int pid) { process_terminate(pid); }
+void window_request_close(int pid) { process_kill_subtree(pid); }
 
 /* Bounded focus boost (SCHED-01): the focused process is picked first for
  * snappy foreground response, but never more than FOCUS_BOOST_MAX times in a
@@ -1139,6 +1139,96 @@ int process_terminate(int pid) {
   pmm_free_page(proc);
 
   return 0;
+}
+
+/*
+ * process_kill_subtree - window-aware EXTERNAL kill (docs/PROCESS-KILL-MODEL.md).
+ *
+ * Terminates root_pid (the explicit target — always, even if it owns a window:
+ * closing an app's window kills the app) PLUS every WINDOWLESS / in-shell
+ * descendant, while SPARING each descendant that OWNS a window and its whole
+ * subtree — independent windowed apps keep running and the user closes them via
+ * their own red button (the maintainer's "distinzione per tipo").  The TYPE
+ * signal is compositor_get_window_by_pid().
+ *
+ * Pitfall A (sched_lock -> compositor_lock is the AB-BA that process_terminate
+ * avoids, and sched_lock is NOT recursive): we SNAPSHOT the (pid,parent) tree
+ * under sched_lock, RELEASE it, then run the window-type probe (blocking
+ * compositor_lock) and the terminations (each re-takes sched_lock) entirely
+ * LOCK-FREE.
+ *
+ * Capability: callers gate first (OBJ_CTL_KILL/CLOSE need OS1_RIGHT_DESTROY;
+ * SYS_KILL needs process_kill_allowed) — this is the kernel mechanism behind the
+ * OBJ_TYPE_PROCESS / window object close.  Self-exit and fault-kill stay
+ * single-process (they call process_terminate directly, not this).
+ */
+void process_kill_subtree(int root_pid) {
+  struct kill_snap {
+    int pid;
+    int parent;
+    signed char windowless;
+    signed char kill;
+  };
+  static const int CAP = MAX_PROCESSES;
+  struct kill_snap snap[MAX_PROCESSES];
+  int n = 0, root_idx = -1;
+
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int i = 0; i < CAP; i++) {
+    struct process *p = process_pool[i];
+    if (!p)
+      continue;
+    snap[n].pid = (int)p->pid;
+    snap[n].parent = p->parent_pid;
+    snap[n].windowless = -1;
+    snap[n].kill = 0;
+    if ((int)p->pid == root_pid)
+      root_idx = n;
+    n++;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+
+  if (root_idx < 0)
+    return; /* target already gone */
+
+  /* TYPE probe, lock-free (Pitfall A): a window owner is SPARED. */
+  extern int compositor_get_window_by_pid(int pid);
+  for (int i = 0; i < n; i++)
+    snap[i].windowless = (compositor_get_window_by_pid(snap[i].pid) > 0) ? 0 : 1;
+
+  /* The explicit target dies regardless of window ownership. */
+  snap[root_idx].kill = 1;
+
+  /* Propagate: a node dies iff its parent dies AND it is windowless.  A windowed
+   * node is spared, which prunes its subtree (its children's parent is not in the
+   * kill set).  Iterate to a fixpoint — parents may sit after children in pool
+   * order; at most n passes for any tree. */
+  for (int pass = 0; pass < n; pass++) {
+    int changed = 0;
+    for (int i = 0; i < n; i++) {
+      if (snap[i].kill || !snap[i].windowless)
+        continue;
+      for (int j = 0; j < n; j++) {
+        if (snap[j].kill && snap[j].pid == snap[i].parent) {
+          snap[i].kill = 1;
+          changed = 1;
+          break;
+        }
+      }
+    }
+    if (!changed)
+      break;
+  }
+
+  /* Terminate the selected set, root first (spec order).  A spared windowed
+   * child transiently orphaned by the root's death is reparented to init by
+   * process_terminate's __reparent_children; process_terminate is idempotent and
+   * a snapshot pid that already exited is a harmless no-op. */
+  process_terminate(root_pid);
+  for (int i = 0; i < n; i++)
+    if (snap[i].kill && snap[i].pid != root_pid)
+      process_terminate(snap[i].pid);
 }
 
 /*

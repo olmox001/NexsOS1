@@ -240,6 +240,11 @@ int process_terminate(int pid);
  * failed — release the half-built child. */
 void process_finalize_spawn(struct process *p);
 void process_abort_spawn(struct process *p);
+/* process_kill_subtree - window-aware EXTERNAL kill: terminate root_pid + its
+ * WINDOWLESS descendants, SPARE windowed descendants + their subtrees
+ * (docs/PROCESS-KILL-MODEL.md).  Used by window_request_close, OBJ_CTL_KILL/
+ * CLOSE and SYS_KILL of another process; self-exit/fault stay single-process. */
+void process_kill_subtree(int root_pid);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */
 extern int process_load_elf(struct process *proc, const char *path);
