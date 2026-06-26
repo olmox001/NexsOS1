@@ -241,7 +241,7 @@ static void process_command(void) {
     print("  nxres <x> <y>   - set resolution, zoom, style and theme \n");
     print("  nxproc          - Realtime list processes\n");
     print("  kill <pid>      - Kill process by PID\n");
-    print("  wins            - List windows (id/pid/state/title)\n");
+    print("  nxwins          - List windows (id/pid/state/title)\n");
     print("  focus <id>      - Focus a window by id (no mouse needed)\n");
     print("  exec <program>  - Execute program (searches /bin, /sys/bin)\n");
     print("  about           - About this OS\n");
@@ -333,23 +333,6 @@ static void process_command(void) {
       }
     } else {
       print("Usage: kill <pid>\n");
-    }
-  } else if (str_eq(cmd_buf, "wins")) {
-    /* List compositor windows (ASTRA §6.7) — the textual twin of the dock
-     * /sys/bin/nxui, backed by the same SYS_WINDOW_ENUM. */
-    struct window_info wi[32];
-    int n = (int)OS1_window_enum(wi, 32);
-    if (n < 0) {
-      print("Error enumerating windows\n");
-    } else {
-      print("\033[1;33mID   PID  STATE   TITLE\033[0m\n");
-      for (int i = 0; i < n; i++) {
-        const char *st = (wi[i].flags & WININFO_MINIMIZED) ? "min"
-                         : (wi[i].flags & WININFO_FOCUSED) ? "focus"
-                         : (wi[i].flags & WININFO_VISIBLE) ? "shown"
-                                                           : "hidden";
-        printf("%d  %d  %s  %s\n", wi[i].id, wi[i].pid, st, wi[i].title);
-      }
     }
   } else if (cmd_buf[0] == 'f' && cmd_buf[1] == 'o' && cmd_buf[2] == 'c' &&
              cmd_buf[3] == 'u' && cmd_buf[4] == 's' && cmd_buf[5] == ' ') {

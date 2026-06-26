@@ -1,16 +1,18 @@
-ifeq ($(shell uname -s),Linux)
-%:
-	@$(MAKE) -f Makefile.linux $@
-all:
-	@$(MAKE) -f Makefile.linux all
-
-else
-
 # Makefile for NexsOS1 (AMD64 / AArch64)
 # Cross-compilation for bare-metal kernel
 # ==============================================================================
 # Configuration
 # ==============================================================================
+
+NEXSOS_SHARED_MAKE := 1
+HOST_OS ?= $(shell uname -s)
+ifeq ($(HOST_OS),Linux)
+    include Makefile.linux
+else ifeq ($(HOST_OS),Darwin)
+    include Makefile.macos
+else
+    $(error Unsupported host OS "$(HOST_OS)"; add a host compatibility file)
+endif
 
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
@@ -37,7 +39,7 @@ COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
                -O2 -g
 
 ifeq ($(ARCH), amd64)
-    CROSS_COMPILE ?= x86_64-elf-
+    CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
     KERNEL_DIR = kernel
     BOOT_DIR   = boot/amd64
     ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
@@ -51,12 +53,12 @@ ifeq ($(ARCH), amd64)
     CFLAGS_BOOT = $(filter-out -mcmodel=large,$(COMMON_FLAGS)) $(INCLUDE) -m32
     QEMU = qemu-system-x86_64
 else
-    CROSS_COMPILE ?= aarch64-none-elf-
+    CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
     KERNEL_DIR = kernel
     BOOT_DIR   = boot/aarch64
     ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
     
-    ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57
+    ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57 $(AARCH64_ARCH_CFLAGS_EXTRA)
     ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
     
     LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
@@ -186,6 +188,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/fs/gpt.c \
     $(KERNEL_DIR)/fs/ext4.c \
     $(KERNEL_DIR)/fs/vfs.c \
+    $(KERNEL_DIR)/fs/procfs.c \
     $(KERNEL_DIR)/mm/pmm.c \
     $(KERNEL_DIR)/mm/vmm.c \
     $(KERNEL_DIR)/mm/buffer.c \
@@ -322,7 +325,7 @@ USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/notify_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/regedit.elf $(BUILD_DIR)/fontman.elf $(BUILD_DIR)/top.elf $(BUILD_DIR)/nexs-fm.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
-           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf
+           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxwins.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf \
@@ -390,6 +393,7 @@ $(BUILD_DIR)/hello.elf: $(BUILD_DIR)/$(USER_DIR)/bin/hello.o $(USER_LIB_O) $(USE
 $(BUILD_DIR)/nxmemstat.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxmemstat.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/stress.elf: $(BUILD_DIR)/$(USER_DIR)/bin/stress.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxwins.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxwins.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fontman.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/fontman/fontman.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -596,7 +600,7 @@ $(VIRT_DTB): | $(BUILD_DIR)
 	         -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
 	         -device virtio-blk-device,drive=hd0 \
 	         -machine dumpdtb=$@ 2>/dev/null
-	@echo "  [DTB]    Done ($$(stat -f%z $@ 2>/dev/null || stat -c%s $@) bytes)"
+	@echo "  [DTB]    Done ($$($(STAT_SIZE) $@) bytes)"
 
 # AArch64 run: use kernel.bin (raw binary) so QEMU's aarch64 boot stub sets x0 = dtb_addr.
 # A raw binary triggers QEMU's arm_load_kernel image-loading path; combined with -dtb,
@@ -653,5 +657,4 @@ ifeq ($(ARCH), aarch64)
     include user/bin/doom/doom-nexs-aarch64.make
 else ifeq ($(ARCH), amd64)
     include user/bin/doom/doom-nexs-amd64.make
-endif
 endif

@@ -160,31 +160,54 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
   if (handles_ensure(cur) != 0)
     return -ENOMEM;
 
-  if (ns == OS1_NS_FS && type == OBJ_TYPE_FILE) {
+  if (ns == OS1_NS_FS) {
+    /* open() ≡ handle_create(OS1_NS_FS): the PATH'S PROVIDER decides the object
+     * TYPE (FILE for ext4/regfs, PROCESS for /proc/<pid>, …) — the namespace IS
+     * the object space.  The 'type' argument is only a hint; the resolution is
+     * the single source of truth. */
+    (void)type;
     char resolved[OBJ_FILE_PATH_MAX];
     vfs_resolve_path(kpath, resolved, OBJ_FILE_PATH_MAX);
-    /* Ambient gate to ACQUIRE a write capability: identical to SYS_OPEN. */
-    if (rights & OS1_RIGHT_WRITE) {
-      if (!proc_has_cap(cur, CAP_FS_WRITE))
-        return -EPERM;
-      if (!proc_is_machine(cur) &&
-          (strncmp(resolved, "/sys/", 5) == 0 ||
-           strncmp(resolved, "/bin/", 5) == 0))
-        return -EACCES;
-    }
-    struct vfs_node node;
-    if (vfs_open(resolved, &node) != 0)
-      return -ENOENT;
-    if (node.type != VFS_TYPE_FILE)
+    struct vfs_objref ref;
+    memset(&ref, 0, sizeof(ref));
+    int rr = vfs_resolve_object(resolved, &ref);
+    if (rr == -2)
       return -EISDIR;
+    if (rr != 0)
+      return -ENOENT;
 
-    struct kobject *o = kobj_alloc(OBJ_TYPE_FILE);
-    if (!o)
-      return -ENOMEM;
-    o->node = node;
-    o->offset = 0;
-    strncpy(o->path, resolved, OBJ_FILE_PATH_MAX - 1);
-    o->path[OBJ_FILE_PATH_MAX - 1] = '\0';
+    struct kobject *o;
+    if (ref.obj_type == OBJ_TYPE_FILE) {
+      /* Ambient gate to ACQUIRE a write capability: identical to SYS_OPEN. */
+      if (rights & OS1_RIGHT_WRITE) {
+        if (!proc_has_cap(cur, CAP_FS_WRITE))
+          return -EPERM;
+        if (!proc_is_machine(cur) &&
+            (strncmp(resolved, "/sys/", 5) == 0 ||
+             strncmp(resolved, "/bin/", 5) == 0))
+          return -EACCES;
+      }
+      o = kobj_alloc(OBJ_TYPE_FILE);
+      if (!o)
+        return -ENOMEM;
+      o->node = ref.node;
+      o->offset = 0;
+      strncpy(o->path, resolved, OBJ_FILE_PATH_MAX - 1);
+      o->path[OBJ_FILE_PATH_MAX - 1] = '\0';
+    } else if (ref.obj_type == OBJ_TYPE_PROCESS) {
+      /* Same acquisition gate as OS1_NS_PROC: a destructive handle (kill /
+       * IPC-send) needs kill authority; a READ/WAIT status handle only needs the
+       * process to exist (object_at already verified it). */
+      if ((rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) &&
+          !process_kill_allowed(cur, ref.pid))
+        return -EPERM;
+      o = kobj_alloc(OBJ_TYPE_PROCESS);
+      if (!o)
+        return -ENOMEM;
+      o->pid = ref.pid;
+    } else {
+      return -EINVAL; /* namespace path resolved to an unsupported type */
+    }
 
     uint64_t flags;
     spin_lock_irqsave(&object_lock, &flags);
@@ -499,8 +522,54 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
       ret = (cn > 0 && arch_copy_to_user(ubuf, &wi, cn) != 0) ? -EFAULT
                                                               : (long)cn;
     }
+  } else if (o->type == OBJ_TYPE_CONSOLE) {
+    /* stdin: drain the IPC input queue for one pressed/repeat key (the folded-in
+     * FD_KBD path).  Release events and non-input messages are discarded, as
+     * before.  When nothing is pending we return -EAGAIN; the SYS_READ
+     * dispatcher turns that into a blocking sleep — rescheduling needs the trap
+     * frame, which lives in the dispatcher, not here. */
+    if (n == 0) {
+      ret = 0;
+    } else {
+      ret = -EAGAIN;
+      while (1) {
+        struct ipc_node *node = pop_message(current_process, -1); /* from ANY */
+        if (!node)
+          break; /* queue empty → -EAGAIN, caller blocks */
+        if (node->msg.type == IPC_TYPE_INPUT && node->msg.data2 != 0) {
+          char c = (char)node->msg.data1;
+          ret = (arch_copy_to_user(ubuf, &c, 1) != 0) ? -EFAULT : 1;
+          kfree(node);
+          break;
+        }
+        kfree(node); /* release event / non-input: discard */
+      }
+    }
+  } else if (o->type == OBJ_TYPE_PROCESS) {
+    /* read = the process's live state as a text status block.  The process
+     * object NOTIFIES its state THROUGH the unified object mechanism (parallels
+     * OBJ_TYPE_WINDOW returning window_info) — not a side-channel.  Acquiring a
+     * READ handle is the ambient "status query" gate (sys_handle_create PROC
+     * branch); this is its payload.  A short buffer truncates, like the
+     * REGKEY/WINDOW reads. */
+    struct ps_info pi;
+    if (proc_get_info(o->pid, &pi) != 0) {
+      ret = -ESRCH;
+    } else {
+      char stbuf[256];
+      int len = snprintf(
+          stbuf, sizeof(stbuf),
+          "pid=%d\nname=%s\nstate=%s\nprio=%d\ncpu_ms=%llu\noncpu=%d\n", pi.pid,
+          pi.name, proc_state_name(pi.state), pi.priority,
+          (unsigned long long)pi.cpu_time, pi.on_cpu);
+      size_t cn = (len > 0) ? (size_t)len : 0;
+      if (cn > n)
+        cn = n;
+      ret = (cn > 0 && arch_copy_to_user(ubuf, stbuf, cn) != 0) ? -EFAULT
+                                                                : (long)cn;
+    }
   } else {
-    ret = -EINVAL; /* PROCESS object is not byte-readable */
+    ret = -EINVAL;
   }
 
   obj_unref(o);
@@ -580,6 +649,17 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
         ret = (rc == 0) ? (long)n : (rc == -EACCES ? -EACCES : -EINVAL);
       }
     }
+  } else if (o->type == OBJ_TYPE_CONSOLE) {
+    /* stdout/stderr: resolve the caller's OWN window first (a process with its
+     * own window renders there), else its controlling terminal (the launching
+     * shell) — the folded-in FD_WIN path.  window_text_write copies the user
+     * buffer and mirrors it to the UART. */
+    int win_id = current_process
+                     ? compositor_get_window_by_pid((int)current_process->pid)
+                     : -1;
+    if (win_id <= 0 && current_process)
+      win_id = current_process->ctty_win;
+    ret = window_text_write(win_id, (const char *)ubuf, n);
   } else {
     ret = -EINVAL;
   }
@@ -628,8 +708,15 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     struct kobject *o = pin_handle(handle, OS1_RIGHT_DESTROY, &err);
     if (!o)
       return err;
-    long ret = (o->type == OBJ_TYPE_PROCESS) ? (long)process_terminate(o->pid)
-                                             : -EINVAL;
+    long ret;
+    if (o->type == OBJ_TYPE_PROCESS) {
+      /* window-aware kill: the target + its windowless helpers die; its own
+       * windowed children are spared (docs/PROCESS-KILL-MODEL.md). */
+      process_kill_subtree(o->pid);
+      ret = 0;
+    } else {
+      ret = -EINVAL;
+    }
     obj_unref(o);
     return ret;
   }
@@ -664,14 +751,15 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     } else if (cmd == OBJ_CTL_FOCUS) {
       ret = compositor_focus_window(o->window_id);
     } else { /* OBJ_CTL_CLOSE */
-      /* Close TERMINATES the owning process, consistent with the titlebar red
-       * button (window_request_close -> process_terminate).  Previously this
-       * only destroyed the WINDOW (compositor_destroy_window), so an app closed
-       * from the dock vanished from screen/dock but kept running headless in the
-       * background (visible in nxproc) — the "close does not kill" bug.
-       * process_terminate's teardown destroys the process's windows; machine-
-       * level owners stay protected inside process_terminate. */
-      ret = (long)process_terminate(o->pid);
+      /* Close TERMINATES the owning process (window-aware, docs/PROCESS-KILL-
+       * MODEL.md): the target app and its windowless helpers die, while its own
+       * windowed children are SPARED (the user closes those via their red
+       * button).  Consistent with the titlebar red button (window_request_close).
+       * Previously a plain process_terminate; before THAT it only destroyed the
+       * WINDOW, leaving the app headless ("close does not kill").  Machine-level
+       * owners stay protected inside process_terminate. */
+      process_kill_subtree(o->pid);
+      ret = 0;
     }
     obj_unref(o);
     return ret;
@@ -717,6 +805,81 @@ long sys_object_ctl(int handle, int cmd, long arg) {
   }
 
   return -EINVAL;
+}
+
+/*
+ * sys_object_lseek - POSIX lseek(2) on a FILE handle: reposition the shared byte
+ * offset per 'whence' and return the new absolute position.  SEEK_END reads the
+ * live size (vfs_stat) so it tracks growth by another handle.  A non-seekable
+ * object (CONSOLE stdin/stdout/stderr, …) returns -ESPIPE.  Positioning needs
+ * only the handle itself (no rights), matching OBJ_CTL_SEEK.
+ */
+long sys_object_lseek(int handle, long off, int whence) {
+  long err = 0;
+  struct kobject *o = pin_handle(handle, 0, &err);
+  if (!o)
+    return err;
+  long ret;
+  if (o->type != OBJ_TYPE_FILE) {
+    ret = -ESPIPE; /* streams cannot seek */
+  } else {
+    long base;
+    if (whence == SEEK_SET) {
+      base = 0;
+    } else if (whence == SEEK_CUR) {
+      base = (long)o->offset;
+    } else if (whence == SEEK_END) {
+      struct vfs_stat st;
+      base = (vfs_stat(o->path, &st) == 0) ? (long)st.size : (long)o->node.size;
+    } else {
+      base = -1; /* invalid whence */
+    }
+    if (base < 0) {
+      ret = -EINVAL;
+    } else {
+      long npos = base + off;
+      if (npos < 0) {
+        ret = -EINVAL;
+      } else {
+        o->offset = (uint64_t)npos;
+        ret = npos;
+      }
+    }
+  }
+  obj_unref(o);
+  return ret;
+}
+
+/*
+ * process_install_stdio - give a freshly created process its stdin/stdout/stderr
+ * as capability handles (ASTRA §6.2: the fd table folds into the object table).
+ * Handles 0/1/2 share ONE refcounted CONSOLE object — a process has a single
+ * controlling terminal: handle 0 holds READ (stdin keyboard drain), handles 1/2
+ * hold WRITE (stdout/stderr → the process's own window, else its ctty).  The
+ * table is allocated eagerly so every process is born with the trio, replacing
+ * the old fd-table pre-open.  Returns 0, or -ENOMEM.
+ */
+int process_install_stdio(struct process *p) {
+  if (!p)
+    return -EINVAL;
+  if (handles_ensure(p) != 0)
+    return -ENOMEM;
+  struct kobject *con = kobj_alloc(OBJ_TYPE_CONSOLE);
+  if (!con)
+    return -ENOMEM;
+  uint64_t flags;
+  spin_lock_irqsave(&object_lock, &flags);
+  /* Slots 0/1/2 of a just-allocated table are free; install the shared console
+   * directly (not via the find-free path, which is for handles >= 3). */
+  p->handles[0].obj = con;
+  p->handles[0].rights = OS1_RIGHT_READ;
+  p->handles[1].obj = con;
+  p->handles[1].rights = OS1_RIGHT_WRITE;
+  p->handles[2].obj = con;
+  p->handles[2].rights = OS1_RIGHT_WRITE;
+  con->refcount = 3; /* three handles reference it */
+  spin_unlock_irqrestore(&object_lock, flags);
+  return 0;
 }
 
 /*

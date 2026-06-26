@@ -241,7 +241,9 @@ void OS1_window_set_flags(int win_id, int flags) { _sys_window_set_flags(win_id,
 void OS1_window_set_focus(int pid) { extern void _sys_set_focus(int pid); _sys_set_focus(pid); }
 int  OS1_window_resize(int win_id, int w, int h) { return _sys_window_resize(win_id, w, h); }
 void OS1_gfx_draw(int x, int y, int w, int h, int color) { _sys_draw(x, y, w, h, color); }
-void OS1_gfx_flush(void) { _sys_flush(); }
+/* flush ≡ render: both just pushed the compositor.  Unified onto the single
+ * SYS_COMPOSITOR_RENDER syscall (the duplicate SYS_FLUSH was retired). */
+void OS1_gfx_flush(void) { _sys_compositor_render(); }
 void OS1_gfx_render(void) { _sys_compositor_render(); }
 
 /* Identity / privilege introspection (nxperm foundation): the caller's own

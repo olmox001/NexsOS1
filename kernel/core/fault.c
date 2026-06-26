@@ -32,7 +32,7 @@ extern int process_terminate(int pid);
 
 struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
                                            uint64_t fault_addr, uint64_t fault_pc,
-                                           const char *desc) {
+                                           const char *desc, uint64_t syndrome) {
   /* Fault context: locate per-CPU state via the MSR/MPIDR path, never via
    * the LAPIC-MMIO read (kernel/fault.h). */
   struct cpu_info *ci = arch_cpu_info_fault_safe();
@@ -45,9 +45,9 @@ struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
     /* User-attributable fault: the kernel itself is healthy.  fault_printf
      * is still used (not printk) because on the uaccess path we may hold
      * arch-side locks until the fixup below. */
-    fault_printf("\n[FAULT] %s%s: PID %d (%s) pc=0x%016lx addr=0x%016lx — terminating\n",
+    fault_printf("\n[FAULT] %s%s: PID %d (%s) pc=0x%016lx addr=0x%016lx cause=0x%016lx — terminating\n",
                  desc, uaccess ? " (uaccess)" : "", task->pid, task->name,
-                 fault_pc, fault_addr);
+                 fault_pc, fault_addr, syndrome);
 
     if (uaccess) {
       /* Release the arch uaccess critical section (locks/IRQ state/flag);

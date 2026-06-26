@@ -56,7 +56,6 @@ extern void _sys_yield(void);
 extern void _sys_nanosleep(unsigned long long ns);
 extern long _sys_clock_gettime(int clk);
 extern void _sys_draw(int x, int y, int w, int h, int color);
-extern void _sys_flush(void);
 extern int  _sys_create_window(int x, int y, int w, int h, const char *title);
 extern void _sys_destroy_window(int win_id);
 extern void _sys_window_draw(int win_id, int x, int y, int w, int h, unsigned int color);

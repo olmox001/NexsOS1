@@ -57,17 +57,15 @@
  *   process teardown) call the underlying functions directly and bypass
  *   these checks by design.
  *
- * Fd model (ABI-03 RESOLVED, B3 batch 3): every process has a real fd table
- *   (kernel/fd.h) — 0=keyboard stdin, 1/2=own window, open() hands out
- *   FD_FILE descriptors >= 3 with a private offset (open/close/lseek =
- *   56/57/62).  The historical "fd >= 100 is a window id" write path
- *   remains as a compatibility alias until the window ABI moves onto the
- *   table.
+ * Descriptor model (ASTRA §6.2 — the fd table folded into the object table):
+ *   a POSIX descriptor IS a capability handle (fd N == handle N).  Every
+ *   process is born with handles 0/1/2 as one shared OBJ_TYPE_CONSOLE object
+ *   (0 = stdin keyboard, 1/2 = stdout+stderr window); open() ≡
+ *   handle_create(FILE) and hands out handles >= 3; read/write/lseek/close
+ *   (63/64/62/57) route through the object layer (sys_object_read/_write/
+ *   _lseek + sys_handle_close).  There is no separate fd array.
  *
  * Known issues:
- *   ABI-06  (W2 BUG/PERF) sys_write() silently truncates WINDOW writes
- *           > 1023 bytes and echoes window text to the UART (file writes
- *           via FD_FILE are exempt from both).
  *   ABI-07  (W2 BUG) SYS_SPAWN disables IRQs across process_create +
  *           process_load_elf, which may trigger blocking virtio/ext4 disk I/O.
  *   GFX-FONT-01  (W4 SECURITY/BUG) SYS_SET_FONT: stores a raw user
@@ -108,11 +106,6 @@ static struct pt_regs *sys_yield(struct pt_regs *regs);
  */
 #define SYSCALL_MAX_IO_BYTES (16u * 1024u * 1024u)  /* 16 MiB */
 
-/* These syscall implementations are currently still in arch/<ARCH>/cpu/syscall.c
- * or will be moved here gradually. For now, we declare them extern. 
- */
-extern long sys_write(int fd, const char *buf, size_t count);
-extern struct pt_regs *sys_read(struct pt_regs *regs);
 extern long sys_get_pid(void);
 extern void sys_exit(int status);
 extern long sys_get_time(void);
@@ -208,11 +201,15 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
   long ret;
   if (p) {
     if (process_load_elf_args(p, path, argc, kargv) == 0) {
-      enqueue_task(p);
-      ret = (long)p->pid;
+      /* SCHED-UAF Pitfall B: commit the child atomically against a concurrent
+       * kill.  Capture the pid first — process_finalize_spawn may RELEASE p (if
+       * a kill was deferred while the ELF loaded), so p must not be read after. */
+      long pid = (long)p->pid;
+      process_finalize_spawn(p);
+      ret = pid;
     } else {
-      process_terminate(p->pid);
-      ret = -ENOENT; /* path missing or unloadable ELF */
+      process_abort_spawn(p); /* load failed: release the half-built child */
+      ret = -ENOENT;          /* path missing or unloadable ELF */
     }
   } else {
     ret = -EAGAIN; /* quota hit or process table exhausted */
@@ -227,7 +224,9 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
  * stdout sink and SYS_WINDOW_WRITE (#123).  Replaces the old 1023-byte
  * syscall_buf truncation (retires ABI-06 on the window path). */
 extern void uart_puts(const char *str);
-static long window_text_write(int win_id, const char *ubuf, size_t count) {
+/* Non-static: also the OBJ_TYPE_CONSOLE stdout/stderr backend, called from
+ * kernel/core/object.c (sys_object_write).  Shared by SYS_WINDOW_WRITE. */
+long window_text_write(int win_id, const char *ubuf, size_t count) {
   if (count == 0)
     return 0;
   if (count > SYSCALL_MAX_IO_BYTES)
@@ -259,10 +258,15 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   switch (syscall_num) {
   case SYS_OPEN:
   {
-    /* open(path, flags) -> fd (ABI-03).  Only the O_ACCMODE bits are
-     * supported: the VFS cannot create or truncate files yet, so any other
-     * flag (O_CREAT, O_APPEND, ...) is an explicit -EINVAL, never silently
-     * ignored. */
+    /* open(path, flags) -> descriptor.  A descriptor IS a capability handle
+     * (ASTRA §6.8: open ≡ handle_create(FS), the fd table folded into the object
+     * table): this installs an OBJ_TYPE_FILE handle and returns its index — the
+     * first free slot >= 3, since 0/1/2 are the pre-installed stdin/stdout/stderr
+     * console handles, so the first open is fd 3 exactly as before.  Only the
+     * O_ACCMODE bits are supported: the VFS cannot create or truncate yet
+     * (#126/#127), so any other flag (O_CREAT, O_APPEND, …) is an explicit
+     * -EINVAL, never silently ignored.  sys_handle_create does the path resolve,
+     * the CAP_FS_WRITE + /sys,/bin write ACL, and the VFS open. */
     if (!current_process) {
       pt_regs_set_return(frame, -EPERM);
       break;
@@ -272,115 +276,49 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EINVAL);
       break;
     }
-    char k_path[FD_PATH_MAX];
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, FD_PATH_MAX) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
-      break;
-    }
-    char resolved[FD_PATH_MAX];
-    vfs_resolve_path(k_path, resolved, FD_PATH_MAX);
-    if ((flags & O_ACCMODE) != O_RDONLY) {
-      /* USR-SEC-03 #79: any write needs CAP_FS_WRITE. */
-      if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
-        pt_regs_set_return(frame, -EPERM);
-        break;
-      }
-      /* Same write ACL as SYS_FILE_WRITE (EXT4-02): the /bin and /sys trees
-       * are read-only for non-machine processes even with CAP_FS_WRITE. */
-      if (!proc_is_machine(current_process) &&
-          (strncmp(resolved, "/sys/", 5) == 0 ||
-           strncmp(resolved, "/bin/", 5) == 0)) {
-        pt_regs_set_return(frame, -EACCES);
-        break;
-      }
-    }
-    struct vfs_node node;
-    if (vfs_open(resolved, &node) != 0) {
-      pt_regs_set_return(frame, -ENOENT);
-      break;
-    }
-    if (node.type != VFS_TYPE_FILE) {
-      pt_regs_set_return(frame, -EISDIR);
-      break;
-    }
-    int newfd = -1;
-    for (int i = 0; i < NPROC_FDS; i++) {
-      if (current_process->fds[i].type == FD_NONE) {
-        newfd = i;
-        break;
-      }
-    }
-    if (newfd < 0) {
-      pt_regs_set_return(frame, -EMFILE);
-      break;
-    }
-    struct fd_entry *e = &current_process->fds[newfd];
-    memset(e, 0, sizeof(*e));
-    e->type = FD_FILE;
-    e->mode = ((flags & O_ACCMODE) == O_RDONLY)   ? FD_MODE_READ
-              : ((flags & O_ACCMODE) == O_WRONLY) ? FD_MODE_WRITE
-                                                  : (FD_MODE_READ | FD_MODE_WRITE);
-    e->node = node;
-    e->offset = 0;
-    strncpy(e->path, resolved, FD_PATH_MAX - 1);
-    pt_regs_set_return(frame, newfd);
+    uint32_t rights = ((flags & O_ACCMODE) == O_RDONLY)   ? OS1_RIGHT_READ
+                      : ((flags & O_ACCMODE) == O_WRONLY) ? OS1_RIGHT_WRITE
+                                                          : (OS1_RIGHT_READ |
+                                                             OS1_RIGHT_WRITE);
+    pt_regs_set_return(frame, sys_handle_create(OS1_NS_FS, (const char *)arg0,
+                                                rights, OBJ_TYPE_FILE));
   } break;
   case SYS_CLOSE:
-  {
-    int fd = (int)arg0;
-    if (!current_process || fd < 0 || fd >= NPROC_FDS ||
-        current_process->fds[fd].type == FD_NONE) {
-      pt_regs_set_return(frame, -EBADF);
-      break;
-    }
-    /* Entries hold no kernel-owned resources (vfs_node is a value type) —
-     * clearing the slot IS the close. */
-    memset(&current_process->fds[fd], 0, sizeof(struct fd_entry));
-    pt_regs_set_return(frame, 0);
-  } break;
-  case SYS_LSEEK:
-  {
-    int fd = (int)arg0;
-    long off = (long)arg1;
-    int whence = (int)arg2;
-    if (!current_process || fd < 0 || fd >= NPROC_FDS ||
-        current_process->fds[fd].type == FD_NONE) {
-      pt_regs_set_return(frame, -EBADF);
-      break;
-    }
-    struct fd_entry *e = &current_process->fds[fd];
-    if (e->type != FD_FILE) {
-      pt_regs_set_return(frame, -ESPIPE); /* KBD/WIN streams cannot seek */
-      break;
-    }
-    long base;
-    if (whence == SEEK_SET) {
-      base = 0;
-    } else if (whence == SEEK_CUR) {
-      base = (long)e->offset;
-    } else if (whence == SEEK_END) {
-      /* stat the path: e->node.size is the open-time size and another fd
-       * may have grown the file since */
-      struct vfs_stat st;
-      base = (vfs_stat(e->path, &st) == 0) ? (long)st.size
-                                           : (long)e->node.size;
-    } else {
-      pt_regs_set_return(frame, -EINVAL);
-      break;
-    }
-    long npos = base + off;
-    if (npos < 0) {
-      pt_regs_set_return(frame, -EINVAL);
-      break;
-    }
-    e->offset = (uint64_t)npos;
-    pt_regs_set_return(frame, npos);
-  } break;
-  case SYS_READ:
-    return sys_read(frame);
-  case SYS_WRITE:
-    pt_regs_set_return(frame, sys_write((int)arg0, (const char *)arg1, (size_t)arg2));
+    /* close(fd) ≡ drop the handle; frees the object at its last reference. */
+    pt_regs_set_return(frame, sys_handle_close((int)arg0));
     break;
+  case SYS_LSEEK:
+    /* lseek(fd, off, whence) ≡ reposition a FILE handle's shared offset; a
+     * CONSOLE/stream handle returns -ESPIPE (handled in sys_object_lseek). */
+    pt_regs_set_return(frame,
+                       sys_object_lseek((int)arg0, (long)arg1, (int)arg2));
+    break;
+  case SYS_READ:
+  {
+    /* read(fd, buf, n) ≡ OS1_object_read on the handle.  A CONSOLE stdin with no
+     * key pending returns -EAGAIN; that is NOT surfaced to userland — we block
+     * the caller exactly like the folded-in FD_KBD path (PROC_SLEEPING, wake on
+     * ANY message i.e. a keystroke, retry the syscall on wake; rescheduling
+     * needs the trap frame, which is why this stays in the dispatcher).  -EPERM
+     * (read of a write-only handle, e.g. stdout) maps to the POSIX -EBADF. */
+    long r = sys_object_read((int)arg0, (void *)arg1, (size_t)arg2);
+    if (r == -EAGAIN && current_process) {
+      arch_local_irq_disable();
+      current_process->ipc_target_pid = -1; /* wake on ANY message */
+      current_process->state = PROC_SLEEPING;
+      arch_local_irq_enable();
+      pt_regs_retry_syscall(frame);
+      return schedule(frame);
+    }
+    pt_regs_set_return(frame, (r == -EPERM) ? -EBADF : r);
+  } break;
+  case SYS_WRITE:
+  {
+    /* write(fd, buf, n) ≡ OS1_object_write on the handle.  -EPERM (write of a
+     * read-only handle, e.g. stdin) maps to the POSIX -EBADF. */
+    long r = sys_object_write((int)arg0, (const void *)arg1, (size_t)arg2);
+    pt_regs_set_return(frame, (r == -EPERM) ? -EBADF : r);
+  } break;
   case SYS_EXIT:
     sys_exit((int)arg0);
     return schedule(frame);
@@ -394,11 +332,15 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, sys_get_pid());
     break;
   case SYS_DRAW:
+    /* Direct draw to the root framebuffer is a display effect: gated by
+     * CAP_WINDOW (the level that "may draw" — guests included).  Previously
+     * ungated.  A capability-stripped worker without CAP_WINDOW cannot scribble
+     * on the screen; machine bypasses. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     graphics_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (uint32_t)arg4);
-    pt_regs_set_return(frame, 0);
-    break;
-  case SYS_FLUSH:
-    compositor_render();
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WINDOW_ENUM: {
@@ -413,6 +355,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   {
     /* USR-SEC-03 #79: drawing a window needs CAP_WINDOW. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    /* SCHED-UAF: a process being torn down must not create a NEW window after
+     * process_terminate already destroyed its windows — it would be orphaned
+     * (owner dead -> un-closeable).  The killer sets ->dying before the teardown. */
+    if (current_process->dying) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
@@ -556,6 +505,15 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   }
   case SYS_COMPOSITOR_RENDER:
+    /* The single compositor-push syscall (the duplicate SYS_FLUSH was retired
+     * and folded here).  Forcing a global re-render is a display effect: gated by
+     * CAP_WINDOW, so a capability-stripped worker (spawned without CAP_WINDOW)
+     * cannot drive the compositor.  Every default preset (incl. GUEST) holds
+     * CAP_WINDOW, and machine processes bypass — so nothing legitimate breaks. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     compositor_render();
     pt_regs_set_return(frame, 0);
     break;
@@ -564,9 +522,22 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WINDOW_SET_FLAGS:
+  {
+    /* Window flags (top-most / hide / click-through) are a property of the
+     * window: only its owner — or a machine process — may set them, mirroring
+     * SYS_DESTROY_WINDOW.  Previously ungated, so any process could top-most or
+     * hide any window.  All legitimate callers (nxui/nxlauncher/notify_srv) set
+     * flags on their OWN window, so the owner check breaks nothing. */
+    extern int compositor_window_owner(int window_id);
+    int fowner = compositor_window_owner((int)arg0);
+    if (fowner >= 0 && fowner != (int)current_process->pid &&
+        !proc_is_machine(current_process)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     compositor_set_window_flags((int)arg0, (int)arg1);
     pt_regs_set_return(frame, 0);
-    break;
+  } break;
   case SYS_DESTROY_WINDOW:
   {
     /* ABI-04: only the window's owner (or a system process) may destroy it.
@@ -669,7 +640,15 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
-    pt_regs_set_return(frame, process_terminate((int)arg0));
+    /* External kill of ANOTHER process is window-aware (kill the target + its
+     * windowless/in-shell descendants, SPARE windowed apps — PROCESS-KILL-MODEL).
+     * Killing SELF stays single-process, like exit. */
+    if (current_process && (int)arg0 == (int)current_process->pid) {
+      pt_regs_set_return(frame, process_terminate((int)arg0));
+    } else {
+      process_kill_subtree((int)arg0);
+      pt_regs_set_return(frame, 0);
+    }
     break;
   case SYS_GETPROCS:
     pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));
@@ -843,6 +822,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, ret);
   } break;
   case SYS_SET_FONT:
+    /* Replacing the GLOBAL system font is a desktop-wide display change (it
+     * affects every window): same capability gate as set_style/set_zoom
+     * (CAP_WINDOW).  Previously ungated — any process could restyle the desktop. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     pt_regs_set_return(frame, sys_set_font((void *)arg0, (size_t)arg1));
     break;
   case SYS_LIST_DIR:
@@ -915,6 +901,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
+    /* unlink is a write-class modification: same capability gate as
+     * SYS_FILE_WRITE / open(write) — CAP_FS_WRITE plus the /sys,/bin read-only
+     * ACL for non-machine processes.  Closes the asymmetry (USR-SEC) where any
+     * process could unlink a path it was not allowed to write. */
+    if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    if (!proc_is_machine(current_process) &&
+        (strncmp(resolved_path, "/sys/", 5) == 0 ||
+         strncmp(resolved_path, "/bin/", 5) == 0)) {
+      pt_regs_set_return(frame, -EACCES);
+      break;
+    }
     pt_regs_set_return(frame, vfs_unlink(resolved_path));
   } break;
   /* --- Object / capability ABI (ASTRA §6.1/6.2/6.5, kernel/object.h) ---
@@ -1121,187 +1121,6 @@ static struct pt_regs *sys_yield(struct pt_regs *regs) {
  */
 long sys_get_pid(void) {
   return current_process ? (long)current_process->pid : 0;
-}
-
-/*
- * sys_read - read from a file descriptor (syscall 63).
- *
- * Routes through the per-process fd table (ABI-03 RESOLVED, kernel/fd.h):
- *
- *   FD_KBD   drains the IPC queue for IPC_TYPE_INPUT messages (keyboard
- *            events); returns the key character of the first pressed or
- *            repeated event (data2 != 0), ignores releases.  If nothing is
- *            pending the process sleeps (PROC_SLEEPING, ipc_target_pid=-1)
- *            with a retry annotation (pt_regs_retry_syscall) so the syscall
- *            re-executes on wakeup.
- *   FD_FILE  VFS read at the fd's private offset (bounce buffer, capped at
- *            SYSCALL_MAX_IO_BYTES); advances the offset; 0 at EOF.
- *   FD_WIN   not readable: -EINVAL.
- *   invalid  -EBADF.
- *
- * Locking: FD_KBD sleeps after a short IRQ-disable window to set state;
- *          no spinlock held across the sleep.
- * IRQ context: no — called from the syscall dispatcher.
- * Returns: regs (with return value set), or schedule(regs) when blocking.
- */
-struct pt_regs *sys_read(struct pt_regs *regs) {
-  int fd = (int)pt_regs_arg(regs, 0);
-  char *buf = (char *)pt_regs_arg(regs, 1);
-  size_t count = (size_t)pt_regs_arg(regs, 2);
-
-  struct fd_entry *e = NULL;
-  if (current_process && fd >= 0 && fd < NPROC_FDS &&
-      current_process->fds[fd].type != FD_NONE)
-    e = &current_process->fds[fd];
-  if (!e) {
-    pt_regs_set_return(regs, -EBADF);
-    return regs;
-  }
-
-  if (e->type == FD_FILE) {
-    if (!(e->mode & FD_MODE_READ)) {
-      pt_regs_set_return(regs, -EBADF);
-      return regs;
-    }
-    if (count > SYSCALL_MAX_IO_BYTES) { /* FIX(EXT4-07) */
-      pt_regs_set_return(regs, -EINVAL);
-      return regs;
-    }
-    if (count == 0) {
-      pt_regs_set_return(regs, 0);
-      return regs;
-    }
-    uint8_t *k_buf = kmalloc(count);
-    if (!k_buf) {
-      pt_regs_set_return(regs, -ENOMEM);
-      return regs;
-    }
-    long ret;
-    int n = vfs_read(&e->node, e->offset, k_buf, (uint32_t)count);
-    if (n < 0) {
-      ret = -EIO;
-    } else if (n > 0 && arch_copy_to_user(buf, k_buf, (size_t)n) != 0) {
-      ret = -EFAULT;
-    } else {
-      e->offset += (uint64_t)n;
-      ret = n;
-    }
-    kfree(k_buf);
-    pt_regs_set_return(regs, ret);
-    return regs;
-  }
-
-  if (e->type != FD_KBD) { /* FD_WIN: a window text sink is not readable */
-    pt_regs_set_return(regs, -EINVAL);
-    return regs;
-  }
-
-  /* FD_KBD (stdin) */
-  (void)count;
-  while (1) {
-    extern struct ipc_node *pop_message(struct process * proc, int src_pid);
-    struct ipc_node *node = pop_message(current_process, -1); /* From ANY */
-
-    if (!node)
-      break;
-
-    if (node->msg.type == IPC_TYPE_INPUT) {
-      /* Only return pressed (1) or repeat (2) events to standard read()
-       * Release (0) events are ignored for compatibility with shell/etc.
-       */
-      if (node->msg.data2 != 0) {
-        char c = (char)node->msg.data1;
-        if (arch_copy_to_user(buf, &c, 1) != 0) { }
-        pt_regs_set_return(regs, 1);
-        kfree(node);
-        return regs;
-      }
-    }
-    kfree(node);
-  }
-
-  arch_local_irq_disable();
-  /* Wait for input via scheduler */
-  current_process->ipc_target_pid = -1; /* Waiting for ANY */
-  current_process->state = PROC_SLEEPING;
-  arch_local_irq_enable();
-
-  pt_regs_retry_syscall(regs);
-  return schedule(regs);
-}
-
-extern void uart_puts(const char *str);
-
-/*
- * sys_write - write to a file descriptor.
- *
- * Routes through the per-process fd table (ABI-03 RESOLVED, kernel/fd.h):
- *
- *   FD_WIN     window text sink (stdout): bounce-buffers the data (no
- *              truncation, capped at SYSCALL_MAX_IO_BYTES), echoes to the
- *              UART (serial mirror), and appends to the caller's OWN window
- *              (resolved by PID; a child does not inherit the spawner's).
- *   FD_FILE    VFS write at the fd's private offset (bounce buffer, capped
- *              at SYSCALL_MAX_IO_BYTES); advances the offset and refreshes
- *              the cached node size.
- *   FD_KBD     not writable: -EINVAL.
- *   invalid    -EBADF.
- *
- * Writing to a specific window by id (not stdout) is SYS_WINDOW_WRITE; the
- * old fd>=100 overload on write() is gone (#123).
- *
- * Locking: none (cpu->syscall_buf is per-CPU, safe without a lock during a
- *          syscall because the calling process is pinned to this CPU).
- * IRQ context: no.
- * Returns: bytes written, or a negative errno.
- */
-long sys_write(int fd, const char *buf, size_t count) {
-  if (count == 0) return 0;
-
-  struct fd_entry *e = NULL;
-  if (current_process && fd >= 0 && fd < NPROC_FDS &&
-      current_process->fds[fd].type != FD_NONE)
-    e = &current_process->fds[fd];
-  if (!e)
-    return -EBADF;
-
-  if (e->type == FD_WIN) {
-    /* stdout sink (USR-TTY-01 #123): resolve the caller's OWN window first;
-     * a process with its own window (doom, top, forkbomb) renders there.  A
-     * windowless CLI tool falls back to its controlling terminal (the
-     * launching shell), so it runs "in the shell" POSIX-style. */
-    int win_id = e->win_id;
-    if (win_id < 0)
-      win_id = compositor_get_window_by_pid(current_process->pid);
-    if (win_id <= 0)
-      win_id = current_process->ctty_win;
-    return window_text_write(win_id, buf, count);
-  }
-
-  if (e->type == FD_FILE) {
-    if (!(e->mode & FD_MODE_WRITE))
-      return -EBADF;
-    if (count > SYSCALL_MAX_IO_BYTES) /* FIX(EXT4-07) */
-      return -EINVAL;
-    uint8_t *k_buf = kmalloc(count);
-    if (!k_buf)
-      return -ENOMEM;
-    if (arch_copy_from_user(k_buf, buf, count) != 0) {
-      kfree(k_buf);
-      return -EFAULT;
-    }
-    int wr = vfs_write_file(e->path, k_buf, (uint32_t)count, e->offset);
-    kfree(k_buf);
-    if (wr < 0)
-      return -EIO;
-    e->offset += (uint64_t)wr;
-    /* The write may have grown the file: refresh the cached node so reads
-     * through this fd see the new size. */
-    (void)vfs_open(e->path, &e->node);
-    return wr;
-  }
-
-  return -EINVAL; /* FD_KBD is not writable */
 }
 
 /*

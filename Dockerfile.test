@@ -1,51 +1,13 @@
 FROM ubuntu:22.04
 
-# Build dependencies for x86_64-elf cross-compiler + runtime tools
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    build-essential \
-    bison flex \
-    libgmp-dev libmpc-dev libmpfr-dev \
-    texinfo \
-    gcc-aarch64-linux-gnu \
-    qemu-system-x86 \
-    qemu-system-arm \
-    grub-common grub-pc-bin \
-    xorriso mtools \
-    wget curl git sudo \
+    ca-certificates \
+    sudo \
+    git \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
-# Build x86_64-elf cross-compiler from GNU sources
-ENV TARGET=x86_64-elf
-ENV PREFIX=/usr/local
-ENV BINUTILS_VERSION=2.42
-ENV GCC_VERSION=13.2.0
-
-WORKDIR /tmp/cross
-
-# binutils
-RUN wget -q https://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.xz \
-    && tar xf binutils-${BINUTILS_VERSION}.tar.xz \
-    && mkdir build-binutils && cd build-binutils \
-    && ../binutils-${BINUTILS_VERSION}/configure \
-        --target=${TARGET} --prefix=${PREFIX} \
-        --with-sysroot --disable-nls --disable-werror --quiet \
-    && make -j$(nproc) -s \
-    && make install -s
-
-# gcc
-RUN wget -q https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz \
-    && tar xf gcc-${GCC_VERSION}.tar.xz \
-    && mkdir build-gcc && cd build-gcc \
-    && ../gcc-${GCC_VERSION}/configure \
-        --target=${TARGET} --prefix=${PREFIX} \
-        --disable-nls --enable-languages=c,c++ \
-        --without-headers --disable-hosted-libstdcxx --quiet \
-    && make all-gcc -j$(nproc) -s \
-    && make all-target-libgcc -j$(nproc) -s \
-    && make install-gcc -s \
-    && make install-target-libgcc -s
-
-# Cleanup build artifacts
-RUN rm -rf /tmp/cross
-
 WORKDIR /workspace
+COPY . /workspace
+RUN git config --global --add safe.directory /workspace \
+    && tools/setup-toolchain-linux.sh

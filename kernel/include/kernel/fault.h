@@ -76,11 +76,14 @@ int arch_frame_on_fault_stack(const void *frame);
  * process was terminated and schedule() picked a successor), or NULL (kernel
  * bug: the caller must dump its arch state and panic).  user_mode is the
  * arch's privilege test at fault time (CS RPL / SPSR.M); fault_addr is
- * CR2/FAR (0 when the vector has no fault address).
+ * CR2/FAR (0 when the vector has no fault address); syndrome is the arch fault
+ * cause register (aarch64 ESR / amd64 error code, 0 when none) — logged
+ * uniformly so the user-fault debug is identical across arches (DIR-06 HAL
+ * conformance: the reporting lives HERE, not duplicated per arch).
  */
 struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
                                            uint64_t fault_addr, uint64_t fault_pc,
-                                           const char *desc);
+                                           const char *desc, uint64_t syndrome);
 
 /*
  * arch_uaccess_fault_fixup - per-HAL: release the arch_copy_{from,to}_user

@@ -177,7 +177,7 @@ int sched_get_focus_pid(void) { return keyboard_focus_pid; }
  * DIR-02 target: deliver a CLOSE event to the window owner for a graceful quit
  * and force-kill only on timeout, and run the kill OUTSIDE mouse-IRQ context
  * (the IRQ-time process_terminate is the separate SCHED-03 follow-up). */
-void window_request_close(int pid) { process_terminate(pid); }
+void window_request_close(int pid) { process_kill_subtree(pid); }
 
 /* Bounded focus boost (SCHED-01): the focused process is picked first for
  * snappy foreground response, but never more than FOCUS_BOOST_MAX times in a
@@ -213,6 +213,14 @@ static uint32_t sched_focus_streak[MAX_CPUS];
  * Locking: caller MUST hold cpu->sched_lock.
  */
 static void reap_push(struct cpu_info *cpu, struct process *p) {
+  /* SCHED-UAF: queue a victim EXACTLY once.  prev==DEAD on one CPU racing a
+   * stale runqueue pick of the same victim on another would otherwise chain it
+   * into two deferred lists and double-free its pages.  test-and-set wins the
+   * first push; later attempts are dropped (the per-process flag is atomic, so
+   * it is safe even though the two reap_push callers hold different per-CPU
+   * locks). */
+  if (__sync_lock_test_and_set(&p->reaping, 1))
+    return;
   p->next = cpu->deferred_free_proc;
   cpu->deferred_free_proc = p;
 }
@@ -564,22 +572,6 @@ int process_ipc_allowed(struct process *caller, int target_pid) {
 }
 
 /*
- * process_fd_init - reset the fd table and pre-open the standard trio
- * (ABI-03, kernel/fd.h): fd 0 = keyboard stdin, fd 1/2 = the process's own
- * compositor window (win_id -1, resolved by PID at write time because the
- * window is usually created after spawn).  Entries hold no kernel-owned
- * resources, so there is no matching teardown pass.
- */
-void process_fd_init(struct process *proc) {
-  memset(proc->fds, 0, sizeof(proc->fds));
-  proc->fds[0].type = FD_KBD;
-  proc->fds[1].type = FD_WIN;
-  proc->fds[1].win_id = -1;
-  proc->fds[2].type = FD_WIN;
-  proc->fds[2].win_id = -1;
-}
-
-/*
  * process_create - allocate and initialise a new process descriptor.
  *
  * Allocates a single PMM page for the struct process, assigns a PID from
@@ -729,7 +721,6 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   else
     strncpy(proc->cwd, "/", sizeof(proc->cwd));
   proc->cwd[sizeof(proc->cwd) - 1] = '\0';
-  process_fd_init(proc);
 
   /* Add to pool */
   process_pool[slot] = proc;
@@ -752,6 +743,21 @@ struct process *process_create_caps(const char *name, uint8_t priority,
     extern int compositor_get_window_by_pid(int pid);
     int term = compositor_get_window_by_pid((int)creator->pid);
     proc->ctty_win = (term > 0) ? term : creator->ctty_win;
+  }
+
+  /* stdin/stdout/stderr as capability handles 0/1/2 (ASTRA §6.2: the fd table
+   * folded into the object table — replaces the old process_fd_init).  Done
+   * outside sched_lock (it kmalloc's the handle table + console object, taking
+   * object_lock) — after ctty so the console's stdout resolves correctly.  On
+   * OOM roll back the pool slot exactly like the kernel-stack failure path. */
+  if (process_install_stdio(proc) != 0) {
+    spin_lock_irqsave(&sched_lock, &flags);
+    process_pool[slot] = NULL;
+    active_count--;
+    __child_count_dec(proc);
+    spin_unlock_irqrestore(&sched_lock, flags);
+    pmm_free_page(proc);
+    return NULL;
   }
 
   proc->page_table = vmm_create_pgd();
@@ -882,6 +888,72 @@ void smp_create_idle_task(uint32_t cpu_id) {
  *          the SYS_KILL dispatcher gate (process_kill_allowed) restricts a
  *          user process to itself and its descendants.
  */
+/*
+ * __process_release_created - tear down a half-built PROC_CREATED child (SCHED-
+ * UAF Pitfall B).  Same teardown as process_terminate's CREATED immediate-free,
+ * factored so process_finalize_spawn / process_abort_spawn share it.  Caller
+ * holds NO lock (this takes sched_lock for the pool cleanup).
+ */
+static void __process_release_created(struct process *p) {
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  int slot = -1;
+  for (int i = 0; i < MAX_PROCESSES; i++)
+    if (process_pool[i] == p) {
+      slot = i;
+      break;
+    }
+  if (slot >= 0) {
+    process_pool[slot] = NULL;
+    active_count--;
+    __child_count_dec(p);
+    __reparent_children(p);
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  process_handles_destroy(p);
+  if (p->kernel_stack)
+    pmm_free_pages((void *)(p->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
+  if (p->page_table)
+    vmm_destroy_pgd(p->page_table);
+  pmm_free_page(p);
+}
+
+/*
+ * process_finalize_spawn - commit a freshly-loaded child against a concurrent
+ * kill (SCHED-UAF Pitfall B).  Under sched_lock: if a kill was DEFERRED while
+ * the ELF loaded (kill_pending), release the child; else enqueue it.  The
+ * kill_pending check and the enqueue are BOTH under the global sched_lock, so a
+ * kill on another CPU cannot slip between them (global -> per-CPU lock order, as
+ * in kernel_ipc_send).
+ */
+void process_finalize_spawn(struct process *p) {
+  if (!p)
+    return;
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  int killed = p->kill_pending;
+  if (!killed) {
+    int tcpu = (p->on_cpu >= 0) ? (int)p->on_cpu : 0;
+    struct cpu_info *tc = &cpu_data[tcpu];
+    spin_lock(&tc->sched_lock);
+    __enqueue_task(p);
+    spin_unlock(&tc->sched_lock);
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  if (killed)
+    __process_release_created(p);
+}
+
+/*
+ * process_abort_spawn - the ELF load failed; release the half-built child.  A
+ * concurrent kill may have set kill_pending (deferred to us) — either way the
+ * child is torn down.
+ */
+void process_abort_spawn(struct process *p) {
+  if (p)
+    __process_release_created(p);
+}
+
 int process_terminate(int pid) {
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
@@ -900,6 +972,17 @@ int process_terminate(int pid) {
     return -1;
   }
 
+  /* IDEMPOTENT (SCHED-UAF, the PMM double-free): a victim already DEAD/ZOMBIE is
+   * committed to the reaper (schedule's deferred-free) — its windows are already
+   * torn down and its pages will be freed exactly once there.  A SECOND
+   * terminate (external kill racing a self-exit; window-close + kill; a
+   * double-kill) must NOT fall through to the immediate-free common tail below,
+   * which would free the same pages a second time.  Short-circuit. */
+  if (proc->state == PROC_DEAD || proc->state == PROC_ZOMBIE) {
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return 0;
+  }
+
   /* Find the slot for this process */
   int slot = -1;
   for (int i = 0; i < MAX_PROCESSES; i++) {
@@ -912,8 +995,15 @@ int process_terminate(int pid) {
   pr_debug("Terminating process '%s' PID=%d\n", proc->name,
            pid); /* hot path: demoted (perf §1) */
 
-  /* Tear down any windows this process owns (compositor uses trylock, so this
-   * is safe to call while holding sched_lock). */
+  /* Tear down any windows this process owns.  Mark ->dying FIRST so a racing
+   * SYS_CREATE_WINDOW on this process's own CPU is refused — otherwise it could
+   * create a fresh window AFTER this teardown, leaving an orphan whose owner is
+   * already dead (un-closeable by the red button: the maintainer's leak).
+   * compositor_destroy_windows_by_pid takes compositor_lock (BLOCKING) — this is
+   * the sched_lock -> compositor_lock order (Pitfall A); nothing may take the two
+   * in reverse, which is why the compositor never reaps orphans by calling back
+   * into the scheduler. */
+  proc->dying = 1;
   extern void compositor_destroy_windows_by_pid(int pid);
   compositor_destroy_windows_by_pid(pid);
 
@@ -923,6 +1013,20 @@ int process_terminate(int pid) {
    * the per-CPU deferred-free stack (SCHED-03 mitigation). */
   if (current_process == proc) {
     proc->state = PROC_ZOMBIE;
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return 0;
+  }
+
+  /* SCHED-UAF (Pitfall B): a PROC_CREATED victim is mid-construction in
+   * dispatch_spawn — process_load_elf_args is mapping its page table on the
+   * creator's CPU (local IRQs off there).  Freeing it now (the immediate-free
+   * common tail below) would pull that page table out from under the load (the
+   * 0xcccc… UAF in arch_vmm_map ← process_load_elf_args).  DEFER instead: flag
+   * it and leave it CREATED; the creator's process_finalize_spawn() releases it
+   * after the load.  (Do NOT flip it to PROC_DEAD, or a stray reaper would
+   * double-free it.) */
+  if (proc->state == PROC_CREATED) {
+    proc->kill_pending = 1;
     spin_unlock_irqrestore(&sched_lock, flags);
     return 0;
   }
@@ -1042,6 +1146,96 @@ int process_terminate(int pid) {
   pmm_free_page(proc);
 
   return 0;
+}
+
+/*
+ * process_kill_subtree - window-aware EXTERNAL kill (docs/PROCESS-KILL-MODEL.md).
+ *
+ * Terminates root_pid (the explicit target — always, even if it owns a window:
+ * closing an app's window kills the app) PLUS every WINDOWLESS / in-shell
+ * descendant, while SPARING each descendant that OWNS a window and its whole
+ * subtree — independent windowed apps keep running and the user closes them via
+ * their own red button (the maintainer's "distinzione per tipo").  The TYPE
+ * signal is compositor_get_window_by_pid().
+ *
+ * Pitfall A (sched_lock -> compositor_lock is the AB-BA that process_terminate
+ * avoids, and sched_lock is NOT recursive): we SNAPSHOT the (pid,parent) tree
+ * under sched_lock, RELEASE it, then run the window-type probe (blocking
+ * compositor_lock) and the terminations (each re-takes sched_lock) entirely
+ * LOCK-FREE.
+ *
+ * Capability: callers gate first (OBJ_CTL_KILL/CLOSE need OS1_RIGHT_DESTROY;
+ * SYS_KILL needs process_kill_allowed) — this is the kernel mechanism behind the
+ * OBJ_TYPE_PROCESS / window object close.  Self-exit and fault-kill stay
+ * single-process (they call process_terminate directly, not this).
+ */
+void process_kill_subtree(int root_pid) {
+  struct kill_snap {
+    int pid;
+    int parent;
+    signed char windowless;
+    signed char kill;
+  };
+  static const int CAP = MAX_PROCESSES;
+  struct kill_snap snap[MAX_PROCESSES];
+  int n = 0, root_idx = -1;
+
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int i = 0; i < CAP; i++) {
+    struct process *p = process_pool[i];
+    if (!p)
+      continue;
+    snap[n].pid = (int)p->pid;
+    snap[n].parent = p->parent_pid;
+    snap[n].windowless = -1;
+    snap[n].kill = 0;
+    if ((int)p->pid == root_pid)
+      root_idx = n;
+    n++;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+
+  if (root_idx < 0)
+    return; /* target already gone */
+
+  /* TYPE probe, lock-free (Pitfall A): a window owner is SPARED. */
+  extern int compositor_get_window_by_pid(int pid);
+  for (int i = 0; i < n; i++)
+    snap[i].windowless = (compositor_get_window_by_pid(snap[i].pid) > 0) ? 0 : 1;
+
+  /* The explicit target dies regardless of window ownership. */
+  snap[root_idx].kill = 1;
+
+  /* Propagate: a node dies iff its parent dies AND it is windowless.  A windowed
+   * node is spared, which prunes its subtree (its children's parent is not in the
+   * kill set).  Iterate to a fixpoint — parents may sit after children in pool
+   * order; at most n passes for any tree. */
+  for (int pass = 0; pass < n; pass++) {
+    int changed = 0;
+    for (int i = 0; i < n; i++) {
+      if (snap[i].kill || !snap[i].windowless)
+        continue;
+      for (int j = 0; j < n; j++) {
+        if (snap[j].kill && snap[j].pid == snap[i].parent) {
+          snap[i].kill = 1;
+          changed = 1;
+          break;
+        }
+      }
+    }
+    if (!changed)
+      break;
+  }
+
+  /* Terminate the selected set, root first (spec order).  A spared windowed
+   * child transiently orphaned by the root's death is reparented to init by
+   * process_terminate's __reparent_children; process_terminate is idempotent and
+   * a snapshot pid that already exited is a harmless no-op. */
+  process_terminate(root_pid);
+  for (int i = 0; i < n; i++)
+    if (snap[i].kill && snap[i].pid != root_pid)
+      process_terminate(snap[i].pid);
 }
 
 /*
@@ -1691,6 +1885,78 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
   kfree(k_buf);
   return count;
+}
+
+/*
+ * proc_state_name - human-readable scheduler state (PROC_*).  Used by the
+ * OBJ_TYPE_PROCESS object read: a process reports its live state THROUGH the
+ * unified object mechanism (sys_object_read), not a side-channel.
+ */
+const char *proc_state_name(int state) {
+  switch (state) {
+  case PROC_CREATED:
+    return "created";
+  case PROC_RUNNING:
+    return "running";
+  case PROC_SLEEPING:
+    return "sleeping";
+  case PROC_ZOMBIE:
+    return "zombie";
+  case PROC_DEAD:
+    return "dead";
+  case PROC_READY:
+    return "ready";
+  default:
+    return "unused";
+  }
+}
+
+/*
+ * proc_get_info - snapshot one live process by pid into *out (same fields as
+ * sys_getprocs).  Returns 0, or -1 if no such live process.  Takes sched_lock.
+ * The kernel-side accessor the OBJ_TYPE_PROCESS object read uses to expose a
+ * process's state (object.c cannot touch process_pool/sched_lock directly).
+ */
+int proc_get_info(int pid, struct ps_info *out) {
+  if (!out)
+    return -1;
+  int rc = -1;
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int i = 0; i < MAX_PROCESSES; i++) {
+    struct process *p = process_pool[i];
+    if (p && (int)p->pid == pid) {
+      out->pid = (int)p->pid;
+      strncpy(out->name, p->name, sizeof(out->name) - 1);
+      out->name[sizeof(out->name) - 1] = '\0';
+      out->state = p->state;
+      out->priority = p->priority;
+      out->cpu_time = timer_counts_to_ns(p->cpu_time_counts) / 1000000ULL;
+      out->on_cpu = p->on_cpu;
+      rc = 0;
+      break;
+    }
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return rc;
+}
+
+/*
+ * proc_enum_pids - fill 'pids' with up to 'max' live process ids; returns the
+ * count.  Backs the /proc namespace directory listing (each pid is a PROCESS
+ * capability object).  Takes sched_lock.
+ */
+int proc_enum_pids(int *pids, int max) {
+  if (!pids || max <= 0)
+    return 0;
+  int n = 0;
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int i = 0; i < MAX_PROCESSES && n < max; i++)
+    if (process_pool[i])
+      pids[n++] = (int)process_pool[i]->pid;
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return n;
 }
 
 /*

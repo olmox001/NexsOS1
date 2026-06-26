@@ -206,12 +206,12 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
       arch_cpu_halt();
     }
 
-    pr_err(
-        "PID %d EXCEPTION: EC=0x%lx ESR=0x%lx FAR=0x%lx ELR=0x%lx ISS=0x%lx\n",
-        current_process ? (int)current_process->pid : -1, ec, esr, far,
-        frame->elr, iss);
-
-    /* Decode exception class */
+    /* Decode the abort class → the human-readable desc passed to the common
+     * fault handler (which logs the ONE unified "[FAULT] <class>: PID … pc …
+     * addr … cause=0x<ESR>" line — the user-fault debug, now IDENTICAL across
+     * arches; the ESR/EC/ISS detail rides in cause=0x<ESR>, FAR in addr, ELR in
+     * pc).  The raw register dump is reserved for the kernel/corruption path
+     * below, mirroring amd64 (DIR-06 HAL conformance: one reporting path). */
     const char *ec_name = "Unknown";
     switch (ec) {
     case 0x00:
@@ -235,17 +235,19 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
     default:
       break;
     }
-    pr_err("Exception Class: %s (0x%lx)\n", ec_name, ec);
 
-    /* This vector (el0_64_sync) only fires for EL0-origin exceptions:
-     * always user-attributable — route through the generic decision
-     * (kernel/core/fault.c).  NULL return = no current task, which on this
-     * vector means scheduler-state corruption: panic. */
+    /* This vector (el0_64_sync) only fires for EL0-origin exceptions: always
+     * user-attributable.  A NULL return = no current task on this vector =
+     * scheduler-state corruption: dump the raw syndrome and panic. */
     {
       struct pt_regs *next =
-          fault_handle_user_or_panic(frame, 1, far, frame->elr, ec_name);
+          fault_handle_user_or_panic(frame, 1, far, frame->elr, ec_name, esr);
       if (next)
         return next;
+      pr_err(
+          "PID %d EXCEPTION: EC=0x%lx ESR=0x%lx FAR=0x%lx ELR=0x%lx ISS=0x%lx\n",
+          current_process ? (int)current_process->pid : -1, ec, esr, far,
+          frame->elr, iss);
       panic("Fatal EL0 exception with no current task (EC=0x%lx)", ec);
     }
   }

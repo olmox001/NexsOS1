@@ -2,7 +2,6 @@
 #define _KERNEL_SCHED_H
 
 #include <drivers/timer.h>
-#include <kernel/fd.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
@@ -78,6 +77,19 @@ struct process {
   /* State, Priority and Permissions */
   int state;
   uint8_t first_run; /* 1 if never scheduled before (ELF context intact) */
+  uint8_t kill_pending; /* SCHED-UAF (Pitfall B): a kill of this PROC_CREATED
+                         * child was DEFERRED (it is mid-construction in
+                         * dispatch_spawn); process_finalize_spawn() releases it
+                         * instead of enqueuing, so the immediate-free path can
+                         * never pull the page table out from under the ELF load. */
+  uint8_t reaping;   /* SCHED-UAF: set once when the process is queued for the
+                      * deferred reaper (reap_push); a second push (prev==DEAD on
+                      * one CPU racing a stale runqueue pick on another) is
+                      * dropped, so its pages are never double-freed. */
+  uint8_t dying;     /* set by process_terminate BEFORE it tears down this
+                      * process's windows; SYS_CREATE_WINDOW refuses for a dying
+                      * process, so it cannot orphan a fresh window created after
+                      * the teardown (the un-closeable-window leak). */
   int priority;      /* 0 (High) - 31 (Low) */
   int time_slice;    /* Ticks remaining */
   int quantum_reset; /* Reset value */
@@ -144,17 +156,13 @@ struct process {
   /* Filesystem state */
   char cwd[128]; /* Current Working Directory */
 
-  /* File-descriptor table (ABI-03, kernel/fd.h).  0/1/2 pre-opened by
-   * process_create(); entries hold no kernel-owned resources, so teardown
-   * needs no cleanup pass.  Touched only by the owning process from
-   * syscall context — no lock. */
-  struct fd_entry fds[NPROC_FDS];
-
-  /* Capability handle table (object/capability ABI, kernel/object.h).  NULL
-   * until the process first uses the object syscalls (zeroed by the create-time
-   * memset), lazily allocated then, freed by process_handles_destroy() at
-   * teardown.  Generalizes the fd table above into unforgeable handles to
-   * refcounted kernel objects with attenuable rights (ASTRA §6.1/6.2/6.5). */
+  /* Capability handle table (object/capability ABI, kernel/object.h) — the ONE
+   * per-process descriptor table (ASTRA §6.2: the fd table folded into it).  A
+   * POSIX fd IS a handle (fd N == handle N): process_create() pre-installs
+   * handles 0/1/2 as the stdin/stdout/stderr CONSOLE object, open() installs
+   * FILE handles >= 3, and the object syscalls share the same table.
+   * Unforgeable handles to refcounted kernel objects with attenuable rights;
+   * freed by process_handles_destroy() at teardown. */
   struct handle_entry *handles;
 };
 
@@ -229,6 +237,18 @@ int process_kill_allowed(struct process *caller, int target_pid);
  * descendant.  Acquires sched_lock internally. */
 int process_ipc_allowed(struct process *caller, int target_pid);
 int process_terminate(int pid);
+/* dispatch_spawn finalization (SCHED-UAF Pitfall B): the creator calls one of
+ * these AFTER process_load_elf_args (local IRQs off) to commit the new child
+ * atomically against a concurrent kill.  finalize: if a kill was deferred
+ * (kill_pending) release the child, else enqueue it.  abort: the ELF load
+ * failed — release the half-built child. */
+void process_finalize_spawn(struct process *p);
+void process_abort_spawn(struct process *p);
+/* process_kill_subtree - window-aware EXTERNAL kill: terminate root_pid + its
+ * WINDOWLESS descendants, SPARE windowed descendants + their subtrees
+ * (docs/PROCESS-KILL-MODEL.md).  Used by window_request_close, OBJ_CTL_KILL/
+ * CLOSE and SYS_KILL of another process; self-exit/fault stay single-process. */
+void process_kill_subtree(int root_pid);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */
 extern int process_load_elf(struct process *proc, const char *path);
@@ -282,6 +302,13 @@ int sched_get_focus_pid(void);
  * drive process lifecycle directly. */
 void window_request_close(int pid);
 long sys_getprocs(struct ps_info *user_buf, size_t max_count);
+/* Kernel-internal process introspection backing the OBJ_TYPE_PROCESS object read
+ * (a process reports its state through the object mechanism, kernel/core/object.c).
+ * proc_get_info: snapshot one pid into *out (0, or -1 if no such live proc).
+ * proc_state_name: human-readable PROC_* state. */
+int proc_get_info(int pid, struct ps_info *out);
+const char *proc_state_name(int state);
+int proc_enum_pids(int *pids, int max); /* live pids -> 'pids' (cap 'max'); /proc listing */
 /* OS1_sys_stats backend: one struct os1_sysstats snapshot to userland (perf
  * brief §1 instrumentation surface).  Forward-declared struct; the full layout
  * lives in include/api/sysstats.h. */

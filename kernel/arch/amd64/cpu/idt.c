@@ -237,7 +237,7 @@ static struct pt_regs *amd64_page_fault_handler(struct pt_regs *regs) {
    * it no longer halts the kernel. */
   struct pt_regs *next =
       fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, cr2, regs->rip,
-                                 "PAGE FAULT");
+                                 "PAGE FAULT", regs->err);
   if (next)
     return next;
 
@@ -266,7 +266,7 @@ static struct pt_regs *amd64_page_fault_handler(struct pt_regs *regs) {
 static struct pt_regs *amd64_gpf_handler(struct pt_regs *regs) {
   struct pt_regs *next =
       fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, 0, regs->rip,
-                                 "GENERAL PROTECTION FAULT");
+                                 "GENERAL PROTECTION FAULT", regs->err);
   if (next)
     return next;
 
@@ -352,7 +352,7 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
       default: {
         struct pt_regs *next =
             fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, 0, regs->rip,
-                                       "CPU EXCEPTION");
+                                       "CPU EXCEPTION", regs->err);
         if (next)
           return next;
         fault_printf("\n[C%d] Unhandled kernel CPU Exception: %ld\n",

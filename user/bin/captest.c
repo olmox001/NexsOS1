@@ -92,6 +92,42 @@ int main(void) {
   check(win_id, "process-object", ok);
   printf("[captest] object_wait(self)=%ld (alive=-1)\n", OS1_object_wait(ph, 0));
 
+  /* 8b. PROCESS object READ (state via the object mechanism): a READ handle to
+   * self reads the live status block — it begins "pid=" and is non-empty.  This
+   * is the process NOTIFYING its state through OS1_object_read, not a side
+   * channel. */
+  {
+    int phr = (int)OS1low_handle_create(OS1_NS_PROC, pidbuf, OS1_RIGHT_READ,
+                                        OBJ_TYPE_PROCESS);
+    char st[128];
+    memset(st, 0, sizeof(st));
+    long rn = (phr >= 0) ? OS1_object_read(phr, st, sizeof(st) - 1) : -1;
+    ok = phr >= 0 && rn > 0 && strncmp(st, "pid=", 4) == 0;
+    check(win_id, "process-read-state", ok);
+    if (phr >= 0)
+      OS1low_handle_close(phr);
+  }
+
+  /* 8c. namespace → TYPED object (deep fusion): acquire /proc/<self> via the
+   * filesystem namespace (a PATH, not a pid) — it resolves to the SAME PROCESS
+   * capability object (cap_query confirms the type) and reads its state.  Proves
+   * "everything resolvable in the namespace is a typed capability object". */
+  {
+    char procpath[32];
+    sprintf(procpath, "/proc/%d", get_pid());
+    int pf = (int)OS1low_handle_create(OS1_NS_FS, procpath, OS1_RIGHT_READ,
+                                       OBJ_TYPE_FILE); /* type hint overridden */
+    long pq2 = (pf >= 0) ? OS1low_cap_query(pf) : -1;
+    char st2[128];
+    memset(st2, 0, sizeof(st2));
+    long rn2 = (pf >= 0) ? OS1_object_read(pf, st2, sizeof(st2) - 1) : -1;
+    ok = pf >= 0 && pq2 >= 0 && OS1_CAPQ_TYPE(pq2) == OBJ_TYPE_PROCESS &&
+         rn2 > 0 && strncmp(st2, "pid=", 4) == 0;
+    check(win_id, "proc-namespace-object", ok);
+    if (pf >= 0)
+      OS1low_handle_close(pf);
+  }
+
   /* 9. delegation gated: grant without OS1_RIGHT_TRANSFER -> -EPERM */
   int hng = (int)OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ,
                                       OBJ_TYPE_FILE);

@@ -20,6 +20,7 @@
 #define _KERNEL_VFS_H
 
 #include <kernel/types.h>
+#include <object.h> /* OBJ_TYPE_* — a namespace path resolves to a typed object */
 
 struct partition; /* kernel/gpt.h */
 struct vfs_mount;
@@ -39,6 +40,17 @@ struct vfs_node {
 struct vfs_stat {
   uint64_t size;
   uint32_t type; /* VFS_TYPE_* */
+};
+
+/* A typed object a namespace path resolves to (the path→object bridge: in the
+ * unified model a path IS a typed capability object, not merely a file).  Filled
+ * by fs_ops.object_at and consumed by handle_create(OS1_NS_FS), which builds the
+ * matching kobject. */
+struct vfs_objref {
+  uint8_t obj_type;     /* OBJ_TYPE_* (include/api/object.h) */
+  int pid;              /* OBJ_TYPE_PROCESS */
+  int window_id;        /* OBJ_TYPE_WINDOW */
+  struct vfs_node node; /* OBJ_TYPE_FILE */
 };
 
 /*
@@ -68,6 +80,12 @@ struct fs_ops {
   /* unlink: remove the file/node at 'path' (provider may not support it:
    * NULL pointer or a negative errno such as -ENOSYS). */
   int (*unlink)(struct vfs_mount *mnt, const char *path);
+  /* object_at: map 'path' to the TYPED object it names (the namespace→object
+   * bridge).  Fill *out and return 0; -1 not found; -2 it is a directory.
+   * Optional — a NULL object_at means the provider's paths are plain FILE
+   * objects (ext4, regfs); see vfs_resolve_object's default. */
+  int (*object_at)(struct vfs_mount *mnt, const char *path,
+                   struct vfs_objref *out);
 };
 
 struct vfs_mount {
@@ -87,6 +105,12 @@ void vfs_init(void);
  * the root "/" mount is the fallback.  Returns 0, or -1 if the table is full /
  * args are bad.  Called from the composition root, single-threaded. */
 int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops, void *fs_private);
+
+/* vfs_resolve_object - resolve a path to the TYPED capability object it names
+ * (delegates to the provider's object_at, else defaults to a FILE).  Returns 0
+ * with *out filled, -1 not found, -2 it is a directory.  Backs open() ≡
+ * handle_create(OS1_NS_FS): everything resolvable in the namespace is an object. */
+int vfs_resolve_object(const char *path, struct vfs_objref *out);
 
 /* Core-facing API (the only filesystem surface outside kernel/fs/) */
 int vfs_open(const char *path, struct vfs_node *out);

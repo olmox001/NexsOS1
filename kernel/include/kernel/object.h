@@ -12,9 +12,11 @@
  * can only shrink across duplicate/grant, so privilege escalation is
  * impossible by construction (the same invariant as the caps.h spawn cut).
  *
- * This generalizes the B3 per-process fd table (kernel/fd.h, ASTRA's "seed").
- * The fd table stays for the POSIX open/read/write path; the handle table is
- * the new general mechanism the object syscalls (235..242) operate on.
+ * This ABSORBED the B3 per-process fd table (ASTRA's "seed", §6.2): there is no
+ * separate fd array any more — a POSIX descriptor IS a handle (fd N == handle N).
+ * open() = handle_create(FILE); read/write/lseek/close operate on the handle
+ * table; stdin/stdout/stderr are pre-installed CONSOLE handles 0/1/2.  The object
+ * syscalls (235..242) and the POSIX file syscalls are the same mechanism.
  *
  * Concurrency: a single global `object_lock` serialises refcount changes and
  * handle-table slot install/close/grant (short, no-I/O critical sections).
@@ -79,5 +81,20 @@ long sys_object_read(int handle, void *ubuf, size_t n);
 long sys_object_write(int handle, const void *ubuf, size_t n);
 long sys_object_wait(int handle, long arg);
 long sys_object_ctl(int handle, int cmd, long arg);
+/* POSIX lseek(2) on a handle: FILE repositions its byte offset per 'whence'
+ * (SEEK_SET/_CUR/_END); a non-seekable object (CONSOLE, …) returns -ESPIPE. */
+long sys_object_lseek(int handle, long off, int whence);
+
+/* window_text_write - copy a user buffer to window win_id (UART mirror +
+ * compositor append); defined in kernel/core/syscall_dispatch.c.  The shared
+ * backend of SYS_WINDOW_WRITE and the OBJ_TYPE_CONSOLE stdout/stderr handle
+ * (declared here so kernel/core/object.c's console write can reach it). */
+long window_text_write(int win_id, const char *ubuf, size_t count);
+
+/* process_install_stdio - eagerly allocate p's handle table and pre-install the
+ * standard trio: handles 0/1/2 share one CONSOLE object (0 = read/stdin, 1/2 =
+ * write/stdout+stderr).  Called by process_create() so every process is born
+ * with stdin/stdout/stderr as capability handles.  Returns 0, or -ENOMEM. */
+int process_install_stdio(struct process *p);
 
 #endif /* _KERNEL_OBJECT_H */

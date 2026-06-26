@@ -316,7 +316,7 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
      * arch_uaccess_fault_fixup next to the code that takes those locks.
      * A wild kernel pointer that merely lands in user VA now panics below. */
     struct pt_regs *next = fault_handle_user_or_panic(
-        frame, (frame->spsr & 0xF) == 0, far, elr, "SYNC EXCEPTION");
+        frame, (frame->spsr & 0xF) == 0, far, elr, "SYNC EXCEPTION", esr);
     if (next)
       return next;
 
@@ -385,7 +385,7 @@ struct pt_regs *fiq_handler(struct pt_regs *frame) {
   fault_printf("\n[FIQ] Unexpected FIQ: ELR=%016lx SPSR=%016lx (FIQ is never enabled)\n",
                frame->elr, frame->spsr);
   struct pt_regs *next = fault_handle_user_or_panic(
-      frame, (frame->spsr & 0xF) == 0, 0, frame->elr, "UNEXPECTED FIQ");
+      frame, (frame->spsr & 0xF) == 0, 0, frame->elr, "UNEXPECTED FIQ", 0);
   if (next)
     return next;
   backtrace_regs(frame->elr, frame->regs[29]);
@@ -407,7 +407,7 @@ struct pt_regs *aarch32_handler(struct pt_regs *frame) {
   fault_printf("\n[EL0-32] AArch32 EL0 exception: ELR=%016lx SPSR=%016lx (unsupported)\n",
                frame->elr, frame->spsr);
   struct pt_regs *next = fault_handle_user_or_panic(
-      frame, 1, 0, frame->elr, "AARCH32 EL0 EXCEPTION");
+      frame, 1, 0, frame->elr, "AARCH32 EL0 EXCEPTION", 0);
   if (next)
     return next;
   backtrace_regs(frame->elr, frame->regs[29]);
