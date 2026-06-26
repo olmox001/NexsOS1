@@ -328,6 +328,14 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, sys_get_pid());
     break;
   case SYS_DRAW:
+    /* Direct draw to the root framebuffer is a display effect: gated by
+     * CAP_WINDOW (the level that "may draw" — guests included).  Previously
+     * ungated.  A capability-stripped worker without CAP_WINDOW cannot scribble
+     * on the screen; machine bypasses. */
+    if (!proc_has_cap(current_process, CAP_WINDOW)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
     graphics_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (uint32_t)arg4);
     pt_regs_set_return(frame, 0);
     break;
