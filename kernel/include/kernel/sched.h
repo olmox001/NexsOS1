@@ -77,6 +77,15 @@ struct process {
   /* State, Priority and Permissions */
   int state;
   uint8_t first_run; /* 1 if never scheduled before (ELF context intact) */
+  uint8_t kill_pending; /* SCHED-UAF (Pitfall B): a kill of this PROC_CREATED
+                         * child was DEFERRED (it is mid-construction in
+                         * dispatch_spawn); process_finalize_spawn() releases it
+                         * instead of enqueuing, so the immediate-free path can
+                         * never pull the page table out from under the ELF load. */
+  uint8_t reaping;   /* SCHED-UAF: set once when the process is queued for the
+                      * deferred reaper (reap_push); a second push (prev==DEAD on
+                      * one CPU racing a stale runqueue pick on another) is
+                      * dropped, so its pages are never double-freed. */
   int priority;      /* 0 (High) - 31 (Low) */
   int time_slice;    /* Ticks remaining */
   int quantum_reset; /* Reset value */
@@ -224,6 +233,13 @@ int process_kill_allowed(struct process *caller, int target_pid);
  * descendant.  Acquires sched_lock internally. */
 int process_ipc_allowed(struct process *caller, int target_pid);
 int process_terminate(int pid);
+/* dispatch_spawn finalization (SCHED-UAF Pitfall B): the creator calls one of
+ * these AFTER process_load_elf_args (local IRQs off) to commit the new child
+ * atomically against a concurrent kill.  finalize: if a kill was deferred
+ * (kill_pending) release the child, else enqueue it.  abort: the ELF load
+ * failed — release the half-built child. */
+void process_finalize_spawn(struct process *p);
+void process_abort_spawn(struct process *p);
 int process_wait(
     int pid); /* Wait for process, returns status or -1 if active */
 extern int process_load_elf(struct process *proc, const char *path);

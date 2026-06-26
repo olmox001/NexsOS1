@@ -213,6 +213,14 @@ static uint32_t sched_focus_streak[MAX_CPUS];
  * Locking: caller MUST hold cpu->sched_lock.
  */
 static void reap_push(struct cpu_info *cpu, struct process *p) {
+  /* SCHED-UAF: queue a victim EXACTLY once.  prev==DEAD on one CPU racing a
+   * stale runqueue pick of the same victim on another would otherwise chain it
+   * into two deferred lists and double-free its pages.  test-and-set wins the
+   * first push; later attempts are dropped (the per-process flag is atomic, so
+   * it is safe even though the two reap_push callers hold different per-CPU
+   * locks). */
+  if (__sync_lock_test_and_set(&p->reaping, 1))
+    return;
   p->next = cpu->deferred_free_proc;
   cpu->deferred_free_proc = p;
 }
@@ -880,6 +888,72 @@ void smp_create_idle_task(uint32_t cpu_id) {
  *          the SYS_KILL dispatcher gate (process_kill_allowed) restricts a
  *          user process to itself and its descendants.
  */
+/*
+ * __process_release_created - tear down a half-built PROC_CREATED child (SCHED-
+ * UAF Pitfall B).  Same teardown as process_terminate's CREATED immediate-free,
+ * factored so process_finalize_spawn / process_abort_spawn share it.  Caller
+ * holds NO lock (this takes sched_lock for the pool cleanup).
+ */
+static void __process_release_created(struct process *p) {
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  int slot = -1;
+  for (int i = 0; i < MAX_PROCESSES; i++)
+    if (process_pool[i] == p) {
+      slot = i;
+      break;
+    }
+  if (slot >= 0) {
+    process_pool[slot] = NULL;
+    active_count--;
+    __child_count_dec(p);
+    __reparent_children(p);
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  process_handles_destroy(p);
+  if (p->kernel_stack)
+    pmm_free_pages((void *)(p->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
+  if (p->page_table)
+    vmm_destroy_pgd(p->page_table);
+  pmm_free_page(p);
+}
+
+/*
+ * process_finalize_spawn - commit a freshly-loaded child against a concurrent
+ * kill (SCHED-UAF Pitfall B).  Under sched_lock: if a kill was DEFERRED while
+ * the ELF loaded (kill_pending), release the child; else enqueue it.  The
+ * kill_pending check and the enqueue are BOTH under the global sched_lock, so a
+ * kill on another CPU cannot slip between them (global -> per-CPU lock order, as
+ * in kernel_ipc_send).
+ */
+void process_finalize_spawn(struct process *p) {
+  if (!p)
+    return;
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  int killed = p->kill_pending;
+  if (!killed) {
+    int tcpu = (p->on_cpu >= 0) ? (int)p->on_cpu : 0;
+    struct cpu_info *tc = &cpu_data[tcpu];
+    spin_lock(&tc->sched_lock);
+    __enqueue_task(p);
+    spin_unlock(&tc->sched_lock);
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  if (killed)
+    __process_release_created(p);
+}
+
+/*
+ * process_abort_spawn - the ELF load failed; release the half-built child.  A
+ * concurrent kill may have set kill_pending (deferred to us) — either way the
+ * child is torn down.
+ */
+void process_abort_spawn(struct process *p) {
+  if (p)
+    __process_release_created(p);
+}
+
 int process_terminate(int pid) {
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
@@ -896,6 +970,17 @@ int process_terminate(int pid) {
             pid);
     spin_unlock_irqrestore(&sched_lock, flags);
     return -1;
+  }
+
+  /* IDEMPOTENT (SCHED-UAF, the PMM double-free): a victim already DEAD/ZOMBIE is
+   * committed to the reaper (schedule's deferred-free) — its windows are already
+   * torn down and its pages will be freed exactly once there.  A SECOND
+   * terminate (external kill racing a self-exit; window-close + kill; a
+   * double-kill) must NOT fall through to the immediate-free common tail below,
+   * which would free the same pages a second time.  Short-circuit. */
+  if (proc->state == PROC_DEAD || proc->state == PROC_ZOMBIE) {
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return 0;
   }
 
   /* Find the slot for this process */
@@ -921,6 +1006,20 @@ int process_terminate(int pid) {
    * the per-CPU deferred-free stack (SCHED-03 mitigation). */
   if (current_process == proc) {
     proc->state = PROC_ZOMBIE;
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return 0;
+  }
+
+  /* SCHED-UAF (Pitfall B): a PROC_CREATED victim is mid-construction in
+   * dispatch_spawn — process_load_elf_args is mapping its page table on the
+   * creator's CPU (local IRQs off there).  Freeing it now (the immediate-free
+   * common tail below) would pull that page table out from under the load (the
+   * 0xcccc… UAF in arch_vmm_map ← process_load_elf_args).  DEFER instead: flag
+   * it and leave it CREATED; the creator's process_finalize_spawn() releases it
+   * after the load.  (Do NOT flip it to PROC_DEAD, or a stray reaper would
+   * double-free it.) */
+  if (proc->state == PROC_CREATED) {
+    proc->kill_pending = 1;
     spin_unlock_irqrestore(&sched_lock, flags);
     return 0;
   }

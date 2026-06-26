@@ -201,11 +201,15 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
   long ret;
   if (p) {
     if (process_load_elf_args(p, path, argc, kargv) == 0) {
-      enqueue_task(p);
-      ret = (long)p->pid;
+      /* SCHED-UAF Pitfall B: commit the child atomically against a concurrent
+       * kill.  Capture the pid first — process_finalize_spawn may RELEASE p (if
+       * a kill was deferred while the ELF loaded), so p must not be read after. */
+      long pid = (long)p->pid;
+      process_finalize_spawn(p);
+      ret = pid;
     } else {
-      process_terminate(p->pid);
-      ret = -ENOENT; /* path missing or unloadable ELF */
+      process_abort_spawn(p); /* load failed: release the half-built child */
+      ret = -ENOENT;          /* path missing or unloadable ELF */
     }
   } else {
     ret = -EAGAIN; /* quota hit or process table exhausted */
