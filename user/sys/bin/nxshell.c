@@ -365,7 +365,13 @@ static void process_command(void) {
   } else if (cmd_buf[0] == 'n' && cmd_buf[1] == 'o' && cmd_buf[2] == 't' &&
              cmd_buf[3] == 'i' && cmd_buf[4] == 'f' && cmd_buf[5] == 'y' &&
              cmd_buf[6] == ' ') {
-    print("Notification sent.\n");
+    /* Actually POST the notification (was a no-op stub that only printed).
+     * OS1_notify_post resolves notify_srv via the registry and IPC-sends it. */
+    int r = OS1_notify_post("Shell", cmd_buf + 7);
+    if (r == 0)
+      print("Notification sent.\n");
+    else
+      print("notify: failed (notify_srv down?)\n");
   } else if (cmd_buf[0] == 'c' && cmd_buf[1] == 'a' && cmd_buf[2] == 't' &&
              cmd_buf[3] == ' ') {
     char *path = &cmd_buf[4];
