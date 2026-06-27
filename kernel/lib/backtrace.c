@@ -140,6 +140,69 @@ void backtrace_regs(uint64_t pc, uint64_t fp) {
 }
 
 /*
+ * backtrace_scan - corruption-robust backtrace fallback.
+ *
+ * The fp-chain walker (backtrace_regs) is useless precisely when you need it
+ * most: a SMASHED kernel stack has a garbage rbp/x29, so the chain yields one
+ * or two bogus frames and stops (the "#GP on ret with only 2 frames" we keep
+ * seeing).  This instead walks the RAW stack from sp upward and prints every
+ * word that lands in kernel .text.  It includes false positives (stale return
+ * addresses, spilled function pointers), but it RECONSTRUCTS the real call path
+ * the fp walker drops — and, critically, shows the corrupted slots themselves
+ * (a non-canonical / 0xcc… word sitting where a return address belongs is the
+ * smoking gun for the stack-corruption class, #169/#170).
+ *
+ * Bounded: at most ~32 KB of stack and BT_SCAN_MAX hits.  fault_printf-based,
+ * so it is callable from any fault/panic path.
+ */
+#define BT_SCAN_MAX 32
+#define BT_RAW_QWORDS 24
+void backtrace_scan(uint64_t sp) {
+  if (!fp_addr_valid(sp))
+    return;
+  /* RAW window first: the smoking gun of the stack-corruption class (#169/#170)
+   * is the actual VALUE at the corrupted slot — e.g. the non-canonical / 0xcc…
+   * word a 'ret'/'iretq' just popped — which a text-only scan hides.  Dump the
+   * first BT_RAW_QWORDS verbatim from sp, annotating any that resolve to .text.
+   * sp is the faulting RSP (the CPU was using it), so this small window is
+   * mapped; we stop at the first hole to avoid a recursive fault. */
+  fault_printf("Stack raw @%016lx (low->high; +sym = return addr):\n", sp);
+  uint64_t p = sp;
+  for (int k = 0; k < BT_RAW_QWORDS; k++, p += 8) {
+    if (!fp_addr_valid(p)) {
+      fault_printf("  %016lx  <out-of-range>\n", p);
+      break;
+    }
+    uint64_t v = *(const uint64_t *)p;
+    uint64_t off = 0;
+    const char *nm = text_addr_valid(v) ? ksym_lookup(v, &off) : NULL;
+    if (nm)
+      fault_printf("  %016lx: %016lx  %s+0x%lx\n", p, v, nm, off);
+    else
+      fault_printf("  %016lx: %016lx\n", p, v);
+  }
+  /* Then continue text-only up the stack to recover the call path the smashed
+   * fp-chain dropped. */
+  fault_printf("Call path (text words up the stack):\n");
+  int shown = 0;
+  uint64_t end = sp + 0x8000; /* up to 32 KB */
+  for (; p < end && shown < BT_SCAN_MAX; p += 8) {
+    if (!fp_addr_valid(p))
+      break;
+    uint64_t v = *(const uint64_t *)p;
+    if (!text_addr_valid(v))
+      continue;
+    uint64_t off = 0;
+    const char *name = ksym_lookup(v, &off);
+    if (name)
+      fault_printf("  @%016lx  %s+0x%lx\n", p, name, off);
+    else
+      fault_printf("  @%016lx  %016lx\n", p, v);
+    shown++;
+  }
+}
+
+/*
  * backtrace_here - backtrace of the current call site (e.g. from panic()).
  */
 void backtrace_here(void) {

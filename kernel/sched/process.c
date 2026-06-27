@@ -1228,14 +1228,36 @@ void process_kill_subtree(int root_pid) {
       break;
   }
 
-  /* Terminate the selected set, root first (spec order).  A spared windowed
-   * child transiently orphaned by the root's death is reparented to init by
-   * process_terminate's __reparent_children; process_terminate is idempotent and
-   * a snapshot pid that already exited is a harmless no-op. */
-  process_terminate(root_pid);
+  /* Diagnostic (flaky-terminate triage): surface every "spared because it owns a
+   * window" decision.  A child that holds only a TRANSIENT window — e.g. stress's
+   * --gui lane create_window/destroy_window churn — can be window-OWNING at the
+   * instant of the probe and so spare ITSELF out of a subtree kill at random.
+   * This line makes that visible: if 'stress' appears here on a shell close, the
+   * window-probe heuristic (not an SMP bug) is what let it survive. */
+  for (int i = 0; i < n; i++) {
+    if (snap[i].kill || snap[i].windowless || snap[i].pid == root_pid)
+      continue;
+    for (int j = 0; j < n; j++)
+      if (snap[j].kill && snap[j].pid == snap[i].parent) {
+        pr_info("kill_subtree: sparing windowed PID %d (child of killed %d)\n",
+                snap[i].pid, snap[i].parent);
+        break;
+      }
+  }
+
+  /* Terminate DESCENDANTS FIRST, the root LAST.  process_terminate(root)
+   * reparents the root's live children to init (__reparent_children), so killing
+   * the root FIRST would ORPHAN any descendant whose own terminate then races —
+   * it becomes unreachable from this subtree (its parent is now init) and
+   * survives (the "closing the shell sometimes leaves stress" flake).  Killing
+   * bottom-up keeps every victim parented to a still-live member of the kill set
+   * until it is reaped; the root, last, then has no windowless children left to
+   * orphan.  process_terminate is idempotent; an already-exited snapshot pid is a
+   * harmless no-op. */
   for (int i = 0; i < n; i++)
     if (snap[i].kill && snap[i].pid != root_pid)
       process_terminate(snap[i].pid);
+  process_terminate(root_pid);
 }
 
 /*
@@ -1413,6 +1435,21 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
   /* Use local lock for runqueue modifications */
   spin_lock_irqsave(&cpu_ptr->sched_lock, &flags);
+
+  /* SCHED-UAF (#169/#170): re-enqueue the task deferred by the PREVIOUS
+   * schedule() on this CPU.  By now we have iretq'd off its kernel stack, so it
+   * is safe for another CPU to run it.  If it was killed while parked here, reap
+   * it instead of resurrecting it (mirrors the DEAD-prev reap path). */
+  if (cpu_ptr->pending_reenqueue) {
+    struct process *pr = cpu_ptr->pending_reenqueue;
+    cpu_ptr->pending_reenqueue = NULL;
+    if (pr->state == PROC_DEAD || pr->state == PROC_ZOMBIE) {
+      pr->on_cpu = -1;
+      reap_push(cpu_ptr, pr);
+    } else {
+      __enqueue_task(pr);
+    }
+  }
 
   /* if (cpu == 0) pr_info("Schedule Core 0\n"); */
   /* Priority Boosting: focus hint.
@@ -1630,9 +1667,39 @@ found:
     return regs;
   }
 
+  /* SCHED-UAF (#169/#170): switching to a DIFFERENT task.  prev was re-enqueued
+   * above (if READY/non-idle); pull it BACK OFF the runqueue and hold it in
+   * pending_reenqueue so no other CPU can work-steal and run it while THIS CPU is
+   * still executing on prev's kernel stack (the IRQ EOI + iretq run on prev's
+   * stack after this schedule() returns; the LAPIC-EOI MMIO write widens that
+   * window on UTM).  The held per-CPU sched_lock kept prev unstealable until now;
+   * it returns to the runqueue at the next schedule() here, after we have iretq'd
+   * off its stack.  Condition mirrors the re-enqueue above exactly. */
+  if (prev && prev->state == PROC_READY && prev->priority != PROC_PRIO_IDLE) {
+    __dequeue_task(prev);
+    cpu_ptr->pending_reenqueue = prev;
+  }
+
   cpu_ptr->current_task = next;
   next->state = PROC_RUNNING;
   next->on_cpu = cpu;
+
+  /* SCHED-UAF diagnostic (#169/#170): catch two CPUs about to execute on the
+   * SAME kernel stack — PMM handing one page to two stacks, or a freed stack
+   * reused while a task is still live on it.  That is the cross-CPU frame smash
+   * behind the amd64 '#GP on ret, return slot holds a canary / pt_regs word'.
+   * Reading other CPUs' current_task without their lock is fine here: a stale
+   * read names a DIFFERENT stack (no false positive); a real alias is persistent
+   * enough to trip.  Panics AT the aliasing switch, naming both PIDs+CPUs. */
+  for (int oc = 0; oc < MAX_CPUS; oc++) {
+    if (oc == (int)cpu)
+      continue;
+    struct process *ot = cpu_data[oc].current_task;
+    if (ot && ot != next && ot->kernel_stack == next->kernel_stack)
+      panic("STACK-ALIAS: CPU%d (PID %d) and CPU%d (PID %d) share kernel_stack "
+            "0x%lx", (int)cpu, (int)next->pid, oc, (int)ot->pid,
+            next->kernel_stack);
+  }
 
   /* Update Page Table (Hardware Context Switch) */
   if (next == NULL) {

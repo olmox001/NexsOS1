@@ -278,6 +278,17 @@ void kernel_secondary_main(void) {
   irq_init_percpu();
   timer_init_percpu();
 
+  /* SMP-IDLE-RACE (#169/#170): do NOT enable interrupts — which lets the timer
+   * drive schedule() — until this CPU's idle task is visible.  schedule() picks
+   * cpu_info->idle_task when nothing else is runnable; if it is still NULL the
+   * context switch jumps into NULL -> #PF/#GP at tiny addresses / corrupted
+   * return frames.  The BSP now publishes it BEFORE waking us, so this passes
+   * immediately; the acquire-load is the explicit ordering/visibility guard
+   * (and covers a slow hypervisor like UTM where the AP starts late). */
+  struct cpu_info *ci = get_cpu_info();
+  while (!__atomic_load_n(&ci->idle_task, __ATOMIC_ACQUIRE))
+    __asm__ volatile("" ::: "memory");
+
   /* Enable interrupts */
   local_irq_enable();
 
