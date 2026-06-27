@@ -562,6 +562,15 @@ void arch_smp_init(void) {
     void *stack_bottom = arch_get_kernel_stack(i);
     void *stack_top = (void *)((uintptr_t)stack_bottom + 131072);
 
+    /* SMP-IDLE-RACE (#169/#170): publish this CPU's idle task BEFORE the SIPI.
+     * The AP enables its timer + IRQs in kernel_secondary_main and is then
+     * preempted into schedule(), which picks cpu_data[i].idle_task when nothing
+     * else runs.  Creating it only after the ACK left a huge window — and under
+     * a slow hypervisor (UTM) the BSP timed out and never created it at all, so
+     * the AP ran schedule() with idle_task == NULL -> context switch into NULL
+     * -> the #PF/#GP at tiny addresses + corrupted frames seen on UTM. */
+    smp_create_idle_task(i);
+
     /* Send INIT-SIPI to AP; NOTE(BOOT-03): single SIPI only */
     if (arch_cpu_wake_secondary(i, secondary_cpu_entry, stack_top) == 0) {
 
@@ -575,9 +584,9 @@ void arch_smp_init(void) {
 
       if (cpu_boot_ack == i) {
         pr_info("AMD64: CPU %u is online\n", i);
-        smp_create_idle_task(i);
       } else {
-        /* AP does not exist physically or did not respond to SIPI */
+        /* AP did not respond in time (absent, or a very slow hypervisor).  Its
+         * idle task already exists, so if it comes up late it schedules safely. */
         pr_warn("AMD64: CPU %u failed to ACK boot\n", i);
       }
     }

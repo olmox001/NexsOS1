@@ -286,14 +286,18 @@ void arch_smp_init(void) {
             allocated = true;
         }
 
+        /* SMP-IDLE-RACE (#169/#170): publish the idle task BEFORE waking the AP.
+         * The AP enables IRQs in kernel_secondary_main and is preempted into
+         * schedule() — which picks cpu_data[i].idle_task — possibly before we'd
+         * otherwise create it (it was created only after the wake here), leaving
+         * a NULL idle_task -> context switch into NULL. Create it first. */
+        smp_create_idle_task(i);
+
         /* Issue PSCI CPU_ON for CPU i.  The entry point is secondary_startup
          * (start.S); stack is passed as context_id (x0 on CPU startup). */
         int ret = arch_cpu_wake_secondary(i, (void (*)(void))kernel_secondary_main, stack);
 
         if (ret == 0) {
-            /* Create an idle task for the new CPU before it starts scheduling. */
-            smp_create_idle_task(i);
-
             /* Spin-wait for secondary to write cpu_boot_ack = i.
              * Timeout = 10M nops (~tens of milliseconds on a GHz CPU). */
             volatile uint32_t timeout = 10000000;
