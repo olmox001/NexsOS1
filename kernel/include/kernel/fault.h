@@ -28,6 +28,12 @@ struct pt_regs;
  * never deadlocking inside a fault handler.
  */
 void fault_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* DIR-05 / #139 — on-screen panic.  fault_text() returns the captured fault
+ * transcript (register dump + class + backtrace); panic_screen() paints it on a
+ * red framebuffer, fault-safe (no compositor, no locks), for when no UART is
+ * attached.  Defined in kernel/graphics/graphics.c. */
+const char *fault_text(void);
+void panic_screen(const char *text);
 void fault_vprintf(const char *fmt, va_list args);
 
 /*

@@ -253,6 +253,10 @@ void panic(const char *fmt, ...) {
     fault_printf("\nSystem halted.\n");
     irq_send_ipi_all();
 
+    /* DIR-05 #139: also paint the fault on the framebuffer (no-UART machines).
+     * fault_text() is the full transcript tee'd through fault_vprintf above. */
+    panic_screen(fault_text());
+
     uint64_t fflags;
     arch_local_irq_save_all(&fflags);
     while (1) {
@@ -272,6 +276,16 @@ void panic(const char *fmt, ...) {
   printk("\n");
   backtrace_here();
   printk("\nSystem halted.\n");
+
+  /* DIR-05 #139: paint the panic reason on the framebuffer too (no-UART case).
+   * Non-fault context, so fault_text() is empty — format the reason directly. */
+  {
+    char nb[256];
+    va_start(args, fmt);
+    vsnprintf(nb, sizeof(nb), fmt, args);
+    va_end(args);
+    panic_screen(nb);
+  }
 
   /* Disable all exceptions and halt this CPU */
   uint64_t flags;

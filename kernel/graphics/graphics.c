@@ -26,6 +26,7 @@
 #include <drivers/gpu/gpu.h>
 #include <graphics/gl.h>
 #include <kernel/arch.h>
+#include <kernel/fault.h>
 #include <kernel/graphics.h>
 #include <kernel/printk.h>
 
@@ -153,6 +154,51 @@ void graphics_clear(uint32_t color) {
 void graphics_swap_buffers(void) {
   /* In single-buffered modes, this is a flush/barrier */
   arch_mb();
+}
+
+/*
+ * panic_screen - paint the captured fault transcript on a RED framebuffer.
+ *
+ * DIR-05 / #139: a kernel fault halts everything and is otherwise visible only
+ * on the UART.  This makes it readable on the display too, for machines with no
+ * serial.  Fault-safe by construction: it does NOT touch the compositor (which
+ * may be wedged or mid-render), takes no locks of its own, writes the primary
+ * GPU framebuffer directly, and presents through the device flush op (which
+ * skips its own lock in fault context).  Best-effort: returns quietly if no GPU
+ * / framebuffer is present.  Called from panic() after the other CPUs quiesce.
+ */
+void panic_screen(const char *text) {
+  struct gl_surface *s = graphics_get_screen_surface();
+  if (!s || !s->buffer || s->width <= 0 || s->height <= 0)
+    return;
+
+  const uint32_t RED = 0x00FF0000, WHITE = 0x00FFFFFF, YELLOW = 0x00FFFF40;
+  uint32_t npix = (uint32_t)s->width * (uint32_t)s->height;
+  for (uint32_t i = 0; i < npix; i++)
+    s->buffer[i] = RED;
+
+  gl_draw_string(s, 12, 8, "*** KERNEL PANIC - system halted ***", WHITE);
+
+  /* The fault transcript, line by line, clipped to the screen.  The top lines
+   * (arch register dump + fault class) are the most diagnostic, so render from
+   * the top. */
+  int y = 32;
+  char line[200];
+  for (const char *p = text ? text : ""; *p && y < (int)s->height - 16;) {
+    int k = 0;
+    while (*p && *p != '\n' && k < (int)sizeof(line) - 1)
+      line[k++] = *p++;
+    line[k] = '\0';
+    if (*p == '\n')
+      p++;
+    if (k > 0)
+      gl_draw_string(s, 12, y, line, YELLOW);
+    y += 16;
+  }
+
+  struct gpu_device *dev = gpu_get_primary();
+  if (dev && dev->ops && dev->ops->flush)
+    dev->ops->flush(dev, 0, 0, dev->width, dev->height);
 }
 
 /*
