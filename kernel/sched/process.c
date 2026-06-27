@@ -1436,6 +1436,21 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   /* Use local lock for runqueue modifications */
   spin_lock_irqsave(&cpu_ptr->sched_lock, &flags);
 
+  /* SCHED-UAF (#169/#170): re-enqueue the task deferred by the PREVIOUS
+   * schedule() on this CPU.  By now we have iretq'd off its kernel stack, so it
+   * is safe for another CPU to run it.  If it was killed while parked here, reap
+   * it instead of resurrecting it (mirrors the DEAD-prev reap path). */
+  if (cpu_ptr->pending_reenqueue) {
+    struct process *pr = cpu_ptr->pending_reenqueue;
+    cpu_ptr->pending_reenqueue = NULL;
+    if (pr->state == PROC_DEAD || pr->state == PROC_ZOMBIE) {
+      pr->on_cpu = -1;
+      reap_push(cpu_ptr, pr);
+    } else {
+      __enqueue_task(pr);
+    }
+  }
+
   /* if (cpu == 0) pr_info("Schedule Core 0\n"); */
   /* Priority Boosting: focus hint.
    * SCHED-01 (#83) resolved — dependency inverted: the scheduler no longer
@@ -1650,6 +1665,19 @@ found:
     spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
     local_irq_restore(sched_irq_flags); /* SCHED-IRQ-01: no-switch exit */
     return regs;
+  }
+
+  /* SCHED-UAF (#169/#170): switching to a DIFFERENT task.  prev was re-enqueued
+   * above (if READY/non-idle); pull it BACK OFF the runqueue and hold it in
+   * pending_reenqueue so no other CPU can work-steal and run it while THIS CPU is
+   * still executing on prev's kernel stack (the IRQ EOI + iretq run on prev's
+   * stack after this schedule() returns; the LAPIC-EOI MMIO write widens that
+   * window on UTM).  The held per-CPU sched_lock kept prev unstealable until now;
+   * it returns to the runqueue at the next schedule() here, after we have iretq'd
+   * off its stack.  Condition mirrors the re-enqueue above exactly. */
+  if (prev && prev->state == PROC_READY && prev->priority != PROC_PRIO_IDLE) {
+    __dequeue_task(prev);
+    cpu_ptr->pending_reenqueue = prev;
   }
 
   cpu_ptr->current_task = next;
