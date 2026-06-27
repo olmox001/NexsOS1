@@ -101,6 +101,10 @@ void arch_uaccess_fault_fixup(void);
  * (and prints raw) when no table is linked.  All output via fault_printf.
  */
 void backtrace_regs(uint64_t pc, uint64_t fp);
+/* backtrace_scan - corruption-robust fallback: walk the raw stack from sp and
+ * symbolize every kernel .text word (used by the fault dumps when the fp chain
+ * is smashed — the stack-corruption crash class #169/#170). */
+void backtrace_scan(uint64_t sp);
 void backtrace_here(void);
 const char *ksym_lookup(uint64_t addr, uint64_t *off);
 

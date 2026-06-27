@@ -140,6 +140,45 @@ void backtrace_regs(uint64_t pc, uint64_t fp) {
 }
 
 /*
+ * backtrace_scan - corruption-robust backtrace fallback.
+ *
+ * The fp-chain walker (backtrace_regs) is useless precisely when you need it
+ * most: a SMASHED kernel stack has a garbage rbp/x29, so the chain yields one
+ * or two bogus frames and stops (the "#GP on ret with only 2 frames" we keep
+ * seeing).  This instead walks the RAW stack from sp upward and prints every
+ * word that lands in kernel .text.  It includes false positives (stale return
+ * addresses, spilled function pointers), but it RECONSTRUCTS the real call path
+ * the fp walker drops — and, critically, shows the corrupted slots themselves
+ * (a non-canonical / 0xcc… word sitting where a return address belongs is the
+ * smoking gun for the stack-corruption class, #169/#170).
+ *
+ * Bounded: at most ~32 KB of stack and BT_SCAN_MAX hits.  fault_printf-based,
+ * so it is callable from any fault/panic path.
+ */
+#define BT_SCAN_MAX 32
+void backtrace_scan(uint64_t sp) {
+  if (!fp_addr_valid(sp))
+    return;
+  fault_printf("Stack scan from %016lx (text-range words; * = call path):\n", sp);
+  int shown = 0;
+  uint64_t end = sp + 0x8000; /* scan up to 32 KB */
+  for (uint64_t p = sp; p < end && shown < BT_SCAN_MAX; p += 8) {
+    if (!fp_addr_valid(p))
+      break;
+    uint64_t v = *(const uint64_t *)p;
+    if (!text_addr_valid(v))
+      continue;
+    uint64_t off = 0;
+    const char *name = ksym_lookup(v, &off);
+    if (name)
+      fault_printf("  @%016lx  %s+0x%lx\n", p, name, off);
+    else
+      fault_printf("  @%016lx  %016lx\n", p, v);
+    shown++;
+  }
+}
+
+/*
  * backtrace_here - backtrace of the current call site (e.g. from panic()).
  */
 void backtrace_here(void) {
