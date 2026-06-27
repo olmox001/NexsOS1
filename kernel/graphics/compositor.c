@@ -2371,6 +2371,20 @@ void compositor_set_window_flags(int window_id, int flags_val) {
         windows[i].visible = 0; /* bit 2: hide window */
       else if (flags_val & 2)
         windows[i].visible = 1; /* bit 1: show window */
+      /* Damage the window's footprint so the show/hide/restack is actually
+       * composited + flushed on the next render.  Without this the state changed
+       * but the damage box stayed empty, so the popup only refreshed when some
+       * OTHER event (the mouse passing over it) damaged that region — the
+       * "notification sticks / won't disappear until I move the mouse" bug.
+       * Same footprint math as compositor_destroy_windows_by_pid. */
+      {
+        int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+        int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+        expand_damage(windows[i].x,
+                      windows[i].y - compositor_titlebar_height(), ddw,
+                      ddh + compositor_titlebar_height());
+        compositor_dirty = 1;
+      }
       break;
     }
   }
