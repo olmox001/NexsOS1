@@ -1,6 +1,7 @@
 /*
- * user/sys/bin/notification_server.c
- * System-wide Notification Server (IPC-based popup service)
+ * user/sys/bin/nxntfy_srv.c
+ * System-wide Notification Server + UI (nxntfy_srv): IPC popup service + a
+ * registry-visible log of recent notifications (read by the nxnotify CLI).
  *
  * Maintains a small always-on-top, PASSIVE (click-through) compositor window in
  * the top-right corner of the screen.  The window is initially hidden; it
@@ -97,6 +98,7 @@ int main(void) {
   struct ipc_message msg;
   long last_notify_time = 0;
   int is_visible = 0; /* Tracks whether the window is currently shown */
+  int ring_idx = 0;   /* registry log ring head: sys.ntfy.log.<i>, 16 deep */
 
   /* Event loop (USR-NOTIFY-02 #134): never busy-spin.
    *   - Idle (window hidden): BLOCK on recv() — the process is descheduled and
@@ -139,6 +141,16 @@ int main(void) {
       is_visible = 1;
       last_notify_time = get_time();
       compositor_render();
+
+      /* Log to a bounded registry ring so notifications are VISIBLE in the
+       * namespace and readable by the nxnotify CLI (ASTRA: everything is a
+       * registry node).  16 entries cap the buffer (anti-spam / fixed size). */
+      {
+        char key[24];
+        snprintf(key, sizeof(key), "sys.ntfy.log.%d", ring_idx & 0x0F);
+        OS1_registry_set(key, msg.payload);
+        ring_idx++;
+      }
     }
 
     /* Auto-hide 2 s (2000 ms; get_time() is real ms) after the last
