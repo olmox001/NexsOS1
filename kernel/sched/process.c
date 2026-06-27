@@ -1228,14 +1228,36 @@ void process_kill_subtree(int root_pid) {
       break;
   }
 
-  /* Terminate the selected set, root first (spec order).  A spared windowed
-   * child transiently orphaned by the root's death is reparented to init by
-   * process_terminate's __reparent_children; process_terminate is idempotent and
-   * a snapshot pid that already exited is a harmless no-op. */
-  process_terminate(root_pid);
+  /* Diagnostic (flaky-terminate triage): surface every "spared because it owns a
+   * window" decision.  A child that holds only a TRANSIENT window — e.g. stress's
+   * --gui lane create_window/destroy_window churn — can be window-OWNING at the
+   * instant of the probe and so spare ITSELF out of a subtree kill at random.
+   * This line makes that visible: if 'stress' appears here on a shell close, the
+   * window-probe heuristic (not an SMP bug) is what let it survive. */
+  for (int i = 0; i < n; i++) {
+    if (snap[i].kill || snap[i].windowless || snap[i].pid == root_pid)
+      continue;
+    for (int j = 0; j < n; j++)
+      if (snap[j].kill && snap[j].pid == snap[i].parent) {
+        pr_info("kill_subtree: sparing windowed PID %d (child of killed %d)\n",
+                snap[i].pid, snap[i].parent);
+        break;
+      }
+  }
+
+  /* Terminate DESCENDANTS FIRST, the root LAST.  process_terminate(root)
+   * reparents the root's live children to init (__reparent_children), so killing
+   * the root FIRST would ORPHAN any descendant whose own terminate then races —
+   * it becomes unreachable from this subtree (its parent is now init) and
+   * survives (the "closing the shell sometimes leaves stress" flake).  Killing
+   * bottom-up keeps every victim parented to a still-live member of the kill set
+   * until it is reaped; the root, last, then has no windowless children left to
+   * orphan.  process_terminate is idempotent; an already-exited snapshot pid is a
+   * harmless no-op. */
   for (int i = 0; i < n; i++)
     if (snap[i].kill && snap[i].pid != root_pid)
       process_terminate(snap[i].pid);
+  process_terminate(root_pid);
 }
 
 /*
