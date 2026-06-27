@@ -1656,6 +1656,23 @@ found:
   next->state = PROC_RUNNING;
   next->on_cpu = cpu;
 
+  /* SCHED-UAF diagnostic (#169/#170): catch two CPUs about to execute on the
+   * SAME kernel stack — PMM handing one page to two stacks, or a freed stack
+   * reused while a task is still live on it.  That is the cross-CPU frame smash
+   * behind the amd64 '#GP on ret, return slot holds a canary / pt_regs word'.
+   * Reading other CPUs' current_task without their lock is fine here: a stale
+   * read names a DIFFERENT stack (no false positive); a real alias is persistent
+   * enough to trip.  Panics AT the aliasing switch, naming both PIDs+CPUs. */
+  for (int oc = 0; oc < MAX_CPUS; oc++) {
+    if (oc == (int)cpu)
+      continue;
+    struct process *ot = cpu_data[oc].current_task;
+    if (ot && ot != next && ot->kernel_stack == next->kernel_stack)
+      panic("STACK-ALIAS: CPU%d (PID %d) and CPU%d (PID %d) share kernel_stack "
+            "0x%lx", (int)cpu, (int)next->pid, oc, (int)ot->pid,
+            next->kernel_stack);
+  }
+
   /* Update Page Table (Hardware Context Switch) */
   if (next == NULL) {
     panic("SCHED: Reschedule failed, next is NULL");
