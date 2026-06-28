@@ -19,8 +19,8 @@
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
-#include <kernel/registry.h>
 #include <kernel/procfs.h>
+#include <kernel/registry.h>
 #include <kernel/sched.h>
 #include <kernel/ssp.h>
 #include <kernel/string.h>

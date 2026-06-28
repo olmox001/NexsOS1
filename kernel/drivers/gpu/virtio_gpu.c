@@ -253,6 +253,7 @@ static int vgpu_set_mode(struct gpu_device *dev, int width, int height) {
   /* New scanout is live: publish it and release the old resource. */
   priv->resource_id = new_res;
   priv->backing_store = new_backing;
+  dev->framebuffer_virt = new_backing; /* keep panic/graphics view in sync */
   dev->width = width;
   dev->height = height;
   dev->framebuffer_size = new_size;
@@ -468,6 +469,11 @@ void virtio_gpu_init(void) {
   int pages = (dev->framebuffer_size + 4095) / 4096;
   priv->backing_store = pmm_alloc_pages_dma(pages);
   memset(priv->backing_store, 0, dev->framebuffer_size);
+  /* DIR-05 #139: panic_screen / graphics_get_screen_surface read
+   * dev->framebuffer_virt; point it at the real scanout backing.  It was never
+   * assigned (-> NULL), so the red panic screen silently no-op'd — the
+   * compositor renders via vgpu_get_framebuffer()->backing_store instead. */
+  dev->framebuffer_virt = priv->backing_store;
 
   priv->resource_id = 1;
   priv->next_resource_id = 2;
