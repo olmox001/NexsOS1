@@ -18,7 +18,7 @@ endif
 ARCH ?= aarch64
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.4.2
+VERSION ?= V0.0.4.3
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 

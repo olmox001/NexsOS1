@@ -31,12 +31,12 @@
 #include <os1.h>
 
 /* OS version banner.  Mirrors the build's VERSION (Makefile: VERSION ?=
- * V0.0.4.2); kept as a userland constant since there is no syscall that reports
+ * V0.0.4.3); kept as a userland constant since there is no syscall that reports
  * it.
  * TODO: surface the kernel build string via a syscall and read it here instead
  * of hardcoding, so the banner can never drift from the running kernel. */
 #define NXINFO_OS_NAME "NEXS"
-#define NXINFO_OS_VERSION "V0.0.4.2"
+#define NXINFO_OS_VERSION "V0.0.4.3"
 
 /*
  * nxinfo_uptime_ms - milliseconds elapsed since boot.
