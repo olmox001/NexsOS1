@@ -232,6 +232,27 @@ int printk(const char *fmt, ...) {
  *          panic() is called, the first printk may spin briefly.
  * Side effects: sets panic_flag, sends IPI, halts all CPUs.
  */
+/* panic_reboot_after_grace - DIR-05 #139 watchdog: after the panic is shown (UART
+ * + red panic_screen), wait a readable grace (~10 s) then HARD-RESET so an
+ * unattended machine self-recovers from a kernel fault.  IRQs stay masked; the
+ * grace spins on the free-running hardware counter (it advances without
+ * interrupts) — NOT arch_idle(), which would wfi/hlt forever with IRQs off.  If
+ * the timer frequency is not up yet (very early boot) the grace is skipped and we
+ * reset immediately.  arch_reboot() is __noreturn (resets, or halts if reset
+ * does not take). */
+static void panic_reboot_after_grace(void) __noreturn;
+static void panic_reboot_after_grace(void) {
+  uint64_t f;
+  arch_local_irq_save_all(&f);
+  uint64_t freq = arch_timer_get_freq();
+  if (freq) {
+    uint64_t end = arch_timer_get_count() + freq * 10ULL; /* ~10 seconds */
+    while ((int64_t)(end - arch_timer_get_count()) > 0)
+      __asm__ __volatile__("" ::: "memory");
+  }
+  arch_reboot();
+}
+
 void panic(const char *fmt, ...) {
   va_list args;
 
@@ -257,11 +278,7 @@ void panic(const char *fmt, ...) {
      * fault_text() is the full transcript tee'd through fault_vprintf above. */
     panic_screen(fault_text());
 
-    uint64_t fflags;
-    arch_local_irq_save_all(&fflags);
-    while (1) {
-      arch_idle();
-    }
+    panic_reboot_after_grace(); /* DIR-05 #139: ~10 s grace, then hard reset */
   }
 
   /* Send IPI (SGI0) to halt all other CPUs */
@@ -287,12 +304,8 @@ void panic(const char *fmt, ...) {
     panic_screen(nb);
   }
 
-  /* Disable all exceptions and halt this CPU */
-  uint64_t flags;
-  arch_local_irq_save_all(&flags);
-  while (1) {
-    arch_idle();
-  }
+  /* DIR-05 #139 watchdog: ~10 s grace to read the panic, then hard reset. */
+  panic_reboot_after_grace();
 
   __builtin_unreachable();
 }

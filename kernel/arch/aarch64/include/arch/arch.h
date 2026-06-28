@@ -51,6 +51,14 @@ static inline void arch_impl_idle(void) { __asm__ __volatile__("wfi"); }
 static inline void arch_impl_yield(void) { __asm__ __volatile__("yield"); }
 static inline void arch_impl_cpu_notify(void) { __asm__ __volatile__("sev"); }
 
+/* arch_impl_reboot - PSCI SYSTEM_RESET (function 0x84000009) over the HVC
+ * conduit (the same conduit the SMP bring-up uses for PSCI CPU_ON) — DIR-05 #139
+ * watchdog.  Used by the HAL arch_reboot() wrapper. */
+static inline void arch_impl_reboot(void) {
+  register unsigned long x0 __asm__("x0") = 0x84000009UL; /* PSCI SYSTEM_RESET */
+  __asm__ __volatile__("hvc #0" : "+r"(x0) : : "memory", "x1", "x2", "x3");
+}
+
 /* Barriers */
 static inline void arch_impl_isb(void) {
   __asm__ __volatile__("isb" ::: "memory");

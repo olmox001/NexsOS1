@@ -246,6 +246,15 @@ static inline void outb(uint16_t port, uint8_t val) {
   __asm__ __volatile__("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
+/* arch_impl_reboot - reset the machine: the 0xCF9 reset-control register first,
+ * then the 8042 keyboard-controller reset line as a fallback (DIR-05 #139
+ * watchdog).  Used by the HAL arch_reboot() wrapper. */
+static inline void arch_impl_reboot(void) {
+  outb(0xCF9, 0x02); /* RST_CPU prepare */
+  outb(0xCF9, 0x0E); /* FULL_RST | RST_CPU | SYS_RST -> hard reset */
+  outb(0x64, 0xFE);  /* 8042 pulse the CPU reset line (fallback) */
+}
+
 static inline uint8_t inb(uint16_t port) {
   uint8_t val;
   __asm__ __volatile__("inb %1, %0" : "=a"(val) : "Nd"(port));
