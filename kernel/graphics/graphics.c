@@ -26,6 +26,7 @@
 #include <drivers/gpu/gpu.h>
 #include <graphics/gl.h>
 #include <kernel/arch.h>
+#include <kernel/fault.h>
 #include <kernel/graphics.h>
 #include <kernel/printk.h>
 
@@ -65,7 +66,7 @@ void graphics_init(void) {
  */
 struct graphics_context *graphics_get_context(void) { return &g_ctx; }
 
-/* 
+/*
  * Helper to get a GL surface wrapping the main screen
  */
 /*
@@ -84,8 +85,9 @@ struct graphics_context *graphics_get_context(void) { return &g_ctx; }
 struct gl_surface *graphics_get_screen_surface(void) {
   static struct gl_surface screen_surf;
   struct gpu_device *dev = gpu_get_primary();
-  if (!dev || !dev->framebuffer_virt) return NULL;
-  
+  if (!dev || !dev->framebuffer_virt)
+    return NULL;
+
   screen_surf.width = dev->width;
   screen_surf.height = dev->height;
   screen_surf.stride = dev->width;
@@ -143,9 +145,9 @@ void graphics_clear(uint32_t color) {
  * graphics_swap_buffers - issue a full memory barrier to commit pending writes.
  *
  * The system runs in single-buffered mode: there is no second framebuffer to
- * swap.  This function exists as an API hook for future double-buffered support.
- * Currently it only issues arch_mb() to ensure all preceding pixel writes are
- * visible to the GPU DMA engine before any following flush.
+ * swap.  This function exists as an API hook for future double-buffered
+ * support. Currently it only issues arch_mb() to ensure all preceding pixel
+ * writes are visible to the GPU DMA engine before any following flush.
  *
  * Side effects: arch_mb() — a full store/load barrier on the current arch.
  * Locking: none required; barrier is inherently CPU-local.
@@ -153,6 +155,51 @@ void graphics_clear(uint32_t color) {
 void graphics_swap_buffers(void) {
   /* In single-buffered modes, this is a flush/barrier */
   arch_mb();
+}
+
+/*
+ * panic_screen - paint the captured fault transcript on a RED framebuffer.
+ *
+ * DIR-05 / #139: a kernel fault halts everything and is otherwise visible only
+ * on the UART.  This makes it readable on the display too, for machines with no
+ * serial.  Fault-safe by construction: it does NOT touch the compositor (which
+ * may be wedged or mid-render), takes no locks of its own, writes the primary
+ * GPU framebuffer directly, and presents through the device flush op (which
+ * skips its own lock in fault context).  Best-effort: returns quietly if no GPU
+ * / framebuffer is present.  Called from panic() after the other CPUs quiesce.
+ */
+void panic_screen(const char *text) {
+  struct gl_surface *s = graphics_get_screen_surface();
+  if (!s || !s->buffer || s->width <= 0 || s->height <= 0)
+    return;
+
+  const uint32_t RED = 0xFFB91C1C, WHITE = 0xFFFCFCFD;
+  uint32_t npix = (uint32_t)s->width * (uint32_t)s->height;
+  for (uint32_t i = 0; i < npix; i++)
+    s->buffer[i] = RED;
+
+  gl_draw_string(s, 12, 8, "*** KERNEL PANIC - system halted ***", WHITE);
+
+  /* The fault transcript, line by line, clipped to the screen.  The top lines
+   * (arch register dump + fault class) are the most diagnostic, so render from
+   * the top. */
+  int y = 32;
+  char line[200];
+  for (const char *p = text ? text : ""; *p && y < (int)s->height - 16;) {
+    int k = 0;
+    while (*p && *p != '\n' && k < (int)sizeof(line) - 1)
+      line[k++] = *p++;
+    line[k] = '\0';
+    if (*p == '\n')
+      p++;
+    if (k > 0)
+      gl_draw_string(s, 12, y, line, WHITE);
+    y += 16;
+  }
+
+  struct gpu_device *dev = gpu_get_primary();
+  if (dev && dev->ops && dev->ops->flush)
+    dev->ops->flush(dev, 0, 0, dev->width, dev->height);
 }
 
 /*
@@ -164,7 +211,8 @@ void graphics_swap_buffers(void) {
  * Side effects: writes pixels to the HAL framebuffer.
  * Locking: none; must not be called from IRQ without holding compositor_lock.
  */
-void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t color) {
+void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint,
+                        uint32_t color) {
   struct gl_surface *surf = graphics_get_screen_surface();
   if (surf) {
     gl_draw_char(surf, (int)x, (int)y, codepoint, color);
@@ -180,7 +228,8 @@ void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t col
  * Side effects: writes pixels to the HAL framebuffer.
  * Locking: none; must not be called from IRQ without holding compositor_lock.
  */
-void graphics_draw_string(uint32_t x, uint32_t y, const char *str, uint32_t color) {
+void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
+                          uint32_t color) {
   struct gl_surface *surf = graphics_get_screen_surface();
   if (surf) {
     gl_draw_string(surf, (int)x, (int)y, str, color);

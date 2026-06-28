@@ -22,6 +22,7 @@
 #include <drivers/virtio.h>
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
+#include <kernel/fault.h>
 #include <kernel/kmalloc.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -155,8 +156,13 @@ static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
     return -1;
   struct virtio_gpu_state *priv = (struct virtio_gpu_state *)dev->priv;
 
-  uint64_t flags;
-  spin_lock_irqsave(&gpu_lock, &flags);
+  /* In a panic/fault context the gpu_lock holder may be a now-halted CPU; the
+   * system is single-threaded by then (panic quiesced the others), so skip the
+   * lock to present the on-screen panic without deadlocking (DIR-05 #139). */
+  int faulting = (fault_depth() > 0);
+  uint64_t flags = 0;
+  if (!faulting)
+    spin_lock_irqsave(&gpu_lock, &flags);
 
   /* 1. Transfer guest memory to the host resource. */
   memset(priv->cmd_buf, 0, 4096);
@@ -183,7 +189,8 @@ static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
   virtio_gpu_send(priv, fl, sizeof(*fl), priv->resp_buf,
                   sizeof(struct virtio_gpu_ctrl_hdr));
 
-  spin_unlock_irqrestore(&gpu_lock, flags);
+  if (!faulting)
+    spin_unlock_irqrestore(&gpu_lock, flags);
   return 0;
 }
 
@@ -246,6 +253,7 @@ static int vgpu_set_mode(struct gpu_device *dev, int width, int height) {
   /* New scanout is live: publish it and release the old resource. */
   priv->resource_id = new_res;
   priv->backing_store = new_backing;
+  dev->framebuffer_virt = new_backing; /* keep panic/graphics view in sync */
   dev->width = width;
   dev->height = height;
   dev->framebuffer_size = new_size;
@@ -461,6 +469,11 @@ void virtio_gpu_init(void) {
   int pages = (dev->framebuffer_size + 4095) / 4096;
   priv->backing_store = pmm_alloc_pages_dma(pages);
   memset(priv->backing_store, 0, dev->framebuffer_size);
+  /* DIR-05 #139: panic_screen / graphics_get_screen_surface read
+   * dev->framebuffer_virt; point it at the real scanout backing.  It was never
+   * assigned (-> NULL), so the red panic screen silently no-op'd — the
+   * compositor renders via vgpu_get_framebuffer()->backing_store instead. */
+  dev->framebuffer_virt = priv->backing_store;
 
   priv->resource_id = 1;
   priv->next_resource_id = 2;

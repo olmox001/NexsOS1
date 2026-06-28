@@ -54,6 +54,16 @@ static inline void arch_cpu_halt(void) {
     while (1) arch_idle();
 }
 
+/* arch_reboot - reset the machine (DIR-05 #139 watchdog: panic recovery).
+ * aarch64: PSCI SYSTEM_RESET (HVC); amd64: 0xCF9 + 8042 reset.  If the reset
+ * does not take, fall back to halting this CPU. */
+static inline void arch_reboot(void) __noreturn;
+static inline void arch_reboot(void) {
+    arch_impl_reboot();
+    arch_local_irq_disable_all();
+    while (1) arch_idle();
+}
+
 /* --- Memory Access HAL --- */
 int arch_copy_from_user(void *dest, const void *src, size_t n);
 int arch_copy_to_user(void *dest, const void *src, size_t n);

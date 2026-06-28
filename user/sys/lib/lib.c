@@ -477,10 +477,12 @@ char *gets(char *s, int size) {
  *
  * Returns the result of send() (0 on success, negative on failure).
  */
-int OS1_notify_post(const char *title, const char *msg) {
+/* notify_send - post a notification with a severity (0=info, 1=warning/yellow,
+ * 2=error/red) in data1, which nxntfy_srv renders as the popup colour. */
+static int notify_send(const char *title, const char *msg, int sev) {
   struct ipc_message imsg;
   imsg.type = IPC_TYPE_NOTIFY;
-  imsg.data1 = 0;
+  imsg.data1 = (uint64_t)sev;
   imsg.data2 = 0;
   int i = 0;
   /* Pack "title: msg" into the 64-byte payload field.
@@ -502,7 +504,9 @@ int OS1_notify_post(const char *title, const char *msg) {
     return -1;
   return (int)OS1low_ipc_send(pid, &imsg);
 }
-int notify(const char *title, const char *msg) { return OS1_notify_post(title, msg); } /* compat shim (DIR-01 F4) */
+int OS1_notify_post(const char *title, const char *msg) { return notify_send(title, msg, 0); }
+int OS1_notify_warn(const char *title, const char *msg) { return notify_send(title, msg, 1); } /* yellow */
+int notify(const char *title, const char *msg) { return notify_send(title, msg, 0); } /* compat shim (DIR-01 F4) */
 
 /* --- Doom/LibC Compatibility ---
  * FILE emulation: a FILE* is a heap-allocated struct (defined in os1.h) that

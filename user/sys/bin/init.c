@@ -56,7 +56,7 @@ int main(void) {
   /* NOTE(USR-INIT-02): Hardcoded path.  init.cfg would provide this path but
    * is never read; the cfg also lists wrong paths (see file header). */
   printf("[Init] Spawning Notification Server...\n");
-  int pid_notify = spawn("/sys/bin/notify_srv");
+  int pid_notify = spawn("/sys/bin/nxntfy_srv");
   if (pid_notify > 0) {
     printf("[Init] Notification Server started (PID %d)\n", pid_notify);
   } else {

@@ -88,8 +88,8 @@ static inline const char *nxproc_state_str(int state) {
 }
 
 /*
- * nxproc_signature - fold the render-relevant fields of a snapshot into a single
- * 64-bit value.
+ * nxproc_signature - fold the render-relevant fields of a snapshot into a
+ * single 64-bit value.
  *
  * procs: snapshot array.
  * count: number of valid entries.
@@ -136,11 +136,12 @@ static inline void nxproc_render_rows(int win_id, const struct ps_info *procs,
                                       int count) {
   /* Clear screen using ANSI (handled by our compositor Terminal Emulator). */
   _sys_window_write(win_id, "\033[H\033[J", 6);
-  _sys_window_write(win_id, "\033[1;33m", 7); /* Bold Yellow */
+  _sys_window_write(win_id, "\033[1;34m", 7); // bold Blue
   printf_win(win_id, "%-4s %-16s %-10s %-4s %-3s\n", "PID", "NAME", "STATE",
              "PRIO", "CPU");
   _sys_window_write(win_id, "\033[0m", 4); /* Reset */
-  _sys_window_write(win_id, "--------------------------------------------\n", 45);
+  _sys_window_write(win_id, "--------------------------------------------\n",
+                    45);
 
   for (int i = 0; i < count; i++) {
     const char *state_str = nxproc_state_str(procs[i].state);
@@ -174,7 +175,8 @@ static inline void nxproc_render_rows(int win_id, const struct ps_info *procs,
  * Returns 1 if it (re)rendered, 0 if it skipped because nothing changed, or a
  * negative value if the snapshot syscall failed.
  */
-static inline int nxproc_render_if_changed(int win_id, unsigned long *last_sig) {
+static inline int nxproc_render_if_changed(int win_id,
+                                           unsigned long *last_sig) {
   struct ps_info procs[NXPROC_MAX];
 
   int count = nxproc_snapshot(procs, NXPROC_MAX);

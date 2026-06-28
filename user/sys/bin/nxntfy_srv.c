@@ -1,6 +1,7 @@
 /*
- * user/sys/bin/notification_server.c
- * System-wide Notification Server (IPC-based popup service)
+ * user/sys/bin/nxntfy_srv.c
+ * System-wide Notification Server + UI (nxntfy_srv): IPC popup service + a
+ * registry-visible log of recent notifications (read by the nxnotify CLI).
  *
  * Maintains a small always-on-top, PASSIVE (click-through) compositor window in
  * the top-right corner of the screen.  The window is initially hidden; it
@@ -8,10 +9,10 @@
  * automatically hidden again after 2 seconds.
  *
  * Render gating (USR-NOTIFY-03): the popup is shown ONLY on a freshly received
- * NOTIFY (gated on the recv return code), never on msg.type alone — IPC_TYPE_RAW
- * is 0 and collides with a "nothing waiting" buffer, which used to re-render the
- * stale payload forever (the popup never auto-hid) and turned a click (delivered
- * as IPC_TYPE_MOUSE) into a stray rendered glyph.
+ * NOTIFY (gated on the recv return code), never on msg.type alone —
+ * IPC_TYPE_RAW is 0 and collides with a "nothing waiting" buffer, which used to
+ * re-render the stale payload forever (the popup never auto-hid) and turned a
+ * click (delivered as IPC_TYPE_MOUSE) into a stray rendered glyph.
  *
  * Discovery mechanism (see USR-SEC-01):
  *   On startup, notify_srv writes its own PID as a decimal string to the
@@ -97,17 +98,21 @@ int main(void) {
   struct ipc_message msg;
   long last_notify_time = 0;
   int is_visible = 0; /* Tracks whether the window is currently shown */
+  int ring_idx = 0;   /* registry log ring head: sys.ntfy.log.<i>, 16 deep */
+  /* Last logged record, kept so the auto-hide can flip its state to READ (the
+   * read receipt): record format is "<from>|<sev>|<state>|<text>". */
+  int last_log_idx = -1, last_from = 0, last_sev = 0;
+  char last_text[56] = {0};
 
   /* Event loop (USR-NOTIFY-02 #134): never busy-spin.
    *   - Idle (window hidden): BLOCK on recv() — the process is descheduled and
    *     consumes ~0% CPU until a notification actually arrives. This is the
    *     server pattern (real blocking IPC, like init's blocking sleep).
    *   - Visible (auto-hide pending): we cannot block forever or the 5 s hide
-   *     would never fire, so poll with try_recv() and a REAL blocking OS1_sleep(100)
-   *     — 10 wakeups/s, not a yield-spin — until the window hides and we drop
-   *     back to the blocking branch.
-   * A recv-with-timeout would collapse both branches; that needs the capability
-   * timer objects of issue #135. */
+   *     would never fire, so poll with try_recv() and a REAL blocking
+   * OS1_sleep(100) — 10 wakeups/s, not a yield-spin — until the window hides
+   * and we drop back to the blocking branch. A recv-with-timeout would collapse
+   * both branches; that needs the capability timer objects of issue #135. */
   while (1) {
     /* `got` is true ONLY when a message was actually received this round.
      * Gate the popup on the receive RETURN CODE, never on msg.type alone:
@@ -127,18 +132,55 @@ int main(void) {
     }
 
     /* Only a freshly-received NOTIFY shows the popup. Any other message type
-     * (e.g. IPC_TYPE_MOUSE from a click on the window) is drained and ignored. */
+     * (e.g. IPC_TYPE_MOUSE from a click on the window) is drained and ignored.
+     */
     if (got && msg.type == IPC_TYPE_NOTIFY) {
-      window_draw(win_id, 0, 0, NOTIFY_WIDTH, NOTIFY_HEIGHT, 0xFFFCFCFD);
-      printf_win(win_id, "\033[H\033[1;93m [System Notification]\033[0m\n ");
+      /* Colour the popup by severity (msg.data1): 2 = error (red), 1 = warning
+       * (amber), else info.  The kernel posts data1=2 for a userland crash;
+       * userland may post data1=1 for warnings. */
+      uint32_t bg = 0xFFFCFCFD; /* info: near-white */
+      const char *hdr = "\033[1;90m [System Notification]";
+      if (msg.data1 == 2) {
+        bg = 0xFFFFD6D6; /* error: light red */
+        hdr = "\033[1;91m [ERROR]";
+      } else if (msg.data1 == 1) {
+        bg = 0xFFFFF2C8; /* warning: light amber */
+        hdr = "\033[1;33m [WARNING]";
+      }
+      window_draw(win_id, 0, 0, NOTIFY_WIDTH, NOTIFY_HEIGHT, bg);
+      printf_win(win_id, "\033[H%s\033[0m\n", hdr);
       /* Limit payload to 64 bytes to avoid over-running the window. */
       printf_win(win_id, "%.64s\n", msg.payload);
 
-      /* Show window: 1=top_most, 2=visible, 8=passive (click-through, no focus). */
+      /* Show window: 1=top_most, 2=visible, 8=passive (click-through, no
+       * focus). */
       set_window_flags(win_id, 1 | 2 | 8);
       is_visible = 1;
       last_notify_time = get_time();
       compositor_render();
+
+      /* Log to a bounded registry ring so notifications are VISIBLE in the
+       * namespace and readable by the nxnotify CLI (ASTRA: everything is a
+       * registry node).  16 entries cap the buffer (anti-spam / fixed size).
+       * Record = "<from>|<sev>|<state>|<text>": carries the sender PID (group
+       * by process), severity, and the receipt state (U=unread/received,
+       * R=read) — the registry-message model. */
+      {
+        int idx = ring_idx & 0x0F;
+        char key[24], rec[80];
+        snprintf(key, sizeof(key), "sys.ntfy.log.%d", idx);
+        snprintf(rec, sizeof(rec), "%d|%d|U|%.48s", (int)msg.from,
+                 (int)msg.data1, msg.payload);
+        OS1_registry_set(key, rec);
+        last_log_idx = idx;
+        last_from = (int)msg.from;
+        last_sev = (int)msg.data1;
+        int t = 0;
+        for (const char *p = msg.payload; *p && t < 55; p++)
+          last_text[t++] = *p;
+        last_text[t] = '\0';
+        ring_idx++;
+      }
     }
 
     /* Auto-hide 2 s (2000 ms; get_time() is real ms) after the last
@@ -147,11 +189,21 @@ int main(void) {
       set_window_flags(win_id, 1 | 4 | 8); /* 1=top_most, 4=hidden, 8=passive */
       is_visible = 0;
       compositor_render();
+      /* The user has now seen the popup: confirm READ in the registry record
+       * (the read receipt of the message model). */
+      if (last_log_idx >= 0) {
+        char key[24], rec[80];
+        snprintf(key, sizeof(key), "sys.ntfy.log.%d", last_log_idx);
+        snprintf(rec, sizeof(rec), "%d|%d|R|%.48s", last_from, last_sev,
+                 last_text);
+        OS1_registry_set(key, rec);
+        last_log_idx = -1;
+      }
     }
 
     /* While the popup is up, pace the auto-hide poll with a real blocking sleep
-     * (descheduled, no busy-wait). Skipped once we are hidden — that path blocks
-     * on recv() at the top instead. */
+     * (descheduled, no busy-wait). Skipped once we are hidden — that path
+     * blocks on recv() at the top instead. */
     if (is_visible)
       OS1_sleep(100);
   }

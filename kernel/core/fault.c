@@ -23,12 +23,35 @@
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
 #include <kernel/printk.h>
+#include <kernel/registry.h>
 #include <kernel/sched.h>
+#include <kernel/string.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 
 extern struct pt_regs *schedule(struct pt_regs *regs);
 extern int process_terminate(int pid);
+
+/* fault_notify_user - post a RED notification (severity 2) about a crashing user
+ * process to the notification server (nxntfy_srv), so a userland crash is visible
+ * ON SCREEN, not only on the UART.  Best-effort: skipped if the server is not up
+ * (registry key srv.notify_pid absent).  Safe in this path: a user fault leaves
+ * the kernel healthy, so registry_get + kernel_ipc_send are ordinary calls. */
+static void fault_notify_user(struct process *task, const char *desc) {
+  char pidbuf[16];
+  if (registry_get("srv.notify_pid", pidbuf, sizeof(pidbuf)) != 0)
+    return;
+  int npid = atoi(pidbuf);
+  if (npid <= 0)
+    return;
+  struct ipc_message m;
+  m.from = task->pid; /* group the crash notification under the crashing process */
+  m.type = IPC_TYPE_NOTIFY;
+  m.data1 = 2; /* severity: error -> red popup (1 = warning/yellow, 0 = info) */
+  m.data2 = (uint64_t)task->pid;
+  snprintf(m.payload, sizeof(m.payload), "%s crashed: %s", task->name, desc);
+  kernel_ipc_send(npid, &m);
+}
 
 struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
                                            uint64_t fault_addr, uint64_t fault_pc,
@@ -55,6 +78,7 @@ struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
       arch_uaccess_fault_fixup();
     }
 
+    fault_notify_user(task, desc); /* DIR-05 #139: red crash popup, best-effort */
     process_terminate(task->pid);
     fault_exit(); /* fault handled — unwind the recursion guard */
     return schedule(regs);

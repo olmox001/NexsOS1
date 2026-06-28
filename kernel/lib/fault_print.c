@@ -24,11 +24,36 @@
  * two CPUs faulting simultaneously pre-init is acceptable: both halt cleanly. */
 static volatile uint32_t fault_depth_fallback;
 
+/* DIR-05 / #139 — on-screen panic.  Tee every byte of fault output into a plain
+ * buffer so panic() can paint it on the framebuffer when no UART is attached
+ * (the only place a kernel fault is otherwise visible).  Lock-free single-writer
+ * by construction: fault output is serialised by the fault recursion guard +
+ * panic's IPI quiesce. */
+#define FAULT_TEXT_CAP 8192
+static char fault_text_buf[FAULT_TEXT_CAP];
+static volatile uint32_t fault_text_used;
+
+static inline void fault_text_putc(char c) {
+  uint32_t n = fault_text_used;
+  if (n < FAULT_TEXT_CAP - 1) {
+    fault_text_buf[n] = c;
+    fault_text_buf[n + 1] = '\0';
+    fault_text_used = n + 1;
+  }
+}
+
+/* The captured fault transcript (NUL-terminated), oldest first.  Returned to
+ * panic_screen(); the leading lines are the arch register dump + fault class,
+ * which is exactly what a maintainer reads off a screen with no serial. */
+const char *fault_text(void) { return fault_text_buf; }
+
 void fault_vprintf(const char *fmt, va_list args) {
   char buf[256];
   vsnprintf(buf, sizeof(buf), fmt, args);
-  for (const char *p = buf; *p; p++)
+  for (const char *p = buf; *p; p++) {
     uart_putc_emergency(*p);
+    fault_text_putc(*p);
+  }
 }
 
 void fault_printf(const char *fmt, ...) {

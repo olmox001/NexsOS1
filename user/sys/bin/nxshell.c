@@ -242,6 +242,7 @@ static void process_command(void) {
     print("  nxproc          - Realtime list processes\n");
     print("  kill <pid>      - Kill process by PID\n");
     print("  nxwins          - List windows (id/pid/state/title)\n");
+    print("  nxnotify <msg>  - Send a notification (nxnotify list to read)\n");
     print("  focus <id>      - Focus a window by id (no mouse needed)\n");
     print("  exec <program>  - Execute program (searches /bin, /sys/bin)\n");
     print("  about           - About this OS\n");
@@ -352,7 +353,7 @@ static void process_command(void) {
       print("Usage: focus <window-id>\n");
     }
   } else if (str_eq(cmd_buf, "about")) {
-    print("\n\033[1;36mNeXs OS v0.0.4.2\033[0m\n");
+    print("\n\033[1;36mNeXs OS v0.0.4.3\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal "
           "Emulator\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
@@ -362,10 +363,6 @@ static void process_command(void) {
     print("Exiting NXShell...\n");
     running = 0;
     exit(0);
-  } else if (cmd_buf[0] == 'n' && cmd_buf[1] == 'o' && cmd_buf[2] == 't' &&
-             cmd_buf[3] == 'i' && cmd_buf[4] == 'f' && cmd_buf[5] == 'y' &&
-             cmd_buf[6] == ' ') {
-    print("Notification sent.\n");
   } else if (cmd_buf[0] == 'c' && cmd_buf[1] == 'a' && cmd_buf[2] == 't' &&
              cmd_buf[3] == ' ') {
     char *path = &cmd_buf[4];
