@@ -175,6 +175,46 @@ rapid multi-process termination is panic-free on **both** arches.
 - **`aarch64` feels a bit slow** under `make run` (TCG; doom ~10fps is largely
   TCG CPU-emulation of the game's software renderer, not a kernel gate).
 
+### 5b. Child-close vs window-creation RACE (maintainer report, 0.0.4.3) — SCHEDULED
+
+Repro: `stress` is a direct child of the shell, lives inside it, and keeps
+opening new windows. Closing the shell **at the exact instant `stress` is
+creating a new window** (the window momentarily assigned to `stress`) produces,
+beyond the expected outcome (`stress` is terminated with the parent), TWO bugs:
+
+- **Bug 1 — zombie PID:** `stress` survives only as a PID (not reaped); it is
+  still `kill`-able from the (respawned) shell. The subtree-kill caught `stress`
+  in the window-creation handoff and left it half-terminated.
+- **Bug 2 — orphan window:** `stress` dies but leaves an open window (`wins`)
+  assigned to a now-nonexistent PID that **cannot be closed** (no live owner).
+
+Root cause (maintainer's read, plausible): a **timing/context race** — the
+window-creation handoff is not atomic w.r.t. the parent subtree-kill; there is a
+momentary control transfer with no synchronisation/buffer covering it (the child
+mid-`create_window` "has no memory" of the transient ownership). Conceptually the
+**same class** as the boot-phase timing/context-division problem (S2): contexts
+must be divided with perfect timing. Needs reinforcing (sync barrier/buffer +
+timing check), NOT a model change — the kill model itself is correct.
+
+Fixes:
+- **Bug 2 (easy):** allow closing a window whose owner PID no longer exists —
+  `compositor_destroy_window` / `nxwins` must not require a live PID. A window
+  with a dead owner is unconditionally closeable.
+- **Bug 1 (harder):** make the window↔child handoff **atomic** relative to the
+  subtree-kill: either the kill accounts for an in-flight `create_window`, or the
+  window-creation completes/rolls back as a unit (reuse the `kill_pending` +
+  `process_finalize_spawn`/`process_abort_spawn` deferral pattern, Pitfall B).
+
+Tracked as phase **S2b** in `~/.claude/plans/nexs-stabilization-usability.md`.
+
+### 5c. nxui elements not locked (maintainer report, 0.0.4.3) — SCHEDULED (S2b)
+
+`nxui` can be moved/resized **manually** with the mouse, which interferes with
+its elements (resizing it snaps them back). System UI should resize **only with
+the screen**, never by hand. Fix: a window **"locked"** flag honoured in the
+drag/resize hit-test (`compositor_handle_click` / `compositor_update_mouse`);
+`nxui` is marked locked. No manual drag, no manual resize; follows the screen.
+
 ---
 
 ## 6. Test plan (BOTH arches, every change)
