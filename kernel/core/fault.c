@@ -45,7 +45,7 @@ static void fault_notify_user(struct process *task, const char *desc) {
   if (npid <= 0)
     return;
   struct ipc_message m;
-  m.from = 0;
+  m.from = task->pid; /* group the crash notification under the crashing process */
   m.type = IPC_TYPE_NOTIFY;
   m.data1 = 2; /* severity: error -> red popup (1 = warning/yellow, 0 = info) */
   m.data2 = (uint64_t)task->pid;

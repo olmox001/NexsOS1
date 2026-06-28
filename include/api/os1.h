@@ -170,6 +170,7 @@ long OS1low_ipc_send(int pid, struct ipc_message *msg);
 long OS1low_ipc_recv(int pid, struct ipc_message *msg);
 long OS1low_ipc_try_recv(int pid, struct ipc_message *msg);
 int  OS1_notify_post(const char *title, const char *msg);
+int  OS1_notify_warn(const char *title, const char *msg); /* yellow (severity 1) */
 int send(int pid, struct ipc_message *msg);
 int recv(int pid, struct ipc_message *msg);
 int try_recv(int pid, struct ipc_message *msg);

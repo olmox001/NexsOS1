@@ -99,6 +99,10 @@ int main(void) {
   long last_notify_time = 0;
   int is_visible = 0; /* Tracks whether the window is currently shown */
   int ring_idx = 0;   /* registry log ring head: sys.ntfy.log.<i>, 16 deep */
+  /* Last logged record, kept so the auto-hide can flip its state to READ (the
+   * read receipt): record format is "<from>|<sev>|<state>|<text>". */
+  int last_log_idx = -1, last_from = 0, last_sev = 0;
+  char last_text[56] = {0};
 
   /* Event loop (USR-NOTIFY-02 #134): never busy-spin.
    *   - Idle (window hidden): BLOCK on recv() — the process is descheduled and
@@ -157,11 +161,24 @@ int main(void) {
 
       /* Log to a bounded registry ring so notifications are VISIBLE in the
        * namespace and readable by the nxnotify CLI (ASTRA: everything is a
-       * registry node).  16 entries cap the buffer (anti-spam / fixed size). */
+       * registry node).  16 entries cap the buffer (anti-spam / fixed size).
+       * Record = "<from>|<sev>|<state>|<text>": carries the sender PID (group
+       * by process), severity, and the receipt state (U=unread/received,
+       * R=read) — the registry-message model. */
       {
-        char key[24];
-        snprintf(key, sizeof(key), "sys.ntfy.log.%d", ring_idx & 0x0F);
-        OS1_registry_set(key, msg.payload);
+        int idx = ring_idx & 0x0F;
+        char key[24], rec[80];
+        snprintf(key, sizeof(key), "sys.ntfy.log.%d", idx);
+        snprintf(rec, sizeof(rec), "%d|%d|U|%.48s", (int)msg.from,
+                 (int)msg.data1, msg.payload);
+        OS1_registry_set(key, rec);
+        last_log_idx = idx;
+        last_from = (int)msg.from;
+        last_sev = (int)msg.data1;
+        int t = 0;
+        for (const char *p = msg.payload; *p && t < 55; p++)
+          last_text[t++] = *p;
+        last_text[t] = '\0';
         ring_idx++;
       }
     }
@@ -172,6 +189,16 @@ int main(void) {
       set_window_flags(win_id, 1 | 4 | 8); /* 1=top_most, 4=hidden, 8=passive */
       is_visible = 0;
       compositor_render();
+      /* The user has now seen the popup: confirm READ in the registry record
+       * (the read receipt of the message model). */
+      if (last_log_idx >= 0) {
+        char key[24], rec[80];
+        snprintf(key, sizeof(key), "sys.ntfy.log.%d", last_log_idx);
+        snprintf(rec, sizeof(rec), "%d|%d|R|%.48s", last_from, last_sev,
+                 last_text);
+        OS1_registry_set(key, rec);
+        last_log_idx = -1;
+      }
     }
 
     /* While the popup is up, pace the auto-hide poll with a real blocking sleep
