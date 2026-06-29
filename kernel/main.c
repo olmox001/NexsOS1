@@ -30,8 +30,10 @@
 
 /* Version */
 #define KERNEL_VERSION_MAJOR 0
-#define KERNEL_VERSION_MINOR 1
-#define KERNEL_VERSION_PATCH 0
+#define KERNEL_VERSION_MINOR 0
+#define KERNEL_VERSION_PATCH 4
+#define KERNEL_VERSION_BUILD 3
+
 #ifdef ARCH_AMD64
 #define KERNEL_NAME "AMD64 NexsOS1"
 #else
@@ -151,9 +153,8 @@ void kernel_main(uint64_t x0_arg) {
 static void print_banner(void) {
   printk("\n");
   printk("========================================\n");
-  printk("  %s v%d.%d.%d\n", KERNEL_NAME, KERNEL_VERSION_MAJOR,
-         KERNEL_VERSION_MINOR, KERNEL_VERSION_PATCH);
-  printk("  NeXsOS1\n");
+  printk(" %s v%d.%d.%d.%d\n", KERNEL_NAME, KERNEL_VERSION_MAJOR,
+         KERNEL_VERSION_MINOR, KERNEL_VERSION_PATCH, KERNEL_VERSION_BUILD);
   printk("========================================\n");
   printk("\n");
 }

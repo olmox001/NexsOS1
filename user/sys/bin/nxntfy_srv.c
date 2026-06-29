@@ -88,12 +88,14 @@ int main(void) {
 
   printf("[Notify] Server started (PID %d)\n", get_pid());
 
-  /* Register PID in system registry for other processes to find it.
-   * NOTE(USR-SEC-01): No authentication; any process can overwrite this key
-   * to redirect all system notifications to itself. */
-  char pid_str[16];
-  snprintf(pid_str, sizeof(pid_str), "%d", get_pid());
-  OS1_registry_set("srv.notify_pid", pid_str);
+  /* NOTE(NOTIFY-REG-01): srv.notify_pid is now published by init (parent),
+   * not by the server itself.  Self-publishing broke respawn: after the
+   * server died and init spawned a fresh copy, the registry key still held
+   * the corpse's pid and every notify_post() lost its messages.  Init owns
+   * the key (it knows the live pid on every spawn + respawn), and re-publishes
+   * it after each respawn so any registry hijack between respawns is undone.
+   * Discovery of this endpoint from a caller: OS1_registry_get("srv.notify_pid").
+   */
 
   struct ipc_message msg;
   long last_notify_time = 0;

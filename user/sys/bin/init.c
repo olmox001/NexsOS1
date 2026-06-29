@@ -28,11 +28,42 @@
  *                crashes immediately will be respawned in a tight loop,
  *                saturating the process table (MAX_PROCESSES=64, os1.h:16)
  *                with zombies until the system stalls.
- *   USR-SEC-01   (W3 SECURITY) notify_srv writes its PID to the global registry
- *                key "srv.notify_pid" with no authentication; any process can
- *                overwrite that key to hijack all system notifications.
+ *   USR-SEC-01   (W3 SECURITY, RESIDUAL) srv.notify_pid has no authentication;
+ *                any process can still overwrite it.  The hijack window is now
+ *                bounded to ONE supervisor tick (~50 ms) because init
+ *                re-publishes the live pid on every respawn (see
+ *                register_notify_pid).  Full capability-based addressing
+ *                (OBJ_TYPE_PROCESS handle) is the planned upgrade; see DIR-01
+ *                M4.5 "IPC -> OBJ_TYPE_PORT".
  */
 #include <os1.h>
+
+/*
+ * register_notify_pid - publish `pid` as the LIVE notification server endpoint
+ * by writing it (decimal, NUL-terminated) to the registry key "srv.notify_pid".
+ *
+ * Called by init on the FIRST spawn AND on every RESPAWN of nxntfy_srv
+ * (init.c main()).  Centralising the write in init fixes two bugs of the
+ * previous "server self-registers" model:
+ *   1. A respawn left srv.notify_pid pointing at the corpse's pid — every
+ *      subsequent notify_post() resolved that dead pid and -ESRCH'd silently,
+ *      so notifications disappeared forever after a single kill of the server.
+ *   2. Any process could overwrite the key (USR-SEC-01) and intercept all
+ *      notifications.  Re-registering on respawn overwrites any such hijack
+ *      with the legitimate pid within one supervisor tick (~50 ms).
+ *
+ * Failure to write the registry key is non-fatal: init logs and continues.
+ * Subsequent notify_post() calls will keep returning -1 until the key is
+ * present, but init's supervisor will retry on the next respawn.
+ */
+static void register_notify_pid(int pid) {
+  char pidbuf[16];
+  int n = snprintf(pidbuf, sizeof(pidbuf), "%d", pid);
+  if (n <= 0 || n >= (int)sizeof(pidbuf))
+    return;
+  if (OS1_registry_set("srv.notify_pid", pidbuf) != 0)
+    printf("[Init] WARN: failed to publish srv.notify_pid=%s\n", pidbuf);
+}
 
 /*
  * main - init entry point; never returns.
@@ -52,13 +83,16 @@ int main(void) {
   print("[Init] System Initialization Starting...\n");
 
   /* Spawn Notification Server */
-  /* Spawn Notification Server */
   /* NOTE(USR-INIT-02): Hardcoded path.  init.cfg would provide this path but
-   * is never read; the cfg also lists wrong paths (see file header). */
+   * is never read; the cfg also lists wrong paths (see file header).
+   * NOTE(NOTIFY-REG-01): init OWNS the srv.notify_pid registry key (see
+   * register_notify_pid() below).  nxntfy_srv no longer publishes its own PID
+   * — otherwise a respawn leaves the key pointing at the corpse. */
   printf("[Init] Spawning Notification Server...\n");
   int pid_notify = spawn("/sys/bin/nxntfy_srv");
   if (pid_notify > 0) {
     printf("[Init] Notification Server started (PID %d)\n", pid_notify);
+    register_notify_pid(pid_notify);
   } else {
     print("[Init] Failed to spawn Notification Server!\n");
   }
@@ -145,7 +179,13 @@ int main(void) {
     r = wait(pid_notify);
     if (r == pid_notify || r == -2) {
       print("[Init] Notification Server died! Respawning...\n");
-      pid_notify = spawn("/sys/bin/notify_srv");
+      pid_notify = spawn("/sys/bin/nxntfy_srv");
+      /* Refresh srv.notify_pid to the LIVE pid.  Without this, the registry key
+       * still holds the corpse's pid and every notify_post returns -ESRCH until
+       * a reboot.  Re-registering on respawn also overwrites any hijack a
+       * malicious process may have written in the meantime. */
+      if (pid_notify > 0)
+        register_notify_pid(pid_notify);
     }
 
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as
