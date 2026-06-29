@@ -1,5 +1,5 @@
 /*
- * user/sys/bin/top.c
+ * user/sys/bin/nxtop.c
  * Realtime Process List Utility - ASTRA stratified service edition.
  *
  * A thin windowed front-end over the reusable process helper nxproc.h.  It
@@ -7,8 +7,15 @@
  * (rewriting the FULL window every tick even when nothing changed) is gone:
  * nxproc_render_if_changed() computes a signature of the visible fields and
  * skips the window write entirely when the table is unchanged.  Between checks
- * top blocks on the real kernel timer (OS1_sleep) rather than busy-spinning, so
- * an idle process list costs no CPU.
+ * nxtop blocks on the real kernel timer (OS1_sleep) rather than busy-spinning,
+ * so an idle process list costs no CPU.
+ *
+ * Naming: renamed from `top` to `nxtop` to follow the NEXS service naming
+ * convention (every /sys/bin ELF is prefixed `nx*`).  The on-disk ELF is
+ * `nxtop.elf`; the shell dispatches `top <pid>` by trying the explicit name
+ * first, then `nxtop` via the spawn_search_args() PATH probe (which already
+ * looks up both /bin and /sys/bin).  This matches how `ps` reaches nxproc
+ * after the proce.c -> nxproc ELF migration.
  */
 #include "nxproc.h"
 #include <os1.h>
@@ -28,8 +35,9 @@ int main(void) {
     nxproc_render_if_changed(my_win, &sig);
 
     /* REFRESH RATE (1Hz): block for one second via the real kernel timer
-     * instead of busy-spinning yield(), so top no longer burns a core idling. */
-    OS1_sleep(1000);
+     * instead of busy-spinning yield(), so nxtop no longer burns a core idling.
+     */
+    OS1_sleep(3000);
   }
 
   return 0;

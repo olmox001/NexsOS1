@@ -1,20 +1,45 @@
 /*
  * user/sys/bin/nxproc.c
- * NEXS process-management frontend (ASTRA stratified service model).
+ * NEXS process-list ELF (ASTRA stratified service model).
  *
- * Usage:
- *   nxproc                 open a window and show the live process list,
- *                          refreshing only when the table actually changes
- *   nxproc kill <pid>      terminate a process by pid
+ * Usage (run from the shell, like /bin/stress):
+ *   nxproc                 snapshot the process table once and print it to
+ *                          stdout (the caller's TTY) — the canonical `ps`
+ *                          inline runtime.  No compositor window is created;
+ *                          every row goes through printf, the same fd 1 path
+ *                          the shell uses for its own prompt.
+ *   nxproc kill <pid>      terminate a process by pid (passes through the
+ *                          helper's thin kill wrapper).
  *
- * This is the THIN CLI/windowed frontend over the reusable helper nxproc.h.
- * It contains no policy of its own: the windowed list defers all snapshot +
- * render + change-detection to the helper, and `kill` is a direct pass-through
- * to nxproc_kill().  Because the helper only wraps syscalls the kernel already
- * gates per caller, nxproc's reach is exactly the caller's reach — no more.
+ * This is the INLINE counterpart to nxtop.c: nxtop opens a window and
+ * refreshes at ~1Hz, this ELF is one-shot and exits.  Both share the snapshot
+ * + signature + render logic via the header-only nxproc.h helper, so the
+ * displayed format and colours are identical regardless of which entry point
+ * the user picks.
  */
 #include "nxproc.h"
 #include <os1.h>
+#include <string.h>
+
+/*
+ * cmd_print - `nxproc` (no args) handler: one-shot snapshot + inline render.
+ *
+ * Fills a local array via nxproc_snapshot() and feeds it to
+ * nxproc_render_inline(), which writes the formatted, ANSI-coloured table to
+ * the caller's stdout.  No window is created; the shell's own terminal
+ * (which routed fd 1 here via the kernel's spawn-time fd inheritance)
+ * receives the bytes.  Returns 0 on success, 1 on syscall error.
+ */
+static int cmd_print(void) {
+  struct ps_info procs[NXPROC_MAX];
+  int count = nxproc_snapshot(procs, NXPROC_MAX);
+  if (count < 0) {
+    printf("nxproc: failed to fetch process list (err %d)\n", count);
+    return 1;
+  }
+  nxproc_render_inline(procs, count);
+  return 0;
+}
 
 /*
  * cmd_kill - `nxproc kill <pid>` handler.
@@ -39,36 +64,14 @@ static int cmd_kill(const char *pid_arg) {
   return 1;
 }
 
-/*
- * cmd_window - `nxproc` (no args) handler: live windowed process list.
- *
- * Opens a window and refreshes the list at ~1Hz, but delegates to
- * nxproc_render_if_changed() so the window is only rewritten when the visible
- * table changes.  Between checks it blocks on the real kernel timer
- * (OS1_sleep) rather than busy-spinning, so an idle list costs no CPU.
- */
-static int cmd_window(void) {
-  int win = _sys_create_window(100, 100, 520, 600, "NEXS Processes");
-  if (win < 0)
-    return 1;
-
-  unsigned long sig = 0; /* Seed sentinel: forces the first render. */
-  while (1) {
-    nxproc_render_if_changed(win, &sig);
-    OS1_sleep(1000); /* ~1Hz cadence; redraw inside only fires on change. */
-  }
-
-  return 0;
-}
-
 int main(int argc, char **argv) {
   /* nxproc kill <pid> */
   if (argc >= 3 && strncmp(argv[1], "kill", 5) == 0)
     return cmd_kill(argv[2]);
 
-  /* nxproc (no args): live windowed list. */
+  /* nxproc (no args): one-shot inline render on stdout. */
   if (argc < 2)
-    return cmd_window();
+    return cmd_print();
 
   printf("nxproc: bad arguments\n");
   printf("usage: nxproc | nxproc kill <pid>\n");
