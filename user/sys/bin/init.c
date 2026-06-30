@@ -116,17 +116,6 @@ int main(void) {
     print("[Init] Failed to spawn Notification Server!\n");
   }
 
-#ifndef LAUNCHER_AUTOSTART
-  /* Spawn Shell */
-  printf("[Init] Spawning Nxshell...\n");
-  int pid_shell = spawn("/sys/bin/nxshell");
-  if (pid_shell > 0) {
-    printf("[Init] NXShell started (PID %d)\n", pid_shell);
-  } else {
-    print("[Init] Failed to spawn NXShell!\n");
-  }
-#endif
-
   /* Spawn the dock (window-manager UI).  Plain spawn(): the ASTRA per-path
    * preset gives any /sys/bin binary ROOT authority (F1), which is exactly what
    * a window manager needs to acquire OBJ_TYPE_WINDOW control capabilities to
@@ -157,6 +146,15 @@ int main(void) {
     print("[Init] Failed to spawn Launcher!\n");
   }
 #endif
+
+  /* Spawn Shell */
+  printf("[Init] Spawning Nxshell...\n");
+  int pid_shell = spawn("/sys/bin/nxshell");
+  if (pid_shell > 0) {
+    printf("[Init] NXShell started (PID %d)\n", pid_shell);
+  } else {
+    print("[Init] Failed to spawn NXShell!\n");
+  }
 
   flush();
 

@@ -358,7 +358,7 @@ static void process_command(void) {
       print("Usage: focus <window-id>\n");
     }
   } else if (str_eq(cmd_buf, "about")) {
-    print("\n\033[1;36mNeXs OS v0.0.4.3\033[0m\n");
+    print("\n\033[1;36mNeXs OS v0.0.4.4\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal "
           "Emulator\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
@@ -500,13 +500,13 @@ int main(void) {
 
     char c = buf[0];
     if (c == '\n' || c == '\r') {
-      /* End of line: the typed command sits on the prompt line ("NXShell:/>ps");
-       * the user's Enter echoes nothing on its own (CONSOLE read drained the
-       * key, didn't echo it), so without a leading newline the dispatched
-       * command's output would render immediately after ">ps".  Emit CR+LF
-       * first to push the cursor to a fresh line, then dispatch, then reprint
-       * the prompt on the next line.  This also keeps the snapshot banner from
-       * `ps` (nxproc's inline render) one row below the prompt. */
+      /* End of line: the typed command sits on the prompt line
+       * ("NXShell:/>ps"); the user's Enter echoes nothing on its own (CONSOLE
+       * read drained the key, didn't echo it), so without a leading newline the
+       * dispatched command's output would render immediately after ">ps".  Emit
+       * CR+LF first to push the cursor to a fresh line, then dispatch, then
+       * reprint the prompt on the next line.  This also keeps the snapshot
+       * banner from `ps` (nxproc's inline render) one row below the prompt. */
       print("\r\n");
       process_command();
       if (running) {

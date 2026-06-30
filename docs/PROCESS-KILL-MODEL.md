@@ -175,7 +175,7 @@ rapid multi-process termination is panic-free on **both** arches.
 - **`aarch64` feels a bit slow** under `make run` (TCG; doom ~10fps is largely
   TCG CPU-emulation of the game's software renderer, not a kernel gate).
 
-### 5b. Child-close vs window-creation RACE (maintainer report, 0.0.4.3) — SCHEDULED
+### 5b. Child-close vs window-creation RACE (maintainer report, 0.0.4.4) — SCHEDULED
 
 Repro: `stress` is a direct child of the shell, lives inside it, and keeps
 opening new windows. Closing the shell **at the exact instant `stress` is
@@ -207,7 +207,7 @@ Fixes:
 
 Tracked as phase **S2b** in `~/.claude/plans/nexs-stabilization-usability.md`.
 
-### 5c. nxui elements not locked (maintainer report, 0.0.4.3) — SCHEDULED (S2b)
+### 5c. nxui elements not locked (maintainer report, 0.0.4.4) — SCHEDULED (S2b)
 
 `nxui` can be moved/resized **manually** with the mouse, which interferes with
 its elements (resizing it snaps them back). System UI should resize **only with
