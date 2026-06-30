@@ -83,6 +83,14 @@
 #define COL_BTN_RED 0xFFE53935u     /* material red 600 — idle scroll button */
 #define COL_BTN_PRESSED 0xFF6B6B73u /* greys out while the button is held    */
 
+/* The /sys/bin/nxlauncher tile is the only non-generic entry in the dock: a
+ * solid green when shown (material green 600), and a dimmer, less saturated
+ * green when the launcher has been sent to the background.  It mirrors the
+ * focus/minimised split used for every other tile (blue/grey) so the dock's
+ * own design language stays consistent — only the hue differs. */
+#define COL_LAUNCHER      0xFF43A047u /* material green 600 (shown)       */
+#define COL_LAUNCHER_MIN  0xFF2E5D32u /* dimmer green (backgrounded)      */
+
 static uint32_t *g_fb;   /* dock pixel buffer (g_sw x DOCK_H, ARGB)        */
 static int g_sw;         /* dock window's OWN width (desktop width minus
                           * the two DOCK_MARGIN_SIDE insets)                */
@@ -229,6 +237,30 @@ static void redraw(int force) {
     }
   }
 
+  /* Pin the launcher to position 0 so it is always the first tile of the
+   * first page (no paging needed to reach it).  Matched by basename so any
+   * future title suffix — e.g. "— folder view" — still pins.  Done after
+   * the collection pass so the focus update above still fires naturally. */
+  int launcher_id = 0;
+  for (int i = 0; i < total; i++) {
+    for (int j = 0; j < n; j++) {
+      if (wi[j].id == ids[i] && strncmp(wi[j].title, "nxlauncher", 10) == 0) {
+        int id = ids[i];
+        unsigned f = flg[i];
+        if (i != 0) {
+          for (int k = i; k > 0; k--) {
+            ids[k] = ids[k - 1];
+            flg[k] = flg[k - 1];
+          }
+          ids[0] = id;
+          flg[0] = f;
+        }
+        launcher_id = id;
+        break;
+      }
+    }
+  }
+
   /* How many tiles fit per page?  Try without scroll buttons first; only pay
    * their width once paging is actually needed. */
   int inner_w = g_sw - 2 * MARGIN;
@@ -298,17 +330,25 @@ static void redraw(int force) {
 
   int ty = (DOCK_H - TILE) / 2;
   for (int i = 0; i < cnt; i++) {
-    uint32_t c = COL_TILE;
+    int is_launcher = (launcher_id != 0 && ids[start + i] == launcher_id);
+    uint32_t c = is_launcher ? COL_LAUNCHER : COL_TILE;
     /* The "real" focus (WININFO_FOCUSED).  When the dock itself is the focused
      * window, or a tile was just toggled to minimized, no window reports
      * WININFO_FOCUSED — in that case, the remembered g_last_focus tile stays
      * blue so the user still sees which app owns the focus. */
     int focused = (dflags[i] & WININFO_FOCUSED) ||
                   (!seen_focus && ids[start + i] == g_last_focus);
-    if (focused)
+    if (is_launcher) {
+      /* Launcher stays green across both states — bright when shown/focused,
+       * dimmer when backgrounded — so the dock never loses the "this is the
+       * launcher" cue.  No special focused override: COL_LAUNCHER already
+       * marks "active". */
+      c = (dflags[i] & WININFO_MINIMIZED) ? COL_LAUNCHER_MIN : COL_LAUNCHER;
+    } else if (focused) {
       c = COL_TILE_FOCUS;
-    else if (dflags[i] & WININFO_MINIMIZED)
+    } else if (dflags[i] & WININFO_MINIMIZED) {
       c = COL_TILE_MIN;
+    }
     fb_rrect(g_slot_x[i], ty, TILE, TILE, TILE_RADIUS, c);
     /* running indicator: a small dot under the focused app's tile */
     if (focused)

@@ -35,7 +35,14 @@
  * it.
  * TODO: surface the kernel build string via a syscall and read it here instead
  * of hardcoding, so the banner can never drift from the running kernel. */
-#define NXINFO_OS_NAME "NEXS"
+
+#ifdef ARCH_AMD64
+#define KERNEL_NAME "AMD64 NexsOS1"
+#else
+#define KERNEL_NAME "AArch64 NexsOS1"
+#endif
+
+#define NXINFO_OS_NAME KERNEL_NAME
 #define NXINFO_OS_VERSION "V0.0.4.3"
 
 /*

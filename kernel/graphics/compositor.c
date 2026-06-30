@@ -1359,6 +1359,17 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
   int width = bb_width > 0 ? bb_width : 800;
   int height = bb_height > 0 ? bb_height : 600;
 
+  /* S1b: hold compositor_lock for the whole window-list update.  This handler
+   * runs in mouse-IRQ context and was the ONLY window-list mutator WITHOUT the
+   * lock — racing window create/destroy (e.g. 'stress' churning windows) and
+   * the render tick.  The torn drag/resize writes to windows[].draw_w/draw_h
+   * could then be consumed out-of-bounds by a concurrent draw syscall (observed:
+   * kernel stack/pointer smash, RIP->0xf9, while dragging a demo3d window).
+   * Same lock order as compositor_handle_click (no caller holds it; the helpers
+   * called below — expand_damage, compositor_titlebar_height — take no lock). */
+  uint64_t cflags;
+  spin_lock_irqsave(&compositor_lock, &cflags);
+
   int old_mx = mouse_x, old_my = mouse_y;
 
   if (absolute) {
@@ -1433,6 +1444,12 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
       }
       if (nh < RESIZE_MIN_H)
         nh = RESIZE_MIN_H;
+      /* S1b: clamp the on-screen size to the screen so a runaway resize cannot
+       * push draw_w/draw_h past the backbuffer (OOB in the scaling blit). */
+      if (nw > width)
+        nw = width;
+      if (nh > height)
+        nh = height;
       windows[i].draw_w = nw;
       windows[i].draw_h = nh;
       windows[i].x = nx < 0 ? 0 : nx;
@@ -1449,6 +1466,8 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
     expand_damage(mouse_x - 1, mouse_y - 1, 14, 18);
   }
   compositor_dirty = 1;
+
+  spin_unlock_irqrestore(&compositor_lock, cflags);
 }
 
 /*

@@ -31,7 +31,6 @@
  *   USR-BLOAT-02 (W2 BAD-IMPL) -g DWARF and -fno-omit-frame-pointer inflate
  *                the ELF; no --gc-sections or strip step.
  */
-#include "proce.h"
 #include <os1.h>
 
 /* Window dimensions */
@@ -222,8 +221,6 @@ static void process_command(void) {
   if (cmd_len == 0)
     return;
 
-  print("\n");
-
   if (str_eq(cmd_buf, "help") || str_eq(cmd_buf, "?")) {
     print("\n\033[1;33mAvailable Commands:\033[0m\n");
     print("  help            - Show this help\n");
@@ -279,7 +276,15 @@ static void process_command(void) {
       print("Failed to start NXShell\n");
     }
   } else if (str_eq(cmd_buf, "ps")) {
-    proce_display_list(my_window);
+    /* `ps` is delegated to /sys/bin/nxproc (the canonical process-listing
+     * ELF, the only place the snapshot/render code lives).  Spawning a
+     * dedicated nxproc ELF matches the rest of the `exec`/`demo3d` pattern
+     * (shell as dispatcher, real apps as ELFs in /sys/bin).  nxproc also
+     * offers a `kill <pid>` sub-command if the user wants to terminate. */
+    int pid = spawn("/sys/bin/nxproc");
+    if (pid <= 0)
+      printf("ps: failed to start nxproc (err %d)\n", pid);
+    run_foreground(pid);
   } else if (str_eq(cmd_buf, "ls") ||
              (cmd_buf[0] == 'l' && cmd_buf[1] == 's' && cmd_buf[2] == ' ')) {
     /* NOTE(USR-SHELL-01): Argument parsed with hardcoded byte offsets.
@@ -495,11 +500,25 @@ int main(void) {
 
     char c = buf[0];
     if (c == '\n' || c == '\r') {
-      /* End of line: dispatch command then reprint the prompt. */
+      /* End of line: the typed command sits on the prompt line ("NXShell:/>ps");
+       * the user's Enter echoes nothing on its own (CONSOLE read drained the
+       * key, didn't echo it), so without a leading newline the dispatched
+       * command's output would render immediately after ">ps".  Emit CR+LF
+       * first to push the cursor to a fresh line, then dispatch, then reprint
+       * the prompt on the next line.  This also keeps the snapshot banner from
+       * `ps` (nxproc's inline render) one row below the prompt. */
+      print("\r\n");
       process_command();
       if (running) {
         char prompt_cwd[128];
         getcwd(prompt_cwd, sizeof(prompt_cwd));
+        /* CR+LF: the compositor's ANSI parser advances on LF, but the terminal
+         * cursor stays anchored on the column where the previous output ended
+         * unless a CR is also emitted.  Without CR the prompt could still
+         * render at column N>0 if the previous output did not end on a clean
+         * boundary, which is what `ps` (nxproc's inline render) leaves behind
+         * on multi-row tables. */
+        print("\r\n");
         printf("\033[32mNXShell\033[0m:\033[34m%s\033[0m> ", prompt_cwd);
       }
     } else if (c == '\b' || c == 127) {
