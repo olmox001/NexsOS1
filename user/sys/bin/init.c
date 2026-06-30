@@ -39,6 +39,25 @@
 #include <os1.h>
 
 /*
+ * LAUNCHER_AUTOSTART - gate for spawning + supervising /sys/bin/nxlauncher
+ * (LAUNCHER-01 #138).
+ *
+ * The launcher is a still-shaky feature: its always-on-bottom z-order and
+ * tile grid are actively being tuned, and an accidental respawn during
+ * development can spam the process table with half-broken launchers.  Flip
+ * this to 0 to disable BOTH the initial spawn AND the supervisor respawn,
+ * without commenting code or touching the rest of init.  Default ON; setting
+ * it to 0 keeps the rest of the desktop (shell, dock, notifications)
+ * unaffected.
+ *
+ * The launcher is spawned AFTER /sys/bin/nxui so the dock's window already
+ * has a higher z-order at boot.  The launcher then calls OS1_window_lower()
+ * itself (canonical ASTRA §6.7 WINDOW-LOWER verb) to restack itself at the
+ * back of the z-order, sitting behind the dock and every user window.
+ */
+#define LAUNCHER_AUTOSTART 1
+
+/*
  * register_notify_pid - publish `pid` as the LIVE notification server endpoint
  * by writing it (decimal, NUL-terminated) to the registry key "srv.notify_pid".
  *
@@ -97,6 +116,7 @@ int main(void) {
     print("[Init] Failed to spawn Notification Server!\n");
   }
 
+#ifndef LAUNCHER_AUTOSTART
   /* Spawn Shell */
   printf("[Init] Spawning Nxshell...\n");
   int pid_shell = spawn("/sys/bin/nxshell");
@@ -105,6 +125,7 @@ int main(void) {
   } else {
     print("[Init] Failed to spawn NXShell!\n");
   }
+#endif
 
   /* Spawn the dock (window-manager UI).  Plain spawn(): the ASTRA per-path
    * preset gives any /sys/bin binary ROOT authority (F1), which is exactly what
@@ -118,6 +139,24 @@ int main(void) {
   } else {
     print("[Init] Failed to spawn Dock!\n");
   }
+
+  /* pid_nxlauncher is declared unconditionally so the supervisor's wait() call
+   * below compiles regardless of LAUNCHER_AUTOSTART; when the gate is off we
+   * pin it to 0 so process_wait() returns -2 (gone) and no respawn fires. */
+  int pid_nxlauncher = 0;
+#if LAUNCHER_AUTOSTART
+  /* Spawn the launcher AFTER the dock so the dock's tiles stay on top of the
+   * launcher's full-screen grid (LAUNCHER-01 #138 — always-on-bottom).  The
+   * launcher also gets the per-path preset ROOT authority; it needs to
+   * acquire WINDOW caps to spawn user apps from its tiles. */
+  printf("[Init] Spawning Launcher (nxlauncher)...\n");
+  pid_nxlauncher = spawn("/sys/bin/nxlauncher");
+  if (pid_nxlauncher > 0) {
+    printf("[Init] Launcher started (PID %d)\n", pid_nxlauncher);
+  } else {
+    print("[Init] Failed to spawn Launcher!\n");
+  }
+#endif
 
   flush();
 
@@ -167,16 +206,8 @@ int main(void) {
       }
     }
 
-    /* Respawn the shell when it is gone (freshly dead corpse OR already
-     * reaped by the kernel).  spawn() assigns a fresh monotonic PID. */
-    int r = wait(pid_shell);
-    if (r == pid_shell || r == -2) {
-      print("[Init] NXShell terminated! Respawning...\n");
-      pid_shell = spawn("/sys/bin/nxshell");
-    }
-
     /* Check if notification server died and respawn. */
-    r = wait(pid_notify);
+    int r = wait(pid_notify);
     if (r == pid_notify || r == -2) {
       print("[Init] Notification Server died! Respawning...\n");
       pid_notify = spawn("/sys/bin/nxntfy_srv");
@@ -187,6 +218,15 @@ int main(void) {
       if (pid_notify > 0)
         register_notify_pid(pid_notify);
     }
+#ifndef LAUNCHER_AUTOSTART
+    /* Respawn the shell when it is gone (freshly dead corpse OR already
+     * reaped by the kernel).  spawn() assigns a fresh monotonic PID. */
+    r = wait(pid_shell);
+    if (r == pid_shell || r == -2) {
+      print("[Init] NXShell terminated! Respawning...\n");
+      pid_shell = spawn("/sys/bin/nxshell");
+    }
+#endif
 
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as
      * above). */
@@ -195,6 +235,18 @@ int main(void) {
       print("[Init] Dock died! Respawning...\n");
       pid_nxui = spawn("/sys/bin/nxui");
     }
+
+#if LAUNCHER_AUTOSTART
+    /* Respawn the launcher.  Initial pid comes from the spawn above; if
+     * LAUNCHER_AUTOSTART is disabled we never set pid_nxlauncher, so the
+     * wait() on a stale handle would otherwise busy-loop — the #else keeps
+     * the variable pinned to 0 so process_wait() returns -2 (gone). */
+    r = wait(pid_nxlauncher);
+    if (r == pid_nxlauncher || r == -2) {
+      print("[Init] Launcher died! Respawning...\n");
+      pid_nxlauncher = spawn("/sys/bin/nxlauncher");
+    }
+#endif
 
     /* NOTE(GFX-DYN-01): host display-change auto-resize is intentionally NOT
      * polled here — a per-iteration poll wastes cycles.  It will be re-added
