@@ -254,9 +254,13 @@ static void init_scheduler(void) {
   /* Initialize Compositor */
   compositor_init();
 
-  /* 1. Spawn the First-Stage Init Process (Must be PID 1) */
+  /* 1. Spawn the First-Stage Init Process (Must be PID 1).
+   * ROOT + explicit caps, NOT machine: PLVL_MACHINE is the machine's own
+   * identity (B3 §3.1) — it would make PID1 unkillable and exempt from every
+   * capability check and from the creator clamp for all its children. */
   pr_info("%s", "Scheduler: Spawning First-Stage Init...\n");
-  struct process *init = process_create("init", PROC_PRIO_USER, PLVL_MACHINE);
+  struct process *init =
+      process_create_caps("init", PROC_PRIO_USER, PLVL_ROOT, CAP_ALL);
   if (init && process_load_elf(init, "/sys/bin/init") == 0) {
     pr_info("Scheduler: Initialized PID %d (/sys/bin/init)\n", init->pid);
     enqueue_task(init);
