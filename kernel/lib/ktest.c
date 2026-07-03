@@ -69,6 +69,17 @@ void ktest_run_all(void) {
     printk("\n[KTEST] Starting Kernel Unit Tests (%d cases found)...\n", (int)count);
 
     for (ktest_case_t *test = __ktests_start; test < __ktests_end; test++) {
+        /* Defense against linker padding slots: a descriptor with a NULL
+         * name/func is not a test — calling it is a jump into rodata (the
+         * W^X #PF UTM/QEMU caught when .ktests started 8-byte-misaligned).
+         * The ALIGN(16) in both kernel.ld files prevents this structurally;
+         * this guard keeps a future layout change from becoming a boot
+         * crash again. */
+        if (!test->name || !test->func) {
+            printk("[KTEST] WARN: skipping padding/garbage slot at %p\n",
+                   (void *)test);
+            continue;
+        }
         printk("[KTEST] Running: %s... ", test->name);
 
         /* Note: This is a simplified runner. In a real system, we might want

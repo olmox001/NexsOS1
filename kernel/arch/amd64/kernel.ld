@@ -63,7 +63,9 @@ SECTIONS {
 
     .rodata : AT(ADDR(.rodata) - KVB) ALIGN(4096) {
         *(.rodata*)
-        . = ALIGN(8);
+        . = ALIGN(16); /* GCC DATA_ALIGNMENT ups >=16-byte aggregates to 16 on
+         * x86-64: with ALIGN(8) the linker could pad AFTER __ktests_start,
+         * making the first walked descriptor garbage (S-ALIGN F9 fix). */
         __ktests_start = .;
         KEEP(*(.ktests))
         __ktests_end = .;

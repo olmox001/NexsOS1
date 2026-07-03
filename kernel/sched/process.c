@@ -665,8 +665,17 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   strncpy(proc->name, name, 15);
   proc->name[15] = '\0';
 
-  /* Assign unique PID */
-  proc->pid = next_pid++;
+  /* Assign unique PID.  Idle tasks (kernel threads) draw from a dedicated
+   * high band: with the K3 gate (S-ALIGN F9) they are created BEFORE init,
+   * and PID 1 must stay reserved for init — orphan reparenting
+   * (process.c reap path) and the compositor's init-authority checks key on
+   * pid==1. */
+  if (priority == PROC_PRIO_IDLE) {
+    static int next_idle_pid = 32000;
+    proc->pid = next_idle_pid++;
+  } else {
+    proc->pid = next_pid++;
+  }
 
   /* Address-space tag for TLB-tagged switches (perf §3): the pool slot+1, so it
    * is unique among all live address spaces (slots are unique while occupied).
