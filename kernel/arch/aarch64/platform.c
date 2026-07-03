@@ -232,11 +232,11 @@ extern void smp_create_idle_task(uint32_t cpu_id);
  * CPU spins with arch_nop() (which typically maps to a WFE-like instruction or
  * NOP) to yield the pipeline between checks.
  *
- * NOTE: The spin-wait does not use a DSB before reading cpu_boot_ack; on weakly-
- * ordered hardware the secondary CPU's write to cpu_boot_ack may not be visible
- * without a load-acquire or explicit barrier on the primary side.  On QEMU this
- * works in practice because the HVC and the memory writes are serialised through
- * the emulator. [static, not verified on real hardware]
+ * The spin-wait reads cpu_boot_ack with a load-acquire, paired with the
+ * secondary's release store in kernel_secondary_main — the ack is never
+ * observed before the secondary's per-CPU initialization writes, also on
+ * weakly-ordered real hardware (was previously a plain volatile read that
+ * only worked because QEMU serialises memory through the emulator).
  */
 void arch_smp_init(void) {
     /* Publish the KERNEL PGD (TTBR1 root) before waking any secondary CPU.
@@ -301,7 +301,8 @@ void arch_smp_init(void) {
             /* Spin-wait for secondary to write cpu_boot_ack = i.
              * Timeout = 10M nops (~tens of milliseconds on a GHz CPU). */
             volatile uint32_t timeout = 10000000;
-            while (cpu_boot_ack != i && timeout > 0) {
+            while (__atomic_load_n(&cpu_boot_ack, __ATOMIC_ACQUIRE) != i &&
+                   timeout > 0) {
                 timeout--;
                 arch_nop();
             }

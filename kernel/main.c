@@ -294,8 +294,9 @@ void kernel_secondary_main(void) {
   /* Enable interrupts */
   local_irq_enable();
 
-  /* Acknowledge boot to primary core */
-  cpu_boot_ack = cpu;
+  /* Acknowledge boot to primary core.  Release store: everything this CPU
+   * initialized above must be visible before the BSP observes the ack. */
+  __atomic_store_n(&cpu_boot_ack, cpu, __ATOMIC_RELEASE);
 
   pr_info("Secondary CPU %u online and ready\n", cpu);
 
