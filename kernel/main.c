@@ -43,7 +43,7 @@
 /* External symbols */
 extern void secondary_cpu_entry(void); /* Assembly wrapper for AMD64 */
 void kernel_secondary_main(void);
-volatile uint32_t cpu_boot_ack = 0;
+/* The boot-ack handshake cell lives in kernel/core/smp.c (S-ALIGN F8). */
 
 /* Forward declarations */
 static void print_banner(void);
@@ -294,9 +294,10 @@ void kernel_secondary_main(void) {
   /* Enable interrupts */
   local_irq_enable();
 
-  /* Acknowledge boot to primary core.  Release store: everything this CPU
-   * initialized above must be visible before the BSP observes the ack. */
-  __atomic_store_n(&cpu_boot_ack, cpu, __ATOMIC_RELEASE);
+  /* Acknowledge boot to primary core (release store inside smp_ack_boot:
+   * everything this CPU initialized above is visible before the BSP sees
+   * the ack — the handshake lives in kernel/core/smp.c, S-ALIGN F8). */
+  smp_ack_boot(cpu);
 
   pr_info("Secondary CPU %u online and ready\n", cpu);
 
