@@ -12,9 +12,6 @@
 #include <kernel/cpu.h>
 #include <kernel/graphics.h>
 #include <kernel/kmalloc.h>
-
-/* Disable optimizations to ensure stack safety/debugging */
-
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>

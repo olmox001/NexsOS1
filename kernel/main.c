@@ -122,9 +122,8 @@ void kernel_main(uint64_t x0_arg) {
   pr_info("%s", "Initializing scheduler...\n");
   init_scheduler();
 
-  /* Set CPU0 current task to idle (placeholder) to allow scheduling? */
-  /* Actually, init_scheduler creates 'init' and 'idle' tasks. */
-  /* We want CPU0 to pick 'init' immediately. */
+  /* init_scheduler created both PID1 ('init') and CPU0's idle task; once
+   * interrupts are enabled below, CPU0's first schedule() picks 'init'. */
 
   /* Wake secondary CPUs via Unified HAL */
   pr_info("%s", "Waking secondary CPUs...\n");
@@ -137,11 +136,8 @@ void kernel_main(uint64_t x0_arg) {
   pr_info("%s", "Kernel initialized successfully!\n");
   pr_info("Boot info at: 0x%016lx\n", arch_get_boot_info());
 
-  /* Main kernel loop */
+  /* CPU0 idle loop: from here on all work happens in scheduled tasks. */
   pr_info("%s", "Entering idle loop...\n");
-
-  /* Enter supervisor loop */
-  pr_info("%s", "[Init] Entering supervisor loop\n");
   while (1) {
     hal_cpu_idle();
   }
@@ -246,7 +242,8 @@ static void init_memory(void) {
 /* smp_create_idle_task moved to arch-specific code or process.c */
 
 /*
- * Initialize scheduler (placeholder)
+ * Initialize scheduler: compositor, PID1 (/sys/bin/init) and CPU0's idle
+ * task — the K2→K3 boot transition lives here (see S-ALIGN boot map).
  */
 static void init_scheduler(void) {
   pr_info("%s", "Scheduler: Initializing...\n");
