@@ -178,14 +178,14 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
 
     struct kobject *o;
     if (ref.obj_type == OBJ_TYPE_FILE) {
-      /* Ambient gate to ACQUIRE a write capability: identical to SYS_OPEN. */
+      /* Ambient gate to ACQUIRE a write capability — the SAME
+       * vfs_write_allowed() seam SYS_FILE_WRITE/SYS_UNLINK check, so the
+       * path-based and handle-based entry points cannot drift (S-ALIGN F6).
+       * Use of an already-held handle is rights-only (seL4/Mach delegation). */
       if (rights & OS1_RIGHT_WRITE) {
-        if (!proc_has_cap(cur, CAP_FS_WRITE))
-          return -EPERM;
-        if (!proc_is_machine(cur) &&
-            (strncmp(resolved, "/sys/", 5) == 0 ||
-             strncmp(resolved, "/bin/", 5) == 0))
-          return -EACCES;
+        long wperm = vfs_write_allowed(resolved);
+        if (wperm != 0)
+          return wperm;
       }
       o = kobj_alloc(OBJ_TYPE_FILE);
       if (!o)

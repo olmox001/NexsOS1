@@ -118,6 +118,11 @@ int vfs_read(struct vfs_node *node, uint64_t offset, void *buf, uint32_t size);
 /* vfs_read_file: buf==NULL / size==0 returns the file size (userland ABI
  * for SYS_FILE_READ relies on this — user/sys/lib/lib.c file_read). */
 int vfs_read_file(const char *path, void *buf, uint32_t size, uint64_t offset);
+/* vfs_write_allowed: THE single write-authority seam (CAP_FS_WRITE + the
+ * /sys,/bin immutable-tree ACL) shared by SYS_FILE_WRITE, SYS_UNLINK and
+ * open-for-write handle acquisition.  Takes a vfs_resolve_path()-canonical
+ * path; returns 0, -EPERM or -EACCES.  (S-ALIGN F6) */
+int vfs_write_allowed(const char *resolved_path);
 int vfs_write_file(const char *path, const void *buf, uint32_t size,
                    uint64_t offset);
 int vfs_list_dir(const char *path, char *buf, uint32_t size);

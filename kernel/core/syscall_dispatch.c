@@ -743,23 +743,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
-    /* USR-SEC-03 #79: any write needs CAP_FS_WRITE. */
-    if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
-      pt_regs_set_return(frame, -EPERM);
-      break;
-    }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
-    /* EXT4-02 (ABI-04 family): the binary trees are write-protected for
-     * non-machine processes — a user process must not be able to overwrite
-     * anything under /bin or /sys (services, init chain).  Config/data
-     * files (/etc, user files) stay writable. */
-    if (!proc_is_machine(current_process) &&
-        (strncmp(resolved_path, "/sys/", 5) == 0 ||
-         strncmp(resolved_path, "/bin/", 5) == 0)) {
-      pr_warn("FILE_WRITE: PID %d denied write to protected path '%s'\n",
-              current_process->pid, resolved_path);
-      pt_regs_set_return(frame, -EACCES);
+    /* Single write-authority seam (S-ALIGN F6): CAP_FS_WRITE + /sys,/bin ACL
+     * live in vfs_write_allowed(), shared with SYS_UNLINK and open-for-write. */
+    long wperm = vfs_write_allowed(resolved_path);
+    if (wperm != 0) {
+      pt_regs_set_return(frame, wperm);
       break;
     }
     size_t size = (size_t)arg2;
@@ -901,18 +891,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
-    /* unlink is a write-class modification: same capability gate as
-     * SYS_FILE_WRITE / open(write) — CAP_FS_WRITE plus the /sys,/bin read-only
-     * ACL for non-machine processes.  Closes the asymmetry (USR-SEC) where any
-     * process could unlink a path it was not allowed to write. */
-    if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
-      pt_regs_set_return(frame, -EPERM);
-      break;
-    }
-    if (!proc_is_machine(current_process) &&
-        (strncmp(resolved_path, "/sys/", 5) == 0 ||
-         strncmp(resolved_path, "/bin/", 5) == 0)) {
-      pt_regs_set_return(frame, -EACCES);
+    /* unlink is a write-class modification: same single authority seam as
+     * SYS_FILE_WRITE / open(write) (vfs_write_allowed, S-ALIGN F6).  Closes
+     * the asymmetry (USR-SEC) where any process could unlink a path it was
+     * not allowed to write. */
+    long uperm = vfs_write_allowed(resolved_path);
+    if (uperm != 0) {
+      pt_regs_set_return(frame, uperm);
       break;
     }
     pt_regs_set_return(frame, vfs_unlink(resolved_path));
