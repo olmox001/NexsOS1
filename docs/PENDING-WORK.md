@@ -15,7 +15,7 @@ e i doc di direzione `docs/direction/DIR-01..06`.
 ---
 
 ## 1. Rinomina API `OS1_` di massa — **PARZIALE** (invariato) · DIR-01 / #137
-- **Fatto:** solo il pilota `sleep → OS1_sleep` (commit `9a01bfe`), su tutti i caller (escluso nexs-fm sospeso).
+- **Fatto:** solo il pilota `sleep → OS1_sleep` (commit `9a01bfe`), su tutti i caller (escluso nxfilem sospeso).
 - **Resta (richiesto come "prossimo task"):** prefissare `OS1_` a TUTTE le funzioni base non-POSIX:
   `yield, spawn, spawn_args, spawn_caps, spawn_level, kill_process, wait,
   create_window, destroy_window, window_draw, window_blit, set_window_flags,
@@ -141,7 +141,7 @@ namespace tree — vedi `docs/ASTRA.md` §7.1/§7.6.
   `nxshell` non ha alcun dispatch `"notify"` — solo la CLI esterna `nxnotify`
   funziona. Verificato su `user/sys/bin/nxshell.c` a HEAD.
 
-## 8. nexs-fm — **PARCHEGGIATO/INCOMPLETO**
+## 8. nxfilem — **PARCHEGGIATO/INCOMPLETO**
 - Pushato come **non funzionante** (commit `dc80001`), su tua indicazione
   ("è da pushare ma non funziona, ci lavoreremo in seguito"). Da completare.
 
@@ -214,7 +214,7 @@ Tracciato in GitHub e in `docs/review/REVIEW.md` (#19, ~220 finding). Epic e clu
 - **Input/Driver:** #125 pointer assoluto UTM · #129 scancode mancanti · #130 USB UTM ·
   #124 PS/2 senza 8042 · #48 GIC affinity · #53/#54/#49/#45 virtio/gpu/pci (#51 ✓) · UART lock (#52 ✓).
 - **FS:** #126 creazione file ext4 · #127 truncate mancante.
-- **Userland:** #123 ereditarietà stdout/TTY · #76 init.cfg · #81 regedit recv · #82 fontman.
+- **Userland:** #123 ereditarietà stdout/TTY · #76 init.cfg · #81 regedit recv · #82 nxfont.
 - **Sched/arch/mm:** #84 AB-BA lock · #38 CPU-AMD64-01 FPU su preempt · #122 quota figli
   (fork-bomb) · #39/#40/#41/#43 TOCTOU uaccess · #30/#31/#32 ARCH/HAL boot · #20 PMM multi-region ·
   #72 registry (#71 SSP ✓) · #106 doom fire button.

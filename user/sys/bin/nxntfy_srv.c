@@ -25,7 +25,7 @@
  *   Idle, the loop BLOCKS on recv(-1, &msg) so it consumes ~0% CPU until a
  *   notification arrives (the old try_recv()+yield() loop busy-spun a core).
  *   While the popup is visible it polls with try_recv() and a real blocking
- *   OS1_sleep(100) so the 2 s auto-hide can still fire, then drops back to the
+ *   OS1_sleep(100) so the 5 s auto-hide can still fire, then drops back to the
  *   blocking branch. A recv-with-timeout (issue #135) would unify both.
  *
  * Known issues:
@@ -39,7 +39,7 @@
 #include <os1.h>
 
 /* Notification popup window geometry (pixels).
- * Positioned at the top-right corner of the live desktop (OS1_display_info). */
+ * Positioned at the top-right corner assuming an 720x1280 display. */
 #define NOTIFY_WIDTH 250
 #define NOTIFY_HEIGHT 60
 #define NOTIFY_PADDING 10
@@ -52,7 +52,8 @@
  * Enters the event loop:
  *   1. try_recv: if a NOTIFY or RAW IPC message arrives, render its payload
  *      (up to 64 bytes) in the window and show it.
- *   2. Auto-hide: hide the popup again ~2 s after it was shown.
+ *   2. Auto-hide: if the window has been visible for >5000 jiffies (~5 s at
+ *      100 Hz), hide it.
  *   3. yield() to give other processes CPU time.
  *
  * Returns 1 on window creation failure, never returns otherwise.
@@ -64,14 +65,11 @@
  *   process can overwrite it and intercept subsequent notify() calls.
  */
 int main(void) {
-  /* Create a window in the top-right corner of the CURRENT desktop — the
-   * width must be queried live (nxres can change it), not hardcoded. */
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF);
-  if (sw <= 0)
-    sw = 720;
+  /* Create a window in the top-right corner.
+   * Screensize is 720 * 1280
+   */
   int win_id =
-      create_window(sw - NOTIFY_WIDTH - NOTIFY_PADDING, NOTIFY_PADDING,
+      create_window(720 - NOTIFY_WIDTH - NOTIFY_PADDING, NOTIFY_PADDING,
                     NOTIFY_WIDTH, NOTIFY_HEIGHT, "Notifiche");
 
   if (win_id < 0) {
@@ -96,7 +94,8 @@ int main(void) {
    * the corpse's pid and every notify_post() lost its messages.  Init owns
    * the key (it knows the live pid on every spawn + respawn), and re-publishes
    * it after each respawn so any registry hijack between respawns is undone.
-   * Discovery of this endpoint from a caller: OS1_registry_get("srv.notify_pid").
+   * Discovery of this endpoint from a caller:
+   * OS1_registry_get("srv.notify_pid").
    */
 
   struct ipc_message msg;

@@ -13,7 +13,7 @@
 | | |
 |---|---|
 | **Subsystem** | Userland: init, services, user library, apps |
-| **Sources** | `user/sys/bin/init.c` (56), `user/sys/bin/nxshell.c` (263), `user/sys/bin/proce.c/.h`, `user/sys/bin/notification_server.c` (68), `user/sys/bin/regedit.c` (68), `user/sys/bin/fontman/fontman.c` (169), `user/sys/lib/lib.c` (413), `user/sys/lib/lib.h`, `user/sys/lib/malloc.c` (114), `user/sys/lib/font_lib.c` (115), `user/sys/lib/syscall.S` (207), `user/arch/aarch64/syscall.S` (231), `user/arch/amd64/syscall.S` (207), `user/bin/counter.c` (48), `user/bin/crash.c` (9), `user/bin/demo3d.c` (308), `user/bin/ipc_send.c` (45), `user/bin/ipc_recv.c` (33), `user/bin/input_test.c` (59), `user/bin/writetest.c` (38), `user/bin/test_init.c` (10) |
+| **Sources** | `user/sys/bin/init.c` (56), `user/sys/bin/nxshell.c` (263), `user/sys/bin/proce.c/.h`, `user/sys/bin/notification_server.c` (68), `user/sys/bin/regedit.c` (68), `user/sys/bin/nxfont/nxfont.c` (169), `user/sys/lib/lib.c` (413), `user/sys/lib/lib.h`, `user/sys/lib/malloc.c` (114), `user/sys/lib/font_lib.c` (115), `user/sys/lib/syscall.S` (207), `user/arch/aarch64/syscall.S` (231), `user/arch/amd64/syscall.S` (207), `user/bin/counter.c` (48), `user/bin/crash.c` (9), `user/bin/demo3d.c` (308), `user/bin/ipc_send.c` (45), `user/bin/ipc_recv.c` (33), `user/bin/input_test.c` (59), `user/bin/writetest.c` (38), `user/bin/test_init.c` (10) |
 | **Headers** | `include/api/os1.h` (179), `user/sys/lib/lib.h` |
 | **Build** | `Makefile` (CFLAGS: `-O2 -g -fno-omit-frame-pointer`, no `--gc-sections`, links `USER_LIB_O` into every ELF) |
 | **Build artifacts** | **[verified]** `build/aarch64/counter.elf` = 503,712 bytes; `build/aarch64/crash.elf` = 502,432 bytes; `build/aarch64/init.elf` = 504,192 bytes. |
@@ -25,7 +25,7 @@
 The userland consists of three tiers:
 
 1. **Process 1 (init)** — spawns system services, runs a supervisor loop watching for child exits and respawning them.
-2. **System services** — `shell` (interactive TTY), `notify_srv` (IPC-based notification popup), `regedit` (registry control panel), `fontman` (TTF rasterizer / font uploader), `proce` (process list helper compiled into shell).
+2. **System services** — `shell` (interactive TTY), `notify_srv` (IPC-based notification popup), `regedit` (registry control panel), `nxfont` (TTF rasterizer / font uploader), `proce` (process list helper compiled into shell).
 3. **User library (`lib.c`, `malloc.c`, `font_lib.c`, `syscall.S`)** — the entire C runtime, formatting layer, STB stacks, and arch-specific syscall stubs are compiled into a single `lib.o` + `malloc.o` pair linked into every ELF. There is no shared-library mechanism.
 
 ---
@@ -95,9 +95,9 @@ Kernel ELF loader
 | USR-SHELL-01 | W2 | BAD-IMPL | `shell.c:111–113` | `ls [path]` parsing uses hardcoded character offsets (`cmd_buf[2] == ' '`, `&cmd_buf[3]`) instead of token splitting, consistent with 13 other command parsers in the same function. Command dispatch is a 200-line if-else chain with no extensibility. |
 | USR-SHELL-02 | W2 | MISSING | `shell.c:21` | Command history buffer is 128 characters (`cmd_buf[128]`), single-line only. No command history, no tab completion, no argument splitting. The shell is a line editor, not a programmable interpreter. |
 | USR-REGEDIT-01 | W3 | BUG · STUB | `regedit.c:58–61` | `recv(0, &msg)` is called in the main loop of regedit without the non-blocking flag; `recv()` is blocking (it does `_sys_recv` with no timeout). The comment on line 59 admits the problem: "Non-blocking check? No, recv blocks. We need an event loop." The window will freeze waiting for IPC. |
-| USR-FONTMAN-01 | W3 | MISSING | `fontman.c:165–166` | fontman keeps the raw TTF buffer alive with `while(1) yield()` because "the kernel just points to it (for now, as per sys_set_font hack)". The kernel holds a raw pointer into userland heap memory. If fontman exits, the kernel dereferences a freed buffer — use-after-free in kernel space. |
-| USR-FONTMAN-02 | W2 | BAD-IMPL | `fontman.c:6,6` (duplicate) | `#include <font.h>` appears twice at lines 5 and 6. Harmless with include guards but indicates copy-paste sloppiness. |
-| USR-FONTMAN-03 | W2 | BAD-IMPL | `fontman.c:56–57` | `acos()` is approximated as `(1.0 - x) * (π/2)` — "Very rough approximation for font rasterization" per its own comment. The correct identity for acos(cos(θ)) ≠ this formula for θ outside [0,π/2]. stb\_truetype uses acos in curve subdivision; severe approximation error will produce malformed glyph outlines. |
+| USR-FONTMAN-01 | W3 | MISSING | `nxfont.c:165–166` | nxfont keeps the raw TTF buffer alive with `while(1) yield()` because "the kernel just points to it (for now, as per sys_set_font hack)". The kernel holds a raw pointer into userland heap memory. If nxfont exits, the kernel dereferences a freed buffer — use-after-free in kernel space. |
+| USR-FONTMAN-02 | W2 | BAD-IMPL | `nxfont.c:6,6` (duplicate) | `#include <font.h>` appears twice at lines 5 and 6. Harmless with include guards but indicates copy-paste sloppiness. |
+| USR-FONTMAN-03 | W2 | BAD-IMPL | `nxfont.c:56–57` | `acos()` is approximated as `(1.0 - x) * (π/2)` — "Very rough approximation for font rasterization" per its own comment. The correct identity for acos(cos(θ)) ≠ this formula for θ outside [0,π/2]. stb\_truetype uses acos in curve subdivision; severe approximation error will produce malformed glyph outlines. |
 | USR-LIB-01 | W2 | BAD-IMPL | `lib.c:54–57` | lib.c `#include`s `kernel/lib/vsnprintf.c`, `kernel/lib/math.c`, `kernel/lib/string.c`, and `font_lib.c` directly via path. Breaks the userland/kernel separation boundary; any change to kernel lib internals silently affects userland. |
 | USR-LIB-02 | W2 | BAD-IMPL | `lib.c:140–141` | `fclose()` checks `(size_t)fp > 10` to guard against NULL-like sentinel values. This is a fragile magic-value check — a real NULL should be guarded with `fp != NULL`. |
 | USR-LIB-03 | W1 | BAD-IMPL | `lib.c:234` | `graphics_draw_text` declares `static char buffer[99999]` — a 100KB static buffer. This bloats `.bss` across every binary that calls it and is retained even when text rendering is not used (no gc-sections). |
@@ -187,7 +187,7 @@ void *calloc(size_t nmemb, size_t size) {
 }
 ```
 
-If `nmemb * size` overflows (e.g., `nmemb = 0x80000001`, `size = 2` on 32-bit; or realistic large values on 64-bit), `total` wraps to a small value. `malloc(small)` succeeds; `memset(ptr, 0, actual_large_value)` writes beyond the allocated block, corrupting the heap. Fontman calls `realloc(bitmap, bitmap_capacity)` (`fontman.c:115`) with a doubling strategy; a large font could trigger this path via `calloc` in stb\_truetype.
+If `nmemb * size` overflows (e.g., `nmemb = 0x80000001`, `size = 2` on 32-bit; or realistic large values on 64-bit), `total` wraps to a small value. `malloc(small)` succeeds; `memset(ptr, 0, actual_large_value)` writes beyond the allocated block, corrupting the heap. Fontman calls `realloc(bitmap, bitmap_capacity)` (`nxfont.c:115`) with a doubling strategy; a large font could trigger this path via `calloc` in stb\_truetype.
 
 **Fix:** `if (nmemb && size > SIZE_MAX / nmemb) return NULL;` before the multiply.
 
@@ -228,13 +228,13 @@ A stripped binary (`strip --strip-debug`) would be ~147KB. With `--gc-sections` 
 | **Coherent ABI** | Split `include/api/os1.h` into a stable syscall layer (numbers + structs only) and a userland library layer (convenience wrappers). Build `lib.o` as a proper archive with `--gc-sections`; move STB includes behind compile-time guards or into separate optional objects. Retire the dead `user/sys/lib/syscall.S` (USR-ABI-01). |
 | **Small isolated service binaries** | Require `-ffunction-sections -fdata-sections --gc-sections` in user ELF link flags; strip debug in release builds (`--strip-debug`; keep symbols in a `.dwp` side file); split STB into separate compilation units or use a host-side tool to avoid bundling image decoders in every process. |
 | **Robust init/supervision** | Adopt a generation-counter PID table, exponential backoff on respawn, rate-limiting (max N respawns per second), and implement `init.cfg` parsing now that `file_read` is available. |
-| **fontman kernel safety** | The kernel must copy the font data at `sys_set_font` time rather than keeping a raw pointer into userland heap. fontman's infinite loop workaround can then be removed (USR-FONTMAN-01). |
+| **nxfont kernel safety** | The kernel must copy the font data at `sys_set_font` time rather than keeping a raw pointer into userland heap. nxfont's infinite loop workaround can then be removed (USR-FONTMAN-01). |
 
 **Suggested sequencing:**
 1. Strip debug symbols from release ELFs; add `--gc-sections` to the user link flags (immediate size win, no API change).
 2. Fix calloc overflow (USR-MALLOC-01); verify malloc coalesce assumption (USR-MALLOC-02).
 3. Implement `init.cfg` parsing and PID-reuse-safe supervisor loop.
-4. Copy font data in kernel at `sys_set_font`; remove fontman's infinite loop.
+4. Copy font data in kernel at `sys_set_font`; remove nxfont's infinite loop.
 5. Split the ABI header; retire dead `user/sys/lib/syscall.S`.
 6. Design the capability/namespace layer; migrate registry + IPC + windows onto named-object VFS.
 7. Rebuild services as minimal sandboxed ELFs with declared-authority capability sets.
@@ -244,8 +244,8 @@ A stripped binary (`strip --strip-debug`) would be ~147KB. With `--gc-sections` 
 ## 8. Verification Notes
 
 - All findings above are **[static]** unless marked **[verified]**.
-- **[verified]** Binary sizes confirmed from `build/aarch64/` artifacts (June 2026 build): counter=503KB, crash=502KB, init=504KB, fontman=773KB (includes stb\_truetype).
+- **[verified]** Binary sizes confirmed from `build/aarch64/` artifacts (June 2026 build): counter=503KB, crash=502KB, init=504KB, nxfont=773KB (includes stb\_truetype).
 - **[verified]** Section and symbol breakdown obtained via `aarch64-none-elf-size -A` and `aarch64-none-elf-nm --size-sort`; stb\_image+stb\_easy\_font total confirmed as 52KB of 66KB `.text` in `counter.elf`.
 - **[verified]** `process_wait()` semantics confirmed by reading `kernel/sched/process.c:710–741`; function is non-blocking (returns -1 if alive).
 - **[inferred — assumes LP64 struct layout]** `block_header_t` alignment analysis (USR-MALLOC-05) assumes `sizeof(size_t)=8, sizeof(int)=4, sizeof(ptr)=8` on aarch64.
-- **[inferred]** `acos()` approximation error in fontman (USR-FONTMAN-03) depends on stb\_truetype's use patterns; full error magnitude not quantified without a test case.
+- **[inferred]** `acos()` approximation error in nxfont (USR-FONTMAN-03) depends on stb\_truetype's use patterns; full error magnitude not quantified without a test case.

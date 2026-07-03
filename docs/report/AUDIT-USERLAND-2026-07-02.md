@@ -55,7 +55,7 @@ link-only code, never itself a process. **DEV-TEST** = harness/demo under
 | `nxwins.c` | **SYSTEM APP** | `nxwins` / `nxwins focus <id>` — textual twin of the dock, extracted from the old shell `wins` builtin | **No spawn site**; advertised in `nxshell.c:241` help text but has **no dedicated builtin** (inconsistent with `ps`→`nxproc`'s pattern) |
 | `regedit.c` | **SYSTEM APP (broken)** | Registry "Control Panel" viewer | **No spawn site**, **not even in shell help** — reachable only by manually clicking its auto-discovered launcher tile; **hangs forever on the first frame** (§3, finding U-1) |
 | `nxnotify.c` | **SYSTEM APP** (thin CLI) | `nxnotify send/warn <msg>` (IPC via `notify()`), `nxnotify list` (reads the `sys.ntfy.log.*` registry ring `nxntfy_srv` writes) | **No spawn site**; advertised in `nxshell.c:242` help text, reached via generic fallback like `nxwins`/`regedit` |
-| `fontman/fontman.c`, `nexs-fm/` | *(out of strict scope — subdirectories, not top-level `user/sys/bin/*.c`)* | TTF rasterizer (`fontman`) / file manager (`nexs-fm`), both built into `/sys/bin` per `Makefile:326-327` | Not investigated this pass; flagged only so the classification table isn't silently incomplete |
+| `nxfont/nxfont.c`, `nxfilem/` | *(out of strict scope — subdirectories, not top-level `user/sys/bin/*.c`)* | TTF rasterizer (`nxfont`) / file manager (`nxfilem`), both built into `/sys/bin` per `Makefile:326-327` | Not investigated this pass; flagged only so the classification table isn't silently incomplete |
 
 ### `user/sys/lib` (linked into every ELF — HELPER LIB by definition)
 
@@ -369,7 +369,7 @@ natural home for the two divergent spawn/launch models §2 documents:
 
 ## Scope note
 
-`fontman/fontman.c` and `nexs-fm/` (both built into `/sys/bin` per
+`nxfont/nxfont.c` and `nxfilem/` (both built into `/sys/bin` per
 `Makefile:326-327`) live in subdirectories of `user/sys/bin/`, not at its top
 level, so per the task's literal file-glob (`user/sys/bin/*.c|*.h`) they were
 **not** read this pass. They are named in §1's classification table only so

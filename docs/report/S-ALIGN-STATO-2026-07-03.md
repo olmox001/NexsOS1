@@ -72,13 +72,13 @@ COMPLETO. Verdetti verificati sul codice a HEAD `6e394cf` (non sui commit messag
 | 127 | ext4/VFS: truncate | **OPEN-VALID** | nessun syscall/hook/logica shrink; kilo.c:1380-84 lo documenta |
 | 123 | USR-TTY-01 stdout routing | **PARTIAL** | modello ibrido vivo a HEAD: process.c:733-746 `ctty_win` + object.c:652-662 own-window-first→fallback ctty (33cb8cd); truncation 1023B e fd>=100 RIMOSSI; resta window-MODE deliberato + protocollo terminale completo (scrollback, raw/cooked, ECMA-48) |
 | 81 | regedit blocking recv | **OPEN-VALID** | regedit.c:109 `recv(0,&msg)` bloccante, mai toccato da giugno |
-| 82 | fontman while(1) yield | **OPEN-VALID** | fontman.c:277; kernel sys_set_font tiene raw pointer nello heap userland (UAF se esce) |
+| 82 | nxfont while(1) yield | **OPEN-VALID** | nxfont.c:277; kernel sys_set_font tiene raw pointer nello heap userland (UAF se esce) |
 | 76 | init.cfg mai letto | **OPEN-VALID** | init.c solo commenti; spawn hardcoded (111/125/142/152); init.cfg con path stali |
 | 124 | PS/2 hang senza 8042 | **FIXED** (`1a3acc4`) | ps2.c:123-133 presence-gate 0xFF prima dei write; flush bounded 16; poll_until cap 100k |
 | 125 | pointer relativo/EV_ABS | **FIXED** (`41fe67c`+`eee8836`+`5a68d45`) | compositor.c:1375-88 sentinella negativa per-asse + scaling INPUT_ABS_MAX; HID tablet usb_hid.c:137-157; resync PS/2 |
 | 130 | USB HID sotto UTM | **FIXED nel codice, NON confermato su UTM live** | usb_core.c:79/232 hid_report_len esatto (era 256B over-request); il maintainer stesso su GitHub chiede re-test UTM — SERVE TEST LIVE |
 | 106 | doom fire button | **INCONCLUSIVO** | doomgeneric_os1.c:54-105 mapping 'k'/click→KEY_FIRE(0xa3) strutturalmente corretto; serve test di gioco live |
-| 174 | nexs-fm mouse click | **OPEN-VALID** | dc80001 auto-dichiarato WIP non-funzionante; events.c:146-170 wiring sembra corretto ma mai validato; serve test live |
+| 174 | nxfilem mouse click | **OPEN-VALID** | dc80001 auto-dichiarato WIP non-funzionante; events.c:146-170 wiring sembra corretto ma mai validato; serve test live |
 
 **Cluster NON completato** (l'altro sub-audit è morto): issue lib/mm/security da code-review
 (#151-#161: FDT parser, kmalloc UAF/krealloc, UTF-8 OOB, vsnprintf, backtrace overflow, entropy

@@ -86,7 +86,7 @@ end address, so the 3–4 GB PCI hole is counted (and treated) as RAM — see th
 
 **Graphics & userland**
 - Window **compositor** (overlap, Z-order, drag, focus), TTF font rendering, 2D/3D fixed-point engines.
-- Userland: `init`, `shell` (TTY), `notify_srv`, `regedit`, `fontman`, plus demo apps and a DOOM port.
+- Userland: `init`, `shell` (TTY), `notify_srv`, `regedit`, `nxfont`, plus demo apps and a DOOM port.
 
 > Many of these (compositor, fonts, VFS, registry) currently live **in the kernel**; the
 > roadmap moves them into isolated userland services (see the charter).
@@ -180,7 +180,7 @@ kernel/
   include/                   # kernel + arch + drivers + graphics headers
 include/api/                 # public userland ABI (os1.h, libc-ish headers; stb_* vendored)
 user/
-  sys/{bin,lib}/             # init, shell, notify_srv, regedit, fontman; lib.c, malloc.c
+  sys/{bin,lib}/             # init, shell, notify_srv, regedit, nxfont; lib.c, malloc.c
   bin/                       # counter, demo3d, ipc_*, input_test, writetest, doom/
   arch/{aarch64,amd64}/      # userland syscall stubs
 tools/mkdisk.c               # builds the Ext4 disk image / rootfs

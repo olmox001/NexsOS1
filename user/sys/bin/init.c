@@ -245,7 +245,6 @@ int main(void) {
       pid_nxlauncher = spawn("/sys/bin/nxlauncher");
     }
 #endif
-    OS1_registry_set("app.assoc.image", "/sys/bin/nximage");
 
     /* NOTE(GFX-DYN-01): host display-change auto-resize is intentionally NOT
      * polled here — a per-iteration poll wastes cycles.  It will be re-added
@@ -259,6 +258,7 @@ int main(void) {
      * are alive. 50 ms respawn latency is imperceptible. */
     OS1_sleep(50);
   }
+  OS1_registry_set("app.assoc.image", "/sys/bin/nximage");
 
   return 0;
 }

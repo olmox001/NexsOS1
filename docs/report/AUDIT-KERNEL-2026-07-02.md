@@ -179,7 +179,7 @@ This is **not dead legacy**: `user/sys/lib/lib.c:397-399` defines
 `_sys_file_write`/`_sys_file_read`/`_sys_list_dir` (i.e. `SYS_FILE_WRITE` /
 `SYS_FILE_READ` / `SYS_LIST_DIR`), and these are the primary file API called
 throughout `user/sys/bin/init.c`, `user/sys/bin/nxlauncher.c`,
-`user/sys/bin/nexs-fm/{state,fileops}.c`, `user/bin/kilo/kilo.c`,
+`user/sys/bin/nxfilem/{state,fileops}.c`, `user/bin/kilo/kilo.c`,
 `user/sys/bin/nxshell.c` (confirmed via grep across `user/`). Both paths are
 live, both are exercised, and they enforce access control independently:
 `SYS_FILE_WRITE` checks `CAP_FS_WRITE` + the `/sys,/bin` ACL inline

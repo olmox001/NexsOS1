@@ -2,7 +2,7 @@
  * NeXs File Manager - File Operations
  * Directory navigation, file manipulation, clipboard operations
  */
-#include "nexs-fm.h"
+#include "nxfilem.h"
 
 /*
  * fm_refresh_directory - ripopola fm_state.files[] con il contenuto di

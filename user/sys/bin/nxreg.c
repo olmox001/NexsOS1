@@ -1,5 +1,5 @@
 /*
- * user/sys/bin/regedit.c
+ * user/sys/bin/nxreg.c
  * Registry Editor (Control Panel)
  *
  * Windowed, read-only registry viewer: enumerates every key in the global
@@ -21,7 +21,7 @@
 #define VAL_BUF_SZ 128   /* single value buffer */
 
 /* Tiny FNV-1a over the rendered content, to skip unchanged redraws. */
-static unsigned long regedit_hash(unsigned long h, const char *s) {
+static unsigned long nxreg_hash(unsigned long h, const char *s) {
   while (*s) {
     h ^= (unsigned char)*s++;
     h *= 1099511628211UL;
@@ -66,8 +66,8 @@ static unsigned long render(int win_id, int do_write) {
       val[0] = '\0';
       if (OS1_registry_get(p, val, sizeof(val)) != 0)
         val[0] = '\0'; /* directory node or vanished key: show empty */
-      h = regedit_hash(h, p);
-      h = regedit_hash(h, val);
+      h = nxreg_hash(h, p);
+      h = nxreg_hash(h, val);
       if (do_write)
         printf_win(win_id, "%-24s %s\n", p, val);
     }
