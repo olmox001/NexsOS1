@@ -218,6 +218,65 @@ static void expand_damage(int x, int y, int w, int h) {
   compositor_dirty = 1;
 }
 
+static void expand_window_content_damage(struct window *win, int x, int y,
+                                         int w, int h) {
+  if (!win || w <= 0 || h <= 0)
+    return;
+
+  int dw = win->draw_w > 0 ? win->draw_w : win->width;
+  int dh = win->draw_h > 0 ? win->draw_h : win->height;
+  if (win->width <= 0 || win->height <= 0 || dw <= 0 || dh <= 0)
+    return;
+
+  int x1 = x;
+  int y1 = y;
+  int x2 = x + w;
+  int y2 = y + h;
+
+  if (x1 < 0)
+    x1 = 0;
+  if (y1 < 0)
+    y1 = 0;
+  if (x2 > win->width)
+    x2 = win->width;
+  if (y2 > win->height)
+    y2 = win->height;
+  if (x2 <= x1 || y2 <= y1)
+    return;
+
+  int sx1 = win->x + (int)((int64_t)x1 * dw / win->width);
+  int sy1 = win->y + (int)((int64_t)y1 * dh / win->height);
+  int sx2 = win->x + (int)(((int64_t)x2 * dw + win->width - 1) / win->width);
+  int sy2 = win->y + (int)(((int64_t)y2 * dh + win->height - 1) / win->height);
+  expand_damage(sx1, sy1, sx2 - sx1, sy2 - sy1);
+}
+
+static int window_region_has_alpha(struct window *win, int x, int y, int w,
+                                   int h) {
+  if (!win || !win->buffer || w <= 0 || h <= 0)
+    return 0;
+
+  int x1 = x < 0 ? 0 : x;
+  int y1 = y < 0 ? 0 : y;
+  int x2 = x + w;
+  int y2 = y + h;
+  if (x2 > win->width)
+    x2 = win->width;
+  if (y2 > win->height)
+    y2 = win->height;
+  if (x2 <= x1 || y2 <= y1)
+    return 0;
+
+  for (int py = y1; py < y2; py++) {
+    uint32_t *row = win->buffer + (size_t)py * win->width;
+    for (int px = x1; px < x2; px++) {
+      if ((row[px] >> 24) != 0xFF)
+        return 1;
+    }
+  }
+  return 0;
+}
+
 /* Pre-allocated buffers for rendering to avoid stack usage and kmalloc in IRQ
  */
 static struct window *sorted_windows[MAX_WINDOWS];
@@ -554,8 +613,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   }
   windows[slot].title[len] = '\0';
 
-  /* Attiva il supporto alpha blending per default */
-  windows[slot].has_alpha = 1;
+  windows[slot].has_alpha = ((default_bg >> 24) != 0xFF);
 
   /* Clear buffer to background */
   for (int i = 0; i < w * h; i++) {
@@ -1002,6 +1060,7 @@ int compositor_resize_window(int window_id, int w, int h) {
   win->height = h;
   win->draw_w = w; /* crisp: on-screen == new logical */
   win->draw_h = h;
+  win->has_alpha = ((win->bg_color >> 24) != 0xFF);
 
   /* Reflow the terminal to the new cell grid. */
   int char_w = graphics_font_max_width();
@@ -2283,10 +2342,14 @@ static void draw_rect_internal(int window_id, int x, int y, int w, int h,
           }
         }
       }
-      /* Update damage region: Window relative -> Screen relative */
-      int win_y = windows[i].y +
-                  (windows[i].top_most ? 0 : compositor_titlebar_height());
-      expand_damage(windows[i].x + x, win_y + y, w, h);
+      if ((color >> 24) != 0xFF) {
+        windows[i].has_alpha = 1;
+      } else if (x <= 0 && y <= 0 && w >= windows[i].width &&
+                 h >= windows[i].height) {
+        windows[i].has_alpha = 0;
+      }
+
+      expand_window_content_damage(&windows[i], x, y, w, h);
       return;
     }
   }
@@ -2319,6 +2382,11 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
         spin_unlock_irqrestore(&compositor_lock, flags);
         return;
       }
+
+      int copied_x1 = windows[i].width;
+      int copied_y1 = windows[i].height;
+      int copied_x2 = 0;
+      int copied_y2 = 0;
 
       /* Copy Logic: Row by Row for speed */
       for (int dy = 0; dy < h; dy++) {
@@ -2362,12 +2430,31 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
           spin_unlock_irqrestore(&compositor_lock, flags);
           return;
         }
+        if (dest_x < copied_x1)
+          copied_x1 = dest_x;
+        if (py < copied_y1)
+          copied_y1 = py;
+        if (dest_x + copy_w > copied_x2)
+          copied_x2 = dest_x + copy_w;
+        if (py + 1 > copied_y2)
+          copied_y2 = py + 1;
       }
 
-      /* Update damage region: Window relative -> Screen relative */
-      int win_y = windows[i].y +
-                  (windows[i].top_most ? 0 : compositor_titlebar_height());
-      expand_damage(windows[i].x + x, win_y + y, w, h);
+      if (copied_x2 > copied_x1 && copied_y2 > copied_y1) {
+        int cw = copied_x2 - copied_x1;
+        int ch = copied_y2 - copied_y1;
+        int copied_has_alpha =
+            window_region_has_alpha(&windows[i], copied_x1, copied_y1, cw, ch);
+        if (copied_has_alpha) {
+          windows[i].has_alpha = 1;
+        } else if (copied_x1 == 0 && copied_y1 == 0 &&
+                   copied_x2 >= windows[i].width &&
+                   copied_y2 >= windows[i].height) {
+          windows[i].has_alpha = 0;
+        }
+        expand_window_content_damage(&windows[i], copied_x1, copied_y1, cw,
+                                     ch);
+      }
 
       spin_unlock_irqrestore(&compositor_lock, flags);
       return;

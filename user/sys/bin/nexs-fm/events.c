@@ -92,11 +92,7 @@ void fm_handle_mouse_click(int x, int y) {
                 fm_state.last_click_item == index && last_ms > 0) {
                 /* Double click */
                 fm_file_t *file = &fm_state.files[index];
-                if (file->is_dir) {
-                    fm_navigate_to(file->full_path);
-                } else {
-                    spawn(file->full_path);
-                }
+                fm_open_file(file);
                 fm_state.last_click_time = 0;
             } else {
                 fm_state.last_click_time = now_ms;
@@ -114,11 +110,7 @@ void fm_handle_mouse_double_click(int x, int y) {
         if (index >= 0 && index < fm_state.file_count) {
             fm_file_t *file = &fm_state.files[index];
             fm_state.needs_redraw = 1;
-            if (file->is_dir) {
-                fm_navigate_to(file->full_path);
-            } else {
-                spawn(file->full_path);
-            }
+            fm_open_file(file);
         }
     }
 }
@@ -243,11 +235,7 @@ void fm_handle_keyboard(input_event_t *event) {
              sc == INPUT_KEY_ENTER) {
         if (fm_state.highlighted_item >= 0 && fm_state.highlighted_item < fm_state.file_count) {
             fm_file_t *file = &fm_state.files[fm_state.highlighted_item];
-            if (file->is_dir) {
-                fm_navigate_to(file->full_path);
-            } else {
-                spawn(file->full_path);
-            }
+            fm_open_file(file);
         }
     }
     /* Sort */

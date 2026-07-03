@@ -306,8 +306,7 @@ int fm_classify_icon(const char *name) {
       strcmp(ext, ".S") == 0 || strcmp(ext, ".s") == 0) {
     return 2; /* eseguibile / sorgente: icona verde */
   }
-  if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".png") == 0 ||
-      strcmp(ext, ".bmp") == 0 || strcmp(ext, ".gif") == 0) {
+  if (os1_image_path_has_known_ext(name)) {
     return 3; /* immagine: icona ciano */
   }
   if (strcmp(ext, ".tar") == 0 || strcmp(ext, ".zip") == 0 ||
@@ -315,4 +314,39 @@ int fm_classify_icon(const char *name) {
     return 4; /* archivio: icona arancione */
   }
   return 1; /* file generico */
+}
+
+int fm_open_file(fm_file_t *file) {
+  if (!file)
+    return -1;
+  if (file->is_dir) {
+    fm_navigate_to(file->full_path);
+    return 0;
+  }
+  if (os1_image_path_has_known_ext(file->name)) {
+    char app_path[FM_PATH_MAX];
+    strncpy(app_path, "/sys/bin/nximage", sizeof(app_path) - 1);
+    app_path[sizeof(app_path) - 1] = '\0';
+
+    int h = (int)OS1low_handle_create(OS1_NS_REG, "app.assoc.image",
+                                      OS1_RIGHT_READ, OBJ_TYPE_REGKEY);
+    if (h >= 0) {
+      char reg_value[FM_PATH_MAX];
+      long n = OS1_object_read(h, reg_value, sizeof(reg_value) - 1);
+      OS1low_handle_close(h);
+      if (n > 0) {
+        reg_value[sizeof(reg_value) - 1] = '\0';
+        if (reg_value[0] == '/')
+          strncpy(app_path, reg_value, sizeof(app_path) - 1);
+        app_path[sizeof(app_path) - 1] = '\0';
+      }
+    }
+
+    char viewer[] = "nximage";
+    char *argv[2];
+    argv[0] = viewer;
+    argv[1] = file->full_path;
+    return spawn_args(app_path, 2, argv);
+  }
+  return spawn(file->full_path);
 }

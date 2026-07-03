@@ -75,12 +75,18 @@
  * STB_IMAGE_IMPLEMENTATION: embed the full stb_image decoder.
  * STBI_NO_STDIO/LINEAR/HDR disable file-I/O and HDR format support that
  * are unavailable or unnecessary in a freestanding environment.
+ * STBI_NO_THREAD_LOCALS/STBI_NO_FAILURE_STRINGS are required by OS1 userland:
+ * there is no initialized TLS block behind TPIDR_EL0, so stb's __thread failure
+ * state would fault in ordinary decoder error paths.
  * NOTE(USR-BLOAT-01): Adds ~50KB of .text to every ELF regardless of use.
  */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
+#define STBI_NO_THREAD_LOCALS
+#define STBI_NO_FAILURE_STRINGS
+#define STBI_MAX_DIMENSIONS 4096
 #include <stb_image.h>
 #pragma GCC diagnostic pop
 
@@ -725,33 +731,109 @@ int graphics_text_width(const char *text) {
   return (int)strlen(text) * 8;
 }
 
+#define OS1_IMAGE_MAX_FILE_BYTES (16u * 1024u * 1024u)
+#define OS1_IMAGE_MAX_DIMENSION  4096
+#define OS1_IMAGE_MAX_PIXELS     (4096u * 4096u)
+
 /*
- * graphics_load_image - load an image file and decode it to ARGB pixels.
+ * graphics_load_image - load an encoded image into sanitized ARGB32 pixels.
  *
- * path: filesystem path to a JPEG, PNG, GIF, or BMP file.
- * w, h: output parameters for image dimensions.
- *
- * Uses file_read with buf==NULL to probe the file size, then reads the full
- * file into a temporary heap buffer and decodes with stbi_load_from_memory()
- * requesting 4 channels (RGBA -> reinterpreted as ARGB32).  The raw file
- * buffer is freed immediately; the decoded pixel buffer from stbi is returned
- * to the caller, who owns it (must free() eventually).
- *
- * Returns NULL on file-not-found, malloc failure, or decode error.
+ * Encoded input is treated as hostile data: it is copied into a bounded scratch
+ * buffer, probed before decode, rejected on dimension/pixel/file caps, decoded
+ * to a temporary RGBA plane, then copied into an OS1-owned ARGB buffer.  The
+ * caller never sees encoded bytes or decoder-owned storage, which keeps image
+ * rendering an inert pixel operation suitable for the stdimage base API.
  */
 uint32_t *graphics_load_image(const char *path, int *w, int *h) {
-  int size = file_read(path, NULL, 0, 0);  /* Probe file size */
-  if (size <= 0) return NULL;
-  unsigned char *data = malloc(size);
-  if (!data) return NULL;
-  if (file_read(path, data, size, 0) != size) {
+  if (!path || !w || !h)
+    return NULL;
+
+  *w = 0;
+  *h = 0;
+
+  long handle =
+      OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
+  if (handle < 0)
+    return NULL;
+
+  long stat_size = OS1_object_ctl((int)handle, OBJ_CTL_STAT, 0);
+  if (stat_size <= 0 || (uint64_t)stat_size > OS1_IMAGE_MAX_FILE_BYTES) {
+    OS1low_handle_close((int)handle);
+    return NULL;
+  }
+
+  int size = (int)stat_size;
+  unsigned char *data = malloc((size_t)size + 16u);
+  if (!data) {
+    OS1low_handle_close((int)handle);
+    return NULL;
+  }
+
+  int total = 0;
+  while (total < size) {
+    long got = OS1_object_read((int)handle, data + total,
+                               (unsigned long)(size - total));
+    if (got <= 0) {
+      OS1low_handle_close((int)handle);
+      free(data);
+      return NULL;
+    }
+    total += (int)got;
+  }
+  OS1low_handle_close((int)handle);
+
+  if (total != size) {
     free(data);
     return NULL;
   }
-  int n;  /* Actual channel count from file; forced to 4 by the last arg */
-  unsigned char *img = stbi_load_from_memory(data, size, w, h, &n, 4);
-  free(data);  /* Release raw file buffer; decoded buffer is returned */
-  return (uint32_t *)img;
+  for (int i = 0; i < 16; i++)
+    data[size + i] = 0;
+
+  int iw = 0;
+  int ih = 0;
+  int channels = 0;
+  if (!stbi_info_from_memory(data, size, &iw, &ih, &channels)) {
+    free(data);
+    return NULL;
+  }
+  if (iw <= 0 || ih <= 0 || iw > OS1_IMAGE_MAX_DIMENSION ||
+      ih > OS1_IMAGE_MAX_DIMENSION ||
+      (uint64_t)iw * (uint64_t)ih > OS1_IMAGE_MAX_PIXELS) {
+    free(data);
+    return NULL;
+  }
+
+  int n = 0;
+  unsigned char *rgba = stbi_load_from_memory(data, size, &iw, &ih, &n, 4);
+  free(data);
+  if (!rgba)
+    return NULL;
+
+  uint64_t pixels = (uint64_t)iw * (uint64_t)ih;
+  if (pixels > OS1_IMAGE_MAX_PIXELS || pixels > ((uint64_t)SIZE_MAX / 4u)) {
+    stbi_image_free(rgba);
+    return NULL;
+  }
+
+  uint32_t *argb = (uint32_t *)malloc((size_t)pixels * 4u);
+  if (!argb) {
+    stbi_image_free(rgba);
+    return NULL;
+  }
+
+  for (uint64_t i = 0; i < pixels; i++) {
+    uint8_t r = rgba[i * 4u + 0u];
+    uint8_t g = rgba[i * 4u + 1u];
+    uint8_t b = rgba[i * 4u + 2u];
+    uint8_t a = rgba[i * 4u + 3u];
+    argb[i] = ((uint32_t)a << 24) | ((uint32_t)r << 16) |
+              ((uint32_t)g << 8) | (uint32_t)b;
+  }
+
+  stbi_image_free(rgba);
+  *w = iw;
+  *h = ih;
+  return argb;
 }
 
 /*

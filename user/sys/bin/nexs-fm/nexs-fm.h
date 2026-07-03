@@ -10,6 +10,7 @@
 #include <string.h>
 #include <input.h>
 #include <graphics.h>
+#include <image.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -245,6 +246,7 @@ void fm_clipboard_paste(void);
 int fm_get_file_size(const char *path);
 long fm_get_file_mtime(const char *path);
 int fm_classify_icon(const char *name);
+int fm_open_file(fm_file_t *file);
 
 /* state.c */
 extern fm_state_t fm_state;

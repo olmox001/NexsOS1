@@ -289,9 +289,8 @@ int graphics_draw_text(int win_id, int x, int y, const char *text,
 int graphics_text_width(const char *text);
 
 /**
- * Load an image from file using stb_image.
- * Returns a pointer to the pixel data (ARGB), and sets width/height.
- * Must be freed with free().
+ * Load an encoded image into sanitized ARGB32 pixels.
+ * Returns a malloc-owned pixel buffer and sets width/height.
  */
 uint32_t *graphics_load_image(const char *path, int *w, int *h);
 

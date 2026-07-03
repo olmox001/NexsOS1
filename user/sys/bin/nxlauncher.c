@@ -43,6 +43,7 @@
  * resolution change.
  */
 #include <font_lib.h>
+#include <image.h>
 #include <input.h>
 #include <os1.h>
 #include <stdlib.h>
@@ -495,7 +496,7 @@ static void load_cfg(void) {
  * to offer as a launchable app). */
 // Lista delle estensioni (devono avere il punto)
 static const char *const filtered_extensions[] = {
-    ".wad", ".txt",  ".png", ".jpg", ".cfg", ".dat",
+    ".wad", ".txt",  ".cfg", ".dat",
     ".md",  ".json", ".old", ".dsg", NULL};
 
 // Lista dei nomi di file completi (esatti)
@@ -503,6 +504,9 @@ static const char *const filtered_files[] = {
     "init", "nxntfy_srv", "nxui", "nxlauncher", ".", "..", NULL};
 
 static int has_filtered_ext(const char *name) {
+  if (os1_image_path_has_known_ext(name))
+    return 1;
+
   // 1. Controllo estensioni
   const char *dot = strrchr(name, '.');
   if (dot) {
