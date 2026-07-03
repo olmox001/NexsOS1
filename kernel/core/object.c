@@ -254,11 +254,12 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
 
   if (ns == OS1_NS_REG && type == OBJ_TYPE_REGKEY) {
     /* A registry key is a capability too (ASTRA §6.6: every node has an
-     * associated capability).  A WRITE handle needs CAP_REG_WRITE to acquire
-     * (mirrors sys_registry); reads are open.  The key is stored in the
-     * kobject's path field, capped at the registry key length so create/get/set
-     * all agree on the same string. */
-    if ((rights & OS1_RIGHT_WRITE) && !proc_has_cap(cur, CAP_REG_WRITE))
+     * associated capability).  A WRITE handle needs CAP_REG_WRITE to acquire —
+     * the SAME registry_write_allowed() seam sys_registry and regfs check, so
+     * the three entry points cannot drift (S-ALIGN F5); reads are open.  The
+     * key is stored in the kobject's path field, capped at the registry key
+     * length so create/get/set all agree on the same string. */
+    if ((rights & OS1_RIGHT_WRITE) && !registry_write_allowed())
       return -EPERM;
     if (kpath[0] == '\0')
       return -EINVAL;
@@ -643,9 +644,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
         ret = -EFAULT;
       } else {
         val[cn] = '\0';
-        int owner =
-            proc_is_machine(current_process) ? 0 : (int)current_process->pid;
-        int rc = registry_set(o->path, val, owner);
+        int rc = registry_set(o->path, val, registry_caller_owner());
         ret = (rc == 0) ? (long)n : (rc == -EACCES ? -EACCES : -EINVAL);
       }
     }

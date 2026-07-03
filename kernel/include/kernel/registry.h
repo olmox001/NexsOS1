@@ -29,6 +29,17 @@ int registry_enum(const char *prefix, char *buf, size_t size);
  * First-writer-wins (owner_pid 0 = kernel/system).  0, -ENOENT, or -EACCES. */
 int registry_del(const char *key, int owner_pid);
 
+/* Single authority seam (S-ALIGN F5) shared by ALL THREE registry entry
+ * points — sys_registry (syscall 250), the /reg VFS mount (regfs), and the
+ * object manager's OBJ_TYPE_REGKEY acquisition/write path.  Gate decisions and
+ * caller-identity derivation live only here so the entry points cannot drift. */
+/* registry_write_allowed: mutating the registry needs CAP_REG_WRITE; a NULL
+ * current_process (in-kernel caller) passes (kernel = machine identity). */
+bool registry_write_allowed(void);
+/* registry_caller_owner: first-writer-wins identity — 0 for machine/kernel
+ * callers (full rights), the caller's PID otherwise. */
+int registry_caller_owner(void);
+
 /* Syscall Handler */
 long sys_registry(int op, const char *key, char *value, size_t size);
 
