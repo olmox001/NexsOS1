@@ -2,116 +2,96 @@
  * user/sys/bin/regedit.c
  * Registry Editor (Control Panel)
  *
- * Displays a simple control panel window showing a fixed set of registry keys
- * and their current values.  Intended to allow inspection (and eventually
- * editing) of system configuration stored in the global registry.
+ * Windowed, read-only registry viewer: enumerates every key in the global
+ * registry (OS1_registry_enum) and renders "key = value" rows through the
+ * window terminal emulator (ANSI + printf_win), refreshing only when the
+ * registry content actually changes — same render-if-changed pattern as
+ * nxproc.h/nxtop.  Editing keys is future work (needs an input line editor).
  *
- * Current state:
- *   - The display loop draws coloured rectangles per key entry but cannot
- *     render text labels — window_draw only fills rectangles; the commented-out
- *     window_print() calls are stubs.
- *   - registry_read() fetches values correctly, but they are invisible in the
- *     window because the text-draw calls are disabled.
+ * Reads are intentionally ungated kernel-side; writes elsewhere are gated by
+ * CAP_REG_WRITE (kernel/lib/registry.c) — this tool never writes.
  *
  * Known issues:
- *   USR-REGEDIT-01 (W3 BUG·STUB) recv(0, &msg) at line ~59 is a BLOCKING
- *                  call (SYS_RECV, syscall #231 with no timeout).  The
- *                  comment on that line acknowledges this: "No, recv blocks.
- *                  We need an event loop."  The window will freeze indefinitely
- *                  waiting for an IPC message that never comes, since nothing
- *                  sends IPC to regedit.  The yield() after it is unreachable.
- *   USR-SEC-01     (W3 SECURITY) registry_read/write has no authentication;
- *                  any process can overwrite any key.
  *   USR-BLOAT-01/02 (W2 BAD-IMPL·PERF) ~500KB ELF due to unconditional
  *                  stb_image/stb_easy_font in lib.o and retained DWARF debug.
  */
 #include <os1.h>
 
-#define MAX_KEYS 16       /* Maximum number of registry keys the UI can show */
-#define KEY_WIDTH 250     /* Width of each key entry row rectangle (px) */
-#define KEY_HEIGHT 30     /* Height of each key entry row rectangle (px) */
-#define PADDING 10        /* Margin between rows and window edge (px) */
+#define ENUM_BUF_SZ 2048 /* newline-separated key list from the kernel */
+#define VAL_BUF_SZ 128   /* single value buffer */
+
+/* Tiny FNV-1a over the rendered content, to skip unchanged redraws. */
+static unsigned long regedit_hash(unsigned long h, const char *s) {
+  while (*s) {
+    h ^= (unsigned char)*s++;
+    h *= 1099511628211UL;
+  }
+  return h;
+}
 
 /*
- * main - registry editor entry point; does not return.
- *
- * Creates a 400x300 compositor window.  In each iteration of the main loop:
- *   1. Clears the window background.
- *   2. For each registered key, draws a white rectangle and calls
- *      registry_read() to fetch the value — but the text display is commented
- *      out (no userland text renderer is available via window_draw).
- *   3. Calls recv(0, &msg) — a BLOCKING IPC receive — which hangs the loop
- *      indefinitely since no sender targets regedit.
- *   4. compositor_render() and yield() after recv() are unreachable.
- *
- * NOTE(USR-REGEDIT-01): The recv() call blocks forever; the window appears
- *   as a grey rectangle with no content and no responsiveness to interaction.
- *   Correct fix: replace recv() with try_recv() and add mouse-event handling.
- *
- * Returns 1 if window creation fails, never returns otherwise.
+ * render - clear the window and print one "key = value" row per registry key.
+ * Returns the content hash so the caller can skip identical frames.
  */
+static unsigned long render(int win_id, int do_write) {
+  char keys[ENUM_BUF_SZ];
+  char val[VAL_BUF_SZ];
+  unsigned long h = 1469598103934665603UL;
+
+  int n = OS1_registry_enum(keys, sizeof(keys));
+  if (n < 0) {
+    if (do_write)
+      _sys_window_write(win_id, "\033[H\033[Jregistry enum failed\n", 27);
+    return ~0UL;
+  }
+
+  /* First pass just hashes; the caller re-invokes with do_write=1 on change. */
+  if (do_write) {
+    _sys_window_write(win_id, "\033[H\033[J", 6);
+    _sys_window_write(win_id, "\033[1;34m", 7);
+    printf_win(win_id, "%-24s %s\n", "KEY", "VALUE");
+    _sys_window_write(win_id, "\033[0m", 4);
+    _sys_window_write(win_id, "----------------------------------------\n", 42);
+  }
+
+  char *p = keys;
+  while (*p) {
+    char *nl = p;
+    while (*nl && *nl != '\n')
+      nl++;
+    int last = (*nl == '\0');
+    *nl = '\0';
+
+    if (*p) {
+      val[0] = '\0';
+      if (OS1_registry_get(p, val, sizeof(val)) != 0)
+        val[0] = '\0'; /* directory node or vanished key: show empty */
+      h = regedit_hash(h, p);
+      h = regedit_hash(h, val);
+      if (do_write)
+        printf_win(win_id, "%-24s %s\n", p, val);
+    }
+
+    if (last)
+      break;
+    p = nl + 1;
+  }
+  return h;
+}
+
 int main(void) {
-  int w = 400;
-  int h = 300;
-  int win_id = create_window(100, 100, w, h, "Control Panel");
+  int win_id = create_window(100, 100, 400, 300, "Control Panel");
   if (win_id < 0)
     return 1;
 
-  /* Hardcoded initial set of three registry keys to display.
-   * MAX_KEYS entries allocated but only key_count=3 used. */
-  char keys[MAX_KEYS][64] = {"theme.color", "system.hostname",
-                             "mouse.sensitivity"};
-  int key_count = 3;
-
-  char val_buf[128];  /* Buffer for registry_read() output */
-
+  unsigned long last = 0; /* impossible hash: guarantees the first render */
   while (1) {
-    /* Clear background */
-    window_draw(win_id, 0, 0, w, h, 0xFFE0E0E0);
-
-    /* Draw Title */
-    // TODO: Font rendering in window_draw? For now we only have basic rects.
-    // We really need a proper UI library or font support in userspace.
-    // Using `notify` as a poor-man's persistent display is not great.
-
-    int y = PADDING;
-    for (int i = 0; i < key_count; i++) {
-      /* Draw white rectangle behind each key entry */
-      window_draw(win_id, PADDING, y, w - 2 * PADDING, KEY_HEIGHT, 0xFFFFFFFF);
-
-      /* Fetch Value from global registry.
-       * registry_read returns 0 on success, negative on not-found. */
-      if (OS1_registry_get(keys[i], val_buf, sizeof(val_buf)) == 0) {
-        /* Display Key */
-        // window_print(win_id, PADDING + 5, y + 5, keys[i], 0xFF000000);
-        /* Display Value */
-        // window_print(win_id, PADDING + 150, y + 5, val_buf, 0xFF0000BB);
-        /* NOTE: window_print() is not implemented; text is invisible.
-         * val_buf contains the correct value but cannot be shown. */
-      }
-
-      y += KEY_HEIGHT + PADDING;
+    unsigned long sig = render(win_id, 0);
+    if (sig != last) {
+      render(win_id, 1);
+      last = sig;
     }
-
-    /*
-     * CRITICAL LIMITATION: We don't have text rendering in userspace library
-     * yet! The `window_draw` syscall only does rectangles. The kernel
-     * compositor draws text, but userspace cannot (easily).
-     *
-     * Workaround: Use `notify()` to show current values when "clicked".
-     */
-
-    struct ipc_message msg;
-    /* NOTE(USR-REGEDIT-01): recv() is BLOCKING (SYS_RECV #231, no timeout).
-     * Nothing sends IPC messages to regedit, so this call hangs the loop
-     * indefinitely.  compositor_render() and yield() below are unreachable.
-     * Should be replaced with try_recv() and a proper event-driven loop. */
-    if (recv(0, &msg)) { /* Non-blocking check? No, recv blocks. */
-                         /* We need an event loop. */
-    }
-
-    compositor_render();
-    yield();
+    OS1_sleep(1000);
   }
 
   return 0;

@@ -279,8 +279,9 @@ static inline void nxproc_render_rows(int win_id, const struct ps_info *procs,
  * (clear-screen + colour SGRs) are identical to the windowed version so the
  * caller's terminal emulator handles them the same way.
  *
- * Unconditional: callers that want change-detection should gate this behind
- * nxproc_render_if_changed_inline() rather than calling it every tick.
+ * Unconditional: one-shot callers (nxproc's `cmd_print`) render exactly once,
+ * so no change-detection wrapper exists for the inline variant — the windowed
+ * loop uses nxproc_render_if_changed() below.
  */
 static inline void nxproc_render_inline(const struct ps_info *procs,
                                        int count) {
@@ -343,42 +344,6 @@ static inline void nxproc_render_inline(const struct ps_info *procs,
     printf("\n");
     printf("\033[0m");
   }
-}
-
-/*
- * nxproc_render_if_changed_inline - OPTIMIZED inline render: snapshot the
- * table and only print it to stdout when the visible content actually
- * changed.
- *
- * last_sig: in/out pointer to the caller's "previous signature" state.  Seed
- *           it with a sentinel (e.g. 0) on the first call; the helper updates
- *           it.  May be NULL to force a single render (no change-detection).
- *
- * Returns 1 if it (re)rendered, 0 if it skipped because nothing changed, or a
- * negative value if the snapshot syscall failed.  Used by `nxproc --inline`
- * to avoid spamming the caller's TTY when nothing has moved.
- */
-static inline int nxproc_render_if_changed_inline(unsigned long *last_sig) {
-  struct ps_info procs[NXPROC_MAX];
-
-  int count = nxproc_snapshot(procs, NXPROC_MAX);
-  if (count < 0) {
-    unsigned long err_sig = ~0UL;
-    if (last_sig && *last_sig != err_sig) {
-      printf("Error fetching process list\n");
-      *last_sig = err_sig;
-    }
-    return count;
-  }
-
-  unsigned long sig = nxproc_signature(procs, count);
-  if (last_sig && *last_sig == sig)
-    return 0;
-
-  nxproc_render_inline(procs, count);
-  if (last_sig)
-    *last_sig = sig;
-  return 1;
 }
 
 /*

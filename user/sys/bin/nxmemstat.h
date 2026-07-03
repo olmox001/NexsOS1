@@ -57,9 +57,6 @@ static inline unsigned long nxmemstat_signature(const struct os1_sysstats *s) {
 static inline void nxmemstat_render(int win_id, const struct os1_sysstats *s,
                                     const struct os1_sysstats *prev,
                                     unsigned long dt_ms) {
-  unsigned long mb =
-      4096UL / 1024UL; /* pages*4K -> KB; /1024 -> MB done below */
-  (void)mb;
   unsigned long free_mb = (unsigned long)((s->pmm_free_pages * 4UL) / 1024UL);
   unsigned long tot_mb = (unsigned long)((s->pmm_total_pages * 4UL) / 1024UL);
   unsigned long lcr_mb =
