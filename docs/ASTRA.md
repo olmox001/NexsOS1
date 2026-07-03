@@ -75,11 +75,11 @@ Violations the phases must fix (worst first):
 
 | Violation | Where | Fixed by |
 |---|---|---|
-| Syscalls and the ELF loader call `ext4_*` directly — no FS contract at all (`vfs.c` is only path normalization) | `kernel/fs/` | **B1** (#64/#56) |
-| `virt_to_phys` is identity; no PA/VA model, no W^X — the "VM primitive" doesn't exist as a contract | `kernel/mm/`, `vmm.h` | **B2** (#92) |
+| ~~Syscalls and the ELF loader call `ext4_*` directly — no FS contract at all~~ — **RESOLVED**: `struct fs_ops` + mount table; `kernel/main.c:226` registers ext4 as a provider (`vfs_register_fs`), zero bypass calls remain outside `kernel/fs/` (verified 2026-07-02: `grep -rl ext4_ kernel/**/*.c` outside `kernel/fs/` is empty) | `kernel/fs/` | **B1 ✅** (#64/#56) |
+| ~~`virt_to_phys` is identity; no PA/VA model, no W^X~~ — **RESOLVED**: higher-half kernel both arches, `KERNEL_VIRT_BASE` PA/VA contract, W^X enforced | `kernel/mm/`, `vmm.h` | **B2 ✅** (#92) |
 | ~~No capability layer: any process can kill PIDs, steal focus (syscall 232), overwrite registry keys~~ — **RESOLVED**: real object manager + unforgeable per-process handles with attenuable rights now back kill/IPC/registry/windows (see §7) | ABI | **B3 ✅** (§7) |
-| Boot-protocol parsing and the 1 GB fallback are monolithic platform code instead of ACPI/Multiboot *providers* | `kernel/arch/amd64/platform/platform.c` (frozen file — do not touch until B4 replaces it behind a contract) | **B4** (#94) |
-| Compositor/fonts/registry live in the kernel core and reach into sched (focus boost) — a service living below its layer | `kernel/graphics/` | **B5** (#95) |
+| Boot-protocol parsing and the 1 GB fallback are monolithic platform code instead of ACPI/Multiboot *providers* — still true: no ACPI/MADT provider exists (`grep -rl acpi_madt kernel/` empty, 2026-07-02); `kernel/arch/amd64/platform/platform.c` is still 593 lines of monolithic platform code (frozen, untouched) | `kernel/arch/amd64/platform/platform.c` (frozen file — do not touch until B4 replaces it behind a contract) | **B4** (#94, still open) |
+| Compositor/fonts/registry live in the kernel core and reach into sched — **partially resolved**: the focus-boost reach-into-sched direction is inverted (SCHED-01, §7 below) and the registry is now a namespace tree mounted at `/reg` (§7.1a), but compositor/fonts/registry are still physically inside `kernel/`, no `kernel/srl` vs `kernel/hal` source-tree split exists yet (verified 2026-07-02) | `kernel/graphics/` | **B5** (#95, in progress) |
 
 ## 3. How each Phase B microphase applies ASTRA
 
@@ -375,12 +375,17 @@ Bionic         → Android layer → libos1 → OS1low_ → Kernel
 
 ---
 
-# 7. Implementation status (updated 2026-06-20)
+# 7. Implementation status (updated 2026-07-02)
 
 §1–§6 describe the target; this section records what is **actually implemented**
-in the tree today, so the structural work ahead starts from fact. Everything
-below is verified building `-Werror` on both arches (aarch64 + amd64) and booting
-with 0 panics; capability regression `captest` 9/9, `capkill` 5/5.
+in the tree today, so the structural work ahead starts from fact. The 2026-06-20
+baseline below (§7.1–§7.5, extended in place) still holds; §7.6–§7.9 record what
+landed since, across the F4.1 batch (2026-06-22→26), the F0.0.4.2 stabilization
+detour (2026-06-27→28, validated stable on UTM), and the notification/kill-model/
+UI polish through v0.0.4.4 (2026-06-29→30); §7.10 is the current "what remains."
+Everything cited below is file:line-verified against the tree at HEAD (`6e394cf`),
+not inferred from commit messages. Regression suites `captest`/`capkill`/`capreg`/
+`capipc`/`sandboxtest`/`fdtest`/`forkbomb` all still exist under `user/bin/`.
 
 ## 7.1 Capability layer — the real object manager (§6.1/6.2/6.5) ✅ DONE
 
@@ -409,6 +414,13 @@ layer — no longer ambient `proc_has_cap()` identity for the object surface.
   `kernel/include/kernel/object.h`. Handle tables are lazily allocated and freed
   at process teardown (`process_handles_destroy`). Tests: `/bin/{captest,capipc,
   capreg,capkill}`.
+- **Update (2026-07-02, F4.1 Stage 4/4a)**: the B3 per-process **fd table is now
+  fully absorbed** into this handle table — `kernel/fd.h` no longer exists;
+  `struct process` (`kernel/include/kernel/sched.h:166`) has exactly one
+  descriptor field, `struct handle_entry *handles`. A POSIX fd IS a handle
+  (fd N == handle N). `OBJ_CTL_STAT` (`include/api/object.h:64`) lets a FILE
+  handle report its size (`vfs_stat`), completing the fd→object migration this
+  section's §6.2 called for.
 
 ## 7.2 Per-path capability presets — VFS stratification (§6.3) ✅ DONE
 
@@ -420,7 +432,11 @@ creator-clamp in `process_create_caps` still forbids a child being more
 privileged than its creator, so a USER shell launching a `/sys/bin` binary does
 NOT gain root. `/sys/bin` is write-protected (object.c denies non-machine writes
 under `/sys`,`/bin`) → the binaries backing the preset are immutable. Follow-up:
-per-service cap refinement and VFS-level read-only enforcement.
+per-service cap refinement and VFS-level read-only enforcement. **Still open as
+of 2026-07-02**: `level_for_path` (`kernel/core/syscall_dispatch.c:176-179`) is
+unchanged since 2026-06-20 — every `/sys/bin/*` service still gets the flat ROOT
+preset; its own comment (`syscall_dispatch.c:172`) still says "refined per
+service later."
 
 ## 7.3 Window objects + native window server (§6.7) ✅ DONE (base)
 
@@ -442,17 +458,35 @@ Windows are first-class capability objects. The compositor stays the pure
 - Files: `kernel/graphics/compositor.c`, `kernel/include/kernel/graphics.h`,
   `user/sys/bin/nxui.c`, libos1 `OS1_window_enum/_minimize/_restore/_focus/_close`.
 
-## 7.4 Stratified SRL services (§6.4) ✅ pattern established
+## 7.4 Stratified SRL services (§6.4) ✅ pattern established, growing
 
 Every system CLI/control is built as **a reusable helper layer + a thin
 frontend**, usable by both user and system apps. The helper adds **no ambient
 checks**: it only wraps syscalls the kernel already gates per caller, so the
 service is **secure-by-caller** automatically (a USER app and a ROOT service get
 exactly their own rights). Established examples: `nxres` (display/style/theme),
-`nxproc` (process management — `nxproc.h` helper + `nxproc` CLI; the shell `ps`
-and `top` consume the same helper, `top` de-spinbombed to render only on change).
-Planned, same pattern: **nxinfo** (system info) and **nxperms** (user-level
-authorizations).
+`nxproc` (process management — `nxproc.h` helper + `nxproc` CLI).
+
+**Update (2026-07-02)**: `nxinfo` and `nxperm` — listed below as "planned" through
+2026-06-20 — are **now implemented**, not stubs:
+- **nxinfo** (`user/sys/bin/nxinfo.c`+`.h`) — one-shot system summary (OS version,
+  uptime, live process count, desktop resolution, pid, cwd).
+- **nxperm** (`user/sys/bin/nxperm.c`+`.h`) — introspection-only identity/
+  permissions CLI (`whoami`/`levels`/`services`) over `OS1_identity()`, presenting
+  the level model (machine/root/user/guest) so apps reason without touching raw
+  capability bits. This is the **foundation** slice of the full nxperm vision
+  (login, named users, su elevation, UAC popups) — `su` is a stub today
+  ("not yet implemented"); the full vision remains a dedicated future phase.
+- Also landed on the same pattern: **nxwins** (window list/focus, split out of
+  the shell, `user/sys/bin/nxwins.c`), **nxmemstat** (`OS1_sys_stats` poller,
+  ROOT-gated), **nxntfy_srv**/**nxnotify** (§7.7 below), **nxlauncher** (app
+  launcher tile grid over `/sys/bin`+`/bin`) and **nxui** (the dock).
+- `nxproc`/`top` note: `top.c` was renamed **`nxtop.c`** (naming-convention
+  sweep, every `/sys/bin` ELF is now `nx*`-prefixed); the shell's `ps` no
+  longer links the helper in-process — it now **spawns `/sys/bin/nxproc` as a
+  child** (`nxshell.c` calls `spawn("/sys/bin/nxproc")` + `run_foreground`).
+  The helper-sharing *pattern* holds, the *mechanism* moved from
+  library-linking to process-spawning.
 
 ## 7.5 Unified input event ABI (§6.2 input objects / DIR-03) ✅ base
 
@@ -463,11 +497,173 @@ compositor delivers events to the focused window. `MOUSE_BTN_*` are centralised
 in `include/api/input.h`. **Open**: per-window mouse delivery beyond the focused
 window and a desktop-resize broadcast are tracked follow-ups (DIR-03/DIR-07).
 
-## 7.6 What remains structural (next)
+## 7.6 Registry as a namespace tree + `/proc` typed objects (§6.3/§6.6) ✅ DONE (2026-07-02)
 
-The **call-surface refactor** (DIR-01/#164) is the next structural work:
+The registry moved off the flat array this section described through
+2026-06-20 into a real **namespace tree**, and `/proc` joined `/reg` as a
+second VFS-mounted typed-object namespace:
+
+- **Tree model**: `struct reg_node` (`kernel/lib/registry.c:49-58`) —
+  `name`/`value`/`owner_pid`/`is_leaf`/`parent` + a sorted dynamic
+  `children[]` array; lookup is binary search (`node_find_child`), not a flat
+  scan. First-writer-wins ownership (§6.6) is unchanged.
+- **`/reg` VFS mount**: `registry_mount_vfs()` (`kernel/lib/registry.c:556`)
+  calls `vfs_mount_at("/reg", &regfs_ops, NULL)`, wired from `kernel/main.c:237`
+  — the registry is now walkable as a Plan 9-style namespace (§6.3), not just a
+  key/value `OS1_registry_*` call surface.
+- **Reader/writer lock**: `reg_cnt_lock`/`reg_res_lock` (`registry.c:66-95`)
+  admit concurrent readers, serialize writers.
+  **`registry_del`** (`registry.c:299-331`) frees a leaf and prunes now-empty
+  ancestor directory nodes back toward the root.
+- **`/proc` typed objects**: `kernel/fs/procfs.c` maps `/proc/<pid>` to an
+  `OBJ_TYPE_PROCESS` object (`procfs_object_at`, `procfs.c:37-53`), mounted at
+  `kernel/main.c:240`. Resolution routes through the same `vfs_resolve_object`
+  path as the legacy `OS1_NS_PROC` namespace (`kernel/core/object.c:170-238`) —
+  `/proc/<pid>` reads go through the PROCESS object's `sys_object_read`, not a
+  procfs-local formatter, so there is no side-channel around the capability
+  model.
+- **Known stray file**: `kernel/include/kernel/registry.h.new` is an
+  unreferenced draft header left over from the migration (last touched
+  `749bed5`, missing `REG_OP_DEL`/`registry_del`/`registry_mount_vfs` that the
+  live `registry.h` has). Not wired into any build rule — safe to delete
+  whenever someone is in the area, not urgent.
+
+## 7.7 Notification model rework (§6.4, DIR-05) ✅ DONE (2026-07-02)
+
+- **Rename**: `notification_server` → `user/sys/bin/nxntfy_srv.c` (server) +
+  new `user/sys/bin/nxnotify.c` (CLI); no `notification_server` file remains
+  anywhere in the tree.
+- **Registry-message model**: notifications are logged to bounded registry ring
+  keys `sys.ntfy.log.<0..15>` as `"<from>|<sev>|<state>|<text>"`
+  (`nxntfy_srv.c:174,199`) — grouped by sender PID (`from`), a severity field
+  (`data1`: 2=error/red, 1=warning/amber), and a read-receipt state that flips
+  `U`(nread)→`R`(ead) on auto-hide.
+- **`init` owns `srv.notify_pid`**: `user/sys/bin/init.c:78-83` publishes the
+  key (not the server itself); `nxntfy_srv.c:91-97` explicitly defers to init
+  as the owner. Refreshed on every respawn (`init.c:217`).
+- **On-screen red panic + watchdog**: `panic_screen()`
+  (`kernel/graphics/graphics.c:171-179`, `RED = 0xFFB91C1C`) blits directly to
+  the primary GPU framebuffer, bypassing the compositor — UART-independent as
+  designed. A watchdog (`kernel/lib/printk.c:243-247`) reboots ~10s after a
+  panic (`arch_timer_get_count() + freq*10`).
+- **Userland crash → red notification**: `fault_notify_user()`
+  (`kernel/core/fault.c:35-49`, called from `fault_handle_user_or_panic` at
+  `fault.c:81`) sends an IPC message with `data1=2` (red/error severity) to
+  `srv.notify_pid` on every user-mode fault — a distinct path from the kernel
+  panic path above, not a reuse of it.
+- **Known regression vs. the DIR-05/#119 baseline**: the in-shell `notify`
+  builtin command was dropped in the same rename pass (`27cf792`, "drop shell
+  builtin") after briefly being restored (`465ada0`). **As of HEAD, `nxshell`
+  has no `notify` dispatch entry** (`user/sys/bin/nxshell.c:224-367`, no
+  `"notify"` case; only a stale doc-comment and a help line pointing at
+  `nxnotify` survive). Functionally superseded by the external `nxnotify` CLI,
+  but this is a user-facing surface change worth flagging if anyone still
+  expects the bare `notify` word to work at the shell prompt.
+
+## 7.8 Capability-gate sweep + fault-reporting unification (§6.1, DIR-06) ✅ DONE (2026-07-02)
+
+A F4.1 batch (2026-06-26) closed the remaining ungated write/effect syscalls and
+unified user-fault reporting across arches:
+
+- **`SYS_SET_FONT`** → `CAP_WINDOW` gate (`kernel/core/syscall_dispatch.c:824-833`).
+- **`SYS_WINDOW_SET_FLAGS`** → ownership gate, same pattern as
+  `SYS_DESTROY_WINDOW` (`syscall_dispatch.c:524-555`): caller must own the
+  window or be `proc_is_machine`.
+- **`SYS_DRAW`** → `CAP_WINDOW` gate (`syscall_dispatch.c:334-345`).
+- **`SYS_UNLINK`** → `CAP_FS_WRITE` + an explicit `/sys/`,`/bin/` ACL denial for
+  non-machine callers (`syscall_dispatch.c:895-919`).
+- **`SYS_FLUSH` retired**, unified into `SYS_COMPOSITOR_RENDER` (212), which is
+  itself `CAP_WINDOW`-gated (`syscall_dispatch.c:507-519`); syscall number 201
+  is now a dead slot with only a comment. Userland `flush()`/`render()` both
+  alias to `_sys_compositor_render()` (`user/sys/lib/lib.c:246-247`).
+- **Unified user-fault reporting (DIR-06)**: a single arch-neutral
+  `fault_handle_user_or_panic()` (`kernel/core/fault.c:56-88`) is called
+  identically from all seven amd64/aarch64 fault entry points (`#PF`/`#GP` on
+  amd64 `idt.c`; sync/FIQ/AArch32-EL0/el0_64_sync on aarch64), with zero
+  `#ifdef` branches inside the shared function. This is the DIR-06 HAL-
+  conformance model applied to the fault path, matching the timer's role as
+  "the reference implementation" (§1 rule 5).
+
+## 7.9 Window-aware kill model + SMP/scheduler hardening ✅ DONE (validated on UTM, 2026-07-02)
+
+Two related hardening passes landed after §7.3–§7.5: a maintainer-specified
+kill model (windowed vs. windowless processes), and an SMP/cross-CPU
+stabilization detour (tag `F0.0.4.2`) that fixed two long-standing bug reports
+(#169/#170). Full design rationale: `docs/PROCESS-KILL-MODEL.md` (spec only,
+not modified by this doc pass).
+
+- **Window-aware subtree kill**: `process_kill_subtree()`
+  (`kernel/sched/process.c:1172-1261`) probes each descendant via
+  `compositor_get_window_by_pid()`; a windowed descendant and its whole subtree
+  are pruned from the kill set (independent apps survive an ancestor's death),
+  matching the maintainer's "windowed children keep running" requirement.
+  Wired into all external-kill seams: `window_request_close()`
+  (`process.c:180`), `SYS_KILL` of another PID (`syscall_dispatch.c:649`),
+  `OBJ_CTL_KILL`/`OBJ_CTL_CLOSE` (`kernel/core/object.c:715`/`761`). Self-kill
+  stays single-process (`syscall_dispatch.c:646-647`).
+- **`process_terminate` idempotency** (the PMM double-free class):
+  `process.c:981-984` short-circuits if the target is already `PROC_DEAD`/
+  `PROC_ZOMBIE`; a `dying` flag (`kernel/include/kernel/sched.h:89-92`, set
+  `process.c:1006` before window teardown) closes the window-orphan race by
+  making `SYS_CREATE_WINDOW` refuse to run on an already-dying process
+  (`syscall_dispatch.c:364`).
+- **`wins` split into `/sys/bin/nxwins`**: the shell's in-process `wins`
+  command is gone (only a help-text line remains, `nxshell.c:241`); it is now
+  its own ELF, same pattern as nxproc/nxres/nxinfo.
+- **SMP idle-race (#169/#170)**: on both arches, `smp_create_idle_task(i)` now
+  runs immediately **before** the AP wake signal
+  (`kernel/arch/aarch64/platform.c:289-298`,
+  `kernel/arch/amd64/platform/platform.c:565-575`) — an AP can no longer start
+  running before its idle task exists.
+- **Cross-CPU stack UAF (#169/#170)**: `schedule()` defers re-enqueuing the
+  outgoing task until the *next* `schedule()` call on that CPU
+  (`kernel/sched/process.c:1678-1681`, consumed at `:1439-1452`), so a task is
+  never re-enqueued while another CPU might still be mid-switch off its kernel
+  stack. A **STACK-ALIAS guard** (`process.c:1694-1701`) panics loudly if two
+  CPUs are ever found sharing one `kernel_stack` pointer, immediately before
+  the context switch. Maintainer-validated stable on UTM (per project memory);
+  this doc pass did not re-run that validation.
+- **`compositor_update_mouse` lock fix**: the last unlocked window-list mutator
+  now takes `compositor_lock` (`kernel/graphics/compositor.c:1356-1466`),
+  closing a drag/resize torn-write race.
+
+## 7.10 What remains structural (updated 2026-07-02)
+
+The **call-surface refactor** (DIR-01/#164) is still the next structural work:
 unify/standardise **all** existing syscalls/verbs onto the OS1_/OS1low_ +
-capability model (not just renaming) — read the §6.1 ABI tables first so the
-final names/shape match the documented surface and the work is not done twice.
-Then the explicit **SRL/HAL source-tree split** (§6.4, B5) and Phase C device
-primitives (§4).
+capability model (not just renaming). Verified still open: `OS1low_vm_map/
+_unmap/_protect` don't exist, `OBJ_TYPE_PORT` (IPC-as-capability) doesn't
+exist, `OS1_fs_write` still takes the ambient path pending `O_CREAT` support
+in `handle_create` (`user/sys/lib/lib.c:370-375`, `NOTE(M4.5-FS-WRITE)`) —
+`kernel/core/syscall_dispatch.c:264-268` still returns `-EINVAL` for any
+`open()` flag beyond `O_ACCMODE` (issue #126, ext4 file creation). Then the
+explicit **SRL/HAL source-tree split** (§6.4, B5 — no `kernel/srl`/`kernel/hal`
+top-level directories exist yet) and Phase C device primitives (§4).
+
+Also still open, verified 2026-07-02:
+- **Per-service capability refinement** (§7.2) — every `/sys/bin/*` service
+  still gets the flat ROOT preset.
+- **B4/amd64 parity** (§2) — no ACPI/MADT provider exists.
+- **FPU/SSE save-restore on context switch** (CPU-AMD64-01, #38) — landed
+  (`184637d`) then **reverted the same day** (`a80bbc1`, 2026-06-19, "This
+  reverts commit 184637d"); still unresolved, not merely unattempted. Worth a
+  fresh look before the next amd64-heavy workload lands.
+- **DIR-05 remaining**: DWARF `file:line` backtrace resolution and a kernel
+  "recovery mode" (quiesce/reset a subsystem instead of `panic()`) — neither
+  exists yet (`grep -r debug_line\|addr2line kernel/lib/backtrace.c` and
+  `grep -r recovery_mode kernel/` both empty); only the on-screen red panic +
+  watchdog reboot (§7.7) landed from DIR-05's acceptance list.
+- **DIR-03 remaining**: the full blocking `OS1_event_wait` (folding in IPC/
+  timer/window/process readiness) doesn't exist; only the input leg
+  (`input_poll_event`) is unified.
+- **DIR-02/DIR-07 remaining**: no system-driven desktop-resize broadcast to
+  all windows (still per-window only, on `SYS_WINDOW_RESIZE`).
+- **Known stray files** (harmless, cleanup candidates): `kernel/graphics/
+  compositor.c.old` and `.c.new` (both last touched `8ad8c51`, unreferenced by
+  any build rule — kept deliberately as a "transform reference" per that
+  commit's message, see `docs/PENDING-WORK.md` item 9); `kernel/include/kernel/
+  registry.h.new` (§7.6, unreferenced draft).
+- `compositor_get_focus_pid()` — the dead-code cleanup `docs/PENDING-WORK.md`
+  item 3 asked for is **already done**: the live `kernel/graphics/compositor.c`
+  no longer defines it (only a comment at `compositor.c:934` explains its
+  removal); it survives only in the two stray `.old`/`.new` files above.

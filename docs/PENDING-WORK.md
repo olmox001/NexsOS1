@@ -14,7 +14,7 @@ e i doc di direzione `docs/direction/DIR-01..06`.
 
 ---
 
-## 1. Rinomina API `OS1_` di massa — **PARZIALE** · DIR-01 / #137
+## 1. Rinomina API `OS1_` di massa — **PARZIALE** (invariato) · DIR-01 / #137
 - **Fatto:** solo il pilota `sleep → OS1_sleep` (commit `9a01bfe`), su tutti i caller (escluso nexs-fm sospeso).
 - **Resta (richiesto come "prossimo task"):** prefissare `OS1_` a TUTTE le funzioni base non-POSIX:
   `yield, spawn, spawn_args, spawn_caps, spawn_level, kill_process, wait,
@@ -30,8 +30,14 @@ e i doc di direzione `docs/direction/DIR-01..06`.
   generico sotto i tipi sopra. Resta il **refactor della call-surface** (#164): prefissare/
   unificare *tutte* le syscall/verbi legacy sul modello `OS1_`/`OS1low_` + capability.
 - **Doc:** `docs/direction/DIR-01-naming-and-objects.md`.
+**Aggiornamento (2026-07-02):** verificato invariato — `OS1_fs_write` resta sul
+percorso ambient (blocco O_CREAT, `user/sys/lib/lib.c:370-375`); `OBJ_TYPE_PORT`
+e `OS1low_vm_map/_unmap/_protect` non esistono. La rinomina di massa non è
+iniziata. **Landato invece** (non era in questo item): fd table assorbita
+nell'handle table (`kernel/fd.h` non esiste più) e registry/­`/proc` come
+namespace tree — vedi `docs/ASTRA.md` §7.1/§7.6.
 
-## 2. Conformità HAL completa — **PARZIALE** · DIR-06 / #140 (HAL-ARCH-01)
+## 2. Conformità HAL completa — **PARZIALE** (avanzata) · DIR-06 / #140 (HAL-ARCH-01)
 - **Fatto:** audit del core (pulito: no inline asm / ISA in `kernel/core|sched|mm|irq`);
   EOI già dietro contratto `irq_chip_end()→chip->end()`; `elf.c` ora usa profili VMM
   arch-neutrali (`PAGE_USER`/`_DATA`/`_RX`/`_RO`), niente `#ifdef` arch (commit `93dc586`).
@@ -43,6 +49,11 @@ e i doc di direzione `docs/direction/DIR-01..06`.
   - `platform.c` (ARCH-03: `timer_get_us` dummy su amd64) — congelato fino a B4.
   - Obiettivo dichiarato: *TUTTO il kernel solo primitive HAL, non vede il layer arch*.
 - **Doc:** `docs/direction/DIR-06-hal-conformance.md` · `docs/ASTRA.md` (regola 5).
+- **Aggiornamento (2026-07-02):** ✓ **fatto** — unificato il fault-reporting
+  utente fra le due arch: `fault_handle_user_or_panic()` (`kernel/core/fault.c:56-88`)
+  è ora l'UNICA funzione, chiamata identica da tutti e 7 i punti di ingresso
+  fault amd64/aarch64, zero `#ifdef` interni (commit `7d3a209`). Resto invariato
+  (main.c signature, ps2.c gate, platform.c congelato fino a B4).
 
 ## 3. Decoupling compositor COMPLETO — **PARZIALE** · DIR-02 (#83/#67/#69 chiusi)
 - **Fatto:** #83 (scheduler non chiama più il compositor), #67 (focus single-owner via
@@ -56,9 +67,16 @@ e i doc di direzione `docs/direction/DIR-01..06`.
     `set_focus(get_pid())` / `window_of_pid(pid)`;
   - **compositor come componente della HAL** (un core-restart preserva framebuffer e
     stato grafico);
-  - **`compositor_get_focus_pid()` ora morta** (solo lo scheduler la usava): rimuoverla
-    da `compositor.c` + `graphics.h` (cleanup).
+  - ~~**`compositor_get_focus_pid()` ora morta**~~ ✓ **fatto (verificato 2026-07-02)**:
+    non esiste più in `compositor.c` (solo un commento a `compositor.c:934` ne
+    documenta la rimozione); sopravvive solo nei due file di riferimento
+    `compositor.c.old`/`.c.new` (non referenziati da alcuna build rule).
 - **Doc:** `docs/direction/DIR-02-compositor-decoupling.md`.
+- **Aggiornamento (2026-07-02):** ✓ anche `compositor_update_mouse` (era l'unico
+  mutatore della window-list senza lock) ora prende `compositor_lock`
+  (`kernel/graphics/compositor.c:1356-1466`, commit `492e5ec`) — chiude una race
+  drag/resize. Resto della visione DIR-02 (window-centric API, HAL component)
+  invariato.
 
 ## 4. Modello eventi unico `event_wait()` — **PARZIALE** · DIR-03 / #138
 - `OS1_event_wait(&ev)` che unifica `EVENT_KEY/MOUSE/IPC/TIMER/WINDOW/PROCESS`;
@@ -87,18 +105,41 @@ e i doc di direzione `docs/direction/DIR-01..06`.
   servizi pianificati `nxinfo` / `nxperms`.
 - Estende #79 / #95 / #120. **Doc:** `docs/direction/DIR-04-capabilities-and-services.md`.
 
-## 6. Trace debugger / recovery — **NON INIZIATO** · DIR-05 / #139
-- risoluzione **linea C esatta** dai backtrace (DWARF `.debug_line`);
+## 6. Trace debugger / recovery — **PARZIALE** (era NON INIZIATO) · DIR-05 / #139
+- risoluzione **linea C esatta** dai backtrace (DWARF `.debug_line`) — **ancora NON
+  INIZIATO**, verificato 2026-07-02 (nessuna logica `debug_line`/`addr2line` in
+  `kernel/lib/backtrace.c`/`fault_print.c`);
 - **modalità recovery**: quiescere/resettare il sottosistema o il core invece di `panic()`
-  (in coppia col core-restart nella HAL);
-- **panel di panico a schermo** via blit HAL minimale (oltre alla UART), per utenti GUI/UTM.
+  (in coppia col core-restart nella HAL) — **ancora NON INIZIATO**, verificato
+  2026-07-02 (nessun simbolo `recovery_mode`/`kernel_recover` nel kernel);
+- ~~**panel di panico a schermo** via blit HAL minimale (oltre alla UART), per utenti GUI/UTM~~
+  ✓ **FATTO (2026-07-02, F0.0.4.2, commit `dbbd80d`)**: `panic_screen()`
+  (`kernel/graphics/graphics.c:171-179`, rosso `0xFFB91C1C`) scrive direttamente
+  sul framebuffer GPU primario, bypassando il compositor — UART-indipendente
+  come richiesto.
+- **Landato in aggiunta (non nello scope originale di questo item, ma coerente
+  con DIR-05):** watchdog reboot ~10s dopo panic (`kernel/lib/printk.c:243-247`,
+  commit `cc29695`); crash utente → notifica rossa via `fault_notify_user()`
+  (`kernel/core/fault.c:35-49`, commit `fb94873`), distinta dal path di panic
+  kernel.
 - **Doc:** `docs/direction/DIR-05-fault-recovery-and-debugger.md`.
 
-## 7. Notifiche — parte 2 — **PARZIALE** · #119 (aperta)
-- **Fatto:** popup appare al boot, render una volta, auto-hide 2s, finestra passiva
+## 7. Notifiche — parte 2 — **QUASI CHIUSO** (era PARZIALE) · #119
+- **Fatto (2026-06-20):** popup appare al boot, render una volta, auto-hide 2s, finestra passiva
   click-through (commit `82a4cb4` + flag passive nel compositor).
-- **Resta:** *warning/errori del kernel e dello userspace devono diventare notifiche
-  visualizzabili* (il routing degli avvisi → notifiche).
+- ~~**Resta:** *warning/errori del kernel e dello userspace devono diventare notifiche
+  visualizzabili*~~ ✓ **FATTO (2026-07-02)**: crash utente → notifica rossa
+  automatica (`kernel/core/fault.c:35-49`, severità `data1=2`); panic kernel →
+  schermo rosso + watchdog (vedi item 6). Modello dati rifatto: rename
+  `notification_server` → `nxntfy_srv` + CLI `nxnotify` (commit `27cf792`);
+  modello a messaggi in registry con raggruppamento per processo (`from`),
+  severità e stato di lettura (`U`/`R`) (commit `eb08ab1`); `init` possiede
+  `srv.notify_pid` (non più il server stesso, commit `48435f5`).
+- **Regressione utente da segnalare:** il builtin `notify` della shell è stato
+  **rimosso** nello stesso pass di rename (dopo un breve ripristino in
+  `465ada0`, tolto di nuovo in `27cf792` "drop shell builtin"). Ad oggi
+  `nxshell` non ha alcun dispatch `"notify"` — solo la CLI esterna `nxnotify`
+  funziona. Verificato su `user/sys/bin/nxshell.c` a HEAD.
 
 ## 8. nexs-fm — **PARCHEGGIATO/INCOMPLETO**
 - Pushato come **non funzionante** (commit `dc80001`), su tua indicazione

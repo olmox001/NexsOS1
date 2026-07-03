@@ -67,3 +67,18 @@ and graphics state** across a kernel-core recovery (see DIR-05), and matches the
   HAL service.  Tracked with the desktop/mobile compositor transform.
 * See **DIR-07** for the surface model, resize and Policy/Style/Theme that build
   on this seam.
+
+## Status (2026-07-02)
+
+* **Done** — `compositor_get_focus_pid()` cleanup: confirmed actually removed
+  from `kernel/graphics/compositor.c` (only a comment at `compositor.c:934`
+  documents the removal); it survives only in the two stray reference files
+  `compositor.c.old`/`compositor.c.new` (unreferenced by any build rule, kept
+  deliberately as a transform reference per `docs/PENDING-WORK.md` item 9).
+* **Done** — `compositor_update_mouse` (`kernel/graphics/compositor.c:1356-1466`)
+  was the last unlocked window-list mutator; it now takes `compositor_lock`,
+  closing a drag/resize torn-write race (commit `492e5ec`).
+* **Still open, unchanged** — window-centric API (`window_focus`/`window_activate`
+  instead of PID-derived addressing), `window_present`/`window_commit`, and
+  compositor-as-HAL-component. No `kernel/hal`-level compositor placement exists
+  in the source tree as of this date.

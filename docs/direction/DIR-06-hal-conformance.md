@@ -56,6 +56,26 @@ Remaining (low priority, tracked here):
   is a provider gate, acceptable. `virtio_input.c` ifdef to review.
 * `platform.c` (`timer_get_us` dummy on amd64, ARCH-03) — frozen until B4.
 
+## Status (2026-07-02)
+
+**Done — user-fault reporting unified across arches** (commit `7d3a209`,
+2026-06-26): a single arch-neutral `fault_handle_user_or_panic()`
+(`kernel/core/fault.c:56-88`) is now called identically from all seven
+amd64/aarch64 fault entry points — amd64 `#PF`/`#GP` in `idt.c:238-240,268-270`;
+aarch64 sync/FIQ/AArch32-EL0 in `cpu.c:318-319,388-389,411-412` and el0_64_sync
+in `syscall.c:243-244` — with zero `#ifdef`/arch-forked branches inside the
+shared function itself. This is the fault-reporting half of what §1's timer
+model already achieved for the timer path; the remaining arch-specific code
+around each call site (register-dump formatting, ESR/error-code decode
+strings) is inherently arch-specific (different register files) and sits
+*around* the shared call, not inside it — consistent with this doc's own
+acceptance bar ("the same class of symptom on both arches").
+
+**Unchanged**: `kernel/main.c` signature difference, PS/2 gate, and frozen
+`platform.c` all remain exactly as scoped above — no B4 work has started
+(verified: no ACPI/MADT provider exists anywhere in `kernel/`, `platform.c` is
+untouched at 593 lines).
+
 ## Method (per ASTRA / docs/nexs-astra-guidelines)
 1. Define the contract (`*_ops`/`*_chip`) in `kernel/include/kernel/`.
 2. Move the implementation next to its provider/driver, not under `kernel/arch/`.

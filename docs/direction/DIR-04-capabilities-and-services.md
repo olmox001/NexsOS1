@@ -78,3 +78,26 @@ at the ROOT preset, not yet a reduced per-service mask); the explicit **SRL/HAL
 source-tree split** (B5); the consistent `proc_*/fs_*/window_*/input_*` family naming
 (§2, pairs with the DIR-01 call-surface refactor); and the planned `nxinfo`/`nxperms`
 services on the same stratified pattern.
+
+## Status (2026-07-02)
+
+**Done** — `nxinfo` and `nxperm` (the plural in this doc was aspirational; the shipped
+binary is singular `nxperm`) are **no longer planned, they are implemented**:
+`user/sys/bin/nxinfo.c`+`.h` (system summary CLI) and `user/sys/bin/nxperm.c`+`.h`
+(introspection-only `whoami`/`levels`/`services` over `OS1_identity()`; `su` is a
+stub, "not yet implemented" — the full login/multi-user vision stays a dedicated
+future phase). Also landed on the same stratified-service pattern since
+2026-06-20: `nxwins` (window list, split out of the shell), `nxmemstat`
+(ROOT-gated `OS1_sys_stats` poller), `nxntfy_srv`/`nxnotify` (notification
+rework, see ASTRA §7.7), `nxlauncher`/`nxui` (app launcher + dock). The F4.1
+batch (2026-06-26) also closed the remaining ungated write/effect syscalls —
+`SET_FONT`, `WINDOW_SET_FLAGS`, `DRAW`, `UNLINK` are all now capability- or
+ownership-gated, and the duplicate `SYS_FLUSH` was retired into
+`SYS_COMPOSITOR_RENDER` (itself `CAP_WINDOW`-gated) — see ASTRA §7.8 for
+file:line citations.
+
+**Still open, unchanged**: per-service capability refinement — `level_for_path`
+(`kernel/core/syscall_dispatch.c:176-179`) is untouched since 2026-06-20, every
+`/sys/bin/*` binary still gets the flat ROOT preset; the SRL/HAL source-tree
+split; the `proc_*/fs_*/window_*/input_*` family-naming convergence (depends on
+the DIR-01 call-surface refactor, also still open).
