@@ -43,11 +43,34 @@ void fm_main_loop(void) {
       } else if (event.type == INPUT_TYPE_MOUSE) {
         fm_handle_mouse(&event);
       }
+
+      /* Correctness over incremental cleverness: a file manager only redraws
+       * on user input (event-driven, low frequency), so every actual ACTION
+       * (a key press or a mouse-button press) forces one full, guaranteed-
+       * correct redraw.  This retires the whole "handler forgot to mark
+       * region X dirty" bug class (View toggles, dropdown remnants, path bar
+       * after navigation) that the per-region dirty tracking left open, while
+       * fm_draw_full_ui already composites the dropdown/context-menu overlays.
+       * Mouse MOVES (state != KEY_PRESSED) are ignored, so there is no
+       * per-motion flicker. */
+      if ((event.type == INPUT_TYPE_KEYBOARD &&
+           event.keyboard.state == KEY_PRESSED) ||
+          (event.type == INPUT_TYPE_MOUSE &&
+           event.mouse.state == KEY_PRESSED)) {
+        fm_mark_dirty_all();
+      }
     }
 
     if (fm_state.needs_redraw) {
-      fm_draw_full_ui();
+      fm_render_dirty_ui();
       fm_state.needs_redraw = 0;
+      fm_state.dirty_all = 0;
+      fm_state.dirty_menu = 0;
+      fm_state.dirty_toolbar = 0;
+      fm_state.dirty_sidebar = 0;
+      fm_state.dirty_content = 0;
+      fm_state.dirty_statusbar = 0;
+      fm_state.dirty_context_menu = 0;
     }
 
     /* Sleep breve e BLOCCANTE via il timer reale del kernel

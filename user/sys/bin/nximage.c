@@ -336,7 +336,7 @@ static int run_terminal(const char *path, os1_image_t *img) {
 
 int main(int argc, char **argv) {
   int term = 0;
-  const char *path = "/sys/bin/globe.png";
+  const char *path = "/sys/bin/background/globe.png";
 
   if (argc >= 2 && streq(argv[1], "--term")) {
     term = 1;

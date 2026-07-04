@@ -19,33 +19,29 @@ void fm_refresh_directory(void) {
   fm_state.total_size = 0;
 
   if (len < 0) {
-    fm_state.needs_redraw = 1;
+    fm_mark_dirty_content();
+    fm_mark_dirty_statusbar();
     return;
   }
 
   char *token = buf;
   while (*token != '\0' && fm_state.file_count < FM_MAX_FILES) {
-    char *newline = strchr(token, '\n');
-    if (!newline)
-      break;
-    *newline = '\0';
+    char *next = token;
+    while (*next != '\0' && *next != ' ' && *next != '\n' && *next != '\r' && *next != '\t')
+      next++;
 
+    if (next == token) {
+      token++;
+      continue;
+    }
+
+    *next = '\0';
     if (strlen(token) == 0) {
-      token = newline + 1;
+      token = next + 1;
       continue;
     }
 
     fm_file_t *file = &fm_state.files[fm_state.file_count];
-
-    int name_len = strlen(token);
-
-    /* list_dir storicamente appende '/' ai nomi delle directory;
-     * lo tolleriamo qui per compatibilità ma il tipo vero lo decide
-     * stat() sotto. */
-    if (name_len > 0 && token[name_len - 1] == '/') {
-      token[name_len - 1] = '\0';
-      name_len--;
-    }
 
     strncpy(file->name, token, FM_NAME_MAX - 1);
     file->name[FM_NAME_MAX - 1] = '\0';
@@ -58,20 +54,23 @@ void fm_refresh_directory(void) {
                file->name);
     }
 
-    /* Classificazione via stat() (lib.c fornisce stat() su file_read
-     * con size probing + S_IFREG). Riconosciamo directory dal
-     * fallimento di stat su path normale, OPPURE se list_dir ha
-     * aggiunto '/' al nome (per compat con vecchio formato). */
+    /* Classificazione delle directory. La libc utente stat() può non
+     * distinguere correttamente directory/file, quindi usiamo opendir() come
+     * verifica primaria per le cartelle reali. */
     struct stat st;
     int is_dir = 0;
-    if (stat(file->full_path, &st) == 0) {
+    DIR *d = opendir(file->full_path);
+    if (d) {
+      is_dir = 1;
+      file->size = 0;
+      file->mtime = 0;
+      closedir(d);
+    } else if (stat(file->full_path, &st) == 0) {
       is_dir = S_ISDIR(st.st_mode);
       file->size = (long)st.st_size;
       file->mtime = (long)st.st_mtime;
     } else {
-      /* stat fallita (es. non file regolare). Tenta come directory:
-       * se list_dir aveva suffissato '/' è quasi certamente una dir. */
-      is_dir = 1;
+      is_dir = 0;
       file->size = 0;
       file->mtime = 0;
     }
@@ -86,7 +85,7 @@ void fm_refresh_directory(void) {
     }
 
     fm_state.file_count++;
-    token = newline + 1;
+    token = next + 1;
   }
 
   /* Ordinamento dei file tramite fm_qsort (allineato ai prototipi dell'header)
@@ -111,7 +110,9 @@ void fm_refresh_directory(void) {
 
   fm_state.highlighted_item = 0;
   fm_state.scroll_offset = 0;
-  fm_state.needs_redraw = 1;
+  fm_mark_dirty_content();
+  fm_mark_dirty_sidebar();
+  fm_mark_dirty_statusbar();
 }
 
 void fm_navigate_to(const char *path) {
@@ -196,34 +197,55 @@ void fm_navigate_up(void) {
 /* ===== LOGICA DI STUB PER OPERAZIONI FILE (OS1 COMPATIBLE) ===== */
 
 void fm_copy_file(const char *src, const char *dst) {
-  /* Cast espliciti a void per evitare -Werror=unused-parameter */
-  (void)src;
-  (void)dst;
+  if (!src || !dst || strcmp(src, dst) == 0)
+    return;
+
+  /* Elimina il file di destinazione esistente per evitare residui di contenuto
+     quando la copia è più corta del file originale. */
+  OS1_fs_unlink(dst);
 
   char copy_buf[512];
-  int offset = 0;
+  int src_offset = 0;
+  int dst_offset = 0;
   int bytes_read;
 
-  /* Utilizziamo la reale syscall file_read esposta dal kernel */
-  while ((bytes_read = file_read(src, copy_buf, sizeof(copy_buf), offset)) >
+  while ((bytes_read = file_read(src, copy_buf, sizeof(copy_buf), src_offset)) >
          0) {
-    offset += bytes_read;
+    int bytes_written = file_write(dst, copy_buf, bytes_read, dst_offset);
+    if (bytes_written != bytes_read) {
+      return;
+    }
+    src_offset += bytes_read;
+    dst_offset += bytes_written;
   }
 }
 
 void fm_move_file(const char *src, const char *dst) {
-  /* Chiamate interne sicure che non generano warning */
+  if (!src || !dst || strcmp(src, dst) == 0)
+    return;
+
   fm_copy_file(src, dst);
   fm_delete_file(src);
 }
 
-void fm_delete_file(const char *path) { (void)path; }
+void fm_delete_file(const char *path) {
+  if (!path)
+    return;
+  OS1_fs_unlink(path);
+}
 
-void fm_create_folder(const char *path) { (void)path; }
+void fm_create_folder(const char *path) {
+  (void)path;
+  /* mkdir support is currently unavailable in this release of the linked
+     OS1 libc, quindi la creazione della cartella non è supportata qui. */
+}
 
 void fm_rename_file(const char *old, const char *new) {
-  (void)old;
-  (void)new;
+  if (!old || !new || strcmp(old, new) == 0)
+    return;
+
+  fm_copy_file(old, new);
+  fm_delete_file(old);
 }
 
 /* ===== APPUNTI E CLIPBOARD ===== */
@@ -236,7 +258,7 @@ void fm_clipboard_copy(void) {
     fm_state.clipboard.path[FM_PATH_MAX - 1] = '\0';
     fm_state.clipboard.is_cut = 0;
     fm_state.clipboard.is_valid = 1;
-    fm_state.needs_redraw = 1;
+    fm_mark_dirty_statusbar();
   }
 }
 
@@ -248,7 +270,7 @@ void fm_clipboard_cut(void) {
     fm_state.clipboard.path[FM_PATH_MAX - 1] = '\0';
     fm_state.clipboard.is_cut = 1;
     fm_state.clipboard.is_valid = 1;
-    fm_state.needs_redraw = 1;
+    fm_mark_dirty_statusbar();
   }
 }
 
@@ -316,6 +338,104 @@ int fm_classify_icon(const char *name) {
   return 1; /* file generico */
 }
 
+static int fm_path_has_extension(const char *path) {
+  if (!path)
+    return 0;
+
+  const char *name = strrchr(path, '/');
+  if (name)
+    name++;
+  else
+    name = path;
+
+  /* Ignora il punto iniziale se il file è nascosto. */
+  const char *dot = strrchr(name, '.');
+  if (!dot || dot == name)
+    return 0;
+  return 1;
+}
+
+static void fm_prune_viewer_pids(void) {
+  int write = 0;
+  for (int i = 0; i < fm_state.viewer_pid_count; i++) {
+    int pid = fm_state.viewer_pids[i];
+    if (wait(pid) == -1) {
+      fm_state.viewer_pids[write++] = pid;
+    }
+  }
+  fm_state.viewer_pid_count = write;
+}
+
+static int fm_register_viewer_pid(int pid) {
+  fm_prune_viewer_pids();
+
+  if (fm_state.viewer_pid_count >= FM_VIEWER_PID_MAX) {
+    int old_pid = fm_state.viewer_pids[0];
+    kill_process(old_pid);
+    wait(old_pid);
+    for (int i = 1; i < fm_state.viewer_pid_count; i++) {
+      fm_state.viewer_pids[i - 1] = fm_state.viewer_pids[i];
+    }
+    fm_state.viewer_pid_count--;
+  }
+
+  fm_state.viewer_pids[fm_state.viewer_pid_count++] = pid;
+  return pid;
+}
+
+static int fm_is_executable_path(const char *path) {
+  if (!path)
+    return 0;
+
+  if ((strncmp(path, "/bin/", 5) == 0 || strncmp(path, "/sys/bin/", 9) == 0) &&
+      !fm_path_has_extension(path)) {
+    return 1;
+  }
+
+  return 0;
+}
+
+int fm_open_with_kilo(fm_file_t *file) {
+  if (!file)
+    return -1;
+  if (file->is_dir) {
+    fm_set_status_message("Cannot open directory in kilo");
+    return -1;
+  }
+
+  char argv0[16];
+  char argv1[FM_PATH_MAX];
+  char *argv[2];
+  char out_path[NXEXEC_PATH_MAX];
+  int pid = 0;
+
+  strncpy(argv0, "kilo", sizeof(argv0) - 1);
+  argv0[sizeof(argv0) - 1] = '\0';
+  strncpy(argv1, file->full_path, sizeof(argv1) - 1);
+  argv1[sizeof(argv1) - 1] = '\0';
+  argv[0] = argv0;
+  argv[1] = argv1;
+
+  pid = nxexec_spawn_search(2, argv, out_path, /*detached=*/1);
+  if (pid <= 0) {
+    fm_set_status_message("Failed to open with kilo");
+    return pid;
+  }
+  fm_register_viewer_pid(pid);
+  fm_set_status_message("Opened with kilo");
+  return pid;
+}
+
+void fm_set_status_message(const char *msg) {
+  if (!msg) {
+    fm_state.status_message[0] = '\0';
+  } else {
+    strncpy(fm_state.status_message, msg, sizeof(fm_state.status_message) - 1);
+    fm_state.status_message[sizeof(fm_state.status_message) - 1] = '\0';
+  }
+  fm_mark_dirty_statusbar();
+}
+
 int fm_open_file(fm_file_t *file) {
   if (!file)
     return -1;
@@ -323,30 +443,40 @@ int fm_open_file(fm_file_t *file) {
     fm_navigate_to(file->full_path);
     return 0;
   }
-  if (os1_image_path_has_known_ext(file->name)) {
-    char app_path[FM_PATH_MAX];
-    strncpy(app_path, "/sys/bin/nximage", sizeof(app_path) - 1);
-    app_path[sizeof(app_path) - 1] = '\0';
 
-    int h = (int)OS1low_handle_create(OS1_NS_REG, "app.assoc.image",
-                                      OS1_RIGHT_READ, OBJ_TYPE_REGKEY);
-    if (h >= 0) {
-      char reg_value[FM_PATH_MAX];
-      long n = OS1_object_read(h, reg_value, sizeof(reg_value) - 1);
-      OS1low_handle_close(h);
-      if (n > 0) {
-        reg_value[sizeof(reg_value) - 1] = '\0';
-        if (reg_value[0] == '/')
-          strncpy(app_path, reg_value, sizeof(app_path) - 1);
-        app_path[sizeof(app_path) - 1] = '\0';
-      }
+  char argv0[16];
+  char argv1[FM_PATH_MAX];
+  char *argv[2];
+  char out_path[NXEXEC_PATH_MAX];
+  int pid = 0;
+
+  if (os1_image_path_has_known_ext(file->full_path)) {
+    strncpy(argv0, "nximage", sizeof(argv0) - 1);
+    argv0[sizeof(argv0) - 1] = '\0';
+    strncpy(argv1, file->full_path, sizeof(argv1) - 1);
+    argv1[sizeof(argv1) - 1] = '\0';
+    argv[0] = argv0;
+    argv[1] = argv1;
+    pid = nxexec_spawn_search(2, argv, out_path, /*detached=*/1);
+    if (pid <= 0) {
+      fm_set_status_message("Failed to open image with nximage");
+      return pid;
     }
-
-    char viewer[] = "nximage";
-    char *argv[2];
-    argv[0] = viewer;
-    argv[1] = file->full_path;
-    return spawn_args(app_path, 2, argv);
+    fm_register_viewer_pid(pid);
+    fm_set_status_message("Opened image in nximage");
+    return pid;
   }
-  return spawn(file->full_path);
+
+  if (fm_is_executable_path(file->full_path)) {
+    argv[0] = file->full_path;
+    pid = nxexec_spawn_search(1, argv, out_path, /*detached=*/1);
+    if (pid <= 0) {
+      fm_set_status_message("Failed to launch executable");
+      return pid;
+    }
+    fm_set_status_message("Launched executable");
+    return pid;
+  }
+
+  return fm_open_with_kilo(file);
 }
