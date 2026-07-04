@@ -17,6 +17,8 @@ AMD64_CROSS_COMPILE ?=
 AARCH64_CROSS_COMPILE ?= aarch64-linux-gnu-
 AARCH64_ARCH_CFLAGS_EXTRA ?= -mno-outline-atomics
 
+USER_LINK_FLAGS += -no-pie -Wl,--build-id=none
+
 STAT_SIZE = stat -c%s
 
 endif
