@@ -11,8 +11,9 @@
 
 .extern amd64_isr_dispatch
 
-/* Vectors that push an error code automatically (Intel spec) */
-#define HAS_ERR(v) ((v)==8||(v)==10||(v)==11||(v)==12||(v)==13||(v)==14||(v)==17||(v)==21||(v)==29||(v)==30)
+/* (The old HAS_ERR(v) macro was defined but never referenced — the ERR vs
+ * NOERR split is done by the explicit ISR_ERR/ISR_NOERR emission below, so it
+ * was dead. Removed.) */
 
 /* Generate a stub for vector V */
 .altmacro
@@ -85,6 +86,7 @@ MAKE_ISR_NOERR V
 
 /* ── Common handler ───────────────────────────────────────── */
 common_isr_entry:
+    cld                        /* SysV: C runs with DF=0 (rep movsb/stosb) */
     /* Check if we came from user mode (CS & 3 != 0)
      * Stack layout: vec (0), err (8), rip (16), cs (24) */
     testb $3, 24(%rsp)
@@ -161,6 +163,7 @@ common_isr_entry:
 .global arch_cpu_yield
 arch_cpu_yield:
     cli
+    cld                        /* SysV: schedule()/C runs with DF=0 */
     popq  %r11                 /* r11 = return address; rsp -> caller frame */
     movq  %rsp, %r10           /* r10 = resume RSP (caller stack) */
     /* Synthetic iretq frame (high->low: ss, rsp, rflags, cs, rip). */
