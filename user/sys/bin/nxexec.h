@@ -40,31 +40,55 @@
 
 #define NXEXEC_PATH_MAX 96
 
+/* A child is treated as "windowed" (a GUI app that should detach) only if it
+ * owns the SAME window id across this many consecutive polls.  A transient
+ * create/destroy churn — stress's --gui lane opens back-to-back windows with
+ * DIFFERENT ids (docs/PROCESS-KILL-MODEL.md §5) — never accumulates a stable
+ * count, so it is correctly hosted as a terminal program instead of being
+ * mistaken for a persistent GUI app and wrongly detached.  ~6 polls x ~15ms
+ * = ~90ms of an unchanging window; a real app holds its window far longer,
+ * a churner never holds one id that long. */
+#define NXEXEC_STABLE_POLLS 6
+
+/* nxexec_run_foreground return codes. */
+#define NXEXEC_JOB_EXITED   0 /* the child finished (or was Ctrl-C'd) */
+#define NXEXEC_JOB_DETACHED 1 /* the child owns a stable window -> it is a GUI app */
+
 /*
  * nxexec_run_foreground - watch a freshly-spawned child as a foreground job
- * (extracted verbatim from nxshell's run_foreground, USR-TTY-01 #123).
+ * (USR-TTY-01 #123), with a DEBOUNCED window-ownership test so a transient
+ * window (stress --gui) is not mistaken for "this is a GUI app, detach".
  *
- * Polls until: the child opens its own window (-> detached, return
- * immediately), the child exits, or the caller receives Ctrl-C (ETX via
- * keyboard IPC) which kills the job.  Other keystrokes are consumed; stdin
- * forwarding to the job is a tracked follow-up.  Yields between polls.
+ * Returns NXEXEC_JOB_DETACHED if the child settled on its own persistent
+ * window (the caller should stop hosting it), or NXEXEC_JOB_EXITED if the
+ * child finished or was killed by Ctrl-C (ETX via keyboard IPC).
  */
-static inline void nxexec_run_foreground(int pid) {
+static inline int nxexec_run_foreground(int pid) {
   if (pid <= 0)
-    return;
+    return NXEXEC_JOB_EXITED;
+  int last_win = -1;
+  int stable = 0;
   while (1) {
-    if (window_of_pid(pid) > 0)
-      break; /* child opened its own window -> detached */
+    int w = window_of_pid(pid);
+    if (w > 0 && w == last_win) {
+      if (++stable >= NXEXEC_STABLE_POLLS)
+        return NXEXEC_JOB_DETACHED; /* a persistent own window -> GUI app */
+    } else {
+      stable = (w > 0) ? 1 : 0; /* new/transient window id: restart the count */
+    }
+    last_win = w;
+
     if (wait(pid) != -1)
-      break; /* child finished (dead/zombie/gone) */
+      return NXEXEC_JOB_EXITED; /* child finished (dead/zombie/gone) */
+
     struct ipc_message m;
     if (try_recv(-1, &m) == 0 && m.type == IPC_TYPE_INPUT && m.data2 != 0 &&
         m.payload[0] == 0x03) {
       kill_process(pid);
       print("^C\n");
-      break;
+      return NXEXEC_JOB_EXITED;
     }
-    yield();
+    OS1_sleep(15); /* time base for the debounce; keeps Ctrl-C responsive */
   }
 }
 

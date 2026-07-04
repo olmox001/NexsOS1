@@ -85,16 +85,27 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  /* Grace probe: graphical child -> vanish; windowless -> host it. */
-  int job_done = 0;
-  for (int i = 0; (i * 20) < NXEXEC_GRACE_MS; i++) {
-    if (window_of_pid(pid) > 0)
-      return 0; /* graphical: close, the app runs independently */
+  /* Grace probe, DEBOUNCED (docs/PROCESS-KILL-MODEL.md §5): a GUI app settles
+   * on a PERSISTENT window (same id for NXEXEC_STABLE_POLLS polls) -> vanish;
+   * a fast CLI exits -> host + dismiss; a terminal program that only churns
+   * transient windows (stress --gui) never accumulates a stable count and
+   * falls through to being hosted, so its output stays visible in the
+   * terminal instead of nxexec wrongly detaching and dropping it. */
+  int job_done = 0, last_win = -1, stable = 0;
+  for (int i = 0; (i * 15) < NXEXEC_GRACE_MS; i++) {
+    int w = window_of_pid(pid);
+    if (w > 0 && w == last_win) {
+      if (++stable >= NXEXEC_STABLE_POLLS)
+        return 0; /* persistent own window -> GUI app, vanish */
+    } else {
+      stable = (w > 0) ? 1 : 0;
+    }
+    last_win = w;
     if (wait(pid) != -1) {
       job_done = 1; /* fast CLI finished within the probe */
       break;
     }
-    OS1_sleep(20);
+    OS1_sleep(15);
   }
 
   /* Windowless: reveal the terminal (its output is already in the buffer). */
@@ -103,11 +114,11 @@ int main(int argc, char *argv[]) {
 
   if (!job_done) {
     /* Long-running windowless job: watch it (Ctrl-C kills; if the user closes
-     * this window the kernel subtree-kill takes the child).  Returns when the
-     * job exits or opens a late window. */
-    nxexec_run_foreground(pid);
-    if (window_of_pid(pid) > 0)
-      return 0; /* it became graphical after all -> vanish */
+     * this window the kernel subtree-kill takes the child).  The debounced
+     * watch returns DETACHED only for a stable own window (a slow-to-open GUI
+     * app), not for stress's transient churn. */
+    if (nxexec_run_foreground(pid) == NXEXEC_JOB_DETACHED)
+      return 0; /* it settled on its own window -> vanish */
   }
 
   /* Job finished: leave the output on screen, let the user read it, close on
