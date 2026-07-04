@@ -13,9 +13,21 @@ else
 # - GCC needs -mno-outline-atomics for the freestanding aarch64 link
 # - stat uses the GNU -c%s syntax
 
-AMD64_CROSS_COMPILE ?= x86_64-elf-
+# WIP(PR #201, CodeAsm): default to the NATIVE x86_64 gcc/ld on Linux rather
+# than an x86_64-elf- cross toolchain.  This got init/PID1 loading on Linux,
+# but the author himself flagged it as provisional — a native (host-targeted)
+# gcc is not a clean freestanding cross-compiler and must be revisited (either
+# require x86_64-elf- like macOS, or add the freestanding/-ffreestanding +
+# no-host-libs guarantees explicitly).  Overridable via the environment.
+AMD64_CROSS_COMPILE ?=
 AARCH64_CROSS_COMPILE ?= aarch64-linux-gnu-
 AARCH64_ARCH_CFLAGS_EXTRA ?= -mno-outline-atomics
+
+# GNU ld defaults to PIE with a build-id note, which the ELF loader rejects
+# (unexpected PT_LOAD at 0x400000).  Force the flat, no-note layout the kernel
+# expects for /sys/bin and /bin ELFs.  Empty on macOS (variable unset there),
+# so this only affects the Linux host build.  (PR #201, CodeAsm)
+USER_LINK_FLAGS += -no-pie -Wl,--build-id=none
 
 STAT_SIZE = stat -c%s
 
