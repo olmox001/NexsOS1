@@ -13,7 +13,7 @@ else
 # - GCC needs -mno-outline-atomics for the freestanding aarch64 link
 # - stat uses the GNU -c%s syntax
 
-AMD64_CROSS_COMPILE ?= x86_64-elf-
+AMD64_CROSS_COMPILE ?=
 AARCH64_CROSS_COMPILE ?= aarch64-linux-gnu-
 AARCH64_ARCH_CFLAGS_EXTRA ?= -mno-outline-atomics
 
