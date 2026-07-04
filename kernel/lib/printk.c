@@ -38,6 +38,7 @@
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
 #include <kernel/irq.h>
+#include <kernel/bootphase.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/string.h>
@@ -266,6 +267,7 @@ void panic(const char *fmt, ...) {
    * that is broken). */
   if (fault_depth() > 0) {
     fault_printf("\n\n*** KERNEL PANIC (fault context) ***\n");
+    fault_printf("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
     va_start(args, fmt);
     fault_vprintf(fmt, args);
     va_end(args);
@@ -285,6 +287,7 @@ void panic(const char *fmt, ...) {
   irq_send_ipi_all();
 
   printk("\n\n*** KERNEL PANIC ***\n");
+  printk("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
 
   va_start(args, fmt);
   vprintk(fmt, args);

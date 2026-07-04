@@ -7,6 +7,7 @@
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
 #include <kernel/bootmodule.h>
+#include <kernel/bootphase.h>
 #include <kernel/buffer.h>
 #include <kernel/cpu.h>
 #include <kernel/drivers.h>
@@ -43,12 +44,33 @@
 /* External symbols */
 extern void secondary_cpu_entry(void); /* Assembly wrapper for AMD64 */
 void kernel_secondary_main(void);
-volatile uint32_t cpu_boot_ack = 0;
+/* The boot-ack handshake cell lives in kernel/core/smp.c (S-ALIGN F8). */
+
+/* Boot-phase tracking (S-ALIGN F9, kernel/bootphase.h): single-writer (BSP,
+ * this file), read by panic() to stamp fault reports.  K3 (userland) is
+ * entered ONLY after K1+K2 are confirmed — the explicit gate the K1/K2/K3
+ * model requires. */
+static enum boot_phase boot_phase = BOOT_PHASE_K1_HW;
+void boot_phase_set(enum boot_phase p) { boot_phase = p; }
+enum boot_phase boot_phase_get(void) { return boot_phase; }
+const char *boot_phase_name(enum boot_phase p) {
+  switch (p) {
+  case BOOT_PHASE_K1_HW:
+    return "K1-hw";
+  case BOOT_PHASE_K2_SUBSYS:
+    return "K2-subsys";
+  case BOOT_PHASE_K3_USERLAND:
+    return "K3-userland";
+  default:
+    return "running";
+  }
+}
 
 /* Forward declarations */
 static void print_banner(void);
 static void init_memory(void);
 static void init_scheduler(void);
+static int spawn_init_process(void);
 
 /*
  * Kernel main entry point
@@ -118,30 +140,37 @@ void kernel_main(uint64_t x0_arg) {
   pr_info("%s", "Initializing processes...\n");
   process_init();
 
-  /* Scheduler and First Process */
+  /* Scheduler (K2): compositor + CPU0's idle task.  PID1 is NOT spawned
+   * here any more — K3 is gated below. */
   pr_info("%s", "Initializing scheduler...\n");
   init_scheduler();
 
-  /* Set CPU0 current task to idle (placeholder) to allow scheduling? */
-  /* Actually, init_scheduler creates 'init' and 'idle' tasks. */
-  /* We want CPU0 to pick 'init' immediately. */
-
-  /* Wake secondary CPUs via Unified HAL */
+  /* Wake secondary CPUs via Unified HAL (completes K1: whole machine up). */
   pr_info("%s", "Waking secondary CPUs...\n");
   arch_smp_init();
+
+  /* ---- K3 GATE (S-ALIGN F9): K1+K2 confirmed, only now start userland. ----
+   * Previously PID1 was created+enqueued in init_scheduler() BEFORE
+   * arch_smp_init(): an early-woken AP could work-steal PID1 and run
+   * userland while the BSP was still bringing up later CPUs (kernel audit
+   * §1.3, the sharpest phase-blur).  A K3-only failure (userland won't
+   * load) no longer panics a healthy K1+K2: the kernel stays alive and
+   * diagnosable on the UART (kernel-alone mode). */
+  boot_phase_set(BOOT_PHASE_K3_USERLAND);
+  if (spawn_init_process() != 0)
+    pr_err("%s", "K3: userland failed to start — kernel-alone mode "
+                 "(K1+K2 healthy, no reboot; inspect via UART)\n");
 
   /* Enable interrupts on primary core */
   pr_info("%s", "Enabling interrupts...\n");
   local_irq_enable();
+  boot_phase_set(BOOT_PHASE_RUNNING);
 
   pr_info("%s", "Kernel initialized successfully!\n");
   pr_info("Boot info at: 0x%016lx\n", arch_get_boot_info());
 
-  /* Main kernel loop */
+  /* CPU0 idle loop: from here on all work happens in scheduled tasks. */
   pr_info("%s", "Entering idle loop...\n");
-
-  /* Enter supervisor loop */
-  pr_info("%s", "[Init] Entering supervisor loop\n");
   while (1) {
     hal_cpu_idle();
   }
@@ -195,6 +224,11 @@ static void init_memory(void) {
    * MM bring-up instead of right after the banner. */
   ktest_run_all();
 
+  /* K1→K2 boundary (S-ALIGN F9): memory/hardware is up; everything from
+   * hal_bus_init() on is subsystem init (bus/block/GPU/graphics/GPT/buffer/
+   * VFS/keyboard/registry/procfs — the kernel-audit §1.1 boot map). */
+  boot_phase_set(BOOT_PHASE_K2_SUBSYS);
+
   /* Perform hardware discovery via Unified HAL */
   hal_bus_init();
 
@@ -246,7 +280,9 @@ static void init_memory(void) {
 /* smp_create_idle_task moved to arch-specific code or process.c */
 
 /*
- * Initialize scheduler (placeholder)
+ * init_scheduler (K2): compositor + CPU0's idle task.  Userland (PID1) is
+ * deliberately NOT started here — that is K3, gated in kernel_main after
+ * arch_smp_init() confirms the whole machine (S-ALIGN F9).
  */
 static void init_scheduler(void) {
   pr_info("%s", "Scheduler: Initializing...\n");
@@ -254,18 +290,30 @@ static void init_scheduler(void) {
   /* Initialize Compositor */
   compositor_init();
 
-  /* 1. Spawn the First-Stage Init Process (Must be PID 1) */
-  pr_info("%s", "Scheduler: Spawning First-Stage Init...\n");
-  struct process *init = process_create("init", PROC_PRIO_USER, PLVL_MACHINE);
-  if (init && process_load_elf(init, "/sys/bin/init") == 0) {
-    pr_info("Scheduler: Initialized PID %d (/sys/bin/init)\n", init->pid);
-    enqueue_task(init);
-  } else {
-    panic("Failed to load /init");
-  }
-
-  /* 2. Create Idle Task for CPU 0 */
+  /* Create Idle Task for CPU 0 */
   smp_create_idle_task(0);
+}
+
+/*
+ * spawn_init_process (K3): create, load and enqueue PID1 (/sys/bin/init).
+ * ROOT + explicit caps, NOT machine: PLVL_MACHINE is the machine's own
+ * identity (B3 §3.1) — it would make PID1 unkillable and exempt from every
+ * capability check and from the creator clamp for all its children.
+ *
+ * Returns 0 on success, -1 if userland could not be started — the caller
+ * keeps the kernel alive (kernel-alone mode) instead of panicking: a
+ * K3-only failure must not take down a healthy K1+K2.
+ */
+static int spawn_init_process(void) {
+  pr_info("%s", "K3: Spawning First-Stage Init...\n");
+  struct process *init =
+      process_create_caps("init", PROC_PRIO_USER, PLVL_ROOT, CAP_ALL);
+  if (init && process_load_elf(init, "/sys/bin/init") == 0) {
+    pr_info("K3: Initialized PID %d (/sys/bin/init)\n", init->pid);
+    enqueue_task(init);
+    return 0;
+  }
+  return -1;
 }
 
 /*
@@ -293,8 +341,10 @@ void kernel_secondary_main(void) {
   /* Enable interrupts */
   local_irq_enable();
 
-  /* Acknowledge boot to primary core */
-  cpu_boot_ack = cpu;
+  /* Acknowledge boot to primary core (release store inside smp_ack_boot:
+   * everything this CPU initialized above is visible before the BSP sees
+   * the ack — the handshake lives in kernel/core/smp.c, S-ALIGN F8). */
+  smp_ack_boot(cpu);
 
   pr_info("Secondary CPU %u online and ready\n", cpu);
 

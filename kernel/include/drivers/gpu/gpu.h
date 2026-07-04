@@ -29,7 +29,9 @@ struct gpu_device {
   int width;
   int height;
   int bpp;
-  void *framebuffer_virt; /* Kernel Virtual Address of FB */
+  /* The scanout buffer is reached ONLY through ops->get_framebuffer (S-ALIGN
+   * F7) — the old raw framebuffer_virt field was a second, field-level path
+   * to the same memory and is retired. */
   size_t framebuffer_size;
   struct gpu_ops *ops;
   void *priv;              /* Driver private data */

@@ -244,6 +244,33 @@ int vfs_read_file(const char *path, void *buf, uint32_t size,
 }
 
 /*
+ * vfs_write_allowed - THE single write-authority seam for every VFS
+ * write-class entry point (S-ALIGN F6): SYS_FILE_WRITE, SYS_UNLINK, and
+ * open-for-write/handle acquisition (SYS_OPEN → sys_handle_create OS1_NS_FS).
+ * Policy lives only here so the entry points cannot drift:
+ *   - mutating the filesystem needs CAP_FS_WRITE (USR-SEC-03 #79);
+ *   - the binary trees /sys,/bin are immutable for non-machine callers
+ *     (EXT4-02/ABI-04: services + init chain cannot be overwritten).
+ * 'resolved_path' must already be vfs_resolve_path()-canonical.  A NULL
+ * current_process (in-kernel caller) passes: kernel = machine identity.
+ * Use-time writes on an already-held FILE handle are deliberately NOT
+ * re-checked (seL4/Mach delegation: the handle's rights are the authority).
+ * Returns 0, -EPERM (no capability) or -EACCES (protected tree).
+ */
+int vfs_write_allowed(const char *resolved_path) {
+  if (!proc_has_cap(current_process, CAP_FS_WRITE))
+    return -EPERM;
+  if (!proc_is_machine(current_process) &&
+      (strncmp(resolved_path, "/sys/", 5) == 0 ||
+       strncmp(resolved_path, "/bin/", 5) == 0)) {
+    pr_warn("vfs: PID %d denied write-class access to protected path '%s'\n",
+            current_process ? current_process->pid : 0, resolved_path);
+    return -EACCES;
+  }
+  return 0;
+}
+
+/*
  * vfs_write_file - path-based write through the provider.
  * Returns bytes written or negative; -1 if the provider has no write support.
  */

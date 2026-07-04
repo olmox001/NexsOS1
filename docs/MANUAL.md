@@ -286,7 +286,7 @@ open (see `area:drivers` issues).
 `kernel/graphics/`. `graphics_init` brings up the **VirtIO-GPU** framebuffer (720×1280 today;
 this is the only GPU provider — there is no VGA/VBE/Bochs-DISPI provider yet, planned).
 Rendering is CPU-side: `compositor.c` manages overlapping windows (Z-order, drag, focus,
-damage tracking, TTY windows for shells); `font.c` renders TTF glyphs (uploaded by `fontman`
+damage tracking, TTY windows for shells); `font.c` renders TTF glyphs (uploaded by `nxfont`
 via `set_font`); `gl.c` provides 2D/3D fixed-point primitives. The compositor and font engine
 are in-kernel today and are prime candidates for extraction into userland services (epic #95).
 
@@ -303,7 +303,7 @@ lock (GFX-COMP-02). These are scheduled for Fase 3/Fase 5.
   loop that respawns them. (Hardcoded list; `init.cfg` is not yet read — USR-INIT-02.)
 - **`shell`:** line editor with built-ins (ls/cat/cd/ps/kill/spawn/…); opens a TTY window.
 - **Services:** `notify_srv` (notification popups via IPC), `regedit` (registry UI),
-  `fontman` (TTF rasteriser/uploader).
+  `nxfont` (TTF rasteriser/uploader).
 - **Library (`user/sys/lib/`):** `lib.c` (libc-ish + formatting + vendored stb), `malloc.c`,
   `font_lib.c`, arch syscall stubs. Everything is statically linked into each ELF (binaries
   are large; USR-BLOAT-01/02).

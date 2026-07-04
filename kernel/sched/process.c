@@ -665,8 +665,17 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   strncpy(proc->name, name, 15);
   proc->name[15] = '\0';
 
-  /* Assign unique PID */
-  proc->pid = next_pid++;
+  /* Assign unique PID.  Idle tasks (kernel threads) draw from a dedicated
+   * high band: with the K3 gate (S-ALIGN F9) they are created BEFORE init,
+   * and PID 1 must stay reserved for init — orphan reparenting
+   * (process.c reap path) and the compositor's init-authority checks key on
+   * pid==1. */
+  if (priority == PROC_PRIO_IDLE) {
+    static int next_idle_pid = 32000;
+    proc->pid = next_idle_pid++;
+  } else {
+    proc->pid = next_pid++;
+  }
 
   /* Address-space tag for TLB-tagged switches (perf §3): the pool slot+1, so it
    * is unique among all live address spaces (slots are unique while occupied).
@@ -739,28 +748,42 @@ struct process *process_create_caps(const char *name, uint8_t priority,
    * lookup takes compositor_lock).  ctty propagates down the tree: the
    * spawner's own window if it has one, else its inherited ctty. */
   proc->ctty_win = -1;
-  if (creator) {
-    extern int compositor_get_window_by_pid(int pid);
-    int term = compositor_get_window_by_pid((int)creator->pid);
-    proc->ctty_win = (term > 0) ? term : creator->ctty_win;
-  }
 
-  /* stdin/stdout/stderr as capability handles 0/1/2 (ASTRA §6.2: the fd table
-   * folded into the object table — replaces the old process_fd_init).  Done
-   * outside sched_lock (it kmalloc's the handle table + console object, taking
-   * object_lock) — after ctty so the console's stdout resolves correctly.  On
-   * OOM roll back the pool slot exactly like the kernel-stack failure path. */
-  if (process_install_stdio(proc) != 0) {
-    spin_lock_irqsave(&sched_lock, &flags);
-    process_pool[slot] = NULL;
-    active_count--;
-    __child_count_dec(proc);
-    spin_unlock_irqrestore(&sched_lock, flags);
-    pmm_free_page(proc);
-    return NULL;
-  }
+  /* Pure kernel threads (the per-CPU idle tasks, PROC_PRIO_IDLE) take a LEAN
+   * path: no ctty (they never write to a console), no stdio handle trio (no
+   * handle-table kmalloc + object_lock traffic), no user PGD (they run on the
+   * shared kernel_pgd — smp_create_idle_task previously created one only to
+   * destroy it).  This keeps the SMP bring-up window free of compositor/
+   * object/vmm lock traffic: UTM caught a #GP inside process_install_stdio
+   * during arch_smp_init exactly on this path (idle tasks were being given
+   * consoles while earlier-woken APs were already scheduling). */
+  if (priority == PROC_PRIO_IDLE) {
+    proc->page_table = NULL; /* runs on the shared kernel_pgd (SCHED-UAF-01) */
+  } else {
+    if (creator) {
+      extern int compositor_get_window_by_pid(int pid);
+      int term = compositor_get_window_by_pid((int)creator->pid);
+      proc->ctty_win = (term > 0) ? term : creator->ctty_win;
+    }
 
-  proc->page_table = vmm_create_pgd();
+    /* stdin/stdout/stderr as capability handles 0/1/2 (ASTRA §6.2: the fd
+     * table folded into the object table — replaces the old process_fd_init).
+     * Done outside sched_lock (it kmalloc's the handle table + console object,
+     * taking object_lock) — after ctty so the console's stdout resolves
+     * correctly.  On OOM roll back the pool slot exactly like the kernel-stack
+     * failure path. */
+    if (process_install_stdio(proc) != 0) {
+      spin_lock_irqsave(&sched_lock, &flags);
+      process_pool[slot] = NULL;
+      active_count--;
+      __child_count_dec(proc);
+      spin_unlock_irqrestore(&sched_lock, flags);
+      pmm_free_page(proc);
+      return NULL;
+    }
+
+    proc->page_table = vmm_create_pgd();
+  }
 
   pr_debug("process_create: '%s' PID=%u slot=%u Prio=%d PageTable=%p\n", name,
            (uint32_t)proc->pid, (uint32_t)slot, (int)proc->priority,
@@ -825,14 +848,9 @@ void smp_create_idle_task(uint32_t cpu_id) {
   if (idle) {
     idle->on_cpu = cpu_id;
 
-    /* Idle tasks are pure kernel threads — they never run user code.
-     * Free the per-process PGD and use NULL: arch_cpu_switch_context loads
-     * the shared kernel_pgd for NULL page_table (SCHED-UAF-01 — it must NOT
-     * leave the previous process's possibly-freed PGD active). */
-    if (idle->page_table) {
-      vmm_destroy_pgd(idle->page_table);
-      idle->page_table = NULL;
-    }
+    /* Idle tasks are pure kernel threads: process_create's PROC_PRIO_IDLE
+     * lean path already left page_table NULL (shared kernel_pgd, SCHED-UAF-01)
+     * and skipped ctty/stdio — nothing to undo here any more. */
 
     /* Ensure we are writing to the correct per-CPU structure */
     struct cpu_info *info = &cpu_data[cpu_id];

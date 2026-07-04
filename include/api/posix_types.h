@@ -1,6 +1,6 @@
 /*
- * kernel/include/kernel/types.h
- * Core kernel types and definitions
+ * include/api/posix_types.h
+ * POSIX-facing shared types for the userland API surface
  */
 #ifndef _POSIX_TYPES_H
 #define _POSIX_TYPES_H

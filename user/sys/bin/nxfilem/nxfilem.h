@@ -7,9 +7,13 @@
 
 #include <os1.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <input.h>
 #include <graphics.h>
+#include <image.h>
+#include <dirent.h>
+#include "../nxexec.h"
 #include <sys/stat.h>
 #include <time.h>
 
@@ -88,6 +92,7 @@
 #define FM_PATH_MAX 512
 #define FM_SORT_MAX 50
 #define FM_HISTORY_MAX 100
+#define FM_VIEWER_PID_MAX 16
 
 typedef struct {
     char name[FM_NAME_MAX];
@@ -147,13 +152,22 @@ typedef struct {
     int window_id;
     int running;
     int needs_redraw;
-    
+    int dirty_all;
+    int dirty_menu;
+    int dirty_toolbar;
+    int dirty_sidebar;
+    int dirty_content;
+    int dirty_statusbar;
+    int dirty_context_menu;
+
     char current_path[FM_PATH_MAX];
     char home_path[FM_PATH_MAX];
     
     fm_file_t files[FM_MAX_FILES];
     int file_count;
     int selected_count;
+    long long total_size;
+    long long selected_size;
     
     int scroll_offset;
     int highlighted_item;
@@ -174,6 +188,9 @@ typedef struct {
     int show_sidebar;
     int show_statusbar;
 
+    int viewer_pids[FM_VIEWER_PID_MAX];
+    int viewer_pid_count;
+
     /* Context menu (click destro sulla lista file) */
     int context_menu_active;
     int context_menu_x;
@@ -190,8 +207,7 @@ typedef struct {
     char search_query[256];
     int search_active;
     
-    long total_size;
-    long selected_size;
+    char status_message[128];
 } fm_state_t;
 
 /* ===== FUNCTION DECLARATIONS ===== */
@@ -208,8 +224,17 @@ void fm_draw_toolbar(void);
 void fm_draw_sidebar(void);
 void fm_draw_content(void);
 void fm_draw_statusbar(void);
-void fm_draw_full_ui(void);
+void fm_render_dirty_ui(void);
 void fm_draw_context_menu(int x, int y);
+int fm_open_with_kilo(fm_file_t *file);
+
+void fm_mark_dirty_all(void);
+void fm_mark_dirty_menu(void);
+void fm_mark_dirty_toolbar(void);
+void fm_mark_dirty_sidebar(void);
+void fm_mark_dirty_content(void);
+void fm_mark_dirty_statusbar(void);
+void fm_mark_dirty_context_menu(void);
 
 /* draw.c */
 void fm_draw_rect(int x, int y, int w, int h, uint32_t color);
@@ -245,6 +270,7 @@ void fm_clipboard_paste(void);
 int fm_get_file_size(const char *path);
 long fm_get_file_mtime(const char *path);
 int fm_classify_icon(const char *name);
+int fm_open_file(fm_file_t *file);
 
 /* state.c */
 extern fm_state_t fm_state;
@@ -256,6 +282,7 @@ void fm_state_sort_files(fm_sort_mode_t mode);
 void fm_state_filter_files(void);
 void fm_state_select_all(void);
 void fm_state_deselect_all(void);
+void fm_set_status_message(const char *msg);
 void fm_state_toggle_select(int index);
 void fm_state_update_sidebar(void);
 

@@ -26,8 +26,9 @@
  *
  * All window control goes through OS1_window_* — i.e. OBJ_TYPE_WINDOW
  * capabilities (ASTRA §6.7): the authority is the unforgeable handle, not
- * nxui's identity.  nxui is spawned by init at machine level (it is a window
- * manager), so it may acquire a control capability to any app's window.
+ * nxui's identity.  nxui is spawned by init at PLVL_ROOT (the /sys/bin
+ * per-path preset) — window-manager authority is enough to control any
+ * app's window, and ROOT keeps the dock killable/respawnable like the shell.
  *
  * Input uses the STANDARD window input API (input_poll_event / input_event_t),
  * exactly like every other windowed app — mouse buttons are the evdev codes
@@ -44,8 +45,8 @@
  *
  * NOTE(GFX-NXUI-02): tiles are blank rounded squares — icon/initial rendering
  * needs the compositor font exposed to userland buffers (future).
- * NOTE(GFX-NXUI-03): runs at PLVL_MACHINE; PLVL_ROOT is tighter once the
- * per-path VFS capability preset (/sys/bin) lands.
+ * NOTE(GFX-NXUI-03): resolved — the per-path VFS capability preset
+ * (/sys/bin → PLVL_ROOT) has shipped and is what governs nxui's level today.
  * NOTE(GFX-NXUI-04): rounded dock corners rely on the compositor honoring
  * per-pixel alpha on window_blit — already true for COL_DOCK_BG's 0xE8 alpha,
  * so the fully-transparent (0x00000000) corner pixels here ride the same

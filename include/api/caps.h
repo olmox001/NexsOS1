@@ -29,4 +29,16 @@
 #define CAP_ALL \
   (CAP_SPAWN | CAP_FS_WRITE | CAP_IPC_ANY | CAP_WINDOW | CAP_REG_WRITE)
 
+/* Spawn-mode flags (arg3 of SYS_SPAWN / SYS_SPAWN_CAPS) — the nxexec model
+ * (#193): a DETACHED child does NOT inherit the spawner as its controlling
+ * terminal (ctty_win stays -1).  For launchers (nxlauncher): a windowless
+ * child spawned detached fails closed (no output surface) instead of writing
+ * into the launcher's soon-minimized window as if it were a shell.  Windowed
+ * children are unaffected (own-window-first stdout resolution). */
+#define SPAWN_FLAG_DETACHED (1u << 0)
+/* Every bit outside SPAWN_FLAGS_ALL is REJECTED kernel-side with -EINVAL
+ * (fail closed): the spawn surface is the front door of process execution
+ * and must never silently accept unknown semantics (#193 hardening). */
+#define SPAWN_FLAGS_ALL SPAWN_FLAG_DETACHED
+
 #endif /* NEXS_API_CAPS_H */

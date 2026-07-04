@@ -13,19 +13,13 @@ typedef struct {
   float m[4][4];
 } mat4_t;
 
-struct graphics_context {
-  uint32_t *buffer;
-  uint32_t width;
-  uint32_t height;
-  uint32_t depth;
-  uint32_t pitch;
-  uint32_t bpp;
-  uint32_t stride;
-};
-
 void graphics_init(void);
-struct graphics_context *graphics_get_context(void);
-struct gl_surface *graphics_get_screen_surface(void);
+/* graphics_screen_surface: THE single accessor to the scanout (S-ALIGN F7) —
+ * fills the caller-owned 'out' via the gpu_ops.get_framebuffer contract.
+ * Returns 0, or -1 if no GPU/framebuffer.  (Replaces graphics_get_screen_
+ * surface()'s SMP-unsafe static return and the stale graphics_context cache.) */
+struct gl_surface;
+int graphics_screen_surface(struct gl_surface *out);
 void graphics_swap_buffers(void);
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,

@@ -4,24 +4,18 @@
  *
  * Role:
  *   Thin HAL bridge between the GPU device driver and the GL rasteriser.
- *   Initialises a single global graphics_context (g_ctx) from the primary
- *   GPU device obtained via gpu_get_primary(), then provides convenience
- *   wrappers that acquire a gl_surface each call and forward to gl_*.
+ *   graphics_screen_surface() is THE single accessor to the scanout buffer
+ *   (S-ALIGN F7): it goes through the gpu_ops.get_framebuffer contract — the
+ *   same method the compositor flush path consumes — so no caller knows which
+ *   provider implementation sits underneath (ASTRA §1 rule 1/2).  The old
+ *   graphics_get_screen_surface() read dev->framebuffer_virt directly (a
+ *   second, field-level path to the same memory) and returned a function-
+ *   static struct (GFX-GFX-01, SMP-unsafe) — both retired.
  *
  * Invariants:
- *   - g_ctx is populated by graphics_init() and never mutated afterwards.
- *   - All draw wrappers silently no-op if gpu_get_primary() returns NULL.
+ *   - All draw wrappers silently no-op if no GPU/framebuffer is present.
  *   - graphics_swap_buffers() is a memory-barrier-only stub; the subsystem
  *     operates in single-buffered mode (backbuffer lives in compositor.c).
- *
- * Known issues:
- *   GFX-GFX-01 (W0 DOC) graphics_get_screen_surface() returns a pointer to a
- *               function-static local.  The returned pointer is stable under a
- *               uniprocessor kernel but is NOT safe if two CPUs call this
- *               concurrently and both store the pointer across a preemption
- *               window — the struct is silently overwritten by the second
- *               caller.  Worth a comment at the call site; no functional bug
- *               under the current single-core model.
  */
 #include <drivers/gpu/gpu.h>
 #include <graphics/gl.h>
@@ -30,69 +24,45 @@
 #include <kernel/graphics.h>
 #include <kernel/printk.h>
 
-/* g_ctx: singleton graphics context populated by graphics_init().
- * Read-only after init; not protected by a lock because it is never mutated
- * post-initialisation under the single-core kernel model. */
-static struct graphics_context g_ctx = {0};
-
 /*
- * graphics_init - discover the primary GPU and populate g_ctx.
+ * graphics_init - verify the primary GPU is discoverable through the HAL.
  *
- * Calls gpu_get_primary() (HAL) to obtain the device descriptor.  On success,
- * copies width, height, and framebuffer_virt into g_ctx; logs failure and
- * leaves g_ctx zeroed otherwise.
- *
- * Locking: none — intended to be called once during kernel init before SMP
- *          or IRQs are active.
- * Side effects: writes g_ctx; logs via pr_info/pr_err.
+ * Pure discovery log: the scanout is always reached per-call through
+ * graphics_screen_surface(), never cached at init (a cached copy went stale
+ * on every runtime resolution change — the retired g_ctx bug).
  */
 void graphics_init(void) {
   struct gpu_device *dev = gpu_get_primary();
-  if (dev) {
-    g_ctx.width = dev->width;
-    g_ctx.height = dev->height;
-    g_ctx.buffer = (uint32_t *)dev->framebuffer_virt;
+  if (dev)
     pr_info("Graphics: Initialized via HAL (%dx%d)\n", dev->width, dev->height);
-  } else {
+  else
     pr_err("%s", "Graphics: No GPU device found!\n");
-  }
 }
 
 /*
- * graphics_get_context - return the global graphics context.
+ * graphics_screen_surface - fill 'out' with a gl_surface over the scanout.
  *
- * Returns a pointer to the static g_ctx populated by graphics_init().
- * Callers must not free or mutate the returned struct.
+ * THE single accessor to the screen buffer (S-ALIGN F7): resolves the primary
+ * GPU per call (picks up runtime mode changes) and reads the buffer through
+ * the gpu_ops.get_framebuffer contract — the same method the compositor's
+ * flush path uses.  The caller owns 'out' (no static: SMP- and fault-safe,
+ * closes GFX-GFX-01).  vgpu_get_framebuffer is lock-free and NULL-safe, so
+ * this path is safe from panic context (panic_screen below).
+ *
+ * Returns 0 on success, -1 if no GPU/framebuffer is present.
  */
-struct graphics_context *graphics_get_context(void) { return &g_ctx; }
-
-/*
- * Helper to get a GL surface wrapping the main screen
- */
-/*
- * graphics_get_screen_surface - build a gl_surface over the HAL framebuffer.
- *
- * Re-queries gpu_get_primary() on every call to pick up any device change.
- * Fills a function-static gl_surface and returns its address.
- *
- * NOTE(GFX-GFX-01): The returned pointer is to a function-static local.
- * Concurrent SMP callers would silently overwrite the same struct; safe only
- * under the current uniprocessor model.  Callers must not cache this pointer
- * across a preemption window.
- *
- * Returns: pointer to screen gl_surface, or NULL if no GPU device is present.
- */
-struct gl_surface *graphics_get_screen_surface(void) {
-  static struct gl_surface screen_surf;
+int graphics_screen_surface(struct gl_surface *out) {
   struct gpu_device *dev = gpu_get_primary();
-  if (!dev || !dev->framebuffer_virt)
-    return NULL;
-
-  screen_surf.width = dev->width;
-  screen_surf.height = dev->height;
-  screen_surf.stride = dev->width;
-  screen_surf.buffer = (uint32_t *)dev->framebuffer_virt;
-  return &screen_surf;
+  if (!out || !dev || !dev->ops || !dev->ops->get_framebuffer)
+    return -1;
+  uint32_t *fb = (uint32_t *)dev->ops->get_framebuffer(dev, NULL);
+  if (!fb)
+    return -1;
+  out->width = dev->width;
+  out->height = dev->height;
+  out->stride = dev->width;
+  out->buffer = fb;
+  return 0;
 }
 
 /*
@@ -104,8 +74,9 @@ struct gl_surface *graphics_get_screen_surface(void) {
  * Locking: none; wraps gl_draw_pixel which is not IRQ-safe.
  */
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (surf) {
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) == 0) {
+    struct gl_surface *surf = &screen;
     gl_draw_pixel(surf, (int)x, (int)y, color);
   }
 }
@@ -120,8 +91,9 @@ void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
  */
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                         uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (surf) {
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) == 0) {
+    struct gl_surface *surf = &screen;
     gl_draw_rect_fill(surf, (int)x, (int)y, (int)w, (int)h, color);
   }
 }
@@ -135,8 +107,9 @@ void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
  * Locking: none.
  */
 void graphics_clear(uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (surf) {
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) == 0) {
+    struct gl_surface *surf = &screen;
     gl_clear(surf, color);
   }
 }
@@ -169,8 +142,11 @@ void graphics_swap_buffers(void) {
  * / framebuffer is present.  Called from panic() after the other CPUs quiesce.
  */
 void panic_screen(const char *text) {
-  struct gl_surface *s = graphics_get_screen_surface();
-  if (!s || !s->buffer || s->width <= 0 || s->height <= 0)
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) != 0)
+    return;
+  struct gl_surface *s = &screen;
+  if (!s->buffer || s->width <= 0 || s->height <= 0)
     return;
 
   const uint32_t RED = 0xFFB91C1C, WHITE = 0xFFFCFCFD;
@@ -213,8 +189,9 @@ void panic_screen(const char *text) {
  */
 void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint,
                         uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (surf) {
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) == 0) {
+    struct gl_surface *surf = &screen;
     gl_draw_char(surf, (int)x, (int)y, codepoint, color);
   }
 }
@@ -230,8 +207,9 @@ void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint,
  */
 void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
                           uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (surf) {
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) == 0) {
+    struct gl_surface *surf = &screen;
     gl_draw_string(surf, (int)x, (int)y, str, color);
   }
 }

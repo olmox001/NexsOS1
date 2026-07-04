@@ -5,11 +5,12 @@
  * user/sys/bin/nxinfo.h
  * NEXS stratified system-information helper (ASTRA service layer).
  *
- * A REUSABLE helper layer that both user and system apps may link against to
- * read coarse system state: uptime, live process count, desktop resolution,
- * the caller's own pid/cwd, and the OS version banner.  Like nxproc.h it is
- * intentionally header-only (all routines `static inline`) so consumers pull it
- * in without any extra object or link-rule churn in the Makefile.
+ * Helper layer on the nxproc.h stratified pattern, reading coarse system
+ * state: uptime, live process count, desktop resolution, the caller's own
+ * pid/cwd, and the OS version banner.  Header-only (all routines `static
+ * inline`) so consumers pull it in without Makefile churn.  Today its only
+ * consumer is nxinfo.c — kept as a header for pattern consistency, not
+ * because reuse is already demonstrated (contrast nxproc.h's 3 consumers).
  *
  * SECURITY MODEL: this layer adds NO ambient permission checks of its own.
  * Every routine is a thin wrapper over an existing READ-ONLY OS1 syscall

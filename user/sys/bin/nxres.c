@@ -5,7 +5,7 @@
  * Usage:
  *   nxres                  print the current desktop resolution
  *   nxres <width> <height> set the desktop resolution at runtime
- *   nxres style <name>     classic | material | glass | minimal | retro
+ *   nxres style <name>     nexs | classic | material | glass | minimal | retro
  *   nxres theme <name>     light | dark
  *
  * Exercises the dynamic-display chain from userland: SYS_SET_DISPLAY_MODE ->

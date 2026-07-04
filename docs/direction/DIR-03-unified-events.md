@@ -62,3 +62,12 @@ timer, window and process readiness (~0% idle, no busy-poll) is still the target
 **Remaining**: per-window mouse delivery **beyond the focused window**; a system-driven
 **desktop-resize broadcast** to apps (tracked with DIR-07); and the unified blocking
 `OS1_event_wait` loop with the `EVENT_*` set above (notify_srv/nxshell as adopters).
+
+## Status (2026-07-02)
+
+**No change** — verified `grep -rn OS1_event_wait include/ user/ kernel/` returns
+nothing; the full blocking event loop is still unimplemented. `nxshell`/
+`nxntfy_srv` (renamed from `notify_srv`, see DIR-05/ASTRA §7.7) still run their
+own poll/sleep loops, not a shared event primitive. Per-window mouse delivery
+beyond focus and the desktop-resize broadcast remain open, matching DIR-07's
+status. This direction is unchanged since 2026-06-20.

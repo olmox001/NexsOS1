@@ -156,3 +156,15 @@ jointly with DIR-03. Plus the rendering follow-ups already listed below.
 - Font alpha/scaling (#121.4) and stb_image PNG (#121.5).
 - Modern terminal protocol on top of `term.c` (#123 problem 2).
 - PCI device-config event reads for amd64 host-driven auto-resize.
+
+## Status (2026-07-02)
+
+**No change to this doc's scope.** The system-driven desktop-resize broadcast
+(this doc's "Remaining" item, shared with DIR-03) is still not implemented —
+resize delivery stays per-window on `SYS_WINDOW_RESIZE`, no global fan-out
+exists. The 2026-06-22→30 landings (registry/object model, capability gates,
+kill model, notification rework, SMP fixes — see `docs/ASTRA.md` §7.6–§7.9)
+were orthogonal to the display/surface/resize model this doc covers and did
+not touch it. `compositor_update_mouse` did gain a lock fix (commit `492e5ec`,
+see DIR-02 status) but that is a correctness fix to existing mouse-delivery
+code, not a surface/resize change in this doc's scope.
