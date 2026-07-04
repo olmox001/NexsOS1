@@ -35,3 +35,32 @@ depend on the (possibly faulted) scheduler or compositor service.
 * A defined set of kernel faults enters recovery mode instead of halting.
 * Fatal faults paint an on-screen panel via a HAL framebuffer primitive, in
   addition to the UART trace.
+
+## Status (2026-07-02)
+
+**Item 3 (on-screen panic) DONE; items 1-2 (DWARF file:line, recovery mode) NOT
+STARTED.** The F0.0.4.2 stabilization detour (2026-06-27→28) shipped the
+on-screen panic half of this direction plus a related crash→notification
+bridge that this doc did not originally scope but belongs here:
+
+* **On-screen red panic, UART-independent**: `panic_screen()`
+  (`kernel/graphics/graphics.c:171-179`, `RED = 0xFFB91C1C`) blits directly to
+  the primary GPU framebuffer, explicitly bypassing the compositor so a faulted
+  compositor/scheduler can't block the panic paint — exactly the "minimal HAL
+  framebuffer blit that does not depend on the (possibly faulted) scheduler or
+  compositor service" this doc's §3 called for. Called from both the
+  fault-context and normal panic branches in `kernel/lib/printk.c:279,304`.
+* **Watchdog reboot** (not originally scoped by this doc, but the natural
+  completion of "on fatal fault, do something visible and bounded"): reboots
+  ~10s after a panic (`kernel/lib/printk.c:243-247`).
+* **Userland crash → red notification**: a user-mode fault (not a kernel
+  panic) now surfaces as a severity-flagged notification via
+  `fault_notify_user()` (`kernel/core/fault.c:35-49`), distinct from the
+  kernel-panic path above. This extends the existing "contain and continue"
+  stance (§2) with a **visible** signal, not just silent process termination.
+* **Still not started**: DWARF `.debug_line` resolution for `file:line`
+  backtrace frames (verified: no `debug_line`/`addr2line` logic in
+  `kernel/lib/backtrace.c`/`kernel/lib/fault_print.c`); a kernel recovery mode
+  that quiesces/resets a subsystem instead of `panic()` (verified: no
+  `recovery_mode`/`kernel_recover` symbol anywhere in `kernel/`). Both remain
+  exactly as scoped in §1/§2 above.

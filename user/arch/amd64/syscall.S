@@ -73,12 +73,14 @@ _sys_exit:
 .global _sys_spawn
 _sys_spawn:
     movq $SYS_SPAWN, %rax
+    movq %rcx, %r10   /* arg3: spawn-mode flags (SPAWN_FLAG_*, #193) */
     syscall
     ret
 
 .global _sys_spawn_caps
 _sys_spawn_caps:
     movq $SYS_SPAWN_CAPS, %rax
+    movq %rcx, %r10   /* arg3: spawn-mode flags (SPAWN_FLAG_*, #193) */
     syscall
     ret
 

@@ -196,10 +196,8 @@ struct mem_region *arch_platform_get_mem_regions(size_t *count) {
     if (count) *count = arch_region_count;
     return arch_mem_regions;
 }
-extern volatile uint32_t cpu_boot_ack;
 extern void *arch_secondary_stacks[MAX_CPUS];
 extern void kernel_secondary_main(void);
-extern void smp_create_idle_task(uint32_t cpu_id);
 
 /*
  * arch_smp_init - wake and synchronise all secondary CPUs.
@@ -211,32 +209,18 @@ extern void smp_create_idle_task(uint32_t cpu_id);
  *      arch_vmm_set_secondary_pgd().  Secondaries read this in secondary_startup
  *      (start.S:159-161) before enabling their MMU.  The cache clean in
  *      arch_vmm_set_secondary_pgd ensures secondaries see the correct value.
- *   2. Query FDT for CPU count (fdt_count_cpus).  Falls back to MAX_CPUS if
+ *   2. Query FDT for CPU count (fdt_count_cpus).  Falls back to a small cap if
  *      FDT reports 0 (e.g., no FDT or FDT without cpu nodes).
  *   3. Pre-allocate kernel stacks for all CPUs via arch_smp_setup_stacks().
  *      This must be done before any CPU is woken to avoid races on the stack
  *      array.
- *   4. For each secondary CPU i (1 .. cpu_count-1):
- *      a. Obtain or allocate the kernel stack top for CPU i.
- *      b. Call arch_cpu_wake_secondary(i, kernel_secondary_main, stack):
- *         Issues PSCI CPU_ON HVC (start.S:arch_cpu_wake_secondary) to ask the
- *         firmware to start CPU i at secondary_startup with stack as context_id.
- *      c. If wake succeeds (ret==0): create an idle task for the new CPU
- *         (smp_create_idle_task), then spin-wait on cpu_boot_ack == i with a
- *         10M-iteration timeout.  cpu_boot_ack is set by kernel_secondary_main
- *         after the secondary CPU completes its arch_cpu_init().
- *      d. On timeout or wake failure: free any dynamically allocated stack and
- *         stop (break) — do not attempt further CPUs.
- *
- * cpu_boot_ack is a volatile uint32_t written by the secondary CPU; the primary
- * CPU spins with arch_nop() (which typically maps to a WFE-like instruction or
- * NOP) to yield the pipeline between checks.
- *
- * NOTE: The spin-wait does not use a DSB before reading cpu_boot_ack; on weakly-
- * ordered hardware the secondary CPU's write to cpu_boot_ack may not be visible
- * without a load-acquire or explicit barrier on the primary side.  On QEMU this
- * works in practice because the HVC and the memory writes are serialised through
- * the emulator. [static, not verified on real hardware]
+ *   4. For each secondary CPU i (1 .. cpu_count-1): obtain/allocate its stack
+ *      top, then hand off to smp_bringup_secondary() (kernel/core/smp.c) —
+ *      the shared arch-neutral primitive that owns the idle-task-first
+ *      invariant (#169/#170), the PSCI wake via arch_cpu_wake_secondary, and
+ *      the acquire/release ack handshake with a wall-time timeout.  Only the
+ *      per-arch failure POLICY lives here (PSCI failure = remaining CPUs
+ *      absent -> break; ack timeout = skip this CPU, free its dynamic stack).
  */
 void arch_smp_init(void) {
     /* Publish the KERNEL PGD (TTBR1 root) before waking any secondary CPU.
@@ -286,34 +270,22 @@ void arch_smp_init(void) {
             allocated = true;
         }
 
-        /* SMP-IDLE-RACE (#169/#170): publish the idle task BEFORE waking the AP.
-         * The AP enables IRQs in kernel_secondary_main and is preempted into
-         * schedule() — which picks cpu_data[i].idle_task — possibly before we'd
-         * otherwise create it (it was created only after the wake here), leaving
-         * a NULL idle_task -> context switch into NULL. Create it first. */
-        smp_create_idle_task(i);
-
-        /* Issue PSCI CPU_ON for CPU i.  The entry point is secondary_startup
-         * (start.S); stack is passed as context_id (x0 on CPU startup). */
-        int ret = arch_cpu_wake_secondary(i, (void (*)(void))kernel_secondary_main, stack);
+        /* Shared bring-up primitive (S-ALIGN F8, B6 slice): idle-task-first
+         * (#169/#170) + PSCI CPU_ON + bounded acquire-wait for the ack all
+         * live in kernel/core/smp.c.  Only the failure POLICY stays here:
+         * a PSCI failure means the remaining CPUs are absent too (break),
+         * an ack timeout skips just this CPU. */
+        int ret = smp_bringup_secondary(
+            i, (void (*)(void))kernel_secondary_main, stack);
 
         if (ret == 0) {
-            /* Spin-wait for secondary to write cpu_boot_ack = i.
-             * Timeout = 10M nops (~tens of milliseconds on a GHz CPU). */
-            volatile uint32_t timeout = 10000000;
-            while (cpu_boot_ack != i && timeout > 0) {
-                timeout--;
-                arch_nop();
-            }
-            if (timeout == 0) {
-                pr_warn("AArch64: CPU %d failed to acknowledge boot (timeout)\n", i);
-                if (allocated) {
-                    /* Reclaim the dynamic stack; ptr = top - 131072. */
-                    pmm_free_pages((void *)((uintptr_t)stack - 131072), 32);
-                    arch_secondary_stacks[i] = 0;
-                }
-            } else {
-                pr_info("AArch64: CPU %d online\n", i);
+            pr_info("AArch64: CPU %d online\n", i);
+        } else if (ret == -2) {
+            pr_warn("AArch64: CPU %d failed to acknowledge boot (timeout)\n", i);
+            if (allocated) {
+                /* Reclaim the dynamic stack; ptr = top - 131072. */
+                pmm_free_pages((void *)((uintptr_t)stack - 131072), 32);
+                arch_secondary_stacks[i] = 0;
             }
         } else {
             /* PSCI CPU_ON failed (e.g., CPU not present or firmware error). */

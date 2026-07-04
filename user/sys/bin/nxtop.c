@@ -3,7 +3,7 @@
  * Realtime Process List Utility - ASTRA stratified service edition.
  *
  * A thin windowed front-end over the reusable process helper nxproc.h.  It
- * opens its window and refreshes at ~1Hz, but the previous "spinbomb" behaviour
+ * opens its window and refreshes every 3 s, but the previous "spinbomb" behaviour
  * (rewriting the FULL window every tick even when nothing changed) is gone:
  * nxproc_render_if_changed() computes a signature of the visible fields and
  * skips the window write entirely when the table is unchanged.  Between checks
@@ -12,10 +12,9 @@
  *
  * Naming: renamed from `top` to `nxtop` to follow the NEXS service naming
  * convention (every /sys/bin ELF is prefixed `nx*`).  The on-disk ELF is
- * `nxtop.elf`; the shell dispatches `top <pid>` by trying the explicit name
- * first, then `nxtop` via the spawn_search_args() PATH probe (which already
- * looks up both /bin and /sys/bin).  This matches how `ps` reaches nxproc
- * after the proce.c -> nxproc ELF migration.
+ * `nxtop.elf`; the shell has no dedicated `top` builtin — typing `nxtop`
+ * reaches it through the generic unknown-command fallback (spawn_search_args'
+ * /bin → /sys/bin probe).  main() takes no argv: there are no options.
  */
 #include "nxproc.h"
 #include <os1.h>
@@ -34,9 +33,8 @@ int main(void) {
      * helper; this only rewrites the window when something visible changed. */
     nxproc_render_if_changed(my_win, &sig);
 
-    /* REFRESH RATE (1Hz): block for one second via the real kernel timer
-     * instead of busy-spinning yield(), so nxtop no longer burns a core idling.
-     */
+    /* REFRESH RATE (~0.33 Hz): block 3 s on the real kernel timer instead
+     * of busy-spinning yield(), so nxtop no longer burns a core idling. */
     OS1_sleep(3000);
   }
 

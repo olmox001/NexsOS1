@@ -185,7 +185,8 @@ static uint8_t level_for_path(const char *path) {
  * across blocking virtio/ext4 disk I/O.  Pre-existing; kept verbatim so the
  * new capability path does not widen the critical section. */
 static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
-                           int use_caps, int argc, char *const kargv[]) {
+                           int use_caps, int argc, char *const kargv[],
+                           uint32_t flags) {
   /* ASTRA per-path preset (F1): plain spawn() takes the path's level; spawn_caps
    * may only DROP privilege below it (a request more privileged than the path is
    * capped to the path).  The creator-clamp in process_create_caps then forbids
@@ -200,6 +201,12 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
                : process_create(path, PROC_PRIO_USER, level);
   long ret;
   if (p) {
+    /* nxexec model (#193): a DETACHED spawn declines being the child's
+     * controlling terminal — process_create inherited the spawner's window
+     * as ctty unconditionally; the flag opts out (launcher-style spawns).
+     * Safe here: the child is not yet enqueued/visible. */
+    if (flags & SPAWN_FLAG_DETACHED)
+      p->ctty_win = -1;
     if (process_load_elf_args(p, path, argc, kargv) == 0) {
       /* SCHED-UAF Pitfall B: commit the child atomically against a concurrent
        * kill.  Capture the pid first — process_finalize_spawn may RELEASE p (if
@@ -564,6 +571,12 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
+    /* #193 hardening: unknown spawn-flag bits are rejected, not ignored —
+     * the spawn surface must fail closed on semantics it does not know. */
+    if (((uint32_t)arg3 & ~(uint32_t)SPAWN_FLAGS_ALL) != 0) {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
@@ -607,7 +620,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
         break;
       }
     }
-    long sret = dispatch_spawn(k_path, PLVL_USER, 0, 0, argc, kargv);
+    /* arg3 = spawn-mode flags (SPAWN_FLAG_*, caps.h) — nxexec model #193. */
+    long sret =
+        dispatch_spawn(k_path, PLVL_USER, 0, 0, argc, kargv, (uint32_t)arg3);
     if (argv_store)
       kfree(argv_store);
     pt_regs_set_return(frame, sret);
@@ -622,6 +637,11 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
+    /* #193 hardening: same strict flag validation as SYS_SPAWN. */
+    if (((uint32_t)arg3 & ~(uint32_t)SPAWN_FLAGS_ALL) != 0) {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
@@ -630,7 +650,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     pt_regs_set_return(
         frame, dispatch_spawn(k_path, (uint8_t)arg1, (uint32_t)arg2, 1, 0,
-                              NULL));
+                              NULL, (uint32_t)arg3));
   } break;
   case SYS_KILL:
     /* ABI-04: a process may kill itself or its descendants (orphans are
@@ -743,23 +763,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
-    /* USR-SEC-03 #79: any write needs CAP_FS_WRITE. */
-    if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
-      pt_regs_set_return(frame, -EPERM);
-      break;
-    }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
-    /* EXT4-02 (ABI-04 family): the binary trees are write-protected for
-     * non-machine processes — a user process must not be able to overwrite
-     * anything under /bin or /sys (services, init chain).  Config/data
-     * files (/etc, user files) stay writable. */
-    if (!proc_is_machine(current_process) &&
-        (strncmp(resolved_path, "/sys/", 5) == 0 ||
-         strncmp(resolved_path, "/bin/", 5) == 0)) {
-      pr_warn("FILE_WRITE: PID %d denied write to protected path '%s'\n",
-              current_process->pid, resolved_path);
-      pt_regs_set_return(frame, -EACCES);
+    /* Single write-authority seam (S-ALIGN F6): CAP_FS_WRITE + /sys,/bin ACL
+     * live in vfs_write_allowed(), shared with SYS_UNLINK and open-for-write. */
+    long wperm = vfs_write_allowed(resolved_path);
+    if (wperm != 0) {
+      pt_regs_set_return(frame, wperm);
       break;
     }
     size_t size = (size_t)arg2;
@@ -901,18 +911,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     char resolved_path[128];
     vfs_resolve_path(k_path, resolved_path, 128);
-    /* unlink is a write-class modification: same capability gate as
-     * SYS_FILE_WRITE / open(write) — CAP_FS_WRITE plus the /sys,/bin read-only
-     * ACL for non-machine processes.  Closes the asymmetry (USR-SEC) where any
-     * process could unlink a path it was not allowed to write. */
-    if (!proc_has_cap(current_process, CAP_FS_WRITE)) {
-      pt_regs_set_return(frame, -EPERM);
-      break;
-    }
-    if (!proc_is_machine(current_process) &&
-        (strncmp(resolved_path, "/sys/", 5) == 0 ||
-         strncmp(resolved_path, "/bin/", 5) == 0)) {
-      pt_regs_set_return(frame, -EACCES);
+    /* unlink is a write-class modification: same single authority seam as
+     * SYS_FILE_WRITE / open(write) (vfs_write_allowed, S-ALIGN F6).  Closes
+     * the asymmetry (USR-SEC) where any process could unlink a path it was
+     * not allowed to write. */
+    long uperm = vfs_write_allowed(resolved_path);
+    if (uperm != 0) {
+      pt_regs_set_return(frame, uperm);
       break;
     }
     pt_regs_set_return(frame, vfs_unlink(resolved_path));

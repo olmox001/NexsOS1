@@ -240,9 +240,10 @@ static void project_to_screen(vec4_t v, int *sx, int *sy, int32_t *sz,
  */
 void render3d_triangle(vec4_t v0, vec4_t v1, vec4_t v2, mat4_t mvp,
                        uint32_t color, int screen_w, int screen_h) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (!surf)
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) != 0)
     return;
+  struct gl_surface *surf = &screen;
 
   /* Transform vertices */
   vec4_t t0 = mat4_mul_vec(mvp, v0);

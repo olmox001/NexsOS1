@@ -53,7 +53,7 @@
 
 /* --- Display / framebuffer (GFX-DYN-01) --- */
 #define SYS_DISPLAY_INFO       270  /* current desktop size, packed (w<<16)|h */
-#define SYS_SET_DISPLAY_MODE   271  /* set resolution (w,h); desktop adapts; CAP_MACHINE */
+#define SYS_SET_DISPLAY_MODE   271  /* set resolution (w,h); desktop adapts; CAP_WINDOW */
 #define SYS_DISPLAY_POLL       273  /* apply a pending host display-change; returns 1 if resized */
 #define SYS_SET_STYLE          274  /* compositor look: arg0=style_id, arg1=theme_id (-1 = keep) */
 #define SYS_SET_ZOOM           275  /* desktop zoom percent (HiDPI/zoom); arg0=percent [25..400] */

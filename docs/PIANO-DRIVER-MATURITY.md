@@ -109,7 +109,7 @@
   *spinge* il focus a un setter sched sotto lock; `keyboard_focus_pid` reso safe; niente
   chiamate dirette `process_terminate`/`kernel_ipc_send` dal compositor.
 - **Fase 4 — Pulizia userland/API morto/legacy** *(chiedere per-file)*: app test/demo,
-  backend doom morti, servizi rotti (fontman #82, regedit #81), stub lib (USR-LIB-04).
+  backend doom morti, servizi rotti (nxfont #82, regedit #81), stub lib (USR-LIB-04).
   Escludere `*.old` e `busybox/`.
 - **Fase 5 — Chiusura B3 reale**: race SMP (GFX-COMP-02, #84 deadlock AB-BA), quote
   (SCHED-DOS-01 #122, per-window/IPC), sicurezza (GFX-FONT-01 #100, LIB-SSP-01 #71), verifica

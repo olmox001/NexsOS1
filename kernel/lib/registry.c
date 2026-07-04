@@ -386,6 +386,29 @@ int registry_enum(const char *prefix, char *buf, size_t size) {
 }
 
 /* ------------------------------------------------------------------------- *
+ * Single authority seam for BOTH registry entry points (S-ALIGN F5).
+ * The registry is reachable two ways — the sys_registry op-switch (syscall 250)
+ * and the /reg VFS mount below — and both mutate the same tree.  Every gate
+ * decision and caller-identity derivation lives HERE, once, so the two entry
+ * points can never drift apart on policy (they used to carry four independent
+ * copies of these checks).
+ * ------------------------------------------------------------------------- */
+
+/* registry_write_allowed - mutating the registry needs CAP_REG_WRITE.  A NULL
+ * current_process (in-kernel caller) passes: proc_has_cap(NULL) is true by
+ * definition (kernel = machine identity). */
+bool registry_write_allowed(void) {
+  return proc_has_cap(current_process, CAP_REG_WRITE);
+}
+
+/* registry_caller_owner - first-writer-wins identity: machine/kernel callers
+ * write as owner 0 (full rights, e.g. init seeding defaults), everyone else as
+ * their own PID. */
+int registry_caller_owner(void) {
+  return proc_is_machine(current_process) ? 0 : (int)current_process->pid;
+}
+
+/* ------------------------------------------------------------------------- *
  * regfs — the registry mounted as a "/reg" file namespace (Phase 4.1 A1b).
  * A synthetic VFS provider (no partition) over the registry tree: a key path
  * "/reg/system/hostname" is the registry key "system.hostname".  This realises
@@ -465,10 +488,9 @@ static int regfs_read(struct vfs_node *node, uint64_t offset, void *buf,
 static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
                        const void *buf, uint32_t size) {
   (void)mnt;
-  /* Writing the registry needs CAP_REG_WRITE (uniform with sys_registry), in
-   * addition to the CAP_FS_WRITE the SYS_FILE_WRITE path already checked — the
-   * two caps layer (VFS-write authority + registry-write authority). */
-  if (current_process && !proc_has_cap(current_process, CAP_REG_WRITE))
+  /* CAP_REG_WRITE (shared seam) layers ON TOP of the CAP_FS_WRITE the
+   * SYS_FILE_WRITE path already checked: VFS-write + registry-write authority. */
+  if (!registry_write_allowed())
     return -EPERM;
   char key[MAX_KEY_LEN];
   regfs_path_to_key(path, key, sizeof(key));
@@ -492,9 +514,7 @@ static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
   if (off + cnt >= curlen)
     val[off + cnt] = '\0';
 
-  int owner =
-      (current_process && !proc_is_machine(current_process)) ? (int)current_process->pid : 0;
-  return registry_set(key, val, owner) == 0 ? (int)cnt : -1;
+  return registry_set(key, val, registry_caller_owner()) == 0 ? (int)cnt : -1;
 }
 
 /* regfs_list - space-separated immediate child names of the node at 'path'
@@ -530,15 +550,13 @@ static int regfs_list(struct vfs_mount *mnt, const char *path, char *buf,
 /* regfs_unlink - remove the registry key at 'path' (rm /reg/...). */
 static int regfs_unlink(struct vfs_mount *mnt, const char *path) {
   (void)mnt;
-  if (current_process && !proc_has_cap(current_process, CAP_REG_WRITE))
+  if (!registry_write_allowed())
     return -EPERM;
   char key[MAX_KEY_LEN];
   regfs_path_to_key(path, key, sizeof(key));
   if (!key[0])
     return -1;
-  int owner =
-      (current_process && !proc_is_machine(current_process)) ? (int)current_process->pid : 0;
-  return registry_del(key, owner);
+  return registry_del(key, registry_caller_owner());
 }
 
 static const struct fs_ops regfs_ops = {
@@ -613,18 +631,14 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
   if (op == REG_OP_WRITE) {
     /* USR-SEC-03 #79: writing the registry needs CAP_REG_WRITE (reads are
      * open to everyone). */
-    if (!proc_has_cap(current_process, CAP_REG_WRITE))
+    if (!registry_write_allowed())
       return -EPERM;
     /* 2. Copy Value from User Space securely (stops at null!) */
     if (vmm_copy_string_from_user(k_val, value, MAX_VAL_LEN) != 0) {
       pr_err("%s", "sys_registry: Invalid value pointer\n");
       return -EFAULT;
     }
-    /* Caller identity for the ownership check (LIB-REG-02/USR-SEC-01):
-     * machine-level processes write as owner 0 (full rights, e.g. init
-     * seeding defaults); everyone else writes as their own PID. */
-    int owner = !proc_is_machine(current_process) ? (int)current_process->pid : 0;
-    return registry_set(k_key, k_val, owner);
+    return registry_set(k_key, k_val, registry_caller_owner());
   } else if (op == REG_OP_READ) {
     if (registry_get(k_key, k_val, sizeof(k_val)) == 0) {
       /* 3. Copy Result to User Space securely */
@@ -642,10 +656,9 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
   } else if (op == REG_OP_DEL) {
     /* Deleting needs CAP_REG_WRITE; first-writer-wins owner is enforced in
      * registry_del (machine processes delete as owner 0 = full rights). */
-    if (!proc_has_cap(current_process, CAP_REG_WRITE))
+    if (!registry_write_allowed())
       return -EPERM;
-    int owner = !proc_is_machine(current_process) ? (int)current_process->pid : 0;
-    return registry_del(k_key, owner);
+    return registry_del(k_key, registry_caller_owner());
   }
 
   return -EINVAL; /* Invalid op */

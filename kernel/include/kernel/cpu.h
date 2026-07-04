@@ -82,6 +82,13 @@ extern struct cpu_info cpu_data[MAX_CPUS];
 struct cpu_info *get_cpu_info(void);
 void smp_create_idle_task(uint32_t cpu_id);
 
+/* Arch-neutral secondary bring-up (kernel/core/smp.c, B6 slice — S-ALIGN F8).
+ * smp_bringup_secondary: idle-task-first (#169/#170) + arch wake + bounded
+ * acquire-wait for the ack.  0 = online, -1 = wake failed, -2 = ack timeout.
+ * smp_ack_boot: release-store ack, called by the secondary once initialized. */
+int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top);
+void smp_ack_boot(uint32_t cpu);
+
 /* These are now provided by arch.h HAL macros/functions */
 #include <kernel/hal_unified.h>
 #include <kernel/arch.h>

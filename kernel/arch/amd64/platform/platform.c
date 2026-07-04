@@ -515,9 +515,7 @@ static uint32_t amd64_count_cpus(void) {
   return cpu_count;
 }
 
-extern volatile uint32_t cpu_boot_ack;
 extern void secondary_cpu_entry(void);
-extern void smp_create_idle_task(uint32_t cpu_id);
 
 /*
  * arch_smp_init - bring application processors online one at a time.
@@ -525,15 +523,14 @@ extern void smp_create_idle_task(uint32_t cpu_id);
  * Called by the BSP after all per-CPU BSP init (GDT/IDT/LAPIC) is complete.
  * Iterates logical CPU IDs 1..(cpu_count-1) (skipping the BSP ID).
  *
- * For each AP:
- *   1. Reset cpu_boot_ack to 0.
- *   2. Compute the AP's kernel stack slice (arch_get_kernel_stack returns
- *      the bottom; stack_top = bottom + 131072 for 128 KB per CPU).
- *   3. Call arch_cpu_wake_secondary (INIT-SIPI sequence).
- *   4. Spin-wait up to 10 seconds (10000 × 1ms udelay) for cpu_boot_ack == i.
- *      The AP sets cpu_boot_ack in its secondary_cpu_entry after arch_cpu_init.
- *   5. On ACK: call smp_create_idle_task(i) to set up the idle thread.
- *      On timeout: warn and skip (AP is absent or malfunctioning).
+ * For each AP: compute its kernel stack slice (arch_get_kernel_stack returns
+ * the bottom; stack_top = bottom + 131072 for 128 KB per CPU), then hand off
+ * to smp_bringup_secondary() (kernel/core/smp.c) — the shared arch-neutral
+ * primitive owning the idle-task-first invariant (#169/#170), the INIT-SIPI
+ * wake via arch_cpu_wake_secondary, and the acquire/release ack handshake
+ * with a ~10 s wall-time timeout.  A timeout just skips the CPU (absent AP
+ * or very slow hypervisor — its idle task already exists, so a late-arriving
+ * AP still schedules safely).
  *
  * NOTE(ARCH-01): cpu_count from amd64_count_cpus may over-count; APs that
  * don't exist simply time out and emit a warning.
@@ -555,40 +552,22 @@ void arch_smp_init(void) {
     if (i == bsp_id)
       continue;
 
-    cpu_boot_ack = 0;
-
     /* Stack slice: 128KB per CPU (131072 bytes).  arch_get_kernel_stack returns
      * the bottom of the slice; add 131072 for the top (stack descends). */
     void *stack_bottom = arch_get_kernel_stack(i);
     void *stack_top = (void *)((uintptr_t)stack_bottom + 131072);
 
-    /* SMP-IDLE-RACE (#169/#170): publish this CPU's idle task BEFORE the SIPI.
-     * The AP enables its timer + IRQs in kernel_secondary_main and is then
-     * preempted into schedule(), which picks cpu_data[i].idle_task when nothing
-     * else runs.  Creating it only after the ACK left a huge window — and under
-     * a slow hypervisor (UTM) the BSP timed out and never created it at all, so
-     * the AP ran schedule() with idle_task == NULL -> context switch into NULL
-     * -> the #PF/#GP at tiny addresses + corrupted frames seen on UTM. */
-    smp_create_idle_task(i);
-
-    /* Send INIT-SIPI to AP; NOTE(BOOT-03): single SIPI only */
-    if (arch_cpu_wake_secondary(i, secondary_cpu_entry, stack_top) == 0) {
-
-      /* Wait for AP ACK with ~10 second timeout (10000 × 1ms).
-       * AP sets cpu_boot_ack = its LAPIC ID in secondary_cpu_entry. */
-      int timeout = 10000;
-      while (cpu_boot_ack != i && timeout > 0) {
-        udelay(1000);
-        timeout--;
-      }
-
-      if (cpu_boot_ack == i) {
-        pr_info("AMD64: CPU %u is online\n", i);
-      } else {
-        /* AP did not respond in time (absent, or a very slow hypervisor).  Its
-         * idle task already exists, so if it comes up late it schedules safely. */
-        pr_warn("AMD64: CPU %u failed to ACK boot\n", i);
-      }
+    /* Shared bring-up primitive (S-ALIGN F8, B6 slice): idle-task-first
+     * (#169/#170), the INIT-SIPI wake and the ack handshake all live in
+     * kernel/core/smp.c — the ordering fix is reasoned about ONCE, not once
+     * per arch.  NOTE(BOOT-03): single SIPI only. */
+    if (smp_bringup_secondary(i, secondary_cpu_entry, stack_top) == 0) {
+      pr_info("AMD64: CPU %u is online\n", i);
+    } else {
+      /* Wake failed, or the AP did not respond in time (absent, or a very
+       * slow hypervisor).  Its idle task already exists, so if it comes up
+       * late it schedules safely. */
+      pr_warn("AMD64: CPU %u failed to ACK boot\n", i);
     }
   }
 }

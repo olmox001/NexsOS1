@@ -14,8 +14,9 @@
 void graphics_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
                         uint32_t color) {
   /* Use GL implementation which handles clipping */
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (surf) {
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) == 0) {
+    struct gl_surface *surf = &screen;
     gl_draw_line(surf, (int)x0, (int)y0, (int)x1, (int)y1, color);
   }
 }
@@ -24,8 +25,10 @@ void graphics_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
  * Draw Circle (Midpoint Algorithm)
  */
 void graphics_draw_circle(int cx, int cy, int r, uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (!surf) return;
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) != 0)
+    return;
+  struct gl_surface *surf = &screen;
 
   int x = r;
   int y = 0;
@@ -54,8 +57,10 @@ void graphics_draw_circle(int cx, int cy, int r, uint32_t color) {
  * Fill Circle
  */
 void graphics_fill_circle(int cx, int cy, int r, uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (!surf) return;
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) != 0)
+    return;
+  struct gl_surface *surf = &screen;
 
   int x = r;
   int y = 0;
@@ -105,8 +110,10 @@ static inline void swap_int(int *a, int *b) {
  */
 void graphics_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
                             uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (!surf) return;
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) != 0)
+    return;
+  struct gl_surface *surf = &screen;
 
   /* Sort by y coordinate */
   if (y0 > y1) {
@@ -153,8 +160,10 @@ void graphics_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
  */
 void graphics_draw_rounded_rect(int x, int y, int w, int h, int r,
                                 uint32_t color) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (!surf) return;
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) != 0)
+    return;
+  struct gl_surface *surf = &screen;
 
   /* Top and bottom lines */
   graphics_draw_line(x + r, y, x + w - r, y, color);
@@ -211,8 +220,10 @@ uint32_t graphics_blend(uint32_t fg, uint32_t bg) {
  */
 void graphics_draw_gradient_h(int x, int y, int w, int h, uint32_t color_left,
                               uint32_t color_right) {
-  struct gl_surface *surf = graphics_get_screen_surface();
-  if (!surf) return;
+  struct gl_surface screen;
+  if (graphics_screen_surface(&screen) != 0)
+    return;
+  struct gl_surface *surf = &screen;
 
   for (int col = 0; col < w; col++) {
     uint32_t t = (col * 255) / (w > 1 ? w - 1 : 1);

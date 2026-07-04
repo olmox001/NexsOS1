@@ -258,6 +258,7 @@ int main(void) {
      * are alive. 50 ms respawn latency is imperceptible. */
     OS1_sleep(50);
   }
+  OS1_registry_set("app.assoc.image", "/sys/bin/nximage");
 
   return 0;
 }

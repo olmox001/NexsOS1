@@ -94,7 +94,8 @@ int main(void) {
    * the corpse's pid and every notify_post() lost its messages.  Init owns
    * the key (it knows the live pid on every spawn + respawn), and re-publishes
    * it after each respawn so any registry hijack between respawns is undone.
-   * Discovery of this endpoint from a caller: OS1_registry_get("srv.notify_pid").
+   * Discovery of this endpoint from a caller:
+   * OS1_registry_get("srv.notify_pid").
    */
 
   struct ipc_message msg;

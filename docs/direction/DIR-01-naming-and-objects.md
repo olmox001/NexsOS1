@@ -163,3 +163,26 @@ the two families whose objects already existed:
 - **IPC → `OBJ_TYPE_PORT`** — Mach-style first-class ports; the type is reserved but
   not implemented. A real new kernel subsystem (closer to Phase C).
 - **memory → `OS1low_vm_map/_unmap/_protect`** — depends on the B2 VM model maturing.
+
+## Status (2026-07-02)
+
+**Object model deepened, call-surface rename still pending.** The F4.1 batch
+(2026-06-22→26) generalized the object layer further, but did **not** touch the
+mass call-surface rename this doc's "next task" describes — that work is still
+open exactly as scoped above. What landed instead:
+
+* **fd table fully absorbed into the handle table** (ASTRA §7.1 update,
+  F4.1 Stage 4/4a): `kernel/fd.h` no longer exists; `struct process`
+  (`kernel/include/kernel/sched.h:166`) has a single `handles` field. A POSIX fd
+  IS a handle now, not merely handle-shaped. `OBJ_CTL_STAT`
+  (`include/api/object.h:64`) gives a FILE handle its size.
+* **Registry became a namespace tree mounted at `/reg`**, and `/proc` joined it
+  as a second typed-object namespace resolving to `OBJ_TYPE_PROCESS`
+  (`kernel/fs/procfs.c`) — see ASTRA §7.6. This is the "everything is a
+  namespace" half of §6.3 landing concretely, ahead of the call-surface rename.
+* **Verified still exactly as scoped above, unchanged since 2026-06-20**:
+  `OS1_fs_write` still takes the ambient path (`user/sys/lib/lib.c:370-375`,
+  same `NOTE(M4.5-FS-WRITE)` blocker); `OBJ_TYPE_PORT` still doesn't exist;
+  `OS1low_vm_map/_unmap/_protect` still don't exist. The mass `OS1_`-prefix
+  rename of the remaining legacy verbs (DIR-01/#164 call-surface refactor) has
+  **not** been started.

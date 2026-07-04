@@ -43,7 +43,9 @@
  * resolution change.
  */
 #include <font_lib.h>
+#include <image.h>
 #include <input.h>
+#include "nxexec.h"
 #include <os1.h>
 #include <stdlib.h>
 #include <string.h>
@@ -495,14 +497,20 @@ static void load_cfg(void) {
  * to offer as a launchable app). */
 // Lista delle estensioni (devono avere il punto)
 static const char *const filtered_extensions[] = {
-    ".wad", ".txt",  ".png", ".jpg", ".cfg", ".dat",
+    ".wad", ".txt",  ".cfg", ".dat",
     ".md",  ".json", ".old", ".dsg", NULL};
 
 // Lista dei nomi di file completi (esatti)
+/* Hidden from the tile grid: the boot/supervisor services, the launcher and
+ * dock themselves, and nxexec (the execution service — it is the thing that
+ * LAUNCHES tiles, not a tile; clicking it with no argument does nothing). */
 static const char *const filtered_files[] = {
-    "init", "nxntfy_srv", "nxui", "nxlauncher", ".", "..", NULL};
+    "init", "nxntfy_srv", "nxui", "nxlauncher", "nxexec", ".", "..", NULL};
 
 static int has_filtered_ext(const char *name) {
+  if (os1_image_path_has_known_ext(name))
+    return 1;
+
   // 1. Controllo estensioni
   const char *dot = strrchr(name, '.');
   if (dot) {
@@ -893,7 +901,12 @@ static void handle_click(int mx, int my) {
     if (g_apps[idx].category == CAT_FOLDER) {
       enter_folder(idx);
     } else if (g_apps[idx].path[0]) {
-      int pid = spawn_args(g_apps[idx].path, 0, (char *const *)0);
+      /* HOSTED launch (#193, nxexec model): every tile runs under a fresh
+       * host shell spawned DETACHED (the launcher is never anyone's ctty).
+       * The host decides at runtime: windowed app -> host vanishes unseen;
+       * terminal program -> a shell window appears hosting its output
+       * ("i processi terminale ottengono una shell come padre"). */
+      int pid = nxexec_spawn_hosted(g_apps[idx].path);
       if (pid <= 0) {
         printf("[launcher] spawn failed: %s\n", g_apps[idx].path);
       } else {
