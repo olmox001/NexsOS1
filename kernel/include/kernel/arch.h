@@ -21,6 +21,15 @@ void arch_smp_setup_stacks(uint32_t cpu_count);
 int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack);
 void arch_cpu_switch_context(struct process *next);
 
+/* arch_cpu_yield - HAL primitive: cooperative reschedule from kernel (task)
+ * context.  A kernel thread calls this to enter schedule() without a hardware
+ * trap; it "returns" only when this thread is scheduled again.  Implemented
+ * per-arch (aarch64 exception.S / amd64 isr_stubs.S) by building a pt_regs
+ * frame, calling schedule(), and restoring the next task's frame.  IRQs must
+ * be masked by the caller (kthread_block).  This is the foundation for
+ * kthread_block/wake and, later, the OS1low_wait_irq blocking primitive. */
+void arch_cpu_yield(void);
+
 static inline uint32_t arch_get_cpu_id(void) { return arch_impl_get_cpu_id(); }
 static inline void arch_nop(void) { arch_impl_nop(); }
 static inline void arch_yield(void) { arch_impl_yield(); }

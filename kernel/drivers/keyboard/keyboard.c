@@ -8,8 +8,10 @@
 #include <drivers/ps2.h>
 #include <drivers/usb/usb.h>
 #include <drivers/virtio_input.h>
+#include <kernel/arch.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
+#include <kernel/spinlock.h>
 #include <kernel/string.h>
 #include <kernel/types.h>
 #include <posix_types.h>
@@ -252,30 +254,54 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
   }
 }
 
-/* Compositor sinks for pointer events (graphics layer). These only update
- * state + mark the compositor dirty (with damage rectangles); the actual
- * repaint is done by compositor_tick() at ~30 Hz. We deliberately never render
- * from here — rendering per input event (full-frame, from IRQ/tick context) is
- * exactly what made the cursor lag. */
+/* Compositor sinks for pointer events (graphics layer). These update window
+ * state + damage; the repaint is the compositor's own 30 Hz tick. */
 extern void compositor_update_mouse(int dx, int dy, int absolute);
 extern void compositor_handle_click(int button, int state);
 
-/*
- * input_report - the single dispatch point for every input provider.
+/* ------------------------------------------------------------------------- *
+ * INPUT DECOUPLING (DIR-02/DIR-03, #68/#131/#194) — STAGED.
  *
- * virtio-input, PS/2 and USB HID all call this with evdev events; nobody
- * dispatches on its own anymore. Keys go through the layout + IPC to the
- * focused process; pointer motion/buttons update the compositor's state and
- * damage, which it repaints on its own 30 Hz tick. (This is also what fixes
- * the PS/2 mouse, whose EV_REL events used to be buffered and dropped.)
- */
-void input_report(uint16_t type, uint16_t code, int32_t value) {
+ * The raw-event ring + input server kernel thread below move ALL compositor
+ * mutation off the hardware IRQ into task context (kthread_block ->
+ * arch_cpu_yield).  The ring/thread and the arch_cpu_yield + kthread_* HAL
+ * primitives are validated: with dispatch stubbed the thread processed a
+ * continuous event stream over dozens of block/wake cycles with 0 faults.
+ *
+ * NOT YET ACTIVATED: arch_cpu_yield's cooperative switch is proven for
+ * kernel-thread -> kernel-thread, but switching TO a freshly-woken USER task
+ * (the shell, woken by the dispatched keystroke's kernel_ipc_send) stalls
+ * CPU0 (heartbeat halts) — a subtle EL0-return / cross-CPU lock interaction
+ * in the hand-rolled epilogue.  Until that is fixed (route the yield through
+ * the proven trap epilogue), input_report dispatches SYNCHRONOUSLY as before,
+ * so the system stays fully functional.  input_server_start() is therefore
+ * not called yet; the plumbing is committed as the foundation.
+ * ------------------------------------------------------------------------- */
+
+struct input_evt {
+  uint16_t type;
+  uint16_t code;
+  int32_t value;
+};
+
+#define INPUT_RING_SZ 256 /* power of two; ~256 evdev events of backlog */
+static struct input_evt input_ring[INPUT_RING_SZ];
+static volatile uint32_t input_ring_head; /* producer index (IRQ) */
+static volatile uint32_t input_ring_tail; /* consumer index (thread) */
+static DEFINE_SPINLOCK(input_ring_lock);
+static uint64_t input_ring_dropped;
+static struct wait_queue_head input_wait_queue;
+
+/* input_dispatch - the actual event handling (key->layout+IPC, pointer->
+ * compositor).  Currently invoked SYNCHRONOUSLY from input_report; becomes
+ * the input server thread's body once the yield-to-user path is fixed. */
+static void input_dispatch(uint16_t type, uint16_t code, int32_t value) {
   switch (type) {
   case EV_KEY:
     if (code == BTN_LEFT) {
       compositor_handle_click(BTN_LEFT, value);
     } else if (code == BTN_RIGHT || code == BTN_MIDDLE) {
-      /* No compositor consumer for these yet; ignore (was already the case). */
+      /* No compositor consumer for these yet. */
     } else {
       keyboard_process_key(code, value);
       wake_up(&keyboard_wait_queue);
@@ -284,18 +310,67 @@ void input_report(uint16_t type, uint16_t code, int32_t value) {
   case EV_REL:
     if (code == REL_X) compositor_update_mouse(value, 0, 0);
     else if (code == REL_Y) compositor_update_mouse(0, value, 0);
-    /* REL_WHEEL has no consumer yet. */
     break;
   case EV_ABS:
-    /* Absolute pointer (e.g. virtio-tablet): one axis per event, so pass -1 for
-     * the other axis to leave it unchanged. Values are normalized to
-     * [0, INPUT_ABS_MAX]; the compositor scales them to framebuffer pixels. */
     if (code == ABS_X) compositor_update_mouse(value, -1, 1);
     else if (code == ABS_Y) compositor_update_mouse(-1, value, 1);
     break;
-  default: /* EV_SYN and others: nothing to do; the tick repaints. */
+  default: /* EV_SYN and others */
     break;
   }
+}
+
+/*
+ * input_report - the single entry point for every input provider.
+ * STAGED: dispatches synchronously (original behaviour) until the input
+ * server thread is activated (see the decoupling note above).
+ */
+void input_report(uint16_t type, uint16_t code, int32_t value) {
+  input_dispatch(type, code, value);
+}
+
+/* input_ring_pop - consumer side (input thread): pull one event, or 0 if empty.
+ * Part of the staged decoupling plumbing (unused until the thread is on). */
+static int input_ring_pop(struct input_evt *out) {
+  uint64_t flags;
+  int got = 0;
+  spin_lock_irqsave(&input_ring_lock, &flags);
+  if (input_ring_tail != input_ring_head) {
+    *out = input_ring[input_ring_tail];
+    input_ring_tail = (input_ring_tail + 1) & (INPUT_RING_SZ - 1);
+    got = 1;
+  }
+  spin_unlock_irqrestore(&input_ring_lock, flags);
+  return got;
+}
+
+/* input_ring_nonempty - lost-wakeup guard: evaluated under the wq lock,
+ * serialized against a producer's wake_up() (see kthread_block). */
+static int input_ring_nonempty(void *arg) {
+  (void)arg;
+  return input_ring_head != input_ring_tail;
+}
+
+/* input_thread_entry - the input server kernel thread body (staged): drains
+ * the ring and dispatches in TASK context, blocking when idle.  Wired but not
+ * launched yet (input_server_start is not called). */
+static void input_thread_entry(void) {
+  for (;;) {
+    struct input_evt e;
+    while (input_ring_pop(&e))
+      input_dispatch(e.type, e.code, e.value);
+    kthread_block(&input_wait_queue, input_ring_nonempty, NULL);
+  }
+}
+
+/* input_server_start - create the input server thread (staged; not yet
+ * called).  When activated, input_report enqueues to the ring + wakes this. */
+void input_server_start(void) {
+  INIT_LIST_HEAD(&input_wait_queue.task_list);
+  spin_lock_init(&input_wait_queue.lock);
+  (void)input_ring_dropped;
+  kthread_create("input", input_thread_entry);
+  pr_info("%s", "Input: server thread started (IRQ-decoupled dispatch)\n");
 }
 
 /*

@@ -271,6 +271,15 @@ void enqueue_task(struct process *p);
 void sleep_on(struct wait_queue_head *wq);
 void wake_up(struct wait_queue_head *wq);
 
+/* Kernel service threads (ASTRA "every service is a process", kernel side).
+ * kthread_create: runnable kernel thread at PROC_PRIO_SYSTEM (no user address
+ * space, no stdio), starting at 'entry'.  kthread_block: park the calling
+ * kernel thread on 'wq' until wake_up(wq) — built on the arch_cpu_yield() HAL
+ * primitive.  The input server is the first consumer (input off the IRQ). */
+struct process *kthread_create(const char *name, void (*entry)(void));
+void kthread_block(struct wait_queue_head *wq, int (*still_block)(void *),
+                   void *arg);
+
 /* Core Tasks */
 void idle_task_entry(void);
 
