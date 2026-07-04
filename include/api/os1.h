@@ -48,8 +48,11 @@ extern long _sys_write(int fd, const char *buf, size_t count);
 extern long _sys_get_time(void);
 extern int  _sys_get_pid(void);
 extern void _sys_exit(int status);
-extern int  _sys_spawn(const char *path, int argc, char *const argv[]);
-extern long _sys_spawn_caps(const char *path, int level, unsigned long caps);
+/* arg3 = spawn-mode flags (SPAWN_FLAG_*, caps.h) — nxexec model #193. */
+extern int  _sys_spawn(const char *path, int argc, char *const argv[],
+                       unsigned int flags);
+extern long _sys_spawn_caps(const char *path, int level, unsigned long caps,
+                            unsigned int flags);
 extern int  _sys_kill(int pid);
 extern int  _sys_wait(int pid);
 extern void _sys_yield(void);
@@ -132,6 +135,12 @@ void yield(void);
  * are kept as zero-breakage compat shims that forward to these — every existing
  * caller keeps compiling, while new code should prefer the OS1low_ names. */
 long OS1low_process_spawn(const char *path, int argc, char *const argv[]);
+/* OS1low_process_spawn_detached: like spawn, but the child does NOT inherit
+ * the spawner as controlling terminal (SPAWN_FLAG_DETACHED — the nxexec
+ * launcher-mode, #193): a windowless child fails closed instead of writing
+ * into the spawner's window as if it were a shell. */
+long OS1low_process_spawn_detached(const char *path, int argc,
+                                   char *const argv[]);
 long OS1low_process_spawn_caps(const char *path, int level, unsigned long caps);
 int  OS1low_process_kill(int pid);
 int  OS1low_process_wait(int pid);

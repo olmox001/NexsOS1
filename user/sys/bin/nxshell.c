@@ -31,6 +31,7 @@
  *   USR-BLOAT-02 (W2 BAD-IMPL) -g DWARF and -fno-omit-frame-pointer inflate
  *                the ELF; no --gc-sections or strip step.
  */
+#include "nxexec.h"
 #include <os1.h>
 
 /* Window dimensions */
@@ -111,7 +112,9 @@ static void shell_redraw(void) {
  * NOTE(USR-SEC-03): spawn_args() grants the new process full ambient authority;
  * no sandboxing applies regardless of the directory searched.
  */
-#define SPAWN_PATH_MAX 64
+/* Must match the shared launch layer's buffer contract: nxexec_spawn_search
+ * writes up to NXEXEC_PATH_MAX bytes into out_path. */
+#define SPAWN_PATH_MAX NXEXEC_PATH_MAX
 #define MAX_ARGV 16
 
 /*
@@ -146,21 +149,9 @@ static int tokenize(char *s, char *argv[], int max) {
  * names (leading '/') bypass the search.  Returns the PID or <= 0 on failure.
  */
 static int spawn_search_args(int argc, char *argv[], char *out_path) {
-  const char *name = argv[0];
-  if (name[0] == '/') {
-    snprintf(out_path, SPAWN_PATH_MAX, "%s", name);
-    return spawn_args(out_path, argc, argv);
-  }
-
-  /* Try /bin/ first */
-  snprintf(out_path, SPAWN_PATH_MAX, "/bin/%s", name);
-  int pid = spawn_args(out_path, argc, argv);
-  if (pid > 0)
-    return pid;
-
-  /* Fall back to /sys/bin/ */
-  snprintf(out_path, SPAWN_PATH_MAX, "/sys/bin/%s", name);
-  return spawn_args(out_path, argc, argv);
+  /* Foreground (needs-shell) mode: the shell IS the child's ctty — the
+   * launch logic itself lives in the shared nxexec layer (#193). */
+  return nxexec_spawn_search(argc, argv, out_path, /*detached=*/0);
 }
 
 /*
@@ -198,22 +189,9 @@ static int spawn_search_args(int argc, char *argv[], char *out_path) {
  * (CLI tools that read input are a follow-up); other keystrokes are consumed.
  */
 static void run_foreground(int pid) {
-  if (pid <= 0)
-    return;
-  while (1) {
-    if (window_of_pid(pid) > 0)
-      break; /* child opened its own window -> detached */
-    if (wait(pid) != -1)
-      break; /* child finished (dead/zombie/gone) */
-    struct ipc_message m;
-    if (try_recv(-1, &m) == 0 && m.type == IPC_TYPE_INPUT && m.data2 != 0 &&
-        m.payload[0] == 0x03) {
-      kill_process(pid);
-      print("^C\n");
-      break;
-    }
-    yield();
-  }
+  /* Extracted to the shared nxexec layer (#193): identical behaviour, one
+   * implementation for every terminal-like consumer. */
+  nxexec_run_foreground(pid);
 }
 
 static void process_command(void) {
