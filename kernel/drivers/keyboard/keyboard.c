@@ -260,22 +260,25 @@ extern void compositor_update_mouse(int dx, int dy, int absolute);
 extern void compositor_handle_click(int button, int state);
 
 /* ------------------------------------------------------------------------- *
- * INPUT DECOUPLING (DIR-02/DIR-03, #68/#131/#194) — STAGED.
+ * INPUT DECOUPLING (DIR-02/DIR-03, #68/#131/#194).
  *
- * The raw-event ring + input server kernel thread below move ALL compositor
- * mutation off the hardware IRQ into task context (kthread_block ->
- * arch_cpu_yield).  The ring/thread and the arch_cpu_yield + kthread_* HAL
- * primitives are validated: with dispatch stubbed the thread processed a
- * continuous event stream over dozens of block/wake cycles with 0 faults.
+ * The hardware input IRQs (virtio-input, PS/2) no longer touch the compositor.
+ * They ONLY enqueue a raw evdev event into the ring below (input_report); the
+ * dispatch — key->layout+IPC, pointer->compositor — runs in input_drain(),
+ * called from the compositor tick (timer IRQ, CPU0).  So the input IRQs never
+ * take compositor_lock and never mutate the window-list, killing the
+ * cross-core input-IRQ-vs-render stall (#194) and the IRQ-context window
+ * mutation from those paths (#68).  Dispatch is now a single serialized
+ * bottom-half in one context (the tick), reflected in the same tick's render.
  *
- * NOT YET ACTIVATED: arch_cpu_yield's cooperative switch is proven for
- * kernel-thread -> kernel-thread, but switching TO a freshly-woken USER task
- * (the shell, woken by the dispatched keystroke's kernel_ipc_send) stalls
- * CPU0 (heartbeat halts) — a subtle EL0-return / cross-CPU lock interaction
- * in the hand-rolled epilogue.  Until that is fixed (route the yield through
- * the proven trap epilogue), input_report dispatches SYNCHRONOUSLY as before,
- * so the system stays fully functional.  input_server_start() is therefore
- * not called yet; the plumbing is committed as the foundation.
+ * NEXT STEP (foundation committed, staged): move input_drain into the
+ * input server kernel THREAD (input_thread_entry, task context) via
+ * kthread_block/arch_cpu_yield — fully off IRQ.  The arch_cpu_yield HAL
+ * primitive + kthread are validated for kernel-thread switches, but the
+ * cooperative switch TO a freshly-woken USER task still stalls CPU0 (a subtle
+ * EL0-return / cross-CPU interaction in the hand-rolled epilogue); once that
+ * is routed through the proven trap epilogue, input_server_start() replaces
+ * the tick-drain.  input_server_start() is therefore not called yet.
  * ------------------------------------------------------------------------- */
 
 struct input_evt {
@@ -291,6 +294,7 @@ static volatile uint32_t input_ring_tail; /* consumer index (thread) */
 static DEFINE_SPINLOCK(input_ring_lock);
 static uint64_t input_ring_dropped;
 static struct wait_queue_head input_wait_queue;
+static int input_ring_pop(struct input_evt *out);
 
 /* input_dispatch - the actual event handling (key->layout+IPC, pointer->
  * compositor).  Currently invoked SYNCHRONOUSLY from input_report; becomes
@@ -321,12 +325,34 @@ static void input_dispatch(uint16_t type, uint16_t code, int32_t value) {
 }
 
 /*
- * input_report - the single entry point for every input provider.
- * STAGED: dispatches synchronously (original behaviour) until the input
- * server thread is activated (see the decoupling note above).
+ * input_report - the single entry point for every input provider (IRQ / poll
+ * context).  DIAGNOSTIC/bottom-half mode: enqueue the raw event; the actual
+ * dispatch runs in input_drain() from the compositor tick (timer IRQ, CPU0) —
+ * proven context — so the virtio/ps2 INPUT IRQs no longer take compositor_lock
+ * (kills the cross-core input-IRQ-vs-render stall, #194/#68).
  */
 void input_report(uint16_t type, uint16_t code, int32_t value) {
-  input_dispatch(type, code, value);
+  uint64_t flags;
+  spin_lock_irqsave(&input_ring_lock, &flags);
+  uint32_t next = (input_ring_head + 1) & (INPUT_RING_SZ - 1);
+  if (next == input_ring_tail) {
+    input_ring_dropped++;
+  } else {
+    input_ring[input_ring_head].type = type;
+    input_ring[input_ring_head].code = code;
+    input_ring[input_ring_head].value = value;
+    input_ring_head = next;
+  }
+  spin_unlock_irqrestore(&input_ring_lock, flags);
+}
+
+/* input_drain - dispatch all queued raw events.  Called from the compositor
+ * tick (timer IRQ, CPU0), so input dispatch is serialized with the render in
+ * one context and never spins cross-core on compositor_lock from an input IRQ. */
+void input_drain(void) {
+  struct input_evt e;
+  while (input_ring_pop(&e))
+    input_dispatch(e.type, e.code, e.value);
 }
 
 /* input_ring_pop - consumer side (input thread): pull one event, or 0 if empty.

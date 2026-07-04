@@ -37,6 +37,9 @@ void input_report(uint16_t type, uint16_t code, int32_t value);
 /* input_server_start - launch the input server kernel thread (task-context
  * dispatch, IRQ-decoupled).  Call after the scheduler + compositor are up. */
 void input_server_start(void);
+/* input_drain - dispatch queued raw input events; called from the compositor
+ * tick (timer IRQ, CPU0).  The input IRQs only enqueue. */
+void input_drain(void);
 
 #include <kernel/sched.h>
 extern struct wait_queue_head keyboard_wait_queue;
