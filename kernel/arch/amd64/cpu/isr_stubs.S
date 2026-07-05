@@ -11,8 +11,9 @@
 
 .extern amd64_isr_dispatch
 
-/* Vectors that push an error code automatically (Intel spec) */
-#define HAS_ERR(v) ((v)==8||(v)==10||(v)==11||(v)==12||(v)==13||(v)==14||(v)==17||(v)==21||(v)==29||(v)==30)
+/* (The old HAS_ERR(v) macro was defined but never referenced — the ERR vs
+ * NOERR split is done by the explicit ISR_ERR/ISR_NOERR emission below, so it
+ * was dead. Removed.) */
 
 /* Generate a stub for vector V */
 .altmacro
@@ -85,6 +86,7 @@ MAKE_ISR_NOERR V
 
 /* ── Common handler ───────────────────────────────────────── */
 common_isr_entry:
+    cld                        /* SysV: C runs with DF=0 (rep movsb/stosb) */
     /* Check if we came from user mode (CS & 3 != 0)
      * Stack layout: vec (0), err (8), rip (16), cs (24) */
     testb $3, 24(%rsp)
@@ -138,6 +140,79 @@ common_isr_entry:
     /* Skip vec + err pushed by stub */
     addq  $16, %rsp
 
+    iretq
+
+/*
+ * arch_cpu_yield - cooperative reschedule from KERNEL (task) context.
+ *
+ * Builds a pt_regs frame on the current kernel stack identical to what
+ * common_isr_entry would produce (synthetic iretq frame + vec/err + GP regs),
+ * calls schedule() (same signature/return as amd64_isr_dispatch: pt_regs* ->
+ * next pt_regs*), then restores the returned task's frame and iretq's into it.
+ *
+ * The saved frame's RIP is this function's return address and CS is the kernel
+ * selector, so when this thread is next scheduled the restoring context iretq's
+ * straight back into the C caller (kthread_block) with callee-saved registers
+ * intact and IRQs re-enabled (RFLAGS.IF set in the saved frame).  The restore
+ * tail mirrors common_isr_entry exactly, including the swapgs-if-returning-to-
+ * ring3 case (schedule may hand us a USER task's frame).
+ *
+ * Caller contract: IRQs masked on entry (kthread_block does cli); the frame
+ * build is then atomic.  Reuses the proven SLEEPING->schedule->wake_up path.
+ */
+.global arch_cpu_yield
+arch_cpu_yield:
+    cli
+    cld                        /* SysV: schedule()/C runs with DF=0 */
+    popq  %r11                 /* r11 = return address; rsp -> caller frame */
+    movq  %rsp, %r10           /* r10 = resume RSP (caller stack) */
+    /* Synthetic iretq frame (high->low: ss, rsp, rflags, cs, rip). */
+    pushq $0x10                /* ss  = kernel data */
+    pushq %r10                 /* rsp = resume stack */
+    pushq $0x202               /* rflags: IF set (IRQs on at resume) */
+    pushq $0x08                /* cs  = kernel code */
+    pushq %r11                 /* rip = caller return address */
+    pushq $0                   /* err */
+    pushq $0                   /* vec */
+    /* GP regs in pt_regs order (rax first ... r15 last), as common_isr_entry. */
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+    movq  %rsp, %rdi
+    call  schedule
+    movq  %rax, %rsp
+    popq  %r15
+    popq  %r14
+    popq  %r13
+    popq  %r12
+    popq  %r11
+    popq  %r10
+    popq  %r9
+    popq  %r8
+    popq  %rbp
+    popq  %rdi
+    popq  %rsi
+    popq  %rdx
+    popq  %rcx
+    popq  %rbx
+    popq  %rax
+    testb $3, 24(%rsp)         /* returning to ring3? (cs & 3) */
+    jz    1f
+    swapgs
+1:
+    addq  $16, %rsp            /* skip vec + err */
     iretq
 
 .macro QUAD_GEN v

@@ -2,7 +2,7 @@
 
 ### Multi-architecture open-source hybrid-kernel operating system
 
-###NOTE: the make system is obsolete and not tested on linux, the official toolchain requires macos, for a quick test use the release iso
+###NOTE: the build system is verified on both macOS (Intel) and Linux (Ubuntu, Debian/Arch need test — see `tools/setup-toolchain-linux.sh`). BSD is not yet supported.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE.md)
 [![Arch](https://img.shields.io/badge/arch-aarch64%20%7C%20amd64-green.svg)](#)
@@ -23,6 +23,7 @@ an interactive **TTY shell**.
 
 ---
 variable theme & style now support:
+<img width="1392" height="952" alt="Screenshot 2026-07-05 alle 03 27 30" src="https://github.com/user-attachments/assets/218a4ebf-b848-4f3f-9f4e-4d93a49cd307" />
 <img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 11 24" src="https://github.com/user-attachments/assets/b63535f3-50ea-45fc-98aa-4fb84fd0e602" />
 <img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 10 22" src="https://github.com/user-attachments/assets/137020f5-9ca3-45a5-a330-ac891b4dc0e1" />
 <img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 06 55" src="https://github.com/user-attachments/assets/66467cb1-aff1-45ed-be96-49a83b91e875" />
@@ -122,21 +123,35 @@ Successfully tested on:
 | VirtIO Block | ✅ |
 | GPT | ✅ |
 | Ext4 | ✅ |
+| Host: macOS (Intel) | ✅ |
+| Host: Linux (Ubuntu) | ✅ |
+| Host: Linux (Debian/Arch) | ✅ (same toolchain path as Ubuntu; see `tools/setup-toolchain-linux.sh`) |
+| Host: BSD | ⬜ not yet supported |
 
 ---
 
 ## Quick start
 
-### 1. Toolchain (bare-metal cross compilers + QEMU) 
-**NOTE** Compilation tested only on macOS Intel
+### 1. Toolchain (bare-metal cross compilers + QEMU)
+**NOTE** Compilation is verified on macOS (Intel) and Linux (Ubuntu, Debian, Arch — other
+Debian/Arch derivatives are auto-detected via `/etc/os-release`'s `ID_LIKE`). BSD is not
+yet supported.
 
-**macOS (Homebrew):**
+**macOS:**
 ```bash
-brew install aarch64-elf-gcc x86_64-elf-gcc qemu make
-# (optional, for bootable ISOs) i686-elf-grub / grub
+./tools/setup-toolchain-macOS.sh
 ```
-**Debian/Ubuntu:** install `gcc-aarch64-none-elf` (or build a cross-gcc), an `x86_64-elf`
-cross toolchain, `qemu-system-arm`, `qemu-system-x86`, `make`, `binutils`.
+
+**Linux (Ubuntu/Debian/Arch/Alpine):**
+```bash
+./tools/setup-toolchain-linux.sh
+```
+This builds the exact same pinned cross-compilers as macOS from GNU source
+(`x86_64-elf-gcc` 13.2.0, `aarch64-none-elf-gcc` 7.2.0 — the aarch64 version is
+pinned deliberately, see the script header) so both hosts produce equivalent
+kernels. The GCC build takes ~10-30 minutes. If you're on WSL2, the script
+detects it and prints guidance about graphical QEMU (WSLg) and `/dev/kvm`
+(not required — this project's QEMU flags never request KVM acceleration).
 
 Verify:
 ```bash

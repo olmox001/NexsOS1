@@ -15,6 +15,125 @@
 .section .text
 
 /*
+ * arch_cpu_yield - cooperative reschedule from KERNEL (task) context.
+ *
+ * The HAL primitive that lets a kernel thread voluntarily enter the scheduler
+ * without a hardware trap: it builds a pt_regs frame on its own kernel stack
+ * exactly as irq_stub would, calls schedule() (same signature as irq_handler:
+ * pt_regs* in/out), then restores the NEXT task's frame and erets into it.
+ *
+ * When THIS thread is later rescheduled, whichever context performs the switch
+ * restores this saved frame; because we set elr = our return address, the eret
+ * lands back in the C caller (kthread_block) with the callee-saved registers
+ * intact.  Thus arch_cpu_yield() "returns" only once this thread runs again.
+ *
+ * Caller contract: IRQs must be masked on entry (kthread_block does this) so
+ * the frame build is atomic; the frame's SPSR (EL1h, DAIF clear) re-enables
+ * IRQs on resume.  Reuses the proven SLEEPING->schedule->wake_up path (the
+ * same one sys_read blocks on), so the SMP wake race is already handled.
+ */
+.global arch_cpu_yield
+arch_cpu_yield:
+    msr daifset, #3          /* mask IRQ/FIQ for the frame build */
+    sub sp, sp, #816
+    stp x0, x1,   [sp, #0]
+    stp x2, x3,   [sp, #16]
+    stp x4, x5,   [sp, #32]
+    stp x6, x7,   [sp, #48]
+    stp x8, x9,   [sp, #64]
+    stp x10, x11, [sp, #80]
+    stp x12, x13, [sp, #96]
+    stp x14, x15, [sp, #112]
+    stp x16, x17, [sp, #128]
+    stp x18, x19, [sp, #144]
+    stp x20, x21, [sp, #160]
+    stp x22, x23, [sp, #176]
+    stp x24, x25, [sp, #192]
+    stp x26, x27, [sp, #208]
+    stp x28, x29, [sp, #224]
+    str x30,      [sp, #240]
+
+    /* elr = return address (x30 on entry); spsr = EL1h, IRQs enabled;
+     * sp_el0 = 0 (kernel thread has no user stack). */
+    str x30,      [sp, #256]     /* elr = caller return address */
+    mov x0, #0x05
+    str x0,       [sp, #264]     /* spsr = EL1h */
+    str xzr,      [sp, #272]     /* sp_el0 */
+
+    stp q0, q1,   [sp, #288]
+    stp q2, q3,   [sp, #320]
+    stp q4, q5,   [sp, #352]
+    stp q6, q7,   [sp, #384]
+    stp q8, q9,   [sp, #416]
+    stp q10, q11, [sp, #448]
+    stp q12, q13, [sp, #480]
+    stp q14, q15, [sp, #512]
+    stp q16, q17, [sp, #544]
+    stp q18, q19, [sp, #576]
+    stp q20, q21, [sp, #608]
+    stp q22, q23, [sp, #640]
+    stp q24, q25, [sp, #672]
+    stp q26, q27, [sp, #704]
+    stp q28, q29, [sp, #736]
+    stp q30, q31, [sp, #768]
+    mrs x0, fpsr
+    mrs x1, fpcr
+    str w0,       [sp, #800]
+    str w1,       [sp, #804]
+
+    /* schedule(frame) -> next task's frame in x0 */
+    mov x0, sp
+    bl schedule
+
+    /* Switch to the returned frame and eret into it (identical to irq_stub). */
+    mov sp, x0
+    msr daifset, #3
+    ldr x0, [sp, #256]
+    ldr x1, [sp, #264]
+    ldr x2, [sp, #272]
+    msr elr_el1, x0
+    msr spsr_el1, x1
+    msr sp_el0, x2
+    ldp q0, q1,   [sp, #288]
+    ldp q2, q3,   [sp, #320]
+    ldp q4, q5,   [sp, #352]
+    ldp q6, q7,   [sp, #384]
+    ldp q8, q9,   [sp, #416]
+    ldp q10, q11, [sp, #448]
+    ldp q12, q13, [sp, #480]
+    ldp q14, q15, [sp, #512]
+    ldp q16, q17, [sp, #544]
+    ldp q18, q19, [sp, #576]
+    ldp q20, q21, [sp, #608]
+    ldp q22, q23, [sp, #640]
+    ldp q24, q25, [sp, #672]
+    ldp q26, q27, [sp, #704]
+    ldp q28, q29, [sp, #736]
+    ldp q30, q31, [sp, #768]
+    ldr w0, [sp, #800]
+    ldr w1, [sp, #804]
+    msr fpsr, x0
+    msr fpcr, x1
+    ldp x0, x1,   [sp, #0]
+    ldp x2, x3,   [sp, #16]
+    ldp x4, x5,   [sp, #32]
+    ldp x6, x7,   [sp, #48]
+    ldp x8, x9,   [sp, #64]
+    ldp x10, x11, [sp, #80]
+    ldp x12, x13, [sp, #96]
+    ldp x14, x15, [sp, #112]
+    ldp x16, x17, [sp, #128]
+    ldp x18, x19, [sp, #144]
+    ldp x20, x21, [sp, #160]
+    ldp x22, x23, [sp, #176]
+    ldp x24, x25, [sp, #192]
+    ldp x26, x27, [sp, #208]
+    ldp x28, x29, [sp, #224]
+    ldr x30,      [sp, #240]
+    add sp, sp, #816
+    eret
+
+/*
  * Each vector must be 128 bytes (32 instructions)
  * Table must be 2KB aligned (0x800)
  */

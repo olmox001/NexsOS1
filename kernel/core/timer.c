@@ -247,6 +247,13 @@ struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
 
   /* CPU 0 only: input polling + compositor. */
   if (cpu->cpu_id == 0) {
+    /* Dispatch queued raw input events here (bottom-half): the virtio/ps2
+     * input IRQs only enqueue, so they never take compositor_lock or mutate
+     * the window-list from IRQ context (#68/#194).  Runs before the render so
+     * this tick reflects the freshest input. */
+    extern void input_drain(void);
+    input_drain();
+
     /* Poll USB HID every tick (CPU 0): keyboard events feed the evdev buffer,
      * pointer motion goes straight to the compositor. Cheap when idle (just an
      * event-ring head check per device). */

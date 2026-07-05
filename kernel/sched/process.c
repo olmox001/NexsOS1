@@ -749,15 +749,14 @@ struct process *process_create_caps(const char *name, uint8_t priority,
    * spawner's own window if it has one, else its inherited ctty. */
   proc->ctty_win = -1;
 
-  /* Pure kernel threads (the per-CPU idle tasks, PROC_PRIO_IDLE) take a LEAN
-   * path: no ctty (they never write to a console), no stdio handle trio (no
-   * handle-table kmalloc + object_lock traffic), no user PGD (they run on the
-   * shared kernel_pgd — smp_create_idle_task previously created one only to
-   * destroy it).  This keeps the SMP bring-up window free of compositor/
-   * object/vmm lock traffic: UTM caught a #GP inside process_install_stdio
-   * during arch_smp_init exactly on this path (idle tasks were being given
-   * consoles while earlier-woken APs were already scheduling). */
-  if (priority == PROC_PRIO_IDLE) {
+  /* Pure kernel threads (per-CPU idle tasks PROC_PRIO_IDLE; kernel service
+   * threads PROC_PRIO_SYSTEM, e.g. the input server) take a LEAN path: no ctty
+   * (they never write to a console), no stdio handle trio (no handle-table
+   * kmalloc + object_lock traffic), no user PGD (they run on the shared
+   * kernel_pgd — SCHED-UAF-01).  This keeps kernel-thread creation free of
+   * compositor/object/vmm lock traffic (UTM caught a #GP inside
+   * process_install_stdio on this path during SMP bring-up). */
+  if (priority == PROC_PRIO_IDLE || priority == PROC_PRIO_SYSTEM) {
     proc->page_table = NULL; /* runs on the shared kernel_pgd (SCHED-UAF-01) */
   } else {
     if (creator) {
@@ -866,6 +865,79 @@ void smp_create_idle_task(uint32_t cpu_id) {
     hal_mb();
     hal_isb();
   }
+}
+
+/*
+ * kthread_create - create and enqueue a runnable KERNEL SERVICE thread.
+ *
+ * Unlike smp_create_idle_task (which pins the result as a CPU's idle task),
+ * this creates a normal runnable kernel thread at PROC_PRIO_SYSTEM: no user
+ * address space (page_table == NULL, shared kernel_pgd), no stdio/ctty (the
+ * lean path in process_create), starting at 'entry' on its own kernel stack.
+ * It is enqueued so the scheduler runs it like any task; it is expected to
+ * loop forever (block via kthread_block when idle).  Returns the new process,
+ * or NULL on failure.  This is the kernel-side of the ASTRA "every service is
+ * a process" model — the input server is the first consumer.
+ */
+struct process *kthread_create(const char *name, void (*entry)(void)) {
+  struct process *t = process_create(name, PROC_PRIO_SYSTEM, PLVL_MACHINE);
+  if (!t)
+    return NULL;
+
+  memset(t->context, 0, sizeof(struct pt_regs));
+  pt_regs_init_kernel_task(t->context, (uint64_t)entry, t->kernel_stack);
+
+  /* Publish the fully-initialised context before it can be scheduled. */
+  hal_cache_clean(t, sizeof(struct process));
+  hal_cache_clean(t->context, sizeof(struct pt_regs));
+  hal_mb();
+  hal_isb();
+
+  enqueue_task(t);
+  return t;
+}
+
+/*
+ * kthread_block - block the calling kernel thread on a wait queue until
+ * wake_up(), UNLESS 'still_block' reports the wait condition already cleared.
+ *
+ * Reuses the exact primitive userland blocking reads use (PROC_SLEEPING +
+ * reschedule + wake_up), but yields via the arch_cpu_yield() HAL primitive
+ * instead of a syscall trap frame — a kernel thread has no trap frame.
+ *
+ * Lost-wakeup safety: still_block(arg) is evaluated UNDER the wq lock, right
+ * before committing to sleep.  A producer publishes work then calls wake_up(),
+ * which also takes the wq lock — so it is serialized against this check.  If
+ * the producer got there first, still_block() sees the work and we do NOT
+ * sleep; if we sleep first, the producer's wake_up() finds us queued and wakes
+ * us.  No event is ever both published and missed.  still_block may be NULL
+ * for an unconditional block.
+ */
+void kthread_block(struct wait_queue_head *wq, int (*still_block)(void *),
+                   void *arg) {
+  struct process *self = current_process;
+  if (!self)
+    return;
+
+  uint64_t flags = local_irq_save();
+
+  uint64_t wqflags;
+  spin_lock_irqsave(&wq->lock, &wqflags);
+  if (still_block && !still_block(arg)) {
+    /* Condition already cleared under the lock: don't sleep, keep running. */
+    spin_unlock_irqrestore(&wq->lock, wqflags);
+    local_irq_restore(flags);
+    return;
+  }
+  self->state = PROC_SLEEPING;
+  self->wait_queue_ptr = wq;
+  list_add_tail(&self->run_list, &wq->task_list);
+  spin_unlock_irqrestore(&wq->lock, wqflags);
+
+  /* Enter the scheduler; returns here once we are scheduled again (woken). */
+  arch_cpu_yield();
+
+  local_irq_restore(flags);
 }
 
 /*

@@ -292,6 +292,10 @@ static void init_scheduler(void) {
 
   /* Create Idle Task for CPU 0 */
   smp_create_idle_task(0);
+
+  /* Input server thread (DIR-02/DIR-03, #68/#194) is STAGED, not launched:
+   * the arch_cpu_yield cooperative-switch-to-user path is still being
+   * hardened.  Input dispatches synchronously meanwhile (see keyboard.c). */
 }
 
 /*
