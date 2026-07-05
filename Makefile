@@ -425,7 +425,6 @@ $(BUILD_DIR)/%.elf:
 	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 
 
-
 # Common compilation rules
 $(BUILD_DIR)/%.o: %.S
 	@mkdir -p $(dir $@)
@@ -487,6 +486,22 @@ $(MKDISK): tools/mkdisk.c
 # ==============================================================================
 # QEMU Flags
 # ==============================================================================
+
+# A terminal launched from a snap-packaged GUI app (VS Code's integrated
+# terminal is the common case on Ubuntu) exports GTK_PATH/GTK_EXE_PREFIX/
+# GTK_MODULES/GIO_MODULE_DIR/XDG_DATA_DIRS/LOCPATH pointing into that snap's
+# own bundle (e.g. /snap/code/<rev>/usr/lib/.../gtk-3.0). Any GTK app started
+# from that shell — including QEMU with -display default, which is a GTK
+# frontend — inherits them and tries to dlopen its GTK module set from the
+# wrong snap's directory tree, which pulls in an old bundled libpthread.so.0
+# incompatible with the host's glibc (undefined symbol __libc_pthread_init,
+# GLIBC_PRIVATE) and QEMU dies before ever opening a window. None of these
+# vars are needed for our own display: strip them unconditionally (no-op if
+# unset, so this is a no-op on macOS/BSD too) rather than ask every
+# contributor to remember to launch from a "clean" terminal.
+QEMU_RUN = env -u GTK_PATH -u GTK_EXE_PREFIX -u GTK_MODULES -u GTK_IM_MODULE_FILE \
+               -u GIO_MODULE_DIR -u GSETTINGS_SCHEMA_DIR -u XDG_DATA_DIRS \
+               -u XDG_DATA_HOME -u LOCPATH $(QEMU)
 
 ifeq ($(ARCH), amd64)
 QEMU_FLAGS = -m 5G -smp 4 -serial mon:stdio \
@@ -583,11 +598,11 @@ release-arch: all
 test-release: release-arch
 	@echo "Starting QEMU Release Test for $(ARCH) (Version: $(VERSION))..."
 ifeq ($(ARCH), amd64)
-	$(QEMU) $(QEMU_RELEASE_FLAGS) \
+	$(QEMU_RUN) $(QEMU_RELEASE_FLAGS) \
 		-drive if=none,file=$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso,id=hd0,format=raw \
 		-device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
 else
-	$(QEMU) $(QEMU_RELEASE_FLAGS) -kernel $(RELEASE_DIR)/kernel.img
+	$(QEMU_RUN) $(QEMU_RELEASE_FLAGS) -kernel $(RELEASE_DIR)/kernel.img
 endif
 
 # ==============================================================================
@@ -602,12 +617,18 @@ endif
 ifeq ($(ARCH), aarch64)
 $(VIRT_DTB): | $(BUILD_DIR)
 	@echo "  [DTB]    Generating QEMU virt device tree -> $@"
-	@$(QEMU) -M virt -cpu cortex-a57 -m 5G -smp 4 \
+	@ERRLOG=$$(mktemp); \
+	if ! $(QEMU_RUN) -M virt -cpu cortex-a57 -m 5G -smp 4 \
 	         -device virtio-gpu-device \
 	         -device virtio-keyboard-device -device virtio-mouse-device \
 	         -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
 	         -device virtio-blk-device,drive=hd0 \
-	         -machine dumpdtb=$@ 2>/dev/null
+	         -machine dumpdtb=$@ 2>"$$ERRLOG"; then \
+	    cat "$$ERRLOG" >&2; rm -f "$$ERRLOG"; \
+	    echo "  [DTB]    $(QEMU_RUN) failed — see stderr above (broken/snap-shadowed QEMU install is a common cause)." >&2; \
+	    exit 1; \
+	fi; \
+	rm -f "$$ERRLOG"
 	@echo "  [DTB]    Done ($$($(STAT_SIZE) $@) bytes)"
 
 # AArch64 run: use kernel.bin (raw binary) so QEMU's aarch64 boot stub sets x0 = dtb_addr.
@@ -615,20 +636,20 @@ $(VIRT_DTB): | $(BUILD_DIR)
 # QEMU loads the DTB into RAM and passes its address in x0 before jumping to the entry.
 # Using kernel.elf (ELF) without a Linux image header leaves x0=0 (no DTB handover).
 run: all $(VIRT_DTB)
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
 
 run-direct: run
 
 debug: all
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
 else
 run: all
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
 
 run-direct: run
 
 debug: all
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 endif
 
 disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
