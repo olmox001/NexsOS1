@@ -47,7 +47,7 @@ Per trasformare un sorgente `.c` in un programma eseguibile servono:
 
 Su macOS, nello spazio di lavoro del progetto NexsOS1 (scaricabile via github):
 ```bash
-./tools/setup-toolchain.sh
+./tools/setup-toolchain-macOS.sh
 ```
 
 Su Debian/Ubuntu servono pacchetti equivalenti;

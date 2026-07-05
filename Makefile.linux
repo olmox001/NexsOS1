@@ -8,26 +8,17 @@ else
 # Keep project build logic in Makefile. This file should only describe the
 # toolchain/host differences needed to run the shared targets on Linux.
 #
-# Ported from the old Makefile.linux:
-# - aarch64 uses the distro aarch64-linux-gnu toolchain
-# - GCC needs -mno-outline-atomics for the freestanding aarch64 link
-# - stat uses the GNU -c%s syntax
+# aarch64 MUST use the same aarch64-none-elf- 7.2.0 cross toolchain as macOS
+# (built from source by tools/setup-toolchain-linux.sh), NOT the distro
+# aarch64-linux-gnu-gcc: that's a modern GCC (13/15.x) that defaults
+# -moutline-atomics on and emits __aarch64_*/emutls helpers the freestanding
+# -nostdlib link can't resolve, and even when forced to link, the kernel does
+# not boot. See tools/setup-toolchain-linux.sh header for the full rationale.
+# stat uses the GNU -c%s syntax.
 
-# WIP(PR #201, CodeAsm): default to the NATIVE x86_64 gcc/ld on Linux rather
-# than an x86_64-elf- cross toolchain.  This got init/PID1 loading on Linux,
-# but the author himself flagged it as provisional — a native (host-targeted)
-# gcc is not a clean freestanding cross-compiler and must be revisited (either
-# require x86_64-elf- like macOS, or add the freestanding/-ffreestanding +
-# no-host-libs guarantees explicitly).  Overridable via the environment.
-AMD64_CROSS_COMPILE ?=
-AARCH64_CROSS_COMPILE ?= aarch64-linux-gnu-
-AARCH64_ARCH_CFLAGS_EXTRA ?= -mno-outline-atomics
-
-# GNU ld defaults to PIE with a build-id note, which the ELF loader rejects
-# (unexpected PT_LOAD at 0x400000).  Force the flat, no-note layout the kernel
-# expects for /sys/bin and /bin ELFs.  Empty on macOS (variable unset there),
-# so this only affects the Linux host build.  (PR #201, CodeAsm)
-USER_LINK_FLAGS += -no-pie -Wl,--build-id=none
+AMD64_CROSS_COMPILE ?= x86_64-elf-
+AARCH64_CROSS_COMPILE ?= aarch64-none-elf-
+AARCH64_ARCH_CFLAGS_EXTRA ?=
 
 STAT_SIZE = stat -c%s
 
