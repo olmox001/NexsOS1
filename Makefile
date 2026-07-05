@@ -506,6 +506,7 @@ QEMU_RUN = env -u GTK_PATH -u GTK_EXE_PREFIX -u GTK_MODULES -u GTK_IM_MODULE_FIL
 ifeq ($(ARCH), amd64)
 QEMU_FLAGS = -m 5G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
+			 -vga none \
              -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
              -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
              -device virtio-mouse-pci,disable-legacy=on,disable-modern=off \
