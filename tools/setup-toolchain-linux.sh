@@ -173,16 +173,42 @@ install_packages() {
                 wget curl git
             ;;
         arch|manjaro|endeavouros)
-            info "Installing build dependencies and tools via pacman..."
-            "${SUDO[@]}" pacman -Syu --noconfirm --needed \
-                base-devel \
-                file \
-                gmp libmpc mpfr isl zstd \
-                texinfo \
-                qemu-system-x86 qemu-system-aarch64 \
-                grub libisoburn mtools \
-                gdb \
-                wget git
+			info "Installing build dependencies and tools via pacman..."
+
+			read -rp "Run a full system upgrade (pacman -Syu)? [y/N] " reply
+			if [[ "$reply" =~ ^[Yy]$ ]]; then
+				"${SUDO[@]}" pacman -Syu
+			fi
+
+			echo
+			info "The following packages will be installed if missing:"
+			cat <<EOF
+base-devel
+file
+gmp libmpc mpfr isl zstd
+texinfo
+qemu-system-x86 qemu-system-aarch64
+grub libisoburn mtools
+gdb
+wget git
+EOF
+			echo
+
+			read -rp "Install these packages? [Y/n] " reply
+			if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+				"${SUDO[@]}" pacman -S --needed \
+					base-devel \
+					file \
+					gmp libmpc mpfr isl zstd \
+					texinfo \
+					qemu-system-x86 qemu-system-aarch64 \
+					grub libisoburn mtools \
+					gdb \
+					wget git
+			else
+				warn "Package installation skipped."
+				return 1
+			fi
             ;;
         alpine)
             info "Installing build dependencies and tools via apk..."
