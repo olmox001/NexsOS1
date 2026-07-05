@@ -422,7 +422,7 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
-	@$(CC) $(CFLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 
 
 # Common compilation rules
@@ -506,6 +506,7 @@ QEMU_RUN = env -u GTK_PATH -u GTK_EXE_PREFIX -u GTK_MODULES -u GTK_IM_MODULE_FIL
 ifeq ($(ARCH), amd64)
 QEMU_FLAGS = -m 5G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
+			 -vga none \
              -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
              -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
              -device virtio-mouse-pci,disable-legacy=on,disable-modern=off \

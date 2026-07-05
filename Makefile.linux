@@ -20,6 +20,8 @@ AMD64_CROSS_COMPILE ?= x86_64-elf-
 AARCH64_CROSS_COMPILE ?= aarch64-none-elf-
 AARCH64_ARCH_CFLAGS_EXTRA ?=
 
+USER_LINK_FLAGS += -no-pie -Wl,--build-id=none
+
 STAT_SIZE = stat -c%s
 
 endif
