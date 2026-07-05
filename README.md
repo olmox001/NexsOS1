@@ -2,7 +2,7 @@
 
 ### Multi-architecture open-source hybrid-kernel operating system
 
-###NOTE: the build system is verified on both macOS (Intel) and Linux (Ubuntu/Debian/Arch — see `tools/setup-toolchain-linux.sh`). BSD is not yet supported.
+###NOTE: the build system is verified on both macOS (Intel) and Linux (Ubuntu, Debian/Arch need test — see `tools/setup-toolchain-linux.sh`). BSD is not yet supported.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE.md)
 [![Arch](https://img.shields.io/badge/arch-aarch64%20%7C%20amd64-green.svg)](#)
