@@ -255,3 +255,7 @@ specification, and the Linux/plan9/sel4kernel (design inspiration, e.g. intrusiv
 ## NOTE
 
 if I had to stop to document everything I do I would go crazy, excuse me if some descriptions are dated, Sorry for my spaghetti-eating English too
+# Graphics portability status
+
+The OpenGL, D3D9 and SDL2 port programme, its ASTRA boundary and validation
+log live in [`docs/graphics-port/`](docs/graphics-port/README.md).
