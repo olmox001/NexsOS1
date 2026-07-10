@@ -10,3 +10,15 @@
 	path = user/bin/doom
 	url = https://github.com/olmox001/doomgeneric.git
 	branch = nexsos-port
+[submodule "user/sys/lib/sdl"]
+	path = user/sys/lib/sdl
+	url = https://github.com/olmox001/SDL.git
+	branch = nexsos-port-sdl2
+[submodule "user/sys/lib/opengl"]
+	path = user/sys/lib/opengl
+	url = https://github.com/olmox001/mesa.git
+	branch = nexsos-port-opengl
+[submodule "user/sys/lib/direct3d"]
+	path = user/sys/lib/direct3d
+	url = https://github.com/olmox001/wine.git
+	branch = nexsos-port-d3d9
