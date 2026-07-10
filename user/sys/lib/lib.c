@@ -58,6 +58,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include "portability/os1_video_platform.h"
 /* POSIX compatibility shims implemented at the bottom of this file (the OS1
  * onion-userland libc layer, epic #120; no new OS1 syscalls). */
 #include <dirent.h>
@@ -281,16 +282,17 @@ int OS1_window_close(int win_id) {
  * write/of_pid/grid/set_window_flags/set_focus/draw/flush/compositor_render)
  * are compat shims forwarding here. */
 int OS1_window_create(int x, int y, int w, int h, const char *title) {
-  return _sys_create_window(x, y, w, h, title);
+  return os1_video_window_create(x, y, w, h, title);
 }
-void OS1_window_destroy(int win_id) { _sys_destroy_window(win_id); }
+void OS1_window_destroy(int win_id) { os1_video_window_destroy(win_id); }
 void OS1_window_draw(int win_id, int x, int y, int w, int h,
                      unsigned int color) {
   _sys_window_draw(win_id, x, y, w, h, color);
 }
 void OS1_window_blit(int win_id, int x, int y, int w, int h,
                      const unsigned int *buf) {
-  _sys_window_blit(win_id, x, y, w, h, buf);
+  (void)os1_video_present_argb8888(win_id, x, y, w, h, buf,
+                                    (size_t)w * (size_t)h);
 }
 void OS1_window_write(int win_id, const char *buf, unsigned long count) {
   _sys_window_write(win_id, buf, count);
@@ -314,15 +316,15 @@ void OS1_window_set_focus(int pid) {
   _sys_set_focus(pid);
 }
 int OS1_window_resize(int win_id, int w, int h) {
-  return _sys_window_resize(win_id, w, h);
+  return os1_video_window_resize(win_id, w, h);
 }
 void OS1_gfx_draw(int x, int y, int w, int h, int color) {
   _sys_draw(x, y, w, h, color);
 }
 /* flush ≡ render: both just pushed the compositor.  Unified onto the single
  * SYS_COMPOSITOR_RENDER syscall (the duplicate SYS_FLUSH was retired). */
-void OS1_gfx_flush(void) { _sys_compositor_render(); }
-void OS1_gfx_render(void) { _sys_compositor_render(); }
+void OS1_gfx_flush(void) { os1_video_render(); }
+void OS1_gfx_render(void) { os1_video_render(); }
 
 /* Identity / privilege introspection (nxperm foundation): the caller's own
  * level + cap mask, unpacked from the (level<<16)|caps syscall return. */

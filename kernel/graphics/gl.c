@@ -32,12 +32,10 @@
  *   compositor_lock held (as compositor_render_internal does), but they must
  *   not be called from hard-IRQ context without that protection.
  *
- * Known issues:
- *   GFX-GL-01 (W1 MISSING) gl_draw_rect (unfilled outline rectangle) and
- *              gl_swizzle_bgr are declared in <graphics/gl.h> but have no
- *              implementation here.  No kernel C caller currently exists, so
- *              there is no link error, but any future caller will break the
- *              link step.
+ * Compatibility:
+ *   gl_draw_rect and gl_swizzle_bgr complete the declared internal surface
+ *   contract. They are kernel primitives only; they do not expose OpenGL to
+ *   applications, which remains a userland personality.
  */
 #include <graphics/gl.h>
 #include <kernel/string.h>
@@ -166,6 +164,20 @@ void gl_draw_line(struct gl_surface *surf, int x0, int y0, int x1, int y1,
   }
 }
 
+/* Outline rectangle with the same exclusive width/height convention as fill. */
+void gl_draw_rect(struct gl_surface *surf, int x, int y, int w, int h,
+                  uint32_t color) {
+  if (!surf || w <= 0 || h <= 0)
+    return;
+  gl_draw_line(surf, x, y, x + w - 1, y, color);
+  if (h > 1)
+    gl_draw_line(surf, x, y + h - 1, x + w - 1, y + h - 1, color);
+  if (w > 1) {
+    gl_draw_line(surf, x, y + 1, x, y + h - 2, color);
+    gl_draw_line(surf, x + w - 1, y + 1, x + w - 1, y + h - 2, color);
+  }
+}
+
 /*
  * gl_draw_rect_fill - draw a solid axis-aligned rectangle clipped to surface.
  *
@@ -201,6 +213,24 @@ void gl_draw_rect_fill(struct gl_surface *surf, int x, int y, int w, int h,
   for (int j = cy; j < y2; j++)
     for (int i = cx; i < x2; i++)
       surf->buffer[j * surf->stride + i] = color;
+}
+
+/* Convert an ABGR8888 buffer to the ARGB8888 contract used by every kernel
+ * surface. This is intentionally in-place: the alpha and green lanes remain
+ * fixed, while red and blue are exchanged. */
+void gl_swizzle_bgr(struct gl_surface *surf) {
+  if (!surf || !surf->buffer || surf->width <= 0 || surf->height <= 0 ||
+      surf->stride < surf->width)
+    return;
+  for (int y = 0; y < surf->height; y++) {
+    for (int x = 0; x < surf->width; x++) {
+      uint32_t pixel = surf->buffer[y * surf->stride + x];
+      uint32_t red = pixel & 0x000000ffu;
+      uint32_t blue = (pixel >> 16) & 0x000000ffu;
+      surf->buffer[y * surf->stride + x] =
+          (pixel & 0xff00ff00u) | (red << 16) | blue;
+    }
+  }
 }
 
 /*

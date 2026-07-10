@@ -211,6 +211,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/sched/process.c \
     $(KERNEL_DIR)/sched/elf.c \
     $(KERNEL_DIR)/graphics/graphics.c \
+    $(KERNEL_DIR)/graphics/surface.c \
     $(KERNEL_DIR)/graphics/region.c \
     $(KERNEL_DIR)/graphics/gl.c \
     $(KERNEL_DIR)/graphics/font.c \
@@ -319,7 +320,8 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
-USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o
+USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o
 USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
 # System ELFs (placed in /sys/bin)

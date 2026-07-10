@@ -31,6 +31,7 @@
 #include <kernel/test.h>
 #include <kernel/string.h>
 #include <kernel/kmalloc.h>
+#include <kernel/gfx_surface.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 
@@ -55,6 +56,33 @@ KTEST_CASE(test_math_basic) {
     int a = 10;
     int b = 20;
     KASSERT_EQ(a + b, 30);
+}
+
+/* test_gfx_surface_contract - test the provider-neutral ARGB8888 facade using
+ * caller-owned memory: clipping, source-over composition and ABGR conversion
+ * all stay independent of the active GPU provider. */
+KTEST_CASE(test_gfx_surface_contract) {
+    uint32_t dst_pixels[16] = {0};
+    uint32_t src_pixels[1] = {0x80FF0000};
+    gfx_surface_t dst = {.width = 4, .height = 4, .stride = 4,
+                         .buffer = dst_pixels, .alpha_mask = NULL};
+    gfx_surface_t src = {.width = 1, .height = 1, .stride = 1,
+                         .buffer = src_pixels, .alpha_mask = NULL};
+    gfx_rect_t clipped = {.x = -1, .y = 1, .width = 3, .height = 1};
+
+    KASSERT(gfx_surface_valid(&dst));
+    gfx_surface_clear(&dst, 0xFF000000);
+    gfx_surface_fill(&dst, &clipped, 0xFF00FF00);
+    KASSERT_EQ(dst_pixels[4], 0xFF00FF00);
+    KASSERT_EQ(dst_pixels[5], 0xFF00FF00);
+    KASSERT_EQ(dst_pixels[6], 0xFF000000);
+
+    gfx_surface_composite_over(&dst, &src, 3, 3);
+    KASSERT_EQ(dst_pixels[15], 0xFF800000);
+
+    dst_pixels[0] = 0xAA112233; /* ABGR: A=AA, B=11, G=22, R=33 */
+    gl_swizzle_bgr(&dst);
+    KASSERT_EQ(dst_pixels[0], 0xAA332211);
 }
 
 /* test_kmalloc_growth - prove the small-object pool grows past one chunk
