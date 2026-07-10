@@ -81,11 +81,29 @@ arch_cpu_yield:
     str w0,       [sp, #800]
     str w1,       [sp, #804]
 
-    /* schedule(frame) -> next task's frame in x0 */
+    /* schedule(frame) -> next task's frame in x0.  Restore it via the ONE
+     * shared epilogue (below), the exact path the trap stubs use — no
+     * hand-rolled second restore (DIR-06 / roadmap Phase 1.A). */
     mov x0, sp
     bl schedule
+    b restore_context
 
-    /* Switch to the returned frame and eret into it (identical to irq_stub). */
+/*
+ * restore_context - the single pt_regs restore + exception-return epilogue.
+ *
+ * Entered with x0 = pointer to the pt_regs frame to load (the return value of
+ * schedule() or an *_handler()).  Switches SP onto that frame, masks IRQ/FIQ,
+ * restores ELR/SPSR/SP_EL0, the full FPU/SIMD file and x0-x30, then ERETs.
+ *
+ * This is the ONLY copy of the restore sequence in the kernel: the sync-
+ * exception stub (vector_stub), the IRQ stub (irq_stub) and the cooperative
+ * yield (arch_cpu_yield) all reach it by branch, so the 816-byte frame layout
+ * lives in exactly one place.  The ERET is context-synchronizing, so a TTBR0
+ * switch performed by schedule()/arch_cpu_switch_context before we get here is
+ * in effect for the returned context.
+ */
+.global restore_context
+restore_context:
     mov sp, x0
     msr daifset, #3
     ldr x0, [sp, #256]
@@ -200,66 +218,10 @@ arch_cpu_yield:
     mov x0, sp
     bl \name\()_handler
     
-    /* Handler returns pointer to new context (x0) */
-    /* Switch stack pointer to the new process's kernel stack */
-    mov sp, x0
-    
-    /* CRITICAL: Mask interrupts before restoring exception state to prevent races */
-    msr daifset, #3
-
-    /* Restore exception state */
-    ldr x0, [sp, #256]
-    ldr x1, [sp, #264]
-    ldr x2, [sp, #272]
-    msr elr_el1, x0
-    msr spsr_el1, x1
-    msr sp_el0, x2
-
-    /* Restore FPU/SIMD registers q0-q31 */
-    ldp q0, q1, [sp, #288]
-    ldp q2, q3, [sp, #320]
-    ldp q4, q5, [sp, #352]
-    ldp q6, q7, [sp, #384]
-    ldp q8, q9, [sp, #416]
-    ldp q10, q11, [sp, #448]
-    ldp q12, q13, [sp, #480]
-    ldp q14, q15, [sp, #512]
-    ldp q16, q17, [sp, #544]
-    ldp q18, q19, [sp, #576]
-    ldp q20, q21, [sp, #608]
-    ldp q22, q23, [sp, #640]
-    ldp q24, q25, [sp, #672]
-    ldp q26, q27, [sp, #704]
-    ldp q28, q29, [sp, #736]
-    ldp q30, q31, [sp, #768]
-
-    /* Restore FPU control/status */
-    ldr w0, [sp, #800]
-    ldr w1, [sp, #804]
-    msr fpsr, x0
-    msr fpcr, x1
-    
-    /* Restore general purpose registers */
-    ldp x0, x1, [sp, #0]
-    ldp x2, x3, [sp, #16]
-    ldp x4, x5, [sp, #32]
-    ldp x6, x7, [sp, #48]
-    ldp x8, x9, [sp, #64]
-    ldp x10, x11, [sp, #80]
-    ldp x12, x13, [sp, #96]
-    ldp x14, x15, [sp, #112]
-    ldp x16, x17, [sp, #128]
-    ldp x18, x19, [sp, #144]
-    ldp x20, x21, [sp, #160]
-    ldp x22, x23, [sp, #176]
-    ldp x24, x25, [sp, #192]
-    ldp x26, x27, [sp, #208]
-    ldp x28, x29, [sp, #224]
-    ldr x30, [sp, #240]
-    
-    /* Deallocate frame and return */
-    add sp, sp, #816
-    eret
+    /* Handler returned the next context in x0; restore it via the ONE shared
+     * epilogue (restore_context) the cooperative yield also uses.  The whole
+     * pt_regs restore lives in exactly one place now (DIR-06 / Phase 1.A). */
+    b restore_context
 .endm
 
 /*
@@ -319,63 +281,9 @@ arch_cpu_yield:
     mov x0, sp
     bl irq_handler
     
-    /* Switch stack pointer */
-    mov sp, x0
-    
-    /* CRITICAL: Mask interrupts before restoring exception state */
-    msr daifset, #3
-
-    /* Restore exception state */
-    ldr x0, [sp, #256]
-    ldr x1, [sp, #264]
-    ldr x2, [sp, #272]
-    msr elr_el1, x0
-    msr spsr_el1, x1
-    msr sp_el0, x2
-
-    /* Restore FPU/SIMD registers q0-q31 */
-    ldp q0, q1, [sp, #288]
-    ldp q2, q3, [sp, #320]
-    ldp q4, q5, [sp, #352]
-    ldp q6, q7, [sp, #384]
-    ldp q8, q9, [sp, #416]
-    ldp q10, q11, [sp, #448]
-    ldp q12, q13, [sp, #480]
-    ldp q14, q15, [sp, #512]
-    ldp q16, q17, [sp, #544]
-    ldp q18, q19, [sp, #576]
-    ldp q20, q21, [sp, #608]
-    ldp q22, q23, [sp, #640]
-    ldp q24, q25, [sp, #672]
-    ldp q26, q27, [sp, #704]
-    ldp q28, q29, [sp, #736]
-    ldp q30, q31, [sp, #768]
-
-    /* Restore FPU control/status */
-    ldr w0, [sp, #800]
-    ldr w1, [sp, #804]
-    msr fpsr, x0
-    msr fpcr, x1
-    
-    ldp x0, x1, [sp, #0]
-    ldp x2, x3, [sp, #16]
-    ldp x4, x5, [sp, #32]
-    ldp x6, x7, [sp, #48]
-    ldp x8, x9, [sp, #64]
-    ldp x10, x11, [sp, #80]
-    ldp x12, x13, [sp, #96]
-    ldp x14, x15, [sp, #112]
-    ldp x16, x17, [sp, #128]
-    ldp x18, x19, [sp, #144]
-    ldp x20, x21, [sp, #160]
-    ldp x22, x23, [sp, #176]
-    ldp x24, x25, [sp, #192]
-    ldp x26, x27, [sp, #208]
-    ldp x28, x29, [sp, #224]
-    ldr x30, [sp, #240]
-    add sp, sp, #816
-    
-    eret
+    /* irq_handler returned the next context in x0; restore it via the ONE
+     * shared epilogue (restore_context) the sync-exception and yield paths use. */
+    b restore_context
 .endm
 
 /*
