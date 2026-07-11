@@ -11,6 +11,11 @@ int NEXSOS_CreateWindowFramebuffer(_THIS, SDL_Window *window, Uint32 *format,
   (void)_this;
   NEXSOS_WindowData *data = (NEXSOS_WindowData *)window->driverdata;
   NEXSOS_DestroyWindowFramebuffer(_this, window);
+  /* Adopt the (possibly compositor-driven) size as the OS1 LOGICAL surface
+   * before allocating the matching SDL framebuffer — the nxlauncher resize
+   * pattern (GFX-DYN-01): the kernel no-ops when the size is unchanged, so
+   * the first acquisition and grip-resize echoes cannot loop. */
+  (void)os1_video_window_resize(data->os1_window, window->w, window->h);
   data->framebuffer = SDL_CreateRGBSurfaceWithFormat(
       0, window->w, window->h, 32, SDL_PIXELFORMAT_ARGB8888);
   if (!data->framebuffer)
