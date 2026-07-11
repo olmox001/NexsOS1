@@ -322,7 +322,8 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o
 USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
 # System ELFs (placed in /sys/bin)
