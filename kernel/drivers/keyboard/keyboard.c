@@ -302,10 +302,12 @@ static int input_ring_pop(struct input_evt *out);
 static void input_dispatch(uint16_t type, uint16_t code, int32_t value) {
   switch (type) {
   case EV_KEY:
-    if (code == BTN_LEFT) {
-      compositor_handle_click(BTN_LEFT, value);
-    } else if (code == BTN_RIGHT || code == BTN_MIDDLE) {
-      /* No compositor consumer for these yet. */
+    if (code == BTN_LEFT || code == BTN_RIGHT || code == BTN_MIDDLE) {
+      /* All pointer buttons reach the compositor; it drives WM actions
+       * (drag/resize/titlebar) from BTN_LEFT only and forwards every
+       * button to the focused app (right/middle were silently dropped
+       * before, so apps could never see them). */
+      compositor_handle_click((int)code, value);
     } else {
       keyboard_process_key(code, value);
       wake_up(&keyboard_wait_queue);

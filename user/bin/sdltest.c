@@ -80,9 +80,12 @@ int main(void) {
         cur_x = event.motion.x;
         cur_y = event.motion.y;
       }
-      if (event.type == SDL_MOUSEBUTTONDOWN) {
-        printf("[SDLTest] mouse button %d at %d,%d\n", event.button.button,
+      if (event.type == SDL_MOUSEBUTTONUP)
+        printf("[SDLTest] mouse button %d UP at %d,%d\n", event.button.button,
                event.button.x, event.button.y);
+      if (event.type == SDL_MOUSEBUTTONDOWN) {
+        printf("[SDLTest] mouse button %d DOWN at %d,%d\n",
+               event.button.button, event.button.x, event.button.y);
         if (event.button.button == SDL_BUTTON_LEFT) {
           border_r = 0; border_g = 255; border_b = 0;
         } else if (event.button.button == SDL_BUTTON_RIGHT) {

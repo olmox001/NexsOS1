@@ -1173,27 +1173,69 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
  * Handle Mouse Click
  */
 void compositor_handle_click(int button, int state) {
-  (void)button;
-
   if (state == 0) {
     /* Button up: end drag/resize.  If we were resizing, tell the window owner
      * its new size so it can reallocate a crisp buffer (it may ignore it and
      * stay scaled). */
     int notify_pid = -1, nw = 0, nh = 0;
+    int release_pid = -1;
+    struct ipc_message release_msg = {0};
     uint64_t rflags;
     spin_lock_irqsave(&compositor_lock, &rflags);
-    dragging_window_id = -1;
-    if (resizing_window_id != -1) {
-      for (int i = 0; i < MAX_WINDOWS; i++) {
-        if (windows[i].id == resizing_window_id) {
-          notify_pid = windows[i].pid;
-          nw = windows[i].draw_w;
-          nh = windows[i].draw_h;
-          break;
+    /* Only the LEFT button drives drag/resize, so only its release ends
+     * them (a right/middle release must not cancel an ongoing left-drag). */
+    if (button == BTN_LEFT) {
+      dragging_window_id = -1;
+      if (resizing_window_id != -1) {
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+          if (windows[i].id == resizing_window_id) {
+            notify_pid = windows[i].pid;
+            nw = windows[i].draw_w;
+            nh = windows[i].draw_h;
+            break;
+          }
         }
+        resizing_window_id = -1;
+        resize_edge = 0;
       }
-      resizing_window_id = -1;
-      resize_edge = 0;
+    }
+    /* Deliver the RELEASE to the focused app with the same IPC_TYPE_MOUSE
+     * message the press uses (data2 = 0) — no new ABI.  Button-state
+     * consumers (SDL tracks pressed buttons) need the matching release or
+     * every press after the first is treated as still-held.  The pointer may
+     * be released outside the window, so coordinates are clamped into the
+     * content area before the draw-rect -> logical mapping. */
+    if (keyboard_focus_pid > 0) {
+      for (int i = 0; i < MAX_WINDOWS; i++) {
+        struct window *fw = &windows[i];
+        if (fw->id == 0 || !fw->visible || fw->passive ||
+            fw->pid != keyboard_focus_pid)
+          continue;
+        int fdw = fw->draw_w > 0 ? fw->draw_w : fw->width;
+        int fdh = fw->draw_h > 0 ? fw->draw_h : fw->height;
+        int rel_x = mouse_x - fw->x;
+        int rel_y = mouse_y - fw->y;
+        if (rel_x < 0)
+          rel_x = 0;
+        if (rel_y < 0)
+          rel_y = 0;
+        if (rel_x >= fdw)
+          rel_x = fdw - 1;
+        if (rel_y >= fdh)
+          rel_y = fdh - 1;
+        if (fdw > 0 && fdw != fw->width)
+          rel_x = (int)((int64_t)rel_x * fw->width / fdw);
+        if (fdh > 0 && fdh != fw->height)
+          rel_y = (int)((int64_t)rel_y * fw->height / fdh);
+        release_msg.from = 0; /* Kernel */
+        release_msg.type = IPC_TYPE_MOUSE;
+        release_msg.data1 = (uint64_t)button;
+        release_msg.data2 = 0;
+        memcpy(release_msg.payload, &rel_x, 4);
+        memcpy(release_msg.payload + 4, &rel_y, 4);
+        release_pid = keyboard_focus_pid;
+        break;
+      }
     }
     spin_unlock_irqrestore(&compositor_lock, rflags);
     if (notify_pid > 0) {
@@ -1203,6 +1245,8 @@ void compositor_handle_click(int button, int state) {
       msg.data2 = (uint64_t)nh;
       kernel_ipc_send(notify_pid, &msg);
     }
+    if (release_pid > 0)
+      kernel_ipc_send(release_pid, &release_msg);
     return;
   }
 
@@ -1274,7 +1318,7 @@ void compositor_handle_click(int button, int state) {
         mouse_y >= hit->y + dh - RESIZE_GRIP && mouse_y < hit->y + dh)
       edge |= RESIZE_EDGE_B;
 
-    if (edge && !hit->protected) {
+    if (button == BTN_LEFT && edge && !hit->protected) {
       resizing_window_id = hit->id;
       resize_edge = edge;
       resize_start_mx = mouse_x;
@@ -1305,23 +1349,28 @@ void compositor_handle_click(int button, int state) {
   int send_pid = -1;
   struct ipc_message msg = {0};
   if (keyboard_focus_pid > 0) {
-    msg.from = 0; /* Kernel */
-    msg.type = IPC_TYPE_MOUSE;
-    msg.data1 = (uint64_t)button;
-    msg.data2 = (uint64_t)state;
-    /* Store relative coordinates in payload, mapped from the on-screen draw
-     * rect back to the app's LOGICAL surface so the app sees its own coords. */
+    /* Relative coordinates, mapped from the on-screen draw rect back to the
+     * app's LOGICAL surface so the app sees its own coords.  Only presses in
+     * the CONTENT area are delivered: chrome presses (titlebar, buttons,
+     * drag) belong to the window manager, and a negative rel_y would leak
+     * WM geometry into the app's input stream. */
     int hdw = hit->draw_w > 0 ? hit->draw_w : hit->width;
     int hdh = hit->draw_h > 0 ? hit->draw_h : hit->height;
     int rel_x = mouse_x - hit->x;
     int rel_y = mouse_y - hit->y;
-    if (hdw > 0 && hdw != hit->width)
-      rel_x = (int)((int64_t)rel_x * hit->width / hdw);
-    if (hdh > 0 && hdh != hit->height)
-      rel_y = (int)((int64_t)rel_y * hit->height / hdh);
-    memcpy(msg.payload, &rel_x, 4);
-    memcpy(msg.payload + 4, &rel_y, 4);
-    send_pid = keyboard_focus_pid;
+    if (rel_x >= 0 && rel_y >= 0 && rel_x < hdw && rel_y < hdh) {
+      if (hdw > 0 && hdw != hit->width)
+        rel_x = (int)((int64_t)rel_x * hit->width / hdw);
+      if (hdh > 0 && hdh != hit->height)
+        rel_y = (int)((int64_t)rel_y * hit->height / hdh);
+      msg.from = 0; /* Kernel */
+      msg.type = IPC_TYPE_MOUSE;
+      msg.data1 = (uint64_t)button;
+      msg.data2 = (uint64_t)state;
+      memcpy(msg.payload, &rel_x, 4);
+      memcpy(msg.payload + 4, &rel_y, 4);
+      send_pid = keyboard_focus_pid;
+    }
   }
 
   /* Capture a titlebar-button hit; the action is deferred until after unlock.
@@ -1331,7 +1380,7 @@ void compositor_handle_click(int button, int state) {
   int close_pid = 0;
   int do_minimize = 0;
   int min_id = 0;
-  if (!hit->protected) {
+  if (button == BTN_LEFT && !hit->protected) {
     const compositor_style_t *st = compositor_style_active();
     int hdw = hit->draw_w > 0 ? hit->draw_w : hit->width;
     int title_h = compositor_titlebar_height();
@@ -1353,8 +1402,8 @@ void compositor_handle_click(int button, int state) {
   }
 
   /* Check for drag start (skipped when closing/minimizing, matching the old
-   * early-return). */
-  if (!do_close && !do_minimize &&
+   * early-return).  Left button only: right/middle never start a drag. */
+  if (button == BTN_LEFT && !do_close && !do_minimize &&
       mouse_y >= hit->y - compositor_titlebar_height() && mouse_y < hit->y) {
     dragging_window_id = hit->id;
     drag_off_x = mouse_x - hit->x;
