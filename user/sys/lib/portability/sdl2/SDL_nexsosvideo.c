@@ -78,8 +78,19 @@ int NEXSOS_CreateWindow(_THIS, SDL_Window *window) {
   if (!data)
     return SDL_OutOfMemory();
 
-  data->os1_window = os1_video_window_create(window->x, window->y, window->w,
-                                              window->h, window->title);
+  /* SDL core applies the title AFTER CreateSDLWindow (via SetWindowTitle),
+   * so window->title is still NULL here; OS1 requires a title at creation.
+   * Positions may still carry the UNDEFINED/CENTERED magic values. */
+  const char *title = window->title ? window->title : "SDL2";
+  int x = window->x;
+  int y = window->y;
+  if (SDL_WINDOWPOS_ISUNDEFINED(x) || SDL_WINDOWPOS_ISCENTERED(x))
+    x = 60;
+  if (SDL_WINDOWPOS_ISUNDEFINED(y) || SDL_WINDOWPOS_ISCENTERED(y))
+    y = 60;
+
+  data->os1_window =
+      os1_video_window_create(x, y, window->w, window->h, title);
   if (data->os1_window < 0) {
     SDL_free(data);
     return SDL_SetError("NexsOS window creation failed");

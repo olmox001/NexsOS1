@@ -52,19 +52,28 @@ int main(void) {
         running = 0;
     }
 
-    /* Animated gradient + sweeping bar, drawn with plain SDL surface ops. */
+    /* STATIC gradient (any apparent motion of it is a presentation bug) +
+     * three pure-channel squares for colour verification; the white bar is
+     * the only element meant to move. */
     Uint32 *pixels = (Uint32 *)surface->pixels;
     int pitch_px = surface->pitch / 4;
     for (int y = 0; y < TEST_H; y++) {
       Uint8 g = (Uint8)((y * 255) / TEST_H);
       for (int x = 0; x < TEST_W; x++) {
-        Uint8 r = (Uint8)(((x + frame) * 255 / TEST_W) & 0xFF);
+        Uint8 r = (Uint8)((x * 255) / TEST_W);
         pixels[y * pitch_px + x] = 0xFF000000u | ((Uint32)r << 16) |
                                    ((Uint32)g << 8) | (Uint32)(255 - r);
       }
     }
+    /* Channel check: pure red, green, blue squares (left to right). */
+    SDL_Rect red = {12, 12, 32, 32}, green = {52, 12, 32, 32},
+             blue = {92, 12, 32, 32};
+    SDL_FillRect(surface, &red, SDL_MapRGB(surface->format, 255, 0, 0));
+    SDL_FillRect(surface, &green, SDL_MapRGB(surface->format, 0, 255, 0));
+    SDL_FillRect(surface, &blue, SDL_MapRGB(surface->format, 0, 0, 255));
+
     int bar_x = (frame * 3) % TEST_W;
-    SDL_Rect bar = {bar_x, 0, 8, TEST_H};
+    SDL_Rect bar = {bar_x, TEST_H - 24, 8, 24};
     SDL_FillRect(surface, &bar, SDL_MapRGB(surface->format, 255, 255, 255));
 
     if (SDL_UpdateWindowSurface(window) != 0) {
