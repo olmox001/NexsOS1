@@ -5,6 +5,7 @@
 SDL_NEXSOS_OVERLAY_SRCS := \
   user/sys/lib/portability/sdl2/SDL_nexsosvideo.c \
   user/sys/lib/portability/sdl2/SDL_nexsosframebuffer.c \
-  user/sys/lib/portability/sdl2/SDL_nexsosevents.c
+  user/sys/lib/portability/sdl2/SDL_nexsosevents.c \
+  user/sys/lib/portability/sdl2/SDL_nexsostimer.c
 SDL_NEXSOS_OVERLAY_CONFIG := user/sys/lib/portability/sdl2/SDL_config_nexsos.h
 SDL_NEXSOS_OVERLAY_CPPFLAGS := -D__NEXSOS__ -include $(SDL_NEXSOS_OVERLAY_CONFIG)

@@ -54,7 +54,11 @@
 #define SDL_SENSOR_DISABLED 1
 #define SDL_LOADSO_DISABLED 1
 #define SDL_THREADS_DISABLED 1
-#define SDL_TIMERS_DISABLED 1
 #define SDL_FILESYSTEM_DUMMY 1
+
+/* Timers are REAL: SDL_nexsostimer.c in the overlay maps
+ * SDL_GetTicks64/SDL_Delay/performance counters onto os1_mono_ns and
+ * _sys_nanosleep.  (SDL_AddTimer callbacks still need threads, which stay
+ * disabled; SDL_Init(SDL_INIT_TIMER) reports that at runtime.) */
 
 #endif /* SDL_config_nexsos_h_ */

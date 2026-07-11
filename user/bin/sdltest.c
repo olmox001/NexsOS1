@@ -4,10 +4,10 @@
  * libSDL2.a (cross-built, unpatched submodule) -> 'nexsos' video driver
  * overlay -> os1_video_platform -> OS1 window/blit/input ABI.
  *
- * Draws an animated colour gradient with a moving bar through
- * SDL_GetWindowSurface/SDL_UpdateWindowSurface (the software framebuffer
- * path) and quits on Escape or SDL_QUIT.  Frame pacing uses OS1_sleep since
- * the SDL timer subsystem is intentionally disabled in this profile.
+ * Draws a STATIC gradient with R/G/B channel squares and one moving white
+ * bar through SDL_GetWindowSurface/SDL_UpdateWindowSurface (the software
+ * framebuffer path) and quits on Escape or SDL_QUIT.  Frame pacing uses
+ * SDL_Delay via the NexsOS SDL timer backend (os1_mono_ns/_sys_nanosleep).
  */
 #include <os1.h>
 
@@ -85,8 +85,11 @@ int main(void) {
     if (frame == 1)
       printf("[SDLTest] first frame presented via driver '%s'\n",
              SDL_GetCurrentVideoDriver());
+    if (frame == 120)
+      printf("[SDLTest] 120 frames in %u ms (SDL_GetTicks64)\n",
+             (unsigned)SDL_GetTicks64());
 
-    OS1_sleep(16); /* ~60 FPS; SDL timers are disabled in this profile */
+    SDL_Delay(16); /* ~60 FPS through the NexsOS SDL timer backend */
   }
 
   SDL_DestroyWindow(window);
