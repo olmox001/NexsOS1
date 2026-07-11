@@ -108,6 +108,56 @@ typedef struct {
 /* Success */
 #define EOK 0
 
+/* os1_strerror - errno -> human-readable string.  Single source of truth for
+ * BOTH kernel and userland (this header is already the shared home of the
+ * EPERM..ENOTEMPTY macros above, included by the kernel build via
+ * -Iinclude/api same as userland) — previously userland's lib.c carried its
+ * own 11-case switch (strerror()) that silently fell back to "Unknown
+ * error" for anything past ENOSYS.  static inline: safe to include in any
+ * number of translation units, no libc calls. */
+static inline const char *os1_strerror(int err) {
+  switch (err) {
+  case EOK: return "Success";
+  case EPERM: return "Operation not permitted";
+  case ENOENT: return "No such file or directory";
+  case ESRCH: return "No such process";
+  case EINTR: return "Interrupted system call";
+  case EIO: return "I/O error";
+  case ENXIO: return "No such device or address";
+  case E2BIG: return "Argument list too long";
+  case ENOEXEC: return "Exec format error";
+  case EBADF: return "Bad file descriptor";
+  case ECHILD: return "No child processes";
+  case EAGAIN: return "Resource temporarily unavailable";
+  case ENOMEM: return "Cannot allocate memory";
+  case EACCES: return "Permission denied";
+  case EFAULT: return "Bad address";
+  case ENOTBLK: return "Block device required";
+  case EBUSY: return "Device or resource busy";
+  case EEXIST: return "File exists";
+  case EXDEV: return "Cross-device link";
+  case ENODEV: return "No such device";
+  case ENOTDIR: return "Not a directory";
+  case EISDIR: return "Is a directory";
+  case EINVAL: return "Invalid argument";
+  case ENFILE: return "Too many open files in system";
+  case EMFILE: return "Too many open files";
+  case ENOTTY: return "Inappropriate ioctl for device";
+  case ETXTBSY: return "Text file busy";
+  case EFBIG: return "File too large";
+  case ENOSPC: return "No space left on device";
+  case ESPIPE: return "Illegal seek";
+  case EROFS: return "Read-only file system";
+  case EMLINK: return "Too many links";
+  case EPIPE: return "Broken pipe";
+  case EDOM: return "Numerical argument out of domain";
+  case ERANGE: return "Numerical result out of range";
+  case ENOSYS: return "Function not implemented";
+  case ENOTEMPTY: return "Directory not empty";
+  default: return "Unknown error";
+  }
+}
+
 /* open(2) flags (ABI-03 fd table).  Only the access mode is supported for
  * now: the VFS cannot create or truncate files yet, so O_CREAT/O_TRUNC/
  * O_APPEND are rejected with -EINVAL rather than silently ignored.
@@ -164,6 +214,20 @@ typedef struct {
 #define IPC_TYPE_NOTIFY 0x100
 #define IPC_TYPE_MOUSE 4
 #define IPC_TYPE_RESIZE 0x200 /* window/desktop resize: data1=w, data2=h (GFX-DYN-01) */
+
+/* IPC_LOOK_PING_MAGIC - marks an IPC_TYPE_NOTIFY message (in .data2) as a
+ * SILENT compositor look-changed ping (nxres_broadcast_look, user/sys/bin/
+ * nxres.h) rather than a user-facing notification — a real notify() call
+ * never sets data2, so the two can never collide.  Lives here (not in
+ * nxres.h) because input_poll_event (user/sys/lib/lib.c) — the SINGLE
+ * consumer of every windowed app's IPC mailbox — needs it too: every app
+ * already funnels keyboard/mouse/resize through that one try_recv() call,
+ * so a second, competing try_recv() loop elsewhere in the same app (the
+ * first version of this feature) silently STOLE mouse/keyboard messages
+ * before input_poll_event ever saw them.  Recognizing the ping inside
+ * input_poll_event itself (as INPUT_TYPE_LOOK_CHANGED, input.h) keeps the
+ * mailbox single-consumer, exactly like IPC_TYPE_RESIZE already is. */
+#define IPC_LOOK_PING_MAGIC 0x4C4F4F4Bu /* "LOOK" */
 
 /* IPC message structure */
 struct ipc_message {

@@ -652,8 +652,21 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
     /* stdout/stderr: resolve the caller's OWN window first (a process with its
      * own window renders there), else its controlling terminal (the launching
      * shell) — the folded-in FD_WIN path.  window_text_write copies the user
-     * buffer and mirrors it to the UART. */
-    int win_id = current_process
+     * buffer and mirrors it to the UART.
+     *
+     * self_rendered (sched.h) processes are excluded from the own-window
+     * branch: once a process has blitted its OWN pixel content into a
+     * window (SYS_WINDOW_BLIT, syscall_dispatch.c), that window's buffer is
+     * its custom UI, not a text console — an implicit stdout write here
+     * (printf, an uncaught crash message, ...) must not draw glyphs over
+     * it.  Falls through to ctty_win (a self-rendering app's own printf
+     * still lands SOMEWHERE sane if it has a controlling terminal) or -1
+     * (window_text_write's `win_id > 0` gate then skips the compositor
+     * draw entirely; the UART mirror above is unaffected either way).
+     * SYS_WINDOW_WRITE (printf_win) is a SEPARATE, explicit call a self-
+     * rendering app can still use on purpose — only this implicit fd=1/2
+     * path is gated. */
+    int win_id = (current_process && !current_process->self_rendered)
                      ? compositor_get_window_by_pid((int)current_process->pid)
                      : -1;
     if (win_id <= 0 && current_process)

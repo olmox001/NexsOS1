@@ -445,7 +445,18 @@ int OS1_registry_get(const char *key, char *buf, size_t size) {
   return (int)_sys_registry(0, key, buf, size);
 }
 int OS1_registry_set(const char *key, const char *value) {
-  return (int)_sys_registry(1, key, (char *)value, strlen(value));
+  int rc = (int)_sys_registry(1, key, (char *)value, strlen(value));
+  /* The kernel only ever pr_warn/UART-logs an owner-mismatch denial — it
+   * must not know about notifications, IPC to a specific service, or any
+   * other userland concept (kernel/userland separation).  The CALLER
+   * already gets -EACCES back synchronously right here, so it is the one
+   * that reports on itself, through the ordinary notify() transport every
+   * other warning already uses (no kernel involvement, no polling
+   * anywhere: nxntfy_srv picks it up via its existing blocking recv(),
+   * nxbar's already-per-frame ring read picks it up from there). */
+  if (rc == -EACCES)
+    OS1_notify_warn("registry", key);
+  return rc;
 }
 int OS1_registry_enum(char *buf, size_t size) {
   return (int)_sys_registry(2, 0, buf, size);
@@ -538,7 +549,15 @@ int getcwd(char *buf, size_t size) { return OS1_fs_getcwd(buf, size); }
  * declaration in fcntl.h; the optional mode argument is ignored because the
  * VFS cannot create files yet (the kernel rejects O_CREAT with -EINVAL). */
 int open(const char *pathname, int flags, ...) {
-  return _sys_open(pathname, flags);
+  int fd = (int)_sys_open(pathname, flags);
+  /* Same reasoning as OS1_registry_set's -EACCES handling above: the kernel
+   * (vfs_write_allowed, kernel/fs/vfs.c) only ever pr_warn/UART-logs a
+   * protected-path write denial — it never touches IPC or notifications.
+   * The caller already has -EACCES back right here, so it reports on
+   * itself through the ordinary notify() transport. */
+  if (fd == -EACCES)
+    OS1_notify_warn("vfs", pathname);
+  return fd;
 }
 int close(int fd) { return _sys_close(fd); }
 long lseek(int fd, long offset, int whence) {
@@ -712,6 +731,11 @@ int OS1_notify_post(const char *title, const char *msg) {
 int OS1_notify_warn(const char *title, const char *msg) {
   return notify_send(title, msg, 1);
 } /* yellow */
+int OS1_notify_error(const char *title, const char *msg) {
+  return notify_send(title, msg, 2);
+} /* red — previously only the kernel crash handler (fault.c) could reach
+   * severity 2 (m.data1 = 2, kernel_ipc_send bypassing this function
+   * entirely); userland callers can now post one directly too. */
 int notify(const char *title, const char *msg) {
   return notify_send(title, msg, 0);
 } /* compat shim (DIR-01 F4) */
@@ -883,6 +907,15 @@ int input_poll_event(input_event_t *event) {
     event->type = INPUT_TYPE_RESIZE;
     event->resize.w = (int)msg.data1;
     event->resize.h = (int)msg.data2;
+    return 1;
+  } else if (msg.type == IPC_TYPE_NOTIFY && msg.data2 == IPC_LOOK_PING_MAGIC) {
+    /* Silent compositor look-changed ping (nxres_broadcast_look, nxres.h),
+     * tagged via data2 so it is never confused with a real notify() call.
+     * Surfaced here (not drained by a second, competing try_recv() loop
+     * elsewhere) so this stays the single consumer of the mailbox — a
+     * second loop would silently steal keyboard/mouse messages before this
+     * function ever saw them. */
+    event->type = INPUT_TYPE_LOOK_CHANGED;
     return 1;
   }
   return 0;
@@ -1385,34 +1418,11 @@ char *strtok(char *str, const char *delim) {
 }
 
 char *strerror(int errnum) {
-  switch (errnum) {
-  case 0:
-    return (char *)"Success";
-  case ENOENT:
-    return (char *)"No such file or directory";
-  case EBADF:
-    return (char *)"Bad file descriptor";
-  case EACCES:
-    return (char *)"Permission denied";
-  case EEXIST:
-    return (char *)"File exists";
-  case ENOTDIR:
-    return (char *)"Not a directory";
-  case EISDIR:
-    return (char *)"Is a directory";
-  case EINVAL:
-    return (char *)"Invalid argument";
-  case ENOSPC:
-    return (char *)"No space left on device";
-  case ENOMEM:
-    return (char *)"Cannot allocate memory";
-  case EFAULT:
-    return (char *)"Bad address";
-  case ENOSYS:
-    return (char *)"Function not implemented";
-  default:
-    return (char *)"Unknown error";
-  }
+  /* os1_strerror (posix_types.h): single source of truth shared with the
+   * kernel — this used to be its own 11-case switch that silently fell
+   * back to "Unknown error" for anything past ENOSYS (EPERM, ESRCH,
+   * EAGAIN, EBUSY, ... all missing). */
+  return (char *)os1_strerror(errnum);
 }
 
 /* --- <stdlib.h> --- */

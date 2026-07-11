@@ -180,6 +180,10 @@ long OS1low_ipc_recv(int pid, struct ipc_message *msg);
 long OS1low_ipc_try_recv(int pid, struct ipc_message *msg);
 int  OS1_notify_post(const char *title, const char *msg);
 int  OS1_notify_warn(const char *title, const char *msg); /* yellow (severity 1) */
+int  OS1_notify_error(const char *title, const char *msg); /* red (severity 2) — was
+                                                            * kernel-crash-only (fault.c);
+                                                            * now reachable from
+                                                            * userland too */
 int send(int pid, struct ipc_message *msg);
 int recv(int pid, struct ipc_message *msg);
 int try_recv(int pid, struct ipc_message *msg);

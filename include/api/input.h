@@ -8,6 +8,13 @@
 #define INPUT_TYPE_KEYBOARD 1
 #define INPUT_TYPE_MOUSE    2
 #define INPUT_TYPE_RESIZE   3  /* window/desktop resized: event.resize.w/h (GFX-DYN-01) */
+#define INPUT_TYPE_LOOK_CHANGED 4 /* compositor style/theme/bg changed elsewhere
+                                    * (nxres_broadcast_look, nxres.h) — no
+                                    * payload; re-read nxres_get_*() and
+                                    * reload the palette.  Delivered via the
+                                    * same try_recv() input_poll_event already
+                                    * drains (IPC_LOOK_PING_MAGIC, posix_types.h)
+                                    * instead of a second competing recv loop. */
 
 /* Key states */
 #define KEY_RELEASED 0

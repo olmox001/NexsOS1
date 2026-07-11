@@ -34,7 +34,11 @@ int main(void) {
 
   SDL_Surface *surface = SDL_GetWindowSurface(window);
   if (!surface) {
-    printf("[SDLTest] SDL_GetWindowSurface failed: %s\n", SDL_GetError());
+    /* The window already exists at this point (NEXSOS_CreateWindow ->
+     * os1_video_window_create -> the same win->buffer window_text_write
+     * draws into) — printf() here would draw text into it instead of a
+     * notification popup, right before destroying it. */
+    OS1_notify_error("SDLTest", SDL_GetError());
     SDL_DestroyWindow(window);
     SDL_Quit();
     exit(1);
@@ -63,7 +67,7 @@ int main(void) {
          * framebuffer and adopts the new OS1 logical size in the driver). */
         surface = SDL_GetWindowSurface(window);
         if (!surface) {
-          printf("[SDLTest] surface re-acquire failed: %s\n", SDL_GetError());
+          OS1_notify_error("SDLTest", SDL_GetError());
           running = 0;
           break;
         }
@@ -74,18 +78,19 @@ int main(void) {
         if (sq_y > win_h - 20) sq_y = win_h > 20 ? win_h - 20 : 0;
         if (cur_x >= win_w) cur_x = win_w - 1;
         if (cur_y >= win_h) cur_y = win_h - 1;
-        printf("[SDLTest] resized to %dx%d\n", win_w, win_h);
       }
       if (event.type == SDL_MOUSEMOTION) {
         cur_x = event.motion.x;
         cur_y = event.motion.y;
       }
-      if (event.type == SDL_MOUSEBUTTONUP)
-        printf("[SDLTest] mouse button %d UP at %d,%d\n", event.button.button,
-               event.button.x, event.button.y);
       if (event.type == SDL_MOUSEBUTTONDOWN) {
-        printf("[SDLTest] mouse button %d DOWN at %d,%d\n",
-               event.button.button, event.button.x, event.button.y);
+        /* Per-click/per-key logging was dropped entirely rather than
+         * rerouted to notify() — this window already exists and redraws
+         * every frame (window_text_write shares win->buffer with the
+         * gradient this loop draws), and a popup on every click/keypress
+         * would be far more disruptive than the corruption it replaces;
+         * the visible colour/position changes below already confirm the
+         * event reached the app. */
         if (event.button.button == SDL_BUTTON_LEFT) {
           border_r = 0; border_g = 255; border_b = 0;
         } else if (event.button.button == SDL_BUTTON_RIGHT) {
@@ -94,8 +99,6 @@ int main(void) {
       }
       if (event.type == SDL_KEYDOWN) {
         SDL_Scancode sc = event.key.keysym.scancode;
-        printf("[SDLTest] key down: scancode %d (%s)\n", (int)sc,
-               SDL_GetScancodeName(sc));
         if (sc == SDL_SCANCODE_ESCAPE)
           running = 0;
         if (sc == SDL_SCANCODE_LEFT)
@@ -111,8 +114,6 @@ int main(void) {
         if (sq_y < 0) sq_y = 0;
         if (sq_y > win_h - 20) sq_y = win_h - 20;
       }
-      if (event.type == SDL_TEXTINPUT)
-        printf("[SDLTest] text: %s\n", event.text.text);
     }
 
     /* STATIC gradient (any apparent motion of it is a presentation bug) +
@@ -162,7 +163,7 @@ int main(void) {
        * instead of quitting. */
       surface = SDL_GetWindowSurface(window);
       if (!surface) {
-        printf("[SDLTest] present failed: %s\n", SDL_GetError());
+        OS1_notify_error("SDLTest", SDL_GetError());
         running = 0;
       } else {
         win_w = surface->w;
@@ -171,12 +172,23 @@ int main(void) {
     }
 
     frame++;
-    if (frame == 1)
-      printf("[SDLTest] first frame presented via driver '%s'\n",
-             SDL_GetCurrentVideoDriver());
-    if (frame == 120)
-      printf("[SDLTest] 120 frames in %u ms (SDL_GetTicks64)\n",
-             (unsigned)SDL_GetTicks64());
+    /* Milestone confirmations (first frame presented, 120-frame mark) go
+     * through the notification popup — same window/buffer reasoning as
+     * above — instead of the per-frame-loop printf() this file used to
+     * have; unlike the removed click/key logging these fire once each, so
+     * a popup is not disruptive. */
+    if (frame == 1) {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "first frame presented via driver '%s'",
+               SDL_GetCurrentVideoDriver());
+      OS1_notify_post("SDLTest", msg);
+    }
+    if (frame == 120) {
+      char msg[64];
+      snprintf(msg, sizeof(msg), "120 frames in %u ms",
+               (unsigned)SDL_GetTicks64());
+      OS1_notify_post("SDLTest", msg);
+    }
 
     SDL_Delay(16); /* ~60 FPS through the NexsOS SDL timer backend */
   }

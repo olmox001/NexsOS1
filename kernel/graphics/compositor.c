@@ -398,6 +398,83 @@ void compositor_get_size(int *w, int *h) {
 }
 
 /*
+ * compositor_reserved_top_locked / compositor_reserved_bottom_locked -
+ * FIX(GFX-COMP-RESERVE-01): infer the screen-edge strip currently claimed by
+ * permanent top_most chrome (nxbar's top bar, nxui's dock) so that ordinary
+ * window placement/resize/drag never slides underneath it.
+ *
+ * Before this fix, compositor_create_window(), compositor_resize(), and
+ * compositor_update_mouse()'s drag clamp only checked compositor_titlebar_
+ * height() at the top (a per-window DECORATION metric — the height of a
+ * window's OWN titlebar — which has nothing to do with nxbar) and the bare
+ * screen edge at the bottom (nothing reserved at all).  Practical effect:
+ *   - a window could be created or dragged with y as low as the titlebar
+ *     height, sliding it underneath nxbar's strip, which the compositor had
+ *     no notion of;
+ *   - any window taller than (screen_h - a few px) got its y clamped to
+ *     "screen_h - h" — flush against the physical bottom edge — with no
+ *     margin for nxui's dock, so it ended up hidden behind the dock instead
+ *     of stopping above it.
+ *
+ * The compositor still does not know "nxbar" or "nxui" by name (kernel/
+ * userland separation, ASTRA §1) — it infers the reservation purely from
+ * geometry: any VISIBLE, TOP_MOST window whose edge sits within
+ * RESERVE_EDGE_SLOP pixels of a screen edge is treated as permanent chrome
+ * anchored to that edge, and its footprint is reserved.  exclude_id lets a
+ * window being placed/dragged skip counting itself (pass 0 if the window has
+ * no id yet, e.g. during creation).  Caller must hold compositor_lock.
+ *
+ * Defined here (ahead of compositor_resize, the first user) rather than
+ * right before compositor_create_window: a static function must be declared
+ * before every call site in the same translation unit, and compositor_resize
+ * appears earlier in this file than compositor_create_window.
+ */
+#define RESERVE_EDGE_SLOP                                                      \
+  8 /* nxui's DOCK_MARGIN_BOTTOM (4px) and nxbar's own                         \
+     * top inset both fall well inside this */
+
+static int compositor_reserved_top_locked(int exclude_id) {
+  /* VECCHIO: partiva da compositor_titlebar_height() → forzava
+   * anche le finestre senza barra (top_most) a stare sotto un
+   * margine inesistente.
+   */
+  /* NUOVO: la riserva è determinata SOLO dalle finestre top_most
+   * ancorate al bordo superiore, non dalla decorazione.
+   */
+  int top = 0;
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == 0 || windows[i].id == exclude_id)
+      continue;
+    if (!windows[i].visible || !windows[i].top_most)
+      continue;
+    if (windows[i].y <= RESERVE_EDGE_SLOP) {
+      int reserved = windows[i].y + windows[i].height;
+      if (reserved > top)
+        top = reserved;
+    }
+  }
+  return top;
+}
+
+static int compositor_reserved_bottom_locked(int exclude_id) {
+  int bottom = 0;
+  int screen_h = bb_height > 0 ? bb_height : 600;
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == 0 || windows[i].id == exclude_id)
+      continue;
+    if (!windows[i].visible || !windows[i].top_most)
+      continue;
+    int gap = screen_h - (windows[i].y + windows[i].height);
+    if (gap >= 0 && gap <= RESERVE_EDGE_SLOP) {
+      int reserved = windows[i].height + gap;
+      if (reserved > bottom)
+        bottom = reserved;
+    }
+  }
+  return bottom;
+}
+
+/*
  * compositor_resize - retarget the backbuffer to the scanout's new w x h.
  *
  * The caller must have already resized the GPU scanout (gpu_set_mode) to the
@@ -431,7 +508,13 @@ void compositor_resize(int w, int h) {
   bb_width = w;
   bb_height = h;
 
-  /* Keep every window's title bar / close button on-screen at the new size. */
+  /* Keep every window's title bar / close button on-screen at the new size.
+   * FIX(GFX-COMP-RESERVE-01): also keep it above nxbar and above nxui's dock
+   * — previously only compositor_titlebar_height() (top) and a bare 20px
+   * (bottom) were enforced, with no notion of either chrome strip, so a
+   * resolution change could resettle a window behind nxbar or behind the
+   * dock. exclude_id=windows[i].id: a top_most window (nxbar/nxui itself)
+   * must not count its own footprint against itself. */
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == 0)
       continue;
@@ -439,10 +522,12 @@ void compositor_resize(int w, int h) {
       windows[i].x = bb_width - 40;
     if (windows[i].x < 0)
       windows[i].x = 0;
-    if (windows[i].y > bb_height - 20)
-      windows[i].y = bb_height - 20;
-    if (windows[i].y < compositor_titlebar_height())
-      windows[i].y = compositor_titlebar_height();
+    int reserved_top = compositor_reserved_top_locked(windows[i].id);
+    int reserved_bottom = compositor_reserved_bottom_locked(windows[i].id);
+    if (windows[i].y > bb_height - reserved_bottom - 20)
+      windows[i].y = bb_height - reserved_bottom - 20;
+    if (windows[i].y < reserved_top)
+      windows[i].y = reserved_top;
   }
 
   damage_x1 = 0;
@@ -560,10 +645,17 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     if (x < 0)
       x = 0;
 
-    if (y + h > screen_h)
-      y = screen_h - h;
-    if (y < compositor_titlebar_height())
-      y = compositor_titlebar_height();
+    /* FIX(GFX-COMP-RESERVE-01): clamp against the LIVE top/bottom chrome
+     * reservation (nxbar/nxui), not just compositor_titlebar_height() at the
+     * top and the bare screen edge at the bottom — see the helper comment
+     * above. exclude_id=0: this window has no id yet, nothing to exclude. */
+    int reserved_top = compositor_reserved_top_locked(0);
+    int reserved_bottom = compositor_reserved_bottom_locked(0);
+
+    if (y + h > screen_h - reserved_bottom)
+      y = screen_h - reserved_bottom - h;
+    if (y < reserved_top)
+      y = reserved_top;
   }
 
   /* Allocate window buffer */
@@ -627,6 +719,21 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   windows[slot].passive = 0;
 
   window_count++;
+
+  /* ============================================================
+   * VECCHIO: nessuna chiamata a expand_damage, nessun compositor_dirty
+   * ============================================================ */
+
+  /* ============================================================
+   * NUOVO: marca l'intera area della finestra (contenuto + barra
+   * del titolo) come danneggiata così il prossimo compositor_tick
+   * la ridisegna immediatamente.
+   * ============================================================ */
+  int ddw = windows[slot].draw_w > 0 ? windows[slot].draw_w : w;
+  int ddh = windows[slot].draw_h > 0 ? windows[slot].draw_h : h;
+  expand_damage(x, y - compositor_titlebar_height(), ddw,
+                ddh + compositor_titlebar_height());
+  compositor_dirty = 1;
 
   pr_debug("Compositor: Created window '%s' (%dx%d) at (%d,%d)\n", title, w, h,
            x, y); /* hot path under GUI churn: demoted (perf §1) */
@@ -1453,10 +1560,11 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
    * runs in mouse-IRQ context and was the ONLY window-list mutator WITHOUT the
    * lock — racing window create/destroy (e.g. 'stress' churning windows) and
    * the render tick.  The torn drag/resize writes to windows[].draw_w/draw_h
-   * could then be consumed out-of-bounds by a concurrent draw syscall (observed:
-   * kernel stack/pointer smash, RIP->0xf9, while dragging a demo3d window).
-   * Same lock order as compositor_handle_click (no caller holds it; the helpers
-   * called below — expand_damage, compositor_titlebar_height — take no lock). */
+   * could then be consumed out-of-bounds by a concurrent draw syscall
+   * (observed: kernel stack/pointer smash, RIP->0xf9, while dragging a demo3d
+   * window). Same lock order as compositor_handle_click (no caller holds it;
+   * the helpers called below — expand_damage, compositor_titlebar_height — take
+   * no lock). */
   uint64_t cflags;
   spin_lock_irqsave(&compositor_lock, &cflags);
 
@@ -1495,15 +1603,21 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
         int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
         windows[i].x = mouse_x - drag_off_x;
         windows[i].y = mouse_y - drag_off_y;
-        /* Enforce screen boundaries (use on-screen draw size) */
+        /* Enforce screen boundaries (use on-screen draw size).
+         * FIX(GFX-COMP-RESERVE-01): clamp against the live nxbar/nxui
+         * reservation instead of just compositor_titlebar_height() at the
+         * top and the bare screen edge at the bottom — a dragged window used
+         * to be draggable right underneath nxbar, or down behind the dock. */
         if (windows[i].x < 0)
           windows[i].x = 0;
         if (windows[i].x + dw > width)
           windows[i].x = width - dw;
-        if (windows[i].y < compositor_titlebar_height())
-          windows[i].y = compositor_titlebar_height();
-        if (windows[i].y + dh > height)
-          windows[i].y = height - dh;
+        int reserved_top = compositor_reserved_top_locked(windows[i].id);
+        int reserved_bottom = compositor_reserved_bottom_locked(windows[i].id);
+        if (windows[i].y < reserved_top)
+          windows[i].y = reserved_top;
+        if (windows[i].y + dh > height - reserved_bottom)
+          windows[i].y = height - reserved_bottom - dh;
         break;
       }
     }
@@ -1662,7 +1776,8 @@ static void compositor_render_internal(void) {
   int clip_w = clip_x2 - clip_x1;
   int clip_h = clip_y2 - clip_y1;
 
-  /* Active theme (colours) + style (form) + background — read once per frame. */
+  /* Active theme (colours) + style (form) + background — read once per frame.
+   */
   const compositor_theme_t *th = compositor_theme_active();
   const compositor_style_t *st = compositor_style_active();
   const compositor_background_t *desk_bg = compositor_background_active();
@@ -1787,10 +1902,11 @@ static void compositor_render_internal(void) {
 
     /* Draw Background — vertical gradient from the active background preset
      * (desk_bg->bg_top -> desk_bg->bg_bottom), interpolated per row. */
-    uint32_t t_r = (desk_bg->bg_top >> 16) & 0xFF, t_g = (desk_bg->bg_top >> 8) & 0xFF,
-             t_b = desk_bg->bg_top & 0xFF;
+    uint32_t t_r = (desk_bg->bg_top >> 16) & 0xFF,
+             t_g = (desk_bg->bg_top >> 8) & 0xFF, t_b = desk_bg->bg_top & 0xFF;
     uint32_t b_r = (desk_bg->bg_bottom >> 16) & 0xFF,
-             b_g = (desk_bg->bg_bottom >> 8) & 0xFF, b_b = desk_bg->bg_bottom & 0xFF;
+             b_g = (desk_bg->bg_bottom >> 8) & 0xFF,
+             b_b = desk_bg->bg_bottom & 0xFF;
     for (int r = 0; r < bg_region->count; r++) {
       struct rect *bg = &bg_region->rects[r];
       for (int y = 0; y < bg->h; y++) {
@@ -1900,11 +2016,11 @@ static void compositor_render_internal(void) {
                 uint32_t title_color = (win->pid == keyboard_focus_pid)
                                            ? th->title_active
                                            : th->title_inactive;
-                                           
+
                 if (st->shadows && title_h > 0)
-                  title_color = gfx_chrome_titlebar_tint(
-                      st->shadow_type, screen_y - decor_y, title_h,
-                      title_color);
+                  title_color = gfx_chrome_titlebar_tint(st->shadow_type,
+                                                         screen_y - decor_y,
+                                                         title_h, title_color);
 
                 /* Titlebar buttons (gfx_chrome): geometry computed once per
                  * window below; drawn only when the window is not protected —
@@ -1918,8 +2034,9 @@ static void compositor_render_internal(void) {
                       st->shadows && st->shadow_type == 2, title_color);
 
                 /* Round the top corners (F3). */
-                if (rr == 0 || gfx_rrect_contains(screen_x - win->x,
-                                            screen_y - decor_y, dw, full_h, rr))
+                if (rr == 0 ||
+                    gfx_rrect_contains(screen_x - win->x, screen_y - decor_y,
+                                       dw, full_h, rr))
                   backbuffer[screen_idx] = title_color;
               }
             } else {
@@ -1930,7 +2047,7 @@ static void compositor_render_internal(void) {
               if (draw_x >= 0 && draw_x < dw && draw_y >= 0 && draw_y < dh &&
                   (rr == 0 ||
                    gfx_rrect_contains(screen_x - win->x, screen_y - decor_y, dw,
-                                full_h, rr))) {
+                                      full_h, rr))) {
                 /* ...mapped back to the logical surface (nearest-sample scale
                  * when draw size != logical size — GFX-DYN-01 surface model).
                  */
@@ -1955,7 +2072,7 @@ static void compositor_render_internal(void) {
                   backbuffer[screen_idx] =
                       gl_blend_pixel(win->bg_color, backbuffer[screen_idx]);
                 }
-                
+
                 /* Inner shadow / separator under titlebar (gfx_chrome) */
                 if (st->shadows && title_h > 0)
                   backbuffer[screen_idx] = gfx_chrome_content_separator(
@@ -2243,8 +2360,7 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
                    copied_y2 >= windows[i].height) {
           windows[i].has_alpha = 0;
         }
-        expand_window_content_damage(&windows[i], copied_x1, copied_y1, cw,
-                                     ch);
+        expand_window_content_damage(&windows[i], copied_x1, copied_y1, cw, ch);
       }
 
       spin_unlock_irqrestore(&compositor_lock, flags);
@@ -2266,17 +2382,16 @@ void compositor_set_window_flags(int window_id, int flags_val) {
       else if (flags_val & 2)
         windows[i].visible = 1; /* bit 1: show window */
       /* Damage the window's footprint so the show/hide/restack is actually
-       * composited + flushed on the next render.  Without this the state changed
-       * but the damage box stayed empty, so the popup only refreshed when some
-       * OTHER event (the mouse passing over it) damaged that region — the
-       * "notification sticks / won't disappear until I move the mouse" bug.
+       * composited + flushed on the next render.  Without this the state
+       * changed but the damage box stayed empty, so the popup only refreshed
+       * when some OTHER event (the mouse passing over it) damaged that region —
+       * the "notification sticks / won't disappear until I move the mouse" bug.
        * Same footprint math as compositor_destroy_windows_by_pid. */
       {
         int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
         int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
-        expand_damage(windows[i].x,
-                      windows[i].y - compositor_titlebar_height(), ddw,
-                      ddh + compositor_titlebar_height());
+        expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
+                      ddw, ddh + compositor_titlebar_height());
         compositor_dirty = 1;
       }
       break;

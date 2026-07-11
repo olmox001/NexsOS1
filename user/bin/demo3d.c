@@ -281,8 +281,15 @@ int main(void) {
     exit(1);
   }
 
-  printf("[Demo3D] Real Solid GL Engine Init. PID %d (present backend %d)\n",
-         pid, os1_d3d9_swapchain_backend(swapchain));
+  /* The swapchain's own window already exists at this point (sw_create ->
+   * os1_video_window_create -> _sys_create_window) — a plain printf() here
+   * would draw text straight into demo3d's own backbuffer via the console
+   * fallback, so this goes through the existing notification popup
+   * (OS1_notify_post, lib.c) instead. */
+  char msg[64];
+  snprintf(msg, sizeof(msg), "Real Solid GL Engine Init. PID %d (backend %d)",
+           pid, os1_d3d9_swapchain_backend(swapchain));
+  OS1_notify_post("Demo3D", msg);
 
   /* Cube size scaled to fit window optimally */
   init_shape(FP_ONE / 3);

@@ -81,7 +81,9 @@
 #include <kernel/kmalloc.h>
 #include <kernel/vfs.h>
 #include <kernel/object.h>
+#include <kernel/registry.h>
 #include <syscall_nums.h>
+#include <style_names.h>
 
 /* Defined below (after sys_get_time); used by the SYS_NANOSLEEP dispatch case. */
 static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns);
@@ -495,12 +497,32 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     extern int compositor_set_theme(int theme_id);
     extern int compositor_set_background(int bg_id);
     int rc = 0;
-    if ((int)arg0 >= 0)
-      rc |= compositor_set_style((int)arg0);
-    if ((int)arg1 >= 0)
-      rc |= compositor_set_theme((int)arg1);
-    if ((int)arg2 >= 0)
-      rc |= compositor_set_background((int)arg2);
+    /* Publish the change into the registry ON SUCCESS, right here, so
+     * style.name/theme.color/background.name are the single coherent
+     * getter for the whole desktop (S-ALIGN): no caller-side "set the
+     * compositor, then remember to also write the registry" step to
+     * forget (nxsettings used to skip it, leaving every OTHER app showing
+     * the stale theme after a GUI change).  owner_pid 0 = system: the
+     * kernel is the canonical writer of these three keys regardless of
+     * which process asked for the switch. */
+    if ((int)arg0 >= 0) {
+      int r = compositor_set_style((int)arg0);
+      rc |= r;
+      if (r == 0 && (int)arg0 < OS1_STYLE_COUNT)
+        registry_set("style.name", os1_style_names[(int)arg0], 0);
+    }
+    if ((int)arg1 >= 0) {
+      int r = compositor_set_theme((int)arg1);
+      rc |= r;
+      if (r == 0 && (int)arg1 < OS1_THEME_COUNT)
+        registry_set("theme.color", os1_theme_names[(int)arg1], 0);
+    }
+    if ((int)arg2 >= 0) {
+      int r = compositor_set_background((int)arg2);
+      rc |= r;
+      if (r == 0 && (int)arg2 < OS1_BG_COUNT)
+        registry_set("background.name", os1_bg_names[(int)arg2], 0);
+    }
     pt_regs_set_return(frame, rc);
     break;
   }
@@ -529,6 +551,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   case SYS_WINDOW_BLIT:
     compositor_blit((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4, (const uint32_t *)arg5, current_process->pid);
+    /* This process now owns custom pixel content in a window's buffer —
+     * see struct process.self_rendered (sched.h) for why the own-window-
+     * first stdout path (window_text_write below) must stop drawing text
+     * into it from here on.  compositor_blit() already refused the call
+     * above if the window is not this process's own (or init's), so
+     * reaching here means the blit legitimately landed on OUR window. */
+    current_process->self_rendered = 1;
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WINDOW_SET_FLAGS:
