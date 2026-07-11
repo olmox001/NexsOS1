@@ -5,6 +5,7 @@
  * Manages windows and composites them to the screen.
  */
 #include <drivers/gpu/gpu.h>
+#include <drivers/timer.h> /* mono_ns: motion-event rate limiting */
 #include <drivers/virtio_input.h>
 #include <graphics/gl.h>
 #include <kernel/arch.h>
@@ -1507,7 +1508,56 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
   }
   compositor_dirty = 1;
 
+  /* Capture a motion event for the focused window using the SAME
+   * IPC_TYPE_MOUSE message the click path sends — no new ABI.  button = 0
+   * means "no button, motion only": every existing consumer already treats a
+   * zero button as not-a-click, and the SDL2 adapter turns it into
+   * SDL_MOUSEMOTION.  Rate-limited so the unbounded per-process IPC queue
+   * cannot be flooded from mouse-IRQ context; delivery happens after the
+   * unlock, mirroring compositor_handle_click.  Suppressed during drag/resize
+   * (the window itself is moving under the cursor). */
+  int motion_pid = -1;
+  struct ipc_message motion_msg = {0};
+  if ((mouse_x != old_mx || mouse_y != old_my) && keyboard_focus_pid > 0 &&
+      dragging_window_id == -1 && resizing_window_id == -1) {
+    static uint64_t last_motion_ns;
+    uint64_t now = mono_ns();
+    if (now - last_motion_ns >= 8000000ull) { /* >= 8 ms (~125 Hz) */
+      for (int i = 0; i < MAX_WINDOWS; i++) {
+        struct window *fw = &windows[i];
+        if (fw->id == 0 || !fw->visible || fw->passive ||
+            fw->pid != keyboard_focus_pid)
+          continue;
+        int fdw = fw->draw_w > 0 ? fw->draw_w : fw->width;
+        int fdh = fw->draw_h > 0 ? fw->draw_h : fw->height;
+        int rel_x = mouse_x - fw->x;
+        int rel_y = mouse_y - fw->y;
+        if (rel_x < 0 || rel_y < 0 || rel_x >= fdw || rel_y >= fdh)
+          break; /* cursor outside the focused content area: no motion */
+        /* Map from the on-screen draw rect back to LOGICAL surface coords,
+         * exactly like the click path. */
+        if (fdw > 0 && fdw != fw->width)
+          rel_x = (int)((int64_t)rel_x * fw->width / fdw);
+        if (fdh > 0 && fdh != fw->height)
+          rel_y = (int)((int64_t)rel_y * fw->height / fdh);
+        motion_msg.from = 0; /* Kernel */
+        motion_msg.type = IPC_TYPE_MOUSE;
+        motion_msg.data1 = 0; /* no button: motion only */
+        motion_msg.data2 = 0;
+        memcpy(motion_msg.payload, &rel_x, 4);
+        memcpy(motion_msg.payload + 4, &rel_y, 4);
+        motion_pid = keyboard_focus_pid;
+        last_motion_ns = now;
+        break;
+      }
+    }
+  }
+
   spin_unlock_irqrestore(&compositor_lock, cflags);
+
+  /* Outside compositor_lock (same contract as compositor_handle_click). */
+  if (motion_pid > 0)
+    kernel_ipc_send(motion_pid, &motion_msg);
 }
 
 /*

@@ -42,14 +42,51 @@ int main(void) {
 
   int running = 1;
   int frame = 0;
+  /* Input-test state: crosshair follows SDL_MOUSEMOTION, the magenta square
+   * moves with the arrow keys, clicks recolour the border (left=green,
+   * right=red).  Everything is also logged on the serial console. */
+  int cur_x = TEST_W / 2, cur_y = TEST_H / 2;
+  int sq_x = TEST_W / 2 - 10, sq_y = TEST_H / 2 - 10;
+  Uint8 border_r = 255, border_g = 255, border_b = 0;
   while (running) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
       if (event.type == SDL_QUIT)
         running = 0;
-      if (event.type == SDL_KEYDOWN &&
-          event.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
-        running = 0;
+      if (event.type == SDL_MOUSEMOTION) {
+        cur_x = event.motion.x;
+        cur_y = event.motion.y;
+      }
+      if (event.type == SDL_MOUSEBUTTONDOWN) {
+        printf("[SDLTest] mouse button %d at %d,%d\n", event.button.button,
+               event.button.x, event.button.y);
+        if (event.button.button == SDL_BUTTON_LEFT) {
+          border_r = 0; border_g = 255; border_b = 0;
+        } else if (event.button.button == SDL_BUTTON_RIGHT) {
+          border_r = 255; border_g = 0; border_b = 0;
+        }
+      }
+      if (event.type == SDL_KEYDOWN) {
+        SDL_Scancode sc = event.key.keysym.scancode;
+        printf("[SDLTest] key down: scancode %d (%s)\n", (int)sc,
+               SDL_GetScancodeName(sc));
+        if (sc == SDL_SCANCODE_ESCAPE)
+          running = 0;
+        if (sc == SDL_SCANCODE_LEFT)
+          sq_x -= 8;
+        if (sc == SDL_SCANCODE_RIGHT)
+          sq_x += 8;
+        if (sc == SDL_SCANCODE_UP)
+          sq_y -= 8;
+        if (sc == SDL_SCANCODE_DOWN)
+          sq_y += 8;
+        if (sq_x < 0) sq_x = 0;
+        if (sq_x > TEST_W - 20) sq_x = TEST_W - 20;
+        if (sq_y < 0) sq_y = 0;
+        if (sq_y > TEST_H - 20) sq_y = TEST_H - 20;
+      }
+      if (event.type == SDL_TEXTINPUT)
+        printf("[SDLTest] text: %s\n", event.text.text);
     }
 
     /* STATIC gradient (any apparent motion of it is a presentation bug) +
@@ -75,6 +112,23 @@ int main(void) {
     int bar_x = (frame * 3) % TEST_W;
     SDL_Rect bar = {bar_x, TEST_H - 24, 8, 24};
     SDL_FillRect(surface, &bar, SDL_MapRGB(surface->format, 255, 255, 255));
+
+    /* Input visualization: arrow-key square, click-coloured border and the
+     * mouse-motion crosshair. */
+    SDL_Rect square = {sq_x, sq_y, 20, 20};
+    SDL_FillRect(surface, &square, SDL_MapRGB(surface->format, 255, 0, 255));
+    Uint32 border_color =
+        SDL_MapRGB(surface->format, border_r, border_g, border_b);
+    SDL_Rect btop = {0, 0, TEST_W, 3}, bbot = {0, TEST_H - 3, TEST_W, 3};
+    SDL_Rect blft = {0, 0, 3, TEST_H}, brgt = {TEST_W - 3, 0, 3, TEST_H};
+    SDL_FillRect(surface, &btop, border_color);
+    SDL_FillRect(surface, &bbot, border_color);
+    SDL_FillRect(surface, &blft, border_color);
+    SDL_FillRect(surface, &brgt, border_color);
+    Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
+    SDL_Rect ch_h = {cur_x - 6, cur_y, 13, 1}, ch_v = {cur_x, cur_y - 6, 1, 13};
+    SDL_FillRect(surface, &ch_h, black);
+    SDL_FillRect(surface, &ch_v, black);
 
     if (SDL_UpdateWindowSurface(window) != 0) {
       printf("[SDLTest] present failed: %s\n", SDL_GetError());
