@@ -212,6 +212,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/sched/elf.c \
     $(KERNEL_DIR)/graphics/graphics.c \
     $(KERNEL_DIR)/graphics/surface.c \
+    $(KERNEL_DIR)/graphics/chrome.c \
     $(KERNEL_DIR)/graphics/region.c \
     $(KERNEL_DIR)/graphics/gl.c \
     $(KERNEL_DIR)/graphics/font.c \

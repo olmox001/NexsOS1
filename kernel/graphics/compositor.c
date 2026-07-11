@@ -10,6 +10,7 @@
 #include <kernel/arch.h>
 #include <kernel/compositor_style.h>
 #include <kernel/cpu.h>
+#include <kernel/gfx_chrome.h>
 #include <kernel/graphics.h>
 #include <kernel/kmalloc.h>
 #include <kernel/pmm.h>
@@ -309,10 +310,9 @@ static int resize_start_mx = 0, resize_start_my = 0;
 static int resize_orig_w = 0, resize_orig_h = 0, resize_orig_x = 0;
 
 /* Title-bar height now comes from the active style (compositor_titlebar_height,
- * Phase 5): 20 by default, 0 for the chrome-less Minimal style.  The close
- * button size stays fixed. */
-#define CLOSE_BUTTON_SIZE 16
-#define BG_BUTTON_GAP 6 /* px gap between the background and close buttons */
+ * Phase 5): 20 by default, 0 for the chrome-less Minimal style.  Button
+ * size/gap and their geometry live in gfx_chrome (gfx_chrome_button_geometry),
+ * the single source shared by the render pass and the click hit-test. */
 
 /* Compositor backbuffer == the "compositor FB" / desktop-virtual surface
  * (GFX-DYN-01).  Its size follows the GPU, no longer a hard-coded 720x1280.
@@ -1335,35 +1335,19 @@ void compositor_handle_click(int button, int state) {
     int hdw = hit->draw_w > 0 ? hit->draw_w : hit->width;
     int title_h = compositor_titlebar_height();
     int decor_y = hit->y - title_h;
-    
-    int btn_size = CLOSE_BUTTON_SIZE;
-    if (st->button_shape == 1 || st->button_shape == 2)
-      btn_size -= 2;
-      
-    int btn_top = decor_y + (title_h - btn_size) / 2;
-    int close_cx, bg_cx;
 
-    if (st->button_side == 0) {
-      int close_left = hit->x + 4;
-      close_cx = close_left + btn_size / 2;
-      bg_cx = close_cx + btn_size + BG_BUTTON_GAP;
-    } else {
-      int close_right = hit->x + hdw - 4;
-      close_cx = close_right - btn_size / 2;
-      bg_cx = close_cx - btn_size - BG_BUTTON_GAP;
-    }
-
-    if (mouse_y >= btn_top && mouse_y < btn_top + btn_size) {
-      int close_x = close_cx - btn_size / 2;
-      int bg_x = bg_cx - btn_size / 2;
-      
-      if (mouse_x >= close_x && mouse_x < close_x + btn_size) {
-        do_close = 1;
-        close_pid = hit->pid;
-      } else if (mouse_x >= bg_x && mouse_x < bg_x + btn_size) {
-        do_minimize = 1;
-        min_id = hit->id;
-      }
+    /* Same gfx_chrome geometry the render pass paints with — the hit-test
+     * can no longer drift from the pixels on screen. */
+    gfx_button_geometry_t buttons;
+    gfx_chrome_button_geometry(hit->x, hdw, decor_y, title_h, st->button_shape,
+                               st->button_side, &buttons);
+    int hit_button = gfx_chrome_button_hit(&buttons, mouse_x, mouse_y);
+    if (hit_button == GFX_BUTTON_CLOSE) {
+      do_close = 1;
+      close_pid = hit->pid;
+    } else if (hit_button == GFX_BUTTON_BACKGROUND) {
+      do_minimize = 1;
+      min_id = hit->id;
     }
   }
 
@@ -1537,32 +1521,8 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
  */
 #include <kernel/region.h>
 
-/* Rounded-rect membership test (F3): is local pixel (lx,ly) inside a w*h rect
- * with corner radius r?  Only the four r*r corner squares are tested; the bulk
- * is a trivial inside.  r<=0 ⇒ always inside (square corners). */
-static inline int rrect_inside(int lx, int ly, int w, int h, int r) {
-  if (r <= 0)
-    return 1;
-  if (lx < 0 || ly < 0 || lx >= w || ly >= h)
-    return 0;
-  int cx, cy;
-  if (lx < r && ly < r) {
-    cx = r - 1 - lx;
-    cy = r - 1 - ly;
-  } else if (lx >= w - r && ly < r) {
-    cx = lx - (w - r);
-    cy = r - 1 - ly;
-  } else if (lx < r && ly >= h - r) {
-    cx = r - 1 - lx;
-    cy = ly - (h - r);
-  } else if (lx >= w - r && ly >= h - r) {
-    cx = lx - (w - r);
-    cy = ly - (h - r);
-  } else {
-    return 1; /* not in a corner square */
-  }
-  return (cx * cx + cy * cy) <= (r * r);
-}
+/* Rounded-rect membership (F3) now lives in gfx_chrome as
+ * gfx_rrect_contains(), shared with the chrome shadow/border primitives. */
 
 static volatile int in_render = 0;
 static void compositor_render_internal(void) {
@@ -1611,6 +1571,9 @@ static void compositor_render_internal(void) {
   /* Wrap backbuffer in GL Surface */
   struct gl_surface screen = {
       .width = bb_w, .height = bb_h, .stride = bb_w, .buffer = backbuffer};
+
+  /* Damage clip as the rect the gfx_chrome primitives honour. */
+  gfx_rect_t chrome_clip = {clip_x1, clip_y1, clip_w, clip_h};
 
   /* Use static buffers to avoid stack pressure/smashing */
   struct window **sorted = sorted_windows;
@@ -1777,20 +1740,11 @@ static void compositor_render_internal(void) {
        * window whose body is just outside the damage box but whose shadow
        * reaches into it is still reprocessed. */
       int so = (st->shadows && !win->top_most) ? st->shadow_size : 0;
-      int margin_l = 0, margin_r = so, margin_t = 0, margin_b = so;
-      if (st->shadow_type == 2) {
-        margin_l = so * 2;
-        margin_r = so * 2;
-        margin_t = so * 2;
-        margin_b = so * 2 + so;
-      } else if (st->shadow_type == 1) {
-        margin_l = so;
-        margin_r = so;
-        margin_t = so;
-        margin_b = so;
-      }
-      if (win->x - margin_l >= clip_x2 || win->x + dw + margin_r <= clip_x1 ||
-          wy - margin_t >= clip_y2 || wy + wfh + margin_b <= clip_y1)
+      gfx_chrome_margins_t margins;
+      gfx_chrome_shadow_margins(st->shadow_type, so, &margins);
+      if (win->x - margins.left >= clip_x2 ||
+          win->x + dw + margins.right <= clip_x1 ||
+          wy - margins.top >= clip_y2 || wy + wfh + margins.bottom <= clip_y1)
         continue;
     }
 
@@ -1805,176 +1759,25 @@ static void compositor_render_internal(void) {
     int full_h = title_h + dh;
     int rr = (st->rounded_corners && !win->top_most) ? st->border_radius : 0;
 
+    /* Button geometry once per window (was recomputed per pixel). */
+    gfx_button_geometry_t buttons;
+    gfx_chrome_button_geometry(win->x, dw, decor_y, title_h, st->button_shape,
+                               st->button_side, &buttons);
+
     /* Drop shadow: behaviour depends on st->shadow_type.
-     * Guard: shadows enabled, non-zero size, not a top-most overlay. */
+     * Guard: shadows enabled, non-zero size, not a top-most overlay.
+     * Painters live in gfx_chrome and honour the frame's damage clip. */
     if (st->shadows && st->shadow_size > 0 && !win->top_most) {
-      int so = st->shadow_size;
-
-      if (st->shadow_type == 0) {
-        /* ── Type 0: solid win_bg ─────────────────────────────────────────
-         * Rettangolo pieno con colore win_bg del tema, nessuna trasparenza.
-         * Serve da "backing" opaco disegnato ESATTAMENTE sotto la finestra
-         * (nessun offset), combaciando coi limiti della finestra. */
-        for (int sy = 0; sy < full_h; sy++) {
-          int py = decor_y + sy;
-          if (py < 0 || py >= bb_h) continue;
-          if (py < clip_y1 || py >= clip_y2) continue;
-          for (int sx = 0; sx < dw; sx++) {
-            int px = win->x + sx;
-            if (px < 0 || px >= bb_w) continue;
-            if (px < clip_x1 || px >= clip_x2) continue;
-            if (!rrect_inside(sx, sy, dw, full_h, rr)) continue;
-            backbuffer[py * bb_w + px] = th->win_bg;
-          }
-        }
-
-      } else if (st->shadow_type == 2) {
-        /* ── Type 2: premium gradient shadow (SDF) ─────────────────────────
-         * Calcolo basato su Signed Distance Field (SDF) per avere angoli perfettamente
-         * curvi che seguono il raggio della finestra espandendosi ("curvali di più").
-         * "Giochi di luce" ottenuti unendo due ombre:
-         * 1. Contact shadow: piccola, vicina e scura (profondità immediata).
-         * 2. Diffuse shadow: ampia e leggera (elevazione ambientale). */
-
-        int spread_diffuse = so * 2;
-        int spread_contact = (so > 1) ? (so / 2) : 1;
-        int y_off_diffuse  = so;
-        int y_off_contact  = spread_contact / 2;
-
-        int min_y = -spread_diffuse;
-        int max_y = full_h + spread_diffuse + y_off_diffuse;
-        int min_x = -spread_diffuse;
-        int max_x = dw + spread_diffuse;
-
-        for (int sy = min_y; sy < max_y; sy++) {
-          int py = decor_y + sy;
-          if (py < 0 || py >= bb_h) continue;
-          if (py < clip_y1 || py >= clip_y2) continue;
-          
-          for (int sx = min_x; sx < max_x; sx++) {
-            int px = win->x + sx;
-            if (px < 0 || px >= bb_w) continue;
-            if (px < clip_x1 || px >= clip_x2) continue;
-            
-            if (sx >= 0 && sx < dw && sy >= 0 && sy < full_h &&
-                rrect_inside(sx, sy, dw, full_h, rr))
-              continue;
-
-            #define CALC_SDF(y_offset, out_dist) do { \
-              int lx = sx; \
-              int ly = sy - (y_offset); \
-              int cx = lx; \
-              if (cx < rr) cx = rr; \
-              else if (cx > dw - 1 - rr) cx = dw - 1 - rr; \
-              int cy = ly; \
-              if (cy < rr) cy = rr; \
-              else if (cy > full_h - 1 - rr) cy = full_h - 1 - rr; \
-              int dx = lx - cx; \
-              int dy = ly - cy; \
-              int dist_sq = dx * dx + dy * dy; \
-              int root = 0; \
-              while ((root + 1) * (root + 1) <= dist_sq) root++; \
-              out_dist = root - rr; \
-            } while(0)
-            
-            int dist_diffuse, dist_contact;
-            CALC_SDF(y_off_diffuse, dist_diffuse);
-            CALC_SDF(y_off_contact, dist_contact);
-            #undef CALC_SDF
-
-            uint32_t a_total = 0;
-
-            if (dist_diffuse <= 0) {
-              a_total += 0x24;
-            } else if (dist_diffuse <= spread_diffuse) {
-              int norm = (spread_diffuse - dist_diffuse) * 64 / spread_diffuse;
-              a_total += (0x24u * (uint32_t)norm * (uint32_t)norm) / (64u * 64u);
-            }
-
-            if (dist_contact <= 0) {
-              a_total += 0x30;
-            } else if (dist_contact <= spread_contact) {
-              int norm = (spread_contact - dist_contact) * 64 / spread_contact;
-              a_total += (0x30u * (uint32_t)norm * (uint32_t)norm) / (64u * 64u);
-            }
-
-            if (a_total > 0) {
-              if (a_total > 255) a_total = 255;
-              uint32_t shadow_color = (a_total << 24) | 0x050510u;
-              backbuffer[py * bb_w + px] =
-                  gl_blend_pixel(shadow_color, backbuffer[py * bb_w + px]);
-            }
-          }
-        }
-        
-        /* Passata C — Luce incidente sul bordo superiore (Highlight ambientale)
-         * Disegna un pixel luminoso tenuissimo subito fuori dal bordo superiore
-         * della finestra, simulando un effetto glass/rim light */
-        {
-          int py = decor_y - 1;
-          if (py >= 0 && py < bb_h && py >= clip_y1 && py < clip_y2) {
-            for (int sx = rr; sx < dw - rr; sx++) {
-              int px = win->x + sx;
-              if (px < 0 || px >= bb_w) continue;
-              if (px < clip_x1 || px >= clip_x2) continue;
-              backbuffer[py * bb_w + px] =
-                  gl_blend_pixel(0x18FFFFFFu, backbuffer[py * bb_w + px]);
-            }
-          }
-        }
-
-      } else if (st->shadow_type == 1) {
-        /* ── Type 1: ombra veloce (Fast gradient shadow) ───────────────────
-         * Simile alla Type 2 ma con un solo layer (diffuse), nessun offset
-         * e calcolo semplificato per massime prestazioni pur restando centrata
-         * e con angoli proporzionalmente curvi tramite SDF a passata singola. */
-        int spread = so;
-        int min_y = -spread;
-        int max_y = full_h + spread;
-        int min_x = -spread;
-        int max_x = dw + spread;
-
-        for (int sy = min_y; sy < max_y; sy++) {
-          int py = decor_y + sy;
-          if (py < 0 || py >= bb_h) continue;
-          if (py < clip_y1 || py >= clip_y2) continue;
-          
-          for (int sx = min_x; sx < max_x; sx++) {
-            int px = win->x + sx;
-            if (px < 0 || px >= bb_w) continue;
-            if (px < clip_x1 || px >= clip_x2) continue;
-            
-            if (sx >= 0 && sx < dw && sy >= 0 && sy < full_h &&
-                rrect_inside(sx, sy, dw, full_h, rr))
-              continue;
-
-            int lx = sx;
-            int ly = sy;
-            int cx = lx;
-            if (cx < rr) cx = rr;
-            else if (cx > dw - 1 - rr) cx = dw - 1 - rr;
-            int cy = ly;
-            if (cy < rr) cy = rr;
-            else if (cy > full_h - 1 - rr) cy = full_h - 1 - rr;
-            int dx = lx - cx;
-            int dy = ly - cy;
-            int dist_sq = dx * dx + dy * dy;
-            
-            int root = 0;
-            while ((root + 1) * (root + 1) <= dist_sq) root++;
-            int dist = root - rr;
-
-            if (dist <= spread) {
-              int norm = (dist <= 0) ? 64 : ((spread - dist) * 64 / spread);
-              uint32_t a = (0x30u * (uint32_t)norm * (uint32_t)norm) / (64u * 64u);
-              if (a > 0) {
-                backbuffer[py * bb_w + px] =
-                    gl_blend_pixel((a << 24) | 0x000000u, backbuffer[py * bb_w + px]);
-              }
-            }
-          }
-        }
-      }
+      gfx_rect_t chrome_frame = {win->x, decor_y, dw, full_h};
+      if (st->shadow_type == 0)
+        gfx_chrome_shadow_solid(&screen, &chrome_clip, &chrome_frame, rr,
+                                th->win_bg);
+      else if (st->shadow_type == 2)
+        gfx_chrome_shadow_premium(&screen, &chrome_clip, &chrome_frame, rr,
+                                  st->shadow_size);
+      else if (st->shadow_type == 1)
+        gfx_chrome_shadow_fast(&screen, &chrome_clip, &chrome_frame, rr,
+                               st->shadow_size);
     }
 
     if (vis) {
@@ -1999,103 +1802,24 @@ static void compositor_render_internal(void) {
                                            ? th->title_active
                                            : th->title_inactive;
                                            
-                if (st->shadows && title_h > 0) {
-                  if (st->shadow_type == 1) {
-                    if (screen_y == decor_y) title_color = gl_blend_pixel(0x20FFFFFF, title_color);
-                  } else if (st->shadow_type == 2) {
-                    if (screen_y == decor_y) title_color = gl_blend_pixel(0x40FFFFFF, title_color);
-                    int th_y = screen_y - decor_y;
-                    int grad = (th_y * 24) / title_h;
-                    if (grad > 0) title_color = gl_blend_pixel((grad << 24) | 0x000000, title_color);
-                  }
-                }
+                if (st->shadows && title_h > 0)
+                  title_color = gfx_chrome_titlebar_tint(
+                      st->shadow_type, screen_y - decor_y, title_h,
+                      title_color);
 
-                /* Titlebar buttons: filled discs (macOS traffic-light style),
-                 * drawn only when the window is not protected — consistent with
-                 * compositor_handle_click ignoring the buttons on
-                 * hit->protected. Right-aligned
-                 * [background(yellow)][close(red)]; geometry mirrors the
-                 * hit-test in compositor_handle_click. */
-                /* Titlebar buttons - shape from style */
-                if (!win->protected) {
-                  int btn_size = CLOSE_BUTTON_SIZE; // 16px default
-
-                  /* Pulsanti più piccoli per stili square/rounded */
-                  if (st->button_shape == 1 || st->button_shape == 2)
-                    btn_size -= 2; // 14x14
-
-                  /* Centraggio verticale nella titlebar */
-                  int btn_top = decor_y + (title_h - btn_size) / 2;
-
-                  int close_cx;
-                  int bg_cx;
-
-                  if (st->button_side == 0) {
-                    /* Pulsanti a sinistra */
-                    int close_left = win->x + 4;
-
-                    close_cx = close_left + btn_size / 2;
-                    bg_cx = close_cx + btn_size + BG_BUTTON_GAP;
-                  } else {
-                    /* Pulsanti a destra */
-                    int close_right = win->x + dw - 4;
-
-                    close_cx = close_right - btn_size / 2;
-                    bg_cx = close_cx - btn_size - BG_BUTTON_GAP;
-                  }
-
-                  int local_y = screen_y - btn_top;
-                  int local_x_close = screen_x - close_cx + (btn_size / 2);
-                  int local_x_bg = screen_x - bg_cx + (btn_size / 2);
-
-                  if (st->button_shape == 1) {
-                    /* Square puro */
-                    if (local_x_close >= 0 && local_x_close < btn_size &&
-                        local_y >= 0 && local_y < btn_size)
-                      title_color = th->close_btn;
-                    else if (local_x_bg >= 0 && local_x_bg < btn_size &&
-                             local_y >= 0 && local_y < btn_size)
-                      title_color = COLOR_MIN_BTN;
-                    else if (st->shadows && st->shadow_type == 2) {
-                      if (local_y == btn_size && local_x_close >= 0 && local_x_close < btn_size) title_color = gl_blend_pixel(0x60000000, title_color);
-                      else if (local_y == btn_size && local_x_bg >= 0 && local_x_bg < btn_size) title_color = gl_blend_pixel(0x60000000, title_color);
-                    }
-
-                  } else if (st->button_shape == 2) {
-                    /* Rounded Square - Material */
-                    int corner_radius = 6;
-                    if (rrect_inside(local_x_close, local_y, btn_size, btn_size,
-                                     corner_radius))
-                      title_color = th->close_btn;
-                    else if (rrect_inside(local_x_bg, local_y, btn_size,
-                                          btn_size, corner_radius))
-                      title_color = COLOR_MIN_BTN;
-                    else if (st->shadows && st->shadow_type == 2) {
-                      if (rrect_inside(local_x_close, local_y - 1, btn_size, btn_size, corner_radius)) title_color = gl_blend_pixel(0x50000000, title_color);
-                      else if (rrect_inside(local_x_bg, local_y - 1, btn_size, btn_size, corner_radius)) title_color = gl_blend_pixel(0x50000000, title_color);
-                    }
-
-                  } else {
-                    /* Cerchi classici */
-                    int radius = btn_size / 2 - 1;
-                    int ddy = screen_y - (btn_top + btn_size / 2);
-                    int dcx = screen_x - close_cx;
-                    int dbx = screen_x - bg_cx;
-
-                    if (dcx * dcx + ddy * ddy <= radius * radius)
-                      title_color = th->close_btn;
-                    else if (dbx * dbx + ddy * ddy <= radius * radius)
-                      title_color = COLOR_MIN_BTN;
-                    else if (st->shadows && st->shadow_type == 2) {
-                      int ddy_s = ddy - 1;
-                      if (dcx * dcx + ddy_s * ddy_s <= radius * radius + 2) title_color = gl_blend_pixel(0x40000000, title_color);
-                      else if (dbx * dbx + ddy_s * ddy_s <= radius * radius + 2) title_color = gl_blend_pixel(0x40000000, title_color);
-                    }
-                  }
-                }
+                /* Titlebar buttons (gfx_chrome): geometry computed once per
+                 * window below; drawn only when the window is not protected —
+                 * consistent with compositor_handle_click ignoring the
+                 * buttons on hit->protected, which now shares the same
+                 * gfx_chrome_button_geometry. */
+                if (!win->protected)
+                  title_color = gfx_chrome_button_pixel(
+                      &buttons, st->button_shape, screen_x, screen_y,
+                      th->close_btn, COLOR_MIN_BTN,
+                      st->shadows && st->shadow_type == 2, title_color);
 
                 /* Round the top corners (F3). */
-                if (rr == 0 || rrect_inside(screen_x - win->x,
+                if (rr == 0 || gfx_rrect_contains(screen_x - win->x,
                                             screen_y - decor_y, dw, full_h, rr))
                   backbuffer[screen_idx] = title_color;
               }
@@ -2106,7 +1830,7 @@ static void compositor_render_internal(void) {
 
               if (draw_x >= 0 && draw_x < dw && draw_y >= 0 && draw_y < dh &&
                   (rr == 0 ||
-                   rrect_inside(screen_x - win->x, screen_y - decor_y, dw,
+                   gfx_rrect_contains(screen_x - win->x, screen_y - decor_y, dw,
                                 full_h, rr))) {
                 /* ...mapped back to the logical surface (nearest-sample scale
                  * when draw size != logical size — GFX-DYN-01 surface model).
@@ -2133,18 +1857,10 @@ static void compositor_render_internal(void) {
                       gl_blend_pixel(win->bg_color, backbuffer[screen_idx]);
                 }
                 
-                /* Inner shadow / separator under titlebar */
-                if (st->shadows && title_h > 0) {
-                  if (st->shadow_type == 0 && draw_y == 0) {
-                     backbuffer[screen_idx] = gl_blend_pixel(0x20000000, backbuffer[screen_idx]);
-                  } else if (st->shadow_type == 1) {
-                     if (draw_y == 0) backbuffer[screen_idx] = gl_blend_pixel(0x30000000, backbuffer[screen_idx]);
-                     else if (draw_y == 1) backbuffer[screen_idx] = gl_blend_pixel(0x10000000, backbuffer[screen_idx]);
-                  } else if (st->shadow_type == 2 && draw_y < 4) {
-                     int a = (4 - draw_y) * 16;
-                     backbuffer[screen_idx] = gl_blend_pixel((a << 24) | 0x000000, backbuffer[screen_idx]);
-                  }
-                }
+                /* Inner shadow / separator under titlebar (gfx_chrome) */
+                if (st->shadows && title_h > 0)
+                  backbuffer[screen_idx] = gfx_chrome_content_separator(
+                      st->shadow_type, draw_y, backbuffer[screen_idx]);
               }
             }
           } // dx
@@ -2183,32 +1899,8 @@ static void compositor_render_internal(void) {
     /* Window border (F3): 1px outline around the full window rect, following
      * the rounded corners.  Drawn last so it sits on top of content + title. */
     if (st->window_borders && !win->top_most) {
-      uint32_t bc = th->border;
-      for (int ly = 0; ly < full_h; ly++) {
-        int py = decor_y + ly;
-        if (py < 0 || py >= bb_h)
-          continue;
-        /* Damage clip (GFX-COMP-03): keep the border inside this frame's box.
-         */
-        if (py < clip_y1 || py >= clip_y2)
-          continue;
-        for (int lx = 0; lx < dw; lx++) {
-          /* perimeter pixels only */
-          int on_edge =
-              (lx == 0 || ly == 0 || lx == dw - 1 || ly == full_h - 1);
-          /* for rounded corners, also treat the rounded boundary as edge */
-          int inside = rrect_inside(lx, ly, dw, full_h, rr);
-          int inside_inset =
-              rr ? rrect_inside(lx - 1, ly - 1, dw - 2, full_h - 2,
-                                rr > 0 ? rr - 1 : 0)
-                 : (lx > 0 && ly > 0 && lx < dw - 1 && ly < full_h - 1);
-          if (inside && (on_edge || !inside_inset)) {
-            int px = win->x + lx;
-            if (px >= 0 && px < bb_w && px >= clip_x1 && px < clip_x2)
-              backbuffer[py * bb_w + px] = bc;
-          }
-        }
-      }
+      gfx_rect_t chrome_frame = {win->x, decor_y, dw, full_h};
+      gfx_chrome_border(&screen, &chrome_clip, &chrome_frame, rr, th->border);
     }
   }
 

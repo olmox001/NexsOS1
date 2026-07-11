@@ -31,6 +31,7 @@
 #include <kernel/test.h>
 #include <kernel/string.h>
 #include <kernel/kmalloc.h>
+#include <kernel/gfx_chrome.h>
 #include <kernel/gfx_surface.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
@@ -83,6 +84,50 @@ KTEST_CASE(test_gfx_surface_contract) {
     dst_pixels[0] = 0xAA112233; /* ABGR: A=AA, B=11, G=22, R=33 */
     gl_swizzle_bgr(&dst);
     KASSERT_EQ(dst_pixels[0], 0xAA332211);
+}
+
+/* test_gfx_chrome_contract - test the window-chrome primitives extracted from
+ * the compositor: rounded-rect membership, per-type shadow margins, the
+ * button geometry shared by paint and hit-test, and clip honouring of the
+ * solid shadow painter on caller-owned memory. */
+KTEST_CASE(test_gfx_chrome_contract) {
+    /* Rounded-rect predicate: r<=0 always inside; the sharp corner pixel of a
+     * rounded rect is outside while the centre stays inside. */
+    KASSERT(gfx_rrect_contains(0, 0, 8, 8, 0));
+    KASSERT(!gfx_rrect_contains(0, 0, 8, 8, 4));
+    KASSERT(gfx_rrect_contains(4, 4, 8, 8, 4));
+
+    /* Shadow margins are pure data per shadow_type; size 0 means no fringe. */
+    gfx_chrome_margins_t m;
+    gfx_chrome_shadow_margins(2, 4, &m); /* premium: 2*so around, 3*so below */
+    KASSERT_EQ(m.left, 8);
+    KASSERT_EQ(m.bottom, 12);
+    gfx_chrome_shadow_margins(1, 4, &m); /* fast: symmetric spread */
+    KASSERT_EQ(m.top, 4);
+    gfx_chrome_shadow_margins(0, 0, &m);
+    KASSERT_EQ(m.right, 0);
+
+    /* Button geometry: right-side circle layout; hit-test and paint share it. */
+    gfx_button_geometry_t g;
+    gfx_chrome_button_geometry(100, 200, 50, 20, 0, 1, &g);
+    KASSERT_EQ(g.size, 16);
+    KASSERT_EQ(g.close_cx, 288); /* 100 + 200 - 4 - 16/2 */
+    KASSERT_EQ(g.bg_cx, 266);    /* close_cx - size - gap */
+    KASSERT_EQ(gfx_chrome_button_hit(&g, g.close_cx, g.top + 1),
+               GFX_BUTTON_CLOSE);
+    KASSERT_EQ(gfx_chrome_button_hit(&g, g.bg_cx, g.top + 1),
+               GFX_BUTTON_BACKGROUND);
+    KASSERT_EQ(gfx_chrome_button_hit(&g, 100, g.top + 1), GFX_BUTTON_NONE);
+
+    /* Solid shadow honours the exclusive clip rect on caller-owned pixels. */
+    uint32_t px[16] = {0};
+    gfx_surface_t s = {.width = 4, .height = 4, .stride = 4,
+                       .buffer = px, .alpha_mask = NULL};
+    gfx_rect_t clip = {.x = 0, .y = 0, .width = 4, .height = 2};
+    gfx_rect_t frame = {.x = 1, .y = 1, .width = 2, .height = 2};
+    gfx_chrome_shadow_solid(&s, &clip, &frame, 0, 0xFF123456);
+    KASSERT_EQ(px[5], 0xFF123456); /* (1,1): inside frame and clip */
+    KASSERT_EQ(px[9], 0);          /* (1,2): inside frame, clipped out */
 }
 
 /* test_kmalloc_growth - prove the small-object pool grows past one chunk
