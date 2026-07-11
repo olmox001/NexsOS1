@@ -212,7 +212,7 @@ _sys_display_poll:
     svc #0
     ret
 
-/* int _sys_set_style(int style_id, int theme_id) — -1 = keep */
+/* int _sys_set_style(int style_id, int theme_id, int bg_id) — -1 = keep */
 .global _sys_set_style
 _sys_set_style:
     mov x8, #SYS_SET_STYLE

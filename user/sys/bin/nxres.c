@@ -7,10 +7,13 @@
  *   nxres <width> <height> set the desktop resolution at runtime
  *   nxres style <name>     nexs | classic | material | glass | minimal | retro
  *   nxres theme <name>     light | dark
+ *   nxres bg <name>        black | red | green | yellow | blue | magenta |
+ *                          cyan | white | gray | bred | … | bwhite
+ *                          ('blue' is the default nexs gradient)
  *
  * Exercises the dynamic-display chain from userland: SYS_SET_DISPLAY_MODE ->
  * gpu_set_mode() (virtio-gpu recreates the scanout) -> compositor_resize().
- * Style/theme go through SYS_SET_STYLE -> compositor_set_style/theme().
+ * Style/theme/bg go through SYS_SET_STYLE (arg0/arg1/arg2; -1 = keep).
  */
 #include <os1.h>
 
@@ -18,6 +21,11 @@
 static const char *style_names[] = {"nexs", "classic", "material", "glass", "minimal",
                                     "retro"};
 static const char *theme_names[] = {"light", "dark"};
+static const char *bg_names[] = {
+    "black", "red",   "green",  "yellow",  "blue",  "magenta", "cyan",
+    "white", "gray",  "bred",   "bgreen",  "byellow", "bblue", "bmagenta",
+    "bcyan", "bwhite",
+};
 
 static int name_to_id(const char *name, const char *const *list, int n) {
   for (int i = 0; i < n; i++) {
@@ -44,7 +52,7 @@ int main(int argc, char **argv) {
     int h = (int)(info & 0xFFFF);
     printf("nxres: current desktop %dx%d\n", w, h);
     printf(
-        "usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme <name>\n");
+        "usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme|bg <name>\n");
     return 0;
   }
 
@@ -89,6 +97,22 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  /* nxres bg <name> */
+  if (argc >= 3 && strncmp(argv[1], "bg", 2) == 0) {
+    int bid = name_to_id(argv[2], bg_names,
+                         (int)(sizeof(bg_names) / sizeof(bg_names[0])));
+    if (bid < 0) {
+      printf("nxres: unknown background '%s'\n", argv[2]);
+      return 1;
+    }
+    if (OS1_display_set_background(bid) == 0) {
+      printf("nxres: background -> %s\n", argv[2]);
+      return 0;
+    }
+    printf("nxres: set_background failed\n");
+    return 1;
+  }
+
   /* nxres <w> <h> */
   if (argc >= 3 && is_digit_str(argv[1]) && is_digit_str(argv[2])) {
     int w = atoi(argv[1]);
@@ -108,6 +132,6 @@ int main(int argc, char **argv) {
 
   printf("nxres: bad arguments\n");
   printf(
-      "usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme <name>\n");
+      "usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme|bg <name>\n");
   return 1;
 }

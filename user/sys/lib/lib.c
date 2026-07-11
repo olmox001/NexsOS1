@@ -474,7 +474,10 @@ long OS1_display_info(void) { return _sys_display_info(); }
 int OS1_display_set_mode(int w, int h) { return _sys_set_display_mode(w, h); }
 int OS1_display_poll(void) { return _sys_display_poll(); }
 int OS1_display_set_style(int style_id, int theme_id) {
-  return _sys_set_style(style_id, theme_id);
+  return _sys_set_style(style_id, theme_id, -1);
+}
+int OS1_display_set_background(int bg_id) {
+  return _sys_set_style(-1, -1, bg_id);
 }
 int OS1_display_set_zoom(int percent) { return _sys_set_zoom(percent); }
 int OS1_display_set_font(void *data, size_t size) {

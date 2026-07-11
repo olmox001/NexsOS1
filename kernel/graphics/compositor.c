@@ -1563,10 +1563,10 @@ static void compositor_render_internal(void) {
   int clip_w = clip_x2 - clip_x1;
   int clip_h = clip_y2 - clip_y1;
 
-  /* Active theme (colours) + style (form) — read once per frame (Phase 5/F3).
-   */
+  /* Active theme (colours) + style (form) + background — read once per frame. */
   const compositor_theme_t *th = compositor_theme_active();
   const compositor_style_t *st = compositor_style_active();
+  const compositor_background_t *desk_bg = compositor_background_active();
 
   /* Wrap backbuffer in GL Surface */
   struct gl_surface screen = {
@@ -1686,12 +1686,12 @@ static void compositor_render_internal(void) {
      */
     region_intersect_rect(bg_region, clip_x1, clip_y1, clip_w, clip_h);
 
-    /* Draw Background — vertical gradient from the active theme
-     * (th->bg_top -> th->bg_bottom), interpolated per row. */
-    uint32_t t_r = (th->bg_top >> 16) & 0xFF, t_g = (th->bg_top >> 8) & 0xFF,
-             t_b = th->bg_top & 0xFF;
-    uint32_t b_r = (th->bg_bottom >> 16) & 0xFF,
-             b_g = (th->bg_bottom >> 8) & 0xFF, b_b = th->bg_bottom & 0xFF;
+    /* Draw Background — vertical gradient from the active background preset
+     * (desk_bg->bg_top -> desk_bg->bg_bottom), interpolated per row. */
+    uint32_t t_r = (desk_bg->bg_top >> 16) & 0xFF, t_g = (desk_bg->bg_top >> 8) & 0xFF,
+             t_b = desk_bg->bg_top & 0xFF;
+    uint32_t b_r = (desk_bg->bg_bottom >> 16) & 0xFF,
+             b_g = (desk_bg->bg_bottom >> 8) & 0xFF, b_b = desk_bg->bg_bottom & 0xFF;
     for (int r = 0; r < bg_region->count; r++) {
       struct rect *bg = &bg_region->rects[r];
       for (int y = 0; y < bg->h; y++) {

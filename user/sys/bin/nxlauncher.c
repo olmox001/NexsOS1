@@ -42,10 +42,10 @@
  * Resize is also polled via OS1_display_info for the rare host-driven
  * resolution change.
  */
+#include "nxexec.h"
 #include <font_lib.h>
 #include <image.h>
 #include <input.h>
-#include "nxexec.h"
 #include <os1.h>
 #include <stdlib.h>
 #include <string.h>
@@ -497,15 +497,15 @@ static void load_cfg(void) {
  * to offer as a launchable app). */
 // Lista delle estensioni (devono avere il punto)
 static const char *const filtered_extensions[] = {
-    ".wad", ".txt",  ".cfg", ".dat",
-    ".md",  ".json", ".old", ".dsg", NULL};
+    ".wad", ".txt", ".cfg", ".dat", ".md", ".json", ".old", ".dsg", NULL};
 
 // Lista dei nomi di file completi (esatti)
 /* Hidden from the tile grid: the boot/supervisor services, the launcher and
  * dock themselves, and nxexec (the execution service — it is the thing that
  * LAUNCHES tiles, not a tile; clicking it with no argument does nothing). */
 static const char *const filtered_files[] = {
-    "init", "nxntfy_srv", "nxui", "nxlauncher", "nxexec", ".", "..", NULL};
+    "init",       "nxntfy_srv", "nxui", "nxlauncher", "nxexec",
+    "background", ".",          "..",   NULL};
 
 static int has_filtered_ext(const char *name) {
   if (os1_image_path_has_known_ext(name))

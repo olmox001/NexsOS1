@@ -73,7 +73,7 @@ extern long _sys_display_info(void);              /* current desktop (w<<16)|h *
 extern int  _sys_set_display_mode(int w, int h);  /* set resolution; desktop adapts */
 extern int  _sys_window_resize(int win_id, int w, int h); /* resize own window surface */
 extern int  _sys_display_poll(void);              /* apply pending host resize; 1 if changed */
-extern int  _sys_set_style(int style_id, int theme_id); /* compositor look; -1 = keep */
+extern int  _sys_set_style(int style_id, int theme_id, int bg_id); /* -1 = keep */
 extern int  _sys_set_zoom(int percent);           /* desktop HiDPI/zoom percent */
 extern void* _sys_sbrk(intptr_t increment);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
@@ -240,6 +240,7 @@ long OS1_display_info(void);                  /* current desktop, packed (w<<16)
 int  OS1_display_set_mode(int w, int h);      /* set resolution; desktop adapts */
 int  OS1_display_poll(void);                  /* apply pending host resize; 1 if changed */
 int  OS1_display_set_style(int style_id, int theme_id); /* -1 = keep */
+int  OS1_display_set_background(int bg_id);
 int  OS1_display_set_zoom(int percent);       /* desktop HiDPI/zoom percent */
 int  OS1_display_set_font(void *data, size_t size);     /* set_font is its shim */
 
