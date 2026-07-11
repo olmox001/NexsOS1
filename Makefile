@@ -326,15 +326,89 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o
 USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
+# ==============================================================================
+# SDL2 static library (graphics-port: SDL cross-build over the OS1 libc)
+# ==============================================================================
+# The SDL submodule compiles UNPATCHED: SDL_config_nexsos.h is force-included
+# (-include) so the tree's own SDL_config.h is skipped, and the DUMMY
+# bootstrap slot is renamed to the NexsOS driver from the portability overlay
+# (see user/sys/lib/portability/sdl2/overlay.mk).  Defined before the user-ELF
+# link rules because prerequisite lists expand immediately.
+AR = $(CROSS_COMPILE)ar
+
+SDL2_DIR := $(USER_LIB_DIR)/sdl
+include user/sys/lib/portability/sdl2/overlay.mk
+
+SDL2_SRCS := \
+  $(wildcard $(SDL2_DIR)/src/*.c) \
+  $(wildcard $(SDL2_DIR)/src/atomic/*.c) \
+  $(wildcard $(SDL2_DIR)/src/audio/*.c) \
+  $(wildcard $(SDL2_DIR)/src/audio/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/cpuinfo/*.c) \
+  $(wildcard $(SDL2_DIR)/src/dynapi/*.c) \
+  $(wildcard $(SDL2_DIR)/src/events/*.c) \
+  $(wildcard $(SDL2_DIR)/src/file/*.c) \
+  $(wildcard $(SDL2_DIR)/src/filesystem/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/haptic/*.c) \
+  $(wildcard $(SDL2_DIR)/src/joystick/*.c) \
+  $(wildcard $(SDL2_DIR)/src/libm/*.c) \
+  $(wildcard $(SDL2_DIR)/src/locale/*.c) \
+  $(wildcard $(SDL2_DIR)/src/locale/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/misc/*.c) \
+  $(wildcard $(SDL2_DIR)/src/misc/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/power/*.c) \
+  $(wildcard $(SDL2_DIR)/src/render/*.c) \
+  $(wildcard $(SDL2_DIR)/src/render/software/*.c) \
+  $(wildcard $(SDL2_DIR)/src/sensor/*.c) \
+  $(wildcard $(SDL2_DIR)/src/sensor/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/stdlib/*.c) \
+  $(wildcard $(SDL2_DIR)/src/thread/*.c) \
+  $(wildcard $(SDL2_DIR)/src/thread/generic/*.c) \
+  $(wildcard $(SDL2_DIR)/src/timer/*.c) \
+  $(wildcard $(SDL2_DIR)/src/timer/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/video/*.c) \
+  $(wildcard $(SDL2_DIR)/src/video/yuv2rgb/*.c) \
+  $(SDL_NEXSOS_OVERLAY_SRCS)
+
+SDL2_OBJ_DIR := $(BUILD_DIR)/sdl2
+SDL2_OBJS := $(patsubst %.c,$(SDL2_OBJ_DIR)/%.o,$(SDL2_SRCS))
+SDL2_LIB  := $(BUILD_DIR)/libSDL2.a
+
+# SDL cannot build under the kernel's -Werror/-Wpedantic regime; codegen and
+# freestanding flags stay identical to userland objects so the archive links
+# into OS1 apps.  GCC>=14 permerrors are demoted for SDL's own fallback code
+# (Uint64* vs unsigned long long* in SDL_string.c is benign on both LP64
+# targets); the SDL tree is never edited.
+SDL2_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
+              -Wno-error=incompatible-pointer-types \
+              -Wno-error=implicit-function-declaration \
+              -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+              -fno-common -fstack-protector-strong -fno-pic -fno-pie \
+              -fno-omit-frame-pointer \
+              -Iinclude/api -I$(SDL2_DIR)/include \
+              $(SDL_NEXSOS_OVERLAY_CPPFLAGS)
+
+$(SDL2_OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(SDL2_CFLAGS) -c $< -o $@
+
+$(SDL2_LIB): $(SDL2_OBJS)
+	@echo "  [AR]     $@"
+	@$(AR) rcs $@ $^
+
+libsdl2: $(SDL2_LIB)
+.PHONY: libsdl2
+
 # System ELFs (placed in /sys/bin)
 SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
-           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxwins.elf \
+           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
            $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf
 
 # User ELFs (placed in /bin)
-BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf \
+BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf \
+           $(BUILD_DIR)/ipc_send.elf \
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
@@ -373,6 +447,13 @@ $(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/init.o $(USER_LIB_O) $(U
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+# sdltest: first SDL2 client; the object needs the SDL headers + injected
+# NexsOS config, the ELF links the cross-built archive before the OS1 libc
+# objects (which satisfy the archive's malloc/os1_video_* undefineds).
+$(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o: $(USER_DIR)/bin/sdltest.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -c $< -o $@
+$(BUILD_DIR)/sdltest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -385,6 +466,7 @@ $(BUILD_DIR)/nxinfo.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinfo.o $(USER_LIB_O)
 $(BUILD_DIR)/nxperm.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxperm.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxui.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxui.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxlauncher.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxlauncher.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxsettings.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxsettings.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)

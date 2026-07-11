@@ -11,9 +11,11 @@
 
 #define NEXSOSVID_DRIVER_NAME "nexsos"
 
+/* Default-available: on NexsOS this is the only real driver, so it must be
+ * picked with no hint set; an explicit hint for another driver still wins. */
 static int NEXSOS_Available(void) {
   const char *requested = SDL_GetHint(SDL_HINT_VIDEODRIVER);
-  return requested && SDL_strcmp(requested, NEXSOSVID_DRIVER_NAME) == 0;
+  return !requested || SDL_strcmp(requested, NEXSOSVID_DRIVER_NAME) == 0;
 }
 
 static void NEXSOS_DeleteDevice(SDL_VideoDevice *device) {
