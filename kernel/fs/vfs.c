@@ -361,6 +361,19 @@ int vfs_unlink(const char *path) {
 }
 
 /*
+ * vfs_create - create an empty file/dir at 'path' through the responsible
+ * mount's provider (issue #126 / NOTE(M4.5-FS-WRITE)).
+ * Returns 0, or negative (provider has no create support, or its own error).
+ */
+int vfs_create(const char *path, uint32_t type) {
+  const char *rel;
+  struct vfs_mount *mnt = vfs_resolve(path, &rel);
+  if (!mnt || !mnt->ops->create)
+    return -1;
+  return mnt->ops->create(mnt, rel, type);
+}
+
+/*
  * vfs_stat - fill st with size/type for path.  0 on success, -1 otherwise.
  */
 int vfs_stat(const char *path, struct vfs_stat *st) {

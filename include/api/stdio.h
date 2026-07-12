@@ -11,11 +11,26 @@ typedef struct {
     int error;
     int eof;
     char path[128];
+    int ungetc_buf;
+    int has_ungetc;
+    int is_tmp;
 } FILE;
 
-#define stdout ((FILE*)1)
-#define stderr ((FILE*)2)
-#define stdin  ((FILE*)0)
+extern FILE _stdin_struct;
+extern FILE _stdout_struct;
+extern FILE _stderr_struct;
+
+#define stdin  (&_stdin_struct)
+#define stdout (&_stdout_struct)
+#define stderr (&_stderr_struct)
+
+#define _IOFBF 0
+#define _IOLBF 1
+#define _IONBF 2
+
+#ifndef BUFSIZ
+#define BUFSIZ 1024
+#endif
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -26,6 +41,7 @@ typedef struct {
 #endif
 
 FILE *fopen(const char *path, const char *mode);
+FILE *freopen(const char *filename, const char *mode, FILE *stream);
 FILE *fdopen(int fd, const char *mode);
 int fclose(FILE *fp);
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp);
@@ -57,9 +73,14 @@ int fgetc(FILE *fp);
 char *fgets(char *s, int size, FILE *fp);
 void perror(const char *s);
 
+int ungetc(int c, FILE *fp);
+void clearerr(FILE *fp);
+int setvbuf(FILE *fp, char *buf, int mode, size_t size);
+FILE *tmpfile(void);
+
 #define getc(fp)    fgetc(fp)
 #define putc(c, fp) fputc((c), (fp))
 
-#define fprintf(f, ...) printf(__VA_ARGS__)
+int fprintf(FILE *stream, const char *format, ...);
 
 #endif

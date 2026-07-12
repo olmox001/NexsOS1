@@ -81,12 +81,34 @@ static inline int nxexec_run_foreground(int pid) {
     if (wait(pid) != -1)
       return NXEXEC_JOB_EXITED; /* child finished (dead/zombie/gone) */
 
+    /* Relay keyboard input to the child (USR-TTY-01 #123 problem 2): a
+     * windowless child can never hold compositor focus (focus is per-window),
+     * so it never sees its own keystrokes unless we forward them here -
+     * without this, any program that reads stdin interactively (a REPL, an
+     * editor, ...) blocks forever on its first read() after printing a
+     * prompt, indistinguishable from a hang. Ctrl-C stays a local kill
+     * instead of being forwarded, matching the existing job-control model.
+     *
+     * No termios/cooked-mode layer exists anywhere in this OS - every
+     * reader echoes its OWN input explicitly (nxshell.c's read(0,...) loop
+     * is the reference). We still hold the window/focus while hosting, so
+     * echo has to happen here too, in the same style, or the cursor never
+     * advances even though the child is receiving every keystroke. */
     struct ipc_message m;
-    if (try_recv(-1, &m) == 0 && m.type == IPC_TYPE_INPUT && m.data2 != 0 &&
-        m.payload[0] == 0x03) {
-      kill_process(pid);
-      print("^C\n");
-      return NXEXEC_JOB_EXITED;
+    if (try_recv(-1, &m) == 0 && m.type == IPC_TYPE_INPUT && m.data2 != 0) {
+      char c = m.payload[0];
+      if (c == 0x03) {
+        kill_process(pid);
+        print("^C\n");
+        return NXEXEC_JOB_EXITED;
+      }
+      send(pid, &m);
+      if (c == '\n' || c == '\r')
+        print("\r\n");
+      else if (c == '\b' || c == 127)
+        print("\b \b");
+      else if (c >= 32 && c < 127)
+        print(m.payload);
     }
     OS1_sleep(15); /* time base for the debounce; keeps Ctrl-C responsive */
   }

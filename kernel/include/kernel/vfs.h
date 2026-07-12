@@ -80,6 +80,11 @@ struct fs_ops {
   /* unlink: remove the file/node at 'path' (provider may not support it:
    * NULL pointer or a negative errno such as -ENOSYS). */
   int (*unlink)(struct vfs_mount *mnt, const char *path);
+  /* create: create an empty file/dir at 'path' (type is VFS_TYPE_FILE or
+   * VFS_TYPE_DIR).  Provider may not support it: NULL pointer or a negative
+   * errno such as -ENOSYS.  Caller must have already verified 'path' does
+   * NOT exist (M4.5-FS-WRITE / issue #126). */
+  int (*create)(struct vfs_mount *mnt, const char *path, uint32_t type);
   /* object_at: map 'path' to the TYPED object it names (the namespace→object
    * bridge).  Fill *out and return 0; -1 not found; -2 it is a directory.
    * Optional — a NULL object_at means the provider's paths are plain FILE
@@ -127,6 +132,12 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size,
                    uint64_t offset);
 int vfs_list_dir(const char *path, char *buf, uint32_t size);
 int vfs_unlink(const char *path); /* remove a file/node by path */
+/* vfs_create - create an empty file/dir at 'path' (VFS_TYPE_FILE/_DIR)
+ * through the responsible mount's provider.  Returns 0, or negative (the
+ * provider has no create support, or its own error).  Does NOT check
+ * write authority or pre-existence - callers (syscall_dispatch.c) must call
+ * vfs_write_allowed()/vfs_stat() first (issue #126). */
+int vfs_create(const char *path, uint32_t type);
 int vfs_stat(const char *path, struct vfs_stat *st);
 
 void vfs_resolve_path(const char *in, char *out, size_t size);

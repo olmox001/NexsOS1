@@ -293,6 +293,9 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/block
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/ps2
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/usb
+	@mkdir -p $(BUILD_DIR)/lua
+	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/lib/portability/lua
+
 # Bootloader
 bootloader: $(BOOTLOADER_BIN)
 
@@ -410,12 +413,105 @@ $(SDL2_LIB): $(SDL2_OBJS)
 libsdl2: $(SDL2_LIB)
 .PHONY: libsdl2
 
+# ==============================================================================
+# Lua static library and runtime (nxlua)
+# ==============================================================================
+LUA_DIR := $(USER_LIB_DIR)/lua
+
+LUA_CORE_SRCS := \
+  $(LUA_DIR)/lapi.c \
+  $(LUA_DIR)/lauxlib.c \
+  $(LUA_DIR)/lbaselib.c \
+  $(LUA_DIR)/lcode.c \
+  $(LUA_DIR)/lcorolib.c \
+  $(LUA_DIR)/lctype.c \
+  $(LUA_DIR)/ldblib.c \
+  $(LUA_DIR)/ldebug.c \
+  $(LUA_DIR)/ldo.c \
+  $(LUA_DIR)/ldump.c \
+  $(LUA_DIR)/lfunc.c \
+  $(LUA_DIR)/lgc.c \
+  $(LUA_DIR)/linit.c \
+  $(LUA_DIR)/liolib.c \
+  $(LUA_DIR)/llex.c \
+  $(LUA_DIR)/lmathlib.c \
+  $(LUA_DIR)/lmem.c \
+  $(LUA_DIR)/loadlib.c \
+  $(LUA_DIR)/lobject.c \
+  $(LUA_DIR)/lopcodes.c \
+  $(LUA_DIR)/loslib.c \
+  $(LUA_DIR)/lparser.c \
+  $(LUA_DIR)/lstate.c \
+  $(LUA_DIR)/lstring.c \
+  $(LUA_DIR)/lstrlib.c \
+  $(LUA_DIR)/ltable.c \
+  $(LUA_DIR)/ltablib.c \
+  $(LUA_DIR)/ltm.c \
+  $(LUA_DIR)/lundump.c \
+  $(LUA_DIR)/lutf8lib.c \
+  $(LUA_DIR)/lvm.c \
+  $(LUA_DIR)/lzio.c
+
+LUA_PORT_SRCS := $(USER_LIB_DIR)/portability/lua/lua_portability.c
+LUA_OS1_SRCS  := $(USER_LIB_DIR)/os1LUA_lib.c
+
+LUA_OBJ_DIR := $(BUILD_DIR)/lua
+LUA_CORE_OBJS := $(patsubst $(LUA_DIR)/%.c,$(LUA_OBJ_DIR)/%.o,$(LUA_CORE_SRCS))
+LUA_PORT_OBJ  := $(BUILD_DIR)/$(USER_LIB_DIR)/portability/lua/lua_portability.o
+LUA_OS1_OBJ   := $(BUILD_DIR)/$(USER_LIB_DIR)/os1LUA_lib.o
+
+LUA_LIB     := $(BUILD_DIR)/lua.a
+LUA_OS1_LIB := $(BUILD_DIR)/libos1lua.a
+
+LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
+             -Wno-error \
+             -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+             -fno-common -fstack-protector-strong -fno-pic -fno-pie \
+             -fno-omit-frame-pointer \
+             -Iinclude/api -I$(LUA_DIR) -I$(USER_LIB_DIR)/portability/lua \
+             -include lua_portability.h
+
+$(LUA_OBJ_DIR)/%.o: $(LUA_DIR)/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+
+$(LUA_PORT_OBJ): $(LUA_PORT_SRCS)
+	@mkdir -p $(dir $@)
+	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+
+$(LUA_OS1_OBJ): $(LUA_OS1_SRCS)
+	@mkdir -p $(dir $@)
+	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+
+$(LUA_LIB): $(LUA_CORE_OBJS) $(LUA_PORT_OBJ)
+	@echo "  [AR]     $@"
+	@$(AR) rcs $@ $^
+
+$(LUA_OS1_LIB): $(LUA_OS1_OBJ)
+	@echo "  [AR]     $@"
+	@$(AR) rcs $@ $^
+
+liblua: $(LUA_LIB) $(LUA_OS1_LIB)
+.PHONY: liblua
+
+$(LUA_OBJ_DIR)/lua.o: $(LUA_DIR)/lua.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nxlua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
+		$(LUA_OBJ_DIR)/lua.o \
+		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
+		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+
 # System ELFs (placed in /sys/bin)
 SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
-           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf
+           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxlua.elf
+
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
@@ -578,6 +674,12 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
 	@-cp user/sys/bin/nxfont/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
+	@# Copy Lua libraries to /sys/lib
+	@-cp $(LUA_LIB)     $(BUILD_DIR)/rootfs/sys/lib/ 2>/dev/null || true
+	@-cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/ 2>/dev/null || true
+	@# Copy Lua's own test suite next to nxlua, for on-device testing
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin/nxluates
+	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/sys/bin/nxluates/ 2>/dev/null || true
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
