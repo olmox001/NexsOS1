@@ -23,9 +23,9 @@ import sys, math, re
 
 COLS = ["t_s","free","lcr","runs","alloc_calls","free_calls","search_ns_total",
         "search_ns_max","km_inuse","km_hi","km_live","ctxsw","runnable","zomb",
-        "objF","objP","objR","objW","cycles"]
+        "objF","objP","objR","objW","objC","cycles"]
 # counters expected FLAT at steady state (drift => leak/fragmentation)
-FLAT = ["free","lcr","runs","km_inuse","km_live","zomb","objF","objP","objR","objW"]
+FLAT = ["free","lcr","runs","km_inuse","km_live","zomb","objF","objP","objR","objW","objC"]
 # cumulative counters -> reported as rates
 RATE = ["alloc_calls","free_calls","ctxsw","cycles"]
 

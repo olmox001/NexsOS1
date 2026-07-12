@@ -58,7 +58,7 @@ static int cmd_log(unsigned long interval_s, int drive_argc, char *const drive_a
   print("[nxmemstat] logging system stats (CSV, MEMSTAT prefix)\n");
   print("MEMSTAT,t_s,free,lcr,runs,alloc_calls,free_calls,search_ns_total,"
         "search_ns_max,km_inuse,km_hi,km_live,ctxsw,runnable,zomb,objF,objP,"
-        "objR,objW,cycles\n");
+        "objR,objW,objC,cycles\n");
   unsigned long long start = os1_mono_ns();
   for (;;) {
     if (nxmemstat_snapshot(&s) > 0) {
