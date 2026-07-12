@@ -536,6 +536,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, compositor_set_zoom((int)arg0));
     break;
   }
+  case SYS_WM_DRAIN: {
+    /* SCHED-03: run deferred window closes in PROCESS context (init's
+     * supervisor polls this).  The compositor enqueues close intents from the
+     * input bottom-half (timer IRQ); doing process_kill_subtree here — on a
+     * normal task stack — is the safe context a shell's SYS_KILL already uses.
+     * Machine-only: init is the supervisor that owns process lifecycle. */
+    if (!proc_is_machine(current_process)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    extern int wm_drain_closes(void);
+    pt_regs_set_return(frame, wm_drain_closes());
+    break;
+  }
   case SYS_COMPOSITOR_RENDER:
     /* The single compositor-push syscall (the duplicate SYS_FLUSH was retired
      * and folded here).  Forcing a global re-render is a display effect: gated by

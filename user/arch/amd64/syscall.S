@@ -185,6 +185,13 @@ _sys_display_poll:
     syscall
     ret
 
+/* int _sys_wm_drain(void) — SCHED-03: run deferred window closes (machine-only) */
+.global _sys_wm_drain
+_sys_wm_drain:
+    movq $SYS_WM_DRAIN, %rax
+    syscall
+    ret
+
 /* int _sys_set_style(int style_id, int theme_id, int bg_id) — -1 = keep */
 .global _sys_set_style
 _sys_set_style:

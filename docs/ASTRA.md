@@ -382,7 +382,7 @@ in the tree today, so the structural work ahead starts from fact. The 2026-06-20
 baseline below (§7.1–§7.5, extended in place) still holds; §7.6–§7.9 record what
 landed since, across the F4.1 batch (2026-06-22→26), the F0.0.4.2 stabilization
 detour (2026-06-27→28, validated stable on UTM), and the notification/kill-model/
-UI polish through v0.0.4.4 (2026-06-29→30); §7.10 is the current "what remains."
+UI polish through v0.0.5.0 (2026-06-29→30); §7.10 is the current "what remains."
 Everything cited below is file:line-verified against the tree at HEAD (`6e394cf`),
 not inferred from commit messages. Regression suites `captest`/`capkill`/`capreg`/
 `capipc`/`sandboxtest`/`fdtest`/`forkbomb` all still exist under `user/bin/`.

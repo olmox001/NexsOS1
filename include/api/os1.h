@@ -75,6 +75,7 @@ extern int  _sys_window_resize(int win_id, int w, int h); /* resize own window s
 extern int  _sys_display_poll(void);              /* apply pending host resize; 1 if changed */
 extern int  _sys_set_style(int style_id, int theme_id, int bg_id); /* -1 = keep */
 extern int  _sys_set_zoom(int percent);           /* desktop HiDPI/zoom percent */
+extern int  _sys_wm_drain(void);                  /* SCHED-03: run deferred window closes (machine) */
 extern void* _sys_sbrk(intptr_t increment);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
 extern long _sys_get_procs(void *procs, size_t max_count);
@@ -243,6 +244,7 @@ int  OS1_window_close(int win_id);
 long OS1_display_info(void);                  /* current desktop, packed (w<<16)|h */
 int  OS1_display_set_mode(int w, int h);      /* set resolution; desktop adapts */
 int  OS1_display_poll(void);                  /* apply pending host resize; 1 if changed */
+int  OS1_wm_drain(void);                       /* SCHED-03: run deferred window closes (machine); returns count */
 int  OS1_display_set_style(int style_id, int theme_id); /* -1 = keep */
 int  OS1_display_set_background(int bg_id);
 int  OS1_display_set_zoom(int percent);       /* desktop HiDPI/zoom percent */

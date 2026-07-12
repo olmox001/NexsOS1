@@ -63,6 +63,13 @@ int graphics_screen_surface(struct gl_surface *out) {
   out->height = dev->height;
   out->stride = dev->width;
   out->buffer = fb;
+  /* S-STAB: the scanout's true size in pixels.  If a concurrent mode change
+   * (vgpu_set_mode) left width/height and framebuffer_size momentarily torn —
+   * the compositor↔GPU seam is unlocked here (S-ALIGN F7) — this makes the
+   * inconsistency a loud, localized panic instead of an OOB blit into the
+   * freed/short scanout backing. */
+  out->capacity = dev->framebuffer_size / sizeof(uint32_t);
+  gfx_surface_verify(out, "graphics_screen_surface");
   return 0;
 }
 

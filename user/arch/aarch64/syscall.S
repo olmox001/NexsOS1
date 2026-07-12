@@ -212,6 +212,13 @@ _sys_display_poll:
     svc #0
     ret
 
+/* int _sys_wm_drain(void) — SCHED-03: run deferred window closes (machine-only) */
+.global _sys_wm_drain
+_sys_wm_drain:
+    mov x8, #SYS_WM_DRAIN
+    svc #0
+    ret
+
 /* int _sys_set_style(int style_id, int theme_id, int bg_id) — -1 = keep */
 .global _sys_set_style
 _sys_set_style:

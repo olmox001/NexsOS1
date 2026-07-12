@@ -14,6 +14,17 @@ struct gpu_ops {
   int (*set_mode)(struct gpu_device *dev, int width, int height);
   void *(*get_framebuffer)(struct gpu_device *dev, size_t *size);
   int (*flush)(struct gpu_device *dev, int x, int y, int w, int h);
+  /* Atomically copy a region of a caller-owned ARGB8888 source (src_w x src_h,
+   * stride == src_w) into the scanout backing AND transfer+flush it to the
+   * host, all under the driver's own lock (S-STAB / RC2).  The compositor uses
+   * this instead of get_framebuffer()+memcpy()+flush(): doing the copy under
+   * the same lock that set_mode() takes to swap+free the backing closes the
+   * use-after-free where a concurrent resolution/zoom change frees the scanout
+   * mid-copy.  The driver copies only the intersection with its CURRENT scanout
+   * and returns <0 (skip this frame) if src geometry no longer matches — never
+   * an OOB.  0 on success (region presented). */
+  int (*present)(struct gpu_device *dev, const uint32_t *src, int src_w,
+                 int src_h, int x, int y, int w, int h);
   void (*destroy)(struct gpu_device *dev);
   /* Query the host's current preferred display size (what the device
    * advertises via GET_DISPLAY_INFO).  0 on success.  (GFX-DYN-01 #54) */

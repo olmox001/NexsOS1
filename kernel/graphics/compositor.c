@@ -1216,7 +1216,9 @@ static void __clear_other_carets_locked(int keep_pid) {
     struct gl_surface s = {.width = win->width,
                            .height = win->height,
                            .stride = win->width,
-                           .buffer = win->buffer};
+                           .buffer = win->buffer,
+                           .capacity = (size_t)win->width * win->height};
+    gfx_surface_verify(&s, "__clear_other_carets_locked/win");
     term_clear_caret(&win->term, &s);
     win->term.focused = 0;
     expand_damage(win->x, win->y - compositor_titlebar_height(), win->width,
@@ -1258,7 +1260,9 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
   struct gl_surface win_surf = {.width = win->width,
                                 .height = win->height,
                                 .stride = win->width,
-                                .buffer = win->buffer};
+                                .buffer = win->buffer,
+                                .capacity = (size_t)win->width * win->height};
+  gfx_surface_verify(&win_surf, "compositor_window_write/win");
 
   /* The caret is drawn only on the window that currently owns keyboard input.
    */
@@ -1535,8 +1539,14 @@ void compositor_handle_click(int button, int state) {
   if (send_pid > 0)
     kernel_ipc_send(send_pid, &msg);
   if (do_close) {
-    pr_info("Compositor: Close button -> request close of PID %d\n", close_pid);
-    window_request_close(close_pid);
+    pr_info("Compositor: Close button -> deferring close of PID %d\n",
+            close_pid);
+    /* SCHED-03: NEVER kill here — compositor_handle_click runs in the input
+     * bottom-half (timer IRQ, CPU0).  process_kill_subtree from IRQ context
+     * can UAF a subtree victim that is `current` on another CPU (the UTM
+     * click-panic).  Enqueue instead; init drains it in process context via
+     * SYS_WM_DRAIN. */
+    wm_defer_close(close_pid);
   }
   /* Background button: send the window to the dock.  compositor_minimize_window
    * re-takes compositor_lock, so it must run here (after the unlock), and it
@@ -1749,9 +1759,15 @@ static void compositor_render_internal(void) {
     return;
   }
 
-  /* Use current buffer dimensions */
+  /* Use current buffer dimensions.  bb_pg snapshots the backing page count so
+   * the surface below carries its TRUE allocation (S-STAB): the whole raster
+   * path only clips against bb_w/bb_h, so if those ever exceeded the allocation
+   * (a geometry desync) every chrome/content write would run off the end into
+   * kernel RAM.  We hold compositor_lock here, so bb_width/height/pages/backbuffer
+   * are a consistent set. */
   int bb_w = bb_width;
   int bb_h = bb_height;
+  int bb_pg = bb_pages;
   uint32_t *backbuffer = compositor_backbuffer;
 
   /* Damage clip for this frame (perf §3.4): composite ONLY the changed region
@@ -1782,9 +1798,17 @@ static void compositor_render_internal(void) {
   const compositor_style_t *st = compositor_style_active();
   const compositor_background_t *desk_bg = compositor_background_active();
 
-  /* Wrap backbuffer in GL Surface */
-  struct gl_surface screen = {
-      .width = bb_w, .height = bb_h, .stride = bb_w, .buffer = backbuffer};
+  /* Wrap backbuffer in GL Surface.  capacity = true backing size in pixels
+   * (S-STAB); gfx_surface_verify panics precisely if bb_w*bb_h ever outran the
+   * allocation instead of letting the chrome/content painters scribble kernel
+   * RAM (the UTM-panic class). */
+  struct gl_surface screen = {.width = bb_w,
+                              .height = bb_h,
+                              .stride = bb_w,
+                              .buffer = backbuffer,
+                              .capacity =
+                                  (size_t)bb_pg * (4096u / sizeof(uint32_t))};
+  gfx_surface_verify(&screen, "compositor_render_internal/backbuffer");
 
   /* Damage clip as the rect the gfx_chrome primitives honour. */
   gfx_rect_t chrome_clip = {clip_x1, clip_y1, clip_w, clip_h};
@@ -2150,17 +2174,32 @@ static void compositor_render_internal(void) {
     }
   }
 
-  /* Flush — only upload the damage bounding box instead of the full framebuffer
-   */
-  if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
+  /* Flush — upload only the damage bounding box.  Prefer the atomic present()
+   * (RC2): it copies backbuffer->scanout AND transfers to the host under the
+   * driver's gpu_lock, so a concurrent set_mode/zoom can't free the scanout
+   * backing mid-copy (the resize/zoom use-after-free).  present() validates the
+   * source geometry against the LIVE scanout and returns <0 to skip a frame on
+   * a mid-resize mismatch — we then leave the damage accumulated so the next
+   * frame repaints at the new size. */
+  int presented = 0;
+  int dx1 = damage_x1 < 0 ? 0 : damage_x1;
+  int dy1 = damage_y1 < 0 ? 0 : damage_y1;
+  int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
+  int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
+  if (dev->ops && dev->ops->present) {
+    if (dx1 < dx2 && dy1 < dy2) {
+      if (dev->ops->present(dev, backbuffer, bb_w, bb_h, dx1, dy1, dx2 - dx1,
+                            dy2 - dy1) == 0)
+        presented = 1;
+    } else {
+      presented = 1; /* nothing to upload, but the (empty) damage is consumed */
+    }
+  } else if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
+    /* Legacy fallback for a driver without present(): copy+flush.  NOT atomic
+     * vs set_mode, but no GPU driver in-tree lacks present() — kept for safety
+     * so a future provider that only implements flush still displays. */
     void *fb_va = dev->ops->get_framebuffer(dev, NULL);
-    /* Backbuffer == scanout (zoom resizes the scanout itself; QEMU stretches it
-     * to the host window).  Upload only the damage bounding box. */
     if (fb_va && bb_w == dev->width && bb_h == dev->height) {
-      int dx1 = damage_x1 < 0 ? 0 : damage_x1;
-      int dy1 = damage_y1 < 0 ? 0 : damage_y1;
-      int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
-      int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
       if (dx1 < dx2 && dy1 < dy2) {
         int row_bytes = (dx2 - dx1) * 4;
         uint8_t *dst = (uint8_t *)fb_va;
@@ -2171,12 +2210,16 @@ static void compositor_render_internal(void) {
         }
         dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
       }
-      /* Reset damage: invalid state (x1>x2) means nothing to flush */
-      damage_x1 = bb_w;
-      damage_y1 = bb_h;
-      damage_x2 = 0;
-      damage_y2 = 0;
+      presented = 1;
     }
+  }
+  /* Reset damage only once the frame was actually presented; a skipped frame
+   * (mid-resize geometry mismatch) keeps its damage for the retry. */
+  if (presented) {
+    damage_x1 = bb_w;
+    damage_y1 = bb_h;
+    damage_x2 = 0;
+    damage_y2 = 0;
   }
   /* Cleanup regions */
   region_destroy(occluded);

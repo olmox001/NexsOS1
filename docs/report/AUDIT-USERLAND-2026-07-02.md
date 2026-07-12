@@ -7,7 +7,7 @@
 > `docs/direction/DIR-04-capabilities-and-services.md`.
 >
 > Repo state audited: branch `comprehensive-review`, HEAD `6e394cf`
-> ("fix init spawn"), tag v0.0.4.4. **This document performs no edits and no
+> ("fix init spawn"), tag v0.0.5.0. **This document performs no edits and no
 > commit**; it is the only new file this pass wrote.
 >
 > Severity scale used below (per instruction): **W1** trivial/doc,
@@ -277,7 +277,7 @@ Each entry: `file:line`, severity, one-line micro-fix.
 
 ## 4. Proposed services-vs-apps division
 
-Grounded in exactly what `init.c` v0.0.4.4 does today
+Grounded in exactly what `init.c` v0.0.5.0 does today
 (`user/sys/bin/init.c:101-263`): one undivided `main()` that (a) spawns
 `nxntfy_srv`, `nxui`, `nxlauncher`, `nxshell` in a fixed hardcoded order
 (`init.c:111,125,142,152`), (b) owns and re-publishes `srv.notify_pid` on

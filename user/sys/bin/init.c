@@ -342,6 +342,14 @@ int main(void) {
      * manual path (nxres / SYS_SET_DISPLAY_MODE) remains.  SYS_DISPLAY_POLL is
      * kept for that future event-driven caller. */
 
+    /* SCHED-03: run any window closes the compositor deferred out of IRQ
+     * context.  The close button enqueues the target pid (it cannot kill from
+     * the input bottom-half — that UAF'd a process live on another CPU); init
+     * performs the actual process_kill_subtree here, in process context, on
+     * every supervisor pass.  ~50 ms latency (the sleep below) is imperceptible,
+     * same as the notification/respawn model. */
+    OS1_wm_drain();
+
     /* Sleep between supervisor passes instead of busy-spinning: with the real
      * kernel timer (SYS_NANOSLEEP) init is descheduled (~0% CPU) and woken by
      * its core's tick, so it can no longer monopolise a core while all children
