@@ -656,6 +656,7 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin/background
 	@mkdir -p $(BUILD_DIR)/rootfs/lib
+	@mkdir -p  $(BUILD_DIR)/rootfs/sys/lib/include
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
@@ -674,9 +675,18 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
 	@-cp user/sys/bin/nxfont/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
-	@# Copy Lua libraries to /sys/lib
-	@-cp $(LUA_LIB)     $(BUILD_DIR)/rootfs/sys/lib/ 2>/dev/null || true
-	@-cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/ 2>/dev/null || true
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include	
+	@-cp $(SDL2_LIB) $(BUILD_DIR)/rootfs/sys/lib/libSDL2.a 2>/dev/null || true
+	@-cp $(LUA_LIB) $(BUILD_DIR)/rootfs/sys/lib/liblua.a 2>/dev/null || true
+	@-cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/libos1lua.a 2>/dev/null || true
+	@rm -rf $(BUILD_DIR)/rootfs/sys/lib/include
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/SDL2
+	@cp -r $(SDL2_DIR)/include/. $(BUILD_DIR)/rootfs/sys/lib/include/SDL2/
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/lua
+	@cp $(LUA_DIR)/*.h $(BUILD_DIR)/rootfs/sys/lib/include/lua/
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/api
+	@cp -r include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
 	@# Copy Lua's own test suite next to nxlua, for on-device testing
 	@mkdir -p $(BUILD_DIR)/rootfs//bin/luatest
 	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/bin/luatest/ 2>/dev/null || true
