@@ -382,7 +382,8 @@ in the tree today, so the structural work ahead starts from fact. The 2026-06-20
 baseline below (§7.1–§7.5, extended in place) still holds; §7.6–§7.9 record what
 landed since, across the F4.1 batch (2026-06-22→26), the F0.0.4.2 stabilization
 detour (2026-06-27→28, validated stable on UTM), and the notification/kill-model/
-UI polish through v0.0.5.0 (2026-06-29→30); §7.10 is the current "what remains."
+UI polish through v0.0.5.0 (2026-06-29→30); §7.10 records the 2026-07-12
+render-isolation stabilization pass; §7.11 is the current "what remains."
 Everything cited below is file:line-verified against the tree at HEAD (`6e394cf`),
 not inferred from commit messages. Regression suites `captest`/`capkill`/`capreg`/
 `capipc`/`sandboxtest`/`fdtest`/`forkbomb` all still exist under `user/bin/`.
@@ -627,7 +628,47 @@ not modified by this doc pass).
   now takes `compositor_lock` (`kernel/graphics/compositor.c:1356-1466`),
   closing a drag/resize torn-write race.
 
-## 7.10 What remains structural (updated 2026-07-02)
+## 7.10 SCHED-STACK-ISO — compositor render moved to userspace ✅ DONE (2026-07-12)
+
+Root-caused and fixed the amd64/aarch64 kernel panics on click/resize under
+SMP (docs/report/S-STAB-2026-07-12-render-isolation-and-notify-panel.md, full
+detail). `compositor_tick()` used to run from the timer IRQ on CPU0 —
+nested on whatever task's kernel stack that CPU had interrupted. Its deep
+render call chain could then smash a live frame on another CPU if that
+stack was freed-and-reused mid-flight (the #169/#170 free-while-in-use
+class): amd64 saw a `current_process` spill overwritten by a gfx return
+address (`#PF`/`#GP` in `kernel_syscall_dispatcher`); aarch64 saw a
+callee-saved register corrupted across `timer_handler`, NULLing
+`current_chip` and faulting the IRQ EOI.
+
+- **Render now runs in PROCESS context** (ASTRA DIR-02): the timer tick no
+  longer calls `compositor_tick()` (`kernel/core/timer.c:48`, `input_drain()`
+  is the only thing left there — shallow, no deep call chain). Init drives the
+  render instead, via the existing `SYS_COMPOSITOR_RENDER` syscall
+  (`flush()` at `user/sys/bin/init.c:232` for the first frame and `:353` in
+  the supervisor loop, ~30 FPS). No new kernel mechanism — a first attempt at
+  a dedicated render stack (`arch_call_on_stack`) was written and **discarded**
+  as the same category of bug as the disabled kthread infra (§KTHREAD-STATUS):
+  a bespoke kernel primitive where a userspace-driven call already does the
+  job.
+- **process_terminate root fix**: never frees a victim's kernel stack/PGD
+  while it is `current_task` on **any** CPU (`kernel/sched/process.c:1230-1247`),
+  not just the possibly-stale `on_cpu` one the old check inspected. This is
+  the actual structural fix for the #169/#170 free-while-in-use class.
+- **Window-close (red button) unchanged in model, safe by construction now**:
+  `compositor_handle_click()` still calls `window_request_close()` directly
+  and synchronously (`kernel/graphics/compositor.c:1550`) — `docs/
+  PROCESS-KILL-MODEL.md`'s window-aware subtree kill (nxexec's
+  spawn-as-own-child + spare-windowed-children model) is untouched. An
+  earlier attempt to defer the kill through a kernel queue drained by init
+  (`SYS_WM_DRAIN`) was **reverted**: it broke the nxexec kill model's timing
+  assumptions and was redundant once the render (the actual corruptor) left
+  IRQ context.
+- **Verified**: a dedicated resize/zoom stress (`user/bin/restest.c`) — 2108
+  cycles on amd64, 754 on aarch64, both at 4 CPUs — 0 faults after the fix;
+  both arches crashed on this exact path before it.
+
+## 7.11 What remains structural (updated 2026-07-02)
 
 The **call-surface refactor** (DIR-01/#164) is still the next structural work:
 unify/standardise **all** existing syscalls/verbs onto the OS1_/OS1low_ +

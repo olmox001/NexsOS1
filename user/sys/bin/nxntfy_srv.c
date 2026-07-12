@@ -49,6 +49,10 @@
 #define NOTIFY_WIDTH 280
 #define NOTIFY_HEIGHT 56
 #define NOTIFY_RADIUS 10
+/* NOTIFY-RESIZE-01: idle-loop poll cadence (see the event-loop comment below)
+ * — bounded so a host display resize is noticed within ~1/3 s even with the
+ * popup hidden and no notification activity, while staying near-0% CPU. */
+#define IDLE_POLL_MS 300
 
 /* Matches nxbar's BAR_MARGIN_SIDE and BAR_H */
 #define BAR_MARGIN_SIDE 7
@@ -298,13 +302,13 @@ int main(void) {
   char last_text[56] = {0};
 
   /* Event loop (USR-NOTIFY-02 #134): never busy-spin.
-   *   - Idle (window hidden): BLOCK on recv() — the process is descheduled and
-   *     consumes ~0% CPU until a notification actually arrives. This is the
-   *     server pattern (real blocking IPC, like init's blocking sleep).
+   *   - Idle (window hidden): poll at a LOW rate (see IDLE_POLL_MS below) so
+   *     the process is descheduled between ticks (near-0% CPU) but still
+   *     notices a host display resize without needing a live notification.
    *   - Visible (auto-hide pending): we cannot block forever or the 2 s hide
    *     would never fire, so poll with try_recv() and a REAL blocking
    * OS1_sleep(100) — 10 wakeups/s, not a yield-spin — until the window hides
-   * and we drop back to the blocking branch. A recv-with-timeout would collapse
+   * and we drop back to the idle branch. A recv-with-timeout would collapse
    * both branches; that needs the capability timer objects of issue #135. */
   while (1) {
     /* Adaptive resolution check (like nxbar) */
@@ -323,8 +327,25 @@ int main(void) {
      * stray glyph. */
     int got;
     if (!is_visible) {
-      /* Idle: block until a message arrives — zero CPU while hidden. */
-      got = (recv(-1, &msg) == 0);
+      /* FIX(NOTIFY-RESIZE-01): this used to be a plain blocking recv(-1,&msg)
+       * — zero CPU while idle, but it ALSO froze the "adaptive resolution
+       * check" above: that check only runs once per loop iteration, and a
+       * blocking recv() means the NEXT iteration (and therefore the next
+       * resize check) does not happen until a real notification arrives to
+       * wake it. A host display resize that lands while idle (the common
+       * state — the popup is hidden almost all the time) was invisible to
+       * this process until something else woke it, leaving the popup's
+       * window stuck at its OLD position/possibly off-screen until the next
+       * notification "touched" it. Poll at IDLE_POLL_MS instead of blocking
+       * forever: still near-0% CPU (a ~3 Hz sleep-based wait, same technique
+       * nxbar/nxui already use at 30 Hz for their own resize polling), but
+       * the resize check now runs on a bounded cadence regardless of
+       * notification activity. */
+      got = (try_recv(-1, &msg) == 0);
+      if (!got) {
+        OS1_sleep(IDLE_POLL_MS);
+        continue;
+      }
     } else {
       /* Visible: non-blocking poll so the 2 s auto-hide can still fire. */
       got = (try_recv(-1, &msg) == 0);
