@@ -22,3 +22,7 @@
 	path = user/sys/lib/direct3d
 	url = https://github.com/olmox001/wine.git
 	branch = nexsos-port-d3d9
+[submodule "user/sys/lib/lua"]
+	path = user/sys/lib/lua
+	url = https://github.com/olmox001/nxlua.git
+	branch = nexsos-por
