@@ -760,10 +760,14 @@ FILE *fopen(const char *path, const char *mode) {
   FILE *f = malloc(sizeof(FILE));
   if (!f)
     return NULL;
+  /* Zero EVERY field: malloc reuses dirty blocks, and a stale has_ungetc
+   * injected a ghost byte at the start of the first fread (doom read
+   * "\0IWA" instead of "IWAD" after its 9-file IWAD probe loop), while a
+   * stale is_tmp made fclose() unlink real files.  memset is the whole
+   * fix; pos/error/eof/has_ungetc/is_tmp start 0 by definition. */
+  memset(f, 0, sizeof(FILE));
+  f->fd = -1; /* no fd-backed stream: positional path I/O */
   strncpy(f->path, path, sizeof(f->path) - 1);
-  f->pos = 0;
-  f->error = 0;
-  f->eof = 0;
   /* Probe file size; file_read with NULL buf and size=0 returns byte count. */
   f->size = file_read(path, NULL, 0, 0);
   if (f->size < 0 && mode[0] == 'r') {
