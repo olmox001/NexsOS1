@@ -33,7 +33,7 @@
  *     notification) goes to every singleton system service's registered
  *     pid — srv.dock_pid (nxui), srv.bar_pid (nxbar), srv.launcher_pid
  *     (nxlauncher) — published by init the same way it already publishes
- *     srv.notify_pid (register_service_pid, user/sys/bin/init.c) and
+ *     srv.notify_pid (register_service_pid, user/sys/bin/nxinit.c) and
  *     refreshed on every respawn so the ping can never land on a corpse's
  *     stale pid.  A windowed app sees this ping as INPUT_TYPE_LOOK_CHANGED
  *     from its EXISTING input_poll_event() loop (input.h/lib.c) — NOT a
@@ -68,7 +68,7 @@ static const char *const nxres_look_ping_targets[] = {
      * instance wins if more than one is ever open at once. */
     "srv.settings_pid",
 };
-#define NXRES_LOOK_PING_NTARGETS \
+#define NXRES_LOOK_PING_NTARGETS                                               \
   (int)(sizeof(nxres_look_ping_targets) / sizeof(nxres_look_ping_targets[0]))
 
 /* nxres_broadcast_look - silent IPC_TYPE_NOTIFY ping to every registered

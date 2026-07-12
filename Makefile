@@ -101,7 +101,7 @@ BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
 BOOTLOADER_BIN = $(BUILD_DIR)/bootloader.bin
 KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN = $(BUILD_DIR)/kernel.bin
-USER_ELF   = $(BUILD_DIR)/init.elf
+USER_ELF   = $(BUILD_DIR)/nxinit.elf
 DISK_IMG   = $(BUILD_DIR)/disk.img
 # AArch64 only: pre-generated QEMU virt DTB used to pass a valid x0 to the kernel.
 # QEMU does not set x0 for bare-metal ELF kernels (no Linux image magic), so we
@@ -414,7 +414,7 @@ libsdl2: $(SDL2_LIB)
 .PHONY: libsdl2
 
 # ==============================================================================
-# Lua static library and runtime (nxlua)
+# Lua static library and runtime (lua)
 # ==============================================================================
 LUA_DIR := $(USER_LIB_DIR)/lua
 
@@ -498,7 +498,7 @@ $(LUA_OBJ_DIR)/lua.o: $(LUA_DIR)/lua.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/nxlua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
 		$(LUA_OBJ_DIR)/lua.o \
 		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
@@ -506,16 +506,16 @@ $(BUILD_DIR)/nxlua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LI
 
 
 # System ELFs (placed in /sys/bin)
-SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
+SYS_ELFS = $(BUILD_DIR)/nxinit.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
-           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxlua.elf
+           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf 
 
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
-           $(BUILD_DIR)/ipc_send.elf \
+           $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/lua.elf\
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
@@ -551,7 +551,7 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
 	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Explicit dependencies for each user ELF
-$(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/init.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -678,8 +678,8 @@ rootfs: user
 	@-cp $(LUA_LIB)     $(BUILD_DIR)/rootfs/sys/lib/ 2>/dev/null || true
 	@-cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/ 2>/dev/null || true
 	@# Copy Lua's own test suite next to nxlua, for on-device testing
-	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin/nxluates
-	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/sys/bin/nxluates/ 2>/dev/null || true
+	@mkdir -p $(BUILD_DIR)/rootfs//bin/luatest
+	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/bin/luatest/ 2>/dev/null || true
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done

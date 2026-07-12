@@ -1,5 +1,5 @@
 /*
- * user/sys/bin/init.c
+ * user/sys/bin/nxinit.c
  * Process 1 — System Initializer and Service Supervisor
  *
  * This is the first userland process launched by the kernel after boot.

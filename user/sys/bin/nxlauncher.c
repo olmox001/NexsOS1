@@ -530,7 +530,7 @@ static const char *const filtered_extensions[] = {
  * dock themselves, and nxexec (the execution service — it is the thing that
  * LAUNCHES tiles, not a tile; clicking it with no argument does nothing). */
 static const char *const filtered_files[] = {
-    "init",   "nxntfy_srv", "nxui", "nxbar", "nxlauncher",
+    "nxinit", "nxntfy_srv", "nxui", "nxbar", "nxlauncher",
     "nxexec", "background", ".",    "..",    NULL};
 
 static int has_filtered_ext(const char *name) {

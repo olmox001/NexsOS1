@@ -299,7 +299,7 @@ static void init_scheduler(void) {
 }
 
 /*
- * spawn_init_process (K3): create, load and enqueue PID1 (/sys/bin/init).
+ * spawn_init_process (K3): create, load and enqueue PID1 (nx).
  * ROOT + explicit caps, NOT machine: PLVL_MACHINE is the machine's own
  * identity (B3 §3.1) — it would make PID1 unkillable and exempt from every
  * capability check and from the creator clamp for all its children.
@@ -310,11 +310,11 @@ static void init_scheduler(void) {
  */
 static int spawn_init_process(void) {
   pr_info("%s", "K3: Spawning First-Stage Init...\n");
-  struct process *init =
-      process_create_caps("init", PROC_PRIO_USER, PLVL_MACHINE, CAP_ALL);
-  if (init && process_load_elf(init, "/sys/bin/init") == 0) {
-    pr_info("K3: Initialized PID %d (/sys/bin/init)\n", init->pid);
-    enqueue_task(init);
+  struct process *nxinit =
+      process_create_caps("nxinit", PROC_PRIO_USER, PLVL_MACHINE, CAP_ALL);
+  if (nxinit && process_load_elf(nxinit, "/sys/bin/nxinit") == 0) {
+    pr_info("K3: Initialized PID %d (/sys/bin/nxinit)\n", nxinit->pid);
+    enqueue_task(nxinit);
     return 0;
   }
   return -1;
