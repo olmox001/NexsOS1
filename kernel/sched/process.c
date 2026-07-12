@@ -179,64 +179,6 @@ int sched_get_focus_pid(void) { return keyboard_focus_pid; }
  * (the IRQ-time process_terminate is the separate SCHED-03 follow-up). */
 void window_request_close(int pid) { process_kill_subtree(pid); }
 
-/* ---------------------------------------------------------------------------
- * SCHED-03 — deferred window close (the follow-up window_request_close's own
- * comment above names).  The corruption behind the UTM click-panics: a close
- * from compositor_handle_click runs in the input bottom-half (timer IRQ on
- * CPU0), so process_kill_subtree() — which takes sched_lock, tears down the
- * victim's windows, and prunes/reaps a whole subtree — executed from an IRQ
- * that had interrupted an arbitrary context, and a subtree victim could be
- * `current` on ANOTHER CPU.  Freeing/transitioning a process that is live on
- * another core is a use-after-free (matches the corrupted current_process in
- * the panic, family #169/#170).
- *
- * Fix (the maintainer-approved init-poll model, mirroring the notification
- * service): the IRQ side only ENQUEUES the target pid here; init drains it in
- * PROCESS context via SYS_WM_DRAIN, so the kill runs on a normal task stack —
- * exactly the safe context a shell's SYS_KILL already uses.  Bounded ring: a
- * dropped close just leaves the window open (the user re-clicks); never a
- * crash, never blocking the IRQ.
- * ------------------------------------------------------------------------- */
-#define WM_CLOSE_QUEUE_SZ 16
-static int wm_close_queue[WM_CLOSE_QUEUE_SZ];
-static int wm_close_head, wm_close_tail;
-static DEFINE_SPINLOCK(wm_close_lock);
-
-/* wm_defer_close - enqueue a close intent from IRQ/bottom-half context. */
-void wm_defer_close(int pid) {
-  if (pid <= 0)
-    return;
-  uint64_t flags;
-  spin_lock_irqsave(&wm_close_lock, &flags);
-  int next = (wm_close_head + 1) % WM_CLOSE_QUEUE_SZ;
-  if (next != wm_close_tail) { /* drop silently when full (window stays open) */
-    wm_close_queue[wm_close_head] = pid;
-    wm_close_head = next;
-  }
-  spin_unlock_irqrestore(&wm_close_lock, flags);
-}
-
-/* wm_drain_closes - run all pending closes in the CALLER's (process) context.
- * Returns the number processed.  Must be called from a task, never an IRQ. */
-int wm_drain_closes(void) {
-  int processed = 0;
-  for (;;) {
-    int pid = -1;
-    uint64_t flags;
-    spin_lock_irqsave(&wm_close_lock, &flags);
-    if (wm_close_tail != wm_close_head) {
-      pid = wm_close_queue[wm_close_tail];
-      wm_close_tail = (wm_close_tail + 1) % WM_CLOSE_QUEUE_SZ;
-    }
-    spin_unlock_irqrestore(&wm_close_lock, flags);
-    if (pid <= 0)
-      break;
-    window_request_close(pid); /* process_kill_subtree in safe process context */
-    processed++;
-  }
-  return processed;
-}
-
 /* Bounded focus boost (SCHED-01): the focused process is picked first for
  * snappy foreground response, but never more than FOCUS_BOOST_MAX times in a
  * row — after that one fair round-robin pick runs, so a CPU-bound focused
@@ -928,6 +870,14 @@ void smp_create_idle_task(uint32_t cpu_id) {
 /*
  * kthread_create - create and enqueue a runnable KERNEL SERVICE thread.
  *
+ * !!! UNSTABLE / NO IN-TREE CALLER — DO NOT WIRE UP (KTHREAD-STATUS,
+ * docs/report/KTHREAD-STATUS.md).  The only intended consumer,
+ * input_server_start(), is compiled out for good reason: a kthread created here
+ * runs OUTSIDE the per-CPU idle-task ordering the SMP scheduler relies on, and
+ * its blocking primitive (kthread_block -> arch_cpu_yield) stalls CPU0 on the
+ * yield-to-USER leg.  Kept as staged scaffolding only; migrate services to
+ * SUPERVISED USERLAND PROCESSES (the notification-service model) instead.
+ *
  * Unlike smp_create_idle_task (which pins the result as a CPU's idle task),
  * this creates a normal runnable kernel thread at PROC_PRIO_SYSTEM: no user
  * address space (page_table == NULL, shared kernel_pgd), no stdio/ctty (the
@@ -1264,11 +1214,29 @@ int process_terminate(int pid) {
    * supervisors must treat process_wait()==-2 as "child gone". */
   proc->state = PROC_DEAD;
   {
-    int vcpu = (proc->on_cpu >= 0) ? proc->on_cpu : 0;
-    struct cpu_info *vc = &cpu_data[vcpu];
-    spin_lock(&vc->sched_lock);
-    int still_current = (vc->current_task == proc);
-    spin_unlock(&vc->sched_lock);
+    /* S-STAB (#169/#170 ROOT FIX): the victim's kernel stack / PGD must NOT be
+     * freed while ANY CPU still executes on it.  The old check trusted
+     * proc->on_cpu — which can be STALE (a task mid-migration, or in the window
+     * between a runqueue pick and the on_cpu write) — and inspected ONLY that
+     * one CPU.  A victim actually current on a DIFFERENT CPU then had its stack
+     * freed under a running core; the PMM handed those pages to a live task and
+     * the two kernel stacks overlapped — the cross-CPU frame smash behind the
+     * UTM panic (a gfx return address overwriting current_process in a healthy
+     * task's nanosleep).  Scan EVERY CPU: if the victim is current_task
+     * anywhere, leave it PROC_DEAD and let THAT CPU's schedule() reap it after
+     * it switches off the stack (the prev==DEAD deferred-free path).  Each CPU's
+     * current_task is read under that CPU's sched_lock (same lock order the
+     * single-CPU check already used: global sched_lock held -> per-CPU). */
+    int still_current = 0;
+    for (int c = 0; c < MAX_CPUS; c++) {
+      struct cpu_info *vc = &cpu_data[c];
+      spin_lock(&vc->sched_lock);
+      if (vc->current_task == proc)
+        still_current = 1;
+      spin_unlock(&vc->sched_lock);
+      if (still_current)
+        break;
+    }
     if (still_current) {
       spin_unlock_irqrestore(&sched_lock, flags);
       return 0;

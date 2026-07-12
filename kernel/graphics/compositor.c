@@ -1539,14 +1539,15 @@ void compositor_handle_click(int button, int state) {
   if (send_pid > 0)
     kernel_ipc_send(send_pid, &msg);
   if (do_close) {
-    pr_info("Compositor: Close button -> deferring close of PID %d\n",
-            close_pid);
-    /* SCHED-03: NEVER kill here — compositor_handle_click runs in the input
-     * bottom-half (timer IRQ, CPU0).  process_kill_subtree from IRQ context
-     * can UAF a subtree victim that is `current` on another CPU (the UTM
-     * click-panic).  Enqueue instead; init drains it in process context via
-     * SYS_WM_DRAIN. */
-    wm_defer_close(close_pid);
+    pr_info("Compositor: Close button -> request close of PID %d\n", close_pid);
+    /* Window-close INTENT seam (#69, docs/PROCESS-KILL-MODEL.md): the kernel's
+     * window-aware subtree kill takes the window owner and its WINDOWLESS
+     * children (nxexec's hosted terminal program), sparing windowed children.
+     * The actual page/stack free is deferred to the scheduler reaper, so the
+     * IRQ-context call here only marks the subtree — the heavy compositor render
+     * that used to smash a stack from this context is now in userspace
+     * (SCHED-STACK-ISO), so the IRQ path is shallow. */
+    window_request_close(close_pid);
   }
   /* Background button: send the window to the dock.  compositor_minimize_window
    * re-takes compositor_lock, so it must run here (after the unlock), and it

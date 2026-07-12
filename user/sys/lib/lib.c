@@ -484,7 +484,6 @@ int OS1_registry_del(const char *key) {
 long OS1_display_info(void) { return _sys_display_info(); }
 int OS1_display_set_mode(int w, int h) { return _sys_set_display_mode(w, h); }
 int OS1_display_poll(void) { return _sys_display_poll(); }
-int OS1_wm_drain(void) { return _sys_wm_drain(); }
 int OS1_display_set_style(int style_id, int theme_id) {
   return _sys_set_style(style_id, theme_id, -1);
 }

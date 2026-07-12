@@ -326,12 +326,6 @@ int sched_get_focus_pid(void);
  * compositor calls this instead of process_terminate() so graphics does not
  * drive process lifecycle directly. */
 void window_request_close(int pid);
-/* SCHED-03 deferred close: wm_defer_close enqueues a close intent from IRQ/
- * bottom-half context (compositor_handle_click); wm_drain_closes runs the
- * pending kills in the caller's PROCESS context (init via SYS_WM_DRAIN), so
- * process_kill_subtree never runs in mouse/timer-IRQ context. */
-void wm_defer_close(int pid);
-int wm_drain_closes(void);
 long sys_getprocs(struct ps_info *user_buf, size_t max_count);
 /* Kernel-internal process introspection backing the OBJ_TYPE_PROCESS object read
  * (a process reports its state through the object mechanism, kernel/core/object.c).

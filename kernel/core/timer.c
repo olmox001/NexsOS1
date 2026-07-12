@@ -41,15 +41,16 @@
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
 
-extern void compositor_tick(void);
 /* USB has no IRQ wired (polled HCDs); the tick drives HID input on CPU 0 so it
  * works even when no virtio/PS-2 interrupt ever fires (e.g. UTM, real HW). */
 extern void usb_hid_poll(void);
 extern volatile int panic_flag;
-/* compositor_interval: tick stride between compositor_tick() calls; set once
- * from HZ and COMPOSITOR_TARGET_FPS on the first tick processed by CPU 0. */
-static uint64_t compositor_interval = 1;
-#define COMPOSITOR_TARGET_FPS 30
+/* NOTE(SCHED-STACK-ISO): the compositor render is no longer driven from the
+ * timer tick — it runs in process context (init -> SYS_COMPOSITOR_RENDER) so it
+ * never nests on an interrupted task's kernel stack.  compositor_interval /
+ * COMPOSITOR_TARGET_FPS / the compositor_tick() hook were removed here with that
+ * change (kernel/graphics/compositor.c still defines compositor_tick() for the
+ * public SYS path, it is just not called from the IRQ any more). */
 
 /* Software timers are PER-CPU: each CPU owns a timer_list + timer_lock in its
  * struct cpu_info (kernel/cpu.h), fired by that CPU in kernel_timer_tick against
@@ -259,21 +260,17 @@ struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
      * event-ring head check per device). */
     usb_hid_poll();
 
-    /* Calculate compositor interval once: HZ/30 ticks (or 1 if HZ < 30).
-     * interval_init guards against re-computation on every tick. */
-    static int interval_init = 0;
-    if (!interval_init) {
-        if (HZ >= COMPOSITOR_TARGET_FPS) {
-            compositor_interval = HZ / COMPOSITOR_TARGET_FPS;
-        } else {
-            compositor_interval = 1;
-        }
-        interval_init = 1;
-    }
-
-    if ((jiffies % compositor_interval) == 0) {
-      compositor_tick();
-    }
+    /* SCHED-STACK-ISO (ASTRA DIR-02, "compositor render in userspace"): the
+     * heavy compositor render is NO LONGER driven from here.  Running it from
+     * the timer IRQ nested it on whatever task's kernel stack CPU0 interrupted;
+     * its deep call chain then smashed a live frame — on amd64 a syscall's
+     * current_process spill (the click/nanosleep panic), on aarch64 the
+     * callee-saved base register restored across timer_handler, faulting the
+     * current_chip->end() EOI at a NULL deref.  The render now runs in PROCESS
+     * context: init drives it via SYS_COMPOSITOR_RENDER (flush()) in its
+     * supervisor loop, on init's own kernel stack — never nested on an
+     * interrupted task.  Input is still dispatched here (input_drain above), but
+     * that path is shallow and takes no deep call chain. */
   }
 
   /* Call Scheduler for Preemption */

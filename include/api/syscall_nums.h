@@ -57,7 +57,6 @@
 #define SYS_DISPLAY_POLL       273  /* apply a pending host display-change; returns 1 if resized */
 #define SYS_SET_STYLE          274  /* compositor look: arg0=style, arg1=theme, arg2=bg (-1 = keep) */
 #define SYS_SET_ZOOM           275  /* desktop zoom percent (HiDPI/zoom); arg0=percent [25..400] */
-#define SYS_WM_DRAIN           276  /* SCHED-03: run deferred window closes in process ctx; machine-only; returns count */
 
 /* --- Memory --- */
 #define SYS_SBRK               216

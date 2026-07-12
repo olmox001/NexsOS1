@@ -342,19 +342,21 @@ int main(void) {
      * manual path (nxres / SYS_SET_DISPLAY_MODE) remains.  SYS_DISPLAY_POLL is
      * kept for that future event-driven caller. */
 
-    /* SCHED-03: run any window closes the compositor deferred out of IRQ
-     * context.  The close button enqueues the target pid (it cannot kill from
-     * the input bottom-half — that UAF'd a process live on another CPU); init
-     * performs the actual process_kill_subtree here, in process context, on
-     * every supervisor pass.  ~50 ms latency (the sleep below) is imperceptible,
-     * same as the notification/respawn model. */
-    OS1_wm_drain();
+    /* SCHED-STACK-ISO (ASTRA DIR-02): DRIVE THE COMPOSITOR RENDER from here, in
+     * process context, instead of the kernel timer IRQ.  Running the heavy
+     * render from the tick nested it on an arbitrary interrupted task's kernel
+     * stack and smashed live frames on other CPUs (the amd64 click/nanosleep
+     * panic and the aarch64 current_chip #PF).  flush() -> SYS_COMPOSITOR_RENDER
+     * runs the render on init's OWN kernel stack — never nested.  The render is
+     * damage-clipped, so an idle pass with nothing dirty is cheap.  ~30 FPS
+     * pacing (33 ms) matches the old tick cadence. */
+    flush();
 
-    /* Sleep between supervisor passes instead of busy-spinning: with the real
-     * kernel timer (SYS_NANOSLEEP) init is descheduled (~0% CPU) and woken by
-     * its core's tick, so it can no longer monopolise a core while all children
-     * are alive. 50 ms respawn latency is imperceptible. */
-    OS1_sleep(50);
+    /* Sleep between supervisor passes.  33 ms ≈ 30 FPS: init is the compositor's
+     * frame pump now, so the desktop refresh cadence lives here.  With the real
+     * kernel timer (SYS_NANOSLEEP) init is descheduled between frames (~0% CPU
+     * at idle) and woken by its core's tick. */
+    OS1_sleep(33);
   }
   return 0;
 }
