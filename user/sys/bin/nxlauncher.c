@@ -529,16 +529,9 @@ static const char *const filtered_extensions[] = {
 /* Hidden from the tile grid: the boot/supervisor services, the launcher and
  * dock themselves, and nxexec (the execution service — it is the thing that
  * LAUNCHES tiles, not a tile; clicking it with no argument does nothing). */
-static const char *const filtered_files[] = {"init",
-                                             "nxntfy_srv",
-                                             "nxui",
-                                             "nxbar"
-                                             "nxlauncher",
-                                             "nxexec",
-                                             "background",
-                                             ".",
-                                             "..",
-                                             NULL};
+static const char *const filtered_files[] = {
+    "init",   "nxntfy_srv", "nxui", "nxbar", "nxlauncher",
+    "nxexec", "background", ".",    "..",    NULL};
 
 static int has_filtered_ext(const char *name) {
   if (os1_image_path_has_known_ext(name))
@@ -828,10 +821,14 @@ static void redraw(void) {
       ax_l += 1;
     if (g_pressed == 2)
       ax_r += 1;
-    fb_rrect(ax_l + ARROW_W / 2 - 4, ay + ARROW_H / 2 - 3, 2, 6, 1, g_col_label);
-    fb_rrect(ax_l + ARROW_W / 2 - 2, ay + ARROW_H / 2 - 1, 2, 2, 1, g_col_label);
-    fb_rrect(ax_l + ARROW_W / 2 - 4, ay + ARROW_H / 2 + 1, 2, 2, 1, g_col_label);
-    fb_rrect(ax_r + ARROW_W / 2 + 2, ay + ARROW_H / 2 - 3, 2, 6, 1, g_col_label);
+    fb_rrect(ax_l + ARROW_W / 2 - 4, ay + ARROW_H / 2 - 3, 2, 6, 1,
+             g_col_label);
+    fb_rrect(ax_l + ARROW_W / 2 - 2, ay + ARROW_H / 2 - 1, 2, 2, 1,
+             g_col_label);
+    fb_rrect(ax_l + ARROW_W / 2 - 4, ay + ARROW_H / 2 + 1, 2, 2, 1,
+             g_col_label);
+    fb_rrect(ax_r + ARROW_W / 2 + 2, ay + ARROW_H / 2 - 3, 2, 6, 1,
+             g_col_label);
     fb_rrect(ax_r + ARROW_W / 2, ay + ARROW_H / 2 - 1, 2, 2, 1, g_col_label);
     fb_rrect(ax_r + ARROW_W / 2, ay + ARROW_H / 2 + 1, 2, 2, 1, g_col_label);
   }

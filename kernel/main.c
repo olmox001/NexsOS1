@@ -311,7 +311,7 @@ static void init_scheduler(void) {
 static int spawn_init_process(void) {
   pr_info("%s", "K3: Spawning First-Stage Init...\n");
   struct process *init =
-      process_create_caps("init", PROC_PRIO_USER, PLVL_ROOT, CAP_ALL);
+      process_create_caps("init", PROC_PRIO_USER, PLVL_MACHINE, CAP_ALL);
   if (init && process_load_elf(init, "/sys/bin/init") == 0) {
     pr_info("K3: Initialized PID %d (/sys/bin/init)\n", init->pid);
     enqueue_task(init);

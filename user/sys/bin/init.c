@@ -95,8 +95,8 @@ static void registry_init_defaults(void) {
 
   /* --- Aspetto del compositor (valori predefiniti) --- */
   OS1_registry_set("theme.color", "dark");
-  OS1_registry_set("style.name", "nexs");
-  OS1_registry_set("background.name", "blue");
+  OS1_registry_set("style.name", "minimal");
+  OS1_registry_set("background.name", "magenta");
 
   /* --- Pannello notifiche (inizialmente chiuso) --- */
   OS1_registry_set("sys.ntfy.panel_open", "0");
@@ -346,16 +346,16 @@ int main(void) {
      * process context, instead of the kernel timer IRQ.  Running the heavy
      * render from the tick nested it on an arbitrary interrupted task's kernel
      * stack and smashed live frames on other CPUs (the amd64 click/nanosleep
-     * panic and the aarch64 current_chip #PF).  flush() -> SYS_COMPOSITOR_RENDER
-     * runs the render on init's OWN kernel stack — never nested.  The render is
-     * damage-clipped, so an idle pass with nothing dirty is cheap.  ~30 FPS
-     * pacing (33 ms) matches the old tick cadence. */
+     * panic and the aarch64 current_chip #PF).  flush() ->
+     * SYS_COMPOSITOR_RENDER runs the render on init's OWN kernel stack — never
+     * nested.  The render is damage-clipped, so an idle pass with nothing dirty
+     * is cheap.  ~30 FPS pacing (33 ms) matches the old tick cadence. */
     flush();
 
-    /* Sleep between supervisor passes.  33 ms ≈ 30 FPS: init is the compositor's
-     * frame pump now, so the desktop refresh cadence lives here.  With the real
-     * kernel timer (SYS_NANOSLEEP) init is descheduled between frames (~0% CPU
-     * at idle) and woken by its core's tick. */
+    /* Sleep between supervisor passes.  33 ms ≈ 30 FPS: init is the
+     * compositor's frame pump now, so the desktop refresh cadence lives here.
+     * With the real kernel timer (SYS_NANOSLEEP) init is descheduled between
+     * frames (~0% CPU at idle) and woken by its core's tick. */
     OS1_sleep(33);
   }
   return 0;
