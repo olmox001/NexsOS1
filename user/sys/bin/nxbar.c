@@ -146,7 +146,16 @@
 
 #define NOTIFY_PANEL_W 260
 #define NOTIFY_ROW_H 18
-#define NOTIFY_PANEL_MAX_H 220
+/* NXBAR-NOTIFY-01: the panel height must fit the ring's own hard cap
+ * (NXBAR_NOTIFY_MAX == the 16-slot sys.ntfy.log.* ring nxntfy_srv writes) —
+ * there is no scroll mechanism, so any row beyond max_rows =
+ * (panel_h-10)/NOTIFY_ROW_H is silently never drawn and unreachable.  The old
+ * 220 capped display at (220-10)/18 = 11 rows, five short of the ring's 16;
+ * once >11 distinct sender-groups were logged, the newest entries (or
+ * whichever sorted last by PID) simply never appeared, with no way to see
+ * them — the "notifications arrive but the panel doesn't show/scroll to
+ * them" bug.  16 rows need 16*18+10 = 298px; round up for margin. */
+#define NOTIFY_PANEL_MAX_H 300
 
 /* Below this, OS1_time_now()'s value reads as "just after boot", not a real
  * wall-clock date — see NOTE(GFX-NXBAR-03) above.  2024-01-01 00:00:00 UTC. */

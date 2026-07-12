@@ -514,18 +514,38 @@ void compositor_resize(int w, int h) {
    * (bottom) were enforced, with no notion of either chrome strip, so a
    * resolution change could resettle a window behind nxbar or behind the
    * dock. exclude_id=windows[i].id: a top_most window (nxbar/nxui itself)
-   * must not count its own footprint against itself. */
+   * must not count its own footprint against itself.
+   *
+   * FIX(GFX-COMP-RESIZE-CLAMP-01): the x clamp used to be a FIXED 40px margin
+   * ("enough to keep a typical title bar/close button reachable"), which
+   * only accounts for a NARROW window. A wide window — nxntfy_srv's 280px
+   * notification popup is the concrete case that surfaced this — positioned
+   * near the right edge could have its LEFT edge clamped to `bb_width-40`
+   * while its RIGHT edge (`x + dw`) stayed far past the new, smaller
+   * bb_width: shrinking the desktop from 1920 to 800 left a 280px-wide popup
+   * with up to ~240px hanging off-screen, invisible until something
+   * repositioned it explicitly. Clamp against the window's OWN on-screen
+   * width/height (draw_w/draw_h, falling back to the logical size — same
+   * on-screen-size resolution the render/hit-test paths already use) instead
+   * of a one-size-fits-all constant, so ANY window's full footprint — not
+   * just its top-left corner — stays reachable after a resize. */
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == 0)
       continue;
-    if (windows[i].x > bb_width - 40)
-      windows[i].x = bb_width - 40;
+    int dw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+    int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+    /* Keep at least a corner (min 40px) reachable even for a window wider
+     * than the new screen, instead of pushing x negative. */
+    int margin_w = dw < 40 ? dw : 40;
+    int margin_h = dh < 40 ? dh : 40;
+    if (windows[i].x > bb_width - margin_w)
+      windows[i].x = bb_width - margin_w;
     if (windows[i].x < 0)
       windows[i].x = 0;
     int reserved_top = compositor_reserved_top_locked(windows[i].id);
     int reserved_bottom = compositor_reserved_bottom_locked(windows[i].id);
-    if (windows[i].y > bb_height - reserved_bottom - 20)
-      windows[i].y = bb_height - reserved_bottom - 20;
+    if (windows[i].y > bb_height - reserved_bottom - margin_h)
+      windows[i].y = bb_height - reserved_bottom - margin_h;
     if (windows[i].y < reserved_top)
       windows[i].y = reserved_top;
   }
@@ -1429,7 +1449,20 @@ void compositor_handle_click(int button, int state) {
         mouse_y >= hit->y + dh - RESIZE_GRIP && mouse_y < hit->y + dh)
       edge |= RESIZE_EDGE_B;
 
-    if (button == BTN_LEFT && edge && !hit->protected) {
+    /* FIX(GFX-COMP-RESIZE-01): top_most system chrome (nxbar, nxui's dock,
+     * nxntfy_srv's popup) must resize ONLY programmatically (bar_reinit/
+     * dock_reinit reacting to a screen-size change), never via an interactive
+     * mouse grip. `protected` alone did not cover this — it is set ONLY for
+     * PID 2 (the shell, compositor_create_window's hardcoded check) — so a
+     * click landing within RESIZE_GRIP of nxbar/nxui's edge (easy: nxbar spans
+     * the full screen width, its bottom edge sits exactly where users click
+     * things right below it) silently started an interactive resize, visibly
+     * distorting the bar/dock until its own next redraw() forced draw_w/draw_h
+     * back to its computed size — the "resizes momentarily then snaps back"
+     * bug. top_most already exists precisely to mark this class of window;
+     * reusing it here (rather than adding a second, parallel flag) needs no
+     * new state and no userland ABI change. */
+    if (button == BTN_LEFT && edge && !hit->protected && !hit->top_most) {
       resizing_window_id = hit->id;
       resize_edge = edge;
       resize_start_mx = mouse_x;
@@ -1907,9 +1940,51 @@ static void compositor_render_internal(void) {
 
     visible_regions[i] = vis;
 
-    /* Aggiungi a Occluded (Solo se la finestra non contiene trasparenze) */
+    /* Aggiungi a Occluded (Solo se la finestra non contiene trasparenze).
+     *
+     * FIX(GFX-COMP-CORNER-01): a rounded-corner window's occlusion footprint
+     * must NOT be the full bounding rect when st->rounded_corners is active —
+     * the 4 corner squares outside the rounded shape are not actually opaque
+     * (gfx_rrect_contains skips painting them; see the content/decoration
+     * paint loop below and gfx_chrome_border/shadow). Marking the FULL rect
+     * occluded blocked the layer underneath from ever being repainted at
+     * those exact corner pixels — and this window's own paint pass also never
+     * writes there (outside the rounded shape) — so the corner pixels simply
+     * kept whatever was left over from a previous frame: stale content,
+     * square (unrounded) leftovers, or garbage on a window's first frame at a
+     * new position/size. This is the "trasparenza/refresh/smussatura"
+     * compositor bug.
+     *
+     * Fix: occlude only the INSCRIBED rectangle set of the rounded rect (top
+     * strip + middle full-width strip + bottom strip, corners excluded) —
+     * a conservative SUBSET of the true opaque area (a rounded rect's corner
+     * quarter-circle sliver is technically opaque too, but treating it as
+     * "not occluded" only costs a few redundant corner-pixel repaints, never
+     * a correctness bug). The three strips are entirely within
+     * gfx_rrect_contains for radius rr, mirroring the same rr computation the
+     * paint loop below uses. */
     if (!win->has_alpha) {
-      region_add_rect(occluded, win->x, win_y, dw, win_h);
+      int rr = (st->rounded_corners && !win->top_most) ? st->border_radius : 0;
+      if (rr <= 0) {
+        region_add_rect(occluded, win->x, win_y, dw, win_h);
+      } else {
+        int cr = rr;
+        if (2 * cr > dw)
+          cr = dw / 2;
+        if (2 * cr > win_h)
+          cr = win_h / 2;
+        if (cr > 0) {
+          /* top strip (between the two top corners) */
+          region_add_rect(occluded, win->x + cr, win_y, dw - 2 * cr, cr);
+          /* middle strip (full width, corners above/below excluded) */
+          region_add_rect(occluded, win->x, win_y + cr, dw, win_h - 2 * cr);
+          /* bottom strip (between the two bottom corners) */
+          region_add_rect(occluded, win->x + cr, win_y + win_h - cr,
+                          dw - 2 * cr, cr);
+        } else {
+          region_add_rect(occluded, win->x, win_y, dw, win_h);
+        }
+      }
     }
   }
 
