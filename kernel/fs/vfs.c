@@ -342,12 +342,33 @@ int vfs_read_file(const char *path, void *buf, uint32_t size,
 int vfs_write_allowed(const char *resolved_path) {
   if (!proc_has_cap(current_process, CAP_FS_WRITE))
     return -EPERM;
-  if (!proc_is_machine(current_process) &&
-      (strncmp(resolved_path, "/sys/", 5) == 0 ||
-       strncmp(resolved_path, "/bin/", 5) == 0)) {
-    pr_warn("vfs: PID %d denied write-class access to protected path '%s'\n",
+  if (proc_is_machine(current_process))
+    return 0; /* machine identity: full filesystem authority */
+
+  /* Tree ACL (maintainer policy, docs/userland-port):
+   *   /sys/bin          MACHINE only — the supervised boot chain; even root
+   *                     cannot swap init/services out from under init.
+   *   /bin, /sys (lib…) ROOT or machine — system binaries and libraries.
+   *   /home             any CAP_FS_WRITE holder — the user-writable tree.
+   *   everything else   any CAP_FS_WRITE holder (unchanged policy).
+   * Exact-match guards cover the directory nodes themselves (unlink/create
+   * of "/bin" etc.), not just children. */
+  if (strncmp(resolved_path, "/sys/bin/", 9) == 0 ||
+      strcmp(resolved_path, "/sys/bin") == 0) {
+    pr_warn("vfs: PID %d denied write to machine-only path '%s'\n",
             current_process ? current_process->pid : 0, resolved_path);
     return -EACCES;
+  }
+  if (strncmp(resolved_path, "/sys/", 5) == 0 ||
+      strcmp(resolved_path, "/sys") == 0 ||
+      strncmp(resolved_path, "/bin/", 5) == 0 ||
+      strcmp(resolved_path, "/bin") == 0) {
+    if (!proc_is_privileged(current_process)) {
+      pr_warn("vfs: PID %d denied write to root-only path '%s'\n",
+              current_process ? current_process->pid : 0, resolved_path);
+      return -EACCES;
+    }
+    return 0;
   }
   return 0;
 }

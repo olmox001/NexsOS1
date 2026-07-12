@@ -657,6 +657,9 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin/background
 	@mkdir -p $(BUILD_DIR)/rootfs/lib
 	@mkdir -p  $(BUILD_DIR)/rootfs/sys/lib/include
+	@# /home: the user-writable tree (vfs_write_allowed tree ACL — /sys/bin is
+	@# machine-only, /bin and /sys root-only, /home open to CAP_FS_WRITE).
+	@mkdir -p $(BUILD_DIR)/rootfs/home
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
