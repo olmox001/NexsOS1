@@ -26,3 +26,11 @@
 	path = user/sys/lib/lua
 	url = https://github.com/olmox001/nxlua.git
 	branch = nexsos-por
+[submodule "user/sys/lib/musl"]
+	path = user/sys/lib/musl
+	url = https://github.com/olmox001/musl.git
+	branch = nexsos-port
+[submodule "user/bin/busybox"]
+	path = user/bin/busybox
+	url = https://github.com/olmox001/busybox.git
+	branch = nexsos-port
