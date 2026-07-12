@@ -33,6 +33,7 @@
 #include <kernel/kmalloc.h>
 #include <kernel/gfx_chrome.h>
 #include <kernel/gfx_surface.h>
+#include <kernel/vfs.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 
@@ -128,6 +129,114 @@ KTEST_CASE(test_gfx_chrome_contract) {
     gfx_chrome_shadow_solid(&s, &clip, &frame, 0, 0xFF123456);
     KASSERT_EQ(px[5], 0xFF123456); /* (1,1): inside frame and clip */
     KASSERT_EQ(px[9], 0);          /* (1,2): inside frame, clipped out */
+}
+
+/* --- Synthetic RAM provider for the VFS lifecycle test.  One file slot
+ * ("/f"), no allocation, no disk: exercises the vfs.c plumbing (mount_at,
+ * resolve, create, write, read, stat, unlink, umount) end to end. --- */
+static char tfs_data[64];
+static uint32_t tfs_size;
+static int tfs_exists;
+static int tfs_umount_ran;
+
+static int tfs_open(struct vfs_mount *mnt, const char *path,
+                    struct vfs_node *out) {
+    if (strcmp(path, "/") == 0) {
+        out->mnt = mnt; out->id = 0; out->size = 0; out->type = VFS_TYPE_DIR;
+        return 0;
+    }
+    if (tfs_exists && strcmp(path, "/f") == 0) {
+        out->mnt = mnt; out->id = 1; out->size = tfs_size;
+        out->type = VFS_TYPE_FILE;
+        return 0;
+    }
+    return -1;
+}
+static int tfs_read(struct vfs_node *node, uint64_t offset, void *buf,
+                    uint32_t size) {
+    if (node->id != 1 || !tfs_exists || offset >= tfs_size)
+        return 0;
+    uint32_t n = tfs_size - (uint32_t)offset;
+    if (n > size)
+        n = size;
+    memcpy(buf, tfs_data + offset, n);
+    return (int)n;
+}
+static int tfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
+                     const void *buf, uint32_t size) {
+    (void)mnt;
+    if (!tfs_exists || strcmp(path, "/f") != 0)
+        return -1;
+    if (offset + size > sizeof(tfs_data))
+        return -1;
+    memcpy(tfs_data + offset, buf, size);
+    if (offset + size > tfs_size)
+        tfs_size = (uint32_t)(offset + size);
+    return (int)size;
+}
+static int tfs_create(struct vfs_mount *mnt, const char *path,
+                      uint32_t type) {
+    (void)mnt;
+    if (type != VFS_TYPE_FILE || strcmp(path, "/f") != 0)
+        return -1;
+    tfs_exists = 1;
+    tfs_size = 0;
+    return 0;
+}
+static int tfs_unlink(struct vfs_mount *mnt, const char *path) {
+    (void)mnt;
+    if (!tfs_exists || strcmp(path, "/f") != 0)
+        return -1;
+    tfs_exists = 0;
+    tfs_size = 0;
+    return 0;
+}
+static int tfs_umount(struct vfs_mount *mnt) {
+    (void)mnt;
+    tfs_umount_ran = 1;
+    return 0;
+}
+static const struct fs_ops tfs_ops = {
+    .name = "ktestfs",
+    .open = tfs_open,
+    .read = tfs_read,
+    .write = tfs_write,
+    .create = tfs_create,
+    .unlink = tfs_unlink,
+    .umount = tfs_umount,
+};
+
+/* test_vfs_mount_lifecycle - mount → create → write → read → stat → unlink
+ * → umount over a synthetic provider: the full Plan 9-namespace lifecycle
+ * the userland-port programme depends on (docs/userland-port PLAN phase 3).
+ * Also proves umount retires the slot (resolution falls back to root and
+ * fails) and that a second umount is rejected. */
+KTEST_CASE(test_vfs_mount_lifecycle) {
+    tfs_exists = 0;
+    tfs_size = 0;
+    tfs_umount_ran = 0;
+
+    KASSERT_EQ(vfs_mount_at("/ktestfs", &tfs_ops, NULL), 0);
+    KASSERT_EQ(vfs_create("/ktestfs/f", VFS_TYPE_FILE), 0);
+    KASSERT_EQ(vfs_write_file("/ktestfs/f", "nexs", 4, 0), 4);
+
+    char rb[8] = {0};
+    KASSERT_EQ(vfs_read_file("/ktestfs/f", rb, sizeof(rb), 0), 4);
+    KASSERT_EQ(memcmp(rb, "nexs", 4), 0);
+
+    struct vfs_stat st;
+    KASSERT_EQ(vfs_stat("/ktestfs/f", &st), 0);
+    KASSERT_EQ(st.size, 4);
+    KASSERT_EQ(st.type, VFS_TYPE_FILE);
+
+    KASSERT_EQ(vfs_unlink("/ktestfs/f"), 0);
+    KASSERT(vfs_stat("/ktestfs/f", &st) != 0);
+
+    KASSERT_EQ(vfs_umount("/ktestfs"), 0);
+    KASSERT_EQ(tfs_umount_ran, 1);
+    KASSERT(vfs_stat("/ktestfs/f", &st) != 0); /* falls back to root: gone */
+    KASSERT(vfs_umount("/ktestfs") != 0);      /* double umount rejected */
+    KASSERT(vfs_umount("/") != 0);             /* root umount refused */
 }
 
 /* test_kmalloc_growth - prove the small-object pool grows past one chunk

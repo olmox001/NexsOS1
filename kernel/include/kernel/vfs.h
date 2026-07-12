@@ -13,7 +13,11 @@
  *   - Paths handed to providers are absolute, normalized (see
  *     vfs_resolve_path) and relative to the provider's own root.
  *   - vfs_node is a plain value type: no refcount, no open-file table; it
- *     stays valid as long as its mount (mounts are never torn down).  The
+ *     stays valid as long as its mount stays mounted.  The root mount is
+ *     never torn down; non-root mounts can be retired with vfs_umount()
+ *     (in-flight path ops are counted and umount refuses with -EBUSY; a
+ *     node HELD across umount is the caller's responsibility until the
+ *     fd-layer refcount lands — docs/userland-port PLAN phase 4).  The
  *     per-process fd table is ABI-03 (epic #93) and will layer on top.
  */
 #ifndef _KERNEL_VFS_H
@@ -91,6 +95,11 @@ struct fs_ops {
    * objects (ext4, regfs); see vfs_resolve_object's default. */
   int (*object_at)(struct vfs_mount *mnt, const char *path,
                    struct vfs_objref *out);
+  /* umount: release fs_private and any provider state for this mount.
+   * Optional — NULL means the provider holds no teardown state.  Called by
+   * vfs_umount() AFTER the mount slot is retired (no new operations can
+   * reach the provider), never with operations in flight. */
+  int (*umount)(struct vfs_mount *mnt);
 };
 
 struct vfs_mount {
@@ -99,6 +108,12 @@ struct vfs_mount {
   const char *mountpoint;  /* absolute mount path ("/", "/reg", ...) — Plan 9 namespace */
   uint32_t part_index;     /* GPT/MBR partition index backing this mount (0 = synthetic) */
   int in_use;
+  /* Path-based operations in flight on this mount (incremented by the
+   * dispatchers in vfs.c under mounts_lock, decremented on completion).
+   * vfs_umount refuses with -EBUSY while non-zero, so a provider can never
+   * be torn down under a running dispatch (the S-STAB lifetime rule the
+   * "mounts are never torn down" era did not need). */
+  volatile int active_ops;
 };
 
 /* Provider registration + mounting (called from the composition root) */
@@ -110,6 +125,14 @@ void vfs_init(void);
  * the root "/" mount is the fallback.  Returns 0, or -1 if the table is full /
  * args are bad.  Called from the composition root, single-threaded. */
 int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops, void *fs_private);
+
+/* vfs_umount - retire a NON-root mount by exact mountpoint match.  Fails with
+ * -EBUSY while path operations are in flight on it, -1 if not found or root
+ * ("/" teardown arrives with the ISO-boot rework, PLAN phase 4).  The
+ * provider's optional umount op runs after the slot is retired.  NOTE: a
+ * vfs_node held across umount is the caller's responsibility until the
+ * fd-layer refcount lands (documented limitation, docs/userland-port). */
+int vfs_umount(const char *mountpoint);
 
 /* vfs_resolve_object - resolve a path to the TYPED capability object it names
  * (delegates to the provider's object_at, else defaults to a FILE).  Returns 0

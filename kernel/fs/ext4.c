@@ -980,7 +980,10 @@ static int ext4_list(struct vfs_mount *mnt, const char *path, char *buf,
     struct ext4_dir_entry *de = (struct ext4_dir_entry *)dir_buf;
     uint32_t offset = 0;
     while (offset < 4096) {
-      if (de->inode == 0 || de->rec_len < 8)
+      /* Two-sided rec_len guard, same as the lookup path: a corrupt rec_len
+       * larger than the block remainder stops the walk (defence in depth;
+       * the offset re-check below already prevented the OOB dereference). */
+      if (de->inode == 0 || de->rec_len < 8 || de->rec_len > (4096 - offset))
         break;
 
       if (de->name_len > 0) {

@@ -38,6 +38,7 @@
  */
 #include <kernel/types.h>
 #include <kernel/sched.h>
+#include <kernel/spinlock.h>
 #include <kernel/string.h>
 #include <kernel/vfs.h>
 #include <kernel/gpt.h>
@@ -50,11 +51,14 @@
 static const struct fs_ops *fs_drivers[VFS_MAX_FS];
 static int fs_driver_count;
 
-/* Mount table.  mounts[0] is the root mount; further slots are reserved for
- * future mountpoints.  Mounts are created once at vfs_init() and never torn
- * down, so readers need no locking. */
+/* Mount table.  mounts[0] is the root mount (established once at vfs_init()
+ * and never torn down); further slots take vfs_mount_at() mounts, which CAN
+ * be retired by vfs_umount().  mounts_lock guards slot claim/retire and the
+ * resolve+active_ops increment, so a dispatch can never run on a mount being
+ * torn down (see vfs_acquire/vfs_release). */
 #define VFS_MAX_MOUNTS 4
 static struct vfs_mount mounts[VFS_MAX_MOUNTS];
+static DEFINE_SPINLOCK(mounts_lock);
 
 /*
  * vfs_register_fs - register a filesystem provider.
@@ -119,6 +123,8 @@ int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops,
     pr_err("%s", "VFS: rejecting malformed vfs_mount_at\n");
     return -1;
   }
+  uint64_t flags;
+  spin_lock_irqsave(&mounts_lock, &flags);
   for (int i = 1; i < VFS_MAX_MOUNTS; i++) { /* slot 0 is the root */
     if (mounts[i].in_use)
       continue;
@@ -126,11 +132,53 @@ int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops,
     mounts[i].fs_private = fs_private;
     mounts[i].mountpoint = mountpoint;
     mounts[i].part_index = 0;
+    mounts[i].active_ops = 0;
     mounts[i].in_use = 1;
+    spin_unlock_irqrestore(&mounts_lock, flags);
     pr_info("VFS: mounted %s at %s\n", ops->name, mountpoint);
     return 0;
   }
+  spin_unlock_irqrestore(&mounts_lock, flags);
   pr_err("%s", "VFS: mount table full\n");
+  return -1;
+}
+
+/*
+ * vfs_umount - retire a NON-root mount by exact mountpoint match.
+ *
+ * Under mounts_lock: refuse while path operations are in flight (-EBUSY —
+ * vfs_acquire holds the same lock to resolve+count, so no new operation can
+ * slip in), then retire the slot.  The provider's optional umount op runs
+ * AFTER the unlock on a stack copy of the retired mount: no new dispatch can
+ * reach it, and provider teardown (kfree etc.) never runs under a spinlock.
+ * Root ("/") teardown is deliberately refused until the ISO-boot rework
+ * (docs/userland-port PLAN phase 4).
+ */
+int vfs_umount(const char *mountpoint) {
+  if (!mountpoint || strcmp(mountpoint, "/") == 0)
+    return -1;
+  uint64_t flags;
+  spin_lock_irqsave(&mounts_lock, &flags);
+  for (int i = 1; i < VFS_MAX_MOUNTS; i++) { /* slot 0 is the root */
+    if (!mounts[i].in_use || !mounts[i].mountpoint ||
+        strcmp(mounts[i].mountpoint, mountpoint) != 0)
+      continue;
+    if (mounts[i].active_ops != 0) {
+      spin_unlock_irqrestore(&mounts_lock, flags);
+      return -EBUSY;
+    }
+    struct vfs_mount retired = mounts[i];
+    mounts[i].in_use = 0;
+    mounts[i].ops = NULL;
+    mounts[i].fs_private = NULL;
+    mounts[i].mountpoint = NULL;
+    spin_unlock_irqrestore(&mounts_lock, flags);
+    if (retired.ops->umount)
+      retired.ops->umount(&retired);
+    pr_info("VFS: unmounted %s from %s\n", retired.ops->name, mountpoint);
+    return 0;
+  }
+  spin_unlock_irqrestore(&mounts_lock, flags);
   return -1;
 }
 
@@ -176,6 +224,29 @@ static struct vfs_mount *vfs_resolve(const char *path, const char **rel) {
 }
 
 /*
+ * vfs_acquire / vfs_release - resolve + pin a mount for one path operation.
+ * The resolve and the active_ops increment happen under mounts_lock, so
+ * vfs_umount (same lock) can never observe active_ops == 0 while a dispatch
+ * is between resolve and provider call.  Release is a plain atomic decrement:
+ * umount only needs the count to eventually reach zero, and a torn-down slot
+ * is never handed out again while pinned.
+ */
+static struct vfs_mount *vfs_acquire(const char *path, const char **rel) {
+  uint64_t flags;
+  spin_lock_irqsave(&mounts_lock, &flags);
+  struct vfs_mount *mnt = vfs_resolve(path, rel);
+  if (mnt)
+    __sync_fetch_and_add(&mnt->active_ops, 1);
+  spin_unlock_irqrestore(&mounts_lock, flags);
+  return mnt;
+}
+
+static void vfs_release(struct vfs_mount *mnt) {
+  if (mnt)
+    __sync_fetch_and_sub(&mnt->active_ops, 1);
+}
+
+/*
  * vfs_open - resolve an absolute normalized path to a vfs_node.
  * Returns 0 on success, negative on error/not-found.
  */
@@ -183,10 +254,12 @@ int vfs_open(const char *path, struct vfs_node *out) {
   if (!path || !out)
     return -1;
   const char *rel;
-  struct vfs_mount *mnt = vfs_resolve(path, &rel);
-  if (!mnt || !mnt->ops->open)
+  struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  if (!mnt)
     return -1;
-  return mnt->ops->open(mnt, rel, out);
+  int rc = mnt->ops->open ? mnt->ops->open(mnt, rel, out) : -1;
+  vfs_release(mnt);
+  return rc;
 }
 
 /*
@@ -201,20 +274,29 @@ int vfs_resolve_object(const char *path, struct vfs_objref *out) {
   if (!path || !out)
     return -1;
   const char *rel;
-  struct vfs_mount *mnt = vfs_resolve(path, &rel);
-  if (!mnt || !mnt->ops)
+  struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  if (!mnt || !mnt->ops) {
+    vfs_release(mnt);
     return -1;
-  if (mnt->ops->object_at)
-    return mnt->ops->object_at(mnt, rel, out);
-  /* Default: the provider's paths are plain FILE objects. */
-  if (!mnt->ops->open)
-    return -1;
-  struct vfs_node node;
-  if (mnt->ops->open(mnt, rel, &node) != 0)
-    return -1;
-  out->obj_type = OBJ_TYPE_FILE;
-  out->node = node;
-  return (node.type == VFS_TYPE_DIR) ? -2 : 0;
+  }
+  int rc;
+  if (mnt->ops->object_at) {
+    rc = mnt->ops->object_at(mnt, rel, out);
+  } else if (!mnt->ops->open) {
+    rc = -1;
+  } else {
+    /* Default: the provider's paths are plain FILE objects. */
+    struct vfs_node node;
+    if (mnt->ops->open(mnt, rel, &node) != 0) {
+      rc = -1;
+    } else {
+      out->obj_type = OBJ_TYPE_FILE;
+      out->node = node;
+      rc = (node.type == VFS_TYPE_DIR) ? -2 : 0;
+    }
+  }
+  vfs_release(mnt);
+  return rc;
 }
 
 /*
@@ -277,10 +359,12 @@ int vfs_write_allowed(const char *resolved_path) {
 int vfs_write_file(const char *path, const void *buf, uint32_t size,
                    uint64_t offset) {
   const char *rel;
-  struct vfs_mount *mnt = vfs_resolve(path, &rel);
-  if (!mnt || !mnt->ops->write)
+  struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  if (!mnt)
     return -1;
-  return mnt->ops->write(mnt, rel, offset, buf, size);
+  int rc = mnt->ops->write ? mnt->ops->write(mnt, rel, offset, buf, size) : -1;
+  vfs_release(mnt);
+  return rc;
 }
 
 /*
@@ -319,16 +403,25 @@ static int mount_child_of(const char *mp, const char *dir, char *leaf,
 
 int vfs_list_dir(const char *path, char *buf, uint32_t size) {
   const char *rel;
-  struct vfs_mount *mnt = vfs_resolve(path, &rel);
-  if (!mnt || !mnt->ops->list)
+  struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  if (!mnt)
     return -1;
+  if (!mnt->ops->list) {
+    vfs_release(mnt);
+    return -1;
+  }
   int res = mnt->ops->list(mnt, rel, buf, size);
+  vfs_release(mnt);
   if (res < 0)
     return res;
 
   /* Append any mounts that live directly under 'path' so they show up in the
-   * listing (a synthetic mount like /reg is not in its parent provider's dir). */
+   * listing (a synthetic mount like /reg is not in its parent provider's dir).
+   * Under mounts_lock: slots can now be retired by vfs_umount, so the
+   * in_use/mountpoint pair must be read atomically with respect to it. */
   size_t off = (size_t)res;
+  uint64_t lflags;
+  spin_lock_irqsave(&mounts_lock, &lflags);
   for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
     if (!mounts[i].in_use || !mounts[i].mountpoint || &mounts[i] == mnt)
       continue;
@@ -345,6 +438,7 @@ int vfs_list_dir(const char *path, char *buf, uint32_t size) {
     buf[off++] = ' ';
     buf[off] = '\0';
   }
+  spin_unlock_irqrestore(&mounts_lock, lflags);
   return (int)off;
 }
 
@@ -354,10 +448,12 @@ int vfs_list_dir(const char *path, char *buf, uint32_t size) {
  */
 int vfs_unlink(const char *path) {
   const char *rel;
-  struct vfs_mount *mnt = vfs_resolve(path, &rel);
-  if (!mnt || !mnt->ops->unlink)
+  struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  if (!mnt)
     return -1;
-  return mnt->ops->unlink(mnt, rel);
+  int rc = mnt->ops->unlink ? mnt->ops->unlink(mnt, rel) : -1;
+  vfs_release(mnt);
+  return rc;
 }
 
 /*
@@ -367,10 +463,12 @@ int vfs_unlink(const char *path) {
  */
 int vfs_create(const char *path, uint32_t type) {
   const char *rel;
-  struct vfs_mount *mnt = vfs_resolve(path, &rel);
-  if (!mnt || !mnt->ops->create)
+  struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  if (!mnt)
     return -1;
-  return mnt->ops->create(mnt, rel, type);
+  int rc = mnt->ops->create ? mnt->ops->create(mnt, rel, type) : -1;
+  vfs_release(mnt);
+  return rc;
 }
 
 /*
