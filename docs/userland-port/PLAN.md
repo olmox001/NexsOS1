@@ -8,10 +8,22 @@ must run.
 
 ## Ordering (maintainer: finish current phases first)
 
-0. **Close the running graphics increments** — the surface-speaking GPU
-   contract is merged (`408e74f`); pending tree changes validated and
-   committed. The SDL/OpenGL/D3D9 chain continues in `docs/graphics-port/`
-   (next there: OSMesa cross-build → Craft client → Nine evaluation).
+0. **Phase A — close the running increments.** The surface-speaking GPU
+   contract is merged (`408e74f`); pending tree changes validated
+   (maintainer-approved `make run`) and committed.
+0b. **Phase B — graphics-chain close-out queue** (continues in
+   `docs/graphics-port/`, interleaved with the phases below as increments
+   complete). State: SDL2 software profile DONE (window, present, timers,
+   full input, resize); D3D9 presentation chain DONE (demo3d client),
+   personality pending; OpenGL front OPEN. Queue, in order:
+   1. OSMesa+softpipe cross-build: meson cross-file over the OS1 libc +
+      single-thread c11-threads shim in `portability/opengl/`
+      (Mesa pinned at 25.0.7 — last release with OSMesa; tree unpatched);
+   2. `glcube` — first real GL client through the `os1_gl_platform` seam;
+   3. Craft (MIT Minecraft clone) port: fork + `nexsos-port` branch,
+      GLFW→SDL2-shim, GLEW dropped, sqlite3 vendored, curl disabled;
+   4. D3D9 personality evaluation: Gallium Nine (MIT, in the pinned Mesa
+      tree) vs Wine d3d9 (LGPL, needs the dynamic-linking design first).
 1. **Register musl and busybox submodules** — the established model:
    `olmox001` fork of the upstream mirror, `nexsos-port` branch, pinned
    gitlink; `user/sys/lib/musl`, `user/bin/busybox`.
