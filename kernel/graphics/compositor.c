@@ -2264,8 +2264,11 @@ static void compositor_render_internal(void) {
   int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
   if (dev->ops && dev->ops->present) {
     if (dx1 < dx2 && dy1 < dy2) {
-      if (dev->ops->present(dev, backbuffer, bb_w, bb_h, dx1, dy1, dx2 - dx1,
-                            dy2 - dy1) == 0)
+      /* Surface-speaking contract (graphics-port): the core hands the
+       * provider its validated gfx_surface + damage rect through gpu_core,
+       * never the driver's ops table directly. */
+      gfx_rect_t present_damage = {dx1, dy1, dx2 - dx1, dy2 - dy1};
+      if (gpu_present_surface(&screen, &present_damage) == 0)
         presented = 1;
     } else {
       presented = 1; /* nothing to upload, but the (empty) damage is consumed */

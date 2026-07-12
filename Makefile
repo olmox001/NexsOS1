@@ -418,7 +418,7 @@ SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_sr
            $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf
 
 # User ELFs (placed in /bin)
-BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf \
+BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
            $(BUILD_DIR)/ipc_send.elf \
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
@@ -466,6 +466,12 @@ $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o: $(USER_DIR)/bin/sdltest.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/sdltest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+$(BUILD_DIR)/$(USER_DIR)/bin/raptor.o: $(USER_DIR)/bin/raptor.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+$(BUILD_DIR)/raptor.elf: $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)

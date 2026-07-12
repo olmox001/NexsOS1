@@ -61,4 +61,16 @@ int gpu_set_mode(int width, int height);
 int gpu_get_display_info(int *width, int *height);
 int gpu_poll_events(int *new_w, int *new_h);
 
+/* Surface-speaking present (graphics-port): the provider contract talks the
+ * same semantic unit the whole stack does — a validated gfx_surface plus a
+ * damage rect — instead of raw pointer+geometry ints.  The S-STAB
+ * gfx_surface_verify() gate runs HERE, at the core/driver seam, so a
+ * geometry/allocation desync panics loudly at the source instead of becoming
+ * a silent OOB copy in a driver.  Present semantics are unchanged underneath
+ * (atomic copy+flush under the driver lock, <0 = skip this frame). */
+struct gfx_rect;
+struct gl_surface;
+int gpu_present_surface(const struct gl_surface *src,
+                        const struct gfx_rect *damage);
+
 #endif
