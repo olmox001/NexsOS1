@@ -16,20 +16,20 @@
  *   desktop/UI for theme/system settings and by services for routing keys.
  *
  * Data model (replaces the old flat 128-slot array, LIB-REG-01):
- *   A tree of DYNAMICALLY allocated `struct reg_node`.  Children are kept SORTED
- *   by name, so lookup is O(depth × children-scanned-with-early-stop) and listing
- *   is ordered — it scales as the supervisory namespace grows, instead of the old
- *   O(128) scan, and the key count is no longer capped.  kmalloc is lazily
- *   initialised (safe at registry_init: PMM is up first), nodes live for the
- *   kernel lifetime (registry keys are not deleted today).
+ *   A tree of DYNAMICALLY allocated `struct reg_node`.  Children are kept
+ * SORTED by name, so lookup is O(depth × children-scanned-with-early-stop) and
+ * listing is ordered — it scales as the supervisory namespace grows, instead of
+ * the old O(128) scan, and the key count is no longer capped.  kmalloc is
+ * lazily initialised (safe at registry_init: PMM is up first), nodes live for
+ * the kernel lifetime (registry keys are not deleted today).
  *
  * Security (LIB-REG-02): writes are first-writer-wins by owner_pid and gated by
  *   CAP_REG_WRITE (sys_registry) — a service's routing key cannot be hijacked.
  *
  * Locking: a reader/writer lock — readers (get/enum/regfs reads) run
- *   CONCURRENTLY, writers (set/del) are exclusive — so the read-heavy supervisory
- *   namespace is not serialized.  IRQ-safe (sections run IRQs-off); per-subtree
- *   locking is a later refinement.
+ *   CONCURRENTLY, writers (set/del) are exclusive — so the read-heavy
+ * supervisory namespace is not serialized.  IRQ-safe (sections run IRQs-off);
+ * per-subtree locking is a later refinement.
  */
 
 #include <kernel/kmalloc.h>
@@ -47,14 +47,14 @@
  * pointers (by name) → O(log n) binary-search lookup and ordered listing; the
  * array grows by doubling (kmalloc, no krealloc in the kernel). */
 struct reg_node {
-  char name[MAX_KEY_LEN];      /* this path segment */
-  char value[MAX_VAL_LEN];     /* leaf value (valid when is_leaf) */
-  int owner_pid;               /* first-writer-wins owner of the leaf */
-  int is_leaf;                 /* 1 = carries a value */
-  struct reg_node *parent;     /* owning directory (NULL for the root) */
-  struct reg_node **children;  /* sorted array of child pointers (by name) */
-  int n_children;              /* number of children */
-  int cap_children;            /* allocated capacity of children[] */
+  char name[MAX_KEY_LEN];     /* this path segment */
+  char value[MAX_VAL_LEN];    /* leaf value (valid when is_leaf) */
+  int owner_pid;              /* first-writer-wins owner of the leaf */
+  int is_leaf;                /* 1 = carries a value */
+  struct reg_node *parent;    /* owning directory (NULL for the root) */
+  struct reg_node **children; /* sorted array of child pointers (by name) */
+  int n_children;             /* number of children */
+  int cap_children;           /* allocated capacity of children[] */
 };
 
 /* The root is the unnamed anchor; statically allocated (BSS-zeroed), its
@@ -68,9 +68,9 @@ static int registry_count = 0;
  * registry is no longer serialized on every access (the old single spinlock).
  * Critical sections run with IRQs disabled (an IRQ handler never reenters
  * mid-section); registry writes never originate from IRQ context.
- *   reg_res_lock — the shared resource: held by a writer, or collectively by the
- *                  readers (first reader takes it, last reader releases it).
- *   reg_cnt_lock — guards reg_readers across the reader lock/unlock transitions. */
+ *   reg_res_lock — the shared resource: held by a writer, or collectively by
+ * the readers (first reader takes it, last reader releases it). reg_cnt_lock —
+ * guards reg_readers across the reader lock/unlock transitions. */
 static DEFINE_SPINLOCK(reg_cnt_lock);
 static DEFINE_SPINLOCK(reg_res_lock);
 static int reg_readers;
@@ -78,17 +78,18 @@ static int reg_readers;
 static void reg_read_lock(uint64_t *flags) {
   spin_lock_irqsave(&reg_cnt_lock, flags);
   if (++reg_readers == 1)
-    spin_lock(&reg_res_lock);  /* first reader excludes writers */
-  spin_unlock(&reg_cnt_lock);  /* keep IRQs off until reg_read_unlock */
+    spin_lock(&reg_res_lock); /* first reader excludes writers */
+  spin_unlock(&reg_cnt_lock); /* keep IRQs off until reg_read_unlock */
 }
 static void reg_read_unlock(uint64_t flags) {
-  spin_lock(&reg_cnt_lock);    /* IRQs already disabled */
+  spin_lock(&reg_cnt_lock); /* IRQs already disabled */
   if (--reg_readers == 0)
     spin_unlock(&reg_res_lock); /* last reader admits writers */
   spin_unlock_irqrestore(&reg_cnt_lock, flags);
 }
 static void reg_write_lock(uint64_t *flags) {
-  spin_lock_irqsave(&reg_res_lock, flags); /* exclusive: waits out readers/writers */
+  spin_lock_irqsave(&reg_res_lock,
+                    flags); /* exclusive: waits out readers/writers */
 }
 static void reg_write_unlock(uint64_t flags) {
   spin_unlock_irqrestore(&reg_res_lock, flags);
@@ -122,9 +123,9 @@ static struct reg_node *node_find_child(struct reg_node *p, const char *seg) {
   return NULL;
 }
 
-/* node_get_or_add - BINARY SEARCH child 'seg'; return it if present, else insert
- * it at the sorted position (growing children[] by doubling).  NULL on OOM
- * (lock held). */
+/* node_get_or_add - BINARY SEARCH child 'seg'; return it if present, else
+ * insert it at the sorted position (growing children[] by doubling).  NULL on
+ * OOM (lock held). */
 static struct reg_node *node_get_or_add(struct reg_node *p, const char *seg) {
   /* Binary search for either the match or the insertion point 'lo'. */
   int lo = 0, hi = p->n_children - 1;
@@ -145,7 +146,8 @@ static struct reg_node *node_get_or_add(struct reg_node *p, const char *seg) {
     if (!arr)
       return NULL;
     if (p->children) {
-      memcpy(arr, p->children, sizeof(struct reg_node *) * (size_t)p->n_children);
+      memcpy(arr, p->children,
+             sizeof(struct reg_node *) * (size_t)p->n_children);
       kfree(p->children);
     }
     p->children = arr;
@@ -155,7 +157,8 @@ static struct reg_node *node_get_or_add(struct reg_node *p, const char *seg) {
   if (!n)
     return NULL;
   n->parent = p;
-  /* Insert at 'lo', shifting the larger names right (keeps the array sorted). */
+  /* Insert at 'lo', shifting the larger names right (keeps the array sorted).
+   */
   for (int i = p->n_children; i > lo; i--)
     p->children[i] = p->children[i - 1];
   p->children[lo] = n;
@@ -163,8 +166,9 @@ static struct reg_node *node_get_or_add(struct reg_node *p, const char *seg) {
   return n;
 }
 
-/* walk_path - resolve dotted 'key' to its node, creating the path when 'create'.
- * Returns the final node, or NULL (not found / OOM / empty key).  Lock held. */
+/* walk_path - resolve dotted 'key' to its node, creating the path when
+ * 'create'. Returns the final node, or NULL (not found / OOM / empty key). Lock
+ * held. */
 static struct reg_node *walk_path(const char *key, int create) {
   struct reg_node *n = reg_root;
   const char *p = key;
@@ -194,14 +198,41 @@ static struct reg_node *walk_path(const char *key, int create) {
 /*
  * registry_init - seed the default entries.  reg_root is BSS-zeroed; kmalloc is
  * lazily initialised on the first node alloc (PMM is already up at this point).
- * Defaults: "theme.color"="dark", "system.hostname"="NeXs",
- * "mouse.sensitivity"="1.0".  Single-threaded before SMP.
+ *
+ * The base set of keys provides a complete namespace for the userland:
+ *   - theme.color, style.name, background.name → compositor look & feel
+ *   - system.hostname, system.arch, system.version, system.os → system identity
+ *   - system.boot_time                           → uptime sanity (filled later)
+ *   - sys.ntfy.panel_open                        → notification panel state
+ *   - mouse.sensitivity                          → input driver
+ *
+ * Single-threaded before SMP.
  */
 void registry_init(void) {
   registry_count = 0;
+
+  /* ---- Compositor appearance (read by nxres, nxsettings, nxui, nxlauncher)
+   * ---- */
   registry_set("theme.color", "dark", 0);
+  registry_set("style.name", "nexs", 0);
+  registry_set("background.name", "blue", 0);
+
+  /* ---- System identity (displayed in "About", network, etc.) ---- */
   registry_set("system.hostname", "NeXs", 0);
+  registry_set("system.arch", "unknown",
+               0); /* will be updated by init/nxinfo */
+  registry_set("system.version", "0.0.0", 0); /* kernel version placeholder */
+  registry_set("system.os", "NEXS", 0);
+
+  /* ---- Boot / runtime markers ---- */
+  registry_set("system.boot_time", "0", 0); /* filled by init after spawn */
+
+  /* ---- Notification infrastructure ---- */
+  registry_set("sys.ntfy.panel_open", "0", 0);
+
+  /* ---- Input ---- */
   registry_set("mouse.sensitivity", "1.0", 0);
+
   pr_info("Registry: Initialized with %d default keys (namespace tree).\n",
           registry_count);
 }
@@ -224,7 +255,8 @@ int registry_set(const char *key, const char *value, int owner_pid) {
     reg_write_unlock(flags);
     return -1; /* empty key or OOM */
   }
-  if (n->is_leaf && owner_pid != 0 && n->owner_pid != owner_pid) {
+  if (n->is_leaf && owner_pid != 0 && n->owner_pid != 0 &&
+      n->owner_pid != owner_pid) {
     reg_write_unlock(flags);
     pr_warn("registry: PID %d denied write to '%s' (owner PID %d)\n", owner_pid,
             key, n->owner_pid);
@@ -263,8 +295,9 @@ int registry_get(const char *key, char *buffer, size_t size) {
   return 0;
 }
 
-/* node_remove_child - unlink 'child' from parent 'p' (binary search) and free it
- * (and its now-unused children array).  Lock held; child must have no children. */
+/* node_remove_child - unlink 'child' from parent 'p' (binary search) and free
+ * it (and its now-unused children array).  Lock held; child must have no
+ * children. */
 static void node_remove_child(struct reg_node *p, struct reg_node *child) {
   int lo = 0, hi = p->n_children - 1, idx = -1;
   while (lo <= hi) {
@@ -291,10 +324,10 @@ static void node_remove_child(struct reg_node *p, struct reg_node *child) {
 
 /*
  * registry_del - remove a key.  Clears the leaf, then prunes every now-empty
- * ancestor directory (freeing the nodes), so deleting "a.b.c" reclaims "c", then
- * "b", then "a" if they become empty.  First-writer-wins: owner_pid != 0 may
- * delete only its own key.  Returns 0, -ENOENT if absent/not a leaf, -EACCES on
- * ownership violation.
+ * ancestor directory (freeing the nodes), so deleting "a.b.c" reclaims "c",
+ * then "b", then "a" if they become empty.  First-writer-wins: owner_pid != 0
+ * may delete only its own key.  Returns 0, -ENOENT if absent/not a leaf,
+ * -EACCES on ownership violation.
  */
 int registry_del(const char *key, int owner_pid) {
   if (!key)
@@ -330,10 +363,10 @@ int registry_del(const char *key, int owner_pid) {
   return 0;
 }
 
-/* enum_dfs - depth-first walk emitting full dotted keys of LEAF nodes that match
- * 'prefix', in sorted order.  'path' is the shared path buffer (length path_len),
- * mutated as we descend and restored for each sibling so per-frame stack stays
- * small (depth-bounded recursion).  Lock held. */
+/* enum_dfs - depth-first walk emitting full dotted keys of LEAF nodes that
+ * match 'prefix', in sorted order.  'path' is the shared path buffer (length
+ * path_len), mutated as we descend and restored for each sibling so per-frame
+ * stack stays small (depth-bounded recursion).  Lock held. */
 static void enum_dfs(struct reg_node *n, char *path, size_t path_len,
                      size_t path_cap, const char *prefix, size_t prefix_len,
                      char *buf, size_t size, size_t *off) {
@@ -362,11 +395,11 @@ static void enum_dfs(struct reg_node *n, char *path, size_t path_len,
 }
 
 /*
- * registry_enum - list used keys, newline-separated, into 'buf' (NUL-terminated,
- * bounded by 'size'); returns bytes written excluding the NUL, -1 on bad args.
- * Keys come out in sorted order (children are kept sorted).  'prefix' (NULL/"" =
- * all) filters to keys beginning with it — the "list a namespace directory"
- * primitive (Phase 4.1 A1a).
+ * registry_enum - list used keys, newline-separated, into 'buf'
+ * (NUL-terminated, bounded by 'size'); returns bytes written excluding the NUL,
+ * -1 on bad args. Keys come out in sorted order (children are kept sorted).
+ * 'prefix' (NULL/"" = all) filters to keys beginning with it — the "list a
+ * namespace directory" primitive (Phase 4.1 A1a).
  */
 int registry_enum(const char *prefix, char *buf, size_t size) {
   if (!buf || size == 0)
@@ -379,7 +412,8 @@ int registry_enum(const char *prefix, char *buf, size_t size) {
   uint64_t flags;
   reg_read_lock(&flags);
   size_t off = 0;
-  enum_dfs(reg_root, path, 0, sizeof(path), prefix, prefix_len, buf, size, &off);
+  enum_dfs(reg_root, path, 0, sizeof(path), prefix, prefix_len, buf, size,
+           &off);
   buf[off] = '\0';
   reg_read_unlock(flags);
   return (int)off;
@@ -401,11 +435,24 @@ bool registry_write_allowed(void) {
   return proc_has_cap(current_process, CAP_REG_WRITE);
 }
 
-/* registry_caller_owner - first-writer-wins identity: machine/kernel callers
- * write as owner 0 (full rights, e.g. init seeding defaults), everyone else as
- * their own PID. */
+/* registry_caller_owner - first-writer-wins identity: machine AND root
+ * callers write as owner 0 (full rights), everyone else as their own PID.
+ *
+ * Root is folded in with machine here (not just "machine/kernel" as the
+ * name used to imply) because every /sys/bin system service — nxbar,
+ * nxsettings, nxntfy_srv, the launcher — runs at PLVL_ROOT via the
+ * per-path preset (level_for_path, syscall_dispatch.c), not PLVL_MACHINE.
+ * Before this, a service's OWN keys (e.g. nxntfy_srv's sys.ntfy.log.* ring)
+ * were owned by its PID; init respawning it after a crash handed the
+ * replacement a FRESH pid, which then got -EACCES writing keys the dead
+ * instance had created, silently freezing the ring until reboot.  Treating
+ * PLVL_ROOT as system authority (interim, pending real per-namespace ACLs
+ * — "system write", see the kernel/lib/registry.c file header) makes the
+ * whole ROOT-level system-service tier share one first-writer-wins owner
+ * and survive respawns; PLVL_USER (untrusted apps) still write as their own
+ * PID and cannot hijack a service's key. */
 int registry_caller_owner(void) {
-  return proc_is_machine(current_process) ? 0 : (int)current_process->pid;
+  return proc_is_privileged(current_process) ? 0 : (int)current_process->pid;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -413,11 +460,13 @@ int registry_caller_owner(void) {
  * A synthetic VFS provider (no partition) over the registry tree: a key path
  * "/reg/system/hostname" is the registry key "system.hostname".  This realises
  * "everything is a file": registry state is read/written/listed through the
- * uniform VFS, and "/reg" is the first non-block server in the Plan 9 namespace.
+ * uniform VFS, and "/reg" is the first non-block server in the Plan 9
+ * namespace.
  * ------------------------------------------------------------------------- */
 
 /* regfs_path_to_key - mount-relative path ("/system/hostname") -> dotted key
- * ("system.hostname"): drop leading slashes, collapse each '/' run to one '.'. */
+ * ("system.hostname"): drop leading slashes, collapse each '/' run to one '.'.
+ */
 static void regfs_path_to_key(const char *relpath, char *key, size_t n) {
   size_t k = 0;
   const char *p = relpath;
@@ -489,7 +538,8 @@ static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
                        const void *buf, uint32_t size) {
   (void)mnt;
   /* CAP_REG_WRITE (shared seam) layers ON TOP of the CAP_FS_WRITE the
-   * SYS_FILE_WRITE path already checked: VFS-write + registry-write authority. */
+   * SYS_FILE_WRITE path already checked: VFS-write + registry-write authority.
+   */
   if (!registry_write_allowed())
     return -EPERM;
   char key[MAX_KEY_LEN];
@@ -502,8 +552,9 @@ static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
   if (off + cnt > MAX_VAL_LEN - 1)
     cnt = MAX_VAL_LEN - 1 - off;
 
-  /* Read-modify-write so a non-zero offset OVERLAYS/extends the value instead of
-   * replacing it (offset 0 stays a plain full write).  Pad a gap past the end. */
+  /* Read-modify-write so a non-zero offset OVERLAYS/extends the value instead
+   * of replacing it (offset 0 stays a plain full write).  Pad a gap past the
+   * end. */
   char val[MAX_VAL_LEN];
   if (registry_get(key, val, sizeof(val)) != 0)
     val[0] = '\0';
@@ -593,8 +644,9 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
 
   if (op == REG_OP_ENUM) {
     /* LIB-REG-04: enumerate keys into the user 'value' buffer.  Reads are open
-     * to everyone (no capability required).  Phase 4.1 A1a: 'key' is an OPTIONAL
-     * namespace prefix (NULL lists all keys — the legacy behaviour). */
+     * to everyone (no capability required).  Phase 4.1 A1a: 'key' is an
+     * OPTIONAL namespace prefix (NULL lists all keys — the legacy behaviour).
+     */
     if (!value || size == 0)
       return -EINVAL;
     char k_prefix[MAX_KEY_LEN];

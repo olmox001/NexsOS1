@@ -18,7 +18,7 @@ endif
 ARCH ?= aarch64
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.4.4
+VERSION ?= V0.0.5.0
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -41,8 +41,8 @@ COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
 ifeq ($(ARCH), amd64)
     CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
     KERNEL_DIR = kernel
-    BOOT_DIR   = boot/amd64
     ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
+BOOT_DIR   = $(ARCH_DIR)/boot
     
     ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large
     ASFLAGS = -g --fatal-warnings
@@ -55,8 +55,8 @@ ifeq ($(ARCH), amd64)
 else
     CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
     KERNEL_DIR = kernel
-    BOOT_DIR   = boot/aarch64
     ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
+BOOT_DIR   = $(ARCH_DIR)/boot
     
     ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57 $(AARCH64_ARCH_CFLAGS_EXTRA)
     ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
@@ -101,7 +101,7 @@ BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
 BOOTLOADER_BIN = $(BUILD_DIR)/bootloader.bin
 KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN = $(BUILD_DIR)/kernel.bin
-USER_ELF   = $(BUILD_DIR)/init.elf
+USER_ELF   = $(BUILD_DIR)/nxinit.elf
 DISK_IMG   = $(BUILD_DIR)/disk.img
 # AArch64 only: pre-generated QEMU virt DTB used to pass a valid x0 to the kernel.
 # QEMU does not set x0 for bare-metal ELF kernels (no Linux image magic), so we
@@ -120,11 +120,11 @@ BOOT_SOURCES = \
     $(BOOT_DIR)/stage2.S
 
 KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/boot/start.S \
+    $(ARCH_DIR)/kinit/start.S \
     $(ARCH_DIR)/cpu/isr_stubs.S \
     $(ARCH_DIR)/cpu/syscall.S \
     $(ARCH_DIR)/cpu/context.S \
-    $(ARCH_DIR)/boot/trampoline.S
+    $(ARCH_DIR)/kinit/trampoline.S
 
 KERN_C_SOURCES = \
     $(ARCH_DIR)/cpu/cpu.c \
@@ -148,7 +148,7 @@ BOOT_SOURCES = \
     $(BOOT_DIR)/stage2.S
 
 KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/boot/start.S \
+    $(ARCH_DIR)/kinit/start.S \
     $(ARCH_DIR)/cpu/exception.S
 
 KERN_C_SOURCES = \
@@ -211,6 +211,8 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/sched/process.c \
     $(KERNEL_DIR)/sched/elf.c \
     $(KERNEL_DIR)/graphics/graphics.c \
+    $(KERNEL_DIR)/graphics/surface.c \
+    $(KERNEL_DIR)/graphics/chrome.c \
     $(KERNEL_DIR)/graphics/region.c \
     $(KERNEL_DIR)/graphics/gl.c \
     $(KERNEL_DIR)/graphics/font.c \
@@ -232,7 +234,17 @@ KERN_C_OBJECTS = $(KERN_C_SOURCES:%.c=$(BUILD_DIR)/%.o)
 KERN_OBJECTS = $(KERN_ASM_OBJECTS) $(KERN_C_OBJECTS)
 
 # Dependency files
-DEPS = $(KERN_C_OBJECTS:.o=.d)
+# Every %.o: %.c rule (kernel AND user, see "Common compilation rules" below)
+# passes -MMD -MP, so a per-TU .d file listing every header it pulled in
+# lands next to each .o.  DEPS used to be JUST the kernel ones
+# (KERN_C_OBJECTS:.o=.d) — userland .o files (nxres.o, nxsettings.o, ...)
+# never got their .d included, so `make` had no idea a userland .c depended
+# on a header like nxres.h/style_names.h: editing ONLY the header left every
+# .o that #included it stale and un-rebuilt, silently running old code with
+# no compile error to flag it.  Globbing every .d already on disk (kernel
+# and user alike) closes that gap; empty on a clean tree (no .d files yet),
+# which is fine — -include tolerates a missing/empty list.
+DEPS = $(shell find $(BUILD_ROOT) -name '*.d' 2>/dev/null)
 
 # ==============================================================================
 # Build Rules
@@ -281,6 +293,9 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/block
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/ps2
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/usb
+	@mkdir -p $(BUILD_DIR)/lua
+	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/lib/portability/lua
+
 # Bootloader
 bootloader: $(BOOTLOADER_BIN)
 
@@ -319,18 +334,188 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
-USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o
+USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/opengl/os1_gl_platform.o
 USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
+# ==============================================================================
+# SDL2 static library (graphics-port: SDL cross-build over the OS1 libc)
+# ==============================================================================
+# The SDL submodule compiles UNPATCHED: SDL_config_nexsos.h is force-included
+# (-include) so the tree's own SDL_config.h is skipped, and the DUMMY
+# bootstrap slot is renamed to the NexsOS driver from the portability overlay
+# (see user/sys/lib/portability/sdl2/overlay.mk).  Defined before the user-ELF
+# link rules because prerequisite lists expand immediately.
+AR = $(CROSS_COMPILE)ar
+
+SDL2_DIR := $(USER_LIB_DIR)/sdl
+include user/sys/lib/portability/sdl2/overlay.mk
+
+SDL2_SRCS := \
+  $(wildcard $(SDL2_DIR)/src/*.c) \
+  $(wildcard $(SDL2_DIR)/src/atomic/*.c) \
+  $(wildcard $(SDL2_DIR)/src/audio/*.c) \
+  $(wildcard $(SDL2_DIR)/src/audio/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/cpuinfo/*.c) \
+  $(wildcard $(SDL2_DIR)/src/dynapi/*.c) \
+  $(wildcard $(SDL2_DIR)/src/events/*.c) \
+  $(wildcard $(SDL2_DIR)/src/file/*.c) \
+  $(wildcard $(SDL2_DIR)/src/filesystem/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/haptic/*.c) \
+  $(wildcard $(SDL2_DIR)/src/joystick/*.c) \
+  $(wildcard $(SDL2_DIR)/src/libm/*.c) \
+  $(wildcard $(SDL2_DIR)/src/locale/*.c) \
+  $(wildcard $(SDL2_DIR)/src/locale/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/misc/*.c) \
+  $(wildcard $(SDL2_DIR)/src/misc/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/power/*.c) \
+  $(wildcard $(SDL2_DIR)/src/render/*.c) \
+  $(wildcard $(SDL2_DIR)/src/render/software/*.c) \
+  $(wildcard $(SDL2_DIR)/src/sensor/*.c) \
+  $(wildcard $(SDL2_DIR)/src/sensor/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/stdlib/*.c) \
+  $(wildcard $(SDL2_DIR)/src/thread/*.c) \
+  $(wildcard $(SDL2_DIR)/src/thread/generic/*.c) \
+  $(wildcard $(SDL2_DIR)/src/timer/*.c) \
+  $(wildcard $(SDL2_DIR)/src/timer/dummy/*.c) \
+  $(wildcard $(SDL2_DIR)/src/video/*.c) \
+  $(wildcard $(SDL2_DIR)/src/video/yuv2rgb/*.c) \
+  $(SDL_NEXSOS_OVERLAY_SRCS)
+
+SDL2_OBJ_DIR := $(BUILD_DIR)/sdl2
+SDL2_OBJS := $(patsubst %.c,$(SDL2_OBJ_DIR)/%.o,$(SDL2_SRCS))
+SDL2_LIB  := $(BUILD_DIR)/libSDL2.a
+
+# SDL cannot build under the kernel's -Werror/-Wpedantic regime; codegen and
+# freestanding flags stay identical to userland objects so the archive links
+# into OS1 apps.  GCC>=14 permerrors are demoted for SDL's own fallback code
+# (Uint64* vs unsigned long long* in SDL_string.c is benign on both LP64
+# targets); the SDL tree is never edited.
+SDL2_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
+              -Wno-error=incompatible-pointer-types \
+              -Wno-error=implicit-function-declaration \
+              -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+              -fno-common -fstack-protector-strong -fno-pic -fno-pie \
+              -fno-omit-frame-pointer \
+              -Iinclude/api -I$(SDL2_DIR)/include \
+              $(SDL_NEXSOS_OVERLAY_CPPFLAGS)
+
+$(SDL2_OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(SDL2_CFLAGS) -c $< -o $@
+
+$(SDL2_LIB): $(SDL2_OBJS)
+	@echo "  [AR]     $@"
+	@$(AR) rcs $@ $^
+
+libsdl2: $(SDL2_LIB)
+.PHONY: libsdl2
+
+# ==============================================================================
+# Lua static library and runtime (lua)
+# ==============================================================================
+LUA_DIR := $(USER_LIB_DIR)/lua
+
+LUA_CORE_SRCS := \
+  $(LUA_DIR)/lapi.c \
+  $(LUA_DIR)/lauxlib.c \
+  $(LUA_DIR)/lbaselib.c \
+  $(LUA_DIR)/lcode.c \
+  $(LUA_DIR)/lcorolib.c \
+  $(LUA_DIR)/lctype.c \
+  $(LUA_DIR)/ldblib.c \
+  $(LUA_DIR)/ldebug.c \
+  $(LUA_DIR)/ldo.c \
+  $(LUA_DIR)/ldump.c \
+  $(LUA_DIR)/lfunc.c \
+  $(LUA_DIR)/lgc.c \
+  $(LUA_DIR)/linit.c \
+  $(LUA_DIR)/liolib.c \
+  $(LUA_DIR)/llex.c \
+  $(LUA_DIR)/lmathlib.c \
+  $(LUA_DIR)/lmem.c \
+  $(LUA_DIR)/loadlib.c \
+  $(LUA_DIR)/lobject.c \
+  $(LUA_DIR)/lopcodes.c \
+  $(LUA_DIR)/loslib.c \
+  $(LUA_DIR)/lparser.c \
+  $(LUA_DIR)/lstate.c \
+  $(LUA_DIR)/lstring.c \
+  $(LUA_DIR)/lstrlib.c \
+  $(LUA_DIR)/ltable.c \
+  $(LUA_DIR)/ltablib.c \
+  $(LUA_DIR)/ltm.c \
+  $(LUA_DIR)/lundump.c \
+  $(LUA_DIR)/lutf8lib.c \
+  $(LUA_DIR)/lvm.c \
+  $(LUA_DIR)/lzio.c
+
+LUA_PORT_SRCS := $(USER_LIB_DIR)/portability/lua/lua_portability.c
+LUA_OS1_SRCS  := $(USER_LIB_DIR)/os1LUA_lib.c
+
+LUA_OBJ_DIR := $(BUILD_DIR)/lua
+LUA_CORE_OBJS := $(patsubst $(LUA_DIR)/%.c,$(LUA_OBJ_DIR)/%.o,$(LUA_CORE_SRCS))
+LUA_PORT_OBJ  := $(BUILD_DIR)/$(USER_LIB_DIR)/portability/lua/lua_portability.o
+LUA_OS1_OBJ   := $(BUILD_DIR)/$(USER_LIB_DIR)/os1LUA_lib.o
+
+LUA_LIB     := $(BUILD_DIR)/lua.a
+LUA_OS1_LIB := $(BUILD_DIR)/libos1lua.a
+
+LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
+             -Wno-error \
+             -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+             -fno-common -fstack-protector-strong -fno-pic -fno-pie \
+             -fno-omit-frame-pointer \
+             -Iinclude/api -I$(LUA_DIR) -I$(USER_LIB_DIR)/portability/lua \
+             -include lua_portability.h
+
+$(LUA_OBJ_DIR)/%.o: $(LUA_DIR)/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+
+$(LUA_PORT_OBJ): $(LUA_PORT_SRCS)
+	@mkdir -p $(dir $@)
+	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+
+$(LUA_OS1_OBJ): $(LUA_OS1_SRCS)
+	@mkdir -p $(dir $@)
+	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+
+$(LUA_LIB): $(LUA_CORE_OBJS) $(LUA_PORT_OBJ)
+	@echo "  [AR]     $@"
+	@$(AR) rcs $@ $^
+
+$(LUA_OS1_LIB): $(LUA_OS1_OBJ)
+	@echo "  [AR]     $@"
+	@$(AR) rcs $@ $^
+
+liblua: $(LUA_LIB) $(LUA_OS1_LIB)
+.PHONY: liblua
+
+$(LUA_OBJ_DIR)/lua.o: $(LUA_DIR)/lua.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
+		$(LUA_OBJ_DIR)/lua.o \
+		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
+		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+
 # System ELFs (placed in /sys/bin)
-SYS_ELFS = $(BUILD_DIR)/init.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
+SYS_ELFS = $(BUILD_DIR)/nxinit.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
-           $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
-           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxwins.elf \
-           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf
+           $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
+           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
+           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf 
+
 
 # User ELFs (placed in /bin)
-BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_send.elf \
+BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
+           $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/lua.elf\
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
@@ -341,6 +526,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/ipc_sen
            $(BUILD_DIR)/sandboxtest.elf $(BUILD_DIR)/sandboxchild.elf \
            $(BUILD_DIR)/hello.elf \
            $(BUILD_DIR)/stress.elf \
+           $(BUILD_DIR)/restest.elf \
 		   $(BUILD_DIR)/kilo.elf
 
 USER_ELFS = $(SYS_ELFS) $(BIN_ELFS)
@@ -350,25 +536,38 @@ user: $(USER_ELFS)
 # User Compilations
 $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/bin/%.o: $(USER_DIR)/bin/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Explicit dependencies for each user ELF
-$(BUILD_DIR)/init.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/init.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+# sdltest: first SDL2 client; the object needs the SDL headers + injected
+# NexsOS config, the ELF links the cross-built archive before the OS1 libc
+# objects (which satisfy the archive's malloc/os1_video_* undefineds).
+$(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o: $(USER_DIR)/bin/sdltest.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+$(BUILD_DIR)/sdltest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+$(BUILD_DIR)/$(USER_DIR)/bin/raptor.o: $(USER_DIR)/bin/raptor.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+$(BUILD_DIR)/raptor.elf: $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -380,7 +579,10 @@ $(BUILD_DIR)/nxproc.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxproc.o $(USER_LIB_O)
 $(BUILD_DIR)/nxinfo.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinfo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxperm.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxperm.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxui.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxui.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxbar.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxbar.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxpower.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxpower.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxlauncher.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxlauncher.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxsettings.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxsettings.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -395,6 +597,7 @@ $(BUILD_DIR)/sandboxchild.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxchild.o $(USE
 $(BUILD_DIR)/hello.elf: $(BUILD_DIR)/$(USER_DIR)/bin/hello.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxmemstat.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxmemstat.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/stress.elf: $(BUILD_DIR)/$(USER_DIR)/bin/stress.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/restest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/restest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxwins.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxwins.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -415,7 +618,7 @@ $(BUILD_DIR)/nxfilem.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/main.o \
 
 $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # kilo is linked like every other user ELF (prereqs declared above, generic
 # linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
@@ -453,6 +656,13 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin/background
 	@mkdir -p $(BUILD_DIR)/rootfs/lib
+	@mkdir -p  $(BUILD_DIR)/rootfs/sys/lib/include
+	@# /home: the ONLY user-writable tree (vfs_write_allowed tree ACL —
+	@# /sys/bin machine-only, every other tree root-only, guests confined to
+	@# /home/shared).  Pre-created because ext4 has no directory creation yet:
+	@# Documents/doom hosts doom's config+savegames (replaces the hardcoded
+	@mkdir -p $(BUILD_DIR)/rootfs/home/Documents/doom
+	@mkdir -p $(BUILD_DIR)/rootfs/home/shared
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
@@ -465,12 +675,25 @@ rootfs: user
 	@-cp user/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/sys/bin/background/globe.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
 	@-cp user/sys/bin/background/nxduck.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
-	@-cp user/bin/doom/doomsav0.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/bin/doom/doomsav1.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/bin/doom/doomsav2.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@# doom savegames are runtime-created in /home/Documents/doom now; the
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
 	@-cp user/sys/bin/nxfont/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include	
+	@-cp $(SDL2_LIB) $(BUILD_DIR)/rootfs/sys/lib/libSDL2.a 2>/dev/null || true
+	@-cp $(LUA_LIB) $(BUILD_DIR)/rootfs/sys/lib/liblua.a 2>/dev/null || true
+	@-cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/libos1lua.a 2>/dev/null || true
+	@rm -rf $(BUILD_DIR)/rootfs/sys/lib/include
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/SDL2
+	@cp -r $(SDL2_DIR)/include/. $(BUILD_DIR)/rootfs/sys/lib/include/SDL2/
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/lua
+	@cp $(LUA_DIR)/*.h $(BUILD_DIR)/rootfs/sys/lib/include/lua/
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/api
+	@cp -r include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
+	@# Copy Lua's own test suite next to nxlua, for on-device testing
+	@mkdir -p $(BUILD_DIR)/rootfs//home/LUA/luatest
+	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/home/LUA/luatest/ 2>/dev/null || true
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done

@@ -102,11 +102,28 @@ static inline void nxmemstat_render(int win_id, const struct os1_sysstats *s,
              (unsigned long)(s->km_high_water_bytes / 1024UL),
              (unsigned long)s->km_live_allocs,
              (unsigned long)(s->km_heap_total_bytes / 1024UL));
-  printf_win(win_id, "objs   : FILE %lu  PROC %lu  REGKEY %lu  WINDOW %lu\n",
+  /* NOTE(OBJ-COUNT-01): these are live CAPABILITY-HANDLE objects (created only
+   * via SYS_HANDLE_CREATE/OS1low_handle_create — see include/api/object.h),
+   * NOT a live inventory of "windows on screen" or "running processes".  Most
+   * everyday operations still go through legacy direct syscalls that never
+   * touch this layer: SYS_CREATE_WINDOW (the compositor's own window array),
+   * SYS_SPAWN/SYS_KILL (process_pool), SYS_REGISTRY_GET/SET (the registry
+   * tree) — none of them call kobj_alloc(), so FILE/PROC/REGKEY/WINDOW read 0
+   * whenever nothing has an OPEN capability handle of that type at the exact
+   * snapshot instant (e.g. a file handle from a startup WAD/font read is
+   * already closed by the time this polls).  This is the documented state of
+   * the call-surface refactor (DIR-01/#164, ASTRA.md §7.10): the object layer
+   * is not yet the path every subsystem uses.  CONSOLE is the one type every
+   * live process actually holds (process_install_stdio gives it 3 handles to
+   * one shared object) and is shown here so the line always has a
+   * nonzero, meaningful number when processes are running. */
+  printf_win(win_id,
+             "objs   : FILE %lu  PROC %lu  REGKEY %lu  WINDOW %lu  CONSOLE %lu\n",
              (unsigned long)s->obj_live_by_type[OBJ_TYPE_FILE],
              (unsigned long)s->obj_live_by_type[OBJ_TYPE_PROCESS],
              (unsigned long)s->obj_live_by_type[OBJ_TYPE_REGKEY],
-             (unsigned long)s->obj_live_by_type[OBJ_TYPE_WINDOW]);
+             (unsigned long)s->obj_live_by_type[OBJ_TYPE_WINDOW],
+             (unsigned long)s->obj_live_by_type[OBJ_TYPE_CONSOLE]);
 }
 
 /* nxmemstat_render_if_changed - snapshot, redraw the window only when the
@@ -152,7 +169,7 @@ static inline int nxmemstat_csv_line(char *buf, int size,
   return snprintf(
       buf, size,
       "MEMSTAT,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
-      "%lu,%lu,0\n",
+      "%lu,%lu,%lu,0\n",
       t_s, (unsigned long)s->pmm_free_pages,
       (unsigned long)s->pmm_largest_contig_run,
       (unsigned long)s->pmm_free_run_count, (unsigned long)s->pmm_alloc_calls,
@@ -165,7 +182,8 @@ static inline int nxmemstat_csv_line(char *buf, int size,
       (unsigned long)s->obj_live_by_type[OBJ_TYPE_FILE],
       (unsigned long)s->obj_live_by_type[OBJ_TYPE_PROCESS],
       (unsigned long)s->obj_live_by_type[OBJ_TYPE_REGKEY],
-      (unsigned long)s->obj_live_by_type[OBJ_TYPE_WINDOW]);
+      (unsigned long)s->obj_live_by_type[OBJ_TYPE_WINDOW],
+      (unsigned long)s->obj_live_by_type[OBJ_TYPE_CONSOLE]);
 }
 
 #endif /* _USER_NXMEMSTAT_H */

@@ -73,7 +73,7 @@ extern long _sys_display_info(void);              /* current desktop (w<<16)|h *
 extern int  _sys_set_display_mode(int w, int h);  /* set resolution; desktop adapts */
 extern int  _sys_window_resize(int win_id, int w, int h); /* resize own window surface */
 extern int  _sys_display_poll(void);              /* apply pending host resize; 1 if changed */
-extern int  _sys_set_style(int style_id, int theme_id); /* compositor look; -1 = keep */
+extern int  _sys_set_style(int style_id, int theme_id, int bg_id); /* -1 = keep */
 extern int  _sys_set_zoom(int percent);           /* desktop HiDPI/zoom percent */
 extern void* _sys_sbrk(intptr_t increment);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
@@ -180,6 +180,10 @@ long OS1low_ipc_recv(int pid, struct ipc_message *msg);
 long OS1low_ipc_try_recv(int pid, struct ipc_message *msg);
 int  OS1_notify_post(const char *title, const char *msg);
 int  OS1_notify_warn(const char *title, const char *msg); /* yellow (severity 1) */
+int  OS1_notify_error(const char *title, const char *msg); /* red (severity 2) — was
+                                                            * kernel-crash-only (fault.c);
+                                                            * now reachable from
+                                                            * userland too */
 int send(int pid, struct ipc_message *msg);
 int recv(int pid, struct ipc_message *msg);
 int try_recv(int pid, struct ipc_message *msg);
@@ -240,6 +244,7 @@ long OS1_display_info(void);                  /* current desktop, packed (w<<16)
 int  OS1_display_set_mode(int w, int h);      /* set resolution; desktop adapts */
 int  OS1_display_poll(void);                  /* apply pending host resize; 1 if changed */
 int  OS1_display_set_style(int style_id, int theme_id); /* -1 = keep */
+int  OS1_display_set_background(int bg_id);
 int  OS1_display_set_zoom(int percent);       /* desktop HiDPI/zoom percent */
 int  OS1_display_set_font(void *data, size_t size);     /* set_font is its shim */
 

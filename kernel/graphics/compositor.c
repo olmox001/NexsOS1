@@ -5,11 +5,13 @@
  * Manages windows and composites them to the screen.
  */
 #include <drivers/gpu/gpu.h>
+#include <drivers/timer.h> /* mono_ns: motion-event rate limiting */
 #include <drivers/virtio_input.h>
 #include <graphics/gl.h>
 #include <kernel/arch.h>
 #include <kernel/compositor_style.h>
 #include <kernel/cpu.h>
+#include <kernel/gfx_chrome.h>
 #include <kernel/graphics.h>
 #include <kernel/kmalloc.h>
 #include <kernel/pmm.h>
@@ -309,10 +311,9 @@ static int resize_start_mx = 0, resize_start_my = 0;
 static int resize_orig_w = 0, resize_orig_h = 0, resize_orig_x = 0;
 
 /* Title-bar height now comes from the active style (compositor_titlebar_height,
- * Phase 5): 20 by default, 0 for the chrome-less Minimal style.  The close
- * button size stays fixed. */
-#define CLOSE_BUTTON_SIZE 16
-#define BG_BUTTON_GAP 6 /* px gap between the background and close buttons */
+ * Phase 5): 20 by default, 0 for the chrome-less Minimal style.  Button
+ * size/gap and their geometry live in gfx_chrome (gfx_chrome_button_geometry),
+ * the single source shared by the render pass and the click hit-test. */
 
 /* Compositor backbuffer == the "compositor FB" / desktop-virtual surface
  * (GFX-DYN-01).  Its size follows the GPU, no longer a hard-coded 720x1280.
@@ -397,6 +398,83 @@ void compositor_get_size(int *w, int *h) {
 }
 
 /*
+ * compositor_reserved_top_locked / compositor_reserved_bottom_locked -
+ * FIX(GFX-COMP-RESERVE-01): infer the screen-edge strip currently claimed by
+ * permanent top_most chrome (nxbar's top bar, nxui's dock) so that ordinary
+ * window placement/resize/drag never slides underneath it.
+ *
+ * Before this fix, compositor_create_window(), compositor_resize(), and
+ * compositor_update_mouse()'s drag clamp only checked compositor_titlebar_
+ * height() at the top (a per-window DECORATION metric — the height of a
+ * window's OWN titlebar — which has nothing to do with nxbar) and the bare
+ * screen edge at the bottom (nothing reserved at all).  Practical effect:
+ *   - a window could be created or dragged with y as low as the titlebar
+ *     height, sliding it underneath nxbar's strip, which the compositor had
+ *     no notion of;
+ *   - any window taller than (screen_h - a few px) got its y clamped to
+ *     "screen_h - h" — flush against the physical bottom edge — with no
+ *     margin for nxui's dock, so it ended up hidden behind the dock instead
+ *     of stopping above it.
+ *
+ * The compositor still does not know "nxbar" or "nxui" by name (kernel/
+ * userland separation, ASTRA §1) — it infers the reservation purely from
+ * geometry: any VISIBLE, TOP_MOST window whose edge sits within
+ * RESERVE_EDGE_SLOP pixels of a screen edge is treated as permanent chrome
+ * anchored to that edge, and its footprint is reserved.  exclude_id lets a
+ * window being placed/dragged skip counting itself (pass 0 if the window has
+ * no id yet, e.g. during creation).  Caller must hold compositor_lock.
+ *
+ * Defined here (ahead of compositor_resize, the first user) rather than
+ * right before compositor_create_window: a static function must be declared
+ * before every call site in the same translation unit, and compositor_resize
+ * appears earlier in this file than compositor_create_window.
+ */
+#define RESERVE_EDGE_SLOP                                                      \
+  8 /* nxui's DOCK_MARGIN_BOTTOM (4px) and nxbar's own                         \
+     * top inset both fall well inside this */
+
+static int compositor_reserved_top_locked(int exclude_id) {
+  /* VECCHIO: partiva da compositor_titlebar_height() → forzava
+   * anche le finestre senza barra (top_most) a stare sotto un
+   * margine inesistente.
+   */
+  /* NUOVO: la riserva è determinata SOLO dalle finestre top_most
+   * ancorate al bordo superiore, non dalla decorazione.
+   */
+  int top = 0;
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == 0 || windows[i].id == exclude_id)
+      continue;
+    if (!windows[i].visible || !windows[i].top_most)
+      continue;
+    if (windows[i].y <= RESERVE_EDGE_SLOP) {
+      int reserved = windows[i].y + windows[i].height;
+      if (reserved > top)
+        top = reserved;
+    }
+  }
+  return top;
+}
+
+static int compositor_reserved_bottom_locked(int exclude_id) {
+  int bottom = 0;
+  int screen_h = bb_height > 0 ? bb_height : 600;
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == 0 || windows[i].id == exclude_id)
+      continue;
+    if (!windows[i].visible || !windows[i].top_most)
+      continue;
+    int gap = screen_h - (windows[i].y + windows[i].height);
+    if (gap >= 0 && gap <= RESERVE_EDGE_SLOP) {
+      int reserved = windows[i].height + gap;
+      if (reserved > bottom)
+        bottom = reserved;
+    }
+  }
+  return bottom;
+}
+
+/*
  * compositor_resize - retarget the backbuffer to the scanout's new w x h.
  *
  * The caller must have already resized the GPU scanout (gpu_set_mode) to the
@@ -430,18 +508,46 @@ void compositor_resize(int w, int h) {
   bb_width = w;
   bb_height = h;
 
-  /* Keep every window's title bar / close button on-screen at the new size. */
+  /* Keep every window's title bar / close button on-screen at the new size.
+   * FIX(GFX-COMP-RESERVE-01): also keep it above nxbar and above nxui's dock
+   * — previously only compositor_titlebar_height() (top) and a bare 20px
+   * (bottom) were enforced, with no notion of either chrome strip, so a
+   * resolution change could resettle a window behind nxbar or behind the
+   * dock. exclude_id=windows[i].id: a top_most window (nxbar/nxui itself)
+   * must not count its own footprint against itself.
+   *
+   * FIX(GFX-COMP-RESIZE-CLAMP-01): the x clamp used to be a FIXED 40px margin
+   * ("enough to keep a typical title bar/close button reachable"), which
+   * only accounts for a NARROW window. A wide window — nxntfy_srv's 280px
+   * notification popup is the concrete case that surfaced this — positioned
+   * near the right edge could have its LEFT edge clamped to `bb_width-40`
+   * while its RIGHT edge (`x + dw`) stayed far past the new, smaller
+   * bb_width: shrinking the desktop from 1920 to 800 left a 280px-wide popup
+   * with up to ~240px hanging off-screen, invisible until something
+   * repositioned it explicitly. Clamp against the window's OWN on-screen
+   * width/height (draw_w/draw_h, falling back to the logical size — same
+   * on-screen-size resolution the render/hit-test paths already use) instead
+   * of a one-size-fits-all constant, so ANY window's full footprint — not
+   * just its top-left corner — stays reachable after a resize. */
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == 0)
       continue;
-    if (windows[i].x > bb_width - 40)
-      windows[i].x = bb_width - 40;
+    int dw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+    int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+    /* Keep at least a corner (min 40px) reachable even for a window wider
+     * than the new screen, instead of pushing x negative. */
+    int margin_w = dw < 40 ? dw : 40;
+    int margin_h = dh < 40 ? dh : 40;
+    if (windows[i].x > bb_width - margin_w)
+      windows[i].x = bb_width - margin_w;
     if (windows[i].x < 0)
       windows[i].x = 0;
-    if (windows[i].y > bb_height - 20)
-      windows[i].y = bb_height - 20;
-    if (windows[i].y < compositor_titlebar_height())
-      windows[i].y = compositor_titlebar_height();
+    int reserved_top = compositor_reserved_top_locked(windows[i].id);
+    int reserved_bottom = compositor_reserved_bottom_locked(windows[i].id);
+    if (windows[i].y > bb_height - reserved_bottom - margin_h)
+      windows[i].y = bb_height - reserved_bottom - margin_h;
+    if (windows[i].y < reserved_top)
+      windows[i].y = reserved_top;
   }
 
   damage_x1 = 0;
@@ -559,10 +665,17 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     if (x < 0)
       x = 0;
 
-    if (y + h > screen_h)
-      y = screen_h - h;
-    if (y < compositor_titlebar_height())
-      y = compositor_titlebar_height();
+    /* FIX(GFX-COMP-RESERVE-01): clamp against the LIVE top/bottom chrome
+     * reservation (nxbar/nxui), not just compositor_titlebar_height() at the
+     * top and the bare screen edge at the bottom — see the helper comment
+     * above. exclude_id=0: this window has no id yet, nothing to exclude. */
+    int reserved_top = compositor_reserved_top_locked(0);
+    int reserved_bottom = compositor_reserved_bottom_locked(0);
+
+    if (y + h > screen_h - reserved_bottom)
+      y = screen_h - reserved_bottom - h;
+    if (y < reserved_top)
+      y = reserved_top;
   }
 
   /* Allocate window buffer */
@@ -626,6 +739,21 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   windows[slot].passive = 0;
 
   window_count++;
+
+  /* ============================================================
+   * VECCHIO: nessuna chiamata a expand_damage, nessun compositor_dirty
+   * ============================================================ */
+
+  /* ============================================================
+   * NUOVO: marca l'intera area della finestra (contenuto + barra
+   * del titolo) come danneggiata così il prossimo compositor_tick
+   * la ridisegna immediatamente.
+   * ============================================================ */
+  int ddw = windows[slot].draw_w > 0 ? windows[slot].draw_w : w;
+  int ddh = windows[slot].draw_h > 0 ? windows[slot].draw_h : h;
+  expand_damage(x, y - compositor_titlebar_height(), ddw,
+                ddh + compositor_titlebar_height());
+  compositor_dirty = 1;
 
   pr_debug("Compositor: Created window '%s' (%dx%d) at (%d,%d)\n", title, w, h,
            x, y); /* hot path under GUI churn: demoted (perf §1) */
@@ -1108,7 +1236,9 @@ static void __clear_other_carets_locked(int keep_pid) {
     struct gl_surface s = {.width = win->width,
                            .height = win->height,
                            .stride = win->width,
-                           .buffer = win->buffer};
+                           .buffer = win->buffer,
+                           .capacity = (size_t)win->width * win->height};
+    gfx_surface_verify(&s, "__clear_other_carets_locked/win");
     term_clear_caret(&win->term, &s);
     win->term.focused = 0;
     expand_damage(win->x, win->y - compositor_titlebar_height(), win->width,
@@ -1150,7 +1280,9 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
   struct gl_surface win_surf = {.width = win->width,
                                 .height = win->height,
                                 .stride = win->width,
-                                .buffer = win->buffer};
+                                .buffer = win->buffer,
+                                .capacity = (size_t)win->width * win->height};
+  gfx_surface_verify(&win_surf, "compositor_window_write/win");
 
   /* The caret is drawn only on the window that currently owns keyboard input.
    */
@@ -1172,27 +1304,69 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
  * Handle Mouse Click
  */
 void compositor_handle_click(int button, int state) {
-  (void)button;
-
   if (state == 0) {
     /* Button up: end drag/resize.  If we were resizing, tell the window owner
      * its new size so it can reallocate a crisp buffer (it may ignore it and
      * stay scaled). */
     int notify_pid = -1, nw = 0, nh = 0;
+    int release_pid = -1;
+    struct ipc_message release_msg = {0};
     uint64_t rflags;
     spin_lock_irqsave(&compositor_lock, &rflags);
-    dragging_window_id = -1;
-    if (resizing_window_id != -1) {
-      for (int i = 0; i < MAX_WINDOWS; i++) {
-        if (windows[i].id == resizing_window_id) {
-          notify_pid = windows[i].pid;
-          nw = windows[i].draw_w;
-          nh = windows[i].draw_h;
-          break;
+    /* Only the LEFT button drives drag/resize, so only its release ends
+     * them (a right/middle release must not cancel an ongoing left-drag). */
+    if (button == BTN_LEFT) {
+      dragging_window_id = -1;
+      if (resizing_window_id != -1) {
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+          if (windows[i].id == resizing_window_id) {
+            notify_pid = windows[i].pid;
+            nw = windows[i].draw_w;
+            nh = windows[i].draw_h;
+            break;
+          }
         }
+        resizing_window_id = -1;
+        resize_edge = 0;
       }
-      resizing_window_id = -1;
-      resize_edge = 0;
+    }
+    /* Deliver the RELEASE to the focused app with the same IPC_TYPE_MOUSE
+     * message the press uses (data2 = 0) — no new ABI.  Button-state
+     * consumers (SDL tracks pressed buttons) need the matching release or
+     * every press after the first is treated as still-held.  The pointer may
+     * be released outside the window, so coordinates are clamped into the
+     * content area before the draw-rect -> logical mapping. */
+    if (keyboard_focus_pid > 0) {
+      for (int i = 0; i < MAX_WINDOWS; i++) {
+        struct window *fw = &windows[i];
+        if (fw->id == 0 || !fw->visible || fw->passive ||
+            fw->pid != keyboard_focus_pid)
+          continue;
+        int fdw = fw->draw_w > 0 ? fw->draw_w : fw->width;
+        int fdh = fw->draw_h > 0 ? fw->draw_h : fw->height;
+        int rel_x = mouse_x - fw->x;
+        int rel_y = mouse_y - fw->y;
+        if (rel_x < 0)
+          rel_x = 0;
+        if (rel_y < 0)
+          rel_y = 0;
+        if (rel_x >= fdw)
+          rel_x = fdw - 1;
+        if (rel_y >= fdh)
+          rel_y = fdh - 1;
+        if (fdw > 0 && fdw != fw->width)
+          rel_x = (int)((int64_t)rel_x * fw->width / fdw);
+        if (fdh > 0 && fdh != fw->height)
+          rel_y = (int)((int64_t)rel_y * fw->height / fdh);
+        release_msg.from = 0; /* Kernel */
+        release_msg.type = IPC_TYPE_MOUSE;
+        release_msg.data1 = (uint64_t)button;
+        release_msg.data2 = 0;
+        memcpy(release_msg.payload, &rel_x, 4);
+        memcpy(release_msg.payload + 4, &rel_y, 4);
+        release_pid = keyboard_focus_pid;
+        break;
+      }
     }
     spin_unlock_irqrestore(&compositor_lock, rflags);
     if (notify_pid > 0) {
@@ -1202,6 +1376,8 @@ void compositor_handle_click(int button, int state) {
       msg.data2 = (uint64_t)nh;
       kernel_ipc_send(notify_pid, &msg);
     }
+    if (release_pid > 0)
+      kernel_ipc_send(release_pid, &release_msg);
     return;
   }
 
@@ -1273,7 +1449,20 @@ void compositor_handle_click(int button, int state) {
         mouse_y >= hit->y + dh - RESIZE_GRIP && mouse_y < hit->y + dh)
       edge |= RESIZE_EDGE_B;
 
-    if (edge && !hit->protected) {
+    /* FIX(GFX-COMP-RESIZE-01): top_most system chrome (nxbar, nxui's dock,
+     * nxntfy_srv's popup) must resize ONLY programmatically (bar_reinit/
+     * dock_reinit reacting to a screen-size change), never via an interactive
+     * mouse grip. `protected` alone did not cover this — it is set ONLY for
+     * PID 2 (the shell, compositor_create_window's hardcoded check) — so a
+     * click landing within RESIZE_GRIP of nxbar/nxui's edge (easy: nxbar spans
+     * the full screen width, its bottom edge sits exactly where users click
+     * things right below it) silently started an interactive resize, visibly
+     * distorting the bar/dock until its own next redraw() forced draw_w/draw_h
+     * back to its computed size — the "resizes momentarily then snaps back"
+     * bug. top_most already exists precisely to mark this class of window;
+     * reusing it here (rather than adding a second, parallel flag) needs no
+     * new state and no userland ABI change. */
+    if (button == BTN_LEFT && edge && !hit->protected && !hit->top_most) {
       resizing_window_id = hit->id;
       resize_edge = edge;
       resize_start_mx = mouse_x;
@@ -1304,23 +1493,28 @@ void compositor_handle_click(int button, int state) {
   int send_pid = -1;
   struct ipc_message msg = {0};
   if (keyboard_focus_pid > 0) {
-    msg.from = 0; /* Kernel */
-    msg.type = IPC_TYPE_MOUSE;
-    msg.data1 = (uint64_t)button;
-    msg.data2 = (uint64_t)state;
-    /* Store relative coordinates in payload, mapped from the on-screen draw
-     * rect back to the app's LOGICAL surface so the app sees its own coords. */
+    /* Relative coordinates, mapped from the on-screen draw rect back to the
+     * app's LOGICAL surface so the app sees its own coords.  Only presses in
+     * the CONTENT area are delivered: chrome presses (titlebar, buttons,
+     * drag) belong to the window manager, and a negative rel_y would leak
+     * WM geometry into the app's input stream. */
     int hdw = hit->draw_w > 0 ? hit->draw_w : hit->width;
     int hdh = hit->draw_h > 0 ? hit->draw_h : hit->height;
     int rel_x = mouse_x - hit->x;
     int rel_y = mouse_y - hit->y;
-    if (hdw > 0 && hdw != hit->width)
-      rel_x = (int)((int64_t)rel_x * hit->width / hdw);
-    if (hdh > 0 && hdh != hit->height)
-      rel_y = (int)((int64_t)rel_y * hit->height / hdh);
-    memcpy(msg.payload, &rel_x, 4);
-    memcpy(msg.payload + 4, &rel_y, 4);
-    send_pid = keyboard_focus_pid;
+    if (rel_x >= 0 && rel_y >= 0 && rel_x < hdw && rel_y < hdh) {
+      if (hdw > 0 && hdw != hit->width)
+        rel_x = (int)((int64_t)rel_x * hit->width / hdw);
+      if (hdh > 0 && hdh != hit->height)
+        rel_y = (int)((int64_t)rel_y * hit->height / hdh);
+      msg.from = 0; /* Kernel */
+      msg.type = IPC_TYPE_MOUSE;
+      msg.data1 = (uint64_t)button;
+      msg.data2 = (uint64_t)state;
+      memcpy(msg.payload, &rel_x, 4);
+      memcpy(msg.payload + 4, &rel_y, 4);
+      send_pid = keyboard_focus_pid;
+    }
   }
 
   /* Capture a titlebar-button hit; the action is deferred until after unlock.
@@ -1330,46 +1524,30 @@ void compositor_handle_click(int button, int state) {
   int close_pid = 0;
   int do_minimize = 0;
   int min_id = 0;
-  if (!hit->protected) {
+  if (button == BTN_LEFT && !hit->protected) {
     const compositor_style_t *st = compositor_style_active();
     int hdw = hit->draw_w > 0 ? hit->draw_w : hit->width;
     int title_h = compositor_titlebar_height();
     int decor_y = hit->y - title_h;
-    
-    int btn_size = CLOSE_BUTTON_SIZE;
-    if (st->button_shape == 1 || st->button_shape == 2)
-      btn_size -= 2;
-      
-    int btn_top = decor_y + (title_h - btn_size) / 2;
-    int close_cx, bg_cx;
 
-    if (st->button_side == 0) {
-      int close_left = hit->x + 4;
-      close_cx = close_left + btn_size / 2;
-      bg_cx = close_cx + btn_size + BG_BUTTON_GAP;
-    } else {
-      int close_right = hit->x + hdw - 4;
-      close_cx = close_right - btn_size / 2;
-      bg_cx = close_cx - btn_size - BG_BUTTON_GAP;
-    }
-
-    if (mouse_y >= btn_top && mouse_y < btn_top + btn_size) {
-      int close_x = close_cx - btn_size / 2;
-      int bg_x = bg_cx - btn_size / 2;
-      
-      if (mouse_x >= close_x && mouse_x < close_x + btn_size) {
-        do_close = 1;
-        close_pid = hit->pid;
-      } else if (mouse_x >= bg_x && mouse_x < bg_x + btn_size) {
-        do_minimize = 1;
-        min_id = hit->id;
-      }
+    /* Same gfx_chrome geometry the render pass paints with — the hit-test
+     * can no longer drift from the pixels on screen. */
+    gfx_button_geometry_t buttons;
+    gfx_chrome_button_geometry(hit->x, hdw, decor_y, title_h, st->button_shape,
+                               st->button_side, &buttons);
+    int hit_button = gfx_chrome_button_hit(&buttons, mouse_x, mouse_y);
+    if (hit_button == GFX_BUTTON_CLOSE) {
+      do_close = 1;
+      close_pid = hit->pid;
+    } else if (hit_button == GFX_BUTTON_BACKGROUND) {
+      do_minimize = 1;
+      min_id = hit->id;
     }
   }
 
   /* Check for drag start (skipped when closing/minimizing, matching the old
-   * early-return). */
-  if (!do_close && !do_minimize &&
+   * early-return).  Left button only: right/middle never start a drag. */
+  if (button == BTN_LEFT && !do_close && !do_minimize &&
       mouse_y >= hit->y - compositor_titlebar_height() && mouse_y < hit->y) {
     dragging_window_id = hit->id;
     drag_off_x = mouse_x - hit->x;
@@ -1395,6 +1573,13 @@ void compositor_handle_click(int button, int state) {
     kernel_ipc_send(send_pid, &msg);
   if (do_close) {
     pr_info("Compositor: Close button -> request close of PID %d\n", close_pid);
+    /* Window-close INTENT seam (#69, docs/PROCESS-KILL-MODEL.md): the kernel's
+     * window-aware subtree kill takes the window owner and its WINDOWLESS
+     * children (nxexec's hosted terminal program), sparing windowed children.
+     * The actual page/stack free is deferred to the scheduler reaper, so the
+     * IRQ-context call here only marks the subtree — the heavy compositor render
+     * that used to smash a stack from this context is now in userspace
+     * (SCHED-STACK-ISO), so the IRQ path is shallow. */
     window_request_close(close_pid);
   }
   /* Background button: send the window to the dock.  compositor_minimize_window
@@ -1419,10 +1604,11 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
    * runs in mouse-IRQ context and was the ONLY window-list mutator WITHOUT the
    * lock — racing window create/destroy (e.g. 'stress' churning windows) and
    * the render tick.  The torn drag/resize writes to windows[].draw_w/draw_h
-   * could then be consumed out-of-bounds by a concurrent draw syscall (observed:
-   * kernel stack/pointer smash, RIP->0xf9, while dragging a demo3d window).
-   * Same lock order as compositor_handle_click (no caller holds it; the helpers
-   * called below — expand_damage, compositor_titlebar_height — take no lock). */
+   * could then be consumed out-of-bounds by a concurrent draw syscall
+   * (observed: kernel stack/pointer smash, RIP->0xf9, while dragging a demo3d
+   * window). Same lock order as compositor_handle_click (no caller holds it;
+   * the helpers called below — expand_damage, compositor_titlebar_height — take
+   * no lock). */
   uint64_t cflags;
   spin_lock_irqsave(&compositor_lock, &cflags);
 
@@ -1461,15 +1647,21 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
         int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
         windows[i].x = mouse_x - drag_off_x;
         windows[i].y = mouse_y - drag_off_y;
-        /* Enforce screen boundaries (use on-screen draw size) */
+        /* Enforce screen boundaries (use on-screen draw size).
+         * FIX(GFX-COMP-RESERVE-01): clamp against the live nxbar/nxui
+         * reservation instead of just compositor_titlebar_height() at the
+         * top and the bare screen edge at the bottom — a dragged window used
+         * to be draggable right underneath nxbar, or down behind the dock. */
         if (windows[i].x < 0)
           windows[i].x = 0;
         if (windows[i].x + dw > width)
           windows[i].x = width - dw;
-        if (windows[i].y < compositor_titlebar_height())
-          windows[i].y = compositor_titlebar_height();
-        if (windows[i].y + dh > height)
-          windows[i].y = height - dh;
+        int reserved_top = compositor_reserved_top_locked(windows[i].id);
+        int reserved_bottom = compositor_reserved_bottom_locked(windows[i].id);
+        if (windows[i].y < reserved_top)
+          windows[i].y = reserved_top;
+        if (windows[i].y + dh > height - reserved_bottom)
+          windows[i].y = height - reserved_bottom - dh;
         break;
       }
     }
@@ -1523,7 +1715,56 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
   }
   compositor_dirty = 1;
 
+  /* Capture a motion event for the focused window using the SAME
+   * IPC_TYPE_MOUSE message the click path sends — no new ABI.  button = 0
+   * means "no button, motion only": every existing consumer already treats a
+   * zero button as not-a-click, and the SDL2 adapter turns it into
+   * SDL_MOUSEMOTION.  Rate-limited so the unbounded per-process IPC queue
+   * cannot be flooded from mouse-IRQ context; delivery happens after the
+   * unlock, mirroring compositor_handle_click.  Suppressed during drag/resize
+   * (the window itself is moving under the cursor). */
+  int motion_pid = -1;
+  struct ipc_message motion_msg = {0};
+  if ((mouse_x != old_mx || mouse_y != old_my) && keyboard_focus_pid > 0 &&
+      dragging_window_id == -1 && resizing_window_id == -1) {
+    static uint64_t last_motion_ns;
+    uint64_t now = mono_ns();
+    if (now - last_motion_ns >= 8000000ull) { /* >= 8 ms (~125 Hz) */
+      for (int i = 0; i < MAX_WINDOWS; i++) {
+        struct window *fw = &windows[i];
+        if (fw->id == 0 || !fw->visible || fw->passive ||
+            fw->pid != keyboard_focus_pid)
+          continue;
+        int fdw = fw->draw_w > 0 ? fw->draw_w : fw->width;
+        int fdh = fw->draw_h > 0 ? fw->draw_h : fw->height;
+        int rel_x = mouse_x - fw->x;
+        int rel_y = mouse_y - fw->y;
+        if (rel_x < 0 || rel_y < 0 || rel_x >= fdw || rel_y >= fdh)
+          break; /* cursor outside the focused content area: no motion */
+        /* Map from the on-screen draw rect back to LOGICAL surface coords,
+         * exactly like the click path. */
+        if (fdw > 0 && fdw != fw->width)
+          rel_x = (int)((int64_t)rel_x * fw->width / fdw);
+        if (fdh > 0 && fdh != fw->height)
+          rel_y = (int)((int64_t)rel_y * fw->height / fdh);
+        motion_msg.from = 0; /* Kernel */
+        motion_msg.type = IPC_TYPE_MOUSE;
+        motion_msg.data1 = 0; /* no button: motion only */
+        motion_msg.data2 = 0;
+        memcpy(motion_msg.payload, &rel_x, 4);
+        memcpy(motion_msg.payload + 4, &rel_y, 4);
+        motion_pid = keyboard_focus_pid;
+        last_motion_ns = now;
+        break;
+      }
+    }
+  }
+
   spin_unlock_irqrestore(&compositor_lock, cflags);
+
+  /* Outside compositor_lock (same contract as compositor_handle_click). */
+  if (motion_pid > 0)
+    kernel_ipc_send(motion_pid, &motion_msg);
 }
 
 /*
@@ -1537,32 +1778,8 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
  */
 #include <kernel/region.h>
 
-/* Rounded-rect membership test (F3): is local pixel (lx,ly) inside a w*h rect
- * with corner radius r?  Only the four r*r corner squares are tested; the bulk
- * is a trivial inside.  r<=0 ⇒ always inside (square corners). */
-static inline int rrect_inside(int lx, int ly, int w, int h, int r) {
-  if (r <= 0)
-    return 1;
-  if (lx < 0 || ly < 0 || lx >= w || ly >= h)
-    return 0;
-  int cx, cy;
-  if (lx < r && ly < r) {
-    cx = r - 1 - lx;
-    cy = r - 1 - ly;
-  } else if (lx >= w - r && ly < r) {
-    cx = lx - (w - r);
-    cy = r - 1 - ly;
-  } else if (lx < r && ly >= h - r) {
-    cx = r - 1 - lx;
-    cy = ly - (h - r);
-  } else if (lx >= w - r && ly >= h - r) {
-    cx = lx - (w - r);
-    cy = ly - (h - r);
-  } else {
-    return 1; /* not in a corner square */
-  }
-  return (cx * cx + cy * cy) <= (r * r);
-}
+/* Rounded-rect membership (F3) now lives in gfx_chrome as
+ * gfx_rrect_contains(), shared with the chrome shadow/border primitives. */
 
 static volatile int in_render = 0;
 static void compositor_render_internal(void) {
@@ -1576,9 +1793,15 @@ static void compositor_render_internal(void) {
     return;
   }
 
-  /* Use current buffer dimensions */
+  /* Use current buffer dimensions.  bb_pg snapshots the backing page count so
+   * the surface below carries its TRUE allocation (S-STAB): the whole raster
+   * path only clips against bb_w/bb_h, so if those ever exceeded the allocation
+   * (a geometry desync) every chrome/content write would run off the end into
+   * kernel RAM.  We hold compositor_lock here, so bb_width/height/pages/backbuffer
+   * are a consistent set. */
   int bb_w = bb_width;
   int bb_h = bb_height;
+  int bb_pg = bb_pages;
   uint32_t *backbuffer = compositor_backbuffer;
 
   /* Damage clip for this frame (perf §3.4): composite ONLY the changed region
@@ -1603,14 +1826,26 @@ static void compositor_render_internal(void) {
   int clip_w = clip_x2 - clip_x1;
   int clip_h = clip_y2 - clip_y1;
 
-  /* Active theme (colours) + style (form) — read once per frame (Phase 5/F3).
+  /* Active theme (colours) + style (form) + background — read once per frame.
    */
   const compositor_theme_t *th = compositor_theme_active();
   const compositor_style_t *st = compositor_style_active();
+  const compositor_background_t *desk_bg = compositor_background_active();
 
-  /* Wrap backbuffer in GL Surface */
-  struct gl_surface screen = {
-      .width = bb_w, .height = bb_h, .stride = bb_w, .buffer = backbuffer};
+  /* Wrap backbuffer in GL Surface.  capacity = true backing size in pixels
+   * (S-STAB); gfx_surface_verify panics precisely if bb_w*bb_h ever outran the
+   * allocation instead of letting the chrome/content painters scribble kernel
+   * RAM (the UTM-panic class). */
+  struct gl_surface screen = {.width = bb_w,
+                              .height = bb_h,
+                              .stride = bb_w,
+                              .buffer = backbuffer,
+                              .capacity =
+                                  (size_t)bb_pg * (4096u / sizeof(uint32_t))};
+  gfx_surface_verify(&screen, "compositor_render_internal/backbuffer");
+
+  /* Damage clip as the rect the gfx_chrome primitives honour. */
+  gfx_rect_t chrome_clip = {clip_x1, clip_y1, clip_w, clip_h};
 
   /* Use static buffers to avoid stack pressure/smashing */
   struct window **sorted = sorted_windows;
@@ -1705,9 +1940,51 @@ static void compositor_render_internal(void) {
 
     visible_regions[i] = vis;
 
-    /* Aggiungi a Occluded (Solo se la finestra non contiene trasparenze) */
+    /* Aggiungi a Occluded (Solo se la finestra non contiene trasparenze).
+     *
+     * FIX(GFX-COMP-CORNER-01): a rounded-corner window's occlusion footprint
+     * must NOT be the full bounding rect when st->rounded_corners is active —
+     * the 4 corner squares outside the rounded shape are not actually opaque
+     * (gfx_rrect_contains skips painting them; see the content/decoration
+     * paint loop below and gfx_chrome_border/shadow). Marking the FULL rect
+     * occluded blocked the layer underneath from ever being repainted at
+     * those exact corner pixels — and this window's own paint pass also never
+     * writes there (outside the rounded shape) — so the corner pixels simply
+     * kept whatever was left over from a previous frame: stale content,
+     * square (unrounded) leftovers, or garbage on a window's first frame at a
+     * new position/size. This is the "trasparenza/refresh/smussatura"
+     * compositor bug.
+     *
+     * Fix: occlude only the INSCRIBED rectangle set of the rounded rect (top
+     * strip + middle full-width strip + bottom strip, corners excluded) —
+     * a conservative SUBSET of the true opaque area (a rounded rect's corner
+     * quarter-circle sliver is technically opaque too, but treating it as
+     * "not occluded" only costs a few redundant corner-pixel repaints, never
+     * a correctness bug). The three strips are entirely within
+     * gfx_rrect_contains for radius rr, mirroring the same rr computation the
+     * paint loop below uses. */
     if (!win->has_alpha) {
-      region_add_rect(occluded, win->x, win_y, dw, win_h);
+      int rr = (st->rounded_corners && !win->top_most) ? st->border_radius : 0;
+      if (rr <= 0) {
+        region_add_rect(occluded, win->x, win_y, dw, win_h);
+      } else {
+        int cr = rr;
+        if (2 * cr > dw)
+          cr = dw / 2;
+        if (2 * cr > win_h)
+          cr = win_h / 2;
+        if (cr > 0) {
+          /* top strip (between the two top corners) */
+          region_add_rect(occluded, win->x + cr, win_y, dw - 2 * cr, cr);
+          /* middle strip (full width, corners above/below excluded) */
+          region_add_rect(occluded, win->x, win_y + cr, dw, win_h - 2 * cr);
+          /* bottom strip (between the two bottom corners) */
+          region_add_rect(occluded, win->x + cr, win_y + win_h - cr,
+                          dw - 2 * cr, cr);
+        } else {
+          region_add_rect(occluded, win->x, win_y, dw, win_h);
+        }
+      }
     }
   }
 
@@ -1723,12 +2000,13 @@ static void compositor_render_internal(void) {
      */
     region_intersect_rect(bg_region, clip_x1, clip_y1, clip_w, clip_h);
 
-    /* Draw Background — vertical gradient from the active theme
-     * (th->bg_top -> th->bg_bottom), interpolated per row. */
-    uint32_t t_r = (th->bg_top >> 16) & 0xFF, t_g = (th->bg_top >> 8) & 0xFF,
-             t_b = th->bg_top & 0xFF;
-    uint32_t b_r = (th->bg_bottom >> 16) & 0xFF,
-             b_g = (th->bg_bottom >> 8) & 0xFF, b_b = th->bg_bottom & 0xFF;
+    /* Draw Background — vertical gradient from the active background preset
+     * (desk_bg->bg_top -> desk_bg->bg_bottom), interpolated per row. */
+    uint32_t t_r = (desk_bg->bg_top >> 16) & 0xFF,
+             t_g = (desk_bg->bg_top >> 8) & 0xFF, t_b = desk_bg->bg_top & 0xFF;
+    uint32_t b_r = (desk_bg->bg_bottom >> 16) & 0xFF,
+             b_g = (desk_bg->bg_bottom >> 8) & 0xFF,
+             b_b = desk_bg->bg_bottom & 0xFF;
     for (int r = 0; r < bg_region->count; r++) {
       struct rect *bg = &bg_region->rects[r];
       for (int y = 0; y < bg->h; y++) {
@@ -1777,20 +2055,11 @@ static void compositor_render_internal(void) {
        * window whose body is just outside the damage box but whose shadow
        * reaches into it is still reprocessed. */
       int so = (st->shadows && !win->top_most) ? st->shadow_size : 0;
-      int margin_l = 0, margin_r = so, margin_t = 0, margin_b = so;
-      if (st->shadow_type == 2) {
-        margin_l = so * 2;
-        margin_r = so * 2;
-        margin_t = so * 2;
-        margin_b = so * 2 + so;
-      } else if (st->shadow_type == 1) {
-        margin_l = so;
-        margin_r = so;
-        margin_t = so;
-        margin_b = so;
-      }
-      if (win->x - margin_l >= clip_x2 || win->x + dw + margin_r <= clip_x1 ||
-          wy - margin_t >= clip_y2 || wy + wfh + margin_b <= clip_y1)
+      gfx_chrome_margins_t margins;
+      gfx_chrome_shadow_margins(st->shadow_type, so, &margins);
+      if (win->x - margins.left >= clip_x2 ||
+          win->x + dw + margins.right <= clip_x1 ||
+          wy - margins.top >= clip_y2 || wy + wfh + margins.bottom <= clip_y1)
         continue;
     }
 
@@ -1805,176 +2074,25 @@ static void compositor_render_internal(void) {
     int full_h = title_h + dh;
     int rr = (st->rounded_corners && !win->top_most) ? st->border_radius : 0;
 
+    /* Button geometry once per window (was recomputed per pixel). */
+    gfx_button_geometry_t buttons;
+    gfx_chrome_button_geometry(win->x, dw, decor_y, title_h, st->button_shape,
+                               st->button_side, &buttons);
+
     /* Drop shadow: behaviour depends on st->shadow_type.
-     * Guard: shadows enabled, non-zero size, not a top-most overlay. */
+     * Guard: shadows enabled, non-zero size, not a top-most overlay.
+     * Painters live in gfx_chrome and honour the frame's damage clip. */
     if (st->shadows && st->shadow_size > 0 && !win->top_most) {
-      int so = st->shadow_size;
-
-      if (st->shadow_type == 0) {
-        /* ── Type 0: solid win_bg ─────────────────────────────────────────
-         * Rettangolo pieno con colore win_bg del tema, nessuna trasparenza.
-         * Serve da "backing" opaco disegnato ESATTAMENTE sotto la finestra
-         * (nessun offset), combaciando coi limiti della finestra. */
-        for (int sy = 0; sy < full_h; sy++) {
-          int py = decor_y + sy;
-          if (py < 0 || py >= bb_h) continue;
-          if (py < clip_y1 || py >= clip_y2) continue;
-          for (int sx = 0; sx < dw; sx++) {
-            int px = win->x + sx;
-            if (px < 0 || px >= bb_w) continue;
-            if (px < clip_x1 || px >= clip_x2) continue;
-            if (!rrect_inside(sx, sy, dw, full_h, rr)) continue;
-            backbuffer[py * bb_w + px] = th->win_bg;
-          }
-        }
-
-      } else if (st->shadow_type == 2) {
-        /* ── Type 2: premium gradient shadow (SDF) ─────────────────────────
-         * Calcolo basato su Signed Distance Field (SDF) per avere angoli perfettamente
-         * curvi che seguono il raggio della finestra espandendosi ("curvali di più").
-         * "Giochi di luce" ottenuti unendo due ombre:
-         * 1. Contact shadow: piccola, vicina e scura (profondità immediata).
-         * 2. Diffuse shadow: ampia e leggera (elevazione ambientale). */
-
-        int spread_diffuse = so * 2;
-        int spread_contact = (so > 1) ? (so / 2) : 1;
-        int y_off_diffuse  = so;
-        int y_off_contact  = spread_contact / 2;
-
-        int min_y = -spread_diffuse;
-        int max_y = full_h + spread_diffuse + y_off_diffuse;
-        int min_x = -spread_diffuse;
-        int max_x = dw + spread_diffuse;
-
-        for (int sy = min_y; sy < max_y; sy++) {
-          int py = decor_y + sy;
-          if (py < 0 || py >= bb_h) continue;
-          if (py < clip_y1 || py >= clip_y2) continue;
-          
-          for (int sx = min_x; sx < max_x; sx++) {
-            int px = win->x + sx;
-            if (px < 0 || px >= bb_w) continue;
-            if (px < clip_x1 || px >= clip_x2) continue;
-            
-            if (sx >= 0 && sx < dw && sy >= 0 && sy < full_h &&
-                rrect_inside(sx, sy, dw, full_h, rr))
-              continue;
-
-            #define CALC_SDF(y_offset, out_dist) do { \
-              int lx = sx; \
-              int ly = sy - (y_offset); \
-              int cx = lx; \
-              if (cx < rr) cx = rr; \
-              else if (cx > dw - 1 - rr) cx = dw - 1 - rr; \
-              int cy = ly; \
-              if (cy < rr) cy = rr; \
-              else if (cy > full_h - 1 - rr) cy = full_h - 1 - rr; \
-              int dx = lx - cx; \
-              int dy = ly - cy; \
-              int dist_sq = dx * dx + dy * dy; \
-              int root = 0; \
-              while ((root + 1) * (root + 1) <= dist_sq) root++; \
-              out_dist = root - rr; \
-            } while(0)
-            
-            int dist_diffuse, dist_contact;
-            CALC_SDF(y_off_diffuse, dist_diffuse);
-            CALC_SDF(y_off_contact, dist_contact);
-            #undef CALC_SDF
-
-            uint32_t a_total = 0;
-
-            if (dist_diffuse <= 0) {
-              a_total += 0x24;
-            } else if (dist_diffuse <= spread_diffuse) {
-              int norm = (spread_diffuse - dist_diffuse) * 64 / spread_diffuse;
-              a_total += (0x24u * (uint32_t)norm * (uint32_t)norm) / (64u * 64u);
-            }
-
-            if (dist_contact <= 0) {
-              a_total += 0x30;
-            } else if (dist_contact <= spread_contact) {
-              int norm = (spread_contact - dist_contact) * 64 / spread_contact;
-              a_total += (0x30u * (uint32_t)norm * (uint32_t)norm) / (64u * 64u);
-            }
-
-            if (a_total > 0) {
-              if (a_total > 255) a_total = 255;
-              uint32_t shadow_color = (a_total << 24) | 0x050510u;
-              backbuffer[py * bb_w + px] =
-                  gl_blend_pixel(shadow_color, backbuffer[py * bb_w + px]);
-            }
-          }
-        }
-        
-        /* Passata C — Luce incidente sul bordo superiore (Highlight ambientale)
-         * Disegna un pixel luminoso tenuissimo subito fuori dal bordo superiore
-         * della finestra, simulando un effetto glass/rim light */
-        {
-          int py = decor_y - 1;
-          if (py >= 0 && py < bb_h && py >= clip_y1 && py < clip_y2) {
-            for (int sx = rr; sx < dw - rr; sx++) {
-              int px = win->x + sx;
-              if (px < 0 || px >= bb_w) continue;
-              if (px < clip_x1 || px >= clip_x2) continue;
-              backbuffer[py * bb_w + px] =
-                  gl_blend_pixel(0x18FFFFFFu, backbuffer[py * bb_w + px]);
-            }
-          }
-        }
-
-      } else if (st->shadow_type == 1) {
-        /* ── Type 1: ombra veloce (Fast gradient shadow) ───────────────────
-         * Simile alla Type 2 ma con un solo layer (diffuse), nessun offset
-         * e calcolo semplificato per massime prestazioni pur restando centrata
-         * e con angoli proporzionalmente curvi tramite SDF a passata singola. */
-        int spread = so;
-        int min_y = -spread;
-        int max_y = full_h + spread;
-        int min_x = -spread;
-        int max_x = dw + spread;
-
-        for (int sy = min_y; sy < max_y; sy++) {
-          int py = decor_y + sy;
-          if (py < 0 || py >= bb_h) continue;
-          if (py < clip_y1 || py >= clip_y2) continue;
-          
-          for (int sx = min_x; sx < max_x; sx++) {
-            int px = win->x + sx;
-            if (px < 0 || px >= bb_w) continue;
-            if (px < clip_x1 || px >= clip_x2) continue;
-            
-            if (sx >= 0 && sx < dw && sy >= 0 && sy < full_h &&
-                rrect_inside(sx, sy, dw, full_h, rr))
-              continue;
-
-            int lx = sx;
-            int ly = sy;
-            int cx = lx;
-            if (cx < rr) cx = rr;
-            else if (cx > dw - 1 - rr) cx = dw - 1 - rr;
-            int cy = ly;
-            if (cy < rr) cy = rr;
-            else if (cy > full_h - 1 - rr) cy = full_h - 1 - rr;
-            int dx = lx - cx;
-            int dy = ly - cy;
-            int dist_sq = dx * dx + dy * dy;
-            
-            int root = 0;
-            while ((root + 1) * (root + 1) <= dist_sq) root++;
-            int dist = root - rr;
-
-            if (dist <= spread) {
-              int norm = (dist <= 0) ? 64 : ((spread - dist) * 64 / spread);
-              uint32_t a = (0x30u * (uint32_t)norm * (uint32_t)norm) / (64u * 64u);
-              if (a > 0) {
-                backbuffer[py * bb_w + px] =
-                    gl_blend_pixel((a << 24) | 0x000000u, backbuffer[py * bb_w + px]);
-              }
-            }
-          }
-        }
-      }
+      gfx_rect_t chrome_frame = {win->x, decor_y, dw, full_h};
+      if (st->shadow_type == 0)
+        gfx_chrome_shadow_solid(&screen, &chrome_clip, &chrome_frame, rr,
+                                th->win_bg);
+      else if (st->shadow_type == 2)
+        gfx_chrome_shadow_premium(&screen, &chrome_clip, &chrome_frame, rr,
+                                  st->shadow_size);
+      else if (st->shadow_type == 1)
+        gfx_chrome_shadow_fast(&screen, &chrome_clip, &chrome_frame, rr,
+                               st->shadow_size);
     }
 
     if (vis) {
@@ -1998,105 +2116,27 @@ static void compositor_render_internal(void) {
                 uint32_t title_color = (win->pid == keyboard_focus_pid)
                                            ? th->title_active
                                            : th->title_inactive;
-                                           
-                if (st->shadows && title_h > 0) {
-                  if (st->shadow_type == 1) {
-                    if (screen_y == decor_y) title_color = gl_blend_pixel(0x20FFFFFF, title_color);
-                  } else if (st->shadow_type == 2) {
-                    if (screen_y == decor_y) title_color = gl_blend_pixel(0x40FFFFFF, title_color);
-                    int th_y = screen_y - decor_y;
-                    int grad = (th_y * 24) / title_h;
-                    if (grad > 0) title_color = gl_blend_pixel((grad << 24) | 0x000000, title_color);
-                  }
-                }
 
-                /* Titlebar buttons: filled discs (macOS traffic-light style),
-                 * drawn only when the window is not protected — consistent with
-                 * compositor_handle_click ignoring the buttons on
-                 * hit->protected. Right-aligned
-                 * [background(yellow)][close(red)]; geometry mirrors the
-                 * hit-test in compositor_handle_click. */
-                /* Titlebar buttons - shape from style */
-                if (!win->protected) {
-                  int btn_size = CLOSE_BUTTON_SIZE; // 16px default
+                if (st->shadows && title_h > 0)
+                  title_color = gfx_chrome_titlebar_tint(st->shadow_type,
+                                                         screen_y - decor_y,
+                                                         title_h, title_color);
 
-                  /* Pulsanti più piccoli per stili square/rounded */
-                  if (st->button_shape == 1 || st->button_shape == 2)
-                    btn_size -= 2; // 14x14
-
-                  /* Centraggio verticale nella titlebar */
-                  int btn_top = decor_y + (title_h - btn_size) / 2;
-
-                  int close_cx;
-                  int bg_cx;
-
-                  if (st->button_side == 0) {
-                    /* Pulsanti a sinistra */
-                    int close_left = win->x + 4;
-
-                    close_cx = close_left + btn_size / 2;
-                    bg_cx = close_cx + btn_size + BG_BUTTON_GAP;
-                  } else {
-                    /* Pulsanti a destra */
-                    int close_right = win->x + dw - 4;
-
-                    close_cx = close_right - btn_size / 2;
-                    bg_cx = close_cx - btn_size - BG_BUTTON_GAP;
-                  }
-
-                  int local_y = screen_y - btn_top;
-                  int local_x_close = screen_x - close_cx + (btn_size / 2);
-                  int local_x_bg = screen_x - bg_cx + (btn_size / 2);
-
-                  if (st->button_shape == 1) {
-                    /* Square puro */
-                    if (local_x_close >= 0 && local_x_close < btn_size &&
-                        local_y >= 0 && local_y < btn_size)
-                      title_color = th->close_btn;
-                    else if (local_x_bg >= 0 && local_x_bg < btn_size &&
-                             local_y >= 0 && local_y < btn_size)
-                      title_color = COLOR_MIN_BTN;
-                    else if (st->shadows && st->shadow_type == 2) {
-                      if (local_y == btn_size && local_x_close >= 0 && local_x_close < btn_size) title_color = gl_blend_pixel(0x60000000, title_color);
-                      else if (local_y == btn_size && local_x_bg >= 0 && local_x_bg < btn_size) title_color = gl_blend_pixel(0x60000000, title_color);
-                    }
-
-                  } else if (st->button_shape == 2) {
-                    /* Rounded Square - Material */
-                    int corner_radius = 6;
-                    if (rrect_inside(local_x_close, local_y, btn_size, btn_size,
-                                     corner_radius))
-                      title_color = th->close_btn;
-                    else if (rrect_inside(local_x_bg, local_y, btn_size,
-                                          btn_size, corner_radius))
-                      title_color = COLOR_MIN_BTN;
-                    else if (st->shadows && st->shadow_type == 2) {
-                      if (rrect_inside(local_x_close, local_y - 1, btn_size, btn_size, corner_radius)) title_color = gl_blend_pixel(0x50000000, title_color);
-                      else if (rrect_inside(local_x_bg, local_y - 1, btn_size, btn_size, corner_radius)) title_color = gl_blend_pixel(0x50000000, title_color);
-                    }
-
-                  } else {
-                    /* Cerchi classici */
-                    int radius = btn_size / 2 - 1;
-                    int ddy = screen_y - (btn_top + btn_size / 2);
-                    int dcx = screen_x - close_cx;
-                    int dbx = screen_x - bg_cx;
-
-                    if (dcx * dcx + ddy * ddy <= radius * radius)
-                      title_color = th->close_btn;
-                    else if (dbx * dbx + ddy * ddy <= radius * radius)
-                      title_color = COLOR_MIN_BTN;
-                    else if (st->shadows && st->shadow_type == 2) {
-                      int ddy_s = ddy - 1;
-                      if (dcx * dcx + ddy_s * ddy_s <= radius * radius + 2) title_color = gl_blend_pixel(0x40000000, title_color);
-                      else if (dbx * dbx + ddy_s * ddy_s <= radius * radius + 2) title_color = gl_blend_pixel(0x40000000, title_color);
-                    }
-                  }
-                }
+                /* Titlebar buttons (gfx_chrome): geometry computed once per
+                 * window below; drawn only when the window is not protected —
+                 * consistent with compositor_handle_click ignoring the
+                 * buttons on hit->protected, which now shares the same
+                 * gfx_chrome_button_geometry. */
+                if (!win->protected)
+                  title_color = gfx_chrome_button_pixel(
+                      &buttons, st->button_shape, screen_x, screen_y,
+                      th->close_btn, COLOR_MIN_BTN,
+                      st->shadows && st->shadow_type == 2, title_color);
 
                 /* Round the top corners (F3). */
-                if (rr == 0 || rrect_inside(screen_x - win->x,
-                                            screen_y - decor_y, dw, full_h, rr))
+                if (rr == 0 ||
+                    gfx_rrect_contains(screen_x - win->x, screen_y - decor_y,
+                                       dw, full_h, rr))
                   backbuffer[screen_idx] = title_color;
               }
             } else {
@@ -2106,8 +2146,8 @@ static void compositor_render_internal(void) {
 
               if (draw_x >= 0 && draw_x < dw && draw_y >= 0 && draw_y < dh &&
                   (rr == 0 ||
-                   rrect_inside(screen_x - win->x, screen_y - decor_y, dw,
-                                full_h, rr))) {
+                   gfx_rrect_contains(screen_x - win->x, screen_y - decor_y, dw,
+                                      full_h, rr))) {
                 /* ...mapped back to the logical surface (nearest-sample scale
                  * when draw size != logical size — GFX-DYN-01 surface model).
                  */
@@ -2132,19 +2172,11 @@ static void compositor_render_internal(void) {
                   backbuffer[screen_idx] =
                       gl_blend_pixel(win->bg_color, backbuffer[screen_idx]);
                 }
-                
-                /* Inner shadow / separator under titlebar */
-                if (st->shadows && title_h > 0) {
-                  if (st->shadow_type == 0 && draw_y == 0) {
-                     backbuffer[screen_idx] = gl_blend_pixel(0x20000000, backbuffer[screen_idx]);
-                  } else if (st->shadow_type == 1) {
-                     if (draw_y == 0) backbuffer[screen_idx] = gl_blend_pixel(0x30000000, backbuffer[screen_idx]);
-                     else if (draw_y == 1) backbuffer[screen_idx] = gl_blend_pixel(0x10000000, backbuffer[screen_idx]);
-                  } else if (st->shadow_type == 2 && draw_y < 4) {
-                     int a = (4 - draw_y) * 16;
-                     backbuffer[screen_idx] = gl_blend_pixel((a << 24) | 0x000000, backbuffer[screen_idx]);
-                  }
-                }
+
+                /* Inner shadow / separator under titlebar (gfx_chrome) */
+                if (st->shadows && title_h > 0)
+                  backbuffer[screen_idx] = gfx_chrome_content_separator(
+                      st->shadow_type, draw_y, backbuffer[screen_idx]);
               }
             }
           } // dx
@@ -2183,32 +2215,8 @@ static void compositor_render_internal(void) {
     /* Window border (F3): 1px outline around the full window rect, following
      * the rounded corners.  Drawn last so it sits on top of content + title. */
     if (st->window_borders && !win->top_most) {
-      uint32_t bc = th->border;
-      for (int ly = 0; ly < full_h; ly++) {
-        int py = decor_y + ly;
-        if (py < 0 || py >= bb_h)
-          continue;
-        /* Damage clip (GFX-COMP-03): keep the border inside this frame's box.
-         */
-        if (py < clip_y1 || py >= clip_y2)
-          continue;
-        for (int lx = 0; lx < dw; lx++) {
-          /* perimeter pixels only */
-          int on_edge =
-              (lx == 0 || ly == 0 || lx == dw - 1 || ly == full_h - 1);
-          /* for rounded corners, also treat the rounded boundary as edge */
-          int inside = rrect_inside(lx, ly, dw, full_h, rr);
-          int inside_inset =
-              rr ? rrect_inside(lx - 1, ly - 1, dw - 2, full_h - 2,
-                                rr > 0 ? rr - 1 : 0)
-                 : (lx > 0 && ly > 0 && lx < dw - 1 && ly < full_h - 1);
-          if (inside && (on_edge || !inside_inset)) {
-            int px = win->x + lx;
-            if (px >= 0 && px < bb_w && px >= clip_x1 && px < clip_x2)
-              backbuffer[py * bb_w + px] = bc;
-          }
-        }
-      }
+      gfx_rect_t chrome_frame = {win->x, decor_y, dw, full_h};
+      gfx_chrome_border(&screen, &chrome_clip, &chrome_frame, rr, th->border);
     }
   }
 
@@ -2242,17 +2250,35 @@ static void compositor_render_internal(void) {
     }
   }
 
-  /* Flush — only upload the damage bounding box instead of the full framebuffer
-   */
-  if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
+  /* Flush — upload only the damage bounding box.  Prefer the atomic present()
+   * (RC2): it copies backbuffer->scanout AND transfers to the host under the
+   * driver's gpu_lock, so a concurrent set_mode/zoom can't free the scanout
+   * backing mid-copy (the resize/zoom use-after-free).  present() validates the
+   * source geometry against the LIVE scanout and returns <0 to skip a frame on
+   * a mid-resize mismatch — we then leave the damage accumulated so the next
+   * frame repaints at the new size. */
+  int presented = 0;
+  int dx1 = damage_x1 < 0 ? 0 : damage_x1;
+  int dy1 = damage_y1 < 0 ? 0 : damage_y1;
+  int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
+  int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
+  if (dev->ops && dev->ops->present) {
+    if (dx1 < dx2 && dy1 < dy2) {
+      /* Surface-speaking contract (graphics-port): the core hands the
+       * provider its validated gfx_surface + damage rect through gpu_core,
+       * never the driver's ops table directly. */
+      gfx_rect_t present_damage = {dx1, dy1, dx2 - dx1, dy2 - dy1};
+      if (gpu_present_surface(&screen, &present_damage) == 0)
+        presented = 1;
+    } else {
+      presented = 1; /* nothing to upload, but the (empty) damage is consumed */
+    }
+  } else if (dev->ops && dev->ops->flush && dev->ops->get_framebuffer) {
+    /* Legacy fallback for a driver without present(): copy+flush.  NOT atomic
+     * vs set_mode, but no GPU driver in-tree lacks present() — kept for safety
+     * so a future provider that only implements flush still displays. */
     void *fb_va = dev->ops->get_framebuffer(dev, NULL);
-    /* Backbuffer == scanout (zoom resizes the scanout itself; QEMU stretches it
-     * to the host window).  Upload only the damage bounding box. */
     if (fb_va && bb_w == dev->width && bb_h == dev->height) {
-      int dx1 = damage_x1 < 0 ? 0 : damage_x1;
-      int dy1 = damage_y1 < 0 ? 0 : damage_y1;
-      int dx2 = damage_x2 > bb_w ? bb_w : damage_x2;
-      int dy2 = damage_y2 > bb_h ? bb_h : damage_y2;
       if (dx1 < dx2 && dy1 < dy2) {
         int row_bytes = (dx2 - dx1) * 4;
         uint8_t *dst = (uint8_t *)fb_va;
@@ -2263,12 +2289,16 @@ static void compositor_render_internal(void) {
         }
         dev->ops->flush(dev, dx1, dy1, dx2 - dx1, dy2 - dy1);
       }
-      /* Reset damage: invalid state (x1>x2) means nothing to flush */
-      damage_x1 = bb_w;
-      damage_y1 = bb_h;
-      damage_x2 = 0;
-      damage_y2 = 0;
+      presented = 1;
     }
+  }
+  /* Reset damage only once the frame was actually presented; a skipped frame
+   * (mid-resize geometry mismatch) keeps its damage for the retry. */
+  if (presented) {
+    damage_x1 = bb_w;
+    damage_y1 = bb_h;
+    damage_x2 = 0;
+    damage_y2 = 0;
   }
   /* Cleanup regions */
   region_destroy(occluded);
@@ -2452,8 +2482,7 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
                    copied_y2 >= windows[i].height) {
           windows[i].has_alpha = 0;
         }
-        expand_window_content_damage(&windows[i], copied_x1, copied_y1, cw,
-                                     ch);
+        expand_window_content_damage(&windows[i], copied_x1, copied_y1, cw, ch);
       }
 
       spin_unlock_irqrestore(&compositor_lock, flags);
@@ -2475,17 +2504,16 @@ void compositor_set_window_flags(int window_id, int flags_val) {
       else if (flags_val & 2)
         windows[i].visible = 1; /* bit 1: show window */
       /* Damage the window's footprint so the show/hide/restack is actually
-       * composited + flushed on the next render.  Without this the state changed
-       * but the damage box stayed empty, so the popup only refreshed when some
-       * OTHER event (the mouse passing over it) damaged that region — the
-       * "notification sticks / won't disappear until I move the mouse" bug.
+       * composited + flushed on the next render.  Without this the state
+       * changed but the damage box stayed empty, so the popup only refreshed
+       * when some OTHER event (the mouse passing over it) damaged that region —
+       * the "notification sticks / won't disappear until I move the mouse" bug.
        * Same footprint math as compositor_destroy_windows_by_pid. */
       {
         int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
         int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
-        expand_damage(windows[i].x,
-                      windows[i].y - compositor_titlebar_height(), ddw,
-                      ddh + compositor_titlebar_height());
+        expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
+                      ddw, ddh + compositor_titlebar_height());
         compositor_dirty = 1;
       }
       break;

@@ -1,5 +1,5 @@
 /*
- * user/sys/bin/init.c
+ * user/sys/bin/nxinit.c
  * Process 1 — System Initializer and Service Supervisor
  *
  * This is the first userland process launched by the kernel after boot.
@@ -36,6 +36,7 @@
  *                (OBJ_TYPE_PROCESS handle) is the planned upgrade; see DIR-01
  *                M4.5 "IPC -> OBJ_TYPE_PORT".
  */
+#include "nxinfo.h"
 #include <os1.h>
 
 /*
@@ -58,30 +59,86 @@
 #define LAUNCHER_AUTOSTART 1
 
 /*
- * register_notify_pid - publish `pid` as the LIVE notification server endpoint
- * by writing it (decimal, NUL-terminated) to the registry key "srv.notify_pid".
+ * registry_init_defaults - completa le chiavi di registro con dati reali.
  *
- * Called by init on the FIRST spawn AND on every RESPAWN of nxntfy_srv
+ * Chiamata DOPO tutti gli spawn iniziali. Il kernel ha già creato le chiavi
+ * base con valori placeholder; init le sovrascrive con l'architettura, la
+ * versione OS, il timestamp di boot reale e i default del compositor.
+ * Ogni binario /sys/bin gira a PLVL_ROOT (preset per-path) e quindi ha
+ * CAP_REG_WRITE come tutti gli altri servizi di sistema; init non è
+ * l'unico scrittore, ma è quello che pubblica i valori reali post-boot.
+ * registry_caller_owner() tratta MACHINE e ROOT come owner 0 (system), così
+ * le chiavi restano scrivibili da qualunque servizio di sistema anche dopo
+ * un respawn con PID diverso (kernel/lib/registry.c).
+ */
+static void registry_init_defaults(void) {
+  /* --- Sistema operativo e versione (da nxinfo.h) --- */
+  OS1_registry_set("system.os", NXINFO_OS_NAME);
+  OS1_registry_set("system.version", NXINFO_OS_VERSION);
+
+  /* --- Architettura (da build flags) --- */
+#if defined(__x86_64__) || defined(__amd64__)
+  OS1_registry_set("system.arch", "amd64");
+#elif defined(__aarch64__)
+  OS1_registry_set("system.arch", "arm64");
+#else
+  OS1_registry_set("system.arch", "generic");
+#endif
+
+  /* --- Hostname --- */
+  OS1_registry_set("system.hostname", "NeXs");
+
+  /* --- Tempo di boot reale (secondi dall'epoch, per nxbar e orologio) --- */
+  char boot_time[32];
+  snprintf(boot_time, sizeof(boot_time), "%ld", OS1_time_now());
+  OS1_registry_set("system.boot_time", boot_time);
+
+  /* --- Aspetto del compositor (valori predefiniti) --- */
+  OS1_registry_set("theme.color", "dark");
+  OS1_registry_set("style.name", "minimal");
+  OS1_registry_set("background.name", "magenta");
+
+  /* --- Pannello notifiche (inizialmente chiuso) --- */
+  OS1_registry_set("sys.ntfy.panel_open", "0");
+
+  /* --- Input --- */
+  OS1_registry_set("mouse.sensitivity", "1.0");
+
+  printf("[Init] Registry defaults initialised.\n");
+}
+
+/*
+ * register_service_pid - publish `pid` as the LIVE endpoint of a singleton
+ * system service by writing it (decimal, NUL-terminated) to registry key
+ * `key`.  Generalised from the original notify-only register_notify_pid
+ * (NOTIFY-REG-01) so every long-lived /sys/bin service init supervises —
+ * nxntfy_srv (srv.notify_pid), nxui/dock (srv.dock_pid), nxbar
+ * (srv.bar_pid), nxlauncher (srv.launcher_pid) — is discoverable the same
+ * way, and stays discoverable across a respawn.
+ *
+ * Called by init on the FIRST spawn AND on every RESPAWN of the service
  * (init.c main()).  Centralising the write in init fixes two bugs of the
- * previous "server self-registers" model:
- *   1. A respawn left srv.notify_pid pointing at the corpse's pid — every
- *      subsequent notify_post() resolved that dead pid and -ESRCH'd silently,
- *      so notifications disappeared forever after a single kill of the server.
- *   2. Any process could overwrite the key (USR-SEC-01) and intercept all
- *      notifications.  Re-registering on respawn overwrites any such hijack
- *      with the legitimate pid within one supervisor tick (~50 ms).
+ * old "server self-registers" model:
+ *   1. A respawn left the key pointing at the corpse's pid — anything
+ *      addressing the service by that pid (notify_post(), or nxres_h's
+ *      theme-change ping, see nxres.h) resolved a dead pid and -ESRCH'd
+ *      silently, so the messages disappeared forever after a single crash.
+ *   2. Any process could overwrite the key (USR-SEC-01) and intercept
+ *      messages meant for the service.  Re-registering on respawn
+ *      overwrites any such hijack with the legitimate pid within one
+ *      supervisor tick (~50 ms).
  *
  * Failure to write the registry key is non-fatal: init logs and continues.
- * Subsequent notify_post() calls will keep returning -1 until the key is
- * present, but init's supervisor will retry on the next respawn.
+ * Callers addressing the service will keep getting a stale/absent pid until
+ * the key is present, but init's supervisor retries on the next respawn.
  */
-static void register_notify_pid(int pid) {
+static void register_service_pid(const char *key, int pid) {
   char pidbuf[16];
   int n = snprintf(pidbuf, sizeof(pidbuf), "%d", pid);
   if (n <= 0 || n >= (int)sizeof(pidbuf))
     return;
-  if (OS1_registry_set("srv.notify_pid", pidbuf) != 0)
-    printf("[Init] WARN: failed to publish srv.notify_pid=%s\n", pidbuf);
+  if (OS1_registry_set(key, pidbuf) != 0)
+    printf("[Init] WARN: failed to publish %s=%s\n", key, pidbuf);
 }
 
 /*
@@ -105,13 +162,13 @@ int main(void) {
   /* NOTE(USR-INIT-02): Hardcoded path.  init.cfg would provide this path but
    * is never read; the cfg also lists wrong paths (see file header).
    * NOTE(NOTIFY-REG-01): init OWNS the srv.notify_pid registry key (see
-   * register_notify_pid() below).  nxntfy_srv no longer publishes its own PID
+   * register_service_pid() below).  nxntfy_srv no longer publishes its own PID
    * — otherwise a respawn leaves the key pointing at the corpse. */
   printf("[Init] Spawning Notification Server...\n");
   int pid_notify = spawn("/sys/bin/nxntfy_srv");
   if (pid_notify > 0) {
     printf("[Init] Notification Server started (PID %d)\n", pid_notify);
-    register_notify_pid(pid_notify);
+    register_service_pid("srv.notify_pid", pid_notify);
   } else {
     print("[Init] Failed to spawn Notification Server!\n");
   }
@@ -125,8 +182,23 @@ int main(void) {
   int pid_nxui = spawn("/sys/bin/nxui");
   if (pid_nxui > 0) {
     printf("[Init] Dock started (PID %d)\n", pid_nxui);
+    /* srv.dock_pid: discovery endpoint for cross-process pushes (theme/style
+     * change ping — nxres.h nxres_broadcast_look_changed) mirroring
+     * srv.notify_pid, same reason: a respawn must not leave this pointing at
+     * a corpse. */
+    register_service_pid("srv.dock_pid", pid_nxui);
   } else {
     print("[Init] Failed to spawn Dock!\n");
+  }
+
+  /* Spawn Top Bar (nxbar) — classic X11-style status bar */
+  printf("[Init] Spawning Top Bar (nxbar)...\n");
+  int pid_nxbar = spawn("/sys/bin/nxbar");
+  if (pid_nxbar > 0) {
+    printf("[Init] nxbar started (PID %d)\n", pid_nxbar);
+    register_service_pid("srv.bar_pid", pid_nxbar);
+  } else {
+    print("[Init] Failed to spawn nxbar!\n");
   }
 
   /* pid_nxlauncher is declared unconditionally so the supervisor's wait() call
@@ -142,6 +214,7 @@ int main(void) {
   pid_nxlauncher = spawn("/sys/bin/nxlauncher");
   if (pid_nxlauncher > 0) {
     printf("[Init] Launcher started (PID %d)\n", pid_nxlauncher);
+    register_service_pid("srv.launcher_pid", pid_nxlauncher);
   } else {
     print("[Init] Failed to spawn Launcher!\n");
   }
@@ -157,6 +230,10 @@ int main(void) {
   }
 
   flush();
+
+  /* Completa il registro con i dati reali (timestamp, architettura, versione)
+   * ora che tutti i servizi sono partiti e OS1_time_now() è significativo. */
+  registry_init_defaults();
 
   /* The "Boot Complete" notification is sent from the supervisor loop below,
    * NOT here: notify() resolves the target from the registry key
@@ -214,7 +291,7 @@ int main(void) {
        * a reboot.  Re-registering on respawn also overwrites any hijack a
        * malicious process may have written in the meantime. */
       if (pid_notify > 0)
-        register_notify_pid(pid_notify);
+        register_service_pid("srv.notify_pid", pid_notify);
     }
 #ifndef LAUNCHER_AUTOSTART
     /* Respawn the shell when it is gone (freshly dead corpse OR already
@@ -227,11 +304,22 @@ int main(void) {
 #endif
 
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as
-     * above). */
+     * above).  Refresh srv.dock_pid on respawn — same corpse-pid hazard as
+     * srv.notify_pid above. */
     r = wait(pid_nxui);
     if (r == pid_nxui || r == -2) {
       print("[Init] Dock died! Respawning...\n");
       pid_nxui = spawn("/sys/bin/nxui");
+      if (pid_nxui > 0)
+        register_service_pid("srv.dock_pid", pid_nxui);
+    }
+    /* Respawn nxbar if it dies */
+    r = wait(pid_nxbar);
+    if (r == pid_nxbar || r == -2) {
+      print("[Init] nxbar died! Respawning...\n");
+      pid_nxbar = spawn("/sys/bin/nxbar");
+      if (pid_nxbar > 0)
+        register_service_pid("srv.bar_pid", pid_nxbar);
     }
 
 #if LAUNCHER_AUTOSTART
@@ -243,6 +331,8 @@ int main(void) {
     if (r == pid_nxlauncher || r == -2) {
       print("[Init] Launcher died! Respawning...\n");
       pid_nxlauncher = spawn("/sys/bin/nxlauncher");
+      if (pid_nxlauncher > 0)
+        register_service_pid("srv.launcher_pid", pid_nxlauncher);
     }
 #endif
 
@@ -252,13 +342,21 @@ int main(void) {
      * manual path (nxres / SYS_SET_DISPLAY_MODE) remains.  SYS_DISPLAY_POLL is
      * kept for that future event-driven caller. */
 
-    /* Sleep between supervisor passes instead of busy-spinning: with the real
-     * kernel timer (SYS_NANOSLEEP) init is descheduled (~0% CPU) and woken by
-     * its core's tick, so it can no longer monopolise a core while all children
-     * are alive. 50 ms respawn latency is imperceptible. */
-    OS1_sleep(50);
-  }
-  OS1_registry_set("app.assoc.image", "/sys/bin/nximage");
+    /* SCHED-STACK-ISO (ASTRA DIR-02): DRIVE THE COMPOSITOR RENDER from here, in
+     * process context, instead of the kernel timer IRQ.  Running the heavy
+     * render from the tick nested it on an arbitrary interrupted task's kernel
+     * stack and smashed live frames on other CPUs (the amd64 click/nanosleep
+     * panic and the aarch64 current_chip #PF).  flush() ->
+     * SYS_COMPOSITOR_RENDER runs the render on init's OWN kernel stack — never
+     * nested.  The render is damage-clipped, so an idle pass with nothing dirty
+     * is cheap.  ~30 FPS pacing (33 ms) matches the old tick cadence. */
+    flush();
 
+    /* Sleep between supervisor passes.  33 ms ≈ 30 FPS: init is the
+     * compositor's frame pump now, so the desktop refresh cadence lives here.
+     * With the real kernel timer (SYS_NANOSLEEP) init is descheduled between
+     * frames (~0% CPU at idle) and woken by its core's tick. */
+    OS1_sleep(33);
+  }
   return 0;
 }

@@ -58,6 +58,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include "portability/os1_video_platform.h"
 /* POSIX compatibility shims implemented at the bottom of this file (the OS1
  * onion-userland libc layer, epic #120; no new OS1 syscalls). */
 #include <dirent.h>
@@ -281,16 +282,17 @@ int OS1_window_close(int win_id) {
  * write/of_pid/grid/set_window_flags/set_focus/draw/flush/compositor_render)
  * are compat shims forwarding here. */
 int OS1_window_create(int x, int y, int w, int h, const char *title) {
-  return _sys_create_window(x, y, w, h, title);
+  return os1_video_window_create(x, y, w, h, title);
 }
-void OS1_window_destroy(int win_id) { _sys_destroy_window(win_id); }
+void OS1_window_destroy(int win_id) { os1_video_window_destroy(win_id); }
 void OS1_window_draw(int win_id, int x, int y, int w, int h,
                      unsigned int color) {
   _sys_window_draw(win_id, x, y, w, h, color);
 }
 void OS1_window_blit(int win_id, int x, int y, int w, int h,
                      const unsigned int *buf) {
-  _sys_window_blit(win_id, x, y, w, h, buf);
+  (void)os1_video_present_argb8888(win_id, x, y, w, h, buf,
+                                    (size_t)w * (size_t)h);
 }
 void OS1_window_write(int win_id, const char *buf, unsigned long count) {
   _sys_window_write(win_id, buf, count);
@@ -314,15 +316,15 @@ void OS1_window_set_focus(int pid) {
   _sys_set_focus(pid);
 }
 int OS1_window_resize(int win_id, int w, int h) {
-  return _sys_window_resize(win_id, w, h);
+  return os1_video_window_resize(win_id, w, h);
 }
 void OS1_gfx_draw(int x, int y, int w, int h, int color) {
   _sys_draw(x, y, w, h, color);
 }
 /* flush ≡ render: both just pushed the compositor.  Unified onto the single
  * SYS_COMPOSITOR_RENDER syscall (the duplicate SYS_FLUSH was retired). */
-void OS1_gfx_flush(void) { _sys_compositor_render(); }
-void OS1_gfx_render(void) { _sys_compositor_render(); }
+void OS1_gfx_flush(void) { os1_video_render(); }
+void OS1_gfx_render(void) { os1_video_render(); }
 
 /* Identity / privilege introspection (nxperm foundation): the caller's own
  * level + cap mask, unpacked from the (level<<16)|caps syscall return. */
@@ -443,7 +445,18 @@ int OS1_registry_get(const char *key, char *buf, size_t size) {
   return (int)_sys_registry(0, key, buf, size);
 }
 int OS1_registry_set(const char *key, const char *value) {
-  return (int)_sys_registry(1, key, (char *)value, strlen(value));
+  int rc = (int)_sys_registry(1, key, (char *)value, strlen(value));
+  /* The kernel only ever pr_warn/UART-logs an owner-mismatch denial — it
+   * must not know about notifications, IPC to a specific service, or any
+   * other userland concept (kernel/userland separation).  The CALLER
+   * already gets -EACCES back synchronously right here, so it is the one
+   * that reports on itself, through the ordinary notify() transport every
+   * other warning already uses (no kernel involvement, no polling
+   * anywhere: nxntfy_srv picks it up via its existing blocking recv(),
+   * nxbar's already-per-frame ring read picks it up from there). */
+  if (rc == -EACCES)
+    OS1_notify_warn("registry", key);
+  return rc;
 }
 int OS1_registry_enum(char *buf, size_t size) {
   return (int)_sys_registry(2, 0, buf, size);
@@ -472,7 +485,10 @@ long OS1_display_info(void) { return _sys_display_info(); }
 int OS1_display_set_mode(int w, int h) { return _sys_set_display_mode(w, h); }
 int OS1_display_poll(void) { return _sys_display_poll(); }
 int OS1_display_set_style(int style_id, int theme_id) {
-  return _sys_set_style(style_id, theme_id);
+  return _sys_set_style(style_id, theme_id, -1);
+}
+int OS1_display_set_background(int bg_id) {
+  return _sys_set_style(-1, -1, bg_id);
 }
 int OS1_display_set_zoom(int percent) { return _sys_set_zoom(percent); }
 int OS1_display_set_font(void *data, size_t size) {
@@ -533,7 +549,15 @@ int getcwd(char *buf, size_t size) { return OS1_fs_getcwd(buf, size); }
  * declaration in fcntl.h; the optional mode argument is ignored because the
  * VFS cannot create files yet (the kernel rejects O_CREAT with -EINVAL). */
 int open(const char *pathname, int flags, ...) {
-  return _sys_open(pathname, flags);
+  int fd = (int)_sys_open(pathname, flags);
+  /* Same reasoning as OS1_registry_set's -EACCES handling above: the kernel
+   * (vfs_write_allowed, kernel/fs/vfs.c) only ever pr_warn/UART-logs a
+   * protected-path write denial — it never touches IPC or notifications.
+   * The caller already has -EACCES back right here, so it reports on
+   * itself through the ordinary notify() transport. */
+  if (fd == -EACCES)
+    OS1_notify_warn("vfs", pathname);
+  return fd;
 }
 int close(int fd) { return _sys_close(fd); }
 long lseek(int fd, long offset, int whence) {
@@ -707,6 +731,11 @@ int OS1_notify_post(const char *title, const char *msg) {
 int OS1_notify_warn(const char *title, const char *msg) {
   return notify_send(title, msg, 1);
 } /* yellow */
+int OS1_notify_error(const char *title, const char *msg) {
+  return notify_send(title, msg, 2);
+} /* red — previously only the kernel crash handler (fault.c) could reach
+   * severity 2 (m.data1 = 2, kernel_ipc_send bypassing this function
+   * entirely); userland callers can now post one directly too. */
 int notify(const char *title, const char *msg) {
   return notify_send(title, msg, 0);
 } /* compat shim (DIR-01 F4) */
@@ -731,10 +760,14 @@ FILE *fopen(const char *path, const char *mode) {
   FILE *f = malloc(sizeof(FILE));
   if (!f)
     return NULL;
+  /* Zero EVERY field: malloc reuses dirty blocks, and a stale has_ungetc
+   * injected a ghost byte at the start of the first fread (doom read
+   * "\0IWA" instead of "IWAD" after its 9-file IWAD probe loop), while a
+   * stale is_tmp made fclose() unlink real files.  memset is the whole
+   * fix; pos/error/eof/has_ungetc/is_tmp start 0 by definition. */
+  memset(f, 0, sizeof(FILE));
+  f->fd = -1; /* no fd-backed stream: positional path I/O */
   strncpy(f->path, path, sizeof(f->path) - 1);
-  f->pos = 0;
-  f->error = 0;
-  f->eof = 0;
   /* Probe file size; file_read with NULL buf and size=0 returns byte count. */
   f->size = file_read(path, NULL, 0, 0);
   if (f->size < 0 && mode[0] == 'r') {
@@ -743,6 +776,15 @@ FILE *fopen(const char *path, const char *mode) {
   }
   return f;
 }
+
+FILE *freopen(const char *filename, const char *mode, FILE *stream) {
+  if (stream) {
+    fclose(stream);
+  }
+  return fopen(filename, mode);
+}
+
+static int file_fd(FILE *fp);
 
 /*
  * fclose - release a FILE handle.
@@ -754,30 +796,77 @@ FILE *fopen(const char *path, const char *mode) {
  * addresses 1-10, which would corrupt the heap.
  */
 int fclose(FILE *fp) {
-  if (fp && (size_t)fp > 10)
+  if (fp && fp != stdin && fp != stdout && fp != stderr && (size_t)fp > 10) {
+    if (fp->is_tmp) {
+      OS1_fs_unlink(fp->path);
+    }
     free(fp);
+  }
   return 0;
 }
 
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
-  if (!fp || (size_t)fp <= 10)
+  if (!fp)
     return 0;
-  int bytes = size * nmemb;
-  int read_bytes = file_read(fp->path, ptr, bytes, fp->pos);
-  if (read_bytes < 0) {
+  if (size == 0 || nmemb == 0)
+    return 0;
+
+  size_t bytes = size * nmemb;
+  char *buf = (char *)ptr;
+  size_t read_bytes = 0;
+
+  if (fp->has_ungetc) {
+    buf[0] = (char)fp->ungetc_buf;
+    fp->has_ungetc = 0;
+    read_bytes = 1;
+    if (bytes == 1) {
+      return 1 / size;
+    }
+  }
+
+  int fd = file_fd(fp);
+  if (fd >= 0) {
+    long r = read(fd, buf + read_bytes, bytes - read_bytes);
+    if (r < 0) {
+      fp->error = 1;
+      return 0;
+    }
+    read_bytes += r;
+    return read_bytes / size;
+  }
+  if ((size_t)fp <= 10)
+    return 0;
+  int rem_bytes = bytes - read_bytes;
+  int r = file_read(fp->path, buf + read_bytes, rem_bytes, fp->pos);
+  if (r < 0) {
     fp->error = 1;
     return 0;
   }
-  fp->pos += read_bytes;
-  if (read_bytes < bytes)
+  fp->pos += r;
+  read_bytes += r;
+  if (r < rem_bytes)
     fp->eof = 1;
   return read_bytes / size;
 }
 
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
-  if (!fp || (size_t)fp <= 10)
+  if (!fp)
     return 0;
-  int bytes = size * nmemb;
+  if (size == 0 || nmemb == 0)
+    return 0;
+
+  size_t bytes = size * nmemb;
+  int fd = file_fd(fp);
+  if (fd >= 0) {
+    long w = write(fd, ptr, bytes);
+    if (w < 0) {
+      fp->error = 1;
+      return 0;
+    }
+    return w / size;
+  }
+  if ((size_t)fp <= 10)
+    return 0;
   int written = file_write(fp->path, ptr, bytes, fp->pos);
   if (written < 0) {
     fp->error = 1;
@@ -786,6 +875,7 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
   fp->pos += written;
   return written / size;
 }
+
 
 int fseek(FILE *fp, long offset, int whence) {
   if (!fp || (size_t)fp <= 10)
@@ -878,6 +968,15 @@ int input_poll_event(input_event_t *event) {
     event->type = INPUT_TYPE_RESIZE;
     event->resize.w = (int)msg.data1;
     event->resize.h = (int)msg.data2;
+    return 1;
+  } else if (msg.type == IPC_TYPE_NOTIFY && msg.data2 == IPC_LOOK_PING_MAGIC) {
+    /* Silent compositor look-changed ping (nxres_broadcast_look, nxres.h),
+     * tagged via data2 so it is never confused with a real notify() call.
+     * Surfaced here (not drained by a second, competing try_recv() loop
+     * elsewhere) so this stays the single consumer of the mailbox — a
+     * second loop would silently steal keyboard/mouse messages before this
+     * function ever saw them. */
+    event->type = INPUT_TYPE_LOOK_CHANGED;
     return 1;
   }
   return 0;
@@ -1244,19 +1343,29 @@ int stat(const char *path, struct stat *buf) {
 /*
  * vfprintf - format and write to a FILE stream.
  *
- * NOTE(USR-LIB-05): The 'stream' argument is ignored; output always goes to
- * fd 1 (stdout/TTY).  Any code that writes to stderr (e.g. fprintf(stderr,
- * ...)) will silently produce output on stdout instead of the error channel.
+ * Routes through fwrite(), so it honours 'stream' exactly like any other
+ * stream I/O: stdin/stdout/stderr go via file_fd()+write() (all three share
+ * one CONSOLE object kernel-side, so stdout/stderr are visually
+ * indistinguishable today, but a real fopen()ed FILE* now writes to its own
+ * path/position instead of unconditionally landing on fd 1 (fixes
+ * USR-LIB-05).
  *
  * Output is limited to 1023 chars by the stack buffer; longer output is
- * silently truncated.  Always returns 0 (not the character count).
+ * silently truncated by vsnprintf. Returns the formatted length (vsnprintf's
+ * return value), not the byte count actually written.
  */
 int vfprintf(FILE *stream, const char *format, va_list ap) {
-  (void)stream; /* NOTE(USR-LIB-05): stream ignored; always writes to fd 1 */
   char buf[1024];
-  vsnprintf(buf, sizeof(buf), format, ap);
-  write(1, buf, strlen(buf));
-  return 0;
+  int n = vsnprintf(buf, sizeof(buf), format, ap);
+  fwrite(buf, 1, strlen(buf), stream);
+  return n;
+}
+int fprintf(FILE *stream, const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  int res = vfprintf(stream, format, args);
+  va_end(args);
+  return res;
 }
 /* fflush: no-op (no userland buffer to flush; writes are unbuffered). */
 int fflush(FILE *stream) {
@@ -1380,34 +1489,11 @@ char *strtok(char *str, const char *delim) {
 }
 
 char *strerror(int errnum) {
-  switch (errnum) {
-  case 0:
-    return (char *)"Success";
-  case ENOENT:
-    return (char *)"No such file or directory";
-  case EBADF:
-    return (char *)"Bad file descriptor";
-  case EACCES:
-    return (char *)"Permission denied";
-  case EEXIST:
-    return (char *)"File exists";
-  case ENOTDIR:
-    return (char *)"Not a directory";
-  case EISDIR:
-    return (char *)"Is a directory";
-  case EINVAL:
-    return (char *)"Invalid argument";
-  case ENOSPC:
-    return (char *)"No space left on device";
-  case ENOMEM:
-    return (char *)"Cannot allocate memory";
-  case EFAULT:
-    return (char *)"Bad address";
-  case ENOSYS:
-    return (char *)"Function not implemented";
-  default:
-    return (char *)"Unknown error";
-  }
+  /* os1_strerror (posix_types.h): single source of truth shared with the
+   * kernel — this used to be its own 11-case switch that silently fell
+   * back to "Unknown error" for anything past ENOSYS (EPERM, ESRCH,
+   * EAGAIN, EBUSY, ... all missing). */
+  return (char *)os1_strerror(errnum);
 }
 
 /* --- <stdlib.h> --- */
@@ -1444,13 +1530,17 @@ void qsort(void *base, size_t nmemb, size_t size,
 }
 
 /* --- <stdio.h> ---
- * The std streams are encoded as (FILE*)0/1/2 (stdin/stdout/stderr); fread/
- * fwrite reject those (they need fp->path), so route them straight to the
- * fd-based read()/write().  Real fopen()ed handles (addr > 2) use fread/fwrite.
+ * Standard stream handles.
  */
+FILE _stdin_struct = { .fd = 0 };
+FILE _stdout_struct = { .fd = 1 };
+FILE _stderr_struct = { .fd = 2 };
+
 static int file_fd(FILE *fp) {
-  size_t v = (size_t)fp;
-  return v <= 2 ? (int)v : -1;
+  if (fp == stdin) return 0;
+  if (fp == stdout) return 1;
+  if (fp == stderr) return 2;
+  return -1;
 }
 
 int fputc(int c, FILE *fp) {
@@ -1479,6 +1569,11 @@ int fputs(const char *s, FILE *fp) {
 }
 
 int fgetc(FILE *fp) {
+  if (!fp) return EOF;
+  if (fp->has_ungetc) {
+    fp->has_ungetc = 0;
+    return fp->ungetc_buf;
+  }
   unsigned char ch;
   int fd = file_fd(fp);
   if (fd >= 0) {
@@ -1508,6 +1603,41 @@ char *fgets(char *s, int size, FILE *fp) {
   }
   s[i] = '\0';
   return s;
+}
+
+int ungetc(int c, FILE *fp) {
+  if (!fp || c == EOF)
+    return EOF;
+  fp->ungetc_buf = c;
+  fp->has_ungetc = 1;
+  fp->eof = 0;
+  return c;
+}
+
+void clearerr(FILE *fp) {
+  if (fp && (size_t)fp > 10) {
+    fp->error = 0;
+    fp->eof = 0;
+  }
+}
+
+int setvbuf(FILE *fp, char *buf, int mode, size_t size) {
+  (void)fp;
+  (void)buf;
+  (void)mode;
+  (void)size;
+  return 0;
+}
+
+FILE *tmpfile(void) {
+  static int temp_counter = 0;
+  char path[128];
+  sprintf(path, "/tmpfile_%d", temp_counter++);
+  FILE *f = fopen(path, "w+");
+  if (f) {
+    f->is_tmp = 1;
+  }
+  return f;
 }
 
 void perror(const char *s) {
@@ -1625,3 +1755,33 @@ int closedir(DIR *dirp) {
   free(dirp);
   return 0;
 }
+
+size_t strspn(const char *s, const char *accept) {
+  const char *p = s;
+  while (*p) {
+    const char *a = accept;
+    while (*a && *a != *p) {
+      a++;
+    }
+    if (*a == '\0') {
+      break;
+    }
+    p++;
+  }
+  return p - s;
+}
+
+char *strpbrk(const char *s, const char *accept) {
+  while (*s) {
+    const char *a = accept;
+    while (*a) {
+      if (*a == *s) {
+        return (char *)s;
+      }
+      a++;
+    }
+    s++;
+  }
+  return NULL;
+}
+

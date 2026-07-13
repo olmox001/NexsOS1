@@ -271,14 +271,14 @@ extern void compositor_handle_click(int button, int state);
  * mutation from those paths (#68).  Dispatch is now a single serialized
  * bottom-half in one context (the tick), reflected in the same tick's render.
  *
- * NEXT STEP (foundation committed, staged): move input_drain into the
- * input server kernel THREAD (input_thread_entry, task context) via
- * kthread_block/arch_cpu_yield — fully off IRQ.  The arch_cpu_yield HAL
- * primitive + kthread are validated for kernel-thread switches, but the
- * cooperative switch TO a freshly-woken USER task still stalls CPU0 (a subtle
- * EL0-return / cross-CPU interaction in the hand-rolled epilogue); once that
- * is routed through the proven trap epilogue, input_server_start() replaces
- * the tick-drain.  input_server_start() is therefore not called yet.
+ * DO NOT MIGRATE to the kthread path (input_thread_entry / input_server_start):
+ * that kthread infra is UNSTABLE and DISABLED — see docs/report/KTHREAD-STATUS.md
+ * and the banner on input_server_start() below.  kthread_block/arch_cpu_yield
+ * stall CPU0 on the yield-to-USER leg, and a kthread created that way lives
+ * outside the per-CPU idle-task ordering the SMP scheduler relies on.  The
+ * correct end state for IRQ-decoupled input is a SUPERVISED USERLAND PROCESS
+ * (the notification-service model), not a kernel thread.  Until then, dispatch
+ * stays in this tick bottom-half.
  * ------------------------------------------------------------------------- */
 
 struct input_evt {
@@ -302,10 +302,12 @@ static int input_ring_pop(struct input_evt *out);
 static void input_dispatch(uint16_t type, uint16_t code, int32_t value) {
   switch (type) {
   case EV_KEY:
-    if (code == BTN_LEFT) {
-      compositor_handle_click(BTN_LEFT, value);
-    } else if (code == BTN_RIGHT || code == BTN_MIDDLE) {
-      /* No compositor consumer for these yet. */
+    if (code == BTN_LEFT || code == BTN_RIGHT || code == BTN_MIDDLE) {
+      /* All pointer buttons reach the compositor; it drives WM actions
+       * (drag/resize/titlebar) from BTN_LEFT only and forwards every
+       * button to the focused app (right/middle were silently dropped
+       * before, so apps could never see them). */
+      compositor_handle_click((int)code, value);
     } else {
       keyboard_process_key(code, value);
       wake_up(&keyboard_wait_queue);
@@ -371,16 +373,21 @@ static int input_ring_pop(struct input_evt *out) {
 }
 
 /* input_ring_nonempty - lost-wakeup guard: evaluated under the wq lock,
- * serialized against a producer's wake_up() (see kthread_block). */
-static int input_ring_nonempty(void *arg) {
+ * serialized against a producer's wake_up() (see kthread_block).
+ * __attribute__((unused)): referenced only by the DISABLED kthread input server
+ * (input_server_start's body is compiled out — see KTHREAD-STATUS.md), kept as
+ * reference skeleton without tripping -Werror=unused-function. */
+static int __attribute__((unused)) input_ring_nonempty(void *arg) {
   (void)arg;
   return input_ring_head != input_ring_tail;
 }
 
 /* input_thread_entry - the input server kernel thread body (staged): drains
- * the ring and dispatches in TASK context, blocking when idle.  Wired but not
- * launched yet (input_server_start is not called). */
-static void input_thread_entry(void) {
+ * the ring and dispatches in TASK context, blocking when idle.  DISABLED —
+ * input_server_start (its only user) is compiled out (KTHREAD-STATUS.md); kept
+ * as the reference skeleton for the future USERLAND input service.  unused so
+ * -Werror=unused-function does not fire. */
+static void __attribute__((unused)) input_thread_entry(void) {
   for (;;) {
     struct input_evt e;
     while (input_ring_pop(&e))
@@ -389,14 +396,37 @@ static void input_thread_entry(void) {
   }
 }
 
-/* input_server_start - create the input server thread (staged; not yet
- * called).  When activated, input_report enqueues to the ring + wakes this. */
+/* input_server_start - create the input server kernel thread.
+ *
+ * !!! DISABLED — DO NOT ENABLE (KTHREAD-STATUS, docs/report/KTHREAD-STATUS.md).
+ * The kthread-based input server is UNSTABLE and UNTESTED.  Two problems, both
+ * unfixed:
+ *   1. kthread_block()/arch_cpu_yield() cooperatively switch TO a freshly-woken
+ *      task; the yield-to-USER leg stalls CPU0 (a cross-CPU EL0-return quirk in
+ *      the hand-rolled epilogue).
+ *   2. A kthread created here lives OUTSIDE the per-CPU idle-task ordering the
+ *      SMP scheduler relies on for process sandboxing, so it can perturb the
+ *      idle/pick invariants (#169/#170 family).
+ * Input is dispatched safely instead from the timer-tick bottom-half
+ * (input_drain, kernel/core/timer.c).  The correct end state is input as a
+ * SUPERVISED USERLAND PROCESS (the notification-service model), NOT a kthread.
+ *
+ * The body is compiled out unless NEXS_ENABLE_UNSTABLE_KTHREAD_INPUT is defined,
+ * so this can never be wired up by accident (an unguarded call is a no-op that
+ * warns).  See also kthread_create()/kthread_block() (kernel/sched/process.c)
+ * and arch_cpu_yield() (kernel/include/kernel/arch.h): same status. */
 void input_server_start(void) {
+#ifdef NEXS_ENABLE_UNSTABLE_KTHREAD_INPUT
   INIT_LIST_HEAD(&input_wait_queue.task_list);
   spin_lock_init(&input_wait_queue.lock);
   (void)input_ring_dropped;
   kthread_create("input", input_thread_entry);
   pr_info("%s", "Input: server thread started (IRQ-decoupled dispatch)\n");
+#else
+  (void)input_ring_dropped;
+  pr_warn("%s", "input_server_start: DISABLED (unstable kthread infra — see "
+                "docs/report/KTHREAD-STATUS.md); using tick bottom-half\n");
+#endif
 }
 
 /*

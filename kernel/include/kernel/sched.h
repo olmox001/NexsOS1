@@ -102,6 +102,22 @@ struct process {
    * it runs "in the shell"; a process that opens its own window renders there
    * instead (own-window-first in sys_write).  -1 = none. */
   int ctty_win;
+  /* self_rendered: set the first time this process calls SYS_WINDOW_BLIT on
+   * its OWN window (syscall_dispatch.c) — it owns a custom pixel buffer it
+   * composites itself (nxbar/nxui/nxlauncher/nxsettings/nxfilem/demo3d/
+   * doom/any SDL app, ...), as opposed to a plain text console.  Checked by
+   * the own-window-first stdout resolution (object.c sys_object_write,
+   * syscall_dispatch.c window_text_write) to skip drawing text into that
+   * window — text and the app's own blit share the SAME pixel buffer
+   * (compositor_window_write's term_write and compositor_blit both target
+   * windows[i].buffer), so a stray printf()/crash message would otherwise
+   * draw glyphs over the app's own rendering.  UART mirroring is untouched
+   * (it happens before this flag is even consulted).  Lives on the
+   * process (scheduler), NOT the compositor: the compositor stays a pure
+   * rendering/composition engine with no "is this text-safe" policy of its
+   * own — this is who-owns-what-content, a process/window-ownership
+   * question. */
+  int self_rendered;
   /* parent_pid: PID of the process that spawned this one (0 = kernel/boot).
    * Set by process_create() from current_process; used by the SYS_KILL
    * capability check (ABI-04): a process may kill itself or any descendant,

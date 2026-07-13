@@ -3,7 +3,7 @@
 > File di handoff scritto su ordine del maintainer ("scrivi tutto in un file e interrompiti") dopo
 > l'interruzione per session-limit. Contiene TUTTO lo stato: architettura decisa, lavoro atterrato
 > (non committato), risultati audit issue (solo in memoria di sessione, persistiti qui), e prossimi passi.
-> Branch `comprehensive-review`, HEAD `6e394cf` (v0.0.4.4). NIENTE PIÙ AGENTI (ordine maintainer).
+> Branch `comprehensive-review`, HEAD `6e394cf` (v0.0.5.0). NIENTE PIÙ AGENTI (ordine maintainer).
 
 ---
 

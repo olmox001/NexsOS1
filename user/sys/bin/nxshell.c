@@ -207,7 +207,8 @@ static void process_command(void) {
     print("  demo            - Draw 2D shapes\n");
     print("  demo3d          - Launch 3D cube demo\n");
     print("  doom            - Launch doom\n");
-    print("  nxshell           - Open new shell window\n");
+    print("  shell           - Open new shell window\n");
+    print("  settings        - Open Settings in neew windows\n");
     print("  ps              - List processes\n");
     print("  ls [path]       - List directory contents\n");
     print("  cd <path>       - Change directory\n");
@@ -237,9 +238,9 @@ static void process_command(void) {
       window_draw(my_window, 50 + i * 100, 100, 80, 80, colors[i]);
     }
     compositor_render();
-  } else if (str_eq(cmd_buf, "demo3d")) {
+  } else if (str_eq(cmd_buf, "settings")) {
     print("Launching 3D demo...\n");
-    int pid = spawn("/bin/demo3d");
+    int pid = spawn("/bin/nxsettings");
     if (pid > 0) {
       printf("Started demo3d with PID %d\n", pid);
     } else {
@@ -336,7 +337,7 @@ static void process_command(void) {
       print("Usage: focus <window-id>\n");
     }
   } else if (str_eq(cmd_buf, "about")) {
-    print("\n\033[1;36mNeXs OS v0.0.4.4\033[0m\n");
+    print("\n\033[1;36mNeXs OS v0.0.5.0\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal "
           "Emulator\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
@@ -441,6 +442,22 @@ static void process_command(void) {
 int main(void) {
   print("NXShell: Alive\n");
   int pid = get_pid();
+  /* === SMART INITIAL WORKING DIRECTORY === */
+  /* Only change to /home for the first shell (launched by the system/launcher).
+   * Subsequent shells spawned with the "shell" command should inherit the
+   * current directory of the parent shell. */
+  char cwd[128] = {0};
+  getcwd(cwd, sizeof(cwd));
+
+  if (str_eq(cwd, "/") || str_eq(cwd, "")) {
+    if (chdir("/home") == 0) {
+      /* Optional: you can remove this line if you don't want the message */
+      // print("NXShell: started in /home\n");
+    } else {
+      print("Warning: could not chdir to /home, staying in /\n");
+    }
+  }
+  /* ====================================== */
   /* Create a unique window for this shell instance.
    * x_off/y_off stagger multiple shell windows by pid so they do not
    * stack exactly on top of each other. */
@@ -450,7 +467,6 @@ int main(void) {
   int x_off = (pid * 40) % 200;
   int y_off = (pid * 40) % 200;
   my_window = create_window(100 + x_off, 100 + y_off, WIN_W, WIN_H, title);
-
   if (my_window <= 0) {
     print("[NXShell] Error creating window\n");
     exit(1);
@@ -462,7 +478,6 @@ int main(void) {
   print("\n[NXShell] TTY Window ");
   print_hex(my_window);
   printf(" active (PID %d).\n", get_pid());
-  char cwd[128];
   getcwd(cwd, sizeof(cwd));
   printf("\033[32mNXShell\033[0m:\033[34m%s\033[0m> ", cwd);
   write(3, "NXShell> ", 7); /* Mirror to UART */

@@ -21,6 +21,7 @@
 #include <graphics/gl.h>
 #include <kernel/arch.h>
 #include <kernel/fault.h>
+#include <kernel/gfx_surface.h>
 #include <kernel/graphics.h>
 #include <kernel/printk.h>
 
@@ -62,6 +63,13 @@ int graphics_screen_surface(struct gl_surface *out) {
   out->height = dev->height;
   out->stride = dev->width;
   out->buffer = fb;
+  /* S-STAB: the scanout's true size in pixels.  If a concurrent mode change
+   * (vgpu_set_mode) left width/height and framebuffer_size momentarily torn —
+   * the compositor↔GPU seam is unlocked here (S-ALIGN F7) — this makes the
+   * inconsistency a loud, localized panic instead of an OOB blit into the
+   * freed/short scanout backing. */
+  out->capacity = dev->framebuffer_size / sizeof(uint32_t);
+  gfx_surface_verify(out, "graphics_screen_surface");
   return 0;
 }
 
@@ -93,8 +101,8 @@ void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                         uint32_t color) {
   struct gl_surface screen;
   if (graphics_screen_surface(&screen) == 0) {
-    struct gl_surface *surf = &screen;
-    gl_draw_rect_fill(surf, (int)x, (int)y, (int)w, (int)h, color);
+    gfx_rect_t rect = {(int)x, (int)y, (int)w, (int)h};
+    gfx_surface_fill(&screen, &rect, color);
   }
 }
 
@@ -108,10 +116,8 @@ void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
  */
 void graphics_clear(uint32_t color) {
   struct gl_surface screen;
-  if (graphics_screen_surface(&screen) == 0) {
-    struct gl_surface *surf = &screen;
-    gl_clear(surf, color);
-  }
+  if (graphics_screen_surface(&screen) == 0)
+    gfx_surface_clear(&screen, color);
 }
 
 /*

@@ -185,7 +185,9 @@ _sys_display_poll:
     syscall
     ret
 
-/* int _sys_set_style(int style_id, int theme_id) — -1 = keep */
+
+
+/* int _sys_set_style(int style_id, int theme_id, int bg_id) — -1 = keep */
 .global _sys_set_style
 _sys_set_style:
     movq $SYS_SET_STYLE, %rax
@@ -390,3 +392,44 @@ _sys_window_enum:
     movq $SYS_WINDOW_ENUM, %rax
     syscall
     ret
+
+.global setjmp
+setjmp:
+    /* rdi contains the address of jmp_buf */
+    movq %rbx, 0(%rdi)
+    movq %rbp, 8(%rdi)
+    movq %r12, 16(%rdi)
+    movq %r13, 24(%rdi)
+    movq %r14, 32(%rdi)
+    movq %r15, 40(%rdi)
+    /* Save stack pointer (rsp) as it was BEFORE the call */
+    leaq 8(%rsp), %rax
+    movq %rax, 48(%rdi)
+    /* Save return address (rip) */
+    movq (%rsp), %rax
+    movq %rax, 56(%rdi)
+    /* Return 0 */
+    xorl %eax, %eax
+    ret
+
+.global longjmp
+longjmp:
+    /* rdi contains the address of jmp_buf, rsi contains the val */
+    movq 0(%rdi), %rbx
+    movq 8(%rdi), %rbp
+    movq 16(%rdi), %r12
+    movq 24(%rdi), %r13
+    movq 32(%rdi), %r14
+    movq 40(%rdi), %r15
+    /* Restore stack pointer */
+    movq 48(%rdi), %rsp
+    /* Jump to return address (rip) */
+    movq 56(%rdi), %rdx
+    /* If val is 0, return 1; else return val */
+    movl %esi, %eax
+    testl %eax, %eax
+    jnz 1f
+    movl $1, %eax
+1:
+    jmp *%rdx
+

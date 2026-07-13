@@ -10,6 +10,9 @@ void fm_init(void) {
   fm_state.window_id =
       create_window(40, 80, FM_WIN_W, FM_WIN_H, "NeXs File Manager");
   if (fm_state.window_id < 0) {
+    /* No window exists (creation itself failed) — printf() is safe here,
+     * nothing to corrupt.  OS1_notify_error would also work but needs
+     * nxntfy_srv up, which is not guaranteed this early either. */
     printf("ERRORE: Impossibile creare finestra!\n");
     exit(1);
   }
@@ -19,8 +22,6 @@ void fm_init(void) {
 
   /* Poi set focus - ordine critico per evitare crash compositor */
   set_focus(get_pid());
-
-  printf("NeXs FM avviato - Finestra ID: %d\n", fm_state.window_id);
 }
 
 void fm_cleanup(void) {

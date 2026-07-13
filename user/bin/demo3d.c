@@ -22,6 +22,8 @@
  */
 #include <os1.h>
 
+#include "../sys/lib/portability/d3d9/os1_d3d9_present.h"
+
 /* Fixed-point 16.16 format:
  *   FP_SHIFT = 16: lower 16 bits are the fractional part.
  *   FP_ONE   = 65536 = 1.0 in fixed-point.
@@ -38,10 +40,11 @@
 #define WIN_H 250
 #define BUFFER_SIZE (WIN_W * WIN_H)
 
-/* framebuffer: local ARGB32 pixel buffer for one frame.
- * Composed CPU-side, then uploaded to the compositor in one window_blit() call
- * per frame — avoids the O(w*h) window_draw() overhead. */
-static unsigned int framebuffer[BUFFER_SIZE];
+/* framebuffer: the D3D9-style swapchain's locked backbuffer for the current
+ * frame.  The cube is rasterized CPU-side into it, then shown with one
+ * Present() — the same lock/draw/unlock/present cycle the D3D9 personality
+ * will drive, exercised here end to end. */
+static unsigned int *framebuffer;
 
 /* vec3_t: a 3D point in fixed-point 16.16 space.
  * All arithmetic on these values uses fixmul() for multiplication and
@@ -270,13 +273,23 @@ int main(void) {
   char title[64];
   sprintf(title, "3D Demo (Solid Cube) PID %d", pid);
 
-  int win = create_window(50, 50, WIN_W, WIN_H, title);
-  if (win <= 0) {
-    print("[Demo3D] Error creating window\n");
+  /* Presentation chain: the D3D9-style swapchain over os1_video_platform. */
+  struct os1_d3d9_present_params params = {50, 50, WIN_W, WIN_H, title};
+  struct os1_d3d9_swapchain *swapchain = 0;
+  if (os1_d3d9_swapchain_create(&params, &swapchain) != 0) {
+    print("[Demo3D] Error creating swapchain\n");
     exit(1);
   }
 
-  printf("[Demo3D] Real Solid GL Engine Init. PID %d\n", pid);
+  /* The swapchain's own window already exists at this point (sw_create ->
+   * os1_video_window_create -> _sys_create_window) — a plain printf() here
+   * would draw text straight into demo3d's own backbuffer via the console
+   * fallback, so this goes through the existing notification popup
+   * (OS1_notify_post, lib.c) instead. */
+  char msg[64];
+  snprintf(msg, sizeof(msg), "Real Solid GL Engine Init. PID %d (backend %d)",
+           pid, os1_d3d9_swapchain_backend(swapchain));
+  OS1_notify_post("Demo3D", msg);
 
   /* Cube size scaled to fit window optimally */
   init_shape(FP_ONE / 3);
@@ -285,6 +298,17 @@ int main(void) {
   int angle_x = 0;
 
   while (1) {
+    /* Lock the backbuffer for CPU rasterization (D3D9 LockRect cycle).  The
+     * cube rasterizer assumes a tight WIN_W-pixel pitch; the software backend
+     * guarantees it, a future GPU backend may not. */
+    struct os1_d3d9_locked_rect locked;
+    if (os1_d3d9_swapchain_lock(swapchain, &locked) != 0 ||
+        locked.pitch != WIN_W * sizeof(unsigned int)) {
+      print("[Demo3D] Backbuffer lock failed\n");
+      break;
+    }
+    framebuffer = locked.bits;
+
     clear_buffer(0); /* Dark gray background */
 
     vec3_t transformed[NUM_VERTS];
@@ -347,9 +371,12 @@ int main(void) {
       }
     }
 
-    /* Syscall di upload */
-    window_blit(win, 0, 0, WIN_W, WIN_H, framebuffer);
-    compositor_render();
+    /* Unlock + Present: one full-frame presentation per cycle. */
+    os1_d3d9_swapchain_unlock(swapchain);
+    if (os1_d3d9_swapchain_present(swapchain, 0) != 0) {
+      print("[Demo3D] Present failed\n");
+      break;
+    }
 
     /* Modifica i gradi di rotazione limitandoli a 360 per prevenire overflow
      * numerici */
@@ -361,6 +388,7 @@ int main(void) {
     OS1_sleep(16);
   }
 
+  os1_d3d9_swapchain_destroy(swapchain);
   exit(0);
   return 0;
 }

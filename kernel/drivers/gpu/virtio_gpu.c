@@ -151,19 +151,13 @@ static int vgpu_query_display_info(struct virtio_gpu_state *priv, int *w,
 /* gpu_ops */
 /* ------------------------------------------------------------------------- */
 
-static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
-  if (!dev || !dev->priv)
-    return -1;
-  struct virtio_gpu_state *priv = (struct virtio_gpu_state *)dev->priv;
-
-  /* In a panic/fault context the gpu_lock holder may be a now-halted CPU; the
-   * system is single-threaded by then (panic quiesced the others), so skip the
-   * lock to present the on-screen panic without deadlocking (DIR-05 #139). */
-  int faulting = (fault_depth() > 0);
-  uint64_t flags = 0;
-  if (!faulting)
-    spin_lock_irqsave(&gpu_lock, &flags);
-
+/* vgpu_xfer_flush_locked - issue TRANSFER_TO_HOST_2D + RESOURCE_FLUSH for the
+ * region (x,y,w,h) against the CURRENT scanout resource.  Caller MUST hold
+ * gpu_lock (or be in single-threaded fault context): it touches priv->cmd_buf
+ * and priv->resource_id, which set_mode also mutates. */
+static void vgpu_xfer_flush_locked(struct virtio_gpu_state *priv,
+                                   struct gpu_device *dev, int x, int y, int w,
+                                   int h) {
   /* 1. Transfer guest memory to the host resource. */
   memset(priv->cmd_buf, 0, 4096);
   struct virtio_gpu_transfer_to_host_2d *xfer = priv->cmd_buf;
@@ -188,9 +182,82 @@ static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
   fl->resource_id = priv->resource_id;
   virtio_gpu_send(priv, fl, sizeof(*fl), priv->resp_buf,
                   sizeof(struct virtio_gpu_ctrl_hdr));
+}
+
+static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
+  if (!dev || !dev->priv)
+    return -1;
+  struct virtio_gpu_state *priv = (struct virtio_gpu_state *)dev->priv;
+
+  /* In a panic/fault context the gpu_lock holder may be a now-halted CPU; the
+   * system is single-threaded by then (panic quiesced the others), so skip the
+   * lock to present the on-screen panic without deadlocking (DIR-05 #139). */
+  int faulting = (fault_depth() > 0);
+  uint64_t flags = 0;
+  if (!faulting)
+    spin_lock_irqsave(&gpu_lock, &flags);
+
+  vgpu_xfer_flush_locked(priv, dev, x, y, w, h);
 
   if (!faulting)
     spin_unlock_irqrestore(&gpu_lock, flags);
+  return 0;
+}
+
+/* vgpu_present - RC2 fix: copy the backbuffer region into the scanout backing
+ * AND transfer+flush it, atomically under gpu_lock.  This is what makes the
+ * compositor↔GPU seam safe against a concurrent set_mode: the same lock that
+ * vgpu_set_mode() takes to swap priv->backing_store and free the old buffer is
+ * held for the entire copy, so the scanout can never be freed mid-memcpy (the
+ * use-after-free behind the resize/zoom panics).  Geometry is validated against
+ * the LIVE scanout under the lock; a mismatch (a mode change landed first) skips
+ * the frame instead of copying past the new, smaller backing. */
+static int vgpu_present(struct gpu_device *dev, const uint32_t *src, int src_w,
+                        int src_h, int x, int y, int w, int h) {
+  if (!dev || !dev->priv || !src)
+    return -1;
+  struct virtio_gpu_state *priv = (struct virtio_gpu_state *)dev->priv;
+
+  uint64_t flags;
+  spin_lock_irqsave(&gpu_lock, &flags);
+
+  /* The source (compositor backbuffer) must match the CURRENT scanout exactly:
+   * both are resized together, but through different locks, so re-check here.
+   * If a set_mode already changed dev->{width,height}, skip — the compositor
+   * will present again next frame at the new size. */
+  uint32_t *fb = (uint32_t *)priv->backing_store;
+  if (!fb || src_w != dev->width || src_h != dev->height) {
+    spin_unlock_irqrestore(&gpu_lock, flags);
+    return -1;
+  }
+
+  /* Clamp the region to the scanout (defensive; the compositor already clips) */
+  if (x < 0) {
+    w += x;
+    x = 0;
+  }
+  if (y < 0) {
+    h += y;
+    y = 0;
+  }
+  if (x + w > dev->width)
+    w = dev->width - x;
+  if (y + h > dev->height)
+    h = dev->height - y;
+  if (w <= 0 || h <= 0) {
+    spin_unlock_irqrestore(&gpu_lock, flags);
+    return 0;
+  }
+
+  /* Row-by-row copy backbuffer -> scanout backing (both stride == dev->width). */
+  for (int row = y; row < y + h; row++) {
+    memcpy((uint8_t *)fb + ((size_t)row * dev->width + x) * 4,
+           (const uint8_t *)src + ((size_t)row * src_w + x) * 4, (size_t)w * 4);
+  }
+
+  vgpu_xfer_flush_locked(priv, dev, x, y, w, h);
+
+  spin_unlock_irqrestore(&gpu_lock, flags);
   return 0;
 }
 
@@ -324,6 +391,7 @@ static void vgpu_destroy(struct gpu_device *dev) {
 static struct gpu_ops vgpu_ops = {
     .flush = vgpu_flush,
     .get_framebuffer = vgpu_get_framebuffer,
+    .present = vgpu_present,
     .set_mode = vgpu_set_mode,
     .destroy = vgpu_destroy,
     .get_display_info = vgpu_get_display_info,

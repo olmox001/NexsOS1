@@ -15,7 +15,26 @@ struct gl_surface {
   int stride; /* in pixels, usually width */
   uint32_t *buffer;
   uint8_t *alpha_mask;
+  /* S-STAB: number of valid uint32_t words actually backing 'buffer'.  The
+   * whole raster path indexes buffer[y*stride+x] and only ever bounds-checks
+   * against width/height, which is memory-safe ONLY if the geometry matches the
+   * allocation (stride>=width AND height*stride<=capacity).  Nothing enforced
+   * that invariant, so any geometry desync (a resize race, a stale scanout, a
+   * driver reporting a size that outran its buffer) turned into a silent OOB
+   * write into adjacent kernel RAM — the class of bug behind the UTM panics.
+   * capacity makes the invariant checkable at the source; 0 = "unknown/legacy"
+   * (an unconverted construction site), which gfx_surface_verify() treats as
+   * un-instrumented rather than as a violation. */
+  size_t capacity;
 };
+
+/* gfx_surface_verify - S-STAB invariant gate.  Panics with the full geometry vs
+ * allocation if a surface is internally inconsistent (stride<width, or
+ * height*stride>capacity), catching a geometry desync at bind time — before the
+ * first OOB write scribbles kernel memory — instead of a mangled fault later.
+ * 'where' names the bind site for the panic message.  No-op when capacity==0
+ * (site not yet instrumented) so partial rollout never false-panics. */
+void gfx_surface_verify(const struct gl_surface *surf, const char *where);
 
 /* Exact round-to-nearest divide-by-255 for x in [0, ~65790] (classic identity,
  * no integer division).  Replaces the ">>8" (÷256) approximation that dimmed

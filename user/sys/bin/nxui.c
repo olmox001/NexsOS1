@@ -58,6 +58,8 @@
 #include <os1.h>
 #include <string.h>
 
+#include "nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
+
 #define DOCK_H 56     /* dock height in px                                   */
 #define TILE 40       /* app tile size in px                                 */
 #define TILE_GAP 12   /* gap between tiles                                   */
@@ -77,10 +79,29 @@
 #define DOCK_RADIUS 12   /* dock outer corner radius — same rounding style as
                           * the tiles, just scaled up for the bigger shape   */
 
-#define COL_DOCK_BG 0xE81C1C24u
-#define COL_TILE 0xFFD0CBD3u
+/* COL_DOCK_BG/COL_TILE/COL_TILE_MIN are the only dock colours that need to
+ * change with theme.color (nxres.h) — background translucency and the idle/
+ * minimized tile need different contrast against a light vs dark desktop.
+ * Everything else below (focus blue, scroll-button red, launcher green) is
+ * an accent/status colour, deliberately theme-INVARIANT — same reasoning as
+ * nxbar's g_col_xbtn_glyph/g_col_badge staying fixed. */
+static uint32_t g_col_dock_bg;
+static uint32_t g_col_tile;
+static uint32_t g_col_tile_min;
+
+static void nxui_load_palette(int light) {
+  if (light) {
+    g_col_dock_bg = 0xE8F5F5F7u;
+    g_col_tile = 0xFFAEAEB2u;
+    g_col_tile_min = 0xFFD1D1D6u;
+  } else {
+    g_col_dock_bg = 0xE81C1C24u;
+    g_col_tile = 0xFFD0CBD3u;
+    g_col_tile_min = 0xFF555563u;
+  }
+}
+
 #define COL_TILE_FOCUS 0xFF5E9CFFu
-#define COL_TILE_MIN 0xFF555563u
 #define COL_BTN_RED 0xFFE53935u     /* material red 600 — idle scroll button */
 #define COL_BTN_PRESSED 0xFF6B6B73u /* greys out while the button is held    */
 
@@ -327,12 +348,12 @@ static void redraw(int force) {
    * fb_rrect skips stay fully transparent so the dock itself reads as a
    * rounded shape (see NOTE(GFX-NXUI-04) above). */
   fb_fill(0x00000000u);
-  fb_rrect(0, 0, g_sw, DOCK_H, DOCK_RADIUS, COL_DOCK_BG);
+  fb_rrect(0, 0, g_sw, DOCK_H, DOCK_RADIUS, g_col_dock_bg);
 
   int ty = (DOCK_H - TILE) / 2;
   for (int i = 0; i < cnt; i++) {
     int is_launcher = (launcher_id != 0 && ids[start + i] == launcher_id);
-    uint32_t c = is_launcher ? COL_LAUNCHER : COL_TILE;
+    uint32_t c = is_launcher ? COL_LAUNCHER : g_col_tile;
     /* The "real" focus (WININFO_FOCUSED).  When the dock itself is the focused
      * window, or a tile was just toggled to minimized, no window reports
      * WININFO_FOCUSED — in that case, the remembered g_last_focus tile stays
@@ -348,7 +369,7 @@ static void redraw(int force) {
     } else if (focused) {
       c = COL_TILE_FOCUS;
     } else if (dflags[i] & WININFO_MINIMIZED) {
-      c = COL_TILE_MIN;
+      c = g_col_tile_min;
     }
     fb_rrect(g_slot_x[i], ty, TILE, TILE, TILE_RADIUS, c);
     /* running indicator: a small dot under the focused app's tile */
@@ -423,6 +444,8 @@ int main(void) {
   if (sh <= 0)
     sh = 600;
 
+  nxui_load_palette(nxres_theme_is_light());
+
   g_fb = (uint32_t *)malloc((size_t)sw * DOCK_H * 4);
   if (!g_fb)
     return 1;
@@ -495,6 +518,12 @@ int main(void) {
         int rw = (int)((d2 >> 16) & 0xFFFF), rh = (int)(d2 & 0xFFFF);
         if (rw > 0 && rh > 0)
           dock_reinit(rw, rh);
+      } else if (ev.type == INPUT_TYPE_LOOK_CHANGED) {
+        /* External style/theme/bg change (nxres_broadcast_look, nxres.h),
+         * surfaced through this SAME input_poll_event() loop — see nxres.h's
+         * header comment for why a second try_recv() loop is wrong here. */
+        nxui_load_palette(nxres_theme_is_light());
+        redraw(1);
       }
     }
 

@@ -113,34 +113,10 @@ common_isr_entry:
     /* Pass pointer to pt_regs as first argument */
     movq  %rsp, %rdi
     call  amd64_isr_dispatch
-    movq  %rax, %rsp
-
-    /* Restore GP registers */
-    popq  %r15
-    popq  %r14
-    popq  %r13
-    popq  %r12
-    popq  %r11
-    popq  %r10
-    popq  %r9
-    popq  %r8
-    popq  %rbp
-    popq  %rdi
-    popq  %rsi
-    popq  %rdx
-    popq  %rcx
-    popq  %rbx
-    popq  %rax
-
-    /* Swap GS back if we are returning to user mode */
-    testb $3, 24(%rsp)
-    jz 1f
-    swapgs
-1:
-    /* Skip vec + err pushed by stub */
-    addq  $16, %rsp
-
-    iretq
+    /* amd64_isr_dispatch returned the next context in rax; restore it via the
+     * ONE shared epilogue (restore_context) the cooperative yield also uses.
+     * The whole GP restore + swapgs-if-ring3 + iretq lives in one place now. */
+    jmp   restore_context
 
 /*
  * arch_cpu_yield - cooperative reschedule from KERNEL (task) context.
@@ -192,6 +168,23 @@ arch_cpu_yield:
     pushq %r15
     movq  %rsp, %rdi
     call  schedule
+    /* schedule() returned the next context in rax; restore it via the ONE
+     * shared epilogue below (restore_context) — the same path the ISR entry
+     * uses, so there is no second hand-rolled restore (DIR-06 / Phase 1.A). */
+    jmp   restore_context
+
+/*
+ * restore_context - the single GP-register restore + iretq epilogue (amd64).
+ *
+ * Entered with rax = pointer to the pt_regs frame to load (the return value of
+ * amd64_isr_dispatch() or schedule()).  Points rsp at that frame, pops the GP
+ * file in pt_regs order, swaps GS back iff returning to ring 3, skips the
+ * vec+err slots and iretq's into the frame.  This is the ONLY copy of the
+ * restore sequence: common_isr_entry and arch_cpu_yield both reach it by jmp,
+ * so the frame layout lives in exactly one place (DIR-06).
+ */
+.global restore_context
+restore_context:
     movq  %rax, %rsp
     popq  %r15
     popq  %r14

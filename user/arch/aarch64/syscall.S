@@ -212,7 +212,9 @@ _sys_display_poll:
     svc #0
     ret
 
-/* int _sys_set_style(int style_id, int theme_id) — -1 = keep */
+
+
+/* int _sys_set_style(int style_id, int theme_id, int bg_id) — -1 = keep */
 .global _sys_set_style
 _sys_set_style:
     mov x8, #SYS_SET_STYLE
@@ -412,3 +414,42 @@ _sys_window_enum:
     mov x8, #SYS_WINDOW_ENUM
     svc #0
     ret
+
+.global setjmp
+setjmp:
+    /* x0 contains the address of jmp_buf */
+    /* Save callee-saved registers x19-x29 */
+    stp x19, x20, [x0, #0]
+    stp x21, x22, [x0, #16]
+    stp x23, x24, [x0, #32]
+    stp x25, x26, [x0, #48]
+    stp x27, x28, [x0, #64]
+    str x29,      [x0, #80]
+    /* Save SP (x31) and LR (x30) */
+    mov x9, sp
+    str x9,      [x0, #88]
+    str x30,     [x0, #96]
+    /* Return 0 */
+    mov x0, #0
+    ret
+
+.global longjmp
+longjmp:
+    /* x0 contains the address of jmp_buf, x1 contains the val */
+    /* Restore callee-saved registers x19-x29 */
+    ldp x19, x20, [x0, #0]
+    ldp x21, x22, [x0, #16]
+    ldp x23, x24, [x0, #32]
+    ldp x25, x26, [x0, #48]
+    ldp x27, x28, [x0, #64]
+    ldr x29,      [x0, #80]
+    /* Restore SP and LR */
+    ldr x9,      [x0, #88]
+    mov sp, x9
+    ldr x30,     [x0, #96]
+    /* If val is 0, return 1; else return val */
+    mov w0, #1
+    cmp w1, #0
+    csel w0, w1, w0, ne
+    ret
+

@@ -1,4 +1,5 @@
 #include <drivers/gpu/gpu.h>
+#include <kernel/gfx_surface.h>
 #include <kernel/printk.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
@@ -76,4 +77,21 @@ int gpu_poll_events(int *new_w, int *new_h) {
   if (!dev || !dev->ops || !dev->ops->poll_events)
     return -1;
   return dev->ops->poll_events(dev, new_w, new_h);
+}
+
+int gpu_present_surface(const struct gl_surface *src,
+                        const struct gfx_rect *damage) {
+  struct gpu_device *dev = primary_gpu;
+  if (!dev || !dev->ops || !dev->ops->present || !src || !damage)
+    return -1;
+  /* S-STAB invariant gate at the contract seam: a surface whose geometry
+   * outruns its backing must fail loud here, never as an OOB copy below. */
+  gfx_surface_verify(src, "gpu_present_surface");
+  if (src->stride != src->width)
+    return -1; /* the provider transfers tightly packed rows only */
+  if (damage->width <= 0 || damage->height <= 0)
+    return 0; /* empty damage: consumed, nothing to upload */
+  return dev->ops->present(dev, src->buffer, src->width, src->height,
+                           damage->x, damage->y, damage->width,
+                           damage->height);
 }

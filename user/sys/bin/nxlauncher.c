@@ -42,10 +42,11 @@
  * Resize is also polled via OS1_display_info for the rare host-driven
  * resolution change.
  */
+#include "nxexec.h"
+#include "nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
 #include <font_lib.h>
 #include <image.h>
 #include <input.h>
-#include "nxexec.h"
 #include <os1.h>
 #include <stdlib.h>
 #include <string.h>
@@ -159,14 +160,39 @@ static const uint32_t COL_TILE[CAT_COUNT] = {
     0xFF757575u, /* CAT_OTHER    grey 600  */
     0xFF26A69Au, /* CAT_FOLDER   teal 400  */
 };
-#define COL_BG 0xE8202028u /* window background                 */
-#define COL_LABEL 0xFFFFFFFFu
-#define COL_LABEL_SHADOW 0x80000000u
-#define COL_DOT_ACTIVE 0xFFFFFFFFu
-#define COL_DOT_INACTIVE 0x66FFFFFFu
-#define COL_ARROW 0xCC2A2A33u
-#define COL_ARROW_PRESSED 0xCC6B6B73u
-#define COL_BACK 0xCC2A2A33u
+/* Window chrome (bg/label/dots/arrows) tracks theme.color (nxres.h); the
+ * per-category tile colours above stay fixed across both themes — same
+ * reasoning as nxui's launcher-tile green / nxbar's badge red. */
+static uint32_t g_col_bg;
+static uint32_t g_col_label;
+static uint32_t g_col_label_shadow;
+static uint32_t g_col_dot_active;
+static uint32_t g_col_dot_inactive;
+static uint32_t g_col_arrow;
+static uint32_t g_col_arrow_pressed;
+static uint32_t g_col_back;
+
+static void nxlauncher_load_palette(int light) {
+  if (light) {
+    g_col_bg = 0xE8F5F5F7u;
+    g_col_label = 0xFF1C1C1Eu;
+    g_col_label_shadow = 0x80FFFFFFu;
+    g_col_dot_active = 0xFF1C1C1Eu;
+    g_col_dot_inactive = 0x661C1C1Eu;
+    g_col_arrow = 0xCCD1D1D6u;
+    g_col_arrow_pressed = 0xCCAEAEB2u;
+    g_col_back = 0xCCD1D1D6u;
+  } else {
+    g_col_bg = 0xE8202028u; /* window background */
+    g_col_label = 0xFFFFFFFFu;
+    g_col_label_shadow = 0x80000000u;
+    g_col_dot_active = 0xFFFFFFFFu;
+    g_col_dot_inactive = 0x66FFFFFFu;
+    g_col_arrow = 0xCC2A2A33u;
+    g_col_arrow_pressed = 0xCC6B6B73u;
+    g_col_back = 0xCC2A2A33u;
+  }
+}
 
 /* ============================================================
  *                        Pixel helpers
@@ -497,15 +523,15 @@ static void load_cfg(void) {
  * to offer as a launchable app). */
 // Lista delle estensioni (devono avere il punto)
 static const char *const filtered_extensions[] = {
-    ".wad", ".txt",  ".cfg", ".dat",
-    ".md",  ".json", ".old", ".dsg", NULL};
+    ".wad", ".txt", ".cfg", ".dat", ".md", ".json", ".old", ".dsg", NULL};
 
 // Lista dei nomi di file completi (esatti)
 /* Hidden from the tile grid: the boot/supervisor services, the launcher and
  * dock themselves, and nxexec (the execution service — it is the thing that
  * LAUNCHES tiles, not a tile; clicking it with no argument does nothing). */
 static const char *const filtered_files[] = {
-    "init", "nxntfy_srv", "nxui", "nxlauncher", "nxexec", ".", "..", NULL};
+    "nxinit", "nxntfy_srv", "nxui", "nxbar", "nxlauncher",
+    "nxexec", "background", ".",    "..",    NULL};
 
 static int has_filtered_ext(const char *name) {
   if (os1_image_path_has_known_ext(name))
@@ -744,8 +770,8 @@ static void draw_label(int x, int y, const char *label) {
     lx = 0;
   int ly = y + TILE + LABEL_GAP;
   if (g_font)
-    buf_draw_text(lx + 1, ly + 1, tmp, COL_LABEL_SHADOW);
-  buf_draw_text(lx, ly, tmp, COL_LABEL);
+    buf_draw_text(lx + 1, ly + 1, tmp, g_col_label_shadow);
+  buf_draw_text(lx, ly, tmp, g_col_label);
 }
 
 static void draw_folder_tile(int x, int y) {
@@ -759,15 +785,15 @@ static void draw_folder_tile(int x, int y) {
 }
 
 static void redraw(void) {
-  fb_fill(COL_BG);
+  fb_fill(g_col_bg);
 
   if (g_view == VIEW_FOLDER && g_back_x >= 0) {
-    fb_rrect(g_back_x, g_back_y, BACK_W, BACK_H, 6, COL_BACK);
+    fb_rrect(g_back_x, g_back_y, BACK_W, BACK_H, 6, g_col_back);
     if (g_font) {
       const char *t = "< Back";
       int tw = buf_text_width(t);
       buf_draw_text(g_back_x + (BACK_W - tw) / 2, g_back_y + (BACK_H - 16) / 2,
-                    t, COL_LABEL);
+                    t, g_col_label);
     }
   }
 
@@ -784,8 +810,8 @@ static void redraw(void) {
   }
 
   if (g_arrow_l_x >= 0) {
-    uint32_t lc = (g_pressed == 1) ? COL_ARROW_PRESSED : COL_ARROW;
-    uint32_t rc = (g_pressed == 2) ? COL_ARROW_PRESSED : COL_ARROW;
+    uint32_t lc = (g_pressed == 1) ? g_col_arrow_pressed : g_col_arrow;
+    uint32_t rc = (g_pressed == 2) ? g_col_arrow_pressed : g_col_arrow;
     int ax_l = g_arrow_l_x - ARROW_W / 2;
     int ax_r = g_arrow_r_x - ARROW_W / 2;
     int ay = g_arrow_l_y - ARROW_H / 2;
@@ -795,18 +821,22 @@ static void redraw(void) {
       ax_l += 1;
     if (g_pressed == 2)
       ax_r += 1;
-    fb_rrect(ax_l + ARROW_W / 2 - 4, ay + ARROW_H / 2 - 3, 2, 6, 1, COL_LABEL);
-    fb_rrect(ax_l + ARROW_W / 2 - 2, ay + ARROW_H / 2 - 1, 2, 2, 1, COL_LABEL);
-    fb_rrect(ax_l + ARROW_W / 2 - 4, ay + ARROW_H / 2 + 1, 2, 2, 1, COL_LABEL);
-    fb_rrect(ax_r + ARROW_W / 2 + 2, ay + ARROW_H / 2 - 3, 2, 6, 1, COL_LABEL);
-    fb_rrect(ax_r + ARROW_W / 2, ay + ARROW_H / 2 - 1, 2, 2, 1, COL_LABEL);
-    fb_rrect(ax_r + ARROW_W / 2, ay + ARROW_H / 2 + 1, 2, 2, 1, COL_LABEL);
+    fb_rrect(ax_l + ARROW_W / 2 - 4, ay + ARROW_H / 2 - 3, 2, 6, 1,
+             g_col_label);
+    fb_rrect(ax_l + ARROW_W / 2 - 2, ay + ARROW_H / 2 - 1, 2, 2, 1,
+             g_col_label);
+    fb_rrect(ax_l + ARROW_W / 2 - 4, ay + ARROW_H / 2 + 1, 2, 2, 1,
+             g_col_label);
+    fb_rrect(ax_r + ARROW_W / 2 + 2, ay + ARROW_H / 2 - 3, 2, 6, 1,
+             g_col_label);
+    fb_rrect(ax_r + ARROW_W / 2, ay + ARROW_H / 2 - 1, 2, 2, 1, g_col_label);
+    fb_rrect(ax_r + ARROW_W / 2, ay + ARROW_H / 2 + 1, 2, 2, 1, g_col_label);
   }
 
   if (g_dots_x0 >= 0) {
     for (int i = 0; i < g_pages; i++) {
       int cx = g_dots_x0 + i * (DOT_DIA + DOT_GAP);
-      uint32_t c = (i == g_page) ? COL_DOT_ACTIVE : COL_DOT_INACTIVE;
+      uint32_t c = (i == g_page) ? g_col_dot_active : g_col_dot_inactive;
       fb_circle(cx, g_dots_y, DOT_DIA / 2, c);
     }
   }
@@ -908,7 +938,13 @@ static void handle_click(int mx, int my) {
        * ("i processi terminale ottengono una shell come padre"). */
       int pid = nxexec_spawn_hosted(g_apps[idx].path);
       if (pid <= 0) {
-        printf("[launcher] spawn failed: %s\n", g_apps[idx].path);
+        /* g_win is already up and actively self-rendering at this point in
+         * the session (unlike main()'s startup path) — printf() here would
+         * draw text straight into g_fb via window_text_write, the same
+         * buffer redraw()/window_blit() use (verified: both ultimately hit
+         * compositor.c's win->buffer) — so this goes through the existing
+         * notification popup (OS1_notify_warn, lib.c) instead. */
+        OS1_notify_warn("nxlauncher", g_apps[idx].path);
       } else {
         /* Auto-background: with the app launched, the launcher's job is done
          * for this turn.  Send ourselves to background so the spawned app
@@ -947,6 +983,7 @@ static void reinit_window(int ww, int wh) {
 
 int main(void) {
   g_font = font_load("/fonts/Rewir-Light.off");
+  nxlauncher_load_palette(nxres_theme_is_light());
 
   scan_bin();
   load_cfg();
@@ -1013,6 +1050,11 @@ int main(void) {
         int nh = ev.resize.h;
         if (nw > 0 && nh > 0)
           reinit_window(nw, nh);
+      } else if (ev.type == INPUT_TYPE_LOOK_CHANGED) {
+        /* External style/theme/bg change (nxres_broadcast_look, nxres.h),
+         * surfaced through this SAME input_poll_event() loop — see nxres.h's
+         * header comment for why a second try_recv() loop is wrong here. */
+        nxlauncher_load_palette(nxres_theme_is_light());
       }
     }
 

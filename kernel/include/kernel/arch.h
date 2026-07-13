@@ -27,7 +27,12 @@ void arch_cpu_switch_context(struct process *next);
  * per-arch (aarch64 exception.S / amd64 isr_stubs.S) by building a pt_regs
  * frame, calling schedule(), and restoring the next task's frame.  IRQs must
  * be masked by the caller (kthread_block).  This is the foundation for
- * kthread_block/wake and, later, the OS1low_wait_irq blocking primitive. */
+ * kthread_block/wake and, later, the OS1low_wait_irq blocking primitive.
+ *
+ * !!! UNSTABLE / currently UNUSED at runtime — the only caller, kthread_block(),
+ * is reachable only from the DISABLED kthread input server.  The yield-to-USER
+ * leg stalls CPU0; do not build new blocking primitives on this until that is
+ * fixed.  See docs/report/KTHREAD-STATUS.md. */
 void arch_cpu_yield(void);
 
 static inline uint32_t arch_get_cpu_id(void) { return arch_impl_get_cpu_id(); }

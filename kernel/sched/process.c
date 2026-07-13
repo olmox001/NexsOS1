@@ -723,8 +723,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   spin_lock_init(&proc->mm_lock);
 
   /* Filesystem Init: a child inherits the spawner's working directory
-   * (POSIX), so `kilo init.cfg` launched from /etc opens /etc/init.cfg and not
-   * /init.cfg.  Kernel/boot creations (no creator) start at "/". */
+   * (POSIX), so `kilo init.cfg` launched from /etc opens /etc/nxinit.cfg and
+   * not /init.cfg.  Kernel/boot creations (no creator) start at "/". */
   if (creator && creator->cwd[0])
     strncpy(proc->cwd, creator->cwd, sizeof(proc->cwd));
   else
@@ -870,6 +870,14 @@ void smp_create_idle_task(uint32_t cpu_id) {
 /*
  * kthread_create - create and enqueue a runnable KERNEL SERVICE thread.
  *
+ * !!! UNSTABLE / NO IN-TREE CALLER — DO NOT WIRE UP (KTHREAD-STATUS,
+ * docs/report/KTHREAD-STATUS.md).  The only intended consumer,
+ * input_server_start(), is compiled out for good reason: a kthread created here
+ * runs OUTSIDE the per-CPU idle-task ordering the SMP scheduler relies on, and
+ * its blocking primitive (kthread_block -> arch_cpu_yield) stalls CPU0 on the
+ * yield-to-USER leg.  Kept as staged scaffolding only; migrate services to
+ * SUPERVISED USERLAND PROCESSES (the notification-service model) instead.
+ *
  * Unlike smp_create_idle_task (which pins the result as a CPU's idle task),
  * this creates a normal runnable kernel thread at PROC_PRIO_SYSTEM: no user
  * address space (page_table == NULL, shared kernel_pgd), no stdio/ctty (the
@@ -1013,8 +1021,8 @@ static void __process_release_created(struct process *p) {
  * kill (SCHED-UAF Pitfall B).  Under sched_lock: if a kill was DEFERRED while
  * the ELF loaded (kill_pending), release the child; else enqueue it.  The
  * kill_pending check and the enqueue are BOTH under the global sched_lock, so a
- * kill on another CPU cannot slip between them (global -> per-CPU lock order, as
- * in kernel_ipc_send).
+ * kill on another CPU cannot slip between them (global -> per-CPU lock order,
+ * as in kernel_ipc_send).
  */
 void process_finalize_spawn(struct process *p) {
   if (!p)
@@ -1062,9 +1070,9 @@ int process_terminate(int pid) {
     return -1;
   }
 
-  /* IDEMPOTENT (SCHED-UAF, the PMM double-free): a victim already DEAD/ZOMBIE is
-   * committed to the reaper (schedule's deferred-free) — its windows are already
-   * torn down and its pages will be freed exactly once there.  A SECOND
+  /* IDEMPOTENT (SCHED-UAF, the PMM double-free): a victim already DEAD/ZOMBIE
+   * is committed to the reaper (schedule's deferred-free) — its windows are
+   * already torn down and its pages will be freed exactly once there.  A SECOND
    * terminate (external kill racing a self-exit; window-close + kill; a
    * double-kill) must NOT fall through to the immediate-free common tail below,
    * which would free the same pages a second time.  Short-circuit. */
@@ -1089,10 +1097,10 @@ int process_terminate(int pid) {
    * SYS_CREATE_WINDOW on this process's own CPU is refused — otherwise it could
    * create a fresh window AFTER this teardown, leaving an orphan whose owner is
    * already dead (un-closeable by the red button: the maintainer's leak).
-   * compositor_destroy_windows_by_pid takes compositor_lock (BLOCKING) — this is
-   * the sched_lock -> compositor_lock order (Pitfall A); nothing may take the two
-   * in reverse, which is why the compositor never reaps orphans by calling back
-   * into the scheduler. */
+   * compositor_destroy_windows_by_pid takes compositor_lock (BLOCKING) — this
+   * is the sched_lock -> compositor_lock order (Pitfall A); nothing may take
+   * the two in reverse, which is why the compositor never reaps orphans by
+   * calling back into the scheduler. */
   proc->dying = 1;
   extern void compositor_destroy_windows_by_pid(int pid);
   compositor_destroy_windows_by_pid(pid);
@@ -1206,11 +1214,29 @@ int process_terminate(int pid) {
    * supervisors must treat process_wait()==-2 as "child gone". */
   proc->state = PROC_DEAD;
   {
-    int vcpu = (proc->on_cpu >= 0) ? proc->on_cpu : 0;
-    struct cpu_info *vc = &cpu_data[vcpu];
-    spin_lock(&vc->sched_lock);
-    int still_current = (vc->current_task == proc);
-    spin_unlock(&vc->sched_lock);
+    /* S-STAB (#169/#170 ROOT FIX): the victim's kernel stack / PGD must NOT be
+     * freed while ANY CPU still executes on it.  The old check trusted
+     * proc->on_cpu — which can be STALE (a task mid-migration, or in the window
+     * between a runqueue pick and the on_cpu write) — and inspected ONLY that
+     * one CPU.  A victim actually current on a DIFFERENT CPU then had its stack
+     * freed under a running core; the PMM handed those pages to a live task and
+     * the two kernel stacks overlapped — the cross-CPU frame smash behind the
+     * UTM panic (a gfx return address overwriting current_process in a healthy
+     * task's nanosleep).  Scan EVERY CPU: if the victim is current_task
+     * anywhere, leave it PROC_DEAD and let THAT CPU's schedule() reap it after
+     * it switches off the stack (the prev==DEAD deferred-free path).  Each
+     * CPU's current_task is read under that CPU's sched_lock (same lock order
+     * the single-CPU check already used: global sched_lock held -> per-CPU). */
+    int still_current = 0;
+    for (int c = 0; c < MAX_CPUS; c++) {
+      struct cpu_info *vc = &cpu_data[c];
+      spin_lock(&vc->sched_lock);
+      if (vc->current_task == proc)
+        still_current = 1;
+      spin_unlock(&vc->sched_lock);
+      if (still_current)
+        break;
+    }
     if (still_current) {
       spin_unlock_irqrestore(&sched_lock, flags);
       return 0;
@@ -1239,7 +1265,8 @@ int process_terminate(int pid) {
 }
 
 /*
- * process_kill_subtree - window-aware EXTERNAL kill (docs/PROCESS-KILL-MODEL.md).
+ * process_kill_subtree - window-aware EXTERNAL kill
+ * (docs/PROCESS-KILL-MODEL.md).
  *
  * Terminates root_pid (the explicit target — always, even if it owns a window:
  * closing an app's window kills the app) PLUS every WINDOWLESS / in-shell
@@ -1255,8 +1282,8 @@ int process_terminate(int pid) {
  * LOCK-FREE.
  *
  * Capability: callers gate first (OBJ_CTL_KILL/CLOSE need OS1_RIGHT_DESTROY;
- * SYS_KILL needs process_kill_allowed) — this is the kernel mechanism behind the
- * OBJ_TYPE_PROCESS / window object close.  Self-exit and fault-kill stay
+ * SYS_KILL needs process_kill_allowed) — this is the kernel mechanism behind
+ * the OBJ_TYPE_PROCESS / window object close.  Self-exit and fault-kill stay
  * single-process (they call process_terminate directly, not this).
  */
 void process_kill_subtree(int root_pid) {
@@ -1292,15 +1319,16 @@ void process_kill_subtree(int root_pid) {
   /* TYPE probe, lock-free (Pitfall A): a window owner is SPARED. */
   extern int compositor_get_window_by_pid(int pid);
   for (int i = 0; i < n; i++)
-    snap[i].windowless = (compositor_get_window_by_pid(snap[i].pid) > 0) ? 0 : 1;
+    snap[i].windowless =
+        (compositor_get_window_by_pid(snap[i].pid) > 0) ? 0 : 1;
 
   /* The explicit target dies regardless of window ownership. */
   snap[root_idx].kill = 1;
 
-  /* Propagate: a node dies iff its parent dies AND it is windowless.  A windowed
-   * node is spared, which prunes its subtree (its children's parent is not in the
-   * kill set).  Iterate to a fixpoint — parents may sit after children in pool
-   * order; at most n passes for any tree. */
+  /* Propagate: a node dies iff its parent dies AND it is windowless.  A
+   * windowed node is spared, which prunes its subtree (its children's parent is
+   * not in the kill set).  Iterate to a fixpoint — parents may sit after
+   * children in pool order; at most n passes for any tree. */
   for (int pass = 0; pass < n; pass++) {
     int changed = 0;
     for (int i = 0; i < n; i++) {
@@ -1318,12 +1346,13 @@ void process_kill_subtree(int root_pid) {
       break;
   }
 
-  /* Diagnostic (flaky-terminate triage): surface every "spared because it owns a
-   * window" decision.  A child that holds only a TRANSIENT window — e.g. stress's
+  /* Diagnostic (flaky-terminate triage): surface every "spared because it owns
+   * a window" decision.  A child that holds only a TRANSIENT window — e.g.
+   * stress's
    * --gui lane create_window/destroy_window churn — can be window-OWNING at the
    * instant of the probe and so spare ITSELF out of a subtree kill at random.
-   * This line makes that visible: if 'stress' appears here on a shell close, the
-   * window-probe heuristic (not an SMP bug) is what let it survive. */
+   * This line makes that visible: if 'stress' appears here on a shell close,
+   * the window-probe heuristic (not an SMP bug) is what let it survive. */
   for (int i = 0; i < n; i++) {
     if (snap[i].kill || snap[i].windowless || snap[i].pid == root_pid)
       continue;
@@ -1336,14 +1365,14 @@ void process_kill_subtree(int root_pid) {
   }
 
   /* Terminate DESCENDANTS FIRST, the root LAST.  process_terminate(root)
-   * reparents the root's live children to init (__reparent_children), so killing
-   * the root FIRST would ORPHAN any descendant whose own terminate then races —
-   * it becomes unreachable from this subtree (its parent is now init) and
-   * survives (the "closing the shell sometimes leaves stress" flake).  Killing
-   * bottom-up keeps every victim parented to a still-live member of the kill set
-   * until it is reaped; the root, last, then has no windowless children left to
-   * orphan.  process_terminate is idempotent; an already-exited snapshot pid is a
-   * harmless no-op. */
+   * reparents the root's live children to init (__reparent_children), so
+   * killing the root FIRST would ORPHAN any descendant whose own terminate then
+   * races — it becomes unreachable from this subtree (its parent is now init)
+   * and survives (the "closing the shell sometimes leaves stress" flake).
+   * Killing bottom-up keeps every victim parented to a still-live member of the
+   * kill set until it is reaped; the root, last, then has no windowless
+   * children left to orphan.  process_terminate is idempotent; an
+   * already-exited snapshot pid is a harmless no-op. */
   for (int i = 0; i < n; i++)
     if (snap[i].kill && snap[i].pid != root_pid)
       process_terminate(snap[i].pid);
@@ -1528,8 +1557,8 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
   /* SCHED-UAF (#169/#170): re-enqueue the task deferred by the PREVIOUS
    * schedule() on this CPU.  By now we have iretq'd off its kernel stack, so it
-   * is safe for another CPU to run it.  If it was killed while parked here, reap
-   * it instead of resurrecting it (mirrors the DEAD-prev reap path). */
+   * is safe for another CPU to run it.  If it was killed while parked here,
+   * reap it instead of resurrecting it (mirrors the DEAD-prev reap path). */
   if (cpu_ptr->pending_reenqueue) {
     struct process *pr = cpu_ptr->pending_reenqueue;
     cpu_ptr->pending_reenqueue = NULL;
@@ -1759,12 +1788,13 @@ found:
 
   /* SCHED-UAF (#169/#170): switching to a DIFFERENT task.  prev was re-enqueued
    * above (if READY/non-idle); pull it BACK OFF the runqueue and hold it in
-   * pending_reenqueue so no other CPU can work-steal and run it while THIS CPU is
-   * still executing on prev's kernel stack (the IRQ EOI + iretq run on prev's
-   * stack after this schedule() returns; the LAPIC-EOI MMIO write widens that
-   * window on UTM).  The held per-CPU sched_lock kept prev unstealable until now;
-   * it returns to the runqueue at the next schedule() here, after we have iretq'd
-   * off its stack.  Condition mirrors the re-enqueue above exactly. */
+   * pending_reenqueue so no other CPU can work-steal and run it while THIS CPU
+   * is still executing on prev's kernel stack (the IRQ EOI + iretq run on
+   * prev's stack after this schedule() returns; the LAPIC-EOI MMIO write widens
+   * that window on UTM).  The held per-CPU sched_lock kept prev unstealable
+   * until now; it returns to the runqueue at the next schedule() here, after we
+   * have iretq'd off its stack.  Condition mirrors the re-enqueue above
+   * exactly. */
   if (prev && prev->state == PROC_READY && prev->priority != PROC_PRIO_IDLE) {
     __dequeue_task(prev);
     cpu_ptr->pending_reenqueue = prev;
@@ -1779,16 +1809,17 @@ found:
    * reused while a task is still live on it.  That is the cross-CPU frame smash
    * behind the amd64 '#GP on ret, return slot holds a canary / pt_regs word'.
    * Reading other CPUs' current_task without their lock is fine here: a stale
-   * read names a DIFFERENT stack (no false positive); a real alias is persistent
-   * enough to trip.  Panics AT the aliasing switch, naming both PIDs+CPUs. */
+   * read names a DIFFERENT stack (no false positive); a real alias is
+   * persistent enough to trip.  Panics AT the aliasing switch, naming both
+   * PIDs+CPUs. */
   for (int oc = 0; oc < MAX_CPUS; oc++) {
     if (oc == (int)cpu)
       continue;
     struct process *ot = cpu_data[oc].current_task;
     if (ot && ot != next && ot->kernel_stack == next->kernel_stack)
       panic("STACK-ALIAS: CPU%d (PID %d) and CPU%d (PID %d) share kernel_stack "
-            "0x%lx", (int)cpu, (int)next->pid, oc, (int)ot->pid,
-            next->kernel_stack);
+            "0x%lx",
+            (int)cpu, (int)next->pid, oc, (int)ot->pid, next->kernel_stack);
   }
 
   /* Update Page Table (Hardware Context Switch) */

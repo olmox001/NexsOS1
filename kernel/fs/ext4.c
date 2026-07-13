@@ -980,7 +980,10 @@ static int ext4_list(struct vfs_mount *mnt, const char *path, char *buf,
     struct ext4_dir_entry *de = (struct ext4_dir_entry *)dir_buf;
     uint32_t offset = 0;
     while (offset < 4096) {
-      if (de->inode == 0 || de->rec_len < 8)
+      /* Two-sided rec_len guard, same as the lookup path: a corrupt rec_len
+       * larger than the block remainder stops the walk (defence in depth;
+       * the offset re-check below already prevented the OOB dereference). */
+      if (de->inode == 0 || de->rec_len < 8 || de->rec_len > (4096 - offset))
         break;
 
       if (de->name_len > 0) {
@@ -1004,6 +1007,604 @@ static int ext4_list(struct vfs_mount *mnt, const char *path, char *buf,
   return (int)buf_pos;
 }
 
+/* ------------------------------------------------------------------ */
+/* File/dir creation and removal (issue #126, NOTE(M4.5-FS-WRITE))    */
+/*                                                                      */
+/* Everything below mirrors the read/write/allocate patterns already   */
+/* established above (ext4_alloc_block, ext4_lookup_in_dir, ext4_bmap, */
+/* ext4_extent_lookup) instead of inventing new on-disk-format logic.  */
+/* Scope: regular files only (VFS_TYPE_DIR creation / rmdir are out of */
+/* scope for this pass - creating "." / ".." bootstrap adds directory- */
+/* specific complexity nothing here needs yet).                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ext4_sync_bg_sb - write back the in-memory group descriptor + superblock.
+ * Caller holds fs->lock (same write-back pattern as ext4_alloc_block).
+ */
+static void ext4_sync_bg_sb(struct ext4_fs *fs) {
+  uint8_t *bg_buf = kmalloc(512);
+  if (bg_buf && ext4_bread(fs->part_start_lba + 8, 1, bg_buf) == 0) {
+    memcpy(bg_buf, &fs->bg, sizeof(fs->bg));
+    ext4_bwrite(fs->part_start_lba + 8, 1, bg_buf);
+  }
+  if (bg_buf)
+    kfree(bg_buf);
+
+  uint8_t *sb_buf = kmalloc(4096);
+  if (sb_buf && ext4_bread(fs->part_start_lba + 2, 2, sb_buf) == 0) {
+    memcpy(sb_buf, &fs->sb, sizeof(fs->sb));
+    ext4_bwrite(fs->part_start_lba + 2, 2, sb_buf);
+  }
+  if (sb_buf)
+    kfree(sb_buf);
+}
+
+/*
+ * ext4_alloc_inode - allocate one free inode from group 0's inode bitmap.
+ * Mirrors ext4_alloc_block exactly, targeting the inode bitmap/table instead
+ * of the block bitmap.  Bit i of the inode bitmap <-> inode number i+1
+ * (standard ext4 convention; matches get_inode_struct's (ino-1) offset math).
+ * Returns inode number (1-indexed) on success, 0 on failure.
+ */
+static uint32_t ext4_alloc_inode(struct ext4_fs *fs) {
+  if (fs->bg.bg_free_inodes_count_lo == 0) {
+    pr_err("%s", "Ext4: No free inodes in Group 0!\n");
+    return 0;
+  }
+
+  uint64_t bitmap_blk = fs->bg.bg_inode_bitmap_lo;
+  uint8_t *bitmap = kmalloc(4096);
+  if (!bitmap)
+    return 0;
+
+  uint64_t lock_flags;
+  spin_lock_irqsave(&fs->lock, &lock_flags);
+
+  if (ext4_bread(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
+    kfree(bitmap);
+    return 0;
+  }
+
+  uint32_t max_bits = fs->sb.s_inodes_count;
+  if (max_bits > 32768)
+    max_bits = 32768;
+
+  uint32_t inode_bit = 0;
+  int found = 0;
+  for (uint32_t i = 0; i < 4096 && !found; i++) {
+    if (bitmap[i] == 0xFF)
+      continue;
+    for (int bit = 0; bit < 8; bit++) {
+      uint32_t idx = i * 8 + (uint32_t)bit;
+      if (idx >= max_bits)
+        break;
+      if (!((bitmap[i] >> bit) & 1)) {
+        bitmap[i] |= (uint8_t)(1 << bit);
+        inode_bit = idx;
+        found = 1;
+        break;
+      }
+    }
+  }
+
+  if (!found) {
+    pr_err("%s", "Ext4: Inode bitmap check failed (inconsistent with "
+                 "free_count)\n");
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
+    kfree(bitmap);
+    return 0;
+  }
+
+  if (ext4_bwrite(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+    pr_err("%s", "Ext4: Failed to update Inode Bitmap\n");
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
+    kfree(bitmap);
+    return 0;
+  }
+  kfree(bitmap);
+
+  fs->bg.bg_free_inodes_count_lo--;
+  fs->sb.s_free_inodes_count--;
+  ext4_sync_bg_sb(fs);
+  spin_unlock_irqrestore(&fs->lock, lock_flags);
+
+  return inode_bit + 1;
+}
+
+/*
+ * ext4_free_block - release one block back to group 0's bitmap (opposite of
+ * ext4_alloc_block). A block already free (or out of range) is a no-op, so a
+ * double-free never corrupts the free-count.
+ */
+static void ext4_free_block(struct ext4_fs *fs, uint32_t block_in_group) {
+  if (block_in_group == 0)
+    return;
+  uint32_t byte = block_in_group / 8, bit = block_in_group % 8;
+  if (byte >= 4096)
+    return;
+
+  uint64_t bitmap_blk = fs->bg.bg_block_bitmap_lo;
+  uint8_t *bitmap = kmalloc(4096);
+  if (!bitmap)
+    return;
+
+  uint64_t lock_flags;
+  spin_lock_irqsave(&fs->lock, &lock_flags);
+  if (ext4_bread(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
+    kfree(bitmap);
+    return;
+  }
+  if (!((bitmap[byte] >> bit) & 1)) {
+    spin_unlock_irqrestore(&fs->lock, lock_flags); /* already free */
+    kfree(bitmap);
+    return;
+  }
+  bitmap[byte] &= (uint8_t)~(1 << bit);
+  if (ext4_bwrite(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
+    kfree(bitmap);
+    return;
+  }
+  kfree(bitmap);
+
+  fs->bg.bg_free_blocks_count_lo++;
+  fs->sb.s_free_blocks_count_lo++;
+  ext4_sync_bg_sb(fs);
+  spin_unlock_irqrestore(&fs->lock, lock_flags);
+}
+
+/* ext4_free_inode - release one inode bit (opposite of ext4_alloc_inode). */
+static void ext4_free_inode(struct ext4_fs *fs, uint32_t ino) {
+  uint32_t bit = ino - 1;
+  uint32_t byte = bit / 8, b = bit % 8;
+  if (byte >= 4096)
+    return;
+
+  uint64_t bitmap_blk = fs->bg.bg_inode_bitmap_lo;
+  uint8_t *bitmap = kmalloc(4096);
+  if (!bitmap)
+    return;
+
+  uint64_t lock_flags;
+  spin_lock_irqsave(&fs->lock, &lock_flags);
+  if (ext4_bread(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
+    kfree(bitmap);
+    return;
+  }
+  if (!((bitmap[byte] >> b) & 1)) {
+    spin_unlock_irqrestore(&fs->lock, lock_flags); /* already free */
+    kfree(bitmap);
+    return;
+  }
+  bitmap[byte] &= (uint8_t)~(1 << b);
+  if (ext4_bwrite(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+    spin_unlock_irqrestore(&fs->lock, lock_flags);
+    kfree(bitmap);
+    return;
+  }
+  kfree(bitmap);
+
+  fs->bg.bg_free_inodes_count_lo++;
+  fs->sb.s_free_inodes_count++;
+  ext4_sync_bg_sb(fs);
+  spin_unlock_irqrestore(&fs->lock, lock_flags);
+}
+
+/*
+ * ext4_extent_free_tree - recursively free every block an extent (sub)tree
+ * references, INCLUDING interior index-node blocks themselves.  Mirrors
+ * ext4_extent_lookup's descent (same depth bound: the format caps eh_depth
+ * at 5, guarded here against a corrupt tree causing unbounded recursion).
+ * 'node_buf' is the 60-byte root (i_block[]) at depth 0, or a full 4KB
+ * interior/leaf block read by the caller for depth > 0.
+ */
+static void ext4_extent_free_tree(struct ext4_fs *fs, const uint8_t *node_buf,
+                                  int depth_guard) {
+  if (depth_guard > 6)
+    return;
+  const struct ext4_extent_header *eh =
+      (const struct ext4_extent_header *)node_buf;
+  if (eh->eh_magic != EXT4_EXT_MAGIC)
+    return;
+
+  if (eh->eh_depth > 0) {
+    const struct ext4_extent_idx *ix =
+        (const struct ext4_extent_idx *)(eh + 1);
+    for (int i = 0; i < eh->eh_entries; i++) {
+      uint64_t child =
+          ix[i].ei_leaf_lo | ((uint64_t)ix[i].ei_leaf_hi << 32);
+      uint8_t *cbuf = kmalloc(4096);
+      if (cbuf) {
+        if (ext4_bread(fs->part_start_lba + child * 8, 8, cbuf) == 0)
+          ext4_extent_free_tree(fs, cbuf, depth_guard + 1);
+        kfree(cbuf);
+      }
+      ext4_free_block(fs, (uint32_t)child);
+    }
+  } else {
+    const struct ext4_extent *ex = (const struct ext4_extent *)(eh + 1);
+    for (int i = 0; i < eh->eh_entries; i++) {
+      int unwritten = ex[i].ee_len > EXT4_EXT_UNWRITTEN_LEN;
+      uint32_t len =
+          unwritten ? ex[i].ee_len - EXT4_EXT_UNWRITTEN_LEN : ex[i].ee_len;
+      uint64_t start =
+          ex[i].ee_start_lo | ((uint64_t)ex[i].ee_start_hi << 32);
+      for (uint32_t b = 0; b < len; b++)
+        ext4_free_block(fs, (uint32_t)(start + b));
+    }
+  }
+}
+
+/*
+ * ext4_free_inode_blocks - free every data/metadata block an inode owns,
+ * dispatching on EXT4_EXTENTS_FL exactly like ext4_bmap does for reads.
+ */
+static void ext4_free_inode_blocks(struct ext4_fs *fs,
+                                   const struct ext4_inode *inode) {
+  if (inode->i_flags & EXT4_EXTENTS_FL) {
+    ext4_extent_free_tree(fs, (const uint8_t *)inode->i_block, 0);
+    return;
+  }
+
+  for (int i = 0; i < 12; i++)
+    if (inode->i_block[i])
+      ext4_free_block(fs, inode->i_block[i]);
+
+  if (inode->i_block[12]) {
+    uint8_t *ind = kmalloc(4096);
+    if (ind) {
+      if (ext4_bread(fs->part_start_lba + (uint64_t)inode->i_block[12] * 8, 8,
+                     ind) == 0) {
+        const uint32_t *ptrs = (const uint32_t *)ind;
+        for (int i = 0; i < 1024; i++)
+          if (ptrs[i])
+            ext4_free_block(fs, ptrs[i]);
+      }
+      kfree(ind);
+    }
+    ext4_free_block(fs, inode->i_block[12]);
+  }
+
+  if (inode->i_block[13]) {
+    uint8_t *dbl = kmalloc(4096);
+    if (dbl) {
+      if (ext4_bread(fs->part_start_lba + (uint64_t)inode->i_block[13] * 8, 8,
+                     dbl) == 0) {
+        const uint32_t *ptrs = (const uint32_t *)dbl;
+        for (int i = 0; i < 1024; i++) {
+          if (!ptrs[i])
+            continue;
+          uint8_t *sub = kmalloc(4096);
+          if (sub) {
+            if (ext4_bread(fs->part_start_lba + (uint64_t)ptrs[i] * 8, 8,
+                           sub) == 0) {
+              const uint32_t *sptrs = (const uint32_t *)sub;
+              for (int j = 0; j < 1024; j++)
+                if (sptrs[j])
+                  ext4_free_block(fs, sptrs[j]);
+            }
+            kfree(sub);
+          }
+          ext4_free_block(fs, ptrs[i]);
+        }
+      }
+      kfree(dbl);
+    }
+    ext4_free_block(fs, inode->i_block[13]);
+  }
+}
+
+/*
+ * ext4_resolve_parent - split an absolute path into its parent directory's
+ * inode and the final path component (name/name_len), resolving the parent
+ * via the existing ext4_find_ino walk.  Used by create and unlink.
+ */
+static int ext4_resolve_parent(struct ext4_fs *fs, const char *path,
+                               uint32_t *parent_ino_out, const char **name_out,
+                               uint32_t *name_len_out) {
+  const char *last_slash = NULL;
+  for (const char *p = path; *p; p++)
+    if (*p == '/')
+      last_slash = p;
+
+  const char *name = last_slash ? last_slash + 1 : path;
+  uint32_t name_len = (uint32_t)strlen(name);
+  if (name_len == 0 || name_len > 255)
+    return -1;
+  if ((name_len == 1 && name[0] == '.') ||
+      (name_len == 2 && name[0] == '.' && name[1] == '.'))
+    return -1; /* reject creating/removing "." or ".." */
+
+  uint32_t parent_ino;
+  if (!last_slash || last_slash == path) {
+    parent_ino = EXT4_ROOT_INO;
+  } else {
+    char parent_path[256];
+    uint32_t plen = (uint32_t)(last_slash - path);
+    if (plen >= sizeof(parent_path))
+      return -1;
+    memcpy(parent_path, path, plen);
+    parent_path[plen] = '\0';
+    if (ext4_find_ino(fs, parent_path, &parent_ino) != 0)
+      return -1;
+  }
+
+  *parent_ino_out = parent_ino;
+  *name_out = name;
+  *name_len_out = name_len;
+  return 0;
+}
+
+/* dirent_ideal_len - minimal 4-byte-aligned rec_len for a name of this
+ * length (8-byte header + name, rounded up), matching tools/mkdisk.c's
+ * '(8 + nlen + 3) & ~3' convention exactly. */
+static inline uint16_t dirent_ideal_len(uint32_t name_len) {
+  return (uint16_t)((8 + name_len + 3) & ~3u);
+}
+
+/* ext4_write_dir_block - write back one already-mapped logical block of a
+ * directory's data (bmap to physical, then a plain block write). */
+static int ext4_write_dir_block(struct ext4_fs *fs,
+                                const struct ext4_inode *inode,
+                                uint32_t block_idx, const uint8_t *buf) {
+  uint64_t phys;
+  struct ext4_icache c = {{0, 0}, {NULL, NULL}};
+  int rc = ext4_bmap(fs, inode, block_idx, &phys, &c);
+  icache_release(&c);
+  if (rc != 0 || phys == 0)
+    return -1;
+  return ext4_bwrite(fs->part_start_lba + (phys * 8), 8, (void *)buf);
+}
+
+/*
+ * ext4_dir_insert - insert one directory entry (name -> ino) into dir_ino's
+ * data, following the exact same "split trailing slack, else append a new
+ * whole-block entry" convention tools/mkdisk.c uses to build the initial
+ * image (see its rec_len-to-end-of-block handling): the LAST entry in a
+ * block always carries the block's remaining slack in its rec_len, so a
+ * subsequent insert either splits that slack or, if none is left anywhere,
+ * allocates a fresh block and seeds it with one whole-block entry (the new
+ * "last entry") ready to be split by the next insert.
+ *
+ * A dirent with inode==0 is a freed slot (see ext4_dir_remove): its whole
+ * rec_len is reusable, no split needed.
+ *
+ * Only depth-0 extent growth / legacy direct blocks (<12) are supported for
+ * a NEW directory block, matching ext4_write's own EXT4-05 boundary -
+ * directories in this driver are expected to stay small.
+ */
+static int ext4_dir_insert(struct ext4_fs *fs, uint32_t dir_ino,
+                           const char *name, uint32_t name_len,
+                           uint32_t new_ino, uint8_t file_type) {
+  uint16_t need = dirent_ideal_len(name_len);
+
+  struct ext4_inode dir_inode;
+  if (get_inode_struct(fs, dir_ino, &dir_inode) != 0)
+    return -1;
+
+  int is_extent = (dir_inode.i_flags & EXT4_EXTENTS_FL) != 0;
+  uint32_t dir_size = dir_inode.i_size_lo;
+  uint8_t *blk_buf = kmalloc(4096);
+  if (!blk_buf)
+    return -1;
+
+  for (uint32_t bidx = 0; bidx * 4096 < dir_size; bidx++) {
+    if (ext4_read_data(fs, &dir_inode, (uint64_t)bidx * 4096, blk_buf, 4096) <=
+        0)
+      break;
+
+    uint32_t off = 0;
+    while (off < 4096) {
+      struct ext4_dir_entry *de = (struct ext4_dir_entry *)(blk_buf + off);
+      if (de->rec_len < 8 || de->rec_len > (4096 - off))
+        break; /* corrupt/end-of-chain: stop scanning this block */
+
+      uint16_t used = de->inode ? dirent_ideal_len(de->name_len) : 0;
+      uint16_t slack = de->rec_len - used;
+      if (slack >= need) {
+        if (de->inode == 0) {
+          de->inode = new_ino;
+          de->name_len = (uint8_t)name_len;
+          de->file_type = file_type;
+          memcpy(de->name, name, name_len);
+        } else {
+          uint16_t old_rec_len = de->rec_len;
+          de->rec_len = used;
+          struct ext4_dir_entry *nde =
+              (struct ext4_dir_entry *)(blk_buf + off + used);
+          nde->inode = new_ino;
+          nde->rec_len = old_rec_len - used;
+          nde->name_len = (uint8_t)name_len;
+          nde->file_type = file_type;
+          memcpy(nde->name, name, name_len);
+        }
+        int rc = ext4_write_dir_block(fs, &dir_inode, bidx, blk_buf);
+        kfree(blk_buf);
+        return rc;
+      }
+      off += de->rec_len;
+    }
+  }
+
+  /* No slack anywhere: append a new block, seeded with one whole-block
+   * entry (the new "last entry", carrying all of the block's slack). */
+  uint32_t new_blk_idx = (dir_size > 0) ? (dir_size - 1) / 4096 + 1 : 0;
+  uint32_t nb = ext4_alloc_block(fs);
+  if (nb == 0) {
+    kfree(blk_buf);
+    return -1;
+  }
+
+  if (is_extent) {
+    if (!ext4_extent_can_append(&dir_inode, new_blk_idx)) {
+      pr_err("%s", "Ext4: directory extent growth not supported yet\n");
+      kfree(blk_buf);
+      return -1;
+    }
+    ext4_extent_do_append(&dir_inode, new_blk_idx, nb);
+  } else if (new_blk_idx < 12) {
+    dir_inode.i_block[new_blk_idx] = nb;
+  } else {
+    pr_err("%s", "Ext4: directory indirect growth not supported yet\n");
+    kfree(blk_buf);
+    return -1;
+  }
+  dir_inode.i_blocks_lo += (4096 / 512);
+
+  memset(blk_buf, 0, 4096);
+  struct ext4_dir_entry *nde = (struct ext4_dir_entry *)blk_buf;
+  nde->inode = new_ino;
+  nde->rec_len = 4096;
+  nde->name_len = (uint8_t)name_len;
+  nde->file_type = file_type;
+  memcpy(nde->name, name, name_len);
+
+  int rc = ext4_bwrite(fs->part_start_lba + (nb * 8), 8, blk_buf);
+  kfree(blk_buf);
+  if (rc != 0)
+    return -1;
+
+  dir_inode.i_size_lo = (new_blk_idx + 1) * 4096;
+  return ext4_update_inode(fs, dir_ino, &dir_inode);
+}
+
+/*
+ * ext4_dir_remove - clear the directory entry named 'name' in dir_ino
+ * (inode = 0, rec_len kept as-is so ext4_dir_insert can reclaim the slot -
+ * the exact inverse of the "free slot" branch above). Returns 0 found and
+ * cleared, -1 not found.
+ */
+static int ext4_dir_remove(struct ext4_fs *fs, uint32_t dir_ino,
+                           const char *name, uint32_t name_len) {
+  struct ext4_inode dir_inode;
+  if (get_inode_struct(fs, dir_ino, &dir_inode) != 0)
+    return -1;
+
+  uint32_t dir_size = dir_inode.i_size_lo;
+  uint8_t *blk_buf = kmalloc(4096);
+  if (!blk_buf)
+    return -1;
+
+  for (uint32_t bidx = 0; bidx * 4096 < dir_size; bidx++) {
+    if (ext4_read_data(fs, &dir_inode, (uint64_t)bidx * 4096, blk_buf, 4096) <=
+        0)
+      break;
+
+    uint32_t off = 0;
+    while (off < 4096) {
+      struct ext4_dir_entry *de = (struct ext4_dir_entry *)(blk_buf + off);
+      if (de->rec_len < 8 || de->rec_len > (4096 - off))
+        break;
+
+      if (de->inode != 0 && de->name_len == name_len &&
+          memcmp(de->name, name, name_len) == 0) {
+        de->inode = 0;
+        int rc = ext4_write_dir_block(fs, &dir_inode, bidx, blk_buf);
+        kfree(blk_buf);
+        return rc;
+      }
+      off += de->rec_len;
+    }
+  }
+
+  kfree(blk_buf);
+  return -1;
+}
+
+/*
+ * ext4_create - fs_ops.create.  Regular files only (VFS_TYPE_DIR is out of
+ * scope, see file-header comment above this section).  New inodes are
+ * legacy-mapped (i_flags=0, no extent header): ext4_write's existing
+ * direct-block growth path (block_idx < 12) then allocates their first data
+ * block the first time something is written, with zero new code needed here.
+ * Rejects if the path already exists (caller must not race this, single
+ * fs->lock-free window between the vfs_stat/ext4_find_ino checks above this
+ * layer and here - same race class every VFS write already tolerates.)
+ */
+static int ext4_create(struct vfs_mount *mnt, const char *path,
+                       uint32_t vfs_type) {
+  struct ext4_fs *fs = mnt->fs_private;
+  if (fs->read_only)
+    return -1;
+  if (vfs_type != VFS_TYPE_FILE) {
+    pr_err("%s", "Ext4: directory creation not supported yet\n");
+    return -1;
+  }
+
+  uint32_t existing;
+  if (ext4_find_ino(fs, path, &existing) == 0)
+    return -1; /* already exists */
+
+  uint32_t parent_ino;
+  const char *name;
+  uint32_t name_len;
+  if (ext4_resolve_parent(fs, path, &parent_ino, &name, &name_len) != 0)
+    return -1;
+
+  uint32_t new_ino = ext4_alloc_inode(fs);
+  if (new_ino == 0)
+    return -1;
+
+  struct ext4_inode inode;
+  memset(&inode, 0, sizeof(inode));
+  inode.i_mode = 0x8000 | 0644; /* S_IFREG | rw-r--r-- */
+  inode.i_links_count = 1;
+  if (ext4_update_inode(fs, new_ino, &inode) != 0) {
+    ext4_free_inode(fs, new_ino); /* undo: no dirent references it yet */
+    return -1;
+  }
+
+  if (ext4_dir_insert(fs, parent_ino, name, name_len, new_ino,
+                      EXT4_FT_REG_FILE) != 0) {
+    ext4_free_inode(fs, new_ino); /* undo: still no dirent, safe to free */
+    return -1;
+  }
+
+  return 0;
+}
+
+/*
+ * ext4_unlink - fs_ops.unlink.  Regular files only (directories need '.'/
+ * '..'/emptiness handling out of scope here). Order matters for crash
+ * safety: remove the dirent FIRST (so a crash after this point leaves an
+ * orphaned-but-allocated inode+blocks, recoverable, rather than a live
+ * dirent pointing at freed blocks, which would corrupt a later read).
+ */
+static int ext4_unlink(struct vfs_mount *mnt, const char *path) {
+  struct ext4_fs *fs = mnt->fs_private;
+  if (fs->read_only)
+    return -1;
+
+  uint32_t ino;
+  if (ext4_find_ino(fs, path, &ino) != 0)
+    return -1;
+
+  struct ext4_inode inode;
+  if (get_inode_struct(fs, ino, &inode) != 0)
+    return -1;
+  if ((inode.i_mode >> 12) == 4) {
+    pr_err("%s", "Ext4: unlink of a directory not supported yet\n");
+    return -1;
+  }
+
+  uint32_t parent_ino;
+  const char *name;
+  uint32_t name_len;
+  if (ext4_resolve_parent(fs, path, &parent_ino, &name, &name_len) != 0)
+    return -1;
+
+  if (ext4_dir_remove(fs, parent_ino, name, name_len) != 0)
+    return -1;
+
+  ext4_free_inode_blocks(fs, &inode);
+  ext4_free_inode(fs, ino);
+  return 0;
+}
+
 const struct fs_ops ext4_fs_ops = {
     .name = "ext4",
     .mount = ext4_mount,
@@ -1011,4 +1612,6 @@ const struct fs_ops ext4_fs_ops = {
     .read = ext4_read,
     .write = ext4_write,
     .list = ext4_list,
+    .unlink = ext4_unlink,
+    .create = ext4_create,
 };
