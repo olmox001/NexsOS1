@@ -23,10 +23,11 @@ an interactive **TTY shell**.
 
 ---
 variable theme & style now support:
+<img width="1831" height="1146" alt="Screenshot 2026-07-13 alle 05 05 06" src="https://github.com/user-attachments/assets/a1e41dea-feca-462c-a39e-18eb463bfe5f" />
+<img width="1831" height="1146" alt="Screenshot 2026-07-13 alle 05 06 13" src="https://github.com/user-attachments/assets/35f8dfc8-069a-44fa-9aaa-58ad80edb1e3" />
 <img width="1392" height="952" alt="Screenshot 2026-07-05 alle 03 27 30" src="https://github.com/user-attachments/assets/218a4ebf-b848-4f3f-9f4e-4d93a49cd307" />
-<img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 11 24" src="https://github.com/user-attachments/assets/b63535f3-50ea-45fc-98aa-4fb84fd0e602" />
 <img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 10 22" src="https://github.com/user-attachments/assets/137020f5-9ca3-45a5-a330-ac891b4dc0e1" />
-<img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 06 55" src="https://github.com/user-attachments/assets/66467cb1-aff1-45ed-be96-49a83b91e875" />
+
 
 
 
