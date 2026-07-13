@@ -8,3 +8,6 @@ release/*
 tools/mkdisk
 logs/*
 base-nexs
+doom
+ttf2off
+mkfont

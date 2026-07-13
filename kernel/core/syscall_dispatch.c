@@ -821,19 +821,14 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, wperm);
       break;
     }
-    /* File CREATION (issue #126, NOTE(M4.5-FS-WRITE)): a missing path used
-     * to be an unconditional write failure (the provider had no create
-     * support at all). Now that it does, gate creation itself to root/
-     * machine callers - stricter than plain CAP_FS_WRITE, same predicate
-     * the /sys,/bin ACL above already uses for elevated-privilege paths -
-     * so any CAP_FS_WRITE-holding USER process can still overwrite files it
-     * already has, but only ROOT can bring a new file into existence. */
+    /* File CREATION (issue #126, NOTE(M4.5-FS-WRITE)): creation authority
+     * IS write authority for the path — vfs_write_allowed above already
+     * applied the whole tree ACL (/home open to users, guest confined to
+     * /home/shared, /sys/bin machine-only, every other tree root/machine).
+     * The old extra machine-only gate predates /home and kept kilo/doom
+     * from ever creating a file; the tree policy is the single seam now. */
     struct vfs_stat wst;
     if (vfs_stat(resolved_path, &wst) != 0) {
-      if (!proc_is_machine(current_process)) {
-        pt_regs_set_return(frame, -EACCES);
-        break;
-      }
       if (vfs_create(resolved_path, VFS_TYPE_FILE) != 0) {
         pt_regs_set_return(frame, -EIO);
         break;

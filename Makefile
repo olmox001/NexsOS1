@@ -657,9 +657,12 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin/background
 	@mkdir -p $(BUILD_DIR)/rootfs/lib
 	@mkdir -p  $(BUILD_DIR)/rootfs/sys/lib/include
-	@# /home: the user-writable tree (vfs_write_allowed tree ACL — /sys/bin is
-	@# machine-only, /bin and /sys root-only, /home open to CAP_FS_WRITE).
-	@mkdir -p $(BUILD_DIR)/rootfs/home
+	@# /home: the ONLY user-writable tree (vfs_write_allowed tree ACL —
+	@# /sys/bin machine-only, every other tree root-only, guests confined to
+	@# /home/shared).  Pre-created because ext4 has no directory creation yet:
+	@# Documents/doom hosts doom's config+savegames (replaces the hardcoded
+	@mkdir -p $(BUILD_DIR)/rootfs/home/Documents/doom
+	@mkdir -p $(BUILD_DIR)/rootfs/home/shared
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
@@ -672,9 +675,7 @@ rootfs: user
 	@-cp user/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/sys/bin/background/globe.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
 	@-cp user/sys/bin/background/nxduck.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
-	@-cp user/bin/doom/doomsav0.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/bin/doom/doomsav1.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/bin/doom/doomsav2.dsg $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@# doom savegames are runtime-created in /home/Documents/doom now; the
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
 	@-cp user/sys/bin/nxfont/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
@@ -691,8 +692,8 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/api
 	@cp -r include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
 	@# Copy Lua's own test suite next to nxlua, for on-device testing
-	@mkdir -p $(BUILD_DIR)/rootfs//bin/luatest
-	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/bin/luatest/ 2>/dev/null || true
+	@mkdir -p $(BUILD_DIR)/rootfs//home/LUA/luatest
+	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/home/LUA/luatest/ 2>/dev/null || true
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done

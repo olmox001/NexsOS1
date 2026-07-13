@@ -346,19 +346,34 @@ int vfs_write_allowed(const char *resolved_path) {
     return 0; /* machine identity: full filesystem authority */
 
   /* Tree ACL (maintainer policy, docs/userland-port):
+   *   /home             the ONLY tree with expanded authority: every
+   *                     CAP_FS_WRITE holder writes here — except GUEST,
+   *                     confined to /home/shared.
    *   /sys/bin          MACHINE only — the supervised boot chain; even root
    *                     cannot swap init/services out from under init.
-   *   /bin, /sys (lib…) ROOT or machine — system binaries and libraries.
-   *   /home             any CAP_FS_WRITE holder — the user-writable tree.
-   *   everything else   any CAP_FS_WRITE holder (unchanged policy).
+   *   everything else   ROOT or machine (all non-home trees stay closed to
+   *                     ordinary users, as before /home existed).
    * Exact-match guards cover the directory nodes themselves (unlink/create
    * of "/bin" etc.), not just children. */
+  if (strncmp(resolved_path, "/home/", 6) == 0 ||
+      strcmp(resolved_path, "/home") == 0) {
+    if (current_process && current_process->level >= PLVL_GUEST &&
+        !(strncmp(resolved_path, "/home/shared/", 13) == 0 ||
+          strcmp(resolved_path, "/home/shared") == 0)) {
+      pr_warn("vfs: guest PID %d denied write outside /home/shared ('%s')\n",
+              current_process->pid, resolved_path);
+      return -EACCES;
+    }
+    return 0;
+  }
   if (strncmp(resolved_path, "/sys/bin/", 9) == 0 ||
       strcmp(resolved_path, "/sys/bin") == 0) {
     pr_warn("vfs: PID %d denied write to machine-only path '%s'\n",
             current_process ? current_process->pid : 0, resolved_path);
     return -EACCES;
   }
+  /* Explicit system trees (maintainer-requested branch): /bin and /sys
+   * (incl. /sys/lib) are the named root-only trees. */
   if (strncmp(resolved_path, "/sys/", 5) == 0 ||
       strcmp(resolved_path, "/sys") == 0 ||
       strncmp(resolved_path, "/bin/", 5) == 0 ||
@@ -369,6 +384,13 @@ int vfs_write_allowed(const char *resolved_path) {
       return -EACCES;
     }
     return 0;
+  }
+  /* Every remaining tree outside /home (/etc, /fonts, /lib, "/", ...) is
+   * equally closed to ordinary users: only /home has expanded authority. */
+  if (!proc_is_privileged(current_process)) {
+    pr_warn("vfs: PID %d denied write outside /home ('%s')\n",
+            current_process ? current_process->pid : 0, resolved_path);
+    return -EACCES;
   }
   return 0;
 }

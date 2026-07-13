@@ -4,21 +4,29 @@
  * Hardened and Standardized for Determinism
  * Recursive RootFS Support
  */
+#include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-#include <dirent.h>
-#include <sys/stat.h>
 
 #define SECTOR_SIZE 512
-#define DISK_SIZE_MB 96
-#define DISK_SIZE_BYTES (DISK_SIZE_MB * 1024 * 1024)
-#define NUM_SECTORS (DISK_SIZE_BYTES / SECTOR_SIZE)
+/* The image must be sized from the rootfs, not from a stale fixed number.  A
+ * rootfs larger than the declared GPT/ext4 partition used to make stdio's
+ * first runtime allocation address a sector beyond the device, which VirtIO
+ * correctly rejected with VIRTIO_BLK_S_IOERR. */
+#define GPT_NONPARTITION_SECTORS 67 /* LBA 0..33 + backup GPT at the tail */
+#define BLOCKS_PER_MIB (1024 * 1024 / EXT4_BLOCK_SIZE)
+#define MIN_PARTITION_BLOCKS (128 * BLOCKS_PER_MIB)
+/* Room for savegames, editor files and other runtime-created data after the
+ * image's static rootfs.  The VFS owns policy; this is only image capacity. */
+#define RUNTIME_RESERVE_BLOCKS (8 * BLOCKS_PER_MIB)
+#define EXT4_SINGLE_GROUP_MAX_BLOCKS 32768
 
 /* GPT Constants */
 #define GPT_SIGNATURE 0x5452415020494645ULL
@@ -49,9 +57,18 @@ struct guid {
 };
 
 /* Basic GUIDs */
-struct guid TYPE_BOOT = {0x21686148, 0x6449, 0x6E6F, {0x74, 0x4E, 0x65, 0x65, 0x64, 0x45, 0x46, 0x49}};
-struct guid TYPE_KERNEL = {0x0FC63DAF, 0x8483, 0x4772, {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}};
-struct guid TYPE_DATA = {0x0FC63DAF, 0x8483, 0x4772, {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}};
+struct guid TYPE_BOOT = {0x21686148,
+                         0x6449,
+                         0x6E6F,
+                         {0x74, 0x4E, 0x65, 0x65, 0x64, 0x45, 0x46, 0x49}};
+struct guid TYPE_KERNEL = {0x0FC63DAF,
+                           0x8483,
+                           0x4772,
+                           {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}};
+struct guid TYPE_DATA = {0x0FC63DAF,
+                         0x8483,
+                         0x4772,
+                         {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}};
 
 struct gpt_header {
   uint64_t signature;
@@ -223,6 +240,108 @@ static uint32_t free_inodes_count = 1014;
  * handle on real images), 0 = legacy direct/indirect pointers (--legacy). */
 static int use_extents = 1;
 
+/* image_plan mirrors exactly the allocations performed by populate_directory:
+ * one inode + one data block per directory; one inode plus rounded-up data
+ * blocks per regular file; and, for a large extent file, one leaf block per
+ * 340 extent records.  It lets us reserve a valid single-group ext4 partition
+ * before writing the first byte, rather than relying on host-file sparseness.
+ */
+struct image_plan {
+  uint64_t inodes;
+  uint64_t data_blocks;
+  uint64_t extent_leaf_blocks;
+};
+
+static void plan_extent_leaves(struct image_plan *plan, uint64_t data_blocks) {
+  if (!use_extents || data_blocks <= 32)
+    return; /* depth-0 root fits inline in i_block[] */
+  uint64_t extents = (data_blocks + 7) / 8; /* build_extent_tree's cap */
+  plan->extent_leaf_blocks += (extents + 339) / 340;
+}
+
+/* plan_rootfs recursively counts the finite rootfs allocation set.  mkdisk
+ * already requires ordinary files/directories, so fail loudly for an input it
+ * could not faithfully encode instead of producing a subtly undersized image.
+ */
+static void plan_rootfs(const char *host_path, struct image_plan *plan) {
+  struct stat st;
+  if (lstat(host_path, &st) != 0) {
+    perror(host_path);
+    exit(1);
+  }
+  if (S_ISDIR(st.st_mode)) {
+    DIR *dir = opendir(host_path);
+    if (!dir) {
+      perror(host_path);
+      exit(1);
+    }
+    plan->inodes++;
+    plan->data_blocks++;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+      if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+        continue;
+      char child[1024];
+      int n = snprintf(child, sizeof(child), "%s/%s", host_path, ent->d_name);
+      if (n < 0 || (size_t)n >= sizeof(child)) {
+        fprintf(stderr, "mkdisk: path too long below %s\n", host_path);
+        closedir(dir);
+        exit(1);
+      }
+      plan_rootfs(child, plan);
+    }
+    closedir(dir);
+    return;
+  }
+  if (!S_ISREG(st.st_mode)) {
+    fprintf(stderr, "mkdisk: unsupported rootfs entry %s\n", host_path);
+    exit(1);
+  }
+  if (st.st_size < 0) {
+    fprintf(stderr, "mkdisk: negative size for %s\n", host_path);
+    exit(1);
+  }
+  uint64_t blocks =
+      ((uint64_t)st.st_size + EXT4_BLOCK_SIZE - 1) / EXT4_BLOCK_SIZE;
+  plan->inodes++;
+  plan->data_blocks += blocks;
+  plan_extent_leaves(plan, blocks);
+}
+
+static uint64_t plan_partition_blocks(const char *root_host) {
+  struct image_plan plan = {0};
+  plan_rootfs(root_host, &plan);
+
+  if (plan.inodes > 1014) {
+    fprintf(stderr, "mkdisk: rootfs needs %llu inodes; image supports 1014\n",
+            (unsigned long long)plan.inodes);
+    exit(1);
+  }
+
+  uint64_t blocks = BLK_DATA_START + plan.data_blocks +
+                    plan.extent_leaf_blocks + RUNTIME_RESERVE_BLOCKS;
+  if (blocks < MIN_PARTITION_BLOCKS)
+    blocks = MIN_PARTITION_BLOCKS;
+  /* Round to a MiB: a stable image size while preserving exact 4 KiB blocks. */
+  blocks = ((blocks + BLOCKS_PER_MIB - 1) / BLOCKS_PER_MIB) * BLOCKS_PER_MIB;
+  if (blocks > EXT4_SINGLE_GROUP_MAX_BLOCKS) {
+    fprintf(stderr,
+            "mkdisk: rootfs + %u MiB runtime reserve needs %llu blocks; "
+            "the single-group ext4 driver supports at most %u\n",
+            RUNTIME_RESERVE_BLOCKS / BLOCKS_PER_MIB, (unsigned long long)blocks,
+            EXT4_SINGLE_GROUP_MAX_BLOCKS);
+    exit(1);
+  }
+
+  printf("mkdisk: rootfs plan = %llu inodes, %llu data blocks, "
+         "%llu extent leaves; partition = %llu MiB (+%u MiB runtime)\n",
+         (unsigned long long)plan.inodes, (unsigned long long)plan.data_blocks,
+         (unsigned long long)plan.extent_leaf_blocks,
+         (unsigned long long)(blocks / BLOCKS_PER_MIB),
+         RUNTIME_RESERVE_BLOCKS / BLOCKS_PER_MIB);
+  return blocks;
+}
+
 uint32_t crc32(const void *data, size_t n_bytes) {
   uint32_t crc = 0xFFFFFFFF;
   const uint8_t *p = data;
@@ -236,20 +355,35 @@ uint32_t crc32(const void *data, size_t n_bytes) {
 }
 
 void xseek(FILE *f, long offset, int whence) {
-  if (fseek(f, offset, whence) != 0) { perror("fseek"); exit(1); }
+  if (fseek(f, offset, whence) != 0) {
+    perror("fseek");
+    exit(1);
+  }
 }
 
 void xwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
-  if (fwrite(ptr, size, nmemb, stream) != nmemb) { perror("fwrite"); exit(1); }
+  if (fwrite(ptr, size, nmemb, stream) != nmemb) {
+    perror("fwrite");
+    exit(1);
+  }
 }
 
 void *xmalloc(size_t size) {
   void *p = calloc(1, size);
-  if (!p) { perror("malloc"); exit(1); }
+  if (!p) {
+    perror("malloc");
+    exit(1);
+  }
   return p;
 }
 
 void mark_block_used(uint32_t block) {
+  if (block >= total_blocks) {
+    fprintf(stderr,
+            "mkdisk: internal error: block %u exceeds partition (%u blocks)\n",
+            block, total_blocks);
+    exit(1);
+  }
   int byte = block / 8;
   int bit = block % 8;
   block_bitmap[byte] |= (1 << bit);
@@ -338,25 +472,32 @@ void build_extent_tree(FILE *f, uint64_t partition_offset_bytes,
       ex[k].ee_start_lo = first_block + ei * cap;
     }
 
-    xseek(f, partition_offset_bytes + (uint64_t)leaf_blk * EXT4_BLOCK_SIZE, SEEK_SET);
+    xseek(f, partition_offset_bytes + (uint64_t)leaf_blk * EXT4_BLOCK_SIZE,
+          SEEK_SET);
     xwrite(lb, 1, EXT4_BLOCK_SIZE, f);
     free(lb);
   }
 }
 
-void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inode_num, const char *src_path) {
-  uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE + (uint64_t)(inode_num - 1) * EXT4_INODE_SIZE;
+void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
+                         uint32_t inode_num, const char *src_path) {
+  uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE +
+                          (uint64_t)(inode_num - 1) * EXT4_INODE_SIZE;
   struct ext4_inode file_inode = {0};
   file_inode.i_mode = 0x81C0;
   file_inode.i_links_count = 1;
 
   FILE *src = fopen(src_path, "rb");
-  if (!src) return;
+  if (!src)
+    return;
   fseek(src, 0, SEEK_END);
   long src_size = ftell(src);
   rewind(src);
   uint8_t *buf = xmalloc(src_size);
-  if (fread(buf, 1, src_size, src) != (size_t)src_size) { perror("fread"); exit(1); }
+  if (fread(buf, 1, src_size, src) != (size_t)src_size) {
+    perror("fread");
+    exit(1);
+  }
   fclose(src);
 
   file_inode.i_size_lo = (uint32_t)src_size;
@@ -374,17 +515,24 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inod
     for (uint32_t i = 0; i < data_blocks; i++) {
       uint32_t b = next_free_block++;
       mark_block_used(b);
-      xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE, SEEK_SET);
-      uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE) ? (src_size % EXT4_BLOCK_SIZE) : EXT4_BLOCK_SIZE;
+      xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE,
+            SEEK_SET);
+      uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE)
+                              ? (src_size % EXT4_BLOCK_SIZE)
+                              : EXT4_BLOCK_SIZE;
       xwrite(buf + i * EXT4_BLOCK_SIZE, 1, to_write, f);
     }
-    build_extent_tree(f, partition_offset_bytes, &file_inode, first_block, data_blocks, &total_meta_blocks);
+    build_extent_tree(f, partition_offset_bytes, &file_inode, first_block,
+                      data_blocks, &total_meta_blocks);
 
-    file_inode.i_blocks_lo = (data_blocks + total_meta_blocks) * (EXT4_BLOCK_SIZE / 512);
+    file_inode.i_blocks_lo =
+        (data_blocks + total_meta_blocks) * (EXT4_BLOCK_SIZE / 512);
     xseek(f, inode_offset, SEEK_SET);
     xwrite(&file_inode, 1, sizeof(file_inode), f);
     free(buf);
-    printf("Ext4: Added %s (Ino %d, %ld bytes, %d data, %d meta blocks, extents)\n", src_path, inode_num, src_size, data_blocks, total_meta_blocks);
+    printf("Ext4: Added %s (Ino %d, %ld bytes, %d data, %d meta blocks, "
+           "extents)\n",
+           src_path, inode_num, src_size, data_blocks, total_meta_blocks);
     return;
   }
 
@@ -394,7 +542,9 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inod
 
     /* Write data block */
     xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE, SEEK_SET);
-    uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE) ? (src_size % EXT4_BLOCK_SIZE) : EXT4_BLOCK_SIZE;
+    uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE)
+                            ? (src_size % EXT4_BLOCK_SIZE)
+                            : EXT4_BLOCK_SIZE;
     xwrite(buf + i * EXT4_BLOCK_SIZE, 1, to_write, f);
 
     if (i < 12) {
@@ -430,33 +580,44 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inod
 
   /* Flush Metadata Blocks */
   if (indir1) {
-    xseek(f, partition_offset_bytes + (uint64_t)file_inode.i_block[12] * EXT4_BLOCK_SIZE, SEEK_SET);
+    xseek(f,
+          partition_offset_bytes +
+              (uint64_t)file_inode.i_block[12] * EXT4_BLOCK_SIZE,
+          SEEK_SET);
     xwrite(indir1, 1, EXT4_BLOCK_SIZE, f);
     free(indir1);
   }
   if (indir2) {
     for (int i = 0; i < 1024; i++) {
       if (indir2_subs[i]) {
-        xseek(f, partition_offset_bytes + (uint64_t)indir2[i] * EXT4_BLOCK_SIZE, SEEK_SET);
+        xseek(f, partition_offset_bytes + (uint64_t)indir2[i] * EXT4_BLOCK_SIZE,
+              SEEK_SET);
         xwrite(indir2_subs[i], 1, EXT4_BLOCK_SIZE, f);
         free(indir2_subs[i]);
       }
     }
-    xseek(f, partition_offset_bytes + (uint64_t)file_inode.i_block[13] * EXT4_BLOCK_SIZE, SEEK_SET);
+    xseek(f,
+          partition_offset_bytes +
+              (uint64_t)file_inode.i_block[13] * EXT4_BLOCK_SIZE,
+          SEEK_SET);
     xwrite(indir2, 1, EXT4_BLOCK_SIZE, f);
     free(indir2);
   }
 
-  file_inode.i_blocks_lo = (data_blocks + total_meta_blocks) * (EXT4_BLOCK_SIZE / 512);
+  file_inode.i_blocks_lo =
+      (data_blocks + total_meta_blocks) * (EXT4_BLOCK_SIZE / 512);
 
   xseek(f, inode_offset, SEEK_SET);
   xwrite(&file_inode, 1, sizeof(file_inode), f);
   free(buf);
-  printf("Ext4: Added %s (Ino %d, %ld bytes, %d data, %d meta blocks)\n", src_path, inode_num, src_size, data_blocks, total_meta_blocks);
+  printf("Ext4: Added %s (Ino %d, %ld bytes, %d data, %d meta blocks)\n",
+         src_path, inode_num, src_size, data_blocks, total_meta_blocks);
 }
 
-void write_directory_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t inode_num, uint32_t data_block) {
-  uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE + (uint64_t)(inode_num - 1) * EXT4_INODE_SIZE;
+void write_directory_inode(FILE *f, uint64_t partition_offset_bytes,
+                           uint32_t inode_num, uint32_t data_block) {
+  uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE +
+                          (uint64_t)(inode_num - 1) * EXT4_INODE_SIZE;
   struct ext4_inode inode = {0};
   inode.i_mode = 0x41ED;
   inode.i_links_count = 2;
@@ -473,14 +634,19 @@ void write_directory_inode(FILE *f, uint64_t partition_offset_bytes, uint32_t in
 }
 
 uint8_t get_ext4_type(mode_t mode) {
-    if (S_ISREG(mode)) return 1;
-    if (S_ISDIR(mode)) return 2;
+  if (S_ISREG(mode))
     return 1;
+  if (S_ISDIR(mode))
+    return 2;
+  return 1;
 }
 
-void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode, uint32_t parent_inode, uint64_t partition_offset_bytes) {
+void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode,
+                        uint32_t parent_inode,
+                        uint64_t partition_offset_bytes) {
   DIR *dir = opendir(host_path);
-  if (!dir) return;
+  if (!dir)
+    return;
 
   uint32_t data_blk_num = next_free_block++;
   mark_block_used(data_blk_num);
@@ -490,18 +656,37 @@ void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode, uint
   int off = 0;
 
   struct ext4_dir_entry *de = (struct ext4_dir_entry *)&dir_blk[off];
-  de->inode = dir_inode; de->rec_len = 12; de->name_len = 1; de->file_type = 2; memcpy(de->name, ".", 1); off += 12;
+  de->inode = dir_inode;
+  de->rec_len = 12;
+  de->name_len = 1;
+  de->file_type = 2;
+  memcpy(de->name, ".", 1);
+  off += 12;
   de = (struct ext4_dir_entry *)&dir_blk[off];
-  de->inode = parent_inode; de->rec_len = 12; de->name_len = 2; de->file_type = 2; memcpy(de->name, "..", 2); off += 12;
+  de->inode = parent_inode;
+  de->rec_len = 12;
+  de->name_len = 2;
+  de->file_type = 2;
+  memcpy(de->name, "..", 2);
+  off += 12;
 
-  struct entry { char name[256]; uint32_t inode; uint8_t type; char path[1024]; } entries[64];
+  struct entry {
+    char name[256];
+    uint32_t inode;
+    uint8_t type;
+    char path[1024];
+  } entries[64];
   int count = 0;
   struct dirent *ent;
   while ((ent = readdir(dir)) && count < 64) {
-    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0 || ent->d_name[0] == '.') continue;
-    char p[1024]; snprintf(p, 1024, "%s/%s", host_path, ent->d_name);
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0 ||
+        ent->d_name[0] == '.')
+      continue;
+    char p[1024];
+    snprintf(p, 1024, "%s/%s", host_path, ent->d_name);
     struct stat st;
-    if (stat(p, &st) != 0) continue;
+    if (stat(p, &st) != 0)
+      continue;
     uint32_t ino = current_free_inode++;
     mark_inode_used(ino);
     strcpy(entries[count].name, ent->d_name);
@@ -520,72 +705,121 @@ void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode, uint
     count++;
   }
   if (off > 24) {
-      int last_off = 0, cur = 0;
-      while (cur < off) { last_off = cur; cur += ((struct ext4_dir_entry *)&dir_blk[cur])->rec_len; }
-      ((struct ext4_dir_entry *)&dir_blk[last_off])->rec_len = EXT4_BLOCK_SIZE - last_off;
+    int last_off = 0, cur = 0;
+    while (cur < off) {
+      last_off = cur;
+      cur += ((struct ext4_dir_entry *)&dir_blk[cur])->rec_len;
+    }
+    ((struct ext4_dir_entry *)&dir_blk[last_off])->rec_len =
+        EXT4_BLOCK_SIZE - last_off;
   } else {
-      ((struct ext4_dir_entry *)&dir_blk[12])->rec_len = EXT4_BLOCK_SIZE - 12;
+    ((struct ext4_dir_entry *)&dir_blk[12])->rec_len = EXT4_BLOCK_SIZE - 12;
   }
 
-  xseek(f, partition_offset_bytes + (uint64_t)data_blk_num * EXT4_BLOCK_SIZE, SEEK_SET);
+  xseek(f, partition_offset_bytes + (uint64_t)data_blk_num * EXT4_BLOCK_SIZE,
+        SEEK_SET);
   xwrite(dir_blk, 1, EXT4_BLOCK_SIZE, f);
   free(dir_blk);
   closedir(dir);
 
   for (int i = 0; i < count; i++) {
-    if (entries[i].type == 2) populate_directory(f, entries[i].path, entries[i].inode, dir_inode, partition_offset_bytes);
-    else write_file_to_inode(f, partition_offset_bytes, entries[i].inode, entries[i].path);
+    if (entries[i].type == 2)
+      populate_directory(f, entries[i].path, entries[i].inode, dir_inode,
+                         partition_offset_bytes);
+    else
+      write_file_to_inode(f, partition_offset_bytes, entries[i].inode,
+                          entries[i].path);
   }
 }
 
-void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors, const char *root_host) {
+void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
+                          const char *root_host) {
   uint64_t start_off = start_lba * SECTOR_SIZE;
   total_blocks = (size_sectors * SECTOR_SIZE) / EXT4_BLOCK_SIZE;
   free_blocks_count = total_blocks;
   block_bitmap = xmalloc(EXT4_BLOCK_SIZE);
   inode_bitmap = xmalloc(EXT4_BLOCK_SIZE);
 
-  for (int i = 0; i < 4; i++) mark_block_used(i);
-  for (int i = 0; i < INODE_TABLE_BLOCKS; i++) mark_block_used(BLK_INODE_TABLE + i);
-  for (int i = 1; i <= 10; i++) mark_inode_used(i);
+  for (int i = 0; i < 4; i++)
+    mark_block_used(i);
+  for (int i = 0; i < INODE_TABLE_BLOCKS; i++)
+    mark_block_used(BLK_INODE_TABLE + i);
+  for (int i = 1; i <= 10; i++)
+    mark_inode_used(i);
 
   mark_inode_used(2);
   populate_directory(f, root_host, 2, 2, start_off);
 
   xseek(f, start_off + EXT4_SUPERBLOCK_OFFSET, SEEK_SET);
   struct ext4_superblock sb = {0};
-  sb.s_inodes_count = 1024; sb.s_blocks_count_lo = total_blocks; sb.s_free_blocks_count_lo = free_blocks_count;
-  sb.s_free_inodes_count = free_inodes_count; sb.s_log_block_size = 2; sb.s_magic = EXT4_MAGIC;
-  sb.s_state = 1; sb.s_rev_level = 1; sb.s_first_ino = 11; sb.s_inode_size = EXT4_INODE_SIZE;
+  sb.s_inodes_count = 1024;
+  sb.s_blocks_count_lo = total_blocks;
+  sb.s_free_blocks_count_lo = free_blocks_count;
+  sb.s_free_inodes_count = free_inodes_count;
+  sb.s_log_block_size = 2;
+  sb.s_magic = EXT4_MAGIC;
+  sb.s_blocks_per_group = total_blocks;
+  sb.s_inodes_per_group = 1024;
+  sb.s_state = 1;
+  sb.s_rev_level = 1;
+  sb.s_first_ino = 11;
+  sb.s_inode_size = EXT4_INODE_SIZE;
   /* Declare what the image actually uses so the kernel's INCOMPAT whitelist
    * is a tested path (extent inodes + typed directory entries). */
   if (use_extents)
-    sb.s_feature_incompat = EXT4_FEATURE_INCOMPAT_FILETYPE | EXT4_FEATURE_INCOMPAT_EXTENTS;
+    sb.s_feature_incompat =
+        EXT4_FEATURE_INCOMPAT_FILETYPE | EXT4_FEATURE_INCOMPAT_EXTENTS;
   xwrite(&sb, 1, sizeof(sb), f);
 
   xseek(f, start_off + EXT4_BLOCK_SIZE, SEEK_SET);
   struct ext4_group_desc bg = {0};
-  bg.bg_block_bitmap_lo = BLK_BLK_BITMAP; bg.bg_inode_bitmap_lo = BLK_INODE_BITMAP;
-  bg.bg_inode_table_lo = BLK_INODE_TABLE; bg.bg_free_blocks_count_lo = free_blocks_count;
+  bg.bg_block_bitmap_lo = BLK_BLK_BITMAP;
+  bg.bg_inode_bitmap_lo = BLK_INODE_BITMAP;
+  bg.bg_inode_table_lo = BLK_INODE_TABLE;
+  bg.bg_free_blocks_count_lo = free_blocks_count;
   bg.bg_free_inodes_count_lo = free_inodes_count;
   xwrite(&bg, 1, sizeof(bg), f);
 
-  xseek(f, start_off + BLK_BLK_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET); xwrite(block_bitmap, 1, EXT4_BLOCK_SIZE, f);
-  xseek(f, start_off + BLK_INODE_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET); xwrite(inode_bitmap, 1, EXT4_BLOCK_SIZE, f);
+  xseek(f, start_off + BLK_BLK_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET);
+  xwrite(block_bitmap, 1, EXT4_BLOCK_SIZE, f);
+  xseek(f, start_off + BLK_INODE_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET);
+  xwrite(inode_bitmap, 1, EXT4_BLOCK_SIZE, f);
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 5) { fprintf(stderr, "Usage: %s <img.img> <boot.bin> <kernel.bin> <root_dir> [--legacy|--extents]\n", argv[0]); return 1; }
+  if (argc < 5) {
+    fprintf(stderr,
+            "Usage: %s <img.img> <boot.bin> <kernel.bin> <root_dir> "
+            "[--legacy|--extents]\n",
+            argv[0]);
+    return 1;
+  }
   const char *boot_path = argv[2], *kern_path = argv[3], *root_dir = argv[4];
-  if (argc > 5 && strcmp(argv[5], "--legacy") == 0) use_extents = 0;
-  printf("mkdisk: inode layout = %s\n", use_extents ? "extents" : "legacy (indirect blocks)");
+  if (argc > 5 && strcmp(argv[5], "--legacy") == 0)
+    use_extents = 0;
+  printf("mkdisk: inode layout = %s\n",
+         use_extents ? "extents" : "legacy (indirect blocks)");
+  uint64_t partition_blocks = plan_partition_blocks(root_dir);
+  uint64_t disk_sectors =
+      partition_blocks * EXT4_SECTORS_PER_BLOCK + GPT_NONPARTITION_SECTORS;
+  uint64_t disk_size_bytes = disk_sectors * SECTOR_SIZE;
 
   FILE *f = fopen(argv[1], "wb+");
-  xseek(f, DISK_SIZE_BYTES - 1, SEEK_SET); fputc(0, f); rewind(f);
+  if (!f) {
+    perror(argv[1]);
+    return 1;
+  }
+  xseek(f, (long)disk_size_bytes - 1, SEEK_SET);
+  fputc(0, f);
+  rewind(f);
 
-  uint8_t mbr[SECTOR_SIZE] = {0}; mbr[510] = 0x55; mbr[511] = 0xAA;
+  uint8_t mbr[SECTOR_SIZE] = {0};
+  mbr[510] = 0x55;
+  mbr[511] = 0xAA;
   struct mbr_entry *me = (struct mbr_entry *)&mbr[446];
-  me->type = 0xEE; me->lba_start = 1; me->sectors = NUM_SECTORS - 1;
+  me->type = 0xEE;
+  me->lba_start = 1;
+  me->sectors = (uint32_t)disk_sectors - 1;
   xwrite(mbr, 1, SECTOR_SIZE, f);
 
   /* Userland-only standard image: a single ext4 rootfs partition.  The old
@@ -598,16 +832,30 @@ int main(int argc, char *argv[]) {
   (void)kern_path;
   uint8_t *entries = xmalloc(128 * 128);
   struct gpt_partition_entry *e = (struct gpt_partition_entry *)entries;
-  e[0].type_guid = TYPE_DATA; e[0].start_lba = 34; e[0].end_lba = NUM_SECTORS - 34;
+  e[0].type_guid = TYPE_DATA;
+  e[0].start_lba = 34;
+  e[0].end_lba = disk_sectors - 34;
 
-  struct gpt_header h = {0}; h.signature = GPT_SIGNATURE; h.revision = GPT_REVISION; h.header_size = 92;
-  h.my_lba = 1; h.alternate_lba = NUM_SECTORS - 1; h.first_usable_lba = 34; h.last_usable_lba = NUM_SECTORS - 34;
-  h.partition_entry_lba = 2; h.num_partition_entries = 128; h.partition_entry_size = 128;
-  h.partition_entry_crc32 = crc32(entries, 128 * 128); h.header_crc32 = crc32(&h, 92);
+  struct gpt_header h = {0};
+  h.signature = GPT_SIGNATURE;
+  h.revision = GPT_REVISION;
+  h.header_size = 92;
+  h.my_lba = 1;
+  h.alternate_lba = disk_sectors - 1;
+  h.first_usable_lba = 34;
+  h.last_usable_lba = disk_sectors - 34;
+  h.partition_entry_lba = 2;
+  h.num_partition_entries = 128;
+  h.partition_entry_size = 128;
+  h.partition_entry_crc32 = crc32(entries, 128 * 128);
+  h.header_crc32 = crc32(&h, 92);
   xwrite(&h, 1, sizeof(h), f);
-  uint8_t pad[SECTOR_SIZE - sizeof(h)] = {0}; xwrite(pad, 1, sizeof(pad), f);
+  uint8_t pad[SECTOR_SIZE - sizeof(h)] = {0};
+  xwrite(pad, 1, sizeof(pad), f);
   xwrite(entries, 1, 128 * 128, f);
 
-  write_ext4_partition(f, e[0].start_lba, e[0].end_lba - e[0].start_lba + 1, root_dir);
-  fclose(f); return 0;
+  write_ext4_partition(f, e[0].start_lba, e[0].end_lba - e[0].start_lba + 1,
+                       root_dir);
+  fclose(f);
+  return 0;
 }
