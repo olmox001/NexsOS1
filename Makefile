@@ -41,8 +41,8 @@ COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
 ifeq ($(ARCH), amd64)
     CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
     KERNEL_DIR = kernel
-    BOOT_DIR   = boot/amd64
     ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
+BOOT_DIR   = $(ARCH_DIR)/boot
     
     ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large
     ASFLAGS = -g --fatal-warnings
@@ -55,8 +55,8 @@ ifeq ($(ARCH), amd64)
 else
     CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
     KERNEL_DIR = kernel
-    BOOT_DIR   = boot/aarch64
     ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
+BOOT_DIR   = $(ARCH_DIR)/boot
     
     ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57 $(AARCH64_ARCH_CFLAGS_EXTRA)
     ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
@@ -120,11 +120,11 @@ BOOT_SOURCES = \
     $(BOOT_DIR)/stage2.S
 
 KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/boot/start.S \
+    $(ARCH_DIR)/kinit/start.S \
     $(ARCH_DIR)/cpu/isr_stubs.S \
     $(ARCH_DIR)/cpu/syscall.S \
     $(ARCH_DIR)/cpu/context.S \
-    $(ARCH_DIR)/boot/trampoline.S
+    $(ARCH_DIR)/kinit/trampoline.S
 
 KERN_C_SOURCES = \
     $(ARCH_DIR)/cpu/cpu.c \
@@ -148,7 +148,7 @@ BOOT_SOURCES = \
     $(BOOT_DIR)/stage2.S
 
 KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/boot/start.S \
+    $(ARCH_DIR)/kinit/start.S \
     $(ARCH_DIR)/cpu/exception.S
 
 KERN_C_SOURCES = \
