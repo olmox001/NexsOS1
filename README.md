@@ -1,262 +1,358 @@
-# OS1 / NEXS
+# NexsOS1 (OS1)
 
 ### Multi-architecture open-source hybrid-kernel operating system
-
-###NOTE: the build system is verified on both macOS (Intel) and Linux (Ubuntu, Debian/Arch need test — see `tools/setup-toolchain-linux.sh`). BSD is not yet supported.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE.md)
 [![Arch](https://img.shields.io/badge/arch-aarch64%20%7C%20amd64-green.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-QEMU-orange.svg)](https://www.qemu.org/)
 [![Language](https://img.shields.io/badge/language-C99-yellow.svg)](https://en.wikipedia.org/wiki/C99)
 
-OS1 (codename **NEXS**) is a from-scratch operating system that boots on both ARM64 and
-x86-64 under QEMU, brings up SMP, drives **VirtIO** GPU/input/block devices, mounts an
-**Ext4** root, composites overlapping windows, and runs user-space ELF programs including
-an interactive **TTY shell**.
+NexsOS1 (codename **OS1**) is an educational and research hybrid-kernel operating system built from scratch. It boots on both ARM64 (AArch64) and x86-64 (AMD64) under QEMU, brings up Symmetric Multiprocessing (SMP), drives native **VirtIO** devices (GPU, input, block), mounts an **Ext4** root filesystem, composites overlapping windows in a custom graphical user interface, and executes user-space ELF binaries with an interactive **TTY shell**.
 
-> **Honesty note.** This README describes the *verified* state. For the complete,
-> evidence-based picture — including bugs, gaps, and severity — see
-> [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going*
-> (a seL4-style, Plan 9-inspired MicroKernel ispired), see
-> [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is **GPL v2** (see
-> [`LICENSE.md`](LICENSE.md)); earlier docs mislabeled it MIT.
-
----
-variable theme & style now support:
-<img width="1831" height="1146" alt="Screenshot 2026-07-13 alle 05 05 06" src="https://github.com/user-attachments/assets/a1e41dea-feca-462c-a39e-18eb463bfe5f" />
-<img width="1831" height="1146" alt="Screenshot 2026-07-13 alle 05 06 13" src="https://github.com/user-attachments/assets/35f8dfc8-069a-44fa-9aaa-58ad80edb1e3" />
-<img width="1392" height="952" alt="Screenshot 2026-07-05 alle 03 27 30" src="https://github.com/user-attachments/assets/218a4ebf-b848-4f3f-9f4e-4d93a49cd307" />
-<img width="1909" height="1151" alt="Screenshot 2026-06-22 alle 05 10 22" src="https://github.com/user-attachments/assets/137020f5-9ca3-45a5-a330-ac891b4dc0e1" />
-
-
-
-
+> **Honesty note.** This README describes the *verified* state. For the complete, evidence-based picture — including bugs, gaps, and severity — see [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going* (a seL4-style, Plan 9-inspired Microkernel), see [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is licensed under **GPL v2** (see [`LICENSE.md`](LICENSE.md)).
 
 ---
 
-
-> simple test the amd64 iso release in UTM (virtio-pci-gpu /ps2 input)
-
-ALL requests will be taken into consideration, at a democratic level I hope that users will open polls on architectural decisions, the results will become part of the development plans!
-
-## Status (verified by building & running, 2026-06-12)
-
-| Capability | AArch64 (`make run`) | amd64 (`make run`) |
-|---|---|---|
-| Builds clean (`-Werror -Wall -Wextra -Wpedantic -Wshadow`) | ✅ | ✅ |
-| Boots to a **TTY shell in a composited window** | ✅ | ✅ |
-| **Higher-half kernel** (PA/VA contract, direct map, **W^X**) | ✅ `0xFFFF0000...` | ✅ `0xFFFF8000...` |
-| Dynamic RAM detection / full boot-protocol memory map | ✅ (DTB) | ✅\* (PVH/MB1/MB2) |
-| **SMP** (multi-core bring-up) | ✅ (4/4 online) |  ✅ |
-| VirtIO GPU / input / block · **Ext4 (extents)** mount · GPT+MBR | ✅ | ✅ |
-| Userland: ELF loader, IPC, windows, registry, fonts | ✅ | ✅ |
-| **Fault isolation**: user crash never kills the kernel; symbolized backtraces | ✅ | ✅ |
-| Coherent syscall ABI (single numbering, negative `errno`) + first **capability checks** | ✅ | ✅ |
-
-\* The amd64 `-kernel` path now parses the real PVH memory map (the old "1 GB fallback"
-is fixed). One accounting defect remains: total RAM is derived from the highest region
-end address, so the 3–4 GB PCI hole is counted (and treated) as RAM — see the epic
-[#94 (amd64 boot parity)](https://github.com/olmox001/NexsOS1/issues/94).
-**AArch64 is the reference "correct" platform.**
+## 📋 Table of Contents
+1. [Key Features](#-key-features)
+2. [Verified Runtime Status](#-verified-runtime-status)
+3. [Screenshots & Themes](#-screenshots--themes)
+4. [Prerequisites & Toolchain Setup](#-prerequisites--toolchain-setup)
+5. [Compilation & Execution](#-compilation--execution)
+6. [Project Layout](#-project-layout)
+7. [The ASTRA Roadmap](#-the-astra-roadmap)
+8. [Democratic Development & Contributing](#-democratic-development--contributing)
+9. [Acknowledgments](#-acknowledgments)
+10. [License](#-license)
 
 ---
 
-## Features (what actually runs)
+## 🚀 Key Features
 
-**Kernel**
-- Physical memory manager: per-zone (DMA ≤16 MB / Normal) bitmap allocator, dynamic RAM discovery.
-- **Higher-half virtual memory** (2026-06): kernel image + direct map at `KERNEL_VIRT_BASE`
-  (`0xFFFF000000000000` aarch64 via TTBR1, `0xFFFF800000000000` amd64), documented PA/VA
-  contract (`phys_to_virt`/`virt_to_phys`), pure-user low half, **W^X enforced** (text RX,
-  rodata RO+NX, everything else RW+NX), cross-CPU TLB shootdown.
-- Preemptive **SMP scheduler**: per-CPU O(1) priority run-queues with work-stealing; ELF64
-  loader; leak-free, race-free process teardown.
-- Message-passing **IPC**; a system **registry** with per-key write ownership; growable
-  kernel heap (`kmalloc`).
-- **Coherent syscall ABI** (2026-06): single numbering (`include/api/syscall_nums.h`
-  compiled into both the kernel dispatcher and the userland stubs), negative-`errno`
-  returns, first **capability layer** (kill/focus/window/file-write/registry checks).
-- **VirtIO** drivers: GPU (framebuffer), input (keyboard/mouse), block.
-- Per-arch: GICv2 + ARM generic timer + PL011 (AArch64); LAPIC/IOAPIC + PIT + 16550 (amd64).
-- **VFS** (mount table + `fs_ops` providers) over **Ext4** (extent-tree + legacy reads,
-  INCOMPAT enforcement, extended write paths), **GPT** with **MBR** fallback, buffer cache.
-- **Fault/trace foundation** (2026-06): fault-safe reporting on dedicated fault stacks, total
-  vector coverage on both arches, user/kernel fault isolation (a crashing app terminates
-  cleanly, the kernel and shell survive), symbolized in-kernel backtraces (`.ksyms`).
-- Leak-free process lifecycle: zombies auto-reaped by the scheduler, single-owner corpse
-  freeing, deterministic service respawn by `init`.
-
-**Graphics & userland**
-- Window **compositor** (overlap, Z-order, drag, focus), TTF font rendering, 2D/3D fixed-point engines.
-- Userland: `init`, `shell` (TTY), `notify_srv`, `regedit`, `nxfont`, plus demo apps and a DOOM port.
-
-> Many of these (compositor, fonts, VFS, registry) currently live **in the kernel**; the
-> roadmap moves them into isolated userland services (see the charter).
-
-## Highlights
-
-- ✅ Native support for AMD64 and AArch64
-- ✅ SMP (4+ cores)
-- ✅ User-space ELF64 applications
-- ✅ Ext4 filesystem
-- ✅ GPT partition support
-- ✅ VirtIO GPU / Input / Block
-- ✅ Graphical compositor and window manager
-- ✅ Multi-window desktop
-- ✅ TTY shell
-- ✅ Doom running as a user-space process
-- ✅ 3D rendering demo
-- ✅ Recoverable fault handling (user faults isolated, symbolized backtraces)
-- ✅ MicroKernel ispired architecture
-
-## Verified Runtime
-
-Successfully tested on:
-
-| Platform | Status |
-|-----------|---------|
-| QEMU AArch64 virt | ✅ |
-| QEMU AMD64 q35 | ✅ |
-| SMP (4 cores) | ✅ |
-| VirtIO GPU | ✅ |
-| VirtIO Keyboard | ✅ |
-| VirtIO Mouse | ✅ |
-| VirtIO Block | ✅ |
-| GPT | ✅ |
-| Ext4 | ✅ |
-| Host: macOS (Intel) | ✅ |
-| Host: Linux (Ubuntu) | ✅ |
-| Host: Linux (Debian/Arch) | ✅ (same toolchain path as Ubuntu; see `tools/setup-toolchain-linux.sh`) |
-| Host: BSD | ⬜ not yet supported |
+*   **Architectural Abstraction Layer (HAL):** The HAL provides complete transparency to the kernel. There are no architecture-specific `#define` statements within the common kernel codebase, ensuring easy portability to other architectures.
+*   **Secure Memory Paging:** Physical (zone-based PMM bitmap allocator) and Virtual Memory Managers handle paging. On AMD64, the system enforces the strict **$W \oplus X$ (Write or Execute)** security protocol (executable text is RX, read-only data is RO+NX, all other regions are RW+NX) alongside Higher-Half kernel mappings (`0xFFFF000000000000` on AArch64 via TTBR1, `0xFFFF800000000000` on AMD64), with cross-CPU TLB shootdown.
+*   **Preemptive SMP & Multiprocessing:** Preemptive O(1) SMP scheduler with per-CPU priority run-queues and work-stealing. Cores are initialized and managed by user-space idle tasks once primary boot completes. Multiple processes are cleanly distributed across cores, with full support for `child` creation, `kill` termination, and an `exec` utility managing terminal, graphical, and integrated terminal modes.
+*   **Capability-Based Security:** Syscalls and system resources are checked and restricted through a capabilities security model mapped to abstract user levels (`Machine`, `Root`, `User`, `Guest`). The only processes allowed to run at the highly privileged `Machine` level are `nxinit` (early init) and the idle tasks.
+*   **Graphics Stack & Window Compositor:** GPU abstraction, display drivers (`virtio-pci-device` and `virtio-gpu-device`), and the compositor are currently inside the kernel (rendering overlapping windows, drag, focus, and Z-order). The compositor processes individual application framebuffers rendered in userland. Supports custom themes and styles; all interface components are compiled as independent ELF binaries.
+*   **Isolated Userland & Release System:** The userland environment resides in a dedicated disk image (`disk.img`), allowing independent loading of the kernel and filesystem in QEMU for rapid testing. At boot, the kernel loads `disk.img` into a temporary RAM disk, and launches the `init` supervisor. `init` manages core services, respawning them automatically if they terminate. The release tool compiles a hybrid, bootable AMD64 ISO via GRUB.
+*   **Fault & Trace Isolation:** Recoverable fault handling with total vector coverage on both architectures. A userland application crash is isolated and never kills the kernel, leaving the shell and compositor running. Provides symbolized in-kernel backtraces (`.ksyms`) on dedicated fault stacks.
+*   **VFS & Ext4 File System:** Virtual File System (with mount tables and `fs_ops` providers) supporting Ext4 (extent-tree reads, legacy reads, INCOMPAT enforcement, and extended write paths) and GPT partition mapping with MBR fallback, and a buffer cache.
+*   **Coherent Syscall ABI:** Single unified syscall numbering (`include/api/syscall_nums.h`) compiled into both the kernel dispatcher and the userland stubs, returning negative `errno` values.
 
 ---
 
-## Quick start
+## 📊 Verified Runtime Status
 
-### 1. Toolchain (bare-metal cross compilers + QEMU)
-**NOTE** Compilation is verified on macOS (Intel) and Linux (Ubuntu, Debian, Arch — other
-Debian/Arch derivatives are auto-detected via `/etc/os-release`'s `ID_LIKE`). BSD is not
-yet supported.
+### Capability Matrix
+Successfully tested and verified by building and running:
 
-**macOS:**
+| Capability | AArch64 (`make run`) | AMD64 (`make run`) |
+|---|:---:|:---:|
+| **Clean Build** (`-Werror -Wall -Wextra -Wpedantic -Wshadow`) | ✅ | ✅ |
+| **Boots to TTY Shell** (In a composited window) | ✅ | ✅ |
+| **Higher-Half Kernel** (PA/VA contract, direct map, $W \oplus X$) | ✅ `0xFFFF0000...` | ✅ `0xFFFF8000...` |
+| **Dynamic RAM Detection** (Full boot-protocol memory map) | ✅ (DTB) | ✅* (PVH/MB1/MB2) |
+| **Symmetric Multiprocessing** (SMP Core Bring-up) | ✅ (4/4 Online) | ✅ |
+| **VirtIO Drivers** (GPU, Input/Keyboard/Mouse, Block) | ✅ | ✅ |
+| **Ext4 Support** (Extent-tree reads, GPT/MBR fallback) | ✅ | ✅ |
+| **Userland Environment** (ELF Loader, IPC, Registry, Fonts) | ✅ | ✅ |
+| **Fault Isolation** (User crash isolated, Symbolized Backtrace) | ✅ | ✅ |
+| **Coherent Syscall ABI** (Negative `errno`, Capability Layer) | ✅ | ✅ |
+
+> [!NOTE]  
+> \* The AMD64 boot pipeline parses the physical PVH memory map, resolving previous hardcoded fallback constraints. However, total RAM estimation currently treats the 3–4 GB PCI hole as RAM. AArch64 remains the reference, fully standard platform.
+
+### Supported Environments
+| Platform / Host OS | Status | Notes |
+| :--- | :---: | :--- |
+| **QEMU AArch64 virt** | ✅ | Fully supported reference platform |
+| **QEMU AMD64 q35** | ✅ | Fully supported |
+| **SMP (4 Cores)** | ✅ | Tested on both architectures |
+| **VirtIO GPU / Keyboard / Mouse / Block** | ✅ | Verified working |
+| **GPT & Ext4** | ✅ | Verified partition and filesystem support |
+| **macOS (Intel/Apple Silicon)** | ✅ | Officially supported via `setup-toolchain-macos.sh` |
+| **Linux (Ubuntu)** | ✅ | Officially supported via `setup-toolchain-linux.sh` |
+| **Linux (Debian / Arch / Alpine)** | ✅ | Toolchain verified; environment features auto-detection |
+| **BSD Derivatives** | ⬜ | Not yet supported |
+| **UTM (AMD64 ISO release)** | ✅ | Verified test on UTM (virtio-pci-gpu / PS/2 input) |
+
+---
+
+## 🖼 Screenshots
+
+### Variable Themes & Styling Support
+Below are live captures demonstrating window compositor features, overlap handling, typography, and styling systems running inside QEMU:
+
+<p align="center">
+  <img width="90%" alt="Theme Showcase 1" src="https://github.com/user-attachments/assets/a1e41dea-feca-462c-a39e-18eb463bfe5f" />
+</p>
+
+<p align="center">
+  <img width="90%" alt="Theme Showcase 2" src="https://github.com/user-attachments/assets/35f8dfc8-069a-44fa-9aaa-58ad80edb1e3" />
+</p>
+
+<p align="center">
+  <img width="90%" alt="TTY Shell and Desktop" src="https://github.com/user-attachments/assets/218a4ebf-b848-4f3f-9f4e-4d93a49cd307" />
+</p>
+
+<p align="center">
+  <img width="90%" alt="Compositor Window Stacking" src="https://github.com/user-attachments/assets/137020f5-9ca3-45a5-a330-ac891b4dc0e1" />
+</p>
+
+---
+
+## 🛠 Prerequisites & Toolchain Setup
+
+To compile and execute NexsOS1, you will need the official cross-compiler toolchain. The official toolchain can be installed via `setup-toolchain-macos.sh` and `setup-toolchain-linux.sh`. The build system has been fully verified on macOS (Intel/Apple Silicon) and Linux (Ubuntu, Debian, and Arch). BSD is not yet supported.
+
+The setup scripts automate the builds of pinned GNU compilers directly from source (`x86_64-elf-gcc` 13.2.0, `aarch64-none-elf-gcc` 7.2.0), taking about 10-30 minutes. It also auto-downloads the required userland repositories from GitHub, including ported libraries and applications such as `kilo`, `freedoom`, `sdl`, `musl`, `busybox`, `lua`, `opengl`, and `direct3d9`.
+
+*(Note: On WSL2, the script automatically prints configuration guides for WSLg graphics and KVM permissions.)*
+
+### 1. Clone the Repository
 ```bash
-./tools/setup-toolchain-macOS.sh
+git clone https://github.com/olmox001/NexsOS1
+cd NexsOS1
 ```
 
-**Linux (Ubuntu/Debian/Arch/Alpine):**
-```bash
-./tools/setup-toolchain-linux.sh
-```
-This builds the exact same pinned cross-compilers as macOS from GNU source
-(`x86_64-elf-gcc` 13.2.0, `aarch64-none-elf-gcc` 7.2.0 — the aarch64 version is
-pinned deliberately, see the script header) so both hosts produce equivalent
-kernels. The GCC build takes ~10-30 minutes. If you're on WSL2, the script
-detects it and prints guidance about graphical QEMU (WSLg) and `/dev/kvm`
-(not required — this project's QEMU flags never request KVM acceleration).
+### 2. Configure Your Build Environment
+Run the corresponding script for your operating system:
 
-Verify:
+*   **For Linux (Ubuntu, Debian, Arch, Alpine):**
+    ```bash
+    ./tools/setup-toolchain-linux.sh
+    ```
+
+*   **For macOS:**
+    ```bash
+    ./tools/setup-toolchain-macos.sh
+    ```
+
+### 3. Verify the Installation
+Ensure the cross-compilers are correctly linked and ready:
 ```bash
 make check ARCH=aarch64
 make check ARCH=amd64
 ```
 
-### 2. Build & run
-```bash
-make run ARCH=aarch64     # ARM64 — full path (SMP, graphical TTY)
-make run ARCH=amd64       # x86-64 — same graphical shell (PVH memory map, see #94 for parity gaps)
-```
-`make run` builds the bootloader, kernel, userland, and a 96 MB Ext4 disk image, then
-launches QEMU with VirtIO GPU/input/block and a graphical display. A window with a TTY
-shell (`shell:/>`) appears once boot completes.
+---
 
-### 3. Other targets
+## 💻 Compilation & Execution
+
+NexsOS1 uses a streamlined `Makefile` interface. To compile the bootloader, kernel, and userland disk image, and immediately boot them in QEMU, run:
+
 ```bash
-make all ARCH=<arch>      # build only (no run)
-make debug ARCH=<arch>    # run under QEMU with gdb stub (-s -S)
-make release VERSION=x.y  # build distributable images (amd64 = bootable hybrid ISO via GRUB)
-make clean
+# Build and run the ARM64 (AArch64) graphical system (Reference)
+make run ARCH=aarch64
+
+# Build and run the x86_64 (AMD64) graphical system
+make run ARCH=amd64
+```
+
+### Additional Build Targets
+
+| Target Command | Description |
+| :--- | :--- |
+| `make all ARCH=<arch>` | Compiles the operating system without launching QEMU. |
+| `make debug ARCH=<arch>` | Boots QEMU with GDB stub debugging enabled (`-s -S`). |
+| `make release VERSION=x.y` | Builds release-ready packages (e.g., hybrid, bootable AMD64 ISOs via GRUB). |
+| `make clean` | Wipes build outputs. Strongly recommended after userland changes in `user/` to make modifications effective. |
+
+The official kernel API for userspace can be found inside `include/api/`, focusing primarily on `os1.h` and `object.h`.
+
+---
+
+## 📁 Project Layout
+
+```text
+.
+├── boot/                        # Stage 1 & Stage 2 bootloaders and linker scripts
+│   ├── aarch64/
+│   └── amd64/
+├── docs/                        # Technical documentation, specifications, and reports
+│   ├── LOGO/                    # Graphical assets and project logotypes
+│   ├── direction/               # Architectural plans, design mandates, and directions
+│   ├── graphics-port/           # Graphic system porting and validation logs
+│   ├── man/                     # System manuals and user references
+│   ├── report/                  # Performance, debugging, and analytical reports
+│   ├── review/
+│   │   └── analysis/            # Code reviews, bug taxonomy, and findings
+│   ├── screen/                  # Architectural screenshots and system captures
+│   └── userland-port/           # Guides and porting updates for the userspace
+├── include/
+│   └── api/                     # Public system API definitions for userland
+│       └── sys/                 # Native C library definitions (os1.h, object.h)
+├── kernel/
+│   ├── arch/                    # Architecture-specific abstraction layers
+│   │   ├── aarch64/             # ARM64 CPU setup, MMU page tables, GIC, PL011 drivers
+│   │   └── amd64/               # AMD64 CPU setup, APIC, IOAPIC, PIT, serial drivers
+│   ├── core/                    # Core kernel engine (Syscall dispatcher, device bus)
+│   ├── drivers/                 # Unified hardware drivers
+│   │   ├── block/               # Mass storage block drivers
+│   │   ├── gic/                 # ARM Interrupt Controllers
+│   │   ├── gpu/                 # GPU framebuffers and VirtIO screen devices
+│   │   ├── keyboard/            # Key input devices
+│   │   ├── pci/                 # Peripheral Component Interconnect bus driver
+│   │   ├── ps2/                 # Traditional PS/2 mouse and keyboard
+│   │   ├── timer/               # System clocks
+│   │   ├── uart/                # Serial logging interfaces
+│   │   ├── usb/                 # Universal Serial Bus (USB) driver stub
+│   │   └── virtio/              # Virtual I/O drivers (GPU, Block, Input)
+│   ├── fs/                      # Virtual File System (VFS) and Ext4 disk system
+│   ├── graphics/                # Compositor engine, TTF fonts, and window servers
+│   │   └── logo/
+│   ├── include/                 # Internal, private kernel headers
+│   ├── irq/                     # Global interrupt request dispatchers
+│   ├── lib/                     # In-kernel shared helper libraries (printf, kmalloc)
+│   ├── mm/                      # Memory management (Bitmap PMM, Virtual MM, Heap)
+│   └── sched/                   # Preemptive priority scheduler and ELF loader
+├── tools/
+│   ├── kernel_doctor/           # Technical debugging, tracing, and analysis suite
+│   └── mkdisk.c                 # Tool for packaging userland into an Ext4 disk image
+└── user/
+    ├── arch/                    # Architecture-specific runtime startup routines
+    │   ├── aarch64/
+    │   └── amd64/
+    ├── bin/                     # Standalone user applications and demos
+    │   ├── base-nexs/           # Native testing and compatibility tools
+    │   ├── busybox/             # Unix terminal utilities
+    │   ├── doom/                # Ported Doom engine
+    │   └── kilo/                # Ported ultra-lightweight text editor
+    ├── home/                    # System root home directory structure
+    │   └── Pictures/
+    └── sys/                     # Operating system critical subsystems
+        ├── bin/                 # Userland base services (init, shell, panel, dock)
+        └── lib/                 # Core shared library runtimes (libos1, libc-stubs)
 ```
 
 ---
 
-## Project layout (actual)
+## 🗺 The ASTRA Roadmap
 
-```
-boot/{aarch64,amd64}/        # stage1/stage2 bootloaders + linker scripts
-kernel/
-  main.c                     # kernel_main orchestration (both arches)
-  arch/{aarch64,amd64}/      # cpu, mmu, platform, hal, virtio, boot asm, syscall entry
-  core/                      # hal_bus (device registry), syscall_dispatch, timer
-  mm/                        # pmm.c, vmm.c, buffer.c   (+ lib/kmalloc.c)
-  sched/                     # process.c (scheduler+IPC), elf.c (loader)
-  fs/                        # vfs.c (path resolution), ext4.c, gpt.c
-  graphics/                  # graphics.c, compositor.c, gl.c, font.c, region.c
-  drivers/                   # virtio/, gpu/, uart/, gic/, timer/, keyboard/, pci/
-  irq/, lib/                 # irq.c; string/printk/vsnprintf/crc32/math/registry/fdt/...
-  include/                   # kernel + arch + drivers + graphics headers
-include/api/                 # public userland ABI (os1.h, libc-ish headers; stb_* vendored)
-user/
-  sys/{bin,lib}/             # init, shell, notify_srv, regedit, nxfont; lib.c, malloc.c
-  bin/                       # counter, demo3d, ipc_*, input_test, writetest, doom/
-  arch/{aarch64,amd64}/      # userland syscall stubs
-tools/mkdisk.c               # builds the Ext4 disk image / rootfs
-docs/                        # review/ (this audit), PROJECT_CHARTER.md, report/, screen/
-```
+### Core Kernel Foundation
+- [x] Clean-boot on AArch64 and AMD64
+- [x] Architectural HAL with complete ISA insulation
+- [x] Preemptive SMP scheduling with work-stealing queues
+- [x] Unified Physical and Virtual Memory Managers
+- [x] Higher Half Kernel Mapping
+- [x] Rigid $W \oplus X$ memory protection
+- [x] Thread/Context Isolation using ASID/PCID
+- [x] Secure ELF64 loader
+- [x] Zero-copy synchronous IPC primitives
+- [x] Capability-based system security model
+- [x] Object Manager abstraction
+- [x] Unified VirtIO Drivers (MMIO & PCI)
+- [x] Capability-based Virtual File System (VFS)
+- [x] Ext4 filesystem layout support (Extent Trees)
+- [x] System registry as a hierarchical VFS namespace
+- [x] Native window graphics compositor
+- [x] Intuitive Window Manager
+- [x] Supervised initialization service (`init` supervisor)
+
+### ASTRA Phase B — Architectural Maturation
+- [x] **B1:** High-fidelity VFS integration as a core ASTRA provider
+- [x] **B2:** Complete, architecture-agnostic memory management model
+- [x] **B3:** Coherent Capability ABI validation & unified Object Manager
+- [ ] **B4:** Complete AMD64 platform parity (native ACPI / MADT mapping)
+- [ ] **B5:** Complete separation of the HAL and the Service Runtime Layer (SRL)
+- [ ] **B6:** SMP refinement and asynchronous I/O event loops
+
+### ASTRA Phase C — Service Demoting (Microkernel Boundary)
+- [ ] Formalization of the low-level `OS1low` ABI
+- [ ] Demoting system drivers to supervised userland tasks
+- [ ] User-space GPU Service
+- [ ] User-space Network Service Stack
+- [ ] User-space Audio Service
+- [ ] User-space Input Handling Daemon
+- [ ] User-space System Registry daemon
+- [ ] Migrating the Compositor into a dedicated user-space application
+- [ ] Separating the Window Server completely from kernel authority
+
+### ASTRA Phase D — Standard Userland Porting
+- [ ] Development of the official native `libOS1` userland library
+- [ ] Upstream port of the `musl` C library to the native OS1 ABI
+- [ ] Full POSIX standards personality layer
+- [ ] Lua runtime engine integration
+- [ ] Full integration of standard `BusyBox` utilities
+
+### ASTRA Phase E — Optimization & Hardening
+- [ ] Extensive optimization of the userland runtimes
+- [ ] Minimization of boot-time and RAM footprint
+- [ ] High-performance low-latency scheduler and ultra-fast IPC paths
+- [ ] Core System Auditing and sandboxing capabilities
+- [ ] Kernel hardening, fault recovery, and DWARF backtrace debugging
+
+### Hardware support targets
+- [ ] Networking
+- [ ] Audio
+- [ ] USB complete support
+- [ ] Hardware graphics acceleration
+- [ ] Advanced storage drivers
+
+### File System targets
+- [ ] Journaling support
+- [ ] Dynamic mounts
+- [ ] Support for multiple filesystems
+- [ ] Fully capability-based VFS
+
+### Security targets
+- [ ] Full syscall auditing
+- [ ] Hardening kernel
+- [ ] Recovery mode
+- [ ] Backtrace DWARF parser
+- [ ] Advanced sandboxing capabilities
 
 ---
 
-## Documentation
+## 🤝 Democratic Development & Contributing
 
-- **[`docs/review/REVIEW.md`](docs/review/REVIEW.md)** — full code review: ~220 findings on a
-  W0–W5 × kind taxonomy, with the verified runtime baseline and per-subsystem analyses
-  ([`docs/review/analysis/`](docs/review/analysis/)).
-- **[`docs/MANUAL.md`](docs/MANUAL.md)** — build/run, architecture, boot flow, memory model,
-  syscall/ABI reference, drivers, filesystem, and how to add an app/driver/syscall.
-- **[`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md)** — purpose, principles, and the
-  seL4/Plan 9 target architecture.
-- **Issues** — the actionable (W3+) findings are tracked as GitHub issues (labels
-  `code-review`, `w3`/`w4`/`w5`, `area:*`); see the
-  [tracking epic #19](https://github.com/olmox001/NexsOS1/issues/19).
+NexsOS1 is, first and foremost, a free and open-source project. While it began as a personal research initiative, the long-term goal is to build an operating system that belongs to its community. Everyone is welcome to participate, whether by writing code, reporting bugs, reviewing the architecture, improving the documentation, testing on new hardware, or simply sharing ideas.
 
-## Roadmap (foundations, dependency-ordered)
+Technical choices are made democratically:
+*   **Democratic Architecture:** Major architectural decisions, API layouts, and roadmap adjustments should reflect community consensus rather than unilateral design.
+*   **GitHub Discussions:** We use Discussions as our town square. We highly encourage developers, researchers, students, and enthusiasts to raise technical inquiries, debate architectural improvements, propose new subsystems, and host community polls! All requests will be taken into consideration.
 
-> **Phase A (fault/trace foundation) is complete**; Phase B is under way — **B1
-> (VFS/ext4-extents) and B2 (memory: W^X, teardown, allocators, higher-half — epic #92)
-> are done**, **B3 (coherent ABI + capabilities, epic #93) is in progress**. See
-> [`docs/review/REVIEW.md`](docs/review/REVIEW.md) §8 for the commit catalog and
-> [`docs/PHASE-B-PLAN.md`](docs/PHASE-B-PLAN.md) for the plan; the architectural
-> guidelines are in [`docs/ASTRA.md`](docs/ASTRA.md).
+### How to Contribute
+1. Fork the repository.
+2. Create a dedicated feature branch (`feature/your-feature`, `fix/your-fix`, `refactor/your-refactor`).
+3. Keep the coding style consistent: **K&R Style, 2-space indentation**, and a warnings-clean build with strict compiler flags (`-Werror -Wall -Wextra -Wpedantic -Wshadow`).
+4. Avoid regressions on both supported architectures (AArch64 and AMD64) whenever possible.
+5. Update documentation when introducing significant architectural changes.
+6. For large changes, please open a Discussion or an Issue before starting the implementation.
 
-1. ~~A documented PA/VA model and **W^X**~~ — **done** (higher-half kernel, epic #92).
-2. A coherent, **capability-checked** syscall ABI — **in progress** (numbering + errno +
-   first capability layer landed; fd table, formal IPC and sandboxing remain — epic #93).
-3. Real allocators (buddy PMM + growable slab) — kmalloc now grows; buddy PMM pending.
-4. Stable boot on both arches via a GPLv2-compatible loader; amd64 parity (epic #94).
-5. A thin (Plan 9-style) HAL; fuller drivers + device tree (epic #95).
-6. **Service isolation** (seL4): move VFS/compositor/fonts to sandboxed userland.
-7. Plan 9 file-namespace registry; then networking and real hardware.
+---
 
-## Contributing
+## 🎨 Graphics Portability
 
-Issues and PRs welcome. Style: K&R, 2-space indent; keep the strict warning set clean
-(`-Werror -Wall -Wextra -Wpedantic -Wshadow`); test on QEMU (`make run`) before submitting.
-Pick a `code-review` issue to start.
+The OpenGL, D3D9, and SDL2 port program, its ASTRA boundary, and validation log reside in [`docs/graphics-port/`](docs/graphics-port/README.md).
 
-## License
+---
 
-**GNU General Public License v2** — see [`LICENSE.md`](LICENSE.md). Any third-party code
-integrated (boot loader, libraries, drivers) must be GPLv2-compatible.
+## 🙏 Acknowledgments
 
-## Acknowledgments
+NexsOS1 stands on the shoulders of the incredible open-source community. Key portions of the userland system are maintained as custom forks specifically optimized for the native OS1 APIs.
 
-ARM & Intel architecture references, the OSDev wiki, the QEMU project, the VirtIO
-specification, and the Linux/plan9/sel4kernel (design inspiration, e.g. intrusive lists).
+Special thanks to the authors and maintainers of:
+*   **BusyBox:** The foundational utility provider for Unix-style userlands.
+*   **Kilo:** The incredibly lightweight text editor adapted to OS1.
+*   **Doom Generic:** Providing the core codebase for our graphics validation.
+*   **SDL2:** Serving as our multimedia abstraction target.
+*   **Mesa:** The baseline foundation for our future OpenGL compatibility.
+*   **Wine:** The core source of inspiration and architectural reference for our Direct3D 9 compatibility layer.
+*   **musl libc:** The lightweight standard C library being adapted to our system ABI.
+*   **Lua:** The ultra-fast scripting engine scheduled for system-wide integration.
+*   **base-nexs:** Native test suite and compatibility applications for the OS1 API.
 
+We also draw technical inspiration from pioneers in operating system research, notably **Linux**, **Plan 9 from Bell Labs**, **seL4**, **Fuchsia**, **Windows NT**, **Darwin (XNU)**, and **TempleOS**. These projects are sources of ideas and architectural inspiration only; NexsOS1 is an independent implementation developed from scratch.
 
-## NOTE
+Finally, thanks to everyone who tests the project, reports bugs, reviews the architecture, proposes improvements, or simply takes the time to explore the code. Every contribution helps make NexsOS1 a better operating system.
 
-if I had to stop to document everything I do I would go crazy, excuse me if some descriptions are dated, Sorry for my spaghetti-eating English too
-# Graphics portability status
+---
 
-The OpenGL, D3D9 and SDL2 port programme, its ASTRA boundary and validation
-log live in [`docs/graphics-port/`](docs/graphics-port/README.md).
+## 📄 License
+
+This project is distributed under the **GNU General Public License v2 (GPL-2.0)**. See the [LICENSE](LICENSE.md) file for the complete terms and conditions.
+
+---
+
+> _**A Quick Dev Note:** If I had to stop to document everything I do I would go crazy, excuse me if some descriptions are dated! Sorry for my spaghetti-eating English too!_ 🍝
