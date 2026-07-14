@@ -88,7 +88,8 @@ Below are live captures demonstrating window compositor features, overlap handli
 </p>
 
 <p align="center">
-  <img width="90%" alt="Theme Showcase 2" src="https://github.com/user-attachments/assets/35f8dfc8-069a-44fa-9aaa-58ad80edb1e3" />
+  <img width="90%" alt="Theme Showcase 1" alt="Screenshot 2026-07-14 alle 15 57 39" src="https://github.com/user-attachments/assets/ee0fca9f-f2b2-4b19-a09d-92506e72d7c1" />
+ />
 </p>
 
 <p align="center">
