@@ -41,8 +41,16 @@
  *
  * Resize is also polled via OS1_display_info for the rare host-driven
  * resolution change.
+ *
+ * Tile icons: each app tile shows a real per-app icon (nxicon.h,
+ * /home/Pictures/icon/{dark,light}, shared with nxui.c's dock) when one is
+ * cached for that executable's basename + the active theme, else the classic
+ * flat per-category color tile (unchanged) — the same corner-rounding code
+ * draws both, see fb_rrect_px().  Folder tiles are untouched
+ * (draw_folder_tile).
  */
 #include "nxexec.h"
+#include "nxicon.h" /* nxicon_get()/nxicon_classify_path() — app-tile icons (shared with nxui.c) */
 #include "nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
 #include <font_lib.h>
 #include <image.h>
@@ -171,8 +179,12 @@ static uint32_t g_col_dot_inactive;
 static uint32_t g_col_arrow;
 static uint32_t g_col_arrow_pressed;
 static uint32_t g_col_back;
+static int g_light; /* current theme, mirrored here so redraw() can pick the
+                     * matching /home/Pictures/icon/{dark,light} set (nxicon.h)
+                     * without a second nxres_theme_is_light() read per frame */
 
 static void nxlauncher_load_palette(int light) {
+  g_light = light;
   if (light) {
     g_col_bg = 0xE8F5F5F7u;
     g_col_label = 0xFF1C1C1Eu;
@@ -204,7 +216,15 @@ static void fb_fill(uint32_t c) {
     g_fb[i] = c;
 }
 
-static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
+/* fb_rrect_px - shared rounded-rect body: one corner-quarter-circle mask
+ * test, one write loop, feeding EITHER a flat color (img == NULL — the
+ * classic per-category tile) or an icon's own pixels (img != NULL, w x h ==
+ * the icon's own dimensions).  Kept as a single function so an icon tile is
+ * rounded by the EXACT same test as every classic tile/back-button/arrow in
+ * this file — no second "icon corner rounding" to keep in sync (same
+ * approach as nxui.c's fb_rrect_px). */
+static void fb_rrect_px(int x, int y, int w, int h, int r, uint32_t c,
+                        const uint32_t *img) {
   if (w <= 0 || h <= 0)
     return;
   if (r < 0)
@@ -213,6 +233,89 @@ static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
     r = w / 2;
   if (r > h / 2)
     r = h / 2;
+
+  for (int j = 0; j < h; j++) {
+    for (int i = 0; i < w; i++) {
+      // Corner rounding
+      int ccx = -1, ccy = 0;
+      if (i < r && j < r) {
+        ccx = r;
+        ccy = r;
+      } else if (i >= w - r && j < r) {
+        ccx = w - r - 1;
+        ccy = r;
+      } else if (i < r && j >= h - r) {
+        ccx = r;
+        ccy = h - r - 1;
+      } else if (i >= w - r && j >= h - r) {
+        ccx = w - r - 1;
+        ccy = h - r - 1;
+      }
+
+      if (ccx >= 0) {
+        int dx = i - ccx, dy = j - ccy;
+        if (dx * dx + dy * dy > r * r)
+          continue;
+      }
+
+      int px = x + i;
+      int py = y + j;
+      if (px < 0 || px >= g_ww || py < 0 || py >= g_wh)
+        continue;
+
+      if (img) {
+        uint32_t src = img[j * w + i];
+        uint8_t alpha = (src >> 24) & 0xFF;
+
+        if (alpha == 0)
+          continue;
+
+        if (alpha == 255) {
+          g_fb[py * g_ww + px] = src;
+        } else {
+          uint32_t dst = g_fb[py * g_ww + px];
+
+          uint32_t dr = (dst >> 16) & 0xFF;
+          uint32_t dg = (dst >> 8) & 0xFF;
+          uint32_t db = dst & 0xFF;
+
+          uint32_t sr = (src >> 16) & 0xFF;
+          uint32_t sg = (src >> 8) & 0xFF;
+          uint32_t sb = src & 0xFF;
+
+          // renamed to avoid shadowing
+          uint32_t out_r = (sr * alpha + dr * (255 - alpha)) / 255;
+          uint32_t out_g = (sg * alpha + dg * (255 - alpha)) / 255;
+          uint32_t out_b = (sb * alpha + db * (255 - alpha)) / 255;
+
+          g_fb[py * g_ww + px] =
+              (0xFF000000u) | (out_r << 16) | (out_g << 8) | out_b;
+        }
+      } else {
+        g_fb[py * g_ww + px] = c;
+      }
+    }
+  }
+}
+
+static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
+  fb_rrect_px(x, y, w, h, r, c, NULL);
+}
+
+/* fb_icon_border - same 3D bevel ring as nxui.c's dock (see that file for the
+ * full rationale): a brighter top-left arc + dimmer bottom-right arc, white
+ * in dark mode / black in light mode, traced along the icon's own rounded
+ * corners. Icon tiles only — classic flat-colour tiles (folders, etc.) don't
+ * get one. */
+static void fb_icon_border(int x, int y, int w, int h, int r, int light) {
+  uint32_t base = light ? 0x000000u : 0xFFFFFFu;
+  if (r < 0)
+    r = 0;
+  if (r > w / 2)
+    r = w / 2;
+  if (r > h / 2)
+    r = h / 2;
+
   for (int j = 0; j < h; j++) {
     for (int i = 0; i < w; i++) {
       int ccx = -1, ccy = 0;
@@ -229,14 +332,38 @@ static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
         ccx = w - r - 1;
         ccy = h - r - 1;
       }
+
+      int on_border;
       if (ccx >= 0) {
         int dx = i - ccx, dy = j - ccy;
-        if (dx * dx + dy * dy > r * r)
+        int d2 = dx * dx + dy * dy;
+        if (d2 > r * r)
           continue;
+        int r_in = r - 1;
+        on_border = d2 >= r_in * r_in;
+      } else {
+        on_border = (i == 0 || i == w - 1 || j == 0 || j == h - 1);
       }
+      if (!on_border)
+        continue;
+
       int px = x + i, py = y + j;
-      if (px >= 0 && px < g_ww && py >= 0 && py < g_wh)
-        g_fb[py * g_ww + px] = c;
+      if (px < 0 || px >= g_ww || py < 0 || py >= g_wh)
+        continue;
+
+      int top_left = (i + j) < (w + h) / 2;
+      uint32_t alpha = top_left ? 0x60u : 0x30u;
+
+      uint32_t dst = g_fb[py * g_ww + px];
+      uint32_t dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
+      uint32_t sr = (base >> 16) & 0xFF, sg = (base >> 8) & 0xFF,
+               sb = base & 0xFF;
+
+      uint32_t out_r = (sr * alpha + dr * (255 - alpha)) / 255;
+      uint32_t out_g = (sg * alpha + dg * (255 - alpha)) / 255;
+      uint32_t out_b = (sb * alpha + db * (255 - alpha)) / 255;
+      g_fb[py * g_ww + px] =
+          (0xFF000000u) | (out_r << 16) | (out_g << 8) | out_b;
     }
   }
 }
@@ -803,8 +930,20 @@ static void redraw(void) {
     if (g_slots[i].kind == 1) {
       draw_folder_tile(g_slots[i].x, g_slots[i].y);
     } else {
-      fb_rrect(g_slots[i].x, g_slots[i].y, TILE, TILE, TILE_RADIUS,
-               COL_TILE[a->category]);
+      /* App tile: use the shared cache (nxicon.h) if this executable's
+       * basename has an icon for the active theme; otherwise unchanged
+       * fallback — the flat per-category color, same as before icons
+       * existed. */
+      os1_image_t *icon =
+          nxicon_get(nxicon_classify_path(a->path), g_light, TILE);
+      if (icon) {
+        fb_rrect_px(g_slots[i].x, g_slots[i].y, TILE, TILE, TILE_RADIUS, 0,
+                    icon->pixels);
+        fb_icon_border(g_slots[i].x, g_slots[i].y, TILE, TILE, TILE_RADIUS,
+                       g_light);
+      } else
+        fb_rrect(g_slots[i].x, g_slots[i].y, TILE, TILE, TILE_RADIUS,
+                 COL_TILE[a->category]);
     }
     draw_label(g_slots[i].x, g_slots[i].y, a->label);
   }

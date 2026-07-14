@@ -654,7 +654,9 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
-	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin/background
+	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/background
+	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/icon/dark
+	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/icon/light
 	@mkdir -p $(BUILD_DIR)/rootfs/lib
 	@mkdir -p  $(BUILD_DIR)/rootfs/sys/lib/include
 	@# /home: the ONLY user-writable tree (vfs_write_allowed tree ACL —
@@ -673,8 +675,12 @@ rootfs: user
 	@# Copy essential WAD files to the root and /bin for engine detection
 	@-cp user/bin/doom/freedoom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/sys/bin/background/globe.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
+	@-cp user/home/Pictures/icon/dark/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/dark/ 2>/dev/null || true
 	@-cp user/sys/bin/background/nxduck.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
+	@# Dock/launcher tile icons (nxicon.h): both theme sets, so a runtime
+	@# theme flip never needs a rebuilt image — see nxicon.h's header comment.
+	@-cp user/home/Pictures/globe.png $(BUILD_DIR)/rootfs/home/Pictures/ 2>/dev/null || true
+	@-cp user/home/Pictures/icon/light/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/light/ 2>/dev/null || true
 	@# doom savegames are runtime-created in /home/Documents/doom now; the
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
@@ -839,7 +845,7 @@ endif
 # dumpdtb exits immediately after writing the DTB; no kernel is required.
 # amd64 does not use a DTB (discovery via multiboot2), so this target is aarch64-only.
 ifeq ($(ARCH), aarch64)
-$(VIRT_DTB): | $(BUILD_DIR)
+$(VIRT_DTB): disk | $(BUILD_DIR)
 	@echo "  [DTB]    Generating QEMU virt device tree -> $@"
 	@ERRLOG=$$(mktemp); \
 	if ! $(QEMU_RUN) -M virt -cpu cortex-a57 -m 5G -smp 4 \
