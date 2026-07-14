@@ -5,9 +5,11 @@
  * nxui is a thin userland window manager UI.  It keeps the compositor as the
  * pure MECHANISM and owns the POLICY itself:
  *   - it enumerates every window with SYS_WINDOW_ENUM (OS1_window_enum);
- *   - it draws a macOS/Darwin-style dock of rounded squares along the bottom of
- *     the screen, one tile per app (icon-ready: a plain rounded square today,
- *     a real icon later);
+ *   - it draws a macOS/Darwin-style dock along the bottom of the screen, one
+ *     tile per app: a real per-app icon (nxicon.h,
+ * /home/Pictures/icon/{dark,light}) when one is cached for that app +
+ * theme, else the classic flat rounded square (GFX-NXUI-02) — the exact same
+ * corner-mask code draws both, see fb_rrect_px();
  *   - a click on a tile FOCUSES that app, RESTORES it if it was sent to the
  *     background, or BACKGROUNDS it if it was the focused app (toggle);
  *   - when more apps are open than fit on screen, two scroll tiles (half-width,
@@ -43,8 +45,9 @@
  * when the dock-relevant state (app set, focus, page, button-press) actually
  * changes — it never busy-spins.
  *
- * NOTE(GFX-NXUI-02): tiles are blank rounded squares — icon/initial rendering
- * needs the compositor font exposed to userland buffers (future).
+ * NOTE(GFX-NXUI-02): resolved — per-app icons (nxicon.h) now draw over the
+ * flat rounded-square tile whenever one is available for the app + active
+ * theme; the flat tile itself is unchanged and remains the fallback.
  * NOTE(GFX-NXUI-03): resolved — the per-path VFS capability preset
  * (/sys/bin → PLVL_ROOT) has shipped and is what governs nxui's level today.
  * NOTE(GFX-NXUI-04): rounded dock corners rely on the compositor honoring
@@ -58,26 +61,30 @@
 #include <os1.h>
 #include <string.h>
 
+#include "nxicon.h" /* nxicon_get()/nxicon_classify() — dock tile icons (GFX-NXUI-02) */
 #include "nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
 
 #define DOCK_H 56     /* dock height in px                                   */
 #define TILE 40       /* app tile size in px                                 */
 #define TILE_GAP 12   /* gap between tiles                                   */
 #define TILE_RADIUS 6 /* tile corner radius */
-#define MARGIN 16     /* inset between the dock window edge and the first/
-                       * last tile or scroll button (NOT the screen inset —
-                       * see DOCK_MARGIN_SIDE below)                         */
-#define MAX_TILES 32  /* matches the compositor MAX_WINDOWS                  */
+#define MARGIN                                                                 \
+  16                 /* inset between the dock window edge and the first/      \
+                      * last tile or scroll button (NOT the screen inset —   \
+                      * see DOCK_MARGIN_SIDE below)                         */
+#define MAX_TILES 32 /* matches the compositor MAX_WINDOWS                  */
 
 /* Outer placement: detach the dock window itself from the screen edges. */
-#define DOCK_MARGIN_SIDE 16   /* gap to the left/right screen edges          */
-#define DOCK_MARGIN_BOTTOM 4  /* gap to the bottom screen edge               */
+#define DOCK_MARGIN_SIDE 16  /* gap to the left/right screen edges          */
+#define DOCK_MARGIN_BOTTOM 4 /* gap to the bottom screen edge               */
 
-/* Scroll (paging) tiles: half the app tiles' width, same height/radius/style. */
+/* Scroll (paging) tiles: half the app tiles' width, same height/radius/style.
+ */
 #define SCROLL_BTN_W (TILE / 2)
-#define SCROLL_BTN_GAP 8 /* gap between a scroll button and the tile row     */
-#define DOCK_RADIUS 12   /* dock outer corner radius — same rounding style as
-                          * the tiles, just scaled up for the bigger shape   */
+#define SCROLL_BTN_GAP 8 /* gap between a scroll button and the tile row */
+#define DOCK_RADIUS                                                            \
+  12 /* dock outer corner radius — same rounding style as                    \
+      * the tiles, just scaled up for the bigger shape   */
 
 /* COL_DOCK_BG/COL_TILE/COL_TILE_MIN are the only dock colours that need to
  * change with theme.color (nxres.h) — background translucency and the idle/
@@ -88,8 +95,12 @@
 static uint32_t g_col_dock_bg;
 static uint32_t g_col_tile;
 static uint32_t g_col_tile_min;
+static int g_light; /* current theme, mirrored here so redraw() can pick the
+                     * matching /home/Pictures/icon/{dark,light} set without
+                     * a second nxres_theme_is_light() read per frame */
 
 static void nxui_load_palette(int light) {
+  g_light = light;
   if (light) {
     g_col_dock_bg = 0xE8F5F5F7u;
     g_col_tile = 0xFFAEAEB2u;
@@ -103,15 +114,15 @@ static void nxui_load_palette(int light) {
 
 #define COL_TILE_FOCUS 0xFF5E9CFFu
 #define COL_BTN_RED 0xFFE53935u     /* material red 600 — idle scroll button */
-#define COL_BTN_PRESSED 0xFF6B6B73u /* greys out while the button is held    */
+#define COL_BTN_PRESSED 0xFF6B6B73u /* greys out while the button is held */
 
 /* The /sys/bin/nxlauncher tile is the only non-generic entry in the dock: a
  * solid green when shown (material green 600), and a dimmer, less saturated
  * green when the launcher has been sent to the background.  It mirrors the
  * focus/minimised split used for every other tile (blue/grey) so the dock's
  * own design language stays consistent — only the hue differs. */
-#define COL_LAUNCHER      0xFF43A047u /* material green 600 (shown)       */
-#define COL_LAUNCHER_MIN  0xFF2E5D32u /* dimmer green (backgrounded)      */
+#define COL_LAUNCHER 0xFF43A047u     /* material green 600 (shown)       */
+#define COL_LAUNCHER_MIN 0xFF2E5D32u /* dimmer green (backgrounded)      */
 
 static uint32_t *g_fb;   /* dock pixel buffer (g_sw x DOCK_H, ARGB)        */
 static int g_sw;         /* dock window's OWN width (desktop width minus
@@ -130,14 +141,14 @@ static int g_slot_x[MAX_TILES];
 static int g_slot_n;
 
 /* paging state */
-static int g_page;             /* current page, 0-based                    */
-static int g_pages = 1;        /* total pages for the current app count and
-                                * dock width — recomputed every redraw, so it
-                                * always tracks the real number actually used */
-static int g_scroll_on;        /* whether the scroll buttons are shown this
-                                * frame (more apps than fit on one page)     */
+static int g_page;               /* current page, 0-based                    */
+static int g_pages = 1;          /* total pages for the current app count and
+                                  * dock width — recomputed every redraw, so it
+                                  * always tracks the real number actually used */
+static int g_scroll_on;          /* whether the scroll buttons are shown this
+                                  * frame (more apps than fit on one page)     */
 static int g_btn_l_x, g_btn_r_x; /* dock-local x of the two scroll buttons */
-static int g_pressed;          /* 0=none, 1=left, 2=right — currently held  */
+static int g_pressed;            /* 0=none, 1=left, 2=right — currently held  */
 
 /* g_last_focus: id of the most recent app window the dock knows to be really
  * focused.  Updated in two places: (1) every redraw, when WININFO_FOCUSED is
@@ -155,9 +166,25 @@ static void fb_fill(uint32_t c) {
     g_fb[i] = c;
 }
 
-/* fb_rrect - filled rounded rectangle into the dock buffer (corners clipped to
- * a quarter-circle of radius r). */
-static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
+/* fb_rrect_px - shared rounded-rect body: one corner-quarter-circle mask test,
+ * one write loop, feeding EITHER a flat color (img == NULL — the classic
+ * GFX-NXUI-02 tile) or an icon's own pixels (img != NULL, w x h == the icon's
+ * own dimensions).  Kept as a single function so an icon tile is rounded by
+ * the EXACT same test as every other shape in this file (dock panel, classic
+ * tiles, scroll buttons) — no second "icon corner rounding" to keep in sync.
+ * dim != 0 darkens an icon's RGB (alpha untouched) for the minimized/
+ * backgrounded state, replacing the classic path's g_col_tile_min swap. */
+static void fb_rrect_px(int x, int y, int w, int h, int r, uint32_t c,
+                        const uint32_t *img, int dim) {
+  if (w <= 0 || h <= 0)
+    return;
+  if (r < 0)
+    r = 0;
+  if (r > w / 2)
+    r = w / 2;
+  if (r > h / 2)
+    r = h / 2;
+
   for (int j = 0; j < h; j++) {
     for (int i = 0; i < w; i++) {
       int ccx = -1, ccy = 0;
@@ -174,14 +201,141 @@ static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
         ccx = w - r - 1;
         ccy = h - r - 1;
       }
+
       if (ccx >= 0) {
         int dx = i - ccx, dy = j - ccy;
         if (dx * dx + dy * dy > r * r)
           continue;
       }
+
+      int px = x + i;
+      int py = y + j;
+      if (px < 0 || px >= g_sw || py < 0 || py >= DOCK_H)
+        continue;
+
+      uint32_t src;
+      if (img) {
+        src = img[j * w + i];
+        if (dim) {
+          uint32_t a = src & 0xFF000000u;
+          uint32_t rr = ((src >> 16) & 0xFFu) * 3u / 5u;
+          uint32_t gg = ((src >> 8) & 0xFFu) * 3u / 5u;
+          uint32_t bb = (src & 0xFFu) * 3u / 5u;
+          src = a | (rr << 16) | (gg << 8) | bb;
+        }
+      } else {
+        src = c;
+      }
+
+      if (img) {
+        uint8_t alpha = (src >> 24) & 0xFF;
+        if (alpha == 0)
+          continue;
+
+        if (alpha == 255) {
+          g_fb[py * g_sw + px] = src;
+        } else {
+          uint32_t dst = g_fb[py * g_sw + px];
+
+          uint32_t dr = (dst >> 16) & 0xFF;
+          uint32_t dg = (dst >> 8) & 0xFF;
+          uint32_t db = dst & 0xFF;
+
+          uint32_t sr = (src >> 16) & 0xFF;
+          uint32_t sg = (src >> 8) & 0xFF;
+          uint32_t sb = src & 0xFF;
+
+          uint32_t out_r = (sr * alpha + dr * (255 - alpha)) / 255;
+          uint32_t out_g = (sg * alpha + dg * (255 - alpha)) / 255;
+          uint32_t out_b = (sb * alpha + db * (255 - alpha)) / 255;
+
+          g_fb[py * g_sw + px] =
+              (0xFF000000u) | (out_r << 16) | (out_g << 8) | out_b;
+        }
+      } else {
+        g_fb[py * g_sw + px] = src;
+      }
+    }
+  }
+}
+
+/* fb_rrect - filled rounded rectangle into the dock buffer (corners clipped to
+ * a quarter-circle of radius r).  The classic (icon-less) tile/panel/button
+ * path — just fb_rrect_px with no image. */
+static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
+  fb_rrect_px(x, y, w, h, r, c, NULL, 0);
+}
+
+/* fb_icon_border - a subtle 3D bevel ring traced around an icon tile only
+ * (the classic flat-colour tile already reads as a solid button and doesn't
+ * need one). Two 1px arcs split along the tile's diagonal: a brighter one
+ * along the top-left edge — the "raised" side, as if lit from above-left —
+ * and a dimmer one along the bottom-right edge, the same convention a real
+ * embossed bezel uses. White in dark mode (a light ring reads as a raised
+ * highlight against a dark tile); black in light mode (mirrored: a dark ring
+ * reads as raised against a light tile). Uses the SAME corner-quarter-circle
+ * test as fb_rrect_px so the ring hugs the icon's own rounded corners exactly
+ * — just restricted to a ~1px band instead of a fill. */
+static void fb_icon_border(int x, int y, int w, int h, int r, int light) {
+  uint32_t base = light ? 0x000000u : 0xFFFFFFu;
+  if (r < 0)
+    r = 0;
+  if (r > w / 2)
+    r = w / 2;
+  if (r > h / 2)
+    r = h / 2;
+
+  for (int j = 0; j < h; j++) {
+    for (int i = 0; i < w; i++) {
+      int ccx = -1, ccy = 0;
+      if (i < r && j < r) {
+        ccx = r;
+        ccy = r;
+      } else if (i >= w - r && j < r) {
+        ccx = w - r - 1;
+        ccy = r;
+      } else if (i < r && j >= h - r) {
+        ccx = r;
+        ccy = h - r - 1;
+      } else if (i >= w - r && j >= h - r) {
+        ccx = w - r - 1;
+        ccy = h - r - 1;
+      }
+
+      int on_border;
+      if (ccx >= 0) {
+        int dx = i - ccx, dy = j - ccy;
+        int d2 = dx * dx + dy * dy;
+        if (d2 > r * r)
+          continue; /* outside the rounded shape entirely */
+        int r_in = r - 1;
+        on_border = d2 >= r_in * r_in; /* within ~1px of the outer arc */
+      } else {
+        /* straight edge: only the single outermost row/column is the ring */
+        on_border = (i == 0 || i == w - 1 || j == 0 || j == h - 1);
+      }
+      if (!on_border)
+        continue;
+
       int px = x + i, py = y + j;
-      if (px >= 0 && px < g_sw && py >= 0 && py < DOCK_H)
-        g_fb[py * g_sw + px] = c;
+      if (px < 0 || px >= g_sw || py < 0 || py >= DOCK_H)
+        continue;
+
+      /* top-left half of the tile (by the diagonal i+j) gets the brighter
+       * "raised" alpha; bottom-right half gets the dimmer "recessed" one. */
+      int top_left = (i + j) < (w + h) / 2;
+      uint32_t alpha = top_left ? 0x60u : 0x30u;
+
+      uint32_t dst = g_fb[py * g_sw + px];
+      uint32_t dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
+      uint32_t sr = (base >> 16) & 0xFF, sg = (base >> 8) & 0xFF,
+               sb = base & 0xFF;
+
+      uint32_t out_r = (sr * alpha + dr * (255 - alpha)) / 255;
+      uint32_t out_g = (sg * alpha + dg * (255 - alpha)) / 255;
+      uint32_t out_b = (sb * alpha + db * (255 - alpha)) / 255;
+      g_fb[py * g_sw + px] =
+          (0xFF000000u) | (out_r << 16) | (out_g << 8) | out_b;
     }
   }
 }
@@ -208,7 +362,7 @@ static void dock_reinit(int sw, int sh) {
   if (g_win >= 0)
     destroy_window(g_win);
   g_win = create_window(DOCK_MARGIN_SIDE, sh - DOCK_H - DOCK_MARGIN_BOTTOM,
-                         g_sw, DOCK_H, "nxui");
+                        g_sw, DOCK_H, "nxui");
   if (g_win >= 0)
     set_window_flags(g_win, 1); /* top_most → chromeless, always-on-top */
   g_sig = 0;                    /* force a redraw at the new size */
@@ -233,8 +387,11 @@ static void redraw(int force) {
   /* Pass 1: collect every eligible window, unfiltered by width. */
   int ids[MAX_TILES];
   unsigned flg[MAX_TILES];
+  char ttl[MAX_TILES][64]; /* title copy, for nxicon_classify() in the draw
+                            * loop below — the id/flags this dock already
+                            * tracked were never enough to pick an icon */
   int total = 0;
-  int seen_focus = 0;     /* 1 if some window reports WININFO_FOCUSED */
+  int seen_focus = 0; /* 1 if some window reports WININFO_FOCUSED */
   for (int i = 0; i < n && total < MAX_TILES; i++) {
     /* our own dock + system overlays (notifications) are never tiled */
     if (wi[i].id == g_win)
@@ -247,6 +404,7 @@ static void redraw(int force) {
       continue;
     ids[total] = wi[i].id;
     flg[total] = wi[i].flags;
+    memcpy(ttl[total], wi[i].title, sizeof(ttl[total]));
     total++;
     /* Follow focus changes the system makes outside the dock (e.g. the user
      * clicks into a window's body).  Only update g_last_focus when we
@@ -269,13 +427,17 @@ static void redraw(int force) {
       if (wi[j].id == ids[i] && strncmp(wi[j].title, "nxlauncher", 10) == 0) {
         int id = ids[i];
         unsigned f = flg[i];
+        char t[64];
+        memcpy(t, ttl[i], sizeof(t));
         if (i != 0) {
           for (int k = i; k > 0; k--) {
             ids[k] = ids[k - 1];
             flg[k] = flg[k - 1];
+            memcpy(ttl[k], ttl[k - 1], sizeof(ttl[k]));
           }
           ids[0] = id;
           flg[0] = f;
+          memcpy(ttl[0], t, sizeof(ttl[0]));
         }
         launcher_id = id;
         break;
@@ -319,17 +481,20 @@ static void redraw(int force) {
 
   int x = MARGIN + (scroll_on ? (SCROLL_BTN_W + SCROLL_BTN_GAP) : 0);
   unsigned dflags[MAX_TILES];
+  char vttl[MAX_TILES][64];
   unsigned sig = 2166136261u ^ (unsigned)g_sw ^ ((unsigned)g_page << 8) ^
-                 ((unsigned)scroll_on << 16) ^ ((unsigned)g_pressed << 20);
+                 ((unsigned)scroll_on << 16) ^ ((unsigned)g_pressed << 20) ^
+                 ((unsigned)g_light << 24);
   int cnt = 0;
   for (int i = 0; i < shown; i++) {
     int idx = start + i;
     g_slot_id[cnt] = ids[idx];
     g_slot_x[cnt] = x;
     dflags[cnt] = flg[idx];
+    memcpy(vttl[cnt], ttl[idx], sizeof(vttl[cnt]));
     sig = (sig ^ (unsigned)ids[idx]) * 16777619u;
-    sig = (sig ^ (flg[idx] & (WININFO_FOCUSED | WININFO_MINIMIZED))) *
-          16777619u;
+    sig =
+        (sig ^ (flg[idx] & (WININFO_FOCUSED | WININFO_MINIMIZED))) * 16777619u;
     cnt++;
     x += TILE + TILE_GAP;
   }
@@ -353,25 +518,48 @@ static void redraw(int force) {
   int ty = (DOCK_H - TILE) / 2;
   for (int i = 0; i < cnt; i++) {
     int is_launcher = (launcher_id != 0 && ids[start + i] == launcher_id);
-    uint32_t c = is_launcher ? COL_LAUNCHER : g_col_tile;
+    int minimized = (dflags[i] & WININFO_MINIMIZED) != 0;
     /* The "real" focus (WININFO_FOCUSED).  When the dock itself is the focused
      * window, or a tile was just toggled to minimized, no window reports
      * WININFO_FOCUSED — in that case, the remembered g_last_focus tile stays
      * blue so the user still sees which app owns the focus. */
     int focused = (dflags[i] & WININFO_FOCUSED) ||
                   (!seen_focus && ids[start + i] == g_last_focus);
-    if (is_launcher) {
-      /* Launcher stays green across both states — bright when shown/focused,
-       * dimmer when backgrounded — so the dock never loses the "this is the
-       * launcher" cue.  No special focused override: COL_LAUNCHER already
-       * marks "active". */
-      c = (dflags[i] & WININFO_MINIMIZED) ? COL_LAUNCHER_MIN : COL_LAUNCHER;
-    } else if (focused) {
-      c = COL_TILE_FOCUS;
-    } else if (dflags[i] & WININFO_MINIMIZED) {
-      c = g_col_tile_min;
+
+    /* vttl[i] is the window's own title text (e.g. nxshell's is "NXShell PID
+     * 6", not "nxshell"), so this uses nxicon_classify() — the case-
+     * insensitive, prefix-matching, path-stripping classifier in nxicon.h —
+     * not nxicon_classify_path()'s exact match (that one is for
+     * nxlauncher's app-table entries, which are real basenames). */
+    int app_id = is_launcher ? NXICON_LAUNCHER : nxicon_classify(vttl[i]);
+    os1_image_t *icon = nxicon_get(app_id, g_light, TILE);
+
+    if (icon) {
+      /* Icon tiles don't recolor on focus (macOS-dock-style: the icon itself
+       * plus the running dot below are enough) — only minimized dims it,
+       * replacing the classic path's color swap. */
+      fb_rrect_px(g_slot_x[i], ty, TILE, TILE, TILE_RADIUS, 0, icon->pixels,
+                  minimized);
+      /* 3D bevel ring — icon tiles only, drawn on top so it's never covered
+       * by the icon's own pixels. */
+      fb_icon_border(g_slot_x[i], ty, TILE, TILE, TILE_RADIUS, g_light);
+    } else {
+      /* Classic fallback (GFX-NXUI-02): no icon cached for this app/theme —
+       * same flat rounded-square logic as before icons existed. */
+      uint32_t c = is_launcher ? COL_LAUNCHER : g_col_tile;
+      if (is_launcher) {
+        /* Launcher stays green across both states — bright when shown/
+         * focused, dimmer when backgrounded — so the dock never loses the
+         * "this is the launcher" cue.  No special focused override:
+         * COL_LAUNCHER already marks "active". */
+        c = minimized ? COL_LAUNCHER_MIN : COL_LAUNCHER;
+      } else if (focused) {
+        c = COL_TILE_FOCUS;
+      } else if (minimized) {
+        c = g_col_tile_min;
+      }
+      fb_rrect(g_slot_x[i], ty, TILE, TILE, TILE_RADIUS, c);
     }
-    fb_rrect(g_slot_x[i], ty, TILE, TILE, TILE_RADIUS, c);
     /* running indicator: a small dot under the focused app's tile */
     if (focused)
       fb_rrect(g_slot_x[i] + TILE / 2 - 2, ty + TILE + 3, 4, 3, 1,

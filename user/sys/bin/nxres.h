@@ -115,6 +115,68 @@ static inline int nxres_theme_is_light(void) {
          strncmp(val, "light", 6) == 0;
 }
 
+/* os1_bg_colors - the 16 background anchor colours (compositor's
+ * backgrounds[].bg_color field, not the gradient stops) as parallel ARGB
+ * literals, indexed by the same id that BG_* enums use in kernel/graphics/
+ * compositor_style.h.  Same role as os1_bg_names above: the userland-
+ * facing name table that the kernel's style/theme/background mirror in the
+ * registry is keyed by.  The pattern — kernel enum + kernel struct +
+ * style_names.h os1_bg_names + this os1_bg_colors — is the SAME pattern
+ * the codebase already established for the *names*, just extended one step
+ * further so a userland app that wants to paint against the current
+ * background does not have to invent its own colour-resolution code
+ * (nxbar's "X" glyph, nxui's dock-tile bevel, any future cutout button
+ * that should read as a hole through to the desktop).  Order MUST match
+ * os1_bg_names above.  If a background is added, the chain to update is
+ * identical to the names' chain: kernel enum -> kernel backgrounds[] ->
+ * style_names.h (here) -> os1_bg_names -> os1_bg_colors. */
+static const unsigned int os1_bg_colors[] = {
+    0xFF121212u, /* BG_BLACK         */
+    0xFFB33A3Au, /* BG_RED           */
+    0xFF3E8E5Bu, /* BG_GREEN         */
+    0xFFC9A227u, /* BG_YELLOW        */
+    0xFF143060u, /* BG_BLUE          */
+    0xFF8E44ADu, /* BG_MAGENTA       */
+    0xFF2A9D8Fu, /* BG_CYAN          */
+    0xFFD8D8DCu, /* BG_WHITE         */
+    0xFF4A4A52u, /* BG_GRAY          */
+    0xFFE8604Fu, /* BG_BRIGHT_RED    */
+    0xFF52B788u, /* BG_BRIGHT_GREEN  */
+    0xFFF2C94Cu, /* BG_BRIGHT_YELLOW */
+    0xFF4A78C0u, /* BG_BRIGHT_BLUE   */
+    0xFFB07CD1u, /* BG_BRIGHT_MAGENTA*/
+    0xFF56C9C9u, /* BG_BRIGHT_CYAN   */
+    0xFFF5F5F7u, /* BG_BRIGHT_WHITE  */
+};
+#define OS1_BG_COLORS_COUNT                                                    \
+  (int)(sizeof(os1_bg_colors) / sizeof(os1_bg_colors[0]))
+
+/* nxres_bg_color - the ARGB colour of the currently applied background,
+ * as the userland-side lookup against the registry's "background.name"
+ * key (the same name every other app — nxsettings, nxlauncher, etc. —
+ * already reads).  Resolves the name to an id via the shared
+ * os1_bg_names table, then reads the colour out of the parallel
+ * os1_bg_colors table — the same two-step name-to-X pattern nxsettings
+ * already uses for background NAMES (NXS_BG = os1_bg_names), just
+ * extended one step further so callers can pick the actual anchor
+ * colour without re-implementing the table themselves.  Returns the dark
+ * default (0xFF1C1C24u) on any read failure, unknown name, or
+ * out-of-range id, matching the dark default every other "look" getter
+ * in this header falls back to.  Inherits the change-propagation path of
+ * the rest of the look: a successful nxres_set_background() pings every
+ * registered service via INPUT_TYPE_LOOK_CHANGED, and the app re-derives
+ * its palette on that ping. */
+static inline unsigned int nxres_bg_color(void) {
+  char val[32] = {0};
+  if (nxres_get_background(val, sizeof(val)) != 0)
+    return 0xFF1C1C24u; /* read failed */
+  for (int i = 0; i < OS1_BG_COUNT && i < OS1_BG_COLORS_COUNT; i++) {
+    if (strncmp(val, os1_bg_names[i], 32) == 0)
+      return os1_bg_colors[i];
+  }
+  return 0xFF1C1C24u; /* unknown name */
+}
+
 /* nxres_name_to_id - linear lookup in one of the os1_*_names[] tables
  * (style_names.h).  Exact match up to and including the NUL; -1 if absent. */
 static inline int nxres_name_to_id(const char *name, const char *const *list,

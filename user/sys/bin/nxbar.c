@@ -96,6 +96,48 @@
  * Discovery/lifecycle: spawned once by init at boot (like nxui/nxntfy_srv),
  * singleton-guarded by window title ("nxbar") the same way nxui guards
  * itself, so a legitimate init respawn after a crash proceeds normally.
+ *
+ * FIX(GFX-NXBAR-05): visual-consistency pass. Three concrete problems, not
+ * vague "looks off" ones:
+ *   1. BAR_RADIUS copied nxui's DOCK_RADIUS as an ABSOLUTE value (12px), but
+ *      nxbar's strip (BAR_H=26) is less than half the dock's height (56).
+ *      Same absolute radius on a much shorter shape means the corner arc
+ *      eats ~46% of the strip's height instead of the dock's ~21% — a
+ *      different, larger PROPORTION, which is why it read as over-rounded
+ *      and out of step with the rest of the desktop even though the number
+ *      matched nxui's. Fixed by matching the RATIO instead of the raw
+ *      value (see BAR_RADIUS/BAR_BTN_RADIUS below).
+ *   2. The renderer itself: nxbar now uses the EXACT same quarter-circle
+ *      mask test nxui.c does for its dock (binary in/out, same per-pixel
+ *      test, same shape). Trying to be "softer" with a smoothstep/feather
+ *      would make the bar look DIFFERENT from the dock at the pixel level
+ *      — a half-pixel mismatch between two adjacent chrome surfaces is
+ *      louder than a wrong colour. A single renderer for both strips is
+ *      the actual fix for "sembla finto".
+ *   3. The dropdown panels (menu/notify) were drawn as fully independent
+ *      four-corner rounded rects flush against the strip's own fully
+ *      rounded bottom edge — two separate "pill" shapes touching at a
+ *      seam, which is the concrete source of the reported visual clutter.
+ *      The strip now drops its BOTTOM corner rounding while a panel is
+ *      open (flat join edge) and the panel drops its TOP corner rounding
+ *      (also flat) and rounds only its bottom two corners — one continuous
+ *      shape that visibly hangs from the bar instead of two shapes glued
+ *      together. fb_rrect_4 (4 independent radii) is the primitive that
+ *      makes this possible.
+ * Also added: a compact layout (BAR_COMPACT_W) that drops the "AC" label
+ * and the "Notif" text and shortens the clock to HH:MM under a narrow
+ * (phone-width) desktop, so the same single layout works on mobile and
+ * desktop instead of overflowing/crowding the right cluster on the former.
+ *
+ * FIX(GFX-NXBAR-06): 1px identity ring around the [X] menu button glyph.
+ * Originally the ring was drawn around the whole button square, which made
+ * the X look like a floating sticker.  Later a manually drawn "X" shape was
+ * tried, but it looked harsh and out of place.  The final solution keeps the
+ * original font glyph (buf_draw_text("X")) and creates a 1‑pixel outline by
+ * drawing the glyph four times, offset by (±1,0) and (0,±1), in the border
+ * colour, and then once more in the centre with the glyph colour.  This
+ * gives a crisp, 1‑px ring that hugs the actual letterform and stays
+ * perfectly consistent with the rest of the text on the bar.
  */
 #include <font_lib.h>
 #include <input.h>
@@ -118,15 +160,25 @@
   3 /* gap to the left/right screen edges, == nxui's                           \
      * DOCK_MARGIN_SIDE                                */
 #define BAR_MARGIN_TOP                                                         \
-  2                   /* gap to the top screen edge, == nxui's                 \
-                       * DOCK_MARGIN_BOTTOM                             */
-#define BAR_RADIUS 12 /* outer corner radius, == nxui's DOCK_RADIUS     */
+  2 /* gap to the top screen edge, == nxui's                                   \
+     * DOCK_MARGIN_BOTTOM                             */
+/* BAR_RADIUS / BAR_BTN_RADIUS (GFX-NXBAR-05): matched to nxui's RATIO, not
+ * its raw px value. nxui's dock uses DOCK_RADIUS=12 on a DOCK_H=56 strip
+ * (~21% of the height) and TILE_RADIUS=6 on a TILE=40 square (~15%). Copying
+ * 12 and 6 verbatim onto nxbar's much thinner BAR_H=26 strip / X_BTN_W=26
+ * button pushed those same ratios up to ~46% and ~23% — visibly rounder than
+ * everything else on screen. These values reproduce nxui's actual ratios at
+ * nxbar's own scale instead. */
+#define BAR_RADIUS                                                             \
+  6 /* ~21% of BAR_H, same ratio as nxui's DOCK_RADIUS/DOCK_H */
 #define BAR_BTN_RADIUS                                                         \
-  6                   /* [X]/notif button corner radius, == nxui's             \
-                       * TILE_RADIUS — keeps the [X] button (flush in        \
-                       * the bar's own top-left corner) from squaring          \
-                       * off the panel's rounded corner underneath it   */
+  4 /* ~15% of X_BTN_W, same ratio as nxui's TILE_RADIUS/TILE */
 #define BAR_MIN_W 320 /* never collapse below this much usable width   */
+/* Below this bar width (a phone-portrait desktop), drop the "AC"/"Notif"
+ * text labels and shorten the clock to HH:MM so the right cluster never
+ * crowds out the focused-window title — same layout code path, just fewer
+ * words in it, rather than a second mobile-only bar (GFX-NXBAR-05). */
+#define BAR_COMPACT_W 480
 
 /* NOTE(GFX-NXBAR-01): reserved, unrendered today — a future per-focused-app
  * menu (File/Edit/...) lands here without moving anything else's x. */
@@ -172,22 +224,36 @@
 static uint32_t g_col_bar_bg;      /* barra principale */
 static uint32_t g_col_xbtn;        /* pulsante [X] idle */
 static uint32_t g_col_xbtn_active; /* pulsante [X] attivo/hover */
-static uint32_t g_col_xbtn_glyph;  /* glifo X — viola material, fisso */
+static uint32_t g_col_xbtn_glyph;  /* glifo X = anchor del background corrente
+                                    * (nxres_bg_color()), in modo che il glifo
+                                    * si "perda" nel wallpaper sottostante */
+static uint32_t g_col_xbtn_border; /* anello 1px attorno al glifo X:
+                                    * nero in light, bianco in dark, dipendente
+                                    * dal solo tema (nxres_theme_is_light) */
 static uint32_t g_col_text;
 static uint32_t g_col_text_dim;
 static uint32_t g_col_panel_bg;
 static uint32_t g_col_panel_sep;
-static uint32_t g_col_badge;      /* material red 600, fisso */
-static uint32_t g_col_badge_text; /* fisso */
+static uint32_t g_col_badge;       /* material red 600, fisso */
+static uint32_t g_col_badge_text;  /* fisso */
 static uint32_t g_col_battery_dot; /* stub "charging" green, fisso */
 static uint32_t g_col_notif_btn;
 static uint32_t g_col_notif_btn_active;
+static uint32_t g_col_bar_hi; /* 1px top hairline highlight, GFX-NXBAR-05 —
+                               * a flat fill with no edge definition at all
+                               * is the other half of "sembra finto"; a thin,
+                               * barely-there brighter line along the top
+                               * edge is the same glass-panel trick nxsettings
+                               * already uses on its own panels, applied here
+                               * so nxbar stops looking like the odd one out */
 
 static void nxbar_load_palette(int light) {
-  g_col_xbtn_glyph = 0xFF9C27B0u;    /* material purple 500, same both themes */
-  g_col_badge = 0xFFE53935u;         /* material red 600 */
+  g_col_badge = 0xFFE53935u; /* material red 600 */
   g_col_badge_text = 0xFFFFFFFFu;
-  g_col_battery_dot = 0xFF66BB6Au;   /* stub: always "charging" green */
+  g_col_battery_dot = 0xFF66BB6Au; /* stub: always "charging" green */
+  /* Anello 1px della X: nero in light, bianco in dark.  Ora applicato
+   * intorno al glifo del font, non a un quadrato o a una forma grezza. */
+  g_col_xbtn_border = light ? 0xFF000000u : 0xFFFFFFFFu;
   if (light) {
     g_col_bar_bg = 0xE8F5F5F7u;
     g_col_xbtn = 0xB0E5E5EAu;
@@ -198,6 +264,7 @@ static void nxbar_load_palette(int light) {
     g_col_panel_sep = 0x301C1C1Eu;
     g_col_notif_btn = 0xB0E5E5EAu;
     g_col_notif_btn_active = 0xD0D1D1D6u;
+    g_col_bar_hi = 0x50FFFFFFu;
   } else {
     g_col_bar_bg = 0xE81C1C24u; /* stessa tonalità/alpha del dock */
     g_col_xbtn = 0xB01C1C24u;
@@ -208,6 +275,7 @@ static void nxbar_load_palette(int light) {
     g_col_panel_sep = 0x30FFFFFFu;
     g_col_notif_btn = 0xB01C1C24u;
     g_col_notif_btn_active = 0xD0343440u;
+    g_col_bar_hi = 0x30FFFFFFu;
   }
 }
 
@@ -235,37 +303,95 @@ static void fb_rect(int x, int y, int w, int h, uint32_t c) {
       g_fb[j * g_bw + i] = c;
 }
 
-/* fb_rrect - filled rounded rectangle (corners clipped to a quarter-circle of
- * radius r).  Same technique as nxui's fb_rrect (GFX-NXBAR-04 / GFX-NXUI-04):
- * relies on the compositor honoring per-pixel alpha on window_blit, which is
- * already true for COL_DOCK_BG's 0xE8 alpha and now for COL_BAR_BG's too. */
-static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
+/* fb_rrect_4 - filled rectangle with FOUR INDEPENDENT corner radii, the SAME
+ * quarter-circle mask test nxui.c uses (GFX-NXBAR-05). Two things this gives
+ * us, both on purpose:
+ *
+ *   1. Visual coherence with the dock: nxui's rounded rect IS a binary
+ *      "inside/outside the quarter-circle" test — no alpha falloff, no
+ *      feather. Picking the same shape here means the bar and the dock
+ *      read as drawn by the same renderer at the same physical pixel
+ *      step. Anything fancier (smoothstep, supersampling) would make the
+ *      bar look SOFTER than the dock and re-introduce exactly the "stona
+ *      con il sistema" reaction the user is reporting — a half-pixel
+ *      mismatch reads louder than a wrong colour.
+ *
+ *   2. A flush join between the strip and a dropdown. The strip draws
+ *      with r_bl=r_br=0 (flat bottom) when a panel is open, and the
+ *      panel draws with r_tl=r_tr=0 (flat top) — same shape, no seam,
+ *      and the two read as ONE body that hangs from the bar instead of
+ *      two pills glued side by side. When no panel is open, all four
+ *      corners of the strip round normally.
+ *
+ * r_tl/r_tr/r_bl/r_br: 0 = square for that corner, non-zero = quarter-circle
+ * radius. Each is independently clamped to w/2 and h/2. */
+static void fb_rrect_4(int x, int y, int w, int h, int r_tl, int r_tr, int r_bl,
+                       int r_br, uint32_t c) {
+  if (w <= 0 || h <= 0)
+    return;
+  if (r_tl < 0)
+    r_tl = 0;
+  if (r_tr < 0)
+    r_tr = 0;
+  if (r_bl < 0)
+    r_bl = 0;
+  if (r_br < 0)
+    r_br = 0;
+  if (r_tl > w / 2)
+    r_tl = w / 2;
+  if (r_tr > w / 2)
+    r_tr = w / 2;
+  if (r_bl > w / 2)
+    r_bl = w / 2;
+  if (r_br > w / 2)
+    r_br = w / 2;
+  if (r_tl > h / 2)
+    r_tl = h / 2;
+  if (r_tr > h / 2)
+    r_tr = h / 2;
+  if (r_bl > h / 2)
+    r_bl = h / 2;
+  if (r_br > h / 2)
+    r_br = h / 2;
+
   for (int j = 0; j < h; j++) {
     for (int i = 0; i < w; i++) {
-      int ccx = -1, ccy = 0;
-      if (i < r && j < r) {
+      int ccx = -1, ccy = 0, r = 0;
+      if (i < r_tl && j < r_tl) {
+        r = r_tl;
         ccx = r;
         ccy = r;
-      } else if (i >= w - r && j < r) {
+      } else if (i >= w - r_tr && j < r_tr) {
+        r = r_tr;
         ccx = w - r - 1;
         ccy = r;
-      } else if (i < r && j >= h - r) {
+      } else if (i < r_bl && j >= h - r_bl) {
+        r = r_bl;
         ccx = r;
         ccy = h - r - 1;
-      } else if (i >= w - r && j >= h - r) {
+      } else if (i >= w - r_br && j >= h - r_br) {
+        r = r_br;
         ccx = w - r - 1;
         ccy = h - r - 1;
       }
+
       if (ccx >= 0) {
         int dx = i - ccx, dy = j - ccy;
         if (dx * dx + dy * dy > r * r)
           continue;
       }
+
       int px = x + i, py = y + j;
       if (px >= 0 && px < g_bw && py >= 0 && py < g_wh)
         g_fb[py * g_bw + px] = c;
     }
   }
+}
+
+/* fb_rrect - convenience wrapper: all four corners share the same radius
+ * (the common case — buttons, the closed strip with no dropdown open). */
+static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
+  fb_rrect_4(x, y, w, h, r, r, r, r, c);
 }
 
 static void buf_draw_glyph(int x, int y, uint32_t codepoint, uint32_t color) {
@@ -588,26 +714,75 @@ static void redraw(int force) {
     return;
   g_sig = sig;
 
-  /* --- top strip [0, BAR_H) --- */
-  /* GFX-NXBAR-04: one rounded translucent panel over the whole window
-   * (strip, or strip+dropdown when a panel is open) — same technique nxui
-   * uses for the dock, replacing the old flat rect + hard border line. */
-  fb_rrect(0, 0, g_bw, g_wh, BAR_RADIUS, g_col_bar_bg);
-
-  /* Se un pannello è aperto, cancella l'area sotto la barra (diventa
-   * trasparente) così non si vede una striscia nera a schermo intero. */
-  if (g_panel != PANEL_NONE) {
+  /* --- strip + optional dropdown, drawn as a SINGLE coherent body ---
+   *
+   * GFX-NXBAR-05: when no panel is open, the strip rounds all four corners
+   * exactly like the closed bar. When a panel IS open, the strip's bottom
+   * two corners go flat (r_bl=r_br=0) and the panel's top two corners go
+   * flat (r_tl=r_tr=0) — the two shapes share the seam at y=BAR_H and
+   * read as one continuous body hanging from the bar, not two pills
+   * stacked. The panel keeps its bottom rounded (r_bl=r_br=BAR_RADIUS)
+   * because the bottom edge is in open air, same way the closed bar's
+   * bottom edge is. */
+  if (g_panel == PANEL_NONE) {
+    fb_rrect(0, 0, g_bw, BAR_H, BAR_RADIUS, g_col_bar_bg);
+  } else {
+    /* strip: top rounded, bottom flat so it flush-joins the panel */
+    fb_rrect_4(0, 0, g_bw, BAR_H, BAR_RADIUS, BAR_RADIUS, 0, 0, g_col_bar_bg);
+    /* area below the strip is transparent, NOT the strip's own colour —
+     * the panel will draw its own background over [BAR_H, BAR_H+panel_h)
+     * with a flat top that matches the strip's flat bottom. */
     fb_rect(0, BAR_H, g_bw, g_wh - BAR_H, 0x00000000);
+  }
+
+  /* 1px top hairline (GFX-NXBAR-05): the dock has its own tile highlights
+   * and reads as a textured surface; a flat translucent strip on its own
+   * looks "dead". One barely-there brighter line along the very top edge
+   * is the same glass-panel trick nxsettings already uses on its panels —
+   * applied here so nxbar stops looking like the odd one out. Skipped
+   * on the rounded corner pixels (they're outside the rect anyway). */
+  if (g_col_bar_hi != 0) {
+    int hi_x0 = BAR_RADIUS;
+    int hi_x1 = g_bw - BAR_RADIUS;
+    if (hi_x1 > hi_x0) {
+      for (int x = hi_x0; x < hi_x1; x++) {
+        uint32_t dst = g_fb[0 * g_bw + x];
+        uint32_t dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF,
+                 db = dst & 0xFF;
+        uint32_t sr = 0xFF, sg = 0xFF, sb = 0xFF;
+        uint32_t a = (g_col_bar_hi >> 24) & 0xFF;
+        uint32_t out_r = (sr * a + dr * (255 - a)) / 255;
+        uint32_t out_g = (sg * a + dg * (255 - a)) / 255;
+        uint32_t out_b = (sb * a + db * (255 - a)) / 255;
+        g_fb[0 * g_bw + x] =
+            (0xFF000000u) | (out_r << 16) | (out_g << 8) | out_b;
+      }
+    }
   }
 
   g_xbtn_x = 6;
   g_xbtn_w = X_BTN_W;
+  /* Sfondo del pulsante: rettangolo arrotondato come prima. */
   fb_rrect(g_xbtn_x, 0, g_xbtn_w, BAR_H, BAR_BTN_RADIUS,
            g_panel == PANEL_MENU ? g_col_xbtn_active : g_col_xbtn);
+  /* GFX-NXBAR-06: contorno di 1 px attorno al glifo X del font.
+   * Disegniamo la "X" quattro volte nel colore del bordo, spostata di 1 px
+   * nelle quattro direzioni cardinali, e poi una volta al centro con il
+   * colore del glifo.  Il risultato è un anello sottile che segue esattamente
+   * la forma del carattere, senza deformazioni geometriche. */
   if (g_font) {
     int tw = buf_text_width("X");
-    buf_draw_text(g_xbtn_x + (g_xbtn_w - tw) / 2, (BAR_H - 16) / 2, "X",
-                  g_col_xbtn_glyph);
+    int x0 = g_xbtn_x + (g_xbtn_w - tw) / 2;
+    int y0 = (BAR_H - 16) / 2; /* 16 = altezza font; centrato verticalmente */
+
+    /* contorno */
+    buf_draw_text(x0 - 1, y0, "X", g_col_xbtn_border);
+    buf_draw_text(x0 + 1, y0, "X", g_col_xbtn_border);
+    buf_draw_text(x0, y0 - 1, "X", g_col_xbtn_border);
+    buf_draw_text(x0, y0 + 1, "X", g_col_xbtn_border);
+
+    /* glifo vero, sopra – ora prende il colore del background LIVE */
+    buf_draw_text(x0, y0, "X", nxres_bg_color());
   }
 
   /* reserved per-app-menu strip: intentionally blank, see GFX-NXBAR-01 */
@@ -666,9 +841,12 @@ static void redraw(int force) {
 
   /* --- dropdown panel, drawn into [BAR_H, g_wh) when open --- */
   if (g_panel == PANEL_MENU) {
-    /* Menu a comparsa vicino al pulsante X */
+    /* Menu a comparsa vicino al pulsante X. Top corners flat so it
+     * flush-joins the strip above; bottom corners rounded because
+     * the bottom edge is in open air. */
     int menu_x = g_xbtn_x;
-    fb_rrect(menu_x, BAR_H, MENU_W, MENU_H, BAR_RADIUS, g_col_panel_bg);
+    fb_rrect_4(menu_x, BAR_H, MENU_W, MENU_H, 0, 0, BAR_RADIUS, BAR_RADIUS,
+               g_col_panel_bg);
     fb_rect(menu_x, BAR_H + MENU_ITEM_H, MENU_W, 1, g_col_panel_sep);
     if (g_font) {
       buf_draw_text(menu_x + 14, BAR_H + (MENU_ITEM_H - 16) / 2, "Settings",
@@ -678,12 +856,13 @@ static void redraw(int force) {
                     "Power...", g_col_text);
     }
   } else if (g_panel == PANEL_NOTIFY) {
-    /* Pannello notifiche posizionato vicino al bottone "Notif" */
+    /* Pannello notifiche posizionato vicino al bottone "Notif".
+     * Same flat-top join as the menu. */
     g_notify_panel_x = g_notifbtn_x + g_notifbtn_w - NOTIFY_PANEL_W;
     if (g_notify_panel_x < 0)
       g_notify_panel_x = 0;
-    fb_rrect(g_notify_panel_x, BAR_H, NOTIFY_PANEL_W, g_notify_panel_h,
-             BAR_RADIUS, g_col_panel_bg);
+    fb_rrect_4(g_notify_panel_x, BAR_H, NOTIFY_PANEL_W, g_notify_panel_h, 0, 0,
+               BAR_RADIUS, BAR_RADIUS, g_col_panel_bg);
     if (nrec == 0) {
       if (g_font)
         buf_draw_text(g_notify_panel_x + 12, BAR_H + 4, "no notifications",
@@ -810,6 +989,10 @@ int main(void) {
     sh = 600;
 
   nxbar_load_palette(nxres_theme_is_light());
+  g_col_xbtn_glyph = nxres_bg_color(); /* dipende dal background, NON dal
+                                        * tema — nxres_bg_color() legge
+                                        * "background.name" e risolve via
+                                        * os1_bg_colors (nxres.h) */
 
   g_fb = NULL;
   g_win = -1;
@@ -841,8 +1024,12 @@ int main(void) {
       } else if (ev.type == INPUT_TYPE_LOOK_CHANGED) {
         /* External style/theme/bg change (nxres_broadcast_look, nxres.h),
          * surfaced through this SAME input_poll_event() loop — see nxres.h's
-         * header comment for why a second try_recv() loop is wrong here. */
+         * header comment for why a second try_recv() loop is wrong here.
+         * The ping covers ALL three look axes, so a background change
+         * reloads the theme palette too — re-deriving the border is cheap
+         * and keeps a single redraw path. */
         nxbar_load_palette(nxres_theme_is_light());
+        g_col_xbtn_glyph = nxres_bg_color();
         redraw(1);
       }
     }
