@@ -341,7 +341,7 @@ Special thanks to the authors and maintainers of:
 *   **Wine:** The core source of inspiration and architectural reference for our Direct3D 9 compatibility layer.
 *   **musl libc:** The lightweight standard C library being adapted to our system ABI.
 *   **Lua:** The ultra-fast scripting engine scheduled for system-wide integration.
-*   **base-nexs:** Native test suite and compatibility applications for the OS1 API.
+*   **base-nexs:** Portable script languages.
 
 We also draw technical inspiration from pioneers in operating system research, notably **Linux**, **Plan 9 from Bell Labs**, **seL4**, **Fuchsia**, **Windows NT**, **Darwin (XNU)**, and **TempleOS**. These projects are sources of ideas and architectural inspiration only; NexsOS1 is an independent implementation developed from scratch.
 
