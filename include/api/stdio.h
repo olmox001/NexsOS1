@@ -4,6 +4,12 @@
 #include <os1.h>
 #include <stdarg.h>
 
+/* FILE_WBUF_SIZE: userland write-buffer capacity for positional (path-backed)
+ * streams.  Sized to the ext4 block so buffered flushes land block-aligned and
+ * a per-byte fwrite loop (e.g. a savegame written field-by-field) coalesces
+ * into one syscall per 4 KiB instead of one per call. */
+#define FILE_WBUF_SIZE 4096
+
 typedef struct {
     int fd;
     int pos;
@@ -14,6 +20,11 @@ typedef struct {
     int ungetc_buf;
     int has_ungetc;
     int is_tmp;
+    /* Write buffer for positional streams (fd < 0).  'wcount' bytes are pending;
+     * their on-disk offset is (pos - wcount).  Empty (wcount == 0) for read
+     * streams and the console std streams, which stay unbuffered. */
+    int wcount;
+    char wbuf[FILE_WBUF_SIZE];
 } FILE;
 
 extern FILE _stdin_struct;

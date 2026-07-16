@@ -30,12 +30,17 @@
  * Known issues:
  *   USR-LIB-01  (W2 BAD-IMPL) Directly #includes kernel/lib C sources;
  *               breaks the userland/kernel boundary.
- *   USR-LIB-02  (W2 BAD-IMPL) fclose() guards against NULL with
- *               `(size_t)fp > 10`, a fragile magic-value check.
+ *   USR-LIB-02  (fixed) The stdio wrappers used to guard against NULL with
+ *               `(size_t)fp > 10`, a fragile magic-value check; replaced with
+ *               proper NULL checks.  fopen streams are now write-buffered
+ *               (FILE.wbuf) so incremental writers issue one syscall per
+ *               FILE_WBUF_SIZE instead of one per fwrite; fflush/fclose/fseek
+ *               and every fread flush the buffer first.
  *   USR-LIB-03  (fixed locally) graphics_draw_text used to declare a 100KB
  *               static buffer and fall back to terminal text rendering.
- *   USR-LIB-04  (W1 STUB) mkdir/system/getenv are no-ops; atof truncates
- *               decimal fractions via (double)atoi().
+ *   USR-LIB-04  (partly fixed) system/getenv are no-ops; atof truncates
+ *               decimal fractions via (double)atoi().  mkdir now issues
+ *               SYS_MKDIR (real ext4 directory creation).
  *   USR-LIB-05  (W1 DOC) vfprintf ignores the stream arg and always writes
  *               to fd 1; stderr goes to stdout silently.
  *   USR-SEC-01  (W3 SECURITY) registry_read/write have no authentication;
@@ -46,6 +51,7 @@
  * gc-sections. USR-BLOAT-02 (W2 BAD-IMPL) -g DWARF retained in every ELF; not
  * stripped.
  */
+#include "portability/os1_video_platform.h"
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -58,7 +64,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include "portability/os1_video_platform.h"
 /* POSIX compatibility shims implemented at the bottom of this file (the OS1
  * onion-userland libc layer, epic #120; no new OS1 syscalls). */
 #include <dirent.h>
@@ -92,9 +97,26 @@
 #include <stb_image.h>
 #pragma GCC diagnostic pop
 
-/* errno: global error variable expected by POSIX-style libc callers.
- * Not set by any syscall wrapper currently; placeholder only. */
+/* errno: global error variable expected by POSIX-style libc callers. */
 int errno = 0;
+
+/*
+ * errno_ret - THE POSIX errno seam for the syscall veneers below.
+ *
+ * Kernel syscalls return a NEGATIVE errno on failure (e.g. -ENOENT, -EACCES);
+ * the POSIX contract every libc caller relies on is "set errno to the positive
+ * code and return -1".  Routing the file/fd wrappers through here is what stops
+ * failures surfacing as strerror(0) == "Success" (the "(Success)" Lua's
+ * io.open printed on a missing file) — and it is deliberately generic: ANY
+ * POSIX-style consumer, not just Lua, gets correct errno/strerror from now on.
+ */
+static long errno_ret(long r) {
+  if (r < 0) {
+    errno = (int)-r;
+    return -1;
+  }
+  return r;
+}
 
 /* --- Syscall Wrappers ---
  * Each function below is a thin C-callable veneer over an assembly stub in
@@ -106,10 +128,10 @@ int errno = 0;
  * and paths with no capability check; any process has full authority.
  */
 long read(int fd, char *buf, unsigned long count) {
-  return _sys_read(fd, buf, count);
+  return errno_ret(_sys_read(fd, buf, count));
 }
 long write(int fd, const char *buf, size_t count) {
-  return _sys_write(fd, buf, count);
+  return errno_ret(_sys_write(fd, buf, count));
 }
 long OS1_time_now(void) { return _sys_get_time(); }
 long get_time(void) { return OS1_time_now(); } /* compat shim (DIR-01 F4) */
@@ -292,7 +314,7 @@ void OS1_window_draw(int win_id, int x, int y, int w, int h,
 void OS1_window_blit(int win_id, int x, int y, int w, int h,
                      const unsigned int *buf) {
   (void)os1_video_present_argb8888(win_id, x, y, w, h, buf,
-                                    (size_t)w * (size_t)h);
+                                   (size_t)w * (size_t)h);
 }
 void OS1_window_write(int win_id, const char *buf, unsigned long count) {
   _sys_window_write(win_id, buf, count);
@@ -507,8 +529,12 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
    * handle_create(FS) requires the file to already exist (vfs_open), so routing
    * here would break file CREATION; it needs handle_create O_CREAT support
    * (ASTRA 6.8 open(O_CREAT) -> handle_create).  Until then write stays on the
-   * ambient path. */
-  return _sys_file_write(path, buf, size, offset);
+   * ambient path — which DOES create the file on first write (the VFS
+   * create-on-write seam, kernel/core/syscall_dispatch.c SYS_FILE_WRITE). */
+  int r = _sys_file_write(path, buf, size, offset);
+  if (r < 0)
+    errno = -r;
+  return r;
 }
 /* OS1_fs_read (F4 M4.5): data reads routed through a FILE capability
  * (handle_create(FS,READ) -> OBJ_CTL_SEEK(offset) -> object_read -> close).  A
@@ -516,15 +542,23 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
  * which the object read does not do, so it stays on the ambient SYS_FILE_READ
  * path. */
 int OS1_fs_read(const char *path, void *buf, int size, int offset) {
-  if (size <= 0 || !buf)
-    return _sys_file_read(path, buf, size, offset);
+  if (size <= 0 || !buf) {
+    int r = _sys_file_read(path, buf, size, offset);
+    if (r < 0)
+      errno = -r;
+    return r;
+  }
   long h = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
-  if (h < 0)
+  if (h < 0) {
+    errno = (int)-h;
     return (int)h;
+  }
   if (offset > 0)
     OS1_object_ctl((int)h, OBJ_CTL_SEEK, offset);
   long r = OS1_object_read((int)h, buf, (unsigned long)size);
   OS1low_handle_close((int)h);
+  if (r < 0)
+    errno = (int)-r;
   return (int)r;
 }
 int OS1_fs_list(const char *path, char *buf, size_t size) {
@@ -545,23 +579,31 @@ int list_dir(const char *path, char *buf, size_t size) {
 int chdir(const char *path) { return OS1_fs_chdir(path); }
 int getcwd(char *buf, size_t size) { return OS1_fs_getcwd(buf, size); }
 
-/* POSIX-style fd I/O (ABI-03 fd table).  open() matches the variadic
- * declaration in fcntl.h; the optional mode argument is ignored because the
- * VFS cannot create files yet (the kernel rejects O_CREAT with -EINVAL). */
+/*
+ * open - POSIX fd open (ABI-03 fd table).
+ *
+ * The create/truncate/append semantics live in the kernel now: SYS_OPEN
+ * honours O_CREAT/O_TRUNC through the VFS write-ACL + create seam (ASTRA §6.8,
+ * kernel/core/syscall_dispatch.c).  libc keeps only the POSIX personality
+ * work: pass the flags straight through, map the negative errno (errno_ret),
+ * surface a protected-path denial on the standard notify() transport, and set
+ * the initial position for O_APPEND (a fresh handle starts at offset 0, and
+ * the kernel does not track per-write append).  The variadic mode argument is
+ * accepted but not applied (the ext4 driver fixes new-file perms).
+ */
 int open(const char *pathname, int flags, ...) {
   int fd = (int)_sys_open(pathname, flags);
-  /* Same reasoning as OS1_registry_set's -EACCES handling above: the kernel
-   * (vfs_write_allowed, kernel/fs/vfs.c) only ever pr_warn/UART-logs a
-   * protected-path write denial — it never touches IPC or notifications.
-   * The caller already has -EACCES back right here, so it reports on
-   * itself through the ordinary notify() transport. */
   if (fd == -EACCES)
     OS1_notify_warn("vfs", pathname);
+  if (fd < 0)
+    return (int)errno_ret(fd);
+  if (flags & O_APPEND)
+    _sys_lseek(fd, 0, SEEK_END); /* best-effort: initial position at EOF */
   return fd;
 }
-int close(int fd) { return _sys_close(fd); }
+int close(int fd) { return (int)errno_ret(_sys_close(fd)); }
 long lseek(int fd, long offset, int whence) {
-  return _sys_lseek(fd, offset, whence);
+  return errno_ret(_sys_lseek(fd, offset, whence));
 }
 
 /* --- Formatting & Printing ---
@@ -758,8 +800,10 @@ int notify(const char *title, const char *msg) {
  */
 FILE *fopen(const char *path, const char *mode) {
   FILE *f = malloc(sizeof(FILE));
-  if (!f)
+  if (!f) {
+    errno = ENOMEM;
     return NULL;
+  }
   /* Zero EVERY field: malloc reuses dirty blocks, and a stale has_ungetc
    * injected a ghost byte at the start of the first fread (doom read
    * "\0IWA" instead of "IWAD" after its 9-file IWAD probe loop), while a
@@ -768,11 +812,43 @@ FILE *fopen(const char *path, const char *mode) {
   memset(f, 0, sizeof(FILE));
   f->fd = -1; /* no fd-backed stream: positional path I/O */
   strncpy(f->path, path, sizeof(f->path) - 1);
-  /* Probe file size; file_read with NULL buf and size=0 returns byte count. */
+  /* Probe file size; file_read with NULL buf and size=0 returns byte count.
+   * On a miss it sets errno (ENOENT/EACCES) — preserved below so a failed
+   * fopen reports the real reason (luaL_fileresult/strerror), not "Success". */
   f->size = file_read(path, NULL, 0, 0);
   if (f->size < 0 && mode[0] == 'r') {
+    int e = errno;
     free(f);
+    errno = e; /* free() must not mask the open failure's errno */
     return NULL;
+  }
+  /* Write mode truncates to empty NOW (POSIX "w"): unlink + zero-byte create,
+   * so the file both exists and is emptied before any fwrite — the old lazy
+   * path left stale trailing bytes when overwriting a longer file. Append
+   * mode ("a") creates-if-missing and starts the position at EOF. */
+  if (mode[0] == 'w') {
+    /* Create-and-truncate in one call: a from-start write (offset 0) now
+     * truncates on the FS side (ext4_write), so a zero-byte write both
+     * materialises a missing file and empties an existing one — no unlink
+     * needed, and the inode (perms/links) is preserved instead of churned. */
+    if (OS1_fs_write(path, "", 0, 0) < 0) {
+      int e = errno;
+      free(f);
+      errno = e;
+      return NULL;
+    }
+    f->size = 0;
+  } else if (mode[0] == 'a') {
+    if (f->size < 0) {
+      if (OS1_fs_write(path, "", 0, 0) < 0) {
+        int e = errno;
+        free(f);
+        errno = e;
+        return NULL;
+      }
+      f->size = 0;
+    }
+    f->pos = f->size;
   }
   return f;
 }
@@ -787,16 +863,36 @@ FILE *freopen(const char *filename, const char *mode, FILE *stream) {
 static int file_fd(FILE *fp);
 
 /*
- * fclose - release a FILE handle.
+ * fstream_flush - write out the pending write buffer of a positional stream.
  *
- * NOTE(USR-LIB-02): Guards against NULL with `(size_t)fp > 10`, which is
- * intended to catch sentinel/invalid values stored as small integers in some
- * callers (e.g. fileno tricks).  A proper NULL check (`fp != NULL`) would be
- * more idiomatic; this heuristic silently allows freeing invalid pointers with
- * addresses 1-10, which would corrupt the heap.
+ * The buffered bytes' on-disk offset is (pos - wcount): fwrite advances the
+ * logical position as it accumulates, so the buffer start trails 'pos' by the
+ * pending count.  A no-op for read streams and the console std streams, whose
+ * wcount stays 0.  On a short/failed write the error flag is set.  Returns 0 on
+ * success, EOF on error.
+ */
+static int fstream_flush(FILE *fp) {
+  if (!fp || fp->wcount <= 0)
+    return 0;
+  int at = fp->pos - fp->wcount;
+  if (at < 0)
+    at = 0;
+  int pending = fp->wcount;
+  int w = file_write(fp->path, fp->wbuf, pending, at);
+  fp->wcount = 0;
+  if (w < 0 || w < pending) {
+    fp->error = 1;
+    return EOF;
+  }
+  return 0;
+}
+
+/*
+ * fclose - flush any pending writes, then release a FILE handle.
  */
 int fclose(FILE *fp) {
-  if (fp && fp != stdin && fp != stdout && fp != stderr && (size_t)fp > 10) {
+  if (fp && fp != stdin && fp != stdout && fp != stderr) {
+    fstream_flush(fp);
     if (fp->is_tmp) {
       OS1_fs_unlink(fp->path);
     }
@@ -810,6 +906,10 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
     return 0;
   if (size == 0 || nmemb == 0)
     return 0;
+
+  /* Read-after-write consistency: persist any buffered writes before reading
+   * so an interleaved read at this position sees them on disk. */
+  fstream_flush(fp);
 
   size_t bytes = size * nmemb;
   char *buf = (char *)ptr;
@@ -834,8 +934,6 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
     read_bytes += r;
     return read_bytes / size;
   }
-  if ((size_t)fp <= 10)
-    return 0;
   int rem_bytes = bytes - read_bytes;
   int r = file_read(fp->path, buf + read_bytes, rem_bytes, fp->pos);
   if (r < 0) {
@@ -858,6 +956,8 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
   size_t bytes = size * nmemb;
   int fd = file_fd(fp);
   if (fd >= 0) {
+    /* Console std streams stay unbuffered: interactive output must appear now.
+     */
     long w = write(fd, ptr, bytes);
     if (w < 0) {
       fp->error = 1;
@@ -865,21 +965,35 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
     }
     return w / size;
   }
-  if ((size_t)fp <= 10)
-    return 0;
-  int written = file_write(fp->path, ptr, bytes, fp->pos);
-  if (written < 0) {
-    fp->error = 1;
-    return 0;
+
+  /* Positional (path-backed) stream: coalesce into the write buffer, flushing a
+   * full buffer to one file_write syscall.  This turns a per-byte/per-field
+   * fwrite loop into one syscall per FILE_WBUF_SIZE, which is what standard C
+   * stdio buffering does — the fix for incremental writers stalling on a
+   * syscall-per-call storm. */
+  const unsigned char *src = (const unsigned char *)ptr;
+  size_t done = 0;
+  while (done < bytes) {
+    if (fp->wcount == FILE_WBUF_SIZE && fstream_flush(fp) != 0)
+      break; /* flush failed: fp->error set, report the partial count */
+    int room = FILE_WBUF_SIZE - fp->wcount;
+    size_t chunk = bytes - done;
+    if (chunk > (size_t)room)
+      chunk = (size_t)room;
+    memcpy(fp->wbuf + fp->wcount, src + done, chunk);
+    fp->wcount += (int)chunk;
+    fp->pos += (int)chunk;
+    done += chunk;
   }
-  fp->pos += written;
-  return written / size;
+  return done / size;
 }
 
-
 int fseek(FILE *fp, long offset, int whence) {
-  if (!fp || (size_t)fp <= 10)
+  if (!fp)
     return -1;
+  /* Persist pending writes before the position moves: the buffer's on-disk
+   * offset is derived from the current pos, so it must be flushed here. */
+  fstream_flush(fp);
   if (whence == SEEK_SET)
     fp->pos = offset;
   else if (whence == SEEK_CUR)
@@ -896,8 +1010,10 @@ int fseek(FILE *fp, long offset, int whence) {
 }
 
 long ftell(FILE *fp) {
-  if (!fp || (size_t)fp <= 10)
+  if (!fp)
     return -1;
+  /* pos already includes buffered-but-unflushed bytes (fwrite advances it as it
+   * accumulates), so this is the correct logical position. */
   return fp->pos;
 }
 
@@ -1307,29 +1423,164 @@ int vsscanf(const char *inp, const char *fmt0, va_list ap) {
   return nassigned;
 }
 
-/* NOTE(USR-LIB-04): The following four functions are stubs.
- * mkdir/system/getenv return no-op values; atof truncates decimal fractions
- * by delegating to atoi() and casting.  Callers expecting correct behaviour
- * (e.g. a floating-point string "3.14" -> 3.14) silently receive 3.0. */
+/* NOTE(USR-LIB-04): system/getenv are still no-op stubs; atof truncates
+ * decimal fractions by delegating to atoi() and casting, so "3.14" -> 3.0.
+ * mkdir is no longer a stub — it issues SYS_MKDIR (see below). */
+/* mkdir - create a directory via SYS_MKDIR (VFS create, VFS_TYPE_DIR).  The
+ * POSIX mode argument is accepted but not yet applied (the ext4 driver fixes
+ * new directories at 0755); returns 0 on success, -1 on error (path exists,
+ * not permitted, or provider failure), matching the POSIX contract. */
 int mkdir(const char *path, mode_t mode) {
-  (void)path;
   (void)mode;
-  return 0;
+  if (!path)
+    return -1;
+  return _sys_mkdir(path) == 0 ? 0 : -1;
 }
+/*
+ * system - run a shell command and wait for it (<stdlib.h>).
+ *
+ * FIX(USR-LIB-04): this used to unconditionally return 0. That silently
+ * broke two separate contracts real POSIX-shaped code relies on:
+ *
+ *   1. system(NULL) must return non-zero IFF a command processor exists.
+ *      Lua's os.execute() with no argument is exactly this check (e.g.
+ *      `assert(os.execute())` in the Lua test suite reads "0" as "no
+ *      shell available" and fails, even though NXShell is right there).
+ *   2. system(cmd) must actually run cmd and hand back its real exit
+ *      status, so os.execute(cmd)/os.execute(cmd) callers get true
+ *      success/failure instead of a hardcoded fake "it worked".
+ *
+ * NOTE: NXSHELL_PATH and the "-c" argv convention below are the standard
+ * Unix shell invocation shape (`sh -c "cmd"`). Adjust NXSHELL_PATH (and the
+ * argv construction, if NXShell parses its command-line differently) to
+ * match the actual shell binary shipped on this system.
+ */
+#define NXSHELL_PATH "/sys/bin/nxshell"
+
 int system(const char *command) {
-  (void)command;
-  return 0;
+  if (command == NULL) {
+    return 1; /* POSIX: non-zero only if a command processor exists.
+               * NXShell is available. */
+  }
+
+  char *argv[4];
+  argv[0] = (char *)NXSHELL_PATH;
+  argv[1] = (char *)"-c";
+  argv[2] = (char *)command;
+  argv[3] = NULL;
+
+  int pid = spawn_args(NXSHELL_PATH, 3, argv);
+  if (pid < 0) {
+    errno = ENOENT;
+    return -1;
+  }
+
+  /* Blocking join through polling, using the same pattern as
+   * nxexec_run_foreground():
+   * wait() is non-blocking (-1 = still running / pid reaped / -2 = not
+   * found), so it must be queried in a loop until it no longer reports
+   * "running" — not called only once like before (that single -1 result
+   * was interpreted as ECHILD, causing system() to fail almost every time). */
+  int w;
+  while ((w = wait(pid)) == -1)
+    OS1_sleep(15);
+
+  return 0; /* w == pid (reaped) or -2 (reaped elsewhere): the command
+             * has still executed. No real status is available: OS1 does
+             * not yet expose a per-process exit code (see note above). */
+}
+
+/*
+ * cmdline_split - split a command line into argv[], honoring quotes.
+ *
+ * THE shared command tokenizer (used by nxshell for both interactive input
+ * and `nxshell -c "<cmd>"`, which is how system()/Lua os.execute() reach a
+ * program).  Whitespace separates words EXCEPT inside a '...' or "..." span,
+ * which is kept as one token with its surrounding quotes REMOVED — so a
+ * shell-style quoted program name like "lua" resolves to lua (not the
+ * literal /bin/"lua" that broke os.execute), and a quoted argument that
+ * contains spaces (Lua's `lua -e "a = 1"`) survives as a single argv entry.
+ * A backslash inside a double-quoted span escapes a following '"' or '\'.
+ *
+ * Tokens are compacted IN PLACE inside s (out <= s always, so writing the
+ * NUL terminators never clobbers a not-yet-scanned token).  Returns argc;
+ * each argv[i] points into s.  Matches the previous whitespace-only splitter
+ * when no quotes are present.
+ */
+int cmdline_split(char *s, char **argv, int max) {
+  int argc = 0;
+  if (!s || !argv || max <= 0)
+    return 0;
+  while (*s && argc < max) {
+    while (*s == ' ' || *s == '\t')
+      s++;
+    if (!*s)
+      break;
+    char *out = s;
+    argv[argc++] = out;
+    while (*s && *s != ' ' && *s != '\t') {
+      char c = *s;
+      if (c == '"' || c == '\'') {
+        char q = c;
+        s++;
+        while (*s && *s != q) {
+          if (q == '"' && *s == '\\' && (s[1] == '"' || s[1] == '\\'))
+            s++; /* consume the backslash, copy the escaped char verbatim */
+          *out++ = *s++;
+        }
+        if (*s == q)
+          s++; /* consume the closing quote */
+      } else {
+        *out++ = *s++;
+      }
+    }
+    if (*s)
+      s++;         /* step past the delimiter for the next scan */
+    *out = '\0';   /* terminate the compacted token (out <= s) */
+  }
+  return argc;
 }
 /* atof: NOTE(USR-LIB-04) only integer part is parsed; decimal digits ignored.
  */
 double atof(const char *nptr) { return (double)atoi(nptr); }
+/*
+ * getenv - minimal process environment (<stdlib.h>).
+ *
+ * OS1 has no per-process environment block yet, but a blanket NULL made every
+ * `getenv("PATH")`-style probe fail (POSIX code, shells, and language runtimes
+ * routinely expect at least PATH/HOME to exist).  Return a small, fixed set
+ * that reflects this system's actual layout; unknown names still yield NULL.
+ * General libc — not tailored to any one caller.
+ */
 char *getenv(const char *name) {
-  (void)name;
+  static const struct {
+    const char *k, *v;
+  } env[] = {
+      {"PATH", "/bin:/sys/bin"},
+      {"HOME", "/home"},
+      {"TMPDIR", "/home"},
+      {"SHELL", "/sys/bin/nxshell"},
+  };
+  if (!name)
+    return NULL;
+  for (unsigned i = 0; i < sizeof(env) / sizeof(env[0]); i++)
+    if (strcmp(name, env[i].k) == 0)
+      return (char *)env[i].v;
   return NULL;
 }
 int stat(const char *path, struct stat *buf) {
   if (buf)
     memset(buf, 0, sizeof(struct stat));
+  /* Directory detection first: the list primitive (the same one the shell's
+   * ls uses) succeeds ONLY on directories (ext4_list returns -2 on a file),
+   * so a >= 0 probe IS "this is a directory".  A tiny buffer suffices — we
+   * only need the verdict, not the entries. */
+  char dprobe[4];
+  if (list_dir(path, dprobe, sizeof(dprobe)) >= 0) {
+    if (buf)
+      buf->st_mode = S_IFDIR;
+    return 0;
+  }
   int size = file_read(path, NULL, 0, 0);
   if (size < 0)
     return -1;
@@ -1367,20 +1618,54 @@ int fprintf(FILE *stream, const char *format, ...) {
   va_end(args);
   return res;
 }
-/* fflush: no-op (no userland buffer to flush; writes are unbuffered). */
+/* fflush: write out a positional stream's pending write buffer.  fflush(NULL)
+ * is defined to flush all open output streams; this libc keeps no open-stream
+ * registry, so that form is a no-op (callers flush the specific stream). */
 int fflush(FILE *stream) {
-  (void)stream;
-  return 0;
+  if (!stream)
+    return 0;
+  return fstream_flush(stream);
 }
-/* remove/rename: stubs returning success; no VFS deletion/rename syscall yet.
+/*
+ * remove - delete a file (POSIX/<stdio.h>).  Was a no-op stub that returned
+ * success while deleting nothing, so os.remove()/temp-file cleanup silently
+ * did nothing; the unlink syscall existed all along (OS1_fs_unlink).
  */
 int remove(const char *pathname) {
-  (void)pathname;
-  return 0;
+  return (int)errno_ret(OS1_fs_unlink(pathname));
 }
+/*
+ * rename - move a file (POSIX/<stdio.h>).  No rename syscall exists, so this
+ * emulates it as copy + unlink of the original — the same approach nxshell's
+ * `mv` uses.  Not atomic and it rewrites the bytes, but it makes os.rename()
+ * and any POSIX renamer actually work instead of falsely reporting success.
+ */
 int rename(const char *oldpath, const char *newpath) {
-  (void)oldpath;
-  (void)newpath;
+  int size = OS1_fs_read(oldpath, NULL, 0, 0); /* size probe; errno on miss */
+  if (size < 0)
+    return -1;
+  /* The destination write starts at offset 0, so ext4_write truncates any
+   * longer pre-existing dst to exactly the copied length — no separate unlink
+   * of newpath is needed to avoid trailing garbage. */
+  if (size > 0) {
+    char *buf = malloc((size_t)size);
+    if (!buf) {
+      errno = ENOMEM;
+      return -1;
+    }
+    int n = OS1_fs_read(oldpath, buf, size, 0);
+    if (n < 0) {
+      free(buf);
+      return -1;
+    }
+    int w = OS1_fs_write(newpath, buf, n, 0);
+    free(buf);
+    if (w < 0)
+      return -1;
+  } else if (OS1_fs_write(newpath, "", 0, 0) < 0) {
+    return -1;
+  }
+  OS1_fs_unlink(oldpath);
   return 0;
 }
 /* puts: writes string + newline to fd 1, matching the standard POSIX contract.
@@ -1532,14 +1817,17 @@ void qsort(void *base, size_t nmemb, size_t size,
 /* --- <stdio.h> ---
  * Standard stream handles.
  */
-FILE _stdin_struct = { .fd = 0 };
-FILE _stdout_struct = { .fd = 1 };
-FILE _stderr_struct = { .fd = 2 };
+FILE _stdin_struct = {.fd = 0};
+FILE _stdout_struct = {.fd = 1};
+FILE _stderr_struct = {.fd = 2};
 
 static int file_fd(FILE *fp) {
-  if (fp == stdin) return 0;
-  if (fp == stdout) return 1;
-  if (fp == stderr) return 2;
+  if (fp == stdin)
+    return 0;
+  if (fp == stdout)
+    return 1;
+  if (fp == stderr)
+    return 2;
   return -1;
 }
 
@@ -1569,7 +1857,8 @@ int fputs(const char *s, FILE *fp) {
 }
 
 int fgetc(FILE *fp) {
-  if (!fp) return EOF;
+  if (!fp)
+    return EOF;
   if (fp->has_ungetc) {
     fp->has_ungetc = 0;
     return fp->ungetc_buf;
@@ -1615,7 +1904,7 @@ int ungetc(int c, FILE *fp) {
 }
 
 void clearerr(FILE *fp) {
-  if (fp && (size_t)fp > 10) {
+  if (fp) {
     fp->error = 0;
     fp->eof = 0;
   }
@@ -1784,4 +2073,3 @@ char *strpbrk(const char *s, const char *accept) {
   }
   return NULL;
 }
-

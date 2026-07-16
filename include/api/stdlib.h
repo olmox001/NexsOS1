@@ -26,6 +26,10 @@ int abs(int j);
 long labs(long j);
 char *getenv(const char *name);
 int system(const char *command);
+/* Quote-aware command-line tokenizer (NexsOS extension): splits s into argv[]
+ * on whitespace, keeping '...'/"..." spans as single tokens with the quotes
+ * stripped.  Modifies s in place; returns argc.  See lib.c. */
+int cmdline_split(char *s, char **argv, int max);
 void qsort(void *base, size_t nmemb, size_t size,
            int (*compar)(const void *, const void *));
 
