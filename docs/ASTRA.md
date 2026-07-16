@@ -708,3 +708,38 @@ Also still open, verified 2026-07-02:
   item 3 asked for is **already done**: the live `kernel/graphics/compositor.c`
   no longer defines it (only a comment at `compositor.c:934` explains its
   removal); it survives only in the two stray `.old`/`.new` files above.
+
+## 7.12 Filesystem/libc stabilization batch (2026-07-16) ✅ DONE (runtime-verified aarch64)
+
+A layer-first debugging pass (nxfilem rename crash, doom save freeze, missing
+mkdir) fixed the shared layers rather than the apps — no app-specific code:
+
+- **`vsnprintf` C99 `*`** (`kernel/lib/vsnprintf.c`, shared kernel+userland):
+  dynamic width/precision (`%*d`, `%.*s`) now consume their int argument.
+  Root cause of the nxfilem rename crash: `%.*s` desynchronised `va_arg`, the
+  following `%s` dereferenced the int (`dir_len=0x11`) as a pointer → Data
+  Abort at 0x11 in EL0.  Verified fixed at runtime.
+- **stdio write buffering** (`user/sys/lib/lib.c`): positional streams carry a
+  4 KiB `FILE.wbuf`; `fwrite` coalesces, flush on fflush/fclose/fseek and
+  before every fread.  Console std streams stay unbuffered.  Fixed the doom
+  save "freeze" (a per-byte fwrite loop was one SYS_FILE_WRITE — each a full
+  ext4 path walk — per byte).  The `(size_t)fp > 10` sentinel heuristics were
+  replaced with NULL checks (USR-LIB-02 closed).
+- **Directories end-to-end**: `ext4_create` seeds `.`/`..` and supports
+  `VFS_TYPE_DIR`; `ext4_unlink` removes EMPTY directories (ENOTEMPTY-style
+  refusal otherwise, `.`/`..` guarded, parent link count maintained); new
+  **`SYS_MKDIR` (260)** gated by the same `vfs_write_allowed` seam as
+  UNLINK/FILE_WRITE; userland `mkdir()`, nxshell `mkdir` builtin, nxfilem
+  "New folder".  Runtime-verified (`mkdir ciao` → `ls` shows it).
+- **`SYS_OPEN` honours `O_CREAT`/`O_TRUNC`/`O_APPEND`** (issue #126 closed for
+  the fd path); `fopen("w"/"a")` implements truncate/append eagerly;
+  `rename()`/`remove()` are real (copy+unlink model); `stat()` reports
+  `S_IFDIR` via a `list_dir` probe.
+- **A2 capability symmetry**: `sys_object_read` re-syncs the cached vfs_node
+  from the object's path before reading (as the write side already did), so a
+  long-lived READ handle sees appended data.
+- **Still ambient** (unchanged, next in line — plan Part 2): `OS1_fs_write`
+  path-write pending `O_CREAT` in `handle_create`; see
+  `docs/PIANO-LIBC-ASTRA-2026-07-16.md` for the full current plan, the
+  capability-closure microphases, and the userland restructuring macroplan
+  (OS1lib_OS1/POSIX/LIBC split, services, nxauth, `.X` executable format).

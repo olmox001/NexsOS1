@@ -22,11 +22,11 @@
  * correctly rejected with VIRTIO_BLK_S_IOERR. */
 #define GPT_NONPARTITION_SECTORS 67 /* LBA 0..33 + backup GPT at the tail */
 #define BLOCKS_PER_MIB (1024 * 1024 / EXT4_BLOCK_SIZE)
-#define MIN_PARTITION_BLOCKS (128 * BLOCKS_PER_MIB)
+#define MIN_PARTITION_BLOCKS (432 * BLOCKS_PER_MIB)
 /* Room for savegames, editor files and other runtime-created data after the
  * image's static rootfs.  The VFS owns policy; this is only image capacity. */
 #define RUNTIME_RESERVE_BLOCKS (8 * BLOCKS_PER_MIB)
-#define EXT4_SINGLE_GROUP_MAX_BLOCKS 32768
+#define EXT4_SINGLE_GROUP_MAX_BLOCKS 110592
 
 /* GPT Constants */
 #define GPT_SIGNATURE 0x5452415020494645ULL
