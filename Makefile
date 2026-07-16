@@ -463,12 +463,21 @@ LUA_OS1_OBJ   := $(BUILD_DIR)/$(USER_LIB_DIR)/os1LUA_lib.o
 LUA_LIB     := $(BUILD_DIR)/lua.a
 LUA_OS1_LIB := $(BUILD_DIR)/libos1lua.a
 
+# The Lua module search path (LUA_ROOT/LDIR/CDIR/LUA_PATH_DEFAULT) is owned
+# SOLELY by the force-included lua_portability.h — a C header, so the ';'
+# path separators are inside a real string literal.  It must NOT be passed
+# as -DLUA_PATH_DEFAULT=\"...;...\" here: Make forwards the \" verbatim, the
+# shell reads it as a literal quote (not a delimiter), and the unquoted ';'
+# then split the gcc line into pieces ("no input files" + bogus commands).
 LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
              -Wno-error \
              -ffreestanding -fno-builtin -nostdlib -nostartfiles \
              -fno-common -fstack-protector-strong -fno-pic -fno-pie \
              -fno-omit-frame-pointer \
-             -Iinclude/api -I$(LUA_DIR) -I$(USER_LIB_DIR)/portability/lua \
+             -DLUA_USE_NEXSOS \
+             -Iinclude/api \
+             -I$(LUA_DIR) \
+             -I$(USER_LIB_DIR)/portability/lua \
              -include lua_portability.h
 
 $(LUA_OBJ_DIR)/%.o: $(LUA_DIR)/%.c
@@ -648,7 +657,7 @@ $(BUILD_DIR)/%.o: %.cpp
 -include $(DEPS)
 
 # Disk Generation
-rootfs: user
+rootfs: user libsdl2 liblua
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
@@ -658,6 +667,10 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/icon/dark
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/icon/light
 	@mkdir -p $(BUILD_DIR)/rootfs/lib
+	@# Lua module search root (lua_portability.h LUA_LDIR/LUA_CDIR): system
+	@# .lua/.so modules live here — read-for-all, root-write-only (unlike
+	@# /home). ext4 has no runtime dir creation, so pre-create the tree.
+	@mkdir -p $(BUILD_DIR)/rootfs/lib/lua/5.4/lib
 	@mkdir -p  $(BUILD_DIR)/rootfs/sys/lib/include
 	@# /home: the ONLY user-writable tree (vfs_write_allowed tree ACL —
 	@# /sys/bin machine-only, every other tree root-only, guests confined to
@@ -680,6 +693,7 @@ rootfs: user
 	@# Dock/launcher tile icons (nxicon.h): both theme sets, so a runtime
 	@# theme flip never needs a rebuilt image — see nxicon.h's header comment.
 	@-cp user/home/Pictures/globe.png $(BUILD_DIR)/rootfs/home/Pictures/ 2>/dev/null || true
+	@-cp user/home/Pictures/background/nxduck.png $(BUILD_DIR)/rootfs/home/Pictures/background/ 2>/dev/null || true
 	@-cp user/home/Pictures/icon/light/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/light/ 2>/dev/null || true
 	@# doom savegames are runtime-created in /home/Documents/doom now; the
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
@@ -687,9 +701,12 @@ rootfs: user
 	@-cp user/sys/bin/nxfont/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include	
-	@-cp $(SDL2_LIB) $(BUILD_DIR)/rootfs/sys/lib/libSDL2.a 2>/dev/null || true
-	@-cp $(LUA_LIB) $(BUILD_DIR)/rootfs/sys/lib/liblua.a 2>/dev/null || true
-	@-cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/libos1lua.a 2>/dev/null || true
+	@# Ship the system libraries into /sys/lib. These are HARD copies (no
+	@# 2>/dev/null||true mask): rootfs now depends on libsdl2+liblua, so a
+	@# missing archive is a real build error, not a silently-empty /sys/lib.
+	@cp $(SDL2_LIB) $(BUILD_DIR)/rootfs/sys/lib/libSDL2.a
+	@cp $(LUA_LIB) $(BUILD_DIR)/rootfs/sys/lib/liblua.a
+	@cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/libos1lua.a
 	@rm -rf $(BUILD_DIR)/rootfs/sys/lib/include
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/SDL2
 	@cp -r $(SDL2_DIR)/include/. $(BUILD_DIR)/rootfs/sys/lib/include/SDL2/
@@ -698,7 +715,7 @@ rootfs: user
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/api
 	@cp -r include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
 	@# Copy Lua's own test suite next to nxlua, for on-device testing
-	@mkdir -p $(BUILD_DIR)/rootfs//home/LUA/luatest
+	@mkdir -p $(BUILD_DIR)/rootfs/home/LUA/luatest
 	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/home/LUA/luatest/ 2>/dev/null || true
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done

@@ -598,6 +598,26 @@ static int regfs_list(struct vfs_mount *mnt, const char *path, char *buf,
   return (int)off;
 }
 
+/* regfs_create - create an empty leaf key at 'path' (fs_ops.create).  Backs
+ * handle_create(OS1_NS_FS, CREATE) on /reg so the capability route can create
+ * keys exactly like regfs_write's implicit create does.  Same authority as
+ * every registry write (registry_write_allowed + first-writer-wins ownership
+ * inside registry_set).  Interior (directory) nodes appear implicitly when a
+ * child leaf is set, so VFS_TYPE_DIR is not supported here. */
+static int regfs_create(struct vfs_mount *mnt, const char *path,
+                        uint32_t type) {
+  (void)mnt;
+  if (type != VFS_TYPE_FILE)
+    return -1;
+  if (!registry_write_allowed())
+    return -EPERM;
+  char key[MAX_KEY_LEN];
+  regfs_path_to_key(path, key, sizeof(key));
+  if (!key[0])
+    return -1;
+  return registry_set(key, "", registry_caller_owner()) == 0 ? 0 : -1;
+}
+
 /* regfs_unlink - remove the registry key at 'path' (rm /reg/...). */
 static int regfs_unlink(struct vfs_mount *mnt, const char *path) {
   (void)mnt;
@@ -616,6 +636,7 @@ static const struct fs_ops regfs_ops = {
     .open = regfs_open,
     .read = regfs_read,
     .write = regfs_write,
+    .create = regfs_create,
     .list = regfs_list,
     .unlink = regfs_unlink,
 };

@@ -19,8 +19,11 @@
  *   Length modifiers: l, ll, z.
  *   Flags: - (left-align), + (force sign), ' ' (space sign), # (alternate),
  *          0 (zero-pad).
- *   Width: decimal field width.
- *   Precision: decimal precision (for numeric digit count).
+ *   Width: decimal field width, or '*' to take it from an int argument (C99);
+ *          a negative '*' width means left-justify with its magnitude.
+ *   Precision: decimal precision, or '.*' to take it from an int argument (C99);
+ *          a negative '*' precision means "no precision".  For %s this bounds
+ *          the copy, so '%.*s' is safe and does not read past the argument.
  *
  * Invariants:
  *   - Every write path guards `written < (int)size - 1` before writing.
@@ -162,6 +165,180 @@ static int print_num(char *buf, size_t size, uint64_t num, int base, int width, 
     return needed;
 }
 
+#ifndef KERNEL
+/*
+ * Floating-point conversion (%f/%F, %e/%E, %g/%G) — USERLAND ONLY.
+ *
+ * The kernel build (KERNEL defined) is compiled FPU-free and never formats
+ * a double (LIB-VSNPRINTF-03), so this whole block is excluded there: no
+ * floating-point code lands in the kernel image, no FPU save/restore is
+ * implied.  The userland os1 library, by contrast, backs Lua's number->string
+ * path (LUAI_NUMFFORMAT "%.14g", string.format("%g"/"%f"/"%e", ...)): without
+ * this, every such conversion fell through to the default case and emitted the
+ * literal spec ("%g"), corrupting all Lua numeric output.
+ *
+ * Digits come from double arithmetic only (no libm dependency): ~15-16
+ * significant decimal digits are reliable, which covers Lua's 14-digit %g.
+ */
+
+/*
+ * fp_gen - generate `ndigits` rounded significant decimal digits of value>0.
+ *   digs[]    receives ndigits chars '0'..'9' (digs[0] most significant);
+ *   *decexp   receives the base-10 exponent of the first digit, i.e.
+ *             value ~= digs[0].digs[1..] x 10^(*decexp).
+ * ndigits is clamped to [1,17].  Rounding is half-up on the guard digit and
+ * carries all the way (all-nines rollover bumps *decexp).
+ */
+static void fp_gen(double value, int ndigits, char *digs, int *decexp) {
+    if (ndigits < 1) ndigits = 1;
+    if (ndigits > 17) ndigits = 17;
+
+    int e = 0;
+    double v = value;
+    while (v >= 10.0) { v /= 10.0; e++; }
+    while (v < 1.0)   { v *= 10.0; e--; }
+
+    int d[19]; /* ndigits (<=17) + one guard digit */
+    for (int i = 0; i <= ndigits; i++) {
+        int digit = (int)v;
+        if (digit < 0) digit = 0; else if (digit > 9) digit = 9;
+        d[i] = digit;
+        v = (v - (double)digit) * 10.0;
+    }
+
+    int carry = (d[ndigits] >= 5) ? 1 : 0;
+    for (int i = ndigits - 1; i >= 0 && carry; i--) {
+        d[i] += 1;
+        if (d[i] == 10) { d[i] = 0; carry = 1; } else carry = 0;
+    }
+    if (carry) { /* 9.999.. rounded to 10.000..: shift and bump the exponent */
+        for (int i = ndigits - 1; i > 0; i--) d[i] = d[i - 1];
+        d[0] = 1;
+        e++;
+    }
+    for (int i = 0; i < ndigits; i++) digs[i] = (char)('0' + d[i]);
+    *decexp = e;
+}
+
+/* Append the exponent suffix (e/E +/- NN, at least two digits) to out[n..]. */
+static int fp_exp(char *out, int n, int decexp, int upper) {
+    out[n++] = upper ? 'E' : 'e';
+    int ex = decexp;
+    if (ex < 0) { out[n++] = '-'; ex = -ex; } else out[n++] = '+';
+    char eb[8];
+    int en = 0;
+    if (ex == 0) eb[en++] = '0';
+    while (ex > 0) { eb[en++] = (char)('0' + ex % 10); ex /= 10; }
+    while (en < 2) eb[en++] = '0';
+    while (en > 0) out[n++] = eb[--en];
+    return n;
+}
+
+/*
+ * fp_format - render `value` into out[] (NUL-terminated); returns length.
+ *   spec  : 'f', 'e' or 'g' (lowercase); `upper` selects the E/G letter case.
+ *   prec  : precision (<0 -> default 6); flags: FLAG_PLUS/SPACE/SPECIAL honored.
+ * Sign and inf/nan are handled here; field WIDTH is applied by the caller.
+ */
+static int fp_format(char *out, double value, char spec, int prec, int flags,
+                     int upper) {
+    int n = 0;
+    union { double d; uint64_t u; } bp;
+    bp.d = value;
+    int neg = (int)(bp.u >> 63);
+    uint64_t expo = (bp.u >> 52) & 0x7ff;
+    uint64_t mant = bp.u & 0xfffffffffffffULL;
+
+    char sgn = neg ? '-' : (flags & FLAG_PLUS) ? '+'
+                          : (flags & FLAG_SPACE) ? ' ' : 0;
+
+    if (expo == 0x7ff) { /* inf / nan */
+        if (mant) {
+            const char *w = upper ? "NAN" : "nan";
+            while (*w) out[n++] = *w++;
+        } else {
+            if (sgn) out[n++] = sgn;
+            const char *w = upper ? "INF" : "inf";
+            while (*w) out[n++] = *w++;
+        }
+        out[n] = '\0';
+        return n;
+    }
+
+    if (neg) value = -value;
+    if (prec < 0) prec = 6;
+    if (sgn) out[n++] = sgn;
+
+    char digs[20];
+    int decexp;
+
+    if (spec == 'e') {
+        int ndig = prec + 1;
+        if (value == 0.0) { for (int i = 0; i < 20; i++) digs[i] = '0'; decexp = 0; }
+        else fp_gen(value, ndig, digs, &decexp);
+        out[n++] = digs[0];
+        if (prec > 0 || (flags & FLAG_SPECIAL)) out[n++] = '.';
+        for (int i = 1; i <= prec; i++) out[n++] = (i < 20) ? digs[i] : '0';
+        n = fp_exp(out, n, decexp, upper);
+    } else if (spec == 'g') {
+        int P = prec ? prec : 1;
+        if (value == 0.0) { for (int i = 0; i < 20; i++) digs[i] = '0'; decexp = 0; }
+        else fp_gen(value, P, digs, &decexp);
+        int siglen = P;
+        if (!(flags & FLAG_SPECIAL))
+            while (siglen > 1 && digs[siglen - 1] == '0') siglen--;
+
+        if (decexp < -4 || decexp >= P) { /* scientific */
+            out[n++] = digs[0];
+            if (siglen > 1 || (flags & FLAG_SPECIAL)) out[n++] = '.';
+            for (int i = 1; i < siglen; i++) out[n++] = digs[i];
+            n = fp_exp(out, n, decexp, upper);
+        } else { /* fixed */
+            int di = 0;
+            if (decexp < 0) out[n++] = '0';
+            else for (int p = decexp; p >= 0; p--)
+                     out[n++] = (di < siglen) ? digs[di++] : '0';
+            char frac[48];
+            int fn = 0;
+            if (decexp < 0) {
+                for (int p = -1; p > decexp; p--) frac[fn++] = '0';
+                for (int i = 0; i < siglen; i++) frac[fn++] = digs[i];
+            } else {
+                for (int i = decexp + 1; i < siglen; i++) frac[fn++] = digs[i];
+            }
+            if (fn > 0 || (flags & FLAG_SPECIAL)) {
+                out[n++] = '.';
+                for (int i = 0; i < fn; i++) out[n++] = frac[i];
+            }
+        }
+    } else { /* 'f' */
+        if (value == 0.0) { digs[0] = '0'; decexp = 0;
+            for (int i = 1; i < 20; i++) digs[i] = '0'; }
+        else {
+            fp_gen(value, 1, digs, &decexp); /* locate the point first */
+            int ndig = decexp + 1 + prec;
+            if (ndig < 1) ndig = 1;
+            if (ndig > 17) ndig = 17;
+            fp_gen(value, ndig, digs, &decexp);
+        }
+        int ndig = decexp + 1 + prec;
+        if (ndig < 1) ndig = 1;
+        if (ndig > 17) ndig = 17;
+        int di = 0;
+        if (decexp < 0) out[n++] = '0';
+        else for (int p = decexp; p >= 0; p--)
+                 out[n++] = (di < ndig) ? digs[di++] : '0';
+        if (prec > 0 || (flags & FLAG_SPECIAL)) out[n++] = '.';
+        for (int p = -1; p >= -prec; p--) {
+            int idx = decexp - p;
+            out[n++] = (idx >= 0 && idx < ndig) ? digs[idx] : '0';
+        }
+    }
+    out[n] = '\0';
+    return n;
+}
+#endif /* !KERNEL */
+
 /*
  * vsnprintf - format a string into buf using at most size bytes (including NUL).
  *
@@ -223,22 +400,44 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
             fmt++;
         }
 
-        /* Field width: decimal digits after flags, before '.' or specifier */
+        /* Field width: a '*' takes the width from an int argument (C99); a
+         * negative value means left-justify with its magnitude.  Otherwise a run
+         * of decimal digits after flags, before '.' or the specifier.
+         * NOTE: '*' MUST consume its int arg here — omitting it desynchronises
+         * every following va_arg (a bogus pointer lands in the next %s and
+         * faults on deref), which is exactly the '%.*s' crash class. */
         width = 0;
-        while (*fmt >= '0' && *fmt <= '9') {
-            width = width * 10 + (*fmt - '0');
+        if (*fmt == '*') {
             fmt++;
+            width = va_arg(args, int);
+            if (width < 0) {
+                flags |= FLAG_LEFT;
+                width = -width;
+            }
+        } else {
+            while (*fmt >= '0' && *fmt <= '9') {
+                width = width * 10 + (*fmt - '0');
+                fmt++;
+            }
         }
 
-        /* Precision: optional '.' followed by decimal digits.
-         * -1 means no precision was specified. */
+        /* Precision: optional '.' followed by a '*' (take from an int argument,
+         * C99; a negative value means "no precision") or a run of decimal
+         * digits.  -1 means no precision was specified. */
         precision = -1;
         if (*fmt == '.') {
             fmt++;
-            precision = 0;
-            while (*fmt >= '0' && *fmt <= '9') {
-                precision = precision * 10 + (*fmt - '0');
+            if (*fmt == '*') {
                 fmt++;
+                precision = va_arg(args, int);
+                if (precision < 0)
+                    precision = -1;
+            } else {
+                precision = 0;
+                while (*fmt >= '0' && *fmt <= '9') {
+                    precision = precision * 10 + (*fmt - '0');
+                    fmt++;
+                }
             }
         }
 
@@ -329,25 +528,98 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                 }
                 break;
 
-            case 'p':
+            case 'p': {
+                /* Build the pointer token "0x" + 16 zero-padded hex digits in
+                 * a scratch buffer (unchanged look for kernel logs), THEN apply
+                 * the FIELD WIDTH to the whole token with space padding /
+                 * left-justify.  The old code fed `width` straight into the
+                 * hex digit count, so "%90p" produced 92 chars of zero-padded
+                 * hex instead of a 90-wide field (LIB-VSNPRINTF-04) — which
+                 * broke Lua's `#string.format("%90p", {}) == 90`. */
                 num = (uint64_t)va_arg(args, void *);
-                if (size > 0 && written < (int)size - 1) buf[written++] = '0';
-                needed++;
-                if (size > 0 && written < (int)size - 1) buf[written++] = 'x';
-                needed++;
-                
-                int p_added = print_num(size > 0 ? buf + written : NULL, size > (size_t)written ? size - written : 0, num, 16, width > 0 ? width : 16, precision, FLAG_ZEROPAD);
-                needed += p_added;
-                if (size > 0 && written < (int)size - 1) {
-                    int add = size - 1 - written;
-                    written += p_added < add ? p_added : add;
+                char pb[32];
+                int pl = 0;
+                pb[pl++] = '0';
+                pb[pl++] = 'x';
+                pl += print_num(pb + pl, sizeof(pb) - pl, num, 16, 16, -1, FLAG_ZEROPAD);
+                int pad = width - pl;
+                if (!(flags & FLAG_LEFT)) {
+                    for (int k = 0; k < pad; k++) {
+                        if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                        needed++;
+                    }
+                    for (int k = 0; k < pl; k++) {
+                        if (size > 0 && written < (int)size - 1) buf[written++] = pb[k];
+                        needed++;
+                    }
+                } else {
+                    for (int k = 0; k < pl; k++) {
+                        if (size > 0 && written < (int)size - 1) buf[written++] = pb[k];
+                        needed++;
+                    }
+                    for (int k = 0; k < pad; k++) {
+                        if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                        needed++;
+                    }
                 }
                 break;
+            }
 
             case '%':
                 if (size > 0 && written < (int)size - 1) buf[written++] = '%';
                 needed++;
                 break;
+
+#ifndef KERNEL
+            case 'f': case 'F':
+            case 'e': case 'E':
+            case 'g': case 'G': {
+                /* Floats are userland-only (see fp_format's header). */
+                double dv = va_arg(args, double);
+                char nb[512];
+                int up = (*fmt >= 'A' && *fmt <= 'Z');
+                char lspec = up ? (char)(*fmt + 32) : *fmt;
+                int ln = fp_format(nb, dv, lspec, precision, flags, up);
+                int pad = width - ln;
+                if (!(flags & FLAG_LEFT)) {
+                    if (flags & FLAG_ZEROPAD) {
+                        /* zero-fill goes AFTER any sign/space prefix */
+                        int sk = (nb[0] == '-' || nb[0] == '+' || nb[0] == ' ') ? 1 : 0;
+                        for (int k = 0; k < sk; k++) {
+                            if (size > 0 && written < (int)size - 1) buf[written++] = nb[k];
+                            needed++;
+                        }
+                        for (int k = 0; k < pad; k++) {
+                            if (size > 0 && written < (int)size - 1) buf[written++] = '0';
+                            needed++;
+                        }
+                        for (int k = sk; k < ln; k++) {
+                            if (size > 0 && written < (int)size - 1) buf[written++] = nb[k];
+                            needed++;
+                        }
+                    } else {
+                        for (int k = 0; k < pad; k++) {
+                            if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                            needed++;
+                        }
+                        for (int k = 0; k < ln; k++) {
+                            if (size > 0 && written < (int)size - 1) buf[written++] = nb[k];
+                            needed++;
+                        }
+                    }
+                } else {
+                    for (int k = 0; k < ln; k++) {
+                        if (size > 0 && written < (int)size - 1) buf[written++] = nb[k];
+                        needed++;
+                    }
+                    for (int k = 0; k < pad; k++) {
+                        if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                        needed++;
+                    }
+                }
+                break;
+            }
+#endif /* !KERNEL */
 
             default:
                 if (size > 0 && written < (int)size - 1) buf[written++] = '%';

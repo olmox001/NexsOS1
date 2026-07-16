@@ -347,6 +347,12 @@ _sys_unlink:
     svc #0
     ret
 
+.global _sys_mkdir
+_sys_mkdir:
+    mov x8, #SYS_MKDIR
+    svc #0
+    ret
+
 .global _sys_getcwd
 _sys_getcwd:
     mov x8, #SYS_GETCWD

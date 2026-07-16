@@ -1,8 +1,8 @@
 #ifndef LUA_PORTABILITY_H
 #define LUA_PORTABILITY_H
 
-#include <stddef.h>
 #include <setjmp.h>
+#include <stddef.h>
 /* time_t/struct timespec/clock_gettime already exist as the system header
  * (include/api/time.h) - reuse it instead of a second, parallel typedef of
  * time_t here (the exact "we have a system header the lua compat layer
@@ -40,6 +40,39 @@ typedef int sig_atomic_t;
 #define HUGE_VALF (__builtin_huge_valf())
 #endif
 
+#ifndef LUA_USE_NEXSOS
+#define LUA_USE_NEXSOS
+#endif
+
+/*
+ * Lua module search path — the SINGLE authoritative definition.
+ *
+ * luaconf.h ships /usr/local paths; because this header is force-included
+ * (-include lua_portability.h) ahead of lua.h, our LUA_ROOT/LDIR/CDIR and
+ * LUA_PATH_DEFAULT win over luaconf.h's #ifndef guards.  The Makefile no
+ * longer passes any -DLUA_* path macro (a \"...;...\" -D can't survive the
+ * shell — the ';' break the compile line), so keep the paths here only.
+ *
+ * Root is /lib, NOT /home: the VFS write-ACL (kernel/fs/vfs.c
+ * vfs_write_allowed) makes /home the only user-writable tree, while /lib is
+ * read-for-all / root-write-only.  System Lua modules therefore live in /lib
+ * (any process can require them; users cannot tamper with them); /home would
+ * expose them to overwrite.  sys/lib is the build-time source tree, not a
+ * runtime VFS path.  Trailing '/' matters: luaconf.h concatenates directly.
+ */
+#define LUA_ROOT "/lib/"
+#define LUA_LDIR LUA_ROOT "lua/5.4/lib/"
+#define LUA_CDIR LUA_ROOT "lua/5.4/lib/"
+
+/* Search the system module tree, then the current directory.  Defined
+ * explicitly (rather than left to luaconf.h) to avoid the LDIR==CDIR
+ * duplicate pair its generator would emit. */
+#define LUA_PATH_DEFAULT                                                        \
+  LUA_LDIR "?.lua;" LUA_LDIR "?/init.lua;"                                      \
+           "./?.lua;./?/init.lua"
+#define LUA_CPATH_DEFAULT                                                       \
+  LUA_CDIR "?.so;" LUA_CDIR "loadall.so;./?.so"
+
 double ldexp(double x, int exp);
 double frexp(double x, int *exp);
 double modf(double x, double *iptr);
@@ -63,14 +96,13 @@ double cosh(double x);
 double sinh(double x);
 double tanh(double x);
 
-
 /* Locale definitions and categories */
-#define LC_ALL          0
-#define LC_COLLATE      1
-#define LC_CTYPE        2
-#define LC_MONETARY     3
-#define LC_NUMERIC      4
-#define LC_TIME         5
+#define LC_ALL 0
+#define LC_COLLATE 1
+#define LC_CTYPE 2
+#define LC_MONETARY 3
+#define LC_NUMERIC 4
+#define LC_TIME 5
 
 struct lconv {
   char *decimal_point;
@@ -153,9 +185,18 @@ int luaopen_os1(struct lua_State *L);
 #define LUA_PORT_MAXINPUT 512
 int os1_lua_readline(char *buf, int bufsize);
 
-#define lua_initreadline(L)   ((void)L)
-#define lua_readline(L,b,p)   ((void)L, print(p), os1_lua_readline((b), LUA_PORT_MAXINPUT))
-#define lua_saveline(L,line)  { (void)L; (void)line; }
-#define lua_freeline(L,b)     { (void)L; (void)b; }
+#define lua_initreadline(L) ((void)L)
+#define lua_readline(L, b, p)                                                  \
+  ((void)L, print(p), os1_lua_readline((b), LUA_PORT_MAXINPUT))
+#define lua_saveline(L, line)                                                  \
+  {                                                                            \
+    (void)L;                                                                   \
+    (void)line;                                                                \
+  }
+#define lua_freeline(L, b)                                                     \
+  {                                                                            \
+    (void)L;                                                                   \
+    (void)b;                                                                   \
+  }
 
 #endif /* LUA_PORTABILITY_H */

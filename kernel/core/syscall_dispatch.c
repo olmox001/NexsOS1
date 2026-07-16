@@ -279,19 +279,61 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * object table): this installs an OBJ_TYPE_FILE handle and returns its
      * index — the first free slot >= 3, since 0/1/2 are the pre-installed
      * stdin/stdout/stderr console handles, so the first open is fd 3 exactly as
-     * before.  Only the O_ACCMODE bits are supported: the VFS cannot create or
-     * truncate yet
-     * (#126/#127), so any other flag (O_CREAT, O_APPEND, …) is an explicit
-     * -EINVAL, never silently ignored.  sys_handle_create does the path
-     * resolve, the CAP_FS_WRITE + /sys,/bin write ACL, and the VFS open. */
+     * before.  O_ACCMODE selects the handle's rights.
+     *
+     * O_CREAT/O_TRUNC/O_APPEND are honoured here (issue #126): the create /
+     * truncate is applied through the SAME vfs_write_allowed() authority seam
+     * SYS_FILE_WRITE and SYS_UNLINK use (S-ALIGN F6), so path-based and
+     * handle-based writes cannot drift, and the POSIX personality logic in
+     * libc keeps only flag/mode translation (ASTRA layering).  Any OTHER flag
+     * is still an explicit -EINVAL, never silently ignored.  sys_handle_create
+     * then does the resolve, the write-ACL re-check for a WRITE handle, and the
+     * VFS open. */
     if (!current_process) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
     int flags = (int)arg1;
-    if (flags & ~O_ACCMODE) {
+    if (flags & ~(O_ACCMODE | O_CREAT | O_TRUNC | O_APPEND)) {
       pt_regs_set_return(frame, -EINVAL);
       break;
+    }
+    if (flags & (O_CREAT | O_TRUNC)) {
+      char kpath[128];
+      if (arch_copy_string_from_user(kpath, (const char *)arg0, sizeof(kpath)) !=
+          0) {
+        pt_regs_set_return(frame, -EFAULT);
+        break;
+      }
+      char resolved[128];
+      vfs_resolve_path(kpath, resolved, sizeof(resolved));
+      struct vfs_stat vst;
+      int exists = (vfs_stat(resolved, &vst) == 0);
+      long wperm;
+      if (!exists && (flags & O_CREAT)) {
+        if ((wperm = vfs_write_allowed(resolved)) != 0) {
+          pt_regs_set_return(frame, wperm);
+          break;
+        }
+        if (vfs_create(resolved, VFS_TYPE_FILE) != 0) {
+          pt_regs_set_return(frame, -EIO);
+          break;
+        }
+      } else if (exists && (flags & O_TRUNC)) {
+        if ((wperm = vfs_write_allowed(resolved)) != 0) {
+          pt_regs_set_return(frame, wperm);
+          break;
+        }
+        /* No vfs_truncate primitive: drop and recreate empty — same net effect
+         * as truncate-to-zero, reusing the create-on-write model. */
+        vfs_unlink(resolved);
+        if (vfs_create(resolved, VFS_TYPE_FILE) != 0) {
+          pt_regs_set_return(frame, -EIO);
+          break;
+        }
+      }
+      /* O_TRUNC on a missing file without O_CREAT: fall through — the open
+       * below resolves nothing and returns -ENOENT, matching POSIX. */
     }
     uint32_t rights = ((flags & O_ACCMODE) == O_RDONLY) ? OS1_RIGHT_READ
                       : ((flags & O_ACCMODE) == O_WRONLY)
@@ -840,6 +882,18 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EINVAL);
       break;
     }
+    if (size == 0) {
+      /* Zero-length write: nothing to copy (falling through to kmalloc(0)
+       * returns NULL and would fail a valid POSIX zero-write with -ENOMEM).
+       * The file was created/already exists above.  A from-start (offset 0)
+       * zero write still truncates the file to empty through the provider —
+       * the create/truncate-empty idiom (fopen("w"), nxfilem, an editor saving
+       * a now-empty buffer); a non-zero offset zero write is a pure no-op. */
+      if ((uint32_t)arg3 == 0)
+        (void)vfs_write_file(resolved_path, "", 0, 0);
+      pt_regs_set_return(frame, 0);
+      break;
+    }
     uint8_t *k_buf = kmalloc(size);
     if (!k_buf) {
       pt_regs_set_return(frame, -ENOMEM);
@@ -983,6 +1037,24 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       break;
     }
     pt_regs_set_return(frame, vfs_unlink(resolved_path));
+  } break;
+  case SYS_MKDIR: {
+    char k_path[128];
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    char resolved_path[128];
+    vfs_resolve_path(k_path, resolved_path, 128);
+    /* mkdir is a write-class modification: same single authority seam as
+     * SYS_FILE_WRITE / SYS_UNLINK (vfs_write_allowed, S-ALIGN F6), so the
+     * three entry points cannot drift. */
+    long mperm = vfs_write_allowed(resolved_path);
+    if (mperm != 0) {
+      pt_regs_set_return(frame, mperm);
+      break;
+    }
+    pt_regs_set_return(frame, vfs_create(resolved_path, VFS_TYPE_DIR));
   } break;
   /* --- Object / capability ABI (ASTRA §6.1/6.2/6.5, kernel/object.h) ---
    * The real capability layer: unforgeable per-process handles to refcounted

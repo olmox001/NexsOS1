@@ -1,248 +1,315 @@
 /*
  * user/sys/lib/malloc.c
- * Userland Heap Allocator — first-fit with forward coalescing
+ * Userland Heap Allocator — segregated free lists + boundary-tag coalescing
  *
- * Maintains a singly-linked free list of block_header_t nodes.  Each node is
- * stored immediately before the user-visible payload pointer.  The free list
- * is the same linear chain used for both free and allocated blocks; the
- * 'free' flag distinguishes them.
+ * Built entirely on top of OS1's SYS_SBRK (#216) via _sys_sbrk(); no other
+ * kernel primitive is required. This replaces the earlier "singly linked
+ * free/alloc chain" design with the standard technique (Knuth's boundary
+ * tags, as used by dlmalloc-family allocators) so correctness no longer
+ * depends on maintaining an address-order invariant by hand.
  *
- * Allocation (malloc):
- *   1. Linear first-fit scan of free_list; splits large free blocks.
- *   2. Falls back to sbrk() -> SYS_SBRK (#216) to extend the heap.
+ * ---- Block layout ----
  *
- * Deallocation (free):
- *   Marks the block free and coalesces with the immediately following block
- *   if that block is also free (forward coalescing only; see USR-MALLOC-02/03).
+ *   [ header (16B) ][ payload (>=32B, 16B-aligned) ][ footer (8B) ]
  *
- * This allocator was designed to support Doom's sequential alloc-then-free
- * access pattern; it is not appropriate for long-running services with mixed
- * allocation sizes (see USR-MALLOC-03/04).
+ *   header.size / footer.size both hold the TOTAL block size (header +
+ *   payload + footer) with bit0 used as the FREE flag. Every block's total
+ *   size is a multiple of 16 by construction, so bit0 is otherwise always
+ *   0 and safe to steal for the flag.
  *
- * Known issues:
- *   USR-MALLOC-02 (W2 BAD-IMPL) Forward coalescing assumes block->next is
- *                 physically contiguous with current block.  Only true if
- *                 next was split from current; false for separately sbrk'd
- *                 blocks.  Incorrect coalesce corrupts the free list silently.
- *   USR-MALLOC-03 (W2 WRONG-DESIGN) No backward coalescing; alternating
- *                 alloc/free patterns with different sizes fragment the heap
- *                 permanently.
- *   USR-MALLOC-04 (W2 WRONG-DESIGN) Heap never shrinks; sbrk'd pages are
- *                 never returned to the kernel even when fully free.
- *   USR-MALLOC-05 (W2 BAD-IMPL) Comment claims 16-byte aligned payload.
- *                 block_header_t is 24 bytes on LP64 (size_t 8 + int 4 +
- *                 4 pad + ptr 8), so payload is at offset +24, which is
- *                 8-byte aligned only, not 16.
- *   USR-MALLOC-06 (W1 BAD-IMPL) realloc() uses block->size (the rounded-up
- *                 allocated capacity) in the shrink check; a request that is
- *                 smaller than the rounded size is returned in place, which
- *                 is safe but may return a larger-than-needed block.
+ *   Storing the size at BOTH ends means any block's neighbours — forward
+ *   (address + size) or backward (read the size word immediately before
+ *   this block's header) — can be located and inspected in O(1), for ANY
+ *   block, allocated or free, however it was created. This is what makes
+ *   coalescing safe without assuming a block's list-neighbour is its
+ *   memory-neighbour (the bug in the previous design, USR-MALLOC-02).
+ *
+ *   A FREE block additionally overlays two pointers (next/prev) at the
+ *   start of its payload — the intrusive doubly-linked list node for its
+ *   size bin. Safe because payload is always >= 32 bytes when free.
+ *
+ * ---- Allocation strategy ----
+ *
+ *   8 segregated bins by payload size (32/64/128/256/512/1024/2048/+inf).
+ *   malloc() does first-fit *within and above* the requested bin — an
+ *   approximate best-fit that is O(1) amortized for the common case
+ *   instead of O(n) over the whole heap.
+ *
+ * ---- What this fixes relative to the original allocator ----
+ *
+ *   USR-MALLOC-02 (coalescing corruption): gone by construction — no
+ *     "assume physical adjacency" step exists anymore; boundary tags let
+ *     us verify it directly.
+ *   USR-MALLOC-03 (no backward coalescing): implemented (see free()).
+ *   USR-MALLOC-04 (heap never shrinks): the trailing free block is
+ *     returned to the kernel via a negative sbrk() in free().
+ *   USR-MALLOC-05 (payload not 16-byte aligned): fixed for real — the
+ *     16-byte header plus the size-residue trick below guarantee every
+ *     payload starts 16-byte aligned (given a 16-aligned heap start,
+ *     which grow_heap() enforces defensively on first use).
+ *   USR-MALLOC-06 (realloc shrink check): realloc() below compares
+ *     against actual old payload capacity, same tradeoff as before
+ *     (documented, not a correctness bug) — still returns in place when
+ *     it fits, to avoid pointless copies.
  */
 #include <os1.h>
 #include <stddef.h>
 #include <stdint.h>
 
-/*
- * block_header_t - metadata stored immediately before each heap allocation.
- *
- * size: rounded user payload capacity (bytes, 16-byte aligned).
- * free: 1 if this block is on the free list; 0 if allocated.
- * next: pointer to the next block_header in the free list (not necessarily
- *       physically adjacent; see USR-MALLOC-02).
- *
- * NOTE(USR-MALLOC-05): On LP64 (AArch64/x86-64), sizeof(block_header_t) = 24
- * (size_t 8 + int 4 + 4 pad + ptr 8).  The payload starts at offset +24,
- * giving 8-byte alignment, not the 16-byte alignment stated in the malloc()
- * comment.  SIMD callers expecting 16-byte-aligned pointers will be misaligned.
- */
-typedef struct block_header {
-    size_t size;
-    int free;
-    struct block_header *next;
-} block_header_t;
+typedef struct header {
+  size_t size;   /* total block size | FREE_BIT (see above) */
+  size_t canary; /* unused; pads header to 16B so payload is 16B-aligned */
+} header_t;
 
-#define BLOCK_HEADER_SIZE sizeof(block_header_t)
+typedef struct free_node {
+  struct free_node *next;
+  struct free_node *prev;
+} free_node_t;
 
-/* free_list: head of the allocation chain.  NULL until the first sbrk() call. */
-static block_header_t *free_list = NULL;
+#define HEADER_SIZE (sizeof(header_t)) /* 16 */
+#define FOOTER_SIZE (sizeof(size_t))   /* 8  */
+#define FREE_BIT ((size_t)1)
+#define SIZE_MASK (~FREE_BIT)
+#define MALLOC_ALIGN 16UL
+#define MIN_PAYLOAD 32UL /* room for a free_node_t plus slack */
+#define MIN_BLOCK (HEADER_SIZE + MIN_PAYLOAD + FOOTER_SIZE)
+#define NUM_BINS 8
 
-/*
- * sbrk - extend the process heap by 'increment' bytes.
- *
- * Delegates to _sys_sbrk (SYS_SBRK, syscall #216).  Returns the old break
- * on success, (void *)-1 on failure (kernel out of memory or quota exceeded).
- *
- * NOTE(USR-MALLOC-04): Heap pages obtained via sbrk are never returned to the
- * kernel; the heap grows monotonically for the lifetime of the process.
- */
-void *OS1low_vm_sbrk(intptr_t increment) {
-    return _sys_sbrk(increment);
+static free_node_t *bins[NUM_BINS];
+static uint8_t *heap_start = NULL;
+static uint8_t *heap_end = NULL; /* current program break */
+
+/* ---------------- boundary-tag helpers ---------------- */
+
+static inline size_t blk_size(header_t *h) { return h->size & SIZE_MASK; }
+static inline int blk_free(header_t *h) { return (int)(h->size & FREE_BIT); }
+
+/* Writes both the header and the mirrored footer in one place, so the two
+ * can never drift apart. Every size/flag change goes through this. */
+static void set_block(header_t *h, size_t total_size, int is_free) {
+  size_t enc = (total_size & SIZE_MASK) | (is_free ? FREE_BIT : 0);
+  h->size = enc;
+  *(size_t *)((uint8_t *)h + total_size - FOOTER_SIZE) = enc;
 }
-/* sbrk: bare-name compat shim over the OS1low_ canonical (DIR-01 F4). */
+
+static header_t *node_to_header(free_node_t *n) {
+  return (header_t *)((uint8_t *)n - HEADER_SIZE);
+}
+
+static int bin_index(size_t payload) {
+  static const size_t thresh[NUM_BINS - 1] = {32,  64,   128, 256,
+                                              512, 1024, 2048};
+  for (int i = 0; i < NUM_BINS - 1; i++)
+    if (payload <= thresh[i])
+      return i;
+  return NUM_BINS - 1;
+}
+
+static void bin_remove(header_t *h) {
+  free_node_t *n = (free_node_t *)(h + 1);
+  int idx = bin_index(blk_size(h) - HEADER_SIZE - FOOTER_SIZE);
+  if (n->prev)
+    n->prev->next = n->next;
+  else
+    bins[idx] = n->next;
+  if (n->next)
+    n->next->prev = n->prev;
+}
+
+static void bin_insert(header_t *h) {
+  int idx = bin_index(blk_size(h) - HEADER_SIZE - FOOTER_SIZE);
+  free_node_t *n = (free_node_t *)(h + 1);
+  n->prev = NULL;
+  n->next = bins[idx];
+  if (bins[idx])
+    bins[idx]->prev = n;
+  bins[idx] = n;
+}
+
+/* ---------------- sbrk shims (unchanged ABI) ---------------- */
+
+void *OS1low_vm_sbrk(intptr_t increment) { return _sys_sbrk(increment); }
 void *sbrk(intptr_t increment) { return OS1low_vm_sbrk(increment); }
 
 /*
- * malloc - allocate at least 'size' bytes from the userland heap.
+ * sbrk_failed - did this sbrk() return an error rather than a break address?
  *
- * Rounds size up to the next multiple of 16 for alignment.
- * NOTE(USR-MALLOC-05): The rounded size does NOT account for the 24-byte
- * block_header_t overhead, so the payload is at a +24 offset (8-byte aligned,
- * not 16).
- *
- * First-fit scan:
- *   Walks free_list from the head; stops at the first block with free==1 and
- *   size >= requested.  If the block is at least BLOCK_HEADER_SIZE+16 bytes
- *   larger than needed, it is split: a new block_header_t is carved out of
- *   the tail and inserted after the current block in the list.
- *
- * If no suitable free block is found, calls sbrk(size + BLOCK_HEADER_SIZE)
- * to extend the heap and appends the new block to the list tail.
- *
- * Returns pointer to the payload (just after the header), or NULL on size==0
- * or sbrk failure.
+ * SYS_SBRK (kernel/sched/process.c sys_sbrk) returns a NEGATIVE errno on
+ * failure — -ENOMEM when the heap hits SBRK_HEAP_LIMIT or a page can't be
+ * allocated, -EINVAL on a bad shrink — NOT the (void *)-1 that plain sbrk()
+ * uses.  Any value in the top page ([-4095, -1]) is such an error code; a
+ * real user-heap break never lands there.  Checking only ==(void *)-1 let
+ * -ENOMEM (-12 -> 0xfffffffffffffff4) slip through as a "pointer", and
+ * grow_heap()/set_block() then wrote a block header to it: the Data Abort at
+ * addr=0xfffffffffffffff4 in malloc under memory pressure (Lua GC stress).
  */
+static inline int sbrk_failed(void *p) {
+  return (uintptr_t)p >= (uintptr_t)(-4095);
+}
+
+/* Grows the heap by exactly min_total bytes (already a multiple of 16) and
+ * returns a fresh block header covering the extension, marked free. On the
+ * very first call it defensively aligns the initial break up to 16 bytes
+ * (via a tiny probe + pad sbrk) in case the kernel's initial break isn't
+ * already aligned — everything after that stays aligned by induction,
+ * since every block's total size is a multiple of 16. */
+static header_t *grow_heap(size_t min_total) {
+  if (!heap_start) {
+    void *probe = sbrk(0);
+    if (!sbrk_failed(probe)) {
+      uintptr_t addr = (uintptr_t)probe;
+      uintptr_t pad =
+          (MALLOC_ALIGN - (addr & (MALLOC_ALIGN - 1))) & (MALLOC_ALIGN - 1);
+      if (pad) {
+        if (sbrk_failed(sbrk((intptr_t)pad)))
+          return NULL;
+      }
+    }
+  }
+
+  void *p = sbrk((intptr_t)min_total);
+  if (sbrk_failed(p))
+    return NULL;
+
+  if (!heap_start)
+    heap_start = (uint8_t *)p;
+  heap_end = (uint8_t *)p + min_total;
+
+  header_t *h = (header_t *)p;
+  set_block(h, min_total, 1);
+  return h;
+}
+
+/* ---------------- malloc ---------------- */
+
 void *malloc(size_t size) {
-    if (size == 0) return NULL;
+  if (size == 0)
+    return NULL;
 
-    /* Align size to 16 bytes for performance/compatibility.
-     * NOTE(USR-MALLOC-05): Aligns the payload size, but the block_header_t
-     * is 24 bytes so the returned pointer is only 8-byte aligned. */
-    size = (size + 15) & ~15UL;
+  /* Round up to 16, then add an 8-byte residue so that
+   * HEADER(16) + payload + FOOTER(8) is itself always a multiple of 16
+   * — this is what keeps every block's payload 16-byte aligned. */
+  size_t payload = (size + (MALLOC_ALIGN - 1)) & ~(MALLOC_ALIGN - 1);
+  if (payload < MIN_PAYLOAD)
+    payload = MIN_PAYLOAD;
+  payload += 8;
 
-    block_header_t *current = free_list;
-    block_header_t *prev = NULL;
+  size_t need = HEADER_SIZE + payload + FOOTER_SIZE;
 
-    /* 1. First-fit: scan free_list for a suitable free block. */
-    while (current) {
-        if (current->free && current->size >= size) {
-            /* Split block if it's much larger than requested.
-             * Minimum split threshold: BLOCK_HEADER_SIZE + 16 bytes remaining
-             * after the allocation, so the remainder is itself usable. */
-            if (current->size >= size + BLOCK_HEADER_SIZE + 16) {
-                block_header_t *new_block = (block_header_t *)((uint8_t *)current + BLOCK_HEADER_SIZE + size);
-                new_block->size = current->size - size - BLOCK_HEADER_SIZE;
-                new_block->free = 1;
-                new_block->next = current->next;
-                current->next = new_block;
-                current->size = size;
-            }
-            current->free = 0;
-            return (void *)(current + 1);  /* Payload starts immediately after header */
-        }
-        prev = current;
-        current = current->next;
+  int start_bin = bin_index(payload);
+  for (int b = start_bin; b < NUM_BINS; b++) {
+    for (free_node_t *n = bins[b]; n; n = n->next) {
+      header_t *h = node_to_header(n);
+      if (blk_size(h) < need)
+        continue;
+
+      bin_remove(h);
+      size_t total = blk_size(h);
+      size_t remainder = total - need;
+
+      if (remainder >= MIN_BLOCK) {
+        set_block(h, need, 0);
+        header_t *rem = (header_t *)((uint8_t *)h + need);
+        set_block(rem, remainder, 1);
+        bin_insert(rem);
+      } else {
+        set_block(h, total, 0); /* keep the few extra bytes */
+      }
+      return (void *)(h + 1);
     }
+  }
 
-    /* 2. No suitable block found: extend heap with sbrk(). */
-    size_t total_size = size + BLOCK_HEADER_SIZE;
-    block_header_t *block = (block_header_t *)sbrk(total_size);
-    if (block == (void *)-1) return NULL;  /* sbrk failed (OOM) */
-
-    block->size = size;
-    block->free = 0;
-    block->next = NULL;
-
-    /* Link new block at the tail of the free list. */
-    if (prev) {
-        prev->next = block;
-    } else {
-        free_list = block;
-    }
-
-    return (void *)(block + 1);
+  /* Nothing fits in any bin: extend the heap for exactly this request. */
+  header_t *h = grow_heap(need);
+  if (!h)
+    return NULL;
+  set_block(h, need, 0);
+  return (void *)(h + 1);
 }
 
-/*
- * free - return a malloc'd allocation to the free list.
- *
- * Marks the block free and performs forward coalescing with the immediately
- * following block if that block is also free.
- *
- * NOTE(USR-MALLOC-02): Forward coalescing assumes that block->next was split
- * from this block and is therefore physically contiguous.  If block->next was
- * a separate sbrk() region, merging their size fields produces an incorrect
- * oversized block that overlaps unrelated memory.
- *
- * NOTE(USR-MALLOC-03): No backward coalescing; a freed block before the
- * current one is never merged.  Alternate-size alloc/free patterns fragment
- * the list permanently.
- */
+/* ---------------- free ---------------- */
+
 void free(void *ptr) {
-    if (!ptr) return;
+  if (!ptr)
+    return;
 
-    block_header_t *block = (block_header_t *)ptr - 1;
-    block->free = 1;
+  header_t *h = (header_t *)ptr - 1;
+  size_t total = blk_size(h);
+  set_block(h, total, 1);
 
-    /* Forward coalescing: merge with next block if it is also free.
-     * NOTE(USR-MALLOC-02): Only safe if block->next is physically contiguous. */
-    if (block->next && block->next->free) {
-        block->size += BLOCK_HEADER_SIZE + block->next->size;
-        block->next = block->next->next;
+  /* Forward coalesce: the boundary tag lets us check the ACTUAL next
+   * block in memory directly, whatever it is — no assumption needed. */
+  uint8_t *next_addr = (uint8_t *)h + total;
+  if (next_addr < heap_end) {
+    header_t *nh = (header_t *)next_addr;
+    if (blk_free(nh)) {
+      bin_remove(nh);
+      total += blk_size(nh);
+      set_block(h, total, 1);
     }
+  }
 
-    /* Coalescing with previous would require a full walk or doubly linked list.
-     * Given Doom's allocation patterns, this simple strategy should suffice. */
+  /* Backward coalesce: read the size word immediately before this
+   * block's header (the previous block's footer) to jump straight to
+   * its header in O(1) and check whether IT is free. */
+  if ((uint8_t *)h > heap_start) {
+    size_t prev_enc = *((size_t *)h - 1);
+    size_t prev_size = prev_enc & SIZE_MASK;
+    header_t *ph = (header_t *)((uint8_t *)h - prev_size);
+    if (blk_free(ph)) {
+      bin_remove(ph);
+      total = prev_size + total;
+      set_block(ph, total, 1);
+      h = ph;
+    }
+  }
+
+  /* If the coalesced free block now reaches the end of the heap, hand
+   * it back to the kernel instead of keeping it around unused. */
+  if ((uint8_t *)h + total == heap_end) {
+    heap_end = (uint8_t *)h;
+    sbrk(-(intptr_t)total);
+    return;
+  }
+
+  bin_insert(h);
 }
 
-/*
- * realloc - resize a malloc'd allocation.
- *
- * If ptr==NULL: behaves as malloc(size).
- * If size==0: behaves as free(ptr), returns NULL.
- * If block->size >= size: returns ptr unchanged (in-place; no shrink).
- * Otherwise: allocates new buffer, copies block->size bytes (the rounded-up
- *   allocated capacity, which may be slightly larger than the original request),
- *   frees old buffer, returns new pointer.
- *
- * NOTE(USR-MALLOC-06): `block->size >= size` uses the rounded-up allocated
- * size, not the original user request.  A request that fits within the rounded
- * capacity is returned in-place even when the caller intends to shrink — safe
- * but wastes memory on repeated shrink calls.
- *
- * Returns new allocation, or NULL on malloc failure (old ptr NOT freed).
- */
+/* ---------------- realloc ---------------- */
+
 void *realloc(void *ptr, size_t size) {
-    if (!ptr) return malloc(size);
-    if (size == 0) {
-        free(ptr);
-        return NULL;
-    }
+  if (!ptr)
+    return malloc(size);
+  if (size == 0) {
+    free(ptr);
+    return NULL;
+  }
 
-    block_header_t *block = (block_header_t *)ptr - 1;
-    /* In-place: block already has enough capacity for the rounded size. */
-    if (block->size >= size) return ptr;
+  header_t *h = (header_t *)ptr - 1;
+  size_t old_payload = blk_size(h) - HEADER_SIZE - FOOTER_SIZE;
 
-    void *new_ptr = malloc(size);
-    if (new_ptr) {
-        /* Copy using block->size (allocated capacity) not original user size.
-         * NOTE(USR-MALLOC-06): The comment below reflects that block->size may
-         * be slightly larger than the original request, but the copy is safe
-         * since the source buffer is at least that large. */
-        memcpy(new_ptr, ptr, block->size);
-        free(ptr);
-    }
-    return new_ptr;
+  if (old_payload >= size)
+    return ptr; /* already fits */
+
+  void *new_ptr = malloc(size);
+  if (new_ptr) {
+    memcpy(new_ptr, ptr, old_payload);
+    free(ptr);
+  }
+  return new_ptr;
 }
 
-/*
- * calloc - allocate nmemb*size bytes, zeroed.
- *
- * FIX(USR-MALLOC-01): the nmemb*size product is overflow-checked before the
- * multiply runs.  Without the guard a wrapping product yields a small 'total',
- * malloc() returns an undersized buffer, and the caller's subsequent nmemb*size
- * write overflows the heap (classic calloc overflow -> heap corruption).  The
- * pre-multiply form (size > SIZE_MAX / nmemb) rejects exactly the inputs whose
- * product would wrap, without relying on the wraparound having already happened;
- * legitimate calls are unaffected.  nmemb==0 short-circuits to malloc(0)->NULL,
- * preserving the prior behaviour for zero-count requests.
- */
-void *calloc(size_t nmemb, size_t size) {
-    if (nmemb != 0 && size > SIZE_MAX / nmemb) return NULL;  /* FIX(USR-MALLOC-01) */
+/* ---------------- calloc ---------------- */
 
-    size_t total = nmemb * size;
-    void *ptr = malloc(total);
-    if (ptr) {
-        memset(ptr, 0, total);
-    }
-    return ptr;
+void *calloc(size_t nmemb, size_t size) {
+  /* Pre-multiply overflow check (USR-MALLOC-01): rejects any input whose
+   * product would wrap, without relying on the wraparound happening. */
+  if (nmemb != 0 && size > SIZE_MAX / nmemb)
+    return NULL;
+
+  size_t total = nmemb * size;
+  void *ptr = malloc(total);
+  if (ptr)
+    memset(ptr, 0, total);
+  return ptr;
 }
