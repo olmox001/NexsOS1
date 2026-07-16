@@ -121,23 +121,35 @@ Temi: filesystem, object, syscall, registry, servizi, librerie userland.
 4. 3.3 nxexec demone + nxauth + kill-model in kernel
 5. 3.5 rifiniture strutturali continue
 
-## Parte 4 — Domande aperte per il maintainer
+## Parte 4 — Decisioni del maintainer (2026-07-17)
 
-1. **Naming**: confermi `OS1lib_OS1/POSIX/LIBC` e header `OS1.h/POSIX.h/LIBC.h`
-   esattamente con queste maiuscole? Le app includeranno `<POSIX.h>` o
-   restano gli include POSIX classici (`<stdio.h>` → forward a LIBC.h)?
-2. **Compat include**: gli header classici (`stdio.h`, `stdlib.h`, …)
-   restano come shim che includono i nuovi, così le app esistenti compilano
-   senza modifiche?
-3. **Librerie aggiuntive**: per GRAPHICS/TERM/SERVICE/IO — partiamo dal
-   censimento di ciò che è già in lib.c (graphics_*, window_*, term…) o hai
-   già una partizione precisa in mente?
-4. **`.X`**: rinominiamo anche i binari esistenti nel rootfs (mkdisk) nello
-   stesso passaggio, o prima solo il supporto e poi la migrazione?
-5. **nxauth**: la password è per-utente (modello nxperm/login futuro) o una
-   password di sistema unica per ora?
-6. **Kill-model in kernel**: portare la logica child/kill in kernel significa
-   nuove syscall/verbi OBJ_CTL o estendere `process_kill_subtree` con policy
-   da capability? Preferenza?
-7. **Timeline commit**: un commit per microfase come in questo blocco, o
-   commit più granulari?
+1. **Include model: SOLO header nuovi.** Le app migrano a
+   `<OS1.h>/<POSIX.h>/<LIBC.h>` direttamente (niente shim retrocompatibili;
+   migrazione big-bang contestuale allo split 3.1).
+2. **Ordine: si parte dalla chiusura capability C1–C4** (Parte 2), poi il
+   macroblocco 3.x.
+3. **nxauth (prima versione): solo utente root con password di preset.**
+   Utenti nominali NON in questo blocco. Le modifiche fs restano sulla
+   divisione attuale per ora.
+4. **Visione VFS per-utente (blocco futuro, modello Linux/Android):**
+   - Una partizione per ambiente: root = sd0 (`/dev/sd0`, `/mnt/sd0`) →
+     linkata in `/root`, `/bin`, `/sys/library`, `/sys/bin`;
+     user1 = sd1 (`/dev/sd1`, `/mnt/sd1`) → linkata in `/usr/user1/home`
+     (contenuto attuale di /home; alcune cose come le icone vanno spostate
+     nello spazio root), `user1/bin`, `user1/lib`, `user1/apps`, ….
+   - Il kernel tratta gli ambienti come chroot: le capability si mappano
+     direttamente sulle partizioni.
+   - Serve una partizione `/tmp`; layout standard Unix ma sul nostro
+     modello (Plan 9-like dove conviene).
+   - `OS1lib_LIBC`/`OS1lib_POSIX` devono contenere la MAPPA del VFS →
+     inizializzazione del VFS standardizzata a runtime + compatibility
+     layer che mappa il VFS Unix classico. Richiede uno studio pragmatico
+     del modello prima dell'esecuzione.
+5. **Kill-model/exec (da studiare nel blocco insieme ad ASTRA):** la logica
+   di base di `nxwins` + process-child di `nxexec` (nuova finestra / nuova
+   finestra terminale / terminale corrente se avviato da terminale) va
+   STANDARDIZZATA nel kernel mantenendo l'approccio nxexec. Studiare il
+   modello attuale e decidere cosa resta in userland e cosa si astrae in
+   kernel; verbi `OBJ_CTL` su PROCESS ed estensione di
+   `process_kill_subtree` sono entrambi da valutare insieme alla rinomina
+   eseguibili (`.X`). Precisazioni rimandate alle prossime fasi.
