@@ -37,8 +37,13 @@
  */
 
 #include <os1.h>
+#include <string.h>
 
 #define NXEXEC_PATH_MAX 96
+#define NXEXEC_ARGV_MAX                                                        \
+  16 /* matches OS1low_process_spawn_detached's argv cap                       \
+      * (kernel-enforced); nxexec itself takes argc-1                          \
+      * of these and forwards them to the child. */
 
 /* A child is treated as "windowed" (a GUI app that should detach) only if it
  * owns the SAME window id across this many consecutive polls.  A transient
@@ -51,8 +56,103 @@
 #define NXEXEC_STABLE_POLLS 6
 
 /* nxexec_run_foreground return codes. */
-#define NXEXEC_JOB_EXITED   0 /* the child finished (or was Ctrl-C'd) */
-#define NXEXEC_JOB_DETACHED 1 /* the child owns a stable window -> it is a GUI app */
+#define NXEXEC_JOB_EXITED 0 /* the child finished (or was Ctrl-C'd) */
+#define NXEXEC_JOB_DETACHED                                                    \
+  1 /* the child owns a stable window -> it is a GUI app */
+
+/*
+ * NXEXEC path-resolution tiers, aligned with POSIX/execvp (previously
+ * duplicated ad hoc across system(), nxassoc, and nxlauncher, each with
+ * its own resolution logic):
+ *
+ *   1. ABSOLUTE ROOT PATH   "/foo/bar" -> used exactly as provided.
+ *   2. HOME-RELATIVE PATH   "~" / "~/x" -> "~" is expanded to "/home"
+ *                                         (single-user system, no getpwuid()).
+ *   3. PROCESS-VFS-RELATIVE PATH   any other path containing a '/'
+ *      (e.g. "./x", "sub/dir/x") -> resolved against the CALLING PROCESS'
+ *      current working directory (getcwd()) — the cwd is maintained
+ *      per process, never as a global prefix.
+ *   4. BARE NAME (no '/') -> searched, in order, in /bin and then /sys/bin
+ *      (existing behavior, unchanged).
+ *
+ * This exactly matches the execvp() rule: a name containing a slash is
+ * treated as a path (resolved, never searched); a bare name is searched.
+ */
+#define NXEXEC_HOME_DIR "/home"
+
+/*
+ * Remove surrounding quotes from an executable path.
+ *
+ * Shell-like callers may provide quoted executable paths
+ * (for example "\"/bin/lua\"" or "'/bin/lua'").
+ * Path resolution must operate on the real path and ignore
+ * only matching outer quotes.
+ *
+ * Internal quotes are preserved.
+ */
+static inline const char *nxexec_strip_path_quotes(const char *name, char *out,
+                                                   size_t sz) {
+  if (!name || !out || sz == 0)
+    return name;
+
+  size_t len = strlen(name);
+
+  if (len >= 2 && ((name[0] == '"' && name[len - 1] == '"') ||
+                   (name[0] == '\'' && name[len - 1] == '\''))) {
+
+    len -= 2;
+
+    if (len >= sz)
+      len = sz - 1;
+
+    memcpy(out, name + 1, len);
+    out[len] = '\0';
+
+    return out;
+  }
+
+  return name;
+}
+
+static inline int nxexec_resolve_path(const char *name, char *out_path,
+                                      size_t sz) {
+  if (!name || !*name || !out_path || sz == 0)
+    return -1;
+
+  char clean_name[NXEXEC_PATH_MAX];
+
+  name = nxexec_strip_path_quotes(name, clean_name, sizeof(clean_name));
+
+  if (name[0] == '/') { /* 1: root-assoluto */
+    snprintf(out_path, sz, "%s", name);
+    return 0;
+  }
+
+  if (name[0] == '~') { /* 2: home-relativo */
+    if (name[1] == '\0')
+      snprintf(out_path, sz, "%s", NXEXEC_HOME_DIR);
+    else if (name[1] == '/')
+      snprintf(out_path, sz, "%s%s", NXEXEC_HOME_DIR, name + 1);
+    else
+      return -1; /* forma "~utente": non supportata, non c'è una pwdb
+                    multi-utente */
+    return 0;
+  }
+
+  if (strchr(name, '/')) { /* 3: process-vfs-relativo */
+    char cwd[NXEXEC_PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) != 0)
+      snprintf(cwd, sizeof(cwd), "/"); /* fallback best-effort */
+    size_t cl = strlen(cwd);
+    if (cl > 0 && cwd[cl - 1] == '/')
+      snprintf(out_path, sz, "%s%s", cwd, name);
+    else
+      snprintf(out_path, sz, "%s/%s", cwd, name);
+    return 0;
+  }
+
+  return 1; /* 4: nome nudo -> il chiamante fa la ricerca /bin, /sys/bin */
+}
 
 /*
  * nxexec_run_foreground - watch a freshly-spawned child as a foreground job
@@ -123,14 +223,28 @@ static inline int nxexec_run_foreground(int pid) {
  */
 static inline int nxexec_spawn_search(int argc, char *argv[], char *out_path,
                                       int detached) {
-  const char *name = argv[0];
   long (*do_spawn)(const char *, int, char *const[]) =
       detached ? OS1low_process_spawn_detached : OS1low_process_spawn;
 
-  if (name[0] == '/') {
-    snprintf(out_path, NXEXEC_PATH_MAX, "%s", name);
+  /* Dequote ONCE, up front, and write the cleaned name back into argv[0] so
+   * it is used consistently for BOTH resolution and the bare-name /bin,
+   * /sys/bin search — and so the child sees a clean argv[0] (its progname).
+   * The previous code stripped quotes only inside nxexec_resolve_path()'s
+   * local buffer, then fell through to the bare-name branch still holding the
+   * quoted original, producing the "/bin/\"lua\"" not-found seen from
+   * os.execute('"lua" ...'). */
+  static char clean_name[NXEXEC_PATH_MAX];
+  argv[0] = (char *)nxexec_strip_path_quotes(argv[0], clean_name,
+                                             sizeof(clean_name));
+  const char *name = argv[0];
+
+  int r = nxexec_resolve_path(name, out_path, NXEXEC_PATH_MAX);
+  if (r == 0)
     return (int)do_spawn(out_path, argc, argv);
-  }
+  if (r < 0)
+    return -1; /* path malformato (es. "~utente") */
+
+  /* Nome nudo: ricerca /bin poi /sys/bin (ora sul nome ripulito). */
   snprintf(out_path, NXEXEC_PATH_MAX, "/bin/%s", name);
   int pid = (int)do_spawn(out_path, argc, argv);
   if (pid > 0)
@@ -163,6 +277,26 @@ static inline int nxexec_spawn_hosted(const char *path) {
   argv[0] = (char *)"/sys/bin/nxexec";
   argv[1] = (char *)path;
   return (int)OS1low_process_spawn_detached("/sys/bin/nxexec", 2, argv);
+}
+
+/* nxexec_spawn_hosted_argv - same as nxexec_spawn_hosted(), but with an
+ * explicit argv forwarded to /sys/bin/nxexec (which itself forwards the
+ * whole argv to the child, see nxexec.c main()).  Used by callers that need
+ * to pass extra arguments to the launched program (nxfilem: "kilo <path>",
+ * "<assoc-prog> <path>").  argc must be in [1, NXEXEC_ARGV_MAX-1] (the -1
+ * accounts for the prepended "/sys/bin/nxexec" entry; SPAWN_MAX_ARGS=16
+ * is the kernel-side cap the dispatcher clamps to).
+ */
+static inline int nxexec_spawn_hosted_argv(int argc, char *argv[]) {
+  if (argc < 1 || !argv)
+    return -1;
+  if (argc + 1 > NXEXEC_ARGV_MAX)
+    return -1;
+  char *full[NXEXEC_ARGV_MAX];
+  full[0] = (char *)"/sys/bin/nxexec";
+  for (int i = 0; i < argc; i++)
+    full[i + 1] = argv[i];
+  return (int)OS1low_process_spawn_detached("/sys/bin/nxexec", argc + 1, full);
 }
 
 #endif /* _USER_NXEXEC_H */

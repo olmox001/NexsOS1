@@ -67,6 +67,15 @@ static const char *const nxres_look_ping_targets[] = {
      * init publishing it — see main_gui() in nxsettings.c.  Last-opened
      * instance wins if more than one is ever open at once. */
     "srv.settings_pid",
+    /* Same self-registration pattern as nxsettings: nxfilem is user-launched
+     * (not a singleton), so it publishes its own pid here on window
+     * creation (see fm_ui_init in ui.c) so an external style/theme/bg change
+     * repaints its already-open window instead of only the next launch. */
+    "srv.filem_pid",
+    /* nxshell self-registers srv.shell_pid on window creation (nxshell.c);
+     * last-opened shell wins if several are open — others still track theme
+     * via the per-loop nxres_theme_is_light() poll in the shell event loop. */
+    "srv.shell_pid",
 };
 #define NXRES_LOOK_PING_NTARGETS                                               \
   (int)(sizeof(nxres_look_ping_targets) / sizeof(nxres_look_ping_targets[0]))

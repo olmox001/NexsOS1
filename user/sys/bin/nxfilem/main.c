@@ -1,91 +1,52 @@
 /*
- * NeXs File Manager - Professional File Manager for OS1
- * Main entry point and initialization
+ * user/sys/bin/nxfilem/main.c
+ * Entry point: window/state setup and the ~30Hz event loop.
+ *
+ * Same loop shape as nxsettings.c/nxui.c: redraw (internally gated by a
+ * state-signature so an unchanged frame never blits), drain every queued
+ * input event, sleep — never a busy-spin.
  */
 #include "nxfilem.h"
 
-void fm_init(void) {
-  fm_state_init();
-
-  fm_state.window_id =
-      create_window(40, 80, FM_WIN_W, FM_WIN_H, "NeXs File Manager");
-  if (fm_state.window_id < 0) {
-    /* No window exists (creation itself failed) — printf() is safe here,
-     * nothing to corrupt.  OS1_notify_error would also work but needs
-     * nxntfy_srv up, which is not guaranteed this early either. */
-    printf("ERRORE: Impossibile creare finestra!\n");
-    exit(1);
-  }
-
-  /* Prima refresh directory per avere contenuto valido */
-  fm_refresh_directory();
-
-  /* Poi set focus - ordine critico per evitare crash compositor */
-  set_focus(get_pid());
-}
-
-void fm_cleanup(void) {
-  if (fm_state.window_id >= 0) {
+static void fm_cleanup(void) {
+  if (fm_state.window_id >= 0)
     destroy_window(fm_state.window_id);
-  }
-}
-
-void fm_main_loop(void) {
-  input_event_t event;
-
-  while (fm_state.running) {
-    /* Drena tutti gli eventi input disponibili: il driver PS/2 e
-     * virtio-input possono accumulare più IPC in coda tra un poll e
-     * l'altro, e se ne processiamo uno solo al ciclo il mouse
-     * "scatta". */
-    while (input_poll_event(&event) == 1) {
-      if (event.type == INPUT_TYPE_KEYBOARD) {
-        fm_handle_keyboard(&event);
-      } else if (event.type == INPUT_TYPE_MOUSE) {
-        fm_handle_mouse(&event);
-      }
-
-      /* Correctness over incremental cleverness: a file manager only redraws
-       * on user input (event-driven, low frequency), so every actual ACTION
-       * (a key press or a mouse-button press) forces one full, guaranteed-
-       * correct redraw.  This retires the whole "handler forgot to mark
-       * region X dirty" bug class (View toggles, dropdown remnants, path bar
-       * after navigation) that the per-region dirty tracking left open, while
-       * fm_draw_full_ui already composites the dropdown/context-menu overlays.
-       * Mouse MOVES (state != KEY_PRESSED) are ignored, so there is no
-       * per-motion flicker. */
-      if ((event.type == INPUT_TYPE_KEYBOARD &&
-           event.keyboard.state == KEY_PRESSED) ||
-          (event.type == INPUT_TYPE_MOUSE &&
-           event.mouse.state == KEY_PRESSED)) {
-        fm_mark_dirty_all();
-      }
-    }
-
-    if (fm_state.needs_redraw) {
-      fm_render_dirty_ui();
-      fm_state.needs_redraw = 0;
-      fm_state.dirty_all = 0;
-      fm_state.dirty_menu = 0;
-      fm_state.dirty_toolbar = 0;
-      fm_state.dirty_sidebar = 0;
-      fm_state.dirty_content = 0;
-      fm_state.dirty_statusbar = 0;
-      fm_state.dirty_context_menu = 0;
-    }
-
-    /* Sleep breve e BLOCCANTE via il timer reale del kernel
-     * (vedi lib.c::sleep — no busy-wait). 2 ms è abbastanza per
-     * non sentire il mouse "lento" ma abbastanza per non saturare
-     * una CPU quando la finestra è inattiva. */
-    yield();
-    OS1_sleep(2);
-  }
 }
 
 int main(void) {
-  fm_init();
-  fm_main_loop();
+  fm_state_init();
+
+  if (fm_ui_init() != 0) {
+    printf("nxfilem: failed to create window\n");
+    return 1;
+  }
+
+  /* First listing before set_focus — the compositor has crashed in the past
+   * on a focus request racing an unpopulated window (see fileops history). */
+  fm_refresh_directory();
+  set_focus(get_pid());
+  fm_ui_redraw(1);
+
+  while (fm_state.running) {
+    input_event_t ev;
+    while (input_poll_event(&ev) == 1) {
+      if (ev.type == INPUT_TYPE_KEYBOARD) {
+        fm_handle_keyboard(&ev);
+      } else if (ev.type == INPUT_TYPE_MOUSE) {
+        if (ev.mouse.state == KEY_PRESSED)
+          fm_ui_handle_click(ev.mouse.x, ev.mouse.y, ev.mouse.button);
+      } else if (ev.type == INPUT_TYPE_RESIZE && ev.resize.w > 0 &&
+                ev.resize.h > 0) {
+        fm_ui_reinit_window(ev.resize.w, ev.resize.h);
+      } else if (ev.type == INPUT_TYPE_LOOK_CHANGED) {
+        fm_ui_load_theme(nxres_theme_is_light());
+      }
+    }
+
+    fm_ui_redraw(0);
+    OS1_sleep(33);
+  }
+
   fm_cleanup();
   return 0;
 }

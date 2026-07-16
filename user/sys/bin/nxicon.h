@@ -71,15 +71,25 @@
 #define NXICON_DOOM 11
 #define NXICON_RAPTOR 12
 #define NXICON_TEXTEDIT 13
-#define NXICON_UNKNOWN 14
-#define NXICON_COUNT 15
+/* Per-FILETYPE icons (by extension/kind, NOT by app id) — landed for
+ * nxfilem's content list, see nxicon_classify_file() below.  folder.png is
+ * used for directories; the file_* set covers the extension buckets
+ * nxfilem's association table (nxassoc.h) already distinguishes. */
+#define NXICON_FOLDER 14
+#define NXICON_FILE_C 15
+#define NXICON_FILE_TEXT 16
+#define NXICON_FILE_CONFIG 17
+#define NXICON_FILE_HTML 18
+#define NXICON_FILE_SCRIPT 19
+#define NXICON_FILE_IMAGE 20
+#define NXICON_FILE_VIDEO 21
+#define NXICON_FILE_BINARY 22
+#define NXICON_FILE_EXECUTABLE 23
+#define NXICON_FILE_GENERIC 24
+#define NXICON_UNKNOWN 25
+#define NXICON_COUNT 26
 /* Still not wired: nxscript.png (no program named nxscript yet — likely
- * meant for a future scripting app, not the same thing as file_script.png),
- * folder.png, and the per-filetype icons (file_binary, file_c, file_config,
- * file_executable, file_generic, file_html, file_image, file_script,
- * file_text, file_video). Those are for nxfilem's folder view (by extension,
- * not by app id) once that lands, not per-app tiles, so they stay out of
- * nxicon_paths for now. */
+ * meant for a future scripting app, distinct from file_script.png above). */
 
 #define NXICON_THEME_DARK 0
 #define NXICON_THEME_LIGHT 1
@@ -101,6 +111,17 @@ static const char *const nxicon_paths[2][NXICON_COUNT] = {
         "/home/Pictures/icon/dark/doom.png",
         "/home/Pictures/icon/dark/raptor.png",
         "/home/Pictures/icon/dark/textedit.png",
+        "/home/Pictures/icon/dark/folder.png",
+        "/home/Pictures/icon/dark/file_c.png",
+        "/home/Pictures/icon/dark/file_text.png",
+        "/home/Pictures/icon/dark/file_config.png",
+        "/home/Pictures/icon/dark/file_html.png",
+        "/home/Pictures/icon/dark/file_script.png",
+        "/home/Pictures/icon/dark/file_image.png",
+        "/home/Pictures/icon/dark/file_video.png",
+        "/home/Pictures/icon/dark/file_binary.png",
+        "/home/Pictures/icon/dark/file_executable.png",
+        "/home/Pictures/icon/dark/file_generic.png",
         "/home/Pictures/icon/dark/fallback.png",
     },
     /* light */
@@ -119,6 +140,17 @@ static const char *const nxicon_paths[2][NXICON_COUNT] = {
         "/home/Pictures/icon/light/doom.png",
         "/home/Pictures/icon/light/raptor.png",
         "/home/Pictures/icon/light/textedit.png",
+        "/home/Pictures/icon/light/folder.png",
+        "/home/Pictures/icon/light/file_c.png",
+        "/home/Pictures/icon/light/file_text.png",
+        "/home/Pictures/icon/light/file_config.png",
+        "/home/Pictures/icon/light/file_html.png",
+        "/home/Pictures/icon/light/file_script.png",
+        "/home/Pictures/icon/light/file_image.png",
+        "/home/Pictures/icon/light/file_video.png",
+        "/home/Pictures/icon/light/file_binary.png",
+        "/home/Pictures/icon/light/file_executable.png",
+        "/home/Pictures/icon/light/file_generic.png",
         "/home/Pictures/icon/light/fallback.png",
     },
 };
@@ -254,6 +286,66 @@ static inline int nxicon_classify_path(const char *path) {
   if (strcmp(base, "kilo") == 0)
     return NXICON_TEXTEDIT;
   return NXICON_UNKNOWN;
+}
+
+/*
+ * nxicon_classify_file - map a filesystem entry (name + is_dir) to an
+ * NXICON_* id for nxfilem's content list.  Directories always get
+ * NXICON_FOLDER regardless of name.  Files are classified by extension
+ * (case-insensitive, via os1_image_ext_eq from image.h — same helper
+ * os1_image_path_has_known_ext already uses), falling back to
+ * NXICON_FILE_GENERIC for anything unrecognised.  Kept in the same
+ * header-only, static-inline style as nxicon_classify()/nxicon_classify_path()
+ * above; deliberately independent of nxassoc.h (icon choice and launch
+ * association are separate concerns that happen to share extension lists).
+ */
+static inline int nxicon_classify_file(const char *name, int is_dir) {
+  if (is_dir)
+    return NXICON_FOLDER;
+  if (!name)
+    return NXICON_FILE_GENERIC;
+  const char *ext = strrchr(name, '.');
+  if (!ext || ext == name)
+    return NXICON_FILE_GENERIC;
+
+  static const char *const c_exts[] = {".c", ".h", ".cpp", ".cc", ".hpp",
+                                       ".s", NULL};
+  static const char *const text_exts[] = {".txt", ".md",  ".log",
+                                          ".rst", ".csv", NULL};
+  static const char *const cfg_exts[] = {".cfg", ".json", ".ini",
+                                         ".toml", ".yaml", ".yml", NULL};
+  static const char *const html_exts[] = {".html", ".htm", ".css", NULL};
+  static const char *const script_exts[] = {".lua", ".sh", ".py", NULL};
+  static const char *const video_exts[] = {".mp4", ".mkv", ".avi",
+                                           ".webm", NULL};
+  static const char *const bin_exts[] = {".bin", ".dat", ".o", ".elf", NULL};
+
+  if (os1_image_path_has_known_ext(name))
+    return NXICON_FILE_IMAGE;
+  for (int i = 0; c_exts[i]; i++)
+    if (os1_image_ext_eq(ext, c_exts[i]))
+      return NXICON_FILE_C;
+  for (int i = 0; script_exts[i]; i++)
+    if (os1_image_ext_eq(ext, script_exts[i]))
+      return NXICON_FILE_SCRIPT;
+  for (int i = 0; html_exts[i]; i++)
+    if (os1_image_ext_eq(ext, html_exts[i]))
+      return NXICON_FILE_HTML;
+  for (int i = 0; cfg_exts[i]; i++)
+    if (os1_image_ext_eq(ext, cfg_exts[i]))
+      return NXICON_FILE_CONFIG;
+  for (int i = 0; text_exts[i]; i++)
+    if (os1_image_ext_eq(ext, text_exts[i]))
+      return NXICON_FILE_TEXT;
+  for (int i = 0; video_exts[i]; i++)
+    if (os1_image_ext_eq(ext, video_exts[i]))
+      return NXICON_FILE_VIDEO;
+  if (os1_image_ext_eq(ext, ".elf"))
+    return NXICON_FILE_EXECUTABLE;
+  for (int i = 0; bin_exts[i]; i++)
+    if (os1_image_ext_eq(ext, bin_exts[i]))
+      return NXICON_FILE_BINARY;
+  return NXICON_FILE_GENERIC;
 }
 
 /* nxicon_reset_cache - drop every cached scaled icon and retry flag (both

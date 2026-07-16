@@ -2,196 +2,176 @@
  * user/sys/bin/nxshell.c
  * Interactive Graphical Shell
  *
- * Creates a compositor window that acts as a TTY.  Reads single characters
- * from fd 0 (keyboard input delivered as IPC by the kernel input driver),
- * accumulates them into cmd_buf, and dispatches on newline.
+ * Creates a compositor window that acts as a TTY.  Keyboard input arrives as
+ * IPC and is drained through input_poll_event() (the same path nxui/nxsettings
+ * use for resize and compositor-look notifications).  Commands are tokenized
+ * in place and dispatched from a small builtin table; anything else is resolved
+ * against /bin then /sys/bin via nxexec_spawn_search().
  *
- * Command dispatch is a linear if-else chain (process_command).  Commands
- * that need an argument parse character offsets directly from cmd_buf rather
- * than splitting tokens — the pattern `cmd_buf[2] == ' '` / `&cmd_buf[3]`
- * appears for ls, cd, cat, kill, notify.
+ * Theme: palette follows nxres_theme_is_light() (nxres.h), refreshed on
+ * INPUT_TYPE_LOOK_CHANGED (nxres_broadcast_look) and on a cheap per-loop poll
+ * so every open shell instance tracks external theme changes even when more
+ * than one is running.
  *
- * The nxshell accepts arbitrary PID arguments to kill without any privilege
- * check; see USR-SEC-02.
- *
- * Known issues:
- *   USR-SEC-02  (W3 SECURITY) kill <pid> accepts any decimal PID from user
- *               input and passes it directly to kill_process() with no
- *               capability check; any user can kill any system service.
- *   USR-SEC-03  (W3 WRONG-DESIGN) spawn() (and the fallback at line ~192)
- *               launches any ELF with full authority; no namespace or
- *               sandboxing constraint applies.
- *   USR-SHELL-01 (W2 BAD-IMPL) Command parsing uses hardcoded character
- *                offsets (e.g. cmd_buf[2]=='  ', &cmd_buf[3]) instead of
- *                token splitting; brittle and inconsistent across commands.
- *   USR-SHELL-02 (W2 MISSING) cmd_buf is 128 bytes, single-line only; no
- *                command history, no tab completion, no argument splitting.
- *   USR-BLOAT-01 (W2 BAD-IMPL·PERF) Every shell binary carries the full
- *                stb_image/stb_easy_font blob via lib.o (~500KB ELF).
- *   USR-BLOAT-02 (W2 BAD-IMPL) -g DWARF and -fno-omit-frame-pointer inflate
- *                the ELF; no --gc-sections or strip step.
+ * Resize: INPUT_TYPE_RESIZE -> OS1_window_resize() for a crisp terminal surface
+ * (compositor reflows the cell grid via term_resize).
  */
 #include "nxexec.h"
+#include "nxperm.h"
+#include "nxres.h"
+#include <input.h>
 #include <os1.h>
+#include <stdlib.h>
+#include <string.h>
 
-/* Window dimensions */
-#define WIN_W 640
-#define WIN_H 480
+#define CMD_MAX 256
+#define SPAWN_PATH_MAX NXEXEC_PATH_MAX
+#define MAX_ARGV 16
+#define MIN_WIN_W 320
+#define MIN_WIN_H 240
 
-/* Colors */
-#define COLOR_BG 0xFFFCFCFD
-#define COLOR_FG 0xFFe0e0e0
-#define COLOR_PROMPT 0xFF00ff88
-
-/*
- * Nxshell state — module-level globals (one set per shell process since there
- * is no shared-library mechanism; each shell ELF has its own BSS).
- *
- * my_window: compositor window ID for this shell instance; -1 until created.
- * running:   cleared by the "exit" command to break the input loop.
- * cmd_buf:   accumulates the current line; NUL-terminated before dispatch.
- * cmd_len:   index of the next character to write in cmd_buf.
- *
- * NOTE(USR-SHELL-02): cmd_buf[128] limits line length to 127 printable chars
- * with no overflow protection beyond the `cmd_len < 126` guard in the input
- * loop; there is no history or tab-completion state.
- */
 static int my_window = -1;
 static int running = 1;
-static char cmd_buf[128];
+static char cmd_buf[CMD_MAX];
 static int cmd_len = 0;
+static int g_win_w = 640;
+static int g_win_h = 480;
+static int g_light = -1;
 
-/*
- * str_eq - naive NUL-terminated string equality test.
- *
- * Returns 1 if 'a' and 'b' are identical, 0 otherwise.
- * Both pointers must be valid (no NULL guard).
- *
- * The standard strcmp/strncmp from lib.c/string.c could replace this;
- * the standalone copy predates the library import.
- */
-static int str_eq(const char *a, const char *b) {
-  while (*a && *b) {
-    if (*a != *b)
-      return 0;
-    a++;
-    b++;
+static uint32_t g_col_bg;
+static uint32_t g_col_fg;
+static uint32_t g_col_prompt;
+
+static void shell_redraw_accent(void);
+
+static void shell_load_colors(int light) {
+  g_light = light;
+  if (light) {
+    g_col_bg = 0xFFF5F5F7u;
+    g_col_fg = 0xFF1C1C1Eu;
+    g_col_prompt = 0xFF007AFFu;
+  } else {
+    g_col_bg = 0xFF1A1A22u;
+    g_col_fg = 0xFFE0E0E0u;
+    g_col_prompt = 0xFF00FF88u;
   }
-  return *a == *b;
 }
 
-/*
- * shell_redraw - repaint the window background.
- *
- * Fills the entire window with COLOR_BG (dark navy), then draws a 2-pixel
- * accent stripe at the top in COLOR_PROMPT (bright green).  Calls
- * compositor_render() to push the update to the screen.
- *
- * Guards against my_window < 0 (window not yet created); safe to call early
- * but does nothing until create_window() has succeeded.
- */
-static void shell_redraw(void) {
+static void shell_check_theme(void) {
+  int light = nxres_theme_is_light();
+  if (light != g_light) {
+    shell_load_colors(light);
+    shell_redraw_accent();
+  }
+}
+
+static void shell_redraw_accent(void) {
   if (my_window < 0)
     return;
-
-  /* Just clear the window */
-  window_draw(my_window, 0, 0, WIN_W, WIN_H, COLOR_BG);
-
-  /* Top accent line */
-  window_draw(my_window, 0, 0, WIN_W, 2, COLOR_PROMPT);
-
+  window_draw(my_window, 0, 0, g_win_w, 2, g_col_prompt);
   compositor_render();
 }
 
-/*
- * Program launch helpers.  spawn_search_args() resolves a program name against
- * /bin then /sys/bin (absolute paths bypass the search) and hands the child an
- * argv vector via spawn_args(); tokenize() splits a command line into that
- * vector.  *out_path (size SPAWN_PATH_MAX) receives the last path tried.
- *
- * NOTE(USR-SEC-03): spawn_args() grants the new process full ambient authority;
- * no sandboxing applies regardless of the directory searched.
- */
-/* Must match the shared launch layer's buffer contract: nxexec_spawn_search
- * writes up to NXEXEC_PATH_MAX bytes into out_path. */
-#define SPAWN_PATH_MAX NXEXEC_PATH_MAX
-#define MAX_ARGV 16
-
-/*
- * tokenize - split a command line into argv in place (USR-SHELL-01 follow-up).
- *
- * Whitespace runs are collapsed; each token is NUL-terminated inside 's'
- * (which is mutated).  Returns argc (0..max); argv[i] point into 's'.  This is
- * the minimal splitter needed to pass arguments to spawned programs, e.g.
- * `kilo notes.txt` -> argv = {"kilo", "notes.txt"}.  No quoting/escaping yet.
- */
-static int tokenize(char *s, char *argv[], int max) {
-  int argc = 0;
-  while (*s && argc < max) {
-    while (*s == ' ')
-      s++; /* skip leading spaces */
-    if (!*s)
-      break;
-    argv[argc++] = s;
-    while (*s && *s != ' ')
-      s++; /* consume the token */
-    if (*s)
-      *s++ = '\0';
-  }
-  return argc;
+static void shell_on_resize(int w, int h) {
+  if (my_window < 0 || w <= 0 || h <= 0)
+    return;
+  if (w < MIN_WIN_W)
+    w = MIN_WIN_W;
+  if (h < MIN_WIN_H)
+    h = MIN_WIN_H;
+  if (w == g_win_w && h == g_win_h)
+    return;
+  OS1_window_resize(my_window, w, h);
+  g_win_w = w;
+  g_win_h = h;
+  shell_redraw_accent();
 }
 
-/*
- * spawn_search_args - spawn argv[0] (probing /bin then /sys/bin) with argv.
- *
- * Probes /bin/<argv[0]> then /sys/bin/<argv[0]> and hands the child the full
- * argv vector via spawn_args().  argv[0] is the program name as typed; absolute
- * names (leading '/') bypass the search.  Returns the PID or <= 0 on failure.
- */
+/* Quote-aware tokenization lives in the libc (lib.c cmdline_split), shared
+ * with every other command path; this keeps `sh -c` word-splitting identical
+ * to the interactive prompt and strips shell-style quotes ("lua" -> lua). */
+static int tokenize(char *s, char *argv[], int max) {
+  return cmdline_split(s, argv, max);
+}
+
 static int spawn_search_args(int argc, char *argv[], char *out_path) {
-  /* Foreground (needs-shell) mode: the shell IS the child's ctty — the
-   * launch logic itself lives in the shared nxexec layer (#193). */
   return nxexec_spawn_search(argc, argv, out_path, /*detached=*/0);
 }
 
-/*
- * process_command - parse and dispatch the accumulated line in cmd_buf.
- *
- * NUL-terminates cmd_buf at cmd_len, then matches against a linear chain of
- * if-else branches.  Returns early on an empty line.
- *
- * Dispatch strategy (NOTE USR-SHELL-01):
- *   - Fixed-word commands ("help", "clear", "time", etc.) use str_eq().
- *   - Commands with arguments ("ls", "cd", "cat", "kill", "notify", "exec")
- *     detect the command prefix by inspecting individual characters
- *     (cmd_buf[0..N]) and extract the argument via hardcoded byte offsets.
- *     There is no tokeniser.
- *   - Unknown tokens are tokenized and tried as ELF names via
- * spawn_search_args(), /bin/ then /sys/bin/ before reporting failure.
- *
- * On return, cmd_len is reset to 0 (erases the accumulated line).
- *
- * Side effects: writes to UART/window, may spawn processes, may call exit().
- */
-/*
- * run_foreground - run a freshly-spawned child as a foreground shell job
- * (USR-TTY-01 #123, POSIX-like).
- *
- * A windowless CLI program writes its stdout into THIS shell's window (its
- * controlling terminal, resolved kernel-side), so it runs "in the shell".
- * We poll until it exits or the user presses Ctrl+C (ETX 0x03, delivered as
- * a keyboard IPC press), which kills it.  If the child opens its OWN window
- * it is a graphical/TTY app (doom, top, forkbomb): it detaches and we return
- * to the prompt immediately, leaving it running in its own window.
- *
- * Priorities are untouched: the child is a normal independent process; this
- * loop only watches it and yields.  stdin is not yet forwarded to the job
- * (CLI tools that read input are a follow-up); other keystrokes are consumed.
- */
-static void run_foreground(int pid) {
-  /* Extracted to the shared nxexec layer (#193): identical behaviour, one
-   * implementation for every terminal-like consumer. */
-  nxexec_run_foreground(pid);
+static void run_foreground(int pid) { nxexec_run_foreground(pid); }
+
+static int skip_bin_entry(const char *name) {
+  if (!name || !*name)
+    return 1;
+  const char *dot = strrchr(name, '.');
+  if (!dot)
+    return 0;
+  return strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
+         strcmp(dot, ".o") == 0 || strcmp(dot, ".old") == 0;
+}
+
+static void help_list_programs(const char *dir) {
+  char buf[1024];
+  int n = list_dir(dir, buf, sizeof(buf) - 1);
+  if (n <= 0)
+    return;
+
+  buf[n] = '\0';
+
+  char *save = NULL;
+  int col = 0;
+
+  for (char *tok = strtok_r(buf, " \t", &save); tok;
+       tok = strtok_r(NULL, " \t", &save)) {
+
+    if (skip_bin_entry(tok))
+      continue;
+
+    printf("%-16s", tok);
+
+    col++;
+    if (col == 4) {
+      printf("\n");
+      col = 0;
+    }
+  }
+
+  if (col != 0)
+    printf("\n");
+}
+
+static void cmd_help(void) {
+  print("\n\033[1;33mBuilt-in commands:\033[0m\n");
+  print("  help            Show this help\n");
+  print("  clear           Clear the screen\n");
+  print("  time            Show uptime\n");
+  print("  ls [path]       List directory\n");
+  print("  cd [path]       Change directory (/ if omitted)\n");
+  print("  pwd             Print working directory\n");
+  print("  cat <path>      Show file contents\n");
+  print("  echo [text...]  Print arguments\n");
+  print("  rm <path>       Remove a file\n");
+  print("  mkdir <path>    Create a directory\n");
+  print("  cp <src> <dst>  Copy file\n");
+  print("  write <p> <txt> Write text to a file\n");
+  print("  kill <pid>      Terminate a process\n");
+  print("  focus <id>      Focus a window by id\n");
+  print("  id              Show privilege level and capabilities\n");
+  print("  about           About this system\n");
+  print("  exec <prog>     Run a program with arguments\n");
+  print("  exit            Close this shell\n");
+  print("\n\033[1;33mPrograms in /sys/bin:\033[0m\n");
+  help_list_programs("/sys/bin");
+  print("\n\033[1;33mPrograms in Bin are not listed for brevity\033[0m\n");
+  print("\nType any program name to run it (searches /bin, then /sys/bin).\n");
+}
+
+static void print_prompt(void) {
+  char prompt_cwd[128];
+  if (getcwd(prompt_cwd, sizeof(prompt_cwd)) != 0)
+    prompt_cwd[0] = '\0';
+  print("\r\n");
+  printf("\033[32mNXShell\033[0m:\033[34m%s\033[0m> ", prompt_cwd);
 }
 
 static void process_command(void) {
@@ -199,336 +179,322 @@ static void process_command(void) {
   if (cmd_len == 0)
     return;
 
-  if (str_eq(cmd_buf, "help") || str_eq(cmd_buf, "?")) {
-    print("\n\033[1;33mAvailable Commands:\033[0m\n");
-    print("  help            - Show this help\n");
-    print("  clear           - Clear screen\n");
-    print("  time            - Show uptime\n");
-    print("  demo            - Draw 2D shapes\n");
-    print("  demo3d          - Launch 3D cube demo\n");
-    print("  doom            - Launch doom\n");
-    print("  shell           - Open new shell window\n");
-    print("  settings        - Open Settings in neew windows\n");
-    print("  ps              - List processes\n");
-    print("  ls [path]       - List directory contents\n");
-    print("  cd <path>       - Change directory\n");
-    print("  pwd             - Show current directory\n");
-    print("  cat <path>      - Show file contents\n");
-    print("  nxres <w> <h>   - set resolution (also: style|theme|zoom <v>)\n");
-    print("  nxproc          - Realtime list processes\n");
-    print("  kill <pid>      - Kill process by PID\n");
-    print("  nxwins          - List windows (id/pid/state/title)\n");
-    print("  nxnotify <msg>  - Send a notification (nxnotify list to read)\n");
-    print("  focus <id>      - Focus a window by id (no mouse needed)\n");
-    print("  exec <program>  - Execute program (searches /bin, /sys/bin)\n");
-    print("  about           - About this OS\n");
-    print("  <program>       - Execute program (searches /bin, /sys/bin)\n");
-    print("  exit            - Exit shell\n");
-  } else if (str_eq(cmd_buf, "clear")) {
+  char line[CMD_MAX];
+  strncpy(line, cmd_buf, sizeof(line) - 1);
+  line[sizeof(line) - 1] = '\0';
+
+  char *argv[MAX_ARGV];
+  int argc = tokenize(line, argv, MAX_ARGV);
+  if (argc == 0)
+    return;
+
+  const char *cmd = argv[0];
+
+  if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
+    cmd_help();
+  } else if (strcmp(cmd, "clear") == 0) {
     print("\033[2J\033[H");
-    shell_redraw();
-  } else if (str_eq(cmd_buf, "time")) {
-    printf("Uptime: %d seconds (%x ms)\n", (int)(get_time() / 1000),
+    shell_redraw_accent();
+  } else if (strcmp(cmd, "time") == 0 || strcmp(cmd, "uptime") == 0) {
+    printf("Uptime: %d seconds (%ld ms)\n", (int)(get_time() / 1000),
            get_time());
-  } else if (str_eq(cmd_buf, "demo")) {
-    print("Drawing demo shapes in window...\n");
-    for (int i = 0; i < 5; i++) {
-      unsigned int colors[] = {0xFFff4444, 0xFF44ff44, 0xFF4444ff, 0xFFffff44,
-                               0xFFff44ff};
-      window_draw(my_window, 50 + i * 100, 100, 80, 80, colors[i]);
-    }
-    compositor_render();
-  } else if (str_eq(cmd_buf, "settings")) {
-    print("Launching 3D demo...\n");
-    int pid = spawn("/bin/nxsettings");
-    if (pid > 0) {
-      printf("Started demo3d with PID %d\n", pid);
-    } else {
-      print("Failed to start demo3d\n");
-    }
-  } else if (str_eq(cmd_buf, "shell")) {
-    print("Opening new NXShell...\n");
-    int pid = spawn("/sys/bin/nxshell");
-    if (pid > 0) {
-      printf("Nxshell started. PID=%d\n", pid);
-    } else {
-      print("Failed to start NXShell\n");
-    }
-  } else if (str_eq(cmd_buf, "ps")) {
-    /* `ps` is delegated to /sys/bin/nxproc (the canonical process-listing
-     * ELF, the only place the snapshot/render code lives).  Spawning a
-     * dedicated nxproc ELF matches the rest of the `exec`/`demo3d` pattern
-     * (shell as dispatcher, real apps as ELFs in /sys/bin).  nxproc also
-     * offers a `kill <pid>` sub-command if the user wants to terminate. */
-    int pid = spawn("/sys/bin/nxproc");
-    if (pid <= 0)
-      printf("ps: failed to start nxproc (err %d)\n", pid);
-    run_foreground(pid);
-  } else if (str_eq(cmd_buf, "ls") ||
-             (cmd_buf[0] == 'l' && cmd_buf[1] == 's' && cmd_buf[2] == ' ')) {
-    /* NOTE(USR-SHELL-01): Argument parsed with hardcoded byte offsets.
-     * "ls" alone uses "."; "ls <path>" takes &cmd_buf[3] as the path. */
-    const char *path = ".";
-    if (cmd_buf[2] == ' ')
-      path = &cmd_buf[3];
+  } else if (strcmp(cmd, "ls") == 0) {
+    const char *path = argc >= 2 ? argv[1] : ".";
     char buf[1024];
     int len = list_dir(path, buf, sizeof(buf));
-    if (len < 0) {
-      printf("Error listing %s\n", path);
-    } else {
+    if (len < 0)
+      printf("ls: cannot list %s\n", path);
+    else {
       print(buf);
       print("\n");
     }
-  } else if (str_eq(cmd_buf, "pwd")) {
+  } else if (strcmp(cmd, "pwd") == 0) {
     char buf[128];
-    if (getcwd(buf, sizeof(buf)) == 0) {
+    if (getcwd(buf, sizeof(buf)) == 0)
       printf("%s\n", buf);
-    } else {
-      print("Error getting CWD\n");
-    }
-  } else if (cmd_buf[0] == 'c' && cmd_buf[1] == 'd' &&
-             (cmd_buf[2] == ' ' || cmd_buf[2] == '\0')) {
-    /* NOTE(USR-SHELL-01): "cd" with no argument defaults to "/"; argument
-     * at &cmd_buf[3] (hardcoded offset after "cd "). */
-    const char *path = "/";
-    if (cmd_buf[2] == ' ')
-      path = &cmd_buf[3];
-    if (chdir(path) != 0) {
+    else
+      print("pwd: error\n");
+  } else if (strcmp(cmd, "cd") == 0) {
+    const char *path = argc >= 2 ? argv[1] : "/";
+    if (chdir(path) != 0)
       printf("cd: no such directory: %s\n", path);
-    }
-  } else if (cmd_buf[0] == 'k' && cmd_buf[1] == 'i' && cmd_buf[2] == 'l' &&
-             cmd_buf[3] == 'l' && cmd_buf[4] == ' ') {
-    /* Parse PID from "kill <pid>".
-     * NOTE(USR-SEC-02): The PID is read directly from user input (decimal
-     * digits at cmd_buf[5..]) and passed to kill_process() with no capability
-     * check.  Any user can kill any PID including system services (init,
-     * notify_srv).  The loop stops at the first non-digit; overflowing int
-     * is silent (no range check). */
-    int pid = 0;
-    for (int i = 5; cmd_buf[i] >= '0' && cmd_buf[i] <= '9'; i++) {
-      pid = pid * 10 + (cmd_buf[i] - '0');
-    }
-    if (pid > 0) {
-      printf("Killing PID %d...\n", pid);
-      int result = kill_process(pid);
-      if (result == 0) {
-        print("Process terminated.\n");
-      } else {
-        print("Failed to kill process.\n");
+  } else if (strcmp(cmd, "cat") == 0) {
+    if (argc < 2) {
+      print("usage: cat <path>\n");
+    } else {
+      char buf[256];
+      int len = file_read(argv[1], buf, sizeof(buf) - 1, 0);
+      if (len < 0)
+        printf("cat: cannot read %s\n", argv[1]);
+      else {
+        buf[len] = '\0';
+        printf("--- %s (%d bytes) ---\n", argv[1], len);
+        print(buf);
+        if ((unsigned int)len >= sizeof(buf) - 1)
+          print("\n...[truncated]...\n");
+        else
+          print("\n");
       }
-    } else {
-      print("Usage: kill <pid>\n");
     }
-  } else if (cmd_buf[0] == 'f' && cmd_buf[1] == 'o' && cmd_buf[2] == 'c' &&
-             cmd_buf[3] == 'u' && cmd_buf[4] == 's' && cmd_buf[5] == ' ') {
-    /* focus <window-id>: give a window keyboard focus (reveals it if it was
-     * backgrounded) — switch windows without a mouse.  Goes through an
-     * OBJ_TYPE_WINDOW capability (OS1_window_focus). */
-    int id = 0;
-    for (int i = 6; cmd_buf[i] >= '0' && cmd_buf[i] <= '9'; i++)
-      id = id * 10 + (cmd_buf[i] - '0');
-    if (id > 0) {
-      int r = OS1_window_focus(id);
-      if (r == 0)
-        printf("Focused window %d\n", id);
-      else
-        printf("focus failed (%d)\n", r);
-    } else {
-      print("Usage: focus <window-id>\n");
+  } else if (strcmp(cmd, "echo") == 0) {
+    for (int i = 1; i < argc; i++) {
+      if (i > 1)
+        print(" ");
+      print(argv[i]);
     }
-  } else if (str_eq(cmd_buf, "about")) {
+    print("\n");
+  } else if (strcmp(cmd, "rm") == 0 || strcmp(cmd, "unlink") == 0) {
+    if (argc < 2) {
+      print("usage: rm <path>\n");
+    } else if (OS1_fs_unlink(argv[1]) != 0) {
+      printf("rm: cannot remove %s\n", argv[1]);
+    }
+  } else if (strcmp(cmd, "mkdir") == 0) {
+    if (argc < 2) {
+      print("usage: mkdir <path>\n");
+    } else if (mkdir(argv[1], 0755) != 0) {
+      printf("mkdir: cannot create directory %s\n", argv[1]);
+    }
+  } else if (strcmp(cmd, "cp") == 0) {
+    if (argc < 3) {
+      print("usage: cp <source> <destination>\n");
+    } else {
+      char buf[1024];
+
+      int len = file_read(argv[1], buf, sizeof(buf), 0);
+      if (len < 0) {
+        printf("cp: cannot read %s\n", argv[1]);
+      } else {
+        int ret = OS1_fs_write(argv[2], buf, len, 0);
+
+        if (ret < 0)
+          printf("cp: cannot write %s\n", argv[2]);
+      }
+    }
+  } else if (strcmp(cmd, "mv") == 0) {
+    if (argc < 3) {
+      print("usage: mv <source> <destination>\n");
+    } else {
+      char buf[1024];
+
+      int len = file_read(argv[1], buf, sizeof(buf), 0);
+
+      if (len < 0) {
+        printf("mv: cannot read %s\n", argv[1]);
+      } else {
+        if (OS1_fs_write(argv[2], buf, len, 0) < 0) {
+          printf("mv: cannot write %s\n", argv[2]);
+        } else {
+          if (OS1_fs_unlink(argv[1]) != 0)
+            printf("mv: cannot remove original %s\n", argv[1]);
+        }
+      }
+    }
+  } else if (strcmp(cmd, "write") == 0) {
+    if (argc < 3) {
+      print("usage: write <path> <text...>\n");
+    } else {
+      char msg[192];
+      int n = 0;
+      for (int i = 2; i < argc && n < (int)sizeof(msg) - 1; i++) {
+        if (i > 2 && n < (int)sizeof(msg) - 1)
+          msg[n++] = ' ';
+        for (const char *p = argv[i]; *p && n < (int)sizeof(msg) - 1; p++)
+          msg[n++] = *p;
+      }
+      msg[n] = '\0';
+      if (OS1_fs_write(argv[1], msg, n, 0) < 0)
+        printf("write: failed on %s\n", argv[1]);
+    }
+  } else if (strcmp(cmd, "kill") == 0) {
+    if (argc < 2) {
+      print("usage: kill <pid>\n");
+    } else {
+      int pid = atoi(argv[1]);
+      if (pid <= 0) {
+        print("usage: kill <pid>\n");
+      } else {
+        printf("Killing PID %d...\n", pid);
+        if (kill_process(pid) == 0)
+          print("Process terminated.\n");
+        else
+          print("Failed to kill process.\n");
+      }
+    }
+  } else if (strcmp(cmd, "focus") == 0) {
+    if (argc < 2) {
+      print("usage: focus <window-id>\n");
+    } else {
+      int id = atoi(argv[1]);
+      if (id <= 0) {
+        print("usage: focus <window-id>\n");
+      } else {
+        int r = OS1_window_focus(id);
+        if (r == 0)
+          printf("Focused window %d\n", id);
+        else
+          printf("focus failed (%d)\n", r);
+      }
+    }
+  } else if (strcmp(cmd, "id") == 0 || strcmp(cmd, "whoami") == 0) {
+    int level = 0;
+    unsigned int mask = 0;
+    OS1_identity(&level, &mask);
+    char m[96];
+    nxperm_mask_str(mask, m, (int)sizeof(m));
+    printf("pid=%d level=%s caps=%s\n", get_pid(), nxperm_level_name(level), m);
+  } else if (strcmp(cmd, "about") == 0) {
     print("\n\033[1;36mNeXs OS v0.0.5.0\033[0m\n");
-    print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal "
-          "Emulator\n");
+    print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
     print("\033[32mLibrary:\033[0m POSIX-like userlib with printf support\n");
     print("\nSystem reported: OK\n");
-  } else if (str_eq(cmd_buf, "exit")) {
+  } else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0) {
     print("Exiting NXShell...\n");
     running = 0;
     exit(0);
-  } else if (cmd_buf[0] == 'c' && cmd_buf[1] == 'a' && cmd_buf[2] == 't' &&
-             cmd_buf[3] == ' ') {
-    char *path = &cmd_buf[4];
-    char buf[256];
-    int len = file_read(path, buf, sizeof(buf) - 1, 0);
-    if (len < 0) {
-      printf("Error reading %s\n", path);
+  } else if (strcmp(cmd, "exec") == 0) {
+    if (argc < 2) {
+      print("usage: exec <program> [args...]\n");
     } else {
-      buf[len] = '\0';
-      printf("--- %s (%d bytes) ---\n", path, len);
-      print(buf);
-      if ((unsigned int)len >= sizeof(buf) - 1)
-        print("\n...[truncated]...\n");
+      char path[SPAWN_PATH_MAX];
+      int pid = spawn_search_args(argc - 1, &argv[1], path);
+      if (pid > 0)
+        run_foreground(pid);
       else
-        print("\n");
+        printf("exec: not found: %s\n", argv[1]);
     }
-
-    /*
-     * exec <program> [args-not-yet-supported]
-     *
-     * Spawns the named ELF as a new child process, searching /bin/ then
-     * /sys/bin/ for relative names (absolute paths bypass the search).
-     *
-     * Unlike a POSIX exec(3) this does NOT replace the shell process — it
-     * uses spawn() which creates a new child; the shell continues running.
-     * Renaming this to "run" in a future cleanup would avoid the semantic
-     * confusion, but "exec" matches user expectations for "execute this
-     * program by name".
-     *
-     * NOTE(USR-SHELL-01): argument parsed at hardcoded offset cmd_buf[5].
-     * NOTE(USR-SEC-03): spawn() grants full ambient authority; no sandbox.
-     */
-  } else if (cmd_buf[0] == 'e' && cmd_buf[1] == 'x' && cmd_buf[2] == 'e' &&
-             cmd_buf[3] == 'c' && cmd_buf[4] == ' ') {
-    char *argv[MAX_ARGV];
-    int argc = tokenize(&cmd_buf[5], argv, MAX_ARGV);
-    if (argc == 0) {
-      print("Usage: exec <program> [args...]\n");
-    } else {
-      char path[SPAWN_PATH_MAX];
-      int pid = spawn_search_args(argc, argv, path);
-      if (pid > 0) {
-        run_foreground(pid); /* in-shell if windowless, else detaches */
-      } else {
-        printf("exec: not found: %s\n", argv[0]);
-      }
-    }
-
   } else {
-    /*
-     * Unknown command: try to spawn it as an ELF name.
-     *
-     * spawn_search_args() probes /bin first, then /sys/bin, with argv.
-     * Absolute paths (starting with '/') are passed directly to spawn().
-     * There is no further PATH search and no shell scripting.
-     *
-     * NOTE(USR-SEC-03): spawn() grants the new process full ambient authority
-     * (arbitrary IPC, kill, registry, spawn); no sandboxing applies.
-     */
-    char *argv[MAX_ARGV];
-    int argc = tokenize(cmd_buf, argv, MAX_ARGV);
-    if (argc > 0) {
-      char path[SPAWN_PATH_MAX];
-      int pid = spawn_search_args(argc, argv, path);
-      if (pid > 0) {
-        run_foreground(pid); /* in-shell if windowless, else detaches */
-      } else {
-        printf("Unknown command: %s\n", argv[0]);
-      }
-    }
+    char path[SPAWN_PATH_MAX];
+    int pid = spawn_search_args(argc, argv, path);
+    if (pid > 0)
+      run_foreground(pid);
+    else
+      printf("Unknown command: %s\n", argv[0]);
   }
 
   cmd_len = 0;
 }
 
-/*
- * main - shell entry point; does not return.
- *
- * 1. Creates a compositor window with position offset by (pid*40)%200 so
- *    multiple shell instances tile without fully overlapping.
- * 2. Calls shell_redraw() and set_focus() to make the window active.
- * 3. Prints the initial prompt (with ANSI colour) to the TTY and mirrors
- *    "shell> " to fd 3 (UART) for serial console visibility.
- * 4. Enters the character-by-character input loop:
- *      - '\n'/'\r' -> process_command(), reprint prompt.
- *      - '\b'/DEL  -> erase last character (ANSI backspace-space-backspace).
- *      - Printable  -> append to cmd_buf, echo to window.
- *    read(0, buf, 1) blocks until a byte is available on the keyboard fd.
- *
- * Side effects: allocates a compositor window, reads from fd 0, writes to
- *   fd 1 (window/TTY), fd 3 (UART mirror), and calls process_command().
- */
-int main(void) {
+static void shell_handle_key(unsigned char key, uint16_t scancode) {
+  if (key == '\n' || key == '\r' || scancode == INPUT_KEY_ENTER) {
+    print("\r\n");
+    process_command();
+    if (running)
+      print_prompt();
+    return;
+  }
+
+  if (key == '\b' || key == 127 || scancode == INPUT_KEY_BACKSPACE) {
+    if (cmd_len > 0) {
+      cmd_len--;
+      print("\b \b");
+    }
+    return;
+  }
+
+  if (key >= 32 && key < 127 && cmd_len < CMD_MAX - 2) {
+    cmd_buf[cmd_len++] = (char)key;
+    char echo[2] = {(char)key, '\0'};
+    print(echo);
+  }
+}
+
+int main(int argc, char *argv[]) {
+  /* Headless mode: `nxshell -c "<command>"` — the actual POSIX `sh -c`
+   * contract, added because system() in lib.c finally has something to
+   * invoke (fix for bug #193-adjacent). No window is created and nothing
+   * is published to the registry: I/O flows through the inherited
+   * controlling terminal, exactly like any other foreground job without
+   * a window (see nxexec.h). */
+  if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
+    strncpy(cmd_buf, argv[2], sizeof(cmd_buf) - 1);
+    cmd_buf[sizeof(cmd_buf) - 1] = '\0';
+    cmd_len = (int)strlen(cmd_buf);
+    process_command();
+    return 0; /* OS1 does not yet provide a real exit-status channel (see
+               * system() in lib.c). A future kernel/registry enhancement
+               * could propagate the actual exit status instead of always
+               * returning 0. */
+  }
+
   print("NXShell: Alive\n");
   int pid = get_pid();
-  /* === SMART INITIAL WORKING DIRECTORY === */
-  /* Only change to /home for the first shell (launched by the system/launcher).
-   * Subsequent shells spawned with the "shell" command should inherit the
-   * current directory of the parent shell. */
+
   char cwd[128] = {0};
   getcwd(cwd, sizeof(cwd));
+  if (strcmp(cwd, "/") == 0 || cwd[0] == '\0')
+    chdir("/home");
 
-  if (str_eq(cwd, "/") || str_eq(cwd, "")) {
-    if (chdir("/home") == 0) {
-      /* Optional: you can remove this line if you don't want the message */
-      // print("NXShell: started in /home\n");
-    } else {
-      print("Warning: could not chdir to /home, staying in /\n");
-    }
+  shell_load_colors(nxres_theme_is_light());
+
+  {
+    char pidbuf[16];
+    snprintf(pidbuf, sizeof(pidbuf), "%d", pid);
+    OS1_registry_set("srv.shell_pid", pidbuf);
   }
-  /* ====================================== */
-  /* Create a unique window for this shell instance.
-   * x_off/y_off stagger multiple shell windows by pid so they do not
-   * stack exactly on top of each other. */
+
   char title[32];
-  sprintf(title, "NXShell PID %d", pid);
+  snprintf(title, sizeof(title), "NXShell PID %d", pid);
+
+  long di = OS1_display_info();
+  int sw = (int)((di >> 16) & 0xFFFF);
+  int sh = (int)(di & 0xFFFF);
+  if (sw <= 0)
+    sw = 800;
+  if (sh <= 0)
+    sh = 600;
+
+  g_win_w = (sw * 3) / 5;
+  g_win_h = (sh * 11) / 20;
+  if (g_win_w > 800)
+    g_win_w = 800;
+  if (g_win_h > 560)
+    g_win_h = 560;
+  if (g_win_w < MIN_WIN_W)
+    g_win_w = MIN_WIN_W;
+  if (g_win_h < MIN_WIN_H)
+    g_win_h = MIN_WIN_H;
 
   int x_off = (pid * 40) % 200;
   int y_off = (pid * 40) % 200;
-  my_window = create_window(100 + x_off, 100 + y_off, WIN_W, WIN_H, title);
+  int wx = (sw - g_win_w) / 2 + x_off;
+  int wy = (sh - g_win_h) / 2 + y_off;
+  if (wx < 0)
+    wx = 100 + x_off;
+  if (wy < 0)
+    wy = 100 + y_off;
+
+  my_window = create_window(wx, wy, g_win_w, g_win_h, title);
   if (my_window <= 0) {
     print("[NXShell] Error creating window\n");
     exit(1);
   }
 
-  shell_redraw();
+  shell_redraw_accent();
   set_focus(get_pid());
 
   print("\n[NXShell] TTY Window ");
   print_hex(my_window);
   printf(" active (PID %d).\n", get_pid());
-  getcwd(cwd, sizeof(cwd));
-  printf("\033[32mNXShell\033[0m:\033[34m%s\033[0m> ", cwd);
-  write(3, "NXShell> ", 7); /* Mirror to UART */
+  print_prompt();
+  write(3, "NXShell> ", 7);
 
-  /* buf[1] always stays NUL so print(buf) terminates correctly after echoing
-   * a single printable character without calling strlen on uninitialized data.
-   */
-  char buf[2] = {0, 0};
   while (running) {
-    long n = read(0, buf, 1); /* Blocking read from keyboard fd */
-    if (n <= 0)
-      continue;
+    shell_check_theme();
 
-    char c = buf[0];
-    if (c == '\n' || c == '\r') {
-      /* End of line: the typed command sits on the prompt line
-       * ("NXShell:/>ps"); the user's Enter echoes nothing on its own (CONSOLE
-       * read drained the key, didn't echo it), so without a leading newline the
-       * dispatched command's output would render immediately after ">ps".  Emit
-       * CR+LF first to push the cursor to a fresh line, then dispatch, then
-       * reprint the prompt on the next line.  This also keeps the snapshot
-       * banner from `ps` (nxproc's inline render) one row below the prompt. */
-      print("\r\n");
-      process_command();
-      if (running) {
-        char prompt_cwd[128];
-        getcwd(prompt_cwd, sizeof(prompt_cwd));
-        /* CR+LF: the compositor's ANSI parser advances on LF, but the terminal
-         * cursor stays anchored on the column where the previous output ended
-         * unless a CR is also emitted.  Without CR the prompt could still
-         * render at column N>0 if the previous output did not end on a clean
-         * boundary, which is what `ps` (nxproc's inline render) leaves behind
-         * on multi-row tables. */
-        print("\r\n");
-        printf("\033[32mNXShell\033[0m:\033[34m%s\033[0m> ", prompt_cwd);
-      }
-    } else if (c == '\b' || c == 127) {
-      /* Backspace (0x08) or DEL (0x7F): erase last character.
-       * "\b \b" moves back, overwrites with space, moves back again. */
-      if (cmd_len > 0) {
-        cmd_len--;
-        print("\b \b");
-      }
-    } else if (c >= 32 && c < 127 && cmd_len < 126) {
-      /* Printable ASCII: append to buffer and echo to window.
-       * Limit is 126 (not 127) to leave room for the NUL terminator. */
-      cmd_buf[cmd_len++] = c;
-      buf[0] = c;
-      buf[1] = 0;
-      print(buf);
+    input_event_t ev;
+    while (input_poll_event(&ev) == 1) {
+      if (ev.type == INPUT_TYPE_RESIZE)
+        shell_on_resize(ev.resize.w, ev.resize.h);
+      else if (ev.type == INPUT_TYPE_LOOK_CHANGED)
+        shell_check_theme();
+      else if (ev.type == INPUT_TYPE_KEYBOARD &&
+               ev.keyboard.state == KEY_PRESSED)
+        shell_handle_key(ev.keyboard.key, ev.keyboard.scancode);
     }
+
+    OS1_sleep(10);
   }
 
   exit(0);
