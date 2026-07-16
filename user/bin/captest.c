@@ -13,6 +13,10 @@
  *   7. lifecycle: close -> 0; use after close -> -EBADF; double close -> -EBADF.
  *   8. PROCESS object: a handle to self; rights enforced (read needs READ).
  *   9. DELEGATION is gated: grant without OS1_RIGHT_TRANSFER -> -EPERM.
+ *  10. O_CREAT: CREATE|WRITE creates a missing file; CREATE bit is stripped.
+ *  11. Creation is explicit: no CREATE (or CREATE w/o WRITE) -> -ENOENT.
+ *  12. Acquisition ACL: CREATE under /sys/bin -> -EACCES for USER.
+ *  13. SYS_MKDIR shares the seam: /home ok (+empty rmdir), /sys/bin -EACCES.
  * Results go to a window AND the serial console (grep "[captest]").
  */
 #include <os1.h>
@@ -133,6 +137,57 @@ int main(void) {
                                       OBJ_TYPE_FILE);
   ok = hng >= 0 && OS1low_cap_grant(get_pid(), hng, OS1_RIGHT_READ) == -EPERM;
   check(win_id, "grant-needs-transfer", ok);
+
+  /* 10. O_CREAT via capability (C1): CREATE|WRITE on a MISSING path creates
+   * the file behind the vfs_write_allowed seam; CREATE is acquisition-only
+   * (stripped from the installed rights, never visible to cap_query); data
+   * written through the handle reads back via a fresh READ handle. */
+  {
+    const char *npath = "/home/captest.tmp";
+    OS1_fs_unlink(npath); /* ensure missing; ignore result */
+    int hc = (int)OS1low_handle_create(OS1_NS_FS, npath,
+                                       OS1_RIGHT_WRITE | OS1_RIGHT_CREATE,
+                                       OBJ_TYPE_FILE);
+    long qc = (hc >= 0) ? OS1low_cap_query(hc) : -1;
+    long wn = (hc >= 0) ? OS1_object_write(hc, "cap!", 4) : -1;
+    if (hc >= 0)
+      OS1low_handle_close(hc);
+    int hr = (int)OS1low_handle_create(OS1_NS_FS, npath, OS1_RIGHT_READ,
+                                       OBJ_TYPE_FILE);
+    char rb[8];
+    memset(rb, 0, sizeof(rb));
+    long rn = (hr >= 0) ? OS1_object_read(hr, rb, 4) : -1;
+    if (hr >= 0)
+      OS1low_handle_close(hr);
+    ok = hc >= 0 && qc >= 0 && OS1_CAPQ_RIGHTS(qc) == OS1_RIGHT_WRITE &&
+         wn == 4 && rn == 4 && memcmp(rb, "cap!", 4) == 0;
+    check(win_id, "create-via-handle", ok);
+    OS1_fs_unlink(npath);
+  }
+
+  /* 11. creation is explicit: a missing path without CREATE stays -ENOENT,
+   * and CREATE without WRITE is meaningless (also -ENOENT). */
+  ok = OS1low_handle_create(OS1_NS_FS, "/home/captest.missing",
+                            OS1_RIGHT_WRITE, OBJ_TYPE_FILE) == -ENOENT &&
+       OS1low_handle_create(OS1_NS_FS, "/home/captest.missing",
+                            OS1_RIGHT_READ | OS1_RIGHT_CREATE,
+                            OBJ_TYPE_FILE) == -ENOENT;
+  check(win_id, "create-needs-flag+write", ok);
+
+  /* 12. acquisition ACL: CREATE under the machine-only /sys/bin tree is
+   * denied at handle_create (the same vfs_write_allowed seam) — USER never
+   * acquires a write/create capability into the boot chain. */
+  ok = OS1low_handle_create(OS1_NS_FS, "/sys/bin/captest.t",
+                            OS1_RIGHT_WRITE | OS1_RIGHT_CREATE,
+                            OBJ_TYPE_FILE) == -EACCES;
+  check(win_id, "create-acl-sysbin", ok);
+
+  /* 13. SYS_MKDIR shares the seam: /home create+remove works (also covers
+   * empty-directory unlink), /sys/bin is -EACCES. */
+  ok = _sys_mkdir("/home/captest.dir") == 0 &&
+       OS1_fs_unlink("/home/captest.dir") == 0 &&
+       _sys_mkdir("/sys/bin/captest.dir") == -EACCES;
+  check(win_id, "mkdir-seam", ok);
 
   if (hd >= 0) OS1low_handle_close(hd);
   if (h2 >= 0) OS1low_handle_close(h2);

@@ -51,6 +51,13 @@
 #define OS1_RIGHT_ALL                                                          \
   (OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_WAIT | OS1_RIGHT_DUPLICATE |   \
    OS1_RIGHT_TRANSFER | OS1_RIGHT_DESTROY)
+/* OS1_RIGHT_CREATE — ACQUISITION-ONLY flag for handle_create(OS1_NS_FS): a
+ * missing path is created as an empty FILE through the provider (ASTRA §6.8,
+ * open(O_CREAT) → handle_create), gated by the same vfs_write_allowed seam as
+ * every write.  Meaningful only together with OS1_RIGHT_WRITE.  NOT part of
+ * OS1_RIGHT_ALL: it is stripped before the handle is installed, so it never
+ * appears in cap_query results and cannot be duplicated/granted. */
+#define OS1_RIGHT_CREATE    (1u << 6)
 
 /* Control verbs for OS1_object_ctl(handle, cmd, arg) — type-specific actions
  * on an object you hold a capability to (seL4: the right IS the authority). */

@@ -738,8 +738,16 @@ mkdir) fixed the shared layers rather than the apps — no app-specific code:
 - **A2 capability symmetry**: `sys_object_read` re-syncs the cached vfs_node
   from the object's path before reading (as the write side already did), so a
   long-lived READ handle sees appended data.
-- **Still ambient** (unchanged, next in line — plan Part 2): `OS1_fs_write`
-  path-write pending `O_CREAT` in `handle_create`; see
-  `docs/PIANO-LIBC-ASTRA-2026-07-16.md` for the full current plan, the
-  capability-closure microphases, and the userland restructuring macroplan
-  (OS1lib_OS1/POSIX/LIBC split, services, nxauth, `.X` executable format).
+- **Capability closure (C1–C2, 2026-07-17)**: `handle_create(OS1_NS_FS)` now
+  supports **`OS1_RIGHT_CREATE`** (acquisition-only, stripped from installed
+  rights): a missing path with CREATE+WRITE is created behind the same
+  `vfs_write_allowed` seam (ASTRA §6.8 `open(O_CREAT)` → `handle_create`);
+  regfs gained a `.create` (empty key via `registry_set`, gated
+  `registry_write_allowed`) so `/reg` stays uniform.  **`OS1_fs_write` is now
+  capability-routed** (WRITE|CREATE handle → SEEK → `object_write` → close),
+  mirroring `OS1_fs_read` — the `NOTE(M4.5-FS-WRITE)` ambient path is gone.
+  Tests 10–13 in `/bin/captest` cover create-via-handle, explicit-create,
+  the /sys/bin acquisition ACL, and the mkdir seam.  See
+  `docs/PIANO-LIBC-ASTRA-2026-07-16.md` for the plan and the userland
+  restructuring macroplan (OS1lib_OS1/POSIX/LIBC split, services, nxauth,
+  `.X` executable format, per-user partition VFS vision).

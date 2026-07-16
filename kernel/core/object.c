@@ -151,6 +151,10 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
   struct process *cur = current_process;
   if (!cur)
     return -EPERM;
+  /* CREATE is acquisition-only (open(O_CREAT) semantics, FS namespace):
+   * capture it, then strip it via the OS1_RIGHT_ALL mask so it never lands
+   * in the installed handle's rights (cannot be duplicated/granted). */
+  int want_create = (rights & OS1_RIGHT_CREATE) != 0;
   rights &= OS1_RIGHT_ALL;
 
   char kpath[OBJ_FILE_PATH_MAX];
@@ -173,8 +177,23 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     int rr = vfs_resolve_object(resolved, &ref);
     if (rr == -2)
       return -EISDIR;
-    if (rr != 0)
-      return -ENOENT;
+    if (rr != 0) {
+      /* O_CREAT semantics (ASTRA §6.8: open(O_CREAT) → handle_create): a
+       * missing path with CREATE+WRITE is created as an empty FILE through
+       * the provider, behind the SAME vfs_write_allowed seam every other
+       * write-class modification uses (S-ALIGN F6).  CREATE without WRITE
+       * is meaningless and stays -ENOENT. */
+      if (!want_create || !(rights & OS1_RIGHT_WRITE))
+        return -ENOENT;
+      long cperm = vfs_write_allowed(resolved);
+      if (cperm != 0)
+        return cperm;
+      if (vfs_create(resolved, VFS_TYPE_FILE) != 0)
+        return -EIO;
+      rr = vfs_resolve_object(resolved, &ref);
+      if (rr != 0)
+        return -ENOENT;
+    }
 
     struct kobject *o;
     if (ref.obj_type == OBJ_TYPE_FILE) {

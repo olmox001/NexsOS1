@@ -524,17 +524,35 @@ int set_font(void *data, size_t size) {
  * used by fopen() to probe file size before allocating a read buffer. */
 /* OS1_fs_ functions: canonical (ASTRA §6.3); the bare file_write/file_read/
  * list_dir/chdir/getcwd below are compat shims (DIR-01 F4). */
+/* OS1_fs_write (M4.5-FS-WRITE resolved): data writes routed through a FILE
+ * capability, mirroring OS1_fs_read — handle_create(FS, WRITE|CREATE) →
+ * OBJ_CTL_SEEK(offset) → object_write → close.  OS1_RIGHT_CREATE gives
+ * open(O_CREAT) semantics (a missing file is created behind the same
+ * vfs_write_allowed seam the ambient path used), so creation keeps working;
+ * a size==0 call is the create/truncate-empty idiom: the creation already
+ * happened at handle_create, nothing to write. */
 int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
-  /* NOTE(M4.5-FS-WRITE): capability-routed write is a follow-up.
-   * handle_create(FS) requires the file to already exist (vfs_open), so routing
-   * here would break file CREATION; it needs handle_create O_CREAT support
-   * (ASTRA 6.8 open(O_CREAT) -> handle_create).  Until then write stays on the
-   * ambient path — which DOES create the file on first write (the VFS
-   * create-on-write seam, kernel/core/syscall_dispatch.c SYS_FILE_WRITE). */
-  int r = _sys_file_write(path, buf, size, offset);
-  if (r < 0)
-    errno = -r;
-  return r;
+  if (size < 0) {
+    errno = EINVAL;
+    return -EINVAL;
+  }
+  long h = OS1low_handle_create(OS1_NS_FS, path,
+                                OS1_RIGHT_WRITE | OS1_RIGHT_CREATE,
+                                OBJ_TYPE_FILE);
+  if (h < 0) {
+    errno = (int)-h;
+    return (int)h;
+  }
+  long w = 0;
+  if (size > 0) {
+    if (offset > 0)
+      OS1_object_ctl((int)h, OBJ_CTL_SEEK, offset);
+    w = OS1_object_write((int)h, buf, (unsigned long)size);
+  }
+  OS1low_handle_close((int)h);
+  if (w < 0)
+    errno = (int)-w;
+  return (int)w;
 }
 /* OS1_fs_read (F4 M4.5): data reads routed through a FILE capability
  * (handle_create(FS,READ) -> OBJ_CTL_SEEK(offset) -> object_read -> close).  A
