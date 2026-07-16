@@ -486,6 +486,14 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
       if (!kb) {
         ret = -ENOMEM;
       } else {
+        /* A2 (capability read/write symmetry): re-sync the cached node from the
+         * handle's path before reading, exactly as sys_object_write refreshes it
+         * after writing.  Without this a long-lived READ handle keeps the size it
+         * saw at handle_create and never sees data a later writer appended.  The
+         * path is the handle's stable identity; the node is a cache.  Best-effort:
+         * if the path vanished, fall back to the cached node (an open handle to a
+         * since-deleted file still reads what it last resolved). */
+        (void)vfs_open(o->path, &o->node);
         int got = vfs_read(&o->node, o->offset, kb, (uint32_t)n);
         if (got < 0) {
           ret = -EIO;
