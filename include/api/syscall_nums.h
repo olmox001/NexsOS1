@@ -103,5 +103,6 @@
 #define SYS_NANOSLEEP          257  /* real blocking sleep (POSIX nanosleep); arg0 = nanoseconds */
 #define SYS_CLOCK_GETTIME      258  /* Tier 3 clock; arg0: 0=MONOTONIC ns, 1=process CPU ns; returns ns */
 #define SYS_UNLINK             259  /* remove a file/namespace node by path (VFS unlink) */
+#define SYS_MKDIR              260  /* create a directory by path (VFS create, VFS_TYPE_DIR) */
 
 #endif /* _SYSCALL_NUMS_H */

@@ -590,10 +590,6 @@ void vfs_resolve_path(const char *in, char *out, size_t size) {
     temp[sizeof(temp)-1] = '\0';
 
     /* Normalize path: remove redundant /./ and handle /../ */
-    /* normalized[]: final assembled canonical path; same 256-byte limit.
-     * NOTE(VFS-04): no growth beyond 255 chars; deep paths are truncated
-     * silently by strncat's capacity guard in the assembly loop below. */
-    char normalized[256];
     /* parts[32]: array of interior pointers into temp[], each pointing to
      * one decoded path component (NUL-terminated in-place at the '/' char).
      * NOTE(VFS-03): capped at 32 slots; the 33rd component is silently
@@ -626,15 +622,20 @@ void vfs_resolve_path(const char *in, char *out, size_t size) {
         else break;
     }
 
-    /* Reassemble: start with root '/' then append each component. */
-    strlcpy(normalized, "/", sizeof(normalized));
+    /* Reassemble the canonical path directly into out[] in ONE bounded pass:
+     * "/" then each component separated by "/".  This replaces the previous
+     * build-into-a-256B-scratch-then-strncpy approach whose per-component
+     * strncat + strlen rescanned the whole accumulated string every time —
+     * O(n^2) in the component count, plus a redundant full-buffer copy.  Now
+     * each output byte is written exactly once, bounded by 'size'. */
+    if (size == 0) return;
+    size_t w = 0;
+    if (w < size - 1) out[w++] = '/';
     for (int i = 0; i < part_count; i++) {
-        strncat(normalized, parts[i], sizeof(normalized) - strlen(normalized) - 1);
-        /* Insert '/' between components but not after the last one. */
-        if (i < part_count - 1) strncat(normalized, "/", sizeof(normalized) - strlen(normalized) - 1);
+        if (i > 0 && w < size - 1) out[w++] = '/';
+        for (const char *p = parts[i]; *p && w < size - 1; p++)
+            out[w++] = *p;
     }
-
-    strncpy(out, normalized, size);
-    /* Guarantee NUL-termination even if strncpy ran out of space. */
-    out[size-1] = '\0';
+    /* w <= size-1 here, so this NUL is always in bounds. */
+    out[w] = '\0';
 }

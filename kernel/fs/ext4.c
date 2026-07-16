@@ -534,12 +534,14 @@ static int ext4_lookup_in_dir(struct ext4_fs *fs, uint32_t dir_ino,
     struct ext4_dir_entry *de = (struct ext4_dir_entry *)dir_buf;
     uint32_t offset = 0;
     while (offset < 4096) {
-      if (de->inode == 0)
-        break;
       if (de->rec_len < 8 || de->rec_len > (4096 - offset))
         break;
 
-      if (de->name_len > 0 && de->name_len == name_len) {
+      /* inode==0 is a FREED slot (ext4_dir_remove), not end-of-block: skip
+       * it by rec_len like ext4_dir_insert does.  Breaking here made every
+       * entry after a deleted one unresolvable (the "unlink one file, lose
+       * the rest of the folder" bug). */
+      if (de->inode != 0 && de->name_len > 0 && de->name_len == name_len) {
         if (memcmp(de->name, name, name_len) == 0) {
           *ino_out = de->inode;
           kfree(dir_buf);
@@ -929,7 +931,21 @@ static int ext4_write(struct vfs_mount *mnt, const char *path,
   kfree(block_buf);
   icache_release(&cache);
 
-  if (current_offset > inode.i_size_lo)
+  /* New file size.  A write that STARTS at offset 0 replaces the file from the
+   * beginning (a whole-file write: an editor save, a cp, a config rewrite), so
+   * the file must END exactly where this write ends — a SHORTER rewrite then
+   * truncates the stale tail instead of leaving old bytes past the new content
+   * (the "shortening a file in the editor leaves trailing characters" bug: the
+   * old code was extend-only, so i_size never shrank).  A write at a NON-zero
+   * offset is positional (append / in-place overlay) and keeps extend-only
+   * semantics, so it never shrinks a file it is only patching.
+   *
+   * Blocks past the new EOF are not freed here (there is no truncate primitive
+   * yet): they are stale-but-unreachable (reads stop at i_size, a later write
+   * reuses them), so this is correct on read, with only a transient space cost. */
+  if (offset == 0)
+    inode.i_size_lo = current_offset;
+  else if (current_offset > inode.i_size_lo)
     inode.i_size_lo = current_offset;
 
   if (ext4_update_inode(fs, ino, &inode) != 0) {
@@ -983,10 +999,14 @@ static int ext4_list(struct vfs_mount *mnt, const char *path, char *buf,
       /* Two-sided rec_len guard, same as the lookup path: a corrupt rec_len
        * larger than the block remainder stops the walk (defence in depth;
        * the offset re-check below already prevented the OOB dereference). */
-      if (de->inode == 0 || de->rec_len < 8 || de->rec_len > (4096 - offset))
+      if (de->rec_len < 8 || de->rec_len > (4096 - offset))
         break;
 
-      if (de->name_len > 0) {
+      /* inode==0 is a FREED slot (ext4_dir_remove), not end-of-block: skip
+       * it by rec_len like ext4_dir_insert does.  Breaking here hid every
+       * entry after a deleted one from the listing (the "unlink one file,
+       * lose the rest of the folder" bug). */
+      if (de->inode != 0 && de->name_len > 0) {
         if (buf_pos + de->name_len + 1 < size) {
           memcpy(buf + buf_pos, de->name, de->name_len);
           buf_pos += de->name_len;
@@ -1516,11 +1536,10 @@ static int ext4_dir_remove(struct ext4_fs *fs, uint32_t dir_ino,
 }
 
 /*
- * ext4_create - fs_ops.create.  Regular files only (VFS_TYPE_DIR is out of
- * scope, see file-header comment above this section).  New inodes are
- * legacy-mapped (i_flags=0, no extent header): ext4_write's existing
- * direct-block growth path (block_idx < 12) then allocates their first data
- * block the first time something is written, with zero new code needed here.
+ * ext4_create - fs_ops.create.  Handles both VFS_TYPE_FILE and VFS_TYPE_DIR.
+ * New inodes are legacy-mapped (i_flags=0, no extent header): a file's first
+ * data block is allocated lazily by ext4_write's direct-block growth path
+ * (block_idx < 12); a directory is seeded here with a single '.'/'..' block.
  * Rejects if the path already exists (caller must not race this, single
  * fs->lock-free window between the vfs_stat/ext4_find_ino checks above this
  * layer and here - same race class every VFS write already tolerates.)
@@ -1530,10 +1549,8 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
   struct ext4_fs *fs = mnt->fs_private;
   if (fs->read_only)
     return -1;
-  if (vfs_type != VFS_TYPE_FILE) {
-    pr_err("%s", "Ext4: directory creation not supported yet\n");
+  if (vfs_type != VFS_TYPE_FILE && vfs_type != VFS_TYPE_DIR)
     return -1;
-  }
 
   uint32_t existing;
   if (ext4_find_ino(fs, path, &existing) == 0)
@@ -1551,27 +1568,129 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
 
   struct ext4_inode inode;
   memset(&inode, 0, sizeof(inode));
-  inode.i_mode = 0x8000 | 0644; /* S_IFREG | rw-r--r-- */
-  inode.i_links_count = 1;
+
+  if (vfs_type == VFS_TYPE_DIR) {
+    /* A directory must carry its own '.' and '..' before it is linked in, so
+     * it needs a seeded data block.  Legacy-map that single block (i_flags=0,
+     * i_block[0]) to match ext4_create's file inodes and ext4_dir_insert's
+     * <12 direct-block growth path (directories stay small in this driver). */
+    uint32_t db = ext4_alloc_block(fs);
+    if (db == 0) {
+      ext4_free_inode(fs, new_ino);
+      return -1;
+    }
+
+    uint8_t *blk = kmalloc(4096);
+    if (!blk) {
+      ext4_free_block(fs, db);
+      ext4_free_inode(fs, new_ino);
+      return -1;
+    }
+    memset(blk, 0, 4096);
+    /* '.' -> self */
+    struct ext4_dir_entry *dot = (struct ext4_dir_entry *)blk;
+    dot->inode = new_ino;
+    dot->rec_len = dirent_ideal_len(1); /* 12 */
+    dot->name_len = 1;
+    dot->file_type = EXT4_FT_DIR;
+    dot->name[0] = '.';
+    /* '..' -> parent, carrying the block's remaining slack (the last-entry
+     * rule ext4_dir_insert relies on). */
+    struct ext4_dir_entry *dotdot =
+        (struct ext4_dir_entry *)(blk + dot->rec_len);
+    dotdot->inode = parent_ino;
+    dotdot->rec_len = (uint16_t)(4096 - dot->rec_len);
+    dotdot->name_len = 2;
+    dotdot->file_type = EXT4_FT_DIR;
+    dotdot->name[0] = '.';
+    dotdot->name[1] = '.';
+
+    int wrc = ext4_bwrite(fs->part_start_lba + ((uint64_t)db * 8), 8, blk);
+    kfree(blk);
+    if (wrc != 0) {
+      ext4_free_block(fs, db);
+      ext4_free_inode(fs, new_ino);
+      return -1;
+    }
+
+    inode.i_mode = 0x4000 | 0755; /* S_IFDIR | rwxr-xr-x */
+    inode.i_links_count = 2;      /* '.' (self) + the parent dirent added below */
+    inode.i_block[0] = db;
+    inode.i_size_lo = 4096;
+    inode.i_blocks_lo = (4096 / 512);
+  } else {
+    inode.i_mode = 0x8000 | 0644; /* S_IFREG | rw-r--r-- */
+    inode.i_links_count = 1;
+  }
+
   if (ext4_update_inode(fs, new_ino, &inode) != 0) {
+    if (vfs_type == VFS_TYPE_DIR)
+      ext4_free_block(fs, inode.i_block[0]);
     ext4_free_inode(fs, new_ino); /* undo: no dirent references it yet */
     return -1;
   }
 
-  if (ext4_dir_insert(fs, parent_ino, name, name_len, new_ino,
-                      EXT4_FT_REG_FILE) != 0) {
+  uint8_t ft = (vfs_type == VFS_TYPE_DIR) ? EXT4_FT_DIR : EXT4_FT_REG_FILE;
+  if (ext4_dir_insert(fs, parent_ino, name, name_len, new_ino, ft) != 0) {
+    if (vfs_type == VFS_TYPE_DIR)
+      ext4_free_block(fs, inode.i_block[0]);
     ext4_free_inode(fs, new_ino); /* undo: still no dirent, safe to free */
     return -1;
+  }
+
+  /* A new subdirectory's '..' adds one link to the parent's count. */
+  if (vfs_type == VFS_TYPE_DIR) {
+    struct ext4_inode pinode;
+    if (get_inode_struct(fs, parent_ino, &pinode) == 0) {
+      pinode.i_links_count++;
+      ext4_update_inode(fs, parent_ino, &pinode);
+    }
   }
 
   return 0;
 }
 
 /*
- * ext4_unlink - fs_ops.unlink.  Regular files only (directories need '.'/
- * '..'/emptiness handling out of scope here). Order matters for crash
- * safety: remove the dirent FIRST (so a crash after this point leaves an
- * orphaned-but-allocated inode+blocks, recoverable, rather than a live
+ * ext4_dir_is_empty - a directory is empty when its only live entries are '.'
+ * and '..'.  Returns 1 empty, 0 non-empty, -1 on a read/alloc failure (caller
+ * treats anything but 1 as "do not remove").
+ */
+static int ext4_dir_is_empty(struct ext4_fs *fs, const struct ext4_inode *dir) {
+  uint32_t dir_size = dir->i_size_lo;
+  uint8_t *blk = kmalloc(4096);
+  if (!blk)
+    return -1;
+
+  int empty = 1;
+  for (uint32_t bidx = 0; bidx * 4096 < dir_size && empty; bidx++) {
+    if (ext4_read_data(fs, dir, (uint64_t)bidx * 4096, blk, 4096) <= 0)
+      break;
+    uint32_t off = 0;
+    while (off < 4096) {
+      struct ext4_dir_entry *de = (struct ext4_dir_entry *)(blk + off);
+      if (de->rec_len < 8 || de->rec_len > (4096 - off))
+        break;
+      if (de->inode != 0) {
+        int is_dot = (de->name_len == 1 && de->name[0] == '.');
+        int is_dotdot = (de->name_len == 2 && de->name[0] == '.' &&
+                         de->name[1] == '.');
+        if (!is_dot && !is_dotdot) {
+          empty = 0;
+          break;
+        }
+      }
+      off += de->rec_len;
+    }
+  }
+  kfree(blk);
+  return empty;
+}
+
+/*
+ * ext4_unlink - fs_ops.unlink.  Removes regular files and EMPTY directories
+ * (a non-empty directory is refused, matching rmdir/ENOTEMPTY).  Order matters
+ * for crash safety: remove the dirent FIRST (so a crash after this point leaves
+ * an orphaned-but-allocated inode+blocks, recoverable, rather than a live
  * dirent pointing at freed blocks, which would corrupt a later read).
  */
 static int ext4_unlink(struct vfs_mount *mnt, const char *path) {
@@ -1586,10 +1705,10 @@ static int ext4_unlink(struct vfs_mount *mnt, const char *path) {
   struct ext4_inode inode;
   if (get_inode_struct(fs, ino, &inode) != 0)
     return -1;
-  if ((inode.i_mode >> 12) == 4) {
-    pr_err("%s", "Ext4: unlink of a directory not supported yet\n");
-    return -1;
-  }
+
+  int is_dir = ((inode.i_mode >> 12) == 4);
+  if (is_dir && ext4_dir_is_empty(fs, &inode) != 1)
+    return -1; /* non-empty directory (or unreadable): refuse, like ENOTEMPTY */
 
   uint32_t parent_ino;
   const char *name;
@@ -1597,11 +1716,27 @@ static int ext4_unlink(struct vfs_mount *mnt, const char *path) {
   if (ext4_resolve_parent(fs, path, &parent_ino, &name, &name_len) != 0)
     return -1;
 
+  /* Never unlink the '.'/'..' entries themselves (path canonicalisation should
+   * strip them, but a stray one must not corrupt the tree). */
+  if ((name_len == 1 && name[0] == '.') ||
+      (name_len == 2 && name[0] == '.' && name[1] == '.'))
+    return -1;
+
   if (ext4_dir_remove(fs, parent_ino, name, name_len) != 0)
     return -1;
 
   ext4_free_inode_blocks(fs, &inode);
   ext4_free_inode(fs, ino);
+
+  /* Removing a subdirectory drops the '..' link it held on its parent. */
+  if (is_dir) {
+    struct ext4_inode pinode;
+    if (get_inode_struct(fs, parent_ino, &pinode) == 0 &&
+        pinode.i_links_count > 0) {
+      pinode.i_links_count--;
+      ext4_update_inode(fs, parent_ino, &pinode);
+    }
+  }
   return 0;
 }
 

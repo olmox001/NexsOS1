@@ -170,6 +170,16 @@ static inline const char *os1_strerror(int err) {
 #ifndef O_ACCMODE
 #define O_ACCMODE 3
 #endif
+/* Creation/truncation/append personality flags.  SYS_OPEN honours these
+ * (create/truncate via the vfs_write_allowed + vfs_create seam); userland
+ * fcntl.h carries the same values.  Kept here too so the kernel dispatcher
+ * sees them. */
+#ifndef O_CREAT
+#define O_CREAT 0x0200
+#define O_APPEND 0x0400
+#define O_TRUNC 0x0800
+#define O_EXCL 0x1000
+#endif
 
 /* lseek(2) whence */
 #ifndef SEEK_SET

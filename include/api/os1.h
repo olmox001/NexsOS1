@@ -88,6 +88,7 @@ extern int  _sys_list_dir(const char *path, char *buf, size_t size);
 extern int  _sys_chdir(const char *path);
 extern int  _sys_getcwd(char *buf, size_t size);
 extern int  _sys_unlink(const char *path);
+extern int  _sys_mkdir(const char *path);
 extern int  _sys_open(const char *path, int flags);
 extern int  _sys_close(int fd);
 extern long _sys_lseek(int fd, long offset, int whence);

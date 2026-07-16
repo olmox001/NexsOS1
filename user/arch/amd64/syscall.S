@@ -322,6 +322,12 @@ _sys_unlink:
     syscall
     ret
 
+.global _sys_mkdir
+_sys_mkdir:
+    movq $SYS_MKDIR, %rax
+    syscall
+    ret
+
 .global _sys_getcwd
 _sys_getcwd:
     movq $SYS_GETCWD, %rax
