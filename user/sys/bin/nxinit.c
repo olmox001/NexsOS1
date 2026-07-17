@@ -38,6 +38,7 @@
  */
 #include "nxinfo.h"
 #include <os1.h>
+#include <sys/wait.h> /* waitpid + status decode — Phase 2 supervisor logging */
 
 /*
  * LAUNCHER_AUTOSTART - gate for spawning + supervising /sys/bin/nxlauncher
@@ -96,7 +97,7 @@ static void registry_init_defaults(void) {
   /* --- Aspetto del compositor (valori predefiniti) --- */
   OS1_registry_set("theme.color", "dark");
   OS1_registry_set("style.name", "minimal");
-  OS1_registry_set("background.name", "magenta");
+  OS1_registry_set("background.name", "grey");
 
   /* --- Pannello notifiche (inizialmente chiuso) --- */
   OS1_registry_set("sys.ntfy.panel_open", "0");
@@ -155,6 +156,26 @@ static void register_service_pid(const char *key, int pid) {
  *   - Sends one IPC notify message to the notification server.
  *   - Calls SYS_FLUSH to push any buffered output before entering the loop.
  */
+/* service_gone - Phase 2 supervisor probe. WNOHANG-waitpid a supervised
+ * service; if it died, log HOW (clean exit code vs killed/faulted) and return
+ * 1 so the caller respawns. 0 while still running. Replaces the ad-hoc
+ * `wait(pid) == pid || -2` checks with one standard, status-aware seam. */
+static int service_gone(int pid, const char *name) {
+  int status = 0;
+  int r = waitpid(pid, &status, WNOHANG);
+  if (r == 0)
+    return 0; /* still alive */
+  if (r > 0 && WIFSIGNALED(status))
+    printf("[Init] %s died (killed, sig %d)! Respawning...\n", name,
+           WTERMSIG(status));
+  else if (r > 0)
+    printf("[Init] %s exited (code %d)! Respawning...\n", name,
+           WEXITSTATUS(status));
+  else
+    printf("[Init] %s gone! Respawning...\n", name); /* reaped elsewhere */
+  return 1;
+}
+
 int main(void) {
   print("[Init] System Initialization Starting...\n");
 
@@ -282,9 +303,7 @@ int main(void) {
     }
 
     /* Check if notification server died and respawn. */
-    int r = wait(pid_notify);
-    if (r == pid_notify || r == -2) {
-      print("[Init] Notification Server died! Respawning...\n");
+    if (service_gone(pid_notify, "Notification Server")) {
       pid_notify = spawn("/sys/bin/nxntfy_srv");
       /* Refresh srv.notify_pid to the LIVE pid.  Without this, the registry key
        * still holds the corpse's pid and every notify_post returns -ESRCH until
@@ -296,9 +315,7 @@ int main(void) {
 #ifndef LAUNCHER_AUTOSTART
     /* Respawn the shell when it is gone (freshly dead corpse OR already
      * reaped by the kernel).  spawn() assigns a fresh monotonic PID. */
-    r = wait(pid_shell);
-    if (r == pid_shell || r == -2) {
-      print("[Init] NXShell terminated! Respawning...\n");
+    if (service_gone(pid_shell, "NXShell")) {
       pid_shell = spawn("/sys/bin/nxshell");
     }
 #endif
@@ -306,17 +323,13 @@ int main(void) {
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as
      * above).  Refresh srv.dock_pid on respawn — same corpse-pid hazard as
      * srv.notify_pid above. */
-    r = wait(pid_nxui);
-    if (r == pid_nxui || r == -2) {
-      print("[Init] Dock died! Respawning...\n");
+    if (service_gone(pid_nxui, "Dock")) {
       pid_nxui = spawn("/sys/bin/nxui");
       if (pid_nxui > 0)
         register_service_pid("srv.dock_pid", pid_nxui);
     }
     /* Respawn nxbar if it dies */
-    r = wait(pid_nxbar);
-    if (r == pid_nxbar || r == -2) {
-      print("[Init] nxbar died! Respawning...\n");
+    if (service_gone(pid_nxbar, "nxbar")) {
       pid_nxbar = spawn("/sys/bin/nxbar");
       if (pid_nxbar > 0)
         register_service_pid("srv.bar_pid", pid_nxbar);
@@ -327,9 +340,7 @@ int main(void) {
      * LAUNCHER_AUTOSTART is disabled we never set pid_nxlauncher, so the
      * wait() on a stale handle would otherwise busy-loop — the #else keeps
      * the variable pinned to 0 so process_wait() returns -2 (gone). */
-    r = wait(pid_nxlauncher);
-    if (r == pid_nxlauncher || r == -2) {
-      print("[Init] Launcher died! Respawning...\n");
+    if (service_gone(pid_nxlauncher, "Launcher")) {
       pid_nxlauncher = spawn("/sys/bin/nxlauncher");
       if (pid_nxlauncher > 0)
         register_service_pid("srv.launcher_pid", pid_nxlauncher);

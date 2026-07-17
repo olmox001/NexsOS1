@@ -1,7 +1,7 @@
 #ifndef _SYS_STAT_H
 #define _SYS_STAT_H
 
-#include "../posix_types.h"
+#include <posix_types.h>
 
 struct stat {
     dev_t     st_dev;

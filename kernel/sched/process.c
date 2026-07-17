@@ -707,6 +707,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   /* Parentage for the SYS_KILL capability check (ABI-04): the spawner is
    * whatever process is current on this CPU; kernel/boot creations get 0. */
   proc->parent_pid = current_process ? (int)current_process->pid : 0;
+  proc->exit_code = 0; /* Phase 2: default; sys_exit() sets the real value */
+  proc->exited = 0;    /* set to 1 only by sys_exit() (voluntary exit) */
 
   /* Init Scheduler Info */
   proc->state = PROC_CREATED;
@@ -1691,6 +1693,14 @@ pick_local_retry:
     goto pick_local_retry;
   }
 
+  /* A STOPPED task that was still in a runqueue (it was stopped while READY)
+   * has just been dequeued — leave it OFF the queue (do NOT reap; it is alive)
+   * and pick again. process_cont() re-enqueues it on resume. */
+  if (next && next->state == PROC_STOPPED) {
+    next = NULL;
+    goto pick_local_retry;
+  }
+
 found:
 
   if (!next) {
@@ -1860,13 +1870,20 @@ found:
  * running, -2 if not found (never existed, or already auto-reaped by the
  * scheduler).  Pure reporter: freeing belongs to the schedule() reaper.
  */
-int process_wait(int pid) {
+int process_wait(int pid, int *out_code) {
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
   for (int i = 0; i < MAX_PROCESSES; i++) {
     struct process *proc = process_pool[i];
     if (proc && (int)proc->pid == pid) {
       if (proc->state == PROC_DEAD || proc->state == PROC_ZOMBIE) {
+        /* Collect the exit status while the corpse is still in the pool
+         * (Phase 2): once the reaper drains it, the slot is gone and a later
+         * waiter only sees -2.  NEXS-neutral encoding: a voluntary exit yields
+         * the exit code (0..255); a KILL/fault death yields a negative marker
+         * (-9, "killed"), which the libc maps to WIFSIGNALED. */
+        if (out_code)
+          *out_code = proc->exited ? (proc->exit_code & 0xff) : -9;
         /* Corpse freeing is owned EXCLUSIVELY by the scheduler reaper
          * (per-CPU deferred-free stack): a zombie seen here is typically
          * already queued for reaping on its CPU, so freeing it now —
@@ -1881,6 +1898,62 @@ int process_wait(int pid) {
   }
   spin_unlock_irqrestore(&sched_lock, flags);
   return -2; /* Not found */
+}
+
+/*
+ * process_stop - suspend a process (job control, Phase 2).  RUNNING/READY ->
+ * PROC_STOPPED; it leaves the runqueue the next time schedule() would pick it
+ * (the STOPPED skip in the picker), and a RUNNING target keeps going only
+ * until its next reschedule.  A STOPPED/SLEEPING/dying target is left alone.
+ * Returns 0, -ESRCH (no such pid), or -EINVAL (not stoppable).
+ */
+int process_stop(int pid) {
+  uint64_t flags;
+  int rc = -ESRCH;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int i = 0; i < MAX_PROCESSES; i++) {
+    struct process *p = process_pool[i];
+    if (p && (int)p->pid == pid) {
+      if (p->state == PROC_RUNNING || p->state == PROC_READY) {
+        p->state = PROC_STOPPED;
+        rc = 0;
+      } else {
+        rc = -EINVAL;
+      }
+      break;
+    }
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return rc;
+}
+
+/*
+ * process_cont - resume a stopped process (job control, Phase 2).  Re-enqueues
+ * it (enqueue_task sets PROC_READY + adds to a runqueue, taking its own lock,
+ * so it is called OUTSIDE sched_lock).  Returns 0, -ESRCH, or -EINVAL (not
+ * stopped).
+ */
+int process_cont(int pid) {
+  uint64_t flags;
+  int rc = -ESRCH;
+  struct process *target = NULL;
+  spin_lock_irqsave(&sched_lock, &flags);
+  for (int i = 0; i < MAX_PROCESSES; i++) {
+    struct process *p = process_pool[i];
+    if (p && (int)p->pid == pid) {
+      if (p->state == PROC_STOPPED) {
+        target = p;
+        rc = 0;
+      } else {
+        rc = -EINVAL;
+      }
+      break;
+    }
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  if (target)
+    enqueue_task(target);
+  return rc;
 }
 /*
  * IPC Helper: Pop message matching src_pid (or -1 for any)

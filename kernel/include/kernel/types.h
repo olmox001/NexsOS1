@@ -8,6 +8,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "../../../../include/api/posix_types.h"
+#include "../../../../include/abi/posix_types.h"
 
 #endif /* _KERNEL_TYPES_H */

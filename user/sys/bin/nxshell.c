@@ -17,6 +17,8 @@
  * (compositor reflows the cell grid via term_resize).
  */
 #include "nxexec.h"
+#include "nxjobs.h"
+#include "nxline.h"
 #include "nxperm.h"
 #include "nxres.h"
 #include <input.h>
@@ -24,19 +26,28 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CMD_MAX 256
+#define CMD_MAX NXLINE_MAX
 #define SPAWN_PATH_MAX NXEXEC_PATH_MAX
 #define MAX_ARGV 16
 #define MIN_WIN_W 320
 #define MIN_WIN_H 240
+#define NXSHELL_HISTORY_PATH "/home/.nxshell_history"
 
 static int my_window = -1;
 static int running = 1;
-static char cmd_buf[CMD_MAX];
-static int cmd_len = 0;
 static int g_win_w = 640;
 static int g_win_h = 480;
 static int g_light = -1;
+
+static struct nxline g_line;
+static struct nxjobs g_jobs;
+
+static void
+print_prompt_only(void); /* fwd decl: used as nxline's repaint hook */
+static void nxline_prompt_hook(void *ctx) {
+  (void)ctx;
+  print_prompt_only();
+}
 
 static uint32_t g_col_bg;
 static uint32_t g_col_fg;
@@ -98,7 +109,20 @@ static int spawn_search_args(int argc, char *argv[], char *out_path) {
   return nxexec_spawn_search(argc, argv, out_path, /*detached=*/0);
 }
 
-static void run_foreground(int pid) { nxexec_run_foreground(pid); }
+static int run_foreground(int pid) { return nxexec_run_foreground(pid); }
+
+/* run_fg_job - foreground a freshly-spawned command; if the user Ctrl-Z's it
+ * (NXEXEC_JOB_STOPPED), register it as a Stopped job so `jobs`/`bg`/`fg` can
+ * pick it up (Phase 2 job control). */
+static void run_fg_job(int pid, const char *cmd) {
+  if (run_foreground(pid) == NXEXEC_JOB_STOPPED) {
+    int id = nxjobs_add(&g_jobs, pid, cmd);
+    int s = nxjobs_find(&g_jobs, id);
+    if (s >= 0)
+      g_jobs.slot[s].state = NXJOB_STOPPED;
+    printf("[%d]  Stopped   %s\n", id, cmd);
+  }
+}
 
 static int skip_bin_entry(const char *name) {
   if (!name || !*name)
@@ -159,34 +183,66 @@ static void cmd_help(void) {
   print("  id              Show privilege level and capabilities\n");
   print("  about           About this system\n");
   print("  exec <prog>     Run a program with arguments\n");
+  print("  jobs            List background jobs\n");
+  print("  fg [%N]          Bring job N (or the most recent) to the "
+        "foreground\n");
+  print("  bg [%N]          (not supported yet — see 'bg' with no args)\n");
   print("  exit            Close this shell\n");
+  print("\n\033[1;33mLine editing:\033[0m\n");
+  print("  \xe2\x86\x90/\xe2\x86\x92 Home/End   move cursor    Delete   "
+        "forward-delete\n");
+  print("  \xe2\x86\x91/\xe2\x86\x93            history        Tab      "
+        "complete command/path\n");
+  print("  Ctrl-A/E        line start/end Ctrl-L   clear screen\n");
+  print("  Ctrl-R          search history Ctrl-D   delete-fwd (or exit on "
+        "empty line)\n");
+  print("  <cmd> &         run in background\n");
   print("\n\033[1;33mPrograms in /sys/bin:\033[0m\n");
   help_list_programs("/sys/bin");
   print("\n\033[1;33mPrograms in Bin are not listed for brevity\033[0m\n");
   print("\nType any program name to run it (searches /bin, then /sys/bin).\n");
 }
 
-static void print_prompt(void) {
+/* print_prompt_only - just the colored prompt, no leading newline and no
+ * line content. This is nxline's repaint hook (Ctrl-L, multi-match tab
+ * completion) as well as the tail end of print_prompt() below — kept as one
+ * function so the prompt text can never drift between the two call sites. */
+static void print_prompt_only(void) {
   char prompt_cwd[128];
   if (getcwd(prompt_cwd, sizeof(prompt_cwd)) != 0)
     prompt_cwd[0] = '\0';
-  print("\r\n");
   printf("\033[32mNXShell\033[0m:\033[34m%s\033[0m> ", prompt_cwd);
 }
 
+static void print_prompt(void) {
+  print("\r\n");
+  print_prompt_only();
+}
+
 static void process_command(void) {
-  cmd_buf[cmd_len] = '\0';
-  if (cmd_len == 0)
+  if (g_line.len == 0)
     return;
 
   char line[CMD_MAX];
-  strncpy(line, cmd_buf, sizeof(line) - 1);
+  strncpy(line, g_line.buf, sizeof(line) - 1);
   line[sizeof(line) - 1] = '\0';
+
+  nxline_history_add(&g_line, g_line.buf);
 
   char *argv[MAX_ARGV];
   int argc = tokenize(line, argv, MAX_ARGV);
   if (argc == 0)
     return;
+
+  /* Background job: a trailing standalone '&' token (nxjobs.h — job control
+   * light, see its header comment on what is and isn't possible without a
+   * kernel-side STOPPED state). Stripped before dispatch so every builtin
+   * and spawn path below sees a clean argv, same as without '&'. */
+  int background = 0;
+  if (argc > 1 && strcmp(argv[argc - 1], "&") == 0) {
+    background = 1;
+    argc--;
+  }
 
   const char *cmd = argv[0];
 
@@ -344,7 +400,7 @@ static void process_command(void) {
     nxperm_mask_str(mask, m, (int)sizeof(m));
     printf("pid=%d level=%s caps=%s\n", get_pid(), nxperm_level_name(level), m);
   } else if (strcmp(cmd, "about") == 0) {
-    print("\n\033[1;36mNeXs OS v0.0.5.0\033[0m\n");
+    print("\n\033[1;36mNeXs OS v0.0.5.2\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
     print("\033[32mLibrary:\033[0m POSIX-like userlib with printf support\n");
@@ -353,50 +409,87 @@ static void process_command(void) {
     print("Exiting NXShell...\n");
     running = 0;
     exit(0);
+  } else if (strcmp(cmd, "jobs") == 0) {
+    nxjobs_poll(&g_jobs);
+    nxjobs_print(&g_jobs);
+  } else if (strcmp(cmd, "fg") == 0) {
+    int slot = argc >= 2 ? nxjobs_find(&g_jobs, nxjobs_parse_id(argv[1]))
+                         : nxjobs_last(&g_jobs);
+    if (slot < 0) {
+      print("fg: no such job\n");
+    } else {
+      printf("%s\n", g_jobs.slot[slot].cmd);
+      if (g_jobs.slot[slot].state == NXJOB_STOPPED)
+        nxjobs_cont(&g_jobs, slot); /* resume before foregrounding */
+      if (run_foreground(g_jobs.slot[slot].pid) == NXEXEC_JOB_STOPPED) {
+        g_jobs.slot[slot].state = NXJOB_STOPPED; /* Ctrl-Z'd again */
+        printf("[%d]  Stopped   %s\n", g_jobs.slot[slot].id,
+               g_jobs.slot[slot].cmd);
+      } else {
+        nxjobs_reap(&g_jobs, slot);
+      }
+    }
+  } else if (strcmp(cmd, "bg") == 0) {
+    int slot = argc >= 2 ? nxjobs_find(&g_jobs, nxjobs_parse_id(argv[1]))
+                         : nxjobs_last(&g_jobs);
+    if (slot < 0)
+      print("bg: no such job\n");
+    else if (g_jobs.slot[slot].state != NXJOB_STOPPED)
+      print("bg: job already running\n");
+    else if (nxjobs_cont(&g_jobs, slot) == 0)
+      printf("[%d] %s &\n", g_jobs.slot[slot].id, g_jobs.slot[slot].cmd);
+    else
+      print("bg: failed to resume\n");
   } else if (strcmp(cmd, "exec") == 0) {
     if (argc < 2) {
       print("usage: exec <program> [args...]\n");
     } else {
       char path[SPAWN_PATH_MAX];
       int pid = spawn_search_args(argc - 1, &argv[1], path);
-      if (pid > 0)
-        run_foreground(pid);
-      else
+      if (pid <= 0) {
         printf("exec: not found: %s\n", argv[1]);
+      } else if (background) {
+        int id = nxjobs_add(&g_jobs, pid, argv[1]);
+        printf("[%d] %d\n", id, pid);
+      } else {
+        run_fg_job(pid, argv[1]);
+      }
     }
   } else {
     char path[SPAWN_PATH_MAX];
     int pid = spawn_search_args(argc, argv, path);
-    if (pid > 0)
-      run_foreground(pid);
-    else
+    if (pid <= 0) {
       printf("Unknown command: %s\n", argv[0]);
+    } else if (background) {
+      int id = nxjobs_add(&g_jobs, pid, argv[0]);
+      printf("[%d] %d\n", id, pid);
+    } else {
+      run_fg_job(pid, argv[0]);
+    }
   }
 
-  cmd_len = 0;
+  nxline_reset(&g_line);
 }
 
 static void shell_handle_key(unsigned char key, uint16_t scancode) {
-  if (key == '\n' || key == '\r' || scancode == INPUT_KEY_ENTER) {
+  int r = nxline_feed_key(&g_line, key, scancode);
+
+  if (r == NXLINE_SUBMIT) {
     print("\r\n");
-    process_command();
+    process_command(); /* reads g_line.buf, then calls nxline_reset() */
     if (running)
       print_prompt();
-    return;
-  }
-
-  if (key == '\b' || key == 127 || scancode == INPUT_KEY_BACKSPACE) {
-    if (cmd_len > 0) {
-      cmd_len--;
-      print("\b \b");
-    }
-    return;
-  }
-
-  if (key >= 32 && key < 127 && cmd_len < CMD_MAX - 2) {
-    cmd_buf[cmd_len++] = (char)key;
-    char echo[2] = {(char)key, '\0'};
-    print(echo);
+  } else if (r == NXLINE_EOF) {
+    /* Ctrl-D on an empty line: same contract as typing "exit". */
+    print("\r\n");
+    print("Exiting NXShell...\n");
+    running = 0;
+    exit(0);
+  } else if (r == NXLINE_CLEAR_SCREEN) {
+    print("\033[2J\033[H");
+    shell_redraw_accent();
+    print_prompt_only();
+    nxline_repaint_inline(&g_line);
   }
 }
 
@@ -407,16 +500,23 @@ int main(int argc, char *argv[]) {
    * is published to the registry: I/O flows through the inherited
    * controlling terminal, exactly like any other foreground job without
    * a window (see nxexec.h). */
+  nxjobs_init(&g_jobs);
+  nxline_init(&g_line, NXSHELL_HISTORY_PATH, nxline_prompt_hook, NULL);
+
   if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
-    strncpy(cmd_buf, argv[2], sizeof(cmd_buf) - 1);
-    cmd_buf[sizeof(cmd_buf) - 1] = '\0';
-    cmd_len = (int)strlen(cmd_buf);
+    /* No history load/save for a one-shot -c invocation: it never reads
+     * keyboard input, so nxline is used purely as a string holder here. */
+    strncpy(g_line.buf, argv[2], sizeof(g_line.buf) - 1);
+    g_line.buf[sizeof(g_line.buf) - 1] = '\0';
+    g_line.len = (int)strlen(g_line.buf);
     process_command();
     return 0; /* OS1 does not yet provide a real exit-status channel (see
                * system() in lib.c). A future kernel/registry enhancement
                * could propagate the actual exit status instead of always
                * returning 0. */
   }
+
+  nxline_load_history(&g_line);
 
   print("NXShell: Alive\n");
   int pid = get_pid();
@@ -482,6 +582,7 @@ int main(int argc, char *argv[]) {
 
   while (running) {
     shell_check_theme();
+    nxjobs_poll(&g_jobs);
 
     input_event_t ev;
     while (input_poll_event(&ev) == 1) {

@@ -23,9 +23,9 @@
  *   DRAWN back-arrow button at the top of the folder view returns to the
  *   root (the compositor gives us a ".." replacement we own).
  *
- *   The optional /sys/bin/nxlauncher.cfg can append extra entries or pin
- *   labels, but the root view itself never changes shape — there is no way
- *   to expose a top-level app that is not under one of the two folders.
+ *   The optional $HOME/settings/nxlauncher.cfg can append extra entries or
+ *   pin labels, but the root view itself never changes shape — there is no
+ *   way to expose a top-level app that is not under one of the two folders.
  *
  * Window events handled:
  *   - INPUT_TYPE_MOUSE (left press): hit-test against the per-page slot
@@ -577,13 +577,25 @@ static enum cat parse_cat(const char *s) {
 }
 
 static void load_cfg(void) {
-  int sz = file_read("/sys/bin/nxlauncher.cfg", (char *)0, 0, 0);
+  /* $HOME/settings/nxlauncher.cfg — same dynamic HOME lookup as nxexec.h's
+   * '~' resolution (getenv("HOME"), falling back to NXEXEC_HOME_DIR "/home"
+   * only if HOME is unset/empty), so this and every '~'-relative path a cfg
+   * entry might use agree on the same HOME without a second definition of
+   * "where is home" to keep in sync. Previously hardcoded to /sys/bin,
+   * alongside the system binaries instead of the user's own settings. */
+  char cfg_path[NXEXEC_PATH_MAX];
+  const char *home = getenv("HOME");
+  if (!home || !*home)
+    home = NXEXEC_HOME_DIR;
+  snprintf(cfg_path, sizeof(cfg_path), "%s/settings/nxlauncher.cfg", home);
+
+  int sz = file_read(cfg_path, (char *)0, 0, 0);
   if (sz <= 0 || sz > CFG_MAX)
     return;
   char *buf = (char *)malloc((size_t)sz + 1);
   if (!buf)
     return;
-  int n = file_read("/sys/bin/nxlauncher.cfg", buf, sz, 0);
+  int n = file_read(cfg_path, buf, sz, 0);
   if (n <= 0) {
     free(buf);
     return;

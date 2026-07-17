@@ -712,7 +712,6 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
  * PROCESS: non-blocking process_wait() — status if dead, -1 alive, -2 gone.
  */
 long sys_object_wait(int handle, long arg) {
-  (void)arg; /* reserved (timeout/flags) */
   long err = 0;
   struct kobject *o = pin_handle(handle, OS1_RIGHT_WAIT, &err);
   if (!o)
@@ -720,7 +719,15 @@ long sys_object_wait(int handle, long arg) {
 
   long ret;
   if (o->type == OBJ_TYPE_PROCESS) {
-    ret = process_wait(o->pid);
+    /* Phase 2: `arg`, if non-NULL, is a user int* that receives the reaped
+     * process's exit_code (raw). The libc personality (waitpid) wraps it in
+     * the POSIX status encoding. Only meaningful on reap (ret == pid). */
+    int code = 0;
+    ret = process_wait(o->pid, &code);
+    if (arg) {
+      extern int arch_copy_to_user(void *dst, const void *src, size_t n);
+      (void)arch_copy_to_user((void *)arg, &code, sizeof(code));
+    }
   } else {
     ret = -EINVAL;
   }
@@ -756,6 +763,22 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     } else {
       ret = -EINVAL;
     }
+    obj_unref(o);
+    return ret;
+  }
+
+  /* PROCESS job control (Phase 2): suspend/resume via the same DESTROY
+   * capability as kill — process-control authority. */
+  if (cmd == OBJ_CTL_STOP || cmd == OBJ_CTL_CONT) {
+    long err = 0;
+    struct kobject *o = pin_handle(handle, OS1_RIGHT_DESTROY, &err);
+    if (!o)
+      return err;
+    long ret;
+    if (o->type == OBJ_TYPE_PROCESS)
+      ret = (cmd == OBJ_CTL_STOP) ? process_stop(o->pid) : process_cont(o->pid);
+    else
+      ret = -EINVAL;
     obj_unref(o);
     return ret;
   }

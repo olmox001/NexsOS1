@@ -109,14 +109,8 @@ int main(int argc, char *argv[]) {
    * terminal instead of nxexec wrongly detaching and dropping it. */
   int job_done = 0, last_win = -1, stable = 0;
   for (int i = 0; (i * 15) < NXEXEC_GRACE_MS; i++) {
-    int w = window_of_pid(pid);
-    if (w > 0 && w == last_win) {
-      if (++stable >= NXEXEC_STABLE_POLLS)
-        return 0; /* persistent own window -> GUI app, vanish */
-    } else {
-      stable = (w > 0) ? 1 : 0;
-    }
-    last_win = w;
+    if (nxexec_window_stable(pid, &last_win, &stable))
+      return 0; /* persistent own window -> GUI app, vanish */
 
     if (wait(pid) != -1) {
       job_done = 1; /* fast CLI finished within the probe */

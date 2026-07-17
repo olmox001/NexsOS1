@@ -1,5 +1,5 @@
 /*
- * include/api/caps.h
+ * include/abi/caps.h
  * Privilege levels and capability bits — the single source of truth shared
  * by the kernel (kernel/include/kernel/sched.h) and userland (os1.h).
  * USR-SEC-03 #79.

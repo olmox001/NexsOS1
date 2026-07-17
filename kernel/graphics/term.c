@@ -251,25 +251,51 @@ static void handle_csi(struct terminal *t, struct gl_surface *surf, char final,
     }
     t->cursor_x = 0;
     t->cursor_y = 0;
-  } else if (final == 'A' || final == 'B' || final == 'C' || final == 'D') {
-    /* Cursor up/down/right/left by N (default 1). */
+  } else if (final == 'A' || final == 'B') {
+    /* Cursor up/down by N (default 1) — pure vertical movement, clamped to
+     * the grid. Unlike C/D below, up/down never "wraps" horizontally: that
+     * would only make sense for something like a wide virtual scrollback,
+     * which this terminal doesn't have. */
     int d = (n >= 1 && a > 0) ? a : 1;
-    if (final == 'A')
-      t->cursor_y -= d;
-    else if (final == 'B')
-      t->cursor_y += d;
-    else if (final == 'C')
-      t->cursor_x += d;
-    else
-      t->cursor_x -= d;
-    if (t->cursor_x < 0)
-      t->cursor_x = 0;
+    t->cursor_y += (final == 'A') ? -d : d;
     if (t->cursor_y < 0)
       t->cursor_y = 0;
-    if (t->cursor_x >= t->cols)
-      t->cursor_x = t->cols - 1;
     if (t->cursor_y >= t->rows)
       t->cursor_y = t->rows - 1;
+  } else if (final == 'C' || final == 'D') {
+    /*
+     * Cursor forward/back by N cells, WRAPPING across row boundaries.
+     *
+     * Plain column clamping used to strand the cursor at column 0 (for 'D')
+     * or cols-1 (for 'C') the instant a relative move reached the edge of
+     * the current row, even when more of the move remained and an adjacent
+     * row held the rest of the same logical line — e.g. a shell command
+     * long enough to auto-wrap during typing. nxline.h's line editor
+     * (user/sys/bin/nxline.h) repositions the caret with exactly these
+     * relative CSI C/D sequences after every insert/delete/history-replace,
+     * so any input line that wraps during editing would desync the caret
+     * from the real insertion point without this fix — the visible cursor
+     * and the byte actually being edited would silently drift apart.
+     *
+     * This grid has no per-row "this break was an autowrap, not a real
+     * newline" flag to consult, so the fix wraps unconditionally across
+     * every row boundary, not only autowrap ones. That's a deliberate
+     * simplification: it's harmless for every current caller (nxline.h
+     * only ever moves the caret within the single line it is actively
+     * editing, never across an Enter/newline boundary — Enter always
+     * submits and resets), and matches how most real terminals treat
+     * relative cursor motion in practice.
+     */
+    int d = (n >= 1 && a > 0) ? a : 1;
+    int pos = t->cursor_y * t->cols + t->cursor_x;
+    pos += (final == 'C') ? d : -d;
+    int max_pos = t->rows * t->cols - 1;
+    if (pos < 0)
+      pos = 0;
+    if (pos > max_pos)
+      pos = max_pos;
+    t->cursor_y = pos / t->cols;
+    t->cursor_x = pos % t->cols;
   } else if (final == 'G') {
     /* Cursor to column N (1-based). */
     int col = (n >= 1 && a > 0) ? a - 1 : 0;

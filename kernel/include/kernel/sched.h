@@ -90,6 +90,12 @@ struct process {
                       * process's windows; SYS_CREATE_WINDOW refuses for a dying
                       * process, so it cannot orphan a fresh window created after
                       * the teardown (the un-closeable-window leak). */
+  int exit_code;     /* low byte of status passed to sys_exit() (Phase 2);
+                      * collected by a waiter via process_wait()'s out-param. */
+  uint8_t exited;    /* 1 once sys_exit() ran (voluntary exit); stays 0 if the
+                      * process reached the grave via KILL/fault, so a waiter can
+                      * tell "Done (N)" from "Killed" (the NEXS stand-in for
+                      * WIFEXITED vs WIFSIGNALED — there is no signal model). */
   int priority;      /* 0 (High) - 31 (Low) */
   int time_slice;    /* Ticks remaining */
   int quantum_reset; /* Reset value */
@@ -190,6 +196,9 @@ struct process {
 #define PROC_ZOMBIE 4
 #define PROC_DEAD 5
 #define PROC_READY 6
+#define PROC_STOPPED 7 /* suspended (Ctrl-Z/bg job): off the runqueue until a
+                        * process_cont() resumes it — modelled on PROC_SLEEPING
+                        * (Phase 2, job control). */
 
 /* Process Priorities */
 #define PROC_PRIO_SYSTEM 0 /* Kernel-level service */
@@ -265,8 +274,16 @@ void process_abort_spawn(struct process *p);
  * (docs/PROCESS-KILL-MODEL.md).  Used by window_request_close, OBJ_CTL_KILL/
  * CLOSE and SYS_KILL of another process; self-exit/fault stay single-process. */
 void process_kill_subtree(int root_pid);
-int process_wait(
-    int pid); /* Wait for process, returns status or -1 if active */
+/* process_wait - reap-poll a process. Returns pid (reaped), -1 (still alive),
+ * or -2 (not found). If out_code != NULL and the process is reaped, *out_code
+ * receives its exit_code (raw). Non-blocking. */
+int process_wait(int pid, int *out_code);
+/* process_stop/process_cont - suspend/resume a process (job control, Phase 2).
+ * stop: RUNNING/READY -> PROC_STOPPED (leaves the runqueue at its next pick).
+ * cont: PROC_STOPPED -> READY + re-enqueued. Return 0, -ESRCH (no such pid),
+ * or -EINVAL (wrong state). */
+int process_stop(int pid);
+int process_cont(int pid);
 extern int process_load_elf(struct process *proc, const char *path);
 /* Like process_load_elf(), but marshals an argv vector onto the new task's
  * stack and seeds main()'s argc/argv (kargv holds kernel-side string copies;

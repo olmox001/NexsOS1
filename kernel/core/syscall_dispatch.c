@@ -840,7 +840,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WAIT:
-    pt_regs_set_return(frame, process_wait((int)arg0));
+    /* Ambient wait: status not collected here (ABI unchanged); the
+     * capability path (SYS_OBJECT_WAIT) carries exit_code. */
+    pt_regs_set_return(frame, process_wait((int)arg0, NULL));
     break;
   case SYS_REGISTRY:
     pt_regs_set_return(frame, sys_registry((int)arg0, (const char *)arg1,
@@ -1281,6 +1283,8 @@ void sys_exit(int status) {
   if (current_process) {
     pr_debug("PID %d exiting with status %d\n", current_process->pid,
              status); /* hot path: demoted (perf §1) */
+    current_process->exit_code = status & 0xff; /* Phase 2: collectable by a waiter */
+    current_process->exited = 1;                 /* voluntary exit (not killed) */
     process_terminate(current_process->pid);
   }
 }

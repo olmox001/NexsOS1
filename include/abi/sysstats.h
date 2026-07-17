@@ -1,5 +1,5 @@
 /*
- * include/api/sysstats.h
+ * include/abi/sysstats.h
  * System statistics ABI — the single source of truth shared by the kernel
  * (kernel/sched/process.c: sys_sysstats) and userland (os1.h, /bin/memstat),
  * exactly like object.h / ps_info.
