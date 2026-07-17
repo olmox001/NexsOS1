@@ -1,7 +1,7 @@
 #ifndef _SYS_MMAN_H
 #define _SYS_MMAN_H
 
-#include "../posix_types.h"
+#include <posix_types.h>
 
 /*
  * Minimal POSIX <sys/mman.h> for the OS1 userspace libc.

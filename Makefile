@@ -18,7 +18,7 @@ endif
 ARCH ?= aarch64
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.5.0
+VERSION ?= V0.0.5.2
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -94,7 +94,11 @@ USER_SYS_DIR = $(USER_DIR)/sys
 USER_LIB_DIR = $(USER_SYS_DIR)/lib
 USER_BIN_DIR = $(USER_SYS_DIR)/bin
 USER_ARCH_DIR = $(USER_DIR)/arch/$(ARCH)
-INCLUDE    = -I$(KERNEL_DIR)/include -I$(ARCH_DIR)/include -Iinclude/api
+# include/abi = the neutral kernel<->userland ABI contract (syscall numbers,
+# object/caps/rights, posix ABI types, sysstats, style names, font structs).
+# include/api = the userland-only base API (OS1low_/OS1_ + libc headers) —
+# the kernel must never grow includes from it (ASTRA layer separation).
+INCLUDE    = -I$(KERNEL_DIR)/include -I$(ARCH_DIR)/include -Iinclude/abi -Iinclude/api
 
 # Output files
 BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
@@ -399,7 +403,7 @@ SDL2_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
               -ffreestanding -fno-builtin -nostdlib -nostartfiles \
               -fno-common -fstack-protector-strong -fno-pic -fno-pie \
               -fno-omit-frame-pointer \
-              -Iinclude/api -I$(SDL2_DIR)/include \
+              -Iinclude/abi -Iinclude/api -I$(SDL2_DIR)/include \
               $(SDL_NEXSOS_OVERLAY_CPPFLAGS)
 
 $(SDL2_OBJ_DIR)/%.o: %.c
@@ -475,6 +479,7 @@ LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
              -fno-common -fstack-protector-strong -fno-pic -fno-pie \
              -fno-omit-frame-pointer \
              -DLUA_USE_NEXSOS \
+             -Iinclude/abi \
              -Iinclude/api \
              -I$(LUA_DIR) \
              -I$(USER_LIB_DIR)/portability/lua \
@@ -678,6 +683,8 @@ rootfs: user libsdl2 liblua
 	@# Documents/doom hosts doom's config+savegames (replaces the hardcoded
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Documents/doom
 	@mkdir -p $(BUILD_DIR)/rootfs/home/shared
+	@mkdir -p $(BUILD_DIR)/rootfs/home/Settings
+	@-cp -r user/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
@@ -714,6 +721,8 @@ rootfs: user libsdl2 liblua
 	@cp $(LUA_DIR)/*.h $(BUILD_DIR)/rootfs/sys/lib/include/lua/
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/api
 	@cp -r include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/abi
+	@cp -r include/abi/. $(BUILD_DIR)/rootfs/sys/lib/include/abi/
 	@# Copy Lua's own test suite next to nxlua, for on-device testing
 	@mkdir -p $(BUILD_DIR)/rootfs/home/LUA/luatest
 	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/home/LUA/luatest/ 2>/dev/null || true

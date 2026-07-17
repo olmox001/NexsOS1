@@ -31,17 +31,17 @@ Problemi noti rimasti nel blocco (non bloccanti, da pianificare):
 - `ext4_find_ino` per ogni write (walk completo): amplificatore di costo,
   candidato a cache/ottimizzazione (vedi Parte 3).
 
-## Parte 2 — Chiusura capability (dopo M8, stesso blocco)
+## Parte 2 — Chiusura capability ✅ COMPLETATA (2026-07-17)
 
 Da ASTRA §7.11 (call-surface refactor) — obiettivo: nessun percorso di
 scrittura ambient residuo dove esiste l'equivalente capability.
 
-| ID | Microfase | Note |
-|----|-----------|------|
-| C1 | `handle_create(OS1_NS_FS)` con semantica `O_CREAT`: creare-il-file-poi-handle in un solo punto (il gate resta `vfs_write_allowed`). Sblocca il routing capability di `OS1_fs_write` (oggi ambient, NOTE M4.5-FS-WRITE in lib.c). | kernel/core/object.c |
-| C2 | `OS1_fs_write` userland → percorso capability (handle WRITE + `OS1_object_write` + SEEK), mantenendo il size-probe ambient per compat. | user/sys/lib |
-| C3 | Test `cap*` estesi: create-via-handle, write-via-handle, mkdir gate. | user/bin |
-| C4 | Verifica 2 arch + checkpoint. | — |
+| ID | Microfase | Stato |
+|----|-----------|-------|
+| C1 | `OS1_RIGHT_CREATE` (acquisition-only, strippato dai diritti installati) in `handle_create(OS1_NS_FS)`: path mancante con CREATE+WRITE creato dietro `vfs_write_allowed`; `regfs.create` per uniformità `/reg`. | ✅ commit `0bcc5d8` |
+| C2 | `OS1_fs_write` → percorso capability (handle WRITE\|CREATE → SEEK → `object_write` → close), speculare a `OS1_fs_read`; percorso ambient NOTE(M4.5-FS-WRITE) ritirato. | ✅ commit `0bcc5d8` |
+| C3 | captest 10–13: create-via-handle (+CREATE strippato), create esplicito, ACL `/sys/bin` all'acquisizione, seam mkdir/rmdir. | ✅ commit `0bcc5d8` |
+| C4 | Verifica runtime 2 arch. | ✅ 13/13 PASS su amd64 E aarch64 (maintainer, 2026-07-17), 0 fault |
 
 ## Parte 3 — MACROPIANO: ristrutturazione userland secondo ASTRA (nuovo blocco, da confermare)
 
@@ -113,13 +113,85 @@ Temi: filesystem, object, syscall, registry, servizi, librerie userland.
 - Kernel: prosecuzione B5 (split srl/hal nel source tree), C (object
   manager completo, `OBJ_TYPE_PORT`, `OS1low_vm_*`).
 
-### Ordine proposto del macroblocco (bozza, da confermare)
+### Decisioni esecutive (2026-07-17, seconda tornata)
 
-1. 3.1 split librerie + header (fondazione, tutto il resto vi si appoggia)
-2. 3.4 formato eseguibili `.X` (tocca pochi punti, sblocca 3.3)
-3. 3.2 servizi in `user/sys/services`
-4. 3.3 nxexec demone + nxauth + kill-model in kernel
-5. 3.5 rifiniture strutturali continue
+- **Mappa split confermata**: OS1lib_OS1 = `OS1_*`/`OS1low_*` + stub `_sys`;
+  OS1lib_POSIX = fd/open/read/stat/dirent/unistd/termios/mman;
+  OS1lib_LIBC = stdio(FILE)/stdlib/string/ctype/time/math;
+  GRAPHICS = graphics/window/font/image; TERM = print/printf_win/ansi;
+  SERVICE = header `nx*`; IO = input/eventi.
+- **Eliminazione TOTALE degli alias bare-name** (spawn, flush, file_write,
+  list_dir, …): solo la nuova nomenclatura sopravvive (piano ASTRA).
+- **Kernel libs: fork in userland** — OS1lib_LIBC riceve copie freestanding
+  proprie (vsnprintf/string/math); `kernel/lib` diventa kernel-only, non più
+  accessibile all'userland (USR-LIB-01 chiuso).
+- **Anche il codice portato migra** (doom/lua/sdl) via i compatibility
+  layer; ristrutturazione completa dell'userland con strumenti di
+  automazione semantica (brew — vedi sotto).
+- **`.X` in un passaggio unico** (supporto + rinomina binari + bonifica di
+  tutti i path hardcoded; censimento affidabile a un agente dedicato).
+
+### Microfasi esecutive del macroblocco
+
+- **R0 Censimento** (nessuna modifica di codice): R0.1 inventario simboli di
+  lib.c → mappa di collocazione per libreria (inclusi gli alias da
+  eliminare); R0.2 inventario call-site per app; R0.3 mappa header
+  `include/api/*` → `user/sys/lib/include/api/*` + punti Makefile/rootfs.
+- **R1 Scheletro + header**: R1.1 cartelle `OS1lib_*` + header nuovi
+  (OS1.h/POSIX.h/LIBC.h/GRAPHICS.h/TERM.h/SERVICE.h/IO.h); R1.2 spostamento
+  header + Makefile (-I e copia nel rootfs/VFS); R1.3 build verde.
+- **R2 Split implementazioni**: R2.1 OS1lib_OS1 (+fork kernel libs);
+  R2.2 POSIX; R2.3 LIBC; R2.4 GRAPHICS/TERM/SERVICE/IO; R2.5 rimozione
+  lib.c, build verde.
+- **R3 Nomenclatura**: R3.1 patch semantiche (coccinelle/comby) che
+  eliminano gli alias bare-name in tutte le app native; R3.2 migrazione
+  include delle app native ai soli header nuovi.
+- **R4 Codice portato**: header classici SOLO dentro
+  `user/sys/lib/portability/*`; migrazione automatizzata di doom/lua/sdl.
+- **R5 Formato `.X`** (passaggio unico): censimento path exec hardcoded
+  (agente dedicato) + mkdisk + loader/level_for_path/nxexec/nxshell/
+  nxlauncher.
+- **R6 Servizi**: spostamento `nx*` in `user/sys/services`; nxexec demone
+  privilegiato + nxauth (password root preset); studio kill-model/exec in
+  kernel (doc dedicato prima del codice).
+
+Ogni microfase: build 2 arch + `make run` checkpoint; **solo stage fino a
+test superati** (direttiva 2026-07-17).
+
+### Architettura header definitiva (decisione 2026-07-17, terza tornata)
+
+Separazione COMPLETA dei due layer ("il kernel è neutro, l'userland è
+neutro"); molte implementazioni header oggi sdoppiate/confuse vanno
+ricostruite pulite in questo passaggio:
+
+```
+kernel/  (superficie kernel SOLO nel kernel; lib fondamentali in kernel/lib)
+   │
+   ▼
+include/abi/    contratto ABI kernel↔userland, neutro e centralizzato
+                (syscall_nums, object/caps/rights, posix_types ABI,
+                 sysstats, style_names, font structs, input events)
+   │
+   ▼
+include/api/    SOLO base userland: OS1low_ + OS1_ — API neutra,
+                il più sottile possibile
+   │
+   ▼
+user/sys/lib/   OS1lib_OS1 · OS1lib_POSIX · OS1lib_LIBC
+                + librerie di compatibilità (portability)
+   │
+   ▼
+librerie aggiuntive: GRAPHICS · TERM · SERVICE · IO (modello librerie
+principali) e le librerie PORTATE (SDL2, Lua) sopra i portability layer
+```
+
+### Strumenti di automazione (brew)
+
+- `coccinelle` — patch semantiche C (.cocci): rinomine API su call-site,
+  eliminazione alias, migrazione firme. Motore principale di R3/R4.
+- `comby` — riscritture strutturali semplici (include, pattern testuali
+  con struttura): complemento veloce a coccinelle.
+- `universal-ctags` — inventario simboli per il censimento R0.
 
 ## Parte 4 — Decisioni del maintainer (2026-07-17)
 

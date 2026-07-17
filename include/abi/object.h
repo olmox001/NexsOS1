@@ -1,5 +1,5 @@
 /*
- * include/api/object.h
+ * include/abi/object.h
  * Object / handle / capability ABI — the single source of truth shared by the
  * kernel (kernel/include/kernel/object.h) and userland (os1.h), exactly like
  * caps.h.  This is the REAL capability layer mandated by ASTRA §6.1/6.2/6.5
@@ -69,6 +69,8 @@
 #define OBJ_CTL_CLOSE    5 /* WINDOW: destroy just this window (RIGHT_DESTROY)          */
 #define OBJ_CTL_SEEK     6 /* FILE: set the object's byte offset to arg; returns it     */
 #define OBJ_CTL_STAT     7 /* FILE: return the current size in bytes (lseek/stat)       */
+#define OBJ_CTL_STOP     8 /* PROCESS: suspend the target (job control; RIGHT_DESTROY)  */
+#define OBJ_CTL_CONT     9 /* PROCESS: resume a stopped target (job control; DESTROY)   */
 
 /* Namespaces for handle_create: how the `path` argument is interpreted. */
 #define OS1_NS_FS   1 /* path is a filesystem path → OBJ_TYPE_FILE            */

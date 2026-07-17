@@ -37,6 +37,8 @@
  */
 
 #include <os1.h>
+#include <stdlib.h> /* getenv() — see the dynamic HOME resolution in
+                      * nxexec_resolve_path()'s tier 2 below. */
 #include <string.h>
 
 #define NXEXEC_PATH_MAX 96
@@ -55,10 +57,40 @@
  * a churner never holds one id that long. */
 #define NXEXEC_STABLE_POLLS 6
 
+/*
+ * nxexec_window_stable - one step of the "has this pid settled on its own
+ * persistent window?" debounce, factored out because the exact same state
+ * machine used to be hand-copied in three places (nxexec_run_foreground()
+ * below, nxexec.c main()'s grace probe, and nxjobs.h's nxjobs_poll() for
+ * background jobs) — three chances for the threshold or the reset rule to
+ * quietly drift apart between callers that all need to agree on what
+ * "windowed" means.
+ *
+ * Caller owns the debounce state (*last_win, *stable) across calls — one
+ * call per poll tick, whatever that caller's tick source is (a blocking
+ * OS1_sleep loop, a probe loop, or an outer shell tick). Returns 1 once
+ * window_of_pid(pid) has reported the SAME positive window id for
+ * NXEXEC_STABLE_POLLS consecutive calls (a persistent own window -> GUI
+ * app), 0 otherwise. A transient/changing window id (create/destroy churn,
+ * see the NXEXEC_STABLE_POLLS comment above) resets the run instead of
+ * accumulating, so it never falsely reaches the threshold.
+ */
+static inline int nxexec_window_stable(int pid, int *last_win, int *stable) {
+  int w = window_of_pid(pid);
+  if (w > 0 && w == *last_win)
+    (*stable)++;
+  else
+    *stable = (w > 0) ? 1 : 0;
+  *last_win = w;
+  return *stable >= NXEXEC_STABLE_POLLS;
+}
+
 /* nxexec_run_foreground return codes. */
 #define NXEXEC_JOB_EXITED 0 /* the child finished (or was Ctrl-C'd) */
 #define NXEXEC_JOB_DETACHED                                                    \
   1 /* the child owns a stable window -> it is a GUI app */
+#define NXEXEC_JOB_STOPPED 2 /* Ctrl-Z: the child was suspended (PROC_STOPPED);
+                              * the caller should register it as a stopped job */
 
 /*
  * NXEXEC path-resolution tiers, aligned with POSIX/execvp (previously
@@ -129,10 +161,20 @@ static inline int nxexec_resolve_path(const char *name, char *out_path,
   }
 
   if (name[0] == '~') { /* 2: home-relativo */
+    /* Dynamic: ask getenv("HOME") first (lib.c currently stubs it to
+     * NXEXEC_HOME_DIR itself, but that's an implementation detail of the
+     * stub, not a contract) and fall back to NXEXEC_HOME_DIR only if HOME
+     * is unset/empty — a real per-user HOME later becomes a getenv() change
+     * alone, no nxexec.h edit, no rebuild of every consumer (nxshell.c,
+     * nxlauncher.c, and whatever "standard for non-system programs" launch
+     * path follows this pattern next). */
+    const char *home = getenv("HOME");
+    if (!home || !*home)
+      home = NXEXEC_HOME_DIR;
     if (name[1] == '\0')
-      snprintf(out_path, sz, "%s", NXEXEC_HOME_DIR);
+      snprintf(out_path, sz, "%s", home);
     else if (name[1] == '/')
-      snprintf(out_path, sz, "%s%s", NXEXEC_HOME_DIR, name + 1);
+      snprintf(out_path, sz, "%s%s", home, name + 1);
     else
       return -1; /* forma "~utente": non supportata, non c'è una pwdb
                     multi-utente */
@@ -169,14 +211,8 @@ static inline int nxexec_run_foreground(int pid) {
   int last_win = -1;
   int stable = 0;
   while (1) {
-    int w = window_of_pid(pid);
-    if (w > 0 && w == last_win) {
-      if (++stable >= NXEXEC_STABLE_POLLS)
-        return NXEXEC_JOB_DETACHED; /* a persistent own window -> GUI app */
-    } else {
-      stable = (w > 0) ? 1 : 0; /* new/transient window id: restart the count */
-    }
-    last_win = w;
+    if (nxexec_window_stable(pid, &last_win, &stable))
+      return NXEXEC_JOB_DETACHED; /* a persistent own window -> GUI app */
 
     if (wait(pid) != -1)
       return NXEXEC_JOB_EXITED; /* child finished (dead/zombie/gone) */
@@ -201,6 +237,13 @@ static inline int nxexec_run_foreground(int pid) {
         kill_process(pid);
         print("^C\n");
         return NXEXEC_JOB_EXITED;
+      }
+      if (c == 0x1a) { /* Ctrl-Z: suspend the foreground job (Phase 2) */
+        if (OS1_process_stop(pid) == 0) {
+          print("^Z\n");
+          return NXEXEC_JOB_STOPPED;
+        }
+        /* stop refused (e.g. windowed/own-terminal child): relay as a key */
       }
       send(pid, &m);
       if (c == '\n' || c == '\r')
@@ -234,8 +277,8 @@ static inline int nxexec_spawn_search(int argc, char *argv[], char *out_path,
    * quoted original, producing the "/bin/\"lua\"" not-found seen from
    * os.execute('"lua" ...'). */
   static char clean_name[NXEXEC_PATH_MAX];
-  argv[0] = (char *)nxexec_strip_path_quotes(argv[0], clean_name,
-                                             sizeof(clean_name));
+  argv[0] =
+      (char *)nxexec_strip_path_quotes(argv[0], clean_name, sizeof(clean_name));
   const char *name = argv[0];
 
   int r = nxexec_resolve_path(name, out_path, NXEXEC_PATH_MAX);

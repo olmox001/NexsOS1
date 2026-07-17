@@ -27,10 +27,16 @@ int usleep(unsigned int usec);
  *   isatty: true for the std stream fds (0/1/2).
  *   getpid: alias of the OS1 get_pid().
  *   pipe:   OS1 has no anonymous pipes — always fails (callers fall back).
- *   unlink: no VFS delete syscall yet — accepted no-op for temp-file cleanup. */
+ *   unlink: real VFS delete (SYS_UNLINK via OS1_fs_unlink), same as remove(). */
 int isatty(int fd);
 int getpid(void);
 int pipe(int pipefd[2]);
 int unlink(const char *pathname);
+
+/* truncate: set a file's length exactly (POSIX).  Built on the FS-layer
+ * whole-file-replace primitive (from-start write); see lib.c.  ftruncate(fd)
+ * awaits an fd->path / OBJ_CTL_TRUNCATE kernel verb and is intentionally not
+ * declared yet. */
+int truncate(const char *path, long length);
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * include/api/syscall_nums.h
+ * include/abi/syscall_nums.h
  * NEXS syscall numbers — THE single source of truth (ABI-01/ABI-SYS-01).
  *
  * Included by BOTH sides of the ABI:

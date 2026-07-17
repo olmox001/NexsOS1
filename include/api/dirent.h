@@ -1,7 +1,7 @@
 #ifndef _DIRENT_H
 #define _DIRENT_H
 
-#include "posix_types.h"
+#include <posix_types.h>
 
 /*
  * Minimal POSIX <dirent.h> for the OS1 userspace libc.

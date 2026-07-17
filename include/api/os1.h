@@ -8,20 +8,20 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include "posix_types.h"
+#include <posix_types.h>
 /* Syscall numbers: single source of truth shared with the kernel dispatch
  * switch and the .S stubs (ABI-01/ABI-SYS-01).
  * Error model (ABI-02): syscalls return negative errno values from
  * posix_types.h on failure (-EFAULT, -ENOMEM, ...), >= 0 on success. */
-#include "syscall_nums.h"
+#include <syscall_nums.h>
 /* Privilege levels (PLVL_*) and capabilities (CAP_*) for spawn_caps (#79). */
-#include "caps.h"
+#include <caps.h>
 /* Object/handle/capability ABI (OBJ_TYPE_*, OS1_RIGHT_*, OS1_NS_*) — ASTRA
  * §6.1/6.2/6.5. The OS1low_/OS1_object_ surface below operates on these. */
-#include "object.h"
+#include <object.h>
 /* System statistics snapshot ABI (struct os1_sysstats) — perf §1 instrumentation
  * surface, read via OS1_sys_stats() below. */
-#include "sysstats.h"
+#include <sysstats.h>
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
@@ -145,6 +145,13 @@ long OS1low_process_spawn_detached(const char *path, int argc,
 long OS1low_process_spawn_caps(const char *path, int level, unsigned long caps);
 int  OS1low_process_kill(int pid);
 int  OS1low_process_wait(int pid);
+/* Like OS1low_process_wait, but on reap writes the process's raw exit_code to
+ * *code (the POSIX personality wraps it). *code untouched if not reaped. */
+int  OS1low_process_wait_status(int pid, int *code);
+/* Job control (Phase 2): suspend/resume a process via its PROCESS capability
+ * (OBJ_CTL_STOP/CONT). Returns 0 or a negative errno. */
+int  OS1_process_stop(int pid);
+int  OS1_process_cont(int pid);
 void OS1low_process_yield(void);
 int  OS1low_process_self(void);
 void OS1low_process_exit(int status);
@@ -185,6 +192,12 @@ int  OS1_notify_error(const char *title, const char *msg); /* red (severity 2) �
                                                             * kernel-crash-only (fault.c);
                                                             * now reachable from
                                                             * userland too */
+/* OS1_report_error - map an errno (positive or raw -errno) to a notification
+ * by severity class (hard faults -> red, policy denials -> amber, normal
+ * control-flow errors -> silent). THE single error-surfacing seam every libc
+ * and portability layer uses so userland failures are visible, uniformly and
+ * without duplicated notify logic. See lib.c. */
+void OS1_report_error(const char *ctx, int err);
 int send(int pid, struct ipc_message *msg);
 int recv(int pid, struct ipc_message *msg);
 int try_recv(int pid, struct ipc_message *msg);

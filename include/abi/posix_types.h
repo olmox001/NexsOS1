@@ -1,5 +1,5 @@
 /*
- * include/api/posix_types.h
+ * include/abi/posix_types.h
  * POSIX-facing shared types for the userland API surface
  */
 #ifndef _POSIX_TYPES_H

@@ -1,5 +1,5 @@
 /*
- * include/api/style_names.h
+ * include/abi/style_names.h
  * Single source of truth for the compositor style/theme/background NAME
  * tables (as opposed to the numeric ids in kernel/include/kernel/
  * compositor_style.h, which userland never includes).

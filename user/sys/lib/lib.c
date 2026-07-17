@@ -69,6 +69,7 @@
 #include <dirent.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <termios.h>
@@ -116,6 +117,46 @@ static long errno_ret(long r) {
     return -1;
   }
   return r;
+}
+
+/*
+ * OS1_report_error - THE single userland error-surfacing seam
+ * (PLAN-2026-07-17-STRATIFICATION.md, Phase 0).
+ *
+ * Maps an errno to the notification system BY SEVERITY CLASS, so a hard
+ * failure in ANY libc / portability path (SDL, lua, doom, ...) becomes visible
+ * — a red/amber notification with context — instead of a silent -1 an app can
+ * ignore and loop on.  Every layer calls THIS one policy; none hand-rolls its
+ * own notify (no duplication, uniform behaviour).  Normal control-flow errors
+ * stay silent so probes (ENOENT, EAGAIN) never spam:
+ *
+ *   EIO/EFAULT/ENOMEM/ENOSPC/EROFS -> error (red)   — unexpected / hard fault
+ *   EACCES/EPERM                   -> warn  (amber) — policy denial
+ *   everything else                -> silent        — normal control flow
+ *
+ * `err` may be given as errno (positive) or as a raw -errno syscall return.
+ * `ctx` is a short tag: a subsystem ("vfs", "mmap") or "op path".
+ */
+void OS1_report_error(const char *ctx, int err) {
+  if (err < 0)
+    err = -err;
+  if (!ctx)
+    ctx = "libc";
+  switch (err) {
+  case EIO:
+  case EFAULT:
+  case ENOMEM:
+  case ENOSPC:
+  case EROFS:
+    OS1_notify_error(ctx, strerror(err));
+    break;
+  case EACCES:
+  case EPERM:
+    OS1_notify_warn(ctx, strerror(err));
+    break;
+  default:
+    break; /* normal control-flow error: no notification */
+  }
 }
 
 /* --- Syscall Wrappers ---
@@ -194,17 +235,49 @@ int OS1low_process_kill(int pid) { return _sys_kill(pid); }
  * (wait-right is separable from kill-right); if the process is already gone,
  * acquisition fails and we fall back to the ambient SYS_WAIT so the legacy "not
  * found" (-2) result is preserved. */
-int OS1low_process_wait(int pid) {
+/* __wait_encode - map the kernel's NEXS-neutral wait code to the POSIX status
+ * word (Phase 2). code >= 0: voluntary exit -> exit code in bits 8..15
+ * (WIFEXITED). code < 0: killed -> low byte = -code (WIFSIGNALED). */
+static int __wait_encode(int code) {
+  if (code < 0)
+    return (-code) & 0x7f;
+  return (code & 0xff) << 8;
+}
+
+int OS1low_process_wait(int pid) { return OS1low_process_wait_status(pid, 0); }
+
+/* OS1low_process_wait_status - like OS1low_process_wait, but on reap writes the
+ * process's raw exit_code to *code (Phase 2). Carried through the PROCESS
+ * capability's OS1_object_wait(handle, &code); the ambient fallback has no
+ * status channel, so *code stays 0 there. */
+int OS1low_process_wait_status(int pid, int *code) {
   char idbuf[16];
   sprintf(idbuf, "%d", pid);
   long h = OS1low_handle_create(OS1_NS_PROC, idbuf, OS1_RIGHT_WAIT,
                                 OBJ_TYPE_PROCESS);
   if (h < 0)
     return _sys_wait(pid);
-  long r = OS1_object_wait((int)h, 0);
+  long r = OS1_object_wait((int)h, (long)code);
   OS1low_handle_close((int)h);
   return (int)r;
 }
+/* OS1_process_stop / _cont - job control (Phase 2). Acquire a PROCESS
+ * capability with the control (DESTROY) right — the same authority as kill —
+ * and issue OBJ_CTL_STOP/CONT. Returns 0 or a negative errno. */
+static int os1_process_ctl(int pid, int cmd) {
+  char idbuf[16];
+  sprintf(idbuf, "%d", pid);
+  long h = OS1low_handle_create(OS1_NS_PROC, idbuf, OS1_RIGHT_DESTROY,
+                                OBJ_TYPE_PROCESS);
+  if (h < 0)
+    return (int)h;
+  long r = OS1_object_ctl((int)h, cmd, 0);
+  OS1low_handle_close((int)h);
+  return (int)r;
+}
+int OS1_process_stop(int pid) { return os1_process_ctl(pid, OBJ_CTL_STOP); }
+int OS1_process_cont(int pid) { return os1_process_ctl(pid, OBJ_CTL_CONT); }
+
 void OS1low_process_yield(void) { _sys_yield(); }
 int OS1low_process_self(void) { return _sys_get_pid(); }
 void OS1low_process_exit(int status) {
@@ -541,6 +614,7 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
                                 OBJ_TYPE_FILE);
   if (h < 0) {
     errno = (int)-h;
+    OS1_report_error(path, (int)h); /* surface EACCES/EIO; ENOENT stays silent */
     return (int)h;
   }
   long w = 0;
@@ -550,8 +624,10 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
     w = OS1_object_write((int)h, buf, (unsigned long)size);
   }
   OS1low_handle_close((int)h);
-  if (w < 0)
+  if (w < 0) {
     errno = (int)-w;
+    OS1_report_error(path, (int)w);
+  }
   return (int)w;
 }
 /* OS1_fs_read (F4 M4.5): data reads routed through a FILE capability
@@ -611,10 +687,13 @@ int getcwd(char *buf, size_t size) { return OS1_fs_getcwd(buf, size); }
  */
 int open(const char *pathname, int flags, ...) {
   int fd = (int)_sys_open(pathname, flags);
-  if (fd == -EACCES)
-    OS1_notify_warn("vfs", pathname);
-  if (fd < 0)
+  if (fd < 0) {
+    /* Uniform surfacing (Phase 0): amber on EACCES, red on a hard fault,
+     * silent on an ENOENT probe — the policy lives in OS1_report_error, not
+     * here, so every open() caller and every portability layer behave alike. */
+    OS1_report_error(pathname, fd);
     return (int)errno_ret(fd);
+  }
   if (flags & O_APPEND)
     _sys_lseek(fd, 0, SEEK_END); /* best-effort: initial position at EOF */
   return fd;
@@ -1499,13 +1578,46 @@ int system(const char *command) {
    * found), so it must be queried in a loop until it no longer reports
    * "running" — not called only once like before (that single -1 result
    * was interpreted as ECHILD, causing system() to fail almost every time). */
-  int w;
-  while ((w = wait(pid)) == -1)
+  int w, code = 0;
+  while ((w = OS1low_process_wait_status(pid, &code)) == -1)
     OS1_sleep(15);
 
-  return 0; /* w == pid (reaped) or -2 (reaped elsewhere): the command
-             * has still executed. No real status is available: OS1 does
-             * not yet expose a per-process exit code (see note above). */
+  /* POSIX system() status word: WEXITSTATUS reads (status>>8)&0xff (Phase 2).
+   * A -2 "reaped elsewhere" leaves code 0 — the command still ran. */
+  (void)w;
+  return __wait_encode(code);
+}
+
+/*
+ * waitpid - POSIX <sys/wait.h> wait (Phase 2).  Was declared but never
+ * defined (an undefined-symbol trap for ported code).  Backed by the PROCESS
+ * capability wait; fills *status with the POSIX-encoded exit code.  WNOHANG is
+ * a single non-blocking poll; other options (WUNTRACED) are ignored (no
+ * stopped-process state yet — a Phase 2 follow-up).
+ */
+int waitpid(int pid, int *status, int options) {
+  int code = 0, w;
+  if (options & WNOHANG) {
+    w = OS1low_process_wait_status(pid, &code);
+    if (w == -1)
+      return 0; /* still running */
+    if (w == -2) {
+      errno = ECHILD;
+      return -1;
+    }
+    if (status)
+      *status = __wait_encode(code);
+    return pid;
+  }
+  while ((w = OS1low_process_wait_status(pid, &code)) == -1)
+    OS1_sleep(15);
+  if (w == -2) {
+    errno = ECHILD;
+    return -1;
+  }
+  if (status)
+    *status = __wait_encode(code);
+  return pid;
 }
 
 /*
@@ -1653,6 +1765,15 @@ int remove(const char *pathname) {
   return (int)errno_ret(OS1_fs_unlink(pathname));
 }
 /*
+ * unlink - remove a file (POSIX <unistd.h>).  The unistd.h declaration existed
+ * with no definition in this libc (only in vendored musl, which our programs
+ * don't link), so a caller would have hit an undefined symbol.  Real now — the
+ * same VFS unlink `remove()` uses.
+ */
+int unlink(const char *pathname) {
+  return (int)errno_ret(OS1_fs_unlink(pathname));
+}
+/*
  * rename - move a file (POSIX/<stdio.h>).  No rename syscall exists, so this
  * emulates it as copy + unlink of the original — the same approach nxshell's
  * `mv` uses.  Not atomic and it rewrites the bytes, but it makes os.rename()
@@ -1685,6 +1806,57 @@ int rename(const char *oldpath, const char *newpath) {
   }
   OS1_fs_unlink(oldpath);
   return 0;
+}
+
+/*
+ * truncate - set a file's length to exactly `length` (POSIX <unistd.h>).
+ *
+ * The NexsOS write model (PLAN-2026-07-17-STRATIFICATION.md Phase 1): a
+ * from-start write (offset 0) IS the whole-file-replace/truncate primitive at
+ * the FS layer (ext4_write), so this builds on it with no new kernel call:
+ *   - length == 0        -> a zero-byte offset-0 write empties the file;
+ *   - length <  size     -> re-write the first `length` bytes at offset 0,
+ *                           which truncates the tail;
+ *   - length >  size     -> zero-extend from the old EOF.
+ * Explicit truncation for programs that don't go through fopen("w"). ftruncate(fd)
+ * needs an fd->path or an OBJ_CTL_TRUNCATE verb (a kernel follow-up), so it is
+ * intentionally not provided yet rather than faked.
+ */
+int truncate(const char *path, long length) {
+  if (length < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  int size = OS1_fs_read(path, NULL, 0, 0); /* current size; errno on miss */
+  if (size < 0)
+    return -1;
+  if (length == (long)size)
+    return 0;
+  if (length == 0)
+    return OS1_fs_write(path, "", 0, 0) < 0 ? -1 : 0;
+  if (length < (long)size) {
+    char *buf = malloc((size_t)length);
+    if (!buf) {
+      errno = ENOMEM;
+      return -1;
+    }
+    int n = OS1_fs_read(path, buf, (int)length, 0);
+    int r = (n < 0 || OS1_fs_write(path, buf, n, 0) < 0) ? -1 : 0;
+    free(buf);
+    return r;
+  }
+  /* extend: zero-fill from the old EOF up to `length` */
+  {
+    long pad = length - (long)size;
+    char *z = calloc(1, (size_t)pad);
+    if (!z) {
+      errno = ENOMEM;
+      return -1;
+    }
+    int r = OS1_fs_write(path, z, (int)pad, size) < 0 ? -1 : 0;
+    free(z);
+    return r;
+  }
 }
 /* puts: writes string + newline to fd 1, matching the standard POSIX contract.
  */
