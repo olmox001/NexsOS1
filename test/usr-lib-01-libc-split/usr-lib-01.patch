@@ -1,0 +1,161 @@
+diff --git a/Makefile b/Makefile
+index bea015c..93a12d7 100644
+--- a/Makefile
++++ b/Makefile
+@@ -338,7 +338,16 @@ $(KERNEL_BIN): $(KERNEL_ELF)
+ 
+ # Userland
+ USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
++# USR-LIB-01 (fixed): lib.c used to #include kernel/lib/{math,string,vsnprintf}.c
++# directly. Those three functions are now implemented independently under
++# user/sys/lib/ (libc_string.c, libc_math.c, libc_vsnprintf.c) with no
++# dependency on the kernel tree, built via the existing
++# $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o pattern rule below like any other
++# userland source, and linked into every ELF alongside lib.o.
+ USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
++                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/libc_string.o \
++                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/libc_math.o \
++                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/libc_vsnprintf.o \
+                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
+                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o \
+                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/opengl/os1_gl_platform.o
+diff --git a/include/api/math.h b/include/api/math.h
+index ec97fc4..e521b85 100644
+--- a/include/api/math.h
++++ b/include/api/math.h
+@@ -11,5 +11,6 @@ double fabs(double x);
+ int sin_fp(int x);
+ int cos_fp(int x);
+ int fixmul(int a, int b);
++int lerp_fp(int a, int b, int t);
+ 
+ #endif
+diff --git a/include/api/string.h b/include/api/string.h
+index 572bdcb..256a50c 100644
+--- a/include/api/string.h
++++ b/include/api/string.h
+@@ -4,8 +4,11 @@
+ #include <os1.h>
+ 
+ size_t strlen(const char *s);
++size_t strnlen(const char *s, size_t maxlen);
+ char *strcpy(char *dest, const char *src) __attribute__((deprecated("use strlcpy/strlcat")));
+ char *strncpy(char *dest, const char *src, size_t n);
++size_t strlcpy(char *dest, const char *src, size_t size);
++size_t strlcat(char *dest, const char *src, size_t size);
+ int strcmp(const char *s1, const char *s2);
+ int strncmp(const char *s1, const char *s2, size_t n);
+ int strcasecmp(const char *s1, const char *s2);
+@@ -20,6 +23,7 @@ char *strtok(char *str, const char *delim);
+ char *strtok_r(char *str, const char *delim, char **saveptr);
+ char *strerror(int errnum);
+ void *memset(void *s, int c, size_t n);
++void bzero(void *s, size_t n);
+ void *memcpy(void *dest, const void *src, size_t n);
+ void *memmove(void *dest, const void *src, size_t n);
+ void *memchr(const void *s, int c, size_t n);
+diff --git a/user/sys/lib/lib.c b/user/sys/lib/lib.c
+index 969c2a0..09149ea 100644
+--- a/user/sys/lib/lib.c
++++ b/user/sys/lib/lib.c
+@@ -22,14 +22,24 @@
+  *   STB_IMAGE_IMPLEMENTATION is compiled unconditionally here. Text rendering
+  *   now uses the OS1 packed bitmap font path instead of stb_easy_font.
+  *
+- * Kernel source inclusion (NOTE USR-LIB-01):
+- *   vsnprintf.c, math.c, string.c are sourced directly from kernel/lib/ via
+- *   relative #include paths.  Any internal change to those kernel files
+- *   silently changes userland behaviour.
++ * Userland-owned shared lib sources (NOTE USR-LIB-01, fixed):
++ *   vsnprintf, the fixed-point math helpers (fixmul/sin_fp/cos_fp/lerp_fp),
++ *   and the string/memory primitives (strlen, memcpy, strcmp, ...) are now
++ *   implemented in user/sys/lib/libc_vsnprintf.c, libc_math.c and
++ *   libc_string.c respectively — independent userland sources with no
++ *   dependency on kernel/lib/, compiled as their own objects and linked into
++ *   this ELF (Makefile: USER_LIB_O).  string.h/math.h declare every symbol
++ *   these files export (strnlen/strlcpy/strlcat/bzero/lerp_fp were missing
++ *   before), which is also why the
++ *   `#pragma GCC diagnostic ignored "-Wimplicit-function-declaration"` /
++ *   "-Wmissing-prototypes" workaround around the stb_image include below is
++ *   gone — it was masking that header gap, not anything stb_image-specific.
++ *   kernel/lib/{string,math,vsnprintf}.c are unchanged and still serve only
++ *   the kernel image.
+  *
+  * Known issues:
+- *   USR-LIB-01  (W2 BAD-IMPL) Directly #includes kernel/lib C sources;
+- *               breaks the userland/kernel boundary.
++ *   USR-LIB-01  (fixed) Used to directly #include kernel/lib C sources here,
++ *               breaking the userland/kernel boundary; see above.
+  *   USR-LIB-02  (fixed) The stdio wrappers used to guard against NULL with
+  *               `(size_t)fp > 10`, a fragile magic-value check; replaced with
+  *               proper NULL checks.  fopen streams are now write-buffered
+@@ -74,11 +84,6 @@
+ #include <sys/mman.h>
+ #include <termios.h>
+ 
+-#pragma GCC diagnostic push
+-#pragma GCC diagnostic ignored "-Wunused-function"
+-#pragma GCC diagnostic ignored "-Wimplicit-function-declaration"
+-#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+-#pragma GCC diagnostic ignored "-Wmissing-braces"
+ /*
+  * STB_IMAGE_IMPLEMENTATION: embed the full stb_image decoder.
+  * STBI_NO_STDIO/LINEAR/HDR disable file-I/O and HDR format support that
+@@ -96,7 +101,6 @@
+ #define STBI_NO_FAILURE_STRINGS
+ #define STBI_MAX_DIMENSIONS 4096
+ #include <stb_image.h>
+-#pragma GCC diagnostic pop
+ 
+ /* errno: global error variable expected by POSIX-style libc callers. */
+ int errno = 0;
+@@ -566,16 +570,15 @@ void set_window_flags(int win_id, int flags) {
+ }
+ void set_focus(int pid) { OS1_window_set_focus(pid); }
+ 
+-/* --- Shared Implementations (from kernel library) ---
+- * NOTE(USR-LIB-01): These are direct source-level #includes of kernel
+- * internal implementation files, not headers.  Changes to kernel/lib C files
+- * silently affect userland behaviour with no compile-time boundary check.
+- * vsnprintf.c provides vsnprintf/vsscanf; math.c provides fixed-point trig
+- * and DEG_TO_FP_RAD/cos_fp/sin_fp/fixmul used by demo3d; string.c provides
+- * memset/memcpy/strlen/strcmp/strncmp/strchr etc. */
+-#include "../../kernel/lib/math.c"
+-#include "../../kernel/lib/string.c"
+-#include "../../kernel/lib/vsnprintf.c"
++/* --- Shared Implementations ---
++ * NOTE(USR-LIB-01, fixed): math.c/string.c/vsnprintf.c from kernel/lib/ are
++ * no longer #included here. This function set is now provided by
++ * user/sys/lib/libc_string.c, libc_math.c and libc_vsnprintf.c — independent
++ * userland-owned sources, compiled as their own objects (Makefile:
++ * USER_LIB_O) and linked into this ELF like any other object file.
++ * kernel/lib/{string,math,vsnprintf}.c are untouched and still serve only
++ * the kernel image. lib.c reaches these functions purely through the public
++ * prototypes in string.h/math.h/stdio.h/os1.h. */
+ #include "font_lib.c"
+ 
+ static struct font_ctx *graphics_default_font;
+@@ -774,8 +777,9 @@ long lseek(int fd, long offset, int whence) {
+ }
+ 
+ /* --- Formatting & Printing ---
+- * All formatting functions delegate to vsnprintf() from kernel/lib/vsnprintf.c
+- * (included above).  Output goes to fd 1 (the shell/window TTY) via write().
++ * All formatting functions delegate to vsnprintf() from libc_vsnprintf.c
++ * (user/sys/lib/, linked separately — see USR-LIB-01 note above).  Output
++ * goes to fd 1 (the shell/window TTY) via write().
+  *
+  * printf: uses a 256-byte stack buffer; output longer than 255 chars is
+  * silently truncated by vsnprintf.
+@@ -2092,8 +2096,9 @@ int utf8_decode(const char *s, size_t len, uint32_t *code) {
+  * These complete the POSIX/libc surface entirely in userland over the OS1 base
+  * API; NO new OS1 syscalls are added (the maintainer's directive: "il resto va
+  * portato nella libc e in posix, non in os1").  strcat/strncat/memchr/atoi/...
+- * live in kernel/lib/string.c (#included above); the functions here are the
+- * remainder needed to build ported POSIX programs (base-nexs first, kilo/doom).
++ * live in libc_string.c (user/sys/lib/, linked separately — see USR-LIB-01
++ * note above); the functions here are the remainder needed to build ported
++ * POSIX programs (base-nexs first, kilo/doom).
+  * ========================================================================== */
+ 
+ /* --- <string.h> --- */

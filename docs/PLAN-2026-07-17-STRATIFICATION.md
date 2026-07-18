@@ -68,6 +68,7 @@ listed here.
 | 6 | nxline / nxjobs — port to userland | **model DONE; porting TODO** |
 | 12 | Service standardisation, ALL services + `/sys/services` | TODO |
 | 10 | POSIX/libc completion as a repeatable gate | TODO |
+| 10a | USR-LIB-01: libc stops #including kernel sources | PARKED WIP (`test/`) |
 | 11 | Users / capabilities / filesystem (ASTRA) | BLOCKED on design doc |
 | 7 | doom revert + lua finish | TODO (last: depends on 9/10) |
 | 8 | naming → bar/icons | **FOLDED INTO 3** (was a duplicate) |
@@ -167,6 +168,40 @@ capability-scoped, its INTERFACE (a CLI tool, a GUI window) becomes a separate
 client of the same port — so one service can be driven from the terminal, the
 dock, or a script without three implementations.  Depends on 12 (services
 relocated + per-service caps) and 14 (windows as a service).
+
+## Phase 10a — USR-LIB-01: split the libc off the KERNEL SOURCES
+Maintainer started this 2026-07-18 and parked it for a planned approach; the
+WIP is preserved under `test/usr-lib-01-libc-split/` (patch + the three modules
++ a README with the open questions).  Nothing is built from there.
+
+**The defect is real and was already flagged in-tree** (`lib.c`:
+"USR-LIB-01 (W2 BAD-IMPL) Directly #includes kernel/lib C sources"):
+
+```c
+#include "../../kernel/lib/math.c"      /* userland COMPILING kernel sources */
+#include "../../kernel/lib/string.c"
+#include "../../kernel/lib/vsnprintf.c"
+```
+
+This inverts the layering the whole plan rests on — the POSIX personality is
+supposed to sit ABOVE the OS1 base API, not reach into the kernel tree.  It also
+blocks two things already scheduled: ASTRA §6.4 B5 (SRL/HAL source-tree split)
+and Phase 12 ("services divided from the standard libc, integrated modularly"),
+because the dependency currently runs the wrong way.
+
+Decisions to take BEFORE re-applying (this is why it is a phase, not a patch):
+1. **Duplication vs deliberate divergence.** Splitting creates two copies of
+   string/math/vsnprintf.  That is right ONLY if they are ALLOWED to diverge
+   (kernel: minimal freestanding; userland: POSIX-complete).  Otherwise it
+   breaks "no duplicated logic" in a fresh place.  Write the rule down.
+2. **The `#ifndef KERNEL` float guard in vsnprintf** loses its reason to exist
+   after a split and must be resolved deliberately.
+3. **Verification**: formatting is exercised by nearly every program, so a
+   regression is broad but quiet.  Re-run the host validation harness
+   (`%f`/`%e`/`%g`/`%p` vs the host libc) against the split copy — a clean build
+   proves nothing here.
+4. **Sequencing**: do it WITH Phase 12's `/sys/services` move, not before, or
+   the same files get relocated twice.
 
 ## Phase 13 — Orphaned structural items (ASTRA §7.11) — NEW
 These are recorded as open in ASTRA but had NO owning phase, so they were
