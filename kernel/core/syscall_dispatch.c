@@ -195,7 +195,8 @@ static uint8_t level_for_path(const char *path) {
  * new capability path does not widen the critical section. */
 static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
                            int use_caps, int argc, char *const kargv[],
-                           uint32_t flags) {
+                           uint32_t flags, const struct spawn_redir *redir,
+                           int nredir) {
   /* ASTRA per-path preset (F1): plain spawn() takes the path's level;
    * spawn_caps may only DROP privilege below it (a request more privileged than
    * the path is capped to the path).  The creator-clamp in process_create_caps
@@ -216,6 +217,41 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
      * Safe here: the child is not yet enqueued/visible. */
     if (flags & SPAWN_FLAG_DETACHED)
       p->ctty_win = -1;
+    /* Phase 4: apply the spawner's fd redirections (shell `<`/`>`/`>>`/`2>`)
+     * into the child's handle table before it runs.  A bad source fd aborts the
+     * whole spawn — redirection is part of the child's promised environment. */
+    long rerr = 0;
+    for (int i = 0; i < nredir; i++) {
+      if (redir[i].source_pid == 0) {
+        /* Ordinary case: the fds belong to whoever called spawn. */
+        rerr = process_redirect_child_fd(p, redir[i].child_fd,
+                                         redir[i].parent_fd);
+      } else {
+        /* An execution SERVICE spawning on a client's behalf: the fds live in
+         * the CLIENT's table.  Reaching into another process's handle table is
+         * a system-service power, not an application one — same rule and same
+         * reasoning as OBJ_CTL_SETOWNER.  Without this gate any process could
+         * siphon descriptors out of any other simply by naming it here. */
+        if (!proc_is_privileged(current_process)) {
+          rerr = -EPERM;
+          break;
+        }
+        struct process *src = process_find_by_pid(redir[i].source_pid);
+        if (!src) {
+          rerr = -ESRCH;
+          break;
+        }
+        rerr = process_redirect_child_fd_from(src, p, redir[i].child_fd,
+                                              redir[i].parent_fd);
+      }
+      if (rerr != 0)
+        break;
+    }
+    if (rerr != 0) {
+      process_abort_spawn(p);
+      arch_local_irq_enable();
+      return rerr;
+    }
     if (process_load_elf_args(p, path, argc, kargv) == 0) {
       /* SCHED-UAF Pitfall B: commit the child atomically against a concurrent
        * kill.  Capture the pid first — process_finalize_spawn may RELEASE p (if
@@ -710,9 +746,31 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
         break;
       }
     }
+    /* Optional fd redirections (Phase 4 shell `<`/`>`/`>>`/`2>`): arg4 = user
+     * array of struct spawn_redir, arg5 = count.  Copy them into kernel memory
+     * so dispatch_spawn can dup the spawner's handles into the child.  Absent
+     * (count 0) → today's behaviour exactly. */
+    struct spawn_redir kredir[SPAWN_MAX_REDIR];
+    int nredir = (int)arg5;
+    if (nredir < 0)
+      nredir = 0;
+    if (nredir > SPAWN_MAX_REDIR) {
+      if (argv_store)
+        kfree(argv_store);
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    if (nredir > 0 &&
+        arch_copy_from_user(kredir, (const void *)arg4,
+                            (size_t)nredir * sizeof(struct spawn_redir)) != 0) {
+      if (argv_store)
+        kfree(argv_store);
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
     /* arg3 = spawn-mode flags (SPAWN_FLAG_*, caps.h) — nxexec model #193. */
-    long sret =
-        dispatch_spawn(k_path, PLVL_USER, 0, 0, argc, kargv, (uint32_t)arg3);
+    long sret = dispatch_spawn(k_path, PLVL_USER, 0, 0, argc, kargv,
+                               (uint32_t)arg3, kredir, nredir);
     if (argv_store)
       kfree(argv_store);
     pt_regs_set_return(frame, sret);
@@ -739,7 +797,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     pt_regs_set_return(frame,
                        dispatch_spawn(k_path, (uint8_t)arg1, (uint32_t)arg2, 1,
-                                      0, NULL, (uint32_t)arg3));
+                                      0, NULL, (uint32_t)arg3, NULL, 0));
   } break;
   case SYS_KILL:
     /* ABI-04: a process may kill itself or its descendants (orphans are
@@ -1058,6 +1116,12 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     pt_regs_set_return(frame, vfs_create(resolved_path, VFS_TYPE_DIR));
   } break;
+  case SYS_PIPE:
+    /* pipe(int fds[2]) → OBJ_TYPE_PIPE; installs read+write ends in the caller's
+     * handle table (fds[0]=read, fds[1]=write).  The shell wires `cmd | cmd` by
+     * dup'ing the ends into the children's fd 0/1 (the same spawn-redir path). */
+    pt_regs_set_return(frame, sys_pipe((int *)arg0));
+    break;
   /* --- Object / capability ABI (ASTRA §6.1/6.2/6.5, kernel/object.h) ---
    * The real capability layer: unforgeable per-process handles to refcounted
    * kernel objects with separable/attenuable rights.  User pointers (path,

@@ -30,7 +30,15 @@ static int cmd_list(void) {
                      : (wi[i].flags & WININFO_FOCUSED)  ? "focus"
                      : (wi[i].flags & WININFO_VISIBLE)  ? "shown"
                                                         : "hidden";
-    printf("%d  %d  %s  %s\n", wi[i].id, wi[i].pid, st, wi[i].title);
+    /* Phase 3: prefer nxexec's canonical launch identity (sys.proc.<pid>.name)
+     * over the app's own window title, so nxwins/nxbar/dock all show one
+     * stable name; fall back to the title when there is no registered id. */
+    char idkey[48], idname[40];
+    const char *label = wi[i].title;
+    snprintf(idkey, sizeof(idkey), "sys.proc.%d.name", wi[i].pid);
+    if (OS1_registry_get(idkey, idname, sizeof(idname)) == 0 && idname[0])
+      label = idname;
+    printf("%d  %d  %s  %s\n", wi[i].id, wi[i].pid, st, label);
   }
   return 0;
 }

@@ -30,6 +30,7 @@ _start:
 .global _sys_exit
 .global _sys_get_time
 .global _sys_spawn
+.global _sys_spawn_redir
 .global _sys_spawn_caps
 .global _sys_kill
 .global _sys_wait
@@ -102,8 +103,21 @@ _sys_exit:
     svc #0
     ret
 
-/* int _sys_spawn(const char *path) */
+/* int _sys_spawn(const char *path, int argc, char *const argv[], uint flags)
+ * The kernel now also reads arg4/arg5 (fd-redirection list + count, Phase 4);
+ * a plain spawn has none, so ZERO x4/x5 here — otherwise leftover register
+ * values would be misread as a redirection array. */
 _sys_spawn:
+    mov x4, #0
+    mov x5, #0
+    mov x8, #SYS_SPAWN
+    svc #0
+    ret
+
+/* long _sys_spawn_redir(const char *path, int argc, char *const argv[],
+ *                       uint flags, const struct spawn_redir *redir, int n)
+ * Same SYS_SPAWN, but x4/x5 carry the redirection list — pass them through. */
+_sys_spawn_redir:
     mov x8, #SYS_SPAWN
     svc #0
     ret
@@ -350,6 +364,13 @@ _sys_unlink:
 .global _sys_mkdir
 _sys_mkdir:
     mov x8, #SYS_MKDIR
+    svc #0
+    ret
+
+/* int _sys_pipe(int fds[2]) — fds in x0 */
+.global _sys_pipe
+_sys_pipe:
+    mov x8, #SYS_PIPE
     svc #0
     ret
 

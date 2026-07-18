@@ -56,6 +56,138 @@ static DEFINE_SPINLOCK(object_lock);
  * Relaxed atomics — independent of object_lock. */
 static uint64_t obj_live_count[OBJ_TYPE_COUNT];
 
+/*
+ * struct kpipe - the payload of an OBJ_TYPE_PIPE kobject (ASTRA §6.2 anonymous
+ * byte pipe).  Heap-allocated and pointed to by kobject.pipe so the buffer +
+ * wait queue don't bloat every kobject.  `buf` is a ring of PIPE_BUF_SIZE bytes.
+ * `readers`/`writers` are OPEN-handle counts (maintained by pipe_handle_count at
+ * every handle lifecycle edge): a reader on an empty pipe blocks on `wq` until a
+ * writer publishes data (wake_up) or the LAST writer closes (writers==0 → EOF).
+ */
+#define PIPE_BUF_SIZE 4096u
+struct kpipe {
+  uint8_t *buf;
+  uint32_t head; /* next byte to read */
+  uint32_t tail; /* next slot to write */
+  uint32_t count;
+  int readers;
+  int writers;
+  struct wait_queue_head rq; /* readers waiting for data / EOF */
+  struct wait_queue_head wq; /* writers waiting for buffer space / EPIPE */
+};
+
+/*
+ * struct kport - the payload of an OBJ_TYPE_PORT kobject: a Mach-style message
+ * MAILBOX that is itself a capability (ASTRA §6.5).  Heap-allocated like kpipe.
+ *
+ * The rights on a handle ARE the port rights: OS1_RIGHT_WRITE is the SEND right
+ * and OS1_RIGHT_READ the RECEIVE right.  A service acquires the port with READ
+ * (becoming its owner) and hands clients attenuated SEND-only handles, so a
+ * client names the SERVICE, never a pid — the seL4 rule ("no PID-by-number
+ * access without a capability") that ambient SYS_SEND violates.
+ *
+ * ASTRA §6.5 says the semantics "ride on the existing B3 IPC layer": we reuse
+ * struct ipc_message verbatim and only relocate the QUEUE (from a pid's mailbox
+ * to the port object) and the AUTHORITY (from process_ipc_allowed to the
+ * handle's rights).  `name` is the published identity clients resolve.
+ */
+#define PORT_QUEUE_MAX 32
+#define PORT_NAME_MAX 32
+struct kport {
+  struct ipc_message q[PORT_QUEUE_MAX];
+  uint32_t head, tail, count;
+  int senders;   /* open handles holding the SEND right    */
+  int receivers; /* open handles holding the RECEIVE right */
+  int owner_pid;
+  char name[PORT_NAME_MAX];
+  struct wait_queue_head rq; /* receivers waiting for a message  */
+  struct wait_queue_head wq; /* senders waiting for queue space  */
+};
+
+/* Named-port registry: the name→port map that lets a client acquire a send
+ * capability BY NAME.  Small and fixed: ports are system services, not a
+ * per-application resource.  Guarded by object_lock. */
+#define PORT_TABLE_MAX 16
+static struct kobject *port_table[PORT_TABLE_MAX];
+
+/* port_find_locked - resolve a published port name.  Caller holds object_lock. */
+static struct kobject *port_find_locked(const char *name) {
+  for (int i = 0; i < PORT_TABLE_MAX; i++) {
+    if (port_table[i] && port_table[i]->port &&
+        strcmp(port_table[i]->port->name, name) == 0)
+      return port_table[i];
+  }
+  return NULL;
+}
+
+/* endpoint_handle_count - adjust a PIPE's or PORT's open endpoint counts by
+ * 'delta' for a handle carrying 'rights'.  Called (under object_lock) at EVERY
+ * handle lifecycle edge — install (+1), close/destroy/redirect-overwrite (-1) —
+ * so the counts exactly track live handles.  A no-op for other types, so callers
+ * need not special-case.  For a pipe, closing the last writer wakes blocked
+ * readers (EOF) and closing the last reader wakes blocked writers (EPIPE); a
+ * port behaves the same way, so a client blocked on a reply is released when the
+ * service dies instead of hanging forever. */
+static void pipe_handle_count(struct kobject *o, uint32_t rights, int delta) {
+  if (o && o->type == OBJ_TYPE_PORT && o->port) {
+    if (rights & OS1_RIGHT_READ) {
+      o->port->receivers += delta;
+      if (delta < 0 && o->port->receivers == 0) {
+        /* The service released its receive right: UNPUBLISH the name here, under
+         * object_lock, so no new client can resolve a send capability to a dead
+         * service.  Doing it at free time instead would race, because kobj_free
+         * runs both inside and outside the lock. */
+        for (int i = 0; i < PORT_TABLE_MAX; i++) {
+          if (port_table[i] == o)
+            port_table[i] = NULL;
+        }
+        wake_up(&o->port->wq); /* service gone → senders stop waiting */
+      }
+    }
+    if (rights & OS1_RIGHT_WRITE) {
+      o->port->senders += delta;
+      if (delta < 0 && o->port->senders == 0)
+        wake_up(&o->port->rq); /* last client gone → receiver wakes */
+    }
+    return;
+  }
+  if (!o || o->type != OBJ_TYPE_PIPE || !o->pipe)
+    return;
+  if (rights & OS1_RIGHT_READ) {
+    o->pipe->readers += delta;
+    if (delta < 0 && o->pipe->readers == 0)
+      wake_up(&o->pipe->wq); /* last reader gone → writers get EPIPE */
+  }
+  if (rights & OS1_RIGHT_WRITE) {
+    o->pipe->writers += delta;
+    if (delta < 0 && o->pipe->writers == 0)
+      wake_up(&o->pipe->rq); /* last writer gone → readers see EOF */
+  }
+}
+
+/* pipe still-block predicates for kthread_block (return 1 = keep sleeping).  A
+ * reader sleeps while the pipe is empty AND a writer still exists; a writer
+ * sleeps while the pipe is full AND a reader still exists.  Evaluated under the
+ * wait queue lock, serialised against the producer/consumer's wake_up(). */
+static int pipe_readable_block(void *arg) {
+  struct kpipe *kp = ((struct kobject *)arg)->pipe;
+  return kp->count == 0 && kp->writers > 0;
+}
+static int pipe_writable_block(void *arg) {
+  struct kpipe *kp = ((struct kobject *)arg)->pipe;
+  return kp->count == PIPE_BUF_SIZE && kp->readers > 0;
+}
+/* Port equivalents: a receiver sleeps while the mailbox is empty AND a sender
+ * still exists; a sender sleeps while it is full AND a receiver still exists. */
+static int port_readable_block(void *arg) {
+  struct kport *kp = ((struct kobject *)arg)->port;
+  return kp->count == 0 && kp->senders > 0;
+}
+static int port_writable_block(void *arg) {
+  struct kport *kp = ((struct kobject *)arg)->port;
+  return kp->count == PORT_QUEUE_MAX && kp->receivers > 0;
+}
+
 /* kobj_alloc - allocate a zeroed kobject of 'type'.  refcount starts at 0; the
  * first handle_install_locked() that succeeds takes it to 1. */
 static struct kobject *kobj_alloc(uint8_t type) {
@@ -77,6 +209,12 @@ static void kobj_free(struct kobject *o) {
     return;
   if (o->type < OBJ_TYPE_COUNT)
     __sync_fetch_and_sub(&obj_live_count[o->type], 1);
+  if (o->type == OBJ_TYPE_PIPE && o->pipe) {
+    kfree(o->pipe->buf);
+    kfree(o->pipe);
+  }
+  if (o->type == OBJ_TYPE_PORT && o->port)
+    kfree(o->port); /* already unpublished when its last receiver closed */
   kfree(o);
 }
 
@@ -125,6 +263,7 @@ static int handle_install_locked(struct process *p, struct kobject *o,
       p->handles[i].obj = o;
       p->handles[i].rights = rights;
       o->refcount++;
+      pipe_handle_count(o, rights, +1); /* track a new pipe reader/writer */
       return i;
     }
   }
@@ -236,6 +375,87 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
       kobj_free(o); /* never installed: refcount stayed 0 */
       return h;
     }
+    return h;
+  }
+
+  /*
+   * OS1_NS_PORT — acquire a capability to a NAMED service port (ASTRA §6.5).
+   * This is the verb that lets a client address a SERVICE instead of a pid.
+   *
+   * Acquisition policy:
+   *   - asking for the RECEIVE right (OS1_RIGHT_READ) PUBLISHES the port and
+   *     makes the caller its owner — that is how a service announces itself.
+   *     A second receiver for an existing name is refused (-EADDRINUSE-ish
+   *     -EEXIST): one mailbox, one service, so a rogue process cannot steal a
+   *     service's identity by racing it.
+   *   - asking without READ yields a SEND-only capability to an EXISTING port;
+   *     possession is thereafter the authority (no ambient pid check).
+   */
+  if (ns == OS1_NS_PORT) {
+    (void)type;
+    if (handles_ensure(cur) != 0)
+      return -ENOMEM;
+    int want_recv = (rights & OS1_RIGHT_READ) != 0;
+
+    uint64_t pflags;
+    spin_lock_irqsave(&object_lock, &pflags);
+    struct kobject *existing = port_find_locked(kpath);
+    if (!want_recv) {
+      if (!existing) {
+        spin_unlock_irqrestore(&object_lock, pflags);
+        return -ENOENT; /* no such service published */
+      }
+      int h = handle_install_locked(cur, existing, rights & ~OS1_RIGHT_READ);
+      spin_unlock_irqrestore(&object_lock, pflags);
+      return h;
+    }
+    if (existing) {
+      spin_unlock_irqrestore(&object_lock, pflags);
+      return -EEXIST; /* a service already owns this name */
+    }
+    int slot = -1;
+    for (int i = 0; i < PORT_TABLE_MAX; i++) {
+      if (!port_table[i]) {
+        slot = i;
+        break;
+      }
+    }
+    spin_unlock_irqrestore(&object_lock, pflags);
+    if (slot < 0)
+      return -ENOSPC; /* port table full */
+
+    /* Allocate with the lock released (kmalloc), then publish under it. */
+    struct kport *kp = kmalloc(sizeof(struct kport));
+    if (!kp)
+      return -ENOMEM;
+    memset(kp, 0, sizeof(*kp));
+    kp->owner_pid = (int)cur->pid;
+    snprintf(kp->name, PORT_NAME_MAX, "%s", kpath);
+    INIT_LIST_HEAD(&kp->rq.task_list);
+    spin_lock_init(&kp->rq.lock);
+    INIT_LIST_HEAD(&kp->wq.task_list);
+    spin_lock_init(&kp->wq.lock);
+
+    struct kobject *o = kobj_alloc(OBJ_TYPE_PORT);
+    if (!o) {
+      kfree(kp);
+      return -ENOMEM;
+    }
+    o->port = kp;
+    o->pid = (int)cur->pid;
+
+    spin_lock_irqsave(&object_lock, &pflags);
+    if (port_find_locked(kpath)) { /* lost a publish race */
+      spin_unlock_irqrestore(&object_lock, pflags);
+      kobj_free(o); /* never installed: refcount still 0 */
+      return -EEXIST;
+    }
+    int h = handle_install_locked(cur, o, rights);
+    if (h >= 0)
+      port_table[slot] = o;
+    spin_unlock_irqrestore(&object_lock, pflags);
+    if (h < 0)
+      kobj_free(o);
     return h;
   }
 
@@ -383,6 +603,7 @@ long sys_handle_close(int handle) {
     return -EBADF;
   }
   struct kobject *o = e->obj;
+  pipe_handle_count(o, e->rights, -1); /* untrack this pipe reader/writer */
   e->obj = NULL;
   e->rights = 0;
   if (--o->refcount <= 0)
@@ -454,6 +675,78 @@ long sys_cap_grant(int target_pid, int handle, uint32_t rights) {
   int h = handle_install_locked(tgt, src->obj, g);
   spin_unlock_irqrestore(&object_lock, flags);
   return h;
+}
+
+/*
+ * sys_pipe - OS1low_pipe(int fds[2]).  Create an anonymous byte pipe (ASTRA §6.2
+ * OBJ_TYPE_PIPE) and install BOTH ends in the caller's handle table: fds[0] is
+ * the READ end, fds[1] the WRITE end (POSIX pipe() order).  One kobject, two
+ * handles (rights = READ / WRITE); reader/writer counts start at 1/1 via the
+ * install path.  Returns 0, or -ENOMEM/-EMFILE/-EFAULT.
+ */
+long sys_pipe(int *ufds) {
+  struct process *cur = current_process;
+  if (!cur)
+    return -EPERM;
+  if (handles_ensure(cur) != 0)
+    return -ENOMEM;
+
+  struct kpipe *kp = kmalloc(sizeof(struct kpipe));
+  if (!kp)
+    return -ENOMEM;
+  memset(kp, 0, sizeof(*kp));
+  kp->buf = kmalloc(PIPE_BUF_SIZE);
+  if (!kp->buf) {
+    kfree(kp);
+    return -ENOMEM;
+  }
+  INIT_LIST_HEAD(&kp->rq.task_list);
+  spin_lock_init(&kp->rq.lock);
+  INIT_LIST_HEAD(&kp->wq.task_list);
+  spin_lock_init(&kp->wq.lock);
+
+  struct kobject *o = kobj_alloc(OBJ_TYPE_PIPE);
+  if (!o) {
+    kfree(kp->buf);
+    kfree(kp);
+    return -ENOMEM;
+  }
+  o->pipe = kp;
+
+  /* Both ends carry TRANSFER and DUPLICATE alongside their direction right.
+   * Without TRANSFER a pipe end cannot be handed to another process at all
+   * (sys_cap_grant requires it), which would make a pipe usable only INSIDE the
+   * creating process — defeating its whole purpose as an IPC channel and, in
+   * particular, breaking the out-of-line request transfer the execution service
+   * depends on.  Note this does NOT widen access to the pipe itself: the
+   * direction right is still what gates read vs write, and a grant can only
+   * attenuate. */
+  uint64_t flags;
+  spin_lock_irqsave(&object_lock, &flags);
+  int rfd = handle_install_locked(
+      cur, o, OS1_RIGHT_READ | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE);
+  int wfd = (rfd >= 0) ? handle_install_locked(cur, o,
+                                               OS1_RIGHT_WRITE |
+                                                   OS1_RIGHT_TRANSFER |
+                                                   OS1_RIGHT_DUPLICATE)
+                       : rfd;
+  spin_unlock_irqrestore(&object_lock, flags);
+
+  if (rfd < 0 || wfd < 0) {
+    if (rfd >= 0)
+      sys_handle_close(rfd); /* drops the read end; frees o at refcount 0 */
+    else
+      kobj_free(o); /* never installed: refcount 0, free the whole pipe */
+    return (rfd < 0) ? rfd : wfd;
+  }
+
+  int fds[2] = {rfd, wfd};
+  if (arch_copy_to_user(ufds, fds, sizeof(fds)) != 0) {
+    sys_handle_close(rfd);
+    sys_handle_close(wfd);
+    return -EFAULT;
+  }
+  return 0;
 }
 
 /* pin_handle - look up a handle, check required rights, and pin the object
@@ -596,6 +889,80 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
       ret = (cn > 0 && arch_copy_to_user(ubuf, stbuf, cn) != 0) ? -EFAULT
                                                                 : (long)cn;
     }
+  } else if (o->type == OBJ_TYPE_PORT) {
+    /* Port RECEIVE (needs the receive right, checked by pin_handle above).
+     * Dequeues one whole ipc_message — the message is the unit, unlike the
+     * pipe's byte stream.  Blocks while empty and a sender still exists;
+     * returns 0 when the last sender is gone, so a service loop terminates
+     * instead of hanging. */
+    struct kport *kp = o->port;
+    if (!kp) {
+      ret = -EIO;
+    } else if (n < sizeof(struct ipc_message)) {
+      ret = -EINVAL; /* a partial message would desync the mailbox */
+    } else {
+      for (;;) {
+        uint64_t f2;
+        spin_lock_irqsave(&object_lock, &f2);
+        if (kp->count > 0) {
+          struct ipc_message m = kp->q[kp->head];
+          kp->head = (kp->head + 1) % PORT_QUEUE_MAX;
+          kp->count--;
+          spin_unlock_irqrestore(&object_lock, f2);
+          wake_up(&kp->wq); /* freed a slot → wake a blocked sender */
+          ret = (arch_copy_to_user(ubuf, &m, sizeof(m)) != 0)
+                    ? -EFAULT
+                    : (long)sizeof(m);
+          break;
+        }
+        if (kp->senders == 0) { /* nobody left to send → end of service */
+          spin_unlock_irqrestore(&object_lock, f2);
+          ret = 0;
+          break;
+        }
+        spin_unlock_irqrestore(&object_lock, f2);
+        kthread_block(&kp->rq, port_readable_block, o);
+      }
+    }
+  } else if (o->type == OBJ_TYPE_PIPE) {
+    /* Pipe read: block until data is available or every writer has closed
+     * (EOF → 0).  The still-block predicate is re-checked under the reader wait
+     * queue lock so a writer's publish-then-wake_up can never be lost. */
+    struct kpipe *kp = o->pipe;
+    if (n == 0 || !kp) {
+      ret = (n == 0) ? 0 : -EIO;
+    } else {
+      uint8_t *kb = kmalloc(n);
+      if (!kb) {
+        ret = -ENOMEM;
+      } else {
+        for (;;) {
+          uint64_t f2;
+          spin_lock_irqsave(&object_lock, &f2);
+          if (kp->count > 0) {
+            uint32_t take = (kp->count < n) ? kp->count : (uint32_t)n;
+            for (uint32_t i = 0; i < take; i++) {
+              kb[i] = kp->buf[kp->head];
+              kp->head = (kp->head + 1) % PIPE_BUF_SIZE;
+            }
+            kp->count -= take;
+            spin_unlock_irqrestore(&object_lock, f2);
+            wake_up(&kp->wq); /* freed space → wake a blocked writer */
+            ret = (arch_copy_to_user(ubuf, kb, take) != 0) ? -EFAULT
+                                                           : (long)take;
+            break;
+          }
+          if (kp->writers == 0) { /* empty and no writers → EOF */
+            spin_unlock_irqrestore(&object_lock, f2);
+            ret = 0;
+            break;
+          }
+          spin_unlock_irqrestore(&object_lock, f2);
+          kthread_block(&kp->rq, pipe_readable_block, o);
+        }
+        kfree(kb);
+      }
+    }
   } else {
     ret = -EINVAL;
   }
@@ -699,6 +1066,91 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
     if (win_id <= 0 && current_process)
       win_id = current_process->ctty_win;
     ret = window_text_write(win_id, (const char *)ubuf, n);
+  } else if (o->type == OBJ_TYPE_PORT) {
+    /* Port SEND (needs the send right).  The handle's WRITE right IS the
+     * authority — deliberately NO process_ipc_allowed() check, exactly as the
+     * OBJ_TYPE_PROCESS send path documents: ambient checks gate ACQUISITION,
+     * not use.  That is the whole point of a port: the client never names a
+     * pid.  `from` is stamped by the kernel so it cannot be forged. */
+    struct kport *kp = o->port;
+    if (!kp) {
+      ret = -EIO;
+    } else if (n != sizeof(struct ipc_message)) {
+      ret = -EINVAL;
+    } else {
+      struct ipc_message m;
+      if (arch_copy_from_user(&m, ubuf, sizeof(m)) != 0) {
+        ret = -EFAULT;
+      } else {
+        m.from = current_process ? (int)current_process->pid : 0;
+        for (;;) {
+          uint64_t f2;
+          spin_lock_irqsave(&object_lock, &f2);
+          if (kp->receivers == 0) { /* service gone → no point queueing */
+            spin_unlock_irqrestore(&object_lock, f2);
+            ret = -EPIPE;
+            break;
+          }
+          if (kp->count < PORT_QUEUE_MAX) {
+            kp->q[kp->tail] = m;
+            kp->tail = (kp->tail + 1) % PORT_QUEUE_MAX;
+            kp->count++;
+            spin_unlock_irqrestore(&object_lock, f2);
+            wake_up(&kp->rq); /* message available → wake the service */
+            ret = (long)sizeof(m);
+            break;
+          }
+          spin_unlock_irqrestore(&object_lock, f2);
+          kthread_block(&kp->wq, port_writable_block, o); /* mailbox full */
+        }
+      }
+    }
+  } else if (o->type == OBJ_TYPE_PIPE) {
+    /* Pipe write: append to the ring buffer, blocking while it is full and a
+     * reader still exists; -EPIPE if every reader has closed (no SIGPIPE here).
+     * Wakes a blocked reader after each chunk lands. */
+    struct kpipe *kp = o->pipe;
+    if (n == 0 || !kp) {
+      ret = (n == 0) ? 0 : -EIO;
+    } else {
+      uint8_t *kb = kmalloc(n);
+      if (!kb) {
+        ret = -ENOMEM;
+      } else if (arch_copy_from_user(kb, ubuf, n) != 0) {
+        kfree(kb);
+        ret = -EFAULT;
+      } else {
+        size_t done = 0;
+        ret = 0;
+        while (done < n) {
+          uint64_t f2;
+          spin_lock_irqsave(&object_lock, &f2);
+          if (kp->readers == 0) { /* no reader will ever consume → broken pipe */
+            spin_unlock_irqrestore(&object_lock, f2);
+            ret = (done > 0) ? (long)done : -EPIPE;
+            break;
+          }
+          uint32_t space = PIPE_BUF_SIZE - kp->count;
+          if (space == 0) { /* full: wait for a reader to drain */
+            spin_unlock_irqrestore(&object_lock, f2);
+            kthread_block(&kp->wq, pipe_writable_block, o);
+            continue;
+          }
+          uint32_t chunk = (n - done < space) ? (uint32_t)(n - done) : space;
+          for (uint32_t i = 0; i < chunk; i++) {
+            kp->buf[kp->tail] = kb[done + i];
+            kp->tail = (kp->tail + 1) % PIPE_BUF_SIZE;
+          }
+          kp->count += chunk;
+          done += chunk;
+          spin_unlock_irqrestore(&object_lock, f2);
+          wake_up(&kp->rq); /* data available → wake a blocked reader */
+        }
+        if (ret == 0)
+          ret = (long)done;
+        kfree(kb);
+      }
+    }
   } else {
     ret = -EINVAL;
   }
@@ -846,6 +1298,57 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     return ret;
   }
 
+  /*
+   * PROCESS: hand a spawned job to its LOGICAL owner (Q3, ASTRA §6.5).
+   *
+   * Authority is deliberately doubled: DESTROY on the target (you must already
+   * control the process) AND a privileged caller — because this DELEGATES
+   * kill/stop/cont authority over that process to `arg`.  Without the
+   * privilege gate any process could hand its child to a third party, or
+   * re-home itself under a victim to borrow their authority chain.
+   */
+  if (cmd == OBJ_CTL_SETOWNER) {
+    long err = 0;
+    struct kobject *o = pin_handle(handle, OS1_RIGHT_DESTROY, &err);
+    if (!o)
+      return err;
+    long ret;
+    if (o->type != OBJ_TYPE_PROCESS || arg <= 0) {
+      ret = -EINVAL;
+    } else if (!current_process || !proc_is_privileged(current_process)) {
+      ret = -EPERM;
+    } else {
+      ret = process_set_owner(o->pid, (int)arg);
+    }
+    obj_unref(o);
+    return ret;
+  }
+
+  /* FILE: truncate to empty through an open descriptor (Phase 1 leftover:
+   * ftruncate).  Needs OS1_RIGHT_WRITE — this destroys data, unlike SEEK.  The
+   * provider's primitive is whole-file-replace, so an offset-0 zero-length
+   * vfs_write_file() empties the file; this is the one truncation a POSIX
+   * write(fd,...,0) cannot express (that is defined as a no-op).  Non-empty
+   * lengths are composed in libc's ftruncate() and never arrive here. */
+  if (cmd == OBJ_CTL_TRUNCATE) {
+    long err = 0;
+    struct kobject *o = pin_handle(handle, OS1_RIGHT_WRITE, &err);
+    if (!o)
+      return err;
+    long ret;
+    if (o->type != OBJ_TYPE_FILE || arg != 0) {
+      ret = -EINVAL;
+    } else if (vfs_write_file(o->path, "", 0, 0) < 0) {
+      ret = -EIO;
+    } else {
+      o->offset = 0;
+      (void)vfs_open(o->path, &o->node); /* refresh the cached size */
+      ret = 0;
+    }
+    obj_unref(o);
+    return ret;
+  }
+
   /* FILE: report the CURRENT size in bytes (Stage 4: lseek SEEK_END / stat via the
    * object, so a FILE handle can fully back open()/read()/write()/lseek()).  Reads
    * the live size (another handle may have grown the file), falling back to the
@@ -945,6 +1448,70 @@ int process_install_stdio(struct process *p) {
 }
 
 /*
+ * process_redirect_child_fd - install the SPAWNER's open handle 'parent_fd' into
+ * the freshly-created child's slot 'child_slot', OVERWRITING the pre-installed
+ * console there (Phase 4 shell redirection: `<`/`>`/`>>`/`2>`).  This is the
+ * fork+dup2 primitive expressed as a capability dup — the child gets a SECOND
+ * handle to the SAME kobject (shared FILE offset, ASTRA §6.2), so its
+ * read(0)/write(1) flow to the file instead of the terminal.  Called from
+ * dispatch_spawn BEFORE the child is enqueued, with the spawner as
+ * current_process; the spawner closes its own copies after the spawn returns.
+ * Returns 0, or -EINVAL/-EBADF/-ENOMEM.
+ */
+int process_redirect_child_fd_from(struct process *owner, struct process *child,
+                                   int child_slot, int parent_fd) {
+  struct process *parent = owner; /* the fd's owner; not necessarily the spawner */
+  if (!child || !parent)
+    return -EINVAL;
+  if (child_slot < 0 || child_slot >= NPROC_HANDLES ||
+      parent_fd < 0 || parent_fd >= NPROC_HANDLES)
+    return -EBADF;
+  if (!parent->handles)
+    return -EBADF;
+  if (handles_ensure(child) != 0) /* normally already done by install_stdio */
+    return -ENOMEM;
+
+  struct kobject *to_free = NULL;
+  uint64_t flags;
+  spin_lock_irqsave(&object_lock, &flags);
+  struct handle_entry *src = &parent->handles[parent_fd];
+  if (!src->obj) {
+    spin_unlock_irqrestore(&object_lock, flags);
+    return -EBADF;
+  }
+  /* Drop whatever the child already held there (its shared console handle) and
+   * point the slot at the spawner's object with the SAME rights. */
+  struct handle_entry *dst = &child->handles[child_slot];
+  struct kobject *old = dst->obj;
+  uint32_t old_rights = dst->rights;
+  dst->obj = src->obj;
+  dst->rights = src->rights;
+  src->obj->refcount++;
+  pipe_handle_count(src->obj, src->rights, +1); /* child gains a pipe end */
+  if (old) {
+    pipe_handle_count(old, old_rights, -1); /* child loses the old handle */
+    if (--old->refcount <= 0)
+      to_free = old; /* last ref to the console → free outside the lock */
+  }
+  spin_unlock_irqrestore(&object_lock, flags);
+  if (to_free)
+    kobj_free(to_free);
+  return 0;
+}
+
+/* process_redirect_child_fd - the spawner-is-the-source form (today's callers:
+ * the SYS_SPAWN redirection list, where the fds belong to the process calling
+ * spawn).  Kept as a thin wrapper so the source stays parameterised: an
+ * execution SERVICE spawning on a client's behalf needs the source to be the
+ * CLIENT, not itself (Q2 hybrid).  Splitting the source out now means that path
+ * is a caller change rather than a rewrite. */
+int process_redirect_child_fd(struct process *child, int child_slot,
+                              int parent_fd) {
+  return process_redirect_child_fd_from(current_process, child, child_slot,
+                                        parent_fd);
+}
+
+/*
  * process_handles_destroy - close every handle a dying process holds and free
  * its table.  Called from BOTH process free sites (immediate teardown and the
  * deferred reaper) before the struct process page is freed.  NULL-safe.
@@ -964,6 +1531,7 @@ void process_handles_destroy(struct process *p) {
     struct kobject *o = tbl[i].obj;
     if (!o)
       continue;
+    pipe_handle_count(o, tbl[i].rights, -1); /* untrack pipe reader/writer */
     tbl[i].obj = NULL;
     if (--o->refcount <= 0)
       kobj_free(o); /* object_lock -> kmalloc_lock order is consistent */

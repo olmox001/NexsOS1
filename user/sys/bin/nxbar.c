@@ -670,7 +670,16 @@ static void redraw(int force) {
     if (wi[i].flags & (WININFO_TOPMOST | WININFO_PASSIVE))
       continue;
     if (wi[i].flags & WININFO_FOCUSED) {
-      snprintf(g_focus_title, sizeof(g_focus_title), "%s", wi[i].title);
+      /* Phase 3: prefer the launch identity nxexec published
+       * (sys.proc.<pid>.name) over the app's own window title, so the bar
+       * shows a stable, canonical name; fall back to the title when a window
+       * has no registered identity (e.g. a system service). */
+      char idkey[48], idname[40];
+      snprintf(idkey, sizeof(idkey), "sys.proc.%d.name", wi[i].pid);
+      if (OS1_registry_get(idkey, idname, sizeof(idname)) == 0 && idname[0])
+        snprintf(g_focus_title, sizeof(g_focus_title), "%s", idname);
+      else
+        snprintf(g_focus_title, sizeof(g_focus_title), "%s", wi[i].title);
       break;
     }
   }
@@ -1032,6 +1041,15 @@ int main(void) {
         g_col_xbtn_glyph = nxres_bg_color();
         redraw(1);
       }
+    }
+
+    /* Phase 3: GC stale sys.proc.<pid> identity keys (dead detached apps) on a
+     * slow cadence — ~every 5 s, not every 33 ms frame. */
+    static long g_last_prune_ms = 0;
+    long now_ms = get_time();
+    if (now_ms - g_last_prune_ms > 5000) {
+      g_last_prune_ms = now_ms;
+      nxexec_prune_identities();
     }
 
     OS1_sleep(33); /* ~30 Hz, descheduled between ticks, like nxui */

@@ -21,10 +21,12 @@
 #include "nxline.h"
 #include "nxperm.h"
 #include "nxres.h"
+#include <fcntl.h>
 #include <input.h>
 #include <os1.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define CMD_MAX NXLINE_MAX
 #define SPAWN_PATH_MAX NXEXEC_PATH_MAX
@@ -41,6 +43,12 @@ static int g_light = -1;
 
 static struct nxline g_line;
 static struct nxjobs g_jobs;
+
+/* Exit status of the last foreground command — the value `nxshell -c` exits
+ * with, so system()/os.execute() see the real result (Phase 2 gave us the
+ * exit_code channel; this is what carries it out of the shell).  POSIX
+ * conventions: 127 = command not found, 128+signal = killed. */
+static int g_last_status = 0;
 
 static void
 print_prompt_only(void); /* fwd decl: used as nxline's repaint hook */
@@ -105,8 +113,37 @@ static int tokenize(char *s, char *argv[], int max) {
   return cmdline_split(s, argv, max);
 }
 
+/* Redirection parsing lives in nxexec.h as EXECUTOR policy, so the shell, the
+ * hosted terminal and the execution service all share ONE parser (maintainer
+ * 2026-07-18: nxexec must handle everything the shell was handling).  The local
+ * copy was deleted rather than aliased: two copies of a parser are exactly how
+ * the graphical and terminal paths drifted apart in the first place. */
+
+/*
+ * spawn_search_args - resolve + spawn a command, honouring any `<`/`>`/`>>`/`2>`
+ * redirections embedded in argv.  Centralised here so both the default command
+ * path and the `exec` builtin get redirection for free.  With no redirections
+ * this is exactly nxexec_spawn_search (nredir 0 -> plain spawn).
+ */
 static int spawn_search_args(int argc, char *argv[], char *out_path) {
-  return nxexec_spawn_search(argc, argv, out_path, /*detached=*/0);
+  struct spawn_redir redir[SPAWN_MAX_REDIR];
+  int fds[SPAWN_MAX_REDIR], nredir = 0, nfds = 0;
+  if (nxexec_strip_redirections(&argc, argv, redir, &nredir, fds, &nfds) != 0)
+    return -1; /* error already reported */
+  if (argc == 0) {
+    print("nxshell: no command\n"); /* e.g. "> out" with nothing to run */
+    for (int i = 0; i < nfds; i++)
+      close(fds[i]);
+    return -1;
+  }
+  int pid =
+      nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0, redir,
+                                nredir);
+  /* The child owns its own dups now; drop our copies so the files close when
+   * both sides are done (POSIX fork+dup2 lifecycle). */
+  for (int i = 0; i < nfds; i++)
+    close(fds[i]);
+  return pid;
 }
 
 static int run_foreground(int pid) { return nxexec_run_foreground(pid); }
@@ -115,13 +152,141 @@ static int run_foreground(int pid) { return nxexec_run_foreground(pid); }
  * (NXEXEC_JOB_STOPPED), register it as a Stopped job so `jobs`/`bg`/`fg` can
  * pick it up (Phase 2 job control). */
 static void run_fg_job(int pid, const char *cmd) {
-  if (run_foreground(pid) == NXEXEC_JOB_STOPPED) {
+  /* Capture the command's exit status on the way through (g_last_status is what
+   * `nxshell -c` returns, so os.execute()/system() observe real failures). */
+  if (nxexec_run_foreground_ex(pid, &g_last_status) == NXEXEC_JOB_STOPPED) {
     int id = nxjobs_add(&g_jobs, pid, cmd);
     int s = nxjobs_find(&g_jobs, id);
     if (s >= 0)
       g_jobs.slot[s].state = NXJOB_STOPPED;
     printf("[%d]  Stopped   %s\n", id, cmd);
   }
+}
+
+/*
+ * spawn_with_extra_redir - resolve + spawn a command, applying its own
+ * `<`/`>`/`>>`/`2>` redirections PLUS one extra {extra_child_fd ← extra_parent_fd}
+ * (a pipe end).  The CALLER owns extra_parent_fd and closes it afterwards; this
+ * closes only the files it opened for the command's own redirections.  Returns
+ * the PID or <= 0.  A negative extra_parent_fd means "no extra redirection".
+ */
+static int spawn_with_extra_redir(int argc, char *argv[], int extra_child_fd,
+                                  int extra_parent_fd, char *out_path) {
+  struct spawn_redir redir[SPAWN_MAX_REDIR];
+  int fds[SPAWN_MAX_REDIR], nredir = 0, nfds = 0;
+  if (nxexec_strip_redirections(&argc, argv, redir, &nredir, fds, &nfds) != 0)
+    return -1;
+  if (argc == 0) {
+    for (int i = 0; i < nfds; i++)
+      close(fds[i]);
+    return -1;
+  }
+  if (extra_parent_fd >= 0 && nredir < SPAWN_MAX_REDIR) {
+    redir[nredir].child_fd = extra_child_fd;
+    redir[nredir].parent_fd = extra_parent_fd;
+    redir[nredir].source_pid = 0; /* our own table */
+    nredir++;
+  }
+  int pid = nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0, redir,
+                                      nredir);
+  for (int i = 0; i < nfds; i++)
+    close(fds[i]); /* our own `>`/`2>` files; NOT the caller's pipe end */
+  return pid;
+}
+
+/*
+ * run_pipeline - execute `LHS | RHS` (a single pipe, ASTRA OBJ_TYPE_PIPE).  The
+ * RHS is the foreground stage; the LHS produces into the pipe.  Two producer
+ * kinds are handled:
+ *   - the `echo` BUILTIN: the shell writes its output straight into the pipe;
+ *   - any other (SPAWNED) command: spawned with its stdout → the pipe write-end.
+ * Each stage still honours its own `>`/`2>` redirections.  If the kernel cannot
+ * make a pipe, fall back to a temp file for the echo case (increment-1
+ * redirection) so the common `echo ... | cmd` still works.
+ */
+static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
+  argv[pipe_idx] = 0; /* terminate the LHS argv in place */
+  int lhs_argc = pipe_idx;
+  char **rhs_argv = &argv[pipe_idx + 1];
+  int rhs_argc = argc - pipe_idx - 1;
+  if (lhs_argc <= 0 || rhs_argc <= 0) {
+    print("nxshell: syntax error near '|'\n");
+    return;
+  }
+  int lhs_is_echo = (strcmp(argv[0], "echo") == 0);
+
+  int pfds[2];
+  if (pipe(pfds) != 0) {
+    /* No kernel pipe available: temp-file fallback for the echo producer. */
+    if (!lhs_is_echo) {
+      print("nxshell: cannot create pipe\n");
+      return;
+    }
+    const char *tmp = "/home/.nxpipe";
+    char buf[CMD_MAX];
+    int n = 0;
+    for (int i = 1; i < lhs_argc && n < (int)sizeof(buf) - 1; i++) {
+      if (i > 1 && n < (int)sizeof(buf) - 1)
+        buf[n++] = ' ';
+      for (const char *p = argv[i]; *p && n < (int)sizeof(buf) - 1; p++)
+        buf[n++] = *p;
+    }
+    if (n < (int)sizeof(buf))
+      buf[n++] = '\n';
+    if (OS1_fs_write(tmp, buf, n, 0) < 0) {
+      printf("nxshell: cannot stage pipe temp %s\n", tmp);
+      return;
+    }
+    int tfd = open(tmp, O_RDONLY);
+    if (tfd < 0) {
+      OS1_fs_unlink(tmp);
+      return;
+    }
+    char tpath[SPAWN_PATH_MAX];
+    int rpid = spawn_with_extra_redir(rhs_argc, rhs_argv, 0, tfd, tpath);
+    close(tfd);
+    if (rpid > 0) {
+      run_fg_job(rpid, rhs_argv[0]);
+    } else {
+      g_last_status = 127; /* POSIX: command not found */
+      printf("Unknown command: %s\n", rhs_argv[0]);
+    }
+    OS1_fs_unlink(tmp);
+    return;
+  }
+
+  /* Real pipe: spawn RHS on the read-end FIRST so it drains while we produce. */
+  char rpath[SPAWN_PATH_MAX];
+  int rpid = spawn_with_extra_redir(rhs_argc, rhs_argv, 0, pfds[0], rpath);
+
+  int lpid = -1;
+  if (lhs_is_echo) {
+    for (int i = 1; i < lhs_argc; i++) {
+      if (i > 1)
+        write(pfds[1], " ", 1);
+      write(pfds[1], argv[i], strlen(argv[i]));
+    }
+    write(pfds[1], "\n", 1);
+  } else {
+    char lpath[SPAWN_PATH_MAX];
+    lpid = spawn_with_extra_redir(lhs_argc, argv, 1, pfds[1], lpath);
+  }
+  close(pfds[1]); /* our write-end gone (LHS keeps its own dup) → RHS sees EOF */
+  close(pfds[0]); /* RHS keeps its own read dup */
+
+  if (rpid > 0) {
+    if (background) {
+      int id = nxjobs_add(&g_jobs, rpid, rhs_argv[0]);
+      printf("[%d] %d\n", id, rpid);
+    } else {
+      run_fg_job(rpid, rhs_argv[0]);
+    }
+  } else {
+    g_last_status = 127; /* POSIX: command not found */
+    printf("Unknown command: %s\n", rhs_argv[0]);
+  }
+  if (lpid > 0)
+    OS1low_process_wait(lpid); /* reap the spawned producer */
 }
 
 static int skip_bin_entry(const char *name) {
@@ -184,9 +349,11 @@ static void cmd_help(void) {
   print("  about           About this system\n");
   print("  exec <prog>     Run a program with arguments\n");
   print("  jobs            List background jobs\n");
-  print("  fg [%N]          Bring job N (or the most recent) to the "
+  print("  fg [%N|name]     Bring job N (or the most recent) to the "
         "foreground\n");
-  print("  bg [%N]          (not supported yet — see 'bg' with no args)\n");
+  print("  bg [%N|name]     Resume a stopped job in the background\n");
+  print("  attach <pid>    Track an already-running process as a job\n");
+  print("  disown [%N]      Stop tracking a job (it keeps running)\n");
   print("  exit            Close this shell\n");
   print("\n\033[1;33mLine editing:\033[0m\n");
   print("  \xe2\x86\x90/\xe2\x86\x92 Home/End   move cursor    Delete   "
@@ -197,6 +364,10 @@ static void cmd_help(void) {
   print("  Ctrl-R          search history Ctrl-D   delete-fwd (or exit on "
         "empty line)\n");
   print("  <cmd> &         run in background\n");
+  print("\n\033[1;33mRedirection & pipes:\033[0m\n");
+  print("  cmd > file      stdout to file      cmd >> file   append\n");
+  print("  cmd < file      stdin from file     cmd 2> file   stderr to file\n");
+  print("  cmd | cmd       pipe stdout into the next command\n");
   print("\n\033[1;33mPrograms in /sys/bin:\033[0m\n");
   help_list_programs("/sys/bin");
   print("\n\033[1;33mPrograms in Bin are not listed for brevity\033[0m\n");
@@ -234,6 +405,10 @@ static void process_command(void) {
   if (argc == 0)
     return;
 
+  /* Each command reports its own status; builtins that print nothing bad leave
+   * it at 0 (success).  Spawn paths overwrite it via run_fg_job(). */
+  g_last_status = 0;
+
   /* Background job: a trailing standalone '&' token (nxjobs.h — job control
    * light, see its header comment on what is and isn't possible without a
    * kernel-side STOPPED state). Stripped before dispatch so every builtin
@@ -242,6 +417,17 @@ static void process_command(void) {
   if (argc > 1 && strcmp(argv[argc - 1], "&") == 0) {
     background = 1;
     argc--;
+  }
+
+  /* Pipeline `LHS | RHS`: handled BEFORE builtin dispatch so a builtin producer
+   * (echo) can feed a spawned consumer.  Single pipe (main.lua's `echo | lua`);
+   * only the first `|` is split. */
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "|") == 0) {
+      run_pipeline(i, argc, argv, background);
+      nxline_reset(&g_line);
+      return;
+    }
   }
 
   const char *cmd = argv[0];
@@ -413,8 +599,7 @@ static void process_command(void) {
     nxjobs_poll(&g_jobs);
     nxjobs_print(&g_jobs);
   } else if (strcmp(cmd, "fg") == 0) {
-    int slot = argc >= 2 ? nxjobs_find(&g_jobs, nxjobs_parse_id(argv[1]))
-                         : nxjobs_last(&g_jobs);
+    int slot = nxjobs_resolve(&g_jobs, argc >= 2 ? argv[1] : (const char *)0);
     if (slot < 0) {
       print("fg: no such job\n");
     } else {
@@ -430,8 +615,7 @@ static void process_command(void) {
       }
     }
   } else if (strcmp(cmd, "bg") == 0) {
-    int slot = argc >= 2 ? nxjobs_find(&g_jobs, nxjobs_parse_id(argv[1]))
-                         : nxjobs_last(&g_jobs);
+    int slot = nxjobs_resolve(&g_jobs, argc >= 2 ? argv[1] : (const char *)0);
     if (slot < 0)
       print("bg: no such job\n");
     else if (g_jobs.slot[slot].state != NXJOB_STOPPED)
@@ -440,6 +624,55 @@ static void process_command(void) {
       printf("[%d] %s &\n", g_jobs.slot[slot].id, g_jobs.slot[slot].cmd);
     else
       print("bg: failed to resume\n");
+  } else if (strcmp(cmd, "attach") == 0) {
+    /*
+     * attach <pid> - adopt an ALREADY-RUNNING process into this shell's job
+     * table (Phase 4: "a separated process is NOT killed with its parent, but
+     * jobs still tracks it").  This is the re-attach half of that model; the
+     * detach half is `disown` below.
+     *
+     * Authority (kernel, sys_handle_create OS1_NS_PROC): TRACKING needs only a
+     * WAIT/READ capability, which any live pid grants — so `jobs` status and
+     * exit reporting work for any process, including one this shell never
+     * spawned (a dock-launched app re-homed to another ancestor).  fg/bg
+     * additionally need kill authority (self / descendant / privileged), so
+     * they succeed for our own descendants and report a failure otherwise
+     * rather than pretending.
+     */
+    if (argc < 2) {
+      print("usage: attach <pid>\n");
+    } else {
+      int pid = atoi(argv[1]);
+      int w = (pid > 0) ? OS1low_process_wait(pid) : -2;
+      if (pid <= 0)
+        print("attach: invalid pid\n");
+      else if (w == -2)
+        printf("attach: no such process: %d\n", pid);
+      else if (w > 0)
+        printf("attach: process %d has already exited\n", pid);
+      else {
+        /* Name it the SAME way the bar and dock do (Phase 3 identity). */
+        char nm[NXJOBS_CMD_MAX];
+        if (!nxexec_lookup_identity(pid, nm, (int)sizeof(nm)))
+          snprintf(nm, sizeof(nm), "pid %d", pid);
+        int id = nxjobs_add(&g_jobs, pid, nm);
+        if (id < 0)
+          print("attach: job table full\n");
+        else
+          printf("[%d] %d %s\n", id, pid, nm);
+      }
+    }
+  } else if (strcmp(cmd, "disown") == 0) {
+    /* disown [%N] - stop tracking a job WITHOUT killing it: the process keeps
+     * running, separated from this shell (the inverse of `attach`). */
+    int slot = nxjobs_resolve(&g_jobs, argc >= 2 ? argv[1] : (const char *)0);
+    if (slot < 0) {
+      print("disown: no such job\n");
+    } else {
+      printf("[%d] %d %s disowned\n", g_jobs.slot[slot].id,
+             g_jobs.slot[slot].pid, g_jobs.slot[slot].cmd);
+      nxjobs_reap(&g_jobs, slot); /* drop the slot; the process lives on */
+    }
   } else if (strcmp(cmd, "exec") == 0) {
     if (argc < 2) {
       print("usage: exec <program> [args...]\n");
@@ -447,6 +680,7 @@ static void process_command(void) {
       char path[SPAWN_PATH_MAX];
       int pid = spawn_search_args(argc - 1, &argv[1], path);
       if (pid <= 0) {
+        g_last_status = 127; /* POSIX: command not found */
         printf("exec: not found: %s\n", argv[1]);
       } else if (background) {
         int id = nxjobs_add(&g_jobs, pid, argv[1]);
@@ -459,6 +693,7 @@ static void process_command(void) {
     char path[SPAWN_PATH_MAX];
     int pid = spawn_search_args(argc, argv, path);
     if (pid <= 0) {
+      g_last_status = 127; /* POSIX: command not found */
       printf("Unknown command: %s\n", argv[0]);
     } else if (background) {
       int id = nxjobs_add(&g_jobs, pid, argv[0]);
@@ -510,10 +745,13 @@ int main(int argc, char *argv[]) {
     g_line.buf[sizeof(g_line.buf) - 1] = '\0';
     g_line.len = (int)strlen(g_line.buf);
     process_command();
-    return 0; /* OS1 does not yet provide a real exit-status channel (see
-               * system() in lib.c). A future kernel/registry enhancement
-               * could propagate the actual exit status instead of always
-               * returning 0. */
+    /* Exit with the COMMAND's status, not a blanket 0.  Phase 2 added the
+     * exit-status channel (per-process exit_code -> waitpid), and run_fg_job()
+     * captures it into g_last_status; propagating it here is what makes
+     * system()/os.execute() able to observe a failure at all — lua's test
+     * suite asserts on exactly this (main.lua NoRun: `assert(not
+     * os.execute(cmd))` for a command that must fail). */
+    return g_last_status;
   }
 
   nxline_load_history(&g_line);

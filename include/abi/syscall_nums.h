@@ -104,5 +104,6 @@
 #define SYS_CLOCK_GETTIME      258  /* Tier 3 clock; arg0: 0=MONOTONIC ns, 1=process CPU ns; returns ns */
 #define SYS_UNLINK             259  /* remove a file/namespace node by path (VFS unlink) */
 #define SYS_MKDIR              260  /* create a directory by path (VFS create, VFS_TYPE_DIR) */
+#define SYS_PIPE               261  /* create an anonymous byte pipe; arg0 = user int[2] (read,write fds) */
 
 #endif /* _SYSCALL_NUMS_H */

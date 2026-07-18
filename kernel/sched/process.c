@@ -133,7 +133,17 @@ static void __reparent_children(struct process *dead) {
 
   for (int i = 0; i < MAX_PROCESSES; i++) {
     struct process *p = process_pool[i];
-    if (!p || p == dead || p->parent_pid != (int)dead->pid)
+    if (!p || p == dead)
+      continue;
+    /* The LOGICAL owner dying breaks the authority chain in exactly the way
+     * this function exists to prevent: owner_pid would point at a corpse, the
+     * ancestry walk in process_kill_allowed() would dead-end, and the job would
+     * be killable only by a privileged process — wedging its pool slot just
+     * like an unadopted orphan.  Drop back to the mechanical parent chain,
+     * which is always walkable. */
+    if (p->owner_pid == (int)dead->pid)
+      p->owner_pid = 0;
+    if (p->parent_pid != (int)dead->pid)
       continue;
     p->parent_pid = heir_pid;
     if (heir)
@@ -232,6 +242,12 @@ static void __enqueue_task(struct process *p) {
    * marks a victim PROC_DEAD under the owning CPU's sched_lock; this guard
    * stops a concurrent schedule() from resurrecting it via re-enqueue. */
   if (p->state == PROC_DEAD || p->state == PROC_ZOMBIE)
+    return;
+
+  /* A STOPPED task must not be resurrected by a wake source (wait-queue
+   * wake_up, etc.) — only process_cont() may resume it, and it does so by
+   * setting PROC_READY first (Phase 2 job control). */
+  if (p->state == PROC_STOPPED)
     return;
 
   int target_cpu_id = (int)p->on_cpu;
@@ -513,6 +529,29 @@ struct process *process_find_by_pid(int pid) {
  * A missing target is "allowed": process_terminate() reports the real
  * -ESRCH-equivalent and keeps the historical return value for it.
  */
+/*
+ * process_set_owner - set a process's LOGICAL parent (Q3, ASTRA §6.5).
+ *
+ * Called only from the OBJ_CTL_SETOWNER capability path, which has already
+ * checked DESTROY on the target and that the caller is privileged.  The owner
+ * must be a LIVE process: allowing a dead/absent pid would leave the job with an
+ * authority chain nobody can walk, orphaning it from job control entirely.
+ *
+ * Returns 0, -ESRCH if either process is gone.
+ */
+int process_set_owner(int pid, int owner_pid) {
+  uint64_t flags;
+  int ret = -ESRCH;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  if (p && __process_find_by_pid(owner_pid)) {
+    p->owner_pid = owner_pid;
+    ret = 0;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return ret;
+}
+
 int process_kill_allowed(struct process *caller, int target_pid) {
   if (!caller)
     return 1; /* kernel context */
@@ -525,16 +564,24 @@ int process_kill_allowed(struct process *caller, int target_pid) {
   spin_lock_irqsave(&sched_lock, &flags);
   struct process *target = __process_find_by_pid(target_pid);
   int allowed = !target;
-  /* Ancestry walk: a parent always has an older (smaller) PID, so the chain
-   * is acyclic and strictly decreasing; the depth bound is belt-and-braces. */
+  /* Ancestry walk over the LOGICAL parent (owner_pid when set, else the
+   * spawning parent_pid), so a job stays under its owner's authority even when
+   * a service did the mechanical spawn (Q3).
+   *
+   * TERMINATION: the plain parent chain is acyclic because a parent always has
+   * an older (smaller) PID.  owner_pid is set by a privileged service and is
+   * NOT guaranteed to be smaller, so that argument no longer holds and the
+   * depth bound stops being belt-and-braces — it is now the actual guarantee
+   * that this loop terminates.  Keep it. */
   for (int depth = 0; target && depth < MAX_PROCESSES; depth++) {
-    if (target->parent_pid == (int)caller->pid) {
+    int up = target->owner_pid > 0 ? target->owner_pid : target->parent_pid;
+    if (up == (int)caller->pid) {
       allowed = 1;
       break;
     }
-    if (target->parent_pid <= 0)
+    if (up <= 0)
       break;
-    target = __process_find_by_pid(target->parent_pid);
+    target = __process_find_by_pid(up);
   }
   spin_unlock_irqrestore(&sched_lock, flags);
   return allowed;
@@ -662,8 +709,11 @@ struct process *process_create_caps(const char *name, uint8_t priority,
    * (zone_alloc_page memsets PAGE_SIZE) and struct process fits in one page,
    * so the old memset(proc,0,sizeof) was a redundant second zeroing of the
    * same page on every spawn (SCHED-08, perf §1). */
-  strncpy(proc->name, name, 15);
-  proc->name[15] = '\0';
+  /* Use the FULL name field (Phase 3): it is PROCESS_NAME_MAX(32) wide, but
+   * the old copy capped at 15 chars, truncating "/sys/bin/nxlauncher" to
+   * "/sys/bin/nxlaun" in ps/nxtop/the bar. */
+  strncpy(proc->name, name, PROCESS_NAME_MAX - 1);
+  proc->name[PROCESS_NAME_MAX - 1] = '\0';
 
   /* Assign unique PID.  Idle tasks (kernel threads) draw from a dedicated
    * high band: with the K3 gate (S-ALIGN F9) they are created BEFORE init,
@@ -707,6 +757,10 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   /* Parentage for the SYS_KILL capability check (ABI-04): the spawner is
    * whatever process is current on this CPU; kernel/boot creations get 0. */
   proc->parent_pid = current_process ? (int)current_process->pid : 0;
+  /* 0 = no distinct logical owner: authority follows parent_pid.  Only an
+   * execution service spawning on a client's behalf sets this, via
+   * OBJ_CTL_SETOWNER (Q3). */
+  proc->owner_pid = 0;
   proc->exit_code = 0; /* Phase 2: default; sys_exit() sets the real value */
   proc->exited = 0;    /* set to 1 only by sys_exit() (voluntary exit) */
 
@@ -1914,11 +1968,17 @@ int process_stop(int pid) {
   for (int i = 0; i < MAX_PROCESSES; i++) {
     struct process *p = process_pool[i];
     if (p && (int)p->pid == pid) {
-      if (p->state == PROC_RUNNING || p->state == PROC_READY) {
+      /* RUNNING/READY/SLEEPING are all stoppable — crucially SLEEPING, since a
+       * foreground REPL polling with OS1_sleep() is usually mid-sleep when
+       * Ctrl-Z arrives.  The wake sources (proc_sleep_wake, IPC send) only
+       * re-ready a PROC_SLEEPING task, so flipping it to STOPPED here keeps it
+       * off the runqueue until process_cont(). */
+      if (p->state == PROC_RUNNING || p->state == PROC_READY ||
+          p->state == PROC_SLEEPING) {
         p->state = PROC_STOPPED;
         rc = 0;
       } else {
-        rc = -EINVAL;
+        rc = -EINVAL; /* already stopped, dying, or a corpse */
       }
       break;
     }
@@ -1951,8 +2011,13 @@ int process_cont(int pid) {
     }
   }
   spin_unlock_irqrestore(&sched_lock, flags);
-  if (target)
+  if (target) {
+    /* Set READY before enqueue so it passes __enqueue_task's STOPPED guard.
+     * A resumed sleeper re-runs its nanosleep and returns once the (now
+     * long-past) deadline is checked, continuing where it left off. */
+    target->state = PROC_READY;
     enqueue_task(target);
+  }
   return rc;
 }
 /*
@@ -2167,6 +2232,8 @@ const char *proc_state_name(int state) {
     return "dead";
   case PROC_READY:
     return "ready";
+  case PROC_STOPPED:
+    return "stopped"; /* Phase 2 job control */
   default:
     return "unused";
   }

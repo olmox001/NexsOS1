@@ -129,6 +129,20 @@ struct process {
    * capability check (ABI-04): a process may kill itself or any descendant,
    * and a privileged (machine/root) process may kill anything. */
   int parent_pid;
+  /* owner_pid: the LOGICAL parent — who this process belongs to, as opposed to
+   * parent_pid, which records who mechanically spawned it (ASTRA §6.5 process
+   * capability; maintainer decision Q3, 2026-07-18).
+   *
+   * These diverge as soon as execution moves behind a service: when the nxexec
+   * daemon spawns a program on a shell's behalf, parent_pid is nxexec but the
+   * job BELONGS to the shell.  Since kill/stop/cont authority is an ancestry
+   * walk, without this the shell would silently lose job control over its own
+   * jobs the moment the daemon lands.
+   *
+   * 0 = unset, meaning "same as parent_pid" (every process today).  Only a
+   * PRIVILEGED process may set it, and setting it DELEGATES authority over the
+   * child, so it is a capability operation (OBJ_CTL_SETOWNER), not a hint. */
+  int owner_pid;
   /* child_count: live (not yet reaped) children of this process
    * (SCHED-DOS-01 #122).  Incremented by process_create() on the creator,
    * decremented when a child's pool slot is released (terminate immediate
@@ -257,6 +271,12 @@ struct process *__process_find_by_pid(int pid);
  * terminate paths (compositor close, init supervision) bypass this and call
  * process_terminate() directly. */
 int process_kill_allowed(struct process *caller, int target_pid);
+/* process_set_owner - set a process's LOGICAL parent (owner_pid), so a job
+ * spawned BY a service still answers to the client that asked for it.  Only
+ * reachable through OBJ_CTL_SETOWNER, which requires DESTROY on the target and
+ * a privileged caller (it delegates authority).  0, or -ESRCH if either pid is
+ * not live. */
+int process_set_owner(int pid, int owner_pid);
 /* process_ipc_allowed: may 'caller' send IPC to target_pid?  True if the
  * caller holds CAP_IPC_ANY, or target is the caller's parent or a
  * descendant.  Acquires sched_lock internally. */

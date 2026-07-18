@@ -42,4 +42,32 @@
  * and must never silently accept unknown semantics (#193 hardening). */
 #define SPAWN_FLAGS_ALL SPAWN_FLAG_DETACHED
 
+/*
+ * fd redirection on spawn (Phase 4, shell `<`/`>`/`>>`/`2>`).  The PARENT opens
+ * the redirect targets (getting handles in its OWN table), then hands the kernel
+ * a list of {child_fd <- parent_fd} pairs; SYS_SPAWN dups each parent handle
+ * into the child's fd slot, OVERWRITING the pre-installed console (fork+dup2
+ * semantics, no string marshaling).  A child reading fd 0 / writing fd 1 then
+ * hits the FILE object instead of the terminal.  The parent closes its own
+ * copies after the spawn returns.
+ */
+#define SPAWN_MAX_REDIR 8
+struct spawn_redir {
+  int child_fd;  /* slot in the CHILD's table (0=stdin,1=stdout,2=stderr,…) */
+  int parent_fd; /* an open handle to dup down, in source_pid's table */
+  /* source_pid: whose table `parent_fd` belongs to.
+   *   0  = the SPAWNER's own table (the ordinary case: a shell redirecting its
+   *        own descriptors into its own child).
+   *   >0 = ANOTHER process's table.  This exists because an execution SERVICE
+   *        spawns on a client's behalf, so the fds belong to the CLIENT, not to
+   *        the spawner.
+   *
+   * AUTHORITY: a non-zero source_pid is accepted only from a PRIVILEGED caller.
+   * Reaching into another process's handle table is a system-service power, not
+   * an application one — the same rule, and the same reasoning, as
+   * OBJ_CTL_SETOWNER.  Without the gate any process could siphon descriptors
+   * out of any other by naming them here. */
+  int source_pid;
+};
+
 #endif /* NEXS_API_CAPS_H */

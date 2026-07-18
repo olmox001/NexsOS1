@@ -458,6 +458,13 @@ LUA_CORE_SRCS := \
 
 LUA_PORT_SRCS := $(USER_LIB_DIR)/portability/lua/lua_portability.c
 LUA_OS1_SRCS  := $(USER_LIB_DIR)/os1LUA_lib.c
+# lua_portability.h is FORCE-INCLUDED into every Lua translation unit
+# (-include, LUA_CFLAGS below), so it is a real prerequisite of all of them.
+# Without it listed here, editing that header silently leaves STALE objects:
+# the .c files it overrides (lua.c's lua_stdin_is_tty / lua_readline) keep the
+# upstream fallbacks while lua_portability.o alone rebuilds — which is exactly
+# how the "echo ... | lua still prints the REPL banner" bug survived a rebuild.
+LUA_PORT_HDR  := $(USER_LIB_DIR)/portability/lua/lua_portability.h
 
 LUA_OBJ_DIR := $(BUILD_DIR)/lua
 LUA_CORE_OBJS := $(patsubst $(LUA_DIR)/%.c,$(LUA_OBJ_DIR)/%.o,$(LUA_CORE_SRCS))
@@ -485,15 +492,15 @@ LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
              -I$(USER_LIB_DIR)/portability/lua \
              -include lua_portability.h
 
-$(LUA_OBJ_DIR)/%.o: $(LUA_DIR)/%.c
+$(LUA_OBJ_DIR)/%.o: $(LUA_DIR)/%.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 
-$(LUA_PORT_OBJ): $(LUA_PORT_SRCS)
+$(LUA_PORT_OBJ): $(LUA_PORT_SRCS) $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 
-$(LUA_OS1_OBJ): $(LUA_OS1_SRCS)
+$(LUA_OS1_OBJ): $(LUA_OS1_SRCS) $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 
@@ -508,7 +515,7 @@ $(LUA_OS1_LIB): $(LUA_OS1_OBJ)
 liblua: $(LUA_LIB) $(LUA_OS1_LIB)
 .PHONY: liblua
 
-$(LUA_OBJ_DIR)/lua.o: $(LUA_DIR)/lua.c
+$(LUA_OBJ_DIR)/lua.o: $(LUA_DIR)/lua.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 

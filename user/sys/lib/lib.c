@@ -225,10 +225,26 @@ long OS1low_process_spawn_detached(const char *path, int argc,
                                    char *const argv[]) {
   return _sys_spawn(path, argc, argv, SPAWN_FLAG_DETACHED);
 }
+/* Phase 4: spawn with fd redirection (shell `<`/`>`/`>>`/`2>`).  The redirect
+ * targets must already be open in THIS process; the kernel dups them into the
+ * child, so the caller closes its copies after we return. */
+long OS1low_process_spawn_redir(const char *path, int argc, char *const argv[],
+                                unsigned int flags,
+                                const struct spawn_redir *redir, int nredir) {
+  if (nredir <= 0)
+    return _sys_spawn(path, argc, argv, flags);
+  return _sys_spawn_redir(path, argc, argv, flags, redir, nredir);
+}
 long OS1low_process_spawn_caps(const char *path, int level,
                                unsigned long caps) {
   return _sys_spawn_caps(path, level, caps, 0);
 }
+/* OS1low_pipe (Phase 4): anonymous byte pipe (OBJ_TYPE_PIPE).  fds[0]=read end,
+ * fds[1]=write end.  The kernel installs both handles; read/write/close operate
+ * on them like any other fd. */
+int OS1low_pipe(int fds[2]) { return (int)errno_ret(_sys_pipe(fds)); }
+/* POSIX pipe(): thin personality over OS1low_pipe (unistd.h). */
+int pipe(int pipefd[2]) { return OS1low_pipe(pipefd); }
 int OS1low_process_kill(int pid) { return _sys_kill(pid); }
 /* OS1low_process_wait (F4 M4.5): wait via a PROCESS capability +
  * OS1_object_wait. A WAIT-only handle is acquirable for any live process
@@ -288,7 +304,28 @@ void OS1low_process_exit(int status) {
 
 /* Bare-name compat shims (DIR-01). */
 int get_pid(void) { return OS1low_process_self(); }
+/* --- POSIX <unistd.h> personality (thin mapping onto the OS1 verbs above) --- */
+/* getpid: the POSIX spelling of get_pid(). */
+int getpid(void) { return get_pid(); }
+/* isatty: a descriptor is a terminal iff the object behind its handle is a
+ * CONSOLE.  This is the REAL test via the capability type (OS1low_cap_query),
+ * not the old "fd < 3" assumption: with shell redirection fd 1 may be a FILE
+ * (`cmd > out`) or a PIPE (`cmd | cmd`), and interactive programs (the lua
+ * REPL) must see isatty() == 0 in exactly those cases. */
+int isatty(int fd) {
+  long q = OS1low_cap_query(fd);
+  if (q < 0) {
+    errno = EBADF;
+    return 0;
+  }
+  return OS1_CAPQ_TYPE(q) == OBJ_TYPE_CONSOLE ? 1 : 0;
+}
 void exit(int status) { OS1low_process_exit(status); }
+/* _Exit: terminate WITHOUT running atexit handlers or flushing streams (C99).
+ * We register no atexit handlers and the console streams are unbuffered, so it
+ * is the same primitive as exit(); kept distinct because ported code chooses
+ * _Exit deliberately (e.g. in a failed child) and expects it to exist. */
+void _Exit(int status) { OS1low_process_exit(status); }
 int spawn(const char *path) { return (int)OS1low_process_spawn(path, 0, 0); }
 int spawn_args(const char *path, int argc, char *const argv[]) {
   return (int)OS1low_process_spawn(path, argc, argv);
@@ -324,6 +361,31 @@ long OS1_object_write(int handle, const void *buf, unsigned long n) {
 }
 long OS1_object_wait(int handle, long arg) {
   return _sys_object_wait(handle, arg);
+}
+
+/* --- Service ports (ASTRA §6.5) -------------------------------------------
+ * Thin personality over handle_create + object I/O: the port is the capability,
+ * so there is no separate "port syscall" to add — acquiring the handle IS the
+ * authority decision, and send/receive are ordinary object writes/reads.
+ */
+int OS1_port_create(const char *name) {
+  /* RECEIVE right publishes the port and claims ownership; TRANSFER lets the
+   * owner delegate send rights onward (cap_grant) without re-opening by name. */
+  return (int)errno_ret(OS1low_handle_create(
+      OS1_NS_PORT, name,
+      OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE,
+      OBJ_TYPE_PORT));
+}
+int OS1_port_open(const char *name) {
+  /* No READ: a client gets a SEND-only capability to an existing service. */
+  return (int)errno_ret(OS1low_handle_create(
+      OS1_NS_PORT, name, OS1_RIGHT_WRITE | OS1_RIGHT_DUPLICATE, OBJ_TYPE_PORT));
+}
+long OS1_port_send(int handle, const struct ipc_message *msg) {
+  return errno_ret(OS1_object_write(handle, msg, sizeof(struct ipc_message)));
+}
+long OS1_port_recv(int handle, struct ipc_message *msg) {
+  return errno_ret(OS1_object_read(handle, msg, sizeof(struct ipc_message)));
 }
 long OS1_object_ctl(int handle, int cmd, long arg) {
   return _sys_object_ctl(handle, cmd, arg);
@@ -987,12 +1049,43 @@ static int fstream_flush(FILE *fp) {
 /*
  * fclose - flush any pending writes, then release a FILE handle.
  */
+/*
+ * fdopen - wrap an ALREADY-OPEN descriptor in a FILE* (POSIX).  The stream is
+ * fd-backed: fread/fwrite go straight through read()/write() on that fd, so it
+ * works for any object the descriptor names — a file, a console, or a PIPE end
+ * (`int p[2]; pipe(p); FILE *f = fdopen(p[0], "r");`), which is the usual way
+ * ported POSIX code consumes a pipe through stdio.  'mode' is accepted for
+ * source compatibility; the descriptor's own rights are the real authority
+ * (the kernel rejects a read of a write-only handle), so we do not re-derive
+ * access from the string.  Returns NULL on a bad fd or out of memory.
+ */
+FILE *fdopen(int fd, const char *mode) {
+  (void)mode;
+  if (fd < 0) {
+    errno = EBADF;
+    return 0;
+  }
+  FILE *f = malloc(sizeof(FILE));
+  if (!f) {
+    errno = ENOMEM;
+    return 0;
+  }
+  memset(f, 0, sizeof(FILE));
+  f->fd = fd;   /* fd-backed: file_fd() routes I/O through read()/write() */
+  f->size = -1; /* unknown until asked */
+  return f;
+}
+
 int fclose(FILE *fp) {
   if (fp && fp != stdin && fp != stdout && fp != stderr) {
     fstream_flush(fp);
     if (fp->is_tmp) {
       OS1_fs_unlink(fp->path);
     }
+    /* An fdopen()'d stream owns its descriptor (POSIX): closing the stream
+     * closes the fd.  Path-backed streams carry fd = -1 and own nothing. */
+    if (fp->fd >= 0)
+      close(fp->fd);
     free(fp);
   }
   return 0;
@@ -1858,6 +1951,65 @@ int truncate(const char *path, long length) {
     return r;
   }
 }
+/*
+ * ftruncate - set an OPEN descriptor's file length (POSIX).  Closes the Phase 1
+ * leftover ("ftruncate awaits an fd->path / OBJ_CTL_TRUNCATE kernel verb").
+ *
+ * Composed from the primitives rather than duplicating truncate()'s path-based
+ * logic in the kernel:
+ *   - shrink to N>0: read the first N bytes back, then rewrite them from offset
+ *     0 — an offset-0 write REPLACES the whole file (the Phase 1 FS standard),
+ *     so the rewrite IS the truncation;
+ *   - shrink to 0: needs OBJ_CTL_TRUNCATE, because POSIX defines
+ *     write(fd, buf, 0) as a NO-OP and so it cannot express "empty this file";
+ *   - extend: zero-fill from the old EOF up to the new length.
+ */
+int ftruncate(int fd, long length) {
+  if (length < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  long size = lseek(fd, 0, SEEK_END);
+  if (size < 0)
+    return -1;
+  if (length == size)
+    return 0;
+
+  if (length == 0)
+    return OS1_object_ctl(fd, OBJ_CTL_TRUNCATE, 0) < 0 ? -1 : 0;
+
+  if (length < size) {
+    char *buf = malloc((size_t)length);
+    if (!buf) {
+      errno = ENOMEM;
+      return -1;
+    }
+    int r = -1;
+    if (lseek(fd, 0, SEEK_SET) >= 0) {
+      long n = read(fd, buf, (unsigned long)length);
+      if (n >= 0 && lseek(fd, 0, SEEK_SET) >= 0 &&
+          write(fd, buf, (size_t)n) >= 0)
+        r = 0; /* offset-0 write replaced the file with n bytes */
+    }
+    free(buf);
+    return r;
+  }
+
+  { /* extend: zero-fill from the old EOF up to `length` */
+    long pad = length - size;
+    char *z = calloc(1, (size_t)pad);
+    if (!z) {
+      errno = ENOMEM;
+      return -1;
+    }
+    int r = (lseek(fd, size, SEEK_SET) >= 0 && write(fd, z, (size_t)pad) >= 0)
+                ? 0
+                : -1;
+    free(z);
+    return r;
+  }
+}
+
 /* puts: writes string + newline to fd 1, matching the standard POSIX contract.
  */
 int puts(const char *s) {
@@ -2011,15 +2163,13 @@ FILE _stdin_struct = {.fd = 0};
 FILE _stdout_struct = {.fd = 1};
 FILE _stderr_struct = {.fd = 2};
 
-static int file_fd(FILE *fp) {
-  if (fp == stdin)
-    return 0;
-  if (fp == stdout)
-    return 1;
-  if (fp == stderr)
-    return 2;
-  return -1;
-}
+/* file_fd - the descriptor behind a stream, or -1 for a positional
+ * (path-backed) one.  The three console streams carry fd 0/1/2 in their own
+ * structs and fopen() sets fd = -1 to select path I/O, so returning the field
+ * is EXACTLY equivalent to the old stdin/stdout/stderr pointer comparison —
+ * and additionally makes fdopen()'d streams (e.g. a pipe end wrapped in a
+ * FILE*) route through read()/write() like any other descriptor. */
+static int file_fd(FILE *fp) { return fp ? fp->fd : -1; }
 
 int fputc(int c, FILE *fp) {
   unsigned char ch = (unsigned char)c;

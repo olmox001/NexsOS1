@@ -197,6 +197,35 @@ static inline int nxjobs_parse_id(const char *arg) {
   return id > 0 ? id : -1;
 }
 
+/* nxjobs_resolve - turn a `fg`/`bg` argument into a slot index. Accepts %N / N
+ * (job id), %name / name (most-recent job whose command starts with name), or
+ * nothing (the most recent job). Returns the slot, or -1 if unmatched. This is
+ * why `fg lua` works now, not just `fg %1` (Phase 2 job-control polish). */
+static inline int nxjobs_resolve(struct nxjobs *j, const char *arg) {
+  if (!arg || !*arg)
+    return nxjobs_last(j);
+  if (arg[0] == '%')
+    arg++;
+  if (!*arg)
+    return nxjobs_last(j);
+  int numeric = 1;
+  for (const char *p = arg; *p; p++)
+    if (*p < '0' || *p > '9') {
+      numeric = 0;
+      break;
+    }
+  if (numeric)
+    return nxjobs_find(j, atoi(arg));
+  /* name prefix: pick the highest-id (most recent) match */
+  size_t len = strlen(arg);
+  int best = -1;
+  for (int i = 0; i < NXJOBS_MAX; i++)
+    if (j->slot[i].in_use && strncmp(j->slot[i].cmd, arg, len) == 0 &&
+        (best < 0 || j->slot[i].id > j->slot[best].id))
+      best = i;
+  return best;
+}
+
 /* nxjobs_stop - suspend a job (Ctrl-Z / `stop %N`): kernel PROC_STOPPED via
  * OS1_process_stop, then mark it Stopped so `jobs` reflects it and `bg`/`fg`
  * can resume it (Phase 2 — a real stopped state exists now). */

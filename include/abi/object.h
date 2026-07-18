@@ -36,7 +36,24 @@
                             * caller's window/ctty.  Handles 0/1/2 are pre-installed
                             * as this (ASTRA §6.2 "Input device" + window-stream);
                             * the per-process fd table folded into it.         */
-#define OBJ_TYPE_COUNT   6 /* number of distinct OBJ_TYPE_* values (NONE..CONSOLE);
+#define OBJ_TYPE_PIPE    6 /* an anonymous byte pipe: a kernel ring buffer with a
+                            * READ end and a WRITE end (separate handles/rights).
+                            * read() blocks until data or the last writer closes
+                            * (EOF); write() appends.  Created by SYS_PIPE; the
+                            * shell wires `cmd | cmd` by dup'ing the ends into the
+                            * children's fd 0/1 (ASTRA §6.2).                   */
+#define OBJ_TYPE_PORT    7 /* a MACH-style PORT: a first-class message mailbox that
+                            * IS a capability (ASTRA §6.5).  Rights are the port
+                            * rights: OS1_RIGHT_WRITE = send right,
+                            * OS1_RIGHT_READ = receive right.  A service keeps the
+                            * receive right and hands clients attenuated SEND-only
+                            * handles, so a client addresses the SERVICE rather
+                            * than a pid — repairing the seL4 rule "no
+                            * PID-by-number access without a capability" that the
+                            * ambient pid-addressed SYS_SEND violates.  The
+                            * semantics ride on the existing IPC message type; a
+                            * port only relocates the QUEUE and the AUTHORITY. */
+#define OBJ_TYPE_COUNT   8 /* number of distinct OBJ_TYPE_* values (NONE..PORT);
                             * sizes per-type accounting arrays (e.g. live-object
                             * stats in include/api/sysstats.h)                 */
 /* Reserved for later migrations (ASTRA §6.2/§6.7): gpu, audio. */
@@ -71,12 +88,35 @@
 #define OBJ_CTL_STAT     7 /* FILE: return the current size in bytes (lseek/stat)       */
 #define OBJ_CTL_STOP     8 /* PROCESS: suspend the target (job control; RIGHT_DESTROY)  */
 #define OBJ_CTL_CONT     9 /* PROCESS: resume a stopped target (job control; DESTROY)   */
+#define OBJ_CTL_SETOWNER 11 /* PROCESS: set the target's LOGICAL parent (owner) to
+                             * `arg` (needs OS1_RIGHT_DESTROY on the target AND a
+                             * PRIVILEGED caller).  Used by an execution service
+                             * that spawns on a client's behalf: the spawn makes
+                             * the SERVICE the mechanical parent, this hands the
+                             * job back to the requesting CLIENT so kill/stop/cont
+                             * authority (an ancestry walk) still reaches it.
+                             * Privileged-only because it DELEGATES authority over
+                             * a process — it is not a hint (ASTRA §6.5).       */
+#define OBJ_CTL_TRUNCATE 10 /* FILE: truncate to `arg` bytes (needs RIGHT_WRITE).  The
+                             * provider primitive is whole-file-replace (an offset-0
+                             * write REPLACES the file), so only arg == 0 (truncate to
+                             * empty) is expressible here — the case a POSIX
+                             * write(fd,...,0) CANNOT express, since that is a no-op.
+                             * Non-empty lengths are composed in libc's ftruncate()
+                             * (read the head back, rewrite it from offset 0) and never
+                             * reach the kernel; arg != 0 returns -EINVAL.            */
 
 /* Namespaces for handle_create: how the `path` argument is interpreted. */
 #define OS1_NS_FS   1 /* path is a filesystem path → OBJ_TYPE_FILE            */
 #define OS1_NS_PROC 2 /* path is a decimal PID string → OBJ_TYPE_PROCESS      */
 #define OS1_NS_REG  3 /* path is a registry key (dotted) → OBJ_TYPE_REGKEY    */
 #define OS1_NS_WIN  4 /* path is a decimal window id → OBJ_TYPE_WINDOW        */
+#define OS1_NS_PORT 5 /* path is a service port NAME → OBJ_TYPE_PORT (§6.5).
+                       * Acquiring with OS1_RIGHT_READ (receive right) CREATES
+                       * the port and makes the caller its owner — that is how a
+                       * service publishes itself; acquiring without READ yields
+                       * a SEND-only capability to an existing port, which is how
+                       * a client reaches a SERVICE BY NAME instead of by pid. */
 
 /* cap_query packs the object type and the held rights into one return value:
  * (type << 24) | rights.  A negative return is an errno (-EBADF). */

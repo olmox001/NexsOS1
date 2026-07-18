@@ -36,10 +36,20 @@
  * Consumers: nxshell.c (foreground path), nxlauncher.c (detached path).
  */
 
+/* execsvc.h is the client-facing WIRE CONTRACT (structs + version only); this
+ * header is the executor's POLICY IMPLEMENTATION.  They stay separate so a
+ * client that merely asks for an execution links the protocol alone, instead of
+ * dragging in window probing, identity registration and the foreground watch
+ * loop below (Phase 12: "i servizi vanno divisi dalla libc e integrati in
+ * maniera modulare").  Included here so nxexec.c and the existing consumers get
+ * it transitively — one definition, no duplication. */
+#include <execsvc.h>
+#include <fcntl.h> /* O_* + open() — redirection parsing below */
 #include <os1.h>
 #include <stdlib.h> /* getenv() — see the dynamic HOME resolution in
                       * nxexec_resolve_path()'s tier 2 below. */
 #include <string.h>
+#include <unistd.h> /* close() */
 
 #define NXEXEC_PATH_MAX 96
 #define NXEXEC_ARGV_MAX                                                        \
@@ -146,6 +156,75 @@ static inline const char *nxexec_strip_path_quotes(const char *name, char *out,
   return name;
 }
 
+/*
+ * Phase 3 — process identity (PLAN-2026-07-17): nxexec is the launch authority,
+ * so it assigns the ONE canonical display name for a program (the exe's
+ * basename, quotes already stripped: "/bin/lua" -> "lua") and publishes it two
+ * ways, per the maintainer's "window-title convention + registry namespace"
+ * decision:
+ *   - it titles the window it hosts with that name (the bar reads titles);
+ *   - it registers sys.proc.<pid>.name / .icon in the registry so the bar/dock
+ *     can serialise ANY pid's identity by number, independent of an app's own
+ *     (possibly colliding or changing) window title.
+ * The icon key is the same canonical name; nxicon classifies it.
+ */
+static inline const char *nxexec_basename(const char *path) {
+  if (!path)
+    return "";
+  const char *b = path;
+  for (const char *p = path; *p; p++)
+    if (*p == '/')
+      b = p + 1;
+  return b;
+}
+
+static inline void nxexec_register_identity(int pid, const char *name) {
+  if (pid <= 0 || !name || !*name)
+    return;
+  char key[48];
+  snprintf(key, sizeof(key), "sys.proc.%d.name", pid);
+  OS1_registry_set(key, name);
+  snprintf(key, sizeof(key), "sys.proc.%d.icon", pid);
+  OS1_registry_set(key, name); /* icon key = name; nxicon resolves it */
+}
+
+static inline void nxexec_unregister_identity(int pid) {
+  if (pid <= 0)
+    return;
+  char key[48];
+  snprintf(key, sizeof(key), "sys.proc.%d.name", pid);
+  OS1_registry_del(key);
+  snprintf(key, sizeof(key), "sys.proc.%d.icon", pid);
+  OS1_registry_del(key);
+}
+
+/*
+ * nxexec_prune_identities - GC sys.proc.<pid> identity keys whose process is
+ * gone.  A DETACHED GUI app keeps its identity registered (nxexec vanished with
+ * it and cannot clean up on its death), so those keys accumulate; a periodic
+ * caller (the bar/dock, on a slow tick) drops the dead ones.  Liveness probe is
+ * wait(pid): -1 = alive, anything else (-2 not-found / reaped) = gone.  Bounded
+ * and cheap; harmless to skip (a stale key just names a pid with no window).
+ */
+static inline void nxexec_prune_identities(void) {
+  char buf[512];
+  int n = OS1_registry_enum_under("sys.proc.", buf, sizeof(buf) - 1);
+  if (n <= 0)
+    return;
+  buf[n] = '\0';
+  char *save = NULL;
+  for (char *k = strtok_r(buf, "\n", &save); k;
+       k = strtok_r(NULL, "\n", &save)) {
+    size_t kl = strlen(k);
+    /* act once per pid, on its ".name" key; ".icon" is deleted alongside it. */
+    if (kl < 14 || strcmp(k + kl - 5, ".name") != 0)
+      continue;
+    int pid = atoi(k + 9); /* past "sys.proc." */
+    if (pid > 0 && wait(pid) != -1)
+      nxexec_unregister_identity(pid);
+  }
+}
+
 static inline int nxexec_resolve_path(const char *name, char *out_path,
                                       size_t sz) {
   if (!name || !*name || !out_path || sz == 0)
@@ -205,7 +284,7 @@ static inline int nxexec_resolve_path(const char *name, char *out_path,
  * window (the caller should stop hosting it), or NXEXEC_JOB_EXITED if the
  * child finished or was killed by Ctrl-C (ETX via keyboard IPC).
  */
-static inline int nxexec_run_foreground(int pid) {
+static inline int nxexec_run_foreground_ex(int pid, int *out_status) {
   if (pid <= 0)
     return NXEXEC_JOB_EXITED;
   int last_win = -1;
@@ -214,8 +293,16 @@ static inline int nxexec_run_foreground(int pid) {
     if (nxexec_window_stable(pid, &last_win, &stable))
       return NXEXEC_JOB_DETACHED; /* a persistent own window -> GUI app */
 
-    if (wait(pid) != -1)
+    /* Reap WITH the exit status (Phase 2 exit_code channel).  *out_status gets
+     * the shell-style status: the exit code for a normal exit, 128+signal for a
+     * killed child — this is what lets `nxshell -c` exit with the command's
+     * status, which system()/os.execute() test. */
+    int code = 0;
+    if (OS1low_process_wait_status(pid, &code) != -1) {
+      if (out_status)
+        *out_status = (code >= 0) ? (code & 0xff) : (128 + (-code));
       return NXEXEC_JOB_EXITED; /* child finished (dead/zombie/gone) */
+    }
 
     /* Relay keyboard input to the child (USR-TTY-01 #123 problem 2): a
      * windowless child can never hold compositor focus (focus is per-window),
@@ -236,9 +323,14 @@ static inline int nxexec_run_foreground(int pid) {
       if (c == 0x03) {
         kill_process(pid);
         print("^C\n");
+        if (out_status)
+          *out_status = 130; /* 128 + SIGINT, the shell convention */
         return NXEXEC_JOB_EXITED;
       }
-      if (c == 0x1a) { /* Ctrl-Z: suspend the foreground job (Phase 2) */
+      if (c == 0x1a) { /* Ctrl-Z: suspend the foreground job and hand back to
+                        * the caller (NXEXEC_JOB_STOPPED). nxshell adopts it as
+                        * a job; nxexec.c keeps its terminal open with a
+                        * resume/kill prompt (never orphaning it). */
         if (OS1_process_stop(pid) == 0) {
           print("^Z\n");
           return NXEXEC_JOB_STOPPED;
@@ -254,6 +346,37 @@ static inline int nxexec_run_foreground(int pid) {
         print(m.payload);
     }
     OS1_sleep(15); /* time base for the debounce; keeps Ctrl-C responsive */
+  }
+}
+
+/* nxexec_run_foreground - status-less form, for callers that only need the
+ * NXEXEC_JOB_* outcome (nxexec.c's hosted terminal). */
+static inline int nxexec_run_foreground(int pid) {
+  return nxexec_run_foreground_ex(pid, 0);
+}
+
+/*
+ * nxexec_wait_stopped_action - the hosted job was Ctrl-Z-suspended
+ * (NXEXEC_JOB_STOPPED).  A standalone terminal has no shell to hand a stopped
+ * job to, so instead of orphaning the process or closing the window it keeps
+ * the window open and blocks here until the user chooses: Enter -> resume
+ * (return 1), Ctrl-C -> kill the child (return 0).  Only these two, or the
+ * program exiting, ever close a hosted terminal.
+ */
+static inline int nxexec_wait_stopped_action(int pid) {
+  while (1) {
+    struct ipc_message m;
+    if (try_recv(-1, &m) == 0 && m.type == IPC_TYPE_INPUT && m.data2 != 0) {
+      char c = m.payload[0];
+      if (c == '\r' || c == '\n')
+        return 1; /* resume */
+      if (c == 0x03) {
+        kill_process(pid);
+        print("^C\n");
+        return 0; /* killed */
+      }
+    }
+    OS1_sleep(15);
   }
 }
 
@@ -281,19 +404,173 @@ static inline int nxexec_spawn_search(int argc, char *argv[], char *out_path,
       (char *)nxexec_strip_path_quotes(argv[0], clean_name, sizeof(clean_name));
   const char *name = argv[0];
 
+  /* argv[0] = the RESOLVED path (Phase 9) — see nxexec_spawn_search_redir. */
   int r = nxexec_resolve_path(name, out_path, NXEXEC_PATH_MAX);
-  if (r == 0)
+  if (r == 0) {
+    argv[0] = out_path;
     return (int)do_spawn(out_path, argc, argv);
+  }
   if (r < 0)
     return -1; /* path malformato (es. "~utente") */
 
   /* Nome nudo: ricerca /bin poi /sys/bin (ora sul nome ripulito). */
   snprintf(out_path, NXEXEC_PATH_MAX, "/bin/%s", name);
+  argv[0] = out_path;
   int pid = (int)do_spawn(out_path, argc, argv);
   if (pid > 0)
     return pid;
   snprintf(out_path, NXEXEC_PATH_MAX, "/sys/bin/%s", name);
+  argv[0] = out_path;
   return (int)do_spawn(out_path, argc, argv);
+}
+
+/*
+ * nxexec_lookup_identity - read back the canonical display name nxexec
+ * published for a pid (sys.proc.<pid>.name, Phase 3 identity).  The consumer
+ * side of nxexec_register_identity, shared so the bar, the dock and the shell's
+ * job table all name a process the SAME way instead of re-deriving it.
+ * Returns 1 and fills out[] on success, 0 if the pid has no registered
+ * identity (e.g. a system service that never went through nxexec).
+ */
+static inline int nxexec_lookup_identity(int pid, char *out, int outsz) {
+  char key[48];
+  snprintf(key, sizeof(key), "sys.proc.%d.name", pid);
+  if (OS1_registry_get(key, out, (size_t)outsz) != 0 || !out[0])
+    return 0;
+  return 1;
+}
+
+/*
+ * nxexec_strip_redirections - pull shell redirection operators (`<` `>` `>>`
+ * `2>`) and their targets out of argv, open the targets, and build the
+ * spawn_redir list the kernel dups into the child.  Both the spaced form
+ * (`> out`) and the attached form (`>out`) are recognised.
+ *
+ * THIS IS EXECUTOR POLICY, NOT SHELL POLICY (maintainer, 2026-07-18: "nxexec
+ * deve essere il modo principale e gestire tutto ciò che sta gestendo la
+ * shell").  It lived in nxshell.c, which is why the GRAPHICAL launch path —
+ * nxlauncher/nxfilem, which already spawn through nxexec correctly — could not
+ * redirect or take arguments the way the terminal could.  Moving it here gives
+ * every caller ONE parser: the shell, the hosted terminal, and the service.
+ *
+ * On return argv (and *pargc) hold ONLY the command and its real arguments;
+ * redir[] (and *nredir) describe the child fd remap; fds[] (and *nfds) are the
+ * handles THIS process opened — the caller MUST close them after the spawn (the
+ * child holds its own dups).  Returns 0, or -1 after reporting an open/syntax
+ * error (having closed anything already opened).  A missing input file (`<`) is
+ * fatal; an output target is created (O_CREAT|O_TRUNC) / appended (`>>`).
+ */
+static inline int nxexec_strip_redirections(int *pargc, char *argv[],
+                                            struct spawn_redir *redir,
+                                            int *nredir, int fds[], int *nfds) {
+  int argc = *pargc, out = 0;
+  *nredir = 0;
+  *nfds = 0;
+  for (int i = 0; i < argc; i++) {
+    char *t = argv[i];
+    int child_fd, oflags;
+    const char *fname = 0;
+    if (strcmp(t, "<") == 0) {
+      child_fd = 0, oflags = O_RDONLY;
+    } else if (strcmp(t, ">") == 0) {
+      child_fd = 1, oflags = O_WRONLY | O_CREAT | O_TRUNC;
+    } else if (strcmp(t, ">>") == 0) {
+      child_fd = 1, oflags = O_WRONLY | O_CREAT | O_APPEND;
+    } else if (strcmp(t, "2>") == 0) {
+      child_fd = 2, oflags = O_WRONLY | O_CREAT | O_TRUNC;
+    } else if (t[0] == '<' && t[1]) {
+      child_fd = 0, oflags = O_RDONLY, fname = t + 1;
+    } else if (t[0] == '2' && t[1] == '>' && t[2]) {
+      child_fd = 2, oflags = O_WRONLY | O_CREAT | O_TRUNC, fname = t + 2;
+    } else if (t[0] == '>' && t[1] == '>' && t[2]) {
+      child_fd = 1, oflags = O_WRONLY | O_CREAT | O_APPEND, fname = t + 2;
+    } else if (t[0] == '>' && t[1]) {
+      child_fd = 1, oflags = O_WRONLY | O_CREAT | O_TRUNC, fname = t + 1;
+    } else {
+      argv[out++] = t; /* an ordinary command argument */
+      continue;
+    }
+    if (!fname) { /* bare operator token: the filename is the next token */
+      if (i + 1 >= argc) {
+        printf("nxexec: syntax error near '%s'\n", t);
+        goto fail;
+      }
+      fname = argv[++i];
+    }
+    if (*nredir >= SPAWN_MAX_REDIR) {
+      print("nxexec: too many redirections\n");
+      goto fail;
+    }
+    int fd = open(fname, oflags, 0644);
+    if (fd < 0) {
+      printf("nxexec: cannot open %s\n", fname);
+      goto fail;
+    }
+    fds[(*nfds)++] = fd;
+    redir[*nredir].child_fd = child_fd;
+    redir[*nredir].parent_fd = fd;
+    redir[*nredir].source_pid = 0; /* our own table (non-zero selects the
+                                    * privileged take-from-another-process
+                                    * path — never leave it uninitialised) */
+    (*nredir)++;
+  }
+  argv[out] = 0;
+  *pargc = out;
+  return 0;
+fail:
+  for (int j = 0; j < *nfds; j++)
+    close(fds[j]);
+  *nfds = 0;
+  *nredir = 0;
+  return -1;
+}
+
+/*
+ * nxexec_spawn_search_redir - nxexec_spawn_search + fd redirection (Phase 4
+ * shell `<`/`>`/`>>`/`2>`).  redir[]/nredir describe the child fd remap; the
+ * CALLER opened each redir[].parent_fd and CLOSES them after this returns (the
+ * kernel dup'd them into the child).  nredir == 0 behaves exactly like
+ * nxexec_spawn_search.  Returns the PID or <= 0 on failure.
+ */
+static inline int nxexec_spawn_search_redir(int argc, char *argv[],
+                                            char *out_path, int detached,
+                                            const struct spawn_redir *redir,
+                                            int nredir) {
+  unsigned int flags = detached ? SPAWN_FLAG_DETACHED : 0u;
+  static char clean_name[NXEXEC_PATH_MAX];
+  argv[0] =
+      (char *)nxexec_strip_path_quotes(argv[0], clean_name, sizeof(clean_name));
+  const char *name = argv[0];
+
+  /* The child's argv[0] is the RESOLVED path, not the bare name as typed
+   * (Phase 9, "esecuzione da path non diretto"): a program that re-executes
+   * itself from its own argv[0] — lua's test suite rebuilds every command as
+   * `"<progname>" ...` — must get a DIRECT path, or the re-execution depends on
+   * the search succeeding again.  It also makes the terminal path agree with
+   * the launcher path, which already passes an absolute path (progname was
+   * `/bin/lua` from the launcher but bare `lua` from the shell). */
+  int r = nxexec_resolve_path(name, out_path, NXEXEC_PATH_MAX);
+  if (r == 0) {
+    argv[0] = out_path;
+    return (int)OS1low_process_spawn_redir(out_path, argc, argv, flags, redir,
+                                           nredir);
+  }
+  if (r < 0)
+    return -1; /* malformed path (e.g. "~user") */
+
+  /* Bare name: search /bin then /sys/bin.  A failed candidate aborts its own
+   * half-built child (kernel process_abort_spawn) and drops the dup'd handle
+   * refs, so retrying the next path with the same redir list is safe. */
+  snprintf(out_path, NXEXEC_PATH_MAX, "/bin/%s", name);
+  argv[0] = out_path;
+  int pid = (int)OS1low_process_spawn_redir(out_path, argc, argv, flags, redir,
+                                            nredir);
+  if (pid > 0)
+    return pid;
+  snprintf(out_path, NXEXEC_PATH_MAX, "/sys/bin/%s", name);
+  argv[0] = out_path;
+  return (int)OS1low_process_spawn_redir(out_path, argc, argv, flags, redir,
+                                         nredir);
 }
 
 /* nxexec_spawn_detached - launcher-style spawn of an explicit path: the child
