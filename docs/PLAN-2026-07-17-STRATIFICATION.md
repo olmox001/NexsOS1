@@ -48,6 +48,14 @@ separately, per the standing rule:
 
 ---
 
+## Known live bugs (current)
+- **`&&` does not work in nxshell** (maintainer, 2026-07-18): `cd X && cmd`
+  performs only the `cd` — the rest of the line is silently dropped.  The shell
+  has no command SEQUENCING at all (`&&`, `||`, `;`).  Not just a missing
+  feature: silently executing HALF a command line is worse than refusing it, and
+  it already cost a confusing test run.  Belongs with the executor/shell work
+  (Phase 9 family) since parsing now lives in nxexec.
+
 ## STATUS INDEX (realigned 2026-07-18)
 
 Read this first: the phase SECTIONS below were written before the work happened
@@ -68,7 +76,7 @@ listed here.
 | 6 | nxline / nxjobs — port to userland | **model DONE; porting TODO** |
 | 12 | Service standardisation, ALL services + `/sys/services` | TODO |
 | 10 | POSIX/libc completion as a repeatable gate | TODO |
-| 10a | LIBRARIES: no shared logic w/ kernel (sep. from 12) | WIP parked in `test/`; redesign per objects |
+| 10a | LIBRARIES: no shared logic w/ kernel (sep. from 12) | then (order 3/3); WIP in `test/` |
 | 11 | Users / capabilities / filesystem (ASTRA) | BLOCKED on design doc |
 | 7 | doom revert + lua finish | TODO (last: depends on 9/10) |
 | 8 | naming → bar/icons | **FOLDED INTO 3** (was a duplicate) |
@@ -77,7 +85,8 @@ listed here.
 | 9d | ctty handback; interactive jobs move too | **NEXT** (gated by 16) |
 | 14 | window management kernel-side; nxwins as service | NEW — doc first |
 | 15 | split services from CLI/GUI interfaces | NEW — after 12 + 14 |
-| 16 | ROADMAP §1.C scheduler/IPC blockers | NEW — gates 9d |
+| 17 | `env` + environment variables | **NEXT** (maintainer order 1/3) |
+| 16 | ROADMAP §1.C scheduler/IPC blockers | then (order 2/3); gates 9d |
 | 13 | Orphaned ASTRA §7.11 structural items | NEW — see below |
 
 ### Corrections this realignment applied
@@ -135,6 +144,10 @@ writes and `process_wait` consults, so corpses can still be freed eagerly.
 be debugged against a status channel that is itself unreliable.
 
 ### 9c — shell uses the service for NON-INTERACTIVE launches (option b)
+> **(b) IS TRANSITIONAL, (a)/9d IS THE FINAL SHAPE** (maintainer, restated
+> 2026-07-18).  9c is a staging step so the logic can be finalised against a
+> working system; it is NOT the destination.  Phase 9 is not complete until
+> interactive jobs also execute through the service, i.e. until 9d lands.
 Maintainer: do (b) first "solo per finalizzare la logica".  `system()` and
 `os.execute` go through the daemon; INTERACTIVE
 foreground jobs keep the in-process path for now.
