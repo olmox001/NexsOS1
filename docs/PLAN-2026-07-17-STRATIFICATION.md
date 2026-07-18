@@ -71,6 +71,11 @@ listed here.
 | 11 | Users / capabilities / filesystem (ASTRA) | BLOCKED on design doc |
 | 7 | doom revert + lua finish | TODO (last: depends on 9/10) |
 | 8 | naming → bar/icons | **FOLDED INTO 3** (was a duplicate) |
+| 9b | exit status must survive reaping (ROOT CAUSE) | **NEXT** — blocks 9c/9d |
+| 9c | shell → service for NON-interactive launches | after 9b |
+| 9d | ctty handback; interactive jobs move too | after 9c |
+| 14 | window management kernel-side; nxwins as service | NEW — doc first |
+| 15 | split services from CLI/GUI interfaces | NEW — after 12 + 14 |
 | 13 | Orphaned ASTRA §7.11 structural items | NEW — see below |
 
 ### Corrections this realignment applied
@@ -96,6 +101,72 @@ listed here.
   work moves to Phase 11 under its recorded scope limits.
 - **ASTRA §7.11 is itself stale**: it still lists `OS1_fs_write` as taking the
   ambient path, which the C1–C2 capability closure removed.
+
+## Phase 9 — subphases (maintainer 2026-07-18: resolve each node as its own
+## subphase, CHAINED so every later phase starts simpler)
+
+### 9b — exit status must survive reaping (ROOT CAUSE, do this FIRST)
+**Found by the lua suite still failing at main.lua:72 after redirection, pipes,
+argv[0] and status propagation were all verified working.**  It is not a lua
+bug, nor a shell bug: it is a kernel lifecycle gap.
+
+`process_wait()` writes `*out_code` ONLY when it finds the corpse
+(PROC_DEAD/PROC_ZOMBIE).  If the scheduler reaper already drained it, the call
+returns -2 with `out_code` UNTOUCHED — so a caller that initialised it to 0
+reports SUCCESS.  A child that fails FAST is exactly the case that gets reaped
+before its parent polls, which is why `assert(not os.execute(bad_program))`
+still fails: the failing lua exits immediately and is collected before nxshell
+looks.  `system()` already documents the hole ("a -2 'reaped elsewhere' leaves
+code 0").
+
+There are no real ZOMBIE semantics: a corpse is not retained until its owner
+reaps it.  This silently corrupts EVERY exit-status consumer — `system()`,
+`waitpid()`, jobs' "Done(N)" — not just lua, and it is timing-dependent, so it
+looks like flakiness rather than a bug.
+
+Fix direction: retain the status until the owner collects it (POSIX zombie
+semantics), keyed on the LOGICAL owner (`owner_pid`) so it works when a service
+did the spawn.  Cheapest correct form: a small reaped-status table the reaper
+writes and `process_wait` consults, so corpses can still be freed eagerly.
+
+**Do this before 9c/9d**: without it, migrating the shell onto the service would
+be debugged against a status channel that is itself unreliable.
+
+### 9c — shell uses the service for NON-INTERACTIVE launches (option b)
+Maintainer: do (b) first "solo per finalizzare la logica".  `system()`,
+`os.execute` and graphical launches go through the daemon; INTERACTIVE
+foreground jobs keep the in-process path for now.  Rationale: `SETOWNER`
+restores AUTHORITY (verified) but NOT the controlling terminal, so moving
+interactive jobs first would break Ctrl-Z/Ctrl-C — the one part of job control
+already validated on device.
+
+### 9d — ctty handback, then interactive jobs move too (option a)
+Needs a kernel verb to reassign `ctty_win` (or to carry it in the spawn
+request), so a job spawned BY the service still has the REQUESTER as its
+controlling terminal.  Only then can 9c's split be collapsed and the
+in-process path deleted.  Dependencies to resolve here: keyboard relay, Ctrl-Z
+suspension, and the window-ownership probe that decides GUI-vs-terminal.
+
+## Phase 14 — Window management into the kernel; nxwins becomes a service
+Maintainer directive: verify nxwins, move window MANAGEMENT kernel-side, leave
+nxwins as a service.  Flagged as requiring **development, study and planning**
+before code — treat like R6: a design doc first.
+- Study first: what nxwins does today vs what the compositor already owns
+  (window objects and OBJ_CTL_MINIMIZE/RESTORE/FOCUS/CLOSE already exist as
+  capabilities, ASTRA §6.7 — so part of "management" may already be kernel-side
+  and the real work is deciding the BOUNDARY, not writing new code).
+- Chaining benefit: 9d needs the window-ownership probe (GUI-vs-terminal
+  detection).  If window state becomes a kernel-owned, queryable fact, that
+  probe stops being a debounced heuristic — 9d gets simpler as a result, which
+  is exactly the "each phase makes the next one easier" ordering the maintainer
+  asked for.
+
+## Phase 15 — Split services from their CLI/GUI interfaces
+Follows 12 and 14: once every service is supervised, port-addressed and
+capability-scoped, its INTERFACE (a CLI tool, a GUI window) becomes a separate
+client of the same port — so one service can be driven from the terminal, the
+dock, or a script without three implementations.  Depends on 12 (services
+relocated + per-service caps) and 14 (windows as a service).
 
 ## Phase 13 — Orphaned structural items (ASTRA §7.11) — NEW
 These are recorded as open in ASTRA but had NO owning phase, so they were
