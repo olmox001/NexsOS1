@@ -1,5 +1,19 @@
 # R0.1 — Censimento simboli lib.c → mappa split (PRIMA PASSATA, euristica)
 
+> **SUPERSEDED IN PART (2026-07-18).** R0.3 proposes moving the shared headers to
+> a neutral `include/abi/`.  The maintainer has since ruled that a shared header
+> directory is CONCEPTUALLY WRONG: it renames the kernel↔userland coupling
+> instead of removing it.  The target is instead that the kernel EXPOSES
+> information dynamically as OBJECTS, userland libraries carry no shared logic,
+> and kernel includes live only in the kernel tree.
+>
+> The census ITSELF (symbol inventory, alias classification, build hook points)
+> remains useful and is not invalidated — only the proposed header destination
+> is.  See Phase 10a in docs/PLAN-2026-07-17-STRATIFICATION.md, which also
+> records the measured state: the PRIMARY violation is `user/sys/lib/lib.c`
+> compiling 1567 lines of kernel `.c` source into every user binary, not the
+> header layout.
+
 Generato 2026-07-17 da grep/awk su user/sys/lib/lib.c (157 definizioni top-level).
 Da RAFFINARE a mano in R0: i casi ambigui vanno confermati; malloc.c,
 font_lib, image e i portability layer sono censiti a parte in R0.2/R0.3.

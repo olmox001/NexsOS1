@@ -68,15 +68,16 @@ listed here.
 | 6 | nxline / nxjobs — port to userland | **model DONE; porting TODO** |
 | 12 | Service standardisation, ALL services + `/sys/services` | TODO |
 | 10 | POSIX/libc completion as a repeatable gate | TODO |
-| 10a | USR-LIB-01: libc stops #including kernel sources | PARKED WIP (`test/`) |
+| 10a | LIBRARIES: no shared logic w/ kernel (sep. from 12) | WIP parked in `test/`; redesign per objects |
 | 11 | Users / capabilities / filesystem (ASTRA) | BLOCKED on design doc |
 | 7 | doom revert + lua finish | TODO (last: depends on 9/10) |
 | 8 | naming → bar/icons | **FOLDED INTO 3** (was a duplicate) |
-| 9b | exit status must survive reaping (ROOT CAUSE) | **NEXT** — blocks 9c/9d |
-| 9c | shell → service for NON-interactive launches | after 9b |
+| 9b | exit status must survive reaping (ROOT CAUSE) | **DONE**, device-verified (47/47) |
+| 9c | shell → service for NON-interactive launches | **NEXT** |
 | 9d | ctty handback; interactive jobs move too | after 9c |
 | 14 | window management kernel-side; nxwins as service | NEW — doc first |
 | 15 | split services from CLI/GUI interfaces | NEW — after 12 + 14 |
+| 16 | ROADMAP §1.C scheduler/IPC blockers | NEW — gates 9d |
 | 13 | Orphaned ASTRA §7.11 structural items | NEW — see below |
 
 ### Corrections this realignment applied
@@ -169,7 +170,87 @@ client of the same port — so one service can be driven from the terminal, the
 dock, or a script without three implementations.  Depends on 12 (services
 relocated + per-service caps) and 14 (windows as a service).
 
-## Phase 10a — USR-LIB-01: split the libc off the KERNEL SOURCES
+## Phase 10a — LIBRARIES: userland stops sharing ANY logic with the kernel
+> **This is the LIBRARIES phase.  It is SEPARATE from Phase 12 (services)** —
+> maintainer, 2026-07-18.  An earlier revision of this plan said "do it WITH
+> Phase 12's /sys/services move"; that was wrong.  Libraries and services are
+> different boundaries and merging them would couple two large moves that can
+> and should be verified independently.
+
+### MEASURED STATE (2026-07-18, verified — not estimated)
+The PRIMARY violation is userland compiling KERNEL SOURCE, not header direction:
+
+| what | where | scale |
+|---|---|---|
+| userland compiles kernel `.c` files | `user/sys/lib/lib.c:576-578` | **1567 lines of kernel code inside EVERY user ELF** |
+| dual-compiled conditionals | `kernel/lib/math.c` (9), `vsnprintf.c` (3), `string.c` (0) | 12 `#ifdef KERNEL` sites |
+| kernel reaches into userland API | `kernel/include/kernel/elf.h:4` → `"../../../../include/api/elf.h"` | a relative-path escape out of the kernel tree |
+| userland API reaches into kernel | `include/api/elf.h:4` → `<kernel/types.h>` | **circular**: kernel → api → kernel |
+| the rule already exists and is broken | `Makefile:100`: *"the kernel must never grow includes from it (ASTRA layer separation)"* | stated, then violated two lines later |
+
+**Latent bug found while measuring** (nobody had reported it): both `elf.h` files
+use the SAME include guard `_KERNEL_ELF_H`, and the kernel one opens `#ifndef`
+without ever DEFINING it — the userland one defines it.  So if the userland
+header is included first, the kernel header's entire body is silently skipped:
+which ELF definitions exist depends on INCLUDE ORDER.  That is the concrete cost
+of the entanglement, and it is invisible in a passing build.
+
+**Why the source-compilation case is the severe one**: the 12 conditionals mean
+those files are not "a utility userland happens to reuse" — they are ONE FILE
+THAT IS TWO DIFFERENT IMPLEMENTATIONS behind `#ifdef KERNEL`.  So the fix is not
+to copy them; it is to RESOLVE the conditionals into two independent
+implementations (maintainer directives 1 and 2).  `string.c` has ZERO
+conditionals, so for it "separate logic" would be pure duplication unless the
+two are allowed to diverge BY PURPOSE (kernel: minimal freestanding; userland:
+POSIX-complete) — that choice has to be made explicitly, not by default.
+
+### Critique of the existing docs (they are obsolete on this point)
+`docs/R0-CENSUS-LIB-SPLIT.md` (R0.3) proposes moving the 9 shared headers to a
+neutral `include/abi/` — "contratto, nessuna implementazione".  That directory
+now exists and has been grown further during Phase 4/9 (caps.h, object.h,
+syscall_nums.h, posix_types.h …).
+
+**The maintainer's ruling is that `abi/` is CONCEPTUALLY WRONG, and on
+reflection that is right**: a shared header directory is still shared
+COMPILE-TIME coupling between kernel and userland.  It renames the dependency
+instead of removing it — both sides still have to be rebuilt together, and a
+struct layout or a number changed on one side silently redefines the other.
+Measured today: `Makefile:101` gives the KERNEL build `-Iinclude/abi
+-Iinclude/api`, i.e. the kernel compiles against the USERLAND api headers, and
+11 kernel files include them.
+
+### The ASTRA-conformant target (maintainer directives 1 + 2)
+- **Information flows as OBJECTS, queried dynamically**, not as headers compiled
+  into both sides.  The kernel is instrumented to EXPOSE what userland needs
+  (types, rights, verbs, limits) through the object/registry model it already
+  has — self-describing and discoverable, which is what §6.2/§6.6 already say
+  about "every node representable as a file, every operation a message".
+- **Userland libraries are independent**: no logic shared with the kernel, no
+  `#include` of kernel sources (the USR-LIB-01 defect), no kernel-owned struct
+  reused as a wire format.
+- **Kernel includes live ONLY in the kernel's own lib** — nothing under
+  `kernel/` may be reachable from a userland translation unit.
+- **`vsnprintf` gets the same treatment** (directive 2): distinct
+  implementations, communicating per ASTRA rather than sharing a file with an
+  `#ifdef KERNEL` seam.
+
+### The one honest tension — state it, do not paper over it
+A *minimal* bootstrap contract is unavoidable: the syscall entry convention plus
+ONE discovery verb, because a process cannot ask the kernel anything before it
+can make a call at all.  Everything above that (object types, rights bits, verb
+numbers, message layouts) can become object-mediated and discovered.  The design
+work of this phase is deciding exactly where that irreducible line sits — and
+keeping it as thin as possible — NOT pretending it can be zero.
+
+### Verification (directive 3)
+Formal check with **coccinelle** (`spatch`), which the plan already lists as
+available: a semantic patch that FAILS the build if any userland translation
+unit reaches into `kernel/` (include or symbol), so the boundary is enforced
+mechanically rather than by review.  This is the same "make the audit a
+repeatable gate" idea as Phase 10, applied to the layering instead of to the
+POSIX surface.
+
+## Phase 10a (WIP parked) — USR-LIB-01: split the libc off the KERNEL SOURCES
 Maintainer started this 2026-07-18 and parked it for a planned approach; the
 WIP is preserved under `test/usr-lib-01-libc-split/` (patch + the three modules
 + a README with the open questions).  Nothing is built from there.
@@ -202,6 +283,26 @@ Decisions to take BEFORE re-applying (this is why it is a phase, not a patch):
    proves nothing here.
 4. **Sequencing**: do it WITH Phase 12's `/sys/services` move, not before, or
    the same files get relocated twice.
+
+## Phase 16 — ROADMAP §1.C scheduler/IPC blockers (previously UNOWNED)
+Found by cross-review 2026-07-18 and VERIFIED in
+`docs/ROADMAP-ASTRA-SERVERIZATION.md` §1.C.  That document calls these
+load-bearing for every server thread and says they "must land in Phase 1", but
+no phase here owned them — so they were invisible to this plan while Phase 9
+was busy building a service on exactly that substrate.
+
+- **`SCHED-CREATED-LEAK-01`** — a process killed while `PROC_CREATED` leaks.
+  Directly in the spawn path the execution service now drives.
+- **`SCHED-05 extended` — `kernel_ipc_send` unbounded queue = kernel-heap DoS.**
+  Note the new `OBJ_TYPE_PORT` does NOT inherit this: its queue is bounded
+  (`PORT_QUEUE_MAX`).  The AMBIENT pid-addressed `ipc_send` is still unbounded,
+  and 9c/9d run over it, so this is a real prerequisite rather than a
+  theoretical one.
+- **`SCHED-05 AB-BA`** — `sched_lock → msg_lock → cpu->sched_lock` inversion;
+  ROADMAP asks for a re-audit once server threads raise IPC concurrency, which
+  is precisely what the exec daemon does.
+
+Sequencing: these gate 9d (interactive jobs over the service) more than 9c.
 
 ## Phase 13 — Orphaned structural items (ASTRA §7.11) — NEW
 These are recorded as open in ASTRA but had NO owning phase, so they were
