@@ -222,6 +222,61 @@ static uint32_t sched_focus_streak[MAX_CPUS];
  *
  * Locking: caller MUST hold cpu->sched_lock.
  */
+/*
+ * Reaped-status retention (Phase 9b) — POSIX zombie semantics, cheaply.
+ *
+ * THE BUG THIS FIXES: process_wait() fills *out_code only when it still finds
+ * the corpse.  Corpses are drained eagerly (the per-CPU deferred-free list runs
+ * on the next schedule()), so a child that fails FAST is routinely gone before
+ * its owner polls — process_wait then returned -2 with *out_code UNTOUCHED, and
+ * every caller that initialised it to 0 read SUCCESS.  That silently corrupted
+ * EVERY exit-status consumer (system(), waitpid(), jobs' "Done(N)") in a
+ * timing-dependent way, so it looked like flakiness rather than a bug; it is
+ * why `assert(not os.execute(failing_program))` kept failing in the lua suite.
+ *
+ * We keep only the STATUS, not the corpse, so eager freeing is preserved: a
+ * process's exit status outlives its struct until somebody collects it.
+ *
+ * Consumed on read, like a real wait(): the second wait on the same pid reports
+ * "gone", matching POSIX ECHILD rather than handing the same status out twice.
+ * The ring is bounded and overwrites oldest-first — a status nobody ever
+ * collects must not be able to pin memory.
+ *
+ * Locking: every site that touches this holds sched_lock.
+ */
+#define REAPED_MAX 32
+struct reaped_status {
+  int pid; /* 0 = free slot (pids start at 1) */
+  int code;
+};
+static struct reaped_status reaped_ring[REAPED_MAX];
+static int reaped_next;
+
+/* __record_reaped - remember a dying process's status.  Caller holds
+ * sched_lock.  Uses the SAME encoding process_wait() reports directly: the exit
+ * code for a voluntary exit, -9 for a kill/fault death. */
+static void __record_reaped(struct process *p) {
+  if (!p || (int)p->pid <= 0)
+    return;
+  reaped_ring[reaped_next].pid = (int)p->pid;
+  reaped_ring[reaped_next].code = p->exited ? (p->exit_code & 0xff) : -9;
+  reaped_next = (reaped_next + 1) % REAPED_MAX;
+}
+
+/* __claim_reaped - collect a retained status, or return 0 if we have none for
+ * that pid.  Caller holds sched_lock. */
+static int __claim_reaped(int pid, int *out_code) {
+  for (int i = 0; i < REAPED_MAX; i++) {
+    if (reaped_ring[i].pid == pid) {
+      if (out_code)
+        *out_code = reaped_ring[i].code;
+      reaped_ring[i].pid = 0; /* consumed */
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static void reap_push(struct cpu_info *cpu, struct process *p) {
   /* SCHED-UAF: queue a victim EXACTLY once.  prev==DEAD on one CPU racing a
    * stale runqueue pick of the same victim on another would otherwise chain it
@@ -1300,6 +1355,9 @@ int process_terminate(int pid) {
   }
 
   if (slot >= 0) {
+    /* 9b: same reason as the reaper path — this frees the victim outright, so
+     * its status must outlive it. */
+    __record_reaped(proc);
     process_pool[slot] = NULL;
     active_count--;
     __child_count_dec(proc);
@@ -1548,6 +1606,9 @@ struct pt_regs *schedule(struct pt_regs *regs) {
     spin_lock_irqsave(&sched_lock, &gflags);
     for (int _i = 0; _i < MAX_PROCESSES; _i++) {
       if (process_pool[_i] == to_free) {
+        /* 9b: keep the status before the struct goes away, or a fast-exiting
+         * child's result is lost to whoever was about to wait for it. */
+        __record_reaped(to_free);
         process_pool[_i] = NULL;
         active_count--;
         __child_count_dec(to_free);
@@ -1950,8 +2011,15 @@ int process_wait(int pid, int *out_code) {
       return -1; /* Still alive */
     }
   }
+  /* Not in the pool: it may have been reaped before we looked.  A retained
+   * status is exactly as authoritative as a corpse, and is the difference
+   * between reporting the real failure and reporting a false success (9b). */
+  if (__claim_reaped(pid, out_code)) {
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return pid;
+  }
   spin_unlock_irqrestore(&sched_lock, flags);
-  return -2; /* Not found */
+  return -2; /* genuinely unknown: never existed, or already collected */
 }
 
 /*

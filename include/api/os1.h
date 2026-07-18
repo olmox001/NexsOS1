@@ -61,6 +61,8 @@ extern long _sys_spawn_caps(const char *path, int level, unsigned long caps,
                             unsigned int flags);
 extern int  _sys_kill(int pid);
 extern int  _sys_wait(int pid);
+/* arg1 = optional int* receiving the exit status (Phase 9b); NULL is legal. */
+extern int  _sys_wait_status(int pid, int *code);
 extern void _sys_yield(void);
 extern void _sys_nanosleep(unsigned long long ns);
 extern long _sys_clock_gettime(int clk);

@@ -271,8 +271,12 @@ int OS1low_process_wait_status(int pid, int *code) {
   sprintf(idbuf, "%d", pid);
   long h = OS1low_handle_create(OS1_NS_PROC, idbuf, OS1_RIGHT_WAIT,
                                 OBJ_TYPE_PROCESS);
-  if (h < 0)
-    return _sys_wait(pid);
+  if (h < 0) {
+    /* No capability: the process is already GONE — which since Phase 9b is the
+     * case where a retained status is precisely what we are after, so the
+     * ambient path must carry it back rather than drop it. */
+    return _sys_wait_status(pid, code);
+  }
   long r = OS1_object_wait((int)h, (long)code);
   OS1low_handle_close((int)h);
   return (int)r;

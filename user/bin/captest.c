@@ -24,6 +24,7 @@
 #include <os1.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h> /* waitpid + WIFEXITED/WEXITSTATUS (Phase 9b section) */
 #include <unistd.h>
 
 static int failures = 0;
@@ -385,6 +386,37 @@ int main(void) {
       OS1_fs_unlink(fp);
     }
     check(win_id, "posix-fdopen-stream", ok);
+  }
+
+  /* ============ exit status survives reaping (Phase 9b) ================= */
+  section(win_id, "exit status retention");
+  {
+    /* A child that fails FAST is reaped before its parent polls, and the status
+     * used to die with the corpse — so a FAILING command reported SUCCESS.
+     * Timing-dependent, hence it looked like flakiness.  Spawn a child that
+     * exits non-zero immediately and only THEN wait, which is the losing order. */
+    char *av[3];
+    av[0] = (char *)"/bin/lua";
+    av[1] = (char *)"-e";
+    av[2] = (char *)"os.exit(3)";
+    int pid = (int)spawn_args("/bin/lua", 3, av);
+    check(win_id, "status-child-spawned", pid > 0);
+    if (pid > 0) {
+      /* Give it time to die AND be collected, so we are testing the retained
+       * status rather than racing the corpse. */
+      for (int i = 0; i < 60; i++)
+        OS1_sleep(15);
+      int st = 0;
+      int w = waitpid(pid, &st, 0);
+      check(win_id, "status-reported-after-reap", w == pid);
+      printf("[captest] status raw=0x%x exited=%d code=%d signalled=%d\n", st,
+             WIFEXITED(st) ? 1 : 0, WEXITSTATUS(st), WIFSIGNALED(st) ? 1 : 0);
+      check(win_id, "status-nonzero-survives", w == pid && WIFEXITED(st) &&
+                                                   WEXITSTATUS(st) == 3);
+      /* Collected once, like a real wait(): a second call must NOT re-report. */
+      int st2 = 0;
+      check(win_id, "status-consumed-once", waitpid(pid, &st2, 0) != pid);
+    }
   }
 
   /* ===================== execution service (Phase 9) ==================== */

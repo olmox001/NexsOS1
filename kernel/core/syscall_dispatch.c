@@ -897,11 +897,22 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     pt_regs_set_return(frame, 0);
     break;
-  case SYS_WAIT:
-    /* Ambient wait: status not collected here (ABI unchanged); the
-     * capability path (SYS_OBJECT_WAIT) carries exit_code. */
-    pt_regs_set_return(frame, process_wait((int)arg0, NULL));
-    break;
+  case SYS_WAIT: {
+    /* Ambient wait, arg1 = OPTIONAL user int* for the exit status.
+     *
+     * It used to always pass NULL, on the reasoning that the capability path
+     * (SYS_OBJECT_WAIT) carries the status.  Phase 9b invalidated that: once a
+     * status OUTLIVES its process, the capability can no longer be acquired for
+     * a dead pid (acquisition requires a live process), so the caller ALWAYS
+     * lands here — and the status was discarded exactly in the case it was
+     * finally available.  Passing NULL stays legal, so existing callers that
+     * only test the return value are unaffected. */
+    int wcode = 0;
+    long wr = process_wait((int)arg0, &wcode);
+    if (arg1 && wr >= 0)
+      (void)arch_copy_to_user((void *)arg1, &wcode, sizeof(wcode));
+    pt_regs_set_return(frame, wr);
+  } break;
   case SYS_REGISTRY:
     pt_regs_set_return(frame, sys_registry((int)arg0, (const char *)arg1,
                                            (char *)arg2, (size_t)arg3));

@@ -140,6 +140,13 @@ _sys_wait:
     svc #0
     ret
 
+/* int _sys_wait_status(int pid, int *code) — same SYS_WAIT, arg1 = status out */
+.global _sys_wait_status
+_sys_wait_status:
+    mov x8, #SYS_WAIT
+    svc #0
+    ret
+
 /* void _sys_yield(void) */
 _sys_yield:
     mov x8, #SYS_YIELD

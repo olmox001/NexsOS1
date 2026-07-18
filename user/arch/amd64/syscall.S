@@ -110,6 +110,12 @@ _sys_wait:
     syscall
     ret
 
+.global _sys_wait_status
+_sys_wait_status:
+    movq $SYS_WAIT, %rax
+    syscall
+    ret
+
 .global _sys_yield
 _sys_yield:
     movq $SYS_YIELD, %rax
