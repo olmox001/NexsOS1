@@ -92,8 +92,15 @@ static int read_full(int fd, void *buf, int want) {
  * and the logical owner we assign to the job.
  */
 static void execsvc_handle_spawn(const struct ipc_message *m) {
-  int reqh = (int)m->data1; /* granted READ end of the request pipe  */
-  int reph = (int)m->data2; /* granted WRITE end of the reply pipe   */
+  /* The channel handles arrive TRANSLATED into our own table by
+   * SYS_PORT_SEND_CAPS, which publishes them in the leading payload slots — a
+   * handle index is meaningless across process boundaries, so the client's own
+   * numbers (whatever it held) are deliberately NOT used here. */
+  int reqh = -1, reph = -1;
+  memcpy(&reqh, m->payload + 0 * sizeof(int), sizeof(int));
+  memcpy(&reph, m->payload + 1 * sizeof(int), sizeof(int));
+  if (reqh < 0 || reph < 0)
+    return; /* no usable channels: nothing to answer on */
 
   struct execsvc_spawn_hdr hdr;
   static char body[EXECSVC_BODY_MAX]; /* static: the service is single-threaded

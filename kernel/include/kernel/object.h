@@ -124,5 +124,10 @@ int process_redirect_child_fd_from(struct process *owner, struct process *child,
  * write ends in the caller's table; writes both fds to the user int[2].  0 or
  * -ENOMEM/-EMFILE/-EFAULT. */
 long sys_pipe(int *ufds);
+/* sys_port_send_caps - SYS_PORT_SEND_CAPS: send through a PORT while
+ * TRANSFERRING handles to the receiver, rewriting the payload with the indices
+ * as the RECEIVER sees them (ASTRA 6.5 Mach rights-in-a-message).  Removes the
+ * need to cap_grant by pid to a service discovered by NAME. */
+long sys_port_send_caps(int handle, const void *umsg, const int *ufds, int nfds);
 
 #endif /* _KERNEL_OBJECT_H */

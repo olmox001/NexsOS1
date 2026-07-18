@@ -61,12 +61,21 @@
 /*
  * Rendezvous header layout inside struct ipc_message (the only part that must
  * fit in 64 bytes — it carries references, not content):
- *   type  = EXECSVC_REQ_SPAWN
- *   data1 = handle of the REQUEST pipe's READ end, granted to the service
- *   data2 = handle of the REPLY  pipe's WRITE end, granted to the service
- *   from  = stamped by the kernel; the service's only trustworthy statement of
- *           WHO is asking, and therefore the basis for authorising the request
- *           and for assigning the job's logical owner (Q3).
+ *
+ *   type       = EXECSVC_REQ_SPAWN
+ *   payload[0] = (int) REQUEST pipe READ end   } as the SERVICE sees them
+ *   payload[1] = (int) REPLY   pipe WRITE end  }
+ *   from       = stamped by the kernel; the service's only trustworthy
+ *                statement of WHO is asking, and therefore the basis for
+ *                authorising the request and assigning the job's logical
+ *                owner (Q3).
+ *
+ * The client sends with OS1_port_send_caps(port, &msg, {req_r, rep_w}, 2) and
+ * does NOT fill those slots itself: a handle index means something only inside
+ * ONE process's table, so the kernel TRANSLATES the transferred handles into
+ * the receiver's table and writes the receiver-side indices here.  Putting the
+ * client's own numbers on the wire would hand the service meaningless slots —
+ * which is exactly the bug this layout note exists to prevent.
  */
 
 /*

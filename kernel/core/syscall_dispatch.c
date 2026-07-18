@@ -1116,6 +1116,13 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     pt_regs_set_return(frame, vfs_create(resolved_path, VFS_TYPE_DIR));
   } break;
+  case SYS_PORT_SEND_CAPS:
+    /* port send carrying capabilities; see sys_port_send_caps() for why a
+     * service found by NAME must not need its pid to receive rights. */
+    pt_regs_set_return(frame,
+                       sys_port_send_caps((int)arg0, (const void *)arg1,
+                                          (const int *)arg2, (int)arg3));
+    break;
   case SYS_PIPE:
     /* pipe(int fds[2]) → OBJ_TYPE_PIPE; installs read+write ends in the caller's
      * handle table (fds[0]=read, fds[1]=write).  The shell wires `cmd | cmd` by

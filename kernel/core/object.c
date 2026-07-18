@@ -778,6 +778,109 @@ static struct kobject *pin_handle(int handle, uint32_t need, long *err) {
 }
 
 /*
+ * sys_port_send_caps - send a message through a PORT, TRANSFERRING capabilities
+ * with it (ASTRA §6.5, Mach: "ports are first-class objects ... a port is itself
+ * a capability", and a Mach message carries port RIGHTS).
+ *
+ * Why this verb has to exist: a handle index is meaningful only inside ONE
+ * process's table, so a client that merely names its fds in a message is
+ * describing slots the service cannot resolve.  The alternative — cap_grant
+ * first — is addressed BY PID, which would drag pid-addressing straight back
+ * into the one path that exists to remove it (you would need the service's pid
+ * to talk to a service you found by NAME).  Transferring the rights along the
+ * message keeps discovery and delegation both capability-based.
+ *
+ * The kernel installs each handle into the RECEIVER (the port's owner) and
+ * rewrites the leading int slots of the message payload with the indices as the
+ * receiver sees them, so the service reads valid handles with no translation
+ * step of its own.  Attenuation only: the transferred rights are the sender's.
+ */
+long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
+                        int nfds) {
+  if (nfds < 0 || nfds > 4)
+    return -EINVAL; /* payload space for the rewritten indices */
+  long err = 0;
+  struct kobject *o = pin_handle(handle, OS1_RIGHT_WRITE, &err);
+  if (!o)
+    return err;
+
+  long ret;
+  struct kport *kp = o->port;
+  struct ipc_message m;
+  int fds[4];
+  if (o->type != OBJ_TYPE_PORT || !kp) {
+    ret = -EINVAL;
+  } else if (arch_copy_from_user(&m, umsg, sizeof(m)) != 0 ||
+             (nfds > 0 &&
+              arch_copy_from_user(fds, ufds, (size_t)nfds * sizeof(int)) != 0)) {
+    ret = -EFAULT;
+  } else {
+    struct process *rcv = process_find_by_pid(kp->owner_pid);
+    if (!rcv) {
+      ret = -ESRCH;
+    } else if (handles_ensure(rcv) != 0) {
+      ret = -ENOMEM;
+    } else {
+      int installed[4];
+      int n_ok = 0;
+      ret = 0;
+      uint64_t f2;
+      spin_lock_irqsave(&object_lock, &f2);
+      for (int i = 0; i < nfds; i++) {
+        if (fds[i] < 0 || fds[i] >= NPROC_HANDLES || !current_process ||
+            !current_process->handles ||
+            !current_process->handles[fds[i]].obj) {
+          ret = -EBADF;
+          break;
+        }
+        struct handle_entry *src = &current_process->handles[fds[i]];
+        int h = handle_install_locked(rcv, src->obj, src->rights);
+        if (h < 0) {
+          ret = h;
+          break;
+        }
+        installed[n_ok++] = h;
+      }
+      if (ret != 0) {
+        /* Roll back a partial transfer: leaving half the rights installed would
+         * hand the service capabilities for a request it will never see. */
+        for (int i = 0; i < n_ok; i++) {
+          struct handle_entry *e = &rcv->handles[installed[i]];
+          pipe_handle_count(e->obj, e->rights, -1);
+          if (--e->obj->refcount <= 0)
+            kobj_free(e->obj);
+          e->obj = NULL;
+          e->rights = 0;
+        }
+        spin_unlock_irqrestore(&object_lock, f2);
+      } else {
+        /* Publish the receiver-side indices in the payload, then enqueue. */
+        for (int i = 0; i < nfds; i++)
+          memcpy(m.payload + (size_t)i * sizeof(int), &installed[i],
+                 sizeof(int));
+        m.from = current_process ? (int)current_process->pid : 0;
+        if (kp->receivers == 0) {
+          ret = -EPIPE;
+        } else if (kp->count >= PORT_QUEUE_MAX) {
+          ret = -EAGAIN; /* caller retries; blocking here would hold the lock */
+        } else {
+          kp->q[kp->tail] = m;
+          kp->tail = (kp->tail + 1) % PORT_QUEUE_MAX;
+          kp->count++;
+          ret = (long)sizeof(m);
+        }
+        spin_unlock_irqrestore(&object_lock, f2);
+        if (ret > 0)
+          wake_up(&kp->rq);
+      }
+    }
+  }
+  obj_unref(o);
+  return ret;
+}
+
+
+/*
  * sys_object_read - OS1_object_read(handle, buf, n).  Needs OS1_RIGHT_READ.
  * FILE: VFS read at the object's offset (shared across handles to it).
  */

@@ -96,6 +96,7 @@ extern int  _sys_getcwd(char *buf, size_t size);
 extern int  _sys_unlink(const char *path);
 extern int  _sys_mkdir(const char *path);
 extern int  _sys_pipe(int fds[2]);
+extern long _sys_port_send_caps(int handle, const void *msg, const int *fds, int nfds);
 extern int  _sys_open(const char *path, int flags);
 extern int  _sys_close(int fd);
 extern long _sys_lseek(int fd, long offset, int whence);
@@ -352,6 +353,13 @@ int  OS1_port_open(const char *name);
  * The kernel stamps msg->from, so the sender identity cannot be forged. */
 long OS1_port_send(int handle, const struct ipc_message *msg);
 long OS1_port_recv(int handle, struct ipc_message *msg);
+/* OS1_port_send_caps - send a message AND transfer handles with it.  The
+ * receiver-side indices are written into the leading int slots of msg->payload,
+ * so a service reads usable handles directly.  This is what lets a client
+ * delegate (e.g. pipe ends) to a service it found BY NAME, without ever needing
+ * the service's pid — the property ports exist to provide. */
+long OS1_port_send_caps(int handle, struct ipc_message *msg, const int *fds,
+                        int nfds);
 long OS1_object_wait(int handle, long arg);
 long OS1_object_ctl(int handle, int cmd, long arg);
 

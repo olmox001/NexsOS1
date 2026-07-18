@@ -349,6 +349,13 @@ _sys_pipe:
     syscall
     ret
 
+.global _sys_port_send_caps
+_sys_port_send_caps:
+    movq $SYS_PORT_SEND_CAPS, %rax
+    movq %rcx, %r10
+    syscall
+    ret
+
 .global _sys_getcwd
 _sys_getcwd:
     movq $SYS_GETCWD, %rax

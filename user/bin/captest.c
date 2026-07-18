@@ -19,6 +19,7 @@
  *  13. SYS_MKDIR shares the seam: /home ok (+empty rmdir), /sys/bin -EACCES.
  * Results go to a window AND the serial console (grep "[captest]").
  */
+#include <execsvc.h> /* execution-service protocol (Phase 9 section below) */
 #include <fcntl.h>
 #include <os1.h>
 #include <stdio.h>
@@ -384,6 +385,82 @@ int main(void) {
       OS1_fs_unlink(fp);
     }
     check(win_id, "posix-fdopen-stream", ok);
+  }
+
+  /* ===================== execution service (Phase 9) ==================== */
+  section(win_id, "exec service");
+  {
+    /* Connect — never spawn.  A client that spawned the service would get an
+     * UNPRIVILEGED one (monotonic creator clamp), and the daemon's defining
+     * powers (SETOWNER, taking client fds) are privileged-only: it would answer
+     * requests but silently fail to delegate.  The service is started by init. */
+    int svc = OS1_port_open(OS1NX_PORT_EXEC);
+    check(win_id, "exec-service-published", svc >= 0);
+
+    if (svc >= 0) {
+      int reqp[2] = {-1, -1}, repp[2] = {-1, -1};
+      ok = pipe(reqp) == 0 && pipe(repp) == 0;
+      check(win_id, "exec-channels", ok);
+
+      if (ok) {
+        /* Build a variable-size request: header + [redir][cwd\0][argv\0...]. */
+        struct execsvc_spawn_hdr hdr;
+        char body[256];
+        unsigned int off = 0;
+        const char *a0 = "/bin/lua", *a1 = "-e", *a2 = "os.exit(0)";
+        memset(&hdr, 0, sizeof(hdr));
+        hdr.version = EXECSVC_VERSION;
+        hdr.argc = 3;
+        hdr.nredir = 0;
+        body[off++] = '\0'; /* cwd: empty */
+        memcpy(body + off, a0, strlen(a0) + 1); off += strlen(a0) + 1;
+        memcpy(body + off, a1, strlen(a1) + 1); off += strlen(a1) + 1;
+        memcpy(body + off, a2, strlen(a2) + 1); off += strlen(a2) + 1;
+        hdr.body_len = off;
+
+        struct ipc_message m;
+        memset(&m, 0, sizeof(m));
+        m.type = EXECSVC_REQ_SPAWN;
+
+        /* Transfer the two channels THROUGH the port.  A handle index only means
+         * something in one process's table, so the rights must travel with the
+         * message; the kernel installs them in the service and rewrites the
+         * leading payload slots with the indices IT will see.  Doing this by
+         * cap_grant instead would need the service's PID — dragging pid
+         * addressing back into the one path that exists to remove it. */
+        int give[2] = {reqp[0], repp[1]};
+        long sent = OS1_port_send_caps(svc, &m, give, 2);
+        check(win_id, "exec-caps-transferred", sent == (long)sizeof(m));
+
+        if (sent == (long)sizeof(m)) {
+          /* The service reads the request body from the pipe we handed it. */
+          write(reqp[1], (const char *)&hdr, sizeof(hdr));
+          write(reqp[1], body, off);
+          close(reqp[1]); /* EOF, so a short body cannot hang the service */
+
+          struct execsvc_spawn_rep rep;
+          memset(&rep, 0, sizeof(rep));
+          long got = read(repp[0], (char *)&rep, sizeof(rep));
+          check(win_id, "exec-reply-received", got == (long)sizeof(rep));
+          check(win_id, "exec-spawned-pid", got == (long)sizeof(rep) &&
+                                                 rep.pid > 0);
+          /* THE Q3 PROPERTY: the job must belong to US, not to the service that
+           * mechanically spawned it — otherwise a shell migrated onto the daemon
+           * would silently lose kill/stop/cont over its own jobs. */
+          check(win_id, "exec-owner-is-requester",
+                got == (long)sizeof(rep) && rep.owner_pid == get_pid());
+          if (got == (long)sizeof(rep) && rep.pid > 0)
+            kill_process(rep.pid);
+        } else {
+          close(reqp[1]);
+        }
+
+        close(reqp[0]);
+        close(repp[0]);
+        close(repp[1]);
+      }
+      OS1low_handle_close(svc);
+    }
   }
 
   if (hd >= 0) OS1low_handle_close(hd);

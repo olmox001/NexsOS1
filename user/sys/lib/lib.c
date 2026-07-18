@@ -384,6 +384,10 @@ int OS1_port_open(const char *name) {
 long OS1_port_send(int handle, const struct ipc_message *msg) {
   return errno_ret(OS1_object_write(handle, msg, sizeof(struct ipc_message)));
 }
+long OS1_port_send_caps(int handle, struct ipc_message *msg, const int *fds,
+                        int nfds) {
+  return errno_ret(_sys_port_send_caps(handle, msg, fds, nfds));
+}
 long OS1_port_recv(int handle, struct ipc_message *msg) {
   return errno_ret(OS1_object_read(handle, msg, sizeof(struct ipc_message)));
 }

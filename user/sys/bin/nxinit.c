@@ -194,6 +194,38 @@ int main(void) {
     print("[Init] Failed to spawn Notification Server!\n");
   }
 
+  /*
+   * Spawn the EXECUTION SERVICE (nxexec --service, the R6 daemon).
+   *
+   * It MUST be started here and nowhere else, and the reason is the capability
+   * model rather than convention: process_create_caps applies a MONOTONIC
+   * creator clamp, so a child is never more privileged than its creator.  A
+   * PLVL_USER client that spawned this service itself would get a PLVL_USER
+   * service, and the daemon's two defining powers — OBJ_CTL_SETOWNER (handing a
+   * spawned job back to the requesting client so job control still reaches it)
+   * and taking a client's fds — are BOTH privileged-only.  Such a service would
+   * answer requests but silently fail to delegate, breaking jobs/fg/bg in a way
+   * that looks like a shell bug.  Started from init (PLVL_MACHINE) it lands at
+   * the /sys/bin ROOT preset and is genuinely privileged.
+   *
+   * Clients therefore never spawn it: they CONNECT, by acquiring a send
+   * capability to the OS1nx_exec port (ASTRA §6.4 "SRL services are supervised
+   * ELF processes, exposed via IPC/capability").
+   *
+   * No register_service_pid() here on purpose: the port NAME is the discovery
+   * endpoint now, which is strictly better than a pid key — it cannot go stale
+   * across a respawn, and possession of the capability IS the authority.
+   */
+  printf("[Init] Spawning Execution Service (nxexec --service)...\n");
+  char *execsvc_argv[2];
+  execsvc_argv[0] = (char *)"/sys/bin/nxexec";
+  execsvc_argv[1] = (char *)"--service";
+  int pid_execsvc = spawn_args("/sys/bin/nxexec", 2, execsvc_argv);
+  if (pid_execsvc > 0)
+    printf("[Init] Execution Service started (PID %d)\n", pid_execsvc);
+  else
+    print("[Init] Failed to spawn Execution Service!\n");
+
   /* Spawn the dock (window-manager UI).  Plain spawn(): the ASTRA per-path
    * preset gives any /sys/bin binary ROOT authority (F1), which is exactly what
    * a window manager needs to acquire OBJ_TYPE_WINDOW control capabilities to
@@ -319,6 +351,17 @@ int main(void) {
       pid_shell = spawn("/sys/bin/nxshell");
     }
 #endif
+
+    /* Respawn the execution service.  Nothing to re-register: clients rediscover
+     * it by PORT NAME, and the new instance re-publishes OS1nx_exec by taking
+     * the receive right — so a respawn heals discovery automatically, with no
+     * stale-pid window of the kind srv.notify_pid has to guard against. */
+    if (service_gone(pid_execsvc, "Execution Service")) {
+      char *rargv[2];
+      rargv[0] = (char *)"/sys/bin/nxexec";
+      rargv[1] = (char *)"--service";
+      pid_execsvc = spawn_args("/sys/bin/nxexec", 2, rargv);
+    }
 
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as
      * above).  Refresh srv.dock_pid on respawn — same corpse-pid hazard as

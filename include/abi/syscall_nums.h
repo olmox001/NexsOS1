@@ -105,5 +105,7 @@
 #define SYS_UNLINK             259  /* remove a file/namespace node by path (VFS unlink) */
 #define SYS_MKDIR              260  /* create a directory by path (VFS create, VFS_TYPE_DIR) */
 #define SYS_PIPE               261  /* create an anonymous byte pipe; arg0 = user int[2] (read,write fds) */
+#define SYS_PORT_SEND_CAPS     262  /* port send that TRANSFERS handles with the message (Mach rights-in-a-message):
+                                     * lets a client delegate to a service found by NAME, with no pid involved */
 
 #endif /* _SYSCALL_NUMS_H */

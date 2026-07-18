@@ -374,6 +374,12 @@ _sys_pipe:
     svc #0
     ret
 
+.global _sys_port_send_caps
+_sys_port_send_caps:
+    mov x8, #SYS_PORT_SEND_CAPS
+    svc #0
+    ret
+
 .global _sys_getcwd
 _sys_getcwd:
     mov x8, #SYS_GETCWD
