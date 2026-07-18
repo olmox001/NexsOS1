@@ -388,6 +388,31 @@ int main(void) {
     check(win_id, "posix-fdopen-stream", ok);
   }
 
+  /* ========== per-process view is VIRTUAL, never stale (Phase 5b) ======== */
+  section(win_id, "virtual proc view");
+  {
+    char v[64];
+    char k[64];
+    /* Our OWN entry must be live and correct, with nobody having written it. */
+    snprintf(k, sizeof(k), "sys.proc.%d.name", get_pid());
+    memset(v, 0, sizeof(v));
+    ok = OS1_registry_get(k, v, sizeof(v)) == 0 && v[0] != '\0';
+    check(win_id, "vproc-name-live", ok);
+
+    snprintf(k, sizeof(k), "sys.proc.%d.state", get_pid());
+    memset(v, 0, sizeof(v));
+    check(win_id, "vproc-state-live",
+          OS1_registry_get(k, v, sizeof(v)) == 0 && v[0] != '\0');
+
+    /* THE property the unification buys: a DEAD pid has no value.  With the old
+     * userland-written copy this is exactly what went stale and needed a
+     * garbage collector; virtualised, there is nothing stored to leak. */
+    snprintf(k, sizeof(k), "sys.proc.%d.name", 999999);
+    memset(v, 0, sizeof(v));
+    OS1_registry_get(k, v, sizeof(v));
+    check(win_id, "vproc-dead-pid-empty", v[0] == '\0');
+  }
+
   /* ============ exit status survives reaping (Phase 9b) ================= */
   section(win_id, "exit status retention");
   {

@@ -179,51 +179,32 @@ static inline const char *nxexec_basename(const char *path) {
 }
 
 static inline void nxexec_register_identity(int pid, const char *name) {
-  if (pid <= 0 || !name || !*name)
+  /* `sys.proc.<pid>.name` is now VIRTUAL — computed by the kernel from the
+   * process table on every read (Phase 5b).  Writing it here would recreate the
+   * second, best-effort copy whose staleness required a garbage collector.
+   * Only the ICON is still published, and it is program-keyed rather than
+   * pid-keyed: an icon is a property of the PROGRAM, so keying it by process
+   * instance was the modelling error that made it go stale. */
+  char key[64];
+  if (!name || !*name)
     return;
-  char key[48];
-  snprintf(key, sizeof(key), "sys.proc.%d.name", pid);
+  snprintf(key, sizeof(key), "sys.appicon.%s", name);
   OS1_registry_set(key, name);
-  snprintf(key, sizeof(key), "sys.proc.%d.icon", pid);
-  OS1_registry_set(key, name); /* icon key = name; nxicon resolves it */
+  (void)pid;
 }
 
 static inline void nxexec_unregister_identity(int pid) {
-  if (pid <= 0)
-    return;
-  char key[48];
-  snprintf(key, sizeof(key), "sys.proc.%d.name", pid);
-  OS1_registry_del(key);
-  snprintf(key, sizeof(key), "sys.proc.%d.icon", pid);
-  OS1_registry_del(key);
+  /* Nothing to unregister: the per-process view is virtual, so a dead pid has
+   * no keys by construction.  Kept as a no-op so callers read naturally. */
+  (void)pid;
 }
 
-/*
- * nxexec_prune_identities - GC sys.proc.<pid> identity keys whose process is
- * gone.  A DETACHED GUI app keeps its identity registered (nxexec vanished with
- * it and cannot clean up on its death), so those keys accumulate; a periodic
- * caller (the bar/dock, on a slow tick) drops the dead ones.  Liveness probe is
- * wait(pid): -1 = alive, anything else (-2 not-found / reaped) = gone.  Bounded
- * and cheap; harmless to skip (a stale key just names a pid with no window).
- */
-static inline void nxexec_prune_identities(void) {
-  char buf[512];
-  int n = OS1_registry_enum_under("sys.proc.", buf, sizeof(buf) - 1);
-  if (n <= 0)
-    return;
-  buf[n] = '\0';
-  char *save = NULL;
-  for (char *k = strtok_r(buf, "\n", &save); k;
-       k = strtok_r(NULL, "\n", &save)) {
-    size_t kl = strlen(k);
-    /* act once per pid, on its ".name" key; ".icon" is deleted alongside it. */
-    if (kl < 14 || strcmp(k + kl - 5, ".name") != 0)
-      continue;
-    int pid = atoi(k + 9); /* past "sys.proc." */
-    if (pid > 0 && wait(pid) != -1)
-      nxexec_unregister_identity(pid);
-  }
-}
+/* nxexec_prune_identities - REMOVED in Phase 5b.  It existed to sweep
+ * `sys.proc.<pid>` keys that outlived their processes; virtualising that view
+ * deleted the staleness class, so the collector has nothing left to collect.
+ * Retained as a no-op only so existing callers keep compiling until they are
+ * updated. */
+static inline void nxexec_prune_identities(void) {}
 
 static inline int nxexec_resolve_path(const char *name, char *out_path,
                                       size_t sz) {

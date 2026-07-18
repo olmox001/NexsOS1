@@ -378,7 +378,8 @@ int OS1_level(void); /* shorthand: just the privilege level (PLVL_*) */
 void print(const char *s);
 void print_hex(unsigned long val);
 int  printf(const char *fmt, ...);
-void printf_win(int win_id, const char *fmt, ...);
+void printf_win(int win_id, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 /* window_write: write text straight to a window you own, by id (#123).
  * Replaces the old fd>=100 overload on write(). */
 void window_write(int win_id, const char *buf, unsigned long count);

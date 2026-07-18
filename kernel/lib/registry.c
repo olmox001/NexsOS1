@@ -277,9 +277,78 @@ int registry_set(const char *key, const char *value, int owner_pid) {
  * registry_get - resolve a key to its leaf and copy the value.
  * Returns 0 on success, -1 if not found / not a leaf / bad args.
  */
+
+/*
+ * VIRTUAL per-process keys (Phase 5b) — `sys.proc.<pid>.<field>`.
+ *
+ * These are COMPUTED from the process table on every read, never stored.  They
+ * used to be written by userland (nxexec) after each spawn, which made the
+ * registry a SECOND, best-effort copy of state the kernel already owns
+ * authoritatively.  The proof that copy was a defect rather than a design: its
+ * entries outlived their processes, so a garbage collector
+ * (nxexec_prune_identities) had to be written to sweep them.
+ *
+ * Virtualising deletes the staleness class outright instead of maintaining it:
+ * a dead pid simply has no keys, because there was never a stored node.  It
+ * also avoids a new lock order — reaping stored keys at process death would
+ * have nested sched_lock inside the registry locks, the same AB-BA shape the
+ * roadmap already flags as an open hazard.
+ *
+ * `name` and lineage are FACTS THE KERNEL OWNS.  Program-level policy (an icon)
+ * deliberately does NOT live here: keying a PROGRAM's property by PID is the
+ * modelling error that made it go stale in the first place — it belongs under a
+ * program-keyed namespace, stable across instances.
+ *
+ * Returns 1 if `key` was a virtual key (answer written to buf), 0 otherwise.
+ */
+static int reg_virtual_proc(const char *key, char *buf, size_t size) {
+  const char *p = key;
+  if (strncmp(p, "sys.proc.", 9) != 0)
+    return 0;
+  p += 9;
+
+  int pid = 0;
+  if (*p < '0' || *p > '9')
+    return 0;
+  while (*p >= '0' && *p <= '9')
+    pid = pid * 10 + (*p++ - '0');
+  if (*p != '.')
+    return 0;
+  p++;
+
+  struct ps_info pi;
+  if (proc_get_info(pid, &pi) != 0) {
+    buf[0] = '\0';
+    return 1; /* live key space, dead process: EMPTY, never a stale value */
+  }
+
+  if (strcmp(p, "name") == 0) {
+    strncpy(buf, pi.name, size - 1);
+    buf[size - 1] = '\0';
+    return 1;
+  }
+  if (strcmp(p, "state") == 0) {
+    strncpy(buf, proc_state_name(pi.state), size - 1);
+    buf[size - 1] = '\0';
+    return 1;
+  }
+  if (strcmp(p, "parent") == 0 || strcmp(p, "owner") == 0) {
+    int par = 0, own = 0;
+    (void)proc_get_lineage(pid, &par, &own);
+    snprintf(buf, size, "%d", (strcmp(p, "owner") == 0) ? own : par);
+    return 1;
+  }
+  return 0; /* not a field we own: fall through to stored nodes */
+}
+
 int registry_get(const char *key, char *buffer, size_t size) {
   if (!key || !buffer || size == 0)
     return -1;
+
+  /* Virtual keys are answered from live kernel state BEFORE consulting stored
+   * nodes, so a stale leftover can never shadow the truth. */
+  if (reg_virtual_proc(key, buffer, size))
+    return 0;
 
   uint64_t flags;
   reg_read_lock(&flags);

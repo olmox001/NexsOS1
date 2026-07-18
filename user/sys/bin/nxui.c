@@ -543,12 +543,22 @@ static void redraw(int force) {
     if (is_launcher) {
       app_id = NXICON_LAUNCHER;
     } else {
-      char idkey[48], idicon[40];
-      snprintf(idkey, sizeof(idkey), "sys.proc.%d.icon", vpid[i]);
-      if (OS1_registry_get(idkey, idicon, sizeof(idicon)) == 0 && idicon[0])
-        app_id = nxicon_classify(idicon);
-      else
+      /* Two steps, because the icon is keyed by PROGRAM while the dock holds a
+       * PID: first ask the (virtual, always-live) per-process view for the
+       * program name, then look the icon up under that name.  Keying the icon
+       * by pid instead was the modelling error that made these entries go
+       * stale — an icon belongs to the program, not to one run of it. */
+      char idkey[64], idname[40], idicon[40];
+      snprintf(idkey, sizeof(idkey), "sys.proc.%d.name", vpid[i]);
+      if (OS1_registry_get(idkey, idname, sizeof(idname)) == 0 && idname[0]) {
+        snprintf(idkey, sizeof(idkey), "sys.appicon.%s", idname);
+        if (OS1_registry_get(idkey, idicon, sizeof(idicon)) == 0 && idicon[0])
+          app_id = nxicon_classify(idicon);
+        else
+          app_id = nxicon_classify(idname); /* the name itself classifies well */
+      } else {
         app_id = nxicon_classify(vttl[i]);
+      }
     }
     os1_image_t *icon = nxicon_get(app_id, g_light, TILE);
 

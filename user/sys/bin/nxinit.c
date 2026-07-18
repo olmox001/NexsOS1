@@ -317,10 +317,26 @@ int main(void) {
    * surviving service's PID.  A failed spawn (pid <= 0) also yields -2 and
    * is retried on the next iteration.
    *
-   * NOTE(USR-INIT-03): There is no respawn backoff or rate limit.  A crashing
-   * service is respawned immediately on every supervisor iteration, which can
-   * exhaust the process table before the system stabilises.
+   * USR-INIT-03 (FIXED 2026-07-18): respawns are now RATE LIMITED.  Previously a
+   * service that crashed immediately was respawned on every supervisor
+   * iteration; a single broken service therefore consumed the process table and
+   * took the whole system down.  That is not theoretical — a one-line format
+   * bug in the dock produced 28 respawns in a row and ended in a kernel panic,
+   * which is how this was found.  A supervisor whose failure mode is "amplify a
+   * crash until the machine dies" is worse than one that gives up.
    */
+  /* Per-service respawn budget.  Indexed by the same order the checks below use.
+   * A service that exhausts it is left DOWN and reported once, so the rest of
+   * the system keeps running and the failure stays diagnosable instead of being
+   * buried under an endless respawn log. */
+#define INIT_RESPAWN_MAX 5
+  int respawns[8];
+  int gaveup[8];
+  for (int i = 0; i < 8; i++) {
+    respawns[i] = 0;
+    gaveup[i] = 0;
+  }
+
   print("[Init] Entering supervisor loop\n");
   while (1) {
     /* Fire the boot notification once notify_srv has registered its endpoint
@@ -334,8 +350,22 @@ int main(void) {
       }
     }
 
+    /* init_should_respawn - spend one unit of a service's respawn budget.
+     * Returns 0 (and reports ONCE) when the budget is exhausted. */
+#define init_should_respawn(slot, name)                                        \
+  (gaveup[slot]                                                                \
+       ? 0                                                                     \
+       : (++respawns[slot] > INIT_RESPAWN_MAX                                  \
+              ? (gaveup[slot] = 1,                                             \
+                 printf("[Init] %s failed %d times — LEFT DOWN (not looping; "  \
+                        "see USR-INIT-03)\n",                                  \
+                        name, INIT_RESPAWN_MAX),                               \
+                 0)                                                            \
+              : 1))
+
     /* Check if notification server died and respawn. */
-    if (service_gone(pid_notify, "Notification Server")) {
+    if (service_gone(pid_notify, "Notification Server") &&
+        init_should_respawn(0, "Notification Server")) {
       pid_notify = spawn("/sys/bin/nxntfy_srv");
       /* Refresh srv.notify_pid to the LIVE pid.  Without this, the registry key
        * still holds the corpse's pid and every notify_post returns -ESRCH until
@@ -347,7 +377,8 @@ int main(void) {
 #ifndef LAUNCHER_AUTOSTART
     /* Respawn the shell when it is gone (freshly dead corpse OR already
      * reaped by the kernel).  spawn() assigns a fresh monotonic PID. */
-    if (service_gone(pid_shell, "NXShell")) {
+    if (service_gone(pid_shell, "NXShell") &&
+        init_should_respawn(5, "NXShell")) {
       pid_shell = spawn("/sys/bin/nxshell");
     }
 #endif
@@ -356,7 +387,8 @@ int main(void) {
      * it by PORT NAME, and the new instance re-publishes OS1nx_exec by taking
      * the receive right — so a respawn heals discovery automatically, with no
      * stale-pid window of the kind srv.notify_pid has to guard against. */
-    if (service_gone(pid_execsvc, "Execution Service")) {
+    if (service_gone(pid_execsvc, "Execution Service") &&
+        init_should_respawn(1, "Execution Service")) {
       char *rargv[2];
       rargv[0] = (char *)"/sys/bin/nxexec";
       rargv[1] = (char *)"--service";
@@ -366,13 +398,15 @@ int main(void) {
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as
      * above).  Refresh srv.dock_pid on respawn — same corpse-pid hazard as
      * srv.notify_pid above. */
-    if (service_gone(pid_nxui, "Dock")) {
+    if (service_gone(pid_nxui, "Dock") &&
+        init_should_respawn(2, "Dock")) {
       pid_nxui = spawn("/sys/bin/nxui");
       if (pid_nxui > 0)
         register_service_pid("srv.dock_pid", pid_nxui);
     }
     /* Respawn nxbar if it dies */
-    if (service_gone(pid_nxbar, "nxbar")) {
+    if (service_gone(pid_nxbar, "nxbar") &&
+        init_should_respawn(3, "nxbar")) {
       pid_nxbar = spawn("/sys/bin/nxbar");
       if (pid_nxbar > 0)
         register_service_pid("srv.bar_pid", pid_nxbar);
@@ -383,7 +417,8 @@ int main(void) {
      * LAUNCHER_AUTOSTART is disabled we never set pid_nxlauncher, so the
      * wait() on a stale handle would otherwise busy-loop — the #else keeps
      * the variable pinned to 0 so process_wait() returns -2 (gone). */
-    if (service_gone(pid_nxlauncher, "Launcher")) {
+    if (service_gone(pid_nxlauncher, "Launcher") &&
+        init_should_respawn(4, "Launcher")) {
       pid_nxlauncher = spawn("/sys/bin/nxlauncher");
       if (pid_nxlauncher > 0)
         register_service_pid("srv.launcher_pid", pid_nxlauncher);
