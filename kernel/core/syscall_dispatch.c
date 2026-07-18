@@ -139,10 +139,11 @@ int sys_set_font(void *data, size_t size);
 /* Filesystem access goes through the VFS contract only (<kernel/vfs.h>);
  * no direct ext4_* calls (VFS-01 resolved). */
 
-extern int arch_copy_from_user(void *dest, const void *src, size_t n);
-extern int arch_copy_to_user(void *dest, const void *src, size_t n);
-extern int arch_copy_string_from_user(char *dest, const char *src,
-                                      size_t max_len);
+/* User-memory access is a HAL primitive with per-architecture providers, like
+ * arch_bus_scan/arch_irq_init (kernel/hal.h).  These used to be hand-rolled
+ * `extern`s right here, which is why the two providers had nothing binding them
+ * to the same semantics.  The contract now lives in one place. */
+#include <kernel/hal_uaccess.h>
 
 extern int keyboard_focus_pid;
 

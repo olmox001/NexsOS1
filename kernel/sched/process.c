@@ -632,6 +632,134 @@ int proc_get_lineage(int pid, int *parent, int *owner) {
   return ret;
 }
 
+/* ---------------------------------------------------------------------------
+ * Per-process ENVIRONMENT (Phase 17)
+ *
+ * Storage is one page per process, allocated at spawn and copied from the
+ * creator (see process_create_caps).  All access below runs under sched_lock,
+ * the same lock that already guards the process table these lookups go
+ * through — no new lock, so no new lock ORDER to get wrong.
+ *
+ * The block is scanned linearly.  With ENV_MAX at 24 that is a handful of
+ * strcmp's against short keys; an index would cost more (in code and in the
+ * page budget) than it could save at this size.
+ * ------------------------------------------------------------------------- */
+
+/* __env_find - slot holding 'key' in p's block, or NULL.  Lock held. */
+static struct env_entry *__env_find(struct process *p, const char *key) {
+  if (!p || !p->env || !key || !*key)
+    return NULL;
+  for (int i = 0; i < ENV_MAX; i++)
+    if (p->env->e[i].k[0] && strcmp(p->env->e[i].k, key) == 0)
+      return &p->env->e[i];
+  return NULL;
+}
+
+int proc_env_get(int pid, const char *key, char *buf, size_t size) {
+  if (!key || !buf || size == 0)
+    return -EINVAL;
+  uint64_t flags;
+  int ret = -ENOENT;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct env_entry *e = __env_find(__process_find_by_pid(pid), key);
+  if (e) {
+    strncpy(buf, e->v, size - 1);
+    buf[size - 1] = '\0';
+    ret = 0;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return ret;
+}
+
+int proc_env_set(struct process *caller, int pid, const char *key,
+                 const char *value) {
+  if (!key || !*key)
+    return -EINVAL;
+  /* Reject a key that would be silently truncated: a setenv that quietly
+   * stored a DIFFERENT name than the one asked for would make the matching
+   * getenv miss, which is far harder to diagnose than a refusal. */
+  if (strlen(key) >= ENV_KEY_MAX || (value && strlen(value) >= ENV_VAL_MAX))
+    return -EINVAL;
+  /* Self is always allowed; anyone else needs privilege (a NULL caller is the
+   * kernel-internal context, already fully privileged). */
+  if (caller && (int)caller->pid != pid && !proc_is_privileged(caller))
+    return -EPERM;
+
+  uint64_t flags;
+  int ret;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  if (!p) {
+    ret = -ESRCH;
+  } else if (!p->env) {
+    /* No block and none can be made here: allocating under sched_lock would
+     * invert the PMM lock against it.  Blocks are allocated at spawn, so this
+     * is only reachable when that allocation failed. */
+    ret = -ENOMEM;
+  } else {
+    struct env_entry *e = __env_find(p, key);
+    if (!value || !*value) {
+      if (e)
+        e->k[0] = '\0'; /* free the slot: unset */
+      ret = 0;
+    } else {
+      if (!e) { /* first write of this name: claim a free slot */
+        for (int i = 0; i < ENV_MAX; i++)
+          if (!p->env->e[i].k[0]) {
+            e = &p->env->e[i];
+            strncpy(e->k, key, ENV_KEY_MAX - 1);
+            e->k[ENV_KEY_MAX - 1] = '\0';
+            break;
+          }
+      }
+      if (!e) {
+        ret = -ENOMEM; /* block full */
+      } else {
+        strncpy(e->v, value, ENV_VAL_MAX - 1);
+        e->v[ENV_VAL_MAX - 1] = '\0';
+        ret = 0;
+      }
+    }
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return ret;
+}
+
+int proc_env_enum(int pid, char *buf, size_t size) {
+  if (!buf || size == 0)
+    return -1;
+  uint64_t flags;
+  size_t used = 0;
+  buf[0] = '\0';
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  if (p && p->env) {
+    for (int i = 0; i < ENV_MAX; i++) {
+      const char *k = p->env->e[i].k;
+      if (!k[0])
+        continue;
+      size_t kl = strlen(k);
+      if (used + kl + 2 > size) /* +1 separator, +1 NUL */
+        break;
+      if (used)
+        buf[used++] = '\n';
+      memcpy(buf + used, k, kl);
+      used += kl;
+      buf[used] = '\0';
+    }
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return (int)used;
+}
+
+void proc_env_free(struct process *p) {
+  if (!p || !p->env)
+    return;
+  struct env_block *b = p->env;
+  p->env = NULL;
+  pmm_free_page(b);
+}
+
 int process_kill_allowed(struct process *caller, int target_pid) {
   if (!caller)
     return 1; /* kernel context */
@@ -741,6 +869,17 @@ struct process *process_create_caps(const char *name, uint8_t priority,
                                     uint8_t level, uint32_t req_caps) {
   pr_debug("Process: Creating '%s' (Prio=%d)\n", name,
            priority); /* hot path: demoted (perf §1) */
+
+  /* Environment page, allocated BEFORE sched_lock (Phase 17).  The PMM takes
+   * its own lock, so allocating inside sched_lock would introduce a
+   * sched_lock -> pmm_lock order that nothing else in this file establishes.
+   * Idle/kernel threads have no environment to inherit or export, so they do
+   * not pay for one.  A failed allocation is NOT fatal: the child runs with a
+   * NULL block and sees the system defaults. */
+  struct env_block *envblk = NULL;
+  if (priority != PROC_PRIO_IDLE)
+    envblk = (struct env_block *)pmm_alloc_page();
+
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
 
@@ -755,18 +894,24 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   int privileged = proc_is_privileged(creator);
   if (active_count >= proc_limit) {
     spin_unlock_irqrestore(&sched_lock, flags);
+    if (envblk)
+      pmm_free_page(envblk);
     pr_debug("Process: limit %d reached, refusing '%s'\n", proc_limit, name);
     return NULL;
   }
   if (!privileged) {
     if (creator->child_count >= MAX_PROCS_PER_PARENT) {
       spin_unlock_irqrestore(&sched_lock, flags);
+      if (envblk)
+        pmm_free_page(envblk);
       pr_debug("Process: PID %d hit the %d-children quota, refusing '%s'\n",
                creator->pid, MAX_PROCS_PER_PARENT, name);
       return NULL;
     }
     if (active_count >= proc_limit - RESERVED_PROC_SLOTS) {
       spin_unlock_irqrestore(&sched_lock, flags);
+      if (envblk)
+        pmm_free_page(envblk);
       pr_debug("Process: only reserved slots left, refusing user '%s'\n", name);
       return NULL;
     }
@@ -775,6 +920,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   int slot = find_free_slot();
   if (slot < 0) {
     spin_unlock_irqrestore(&sched_lock, flags);
+    if (envblk)
+      pmm_free_page(envblk);
     pr_err("%s", "Process pool full!\n");
     return NULL;
   }
@@ -782,6 +929,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   struct process *proc = (struct process *)pmm_alloc_page();
   if (!proc) {
     spin_unlock_irqrestore(&sched_lock, flags);
+    if (envblk)
+      pmm_free_page(envblk);
     return NULL;
   }
 
@@ -866,6 +1015,15 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   else
     strncpy(proc->cwd, "/", sizeof(proc->cwd));
   proc->cwd[sizeof(proc->cwd) - 1] = '\0';
+
+  /* Environment: same inheritance rule as cwd, one step deeper (Phase 17).
+   * A COPY, not a shared pointer — see the struct env_block comment: sharing
+   * would let a parent's later setenv rewrite a running child's environment.
+   * The page arrived zeroed from the PMM, so "no creator" needs no work: an
+   * empty block simply resolves everything to the `sys.env.*` defaults. */
+  proc->env = envblk;
+  if (envblk && creator && creator->env)
+    memcpy(envblk, creator->env, sizeof(*envblk));
 
   /* Add to pool */
   process_pool[slot] = proc;
@@ -1145,6 +1303,7 @@ static void __process_release_created(struct process *p) {
   }
   spin_unlock_irqrestore(&sched_lock, flags);
   process_handles_destroy(p);
+  proc_env_free(p); /* Phase 17: release the environment page */
   if (p->kernel_stack)
     pmm_free_pages((void *)(p->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
   if (p->page_table)
@@ -1391,6 +1550,7 @@ int process_terminate(int pid) {
   spin_unlock_irqrestore(&sched_lock, flags);
 
   process_handles_destroy(proc); /* close capability handles, free objects */
+  proc_env_free(proc);           /* Phase 17: release the environment page */
   if (proc->kernel_stack) {
     pmm_free_pages((void *)(proc->kernel_stack - STACK_SIZE),
                    STACK_SIZE / 4096);
@@ -1668,6 +1828,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
     process_handles_destroy(
         to_free); /* close capability handles, free objects */
+    proc_env_free(to_free); /* Phase 17: release the environment page */
     if (to_free->kernel_stack)
       pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE),
                      STACK_SIZE / 4096);

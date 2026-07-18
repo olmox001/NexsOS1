@@ -85,10 +85,72 @@ listed here.
 | 9d | ctty handback; interactive jobs move too | **NEXT** (gated by 16) |
 | 14 | window management kernel-side; nxwins as service | NEW — doc first |
 | 15 | split services from CLI/GUI interfaces | NEW — after 12 + 14 |
-| 5b | UNIFY per-process state: registry view backed by KERNEL | **NEXT** — gates 17 |
-| 17 | `env` + environment variables | after 5b (order 1/3) |
+| 5b | UNIFY per-process state: registry view backed by KERNEL | **DONE** 2026-07-18 (`19a367a`), device-verified 50/50 |
+| 17a | env kernel-backed + LIMITS unbound + 5b debt | **IN PROGRESS** (order 1/3) |
+| 17b | env inheritance follows the OWNER; env in the execsvc request | after 17a — **STALL S1** |
+| 17c | PATH becomes configuration, consumed by nxexec | after 17b — **STALL S2** |
+| 17d | terminal TYPE + terminfo (`TERM` gets a referent) | after 17c — **STALL S3** |
+| 17e | `env` utility + shell `export`/`unset`/`$VAR` | closes 17 |
 | 16 | ROADMAP §1.C scheduler/IPC blockers | then (order 2/3); gates 9d |
 | 13 | Orphaned ASTRA §7.11 structural items | NEW — see below |
+
+### Correction log — planning errors found 2026-07-18 (second pass)
+Recorded rather than silently patched, because the same mistakes recur:
+- **Phase 10a said "11 kernel files include userland headers".** Now measured
+  MECHANICALLY (`scripts/check-layering.sh`): **16 include sites across 13
+  translation units**, plus **3** userland→kernel source includes.  The figure
+  was an estimate presented as a measurement.
+- **`lib.c:576-578`** for the kernel-source includes is stale; they are at
+  `577-579` and will drift again.  The gate finds them by content, so the plan
+  should stop quoting line numbers for them at all.
+- **`TERM` was about to be seeded with an invented value (`nxterm`).**  Caught
+  by the maintainer.  The lesson is not "drop TERM": `kernel/graphics/term.c`
+  implements a REAL ECMA-48 subset with the full xterm-256 palette, so the
+  terminal has a knowable capability set and nothing names it.  That is a
+  missing artefact (17d), not a key to delete.
+- **`PATH` was assessed as "nobody reads it, so drop it".**  Wrong reasoning:
+  nxshell has NO search of its own, it delegates to `nxexec_spawn_search`, which
+  hardcodes `/bin` then `/sys/bin`.  That list IS the PATH policy, sitting
+  inside the executor that is meant to be THE executor (17c).
+
+## STALLS — found, owned, ordered (maintainer 2026-07-18: "gli stalli
+## individuati vanno documentati aggiunti alle fasi e risolti in ordine")
+
+A stall is anything that would leave a later phase unable to proceed without
+re-opening a closed one.  Each gets an owning subphase; none is left as a note.
+
+| id | stall | owner |
+|---|---|---|
+| **S1** | env inheritance copies from the MECHANICAL parent (`current_process`).  Since 9c that is **nxexec**, so a job launched through the service inherits the SERVICE's environment, not the requester's.  `proc_get_lineage`'s own comment in-tree warns of exactly this. Without it `env LUA_PATH=x lua ...` — the reason Phase 17 exists — cannot work. | **17b** |
+| **S2** | The program search is hardcoded inside `nxexec_spawn_search`.  Configuration living as a C literal in the executor blocks Phase 12 (services relocate to `/sys/services` — the search list must move with them) and Phase 11 (per-user paths). | **17c** |
+| **S3** | No terminal TYPE exists.  `term.c` supports H/f, K, J, SGR + xterm-256, DECTCEM `?25h/l`, but nothing names that set, so no ported program can negotiate capabilities.  Blocks any curses-class port and Phase 15 (a service driven from the terminal must know what the terminal can do). | **17d** |
+| **S4** | 5b DEBT (self-inflicted, already committed): `sys.appicon.<name>` stores `name` → `name` — zero information — and the writer keys it on the BASENAME while nxui builds the key from the kernel's FULL path, so it can never hit.  Harmless only because `nxicon_classify` strips the path itself. | **17a** |
+| **S5** | **FIXED CEILINGS TREATED AS CONSTRAINTS.**  Maintainer: *"tutti i limiti vanno risolti in maniera pianificata per slegare il codice, non sono vincoli vanno trattati come ostacoli da risolvere"*.  See the table below. | **17a** + **18** |
+| **S6** | nxshell has no `&&` / `\|\|` / `;` sequencing — it silently runs only the first command.  Documented as a trap for months with no owning phase. | **17e** |
+| **S7** | Both `elf.h` files share the guard `_KERNEL_ELF_H` and the kernel one never DEFINES it, so which ELF definitions exist depends on include ORDER.  Latent, invisible in a passing build. | **10a** |
+
+### S5 — the ceilings, and what each one actually blocks
+Written out because "there is a limit" is not the problem; **a limit that cannot
+grow without editing unrelated code** is.
+
+| ceiling | where | what it blocks | direction |
+|---|---|---|---|
+| `ENV_MAX 24`, `ENV_KEY_MAX 32`, `ENV_VAL_MAX 128` | `kernel/include/kernel/sched.h` | one page per process is the real bound; a program with a long `LUA_INIT` or many vars hits it silently | **17a**: refuse rather than truncate (a silently different value is worse than a failure), then **18**: chained pages so the block grows |
+| `MAX_VAL_LEN 128`, `MAX_KEY_LEN 64` | `kernel/include/kernel/registry.h` | **the worst coupling**: an environment VALUE is capped by a constant that belongs to the registry, an unrelated subsystem, purely because the seam happens to be the registry | **18**: env transfer moves out-of-line, the way the execsvc body already does — the seam stops copying through a fixed buffer |
+| `NXEXEC_ARGV_MAX 16` | `user/sys/bin/nxexec.h` | a long command line is truncated, not rejected | **18** |
+| `PORT_QUEUE_MAX 32` | `kernel/core/object.c` | bounded ON PURPOSE (it is the DoS fix Phase 16 wants) — **not** a stall; recorded so it is not "fixed" by mistake | — |
+| `REAPED_MAX 32` | `kernel/sched/process.c` | 33 fast-exiting children lose a status | **16**, with the other lifecycle gaps |
+
+## Phase 18 — UNBIND THE CEILINGS (new, after 17)
+Every item above marked **18**.  Grouped into one phase deliberately: they are
+the same defect wearing different sizes — a fixed buffer chosen once, at a layer
+that does not own the data.  Doing them together means designing the growth
+path ONCE (out-of-line transfer + chained storage, both of which already exist
+in this tree: the execsvc variable-size body, and the registry's doubling child
+array) instead of inventing three different bigger numbers.
+
+Explicit non-goal: raising constants.  A bigger magic number is the same defect
+with a later failure date.
 
 ### Corrections this realignment applied
 - **Phase 8 was a duplicate of Phase 3** ("nxexec provides display name + icon to
@@ -171,6 +233,75 @@ controlling terminal.  Only then can 9c's split be collapsed and the
 in-process path deleted.  Dependencies to resolve here: keyboard relay, Ctrl-Z
 suspension, and the window-ownership probe that decides GUI-vs-terminal.
 
+## Phase 17 — subphases (`env` + environment variables)
+
+The environment is per-process state that is INHERITED at spawn and mutable by
+its owner — structurally identical to `cwd`, which already lives in the kernel.
+So it goes where cwd goes, and userland reaches it through the SYSCALL
+DISPATCHER via the registry seam.  No shared struct crosses the boundary: the
+kernel owns `struct env_block` and userland never sees it, only strings through
+`sys_registry`.  That is the ASTRA rule the maintainer restated — *"userland e
+kernel devono essere completamente indipendenti, abbiamo un syscall dispatcher
+apposta"* — and it is why the seam is a namespace path and not a header.
+
+Two layers, each with exactly one owner:
+
+| layer | key | owner | authority to write |
+|---|---|---|---|
+| machine defaults | `sys.env.<NAME>` | init (stored registry nodes — this IS configuration, ASTRA §6.6) | `CAP_REG_WRITE` |
+| per-process | `sys.proc.<pid>.env.<NAME>` | the scheduler (virtual, computed) | self always; others only if privileged |
+
+`getenv` resolves process-first, then defaults.  So nothing has to copy the
+machine's PATH into every process at spawn, and a `setenv` shadows it for that
+process and its children only.  Two layers — **not two copies of one thing**,
+which is the 5b lesson applied forward.
+
+Note the authority split, which is the point of routing writes BEFORE the
+registry's capability gate: `setenv` is ordinary unprivileged work, so demanding
+`CAP_REG_WRITE` for it would set the ceiling at "may reconfigure the machine"
+for an operation touching only the caller.
+
+### 17a — kernel-backed env, ceilings made non-silent, 5b debt paid
+- per-process block in `struct process`, copied at spawn, freed at teardown;
+- registry seam: read + write + enum of `sys.proc.<pid>.env.*`;
+- **S5 first cut**: a key or value that does not fit is REFUSED, never
+  truncated.  A silently different value than the one asked for makes the
+  matching `getenv` miss, which is far harder to diagnose than a failure;
+- **S4**: drop `sys.appicon.<name>` (it stores `name` → `name`) and let
+  `nxicon_classify` do what it already does correctly.
+
+### 17b — inheritance follows the OWNER (S1)
+Blocker restated: `process_create_caps` copies from `current_process`.  Behind
+the exec service that is nxexec.  `owner_pid` is still 0 at create time
+(`SETOWNER` lands after), so "just read owner_pid" does not work either.
+
+Options, to decide with the maintainer rather than by default:
+- **(a)** the execsvc request CARRIES the environment (the variable-size body
+  can already express it) — explicit, no kernel change, and the service is
+  already the place that knows who asked;
+- **(b)** a spawn-time `owner` field so the kernel copies from the right
+  process — fixes it for EVERY future spawn-through-a-service, not just exec.
+
+(b) generalises; (a) is smaller and lands sooner.  They are not exclusive.
+
+### 17c — PATH becomes configuration (S2)
+`nxexec_spawn_search` gains a PATH-driven search with the current hardcoded
+list as the fallback, so behaviour is unchanged until the key exists.  Then
+`sys.env.PATH` has a real owner instead of being decoration, and Phase 12's
+move to `/sys/services` is a registry edit rather than a code edit.
+
+### 17d — terminal type + terminfo (S3)
+`term.c` already implements a specific, knowable capability set.  Work: name
+the terminal type, write the capability description as a first-class artefact
+(a registry subtree is the natural home — it is configuration, queryable, and
+needs no new mechanism), and only THEN seed `TERM`.  Seeding `TERM` first would
+advertise a type with no description behind it.
+
+### 17e — `env` utility + shell integration (S6)
+`env [-i] [-u NAME] [NAME=VALUE ...] [cmd ...]`, plus `export` / `unset` /
+`$VAR` expansion in nxshell, plus the `&&` / `||` / `;` sequencing that has been
+a documented trap with no owner.  Target: the lua suite passes `main.lua:133`.
+
 ## Phase 14 — Window management into the kernel; nxwins becomes a service
 Maintainer directive: verify nxwins, move window MANAGEMENT kernel-side, leave
 nxwins as a service.  Flagged as requiring **development, study and planning**
@@ -199,16 +330,26 @@ relocated + per-service caps) and 14 (windows as a service).
 > different boundaries and merging them would couple two large moves that can
 > and should be verified independently.
 
-### MEASURED STATE (2026-07-18, verified — not estimated)
-The PRIMARY violation is userland compiling KERNEL SOURCE, not header direction:
+### MEASURED STATE — now MECHANICALLY measured (2026-07-18, second pass)
+Superseding the earlier hand count (which said "11 kernel files" — an estimate
+presented as a measurement).  Reproduce with `./scripts/check-layering.sh`:
 
-| what | where | scale |
+```
+kernel->userland: 16      userland->kernel: 3
+```
+
+| what | scale | detail |
 |---|---|---|
-| userland compiles kernel `.c` files | `user/sys/lib/lib.c:576-578` | **1567 lines of kernel code inside EVERY user ELF** |
-| dual-compiled conditionals | `kernel/lib/math.c` (9), `vsnprintf.c` (3), `string.c` (0) | 12 `#ifdef KERNEL` sites |
-| kernel reaches into userland API | `kernel/include/kernel/elf.h:4` → `"../../../../include/api/elf.h"` | a relative-path escape out of the kernel tree |
-| userland API reaches into kernel | `include/api/elf.h:4` → `<kernel/types.h>` | **circular**: kernel → api → kernel |
-| the rule already exists and is broken | `Makefile:100`: *"the kernel must never grow includes from it (ASTRA layer separation)"* | stated, then violated two lines later |
+| userland compiles kernel `.c` files | **3** sites, **1567 lines of kernel code inside EVERY user ELF** | `math.c`, `string.c`, `vsnprintf.c` — found by content, not line number |
+| dual-compiled conditionals | 12 `#ifdef KERNEL` sites | `math.c` (9), `vsnprintf.c` (3), `string.c` (0) |
+| kernel includes userland headers | **16** sites / **13** translation units | `<object.h>`×4, `<caps.h>`, `<sysstats.h>`, `<style_names.h>`, `<syscall_nums.h>`, `<posix_types.h>`×2, `<font.h>`, `<stdbool.h>`×2, `<os1.h>`×2, `api/elf.h` |
+| **the cycle, closed** | — | `lib.c` compiles `kernel/lib/math.c` **and** `kernel/lib/vsnprintf.c`, and BOTH of those include `<os1.h>` — a userland header.  userland → kernel → userland. |
+| the rule already exists and is broken | — | `Makefile:100`: *"the kernel must never grow includes from it (ASTRA layer separation)"*, then `Makefile:101` gives the kernel `-Iinclude/abi -Iinclude/api` |
+
+The gate is generated from the tree's own inventory
+(`scripts/gen-layering-cocci.py`), so it cannot drift out of date as headers are
+added, and the two directions are scanned against DIFFERENT trees — `#include
+<os1.h>` is a violation in `kernel/` and entirely correct in `user/`.
 
 **Latent bug found while measuring** (nobody had reported it): both `elf.h` files
 use the SAME include guard `_KERNEL_ELF_H`, and the kernel one opens `#ifndef`

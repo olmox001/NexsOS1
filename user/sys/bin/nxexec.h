@@ -163,7 +163,8 @@ static inline const char *nxexec_strip_path_quotes(const char *name, char *out,
  * ways, per the maintainer's "window-title convention + registry namespace"
  * decision:
  *   - it titles the window it hosts with that name (the bar reads titles);
- *   - it registers sys.proc.<pid>.name / .icon in the registry so the bar/dock
+ *   - it no longer registers any identity key: sys.proc.<pid>.* is computed by
+ *     the kernel (Phase 5b) and the icon follows from the program name (17a)
  *     can serialise ANY pid's identity by number, independent of an app's own
  *     (possibly colliding or changing) window title.
  * The icon key is the same canonical name; nxicon classifies it.
@@ -179,18 +180,19 @@ static inline const char *nxexec_basename(const char *path) {
 }
 
 static inline void nxexec_register_identity(int pid, const char *name) {
-  /* `sys.proc.<pid>.name` is now VIRTUAL — computed by the kernel from the
-   * process table on every read (Phase 5b).  Writing it here would recreate the
-   * second, best-effort copy whose staleness required a garbage collector.
-   * Only the ICON is still published, and it is program-keyed rather than
-   * pid-keyed: an icon is a property of the PROGRAM, so keying it by process
-   * instance was the modelling error that made it go stale. */
-  char key[64];
-  if (!name || !*name)
-    return;
-  snprintf(key, sizeof(key), "sys.appicon.%s", name);
-  OS1_registry_set(key, name);
+  /* NOTHING to publish (Phase 5b, corrected in 17a).
+   *
+   * `sys.proc.<pid>.name` is VIRTUAL — the kernel computes it from the process
+   * table on every read — so writing it here would recreate exactly the second,
+   * best-effort copy whose staleness needed a garbage collector.
+   *
+   * The ICON does not need a key either.  5b published `sys.appicon.<name>`
+   * mapping a name to ITSELF: zero information.  Worse, it keyed on the
+   * BASENAME while the only reader (nxui) builds the key from the kernel's FULL
+   * path, so it could never even hit.  `nxicon_classify` already strips the
+   * path and classifies the program name directly, which is the whole job. */
   (void)pid;
+  (void)name;
 }
 
 static inline void nxexec_unregister_identity(int pid) {

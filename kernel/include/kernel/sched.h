@@ -46,6 +46,35 @@ struct wait_queue_head {
 
 struct handle_entry; /* kernel/object.h — capability handle table slot */
 
+/* Per-process ENVIRONMENT (Phase 17).
+ *
+ * The environment is per-process state that is INHERITED at spawn and mutable
+ * by its owner — exactly the shape of cwd, which already lives here.  Keeping
+ * it in the kernel is the Phase 5b rule applied consistently: state the kernel
+ * can own authoritatively is not duplicated into a userland-written copy that
+ * then needs a collector.  Userland reads and writes it through the registry
+ * seam (`sys.proc.<pid>.env.<NAME>`), so there is ONE representation.
+ *
+ * Inheritance follows a COPY at spawn, not a live reference to the parent.  A
+ * reference would be cheaper, but it would mean a parent's later `setenv` (or
+ * its death) silently rewrote a running child's environment — POSIX snapshots,
+ * and so do we.
+ *
+ * Sized to fit in a single page, which is also the allocation unit: 24 entries
+ * of 32+128 bytes.  A bound is unavoidable somewhere; making it the page keeps
+ * allocation trivial (pmm_alloc_page returns zeroed memory) and the limit
+ * honest and visible rather than emergent. */
+#define ENV_KEY_MAX 32
+#define ENV_VAL_MAX 128
+#define ENV_MAX 24
+struct env_entry {
+  char k[ENV_KEY_MAX]; /* empty k == free slot */
+  char v[ENV_VAL_MAX];
+};
+struct env_block {
+  struct env_entry e[ENV_MAX];
+};
+
 /* Process Control Block */
 struct process {
   uint32_t pid;
@@ -192,6 +221,13 @@ struct process {
   /* Filesystem state */
   char cwd[128]; /* Current Working Directory */
 
+  /* Per-process environment (Phase 17), one page, copied from the creator at
+   * spawn.  NULL means "no private environment": reads fall through to the
+   * system defaults under `sys.env.*`.  That is also the graceful degradation
+   * path if the page allocation fails — a spawn is never failed over the
+   * environment, the child simply inherits the machine's defaults. */
+  struct env_block *env;
+
   /* Capability handle table (object/capability ABI, kernel/object.h) — the ONE
    * per-process descriptor table (ASTRA §6.2: the fd table folded into it).  A
    * POSIX fd IS a handle (fd N == handle N): process_create() pre-installs
@@ -281,6 +317,25 @@ int process_set_owner(int pid, int owner_pid);
  * to parent when unset).  Lets userland follow inheritance across a service
  * spawn, where the mechanical parent is the service rather than the requester. */
 int proc_get_lineage(int pid, int *parent, int *owner);
+
+/* Per-process environment (Phase 17).  The AUTHORITY rule is deliberately the
+ * process one, not the registry one: a process may always read and write its
+ * OWN environment (calling setenv is ordinary, unprivileged work), and only a
+ * privileged process may touch another's.  Routing this through CAP_REG_WRITE
+ * because the seam happens to be the registry would have made `setenv` demand
+ * system-configuration authority — the wrong ceiling for the operation.
+ *
+ * proc_env_get   0 on hit, -ENOENT if the process has no such variable.
+ * proc_env_set   0, -ESRCH (no such pid), -EPERM, -ENOMEM (block full/OOM).
+ *                A NULL/empty value UNSETS, which is what the registry DEL op
+ *                and `env -u` both need.
+ * proc_env_enum  newline-separated NAMEs into buf; returns length, or -1.
+ * proc_env_free  release the block at teardown. */
+int proc_env_get(int pid, const char *key, char *buf, size_t size);
+int proc_env_set(struct process *caller, int pid, const char *key,
+                 const char *value);
+int proc_env_enum(int pid, char *buf, size_t size);
+void proc_env_free(struct process *p);
 /* process_ipc_allowed: may 'caller' send IPC to target_pid?  True if the
  * caller holds CAP_IPC_ANY, or target is the caller's parent or a
  * descendant.  Acquires sched_lock internally. */

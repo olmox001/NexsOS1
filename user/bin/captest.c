@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <os1.h>
 #include <stdio.h>
+#include <stdlib.h> /* getenv/setenv/unsetenv (Phase 17 section) */
 #include <string.h>
 #include <sys/wait.h> /* waitpid + WIFEXITED/WEXITSTATUS (Phase 9b section) */
 #include <unistd.h>
@@ -411,6 +412,85 @@ int main(void) {
     memset(v, 0, sizeof(v));
     OS1_registry_get(k, v, sizeof(v));
     check(win_id, "vproc-dead-pid-empty", v[0] == '\0');
+  }
+
+  /* ============ environment (Phase 17a) ================================= */
+  section(win_id, "environment");
+  {
+    char v[64], k[96];
+
+    /* The seam is a NAMESPACE PATH, not a shared struct: userland never sees
+     * the kernel's env block, only strings through sys_registry.  That is the
+     * whole reason the syscall dispatcher exists. */
+    check(win_id, "env-set", setenv("CAPTEST_A", "one", 1) == 0);
+    const char *got = getenv("CAPTEST_A");
+    check(win_id, "env-get-roundtrip", got && strcmp(got, "one") == 0);
+
+    check(win_id, "env-overwrite", setenv("CAPTEST_A", "two", 1) == 0 &&
+                                       (got = getenv("CAPTEST_A")) &&
+                                       strcmp(got, "two") == 0);
+
+    /* overwrite=0 must NOT replace an existing value. */
+    setenv("CAPTEST_A", "three", 0);
+    got = getenv("CAPTEST_A");
+    check(win_id, "env-no-overwrite", got && strcmp(got, "two") == 0);
+
+    unsetenv("CAPTEST_A");
+    check(win_id, "env-unset", getenv("CAPTEST_A") == (char *)0);
+
+    /* The MACHINE default layer: HOME is seeded by init as a stored key, and
+     * getenv falls through to it with nothing copied into this process. */
+    got = getenv("HOME");
+    check(win_id, "env-machine-default", got && got[0] == '/');
+
+    /* A process value SHADOWS the default for this process only... */
+    setenv("HOME", "/captest", 1);
+    got = getenv("HOME");
+    check(win_id, "env-process-shadows-default",
+          got && strcmp(got, "/captest") == 0);
+    /* ...and removing it exposes the default again, unharmed: the two layers
+     * are layers, not two copies of one value. */
+    unsetenv("HOME");
+    got = getenv("HOME");
+    check(win_id, "env-default-survives-shadow",
+          got && strcmp(got, "/captest") != 0 && got[0] == '/');
+
+    /* S5: a value that does not fit is REFUSED, never silently shortened.  A
+     * truncated value is a DIFFERENT value, so the write would "succeed" and
+     * the matching read would miss — the failure mode this replaces. */
+    {
+      char big[512];
+      memset(big, 'x', sizeof(big) - 1);
+      big[sizeof(big) - 1] = '\0';
+      int r = setenv("CAPTEST_BIG", big, 1);
+      check(win_id, "env-oversize-refused-not-truncated", r != 0);
+      check(win_id, "env-oversize-left-unset",
+            getenv("CAPTEST_BIG") == (char *)0);
+    }
+
+    /* Same property one layer down, at the registry seam itself — this bit
+     * EVERY long registry write, not just the environment. */
+    {
+      char big[512];
+      memset(big, 'y', sizeof(big) - 1);
+      big[sizeof(big) - 1] = '\0';
+      check(win_id, "registry-oversize-value-refused",
+            OS1_registry_set("captest.big", big) != 0);
+    }
+
+    /* Writing a COMPUTED field is meaningless, not merely unprivileged: it
+     * must be refused rather than stored as a node the computed value would
+     * then shadow forever. */
+    snprintf(k, sizeof(k), "sys.proc.%d.name", get_pid());
+    check(win_id, "vproc-computed-field-readonly",
+          OS1_registry_set(k, "hijacked") != 0);
+    memset(v, 0, sizeof(v));
+    check(win_id, "vproc-name-still-true",
+          OS1_registry_get(k, v, sizeof(v)) == 0 && strcmp(v, "hijacked") != 0);
+
+    /* Another process's environment is not ours to write. */
+    check(win_id, "env-other-process-denied",
+          OS1_registry_set("sys.proc.1.env.CAPTEST", "x") != 0);
   }
 
   /* ============ exit status survives reaping (Phase 9b) ================= */

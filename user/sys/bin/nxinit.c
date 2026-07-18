@@ -105,6 +105,40 @@ static void registry_init_defaults(void) {
   /* --- Input --- */
   OS1_registry_set("mouse.sensitivity", "1.0");
 
+  /* --- Environment: the MACHINE's defaults (Phase 17) ---
+   * These are stored registry keys, not process state: they describe this
+   * installation's layout, so they belong to the configuration namespace
+   * (ASTRA §6.6) and outlive every process.  getenv() falls back here when a
+   * process has no value of its own, which is why nothing has to copy PATH
+   * into each new process at spawn.  Editing these reconfigures the machine
+   * and needs CAP_REG_WRITE; a process changing its OWN copy does not.
+   *
+   * Seed ONLY what has a verified consumer.  A default with no reader is not
+   * harmless documentation: it is a claim about the system that nothing keeps
+   * true, and the first program to believe it finds out the hard way.
+   *
+   *   HOME  read by nxexec_resolve_path()'s '~' tier and nxlauncher — and
+   *         nxexec.h already anticipates it ("a real per-user HOME later
+   *         becomes a getenv() change alone").
+   *   PATH  no reader YET: the bare-name search is hardcoded to /bin then
+   *         /sys/bin inside nxexec_spawn_search.  That hardcoded list IS this
+   *         key's meaning, and 17c makes the executor consume it, at which
+   *         point Phase 12's move to /sys/services becomes a registry edit
+   *         rather than a code edit.
+   *
+   * Deliberately NOT seeded:
+   *   TERM    there is no terminal TYPE yet.  term.c implements a real
+   *           ECMA-48 subset, but nothing names or describes that capability
+   *           set, so TERM would advertise a type with nothing behind it (17d).
+   *   USER    there is no user identity in this system.  Phase 11 owns that
+   *           model and is blocked on its design doc; inventing a name here
+   *           would pre-commit it.
+   *   SHELL   no reader.  system() uses the STANDARD shell by POSIX, not $SHELL.
+   *   TMPDIR  no reader.  doom reads TEMP, and only under #if _WIN32.
+   */
+  OS1_registry_set("sys.env.HOME", "/home");
+  OS1_registry_set("sys.env.PATH", "/bin:/sys/bin");
+
   printf("[Init] Registry defaults initialised.\n");
 }
 
