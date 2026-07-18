@@ -277,6 +277,10 @@ int process_kill_allowed(struct process *caller, int target_pid);
  * a privileged caller (it delegates authority).  0, or -ESRCH if either pid is
  * not live. */
 int process_set_owner(int pid, int owner_pid);
+/* proc_get_lineage - spawning parent + LOGICAL owner of a pid (owner falls back
+ * to parent when unset).  Lets userland follow inheritance across a service
+ * spawn, where the mechanical parent is the service rather than the requester. */
+int proc_get_lineage(int pid, int *parent, int *owner);
 /* process_ipc_allowed: may 'caller' send IPC to target_pid?  True if the
  * caller holds CAP_IPC_ANY, or target is the caller's parent or a
  * descendant.  Acquires sched_lock internally. */

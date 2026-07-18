@@ -85,7 +85,8 @@ listed here.
 | 9d | ctty handback; interactive jobs move too | **NEXT** (gated by 16) |
 | 14 | window management kernel-side; nxwins as service | NEW — doc first |
 | 15 | split services from CLI/GUI interfaces | NEW — after 12 + 14 |
-| 17 | `env` + environment variables | **NEXT** (maintainer order 1/3) |
+| 5b | UNIFY per-process state: registry view backed by KERNEL | **NEXT** — gates 17 |
+| 17 | `env` + environment variables | after 5b (order 1/3) |
 | 16 | ROADMAP §1.C scheduler/IPC blockers | then (order 2/3); gates 9d |
 | 13 | Orphaned ASTRA §7.11 structural items | NEW — see below |
 

@@ -977,15 +977,21 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
      * branch); this is its payload.  A short buffer truncates, like the
      * REGKEY/WINDOW reads. */
     struct ps_info pi;
+    /* Lineage is read separately rather than widened into ps_info: that struct
+     * is a userland ABI read as an ARRAY by ps/nxproc, so growing it would move
+     * every element. */
+    int lin_parent = 0, lin_owner = 0;
+    (void)proc_get_lineage(o->pid, &lin_parent, &lin_owner);
     if (proc_get_info(o->pid, &pi) != 0) {
       ret = -ESRCH;
     } else {
       char stbuf[256];
       int len = snprintf(
           stbuf, sizeof(stbuf),
-          "pid=%d\nname=%s\nstate=%s\nprio=%d\ncpu_ms=%llu\noncpu=%d\n", pi.pid,
-          pi.name, proc_state_name(pi.state), pi.priority,
-          (unsigned long long)pi.cpu_time, pi.on_cpu);
+          "pid=%d\nname=%s\nstate=%s\nprio=%d\ncpu_ms=%llu\noncpu=%d\n"
+          "parent=%d\nowner=%d\n",
+          pi.pid, pi.name, proc_state_name(pi.state), pi.priority,
+          (unsigned long long)pi.cpu_time, pi.on_cpu, lin_parent, lin_owner);
       size_t cn = (len > 0) ? (size_t)len : 0;
       if (cn > n)
         cn = n;

@@ -607,6 +607,31 @@ int process_set_owner(int pid, int owner_pid) {
   return ret;
 }
 
+/*
+ * proc_get_lineage - report a process's spawning parent AND logical owner.
+ *
+ * Exposed so userland can follow INHERITANCE (environment, and later anything
+ * else that descends).  The distinction matters since Phase 9c: with execution
+ * behind a service the mechanical parent is nxexec, so anything that inherited
+ * via parent_pid would inherit from the SERVICE instead of from the process that
+ * actually asked — owner_pid is the one to follow.
+ */
+int proc_get_lineage(int pid, int *parent, int *owner) {
+  uint64_t flags;
+  int ret = -1;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  if (p) {
+    if (parent)
+      *parent = p->parent_pid;
+    if (owner)
+      *owner = p->owner_pid > 0 ? p->owner_pid : p->parent_pid;
+    ret = 0;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return ret;
+}
+
 int process_kill_allowed(struct process *caller, int target_pid) {
   if (!caller)
     return 1; /* kernel context */
