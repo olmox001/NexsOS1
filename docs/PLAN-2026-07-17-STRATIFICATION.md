@@ -73,8 +73,8 @@ listed here.
 | 7 | doom revert + lua finish | TODO (last: depends on 9/10) |
 | 8 | naming → bar/icons | **FOLDED INTO 3** (was a duplicate) |
 | 9b | exit status must survive reaping (ROOT CAUSE) | **DONE**, device-verified (47/47) |
-| 9c | shell → service for NON-interactive launches | **NEXT** |
-| 9d | ctty handback; interactive jobs move too | after 9c |
+| 9c | system()/os.execute → service (non-interactive) | **DONE**, device-verified |
+| 9d | ctty handback; interactive jobs move too | **NEXT** (gated by 16) |
 | 14 | window management kernel-side; nxwins as service | NEW — doc first |
 | 15 | split services from CLI/GUI interfaces | NEW — after 12 + 14 |
 | 16 | ROADMAP §1.C scheduler/IPC blockers | NEW — gates 9d |
@@ -135,9 +135,17 @@ writes and `process_wait` consults, so corpses can still be freed eagerly.
 be debugged against a status channel that is itself unreliable.
 
 ### 9c — shell uses the service for NON-INTERACTIVE launches (option b)
-Maintainer: do (b) first "solo per finalizzare la logica".  `system()`,
-`os.execute` and graphical launches go through the daemon; INTERACTIVE
-foreground jobs keep the in-process path for now.  Rationale: `SETOWNER`
+Maintainer: do (b) first "solo per finalizzare la logica".  `system()` and
+`os.execute` go through the daemon; INTERACTIVE
+foreground jobs keep the in-process path for now.
+
+CORRECTION (verified 2026-07-18): this section originally said GRAPHICAL
+launches should move to the daemon too.  That is WRONG — nxlauncher/nxfilem use
+the nxexec BINARY in HOSTED mode, which creates the terminal window; the service
+spawns WITHOUT one, so moving them would silently lose hosted output.  They
+already route through nxexec correctly and must stay as they are.
+
+Rationale for keeping interactive jobs in-process: `SETOWNER`
 restores AUTHORITY (verified) but NOT the controlling terminal, so moving
 interactive jobs first would break Ctrl-Z/Ctrl-C — the one part of job control
 already validated on device.

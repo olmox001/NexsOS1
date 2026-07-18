@@ -58,6 +58,7 @@
 #include <graphics.h>
 #include <input.h>
 #include <math.h>
+#include <execsvc.h>
 #include <os1.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1667,7 +1668,19 @@ int system(const char *command) {
   argv[2] = (char *)command;
   argv[3] = NULL;
 
-  int pid = spawn_args(NXSHELL_PATH, 3, argv);
+  /* Phase 9c: route NON-INTERACTIVE execution through the execution service, so
+   * the POSIX surface stops carrying its own private execution path (nxexec is
+   * meant to be THE executor and the POSIX compatibility point).  Interactive
+   * foreground jobs deliberately still spawn in-process — the service becomes
+   * the spawning parent, and SETOWNER restores authority but NOT the
+   * controlling terminal, so Ctrl-Z/Ctrl-C would break (that is Phase 9d).
+   *
+   * The fallback is required, not defensive padding: the service is supervised
+   * and can be briefly absent across a respawn, and a system() that failed in
+   * that window would be a worse regression than the divergence it removes. */
+  int pid = execsvc_spawn(3, argv, 0);
+  if (pid <= 0)
+    pid = spawn_args(NXSHELL_PATH, 3, argv);
   if (pid < 0) {
     errno = ENOENT;
     return -1;

@@ -131,4 +131,14 @@ struct execsvc_spawn_rep {
   char resolved[EXECSVC_PATH_MAX]; /* the path actually executed */
 };
 
+/*
+ * execsvc_spawn - client stub: ask the execution service to run argv.
+ * Returns the child pid, or < 0 if the service is unreachable — callers MUST
+ * fall back to spawning directly, because the service is supervised and can be
+ * briefly absent across a respawn.  Implemented in user/sys/lib/execsvc_client.c
+ * (its own unit, so Phase 10a/12 can move service clients out of the libc as a
+ * build change rather than another extraction).
+ */
+int execsvc_spawn(int argc, char *const argv[], unsigned int flags);
+
 #endif /* _EXECSVC_H */
