@@ -573,6 +573,61 @@ static inline int nxexec_spawn_search_redir(int argc, char *argv[],
                                          nredir);
 }
 
+/*
+ * nxexec_spawn_pipe_consumer - create a pipe and spawn `argv` reading from it,
+ * handing the WRITE end back to the caller.
+ *
+ * This is the pipeline's EXECUTOR half: making the channel, wiring the
+ * consumer's fd 0 to it, and honouring the consumer's own `>`/`2>`.  What
+ * PRODUCES the data stays with the caller, because that genuinely differs — a
+ * shell may feed a builtin's output straight in, while a graphical caller
+ * spawns a producer process.  Splitting it here is what stops the pipe wiring
+ * from living only inside nxshell, the way redirection used to.
+ *
+ * Returns the consumer pid (<=0 on failure) and stores the write end in
+ * *out_write_fd (-1 if none).  The caller closes the write end to signal EOF,
+ * and closes it in ANY case — a forgotten write end means the consumer waits
+ * for data that can never arrive.
+ */
+static inline int nxexec_spawn_pipe_consumer(int argc, char *argv[],
+                                             char *out_path, int *out_write_fd) {
+  int pfd[2] = {-1, -1};
+  *out_write_fd = -1;
+  if (pipe(pfd) != 0)
+    return -1;
+
+  struct spawn_redir redir[SPAWN_MAX_REDIR];
+  int fds[SPAWN_MAX_REDIR], nredir = 0, nfds = 0;
+  if (nxexec_strip_redirections(&argc, argv, redir, &nredir, fds, &nfds) != 0 ||
+      argc == 0) {
+    for (int i = 0; i < nfds; i++)
+      close(fds[i]);
+    close(pfd[0]);
+    close(pfd[1]);
+    return -1;
+  }
+  /* stdin from the pipe, appended AFTER the command's own redirections so an
+   * explicit `< file` on the same stage stays visible to the kernel. */
+  if (nredir < SPAWN_MAX_REDIR) {
+    redir[nredir].child_fd = 0;
+    redir[nredir].parent_fd = pfd[0];
+    redir[nredir].source_pid = 0;
+    nredir++;
+  }
+  int pid =
+      nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0, redir,
+                                nredir);
+  for (int i = 0; i < nfds; i++)
+    close(fds[i]);
+  close(pfd[0]); /* the consumer holds its own dup */
+  if (pid <= 0) {
+    close(pfd[1]);
+    return pid;
+  }
+  *out_write_fd = pfd[1];
+  return pid;
+}
+
 /* nxexec_spawn_detached - launcher-style spawn of an explicit path: the child
  * never inherits the spawner as ctty (kernel-enforced, SPAWN_FLAG_DETACHED). */
 static inline int nxexec_spawn_detached(const char *path, int argc,

@@ -215,9 +215,14 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
   }
   int lhs_is_echo = (strcmp(argv[0], "echo") == 0);
 
-  int pfds[2];
-  if (pipe(pfds) != 0) {
-    /* No kernel pipe available: temp-file fallback for the echo producer. */
+  /* Start the consumer on a fresh pipe (executor policy).  A failure here is
+   * the ONLY thing that selects the temp-file fallback — we no longer create a
+   * probe pipe just to test the waters, which leaked one pipe per pipeline. */
+  char rpath[SPAWN_PATH_MAX];
+  int wfd = -1;
+  int rpid = nxexec_spawn_pipe_consumer(rhs_argc, rhs_argv, rpath, &wfd);
+  if (rpid <= 0) {
+    /* No pipe/consumer: temp-file fallback for the echo producer. */
     if (!lhs_is_echo) {
       print("nxshell: cannot create pipe\n");
       return;
@@ -243,10 +248,10 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
       return;
     }
     char tpath[SPAWN_PATH_MAX];
-    int rpid = spawn_with_extra_redir(rhs_argc, rhs_argv, 0, tfd, tpath);
+    int tpid = spawn_with_extra_redir(rhs_argc, rhs_argv, 0, tfd, tpath);
     close(tfd);
-    if (rpid > 0) {
-      run_fg_job(rpid, rhs_argv[0]);
+    if (tpid > 0) {
+      run_fg_job(tpid, rhs_argv[0]);
     } else {
       g_last_status = 127; /* POSIX: command not found */
       printf("Unknown command: %s\n", rhs_argv[0]);
@@ -255,24 +260,27 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
     return;
   }
 
-  /* Real pipe: spawn RHS on the read-end FIRST so it drains while we produce. */
-  char rpath[SPAWN_PATH_MAX];
-  int rpid = spawn_with_extra_redir(rhs_argc, rhs_argv, 0, pfds[0], rpath);
-
+  /* The consumer is already running on the pipe (started above); what stays
+   * here is genuinely the shell's: WHO produces, and job tracking. */
   int lpid = -1;
-  if (lhs_is_echo) {
-    for (int i = 1; i < lhs_argc; i++) {
-      if (i > 1)
-        write(pfds[1], " ", 1);
-      write(pfds[1], argv[i], strlen(argv[i]));
+  if (rpid > 0 && wfd >= 0) {
+    if (lhs_is_echo) {
+      /* Builtin producer: the shell writes the output itself — there is no
+       * process to give the write end to. */
+      for (int i = 1; i < lhs_argc; i++) {
+        if (i > 1)
+          write(wfd, " ", 1);
+        write(wfd, argv[i], strlen(argv[i]));
+      }
+      write(wfd, "\n", 1);
+    } else {
+      char lpath[SPAWN_PATH_MAX];
+      lpid = spawn_with_extra_redir(lhs_argc, argv, 1, wfd, lpath);
     }
-    write(pfds[1], "\n", 1);
-  } else {
-    char lpath[SPAWN_PATH_MAX];
-    lpid = spawn_with_extra_redir(lhs_argc, argv, 1, pfds[1], lpath);
   }
-  close(pfds[1]); /* our write-end gone (LHS keeps its own dup) → RHS sees EOF */
-  close(pfds[0]); /* RHS keeps its own read dup */
+  if (wfd >= 0)
+    close(wfd); /* ALWAYS: a retained write end leaves the consumer waiting for
+                 * data that can never arrive */
 
   if (rpid > 0) {
     if (background) {

@@ -297,8 +297,43 @@ int main(int argc, char *argv[]) {
    * terminal. Flag bits (compositor_set_window_flags): 4 = hide, 2 = show. */
   set_window_flags(win, 4);
 
+  /*
+   * Apply `<` `>` `>>` `2>` on the HOSTED path too (Phase 9 step 2).
+   *
+   * Until now redirection existed only in the shell, so the two launch paths
+   * were not merely separate implementations — they had different CAPABILITIES:
+   * a terminal user could redirect, a graphical caller could not.  nxlauncher
+   * and nxfilem already route through this binary, so parsing here is what
+   * finally lets a GUI caller pass a full command line (the nxpopup argument
+   * entry) and get the same behaviour the terminal has always had.
+   *
+   * Errors are reported into this window, which must therefore be REVEALED
+   * first: it was hidden for the grace probe, and a failure message written to
+   * a hidden window would be invisible — the launch would look like it silently
+   * did nothing.
+   */
+  struct spawn_redir redir[SPAWN_MAX_REDIR];
+  int rfds[SPAWN_MAX_REDIR], nredir = 0, nrfds = 0;
+  if (nxexec_strip_redirections(&jargc, jargv, redir, &nredir, rfds, &nrfds) !=
+          0 ||
+      jargc == 0) {
+    set_window_flags(win, 2);
+    set_focus(get_pid());
+    if (jargc == 0)
+      printf("nxexec: no command to run\r\n");
+    wait_dismiss(NXEXEC_DISMISS_MS);
+    for (int i = 0; i < nrfds; i++)
+      close(rfds[i]);
+    return 1;
+  }
+
   char path[NXEXEC_PATH_MAX];
-  int pid = nxexec_spawn_search(jargc, jargv, path, /*detached=*/0);
+  int pid = nxexec_spawn_search_redir(jargc, jargv, path, /*detached=*/0, redir,
+                                      nredir);
+  /* The child holds its own dups; drop ours so the files close when both sides
+   * are done, instead of staying open for this terminal's whole lifetime. */
+  for (int i = 0; i < nrfds; i++)
+    close(rfds[i]);
 
   if (pid <= 0) {
     set_window_flags(win, 2);
