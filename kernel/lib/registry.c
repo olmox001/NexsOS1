@@ -255,8 +255,28 @@ int registry_set(const char *key, const char *value, int owner_pid) {
     reg_write_unlock(flags);
     return -1; /* empty key or OOM */
   }
-  if (n->is_leaf && owner_pid != 0 && n->owner_pid != 0 &&
-      n->owner_pid != owner_pid) {
+  /* Ownership ACL.  owner_pid 0 == the SYSTEM identity (machine/root, see
+   * registry_caller_owner()); a non-zero owner_pid is an ordinary process
+   * writing as itself.  A non-system caller may write ONLY a key it already
+   * owns; everything else is denied.  That single rule covers two cases:
+   *
+   *   - another USER's key (n->owner_pid = some other pid) — first-writer-wins,
+   *     unchanged;
+   *   - a SYSTEM key (n->owner_pid == 0) — a config/service key first written
+   *     by init or a root service.
+   *
+   * USR-SEC-01 (FIXED 2026-07-23, audit programme A): the deny used to also
+   * require `n->owner_pid != 0`, which meant a system-owned key was writable by
+   * ANYONE — an ordinary app could overwrite `srv.notify_pid` (redirecting every
+   * notification), `theme.*`, `sys.env.*`, etc.  init re-published srv.* on each
+   * respawn to paper over it (NOTIFY-REG-01), but that only bounded the window,
+   * it did not close it.  The real separation of root from user here is
+   * NAMESPACE OWNERSHIP, not the coarse capability mask: a user keeps
+   * CAP_REG_WRITE (raptor/nxempire persist their own keys), but the keys it
+   * creates are owned by its pid and it can no longer reach a system key.  A
+   * system caller (owner_pid == 0) is never denied and may still override any
+   * key, exactly as before. */
+  if (n->is_leaf && owner_pid != 0 && n->owner_pid != owner_pid) {
     reg_write_unlock(flags);
     pr_warn("registry: PID %d denied write to '%s' (owner PID %d)\n", owner_pid,
             key, n->owner_pid);
