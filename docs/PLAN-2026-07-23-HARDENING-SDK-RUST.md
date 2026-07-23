@@ -98,7 +98,7 @@ fix unblocks another.  Populated from §A; B1 is already known.
 
 | task | defect | state |
 |---|---|---|
-| B1 | PROC-REF-01 — process reference/pin so cross-process handle work is safe (`sys_port_send_caps` rcv, `process_redirect_child_fd_from` owner) | pending |
+| B1 | PROC-REF-01 | **DONE** — resolved by holding sched_lock across lookup+use instead of adding a process-wide refcount.  `sched_lock` exposed in sched.h (it pins the pool); three sites fixed: `sys_cap_grant` (also closes OBJ-GRANT-REAP), `sys_port_send_caps` rcv, `dispatch_spawn` src.  Order sched→object→kmalloc; handle-table allocation refused under sched_lock (a real target always has one).  Both arches boot clean. |
 | B2 | CAP-POLICY-01 — per-app / per-service capability sets so PLVL_USER stops meaning CAP_ALL; folds in USR-SEC-01 and ASTRA §7.11 Q5.  Large; likely wants an app manifest + a nxexec-assigned cap set.  Do NOT narrow universally — stage behind a default-permissive flag and tighten per service. | pending |
 
 ---

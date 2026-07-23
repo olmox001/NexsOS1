@@ -641,10 +641,12 @@ long sys_cap_query(int handle) {
  * and IPC authority to the target.  Returns the handle index installed in the
  * TARGET (the grantor relays it to the target, e.g. over IPC).
  *
- * NOTE(OBJ-GRANT-REAP): granting to a process that is being reaped on another
- * CPU at the same instant is unsupported (the common path — parent delegating
- * to a live descendant — is fully serialised by object_lock + the table-null
- * in process_handles_destroy).
+ * OBJ-GRANT-REAP (RESOLVED 2026-07-23, was: "granting to a process being reaped
+ * on another CPU is unsupported"): it is supported now.  The whole grant runs
+ * under sched_lock, which pins the target in the process pool — a concurrent
+ * reap cannot remove and free it mid-install (PROC-REF-01).  Lock order is
+ * sched_lock -> object_lock; the source handle belongs to current_process,
+ * which cannot be reaped underneath its own syscall.
  */
 long sys_cap_grant(int target_pid, int handle, uint32_t rights) {
   struct process *cur = current_process;
@@ -654,26 +656,31 @@ long sys_cap_grant(int target_pid, int handle, uint32_t rights) {
 
   if (!process_ipc_allowed(cur, target_pid))
     return -EPERM;
-  struct process *tgt = process_find_by_pid(target_pid);
-  if (!tgt)
-    return -ESRCH;
-  if (handles_ensure(tgt) != 0)
-    return -ENOMEM;
 
-  uint64_t flags;
-  spin_lock_irqsave(&object_lock, &flags);
-  struct handle_entry *src = &cur->handles[handle];
-  if (!src->obj) {
-    spin_unlock_irqrestore(&object_lock, flags);
-    return -EBADF;
+  uint64_t sflags;
+  spin_lock_irqsave(&sched_lock, &sflags);
+  struct process *tgt = __process_find_by_pid(target_pid);
+  int h;
+  if (!tgt) {
+    h = -ESRCH;
+  } else if (!tgt->handles) {
+    /* No table and none can be made here: handles_ensure would kmalloc, which
+     * must not happen under sched_lock.  Every real IPC target already has one
+     * (it took a handle to be addressable); a kernel thread that never did is
+     * simply not a grant target. */
+    h = -ENOMEM;
+  } else {
+    spin_lock(&object_lock);
+    struct handle_entry *src = &cur->handles[handle];
+    if (!src->obj)
+      h = -EBADF;
+    else if (!(src->rights & OS1_RIGHT_TRANSFER))
+      h = -EPERM;
+    else
+      h = handle_install_locked(tgt, src->obj, rights & src->rights);
+    spin_unlock(&object_lock);
   }
-  if (!(src->rights & OS1_RIGHT_TRANSFER)) {
-    spin_unlock_irqrestore(&object_lock, flags);
-    return -EPERM;
-  }
-  uint32_t g = rights & src->rights; /* attenuation only */
-  int h = handle_install_locked(tgt, src->obj, g);
-  spin_unlock_irqrestore(&object_lock, flags);
+  spin_unlock_irqrestore(&sched_lock, sflags);
   return h;
 }
 
@@ -815,17 +822,27 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
               arch_copy_from_user(fds, ufds, (size_t)nfds * sizeof(int)) != 0)) {
     ret = -EFAULT;
   } else {
-    struct process *rcv = process_find_by_pid(kp->owner_pid);
+    /* PROC-REF-01: hold sched_lock across the receiver lookup AND the whole
+     * handle install, so the service cannot be reaped and freed out from under
+     * us between finding it and writing into its table.  process_find_by_pid()
+     * would return a pointer valid only for the instant it held the lock.  Lock
+     * order sched_lock -> object_lock; the receiver's table is NOT allocated
+     * here (kmalloc under sched_lock is forbidden) — a real port owner always
+     * has one, having taken a handle to publish the port. */
+    uint64_t sflags;
+    spin_lock_irqsave(&sched_lock, &sflags);
+    struct process *rcv = __process_find_by_pid(kp->owner_pid);
     if (!rcv) {
       ret = -ESRCH;
-    } else if (handles_ensure(rcv) != 0) {
+      spin_unlock_irqrestore(&sched_lock, sflags);
+    } else if (!rcv->handles) {
       ret = -ENOMEM;
+      spin_unlock_irqrestore(&sched_lock, sflags);
     } else {
       int installed[4];
       int n_ok = 0;
       ret = 0;
-      uint64_t f2;
-      spin_lock_irqsave(&object_lock, &f2);
+      spin_lock(&object_lock); /* nested under sched_lock; IRQs already off */
       for (int i = 0; i < nfds; i++) {
         if (fds[i] < 0 || fds[i] >= NPROC_HANDLES || !current_process ||
             !current_process->handles ||
@@ -887,9 +904,10 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
           e->rights = 0;
         }
       }
-      spin_unlock_irqrestore(&object_lock, f2);
+      spin_unlock(&object_lock);
+      spin_unlock_irqrestore(&sched_lock, sflags);
       if (ret > 0)
-        wake_up(&kp->rq);
+        wake_up(&kp->rq); /* outside both locks: wake_up touches runqueues */
     }
   }
   obj_unref(o);

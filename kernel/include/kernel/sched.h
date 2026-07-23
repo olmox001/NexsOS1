@@ -301,6 +301,17 @@ extern struct process *process_create_caps(const char *name, uint8_t priority,
                                            uint8_t level, uint32_t req_caps);
 struct process *process_find_by_pid(int pid);
 struct process *__process_find_by_pid(int pid);
+/* sched_lock — THE global scheduler lock (defined in process.c).  Holding it
+ * pins every entry of process_pool[] in place: every teardown path removes a
+ * process from the pool UNDER this lock and frees its page only afterwards, so
+ * while it is held a `struct process *` obtained from __process_find_by_pid()
+ * cannot become a dangling pointer (PROC-REF-01).  Exposed so a subsystem that
+ * must operate on ANOTHER process's kernel state (installing a handle into it,
+ * reading its handle table) can do lookup+use atomically instead of racing a
+ * concurrent exit.  Lock order is sched_lock -> object_lock -> kmalloc_lock;
+ * nothing takes them in reverse.  Do NOT sleep or allocate a process's handle
+ * table while holding it — refuse instead (see handle_install_into_pid). */
+extern spinlock_t sched_lock;
 /* proc_pid_is_privileged - privilege of a pid as a VALUE (0/1).  Use this, not
  * process_find_by_pid()+proc_is_privileged(), from any subsystem outside the
  * scheduler: the pointer form both dangles once sched_lock is released and

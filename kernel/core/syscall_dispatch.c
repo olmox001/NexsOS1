@@ -263,13 +263,21 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
           rerr = -EPERM;
           break;
         }
-        struct process *src = process_find_by_pid(redir[i].source_pid);
-        if (!src) {
+        /* PROC-REF-01: hold sched_lock across the source lookup AND the handle
+         * read inside process_redirect_child_fd_from(), so a concurrent exit of
+         * the client cannot free `src` between naming it and dup'ing one of its
+         * descriptors.  process_find_by_pid() alone returns a pointer valid only
+         * for the instant it held the lock.  Order sched_lock -> object_lock
+         * (the redirect takes object_lock internally). */
+        uint64_t sf;
+        spin_lock_irqsave(&sched_lock, &sf);
+        struct process *src = __process_find_by_pid(redir[i].source_pid);
+        if (!src)
           rerr = -ESRCH;
-          break;
-        }
-        rerr = process_redirect_child_fd_from(src, p, redir[i].child_fd,
-                                              redir[i].parent_fd);
+        else
+          rerr = process_redirect_child_fd_from(src, p, redir[i].child_fd,
+                                                redir[i].parent_fd);
+        spin_unlock_irqrestore(&sched_lock, sf);
       }
       if (rerr != 0)
         break;
