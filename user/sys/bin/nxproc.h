@@ -90,6 +90,8 @@ static inline const char *nxproc_state_str(int state) {
     return "DEAD";
   case 6:
     return "READY";
+  case 7:
+    return "STOPPED"; /* PROC_STOPPED (Phase 2 job control) */
   default:
     return "UNUSED";
   }

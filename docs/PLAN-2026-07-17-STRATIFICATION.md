@@ -26,17 +26,635 @@ separately, per the standing rule:
   get reverted as the library becomes standard.
 
 ## Known live bugs → mapped to phases
-- **doom loops on savegame LOAD** (write now works via real `rename()`). Two
-  hypotheses ruled out: header-last write (doom writes sequentially + renames)
-  and the 16 MiB syscall cap (savegame is ~176 KB). Root cause needs runtime
-  visibility → **blocked on Phase 0**; likely a doom-side hack vs standard I/O
-  (Phase 7) once visible.
-- **lua test children stay SLEEPING** → nested spawn (lua → `nxshell -c` →
-  lua) has no controlling terminal / stdin relay, so the inner lua blocks on
-  input forever and the parent's `wait()` never returns → **Phase 4**.
-- `nxline.h` / `nxjobs.h` are STUBS → **Phase 6**.
+> ALL THREE ORIGINAL ENTRIES ARE NOW RESOLVED — kept with their outcomes because
+> the diagnosis path is the useful part.  Stale wording here is what made a later
+> reviewer repeat the "nxline/nxjobs are stubs" claim, so it is corrected in
+> place rather than deleted.
+
+- ~~doom loops on savegame LOAD~~ → **FIXED** (17b/17d, device-verified): the
+  cause was `saveg_read8()` returning an UNINITIALISED byte on a short read, so
+  the loops span on garbage.  Not an I/O-model bug at all.  Remaining doom work
+  (revert its old-libc hacks, slow positional `fread`) is Phase 7.
+- ~~lua test children stay SLEEPING~~ → **FIXED** (17q/17w, device-verified).
+  The stated cause (missing ctty/stdin relay) was WRONG: the tests never feed a
+  nested lua from the keyboard — they redirect (`< file`) or pipe.  The real
+  causes were, in order: no shell redirection, no pipes, `lua_stdin_is_tty()`
+  hardcoded to 1, and `nxshell -c` discarding the child's exit status.
+- ~~`nxline.h` / `nxjobs.h` are STUBS~~ → **WRONG, AND ALWAYS WAS BY NOW**:
+  nxline is 562 lines (history ring, Ctrl-R reverse search, completion) and
+  nxjobs became real in Phase 2 (waitpid status, STOPPED, stop/cont, %N/name
+  resolution).  Phase 6's real remaining work is PORTING kilo and the lua REPL
+  onto them, since both still hand-roll their own line input.
 
 ---
+
+## Known live bugs (current)
+- ~~**`&&` does not work in nxshell**~~ → **FIXED 2026-07-23** (17e sequencing
+  half).  `split_sequence()` in nxshell.c cuts the RAW line at top-level
+  `&&`/`||`/`;` before tokenisation — before, because the tokeniser strips
+  quotes and after it has run `echo "a && b"` and `echo a && b` are
+  indistinguishable.  Two-character operators are matched ahead of their
+  one-character prefixes, so `cmd &` and `a | b` keep their meaning.
+  Short-circuiting reads `g_last_status` (the shell's `$?`) BEFORE the segment
+  runs, so `a && b || c` behaves.  The rest of 17e (`env`, `export`/`unset`,
+  `$VAR`) is still open.
+
+## REGRESSION BLOCK 2026-07-23 — what the 17a/9a/9b/9c batch broke, and why
+
+Recorded in the plan rather than in a side document because every one of these
+was a SEQUENCING failure, not a coding failure: each change was individually
+reasonable and landed before the thing it depended on.  Maintainer-reported
+symptoms first, then what they actually were.
+
+| symptom | actual defect | fix |
+|---|---|---|
+| "root processes kill nxinit" | `process_kill_subtree()` marked a MACHINE root for kill and killed every windowless descendant; only the final `process_terminate(root)` declined.  Init survived and its entire service set did not — and since 9a/9c those descendants are nxntfy_srv, the execution service, and every job under it. | **ABI-06**: refuse a machine-level root outright, and never put a machine descendant in the kill set. |
+| "foreground commands broke" | `system()` was routed through the exec service (9c), so every child was created BY the service and inherited the SERVICE's cwd (`/`) and ctty (none).  The request format carried `cwd` and the service threw it away (`(void)cwd;`), so the hole was invisible in review — the protocol *looked* like it carried it. | cwd is now sent and honoured; the ROUTING is held until 9d (see below). |
+| "nxinit restarts" | The supervisor probed `service_gone()` every tick even with a respawn already queued — and it PRINTS on every call, so one death produced up to ~900 identical lines per backoff cycle.  A failed `spawn()` also cleared the request and then reset the backoff to base, retrying five times a second forever.  Feeding it: `nxexec --service` EXITED when it lost the port-name race against its own dying predecessor. | probe only while idle; penalise the backoff on spawn failure; the service retries the port claim briefly. |
+| assorted instability | `compositor_create_window()` took `compositor_lock` and then blocked on `sched_lock` via `process_find_by_pid()` — the other half of the AB-BA that `process_terminate()`'s trylock exists to avoid (PROCESS-KILL-MODEL §4, Pitfall A) — and dereferenced the returned `struct process *` after the lock was gone. | `proc_pid_is_privileged()` answers as an int, called BEFORE `compositor_lock`. |
+| latent | `SYS_WAIT` grew an arg1 status pointer, but `_sys_wait(int pid)` still traps without zeroing x1/rsi.  Scratch registers are undefined at a one-argument call, so any caller of the one-arg form makes the kernel write four bytes to a semi-random user address.  **The identical lesson is already in this tree**: `_sys_spawn` zeroes x4/x5 for exactly this reason, three phases earlier. | both stubs zero the register. |
+
+### Job control brought to POSIX (2026-07-23)
+Reported alongside the above: `fg`/`bg` acted without being told which job.
+Omitting the operand IS standard (XCU: *"if job_id is omitted, the current job
+shall be used"*) — what was not standard was everything around it:
+
+- the bare form took **the highest job id still in the table**, which is not the
+  current job and which included **finished** jobs, so `fg` could resume nothing
+  and Ctrl-Z did not change what a bare `fg` would bring back.  There is now a
+  real current/previous job, updated on the two events POSIX defines it by
+  (a job backgrounded, a job stopped), rebuilt from the rule when the job it
+  named goes away;
+- a **bare name** (`fg lua`) resolved by command prefix.  That is not a job id in
+  any shell — it made `fg` guess.  Removed; `%lua` is the spelling.  A bare
+  NUMBER stays, being the one universal extension;
+- `%%`, `%+`, `%-`, `%?string` did not exist.  They do now;
+- `jobs` did not mark which job was current, so its output could not answer the
+  only question a user reads it to answer.  `+`/`-` markers added.
+
+### The one decision that made the rest systemic
+`DESIGN-2026-07-18-NXEXEC-DAEMON.md` §11 says, in the tree, before any of this:
+
+> *"Service start-up is deliberately NOT wired into nxinit yet: that belongs to
+> Phase 12, and putting an unverified service into the boot path would risk the
+> one thing that must keep working."*
+
+9a wired it in anyway.  That is what turned "the exec service has bugs" into
+"the machine has bugs": it put an unverified daemon into PID 1's supervised set
+and, once 9c landed, reparented every non-interactive job underneath it — so a
+service defect, a supervisor defect and a kill-model defect all became the same
+incident.
+
+### 9c is HELD AT ITS OWN GATE (2026-07-23)
+The design doc's migration rule (§6 step 3) is to route a caller through the
+service *"keeping the in-process path behind a fallback until the suite is at
+least as green as before"*.  It was not.  Of the three per-process attributes a
+service-created child inherits wrongly:
+
+- **cwd** — fixed, no new mechanism needed (the body already had the slot);
+- **env** — stall S1, already owned by 9d;
+- **ctty** — NOT fixable at this layer.  `sys_write` resolves stdout from the
+  WRITER's own window, else its `ctty_win` (kernel/core/object.c); the service
+  has neither, so its children write nowhere.  fd redirection cannot patch it:
+  the destination comes from the process, not from the handle.
+
+Carrying ctty means the spawn itself must carry it, which is 9d, which is gated
+by 16.  Inventing a second mechanism now (a post-spawn ctty verb, or hanging it
+off `OBJ_CTL_SETOWNER`) would be the duplicate-mechanism mistake this plan
+already recorded and withdrew when it deleted 17b.  So `system()` uses the
+in-process path and `execsvc_spawn()` stays verified through captest's "exec
+service" section until 9d lands.  **Re-enable it in `lib.c system()` and
+nowhere else.**
+
+## STATUS INDEX (realigned 2026-07-18)
+
+Read this first: the phase SECTIONS below were written before the work happened
+and several still describe finished work in the future tense.  This index is the
+authoritative status; where a section disagrees with it, the index wins.
+Phase NUMBERS are historical labels, not execution order — the order is the one
+listed here.
+
+| # | Phase | Status |
+|---|-------|--------|
+| 0 | Error visibility (`OS1_report_error`) | **DONE** |
+| 1 | Truncation model + `truncate`/`ftruncate` | **DONE** (last item, ftruncate, closed 17s) |
+| 2 | Process primitives (exit_code / waitpid / STOPPED) | **DONE**, device-verified |
+| 3 | Process identity & serialisation | **DONE**, device-verified |
+| 4 | TTY / redirection / pipes / job re-attach | **DONE** except (b) → moved to 11 |
+| 9 | nxexec as THE standard executor (R6 daemon) | **IN PROGRESS** |
+| 5 | fd / object / registry standardisation | **2 of 3 items already DONE** |
+| 6 | nxline / nxjobs — port to userland | **model DONE; porting TODO** |
+| 12 | Service standardisation, ALL services + `/sys/services` | TODO |
+| 10 | POSIX/libc completion as a repeatable gate | TODO |
+| 10a | LIBRARIES: no shared logic w/ kernel (sep. from 12) | then (order 3/3); WIP in `test/` |
+| 11 | Users / capabilities / filesystem (ASTRA) | BLOCKED on design doc |
+| 7 | doom revert + lua finish | TODO (last: depends on 9/10) |
+| 8 | naming → bar/icons | **FOLDED INTO 3** (was a duplicate) |
+| 9b | exit status must survive reaping (ROOT CAUSE) | **DONE**, device-verified (47/47) |
+| 9c | system()/os.execute → service (non-interactive) | built + verified, but **HELD AT THE GATE** 2026-07-23 (ctty; see the regression block) |
+| 9d | ctty handback; interactive jobs move too | **NEXT** (gated by 16) |
+| 14 | window management kernel-side; nxwins as service | NEW — doc first |
+| 15 | split services from CLI/GUI interfaces | NEW — after 12 + 14 |
+| 5b | UNIFY per-process state: registry view backed by KERNEL | **DONE** 2026-07-18 (`19a367a`), device-verified 50/50 |
+| 17a | env kernel-backed + LIMITS unbound + 5b debt | **IN PROGRESS** (order 1/3) |
+| ~~17b~~ | **DELETED — it was 9d wearing a different hat.**  See below. | folded into **9d**, gated by **16** |
+| 17c | PATH becomes configuration, consumed by nxexec | after 17a — **STALL S2** |
+| 17d | terminal TYPE + terminfo (`TERM` gets a referent) | after 17c — **STALL S3** |
+| 17e | `env` utility + shell `export`/`unset`/`$VAR` | closes the UNBLOCKED part of 17 |
+| 16 | ROADMAP §1.C scheduler/IPC blockers | **moved ahead**: gates 9d, which now also carries 17b |
+| HAL-0 | close the remaining HAL divergences | NEW — **BEFORE 10a** (maintainer) |
+| 13 | Orphaned ASTRA §7.11 structural items | NEW — see below |
+
+### S8 — THE LAYERING GAP IN 17a (found by review, 2026-07-18)
+The plan's OWN opening rule, violated by the commit that claimed to follow it:
+
+> *"expose it in our library as two distinct, non-duplicated layers: `OS1_*`
+> (NEXS logic) and the POSIX/libc names (**a thin compatibility mapping over
+> `OS1_*`**)"* — and Phase 10: *"never a parallel implementation"*.
+
+`getenv`/`setenv`/`unsetenv`/`putenv`/`clearenv` were written as POSIX names
+calling `OS1_registry_get/set` DIRECTLY with hand-built `"sys.proc.%d.env.%s"`
+key strings.  There is no `OS1_env_*` layer, so POSIX is not a mapping over the
+OS1 surface — it IS the implementation.  Compare the pattern every other POSIX
+function in `lib.c` follows: `pipe`→`OS1low_pipe`, `chdir`→`OS1_fs_chdir`,
+`isatty`→`OS1low_cap_query`.
+
+The smoking gun is `setenv` rejecting any name containing `'.'` "because the
+registry splits on dots": the registry's PATH SYNTAX had leaked into the POSIX
+API, and the response was to forbid valid variable names rather than to put a
+layer in between.  Maintainer, restating it: *"il nostro kernel non è posix,
+posix viene costruito sopra os1"*.
+
+Owner: **17a-fix**, before 17b.  And the dot restriction is an S5-class
+obstacle, not a constraint — see 17a-fix below.
+
+### Correction log — planning errors found 2026-07-18 (second pass)
+Recorded rather than silently patched, because the same mistakes recur:
+- **Phase 10a said "11 kernel files include userland headers".** Now measured
+  MECHANICALLY (`scripts/check-layering.sh`): **16 include sites across 13
+  translation units**, plus **3** userland→kernel source includes.  The figure
+  was an estimate presented as a measurement.
+- **`lib.c:576-578`** for the kernel-source includes is stale; they are at
+  `577-579` and will drift again.  The gate finds them by content, so the plan
+  should stop quoting line numbers for them at all.
+- **`TERM` was about to be seeded with an invented value (`nxterm`).**  Caught
+  by the maintainer.  The lesson is not "drop TERM": `kernel/graphics/term.c`
+  implements a REAL ECMA-48 subset with the full xterm-256 palette, so the
+  terminal has a knowable capability set and nothing names it.  That is a
+  missing artefact (17d), not a key to delete.
+- **`PATH` was assessed as "nobody reads it, so drop it".**  Wrong reasoning:
+  nxshell has NO search of its own, it delegates to `nxexec_spawn_search`, which
+  hardcodes `/bin` then `/sys/bin`.  That list IS the PATH policy, sitting
+  inside the executor that is meant to be THE executor (17c).
+
+## STALLS — found, owned, ordered (maintainer 2026-07-18: "gli stalli
+## individuati vanno documentati aggiunti alle fasi e risolti in ordine")
+
+A stall is anything that would leave a later phase unable to proceed without
+re-opening a closed one.  Each gets an owning subphase; none is left as a note.
+
+| id | stall | owner |
+|---|---|---|
+| **S1** | env inheritance copies from the MECHANICAL parent (`current_process`).  Since 9c that is **nxexec**, so a job launched through the service inherits the SERVICE's environment, not the requester's. | **9d** (see below — this is NOT a separate subphase) |
+| **S2** | The program search is hardcoded inside `nxexec_spawn_search`.  Configuration living as a C literal in the executor blocks Phase 12 (services relocate to `/sys/services` — the search list must move with them) and Phase 11 (per-user paths). | **17c** |
+| **S3** | No terminal TYPE exists.  `term.c` supports H/f, K, J, SGR + xterm-256, DECTCEM `?25h/l`, but nothing names that set, so no ported program can negotiate capabilities.  Blocks any curses-class port and Phase 15 (a service driven from the terminal must know what the terminal can do). | **17d** |
+| **S4** | 5b DEBT (self-inflicted, already committed): `sys.appicon.<name>` stores `name` → `name` — zero information — and the writer keys it on the BASENAME while nxui builds the key from the kernel's FULL path, so it can never hit.  Harmless only because `nxicon_classify` strips the path itself. | **17a** |
+| **S5** | **FIXED CEILINGS TREATED AS CONSTRAINTS.**  Maintainer: *"tutti i limiti vanno risolti in maniera pianificata per slegare il codice, non sono vincoli vanno trattati come ostacoli da risolvere"*.  See the table below. | **17a** + **18** |
+| ~~**S6**~~ | ~~nxshell has no `&&` / `\|\|` / `;` sequencing~~ — **RESOLVED 2026-07-23**, `split_sequence()` in nxshell.c. | **17e** (done) |
+| **S7** | Both `elf.h` files share the guard `_KERNEL_ELF_H` and the kernel one never DEFINES it, so which ELF definitions exist depends on include ORDER.  Latent, invisible in a passing build. | **10a** |
+
+### S5 — the ceilings, and what each one actually blocks
+Written out because "there is a limit" is not the problem; **a limit that cannot
+grow without editing unrelated code** is.
+
+| ceiling | where | what it blocks | direction |
+|---|---|---|---|
+| `ENV_MAX 24`, `ENV_KEY_MAX 32`, `ENV_VAL_MAX 128` | `kernel/include/kernel/sched.h` | one page per process is the real bound; a program with a long `LUA_INIT` or many vars hits it silently | **17a**: refuse rather than truncate (a silently different value is worse than a failure), then **18**: chained pages so the block grows |
+| `MAX_VAL_LEN 128`, `MAX_KEY_LEN 64` | `kernel/include/kernel/registry.h` | **the worst coupling**: an environment VALUE is capped by a constant that belongs to the registry, an unrelated subsystem, purely because the seam happens to be the registry | **18**: env transfer moves out-of-line, the way the execsvc body already does — the seam stops copying through a fixed buffer |
+| `NXEXEC_ARGV_MAX 16` | `user/sys/bin/nxexec.h` | a long command line is truncated, not rejected | **18** |
+| `PORT_QUEUE_MAX 32` | `kernel/core/object.c` | bounded ON PURPOSE (it is the DoS fix Phase 16 wants) — **not** a stall; recorded so it is not "fixed" by mistake | — |
+| `REAPED_MAX 32` | `kernel/sched/process.c` | 33 fast-exiting children lose a status | **16**, with the other lifecycle gaps |
+
+## Phase HAL-0 — CLOSE THE REMAINING HAL DIVERGENCES (new; BEFORE 10a)
+Maintainer, 2026-07-18: add a microphase to close the other HAL divergences
+*before* the phase that separates the kernel library from userland.
+
+The reason it comes first: 10a decides what the kernel library IS.  Doing that
+while two architectures silently implement the same primitive with different
+guarantees means codifying the divergence into the split.
+
+**Found while writing the uaccess contract (17a), and worse than the truncation
+bug that exposed it** — these are the same functions:
+
+| primitive | aarch64 | amd64 | divergence |
+|---|---|---|---|
+| `arch_copy_from_user` | `spin_lock(&current_process->mm_lock)` + TTBR0 switch + TLB flush around the copy | **no lock at all**; `NOTE(UACC-AMD64-02)` admits the TOCTOU window | aarch64 serialises against concurrent page-table modification, amd64 does not — an SMP data race if the process unmaps between validation and copy |
+| `arch_copy_to_user` | same locking | none; `NOTE(UACC-AMD64-03)` | write-side mirror of the same race |
+| `arch_copy_string_from_user_n` | same locking | none; `NOTE(UACC-AMD64-04)` also records that the first byte and some page-crossing points are never re-validated | as above, plus a validation gap |
+
+Part of the asymmetry is LEGITIMATE and must be preserved, not "fixed": on
+amd64 the kernel shares the address space with the current process (PML4
+0..255 private, kernel in the high half), so user memory is directly
+addressable and no TTBR/CR3 switch is needed; aarch64 splits TTBR0/TTBR1 and
+must switch.  **The locking difference is NOT legitimate** — it is the same
+concurrency question answered two different ways, in a security-sensitive
+primitive, with the amd64 answer recorded as a known hole for months.
+
+Work:
+1. Extend `kernel/include/kernel/hal_uaccess.h` from a SIGNATURE contract into
+   a SEMANTIC one: state what the provider must guarantee against concurrent
+   address-space modification, and which parts may legitimately differ by ISA.
+   A contract that only fixes the prototypes is what let these drift.
+2. Bring amd64 up to the guarantee (or prove the guarantee is unnecessary
+   there and write down WHY — a documented asymmetry is fine, an undocumented
+   one is not).
+3. Close `UACC-AMD64-04`'s validation gap.
+4. Then CENSUS the rest: every primitive implemented separately under
+   `kernel/arch/*/` with no entry in `arch/arch.h`'s `arch_impl_*` family and
+   no declaration in `kernel/include/kernel/hal*.h`.  Candidates already
+   identified: `arch_timer_init` (no ISR-context contract),
+   `arch_cpu_switch_context` (register/IRQ-state semantics implicit).
+5. `CPU-AMD64-01` (FPU/SSE save-restore on context switch) belongs here too:
+   ASTRA §7.10 records it as landed-and-REVERTED, i.e. unresolved rather than
+   unattempted, and it is an arch primitive with no contract.
+
+Exit criterion: the two architectures differ only where a written contract
+says they may.
+
+## Phase 18 — UNBIND THE CEILINGS (new, after 17)
+Every item above marked **18**.  Grouped into one phase deliberately: they are
+the same defect wearing different sizes — a fixed buffer chosen once, at a layer
+that does not own the data.  Doing them together means designing the growth
+path ONCE (out-of-line transfer + chained storage, both of which already exist
+in this tree: the execsvc variable-size body, and the registry's doubling child
+array) instead of inventing three different bigger numbers.
+
+Explicit non-goal: raising constants.  A bigger magic number is the same defect
+with a later failure date.
+
+### Corrections this realignment applied
+- **Phase 8 was a duplicate of Phase 3** ("nxexec provides display name + icon to
+  bar/dock") — Phase 3 already shipped exactly that (17h/17j).  Folded in.
+- **Phase 5**: "every fd is a handle" and "POSIX fd calls are thin compat over
+  `OS1_object_*`" are ALREADY TRUE (the fd table was absorbed into the object
+  table; `SYS_OPEN/CLOSE/READ/WRITE/LSEEK` are `sys_handle_*`/`sys_object_*`).
+  Only *process/job state in the registry* remains → maintainer chose the
+  VIRTUALISED (`/proc`-like) form.
+- **Phase 6**: the plan called `nxline.h`/`nxjobs.h` STUBS.  They are NOT: nxline
+  is 562 lines with history ring + Ctrl-R search + completion, and nxjobs became
+  real in Phase 2.  What actually remains is the PORTING half (kilo and the lua
+  REPL still hand-roll their own line input).
+- **Phase 9**: the shape decision is CLOSED (maintainer chose the R6 privileged
+  daemon), and its three prerequisites are already implemented — they had no
+  phase home before: `OBJ_TYPE_PORT` + `OS1_NS_PORT` (device-verified),
+  `owner_pid` + `OBJ_CTL_SETOWNER`, and the `source_pid` fd-source split.
+- **Phase 9 depends on Phase 12**: the daemon is not actually "the standard
+  executor" until it is started from the boot path, which is Phase 12 work.
+- **Phase 4(b)** was deferred *pending a design doc*; that doc now exists
+  (`DESIGN-2026-07-18-NXEXEC-DAEMON.md`), so the deferral reason is spent — the
+  work moves to Phase 11 under its recorded scope limits.
+- **ASTRA §7.11 is itself stale**: it still lists `OS1_fs_write` as taking the
+  ambient path, which the C1–C2 capability closure removed.
+
+## Phase 9 — subphases (maintainer 2026-07-18: resolve each node as its own
+## subphase, CHAINED so every later phase starts simpler)
+
+### 9b — exit status must survive reaping (ROOT CAUSE, do this FIRST)
+**Found by the lua suite still failing at main.lua:72 after redirection, pipes,
+argv[0] and status propagation were all verified working.**  It is not a lua
+bug, nor a shell bug: it is a kernel lifecycle gap.
+
+`process_wait()` writes `*out_code` ONLY when it finds the corpse
+(PROC_DEAD/PROC_ZOMBIE).  If the scheduler reaper already drained it, the call
+returns -2 with `out_code` UNTOUCHED — so a caller that initialised it to 0
+reports SUCCESS.  A child that fails FAST is exactly the case that gets reaped
+before its parent polls, which is why `assert(not os.execute(bad_program))`
+still fails: the failing lua exits immediately and is collected before nxshell
+looks.  `system()` already documents the hole ("a -2 'reaped elsewhere' leaves
+code 0").
+
+There are no real ZOMBIE semantics: a corpse is not retained until its owner
+reaps it.  This silently corrupts EVERY exit-status consumer — `system()`,
+`waitpid()`, jobs' "Done(N)" — not just lua, and it is timing-dependent, so it
+looks like flakiness rather than a bug.
+
+Fix direction: retain the status until the owner collects it (POSIX zombie
+semantics), keyed on the LOGICAL owner (`owner_pid`) so it works when a service
+did the spawn.  Cheapest correct form: a small reaped-status table the reaper
+writes and `process_wait` consults, so corpses can still be freed eagerly.
+
+**Do this before 9c/9d**: without it, migrating the shell onto the service would
+be debugged against a status channel that is itself unreliable.
+
+### 9c — shell uses the service for NON-INTERACTIVE launches (option b)
+> **(b) IS TRANSITIONAL, (a)/9d IS THE FINAL SHAPE** (maintainer, restated
+> 2026-07-18).  9c is a staging step so the logic can be finalised against a
+> working system; it is NOT the destination.  Phase 9 is not complete until
+> interactive jobs also execute through the service, i.e. until 9d lands.
+Maintainer: do (b) first "solo per finalizzare la logica".  `system()` and
+`os.execute` go through the daemon; INTERACTIVE
+foreground jobs keep the in-process path for now.
+
+CORRECTION (verified 2026-07-18): this section originally said GRAPHICAL
+launches should move to the daemon too.  That is WRONG — nxlauncher/nxfilem use
+the nxexec BINARY in HOSTED mode, which creates the terminal window; the service
+spawns WITHOUT one, so moving them would silently lose hosted output.  They
+already route through nxexec correctly and must stay as they are.
+
+Rationale for keeping interactive jobs in-process: `SETOWNER`
+restores AUTHORITY (verified) but NOT the controlling terminal, so moving
+interactive jobs first would break Ctrl-Z/Ctrl-C — the one part of job control
+already validated on device.
+
+### 9d — ctty handback, then interactive jobs move too (option a)
+Needs a kernel verb to reassign `ctty_win` (or to carry it in the spawn
+request), so a job spawned BY the service still has the REQUESTER as its
+controlling terminal.  Only then can 9c's split be collapsed and the
+in-process path deleted.  Dependencies to resolve here: keyboard relay, Ctrl-Z
+suspension, and the window-ownership probe that decides GUI-vs-terminal.
+
+## Phase 17 — subphases (`env` + environment variables)
+
+The environment is per-process state that is INHERITED at spawn and mutable by
+its owner — structurally identical to `cwd`, which already lives in the kernel.
+So it goes where cwd goes, and userland reaches it through the SYSCALL
+DISPATCHER via the registry seam.  No shared struct crosses the boundary: the
+kernel owns `struct env_block` and userland never sees it, only strings through
+`sys_registry`.  That is the ASTRA rule the maintainer restated — *"userland e
+kernel devono essere completamente indipendenti, abbiamo un syscall dispatcher
+apposta"* — and it is why the seam is a namespace path and not a header.
+
+Two layers, each with exactly one owner:
+
+| layer | key | owner | authority to write |
+|---|---|---|---|
+| machine defaults | `sys.env.<NAME>` | init (stored registry nodes — this IS configuration, ASTRA §6.6) | `CAP_REG_WRITE` |
+| per-process | `sys.proc.<pid>.env.<NAME>` | the scheduler (virtual, computed) | self always; others only if privileged |
+
+`getenv` resolves process-first, then defaults.  So nothing has to copy the
+machine's PATH into every process at spawn, and a `setenv` shadows it for that
+process and its children only.  Two layers — **not two copies of one thing**,
+which is the 5b lesson applied forward.
+
+Note the authority split, which is the point of routing writes BEFORE the
+registry's capability gate: `setenv` is ordinary unprivileged work, so demanding
+`CAP_REG_WRITE` for it would set the ceiling at "may reconfigure the machine"
+for an operation touching only the caller.
+
+### 17a — kernel-backed env, ceilings made non-silent, 5b debt paid
+- per-process block in `struct process`, copied at spawn, freed at teardown;
+- registry seam: read + write + enum of `sys.proc.<pid>.env.*`;
+- **S5 first cut**: a key or value that does not fit is REFUSED, never
+  truncated.  A silently different value than the one asked for makes the
+  matching `getenv` miss, which is far harder to diagnose than a failure;
+- **S4**: drop `sys.appicon.<name>` (it stores `name` → `name`) and let
+  `nxicon_classify` do what it already does correctly.
+
+### ~~17b~~ — DELETED.  It is 9d, and 9d is gated by 16.
+**Planning error, corrected 2026-07-18 (maintainer: "il piano è bloccato perché
+un'altra fase lo blocca").**  17b was written as its own subphase.  It is not:
+
+> **9d**: "a job spawned BY the service still has the REQUESTER as its
+> **controlling terminal**"
+> **17b**: "...as its **environment**"
+
+One problem — *inherit an attribute from the REQUESTER instead of from the
+mechanical parent* — described twice.  Solving it twice would produce two
+mechanisms for one question, which is the "no duplicated logic" rule broken in a
+fresh place.
+
+**And it is blocked, not merely redundant.**  Any solution needs the service to
+configure the child BEFORE it runs, i.e. a child that exists but is not
+runnable.  That lands directly on `SCHED-CREATED-LEAK-01` — *"a process killed
+while `PROC_CREATED` leaks.  **Directly in the spawn path the execution service
+now drives**"* — which is **Phase 16**, not done.  A suspended child whose
+service dies before resuming it is precisely that leak.  Building the mechanism
+first would mean stacking a new lifecycle state on a known hole.
+
+WITHDRAWN from the tree accordingly: a `SPAWN_FLAG_SUSPENDED` + env-follows-
+SETOWNER implementation was written and then backed out, because it was this
+mistake in code form.
+
+Sequencing consequence — **16 moves ahead of the rest of 9/17**:
+`17a` → `17c` → `17d` → `17e` (none of which need it) → **`16`** → **`9d`
+(carrying the environment with the ctty, one mechanism)** → `10a`.
+
+What 9d must then carry, in one design: ctty, environment, and cwd — every
+per-process attribute that is inherited at creation and therefore wrong when a
+service is the creator.  Doing them together is the point.
+
+### 17c — PATH becomes configuration (S2)
+`nxexec_spawn_search` gains a PATH-driven search with the current hardcoded
+list as the fallback, so behaviour is unchanged until the key exists.  Then
+`sys.env.PATH` has a real owner instead of being decoration, and Phase 12's
+move to `/sys/services` is a registry edit rather than a code edit.
+
+### 17d — terminal type + terminfo (S3)
+`term.c` already implements a specific, knowable capability set.  Work: name
+the terminal type, write the capability description as a first-class artefact
+(a registry subtree is the natural home — it is configuration, queryable, and
+needs no new mechanism), and only THEN seed `TERM`.  Seeding `TERM` first would
+advertise a type with no description behind it.
+
+### 17e — `env` utility + shell integration (S6)
+`env [-i] [-u NAME] [NAME=VALUE ...] [cmd ...]`, plus `export` / `unset` /
+`$VAR` expansion in nxshell, plus the `&&` / `||` / `;` sequencing that has been
+a documented trap with no owner.  Target: the lua suite passes `main.lua:133`.
+
+## Phase 14 — Window management into the kernel; nxwins becomes a service
+Maintainer directive: verify nxwins, move window MANAGEMENT kernel-side, leave
+nxwins as a service.  Flagged as requiring **development, study and planning**
+before code — treat like R6: a design doc first.
+- Study first: what nxwins does today vs what the compositor already owns
+  (window objects and OBJ_CTL_MINIMIZE/RESTORE/FOCUS/CLOSE already exist as
+  capabilities, ASTRA §6.7 — so part of "management" may already be kernel-side
+  and the real work is deciding the BOUNDARY, not writing new code).
+- Chaining benefit: 9d needs the window-ownership probe (GUI-vs-terminal
+  detection).  If window state becomes a kernel-owned, queryable fact, that
+  probe stops being a debounced heuristic — 9d gets simpler as a result, which
+  is exactly the "each phase makes the next one easier" ordering the maintainer
+  asked for.
+
+## Phase 15 — Split services from their CLI/GUI interfaces
+Follows 12 and 14: once every service is supervised, port-addressed and
+capability-scoped, its INTERFACE (a CLI tool, a GUI window) becomes a separate
+client of the same port — so one service can be driven from the terminal, the
+dock, or a script without three implementations.  Depends on 12 (services
+relocated + per-service caps) and 14 (windows as a service).
+
+## Phase 10a — LIBRARIES: userland stops sharing ANY logic with the kernel
+> **This is the LIBRARIES phase.  It is SEPARATE from Phase 12 (services)** —
+> maintainer, 2026-07-18.  An earlier revision of this plan said "do it WITH
+> Phase 12's /sys/services move"; that was wrong.  Libraries and services are
+> different boundaries and merging them would couple two large moves that can
+> and should be verified independently.
+
+### MEASURED STATE — now MECHANICALLY measured (2026-07-18, second pass)
+Superseding the earlier hand count (which said "11 kernel files" — an estimate
+presented as a measurement).  Reproduce with `./scripts/check-layering.sh`:
+
+```
+kernel->userland: 16      userland->kernel: 3
+```
+
+| what | scale | detail |
+|---|---|---|
+| userland compiles kernel `.c` files | **3** sites, **1567 lines of kernel code inside EVERY user ELF** | `math.c`, `string.c`, `vsnprintf.c` — found by content, not line number |
+| dual-compiled conditionals | 12 `#ifdef KERNEL` sites | `math.c` (9), `vsnprintf.c` (3), `string.c` (0) |
+| kernel includes userland headers | **16** sites / **13** translation units | `<object.h>`×4, `<caps.h>`, `<sysstats.h>`, `<style_names.h>`, `<syscall_nums.h>`, `<posix_types.h>`×2, `<font.h>`, `<stdbool.h>`×2, `<os1.h>`×2, `api/elf.h` |
+| **the cycle, closed** | — | `lib.c` compiles `kernel/lib/math.c` **and** `kernel/lib/vsnprintf.c`, and BOTH of those include `<os1.h>` — a userland header.  userland → kernel → userland. |
+| the rule already exists and is broken | — | `Makefile:100`: *"the kernel must never grow includes from it (ASTRA layer separation)"*, then `Makefile:101` gives the kernel `-Iinclude/abi -Iinclude/api` |
+
+The gate is generated from the tree's own inventory
+(`scripts/gen-layering-cocci.py`), so it cannot drift out of date as headers are
+added, and the two directions are scanned against DIFFERENT trees — `#include
+<os1.h>` is a violation in `kernel/` and entirely correct in `user/`.
+
+**Latent bug found while measuring** (nobody had reported it): both `elf.h` files
+use the SAME include guard `_KERNEL_ELF_H`, and the kernel one opens `#ifndef`
+without ever DEFINING it — the userland one defines it.  So if the userland
+header is included first, the kernel header's entire body is silently skipped:
+which ELF definitions exist depends on INCLUDE ORDER.  That is the concrete cost
+of the entanglement, and it is invisible in a passing build.
+
+**Why the source-compilation case is the severe one**: the 12 conditionals mean
+those files are not "a utility userland happens to reuse" — they are ONE FILE
+THAT IS TWO DIFFERENT IMPLEMENTATIONS behind `#ifdef KERNEL`.  So the fix is not
+to copy them; it is to RESOLVE the conditionals into two independent
+implementations (maintainer directives 1 and 2).  `string.c` has ZERO
+conditionals, so for it "separate logic" would be pure duplication unless the
+two are allowed to diverge BY PURPOSE (kernel: minimal freestanding; userland:
+POSIX-complete) — that choice has to be made explicitly, not by default.
+
+### Critique of the existing docs (they are obsolete on this point)
+`docs/R0-CENSUS-LIB-SPLIT.md` (R0.3) proposes moving the 9 shared headers to a
+neutral `include/abi/` — "contratto, nessuna implementazione".  That directory
+now exists and has been grown further during Phase 4/9 (caps.h, object.h,
+syscall_nums.h, posix_types.h …).
+
+**The maintainer's ruling is that `abi/` is CONCEPTUALLY WRONG, and on
+reflection that is right**: a shared header directory is still shared
+COMPILE-TIME coupling between kernel and userland.  It renames the dependency
+instead of removing it — both sides still have to be rebuilt together, and a
+struct layout or a number changed on one side silently redefines the other.
+Measured today: `Makefile:101` gives the KERNEL build `-Iinclude/abi
+-Iinclude/api`, i.e. the kernel compiles against the USERLAND api headers, and
+11 kernel files include them.
+
+### The ASTRA-conformant target (maintainer directives 1 + 2)
+- **Information flows as OBJECTS, queried dynamically**, not as headers compiled
+  into both sides.  The kernel is instrumented to EXPOSE what userland needs
+  (types, rights, verbs, limits) through the object/registry model it already
+  has — self-describing and discoverable, which is what §6.2/§6.6 already say
+  about "every node representable as a file, every operation a message".
+- **Userland libraries are independent**: no logic shared with the kernel, no
+  `#include` of kernel sources (the USR-LIB-01 defect), no kernel-owned struct
+  reused as a wire format.
+- **Kernel includes live ONLY in the kernel's own lib** — nothing under
+  `kernel/` may be reachable from a userland translation unit.
+- **`vsnprintf` gets the same treatment** (directive 2): distinct
+  implementations, communicating per ASTRA rather than sharing a file with an
+  `#ifdef KERNEL` seam.
+
+### The one honest tension — state it, do not paper over it
+A *minimal* bootstrap contract is unavoidable: the syscall entry convention plus
+ONE discovery verb, because a process cannot ask the kernel anything before it
+can make a call at all.  Everything above that (object types, rights bits, verb
+numbers, message layouts) can become object-mediated and discovered.  The design
+work of this phase is deciding exactly where that irreducible line sits — and
+keeping it as thin as possible — NOT pretending it can be zero.
+
+### Verification (directive 3)
+Formal check with **coccinelle** (`spatch`), which the plan already lists as
+available: a semantic patch that FAILS the build if any userland translation
+unit reaches into `kernel/` (include or symbol), so the boundary is enforced
+mechanically rather than by review.  This is the same "make the audit a
+repeatable gate" idea as Phase 10, applied to the layering instead of to the
+POSIX surface.
+
+## Phase 10a (WIP parked) — USR-LIB-01: split the libc off the KERNEL SOURCES
+Maintainer started this 2026-07-18 and parked it for a planned approach; the
+WIP is preserved under `test/usr-lib-01-libc-split/` (patch + the three modules
++ a README with the open questions).  Nothing is built from there.
+
+**The defect is real and was already flagged in-tree** (`lib.c`:
+"USR-LIB-01 (W2 BAD-IMPL) Directly #includes kernel/lib C sources"):
+
+```c
+#include "../../kernel/lib/math.c"      /* userland COMPILING kernel sources */
+#include "../../kernel/lib/string.c"
+#include "../../kernel/lib/vsnprintf.c"
+```
+
+This inverts the layering the whole plan rests on — the POSIX personality is
+supposed to sit ABOVE the OS1 base API, not reach into the kernel tree.  It also
+blocks two things already scheduled: ASTRA §6.4 B5 (SRL/HAL source-tree split)
+and Phase 12 ("services divided from the standard libc, integrated modularly"),
+because the dependency currently runs the wrong way.
+
+Decisions to take BEFORE re-applying (this is why it is a phase, not a patch):
+1. **Duplication vs deliberate divergence.** Splitting creates two copies of
+   string/math/vsnprintf.  That is right ONLY if they are ALLOWED to diverge
+   (kernel: minimal freestanding; userland: POSIX-complete).  Otherwise it
+   breaks "no duplicated logic" in a fresh place.  Write the rule down.
+2. **The `#ifndef KERNEL` float guard in vsnprintf** loses its reason to exist
+   after a split and must be resolved deliberately.
+3. **Verification**: formatting is exercised by nearly every program, so a
+   regression is broad but quiet.  Re-run the host validation harness
+   (`%f`/`%e`/`%g`/`%p` vs the host libc) against the split copy — a clean build
+   proves nothing here.
+4. **Sequencing**: do it WITH Phase 12's `/sys/services` move, not before, or
+   the same files get relocated twice.
+
+## Phase 16 — ROADMAP §1.C scheduler/IPC blockers (previously UNOWNED)
+Found by cross-review 2026-07-18 and VERIFIED in
+`docs/ROADMAP-ASTRA-SERVERIZATION.md` §1.C.  That document calls these
+load-bearing for every server thread and says they "must land in Phase 1", but
+no phase here owned them — so they were invisible to this plan while Phase 9
+was busy building a service on exactly that substrate.
+
+- **`SCHED-CREATED-LEAK-01`** — a process killed while `PROC_CREATED` leaks.
+  Directly in the spawn path the execution service now drives.
+- **`SCHED-05 extended` — `kernel_ipc_send` unbounded queue = kernel-heap DoS.**
+  Note the new `OBJ_TYPE_PORT` does NOT inherit this: its queue is bounded
+  (`PORT_QUEUE_MAX`).  The AMBIENT pid-addressed `ipc_send` is still unbounded,
+  and 9c/9d run over it, so this is a real prerequisite rather than a
+  theoretical one.
+- **`SCHED-05 AB-BA`** — `sched_lock → msg_lock → cpu->sched_lock` inversion;
+  ROADMAP asks for a re-audit once server threads raise IPC concurrency, which
+  is precisely what the exec daemon does.
+- **`PROC-REF-01` — a `struct process *` outlives the lock that validated it**
+  (found 2026-07-23 while fixing the compositor instance of it).  The compositor
+  case was fixable by not needing the pointer at all
+  (`proc_pid_is_privileged()` returns an int), but two paths genuinely need to
+  OPERATE on another process and have no way to hold it alive:
+  `sys_port_send_caps()` looks up the receiver by `kp->owner_pid` and then
+  installs handles into it under `object_lock`, and
+  `process_redirect_child_fd_from()` takes an owner pointer its callers looked
+  up the same way.  Both windows are real and both are on the service path: a
+  service respawning between the lookup and the install is the case.
+  Deliberately NOT patched in place — the answer is a process REFERENCE (pin /
+  refcount, or performing the operation under `sched_lock`, which today would
+  invert against `object_lock`), and improvising one is how the lock inversion
+  above got introduced in the first place.  It belongs here, with the other
+  lifecycle gaps, because it IS one.
+
+Sequencing: these gate 9d (interactive jobs over the service) more than 9c.
+
+## Phase 13 — Orphaned structural items (ASTRA §7.11) — NEW
+These are recorded as open in ASTRA but had NO owning phase, so they were
+invisible to planning.  Listed here to be scheduled or explicitly dropped,
+not silently forgotten:
+- **SRL/HAL source-tree split** (§6.4 B5): no `kernel/srl` / `kernel/hal` exist.
+  Overlaps Phase 12's `/sys/services` move — do them together.
+- **FPU/SSE save-restore on context switch** (CPU-AMD64-01 #38): landed and
+  REVERTED the same day; unresolved, not merely unattempted.  Matters before any
+  amd64-heavy workload.
+- **DIR-03**: the full blocking `OS1_event_wait` (IPC/timer/window/process
+  readiness) — only the input leg exists.  A POSIX-compat gap.
+- **DIR-05**: DWARF `file:line` backtraces and a kernel "recovery mode"
+  (quiesce a subsystem instead of `panic()`).
+- **DIR-02/07**: system-driven desktop-resize broadcast (still per-window).
 
 ## Progress log
 - **2026-07-17a**: Phase 0 seam `OS1_report_error()` landed (lib.c + os1.h),
@@ -85,7 +703,308 @@ separately, per the standing rule:
   Ctrl-Z'd job, real bg/fg), **nxinit** (`service_gone()` waitpid helper logs
   WHY a service died). Next: Phase 3 (process identity/naming).
 
-## Phase 0 — Error visibility (library) — START HERE
+- **2026-07-17g**: Phase 2 boots clean on QEMU (no panic from PROC_STOPPED /
+  exit_code). Phase 3 started: fixed the process-name truncation
+  (process_create copied 15 of the 32-byte field -> "/sys/bin/nxlaun"); now
+  full PROCESS_NAME_MAX. Identity finding: nxbar serialises by window TITLE +
+  pid (OS1_window_enum); nxicon resolves icons by HEURISTIC title/exe
+  classification. The stable name/icon-from-nxexec mechanism is the open
+  design decision (registry vs kernel field vs title convention).
+
+- **2026-07-17h**: Phase 3 identity (maintainer chose window-title + registry).
+  nxexec now assigns ONE canonical display name (exe basename) and publishes it
+  both ways: titles its hosted window with it, and registers
+  `sys.proc.<pid>.name`/`.icon` on spawn (unregisters when the hosted job
+  exits). nxbar prefers that registry identity over the app's own window title
+  for the focused-app label. Builds. OPEN follow-ups: nxui/dock tile labels +
+  ICONS should read the same `sys.proc.<pid>.icon` (nxicon); a pruner for
+  `sys.proc.<pid>` keys leaked by DETACHED GUI apps (harmless to display — dead
+  pids have no window — but they accumulate).
+
+- **2026-07-17i**: Ctrl-Z VERIFIED working on-device (`^Z` -> `[1] Stopped`,
+  `jobs`, `fg %1` resumes). Root cause fixed: a foreground REPL is usually
+  PROC_SLEEPING (OS1_sleep poll) at Ctrl-Z, but process_stop only accepted
+  RUNNING/READY; now it stops SLEEPING too (its wake sources only re-ready a
+  PROC_SLEEPING task, so STOPPED sticks) + __enqueue_task STOPPED guard +
+  process_cont sets READY before enqueue. Test surfaced state-name gaps (a
+  STOPPED proc showed "UNUSED"): fixed nxproc_state_str (+ nxsettings via it),
+  kernel proc_state_name. Maintainer flag: nxwins now shows the registry
+  identity (sys.proc.<pid>.name) like nxbar. Minor open: `fg <name>` (bare
+  command name, not %N) says "no such job" — matches POSIX but could add
+  %name-prefix matching.
+
+- **2026-07-17j**: Phase 2 & 3 COMPLETE. Phase 2 polish: `fg`/`bg` accept a
+  job NAME (nxjobs_resolve: %N / N / %name / name / none), so `fg lua` works.
+  Phase 3 finish: nxui dock resolves tile icons from `sys.proc.<pid>.icon`
+  (canonical identity) with title fallback (threaded vpid through the tile
+  arrays); nxexec_prune_identities() GCs stale sys.proc.<pid> keys of dead
+  detached apps, driven by nxbar on a ~5 s throttle. Next: **Phase 4** (TTY /
+  controlling terminal) — the lua nested-spawn SLEEPING hang.
+
+- **2026-07-17k**: Phase 2+3 verified (3/4 headless boots clean). NOTE: an
+  INTERMITTENT kernel panic in the K3-userland bring-up window (~1/4 boots) —
+  the pre-existing SMP boot-race class (ASTRA §7.9-7.10), NOT from these
+  changes (they run post-boot). Worth its own hardening pass later. Phase 4
+  analysis (below) started.
+
+- **2026-07-17l**: Fixed hosted-terminal Ctrl-Z bug (maintainer report):
+  nxexec_run_foreground now takes `job_control` — nxshell passes 1 (Ctrl-Z
+  suspends + shell adopts the job), nxexec.c passes 0 (standalone hosted
+  terminal RELAYS Ctrl-Z to the child, never suspending/orphaning it or
+  closing the window; only Ctrl-C / program exit close it). Also confirmed:
+  simple nested `os.execute('lua -e ...')` WORKS (`42 / true exit 0`) — Phase 4
+  hang is specific to certain all.lua cases, not nested spawn in general.
+
+- **2026-07-17m**: Revised the hosted-terminal Ctrl-Z (prev no-op relay was
+  wrong — "not detected"). Now Ctrl-Z is DETECTED and SUSPENDS the hosted job;
+  the terminal stays open showing "[suspended — Enter to resume, Ctrl-C to
+  close]" (nxexec_wait_stopped_action): Enter -> OS1_process_cont + keep
+  watching, Ctrl-C -> kill + close. Reverted the vestigial job_control flag.
+  main.lua CONFIRMED uses shell redirection: `lua - < %s > %s`, `... | lua`
+  (lines 82/90/93) -> Phase 4 needs nxshell `<`/`>`/`|` redirection (fd setup
+  on spawn), not just a kernel ctty-stdin path.
+
+- **2026-07-17n**: Phase 4 APPROACH APPROVED (maintainer): extend the spawn
+  ABI with fd redirection, then wire nxshell `<`/`>`/`|`. Feasibility: SYS_SPAWN
+  today carries only path/argc/argv/flags (flags = SPAWN_FLAG_DETACHED only);
+  child fds 0/1/2 are always the console (process_install_stdio). Chosen model:
+  PARENT opens the redirect targets (reusing the now-working open() with
+  O_CREAT/O_TRUNC/errno), then passes {child_fd, parent_fd} pairs to spawn; the
+  kernel DUPs the parent's handle into the child's fd slot (reusing the handle
+  dup/grant mechanism) — no string marshaling, POSIX fork+dup2 semantics, child
+  read(0)/write(1) then hit the FILE object. IN PROGRESS.
+
+- **2026-07-17o**: Plan review before coding Phase 4 — one correction. Audited
+  every `RUN(...)` in main.lua: NO test feeds a nested lua from the live
+  keyboard; they ALL feed input via `< file` or `| pipe` and capture via
+  `> file` / `2> file` (`2>` at line 71). So the real blocker is REDIRECTION +
+  PIPES, not the interactive stdin-down-the-ctty-tree path the Phase 4 analysis
+  section describes — that path is likely UNNEEDED for the lua suite. The
+  generic {child_fd, parent_fd} dup model already covers `2>` (child_fd = 2) for
+  free, and pipes reuse the SAME spawn-redir mechanism once a pipe kobject
+  exists (parent makes a pipe; producer spawned with fd1←write-end, consumer
+  with fd0←read-end). INCREMENT ORDER: (1) file redirection `< > >> 2>` (kernel
+  dup-into-child-slot + libc + nxshell parser) — unblocks the majority
+  (`lua %s > %s`, `lua - < %s > %s`); (2) pipes `|` (pipe kobject, reuse the
+  mechanism); (3) revisit whether interactive ctty-stdin is still needed.
+  Starting increment (1).
+
+- **2026-07-17p**: Phase 4 increment (1) — FILE REDIRECTION `<`/`>`/`>>`/`2>`
+  IMPLEMENTED, builds clean, boots. Kernel: `struct spawn_redir {child_fd,
+  parent_fd}` + `SPAWN_MAX_REDIR` (caps.h); `process_redirect_child_fd()`
+  (object.c) dups the spawner's handle into the child's fd slot, dropping the
+  console ref (fork+dup2 as a capability dup, shared FILE offset); SYS_SPAWN
+  reads arg4/arg5 = redir[]+count, `dispatch_spawn` applies them before the
+  child runs (bad fd aborts the spawn). ABI: `_sys_spawn` stub now ZEROES
+  x4/x5 (r8/r9) so old 4-arg callers can't leak garbage as nredir; new
+  `_sys_spawn_redir` passes them through (both arches). Libc:
+  `OS1low_process_spawn_redir` (os1.h + lib.c). nxexec.h:
+  `nxexec_spawn_search_redir`. nxshell: `strip_redirections()` parses
+  `<`/`>`/`>>`/`2>` (spaced + attached), opens targets, spawns with redir,
+  closes its copies; centralised in `spawn_search_args` so the default path AND
+  `exec` get it. VERIFIED-BY-CODE end-to-end: libc stdin/stdout/stderr FILEs
+  have fd 0/1/2 and route through read()/write() → the handle table → the dup'd
+  FILE object; read(0) on a FILE returns 0 at EOF (not -EAGAIN/block like a
+  console) — the direct fix for the "inner reader sleeps forever" hang. AWAITING
+  on-device verification. NEXT: increment (2) pipes `|` (pipe kobject).
+
+- **2026-07-17q**: Increment (1) file redirection VERIFIED on-device — all 4
+  cases pass: `lua -e "print(7*6)" > r.txt` → `42`; `lua - < s.lua` → `6` AND
+  RETURNS TO PROMPT (the nested-input hang is fixed at the root); `... 2> e.txt`
+  → `boom`; `lua - < s.lua > o.txt` → `6`. Running the real suite (`all.lua`)
+  now advances PAST the interpreter tests (`progname: /bin/lua`, `Lua 5.4.6`)
+  and stops at the FIRST PIPE (main.lua:93 `echo "..." | lua > %s`): echo (a
+  builtin) printed `| /bin/lua > /home/.luatmp_2` literally, no temp file made.
+  DISCOVERY that reshapes increment (2): EVERY pipe in main.lua (93,125,244,246,
+  249,253,260) is `echo "<string>" | lua <args>` — the LHS is ALWAYS the echo
+  builtin, never a spawned streaming producer. So `echo "x" | cmd` ≡
+  `echo "x" > tmp; cmd < tmp; rm tmp`, i.e. it can REUSE increment (1)'s file
+  redirection (shell materialises the bounded builtin output to a temp file)
+  with NO new kernel primitive — vs a full OBJ_TYPE_PIPE kobject (real general
+  pipes, but writer-count/blocking/EOF complexity). Fork raised to maintainer.
+
+- **2026-07-17r**: Maintainer decision on the pipe fork — do ALL THREE, properly
+  on the ASTRA object model: (a) a REAL pipe kobject, (b) temp-file, (c) a POSIX
+  layer. Each gets a distinct role, so nothing is duplicated:
+  * **(a) Kernel primitive (ASTRA §6.2)**: `OBJ_TYPE_PIPE` (= 6, COUNT→7) — a
+    kernel ring buffer with reader/writer OPEN counts.  `sys_object_read`: data
+    → return it; empty + writers>0 → -EAGAIN → SYS_READ blocks (as console
+    stdin does); empty + writers==0 → 0 (EOF).  `sys_object_write`: append; full
+    + readers==0 → -EPIPE.  Reader/writer counts maintained in ONE place per
+    lifecycle edge (install/close/destroy/redirect-dup) via a
+    `pipe_handle_count(o,rights,±1)` helper, keyed on OBJ_TYPE_PIPE + rights.
+    Creation verb `SYS_PIPE` installs a READ handle + a WRITE handle and returns
+    both fds (user int[2]).  Anonymous (no registry name) — like an unnamed FILE.
+  * **(b) temp-file**: nxshell's `|` when the LHS is a BUILTIN producer (echo —
+    100% of main.lua's pipes): materialise its bounded output to a temp file and
+    spawn the RHS with fd0←that file, REUSING increment (1)'s redirection; rm
+    after.  No streaming machinery for the case that doesn't need it.
+  * **(c) POSIX layer**: `pipe(int fd[2])` in libc over `OS1low_pipe`, so
+    `spawned | spawned` pipelines and any future POSIX app use the real kobject.
+  nxshell `|`: builtin-LHS → path (b); spawned-LHS / multi-stage → path (a).
+  IMPLEMENTING (2a) kernel pipe + POSIX pipe() first, then (2b) shell.
+
+- **2026-07-17s**: STANDARDISATION pass (maintainer: "il tuo lavoro è la
+  standardizzazione — crea unistd reale ... sia la call os1 che gli standard
+  posix come layer di compatibilità") + closed-phase leftovers. Builds clean.
+  * **Real `<unistd.h>`**: now the authoritative POSIX entry point, carrying a
+    documented POSIX→OS1 mapping table and the KNOWN DEVIATIONS (read/write take
+    `char *` and return `long`; `getcwd` returns int; no `sleep()` because
+    OS1_sleep is MILLISECONDS).  Names os1.h already declares (read/write/close/
+    lseek/chdir/getcwd/sbrk) are documented but NOT re-declared — one
+    declaration each, so the headers cannot drift.
+  * **DEFECT FOUND + FIXED**: `isatty()` and `getpid()` were DECLARED in
+    unistd.h but implemented NOWHERE (the header promised link errors).  Both
+    implemented.  `isatty()` now does a REAL capability-type test
+    (OS1low_cap_query → OBJ_TYPE_CONSOLE) instead of "fd < 3" — required now
+    that increment (1) exists: with `cmd > out` fd 1 is a FILE and with
+    `cmd | cmd` a PIPE, and the lua REPL keys off isatty()==0 there.
+  * nxshell now calls POSIX `pipe()` via `<unistd.h>` (was a direct
+    `OS1low_pipe` shortcut taken only to dodge the missing declaration) — the
+    compat layer exercising itself.
+  * **PHASE 1 LEFTOVER CLOSED — `ftruncate()`**: composed from primitives, not
+    duplicated kernel-side.  shrink to N>0 = read the head back + rewrite from
+    offset 0 (offset-0 write REPLACES the file, so the rewrite IS the
+    truncation); shrink to 0 = new **OBJ_CTL_TRUNCATE** verb, needed because
+    POSIX defines write(fd,buf,0) as a NO-OP and it cannot express "empty this
+    file"; extend = zero-fill from the old EOF.  Re-verified that the earlier
+    zero-write fix did NOT break `truncate(path,0)`/`fopen("w")`: the PATH-based
+    offset-0 zero write still truncates (syscall_dispatch.c), only the fd-based
+    one is a no-op (correct POSIX).
+  PHASE STATUS: 0,1,2,3 CLOSED (1's only deferred item now done). Phase 4 =
+  (i) redirection VERIFIED, (ii) pipes built+compiling, awaiting device test,
+  (iii) STILL OPEN: "re-attach a separated process into job control" and
+  "root-vs-user process division (formalise the identity split)".
+
+- **2026-07-17t**: CROSS-LAYER AUDIT (maintainer: "cerca se altre parti usano le
+  std ... o stub incompleti; ragiona in ordine kernel—lib—posix/libc—lua").
+  Device evidence that drove it: `lua -e "print(99)" | lua -e "print(io.read())"`
+  → **99** (kernel pipe CORRECT, two live ends), but `echo "print(10)" | lua`
+  printed the REPL banner + `>` and waited for a keypress.
+  * **ROOT CAUSE (lua layer)**: lua.c's `lua_stdin_is_tty()` ISO-C fallback is
+    hardcoded to 1 ("assume stdin is a tty") unless LUA_USE_POSIX is set — which
+    we deliberately do not set.  So lua ALWAYS believed stdin was a tty and took
+    the REPL branch instead of "execute stdin"; and our own `lua_readline`
+    override reads the KEYBOARD mailbox (LUA-TTY-01), so the piped program was
+    never consumed.  A textbook "stub used because the real function was
+    missing" — isatty() existed only as a DECLARATION.  Fixed: lua_portability.h
+    now defines `lua_stdin_is_tty()` = our real `isatty(0)` (LUA-TTY-02).
+  * **LUA-TTY-03**: `-i` FORCES the REPL regardless of isatty, so
+    `lua -i < file` (main.lua:335) and `echo ... | lua -i` (main.lua:249) still
+    reached the keyboard reader.  `os1_lua_readline()` now falls back to
+    `fgets(stdin)` whenever `!isatty(0)`.
+  * **SYSTEMATIC AUDIT** (nm on every built libc object vs every prototype in
+    our core headers) — found the remaining declared-but-UNIMPLEMENTED
+    functions, the same class as isatty/getpid: **`_Exit`** (stdlib.h) and
+    **`fdopen`** (stdio.h).  Both implemented.  `fdopen` mattered now: it is how
+    ported POSIX code wraps a PIPE end in a FILE*.  Supporting it generalised
+    `file_fd()` to return the stream's fd field instead of comparing against
+    stdin/stdout/stderr — exactly equivalent for existing streams (the console
+    structs carry 0/1/2, fopen sets -1) and it makes fdopen'd streams route
+    through read()/write().  `fclose()` now closes an fd-backed stream's
+    descriptor (POSIX ownership).  ctype's isalnum/isalpha/... were a FALSE
+    positive: `static inline` in ctype.h, correctly defined.
+  * Audit now returns EMPTY: no function declared in our core headers is
+    unimplemented.
+  * Maintainer also saw a one-off GRAPHICS glitch that did NOT reproduce; left
+    UNDIAGNOSED (no repro) — the log around it shows only demo3d window
+    close/focus churn, not a libc path.
+
+- **2026-07-17u**: Phase 4 remaining items resolved.
+  * **(a) RE-ATTACH A SEPARATED PROCESS — DONE.** New nxshell builtins
+    `attach <pid>` / `disown [%N]`, closing the directive's "separated process
+    is NOT killed with its parent, but jobs still tracks it".  The kernel's
+    acquisition policy makes the split exact and honest: TRACKING (status, exit
+    reporting) needs only a WAIT/READ capability, which any live pid grants — so
+    a process this shell never spawned (a dock-launched app re-homed to another
+    ancestor) can still be followed by `jobs`; fg/bg additionally need kill
+    authority (self/descendant/privileged, process_kill_allowed), so they work
+    for our descendants and fail visibly otherwise instead of pretending.
+    `attach` names the job through nxexec_lookup_identity() — the SAME Phase 3
+    registry identity the bar and dock use, so one process has one name
+    everywhere.  Also fixed stale help text that still claimed `bg` was "not
+    supported yet" (Phase 2 made it real) and documented the new redirection /
+    pipe syntax in `help`.
+  * **(b) ROOT-VS-USER IDENTITY SPLIT — DEFERRED, by the maintainer's OWN
+    recorded decisions (PIANO-LIBC-ASTRA-2026-07-16 §"decisioni"), not skipped.**
+    The division itself ALREADY EXISTS: level_for_path() (/sys/bin → PLVL_ROOT,
+    everything else PLVL_USER) as a ceiling+default, the monotonic creator clamp
+    in process_create_caps, per-level capability masks, SYS_GET_IDENTITY
+    reporting (level<<16)|caps, and nxperm.h presenting it.  What would REMAIN
+    is explicitly out of scope or gated:
+      - decision 3: "nxauth (prima versione): solo utente root con password di
+        preset. **Utenti nominali NON in questo blocco.**"
+      - decision 4: per-user VFS partitions = "blocco futuro".
+      - R6: nxauth + the kernel exec/kill consolidation require "**doc dedicato
+        prima del codice**".
+    So writing an identity/users subsystem now would violate the maintainer's
+    own doc-before-code rule.  NEXT ACTION for (b) is the dedicated kernel
+    exec/kill + nxauth design doc, not code.
+  * Confirmed **C1–C4 capability closure is fully CLOSED** (C4: 13/13 PASS on
+    amd64 AND aarch64, 0 fault) — no pending item from that block either.
+
+- **2026-07-17v**: BUILD-SYSTEM BUG (why the LUA-TTY-02 fix appeared not to
+  work).  Device run showed the pipe now DELIVERING (`10` and `2` executed) but
+  lua still printing the REPL banner + `>` prompts, so main.lua:57 asserted:
+  expected `'10\n2\n'`, got `'Lua 5.4.6 ...\n> 10\n> 2\n> > \n'`.
+  Root cause was NOT the code: `lua_portability.h` is FORCE-INCLUDED into every
+  Lua TU (`-include`), but was not listed as a PREREQUISITE of any lua rule, so
+  editing it left STALE objects.  `lua_portability.c` recompiled (its own rule
+  named it) — which is why the LUA-TTY-03 `fgets(stdin)` fallback DID take
+  effect — while `lua.o` did not, keeping upstream's hardcoded
+  `lua_stdin_is_tty() 1`.  Proved with `nm -u lua.o`: no `isatty` reference
+  before, `U isatty` after.  FIXED: added `LUA_PORT_HDR` and made it a
+  prerequisite of the lua pattern rule, `lua.o`, `LUA_PORT_OBJ` and
+  `LUA_OS1_OBJ`, so this whole class of silent-stale-object bug cannot recur.
+  * Maintainer note: the test suite is launched INTERACTIVELY (double-click in
+    nxfilem), so the OUTER lua is legitimately a tty — that is correct, not a
+    bug; only the INNER `echo ... | lua` must be non-interactive.  A possible
+    nxfilem double-click issue (two instances) was observed but not reproduced;
+    left undiagnosed rather than guessed at.
+
+- **2026-07-17w**: `echo "print(10)" | lua` → **`10`** VERIFIED on device (clean,
+  no banner/prompts): pipes + LUA-TTY-02/03 confirmed.  Suite advanced 57 → 72.
+  New failure at main.lua:72 (`NoRun`: `assert(not os.execute(cmd))` — a command
+  that MUST fail) was ANOTHER stale leftover of a closed phase: `nxshell -c` did
+  `process_command(); return 0;`, carrying a comment claiming "OS1 does not yet
+  provide a real exit-status channel".  That comment was OBSOLETE — Phase 2
+  built exactly that channel (exit_code → waitpid → WEXITSTATUS); it was simply
+  never wired into the shell, so every command reported success and os.execute
+  could never see a failure.  FIXED end-to-end:
+  `nxexec_run_foreground_ex(pid, &status)` reaps via
+  OS1low_process_wait_status and yields shell-style status (exit code, 128+sig
+  when killed, 130 for Ctrl-C); nxshell tracks `g_last_status`, sets 127 on
+  command-not-found (POSIX), and `-c` exits with it; `system()` already encoded
+  it, so os.execute now observes real failures.  (`nxexec_run_foreground(pid)`
+  kept as the status-less wrapper for nxexec.c's hosted terminal.)
+  * Self-inflicted bug caught during the edit: one brace-less `else` gained a
+    second statement, which would have printed "Unknown command" even on
+    SUCCESS in the temp-file pipeline path.  Fixed; other 3 sites verified
+    properly braced.
+  * NOT bugs (maintainer runs): `lua all.lua` from the shell failing "cannot
+    open main.lua" is all.lua:149 doing `dofile('main.lua')` — a RELATIVE path,
+    so it needs `cd /home/LUA/luatest` first.  And the OUTER lua being
+    interactive when double-clicked from nxfilem is correct (its stdin really is
+    the console); only the INNER `echo ... | lua` must be non-interactive.
+
+## Appendix — analysis of the lua nested-spawn hang (historical)
+> SUPERSEDED IN PART by 2026-07-17o: the interactive stdin-down-the-tree path
+> below is NOT what main.lua needs (it always redirects/pipes input). Kept for
+> the eventual interactive case (a hosted REPL reading the real keyboard).
+Chain: outer `lua` (foreground job, shell relays its stdin) does
+`os.execute` -> `system()` -> spawns `nxshell -c "lua ..."` and BLOCKS waiting
+on it -> nxshell -c (windowless, unfocused) spawns the inner `lua` and runs
+`nxexec_run_foreground`, which relays stdin by reading ITS OWN stdin
+(try_recv). But keyboard IPC only goes to the FOCUSED window's pid
+(keyboard.c), and the outer lua is blocked in system()'s wait — so nothing
+feeds nxshell -c, nothing feeds the inner lua. Any inner reader (REPL /
+io.read) sleeps forever; the outer lua's wait never returns -> `lua all.lua`
+stalls. The ctty (`proc->ctty_win`) already carries stdOUT down the tree
+(sys_write falls back to ctty_win); stdIN has no equivalent. Phase 4 = an
+input path down the ctty/process tree so a windowless descendant reading fd 0
+gets the terminal's input. Needs a runtime confirmation of the exact reader.
+
+## Phase 0 — Error visibility (library) — **DONE**
 Lowest risk, unblocks diagnosing doom + lua.
 - **lib**: one internal seam `__libc_report(ctx, err)` in `lib.c` mapping an
   errno class → notify severity (EIO/EFAULT/ENOMEM/EROFS/ENOSPC → error/red;
@@ -98,7 +1017,7 @@ Lowest risk, unblocks diagnosing doom + lua.
 - Exit criteria: a failing file/mmap/alloc in any app raises a visible
   notification with context; doom's load failure becomes observable.
 
-## Phase 1 — Truncation model = standard (kernel + lib + port)
+## Phase 1 — Truncation model = standard — **DONE** (ftruncate closed 17s)
 Decide + enforce the standard: truncation is an OPEN-time op (O_TRUNC /
 `fopen("w")`), not a per-write side effect (POSIX pwrite never truncates).
 - **kernel**: keep `open(O_TRUNC)` (already added). Re-evaluate the
@@ -108,7 +1027,7 @@ Decide + enforce the standard: truncation is an OPEN-time op (O_TRUNC /
   truncates at open only.
 - **port**: adapt apps that assumed write-time truncation to the standard API.
 
-## Phase 2 — Kernel process primitives (ASTRA)
+## Phase 2 — Kernel process primitives (ASTRA) — **DONE**, device-verified
 - **kernel**: per-process `exit_code`; `SYS_WAIT` returns it (payload), so
   `system()` and jobs report real status ("Done (0)"/"Exit 1").
 - **kernel**: `STOPPED` process state + resume, so Ctrl-Z/`bg`/`fg` are real
@@ -116,7 +1035,7 @@ Decide + enforce the standard: truncation is an OPEN-time op (O_TRUNC /
 - **lib**: `waitpid`/`WEXITSTATUS` compat over the payload; `OS1_process_wait`
   NEXS surface.
 
-## Phase 3 — Process identity & serialisation
+## Phase 3 — Process identity & serialisation — **DONE** (absorbed old Phase 8)
 - **kernel**: widen/clean the `proc->name` field (16 vs 32 mismatch in
   sysstats), add a stable per-process serial; expose identity via the registry
   namespace (`/proc/<pid>` typed object already exists — extend).
@@ -124,7 +1043,7 @@ Decide + enforce the standard: truncation is an OPEN-time op (O_TRUNC /
   and records it, so the bar/dock/jobs all read ONE stable name, not a
   path-basename that collides ("lua", "lua", "lua").
 
-## Phase 4 — TTY / input routing + bg/fg abstraction
+## Phase 4 — TTY / redirection / pipes / job re-attach — **DONE** except (b)→Ph.11
 - **kernel/lib**: controlling-terminal model so a hosted (windowless) child —
   including a NESTED spawn — receives stdin (fixes lua SLEEPING). Unify with
   `nxexec_run_foreground()`'s echo/relay (currently separate).
@@ -133,21 +1052,101 @@ Decide + enforce the standard: truncation is an OPEN-time op (O_TRUNC /
 - **kernel**: root-vs-user process division (level presets exist per path;
   formalise the identity split).
 
-## Phase 5 — fd / object / registry standardisation (ASTRA §6.2)
+## Phase 9 — nxexec as THE standard executor — **IN PROGRESS** (shape DECIDED: R6 daemon)
+Maintainer directive 2026-07-18: "nxexec deve essere il nostro esecutore
+standard e va raffinato; dovrà essere il punto della compatibilità posix ed è
+fondamentale per permettere un utilizzo grafico e da terminale SENZA ECCEZIONI".
+- **Finding**: there are TWO divergent execution paths today.  nxlauncher (and
+  nxfilem) spawn the nxexec BINARY; nxshell only reuses `nxexec.h` HELPERS and
+  spawns programs itself.  Everything refined in the shell (redirection, pipes,
+  job control, exit status, identity registration) therefore does NOT apply to
+  the graphical path, and vice-versa.
+- **Symptom already observed**: `progname` is `/bin/lua` when launched from the
+  launcher but bare `lua` from the shell, because `nxexec_spawn_search*` spawns
+  `do_spawn(out_path, ...)` while leaving `argv[0]` as the BARE name.  main.lua
+  rewrites its commands with that progname, so a bare one produces `"lua" ...`
+  which must be re-resolved — the "esecuzione da path non diretto" to fix.
+- **Work**: consolidate the shell's refined execution logic INTO nxexec; make
+  nxshell execute through it; make argv[0] reflect the resolved path; one
+  cross-checked path for graphical AND terminal.
+- **OPEN DESIGN FORK** (needs maintainer): the recorded R6 vision in
+  PIANO-LIBC-ASTRA is "nxexec → **demone privilegiato di esecuzione**" that
+  spawns a password panel for extra authority.  So which shape?
+  (A) shared LIBRARY (today's nxexec.h, grown into the canonical executor);
+  (B) a PROCESS per command (`nxshell` spawns `/sys/bin/nxexec cmd`);
+  (C) a privileged DAEMON everyone asks over IPC (the recorded R6 vision).
+
+## Phase 12 — Service standardisation, ALL services (+ `/sys/services`) — TODO (Ph.9 needs it)
+Maintainer directive 2026-07-18: *"il lavoro di standardizzazione dei servizi va
+fatto per TUTTI i servizi ... consiglio anche di spostarli da /sys/bin a
+/sys/services, in questo modo le app utenti usano i servizzi; i servizi vanno
+anche divisi dalla libc standard e integrati in maniera modulare"*.
+
+Scope — every system service (nxinit, nxexec, nxntfy_srv, and the rest), not
+just nxexec:
+1. **Relocation `/sys/bin` → `/sys/services`.**  Separates SERVICES (things apps
+   talk to) from BINARIES (things apps run), which is what makes "le app utenti
+   usano i servizi" legible in the namespace itself.
+   - **DEPENDENCY**: `level_for_path()` currently grants `PLVL_ROOT` to
+     `/sys/bin/` specifically.  The preset MUST follow the services to
+     `/sys/services/`, or every service silently drops to `PLVL_USER`.  The VFS
+     write-ACL protects all of `/sys`, so immutability is unaffected.
+   - Also touches: the `/bin`,`/sys/bin` spawn search order (nxexec.h), nxinit's
+     supervised-service list, nxlauncher's hidden-entries list, mkdisk layout.
+     ASTRA §7.11 already flags an exec-path census as needed for the `.X` format
+     work (R5) — do the census ONCE and serve both.
+2. **Each service publishes a PORT** under the `OS1nx_<service>` naming standard
+   (`OS1NX_PORT_EXEC` is the first).  Clients then address a SERVICE, never a
+   pid — the seL4 rule ASTRA §6.5 states.
+3. **Per-service capability refinement** (Q5): ASTRA §7.11 records that every
+   `/sys/bin/*` still gets the FLAT ROOT preset.  Each service gets an explicit,
+   minimal capability set instead.
+4. **Services split OUT of the standard libc, integrated modularly**: libc keeps
+   the POSIX/OS1 personality only; service CLIENT stubs (the port protocol
+   wrappers) live in their own module per service, so an app links only the
+   services it uses.  This is the SRL/HAL source-tree split ASTRA §6.4/§7.11 has
+   been asking for ("no `kernel/srl`/`kernel/hal` top-level dirs exist yet"),
+   applied on the userland side.
+
+Sequencing note: this phase is what makes Phase 9's daemon a *general* pattern
+rather than a one-off for nxexec.
+
+## Phase 10 — POSIX/libc completion as a repeatable gate — TODO
+Maintainer: "TUTTO quello che riguarda la libreria e posix e il suo
+completamento è di tuo interesse ... la maggior parte esiste già a livello
+kernel, va standardizzato, studiato e portato a termine.  POSIX vive SOPRA il
+nostro sistema come layer di compatibilità."
+- Keep the POSIX personality a thin mapping over `OS1_*`/`OS1low_*`; never a
+  parallel implementation.
+- Make the declared-vs-implemented audit (nm over the libc objects vs the
+  prototypes in our headers) a REPEATABLE check, so the isatty/_Exit/fdopen
+  class of "declared but nobody implemented it" cannot come back.
+- Same for force-included headers as make prerequisites (the lua.o stale-object
+  class, 2026-07-17v).
+
+## Phase 11 — Users / capabilities / filesystem — BLOCKED (design doc first); absorbs Ph.4(b)
+Maintainer put users/capabilities/filesystem in scope, "da studiare su ASTRA;
+la maggior parte esiste già a livello kernel".  Sequenced AFTER the doc that
+PIANO-LIBC-ASTRA R6 requires ("studio kill-model/exec in kernel — doc dedicato
+PRIMA del codice"), and bounded by its decisions 3 and 4 (nxauth v1 = root with
+preset password, named users NOT in this block; per-user VFS = future block).
+Absorbs the old Phase 4(b) "root-vs-user process division".
+
+## Phase 5 — fd / object / registry standardisation — **2 of 3 items ALREADY DONE**
 - **kernel**: make every `fd` a handle uniformly; expose process/job state
   through the registry namespace so tools read it as files.
 - **lib**: the POSIX fd calls are a thin compat over `OS1_object_*`.
 
-## Phase 6 — nxline / nxjobs real model + port to userland
+## Phase 6 — nxline / nxjobs — model **DONE**, PORTING todo (they are NOT stubs)
 - Back `nxjobs` with Phase 2 exit_code/state; `nxline` history via standard
   paths. Standardise both and port to the other userland tools (kilo, lua REPL,
   nxexec host loop) so line-editing/job-control are shared, not re-hand-rolled.
 
-## Phase 7 — doom revert + library conformance + lua finish
+## Phase 7 — doom revert + lua finish — TODO (depends on 9/10)
 - Revert doom's old-libc adaptations to the standard API; finish the lua port
   on the now-standard I/O + process model.
 
-## Phase 8 — naming → bar / icons via nxexec
+## Phase 8 — FOLDED INTO PHASE 3 (was a duplicate; kept for traceability)
 - nxexec provides the display name + icon to the bar/dock; stable process
   serialisation end to end.
 

@@ -387,6 +387,8 @@ static void redraw(int force) {
   /* Pass 1: collect every eligible window, unfiltered by width. */
   int ids[MAX_TILES];
   unsigned flg[MAX_TILES];
+  int pids[MAX_TILES];     /* pid per window, for the sys.proc.<pid>.name lookup
+                            * (Phase 3 identity) in the draw loop below */
   char ttl[MAX_TILES][64]; /* title copy, for nxicon_classify() in the draw
                             * loop below — the id/flags this dock already
                             * tracked were never enough to pick an icon */
@@ -404,6 +406,7 @@ static void redraw(int force) {
       continue;
     ids[total] = wi[i].id;
     flg[total] = wi[i].flags;
+    pids[total] = wi[i].pid;
     memcpy(ttl[total], wi[i].title, sizeof(ttl[total]));
     total++;
     /* Follow focus changes the system makes outside the dock (e.g. the user
@@ -481,6 +484,7 @@ static void redraw(int force) {
 
   int x = MARGIN + (scroll_on ? (SCROLL_BTN_W + SCROLL_BTN_GAP) : 0);
   unsigned dflags[MAX_TILES];
+  int vpid[MAX_TILES];
   char vttl[MAX_TILES][64];
   unsigned sig = 2166136261u ^ (unsigned)g_sw ^ ((unsigned)g_page << 8) ^
                  ((unsigned)scroll_on << 16) ^ ((unsigned)g_pressed << 20) ^
@@ -491,6 +495,7 @@ static void redraw(int force) {
     g_slot_id[cnt] = ids[idx];
     g_slot_x[cnt] = x;
     dflags[cnt] = flg[idx];
+    vpid[cnt] = pids[idx];
     memcpy(vttl[cnt], ttl[idx], sizeof(vttl[cnt]));
     sig = (sig ^ (unsigned)ids[idx]) * 16777619u;
     sig =
@@ -531,7 +536,26 @@ static void redraw(int force) {
      * insensitive, prefix-matching, path-stripping classifier in nxicon.h —
      * not nxicon_classify_path()'s exact match (that one is for
      * nxlauncher's app-table entries, which are real basenames). */
-    int app_id = is_launcher ? NXICON_LAUNCHER : nxicon_classify(vttl[i]);
+    /* Prefer the PROGRAM NAME over the window title: the title is the app's
+     * own, noisy text, the name is the canonical launch identity.  The title
+     * classifier stays as the fallback for a window whose pid is gone. */
+    int app_id;
+    if (is_launcher) {
+      app_id = NXICON_LAUNCHER;
+    } else {
+      /* Ask the (virtual, always-live) per-process view for the program name
+       * and classify THAT.  There is no icon key to consult: an icon is a
+       * property of the program, and the program name already carries it —
+       * nxicon_classify strips the path itself.  The intermediate
+       * `sys.appicon.<name>` key that 5b introduced mapped a name to itself,
+       * so it added a lookup and no information (17a). */
+      char idkey[64], idname[40];
+      snprintf(idkey, sizeof(idkey), "sys.proc.%d.name", vpid[i]);
+      if (OS1_registry_get(idkey, idname, sizeof(idname)) == 0 && idname[0])
+        app_id = nxicon_classify(idname);
+      else
+        app_id = nxicon_classify(vttl[i]); /* fall back to the window title */
+    }
     os1_image_t *icon = nxicon_get(app_id, g_light, TILE);
 
     if (icon) {

@@ -46,6 +46,35 @@ struct wait_queue_head {
 
 struct handle_entry; /* kernel/object.h — capability handle table slot */
 
+/* Per-process ENVIRONMENT (Phase 17).
+ *
+ * The environment is per-process state that is INHERITED at spawn and mutable
+ * by its owner — exactly the shape of cwd, which already lives here.  Keeping
+ * it in the kernel is the Phase 5b rule applied consistently: state the kernel
+ * can own authoritatively is not duplicated into a userland-written copy that
+ * then needs a collector.  Userland reads and writes it through the registry
+ * seam (`sys.proc.<pid>.env.<NAME>`), so there is ONE representation.
+ *
+ * Inheritance follows a COPY at spawn, not a live reference to the parent.  A
+ * reference would be cheaper, but it would mean a parent's later `setenv` (or
+ * its death) silently rewrote a running child's environment — POSIX snapshots,
+ * and so do we.
+ *
+ * Sized to fit in a single page, which is also the allocation unit: 24 entries
+ * of 32+128 bytes.  A bound is unavoidable somewhere; making it the page keeps
+ * allocation trivial (pmm_alloc_page returns zeroed memory) and the limit
+ * honest and visible rather than emergent. */
+#define ENV_KEY_MAX 32
+#define ENV_VAL_MAX 128
+#define ENV_MAX 24
+struct env_entry {
+  char k[ENV_KEY_MAX]; /* empty k == free slot */
+  char v[ENV_VAL_MAX];
+};
+struct env_block {
+  struct env_entry e[ENV_MAX];
+};
+
 /* Process Control Block */
 struct process {
   uint32_t pid;
@@ -129,6 +158,20 @@ struct process {
    * capability check (ABI-04): a process may kill itself or any descendant,
    * and a privileged (machine/root) process may kill anything. */
   int parent_pid;
+  /* owner_pid: the LOGICAL parent — who this process belongs to, as opposed to
+   * parent_pid, which records who mechanically spawned it (ASTRA §6.5 process
+   * capability; maintainer decision Q3, 2026-07-18).
+   *
+   * These diverge as soon as execution moves behind a service: when the nxexec
+   * daemon spawns a program on a shell's behalf, parent_pid is nxexec but the
+   * job BELONGS to the shell.  Since kill/stop/cont authority is an ancestry
+   * walk, without this the shell would silently lose job control over its own
+   * jobs the moment the daemon lands.
+   *
+   * 0 = unset, meaning "same as parent_pid" (every process today).  Only a
+   * PRIVILEGED process may set it, and setting it DELEGATES authority over the
+   * child, so it is a capability operation (OBJ_CTL_SETOWNER), not a hint. */
+  int owner_pid;
   /* child_count: live (not yet reaped) children of this process
    * (SCHED-DOS-01 #122).  Incremented by process_create() on the creator,
    * decremented when a child's pool slot is released (terminate immediate
@@ -177,6 +220,13 @@ struct process {
 
   /* Filesystem state */
   char cwd[128]; /* Current Working Directory */
+
+  /* Per-process environment (Phase 17), one page, copied from the creator at
+   * spawn.  NULL means "no private environment": reads fall through to the
+   * system defaults under `sys.env.*`.  That is also the graceful degradation
+   * path if the page allocation fails — a spawn is never failed over the
+   * environment, the child simply inherits the machine's defaults. */
+  struct env_block *env;
 
   /* Capability handle table (object/capability ABI, kernel/object.h) — the ONE
    * per-process descriptor table (ASTRA §6.2: the fd table folded into it).  A
@@ -251,12 +301,47 @@ extern struct process *process_create_caps(const char *name, uint8_t priority,
                                            uint8_t level, uint32_t req_caps);
 struct process *process_find_by_pid(int pid);
 struct process *__process_find_by_pid(int pid);
+/* proc_pid_is_privileged - privilege of a pid as a VALUE (0/1).  Use this, not
+ * process_find_by_pid()+proc_is_privileged(), from any subsystem outside the
+ * scheduler: the pointer form both dangles once sched_lock is released and
+ * forces sched_lock underneath whatever lock the caller already holds.  The
+ * compositor is the reason it exists (see the definition, Pitfall A). */
+int proc_pid_is_privileged(int pid);
 /* process_kill_allowed: ABI-04 capability check for SYS_KILL.  Returns
  * non-zero if 'caller' may terminate 'target_pid': itself, any descendant,
  * or anything when it is privileged (machine/root).  Kernel-internal
  * terminate paths (compositor close, init supervision) bypass this and call
  * process_terminate() directly. */
 int process_kill_allowed(struct process *caller, int target_pid);
+/* process_set_owner - set a process's LOGICAL parent (owner_pid), so a job
+ * spawned BY a service still answers to the client that asked for it.  Only
+ * reachable through OBJ_CTL_SETOWNER, which requires DESTROY on the target and
+ * a privileged caller (it delegates authority).  0, or -ESRCH if either pid is
+ * not live. */
+int process_set_owner(int pid, int owner_pid);
+/* proc_get_lineage - spawning parent + LOGICAL owner of a pid (owner falls back
+ * to parent when unset).  Lets userland follow inheritance across a service
+ * spawn, where the mechanical parent is the service rather than the requester. */
+int proc_get_lineage(int pid, int *parent, int *owner);
+
+/* Per-process environment (Phase 17).  The AUTHORITY rule is deliberately the
+ * process one, not the registry one: a process may always read and write its
+ * OWN environment (calling setenv is ordinary, unprivileged work), and only a
+ * privileged process may touch another's.  Routing this through CAP_REG_WRITE
+ * because the seam happens to be the registry would have made `setenv` demand
+ * system-configuration authority — the wrong ceiling for the operation.
+ *
+ * proc_env_get   0 on hit, -ENOENT if the process has no such variable.
+ * proc_env_set   0, -ESRCH (no such pid), -EPERM, -ENOMEM (block full/OOM).
+ *                A NULL/empty value UNSETS, which is what the registry DEL op
+ *                and `env -u` both need.
+ * proc_env_enum  newline-separated NAMEs into buf; returns length, or -1.
+ * proc_env_free  release the block at teardown. */
+int proc_env_get(int pid, const char *key, char *buf, size_t size);
+int proc_env_set(struct process *caller, int pid, const char *key,
+                 const char *value);
+int proc_env_enum(int pid, char *buf, size_t size);
+void proc_env_free(struct process *p);
 /* process_ipc_allowed: may 'caller' send IPC to target_pid?  True if the
  * caller holds CAP_IPC_ANY, or target is the caller's parent or a
  * descendant.  Acquires sched_lock internally. */

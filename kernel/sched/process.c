@@ -133,7 +133,17 @@ static void __reparent_children(struct process *dead) {
 
   for (int i = 0; i < MAX_PROCESSES; i++) {
     struct process *p = process_pool[i];
-    if (!p || p == dead || p->parent_pid != (int)dead->pid)
+    if (!p || p == dead)
+      continue;
+    /* The LOGICAL owner dying breaks the authority chain in exactly the way
+     * this function exists to prevent: owner_pid would point at a corpse, the
+     * ancestry walk in process_kill_allowed() would dead-end, and the job would
+     * be killable only by a privileged process — wedging its pool slot just
+     * like an unadopted orphan.  Drop back to the mechanical parent chain,
+     * which is always walkable. */
+    if (p->owner_pid == (int)dead->pid)
+      p->owner_pid = 0;
+    if (p->parent_pid != (int)dead->pid)
       continue;
     p->parent_pid = heir_pid;
     if (heir)
@@ -212,6 +222,61 @@ static uint32_t sched_focus_streak[MAX_CPUS];
  *
  * Locking: caller MUST hold cpu->sched_lock.
  */
+/*
+ * Reaped-status retention (Phase 9b) — POSIX zombie semantics, cheaply.
+ *
+ * THE BUG THIS FIXES: process_wait() fills *out_code only when it still finds
+ * the corpse.  Corpses are drained eagerly (the per-CPU deferred-free list runs
+ * on the next schedule()), so a child that fails FAST is routinely gone before
+ * its owner polls — process_wait then returned -2 with *out_code UNTOUCHED, and
+ * every caller that initialised it to 0 read SUCCESS.  That silently corrupted
+ * EVERY exit-status consumer (system(), waitpid(), jobs' "Done(N)") in a
+ * timing-dependent way, so it looked like flakiness rather than a bug; it is
+ * why `assert(not os.execute(failing_program))` kept failing in the lua suite.
+ *
+ * We keep only the STATUS, not the corpse, so eager freeing is preserved: a
+ * process's exit status outlives its struct until somebody collects it.
+ *
+ * Consumed on read, like a real wait(): the second wait on the same pid reports
+ * "gone", matching POSIX ECHILD rather than handing the same status out twice.
+ * The ring is bounded and overwrites oldest-first — a status nobody ever
+ * collects must not be able to pin memory.
+ *
+ * Locking: every site that touches this holds sched_lock.
+ */
+#define REAPED_MAX 32
+struct reaped_status {
+  int pid; /* 0 = free slot (pids start at 1) */
+  int code;
+};
+static struct reaped_status reaped_ring[REAPED_MAX];
+static int reaped_next;
+
+/* __record_reaped - remember a dying process's status.  Caller holds
+ * sched_lock.  Uses the SAME encoding process_wait() reports directly: the exit
+ * code for a voluntary exit, -9 for a kill/fault death. */
+static void __record_reaped(struct process *p) {
+  if (!p || (int)p->pid <= 0)
+    return;
+  reaped_ring[reaped_next].pid = (int)p->pid;
+  reaped_ring[reaped_next].code = p->exited ? (p->exit_code & 0xff) : -9;
+  reaped_next = (reaped_next + 1) % REAPED_MAX;
+}
+
+/* __claim_reaped - collect a retained status, or return 0 if we have none for
+ * that pid.  Caller holds sched_lock. */
+static int __claim_reaped(int pid, int *out_code) {
+  for (int i = 0; i < REAPED_MAX; i++) {
+    if (reaped_ring[i].pid == pid) {
+      if (out_code)
+        *out_code = reaped_ring[i].code;
+      reaped_ring[i].pid = 0; /* consumed */
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static void reap_push(struct cpu_info *cpu, struct process *p) {
   /* SCHED-UAF: queue a victim EXACTLY once.  prev==DEAD on one CPU racing a
    * stale runqueue pick of the same victim on another would otherwise chain it
@@ -232,6 +297,12 @@ static void __enqueue_task(struct process *p) {
    * marks a victim PROC_DEAD under the owning CPU's sched_lock; this guard
    * stops a concurrent schedule() from resurrecting it via re-enqueue. */
   if (p->state == PROC_DEAD || p->state == PROC_ZOMBIE)
+    return;
+
+  /* A STOPPED task must not be resurrected by a wake source (wait-queue
+   * wake_up, etc.) — only process_cont() may resume it, and it does so by
+   * setting PROC_READY first (Phase 2 job control). */
+  if (p->state == PROC_STOPPED)
     return;
 
   int target_cpu_id = (int)p->on_cpu;
@@ -498,6 +569,35 @@ struct process *process_find_by_pid(int pid) {
 }
 
 /*
+ * proc_pid_is_privileged - a pid's privilege as a VALUE, not as a pointer.
+ *
+ * process_find_by_pid() hands back a pointer that is only valid while the
+ * caller can guarantee the process stays alive — which a caller outside the
+ * scheduler cannot.  Every user of it that only wants to ASK something about
+ * the process therefore has two ways to be wrong: it dereferences after the
+ * lock is gone (use-after-free against a concurrent terminate), and it drags
+ * sched_lock into whatever lock it already holds.
+ *
+ * The compositor is exactly that caller: compositor_create_window() runs under
+ * compositor_lock, and process_terminate() takes sched_lock and then TRYLOCKS
+ * compositor_lock (docs/PROCESS-KILL-MODEL.md §4, Pitfall A).  A blocking
+ * compositor_lock -> sched_lock is the other half of that AB-BA, so the answer
+ * has to be fetched BEFORE compositor_lock is taken, and it has to be a
+ * plain int that cannot dangle.
+ *
+ * Locking: acquires/releases sched_lock internally.  Callers must NOT hold a
+ * lock that any sched_lock holder may block on.
+ */
+int proc_pid_is_privileged(int pid) {
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  int privileged = p ? proc_is_privileged(p) : 0;
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return privileged;
+}
+
+/*
  * process_kill_allowed - ABI-04 capability check for SYS_KILL.
  *
  * Policy (checked under sched_lock so the target cannot be recycled
@@ -513,6 +613,182 @@ struct process *process_find_by_pid(int pid) {
  * A missing target is "allowed": process_terminate() reports the real
  * -ESRCH-equivalent and keeps the historical return value for it.
  */
+/*
+ * process_set_owner - set a process's LOGICAL parent (Q3, ASTRA §6.5).
+ *
+ * Called only from the OBJ_CTL_SETOWNER capability path, which has already
+ * checked DESTROY on the target and that the caller is privileged.  The owner
+ * must be a LIVE process: allowing a dead/absent pid would leave the job with
+ * an authority chain nobody can walk, orphaning it from job control entirely.
+ *
+ * Returns 0, -ESRCH if either process is gone.
+ */
+int process_set_owner(int pid, int owner_pid) {
+  uint64_t flags;
+  int ret = -ESRCH;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  if (p && __process_find_by_pid(owner_pid)) {
+    p->owner_pid = owner_pid;
+    ret = 0;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return ret;
+}
+
+/*
+ * proc_get_lineage - report a process's spawning parent AND logical owner.
+ *
+ * Exposed so userland can follow INHERITANCE (environment, and later anything
+ * else that descends).  The distinction matters since Phase 9c: with execution
+ * behind a service the mechanical parent is nxexec, so anything that inherited
+ * via parent_pid would inherit from the SERVICE instead of from the process
+ * that actually asked — owner_pid is the one to follow.
+ */
+int proc_get_lineage(int pid, int *parent, int *owner) {
+  uint64_t flags;
+  int ret = -1;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  if (p) {
+    if (parent)
+      *parent = p->parent_pid;
+    if (owner)
+      *owner = p->owner_pid > 0 ? p->owner_pid : p->parent_pid;
+    ret = 0;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return ret;
+}
+
+/* ---------------------------------------------------------------------------
+ * Per-process ENVIRONMENT (Phase 17)
+ *
+ * Storage is one page per process, allocated at spawn and copied from the
+ * creator (see process_create_caps).  All access below runs under sched_lock,
+ * the same lock that already guards the process table these lookups go
+ * through — no new lock, so no new lock ORDER to get wrong.
+ *
+ * The block is scanned linearly.  With ENV_MAX at 24 that is a handful of
+ * strcmp's against short keys; an index would cost more (in code and in the
+ * page budget) than it could save at this size.
+ * ------------------------------------------------------------------------- */
+
+/* __env_find - slot holding 'key' in p's block, or NULL.  Lock held. */
+static struct env_entry *__env_find(struct process *p, const char *key) {
+  if (!p || !p->env || !key || !*key)
+    return NULL;
+  for (int i = 0; i < ENV_MAX; i++)
+    if (p->env->e[i].k[0] && strcmp(p->env->e[i].k, key) == 0)
+      return &p->env->e[i];
+  return NULL;
+}
+
+int proc_env_get(int pid, const char *key, char *buf, size_t size) {
+  if (!key || !buf || size == 0)
+    return -EINVAL;
+  uint64_t flags;
+  int ret = -ENOENT;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct env_entry *e = __env_find(__process_find_by_pid(pid), key);
+  if (e) {
+    strncpy(buf, e->v, size - 1);
+    buf[size - 1] = '\0';
+    ret = 0;
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return ret;
+}
+
+int proc_env_set(struct process *caller, int pid, const char *key,
+                 const char *value) {
+  if (!key || !*key)
+    return -EINVAL;
+  /* Reject a key that would be silently truncated: a setenv that quietly
+   * stored a DIFFERENT name than the one asked for would make the matching
+   * getenv miss, which is far harder to diagnose than a refusal. */
+  if (strlen(key) >= ENV_KEY_MAX || (value && strlen(value) >= ENV_VAL_MAX))
+    return -EINVAL;
+  /* Self is always allowed; anyone else needs privilege (a NULL caller is the
+   * kernel-internal context, already fully privileged). */
+  if (caller && (int)caller->pid != pid && !proc_is_privileged(caller))
+    return -EPERM;
+
+  uint64_t flags;
+  int ret;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  if (!p) {
+    ret = -ESRCH;
+  } else if (!p->env) {
+    /* No block and none can be made here: allocating under sched_lock would
+     * invert the PMM lock against it.  Blocks are allocated at spawn, so this
+     * is only reachable when that allocation failed. */
+    ret = -ENOMEM;
+  } else {
+    struct env_entry *e = __env_find(p, key);
+    if (!value || !*value) {
+      if (e)
+        e->k[0] = '\0'; /* free the slot: unset */
+      ret = 0;
+    } else {
+      if (!e) { /* first write of this name: claim a free slot */
+        for (int i = 0; i < ENV_MAX; i++)
+          if (!p->env->e[i].k[0]) {
+            e = &p->env->e[i];
+            strncpy(e->k, key, ENV_KEY_MAX - 1);
+            e->k[ENV_KEY_MAX - 1] = '\0';
+            break;
+          }
+      }
+      if (!e) {
+        ret = -ENOMEM; /* block full */
+      } else {
+        strncpy(e->v, value, ENV_VAL_MAX - 1);
+        e->v[ENV_VAL_MAX - 1] = '\0';
+        ret = 0;
+      }
+    }
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return ret;
+}
+
+int proc_env_enum(int pid, char *buf, size_t size) {
+  if (!buf || size == 0)
+    return -1;
+  uint64_t flags;
+  size_t used = 0;
+  buf[0] = '\0';
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  if (p && p->env) {
+    for (int i = 0; i < ENV_MAX; i++) {
+      const char *k = p->env->e[i].k;
+      if (!k[0])
+        continue;
+      size_t kl = strlen(k);
+      if (used + kl + 2 > size) /* +1 separator, +1 NUL */
+        break;
+      if (used)
+        buf[used++] = '\n';
+      memcpy(buf + used, k, kl);
+      used += kl;
+      buf[used] = '\0';
+    }
+  }
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return (int)used;
+}
+
+void proc_env_free(struct process *p) {
+  if (!p || !p->env)
+    return;
+  struct env_block *b = p->env;
+  p->env = NULL;
+  pmm_free_page(b);
+}
+
 int process_kill_allowed(struct process *caller, int target_pid) {
   if (!caller)
     return 1; /* kernel context */
@@ -525,16 +801,24 @@ int process_kill_allowed(struct process *caller, int target_pid) {
   spin_lock_irqsave(&sched_lock, &flags);
   struct process *target = __process_find_by_pid(target_pid);
   int allowed = !target;
-  /* Ancestry walk: a parent always has an older (smaller) PID, so the chain
-   * is acyclic and strictly decreasing; the depth bound is belt-and-braces. */
+  /* Ancestry walk over the LOGICAL parent (owner_pid when set, else the
+   * spawning parent_pid), so a job stays under its owner's authority even when
+   * a service did the mechanical spawn (Q3).
+   *
+   * TERMINATION: the plain parent chain is acyclic because a parent always has
+   * an older (smaller) PID.  owner_pid is set by a privileged service and is
+   * NOT guaranteed to be smaller, so that argument no longer holds and the
+   * depth bound stops being belt-and-braces — it is now the actual guarantee
+   * that this loop terminates.  Keep it. */
   for (int depth = 0; target && depth < MAX_PROCESSES; depth++) {
-    if (target->parent_pid == (int)caller->pid) {
+    int up = target->owner_pid > 0 ? target->owner_pid : target->parent_pid;
+    if (up == (int)caller->pid) {
       allowed = 1;
       break;
     }
-    if (target->parent_pid <= 0)
+    if (up <= 0)
       break;
-    target = __process_find_by_pid(target->parent_pid);
+    target = __process_find_by_pid(up);
   }
   spin_unlock_irqrestore(&sched_lock, flags);
   return allowed;
@@ -614,6 +898,17 @@ struct process *process_create_caps(const char *name, uint8_t priority,
                                     uint8_t level, uint32_t req_caps) {
   pr_debug("Process: Creating '%s' (Prio=%d)\n", name,
            priority); /* hot path: demoted (perf §1) */
+
+  /* Environment page, allocated BEFORE sched_lock (Phase 17).  The PMM takes
+   * its own lock, so allocating inside sched_lock would introduce a
+   * sched_lock -> pmm_lock order that nothing else in this file establishes.
+   * Idle/kernel threads have no environment to inherit or export, so they do
+   * not pay for one.  A failed allocation is NOT fatal: the child runs with a
+   * NULL block and sees the system defaults. */
+  struct env_block *envblk = NULL;
+  if (priority != PROC_PRIO_IDLE)
+    envblk = (struct env_block *)pmm_alloc_page();
+
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
 
@@ -628,18 +923,24 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   int privileged = proc_is_privileged(creator);
   if (active_count >= proc_limit) {
     spin_unlock_irqrestore(&sched_lock, flags);
+    if (envblk)
+      pmm_free_page(envblk);
     pr_debug("Process: limit %d reached, refusing '%s'\n", proc_limit, name);
     return NULL;
   }
   if (!privileged) {
     if (creator->child_count >= MAX_PROCS_PER_PARENT) {
       spin_unlock_irqrestore(&sched_lock, flags);
+      if (envblk)
+        pmm_free_page(envblk);
       pr_debug("Process: PID %d hit the %d-children quota, refusing '%s'\n",
                creator->pid, MAX_PROCS_PER_PARENT, name);
       return NULL;
     }
     if (active_count >= proc_limit - RESERVED_PROC_SLOTS) {
       spin_unlock_irqrestore(&sched_lock, flags);
+      if (envblk)
+        pmm_free_page(envblk);
       pr_debug("Process: only reserved slots left, refusing user '%s'\n", name);
       return NULL;
     }
@@ -648,6 +949,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   int slot = find_free_slot();
   if (slot < 0) {
     spin_unlock_irqrestore(&sched_lock, flags);
+    if (envblk)
+      pmm_free_page(envblk);
     pr_err("%s", "Process pool full!\n");
     return NULL;
   }
@@ -655,6 +958,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   struct process *proc = (struct process *)pmm_alloc_page();
   if (!proc) {
     spin_unlock_irqrestore(&sched_lock, flags);
+    if (envblk)
+      pmm_free_page(envblk);
     return NULL;
   }
 
@@ -662,8 +967,11 @@ struct process *process_create_caps(const char *name, uint8_t priority,
    * (zone_alloc_page memsets PAGE_SIZE) and struct process fits in one page,
    * so the old memset(proc,0,sizeof) was a redundant second zeroing of the
    * same page on every spawn (SCHED-08, perf §1). */
-  strncpy(proc->name, name, 15);
-  proc->name[15] = '\0';
+  /* Use the FULL name field (Phase 3): it is PROCESS_NAME_MAX(32) wide, but
+   * the old copy capped at 15 chars, truncating "/sys/bin/nxlauncher" to
+   * "/sys/bin/nxlaun" in ps/nxtop/the bar. */
+  strncpy(proc->name, name, PROCESS_NAME_MAX - 1);
+  proc->name[PROCESS_NAME_MAX - 1] = '\0';
 
   /* Assign unique PID.  Idle tasks (kernel threads) draw from a dedicated
    * high band: with the K3 gate (S-ALIGN F9) they are created BEFORE init,
@@ -707,6 +1015,10 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   /* Parentage for the SYS_KILL capability check (ABI-04): the spawner is
    * whatever process is current on this CPU; kernel/boot creations get 0. */
   proc->parent_pid = current_process ? (int)current_process->pid : 0;
+  /* 0 = no distinct logical owner: authority follows parent_pid.  Only an
+   * execution service spawning on a client's behalf sets this, via
+   * OBJ_CTL_SETOWNER (Q3). */
+  proc->owner_pid = 0;
   proc->exit_code = 0; /* Phase 2: default; sys_exit() sets the real value */
   proc->exited = 0;    /* set to 1 only by sys_exit() (voluntary exit) */
 
@@ -732,6 +1044,15 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   else
     strncpy(proc->cwd, "/", sizeof(proc->cwd));
   proc->cwd[sizeof(proc->cwd) - 1] = '\0';
+
+  /* Environment: same inheritance rule as cwd, one step deeper (Phase 17).
+   * A COPY, not a shared pointer — see the struct env_block comment: sharing
+   * would let a parent's later setenv rewrite a running child's environment.
+   * The page arrived zeroed from the PMM, so "no creator" needs no work: an
+   * empty block simply resolves everything to the `sys.env.*` defaults. */
+  proc->env = envblk;
+  if (envblk && creator && creator->env)
+    memcpy(envblk, creator->env, sizeof(*envblk));
 
   /* Add to pool */
   process_pool[slot] = proc;
@@ -1011,6 +1332,7 @@ static void __process_release_created(struct process *p) {
   }
   spin_unlock_irqrestore(&sched_lock, flags);
   process_handles_destroy(p);
+  proc_env_free(p); /* Phase 17: release the environment page */
   if (p->kernel_stack)
     pmm_free_pages((void *)(p->kernel_stack - STACK_SIZE), STACK_SIZE / 4096);
   if (p->page_table)
@@ -1246,6 +1568,9 @@ int process_terminate(int pid) {
   }
 
   if (slot >= 0) {
+    /* 9b: same reason as the reaper path — this frees the victim outright, so
+     * its status must outlive it. */
+    __record_reaped(proc);
     process_pool[slot] = NULL;
     active_count--;
     __child_count_dec(proc);
@@ -1254,6 +1579,7 @@ int process_terminate(int pid) {
   spin_unlock_irqrestore(&sched_lock, flags);
 
   process_handles_destroy(proc); /* close capability handles, free objects */
+  proc_env_free(proc);           /* Phase 17: release the environment page */
   if (proc->kernel_stack) {
     pmm_free_pages((void *)(proc->kernel_stack - STACK_SIZE),
                    STACK_SIZE / 4096);
@@ -1287,6 +1613,30 @@ int process_terminate(int pid) {
  * SYS_KILL needs process_kill_allowed) — this is the kernel mechanism behind
  * the OBJ_TYPE_PROCESS / window object close.  Self-exit and fault-kill stay
  * single-process (they call process_terminate directly, not this).
+ *
+ * ABI-06 (FIXED 2026-07-23): a MACHINE-level root is refused OUTRIGHT, not
+ * merely spared at the end.
+ *
+ * process_terminate() has always protected machine processes, so this function
+ * looked safe: kill the subtree, then process_terminate(root) declines.  The
+ * root survived — and every windowless DESCENDANT of it did not.  That is not
+ * a partial application of the guard, it is the inverse of it: PID 1's
+ * windowless children ARE the system (nxntfy_srv, the execution service, the
+ * shell), while init itself is only the thing that restarts them.  Killing the
+ * subtree of an untouchable process destroys exactly what the protection was
+ * written to preserve and leaves a supervisor with nothing left to supervise.
+ *
+ * It became reachable rather than theoretical when Phase 9a put the execution
+ * service under init and 9c reparented every non-interactive job beneath it:
+ * one OBJ_CTL_KILL on PID 1 from any /sys/bin binary — they all run PLVL_ROOT
+ * under the ASTRA per-path preset, and process_kill_allowed() returns 1
+ * unconditionally for a privileged caller — now wipes the whole service set in
+ * one call.  Reported as "root processes kill nxinit"; init is the one thing
+ * that survives, which is why it presents as init restarting everything.
+ *
+ * Machine descendants are excluded from the kill set for the same reason,
+ * belt-and-braces: process_terminate() would refuse them individually, but by
+ * then their own children would already be gone.
  */
 void process_kill_subtree(int root_pid) {
   struct kill_snap {
@@ -1294,6 +1644,7 @@ void process_kill_subtree(int root_pid) {
     int parent;
     signed char windowless;
     signed char kill;
+    signed char machine;
   };
   static const int CAP = MAX_PROCESSES;
   struct kill_snap snap[MAX_PROCESSES];
@@ -1309,6 +1660,7 @@ void process_kill_subtree(int root_pid) {
     snap[n].parent = p->parent_pid;
     snap[n].windowless = -1;
     snap[n].kill = 0;
+    snap[n].machine = proc_is_machine(p) ? 1 : 0;
     if ((int)p->pid == root_pid)
       root_idx = n;
     n++;
@@ -1317,6 +1669,11 @@ void process_kill_subtree(int root_pid) {
 
   if (root_idx < 0)
     return; /* target already gone */
+
+  if (snap[root_idx].machine) {
+    pr_warn("Refusing subtree kill of protected process (PID %d)\n", root_pid);
+    return; /* ABI-06: see the note above — the subtree IS the protection */
+  }
 
   /* TYPE probe, lock-free (Pitfall A): a window owner is SPARED. */
   extern int compositor_get_window_by_pid(int pid);
@@ -1334,8 +1691,8 @@ void process_kill_subtree(int root_pid) {
   for (int pass = 0; pass < n; pass++) {
     int changed = 0;
     for (int i = 0; i < n; i++) {
-      if (snap[i].kill || !snap[i].windowless)
-        continue;
+      if (snap[i].kill || !snap[i].windowless || snap[i].machine)
+        continue; /* ABI-06: a machine descendant is never in the kill set */
       for (int j = 0; j < n; j++) {
         if (snap[j].kill && snap[j].pid == snap[i].parent) {
           snap[i].kill = 1;
@@ -1494,6 +1851,9 @@ struct pt_regs *schedule(struct pt_regs *regs) {
     spin_lock_irqsave(&sched_lock, &gflags);
     for (int _i = 0; _i < MAX_PROCESSES; _i++) {
       if (process_pool[_i] == to_free) {
+        /* 9b: keep the status before the struct goes away, or a fast-exiting
+         * child's result is lost to whoever was about to wait for it. */
+        __record_reaped(to_free);
         process_pool[_i] = NULL;
         active_count--;
         __child_count_dec(to_free);
@@ -1527,7 +1887,8 @@ struct pt_regs *schedule(struct pt_regs *regs) {
     timer_del(&to_free->sleep_timer);
 
     process_handles_destroy(
-        to_free); /* close capability handles, free objects */
+        to_free);           /* close capability handles, free objects */
+    proc_env_free(to_free); /* Phase 17: release the environment page */
     if (to_free->kernel_stack)
       pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE),
                      STACK_SIZE / 4096);
@@ -1896,8 +2257,15 @@ int process_wait(int pid, int *out_code) {
       return -1; /* Still alive */
     }
   }
+  /* Not in the pool: it may have been reaped before we looked.  A retained
+   * status is exactly as authoritative as a corpse, and is the difference
+   * between reporting the real failure and reporting a false success (9b). */
+  if (__claim_reaped(pid, out_code)) {
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return pid;
+  }
   spin_unlock_irqrestore(&sched_lock, flags);
-  return -2; /* Not found */
+  return -2; /* genuinely unknown: never existed, or already collected */
 }
 
 /*
@@ -1905,7 +2273,29 @@ int process_wait(int pid, int *out_code) {
  * PROC_STOPPED; it leaves the runqueue the next time schedule() would pick it
  * (the STOPPED skip in the picker), and a RUNNING target keeps going only
  * until its next reschedule.  A STOPPED/SLEEPING/dying target is left alone.
- * Returns 0, -ESRCH (no such pid), or -EINVAL (not stoppable).
+ * Returns 0, -ESRCH (no such pid), -EINVAL (not stoppable), or -EPERM
+ * (machine-protected target).
+ *
+ * ABI-05 (FOUND alongside USR-INIT-04, FIXED 2026-07-18): process_terminate()
+ * refuses a proc_is_machine() target as a last-resort guard that holds no
+ * matter how the kill was reached (SYS_KILL, OBJ_CTL_KILL, window close —
+ * NOTE(ABI-04) calls this out explicitly).  process_stop() had NO such
+ * guard, and OBJ_CTL_STOP (object.c sys_object_ctl) reaches it through the
+ * exact same DESTROY-capability acquisition path as OBJ_CTL_KILL
+ * (process_kill_allowed(), which returns 1 unconditionally for ANY
+ * privileged caller against ANY target — see object.c's OS1_NS_PROC gate).
+ * Since every /sys/bin binary runs at PLVL_ROOT (privileged) under the
+ * ASTRA per-path preset, any system binary — not just a compromised one, an
+ * ordinary one like nxbar or nxwins — could acquire a DESTROY handle on
+ * init (PID 1, PLVL_MACHINE) or the execution service and call
+ * OBJ_CTL_STOP.  That is WORSE than the kill process_terminate() already
+ * blocks: a stopped process is never a corpse, so it never satisfies
+ * service_gone()'s waitpid(WNOHANG) check, and init supervises nothing else
+ * against itself — a stopped init sits there permanently, un-respawnable,
+ * with no crash logged and no supervisor left running to notice.  Guarding
+ * here mirrors process_terminate() exactly: unconditional, independent of
+ * caller privilege, because that guard's whole point is to hold even when
+ * every earlier gate said yes.
  */
 int process_stop(int pid) {
   uint64_t flags;
@@ -1914,11 +2304,22 @@ int process_stop(int pid) {
   for (int i = 0; i < MAX_PROCESSES; i++) {
     struct process *p = process_pool[i];
     if (p && (int)p->pid == pid) {
-      if (p->state == PROC_RUNNING || p->state == PROC_READY) {
+      if (proc_is_machine(p)) {
+        pr_warn("Cannot stop protected process '%s' (PID %d)\n", p->name, pid);
+        rc = -EPERM;
+        break;
+      }
+      /* RUNNING/READY/SLEEPING are all stoppable — crucially SLEEPING, since a
+       * foreground REPL polling with OS1_sleep() is usually mid-sleep when
+       * Ctrl-Z arrives.  The wake sources (proc_sleep_wake, IPC send) only
+       * re-ready a PROC_SLEEPING task, so flipping it to STOPPED here keeps it
+       * off the runqueue until process_cont(). */
+      if (p->state == PROC_RUNNING || p->state == PROC_READY ||
+          p->state == PROC_SLEEPING) {
         p->state = PROC_STOPPED;
         rc = 0;
       } else {
-        rc = -EINVAL;
+        rc = -EINVAL; /* already stopped, dying, or a corpse */
       }
       break;
     }
@@ -1951,8 +2352,13 @@ int process_cont(int pid) {
     }
   }
   spin_unlock_irqrestore(&sched_lock, flags);
-  if (target)
+  if (target) {
+    /* Set READY before enqueue so it passes __enqueue_task's STOPPED guard.
+     * A resumed sleeper re-runs its nanosleep and returns once the (now
+     * long-past) deadline is checked, continuing where it left off. */
+    target->state = PROC_READY;
     enqueue_task(target);
+  }
   return rc;
 }
 /*
@@ -2167,6 +2573,8 @@ const char *proc_state_name(int state) {
     return "dead";
   case PROC_READY:
     return "ready";
+  case PROC_STOPPED:
+    return "stopped"; /* Phase 2 job control */
   default:
     return "unused";
   }

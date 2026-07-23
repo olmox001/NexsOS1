@@ -97,13 +97,47 @@ static void registry_init_defaults(void) {
   /* --- Aspetto del compositor (valori predefiniti) --- */
   OS1_registry_set("theme.color", "dark");
   OS1_registry_set("style.name", "minimal");
-  OS1_registry_set("background.name", "grey");
+  OS1_registry_set("background.name", "blue");
 
   /* --- Pannello notifiche (inizialmente chiuso) --- */
   OS1_registry_set("sys.ntfy.panel_open", "0");
 
   /* --- Input --- */
   OS1_registry_set("mouse.sensitivity", "1.0");
+
+  /* --- Environment: the MACHINE's defaults (Phase 17) ---
+   * These are stored registry keys, not process state: they describe this
+   * installation's layout, so they belong to the configuration namespace
+   * (ASTRA §6.6) and outlive every process.  getenv() falls back here when a
+   * process has no value of its own, which is why nothing has to copy PATH
+   * into each new process at spawn.  Editing these reconfigures the machine
+   * and needs CAP_REG_WRITE; a process changing its OWN copy does not.
+   *
+   * Seed ONLY what has a verified consumer.  A default with no reader is not
+   * harmless documentation: it is a claim about the system that nothing keeps
+   * true, and the first program to believe it finds out the hard way.
+   *
+   *   HOME  read by nxexec_resolve_path()'s '~' tier and nxlauncher — and
+   *         nxexec.h already anticipates it ("a real per-user HOME later
+   *         becomes a getenv() change alone").
+   *   PATH  no reader YET: the bare-name search is hardcoded to /bin then
+   *         /sys/bin inside nxexec_spawn_search.  That hardcoded list IS this
+   *         key's meaning, and 17c makes the executor consume it, at which
+   *         point Phase 12's move to /sys/services becomes a registry edit
+   *         rather than a code edit.
+   *
+   * Deliberately NOT seeded:
+   *   TERM    there is no terminal TYPE yet.  term.c implements a real
+   *           ECMA-48 subset, but nothing names or describes that capability
+   *           set, so TERM would advertise a type with nothing behind it (17d).
+   *   USER    there is no user identity in this system.  Phase 11 owns that
+   *           model and is blocked on its design doc; inventing a name here
+   *           would pre-commit it.
+   *   SHELL   no reader.  system() uses the STANDARD shell by POSIX, not
+   * $SHELL. TMPDIR  no reader.  doom reads TEMP, and only under #if _WIN32.
+   */
+  OS1_registry_set("sys.env.HOME", "/home");
+  OS1_registry_set("sys.env.PATH", "/bin:/sys/bin");
 
   printf("[Init] Registry defaults initialised.\n");
 }
@@ -193,6 +227,38 @@ int main(void) {
   } else {
     print("[Init] Failed to spawn Notification Server!\n");
   }
+
+  /*
+   * Spawn the EXECUTION SERVICE (nxexec --service, the R6 daemon).
+   *
+   * It MUST be started here and nowhere else, and the reason is the capability
+   * model rather than convention: process_create_caps applies a MONOTONIC
+   * creator clamp, so a child is never more privileged than its creator.  A
+   * PLVL_USER client that spawned this service itself would get a PLVL_USER
+   * service, and the daemon's two defining powers — OBJ_CTL_SETOWNER (handing a
+   * spawned job back to the requesting client so job control still reaches it)
+   * and taking a client's fds — are BOTH privileged-only.  Such a service would
+   * answer requests but silently fail to delegate, breaking jobs/fg/bg in a way
+   * that looks like a shell bug.  Started from init (PLVL_MACHINE) it lands at
+   * the /sys/bin ROOT preset and is genuinely privileged.
+   *
+   * Clients therefore never spawn it: they CONNECT, by acquiring a send
+   * capability to the OS1nx_exec port (ASTRA §6.4 "SRL services are supervised
+   * ELF processes, exposed via IPC/capability").
+   *
+   * No register_service_pid() here on purpose: the port NAME is the discovery
+   * endpoint now, which is strictly better than a pid key — it cannot go stale
+   * across a respawn, and possession of the capability IS the authority.
+   */
+  printf("[Init] Spawning Execution Service (nxexec --service)...\n");
+  char *execsvc_argv[2];
+  execsvc_argv[0] = (char *)"/sys/bin/nxexec";
+  execsvc_argv[1] = (char *)"--service";
+  int pid_execsvc = spawn_args("/sys/bin/nxexec", 2, execsvc_argv);
+  if (pid_execsvc > 0)
+    printf("[Init] Execution Service started (PID %d)\n", pid_execsvc);
+  else
+    print("[Init] Failed to spawn Execution Service!\n");
 
   /* Spawn the dock (window-manager UI).  Plain spawn(): the ASTRA per-path
    * preset gives any /sys/bin binary ROOT authority (F1), which is exactly what
@@ -285,12 +351,146 @@ int main(void) {
    * surviving service's PID.  A failed spawn (pid <= 0) also yields -2 and
    * is retried on the next iteration.
    *
-   * NOTE(USR-INIT-03): There is no respawn backoff or rate limit.  A crashing
-   * service is respawned immediately on every supervisor iteration, which can
-   * exhaust the process table before the system stabilises.
+   * USR-INIT-03 (FIXED 2026-07-18): respawns were RATE LIMITED.  Previously a
+   * service that crashed immediately was respawned on every supervisor
+   * iteration; a single broken service therefore consumed the process table and
+   * took the whole system down.  That is not theoretical — a one-line format
+   * bug in the dock produced 28 respawns in a row and ended in a kernel panic,
+   * which is how this was found.
+   *
+   * USR-INIT-04 (FIXED 2026-07-18): USR-INIT-03's fix was a flat LIFETIME
+   * counter (respawns[slot] > 5 => gaveup[slot] = 1, forever).  That traded an
+   * amplifying crash loop for a permanent one: six isolated crashes hours
+   * apart — nothing in common, each one fully recovered from — permanently
+   * killed the service with no further attempt, because the counter only ever
+   * counted UP and "gaveup" never cleared.  For a MANDATORY service (dock,
+   * execsvc, notify_srv) that is worse than the tight loop it replaced: at
+   * least the tight loop kept the service reachable eventually.
+   *
+   * Fix: a small per-service SPAWN QUEUE with DECAYING exponential backoff
+   * instead of a lifetime budget.
+   *   - A dead service is not respawned inline; service_gone() enqueues a
+   *     request (spawnq_request) with a "not before" deadline, and the queue
+   *     is drained (spawnq_due) once per tick — this is what lets a boot storm
+   *     of several simultaneous deaths get staggered instead of all firing
+   *     spawn() back-to-back in the same 33 ms tick.
+   *   - The backoff for a slot DOUBLES (capped at SPAWN_BACKOFF_MAX_MS) only
+   *     when the service dies again before SPAWN_STABLE_MS of uptime — that is
+   *     the actual crash-loop signature USR-INIT-03 was reacting to.
+   *   - A service that survives >= SPAWN_STABLE_MS since its last (re)spawn is
+   *     "recovered": its backoff resets to the base delay, so an occasional,
+   *     unrelated crash months apart is never penalized by history.
+   *   - There is no "gaveup" state.  A service stuck in a genuine crash loop
+   *     is retried forever at the SPAWN_BACKOFF_MAX_MS ceiling — that ceiling
+   *     is what bounds the amplification (28 respawns/tick -> at most one
+   *     spawn per 30 s), without ever leaving a mandatory service dark.
    */
+#define SPAWN_BACKOFF_BASE_MS                                                  \
+  200 /* first retry: fast, matches the old immediate-respawn feel */
+#define SPAWN_BACKOFF_MAX_MS                                                   \
+  30000 /* ceiling: worst case one attempt every 30s, never zero */
+#define SPAWN_STABLE_MS                                                        \
+  10000 /* alive this long since last (re)spawn -> backoff resets */
+#define SPAWN_QUEUE_MAX                                                        \
+  8 /* one slot per supervised service, same indexing as before */
+
+  struct spawn_req {
+    int pending; /* 1 if a respawn is currently queued for this slot */
+    unsigned long long
+        not_before_ms; /* queue drains this request once now_ms >= this */
+    int backoff_ms;    /* current backoff for this slot; doubles on fast repeat
+                          deaths */
+    unsigned long long
+        last_spawn_ms; /* when this slot was last (re)spawned; 0 = never yet */
+  };
+  static struct spawn_req spawnq[SPAWN_QUEUE_MAX];
+  for (int i = 0; i < SPAWN_QUEUE_MAX; i++) {
+    spawnq[i].pending = 0;
+    spawnq[i].not_before_ms = 0;
+    spawnq[i].backoff_ms = SPAWN_BACKOFF_BASE_MS;
+    spawnq[i].last_spawn_ms = 0;
+  }
+  unsigned long long now_ms = os1_mono_ns() / 1000000ULL;
+
+  /* Seed last_spawn_ms for the services already brought up above, so a fast
+   * crash-loop that starts right at boot is detected on its FIRST death
+   * instead of getting one free "isolated failure" reset (last_spawn_ms==0 is
+   * the sentinel spawnq_request() below treats as "never tracked yet"). */
+  if (pid_notify > 0)
+    spawnq[0].last_spawn_ms = now_ms;
+  if (pid_execsvc > 0)
+    spawnq[1].last_spawn_ms = now_ms;
+  if (pid_nxui > 0)
+    spawnq[2].last_spawn_ms = now_ms;
+  if (pid_nxbar > 0)
+    spawnq[3].last_spawn_ms = now_ms;
+  if (pid_nxlauncher > 0)
+    spawnq[4].last_spawn_ms = now_ms;
+#ifndef LAUNCHER_AUTOSTART
+  if (pid_shell > 0)
+    spawnq[5].last_spawn_ms = now_ms;
+#endif
+
+  /* spawnq_enqueue - queue a (re)spawn for `slot` and choose its delay.
+   *
+   * `penalise` forces the backoff to GROW instead of measuring uptime.  It is
+   * set when the spawn() ITSELF failed, which has no uptime to measure: with
+   * the uptime rule alone, `now_ms - last_spawn_ms` is large in that case, so
+   * every failed attempt reads as an "isolated failure", resets to the base
+   * delay, and the slot is retried five times a second forever.  That is the
+   * amplification USR-INIT-03 was written to stop, coming back through the
+   * other door — a missing or unloadable binary is precisely the case that
+   * never sets last_spawn_ms at all. */
+#define spawnq_enqueue(slot, name, penalise)                                   \
+  do {                                                                         \
+    struct spawn_req *q = &spawnq[slot];                                       \
+    unsigned long long uptime = now_ms - q->last_spawn_ms;                     \
+    if (!(penalise) && (q->last_spawn_ms == 0 || uptime >= SPAWN_STABLE_MS)) { \
+      q->backoff_ms =                                                          \
+          SPAWN_BACKOFF_BASE_MS; /* isolated failure: full reset */            \
+    } else {                                                                   \
+      q->backoff_ms *= 2;                                                      \
+      if (q->backoff_ms > SPAWN_BACKOFF_MAX_MS)                                \
+        q->backoff_ms = SPAWN_BACKOFF_MAX_MS;                                  \
+      printf("[Init] %s is not staying up — next attempt in %d ms "            \
+             "(retrying, not giving up; see USR-INIT-04)\n",                   \
+             name, q->backoff_ms);                                             \
+    }                                                                          \
+    q->pending = 1;                                                            \
+    q->not_before_ms = now_ms + q->backoff_ms;                                 \
+  } while (0)
+
+  /* spawnq_idle - nothing queued for this slot, so it is worth PROBING.
+   *
+   * The probe must be gated on this, because service_gone() PRINTS on every
+   * call and a queued request stays queued for its whole backoff — up to
+   * SPAWN_BACKOFF_MAX_MS.  Probing unconditionally therefore reported the same
+   * death once per 33 ms tick, up to ~900 identical lines per backoff cycle,
+   * into the console the user is trying to read.  It also re-consulted a status
+   * the kernel had already handed over: the Phase 9b reaped-status ring is
+   * consume-on-read, so only the first probe carries real information and every
+   * later one degrades to the anonymous "gone" branch. */
+#define spawnq_idle(slot) (!spawnq[slot].pending)
+
+  /* spawnq_due - true exactly once when a queued request's backoff has
+   * elapsed; clears `pending` so the caller's spawn() only fires once per
+   * request.  The caller MUST then call spawnq_mark_spawned() on success, or
+   * spawnq_enqueue(..., 1) on failure — the request has already been consumed,
+   * so a slot that does neither is never retried. */
+#define spawnq_due(slot)                                                       \
+  (spawnq[slot].pending && now_ms >= spawnq[slot].not_before_ms                \
+       ? (spawnq[slot].pending = 0, 1)                                         \
+       : 0)
+
+#define spawnq_mark_spawned(slot) (spawnq[slot].last_spawn_ms = now_ms)
+
   print("[Init] Entering supervisor loop\n");
   while (1) {
+    /* One clock read per tick: every spawnq_* call below uses this now_ms, so
+     * a whole supervisor pass is internally consistent even though several
+     * services may be checked/spawned in the same iteration. */
+    now_ms = os1_mono_ns() / 1000000ULL;
+
     /* Fire the boot notification once notify_srv has registered its endpoint
      * (srv.notify_pid present in the registry). This makes the popup actually
      * appear at startup instead of racing notify_srv's registration. */
@@ -303,36 +503,81 @@ int main(void) {
     }
 
     /* Check if notification server died and respawn. */
-    if (service_gone(pid_notify, "Notification Server")) {
+    if (spawnq_idle(0) && service_gone(pid_notify, "Notification Server"))
+      spawnq_enqueue(0, "Notification Server", 0);
+    if (spawnq_due(0)) {
       pid_notify = spawn("/sys/bin/nxntfy_srv");
       /* Refresh srv.notify_pid to the LIVE pid.  Without this, the registry key
        * still holds the corpse's pid and every notify_post returns -ESRCH until
        * a reboot.  Re-registering on respawn also overwrites any hijack a
        * malicious process may have written in the meantime. */
-      if (pid_notify > 0)
+      if (pid_notify > 0) {
         register_service_pid("srv.notify_pid", pid_notify);
+        spawnq_mark_spawned(0);
+      } else {
+        spawnq_enqueue(0, "Notification Server", 1);
+      }
     }
 #ifndef LAUNCHER_AUTOSTART
     /* Respawn the shell when it is gone (freshly dead corpse OR already
      * reaped by the kernel).  spawn() assigns a fresh monotonic PID. */
-    if (service_gone(pid_shell, "NXShell")) {
+    if (spawnq_idle(5) && service_gone(pid_shell, "NXShell"))
+      spawnq_enqueue(5, "NXShell", 0);
+    if (spawnq_due(5)) {
       pid_shell = spawn("/sys/bin/nxshell");
+      if (pid_shell > 0)
+        spawnq_mark_spawned(5);
+      else
+        spawnq_enqueue(5, "NXShell", 1);
     }
 #endif
+
+    /* Respawn the execution service.  Nothing to re-register: clients
+     * rediscover it by PORT NAME, and the new instance re-publishes OS1nx_exec
+     * by taking the receive right — so a respawn heals discovery automatically,
+     * with no stale-pid window of the kind srv.notify_pid has to guard against.
+     * (The new instance RETRIES that claim briefly, because the dead one's
+     * receive handle is still being torn down when we get here — see
+     * nxexec_service().)
+     */
+    if (spawnq_idle(1) && service_gone(pid_execsvc, "Execution Service"))
+      spawnq_enqueue(1, "Execution Service", 0);
+    if (spawnq_due(1)) {
+      char *rargv[2];
+      rargv[0] = (char *)"/sys/bin/nxexec";
+      rargv[1] = (char *)"--service";
+      pid_execsvc = spawn_args("/sys/bin/nxexec", 2, rargv);
+      if (pid_execsvc > 0)
+        spawnq_mark_spawned(1);
+      else
+        spawnq_enqueue(1, "Execution Service", 1);
+    }
 
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as
      * above).  Refresh srv.dock_pid on respawn — same corpse-pid hazard as
      * srv.notify_pid above. */
-    if (service_gone(pid_nxui, "Dock")) {
+    if (spawnq_idle(2) && service_gone(pid_nxui, "Dock"))
+      spawnq_enqueue(2, "Dock", 0);
+    if (spawnq_due(2)) {
       pid_nxui = spawn("/sys/bin/nxui");
-      if (pid_nxui > 0)
+      if (pid_nxui > 0) {
         register_service_pid("srv.dock_pid", pid_nxui);
+        spawnq_mark_spawned(2);
+      } else {
+        spawnq_enqueue(2, "Dock", 1);
+      }
     }
     /* Respawn nxbar if it dies */
-    if (service_gone(pid_nxbar, "nxbar")) {
+    if (spawnq_idle(3) && service_gone(pid_nxbar, "nxbar"))
+      spawnq_enqueue(3, "nxbar", 0);
+    if (spawnq_due(3)) {
       pid_nxbar = spawn("/sys/bin/nxbar");
-      if (pid_nxbar > 0)
+      if (pid_nxbar > 0) {
         register_service_pid("srv.bar_pid", pid_nxbar);
+        spawnq_mark_spawned(3);
+      } else {
+        spawnq_enqueue(3, "nxbar", 1);
+      }
     }
 
 #if LAUNCHER_AUTOSTART
@@ -340,10 +585,16 @@ int main(void) {
      * LAUNCHER_AUTOSTART is disabled we never set pid_nxlauncher, so the
      * wait() on a stale handle would otherwise busy-loop — the #else keeps
      * the variable pinned to 0 so process_wait() returns -2 (gone). */
-    if (service_gone(pid_nxlauncher, "Launcher")) {
+    if (spawnq_idle(4) && service_gone(pid_nxlauncher, "Launcher"))
+      spawnq_enqueue(4, "Launcher", 0);
+    if (spawnq_due(4)) {
       pid_nxlauncher = spawn("/sys/bin/nxlauncher");
-      if (pid_nxlauncher > 0)
+      if (pid_nxlauncher > 0) {
         register_service_pid("srv.launcher_pid", pid_nxlauncher);
+        spawnq_mark_spawned(4);
+      } else {
+        spawnq_enqueue(4, "Launcher", 1);
+      }
     }
 #endif
 

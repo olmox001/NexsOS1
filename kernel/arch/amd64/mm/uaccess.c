@@ -172,9 +172,22 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
  *
  * Returns 0 on success, -1 if a page boundary check fails (string truncated).
  */
-int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
+/*
+ * arch_copy_string_from_user_n - HAL uaccess provider (kernel/hal_uaccess.h).
+ * Mirror of the aarch64 provider; kept deliberately symmetric so the two
+ * architectures cannot drift on semantics the way they did while this had no
+ * written contract at all.
+ */
+int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
+                                 size_t *out_len, int *out_truncated) {
+  if (out_len) *out_len = 0;
+  if (out_truncated) *out_truncated = 0;
   if (!vmm_is_user_addr((uint64_t)src)) return -1;
   if (!current_process || !current_process->page_table) return -1;
+  /* max_len 0 would underflow `max_len - 1` below and run away; a zero-sized
+   * destination cannot hold even the terminator, so refuse it outright. */
+  if (max_len == 0)
+    return -1;
 
   /* uaccess window — see arch_copy_from_user */
   uint64_t uflags = local_irq_save();
@@ -197,10 +210,22 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
     dest[i] = src[i];
     if (src[i] == '\0') break;
   }
+  /* Ran the destination out before the terminator: the source is longer.
+   * i == max_len - 1 only when the loop exhausted its bound rather than
+   * breaking on the NUL. */
+  if (ret == 0 && i == max_len - 1 && out_truncated)
+    *out_truncated = 1;
   dest[max_len - 1] = '\0';
+  if (out_len) *out_len = i;
 
   get_cpu_info()->uaccess_active = 0;
   local_irq_restore(uflags);
 
   return ret;
+}
+
+/* Legacy tolerant spelling — truncation is success.  See kernel/hal_uaccess.h. */
+int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
+  return arch_copy_string_from_user_n(dest, src, max_len, (size_t *)0,
+                                      (int *)0);
 }

@@ -339,6 +339,7 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/execsvc_client.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/opengl/os1_gl_platform.o
@@ -458,6 +459,13 @@ LUA_CORE_SRCS := \
 
 LUA_PORT_SRCS := $(USER_LIB_DIR)/portability/lua/lua_portability.c
 LUA_OS1_SRCS  := $(USER_LIB_DIR)/os1LUA_lib.c
+# lua_portability.h is FORCE-INCLUDED into every Lua translation unit
+# (-include, LUA_CFLAGS below), so it is a real prerequisite of all of them.
+# Without it listed here, editing that header silently leaves STALE objects:
+# the .c files it overrides (lua.c's lua_stdin_is_tty / lua_readline) keep the
+# upstream fallbacks while lua_portability.o alone rebuilds — which is exactly
+# how the "echo ... | lua still prints the REPL banner" bug survived a rebuild.
+LUA_PORT_HDR  := $(USER_LIB_DIR)/portability/lua/lua_portability.h
 
 LUA_OBJ_DIR := $(BUILD_DIR)/lua
 LUA_CORE_OBJS := $(patsubst $(LUA_DIR)/%.c,$(LUA_OBJ_DIR)/%.o,$(LUA_CORE_SRCS))
@@ -485,15 +493,15 @@ LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
              -I$(USER_LIB_DIR)/portability/lua \
              -include lua_portability.h
 
-$(LUA_OBJ_DIR)/%.o: $(LUA_DIR)/%.c
+$(LUA_OBJ_DIR)/%.o: $(LUA_DIR)/%.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 
-$(LUA_PORT_OBJ): $(LUA_PORT_SRCS)
+$(LUA_PORT_OBJ): $(LUA_PORT_SRCS) $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 
-$(LUA_OS1_OBJ): $(LUA_OS1_SRCS)
+$(LUA_OS1_OBJ): $(LUA_OS1_SRCS) $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 
@@ -508,7 +516,7 @@ $(LUA_OS1_LIB): $(LUA_OS1_OBJ)
 liblua: $(LUA_LIB) $(LUA_OS1_LIB)
 .PHONY: liblua
 
-$(LUA_OBJ_DIR)/lua.o: $(LUA_DIR)/lua.c
+$(LUA_OBJ_DIR)/lua.o: $(LUA_DIR)/lua.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
 	@$(CC) $(LUA_CFLAGS) -c $< -o $@
 
@@ -529,7 +537,7 @@ SYS_ELFS = $(BUILD_DIR)/nxinit.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
-           $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/lua.elf\
+           $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf\
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
@@ -581,6 +589,11 @@ $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o: $(USER_DIR)/bin/raptor.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/raptor.elf: $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+$(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o: $(USER_DIR)/bin/nxempire.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+$(BUILD_DIR)/nxempire.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)

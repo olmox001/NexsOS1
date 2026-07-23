@@ -74,6 +74,20 @@ _sys_exit:
 _sys_spawn:
     movq $SYS_SPAWN, %rax
     movq %rcx, %r10   /* arg3: spawn-mode flags (SPAWN_FLAG_*, #193) */
+    /* The kernel now also reads arg4/arg5 (fd-redirection list + count,
+     * Phase 4); a plain spawn has none, so ZERO r8/r9 — otherwise leftover
+     * register values would be misread as a redirection array. */
+    xorq %r8, %r8
+    xorq %r9, %r9
+    syscall
+    ret
+
+.global _sys_spawn_redir
+/* long _sys_spawn_redir(path, argc, argv, flags, redir, n) — same SYS_SPAWN,
+ * but r8/r9 carry the redirection list (arg4/arg5); pass them through. */
+_sys_spawn_redir:
+    movq $SYS_SPAWN, %rax
+    movq %rcx, %r10   /* arg3: spawn-mode flags */
     syscall
     ret
 
@@ -92,6 +106,19 @@ _sys_kill:
 
 .global _sys_wait
 _sys_wait:
+    movq $SYS_WAIT, %rax
+    /* The kernel now also reads arg1 (an OPTIONAL user int* for the exit
+     * status, Phase 9b); this form has none, so ZERO rsi.  rsi is a scratch
+     * register with undefined contents at a one-argument call, so a leftover
+     * value would be misread as a status pointer and the kernel would write
+     * four bytes into a semi-random address in the caller's own address space.
+     * Exactly the hazard _sys_spawn zeroes r8/r9 for. */
+    xorq %rsi, %rsi
+    syscall
+    ret
+
+.global _sys_wait_status
+_sys_wait_status:
     movq $SYS_WAIT, %rax
     syscall
     ret
@@ -325,6 +352,20 @@ _sys_unlink:
 .global _sys_mkdir
 _sys_mkdir:
     movq $SYS_MKDIR, %rax
+    syscall
+    ret
+
+/* int _sys_pipe(int fds[2]) — fds in rdi */
+.global _sys_pipe
+_sys_pipe:
+    movq $SYS_PIPE, %rax
+    syscall
+    ret
+
+.global _sys_port_send_caps
+_sys_port_send_caps:
+    movq $SYS_PORT_SEND_CAPS, %rax
+    movq %rcx, %r10
     syscall
     ret
 

@@ -680,6 +680,18 @@ int strcoll(const char *s1, const char *s2) { return strcmp(s1, s2); }
  * which pushline() in lua.c strips itself), or 0 on Ctrl-C (EOF-like).
  */
 int os1_lua_readline(char *buf, int bufsize) {
+  /*
+   * NOTE(LUA-TTY-03): the keyboard-mailbox path below is ONLY correct for a
+   * real console.  `-i` FORCES interactive mode regardless of
+   * lua_stdin_is_tty(), so `lua -i < script` and `echo ... | lua -i` reach the
+   * REPL with stdin redirected to a FILE or a PIPE — there the line must come
+   * from fd 0, not from the keyboard (otherwise the REPL ignores the supplied
+   * program and blocks on a keypress that never comes).  isatty() is the same
+   * capability-type test the tty check uses, so the two agree by construction.
+   */
+  if (!isatty(0))
+    return fgets(buf, bufsize, stdin) ? 1 : 0; /* NULL => EOF, like Ctrl-C */
+
   int len = 0;
   while (1) {
     struct ipc_message m;

@@ -58,6 +58,7 @@
 #include <graphics.h>
 #include <input.h>
 #include <math.h>
+#include <execsvc.h>
 #include <os1.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -225,10 +226,26 @@ long OS1low_process_spawn_detached(const char *path, int argc,
                                    char *const argv[]) {
   return _sys_spawn(path, argc, argv, SPAWN_FLAG_DETACHED);
 }
+/* Phase 4: spawn with fd redirection (shell `<`/`>`/`>>`/`2>`).  The redirect
+ * targets must already be open in THIS process; the kernel dups them into the
+ * child, so the caller closes its copies after we return. */
+long OS1low_process_spawn_redir(const char *path, int argc, char *const argv[],
+                                unsigned int flags,
+                                const struct spawn_redir *redir, int nredir) {
+  if (nredir <= 0)
+    return _sys_spawn(path, argc, argv, flags);
+  return _sys_spawn_redir(path, argc, argv, flags, redir, nredir);
+}
 long OS1low_process_spawn_caps(const char *path, int level,
                                unsigned long caps) {
   return _sys_spawn_caps(path, level, caps, 0);
 }
+/* OS1low_pipe (Phase 4): anonymous byte pipe (OBJ_TYPE_PIPE).  fds[0]=read end,
+ * fds[1]=write end.  The kernel installs both handles; read/write/close operate
+ * on them like any other fd. */
+int OS1low_pipe(int fds[2]) { return (int)errno_ret(_sys_pipe(fds)); }
+/* POSIX pipe(): thin personality over OS1low_pipe (unistd.h). */
+int pipe(int pipefd[2]) { return OS1low_pipe(pipefd); }
 int OS1low_process_kill(int pid) { return _sys_kill(pid); }
 /* OS1low_process_wait (F4 M4.5): wait via a PROCESS capability +
  * OS1_object_wait. A WAIT-only handle is acquirable for any live process
@@ -255,8 +272,12 @@ int OS1low_process_wait_status(int pid, int *code) {
   sprintf(idbuf, "%d", pid);
   long h = OS1low_handle_create(OS1_NS_PROC, idbuf, OS1_RIGHT_WAIT,
                                 OBJ_TYPE_PROCESS);
-  if (h < 0)
-    return _sys_wait(pid);
+  if (h < 0) {
+    /* No capability: the process is already GONE — which since Phase 9b is the
+     * case where a retained status is precisely what we are after, so the
+     * ambient path must carry it back rather than drop it. */
+    return _sys_wait_status(pid, code);
+  }
   long r = OS1_object_wait((int)h, (long)code);
   OS1low_handle_close((int)h);
   return (int)r;
@@ -288,7 +309,28 @@ void OS1low_process_exit(int status) {
 
 /* Bare-name compat shims (DIR-01). */
 int get_pid(void) { return OS1low_process_self(); }
+/* --- POSIX <unistd.h> personality (thin mapping onto the OS1 verbs above) --- */
+/* getpid: the POSIX spelling of get_pid(). */
+int getpid(void) { return get_pid(); }
+/* isatty: a descriptor is a terminal iff the object behind its handle is a
+ * CONSOLE.  This is the REAL test via the capability type (OS1low_cap_query),
+ * not the old "fd < 3" assumption: with shell redirection fd 1 may be a FILE
+ * (`cmd > out`) or a PIPE (`cmd | cmd`), and interactive programs (the lua
+ * REPL) must see isatty() == 0 in exactly those cases. */
+int isatty(int fd) {
+  long q = OS1low_cap_query(fd);
+  if (q < 0) {
+    errno = EBADF;
+    return 0;
+  }
+  return OS1_CAPQ_TYPE(q) == OBJ_TYPE_CONSOLE ? 1 : 0;
+}
 void exit(int status) { OS1low_process_exit(status); }
+/* _Exit: terminate WITHOUT running atexit handlers or flushing streams (C99).
+ * We register no atexit handlers and the console streams are unbuffered, so it
+ * is the same primitive as exit(); kept distinct because ported code chooses
+ * _Exit deliberately (e.g. in a failed child) and expects it to exist. */
+void _Exit(int status) { OS1low_process_exit(status); }
 int spawn(const char *path) { return (int)OS1low_process_spawn(path, 0, 0); }
 int spawn_args(const char *path, int argc, char *const argv[]) {
   return (int)OS1low_process_spawn(path, argc, argv);
@@ -324,6 +366,35 @@ long OS1_object_write(int handle, const void *buf, unsigned long n) {
 }
 long OS1_object_wait(int handle, long arg) {
   return _sys_object_wait(handle, arg);
+}
+
+/* --- Service ports (ASTRA §6.5) -------------------------------------------
+ * Thin personality over handle_create + object I/O: the port is the capability,
+ * so there is no separate "port syscall" to add — acquiring the handle IS the
+ * authority decision, and send/receive are ordinary object writes/reads.
+ */
+int OS1_port_create(const char *name) {
+  /* RECEIVE right publishes the port and claims ownership; TRANSFER lets the
+   * owner delegate send rights onward (cap_grant) without re-opening by name. */
+  return (int)errno_ret(OS1low_handle_create(
+      OS1_NS_PORT, name,
+      OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE,
+      OBJ_TYPE_PORT));
+}
+int OS1_port_open(const char *name) {
+  /* No READ: a client gets a SEND-only capability to an existing service. */
+  return (int)errno_ret(OS1low_handle_create(
+      OS1_NS_PORT, name, OS1_RIGHT_WRITE | OS1_RIGHT_DUPLICATE, OBJ_TYPE_PORT));
+}
+long OS1_port_send(int handle, const struct ipc_message *msg) {
+  return errno_ret(OS1_object_write(handle, msg, sizeof(struct ipc_message)));
+}
+long OS1_port_send_caps(int handle, struct ipc_message *msg, const int *fds,
+                        int nfds) {
+  return errno_ret(_sys_port_send_caps(handle, msg, fds, nfds));
+}
+long OS1_port_recv(int handle, struct ipc_message *msg) {
+  return errno_ret(OS1_object_read(handle, msg, sizeof(struct ipc_message)));
 }
 long OS1_object_ctl(int handle, int cmd, long arg) {
   return _sys_object_ctl(handle, cmd, arg);
@@ -987,12 +1058,43 @@ static int fstream_flush(FILE *fp) {
 /*
  * fclose - flush any pending writes, then release a FILE handle.
  */
+/*
+ * fdopen - wrap an ALREADY-OPEN descriptor in a FILE* (POSIX).  The stream is
+ * fd-backed: fread/fwrite go straight through read()/write() on that fd, so it
+ * works for any object the descriptor names — a file, a console, or a PIPE end
+ * (`int p[2]; pipe(p); FILE *f = fdopen(p[0], "r");`), which is the usual way
+ * ported POSIX code consumes a pipe through stdio.  'mode' is accepted for
+ * source compatibility; the descriptor's own rights are the real authority
+ * (the kernel rejects a read of a write-only handle), so we do not re-derive
+ * access from the string.  Returns NULL on a bad fd or out of memory.
+ */
+FILE *fdopen(int fd, const char *mode) {
+  (void)mode;
+  if (fd < 0) {
+    errno = EBADF;
+    return 0;
+  }
+  FILE *f = malloc(sizeof(FILE));
+  if (!f) {
+    errno = ENOMEM;
+    return 0;
+  }
+  memset(f, 0, sizeof(FILE));
+  f->fd = fd;   /* fd-backed: file_fd() routes I/O through read()/write() */
+  f->size = -1; /* unknown until asked */
+  return f;
+}
+
 int fclose(FILE *fp) {
   if (fp && fp != stdin && fp != stdout && fp != stderr) {
     fstream_flush(fp);
     if (fp->is_tmp) {
       OS1_fs_unlink(fp->path);
     }
+    /* An fdopen()'d stream owns its descriptor (POSIX): closing the stream
+     * closes the fd.  Path-backed streams carry fd = -1 and own nothing. */
+    if (fp->fd >= 0)
+      close(fp->fd);
     free(fp);
   }
   return 0;
@@ -1566,6 +1668,35 @@ int system(const char *command) {
   argv[2] = (char *)command;
   argv[3] = NULL;
 
+  /* Phase 9c HELD AT THE GATE (2026-07-23) — the in-process path is the one
+   * that runs, and the reason is the migration rule this phase set for itself.
+   *
+   * DESIGN-2026-07-18-NXEXEC-DAEMON §6 step 3: route a caller through the
+   * service "keeping the in-process path behind a fallback UNTIL the suite is
+   * at least as green as before".  It was not.  A child created by the service
+   * inherits its per-process attributes from the SERVICE, and two of the three
+   * were simply wrong:
+   *
+   *   cwd  — FIXED: the request now carries the requester's cwd and the
+   *          service adopts it around the spawn (execsvc_client.c, nxexec.c).
+   *          It was being parsed and discarded.
+   *   ctty — NOT FIXED, and NOT fixable here.  sys_write resolves stdout to
+   *          the writer's own window, else its ctty_win (kernel/core/object.c).
+   *          The service has no window and no ctty, so every child it creates
+   *          gets ctty_win = -1 and its output goes NOWHERE.  fd redirection
+   *          cannot patch this: the destination comes from the process, not
+   *          from the handle.
+   *   env  — plan stall S1, same shape, already owned.
+   *
+   * Carrying ctty needs the spawn itself to carry it, which is Phase 9d — and
+   * 9d is gated by Phase 16.  Inventing a second mechanism for it now (a
+   * post-spawn ctty verb, or hanging it off OBJ_CTL_SETOWNER) is exactly the
+   * duplicate-mechanism mistake the plan already recorded and withdrew when it
+   * deleted 17b.  So the routing waits for the ONE mechanism instead.
+   *
+   * execsvc_spawn() is NOT dead: captest exercises the protocol directly
+   * ("exec service" section), so the daemon stays verified while it is off the
+   * POSIX critical path.  Re-enable here — and nowhere else — once 9d lands. */
   int pid = spawn_args(NXSHELL_PATH, 3, argv);
   if (pid < 0) {
     errno = ENOENT;
@@ -1673,31 +1804,199 @@ int cmdline_split(char *s, char **argv, int max) {
 /* atof: NOTE(USR-LIB-04) only integer part is parsed; decimal digits ignored.
  */
 double atof(const char *nptr) { return (double)atoi(nptr); }
-/*
- * getenv - minimal process environment (<stdlib.h>).
+/* ---------------------------------------------------------------------------
+ * ENVIRONMENT — Phase 17
  *
- * OS1 has no per-process environment block yet, but a blanket NULL made every
- * `getenv("PATH")`-style probe fail (POSIX code, shells, and language runtimes
- * routinely expect at least PATH/HOME to exist).  Return a small, fixed set
- * that reflects this system's actual layout; unknown names still yield NULL.
- * General libc — not tailored to any one caller.
- */
-char *getenv(const char *name) {
-  static const struct {
-    const char *k, *v;
-  } env[] = {
-      {"PATH", "/bin:/sys/bin"},
-      {"HOME", "/home"},
-      {"TMPDIR", "/home"},
-      {"SHELL", "/sys/bin/nxshell"},
-  };
-  if (!name)
-    return NULL;
-  for (unsigned i = 0; i < sizeof(env) / sizeof(env[0]); i++)
-    if (strcmp(name, env[i].k) == 0)
-      return (char *)env[i].v;
-  return NULL;
+ * TWO LAYERS, because ASTRA §6.8 and this plan's opening rule both require it:
+ * the kernel is NOT POSIX; POSIX is a personality built ON TOP of OS1.
+ *
+ *   OS1_env_*   the NATIVE surface.  Owns the one fact that the kernel exposes
+ *               the environment through the `sys.proc.<pid>.env.*` registry
+ *               namespace, with `sys.env.*` beneath it as machine defaults.
+ *   getenv/...  the POSIX personality: a THIN mapping over OS1_env_*, with no
+ *               knowledge of the registry whatsoever.
+ *
+ * The first cut of this phase collapsed the two — POSIX built registry key
+ * strings itself — which put the registry's path syntax into the POSIX API and
+ * led to setenv() rejecting any name containing a '.'.  That restriction was
+ * never real: the kernel's virtual-key router hands everything after "env." to
+ * the scheduler as one opaque name, so dots always worked.  It was a limit
+ * invented to serve a layering mistake.
+ * ------------------------------------------------------------------------- */
+
+#define OS1_ENV_KEYMAX 96
+
+/* env_self - our own pid, resolved once.
+ *
+ * getpid() is a syscall, and every env operation needs the pid to name its own
+ * branch of the namespace — so the naive form costs TWO syscalls per getenv(),
+ * on a function that path resolution calls per spawn.  A process's pid never
+ * changes (pids come from a monotonic counter and there is no fork), so the
+ * value is cacheable without an invalidation story. */
+static int env_self(void) {
+  static int self_pid;
+  if (self_pid <= 0)
+    self_pid = getpid();
+  return self_pid;
 }
+
+/* env_key - build the per-process namespace path.  The ONLY place in userland
+ * that knows this syntax. */
+static int env_key(char *out, size_t size, const char *name) {
+  if (!name || !*name || strchr(name, '='))
+    return -1; /* POSIX: '=' separates name from value, so it cannot be in one */
+  return (snprintf(out, size, "sys.proc.%d.env.%s", env_self(), name) > 0) ? 0
+                                                                          : -1;
+}
+
+int OS1_env_get(const char *name, char *buf, size_t size) {
+  char key[OS1_ENV_KEYMAX];
+  if (!buf || size == 0 || env_key(key, sizeof(key), name) != 0)
+    return -1;
+  /* Process value first: it SHADOWS the machine default, which is the whole
+   * point of having both layers. */
+  if (OS1_registry_get(key, buf, size) == 0)
+    return 0;
+  if (snprintf(key, sizeof(key), "sys.env.%s", name) <= 0)
+    return -1;
+  if (OS1_registry_get(key, buf, size) == 0 && buf[0])
+    return 0;
+  return -1;
+}
+
+int OS1_env_set(const char *name, const char *value) {
+  char key[OS1_ENV_KEYMAX];
+  if (env_key(key, sizeof(key), name) != 0)
+    return -1;
+  /* Writes always land on the PROCESS layer, never on sys.env.*: a program
+   * calling setenv means "for me and my children", not "reconfigure the
+   * machine".  Keeping that distinction here is why setenv needs no privilege
+   * while editing the defaults still does. */
+  return OS1_registry_set(key, value ? value : "") == 0 ? 0 : -1;
+}
+
+int OS1_env_unset(const char *name) {
+  char key[OS1_ENV_KEYMAX];
+  if (env_key(key, sizeof(key), name) != 0)
+    return -1;
+  OS1_registry_del(key); /* DEL and set-to-empty both clear the slot */
+  return 0;
+}
+
+int OS1_env_enum(char *buf, size_t size) {
+  char prefix[OS1_ENV_KEYMAX];
+  if (!buf || size == 0)
+    return -1;
+  if (snprintf(prefix, sizeof(prefix), "sys.proc.%d.env.", env_self()) <= 0)
+    return -1;
+  int n = OS1_registry_enum_under(prefix, buf, size - 1);
+  if (n <= 0) {
+    buf[0] = '\0';
+    return 0;
+  }
+  buf[n] = '\0';
+  /* Enumeration returns FULL keys; strip the namespace so callers above this
+   * layer never see it.  Rewrites in place, line by line. */
+  size_t plen = strlen(prefix);
+  char *w = buf;
+  for (char *r = buf; *r;) {
+    char *nl = strchr(r, '\n');
+    size_t len = nl ? (size_t)(nl - r) : strlen(r);
+    const char *nm = (len > plen && strncmp(r, prefix, plen) == 0) ? r + plen : r;
+    size_t nlen = len - (size_t)(nm - r);
+    memmove(w, nm, nlen);
+    w += nlen;
+    if (!nl)
+      break;
+    *w++ = '\n';
+    r = nl + 1;
+  }
+  *w = '\0';
+  return (int)(w - buf);
+}
+
+/* --- POSIX personality (<stdlib.h>) — a thin mapping, nothing more --------
+ *
+ * Documented deviation: the string returned by getenv() lives in a small
+ * rotating buffer pool, so it is valid until GETENV_SLOTS further getenv()
+ * calls, not until the next setenv().  Callers keeping a value across many
+ * lookups must copy it.  The alternative — a per-name heap cache that is never
+ * freed — leaks by design. */
+#define GETENV_SLOTS 4
+#define GETENV_VALMAX 128
+
+char *getenv(const char *name) {
+  static char slots[GETENV_SLOTS][GETENV_VALMAX];
+  static int next_slot;
+  char *out = slots[next_slot];
+  if (OS1_env_get(name, out, GETENV_VALMAX) != 0)
+    return NULL;
+  next_slot = (next_slot + 1) % GETENV_SLOTS;
+  return out;
+}
+
+int setenv(const char *name, const char *value, int overwrite) {
+  if (!overwrite && getenv(name))
+    return 0;
+  return OS1_env_set(name, value);
+}
+
+int unsetenv(const char *name) { return OS1_env_unset(name); }
+
+/*
+ * putenv - POSIX's older "NAME=VALUE" form.
+ *
+ * POSIX says the caller's string BECOMES part of the environment, so later
+ * edits to it are visible.  We cannot honour that — the storage is in the
+ * kernel — so this parses and copies, like setenv.  Stated because a caller
+ * relying on the aliasing would otherwise be silently wrong; in practice every
+ * caller in this tree passes a string literal.
+ */
+int putenv(char *string) {
+  if (!string)
+    return -1;
+  const char *eq = strchr(string, '=');
+  if (!eq)
+    return unsetenv(string); /* "NAME" with no '=' unsets, per POSIX */
+  char name[OS1_ENV_KEYMAX];
+  size_t nl = (size_t)(eq - string);
+  if (nl == 0 || nl >= sizeof(name))
+    return -1;
+  memcpy(name, string, nl);
+  name[nl] = '\0';
+  return setenv(name, eq + 1, 1);
+}
+
+int clearenv(void) {
+  char buf[512];
+  if (OS1_env_enum(buf, sizeof(buf)) <= 0)
+    return 0;
+  char *save = NULL;
+  for (char *k = strtok_r(buf, "\n", &save); k; k = strtok_r(NULL, "\n", &save))
+    OS1_env_unset(k);
+  return 0;
+}
+
+/*
+ * env_names - NexsOS extension replacing POSIX `environ`.
+ *
+ * The POSIX way to enumerate assumes the environment is a userland array the
+ * process can point at.  Here it is kernel state, so a `char **environ` would
+ * mean publishing a snapshot and then lying about how fresh it is.  An explicit
+ * enumerator says what it actually does: names only, values via getenv().
+ */
+int env_names(char *names[], int max) {
+  static char buf[512];
+  int count = 0;
+  if (OS1_env_enum(buf, sizeof(buf)) <= 0)
+    return 0;
+  char *save = NULL;
+  for (char *k = strtok_r(buf, "\n", &save); k && count < max;
+       k = strtok_r(NULL, "\n", &save))
+    names[count++] = k;
+  return count;
+}
+
 int stat(const char *path, struct stat *buf) {
   if (buf)
     memset(buf, 0, sizeof(struct stat));
@@ -1858,6 +2157,65 @@ int truncate(const char *path, long length) {
     return r;
   }
 }
+/*
+ * ftruncate - set an OPEN descriptor's file length (POSIX).  Closes the Phase 1
+ * leftover ("ftruncate awaits an fd->path / OBJ_CTL_TRUNCATE kernel verb").
+ *
+ * Composed from the primitives rather than duplicating truncate()'s path-based
+ * logic in the kernel:
+ *   - shrink to N>0: read the first N bytes back, then rewrite them from offset
+ *     0 — an offset-0 write REPLACES the whole file (the Phase 1 FS standard),
+ *     so the rewrite IS the truncation;
+ *   - shrink to 0: needs OBJ_CTL_TRUNCATE, because POSIX defines
+ *     write(fd, buf, 0) as a NO-OP and so it cannot express "empty this file";
+ *   - extend: zero-fill from the old EOF up to the new length.
+ */
+int ftruncate(int fd, long length) {
+  if (length < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  long size = lseek(fd, 0, SEEK_END);
+  if (size < 0)
+    return -1;
+  if (length == size)
+    return 0;
+
+  if (length == 0)
+    return OS1_object_ctl(fd, OBJ_CTL_TRUNCATE, 0) < 0 ? -1 : 0;
+
+  if (length < size) {
+    char *buf = malloc((size_t)length);
+    if (!buf) {
+      errno = ENOMEM;
+      return -1;
+    }
+    int r = -1;
+    if (lseek(fd, 0, SEEK_SET) >= 0) {
+      long n = read(fd, buf, (unsigned long)length);
+      if (n >= 0 && lseek(fd, 0, SEEK_SET) >= 0 &&
+          write(fd, buf, (size_t)n) >= 0)
+        r = 0; /* offset-0 write replaced the file with n bytes */
+    }
+    free(buf);
+    return r;
+  }
+
+  { /* extend: zero-fill from the old EOF up to `length` */
+    long pad = length - size;
+    char *z = calloc(1, (size_t)pad);
+    if (!z) {
+      errno = ENOMEM;
+      return -1;
+    }
+    int r = (lseek(fd, size, SEEK_SET) >= 0 && write(fd, z, (size_t)pad) >= 0)
+                ? 0
+                : -1;
+    free(z);
+    return r;
+  }
+}
+
 /* puts: writes string + newline to fd 1, matching the standard POSIX contract.
  */
 int puts(const char *s) {
@@ -2011,15 +2369,13 @@ FILE _stdin_struct = {.fd = 0};
 FILE _stdout_struct = {.fd = 1};
 FILE _stderr_struct = {.fd = 2};
 
-static int file_fd(FILE *fp) {
-  if (fp == stdin)
-    return 0;
-  if (fp == stdout)
-    return 1;
-  if (fp == stderr)
-    return 2;
-  return -1;
-}
+/* file_fd - the descriptor behind a stream, or -1 for a positional
+ * (path-backed) one.  The three console streams carry fd 0/1/2 in their own
+ * structs and fopen() sets fd = -1 to select path I/O, so returning the field
+ * is EXACTLY equivalent to the old stdin/stdout/stderr pointer comparison —
+ * and additionally makes fdopen()'d streams (e.g. a pipe end wrapped in a
+ * FILE*) route through read()/write() like any other descriptor. */
+static int file_fd(FILE *fp) { return fp ? fp->fd : -1; }
 
 int fputc(int c, FILE *fp) {
   unsigned char ch = (unsigned char)c;

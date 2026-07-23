@@ -65,9 +65,21 @@ int fflush(FILE *stream);
 int remove(const char *pathname);
 int rename(const char *oldpath, const char *newpath);
 
-int printf(const char *format, ...);
-int sprintf(char *str, const char *format, ...);
-int snprintf(char *str, size_t size, const char *format, ...);
+/* NX_PRINTFLIKE - tell the compiler these take a printf format string, so
+ * -Wformat (already on via -Wall -Werror) actually CHECKS the arguments.
+ *
+ * Without this the checking is silently absent: a `%s` fed an int compiles
+ * clean and then dereferences that integer as a pointer at runtime.  That
+ * exact bug crashed the dock on every frame, and because init has no respawn
+ * rate limiting it became a boot-killing loop and finally a kernel panic — from
+ * a mismatch the compiler was fully capable of catching. */
+#define NX_PRINTFLIKE(fmt_idx, first_arg)                                      \
+  __attribute__((format(printf, fmt_idx, first_arg)))
+
+int printf(const char *format, ...) NX_PRINTFLIKE(1, 2);
+int sprintf(char *str, const char *format, ...) NX_PRINTFLIKE(2, 3);
+int snprintf(char *str, size_t size, const char *format, ...)
+    NX_PRINTFLIKE(3, 4);
 int vsnprintf(char *str, size_t size, const char *format, va_list ap);
 int vsprintf(char *str, const char *format, va_list ap);
 int vfprintf(FILE *stream, const char *format, va_list ap);
@@ -92,6 +104,6 @@ FILE *tmpfile(void);
 #define getc(fp)    fgetc(fp)
 #define putc(c, fp) fputc((c), (fp))
 
-int fprintf(FILE *stream, const char *format, ...);
+int fprintf(FILE *stream, const char *format, ...) NX_PRINTFLIKE(2, 3);
 
 #endif

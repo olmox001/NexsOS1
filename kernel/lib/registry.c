@@ -277,9 +277,131 @@ int registry_set(const char *key, const char *value, int owner_pid) {
  * registry_get - resolve a key to its leaf and copy the value.
  * Returns 0 on success, -1 if not found / not a leaf / bad args.
  */
+
+/*
+ * VIRTUAL per-process keys (Phase 5b) — `sys.proc.<pid>.<field>`.
+ *
+ * These are COMPUTED from the process table on every read, never stored.  They
+ * used to be written by userland (nxexec) after each spawn, which made the
+ * registry a SECOND, best-effort copy of state the kernel already owns
+ * authoritatively.  The proof that copy was a defect rather than a design: its
+ * entries outlived their processes, so a garbage collector
+ * (nxexec_prune_identities) had to be written to sweep them.
+ *
+ * Virtualising deletes the staleness class outright instead of maintaining it:
+ * a dead pid simply has no keys, because there was never a stored node.  It
+ * also avoids a new lock order — reaping stored keys at process death would
+ * have nested sched_lock inside the registry locks, the same AB-BA shape the
+ * roadmap already flags as an open hazard.
+ *
+ * `name` and lineage are FACTS THE KERNEL OWNS.  Program-level policy (an icon)
+ * deliberately does NOT live here: keying a PROGRAM's property by PID is the
+ * modelling error that made it go stale in the first place — it belongs under a
+ * program-keyed namespace, stable across instances.
+ *
+ * Returns 1 if `key` was a virtual key (answer written to buf), 0 otherwise.
+ */
+/* reg_proc_split - parse "sys.proc.<pid>.<field>".  Returns the field (a
+ * pointer into `key`) and writes the pid, or NULL if `key` is not in the
+ * per-process namespace at all.  Shared by the read and write paths so they
+ * cannot disagree about what counts as a virtual key. */
+static const char *reg_proc_split(const char *key, int *out_pid) {
+  const char *p = key;
+  if (strncmp(p, "sys.proc.", 9) != 0)
+    return NULL;
+  p += 9;
+  int pid = 0;
+  if (*p < '0' || *p > '9')
+    return NULL;
+  while (*p >= '0' && *p <= '9')
+    pid = pid * 10 + (*p++ - '0');
+  if (*p != '.')
+    return NULL;
+  *out_pid = pid;
+  return p + 1;
+}
+
+static int reg_virtual_proc(const char *key, char *buf, size_t size) {
+  int pid = 0;
+  const char *p = reg_proc_split(key, &pid);
+  if (!p)
+    return 0;
+
+  struct ps_info pi;
+  if (proc_get_info(pid, &pi) != 0) {
+    buf[0] = '\0';
+    return 1; /* live key space, dead process: EMPTY, never a stale value */
+  }
+
+  if (strcmp(p, "name") == 0) {
+    strncpy(buf, pi.name, size - 1);
+    buf[size - 1] = '\0';
+    return 1;
+  }
+  if (strcmp(p, "state") == 0) {
+    strncpy(buf, proc_state_name(pi.state), size - 1);
+    buf[size - 1] = '\0';
+    return 1;
+  }
+  if (strcmp(p, "parent") == 0 || strcmp(p, "owner") == 0) {
+    int par = 0, own = 0;
+    (void)proc_get_lineage(pid, &par, &own);
+    snprintf(buf, size, "%d", (strcmp(p, "owner") == 0) ? own : par);
+    return 1;
+  }
+  /* `env.<NAME>` — the per-process ENVIRONMENT (Phase 17), owned by the
+   * scheduler.  An UNSET variable answers -1 ("ours, and definitively absent")
+   * rather than an empty string: getenv() must be able to tell "not set" from
+   * "set to the empty string", and an empty answer would collapse the two.
+   * -1 also stops the lookup here instead of falling through to stored nodes,
+   * so nothing can shadow the live block. */
+  if (strncmp(p, "env.", 4) == 0) {
+    if (!p[4])
+      return -1;
+    return proc_env_get(pid, p + 4, buf, size) == 0 ? 1 : -1;
+  }
+  return 0; /* not a field we own: fall through to stored nodes */
+}
+
+/*
+ * reg_virtual_proc_write - route a WRITE/DELETE aimed at the virtual
+ * per-process namespace.  Returns 1 (handled, *ret holds the result) or 0.
+ *
+ * Only `env.<NAME>` is writable.  The rest of the per-process view reports
+ * facts the kernel derives — a write there is not "denied for now", it is
+ * meaningless, so it is refused with -EACCES rather than quietly stored as a
+ * node that would then be shadowed by the computed value forever.
+ *
+ * NOTE the authority split: this runs BEFORE the CAP_REG_WRITE gate in
+ * sys_registry, because writing your own environment is ordinary unprivileged
+ * work.  Requiring registry-write capability for setenv() would have set the
+ * ceiling at "may reconfigure the machine" for an operation that only touches
+ * the caller's own process.  proc_env_set enforces the correct rule instead:
+ * self always, anyone else only if privileged.
+ */
+static int reg_virtual_proc_write(const char *key, const char *value,
+                                  long *ret) {
+  int pid = 0;
+  const char *p = reg_proc_split(key, &pid);
+  if (!p)
+    return 0;
+  if (strncmp(p, "env.", 4) == 0 && p[4]) {
+    *ret = proc_env_set(current_process, pid, p + 4, value);
+    return 1;
+  }
+  *ret = -EACCES; /* computed field: not writable by anyone */
+  return 1;
+}
+
 int registry_get(const char *key, char *buffer, size_t size) {
   if (!key || !buffer || size == 0)
     return -1;
+
+  /* Virtual keys are answered from live kernel state BEFORE consulting stored
+   * nodes, so a stale leftover can never shadow the truth. */
+  int v = reg_virtual_proc(key, buffer, size);
+  if (v)
+    return v > 0 ? 0 : -1;
 
   uint64_t flags;
   reg_read_lock(&flags);
@@ -404,6 +526,40 @@ static void enum_dfs(struct reg_node *n, char *path, size_t path_len,
 int registry_enum(const char *prefix, char *buf, size_t size) {
   if (!buf || size == 0)
     return -1;
+
+  /* `sys.proc.<pid>.env.` is VIRTUAL: it has no stored nodes to walk, so a
+   * plain DFS would report a process's environment as empty.  Answer it from
+   * the scheduler's block instead, in the same full-key form the DFS emits, so
+   * callers cannot tell the two namespaces apart. */
+  if (prefix) {
+    int pid = 0;
+    const char *f = reg_proc_split(prefix, &pid);
+    if (f && strcmp(f, "env.") == 0) {
+      char names[512];
+      int n = proc_env_enum(pid, names, sizeof(names));
+      size_t off = 0;
+      /* Walk the newline-separated names in place (no strtok_r in the kernel
+       * string library, and none is needed for a single scan). */
+      for (char *k = names; n > 0 && *k;) {
+        char *nl = k;
+        while (*nl && *nl != '\n')
+          nl++;
+        char sep = *nl;
+        *nl = '\0';
+        size_t need = strlen(prefix) + strlen(k) + 2; /* separator + NUL */
+        if (off + need > size)
+          break;
+        if (off)
+          buf[off++] = '\n';
+        off += (size_t)snprintf(buf + off, size - off, "%s%s", prefix, k);
+        if (!sep)
+          break;
+        k = nl + 1;
+      }
+      buf[off] = '\0';
+      return (int)off;
+    }
+  }
 
   size_t prefix_len = prefix ? strlen(prefix) : 0;
   char path[256];
@@ -695,22 +851,50 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
     return ret;
   }
 
-  /* 1. Copy Key from User Space securely (stops at null!) */
-  if (vmm_copy_string_from_user(k_key, key, MAX_KEY_LEN) != 0) {
-    pr_err("%s", "sys_registry: Invalid key pointer\n");
-    return -EFAULT;
+  /* 1. Copy the key from user space.  STRICT: a truncated key is a DIFFERENT
+   * key, so the write would land somewhere the matching read never looks —
+   * a silent miss rather than a reported failure.  Refuse instead
+   * (kernel/hal_uaccess.h explains why the tolerant form still exists). */
+  {
+    int r = vmm_copy_string_from_user_strict(k_key, key, MAX_KEY_LEN);
+    if (r == -E2BIG) {
+      pr_warn("registry: key longer than %d bytes refused (not truncated)\n",
+              MAX_KEY_LEN - 1);
+      return -E2BIG;
+    }
+    if (r != 0) {
+      pr_err("%s", "sys_registry: Invalid key pointer\n");
+      return -EFAULT;
+    }
   }
 
   if (op == REG_OP_WRITE) {
+    /* 2. Copy the value.  STRICT for the same reason as the key, and it matters
+     * most here: a truncated VALUE is reported as a successful write, so the
+     * caller believes it stored something it did not.  This bit every registry
+     * write over MAX_VAL_LEN, not just the environment — the environment is
+     * simply the first consumer with values long enough to hit it. */
+    {
+      int r = vmm_copy_string_from_user_strict(k_val, value, MAX_VAL_LEN);
+      if (r == -E2BIG) {
+        pr_warn("registry: value for '%s' longer than %d bytes refused\n",
+                k_key, MAX_VAL_LEN - 1);
+        return -E2BIG;
+      }
+      if (r != 0) {
+        pr_err("%s", "sys_registry: Invalid value pointer\n");
+        return -EFAULT;
+      }
+    }
+    /* Virtual per-process keys carry their OWN authority rule and are routed
+     * before the CAP_REG_WRITE gate — see reg_virtual_proc_write. */
+    long vret;
+    if (reg_virtual_proc_write(k_key, k_val, &vret))
+      return vret;
     /* USR-SEC-03 #79: writing the registry needs CAP_REG_WRITE (reads are
      * open to everyone). */
     if (!registry_write_allowed())
       return -EPERM;
-    /* 2. Copy Value from User Space securely (stops at null!) */
-    if (vmm_copy_string_from_user(k_val, value, MAX_VAL_LEN) != 0) {
-      pr_err("%s", "sys_registry: Invalid value pointer\n");
-      return -EFAULT;
-    }
     return registry_set(k_key, k_val, registry_caller_owner());
   } else if (op == REG_OP_READ) {
     if (registry_get(k_key, k_val, sizeof(k_val)) == 0) {
@@ -727,6 +911,10 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
     }
     return -ENOENT;
   } else if (op == REG_OP_DEL) {
+    /* Deleting a virtual env key IS unsetenv: same routing, empty value. */
+    long vret;
+    if (reg_virtual_proc_write(k_key, "", &vret))
+      return vret;
     /* Deleting needs CAP_REG_WRITE; first-writer-wins owner is enforced in
      * registry_del (machine processes delete as owner 0 = full rights). */
     if (!registry_write_allowed())

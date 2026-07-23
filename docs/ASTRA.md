@@ -672,14 +672,26 @@ callee-saved register corrupted across `timer_handler`, NULLing
 
 The **call-surface refactor** (DIR-01/#164) is still the next structural work:
 unify/standardise **all** existing syscalls/verbs onto the OS1_/OS1low_ +
-capability model (not just renaming). Verified still open: `OS1low_vm_map/
-_unmap/_protect` don't exist, `OBJ_TYPE_PORT` (IPC-as-capability) doesn't
-exist, `OS1_fs_write` still takes the ambient path pending `O_CREAT` support
-in `handle_create` (`user/sys/lib/lib.c:370-375`, `NOTE(M4.5-FS-WRITE)`) —
-`kernel/core/syscall_dispatch.c:264-268` still returns `-EINVAL` for any
-`open()` flag beyond `O_ACCMODE` (issue #126, ext4 file creation). Then the
-explicit **SRL/HAL source-tree split** (§6.4, B5 — no `kernel/srl`/`kernel/hal`
-top-level directories exist yet) and Phase C device primitives (§4).
+capability model (not just renaming).
+
+**Status refresh 2026-07-18** (the list below was written 2026-07-02 and three
+of its items have since been CLOSED — leaving them marked "still open" was
+actively misleading sequencing decisions):
+- ✅ **`OBJ_TYPE_PORT` (IPC-as-capability) NOW EXISTS** — a Mach-style named port
+  that IS a capability (rights = port rights: WRITE is the send right, READ the
+  receive right), so a client addresses a SERVICE by name instead of a pid,
+  which is the seL4 rule §6.5 states and the ambient pid-addressed `SYS_SEND`
+  violates. Device-verified, including that the kernel-stamped sender identity
+  is unforgeable.
+- ✅ **`OS1_fs_write` is capability-routed** — the `NOTE(M4.5-FS-WRITE)` ambient
+  path is gone (capability closure C1–C2).
+- ✅ **`open()` honours `O_CREAT`/`O_TRUNC`/`O_APPEND`** — no longer `-EINVAL`
+  beyond `O_ACCMODE` (issue #126 closed).
+- ❌ still open: `OS1low_vm_map/_unmap/_protect` don't exist.
+- ❌ still open: the explicit **SRL/HAL source-tree split** (§6.4, B5 — no
+  `kernel/srl`/`kernel/hal` top-level directories exist yet) and Phase C device
+  primitives (§4). Tracked as Phase 13 in PLAN-2026-07-17-STRATIFICATION.md,
+  alongside the `/sys/services` move it overlaps.
 
 Also still open, verified 2026-07-02:
 - **Per-service capability refinement** (§7.2) — every `/sys/bin/*` service

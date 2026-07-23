@@ -50,6 +50,16 @@ struct kobject {
 
   /* OBJ_TYPE_WINDOW */
   int window_id;
+
+  /* OBJ_TYPE_PIPE — anonymous kernel byte pipe (ASTRA §6.2).  Heap-allocated
+   * (struct kpipe, kernel/core/object.c) so the ring buffer + reader wait queue
+   * don't bloat every kobject; NULL for non-pipe objects. */
+  struct kpipe *pipe;
+
+  /* OBJ_TYPE_PORT — Mach-style message port (ASTRA §6.5): a named mailbox that
+   * IS a capability.  Heap-allocated (struct kport, kernel/core/object.c) for
+   * the same reason as the pipe; NULL for non-port objects. */
+  struct kport *port;
 };
 
 /* A handle-table slot: a capability = (object, held rights). */
@@ -96,5 +106,28 @@ long window_text_write(int win_id, const char *ubuf, size_t count);
  * write/stdout+stderr).  Called by process_create() so every process is born
  * with stdin/stdout/stderr as capability handles.  Returns 0, or -ENOMEM. */
 int process_install_stdio(struct process *p);
+
+/* process_redirect_child_fd - dup the spawner's open handle 'parent_fd' into a
+ * freshly-created child's 'child_slot', overwriting the console there (Phase 4
+ * shell `<`/`>`/`>>`/`2>`).  Called from dispatch_spawn with the spawner as
+ * current_process, before the child runs.  Returns 0 or -EINVAL/-EBADF/-ENOMEM. */
+int process_redirect_child_fd(struct process *child, int child_slot,
+                              int parent_fd);
+/* process_redirect_child_fd_from - same, with the SOURCE process explicit.  The
+ * spawner and the fd owner are the same process today, but diverge once an
+ * execution service spawns on a client's behalf (Q2): the fds are the CLIENT's.
+ * Parameterising the source keeps that a caller change, not a rewrite. */
+int process_redirect_child_fd_from(struct process *owner, struct process *child,
+                                   int child_slot, int parent_fd);
+
+/* sys_pipe - SYS_PIPE: create an anonymous OBJ_TYPE_PIPE and install its read +
+ * write ends in the caller's table; writes both fds to the user int[2].  0 or
+ * -ENOMEM/-EMFILE/-EFAULT. */
+long sys_pipe(int *ufds);
+/* sys_port_send_caps - SYS_PORT_SEND_CAPS: send through a PORT while
+ * TRANSFERRING handles to the receiver, rewriting the payload with the indices
+ * as the RECEIVER sees them (ASTRA 6.5 Mach rights-in-a-message).  Removes the
+ * need to cap_grant by pid to a service discovered by NAME. */
+long sys_port_send_caps(int handle, const void *umsg, const int *ufds, int nfds);
 
 #endif /* _KERNEL_OBJECT_H */

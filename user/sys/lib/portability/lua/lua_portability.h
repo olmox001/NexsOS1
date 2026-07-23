@@ -171,6 +171,26 @@ struct lua_State;
 int luaopen_os1(struct lua_State *L);
 
 /*
+ * NOTE(LUA-TTY-02): lua.c chooses "interactive REPL" vs "EXECUTE stdin" with
+ * lua_stdin_is_tty(), whose ISO-C fallback (lua.c) hardcodes it to 1 —
+ * literally commented there as "assume stdin is a tty" —
+ * unless LUA_USE_POSIX is defined.  We deliberately do NOT define
+ * LUA_USE_POSIX (it also drags in popen/dlopen assumptions we do not provide),
+ * so lua ASSUMED a tty unconditionally: `echo "print(10)" | lua` and
+ * `lua < script` entered the REPL instead of executing stdin — and the REPL
+ * reads the KEYBOARD mailbox (LUA-TTY-01 below), not fd 0, so the piped program
+ * was never consumed (it printed the banner + '>' and waited for a keypress).
+ *
+ * Wire it to our REAL isatty() (lib.c): a genuine capability-type test of the
+ * descriptor's object — CONSOLE vs FILE vs PIPE — so a redirected or piped
+ * stdin correctly EXECUTES, while an interactive console still gets the REPL
+ * plus the keyboard reader below.  This is the lua-side half of the fix; the
+ * libc side was implementing isatty(), which unistd.h had only DECLARED.
+ */
+#include <unistd.h>
+#define lua_stdin_is_tty() isatty(0)
+
+/*
  * NOTE(LUA-TTY-01): REPL line input overrides lua.c's lua_readline/
  * _initreadline/_saveline/_freeline fallback (fgets(stdin) - see lua.c's own
  * '#if !defined(lua_readline)' guard; force-including this header ahead of

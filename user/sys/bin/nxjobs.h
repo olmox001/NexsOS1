@@ -5,27 +5,28 @@
  * user/sys/bin/nxjobs.h
  * NEXS shell job table (ASTRA service layer) — "job control, light".
  *
- * Tracks pids launched in the BACKGROUND (`cmd &`) so `jobs`/`fg` have
- * something to operate on. Deliberately scoped to what's possible without
- * any kernel change:
+ * Tracks pids launched in the BACKGROUND (`cmd &`) and jobs suspended with
+ * Ctrl-Z, so `jobs`/`fg`/`bg` have something to operate on.
  *
- *   - background (&), jobs, fg   -> fully supported today. A background
- *     job is just a spawned pid the shell chose not to wait() on
- *     immediately; nxjobs_poll() drains SYS_WAIT non-blockingly each loop
- *     tick to notice when one finishes.
+ *   - background (&), jobs, fg   A background job is a spawned pid the shell
+ *     chose not to wait() on immediately; nxjobs_poll() drains SYS_WAIT
+ *     non-blockingly each loop tick to notice when one finishes.
  *
- *   - real suspend (Ctrl-Z) / bg -> NOT supported. There is no STOPPED
- *     process state in the scheduler (syscall_nums.h / sysstats.h expose
- *     only running/zombie), so nothing exists to "resume". `bg` is kept as
- *     a builtin that explains this rather than silently pretending to work
- *     — see nxjobs_bg_unsupported_message() below, used verbatim by the
- *     `bg` builtin in nxshell.c.
+ *   - suspend (Ctrl-Z), bg, fg   REAL since Phase 2: the scheduler has a
+ *     PROC_STOPPED state with process_stop/process_cont behind the
+ *     DESTROY-gated OBJ_CTL_STOP/CONT verbs, so a stopped job genuinely
+ *     stops and genuinely resumes.
  *
- * No exit-status tracking either: SYS_WAIT only reports running/not-running
- * (see lib.c system()'s comment — OS1 does not yet expose a per-process
- * exit code), so nxjobs reports a job as "Done", never "Done (0)"/"Exit 1".
- * That's a kernel-side gap (process exit_code + SYS_WAIT payload), not
- * something this header can paper over correctly.
+ *   - exit status                REAL since Phase 2/9b: waitpid() carries a
+ *     POSIX status that survives reaping, so a job reports "Done (N)" or
+ *     "Killed (N)", not a bare "Done".
+ *
+ * (This header used to state the opposite for the last two — written before
+ * the kernel work landed and never updated.  The stale text was quoted back
+ * as fact by a later review, so it is corrected here rather than deleted:
+ * PLAN-2026-07-17 §"Known live bugs" records that failure mode.)
+ *
+ * Job SELECTION follows POSIX XCU §2.9.3.1 — see nxjobs_resolve().
  */
 
 #include "nxexec.h" /* nxexec_window_stable() — the single shared debounce
@@ -59,11 +60,84 @@ struct nxjob {
 struct nxjobs {
   struct nxjob slot[NXJOBS_MAX];
   int next_id;
+  /* POSIX current/previous job (`%%`/`%+` and `%-`, and what a bare `fg`/`bg`
+   * operates on).  Stored as IDS and updated on the EVENTS that define them,
+   * because "most recently stopped" is not recoverable from the table's state:
+   * with two stopped jobs, nothing in the slots says which stopped last. */
+  int current_id;
+  int previous_id;
 };
 
 static inline void nxjobs_init(struct nxjobs *j) {
   memset(j, 0, sizeof(*j));
   j->next_id = 1;
+}
+
+/* __nxjobs_slot_of_id - slot for `id`, but only if it still names a job that
+ * can be foregrounded.  A finished job is deliberately NOT eligible: it is
+ * about to leave the table, and selecting a corpse is not a selection. */
+static inline int __nxjobs_slot_of_id(struct nxjobs *j, int id) {
+  if (id <= 0)
+    return -1;
+  for (int i = 0; i < NXJOBS_MAX; i++)
+    if (j->slot[i].in_use && j->slot[i].id == id &&
+        j->slot[i].state != NXJOB_DONE)
+      return i;
+  return -1;
+}
+
+/* __nxjobs_pick - the POSIX current-job RULE, applied from scratch.
+ *
+ * "the most recently stopped job, or, if there are no stopped jobs, the most
+ * recently started background job".  `skip_id` asks for the next one down,
+ * which is how the previous job is chosen.  Used only to REBUILD the ids after
+ * the job they named went away — the event-driven path above is what makes
+ * "most recently stopped" mean the right thing while both jobs are stopped. */
+static inline int __nxjobs_pick(struct nxjobs *j, int skip_id) {
+  for (int pass = 0; pass < 2; pass++) {
+    int want = (pass == 0) ? NXJOB_STOPPED : NXJOB_RUNNING;
+    int best = -1;
+    for (int i = 0; i < NXJOBS_MAX; i++) {
+      if (!j->slot[i].in_use || j->slot[i].state != want)
+        continue;
+      if (j->slot[i].id == skip_id)
+        continue;
+      if (best < 0 || j->slot[i].id > j->slot[best].id)
+        best = i;
+    }
+    if (best >= 0)
+      return best;
+  }
+  return -1;
+}
+
+/* __nxjobs_resync - drop current/previous ids that no longer name an eligible
+ * job and refill them from the rule.  Called before every resolution, so a job
+ * finishing or being disowned cannot leave `fg` pointing at nothing. */
+static inline void __nxjobs_resync(struct nxjobs *j) {
+  if (__nxjobs_slot_of_id(j, j->current_id) < 0)
+    j->current_id = 0;
+  if (__nxjobs_slot_of_id(j, j->previous_id) < 0)
+    j->previous_id = 0;
+  if (j->current_id == 0) {
+    int s = __nxjobs_pick(j, j->previous_id);
+    j->current_id = (s >= 0) ? j->slot[s].id : 0;
+  }
+  if (j->previous_id == 0) {
+    int s = __nxjobs_pick(j, j->current_id);
+    j->previous_id = (s >= 0) ? j->slot[s].id : 0;
+  }
+}
+
+/* __nxjobs_promote - `id` becomes the current job, the old current becomes the
+ * previous one.  This is the only way current_id is set on the happy path: it
+ * is called when a job is started in the background and when one is stopped,
+ * which are exactly the two events POSIX defines the current job by. */
+static inline void __nxjobs_promote(struct nxjobs *j, int id) {
+  if (id <= 0 || id == j->current_id)
+    return;
+  j->previous_id = j->current_id;
+  j->current_id = id;
 }
 
 /* nxjobs_add - register a newly-spawned BACKGROUND pid. Returns the job id
@@ -80,10 +154,26 @@ static inline int nxjobs_add(struct nxjobs *j, int pid, const char *cmd) {
       j->slot[i].win_last = -1;
       j->slot[i].win_stable = 0;
       snprintf(j->slot[i].cmd, NXJOBS_CMD_MAX, "%s", cmd);
+      __nxjobs_promote(j, j->slot[i].id); /* POSIX: a new background job is
+                                           * the current job */
       return j->slot[i].id;
     }
   }
   return 0;
+}
+
+/* nxjobs_mark_stopped - record that a job has been suspended.
+ *
+ * Separate from nxjobs_stop() because Ctrl-Z is detected by the foreground
+ * watcher, which has already suspended the process — only the bookkeeping is
+ * left.  Both paths must come through here, though, because a stopped job
+ * becomes the CURRENT job, and a shell where Ctrl-Z did not change what a bare
+ * `fg` resumes is the one thing job control has to get right. */
+static inline void nxjobs_mark_stopped(struct nxjobs *j, int slot) {
+  if (slot < 0 || slot >= NXJOBS_MAX || !j->slot[slot].in_use)
+    return;
+  j->slot[slot].state = NXJOB_STOPPED;
+  __nxjobs_promote(j, j->slot[slot].id);
 }
 
 /* nxjobs_reap - drop a job from the table (finished, or just promoted to
@@ -145,24 +235,21 @@ static inline int nxjobs_find(struct nxjobs *j, int id) {
   return -1;
 }
 
-/* nxjobs_last - the most recently added still-tracked job's slot, for a
- * bare `fg`/`jobs` with no explicit %N (matches everyday shell habit).
- * Returns -1 if the table is empty. */
-static inline int nxjobs_last(struct nxjobs *j) {
-  int best = -1;
-  for (int i = 0; i < NXJOBS_MAX; i++)
-    if (j->slot[i].in_use && (best < 0 || j->slot[i].id > j->slot[best].id))
-      best = i;
-  return best;
-}
-
-/* nxjobs_print - `jobs` builtin body. */
+/* nxjobs_print - `jobs` builtin body.
+ *
+ * The current job is marked '+' and the previous one '-', as POSIX specifies:
+ * without them the output does not say what a bare `fg` would act on, which is
+ * the only reason a user needs to read it before typing one. */
 static inline void nxjobs_print(struct nxjobs *j) {
   int any = 0;
+  __nxjobs_resync(j);
   for (int i = 0; i < NXJOBS_MAX; i++) {
     if (!j->slot[i].in_use)
       continue;
     any = 1;
+    char mark = (j->slot[i].id == j->current_id)    ? '+'
+                : (j->slot[i].id == j->previous_id) ? '-'
+                                                    : ' ';
     const char *st;
     char stbuf[24];
     if (j->slot[i].state == NXJOB_RUNNING) {
@@ -177,8 +264,8 @@ static inline void nxjobs_print(struct nxjobs *j) {
         snprintf(stbuf, sizeof(stbuf), "Done (%d)", WEXITSTATUS(s));
       st = stbuf;
     }
-    printf("[%d]  %-12s pid=%-6d %s\n", j->slot[i].id, st, j->slot[i].pid,
-           j->slot[i].cmd);
+    printf("[%d]%c %-12s pid=%-6d %s\n", j->slot[i].id, mark, st,
+           j->slot[i].pid, j->slot[i].cmd);
   }
   if (!any)
     print("No background jobs.\n");
@@ -197,6 +284,86 @@ static inline int nxjobs_parse_id(const char *arg) {
   return id > 0 ? id : -1;
 }
 
+/* __nxjobs_match - most recent job whose command matches `s`, by prefix or
+ * (with `anywhere`) by substring.  POSIX `%string` and `%?string`. */
+static inline int __nxjobs_match(struct nxjobs *j, const char *s, int anywhere) {
+  if (!s || !*s)
+    return -1;
+  size_t len = strlen(s);
+  int best = -1;
+  for (int i = 0; i < NXJOBS_MAX; i++) {
+    if (!j->slot[i].in_use)
+      continue;
+    int hit = anywhere ? (strstr(j->slot[i].cmd, s) != (char *)0)
+                       : (strncmp(j->slot[i].cmd, s, len) == 0);
+    if (hit && (best < 0 || j->slot[i].id > j->slot[best].id))
+      best = i;
+  }
+  return best;
+}
+
+/*
+ * nxjobs_resolve - turn a `fg`/`bg`/`disown` operand into a slot index.
+ *
+ * POSIX job_id syntax (XCU §2.9.3.1), which this now actually implements:
+ *
+ *   (omitted)  the CURRENT job
+ *   %% or %+   the current job          %-        the previous job
+ *   %N         job number N             %string   job whose command starts
+ *   %?string   ...whose command contains string     with string
+ *
+ * TWO CORRECTIONS, 2026-07-23:
+ *
+ * 1. A bare `fg` used to take "the highest job id still in the table"
+ *    (nxjobs_last).  That is not the current job and, worse, the table
+ *    includes FINISHED jobs — so `fg` could resume nothing, and Ctrl-Z'ing a
+ *    job did not change what a bare `fg` would bring back.  It now follows the
+ *    real rule: most recently stopped, else most recently backgrounded, never
+ *    a finished one.  Omitting the operand IS standard; picking the wrong job
+ *    for it was not.
+ *
+ * 2. A BARE NAME (`fg lua`, no `%`) used to resolve by command prefix.  That
+ *    is not a job id in any shell — `lua` there is a command name, and
+ *    accepting it means `fg` silently guesses when the user meant something
+ *    else.  Removed; `fg %lua` is the spelling.  A bare NUMBER stays: `fg 1`
+ *    for `%1` is the one extension every shell accepts.
+ *
+ * Returns the slot, or -1 if the operand names no job.
+ */
+static inline int nxjobs_resolve(struct nxjobs *j, const char *arg) {
+  __nxjobs_resync(j);
+
+  if (!arg || !*arg)
+    return __nxjobs_slot_of_id(j, j->current_id);
+
+  if (arg[0] != '%') {
+    for (const char *p = arg; *p; p++)
+      if (*p < '0' || *p > '9')
+        return -1; /* a bare name is a command, not a job id */
+    return nxjobs_find(j, atoi(arg));
+  }
+
+  arg++;
+  if (!*arg)
+    return -1; /* a lone "%" names nothing */
+  if (arg[0] == '%' || arg[0] == '+')
+    return __nxjobs_slot_of_id(j, j->current_id);
+  if (arg[0] == '-')
+    return __nxjobs_slot_of_id(j, j->previous_id);
+  if (arg[0] == '?')
+    return __nxjobs_match(j, arg + 1, 1);
+
+  int numeric = 1;
+  for (const char *p = arg; *p; p++)
+    if (*p < '0' || *p > '9') {
+      numeric = 0;
+      break;
+    }
+  if (numeric)
+    return nxjobs_find(j, atoi(arg));
+  return __nxjobs_match(j, arg, 0);
+}
+
 /* nxjobs_stop - suspend a job (Ctrl-Z / `stop %N`): kernel PROC_STOPPED via
  * OS1_process_stop, then mark it Stopped so `jobs` reflects it and `bg`/`fg`
  * can resume it (Phase 2 — a real stopped state exists now). */
@@ -205,7 +372,7 @@ static inline int nxjobs_stop(struct nxjobs *j, int slot) {
     return -1;
   int r = OS1_process_stop(j->slot[slot].pid);
   if (r == 0)
-    j->slot[slot].state = NXJOB_STOPPED;
+    nxjobs_mark_stopped(j, slot); /* also makes it the current job */
   return r;
 }
 

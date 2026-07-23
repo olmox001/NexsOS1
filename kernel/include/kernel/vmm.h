@@ -230,8 +230,13 @@ static inline bool vmm_is_user_addr(uint64_t addr) {
 }
 
 #include <kernel/arch.h>
+#include <kernel/hal_uaccess.h>
 #define vmm_copy_from_user(dest, src, n) arch_copy_from_user(dest, src, n)
 #define vmm_copy_to_user(dest, src, n) arch_copy_to_user(dest, src, n)
-#define vmm_copy_string_from_user(dest, src, max_len) arch_copy_string_from_user(dest, src, max_len)
+/* TOLERANT copy: truncation is accepted.  Where a shortened string would be a
+ * DIFFERENT string (paths, registry keys/values, environment), use
+ * hal_copy_string_from_user_strict() instead — see kernel/hal_uaccess.h. */
+#define vmm_copy_string_from_user(dest, src, max_len) hal_copy_string_from_user(dest, src, max_len)
+#define vmm_copy_string_from_user_strict(dest, src, max_len) hal_copy_string_from_user_strict(dest, src, max_len)
 
 #endif /* _KERNEL_VMM_H */

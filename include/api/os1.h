@@ -51,10 +51,18 @@ extern void _sys_exit(int status);
 /* arg3 = spawn-mode flags (SPAWN_FLAG_*, caps.h) — nxexec model #193. */
 extern int  _sys_spawn(const char *path, int argc, char *const argv[],
                        unsigned int flags);
+/* arg4/arg5 = fd-redirection list + count (Phase 4 shell `<`/`>`/`>>`/`2>`).
+ * Same SYS_SPAWN; the stub passes the extra registers through where the plain
+ * _sys_spawn zeroes them. */
+extern int  _sys_spawn_redir(const char *path, int argc, char *const argv[],
+                             unsigned int flags, const struct spawn_redir *redir,
+                             int nredir);
 extern long _sys_spawn_caps(const char *path, int level, unsigned long caps,
                             unsigned int flags);
 extern int  _sys_kill(int pid);
 extern int  _sys_wait(int pid);
+/* arg1 = optional int* receiving the exit status (Phase 9b); NULL is legal. */
+extern int  _sys_wait_status(int pid, int *code);
 extern void _sys_yield(void);
 extern void _sys_nanosleep(unsigned long long ns);
 extern long _sys_clock_gettime(int clk);
@@ -89,6 +97,8 @@ extern int  _sys_chdir(const char *path);
 extern int  _sys_getcwd(char *buf, size_t size);
 extern int  _sys_unlink(const char *path);
 extern int  _sys_mkdir(const char *path);
+extern int  _sys_pipe(int fds[2]);
+extern long _sys_port_send_caps(int handle, const void *msg, const int *fds, int nfds);
 extern int  _sys_open(const char *path, int flags);
 extern int  _sys_close(int fd);
 extern long _sys_lseek(int fd, long offset, int whence);
@@ -142,7 +152,19 @@ long OS1low_process_spawn(const char *path, int argc, char *const argv[]);
  * into the spawner's window as if it were a shell. */
 long OS1low_process_spawn_detached(const char *path, int argc,
                                    char *const argv[]);
+/* OS1low_process_spawn_redir (Phase 4): spawn with the spawner's open fds dup'd
+ * into the child (shell `<`/`>`/`>>`/`2>`).  The caller opens the redirect
+ * targets, fills redir[] with {child_fd, parent_fd} pairs (SPAWN_MAX_REDIR max),
+ * then closes its own copies once this returns.  Returns the child pid, or a
+ * negative errno (a bad parent_fd fails the whole spawn). */
+long OS1low_process_spawn_redir(const char *path, int argc, char *const argv[],
+                                unsigned int flags,
+                                const struct spawn_redir *redir, int nredir);
 long OS1low_process_spawn_caps(const char *path, int level, unsigned long caps);
+/* OS1low_pipe (Phase 4): create an anonymous byte pipe (OBJ_TYPE_PIPE); fds[0]
+ * is the READ end, fds[1] the WRITE end.  Returns 0 or a negative errno.  The
+ * POSIX pipe() (unistd.h) is a thin wrapper over this. */
+int  OS1low_pipe(int fds[2]);
 int  OS1low_process_kill(int pid);
 int  OS1low_process_wait(int pid);
 /* Like OS1low_process_wait, but on reap writes the process's raw exit_code to
@@ -283,6 +305,35 @@ int OS1_fs_list(const char *path, char *buf, size_t size);
 int OS1_fs_chdir(const char *path);
 int OS1_fs_getcwd(char *buf, size_t size);
 int OS1_fs_unlink(const char *path); /* remove a file/node by path (VFS unlink) */
+
+/* Environment — the OS1 NATIVE surface (ASTRA §6.8: POSIX is a personality
+ * ABOVE this, never beside it).
+ *
+ * The environment is per-process state the kernel owns and inherits at spawn,
+ * structurally identical to cwd — hence its place next to OS1_fs_chdir.
+ *
+ * These functions OWN the fact that the kernel exposes the environment through
+ * the `sys.proc.<pid>.env.*` registry namespace, with `sys.env.*` underneath as
+ * the machine defaults.  Nothing above this layer knows that: getenv/setenv are
+ * a thin mapping onto these, exactly as pipe() maps onto OS1low_pipe() and
+ * chdir() onto OS1_fs_chdir().  The first cut of Phase 17 got this wrong — it
+ * built registry key strings inside getenv/setenv, which put the registry's
+ * path syntax into the POSIX API (plan S8).
+ *
+ * OS1_env_get   0 on hit, negative if this process has no such variable AND no
+ *               machine default exists.  Resolution is process-first: a value
+ *               set by this process SHADOWS the default, for it and its
+ *               children only.
+ * OS1_env_set   set for THIS process.  A NULL/empty value unsets.  Writing
+ *               another process's environment needs privilege and is not
+ *               reachable from here by design.
+ * OS1_env_unset remove this process's value, exposing any machine default.
+ * OS1_env_enum  newline-separated NAMEs of this process's own variables;
+ *               returns the length written, or negative. */
+int OS1_env_get(const char *name, char *buf, size_t size);
+int OS1_env_set(const char *name, const char *value);
+int OS1_env_unset(const char *name);
+int OS1_env_enum(char *buf, size_t size);
 int file_write(const char *path, const void *buf, int size, int offset);
 int file_read(const char *path, void *buf, int size, int offset);
 int list_dir(const char *path, char *buf, size_t size);
@@ -307,6 +358,39 @@ long OS1low_cap_query(int handle);
 long OS1low_cap_grant(int target_pid, int handle, unsigned int rights);
 long OS1_object_read(int handle, void *buf, unsigned long n);
 long OS1_object_write(int handle, const void *buf, unsigned long n);
+
+/* --- Service ports (ASTRA §6.5: a port IS a capability) -------------------
+ * A port lets a client address a SERVICE BY NAME instead of by pid, which is
+ * the seL4 rule ("no PID-by-number access without a capability") that the
+ * ambient pid-addressed OS1low_ipc_send cannot satisfy.  Rights ARE the port
+ * rights: receive = OS1_RIGHT_READ (the service), send = OS1_RIGHT_WRITE
+ * (its clients).  These are thin wrappers over handle_create + object I/O —
+ * no new transport, per ASTRA "the semantics ride on the existing IPC layer".
+ *
+ * NAMING STANDARD for system services (2026-07-18): "OS1nx_<service>".
+ */
+#define OS1NX_PORT_EXEC "OS1nx_exec" /* the nxexec execution service */
+
+/* OS1_port_create - publish a service port and take its RECEIVE right (making
+ * this process its owner).  Fails with -EEXIST if the name is already served,
+ * so a rogue process cannot steal a service identity by racing it. */
+int  OS1_port_create(const char *name);
+/* OS1_port_open - acquire a SEND-only capability to an existing service port.
+ * -ENOENT if no service published that name. */
+int  OS1_port_open(const char *name);
+/* OS1_port_send / OS1_port_recv - one whole ipc_message per call.  send needs
+ * the send right, recv the receive right; recv BLOCKS until a message arrives
+ * and returns 0 when the last sender is gone (so a service loop terminates).
+ * The kernel stamps msg->from, so the sender identity cannot be forged. */
+long OS1_port_send(int handle, const struct ipc_message *msg);
+long OS1_port_recv(int handle, struct ipc_message *msg);
+/* OS1_port_send_caps - send a message AND transfer handles with it.  The
+ * receiver-side indices are written into the leading int slots of msg->payload,
+ * so a service reads usable handles directly.  This is what lets a client
+ * delegate (e.g. pipe ends) to a service it found BY NAME, without ever needing
+ * the service's pid — the property ports exist to provide. */
+long OS1_port_send_caps(int handle, struct ipc_message *msg, const int *fds,
+                        int nfds);
 long OS1_object_wait(int handle, long arg);
 long OS1_object_ctl(int handle, int cmd, long arg);
 
@@ -323,7 +407,8 @@ int OS1_level(void); /* shorthand: just the privilege level (PLVL_*) */
 void print(const char *s);
 void print_hex(unsigned long val);
 int  printf(const char *fmt, ...);
-void printf_win(int win_id, const char *fmt, ...);
+void printf_win(int win_id, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 /* window_write: write text straight to a window you own, by id (#123).
  * Replaces the old fd>=100 overload on write(). */
 void window_write(int win_id, const char *buf, unsigned long count);

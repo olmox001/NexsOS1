@@ -24,7 +24,22 @@ int mkdir(const char *path, mode_t mode);
 double atof(const char *nptr);
 int abs(int j);
 long labs(long j);
+/* Environment (Phase 17).  Backed by the KERNEL's per-process block, reached
+ * through the `sys.proc.<pid>.env.*` registry seam, with `sys.env.*` as the
+ * machine-wide defaults underneath.  See the block comment in lib.c for the
+ * layering and the one documented deviation (getenv's returned pointer is
+ * valid for a bounded number of further getenv calls, not until setenv). */
 char *getenv(const char *name);
+int setenv(const char *name, const char *value, int overwrite);
+int unsetenv(const char *name);
+int putenv(char *string);
+int clearenv(void);
+/* env_names - NexsOS extension replacing POSIX `environ`: fills names[] with
+ * this process's own variable NAMES (values via getenv) and returns the count.
+ * `environ` is deliberately absent — the environment is not a userland array
+ * here, and exposing one would mean publishing a snapshot that silently goes
+ * stale. */
+int env_names(char *names[], int max);
 int system(const char *command);
 /* Quote-aware command-line tokenizer (NexsOS extension): splits s into argv[]
  * on whitespace, keeping '...'/"..." spans as single tokens with the quotes

@@ -144,11 +144,28 @@ void arch_uaccess_fault_fixup(void) {
 
 /* Copy null-terminated string from user space safely with Page Table Switching
  */
-int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
+/*
+ * arch_copy_string_from_user_n - HAL uaccess provider (kernel/hal_uaccess.h).
+ *
+ * Reports what the copy loop already knows and used to discard: how much was
+ * copied, and whether the source was LONGER than the destination.  Without
+ * that, a truncated string is indistinguishable from a complete one and every
+ * caller proceeds with a value the process never passed.
+ */
+int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
+                                 size_t *out_len, int *out_truncated) {
+  if (out_len)
+    *out_len = 0;
+  if (out_truncated)
+    *out_truncated = 0;
   if (!vmm_is_user_addr((uint64_t)src))
     return -1;
 
   if (!current_process || !current_process->page_table)
+    return -1;
+  /* max_len 0 would underflow `max_len - 1` below and run away; a zero-sized
+   * destination cannot hold even the terminator, so refuse it outright. */
+  if (max_len == 0)
     return -1;
 
   uint64_t flagsptr = local_irq_save();
@@ -175,9 +192,14 @@ int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
     if (src[i] == '\0')
       goto out;
   }
+  /* Ran out of destination before the terminator: the source is longer. */
   dest[max_len - 1] = '\0';
+  if (out_truncated)
+    *out_truncated = 1;
 
 out:
+  if (out_len)
+    *out_len = i;
   get_cpu_info()->uaccess_active = 0;
   arch_vmm_set_pgd(old_pgd);
   arch_tlb_flush_all();
@@ -255,4 +277,11 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
   /* Dispatch via agnostic core */
   extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *regs);
   return kernel_syscall_dispatcher(frame);
+}
+
+/* Legacy tolerant spelling — truncation is success.  See kernel/hal_uaccess.h
+ * for why both exist and which call sites must use the strict form instead. */
+int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) {
+  return arch_copy_string_from_user_n(dest, src, max_len, (size_t *)0,
+                                      (int *)0);
 }
