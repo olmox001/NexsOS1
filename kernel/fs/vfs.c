@@ -345,14 +345,18 @@ int vfs_write_allowed(const char *resolved_path) {
   if (proc_is_machine(current_process))
     return 0; /* machine identity: full filesystem authority */
 
-  /* Tree ACL (maintainer policy, docs/userland-port):
-   *   /home             the ONLY tree with expanded authority: every
-   *                     CAP_FS_WRITE holder writes here — except GUEST,
-   *                     confined to /home/shared.
-   *   /sys/bin          MACHINE only — the supervised boot chain; even root
-   *                     cannot swap init/services out from under init.
-   *   everything else   ROOT or machine (all non-home trees stay closed to
-   *                     ordinary users, as before /home existed).
+  /* Tree ACL (maintainer policy, 2026-07-23 — the LEVEL model's filesystem
+   * half; the capability mask is the other half):
+   *   machine           full authority (handled above).
+   *   /home             every CAP_FS_WRITE holder writes here — except GUEST,
+   *                     confined to /home/shared.  (Per-user partitions
+   *                     /mnt/usrN/home are the forward work, B2.3.)
+   *   /sys/bin,/system  MACHINE only — even ROOT is refused.  /sys/bin is the
+   *                     supervised boot chain (init/services must not be
+   *                     swappable out from under init); /system is the machine
+   *                     configuration tree.  These two are the "root has full
+   *                     access EXCEPT these" the maintainer named.
+   *   /sys,/bin,else    ROOT or machine; closed to ordinary users.
    * Exact-match guards cover the directory nodes themselves (unlink/create
    * of "/bin" etc.), not just children. */
   if (strncmp(resolved_path, "/home/", 6) == 0 ||
@@ -366,8 +370,15 @@ int vfs_write_allowed(const char *resolved_path) {
     }
     return 0;
   }
+  /* B2.2: /system joins /sys/bin as MACHINE-only — root is refused here, which
+   * is the "root full access EXCEPT /sys/bin and /system" rule.  Guarding the
+   * path now (before /system is populated — B2.3 owns its creation/layout) is
+   * correct and harmless: nothing writes it today, and the ACL must not depend
+   * on the tree already existing. */
   if (strncmp(resolved_path, "/sys/bin/", 9) == 0 ||
-      strcmp(resolved_path, "/sys/bin") == 0) {
+      strcmp(resolved_path, "/sys/bin") == 0 ||
+      strncmp(resolved_path, "/system/", 8) == 0 ||
+      strcmp(resolved_path, "/system") == 0) {
     pr_warn("vfs: PID %d denied write to machine-only path '%s'\n",
             current_process ? current_process->pid : 0, resolved_path);
     return -EACCES;
