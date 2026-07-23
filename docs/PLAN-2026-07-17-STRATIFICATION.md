@@ -49,12 +49,82 @@ separately, per the standing rule:
 ---
 
 ## Known live bugs (current)
-- **`&&` does not work in nxshell** (maintainer, 2026-07-18): `cd X && cmd`
-  performs only the `cd` — the rest of the line is silently dropped.  The shell
-  has no command SEQUENCING at all (`&&`, `||`, `;`).  Not just a missing
-  feature: silently executing HALF a command line is worse than refusing it, and
-  it already cost a confusing test run.  Belongs with the executor/shell work
-  (Phase 9 family) since parsing now lives in nxexec.
+- ~~**`&&` does not work in nxshell**~~ → **FIXED 2026-07-23** (17e sequencing
+  half).  `split_sequence()` in nxshell.c cuts the RAW line at top-level
+  `&&`/`||`/`;` before tokenisation — before, because the tokeniser strips
+  quotes and after it has run `echo "a && b"` and `echo a && b` are
+  indistinguishable.  Two-character operators are matched ahead of their
+  one-character prefixes, so `cmd &` and `a | b` keep their meaning.
+  Short-circuiting reads `g_last_status` (the shell's `$?`) BEFORE the segment
+  runs, so `a && b || c` behaves.  The rest of 17e (`env`, `export`/`unset`,
+  `$VAR`) is still open.
+
+## REGRESSION BLOCK 2026-07-23 — what the 17a/9a/9b/9c batch broke, and why
+
+Recorded in the plan rather than in a side document because every one of these
+was a SEQUENCING failure, not a coding failure: each change was individually
+reasonable and landed before the thing it depended on.  Maintainer-reported
+symptoms first, then what they actually were.
+
+| symptom | actual defect | fix |
+|---|---|---|
+| "root processes kill nxinit" | `process_kill_subtree()` marked a MACHINE root for kill and killed every windowless descendant; only the final `process_terminate(root)` declined.  Init survived and its entire service set did not — and since 9a/9c those descendants are nxntfy_srv, the execution service, and every job under it. | **ABI-06**: refuse a machine-level root outright, and never put a machine descendant in the kill set. |
+| "foreground commands broke" | `system()` was routed through the exec service (9c), so every child was created BY the service and inherited the SERVICE's cwd (`/`) and ctty (none).  The request format carried `cwd` and the service threw it away (`(void)cwd;`), so the hole was invisible in review — the protocol *looked* like it carried it. | cwd is now sent and honoured; the ROUTING is held until 9d (see below). |
+| "nxinit restarts" | The supervisor probed `service_gone()` every tick even with a respawn already queued — and it PRINTS on every call, so one death produced up to ~900 identical lines per backoff cycle.  A failed `spawn()` also cleared the request and then reset the backoff to base, retrying five times a second forever.  Feeding it: `nxexec --service` EXITED when it lost the port-name race against its own dying predecessor. | probe only while idle; penalise the backoff on spawn failure; the service retries the port claim briefly. |
+| assorted instability | `compositor_create_window()` took `compositor_lock` and then blocked on `sched_lock` via `process_find_by_pid()` — the other half of the AB-BA that `process_terminate()`'s trylock exists to avoid (PROCESS-KILL-MODEL §4, Pitfall A) — and dereferenced the returned `struct process *` after the lock was gone. | `proc_pid_is_privileged()` answers as an int, called BEFORE `compositor_lock`. |
+| latent | `SYS_WAIT` grew an arg1 status pointer, but `_sys_wait(int pid)` still traps without zeroing x1/rsi.  Scratch registers are undefined at a one-argument call, so any caller of the one-arg form makes the kernel write four bytes to a semi-random user address.  **The identical lesson is already in this tree**: `_sys_spawn` zeroes x4/x5 for exactly this reason, three phases earlier. | both stubs zero the register. |
+
+### Job control brought to POSIX (2026-07-23)
+Reported alongside the above: `fg`/`bg` acted without being told which job.
+Omitting the operand IS standard (XCU: *"if job_id is omitted, the current job
+shall be used"*) — what was not standard was everything around it:
+
+- the bare form took **the highest job id still in the table**, which is not the
+  current job and which included **finished** jobs, so `fg` could resume nothing
+  and Ctrl-Z did not change what a bare `fg` would bring back.  There is now a
+  real current/previous job, updated on the two events POSIX defines it by
+  (a job backgrounded, a job stopped), rebuilt from the rule when the job it
+  named goes away;
+- a **bare name** (`fg lua`) resolved by command prefix.  That is not a job id in
+  any shell — it made `fg` guess.  Removed; `%lua` is the spelling.  A bare
+  NUMBER stays, being the one universal extension;
+- `%%`, `%+`, `%-`, `%?string` did not exist.  They do now;
+- `jobs` did not mark which job was current, so its output could not answer the
+  only question a user reads it to answer.  `+`/`-` markers added.
+
+### The one decision that made the rest systemic
+`DESIGN-2026-07-18-NXEXEC-DAEMON.md` §11 says, in the tree, before any of this:
+
+> *"Service start-up is deliberately NOT wired into nxinit yet: that belongs to
+> Phase 12, and putting an unverified service into the boot path would risk the
+> one thing that must keep working."*
+
+9a wired it in anyway.  That is what turned "the exec service has bugs" into
+"the machine has bugs": it put an unverified daemon into PID 1's supervised set
+and, once 9c landed, reparented every non-interactive job underneath it — so a
+service defect, a supervisor defect and a kill-model defect all became the same
+incident.
+
+### 9c is HELD AT ITS OWN GATE (2026-07-23)
+The design doc's migration rule (§6 step 3) is to route a caller through the
+service *"keeping the in-process path behind a fallback until the suite is at
+least as green as before"*.  It was not.  Of the three per-process attributes a
+service-created child inherits wrongly:
+
+- **cwd** — fixed, no new mechanism needed (the body already had the slot);
+- **env** — stall S1, already owned by 9d;
+- **ctty** — NOT fixable at this layer.  `sys_write` resolves stdout from the
+  WRITER's own window, else its `ctty_win` (kernel/core/object.c); the service
+  has neither, so its children write nowhere.  fd redirection cannot patch it:
+  the destination comes from the process, not from the handle.
+
+Carrying ctty means the spawn itself must carry it, which is 9d, which is gated
+by 16.  Inventing a second mechanism now (a post-spawn ctty verb, or hanging it
+off `OBJ_CTL_SETOWNER`) would be the duplicate-mechanism mistake this plan
+already recorded and withdrew when it deleted 17b.  So `system()` uses the
+in-process path and `execsvc_spawn()` stays verified through captest's "exec
+service" section until 9d lands.  **Re-enable it in `lib.c system()` and
+nowhere else.**
 
 ## STATUS INDEX (realigned 2026-07-18)
 
@@ -81,18 +151,42 @@ listed here.
 | 7 | doom revert + lua finish | TODO (last: depends on 9/10) |
 | 8 | naming → bar/icons | **FOLDED INTO 3** (was a duplicate) |
 | 9b | exit status must survive reaping (ROOT CAUSE) | **DONE**, device-verified (47/47) |
-| 9c | system()/os.execute → service (non-interactive) | **DONE**, device-verified |
+| 9c | system()/os.execute → service (non-interactive) | built + verified, but **HELD AT THE GATE** 2026-07-23 (ctty; see the regression block) |
 | 9d | ctty handback; interactive jobs move too | **NEXT** (gated by 16) |
 | 14 | window management kernel-side; nxwins as service | NEW — doc first |
 | 15 | split services from CLI/GUI interfaces | NEW — after 12 + 14 |
 | 5b | UNIFY per-process state: registry view backed by KERNEL | **DONE** 2026-07-18 (`19a367a`), device-verified 50/50 |
 | 17a | env kernel-backed + LIMITS unbound + 5b debt | **IN PROGRESS** (order 1/3) |
-| 17b | env inheritance follows the OWNER; env in the execsvc request | after 17a — **STALL S1** |
-| 17c | PATH becomes configuration, consumed by nxexec | after 17b — **STALL S2** |
+| ~~17b~~ | **DELETED — it was 9d wearing a different hat.**  See below. | folded into **9d**, gated by **16** |
+| 17c | PATH becomes configuration, consumed by nxexec | after 17a — **STALL S2** |
 | 17d | terminal TYPE + terminfo (`TERM` gets a referent) | after 17c — **STALL S3** |
-| 17e | `env` utility + shell `export`/`unset`/`$VAR` | closes 17 |
-| 16 | ROADMAP §1.C scheduler/IPC blockers | then (order 2/3); gates 9d |
+| 17e | `env` utility + shell `export`/`unset`/`$VAR` | closes the UNBLOCKED part of 17 |
+| 16 | ROADMAP §1.C scheduler/IPC blockers | **moved ahead**: gates 9d, which now also carries 17b |
+| HAL-0 | close the remaining HAL divergences | NEW — **BEFORE 10a** (maintainer) |
 | 13 | Orphaned ASTRA §7.11 structural items | NEW — see below |
+
+### S8 — THE LAYERING GAP IN 17a (found by review, 2026-07-18)
+The plan's OWN opening rule, violated by the commit that claimed to follow it:
+
+> *"expose it in our library as two distinct, non-duplicated layers: `OS1_*`
+> (NEXS logic) and the POSIX/libc names (**a thin compatibility mapping over
+> `OS1_*`**)"* — and Phase 10: *"never a parallel implementation"*.
+
+`getenv`/`setenv`/`unsetenv`/`putenv`/`clearenv` were written as POSIX names
+calling `OS1_registry_get/set` DIRECTLY with hand-built `"sys.proc.%d.env.%s"`
+key strings.  There is no `OS1_env_*` layer, so POSIX is not a mapping over the
+OS1 surface — it IS the implementation.  Compare the pattern every other POSIX
+function in `lib.c` follows: `pipe`→`OS1low_pipe`, `chdir`→`OS1_fs_chdir`,
+`isatty`→`OS1low_cap_query`.
+
+The smoking gun is `setenv` rejecting any name containing `'.'` "because the
+registry splits on dots": the registry's PATH SYNTAX had leaked into the POSIX
+API, and the response was to forbid valid variable names rather than to put a
+layer in between.  Maintainer, restating it: *"il nostro kernel non è posix,
+posix viene costruito sopra os1"*.
+
+Owner: **17a-fix**, before 17b.  And the dot restriction is an S5-class
+obstacle, not a constraint — see 17a-fix below.
 
 ### Correction log — planning errors found 2026-07-18 (second pass)
 Recorded rather than silently patched, because the same mistakes recur:
@@ -121,12 +215,12 @@ re-opening a closed one.  Each gets an owning subphase; none is left as a note.
 
 | id | stall | owner |
 |---|---|---|
-| **S1** | env inheritance copies from the MECHANICAL parent (`current_process`).  Since 9c that is **nxexec**, so a job launched through the service inherits the SERVICE's environment, not the requester's.  `proc_get_lineage`'s own comment in-tree warns of exactly this. Without it `env LUA_PATH=x lua ...` — the reason Phase 17 exists — cannot work. | **17b** |
+| **S1** | env inheritance copies from the MECHANICAL parent (`current_process`).  Since 9c that is **nxexec**, so a job launched through the service inherits the SERVICE's environment, not the requester's. | **9d** (see below — this is NOT a separate subphase) |
 | **S2** | The program search is hardcoded inside `nxexec_spawn_search`.  Configuration living as a C literal in the executor blocks Phase 12 (services relocate to `/sys/services` — the search list must move with them) and Phase 11 (per-user paths). | **17c** |
 | **S3** | No terminal TYPE exists.  `term.c` supports H/f, K, J, SGR + xterm-256, DECTCEM `?25h/l`, but nothing names that set, so no ported program can negotiate capabilities.  Blocks any curses-class port and Phase 15 (a service driven from the terminal must know what the terminal can do). | **17d** |
 | **S4** | 5b DEBT (self-inflicted, already committed): `sys.appicon.<name>` stores `name` → `name` — zero information — and the writer keys it on the BASENAME while nxui builds the key from the kernel's FULL path, so it can never hit.  Harmless only because `nxicon_classify` strips the path itself. | **17a** |
 | **S5** | **FIXED CEILINGS TREATED AS CONSTRAINTS.**  Maintainer: *"tutti i limiti vanno risolti in maniera pianificata per slegare il codice, non sono vincoli vanno trattati come ostacoli da risolvere"*.  See the table below. | **17a** + **18** |
-| **S6** | nxshell has no `&&` / `\|\|` / `;` sequencing — it silently runs only the first command.  Documented as a trap for months with no owning phase. | **17e** |
+| ~~**S6**~~ | ~~nxshell has no `&&` / `\|\|` / `;` sequencing~~ — **RESOLVED 2026-07-23**, `split_sequence()` in nxshell.c. | **17e** (done) |
 | **S7** | Both `elf.h` files share the guard `_KERNEL_ELF_H` and the kernel one never DEFINES it, so which ELF definitions exist depends on include ORDER.  Latent, invisible in a passing build. | **10a** |
 
 ### S5 — the ceilings, and what each one actually blocks
@@ -140,6 +234,52 @@ grow without editing unrelated code** is.
 | `NXEXEC_ARGV_MAX 16` | `user/sys/bin/nxexec.h` | a long command line is truncated, not rejected | **18** |
 | `PORT_QUEUE_MAX 32` | `kernel/core/object.c` | bounded ON PURPOSE (it is the DoS fix Phase 16 wants) — **not** a stall; recorded so it is not "fixed" by mistake | — |
 | `REAPED_MAX 32` | `kernel/sched/process.c` | 33 fast-exiting children lose a status | **16**, with the other lifecycle gaps |
+
+## Phase HAL-0 — CLOSE THE REMAINING HAL DIVERGENCES (new; BEFORE 10a)
+Maintainer, 2026-07-18: add a microphase to close the other HAL divergences
+*before* the phase that separates the kernel library from userland.
+
+The reason it comes first: 10a decides what the kernel library IS.  Doing that
+while two architectures silently implement the same primitive with different
+guarantees means codifying the divergence into the split.
+
+**Found while writing the uaccess contract (17a), and worse than the truncation
+bug that exposed it** — these are the same functions:
+
+| primitive | aarch64 | amd64 | divergence |
+|---|---|---|---|
+| `arch_copy_from_user` | `spin_lock(&current_process->mm_lock)` + TTBR0 switch + TLB flush around the copy | **no lock at all**; `NOTE(UACC-AMD64-02)` admits the TOCTOU window | aarch64 serialises against concurrent page-table modification, amd64 does not — an SMP data race if the process unmaps between validation and copy |
+| `arch_copy_to_user` | same locking | none; `NOTE(UACC-AMD64-03)` | write-side mirror of the same race |
+| `arch_copy_string_from_user_n` | same locking | none; `NOTE(UACC-AMD64-04)` also records that the first byte and some page-crossing points are never re-validated | as above, plus a validation gap |
+
+Part of the asymmetry is LEGITIMATE and must be preserved, not "fixed": on
+amd64 the kernel shares the address space with the current process (PML4
+0..255 private, kernel in the high half), so user memory is directly
+addressable and no TTBR/CR3 switch is needed; aarch64 splits TTBR0/TTBR1 and
+must switch.  **The locking difference is NOT legitimate** — it is the same
+concurrency question answered two different ways, in a security-sensitive
+primitive, with the amd64 answer recorded as a known hole for months.
+
+Work:
+1. Extend `kernel/include/kernel/hal_uaccess.h` from a SIGNATURE contract into
+   a SEMANTIC one: state what the provider must guarantee against concurrent
+   address-space modification, and which parts may legitimately differ by ISA.
+   A contract that only fixes the prototypes is what let these drift.
+2. Bring amd64 up to the guarantee (or prove the guarantee is unnecessary
+   there and write down WHY — a documented asymmetry is fine, an undocumented
+   one is not).
+3. Close `UACC-AMD64-04`'s validation gap.
+4. Then CENSUS the rest: every primitive implemented separately under
+   `kernel/arch/*/` with no entry in `arch/arch.h`'s `arch_impl_*` family and
+   no declaration in `kernel/include/kernel/hal*.h`.  Candidates already
+   identified: `arch_timer_init` (no ISR-context contract),
+   `arch_cpu_switch_context` (register/IRQ-state semantics implicit).
+5. `CPU-AMD64-01` (FPU/SSE save-restore on context switch) belongs here too:
+   ASTRA §7.10 records it as landed-and-REVERTED, i.e. unresolved rather than
+   unattempted, and it is an arch primitive with no contract.
+
+Exit criterion: the two architectures differ only where a written contract
+says they may.
 
 ## Phase 18 — UNBIND THE CEILINGS (new, after 17)
 Every item above marked **18**.  Grouped into one phase deliberately: they are
@@ -270,19 +410,38 @@ for an operation touching only the caller.
 - **S4**: drop `sys.appicon.<name>` (it stores `name` → `name`) and let
   `nxicon_classify` do what it already does correctly.
 
-### 17b — inheritance follows the OWNER (S1)
-Blocker restated: `process_create_caps` copies from `current_process`.  Behind
-the exec service that is nxexec.  `owner_pid` is still 0 at create time
-(`SETOWNER` lands after), so "just read owner_pid" does not work either.
+### ~~17b~~ — DELETED.  It is 9d, and 9d is gated by 16.
+**Planning error, corrected 2026-07-18 (maintainer: "il piano è bloccato perché
+un'altra fase lo blocca").**  17b was written as its own subphase.  It is not:
 
-Options, to decide with the maintainer rather than by default:
-- **(a)** the execsvc request CARRIES the environment (the variable-size body
-  can already express it) — explicit, no kernel change, and the service is
-  already the place that knows who asked;
-- **(b)** a spawn-time `owner` field so the kernel copies from the right
-  process — fixes it for EVERY future spawn-through-a-service, not just exec.
+> **9d**: "a job spawned BY the service still has the REQUESTER as its
+> **controlling terminal**"
+> **17b**: "...as its **environment**"
 
-(b) generalises; (a) is smaller and lands sooner.  They are not exclusive.
+One problem — *inherit an attribute from the REQUESTER instead of from the
+mechanical parent* — described twice.  Solving it twice would produce two
+mechanisms for one question, which is the "no duplicated logic" rule broken in a
+fresh place.
+
+**And it is blocked, not merely redundant.**  Any solution needs the service to
+configure the child BEFORE it runs, i.e. a child that exists but is not
+runnable.  That lands directly on `SCHED-CREATED-LEAK-01` — *"a process killed
+while `PROC_CREATED` leaks.  **Directly in the spawn path the execution service
+now drives**"* — which is **Phase 16**, not done.  A suspended child whose
+service dies before resuming it is precisely that leak.  Building the mechanism
+first would mean stacking a new lifecycle state on a known hole.
+
+WITHDRAWN from the tree accordingly: a `SPAWN_FLAG_SUSPENDED` + env-follows-
+SETOWNER implementation was written and then backed out, because it was this
+mistake in code form.
+
+Sequencing consequence — **16 moves ahead of the rest of 9/17**:
+`17a` → `17c` → `17d` → `17e` (none of which need it) → **`16`** → **`9d`
+(carrying the environment with the ctty, one mechanism)** → `10a`.
+
+What 9d must then carry, in one design: ctty, environment, and cwd — every
+per-process attribute that is inherited at creation and therefore wrong when a
+service is the creator.  Doing them together is the point.
 
 ### 17c — PATH becomes configuration (S2)
 `nxexec_spawn_search` gains a PATH-driven search with the current hardcoded
@@ -464,6 +623,21 @@ was busy building a service on exactly that substrate.
 - **`SCHED-05 AB-BA`** — `sched_lock → msg_lock → cpu->sched_lock` inversion;
   ROADMAP asks for a re-audit once server threads raise IPC concurrency, which
   is precisely what the exec daemon does.
+- **`PROC-REF-01` — a `struct process *` outlives the lock that validated it**
+  (found 2026-07-23 while fixing the compositor instance of it).  The compositor
+  case was fixable by not needing the pointer at all
+  (`proc_pid_is_privileged()` returns an int), but two paths genuinely need to
+  OPERATE on another process and have no way to hold it alive:
+  `sys_port_send_caps()` looks up the receiver by `kp->owner_pid` and then
+  installs handles into it under `object_lock`, and
+  `process_redirect_child_fd_from()` takes an owner pointer its callers looked
+  up the same way.  Both windows are real and both are on the service path: a
+  service respawning between the lookup and the install is the case.
+  Deliberately NOT patched in place — the answer is a process REFERENCE (pin /
+  refcount, or performing the operation under `sched_lock`, which today would
+  invert against `object_lock`), and improvising one is how the lock inversion
+  above got introduced in the first place.  It belongs here, with the other
+  lifecycle gaps, because it IS one.
 
 Sequencing: these gate 9d (interactive jobs over the service) more than 9c.
 

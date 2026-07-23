@@ -569,6 +569,35 @@ struct process *process_find_by_pid(int pid) {
 }
 
 /*
+ * proc_pid_is_privileged - a pid's privilege as a VALUE, not as a pointer.
+ *
+ * process_find_by_pid() hands back a pointer that is only valid while the
+ * caller can guarantee the process stays alive — which a caller outside the
+ * scheduler cannot.  Every user of it that only wants to ASK something about
+ * the process therefore has two ways to be wrong: it dereferences after the
+ * lock is gone (use-after-free against a concurrent terminate), and it drags
+ * sched_lock into whatever lock it already holds.
+ *
+ * The compositor is exactly that caller: compositor_create_window() runs under
+ * compositor_lock, and process_terminate() takes sched_lock and then TRYLOCKS
+ * compositor_lock (docs/PROCESS-KILL-MODEL.md §4, Pitfall A).  A blocking
+ * compositor_lock -> sched_lock is the other half of that AB-BA, so the answer
+ * has to be fetched BEFORE compositor_lock is taken, and it has to be a
+ * plain int that cannot dangle.
+ *
+ * Locking: acquires/releases sched_lock internally.  Callers must NOT hold a
+ * lock that any sched_lock holder may block on.
+ */
+int proc_pid_is_privileged(int pid) {
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *p = __process_find_by_pid(pid);
+  int privileged = p ? proc_is_privileged(p) : 0;
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return privileged;
+}
+
+/*
  * process_kill_allowed - ABI-04 capability check for SYS_KILL.
  *
  * Policy (checked under sched_lock so the target cannot be recycled
@@ -589,8 +618,8 @@ struct process *process_find_by_pid(int pid) {
  *
  * Called only from the OBJ_CTL_SETOWNER capability path, which has already
  * checked DESTROY on the target and that the caller is privileged.  The owner
- * must be a LIVE process: allowing a dead/absent pid would leave the job with an
- * authority chain nobody can walk, orphaning it from job control entirely.
+ * must be a LIVE process: allowing a dead/absent pid would leave the job with
+ * an authority chain nobody can walk, orphaning it from job control entirely.
  *
  * Returns 0, -ESRCH if either process is gone.
  */
@@ -613,8 +642,8 @@ int process_set_owner(int pid, int owner_pid) {
  * Exposed so userland can follow INHERITANCE (environment, and later anything
  * else that descends).  The distinction matters since Phase 9c: with execution
  * behind a service the mechanical parent is nxexec, so anything that inherited
- * via parent_pid would inherit from the SERVICE instead of from the process that
- * actually asked — owner_pid is the one to follow.
+ * via parent_pid would inherit from the SERVICE instead of from the process
+ * that actually asked — owner_pid is the one to follow.
  */
 int proc_get_lineage(int pid, int *parent, int *owner) {
   uint64_t flags;
@@ -1584,6 +1613,30 @@ int process_terminate(int pid) {
  * SYS_KILL needs process_kill_allowed) — this is the kernel mechanism behind
  * the OBJ_TYPE_PROCESS / window object close.  Self-exit and fault-kill stay
  * single-process (they call process_terminate directly, not this).
+ *
+ * ABI-06 (FIXED 2026-07-23): a MACHINE-level root is refused OUTRIGHT, not
+ * merely spared at the end.
+ *
+ * process_terminate() has always protected machine processes, so this function
+ * looked safe: kill the subtree, then process_terminate(root) declines.  The
+ * root survived — and every windowless DESCENDANT of it did not.  That is not
+ * a partial application of the guard, it is the inverse of it: PID 1's
+ * windowless children ARE the system (nxntfy_srv, the execution service, the
+ * shell), while init itself is only the thing that restarts them.  Killing the
+ * subtree of an untouchable process destroys exactly what the protection was
+ * written to preserve and leaves a supervisor with nothing left to supervise.
+ *
+ * It became reachable rather than theoretical when Phase 9a put the execution
+ * service under init and 9c reparented every non-interactive job beneath it:
+ * one OBJ_CTL_KILL on PID 1 from any /sys/bin binary — they all run PLVL_ROOT
+ * under the ASTRA per-path preset, and process_kill_allowed() returns 1
+ * unconditionally for a privileged caller — now wipes the whole service set in
+ * one call.  Reported as "root processes kill nxinit"; init is the one thing
+ * that survives, which is why it presents as init restarting everything.
+ *
+ * Machine descendants are excluded from the kill set for the same reason,
+ * belt-and-braces: process_terminate() would refuse them individually, but by
+ * then their own children would already be gone.
  */
 void process_kill_subtree(int root_pid) {
   struct kill_snap {
@@ -1591,6 +1644,7 @@ void process_kill_subtree(int root_pid) {
     int parent;
     signed char windowless;
     signed char kill;
+    signed char machine;
   };
   static const int CAP = MAX_PROCESSES;
   struct kill_snap snap[MAX_PROCESSES];
@@ -1606,6 +1660,7 @@ void process_kill_subtree(int root_pid) {
     snap[n].parent = p->parent_pid;
     snap[n].windowless = -1;
     snap[n].kill = 0;
+    snap[n].machine = proc_is_machine(p) ? 1 : 0;
     if ((int)p->pid == root_pid)
       root_idx = n;
     n++;
@@ -1614,6 +1669,11 @@ void process_kill_subtree(int root_pid) {
 
   if (root_idx < 0)
     return; /* target already gone */
+
+  if (snap[root_idx].machine) {
+    pr_warn("Refusing subtree kill of protected process (PID %d)\n", root_pid);
+    return; /* ABI-06: see the note above — the subtree IS the protection */
+  }
 
   /* TYPE probe, lock-free (Pitfall A): a window owner is SPARED. */
   extern int compositor_get_window_by_pid(int pid);
@@ -1631,8 +1691,8 @@ void process_kill_subtree(int root_pid) {
   for (int pass = 0; pass < n; pass++) {
     int changed = 0;
     for (int i = 0; i < n; i++) {
-      if (snap[i].kill || !snap[i].windowless)
-        continue;
+      if (snap[i].kill || !snap[i].windowless || snap[i].machine)
+        continue; /* ABI-06: a machine descendant is never in the kill set */
       for (int j = 0; j < n; j++) {
         if (snap[j].kill && snap[j].pid == snap[i].parent) {
           snap[i].kill = 1;
@@ -1827,7 +1887,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
     timer_del(&to_free->sleep_timer);
 
     process_handles_destroy(
-        to_free); /* close capability handles, free objects */
+        to_free);           /* close capability handles, free objects */
     proc_env_free(to_free); /* Phase 17: release the environment page */
     if (to_free->kernel_stack)
       pmm_free_pages((void *)(to_free->kernel_stack - STACK_SIZE),
@@ -2213,7 +2273,29 @@ int process_wait(int pid, int *out_code) {
  * PROC_STOPPED; it leaves the runqueue the next time schedule() would pick it
  * (the STOPPED skip in the picker), and a RUNNING target keeps going only
  * until its next reschedule.  A STOPPED/SLEEPING/dying target is left alone.
- * Returns 0, -ESRCH (no such pid), or -EINVAL (not stoppable).
+ * Returns 0, -ESRCH (no such pid), -EINVAL (not stoppable), or -EPERM
+ * (machine-protected target).
+ *
+ * ABI-05 (FOUND alongside USR-INIT-04, FIXED 2026-07-18): process_terminate()
+ * refuses a proc_is_machine() target as a last-resort guard that holds no
+ * matter how the kill was reached (SYS_KILL, OBJ_CTL_KILL, window close —
+ * NOTE(ABI-04) calls this out explicitly).  process_stop() had NO such
+ * guard, and OBJ_CTL_STOP (object.c sys_object_ctl) reaches it through the
+ * exact same DESTROY-capability acquisition path as OBJ_CTL_KILL
+ * (process_kill_allowed(), which returns 1 unconditionally for ANY
+ * privileged caller against ANY target — see object.c's OS1_NS_PROC gate).
+ * Since every /sys/bin binary runs at PLVL_ROOT (privileged) under the
+ * ASTRA per-path preset, any system binary — not just a compromised one, an
+ * ordinary one like nxbar or nxwins — could acquire a DESTROY handle on
+ * init (PID 1, PLVL_MACHINE) or the execution service and call
+ * OBJ_CTL_STOP.  That is WORSE than the kill process_terminate() already
+ * blocks: a stopped process is never a corpse, so it never satisfies
+ * service_gone()'s waitpid(WNOHANG) check, and init supervises nothing else
+ * against itself — a stopped init sits there permanently, un-respawnable,
+ * with no crash logged and no supervisor left running to notice.  Guarding
+ * here mirrors process_terminate() exactly: unconditional, independent of
+ * caller privilege, because that guard's whole point is to hold even when
+ * every earlier gate said yes.
  */
 int process_stop(int pid) {
   uint64_t flags;
@@ -2222,6 +2304,11 @@ int process_stop(int pid) {
   for (int i = 0; i < MAX_PROCESSES; i++) {
     struct process *p = process_pool[i];
     if (p && (int)p->pid == pid) {
+      if (proc_is_machine(p)) {
+        pr_warn("Cannot stop protected process '%s' (PID %d)\n", p->name, pid);
+        rc = -EPERM;
+        break;
+      }
       /* RUNNING/READY/SLEEPING are all stoppable — crucially SLEEPING, since a
        * foreground REPL polling with OS1_sleep() is usually mid-sleep when
        * Ctrl-Z arrives.  The wake sources (proc_sleep_wake, IPC send) only

@@ -173,7 +173,7 @@ static const compositor_background_t backgrounds[BG_COUNT] = {
 
 static int active_style = STYLE_MINIMAL;
 static int active_theme = THEME_DARK;
-static int active_background = BG_GRAY; /* default: the nexs gradient */
+static int active_background = BG_BLUE; /* default: the nexs gradient */
 
 const compositor_style_t *compositor_style_active(void) {
   return &styles[active_style];

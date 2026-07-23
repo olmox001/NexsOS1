@@ -107,6 +107,13 @@ _sys_kill:
 .global _sys_wait
 _sys_wait:
     movq $SYS_WAIT, %rax
+    /* The kernel now also reads arg1 (an OPTIONAL user int* for the exit
+     * status, Phase 9b); this form has none, so ZERO rsi.  rsi is a scratch
+     * register with undefined contents at a one-argument call, so a leftover
+     * value would be misread as a status pointer and the kernel would write
+     * four bytes into a semi-random address in the caller's own address space.
+     * Exactly the hazard _sys_spawn zeroes r8/r9 for. */
+    xorq %rsi, %rsi
     syscall
     ret
 

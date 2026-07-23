@@ -301,6 +301,12 @@ extern struct process *process_create_caps(const char *name, uint8_t priority,
                                            uint8_t level, uint32_t req_caps);
 struct process *process_find_by_pid(int pid);
 struct process *__process_find_by_pid(int pid);
+/* proc_pid_is_privileged - privilege of a pid as a VALUE (0/1).  Use this, not
+ * process_find_by_pid()+proc_is_privileged(), from any subsystem outside the
+ * scheduler: the pointer form both dangles once sched_lock is released and
+ * forces sched_lock underneath whatever lock the caller already holds.  The
+ * compositor is the reason it exists (see the definition, Pitfall A). */
+int proc_pid_is_privileged(int pid);
 /* process_kill_allowed: ABI-04 capability check for SYS_KILL.  Returns
  * non-zero if 'caller' may terminate 'target_pid': itself, any descendant,
  * or anything when it is privileged (machine/root).  Kernel-internal

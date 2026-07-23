@@ -305,6 +305,35 @@ int OS1_fs_list(const char *path, char *buf, size_t size);
 int OS1_fs_chdir(const char *path);
 int OS1_fs_getcwd(char *buf, size_t size);
 int OS1_fs_unlink(const char *path); /* remove a file/node by path (VFS unlink) */
+
+/* Environment — the OS1 NATIVE surface (ASTRA §6.8: POSIX is a personality
+ * ABOVE this, never beside it).
+ *
+ * The environment is per-process state the kernel owns and inherits at spawn,
+ * structurally identical to cwd — hence its place next to OS1_fs_chdir.
+ *
+ * These functions OWN the fact that the kernel exposes the environment through
+ * the `sys.proc.<pid>.env.*` registry namespace, with `sys.env.*` underneath as
+ * the machine defaults.  Nothing above this layer knows that: getenv/setenv are
+ * a thin mapping onto these, exactly as pipe() maps onto OS1low_pipe() and
+ * chdir() onto OS1_fs_chdir().  The first cut of Phase 17 got this wrong — it
+ * built registry key strings inside getenv/setenv, which put the registry's
+ * path syntax into the POSIX API (plan S8).
+ *
+ * OS1_env_get   0 on hit, negative if this process has no such variable AND no
+ *               machine default exists.  Resolution is process-first: a value
+ *               set by this process SHADOWS the default, for it and its
+ *               children only.
+ * OS1_env_set   set for THIS process.  A NULL/empty value unsets.  Writing
+ *               another process's environment needs privilege and is not
+ *               reachable from here by design.
+ * OS1_env_unset remove this process's value, exposing any machine default.
+ * OS1_env_enum  newline-separated NAMEs of this process's own variables;
+ *               returns the length written, or negative. */
+int OS1_env_get(const char *name, char *buf, size_t size);
+int OS1_env_set(const char *name, const char *value);
+int OS1_env_unset(const char *name);
+int OS1_env_enum(char *buf, size_t size);
 int file_write(const char *path, const void *buf, int size, int offset);
 int file_read(const char *path, void *buf, int size, int offset);
 int list_dir(const char *path, char *buf, size_t size);

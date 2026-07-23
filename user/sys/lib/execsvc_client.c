@@ -89,7 +89,33 @@ int execsvc_spawn(int argc, char *const argv[], unsigned int flags) {
   hdr.flags = flags;
   hdr.argc = argc;
   hdr.nredir = 0;
-  body[off++] = '\0'; /* cwd: empty = service default */
+
+  /* cwd: the REQUESTER's, always sent.
+   *
+   * This used to send an empty string commented "service default", which is
+   * not a default at all — the child is created by the service, so it inherits
+   * the SERVICE's cwd ("/"), and every relative path in a command silently
+   * resolved against the wrong directory.  `os.execute("lua main.lua")` from
+   * /home/LUA/luatest looked like a missing file.  cwd is a per-process
+   * attribute that is inherited at creation, so it is wrong for exactly the
+   * same reason the environment is (plan S1) — the difference is that it costs
+   * nothing to carry, because the protocol body already has a slot for it. */
+  {
+    char cwd[EXECSVC_PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) != 0 || !cwd[0])
+      cwd[0] = '\0'; /* unknown: the service leaves its own cwd alone */
+    unsigned int n = (unsigned int)strlen(cwd) + 1;
+    if (n > sizeof(body)) {
+      close(reqp[0]);
+      close(reqp[1]);
+      close(repp[0]);
+      close(repp[1]);
+      OS1low_handle_close(svc);
+      return -1;
+    }
+    memcpy(body + off, cwd, n);
+    off += n;
+  }
   for (int i = 0; i < argc && ok; i++) {
     unsigned int n = (unsigned int)strlen(argv[i]) + 1;
     if (off + n > sizeof(body)) {

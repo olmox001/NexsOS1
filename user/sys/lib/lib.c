@@ -1668,19 +1668,36 @@ int system(const char *command) {
   argv[2] = (char *)command;
   argv[3] = NULL;
 
-  /* Phase 9c: route NON-INTERACTIVE execution through the execution service, so
-   * the POSIX surface stops carrying its own private execution path (nxexec is
-   * meant to be THE executor and the POSIX compatibility point).  Interactive
-   * foreground jobs deliberately still spawn in-process — the service becomes
-   * the spawning parent, and SETOWNER restores authority but NOT the
-   * controlling terminal, so Ctrl-Z/Ctrl-C would break (that is Phase 9d).
+  /* Phase 9c HELD AT THE GATE (2026-07-23) — the in-process path is the one
+   * that runs, and the reason is the migration rule this phase set for itself.
    *
-   * The fallback is required, not defensive padding: the service is supervised
-   * and can be briefly absent across a respawn, and a system() that failed in
-   * that window would be a worse regression than the divergence it removes. */
-  int pid = execsvc_spawn(3, argv, 0);
-  if (pid <= 0)
-    pid = spawn_args(NXSHELL_PATH, 3, argv);
+   * DESIGN-2026-07-18-NXEXEC-DAEMON §6 step 3: route a caller through the
+   * service "keeping the in-process path behind a fallback UNTIL the suite is
+   * at least as green as before".  It was not.  A child created by the service
+   * inherits its per-process attributes from the SERVICE, and two of the three
+   * were simply wrong:
+   *
+   *   cwd  — FIXED: the request now carries the requester's cwd and the
+   *          service adopts it around the spawn (execsvc_client.c, nxexec.c).
+   *          It was being parsed and discarded.
+   *   ctty — NOT FIXED, and NOT fixable here.  sys_write resolves stdout to
+   *          the writer's own window, else its ctty_win (kernel/core/object.c).
+   *          The service has no window and no ctty, so every child it creates
+   *          gets ctty_win = -1 and its output goes NOWHERE.  fd redirection
+   *          cannot patch this: the destination comes from the process, not
+   *          from the handle.
+   *   env  — plan stall S1, same shape, already owned.
+   *
+   * Carrying ctty needs the spawn itself to carry it, which is Phase 9d — and
+   * 9d is gated by Phase 16.  Inventing a second mechanism for it now (a
+   * post-spawn ctty verb, or hanging it off OBJ_CTL_SETOWNER) is exactly the
+   * duplicate-mechanism mistake the plan already recorded and withdrew when it
+   * deleted 17b.  So the routing waits for the ONE mechanism instead.
+   *
+   * execsvc_spawn() is NOT dead: captest exercises the protocol directly
+   * ("exec service" section), so the daemon stays verified while it is off the
+   * POSIX critical path.  Re-enable here — and nowhere else — once 9d lands. */
+  int pid = spawn_args(NXSHELL_PATH, 3, argv);
   if (pid < 0) {
     errno = ENOENT;
     return -1;
@@ -1788,96 +1805,152 @@ int cmdline_split(char *s, char **argv, int max) {
  */
 double atof(const char *nptr) { return (double)atoi(nptr); }
 /* ---------------------------------------------------------------------------
- * ENVIRONMENT (<stdlib.h>) — Phase 17
+ * ENVIRONMENT — Phase 17
  *
- * There is ONE representation and the kernel owns it: a per-process block,
- * inherited at spawn (see struct env_block, kernel/include/kernel/sched.h).
- * This libc is a thin personality over it, reached through the registry seam:
+ * TWO LAYERS, because ASTRA §6.8 and this plan's opening rule both require it:
+ * the kernel is NOT POSIX; POSIX is a personality built ON TOP of OS1.
  *
- *   sys.proc.<pid>.env.<NAME>   the calling process's own variables (virtual,
- *                               computed from the scheduler on every read)
- *   sys.env.<NAME>              the MACHINE's defaults, seeded by init — real
- *                               stored keys, because they are configuration
- *                               and configuration is what the registry is for
- *                               (ASTRA §6.6)
+ *   OS1_env_*   the NATIVE surface.  Owns the one fact that the kernel exposes
+ *               the environment through the `sys.proc.<pid>.env.*` registry
+ *               namespace, with `sys.env.*` beneath it as machine defaults.
+ *   getenv/...  the POSIX personality: a THIN mapping over OS1_env_*, with no
+ *               knowledge of the registry whatsoever.
  *
- * getenv resolves process-first, then defaults.  So a program inherits the
- * system's PATH without anyone having to copy it into every process at spawn,
- * and a `setenv("PATH", ...)` shadows it for that process and its children
- * only.  Two layers, each with one owner — not two copies of one thing.
- *
- * Deliberate deviation from POSIX, stated rather than hidden: the string
- * returned by getenv() lives in a small rotating buffer pool, so it is valid
- * until GETENV_SLOTS further getenv() calls have happened, not until the next
- * setenv().  Callers that keep a value across many lookups must strdup it.
- * The alternative — a per-name heap cache that never frees — leaks by design.
+ * The first cut of this phase collapsed the two — POSIX built registry key
+ * strings itself — which put the registry's path syntax into the POSIX API and
+ * led to setenv() rejecting any name containing a '.'.  That restriction was
+ * never real: the kernel's virtual-key router hands everything after "env." to
+ * the scheduler as one opaque name, so dots always worked.  It was a limit
+ * invented to serve a layering mistake.
  * ------------------------------------------------------------------------- */
+
+#define OS1_ENV_KEYMAX 96
+
+/* env_self - our own pid, resolved once.
+ *
+ * getpid() is a syscall, and every env operation needs the pid to name its own
+ * branch of the namespace — so the naive form costs TWO syscalls per getenv(),
+ * on a function that path resolution calls per spawn.  A process's pid never
+ * changes (pids come from a monotonic counter and there is no fork), so the
+ * value is cacheable without an invalidation story. */
+static int env_self(void) {
+  static int self_pid;
+  if (self_pid <= 0)
+    self_pid = getpid();
+  return self_pid;
+}
+
+/* env_key - build the per-process namespace path.  The ONLY place in userland
+ * that knows this syntax. */
+static int env_key(char *out, size_t size, const char *name) {
+  if (!name || !*name || strchr(name, '='))
+    return -1; /* POSIX: '=' separates name from value, so it cannot be in one */
+  return (snprintf(out, size, "sys.proc.%d.env.%s", env_self(), name) > 0) ? 0
+                                                                          : -1;
+}
+
+int OS1_env_get(const char *name, char *buf, size_t size) {
+  char key[OS1_ENV_KEYMAX];
+  if (!buf || size == 0 || env_key(key, sizeof(key), name) != 0)
+    return -1;
+  /* Process value first: it SHADOWS the machine default, which is the whole
+   * point of having both layers. */
+  if (OS1_registry_get(key, buf, size) == 0)
+    return 0;
+  if (snprintf(key, sizeof(key), "sys.env.%s", name) <= 0)
+    return -1;
+  if (OS1_registry_get(key, buf, size) == 0 && buf[0])
+    return 0;
+  return -1;
+}
+
+int OS1_env_set(const char *name, const char *value) {
+  char key[OS1_ENV_KEYMAX];
+  if (env_key(key, sizeof(key), name) != 0)
+    return -1;
+  /* Writes always land on the PROCESS layer, never on sys.env.*: a program
+   * calling setenv means "for me and my children", not "reconfigure the
+   * machine".  Keeping that distinction here is why setenv needs no privilege
+   * while editing the defaults still does. */
+  return OS1_registry_set(key, value ? value : "") == 0 ? 0 : -1;
+}
+
+int OS1_env_unset(const char *name) {
+  char key[OS1_ENV_KEYMAX];
+  if (env_key(key, sizeof(key), name) != 0)
+    return -1;
+  OS1_registry_del(key); /* DEL and set-to-empty both clear the slot */
+  return 0;
+}
+
+int OS1_env_enum(char *buf, size_t size) {
+  char prefix[OS1_ENV_KEYMAX];
+  if (!buf || size == 0)
+    return -1;
+  if (snprintf(prefix, sizeof(prefix), "sys.proc.%d.env.", env_self()) <= 0)
+    return -1;
+  int n = OS1_registry_enum_under(prefix, buf, size - 1);
+  if (n <= 0) {
+    buf[0] = '\0';
+    return 0;
+  }
+  buf[n] = '\0';
+  /* Enumeration returns FULL keys; strip the namespace so callers above this
+   * layer never see it.  Rewrites in place, line by line. */
+  size_t plen = strlen(prefix);
+  char *w = buf;
+  for (char *r = buf; *r;) {
+    char *nl = strchr(r, '\n');
+    size_t len = nl ? (size_t)(nl - r) : strlen(r);
+    const char *nm = (len > plen && strncmp(r, prefix, plen) == 0) ? r + plen : r;
+    size_t nlen = len - (size_t)(nm - r);
+    memmove(w, nm, nlen);
+    w += nlen;
+    if (!nl)
+      break;
+    *w++ = '\n';
+    r = nl + 1;
+  }
+  *w = '\0';
+  return (int)(w - buf);
+}
+
+/* --- POSIX personality (<stdlib.h>) — a thin mapping, nothing more --------
+ *
+ * Documented deviation: the string returned by getenv() lives in a small
+ * rotating buffer pool, so it is valid until GETENV_SLOTS further getenv()
+ * calls, not until the next setenv().  Callers keeping a value across many
+ * lookups must copy it.  The alternative — a per-name heap cache that is never
+ * freed — leaks by design. */
 #define GETENV_SLOTS 4
 #define GETENV_VALMAX 128
 
 char *getenv(const char *name) {
   static char slots[GETENV_SLOTS][GETENV_VALMAX];
   static int next_slot;
-  if (!name || !*name)
-    return NULL;
-
-  char key[96];
   char *out = slots[next_slot];
-
-  /* Own environment first: a process-level value SHADOWS the machine default,
-   * which is the whole point of having both layers. */
-  snprintf(key, sizeof(key), "sys.proc.%d.env.%s", getpid(), name);
-  if (OS1_registry_get(key, out, GETENV_VALMAX) == 0) {
-    next_slot = (next_slot + 1) % GETENV_SLOTS;
-    return out;
-  }
-
-  snprintf(key, sizeof(key), "sys.env.%s", name);
-  if (OS1_registry_get(key, out, GETENV_VALMAX) == 0 && out[0]) {
-    next_slot = (next_slot + 1) % GETENV_SLOTS;
-    return out;
-  }
-  return NULL;
+  if (OS1_env_get(name, out, GETENV_VALMAX) != 0)
+    return NULL;
+  next_slot = (next_slot + 1) % GETENV_SLOTS;
+  return out;
 }
 
-/*
- * setenv - set a variable in THIS process's environment.
- *
- * Writes always land on the process layer, never on `sys.env.*`: a program
- * calling setenv() means "for me and my children", not "reconfigure the
- * machine".  Keeping that distinction in the seam is why setenv needs no
- * privilege while editing the defaults still does.
- */
 int setenv(const char *name, const char *value, int overwrite) {
-  if (!name || !*name || strchr(name, '=') || strchr(name, '.'))
-    return -1; /* '.' would split into extra registry path segments */
   if (!overwrite && getenv(name))
     return 0;
-  char key[96];
-  snprintf(key, sizeof(key), "sys.proc.%d.env.%s", getpid(), name);
-  return OS1_registry_set(key, value ? value : "") == 0 ? 0 : -1;
+  return OS1_env_set(name, value);
 }
 
-int unsetenv(const char *name) {
-  if (!name || !*name || strchr(name, '='))
-    return -1;
-  char key[96];
-  snprintf(key, sizeof(key), "sys.proc.%d.env.%s", getpid(), name);
-  /* DEL and "set to empty" are the same operation on the virtual namespace;
-   * either clears the slot. */
-  OS1_registry_del(key);
-  return 0;
-}
+int unsetenv(const char *name) { return OS1_env_unset(name); }
 
 /*
  * putenv - POSIX's older "NAME=VALUE" form.
  *
- * POSIX says the caller's string BECOMES part of the environment (so later
- * edits to it are visible).  We cannot honour that — the storage is in the
- * kernel — so this parses and copies, exactly like setenv.  Documented here
- * because a caller relying on the aliasing would otherwise be silently wrong;
- * in practice essentially nobody does, and every such caller in this tree
- * passes a string literal.
+ * POSIX says the caller's string BECOMES part of the environment, so later
+ * edits to it are visible.  We cannot honour that — the storage is in the
+ * kernel — so this parses and copies, like setenv.  Stated because a caller
+ * relying on the aliasing would otherwise be silently wrong; in practice every
+ * caller in this tree passes a string literal.
  */
 int putenv(char *string) {
   if (!string)
@@ -1885,7 +1958,7 @@ int putenv(char *string) {
   const char *eq = strchr(string, '=');
   if (!eq)
     return unsetenv(string); /* "NAME" with no '=' unsets, per POSIX */
-  char name[64];
+  char name[OS1_ENV_KEYMAX];
   size_t nl = (size_t)(eq - string);
   if (nl == 0 || nl >= sizeof(name))
     return -1;
@@ -1896,47 +1969,34 @@ int putenv(char *string) {
 
 int clearenv(void) {
   char buf[512];
-  char prefix[64];
-  snprintf(prefix, sizeof(prefix), "sys.proc.%d.env.", getpid());
-  int n = OS1_registry_enum_under(prefix, buf, sizeof(buf) - 1);
-  if (n <= 0)
+  if (OS1_env_enum(buf, sizeof(buf)) <= 0)
     return 0;
-  buf[n] = '\0';
   char *save = NULL;
   for (char *k = strtok_r(buf, "\n", &save); k; k = strtok_r(NULL, "\n", &save))
-    OS1_registry_del(k);
+    OS1_env_unset(k);
   return 0;
 }
 
 /*
- * env_names - NexsOS extension: list this process's own variable NAMES.
+ * env_names - NexsOS extension replacing POSIX `environ`.
  *
- * The POSIX way to enumerate is the `environ` global, which assumes the
- * environment is a userland array the process can point at.  Here it is kernel
- * state, so exposing a `char **environ` would mean materialising a snapshot
- * and then lying about how fresh it is.  An explicit enumerator says what it
- * actually does: names only, ask getenv() for the values.
- *
- * Returns the number of names written.
+ * The POSIX way to enumerate assumes the environment is a userland array the
+ * process can point at.  Here it is kernel state, so a `char **environ` would
+ * mean publishing a snapshot and then lying about how fresh it is.  An explicit
+ * enumerator says what it actually does: names only, values via getenv().
  */
 int env_names(char *names[], int max) {
   static char buf[512];
-  char prefix[64];
   int count = 0;
-  snprintf(prefix, sizeof(prefix), "sys.proc.%d.env.", getpid());
-  int n = OS1_registry_enum_under(prefix, buf, sizeof(buf) - 1);
-  if (n <= 0)
+  if (OS1_env_enum(buf, sizeof(buf)) <= 0)
     return 0;
-  buf[n] = '\0';
-  size_t plen = strlen(prefix);
   char *save = NULL;
   for (char *k = strtok_r(buf, "\n", &save); k && count < max;
-       k = strtok_r(NULL, "\n", &save)) {
-    /* Enumeration returns FULL keys; hand back just the variable name. */
-    names[count++] = (strncmp(k, prefix, plen) == 0) ? k + plen : k;
-  }
+       k = strtok_r(NULL, "\n", &save))
+    names[count++] = k;
   return count;
 }
+
 int stat(const char *path, struct stat *buf) {
   if (buf)
     memset(buf, 0, sizeof(struct stat));

@@ -161,7 +161,27 @@ static void execsvc_handle_spawn(const struct ipc_message *m) {
       }
       off++;
     }
-    (void)cwd; /* honoured once the service adopts per-request cwd */
+    /* cwd: adopt the REQUESTER's for the duration of this spawn.
+     *
+     * The child inherits cwd from its CREATOR, which is this service — so
+     * without this every relative path in a served command resolved against
+     * the service's "/" instead of the caller's directory.  It was parsed and
+     * then discarded ((void)cwd), which made the hole invisible in review: the
+     * protocol looked like it carried cwd and nothing consumed it.
+     *
+     * Adopt-spawn-restore is safe HERE and only here: the service loop is
+     * single-threaded and serves one request to completion, so no second
+     * request can observe the borrowed directory.  It is a stopgap with a
+     * named successor — Phase 9d carries cwd, ctty and environment in the
+     * spawn itself, as ONE mechanism, which is what removes the borrowing.
+     *
+     * Restoring to "/" rather than to the previous value is deliberate: "/"
+     * is the service's own cwd at start-up and the only value it is ever
+     * supposed to hold at rest, so a failed restore cannot strand the service
+     * inside a client's directory. */
+    int cwd_adopted = 0;
+    if (ok_parse && cwd[0])
+      cwd_adopted = (chdir(cwd) == 0);
 
     /* Translate the abstract fd sources into kernel redirections (Q2 hybrid):
      *   GRANTED   -> the client delegated the handle to US, so it indexes our
@@ -212,6 +232,11 @@ static void execsvc_handle_spawn(const struct ipc_message *m) {
         rep.pid = -ENOENT;
       }
     }
+
+    /* Give the borrowed directory back before answering, so the service is at
+     * rest in a known place no matter which branch above ran. */
+    if (cwd_adopted)
+      chdir("/");
   }
 
   write(reph, (const char *)&rep, sizeof(rep));
@@ -236,9 +261,34 @@ static void execsvc_handle_spawn(const struct ipc_message *m) {
  * it, OS1_port_create fails and this instance exits instead of competing.
  */
 static int nxexec_service(void) {
-  int port = OS1_port_create(OS1NX_PORT_EXEC);
+  /*
+   * Claiming the name is RETRIED, briefly, before giving up.
+   *
+   * The port is unpublished when its last RECEIVER handle closes, which
+   * happens while the dead instance's handle table is being torn down — after
+   * init has already seen the corpse and queued a respawn.  So the ordinary,
+   * expected respawn lands in a window where the old name is still served and
+   * OS1_port_create() returns -EEXIST.  Exiting there turned a clean restart
+   * into a crash loop: init respawns, the new instance loses the same race,
+   * exits, init respawns... which is what the supervisor's backoff then had to
+   * absorb, and what presented as init endlessly restarting things.
+   *
+   * A bounded retry — not an unbounded one: if some OTHER process genuinely
+   * holds the name, this instance must still exit and say so rather than spin
+   * forever competing for a service identity it does not own.
+   */
+#define SERVICE_CLAIM_TRIES 20
+#define SERVICE_CLAIM_WAIT_MS 100
+  int port = -1;
+  for (int attempt = 0; attempt < SERVICE_CLAIM_TRIES; attempt++) {
+    port = OS1_port_create(OS1NX_PORT_EXEC);
+    if (port >= 0)
+      break;
+    OS1_sleep(SERVICE_CLAIM_WAIT_MS);
+  }
   if (port < 0) {
-    printf("nxexec: cannot publish %s (already served?)\n", OS1NX_PORT_EXEC);
+    printf("nxexec: cannot publish %s after %d attempts (already served?)\n",
+           OS1NX_PORT_EXEC, SERVICE_CLAIM_TRIES);
     return 1;
   }
   printf("nxexec: execution service listening on %s\n", OS1NX_PORT_EXEC);

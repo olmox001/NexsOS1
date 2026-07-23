@@ -25,7 +25,31 @@
 #include <object.h> /* struct window_info, WININFO_* — windows as objects (§6.7) */
 #include <stdint.h>
 
-#define MAX_WINDOWS 32
+#define MAX_WINDOWS 40
+
+/*
+ * GFX-COMP-RESERVE-02: MAX_WINDOWS is one flat pool shared by every caller.
+ * A stress test that opens ordinary user windows up to window_count ==
+ * MAX_WINDOWS starves compositor_create_window() for EVERYONE, including a
+ * supervised system service (nxui/dock, nxbar, the launcher) that init just
+ * respawned after a crash — its create_window() call fails exactly like an
+ * unprivileged app's would, and the service exits again (see nxui.c/nxbar.c
+ * main(): `if (g_win < 0) return 1;`).  init's backoff queue (USR-INIT-04)
+ * keeps retrying it, but it can never succeed until user windows close back
+ * below the cap — a stress test can hold the desktop chrome down indefinitely.
+ *
+ * Fix: reserve the last RESERVED_SYSTEM_SLOTS pool entries for PRIVILEGED
+ * callers only (PLVL_ROOT/PLVL_MACHINE — proc_is_privileged(), same check
+ * process.c/object.c already gate other root-only operations on).  Ordinary
+ * PLVL_USER/PLVL_GUEST windows are capped at MAX_WINDOWS -
+ * RESERVED_SYSTEM_SLOTS; a privileged caller may use the full pool.  Sized
+ * for the known supervised /sys/bin singletons (dock, nxbar, launcher) plus
+ * one spare so a destroy+recreate resize (nxui's dock_reinit / nxbar's
+ * set_window_height) never has to land in the exact instant a slot is free
+ * to avoid double-booking itself.
+ */
+#define RESERVED_SYSTEM_SLOTS 8
+#define MAX_USER_WINDOWS (MAX_WINDOWS - RESERVED_SYSTEM_SLOTS)
 
 /* Desktop */
 /* ========================================================================= */
@@ -614,6 +638,24 @@ static void draw_rect_internal(int window_id, int x, int y, int w, int h,
 
 int compositor_create_window(int x, int y, int w, int h, const char *title,
                              int pid) {
+  /*
+   * GFX-COMP-RESERVE-02: the caller's privilege is resolved BEFORE
+   * compositor_lock is taken, and as an int rather than a struct pointer.
+   *
+   * Both properties are load-bearing.  process_terminate() holds sched_lock and
+   * TRYLOCKS compositor_lock (docs/PROCESS-KILL-MODEL.md §4, Pitfall A); a
+   * blocking compositor_lock -> sched_lock here would close that AB-BA, on the
+   * hottest path the compositor has.  And a `struct process *` fetched by
+   * process_find_by_pid() is already stale when the function returns — the
+   * target can be terminated and its page freed before it is dereferenced.
+   * proc_pid_is_privileged() answers under sched_lock and lets nothing escape.
+   *
+   * An unknown pid (a caller that raced its own exit) reads as UNPRIVILEGED:
+   * fail closed into the smaller user-window budget rather than hand reserved
+   * capacity to a caller that can no longer be identified.
+   */
+  int privileged = proc_pid_is_privileged(pid);
+
   uint64_t flags;
   spin_lock_irqsave(&compositor_lock, &flags);
 
@@ -623,8 +665,25 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     return -1;
   }
 
-  if (window_count >= MAX_WINDOWS) {
-    pr_err("%s", "Compositor: Max windows reached\n");
+  /*
+   * An unprivileged caller (ordinary app) is capped below the full pool so it
+   * can never crowd out the reserved slots a respawning system service needs.
+   * A privileged caller (PLVL_ROOT / PLVL_MACHINE — /sys/bin services under
+   * the ASTRA per-path preset) is checked against the full MAX_WINDOWS:
+   * privileged windows are a small, fixed, supervised set (dock, nxbar,
+   * launcher, plus transient destroy+recreate overlap), never something a
+   * stress test grows without bound, so they don't need — and shouldn't get —
+   * a *tighter* cap than before.  `privileged` was resolved at entry; see the
+   * note there for why it cannot be resolved here.
+   */
+  int cap = privileged ? MAX_WINDOWS : MAX_USER_WINDOWS;
+
+  if (window_count >= cap) {
+    pr_err(
+        "%s",
+        privileged
+            ? "Compositor: Max windows reached\n"
+            : "Compositor: Max user windows reached (system slots reserved)\n");
     spin_unlock_irqrestore(&compositor_lock, flags);
     return -1;
   }
@@ -1577,8 +1636,8 @@ void compositor_handle_click(int button, int state) {
      * window-aware subtree kill takes the window owner and its WINDOWLESS
      * children (nxexec's hosted terminal program), sparing windowed children.
      * The actual page/stack free is deferred to the scheduler reaper, so the
-     * IRQ-context call here only marks the subtree — the heavy compositor render
-     * that used to smash a stack from this context is now in userspace
+     * IRQ-context call here only marks the subtree — the heavy compositor
+     * render that used to smash a stack from this context is now in userspace
      * (SCHED-STACK-ISO), so the IRQ path is shallow. */
     window_request_close(close_pid);
   }
@@ -1797,8 +1856,8 @@ static void compositor_render_internal(void) {
    * the surface below carries its TRUE allocation (S-STAB): the whole raster
    * path only clips against bb_w/bb_h, so if those ever exceeded the allocation
    * (a geometry desync) every chrome/content write would run off the end into
-   * kernel RAM.  We hold compositor_lock here, so bb_width/height/pages/backbuffer
-   * are a consistent set. */
+   * kernel RAM.  We hold compositor_lock here, so
+   * bb_width/height/pages/backbuffer are a consistent set. */
   int bb_w = bb_width;
   int bb_h = bb_height;
   int bb_pg = bb_pages;

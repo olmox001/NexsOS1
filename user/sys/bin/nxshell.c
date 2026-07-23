@@ -156,10 +156,8 @@ static void run_fg_job(int pid, const char *cmd) {
    * `nxshell -c` returns, so os.execute()/system() observe real failures). */
   if (nxexec_run_foreground_ex(pid, &g_last_status) == NXEXEC_JOB_STOPPED) {
     int id = nxjobs_add(&g_jobs, pid, cmd);
-    int s = nxjobs_find(&g_jobs, id);
-    if (s >= 0)
-      g_jobs.slot[s].state = NXJOB_STOPPED;
-    printf("[%d]  Stopped   %s\n", id, cmd);
+    nxjobs_mark_stopped(&g_jobs, nxjobs_find(&g_jobs, id));
+    printf("[%d]+ Stopped   %s\n", id, cmd);
   }
 }
 
@@ -356,12 +354,11 @@ static void cmd_help(void) {
   print("  id              Show privilege level and capabilities\n");
   print("  about           About this system\n");
   print("  exec <prog>     Run a program with arguments\n");
-  print("  jobs            List background jobs\n");
-  print("  fg [%N|name]     Bring job N (or the most recent) to the "
-        "foreground\n");
-  print("  bg [%N|name]     Resume a stopped job in the background\n");
+  print("  jobs            List jobs ('+' = current, '-' = previous)\n");
+  print("  fg [job]        Bring a job to the foreground\n");
+  print("  bg [job]        Resume a stopped job in the background\n");
   print("  attach <pid>    Track an already-running process as a job\n");
-  print("  disown [%N]      Stop tracking a job (it keeps running)\n");
+  print("  disown [job]    Stop tracking a job (it keeps running)\n");
   print("  exit            Close this shell\n");
   print("\n\033[1;33mLine editing:\033[0m\n");
   print("  \xe2\x86\x90/\xe2\x86\x92 Home/End   move cursor    Delete   "
@@ -376,6 +373,15 @@ static void cmd_help(void) {
   print("  cmd > file      stdout to file      cmd >> file   append\n");
   print("  cmd < file      stdin from file     cmd 2> file   stderr to file\n");
   print("  cmd | cmd       pipe stdout into the next command\n");
+  print("\n\033[1;33mJob ids (POSIX):\033[0m\n");
+  print("  (omitted)       the current job     %%  %+   the current job\n");
+  print("  %N  or  N       job number N        %-       the previous job\n");
+  print("  %str            command starts with str\n");
+  print("  %?str           command contains str\n");
+  print("\n\033[1;33mSequencing:\033[0m\n");
+  print("  a ; b           run b after a, whatever a returned\n");
+  print("  a && b          run b only if a succeeded\n");
+  print("  a || b          run b only if a failed\n");
   print("\n\033[1;33mPrograms in /sys/bin:\033[0m\n");
   help_list_programs("/sys/bin");
   print("\n\033[1;33mPrograms in Bin are not listed for brevity\033[0m\n");
@@ -398,16 +404,14 @@ static void print_prompt(void) {
   print_prompt_only();
 }
 
-static void process_command(void) {
-  if (g_line.len == 0)
-    return;
-
-  char line[CMD_MAX];
-  strncpy(line, g_line.buf, sizeof(line) - 1);
-  line[sizeof(line) - 1] = '\0';
-
-  nxline_history_add(&g_line, g_line.buf);
-
+/*
+ * run_command_line - execute ONE simple command (no `&&`/`||`/`;`).
+ *
+ * `line` is consumed in place by the tokeniser.  Sequencing is the caller's
+ * job (process_command below); this function is the unit a connector decides
+ * to run or skip, and it owns g_last_status for that unit.
+ */
+static void run_command_line(char *line) {
   char *argv[MAX_ARGV];
   int argc = tokenize(line, argv, MAX_ARGV);
   if (argc == 0)
@@ -433,7 +437,6 @@ static void process_command(void) {
   for (int i = 0; i < argc; i++) {
     if (strcmp(argv[i], "|") == 0) {
       run_pipeline(i, argc, argv, background);
-      nxline_reset(&g_line);
       return;
     }
   }
@@ -607,26 +610,37 @@ static void process_command(void) {
     nxjobs_poll(&g_jobs);
     nxjobs_print(&g_jobs);
   } else if (strcmp(cmd, "fg") == 0) {
+    nxjobs_poll(&g_jobs); /* don't resolve against jobs that already finished */
     int slot = nxjobs_resolve(&g_jobs, argc >= 2 ? argv[1] : (const char *)0);
     if (slot < 0) {
-      print("fg: no such job\n");
+      /* Distinguish the two failures: with no operand the shell had nothing to
+       * choose from, which is not the same as being handed a job id that does
+       * not exist. */
+      if (argc >= 2)
+        printf("fg: %s: no such job\n", argv[1]);
+      else
+        print("fg: no current job\n");
     } else {
       printf("%s\n", g_jobs.slot[slot].cmd);
       if (g_jobs.slot[slot].state == NXJOB_STOPPED)
         nxjobs_cont(&g_jobs, slot); /* resume before foregrounding */
       if (run_foreground(g_jobs.slot[slot].pid) == NXEXEC_JOB_STOPPED) {
-        g_jobs.slot[slot].state = NXJOB_STOPPED; /* Ctrl-Z'd again */
-        printf("[%d]  Stopped   %s\n", g_jobs.slot[slot].id,
+        nxjobs_mark_stopped(&g_jobs, slot); /* Ctrl-Z'd again: current job */
+        printf("[%d]+ Stopped   %s\n", g_jobs.slot[slot].id,
                g_jobs.slot[slot].cmd);
       } else {
         nxjobs_reap(&g_jobs, slot);
       }
     }
   } else if (strcmp(cmd, "bg") == 0) {
+    nxjobs_poll(&g_jobs);
     int slot = nxjobs_resolve(&g_jobs, argc >= 2 ? argv[1] : (const char *)0);
-    if (slot < 0)
-      print("bg: no such job\n");
-    else if (g_jobs.slot[slot].state != NXJOB_STOPPED)
+    if (slot < 0) {
+      if (argc >= 2)
+        printf("bg: %s: no such job\n", argv[1]);
+      else
+        print("bg: no current job\n");
+    } else if (g_jobs.slot[slot].state != NXJOB_STOPPED)
       print("bg: job already running\n");
     else if (nxjobs_cont(&g_jobs, slot) == 0)
       printf("[%d] %s &\n", g_jobs.slot[slot].id, g_jobs.slot[slot].cmd);
@@ -709,6 +723,115 @@ static void process_command(void) {
     } else {
       run_fg_job(pid, argv[0]);
     }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Command SEQUENCING — `&&`, `||`, `;`  (plan stall S6, phase 17e)
+ *
+ * `cd X && cmd` used to perform only the `cd`.  nxshell had no sequencing at
+ * all, so `&&` tokenised into an argument nobody ever looked at and the rest
+ * of the line was dropped without a word.  Silently running HALF a command
+ * line is worse than refusing it: it produced test runs that read as passes,
+ * and the plan carried it as a documented trap for months with no owner.
+ *
+ * The split runs on the RAW line, BEFORE tokenisation, because the tokeniser
+ * strips quotes — after it has run, `echo "a && b"` and `echo a && b` are
+ * indistinguishable.  So the scanner has to repeat the tokeniser's quoting
+ * rules (lib.c cmdline_split); the two must agree on what counts as quoted,
+ * or a separator inside a string would split the line.
+ *
+ * Two-character operators are tested BEFORE their one-character prefixes, so
+ * background (`cmd &`) and pipelines (`a | b`) keep their existing meaning.
+ * ------------------------------------------------------------------------- */
+#define SEQ_MAX 8   /* segments per line; a refusal, never a silent truncation */
+#define SEQ_ALWAYS 0 /* `;` and the implicit connector before the first segment */
+#define SEQ_AND 1    /* `&&` — run only if the previous segment SUCCEEDED */
+#define SEQ_OR 2     /* `||` — run only if the previous segment FAILED */
+
+/* split_sequence - cut `line` into segments at top-level `&&`/`||`/`;`.
+ *
+ * Writes NULs into `line`.  conn[i] is the connector that PRECEDES seg[i]
+ * (conn[0] is always SEQ_ALWAYS).  Returns the segment count, or -1 if the
+ * line has more than `max` of them. */
+static int split_sequence(char *line, char *seg[], int conn[], int max) {
+  int n = 1;
+  char *p = line;
+  seg[0] = p;
+  conn[0] = SEQ_ALWAYS;
+
+  while (*p) {
+    if (*p == '"' || *p == '\'') { /* skip a quoted run, cmdline_split's rules */
+      char q = *p++;
+      while (*p && *p != q) {
+        if (q == '"' && *p == '\\' && (p[1] == '"' || p[1] == '\\'))
+          p++;
+        p++;
+      }
+      if (*p)
+        p++;
+      continue;
+    }
+
+    int kind, len;
+    if (p[0] == '&' && p[1] == '&') {
+      kind = SEQ_AND;
+      len = 2;
+    } else if (p[0] == '|' && p[1] == '|') {
+      kind = SEQ_OR;
+      len = 2;
+    } else if (p[0] == ';') {
+      kind = SEQ_ALWAYS;
+      len = 1;
+    } else {
+      p++;
+      continue;
+    }
+
+    if (n >= max)
+      return -1;
+    *p = '\0'; /* terminate the segment that ends here */
+    p += len;  /* and step past the whole operator */
+    conn[n] = kind;
+    seg[n] = p;
+    n++;
+  }
+  return n;
+}
+
+static void process_command(void) {
+  if (g_line.len == 0)
+    return;
+
+  char line[CMD_MAX];
+  strncpy(line, g_line.buf, sizeof(line) - 1);
+  line[sizeof(line) - 1] = '\0';
+
+  nxline_history_add(&g_line, g_line.buf);
+
+  char *seg[SEQ_MAX];
+  int conn[SEQ_MAX];
+  int nseg = split_sequence(line, seg, conn, SEQ_MAX);
+  if (nseg < 0) {
+    printf("nxshell: more than %d commands in one line\n", SEQ_MAX);
+    g_last_status = 2;
+    nxline_reset(&g_line);
+    return;
+  }
+
+  for (int i = 0; i < nseg && running; i++) {
+    /* g_last_status is the shell's $?: run_fg_job() maintains it, and the
+     * builtins set it on failure.  Short-circuiting reads it BEFORE the
+     * segment runs, so a skipped segment leaves the chain's status intact —
+     * which is what makes `a && b || c` behave: if a fails, b is skipped and
+     * c still sees a's failure. */
+    if (i > 0) {
+      if (conn[i] == SEQ_AND && g_last_status != 0)
+        continue;
+      if (conn[i] == SEQ_OR && g_last_status == 0)
+        continue;
+    }
+    run_command_line(seg[i]);
   }
 
   nxline_reset(&g_line);
