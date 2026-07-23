@@ -99,7 +99,30 @@ fix unblocks another.  Populated from §A; B1 is already known.
 | task | defect | state |
 |---|---|---|
 | B1 | PROC-REF-01 | **DONE** — resolved by holding sched_lock across lookup+use instead of adding a process-wide refcount.  `sched_lock` exposed in sched.h (it pins the pool); three sites fixed: `sys_cap_grant` (also closes OBJ-GRANT-REAP), `sys_port_send_caps` rcv, `dispatch_spawn` src.  Order sched→object→kmalloc; handle-table allocation refused under sched_lock (a real target always has one).  Both arches boot clean. |
-| B2 | CAP-POLICY-01 — per-app / per-service capability sets so PLVL_USER stops meaning CAP_ALL; folds in USR-SEC-01 and ASTRA §7.11 Q5.  Large; likely wants an app manifest + a nxexec-assigned cap set.  Do NOT narrow universally — stage behind a default-permissive flag and tighten per service. | pending |
+| B2 | CAP-POLICY-01 — reframed after the maintainer's correction: this is NOT per-app bitmasks, it is the **4-LEVEL abstraction** (machine/root/user/guest) that must stratify.  The mask half AND the per-namespace ACL half together.  Split into B2.0–B2.4 below. | in progress |
+
+### B2 — the level model, corrected understanding
+The maintainer corrected two approximations: (1) apps reason in the 4 LEVELS
+(machine/root/user/guest), mapped over caps, not raw bits — the POSIX
+abstraction sits on that; (2) that mapping exists at KERNEL level
+(`struct process.level`, `proc_is_privileged`/`proc_is_machine`,
+`caps_for_level` (was `level_ceiling`), `level_for_path`, `registry_caller_owner`),
+mirrored in userland by `nxperm.h`.  The stated target semantics:
+- **machine** — full authority (it IS the check).
+- **root** — full, EXCEPT writing `/sys/bin` and `/system` (VFS ACL, not mask).
+- **user** — restructured: home moves `/home` → `/mnt/usr1/home` (per-user
+  partition prep), per-service manifest presets LATER.
+- **guest** — windows only (the one level whose MASK is genuinely narrow).
+- **The POSIX abstraction must work over our VFS.**
+
+| task | item | state |
+|---|---|---|
+| B2.0 | Loss analysis: is the mask/ACL regressed vs the reference or a release? | **DONE** — nothing lost.  `level_ceiling[PLVL_USER]` = CAP_ALL since the model's first commit `24fab00`; VFS write-ACL byte-identical across `884b7f3` and every release tag; `/system` and `/mnt/usr` never existed.  The stratification is a FORWARD upgrade, not a repair. |
+| USR-SEC-01 | system-owned registry key writable by anyone (owner-0 hole) | **DONE** `bf92c76` — deny is now "a non-system caller writes only a key it owns", matching registry_del which was already correct. |
+| B2.1 | separate the level→mask policy from the scheduler into caps | **DONE** `d93b6fc` — `caps_for_level()` in `include/abi/caps.h`, kernel + nxperm derive from it, drift bug removed. |
+| B2.2 | `/system` machine-only in the VFS write-ACL (root refused, like /sys/bin) | **DONE** `5b8b77d` — path guarded before it is populated (harmless; nothing writes it). |
+| B2.3 | user home `/home` → `/mnt/usr1/home` | **BLOCKED on a disk-layout decision** — see below.  84 hardcoded `/home` references across userland (icons, shell cd, nxexec `~`, history, image paths); rootfs is a single ext4 partition with no `/mnt`; the VFS supports multiple mounts but roots a single one; no symlink support.  This is the maintainer's "per-user partition = future block".  Options to decide: (a) separate mounted partition at `/mnt/usr1` vs (b) a directory in the same rootfs; and how the 84 hardcodes migrate (consult `HOME` everywhere vs keep `/home` as a compat alias). |
+| B2.4 | per-service capability manifest/preset (ASTRA §7.11 Q5) | pending — after B2.3.  Mechanism: a per-path/per-app cap mask layered over `caps_for_level`, default-permissive, tightened one service at a time. |
 
 ---
 
