@@ -841,19 +841,23 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
         }
         installed[n_ok++] = h;
       }
-      if (ret != 0) {
-        /* Roll back a partial transfer: leaving half the rights installed would
-         * hand the service capabilities for a request it will never see. */
-        for (int i = 0; i < n_ok; i++) {
-          struct handle_entry *e = &rcv->handles[installed[i]];
-          pipe_handle_count(e->obj, e->rights, -1);
-          if (--e->obj->refcount <= 0)
-            kobj_free(e->obj);
-          e->obj = NULL;
-          e->rights = 0;
-        }
-        spin_unlock_irqrestore(&object_lock, f2);
-      } else {
+      /* Only try to enqueue if every handle installed.  The enqueue can STILL
+       * fail (receiver gone, queue full) AFTER the handles are in the
+       * receiver's table — and those failures must unwind the install too.
+       *
+       * PORTCAP-01 (found 2026-07-23, audit programme A): the rollback used to
+       * cover ONLY the install loop.  On -EPIPE / -EAGAIN the transferred
+       * handles were left installed, so:
+       *   - a receiver that died between the install and the enqueue kept
+       *     capabilities for a message it never got (a leak that also touches
+       *     PROC-REF-01: rcv may be freeing right now);
+       *   - worse, -EAGAIN is the RETRYABLE path (PORT_QUEUE_MAX full), and the
+       *     client retries the whole send — so a peer that merely keeps a
+       *     service's port queue full makes every retry leak a fresh set of
+       *     handles into the service's table until it hits NPROC_HANDLES.  A
+       *     capability-table exhaustion DoS from an unprivileged sender.
+       * The unwind is now driven by `ret < 0` regardless of WHERE it was set. */
+      if (ret == 0) {
         /* Publish the receiver-side indices in the payload, then enqueue. */
         for (int i = 0; i < nfds; i++)
           memcpy(m.payload + (size_t)i * sizeof(int), &installed[i],
@@ -869,10 +873,23 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
           kp->count++;
           ret = (long)sizeof(m);
         }
-        spin_unlock_irqrestore(&object_lock, f2);
-        if (ret > 0)
-          wake_up(&kp->rq);
       }
+      if (ret < 0) {
+        /* Any failure after (or during) install unwinds every handle that made
+         * it in — leaving half the rights installed hands the service
+         * capabilities for a request it will never see. */
+        for (int i = 0; i < n_ok; i++) {
+          struct handle_entry *e = &rcv->handles[installed[i]];
+          pipe_handle_count(e->obj, e->rights, -1);
+          if (--e->obj->refcount <= 0)
+            kobj_free(e->obj);
+          e->obj = NULL;
+          e->rights = 0;
+        }
+      }
+      spin_unlock_irqrestore(&object_lock, f2);
+      if (ret > 0)
+        wake_up(&kp->rq);
     }
   }
   obj_unref(o);

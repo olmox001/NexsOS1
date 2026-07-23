@@ -189,6 +189,29 @@ static uint8_t level_for_path(const char *path) {
   return PLVL_USER;
 }
 
+/* spawn_path_is_sane - reject a spawn path the preset cannot reason about.
+ *
+ * SPAWN-LVL-01 (found 2026-07-23, audit programme A): level_for_path() prefix-
+ * matches the RAW string, but the VFS resolves ".." (vfs.c).  So
+ * "/sys/bin/../../home/evil" prefix-matches /sys/bin/ and would take the ROOT
+ * preset while resolving to a user-writable file.  It is NOT an escalation
+ * today — the monotonic creator clamp in process_create_caps drags the child
+ * back to the (less-privileged) creator's level, so a USER caller gets USER
+ * regardless.  But "harmless only because a SECOND, distant check happens to
+ * cover it" is exactly the fragility this audit exists to remove: the preset
+ * must see the path the VFS will actually open.  No legitimate caller spawns a
+ * path containing ".." (verified across the tree), so refusing them costs
+ * nothing and makes level_for_path()'s prefix match sound. */
+static int spawn_path_is_sane(const char *path) {
+  if (!path || !path[0])
+    return 0;
+  for (const char *p = path; *p; p++)
+    if (p[0] == '.' && p[1] == '.' &&
+        (p == path || p[-1] == '/') && (p[2] == '/' || p[2] == '\0'))
+      return 0; /* a ".." path component */
+  return 1;
+}
+
 /* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
  *
  * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
@@ -202,6 +225,9 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
    * spawn_caps may only DROP privilege below it (a request more privileged than
    * the path is capped to the path).  The creator-clamp in process_create_caps
    * then forbids any escalation regardless. */
+  if (!spawn_path_is_sane(path))
+    return -EINVAL; /* SPAWN-LVL-01: no ".." — the preset must match the VFS */
+
   uint8_t path_lvl = level_for_path(path);
   if (!use_caps || level < path_lvl)
     level = path_lvl;
@@ -280,11 +306,54 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
 extern void uart_puts(const char *str);
 /* Non-static: also the OBJ_TYPE_CONSOLE stdout/stderr backend, called from
  * kernel/core/object.c (sys_object_write).  Shared by SYS_WINDOW_WRITE. */
+/*
+ * GFX-WIN-WRITE-01 (found 2026-07-23, audit programme A) — may 'current' put
+ * text into window 'win_id'?
+ *
+ * SYS_WINDOW_WRITE was gated by CAP_WINDOW and nothing else, while every
+ * sibling verb had already been closed: DRAW and BLIT pass the caller's pid so
+ * the compositor can refuse, RESIZE / SET_FLAGS / DESTROY_WINDOW check
+ * compositor_window_owner() right in the dispatcher.  This one was missed, and
+ * CAP_WINDOW is the WEAKEST capability there is — PLVL_GUEST holds it and
+ * nothing else (level_ceiling[], process.c).  So the least privileged process
+ * on the machine could write arbitrary text into ANY window, and it did not
+ * even have to guess an id: SYS_WINDOW_ENUM is deliberately ungated.  That is a
+ * UI-spoofing primitive against the shell, the dock and the notification panel.
+ *
+ * Three writers are legitimate and all three are expressible as authority the
+ * process already holds:
+ *   - the window's OWNER;
+ *   - a process writing to its CONTROLLING TERMINAL.  This is the one that
+ *     makes an owner-only check wrong: a windowless child's stdout goes to the
+ *     shell's window (sys_object_write resolves ctty_win), and it does not own
+ *     it.  ctty_win is set by the kernel at spawn and is not user-writable, so
+ *     honouring it grants nothing the process was not already given;
+ *   - a MACHINE process, exactly as SET_FLAGS and DESTROY_WINDOW allow.
+ *
+ * Locking: called with NO lock held (pin_handle releases object_lock before
+ * sys_object_write reaches here, and the dispatcher holds nothing), so taking
+ * compositor_lock inside compositor_window_owner() is safe.  Do not move this
+ * check under a lock without re-reading PROCESS-KILL-MODEL §4, Pitfall A.
+ */
+static int window_write_allowed(int win_id) {
+  extern int compositor_window_owner(int window_id);
+  if (!current_process)
+    return 1; /* kernel-internal writer */
+  if (proc_is_machine(current_process))
+    return 1;
+  if (win_id == current_process->ctty_win)
+    return 1;
+  int owner = compositor_window_owner(win_id);
+  return (owner < 0) || (owner == (int)current_process->pid);
+}
+
 long window_text_write(int win_id, const char *ubuf, size_t count) {
   if (count == 0)
     return 0;
   if (count > SYSCALL_MAX_IO_BYTES)
     return -EINVAL;
+  if (win_id > 0 && !window_write_allowed(win_id))
+    return -EPERM;
   char *k = kmalloc(count + 1);
   if (!k)
     return -ENOMEM;
