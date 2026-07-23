@@ -35,18 +35,12 @@ static inline const char *nxperm_level_name(int level) {
   }
 }
 
-/* The capability mask a level grants — the user-facing abstraction over the
- * kernel's level_ceiling[] (kernel/sched/process.c is the single source of
- * truth; mirrored here for the userland view).  machine/root/user = full,
- * guest = windows only. */
+/* The capability mask a level grants.  Derives from caps_for_level() in the
+ * shared caps header — the ONE definition of the level->mask policy (B2.1).
+ * This used to be a hand-maintained copy of the kernel's level_ceiling[]; a
+ * copy is a drift bug waiting to happen, so it is now a thin alias. */
 static inline unsigned int nxperm_level_mask(int level) {
-  switch (level) {
-  case PLVL_MACHINE:
-  case PLVL_ROOT:
-  case PLVL_USER:  return CAP_ALL;
-  case PLVL_GUEST: return CAP_WINDOW;
-  default:         return 0u;
-  }
+  return caps_for_level(level);
 }
 
 /* One capability bit -> a human service label. */

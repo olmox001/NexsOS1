@@ -876,22 +876,17 @@ int process_ipc_allowed(struct process *caller, int target_pid) {
  * NOTE(SCHED-08): memset() zeroes the PMM page even though pmm_alloc_page()
  *          already zeroes; double-zero is harmless but wasteful. [W1 PERF]
  */
-/* Per-level capability ceiling = maximum grantable at that level, and also
- * the default preset (a process gets its level's ceiling unless the spawner
- * asks for less via SYS_SPAWN_CAPS).  machine/root/user get everything so
- * today's apps are unchanged; guest is draw-only. */
-static const uint32_t level_ceiling[PLVL_COUNT] = {
-    [PLVL_MACHINE] = CAP_ALL,
-    [PLVL_ROOT] = CAP_ALL,
-    [PLVL_USER] = CAP_ALL,
-    [PLVL_GUEST] = CAP_WINDOW,
-};
+/* The per-level capability ceiling (= maximum grantable at that level, and the
+ * default preset) now lives in caps_for_level() in the shared caps header, not
+ * as a table here: B2.1 separated the level->mask policy from the scheduler so
+ * there is ONE definition the kernel and the userland permissions view both
+ * derive from, instead of a scheduler table hand-mirrored in nxperm.h. */
 
 /* process_create - spawn at 'level' with that level's default preset. */
 struct process *process_create(const char *name, uint8_t priority,
                                uint8_t level) {
   uint8_t lvl = (level < PLVL_COUNT) ? level : PLVL_GUEST;
-  return process_create_caps(name, priority, lvl, level_ceiling[lvl]);
+  return process_create_caps(name, priority, lvl, caps_for_level(lvl));
 }
 
 struct process *process_create_caps(const char *name, uint8_t priority,
@@ -1006,7 +1001,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
     uint8_t lvl = (level < PLVL_COUNT) ? level : PLVL_GUEST;
     if (creator && creator->level > lvl)
       lvl = creator->level;
-    uint32_t caps = req_caps & level_ceiling[lvl];
+    uint32_t caps = req_caps & caps_for_level(lvl);
     if (creator && !proc_is_machine(creator))
       caps &= creator->caps;
     proc->level = lvl;
