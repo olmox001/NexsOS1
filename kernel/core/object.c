@@ -1581,8 +1581,17 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     if (o->type != OBJ_TYPE_FILE) {
       ret = -EINVAL;
     } else {
-      struct vfs_stat st;
-      ret = (vfs_stat(o->path, &st) == 0) ? (long)st.size : (long)o->node.size;
+      /* Re-sync the cached node, do NOT run a second full path resolution.
+       *
+       * This used to call vfs_stat(o->path), which resolves the path from the
+       * mount table all over again — while handle_create had just resolved the
+       * very same path into o->node microseconds earlier.  For the size-probe
+       * idiom (handle_create -> STAT -> close, which is what every fopen does)
+       * that doubled the VFS work for no new information.  vfs_open refreshes
+       * the node in place, the same way sys_object_read does before a read, so
+       * a long-lived handle still sees a writer's appended size. */
+      (void)vfs_open(o->path, &o->node);
+      ret = (long)o->node.size;
     }
     obj_unref(o);
     return ret;
