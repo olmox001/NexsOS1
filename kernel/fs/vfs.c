@@ -85,29 +85,67 @@ int vfs_register_fs(const struct fs_ops *ops) {
  * quietly (a partition that is simply not their format is normal) and fail
  * loudly only on recognised-but-unsupported filesystems.
  */
+/* __vfs_try_mount_root - try every FS provider on `p` as the root mount.
+ * Returns 1 if one took it.  `idx` is only for the log line. */
+static int __vfs_try_mount_root(struct partition *p, int idx) {
+  if (!p)
+    return 0;
+  for (int d = 0; d < fs_driver_count; d++) {
+    struct vfs_mount *mnt = &mounts[0];
+    mnt->ops = fs_drivers[d];
+    mnt->part_index = (uint32_t)idx;
+    mnt->fs_private = NULL;
+    mnt->mountpoint = "/"; /* the root mount (Plan 9 namespace fallback) */
+    if (fs_drivers[d]->mount(mnt, p) == 0) {
+      mnt->in_use = 1;
+      pr_info("VFS: mounted %s on partition %d as /\n", fs_drivers[d]->name,
+              idx);
+      return 1;
+    }
+    mnt->ops = NULL;
+  }
+  return 0;
+}
+
+/*
+ * vfs_init - establish the root mount.
+ *
+ * BY ROLE first (F3): the partition whose type GUID says NEXS_ROLE_ROOT becomes
+ * "/", whatever its position in the table.  The old behaviour — mount the first
+ * partition any provider accepts — was safe only while exactly one filesystem
+ * existed on the disk.  It is the mechanism behind GPT-02's warning that
+ * "changing the disk image layout will silently mount the wrong partition", and
+ * it would break the moment the installer adds a second ext4 (MACHINE, USR):
+ * whichever was probed first would silently become the system root.
+ *
+ * The scan is KEPT as a fallback, and that is deliberate rather than defensive:
+ * images that predate roles must still boot, and so must the release ISO, whose
+ * rootfs arrives as a RAM disk built by the same mkdisk.  Falling back is
+ * announced in the log so an unroled disk is visible, not silent.
+ */
 void vfs_init(void) {
   if (fs_driver_count == 0) {
     pr_err("%s", "VFS: no filesystem providers registered\n");
     return;
   }
+
+  struct partition *root = partition_find_by_role(NEXS_ROLE_ROOT);
+  if (root) {
+    if (__vfs_try_mount_root(root, (int)root->index))
+      return;
+    /* A partition that DECLARES it is the root but carries no mountable
+     * filesystem is a corrupt install, not a reason to go looking elsewhere:
+     * mounting some other partition as "/" would hide the damage and run the
+     * system on the wrong tree. */
+    pr_err("%s", "VFS: NEXS-ROOT partition has no mountable filesystem\n");
+    return;
+  }
+
+  pr_info("%s", "VFS: no NEXS-ROOT partition; falling back to first mountable "
+                "(pre-role image)\n");
   for (int i = 0; i < num_partitions; i++) {
-    struct partition *p = gpt_get_partition(i);
-    if (!p)
-      continue;
-    for (int d = 0; d < fs_driver_count; d++) {
-      struct vfs_mount *mnt = &mounts[0];
-      mnt->ops = fs_drivers[d];
-      mnt->part_index = (uint32_t)i;
-      mnt->fs_private = NULL;
-      mnt->mountpoint = "/"; /* the root mount (Plan 9 namespace fallback) */
-      if (fs_drivers[d]->mount(mnt, p) == 0) {
-        mnt->in_use = 1;
-        pr_info("VFS: mounted %s on partition %d as /\n",
-                fs_drivers[d]->name, i);
-        return;
-      }
-      mnt->ops = NULL;
-    }
+    if (__vfs_try_mount_root(gpt_get_partition(i), i))
+      return;
   }
   pr_err("%s", "VFS: no mountable filesystem found on any partition\n");
 }

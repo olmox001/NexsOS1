@@ -358,3 +358,47 @@ struct partition *gpt_get_partition(int index) {
     return NULL;
   return &partitions[index];
 }
+
+/*
+ * partition_role - decode the NEXS role from a partition's type GUID.
+ *
+ * The GUID is stored little-endian on disk, exactly as GPT specifies for the
+ * first three fields: data1 (4 bytes) and data2 (2 bytes) are LE, data4 is a
+ * byte string.  So "NEXS" (0x4E455853) reads back as 53 58 45 4E, and the role
+ * (data2) as its two bytes low-first.
+ *
+ * Returns the role, or 0 for any partition that is not ours — a foreign
+ * partition, or an image built before roles existed.  0 is not a valid role,
+ * so callers can treat it as "unknown" without a separate flag.
+ */
+uint16_t partition_role(const struct partition *p) {
+  if (!p)
+    return 0;
+  static const uint8_t nexs_d1[4] = {0x53, 0x58, 0x45, 0x4E}; /* "NEXS" LE */
+  for (int i = 0; i < 4; i++)
+    if (p->type_guid[i] != nexs_d1[i])
+      return 0;
+  /* data3 + data4 pin the rest of the namespace, so a coincidental match on
+   * the first four bytes cannot be mistaken for one of our roles. */
+  if (p->type_guid[6] != 0x58 || p->type_guid[7] != 0x4E)
+    return 0;
+  return (uint16_t)((uint16_t)p->type_guid[4] |
+                    ((uint16_t)p->type_guid[5] << 8));
+}
+
+/*
+ * partition_find_by_role - locate a partition by what it IS.
+ *
+ * This is the seam that retires GPT-02: callers stop passing an index whose
+ * meaning silently differs between the GPT and MBR paths, and stop depending on
+ * the physical ordering of the table.  An installer may lay the disk out in any
+ * order, and re-partitioning cannot move the root out from under the kernel.
+ */
+struct partition *partition_find_by_role(uint16_t role) {
+  if (role == 0)
+    return NULL;
+  for (int i = 0; i < num_partitions; i++)
+    if (partition_role(&partitions[i]) == role)
+      return &partitions[i];
+  return NULL;
+}

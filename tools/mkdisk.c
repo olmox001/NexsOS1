@@ -81,6 +81,12 @@ struct guid TYPE_BOOT = {0x21686148,
  * and cannot collide with the EFI/Linux well-known types.  data2 is the role.
  * TYPE_BOOT above is left standard on purpose: where a BIOS boot partition is
  * genuinely required, it must carry the GUID firmware looks for.
+ *
+ * CANONICAL DEFINITION: kernel/include/kernel/gpt.h (NEXS_ROLE_*).  This is a
+ * host tool and cannot include kernel headers, so it mirrors them — the same
+ * convention this file already follows for the ext4 on-disk structs.  A
+ * mismatch does not fail the build, it mounts the wrong partition, so the two
+ * lists are reviewed together.
  */
 #define NEXS_GUID(role_id)                                                     \
   {                                                                            \
