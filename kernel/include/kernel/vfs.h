@@ -23,6 +23,7 @@
 #ifndef _KERNEL_VFS_H
 #define _KERNEL_VFS_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 #include <object.h> /* OBJ_TYPE_* — a namespace path resolves to a typed object */
 
@@ -117,14 +118,14 @@ struct vfs_mount {
 };
 
 /* Provider registration + mounting (called from the composition root) */
-int vfs_register_fs(const struct fs_ops *ops);
+int vfs_register_fs(const struct fs_ops *ops) NX_MUST_USE;
 void vfs_init(void);
 /* vfs_mount_at - mount a provider at an absolute path (Plan 9-style namespace
  * mount).  'fs_private' is the provider's state (NULL for a stateless synthetic
  * server like regfs).  Path resolution routes by LONGEST matching mountpoint;
  * the root "/" mount is the fallback.  Returns 0, or -1 if the table is full /
  * args are bad.  Called from the composition root, single-threaded. */
-int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops, void *fs_private);
+int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops, void *fs_private) NX_MUST_USE;
 
 /* vfs_umount - retire a NON-root mount by exact mountpoint match.  Fails with
  * -EBUSY while path operations are in flight on it, -1 if not found or root
@@ -132,36 +133,36 @@ int vfs_mount_at(const char *mountpoint, const struct fs_ops *ops, void *fs_priv
  * provider's optional umount op runs after the slot is retired.  NOTE: a
  * vfs_node held across umount is the caller's responsibility until the
  * fd-layer refcount lands (documented limitation, docs/userland-port). */
-int vfs_umount(const char *mountpoint);
+int vfs_umount(const char *mountpoint) NX_MUST_USE;
 
 /* vfs_resolve_object - resolve a path to the TYPED capability object it names
  * (delegates to the provider's object_at, else defaults to a FILE).  Returns 0
  * with *out filled, -1 not found, -2 it is a directory.  Backs open() ≡
  * handle_create(OS1_NS_FS): everything resolvable in the namespace is an object. */
-int vfs_resolve_object(const char *path, struct vfs_objref *out);
+int vfs_resolve_object(const char *path, struct vfs_objref *out) NX_MUST_USE;
 
 /* Core-facing API (the only filesystem surface outside kernel/fs/) */
-int vfs_open(const char *path, struct vfs_node *out);
-int vfs_read(struct vfs_node *node, uint64_t offset, void *buf, uint32_t size);
+int vfs_open(const char *path, struct vfs_node *out) NX_MUST_USE;
+int vfs_read(struct vfs_node *node, uint64_t offset, void *buf, uint32_t size) NX_MUST_USE;
 /* vfs_read_file: buf==NULL / size==0 returns the file size (userland ABI
  * for SYS_FILE_READ relies on this — user/sys/lib/lib.c file_read). */
-int vfs_read_file(const char *path, void *buf, uint32_t size, uint64_t offset);
+int vfs_read_file(const char *path, void *buf, uint32_t size, uint64_t offset) NX_MUST_USE;
 /* vfs_write_allowed: THE single write-authority seam (CAP_FS_WRITE + the
  * /sys,/bin immutable-tree ACL) shared by SYS_FILE_WRITE, SYS_UNLINK and
  * open-for-write handle acquisition.  Takes a vfs_resolve_path()-canonical
  * path; returns 0, -EPERM or -EACCES.  (S-ALIGN F6) */
-int vfs_write_allowed(const char *resolved_path);
+int vfs_write_allowed(const char *resolved_path) NX_MUST_USE;
 int vfs_write_file(const char *path, const void *buf, uint32_t size,
                    uint64_t offset);
-int vfs_list_dir(const char *path, char *buf, uint32_t size);
+int vfs_list_dir(const char *path, char *buf, uint32_t size) NX_MUST_USE;
 int vfs_unlink(const char *path); /* remove a file/node by path */
 /* vfs_create - create an empty file/dir at 'path' (VFS_TYPE_FILE/_DIR)
  * through the responsible mount's provider.  Returns 0, or negative (the
  * provider has no create support, or its own error).  Does NOT check
  * write authority or pre-existence - callers (syscall_dispatch.c) must call
  * vfs_write_allowed()/vfs_stat() first (issue #126). */
-int vfs_create(const char *path, uint32_t type);
-int vfs_stat(const char *path, struct vfs_stat *st);
+int vfs_create(const char *path, uint32_t type) NX_MUST_USE;
+int vfs_stat(const char *path, struct vfs_stat *st) NX_MUST_USE;
 
 void vfs_resolve_path(const char *in, char *out, size_t size);
 

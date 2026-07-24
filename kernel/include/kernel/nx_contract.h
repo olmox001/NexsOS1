@@ -37,7 +37,17 @@
  * EVERY function whose return value carries a failure the caller must act on —
  * which in this tree is essentially everything returning `int` as -errno.
  */
+/* Gated on NX_STRICT so the surface can be annotated INCREMENTALLY.  With
+ * -Werror on, switching every -errno return to must-use at once turns the
+ * whole backlog into a wall of hard errors and the usual response to a wall is
+ * to delete the gate.  `make NX_STRICT=1` shows the full list; the count goes
+ * down commit by commit, and flipping the default is the last step, not the
+ * first. */
+#if defined(NX_STRICT)
 #define NX_MUST_USE __attribute__((warn_unused_result))
+#else
+#define NX_MUST_USE
+#endif
 
 /*
  * NX_NONNULL(...) — these argument positions may never be NULL.

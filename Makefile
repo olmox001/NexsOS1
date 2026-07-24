@@ -38,6 +38,14 @@ COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
                -fno-omit-frame-pointer \
                -O2 -g
 
+# NX_STRICT=1 turns the nx_contract.h annotations into enforced attributes
+# (NX_MUST_USE -> warn_unused_result).  With -Werror that makes every ignored
+# -errno a hard error, which is the point: `make NX_STRICT=1` is the report of
+# how much of the surface still drops failures on the floor.
+ifeq ($(NX_STRICT),1)
+COMMON_FLAGS += -DNX_STRICT
+endif
+
 ifeq ($(ARCH), amd64)
     CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
     KERNEL_DIR = kernel
