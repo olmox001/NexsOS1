@@ -923,6 +923,14 @@ debug: all
 	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 endif
 
+
+# lockcheck — the two memory/lock rules as a build gate (scripts/check-lockrules.py).
+# Not yet wired into `all`: the transitive closure is deliberately over-eager
+# and the current output needs a triage pass before it can block a build.
+# Run it before touching the scheduler or any teardown path.
+lockcheck:
+	@python3 scripts/check-lockrules.py
+
 disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 	$(OBJDUMP) -d $(KERNEL_ELF) > $(BUILD_DIR)/kernel.disasm
 	$(OBJDUMP) -d $(BOOTLOADER_ELF) > $(BUILD_DIR)/bootloader.disasm
