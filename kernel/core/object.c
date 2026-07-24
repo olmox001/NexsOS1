@@ -314,8 +314,30 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     struct vfs_objref ref;
     memset(&ref, 0, sizeof(ref));
     int rr = vfs_resolve_object(resolved, &ref);
-    if (rr == -2)
-      return -EISDIR;
+    if (rr == -2) {
+      /*
+       * A DIRECTORY IS A FILE YOU READ (ASTRA §6.3, Programme R1).
+       *
+       * vfs_resolve_object reports -2 for a directory but has already filled
+       * `ref` (OBJ_TYPE_FILE + the dir node), so everything needed is here —
+       * acquisition simply used to refuse.  A READ-only handle is now allowed,
+       * which is what makes sys_object_read's VFS_TYPE_DIR branch reachable and
+       * lets OS1_fs_list() be handle_create + object_read + close instead of a
+       * private ambient verb.
+       *
+       * WRITE stays -EISDIR: writing a directory as a byte stream is not an
+       * operation the VFS has, and silently accepting the handle would move the
+       * failure to the first write.  Directory MUTATION (create/remove a node)
+       * needs its own verb — tracked as R1b, still open.
+       *
+       * Found by the maintainer: `ls` broke with "cannot list ." because the
+       * listing path could not acquire the handle at all.  The dir-read code was
+       * unreachable until this gate opened.
+       */
+      if (rights & (OS1_RIGHT_WRITE | OS1_RIGHT_CREATE))
+        return -EISDIR;
+      rr = 0;
+    }
     if (rr != 0) {
       /* O_CREAT semantics (ASTRA §6.8: open(O_CREAT) → handle_create): a
        * missing path with CREATE+WRITE is created as an empty FILE through
@@ -962,11 +984,21 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
            * returns the tail, and a read past the end returns 0 (EOF), which is
            * the behaviour any reader loop already expects from a file.
            */
-          char *full = kmalloc(OBJ_MAX_IO_BYTES);
+          /* Scratch is sized from the CALLER's request plus the cursor, not
+           * from OBJ_MAX_IO_BYTES.  The first version allocated the 16 MiB
+           * ceiling on every single listing — the old ambient verb allocated
+           * exactly what the caller asked for, and a per-`ls` 16 MiB kmalloc is
+           * a performance defect, not a safety margin.  A listing longer than
+           * (offset + n) is simply truncated at the cursor window, which is the
+           * same thing a short read does on any file. */
+          size_t want = (size_t)o->offset + n;
+          if (want > OBJ_MAX_IO_BYTES)
+            want = OBJ_MAX_IO_BYTES;
+          char *full = kmalloc(want);
           if (!full) {
             got = -1;
           } else {
-            int total = vfs_list_dir(o->path, full, OBJ_MAX_IO_BYTES);
+            int total = vfs_list_dir(o->path, full, (uint32_t)want);
             if (total < 0) {
               got = -1;
             } else if (o->offset >= (uint64_t)total) {

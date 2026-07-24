@@ -190,21 +190,18 @@ int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
   int ret = 0;
   size_t i = 0;
 
-  /* UACC-04 (FIXED 2026-07-23, HAL-0): validate the FIRST page before reading
-   * a byte.  The loop below only checks page-ALIGNED addresses, which validates
-   * each NEW page at its first byte — but the page containing src itself is
-   * only page-aligned when src is, so for any unaligned src the starting page
-   * was never checked by vmm_check_range.  Documented on the amd64 side as
-   * UACC-AMD64-04; it was equally present here and recorded nowhere. */
-  if (vmm_check_range(current_process->page_table, (uint64_t)src, 1,
-                      PTE_VALID) != 0) {
-    ret = -1;
-    goto out;
-  }
-
   for (i = 0; i < max_len - 1; i++) {
-    /* Check each page boundary for mapping if we cross it */
-    if (((uint64_t)&src[i] & 0xFFF) == 0) {
+    /* One page-table walk per page touched, never two.
+     *
+     * UACC-04 (FIXED 2026-07-23, HAL-0): the `i == 0` term is the fix — the
+     * alignment test alone validates each NEW page at its first byte, but the
+     * page containing src is only aligned when src is, so for any unaligned src
+     * the starting page was never checked.  Documented on the amd64 side as
+     * UACC-AMD64-04; equally present here and recorded nowhere.  Folded into
+     * the loop rather than added as a separate pre-walk: a standalone pre-check
+     * repeats the i == 0 walk whenever src IS aligned, on the hottest string
+     * path in the kernel. */
+    if (i == 0 || ((uint64_t)&src[i] & 0xFFF) == 0) {
        if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1, PTE_VALID) != 0) {
          /* HAL-0: a failed validation is a FAILURE.  This used to `goto out`
           * with ret still 0, so a string that ran into an unmapped page was

@@ -251,22 +251,22 @@ int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
   size_t i;
   int ret = 0;
 
-  /* UACC-AMD64-04 (FIXED 2026-07-23, HAL-0): validate the FIRST page before
-   * reading a single byte.  The loop below only checks when the address is
-   * page-ALIGNED, which correctly validates each new page at its first byte —
-   * but the page containing src itself is never page-aligned unless src is, so
-   * for any unaligned src the starting page went entirely unchecked (only
-   * vmm_is_user_addr had looked at it).  A user could point src at an unmapped
-   * page and the first read would fault inside the kernel. */
-  if (vmm_check_range(current_process->page_table, (uint64_t)src, 1,
-                      PTE_VALID) != 0) {
-    ret = -1;
-    goto out;
-  }
-
   for (i = 0; i < max_len - 1; i++) {
-    /* Per-page validation: each new page is checked at its first byte. */
-    if (((uint64_t)&src[i] & 0xFFF) == 0) {
+    /* Per-page validation, one walk per page touched and no more.
+     *
+     * UACC-AMD64-04 (FIXED 2026-07-23, HAL-0): the `i == 0` term is the fix.
+     * The alignment test alone validates each NEW page at its first byte, but
+     * the page containing src is only page-aligned when src is — so for any
+     * unaligned src the STARTING page went entirely unchecked (vmm_is_user_addr
+     * had merely confirmed it was a user address).  A user could point src at
+     * an unmapped page and the first read would fault inside the kernel.
+     *
+     * Folded into the loop rather than done as a separate pre-check before it:
+     * a standalone pre-walk repeats the same page-table walk the i == 0
+     * iteration already performs whenever src IS aligned, and this is the
+     * hottest string path in the kernel (every path, every registry key and
+     * value).  One walk per page, never two. */
+    if (i == 0 || ((uint64_t)&src[i] & 0xFFF) == 0) {
        if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1, PTE_VALID) != 0) {
          ret = -1;
          break;
@@ -282,7 +282,8 @@ int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
     *out_truncated = 1;
   if (out_len) *out_len = i;
 
-out:
+  /* Terminate on EVERY path, including the mid-loop validation failure — an
+   * unterminated dest hands the caller a string with no end. */
   dest[max_len - 1] = '\0';
   get_cpu_info()->uaccess_active = 0;
   spin_unlock(&current_process->mm_lock);
