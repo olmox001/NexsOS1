@@ -34,6 +34,64 @@ equivalent artefact: one row per defect, with severity, status and owning task.
 
 ---
 
+## §0 — State  (updated 2026-07-24, HEAD `a636e27`)
+
+What is actually done, for someone opening this file cold.  Corrected IN PLACE;
+the per-programme sections carry the detail.  **This file is the only state
+artefact** — no per-session handoff document, because two of them diverge and
+the divergence is the defect this section exists to prevent.
+
+**Confirmed work order (maintainer, 2026-07-24).**  The ALIGNMENT of programme
+R closes BEFORE programme F resumes:
+
+```
+R1b → R2 → C1 → R3 → R4 → R5 → R6 → F
+```
+
+C1 is the UART/printk channel ONLY, not the rest of programme C, and it is
+inserted before R3 deliberately: R3 moves 17 verbs through the compositor, and
+entering it with `printk` still sharing the graphical shell's path loses the
+diagnostic output exactly when the graphical shell is the thing that breaks.
+
+**Landed since the 2026-07-23 handoff** (`dcec177` → `a636e27`):
+
+| commit | what |
+|---|---|
+| `602cb2f` | nxui: one record per window — UI-DOCK-PID-01 (§A) |
+| `8ebe1c1` | V0.0.5.3 |
+| `a636e27` | five defects: `fgetc`/`fputc`/`fputs` took an `if (fd >= 0)` shortcut past the stream buffers (a `FILE` now holds a handle for its lifetime, so the shortcut started bypassing them); `sys_ipc_recv` rewound the PC through `current_process->context`, which is NOT the live trap frame; the reaper drained `msg_queue` without `msg_lock` (double `list_del` + double `kfree` → "Invalid magic"); amd64 now classifies a user-mode fault with no current task as scheduler-state corruption, as aarch64 already did; the amd64 link had one RWX `PT_LOAD` fusing pre-paging code with the boot page tables, and `.note.PVH` was `SHF_ALLOC` in no `PT_LOAD` at all.  Adds `user/bin/libctest.c`, 18 cases. |
+
+**HAL-0b is HALF done.**  `a636e27` closed the IMAGE half (the amd64 link is now
+split per permission).  The RUNTIME half is untouched: amd64 still identity-maps
+all usable RAM in the low half besides the higher-half direct map — RAM mapped
+twice, kernel alias in user space — and `AMMU-01` still leaves kernel RAM W+X
+with no NX.  **So the charter's W^X claim is not upheld on amd64 today.**  That
+is stated plainly because it is a DECLARED property that is not true, which is a
+different and worse thing than a missing feature.  Closes inside HAL-0, before
+E2 (Rust) depends on it.
+
+**Verification gates.**  Both arches build AND boot, plus `captest` 64/64 AND
+`libctest` 18/18.  `libctest` joins the gate from `a636e27` — its 18 cases are
+named after the app each one protects, so a regression names its own victim.
+Harness: `tools/nxrun.sh -a <arch> -n <runs> -c captest -c libctest` (untracked
+at time of writing).
+
+Boot counts are THREE different numbers and conflating them is how a race gets
+declared fixed while it is still there:
+
+| purpose | runs | why |
+|---|---|---|
+| routine per-phase smoke test | 5 | cheap, catches a hard break |
+| DETECT the intermittent SMP race | 20 per arch | at p=0.25, `0.75^20` ≈ 0.3% chance of missing it.  **5/5 passes 24% of the time with the bug fully present**, so 5 proves nothing about a race |
+| DECLARE the race resolved | 59 clean | 95% confidence the failure rate is below 5% |
+
+**Retired syscall numbers are never reused.**  251/252/254 (R1) and, when R1b
+lands, 259/260.  A stale binary must get `-ENOSYS` — a clean failure — instead
+of landing on another verb's slot with its arguments misread.  `263`
+(`SYS_STAT`) is assigned; new numbers continue upward from there.
+
+---
+
 ## Programme A — Security & correctness audit  (IN PROGRESS)
 
 Surface, in the order the maintainer named it.  Every file gets a verdict, and
@@ -67,7 +125,7 @@ or isolation defect requiring some privilege · **S3** correctness/robustness ·
 | **PORTCAP-01** | **S2** | object.c | `sys_port_send_caps` rolled back installed handles only on install-loop failure; on `-EPIPE`/`-EAGAIN` (queue full) the transferred handles stayed in the receiver. `-EAGAIN` is retryable, so a peer keeping a service's port queue full leaks a fresh handle set into the service's table per retry → capability-table exhaustion DoS. | **FIXED** (this batch) — unwind on any `ret < 0` |
 | **SPAWN-LVL-01** | **S3** | syscall_dispatch.c | `level_for_path()` prefix-matches the RAW path but the VFS resolves `..`, so `/sys/bin/../../home/x` takes the ROOT preset. Not an escalation (creator clamp drags it back to USER), but "safe only because a distant second check covers it". | **FIXED** (this batch) — reject `..` components in a spawn path |
 | **CAP-POLICY-01** | **S2 (design)** | process.c `level_ceiling[]` | `PLVL_USER = CAP_ALL`. Every ordinary process holds **every** capability (SPAWN, FS_WRITE, IPC_ANY, WINDOW, REG_WRITE). The capability MECHANISM is enforced everywhere, but the POLICY is "everyone gets everything except guest", so least-privilege is not realised — this is the maintainer's "problem with capabilities". Also the root of USR-SEC-01 (any process may overwrite `srv.notify_pid`). | OPEN → B2 (needs per-app/per-service caps, ASTRA §7.11 Q5 — cannot be narrowed unilaterally without breaking every app) |
-| PROC-REF-01 | S2 | object.c, process.c | a `struct process *` outlives the lock that validated it (`sys_port_send_caps` `rcv`, `process_redirect_child_fd_from`) | OPEN → B1 |
+| PROC-REF-01 | S2 | object.c, process.c | a `struct process *` outlives the lock that validated it (`sys_cap_grant`, `sys_port_send_caps` `rcv`, `dispatch_spawn`'s `src` into `process_redirect_child_fd_from`) | **PARTIAL — 2 of 3 sites closed.**  The `dispatch_spawn` site is still OPEN (the fix was reverted in `bd3073d`; see B1/B1b and the 25-line account at `syscall_dispatch.c:266-291`) |
 | **UI-DOCK-PID-01** | **S3** | nxui.c | The dock kept one window's fields in four PARALLEL arrays (`ids`/`flg`/`ttl`/`pids`), and the launcher-hoist loop that pins nxlauncher to tile 0 shifted only three of them — `pids[]` was never moved. Every tile before the launcher's original index therefore drew the icon of its NEIGHBOUR: at boot the compositor lists `[nxshell, nxlauncher]`, the hoist shifts the shell to index 1, and tile 1 resolves `sys.proc.<launcher_pid>.name` → the shell wore the launcher's icon. Only the icon was wrong because the title and the click target came from the arrays that *were* shifted. Reopening a shell put it after the launcher, needing no hoist — hence "close it and the icon is right". | **FIXED** — the four arrays collapsed into one `struct tile_win win[]`, so a reorder moves the whole record and no field can be left at its old index |
 
 ### A — verdicts on surface (no defect = why)
@@ -114,7 +172,8 @@ fix unblocks another.  Populated from §A; B1 is already known.
 
 | task | defect | state |
 |---|---|---|
-| B1 | PROC-REF-01 | **DONE** — resolved by holding sched_lock across lookup+use instead of adding a process-wide refcount.  `sched_lock` exposed in sched.h (it pins the pool); three sites fixed: `sys_cap_grant` (also closes OBJ-GRANT-REAP), `sys_port_send_caps` rcv, `dispatch_spawn` src.  Order sched→object→kmalloc; handle-table allocation refused under sched_lock (a real target always has one).  Both arches boot clean. |
+| B1 | PROC-REF-01 | **PARTIAL — 2 of 3 sites.**  The approach was to hold `sched_lock` across lookup+use (it pins the pool) instead of adding a process-wide refcount; `sched_lock` is exposed in sched.h.  **Closed:** `sys_cap_grant` (also closes OBJ-GRANT-REAP) and `sys_port_send_caps` `rcv` — both are ALLOCATION-FREE under the lock **on purpose**: they refuse a target that has no handle table rather than creating one.  **Reverted (`bd3073d`), still open:** `dispatch_spawn`'s `src`.  `process_redirect_child_fd_from` ALLOCATES — `handles_ensure()` kmallocs the child's table and `kobj_free()` releases the displaced console handle — and allocating under `sched_lock` establishes the `sched_lock → pmm_lock/kmalloc_lock` order that `process.c` states in writing nothing else establishes.  With IRQs off, an idle core spinning inside the allocator while this CPU holds `sched_lock` is a hard hang: that is the amd64 K3-userland panic (corrupted RSP, execution off into the stack).  A rare UAF was accepted over a reproducible deadlock in the path every `system()` call takes.  The full account is `syscall_dispatch.c:266-291` — **read it before touching this site.**  Remaining work → B1b. |
+| B1b | PROC-REF-01 residual — `dispatch_spawn`'s `src` | planned, and it is NOT "add a refcount".  **First, why the other two sites are already safe, because it is the asymmetry that matters and not an oversight:** `sys_cap_grant` and `sys_port_send_caps` are allocation-free under `sched_lock` **on purpose** — they REFUSE a target that has no handle table rather than creating one, which is legitimate there because a real target always has one.  `dispatch_spawn` could not be closed the same way: the child legitimately MAY need its table built, so refusing would break the operation rather than harden it.  That is the whole difference between the third site and the other two.  The way out is to move the ALLOCATION instead of the lock: (1) hoist `handles_ensure(p)` OUT of the critical section — the child is `p`, created by this same dispatch and racing with nobody, and `object.c:1710` notes its table is normally already built by `install_stdio`; (2) under `sched_lock`, look up `src` and REFUSE a source with no handle table instead of creating one — exactly what makes the other two sites safe (`syscall_dispatch.c:283-286`); (3) the dup runs under `object_lock` nested inside `sched_lock`, the documented `sched → object → kmalloc` order; (4) `to_free` is returned to the caller and released after BOTH locks drop.  Requires splitting `process_redirect_child_fd_from` into an allocation-free core returning `to_free` plus a wrapper that frees it — the `to_free` pattern `object.c` already uses in that same function.  No new mechanism, no termination path touched. |
 | B2 | CAP-POLICY-01 — reframed after the maintainer's correction: this is NOT per-app bitmasks, it is the **4-LEVEL abstraction** (machine/root/user/guest) that must stratify.  The mask half AND the per-namespace ACL half together.  Split into B2.0–B2.4 below. | in progress |
 
 ### B2 — the level model, corrected understanding
@@ -249,6 +308,17 @@ and **RAM-only** (test setup: home initialised in RAM from detected free space).
 
 ### F-phases
 
+**Phase state:** F1 **DONE** `986858c` · F2 **DONE** `7418dca` · F3 **DONE**
+`7418dca` · F4–F10 planned, and they resume only after programme R closes (§0).
+What F2/F3 actually landed: six NEXS role GUIDs minted in `tools/mkdisk.c:97-103`
+(`NEXS_META`, `NEXS_KEYSTORE`, `KERNEL_A`, `KERNEL_B`, `ROOT`, `MACHINE`, `USR`
+— note `KERNEL_A`/`KERNEL_B` are the D14 A/B slots and `USR` is P4+, plural by
+design per D15), mount by ROLE instead of by index (retires GPT-02), and one
+SHA-256 implementation shared by `tools/mkdisk.c` and `kernel/lib/sha256.c` —
+one algorithm, not two transcriptions of a spec, so a mismatch is a real
+mismatch.  **The partition table is therefore not a blank sheet:** later phases
+consume these roles, they do not re-mint them.
+
 - **F1 — DESIGN DOC FIRST (`docs/DESIGN-PERSISTENCE-INSTALL.md`).**  R6 rule
   ("doc dedicato prima del codice") applies: this changes the boot contract, the
   disk format and the write path at once.  The doc fixes: partition table
@@ -267,6 +337,38 @@ and **RAM-only** (test setup: home initialised in RAM from detected free space).
   recognise the roles.  Extend `vfs_write_allowed()` so the tree ACL and the
   PARTITION agree (a machine-only path must also be on the machine partition —
   today the ACL is path-string-only, B2.2).
+- **F4 — DECISIONS TAKEN (maintainer, 2026-07-24), to be folded into
+  `DESIGN-PERSISTENCE-INSTALL.md` as numbered decisions when F4 starts — recorded
+  here now so they are not lost, and NOT minted into the agreed design doc
+  unilaterally:**
+  - **The journal format is NEXS-proprietary, not JBD2.**  The ext4 in tree is
+    hand-rolled; a partial JBD2 is worse than none because it promises Linux an
+    interoperability that does not hold, and interoperability is not a declared
+    goal of this project.
+  - **The journal lives in P0 (`NEXS_META`), not in a partition of its own.**
+    P0 already holds the Merkle roots, and D6' commits the data change and the
+    hash change in ONE transaction: putting them in two partitions means two
+    writes to distant regions that must be atomic with respect to each other —
+    i.e. re-creating the exact problem the journal exists to solve.
+  - **Data journaling for the integrity-protected partitions (P1/P2/P3);
+    metadata-only for P4+ (per-user).**  The 2× write cost is paid where
+    integrity is bought.  Reason it cannot be avoided on P2: if the data is not
+    journaled, a crash leaves the hash and the data divergent with no way to
+    know which is right, and a Merkle tree that "repairs" itself by recomputing
+    the hash FROM the data verifies nothing at all — it certifies whatever is on
+    the disk, including what an attacker put there.  That would forfeit the
+    property F4c exists for.
+  - **Boot-time Merkle verification stays ON** (maintainer: "non mi interessa
+    quanti secondi di boot perdiamo").  The cost is to be MEASURED and reported
+    on both arches — P2 is 110592 blocks × 4096 = ~432 MiB to re-read and hash,
+    and on aarch64 under TCG that is software SHA-256 on an emulated CPU — but
+    the policy is decided and is not re-opened by the measurement.  A build flag
+    may disable it with two constraints: **default ON**, and a release image must
+    not be able to boot with verification off.  A flag that can be left off by
+    accident is a security defect, not a development convenience.
+  - **F4 needs its design doc before code** (with G3): the criterion is that a
+    wrong on-disk format is already in users' images, whereas a wrong object verb
+    is changed in the next commit.
 - **F4 — persistence write-back.**  The RAM-copy + authorised-write-back path,
   tied to the syscall boundary as the maintainer specified.  Depends on the
   memory work MICROSCOPE R4 (RAM-disk + tmpfs + PMM zones share one accounting
@@ -288,6 +390,16 @@ and **RAM-only** (test setup: home initialised in RAM from detected free space).
   criteria: decoder size, no dynamic allocation requirement, license
   compatibility with GPLv2, and whether we need seekable/streaming.  Used to
   ship the `usr` tree compressed inside `disk.img` and expand it at install.
+- **MULTI-USER IS A REQUIREMENT, not a later extension** (maintainer: "il sistema
+  deve essere in grado di gestire multiutenti, un solo utente era per esempio").
+  F7 and F9 are designed multi-user FROM THE START — `TYPE_NEXS_USR`
+  (`mkdisk.c:103`) is already minted as "P4+ per-user", plural, and D15 forbids
+  naming `usr1` as a constant.  A default installation that creates one user is
+  not the same thing as a system that supports one.
+- **The release ISO is a HOTLOADER, not a disk.**  It is not writable, and
+  `nxsetup` must EXCLUDE it from the list of installable targets — needed as soon
+  as F5 (`nxdisk`) enumerates devices.  It also stays the regression canary that
+  the block contract remained backend-agnostic.
 - **F7 — `nxsetup` installer (first boot, runs ONCE).**  Chooses the username,
   sizes the partitions (or RAM-only mode), asks `nxdisk` to partition/format,
   asks `nxcomp` to expand `usr`, seeds the user's environment
@@ -389,14 +501,44 @@ Two findings worth stating plainly:
 
 ### R-phases (each: build + headless boot on BOTH arches before the next)
 
-- **R1 — files.**  Delete the path-based FS verbs from the kernel and compose
-  them in libc over `open`/`lseek`/`read`/`write`/`close`.  `file_read(path,…)`
-  is open+seek+read+close — a userland composition, not a syscall.  Removes
-  `SYS_FILE_READ`, `SYS_FILE_WRITE`, `SYS_LIST_DIR` from the ABI.
-  `SYS_MKDIR`/`SYS_UNLINK` are namespace MUTATIONS with no object equivalent
-  yet — they stay until R1b gives the namespace a create/remove verb, and that
-  is recorded rather than hand-waved.
-- **R2 — registry: one truth.**  `/reg` is already a mounted namespace, so
+- **R1 — files.  DONE** `10641b6`, regressions fixed in `d8bb115`.  Deleted the
+  path-based FS verbs from the kernel and composed them in libc over
+  `open`/`lseek`/`read`/`write`/`close`.  `file_read(path,…)` is
+  open+seek+read+close — a userland composition, not a syscall.  Removed
+  `SYS_FILE_READ`, `SYS_FILE_WRITE`, `SYS_LIST_DIR` (251/252/254, retired and
+  NOT reused).  Directory listing works because a directory is a file you read.
+  `SYS_STAT` (263) was added afterwards to restore the file-vs-directory
+  distinction the retirement broke.
+  **The lesson this phase paid for, which applies to R3–R6:** when a syscall is
+  retired, find every consumer of its IMPLICIT INVARIANTS, not just its callers.
+  Both regressions were unwritten invariants — `stat()` and `opendir()` both
+  relied on "the list primitive succeeds ONLY on a directory".
+- **R1b — namespace mutation as an object verb.  NEXT.**  `SYS_MKDIR` (260) and
+  `SYS_UNLINK` (259) are the last path-addressed FS verbs: namespace MUTATIONS
+  with no object equivalent.  Decided form (maintainer, 2026-07-24), p9-faithful:
+  the verb acts on a handle to the PARENT DIRECTORY.
+  - **A distinct acquisition mode, not a new capability bit.**  `PLVL_USER` is
+    `CAP_ALL` today (CAP-POLICY-01), so a new `CAP_*` would be granted to
+    everyone and enforce nothing while adding ABI surface.  Root-vs-user is
+    enforced by the per-namespace ACLs (the VFS write tree, registry owner), not
+    by the coarse mask.  A per-service narrowing belongs to B2.4, where the
+    manifests give it meaning.
+  - **`-EISDIR` on WRITE stays exactly as it is** (`object.c:328-338`, where the
+    refusal is deliberate and commented).  Creating or removing a node in a
+    directory is a DIFFERENT operation from writing that directory as a byte
+    stream, and merging the two is how ACLs get lost.  The relaxation is targeted
+    and must be verified against the case it unblocks — precedent: READ on a
+    directory was refused by the same function, which made the directory-read
+    path unreachable and produced `ls: cannot list .`.
+  - **Recursive removal stays a userland composition.**  A recursive kernel verb
+    is unbounded work under a lock and a single syscall that can destroy a
+    subtree; ASTRA excludes both.
+  - `nxdisk` (F5) and R6 need this verb, so it is a prerequisite of programme F,
+    not only of R.
+- **R2 — registry: one truth.  PARTIAL** — `af39c90` made the KEY decide its
+  authority instead of the door the caller came through, so the three paths now
+  AGREE.  The COLLAPSE itself is NOT done: all three still exist.  `/reg` is
+  already a mounted namespace, so
   `open("/reg/…")` IS the object path.  Collapse the three onto it:
   `SYS_REGISTRY` becomes a compatibility shim (or goes), `OBJ_TYPE_REGKEY` has
   zero users and is a deletion candidate.  **Constraint:** the virtual
@@ -406,7 +548,12 @@ Two findings worth stating plainly:
 - **R3 — windows.**  17 ad-hoc verbs onto the `OBJ_TYPE_WINDOW` object that
   already exists with 8 `OBJ_CTL_*` verbs.  Largest numeric reduction, highest
   risk (compositor + the ACL work from GFX-WIN-WRITE-01), so it goes after the
-  two safe ones.
+  two safe ones — and after **C1**, so a compositor that breaks does not take
+  the diagnostic channel with it.
+  **Net for this phase: `captest` AND `libctest` before and after EVERY
+  sub-step, not only at the phase boundary** — the tests say more than the boots
+  do, and this is the surface where an AB-BA lock inversion (GFX-COMP-RESERVE-02)
+  has already landed once.  20 boots per arch on top, per §0.
 - **R4 — IPC.**  Ambient pid `SYS_SEND/RECV/TRY_RECV` → ports.  The daemon
   design doc already states ambient pid IPC is the seL4 rule ports repair, and
   Phase 16 already owns the unbounded-queue DoS on the ambient path — so this
@@ -442,3 +589,10 @@ applied on the spot, but it is still recorded.
 | REG-PID-PARSE-01 | registry.c `reg_proc_split` | unbounded `pid = pid*10+d`, can wrap negative; harmless (lookup fails) | S4, fix with B-family registry pass |
 | CPU-AMD64-01 | arch/amd64/cpu | FPU/SSE save-restore landed-and-reverted; matters before amd64-heavy work; also blocks E2 (Rust needs a settled FP/SSE context contract) | Programme B / E2 |
 | UACC-AMD64-02/03/04 | arch/amd64/mm/uaccess.c | amd64 uaccess has no lock vs concurrent unmap (aarch64 does); documented TOCTOU | HAL-0 (pre-existing phase) → gates E2 |
+| **MM-KHEAP-01** | kheap / sched | After `stress` exits, kheap grows to a plateau and ctxsw stays DEGRADED.  The informative detail: ctxsw **descends** rather than rising — each switch costs more, there are not more of them.  **Do not attribute this to the double-`kfree` fixed in `a636e27`**: that was corruption, not a leak, and reaching for a closed cause is how a real one stays open. | open, to characterise — NOT ahead of the §0 work order |
+| **HAL-0b** (runtime half) | arch/amd64/mm | image half closed in `a636e27`; the runtime identity map (RAM mapped twice, kernel alias in user space) and missing NX are untouched, so the charter's W^X claim is not upheld on amd64 | HAL-0, before E2 |
+| **PERF-AMD64-01** | — | "amd64 feels slower than aarch64 despite TCG" — a SENTENCE, never measured, never reproduced.  The actual ctxsw collapse had three concrete causes, all found and fixed: a 16 MiB `kmalloc` per directory listing (the buffer was sized on `OBJ_MAX_IO_BYTES` instead of on the caller's request), a double page-table walk in the string uaccess (the standalone pre-check repeated the `i==0` iteration), and `OBJ_CTL_STAT` re-running a full `vfs_stat()` after `handle_create` had already resolved the path.  Maintainer confirmed "ctxsw tornato ok". | measure ctxsw on both arches, then **close this row or state the number** — an "unexplained" note nobody re-measures is debt |
+| **ABI-FILE-01** | user/sys/lib | `struct FILE` grew ~4.3 KB → ~8.4 KB (the read buffer).  Harmless ONLY because everything is statically linked and `make` rebuilds `disk.img` wholesale.  The moment `libos1.so` is shared and apps ship separately, `struct FILE` is public, versioned ABI. | **gate for programme D** — decide versioning before D3 |
+| **TOOL-VERIFY-01** | tools/ | `tools/nxrun.sh` and `tools/qmp_keys.py` are UNTRACKED; `nxrun.sh` is the repeated-boot harness the §0 gates depend on.  Its verdict currently reports `captest`/`libctest` results but does not FAIL on them — only faults, heap corruption and no-boot set the exit status, so a run with `captest 60/64` still prints `ok`. | track them, and make test failure set the exit status, before they gate a phase |
+| — | ext4 / stdio | **The 4 KiB block-granularity trap, which cost two regressions.**  ext4 fetches — and for a write read-modify-writes — a WHOLE 4 KiB block for any partial access.  So unbuffered byte-at-a-time I/O touches one 4 KiB block PER BYTE: that, not the syscall count, is what made doom's savegame take minutes.  `FILE` therefore buffers BOTH directions at 4096 (= one block), and the direct fd path in `fread`/`fwrite` is for console and pipe streams ONLY (`path[0] == '\0'`).  **Never route a file stream around those buffers** — `a636e27` had to fix `fgetc`/`fputc`/`fputs` for doing exactly that. | standing note |
+| — | verification | `writetest` is OBSOLETE and must not be used as a verification tool.  `user/bin/base-nexs` is a submodule outside the build whose reference `lib.c` still calls the retired `_sys_file_read`: **do not delete it** — it is the canary proving R1's ABI break has consumers outside the tree, and making it link is the first test of dynamic linking in programme D. | standing note |
