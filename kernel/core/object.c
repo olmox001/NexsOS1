@@ -520,7 +520,14 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
      * the three entry points cannot drift (S-ALIGN F5); reads are open.  The
      * key is stored in the kobject's path field, capped at the registry key
      * length so create/get/set all agree on the same string. */
-    if ((rights & OS1_RIGHT_WRITE) && !registry_write_allowed())
+    /* R2: a VIRTUAL per-process key (sys.proc.<pid>.env.*) is exempt from
+     * CAP_REG_WRITE — writing your own environment is ordinary unprivileged
+     * work, and proc_env_set enforces the real rule (self always, others only
+     * if privileged).  sys_registry already worked this way; this door demanded
+     * the machine-reconfiguration capability for a setenv, so the same
+     * operation succeeded or failed depending on which entry point was used. */
+    if ((rights & OS1_RIGHT_WRITE) && !registry_key_is_virtual(kpath) &&
+        !registry_write_allowed())
       return -EPERM;
     if (kpath[0] == '\0')
       return -EINVAL;

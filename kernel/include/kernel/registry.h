@@ -19,6 +19,13 @@ void registry_init(void);
  * a service's routing key cannot be hijacked by another process). */
 int registry_set(const char *key, const char *value, int owner_pid);
 int registry_get(const char *key, char *buffer, size_t size);
+/* registry_key_is_virtual - does the key name the COMPUTED per-process view
+ * (sys.proc.<pid>.*) rather than a stored node?  The authority rule belongs to
+ * the key, not to the entry point: a virtual key is exempt from CAP_REG_WRITE
+ * (proc_env_set applies self-or-privileged instead), so every write gate —
+ * sys_registry, the OS1_NS_REG acquisition, regfs_write — consults this and
+ * they cannot disagree about the same key (R2). */
+int registry_key_is_virtual(const char *key);
 /* registry_enum: write the newline-separated list of used keys into 'buf'
  * (NUL-terminated, bounded by 'size'); returns the number of bytes written
  * (excluding the NUL), or -1 on bad args (LIB-REG-04).

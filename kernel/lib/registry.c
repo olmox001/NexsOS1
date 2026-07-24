@@ -169,6 +169,11 @@ static struct reg_node *node_get_or_add(struct reg_node *p, const char *seg) {
 /* walk_path - resolve dotted 'key' to its node, creating the path when
  * 'create'. Returns the final node, or NULL (not found / OOM / empty key). Lock
  * held. */
+/* Forward declaration: registry_set/registry_del route virtual per-process keys
+ * (R2) but are defined above the routing helper, which needs reg_proc_split. */
+static int reg_virtual_proc_write(const char *key, const char *value,
+                                  long *ret);
+
 static struct reg_node *walk_path(const char *key, int create) {
   struct reg_node *n = reg_root;
   const char *p = key;
@@ -246,6 +251,19 @@ void registry_init(void) {
 int registry_set(const char *key, const char *value, int owner_pid) {
   if (!key || !value)
     return -1;
+
+  /* R2: route the virtual per-process namespace HERE, at the shared seam, so
+   * every entry point behaves identically.  It used to be routed only inside
+   * sys_registry, which meant a setenv arriving through an OBJ_TYPE_REGKEY
+   * handle or through the /reg mount silently created a STORED node that the
+   * computed value then shadowed forever — the write appeared to succeed and
+   * did nothing.  Three doors to one resource must not disagree about what the
+   * resource IS. */
+  {
+    long vret;
+    if (reg_virtual_proc_write(key, value, &vret))
+      return (int)vret;
+  }
 
   uint64_t flags;
   reg_write_lock(&flags);
@@ -399,6 +417,25 @@ static int reg_virtual_proc(const char *key, char *buf, size_t size) {
  * the caller's own process.  proc_env_set enforces the correct rule instead:
  * self always, anyone else only if privileged.
  */
+/*
+ * registry_key_is_virtual - does this key name the computed per-process view?
+ *
+ * R2: the authority rule belongs to the KEY, not to the entry point.  All three
+ * write gates (sys_registry, the OS1_NS_REG acquisition in object.c, regfs_write)
+ * consult this so a virtual key is uniformly exempt from CAP_REG_WRITE — writing
+ * your own environment is ordinary unprivileged work, and proc_env_set enforces
+ * the real rule (self always, anyone else only if privileged).
+ *
+ * Before this, only sys_registry knew: the object and regfs paths demanded
+ * CAP_REG_WRITE for a setenv AND then stored a real node that the computed
+ * value would shadow forever — two different wrong answers for the same key
+ * depending on which door you came through.
+ */
+int registry_key_is_virtual(const char *key) {
+  int pid = 0;
+  return key && reg_proc_split(key, &pid) != (const char *)0;
+}
+
 static int reg_virtual_proc_write(const char *key, const char *value,
                                   long *ret) {
   int pid = 0;
@@ -474,6 +511,14 @@ static void node_remove_child(struct reg_node *p, struct reg_node *child) {
 int registry_del(const char *key, int owner_pid) {
   if (!key)
     return -1;
+
+  /* R2: same seam-level routing as registry_set.  Deleting a virtual env key IS
+   * unsetenv — an empty value clears the slot (see reg_virtual_proc_write). */
+  {
+    long vret;
+    if (reg_virtual_proc_write(key, "", &vret))
+      return (int)vret;
+  }
 
   uint64_t flags;
   reg_write_lock(&flags);
@@ -716,12 +761,16 @@ static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
   /* CAP_REG_WRITE (shared seam) layers ON TOP of the CAP_FS_WRITE the
    * SYS_FILE_WRITE path already checked: VFS-write + registry-write authority.
    */
-  if (!registry_write_allowed())
-    return -EPERM;
   char key[MAX_KEY_LEN];
   regfs_path_to_key(path, key, sizeof(key));
   if (!key[0] || offset >= MAX_VAL_LEN - 1)
     return -1;
+  /* R2: the key decides the authority.  A virtual per-process key is exempt
+   * from CAP_REG_WRITE (setenv is unprivileged; proc_env_set applies the real
+   * self-or-privileged rule) — the gate had to move BELOW the path→key
+   * conversion, because until the key exists there is nothing to ask about. */
+  if (!registry_key_is_virtual(key) && !registry_write_allowed())
+    return -EPERM;
 
   size_t off = (size_t)offset;
   size_t cnt = size;
@@ -906,14 +955,11 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
         return -EFAULT;
       }
     }
-    /* Virtual per-process keys carry their OWN authority rule and are routed
-     * before the CAP_REG_WRITE gate — see reg_virtual_proc_write. */
-    long vret;
-    if (reg_virtual_proc_write(k_key, k_val, &vret))
-      return vret;
-    /* USR-SEC-03 #79: writing the registry needs CAP_REG_WRITE (reads are
-     * open to everyone). */
-    if (!registry_write_allowed())
+    /* USR-SEC-03 #79: writing the registry needs CAP_REG_WRITE (reads are open
+     * to everyone) — EXCEPT for a virtual per-process key, which carries its
+     * own authority rule (R2: the key decides, not the door).  The routing
+     * itself now lives in registry_set, so this path no longer duplicates it. */
+    if (!registry_key_is_virtual(k_key) && !registry_write_allowed())
       return -EPERM;
     return registry_set(k_key, k_val, registry_caller_owner());
   } else if (op == REG_OP_READ) {
@@ -931,13 +977,9 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
     }
     return -ENOENT;
   } else if (op == REG_OP_DEL) {
-    /* Deleting a virtual env key IS unsetenv: same routing, empty value. */
-    long vret;
-    if (reg_virtual_proc_write(k_key, "", &vret))
-      return vret;
-    /* Deleting needs CAP_REG_WRITE; first-writer-wins owner is enforced in
-     * registry_del (machine processes delete as owner 0 = full rights). */
-    if (!registry_write_allowed())
+    /* Deleting needs CAP_REG_WRITE — except for a virtual key, which is
+     * unsetenv and unprivileged (R2).  registry_del does the routing. */
+    if (!registry_key_is_virtual(k_key) && !registry_write_allowed())
       return -EPERM;
     return registry_del(k_key, registry_caller_owner());
   }
