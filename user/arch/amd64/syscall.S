@@ -293,20 +293,6 @@ _sys_sysstats:
     syscall
     ret
 
-.global _sys_file_write
-_sys_file_write:
-    movq $SYS_FILE_WRITE, %rax
-    movq %rcx, %r10   /* arg3: rcx → r10 */
-    syscall
-    ret
-
-.global _sys_file_read
-_sys_file_read:
-    movq $SYS_FILE_READ, %rax
-    movq %rcx, %r10   /* arg3: rcx → r10 */
-    syscall
-    ret
-
 .global _sys_set_focus
 _sys_set_focus:
     movq $SYS_SET_FOCUS, %rax
@@ -328,12 +314,6 @@ _sys_sbrk:
 .global _sys_set_font
 _sys_set_font:
     movq $SYS_SET_FONT, %rax
-    syscall
-    ret
-
-.global _sys_list_dir
-_sys_list_dir:
-    movq $SYS_LIST_DIR, %rax
     syscall
     ret
 

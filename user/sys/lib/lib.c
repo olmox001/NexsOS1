@@ -701,17 +701,81 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
   }
   return (int)w;
 }
-/* OS1_fs_read (F4 M4.5): data reads routed through a FILE capability
- * (handle_create(FS,READ) -> OBJ_CTL_SEEK(offset) -> object_read -> close).  A
- * size<=0 / NULL-buf call is a metadata size-probe (returns the file size)
- * which the object read does not do, so it stays on the ambient SYS_FILE_READ
- * path. */
+/* OS1_fs_read (F4 M4.5; ambient fallback removed by R1): data reads routed
+ * through a FILE capability — handle_create(FS,READ) -> OBJ_CTL_SEEK(offset) ->
+ * object_read -> close.
+ *
+ * The size<=0 / NULL-buf call is a metadata size-probe.  It used to fall back
+ * to the ambient SYS_FILE_READ verb "because the object read does not do that"
+ * — but OBJ_CTL_STAT does, and always did: the object layer was never missing
+ * the capability, only this caller was not asking for it.  Probing through the
+ * handle removes the last libc user of the ambient path (Programme R1) and, in
+ * passing, makes the probe capability-checked like every other read. */
 int OS1_fs_read(const char *path, void *buf, int size, int offset) {
-  if (size <= 0 || !buf) {
-    int r = _sys_file_read(path, buf, size, offset);
-    if (r < 0)
-      errno = -r;
-    return r;
+  /* EXIT SEMANTICS ARE PRESERVED EXACTLY.  The old guard was `size <= 0 ||
+   * !buf` funnelling into the ambient verb, but the KERNEL branched only on
+   * `size`, so the one guard covered three different outcomes and they must
+   * stay distinct:
+   *
+   *   size < 0            (size_t)size wrapped to a huge value, tripping the
+   *                       SYSCALL_MAX_IO_BYTES check       -> -EINVAL
+   *   size > 0, buf NULL  the kernel read, then copy_to_user(NULL) failed
+   *                                                        -> -EFAULT
+   *   size == 0           probe: vfs_read_file(path,NULL,0) -> file size,
+   *                       any failure reported as          -> -ENOENT
+   *
+   * Collapsing all three onto "return the size" would have made a negative
+   * size and a NULL destination look like successful probes. */
+  if (size < 0) {
+    errno = EINVAL;
+    return -EINVAL;
+  }
+  if (size > 0 && !buf) {
+    errno = EFAULT;
+    return -EFAULT;
+  }
+  if (size == 0) {
+    /* THE SIZE-PROBE STANDARD (made explicit here, R1).
+     *
+     * `size == 0` asks "how big is this file".  That is a STAT question, and a
+     * stat has no offset — so the offset argument is meaningless for a probe.
+     * The old implementation silently ignored it and returned the total size,
+     * which means a caller asking "how many bytes remain after `offset`" got
+     * the whole size and no indication it had asked something the API does not
+     * answer.  This refuses instead, following the rule this project already
+     * applies to the environment ceilings: a silently different value is worse
+     * than a failure, because the failure is diagnosable.
+     *
+     * Verified before enforcing: all 12 probe call sites in the tree pass
+     * offset 0 (fopen, font_lib, nxfilem, nxlauncher, rename/truncate,
+     * fdtest/writetest/capreg), so no application changes — the standard was
+     * already universally observed, it just was not stated or enforced.
+     *
+     * Probe through the object layer: OBJ_CTL_STAT is exactly "current size in
+     * bytes" and resolves it from the same place the ambient verb did
+     * (vfs_stat, falling back to the node size), so the value is identical.
+     * Read acquisition is ungated (the tree ACL gates writes), so a file
+     * readable before is readable now — the probe is simply capability-routed
+     * like every other read.  Failure stays -ENOENT to keep the old contract;
+     * handle_create knows more (-EACCES, …) but changing what callers observe
+     * is a separate decision, not a side effect of this refactor. */
+    if (offset != 0) {
+      errno = EINVAL;
+      return -EINVAL;
+    }
+    long ph = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ,
+                                   OBJ_TYPE_FILE);
+    if (ph < 0) {
+      errno = ENOENT;
+      return -ENOENT;
+    }
+    long sz = OS1_object_ctl((int)ph, OBJ_CTL_STAT, 0);
+    OS1low_handle_close((int)ph);
+    if (sz < 0) {
+      errno = ENOENT;
+      return -ENOENT;
+    }
+    return (int)sz;
   }
   long h = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
   if (h < 0) {
@@ -726,8 +790,34 @@ int OS1_fs_read(const char *path, void *buf, int size, int offset) {
     errno = (int)-r;
   return (int)r;
 }
+/* OS1_fs_list (R1): a directory is a file you READ.  handle_create(FS,READ) ->
+ * object_read -> close, the same shape as OS1_fs_read — so listing goes through
+ * the capability layer like every other read instead of the ambient
+ * SYS_LIST_DIR verb.
+ *
+ * Exit semantics preserved: the ambient verb returned the listing LENGTH and
+ * -ENOENT for a missing/unreadable path, so acquisition failure maps to
+ * -ENOENT rather than surfacing handle_create's own errno.  The listing is
+ * NUL-terminated for callers that treat it as a string (the ambient path
+ * copied res+1 bytes for exactly that reason). */
 int OS1_fs_list(const char *path, char *buf, size_t size) {
-  return _sys_list_dir(path, buf, size);
+  if (!buf || size == 0) {
+    errno = EINVAL;
+    return -EINVAL;
+  }
+  long h = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
+  if (h < 0) {
+    errno = ENOENT;
+    return -ENOENT;
+  }
+  long r = OS1_object_read((int)h, buf, size - 1);
+  OS1low_handle_close((int)h);
+  if (r < 0) {
+    errno = ENOENT;
+    return -ENOENT;
+  }
+  buf[r] = '\0';
+  return (int)r;
 }
 int OS1_fs_chdir(const char *path) { return _sys_chdir(path); }
 int OS1_fs_getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
@@ -961,7 +1051,11 @@ int notify(const char *title, const char *msg) {
  * fopen - open a file for buffered I/O emulation.
  *
  * Allocates a FILE struct, stores the path, probes the file size via
- * file_read(path, NULL, 0, 0) (size-probe convention: buf==NULL returns size).
+ * file_read(path, NULL, 0, 0).  SIZE-PROBE CONVENTION: the trigger is
+ * `size == 0` (NOT `buf == NULL`, which this comment used to claim — the
+ * distinction matters because `buf == NULL` with a NON-zero size is an error,
+ * -EFAULT, not a probe).  `offset` must be 0: a size has no offset, and passing
+ * one is refused with -EINVAL rather than silently answered with the total.
  * Returns NULL if the file does not exist and mode is "r" (read-only).
  * Write modes ("w", "a") do not fail on missing files — file_write will
  * create them on demand via the kernel VFS.

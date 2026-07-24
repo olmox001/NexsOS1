@@ -944,7 +944,43 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
          * if the path vanished, fall back to the cached node (an open handle to a
          * since-deleted file still reads what it last resolved). */
         (void)vfs_open(o->path, &o->node);
-        int got = vfs_read(&o->node, o->offset, kb, (uint32_t)n);
+        int got;
+        if (o->node.type == VFS_TYPE_DIR) {
+          /*
+           * A DIRECTORY IS A FILE YOU READ (ASTRA §6.3, Programme R1).
+           *
+           * Reading a directory handle yields its listing, which is the Plan 9
+           * rule the whole namespace model rests on — and it is what lets
+           * OS1_fs_list() be handle_create + object_read + close instead of a
+           * private ambient verb (SYS_LIST_DIR) reaching into the VFS beside
+           * the object layer.
+           *
+           * The listing is produced WHOLE, and the offset is treated as a byte
+           * cursor into it: vfs_list_dir has no incremental form, so a partial
+           * read cannot be resumed mid-directory without re-listing.  That is
+           * why the cursor advances by what was handed out — a second read
+           * returns the tail, and a read past the end returns 0 (EOF), which is
+           * the behaviour any reader loop already expects from a file.
+           */
+          char *full = kmalloc(OBJ_MAX_IO_BYTES);
+          if (!full) {
+            got = -1;
+          } else {
+            int total = vfs_list_dir(o->path, full, OBJ_MAX_IO_BYTES);
+            if (total < 0) {
+              got = -1;
+            } else if (o->offset >= (uint64_t)total) {
+              got = 0; /* cursor past the end: EOF */
+            } else {
+              size_t avail = (size_t)total - (size_t)o->offset;
+              got = (int)(avail < n ? avail : n);
+              memcpy(kb, full + o->offset, (size_t)got);
+            }
+            kfree(full);
+          }
+        } else {
+          got = vfs_read(&o->node, o->offset, kb, (uint32_t)n);
+        }
         if (got < 0) {
           ret = -EIO;
         } else if (got > 0 && arch_copy_to_user(ubuf, kb, (size_t)got) != 0) {

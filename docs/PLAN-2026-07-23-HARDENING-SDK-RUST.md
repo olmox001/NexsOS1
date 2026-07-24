@@ -346,6 +346,89 @@ on real hardware.  G5 and F4 both touch the HAL and should not be interleaved.
 
 ---
 
+## Programme R — ASTRA surface reduction: everything through the object layer
+
+> Maintainer, 2026-07-23: *"guarda tutte le syscall p9, dobbiamo adattarle e
+> adattare il vfs, tutto deve passare dal layer object in maniera analoga,
+> riduciamo tutte le superfici come da ASTRA"* — and: correct ALL the
+> implementations already built, not only the recent work; this vision is now
+> part of the plan permanently.
+
+**The rule.** ASTRA §6.2/§6.3/§6.6: every resource is a node in a namespace,
+every node is representable as a file, every operation is a message on a
+capability-bearing handle.  A kernel verb that reaches a resource WITHOUT going
+through the object layer is a second implementation of something that already
+exists — it doubles the audit surface, and the two copies drift (this is the
+same defect class as the `level_ceiling` mirror B2.1 removed, and the three
+registry paths below).
+
+**Libc is unaffected as an API.**  POSIX names stay exactly where they are —
+that is the personality layer the project already mandates ("POSIX vive SOPRA
+os1").  What changes is WHO implements them underneath: composition over the
+object primitives instead of a private kernel verb.
+
+### R0 — MEASURED census (2026-07-23, real files)
+
+| surface | object layer (ASTRA) | parallel path |
+|---|---|---|
+| **Files** | `open()` — **496** userland call sites | `file_read` 49, `file_write` 19, `list_dir` 20, `OS1_fs_unlink` 20, `OS1_fs_write` 17, `OS1_fs_read` 8, `OS1_fs_list` 2 → **~135 sites** over `SYS_FILE_READ/WRITE`, `SYS_LIST_DIR`, `SYS_MKDIR`, `SYS_UNLINK` |
+| **Registry** | `OS1_NS_REG` + `OBJ_TYPE_REGKEY` — **0 userland users** | `SYS_REGISTRY` — 14 uses in lib.c |
+| **Registry (again)** | `/reg` regfs mount — the p9 namespace, ASTRA §7.6 marked DONE | so the SAME data has **three** access paths |
+| **Windows** | 8 `OBJ_CTL_*` verbs on `OBJ_TYPE_WINDOW` | **17** ad-hoc `SYS_WINDOW_*`/display syscalls |
+| **IPC** | `OBJ_TYPE_PORT` (capability-addressed) | 12 uses of ambient pid `SYS_SEND/RECV/TRY_RECV` |
+| **Process** | `OBJ_TYPE_PROCESS` + `OBJ_CTL_KILL/STOP/CONT`, `SYS_OBJECT_WAIT` | `SYS_KILL`, `SYS_WAIT` |
+
+Two findings worth stating plainly:
+- **The object layer has already won on files** (496 vs ~135).  The reduction is
+  realistic, not aspirational.
+- **The capability check is NOT the gap.**  `vfs_write_allowed()` is already the
+  single write-authority seam and both paths call it.  So this programme is
+  about ONE IMPLEMENTATION, not about closing a hole — which is why it can be
+  done without a security window opening mid-migration.
+
+### R-phases (each: build + headless boot on BOTH arches before the next)
+
+- **R1 — files.**  Delete the path-based FS verbs from the kernel and compose
+  them in libc over `open`/`lseek`/`read`/`write`/`close`.  `file_read(path,…)`
+  is open+seek+read+close — a userland composition, not a syscall.  Removes
+  `SYS_FILE_READ`, `SYS_FILE_WRITE`, `SYS_LIST_DIR` from the ABI.
+  `SYS_MKDIR`/`SYS_UNLINK` are namespace MUTATIONS with no object equivalent
+  yet — they stay until R1b gives the namespace a create/remove verb, and that
+  is recorded rather than hand-waved.
+- **R2 — registry: one truth.**  `/reg` is already a mounted namespace, so
+  `open("/reg/…")` IS the object path.  Collapse the three onto it:
+  `SYS_REGISTRY` becomes a compatibility shim (or goes), `OBJ_TYPE_REGKEY` has
+  zero users and is a deletion candidate.  **Constraint:** the virtual
+  `sys.proc.<pid>.env.*` routing lives inside `SYS_REGISTRY`'s path
+  (`reg_virtual_proc_write`), and `getenv/setenv` depend on it — that routing
+  must move with the data, not be lost.
+- **R3 — windows.**  17 ad-hoc verbs onto the `OBJ_TYPE_WINDOW` object that
+  already exists with 8 `OBJ_CTL_*` verbs.  Largest numeric reduction, highest
+  risk (compositor + the ACL work from GFX-WIN-WRITE-01), so it goes after the
+  two safe ones.
+- **R4 — IPC.**  Ambient pid `SYS_SEND/RECV/TRY_RECV` → ports.  The daemon
+  design doc already states ambient pid IPC is the seL4 rule ports repair, and
+  Phase 16 already owns the unbounded-queue DoS on the ambient path — so this
+  phase converges with work already scheduled.
+- **R5 — process.**  `SYS_KILL`/`SYS_WAIT` → `OBJ_TYPE_PROCESS` verbs.  Note
+  `SYS_WAIT` must keep working for a REAPED pid (Phase 9b): a capability cannot
+  be acquired for a dead process, so the object path alone cannot express it —
+  the retained-status lookup has to be part of the design, not discovered
+  afterwards.
+- **R6 — the VFS itself.**  Mounts through the namespace: `vfs_mount_at()` is
+  the existing p9 seam (used by `/reg`, `/proc`, ktest) and the F-programme's
+  role partitions (MACHINE→`/system`, USR→`/mnt/usr1`) must mount through it
+  rather than growing new special cases.  The ROOT mount stays bootstrap-special
+  by necessity — you cannot mount `/` through a namespace that does not exist
+  yet — and that exception is written down here so it is not mistaken for drift.
+
+**Ordering rationale:** R1 and R2 remove implementations without changing
+authority; R3–R5 change how authority is NAMED and therefore need the object
+model to already be the only file/registry path.  R6 is small and unblocks the
+F-programme's partition set.
+
+---
+
 ## §H — Open points found while doing other work
 
 Anything noticed in passing lands here immediately.  A one-line fix may be

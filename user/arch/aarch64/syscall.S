@@ -46,8 +46,6 @@ _start:
 .global _sys_window_of_pid
 .global _sys_window_blit
 .global _sys_compositor_render
-.global _sys_file_write
-.global _sys_file_read
 .global _sys_set_font
 
 /* 
@@ -320,18 +318,6 @@ _sys_sysstats:
     ret
 
 
-/* int _sys_file_write(const char *path, const void *buf, int size, int offset) */
-_sys_file_write:
-    mov x8, #SYS_FILE_WRITE
-    svc #0
-    ret
-
-/* int _sys_file_read(const char *path, void *buf, int size, int offset)  */
-_sys_file_read:
-    mov x8, #SYS_FILE_READ
-    svc #0
-    ret
-
 /* void _sys_set_focus(int pid) */
 .global _sys_set_focus
 _sys_set_focus:
@@ -354,12 +340,6 @@ _sys_sbrk:
 /* int _sys_set_font(void *data, size_t size) */
 _sys_set_font:
     mov x8, #SYS_SET_FONT
-    svc #0
-    ret
-
-.global _sys_list_dir
-_sys_list_dir:
-    mov x8, #SYS_LIST_DIR
     svc #0
     ret
 

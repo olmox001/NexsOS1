@@ -94,10 +94,15 @@
 
 /* --- Registry / files / misc --- */
 #define SYS_REGISTRY           250
-#define SYS_FILE_WRITE         251
-#define SYS_FILE_READ          252
+/* 251/252/254 RETIRED by Programme R1 (ASTRA surface reduction): SYS_FILE_WRITE,
+ * SYS_FILE_READ and SYS_LIST_DIR were a second, path-addressed implementation of
+ * what the OBJECT layer already does — acquire a FILE capability, then read /
+ * write / seek / stat it.  Every one of their users now composes over
+ * handle_create + object_read/write + OBJ_CTL_STAT, including directory listing
+ * (a directory is a file you read, ASTRA §6.3) and the size probe
+ * (OBJ_CTL_STAT).  The numbers are NOT reused: a stale binary calling one gets
+ * -ENOSYS instead of silently landing on whatever verb inherited its slot. */
 #define SYS_SET_FONT           253
-#define SYS_LIST_DIR           254
 #define SYS_CHDIR              255
 #define SYS_GETCWD             256
 #define SYS_NANOSLEEP          257  /* real blocking sleep (POSIX nanosleep); arg0 = nanoseconds */
