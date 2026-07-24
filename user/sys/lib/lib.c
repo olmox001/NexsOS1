@@ -1068,7 +1068,7 @@ FILE *fopen(const char *path, const char *mode) {
    * stale is_tmp made fclose() unlink real files.  memset is the whole
    * fix; pos/error/eof/has_ungetc/is_tmp start 0 by definition. */
   memset(f, 0, sizeof(FILE));
-  f->fd = -1; /* no fd-backed stream: positional path I/O */
+  f->fd = -1;
   strncpy(f->path, path, sizeof(f->path) - 1);
   /* Probe file size; file_read with NULL buf and size=0 returns byte count.
    * On a miss it sets errno (ENOENT/EACCES) — preserved below so a failed
@@ -1107,6 +1107,40 @@ FILE *fopen(const char *path, const char *mode) {
       f->size = 0;
     }
     f->pos = f->size;
+  }
+
+  /*
+   * Open a REAL handle and keep it for the stream's lifetime.
+   *
+   * Before this, a path-backed FILE carried fd = -1 and EVERY fread/fwrite did
+   * handle_create + seek + read/write + close — four syscalls and, far worse, a
+   * full VFS PATH RESOLUTION per call.  doom reads a savegame a byte at a time
+   * (saveg_read8), so a ~100 KB save meant ~100 000 path resolutions: that is
+   * the multi-minute load, and it is the "positional per-byte fread through the
+   * FILE layer + handle-per-call" item the plan logged at 17d.
+   *
+   * Now the handle is opened once and the KERNEL owns the offset.  fread/fwrite
+   * are one syscall with no resolution; fseek moves the kernel offset with
+   * lseek.  fp->pos is kept as a mirror so ftell costs nothing.
+   *
+   * A failure here is NOT fatal: the stream falls back to the positional path
+   * (fd stays -1), which still works.  Losing speed is acceptable; losing the
+   * ability to open a file is not — and the write modes above have already
+   * created/truncated, so the file exists either way. */
+  {
+    int oflags;
+    if (mode[0] == 'r')
+      oflags = (mode[1] == '+' || (mode[1] && mode[2] == '+')) ? O_RDWR
+                                                              : O_RDONLY;
+    else
+      oflags = O_RDWR; /* "w"/"a" already created+positioned above */
+    int h = open(path, oflags);
+    if (h >= 0) {
+      f->fd = h;
+      /* Align the kernel offset with the logical one ("a" starts at EOF). */
+      if (f->pos != 0)
+        lseek(h, f->pos, SEEK_SET);
+    }
   }
   return f;
 }
@@ -1181,8 +1215,10 @@ int fclose(FILE *fp) {
     if (fp->is_tmp) {
       OS1_fs_unlink(fp->path);
     }
-    /* An fdopen()'d stream owns its descriptor (POSIX): closing the stream
-     * closes the fd.  Path-backed streams carry fd = -1 and own nothing. */
+    /* The stream owns its descriptor (POSIX): closing the stream closes it.
+     * This now covers fopen'd streams too — they hold a real handle for their
+     * lifetime instead of reopening per call — as well as fdopen'd ones.  A
+     * stream whose open failed carries fd = -1 and owns nothing. */
     if (fp->fd >= 0)
       close(fp->fd);
     free(fp);
@@ -1220,6 +1256,11 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
       fp->error = 1;
       return 0;
     }
+    /* Mirror the kernel offset so ftell() stays free and fseek(SEEK_CUR) is
+     * computed from the right base.  A short read is EOF for a file stream. */
+    fp->pos += (int)r;
+    if (r == 0 && bytes > read_bytes)
+      fp->eof = 1;
     read_bytes += r;
     return read_bytes / size;
   }
@@ -1252,6 +1293,11 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
       fp->error = 1;
       return 0;
     }
+    /* Mirror the offset (see fread).  Harmless for the console streams: their
+     * pos is never read back, and nothing seeks them. */
+    fp->pos += (int)w;
+    if (fp->pos > fp->size)
+      fp->size = fp->pos;
     return w / size;
   }
 
@@ -1294,6 +1340,13 @@ int fseek(FILE *fp, long offset, int whence) {
   }
   if (fp->pos < 0)
     fp->pos = 0;
+  /* A handle-backed stream keeps its offset in the KERNEL, so moving the
+   * logical position must move that too — otherwise fread would keep reading
+   * from wherever the last read left off and silently ignore the seek.  Only
+   * for path-backed streams: seeking a console/pipe is meaningless, and those
+   * carry no path. */
+  if (fp->fd >= 0 && fp->path[0])
+    lseek(fp->fd, fp->pos, SEEK_SET);
   fp->eof = 0;
   return 0;
 }
