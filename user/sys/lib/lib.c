@@ -1170,8 +1170,24 @@ static int fstream_flush(FILE *fp) {
   if (at < 0)
     at = 0;
   int pending = fp->wcount;
-  int w = file_write(fp->path, fp->wbuf, pending, at);
+  int w;
+  if (fp->fd >= 0) {
+    /* Flush through the stream's own handle: one syscall, no path resolution.
+     * lseek first because the buffer's on-disk offset trails the logical
+     * position by the pending count, and interleaved reads may have moved the
+     * kernel offset since. */
+    lseek(fp->fd, at, SEEK_SET);
+    long r = write(fp->fd, fp->wbuf, (unsigned long)pending);
+    w = (int)r;
+    if (r > 0)
+      lseek(fp->fd, fp->pos, SEEK_SET); /* restore the logical position */
+  } else {
+    w = file_write(fp->path, fp->wbuf, pending, at);
+  }
   fp->wcount = 0;
+  /* The file just changed: any cached read window may now be stale. */
+  fp->rcount = 0;
+  fp->rhead = 0;
   if (w < 0 || w < pending) {
     fp->error = 1;
     return EOF;
@@ -1250,18 +1266,53 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
   }
 
   int fd = file_fd(fp);
-  if (fd >= 0) {
+  if (fd >= 0 && fp->path[0] == '\0') {
+    /* Console/pipe: unbuffered, and never seekable. */
     long r = read(fd, buf + read_bytes, bytes - read_bytes);
     if (r < 0) {
       fp->error = 1;
       return 0;
     }
-    /* Mirror the kernel offset so ftell() stays free and fseek(SEEK_CUR) is
-     * computed from the right base.  A short read is EOF for a file stream. */
     fp->pos += (int)r;
     if (r == 0 && bytes > read_bytes)
       fp->eof = 1;
     read_bytes += r;
+    return read_bytes / size;
+  }
+  if (fd >= 0) {
+    /*
+     * BUFFERED read for a file stream, symmetric with the write buffer and for
+     * the same filesystem reason: ext4 fetches a whole 4 KiB block for any
+     * partial read, so an unbuffered byte-at-a-time reader re-reads the same
+     * block once per byte.  doom loads savegames exactly that way — that is
+     * the multi-minute load, and buffering is what removes it, not the handle
+     * cache alone.
+     */
+    while (read_bytes < bytes) {
+      if (fp->rhead >= fp->rcount) { /* window exhausted: refill from pos */
+        fp->rbase = fp->pos;
+        fp->rhead = 0;
+        fp->rcount = 0;
+        lseek(fd, fp->pos, SEEK_SET);
+        long r = read(fd, fp->rbuf, FILE_RBUF_SIZE);
+        if (r < 0) {
+          fp->error = 1;
+          break;
+        }
+        if (r == 0) {
+          fp->eof = 1;
+          break;
+        }
+        fp->rcount = (int)r;
+      }
+      size_t avail = (size_t)(fp->rcount - fp->rhead);
+      size_t want = bytes - read_bytes;
+      size_t take = avail < want ? avail : want;
+      memcpy(buf + read_bytes, fp->rbuf + fp->rhead, take);
+      fp->rhead += (int)take;
+      fp->pos += (int)take;
+      read_bytes += take;
+    }
     return read_bytes / size;
   }
   int rem_bytes = bytes - read_bytes;
@@ -1285,16 +1336,20 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
 
   size_t bytes = size * nmemb;
   int fd = file_fd(fp);
-  if (fd >= 0) {
-    /* Console std streams stay unbuffered: interactive output must appear now.
-     */
+  /* CONSOLE/pipe streams only (no path): unbuffered, because interactive output
+   * must appear now.  A FILE-backed stream must NOT take this branch even
+   * though it now has an fd — buffering is not about syscall count here, it is
+   * about the FILESYSTEM: ext4_write does a read-modify-write of a whole 4 KiB
+   * block for any partial write, so an unbuffered byte-at-a-time writer costs
+   * one 4 KiB read + 4 KiB write PER BYTE.  doom saves exactly that way, and
+   * bypassing the buffer made saving look like a hang.  FILE_WBUF_SIZE is 4096
+   * precisely so a full buffer is one whole block. */
+  if (fd >= 0 && fp->path[0] == '\0') {
     long w = write(fd, ptr, bytes);
     if (w < 0) {
       fp->error = 1;
       return 0;
     }
-    /* Mirror the offset (see fread).  Harmless for the console streams: their
-     * pos is never read back, and nothing seeks them. */
     fp->pos += (int)w;
     if (fp->pos > fp->size)
       fp->size = fp->pos;
@@ -1345,8 +1400,20 @@ int fseek(FILE *fp, long offset, int whence) {
    * from wherever the last read left off and silently ignore the seek.  Only
    * for path-backed streams: seeking a console/pipe is meaningless, and those
    * carry no path. */
-  if (fp->fd >= 0 && fp->path[0])
+  if (fp->fd >= 0 && fp->path[0]) {
+    /* Keep the read window if it still covers the new position — a savegame
+     * reader that seeks backwards a few bytes then continues would otherwise
+     * refill on every seek and lose the buffering entirely.  Otherwise drop
+     * it; a stale window would serve bytes from the OLD offset. */
+    if (fp->rcount > 0 && fp->pos >= fp->rbase &&
+        fp->pos < fp->rbase + fp->rcount) {
+      fp->rhead = fp->pos - fp->rbase;
+    } else {
+      fp->rcount = 0;
+      fp->rhead = 0;
+    }
     lseek(fp->fd, fp->pos, SEEK_SET);
+  }
   fp->eof = 0;
   return 0;
 }

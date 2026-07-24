@@ -9,6 +9,7 @@
  * a per-byte fwrite loop (e.g. a savegame written field-by-field) coalesces
  * into one syscall per 4 KiB instead of one per call. */
 #define FILE_WBUF_SIZE 4096
+#define FILE_RBUF_SIZE 4096
 
 typedef struct {
     int fd;
@@ -25,6 +26,16 @@ typedef struct {
      * streams and the console std streams, which stay unbuffered. */
     int wcount;
     char wbuf[FILE_WBUF_SIZE];
+    /* READ buffer, symmetric with the write one and for the same reason: the
+     * filesystem reads a whole 4 KiB block for any partial read, so an
+     * unbuffered byte-at-a-time reader re-reads the same block once per byte.
+     * rhead is the consumed offset inside rbuf, rcount the valid bytes; rbase
+     * is the file offset rbuf[0] came from, so a seek can tell whether the
+     * cached window still covers the new position. */
+    int rcount;
+    int rhead;
+    int rbase;
+    char rbuf[FILE_RBUF_SIZE];
 } FILE;
 
 extern FILE _stdin_struct;
