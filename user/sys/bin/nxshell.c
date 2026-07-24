@@ -120,10 +120,11 @@ static int tokenize(char *s, char *argv[], int max) {
  * the graphical and terminal paths drifted apart in the first place. */
 
 /*
- * spawn_search_args - resolve + spawn a command, honouring any `<`/`>`/`>>`/`2>`
- * redirections embedded in argv.  Centralised here so both the default command
- * path and the `exec` builtin get redirection for free.  With no redirections
- * this is exactly nxexec_spawn_search (nredir 0 -> plain spawn).
+ * spawn_search_args - resolve + spawn a command, honouring any
+ * `<`/`>`/`>>`/`2>` redirections embedded in argv.  Centralised here so both
+ * the default command path and the `exec` builtin get redirection for free.
+ * With no redirections this is exactly nxexec_spawn_search (nredir 0 -> plain
+ * spawn).
  */
 static int spawn_search_args(int argc, char *argv[], char *out_path) {
   struct spawn_redir redir[SPAWN_MAX_REDIR];
@@ -136,9 +137,8 @@ static int spawn_search_args(int argc, char *argv[], char *out_path) {
       close(fds[i]);
     return -1;
   }
-  int pid =
-      nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0, redir,
-                                nredir);
+  int pid = nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0,
+                                      redir, nredir);
   /* The child owns its own dups now; drop our copies so the files close when
    * both sides are done (POSIX fork+dup2 lifecycle). */
   for (int i = 0; i < nfds; i++)
@@ -163,10 +163,11 @@ static void run_fg_job(int pid, const char *cmd) {
 
 /*
  * spawn_with_extra_redir - resolve + spawn a command, applying its own
- * `<`/`>`/`>>`/`2>` redirections PLUS one extra {extra_child_fd ← extra_parent_fd}
- * (a pipe end).  The CALLER owns extra_parent_fd and closes it afterwards; this
- * closes only the files it opened for the command's own redirections.  Returns
- * the PID or <= 0.  A negative extra_parent_fd means "no extra redirection".
+ * `<`/`>`/`>>`/`2>` redirections PLUS one extra {extra_child_fd ←
+ * extra_parent_fd} (a pipe end).  The CALLER owns extra_parent_fd and closes it
+ * afterwards; this closes only the files it opened for the command's own
+ * redirections.  Returns the PID or <= 0.  A negative extra_parent_fd means "no
+ * extra redirection".
  */
 static int spawn_with_extra_redir(int argc, char *argv[], int extra_child_fd,
                                   int extra_parent_fd, char *out_path) {
@@ -185,8 +186,8 @@ static int spawn_with_extra_redir(int argc, char *argv[], int extra_child_fd,
     redir[nredir].source_pid = 0; /* our own table */
     nredir++;
   }
-  int pid = nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0, redir,
-                                      nredir);
+  int pid = nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0,
+                                      redir, nredir);
   for (int i = 0; i < nfds; i++)
     close(fds[i]); /* our own `>`/`2>` files; NOT the caller's pipe end */
   return pid;
@@ -197,10 +198,10 @@ static int spawn_with_extra_redir(int argc, char *argv[], int extra_child_fd,
  * RHS is the foreground stage; the LHS produces into the pipe.  Two producer
  * kinds are handled:
  *   - the `echo` BUILTIN: the shell writes its output straight into the pipe;
- *   - any other (SPAWNED) command: spawned with its stdout → the pipe write-end.
- * Each stage still honours its own `>`/`2>` redirections.  If the kernel cannot
- * make a pipe, fall back to a temp file for the echo case (increment-1
- * redirection) so the common `echo ... | cmd` still works.
+ *   - any other (SPAWNED) command: spawned with its stdout → the pipe
+ * write-end. Each stage still honours its own `>`/`2>` redirections.  If the
+ * kernel cannot make a pipe, fall back to a temp file for the echo case
+ * (increment-1 redirection) so the common `echo ... | cmd` still works.
  */
 static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
   argv[pipe_idx] = 0; /* terminate the LHS argv in place */
@@ -597,7 +598,7 @@ static void run_command_line(char *line) {
     nxperm_mask_str(mask, m, (int)sizeof(m));
     printf("pid=%d level=%s caps=%s\n", get_pid(), nxperm_level_name(level), m);
   } else if (strcmp(cmd, "about") == 0) {
-    print("\n\033[1;36mNeXs OS v0.0.5.2\033[0m\n");
+    print("\n\033[1;36mNeXs OS V0.0.5.3\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
     print("\033[32mLibrary:\033[0m POSIX-like userlib with printf support\n");
@@ -744,10 +745,12 @@ static void run_command_line(char *line) {
  * Two-character operators are tested BEFORE their one-character prefixes, so
  * background (`cmd &`) and pipelines (`a | b`) keep their existing meaning.
  * ------------------------------------------------------------------------- */
-#define SEQ_MAX 8   /* segments per line; a refusal, never a silent truncation */
-#define SEQ_ALWAYS 0 /* `;` and the implicit connector before the first segment */
-#define SEQ_AND 1    /* `&&` — run only if the previous segment SUCCEEDED */
-#define SEQ_OR 2     /* `||` — run only if the previous segment FAILED */
+#define SEQ_MAX 8 /* segments per line; a refusal, never a silent truncation   \
+                   */
+#define SEQ_ALWAYS                                                             \
+  0               /* `;` and the implicit connector before the first segment */
+#define SEQ_AND 1 /* `&&` — run only if the previous segment SUCCEEDED */
+#define SEQ_OR 2  /* `||` — run only if the previous segment FAILED */
 
 /* split_sequence - cut `line` into segments at top-level `&&`/`||`/`;`.
  *
@@ -761,7 +764,8 @@ static int split_sequence(char *line, char *seg[], int conn[], int max) {
   conn[0] = SEQ_ALWAYS;
 
   while (*p) {
-    if (*p == '"' || *p == '\'') { /* skip a quoted run, cmdline_split's rules */
+    if (*p == '"' ||
+        *p == '\'') { /* skip a quoted run, cmdline_split's rules */
       char q = *p++;
       while (*p && *p != q) {
         if (q == '"' && *p == '\\' && (p[1] == '"' || p[1] == '\\'))
