@@ -962,8 +962,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * with src_pid=0 and slept forever on a non-empty queue).
      * NOTE(IPC-02): still unconditionally schedules — a delivered message
      * costs an extra yield. */
+    /* No current task means the scheduler is between reaping the previous one
+     * and picking the next; sys_ipc_recv walks current_process->msg_queue
+     * unguarded, so it must not be entered in that window.  aarch64's EL0
+     * vector already refuses to continue in this state (it panics by name);
+     * amd64 has no such guard, which is why this check lives here, in the
+     * shared dispatcher, rather than in one arch's entry path. */
+    if (!current_process) {
+      pt_regs_set_return(frame, -ESRCH);
+      return schedule(frame);
+    }
     long rc = sys_ipc_recv((int)arg0, (void *)arg1);
-    if (rc != IPC_RECV_RETRY)
+    if (rc == IPC_RECV_RETRY)
+      pt_regs_retry_syscall(frame); /* the LIVE frame — see sys_ipc_recv */
+    else
       pt_regs_set_return(frame, rc);
     return schedule(frame);
   }

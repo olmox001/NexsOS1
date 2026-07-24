@@ -1334,6 +1334,14 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
   if (size == 0 || nmemb == 0)
     return 0;
 
+  /* Write-after-read consistency, the mirror of the flush fread() does before
+   * reading.  The cached read window may cover the bytes about to change, and
+   * rhead does not move when a write advances pos — so a read following a write
+   * would otherwise be served stale bytes from the OLD position.  Dropping the
+   * window costs one refill and removes the whole hazard. */
+  fp->rcount = 0;
+  fp->rhead = 0;
+
   size_t bytes = size * nmemb;
   int fd = file_fd(fp);
   /* CONSOLE/pipe streams only (no path): unbuffered, because interactive output
@@ -2600,13 +2608,33 @@ FILE _stderr_struct = {.fd = 2};
  * FILE*) route through read()/write() like any other descriptor. */
 static int file_fd(FILE *fp) { return fp ? fp->fd : -1; }
 
+/*
+ * fputc/fputs/fgetc delegate to fwrite/fread rather than calling write()/read()
+ * on the descriptor themselves.
+ *
+ * They used to take an `if (fd >= 0)` shortcut straight to the syscall.  That
+ * was correct while only the console had a descriptor and a path-backed FILE
+ * had none — but a FILE now keeps an open handle for its lifetime, so `fd >= 0`
+ * became true for ordinary files too and the shortcut started bypassing the
+ * stream buffers.  The consequences were not symmetric and neither was
+ * cosmetic:
+ *
+ *   - fgetc read one byte straight from the descriptor and never advanced
+ *     fp->pos.  A reader that mixes getc() with fread() — which is exactly what
+ *     Lua's loader does when it skips a `#!` line — desynchronised: fread then
+ *     refilled from the stale fp->pos and re-read the file from the beginning.
+ *   - fputc/fputs wrote straight through while buffered bytes were still
+ *     pending in wbuf, so the two landed out of order: silent corruption, not a
+ *     visible failure.
+ *
+ * fread/fwrite already own the one correct rule — the descriptor fast path is
+ * for CONSOLE/pipe streams only (`path[0] == '\0'`), never for a file — so
+ * these three defer to it instead of carrying a second, older copy of the same
+ * decision.  ext4's 4 KiB read-modify-write granularity is why that rule
+ * exists; see the comment in fwrite.
+ */
 int fputc(int c, FILE *fp) {
   unsigned char ch = (unsigned char)c;
-  int fd = file_fd(fp);
-  if (fd >= 0) {
-    write(fd, (const char *)&ch, 1);
-    return (int)ch;
-  }
   if (fwrite(&ch, 1, 1, fp) != 1)
     return EOF;
   return (int)ch;
@@ -2614,12 +2642,6 @@ int fputc(int c, FILE *fp) {
 
 int fputs(const char *s, FILE *fp) {
   size_t len = strlen(s);
-  int fd = file_fd(fp);
-  if (fd >= 0) {
-    if (len)
-      write(fd, s, len);
-    return 0;
-  }
   if (len && fwrite(s, 1, len, fp) != len)
     return EOF;
   return 0;
@@ -2633,12 +2655,6 @@ int fgetc(FILE *fp) {
     return fp->ungetc_buf;
   }
   unsigned char ch;
-  int fd = file_fd(fp);
-  if (fd >= 0) {
-    if (read(fd, (char *)&ch, 1) != 1)
-      return EOF;
-    return (int)ch;
-  }
   if (fread(&ch, 1, 1, fp) != 1)
     return EOF;
   return (int)ch;

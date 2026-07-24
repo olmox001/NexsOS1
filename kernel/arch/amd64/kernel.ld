@@ -19,10 +19,27 @@ ENTRY(_start_32)
 
 KVB = 0xFFFF800000000000;
 
+/*
+ * One segment per permission set.  The boot region used to be a single
+ * FLAGS(7) R+W+X PT_LOAD holding both the pre-paging code and the boot page
+ * tables, which is why the link emitted "LOAD segment with RWX permissions":
+ * the image itself contradicted the charter's W^X claim before a single page
+ * table was ever built.  The input sections were already correctly marked
+ * ("ax" for .text.boot, "aw",@nobits for .boot_bss) — only the script fused
+ * them, so splitting the segment costs nothing and makes the ELF say what the
+ * sections already said.
+ *
+ * NOTE: this fixes the IMAGE half of HAL-0b.  The RUNTIME half — amd64 still
+ * identity-maps all RAM in the low half alongside the higher-half map, and
+ * kernel pages are mapped without NX (AMMU-01) — is untouched and remains
+ * open in the plan.  Do not read the absence of this warning as W^X being
+ * enforced at runtime.
+ */
 PHDRS
 {
-    boot      PT_LOAD FLAGS(7); /* R+W+X: pre-paging code + boot tables */
-    note      PT_NOTE FLAGS(4); /* R */
+    boot      PT_LOAD FLAGS(5); /* R+X: pre-paging code + boot headers */
+    note      PT_NOTE FLAGS(4); /* R:   PVH note, for the QEMU PVH loader */
+    boot_data PT_LOAD FLAGS(6); /* R+W: boot GDT + boot page tables       */
     text      PT_LOAD FLAGS(5); /* R+X */
     data      PT_LOAD FLAGS(6); /* R+W */
 }
@@ -36,13 +53,18 @@ SECTIONS {
         KEEP(*(.text.boot))
     } :boot
 
+    /* In BOTH segments on purpose.  PT_NOTE is how QEMU's PVH loader finds the
+     * entry point, but PT_NOTE is not loadable — an SHF_ALLOC section that
+     * belongs to no PT_LOAD is what produced "allocated section `.note.PVH'
+     * not in segment".  Naming :boot as well places the bytes in a loadable
+     * segment; :note still describes them to the loader. */
     .note.PVH : ALIGN(4) {
         KEEP(*(.note.PVH))
-    } :note
+    } :boot :note
 
     .boot_bss : ALIGN(4096) {
         *(.boot_bss*)
-    } :boot
+    } :boot_data
 
     . = ALIGN(4096);
     __boot_phys_end = .;

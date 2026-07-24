@@ -14,7 +14,24 @@ QCODE["/"] = "slash"
 QCODE["."] = "dot"
 
 # Characters that need shift held (guest keymap is US-style: '_' = Shift+'-')
-SHIFTED = {"_": "minus", ":": "semicolon", "!": "1", "?": "slash"}
+SHIFTED = {"_": "minus", ":": "semicolon", "!": "1", "?": "slash",
+           '"': "apostrophe", "'": "apostrophe", "(": "9", ")": "0",
+           "#": "3", "$": "4", "%": "5", "&": "7", "*": "8", "+": "equal",
+           "<": "comma", ">": "dot", "|": "backslash", "~": "grave_accent",
+           "^": "6", "@": "2", "{": "bracket_left", "}": "bracket_right"}
+# Uppercase is Shift + the lowercase key.  Without this a path like
+# /home/LUA/... died on a KeyError halfway through and typed a truncated
+# command into the guest, which looks exactly like a guest-side hang.
+for _c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+    SHIFTED[_c] = _c.lower()
+QCODE[","] = "comma"
+QCODE[";"] = "semicolon"
+QCODE["="] = "equal"
+QCODE["["] = "bracket_left"
+QCODE["]"] = "bracket_right"
+QCODE["\\"] = "backslash"
+QCODE["`"] = "grave_accent"
+QCODE["\t"] = "tab"
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock_path)

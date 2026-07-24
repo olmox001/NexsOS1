@@ -84,5 +84,20 @@ struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
     return schedule(regs);
   }
 
+  /* A USER-attributable fault with no current task is not a kernel fault: it
+   * means this CPU took an exception from user mode while its current_task was
+   * NULL, i.e. the scheduler state is corrupt.  Naming it here, in the shared
+   * decision, is what makes the two architectures agree: aarch64's EL0 vector
+   * already panicked with that diagnosis while amd64 fell through and printed
+   * "KERNEL PAGE FAULT", classifying the same condition as something else
+   * entirely.  Each caller still dumps its own register set — those genuinely
+   * differ — but the diagnosis no longer depends on which arch you are on. */
+  if ((user_mode || uaccess) && !task)
+    fault_printf("\n[FAULT] %s from user mode with NO CURRENT TASK on cpu %d — "
+                 "scheduler-state corruption (pc=0x%016lx addr=0x%016lx "
+                 "cause=0x%016lx)\n",
+                 desc, ci ? (int)ci->cpu_id : -1, fault_pc, fault_addr,
+                 syndrome);
+
   return NULL; /* kernel fault: caller dumps registers and panics */
 }

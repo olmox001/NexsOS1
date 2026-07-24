@@ -1860,15 +1860,30 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
     /* Drain leftover IPC messages.  The external-terminate path drains the
      * queue in process_terminate(), but a self-terminated zombie keeps any
-     * already-queued nodes.  No lock needed: kernel_ipc_send() refuses
-     * DEAD/ZOMBIE targets, so the queue is stable by the time we get here. */
+     * already-queued nodes.
+     *
+     * TAKEN UNDER msg_lock, unlike before.  The previous justification for
+     * skipping it — "kernel_ipc_send() refuses DEAD/ZOMBIE targets, so the
+     * queue is stable" — reasons only about SENDERS.  Receivers are the other
+     * half: pop_message() walks this same list under msg_lock, and
+     * process_terminate() takes the lock at its own drain for exactly that
+     * stated reason.  Two drains of one list where only one holds the lock is
+     * a double list_del + double kfree of the same node, which surfaces as
+     * "kfree: Invalid magic" and then as a fault on a freed PCB rather than at
+     * the corruption itself.
+     *
+     * sched_lock was released just above, so this establishes no new order and
+     * no allocation happens under it. */
     {
       struct list_head *pos, *q;
+      uint64_t mflags;
+      spin_lock_irqsave(&to_free->msg_lock, &mflags);
       list_for_each_safe(pos, q, &to_free->msg_queue) {
         struct ipc_node *node = list_entry(pos, struct ipc_node, list);
         list_del(pos);
         kfree(node);
       }
+      spin_unlock_irqrestore(&to_free->msg_lock, mflags);
     }
 
     /* Cancel any pending per-process timed-sleep timer BEFORE freeing the PCB,
@@ -2360,6 +2375,21 @@ int process_cont(int pid) {
  * IPC Helper: Pop message matching src_pid (or -1 for any)
  */
 struct ipc_node *pop_message(struct process *proc, int src_pid) {
+  /* NULL is a reachable argument, not a caller bug to assume away.  Every call
+   * site passes `current_process`, which is get_cpu_info()->current_task, and
+   * schedule() sets that to NULL while it reaps a DEAD/ZOMBIE task before
+   * picking the next one.  Without this test the very first statement below
+   * computes &((struct process *)0)->msg_lock — offset 0x148 — and the write
+   * faults in ring 0 with no useful context.
+   *
+   * NOTE the arch asymmetry this papers over: aarch64's el0_64_sync vector
+   * already treats "EL0 exception with no current task" as scheduler-state
+   * corruption and panics by name, while amd64 has no equivalent guard and
+   * simply proceeds into the dereference.  Returning NULL here makes both
+   * arches behave the same at THIS call, but the underlying divergence belongs
+   * in the HAL and is still open. */
+  if (!proc)
+    return NULL;
   /* pr_err("pop_message: proc=%d src=%d\n", proc->pid, src_pid); */
   uint64_t flags;
   struct ipc_node *node = NULL;
@@ -2490,10 +2520,24 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
    * during the window we stayed RUNNING: the dispatcher's schedule() simply
    * re-runs us and the retried pop succeeds immediately.
    *
+   * The REWIND ITSELF BELONGS TO THE DISPATCHER, which holds the live trap
+   * frame; this function only reports that it must happen.  It used to rewind
+   * `current_process->context` here, and that pointer is not the running
+   * frame: `context` is written in exactly one place — schedule(), when a
+   * process is switched OUT — so while a process runs it holds whatever was
+   * saved at its last switch-out, or, for one that has never been switched
+   * out, the value elf.c set at load time.
+   *
+   * That mostly went unnoticed because syscall_entry reloads RSP from
+   * cpu_info->stack_top on every entry, so successive syscalls on the same CPU
+   * build their pt_regs at the SAME address and the stale pointer happened to
+   * be right.  It stops being right when the last switch-out came from another
+   * CPU or from an interrupt frame, and then this wrote `rip -= 2` into
+   * whatever the pointer reached — kernel text included, which faults as a
+   * write to a present read-only page from ring 0.
+   *
    * IPC_RECV_RETRY tells the dispatcher the retry is armed and the trap
    * frame's argument registers must survive untouched (see sched.h). */
-  pt_regs_retry_syscall(current_process->context);
-
   return IPC_RECV_RETRY;
 }
 
