@@ -460,3 +460,9 @@ longjmp:
 1:
     jmp *%rdx
 
+/* int _sys_stat(const char *path, struct abi_stat *out) */
+.global _sys_stat
+_sys_stat:
+    movq $SYS_STAT, %rax
+    syscall
+    ret

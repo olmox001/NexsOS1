@@ -103,6 +103,14 @@
  * (OBJ_CTL_STAT).  The numbers are NOT reused: a stale binary calling one gets
  * -ENOSYS instead of silently landing on whatever verb inherited its slot. */
 #define SYS_SET_FONT           253
+/* SYS_STAT — metadata for a path in ONE round trip: arg0 = path, arg1 = user
+ * `struct abi_stat *`.  Added by R1-fix, and it is a NET REDUCTION, not a
+ * relapse: it replaces three retired verbs plus the handle_create/OBJ_CTL_STAT/
+ * close dance that composing them in userland required, and it composes the
+ * same object primitives kernel-side instead of duplicating an implementation.
+ * It also restores the file/directory DISTINCTION that opendir() and stat()
+ * both depend on — see include/abi/posix_types.h struct abi_stat. */
+#define SYS_STAT               263
 #define SYS_CHDIR              255
 #define SYS_GETCWD             256
 #define SYS_NANOSLEEP          257  /* real blocking sleep (POSIX nanosleep); arg0 = nanoseconds */

@@ -763,19 +763,15 @@ int OS1_fs_read(const char *path, void *buf, int size, int offset) {
       errno = EINVAL;
       return -EINVAL;
     }
-    long ph = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ,
-                                   OBJ_TYPE_FILE);
-    if (ph < 0) {
+    /* ONE syscall.  The first R1 version did handle_create + OBJ_CTL_STAT +
+     * close — three syscalls and two path resolutions for one number, on the
+     * path every fopen() takes.  SYS_STAT asks the same VFS once. */
+    struct abi_stat as;
+    if (_sys_stat(path, &as) != 0) {
       errno = ENOENT;
       return -ENOENT;
     }
-    long sz = OS1_object_ctl((int)ph, OBJ_CTL_STAT, 0);
-    OS1low_handle_close((int)ph);
-    if (sz < 0) {
-      errno = ENOENT;
-      return -ENOENT;
-    }
-    return (int)sz;
+    return (int)as.size;
   }
   long h = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
   if (h < 0) {
@@ -2091,25 +2087,32 @@ int env_names(char *names[], int max) {
   return count;
 }
 
+/*
+ * stat - path metadata in ONE syscall (SYS_STAT).
+ *
+ * It used to infer the type: "list_dir succeeds ONLY on directories, so a >= 0
+ * probe IS a directory".  That invariant was load-bearing in TWO places (here
+ * and opendir) and R1 broke it — once a READ handle could be acquired on any
+ * path, listing a regular FILE returned its CONTENT instead of failing, so
+ * every file looked like a directory and the file manager tried to chdir into
+ * them ("Cannot open directory").
+ *
+ * Inference replaced by a fact: the kernel is the only place that knows a
+ * node's type, so it reports it.  One round trip instead of a listing probe
+ * plus a size probe.
+ */
 int stat(const char *path, struct stat *buf) {
   if (buf)
     memset(buf, 0, sizeof(struct stat));
-  /* Directory detection first: the list primitive (the same one the shell's
-   * ls uses) succeeds ONLY on directories (ext4_list returns -2 on a file),
-   * so a >= 0 probe IS "this is a directory".  A tiny buffer suffices — we
-   * only need the verdict, not the entries. */
-  char dprobe[4];
-  if (list_dir(path, dprobe, sizeof(dprobe)) >= 0) {
-    if (buf)
-      buf->st_mode = S_IFDIR;
-    return 0;
-  }
-  int size = file_read(path, NULL, 0, 0);
-  if (size < 0)
+  struct abi_stat as;
+  int r = _sys_stat(path, &as);
+  if (r != 0) {
+    errno = ENOENT;
     return -1;
+  }
   if (buf) {
-    buf->st_size = size;
-    buf->st_mode = S_IFREG;
+    buf->st_size = (off_t)as.size;
+    buf->st_mode = (as.type == ABI_S_TYPE_DIR) ? S_IFDIR : S_IFREG;
   }
   return 0;
 }
@@ -2652,6 +2655,16 @@ int ioctl(int fd, unsigned long request, ...) {
 
 /* --- <dirent.h> --- over list_dir() (space-separated names from ext4_list). */
 DIR *opendir(const char *name) {
+  /* Verify it IS a directory before listing.  opendir() used to rely on
+   * list_dir failing for a regular file; since a directory is now read through
+   * the same object path as a file, listing a FILE returns its content and the
+   * call would "succeed" on anything.  Callers use opendir() as the
+   * file-or-directory test (the file manager does), so this must be exact. */
+  struct abi_stat as;
+  if (_sys_stat(name, &as) != 0 || as.type != ABI_S_TYPE_DIR) {
+    errno = ENOTDIR;
+    return NULL;
+  }
   DIR *d = malloc(sizeof(DIR));
   if (!d)
     return NULL;

@@ -995,6 +995,51 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     pt_regs_set_return(frame, sys_registry((int)arg0, (const char *)arg1,
                                            (char *)arg2, (size_t)arg3));
     break;
+  case SYS_STAT: {
+    /*
+     * Path metadata in ONE round trip: type + size.
+     *
+     * Why this exists (R1-fix).  R1 removed the ambient FS verbs and composed
+     * their users over the object layer, which was right for the DATA path but
+     * had two costs the composition could not absorb:
+     *
+     *  - CORRECTNESS.  opendir() and stat() both relied on the invariant "the
+     *    list primitive succeeds ONLY on a directory".  Once a READ handle could
+     *    be acquired on any path, object_read on a FILE returned its CONTENT, so
+     *    opendir() succeeded on regular files — the file manager then marked
+     *    every file a directory and double-clicking one tried to chdir into it
+     *    ("Cannot open directory").  The type distinction has to come from the
+     *    kernel, which is the only place that knows it.
+     *  - COST.  The size probe became handle_create + OBJ_CTL_STAT + close:
+     *    three syscalls and two path resolutions for one number, on the path
+     *    every fopen() takes.
+     *
+     * This is a NET REDUCTION even though it adds a number: it replaces three
+     * retired verbs and the three-call dance, and it duplicates nothing — it
+     * asks the same VFS the object layer asks.
+     */
+    char k_path[128];
+    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    char resolved_path[128];
+    vfs_resolve_path(k_path, resolved_path, 128);
+    struct vfs_stat vst;
+    if (vfs_stat(resolved_path, &vst) != 0) {
+      pt_regs_set_return(frame, -ENOENT);
+      break;
+    }
+    struct abi_stat ast;
+    memset(&ast, 0, sizeof(ast));
+    ast.size = vst.size;
+    ast.type = vst.type; /* ABI_S_TYPE_* match VFS_TYPE_* by value */
+    if (arch_copy_to_user((void *)arg1, &ast, sizeof(ast)) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    pt_regs_set_return(frame, 0);
+  } break;
   case SYS_SET_FONT:
     /* Replacing the GLOBAL system font is a desktop-wide display change (it
      * affects every window): same capability gate as set_style/set_zoom

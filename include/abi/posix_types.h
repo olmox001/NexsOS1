@@ -248,4 +248,22 @@ struct ipc_message {
   char payload[64];
 };
 
+/*
+ * abi_stat — what SYS_STAT returns.  The kernel-side truth is `struct vfs_stat`
+ * (size + VFS_TYPE_*); this is its ABI shape, so the kernel never has to include
+ * a userland <sys/stat.h> to fill it and userland never has to guess a layout.
+ * libc maps it onto POSIX `struct stat`.
+ *
+ * ABI_S_TYPE_* deliberately match VFS_TYPE_FILE/VFS_TYPE_DIR by value, so the
+ * kernel copies the field through without a translation table that could drift.
+ */
+#define ABI_S_TYPE_FILE 1
+#define ABI_S_TYPE_DIR 2
+
+struct abi_stat {
+  unsigned long long size;
+  unsigned int type; /* ABI_S_TYPE_* */
+  unsigned int _pad; /* explicit: keeps the struct 16 bytes on both arches */
+};
+
 #endif /* _POSIX_TYPES_H */

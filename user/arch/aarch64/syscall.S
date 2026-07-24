@@ -47,6 +47,7 @@ _start:
 .global _sys_window_blit
 .global _sys_compositor_render
 .global _sys_set_font
+.global _sys_stat
 
 /* 
  * Generic Syscall Wrapper Macros could be used, but manual is clearer for now
@@ -480,3 +481,8 @@ longjmp:
     csel w0, w1, w0, ne
     ret
 
+/* int _sys_stat(const char *path, struct abi_stat *out) */
+_sys_stat:
+    mov x8, #SYS_STAT
+    svc #0
+    ret
