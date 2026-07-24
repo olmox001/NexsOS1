@@ -109,6 +109,8 @@ void perror(const char *s);
 
 int ungetc(int c, FILE *fp);
 void clearerr(FILE *fp);
+/* rewind: fseek(fp,0,SEEK_SET) plus clearing the error indicator (POSIX). */
+void rewind(FILE *fp);
 int setvbuf(FILE *fp, char *buf, int mode, size_t size);
 FILE *tmpfile(void);
 

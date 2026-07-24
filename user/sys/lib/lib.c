@@ -1395,6 +1395,12 @@ int fseek(FILE *fp, long offset, int whence) {
   }
   if (fp->pos < 0)
     fp->pos = 0;
+  /* POSIX: "a successful call to fseek() shall undo any effects of ungetc()".
+   * The pushback byte belongs to the OLD position, so carrying it across a seek
+   * would inject a stray byte at the new one.  Latent before — the positional
+   * path re-read from the file every time — and made reachable by the read
+   * window, which is exactly the kind of dormant deviation a buffer exposes. */
+  fp->has_ungetc = 0;
   /* A handle-backed stream keeps its offset in the KERNEL, so moving the
    * logical position must move that too — otherwise fread would keep reading
    * from wherever the last read left off and silently ignore the seek.  Only
@@ -2671,6 +2677,20 @@ void clearerr(FILE *fp) {
     fp->error = 0;
     fp->eof = 0;
   }
+}
+
+/*
+ * rewind - POSIX: equivalent to fseek(fp, 0, SEEK_SET) except that it also
+ * clears the error indicator and returns nothing.  Added because it was the one
+ * standard stdio entry point missing from this libc, and code ported from POSIX
+ * reaches for it after a failed read; without it the link failed rather than
+ * the call misbehaving, which is why it went unnoticed.
+ */
+void rewind(FILE *fp) {
+  if (!fp)
+    return;
+  fseek(fp, 0, SEEK_SET);
+  fp->error = 0;
 }
 
 int setvbuf(FILE *fp, char *buf, int mode, size_t size) {
