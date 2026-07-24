@@ -73,8 +73,20 @@ E2 (Rust) depends on it.
 **Verification gates.**  Both arches build AND boot, plus `captest` 64/64 AND
 `libctest` 18/18.  `libctest` joins the gate from `a636e27` — its 18 cases are
 named after the app each one protects, so a regression names its own victim.
-Harness: `tools/nxrun.sh -a <arch> -n <runs> -c captest -c libctest` (untracked
-at time of writing).
+Harness: `tools/nxrun.sh -a <arch> -n <runs> -c captest -c libctest -e captest=64
+-e libctest=18`, in the tree since `922cc71`, where its gate was also made real
+(it used to print the test counts without comparing them, so a run reporting
+`captest 60/64` exited 0).
+
+**Do NOT shorten the harness waits using the boot times.**  Measured 2026-07-24,
+3 runs each: `"Entering supervisor loop"` appears at 0.60 s on amd64 and 0.67 s
+on aarch64.  That line is the KERNEL reaching its loop — it is **not** the system
+ready to accept input; the graphical services and the shell come afterwards, and
+in practice ~24 s (amd64) and ~40 s (aarch64) are needed before `qmp_type.py`
+produces reliable results.  Cutting the waits to those 0.6 s would reintroduce a
+flakiness that reads as a guest fault when it is a tool artefact.  The number
+worth having is time-to-first-shell-response, which is not what was measured
+here.
 
 Boot counts are THREE different numbers and conflating them is how a race gets
 declared fixed while it is still there:
@@ -84,6 +96,28 @@ declared fixed while it is still there:
 | routine per-phase smoke test | 5 | cheap, catches a hard break |
 | DETECT the intermittent SMP race | 20 per arch | at p=0.25, `0.75^20` ≈ 0.3% chance of missing it.  **5/5 passes 24% of the time with the bug fully present**, so 5 proves nothing about a race |
 | DECLARE the race resolved | 59 clean | 95% confidence the failure rate is below 5% |
+
+**MEASURED 2026-07-24 on HEAD `922cc71`: 20/20 amd64 and 20/20 aarch64 clean —
+the intermittent SMP boot race did NOT reproduce.**
+- Detector matches the documented signature: the race is recorded as an
+  *intermittent kernel PANIC* in the K3-userland window
+  (`PLAN-2026-07-17-STRATIFICATION.md:744`), and the harness greps
+  `PANIC|PAGE FAULT|PROTECTION FAULT` plus heap corruption.  Each run was given
+  a 20 s window after `"Entering supervisor loop"` — without a command the fault
+  check fires instantly and a panic two seconds later is missed.  All 40 serial
+  logs contain the full `ls` output, so every boot reached a userland shell that
+  ANSWERED; "clean" is not "did not explode".
+- `0.75^40` = `1.0e-05`, so **the "~1 in 4" characterisation is refuted.**  Worth
+  recording where that figure came from: `PLAN-2026-07-17-STRATIFICATION.md:744`
+  notes "3/4 headless boots clean" — **one failure in a sample of four**, on
+  2026-07-17.  It was never a measured rate, which is why it survived a year of
+  repetition unchallenged.
+- **This is NOT "resolved".**  Zero failures in 40 boots bounds the rate at
+  **7.2%** with 95% confidence (`1 - 0.05^(1/40)`); the under-5% claim needs 59
+  clean, which is exactly where that number comes from.  Nothing was fixed — the
+  honest statement is "not reproduced in 40 boots, rate below 7.2%".
+- The `884b7f3` comparison was NOT run: the maintainer conditioned those 40
+  extra boots on the race actually manifesting, and it did not.
 
 **Retired syscall numbers are never reused.**  251/252/254 (R1) and, when R1b
 lands, 259/260.  A stale binary must get `-ENOSYS` — a clean failure — instead
@@ -359,13 +393,24 @@ consume these roles, they do not re-mint them.
     the disk, including what an attacker put there.  That would forfeit the
     property F4c exists for.
   - **Boot-time Merkle verification stays ON** (maintainer: "non mi interessa
-    quanti secondi di boot perdiamo").  The cost is to be MEASURED and reported
-    on both arches — P2 is 110592 blocks × 4096 = ~432 MiB to re-read and hash,
-    and on aarch64 under TCG that is software SHA-256 on an emulated CPU — but
-    the policy is decided and is not re-opened by the measurement.  A build flag
-    may disable it with two constraints: **default ON**, and a release image must
-    not be able to boot with verification off.  A flag that can be left off by
-    accident is a security defect, not a development convenience.
+    quanti secondi di boot perdiamo").  The policy is decided and a measurement
+    does not re-open it.  A build flag may disable it with two constraints:
+    **default ON**, and a release image must not be able to boot with
+    verification off.  A flag that can be left off by accident is a security
+    defect, not a development convenience.
+  - **Its cost is NOT MEASURED, and that is a statement about the code, not a
+    task nobody did.**  `kernel/lib/sha256.c` arrived with F2/F3 (`7418dca`) but
+    has **zero callers** — verified: `grep -rn sha256 kernel/ --include=*.c`
+    outside the file itself returns nothing, and there is no `merkle`/`digest`
+    caller either.  Nothing hashes anything at boot today, so there is no
+    verification to time; the number would have to come from a throwaway kernel
+    patch measuring code that does not exist yet.  **Maintainer's decision
+    (2026-07-24): defer the number to F4c**, where the verification is actually
+    implemented.  What IS known and measured: P2 is 110592 blocks × 4096 =
+    432 MiB (`mkdisk.c:25,29`; `build/<arch>/disk.img` is 453019136 bytes) to
+    re-read and hash per boot, and on aarch64 that is software SHA-256 on a
+    TCG-emulated CPU.  **No estimate is recorded here in place of the
+    measurement** — when F4c lands, the number comes from a command.
   - **F4 needs its design doc before code** (with G3): the criterion is that a
     wrong on-disk format is already in users' images, whereas a wrong object verb
     is changed in the next commit.
@@ -589,9 +634,9 @@ applied on the spot, but it is still recorded.
 | REG-PID-PARSE-01 | registry.c `reg_proc_split` | unbounded `pid = pid*10+d`, can wrap negative; harmless (lookup fails) | S4, fix with B-family registry pass |
 | CPU-AMD64-01 | arch/amd64/cpu | FPU/SSE save-restore landed-and-reverted; matters before amd64-heavy work; also blocks E2 (Rust needs a settled FP/SSE context contract) | Programme B / E2 |
 | UACC-AMD64-02/03/04 | arch/amd64/mm/uaccess.c | amd64 uaccess has no lock vs concurrent unmap (aarch64 does); documented TOCTOU | HAL-0 (pre-existing phase) → gates E2 |
-| **MM-KHEAP-01** | kheap / sched | After `stress` exits, kheap grows to a plateau and ctxsw stays DEGRADED.  The informative detail: ctxsw **descends** rather than rising — each switch costs more, there are not more of them.  **Do not attribute this to the double-`kfree` fixed in `a636e27`**: that was corruption, not a leak, and reaching for a closed cause is how a real one stays open. | open, to characterise — NOT ahead of the §0 work order |
+| **MM-KHEAP-01** | kheap / sched | After `stress` exits, kheap grows to a plateau and ctxsw stays DEGRADED.  The informative detail: ctxsw **descends** rather than rising — each switch costs more, there are not more of them.  **Do not attribute this to the double-`kfree` fixed in `a636e27`**: that was corruption, not a leak, and reaching for a closed cause is how a real one stays open.  **The 2026-07-24 ctxsw numbers in PERF-AMD64-01 say NOTHING about this item** — they were taken at IDLE, and this defect is defined by what happens *after* a load ends ("alla sua chiusura sembra che il sistema sia ancora sotto stress").  Written here so nobody reads "ctxsw measured, fine" and treats both as covered. | open.  **The measurement that characterises it is three-point on ONE boot:** ctxsw + kheap at idle → prolonged `stress` → ctxsw + kheap after it exits.  `nxmemstat --log <iv> --run /bin/stress` exists for precisely this, and `tools/nxrun.sh` can now drive it.  It also produces the loaded-vs-idle number PERF-AMD64-01 needs to reconcile its 350 baseline, so the two are one measurement.  NOT ahead of the §0 work order. |
 | **HAL-0b** (runtime half) | arch/amd64/mm | image half closed in `a636e27`; the runtime identity map (RAM mapped twice, kernel alias in user space) and missing NX are untouched, so the charter's W^X claim is not upheld on amd64 | HAL-0, before E2 |
-| **PERF-AMD64-01** | — | "amd64 feels slower than aarch64 despite TCG" — a SENTENCE, never measured, never reproduced.  The actual ctxsw collapse had three concrete causes, all found and fixed: a 16 MiB `kmalloc` per directory listing (the buffer was sized on `OBJ_MAX_IO_BYTES` instead of on the caller's request), a double page-table walk in the string uaccess (the standalone pre-check repeated the `i==0` iteration), and `OBJ_CTL_STAT` re-running a full `vfs_stat()` after `handle_create` had already resolved the path.  Maintainer confirmed "ctxsw tornato ok". | measure ctxsw on both arches, then **close this row or state the number** — an "unexplained" note nobody re-measures is debt |
+| **PERF-AMD64-01** | — | "amd64 feels slower than aarch64 despite TCG" — a SENTENCE, never measured, never reproduced.  The actual ctxsw collapse had three concrete causes, all found and fixed: a 16 MiB `kmalloc` per directory listing (the buffer was sized on `OBJ_MAX_IO_BYTES` instead of on the caller's request), a double page-table walk in the string uaccess (the standalone pre-check repeated the `i==0` iteration), and `OBJ_CTL_STAT` re-running a full `vfs_stat()` after `handle_create` had already resolved the path.  Maintainer confirmed "ctxsw tornato ok". | **MEASURED 2026-07-24, NOT CLOSED — and the reason it cannot close is the point.**  Idle context switches on HEAD `922cc71` via `nxmemstat --log 2`: **amd64 213.9 switch/s** (default accel), **234.0** under `-accel hvf -cpu host`, **208.3** under explicit `-accel tcg`; **aarch64 167.0** (TCG is the only accelerator its QEMU offers).  `HZ` is one shared constant (100, `drivers/timer.h:18`), so the two arches are comparable on that axis.  **What this does establish:** amd64 is not slower than aarch64 on this metric — it is HIGHER — so the sentence that opened this row is not reproduced.  **What it does NOT establish, and why closing here would have repeated the "1 in 4" mistake:** the healthy baseline reported by the maintainer is ~350 switch/s (the collapse was 350→70, the recovery "ctxsw tornato ok"), with ~130/150 after stress.  **None of those numbers exists anywhere in the tree** — `grep -rn 350 docs/` finds nothing near ctxsw, and the "perf brief" that `sysstats.h` cites is not a file under `docs/`.  So 213.9 would be judged against a baseline with no recorded provenance and no recorded measurement conditions.  One clean explanation was checked and **excluded by measurement**: `tools/run-stress.sh:14` documents the campaign ran amd64 with `-accel hvf -cpu host` while `nxrun.sh` passes no accelerator at all, but HVF idle (234.0) vs TCG idle (208.3) is ~12%, not the ~40% needed to reach 350.  **The likeliest remaining explanation is that 350 was measured under LOAD, not at idle** — the campaign drives `/bin/stress` — and an idle rate and a loaded rate are simply different quantities.  **What settles it:** the three-point measurement on ONE boot — idle → prolonged `stress` → after it exits — which is exactly what `nxmemstat --log <iv> --run /bin/stress` was built for.  That measurement belongs with **MM-KHEAP-01** and is done there, not here. |
 | **ABI-FILE-01** | user/sys/lib | `struct FILE` grew ~4.3 KB → ~8.4 KB (the read buffer).  Harmless ONLY because everything is statically linked and `make` rebuilds `disk.img` wholesale.  The moment `libos1.so` is shared and apps ship separately, `struct FILE` is public, versioned ABI. | **gate for programme D** — decide versioning before D3 |
 | **TOOL-VERIFY-01** | tools/ | `tools/nxrun.sh` and `tools/qmp_keys.py` are UNTRACKED; `nxrun.sh` is the repeated-boot harness the §0 gates depend on.  Its verdict currently reports `captest`/`libctest` results but does not FAIL on them — only faults, heap corruption and no-boot set the exit status, so a run with `captest 60/64` still prints `ok`. | track them, and make test failure set the exit status, before they gate a phase |
 | — | ext4 / stdio | **The 4 KiB block-granularity trap, which cost two regressions.**  ext4 fetches — and for a write read-modify-writes — a WHOLE 4 KiB block for any partial access.  So unbuffered byte-at-a-time I/O touches one 4 KiB block PER BYTE: that, not the syscall count, is what made doom's savegame take minutes.  `FILE` therefore buffers BOTH directions at 4096 (= one block), and the direct fd path in `fread`/`fwrite` is for console and pipe streams ONLY (`path[0] == '\0'`).  **Never route a file stream around those buffers** — `a636e27` had to fix `fgetc`/`fputc`/`fputs` for doing exactly that. | standing note |
