@@ -948,8 +948,33 @@ uint64_t pmm_page_to_phys(struct page *page) {
  */
 uint64_t pmm_get_free_pages(void) { return free_pages; }
 
-/* pmm_get_total_pages - return total_pages (immutable after pmm_init). */
+/* pmm_get_total_pages - return total_pages (immutable after pmm_init).
+ *
+ * This is the metadata SPAN, not the amount of memory that exists.  It is the
+ * bound of page_array[]/the zone bitmaps, so it is what PFN indexing must be
+ * validated against — and nothing else.  Anything reporting "how much RAM does
+ * this machine have" wants pmm_get_usable_pages(). */
 uint64_t pmm_get_total_pages(void) { return total_pages; }
+
+/*
+ * pmm_get_usable_pages - RAM that actually exists, in pages.
+ *
+ * MM-PMM-09 (#94, fixed 2026-07-23): the span and the usable total are not the
+ * same number on amd64, and userland was being shown the span.  The firmware
+ * memory map has a hole below 4 GB for PCI/MMIO, so with 6 GB installed the
+ * usable regions sum to ~5119 MB while the address span from MEMORY_BASE to the
+ * highest usable end is 6144 MB.  Reporting the span made the monitor print
+ * "free 5026 / 6144 MB, used 1118 MB" — attributing the ~1 GB hardware hole to
+ * consumed memory, so used was wrong by more than an order of magnitude (the
+ * real figure is ~93 MB).
+ *
+ * The gap is already handled correctly INSIDE the PMM (the regions are reserved
+ * and never allocated); it simply must not be counted as memory.  Per the HAL
+ * abstraction rule: amd64 does not use the gap and must not present it as
+ * something that exists.  aarch64 has no such hole, so span == usable there and
+ * this changes nothing — which is the point: one number, correct on both.
+ */
+uint64_t pmm_get_usable_pages(void) { return usable_pages; }
 
 /*
  * pmm_dump_stats - print total/free/used page counts to the kernel log.

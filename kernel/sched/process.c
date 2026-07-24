@@ -2653,7 +2653,15 @@ long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size) {
    * (dependency-free, identical 8-byte layout on both arches) while the kernel
    * accessors take uint64_t (== unsigned long here) — distinct types under
    * -Werror, so pass temporaries and assign (scalar conversion is fine). */
-  s.pmm_total_pages = pmm_get_total_pages();
+  /* MM-PMM-09 (#94): report USABLE RAM, not the metadata span.  On amd64 the
+   * span includes the sub-4GB PCI/MMIO hole, so userland was shown ~6144 MB on
+   * a 6 GB machine with ~5119 MB of real RAM — and since every consumer derives
+   * "used" as total - free, the ~1 GB hole was being reported as consumed
+   * memory (1118 MB instead of ~93 MB).  The hole is already excluded from
+   * allocation inside the PMM; it must not be counted as memory either.  One
+   * change fixes nxmemstat, nxsettings and the Lua binding at once, because
+   * they all read this field. */
+  s.pmm_total_pages = pmm_get_usable_pages();
   s.pmm_free_pages = pmm_get_free_pages();
   {
     uint64_t frag_largest = 0, frag_runs = 0;

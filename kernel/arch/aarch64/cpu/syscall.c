@@ -38,7 +38,13 @@ int arch_copy_from_user(void *dest, const void *src, size_t n) {
   if (src_addr + n < src_addr)
     return -1; /* Wrap around */
 
-  if (!vmm_is_user_addr(src_addr) || !vmm_is_user_addr(src_addr + n))
+  /* UACC-05 (HAL-0): validate the LAST BYTE TOUCHED, not one-past-the-end.
+   * src+n is the first address the copy does NOT read, so a region ending
+   * exactly at the user boundary was refused although it is entirely legal,
+   * and n == 0 checked a byte that is never accessed. */
+  if (n == 0)
+    return 0;
+  if (!vmm_is_user_addr(src_addr) || !vmm_is_user_addr(src_addr + n - 1))
     return -1;
 
   if (!current_process || !current_process->page_table)
@@ -85,9 +91,11 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
   uint64_t dest_addr = (uint64_t)dest;
   if (dest_addr + n < dest_addr)
     return -1; /* Wrap around */
-    
-  if (!vmm_is_user_addr(dest_addr) ||
-      !vmm_is_user_addr(dest_addr + n))
+
+  /* UACC-05 (HAL-0): last byte touched, not one-past-the-end. */
+  if (n == 0)
+    return 0;
+  if (!vmm_is_user_addr(dest_addr) || !vmm_is_user_addr(dest_addr + n - 1))
     return -1;
 
   /* UACC-AARCH64-01: guard current_process before dereferencing its
@@ -180,12 +188,31 @@ int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
   get_cpu_info()->uaccess_active = 1;
 
   int ret = 0;
-  size_t i;
+  size_t i = 0;
+
+  /* UACC-04 (FIXED 2026-07-23, HAL-0): validate the FIRST page before reading
+   * a byte.  The loop below only checks page-ALIGNED addresses, which validates
+   * each NEW page at its first byte — but the page containing src itself is
+   * only page-aligned when src is, so for any unaligned src the starting page
+   * was never checked by vmm_check_range.  Documented on the amd64 side as
+   * UACC-AMD64-04; it was equally present here and recorded nowhere. */
+  if (vmm_check_range(current_process->page_table, (uint64_t)src, 1,
+                      PTE_VALID) != 0) {
+    ret = -1;
+    goto out;
+  }
+
   for (i = 0; i < max_len - 1; i++) {
     /* Check each page boundary for mapping if we cross it */
     if (((uint64_t)&src[i] & 0xFFF) == 0) {
-       if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1, PTE_VALID) != 0)
+       if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1, PTE_VALID) != 0) {
+         /* HAL-0: a failed validation is a FAILURE.  This used to `goto out`
+          * with ret still 0, so a string that ran into an unmapped page was
+          * reported as a successful (silently truncated) copy — the caller then
+          * acted on a partial path/key.  amd64 already returned -1 here. */
+         ret = -1;
          goto out;
+       }
     }
 
     dest[i] = src[i];
@@ -193,11 +220,14 @@ int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
       goto out;
   }
   /* Ran out of destination before the terminator: the source is longer. */
-  dest[max_len - 1] = '\0';
   if (out_truncated)
     *out_truncated = 1;
 
 out:
+  /* HAL-0: terminate on EVERY path.  The early exits used to leave dest
+   * unterminated (only the fall-through wrote the NUL), handing the caller a
+   * string with no end — the classic overrun-in-the-consumer. */
+  dest[max_len - 1] = '\0';
   if (out_len)
     *out_len = i;
   get_cpu_info()->uaccess_active = 0;

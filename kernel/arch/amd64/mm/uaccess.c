@@ -53,23 +53,42 @@
  * arch_uaccess_fault_fixup - release the uaccess critical section after a
  * #PF inside one of the copy windows below (kernel/core/fault.c).
  *
- * On amd64 the copies hold only IRQs-masked + uaccess_active (unified address
- * space: no TTBR swap, no mm_lock).  The faulting context is being discarded
- * (process terminated) and schedule() returns a frame whose saved RFLAGS
- * govern the next task, so only the flag needs clearing.
+ * The copies hold IRQs-masked + uaccess_active + current_process->mm_lock.
+ * The faulting context is being discarded (process terminated), so the flag is
+ * cleared and the lock dropped; schedule() returns a frame whose saved RFLAGS
+ * govern the next task, so IRQ state needs no explicit restore here.
+ *
+ * HAL-0 (2026-07-23): mm_lock is NEW on this side.  Dropping it here is not
+ * optional bookkeeping — a #PF inside a copy window would otherwise leave
+ * mm_lock held by a process that is being torn down, and the next acquirer of
+ * that lock would wait forever.  This mirrors aarch64's
+ * arch_uaccess_fault_fixup exactly; the two providers now differ only where a
+ * written contract says they may (aarch64 additionally restores TTBR0 — it
+ * swaps address spaces, amd64 does not).
  */
 void arch_uaccess_fault_fixup(void) {
   struct cpu_info *ci = arch_cpu_info_fault_safe();
-  if (ci)
+  if (ci) {
     ci->uaccess_active = 0;
+    if (ci->current_task)
+      spin_unlock(&ci->current_task->mm_lock);
+  }
 }
 
 /*
  * AMD64 uses a unified address space: the user PML4 is already in CR3 when
  * a syscall handler runs.  No TTBR switch (unlike aarch64) is needed.
- * NOTE(UACC-AMD64-01): The original comment claims "we only need to bypass
- * SMAP (stac)" — but no stac/clac instructions are emitted here and CR4.SMAP
- * is not enabled in cpu.c.  The comment overstates the security protection.
+ *
+ * UACC-AMD64-01 (CLOSED 2026-07-23, HAL-0): the note recorded that a comment
+ * claimed stac/clac SMAP bracketing that is not emitted.  Verified: no
+ * stac/clac anywhere in this file and CR4.SMAP is not enabled, so there is no
+ * SMAP protection to bracket — the claim was the defect, and the misleading
+ * comment is gone.  Stated positively so nobody re-derives it: user memory is
+ * reachable from kernel mode here because SMAP is OFF; the protection that
+ * actually holds is the explicit vmm_is_user_addr + vmm_check_range validation
+ * under mm_lock below.  Enabling CR4.SMAP (and then genuinely bracketing these
+ * copies with stac/clac) is a hardening step in its own right, tracked with the
+ * other amd64 CPU-feature work rather than pretended here.
  */
 
 /*
@@ -84,34 +103,57 @@ void arch_uaccess_fault_fixup(void) {
  *   4. vmm_check_range: walks the page table to confirm all pages are present.
  *   5. memcpy: the actual copy.
  *
- * NOTE(UACC-AMD64-02): No lock is held between vmm_check_range (:23) and
- * memcpy (:26).  On SMP a concurrent munmap between these two steps allows
- * the memcpy to access a freed page.  The aarch64 equivalent holds mm_lock
- * and disables IRQs around both.
+ * UACC-AMD64-02 (FIXED 2026-07-23, HAL-0): the check and the copy now run
+ * under current_process->mm_lock, closing the window in which a concurrent
+ * unmap on another CPU could free a page between vmm_check_range() and the
+ * memcpy.  aarch64 has always held mm_lock here; amd64 answering the same
+ * concurrency question differently, in a security-sensitive primitive, was the
+ * divergence HAL-0 exists to remove.  What legitimately still differs is the
+ * TTBR0 swap (aarch64 splits address spaces, amd64 does not) — that is written
+ * down in kernel/hal_uaccess.h rather than left implicit.
  *
  * Returns 0 on success, -1 on any validation failure.
  */
 int arch_copy_from_user(void *dest, const void *src, size_t n) {
   uint64_t src_addr = (uint64_t)src;
-  /* NOTE(UACC-AMD64-05): wrap-around check; does not catch src+n == boundary */
+  /* UACC-AMD64-05 (CLOSED 2026-07-23, HAL-0): the wrap check rejects an
+   * overflowing src+n, and the range check below is applied to the LAST BYTE
+   * ACTUALLY TOUCHED (src+n-1), not to the one-past-the-end address.  Checking
+   * src+n was the recorded edge case: for a region ending exactly at the user
+   * boundary the one-past address is the first non-user byte, so a perfectly
+   * legal copy was refused; and n == 0 made src+n == src, checking a byte the
+   * copy never reads.  n == 0 is now short-circuited (nothing to validate). */
   if (src_addr + n < src_addr) return -1;
-  if (!vmm_is_user_addr(src_addr) || !vmm_is_user_addr(src_addr + n)) return -1;
-  if (!current_process || !current_process->page_table) return -1;
-
-  /* NOTE(UACC-AMD64-02): TOCTOU window between this check and the memcpy below */
-  if (vmm_check_range(current_process->page_table, src_addr, n, PTE_VALID) != 0)
+  if (n == 0) return 0;
+  if (!vmm_is_user_addr(src_addr) || !vmm_is_user_addr(src_addr + n - 1))
     return -1;
+  if (!current_process || !current_process->page_table) return -1;
 
   /* uaccess window (Phase A step 9/10): flag the copy so the fault classifier
    * treats a #PF on a user VA here as recoverable (terminate the process)
    * rather than a kernel bug.  IRQs are masked so the flag cannot leak to a
-   * different task via preemption; aarch64 already masks for its TTBR swap. */
+   * different task via preemption; aarch64 already masks for its TTBR swap.
+   *
+   * mm_lock is taken BEFORE the range check so validation and use are one
+   * critical section — checking first and locking after would leave exactly the
+   * TOCTOU this fixes.  arch_uaccess_fault_fixup() drops it if the copy faults.
+   */
   uint64_t uflags = local_irq_save();
+  spin_lock(&current_process->mm_lock);
+
+  if (vmm_check_range(current_process->page_table, src_addr, n, PTE_VALID) !=
+      0) {
+    spin_unlock(&current_process->mm_lock);
+    local_irq_restore(uflags);
+    return -1;
+  }
+
   get_cpu_info()->uaccess_active = 1;
 
   memcpy(dest, src, n); /* NOTE(UACC-AMD64-01): no stac/clac bracketing */
 
   get_cpu_info()->uaccess_active = 0;
+  spin_unlock(&current_process->mm_lock);
   local_irq_restore(uflags);
 
   return 0;
@@ -121,30 +163,40 @@ int arch_copy_from_user(void *dest, const void *src, size_t n) {
  * arch_copy_to_user - copy 'n' bytes from kernel 'src' to user-space 'dest'.
  *
  * Same validation sequence as arch_copy_from_user with dest as the address.
- * NOTE(UACC-AMD64-03): Same TOCTOU window as UACC-AMD64-02 — between the
- * vmm_check_range at :37 and the memcpy at :41.  A concurrent munmap by
- * another CPU or kernel thread can unmap dest between the check and the copy,
- * causing the write to land in a newly-allocated kernel page.
+ * UACC-AMD64-03 (FIXED 2026-07-23, HAL-0): the write-side mirror of
+ * UACC-AMD64-02 — check and copy now share one mm_lock critical section, so a
+ * concurrent unmap can no longer land this write in a newly-allocated kernel
+ * page.
  *
  * Returns 0 on success, -1 on any validation failure.
  */
 int arch_copy_to_user(void *dest, const void *src, size_t n) {
   uint64_t dest_addr = (uint64_t)dest;
+  /* UACC-AMD64-05: last byte touched, not one-past-the-end.  See
+   * arch_copy_from_user. */
   if (dest_addr + n < dest_addr) return -1;
-  if (!vmm_is_user_addr(dest_addr) || !vmm_is_user_addr(dest_addr + n)) return -1;
-  if (!current_process || !current_process->page_table) return -1;
-
-  /* NOTE(UACC-AMD64-03): TOCTOU window between check and copy */
-  if (vmm_check_range(current_process->page_table, dest_addr, n, PTE_VALID) != 0)
+  if (n == 0) return 0;
+  if (!vmm_is_user_addr(dest_addr) || !vmm_is_user_addr(dest_addr + n - 1))
     return -1;
+  if (!current_process || !current_process->page_table) return -1;
 
   /* uaccess window — see arch_copy_from_user */
   uint64_t uflags = local_irq_save();
+  spin_lock(&current_process->mm_lock);
+
+  if (vmm_check_range(current_process->page_table, dest_addr, n, PTE_VALID) !=
+      0) {
+    spin_unlock(&current_process->mm_lock);
+    local_irq_restore(uflags);
+    return -1;
+  }
+
   get_cpu_info()->uaccess_active = 1;
 
   memcpy(dest, src, n); /* NOTE(UACC-AMD64-01): no stac/clac bracketing */
 
   get_cpu_info()->uaccess_active = 0;
+  spin_unlock(&current_process->mm_lock);
   local_irq_restore(uflags);
 
   return 0;
@@ -189,19 +241,32 @@ int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
   if (max_len == 0)
     return -1;
 
-  /* uaccess window — see arch_copy_from_user */
+  /* uaccess window — see arch_copy_from_user.  mm_lock spans the whole walk:
+   * the string is validated page by page AS IT IS READ, so the lock must cover
+   * every check/read pair, not just one (UACC-AMD64-02 for the string path). */
   uint64_t uflags = local_irq_save();
+  spin_lock(&current_process->mm_lock);
   get_cpu_info()->uaccess_active = 1;
 
   size_t i;
   int ret = 0;
+
+  /* UACC-AMD64-04 (FIXED 2026-07-23, HAL-0): validate the FIRST page before
+   * reading a single byte.  The loop below only checks when the address is
+   * page-ALIGNED, which correctly validates each new page at its first byte —
+   * but the page containing src itself is never page-aligned unless src is, so
+   * for any unaligned src the starting page went entirely unchecked (only
+   * vmm_is_user_addr had looked at it).  A user could point src at an unmapped
+   * page and the first read would fault inside the kernel. */
+  if (vmm_check_range(current_process->page_table, (uint64_t)src, 1,
+                      PTE_VALID) != 0) {
+    ret = -1;
+    goto out;
+  }
+
   for (i = 0; i < max_len - 1; i++) {
-    /* Per-page validation: check each page as we cross its start address.
-     * NOTE(UACC-AMD64-04): first byte and the byte at crossing points between
-     * non-zero offsets are not individually re-validated by vmm_check_range. */
+    /* Per-page validation: each new page is checked at its first byte. */
     if (((uint64_t)&src[i] & 0xFFF) == 0) {
-       /* NOTE(UACC-AMD64-02/04): also subject to TOCTOU between this check
-        * and the read of src[i] below. */
        if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1, PTE_VALID) != 0) {
          ret = -1;
          break;
@@ -215,10 +280,12 @@ int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
    * breaking on the NUL. */
   if (ret == 0 && i == max_len - 1 && out_truncated)
     *out_truncated = 1;
-  dest[max_len - 1] = '\0';
   if (out_len) *out_len = i;
 
+out:
+  dest[max_len - 1] = '\0';
   get_cpu_info()->uaccess_active = 0;
+  spin_unlock(&current_process->mm_lock);
   local_irq_restore(uflags);
 
   return ret;

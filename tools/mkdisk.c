@@ -61,14 +61,148 @@ struct guid TYPE_BOOT = {0x21686148,
                          0x6449,
                          0x6E6F,
                          {0x74, 0x4E, 0x65, 0x65, 0x64, 0x45, 0x46, 0x49}};
-struct guid TYPE_KERNEL = {0x0FC63DAF,
-                           0x8483,
-                           0x4772,
-                           {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}};
-struct guid TYPE_DATA = {0x0FC63DAF,
-                         0x8483,
-                         0x4772,
-                         {0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4}};
+
+/*
+ * NEXS ROLE GUIDs (F2, design doc D10).
+ *
+ * Every partition declares its ROLE in its type GUID, so the kernel identifies
+ * partitions by what they ARE and never by table index (D1) — which is what
+ * retires GPT-02 ("changing the disk image layout will silently mount the wrong
+ * partition") and what lets vfs_init() stop mounting whatever happens to probe
+ * first.
+ *
+ * These REPLACE the previous TYPE_KERNEL/TYPE_DATA, which were a defect on two
+ * counts: they were BYTE-IDENTICAL to each other (so they could not distinguish
+ * anything), and their value was 0FC63DAF-8483-4772-8E79-3D69D8477DE4 — the
+ * standard *Linux filesystem data* GUID.  Claiming to be Linux partitions
+ * invites another OS's installer to treat them as its own.
+ *
+ * data1 is 0x4E455853 = "NEXS" in ASCII, so the role is legible in a hex dump
+ * and cannot collide with the EFI/Linux well-known types.  data2 is the role.
+ * TYPE_BOOT above is left standard on purpose: where a BIOS boot partition is
+ * genuinely required, it must carry the GUID firmware looks for.
+ */
+#define NEXS_GUID(role_id)                                                     \
+  {                                                                            \
+    0x4E455853, (role_id), 0x4E58, {                                           \
+      0x9C, 0x00, 0x4E, 0x45, 0x58, 0x53, 0x4F, 0x53                           \
+    }                                                                          \
+  }
+struct guid TYPE_NEXS_META = NEXS_GUID(0x0001);     /* P0  Merkle roots, marker */
+struct guid TYPE_NEXS_KEYSTORE = NEXS_GUID(0x0002); /* PK  secrets, kernel-only */
+struct guid TYPE_NEXS_KERNEL_A = NEXS_GUID(0x0003); /* P1a boot chain slot A    */
+struct guid TYPE_NEXS_KERNEL_B = NEXS_GUID(0x0004); /* P1b boot chain slot B    */
+struct guid TYPE_NEXS_ROOT = NEXS_GUID(0x0005);     /* P2  "/"                  */
+struct guid TYPE_NEXS_MACHINE = NEXS_GUID(0x0006);  /* P3  /system              */
+struct guid TYPE_NEXS_USR = NEXS_GUID(0x0007);      /* P4+ per-user             */
+
+/* ---------------------------------------------------------------------------
+ * SHA-256 (F2, design doc §4bis) — host side.
+ *
+ * FIPS 180-4.  The kernel gets the SAME implementation (kernel/lib/sha256.c) in
+ * F3: a digest is only meaningful if both sides compute it identically, so the
+ * two must be one algorithm, not two transcriptions of a spec.
+ *
+ * This is the leaf primitive for the Merkle tree (D13): the image is hashed per
+ * 4 KiB block (Q8), leaves are hashed pairwise up to a root, and the root goes
+ * in P0.  Verification then costs a full read at boot but a write costs only
+ * log2(n) rehashes — which is what makes "verify ROOT at every boot" survive a
+ * writable filesystem.
+ * ------------------------------------------------------------------------- */
+struct sha256_ctx {
+  uint32_t h[8];
+  uint64_t len;
+  uint8_t buf[64];
+  size_t buflen;
+};
+
+static const uint32_t SHA256_K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+    0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+    0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+
+#define SHA256_ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void sha256_block(struct sha256_ctx *c, const uint8_t *p) {
+  uint32_t w[64], a, b, cc, d, e, f, g, h;
+  for (int i = 0; i < 16; i++)
+    w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) |
+           ((uint32_t)p[i * 4 + 2] << 8) | (uint32_t)p[i * 4 + 3];
+  for (int i = 16; i < 64; i++) {
+    uint32_t s0 = SHA256_ROR(w[i - 15], 7) ^ SHA256_ROR(w[i - 15], 18) ^
+                  (w[i - 15] >> 3);
+    uint32_t s1 =
+        SHA256_ROR(w[i - 2], 17) ^ SHA256_ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+  }
+  a = c->h[0]; b = c->h[1]; cc = c->h[2]; d = c->h[3];
+  e = c->h[4]; f = c->h[5]; g = c->h[6]; h = c->h[7];
+  for (int i = 0; i < 64; i++) {
+    uint32_t S1 = SHA256_ROR(e, 6) ^ SHA256_ROR(e, 11) ^ SHA256_ROR(e, 25);
+    uint32_t ch = (e & f) ^ ((~e) & g);
+    uint32_t t1 = h + S1 + ch + SHA256_K[i] + w[i];
+    uint32_t S0 = SHA256_ROR(a, 2) ^ SHA256_ROR(a, 13) ^ SHA256_ROR(a, 22);
+    uint32_t mj = (a & b) ^ (a & cc) ^ (b & cc);
+    uint32_t t2 = S0 + mj;
+    h = g; g = f; f = e; e = d + t1;
+    d = cc; cc = b; b = a; a = t1 + t2;
+  }
+  c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
+  c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += h;
+}
+
+static void sha256_init(struct sha256_ctx *c) {
+  c->h[0] = 0x6a09e667; c->h[1] = 0xbb67ae85; c->h[2] = 0x3c6ef372;
+  c->h[3] = 0xa54ff53a; c->h[4] = 0x510e527f; c->h[5] = 0x9b05688c;
+  c->h[6] = 0x1f83d9ab; c->h[7] = 0x5be0cd19;
+  c->len = 0;
+  c->buflen = 0;
+}
+
+static void sha256_update(struct sha256_ctx *c, const void *data, size_t n) {
+  const uint8_t *p = (const uint8_t *)data;
+  c->len += n;
+  while (n) {
+    size_t take = 64 - c->buflen;
+    if (take > n)
+      take = n;
+    memcpy(c->buf + c->buflen, p, take);
+    c->buflen += take;
+    p += take;
+    n -= take;
+    if (c->buflen == 64) {
+      sha256_block(c, c->buf);
+      c->buflen = 0;
+    }
+  }
+}
+
+static void sha256_final(struct sha256_ctx *c, uint8_t out[32]) {
+  uint64_t bits = c->len * 8;
+  uint8_t pad = 0x80;
+  sha256_update(c, &pad, 1);
+  uint8_t zero = 0;
+  while (c->buflen != 56)
+    sha256_update(c, &zero, 1);
+  uint8_t lenbe[8];
+  for (int i = 0; i < 8; i++)
+    lenbe[i] = (uint8_t)(bits >> (56 - i * 8));
+  sha256_update(c, lenbe, 8);
+  for (int i = 0; i < 8; i++) {
+    out[i * 4] = (uint8_t)(c->h[i] >> 24);
+    out[i * 4 + 1] = (uint8_t)(c->h[i] >> 16);
+    out[i * 4 + 2] = (uint8_t)(c->h[i] >> 8);
+    out[i * 4 + 3] = (uint8_t)c->h[i];
+  }
+}
 
 struct gpt_header {
   uint64_t signature;
@@ -735,6 +869,21 @@ void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode,
 void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
                           const char *root_host) {
   uint64_t start_off = start_lba * SECTOR_SIZE;
+
+  /* Reset the allocator state so this function can be called MORE THAN ONCE
+   * (F2: one call per ext4 partition).  total_blocks/free_blocks_count were
+   * already re-initialised here, but next_free_block, current_free_inode and
+   * free_inodes_count are file-scope and were only ever initialised at load
+   * time — a second partition would have continued allocating from where the
+   * first one stopped, producing a filesystem whose bitmaps and superblock
+   * disagree.  Latent until now because exactly one partition was ever
+   * written; fixed before it can bite. */
+  next_free_block = BLK_DATA_START;
+  current_free_inode = 11;
+  free_inodes_count = 1014;
+  free(block_bitmap);
+  free(inode_bitmap);
+
   total_blocks = (size_sectors * SECTOR_SIZE) / EXT4_BLOCK_SIZE;
   free_blocks_count = total_blocks;
   block_bitmap = xmalloc(EXT4_BLOCK_SIZE);
@@ -822,19 +971,54 @@ int main(int argc, char *argv[]) {
   me->sectors = (uint32_t)disk_sectors - 1;
   xwrite(mbr, 1, SECTOR_SIZE, f);
 
-  /* Userland-only standard image: a single ext4 rootfs partition.  The old
-   * BOOT and KERNEL partitions were dead weight — QEMU always boots the kernel
-   * via -kernel (dev) or GRUB (release); the kernel is never read from this
-   * image.  The rootfs is mounted from this partition through the block
-   * contract (virtio-blk today, any block backend tomorrow).  boot_path and
-   * kern_path are still accepted for Makefile compatibility but ignored. */
+  /*
+   * Partition emission, F2.
+   *
+   * The image still contains exactly ONE ext4 partition, and it still occupies
+   * the whole usable range, so the on-disk layout is unchanged and `make run`
+   * boots the same image as before.  What changes is that the partition now
+   * DECLARES ITS ROLE (TYPE_NEXS_ROOT) instead of claiming to be a Linux
+   * filesystem, and it is emitted through a role TABLE rather than by writing
+   * e[0] by hand — which is the seam the rest of the partition set (P0 META,
+   * PK KEYSTORE, P1 KERNEL A/B, P3 MACHINE, P4 USR) drops into once F3 teaches
+   * the kernel to mount BY ROLE.
+   *
+   * Deliberately staged: adding the other partitions before the kernel can
+   * identify them by role would hit exactly the failure the design doc records
+   * — vfs_init() mounts the first partition any driver accepts, so a second
+   * ext4 could silently become "/".
+   *
+   * boot_path/kern_path stay accepted-and-ignored for Makefile compatibility;
+   * the KERNEL partition returns as P1 A/B in the same step that gives it a
+   * reader.
+   */
   (void)boot_path;
   (void)kern_path;
+
+  struct part_spec {
+    struct guid type;
+    uint64_t start_lba;
+    uint64_t end_lba;
+    const char *label;
+  } specs[128];
+  int nspecs = 0;
+
+  specs[nspecs].type = TYPE_NEXS_ROOT;
+  specs[nspecs].start_lba = 34;
+  specs[nspecs].end_lba = disk_sectors - 34;
+  specs[nspecs].label = "NEXS-ROOT";
+  nspecs++;
+
   uint8_t *entries = xmalloc(128 * 128);
   struct gpt_partition_entry *e = (struct gpt_partition_entry *)entries;
-  e[0].type_guid = TYPE_DATA;
-  e[0].start_lba = 34;
-  e[0].end_lba = disk_sectors - 34;
+  for (int i = 0; i < nspecs; i++) {
+    e[i].type_guid = specs[i].type;
+    e[i].start_lba = specs[i].start_lba;
+    e[i].end_lba = specs[i].end_lba;
+    /* UTF-16LE partition name, ASCII subset — legible in any partition tool. */
+    for (int k = 0; specs[i].label[k] && k < 35; k++)
+      e[i].partition_name[k] = (uint16_t)specs[i].label[k];
+  }
 
   struct gpt_header h = {0};
   h.signature = GPT_SIGNATURE;
@@ -856,6 +1040,61 @@ int main(int argc, char *argv[]) {
 
   write_ext4_partition(f, e[0].start_lba, e[0].end_lba - e[0].start_lba + 1,
                        root_dir);
+
+  /*
+   * Merkle root over the ROOT partition (§4bis, D13).
+   *
+   * Computed AFTER the filesystem is written, over the partition's blocks in
+   * order: one SHA-256 leaf per 4 KiB block (Q8), then leaves hashed pairwise
+   * up to a single root.  A lone leaf at an odd level is promoted unchanged
+   * rather than paired with a duplicate of itself — self-pairing is the classic
+   * Merkle malleability bug (CVE-2012-2459 in Bitcoin), where two different
+   * block sequences can produce the same root.
+   *
+   * For now the root is REPORTED, not stored: P0 NEXS-META does not exist until
+   * the partition set lands, and writing the digest somewhere the kernel cannot
+   * yet find would be a value nobody reads.  Printing it makes the build
+   * reproducible-checkable today and gives F3 a known-good expected value.
+   */
+  {
+    uint64_t first = e[0].start_lba, last = e[0].end_lba;
+    uint64_t nblocks =
+        ((last - first + 1) * SECTOR_SIZE) / EXT4_BLOCK_SIZE;
+    uint8_t *level = xmalloc((size_t)nblocks * 32);
+    uint8_t *blk = xmalloc(EXT4_BLOCK_SIZE);
+    for (uint64_t i = 0; i < nblocks; i++) {
+      xseek(f, first * SECTOR_SIZE + i * EXT4_BLOCK_SIZE, SEEK_SET);
+      if (fread(blk, 1, EXT4_BLOCK_SIZE, f) != EXT4_BLOCK_SIZE)
+        memset(blk, 0, EXT4_BLOCK_SIZE); /* tail past EOF reads as zeroes */
+      struct sha256_ctx c;
+      sha256_init(&c);
+      sha256_update(&c, blk, EXT4_BLOCK_SIZE);
+      sha256_final(&c, level + i * 32);
+    }
+    uint64_t n = nblocks;
+    while (n > 1) {
+      uint64_t out = 0;
+      for (uint64_t i = 0; i < n; i += 2, out++) {
+        if (i + 1 == n) {
+          memmove(level + out * 32, level + i * 32, 32); /* promote, not pair */
+        } else {
+          struct sha256_ctx c;
+          sha256_init(&c);
+          sha256_update(&c, level + i * 32, 64);
+          sha256_final(&c, level + out * 32);
+        }
+      }
+      n = out;
+    }
+    printf("mkdisk: NEXS-ROOT merkle sha256 = ");
+    for (int i = 0; i < 32 && nblocks; i++)
+      printf("%02x", level[i]);
+    printf(" (%llu blocks of %d)\n", (unsigned long long)nblocks,
+           EXT4_BLOCK_SIZE);
+    free(level);
+    free(blk);
+  }
+
   fclose(f);
   return 0;
 }
