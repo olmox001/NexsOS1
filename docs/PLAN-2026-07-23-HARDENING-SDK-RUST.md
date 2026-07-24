@@ -1,10 +1,25 @@
 # PLAN 2026-07-23 — Hardening, formal diagnostics, portable SDK, Rust core
 
-Maintainer directive, 2026-07-23.  Five programmes, executed in order, each one
-task at a time: **study the surface → write the plan → apply it → test on both
-architectures → refine → next**.  Both arches build and boot at every task
+Maintainer directive, 2026-07-23.  Seven programmes (A–E from the first
+directive, **F–G added 2026-07-23 second directive**), executed in order, each
+one task at a time: **study the surface → write the plan → apply it → test on
+both architectures → refine → next**.  Both arches build and boot at every task
 boundary; the maintainer drives `make run` interactively, this plan's own gate
 is the headless boot plus the build.
+
+**COMMIT POLICY (maintainer, 2026-07-23):** from the second directive onward,
+NO commit without the maintainer's explicit authorization.  Work is staged and
+verified; the maintainer authorises the commit.
+
+Programmes F and G are the "make the kernel actually usable" directive:
+on-disk PERSISTENCE with a real partition model + a first-boot INSTALLER
+(Programme F), on top of REAL storage & device drivers (Programme G).  They
+EXTEND existing in-tree plans rather than replacing them — `docs/MICROSCOPE-
+RELEASE-STORAGE.md` (block contract done, tmpfs/xfs/memory-drivers open),
+`docs/PIANO-DRIVER-MATURITY.md` (Fase 2 = runtime hotplug/plug-and-play, USB
+stack partly landed), `docs/FUTURE_DRIVER_EXPANSION_PLAN.md` (NVMe/AHCI as block
+providers, partition-table parser).  Method stays ASTRA: every device/format is
+a provider behind a contract; `arch/` holds only ISA/boot glue.
 
 This file is the task list.  It is updated IN PLACE as tasks complete, and any
 defect or open point found while doing something else is added to §H rather than
@@ -179,6 +194,155 @@ an SDK rather than against the kernel tree.
   rather than for being important.
 - **E4 — the delicate modules**, one at a time, each with the C version kept
   until the Rust one passes the same tests.
+
+---
+
+## Programme F — On-disk persistence, partition model, first-boot installer
+
+> Maintainer directive 2026-07-23 (second).  This is the programme that makes
+> the system **actually usable**: persistent on real disk, installed once, then
+> booting as a named user rather than as root.
+
+### F0 — VERIFIED CURRENT STATE (real files, no assumptions)
+Everything below was read out of the tree, not inferred:
+
+| fact | evidence |
+|---|---|
+| The block layer is already a CONTRACT with one active backend | `kernel/drivers/block/block.c` — `block_register()`, `block_read/write()` route to `static const struct block_dev *active` |
+| virtio-blk registers, then **ramdisk OVERRIDES it if a boot module exists** | `kernel/main.c:236-240` — `virtio_blk_init(); ramdisk_init();` |
+| ramdisk writes are **volatile by construction** | `kernel/drivers/block/ramdisk.c` — `memcpy(disk, buf, len); /* RAM-backed: writes are volatile */` |
+| ext4 writes reach the backend, so **persistence already works on the virtio-blk path** | `kernel/fs/ext4.c:90,252` → `block_write()`; `make run` attaches `disk.img` as virtio-blk |
+| The ISO/release path is the RAM one ("loaded next to the kernel") | `Makefile:840` `module2 /boot/disk.img diskimg`; module reserved as `MEM_REGION_RESERVED` before PMM (`kernel/main.c:199-211`) |
+| `mkdisk` builds a **single** GPT partition, hand-rolled single-group ext4 | `tools/mkdisk.c` — `MIN_PARTITION_BLOCKS (432 MiB)`, ~1014-inode cap, `plan_partition_blocks()` |
+| The VFS supports MULTIPLE mounts but roots exactly one | `kernel/fs/vfs.c:54-57` mount table, `vfs_mount_at`/`vfs_umount`; "Single root mount" |
+| No symlink / bind-mount support | no `VFS_TYPE_LINK`, no bind in `vfs.c` |
+| RAM discovery is already an arch-HAL contract | `arch_platform_get_mem_regions()` — aarch64 FDT + manual probe, amd64 MB2 MMAP |
+| Storage drivers present: **virtio-blk and ramdisk only** | `kernel/drivers/block/`, `kernel/drivers/virtio/virtio_blk.c`; **no AHCI/NVMe/SATA/SCSI anywhere** |
+| 84 hardcoded `/home` references in project userland | measured, `grep '"/home'` |
+
+**Conclusion:** the block CONTRACT and ext4 write-back already exist (MICROSCOPE
+R1 landed).  What is missing is the PARTITION MODEL, the RAM-copy + authorised
+write-back persistence policy, the installer, and real disk drivers.
+
+### F-target — the architecture the maintainer specified
+```
+DISK (after install)
+ ├── P1 KERNEL   immutable on disk; never writable at runtime
+ ├── P2 ROOT "/" writable by ROOT only
+ ├── P3 MACHINE  machine-only paths (the 4th partition the maintainer asked for,
+ │               so "/" can be root-writable without exposing machine state)
+ └── P4 USR1     /mnt/usr1 — per-user; more users = more partitions
+
+BOOT
+ kernel loaded from P1 → detects RAM → assigns ~20% of RAM to "/"
+ → system image mounted there → nxinit from /sys/bin (unchanged)
+ → kernel + root are COPIES IN RAM; the disk copies stay authoritative
+
+PERSISTENCE (tied to the syscalls)
+ userland write → VFS → path is authorised & disk-backed?
+   → operation completes in the RAM view
+   → the changed file/section is handed to the DISK DRIVER, which persists it
+```
+Setup modes: **full** (a disk exists → choose disk, choose the partition sizes)
+and **RAM-only** (test setup: home initialised in RAM from detected free space).
+
+### F-phases
+
+- **F1 — DESIGN DOC FIRST (`docs/DESIGN-PERSISTENCE-INSTALL.md`).**  R6 rule
+  ("doc dedicato prima del codice") applies: this changes the boot contract, the
+  disk format and the write path at once.  The doc fixes: partition table
+  layout + GUIDs, which trees live on which partition, the RAM-copy semantics
+  (what is copied, when, what stays disk-authoritative), the write-back
+  contract (who decides a write is persistable, at what granularity — file vs
+  section — and the failure/ordering semantics), and the install/first-boot
+  state machine.  **Nothing in F2+ starts before this is agreed.**
+- **F2 — `mkdisk` multi-partition.**  Generalise the hand-rolled GPT+ext4 writer
+  from one partition to N (it currently writes exactly one; the single-group
+  ext4 and the ~1014-inode cap are per-partition limits that must be sized per
+  role).  Emit P1..P4.  Keep a single-partition mode so today's `make run` stays
+  byte-identical until F5 flips it.
+- **F3 — kernel: mount the partition set.**  Use the existing multi-mount table
+  (`vfs_mount_at`) to mount ROOT, MACHINE and USR1; extend the GPT probe to
+  recognise the roles.  Extend `vfs_write_allowed()` so the tree ACL and the
+  PARTITION agree (a machine-only path must also be on the machine partition —
+  today the ACL is path-string-only, B2.2).
+- **F4 — persistence write-back.**  The RAM-copy + authorised-write-back path,
+  tied to the syscall boundary as the maintainer specified.  Depends on the
+  memory work MICROSCOPE R4 (RAM-disk + tmpfs + PMM zones share one accounting
+  path) and interacts with the buffer cache (`kernel/mm/buffer.c`).
+  **OPEN INVESTIGATION (maintainer flagged "attento a … su amd64"):** on amd64
+  the kernel shares the address space with the current process and identity-maps
+  usable RAM (`kernel/arch/amd64/mm/mmu.c:116`), so carving a RAM partition at
+  runtime must coordinate with PMM regions and the identity map; aarch64 splits
+  TTBR0/TTBR1 and does not.  This asymmetry must be settled in F1's doc, and it
+  is the same class as HAL-0's uaccess divergence.
+- **F5 — `nxdisk` service.**  Partitioning, formatting, mounting — a supervised
+  service behind a port (`OS1nx_disk`, per the `OS1nx_<service>` standard), so
+  the installer is a CLIENT and the privileged disk work is one auditable place.
+- **F6 — `nxcomp` service.**  Compression/decompression as a service
+  (`OS1nx_comp`).  Format decision: prefer a small, permissively-licensed,
+  self-contained decompressor that is GPLv2-compatible and needs no allocator
+  heroics — candidates to evaluate in F1: **zlib/DEFLATE** (zip), **miniz**
+  (single-file, MIT), **LZ4** (BSD, trivial decoder), **zstd** (BSD).  Selection
+  criteria: decoder size, no dynamic allocation requirement, license
+  compatibility with GPLv2, and whether we need seekable/streaming.  Used to
+  ship the `usr` tree compressed inside `disk.img` and expand it at install.
+- **F7 — `nxsetup` installer (first boot, runs ONCE).**  Chooses the username,
+  sizes the partitions (or RAM-only mode), asks `nxdisk` to partition/format,
+  asks `nxcomp` to expand `usr`, seeds the user's environment
+  (`sys.env.HOME` → `/mnt/usr1/home`, per the B2.3 decision "everything via
+  sys.env"), and copies the boot chain (bootloader + kernel, shipped compressed
+  in `disk.img` like the ISO carries them) onto P1 so the machine becomes
+  self-booting.  Guarded by a "already installed" marker so it never runs twice.
+- **F8 — `nxauth` = `su`.**  Called from the shell; switches to another user or
+  to root.  Bounded by the maintainer's earlier decision (nxauth v1 = root with
+  a preset password); this phase widens it to named users once F7 creates them.
+  Interacts with the LEVEL model (B2) — a user session runs at PLVL_USER with
+  its own home partition.
+- **F9 — default user migration.**  `user/home` → `user/usr1`; the shell opens
+  as `usr<name>` with its partition mounted, not as root.  **This SUPERSEDES
+  B2.3a/b/c** — the home move is now a sub-step of the installer work rather
+  than a standalone migration, but the two decisions already taken stand:
+  separate ext4 partition mounted at `/mnt/usr1`, and all 84 hardcoded paths
+  resolved through `sys.env`.
+- **F10 — `make` integration.**  Compress the `usr` tree into `disk.img` at
+  build time; `disk.img` gains the boot chain (bootloader+kernel) so it can
+  install like the ISO; re-check `make release` and the tmpfs story
+  (MICROSCOPE R2, still open) — the release ISO currently boots RAM-volatile.
+
+---
+
+## Programme G — Real storage & device drivers (both arches, unified HAL)
+
+> Prerequisite for F on real hardware: today the only block backends are
+> virtio-blk and a RAM disk.  Extends `docs/FUTURE_DRIVER_EXPANSION_PLAN.md` §4
+> (storage controllers as block providers) and `docs/PIANO-DRIVER-MATURITY.md`
+> (Fase 2 = runtime plug-and-play), both already ASTRA-shaped.
+
+- **G1 — AHCI/SATA block provider.**  HDD/SSD over the existing `block_dev`
+  contract; PCI discovery already exists (`kernel/drivers/pci/pci.c`
+  `pci_enumerate`).  No FS changes: it registers like virtio-blk.
+- **G2 — NVMe block provider.**  The de-facto SSD standard (PCIe); same
+  contract.  FUTURE_DRIVER_EXPANSION §4 already names the target controllers.
+- **G3 — partition-table parser completion.**  GPT exists (`kernel/fs/gpt.c`,
+  with GPT-01/02/03 markers open); F2/F3 need role-aware partition
+  identification, and multi-disk selection for the installer.
+- **G4 — USB completion + device tree.**  The stack is present (`xhci.c`,
+  `ehci.c`, `uhci.c`, `usb_hid.c`, `usb_core.c`) and HID works on xHCI/EHCI;
+  what is missing is enumeration completeness and the device-tree/ACPI
+  description path.  `kernel/drivers/usb/xhci.c:14` carries an
+  `ASTRA-VIOLATION` (calls `arch_vmm_map_device()` directly) that this phase
+  must clear.
+- **G5 — runtime plug-and-play, unified under the HAL.**  `usb_core.c:354`
+  records "Runtime hotplug / re-scan is Fase 2"; the HAL device registry is
+  immutable/lockless after SMP bring-up.  Make it mutable at runtime with
+  recognition + dispatch, hotplug events HCD → HAL → IPC to userland, the SAME
+  mechanism on aarch64 and amd64.  This is `PIANO-DRIVER-MATURITY` Fase 2 —
+  adopt that plan, do not re-derive it.
+
+**Ordering note:** F can be developed and verified entirely on virtio-blk (the
+contract is backend-agnostic), so F does not block on G.  G is what makes F work
+on real hardware.  G5 and F4 both touch the HAL and should not be interleaved.
 
 ---
 
