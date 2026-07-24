@@ -385,13 +385,22 @@ static void redraw(int force) {
     n = 0;
 
   /* Pass 1: collect every eligible window, unfiltered by width. */
-  int ids[MAX_TILES];
-  unsigned flg[MAX_TILES];
-  int pids[MAX_TILES];     /* pid per window, for the sys.proc.<pid>.name lookup
-                            * (Phase 3 identity) in the draw loop below */
-  char ttl[MAX_TILES][64]; /* title copy, for nxicon_classify() in the draw
-                            * loop below — the id/flags this dock already
-                            * tracked were never enough to pick an icon */
+  /* One record per window rather than four parallel arrays.  The launcher
+   * hoist below REORDERS this list, and a reorder that moves some of a
+   * window's fields but not the others silently mis-attributes them: when
+   * `pid` was a separate array that the hoist forgot to shift, every tile
+   * before the launcher drew the icon of its neighbour — at boot that made
+   * the shell wear the launcher's icon.  Keeping the fields in one struct
+   * makes a reorder move the whole window by construction. */
+  struct tile_win {
+    int id;
+    unsigned flags;
+    int pid;        /* for the sys.proc.<pid>.name lookup (Phase 3 identity)
+                     * in the draw loop below */
+    char title[64]; /* title copy, for nxicon_classify() in the draw loop
+                     * below — the id/flags this dock already tracked were
+                     * never enough to pick an icon */
+  } win[MAX_TILES];
   int total = 0;
   int seen_focus = 0; /* 1 if some window reports WININFO_FOCUSED */
   for (int i = 0; i < n && total < MAX_TILES; i++) {
@@ -404,10 +413,10 @@ static void redraw(int force) {
      * window an app hid itself (hidden but not user-minimized). */
     if (!(wi[i].flags & WININFO_VISIBLE) && !(wi[i].flags & WININFO_MINIMIZED))
       continue;
-    ids[total] = wi[i].id;
-    flg[total] = wi[i].flags;
-    pids[total] = wi[i].pid;
-    memcpy(ttl[total], wi[i].title, sizeof(ttl[total]));
+    win[total].id = wi[i].id;
+    win[total].flags = wi[i].flags;
+    win[total].pid = wi[i].pid;
+    memcpy(win[total].title, wi[i].title, sizeof(win[total].title));
     total++;
     /* Follow focus changes the system makes outside the dock (e.g. the user
      * clicks into a window's body).  Only update g_last_focus when we
@@ -427,22 +436,16 @@ static void redraw(int force) {
   int launcher_id = 0;
   for (int i = 0; i < total; i++) {
     for (int j = 0; j < n; j++) {
-      if (wi[j].id == ids[i] && strncmp(wi[j].title, "nxlauncher", 10) == 0) {
-        int id = ids[i];
-        unsigned f = flg[i];
-        char t[64];
-        memcpy(t, ttl[i], sizeof(t));
+      if (wi[j].id == win[i].id && strncmp(wi[j].title, "nxlauncher", 10) == 0) {
+        launcher_id = win[i].id;
         if (i != 0) {
-          for (int k = i; k > 0; k--) {
-            ids[k] = ids[k - 1];
-            flg[k] = flg[k - 1];
-            memcpy(ttl[k], ttl[k - 1], sizeof(ttl[k]));
-          }
-          ids[0] = id;
-          flg[0] = f;
-          memcpy(ttl[0], t, sizeof(ttl[0]));
+          /* Rotate the whole record to the front: one element moves, so no
+           * field can be left behind at its old index. */
+          struct tile_win hoisted = win[i];
+          for (int k = i; k > 0; k--)
+            win[k] = win[k - 1];
+          win[0] = hoisted;
         }
-        launcher_id = id;
         break;
       }
     }
@@ -492,14 +495,14 @@ static void redraw(int force) {
   int cnt = 0;
   for (int i = 0; i < shown; i++) {
     int idx = start + i;
-    g_slot_id[cnt] = ids[idx];
+    g_slot_id[cnt] = win[idx].id;
     g_slot_x[cnt] = x;
-    dflags[cnt] = flg[idx];
-    vpid[cnt] = pids[idx];
-    memcpy(vttl[cnt], ttl[idx], sizeof(vttl[cnt]));
-    sig = (sig ^ (unsigned)ids[idx]) * 16777619u;
-    sig =
-        (sig ^ (flg[idx] & (WININFO_FOCUSED | WININFO_MINIMIZED))) * 16777619u;
+    dflags[cnt] = win[idx].flags;
+    vpid[cnt] = win[idx].pid;
+    memcpy(vttl[cnt], win[idx].title, sizeof(vttl[cnt]));
+    sig = (sig ^ (unsigned)win[idx].id) * 16777619u;
+    sig = (sig ^ (win[idx].flags & (WININFO_FOCUSED | WININFO_MINIMIZED))) *
+          16777619u;
     cnt++;
     x += TILE + TILE_GAP;
   }
@@ -522,14 +525,14 @@ static void redraw(int force) {
 
   int ty = (DOCK_H - TILE) / 2;
   for (int i = 0; i < cnt; i++) {
-    int is_launcher = (launcher_id != 0 && ids[start + i] == launcher_id);
+    int is_launcher = (launcher_id != 0 && win[start + i].id == launcher_id);
     int minimized = (dflags[i] & WININFO_MINIMIZED) != 0;
     /* The "real" focus (WININFO_FOCUSED).  When the dock itself is the focused
      * window, or a tile was just toggled to minimized, no window reports
      * WININFO_FOCUSED — in that case, the remembered g_last_focus tile stays
      * blue so the user still sees which app owns the focus. */
     int focused = (dflags[i] & WININFO_FOCUSED) ||
-                  (!seen_focus && ids[start + i] == g_last_focus);
+                  (!seen_focus && win[start + i].id == g_last_focus);
 
     /* vttl[i] is the window's own title text (e.g. nxshell's is "NXShell PID
      * 6", not "nxshell"), so this uses nxicon_classify() — the case-
