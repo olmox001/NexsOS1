@@ -870,6 +870,7 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
     } else {
       int installed[4];
       int n_ok = 0;
+      struct kobject *to_free = NULL;
       ret = 0;
       spin_lock(&object_lock); /* nested under sched_lock; IRQs already off */
       for (int i = 0; i < nfds; i++) {
@@ -923,18 +924,28 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
       if (ret < 0) {
         /* Any failure after (or during) install unwinds every handle that made
          * it in — leaving half the rights installed hands the service
-         * capabilities for a request it will never see. */
+         * capabilities for a request it will never see.
+         *
+         * The unwind DROPS the reference but never frees here: kobj_free()
+         * kfree()s, and we hold sched_lock, which would create the
+         * sched_lock -> kmalloc_lock order process.c says nothing establishes
+         * (the same order that deadlocked dispatch_spawn against an idle core).
+         * A last reference is handed to `to_free` and released after both locks
+         * are dropped; at most one object can reach zero per unwind, because
+         * each installed slot holds exactly one reference. */
         for (int i = 0; i < n_ok; i++) {
           struct handle_entry *e = &rcv->handles[installed[i]];
           pipe_handle_count(e->obj, e->rights, -1);
           if (--e->obj->refcount <= 0)
-            kobj_free(e->obj);
+            to_free = e->obj;
           e->obj = NULL;
           e->rights = 0;
         }
       }
       spin_unlock(&object_lock);
       spin_unlock_irqrestore(&sched_lock, sflags);
+      if (to_free)
+        kobj_free(to_free); /* frees (kfree) — never under sched_lock */
       if (ret > 0)
         wake_up(&kp->rq); /* outside both locks: wake_up touches runqueues */
     }

@@ -263,21 +263,39 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
           rerr = -EPERM;
           break;
         }
-        /* PROC-REF-01: hold sched_lock across the source lookup AND the handle
-         * read inside process_redirect_child_fd_from(), so a concurrent exit of
-         * the client cannot free `src` between naming it and dup'ing one of its
-         * descriptors.  process_find_by_pid() alone returns a pointer valid only
-         * for the instant it held the lock.  Order sched_lock -> object_lock
-         * (the redirect takes object_lock internally). */
-        uint64_t sf;
-        spin_lock_irqsave(&sched_lock, &sf);
-        struct process *src = __process_find_by_pid(redir[i].source_pid);
+        /*
+         * PROC-REF-01 is NOT closed here, deliberately — and the first attempt
+         * to close it introduced a worse bug than the one it fixed.
+         *
+         * That attempt held sched_lock across the lookup AND
+         * process_redirect_child_fd_from().  But that function ALLOCATES:
+         * handles_ensure() kmallocs the child's table and kobj_free() releases
+         * the displaced console handle.  Allocating under sched_lock creates
+         * the sched_lock -> pmm_lock/kmalloc_lock order that process.c states
+         * in writing "nothing else in this file establishes" — the same reason
+         * process_create_caps allocates the environment page BEFORE taking the
+         * lock.  With IRQs disabled, an idle core spinning inside the allocator
+         * while this CPU holds sched_lock and waits for it is a hard hang; that
+         * is the amd64 K3-userland panic (corrupted RSP, execution off into the
+         * stack).
+         *
+         * The other two PROC-REF-01 sites (sys_cap_grant, sys_port_send_caps)
+         * are safe because they were made ALLOCATION-FREE under the lock on
+         * purpose: both refuse a target with no handle table rather than
+         * creating one.  This path cannot be made allocation-free the same way
+         * — the child legitimately may need its table built.
+         *
+         * So this site keeps the narrow, pre-existing use-after-free window and
+         * waits for the real fix (a process pin/refcount), which is what
+         * PROC-REF-01 asks for.  A rare UAF is strictly better than a
+         * reproducible deadlock in the path every system() call takes.
+         */
+        struct process *src = process_find_by_pid(redir[i].source_pid);
         if (!src)
           rerr = -ESRCH;
         else
           rerr = process_redirect_child_fd_from(src, p, redir[i].child_fd,
                                                 redir[i].parent_fd);
-        spin_unlock_irqrestore(&sched_lock, sf);
       }
       if (rerr != 0)
         break;
@@ -1018,12 +1036,15 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * retired verbs and the three-call dance, and it duplicates nothing — it
      * asks the same VFS the object layer asks.
      */
-    char k_path[128];
+    /* Path copies go in the per-CPU scratch buffer, per this file's own rule
+     * ("cpu->syscall_buf is used for path/title copies; only one such copy is
+     * in flight per CPU"), not on the kernel stack. */
+    char *k_path = get_cpu_info()->syscall_buf;
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
-    char resolved_path[128];
+    char *resolved_path = k_path + 128; /* same 2 KiB scratch, second slot */
     vfs_resolve_path(k_path, resolved_path, 128);
     struct vfs_stat vst;
     if (vfs_stat(resolved_path, &vst) != 0) {
