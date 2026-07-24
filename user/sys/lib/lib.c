@@ -112,13 +112,35 @@ int errno = 0;
  * io.open printed on a missing file) — and it is deliberately generic: ANY
  * POSIX-style consumer, not just Lua, gets correct errno/strerror from now on.
  */
-static long errno_ret(long r) {
+static long errno_ret_ctx(long r, const char *ctx) {
   if (r < 0) {
     errno = (int)-r;
+    /*
+     * The classifier runs HERE, so the diagnostic declaration is universal.
+     *
+     * OS1_report_error's own comment promises that a hard failure in ANY libc
+     * or portability path becomes visible, but it was reached from three call
+     * sites only — so every OTHER POSIX veneer set errno correctly and was
+     * never classified.  A promise kept at three sites is not a policy, it is
+     * a convention each new compatibility layer (SDL, lua, doom, tomorrow
+     * musl) has to remember to call — and "remember to call it" is the shape
+     * of a duplication waiting to diverge.
+     *
+     * Safe to route everything through it because the POLICY is already
+     * selective: ENOENT/EAGAIN and the rest of normal control flow stay
+     * silent, EACCES/EPERM warn, and only EIO/EFAULT/ENOMEM/ENOSPC/EROFS
+     * raise the red one.  Probes cannot spam it.
+     */
+    OS1_report_error(ctx, (int)r);
     return -1;
   }
   return r;
 }
+
+/* errno_ret - the POSIX seam without a context tag (ctx defaults to "libc").
+ * Callers that know the object they failed on should use errno_ret_ctx so the
+ * notification names it. */
+static long errno_ret(long r) { return errno_ret_ctx(r, NULL); }
 
 /*
  * OS1_report_error - THE single userland error-surfacing seam
@@ -847,9 +869,11 @@ int open(const char *pathname, int flags, ...) {
   if (fd < 0) {
     /* Uniform surfacing (Phase 0): amber on EACCES, red on a hard fault,
      * silent on an ENOENT probe — the policy lives in OS1_report_error, not
-     * here, so every open() caller and every portability layer behave alike. */
-    OS1_report_error(pathname, fd);
-    return (int)errno_ret(fd);
+     * here, so every open() caller and every portability layer behave alike.
+     * The report now happens INSIDE the errno seam (see errno_ret_ctx); this
+     * site passes the path so the notification still names the file rather
+     * than the generic "libc", and reports ONCE instead of twice. */
+    return (int)errno_ret_ctx(fd, pathname);
   }
   if (flags & O_APPEND)
     _sys_lseek(fd, 0, SEEK_END); /* best-effort: initial position at EOF */
@@ -1855,9 +1879,16 @@ int vsscanf(const char *inp, const char *fmt0, va_list ap) {
  * not permitted, or provider failure), matching the POSIX contract. */
 int mkdir(const char *path, mode_t mode) {
   (void)mode;
-  if (!path)
+  if (!path) {
+    errno = EFAULT;
     return -1;
-  return _sys_mkdir(path) == 0 ? 0 : -1;
+  }
+  /* EXT4-ERRNO-01 (userland half): this returned a bare -1 without touching
+   * errno, so a caller doing the POSIX thing — check -1, then read errno —
+   * read whatever a PREVIOUS call had left there.  A stale errno is worse than
+   * none: it is indistinguishable from a fresh one.  Routed through
+   * errno_ret() like every other syscall veneer. */
+  return (int)errno_ret_ctx(_sys_mkdir(path), path);
 }
 /*
  * system - run a shell command and wait for it (<stdlib.h>).
@@ -2292,7 +2323,7 @@ int fflush(FILE *stream) {
  * did nothing; the unlink syscall existed all along (OS1_fs_unlink).
  */
 int remove(const char *pathname) {
-  return (int)errno_ret(OS1_fs_unlink(pathname));
+  return (int)errno_ret_ctx(OS1_fs_unlink(pathname), pathname);
 }
 /*
  * unlink - remove a file (POSIX <unistd.h>).  The unistd.h declaration existed
@@ -2301,7 +2332,7 @@ int remove(const char *pathname) {
  * same VFS unlink `remove()` uses.
  */
 int unlink(const char *pathname) {
-  return (int)errno_ret(OS1_fs_unlink(pathname));
+  return (int)errno_ret_ctx(OS1_fs_unlink(pathname), pathname);
 }
 /*
  * rename - move a file (POSIX/<stdio.h>).  No rename syscall exists, so this

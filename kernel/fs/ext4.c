@@ -1548,23 +1548,23 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
                        uint32_t vfs_type) {
   struct ext4_fs *fs = mnt->fs_private;
   if (fs->read_only)
-    return -1;
+    return -EROFS;
   if (vfs_type != VFS_TYPE_FILE && vfs_type != VFS_TYPE_DIR)
-    return -1;
+    return -EINVAL;
 
   uint32_t existing;
   if (ext4_find_ino(fs, path, &existing) == 0)
-    return -1; /* already exists */
+    return -EEXIST; /* already exists */
 
   uint32_t parent_ino;
   const char *name;
   uint32_t name_len;
   if (ext4_resolve_parent(fs, path, &parent_ino, &name, &name_len) != 0)
-    return -1;
+    return -ENOENT;
 
   uint32_t new_ino = ext4_alloc_inode(fs);
   if (new_ino == 0)
-    return -1;
+    return -ENOSPC;
 
   struct ext4_inode inode;
   memset(&inode, 0, sizeof(inode));
@@ -1577,14 +1577,14 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
     uint32_t db = ext4_alloc_block(fs);
     if (db == 0) {
       ext4_free_inode(fs, new_ino);
-      return -1;
+      return -ENOSPC;
     }
 
     uint8_t *blk = kmalloc(4096);
     if (!blk) {
       ext4_free_block(fs, db);
       ext4_free_inode(fs, new_ino);
-      return -1;
+      return -ENOMEM;
     }
     memset(blk, 0, 4096);
     /* '.' -> self */
@@ -1610,7 +1610,7 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
     if (wrc != 0) {
       ext4_free_block(fs, db);
       ext4_free_inode(fs, new_ino);
-      return -1;
+      return -EIO;
     }
 
     inode.i_mode = 0x4000 | 0755; /* S_IFDIR | rwxr-xr-x */
@@ -1627,7 +1627,7 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
     if (vfs_type == VFS_TYPE_DIR)
       ext4_free_block(fs, inode.i_block[0]);
     ext4_free_inode(fs, new_ino); /* undo: no dirent references it yet */
-    return -1;
+    return -EIO;
   }
 
   uint8_t ft = (vfs_type == VFS_TYPE_DIR) ? EXT4_FT_DIR : EXT4_FT_REG_FILE;
@@ -1635,7 +1635,12 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
     if (vfs_type == VFS_TYPE_DIR)
       ext4_free_block(fs, inode.i_block[0]);
     ext4_free_inode(fs, new_ino); /* undo: still no dirent, safe to free */
-    return -1;
+    /* EXT4-ERRNO-01, stated rather than overclaimed: ext4_dir_insert still
+     * returns a bare -1 for several causes (allocation, read failure, and a
+     * full single-block directory), so this is the ONE bucket that stays
+     * undifferentiated.  -EIO is the honest floor; narrowing it means giving
+     * ext4_dir_insert its own errnos, which is a separate change. */
+    return -EIO;
   }
 
   /* A new subdirectory's '..' adds one link to the parent's count. */
@@ -1696,34 +1701,42 @@ static int ext4_dir_is_empty(struct ext4_fs *fs, const struct ext4_inode *dir) {
 static int ext4_unlink(struct vfs_mount *mnt, const char *path) {
   struct ext4_fs *fs = mnt->fs_private;
   if (fs->read_only)
-    return -1;
+    return -EROFS;
 
   uint32_t ino;
   if (ext4_find_ino(fs, path, &ino) != 0)
-    return -1;
+    return -ENOENT;
 
   struct ext4_inode inode;
   if (get_inode_struct(fs, ino, &inode) != 0)
-    return -1;
+    return -EIO;
 
   int is_dir = ((inode.i_mode >> 12) == 4);
-  if (is_dir && ext4_dir_is_empty(fs, &inode) != 1)
-    return -1; /* non-empty directory (or unreadable): refuse, like ENOTEMPTY */
+  if (is_dir) {
+    /* EXT4-ERRNO-01: "not empty" and "could not be read" were one refusal.
+     * ext4_dir_is_empty already distinguishes them (1 / 0 / -1) — only the
+     * caller threw the distinction away. */
+    int empty = ext4_dir_is_empty(fs, &inode);
+    if (empty < 0)
+      return -EIO;
+    if (empty == 0)
+      return -ENOTEMPTY;
+  }
 
   uint32_t parent_ino;
   const char *name;
   uint32_t name_len;
   if (ext4_resolve_parent(fs, path, &parent_ino, &name, &name_len) != 0)
-    return -1;
+    return -ENOENT;
 
   /* Never unlink the '.'/'..' entries themselves (path canonicalisation should
    * strip them, but a stray one must not corrupt the tree). */
   if ((name_len == 1 && name[0] == '.') ||
       (name_len == 2 && name[0] == '.' && name[1] == '.'))
-    return -1;
+    return -EINVAL;
 
   if (ext4_dir_remove(fs, parent_ino, name, name_len) != 0)
-    return -1;
+    return -EIO;
 
   ext4_free_inode_blocks(fs, &inode);
   ext4_free_inode(fs, ino);

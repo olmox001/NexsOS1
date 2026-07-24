@@ -541,9 +541,15 @@ int vfs_list_dir(const char *path, char *buf, uint32_t size) {
 int vfs_unlink(const char *path) {
   const char *rel;
   struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  /* EXT4-ERRNO-01: a bare -1 IS -EPERM (errno 1).  That mattered twice over —
+   * userland could not tell the causes apart, AND OS1_report_error classifies
+   * BY errno, so every provider failure was filed as an EPERM policy denial
+   * (amber warn) whatever it really was.  No mount is -ENOENT; a provider that
+   * does not implement removal is -ENOSYS.  The provider's own value passes
+   * through untouched. */
   if (!mnt)
-    return -1;
-  int rc = mnt->ops->unlink ? mnt->ops->unlink(mnt, rel) : -1;
+    return -ENOENT;
+  int rc = mnt->ops->unlink ? mnt->ops->unlink(mnt, rel) : -ENOSYS;
   vfs_release(mnt);
   return rc;
 }
@@ -556,9 +562,10 @@ int vfs_unlink(const char *path) {
 int vfs_create(const char *path, uint32_t type) {
   const char *rel;
   struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  /* EXT4-ERRNO-01, as vfs_unlink above. */
   if (!mnt)
-    return -1;
-  int rc = mnt->ops->create ? mnt->ops->create(mnt, rel, type) : -1;
+    return -ENOENT;
+  int rc = mnt->ops->create ? mnt->ops->create(mnt, rel, type) : -ENOSYS;
   vfs_release(mnt);
   return rc;
 }

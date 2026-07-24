@@ -20,6 +20,7 @@
  */
 
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <os1.h>
 #include <stdio.h>
@@ -423,6 +424,72 @@ static void t_native_and_stream_agree(void) {
   ok(name);
 }
 
+/* ---------- group D: the CAUSE of a failure, not merely the fact ---------- */
+
+/*
+ * D1 — `rm`, and the `rmdir` that does not exist yet, must be able to tell WHY
+ * a removal failed.  Every cause in the ext4 driver used to collapse onto a
+ * bare -1, and -1 IS -EPERM by value, so "directory not empty" and "no such
+ * file" both surfaced as "Operation not permitted" (EXT4-ERRNO-01).
+ *
+ * It mattered twice over, because OS1_report_error classifies BY errno: a
+ * driver failure filed as EPERM raised an amber policy-denial notification
+ * whatever had actually gone wrong, while a real EIO never raised the red one.
+ *
+ * This case is also the precondition for R1b being testable at all: a verb
+ * whose refusals are indistinguishable can only be asserted zero/non-zero, so
+ * moving the verb first would have produced a new ABI with the old coverage.
+ */
+static void t_unlink_reports_the_cause(void) {
+  const char *name = "rm/unlink-errno-distinguishes";
+  const char *dir = "/home/.libctest.d";
+  const char *inner = "/home/.libctest.d/f";
+
+  remove(inner); /* leftovers from an interrupted earlier run */
+  remove(dir);
+  CHECK(name, mkdir(dir, 0755) == 0, "fixture mkdir failed");
+  CHECK(name, write_file(inner, "x", 1) == 0, "fixture write failed");
+
+  errno = 0;
+  CHECK(name, remove(dir) == -1, "removing a NON-EMPTY directory succeeded");
+  CHECK(name, errno == ENOTEMPTY,
+        "a non-empty directory did not report ENOTEMPTY");
+
+  errno = 0;
+  CHECK(name, remove("/home/.libctest.absent") == -1,
+        "removing a missing path succeeded");
+  CHECK(name, errno == ENOENT, "a missing path did not report ENOENT");
+
+  /* Emptied, the same directory goes away: the refusal was about the CONTENTS,
+   * not about it being a directory — the distinction a caller acts on. */
+  CHECK(name, remove(inner) == 0, "removing the inner file failed");
+  CHECK(name, remove(dir) == 0, "removing the emptied directory failed");
+  ok(name);
+}
+
+/*
+ * D2 — mkdir must SET errno rather than leave the previous call's value.  It
+ * returned a bare -1 without touching errno, so a caller doing the POSIX thing
+ * — check -1, then read errno — read whatever happened to be there.  A stale
+ * errno is worse than none: it is indistinguishable from a fresh one.  The
+ * sentinel below is the whole point of the case.
+ */
+static void t_mkdir_sets_errno(void) {
+  const char *name = "mkdir/sets-errno";
+  const char *dir = "/home/.libctest.d2";
+
+  remove(dir);
+  CHECK(name, mkdir(dir, 0755) == 0, "fixture mkdir failed");
+
+  errno = EBADF; /* a sentinel that the correct answer is NOT */
+  CHECK(name, mkdir(dir, 0755) == -1, "mkdir on an existing path succeeded");
+  CHECK(name, errno == EEXIST,
+        "mkdir left a stale errno (did not report EEXIST)");
+
+  CHECK(name, remove(dir) == 0, "cleanup failed");
+  ok(name);
+}
+
 int main(void) {
   printf("[libctest] stdio / POSIX-over-native conformance\n");
 
@@ -446,6 +513,9 @@ int main(void) {
   t_stat_file_vs_dir();
   t_opendir_rejects_a_file();
   t_native_and_stream_agree();
+
+  t_unlink_reports_the_cause();
+  t_mkdir_sets_errno();
 
   OS1_fs_unlink(TMP);
   printf("[libctest] done: %d/%d passed, %d failure(s)\n", g_pass,
