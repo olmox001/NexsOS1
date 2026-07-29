@@ -12,6 +12,7 @@
 #ifndef _KERNEL_TERM_H
 #define _KERNEL_TERM_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 #include <stddef.h>
 
@@ -43,14 +44,14 @@ struct terminal {
 
 /* Allocate the cell grids and initialise VT state.  Returns 0 on success, -1 if
  * a grid allocation failed (caller should treat the terminal as unusable). */
-int term_init(struct terminal *t, int cols, int rows, uint32_t fg, uint32_t bg);
+int term_init(struct terminal *t, int cols, int rows, uint32_t fg, uint32_t bg) NX_MUST_USE;
 
 /* Free the cell grids (idempotent; safe on a zeroed terminal). */
 void term_free(struct terminal *t);
 
 /* Reconfigure the grid to new cols/rows: reallocates and clears the grids.
  * Pixel content is the caller's concern (it owns the surface).  Returns 0/-1. */
-int term_resize(struct terminal *t, int cols, int rows);
+int term_resize(struct terminal *t, int cols, int rows) NX_MUST_USE;
 
 /* Feed bytes to the terminal, rendering glyphs / handling ANSI escapes into
  * surf, and (re)drawing the caret at the end of the batch. */

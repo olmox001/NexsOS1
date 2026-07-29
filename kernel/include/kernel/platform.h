@@ -5,6 +5,7 @@
 #ifndef _KERNEL_PLATFORM_H
 #define _KERNEL_PLATFORM_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/pmm.h>
 
 /* IRQ numbers for QEMU virt machine */
@@ -27,6 +28,6 @@ struct mem_region *arch_platform_get_mem_regions(size_t *count);
  * none today (returns 0).  Equivalent HAL contract on both arches; the result
  * is cached on first call so it stays valid after the early identity map is
  * gone.  Returns 1 and fills base/size (physical) when present, else 0. */
-int arch_platform_get_boot_module(uint64_t *base, uint64_t *size);
+int arch_platform_get_boot_module(uint64_t *base, uint64_t *size) NX_MUST_USE;
 
 #endif /* _KERNEL_PLATFORM_H */

@@ -4,6 +4,7 @@
  *
  * Translates scancodes to ASCII and provides buffered input
  */
+#include <kernel/nx_contract.h>
 #include <drivers/keyboard.h>
 #include <drivers/ps2.h>
 #include <drivers/usb/usb.h>
@@ -15,6 +16,11 @@
 #include <kernel/string.h>
 #include <kernel/types.h>
 #include <posix_types.h>
+
+/* kbd_dropped_events - keystrokes the kernel could not deliver.  Read it
+ * when someone reports missed input; it is the difference between a driver
+ * bug and a receiver that stopped draining its queue. */
+unsigned long kbd_dropped_events;
 
 /* Keyboard state */
 static int shift_pressed = 0;
@@ -250,7 +256,21 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
       }
     }
 
-    kernel_ipc_send(focus_pid, &msg);
+    /* A failed send here IS a lost keystroke: the focused process is gone or
+     * its queue is full.  Discarding it made "the shell sometimes misses keys"
+     * unattributable, which is the worst possible property for an input path.
+     *
+     * IRQ context, so there is no caller to return to and no room to log per
+     * event -- a full queue would become an interrupt storm of its own.  The
+     * loss is therefore COUNTED, and only the transition into a lossy state is
+     * announced.  A counter that can be read after the fact turns an anecdote
+     * into a number. */
+    if (kernel_ipc_send(focus_pid, &msg) != 0) {
+      if (kbd_dropped_events++ == 0)
+        pr_err("keyboard: input to pid %d is being DROPPED (receiver gone or "
+               "queue full); further drops are counted, not logged\n",
+               focus_pid);
+    }
   }
 }
 

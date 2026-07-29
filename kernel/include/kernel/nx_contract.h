@@ -37,17 +37,12 @@
  * EVERY function whose return value carries a failure the caller must act on —
  * which in this tree is essentially everything returning `int` as -errno.
  */
-/* Gated on NX_STRICT so the surface can be annotated INCREMENTALLY.  With
- * -Werror on, switching every -errno return to must-use at once turns the
- * whole backlog into a wall of hard errors and the usual response to a wall is
- * to delete the gate.  `make NX_STRICT=1` shows the full list; the count goes
- * down commit by commit, and flipping the default is the last step, not the
- * first. */
-#if defined(NX_STRICT)
+/* Always on.  It was briefly gated behind NX_STRICT so the backlog could be
+ * measured without breaking the tree, and the predictable result was that
+ * nobody saw a single error: a gate you have to remember to switch on is a gate
+ * that is off.  The diagnosis has to happen during an ordinary build, which is
+ * the only build anyone runs. */
 #define NX_MUST_USE __attribute__((warn_unused_result))
-#else
-#define NX_MUST_USE
-#endif
 
 /*
  * NX_NONNULL(...) — these argument positions may never be NULL.
@@ -59,6 +54,32 @@
  * load-bearing, not defensive.
  */
 #define NX_NONNULL(...) __attribute__((nonnull(__VA_ARGS__)))
+
+/*
+ * NX_DISCARD(expr, why) — deliberately drop a must-use result, with a reason.
+ *
+ * Without an escape hatch a must-use gate does not get satisfied, it gets
+ * DELETED: the first person who meets a legitimately ignorable result and has
+ * no way to say so removes the attribute, and the annotation is gone for every
+ * caller.  So the hatch exists — and it is deliberately more typing than
+ * handling the error, because the common case should be the easy one.
+ *
+ * `why` is a string literal that generates nothing.  Its only job is to make
+ * the author state the justification where the next reader will look, so a
+ * discard can be reviewed instead of merely noticed.  Note that a plain (void)
+ * cast does NOT suppress warn_unused_result under GCC — the tree already had
+ * `(void)arch_copy_to_user(...)` sitting in SYS_WAIT, which looked deliberate
+ * and silenced nothing.
+ *
+ * Legitimate uses are narrow: an error-unwind path where the failure of the
+ * cleanup changes nothing, and a genuinely best-effort refresh whose fallback
+ * is documented.  "I do not know what to do with this" is not one of them.
+ */
+#define NX_DISCARD(expr, why)                                                  \
+  do {                                                                         \
+    __typeof__(expr) _nx_discarded __attribute__((unused)) = (expr);           \
+    (void)sizeof(why);                                                         \
+  } while (0)
 
 /*
  * NX_NO_ALLOC / NX_ALLOCATES — the memory contract, for the checker.
@@ -82,31 +103,13 @@
 #define NX_ACQUIRES(lock)
 
 /*
- * NX_ABI_ASSERT(cond, msg) — a compile-time claim about a layout or constant.
+ * The layout-assert macros live in <abi/nx_abi.h>, NOT here.
  *
- * There was NOT ONE static assertion in this tree before this file, and the
- * cost of that showed up concretely: `struct pt_regs` is built by hand in
- * assembly (syscall.S pushes the fields one by one) and read as a C struct by
- * the dispatcher.  Nothing tied the two together, so a field inserted in the
- * struct would have silently shifted every offset the assembly writes — and
- * the symptom would have been a kernel that writes through a pointer into its
- * own text, hundreds of instructions away from the edit.  That is precisely
- * the shape of the panic that motivated this header.
+ * They are needed by userland and by the shared ABI headers too, and a second
+ * definition in the kernel tree would be exactly the duplication these asserts
+ * exist to catch: two statements of one contract, drifting.  See that header
+ * for why the boundary is where it is.
  */
-#define NX_ABI_ASSERT(cond, msg) _Static_assert((cond), msg)
-
-/* NX_ASSERT_OFFSET / NX_ASSERT_SIZE — the two forms actually needed.
- * Use them wherever assembly, another architecture, or a persisted on-disk
- * format depends on a layout: the assert is the contract, and it is checked on
- * every build of every arch instead of being remembered. */
-#define NX_ASSERT_OFFSET(type, field, off)                                     \
-  NX_ABI_ASSERT(__builtin_offsetof(type, field) == (off),                      \
-                #type "." #field " moved: assembly and/or the other arch "    \
-                      "depend on this offset")
-
-#define NX_ASSERT_SIZE(type, bytes)                                            \
-  NX_ABI_ASSERT(sizeof(type) == (bytes),                                       \
-                "sizeof(" #type ") changed: check every consumer that "       \
-                "hardcodes it (assembly, the other arch, on-disk images)")
+#include <nx_abi.h>
 
 #endif /* _KERNEL_NX_CONTRACT_H */

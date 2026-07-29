@@ -578,9 +578,18 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
   /* Map MMIO (UART, GIC, VirtIO) at its direct-map VA (phys_to_virt;
    * identity while KERNEL_VIRT_BASE == 0).
    * 0x08000000 to 0x0A800000 covers typical QEMU virt devices. */
-  arch_vmm_map_range(virt_to_phys(pgd),
-                     (uint64_t)phys_to_virt(0x08000000UL), 0x08000000UL,
-                     0x02800000UL, PAGE_DEVICE);
+  /* This one range carries the GIC, the PL011 UART and all 32 VirtIO-MMIO
+   * slots.  If it is not mapped there is no interrupt controller, no console
+   * and no device of any kind -- and the failure would appear as a system that
+   * boots into silence, which is indistinguishable from a hang.  The amd64
+   * counterpart in arch/amd64/mm/mmu.c makes the same call fatal for the same
+   * reason; keeping the two arches identical HERE is what stops one platform
+   * from silently tolerating what the other refuses. */
+  if (arch_vmm_map_range(virt_to_phys(pgd),
+                         (uint64_t)phys_to_virt(0x08000000UL), 0x08000000UL,
+                         0x02800000UL, PAGE_DEVICE) != 0)
+    panic("arch_vmm_map_mmio: cannot map the 0x08000000..0x0A800000 MMIO "
+          "window — GIC, UART and VirtIO are all unreachable");
 }
 
 /*

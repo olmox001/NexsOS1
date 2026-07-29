@@ -179,7 +179,13 @@ for run in $(seq 1 "$RUNS"); do
     fi
   done
 
-  faults=$(grep -ci "PANIC\|PAGE FAULT\|PROTECTION FAULT" "$D/ser.log")
+  # Match the BANNERS the kernel actually prints, not the words.  A
+  # case-insensitive search for "panic" also matches ordinary log text that
+  # merely contains it -- a diagnostic reading "a panic will not stop the other
+  # cores" made this report a fault on a healthy boot.  A gate that cries wolf
+  # gets ignored, so the patterns are anchored to the real output:
+  #   "*** KERNEL PANIC", "KERNEL PAGE FAULT:", "KERNEL GENERAL PROTECTION FAULT"
+  faults=$(grep -cE "KERNEL PANIC|KERNEL PAGE FAULT|GENERAL PROTECTION FAULT|Unrecoverable kernel" "$D/ser.log")
   heap=$(grep -c "Invalid magic" "$D/ser.log")
 
   verdict=ok

@@ -1727,10 +1727,21 @@ void process_kill_subtree(int root_pid) {
    * kill set until it is reaped; the root, last, then has no windowless
    * children left to orphan.  process_terminate is idempotent; an
    * already-exited snapshot pid is a harmless no-op. */
+  int kill_failures = 0;
   for (int i = 0; i < n; i++)
     if (snap[i].kill && snap[i].pid != root_pid)
-      process_terminate(snap[i].pid);
-  process_terminate(root_pid);
+      if (process_terminate(snap[i].pid) != 0)
+        kill_failures++;
+  if (process_terminate(root_pid) != 0)
+    kill_failures++;
+  /* A victim that survives its own kill is the "closing the shell sometimes
+   * leaves stress running" flake named above.  The loop cannot stop on it --
+   * the remaining victims still have to die -- but it must not be silent
+   * either, or the survivor is indistinguishable from one that was never in
+   * the kill set. */
+  if (kill_failures)
+    pr_err("kill_subtree(%d): %d victim(s) did not terminate\n", root_pid,
+           kill_failures);
 }
 
 /*
@@ -2588,8 +2599,13 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   }
   spin_unlock_irqrestore(&sched_lock, flags);
 
-  vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
+  /* Returning `count` after a failed copy tells the caller it received N
+   * entries it never got, and ps/nxproc would then walk an untouched buffer as
+   * if it were an array of that many records. */
+  int copied = vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
   kfree(k_buf);
+  if (copied != 0)
+    return -EFAULT;
   return count;
 }
 

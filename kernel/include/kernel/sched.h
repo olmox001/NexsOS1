@@ -1,6 +1,7 @@
 #ifndef _KERNEL_SCHED_H
 #define _KERNEL_SCHED_H
 
+#include <kernel/nx_contract.h>
 #include <drivers/timer.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
@@ -317,23 +318,23 @@ extern spinlock_t sched_lock;
  * scheduler: the pointer form both dangles once sched_lock is released and
  * forces sched_lock underneath whatever lock the caller already holds.  The
  * compositor is the reason it exists (see the definition, Pitfall A). */
-int proc_pid_is_privileged(int pid);
+int proc_pid_is_privileged(int pid) NX_MUST_USE;
 /* process_kill_allowed: ABI-04 capability check for SYS_KILL.  Returns
  * non-zero if 'caller' may terminate 'target_pid': itself, any descendant,
  * or anything when it is privileged (machine/root).  Kernel-internal
  * terminate paths (compositor close, init supervision) bypass this and call
  * process_terminate() directly. */
-int process_kill_allowed(struct process *caller, int target_pid);
+int process_kill_allowed(struct process *caller, int target_pid) NX_MUST_USE;
 /* process_set_owner - set a process's LOGICAL parent (owner_pid), so a job
  * spawned BY a service still answers to the client that asked for it.  Only
  * reachable through OBJ_CTL_SETOWNER, which requires DESTROY on the target and
  * a privileged caller (it delegates authority).  0, or -ESRCH if either pid is
  * not live. */
-int process_set_owner(int pid, int owner_pid);
+int process_set_owner(int pid, int owner_pid) NX_MUST_USE;
 /* proc_get_lineage - spawning parent + LOGICAL owner of a pid (owner falls back
  * to parent when unset).  Lets userland follow inheritance across a service
  * spawn, where the mechanical parent is the service rather than the requester. */
-int proc_get_lineage(int pid, int *parent, int *owner);
+int proc_get_lineage(int pid, int *parent, int *owner) NX_MUST_USE;
 
 /* Per-process environment (Phase 17).  The AUTHORITY rule is deliberately the
  * process one, not the registry one: a process may always read and write its
@@ -348,16 +349,16 @@ int proc_get_lineage(int pid, int *parent, int *owner);
  *                and `env -u` both need.
  * proc_env_enum  newline-separated NAMEs into buf; returns length, or -1.
  * proc_env_free  release the block at teardown. */
-int proc_env_get(int pid, const char *key, char *buf, size_t size);
+int proc_env_get(int pid, const char *key, char *buf, size_t size) NX_MUST_USE;
 int proc_env_set(struct process *caller, int pid, const char *key,
-                 const char *value);
-int proc_env_enum(int pid, char *buf, size_t size);
+                 const char *value) NX_MUST_USE;
+int proc_env_enum(int pid, char *buf, size_t size) NX_MUST_USE;
 void proc_env_free(struct process *p);
 /* process_ipc_allowed: may 'caller' send IPC to target_pid?  True if the
  * caller holds CAP_IPC_ANY, or target is the caller's parent or a
  * descendant.  Acquires sched_lock internally. */
-int process_ipc_allowed(struct process *caller, int target_pid);
-int process_terminate(int pid);
+int process_ipc_allowed(struct process *caller, int target_pid) NX_MUST_USE;
+int process_terminate(int pid) NX_MUST_USE;
 /* dispatch_spawn finalization (SCHED-UAF Pitfall B): the creator calls one of
  * these AFTER process_load_elf_args (local IRQs off) to commit the new child
  * atomically against a concurrent kill.  finalize: if a kill was deferred
@@ -373,13 +374,13 @@ void process_kill_subtree(int root_pid);
 /* process_wait - reap-poll a process. Returns pid (reaped), -1 (still alive),
  * or -2 (not found). If out_code != NULL and the process is reaped, *out_code
  * receives its exit_code (raw). Non-blocking. */
-int process_wait(int pid, int *out_code);
+int process_wait(int pid, int *out_code) NX_MUST_USE;
 /* process_stop/process_cont - suspend/resume a process (job control, Phase 2).
  * stop: RUNNING/READY -> PROC_STOPPED (leaves the runqueue at its next pick).
  * cont: PROC_STOPPED -> READY + re-enqueued. Return 0, -ESRCH (no such pid),
  * or -EINVAL (wrong state). */
-int process_stop(int pid);
-int process_cont(int pid);
+int process_stop(int pid) NX_MUST_USE;
+int process_cont(int pid) NX_MUST_USE;
 extern int process_load_elf(struct process *proc, const char *path);
 /* Like process_load_elf(), but marshals an argv vector onto the new task's
  * stack and seeds main()'s argc/argv (kargv holds kernel-side string copies;
@@ -413,7 +414,7 @@ void kthread_block(struct wait_queue_head *wq, int (*still_block)(void *),
 void idle_task_entry(void);
 
 /* Syscalls */
-int sys_ipc_send(int target_pid, void *msg_ptr);
+int sys_ipc_send(int target_pid, void *msg_ptr) NX_MUST_USE;
 /* sys_ipc_recv returns IPC_RECV_RETRY when it annotated a syscall retry
  * (blocked, or a message slipped in during the sleep window).  The
  * dispatcher must NOT write a return value in that case: on aarch64 x0 is
@@ -421,9 +422,9 @@ int sys_ipc_send(int target_pid, void *msg_ptr);
  * the re-executed SVC (the receiver re-armed with src_pid=0 and slept
  * forever on a non-empty queue — the visible half of IPC-01). */
 #define IPC_RECV_RETRY 1
-int sys_ipc_recv(int src_pid, void *msg_ptr);
-int sys_ipc_try_recv(int src_pid, void *msg_ptr);
-int kernel_ipc_send(int target_pid, struct ipc_message *msg);
+int sys_ipc_recv(int src_pid, void *msg_ptr) NX_MUST_USE;
+int sys_ipc_try_recv(int src_pid, void *msg_ptr) NX_MUST_USE;
+int kernel_ipc_send(int target_pid, struct ipc_message *msg) NX_MUST_USE;
 struct ipc_node *pop_message(struct process *proc, int src_pid);
 /* keyboard_focus_pid: scheduler-owned focus HINT (which PID keystrokes route to
  * and the schedule() focus boost favours). MUTATE ONLY via sched_set_focus_pid()
@@ -434,24 +435,24 @@ struct ipc_node *pop_message(struct process *proc, int src_pid);
  * outside the compositor's own render path. */
 extern int keyboard_focus_pid;
 void sched_set_focus_pid(int pid);
-int sched_get_focus_pid(void);
+int sched_get_focus_pid(void) NX_MUST_USE;
 /* window_request_close: window-close intent seam (GFX-COMP-03 #69) — the
  * compositor calls this instead of process_terminate() so graphics does not
  * drive process lifecycle directly. */
 void window_request_close(int pid);
-long sys_getprocs(struct ps_info *user_buf, size_t max_count);
+long sys_getprocs(struct ps_info *user_buf, size_t max_count) NX_MUST_USE;
 /* Kernel-internal process introspection backing the OBJ_TYPE_PROCESS object read
  * (a process reports its state through the object mechanism, kernel/core/object.c).
  * proc_get_info: snapshot one pid into *out (0, or -1 if no such live proc).
  * proc_state_name: human-readable PROC_* state. */
-int proc_get_info(int pid, struct ps_info *out);
+int proc_get_info(int pid, struct ps_info *out) NX_MUST_USE;
 const char *proc_state_name(int state);
-int proc_enum_pids(int *pids, int max); /* live pids -> 'pids' (cap 'max'); /proc listing */
+int proc_enum_pids(int *pids, int max) NX_MUST_USE; /* live pids -> 'pids' (cap 'max'); /proc listing */
 /* OS1_sys_stats backend: one struct os1_sysstats snapshot to userland (perf
  * brief §1 instrumentation surface).  Forward-declared struct; the full layout
  * lives in include/api/sysstats.h. */
 struct os1_sysstats;
-long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size);
-long sys_sbrk(intptr_t increment);
+long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size) NX_MUST_USE;
+long sys_sbrk(intptr_t increment) NX_MUST_USE;
 
 #endif

@@ -177,8 +177,19 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
           uint64_t offset_in_page = copy_start - page_start;
           uint64_t offset_in_file = phdr.p_offset + (copy_start - seg_vstart);
 
-          vfs_read(&exe, offset_in_file, (uint8_t *)kaddr + offset_in_page,
-                   copy_len);
+          /* A short or failed read leaves this page holding whatever the
+           * freshly-allocated frame contained, and the process then EXECUTES
+           * it.  Loading a partially-read binary is worse than failing to load
+           * one, because the failure surfaces as an illegal instruction in
+           * userland with no link back to the read. */
+          long rd = vfs_read(&exe, offset_in_file,
+                             (uint8_t *)kaddr + offset_in_page, copy_len);
+          if (rd < 0 || (uint64_t)rd != copy_len) {
+            pr_err("elf: short read loading segment (want %lu, got %ld) — "
+                   "refusing to run a partially loaded image\n",
+                   (unsigned long)copy_len, rd);
+            return -1;
+          }
         }
 
         /* Clean DC to PoU and invalid IC for executable pages */

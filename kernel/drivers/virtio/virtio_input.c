@@ -131,7 +131,12 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
             v_read32(dev, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_DRIVER_OK);
 
   /* Register and Enable Interrupt */
-  irq_register(irq, virtio_input_handler, dev);
+  /* A device whose IRQ line is not wired delivers nothing: no keystrokes, no
+   * mouse.  Dropping this made that look like a dead device rather than a
+   * failed registration. */
+  if (irq_register(irq, virtio_input_handler, dev) != 0)
+    pr_err("virtio-input: cannot register IRQ %u — this device will deliver no "
+           "events\n", irq);
 
   /* Notify device */
   v_notify(dev, 0);

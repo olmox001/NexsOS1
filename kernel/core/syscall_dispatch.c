@@ -458,7 +458,16 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
         }
         /* No vfs_truncate primitive: drop and recreate empty — same net effect
          * as truncate-to-zero, reusing the create-on-write model. */
-        vfs_unlink(resolved);
+        /* -ENOENT is the normal case (truncating a file that does not exist
+         * yet); anything else is a real failure that used to be swallowed, so
+         * an EACCES or EIO here became a silent "truncate succeeded". */
+        {
+          int ur = vfs_unlink(resolved);
+          if (ur != 0 && ur != -ENOENT) {
+            pt_regs_set_return(frame, ur);
+            break;
+          }
+        }
         if (vfs_create(resolved, VFS_TYPE_FILE) != 0) {
           pt_regs_set_return(frame, -EIO);
           break;
@@ -699,19 +708,28 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       int r = compositor_set_style((int)arg0);
       rc |= r;
       if (r == 0 && (int)arg0 < OS1_STYLE_COUNT)
-        registry_set("style.name", os1_style_names[(int)arg0], 0);
+        if (registry_set("style.name", os1_style_names[(int)arg0], 0) != 0)
+        rc |= -EIO; /* applied but NOT persisted: it survives until
+                     * reboot and then silently reverts, which is
+                     * worse than failing now */
     }
     if ((int)arg1 >= 0) {
       int r = compositor_set_theme((int)arg1);
       rc |= r;
       if (r == 0 && (int)arg1 < OS1_THEME_COUNT)
-        registry_set("theme.color", os1_theme_names[(int)arg1], 0);
+        if (registry_set("theme.color", os1_theme_names[(int)arg1], 0) != 0)
+        rc |= -EIO; /* applied but NOT persisted: it survives until
+                     * reboot and then silently reverts, which is
+                     * worse than failing now */
     }
     if ((int)arg2 >= 0) {
       int r = compositor_set_background((int)arg2);
       rc |= r;
       if (r == 0 && (int)arg2 < OS1_BG_COUNT)
-        registry_set("background.name", os1_bg_names[(int)arg2], 0);
+        if (registry_set("background.name", os1_bg_names[(int)arg2], 0) != 0)
+        rc |= -EIO; /* applied but NOT persisted: it survives until
+                     * reboot and then silently reverts, which is
+                     * worse than failing now */
     }
     pt_regs_set_return(frame, rc);
     break;
@@ -1017,8 +1035,12 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * only test the return value are unaffected. */
     int wcode = 0;
     long wr = process_wait((int)arg0, &wcode);
-    if (arg1 && wr >= 0)
-      (void)arch_copy_to_user((void *)arg1, &wcode, sizeof(wcode));
+    /* The (void) cast that used to be here did not suppress the attribute, it
+     * only made the omission look deliberate.  A bad status pointer is -EFAULT
+     * under POSIX, not a successful wait whose status silently never arrived. */
+    if (arg1 && wr >= 0 &&
+        arch_copy_to_user((void *)arg1, &wcode, sizeof(wcode)) != 0)
+      wr = -EFAULT;
     pt_regs_set_return(frame, wr);
   } break;
   case SYS_REGISTRY:
@@ -1389,6 +1411,10 @@ void sys_exit(int status) {
              status); /* hot path: demoted (perf §1) */
     current_process->exit_code = status & 0xff; /* Phase 2: collectable by a waiter */
     current_process->exited = 1;                 /* voluntary exit (not killed) */
-    process_terminate(current_process->pid);
+    /* Nothing to propagate to: the caller is exiting.  Reported so a failure
+     * to tear down is visible instead of leaving a process that believes it
+     * exited still in the pool. */
+    if (process_terminate(current_process->pid) != 0)
+      pr_err("exit: process_terminate(%d) failed\n", current_process->pid);
   }
 }

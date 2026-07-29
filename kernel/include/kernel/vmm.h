@@ -22,6 +22,7 @@
 #ifndef _KERNEL_VMM_H
 #define _KERNEL_VMM_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/memlayout.h>
 #include <kernel/pmm.h>
 #include <kernel/types.h>
@@ -192,7 +193,7 @@ void vmm_init(void);
  * NOTE(MM-VMM-01): maps all RAM PAGE_KERNEL_EXEC; no W^X. */
 void vmm_dynamic_remap(void);
 /* vmm_map_page: map one 4KB page; delegates to arch_vmm_map(). */
-int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags);
+int vmm_map_page(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t flags) NX_MUST_USE;
 /* vmm_unmap_page: unmap one page with cross-CPU TLB shootdown (MM-VMM-05
  * resolved): on return no online CPU translates 'virt' via the old entry. */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt);
@@ -200,23 +201,23 @@ void vmm_unmap_page(uint64_t *pgd, uint64_t virt);
  * virt+size) to the given PAGE/PTE profile (AMMU-02 resolved).  Frame
  * addresses are preserved; large pages are split for 4KB precision; ends
  * with a cross-CPU TLB shootdown.  Returns 0, or -1 on a hole in range. */
-int vmm_protect(uint64_t *pgd, uint64_t virt, uint64_t size, uint64_t flags);
+int vmm_protect(uint64_t *pgd, uint64_t virt, uint64_t size, uint64_t flags) NX_MUST_USE;
 uint64_t vmm_get_phys(uint64_t *pgd, uint64_t virt);
 
 struct process;
 /* vmm_map_page_locked: vmm_map_page wrapped with proc->mm_lock. */
-int vmm_map_page_locked(struct process *proc, uint64_t virt, uint64_t phys, uint64_t flags);
+int vmm_map_page_locked(struct process *proc, uint64_t virt, uint64_t phys, uint64_t flags) NX_MUST_USE;
 /* vmm_unmap_page_locked: vmm_unmap_page wrapped with proc->mm_lock. */
 void vmm_unmap_page_locked(struct process *proc, uint64_t virt);
 
 /* vmm_map: map a contiguous range; 4KB pages only; partial on error (no rollback). */
-int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags);
+int vmm_map(uint64_t *pgd, uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags) NX_MUST_USE;
 /* vmm_map_ram_wx: map a usable RAM range at its direct-map VA with the W^X
  * split: kernel text RX, rodata RO+NX, everything else RW+NX
  * (MM-VMM-01/AMMU-01). */
 void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size);
 /* vmm_check_range: verify all pages in range are mapped with required flags. */
-int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size, uint64_t flags_mask);
+int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size, uint64_t flags_mask) NX_MUST_USE;
 
 /*
  * vmm_is_user_addr - return true if 'addr' falls in the user virtual range.

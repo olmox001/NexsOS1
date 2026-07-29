@@ -8,6 +8,7 @@
 #ifndef KERNEL_GFX_SURFACE_H
 #define KERNEL_GFX_SURFACE_H
 
+#include <kernel/nx_contract.h>
 #include <graphics/gl.h>
 #include <stdint.h>
 
@@ -22,7 +23,7 @@ typedef struct gfx_rect {
 
 enum gfx_surface_format { GFX_SURFACE_ARGB8888 = 1 };
 
-int gfx_surface_valid(const gfx_surface_t *surface);
+int gfx_surface_valid(const gfx_surface_t *surface) NX_MUST_USE;
 void gfx_surface_clear(gfx_surface_t *surface, uint32_t argb);
 void gfx_surface_fill(gfx_surface_t *surface, const gfx_rect_t *rect,
                       uint32_t argb);

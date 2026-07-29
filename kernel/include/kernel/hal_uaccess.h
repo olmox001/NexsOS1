@@ -1,6 +1,7 @@
 #ifndef _KERNEL_HAL_UACCESS_H
 #define _KERNEL_HAL_UACCESS_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 
 /*
@@ -61,13 +62,13 @@
  *   and *out_truncated is set to 1 if the source was longer than max_len - 1.
  *   Reporting both is what lets the two wrappers above share one provider. */
 int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
-                                 size_t *out_len, int *out_truncated);
-int arch_copy_from_user(void *dest, const void *src, size_t n);
-int arch_copy_to_user(void *dest, const void *src, size_t n);
+                                 size_t *out_len, int *out_truncated) NX_MUST_USE;
+int arch_copy_from_user(void *dest, const void *src, size_t n) NX_MUST_USE;
+int arch_copy_to_user(void *dest, const void *src, size_t n) NX_MUST_USE;
 
 /* Legacy spelling, kept because ~10 call sites use it and truncation is
  * acceptable for all of them; implemented over the provider above. */
-int arch_copy_string_from_user(char *dest, const char *src, size_t max_len);
+int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) NX_MUST_USE;
 
 /* E2BIG reaches the kernel today from include/abi/posix_types.h, which the
  * layering gate counts as a violation (scripts/check-layering.sh).  The

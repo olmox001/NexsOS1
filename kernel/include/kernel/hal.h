@@ -1,6 +1,7 @@
 #ifndef _KERNEL_HAL_H
 #define _KERNEL_HAL_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 #include <kernel/hal_unified.h>
 #include <kernel/hal_device.h>
@@ -37,7 +38,7 @@ struct hal_device {
 };
 
 void hal_bus_init(void);
-int hal_device_get_count(void);
+int hal_device_get_count(void) NX_MUST_USE;
 struct hal_device *hal_device_get(int index);
 struct hal_device *hal_device_find(uint16_t vendor, uint16_t device, int index);
 /* Find the Nth device whose PCI class triplet matches (0xFF = wildcard on any

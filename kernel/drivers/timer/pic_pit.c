@@ -256,7 +256,31 @@ void pic_init(void) {
 
   /* Panic-halt IPI receiver (LAPIC fixed vector; pic_chip_enable ignores
    * vectors >= 48, so this touches no 8259 mask). */
-  irq_register(HALT_IPI_VECTOR, halt_ipi_handler, NULL);
+  /* If this fails the panic-halt IPI has no receiver, so a panic on one core
+   * would leave the others running instead of halting.  Dropping the result
+   * made that outcome indistinguishable from a working setup. */
+  /* pic_init() is reached from TWO composition points on amd64
+   * (arch/amd64/hal.c and arch/amd64/platform/platform.c).  The 8259
+   * programming above is idempotent, so the double call was invisible; this
+   * registration is NOT, and the second call gets -EBUSY.
+   *
+   * -EBUSY therefore means "already registered by the first call", which is the
+   * intended end state and not a failure.  Anything else IS one: the halt IPI
+   * would have no receiver and a panic on one core would leave the others
+   * running.  Distinguishing the two is the whole point -- dropping the result
+   * treated both as success.
+   *
+   * NOTE for the composition-root decision (ASTRA wants exactly one): which of
+   * the two callers should own this wiring is recorded as an open question, not
+   * settled here.  Suppressing the second CALL outright was tried and broke the
+   * boot, so the second call is doing work the first does not. */
+  {
+    int hr = irq_register(HALT_IPI_VECTOR, halt_ipi_handler, NULL);
+    if (hr != 0 && hr != -EBUSY)
+      pr_err("PIC: cannot register the halt-IPI handler on vector %d (%d) — a "
+             "kernel fault on one core will not stop the others\n",
+             HALT_IPI_VECTOR, hr);
+  }
 
   pr_info("PIC Initialized and remapped to 32-47.\n");
 }

@@ -1199,6 +1199,34 @@ void compositor_move_window(int window_id, int x, int y) {
  * context (it backs SYS_WINDOW_RESIZE), never from an IRQ.  Returns 0 on
  * success, -1 on failure (the old surface is kept on failure).
  */
+
+/*
+ * gfx_notify_client - deliver one compositor event to a client, and ACCOUNT for
+ * the loss when it cannot be delivered.
+ *
+ * Every caller below runs in IRQ or near-IRQ context with no one to return a
+ * failure to, and each used to drop the result.  That made "the window stopped
+ * responding to the mouse" and "the app kept drawing at the old size"
+ * unattributable: the event simply never arrived and nothing recorded it.
+ *
+ * Logging per event is not an option -- a full queue would become an interrupt
+ * storm -- so losses are COUNTED and only the ONSET is announced.  One place
+ * owns the policy so the call sites cannot drift apart, which is the same
+ * reason OS1_report_error is a single seam in userland.
+ */
+unsigned long gfx_dropped_events;
+static void gfx_notify_client(int pid, struct ipc_message *m,
+                              const char *what) {
+  if (pid <= 0)
+    return;
+  if (kernel_ipc_send(pid, m) != 0) {
+    if (gfx_dropped_events++ == 0)
+      pr_err("compositor: %s to pid %d was DROPPED (receiver gone or queue "
+             "full); further losses are counted in gfx_dropped_events\n",
+             what, pid);
+  }
+}
+
 int compositor_resize_window(int window_id, int w, int h) {
   if (w <= 0 || h <= 0 || w > 4096 || h > 4096)
     return -1;
@@ -1252,8 +1280,11 @@ int compositor_resize_window(int window_id, int w, int h) {
   /* Reflow the terminal to the new cell grid. */
   int char_w = graphics_font_max_width();
   int char_h = graphics_font_height();
-  if (char_w > 0 && char_h > 0)
-    term_resize(&win->term, w / char_w, h / char_h);
+  if (char_w > 0 && char_h > 0 &&
+      term_resize(&win->term, w / char_w, h / char_h) != 0)
+    pr_err("compositor: terminal reflow to %dx%d cells failed for pid %d — the "
+           "window keeps the OLD cell grid and will render clipped\n",
+           w / char_w, h / char_h, win->pid);
 
   /* Damage the NEW footprint and repaint. */
   expand_damage(win->x, win->y - compositor_titlebar_height(), w,
@@ -1273,7 +1304,14 @@ int compositor_resize_window(int window_id, int w, int h) {
     msg.type = IPC_TYPE_RESIZE;
     msg.data1 = (uint64_t)w;
     msg.data2 = (uint64_t)h;
-    kernel_ipc_send(owner, &msg);
+    /* GFX-DYN-01: this message IS how a client learns its new logical size.
+     * Dropping it leaves the app drawing at the old dimensions against a
+     * surface that already changed -- visible as clipped or stretched output
+     * with nothing in the log to connect it to the resize. */
+    if (kernel_ipc_send(owner, &msg) != 0)
+      pr_err("compositor: resize notify to pid %d failed — it will keep "
+             "drawing at its previous size\n",
+             owner);
   }
   return 0;
 }
@@ -1433,10 +1471,17 @@ void compositor_handle_click(int button, int state) {
       msg.type = IPC_TYPE_RESIZE;
       msg.data1 = (uint64_t)nw;
       msg.data2 = (uint64_t)nh;
-      kernel_ipc_send(notify_pid, &msg);
+      /* Same contract as above: a lost resize is a client stuck at the wrong
+       * size, not a cosmetic miss. */
+      if (kernel_ipc_send(notify_pid, &msg) != 0)
+        pr_err("compositor: resize notify to pid %d failed — it will keep "
+               "drawing at its previous size\n",
+               notify_pid);
     }
-    if (release_pid > 0)
-      kernel_ipc_send(release_pid, &release_msg);
+    if (release_pid > 0 && kernel_ipc_send(release_pid, &release_msg) != 0)
+      pr_err("compositor: release notify to pid %d failed — it may believe it "
+             "still holds the pointer grab\n",
+             release_pid);
     return;
   }
 
@@ -1628,8 +1673,7 @@ void compositor_handle_click(int button, int state) {
    * NOTE: the close still force-terminates in mouse-IRQ context; deferring it
    * to a safe context is the separate SCHED-03 follow-up, now localised behind
    * the seam. */
-  if (send_pid > 0)
-    kernel_ipc_send(send_pid, &msg);
+  gfx_notify_client(send_pid, &msg, "click event");
   if (do_close) {
     pr_info("Compositor: Close button -> request close of PID %d\n", close_pid);
     /* Window-close INTENT seam (#69, docs/PROCESS-KILL-MODEL.md): the kernel's
@@ -1645,8 +1689,10 @@ void compositor_handle_click(int button, int state) {
    * re-takes compositor_lock, so it must run here (after the unlock), and it
    * re-finds the window by id, so a slot that changed meanwhile is handled
    * gracefully — same contract as window_request_close above. */
-  if (do_minimize)
-    compositor_minimize_window(min_id);
+  if (do_minimize && compositor_minimize_window(min_id) != 0)
+    pr_err("compositor: minimize of window %d failed — the user clicked the "
+           "dock button and nothing happened\n",
+           min_id);
 }
 
 /*
@@ -1822,8 +1868,7 @@ void compositor_update_mouse(int dx, int dy, int absolute) {
   spin_unlock_irqrestore(&compositor_lock, cflags);
 
   /* Outside compositor_lock (same contract as compositor_handle_click). */
-  if (motion_pid > 0)
-    kernel_ipc_send(motion_pid, &motion_msg);
+  gfx_notify_client(motion_pid, &motion_msg, "pointer motion");
 }
 
 /*

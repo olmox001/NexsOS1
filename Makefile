@@ -30,6 +30,33 @@ else ifeq ($(findstring amd64,$(ARCH)),amd64)
 endif
 
 # Common Compiler Flags
+# ---------------------------------------------------------------------------
+# CONTRACT GATE — read before you reach for a way around it.
+#
+# kernel/include/kernel/nx_contract.h turns the invariants C cannot check into
+# build failures: NX_MUST_USE on every -errno return, NX_ASSERT_OFFSET on every
+# layout assembly depends on.  It is ALWAYS ON.  There is deliberately no flag
+# to disable it, and adding one would defeat the reason it exists -- an earlier
+# version was gated behind NX_STRICT and the result was that nobody ever saw a
+# single diagnostic, because a gate you have to remember to switch on is a gate
+# that is off.
+#
+# When the build stops on one of these, the build is correct and the code is
+# not.  The three legitimate responses, in order of preference:
+#
+#   1. Handle the failure.  This is almost always the right answer.
+#   2. Make the failure visible where it happens -- pr_err with the CONSEQUENCE
+#      named, not just the fact ("no key events" beats "irq_register failed").
+#   3. NX_DISCARD(expr, "why") -- only for an error-unwind path where the
+#      cleanup failing changes nothing, or a best-effort refresh whose fallback
+#      is documented.  It requires a written reason precisely so it can be
+#      reviewed rather than merely noticed.
+#
+# What is NOT a response: deleting the annotation, adding -Wno-unused-result,
+# or a (void) cast (which does not suppress warn_unused_result under GCC and
+# only makes the omission look intentional -- the tree already had one).
+# ---------------------------------------------------------------------------
+
 COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
                -Wmissing-prototypes -Wstrict-prototypes \
                -ffreestanding -fno-builtin -nostdlib -nostartfiles \

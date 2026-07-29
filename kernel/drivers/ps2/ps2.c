@@ -186,8 +186,10 @@ void ps2_init(void) {
     (void)inb(0x60);
 
   /* Register keyboard (IRQ 1) at vector 33 and mouse (IRQ 12) at vector 44. */
-  irq_register(PIC_VECTOR_BASE + 1, ps2_keyboard_handler, NULL);
-  irq_register(PIC_VECTOR_BASE + 12, ps2_mouse_handler, NULL);
+  if (irq_register(PIC_VECTOR_BASE + 1, ps2_keyboard_handler, NULL) != 0)
+    pr_err("%s", "ps2: cannot register the keyboard IRQ — no key events\n");
+  if (irq_register(PIC_VECTOR_BASE + 12, ps2_mouse_handler, NULL) != 0)
+    pr_err("%s", "ps2: cannot register the mouse IRQ — no pointer events\n");
 
   pr_info("%s", "PS/2: Keyboard + Mouse ready (IRQ 1/12 -> vec 33/44)\n");
 }

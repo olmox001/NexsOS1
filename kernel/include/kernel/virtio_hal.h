@@ -5,6 +5,7 @@
 #ifndef _KERNEL_VIRTIO_HAL_H
 #define _KERNEL_VIRTIO_HAL_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 
 /* VirtIO Transport Type */
@@ -33,6 +34,6 @@ struct virtio_device {
 };
 
 /* Discovery API */
-int virtio_probe_device(uint32_t device_id, struct virtio_device *out_dev);
+int virtio_probe_device(uint32_t device_id, struct virtio_device *out_dev) NX_MUST_USE;
 
 #endif /* _KERNEL_VIRTIO_HAL_H */

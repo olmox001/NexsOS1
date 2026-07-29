@@ -153,9 +153,9 @@ int vfs_read_file(const char *path, void *buf, uint32_t size, uint64_t offset) N
  * path; returns 0, -EPERM or -EACCES.  (S-ALIGN F6) */
 int vfs_write_allowed(const char *resolved_path) NX_MUST_USE;
 int vfs_write_file(const char *path, const void *buf, uint32_t size,
-                   uint64_t offset);
+                   uint64_t offset) NX_MUST_USE;
 int vfs_list_dir(const char *path, char *buf, uint32_t size) NX_MUST_USE;
-int vfs_unlink(const char *path); /* remove a file/node by path */
+int vfs_unlink(const char *path) NX_MUST_USE; /* remove a file/node by path */
 /* vfs_create - create an empty file/dir at 'path' (VFS_TYPE_FILE/_DIR)
  * through the responsible mount's provider.  Returns 0, or negative (the
  * provider has no create support, or its own error).  Does NOT check

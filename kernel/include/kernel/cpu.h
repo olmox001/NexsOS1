@@ -2,6 +2,7 @@
 #define _KERNEL_CPU_H
 
 #ifndef __ASSEMBLER__
+#include <kernel/nx_contract.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
@@ -86,7 +87,7 @@ void smp_create_idle_task(uint32_t cpu_id);
  * smp_bringup_secondary: idle-task-first (#169/#170) + arch wake + bounded
  * acquire-wait for the ack.  0 = online, -1 = wake failed, -2 = ack timeout.
  * smp_ack_boot: release-store ack, called by the secondary once initialized. */
-int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top);
+int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) NX_MUST_USE;
 void smp_ack_boot(uint32_t cpu);
 
 /* These are now provided by arch.h HAL macros/functions */

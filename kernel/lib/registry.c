@@ -32,6 +32,7 @@
  * per-subtree locking is a later refinement.
  */
 
+#include <kernel/nx_contract.h>
 #include <kernel/kmalloc.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
@@ -213,30 +214,43 @@ static struct reg_node *walk_path(const char *key, int create) {
  *
  * Single-threaded before SMP.
  */
+/* set_default - install one boot default, reporting the ONE thing that can go
+ * wrong here.  registry_init runs single-threaded on an empty table, so a
+ * failure means the table is full or out of memory -- and the visible symptom
+ * would be a consumer reading a key the system believes it published, which is
+ * indistinguishable from a consumer bug.  Counted centrally so the ten call
+ * sites below do not each carry a copy of the same check. */
+static int registry_defaults_failed;
+static void set_default(const char *key, const char *val) {
+  if (registry_set(key, val, 0) != 0) {
+    registry_defaults_failed++;
+    pr_err("registry: default key '%s' could not be installed\n", key);
+  }
+}
+
 void registry_init(void) {
   registry_count = 0;
 
   /* ---- Compositor appearance (read by nxres, nxsettings, nxui, nxlauncher)
    * ---- */
-  registry_set("theme.color", "dark", 0);
-  registry_set("style.name", "nexs", 0);
-  registry_set("background.name", "blue", 0);
+  set_default("theme.color", "dark");
+  set_default("style.name", "nexs");
+  set_default("background.name", "blue");
 
   /* ---- System identity (displayed in "About", network, etc.) ---- */
-  registry_set("system.hostname", "NeXs", 0);
-  registry_set("system.arch", "unknown",
-               0); /* will be updated by init/nxinfo */
-  registry_set("system.version", "0.0.0", 0); /* kernel version placeholder */
-  registry_set("system.os", "NEXS", 0);
+  set_default("system.hostname", "NeXs");
+  set_default("system.arch", "unknown"); /* will be updated by init/nxinfo */
+  set_default("system.version", "0.0.0"); /* kernel version placeholder */
+  set_default("system.os", "NEXS");
 
   /* ---- Boot / runtime markers ---- */
-  registry_set("system.boot_time", "0", 0); /* filled by init after spawn */
+  set_default("system.boot_time", "0"); /* filled by init after spawn */
 
   /* ---- Notification infrastructure ---- */
-  registry_set("sys.ntfy.panel_open", "0", 0);
+  set_default("sys.ntfy.panel_open", "0");
 
   /* ---- Input ---- */
-  registry_set("mouse.sensitivity", "1.0", 0);
+  set_default("mouse.sensitivity", "1.0");
 
   pr_info("Registry: Initialized with %d default keys (namespace tree).\n",
           registry_count);
@@ -383,7 +397,10 @@ static int reg_virtual_proc(const char *key, char *buf, size_t size) {
   }
   if (strcmp(p, "parent") == 0 || strcmp(p, "owner") == 0) {
     int par = 0, own = 0;
-    (void)proc_get_lineage(pid, &par, &own);
+    NX_DISCARD(proc_get_lineage(pid, &par, &own),
+               "a pid with no lineage (or already reaped) reports 0/0, which is "
+               "the same answer this virtual key gives for init; the caller is "
+               "reading a status field, not performing an operation");
     snprintf(buf, size, "%d", (strcmp(p, "owner") == 0) ? own : par);
     return 1;
   }
@@ -868,7 +885,14 @@ static const struct fs_ops regfs_ops = {
 
 /* registry_mount_vfs - mount the registry as the "/reg" namespace.  Call from
  * the composition root after vfs_init() + registry_init(). */
-void registry_mount_vfs(void) { vfs_mount_at("/reg", &regfs_ops, NULL); }
+void registry_mount_vfs(void) {
+  /* /reg is the VFS door onto the registry.  If it does not mount, that door
+   * silently disappears while SYS_REGISTRY keeps working — the two paths stop
+   * agreeing, which is precisely the divergence R2 exists to remove. */
+  if (vfs_mount_at("/reg", &regfs_ops, NULL) != 0)
+    pr_err("%s", "registry: /reg could not be mounted — the VFS door onto the "
+           "registry is absent while the syscall door still works\n");
+}
 
 /*
  * sys_registry - syscall handler for registry access (syscall 250).

@@ -114,4 +114,11 @@ static const struct fs_ops procfs_ops = {
     .object_at = procfs_object_at, /* path -> typed PROCESS object */
 };
 
-void procfs_init(void) { vfs_mount_at("/proc", &procfs_ops, NULL); }
+void procfs_init(void) {
+  /* A mount that fails leaves /proc simply absent, and every consumer then
+   * reports "no such file" for a namespace the system believes it published.
+   * The failure has to be named where it happens. */
+  if (vfs_mount_at("/proc", &procfs_ops, NULL) != 0)
+    pr_err("%s", "procfs: /proc could not be mounted — process introspection is "
+           "unavailable\n");
+}

@@ -235,6 +235,97 @@ mirrored in userland by `nxperm.h`.  The stated target semantics:
 
 ---
 
+## Programme N — Contract gates: make C fail on what it cannot check  (LANDED, ongoing)
+
+Opened 2026-07-24 on the maintainer's directive: *everything we routinely
+forget must block compilation*.  Not a new programme in the ASTRA sense — it is
+the enforcement layer under all of them, and every other programme inherits it.
+
+**The problem it addresses.**  Every defect this kernel has lost days to
+belonged to a class C is blind to: a return value nobody looked at, a struct
+whose layout assembly depends on, a lock held across an allocation, a page
+freed while a register spilled onto it was still live.  Each was written into a
+comment after it was found, and each was violated again — because a comment
+cannot fail a build.
+
+### N1 — the vocabulary  (`kernel/include/kernel/nx_contract.h`)
+
+Two enforcers reading ONE set of annotations, so a second list cannot drift
+from the first:
+
+| macro | mechanism | catches |
+|---|---|---|
+| `NX_MUST_USE` | `warn_unused_result` | an `-errno` return nobody acted on |
+| `NX_NONNULL(...)` | `nonnull` | a NULL where the contract forbids one |
+| `NX_ASSERT_OFFSET` / `NX_ASSERT_SIZE` | `_Static_assert` | a layout assembly or the other arch depends on |
+| `NX_DISCARD(expr, why)` | typed sink | a deliberate drop, WITH a written reason |
+| `NX_NO_ALLOC` / `NX_ALLOCATES` / `NX_HOLDS` | checker-read | the interprocedural rules |
+
+**Always on.**  There is deliberately no switch.  An earlier version was gated
+behind `NX_STRICT` and the result was that nobody saw a single diagnostic: a
+gate you have to remember to enable is a gate that is off.  The Makefile
+carries a note stating the three legitimate responses (handle it, surface it
+with the CONSEQUENCE named, or `NX_DISCARD` with a reason) and the three that
+are not (delete the annotation, `-Wno-unused-result`, or a `(void)` cast —
+which does not suppress the attribute under GCC and only makes the omission
+look intentional).
+
+`NX_DISCARD` exists because a must-use gate without an escape hatch does not
+get satisfied, it gets DELETED by the first person who meets a legitimately
+ignorable result.  It is deliberately more typing than handling the error.
+
+### N2 — layouts pinned
+
+There was **not one** `_Static_assert` in the tree.  `struct pt_regs` is built
+BY HAND in assembly and read as a C struct by the dispatcher — two statements
+of one layout with nothing connecting them.  Now pinned on both arches;
+verified by negative control (inserting a field fails the build naming the
+moved offsets, removing it returns to zero).  aarch64 is the worse case:
+anything before `qregs[]` shifts 512 bytes of NEON state addressed by constant
+in the save/restore stubs.
+
+### N3 — the interprocedural rules  (`make lockcheck`)
+
+RULE A (nothing allocates under a `sched_lock`) and RULE B (nothing goes back
+to the PMM while the running context still depends on it), both TRANSITIVE —
+the call that broke rule A contained no allocator name at all.  27 hits; needs
+a triage pass before it can gate `all`.
+
+### N4 — what the gate found (first pass, both arches build + boot clean)
+
+| site | defect |
+|---|---|
+| `arch/{amd64,aarch64}/mm/mmu.c` | `arch_vmm_map_device` looped over a BAR ignoring every failure and returned 0 — **the same defect on BOTH arches**, which is exactly the divergence class this gate exists for |
+| `arch/amd64/mm/mmu.c` | the MMIO window and the low-2MB SMP-trampoline identity map dropped failures; a partial map surfaced later as a driver fault or as secondary CPUs that never came online |
+| `arch/aarch64/cpu/cpu.c` | the one range carrying GIC + PL011 + all 32 VirtIO-MMIO slots dropped its failure: no interrupt controller, no console, no devices, reported as silence |
+| `mm/vmm.c` | `vmm_unmap_page` ignored the unmap result while its own comment promises "the caller may safely recycle the backing frame" — a still-mapped page handed back to the PMM |
+| `sched/elf.c` | a short segment read left a page holding whatever the frame contained, and the process executed it |
+| `core/syscall_dispatch.c`, `core/object.c` | `arch_copy_to_user` dropped in `SYS_WAIT` and `OBJ_CTL` — a bad user pointer reported a successful wait whose status never arrived.  Both carried a `(void)` cast that suppressed nothing |
+| `sched/process.c` | `sys_getprocs` returned a count after a failed copy; `kill_subtree` could not tell a survivor from a process never in the kill set |
+| `drivers/timer/pic_pit.c` | **the halt-IPI handler had never been registered**: `pic_init()` runs from two composition points, the second gets `-EBUSY`, and with the result dropped nobody knew.  A kernel fault on one core left the others running |
+| `graphics/compositor.c` | resize and pointer notifications dropped — the app kept drawing at its old size, or stopped receiving input, with nothing in the log |
+| `fs/procfs.c`, `lib/registry.c` | a failed mount left `/proc` or `/reg` simply absent while consumers reported "no such file" |
+| `mm/buffer.c` | writeback cleared the DIRTY bit after a FAILED write, asserting the block matched the disk and never retrying it |
+| `include/kernel/test.h` | `KASSERT` was a bare `if`: `if (c) KASSERT(x); else y;` bound the else to the macro's own if |
+
+**Open, deliberately not decided here:** `pic_init()` is driven from BOTH
+`arch/amd64/hal.c` and `arch/amd64/platform/platform.c`.  ASTRA wants exactly
+one composition root.  Suppressing the second call outright was tried and
+BROKE THE BOOT — the second call does work the first does not — so which
+caller should own the wiring is a maintainer decision, recorded rather than
+guessed.
+
+### N5 — remaining
+
+`NX_MUST_USE` beyond the kernel headers (userland `include/api/*`), the timer
+rule (`timer_del` must precede the free of the object a timer points at),
+`#pragma GCC poison` for arch/transport leakage into generic code, the
+`lockcheck` triage, and real `ktest` coverage — today its 13 cases live inside
+the framework's own files and test string/math/gfx contracts, not one kernel
+invariant.
+
+---
+
 ## Programme C — Formal diagnostics
 
 Goal: make any function in the kernel accurately and readably diagnosable, and

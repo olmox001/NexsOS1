@@ -22,6 +22,7 @@
  * is consistent (kmalloc/kfree never take object_lock), so kfree() under the
  * lock cannot deadlock.
  */
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 #include <kernel/object.h>
 #include <kernel/sched.h>
@@ -770,7 +771,9 @@ long sys_pipe(int *ufds) {
 
   if (rfd < 0 || wfd < 0) {
     if (rfd >= 0)
-      sys_handle_close(rfd); /* drops the read end; frees o at refcount 0 */
+      NX_DISCARD(sys_handle_close(rfd),
+                 "error unwind: the pipe creation already failed, and a failing "
+                 "close changes nothing the caller can act on");
     else
       kobj_free(o); /* never installed: refcount 0, free the whole pipe */
     return (rfd < 0) ? rfd : wfd;
@@ -778,8 +781,8 @@ long sys_pipe(int *ufds) {
 
   int fds[2] = {rfd, wfd};
   if (arch_copy_to_user(ufds, fds, sizeof(fds)) != 0) {
-    sys_handle_close(rfd);
-    sys_handle_close(wfd);
+    NX_DISCARD(sys_handle_close(rfd), "unwinding a failed copy_to_user");
+    NX_DISCARD(sys_handle_close(wfd), "unwinding a failed copy_to_user");
     return -EFAULT;
   }
   return 0;
@@ -983,7 +986,10 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
          * path is the handle's stable identity; the node is a cache.  Best-effort:
          * if the path vanished, fall back to the cached node (an open handle to a
          * since-deleted file still reads what it last resolved). */
-        (void)vfs_open(o->path, &o->node);
+        NX_DISCARD(vfs_open(o->path, &o->node),
+                   "best-effort refresh: on failure the CACHED node is the "
+                   "documented fallback, so an open handle to a since-deleted "
+                   "file still reads what it last resolved");
         int got;
         if (o->node.type == VFS_TYPE_DIR) {
           /*
@@ -1102,7 +1108,9 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
      * is a userland ABI read as an ARRAY by ps/nxproc, so growing it would move
      * every element. */
     int lin_parent = 0, lin_owner = 0;
-    (void)proc_get_lineage(o->pid, &lin_parent, &lin_owner);
+    NX_DISCARD(proc_get_lineage(o->pid, &lin_parent, &lin_owner),
+               "lineage is optional in this status block; the zero-initialised "
+               "parent/owner above are the intended fallback");
     if (proc_get_info(o->pid, &pi) != 0) {
       ret = -ESRCH;
     } else {
@@ -1231,7 +1239,9 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
           ret = -EIO;
         } else {
           o->offset += (uint64_t)wr;
-          (void)vfs_open(o->path, &o->node); /* refresh cached size */
+          NX_DISCARD(vfs_open(o->path, &o->node),
+                     "best-effort size refresh after a successful write; the "
+                     "write itself already succeeded and is what we report");
           ret = wr;
         }
       }
@@ -1408,7 +1418,11 @@ long sys_object_wait(int handle, long arg) {
     ret = process_wait(o->pid, &code);
     if (arg) {
       extern int arch_copy_to_user(void *dst, const void *src, size_t n);
-      (void)arch_copy_to_user((void *)arg, &code, sizeof(code));
+      /* A bad status pointer is -EFAULT, not a reap that quietly delivered no
+       * status.  The (void) cast here suppressed nothing and only made the
+       * omission read as intentional. */
+      if (arch_copy_to_user((void *)arg, &code, sizeof(code)) != 0)
+        ret = -EFAULT;
     }
   } else {
     ret = -EINVAL;
@@ -1572,7 +1586,9 @@ long sys_object_ctl(int handle, int cmd, long arg) {
       ret = -EIO;
     } else {
       o->offset = 0;
-      (void)vfs_open(o->path, &o->node); /* refresh the cached size */
+      NX_DISCARD(vfs_open(o->path, &o->node),
+                 "best-effort refresh after a successful truncate; the truncate "
+                 "is what we report, and the cached node is the fallback");
       ret = 0;
     }
     obj_unref(o);
@@ -1601,7 +1617,9 @@ long sys_object_ctl(int handle, int cmd, long arg) {
        * that doubled the VFS work for no new information.  vfs_open refreshes
        * the node in place, the same way sys_object_read does before a read, so
        * a long-lived handle still sees a writer's appended size. */
-      (void)vfs_open(o->path, &o->node);
+      NX_DISCARD(vfs_open(o->path, &o->node),
+                 "best-effort: on failure the cached node's size is returned, "
+                 "which is the last value this handle actually resolved");
       ret = (long)o->node.size;
     }
     obj_unref(o);
