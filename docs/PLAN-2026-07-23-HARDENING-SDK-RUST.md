@@ -58,7 +58,7 @@ diagnostic output exactly when the graphical shell is the thing that breaks.
 | commit | what |
 |---|---|
 | `602cb2f` | nxui: one record per window — UI-DOCK-PID-01 (§A) |
-| `8ebe1c1` | V0.0.5.3 |
+| `8ebe1c1` | V0.0.5.4 |
 | `a636e27` | five defects: `fgetc`/`fputc`/`fputs` took an `if (fd >= 0)` shortcut past the stream buffers (a `FILE` now holds a handle for its lifetime, so the shortcut started bypassing them); `sys_ipc_recv` rewound the PC through `current_process->context`, which is NOT the live trap frame; the reaper drained `msg_queue` without `msg_lock` (double `list_del` + double `kfree` → "Invalid magic"); amd64 now classifies a user-mode fault with no current task as scheduler-state corruption, as aarch64 already did; the amd64 link had one RWX `PT_LOAD` fusing pre-paging code with the boot page tables, and `.note.PVH` was `SHF_ALLOC` in no `PT_LOAD` at all.  Adds `user/bin/libctest.c`, 18 cases. |
 
 **HAL-0b is HALF done.**  `a636e27` closed the IMAGE half (the amd64 link is now

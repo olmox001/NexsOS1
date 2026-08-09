@@ -598,7 +598,7 @@ static void run_command_line(char *line) {
     nxperm_mask_str(mask, m, (int)sizeof(m));
     printf("pid=%d level=%s caps=%s\n", get_pid(), nxperm_level_name(level), m);
   } else if (strcmp(cmd, "about") == 0) {
-    print("\n\033[1;36mNeXs OS V0.0.5.3\033[0m\n");
+    print("\n\033[1;36mNeXs OS V0.0.5.4\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
     print("\033[32mLibrary:\033[0m POSIX-like userlib with printf support\n");
@@ -745,8 +745,9 @@ static void run_command_line(char *line) {
  * Two-character operators are tested BEFORE their one-character prefixes, so
  * background (`cmd &`) and pipelines (`a | b`) keep their existing meaning.
  * ------------------------------------------------------------------------- */
-#define SEQ_MAX 8 /* segments per line; a refusal, never a silent truncation   \
-                   */
+#define SEQ_MAX                                                                \
+  8 /* segments per line; a refusal, never a silent truncation                 \
+     */
 #define SEQ_ALWAYS                                                             \
   0               /* `;` and the implicit connector before the first segment */
 #define SEQ_AND 1 /* `&&` — run only if the previous segment SUCCEEDED */
