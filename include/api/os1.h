@@ -88,12 +88,12 @@ extern long _sys_registry(int op, const char *key, char *value, size_t size);
 extern long _sys_get_procs(void *procs, size_t max_count);
 extern long _sys_get_identity(void);
 extern long _sys_sysstats(void *buf, size_t buf_size);
-extern int  _sys_file_write(const char *path, const void *buf, int size, int offset);
-extern int  _sys_file_read(const char *path, void *buf, int size, int offset);
 extern int  _sys_send(int pid, struct ipc_message *msg);
 extern int  _sys_recv(int pid, struct ipc_message *msg);
-extern int  _sys_list_dir(const char *path, char *buf, size_t size);
 extern int  _sys_chdir(const char *path);
+/* _sys_stat: path metadata (type + size) in ONE round trip.  `out` is a
+ * `struct abi_stat *` (include/abi/posix_types.h).  0, or a negative errno. */
+extern int  _sys_stat(const char *path, void *out);
 extern int  _sys_getcwd(char *buf, size_t size);
 extern int  _sys_unlink(const char *path);
 extern int  _sys_mkdir(const char *path);

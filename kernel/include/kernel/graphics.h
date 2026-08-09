@@ -1,6 +1,7 @@
 #ifndef _KERNEL_GRAPHICS_H
 #define _KERNEL_GRAPHICS_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 #include <stdint.h>
 
@@ -19,7 +20,7 @@ void graphics_init(void);
  * Returns 0, or -1 if no GPU/framebuffer.  (Replaces graphics_get_screen_
  * surface()'s SMP-unsafe static return and the stale graphics_context cache.) */
 struct gl_surface;
-int graphics_screen_surface(struct gl_surface *out);
+int graphics_screen_surface(struct gl_surface *out) NX_MUST_USE;
 void graphics_swap_buffers(void);
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
@@ -30,15 +31,15 @@ void graphics_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
 void graphics_clear(uint32_t color);
 
 /* Font/String API */
-int graphics_char_width(uint32_t codepoint);
-int graphics_string_width(const char *str);
-int utf8_decode(const char *s, size_t len, uint32_t *code);
-int graphics_font_height(void);
-int graphics_font_ascent(void);
-int graphics_font_max_width(void);
+int graphics_char_width(uint32_t codepoint) NX_MUST_USE;
+int graphics_string_width(const char *str) NX_MUST_USE;
+int utf8_decode(const char *s, size_t len, uint32_t *code) NX_MUST_USE;
+int graphics_font_height(void) NX_MUST_USE;
+int graphics_font_ascent(void) NX_MUST_USE;
+int graphics_font_max_width(void) NX_MUST_USE;
 void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
                           uint32_t color);
-int sys_set_font(void *data, size_t size);
+int sys_set_font(void *data, size_t size) NX_MUST_USE;
 
 /* 3D Renderer API */
 void render3d_init(uint32_t width, uint32_t height);
@@ -55,19 +56,19 @@ void compositor_resize(int w, int h);
 void compositor_get_size(int *w, int *h);
 /* compositor_set_zoom: desktop zoom percent (HiDPI, F2). Resizes the GPU scanout
  * to native*100/percent; QEMU stretches it to the host window. 0/-1. */
-int compositor_set_zoom(int percent);
+int compositor_set_zoom(int percent) NX_MUST_USE;
 /* compositor_set_native_mode: record a real resolution change as the zoom-100
  * reference (resets zoom). Call alongside gpu_set_mode + compositor_resize. */
 void compositor_set_native_mode(int w, int h);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
-                             int pid);
+                             int pid) NX_MUST_USE;
 void compositor_destroy_window(int window_id);
 /* compositor_window_owner: owning PID of a window id, -1 if not found.
  * Used by the SYS_DESTROY_WINDOW capability check (ABI-04). */
-int compositor_window_owner(int window_id);
+int compositor_window_owner(int window_id) NX_MUST_USE;
 /* compositor_window_grid: terminal grid (cols x rows) of a window; 0 on
  * success (fills cols/rows), -1 if the id is unknown.  Backs SYS_WINDOW_GRID. */
-int compositor_window_grid(int window_id, int *cols, int *rows);
+int compositor_window_grid(int window_id, int *cols, int *rows) NX_MUST_USE;
 /* compositor_focus_changed: erase the terminal caret off windows that no
  * longer own keyboard focus (new_pid is the new focus owner).  Called by
  * SYS_SET_FOCUS so the caret tracks the window the user types into. */
@@ -77,7 +78,7 @@ void compositor_move_window(int window_id, int x, int y);
 /* compositor_resize_window: resize a window's logical surface to w x h
  * (reallocates the buffer, reflows the terminal).  Process context only.
  * Returns 0 on success, -1 on failure.  Backs SYS_WINDOW_RESIZE (GFX-DYN-01). */
-int compositor_resize_window(int window_id, int w, int h);
+int compositor_resize_window(int window_id, int w, int h) NX_MUST_USE;
 void compositor_render(void);
 void compositor_handle_click(int button, int state);
 void compositor_update_mouse(int dx, int dy, int absolute);
@@ -95,11 +96,11 @@ void compositor_set_window_flags(int window_id, int flags);
  * titlebar background button.  minimize/restore/focus return 0 or -ESRCH;
  * sys_window_enum returns the window count (or a negative errno). */
 struct window_info; /* defined in include/api/object.h (shared ABI) */
-int compositor_minimize_window(int window_id);
-int compositor_restore_window(int window_id);
-int compositor_focus_window(int window_id);
-int compositor_window_info(int window_id, struct window_info *out);
-long sys_window_enum(struct window_info *ubuf, size_t max);
+int compositor_minimize_window(int window_id) NX_MUST_USE;
+int compositor_restore_window(int window_id) NX_MUST_USE;
+int compositor_focus_window(int window_id) NX_MUST_USE;
+int compositor_window_info(int window_id, struct window_info *out) NX_MUST_USE;
+long sys_window_enum(struct window_info *ubuf, size_t max) NX_MUST_USE;
 
 /* Process/System seam (DIR-02).
  *
@@ -112,7 +113,7 @@ long sys_window_enum(struct window_info *ubuf, size_t max);
  * compositor_get_focus_pid() was removed (dead after SCHED-01): focus is read
  * from the scheduler's published hint, not queried from the compositor. */
 void compositor_destroy_windows_by_pid(int pid);
-int compositor_get_window_by_pid(int pid);
+int compositor_get_window_by_pid(int pid) NX_MUST_USE;
 /* Alias documenting the relation as window-centric (DIR-02): the primary
  * window owned by a process, or -1 if it has none. */
 static inline int compositor_primary_window_of_pid(int pid) {

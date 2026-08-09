@@ -46,17 +46,16 @@
  * nxmemstat_snapshot() (non-ROOT caller) is reported inline instead of
  * crashing the section.
  */
-#include <font_lib.h>
-#include <input.h>
-#include <os1.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include "nxinfo.h"
 #include "nxmemstat.h"
 #include "nxperm.h"
 #include "nxproc.h"
 #include "nxres.h"
+#include <font_lib.h>
+#include <input.h>
+#include <os1.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* ================================================================
  *                       Shared: notification log
@@ -742,7 +741,7 @@ static void render_perm(void) {
   for (int i = 0; i < NXPERM_NSERVICES; i++) {
     const struct nxperm_service *s = &NXPERM_SERVICES[i];
     snprintf(line, sizeof(line), "%-9s [%s] %s", s->name,
-             (mask & s->cap) ? "si" : "no", s->desc);
+             (mask & s->cap) ? "yes" : "no", s->desc);
     ui_text(cx, &y, line, (mask & s->cap) ? g_col_text : g_col_text_dim);
   }
 }
@@ -762,7 +761,7 @@ static void render_proc(void) {
   }
 
   char hdr[64];
-  snprintf(hdr, sizeof(hdr), "%-5s %-14s %-9s %-4s", "PID", "NOME", "STATO",
+  snprintf(hdr, sizeof(hdr), "%-5s %-14s %-9s %-4s", "PID", "NAME", "STATES",
            "PRIO");
   ui_text(cx, &y, hdr, g_col_text_dim);
   y += 2;

@@ -1,6 +1,7 @@
 #ifndef _KERNEL_IRQ_H
 #define _KERNEL_IRQ_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 
 /* Forward declaration for pt_regs */
@@ -29,7 +30,7 @@ void irq_init(void);
 void irq_init_percpu(void);
 void irq_register_chip(struct irq_chip *chip);
 
-int irq_register(uint32_t irq, irq_handler_t handler, void *data);
+int irq_register(uint32_t irq, irq_handler_t handler, void *data) NX_MUST_USE;
 void irq_unregister(uint32_t irq);
 void irq_enable(uint32_t irq);
 void irq_disable(uint32_t irq);

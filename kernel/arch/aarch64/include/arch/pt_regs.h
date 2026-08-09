@@ -7,6 +7,7 @@
 #ifndef _ARCH_AARCH64_PT_REGS_H
 #define _ARCH_AARCH64_PT_REGS_H
 
+#include <kernel/nx_contract.h>
 #include <stdint.h>
 
 /* Full Register State (matching stack layout in exception.S) */
@@ -24,6 +25,22 @@ struct pt_regs {
   uint32_t fpcr;         /* 804 */
   uint64_t fpu_padding;  /* 808-816 */
 };
+
+/*
+ * Same contract as amd64: this layout is written BY HAND in the exception
+ * vectors, and the offsets in the comments above were maintained by eye.  The
+ * FPU block makes it worse than amd64's — inserting anything before qregs[]
+ * shifts 512 bytes of NEON state that the save/restore stubs address by
+ * constant, and the failure would appear as corrupted floating-point results
+ * in userland, not as a fault at the edit.  Pinned so a reorder breaks the
+ * build here instead.
+ */
+NX_ASSERT_OFFSET(struct pt_regs, elr, 256);
+NX_ASSERT_OFFSET(struct pt_regs, spsr, 264);
+NX_ASSERT_OFFSET(struct pt_regs, sp_el0, 272);
+NX_ASSERT_OFFSET(struct pt_regs, qregs, 288);
+NX_ASSERT_OFFSET(struct pt_regs, fpsr, 800);
+NX_ASSERT_OFFSET(struct pt_regs, fpcr, 804);
 
 /* ─── Architecture-Agnostic Accessors ─── */
 

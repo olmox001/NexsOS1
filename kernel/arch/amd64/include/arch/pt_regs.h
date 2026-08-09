@@ -8,6 +8,7 @@
 #ifndef _ARCH_AMD64_PT_REGS_H
 #define _ARCH_AMD64_PT_REGS_H
 
+#include <kernel/nx_contract.h>
 #include <stdint.h>
 
 /*
@@ -43,6 +44,26 @@ struct pt_regs {
   uint64_t rsp; /* user RSP (only valid from Ring 3) */
   uint64_t ss;  /* user SS  (only valid from Ring 3) */
 };
+
+/*
+ * The layout above is built BY HAND in assembly — syscall_entry in
+ * kernel/arch/amd64/cpu/syscall.S pushes these fields one at a time, and
+ * common_isr_entry in isr_stubs.S does the same for the interrupt path.  The C
+ * struct and those push sequences are two statements of one layout with
+ * nothing connecting them, so inserting a field here would silently shift
+ * every offset the assembly writes and the dispatcher reads.
+ *
+ * `rip` at 0x88 is not a decorative number: it is the offset the compiler
+ * emits for pt_regs_retry_syscall's `r->rip -= 2`, and a kernel #PF writing to
+ * frame+0x88 is what made that visible.  Pinning these three makes a reorder a
+ * BUILD failure at the edit instead of a page fault at runtime.
+ */
+NX_ASSERT_OFFSET(struct pt_regs, rbx, 0x68);
+NX_ASSERT_OFFSET(struct pt_regs, rax, 0x70);
+NX_ASSERT_OFFSET(struct pt_regs, vec, 0x78);
+NX_ASSERT_OFFSET(struct pt_regs, err, 0x80);
+NX_ASSERT_OFFSET(struct pt_regs, rip, 0x88);
+NX_ASSERT_SIZE(struct pt_regs, 0xB0);
 
 /* ─── Architecture-Agnostic Accessors ─── */
 

@@ -54,11 +54,11 @@
 #include "portability/os1_video_platform.h"
 #include <ctype.h>
 #include <errno.h>
+#include <execsvc.h>
 #include <fcntl.h>
 #include <graphics.h>
 #include <input.h>
 #include <math.h>
-#include <execsvc.h>
 #include <os1.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,9 +70,9 @@
 #include <dirent.h>
 #include <poll.h>
 #include <signal.h>
-#include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <termios.h>
 
 #pragma GCC diagnostic push
@@ -99,6 +99,22 @@
 #include <stb_image.h>
 #pragma GCC diagnostic pop
 
+/*
+ * OS1VID_IMPLEMENTATION: istanzia qui, una sola volta per l'intero link
+ * (stesso pattern di STB_IMAGE_IMPLEMENTATION sopra), il compat layer video
+ * (include/api/os1vid.h) che include a sua volta include/api/pl_mpeg.h
+ * (upstream MIT, NON modificato:
+ * https://raw.githubusercontent.com/phoboslab/pl_mpeg/master/pl_mpeg.h).
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wimplicit-function-declaration"
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#define OS1VID_IMPLEMENTATION
+#include <os1vid.h>
+#pragma GCC diagnostic pop
+
 /* errno: global error variable expected by POSIX-style libc callers. */
 int errno = 0;
 
@@ -112,13 +128,35 @@ int errno = 0;
  * io.open printed on a missing file) — and it is deliberately generic: ANY
  * POSIX-style consumer, not just Lua, gets correct errno/strerror from now on.
  */
-static long errno_ret(long r) {
+static long errno_ret_ctx(long r, const char *ctx) {
   if (r < 0) {
     errno = (int)-r;
+    /*
+     * The classifier runs HERE, so the diagnostic declaration is universal.
+     *
+     * OS1_report_error's own comment promises that a hard failure in ANY libc
+     * or portability path becomes visible, but it was reached from three call
+     * sites only — so every OTHER POSIX veneer set errno correctly and was
+     * never classified.  A promise kept at three sites is not a policy, it is
+     * a convention each new compatibility layer (SDL, lua, doom, tomorrow
+     * musl) has to remember to call — and "remember to call it" is the shape
+     * of a duplication waiting to diverge.
+     *
+     * Safe to route everything through it because the POLICY is already
+     * selective: ENOENT/EAGAIN and the rest of normal control flow stay
+     * silent, EACCES/EPERM warn, and only EIO/EFAULT/ENOMEM/ENOSPC/EROFS
+     * raise the red one.  Probes cannot spam it.
+     */
+    OS1_report_error(ctx, (int)r);
     return -1;
   }
   return r;
 }
+
+/* errno_ret - the POSIX seam without a context tag (ctx defaults to "libc").
+ * Callers that know the object they failed on should use errno_ret_ctx so the
+ * notification names it. */
+static long errno_ret(long r) { return errno_ret_ctx(r, NULL); }
 
 /*
  * OS1_report_error - THE single userland error-surfacing seam
@@ -309,7 +347,8 @@ void OS1low_process_exit(int status) {
 
 /* Bare-name compat shims (DIR-01). */
 int get_pid(void) { return OS1low_process_self(); }
-/* --- POSIX <unistd.h> personality (thin mapping onto the OS1 verbs above) --- */
+/* --- POSIX <unistd.h> personality (thin mapping onto the OS1 verbs above) ---
+ */
 /* getpid: the POSIX spelling of get_pid(). */
 int getpid(void) { return get_pid(); }
 /* isatty: a descriptor is a terminal iff the object behind its handle is a
@@ -375,11 +414,13 @@ long OS1_object_wait(int handle, long arg) {
  */
 int OS1_port_create(const char *name) {
   /* RECEIVE right publishes the port and claims ownership; TRANSFER lets the
-   * owner delegate send rights onward (cap_grant) without re-opening by name. */
-  return (int)errno_ret(OS1low_handle_create(
-      OS1_NS_PORT, name,
-      OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE,
-      OBJ_TYPE_PORT));
+   * owner delegate send rights onward (cap_grant) without re-opening by name.
+   */
+  return (int)errno_ret(OS1low_handle_create(OS1_NS_PORT, name,
+                                             OS1_RIGHT_READ | OS1_RIGHT_WRITE |
+                                                 OS1_RIGHT_TRANSFER |
+                                                 OS1_RIGHT_DUPLICATE,
+                                             OBJ_TYPE_PORT));
 }
 int OS1_port_open(const char *name) {
   /* No READ: a client gets a SEND-only capability to an existing service. */
@@ -574,7 +615,7 @@ void set_focus(int pid) { OS1_window_set_focus(pid); }
  * vsnprintf.c provides vsnprintf/vsscanf; math.c provides fixed-point trig
  * and DEG_TO_FP_RAD/cos_fp/sin_fp/fixmul used by demo3d; string.c provides
  * memset/memcpy/strlen/strcmp/strncmp/strchr etc. */
-#include "../../kernel/lib/math.c"
+/* math functions now in user/sys/lib/math.c (IEEE-754 float/double) */
 #include "../../kernel/lib/string.c"
 #include "../../kernel/lib/vsnprintf.c"
 #include "font_lib.c"
@@ -680,12 +721,12 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
     errno = EINVAL;
     return -EINVAL;
   }
-  long h = OS1low_handle_create(OS1_NS_FS, path,
-                                OS1_RIGHT_WRITE | OS1_RIGHT_CREATE,
-                                OBJ_TYPE_FILE);
+  long h = OS1low_handle_create(
+      OS1_NS_FS, path, OS1_RIGHT_WRITE | OS1_RIGHT_CREATE, OBJ_TYPE_FILE);
   if (h < 0) {
     errno = (int)-h;
-    OS1_report_error(path, (int)h); /* surface EACCES/EIO; ENOENT stays silent */
+    OS1_report_error(path,
+                     (int)h); /* surface EACCES/EIO; ENOENT stays silent */
     return (int)h;
   }
   long w = 0;
@@ -701,17 +742,77 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
   }
   return (int)w;
 }
-/* OS1_fs_read (F4 M4.5): data reads routed through a FILE capability
- * (handle_create(FS,READ) -> OBJ_CTL_SEEK(offset) -> object_read -> close).  A
- * size<=0 / NULL-buf call is a metadata size-probe (returns the file size)
- * which the object read does not do, so it stays on the ambient SYS_FILE_READ
- * path. */
+/* OS1_fs_read (F4 M4.5; ambient fallback removed by R1): data reads routed
+ * through a FILE capability — handle_create(FS,READ) -> OBJ_CTL_SEEK(offset) ->
+ * object_read -> close.
+ *
+ * The size<=0 / NULL-buf call is a metadata size-probe.  It used to fall back
+ * to the ambient SYS_FILE_READ verb "because the object read does not do that"
+ * — but OBJ_CTL_STAT does, and always did: the object layer was never missing
+ * the capability, only this caller was not asking for it.  Probing through the
+ * handle removes the last libc user of the ambient path (Programme R1) and, in
+ * passing, makes the probe capability-checked like every other read. */
 int OS1_fs_read(const char *path, void *buf, int size, int offset) {
-  if (size <= 0 || !buf) {
-    int r = _sys_file_read(path, buf, size, offset);
-    if (r < 0)
-      errno = -r;
-    return r;
+  /* EXIT SEMANTICS ARE PRESERVED EXACTLY.  The old guard was `size <= 0 ||
+   * !buf` funnelling into the ambient verb, but the KERNEL branched only on
+   * `size`, so the one guard covered three different outcomes and they must
+   * stay distinct:
+   *
+   *   size < 0            (size_t)size wrapped to a huge value, tripping the
+   *                       SYSCALL_MAX_IO_BYTES check       -> -EINVAL
+   *   size > 0, buf NULL  the kernel read, then copy_to_user(NULL) failed
+   *                                                        -> -EFAULT
+   *   size == 0           probe: vfs_read_file(path,NULL,0) -> file size,
+   *                       any failure reported as          -> -ENOENT
+   *
+   * Collapsing all three onto "return the size" would have made a negative
+   * size and a NULL destination look like successful probes. */
+  if (size < 0) {
+    errno = EINVAL;
+    return -EINVAL;
+  }
+  if (size > 0 && !buf) {
+    errno = EFAULT;
+    return -EFAULT;
+  }
+  if (size == 0) {
+    /* THE SIZE-PROBE STANDARD (made explicit here, R1).
+     *
+     * `size == 0` asks "how big is this file".  That is a STAT question, and a
+     * stat has no offset — so the offset argument is meaningless for a probe.
+     * The old implementation silently ignored it and returned the total size,
+     * which means a caller asking "how many bytes remain after `offset`" got
+     * the whole size and no indication it had asked something the API does not
+     * answer.  This refuses instead, following the rule this project already
+     * applies to the environment ceilings: a silently different value is worse
+     * than a failure, because the failure is diagnosable.
+     *
+     * Verified before enforcing: all 12 probe call sites in the tree pass
+     * offset 0 (fopen, font_lib, nxfilem, nxlauncher, rename/truncate,
+     * fdtest/writetest/capreg), so no application changes — the standard was
+     * already universally observed, it just was not stated or enforced.
+     *
+     * Probe through the object layer: OBJ_CTL_STAT is exactly "current size in
+     * bytes" and resolves it from the same place the ambient verb did
+     * (vfs_stat, falling back to the node size), so the value is identical.
+     * Read acquisition is ungated (the tree ACL gates writes), so a file
+     * readable before is readable now — the probe is simply capability-routed
+     * like every other read.  Failure stays -ENOENT to keep the old contract;
+     * handle_create knows more (-EACCES, …) but changing what callers observe
+     * is a separate decision, not a side effect of this refactor. */
+    if (offset != 0) {
+      errno = EINVAL;
+      return -EINVAL;
+    }
+    /* ONE syscall.  The first R1 version did handle_create + OBJ_CTL_STAT +
+     * close — three syscalls and two path resolutions for one number, on the
+     * path every fopen() takes.  SYS_STAT asks the same VFS once. */
+    struct abi_stat as;
+    if (_sys_stat(path, &as) != 0) {
+      errno = ENOENT;
+      return -ENOENT;
+    }
+    return (int)as.size;
   }
   long h = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
   if (h < 0) {
@@ -726,8 +827,34 @@ int OS1_fs_read(const char *path, void *buf, int size, int offset) {
     errno = (int)-r;
   return (int)r;
 }
+/* OS1_fs_list (R1): a directory is a file you READ.  handle_create(FS,READ) ->
+ * object_read -> close, the same shape as OS1_fs_read — so listing goes through
+ * the capability layer like every other read instead of the ambient
+ * SYS_LIST_DIR verb.
+ *
+ * Exit semantics preserved: the ambient verb returned the listing LENGTH and
+ * -ENOENT for a missing/unreadable path, so acquisition failure maps to
+ * -ENOENT rather than surfacing handle_create's own errno.  The listing is
+ * NUL-terminated for callers that treat it as a string (the ambient path
+ * copied res+1 bytes for exactly that reason). */
 int OS1_fs_list(const char *path, char *buf, size_t size) {
-  return _sys_list_dir(path, buf, size);
+  if (!buf || size == 0) {
+    errno = EINVAL;
+    return -EINVAL;
+  }
+  long h = OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
+  if (h < 0) {
+    errno = ENOENT;
+    return -ENOENT;
+  }
+  long r = OS1_object_read((int)h, buf, size - 1);
+  OS1low_handle_close((int)h);
+  if (r < 0) {
+    errno = ENOENT;
+    return -ENOENT;
+  }
+  buf[r] = '\0';
+  return (int)r;
 }
 int OS1_fs_chdir(const char *path) { return _sys_chdir(path); }
 int OS1_fs_getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
@@ -761,9 +888,11 @@ int open(const char *pathname, int flags, ...) {
   if (fd < 0) {
     /* Uniform surfacing (Phase 0): amber on EACCES, red on a hard fault,
      * silent on an ENOENT probe — the policy lives in OS1_report_error, not
-     * here, so every open() caller and every portability layer behave alike. */
-    OS1_report_error(pathname, fd);
-    return (int)errno_ret(fd);
+     * here, so every open() caller and every portability layer behave alike.
+     * The report now happens INSIDE the errno seam (see errno_ret_ctx); this
+     * site passes the path so the notification still names the file rather
+     * than the generic "libc", and reports ONCE instead of twice. */
+    return (int)errno_ret_ctx(fd, pathname);
   }
   if (flags & O_APPEND)
     _sys_lseek(fd, 0, SEEK_END); /* best-effort: initial position at EOF */
@@ -961,7 +1090,11 @@ int notify(const char *title, const char *msg) {
  * fopen - open a file for buffered I/O emulation.
  *
  * Allocates a FILE struct, stores the path, probes the file size via
- * file_read(path, NULL, 0, 0) (size-probe convention: buf==NULL returns size).
+ * file_read(path, NULL, 0, 0).  SIZE-PROBE CONVENTION: the trigger is
+ * `size == 0` (NOT `buf == NULL`, which this comment used to claim — the
+ * distinction matters because `buf == NULL` with a NON-zero size is an error,
+ * -EFAULT, not a probe).  `offset` must be 0: a size has no offset, and passing
+ * one is refused with -EINVAL rather than silently answered with the total.
  * Returns NULL if the file does not exist and mode is "r" (read-only).
  * Write modes ("w", "a") do not fail on missing files — file_write will
  * create them on demand via the kernel VFS.
@@ -978,7 +1111,7 @@ FILE *fopen(const char *path, const char *mode) {
    * stale is_tmp made fclose() unlink real files.  memset is the whole
    * fix; pos/error/eof/has_ungetc/is_tmp start 0 by definition. */
   memset(f, 0, sizeof(FILE));
-  f->fd = -1; /* no fd-backed stream: positional path I/O */
+  f->fd = -1;
   strncpy(f->path, path, sizeof(f->path) - 1);
   /* Probe file size; file_read with NULL buf and size=0 returns byte count.
    * On a miss it sets errno (ENOENT/EACCES) — preserved below so a failed
@@ -1018,6 +1151,40 @@ FILE *fopen(const char *path, const char *mode) {
     }
     f->pos = f->size;
   }
+
+  /*
+   * Open a REAL handle and keep it for the stream's lifetime.
+   *
+   * Before this, a path-backed FILE carried fd = -1 and EVERY fread/fwrite did
+   * handle_create + seek + read/write + close — four syscalls and, far worse, a
+   * full VFS PATH RESOLUTION per call.  doom reads a savegame a byte at a time
+   * (saveg_read8), so a ~100 KB save meant ~100 000 path resolutions: that is
+   * the multi-minute load, and it is the "positional per-byte fread through the
+   * FILE layer + handle-per-call" item the plan logged at 17d.
+   *
+   * Now the handle is opened once and the KERNEL owns the offset.  fread/fwrite
+   * are one syscall with no resolution; fseek moves the kernel offset with
+   * lseek.  fp->pos is kept as a mirror so ftell costs nothing.
+   *
+   * A failure here is NOT fatal: the stream falls back to the positional path
+   * (fd stays -1), which still works.  Losing speed is acceptable; losing the
+   * ability to open a file is not — and the write modes above have already
+   * created/truncated, so the file exists either way. */
+  {
+    int oflags;
+    if (mode[0] == 'r')
+      oflags =
+          (mode[1] == '+' || (mode[1] && mode[2] == '+')) ? O_RDWR : O_RDONLY;
+    else
+      oflags = O_RDWR; /* "w"/"a" already created+positioned above */
+    int h = open(path, oflags);
+    if (h >= 0) {
+      f->fd = h;
+      /* Align the kernel offset with the logical one ("a" starts at EOF). */
+      if (f->pos != 0)
+        lseek(h, f->pos, SEEK_SET);
+    }
+  }
   return f;
 }
 
@@ -1046,8 +1213,24 @@ static int fstream_flush(FILE *fp) {
   if (at < 0)
     at = 0;
   int pending = fp->wcount;
-  int w = file_write(fp->path, fp->wbuf, pending, at);
+  int w;
+  if (fp->fd >= 0) {
+    /* Flush through the stream's own handle: one syscall, no path resolution.
+     * lseek first because the buffer's on-disk offset trails the logical
+     * position by the pending count, and interleaved reads may have moved the
+     * kernel offset since. */
+    lseek(fp->fd, at, SEEK_SET);
+    long r = write(fp->fd, fp->wbuf, (unsigned long)pending);
+    w = (int)r;
+    if (r > 0)
+      lseek(fp->fd, fp->pos, SEEK_SET); /* restore the logical position */
+  } else {
+    w = file_write(fp->path, fp->wbuf, pending, at);
+  }
   fp->wcount = 0;
+  /* The file just changed: any cached read window may now be stale. */
+  fp->rcount = 0;
+  fp->rhead = 0;
   if (w < 0 || w < pending) {
     fp->error = 1;
     return EOF;
@@ -1091,8 +1274,10 @@ int fclose(FILE *fp) {
     if (fp->is_tmp) {
       OS1_fs_unlink(fp->path);
     }
-    /* An fdopen()'d stream owns its descriptor (POSIX): closing the stream
-     * closes the fd.  Path-backed streams carry fd = -1 and own nothing. */
+    /* The stream owns its descriptor (POSIX): closing the stream closes it.
+     * This now covers fopen'd streams too — they hold a real handle for their
+     * lifetime instead of reopening per call — as well as fdopen'd ones.  A
+     * stream whose open failed carries fd = -1 and owns nothing. */
     if (fp->fd >= 0)
       close(fp->fd);
     free(fp);
@@ -1124,13 +1309,53 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
   }
 
   int fd = file_fd(fp);
-  if (fd >= 0) {
+  if (fd >= 0 && fp->path[0] == '\0') {
+    /* Console/pipe: unbuffered, and never seekable. */
     long r = read(fd, buf + read_bytes, bytes - read_bytes);
     if (r < 0) {
       fp->error = 1;
       return 0;
     }
+    fp->pos += (int)r;
+    if (r == 0 && bytes > read_bytes)
+      fp->eof = 1;
     read_bytes += r;
+    return read_bytes / size;
+  }
+  if (fd >= 0) {
+    /*
+     * BUFFERED read for a file stream, symmetric with the write buffer and for
+     * the same filesystem reason: ext4 fetches a whole 4 KiB block for any
+     * partial read, so an unbuffered byte-at-a-time reader re-reads the same
+     * block once per byte.  doom loads savegames exactly that way — that is
+     * the multi-minute load, and buffering is what removes it, not the handle
+     * cache alone.
+     */
+    while (read_bytes < bytes) {
+      if (fp->rhead >= fp->rcount) { /* window exhausted: refill from pos */
+        fp->rbase = fp->pos;
+        fp->rhead = 0;
+        fp->rcount = 0;
+        lseek(fd, fp->pos, SEEK_SET);
+        long r = read(fd, fp->rbuf, FILE_RBUF_SIZE);
+        if (r < 0) {
+          fp->error = 1;
+          break;
+        }
+        if (r == 0) {
+          fp->eof = 1;
+          break;
+        }
+        fp->rcount = (int)r;
+      }
+      size_t avail = (size_t)(fp->rcount - fp->rhead);
+      size_t want = bytes - read_bytes;
+      size_t take = avail < want ? avail : want;
+      memcpy(buf + read_bytes, fp->rbuf + fp->rhead, take);
+      fp->rhead += (int)take;
+      fp->pos += (int)take;
+      read_bytes += take;
+    }
     return read_bytes / size;
   }
   int rem_bytes = bytes - read_bytes;
@@ -1152,16 +1377,33 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
   if (size == 0 || nmemb == 0)
     return 0;
 
+  /* Write-after-read consistency, the mirror of the flush fread() does before
+   * reading.  The cached read window may cover the bytes about to change, and
+   * rhead does not move when a write advances pos — so a read following a write
+   * would otherwise be served stale bytes from the OLD position.  Dropping the
+   * window costs one refill and removes the whole hazard. */
+  fp->rcount = 0;
+  fp->rhead = 0;
+
   size_t bytes = size * nmemb;
   int fd = file_fd(fp);
-  if (fd >= 0) {
-    /* Console std streams stay unbuffered: interactive output must appear now.
-     */
+  /* CONSOLE/pipe streams only (no path): unbuffered, because interactive output
+   * must appear now.  A FILE-backed stream must NOT take this branch even
+   * though it now has an fd — buffering is not about syscall count here, it is
+   * about the FILESYSTEM: ext4_write does a read-modify-write of a whole 4 KiB
+   * block for any partial write, so an unbuffered byte-at-a-time writer costs
+   * one 4 KiB read + 4 KiB write PER BYTE.  doom saves exactly that way, and
+   * bypassing the buffer made saving look like a hang.  FILE_WBUF_SIZE is 4096
+   * precisely so a full buffer is one whole block. */
+  if (fd >= 0 && fp->path[0] == '\0') {
     long w = write(fd, ptr, bytes);
     if (w < 0) {
       fp->error = 1;
       return 0;
     }
+    fp->pos += (int)w;
+    if (fp->pos > fp->size)
+      fp->size = fp->pos;
     return w / size;
   }
 
@@ -1204,6 +1446,31 @@ int fseek(FILE *fp, long offset, int whence) {
   }
   if (fp->pos < 0)
     fp->pos = 0;
+  /* POSIX: "a successful call to fseek() shall undo any effects of ungetc()".
+   * The pushback byte belongs to the OLD position, so carrying it across a seek
+   * would inject a stray byte at the new one.  Latent before — the positional
+   * path re-read from the file every time — and made reachable by the read
+   * window, which is exactly the kind of dormant deviation a buffer exposes. */
+  fp->has_ungetc = 0;
+  /* A handle-backed stream keeps its offset in the KERNEL, so moving the
+   * logical position must move that too — otherwise fread would keep reading
+   * from wherever the last read left off and silently ignore the seek.  Only
+   * for path-backed streams: seeking a console/pipe is meaningless, and those
+   * carry no path. */
+  if (fp->fd >= 0 && fp->path[0]) {
+    /* Keep the read window if it still covers the new position — a savegame
+     * reader that seeks backwards a few bytes then continues would otherwise
+     * refill on every seek and lose the buffering entirely.  Otherwise drop
+     * it; a stale window would serve bytes from the OLD offset. */
+    if (fp->rcount > 0 && fp->pos >= fp->rbase &&
+        fp->pos < fp->rbase + fp->rcount) {
+      fp->rhead = fp->pos - fp->rbase;
+    } else {
+      fp->rcount = 0;
+      fp->rhead = 0;
+    }
+    lseek(fp->fd, fp->pos, SEEK_SET);
+  }
   fp->eof = 0;
   return 0;
 }
@@ -1227,8 +1494,8 @@ char *strdup(const char *s) {
   return res;
 }
 
-int abs(int x) { return x < 0 ? -x : x; }
-double fabs(double x) { return x < 0 ? -x : x; }
+/* abs() moved to math.c */
+/* fabs() moved to math.c */
 
 /* --- Standard Input Library ---
  * Input events are delivered as IPC messages from the kernel input driver.
@@ -1631,9 +1898,16 @@ int vsscanf(const char *inp, const char *fmt0, va_list ap) {
  * not permitted, or provider failure), matching the POSIX contract. */
 int mkdir(const char *path, mode_t mode) {
   (void)mode;
-  if (!path)
+  if (!path) {
+    errno = EFAULT;
     return -1;
-  return _sys_mkdir(path) == 0 ? 0 : -1;
+  }
+  /* EXT4-ERRNO-01 (userland half): this returned a bare -1 without touching
+   * errno, so a caller doing the POSIX thing — check -1, then read errno —
+   * read whatever a PREVIOUS call had left there.  A stale errno is worse than
+   * none: it is indistinguishable from a fresh one.  Routed through
+   * errno_ret() like every other syscall veneer. */
+  return (int)errno_ret_ctx(_sys_mkdir(path), path);
 }
 /*
  * system - run a shell command and wait for it (<stdlib.h>).
@@ -1796,14 +2070,15 @@ int cmdline_split(char *s, char **argv, int max) {
       }
     }
     if (*s)
-      s++;         /* step past the delimiter for the next scan */
-    *out = '\0';   /* terminate the compacted token (out <= s) */
+      s++;       /* step past the delimiter for the next scan */
+    *out = '\0'; /* terminate the compacted token (out <= s) */
   }
   return argc;
 }
 /* atof: NOTE(USR-LIB-04) only integer part is parsed; decimal digits ignored.
  */
-double atof(const char *nptr) { return (double)atoi(nptr); }
+/* atof: real IEEE-754 float parse via strtod (math.c) */
+double atof(const char *nptr) { return strtod(nptr, NULL); }
 /* ---------------------------------------------------------------------------
  * ENVIRONMENT — Phase 17
  *
@@ -1844,9 +2119,10 @@ static int env_self(void) {
  * that knows this syntax. */
 static int env_key(char *out, size_t size, const char *name) {
   if (!name || !*name || strchr(name, '='))
-    return -1; /* POSIX: '=' separates name from value, so it cannot be in one */
+    return -1; /* POSIX: '=' separates name from value, so it cannot be in one
+                */
   return (snprintf(out, size, "sys.proc.%d.env.%s", env_self(), name) > 0) ? 0
-                                                                          : -1;
+                                                                           : -1;
 }
 
 int OS1_env_get(const char *name, char *buf, size_t size) {
@@ -1902,7 +2178,8 @@ int OS1_env_enum(char *buf, size_t size) {
   for (char *r = buf; *r;) {
     char *nl = strchr(r, '\n');
     size_t len = nl ? (size_t)(nl - r) : strlen(r);
-    const char *nm = (len > plen && strncmp(r, prefix, plen) == 0) ? r + plen : r;
+    const char *nm =
+        (len > plen && strncmp(r, prefix, plen) == 0) ? r + plen : r;
     size_t nlen = len - (size_t)(nm - r);
     memmove(w, nm, nlen);
     w += nlen;
@@ -1997,25 +2274,32 @@ int env_names(char *names[], int max) {
   return count;
 }
 
+/*
+ * stat - path metadata in ONE syscall (SYS_STAT).
+ *
+ * It used to infer the type: "list_dir succeeds ONLY on directories, so a >= 0
+ * probe IS a directory".  That invariant was load-bearing in TWO places (here
+ * and opendir) and R1 broke it — once a READ handle could be acquired on any
+ * path, listing a regular FILE returned its CONTENT instead of failing, so
+ * every file looked like a directory and the file manager tried to chdir into
+ * them ("Cannot open directory").
+ *
+ * Inference replaced by a fact: the kernel is the only place that knows a
+ * node's type, so it reports it.  One round trip instead of a listing probe
+ * plus a size probe.
+ */
 int stat(const char *path, struct stat *buf) {
   if (buf)
     memset(buf, 0, sizeof(struct stat));
-  /* Directory detection first: the list primitive (the same one the shell's
-   * ls uses) succeeds ONLY on directories (ext4_list returns -2 on a file),
-   * so a >= 0 probe IS "this is a directory".  A tiny buffer suffices — we
-   * only need the verdict, not the entries. */
-  char dprobe[4];
-  if (list_dir(path, dprobe, sizeof(dprobe)) >= 0) {
-    if (buf)
-      buf->st_mode = S_IFDIR;
-    return 0;
-  }
-  int size = file_read(path, NULL, 0, 0);
-  if (size < 0)
+  struct abi_stat as;
+  int r = _sys_stat(path, &as);
+  if (r != 0) {
+    errno = ENOENT;
     return -1;
+  }
   if (buf) {
-    buf->st_size = size;
-    buf->st_mode = S_IFREG;
+    buf->st_size = (off_t)as.size;
+    buf->st_mode = (as.type == ABI_S_TYPE_DIR) ? S_IFDIR : S_IFREG;
   }
   return 0;
 }
@@ -2061,7 +2345,7 @@ int fflush(FILE *stream) {
  * did nothing; the unlink syscall existed all along (OS1_fs_unlink).
  */
 int remove(const char *pathname) {
-  return (int)errno_ret(OS1_fs_unlink(pathname));
+  return (int)errno_ret_ctx(OS1_fs_unlink(pathname), pathname);
 }
 /*
  * unlink - remove a file (POSIX <unistd.h>).  The unistd.h declaration existed
@@ -2070,7 +2354,7 @@ int remove(const char *pathname) {
  * same VFS unlink `remove()` uses.
  */
 int unlink(const char *pathname) {
-  return (int)errno_ret(OS1_fs_unlink(pathname));
+  return (int)errno_ret_ctx(OS1_fs_unlink(pathname), pathname);
 }
 /*
  * rename - move a file (POSIX/<stdio.h>).  No rename syscall exists, so this
@@ -2117,9 +2401,9 @@ int rename(const char *oldpath, const char *newpath) {
  *   - length <  size     -> re-write the first `length` bytes at offset 0,
  *                           which truncates the tail;
  *   - length >  size     -> zero-extend from the old EOF.
- * Explicit truncation for programs that don't go through fopen("w"). ftruncate(fd)
- * needs an fd->path or an OBJ_CTL_TRUNCATE verb (a kernel follow-up), so it is
- * intentionally not provided yet rather than faked.
+ * Explicit truncation for programs that don't go through fopen("w").
+ * ftruncate(fd) needs an fd->path or an OBJ_CTL_TRUNCATE verb (a kernel
+ * follow-up), so it is intentionally not provided yet rather than faked.
  */
 int truncate(const char *path, long length) {
   if (length < 0) {
@@ -2377,13 +2661,33 @@ FILE _stderr_struct = {.fd = 2};
  * FILE*) route through read()/write() like any other descriptor. */
 static int file_fd(FILE *fp) { return fp ? fp->fd : -1; }
 
+/*
+ * fputc/fputs/fgetc delegate to fwrite/fread rather than calling write()/read()
+ * on the descriptor themselves.
+ *
+ * They used to take an `if (fd >= 0)` shortcut straight to the syscall.  That
+ * was correct while only the console had a descriptor and a path-backed FILE
+ * had none — but a FILE now keeps an open handle for its lifetime, so `fd >= 0`
+ * became true for ordinary files too and the shortcut started bypassing the
+ * stream buffers.  The consequences were not symmetric and neither was
+ * cosmetic:
+ *
+ *   - fgetc read one byte straight from the descriptor and never advanced
+ *     fp->pos.  A reader that mixes getc() with fread() — which is exactly what
+ *     Lua's loader does when it skips a `#!` line — desynchronised: fread then
+ *     refilled from the stale fp->pos and re-read the file from the beginning.
+ *   - fputc/fputs wrote straight through while buffered bytes were still
+ *     pending in wbuf, so the two landed out of order: silent corruption, not a
+ *     visible failure.
+ *
+ * fread/fwrite already own the one correct rule — the descriptor fast path is
+ * for CONSOLE/pipe streams only (`path[0] == '\0'`), never for a file — so
+ * these three defer to it instead of carrying a second, older copy of the same
+ * decision.  ext4's 4 KiB read-modify-write granularity is why that rule
+ * exists; see the comment in fwrite.
+ */
 int fputc(int c, FILE *fp) {
   unsigned char ch = (unsigned char)c;
-  int fd = file_fd(fp);
-  if (fd >= 0) {
-    write(fd, (const char *)&ch, 1);
-    return (int)ch;
-  }
   if (fwrite(&ch, 1, 1, fp) != 1)
     return EOF;
   return (int)ch;
@@ -2391,12 +2695,6 @@ int fputc(int c, FILE *fp) {
 
 int fputs(const char *s, FILE *fp) {
   size_t len = strlen(s);
-  int fd = file_fd(fp);
-  if (fd >= 0) {
-    if (len)
-      write(fd, s, len);
-    return 0;
-  }
   if (len && fwrite(s, 1, len, fp) != len)
     return EOF;
   return 0;
@@ -2410,12 +2708,6 @@ int fgetc(FILE *fp) {
     return fp->ungetc_buf;
   }
   unsigned char ch;
-  int fd = file_fd(fp);
-  if (fd >= 0) {
-    if (read(fd, (char *)&ch, 1) != 1)
-      return EOF;
-    return (int)ch;
-  }
   if (fread(&ch, 1, 1, fp) != 1)
     return EOF;
   return (int)ch;
@@ -2454,6 +2746,20 @@ void clearerr(FILE *fp) {
     fp->error = 0;
     fp->eof = 0;
   }
+}
+
+/*
+ * rewind - POSIX: equivalent to fseek(fp, 0, SEEK_SET) except that it also
+ * clears the error indicator and returns nothing.  Added because it was the one
+ * standard stdio entry point missing from this libc, and code ported from POSIX
+ * reaches for it after a failed read; without it the link failed rather than
+ * the call misbehaving, which is why it went unnoticed.
+ */
+void rewind(FILE *fp) {
+  if (!fp)
+    return;
+  fseek(fp, 0, SEEK_SET);
+  fp->error = 0;
 }
 
 int setvbuf(FILE *fp, char *buf, int mode, size_t size) {
@@ -2558,6 +2864,16 @@ int ioctl(int fd, unsigned long request, ...) {
 
 /* --- <dirent.h> --- over list_dir() (space-separated names from ext4_list). */
 DIR *opendir(const char *name) {
+  /* Verify it IS a directory before listing.  opendir() used to rely on
+   * list_dir failing for a regular file; since a directory is now read through
+   * the same object path as a file, listing a FILE returns its content and the
+   * call would "succeed" on anything.  Callers use opendir() as the
+   * file-or-directory test (the file manager does), so this must be exact. */
+  struct abi_stat as;
+  if (_sys_stat(name, &as) != 0 || as.type != ABI_S_TYPE_DIR) {
+    errno = ENOTDIR;
+    return NULL;
+  }
   DIR *d = malloc(sizeof(DIR));
   if (!d)
     return NULL;

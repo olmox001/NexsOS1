@@ -876,22 +876,17 @@ int process_ipc_allowed(struct process *caller, int target_pid) {
  * NOTE(SCHED-08): memset() zeroes the PMM page even though pmm_alloc_page()
  *          already zeroes; double-zero is harmless but wasteful. [W1 PERF]
  */
-/* Per-level capability ceiling = maximum grantable at that level, and also
- * the default preset (a process gets its level's ceiling unless the spawner
- * asks for less via SYS_SPAWN_CAPS).  machine/root/user get everything so
- * today's apps are unchanged; guest is draw-only. */
-static const uint32_t level_ceiling[PLVL_COUNT] = {
-    [PLVL_MACHINE] = CAP_ALL,
-    [PLVL_ROOT] = CAP_ALL,
-    [PLVL_USER] = CAP_ALL,
-    [PLVL_GUEST] = CAP_WINDOW,
-};
+/* The per-level capability ceiling (= maximum grantable at that level, and the
+ * default preset) now lives in caps_for_level() in the shared caps header, not
+ * as a table here: B2.1 separated the level->mask policy from the scheduler so
+ * there is ONE definition the kernel and the userland permissions view both
+ * derive from, instead of a scheduler table hand-mirrored in nxperm.h. */
 
 /* process_create - spawn at 'level' with that level's default preset. */
 struct process *process_create(const char *name, uint8_t priority,
                                uint8_t level) {
   uint8_t lvl = (level < PLVL_COUNT) ? level : PLVL_GUEST;
-  return process_create_caps(name, priority, lvl, level_ceiling[lvl]);
+  return process_create_caps(name, priority, lvl, caps_for_level(lvl));
 }
 
 struct process *process_create_caps(const char *name, uint8_t priority,
@@ -1006,7 +1001,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
     uint8_t lvl = (level < PLVL_COUNT) ? level : PLVL_GUEST;
     if (creator && creator->level > lvl)
       lvl = creator->level;
-    uint32_t caps = req_caps & level_ceiling[lvl];
+    uint32_t caps = req_caps & caps_for_level(lvl);
     if (creator && !proc_is_machine(creator))
       caps &= creator->caps;
     proc->level = lvl;
@@ -1094,7 +1089,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
      * taking object_lock) — after ctty so the console's stdout resolves
      * correctly.  On OOM roll back the pool slot exactly like the kernel-stack
      * failure path. */
-    if (process_install_stdio(proc) != 0) {
+    if (process_install_stdio(proc, creator) != 0) {
       spin_lock_irqsave(&sched_lock, &flags);
       process_pool[slot] = NULL;
       active_count--;
@@ -1732,10 +1727,21 @@ void process_kill_subtree(int root_pid) {
    * kill set until it is reaped; the root, last, then has no windowless
    * children left to orphan.  process_terminate is idempotent; an
    * already-exited snapshot pid is a harmless no-op. */
+  int kill_failures = 0;
   for (int i = 0; i < n; i++)
     if (snap[i].kill && snap[i].pid != root_pid)
-      process_terminate(snap[i].pid);
-  process_terminate(root_pid);
+      if (process_terminate(snap[i].pid) != 0)
+        kill_failures++;
+  if (process_terminate(root_pid) != 0)
+    kill_failures++;
+  /* A victim that survives its own kill is the "closing the shell sometimes
+   * leaves stress running" flake named above.  The loop cannot stop on it --
+   * the remaining victims still have to die -- but it must not be silent
+   * either, or the survivor is indistinguishable from one that was never in
+   * the kill set. */
+  if (kill_failures)
+    pr_err("kill_subtree(%d): %d victim(s) did not terminate\n", root_pid,
+           kill_failures);
 }
 
 /*
@@ -1865,15 +1871,30 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
     /* Drain leftover IPC messages.  The external-terminate path drains the
      * queue in process_terminate(), but a self-terminated zombie keeps any
-     * already-queued nodes.  No lock needed: kernel_ipc_send() refuses
-     * DEAD/ZOMBIE targets, so the queue is stable by the time we get here. */
+     * already-queued nodes.
+     *
+     * TAKEN UNDER msg_lock, unlike before.  The previous justification for
+     * skipping it — "kernel_ipc_send() refuses DEAD/ZOMBIE targets, so the
+     * queue is stable" — reasons only about SENDERS.  Receivers are the other
+     * half: pop_message() walks this same list under msg_lock, and
+     * process_terminate() takes the lock at its own drain for exactly that
+     * stated reason.  Two drains of one list where only one holds the lock is
+     * a double list_del + double kfree of the same node, which surfaces as
+     * "kfree: Invalid magic" and then as a fault on a freed PCB rather than at
+     * the corruption itself.
+     *
+     * sched_lock was released just above, so this establishes no new order and
+     * no allocation happens under it. */
     {
       struct list_head *pos, *q;
+      uint64_t mflags;
+      spin_lock_irqsave(&to_free->msg_lock, &mflags);
       list_for_each_safe(pos, q, &to_free->msg_queue) {
         struct ipc_node *node = list_entry(pos, struct ipc_node, list);
         list_del(pos);
         kfree(node);
       }
+      spin_unlock_irqrestore(&to_free->msg_lock, mflags);
     }
 
     /* Cancel any pending per-process timed-sleep timer BEFORE freeing the PCB,
@@ -2365,6 +2386,21 @@ int process_cont(int pid) {
  * IPC Helper: Pop message matching src_pid (or -1 for any)
  */
 struct ipc_node *pop_message(struct process *proc, int src_pid) {
+  /* NULL is a reachable argument, not a caller bug to assume away.  Every call
+   * site passes `current_process`, which is get_cpu_info()->current_task, and
+   * schedule() sets that to NULL while it reaps a DEAD/ZOMBIE task before
+   * picking the next one.  Without this test the very first statement below
+   * computes &((struct process *)0)->msg_lock — offset 0x148 — and the write
+   * faults in ring 0 with no useful context.
+   *
+   * NOTE the arch asymmetry this papers over: aarch64's el0_64_sync vector
+   * already treats "EL0 exception with no current task" as scheduler-state
+   * corruption and panics by name, while amd64 has no equivalent guard and
+   * simply proceeds into the dereference.  Returning NULL here makes both
+   * arches behave the same at THIS call, but the underlying divergence belongs
+   * in the HAL and is still open. */
+  if (!proc)
+    return NULL;
   /* pr_err("pop_message: proc=%d src=%d\n", proc->pid, src_pid); */
   uint64_t flags;
   struct ipc_node *node = NULL;
@@ -2495,10 +2531,24 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
    * during the window we stayed RUNNING: the dispatcher's schedule() simply
    * re-runs us and the retried pop succeeds immediately.
    *
+   * The REWIND ITSELF BELONGS TO THE DISPATCHER, which holds the live trap
+   * frame; this function only reports that it must happen.  It used to rewind
+   * `current_process->context` here, and that pointer is not the running
+   * frame: `context` is written in exactly one place — schedule(), when a
+   * process is switched OUT — so while a process runs it holds whatever was
+   * saved at its last switch-out, or, for one that has never been switched
+   * out, the value elf.c set at load time.
+   *
+   * That mostly went unnoticed because syscall_entry reloads RSP from
+   * cpu_info->stack_top on every entry, so successive syscalls on the same CPU
+   * build their pt_regs at the SAME address and the stale pointer happened to
+   * be right.  It stops being right when the last switch-out came from another
+   * CPU or from an interrupt frame, and then this wrote `rip -= 2` into
+   * whatever the pointer reached — kernel text included, which faults as a
+   * write to a present read-only page from ring 0.
+   *
    * IPC_RECV_RETRY tells the dispatcher the retry is armed and the trap
    * frame's argument registers must survive untouched (see sched.h). */
-  pt_regs_retry_syscall(current_process->context);
-
   return IPC_RECV_RETRY;
 }
 
@@ -2549,8 +2599,14 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   }
   spin_unlock_irqrestore(&sched_lock, flags);
 
-  vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
+  /* Returning `count` after a failed copy tells the caller it received N
+   * entries it never got, and ps/nxproc would then walk an untouched buffer as
+   * if it were an array of that many records. */
+  int copied =
+      vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
   kfree(k_buf);
+  if (copied != 0)
+    return -EFAULT;
   return count;
 }
 
@@ -2658,7 +2714,15 @@ long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size) {
    * (dependency-free, identical 8-byte layout on both arches) while the kernel
    * accessors take uint64_t (== unsigned long here) — distinct types under
    * -Werror, so pass temporaries and assign (scalar conversion is fine). */
-  s.pmm_total_pages = pmm_get_total_pages();
+  /* MM-PMM-09 (#94): report USABLE RAM, not the metadata span.  On amd64 the
+   * span includes the sub-4GB PCI/MMIO hole, so userland was shown ~6144 MB on
+   * a 6 GB machine with ~5119 MB of real RAM — and since every consumer derives
+   * "used" as total - free, the ~1 GB hole was being reported as consumed
+   * memory (1118 MB instead of ~93 MB).  The hole is already excluded from
+   * allocation inside the PMM; it must not be counted as memory either.  One
+   * change fixes nxmemstat, nxsettings and the Lua binding at once, because
+   * they all read this field. */
+  s.pmm_total_pages = pmm_get_usable_pages();
   s.pmm_free_pages = pmm_get_free_pages();
   {
     uint64_t frag_largest = 0, frag_runs = 0;

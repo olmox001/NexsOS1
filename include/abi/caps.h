@@ -30,6 +30,46 @@
 #define CAP_ALL                                                                \
   (CAP_SPAWN | CAP_FS_WRITE | CAP_IPC_ANY | CAP_WINDOW | CAP_REG_WRITE)
 
+/*
+ * caps_for_level - the DEFAULT capability mask a privilege level is created
+ * with.  THE single source of truth for the level->mask policy, deliberately
+ * here in the shared caps header rather than in the scheduler.
+ *
+ * It used to live as `level_ceiling[]` inside kernel/sched/process.c and was
+ * MIRRORED by hand in userland (nxperm.h nxperm_level_mask()).  Two copies of
+ * one policy in two trees is a latent drift bug — a level's authority would
+ * silently disagree between what the kernel grants and what the permissions UI
+ * claims.  Both now derive from this one function, which is also where a future
+ * per-service manifest (ASTRA §7.11 Q5) layers its overrides.
+ *
+ * Semantics of the LEVELS themselves (the capability MASK is only half of it —
+ * the other half is the per-namespace ACLs: the VFS write tree in
+ * vfs_write_allowed(), the registry owner model, /sys/bin immutability):
+ *   machine  full authority, bypasses every capability check (it IS the check).
+ *   root     full capability mask; restricted only by the resource ACLs
+ *            (cannot write /sys/bin or /system — that is the VFS ACL's job,
+ *            not the mask's).
+ *   user     full capability mask today; the per-service tightening and the
+ *            per-user home partition are the forward work (B2.3/B2.4).  A user
+ *            is separated from root by the ACLs, not yet by the mask.
+ *   guest    windows only — the one level whose MASK is genuinely narrowed.
+ *
+ * A static inline so it costs nothing and both freestanding kernel and
+ * userland translation units can use it without a linked object.
+ */
+static inline unsigned int caps_for_level(int level) {
+  switch (level) {
+  case PLVL_MACHINE:
+  case PLVL_ROOT:
+  case PLVL_USER:
+    return CAP_ALL;
+  case PLVL_GUEST:
+    return CAP_WINDOW;
+  default:
+    return 0u;
+  }
+}
+
 /* Spawn-mode flags (arg3 of SYS_SPAWN / SYS_SPAWN_CAPS) — the nxexec model
  * (#193): a DETACHED child does NOT inherit the spawner as its controlling
  * terminal (ctty_win stays -1).  For launchers (nxlauncher): a windowless

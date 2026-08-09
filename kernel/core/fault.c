@@ -20,6 +20,7 @@
  * panic; only a fault raised by the explicit user-copy window may terminate
  * the process and continue.
  */
+#include <kernel/nx_contract.h>
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
 #include <kernel/printk.h>
@@ -50,7 +51,16 @@ static void fault_notify_user(struct process *task, const char *desc) {
   m.data1 = 2; /* severity: error -> red popup (1 = warning/yellow, 0 = info) */
   m.data2 = (uint64_t)task->pid;
   snprintf(m.payload, sizeof(m.payload), "%s crashed: %s", task->name, desc);
-  kernel_ipc_send(npid, &m);
+  /* DIR-05's contract is that a userland crash is VISIBLE, not that an IPC was
+   * attempted.  Discarding the result satisfied the letter and lost the point:
+   * when the notification server is wedged or its queue is full -- exactly the
+   * moment a crash matters most -- the popup silently never appears and the
+   * only trace is gone.  So the failure falls back to the channel that cannot
+   * itself be full. */
+  if (kernel_ipc_send(npid, &m) != 0)
+    fault_printf("[FAULT] crash popup NOT delivered to the notify server "
+                 "(pid %d): %s\n",
+                 npid, m.payload);
 }
 
 struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
@@ -79,10 +89,30 @@ struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
     }
 
     fault_notify_user(task, desc); /* DIR-05 #139: red crash popup, best-effort */
-    process_terminate(task->pid);
+    /* We are already in the fault handler for this task; there is no caller
+     * left to propagate to.  Reported so a teardown that fails does not leave a
+     * faulted process silently alive and schedulable. */
+    if (process_terminate(task->pid) != 0)
+      fault_printf("[FAULT] process_terminate(%d) FAILED after a user fault\n",
+                   task->pid);
     fault_exit(); /* fault handled — unwind the recursion guard */
     return schedule(regs);
   }
+
+  /* A USER-attributable fault with no current task is not a kernel fault: it
+   * means this CPU took an exception from user mode while its current_task was
+   * NULL, i.e. the scheduler state is corrupt.  Naming it here, in the shared
+   * decision, is what makes the two architectures agree: aarch64's EL0 vector
+   * already panicked with that diagnosis while amd64 fell through and printed
+   * "KERNEL PAGE FAULT", classifying the same condition as something else
+   * entirely.  Each caller still dumps its own register set — those genuinely
+   * differ — but the diagnosis no longer depends on which arch you are on. */
+  if ((user_mode || uaccess) && !task)
+    fault_printf("\n[FAULT] %s from user mode with NO CURRENT TASK on cpu %d — "
+                 "scheduler-state corruption (pc=0x%016lx addr=0x%016lx "
+                 "cause=0x%016lx)\n",
+                 desc, ci ? (int)ci->cpu_id : -1, fault_pc, fault_addr,
+                 syndrome);
 
   return NULL; /* kernel fault: caller dumps registers and panics */
 }

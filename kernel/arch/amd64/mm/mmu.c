@@ -199,8 +199,14 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
    * Covers PCI devices, LAPIC, IOAPIC, and upper BIOS ranges.
    * NOTE(AMMU-06): ~8192 individual 4KB map calls per PGD — inefficient. */
   for (uint64_t addr = 0xFE000000UL; addr < 0xFFFFFFFFUL; addr += 4096) {
-    arch_vmm_map(virt_to_phys(pgd), (uint64_t)phys_to_virt(addr), addr,
-                 PAGE_DEVICE);
+    /* A failure here means the page-table allocator is exhausted during boot.
+     * This used to be dropped: the window came out partially mapped and the
+     * first driver to touch the missing page faulted somewhere unrelated, with
+     * nothing pointing back here.  It is unrecoverable and boot-critical, so it
+     * says so at the point it happens. */
+    if (arch_vmm_map(virt_to_phys(pgd), (uint64_t)phys_to_virt(addr), addr,
+                     PAGE_DEVICE) != 0)
+      panic("arch_vmm_map_mmio: cannot map MMIO page 0x%lx", addr);
   }
 
   /* Identity-map the low 2MB into every KERNEL PGD (this function is
@@ -213,7 +219,11 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
    *    reads the trampoline blob via its low link address.
    * NX is safe: APs execute the trampoline in real mode (paging off) and
    * then on boot_pml4, never through these kernel_pgd entries. */
-  arch_vmm_map_range(virt_to_phys(pgd), 0, 0, 0x200000, PAGE_KERNEL);
+  /* The SMP trampoline lives in this window.  Dropping the result meant a
+   * failure surfaced later as secondary CPUs that never came online, which
+   * looks like an SMP bug rather than a mapping one. */
+  if (arch_vmm_map_range(virt_to_phys(pgd), 0, 0, 0x200000, PAGE_KERNEL) != 0)
+    panic("arch_vmm_map_mmio: cannot identity-map the low 2MB (SMP trampoline)");
 }
 
 /*
@@ -233,8 +243,15 @@ int arch_vmm_map_device(uint64_t base, uint64_t size) {
   uint64_t start = base & ~0xFFFUL;
   uint64_t end = (base + size + 0xFFFUL) & ~0xFFFUL;
   for (uint64_t a = start; a < end; a += 4096) {
-    arch_vmm_map(virt_to_phys(kernel_pgd), (uint64_t)phys_to_virt(a), a,
-                 PAGE_DEVICE);
+    /* Runtime, and recoverable: a BAR that cannot be mapped is a device the
+     * driver must be told about, not a dead kernel.  Previously the loop
+     * returned 0 whatever happened, so the caller mapped nothing and believed
+     * it had. */
+    if (arch_vmm_map(virt_to_phys(kernel_pgd), (uint64_t)phys_to_virt(a), a,
+                     PAGE_DEVICE) != 0) {
+      arch_tlb_flush_all();
+      return -ENOMEM;
+    }
   }
   arch_tlb_flush_all();
   return 0;

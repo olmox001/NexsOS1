@@ -189,7 +189,13 @@ static inline uint64_t pfn_to_phys(uint64_t pfn) { return pfn << PAGE_SHIFT; }
 
 /* Statistics */
 uint64_t pmm_get_free_pages(void);
+/* pmm_get_total_pages: the metadata SPAN (page_array/bitmap bound).  Use it to
+ * validate a PFN, never to report how much memory the machine has — on amd64
+ * the span includes the sub-4GB PCI/MMIO hole. */
 uint64_t pmm_get_total_pages(void);
+/* pmm_get_usable_pages: RAM that actually exists (sum of the usable regions).
+ * THIS is "total memory" for any report or budget; see MM-PMM-09 (#94). */
+uint64_t pmm_get_usable_pages(void);
 void pmm_dump_stats(void);
 
 /* Instrumentation (perf brief §1; surfaced via OS1_sys_stats).

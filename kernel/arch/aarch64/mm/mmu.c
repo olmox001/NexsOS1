@@ -509,7 +509,15 @@ int arch_vmm_map_device(uint64_t base, uint64_t size) {
   uint64_t start = base & ~0xFFFUL;
   uint64_t end = (base + size + 0xFFFUL) & ~0xFFFUL;
   for (uint64_t a = start; a < end; a += 4096) {
-    arch_vmm_map(pgd, (uint64_t)phys_to_virt(a), a, PAGE_DEVICE);
+    /* Recoverable and runtime: a BAR that cannot be mapped is a device the
+     * driver must be told about, not a dead kernel.  The loop returned 0
+     * whatever happened, so a caller mapped nothing and believed it had --
+     * the SAME defect as the amd64 twin in arch/amd64/mm/mmu.c, which is
+     * exactly why the two are fixed identically. */
+    if (arch_vmm_map(pgd, (uint64_t)phys_to_virt(a), a, PAGE_DEVICE) != 0) {
+      arch_tlb_flush_all();
+      return -ENOMEM;
+    }
   }
   arch_tlb_flush_all();
   return 0;

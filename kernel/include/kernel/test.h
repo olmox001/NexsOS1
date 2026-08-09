@@ -28,12 +28,20 @@ extern volatile int ktest_test_failed;
     void test_name(void)
 
 /* Assertions */
+/* KASSERT — wrapped in do{}while(0) because the bare `if` it used to be is a
+ * dangling-else trap: `if (c) KASSERT(x); else y;` bound the else to KASSERT's
+ * own if, silently inverting the test.  The compiler cannot warn about a macro
+ * that expands to a syntactically valid wrong thing, which is exactly the class
+ * nx_contract.h exists for. */
 #define KASSERT(cond) \
-    if (!(cond)) { \
-        printk("[KTEST] FAIL: %s:%d: Assertion failed: %s\n", __FILE__, __LINE__, #cond); \
-        ktest_test_failed = 1; \
-        return; \
-    }
+    do { \
+        if (!(cond)) { \
+            printk("[KTEST] FAIL: %s:%d: Assertion failed: %s\n", __FILE__, \
+                   __LINE__, #cond); \
+            ktest_test_failed = 1; \
+            return; \
+        } \
+    } while (0)
 
 #define KASSERT_EQ(a, b) KASSERT((a) == (b))
 

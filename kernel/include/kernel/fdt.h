@@ -1,6 +1,7 @@
 #ifndef _KERNEL_FDT_H
 #define _KERNEL_FDT_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 #include <kernel/pmm.h>
 
@@ -32,8 +33,8 @@ struct fdt_reserve_entry {
 };
 
 /* API */
-int fdt_init(uintptr_t fdt_addr);
-int fdt_get_mem_regions(struct mem_region *regions, size_t max_count, size_t *count);
+int fdt_init(uintptr_t fdt_addr) NX_MUST_USE;
+int fdt_get_mem_regions(struct mem_region *regions, size_t max_count, size_t *count) NX_MUST_USE;
 uint32_t fdt_count_cpus(void);
 uintptr_t fdt_find_in_memory(uintptr_t start, uintptr_t end);
 #endif /* _KERNEL_FDT_H */

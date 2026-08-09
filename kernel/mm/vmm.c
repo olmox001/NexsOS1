@@ -264,7 +264,16 @@ uint64_t vmm_get_phys(uint64_t *pgd, uint64_t virt) {
  * hardware; amd64 with a LAPIC IPI round (see arch/amd64/mm/tlb.c).
  */
 void vmm_unmap_page(uint64_t *pgd, uint64_t virt) {
-  arch_vmm_unmap(virt_to_phys(pgd), virt);
+  /* The contract stated directly above is that after this returns "the caller
+   * may safely recycle the backing frame".  If the unmap FAILED, that promise
+   * is false: the caller hands a still-mapped page back to the PMM, an idle
+   * core hands it straight to the next allocation, and two owners write to one
+   * frame.  Continuing past a broken invariant is worse than stopping on it,
+   * because the corruption surfaces somewhere with no path back to here. */
+  if (arch_vmm_unmap(virt_to_phys(pgd), virt) != 0)
+    panic("vmm_unmap_page: unmap of VA 0x%lx failed — the frame cannot be "
+          "recycled safely",
+          virt);
 }
 
 /*
@@ -372,8 +381,12 @@ void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size) {
     if (ro_e > cur && ro_e < next)
       next = ro_e;
 
-    arch_vmm_map_range(virt_to_phys(pgd), (uint64_t)phys_to_virt(cur), cur,
-                       next - cur, flags);
+    /* Boot-time direct map: a failure leaves a hole in the kernel's own view
+     * of RAM, and the first access through it faults with nothing pointing
+     * back to the mapping that was never made. */
+    if (arch_vmm_map_range(virt_to_phys(pgd), (uint64_t)phys_to_virt(cur), cur,
+                           next - cur, flags) != 0)
+      panic("vmm: direct map failed for PA 0x%lx..0x%lx", cur, next);
     cur = next;
   }
 }

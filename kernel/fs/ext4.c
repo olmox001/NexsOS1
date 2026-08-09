@@ -36,7 +36,21 @@
  *     (EXT4-12/13 made explicit instead of silently misreading);
  *   - unknown RO_COMPAT features (e.g. metadata_csum, gdt_csum) force a
  *     read-only mount: our writer maintains no checksums, so writing would
- *     corrupt the image's self-consistency.
+ *     corrupt the image's self-consistency;
+ *   - a GDT that points its block bitmap / inode bitmap / inode table
+ *     outside the partition is refused outright (EXT4-STRUCT-01): there is
+ *     no bitmap to self-heal against in that case (see
+ *     ext4_repair_structural_sanity below);
+ *   - once the GDT itself checks out, the block bitmap and inode bitmap are
+ *     SELF-HEALED rather than rejected: any of the fixed metadata blocks
+ *     (superblock/GDT/bitmaps/inode table) or reserved inodes (1..10, root
+ *     = 2) found marked FREE are corrected in place and persisted
+ *     (EXT4-STRUCT-01) — this is what lets a save corrupted by an unclean
+ *     shutdown mount cleanly again instead of needing a reformat;
+ *   - the free-block/free-inode COUNTERS are separately reconciled against
+ *     the (now-repaired) bitmaps (ext4_verify_free_count, Fase 1) so a
+ *     stale counter can't later trip ext4_alloc_block's own consistency
+ *     check.
  *
  * Key invariants:
  *   - fs->lock serialises block allocation (alloc block bitmap r-m-w, GDT
@@ -57,6 +71,21 @@
  *   EXT4-15  (W1 MISSING) Buffer cache bypassed; all I/O direct to virtio.
  *            (EXT4-11 resolved: per-loop interior-block cache, see
  *            struct ext4_icache.)
+ *   EXT4-STRUCT-02 (still open) Structural self-heal (below) recovers the
+ *            FIXED metadata region and the RESERVED inode range only. It
+ *            cannot detect or repair corruption inside a file's own data
+ *            blocks or extent/indirect metadata (no checksums exist in this
+ *            format to tell "wrong content" from "right content") — that
+ *            would need per-block checksums or the Merkle root mkdisk.c
+ *            already computes at image-build time (§4bis) to be threaded
+ *            through to a runtime verifier, which does not exist yet.
+ *   EXT4-GROW-01 (explicitly out of scope) This driver and tools/mkdisk.c
+ *            are both single-block-group by design (one 4 KiB block bitmap
+ *            = 32768 blocks = 128 MiB ceiling, see MKDISK-BITMAP-01 in
+ *            mkdisk.c). Runtime partition resize and multi-group support
+ *            are a different, much larger change (new on-disk layout, GDT
+ *            with N descriptors, cross-group allocation) and are not
+ *            attempted here.
  */
 #include <kernel/block.h>
 #include <kernel/buffer.h>
@@ -73,10 +102,27 @@ struct ext4_fs {
   uint64_t part_start_lba; /* absolute LBA of the partition's first sector */
   uint32_t inode_size;     /* on-disk inode record size (sb.s_inode_size) */
   int read_only;           /* set at mount for unknown RO_COMPAT features */
+  uint32_t n_groups;       /* number of block groups (MKDISK-MULTIGROUP-01) */
+  uint32_t blocks_per_group; /* s_blocks_per_group from superblock */
   struct ext4_superblock sb;
-  struct ext4_group_desc bg; /* group 0 descriptor (single-group images) */
+  struct ext4_group_desc *bgs; /* [n_groups] kmalloc'd array; NULL until mount */
   spinlock_t lock;
 };
+
+/* Mirrors tools/mkdisk.c INODE_TABLE_BLOCKS — the fixed metadata region this
+ * driver's own writer lays out, and what ext4_repair_structural_sanity below
+ * uses to know which blocks must always read as "used" in a sane image. */
+#define EXT4_INODE_TABLE_BLOCKS 64
+
+/* Forward declaration: ext4_sync_bg_sb is DEFINED later in this file
+ * (alongside the create/remove helpers, NOTE(M4.5-FS-WRITE)) but is needed
+ * earlier by ext4_verify_free_count and ext4_repair_structural_sanity
+ * (mount-time recovery, Fase 1 / Fase 1b) and by ext4_alloc_inode/
+ * ext4_free_block/ext4_free_inode.  Without this prototype the compiler
+ * synthesises an implicit int-returning declaration at first use, which then
+ * conflicts with the real "static void(struct ext4_fs *)" definition and
+ * fails the build under -Werror. */
+static void ext4_sync_bg_sb(struct ext4_fs *fs);
 
 /*
  * Helper: Read/Write Sectors (absolute LBA; thin virtio wrappers).
@@ -91,121 +137,253 @@ static int ext4_bwrite(uint64_t sector, uint32_t count, void *buf) {
 }
 
 /*
- * ext4_alloc_block - allocate one free block from block group 0.
+ * ext4_alloc_block - allocate one free block from any block group.
  *
- * Algorithm:
- *   1. Read the group-0 block bitmap (one 4096-byte block) into a heap buffer.
- *   2. Under fs->lock: scan for the first clear bit (LSB-first per byte),
- *      set it, write the bitmap back.
- *   3. Decrement bg/sb free counters and write both back.
- *   4. Zero the new block on disk outside the lock (ownership established).
- *
- * Returns: absolute block number on success, 0 on failure (OOM, bitmap
- * inconsistency, or I/O error).
+ * Multi-group (MKDISK-MULTIGROUP-01): scans groups in order, picks the first
+ * group with bg_free_blocks_count_lo > 0, scans its bitmap, sets the bit,
+ * writes the bitmap back, decrements the per-group and superblock counters,
+ * syncs the GDT, and returns the ABSOLUTE block number (group * blocks_per_group
+ * + bit_in_group). Returns 0 on full-partition failure.
  */
 static uint32_t ext4_alloc_block(struct ext4_fs *fs) {
-  if (fs->bg.bg_free_blocks_count_lo == 0) {
-    pr_err("%s", "Ext4: No free blocks in Group 0!\n");
-    return 0;
-  }
+  for (uint32_t g = 0; g < fs->n_groups; g++) {
+    if (fs->bgs[g].bg_free_blocks_count_lo == 0)
+      continue;
 
-  uint64_t bitmap_blk = fs->bg.bg_block_bitmap_lo;
-  uint8_t *bitmap = kmalloc(4096);
-  if (!bitmap)
-    return 0;
+    uint64_t bitmap_blk = fs->bgs[g].bg_block_bitmap_lo;
+    uint8_t *bitmap = kmalloc(4096);
+    if (!bitmap)
+      return 0;
 
-  uint64_t lock_flags;
-  /* Lock before the bitmap read to serialise the whole read-modify-write
-   * cycle; locking only the bit-set would let two allocators claim one bit. */
-  spin_lock_irqsave(&fs->lock, &lock_flags);
+    uint64_t lock_flags;
+    spin_lock_irqsave(&fs->lock, &lock_flags);
 
-  if (ext4_bread(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
-    spin_unlock_irqrestore(&fs->lock, lock_flags);
-    kfree(bitmap);
-    return 0;
-  }
+    if (ext4_bread(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+      spin_unlock_irqrestore(&fs->lock, lock_flags);
+      kfree(bitmap);
+      continue; /* I/O error on this group; try next */
+    }
 
-  /* Scan 32768 bits, LSB-first within each byte. */
-  uint32_t block_in_group = 0;
-  int found = 0;
-  for (int i = 0; i < 4096; i++) {
-    if (bitmap[i] != 0xFF) {
+    /* Scan 32768 bits, LSB-first within each byte. */
+    uint32_t bit_in_group = 0;
+    int found = 0;
+    for (int i = 0; i < 4096 && !found; i++) {
+      if (bitmap[i] == 0xFF)
+        continue;
       for (int bit = 0; bit < 8; bit++) {
         if (!((bitmap[i] >> bit) & 1)) {
-          bitmap[i] |= (1 << bit);
-          block_in_group = (i * 8) + bit;
+          bitmap[i] |= (uint8_t)(1 << bit);
+          bit_in_group = (uint32_t)(i * 8 + bit);
           found = 1;
           break;
         }
       }
     }
-    if (found)
-      break;
-  }
 
-  if (!found) {
-    pr_err("%s", "Ext4: Bitmap check failed (inconsistent with free_count)\n");
-    spin_unlock_irqrestore(&fs->lock, lock_flags);
+    if (!found) {
+      /* Descriptor said free > 0 but bitmap is full: mismatch.
+       * ext4_verify_free_count corrects at mount; if it still happens at
+       * runtime, log it and skip this group rather than returning 0. */
+      pr_err("Ext4: group %u bitmap/free_count mismatch at alloc\n", g);
+      spin_unlock_irqrestore(&fs->lock, lock_flags);
+      kfree(bitmap);
+      continue;
+    }
+
+    if (ext4_bwrite(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+      pr_err("Ext4: group %u block bitmap write failed\n", g);
+      spin_unlock_irqrestore(&fs->lock, lock_flags);
+      kfree(bitmap);
+      return 0;
+    }
     kfree(bitmap);
-    return 0;
-  }
 
-  if (ext4_bwrite(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
-    pr_err("%s", "Ext4: Failed to update Block Bitmap\n");
+    fs->bgs[g].bg_free_blocks_count_lo--;
+    fs->sb.s_free_blocks_count_lo--;
+
+    ext4_sync_bg_sb(fs); /* write GDT + superblock */
     spin_unlock_irqrestore(&fs->lock, lock_flags);
+
+    uint32_t abs_block = g * fs->blocks_per_group + bit_in_group;
+
+    /* Zero the new block outside the lock (ownership established). */
+    uint8_t *zero_buf = kmalloc(4096);
+    if (zero_buf) {
+      memset(zero_buf, 0, 4096);
+      ext4_bwrite(fs->part_start_lba + ((uint64_t)abs_block * 8), 8, zero_buf);
+      kfree(zero_buf);
+    }
+
+    return abs_block;
+  }
+
+  pr_err("%s", "Ext4: No free blocks in any group!\n");
+  return 0;
+}
+
+/*
+ * ext4_verify_free_count - per-group mount-time inline fsck.
+ * Corrects bg_free_blocks_count_lo if it disagrees with the bitmap.
+ * Must run AFTER ext4_repair_structural_sanity (see that function's comment).
+ * Runs for every group.
+ */
+static void ext4_verify_free_count(struct ext4_fs *fs) {
+  for (uint32_t g = 0; g < fs->n_groups; g++) {
+    uint64_t bitmap_blk = fs->bgs[g].bg_block_bitmap_lo;
+    uint8_t *bitmap = kmalloc(4096);
+    if (!bitmap)
+      continue;
+    if (ext4_bread(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+      kfree(bitmap);
+      continue;
+    }
+
+    uint32_t free_in_bitmap = 0;
+    for (int i = 0; i < 4096; i++) {
+      uint8_t b = (uint8_t)~bitmap[i];
+      while (b) {
+        free_in_bitmap++;
+        b &= (uint8_t)(b - 1);
+      }
+    }
     kfree(bitmap);
-    return 0;
+
+    if (free_in_bitmap != (uint32_t)fs->bgs[g].bg_free_blocks_count_lo) {
+      pr_warn("Ext4: group %u free_count mismatch: descriptor=%u bitmap=%u; "
+              "correcting (unclean shutdown?)\n",
+              g, (unsigned)fs->bgs[g].bg_free_blocks_count_lo, free_in_bitmap);
+      fs->bgs[g].bg_free_blocks_count_lo = (uint16_t)free_in_bitmap;
+      ext4_sync_bg_sb(fs);
+    }
   }
-  kfree(bitmap);
+}
 
-  fs->bg.bg_free_blocks_count_lo--;
-  fs->sb.s_free_blocks_count_lo--;
+/*
+ * ext4_repair_structural_sanity - per-group mount-time self-heal.
+ * For group 0: repair block bitmap (metadata region) + inode bitmap (reserved).
+ * For groups 1+: repair only the per-group metadata blocks (bitmap + inode_bitmap
+ * + dummy inode_table = first GN_META_BLOCKS blocks of the group).
+ */
+#define GN_META_BLOCKS 3  /* groups 1+: block-bmap + inode-bmap + dummy itable */
+static int ext4_repair_structural_sanity(struct ext4_fs *fs) {
+  uint32_t total_blocks = fs->sb.s_blocks_count_lo;
 
-  /* Write-back group descriptor 0 (32 bytes at the head of the GDT sector). */
-  uint8_t *bg_buf = kmalloc(512);
-  if (bg_buf && ext4_bread(fs->part_start_lba + 8, 1, bg_buf) == 0) {
-    memcpy(bg_buf, &fs->bg, sizeof(fs->bg));
-    ext4_bwrite(fs->part_start_lba + 8, 1, bg_buf);
+  for (uint32_t g = 0; g < fs->n_groups; g++) {
+    struct ext4_group_desc *bg = &fs->bgs[g];
+
+    if (bg->bg_block_bitmap_lo == 0 ||
+        bg->bg_block_bitmap_lo >= total_blocks ||
+        bg->bg_inode_bitmap_lo == 0 ||
+        bg->bg_inode_bitmap_lo >= total_blocks ||
+        bg->bg_inode_table_lo == 0) {
+      pr_err("Ext4: group %u GDT pointers out of range "
+             "(bitmap=%u inode_bitmap=%u inode_table=%u) -- skipping repair\n",
+             g, bg->bg_block_bitmap_lo, bg->bg_inode_bitmap_lo,
+             bg->bg_inode_table_lo);
+      if (g == 0)
+        return -1; /* group 0 is unrecoverable without correct pointers */
+      continue;
+    }
+
+    /* Determine which blocks must be marked used in this group's bitmap. */
+    uint64_t bitmap_blk = bg->bg_block_bitmap_lo;
+    uint8_t *bitmap = kmalloc(4096);
+    if (!bitmap)
+      return -1;
+    if (ext4_bread(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+      kfree(bitmap);
+      if (g == 0) return -1;
+      continue;
+    }
+
+    uint32_t meta_end;
+    if (g == 0) {
+      /* Group 0: superblock(0), GDT(1), block-bmap(2), inode-bmap(3),
+       * inode-table(4..67) = BLK_DATA_START blocks of overhead. */
+      meta_end = bg->bg_inode_table_lo + EXT4_INODE_TABLE_BLOCKS;
+    } else {
+      /* Groups 1+: block-bmap(0), inode-bmap(1), dummy-itable(2) = 3 blocks,
+       * all at the START of this group.  We repair bits 0..GN_META_BLOCKS-1
+       * within the group's own bitmap. */
+      meta_end = GN_META_BLOCKS; /* bits within this group's bitmap */
+    }
+
+    uint32_t repaired = 0;
+    for (uint32_t b = 0; b < meta_end; b++) {
+      uint32_t byte = b / 8, bit = b % 8;
+      if (byte >= 4096) break;
+      if (!((bitmap[byte] >> bit) & 1)) {
+        bitmap[byte] |= (uint8_t)(1 << bit);
+        repaired++;
+      }
+    }
+
+    if (repaired > 0) {
+      pr_warn("Ext4: group %u: repaired %u metadata block(s) wrongly free\n",
+              g, repaired);
+      if (ext4_bwrite(fs->part_start_lba + (bitmap_blk * 8), 8, bitmap) != 0) {
+        pr_err("Ext4: group %u: failed to write back repaired block bitmap\n", g);
+        kfree(bitmap);
+        if (g == 0) return -1;
+        continue;
+      }
+      if (bg->bg_free_blocks_count_lo >= repaired)
+        bg->bg_free_blocks_count_lo -= (uint16_t)repaired;
+      else
+        bg->bg_free_blocks_count_lo = 0;
+      if (fs->sb.s_free_blocks_count_lo >= repaired)
+        fs->sb.s_free_blocks_count_lo -= repaired;
+      else
+        fs->sb.s_free_blocks_count_lo = 0;
+    }
+    kfree(bitmap);
+
+    /* Group 0 inode bitmap: reserved inodes 1..10 (root = 2). */
+    if (g == 0) {
+      uint64_t ibitmap_blk = bg->bg_inode_bitmap_lo;
+      uint8_t *ibitmap = kmalloc(4096);
+      if (!ibitmap) return -1;
+      if (ext4_bread(fs->part_start_lba + (ibitmap_blk * 8), 8, ibitmap) != 0) {
+        kfree(ibitmap); return -1;
+      }
+      uint32_t repaired_ino = 0;
+      for (uint32_t ino = 1; ino <= 10; ino++) {
+        uint32_t bit = ino - 1, byte = bit / 8, b = bit % 8;
+        if (!((ibitmap[byte] >> b) & 1)) {
+          ibitmap[byte] |= (uint8_t)(1 << b);
+          repaired_ino++;
+        }
+      }
+      if (repaired_ino > 0) {
+        pr_warn("Ext4: repaired %u reserved inode(s) wrongly free\n", repaired_ino);
+        ext4_bwrite(fs->part_start_lba + (ibitmap_blk * 8), 8, ibitmap);
+        if (bg->bg_free_inodes_count_lo >= repaired_ino)
+          bg->bg_free_inodes_count_lo -= (uint16_t)repaired_ino;
+        else
+          bg->bg_free_inodes_count_lo = 0;
+        if (fs->sb.s_free_inodes_count >= repaired_ino)
+          fs->sb.s_free_inodes_count -= repaired_ino;
+        else
+          fs->sb.s_free_inodes_count = 0;
+      }
+      kfree(ibitmap);
+    }
   }
-  if (bg_buf)
-    kfree(bg_buf);
 
-  /* Write-back superblock (1016 bytes at byte offset 1024). */
-  uint8_t *sb_buf = kmalloc(4096);
-  if (sb_buf && ext4_bread(fs->part_start_lba + 2, 2, sb_buf) == 0) {
-    memcpy(sb_buf, &fs->sb, sizeof(fs->sb));
-    ext4_bwrite(fs->part_start_lba + 2, 2, sb_buf);
-  }
-  if (sb_buf)
-    kfree(sb_buf);
-  spin_unlock_irqrestore(&fs->lock, lock_flags);
-
-  /* Zero the new block outside the lock: ownership is established (bit set
-   * and persisted), no concurrent allocator can claim it. */
-  uint8_t *zero_buf = kmalloc(4096);
-  if (zero_buf) {
-    memset(zero_buf, 0, 4096);
-    ext4_bwrite(fs->part_start_lba + (block_in_group * 8), 8, zero_buf);
-    kfree(zero_buf);
-  }
-
-  return block_in_group;
+  ext4_sync_bg_sb(fs);
+  return 0;
 }
 
 /*
  * get_inode_struct - read inode 'ino' from the group-0 inode table.
- *
- * Copies sizeof(struct ext4_inode) == 128 bytes.  With inode_size 128 or 256
- * the record offset within its 512-byte sector is always a multiple of 128
- * with 128 bytes available before the boundary, so a single-sector read never
- * straddles (EXT4-10 resolved by construction; inode_size is validated at
- * mount to be a multiple of 128).
+ * Multi-group: all inodes are in group 0 (bgs[0].bg_inode_table_lo).
  */
 static int get_inode_struct(struct ext4_fs *fs, uint32_t ino,
                             struct ext4_inode *inode_out) {
-  uint64_t table_blk = fs->bg.bg_inode_table_lo;
+  uint64_t table_blk = fs->bgs[0].bg_inode_table_lo;
   uint64_t table_byte_offset = table_blk * 4096;
-  uint64_t inode_offset = table_byte_offset + (uint64_t)(ino - 1) * fs->inode_size;
+  uint64_t inode_offset =
+      table_byte_offset + (uint64_t)(ino - 1) * fs->inode_size;
 
   uint64_t sector = fs->part_start_lba + (inode_offset / 512);
   uint32_t sector_off = inode_offset % 512;
@@ -224,14 +402,14 @@ static int get_inode_struct(struct ext4_fs *fs, uint32_t ino,
 }
 
 /*
- * ext4_update_inode - read-modify-write inode 'ino' back to the table.
- * Serialised by fs->lock (shared with the allocator's metadata writes).
+ * ext4_update_inode - read-modify-write inode 'ino' back to the group-0 table.
  */
 static int ext4_update_inode(struct ext4_fs *fs, uint32_t ino,
                              struct ext4_inode *inode) {
-  uint64_t table_blk = fs->bg.bg_inode_table_lo;
+  uint64_t table_blk = fs->bgs[0].bg_inode_table_lo;
   uint64_t table_byte_offset = table_blk * 4096;
-  uint64_t inode_offset = table_byte_offset + (uint64_t)(ino - 1) * fs->inode_size;
+  uint64_t inode_offset =
+      table_byte_offset + (uint64_t)(ino - 1) * fs->inode_size;
 
   uint64_t sector = fs->part_start_lba + (inode_offset / 512);
   uint32_t sector_off = inode_offset % 512;
@@ -291,8 +469,8 @@ static void icache_invalidate(struct ext4_icache *c) {
 
 /* Return the contents of interior block 'blk' via the level slot, reading
  * from disk only on a cache miss.  NULL on OOM or I/O error. */
-static uint8_t *icache_get(struct ext4_fs *fs, struct ext4_icache *c,
-                           int level, uint64_t blk) {
+static uint8_t *icache_get(struct ext4_fs *fs, struct ext4_icache *c, int level,
+                           uint64_t blk) {
   if (level > 1)
     level = 1;
   if (c->buf[level] && c->blk[level] == blk)
@@ -375,9 +553,9 @@ static int ext4_extent_lookup(struct ext4_fs *fs,
           unwritten ? ex[i].ee_len - EXT4_EXT_UNWRITTEN_LEN : ex[i].ee_len;
       if (blk >= start && blk < start + len) {
         if (!unwritten)
-          *phys_out = (ex[i].ee_start_lo |
-                       ((uint64_t)ex[i].ee_start_hi << 32)) +
-                      (blk - start);
+          *phys_out =
+              (ex[i].ee_start_lo | ((uint64_t)ex[i].ee_start_hi << 32)) +
+              (blk - start);
         break; /* unwritten: leave *phys_out = 0 → reads as zeros */
       }
     }
@@ -445,8 +623,7 @@ static int ext4_bmap(struct ext4_fs *fs, const struct ext4_inode *inode,
  */
 static int ext4_read_data(struct ext4_fs *fs, const struct ext4_inode *inode,
                           uint64_t offset, uint8_t *buf, uint32_t size) {
-  uint64_t file_size =
-      inode->i_size_lo | ((uint64_t)inode->i_size_high << 32);
+  uint64_t file_size = inode->i_size_lo | ((uint64_t)inode->i_size_high << 32);
   if (size == 0 || buf == NULL)
     return 0;
   if (offset >= file_size)
@@ -597,7 +774,8 @@ static int ext4_find_ino(struct ext4_fs *fs, const char *path,
 /*
  * ext4_mount - probe + mount the partition (fs_ops.mount).
  * Quiet on "not ext4" (the VFS probes every partition); loud on recognised-
- * but-unsupported images.  See the file header for the enforcement matrix.
+ * but-unsupported images. Self-heals recoverable bitmap/counter corruption.
+ * See the file header for the full enforcement/repair matrix.
  */
 static int ext4_mount(struct vfs_mount *mnt, struct partition *p) {
   uint8_t *k_buf = kmalloc(4096);
@@ -642,23 +820,12 @@ static int ext4_mount(struct vfs_mount *mnt, struct partition *p) {
     reject = 1;
   }
 
-  /* Single-group images only: group-0 GDT/bitmaps/inode-table are the only
-   * metadata this driver reads (EXT4-12/13 enforced instead of misreading). */
-  uint32_t bpg = fs->sb.s_blocks_per_group ? fs->sb.s_blocks_per_group : 32768;
-  if (!reject &&
-      (fs->sb.s_blocks_count_hi != 0 || fs->sb.s_blocks_count_lo > bpg)) {
-    pr_err("Ext4: multi-group image (%d blocks, %d per group) unsupported\n",
-           fs->sb.s_blocks_count_lo, bpg);
-    reject = 1;
-  }
-
   /* Inode record size: rev0 fixes it at 128; rev1+ reads s_inode_size.
    * Must be a multiple of 128 ≥ sizeof(struct ext4_inode) so table records
    * never straddle a 512-byte sector read (see get_inode_struct). */
   fs->inode_size = (fs->sb.s_rev_level == 0) ? 128 : fs->sb.s_inode_size;
-  if (!reject &&
-      (fs->inode_size < 128 || fs->inode_size > 4096 ||
-       (fs->inode_size % 128) != 0)) {
+  if (!reject && (fs->inode_size < 128 || fs->inode_size > 4096 ||
+                  (fs->inode_size % 128) != 0)) {
     pr_err("Ext4: invalid inode size %d\n", fs->inode_size);
     reject = 1;
   }
@@ -678,19 +845,63 @@ static int ext4_mount(struct vfs_mount *mnt, struct partition *p) {
     fs->read_only = 1;
   }
 
-  /* Group descriptor 0: block 1 = byte 4096 = sector 8. */
-  if (block_read(k_buf, p->start_lba + 8, 1) != 0) {
-    pr_err("%s", "Ext4: Failed to read GDT\n");
-    kfree(k_buf);
-    kfree(fs);
-    return -1;
-  }
-  memcpy(&fs->bg, k_buf, sizeof(fs->bg));
   kfree(k_buf);
 
   fs->part_start_lba = p->start_lba;
   spin_lock_init(&fs->lock);
   mnt->fs_private = fs;
+  /* --- Multi-group setup (MKDISK-MULTIGROUP-01) ---
+   * s_blocks_per_group tells us how many groups the image has.
+   * Allocate and populate the bgs[] array from the on-disk GDT (block 1). */
+  uint32_t bpg = fs->sb.s_blocks_per_group;
+  if (bpg == 0) bpg = 8 * 4096; /* legacy single-group images had bpg==total_blocks */
+  fs->blocks_per_group = bpg;
+
+  uint32_t total_blks = fs->sb.s_blocks_count_lo;
+  uint32_t n_grps = (total_blks + bpg - 1) / bpg;
+  if (n_grps == 0) n_grps = 1;
+  if (n_grps > 128) n_grps = 128; /* cap at MAX_GROUPS */
+  fs->n_groups = n_grps;
+
+  fs->bgs = kmalloc(n_grps * sizeof(struct ext4_group_desc));
+  if (!fs->bgs) {
+    pr_err("%s", "Ext4: OOM allocating group descriptors\n");
+    mnt->fs_private = NULL;
+    kfree(fs);
+    return -1;
+  }
+
+  /* Read the GDT block (block 1 = sectors 8..15). */
+  uint8_t *gdt_buf = kmalloc(4096);
+  if (!gdt_buf) {
+    kfree(fs->bgs);
+    mnt->fs_private = NULL;
+    kfree(fs);
+    return -1;
+  }
+  if (ext4_bread(fs->part_start_lba + 8, 8, gdt_buf) != 0) {
+    pr_err("%s", "Ext4: failed to read GDT\n");
+    kfree(gdt_buf);
+    kfree(fs->bgs);
+    mnt->fs_private = NULL;
+    kfree(fs);
+    return -1;
+  }
+  memcpy(fs->bgs, gdt_buf, n_grps * sizeof(struct ext4_group_desc));
+  kfree(gdt_buf);
+
+  pr_info("Ext4: %u block group(s), %u blocks/group\n", n_grps, bpg);
+
+  /* Mount-time self-heal (order: structural repair THEN free-count correction). */
+  if (ext4_repair_structural_sanity(fs) != 0) {
+    pr_err("%s", "Ext4: structural corruption could not be repaired, "
+                 "refusing to mount\n");
+    kfree(fs->bgs);
+    mnt->fs_private = NULL;
+    kfree(fs);
+    return -1;
+  }
+  ext4_verify_free_count(fs);
 
   pr_info("Ext4: Mounted. Vol=%s, Inodes=%d, features incompat=0x%x%s\n",
           fs->sb.s_volume_name, fs->sb.s_inodes_count,
@@ -762,8 +973,7 @@ static int ext4_extent_can_append(const struct ext4_inode *inode,
  */
 static void ext4_extent_do_append(struct ext4_inode *inode, uint32_t logical,
                                   uint32_t phys) {
-  struct ext4_extent_header *eh =
-      (struct ext4_extent_header *)inode->i_block;
+  struct ext4_extent_header *eh = (struct ext4_extent_header *)inode->i_block;
   struct ext4_extent *ex = (struct ext4_extent *)(eh + 1);
 
   if (eh->eh_entries > 0) {
@@ -809,8 +1019,8 @@ static int ext4_write(struct vfs_mount *mnt, const char *path,
   if (ext4_find_ino(fs, path, &ino) != 0) {
     /* A missing file is a NORMAL negative result of a userland open(), not a
      * kernel error — log at debug so a process probing paths (or the stress
-     * file lane) cannot spam the console (perf §1; Linux likewise never printk's
-     * on ENOENT). */
+     * file lane) cannot spam the console (perf §1; Linux likewise never
+     * printk's on ENOENT). */
     pr_debug("Ext4: File not found: %s\n", path);
     return -1;
   }
@@ -913,15 +1123,13 @@ static int ext4_write(struct vfs_mount *mnt, const char *path,
 
     /* Read-modify-write for partial blocks. */
     if (block_off != 0 || to_copy != 4096) {
-      if (ext4_bread(fs->part_start_lba + (phys_block * 8), 8, block_buf) !=
-          0)
+      if (ext4_bread(fs->part_start_lba + (phys_block * 8), 8, block_buf) != 0)
         goto fail;
     }
 
     memcpy(block_buf + block_off, buf + bytes_written, to_copy);
 
-    if (ext4_bwrite(fs->part_start_lba + (phys_block * 8), 8, block_buf) !=
-        0)
+    if (ext4_bwrite(fs->part_start_lba + (phys_block * 8), 8, block_buf) != 0)
       goto fail;
 
     bytes_written += to_copy;
@@ -942,7 +1150,8 @@ static int ext4_write(struct vfs_mount *mnt, const char *path,
    *
    * Blocks past the new EOF are not freed here (there is no truncate primitive
    * yet): they are stale-but-unreachable (reads stop at i_size, a later write
-   * reuses them), so this is correct on read, with only a transient space cost. */
+   * reuses them), so this is correct on read, with only a transient space cost.
+   */
   if (offset == 0)
     inode.i_size_lo = current_offset;
   else if (current_offset > inode.i_size_lo)
@@ -1039,17 +1248,21 @@ static int ext4_list(struct vfs_mount *mnt, const char *path, char *buf,
 /* ------------------------------------------------------------------ */
 
 /*
- * ext4_sync_bg_sb - write back the in-memory group descriptor + superblock.
- * Caller holds fs->lock (same write-back pattern as ext4_alloc_block).
+ * ext4_sync_bg_sb - write back all in-memory group descriptors + superblock.
+ * Multi-group: the full GDT (n_groups * 32 bytes) fits in one 4 KiB block
+ * (MAX_GROUPS=128 × 32B = 4096B).  We rewrite the whole block to avoid
+ * RMW on partial sectors.
  */
 static void ext4_sync_bg_sb(struct ext4_fs *fs) {
-  uint8_t *bg_buf = kmalloc(512);
-  if (bg_buf && ext4_bread(fs->part_start_lba + 8, 1, bg_buf) == 0) {
-    memcpy(bg_buf, &fs->bg, sizeof(fs->bg));
-    ext4_bwrite(fs->part_start_lba + 8, 1, bg_buf);
+  /* GDT block is block 1 = sectors 8..15 (block * 8 sectors). */
+  uint8_t *gdt_buf = kmalloc(4096);
+  if (gdt_buf) {
+    if (ext4_bread(fs->part_start_lba + 8, 8, gdt_buf) == 0) {
+      memcpy(gdt_buf, fs->bgs, fs->n_groups * sizeof(struct ext4_group_desc));
+      ext4_bwrite(fs->part_start_lba + 8, 8, gdt_buf);
+    }
+    kfree(gdt_buf);
   }
-  if (bg_buf)
-    kfree(bg_buf);
 
   uint8_t *sb_buf = kmalloc(4096);
   if (sb_buf && ext4_bread(fs->part_start_lba + 2, 2, sb_buf) == 0) {
@@ -1062,18 +1275,15 @@ static void ext4_sync_bg_sb(struct ext4_fs *fs) {
 
 /*
  * ext4_alloc_inode - allocate one free inode from group 0's inode bitmap.
- * Mirrors ext4_alloc_block exactly, targeting the inode bitmap/table instead
- * of the block bitmap.  Bit i of the inode bitmap <-> inode number i+1
- * (standard ext4 convention; matches get_inode_struct's (ino-1) offset math).
- * Returns inode number (1-indexed) on success, 0 on failure.
+ * Multi-group: all inodes live in group 0 (groups 1+ have free_inodes=0).
  */
 static uint32_t ext4_alloc_inode(struct ext4_fs *fs) {
-  if (fs->bg.bg_free_inodes_count_lo == 0) {
+  if (fs->bgs[0].bg_free_inodes_count_lo == 0) {
     pr_err("%s", "Ext4: No free inodes in Group 0!\n");
     return 0;
   }
 
-  uint64_t bitmap_blk = fs->bg.bg_inode_bitmap_lo;
+  uint64_t bitmap_blk = fs->bgs[0].bg_inode_bitmap_lo;
   uint8_t *bitmap = kmalloc(4096);
   if (!bitmap)
     return 0;
@@ -1125,7 +1335,7 @@ static uint32_t ext4_alloc_inode(struct ext4_fs *fs) {
   }
   kfree(bitmap);
 
-  fs->bg.bg_free_inodes_count_lo--;
+  fs->bgs[0].bg_free_inodes_count_lo--;
   fs->sb.s_free_inodes_count--;
   ext4_sync_bg_sb(fs);
   spin_unlock_irqrestore(&fs->lock, lock_flags);
@@ -1134,18 +1344,21 @@ static uint32_t ext4_alloc_inode(struct ext4_fs *fs) {
 }
 
 /*
- * ext4_free_block - release one block back to group 0's bitmap (opposite of
- * ext4_alloc_block). A block already free (or out of range) is a no-op, so a
- * double-free never corrupts the free-count.
+ * ext4_free_block - release one block back to its group's bitmap.
+ * Multi-group: group = block_num / blocks_per_group.
  */
-static void ext4_free_block(struct ext4_fs *fs, uint32_t block_in_group) {
-  if (block_in_group == 0)
+static void ext4_free_block(struct ext4_fs *fs, uint32_t abs_block) {
+  if (abs_block == 0)
     return;
-  uint32_t byte = block_in_group / 8, bit = block_in_group % 8;
+  uint32_t g   = abs_block / fs->blocks_per_group;
+  uint32_t off = abs_block % fs->blocks_per_group;
+  if (g >= fs->n_groups)
+    return;
+  uint32_t byte = off / 8, bit = off % 8;
   if (byte >= 4096)
     return;
 
-  uint64_t bitmap_blk = fs->bg.bg_block_bitmap_lo;
+  uint64_t bitmap_blk = fs->bgs[g].bg_block_bitmap_lo;
   uint8_t *bitmap = kmalloc(4096);
   if (!bitmap)
     return;
@@ -1170,20 +1383,21 @@ static void ext4_free_block(struct ext4_fs *fs, uint32_t block_in_group) {
   }
   kfree(bitmap);
 
-  fs->bg.bg_free_blocks_count_lo++;
+  fs->bgs[g].bg_free_blocks_count_lo++;
   fs->sb.s_free_blocks_count_lo++;
   ext4_sync_bg_sb(fs);
   spin_unlock_irqrestore(&fs->lock, lock_flags);
 }
 
-/* ext4_free_inode - release one inode bit (opposite of ext4_alloc_inode). */
+/* ext4_free_inode - release one inode bit (opposite of ext4_alloc_inode).
+ * Multi-group: all inodes are in group 0. */
 static void ext4_free_inode(struct ext4_fs *fs, uint32_t ino) {
-  uint32_t bit = ino - 1;
+  uint32_t bit  = ino - 1;
   uint32_t byte = bit / 8, b = bit % 8;
   if (byte >= 4096)
     return;
 
-  uint64_t bitmap_blk = fs->bg.bg_inode_bitmap_lo;
+  uint64_t bitmap_blk = fs->bgs[0].bg_inode_bitmap_lo;
   uint8_t *bitmap = kmalloc(4096);
   if (!bitmap)
     return;
@@ -1208,7 +1422,7 @@ static void ext4_free_inode(struct ext4_fs *fs, uint32_t ino) {
   }
   kfree(bitmap);
 
-  fs->bg.bg_free_inodes_count_lo++;
+  fs->bgs[0].bg_free_inodes_count_lo++;
   fs->sb.s_free_inodes_count++;
   ext4_sync_bg_sb(fs);
   spin_unlock_irqrestore(&fs->lock, lock_flags);
@@ -1232,11 +1446,9 @@ static void ext4_extent_free_tree(struct ext4_fs *fs, const uint8_t *node_buf,
     return;
 
   if (eh->eh_depth > 0) {
-    const struct ext4_extent_idx *ix =
-        (const struct ext4_extent_idx *)(eh + 1);
+    const struct ext4_extent_idx *ix = (const struct ext4_extent_idx *)(eh + 1);
     for (int i = 0; i < eh->eh_entries; i++) {
-      uint64_t child =
-          ix[i].ei_leaf_lo | ((uint64_t)ix[i].ei_leaf_hi << 32);
+      uint64_t child = ix[i].ei_leaf_lo | ((uint64_t)ix[i].ei_leaf_hi << 32);
       uint8_t *cbuf = kmalloc(4096);
       if (cbuf) {
         if (ext4_bread(fs->part_start_lba + child * 8, 8, cbuf) == 0)
@@ -1251,8 +1463,7 @@ static void ext4_extent_free_tree(struct ext4_fs *fs, const uint8_t *node_buf,
       int unwritten = ex[i].ee_len > EXT4_EXT_UNWRITTEN_LEN;
       uint32_t len =
           unwritten ? ex[i].ee_len - EXT4_EXT_UNWRITTEN_LEN : ex[i].ee_len;
-      uint64_t start =
-          ex[i].ee_start_lo | ((uint64_t)ex[i].ee_start_hi << 32);
+      uint64_t start = ex[i].ee_start_lo | ((uint64_t)ex[i].ee_start_hi << 32);
       for (uint32_t b = 0; b < len; b++)
         ext4_free_block(fs, (uint32_t)(start + b));
     }
@@ -1548,23 +1759,23 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
                        uint32_t vfs_type) {
   struct ext4_fs *fs = mnt->fs_private;
   if (fs->read_only)
-    return -1;
+    return -EROFS;
   if (vfs_type != VFS_TYPE_FILE && vfs_type != VFS_TYPE_DIR)
-    return -1;
+    return -EINVAL;
 
   uint32_t existing;
   if (ext4_find_ino(fs, path, &existing) == 0)
-    return -1; /* already exists */
+    return -EEXIST; /* already exists */
 
   uint32_t parent_ino;
   const char *name;
   uint32_t name_len;
   if (ext4_resolve_parent(fs, path, &parent_ino, &name, &name_len) != 0)
-    return -1;
+    return -ENOENT;
 
   uint32_t new_ino = ext4_alloc_inode(fs);
   if (new_ino == 0)
-    return -1;
+    return -ENOSPC;
 
   struct ext4_inode inode;
   memset(&inode, 0, sizeof(inode));
@@ -1577,14 +1788,14 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
     uint32_t db = ext4_alloc_block(fs);
     if (db == 0) {
       ext4_free_inode(fs, new_ino);
-      return -1;
+      return -ENOSPC;
     }
 
     uint8_t *blk = kmalloc(4096);
     if (!blk) {
       ext4_free_block(fs, db);
       ext4_free_inode(fs, new_ino);
-      return -1;
+      return -ENOMEM;
     }
     memset(blk, 0, 4096);
     /* '.' -> self */
@@ -1610,11 +1821,11 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
     if (wrc != 0) {
       ext4_free_block(fs, db);
       ext4_free_inode(fs, new_ino);
-      return -1;
+      return -EIO;
     }
 
     inode.i_mode = 0x4000 | 0755; /* S_IFDIR | rwxr-xr-x */
-    inode.i_links_count = 2;      /* '.' (self) + the parent dirent added below */
+    inode.i_links_count = 2; /* '.' (self) + the parent dirent added below */
     inode.i_block[0] = db;
     inode.i_size_lo = 4096;
     inode.i_blocks_lo = (4096 / 512);
@@ -1627,7 +1838,7 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
     if (vfs_type == VFS_TYPE_DIR)
       ext4_free_block(fs, inode.i_block[0]);
     ext4_free_inode(fs, new_ino); /* undo: no dirent references it yet */
-    return -1;
+    return -EIO;
   }
 
   uint8_t ft = (vfs_type == VFS_TYPE_DIR) ? EXT4_FT_DIR : EXT4_FT_REG_FILE;
@@ -1635,7 +1846,12 @@ static int ext4_create(struct vfs_mount *mnt, const char *path,
     if (vfs_type == VFS_TYPE_DIR)
       ext4_free_block(fs, inode.i_block[0]);
     ext4_free_inode(fs, new_ino); /* undo: still no dirent, safe to free */
-    return -1;
+    /* EXT4-ERRNO-01, stated rather than overclaimed: ext4_dir_insert still
+     * returns a bare -1 for several causes (allocation, read failure, and a
+     * full single-block directory), so this is the ONE bucket that stays
+     * undifferentiated.  -EIO is the honest floor; narrowing it means giving
+     * ext4_dir_insert its own errnos, which is a separate change. */
+    return -EIO;
   }
 
   /* A new subdirectory's '..' adds one link to the parent's count. */
@@ -1672,8 +1888,8 @@ static int ext4_dir_is_empty(struct ext4_fs *fs, const struct ext4_inode *dir) {
         break;
       if (de->inode != 0) {
         int is_dot = (de->name_len == 1 && de->name[0] == '.');
-        int is_dotdot = (de->name_len == 2 && de->name[0] == '.' &&
-                         de->name[1] == '.');
+        int is_dotdot =
+            (de->name_len == 2 && de->name[0] == '.' && de->name[1] == '.');
         if (!is_dot && !is_dotdot) {
           empty = 0;
           break;
@@ -1696,34 +1912,42 @@ static int ext4_dir_is_empty(struct ext4_fs *fs, const struct ext4_inode *dir) {
 static int ext4_unlink(struct vfs_mount *mnt, const char *path) {
   struct ext4_fs *fs = mnt->fs_private;
   if (fs->read_only)
-    return -1;
+    return -EROFS;
 
   uint32_t ino;
   if (ext4_find_ino(fs, path, &ino) != 0)
-    return -1;
+    return -ENOENT;
 
   struct ext4_inode inode;
   if (get_inode_struct(fs, ino, &inode) != 0)
-    return -1;
+    return -EIO;
 
   int is_dir = ((inode.i_mode >> 12) == 4);
-  if (is_dir && ext4_dir_is_empty(fs, &inode) != 1)
-    return -1; /* non-empty directory (or unreadable): refuse, like ENOTEMPTY */
+  if (is_dir) {
+    /* EXT4-ERRNO-01: "not empty" and "could not be read" were one refusal.
+     * ext4_dir_is_empty already distinguishes them (1 / 0 / -1) — only the
+     * caller threw the distinction away. */
+    int empty = ext4_dir_is_empty(fs, &inode);
+    if (empty < 0)
+      return -EIO;
+    if (empty == 0)
+      return -ENOTEMPTY;
+  }
 
   uint32_t parent_ino;
   const char *name;
   uint32_t name_len;
   if (ext4_resolve_parent(fs, path, &parent_ino, &name, &name_len) != 0)
-    return -1;
+    return -ENOENT;
 
   /* Never unlink the '.'/'..' entries themselves (path canonicalisation should
    * strip them, but a stray one must not corrupt the tree). */
   if ((name_len == 1 && name[0] == '.') ||
       (name_len == 2 && name[0] == '.' && name[1] == '.'))
-    return -1;
+    return -EINVAL;
 
   if (ext4_dir_remove(fs, parent_ino, name, name_len) != 0)
-    return -1;
+    return -EIO;
 
   ext4_free_inode_blocks(fs, &inode);
   ext4_free_inode(fs, ino);

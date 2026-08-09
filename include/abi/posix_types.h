@@ -5,6 +5,8 @@
 #ifndef _POSIX_TYPES_H
 #define _POSIX_TYPES_H
 
+#include <nx_abi.h>
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -117,44 +119,82 @@ typedef struct {
  * number of translation units, no libc calls. */
 static inline const char *os1_strerror(int err) {
   switch (err) {
-  case EOK: return "Success";
-  case EPERM: return "Operation not permitted";
-  case ENOENT: return "No such file or directory";
-  case ESRCH: return "No such process";
-  case EINTR: return "Interrupted system call";
-  case EIO: return "I/O error";
-  case ENXIO: return "No such device or address";
-  case E2BIG: return "Argument list too long";
-  case ENOEXEC: return "Exec format error";
-  case EBADF: return "Bad file descriptor";
-  case ECHILD: return "No child processes";
-  case EAGAIN: return "Resource temporarily unavailable";
-  case ENOMEM: return "Cannot allocate memory";
-  case EACCES: return "Permission denied";
-  case EFAULT: return "Bad address";
-  case ENOTBLK: return "Block device required";
-  case EBUSY: return "Device or resource busy";
-  case EEXIST: return "File exists";
-  case EXDEV: return "Cross-device link";
-  case ENODEV: return "No such device";
-  case ENOTDIR: return "Not a directory";
-  case EISDIR: return "Is a directory";
-  case EINVAL: return "Invalid argument";
-  case ENFILE: return "Too many open files in system";
-  case EMFILE: return "Too many open files";
-  case ENOTTY: return "Inappropriate ioctl for device";
-  case ETXTBSY: return "Text file busy";
-  case EFBIG: return "File too large";
-  case ENOSPC: return "No space left on device";
-  case ESPIPE: return "Illegal seek";
-  case EROFS: return "Read-only file system";
-  case EMLINK: return "Too many links";
-  case EPIPE: return "Broken pipe";
-  case EDOM: return "Numerical argument out of domain";
-  case ERANGE: return "Numerical result out of range";
-  case ENOSYS: return "Function not implemented";
-  case ENOTEMPTY: return "Directory not empty";
-  default: return "Unknown error";
+  case EOK:
+    return "Success";
+  case EPERM:
+    return "Operation not permitted";
+  case ENOENT:
+    return "No such file or directory";
+  case ESRCH:
+    return "No such process";
+  case EINTR:
+    return "Interrupted system call";
+  case EIO:
+    return "I/O error";
+  case ENXIO:
+    return "No such device or address";
+  case E2BIG:
+    return "Argument list too long";
+  case ENOEXEC:
+    return "Exec format error";
+  case EBADF:
+    return "Bad file descriptor";
+  case ECHILD:
+    return "No child processes";
+  case EAGAIN:
+    return "Resource temporarily unavailable";
+  case ENOMEM:
+    return "Cannot allocate memory";
+  case EACCES:
+    return "Permission denied";
+  case EFAULT:
+    return "Bad address";
+  case ENOTBLK:
+    return "Block device required";
+  case EBUSY:
+    return "Device or resource busy";
+  case EEXIST:
+    return "File exists";
+  case EXDEV:
+    return "Cross-device link";
+  case ENODEV:
+    return "No such device";
+  case ENOTDIR:
+    return "Not a directory";
+  case EISDIR:
+    return "Is a directory";
+  case EINVAL:
+    return "Invalid argument";
+  case ENFILE:
+    return "Too many open files in system";
+  case EMFILE:
+    return "Too many open files";
+  case ENOTTY:
+    return "Inappropriate ioctl for device";
+  case ETXTBSY:
+    return "Text file busy";
+  case EFBIG:
+    return "File too large";
+  case ENOSPC:
+    return "No space left on device";
+  case ESPIPE:
+    return "Illegal seek";
+  case EROFS:
+    return "Read-only file system";
+  case EMLINK:
+    return "Too many links";
+  case EPIPE:
+    return "Broken pipe";
+  case EDOM:
+    return "Numerical argument out of domain";
+  case ERANGE:
+    return "Numerical result out of range";
+  case ENOSYS:
+    return "Function not implemented";
+  case ENOTEMPTY:
+    return "Directory not empty";
+  default:
+    return "Unknown error";
   }
 }
 
@@ -223,7 +263,8 @@ static inline const char *os1_strerror(int err) {
 #define IPC_TYPE_INPUT 1
 #define IPC_TYPE_NOTIFY 0x100
 #define IPC_TYPE_MOUSE 4
-#define IPC_TYPE_RESIZE 0x200 /* window/desktop resize: data1=w, data2=h (GFX-DYN-01) */
+#define IPC_TYPE_RESIZE                                                        \
+  0x200 /* window/desktop resize: data1=w, data2=h (GFX-DYN-01) */
 
 /* IPC_LOOK_PING_MAGIC - marks an IPC_TYPE_NOTIFY message (in .data2) as a
  * SILENT compositor look-changed ping (nxres_broadcast_look, user/sys/bin/
@@ -247,5 +288,43 @@ struct ipc_message {
   uint64_t data2;
   char payload[64];
 };
+
+/*
+ * The IPC wire format.  Every keystroke, pointer event, resize and notification
+ * crosses this structure, and it is read by BOTH kernels and by userland's
+ * input_poll_event() — which additionally unpacks a scancode out of the high
+ * bits of data1, so the field WIDTHS are part of the contract and not just the
+ * offsets.  Nothing in the build makes those three views agree; these do.
+ */
+NX_ASSERT_OFFSET(struct ipc_message, from, 0);
+NX_ASSERT_OFFSET(struct ipc_message, type, 4);
+NX_ASSERT_OFFSET(struct ipc_message, data1, 8);
+NX_ASSERT_OFFSET(struct ipc_message, data2, 16);
+NX_ASSERT_OFFSET(struct ipc_message, payload, 24);
+NX_ASSERT_SIZE(struct ipc_message, 88);
+
+/*
+ * abi_stat — what SYS_STAT returns.  The kernel-side truth is `struct vfs_stat`
+ * (size + VFS_TYPE_*); this is its ABI shape, so the kernel never has to
+ * include a userland <sys/stat.h> to fill it and userland never has to guess a
+ * layout. libc maps it onto POSIX `struct stat`.
+ *
+ * ABI_S_TYPE_* deliberately match VFS_TYPE_FILE/VFS_TYPE_DIR by value, so the
+ * kernel copies the field through without a translation table that could drift.
+ */
+#define ABI_S_TYPE_FILE 1
+#define ABI_S_TYPE_DIR 2
+
+struct abi_stat {
+  unsigned long long size;
+  unsigned int type; /* ABI_S_TYPE_* */
+  unsigned int _pad; /* explicit: keeps the struct 16 bytes on both arches */
+};
+
+/* The comment above already CLAIMS 16 bytes on both arches.  This is that claim
+ * checked instead of asserted in prose. */
+NX_ASSERT_OFFSET(struct abi_stat, size, 0);
+NX_ASSERT_OFFSET(struct abi_stat, type, 8);
+NX_ASSERT_SIZE(struct abi_stat, 16);
 
 #endif /* _POSIX_TYPES_H */

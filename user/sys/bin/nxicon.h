@@ -308,16 +308,16 @@ static inline int nxicon_classify_file(const char *name, int is_dir) {
   if (!ext || ext == name)
     return NXICON_FILE_GENERIC;
 
-  static const char *const c_exts[] = {".c", ".h", ".cpp", ".cc", ".hpp",
-                                       ".s", NULL};
+  static const char *const c_exts[] = {".c",   ".h", ".cpp", ".cc",
+                                       ".hpp", ".s", NULL};
   static const char *const text_exts[] = {".txt", ".md",  ".log",
                                           ".rst", ".csv", NULL};
-  static const char *const cfg_exts[] = {".cfg", ".json", ".ini",
-                                         ".toml", ".yaml", ".yml", NULL};
+  static const char *const cfg_exts[] = {".cfg",  ".json", ".ini", ".toml",
+                                         ".yaml", ".yml",  NULL};
   static const char *const html_exts[] = {".html", ".htm", ".css", NULL};
   static const char *const script_exts[] = {".lua", ".sh", ".py", NULL};
-  static const char *const video_exts[] = {".mp4", ".mkv", ".avi",
-                                           ".webm", NULL};
+  static const char *const video_exts[] = {".mp4", ".mkv",  ".avi", ".webm",
+                                           ".mpg", ".mpeg", NULL};
   static const char *const bin_exts[] = {".bin", ".dat", ".o", ".elf", NULL};
 
   if (os1_image_path_has_known_ext(name))

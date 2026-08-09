@@ -85,29 +85,67 @@ int vfs_register_fs(const struct fs_ops *ops) {
  * quietly (a partition that is simply not their format is normal) and fail
  * loudly only on recognised-but-unsupported filesystems.
  */
+/* __vfs_try_mount_root - try every FS provider on `p` as the root mount.
+ * Returns 1 if one took it.  `idx` is only for the log line. */
+static int __vfs_try_mount_root(struct partition *p, int idx) {
+  if (!p)
+    return 0;
+  for (int d = 0; d < fs_driver_count; d++) {
+    struct vfs_mount *mnt = &mounts[0];
+    mnt->ops = fs_drivers[d];
+    mnt->part_index = (uint32_t)idx;
+    mnt->fs_private = NULL;
+    mnt->mountpoint = "/"; /* the root mount (Plan 9 namespace fallback) */
+    if (fs_drivers[d]->mount(mnt, p) == 0) {
+      mnt->in_use = 1;
+      pr_info("VFS: mounted %s on partition %d as /\n", fs_drivers[d]->name,
+              idx);
+      return 1;
+    }
+    mnt->ops = NULL;
+  }
+  return 0;
+}
+
+/*
+ * vfs_init - establish the root mount.
+ *
+ * BY ROLE first (F3): the partition whose type GUID says NEXS_ROLE_ROOT becomes
+ * "/", whatever its position in the table.  The old behaviour — mount the first
+ * partition any provider accepts — was safe only while exactly one filesystem
+ * existed on the disk.  It is the mechanism behind GPT-02's warning that
+ * "changing the disk image layout will silently mount the wrong partition", and
+ * it would break the moment the installer adds a second ext4 (MACHINE, USR):
+ * whichever was probed first would silently become the system root.
+ *
+ * The scan is KEPT as a fallback, and that is deliberate rather than defensive:
+ * images that predate roles must still boot, and so must the release ISO, whose
+ * rootfs arrives as a RAM disk built by the same mkdisk.  Falling back is
+ * announced in the log so an unroled disk is visible, not silent.
+ */
 void vfs_init(void) {
   if (fs_driver_count == 0) {
     pr_err("%s", "VFS: no filesystem providers registered\n");
     return;
   }
+
+  struct partition *root = partition_find_by_role(NEXS_ROLE_ROOT);
+  if (root) {
+    if (__vfs_try_mount_root(root, (int)root->index))
+      return;
+    /* A partition that DECLARES it is the root but carries no mountable
+     * filesystem is a corrupt install, not a reason to go looking elsewhere:
+     * mounting some other partition as "/" would hide the damage and run the
+     * system on the wrong tree. */
+    pr_err("%s", "VFS: NEXS-ROOT partition has no mountable filesystem\n");
+    return;
+  }
+
+  pr_info("%s", "VFS: no NEXS-ROOT partition; falling back to first mountable "
+                "(pre-role image)\n");
   for (int i = 0; i < num_partitions; i++) {
-    struct partition *p = gpt_get_partition(i);
-    if (!p)
-      continue;
-    for (int d = 0; d < fs_driver_count; d++) {
-      struct vfs_mount *mnt = &mounts[0];
-      mnt->ops = fs_drivers[d];
-      mnt->part_index = (uint32_t)i;
-      mnt->fs_private = NULL;
-      mnt->mountpoint = "/"; /* the root mount (Plan 9 namespace fallback) */
-      if (fs_drivers[d]->mount(mnt, p) == 0) {
-        mnt->in_use = 1;
-        pr_info("VFS: mounted %s on partition %d as /\n",
-                fs_drivers[d]->name, i);
-        return;
-      }
-      mnt->ops = NULL;
-    }
+    if (__vfs_try_mount_root(gpt_get_partition(i), i))
+      return;
   }
   pr_err("%s", "VFS: no mountable filesystem found on any partition\n");
 }
@@ -345,14 +383,18 @@ int vfs_write_allowed(const char *resolved_path) {
   if (proc_is_machine(current_process))
     return 0; /* machine identity: full filesystem authority */
 
-  /* Tree ACL (maintainer policy, docs/userland-port):
-   *   /home             the ONLY tree with expanded authority: every
-   *                     CAP_FS_WRITE holder writes here — except GUEST,
-   *                     confined to /home/shared.
-   *   /sys/bin          MACHINE only — the supervised boot chain; even root
-   *                     cannot swap init/services out from under init.
-   *   everything else   ROOT or machine (all non-home trees stay closed to
-   *                     ordinary users, as before /home existed).
+  /* Tree ACL (maintainer policy, 2026-07-23 — the LEVEL model's filesystem
+   * half; the capability mask is the other half):
+   *   machine           full authority (handled above).
+   *   /home             every CAP_FS_WRITE holder writes here — except GUEST,
+   *                     confined to /home/shared.  (Per-user partitions
+   *                     /mnt/usrN/home are the forward work, B2.3.)
+   *   /sys/bin,/system  MACHINE only — even ROOT is refused.  /sys/bin is the
+   *                     supervised boot chain (init/services must not be
+   *                     swappable out from under init); /system is the machine
+   *                     configuration tree.  These two are the "root has full
+   *                     access EXCEPT these" the maintainer named.
+   *   /sys,/bin,else    ROOT or machine; closed to ordinary users.
    * Exact-match guards cover the directory nodes themselves (unlink/create
    * of "/bin" etc.), not just children. */
   if (strncmp(resolved_path, "/home/", 6) == 0 ||
@@ -366,8 +408,15 @@ int vfs_write_allowed(const char *resolved_path) {
     }
     return 0;
   }
+  /* B2.2: /system joins /sys/bin as MACHINE-only — root is refused here, which
+   * is the "root full access EXCEPT /sys/bin and /system" rule.  Guarding the
+   * path now (before /system is populated — B2.3 owns its creation/layout) is
+   * correct and harmless: nothing writes it today, and the ACL must not depend
+   * on the tree already existing. */
   if (strncmp(resolved_path, "/sys/bin/", 9) == 0 ||
-      strcmp(resolved_path, "/sys/bin") == 0) {
+      strcmp(resolved_path, "/sys/bin") == 0 ||
+      strncmp(resolved_path, "/system/", 8) == 0 ||
+      strcmp(resolved_path, "/system") == 0) {
     pr_warn("vfs: PID %d denied write to machine-only path '%s'\n",
             current_process ? current_process->pid : 0, resolved_path);
     return -EACCES;
@@ -492,9 +541,15 @@ int vfs_list_dir(const char *path, char *buf, uint32_t size) {
 int vfs_unlink(const char *path) {
   const char *rel;
   struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  /* EXT4-ERRNO-01: a bare -1 IS -EPERM (errno 1).  That mattered twice over —
+   * userland could not tell the causes apart, AND OS1_report_error classifies
+   * BY errno, so every provider failure was filed as an EPERM policy denial
+   * (amber warn) whatever it really was.  No mount is -ENOENT; a provider that
+   * does not implement removal is -ENOSYS.  The provider's own value passes
+   * through untouched. */
   if (!mnt)
-    return -1;
-  int rc = mnt->ops->unlink ? mnt->ops->unlink(mnt, rel) : -1;
+    return -ENOENT;
+  int rc = mnt->ops->unlink ? mnt->ops->unlink(mnt, rel) : -ENOSYS;
   vfs_release(mnt);
   return rc;
 }
@@ -507,9 +562,10 @@ int vfs_unlink(const char *path) {
 int vfs_create(const char *path, uint32_t type) {
   const char *rel;
   struct vfs_mount *mnt = vfs_acquire(path, &rel);
+  /* EXT4-ERRNO-01, as vfs_unlink above. */
   if (!mnt)
-    return -1;
-  int rc = mnt->ops->create ? mnt->ops->create(mnt, rel, type) : -1;
+    return -ENOENT;
+  int rc = mnt->ops->create ? mnt->ops->create(mnt, rel, type) : -ENOSYS;
   vfs_release(mnt);
   return rc;
 }

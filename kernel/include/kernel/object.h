@@ -13,10 +13,11 @@
  * impossible by construction (the same invariant as the caps.h spawn cut).
  *
  * This ABSORBED the B3 per-process fd table (ASTRA's "seed", §6.2): there is no
- * separate fd array any more — a POSIX descriptor IS a handle (fd N == handle N).
- * open() = handle_create(FILE); read/write/lseek/close operate on the handle
- * table; stdin/stdout/stderr are pre-installed CONSOLE handles 0/1/2.  The object
- * syscalls (235..242) and the POSIX file syscalls are the same mechanism.
+ * separate fd array any more — a POSIX descriptor IS a handle (fd N == handle
+ * N). open() = handle_create(FILE); read/write/lseek/close operate on the
+ * handle table; stdin/stdout/stderr are pre-installed CONSOLE handles 0/1/2.
+ * The object syscalls (235..242) and the POSIX file syscalls are the same
+ * mechanism.
  *
  * Concurrency: a single global `object_lock` serialises refcount changes and
  * handle-table slot install/close/grant (short, no-I/O critical sections).
@@ -26,6 +27,7 @@
 #ifndef _KERNEL_OBJECT_H
 #define _KERNEL_OBJECT_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 #include <kernel/vfs.h>
 #include <object.h> /* shared ABI: OBJ_TYPE_*, OS1_RIGHT_*, OS1_NS_* */
@@ -42,8 +44,9 @@ struct kobject {
 
   /* OBJ_TYPE_FILE */
   struct vfs_node node;
-  uint64_t offset;                /* shared file position */
-  char path[OBJ_FILE_PATH_MAX];   /* resolved path (VFS write contract is path-based) */
+  uint64_t offset;              /* shared file position */
+  char path[OBJ_FILE_PATH_MAX]; /* resolved path (VFS write contract is
+                                   path-based) */
 
   /* OBJ_TYPE_PROCESS (also the owning pid for OBJ_TYPE_WINDOW) */
   int pid;
@@ -82,52 +85,56 @@ void object_get_live_counts(uint64_t *out, int max);
 /* Syscall backends (dispatched from kernel/core/syscall_dispatch.c).  The
  * caller is current_process; user pointers are copied with arch_copy_*_user
  * inside.  Return >= 0 on success, negative errno on failure. */
-long sys_handle_create(int ns, const char *upath, uint32_t rights, int type);
-long sys_handle_dup(int handle, uint32_t new_rights);
-long sys_handle_close(int handle);
-long sys_cap_query(int handle);
-long sys_cap_grant(int target_pid, int handle, uint32_t rights);
-long sys_object_read(int handle, void *ubuf, size_t n);
-long sys_object_write(int handle, const void *ubuf, size_t n);
-long sys_object_wait(int handle, long arg);
-long sys_object_ctl(int handle, int cmd, long arg);
+long sys_handle_create(int ns, const char *upath, uint32_t rights,
+                       int type) NX_MUST_USE;
+long sys_handle_dup(int handle, uint32_t new_rights) NX_MUST_USE;
+long sys_handle_close(int handle) NX_MUST_USE;
+long sys_cap_query(int handle) NX_MUST_USE;
+long sys_cap_grant(int target_pid, int handle, uint32_t rights) NX_MUST_USE;
+long sys_object_read(int handle, void *ubuf, size_t n) NX_MUST_USE;
+long sys_object_write(int handle, const void *ubuf, size_t n) NX_MUST_USE;
+long sys_object_wait(int handle, long arg) NX_MUST_USE;
+long sys_object_ctl(int handle, int cmd, long arg) NX_MUST_USE;
 /* POSIX lseek(2) on a handle: FILE repositions its byte offset per 'whence'
  * (SEEK_SET/_CUR/_END); a non-seekable object (CONSOLE, …) returns -ESPIPE. */
-long sys_object_lseek(int handle, long off, int whence);
+long sys_object_lseek(int handle, long off, int whence) NX_MUST_USE;
 
 /* window_text_write - copy a user buffer to window win_id (UART mirror +
  * compositor append); defined in kernel/core/syscall_dispatch.c.  The shared
  * backend of SYS_WINDOW_WRITE and the OBJ_TYPE_CONSOLE stdout/stderr handle
  * (declared here so kernel/core/object.c's console write can reach it). */
-long window_text_write(int win_id, const char *ubuf, size_t count);
+long window_text_write(int win_id, const char *ubuf, size_t count) NX_MUST_USE;
 
 /* process_install_stdio - eagerly allocate p's handle table and pre-install the
  * standard trio: handles 0/1/2 share one CONSOLE object (0 = read/stdin, 1/2 =
  * write/stdout+stderr).  Called by process_create() so every process is born
  * with stdin/stdout/stderr as capability handles.  Returns 0, or -ENOMEM. */
-int process_install_stdio(struct process *p);
+int process_install_stdio(struct process *p,
+                          struct process *parent) NX_MUST_USE;
 
 /* process_redirect_child_fd - dup the spawner's open handle 'parent_fd' into a
  * freshly-created child's 'child_slot', overwriting the console there (Phase 4
  * shell `<`/`>`/`>>`/`2>`).  Called from dispatch_spawn with the spawner as
- * current_process, before the child runs.  Returns 0 or -EINVAL/-EBADF/-ENOMEM. */
+ * current_process, before the child runs.  Returns 0 or -EINVAL/-EBADF/-ENOMEM.
+ */
 int process_redirect_child_fd(struct process *child, int child_slot,
-                              int parent_fd);
+                              int parent_fd) NX_MUST_USE;
 /* process_redirect_child_fd_from - same, with the SOURCE process explicit.  The
  * spawner and the fd owner are the same process today, but diverge once an
  * execution service spawns on a client's behalf (Q2): the fds are the CLIENT's.
  * Parameterising the source keeps that a caller change, not a rewrite. */
 int process_redirect_child_fd_from(struct process *owner, struct process *child,
-                                   int child_slot, int parent_fd);
+                                   int child_slot, int parent_fd) NX_MUST_USE;
 
 /* sys_pipe - SYS_PIPE: create an anonymous OBJ_TYPE_PIPE and install its read +
  * write ends in the caller's table; writes both fds to the user int[2].  0 or
  * -ENOMEM/-EMFILE/-EFAULT. */
-long sys_pipe(int *ufds);
+long sys_pipe(int *ufds) NX_MUST_USE;
 /* sys_port_send_caps - SYS_PORT_SEND_CAPS: send through a PORT while
  * TRANSFERRING handles to the receiver, rewriting the payload with the indices
  * as the RECEIVER sees them (ASTRA 6.5 Mach rights-in-a-message).  Removes the
  * need to cap_grant by pid to a service discovered by NAME. */
-long sys_port_send_caps(int handle, const void *umsg, const int *ufds, int nfds);
+long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
+                        int nfds) NX_MUST_USE;
 
 #endif /* _KERNEL_OBJECT_H */

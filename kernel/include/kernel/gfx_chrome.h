@@ -15,6 +15,7 @@
 #ifndef KERNEL_GFX_CHROME_H
 #define KERNEL_GFX_CHROME_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/gfx_surface.h>
 #include <stdint.h>
 
@@ -45,7 +46,7 @@ enum gfx_button_hit {
 
 /* Rounded-rect membership test: is local pixel (lx,ly) inside a w*h rect with
  * corner radius r?  r<=0 ⇒ always inside (square corners). */
-int gfx_rrect_contains(int lx, int ly, int w, int h, int r);
+int gfx_rrect_contains(int lx, int ly, int w, int h, int r) NX_MUST_USE;
 
 /* Shadow footprint per shadow_type (0 solid, 1 fast, 2 premium); a
  * shadow_size of 0 yields zero margins for every type. */
@@ -83,7 +84,7 @@ void gfx_chrome_button_geometry(int frame_x, int frame_w, int titlebar_y,
                                 gfx_button_geometry_t *out);
 
 /* Rectangular hit-test on the two buttons (matches the click handler). */
-int gfx_chrome_button_hit(const gfx_button_geometry_t *geometry, int x, int y);
+int gfx_chrome_button_hit(const gfx_button_geometry_t *geometry, int x, int y) NX_MUST_USE;
 
 /* Per-pixel button paint over a titlebar pixel at screen (x,y): returns the
  * button colour, the drop-shadow-accented base (when drop_shadow, used by the

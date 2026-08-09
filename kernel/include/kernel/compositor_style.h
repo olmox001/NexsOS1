@@ -17,6 +17,7 @@
 #ifndef _KERNEL_COMPOSITOR_STYLE_H
 #define _KERNEL_COMPOSITOR_STYLE_H
 
+#include <kernel/nx_contract.h>
 #include <stdint.h>
 
 /* Window-management policy (behaviour).  Tiling/mobile are hooks for the
@@ -103,13 +104,13 @@ const compositor_background_t *compositor_background_active(void);
 
 /* Select a preset by id; returns 0 on success, -1 if out of range.  Marks the
  * compositor dirty so the change is visible immediately. */
-int compositor_set_style(int style_id);
-int compositor_set_theme(int theme_id);
-int compositor_set_background(int bg_id);
+int compositor_set_style(int style_id) NX_MUST_USE;
+int compositor_set_theme(int theme_id) NX_MUST_USE;
+int compositor_set_background(int bg_id) NX_MUST_USE;
 
 /* Effective title-bar height for a window: the active style's height, or 0 when
  * the style has no titlebar.  Single source of truth for chrome geometry. */
-int compositor_titlebar_height(void);
+int compositor_titlebar_height(void) NX_MUST_USE;
 
 /* Provided by the compositor: mark the whole desktop dirty so a style/theme
  * switch repaints immediately. */

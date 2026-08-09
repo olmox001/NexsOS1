@@ -33,7 +33,7 @@
 #define KERNEL_VERSION_MAJOR 0
 #define KERNEL_VERSION_MINOR 0
 #define KERNEL_VERSION_PATCH 5
-#define KERNEL_VERSION_BUILD 2
+#define KERNEL_VERSION_BUILD 3
 
 #ifdef ARCH_AMD64
 #define KERNEL_NAME "AMD64 NexsOS1"
@@ -100,11 +100,26 @@ void kernel_main(uint64_t x0_arg) {
 #ifndef ARCH_AMD64
   /* Ensure boot_fdt_ptr is set from the entry argument */
   boot_fdt_ptr = x0_arg;
-  fdt_init(boot_fdt_ptr);
+  /* aarch64: the device tree IS the device-discovery mechanism.  Without it
+   * nothing on the virtio-MMIO transport is found -- no block device, no
+   * input, no GPU -- and the failure would surface much later as a system that
+   * booted into a shell with no storage, which is nothing like "the DTB was
+   * not parsed". */
+  if (fdt_init(boot_fdt_ptr) != 0)
+    panic("FDT: no usable device tree at 0x%lx — no MMIO device can be "
+          "discovered on this platform",
+          (unsigned long)boot_fdt_ptr);
   pr_info("Kernel: Entry x0 = 0x%lx\n", x0_arg);
 #else
   boot_fdt_ptr = 0;
-  fdt_init(0);
+  /* amd64 has no device tree: devices come from PCI enumeration instead.  The
+   * scan is still attempted because a DTB in RAM would be usable if present,
+   * and NOT finding one is the EXPECTED answer here -- so it is reported as
+   * information, not dropped.  The same call is fatal on aarch64 above; that
+   * asymmetry is the point, and it is now stated instead of implied. */
+  if (fdt_init(0) != 0)
+    pr_info("%s", "FDT: no device tree found — expected on amd64, devices come "
+                  "from PCI enumeration\n");
 #endif
 
   /* Print kernel banner */
@@ -257,7 +272,13 @@ static void init_memory(void) {
   /* Mount the root filesystem: register providers, then probe partitions.
    * Composition root (ASTRA): the wiring fs-driver → VFS happens here only;
    * the rest of the kernel consumes the <kernel/vfs.h> contract. */
-  vfs_register_fs(&ext4_fs_ops);
+  /* Composition root: if the only on-disk filesystem provider fails to
+   * register, the root mount below has nothing to mount WITH, and the symptom
+   * is an unbootable system reported as "no root filesystem" rather than as a
+   * registration that failed here. */
+  if (vfs_register_fs(&ext4_fs_ops) != 0)
+    panic("VFS: ext4 provider could not be registered — no root filesystem is "
+          "possible");
   vfs_init();
   pr_info("%s", "VFS: Done.\n");
 

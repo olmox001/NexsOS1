@@ -18,7 +18,7 @@ endif
 ARCH ?= aarch64
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.5.2
+VERSION ?= V0.0.5.4
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -30,6 +30,33 @@ else ifeq ($(findstring amd64,$(ARCH)),amd64)
 endif
 
 # Common Compiler Flags
+# ---------------------------------------------------------------------------
+# CONTRACT GATE — read before you reach for a way around it.
+#
+# kernel/include/kernel/nx_contract.h turns the invariants C cannot check into
+# build failures: NX_MUST_USE on every -errno return, NX_ASSERT_OFFSET on every
+# layout assembly depends on.  It is ALWAYS ON.  There is deliberately no flag
+# to disable it, and adding one would defeat the reason it exists -- an earlier
+# version was gated behind NX_STRICT and the result was that nobody ever saw a
+# single diagnostic, because a gate you have to remember to switch on is a gate
+# that is off.
+#
+# When the build stops on one of these, the build is correct and the code is
+# not.  The three legitimate responses, in order of preference:
+#
+#   1. Handle the failure.  This is almost always the right answer.
+#   2. Make the failure visible where it happens -- pr_err with the CONSEQUENCE
+#      named, not just the fact ("no key events" beats "irq_register failed").
+#   3. NX_DISCARD(expr, "why") -- only for an error-unwind path where the
+#      cleanup failing changes nothing, or a best-effort refresh whose fallback
+#      is documented.  It requires a written reason precisely so it can be
+#      reviewed rather than merely noticed.
+#
+# What is NOT a response: deleting the annotation, adding -Wno-unused-result,
+# or a (void) cast (which does not suppress warn_unused_result under GCC and
+# only makes the omission look intentional -- the tree already had one).
+# ---------------------------------------------------------------------------
+
 COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
                -Wmissing-prototypes -Wstrict-prototypes \
                -ffreestanding -fno-builtin -nostdlib -nostartfiles \
@@ -37,6 +64,14 @@ COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
                -fno-pic -fno-pie \
                -fno-omit-frame-pointer \
                -O2 -g
+
+# NX_STRICT=1 turns the nx_contract.h annotations into enforced attributes
+# (NX_MUST_USE -> warn_unused_result).  With -Werror that makes every ignored
+# -errno a hard error, which is the point: `make NX_STRICT=1` is the report of
+# how much of the surface still drops failures on the floor.
+ifeq ($(NX_STRICT),1)
+COMMON_FLAGS += -DNX_STRICT
+endif
 
 ifeq ($(ARCH), amd64)
     CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
@@ -199,6 +234,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/mm/buffer.c \
     $(KERNEL_DIR)/lib/string.c \
     $(KERNEL_DIR)/lib/crc32.c \
+    $(KERNEL_DIR)/lib/sha256.c \
     $(KERNEL_DIR)/lib/vsnprintf.c \
     $(KERNEL_DIR)/lib/printk.c \
     $(KERNEL_DIR)/lib/fault_print.c \
@@ -339,6 +375,7 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/math.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/execsvc_client.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o \
@@ -541,7 +578,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
-           $(BUILD_DIR)/captest.elf \
+           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/libctest.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
            $(BUILD_DIR)/capreg.elf \
            $(BUILD_DIR)/capkill.elf $(BUILD_DIR)/capkill_child.elf \
@@ -549,6 +586,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/hello.elf \
            $(BUILD_DIR)/stress.elf \
            $(BUILD_DIR)/restest.elf \
+           $(BUILD_DIR)/env.elf \
 		   $(BUILD_DIR)/kilo.elf
 
 USER_ELFS = $(SYS_ELFS) $(BIN_ELFS)
@@ -561,6 +599,8 @@ $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -613,6 +653,7 @@ $(BUILD_DIR)/nxsettings.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxsettings.o $(USE
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/libctest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/libctest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capreg.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capreg.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -625,6 +666,7 @@ $(BUILD_DIR)/hello.elf: $(BUILD_DIR)/$(USER_DIR)/bin/hello.o $(USER_LIB_O) $(USE
 $(BUILD_DIR)/nxmemstat.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxmemstat.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/stress.elf: $(BUILD_DIR)/$(USER_DIR)/bin/stress.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/restest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/restest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/env.elf: $(BUILD_DIR)/$(USER_DIR)/bin/env.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxwins.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxwins.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -695,6 +737,7 @@ rootfs: user libsdl2 liblua
 	@# /home/shared).  Pre-created because ext4 has no directory creation yet:
 	@# Documents/doom hosts doom's config+savegames (replaces the hardcoded
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Documents/doom
+	@mkdir -p $(BUILD_DIR)/rootfs/home/Video
 	@mkdir -p $(BUILD_DIR)/rootfs/home/shared
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Settings
 	@-cp -r user/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
@@ -715,6 +758,7 @@ rootfs: user libsdl2 liblua
 	@-cp user/home/Pictures/globe.png $(BUILD_DIR)/rootfs/home/Pictures/ 2>/dev/null || true
 	@-cp user/home/Pictures/background/nxduck.png $(BUILD_DIR)/rootfs/home/Pictures/background/ 2>/dev/null || true
 	@-cp user/home/Pictures/icon/light/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/light/ 2>/dev/null || true
+	@-cp user/home/Video/*.mpeg $(BUILD_DIR)/rootfs/home/Video/ 2>/dev/null || true
 	@# doom savegames are runtime-created in /home/Documents/doom now; the
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
@@ -742,6 +786,7 @@ rootfs: user libsdl2 liblua
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
+	@-cp $(BUILD_DIR)/rootfs/bin/env $(BUILD_DIR)/rootfs/sys/bin/env 2>/dev/null || true
 
 disk: $(MKDISK) kernel rootfs bootloader
 	@mkdir -p $(BUILD_DIR)
@@ -920,6 +965,14 @@ run-direct: run
 debug: all
 	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 endif
+
+
+# lockcheck — the two memory/lock rules as a build gate (scripts/check-lockrules.py).
+# Not yet wired into `all`: the transitive closure is deliberately over-eager
+# and the current output needs a triage pass before it can block a build.
+# Run it before touching the scheduler or any teardown path.
+lockcheck:
+	@python3 scripts/check-lockrules.py
 
 disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 	$(OBJDUMP) -d $(KERNEL_ELF) > $(BUILD_DIR)/kernel.disasm

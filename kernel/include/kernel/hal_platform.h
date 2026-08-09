@@ -1,6 +1,7 @@
 #ifndef _KERNEL_HAL_PLATFORM_H
 #define _KERNEL_HAL_PLATFORM_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 #include <kernel/pmm.h>
 #include <kernel/hal_device.h>
@@ -31,7 +32,7 @@ typedef enum {
  * Find a device by its unified ID.
  * Returns 0 on success, fills 'out_dev'.
  */
-int hal_platform_find_device(hal_device_id_t id, hal_device_t *out_dev);
+int hal_platform_find_device(hal_device_id_t id, hal_device_t *out_dev) NX_MUST_USE;
 
 /* IRQ Abstraction */
 uint32_t hal_get_timer_irq(void);

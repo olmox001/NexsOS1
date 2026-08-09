@@ -1,6 +1,15 @@
 #ifndef LUA_PORTABILITY_H
 #define LUA_PORTABILITY_H
 
+/* l_noret: attribute for functions that never return.
+ * Lua's ldo.c luaD_throw is marked l_noret but GCC may not see all
+ * paths as noreturn (longjmp path). Force the attribute. */
+#if defined(__GNUC__)
+#define l_noret __attribute__((noreturn)) void
+#else
+#define l_noret void
+#endif
+
 #include <setjmp.h>
 #include <stddef.h>
 /* time_t/struct timespec/clock_gettime already exist as the system header
@@ -12,6 +21,7 @@
  * every other syscall wrapper agree on). Only struct tm/localtime/gmtime/
  * strftime/mktime below are genuinely new - time.h does not declare them. */
 #include <time.h>
+#include <math.h>
 
 /* Provide sig_atomic_t before Lua's <signal.h> include path resolves.
  * NexsOS1's <signal.h> does not declare it, but Lua's lstate.h uses it
@@ -30,27 +40,19 @@ typedef int sig_atomic_t;
 #define l_signalT sig_atomic_t
 #endif
 
-/* NexsOS1's <math.h> is minimal (only fabs). Lua needs more. Declare
- * the math symbols used by the Lua core and lmathlib. Implementations
- * are provided in lua_portability.c. */
-#ifndef HUGE_VAL
-#define HUGE_VAL (__builtin_huge_val())
-#endif
-#ifndef HUGE_VALF
-#define HUGE_VALF (__builtin_huge_valf())
-#endif
+/* NexsOS1's <math.h> now provides a full math library.
+ * The math symbols used by the Lua core and lmathlib are now in <math.h>.
+ * Only strtod and non-math symbols remain here. */
 
-#ifndef LUA_USE_NEXSOS
-#define LUA_USE_NEXSOS
-#endif
+/* HUGE_VAL/HUGE_VALF are now provided by <math.h> */
 
 /*
  * Lua module search path — the SINGLE authoritative definition.
  *
  * luaconf.h ships /usr/local paths; because this header is force-included
- * (-include lua_portability.h) ahead of lua.h, our LUA_ROOT/LDIR/CDIR and
+ * (-include) ahead of lua.h, our LUA_ROOT/LDIR/CDIR and
  * LUA_PATH_DEFAULT win over luaconf.h's #ifndef guards.  The Makefile no
- * longer passes any -DLUA_* path macro (a \"...;...\" -D can't survive the
+ * longer passes any -DLUA_* path macro (a "...;..." -D can't survive the
  * shell — the ';' break the compile line), so keep the paths here only.
  *
  * Root is /lib, NOT /home: the VFS write-ACL (kernel/fs/vfs.c
@@ -67,104 +69,34 @@ typedef int sig_atomic_t;
 /* Search the system module tree, then the current directory.  Defined
  * explicitly (rather than left to luaconf.h) to avoid the LDIR==CDIR
  * duplicate pair its generator would emit. */
-#define LUA_PATH_DEFAULT                                                        \
-  LUA_LDIR "?.lua;" LUA_LDIR "?/init.lua;"                                      \
+#define LUA_PATH_DEFAULT                                                       \
+  LUA_LDIR "?.lua;" LUA_LDIR "?/init.lua;"                                     \
            "./?.lua;./?/init.lua"
-#define LUA_CPATH_DEFAULT                                                       \
-  LUA_CDIR "?.so;" LUA_CDIR "loadall.so;./?.so"
+#define LUA_CPATH_DEFAULT LUA_CDIR "?.so;" LUA_CDIR "loadall.so;./?.so"
 
-double ldexp(double x, int exp);
-double frexp(double x, int *exp);
-double modf(double x, double *iptr);
-double floor(double x);
-double ceil(double x);
-double fmod(double x, double y);
-double pow(double x, double y);
-double sqrt(double x);
-double sin(double x);
-double cos(double x);
-double tan(double x);
-double asin(double x);
-double acos(double x);
-double atan(double x);
-double atan2(double y, double x);
-double log(double x);
-double log10(double x);
-double log2(double x);
-double exp(double x);
-double cosh(double x);
-double sinh(double x);
-double tanh(double x);
+/* Locale: override luaconf.h's localeconv-based macro before luaconf.h
+ * includes it.  NexsOS1 has no locale support; the decimal point is always '.'.
+ */
+#define lua_getlocaledecpoint() ('.')
 
-/* Locale definitions and categories */
-#define LC_ALL 0
-#define LC_COLLATE 1
-#define LC_CTYPE 2
-#define LC_MONETARY 3
-#define LC_NUMERIC 4
-#define LC_TIME 5
-
-struct lconv {
-  char *decimal_point;
-  char *thousands_sep;
-  char *grouping;
-  char *int_curr_symbol;
-  char *currency_symbol;
-  char *mon_decimal_point;
-  char *mon_thousands_sep;
-  char *mon_grouping;
-  char *positive_sign;
-  char *negative_sign;
-  char int_frac_digits;
-  char frac_digits;
-  char p_cs_precedes;
-  char p_sep_by_space;
-  char n_cs_precedes;
-  char n_sep_by_space;
-  char p_sign_posn;
-  char n_sign_posn;
-};
-
-char *setlocale(int category, const char *locale);
-struct lconv *localeconv(void);
-
-/* Time and Clock definitions.  time_t/struct timespec/clock_gettime come
- * from the system <time.h> (included above); only clock_t is new here. */
+/* time_t/struct tm/clock_gettime/nanosleep/time/mktime/difftime/localtime/
+ * gmtime/strftime are declared in <time.h> (system header).
+ * clock_t/tmpnam/clock are implemented below. */
 typedef long clock_t;
-
 #ifndef CLOCKS_PER_SEC
 #define CLOCKS_PER_SEC 1000000000L
 #endif
-
 #ifndef L_tmpnam
 #define L_tmpnam 128
 #endif
 
 char *tmpnam(char *s);
 clock_t clock(void);
-double difftime(time_t time1, time_t time0);
-
-struct tm {
-  int tm_sec;
-  int tm_min;
-  int tm_hour;
-  int tm_mday;
-  int tm_mon;
-  int tm_year;
-  int tm_wday;
-  int tm_yday;
-  int tm_isdst;
-};
-
-time_t time(time_t *t);
-struct tm *localtime(const time_t *timep);
-struct tm *gmtime(const time_t *timep);
-size_t strftime(char *s, size_t max, const char *format, const struct tm *tm);
-time_t mktime(struct tm *tm);
 
 /* Double conversions */
-double strtod(const char *nptr, char **endptr);
 int strcoll(const char *s1, const char *s2);
+
+#include <locale.h>
 
 /* Declaration of os1 library open function */
 struct lua_State;

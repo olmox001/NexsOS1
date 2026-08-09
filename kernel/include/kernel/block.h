@@ -10,6 +10,7 @@
 #ifndef _KERNEL_BLOCK_H
 #define _KERNEL_BLOCK_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 
 struct block_dev {
@@ -28,7 +29,7 @@ const char *block_active_name(void);
 
 /* Read/write 'count' 512-byte sectors at 'sector' through the active backend.
  * Return 0 on success, negative on failure (no backend -> failure). */
-int block_read(void *buf, uint64_t sector, uint32_t count);
-int block_write(void *buf, uint64_t sector, uint32_t count);
+int block_read(void *buf, uint64_t sector, uint32_t count) NX_MUST_USE;
+int block_write(void *buf, uint64_t sector, uint32_t count) NX_MUST_USE;
 
 #endif /* _KERNEL_BLOCK_H */

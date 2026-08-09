@@ -13,6 +13,7 @@
 #ifndef _KERNEL_FAULT_H
 #define _KERNEL_FAULT_H
 
+#include <kernel/nx_contract.h>
 #include <stdarg.h>
 #include <kernel/types.h>
 
@@ -72,7 +73,7 @@ struct cpu_info *arch_cpu_info_fault_safe(void);
  * parked the original SP at frame+816).  amd64 does not define it — the IST
  * mechanism is transparent there.
  */
-int arch_frame_on_fault_stack(const void *frame);
+int arch_frame_on_fault_stack(const void *frame) NX_MUST_USE;
 
 /*
  * fault_handle_user_or_panic - generic user-vs-kernel fault decision

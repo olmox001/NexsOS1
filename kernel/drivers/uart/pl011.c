@@ -36,6 +36,7 @@
  *                serialises concurrent consumers, so rx_tail can no longer be
  *                corrupted.  rx_lock is distinct from uart_lock (TX).
  */
+#include <kernel/printk.h>
 #include <drivers/uart.h>
 #include <kernel/arch.h>
 #include <kernel/io_poll.h>
@@ -178,7 +179,12 @@ void uart_init(void) {
   UART_REG(UART_IMSC) = UART_IMSC_RXIM;
 
   /* Register IRQ */
-  irq_register(PLATFORM_IRQ_UART0, uart_irq_handler, NULL);
+  /* The UART is the diagnostic channel of last resort: losing its IRQ
+   * silently is exactly the failure that leaves you with no way to see
+   * failures. */
+  if (irq_register(PLATFORM_IRQ_UART0, uart_irq_handler, NULL) != 0)
+    pr_err("%s", "pl011: cannot register UART0 IRQ — input on the serial "
+                 "console will not be delivered\n");
 
   /* Enable UART, TX and RX */
   UART_REG(UART_CR) = UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE;

@@ -313,10 +313,18 @@ void buffer_sync(void) {
   spin_unlock_irqrestore(&buffer_lock, flags);
 
   for (int i = 0; i < ndirty; i++) {
-    block_write(dirty[i]->data, dirty[i]->block * SECTORS_PER_BLOCK,
-                     SECTORS_PER_BLOCK);
+    /* Writeback: the DIRTY bit is cleared below to say "this buffer matches
+     * the disk".  Clearing it after a FAILED write asserts exactly the thing
+     * that did not happen, and the block is then never retried -- silent data
+     * loss.  The bit is only cleared when the write actually succeeded. */
+    int wb = block_write(dirty[i]->data, dirty[i]->block * SECTORS_PER_BLOCK,
+                         SECTORS_PER_BLOCK);
+    if (wb < 0)
+      pr_err("buffer: writeback of block %lu FAILED — left dirty for retry\n",
+             (unsigned long)dirty[i]->block);
     spin_lock_irqsave(&buffer_lock, &flags);
-    dirty[i]->flags &= ~BUFFER_DIRTY;
+    if (wb >= 0)
+      dirty[i]->flags &= ~BUFFER_DIRTY;
     if (dirty[i]->ref_count > 0)
       dirty[i]->ref_count--;
     spin_unlock_irqrestore(&buffer_lock, flags);

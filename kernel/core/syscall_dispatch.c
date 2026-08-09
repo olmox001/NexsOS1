@@ -189,6 +189,29 @@ static uint8_t level_for_path(const char *path) {
   return PLVL_USER;
 }
 
+/* spawn_path_is_sane - reject a spawn path the preset cannot reason about.
+ *
+ * SPAWN-LVL-01 (found 2026-07-23, audit programme A): level_for_path() prefix-
+ * matches the RAW string, but the VFS resolves ".." (vfs.c).  So
+ * "/sys/bin/../../home/evil" prefix-matches /sys/bin/ and would take the ROOT
+ * preset while resolving to a user-writable file.  It is NOT an escalation
+ * today — the monotonic creator clamp in process_create_caps drags the child
+ * back to the (less-privileged) creator's level, so a USER caller gets USER
+ * regardless.  But "harmless only because a SECOND, distant check happens to
+ * cover it" is exactly the fragility this audit exists to remove: the preset
+ * must see the path the VFS will actually open.  No legitimate caller spawns a
+ * path containing ".." (verified across the tree), so refusing them costs
+ * nothing and makes level_for_path()'s prefix match sound. */
+static int spawn_path_is_sane(const char *path) {
+  if (!path || !path[0])
+    return 0;
+  for (const char *p = path; *p; p++)
+    if (p[0] == '.' && p[1] == '.' &&
+        (p == path || p[-1] == '/') && (p[2] == '/' || p[2] == '\0'))
+      return 0; /* a ".." path component */
+  return 1;
+}
+
 /* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
  *
  * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
@@ -202,6 +225,9 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
    * spawn_caps may only DROP privilege below it (a request more privileged than
    * the path is capped to the path).  The creator-clamp in process_create_caps
    * then forbids any escalation regardless. */
+  if (!spawn_path_is_sane(path))
+    return -EINVAL; /* SPAWN-LVL-01: no ".." — the preset must match the VFS */
+
   uint8_t path_lvl = level_for_path(path);
   if (!use_caps || level < path_lvl)
     level = path_lvl;
@@ -237,13 +263,39 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
           rerr = -EPERM;
           break;
         }
+        /*
+         * PROC-REF-01 is NOT closed here, deliberately — and the first attempt
+         * to close it introduced a worse bug than the one it fixed.
+         *
+         * That attempt held sched_lock across the lookup AND
+         * process_redirect_child_fd_from().  But that function ALLOCATES:
+         * handles_ensure() kmallocs the child's table and kobj_free() releases
+         * the displaced console handle.  Allocating under sched_lock creates
+         * the sched_lock -> pmm_lock/kmalloc_lock order that process.c states
+         * in writing "nothing else in this file establishes" — the same reason
+         * process_create_caps allocates the environment page BEFORE taking the
+         * lock.  With IRQs disabled, an idle core spinning inside the allocator
+         * while this CPU holds sched_lock and waits for it is a hard hang; that
+         * is the amd64 K3-userland panic (corrupted RSP, execution off into the
+         * stack).
+         *
+         * The other two PROC-REF-01 sites (sys_cap_grant, sys_port_send_caps)
+         * are safe because they were made ALLOCATION-FREE under the lock on
+         * purpose: both refuse a target with no handle table rather than
+         * creating one.  This path cannot be made allocation-free the same way
+         * — the child legitimately may need its table built.
+         *
+         * So this site keeps the narrow, pre-existing use-after-free window and
+         * waits for the real fix (a process pin/refcount), which is what
+         * PROC-REF-01 asks for.  A rare UAF is strictly better than a
+         * reproducible deadlock in the path every system() call takes.
+         */
         struct process *src = process_find_by_pid(redir[i].source_pid);
-        if (!src) {
+        if (!src)
           rerr = -ESRCH;
-          break;
-        }
-        rerr = process_redirect_child_fd_from(src, p, redir[i].child_fd,
-                                              redir[i].parent_fd);
+        else
+          rerr = process_redirect_child_fd_from(src, p, redir[i].child_fd,
+                                                redir[i].parent_fd);
       }
       if (rerr != 0)
         break;
@@ -280,11 +332,54 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
 extern void uart_puts(const char *str);
 /* Non-static: also the OBJ_TYPE_CONSOLE stdout/stderr backend, called from
  * kernel/core/object.c (sys_object_write).  Shared by SYS_WINDOW_WRITE. */
+/*
+ * GFX-WIN-WRITE-01 (found 2026-07-23, audit programme A) — may 'current' put
+ * text into window 'win_id'?
+ *
+ * SYS_WINDOW_WRITE was gated by CAP_WINDOW and nothing else, while every
+ * sibling verb had already been closed: DRAW and BLIT pass the caller's pid so
+ * the compositor can refuse, RESIZE / SET_FLAGS / DESTROY_WINDOW check
+ * compositor_window_owner() right in the dispatcher.  This one was missed, and
+ * CAP_WINDOW is the WEAKEST capability there is — PLVL_GUEST holds it and
+ * nothing else (level_ceiling[], process.c).  So the least privileged process
+ * on the machine could write arbitrary text into ANY window, and it did not
+ * even have to guess an id: SYS_WINDOW_ENUM is deliberately ungated.  That is a
+ * UI-spoofing primitive against the shell, the dock and the notification panel.
+ *
+ * Three writers are legitimate and all three are expressible as authority the
+ * process already holds:
+ *   - the window's OWNER;
+ *   - a process writing to its CONTROLLING TERMINAL.  This is the one that
+ *     makes an owner-only check wrong: a windowless child's stdout goes to the
+ *     shell's window (sys_object_write resolves ctty_win), and it does not own
+ *     it.  ctty_win is set by the kernel at spawn and is not user-writable, so
+ *     honouring it grants nothing the process was not already given;
+ *   - a MACHINE process, exactly as SET_FLAGS and DESTROY_WINDOW allow.
+ *
+ * Locking: called with NO lock held (pin_handle releases object_lock before
+ * sys_object_write reaches here, and the dispatcher holds nothing), so taking
+ * compositor_lock inside compositor_window_owner() is safe.  Do not move this
+ * check under a lock without re-reading PROCESS-KILL-MODEL §4, Pitfall A.
+ */
+static int window_write_allowed(int win_id) {
+  extern int compositor_window_owner(int window_id);
+  if (!current_process)
+    return 1; /* kernel-internal writer */
+  if (proc_is_machine(current_process))
+    return 1;
+  if (win_id == current_process->ctty_win)
+    return 1;
+  int owner = compositor_window_owner(win_id);
+  return (owner < 0) || (owner == (int)current_process->pid);
+}
+
 long window_text_write(int win_id, const char *ubuf, size_t count) {
   if (count == 0)
     return 0;
   if (count > SYSCALL_MAX_IO_BYTES)
     return -EINVAL;
+  if (win_id > 0 && !window_write_allowed(win_id))
+    return -EPERM;
   char *k = kmalloc(count + 1);
   if (!k)
     return -ENOMEM;
@@ -363,7 +458,16 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
         }
         /* No vfs_truncate primitive: drop and recreate empty — same net effect
          * as truncate-to-zero, reusing the create-on-write model. */
-        vfs_unlink(resolved);
+        /* -ENOENT is the normal case (truncating a file that does not exist
+         * yet); anything else is a real failure that used to be swallowed, so
+         * an EACCES or EIO here became a silent "truncate succeeded". */
+        {
+          int ur = vfs_unlink(resolved);
+          if (ur != 0 && ur != -ENOENT) {
+            pt_regs_set_return(frame, ur);
+            break;
+          }
+        }
         if (vfs_create(resolved, VFS_TYPE_FILE) != 0) {
           pt_regs_set_return(frame, -EIO);
           break;
@@ -604,19 +708,28 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       int r = compositor_set_style((int)arg0);
       rc |= r;
       if (r == 0 && (int)arg0 < OS1_STYLE_COUNT)
-        registry_set("style.name", os1_style_names[(int)arg0], 0);
+        if (registry_set("style.name", os1_style_names[(int)arg0], 0) != 0)
+        rc |= -EIO; /* applied but NOT persisted: it survives until
+                     * reboot and then silently reverts, which is
+                     * worse than failing now */
     }
     if ((int)arg1 >= 0) {
       int r = compositor_set_theme((int)arg1);
       rc |= r;
       if (r == 0 && (int)arg1 < OS1_THEME_COUNT)
-        registry_set("theme.color", os1_theme_names[(int)arg1], 0);
+        if (registry_set("theme.color", os1_theme_names[(int)arg1], 0) != 0)
+        rc |= -EIO; /* applied but NOT persisted: it survives until
+                     * reboot and then silently reverts, which is
+                     * worse than failing now */
     }
     if ((int)arg2 >= 0) {
       int r = compositor_set_background((int)arg2);
       rc |= r;
       if (r == 0 && (int)arg2 < OS1_BG_COUNT)
-        registry_set("background.name", os1_bg_names[(int)arg2], 0);
+        if (registry_set("background.name", os1_bg_names[(int)arg2], 0) != 0)
+        rc |= -EIO; /* applied but NOT persisted: it survives until
+                     * reboot and then silently reverts, which is
+                     * worse than failing now */
     }
     pt_regs_set_return(frame, rc);
     break;
@@ -867,8 +980,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * with src_pid=0 and slept forever on a non-empty queue).
      * NOTE(IPC-02): still unconditionally schedules — a delivered message
      * costs an extra yield. */
+    /* No current task means the scheduler is between reaping the previous one
+     * and picking the next; sys_ipc_recv walks current_process->msg_queue
+     * unguarded, so it must not be entered in that window.  aarch64's EL0
+     * vector already refuses to continue in this state (it panics by name);
+     * amd64 has no such guard, which is why this check lives here, in the
+     * shared dispatcher, rather than in one arch's entry path. */
+    if (!current_process) {
+      pt_regs_set_return(frame, -ESRCH);
+      return schedule(frame);
+    }
     long rc = sys_ipc_recv((int)arg0, (void *)arg1);
-    if (rc != IPC_RECV_RETRY)
+    if (rc == IPC_RECV_RETRY)
+      pt_regs_retry_syscall(frame); /* the LIVE frame — see sys_ipc_recv */
+    else
       pt_regs_set_return(frame, rc);
     return schedule(frame);
   }
@@ -910,116 +1035,65 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * only test the return value are unaffected. */
     int wcode = 0;
     long wr = process_wait((int)arg0, &wcode);
-    if (arg1 && wr >= 0)
-      (void)arch_copy_to_user((void *)arg1, &wcode, sizeof(wcode));
+    /* The (void) cast that used to be here did not suppress the attribute, it
+     * only made the omission look deliberate.  A bad status pointer is -EFAULT
+     * under POSIX, not a successful wait whose status silently never arrived. */
+    if (arg1 && wr >= 0 &&
+        arch_copy_to_user((void *)arg1, &wcode, sizeof(wcode)) != 0)
+      wr = -EFAULT;
     pt_regs_set_return(frame, wr);
   } break;
   case SYS_REGISTRY:
     pt_regs_set_return(frame, sys_registry((int)arg0, (const char *)arg1,
                                            (char *)arg2, (size_t)arg3));
     break;
-  case SYS_FILE_WRITE: {
-    struct cpu_info *cpu = get_cpu_info();
-    char *k_path = cpu->syscall_buf;
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
-      break;
-    }
-    char resolved_path[128];
-    vfs_resolve_path(k_path, resolved_path, 128);
-    /* Single write-authority seam (S-ALIGN F6): CAP_FS_WRITE + /sys,/bin ACL
-     * live in vfs_write_allowed(), shared with SYS_UNLINK and open-for-write.
+  case SYS_STAT: {
+    /*
+     * Path metadata in ONE round trip: type + size.
+     *
+     * Why this exists (R1-fix).  R1 removed the ambient FS verbs and composed
+     * their users over the object layer, which was right for the DATA path but
+     * had two costs the composition could not absorb:
+     *
+     *  - CORRECTNESS.  opendir() and stat() both relied on the invariant "the
+     *    list primitive succeeds ONLY on a directory".  Once a READ handle could
+     *    be acquired on any path, object_read on a FILE returned its CONTENT, so
+     *    opendir() succeeded on regular files — the file manager then marked
+     *    every file a directory and double-clicking one tried to chdir into it
+     *    ("Cannot open directory").  The type distinction has to come from the
+     *    kernel, which is the only place that knows it.
+     *  - COST.  The size probe became handle_create + OBJ_CTL_STAT + close:
+     *    three syscalls and two path resolutions for one number, on the path
+     *    every fopen() takes.
+     *
+     * This is a NET REDUCTION even though it adds a number: it replaces three
+     * retired verbs and the three-call dance, and it duplicates nothing — it
+     * asks the same VFS the object layer asks.
      */
-    long wperm = vfs_write_allowed(resolved_path);
-    if (wperm != 0) {
-      pt_regs_set_return(frame, wperm);
-      break;
-    }
-    /* File CREATION (issue #126, NOTE(M4.5-FS-WRITE)): creation authority
-     * IS write authority for the path — vfs_write_allowed above already
-     * applied the whole tree ACL (/home open to users, guest confined to
-     * /home/shared, /sys/bin machine-only, every other tree root/machine).
-     * The old extra machine-only gate predates /home and kept kilo/doom
-     * from ever creating a file; the tree policy is the single seam now. */
-    struct vfs_stat wst;
-    if (vfs_stat(resolved_path, &wst) != 0) {
-      if (vfs_create(resolved_path, VFS_TYPE_FILE) != 0) {
-        pt_regs_set_return(frame, -EIO);
-        break;
-      }
-    }
-    size_t size = (size_t)arg2;
-    if (size >
-        SYSCALL_MAX_IO_BYTES) { /* FIX(EXT4-07): reject absurd user size */
-      pt_regs_set_return(frame, -EINVAL);
-      break;
-    }
-    if (size == 0) {
-      /* Zero-length write: nothing to copy (falling through to kmalloc(0)
-       * returns NULL and would fail a valid POSIX zero-write with -ENOMEM).
-       * The file was created/already exists above.  A from-start (offset 0)
-       * zero write still truncates the file to empty through the provider —
-       * the create/truncate-empty idiom (fopen("w"), nxfilem, an editor saving
-       * a now-empty buffer); a non-zero offset zero write is a pure no-op. */
-      if ((uint32_t)arg3 == 0)
-        (void)vfs_write_file(resolved_path, "", 0, 0);
-      pt_regs_set_return(frame, 0);
-      break;
-    }
-    uint8_t *k_buf = kmalloc(size);
-    if (!k_buf) {
-      pt_regs_set_return(frame, -ENOMEM);
-      break;
-    }
-    if (arch_copy_from_user(k_buf, (const void *)arg1, size) != 0) {
-      kfree(k_buf);
-      pt_regs_set_return(frame, -EFAULT);
-      break;
-    }
-    uint32_t offset = (uint32_t)arg3;
-    int wr = vfs_write_file(resolved_path, k_buf, (uint32_t)size, offset);
-    pt_regs_set_return(frame, wr < 0 ? -EIO : wr);
-    kfree(k_buf);
-  } break;
-  case SYS_FILE_READ: {
-    char k_path[128];
+    /* Path copies go in the per-CPU scratch buffer, per this file's own rule
+     * ("cpu->syscall_buf is used for path/title copies; only one such copy is
+     * in flight per CPU"), not on the kernel stack. */
+    char *k_path = get_cpu_info()->syscall_buf;
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       pt_regs_set_return(frame, -EFAULT);
       break;
     }
-    char resolved_path[128];
+    char *resolved_path = k_path + 128; /* same 2 KiB scratch, second slot */
     vfs_resolve_path(k_path, resolved_path, 128);
-    size_t size = (size_t)arg2;
-    if (size >
-        SYSCALL_MAX_IO_BYTES) { /* FIX(EXT4-07): reject absurd user size */
-      pt_regs_set_return(frame, -EINVAL);
+    struct vfs_stat vst;
+    if (vfs_stat(resolved_path, &vst) != 0) {
+      pt_regs_set_return(frame, -ENOENT);
       break;
     }
-    uint32_t offset = (uint32_t)arg3;
-    long ret;
-
-    if (size == 0) {
-      int probed = vfs_read_file(resolved_path, NULL, 0, offset);
-      ret = probed < 0 ? -ENOENT : probed;
-    } else {
-      uint8_t *k_buf = kmalloc(size);
-      if (!k_buf) {
-        pt_regs_set_return(frame, -ENOMEM);
-        break;
-      }
-
-      int bytes_read =
-          vfs_read_file(resolved_path, k_buf, (uint32_t)size, offset);
-      if (bytes_read < 0) {
-        ret = -ENOENT; /* missing path is by far the dominant failure */
-      } else if (arch_copy_to_user((void *)arg1, k_buf, bytes_read) != 0) {
-        ret = -EFAULT;
-      } else {
-        ret = bytes_read;
-      }
-      kfree(k_buf);
+    struct abi_stat ast;
+    memset(&ast, 0, sizeof(ast));
+    ast.size = vst.size;
+    ast.type = vst.type; /* ABI_S_TYPE_* match VFS_TYPE_* by value */
+    if (arch_copy_to_user((void *)arg1, &ast, sizeof(ast)) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
     }
-    pt_regs_set_return(frame, ret);
+    pt_regs_set_return(frame, 0);
   } break;
   case SYS_SET_FONT:
     /* Replacing the GLOBAL system font is a desktop-wide display change (it
@@ -1032,37 +1106,6 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     pt_regs_set_return(frame, sys_set_font((void *)arg0, (size_t)arg1));
     break;
-  case SYS_LIST_DIR: {
-    char k_path[128];
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
-      break;
-    }
-    char resolved_path[128];
-    vfs_resolve_path(k_path, resolved_path, 128);
-    size_t size = (size_t)arg2;
-    if (size >
-        SYSCALL_MAX_IO_BYTES) { /* FIX(EXT4-07): reject absurd user size */
-      pt_regs_set_return(frame, -EINVAL);
-      break;
-    }
-    char *k_buf = kmalloc(size);
-    if (!k_buf) {
-      pt_regs_set_return(frame, -ENOMEM);
-      break;
-    }
-    long ret;
-    int res = vfs_list_dir(resolved_path, k_buf, (uint32_t)size);
-    if (res < 0) {
-      ret = -ENOENT;
-    } else if (arch_copy_to_user((void *)arg1, k_buf, res + 1) != 0) {
-      ret = -EFAULT;
-    } else {
-      ret = res;
-    }
-    kfree(k_buf);
-    pt_regs_set_return(frame, ret);
-  } break;
   case SYS_CHDIR: {
     char k_path[128];
     if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
@@ -1368,6 +1411,10 @@ void sys_exit(int status) {
              status); /* hot path: demoted (perf §1) */
     current_process->exit_code = status & 0xff; /* Phase 2: collectable by a waiter */
     current_process->exited = 1;                 /* voluntary exit (not killed) */
-    process_terminate(current_process->pid);
+    /* Nothing to propagate to: the caller is exiting.  Reported so a failure
+     * to tear down is visible instead of leaving a process that believes it
+     * exited still in the pool. */
+    if (process_terminate(current_process->pid) != 0)
+      pr_err("exit: process_terminate(%d) failed\n", current_process->pid);
   }
 }

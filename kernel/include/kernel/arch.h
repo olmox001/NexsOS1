@@ -1,6 +1,7 @@
 #ifndef _KERNEL_ARCH_H
 #define _KERNEL_ARCH_H
 
+#include <kernel/nx_contract.h>
 #include <kernel/types.h>
 
 /* Architecture-specific primitives are included here.
@@ -18,7 +19,7 @@ struct process;
 void arch_cpu_init(void);
 void arch_smp_init(void);
 void arch_smp_setup_stacks(uint32_t cpu_count);
-int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack);
+int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) NX_MUST_USE;
 void arch_cpu_switch_context(struct process *next);
 
 /* arch_cpu_yield - HAL primitive: cooperative reschedule from kernel (task)
@@ -79,23 +80,23 @@ static inline void arch_reboot(void) {
 }
 
 /* --- Memory Access HAL --- */
-int arch_copy_from_user(void *dest, const void *src, size_t n);
-int arch_copy_to_user(void *dest, const void *src, size_t n);
-int arch_copy_string_from_user(char *dest, const char *src, size_t max_len);
+int arch_copy_from_user(void *dest, const void *src, size_t n) NX_MUST_USE;
+int arch_copy_to_user(void *dest, const void *src, size_t n) NX_MUST_USE;
+int arch_copy_string_from_user(char *dest, const char *src, size_t max_len) NX_MUST_USE;
 
 /* --- Memory Management (VMM/TLB/Cache) --- */
 void arch_vmm_init_hw(uint64_t kernel_pgd);
 void arch_vmm_map_mmio(uint64_t *pgd);
-int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags);
-int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, uint64_t flags);
-int arch_vmm_unmap(uint64_t pgd, uint64_t va);
+int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags) NX_MUST_USE;
+int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, uint64_t flags) NX_MUST_USE;
+int arch_vmm_unmap(uint64_t pgd, uint64_t va) NX_MUST_USE;
 /* arch_vmm_protect: rewrite the attributes of existing 4KB mappings in
  * [va, va+size).  'flags' is the arch's PAGE/PTE profile (same vocabulary
  * as arch_vmm_map); the frame address is preserved, every attribute bit is
  * replaced.  Large pages covering the range are split first.  Ends with a
  * cross-CPU TLB shootdown.  Returns 0, or -1 on a hole in the range
  * (already-rewritten pages keep the new attributes). */
-int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags);
+int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) NX_MUST_USE;
 uint64_t arch_vmm_get_physical(uint64_t pgd, uint64_t va);
 void arch_vmm_set_secondary_pgd(uint64_t pgd);
 
@@ -159,7 +160,7 @@ static inline int arch_spin_trylock(volatile uint32_t *lock) { return arch_impl_
 /* --- VirtIO Bus HAL --- */
 uint32_t arch_virtio_read32(uintptr_t base, uint32_t offset);
 void arch_virtio_write32(uintptr_t base, uint32_t offset, uint32_t val);
-int arch_virtio_probe(uint32_t device_id, uintptr_t *out_base, uint32_t *out_irq);
+int arch_virtio_probe(uint32_t device_id, uintptr_t *out_base, uint32_t *out_irq) NX_MUST_USE;
 
 #endif /* __ASSEMBLER__ */
 
