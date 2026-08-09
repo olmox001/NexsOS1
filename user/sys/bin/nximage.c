@@ -1,6 +1,7 @@
 #include <image.h>
 #include <input.h>
 #include <os1.h>
+#include <os1vid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -334,6 +335,105 @@ static int run_terminal(const char *path, os1_image_t *img) {
   return 0;
 }
 
+/*
+ * run_video - windowed playback for a .mpg/.mpeg (MPEG1 + MP2, MP2 disabled —
+ * see os1vid.h's header comment) file via os1vid.h.
+ *
+ * Deliberately simpler than run_window(): no zoom toolbar (the video decodes
+ * at a fixed size, and rescaling every decoded frame every tick is a real
+ * cost the still-image path doesn't have to pay), no PAD/TOOLBAR chrome —
+ * just the video letterboxed into a window sized to fit the screen. 'q'/Esc
+ * quits; the window does not support live resize.
+ */
+static int run_video(const char *path) {
+  os1vid_t *v = os1vid_open(path);
+  if (!v) {
+    printf("nximage: unable to decode '%s' as MPEG1 (.mpg/.mpeg)\n", path);
+    printf("Convert other formats first, e.g.:\n");
+    printf("  ffmpeg -i input.mp4 -c:v mpeg1video -c:a mp2 -format mpeg "
+           "output.mpg\n");
+    return 1;
+  }
+
+  update_screen_size();
+  int max_w = (g_screen_w * 9) / 10;
+  int max_h = (g_screen_h * 8) / 10;
+  int ww = v->width;
+  int wh = v->height;
+  if (ww > max_w || wh > max_h) {
+    /* Letterbox to fit the screen; the decoded buffer stays full-size, we
+     * just don't upload more of it than the window shows. */
+    int fit_w = 0, fit_h = 0;
+    if (os1_image_fit_size(v->width, v->height, max_w, max_h, 0, &fit_w,
+                           &fit_h) == OS1_IMAGE_OK) {
+      ww = fit_w;
+      wh = fit_h;
+    }
+  }
+  if (ww < MIN_W)
+    ww = MIN_W;
+  if (wh < MIN_H)
+    wh = MIN_H;
+
+  int wx = (g_screen_w - ww) / 2;
+  int wy = (g_screen_h - wh) / 2;
+
+  char title[64];
+  snprintf(title, sizeof(title), "nximage: %s", path);
+  int win = create_window(wx, wy, ww, wh, title);
+  if (win < 0) {
+    os1vid_close(v);
+    return 1;
+  }
+
+  printf("nximage: playing %s (%dx%d, %.2f fps, MPEG1, no audio device)\n",
+         path, v->width, v->height, v->framerate);
+
+  int quit = 0;
+  while (!quit) {
+    if (os1vid_update(v)) {
+      if (ww == v->width && wh == v->height) {
+        window_blit(win, 0, 0, v->width, v->height, v->pixels);
+      } else {
+        /* Simple nearest-neighbour letterbox blit into the fitted window
+         * size; reuses os1_image_resample() by wrapping the decoded frame
+         * as a throwaway os1_image_t (no copy of the pixel data itself). */
+        os1_image_t frame_view = {v->width, v->height, v->pixels};
+        os1_image_t *scaled = os1_image_resample(&frame_view, ww, wh);
+        if (scaled) {
+          window_blit(win, 0, 0, ww, wh, scaled->pixels);
+          free(scaled->pixels);
+          free(scaled);
+        }
+      }
+      compositor_render();
+    }
+
+    if (os1vid_has_ended(v)) {
+      destroy_window(win);
+      os1vid_close(v);
+      return 0;
+    }
+
+    input_event_t ev;
+    while (input_poll_event(&ev) == 1) {
+      if (ev.type == INPUT_TYPE_KEYBOARD && ev.keyboard.state == KEY_PRESSED) {
+        if (ev.keyboard.key == 'q' || ev.keyboard.key == 'Q' ||
+            ev.keyboard.scancode == INPUT_KEY_ESC) {
+          quit = 1;
+        }
+      }
+    }
+    OS1_sleep(8); /* os1vid_update() paces itself off real elapsed time, so a
+                   * short poll interval just keeps input/quit responsive —
+                   * it does not throttle the video to this rate. */
+  }
+
+  destroy_window(win);
+  os1vid_close(v);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   int term = 0;
   const char *path = "/home/Pictures//globe.png";
@@ -346,10 +446,20 @@ int main(int argc, char **argv) {
     path = argv[1];
   }
 
+  if (os1vid_path_has_known_ext(path)) {
+    if (term) {
+      printf("nximage: --term does not support video playback; drop --term "
+             "to open %s in a window.\n",
+             path);
+      return 1;
+    }
+    return run_video(path);
+  }
+
   os1_image_t *img = os1_image_load(path);
   if (!img) {
     printf("nximage: unable to load '%s'\n", path);
-    printf("usage: nximage [--term] [file.png]\n");
+    printf("usage: nximage [--term] [file.png|file.mpg]\n");
     return 1;
   }
 

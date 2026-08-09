@@ -54,11 +54,11 @@
 #include "portability/os1_video_platform.h"
 #include <ctype.h>
 #include <errno.h>
+#include <execsvc.h>
 #include <fcntl.h>
 #include <graphics.h>
 #include <input.h>
 #include <math.h>
-#include <execsvc.h>
 #include <os1.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,9 +70,9 @@
 #include <dirent.h>
 #include <poll.h>
 #include <signal.h>
-#include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <termios.h>
 
 #pragma GCC diagnostic push
@@ -97,6 +97,22 @@
 #define STBI_NO_FAILURE_STRINGS
 #define STBI_MAX_DIMENSIONS 4096
 #include <stb_image.h>
+#pragma GCC diagnostic pop
+
+/*
+ * OS1VID_IMPLEMENTATION: istanzia qui, una sola volta per l'intero link
+ * (stesso pattern di STB_IMAGE_IMPLEMENTATION sopra), il compat layer video
+ * (include/api/os1vid.h) che include a sua volta include/api/pl_mpeg.h
+ * (upstream MIT, NON modificato:
+ * https://raw.githubusercontent.com/phoboslab/pl_mpeg/master/pl_mpeg.h).
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wimplicit-function-declaration"
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#define OS1VID_IMPLEMENTATION
+#include <os1vid.h>
 #pragma GCC diagnostic pop
 
 /* errno: global error variable expected by POSIX-style libc callers. */
@@ -331,7 +347,8 @@ void OS1low_process_exit(int status) {
 
 /* Bare-name compat shims (DIR-01). */
 int get_pid(void) { return OS1low_process_self(); }
-/* --- POSIX <unistd.h> personality (thin mapping onto the OS1 verbs above) --- */
+/* --- POSIX <unistd.h> personality (thin mapping onto the OS1 verbs above) ---
+ */
 /* getpid: the POSIX spelling of get_pid(). */
 int getpid(void) { return get_pid(); }
 /* isatty: a descriptor is a terminal iff the object behind its handle is a
@@ -397,11 +414,13 @@ long OS1_object_wait(int handle, long arg) {
  */
 int OS1_port_create(const char *name) {
   /* RECEIVE right publishes the port and claims ownership; TRANSFER lets the
-   * owner delegate send rights onward (cap_grant) without re-opening by name. */
-  return (int)errno_ret(OS1low_handle_create(
-      OS1_NS_PORT, name,
-      OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE,
-      OBJ_TYPE_PORT));
+   * owner delegate send rights onward (cap_grant) without re-opening by name.
+   */
+  return (int)errno_ret(OS1low_handle_create(OS1_NS_PORT, name,
+                                             OS1_RIGHT_READ | OS1_RIGHT_WRITE |
+                                                 OS1_RIGHT_TRANSFER |
+                                                 OS1_RIGHT_DUPLICATE,
+                                             OBJ_TYPE_PORT));
 }
 int OS1_port_open(const char *name) {
   /* No READ: a client gets a SEND-only capability to an existing service. */
@@ -596,7 +615,7 @@ void set_focus(int pid) { OS1_window_set_focus(pid); }
  * vsnprintf.c provides vsnprintf/vsscanf; math.c provides fixed-point trig
  * and DEG_TO_FP_RAD/cos_fp/sin_fp/fixmul used by demo3d; string.c provides
  * memset/memcpy/strlen/strcmp/strncmp/strchr etc. */
-#include "../../kernel/lib/math.c"
+/* math functions now in user/sys/lib/math.c (IEEE-754 float/double) */
 #include "../../kernel/lib/string.c"
 #include "../../kernel/lib/vsnprintf.c"
 #include "font_lib.c"
@@ -702,12 +721,12 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
     errno = EINVAL;
     return -EINVAL;
   }
-  long h = OS1low_handle_create(OS1_NS_FS, path,
-                                OS1_RIGHT_WRITE | OS1_RIGHT_CREATE,
-                                OBJ_TYPE_FILE);
+  long h = OS1low_handle_create(
+      OS1_NS_FS, path, OS1_RIGHT_WRITE | OS1_RIGHT_CREATE, OBJ_TYPE_FILE);
   if (h < 0) {
     errno = (int)-h;
-    OS1_report_error(path, (int)h); /* surface EACCES/EIO; ENOENT stays silent */
+    OS1_report_error(path,
+                     (int)h); /* surface EACCES/EIO; ENOENT stays silent */
     return (int)h;
   }
   long w = 0;
@@ -1154,8 +1173,8 @@ FILE *fopen(const char *path, const char *mode) {
   {
     int oflags;
     if (mode[0] == 'r')
-      oflags = (mode[1] == '+' || (mode[1] && mode[2] == '+')) ? O_RDWR
-                                                              : O_RDONLY;
+      oflags =
+          (mode[1] == '+' || (mode[1] && mode[2] == '+')) ? O_RDWR : O_RDONLY;
     else
       oflags = O_RDWR; /* "w"/"a" already created+positioned above */
     int h = open(path, oflags);
@@ -1475,8 +1494,8 @@ char *strdup(const char *s) {
   return res;
 }
 
-int abs(int x) { return x < 0 ? -x : x; }
-double fabs(double x) { return x < 0 ? -x : x; }
+/* abs() moved to math.c */
+/* fabs() moved to math.c */
 
 /* --- Standard Input Library ---
  * Input events are delivered as IPC messages from the kernel input driver.
@@ -2051,14 +2070,15 @@ int cmdline_split(char *s, char **argv, int max) {
       }
     }
     if (*s)
-      s++;         /* step past the delimiter for the next scan */
-    *out = '\0';   /* terminate the compacted token (out <= s) */
+      s++;       /* step past the delimiter for the next scan */
+    *out = '\0'; /* terminate the compacted token (out <= s) */
   }
   return argc;
 }
 /* atof: NOTE(USR-LIB-04) only integer part is parsed; decimal digits ignored.
  */
-double atof(const char *nptr) { return (double)atoi(nptr); }
+/* atof: real IEEE-754 float parse via strtod (math.c) */
+double atof(const char *nptr) { return strtod(nptr, NULL); }
 /* ---------------------------------------------------------------------------
  * ENVIRONMENT — Phase 17
  *
@@ -2099,9 +2119,10 @@ static int env_self(void) {
  * that knows this syntax. */
 static int env_key(char *out, size_t size, const char *name) {
   if (!name || !*name || strchr(name, '='))
-    return -1; /* POSIX: '=' separates name from value, so it cannot be in one */
+    return -1; /* POSIX: '=' separates name from value, so it cannot be in one
+                */
   return (snprintf(out, size, "sys.proc.%d.env.%s", env_self(), name) > 0) ? 0
-                                                                          : -1;
+                                                                           : -1;
 }
 
 int OS1_env_get(const char *name, char *buf, size_t size) {
@@ -2157,7 +2178,8 @@ int OS1_env_enum(char *buf, size_t size) {
   for (char *r = buf; *r;) {
     char *nl = strchr(r, '\n');
     size_t len = nl ? (size_t)(nl - r) : strlen(r);
-    const char *nm = (len > plen && strncmp(r, prefix, plen) == 0) ? r + plen : r;
+    const char *nm =
+        (len > plen && strncmp(r, prefix, plen) == 0) ? r + plen : r;
     size_t nlen = len - (size_t)(nm - r);
     memmove(w, nm, nlen);
     w += nlen;
@@ -2379,9 +2401,9 @@ int rename(const char *oldpath, const char *newpath) {
  *   - length <  size     -> re-write the first `length` bytes at offset 0,
  *                           which truncates the tail;
  *   - length >  size     -> zero-extend from the old EOF.
- * Explicit truncation for programs that don't go through fopen("w"). ftruncate(fd)
- * needs an fd->path or an OBJ_CTL_TRUNCATE verb (a kernel follow-up), so it is
- * intentionally not provided yet rather than faked.
+ * Explicit truncation for programs that don't go through fopen("w").
+ * ftruncate(fd) needs an fd->path or an OBJ_CTL_TRUNCATE verb (a kernel
+ * follow-up), so it is intentionally not provided yet rather than faked.
  */
 int truncate(const char *path, long length) {
   if (length < 0) {

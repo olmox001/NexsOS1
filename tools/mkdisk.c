@@ -22,11 +22,61 @@
  * correctly rejected with VIRTIO_BLK_S_IOERR. */
 #define GPT_NONPARTITION_SECTORS 67 /* LBA 0..33 + backup GPT at the tail */
 #define BLOCKS_PER_MIB (1024 * 1024 / EXT4_BLOCK_SIZE)
-#define MIN_PARTITION_BLOCKS (432 * BLOCKS_PER_MIB)
-/* Room for savegames, editor files and other runtime-created data after the
- * image's static rootfs.  The VFS owns policy; this is only image capacity. */
-#define RUNTIME_RESERVE_BLOCKS (8 * BLOCKS_PER_MIB)
-#define EXT4_SINGLE_GROUP_MAX_BLOCKS 110592
+/*
+ * MKDISK-BITMAP-01 (fix, root cause of the "No free blocks in Group 0" /
+ * bitmap-corruption family of bugs):
+ *
+ * This tool AND the kernel driver both allocate exactly ONE 4 KiB block for
+ * the block bitmap (mkdisk: block_bitmap = xmalloc(EXT4_BLOCK_SIZE); kernel:
+ * ext4_alloc_block/ext4_verify_free_count both kmalloc(4096)).  A single
+ * 4096-byte bitmap addresses AT MOST 8*4096 = 32768 blocks — that is a hard
+ * on-disk-format ceiling for a single-group image, not a tunable.
+ *
+ * MIN_PARTITION_BLOCKS used to be 432 MiB (110592 blocks) while
+ * EXT4_SINGLE_GROUP_MAX_BLOCKS was ALSO 110592 — the two constants were set
+ * equal to each other by construction, so `if (blocks > MAX) exit(1)` never
+ * fired, and every image was silently built at ~3.4x the real single-bitmap
+ * capacity.  mark_block_used() then indexed block_bitmap[block/8] with
+ * block/8 up to ~13824 into a 4096-byte buffer: a host-side heap overflow
+ * during image creation, corrupting adjacent heap memory in a way that
+ * depends on allocator layout (why runs "sometimes worked").  It also made
+ * bg_free_blocks_count_lo (uint16_t, max 65535) wrap for a free-block count
+ * in the hundred-thousands, poisoning the group descriptor from the moment
+ * the image was written — no unclean shutdown required.
+ *
+ * Fix: MIN_PARTITION_BLOCKS now stays safely under the REAL 32768-block
+ * ceiling (with headroom for RUNTIME_RESERVE_BLOCKS), and
+ * EXT4_SINGLE_GROUP_MAX_BLOCKS below is corrected to the true value so the
+ * existing guard in plan_partition_blocks() is no longer a no-op.
+ *
+ * This ceiling stays at 128 MiB (single block group) by design decision —
+ * NOT expanded to multi-group.  If the rootfs no longer fits, the fix is a
+ * smaller rootfs / fewer runtime-reserve MiB, not a bigger bitmap: growing
+ * past one 4 KiB bitmap block is a real on-disk-format change (multi-group
+ * GDT, per-group allocation in both this tool and kernel/fs/ext4.c) that is
+ * deliberately out of scope here.
+ */
+/* MKDISK-MULTIGROUP-01
+ * Each block group is indexed by one 4 KiB block bitmap = 32768 blocks = 128 MiB.
+ * Multi-group support means total_blocks can be n_groups * BLOCKS_PER_GROUP.
+ * MAX_GROUPS caps the GDT at one 4 KiB block (128 entries × 32 B = 4096 B).
+ * At 32768 blocks/group that is 16 GiB; our images stay well under that.
+ * The old single-group ceiling (EXT4_SINGLE_GROUP_MAX_BLOCKS) is kept as an
+ * alias so the existing guard in write_ext4_partition still compiles. */
+#define BLOCKS_PER_GROUP       (8 * EXT4_BLOCK_SIZE)   /* 32768 = 128 MiB/group */
+#define MAX_GROUPS             128                       /* fits in one GDT block */
+#define EXT4_MAX_BLOCKS        ((uint64_t)MAX_GROUPS * BLOCKS_PER_GROUP)
+/* Alias kept for the one guard site still using the old name. */
+#define EXT4_SINGLE_GROUP_MAX_BLOCKS BLOCKS_PER_GROUP
+/* Metadata overhead of group 0 (superblock + GDT + 2 bitmaps + inode table). */
+#define G0_META_BLOCKS         BLK_DATA_START           /* == 68 */
+/* Metadata overhead per group G > 0: block-bitmap + inode-bitmap + 1 dummy
+ * inode-table block. Inodes all live in group 0; groups 1+ carry 0 free inodes
+ * (bg_free_inodes_count_lo == 0) so the allocator never touches them.       */
+#define GN_META_BLOCKS         3
+/* Minimum partition: 4 groups (512 MiB) as requested. */
+#define MIN_PARTITION_BLOCKS   (4 * BLOCKS_PER_GROUP)   /* 512 MiB */
+#define RUNTIME_RESERVE_BLOCKS 0
 
 /* GPT Constants */
 #define GPT_SIGNATURE 0x5452415020494645ULL
@@ -47,6 +97,16 @@
 #define BLK_INODE_TABLE 4
 #define INODE_TABLE_BLOCKS 64
 #define BLK_DATA_START (BLK_INODE_TABLE + INODE_TABLE_BLOCKS)
+
+/* populate_directory keeps one host-side struct entry per directory entry on
+ * the C call stack (see below) — MAX_DIR_ENTRIES bounds that array.  This is
+ * a real limit of this tool (a single flat directory can hold at most this
+ * many files/subdirs in the generated image), not a tunable to silently
+ * exceed: going over it used to truncate the directory listing without any
+ * error, silently dropping every entry past the limit from the image while
+ * plan_partition_blocks() had already reserved space for all of them (see
+ * MKDISK-DIRLIMIT-01 below). Fixed to fail loudly instead. */
+#define MAX_DIR_ENTRIES 256
 
 /* Simplified GUID structure */
 struct guid {
@@ -89,18 +149,18 @@ struct guid TYPE_BOOT = {0x21686148,
  * lists are reviewed together.
  */
 #define NEXS_GUID(role_id)                                                     \
-  {                                                                            \
-    0x4E455853, (role_id), 0x4E58, {                                           \
-      0x9C, 0x00, 0x4E, 0x45, 0x58, 0x53, 0x4F, 0x53                           \
-    }                                                                          \
-  }
-struct guid TYPE_NEXS_META = NEXS_GUID(0x0001);     /* P0  Merkle roots, marker */
-struct guid TYPE_NEXS_KEYSTORE = NEXS_GUID(0x0002); /* PK  secrets, kernel-only */
-struct guid TYPE_NEXS_KERNEL_A = NEXS_GUID(0x0003); /* P1a boot chain slot A    */
-struct guid TYPE_NEXS_KERNEL_B = NEXS_GUID(0x0004); /* P1b boot chain slot B    */
-struct guid TYPE_NEXS_ROOT = NEXS_GUID(0x0005);     /* P2  "/"                  */
-struct guid TYPE_NEXS_MACHINE = NEXS_GUID(0x0006);  /* P3  /system              */
-struct guid TYPE_NEXS_USR = NEXS_GUID(0x0007);      /* P4+ per-user             */
+  {0x4E455853,                                                                 \
+   (role_id),                                                                  \
+   0x4E58,                                                                     \
+   {0x9C, 0x00, 0x4E, 0x45, 0x58, 0x53, 0x4F, 0x53}}
+struct guid TYPE_NEXS_META = NEXS_GUID(0x0001); /* P0  Merkle roots, marker */
+struct guid TYPE_NEXS_KEYSTORE =
+    NEXS_GUID(0x0002); /* PK  secrets, kernel-only */
+struct guid TYPE_NEXS_KERNEL_A = NEXS_GUID(0x0003); /* P1a boot chain slot A */
+struct guid TYPE_NEXS_KERNEL_B = NEXS_GUID(0x0004); /* P1b boot chain slot B */
+struct guid TYPE_NEXS_ROOT = NEXS_GUID(0x0005); /* P2  "/"                  */
+struct guid TYPE_NEXS_MACHINE = NEXS_GUID(0x0006); /* P3  /system */
+struct guid TYPE_NEXS_USR = NEXS_GUID(0x0007); /* P4+ per-user             */
 
 /* ---------------------------------------------------------------------------
  * SHA-256 (F2, design doc §4bis) — host side.
@@ -143,14 +203,20 @@ static void sha256_block(struct sha256_ctx *c, const uint8_t *p) {
     w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) |
            ((uint32_t)p[i * 4 + 2] << 8) | (uint32_t)p[i * 4 + 3];
   for (int i = 16; i < 64; i++) {
-    uint32_t s0 = SHA256_ROR(w[i - 15], 7) ^ SHA256_ROR(w[i - 15], 18) ^
-                  (w[i - 15] >> 3);
+    uint32_t s0 =
+        SHA256_ROR(w[i - 15], 7) ^ SHA256_ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
     uint32_t s1 =
         SHA256_ROR(w[i - 2], 17) ^ SHA256_ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
     w[i] = w[i - 16] + s0 + w[i - 7] + s1;
   }
-  a = c->h[0]; b = c->h[1]; cc = c->h[2]; d = c->h[3];
-  e = c->h[4]; f = c->h[5]; g = c->h[6]; h = c->h[7];
+  a = c->h[0];
+  b = c->h[1];
+  cc = c->h[2];
+  d = c->h[3];
+  e = c->h[4];
+  f = c->h[5];
+  g = c->h[6];
+  h = c->h[7];
   for (int i = 0; i < 64; i++) {
     uint32_t S1 = SHA256_ROR(e, 6) ^ SHA256_ROR(e, 11) ^ SHA256_ROR(e, 25);
     uint32_t ch = (e & f) ^ ((~e) & g);
@@ -158,17 +224,34 @@ static void sha256_block(struct sha256_ctx *c, const uint8_t *p) {
     uint32_t S0 = SHA256_ROR(a, 2) ^ SHA256_ROR(a, 13) ^ SHA256_ROR(a, 22);
     uint32_t mj = (a & b) ^ (a & cc) ^ (b & cc);
     uint32_t t2 = S0 + mj;
-    h = g; g = f; f = e; e = d + t1;
-    d = cc; cc = b; b = a; a = t1 + t2;
+    h = g;
+    g = f;
+    f = e;
+    e = d + t1;
+    d = cc;
+    cc = b;
+    b = a;
+    a = t1 + t2;
   }
-  c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
-  c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += h;
+  c->h[0] += a;
+  c->h[1] += b;
+  c->h[2] += cc;
+  c->h[3] += d;
+  c->h[4] += e;
+  c->h[5] += f;
+  c->h[6] += g;
+  c->h[7] += h;
 }
 
 static void sha256_init(struct sha256_ctx *c) {
-  c->h[0] = 0x6a09e667; c->h[1] = 0xbb67ae85; c->h[2] = 0x3c6ef372;
-  c->h[3] = 0xa54ff53a; c->h[4] = 0x510e527f; c->h[5] = 0x9b05688c;
-  c->h[6] = 0x1f83d9ab; c->h[7] = 0x5be0cd19;
+  c->h[0] = 0x6a09e667;
+  c->h[1] = 0xbb67ae85;
+  c->h[2] = 0x3c6ef372;
+  c->h[3] = 0xa54ff53a;
+  c->h[4] = 0x510e527f;
+  c->h[5] = 0x9b05688c;
+  c->h[6] = 0x1f83d9ab;
+  c->h[7] = 0x5be0cd19;
   c->len = 0;
   c->buflen = 0;
 }
@@ -369,13 +452,18 @@ struct ext4_extent {
   uint32_t ee_start_lo;
 } __attribute__((packed));
 
-static uint8_t *block_bitmap = NULL;
-static uint8_t *inode_bitmap = NULL;
-static uint32_t next_free_block = BLK_DATA_START;
-static uint32_t current_free_inode = 11;
-static uint32_t total_blocks = 0;
-static uint32_t free_blocks_count = 0;
-static uint32_t free_inodes_count = 1014;
+/* Per-group block bitmaps (multi-group, MKDISK-MULTIGROUP-01).
+ * block_bitmaps[g] is a kmalloc'd 4 KiB buffer for group g.
+ * inode_bitmap covers group 0 only; groups 1+ have their inode bitmaps
+ * written as all-1s (no free inodes) directly by write_ext4_partition. */
+static uint8_t **block_bitmaps = NULL; /* [n_groups] pointers */
+static uint8_t *inode_bitmap   = NULL; /* group 0 inode bitmap */
+static uint32_t n_groups_alloc = 0;    /* how many bitmaps are allocated */
+static uint32_t next_free_block      = BLK_DATA_START;
+static uint32_t current_free_inode   = 11;
+static uint32_t total_blocks         = 0;
+static uint32_t free_blocks_count    = 0;
+static uint32_t free_inodes_count    = 1014;
 /* Inode layout: 1 = extent trees (mkfs.ext4 default, what the kernel must
  * handle on real images), 0 = legacy direct/indirect pointers (--legacy). */
 static int use_extents = 1;
@@ -399,9 +487,20 @@ static void plan_extent_leaves(struct image_plan *plan, uint64_t data_blocks) {
   plan->extent_leaf_blocks += (extents + 339) / 340;
 }
 
-/* plan_rootfs recursively counts the finite rootfs allocation set.  mkdisk
+/*
+ * plan_rootfs recursively counts the finite rootfs allocation set.  mkdisk
  * already requires ordinary files/directories, so fail loudly for an input it
  * could not faithfully encode instead of producing a subtly undersized image.
+ *
+ * MKDISK-DIRLIMIT-01: this must count exactly what populate_directory will
+ * later WRITE, or the two diverge (planner reserves space for entries that
+ * are silently dropped, or — worse — populate_directory writes more than was
+ * planned and runs off the end of the partition).  populate_directory cannot
+ * hold more than MAX_DIR_ENTRIES children per directory in its on-stack
+ * `entries[]` array (see its own comment), so the planner must enforce the
+ * exact same limit here, at plan time, where it can still be reported as a
+ * normal command-line error instead of a silent data loss deep in the write
+ * path.
  */
 static void plan_rootfs(const char *host_path, struct image_plan *plan) {
   struct stat st;
@@ -418,9 +517,27 @@ static void plan_rootfs(const char *host_path, struct image_plan *plan) {
     plan->inodes++;
     plan->data_blocks++;
     struct dirent *ent;
+    int child_count = 0;
     while ((ent = readdir(dir)) != NULL) {
       if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
         continue;
+      /* Hidden entries (leading '.') are skipped by populate_directory too
+       * (see its own readdir loop) — keep the count consistent so a rootfs
+       * full of dotfiles doesn't trip this limit for entries that will never
+       * actually be written. */
+      if (ent->d_name[0] == '.')
+        continue;
+      child_count++;
+      if (child_count > MAX_DIR_ENTRIES) {
+        fprintf(stderr,
+                "mkdisk: %s has more than %d entries; this tool's directory "
+                "writer (populate_directory) cannot represent more than "
+                "%d children per directory (see MKDISK-DIRLIMIT-01) — split "
+                "the rootfs into subdirectories\n",
+                host_path, MAX_DIR_ENTRIES, MAX_DIR_ENTRIES);
+        closedir(dir);
+        exit(1);
+      }
       char child[1024];
       int n = snprintf(child, sizeof(child), "%s/%s", host_path, ent->d_name);
       if (n < 0 || (size_t)n >= sizeof(child)) {
@@ -458,27 +575,39 @@ static uint64_t plan_partition_blocks(const char *root_host) {
     exit(1);
   }
 
-  uint64_t blocks = BLK_DATA_START + plan.data_blocks +
-                    plan.extent_leaf_blocks + RUNTIME_RESERVE_BLOCKS;
-  if (blocks < MIN_PARTITION_BLOCKS)
-    blocks = MIN_PARTITION_BLOCKS;
-  /* Round to a MiB: a stable image size while preserving exact 4 KiB blocks. */
-  blocks = ((blocks + BLOCKS_PER_MIB - 1) / BLOCKS_PER_MIB) * BLOCKS_PER_MIB;
-  if (blocks > EXT4_SINGLE_GROUP_MAX_BLOCKS) {
+  /* Raw content in group 0 data area. */
+  uint64_t content_blocks = BLK_DATA_START + plan.data_blocks +
+                             plan.extent_leaf_blocks + RUNTIME_RESERVE_BLOCKS;
+
+  /* How many full groups do we need?  Group 0 fits G0_META_BLOCKS + its data;
+   * every extra group adds BLOCKS_PER_GROUP (GN_META_BLOCKS metadata + data). */
+  uint64_t n_groups;
+  if (content_blocks <= BLOCKS_PER_GROUP) {
+    n_groups = 1;
+  } else {
+    uint64_t overflow = content_blocks - BLOCKS_PER_GROUP;
+    n_groups = 1 + (overflow + (BLOCKS_PER_GROUP - GN_META_BLOCKS) - 1) /
+                       (BLOCKS_PER_GROUP - GN_META_BLOCKS);
+  }
+  uint64_t min_groups = MIN_PARTITION_BLOCKS / BLOCKS_PER_GROUP;
+  if (n_groups < min_groups)
+    n_groups = min_groups;
+  if (n_groups > MAX_GROUPS) {
     fprintf(stderr,
-            "mkdisk: rootfs + %u MiB runtime reserve needs %llu blocks; "
-            "the single-group ext4 driver supports at most %u\n",
-            RUNTIME_RESERVE_BLOCKS / BLOCKS_PER_MIB, (unsigned long long)blocks,
-            EXT4_SINGLE_GROUP_MAX_BLOCKS);
+            "mkdisk: rootfs needs %llu block groups; max is %u "
+            "(GDT block = %u entries × 32 B, MKDISK-MULTIGROUP-01)\n",
+            (unsigned long long)n_groups, MAX_GROUPS, MAX_GROUPS);
     exit(1);
   }
 
+  uint64_t blocks = n_groups * (uint64_t)BLOCKS_PER_GROUP;
+
   printf("mkdisk: rootfs plan = %llu inodes, %llu data blocks, "
-         "%llu extent leaves; partition = %llu MiB (+%u MiB runtime)\n",
+         "%llu extent leaves; partition = %llu MiB (%llu groups × 128 MiB)\n",
          (unsigned long long)plan.inodes, (unsigned long long)plan.data_blocks,
          (unsigned long long)plan.extent_leaf_blocks,
          (unsigned long long)(blocks / BLOCKS_PER_MIB),
-         RUNTIME_RESERVE_BLOCKS / BLOCKS_PER_MIB);
+         (unsigned long long)n_groups);
   return blocks;
 }
 
@@ -502,14 +631,21 @@ void xseek(FILE *f, long offset, int whence) {
 }
 
 void xwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
-  if (fwrite(ptr, size, nmemb, stream) != nmemb) {
+  if (nmemb != 0 && fwrite(ptr, size, nmemb, stream) != nmemb) {
     perror("fwrite");
     exit(1);
   }
 }
 
 void *xmalloc(size_t size) {
-  void *p = calloc(1, size);
+  /* calloc(1, 0) is legal to return NULL even on success (glibc may return a
+   * unique non-NULL pointer instead, but the C standard does not require
+   * it) — treating a zero-size request as fatal made a zero-byte file in
+   * the rootfs abort the whole build.  A zero-size allocation has nothing
+   * to hold, so hand back a minimal valid non-NULL block instead of relying
+   * on calloc's unspecified behaviour at size 0. */
+  size_t alloc_size = (size == 0) ? 1 : size;
+  void *p = calloc(1, alloc_size);
   if (!p) {
     perror("malloc");
     exit(1);
@@ -524,9 +660,19 @@ void mark_block_used(uint32_t block) {
             block, total_blocks);
     exit(1);
   }
-  int byte = block / 8;
-  int bit = block % 8;
-  block_bitmap[byte] |= (1 << bit);
+  /* Multi-group: determine which group this block belongs to and mark its bit
+   * in the per-group bitmap (MKDISK-MULTIGROUP-01). */
+  uint32_t g   = block / BLOCKS_PER_GROUP;
+  uint32_t off = block % BLOCKS_PER_GROUP; /* bit within that group's bitmap */
+  if (g >= n_groups_alloc || !block_bitmaps[g]) {
+    fprintf(stderr,
+            "mkdisk: internal error: block %u maps to group %u (alloc=%u)\n",
+            block, g, n_groups_alloc);
+    exit(1);
+  }
+  int byte = (int)(off / 8);
+  int bit  = (int)(off % 8);
+  block_bitmaps[g][byte] |= (uint8_t)(1 << bit);
   free_blocks_count--;
 }
 
@@ -619,6 +765,22 @@ void build_extent_tree(FILE *f, uint64_t partition_offset_bytes,
   }
 }
 
+/*
+ * write_file_to_inode - writes a regular file's data + inode.
+ *
+ * On fopen() failure this used to `return` after populate_directory had
+ * already called mark_inode_used() for it: the inode number stays
+ * permanently reserved (correct — inode allocation may not be un-done once
+ * a directory entry could reference it) but the inode record on disk stays
+ * all-zero (i_mode==0, i_links_count==0), which is a ghost entry: the
+ * directory dirent points at an inode that looks unallocated to anything
+ * that trusts i_mode instead of the bitmap. Since the caller list in this
+ * tool is exactly one (populate_directory, which already validated the
+ * path with stat() before choosing this branch), a fopen() failure here
+ * means the rootfs changed between the planning stat() and this open() —
+ * treat that as the build-breaking error it is instead of writing a silent
+ * ghost inode into the image.
+ */
 void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
                          uint32_t inode_num, const char *src_path) {
   uint64_t inode_offset = partition_offset_bytes + 4LL * EXT4_BLOCK_SIZE +
@@ -628,13 +790,20 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
   file_inode.i_links_count = 1;
 
   FILE *src = fopen(src_path, "rb");
-  if (!src)
-    return;
+  if (!src) {
+    fprintf(stderr,
+            "mkdisk: %s vanished or became unreadable between planning and "
+            "writing (ino %u already reserved) — aborting instead of "
+            "writing a ghost inode\n",
+            src_path, inode_num);
+    perror(src_path);
+    exit(1);
+  }
   fseek(src, 0, SEEK_END);
   long src_size = ftell(src);
   rewind(src);
   uint8_t *buf = xmalloc(src_size);
-  if (fread(buf, 1, src_size, src) != (size_t)src_size) {
+  if (src_size > 0 && fread(buf, 1, src_size, src) != (size_t)src_size) {
     perror("fread");
     exit(1);
   }
@@ -650,7 +819,10 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
 
   if (use_extents) {
     /* Extent layout: write the data as one contiguous run, then describe it
-     * with an extent tree in i_block[] (no indirect pointer blocks). */
+     * with an extent tree in i_block[] (no indirect pointer blocks). A
+     * zero-byte file has data_blocks == 0: skip straight to an empty extent
+     * tree (build_extent_tree handles nblocks==0 as n_ext==0, zero entries)
+     * instead of writing a first_block that was never allocated. */
     uint32_t first_block = next_free_block;
     for (uint32_t i = 0; i < data_blocks; i++) {
       uint32_t b = next_free_block++;
@@ -781,6 +953,23 @@ uint8_t get_ext4_type(mode_t mode) {
   return 1;
 }
 
+/*
+ * populate_directory - write dir_inode's data block(s) and recurse into
+ * children.
+ *
+ * MKDISK-DIRLIMIT-01 (fix): entries[] is bounded at MAX_DIR_ENTRIES. The old
+ * `count < 64` loop condition silently stopped consuming readdir() once the
+ * array was full — any remaining files/subdirectories in that host directory
+ * were never visited, never got an inode, and never appeared anywhere in the
+ * generated image, with no diagnostic of any kind. That is silent data loss
+ * exactly during image creation, the failure mode this tool's own header
+ * comment says it exists to prevent. plan_rootfs() now enforces the same
+ * MAX_DIR_ENTRIES limit at the planning stage (see MKDISK-DIRLIMIT-01 there),
+ * so by the time this function runs any directory that would have overflowed
+ * entries[] has already made mkdisk exit(1) with a clear message. The count
+ * check below stays as defence-in-depth (fail loudly, not silently truncate)
+ * in case the two ever drift out of sync.
+ */
 void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode,
                         uint32_t parent_inode,
                         uint64_t partition_offset_bytes) {
@@ -815,13 +1004,29 @@ void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode,
     uint32_t inode;
     uint8_t type;
     char path[1024];
-  } entries[64];
+  } entries[MAX_DIR_ENTRIES];
   int count = 0;
   struct dirent *ent;
-  while ((ent = readdir(dir)) && count < 64) {
+  while ((ent = readdir(dir)) != NULL) {
     if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0 ||
         ent->d_name[0] == '.')
       continue;
+    if (count >= MAX_DIR_ENTRIES) {
+      /* Should be unreachable: plan_rootfs() already rejected any directory
+       * with more than MAX_DIR_ENTRIES visible children before any bytes
+       * were written. If this fires, planning and writing disagreed about
+       * what counts as an entry (e.g. a symlink loop, or the host
+       * directory changing under us) — fail loudly rather than silently
+       * dropping the remaining entries from the image. */
+      fprintf(stderr,
+              "mkdisk: internal error: %s has more entries than the plan "
+              "accounted for (MAX_DIR_ENTRIES=%d) — aborting instead of "
+              "silently truncating the directory\n",
+              host_path, MAX_DIR_ENTRIES);
+      closedir(dir);
+      free(dir_blk);
+      exit(1);
+    }
     char p[1024];
     snprintf(p, 1024, "%s/%s", host_path, ent->d_name);
     struct stat st;
@@ -876,69 +1081,162 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
                           const char *root_host) {
   uint64_t start_off = start_lba * SECTOR_SIZE;
 
-  /* Reset the allocator state so this function can be called MORE THAN ONCE
-   * (F2: one call per ext4 partition).  total_blocks/free_blocks_count were
-   * already re-initialised here, but next_free_block, current_free_inode and
-   * free_inodes_count are file-scope and were only ever initialised at load
-   * time — a second partition would have continued allocating from where the
-   * first one stopped, producing a filesystem whose bitmaps and superblock
-   * disagree.  Latent until now because exactly one partition was ever
-   * written; fixed before it can bite. */
-  next_free_block = BLK_DATA_START;
+  /* Reset the allocator state (supports multiple calls — see original comment).
+   * Free any per-group bitmaps from a previous invocation. */
+  next_free_block   = BLK_DATA_START;
   current_free_inode = 11;
-  free_inodes_count = 1014;
-  free(block_bitmap);
+  free_inodes_count  = 1014;
+  if (block_bitmaps) {
+    for (uint32_t g = 0; g < n_groups_alloc; g++)
+      free(block_bitmaps[g]);
+    free(block_bitmaps);
+    block_bitmaps = NULL;
+  }
   free(inode_bitmap);
+  inode_bitmap = NULL;
+  n_groups_alloc = 0;
 
   total_blocks = (size_sectors * SECTOR_SIZE) / EXT4_BLOCK_SIZE;
-  free_blocks_count = total_blocks;
-  block_bitmap = xmalloc(EXT4_BLOCK_SIZE);
-  inode_bitmap = xmalloc(EXT4_BLOCK_SIZE);
 
+  /* MKDISK-MULTIGROUP-01: compute n_groups; abort if too large for one GDT
+   * block (MAX_GROUPS * 32 B = 4096 B).  total_blocks must be a multiple of
+   * BLOCKS_PER_GROUP (plan_partition_blocks() ensures this). */
+  if (total_blocks == 0 || total_blocks % BLOCKS_PER_GROUP != 0) {
+    fprintf(stderr,
+            "mkdisk: total_blocks=%u not a multiple of BLOCKS_PER_GROUP=%u\n",
+            total_blocks, BLOCKS_PER_GROUP);
+    exit(1);
+  }
+  uint32_t n_groups = total_blocks / BLOCKS_PER_GROUP;
+  if (n_groups > MAX_GROUPS) {
+    fprintf(stderr,
+            "mkdisk: %u groups exceeds max %u (MKDISK-MULTIGROUP-01)\n",
+            n_groups, MAX_GROUPS);
+    exit(1);
+  }
+
+  /* Allocate per-group block bitmaps (all zeroed = all free initially). */
+  n_groups_alloc = n_groups;
+  block_bitmaps  = calloc(n_groups, sizeof(uint8_t *));
+  if (!block_bitmaps) { perror("calloc"); exit(1); }
+  for (uint32_t g = 0; g < n_groups; g++) {
+    block_bitmaps[g] = calloc(1, EXT4_BLOCK_SIZE);
+    if (!block_bitmaps[g]) { perror("calloc"); exit(1); }
+  }
+  inode_bitmap = calloc(1, EXT4_BLOCK_SIZE);
+  if (!inode_bitmap) { perror("calloc"); exit(1); }
+
+  free_blocks_count = total_blocks;
+
+  /* -- Mark group 0 metadata blocks as used -- */
+  /* Blocks 0..3 (superblock, GDT, block-bitmap, inode-bitmap) */
   for (int i = 0; i < 4; i++)
     mark_block_used(i);
+  /* Blocks 4..67 = inode table */
   for (int i = 0; i < INODE_TABLE_BLOCKS; i++)
     mark_block_used(BLK_INODE_TABLE + i);
+
+  /* -- Mark groups 1+ metadata blocks as used -- */
+  /* Each group g > 0 reserves GN_META_BLOCKS = 3 blocks:
+   *   g*32768+0 = block bitmap
+   *   g*32768+1 = inode bitmap (written all-1s)
+   *   g*32768+2 = dummy inode table (1 block, all zeros)
+   */
+  for (uint32_t g = 1; g < n_groups; g++) {
+    for (uint32_t m = 0; m < GN_META_BLOCKS; m++)
+      mark_block_used(g * BLOCKS_PER_GROUP + m);
+  }
+
+  /* -- Reserved inodes (1..10 + root=2) -- */
   for (int i = 1; i <= 10; i++)
     mark_inode_used(i);
-
   mark_inode_used(2);
+
+  /* -- Populate the filesystem tree -- */
   populate_directory(f, root_host, 2, 2, start_off);
 
+  /* -- Compute per-group free_blocks_count -- */
+  /* Count free bits per group from the per-group bitmap. */
+  uint32_t *grp_free = calloc(n_groups, sizeof(uint32_t));
+  if (!grp_free) { perror("calloc"); exit(1); }
+  for (uint32_t g = 0; g < n_groups; g++) {
+    uint32_t blks_in_group = (g == n_groups - 1)
+        ? (total_blocks - g * BLOCKS_PER_GROUP)
+        : BLOCKS_PER_GROUP;
+    uint32_t free_in_g = 0;
+    for (uint32_t i = 0; i < (blks_in_group + 7) / 8 && i < EXT4_BLOCK_SIZE; i++) {
+      uint8_t b = (uint8_t)~block_bitmaps[g][i];
+      while (b) { free_in_g++; b &= (uint8_t)(b - 1); }
+    }
+    grp_free[g] = free_in_g;
+  }
+
+  /* -- Write superblock -- */
   xseek(f, start_off + EXT4_SUPERBLOCK_OFFSET, SEEK_SET);
   struct ext4_superblock sb = {0};
-  sb.s_inodes_count = 1024;
-  sb.s_blocks_count_lo = total_blocks;
+  sb.s_inodes_count        = 1024;
+  sb.s_blocks_count_lo     = total_blocks;
   sb.s_free_blocks_count_lo = free_blocks_count;
-  sb.s_free_inodes_count = free_inodes_count;
-  sb.s_log_block_size = 2;
-  sb.s_magic = EXT4_MAGIC;
-  sb.s_blocks_per_group = total_blocks;
-  sb.s_inodes_per_group = 1024;
-  sb.s_state = 1;
-  sb.s_rev_level = 1;
-  sb.s_first_ino = 11;
-  sb.s_inode_size = EXT4_INODE_SIZE;
-  /* Declare what the image actually uses so the kernel's INCOMPAT whitelist
-   * is a tested path (extent inodes + typed directory entries). */
+  sb.s_free_inodes_count   = free_inodes_count;
+  sb.s_log_block_size      = 2;
+  sb.s_magic               = EXT4_MAGIC;
+  sb.s_blocks_per_group    = BLOCKS_PER_GROUP;   /* was total_blocks */
+  sb.s_inodes_per_group    = 1024;
+  sb.s_state               = 1;
+  sb.s_rev_level           = 1;
+  sb.s_first_ino           = 11;
+  sb.s_inode_size          = EXT4_INODE_SIZE;
   if (use_extents)
     sb.s_feature_incompat =
         EXT4_FEATURE_INCOMPAT_FILETYPE | EXT4_FEATURE_INCOMPAT_EXTENTS;
   xwrite(&sb, 1, sizeof(sb), f);
 
+  /* -- Write GDT (all n_groups descriptors, packed into one 4 KiB block) -- */
   xseek(f, start_off + EXT4_BLOCK_SIZE, SEEK_SET);
-  struct ext4_group_desc bg = {0};
-  bg.bg_block_bitmap_lo = BLK_BLK_BITMAP;
-  bg.bg_inode_bitmap_lo = BLK_INODE_BITMAP;
-  bg.bg_inode_table_lo = BLK_INODE_TABLE;
-  bg.bg_free_blocks_count_lo = free_blocks_count;
-  bg.bg_free_inodes_count_lo = free_inodes_count;
-  xwrite(&bg, 1, sizeof(bg), f);
+  for (uint32_t g = 0; g < n_groups; g++) {
+    struct ext4_group_desc bg = {0};
+    if (g == 0) {
+      bg.bg_block_bitmap_lo    = BLK_BLK_BITMAP;
+      bg.bg_inode_bitmap_lo    = BLK_INODE_BITMAP;
+      bg.bg_inode_table_lo     = BLK_INODE_TABLE;
+      bg.bg_free_blocks_count_lo = (uint16_t)grp_free[0];
+      bg.bg_free_inodes_count_lo = (uint16_t)free_inodes_count;
+    } else {
+      /* Groups 1+: metadata at start of group (block g*BLOCKS_PER_GROUP + 0/1/2) */
+      bg.bg_block_bitmap_lo    = g * BLOCKS_PER_GROUP + 0;
+      bg.bg_inode_bitmap_lo    = g * BLOCKS_PER_GROUP + 1;
+      bg.bg_inode_table_lo     = g * BLOCKS_PER_GROUP + 2;
+      bg.bg_free_blocks_count_lo = (uint16_t)grp_free[g];
+      bg.bg_free_inodes_count_lo = 0; /* all inodes live in group 0 */
+    }
+    xwrite(&bg, 1, sizeof(bg), f);
+  }
 
-  xseek(f, start_off + BLK_BLK_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET);
-  xwrite(block_bitmap, 1, EXT4_BLOCK_SIZE, f);
+  /* -- Write block bitmaps for each group -- */
+  for (uint32_t g = 0; g < n_groups; g++) {
+    uint64_t bmap_blk = (g == 0) ? BLK_BLK_BITMAP : (uint64_t)g * BLOCKS_PER_GROUP;
+    xseek(f, start_off + bmap_blk * EXT4_BLOCK_SIZE, SEEK_SET);
+    xwrite(block_bitmaps[g], 1, EXT4_BLOCK_SIZE, f);
+  }
+
+  /* -- Write group 0 inode bitmap -- */
   xseek(f, start_off + BLK_INODE_BITMAP * EXT4_BLOCK_SIZE, SEEK_SET);
   xwrite(inode_bitmap, 1, EXT4_BLOCK_SIZE, f);
+
+  /* -- Write groups 1+ inode bitmaps (all-1s = no free inodes) -- */
+  uint8_t *all_ones = malloc(EXT4_BLOCK_SIZE);
+  if (!all_ones) { perror("malloc"); exit(1); }
+  memset(all_ones, 0xFF, EXT4_BLOCK_SIZE);
+  for (uint32_t g = 1; g < n_groups; g++) {
+    uint64_t imap_blk = (uint64_t)g * BLOCKS_PER_GROUP + 1;
+    xseek(f, start_off + imap_blk * EXT4_BLOCK_SIZE, SEEK_SET);
+    xwrite(all_ones, 1, EXT4_BLOCK_SIZE, f);
+    /* Dummy inode table for group g (1 block, already zeroed by truncation). */
+    /* Nothing to write: the file was pre-extended to disk_size_bytes with
+     * a single fputc(0) seek; all unwritten regions read as zero. */
+  }
+  free(all_ones);
+  free(grp_free);
 }
 
 int main(int argc, char *argv[]) {
@@ -1064,8 +1362,7 @@ int main(int argc, char *argv[]) {
    */
   {
     uint64_t first = e[0].start_lba, last = e[0].end_lba;
-    uint64_t nblocks =
-        ((last - first + 1) * SECTOR_SIZE) / EXT4_BLOCK_SIZE;
+    uint64_t nblocks = ((last - first + 1) * SECTOR_SIZE) / EXT4_BLOCK_SIZE;
     uint8_t *level = xmalloc((size_t)nblocks * 32);
     uint8_t *blk = xmalloc(EXT4_BLOCK_SIZE);
     for (uint64_t i = 0; i < nblocks; i++) {

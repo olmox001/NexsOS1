@@ -1089,7 +1089,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
      * taking object_lock) — after ctty so the console's stdout resolves
      * correctly.  On OOM roll back the pool slot exactly like the kernel-stack
      * failure path. */
-    if (process_install_stdio(proc) != 0) {
+    if (process_install_stdio(proc, creator) != 0) {
       spin_lock_irqsave(&sched_lock, &flags);
       process_pool[slot] = NULL;
       active_count--;
@@ -2602,7 +2602,8 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   /* Returning `count` after a failed copy tells the caller it received N
    * entries it never got, and ps/nxproc would then walk an untouched buffer as
    * if it were an array of that many records. */
-  int copied = vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
+  int copied =
+      vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
   kfree(k_buf);
   if (copied != 0)
     return -EFAULT;

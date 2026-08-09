@@ -375,6 +375,7 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/math.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/execsvc_client.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o \
@@ -585,6 +586,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/hello.elf \
            $(BUILD_DIR)/stress.elf \
            $(BUILD_DIR)/restest.elf \
+           $(BUILD_DIR)/env.elf \
 		   $(BUILD_DIR)/kilo.elf
 
 USER_ELFS = $(SYS_ELFS) $(BIN_ELFS)
@@ -597,6 +599,8 @@ $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
@@ -662,6 +666,7 @@ $(BUILD_DIR)/hello.elf: $(BUILD_DIR)/$(USER_DIR)/bin/hello.o $(USER_LIB_O) $(USE
 $(BUILD_DIR)/nxmemstat.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxmemstat.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/stress.elf: $(BUILD_DIR)/$(USER_DIR)/bin/stress.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/restest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/restest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/env.elf: $(BUILD_DIR)/$(USER_DIR)/bin/env.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxwins.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxwins.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -732,6 +737,7 @@ rootfs: user libsdl2 liblua
 	@# /home/shared).  Pre-created because ext4 has no directory creation yet:
 	@# Documents/doom hosts doom's config+savegames (replaces the hardcoded
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Documents/doom
+	@mkdir -p $(BUILD_DIR)/rootfs/home/Video
 	@mkdir -p $(BUILD_DIR)/rootfs/home/shared
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Settings
 	@-cp -r user/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
@@ -752,6 +758,7 @@ rootfs: user libsdl2 liblua
 	@-cp user/home/Pictures/globe.png $(BUILD_DIR)/rootfs/home/Pictures/ 2>/dev/null || true
 	@-cp user/home/Pictures/background/nxduck.png $(BUILD_DIR)/rootfs/home/Pictures/background/ 2>/dev/null || true
 	@-cp user/home/Pictures/icon/light/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/light/ 2>/dev/null || true
+	@-cp user/home/Video/*.mpeg $(BUILD_DIR)/rootfs/home/Video/ 2>/dev/null || true
 	@# doom savegames are runtime-created in /home/Documents/doom now; the
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
 	@-cp user/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
@@ -779,6 +786,7 @@ rootfs: user libsdl2 liblua
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
+	@-cp $(BUILD_DIR)/rootfs/bin/env $(BUILD_DIR)/rootfs/sys/bin/env 2>/dev/null || true
 
 disk: $(MKDISK) kernel rootfs bootloader
 	@mkdir -p $(BUILD_DIR)

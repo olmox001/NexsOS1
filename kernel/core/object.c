@@ -8,8 +8,9 @@
  *   - Unforgeability: a handle is an index into the caller's PRIVATE table; a
  *     value with no installed slot returns -EBADF.  A process can only act on
  *     objects it was handed.
- *   - Attenuation only: duplicate()/grant() compute new_rights & current_rights,
- *     so rights can never grow (no escalation), mirroring the caps.h spawn cut.
+ *   - Attenuation only: duplicate()/grant() compute new_rights &
+ * current_rights, so rights can never grow (no escalation), mirroring the
+ * caps.h spawn cut.
  *   - Acquisition is ambient-gated: getting a write FILE capability still needs
  *     CAP_FS_WRITE + the /bin,/sys ACL; getting a PROCESS capability needs the
  *     same authority as kill (self/descendant/privileged).  Once held, the
@@ -18,22 +19,22 @@
  * Locking: one global object_lock guards refcounts and slot install/close/grant
  * (short, allocation-free critical sections).  Blocking VFS I/O runs OUTSIDE
  * the lock via a pin (refcount++) / use / unpin pattern, so a concurrent
- * close() cannot free an object mid-I/O.  Lock order object_lock -> kmalloc_lock
- * is consistent (kmalloc/kfree never take object_lock), so kfree() under the
- * lock cannot deadlock.
+ * close() cannot free an object mid-I/O.  Lock order object_lock ->
+ * kmalloc_lock is consistent (kmalloc/kfree never take object_lock), so kfree()
+ * under the lock cannot deadlock.
  */
-#include <kernel/nx_contract.h>
-#include <kernel/types.h>
-#include <kernel/object.h>
-#include <kernel/sched.h>
 #include <kernel/cpu.h>
-#include <kernel/spinlock.h>
-#include <kernel/kmalloc.h>
-#include <kernel/string.h>
-#include <kernel/printk.h>
-#include <kernel/vfs.h>
-#include <kernel/registry.h>
 #include <kernel/graphics.h> /* OBJ_TYPE_WINDOW backends: compositor_* (§6.7) */
+#include <kernel/kmalloc.h>
+#include <kernel/nx_contract.h>
+#include <kernel/object.h>
+#include <kernel/printk.h>
+#include <kernel/registry.h>
+#include <kernel/sched.h>
+#include <kernel/spinlock.h>
+#include <kernel/string.h>
+#include <kernel/types.h>
+#include <kernel/vfs.h>
 
 /* Upper bound for a single object read/write bounce buffer (mirrors the
  * dispatcher's SYSCALL_MAX_IO_BYTES so a user size argument cannot ask the
@@ -42,7 +43,8 @@
 
 extern int arch_copy_from_user(void *dest, const void *src, size_t n);
 extern int arch_copy_to_user(void *dest, const void *src, size_t n);
-extern int arch_copy_string_from_user(char *dest, const char *src, size_t max_len);
+extern int arch_copy_string_from_user(char *dest, const char *src,
+                                      size_t max_len);
 
 /* Serialises refcount changes and handle-table slot mutations. */
 static DEFINE_SPINLOCK(object_lock);
@@ -60,10 +62,11 @@ static uint64_t obj_live_count[OBJ_TYPE_COUNT];
 /*
  * struct kpipe - the payload of an OBJ_TYPE_PIPE kobject (ASTRA §6.2 anonymous
  * byte pipe).  Heap-allocated and pointed to by kobject.pipe so the buffer +
- * wait queue don't bloat every kobject.  `buf` is a ring of PIPE_BUF_SIZE bytes.
- * `readers`/`writers` are OPEN-handle counts (maintained by pipe_handle_count at
- * every handle lifecycle edge): a reader on an empty pipe blocks on `wq` until a
- * writer publishes data (wake_up) or the LAST writer closes (writers==0 → EOF).
+ * wait queue don't bloat every kobject.  `buf` is a ring of PIPE_BUF_SIZE
+ * bytes. `readers`/`writers` are OPEN-handle counts (maintained by
+ * pipe_handle_count at every handle lifecycle edge): a reader on an empty pipe
+ * blocks on `wq` until a writer publishes data (wake_up) or the LAST writer
+ * closes (writers==0 → EOF).
  */
 #define PIPE_BUF_SIZE 4096u
 struct kpipe {
@@ -111,7 +114,8 @@ struct kport {
 #define PORT_TABLE_MAX 16
 static struct kobject *port_table[PORT_TABLE_MAX];
 
-/* port_find_locked - resolve a published port name.  Caller holds object_lock. */
+/* port_find_locked - resolve a published port name.  Caller holds object_lock.
+ */
 static struct kobject *port_find_locked(const char *name) {
   for (int i = 0; i < PORT_TABLE_MAX; i++) {
     if (port_table[i] && port_table[i]->port &&
@@ -124,20 +128,20 @@ static struct kobject *port_find_locked(const char *name) {
 /* endpoint_handle_count - adjust a PIPE's or PORT's open endpoint counts by
  * 'delta' for a handle carrying 'rights'.  Called (under object_lock) at EVERY
  * handle lifecycle edge — install (+1), close/destroy/redirect-overwrite (-1) —
- * so the counts exactly track live handles.  A no-op for other types, so callers
- * need not special-case.  For a pipe, closing the last writer wakes blocked
- * readers (EOF) and closing the last reader wakes blocked writers (EPIPE); a
- * port behaves the same way, so a client blocked on a reply is released when the
- * service dies instead of hanging forever. */
+ * so the counts exactly track live handles.  A no-op for other types, so
+ * callers need not special-case.  For a pipe, closing the last writer wakes
+ * blocked readers (EOF) and closing the last reader wakes blocked writers
+ * (EPIPE); a port behaves the same way, so a client blocked on a reply is
+ * released when the service dies instead of hanging forever. */
 static void pipe_handle_count(struct kobject *o, uint32_t rights, int delta) {
   if (o && o->type == OBJ_TYPE_PORT && o->port) {
     if (rights & OS1_RIGHT_READ) {
       o->port->receivers += delta;
       if (delta < 0 && o->port->receivers == 0) {
-        /* The service released its receive right: UNPUBLISH the name here, under
-         * object_lock, so no new client can resolve a send capability to a dead
-         * service.  Doing it at free time instead would race, because kobj_free
-         * runs both inside and outside the lock. */
+        /* The service released its receive right: UNPUBLISH the name here,
+         * under object_lock, so no new client can resolve a send capability to
+         * a dead service.  Doing it at free time instead would race, because
+         * kobj_free runs both inside and outside the lock. */
         for (int i = 0; i < PORT_TABLE_MAX; i++) {
           if (port_table[i] == o)
             port_table[i] = NULL;
@@ -179,7 +183,8 @@ static int pipe_writable_block(void *arg) {
   return kp->count == PIPE_BUF_SIZE && kp->readers > 0;
 }
 /* Port equivalents: a receiver sleeps while the mailbox is empty AND a sender
- * still exists; a sender sleeps while it is full AND a receiver still exists. */
+ * still exists; a sender sleeps while it is full AND a receiver still exists.
+ */
 static int port_readable_block(void *arg) {
   struct kport *kp = ((struct kobject *)arg)->port;
   return kp->count == 0 && kp->senders > 0;
@@ -332,8 +337,8 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
        * needs its own verb — tracked as R1b, still open.
        *
        * Found by the maintainer: `ls` broke with "cannot list ." because the
-       * listing path could not acquire the handle at all.  The dir-read code was
-       * unreachable until this gate opened.
+       * listing path could not acquire the handle at all.  The dir-read code
+       * was unreachable until this gate opened.
        */
       if (rights & (OS1_RIGHT_WRITE | OS1_RIGHT_CREATE))
         return -EISDIR;
@@ -377,8 +382,8 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
       o->path[OBJ_FILE_PATH_MAX - 1] = '\0';
     } else if (ref.obj_type == OBJ_TYPE_PROCESS) {
       /* Same acquisition gate as OS1_NS_PROC: a destructive handle (kill /
-       * IPC-send) needs kill authority; a READ/WAIT status handle only needs the
-       * process to exist (object_at already verified it). */
+       * IPC-send) needs kill authority; a READ/WAIT status handle only needs
+       * the process to exist (object_at already verified it). */
       if ((rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) &&
           !process_kill_allowed(cur, ref.pid))
         return -EPERM;
@@ -486,12 +491,12 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     int pid = atoi(kpath); /* libkernel parser (kernel/lib/string.c) */
     if (pid <= 0)
       return -EINVAL;
-    /* Acquisition policy (seL4 separable rights, F4 M4.5): a DESTRUCTIVE handle —
-     * one that can kill (DESTROY) or IPC-send (WRITE) — still needs kill authority.
-     * A non-destructive WAIT/READ-only handle (status query, the OS1_object_wait
-     * path behind OS1low_process_wait) only needs the process to exist, matching
-     * the permissive ambient SYS_WAIT.  This separates wait-right from kill-right
-     * without widening kill/send acquisition. */
+    /* Acquisition policy (seL4 separable rights, F4 M4.5): a DESTRUCTIVE handle
+     * — one that can kill (DESTROY) or IPC-send (WRITE) — still needs kill
+     * authority. A non-destructive WAIT/READ-only handle (status query, the
+     * OS1_object_wait path behind OS1low_process_wait) only needs the process
+     * to exist, matching the permissive ambient SYS_WAIT.  This separates
+     * wait-right from kill-right without widening kill/send acquisition. */
     int destructive = (rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) != 0;
     if (destructive && !process_kill_allowed(cur, pid))
       return -EPERM;
@@ -715,11 +720,11 @@ long sys_cap_grant(int target_pid, int handle, uint32_t rights) {
 }
 
 /*
- * sys_pipe - OS1low_pipe(int fds[2]).  Create an anonymous byte pipe (ASTRA §6.2
- * OBJ_TYPE_PIPE) and install BOTH ends in the caller's handle table: fds[0] is
- * the READ end, fds[1] the WRITE end (POSIX pipe() order).  One kobject, two
- * handles (rights = READ / WRITE); reader/writer counts start at 1/1 via the
- * install path.  Returns 0, or -ENOMEM/-EMFILE/-EFAULT.
+ * sys_pipe - OS1low_pipe(int fds[2]).  Create an anonymous byte pipe (ASTRA
+ * §6.2 OBJ_TYPE_PIPE) and install BOTH ends in the caller's handle table:
+ * fds[0] is the READ end, fds[1] the WRITE end (POSIX pipe() order).  One
+ * kobject, two handles (rights = READ / WRITE); reader/writer counts start at
+ * 1/1 via the install path.  Returns 0, or -ENOMEM/-EMFILE/-EFAULT.
  */
 long sys_pipe(int *ufds) {
   struct process *cur = current_process;
@@ -762,18 +767,19 @@ long sys_pipe(int *ufds) {
   spin_lock_irqsave(&object_lock, &flags);
   int rfd = handle_install_locked(
       cur, o, OS1_RIGHT_READ | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE);
-  int wfd = (rfd >= 0) ? handle_install_locked(cur, o,
-                                               OS1_RIGHT_WRITE |
-                                                   OS1_RIGHT_TRANSFER |
-                                                   OS1_RIGHT_DUPLICATE)
-                       : rfd;
+  int wfd = (rfd >= 0)
+                ? handle_install_locked(cur, o,
+                                        OS1_RIGHT_WRITE | OS1_RIGHT_TRANSFER |
+                                            OS1_RIGHT_DUPLICATE)
+                : rfd;
   spin_unlock_irqrestore(&object_lock, flags);
 
   if (rfd < 0 || wfd < 0) {
     if (rfd >= 0)
-      NX_DISCARD(sys_handle_close(rfd),
-                 "error unwind: the pipe creation already failed, and a failing "
-                 "close changes nothing the caller can act on");
+      NX_DISCARD(
+          sys_handle_close(rfd),
+          "error unwind: the pipe creation already failed, and a failing "
+          "close changes nothing the caller can act on");
     else
       kobj_free(o); /* never installed: refcount 0, free the whole pipe */
     return (rfd < 0) ? rfd : wfd;
@@ -818,8 +824,8 @@ static struct kobject *pin_handle(int handle, uint32_t need, long *err) {
 
 /*
  * sys_port_send_caps - send a message through a PORT, TRANSFERRING capabilities
- * with it (ASTRA §6.5, Mach: "ports are first-class objects ... a port is itself
- * a capability", and a Mach message carries port RIGHTS).
+ * with it (ASTRA §6.5, Mach: "ports are first-class objects ... a port is
+ * itself a capability", and a Mach message carries port RIGHTS).
  *
  * Why this verb has to exist: a handle index is meaningful only inside ONE
  * process's table, so a client that merely names its fds in a message is
@@ -850,8 +856,8 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
   if (o->type != OBJ_TYPE_PORT || !kp) {
     ret = -EINVAL;
   } else if (arch_copy_from_user(&m, umsg, sizeof(m)) != 0 ||
-             (nfds > 0 &&
-              arch_copy_from_user(fds, ufds, (size_t)nfds * sizeof(int)) != 0)) {
+             (nfds > 0 && arch_copy_from_user(
+                              fds, ufds, (size_t)nfds * sizeof(int)) != 0)) {
     ret = -EFAULT;
   } else {
     /* PROC-REF-01: hold sched_lock across the receiver lookup AND the whole
@@ -906,7 +912,8 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
        *     service's port queue full makes every retry leak a fresh set of
        *     handles into the service's table until it hits NPROC_HANDLES.  A
        *     capability-table exhaustion DoS from an unprivileged sender.
-       * The unwind is now driven by `ret < 0` regardless of WHERE it was set. */
+       * The unwind is now driven by `ret < 0` regardless of WHERE it was set.
+       */
       if (ret == 0) {
         /* Publish the receiver-side indices in the payload, then enqueue. */
         for (int i = 0; i < nfds; i++)
@@ -957,7 +964,6 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
   return ret;
 }
 
-
 /*
  * sys_object_read - OS1_object_read(handle, buf, n).  Needs OS1_RIGHT_READ.
  * FILE: VFS read at the object's offset (shared across handles to it).
@@ -980,12 +986,13 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
         ret = -ENOMEM;
       } else {
         /* A2 (capability read/write symmetry): re-sync the cached node from the
-         * handle's path before reading, exactly as sys_object_write refreshes it
-         * after writing.  Without this a long-lived READ handle keeps the size it
-         * saw at handle_create and never sees data a later writer appended.  The
-         * path is the handle's stable identity; the node is a cache.  Best-effort:
-         * if the path vanished, fall back to the cached node (an open handle to a
-         * since-deleted file still reads what it last resolved). */
+         * handle's path before reading, exactly as sys_object_write refreshes
+         * it after writing.  Without this a long-lived READ handle keeps the
+         * size it saw at handle_create and never sees data a later writer
+         * appended.  The path is the handle's stable identity; the node is a
+         * cache.  Best-effort: if the path vanished, fall back to the cached
+         * node (an open handle to a since-deleted file still reads what it last
+         * resolved). */
         NX_DISCARD(vfs_open(o->path, &o->node),
                    "best-effort refresh: on failure the CACHED node is the "
                    "documented fallback, so an open handle to a since-deleted "
@@ -1042,7 +1049,8 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
         } else if (got > 0 && arch_copy_to_user(ubuf, kb, (size_t)got) != 0) {
           ret = -EFAULT;
         } else {
-          o->offset += (uint64_t)got; /* benign shared-offset race, documented */
+          o->offset +=
+              (uint64_t)got; /* benign shared-offset race, documented */
           ret = got;
         }
         kfree(kb);
@@ -1074,11 +1082,11 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
                                                               : (long)cn;
     }
   } else if (o->type == OBJ_TYPE_CONSOLE) {
-    /* stdin: drain the IPC input queue for one pressed/repeat key (the folded-in
-     * FD_KBD path).  Release events and non-input messages are discarded, as
-     * before.  When nothing is pending we return -EAGAIN; the SYS_READ
-     * dispatcher turns that into a blocking sleep — rescheduling needs the trap
-     * frame, which lives in the dispatcher, not here. */
+    /* stdin: drain the IPC input queue for one pressed/repeat key (the
+     * folded-in FD_KBD path).  Release events and non-input messages are
+     * discarded, as before.  When nothing is pending we return -EAGAIN; the
+     * SYS_READ dispatcher turns that into a blocking sleep — rescheduling needs
+     * the trap frame, which lives in the dispatcher, not here. */
     if (n == 0) {
       ret = 0;
     } else {
@@ -1148,9 +1156,8 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
           kp->count--;
           spin_unlock_irqrestore(&object_lock, f2);
           wake_up(&kp->wq); /* freed a slot → wake a blocked sender */
-          ret = (arch_copy_to_user(ubuf, &m, sizeof(m)) != 0)
-                    ? -EFAULT
-                    : (long)sizeof(m);
+          ret = (arch_copy_to_user(ubuf, &m, sizeof(m)) != 0) ? -EFAULT
+                                                              : (long)sizeof(m);
           break;
         }
         if (kp->senders == 0) { /* nobody left to send → end of service */
@@ -1186,8 +1193,8 @@ long sys_object_read(int handle, void *ubuf, size_t n) {
             kp->count -= take;
             spin_unlock_irqrestore(&object_lock, f2);
             wake_up(&kp->wq); /* freed space → wake a blocked writer */
-            ret = (arch_copy_to_user(ubuf, kb, take) != 0) ? -EFAULT
-                                                           : (long)take;
+            ret =
+                (arch_copy_to_user(ubuf, kb, take) != 0) ? -EFAULT : (long)take;
             break;
           }
           if (kp->writers == 0) { /* empty and no writers → EOF */
@@ -1365,7 +1372,8 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
         while (done < n) {
           uint64_t f2;
           spin_lock_irqsave(&object_lock, &f2);
-          if (kp->readers == 0) { /* no reader will ever consume → broken pipe */
+          if (kp->readers ==
+              0) { /* no reader will ever consume → broken pipe */
             spin_unlock_irqrestore(&object_lock, f2);
             ret = (done > 0) ? (long)done : -EPIPE;
             break;
@@ -1437,9 +1445,9 @@ long sys_object_wait(int handle, long arg) {
  * Type-specific control verbs on an object you hold a capability to.
  * PROCESS + OBJ_CTL_KILL needs OS1_RIGHT_DESTROY and terminates the target
  * (machine-level processes stay protected inside process_terminate).  Holding a
- * DESTROY capability IS the authority — a GRANTED destroy handle lets its holder
- * kill a process it could not reach by process_kill_allowed (seL4 delegation of
- * the kill right; acquisition was gated at handle_create time).
+ * DESTROY capability IS the authority — a GRANTED destroy handle lets its
+ * holder kill a process it could not reach by process_kill_allowed (seL4
+ * delegation of the kill right; acquisition was gated at handle_create time).
  */
 long sys_object_ctl(int handle, int cmd, long arg) {
   (void)arg;
@@ -1485,14 +1493,15 @@ long sys_object_ctl(int handle, int cmd, long arg) {
    * window it does not own; acquisition was gated at handle_create. */
   if (cmd == OBJ_CTL_MINIMIZE || cmd == OBJ_CTL_RESTORE ||
       cmd == OBJ_CTL_FOCUS || cmd == OBJ_CTL_CLOSE) {
-    /* NOTE(OBJ-WIN-FOCUS): FOCUS needs only READ, so a READ-only window handle —
-     * which handle_create hands out for ANY window, ungated — can redirect
+    /* NOTE(OBJ-WIN-FOCUS): FOCUS needs only READ, so a READ-only window handle
+     * — which handle_create hands out for ANY window, ungated — can redirect
      * keyboard focus.  This deliberately mirrors the compositor's unprivileged
      * click-to-focus (any user may focus any window with the mouse) so the
-     * keyboard `focus` path is as open as the mouse.  minimize/restore/close stay
-     * window-manager authority (WRITE/DESTROY, gated at handle_create).  Unifying
-     * this with SYS_SET_FOCUS's stricter cross-pid rule is a security-phase item. */
-    uint32_t need = (cmd == OBJ_CTL_CLOSE)  ? OS1_RIGHT_DESTROY
+     * keyboard `focus` path is as open as the mouse.  minimize/restore/close
+     * stay window-manager authority (WRITE/DESTROY, gated at handle_create).
+     * Unifying this with SYS_SET_FOCUS's stricter cross-pid rule is a
+     * security-phase item. */
+    uint32_t need = (cmd == OBJ_CTL_CLOSE)   ? OS1_RIGHT_DESTROY
                     : (cmd == OBJ_CTL_FOCUS) ? OS1_RIGHT_READ
                                              : OS1_RIGHT_WRITE;
     long err = 0;
@@ -1512,10 +1521,11 @@ long sys_object_ctl(int handle, int cmd, long arg) {
       /* Close TERMINATES the owning process (window-aware, docs/PROCESS-KILL-
        * MODEL.md): the target app and its windowless helpers die, while its own
        * windowed children are SPARED (the user closes those via their red
-       * button).  Consistent with the titlebar red button (window_request_close).
-       * Previously a plain process_terminate; before THAT it only destroyed the
-       * WINDOW, leaving the app headless ("close does not kill").  Machine-level
-       * owners stay protected inside process_terminate. */
+       * button).  Consistent with the titlebar red button
+       * (window_request_close). Previously a plain process_terminate; before
+       * THAT it only destroyed the WINDOW, leaving the app headless ("close
+       * does not kill").  Machine-level owners stay protected inside
+       * process_terminate. */
       process_kill_subtree(o->pid);
       ret = 0;
     }
@@ -1523,8 +1533,8 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     return ret;
   }
 
-  /* FILE: seek the object's shared byte offset (F4 M4.5).  Positioning needs only
-   * the handle itself (any FILE capability), so write-at-offset works on a
+  /* FILE: seek the object's shared byte offset (F4 M4.5).  Positioning needs
+   * only the handle itself (any FILE capability), so write-at-offset works on a
    * WRITE-only handle too.  arg = absolute offset; returns the new offset. */
   if (cmd == OBJ_CTL_SEEK) {
     long err = 0;
@@ -1586,19 +1596,20 @@ long sys_object_ctl(int handle, int cmd, long arg) {
       ret = -EIO;
     } else {
       o->offset = 0;
-      NX_DISCARD(vfs_open(o->path, &o->node),
-                 "best-effort refresh after a successful truncate; the truncate "
-                 "is what we report, and the cached node is the fallback");
+      NX_DISCARD(
+          vfs_open(o->path, &o->node),
+          "best-effort refresh after a successful truncate; the truncate "
+          "is what we report, and the cached node is the fallback");
       ret = 0;
     }
     obj_unref(o);
     return ret;
   }
 
-  /* FILE: report the CURRENT size in bytes (Stage 4: lseek SEEK_END / stat via the
-   * object, so a FILE handle can fully back open()/read()/write()/lseek()).  Reads
-   * the live size (another handle may have grown the file), falling back to the
-   * cached open-time size. */
+  /* FILE: report the CURRENT size in bytes (Stage 4: lseek SEEK_END / stat via
+   * the object, so a FILE handle can fully back open()/read()/write()/lseek()).
+   * Reads the live size (another handle may have grown the file), falling back
+   * to the cached open-time size. */
   if (cmd == OBJ_CTL_STAT) {
     long err = 0;
     struct kobject *o = pin_handle(handle, 0, &err);
@@ -1630,11 +1641,11 @@ long sys_object_ctl(int handle, int cmd, long arg) {
 }
 
 /*
- * sys_object_lseek - POSIX lseek(2) on a FILE handle: reposition the shared byte
- * offset per 'whence' and return the new absolute position.  SEEK_END reads the
- * live size (vfs_stat) so it tracks growth by another handle.  A non-seekable
- * object (CONSOLE stdin/stdout/stderr, …) returns -ESPIPE.  Positioning needs
- * only the handle itself (no rights), matching OBJ_CTL_SEEK.
+ * sys_object_lseek - POSIX lseek(2) on a FILE handle: reposition the shared
+ * byte offset per 'whence' and return the new absolute position.  SEEK_END
+ * reads the live size (vfs_stat) so it tracks growth by another handle.  A
+ * non-seekable object (CONSOLE stdin/stdout/stderr, …) returns -ESPIPE.
+ * Positioning needs only the handle itself (no rights), matching OBJ_CTL_SEEK.
  */
 long sys_object_lseek(int handle, long off, int whence) {
   long err = 0;
@@ -1673,15 +1684,18 @@ long sys_object_lseek(int handle, long off, int whence) {
 }
 
 /*
- * process_install_stdio - give a freshly created process its stdin/stdout/stderr
- * as capability handles (ASTRA §6.2: the fd table folds into the object table).
- * Handles 0/1/2 share ONE refcounted CONSOLE object — a process has a single
- * controlling terminal: handle 0 holds READ (stdin keyboard drain), handles 1/2
- * hold WRITE (stdout/stderr → the process's own window, else its ctty).  The
- * table is allocated eagerly so every process is born with the trio, replacing
- * the old fd-table pre-open.  Returns 0, or -ENOMEM.
+ * process_install_stdio - give a freshly created process its
+ * stdin/stdout/stderr as capability handles (ASTRA §6.2: the fd table folds
+ * into the object table). Handles 0/1/2 share ONE refcounted CONSOLE object — a
+ * process has a single controlling terminal: handle 0 holds READ (stdin
+ * keyboard drain), handles 1/2 hold WRITE (stdout/stderr → the process's own
+ * window, else its ctty).  The table is allocated eagerly so every process is
+ * born with the trio, replacing the old fd-table pre-open.  Returns 0, or
+ * -ENOMEM.
  */
-int process_install_stdio(struct process *p) {
+int process_install_stdio(struct process *p, struct process *parent) {
+  (void)
+      parent; /* currently unused; reserved for future ctty/stdio inheritance */
   if (!p)
     return -EINVAL;
   if (handles_ensure(p) != 0)
@@ -1705,23 +1719,24 @@ int process_install_stdio(struct process *p) {
 }
 
 /*
- * process_redirect_child_fd - install the SPAWNER's open handle 'parent_fd' into
- * the freshly-created child's slot 'child_slot', OVERWRITING the pre-installed
- * console there (Phase 4 shell redirection: `<`/`>`/`>>`/`2>`).  This is the
- * fork+dup2 primitive expressed as a capability dup — the child gets a SECOND
- * handle to the SAME kobject (shared FILE offset, ASTRA §6.2), so its
- * read(0)/write(1) flow to the file instead of the terminal.  Called from
+ * process_redirect_child_fd - install the SPAWNER's open handle 'parent_fd'
+ * into the freshly-created child's slot 'child_slot', OVERWRITING the
+ * pre-installed console there (Phase 4 shell redirection: `<`/`>`/`>>`/`2>`).
+ * This is the fork+dup2 primitive expressed as a capability dup — the child
+ * gets a SECOND handle to the SAME kobject (shared FILE offset, ASTRA §6.2), so
+ * its read(0)/write(1) flow to the file instead of the terminal.  Called from
  * dispatch_spawn BEFORE the child is enqueued, with the spawner as
  * current_process; the spawner closes its own copies after the spawn returns.
  * Returns 0, or -EINVAL/-EBADF/-ENOMEM.
  */
 int process_redirect_child_fd_from(struct process *owner, struct process *child,
                                    int child_slot, int parent_fd) {
-  struct process *parent = owner; /* the fd's owner; not necessarily the spawner */
+  struct process *parent =
+      owner; /* the fd's owner; not necessarily the spawner */
   if (!child || !parent)
     return -EINVAL;
-  if (child_slot < 0 || child_slot >= NPROC_HANDLES ||
-      parent_fd < 0 || parent_fd >= NPROC_HANDLES)
+  if (child_slot < 0 || child_slot >= NPROC_HANDLES || parent_fd < 0 ||
+      parent_fd >= NPROC_HANDLES)
     return -EBADF;
   if (!parent->handles)
     return -EBADF;

@@ -32,6 +32,7 @@
 
 #include <image.h>
 #include <os1.h>
+#include <os1vid.h>
 #include <string.h>
 
 /* NXASSOC_KIND_ARG: launch "<prog> <path>" (argv[0]=prog, argv[1]=path).
@@ -84,7 +85,7 @@ static inline int nxassoc_is_exec_path(const char *path) {
  * (caller's responsibility, see header comment).
  */
 static inline int nxassoc_resolve(const char *path, char *out_prog, size_t sz) {
-  if (os1_image_path_has_known_ext(path)) {
+  if (os1_image_path_has_known_ext(path) || os1vid_path_has_known_ext(path)) {
     snprintf(out_prog, sz, "%s", "/sys/bin/nximage");
     return NXASSOC_KIND_ARG;
   }
@@ -100,7 +101,6 @@ static inline int nxassoc_resolve(const char *path, char *out_prog, size_t sz) {
       }
     }
   }
-
   if (nxassoc_is_exec_path(path)) {
     snprintf(out_prog, sz, "%s", path);
     return NXASSOC_KIND_EXEC;
