@@ -39,8 +39,8 @@
  *   USR-LIB-03  (fixed locally) graphics_draw_text used to declare a 100KB
  *               static buffer and fall back to terminal text rendering.
  *   USR-LIB-04  (partly fixed) system/getenv are no-ops; atof truncates
- *               decimal fractions via (double)atoi().  mkdir now issues
- *               SYS_MKDIR (real ext4 directory creation).
+ *               decimal fractions via (double)atoi(). mkdir now composes over
+ *               a parent directory capability (real ext4 directory creation).
  *   USR-LIB-05  (W1 DOC) vfprintf ignores the stream arg and always writes
  *               to fd 1; stderr goes to stdout silently.
  *   USR-SEC-01  (W3 SECURITY) registry_read/write have no authentication;
@@ -858,7 +858,56 @@ int OS1_fs_list(const char *path, char *buf, size_t size) {
 }
 int OS1_fs_chdir(const char *path) { return _sys_chdir(path); }
 int OS1_fs_getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
-int OS1_fs_unlink(const char *path) { return _sys_unlink(path); }
+
+/* __fs_parent_ctl - split a pathname into a parent directory and one child
+ * name, acquire the parent with the distinct MUTATE right, then send the
+ * namespace operation through that capability. The kernel repeats the
+ * one-component validation: this split is composition convenience, not a
+ * security boundary. */
+static int __fs_parent_ctl(const char *path, int cmd) {
+  if (!path)
+    return -EFAULT;
+
+  char work[128];
+  size_t len = strlen(path);
+  if (len == 0 || len >= sizeof(work))
+    return -EINVAL;
+  memcpy(work, path, len + 1);
+  while (len > 1 && work[len - 1] == '/')
+    work[--len] = '\0';
+  if (strcmp(work, "/") == 0)
+    return -EINVAL;
+
+  char *leaf = work + len;
+  while (leaf > work && leaf[-1] != '/')
+    leaf--;
+  const char *parent;
+  if (leaf == work) {
+    parent = ".";
+  } else if (leaf == work + 1 && work[0] == '/') {
+    parent = "/";
+  } else {
+    leaf[-1] = '\0';
+    parent = work;
+  }
+  if (!leaf[0])
+    return -EINVAL;
+
+  long h = OS1low_handle_create(OS1_NS_FS, parent, OS1_RIGHT_MUTATE,
+                                OBJ_TYPE_FILE);
+  if (h < 0)
+    return (int)h;
+  long r = OS1_object_ctl((int)h, cmd, (long)leaf);
+  OS1low_handle_close((int)h);
+  return (int)r;
+}
+
+int OS1_fs_mkdir(const char *path) {
+  return __fs_parent_ctl(path, OBJ_CTL_MKDIR);
+}
+int OS1_fs_unlink(const char *path) {
+  return __fs_parent_ctl(path, OBJ_CTL_UNLINK);
+}
 int file_write(const char *path, const void *buf, int size, int offset) {
   return OS1_fs_write(path, buf, size, offset);
 }
@@ -1891,8 +1940,8 @@ int vsscanf(const char *inp, const char *fmt0, va_list ap) {
 
 /* NOTE(USR-LIB-04): system/getenv are still no-op stubs; atof truncates
  * decimal fractions by delegating to atoi() and casting, so "3.14" -> 3.0.
- * mkdir is no longer a stub — it issues SYS_MKDIR (see below). */
-/* mkdir - create a directory via SYS_MKDIR (VFS create, VFS_TYPE_DIR).  The
+ * mkdir is no longer a stub — it composes over a parent directory capability. */
+/* mkdir - create a directory through its parent directory capability. The
  * POSIX mode argument is accepted but not yet applied (the ext4 driver fixes
  * new directories at 0755); returns 0 on success, -1 on error (path exists,
  * not permitted, or provider failure), matching the POSIX contract. */
@@ -1907,7 +1956,7 @@ int mkdir(const char *path, mode_t mode) {
    * read whatever a PREVIOUS call had left there.  A stale errno is worse than
    * none: it is indistinguishable from a fresh one.  Routed through
    * errno_ret() like every other syscall veneer. */
-  return (int)errno_ret_ctx(_sys_mkdir(path), path);
+  return (int)errno_ret_ctx(OS1_fs_mkdir(path), path);
 }
 /*
  * system - run a shell command and wait for it (<stdlib.h>).

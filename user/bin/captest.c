@@ -16,7 +16,8 @@
  *  10. O_CREAT: CREATE|WRITE creates a missing file; CREATE bit is stripped.
  *  11. Creation is explicit: no CREATE (or CREATE w/o WRITE) -> -ENOENT.
  *  12. Acquisition ACL: CREATE under /sys/bin -> -EACCES for USER.
- *  13. SYS_MKDIR shares the seam: /home ok (+empty rmdir), /sys/bin -EACCES.
+ *  13. Parent-directory MUTATE capability: /home mkdir+unlink succeeds;
+ *      /sys/bin acquisition is denied; malformed child names cannot escape.
  * Results go to a window AND the serial console (grep "[captest]").
  */
 #include <execsvc.h> /* execution-service protocol (Phase 9 section below) */
@@ -200,12 +201,20 @@ int main(void) {
                             OBJ_TYPE_FILE) == -EACCES;
   check(win_id, "create-acl-sysbin", ok);
 
-  /* 13. SYS_MKDIR shares the seam: /home create+remove works (also covers
-   * empty-directory unlink), /sys/bin is -EACCES. */
-  ok = _sys_mkdir("/home/captest.dir") == 0 &&
+  /* 13. R1b: directory namespace mutation is a message on a parent-directory
+   * capability. The parent ACL gates acquisition; the held capability names
+   * the namespace, and the child name cannot contain a path separator. */
+  int home_dir = (int)OS1low_handle_create(OS1_NS_FS, "/home",
+                                            OS1_RIGHT_MUTATE, OBJ_TYPE_FILE);
+  long escaped = (home_dir >= 0)
+                     ? OS1_object_ctl(home_dir, OBJ_CTL_MKDIR, (long)"a/b")
+                     : -1;
+  if (home_dir >= 0)
+    OS1low_handle_close(home_dir);
+  ok = OS1_fs_mkdir("/home/captest.dir") == 0 &&
        OS1_fs_unlink("/home/captest.dir") == 0 &&
-       _sys_mkdir("/sys/bin/captest.dir") == -EACCES;
-  check(win_id, "mkdir-seam", ok);
+       OS1_fs_mkdir("/sys/bin/captest.dir") == -EACCES && escaped == -EINVAL;
+  check(win_id, "dir-mutate-capability", ok);
 
   /* --- 14..18: service PORTS (ASTRA §6.5 — a port IS a capability) --------
    * These verify the property that motivates ports: a client reaches a SERVICE

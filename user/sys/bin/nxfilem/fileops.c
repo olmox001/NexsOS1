@@ -259,8 +259,8 @@ void fm_delete_file(const char *path) {
     OS1_fs_unlink(path);
 }
 
-/* fm_create_folder - create a subdirectory in the current directory via the
- * mkdir() syscall wrapper (SYS_MKDIR), then refresh so the new folder shows. */
+/* fm_create_folder - create a subdirectory in the current directory through
+ * mkdir()'s parent-directory capability composition, then refresh the view. */
 void fm_create_folder(const char *name) {
   if (!name || !name[0]) {
     fm_set_status_message("New folder: empty name");

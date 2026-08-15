@@ -396,7 +396,7 @@ struct ext4_group_desc {
   uint16_t bg_free_inodes_count_lo;
   uint16_t bg_used_dirs_count_lo;
   uint16_t bg_flags;
-  uint8_t padding[14];
+  uint8_t padding[12]; /* 20 named + 12 = 32 bytes, standard on-disk GDT entry size */
 } __attribute__((packed));
 
 struct ext4_inode {
@@ -413,7 +413,7 @@ struct ext4_inode {
   uint32_t i_flags;
   uint32_t i_osd1;
   uint32_t i_block[15];
-  uint8_t padding[256 - 102];
+  uint8_t padding[256 - 100];
 } __attribute__((packed));
 
 struct ext4_dir_entry {

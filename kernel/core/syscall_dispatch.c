@@ -415,8 +415,8 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      *
      * O_CREAT/O_TRUNC/O_APPEND are honoured here (issue #126): the create /
      * truncate is applied through the SAME vfs_write_allowed() authority seam
-     * SYS_FILE_WRITE and SYS_UNLINK use (S-ALIGN F6), so path-based and
-     * handle-based writes cannot drift, and the POSIX personality logic in
+     * used for WRITE capability acquisition (S-ALIGN F6), so the POSIX
+     * personality logic in
      * libc keeps only flag/mode translation (ASTRA layering).  Any OTHER flag
      * is still an explicit -EINVAL, never silently ignored.  sys_handle_create
      * then does the resolve, the write-ACL re-check for a WRITE handle, and the
@@ -1133,43 +1133,6 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     } else {
       pt_regs_set_return(frame, 0);
     }
-  } break;
-  case SYS_UNLINK: {
-    char k_path[128];
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
-      break;
-    }
-    char resolved_path[128];
-    vfs_resolve_path(k_path, resolved_path, 128);
-    /* unlink is a write-class modification: same single authority seam as
-     * SYS_FILE_WRITE / open(write) (vfs_write_allowed, S-ALIGN F6).  Closes
-     * the asymmetry (USR-SEC) where any process could unlink a path it was
-     * not allowed to write. */
-    long uperm = vfs_write_allowed(resolved_path);
-    if (uperm != 0) {
-      pt_regs_set_return(frame, uperm);
-      break;
-    }
-    pt_regs_set_return(frame, vfs_unlink(resolved_path));
-  } break;
-  case SYS_MKDIR: {
-    char k_path[128];
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
-      break;
-    }
-    char resolved_path[128];
-    vfs_resolve_path(k_path, resolved_path, 128);
-    /* mkdir is a write-class modification: same single authority seam as
-     * SYS_FILE_WRITE / SYS_UNLINK (vfs_write_allowed, S-ALIGN F6), so the
-     * three entry points cannot drift. */
-    long mperm = vfs_write_allowed(resolved_path);
-    if (mperm != 0) {
-      pt_regs_set_return(frame, mperm);
-      break;
-    }
-    pt_regs_set_return(frame, vfs_create(resolved_path, VFS_TYPE_DIR));
   } break;
   case SYS_PORT_SEND_CAPS:
     /* port send carrying capabilities; see sys_port_send_caps() for why a

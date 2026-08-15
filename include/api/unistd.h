@@ -26,7 +26,7 @@
  * getcwd()          OS1_fs_getcwd                       os1.h
  * sbrk()            OS1low_vm_sbrk                      os1.h
  * pipe()            OS1low_pipe (SYS_PIPE, OBJ_TYPE_PIPE)   here
- * unlink()          OS1_fs_unlink (SYS_UNLINK)              here
+ * unlink()          OS1_fs_unlink (parent DIR capability)   here
  * truncate()        OS1_fs_read/OS1_fs_write (whole-file)   here
  * ftruncate()       lseek/read/write + OBJ_CTL_TRUNCATE     here
  * isatty()          OS1low_cap_query (type == CONSOLE)      here
@@ -65,7 +65,8 @@ int usleep(unsigned int usec);
  * child as its stdin/stdout.  Returns 0, or -1 with errno set. */
 int pipe(int pipefd[2]);
 
-/* unlink: real VFS delete (SYS_UNLINK via OS1_fs_unlink), same as remove(). */
+/* unlink: parent-directory capability mutation via OS1_fs_unlink(), same as
+ * remove(). */
 int unlink(const char *pathname);
 
 /* isatty: true iff the descriptor's underlying object is a CONSOLE.  This is a

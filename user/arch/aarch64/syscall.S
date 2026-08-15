@@ -350,18 +350,6 @@ _sys_chdir:
     svc #0
     ret
 
-.global _sys_unlink
-_sys_unlink:
-    mov x8, #SYS_UNLINK
-    svc #0
-    ret
-
-.global _sys_mkdir
-_sys_mkdir:
-    mov x8, #SYS_MKDIR
-    svc #0
-    ret
-
 /* int _sys_pipe(int fds[2]) — fds in x0 */
 .global _sys_pipe
 _sys_pipe:

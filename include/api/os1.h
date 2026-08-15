@@ -95,8 +95,6 @@ extern int  _sys_chdir(const char *path);
  * `struct abi_stat *` (include/abi/posix_types.h).  0, or a negative errno. */
 extern int  _sys_stat(const char *path, void *out);
 extern int  _sys_getcwd(char *buf, size_t size);
-extern int  _sys_unlink(const char *path);
-extern int  _sys_mkdir(const char *path);
 extern int  _sys_pipe(int fds[2]);
 extern long _sys_port_send_caps(int handle, const void *msg, const int *fds, int nfds);
 extern int  _sys_open(const char *path, int flags);
@@ -304,7 +302,8 @@ int OS1_fs_read(const char *path, void *buf, int size, int offset);
 int OS1_fs_list(const char *path, char *buf, size_t size);
 int OS1_fs_chdir(const char *path);
 int OS1_fs_getcwd(char *buf, size_t size);
-int OS1_fs_unlink(const char *path); /* remove a file/node by path (VFS unlink) */
+int OS1_fs_mkdir(const char *path);  /* create a directory through its parent */
+int OS1_fs_unlink(const char *path); /* remove a node through its parent dir   */
 
 /* Environment — the OS1 NATIVE surface (ASTRA §6.8: POSIX is a personality
  * ABOVE this, never beside it).
