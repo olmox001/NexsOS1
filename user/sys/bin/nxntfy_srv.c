@@ -429,7 +429,8 @@ int main(void) {
           is_visible = 1;
           popup_shown = 1;
           last_notify_time = get_time();
-          compositor_render();
+          /* SCHED-STACK-ISO: blit + set_window_flags mark damage; init flush()
+           * presents — no nested compositor_render() here. */
         }
       }
 
@@ -477,7 +478,8 @@ int main(void) {
     if (is_visible && (get_time() - last_notify_time >= 2000)) {
       set_window_flags(g_win, 1 | 4 | 8); /* 1=top_most, 4=hidden, 8=passive */
       is_visible = 0;
-      compositor_render();
+      /* SCHED-STACK-ISO: set_window_flags marks damage; init flush() presents
+       * the hide — no nested compositor_render() here. */
       /* The user has now seen the popup: confirm READ in the registry record
        * (the read receipt of the message model). */
       if (last_log_idx >= 0) {

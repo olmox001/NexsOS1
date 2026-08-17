@@ -88,7 +88,10 @@ static void shell_redraw_accent(void) {
   if (my_window < 0)
     return;
   window_draw(my_window, 0, 0, g_win_w, 2, g_col_prompt);
-  compositor_render();
+  /* SCHED-STACK-ISO: init drives the heavy compositor render via flush()
+   * (~30 FPS).  window_draw() already marks damage dirty; calling
+   * compositor_render() here nested the full chrome/region render on the
+   * shell's kernel stack and could clobber frame locals before present. */
 }
 
 static void shell_on_resize(int w, int h) {

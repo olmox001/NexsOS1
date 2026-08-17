@@ -6,7 +6,7 @@ int main(void) {
     return 1;
 
   window_draw(win, 0, 0, 300, 100, 0xFF333333);
-  compositor_render();
+  /* init flush() presents; window_draw marks damage. */
 
   struct ipc_message msg;
   msg.type = 1;
@@ -32,12 +32,10 @@ int main(void) {
   if (send(target_pid, &msg) == 0) {
     printf("[IPC Send] Message sent successfully!\n");
     window_draw(win, 0, 0, 300, 100, 0xFF00AA00); /* Green */
-    compositor_render();
     OS1_sleep(1000); /* keep the result window up ~1s (OS1_sleep() is now ms) */
   } else {
     printf("[IPC Send] Send failed.\n");
     window_draw(win, 0, 0, 300, 100, 0xFFAA0000); /* Red */
-    compositor_render();
     OS1_sleep(1000); /* keep the result window up ~1s (OS1_sleep() is now ms) */
   }
 

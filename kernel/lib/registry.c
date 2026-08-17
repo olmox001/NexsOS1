@@ -32,8 +32,8 @@
  * per-subtree locking is a later refinement.
  */
 
-#include <kernel/nx_contract.h>
 #include <kernel/kmalloc.h>
+#include <kernel/nx_contract.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
 #include <kernel/sched.h> /* current_process / proc_has_cap / proc_is_machine */
@@ -239,7 +239,7 @@ void registry_init(void) {
 
   /* ---- System identity (displayed in "About", network, etc.) ---- */
   set_default("system.hostname", "NeXs");
-  set_default("system.arch", "unknown"); /* will be updated by init/nxinfo */
+  set_default("system.arch", "unknown");  /* will be updated by init/nxinfo */
   set_default("system.version", "0.0.0"); /* kernel version placeholder */
   set_default("system.os", "NEXS");
 
@@ -299,10 +299,10 @@ int registry_set(const char *key, const char *value, int owner_pid) {
    *
    * USR-SEC-01 (FIXED 2026-07-23, audit programme A): the deny used to also
    * require `n->owner_pid != 0`, which meant a system-owned key was writable by
-   * ANYONE — an ordinary app could overwrite `srv.notify_pid` (redirecting every
-   * notification), `theme.*`, `sys.env.*`, etc.  init re-published srv.* on each
-   * respawn to paper over it (NOTIFY-REG-01), but that only bounded the window,
-   * it did not close it.  The real separation of root from user here is
+   * ANYONE — an ordinary app could overwrite `srv.notify_pid` (redirecting
+   * every notification), `theme.*`, `sys.env.*`, etc.  init re-published srv.*
+   * on each respawn to paper over it (NOTIFY-REG-01), but that only bounded the
+   * window, it did not close it.  The real separation of root from user here is
    * NAMESPACE OWNERSHIP, not the coarse capability mask: a user keeps
    * CAP_REG_WRITE (raptor/nxempire persist their own keys), but the keys it
    * creates are owned by its pid and it can no longer reach a system key.  A
@@ -397,10 +397,11 @@ static int reg_virtual_proc(const char *key, char *buf, size_t size) {
   }
   if (strcmp(p, "parent") == 0 || strcmp(p, "owner") == 0) {
     int par = 0, own = 0;
-    NX_DISCARD(proc_get_lineage(pid, &par, &own),
-               "a pid with no lineage (or already reaped) reports 0/0, which is "
-               "the same answer this virtual key gives for init; the caller is "
-               "reading a status field, not performing an operation");
+    NX_DISCARD(
+        proc_get_lineage(pid, &par, &own),
+        "a pid with no lineage (or already reaped) reports 0/0, which is "
+        "the same answer this virtual key gives for init; the caller is "
+        "reading a status field, not performing an operation");
     snprintf(buf, size, "%d", (strcmp(p, "owner") == 0) ? own : par);
     return 1;
   }
@@ -438,10 +439,11 @@ static int reg_virtual_proc(const char *key, char *buf, size_t size) {
  * registry_key_is_virtual - does this key name the computed per-process view?
  *
  * R2: the authority rule belongs to the KEY, not to the entry point.  All three
- * write gates (sys_registry, the OS1_NS_REG acquisition in object.c, regfs_write)
- * consult this so a virtual key is uniformly exempt from CAP_REG_WRITE — writing
- * your own environment is ordinary unprivileged work, and proc_env_set enforces
- * the real rule (self always, anyone else only if privileged).
+ * write gates (sys_registry, the OS1_NS_REG acquisition in object.c,
+ * regfs_write) consult this so a virtual key is uniformly exempt from
+ * CAP_REG_WRITE — writing your own environment is ordinary unprivileged work,
+ * and proc_env_set enforces the real rule (self always, anyone else only if
+ * privileged).
  *
  * Before this, only sys_registry knew: the object and regfs paths demanded
  * CAP_REG_WRITE for a setenv AND then stored a real node that the computed
@@ -533,7 +535,7 @@ int registry_del(const char *key, int owner_pid) {
    * unsetenv — an empty value clears the slot (see reg_virtual_proc_write). */
   {
     long vret;
-    if (reg_virtual_proc_write(key, "", &vret))
+    if (reg_virtual_proc_write(key, NULL, &vret))
       return (int)vret;
   }
 
@@ -891,7 +893,7 @@ void registry_mount_vfs(void) {
    * agreeing, which is precisely the divergence R2 exists to remove. */
   if (vfs_mount_at("/reg", &regfs_ops, NULL) != 0)
     pr_err("%s", "registry: /reg could not be mounted — the VFS door onto the "
-           "registry is absent while the syscall door still works\n");
+                 "registry is absent while the syscall door still works\n");
 }
 
 /*
@@ -982,7 +984,8 @@ long sys_registry(int op, const char *key, char *value, size_t size) {
     /* USR-SEC-03 #79: writing the registry needs CAP_REG_WRITE (reads are open
      * to everyone) — EXCEPT for a virtual per-process key, which carries its
      * own authority rule (R2: the key decides, not the door).  The routing
-     * itself now lives in registry_set, so this path no longer duplicates it. */
+     * itself now lives in registry_set, so this path no longer duplicates it.
+     */
     if (!registry_key_is_virtual(k_key) && !registry_write_allowed())
       return -EPERM;
     return registry_set(k_key, k_val, registry_caller_owner());

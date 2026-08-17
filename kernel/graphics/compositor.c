@@ -307,6 +307,21 @@ static int window_region_has_alpha(struct window *win, int x, int y, int w,
  */
 static struct window *sorted_windows[MAX_WINDOWS];
 static struct region *visible_regions_store[MAX_WINDOWS];
+/* Backbuffer surface descriptor for the whole render pass — file-static, not
+ * stack-local, so a deep chrome/GL call chain cannot clobber it before
+ * gpu_present_surface() (S-STAB: same rationale as sorted_windows above). */
+static struct gl_surface compositor_frame_surface;
+
+static void compositor_bind_backbuffer_surface(int bb_w, int bb_h, int bb_pg,
+                                               uint32_t *backbuffer) {
+  compositor_frame_surface.width = bb_w;
+  compositor_frame_surface.height = bb_h;
+  compositor_frame_surface.stride = bb_w;
+  compositor_frame_surface.buffer = backbuffer;
+  compositor_frame_surface.alpha_mask = NULL;
+  compositor_frame_surface.capacity =
+      (size_t)bb_pg * (4096u / sizeof(uint32_t));
+}
 
 /* Mouse State */
 static int mouse_x = 400;
@@ -1940,13 +1955,10 @@ static void compositor_render_internal(void) {
    * (S-STAB); gfx_surface_verify panics precisely if bb_w*bb_h ever outran the
    * allocation instead of letting the chrome/content painters scribble kernel
    * RAM (the UTM-panic class). */
-  struct gl_surface screen = {.width = bb_w,
-                              .height = bb_h,
-                              .stride = bb_w,
-                              .buffer = backbuffer,
-                              .capacity =
-                                  (size_t)bb_pg * (4096u / sizeof(uint32_t))};
-  gfx_surface_verify(&screen, "compositor_render_internal/backbuffer");
+  compositor_bind_backbuffer_surface(bb_w, bb_h, bb_pg, backbuffer);
+  gfx_surface_verify(&compositor_frame_surface,
+                     "compositor_render_internal/backbuffer");
+  struct gl_surface *screen = &compositor_frame_surface;
 
   /* Damage clip as the rect the gfx_chrome primitives honour. */
   gfx_rect_t chrome_clip = {clip_x1, clip_y1, clip_w, clip_h};
@@ -2189,13 +2201,13 @@ static void compositor_render_internal(void) {
     if (st->shadows && st->shadow_size > 0 && !win->top_most) {
       gfx_rect_t chrome_frame = {win->x, decor_y, dw, full_h};
       if (st->shadow_type == 0)
-        gfx_chrome_shadow_solid(&screen, &chrome_clip, &chrome_frame, rr,
+        gfx_chrome_shadow_solid(screen, &chrome_clip, &chrome_frame, rr,
                                 th->win_bg);
       else if (st->shadow_type == 2)
-        gfx_chrome_shadow_premium(&screen, &chrome_clip, &chrome_frame, rr,
+        gfx_chrome_shadow_premium(screen, &chrome_clip, &chrome_frame, rr,
                                   st->shadow_size);
       else if (st->shadow_type == 1)
-        gfx_chrome_shadow_fast(&screen, &chrome_clip, &chrome_frame, rr,
+        gfx_chrome_shadow_fast(screen, &chrome_clip, &chrome_frame, rr,
                                st->shadow_size);
     }
 
@@ -2312,7 +2324,7 @@ static void compositor_render_internal(void) {
       /* Damage clip (GFX-COMP-03): title text is drawn unoccluded over the
        * titlebar, so it must be confined to this frame's damage box or it would
        * overpaint pixels outside the recomposited region. */
-      gl_draw_string_clipped(&screen, start_x, start_y, win->title, text_color,
+      gl_draw_string_clipped(screen, start_x, start_y, win->title, text_color,
                              clip_x1, clip_y1, clip_x2, clip_y2);
     }
 
@@ -2320,7 +2332,7 @@ static void compositor_render_internal(void) {
      * the rounded corners.  Drawn last so it sits on top of content + title. */
     if (st->window_borders && !win->top_most) {
       gfx_rect_t chrome_frame = {win->x, decor_y, dw, full_h};
-      gfx_chrome_border(&screen, &chrome_clip, &chrome_frame, rr, th->border);
+      gfx_chrome_border(screen, &chrome_clip, &chrome_frame, rr, th->border);
     }
   }
 
@@ -2370,9 +2382,13 @@ static void compositor_render_internal(void) {
     if (dx1 < dx2 && dy1 < dy2) {
       /* Surface-speaking contract (graphics-port): the core hands the
        * provider its validated gfx_surface + damage rect through gpu_core,
-       * never the driver's ops table directly. */
+       * never the driver's ops table directly.  Re-bind immediately before
+       * present so a clobbered descriptor cannot reach the GPU seam even if
+       * something scribbled over compositor_frame_surface mid-frame. */
+      compositor_bind_backbuffer_surface(bb_w, bb_h, bb_pg, backbuffer);
+      gfx_surface_verify(screen, "compositor_render_internal/present");
       gfx_rect_t present_damage = {dx1, dy1, dx2 - dx1, dy2 - dy1};
-      if (gpu_present_surface(&screen, &present_damage) == 0)
+      if (gpu_present_surface(screen, &present_damage) == 0)
         presented = 1;
     } else {
       presented = 1; /* nothing to upload, but the (empty) damage is consumed */
@@ -2404,8 +2420,8 @@ static void compositor_render_internal(void) {
     damage_x2 = 0;
     damage_y2 = 0;
   }
-  /* Cleanup regions */
-  region_destroy(occluded);
+  /* Cleanup regions (occluded was destroyed after pass 1; visible_regions
+   * entries are nulled as pass 2 consumes them). */
   for (int i = 0; i < count; i++) {
     if (visible_regions[i]) {
       region_destroy(visible_regions[i]);

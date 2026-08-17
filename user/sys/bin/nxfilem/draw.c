@@ -186,5 +186,6 @@ void fm_blit(void) {
   if (fm_win_id < 0 || !fm_fb)
     return;
   window_blit(fm_win_id, 0, 0, fm_fb_w, fm_fb_h, fm_fb);
-  compositor_render();
+  /* SCHED-STACK-ISO: init pumps the compositor via flush(); blit marks
+   * damage — no nested compositor_render() here. */
 }
