@@ -16,6 +16,10 @@ endif
 
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
+# Build flavour for userland size control.
+#   make BUILD=debug   → full symbols, no strip (default)
+#   make BUILD=release → --gc-sections + strip
+BUILD ?= debug
 
 # Optional escape hatch for incomplete userland compatibility layers: when set,
 # the user-space compile rules drop -Werror without weakening the kernel build.
@@ -31,6 +35,8 @@ endif
 VERSION ?= V0.0.5.4
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
+
+
 
 # Normalize ARCH typos
 ifeq ($(findstring aarch64,$(ARCH)),aarch64)
@@ -113,7 +119,11 @@ BOOT_DIR   = $(ARCH_DIR)/boot
     QEMU = qemu-system-aarch64
 endif
 
-USER_CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE)
+# Userland: enable per-function/data sections so the linker can GC unused
+# code from the whole-archive lib.o (USR-BLOAT-01/02).  Kernel keeps the
+# original COMMON_FLAGS (no gc needed there).
+USER_CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) \
+              -ffunction-sections -fdata-sections
 ifneq ($(BYPASS_USERLAND_ERRORS),0)
 USER_CFLAGS += -Wno-error
 endif
@@ -757,6 +767,15 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 
 # kilo is linked like every other user ELF (prereqs declared above, generic
 # linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
+
+# Userland link flags.
+# --gc-sections drops unused functions/data from the whole-linked lib.o
+# (the main source of the ~50-70 KB bloat measured in counter.elf).
+# In release builds we also strip symbols; debug keeps everything.
+USER_LINK_FLAGS ?= -Wl,--gc-sections
+ifeq ($(BUILD),release)
+USER_LINK_FLAGS += -Wl,-s
+endif
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
