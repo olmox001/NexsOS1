@@ -15,6 +15,10 @@ static inline int isspace(int c) {
     return (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r');
 }
 
+static inline int isblank(int c) {
+    return (c == ' ' || c == '\t');
+}
+
 static inline int isdigit(int c) {
     return (c >= '0' && c <= '9');
 }

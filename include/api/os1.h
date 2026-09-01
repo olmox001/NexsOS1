@@ -121,6 +121,7 @@ long write(int fd, const char *buf, size_t count);
 long get_time(void);   /* compat shim for OS1_time_now() (DIR-01 F4) */
 int  get_pid(void);
 void exit(int status);
+long gethostid(void);
 int  spawn(const char *path);
 /* spawn_args: like spawn(), but hands the child an argv vector (the shell
  * uses it to pass a filename, e.g. `kilo notes.txt`).  argv[0] is the program
@@ -337,7 +338,9 @@ int file_write(const char *path, const void *buf, int size, int offset);
 int file_read(const char *path, void *buf, int size, int offset);
 int list_dir(const char *path, char *buf, size_t size);
 int chdir(const char *path);
+#ifndef _NEXSOS_GETCWD_POSIX
 int getcwd(char *buf, size_t size);
+#endif
 
 /* POSIX-style fd I/O (ABI-03 fd table; open() is declared in fcntl.h, the
  * O_ and SEEK_ values in posix_types.h).  read()/write() above work on any

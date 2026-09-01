@@ -34,3 +34,11 @@
 	path = user/bin/busybox
 	url = https://github.com/olmox001/busybox.git
 	branch = nexsos-port
+[submodule "user/sys/lib/gnulib"]
+	path = user/sys/lib/gnulib
+	url = https://github.com/coreutils/gnulib.git
+	branch = nexsos-port
+
+[submodule "user/bin/coreutils"]
+	path = user/bin/coreutils
+	url = https://github.com/coreutils/coreutils.git

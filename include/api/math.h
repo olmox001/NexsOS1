@@ -59,6 +59,8 @@ int32_t fixmul(int32_t a, int32_t b);
 #define INFINITY __builtin_inff()
 #define HUGE_VALF INFINITY
 #define HUGE_VAL ((double)INFINITY)
+#define signbit(x) __builtin_signbit(x)
+
 
 int __float32_isnan(float x);
 int __float32_isinf(float x);
@@ -146,5 +148,6 @@ double ldexp(double x, int exp);
 /* -------------------------------------------------------------------------- */
 float strtof(const char *nptr, char **endptr);
 double strtod(const char *nptr, char **endptr);
+long double strtold(const char *nptr, char **endptr);
 
 #endif /* _MATH_H */

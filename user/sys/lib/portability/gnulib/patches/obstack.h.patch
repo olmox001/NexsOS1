@@ -1,0 +1,15 @@
+--- a/user/sys/lib/gnulib/lib/obstack.h
++++ b/user/sys/lib/portability/gnulib/obstack.h
+@@
+-/* keep upstream gnulib obstack.h as-is */
++/* NexsOS1 portability override:
++   this file is intentionally stored in the compatibility layer and not in the
++   upstream Gnulib tree.  It preserves the canonical upstream implementation while
++   allowing OS1-specific patches to be tracked under the portability overlay.
++
++   Any real delta should be kept under user/sys/lib/portability/gnulib/ and the
++   corresponding .patch file in user/sys/lib/portability/gnulib/patches/.
++ */
++
++#include "../../gnulib/lib/obstack.h"
+*** End Patch

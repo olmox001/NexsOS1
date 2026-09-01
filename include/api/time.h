@@ -13,6 +13,8 @@
 
 typedef long time_t;
 
+typedef struct tm_zone *timezone_t;
+
 typedef int clockid_t;
 
 struct timespec {
@@ -62,6 +64,11 @@ double difftime(time_t time1, time_t time0);
 /* localtime/gmtime: convert time_t to struct tm. */
 struct tm *localtime(const time_t *timep);
 struct tm *gmtime(const time_t *timep);
+
+/* mktime_z / localtime_rz: timezone-aware conversions (NexsOS1 stubs).
+ * NexsOS1 does not support timezones; these delegate to standard functions. */
+time_t mktime_z(timezone_t tz, struct tm *tm);
+struct tm *localtime_rz(timezone_t tz, const time_t *t, struct tm *tm);
 
 /* strftime: format time into string. */
 size_t strftime(char *s, size_t max, const char *format, const struct tm *tm);

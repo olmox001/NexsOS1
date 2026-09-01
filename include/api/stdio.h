@@ -70,6 +70,8 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp);
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp);
 int fseek(FILE *fp, long offset, int whence);
 long ftell(FILE *fp);
+int fseeko(FILE *fp, off_t offset, int whence);
+off_t ftello(FILE *fp);
 int feof(FILE *fp);
 int ferror(FILE *fp);
 int fflush(FILE *stream);
@@ -91,9 +93,15 @@ int printf(const char *format, ...) NX_PRINTFLIKE(1, 2);
 int sprintf(char *str, const char *format, ...) NX_PRINTFLIKE(2, 3);
 int snprintf(char *str, size_t size, const char *format, ...)
     NX_PRINTFLIKE(3, 4);
+int asprintf(char **strp, const char *format, ...)
+    NX_PRINTFLIKE(2, 3);
+int vasprintf(char **strp, const char *format, va_list ap);
+ptrdiff_t vaszprintf(char **resultp, const char *format, va_list args);
 int vsnprintf(char *str, size_t size, const char *format, va_list ap);
 int vsprintf(char *str, const char *format, va_list ap);
 int vfprintf(FILE *stream, const char *format, va_list ap);
+int vprintf(const char *format, va_list ap);
+
 int sscanf(const char *str, const char *format, ...);
 int vsscanf(const char *str, const char *format, va_list ap);
 
@@ -117,6 +125,13 @@ FILE *tmpfile(void);
 #define getc(fp)    fgetc(fp)
 #define putc(c, fp) fputc((c), (fp))
 
+int fileno(FILE *fp);
 int fprintf(FILE *stream, const char *format, ...) NX_PRINTFLIKE(2, 3);
+
+/* Compatibility surfaces used by gnulib/coreutils. */
+void fseterr(FILE *fp);
+
+/* POSIX getdelim for portability glue */
+ssize_t getdelim(char **lineptr, size_t *delim, int delimiter, FILE *stream);
 
 #endif

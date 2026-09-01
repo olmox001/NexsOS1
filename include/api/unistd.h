@@ -68,6 +68,7 @@ int pipe(int pipefd[2]);
 /* unlink: parent-directory capability mutation via OS1_fs_unlink(), same as
  * remove(). */
 int unlink(const char *pathname);
+int link(const char *oldpath, const char *newpath);
 
 /* isatty: true iff the descriptor's underlying object is a CONSOLE.  This is a
  * real capability-type test (OS1low_cap_query), NOT "fd < 3" — with shell
@@ -85,5 +86,94 @@ int getpid(void);
  * zero-length write cannot express (POSIX write(fd,...,0) is a no-op). */
 int truncate(const char *path, long length);
 int ftruncate(int fd, long length);
+int fchdir(int fd);
+unsigned int sleep(unsigned int seconds);
+int getpagesize(void);
+pid_t fork(void);
+int chown(const char *path, uid_t owner, gid_t group);
+int lchown(const char *path, uid_t owner, gid_t group);
+int fchown(int fd, uid_t owner, gid_t group);
+int chownat(int dirfd, const char *pathname, uid_t owner, gid_t group);
+int lchownat(int dirfd, const char *pathname, uid_t owner, gid_t group);
+int fchownat(int dirfd, const char *pathname, uid_t owner, gid_t group, int flags);
+int rmdir(const char *pathname);
+ssize_t readlink(const char *path, char *buf, size_t bufsiz);
+int fsync(int fd);
+int fdatasync(int fd);
+void sync(void);
+uid_t getuid(void);
+uid_t geteuid(void);
+gid_t getgid(void);
+gid_t getegid(void);
+int dup(int oldfd);
+int dup2(int oldfd, int newfd);
+int access(const char *pathname, int mode);
+ssize_t copy_file_range(int fd_in, off_t *off_in, int fd_out, off_t *off_out, size_t len, unsigned int flags);
+
+/* Process / signal primitives */
+pid_t getppid(void);
+int   kill(pid_t pid, int sig);
+int   setuid(uid_t uid);
+int   seteuid(uid_t uid);
+int   setgid(gid_t gid);
+int   setegid(gid_t gid);
+int   setreuid(uid_t ruid, uid_t euid);
+int   setregid(gid_t rgid, gid_t egid);
+int   getgroups(int size, gid_t list[]);
+
+/* Terminal / tty */
+char *ttyname(int fd);
+int   ttyname_r(int fd, char *buf, size_t buflen);
+char *getlogin(void);
+int   getlogin_r(char *buf, size_t bufsize);
+
+/* Misc POSIX */
+long  sysconf(int name);
+unsigned int alarm(unsigned int seconds);
+int   pause(void);
+int   nice(int inc);
+int   lchmod(const char *path, mode_t mode);
+int   getentropy(void *buffer, size_t length);
+
+/* exec family: replace the current process image with a new program.
+ * NexsOS1 implements these as stubs that return -ENOTSUP (not supported). */
+int   execv(const char *pathname, char *const argv[]);
+int   execvp(const char *file, char *const argv[]);
+int   execl(const char *pathname, const char *arg, ...);
+int   execlp(const char *file, const char *arg, ...);
+int   execle(const char *pathname, const char *arg, ...);
+
+/* sysconf names */
+#define _SC_NPROCESSORS_ONLN  84
+#define _SC_NPROCESSORS_CONF  83
+#define _SC_PHYS_PAGES        85
+#define _SC_AVPHYS_PAGES      86
+#define _SC_PAGESIZE           30
+#define _SC_CLK_TCK            2
+#define _SC_OPEN_MAX           5
+#define _SC_LOGIN_NAME_MAX   71
+#define _SC_HOST_NAME_MAX   72
+
+
+
+
+
+
+
+
+
+extern char **environ;
+
+/* Standard POSIX getopt variables */
+
+extern char *optarg;
+extern int optind;
+extern int opterr;
+extern int optopt;
+int getopt(int argc, char *const argv[], const char *optstring);
 
 #endif
+
+
+
+

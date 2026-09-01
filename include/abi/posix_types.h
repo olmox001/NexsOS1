@@ -13,6 +13,7 @@
 
 /* Basic types */
 typedef int64_t ssize_t;
+#define SSIZE_MAX INT64_MAX
 typedef int32_t pid_t;
 typedef uint32_t uid_t;
 typedef uint32_t gid_t;
@@ -106,6 +107,17 @@ typedef struct {
 #define ERANGE 34
 #define ENOSYS 38
 #define ENOTEMPTY 39
+#define ELOOP 40
+#define ENAMETOOLONG 36
+#define EILSEQ 84
+#define ESTALE 116
+#define ENOTSUP 95
+#define EOPNOTSUPP 95
+#define EOVERFLOW 75
+#define ENODATA 61
+
+
+
 
 /* Success */
 #define EOK 0

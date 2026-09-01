@@ -29,7 +29,11 @@ typedef struct {
 } DIR;
 
 DIR *opendir(const char *name);
+DIR *fdopendir(int fd);
 struct dirent *readdir(DIR *dirp);
 int closedir(DIR *dirp);
+int dirfd(DIR *dirp);
+
+
 
 #endif /* _DIRENT_H */

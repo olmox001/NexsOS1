@@ -32,5 +32,7 @@ typedef void (*sighandler_t)(int);
 #define SIGSTOP 19
 
 sighandler_t signal(int signum, sighandler_t handler);
+int raise(int sig);
 
 #endif /* _SIGNAL_H */
+
