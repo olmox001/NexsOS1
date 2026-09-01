@@ -12,6 +12,10 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+/* La variabile program_name viene impostata da gnulib (progname.c)
+   tramite set_program_name() all'avvio di ogni programma GNU. */
+extern char *program_name;
+
 static char g_progname_buf[64] = "nexsos_app";
 
 int gnulib_os1_getpagesize(void) {
@@ -23,6 +27,12 @@ int gnulib_os1_getdtablesize(void) {
 }
 
 const char *gnulib_os1_getprogname(void) {
+    /* Se il buffer contiene ancora il default, prova a usare program_name
+       che gnulib ha impostato (es. "mkdir", "cat", "ls"). */
+    if (strcmp(g_progname_buf, "nexsos_app") == 0) {
+        if (program_name && program_name[0] != '\0')
+            return program_name;
+    }
     return g_progname_buf;
 }
 
@@ -213,5 +223,3 @@ int fts_close(FTS *sp) {
     errno = ENOSYS;
     return -1;
 }
-
-

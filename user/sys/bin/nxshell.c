@@ -15,6 +15,14 @@
  *
  * Resize: INPUT_TYPE_RESIZE -> OS1_window_resize() for a crisp terminal surface
  * (compositor reflows the cell grid via term_resize).
+ *
+ * MODIFICA 2026-09-01:
+ *   - Priorità ai built‑in senza prefisso: se l'utente digita un comando
+ *     della whitelist (ls, cd, pwd, ...), la shell usa direttamente il built‑in
+ *     corrispondente (nxls, nxcd, ...) senza cercare il binario esterno.
+ *     I binari esterni vengono eseguiti solo per i comandi NON nella whitelist.
+ *   - La mappa `get_builtin_name` traduce il nome base nel nome built‑in con
+ *     prefisso `nx`.
  */
 #include "nxexec.h"
 #include "nxjobs.h"
@@ -88,10 +96,6 @@ static void shell_redraw_accent(void) {
   if (my_window < 0)
     return;
   window_draw(my_window, 0, 0, g_win_w, 2, g_col_prompt);
-  /* SCHED-STACK-ISO: init drives the heavy compositor render via flush()
-   * (~30 FPS).  window_draw() already marks damage dirty; calling
-   * compositor_render() here nested the full chrome/region render on the
-   * shell's kernel stack and could clobber frame locals before present. */
 }
 
 static void shell_on_resize(int w, int h) {
@@ -109,41 +113,23 @@ static void shell_on_resize(int w, int h) {
   shell_redraw_accent();
 }
 
-/* Quote-aware tokenization lives in the libc (lib.c cmdline_split), shared
- * with every other command path; this keeps `sh -c` word-splitting identical
- * to the interactive prompt and strips shell-style quotes ("lua" -> lua). */
 static int tokenize(char *s, char *argv[], int max) {
   return cmdline_split(s, argv, max);
 }
 
-/* Redirection parsing lives in nxexec.h as EXECUTOR policy, so the shell, the
- * hosted terminal and the execution service all share ONE parser (maintainer
- * 2026-07-18: nxexec must handle everything the shell was handling).  The local
- * copy was deleted rather than aliased: two copies of a parser are exactly how
- * the graphical and terminal paths drifted apart in the first place. */
-
-/*
- * spawn_search_args - resolve + spawn a command, honouring any
- * `<`/`>`/`>>`/`2>` redirections embedded in argv.  Centralised here so both
- * the default command path and the `exec` builtin get redirection for free.
- * With no redirections this is exactly nxexec_spawn_search (nredir 0 -> plain
- * spawn).
- */
 static int spawn_search_args(int argc, char *argv[], char *out_path) {
   struct spawn_redir redir[SPAWN_MAX_REDIR];
   int fds[SPAWN_MAX_REDIR], nredir = 0, nfds = 0;
   if (nxexec_strip_redirections(&argc, argv, redir, &nredir, fds, &nfds) != 0)
-    return -1; /* error already reported */
+    return -1;
   if (argc == 0) {
-    print("nxshell: no command\n"); /* e.g. "> out" with nothing to run */
+    print("nxshell: no command\n");
     for (int i = 0; i < nfds; i++)
       close(fds[i]);
     return -1;
   }
   int pid = nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0,
                                       redir, nredir);
-  /* The child owns its own dups now; drop our copies so the files close when
-   * both sides are done (POSIX fork+dup2 lifecycle). */
   for (int i = 0; i < nfds; i++)
     close(fds[i]);
   return pid;
@@ -151,12 +137,7 @@ static int spawn_search_args(int argc, char *argv[], char *out_path) {
 
 static int run_foreground(int pid) { return nxexec_run_foreground(pid); }
 
-/* run_fg_job - foreground a freshly-spawned command; if the user Ctrl-Z's it
- * (NXEXEC_JOB_STOPPED), register it as a Stopped job so `jobs`/`bg`/`fg` can
- * pick it up (Phase 2 job control). */
 static void run_fg_job(int pid, const char *cmd) {
-  /* Capture the command's exit status on the way through (g_last_status is what
-   * `nxshell -c` returns, so os.execute()/system() observe real failures). */
   if (nxexec_run_foreground_ex(pid, &g_last_status) == NXEXEC_JOB_STOPPED) {
     int id = nxjobs_add(&g_jobs, pid, cmd);
     nxjobs_mark_stopped(&g_jobs, nxjobs_find(&g_jobs, id));
@@ -164,14 +145,6 @@ static void run_fg_job(int pid, const char *cmd) {
   }
 }
 
-/*
- * spawn_with_extra_redir - resolve + spawn a command, applying its own
- * `<`/`>`/`>>`/`2>` redirections PLUS one extra {extra_child_fd ←
- * extra_parent_fd} (a pipe end).  The CALLER owns extra_parent_fd and closes it
- * afterwards; this closes only the files it opened for the command's own
- * redirections.  Returns the PID or <= 0.  A negative extra_parent_fd means "no
- * extra redirection".
- */
 static int spawn_with_extra_redir(int argc, char *argv[], int extra_child_fd,
                                   int extra_parent_fd, char *out_path) {
   struct spawn_redir redir[SPAWN_MAX_REDIR];
@@ -186,28 +159,18 @@ static int spawn_with_extra_redir(int argc, char *argv[], int extra_child_fd,
   if (extra_parent_fd >= 0 && nredir < SPAWN_MAX_REDIR) {
     redir[nredir].child_fd = extra_child_fd;
     redir[nredir].parent_fd = extra_parent_fd;
-    redir[nredir].source_pid = 0; /* our own table */
+    redir[nredir].source_pid = 0;
     nredir++;
   }
   int pid = nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0,
                                       redir, nredir);
   for (int i = 0; i < nfds; i++)
-    close(fds[i]); /* our own `>`/`2>` files; NOT the caller's pipe end */
+    close(fds[i]);
   return pid;
 }
 
-/*
- * run_pipeline - execute `LHS | RHS` (a single pipe, ASTRA OBJ_TYPE_PIPE).  The
- * RHS is the foreground stage; the LHS produces into the pipe.  Two producer
- * kinds are handled:
- *   - the `echo` BUILTIN: the shell writes its output straight into the pipe;
- *   - any other (SPAWNED) command: spawned with its stdout → the pipe
- * write-end. Each stage still honours its own `>`/`2>` redirections.  If the
- * kernel cannot make a pipe, fall back to a temp file for the echo case
- * (increment-1 redirection) so the common `echo ... | cmd` still works.
- */
 static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
-  argv[pipe_idx] = 0; /* terminate the LHS argv in place */
+  argv[pipe_idx] = 0;
   int lhs_argc = pipe_idx;
   char **rhs_argv = &argv[pipe_idx + 1];
   int rhs_argc = argc - pipe_idx - 1;
@@ -215,16 +178,12 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
     print("nxshell: syntax error near '|'\n");
     return;
   }
-  int lhs_is_echo = (strcmp(argv[0], "echo") == 0);
+  int lhs_is_echo = (strcmp(argv[0], "nxecho") == 0);
 
-  /* Start the consumer on a fresh pipe (executor policy).  A failure here is
-   * the ONLY thing that selects the temp-file fallback — we no longer create a
-   * probe pipe just to test the waters, which leaked one pipe per pipeline. */
   char rpath[SPAWN_PATH_MAX];
   int wfd = -1;
   int rpid = nxexec_spawn_pipe_consumer(rhs_argc, rhs_argv, rpath, &wfd);
   if (rpid <= 0) {
-    /* No pipe/consumer: temp-file fallback for the echo producer. */
     if (!lhs_is_echo) {
       print("nxshell: cannot create pipe\n");
       return;
@@ -255,20 +214,16 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
     if (tpid > 0) {
       run_fg_job(tpid, rhs_argv[0]);
     } else {
-      g_last_status = 127; /* POSIX: command not found */
+      g_last_status = 127;
       printf("Unknown command: %s\n", rhs_argv[0]);
     }
     OS1_fs_unlink(tmp);
     return;
   }
 
-  /* The consumer is already running on the pipe (started above); what stays
-   * here is genuinely the shell's: WHO produces, and job tracking. */
   int lpid = -1;
   if (rpid > 0 && wfd >= 0) {
     if (lhs_is_echo) {
-      /* Builtin producer: the shell writes the output itself — there is no
-       * process to give the write end to. */
       for (int i = 1; i < lhs_argc; i++) {
         if (i > 1)
           write(wfd, " ", 1);
@@ -281,8 +236,7 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
     }
   }
   if (wfd >= 0)
-    close(wfd); /* ALWAYS: a retained write end leaves the consumer waiting for
-                 * data that can never arrive */
+    close(wfd);
 
   if (rpid > 0) {
     if (background) {
@@ -292,11 +246,11 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
       run_fg_job(rpid, rhs_argv[0]);
     }
   } else {
-    g_last_status = 127; /* POSIX: command not found */
+    g_last_status = 127;
     printf("Unknown command: %s\n", rhs_argv[0]);
   }
   if (lpid > 0)
-    OS1low_process_wait(lpid); /* reap the spawned producer */
+    OS1low_process_wait(lpid);
 }
 
 static int skip_bin_entry(const char *name) {
@@ -340,30 +294,31 @@ static void help_list_programs(const char *dir) {
 }
 
 static void cmd_help(void) {
-  print("\n\033[1;33mBuilt-in commands:\033[0m\n");
-  print("  help            Show this help\n");
-  print("  clear           Clear the screen\n");
-  print("  time            Show uptime\n");
-  print("  ls [path]       List directory\n");
-  print("  cd [path]       Change directory (/ if omitted)\n");
-  print("  pwd             Print working directory\n");
-  print("  cat <path>      Show file contents\n");
-  print("  echo [text...]  Print arguments\n");
-  print("  rm <path>       Remove a file\n");
-  print("  mkdir <path>    Create a directory\n");
-  print("  cp <src> <dst>  Copy file\n");
-  print("  write <p> <txt> Write text to a file\n");
-  print("  kill <pid>      Terminate a process\n");
-  print("  focus <id>      Focus a window by id\n");
-  print("  id              Show privilege level and capabilities\n");
-  print("  about           About this system\n");
-  print("  exec <prog>     Run a program with arguments\n");
-  print("  jobs            List jobs ('+' = current, '-' = previous)\n");
-  print("  fg [job]        Bring a job to the foreground\n");
-  print("  bg [job]        Resume a stopped job in the background\n");
-  print("  attach <pid>    Track an already-running process as a job\n");
-  print("  disown [job]    Stop tracking a job (it keeps running)\n");
-  print("  exit            Close this shell\n");
+  print("\n\033[1;33mBuilt-in commands (prefixed with 'nx'):\033[0m\n");
+  print("  nxhelp            Show this help\n");
+  print("  nxclear           Clear the screen\n");
+  print("  nxtime            Show uptime (alias nxuptime)\n");
+  print("  nxls [path]       List directory\n");
+  print("  nxcd [path]       Change directory (/ if omitted)\n");
+  print("  nxpwd             Print working directory\n");
+  print("  nxcat <path>      Show file contents\n");
+  print("  nxecho [text...]  Print arguments\n");
+  print("  nxrm <path>       Remove a file (alias nxunlink)\n");
+  print("  nxmkdir <path>    Create a directory\n");
+  print("  nxcp <src> <dst>  Copy file\n");
+  print("  nxmv <src> <dst>  Move file\n");
+  print("  nxwrite <p> <txt> Write text to a file\n");
+  print("  nxkill <pid>      Terminate a process\n");
+  print("  nxfocus <id>      Focus a window by id\n");
+  print("  nxid              Show privilege level and capabilities (alias nxwhoami)\n");
+  print("  nxabout           About this system\n");
+  print("  nxexec <prog>     Run a program with arguments\n");
+  print("  nxjobs            List jobs ('+' = current, '-' = previous)\n");
+  print("  nxfg [job]        Bring a job to the foreground\n");
+  print("  nxbg [job]        Resume a stopped job in the background\n");
+  print("  nxattach <pid>    Track an already-running process as a job\n");
+  print("  nxdisown [job]    Stop tracking a job (it keeps running)\n");
+  print("  nxexit            Close this shell (alias nxquit)\n");
   print("\n\033[1;33mLine editing:\033[0m\n");
   print("  \xe2\x86\x90/\xe2\x86\x92 Home/End   move cursor    Delete   "
         "forward-delete\n");
@@ -392,10 +347,6 @@ static void cmd_help(void) {
   print("\nType any program name to run it (searches /bin, then /sys/bin).\n");
 }
 
-/* print_prompt_only - just the colored prompt, no leading newline and no
- * line content. This is nxline's repaint hook (Ctrl-L, multi-match tab
- * completion) as well as the tail end of print_prompt() below — kept as one
- * function so the prompt text can never drift between the two call sites. */
 static void print_prompt_only(void) {
   char prompt_cwd[128];
   if (getcwd(prompt_cwd, sizeof(prompt_cwd)) != 0)
@@ -408,81 +359,58 @@ static void print_prompt(void) {
   print_prompt_only();
 }
 
-/*
- * run_command_line - execute ONE simple command (no `&&`/`||`/`;`).
- *
- * `line` is consumed in place by the tokeniser.  Sequencing is the caller's
- * job (process_command below); this function is the unit a connector decides
- * to run or skip, and it owns g_last_status for that unit.
- */
-static void run_command_line(char *line) {
-  char *argv[MAX_ARGV];
-  int argc = tokenize(line, argv, MAX_ARGV);
+/* ---------------------------------------------------------------------------
+ * run_builtin - execute one of the shell's internal commands.
+ * Returns 0 if the command was handled, -1 otherwise.
+ * ------------------------------------------------------------------------- */
+static int run_builtin(int argc, char *argv[]) {
   if (argc == 0)
-    return;
-
-  /* Each command reports its own status; builtins that print nothing bad leave
-   * it at 0 (success).  Spawn paths overwrite it via run_fg_job(). */
-  g_last_status = 0;
-
-  /* Background job: a trailing standalone '&' token (nxjobs.h — job control
-   * light, see its header comment on what is and isn't possible without a
-   * kernel-side STOPPED state). Stripped before dispatch so every builtin
-   * and spawn path below sees a clean argv, same as without '&'. */
-  int background = 0;
-  if (argc > 1 && strcmp(argv[argc - 1], "&") == 0) {
-    background = 1;
-    argc--;
-  }
-
-  /* Pipeline `LHS | RHS`: handled BEFORE builtin dispatch so a builtin producer
-   * (echo) can feed a spawned consumer.  Single pipe (main.lua's `echo | lua`);
-   * only the first `|` is split. */
-  for (int i = 0; i < argc; i++) {
-    if (strcmp(argv[i], "|") == 0) {
-      run_pipeline(i, argc, argv, background);
-      return;
-    }
-  }
-
+    return -1;
   const char *cmd = argv[0];
 
-  if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
+  /* --- Built-in commands with 'nx' prefix (and aliases) --- */
+  if (strcmp(cmd, "nxhelp") == 0 || strcmp(cmd, "?") == 0) {
     cmd_help();
-  } else if (strcmp(cmd, "clear") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxclear") == 0) {
     print("\033[2J\033[H");
     shell_redraw_accent();
-  } else if (strcmp(cmd, "time") == 0 || strcmp(cmd, "uptime") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxtime") == 0 || strcmp(cmd, "nxuptime") == 0) {
     printf("Uptime: %d seconds (%ld ms)\n", (int)(get_time() / 1000),
            get_time());
-  } else if (strcmp(cmd, "ls") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxls") == 0) {
     const char *path = argc >= 2 ? argv[1] : ".";
     char buf[1024];
     int len = list_dir(path, buf, sizeof(buf));
     if (len < 0)
-      printf("ls: cannot list %s\n", path);
+      printf("nxls: cannot list %s\n", path);
     else {
       print(buf);
       print("\n");
     }
-  } else if (strcmp(cmd, "pwd") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxpwd") == 0) {
     char buf[128];
     if (getcwd(buf, sizeof(buf)) == 0)
       printf("%s\n", buf);
     else
-      print("pwd: error\n");
-  } else if (strcmp(cmd, "cd") == 0) {
+      print("nxpwd: error\n");
+    return 0;
+  } else if (strcmp(cmd, "nxcd") == 0) {
     const char *path = argc >= 2 ? argv[1] : "/";
     if (chdir(path) != 0)
-      printf("cd: no such directory: %s\n", path);
-  } else if (strcmp(cmd, "cat") == 0) {
+      printf("nxcd: no such directory: %s\n", path);
+    return 0;
+  } else if (strcmp(cmd, "nxcat") == 0) {
     if (argc < 2) {
-      print("usage: cat <path>\n");
+      print("usage: nxcat <path>\n");
     } else {
       char buf[256];
       int len = file_read(argv[1], buf, sizeof(buf) - 1, 0);
       if (len < 0)
-        printf("cat: cannot read %s\n", argv[1]);
+        printf("nxcat: cannot read %s\n", argv[1]);
       else {
         buf[len] = '\0';
         printf("--- %s (%d bytes) ---\n", argv[1], len);
@@ -493,63 +421,69 @@ static void run_command_line(char *line) {
           print("\n");
       }
     }
-  } else if (strcmp(cmd, "echo") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxecho") == 0) {
     for (int i = 1; i < argc; i++) {
       if (i > 1)
         print(" ");
       print(argv[i]);
     }
     print("\n");
-  } else if (strcmp(cmd, "rm") == 0 || strcmp(cmd, "unlink") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxrm") == 0 || strcmp(cmd, "nxunlink") == 0) {
     if (argc < 2) {
-      print("usage: rm <path>\n");
+      print("usage: nxrm <path>\n");
     } else if (OS1_fs_unlink(argv[1]) != 0) {
-      printf("rm: cannot remove %s\n", argv[1]);
+      printf("nxrm: cannot remove %s\n", argv[1]);
     }
-  } else if (strcmp(cmd, "mkdir") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxmkdir") == 0) {
     if (argc < 2) {
-      print("usage: mkdir <path>\n");
+      print("usage: nxmkdir <path>\n");
     } else if (mkdir(argv[1], 0755) != 0) {
-      printf("mkdir: cannot create directory %s\n", argv[1]);
+      printf("nxmkdir: cannot create directory %s\n", argv[1]);
     }
-  } else if (strcmp(cmd, "cp") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxcp") == 0) {
     if (argc < 3) {
-      print("usage: cp <source> <destination>\n");
+      print("usage: nxcp <source> <destination>\n");
     } else {
       char buf[1024];
 
       int len = file_read(argv[1], buf, sizeof(buf), 0);
       if (len < 0) {
-        printf("cp: cannot read %s\n", argv[1]);
+        printf("nxcp: cannot read %s\n", argv[1]);
       } else {
         int ret = OS1_fs_write(argv[2], buf, len, 0);
 
         if (ret < 0)
-          printf("cp: cannot write %s\n", argv[2]);
+          printf("nxcp: cannot write %s\n", argv[2]);
       }
     }
-  } else if (strcmp(cmd, "mv") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxmv") == 0) {
     if (argc < 3) {
-      print("usage: mv <source> <destination>\n");
+      print("usage: nxmv <source> <destination>\n");
     } else {
       char buf[1024];
 
       int len = file_read(argv[1], buf, sizeof(buf), 0);
 
       if (len < 0) {
-        printf("mv: cannot read %s\n", argv[1]);
+        printf("nxmv: cannot read %s\n", argv[1]);
       } else {
         if (OS1_fs_write(argv[2], buf, len, 0) < 0) {
-          printf("mv: cannot write %s\n", argv[2]);
+          printf("nxmv: cannot write %s\n", argv[2]);
         } else {
           if (OS1_fs_unlink(argv[1]) != 0)
-            printf("mv: cannot remove original %s\n", argv[1]);
+            printf("nxmv: cannot remove original %s\n", argv[1]);
         }
       }
     }
-  } else if (strcmp(cmd, "write") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxwrite") == 0) {
     if (argc < 3) {
-      print("usage: write <path> <text...>\n");
+      print("usage: nxwrite <path> <text...>\n");
     } else {
       char msg[192];
       int n = 0;
@@ -561,15 +495,16 @@ static void run_command_line(char *line) {
       }
       msg[n] = '\0';
       if (OS1_fs_write(argv[1], msg, n, 0) < 0)
-        printf("write: failed on %s\n", argv[1]);
+        printf("nxwrite: failed on %s\n", argv[1]);
     }
-  } else if (strcmp(cmd, "kill") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxkill") == 0) {
     if (argc < 2) {
-      print("usage: kill <pid>\n");
+      print("usage: nxkill <pid>\n");
     } else {
       int pid = atoi(argv[1]);
       if (pid <= 0) {
-        print("usage: kill <pid>\n");
+        print("usage: nxkill <pid>\n");
       } else {
         printf("Killing PID %d...\n", pid);
         if (kill_process(pid) == 0)
@@ -578,13 +513,14 @@ static void run_command_line(char *line) {
           print("Failed to kill process.\n");
       }
     }
-  } else if (strcmp(cmd, "focus") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxfocus") == 0) {
     if (argc < 2) {
-      print("usage: focus <window-id>\n");
+      print("usage: nxfocus <window-id>\n");
     } else {
       int id = atoi(argv[1]);
       if (id <= 0) {
-        print("usage: focus <window-id>\n");
+        print("usage: nxfocus <window-id>\n");
       } else {
         int r = OS1_window_focus(id);
         if (r == 0)
@@ -593,141 +529,259 @@ static void run_command_line(char *line) {
           printf("focus failed (%d)\n", r);
       }
     }
-  } else if (strcmp(cmd, "id") == 0 || strcmp(cmd, "whoami") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxid") == 0 || strcmp(cmd, "nxwhoami") == 0) {
     int level = 0;
     unsigned int mask = 0;
     OS1_identity(&level, &mask);
     char m[96];
     nxperm_mask_str(mask, m, (int)sizeof(m));
     printf("pid=%d level=%s caps=%s\n", get_pid(), nxperm_level_name(level), m);
-  } else if (strcmp(cmd, "about") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxabout") == 0) {
     print("\n\033[1;36mNeXs OS V0.0.5.4\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
     print("\033[32mLibrary:\033[0m POSIX-like userlib with printf support\n");
     print("\nSystem reported: OK\n");
-  } else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxexit") == 0 || strcmp(cmd, "nxquit") == 0) {
     print("Exiting NXShell...\n");
     running = 0;
     exit(0);
-  } else if (strcmp(cmd, "jobs") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxjobs") == 0) {
     nxjobs_poll(&g_jobs);
     nxjobs_print(&g_jobs);
-  } else if (strcmp(cmd, "fg") == 0) {
-    nxjobs_poll(&g_jobs); /* don't resolve against jobs that already finished */
+    return 0;
+  } else if (strcmp(cmd, "nxfg") == 0) {
+    nxjobs_poll(&g_jobs);
     int slot = nxjobs_resolve(&g_jobs, argc >= 2 ? argv[1] : (const char *)0);
     if (slot < 0) {
-      /* Distinguish the two failures: with no operand the shell had nothing to
-       * choose from, which is not the same as being handed a job id that does
-       * not exist. */
       if (argc >= 2)
-        printf("fg: %s: no such job\n", argv[1]);
+        printf("nxfg: %s: no such job\n", argv[1]);
       else
-        print("fg: no current job\n");
+        print("nxfg: no current job\n");
     } else {
       printf("%s\n", g_jobs.slot[slot].cmd);
       if (g_jobs.slot[slot].state == NXJOB_STOPPED)
-        nxjobs_cont(&g_jobs, slot); /* resume before foregrounding */
+        nxjobs_cont(&g_jobs, slot);
       if (run_foreground(g_jobs.slot[slot].pid) == NXEXEC_JOB_STOPPED) {
-        nxjobs_mark_stopped(&g_jobs, slot); /* Ctrl-Z'd again: current job */
+        nxjobs_mark_stopped(&g_jobs, slot);
         printf("[%d]+ Stopped   %s\n", g_jobs.slot[slot].id,
                g_jobs.slot[slot].cmd);
       } else {
         nxjobs_reap(&g_jobs, slot);
       }
     }
-  } else if (strcmp(cmd, "bg") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxbg") == 0) {
     nxjobs_poll(&g_jobs);
     int slot = nxjobs_resolve(&g_jobs, argc >= 2 ? argv[1] : (const char *)0);
     if (slot < 0) {
       if (argc >= 2)
-        printf("bg: %s: no such job\n", argv[1]);
+        printf("nxbg: %s: no such job\n", argv[1]);
       else
-        print("bg: no current job\n");
+        print("nxbg: no current job\n");
     } else if (g_jobs.slot[slot].state != NXJOB_STOPPED)
-      print("bg: job already running\n");
+      print("nxbg: job already running\n");
     else if (nxjobs_cont(&g_jobs, slot) == 0)
       printf("[%d] %s &\n", g_jobs.slot[slot].id, g_jobs.slot[slot].cmd);
     else
-      print("bg: failed to resume\n");
-  } else if (strcmp(cmd, "attach") == 0) {
-    /*
-     * attach <pid> - adopt an ALREADY-RUNNING process into this shell's job
-     * table (Phase 4: "a separated process is NOT killed with its parent, but
-     * jobs still tracks it").  This is the re-attach half of that model; the
-     * detach half is `disown` below.
-     *
-     * Authority (kernel, sys_handle_create OS1_NS_PROC): TRACKING needs only a
-     * WAIT/READ capability, which any live pid grants — so `jobs` status and
-     * exit reporting work for any process, including one this shell never
-     * spawned (a dock-launched app re-homed to another ancestor).  fg/bg
-     * additionally need kill authority (self / descendant / privileged), so
-     * they succeed for our own descendants and report a failure otherwise
-     * rather than pretending.
-     */
+      print("nxbg: failed to resume\n");
+    return 0;
+  } else if (strcmp(cmd, "nxattach") == 0) {
     if (argc < 2) {
-      print("usage: attach <pid>\n");
+      print("usage: nxattach <pid>\n");
     } else {
       int pid = atoi(argv[1]);
       int w = (pid > 0) ? OS1low_process_wait(pid) : -2;
       if (pid <= 0)
-        print("attach: invalid pid\n");
+        print("nxattach: invalid pid\n");
       else if (w == -2)
-        printf("attach: no such process: %d\n", pid);
+        printf("nxattach: no such process: %d\n", pid);
       else if (w > 0)
-        printf("attach: process %d has already exited\n", pid);
+        printf("nxattach: process %d has already exited\n", pid);
       else {
-        /* Name it the SAME way the bar and dock do (Phase 3 identity). */
         char nm[NXJOBS_CMD_MAX];
         if (!nxexec_lookup_identity(pid, nm, (int)sizeof(nm)))
           snprintf(nm, sizeof(nm), "pid %d", pid);
         int id = nxjobs_add(&g_jobs, pid, nm);
         if (id < 0)
-          print("attach: job table full\n");
+          print("nxattach: job table full\n");
         else
           printf("[%d] %d %s\n", id, pid, nm);
       }
     }
-  } else if (strcmp(cmd, "disown") == 0) {
-    /* disown [%N] - stop tracking a job WITHOUT killing it: the process keeps
-     * running, separated from this shell (the inverse of `attach`). */
+    return 0;
+  } else if (strcmp(cmd, "nxdisown") == 0) {
     int slot = nxjobs_resolve(&g_jobs, argc >= 2 ? argv[1] : (const char *)0);
     if (slot < 0) {
-      print("disown: no such job\n");
+      print("nxdisown: no such job\n");
     } else {
       printf("[%d] %d %s disowned\n", g_jobs.slot[slot].id,
              g_jobs.slot[slot].pid, g_jobs.slot[slot].cmd);
-      nxjobs_reap(&g_jobs, slot); /* drop the slot; the process lives on */
+      nxjobs_reap(&g_jobs, slot);
     }
-  } else if (strcmp(cmd, "exec") == 0) {
+    return 0;
+  } else if (strcmp(cmd, "nxexec") == 0) {
     if (argc < 2) {
-      print("usage: exec <program> [args...]\n");
+      print("usage: nxexec <program> [args...]\n");
     } else {
       char path[SPAWN_PATH_MAX];
       int pid = spawn_search_args(argc - 1, &argv[1], path);
       if (pid <= 0) {
-        g_last_status = 127; /* POSIX: command not found */
-        printf("exec: not found: %s\n", argv[1]);
-      } else if (background) {
-        int id = nxjobs_add(&g_jobs, pid, argv[1]);
-        printf("[%d] %d\n", id, pid);
+        g_last_status = 127;
+        printf("nxexec: not found: %s\n", argv[1]);
       } else {
         run_fg_job(pid, argv[1]);
       }
     }
-  } else {
-    char path[SPAWN_PATH_MAX];
-    int pid = spawn_search_args(argc, argv, path);
-    if (pid <= 0) {
-      g_last_status = 127; /* POSIX: command not found */
-      printf("Unknown command: %s\n", argv[0]);
-    } else if (background) {
+    return 0;
+  }
+
+  return -1;
+}
+
+/*
+ * get_builtin_name - restituisce il nome del built-in corrispondente
+ * al comando base. Esempio: "ls" -> "nxls", "cd" -> "nxcd".
+ * Se il comando è già un built-in (inizia con "nx"), lo restituisce
+ * invariato.
+ */
+static const char* get_builtin_name(const char *cmd) {
+  /* Mappa comandi base -> built-in con prefisso nx */
+  static const struct {
+    const char *base;
+    const char *builtin;
+  } map[] = {
+    {"help", "nxhelp"},
+    {"clear", "nxclear"},
+    {"time", "nxtime"},
+    {"uptime", "nxuptime"},
+    {"ls", "nxls"},
+    {"cd", "nxcd"},
+    {"pwd", "nxpwd"},
+    {"cat", "nxcat"},
+    {"echo", "nxecho"},
+    {"rm", "nxrm"},
+    {"unlink", "nxunlink"},
+    {"mkdir", "nxmkdir"},
+    {"cp", "nxcp"},
+    {"mv", "nxmv"},
+    {"write", "nxwrite"},
+    {"kill", "nxkill"},
+    {"focus", "nxfocus"},
+    {"id", "nxid"},
+    {"whoami", "nxwhoami"},
+    {"about", "nxabout"},
+    {"exec", "nxexec"},
+    {"jobs", "nxjobs"},
+    {"fg", "nxfg"},
+    {"bg", "nxbg"},
+    {"attach", "nxattach"},
+    {"disown", "nxdisown"},
+    {"exit", "nxexit"},
+    {"quit", "nxquit"},
+    {"?", "nxhelp"}
+  };
+
+  /* Se il comando inizia già con "nx", è già un built-in */
+  if (strncmp(cmd, "nx", 2) == 0)
+    return cmd;
+
+  /* Cerca nella mappa */
+  for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
+    if (strcmp(cmd, map[i].base) == 0)
+      return map[i].builtin;
+  }
+
+  return NULL;
+}
+
+/*
+ * run_command_line - execute ONE simple command (no `&&`/`||`/`;`).
+ *
+ * `line` is consumed in place by the tokeniser.  Sequencing is the caller's
+ * job (process_command below); this function is the unit a connector decides
+ * to run or skip, and it owns g_last_status for that unit.
+ *
+ * Priority order (modifica 2026-09-01):
+ *   1. Se il comando è nella whitelist (mappa get_builtin_name),
+ *      esegui il built‑in corrispondente SENZA cercare il binario.
+ *   2. Altrimenti, cerca il binario esterno in /bin e /sys/bin.
+ *   3. Se il binario non esiste, prova il built‑in come fallback (solo per
+ *      i comandi della whitelist).
+ *   4. Se nessuno funziona, "Unknown command".
+ */
+static void run_command_line(char *line) {
+  char *argv[MAX_ARGV];
+  int argc = tokenize(line, argv, MAX_ARGV);
+  if (argc == 0)
+    return;
+
+  /* Each command reports its own status; builtins that print nothing bad leave
+   * it at 0 (success).  Spawn paths overwrite it via run_fg_job(). */
+  g_last_status = 0;
+
+  /* Background job: a trailing standalone '&' token. */
+  int background = 0;
+  if (argc > 1 && strcmp(argv[argc - 1], "&") == 0) {
+    background = 1;
+    argc--;
+  }
+
+  /* Pipeline `LHS | RHS`: handled before everything else. */
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "|") == 0) {
+      run_pipeline(i, argc, argv, background);
+      return;
+    }
+  }
+
+  /* 1) Se il comando è nella whitelist, usa il built‑in direttamente */
+  const char *builtin_name = get_builtin_name(argv[0]);
+  if (builtin_name) {
+    char *builtin_argv[MAX_ARGV];
+    builtin_argv[0] = (char*)builtin_name;
+    for (int i = 1; i < argc && i < MAX_ARGV - 1; i++)
+      builtin_argv[i] = argv[i];
+    builtin_argv[argc] = NULL;
+
+    if (run_builtin(argc, builtin_argv) == 0)
+      return;
+    /* Se per qualche motivo il built‑in fallisce, continuiamo con il binario */
+  }
+
+  /* 2) Cerca il binario esterno */
+  char path[SPAWN_PATH_MAX];
+  int pid = spawn_search_args(argc, argv, path);
+  if (pid > 0) {
+    if (background) {
       int id = nxjobs_add(&g_jobs, pid, argv[0]);
       printf("[%d] %d\n", id, pid);
     } else {
       run_fg_job(pid, argv[0]);
     }
+    return;
   }
+
+  /* 3) Se il binario non esiste e il comando era nella whitelist,
+   *    proviamo di nuovo il built‑in (fallback). */
+  if (builtin_name) {
+    char *builtin_argv[MAX_ARGV];
+    builtin_argv[0] = (char*)builtin_name;
+    for (int i = 1; i < argc && i < MAX_ARGV - 1; i++)
+      builtin_argv[i] = argv[i];
+    builtin_argv[argc] = NULL;
+
+    if (run_builtin(argc, builtin_argv) == 0)
+      return;
+  }
+
+  /* 3) Command not found */
+  g_last_status = 127; /* POSIX: command not found */
+  printf("Unknown command: %s\n", argv[0]);
 }
 
 /* ---------------------------------------------------------------------------
@@ -854,7 +908,7 @@ static void shell_handle_key(unsigned char key, uint16_t scancode) {
     if (running)
       print_prompt();
   } else if (r == NXLINE_EOF) {
-    /* Ctrl-D on an empty line: same contract as typing "exit". */
+    /* Ctrl-D on an empty line: same contract as typing "nxexit". */
     print("\r\n");
     print("Exiting NXShell...\n");
     running = 0;
