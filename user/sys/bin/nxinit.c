@@ -213,6 +213,11 @@ static int service_gone(int pid, const char *name) {
 int main(void) {
   print("[Init] System Initialization Starting...\n");
 
+  /* Completa il registro con i dati reali (timestamp, architettura, versione)
+   * prima di ogni spawn, così l'ambiente esiste già quando il primo processo
+   * utente parte. */
+  registry_init_defaults();
+
   /* Spawn Notification Server */
   /* NOTE(USR-INIT-02): Hardcoded path.  init.cfg would provide this path but
    * is never read; the cfg also lists wrong paths (see file header).
@@ -317,10 +322,6 @@ int main(void) {
   }
 
   flush();
-
-  /* Completa il registro con i dati reali (timestamp, architettura, versione)
-   * ora che tutti i servizi sono partiti e OS1_time_now() è significativo. */
-  registry_init_defaults();
 
   /* The "Boot Complete" notification is sent from the supervisor loop below,
    * NOT here: notify() resolves the target from the registry key

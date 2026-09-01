@@ -19,6 +19,8 @@ struct stat {
     time_t    st_atime;
     time_t    st_mtime;
     time_t    st_ctime;
+    blksize_t st_blksize;   /* dimensione ottimale dei blocchi per I/O */
+    blkcnt_t  st_blocks;    /* numero di blocchi da 512 byte allocati */
 };
 
 #define S_IFMT   0170000

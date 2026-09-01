@@ -383,6 +383,17 @@ int vfs_write_allowed(const char *resolved_path) {
   if (proc_is_machine(current_process))
     return 0; /* machine identity: full filesystem authority */
 
+  /* /tmp, /var/tmp: scratch space POSIX-style, world-writable (sticky-bit
+   * convention).  coreutils/gnulib assume it's writable by anyone
+   * (mktemp, mkstemp, sort/cp/mv temp files, etc.) — without this branch
+   * any command touching /tmp is blocked by the generic ACL further down. */
+  if (strncmp(resolved_path, "/tmp/", 5) == 0 ||
+      strcmp(resolved_path, "/tmp") == 0 ||
+      strncmp(resolved_path, "/var/tmp/", 9) == 0 ||
+      strcmp(resolved_path, "/var/tmp") == 0) {
+    return 0;
+  }
+
   /* Tree ACL (maintainer policy, 2026-07-23 — the LEVEL model's filesystem
    * half; the capability mask is the other half):
    *   machine           full authority (handled above).

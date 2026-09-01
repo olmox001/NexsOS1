@@ -13,6 +13,21 @@ typedef char *security_context_t;
 
 static inline int is_selinux_enabled(void) { return 0; }
 static inline int getcon(security_context_t *con) { (void)con; errno = ENOTSUP; return -1; }
+static inline int getfilecon(const char *file, security_context_t *con) {
+  (void)file;
+  if (con) *con = NULL;
+  errno = ENOTSUP;
+  return -1;
+}
+static inline int lgetfilecon(const char *file, security_context_t *con) {
+  return getfilecon(file, con);
+}
+static inline int fgetfilecon(int fd, security_context_t *con) {
+  (void)fd;
+  if (con) *con = NULL;
+  errno = ENOTSUP;
+  return -1;
+}
 static inline void freecon(security_context_t con) { (void)con; }
 static inline int setfscreatecon(const char *con) { (void)con; errno = ENOTSUP; return -1; }
 static inline int matchpathcon_init(const char *path) { (void)path; errno = ENOTSUP; return -1; }

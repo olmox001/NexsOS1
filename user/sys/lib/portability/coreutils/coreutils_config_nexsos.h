@@ -21,9 +21,24 @@
 
 
 /* Disable host security subsystems not applicable to bare-metal / NexsOS1 */
-#define HAVE_SELINUX_SELINUX_H 0
-#define HAVE_SYS_ACL_H 0
-#define HAVE_SYS_XATTR_H 0
+#undef HAVE_SELINUX_SELINUX_H
+#undef HAVE_SYS_ACL_H
+#undef HAVE_SYS_XATTR_H
+#define HAVE_SYS_STATFS_H 1
+#define HAVE_SYS_STATVFS_H 1
+#undef HAVE_SYS_VFS_H
+#undef HAVE_SYS_MOUNT_H
+#undef HAVE_SYS_PARAM_H
+#define STAT_STATVFS 1
+#define HAVE_STRUCT_STATVFS_F_TYPE 1
+#define HAVE_STRUCT_STATVFS_F_FSID 1
+#define HAVE_STRUCT_STATVFS_F_NAMEMAX 1
+#define HAVE_STRUCT_STATVFS_F_FRSIZE 1
+#undef HAVE_STRUCT_STATFS_F_TYPE
+#undef HAVE_STRUCT_STATFS_F_FSTYPENAME
+#undef HAVE_STRUCT_STATFS_F_NAMELEN
+#undef HAVE_STRUCT_STATFS_F_NAMEMAX
+#undef HAVE_STRUCT_STATFS_F_FRSIZE
 
 #ifndef unreachable
 # if defined(__GNUC__) || defined(__clang__)

@@ -40,6 +40,7 @@ long labs(long j);
  * layering and the one documented deviation (getenv's returned pointer is
  * valid for a bounded number of further getenv calls, not until setenv). */
 char *getenv(const char *name);
+char *canonicalize_file_name(const char *name);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
 int putenv(char *string);

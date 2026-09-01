@@ -78,6 +78,8 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <termios.h>
 
@@ -275,14 +277,24 @@ int nanosleep(const struct timespec *req, struct timespec *rem) {
  * defined further down, next to their original neighbours).  exit keeps the
  * while(1): unreachable dead code that silences the "noreturn" warning in
  * compilers that do not see svc #0 as a terminator. */
+/* Forward declaration: every spawn primitive below propagates
+ * the caller's environment into the child's per-process registry
+ * namespace before returning the pid — see __env_propagate_to_child,
+ * defined further down with the rest of the OS1_env_* surface. */
+static void __env_propagate_to_child(long child_pid);
+
 long OS1low_process_spawn(const char *path, int argc, char *const argv[]) {
-  return _sys_spawn(path, argc, argv, 0);
+  long pid = _sys_spawn(path, argc, argv, 0);
+  __env_propagate_to_child(pid);
+  return pid;
 }
 /* Detached (SPAWN_FLAG_DETACHED, #193): the child does NOT inherit the spawner
  * as ctty — the nxexec launcher-mode.  See caps.h for the flag semantics. */
 long OS1low_process_spawn_detached(const char *path, int argc,
                                    char *const argv[]) {
-  return _sys_spawn(path, argc, argv, SPAWN_FLAG_DETACHED);
+  long pid = _sys_spawn(path, argc, argv, SPAWN_FLAG_DETACHED);
+  __env_propagate_to_child(pid);
+  return pid;
 }
 /* Phase 4: spawn with fd redirection (shell `<`/`>`/`>>`/`2>`).  The redirect
  * targets must already be open in THIS process; the kernel dups them into the
@@ -290,13 +302,17 @@ long OS1low_process_spawn_detached(const char *path, int argc,
 long OS1low_process_spawn_redir(const char *path, int argc, char *const argv[],
                                 unsigned int flags,
                                 const struct spawn_redir *redir, int nredir) {
-  if (nredir <= 0)
-    return _sys_spawn(path, argc, argv, flags);
-  return _sys_spawn_redir(path, argc, argv, flags, redir, nredir);
+  long pid = (nredir <= 0)
+                 ? _sys_spawn(path, argc, argv, flags)
+                 : _sys_spawn_redir(path, argc, argv, flags, redir, nredir);
+  __env_propagate_to_child(pid);
+  return pid;
 }
 long OS1low_process_spawn_caps(const char *path, int level,
                                unsigned long caps) {
-  return _sys_spawn_caps(path, level, caps, 0);
+  long pid = _sys_spawn_caps(path, level, caps, 0);
+  __env_propagate_to_child(pid);
+  return pid;
 }
 /* OS1low_pipe (Phase 4): anonymous byte pipe (OBJ_TYPE_PIPE).  fds[0]=read end,
  * fds[1]=write end.  The kernel installs both handles; read/write/close operate
@@ -2506,6 +2522,53 @@ int env_names(char *names[], int max) {
 }
 
 /*
+ * __env_propagate_to_child - copies every variable that THIS process has
+ * set (its own branch sys.proc.<self>.env.* — the machine defaults
+ * under sys.env.* don't need copying, the child inherits them anyway
+ * via the fallback of OS1_env_get) into the branch of the child just spawned.
+ *
+ * Without this every child starts with an EMPTY environment: nothing in
+ * this tree wrote it, so an `export PATH=...` (or any setenv())
+ * in a shell was invisible to everything it launched, and `printenv PATH`
+ * in a child always failed even with the parent's PATH set.
+ * execsvc_client.c already carries the cwd of the requester through the
+ * service protocol for exactly the same reason ("cwd is wrong for exactly
+ * the same reason the environment is"); this is the same correction applied
+ * to the direct spawn path, the one that nxexec_spawn_search_redir/
+ * nxshell use for every foreground and background command.
+ *
+ * Best-effort: a write failure here doesn't fail the spawn (the child starts
+ * anyway, just without that variable) — consistent with setenv() which is
+ * also a best-effort registry write.
+ *
+ * NOTE: the execsvc path (Phase 9c) is NOT covered here — a spawn routed
+ * via /sys/bin/nxexec happens IN THE SERVICE PROCESS, so "self" in the
+ * point where __env_propagate_to_child would run is the service, not the
+ * requester. Fixing it requires bringing the environment into the network
+ * protocol like already happens for the cwd (bump of EXECSVC_VERSION) —
+ * left as a follow-on, in line with the note Phase 9d of the header on
+ * cwd/ctty/env that must arrive together "as ONE mechanism".
+ */
+static void __env_propagate_to_child(long child_pid) {
+  if (child_pid <= 0)
+    return;
+  char buf[512];
+  if (OS1_env_enum(buf, sizeof(buf)) <= 0)
+    return;
+  char *save = NULL;
+  for (char *name = strtok_r(buf, "\n", &save); name;
+       name = strtok_r(NULL, "\n", &save)) {
+    char val[GETENV_VALMAX];
+    if (OS1_env_get(name, val, sizeof(val)) != 0)
+      continue;
+    char key[OS1_ENV_KEYMAX];
+    if (snprintf(key, sizeof(key), "sys.proc.%ld.env.%s", child_pid, name) <= 0)
+      continue;
+    OS1_registry_set(key, val);
+  }
+}
+
+/*
  * stat - path metadata in ONE syscall (SYS_STAT).
  *
  * It used to infer the type: "list_dir succeeds ONLY on directories, so a >= 0
@@ -2519,20 +2582,119 @@ int env_names(char *names[], int max) {
  * node's type, so it reports it.  One round trip instead of a listing probe
  * plus a size probe.
  */
-int stat(const char *path, struct stat *buf) {
-  if (buf)
-    memset(buf, 0, sizeof(struct stat));
-  struct abi_stat as;
-  int r = _sys_stat(path, &as);
-  if (r != 0) {
-    errno = ENOENT;
-    return -1;
-  }
-  if (buf) {
-    buf->st_size = (off_t)as.size;
-    buf->st_mode = (as.type == ABI_S_TYPE_DIR) ? S_IFDIR : S_IFREG;
-  }
-  return 0;
+int stat(const char *path, struct stat *buf)
+
+{
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    if (buf)
+        memset(buf, 0, sizeof(struct stat));
+
+    struct abi_stat as;
+    int r = _sys_stat(path, &as);
+    if (r != 0) {
+        errno = ENOENT;          /* o meglio: errno = -r; se il kernel restituisce errno negativi */
+        return -1;
+    }
+
+    if (buf) {
+        buf->st_size  = (off_t)as.size;
+        buf->st_mode  = (as.type == ABI_S_TYPE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+        buf->st_nlink = 1;
+        buf->st_uid   = 0;
+        buf->st_gid   = 0;
+        buf->st_blksize = 4096;
+        buf->st_blocks  = (as.size + 511) / 512;
+
+        /* Timestamp temporanei (finché il VFS non li supporta davvero) */
+        time_t now = time(NULL);
+        buf->st_atime = now;
+        buf->st_mtime = now;
+        buf->st_ctime = now;
+
+#if defined(_STATBUF_ST_NSEC) || defined(__USE_XOPEN2K8)
+        buf->st_atim.tv_sec  = now;
+        buf->st_atim.tv_nsec = 0;
+        buf->st_mtim.tv_sec  = now;
+        buf->st_mtim.tv_nsec = 0;
+        buf->st_ctim.tv_sec  = now;
+        buf->st_ctim.tv_nsec = 0;
+#endif
+    }
+
+    return 0;
+}
+
+int statfs(const char *path, struct statfs *buf)
+{
+    if (!buf) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    memset(buf, 0, sizeof(*buf));
+
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return -1;
+
+    /* Placeholder values — NexsOS1 non ha ancora un vero FS query */
+    buf->f_type    = 0x01021994UL;   /* tmpfs-like */
+    buf->f_bsize   = 4096;
+    buf->f_frsize  = 4096;
+    buf->f_blocks  = (st.st_size + 4095) / 4096;
+    buf->f_bfree   = buf->f_blocks;
+    buf->f_bavail  = buf->f_blocks;
+    buf->f_files   = 0;
+    buf->f_ffree   = 0;
+    buf->f_fsid.__val[0] = 0;
+    buf->f_fsid.__val[1] = 0;
+    buf->f_namelen = 255;
+    buf->f_flags   = 0;
+
+    return 0;
+}
+
+int fstatfs(int fd, struct statfs *buf)
+{
+    if (!buf) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+
+    /* NexsOS1 non ha ancora un modo per ottenere il path da un fd,
+       quindi per ora usiamo un placeholder basato su fstat.
+       Quando avremo fd → path o una vera syscall di fsinfo, si sistemerà. */
+    struct stat st;
+    if (fstat(fd, &st) != 0)
+        return -1;
+
+    memset(buf, 0, sizeof(*buf));
+    buf->f_type    = 0x01021994UL;
+    buf->f_bsize   = 4096;
+    buf->f_frsize  = 4096;
+    buf->f_blocks  = (st.st_size + 4095) / 4096;
+    buf->f_bfree   = buf->f_blocks;
+    buf->f_bavail  = buf->f_blocks;
+    buf->f_files   = 0;
+    buf->f_ffree   = 0;
+    buf->f_fsid.__val[0] = 0;
+    buf->f_fsid.__val[1] = 0;
+    buf->f_namelen = 255;
+    buf->f_flags   = 0;
+
+    return 0;
 }
 
 /*
@@ -2952,6 +3114,21 @@ time_t mktime_z(timezone_t tz, struct tm *tm) {
   (void)tz;
   return mktime(tm);
 }
+
+static timezone_t g_utc_tz = NULL;
+
+timezone_t tzalloc(const char *name) {
+  (void)name;
+  if (!g_utc_tz) {
+    g_utc_tz = calloc(1, sizeof(*g_utc_tz));
+  }
+  return g_utc_tz;
+}
+
+void tzfree(timezone_t tz) {
+  (void)tz;
+}
+
 struct tm *localtime_rz(timezone_t tz, const time_t *t, struct tm *tm) {
   (void)tz;
   if (!t || !tm)
@@ -3468,8 +3645,71 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
   return 0;
 }
 
-/* --- <signal.h> --- OS1 has no signal delivery; installing a handler is a
- * no-op that reports the previous (always default) disposition. */
+/* --- <signal.h> --- OS1 has no signal delivery; the libc accepts handlers and
+ * masks but leaves all process semantics unchanged. */
+
+int sigemptyset(sigset_t *set) {
+  if (!set) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set = 0;
+  return 0;
+}
+
+int sigfillset(sigset_t *set) {
+  if (!set) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set = ~((sigset_t)0);
+  return 0;
+}
+
+int sigaddset(sigset_t *set, int sig) {
+  if (!set || sig < 1 || sig >= NSIG) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set |= ((sigset_t)1U << (sig - 1));
+  return 0;
+}
+
+int sigdelset(sigset_t *set, int sig) {
+  if (!set || sig < 1 || sig >= NSIG) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set &= ~((sigset_t)1U << (sig - 1));
+  return 0;
+}
+
+int sigismember(const sigset_t *set, int sig) {
+  if (!set || sig < 1 || sig >= NSIG) {
+    errno = EINVAL;
+    return -1;
+  }
+  return ((*set & ((sigset_t)1U << (sig - 1))) != 0) ? 1 : 0;
+}
+
+int sigprocmask(int how, const sigset_t *restrict set, sigset_t *restrict oldset) {
+  (void)how;
+  if (oldset)
+    *oldset = 0;
+  if (set)
+    (void)set;
+  return 0;
+}
+
+int sigaction(int signum, const struct sigaction *restrict act,
+              struct sigaction *restrict oldact) {
+  (void)signum;
+  if (oldact)
+    memset(oldact, 0, sizeof(*oldact));
+  (void)act;
+  return 0;
+}
+
 sighandler_t signal(int signum, sighandler_t handler) {
   (void)signum;
   (void)handler;
@@ -4307,3 +4547,99 @@ long sysconf(int name) {
 unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
 int pause(void) { errno = EINTR; return -1; }
 int nice(int inc) { (void)inc; return 0; }
+
+/* ==========================================================================
+ * Timestamp support (utime family) — required by GNU Coreutils `touch`
+ * ========================================================================== */
+
+/* Definiamo qui le strutture perché NexsOS1 non ha ancora <utime.h> */
+
+struct utimbuf {
+    time_t actime;   /* access time */
+    time_t modtime;  /* modification time */
+};
+
+int utime(const char *path, const struct utimbuf *times);
+int utimes(const char *path, const struct timeval times[2]);
+int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags);
+int futimens(int fd, const struct timespec times[2]);
+
+/*
+ * utime - set access and modification times of a file.
+ * times == NULL → set both to current time.
+ */
+__attribute__((weak))
+int utime(const char *path, const struct utimbuf *times)
+{
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    /* Assicuriamoci che il file esista (comportamento di touch) */
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        if (fd < 0)
+            return -1;
+        close(fd);
+    }
+
+    (void)times;   /* il filesystem non salva ancora i timestamp */
+    return 0;
+}
+
+__attribute__((weak))
+int utimes(const char *path, const struct timeval times[2])
+{
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    struct utimbuf buf;
+    if (times) {
+        buf.actime  = times[0].tv_sec;
+        buf.modtime = times[1].tv_sec;
+    } else {
+        time_t now = time(NULL);
+        buf.actime  = now;
+        buf.modtime = now;
+    }
+    return utime(path, times ? &buf : NULL);
+}
+
+__attribute__((weak))
+int utimensat(int dirfd, const char *path,
+              const struct timespec times[2], int flags)
+{
+    (void)flags;
+
+    if (dirfd != AT_FDCWD) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    struct timeval tv[2];
+    if (times) {
+        tv[0].tv_sec  = times[0].tv_sec;
+        tv[0].tv_usec = times[0].tv_nsec / 1000;
+        tv[1].tv_sec  = times[1].tv_sec;
+        tv[1].tv_usec = times[1].tv_nsec / 1000;
+    }
+    return utimes(path, times ? tv : NULL);
+}
+__attribute__((weak))
+int futimens(int fd, const struct timespec times[2])
+{
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    (void)times;
+    return 0;
+}

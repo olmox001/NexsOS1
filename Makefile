@@ -644,6 +644,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/restest.elf \
            $(BUILD_DIR)/env.elf \
            $(BUILD_DIR)/gnulibtest.elf \
+           $(BUILD_DIR)/coreutils_test.elf \
            $(BUILD_DIR)/kilo.elf \
            $(COREUTILS_ELFS)
 
@@ -698,6 +699,7 @@ $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -Wno-error -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/coreutils_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -786,6 +788,8 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
+	@mkdir -p $(BUILD_DIR)/rootfs/tmp
+	@mkdir -p $(BUILD_DIR)/rootfs/var/tmp
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/background
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/icon/dark
@@ -851,13 +855,15 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
-	@# Create non-prefixed coreutils aliases (e.g. cu_echo -> echo)
-	@for cu in echo true false pwd uname cat yes sleep mkdir rmdir unlink sync basename dirname whoami printenv; do \
+	@# Rinomina i file cu_* togliendo il prefisso (senza duplicare)
+	@for cu in $(COREUTILS_NAMES); do \
 		if [ -f $(BUILD_DIR)/rootfs/bin/cu_$$cu ]; then \
-			cp $(BUILD_DIR)/rootfs/bin/cu_$$cu $(BUILD_DIR)/rootfs/bin/$$cu 2>/dev/null || true; \
+			mv $(BUILD_DIR)/rootfs/bin/cu_$$cu $(BUILD_DIR)/rootfs/bin/$$cu; \
 		fi; \
 	done
 
+	@# Keep a system-level env mirror in /sys/bin for direct invocation and PATH
+	@# resolution, matching the default runtime PATH configured by nxinit.
 	@-cp $(BUILD_DIR)/rootfs/bin/env $(BUILD_DIR)/rootfs/sys/bin/env 2>/dev/null || true
 
 

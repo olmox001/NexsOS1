@@ -13,7 +13,16 @@
 
 typedef long time_t;
 
+struct tm_zone {
+  struct tm_zone *next;
+  char tz_is_set;
+  char abbrs[];
+};
+
 typedef struct tm_zone *timezone_t;
+
+timezone_t tzalloc(const char *name);
+void tzfree(timezone_t tz);
 
 typedef int clockid_t;
 

@@ -24,6 +24,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+#ifndef MAXPATHLEN
+#define MAXPATHLEN PATH_MAX
+#endif
+
 #ifndef UINT_WIDTH
 # if defined(__SIZEOF_INT__) && __SIZEOF_INT__ == 4
 #  define UINT_WIDTH 32
@@ -425,6 +432,15 @@ typedef ptrdiff_t idx_t;
 #define HAVE_DUP2 1
 #define HAVE_RAW_DECL_MEMRCHR 1
 #define HAVE_RAW_DECL_RAWMEMCHR 1
+
+/* Timestamp support for touch / coreutils */
+#define HAVE_UTIME              1
+#define HAVE_UTIMES             1
+#define HAVE_UTIMENSAT          1
+#define HAVE_FUTIMENS           1
+#define HAVE_STRUCT_TIMESPEC    1
+#define HAVE_STRUCT_UTIMBUF     1
+#define HAVE_STRUCT_TIMEVAL     1
 
 /* Architecture bitness */
 #define SIZEOF_VOID_P 8
