@@ -892,8 +892,8 @@ void set_focus(int pid) { OS1_window_set_focus(pid); }
  * and DEG_TO_FP_RAD/cos_fp/sin_fp/fixmul used by demo3d; string.c provides
  * memset/memcpy/strlen/strcmp/strncmp/strchr etc. */
 /* math functions now in user/sys/lib/math.c (IEEE-754 float/double) */
-#include "../../kernel/lib/string.c"
-#include "../../kernel/lib/vsnprintf.c"
+#include "common/string.c"
+#include "common/vsnprintf.c"
 #include "font_lib.c"
 
 static struct font_ctx *graphics_default_font;
@@ -2374,102 +2374,6 @@ int sscanf(const char *str, const char *format, ...) {
   int res = vsscanf(str, format, args);
   va_end(args);
   return res;
-}
-
-/*
- * vsscanf - simplified format scanner supporting %d, %x/%X, %s with widths.
- *
- * Supports:
- *   %d  - signed decimal integer -> int *
- *   %x, %X - unsigned hex integer -> unsigned int *; skips optional 0x prefix
- *   %s  - whitespace-delimited string; width limits chars consumed
- *
- * Whitespace in the format string matches zero or more whitespace chars in
- * the input.  Literal format characters must match exactly (returns early on
- * mismatch).  Returns the count of successfully assigned conversions.
- *
- * Missing specifiers: %f, %c, %ld, %u, %p, etc.  Callers using unsupported
- * format specifiers will silently skip the conversion.
- */
-/* ==========================================================================
- * MODULE 5 cont'd — Formatting: the scanf family
- * ========================================================================== */
-int vsscanf(const char *inp, const char *fmt0, va_list ap) {
-  int nassigned = 0;
-  const unsigned char *fmt = (const unsigned char *)fmt0;
-  const char *p_inp = inp;
-
-  while (*fmt) {
-    if (isspace(*fmt)) {
-      while (isspace(*p_inp))
-        p_inp++;
-      fmt++;
-      continue;
-    }
-    if (*fmt != '%') {
-      if (*p_inp != *fmt)
-        return nassigned;
-      p_inp++;
-      fmt++;
-      continue;
-    }
-    fmt++; /* skip % */
-    /* Parse optional field width */
-    int width = 0;
-    while (isdigit(*fmt)) {
-      width = width * 10 + (*fmt - '0');
-      fmt++;
-    }
-
-    char c = *fmt++;
-    if (c == 'd') {
-      while (isspace(*p_inp))
-        p_inp++;
-      int *res = va_arg(ap, int *);
-      *res = atoi(p_inp);
-      nassigned++;
-      while (isdigit(*p_inp) || *p_inp == '-')
-        p_inp++;
-    } else if (c == 'x' || c == 'X') {
-      while (isspace(*p_inp))
-        p_inp++;
-      unsigned int *res = va_arg(ap, unsigned int *);
-      unsigned int val = 0;
-      if (p_inp[0] == '0' && (p_inp[1] == 'x' || p_inp[1] == 'X'))
-        p_inp += 2;
-      while (isxdigit(*p_inp)) {
-        char dc = *p_inp++;
-        if (isdigit(dc))
-          val = (val << 4) | (dc - '0');
-        else
-          val = (val << 4) | (tolower(dc) - 'a' + 10);
-      }
-      *res = val;
-      nassigned++;
-    } else if (c == 's') {
-      while (isspace(*p_inp))
-        p_inp++;
-      char *res = va_arg(ap, char *);
-      /* R2/documented hazard, NOT a bug specific to this file: a bare `%s`
-       * (width == 0, i.e. unspecified) has NO destination bound to check
-       * against here — this is the real POSIX scanf("%s", ...) contract
-       * (as unsafe as gets() without an explicit width, by the C standard's
-       * own design, same reason noted for sprintf() above), so `%Ns` is the
-       * caller's actual safety mechanism, not something this function can
-       * retrofit without silently changing what %s means. */
-      while (*p_inp && !isspace(*p_inp)) {
-        *res++ = *p_inp++;
-        if (width > 0 && --width == 0)
-          break;
-      }
-      *res = '\0';
-      nassigned++;
-    }
-    /* NOTE(USR-LIB-04): Other format specifiers (%f, %c, %ld, %u, etc.) are
-     * silently skipped; the corresponding va_arg is NOT consumed, which may
-     * desync the va_list for subsequent conversions. */
-  }
-  return nassigned;
 }
 
 /* mkdir - create a directory through its parent directory capability. The
@@ -4256,10 +4160,10 @@ int uname(struct utsname *buf) {
   strncpy(buf->nodename, "nexsos", sizeof(buf->nodename) - 1);
   buf->nodename[sizeof(buf->nodename) - 1] = '\0';
 
-  strncpy(buf->release, "0.0.5.4", sizeof(buf->release) - 1);
+  strncpy(buf->release, "0.0.5.5", sizeof(buf->release) - 1);
   buf->release[sizeof(buf->release) - 1] = '\0';
 
-  strncpy(buf->version, "NexsOS1-V0.0.5.4", sizeof(buf->version) - 1);
+  strncpy(buf->version, "NexsOS1-V0.0.5.5", sizeof(buf->version) - 1);
   buf->version[sizeof(buf->version) - 1] = '\0';
 
 #if defined(ARCH_AMD64) || defined(__x86_64__)

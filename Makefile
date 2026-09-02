@@ -32,7 +32,7 @@ USER_CFLAGS += -Wno-error
 endif
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.5.4
+VERSION ?= V0.0.5.5
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 

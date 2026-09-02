@@ -3,7 +3,6 @@
 
 #include <os1.h>
 
-size_t strlen(const char *s);
 bool str_endswith(const char *string, const char *suffix);
 char *strcpy(char *dest, const char *src) __attribute__((deprecated("use strlcpy/strlcat")));
 char *stpcpy(char *dest, const char *src);
@@ -18,6 +17,10 @@ size_t strxfrm(char *dest, const char *src, size_t n);
 char *strdup(const char *s);
 char *strndup(const char *s, size_t n);
 char *strchr(const char *s, int c);
+size_t strnlen(const char *s, size_t maxlen);
+size_t strlcpy(char *dest, const char *src, size_t size);
+size_t strlcat(char *dest, const char *src, size_t size);
+void bzero(void *s, size_t n);
 
 char *strrchr(const char *s, int c);
 char *strstr(const char *haystack, const char *needle);

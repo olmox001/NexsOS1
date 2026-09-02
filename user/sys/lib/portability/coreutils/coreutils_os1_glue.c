@@ -22,10 +22,10 @@ int coreutils_os1_uname(struct os1_utsname *buf) {
     strncpy(buf->nodename, "nexsos", sizeof(buf->nodename) - 1);
     buf->nodename[sizeof(buf->nodename) - 1] = '\0';
 
-    strncpy(buf->release, "0.0.5.4", sizeof(buf->release) - 1);
+    strncpy(buf->release, "0.0.5.5", sizeof(buf->release) - 1);
     buf->release[sizeof(buf->release) - 1] = '\0';
 
-    strncpy(buf->version, "ASTRA-V0.0.5.4", sizeof(buf->version) - 1);
+    strncpy(buf->version, "NexsOS1-V0.0.5.5", sizeof(buf->version) - 1);
     buf->version[sizeof(buf->version) - 1] = '\0';
 
 #if defined(ARCH_AMD64) || defined(__x86_64__)
