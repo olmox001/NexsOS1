@@ -365,13 +365,24 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     struct kobject *o;
     if (ref.obj_type == OBJ_TYPE_FILE) {
       /* Ambient gate to ACQUIRE a write capability — the SAME
-       * vfs_write_allowed() seam SYS_FILE_WRITE/SYS_UNLINK check, so the
-       * path-based and handle-based entry points cannot drift (S-ALIGN F6).
+       * vfs_write_allowed() seam used by every write-capability acquisition
+       * (S-ALIGN F6).
        * Use of an already-held handle is rights-only (seL4/Mach delegation). */
       if (rights & OS1_RIGHT_WRITE) {
         long wperm = vfs_write_allowed(resolved);
         if (wperm != 0)
           return wperm;
+      }
+      /* Namespace mutation is distinct from writing a directory as a byte
+       * stream. WRITE on a directory remains -EISDIR above; MUTATE is a
+       * capability to this directory's children, acquired through the same
+       * VFS ACL and then delegable like every other object right. */
+      if (rights & OS1_RIGHT_MUTATE) {
+        if (ref.node.type != VFS_TYPE_DIR)
+          return -ENOTDIR;
+        long mperm = vfs_write_allowed(resolved);
+        if (mperm != 0)
+          return mperm;
       }
       o = kobj_alloc(OBJ_TYPE_FILE);
       if (!o)
@@ -1450,8 +1461,6 @@ long sys_object_wait(int handle, long arg) {
  * delegation of the kill right; acquisition was gated at handle_create time).
  */
 long sys_object_ctl(int handle, int cmd, long arg) {
-  (void)arg;
-
   /* PROCESS: terminate via a DESTROY capability (seL4 delegable kill). */
   if (cmd == OBJ_CTL_KILL) {
     long err = 0;
@@ -1601,6 +1610,57 @@ long sys_object_ctl(int handle, int cmd, long arg) {
           "best-effort refresh after a successful truncate; the truncate "
           "is what we report, and the cached node is the fallback");
       ret = 0;
+    }
+    obj_unref(o);
+    return ret;
+  }
+
+  /* Namespace mutation (Programme R1b): the parent directory capability,
+   * rather than an ambient path syscall, names the namespace being changed.
+   * `arg` is deliberately only ONE child name: accepting slash-separated text
+   * would let a caller escape the directory it holds through `..` or a nested
+   * path. Recursive work stays in userland composition. */
+  if (cmd == OBJ_CTL_MKDIR || cmd == OBJ_CTL_UNLINK) {
+    long err = 0;
+    struct kobject *o = pin_handle(handle, OS1_RIGHT_MUTATE, &err);
+    if (!o)
+      return err;
+
+    long ret;
+    if (o->type != OBJ_TYPE_FILE || o->node.type != VFS_TYPE_DIR) {
+      ret = -ENOTDIR;
+    } else if (arg == 0) {
+      ret = -EFAULT;
+    } else {
+      char name[OBJ_FILE_PATH_MAX];
+      if (arch_copy_string_from_user(name, (const char *)arg, sizeof(name)) != 0) {
+        ret = -EFAULT;
+      } else {
+        size_t nlen = strlen(name);
+        int invalid = nlen == 0 || strcmp(name, ".") == 0 ||
+                      strcmp(name, "..") == 0;
+        for (size_t i = 0; i < nlen; i++)
+          if (name[i] == '/')
+            invalid = 1;
+        if (invalid) {
+          ret = -EINVAL;
+        } else {
+          size_t plen = strlen(o->path);
+          size_t sep = (plen == 1 && o->path[0] == '/') ? 0 : 1;
+          if (plen + sep + nlen >= OBJ_FILE_PATH_MAX) {
+            ret = -EINVAL;
+          } else {
+            char child[OBJ_FILE_PATH_MAX];
+            memcpy(child, o->path, plen);
+            if (sep)
+              child[plen++] = '/';
+            memcpy(child + plen, name, nlen + 1);
+            ret = (cmd == OBJ_CTL_MKDIR)
+                      ? vfs_create(child, VFS_TYPE_DIR)
+                      : vfs_unlink(child);
+          }
+        }
+      }
     }
     obj_unref(o);
     return ret;

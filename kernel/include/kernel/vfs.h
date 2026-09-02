@@ -144,12 +144,12 @@ int vfs_resolve_object(const char *path, struct vfs_objref *out) NX_MUST_USE;
 /* Core-facing API (the only filesystem surface outside kernel/fs/) */
 int vfs_open(const char *path, struct vfs_node *out) NX_MUST_USE;
 int vfs_read(struct vfs_node *node, uint64_t offset, void *buf, uint32_t size) NX_MUST_USE;
-/* vfs_read_file: buf==NULL / size==0 returns the file size (userland ABI
- * for SYS_FILE_READ relies on this — user/sys/lib/lib.c file_read). */
+/* vfs_read_file: buf==NULL / size==0 returns the file size (legacy internal
+ * helper; userland metadata probes use OBJ_CTL_STAT). */
 int vfs_read_file(const char *path, void *buf, uint32_t size, uint64_t offset) NX_MUST_USE;
 /* vfs_write_allowed: THE single write-authority seam (CAP_FS_WRITE + the
- * /sys,/bin immutable-tree ACL) shared by SYS_FILE_WRITE, SYS_UNLINK and
- * open-for-write handle acquisition.  Takes a vfs_resolve_path()-canonical
+ * /sys,/bin immutable-tree ACL) shared by WRITE/MUTATE-handle acquisition.
+ * Takes a vfs_resolve_path()-canonical
  * path; returns 0, -EPERM or -EACCES.  (S-ALIGN F6) */
 int vfs_write_allowed(const char *resolved_path) NX_MUST_USE;
 int vfs_write_file(const char *path, const void *buf, uint32_t size,

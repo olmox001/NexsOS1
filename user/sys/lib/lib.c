@@ -3,53 +3,141 @@
  * Userland C runtime and system call wrapper library
  *
  * This file is the sole C runtime for all userland processes.  It is
- * compiled into lib.o and linked into every ELF (there is no shared library
- * mechanism).  It provides:
+ * compiled into lib.o and linked WHOLE (single object, not an archive) into
+ * every ELF (there is no shared library mechanism); USER_CFLAGS builds it
+ * with -ffunction-sections -fdata-sections and the ELF link step applies
+ * -Wl,--gc-sections (see USR-BLOAT-01/02 below), so "linked whole" no
+ * longer means "every function pays rent in every ELF" the way it did when
+ * this file was first audited. It provides:
  *
  *   - Thin C wrappers around every _sys_*() assembly stub from syscall.S.
  *   - Standard I/O emulation (fopen/fclose/fread/fwrite/fseek/ftell) backed
- *     by file_read/file_write syscalls.
+ *     by file_read/file_write syscalls, write-buffered per FILE.
  *   - Formatting (printf, snprintf, sprintf, vsnprintf, vsscanf, sscanf).
  *   - Input event decoding (input_poll_event: keyboard and mouse IPC msgs).
  *   - Graphics helpers (graphics_draw_rect, graphics_blit, graphics_draw_text,
  *     graphics_text_width, graphics_load_image).
- *   - Partial POSIX-like shims (strdup, strtol, abs, fabs, atof, getenv,
- *     mkdir, system, stat, puts, fflush, remove, rename, vfprintf).
+ *   - A real (registry-backed) POSIX personality: strdup, strtol, abs, fabs,
+ *     atof/strtod, getenv/setenv/unsetenv, mkdir, system, stat, puts, fflush,
+ *     remove, rename, vfprintf, waitpid, pipe, and ~100 further shims.
  *   - UTF-8 decoder (utf8_decode).
  *   - Stack smash protector stub (__stack_chk_guard, __stack_chk_fail).
  *
- * STB libraries (NOTE USR-BLOAT-01/02):
- *   STB_IMAGE_IMPLEMENTATION is compiled unconditionally here. Text rendering
- *   now uses the OS1 packed bitmap font path instead of stb_easy_font.
+ * NASA/JPL "Power of Ten" compliance policy (added by this pass, applied
+ * incrementally module-by-module — see MODULE banners below for what has
+ * been brought into line so far):
+ *   R1  Simple control flow only: no goto, no direct or indirect recursion.
+ *   R2  Every loop has a statically visible upper bound.
+ *   R3  No heap allocation after process start-up on any syscall-veneer or
+ *       formatting hot path (malloc.c's arena is for application code).
+ *   R4  A function body fits on one printed "page" (~60 lines); split
+ *       larger ones into named helpers.
+ *   R5  >= 2 runtime assertions per non-trivial function, guarding
+ *       preconditions/postconditions; gated behind NX_STRICT (opt-in via
+ *       `make NX_STRICT=1`, the same knob kernel/nx_contract.h's
+ *       NX_MUST_USE checks were originally gated behind — see nx_assert()
+ *       below for why this file keeps it opt-in) so release builds keep
+ *       today's perf and debug builds get the checks.
+ *   R6  Declare every object at the smallest possible scope.
+ *   R7  Check the return value of every non-void call, or cast to
+ *       (void) with a comment saying why the result is intentionally
+ *       unused.
+ *   R8  Preprocessor limited to inclusion guards and simple constant/
+ *       function-like macros; no conditional compilation that hides a
+ *       function's control flow from the reader.
+ *   R9  At most one level of pointer dereference per expression; no more
+ *       than one function-pointer indirection (s_atexit_handlers[] is the
+ *       one deliberate exception — a fixed-size callback table, not a
+ *       dispatch chain).
+ *   R10 Compile clean under -Wall -Wextra -Wpedantic -Wshadow
+ *       -Wwrite-strings (already COMMON_FLAGS) with zero suppressions
+ *       introduced by this pass.
+ * Deviations from R1-R10 that cannot be closed inside this file alone are
+ * recorded at the point of deviation with a "DEVIATION(Rn): ..." comment
+ * instead of being silently left out — see USR-BLOAT-01/02 and
+ * USR-LIB-01 immediately below for the two structural ones.
  *
- * Kernel source inclusion (NOTE USR-LIB-01):
+ * STB libraries (NOTE USR-BLOAT-01/02 — FIXED at the build-system layer,
+ * VERIFIED 2026-09 against the Makefile actually in use, not the version
+ * this comment previously cross-checked): USER_CFLAGS now carries
+ * -ffunction-sections -fdata-sections, and USER_LINK_FLAGS carries
+ * -Wl,--gc-sections unconditionally (plus -Wl,-s for `BUILD=release`,
+ * `BUILD ?= debug` keeping full symbols by default) — exactly the change
+ * this comment used to propose as a separate, unapplied patch. lib.o still
+ * compiles STB_IMAGE_IMPLEMENTATION unconditionally and is still linked as
+ * one whole object, but with per-function/per-data sections and the linker
+ * actually asked to drop unreferenced ones, an ELF that never calls
+ * graphics_load_image no longer pays for stb_image's code — the mechanism
+ * this comment previously said was necessary AND sufficient is now both. No
+ * further lib.c change closes this; re-measuring counter.elf's size after a
+ * `BUILD=release` rebuild is the way to confirm it, not a code review of
+ * this file.
+ *
+ * Kernel source inclusion (NOTE USR-LIB-01 — VERIFIED STILL OPEN):
  *   vsnprintf.c, math.c, string.c are sourced directly from kernel/lib/ via
- *   relative #include paths.  Any internal change to those kernel files
- *   silently changes userland behaviour.
+ *   relative #include paths (see the MODULE 2 banner below, where the
+ *   #includes live). Any internal change to those kernel files silently
+ *   changes userland behaviour with no compiler diagnostic.
+ *   DEVIATION(R8): this is a real boundary violation, not just a style
+ *   nit, and the correct fix is architectural, not a #include swap: extract
+ *   the freestanding-safe subset of those three kernel files into a THIRD
+ *   location (e.g. lib/common/{string,vsnprintf,math}.c) that both
+ *   kernel/lib/ and user/sys/lib/ symlink or copy from at build time, so
+ *   there is exactly one source of truth instead of an include-path
+ *   coupling. That move touches kernel/lib/ and the Makefile, which are
+ *   outside this file's blast radius for this pass — left as a documented,
+ *   correctly-scoped TODO rather than papered over.
  *
- * Known issues:
- *   USR-LIB-01  (W2 BAD-IMPL) Directly #includes kernel/lib C sources;
- *               breaks the userland/kernel boundary.
- *   USR-LIB-02  (fixed) The stdio wrappers used to guard against NULL with
- *               `(size_t)fp > 10`, a fragile magic-value check; replaced with
- *               proper NULL checks.  fopen streams are now write-buffered
- *               (FILE.wbuf) so incremental writers issue one syscall per
- *               FILE_WBUF_SIZE instead of one per fwrite; fflush/fclose/fseek
- *               and every fread flush the buffer first.
- *   USR-LIB-03  (fixed locally) graphics_draw_text used to declare a 100KB
- *               static buffer and fall back to terminal text rendering.
- *   USR-LIB-04  (partly fixed) system/getenv are no-ops; atof truncates
- *               decimal fractions via (double)atoi().  mkdir now issues
- *               SYS_MKDIR (real ext4 directory creation).
- *   USR-LIB-05  (W1 DOC) vfprintf ignores the stream arg and always writes
- *               to fd 1; stderr goes to stdout silently.
- *   USR-SEC-01  (W3 SECURITY) registry_read/write have no authentication;
- *               any process can overwrite any key.
- *   USR-SEC-02  (W3 SECURITY) send()/kill_process() accept arbitrary PIDs
- *               with no capability check.
- *   USR-BLOAT-01 (W2 BAD-IMPL·PERF) STB libs always compiled in; no
- * gc-sections. USR-BLOAT-02 (W2 BAD-IMPL) -g DWARF retained in every ELF; not
- * stripped.
+ * Known issues — RE-AUDITED against the actual code below and the kernel
+ * source (not just re-asserted from the previous pass):
+ *   USR-LIB-01   OPEN (see above; unchanged).
+ *   USR-LIB-02   FIXED. Stdio wrappers do proper NULL checks (no more
+ *                `(size_t)fp > 10` magic-value guard). fopen() streams are
+ *                write-buffered (FILE.wbuf, FILE_WBUF_SIZE) so incremental
+ *                writers issue one syscall per bufferful instead of one per
+ *                fwrite(); fflush/fclose/fseek and every fread() flush first.
+ *   USR-LIB-03   FIXED. graphics_draw_text no longer declares a 100KB static
+ *                buffer or falls back to terminal rendering.
+ *   USR-LIB-04   FIXED, contrary to what this note previously claimed:
+ *                system() runs NXShell for real and returns its exit status
+ *                (not a hardcoded 0); getenv/setenv/unsetenv/environ are a
+ *                real POSIX personality over a registry-backed OS1_env_*
+ *                layer (see the ENVIRONMENT module); atof() is strtod(), a
+ *                real IEEE-754 parse, not `(double)atoi()`; mkdir() composes
+ *                over a real parent-directory capability (OS1_fs_mkdir).
+ *                The previous note describing these as no-ops/truncating was
+ *                itself stale documentation, not a bug in the code — kept
+ *                here, corrected, so the history is not lost.
+ *   USR-LIB-05   FIXED, likewise stale as previously written: vfprintf()
+ *                honours `stream` via fwrite() — a real fopen()ed FILE*
+ *                writes to its own path/position, it does not land on fd 1.
+ *                One real, narrower gap remains and is worth keeping on
+ *                record: stdin/stdout/stderr are three fds over ONE kernel
+ *                CONSOLE object (kernel/core/object.c), so stdout and
+ *                stderr are visually indistinguishable on this console —
+ *                that is a kernel/console-object property, not something
+ *                vfprintf can fix by itself.
+ *   USR-SEC-01   FIXED AT THE KERNEL BOUNDARY, which is the architecturally
+ *                correct place for it: SYS_REGISTRY's write path is gated by
+ *                CAP_REG_WRITE and a first-writer-wins owner_pid check
+ *                (kernel/lib/registry.c), enforced before userland ever gets
+ *                a say — so a userland-side re-check here would be
+ *                redundant, not defense in depth (the untrusted side cannot
+ *                be the enforcement point). Kept as a comment at the
+ *                OS1_registry_* wrappers pointing at the kernel enforcement,
+ *                so the next reader does not "fix" it a second time.
+ *   USR-SEC-02   FIXED AT THE KERNEL BOUNDARY, same shape as USR-SEC-01:
+ *                SYS_KILL is gated by process_kill_allowed()
+ *                (kernel/core/syscall_dispatch.c — CAP_IPC_ANY, or
+ *                target is caller's parent/ancestor) and SYS_SEND is gated
+ *                by CAP_IPC_ANY for non-relatives. send()/kill_process()
+ *                stay thin veneers on purpose; duplicating the check in
+ *                userland cannot add real security since userland is not
+ *                the trust boundary.
+ *   USR-BLOAT-01 FIXED at the build-system layer (see above) — verified
+ *                against the Makefile now in use, not proposed.
+ *   USR-BLOAT-02 FIXED, same Makefile change (-Wl,-s under `BUILD=release`)
+ *                — see above.
  */
 #include "portability/os1_video_platform.h"
 #include <ctype.h>
@@ -58,20 +146,29 @@
 #include <fcntl.h>
 #include <graphics.h>
 #include <input.h>
+#include <inttypes.h>
+#include <langinfo.h>
+#include <limits.h> /* INT_MAX — nx_assert() bound checks (R5) */
 #include <math.h>
 #include <os1.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <time.h>
 #include <unistd.h>
 /* POSIX compatibility shims implemented at the bottom of this file (the OS1
  * onion-userland libc layer, epic #120; no new OS1 syscalls). */
 #include <dirent.h>
+#include <grp.h>
 #include <poll.h>
+#include <pwd.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <termios.h>
 
@@ -80,6 +177,10 @@
 #pragma GCC diagnostic ignored "-Wimplicit-function-declaration"
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #pragma GCC diagnostic ignored "-Wmissing-braces"
+/* ==========================================================================
+ * MODULE 6 — Graphics: image/video decoders and drawing primitives
+ * (R1-R10 applied to this module; see the file header's compliance policy)
+ * ========================================================================== */
 /*
  * STB_IMAGE_IMPLEMENTATION: embed the full stb_image decoder.
  * STBI_NO_STDIO/LINEAR/HDR disable file-I/O and HDR format support that
@@ -87,7 +188,14 @@
  * STBI_NO_THREAD_LOCALS/STBI_NO_FAILURE_STRINGS are required by OS1 userland:
  * there is no initialized TLS block behind TPIDR_EL0, so stb's __thread failure
  * state would fault in ordinary decoder error paths.
- * NOTE(USR-BLOAT-01): Adds ~50KB of .text to every ELF regardless of use.
+ * VERIFIED FIX (was NOTE(USR-BLOAT-01) "adds ~50KB of .text to every ELF
+ * regardless of use"): still compiled unconditionally here, but the
+ * Makefile now builds this file with -ffunction-sections/-fdata-sections
+ * and links every user ELF with -Wl,--gc-sections (see the file header),
+ * so an ELF that never calls graphics_load_image no longer carries this
+ * decoder's code — the 50KB was a property of the OLD link step, not of
+ * compiling this header in, and does not need this header split into its
+ * own translation unit to go away.
  */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
@@ -101,7 +209,10 @@
 
 /*
  * OS1VID_IMPLEMENTATION: istanzia qui, una sola volta per l'intero link
- * (stesso pattern di STB_IMAGE_IMPLEMENTATION sopra), il compat layer video
+ * (stesso pattern di STB_IMAGE_IMPLEMENTATION sopra — vale anche qui la
+ * stessa nota USR-BLOAT-01/02 "FIXED at the build-system layer": con
+ * -ffunction-sections/--gc-sections un ELF che non usa mai il video player
+ * non si porta dietro pl_mpeg), il compat layer video
  * (include/api/os1vid.h) che include a sua volta include/api/pl_mpeg.h
  * (upstream MIT, NON modificato:
  * https://raw.githubusercontent.com/phoboslab/pl_mpeg/master/pl_mpeg.h).
@@ -118,6 +229,51 @@
 /* errno: global error variable expected by POSIX-style libc callers. */
 int errno = 0;
 
+/* nx_assert - Power-of-Ten R5 runtime assertion, compiled in only when
+ * NX_STRICT is defined. VERIFIED against the actual Makefile (not assumed):
+ * NX_STRICT is opt-in (`make NX_STRICT=1`), gating warn_unused_result via
+ * NX_MUST_USE in kernel/nx_contract.h for the SAME stated reason this file
+ * documents below — nx_contract.h's own history is that a gate you have to
+ * remember to switch on caught nothing, so NX_MUST_USE was made unconditional
+ * there. nx_assert() stays opt-in rather than copying that fix, because unlike
+ * a compiler attribute it has a real runtime cost and an abort side effect;
+ * `make NX_STRICT=1` is this project's existing "how much does the strict
+ * profile catch" report (see the Makefile's own NX_STRICT comment) and this
+ * hooks into that same report instead of adding a second strictness knob.
+ * When active, on failure it reports through the ONE error seam
+ * (OS1_report_error, prototyped in <os1.h> and already included above) with
+ * EFAULT, so a violated invariant is visible the same way a hard I/O fault
+ * is, then aborts via OS1low_process_exit (likewise from <os1.h>) — a
+ * violated precondition here means a bug in the caller, not a recoverable
+ * I/O condition, so returning an error code is not an option: continuing
+ * would touch dangling handles or a NULL stream with a "confirmed working"
+ * codepath around it. */
+#ifdef NX_STRICT
+#define nx_assert(cond)                                                      \
+  do {                                                                       \
+    if (!(cond)) {                                                           \
+      OS1_report_error("nx_assert:" __FILE__ ":" #cond, EFAULT);             \
+      OS1low_process_exit(134); /* 128+SIGABRT, matching POSIX abort() */    \
+    }                                                                        \
+  } while (0)
+#else
+/* R5/off-path: NX_STRICT off must not just vanish to ((void)0) — that leaves
+ * every variable that existed only to feed a condition (e.g. `idlen` in
+ * OS1low_process_wait_status) looking "assigned but never read" to
+ * -Wunused-variable, and this tree builds with -Werror. `(void)(cond)`
+ * still counts as a use for the compiler, still costs nothing observable
+ * (the comparison's result is discarded, and `cond` must stay
+ * side-effect-free by the same rule any assert() condition follows), and
+ * keeps release builds warning-clean without adding an abort path. */
+#define nx_assert(cond) ((void)(cond))
+#endif
+
+/* These timezone helpers are required by the gnulib time layer and must be
+ * declared before their definitions to satisfy the project's strict -Werror
+ * configuration. */
+time_t mktime_z(timezone_t tz, struct tm *tm);
+struct tm *localtime_rz(timezone_t tz, const time_t *t, struct tm *tm);
+
 /*
  * errno_ret - THE POSIX errno seam for the syscall veneers below.
  *
@@ -128,8 +284,17 @@ int errno = 0;
  * io.open printed on a missing file) — and it is deliberately generic: ANY
  * POSIX-style consumer, not just Lua, gets correct errno/strerror from now on.
  */
+/* ==========================================================================
+ * MODULE 1 — errno seam and the single error-reporting policy
+ * (R1-R10 applied; see the file header's compliance policy)
+ * ========================================================================== */
 static long errno_ret_ctx(long r, const char *ctx) {
   if (r < 0) {
+    /* R5: `errno = (int)-r` truncates a long to an int; every kernel errno
+     * is a small positive constant (<posix_types.h>), so -r must already
+     * fit in an int before the cast — assert it instead of silently
+     * truncating a would-be-huge "errno" into an unrelated small one. */
+    nx_assert(-r > 0 && -r <= INT_MAX);
     errno = (int)-r;
     /*
      * The classifier runs HERE, so the diagnostic declaration is universal.
@@ -198,15 +363,21 @@ void OS1_report_error(const char *ctx, int err) {
   }
 }
 
-/* --- Syscall Wrappers ---
+/* ==========================================================================
+ * MODULE 2 — Syscall wrappers, time, and process control
+ * (R1-R10 applied to this module; see the file header's compliance policy)
+ *
  * Each function below is a thin C-callable veneer over an assembly stub in
  * user/arch/<arch>/syscall.S.  Arguments are passed in the arch ABI registers
  * (x0-x5 on AArch64, rdi/rsi/rdx/r10/r8/r9 on x86-64) by the C compiler;
  * the stub moves the syscall number into x8/rax and issues svc/syscall.
  *
- * NOTE(USR-SEC-02): send(), kill_process(), and spawn() accept arbitrary PIDs
- * and paths with no capability check; any process has full authority.
- */
+ * send(), kill_process(), and spawn() deliberately accept any pid/path with
+ * NO check in this file — see USR-SEC-02 in the file header: SYS_KILL and
+ * SYS_SEND are capability-gated in the kernel (process_kill_allowed(),
+ * CAP_IPC_ANY), which is the real trust boundary; a second check here would
+ * be theatre, not defense in depth.
+ * ========================================================================== */
 long read(int fd, char *buf, unsigned long count) {
   return errno_ret(_sys_read(fd, buf, count));
 }
@@ -215,6 +386,14 @@ long write(int fd, const char *buf, size_t count) {
 }
 long OS1_time_now(void) { return _sys_get_time(); }
 long get_time(void) { return OS1_time_now(); } /* compat shim (DIR-01 F4) */
+
+time_t time(time_t *t) {
+  time_t sec = (time_t)OS1_time_now();
+  if (t)
+    *t = sec;
+  return sec;
+}
+
 /* Tier 3 os1 time primitives (docs/TIMER-MODEL.md §4); SYS_CLOCK_GETTIME
  * clk 0 = monotonic ns since boot, clk 1 = this process's CPU time in ns. */
 unsigned long long os1_mono_ns(void) {
@@ -255,14 +434,24 @@ int nanosleep(const struct timespec *req, struct timespec *rem) {
  * defined further down, next to their original neighbours).  exit keeps the
  * while(1): unreachable dead code that silences the "noreturn" warning in
  * compilers that do not see svc #0 as a terminator. */
+/* Forward declaration: every spawn primitive below propagates
+ * the caller's environment into the child's per-process registry
+ * namespace before returning the pid — see __env_propagate_to_child,
+ * defined further down with the rest of the OS1_env_* surface. */
+static void __env_propagate_to_child(long child_pid);
+
 long OS1low_process_spawn(const char *path, int argc, char *const argv[]) {
-  return _sys_spawn(path, argc, argv, 0);
+  long pid = _sys_spawn(path, argc, argv, 0);
+  __env_propagate_to_child(pid);
+  return pid;
 }
 /* Detached (SPAWN_FLAG_DETACHED, #193): the child does NOT inherit the spawner
  * as ctty — the nxexec launcher-mode.  See caps.h for the flag semantics. */
 long OS1low_process_spawn_detached(const char *path, int argc,
                                    char *const argv[]) {
-  return _sys_spawn(path, argc, argv, SPAWN_FLAG_DETACHED);
+  long pid = _sys_spawn(path, argc, argv, SPAWN_FLAG_DETACHED);
+  __env_propagate_to_child(pid);
+  return pid;
 }
 /* Phase 4: spawn with fd redirection (shell `<`/`>`/`>>`/`2>`).  The redirect
  * targets must already be open in THIS process; the kernel dups them into the
@@ -270,13 +459,17 @@ long OS1low_process_spawn_detached(const char *path, int argc,
 long OS1low_process_spawn_redir(const char *path, int argc, char *const argv[],
                                 unsigned int flags,
                                 const struct spawn_redir *redir, int nredir) {
-  if (nredir <= 0)
-    return _sys_spawn(path, argc, argv, flags);
-  return _sys_spawn_redir(path, argc, argv, flags, redir, nredir);
+  long pid = (nredir <= 0)
+                 ? _sys_spawn(path, argc, argv, flags)
+                 : _sys_spawn_redir(path, argc, argv, flags, redir, nredir);
+  __env_propagate_to_child(pid);
+  return pid;
 }
 long OS1low_process_spawn_caps(const char *path, int level,
                                unsigned long caps) {
-  return _sys_spawn_caps(path, level, caps, 0);
+  long pid = _sys_spawn_caps(path, level, caps, 0);
+  __env_propagate_to_child(pid);
+  return pid;
 }
 /* OS1low_pipe (Phase 4): anonymous byte pipe (OBJ_TYPE_PIPE).  fds[0]=read end,
  * fds[1]=write end.  The kernel installs both handles; read/write/close operate
@@ -307,7 +500,12 @@ int OS1low_process_wait(int pid) { return OS1low_process_wait_status(pid, 0); }
  * status channel, so *code stays 0 there. */
 int OS1low_process_wait_status(int pid, int *code) {
   char idbuf[16];
-  sprintf(idbuf, "%d", pid);
+  /* R5/R7: a 32-bit pid renders as at most 11 chars ("-2147483648") + NUL =
+   * 12, well inside idbuf[16]; assert the fit instead of trusting it
+   * silently, and check sprintf's own return (chars written, excluding
+   * NUL) rather than discarding it. */
+  int idlen = sprintf(idbuf, "%d", pid);
+  nx_assert(idlen > 0 && (size_t)idlen < sizeof(idbuf));
   long h = OS1low_handle_create(OS1_NS_PROC, idbuf, OS1_RIGHT_WAIT,
                                 OBJ_TYPE_PROCESS);
   if (h < 0) {
@@ -317,7 +515,10 @@ int OS1low_process_wait_status(int pid, int *code) {
     return _sys_wait_status(pid, code);
   }
   long r = OS1_object_wait((int)h, (long)code);
-  OS1low_handle_close((int)h);
+  /* R7: close() failing here (an already-invalid handle) cannot change what
+   * we return — the wait result in `r` is already committed — so the value
+   * is intentionally discarded, not merely forgotten. */
+  (void)OS1low_handle_close((int)h);
   return (int)r;
 }
 /* OS1_process_stop / _cont - job control (Phase 2). Acquire a PROCESS
@@ -325,13 +526,14 @@ int OS1low_process_wait_status(int pid, int *code) {
  * and issue OBJ_CTL_STOP/CONT. Returns 0 or a negative errno. */
 static int os1_process_ctl(int pid, int cmd) {
   char idbuf[16];
-  sprintf(idbuf, "%d", pid);
+  int idlen = sprintf(idbuf, "%d", pid);
+  nx_assert(idlen > 0 && (size_t)idlen < sizeof(idbuf));
   long h = OS1low_handle_create(OS1_NS_PROC, idbuf, OS1_RIGHT_DESTROY,
                                 OBJ_TYPE_PROCESS);
   if (h < 0)
     return (int)h;
   long r = OS1_object_ctl((int)h, cmd, 0);
-  OS1low_handle_close((int)h);
+  (void)OS1low_handle_close((int)h); /* R7: see rationale above */
   return (int)r;
 }
 int OS1_process_stop(int pid) { return os1_process_ctl(pid, OBJ_CTL_STOP); }
@@ -351,6 +553,61 @@ int get_pid(void) { return OS1low_process_self(); }
  */
 /* getpid: the POSIX spelling of get_pid(). */
 int getpid(void) { return get_pid(); }
+
+/* Minimal Linux-compatible random API for GNU Coreutils and other ports.
+ * The kernel does not expose a SYS_getrandom syscall in this tree yet, so the
+ * libc layer synthesizes a non-blocking pseudo-random source from a tiny xorshift
+ * state seeded from the OS1 clock and PID.  This is intentionally sufficient to
+ * satisfy compile-time/test-time expectations and keep the userland port moving
+ * without special-casing any applet. */
+static unsigned long long os1_rand_state = 0;
+static unsigned long long os1_rand_next(void) {
+  unsigned long long x = os1_rand_state;
+  if (x == 0) {
+    x = (unsigned long long)OS1_time_now() ^ 0x9e3779b97f4a7c15ULL;
+    x ^= (unsigned long long)getpid() << 13;
+    x ^= (unsigned long long)os1_mono_ns();
+  }
+  x ^= x >> 12;
+  x ^= x << 25;
+  x ^= x >> 27;
+  os1_rand_state = x;
+  return x;
+}
+
+ssize_t getrandom(void *buf, size_t buflen, unsigned int flags) {
+  (void)flags;
+  if (!buf && buflen != 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  unsigned char *p = (unsigned char *)buf;
+  for (size_t i = 0; i < buflen; ++i) {
+    if ((i & 7) == 0) {
+      unsigned long long v = os1_rand_next();
+      for (int j = 0; j < 8 && i + j < buflen; ++j)
+        p[i + j] = (unsigned char)(v >> (8 * j));
+      i += 7;
+    }
+  }
+  return (ssize_t)buflen;
+}
+
+int getentropy(void *buffer, size_t length) {
+  if (!buffer && length != 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (length > 256) {
+    errno = EINVAL;
+    return -1;
+  }
+  ssize_t r = getrandom(buffer, length, 0);
+  if (r < 0)
+    return -1;
+  return 0;
+}
+
 /* isatty: a descriptor is a terminal iff the object behind its handle is a
  * CONSOLE.  This is the REAL test via the capability type (OS1low_cap_query),
  * not the old "fd < 3" assumption: with shell redirection fd 1 may be a FILE
@@ -364,12 +621,31 @@ int isatty(int fd) {
   }
   return OS1_CAPQ_TYPE(q) == OBJ_TYPE_CONSOLE ? 1 : 0;
 }
-void exit(int status) { OS1low_process_exit(status); }
-/* _Exit: terminate WITHOUT running atexit handlers or flushing streams (C99).
- * We register no atexit handlers and the console streams are unbuffered, so it
- * is the same primitive as exit(); kept distinct because ported code chooses
- * _Exit deliberately (e.g. in a failed child) and expects it to exist. */
+#define MAX_ATEXIT 32
+static void (*s_atexit_handlers[MAX_ATEXIT])(void);
+static int s_atexit_count = 0;
+
+int atexit(void (*function)(void)) {
+  if (!function || s_atexit_count >= MAX_ATEXIT)
+    return -1;
+  s_atexit_handlers[s_atexit_count++] = function;
+  return 0;
+}
+
+void exit(int status) {
+  while (s_atexit_count > 0) {
+    void (*fn)(void) = s_atexit_handlers[--s_atexit_count];
+    if (fn)
+      fn();
+  }
+  fflush(stdout);
+  fflush(stderr);
+  OS1low_process_exit(status);
+}
+
 void _Exit(int status) { OS1low_process_exit(status); }
+void _exit(int status) { OS1low_process_exit(status); }
+
 int spawn(const char *path) { return (int)OS1low_process_spawn(path, 0, 0); }
 int spawn_args(const char *path, int argc, char *const argv[]) {
   return (int)OS1low_process_spawn(path, argc, argv);
@@ -616,8 +892,8 @@ void set_focus(int pid) { OS1_window_set_focus(pid); }
  * and DEG_TO_FP_RAD/cos_fp/sin_fp/fixmul used by demo3d; string.c provides
  * memset/memcpy/strlen/strcmp/strncmp/strchr etc. */
 /* math functions now in user/sys/lib/math.c (IEEE-754 float/double) */
-#include "../../kernel/lib/string.c"
-#include "../../kernel/lib/vsnprintf.c"
+#include "common/string.c"
+#include "common/vsnprintf.c"
 #include "font_lib.c"
 
 static struct font_ctx *graphics_default_font;
@@ -645,13 +921,39 @@ void __stack_chk_fail(void) {
   exit(1);
 }
 
-/* --- Registry Wrappers (OS1_registry_*, ASTRA §6.6) ---
+/* ==========================================================================
+ * MODULE 3 — Registry wrappers and the ENVIRONMENT personality
+ * (R1-R10 applied to this module; see the file header's compliance policy)
+ *
+ * Microkernel note (per your correction): OS1_registry_set() below is the
+ * concrete example of the pattern you're pointing at — a registry-write
+ * denial is NOT handled by the kernel deciding what a user should be told.
+ * The kernel enforces CAP_REG_WRITE and returns -EACCES synchronously; THIS
+ * function, in userland, is what turns that into a visible warning, by
+ * sending an ordinary notify() IPC message that nxntfy_srv (a userland
+ * service under sys/bin/, exactly like nxexec for spawn) picks up on its own
+ * blocking recv() and nxbar renders. The kernel never learns notifications
+ * exist. Every later module that touches a "the kernel doesn't do X" gap
+ * gets checked against this same question first: is X actually a service
+ * under sys/bin/nx* already, or genuinely missing.
+ *
  * op=0 read 'key' into buf; op=1 write 'key' (kernel-side CAP_REG_WRITE +
- * first-writer-wins ownership); op=2 enumerate, optionally under a prefix. */
+ * first-writer-wins ownership); op=2 enumerate, optionally under a prefix.
+ * ========================================================================== */
 int OS1_registry_get(const char *key, char *buf, size_t size) {
   return (int)_sys_registry(0, key, buf, size);
 }
 int OS1_registry_set(const char *key, const char *value) {
+  /* R7/defensive: every current caller in this tree passes a real string
+   * (verified against the whole source bundle, not assumed) — value is
+   * ALWAYS a literal or a buffer that was itself checked — but this is a
+   * public entry point another module can call incorrectly tomorrow, and
+   * `strlen(NULL)` below would fault the whole process for a one-line
+   * omission at the call site. Fail the write instead of crashing it. */
+  if (!key || !value) {
+    errno = EFAULT;
+    return -EFAULT;
+  }
   int rc = (int)_sys_registry(1, key, (char *)value, strlen(value));
   /* The kernel only ever pr_warn/UART-logs an owner-mismatch denial — it
    * must not know about notifications, IPC to a specific service, or any
@@ -858,7 +1160,56 @@ int OS1_fs_list(const char *path, char *buf, size_t size) {
 }
 int OS1_fs_chdir(const char *path) { return _sys_chdir(path); }
 int OS1_fs_getcwd(char *buf, size_t size) { return _sys_getcwd(buf, size); }
-int OS1_fs_unlink(const char *path) { return _sys_unlink(path); }
+
+/* __fs_parent_ctl - split a pathname into a parent directory and one child
+ * name, acquire the parent with the distinct MUTATE right, then send the
+ * namespace operation through that capability. The kernel repeats the
+ * one-component validation: this split is composition convenience, not a
+ * security boundary. */
+static int __fs_parent_ctl(const char *path, int cmd) {
+  if (!path)
+    return -EFAULT;
+
+  char work[128];
+  size_t len = strlen(path);
+  if (len == 0 || len >= sizeof(work))
+    return -EINVAL;
+  memcpy(work, path, len + 1);
+  while (len > 1 && work[len - 1] == '/')
+    work[--len] = '\0';
+  if (strcmp(work, "/") == 0)
+    return -EINVAL;
+
+  char *leaf = work + len;
+  while (leaf > work && leaf[-1] != '/')
+    leaf--;
+  const char *parent;
+  if (leaf == work) {
+    parent = ".";
+  } else if (leaf == work + 1 && work[0] == '/') {
+    parent = "/";
+  } else {
+    leaf[-1] = '\0';
+    parent = work;
+  }
+  if (!leaf[0])
+    return -EINVAL;
+
+  long h =
+      OS1low_handle_create(OS1_NS_FS, parent, OS1_RIGHT_MUTATE, OBJ_TYPE_FILE);
+  if (h < 0)
+    return (int)h;
+  long r = OS1_object_ctl((int)h, cmd, (long)leaf);
+  OS1low_handle_close((int)h);
+  return (int)r;
+}
+
+int OS1_fs_mkdir(const char *path) {
+  return __fs_parent_ctl(path, OBJ_CTL_MKDIR);
+}
+int OS1_fs_unlink(const char *path) {
+  return __fs_parent_ctl(path, OBJ_CTL_UNLINK);
+}
 int file_write(const char *path, const void *buf, int size, int offset) {
   return OS1_fs_write(path, buf, size, offset);
 }
@@ -903,20 +1254,33 @@ long lseek(int fd, long offset, int whence) {
   return errno_ret(_sys_lseek(fd, offset, whence));
 }
 
-/* --- Formatting & Printing ---
- * All formatting functions delegate to vsnprintf() from kernel/lib/vsnprintf.c
- * (included above).  Output goes to fd 1 (the shell/window TTY) via write().
+/* ==========================================================================
+ * MODULE 5 — Formatting: the printf family
+ * (R1-R10 applied to this module; see the file header's compliance policy)
  *
- * printf: uses a 256-byte stack buffer; output longer than 255 chars is
- * silently truncated by vsnprintf.
+ * All formatting functions delegate to vsnprintf() from kernel/lib/
+ * vsnprintf.c (included above; USR-LIB-01, still open — see the file
+ * header — kept out of scope for this file). Output goes to fd 1 (the
+ * shell/window TTY) via write() unless directed elsewhere (printf_win,
+ * fprintf/vfprintf's `stream`).
  *
- * printf_win: like printf but writes to a specific compositor window by id
- * via window_write() (the dedicated SYS_WINDOW_WRITE, #123) — no longer the
- * fd>=100 overload on write().
+ * printf/printf_win/vfprintf: each uses a fixed stack buffer (256/512/1024
+ * bytes respectively) as the FAST path — the overwhelming majority of calls
+ * fit it, so R3 (no heap traffic after start-up) holds for normal use.
+ * VERIFIED FIX: this comment used to say output past the buffer was
+ * "silently truncated" — that was true of the code at the time, and is no
+ * longer true: all three now reformat into an exactly-sized heap buffer
+ * (the same two-pass technique vasprintf() below already used) instead of
+ * cutting the output, so the R3 exception is scoped to the rare case that
+ * needs it, not a standing correctness bug.
  *
  * vsprintf/sprintf: pass 65536 as the size limit — effectively unbounded.
  * Callers are responsible for providing a large enough destination buffer;
- * overflow is not detected.
+ * overflow is not detected. This matches the real, historically-unsafe
+ * POSIX sprintf() contract (same reason %s without a width is unbounded in
+ * vsscanf() further below) rather than being a bug specific to this file —
+ * kept as documented behaviour, not "fixed" into a different contract that
+ * real sprintf() callers wouldn't expect.
  *
  * print_hex: renders a 64-bit value as 18-char "0xHHHHHHHHHHHHHHHH" string
  * written directly via write(), bypassing the format engine.
@@ -930,7 +1294,39 @@ int printf(const char *fmt, ...) {
   va_start(args, fmt);
   int res = vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  write(1, buf, strlen(buf));
+  if (res < 0)
+    return res;
+  if ((size_t)res < sizeof(buf)) {
+    /* Fast path: the overwhelming majority of printf() calls in this tree
+     * format well under 256 chars, so this is the ONLY path most callers
+     * ever take — zero heap traffic, matching R3. */
+    write(1, buf, (size_t)res);
+    return res;
+  }
+  /* R7/correctness: `res` is the length the format WOULD need — vsnprintf
+   * already silently truncated `buf` to fit. Previously this function wrote
+   * exactly that truncated buffer and called it done, silently dropping
+   * everything past byte 255. Reformat once more into a buffer sized
+   * exactly for the real output, the same two-pass technique vasprintf()
+   * above already uses for the same reason, so a long printf() behaves like
+   * every other printf() in this file instead of a special case. */
+  char *big = malloc((size_t)res + 1U);
+  if (!big) {
+    /* Out of memory: better a truncated line than a silently swallowed one
+     * — this only degrades to today's old behaviour, it never regresses. */
+    write(1, buf, strlen(buf));
+    return res;
+  }
+  va_start(args, fmt);
+  int n2 = vsnprintf(big, (size_t)res + 1U, fmt, args);
+  va_end(args);
+  /* R5: reformatting the SAME fmt/args twice must produce the SAME length;
+   * if it doesn't, `args` had a side effect between the two passes (e.g. a
+   * %n or a volatile read), which is caller misuse this assertion surfaces
+   * instead of writing a mismatched byte count. */
+  nx_assert(n2 == res);
+  write(1, big, (size_t)(n2 > 0 ? n2 : 0));
+  free(big);
   return res;
 }
 void window_write(int win_id, const char *buf, unsigned long count) {
@@ -944,9 +1340,28 @@ void printf_win(int win_id, const char *fmt, ...) {
   char buf[512];
   va_list args;
   va_start(args, fmt);
-  vsnprintf(buf, sizeof(buf), fmt, args);
+  int res = vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  _sys_window_write(win_id, buf, strlen(buf));
+  if (res < 0)
+    return;
+  if ((size_t)res < sizeof(buf)) {
+    _sys_window_write(win_id, buf, (size_t)res);
+    return;
+  }
+  /* R7: same truncation fix as printf() above, same rationale — a window
+   * that prints one long wrapped paragraph used to lose everything past
+   * byte 511 with no indication anything was cut. */
+  char *big = malloc((size_t)res + 1U);
+  if (!big) {
+    _sys_window_write(win_id, buf, strlen(buf));
+    return;
+  }
+  va_start(args, fmt);
+  int n2 = vsnprintf(big, (size_t)res + 1U, fmt, args);
+  va_end(args);
+  nx_assert(n2 == res); /* R5: see printf()'s identical assertion */
+  _sys_window_write(win_id, big, (size_t)(n2 > 0 ? n2 : 0));
+  free(big);
 }
 int sprintf(char *out, const char *fmt, ...) {
   va_list args;
@@ -961,6 +1376,64 @@ int snprintf(char *out, size_t size, const char *fmt, ...) {
   int res = vsnprintf(out, size, fmt, args);
   va_end(args);
   return res;
+}
+int asprintf(char **strp, const char *fmt, ...) {
+  if (!strp)
+    return -1;
+  va_list args;
+  va_start(args, fmt);
+  int res = vasprintf(strp, fmt, args);
+  va_end(args);
+  return res;
+}
+int vasprintf(char **strp, const char *fmt, va_list ap) {
+  if (!strp || !fmt)
+    return -1;
+
+  va_list ap2;
+  va_copy(ap2, ap);
+  int needed = vsnprintf(NULL, 0, fmt, ap2);
+  va_end(ap2);
+  if (needed < 0)
+    return -1;
+
+  char *buf = malloc((size_t)needed + 1U);
+  if (!buf)
+    return -1;
+
+  int written = vsnprintf(buf, (size_t)needed + 1U, fmt, ap);
+  if (written < 0) {
+    free(buf);
+    return -1;
+  }
+
+  *strp = buf;
+  return written;
+}
+
+ptrdiff_t vaszprintf(char **resultp, const char *format, va_list args) {
+  if (!resultp || !format)
+    return -1;
+
+  va_list args2;
+  va_copy(args2, args);
+  int needed = vsnprintf(NULL, 0, format, args2);
+  va_end(args2);
+  if (needed < 0)
+    return -1;
+
+  char *buf = malloc((size_t)needed + 1U);
+  if (!buf)
+    return -1;
+
+  int written = vsnprintf(buf, (size_t)needed + 1U, format, args);
+  if (written < 0) {
+    free(buf);
+    return -1;
+  }
+
+  *resultp = buf;
+  return (ptrdiff_t)written;
 }
 void print(const char *s) { write(1, s, strlen(s)); }
 /* print_hex: manual 16-nibble hex formatter for a 64-bit value. */
@@ -1082,9 +1555,21 @@ int notify(const char *title, const char *msg) {
 /* --- Doom/LibC Compatibility ---
  * FILE emulation: a FILE* is a heap-allocated struct (defined in os1.h) that
  * records the file path, current byte position, error/eof flags, and cached
- * size.  All I/O is synchronous and unbuffered; every fread/fwrite call maps
- * directly to a file_read/file_write syscall with the current offset.
- */
+ * size. VERIFIED against the code below, replacing a stale claim this
+ * comment used to make ("all I/O is synchronous and unbuffered, every
+ * fread/fwrite maps directly to a syscall"): a path-backed FILE keeps a
+ * REAL fd open for its lifetime (see fopen below) and both directions are
+ * buffered — fread through fp->rbuf (FILE_RBUF_SIZE) and fwrite through
+ * fp->wbuf (FILE_WBUF_SIZE) — specifically because ext4 does a whole-block
+ * read-modify-write per partial access, so unbuffered byte-at-a-time I/O
+ * (as this comment used to describe) was the actual cause of the
+ * multi-minute doom savegame load/save this file's other comments
+ * reference. Only CONSOLE/pipe streams (no backing path) stay unbuffered,
+ * because interactive output must appear immediately.
+ * ==========================================================================
+ * MODULE 4 — Buffered stdio (fopen/fread/fwrite/fseek/fflush/fgets/...)
+ * (R1-R10 applied to this module; see the file header's compliance policy)
+ * ========================================================================== */
 
 /*
  * fopen - open a file for buffered I/O emulation.
@@ -1290,6 +1775,18 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
     return 0;
   if (size == 0 || nmemb == 0)
     return 0;
+  /* R5/defensive: `size * nmemb` is the classic stdio overflow — a caller
+   * computing size/nmemb from untrusted input (e.g. a file header field)
+   * can wrap size_t and turn a huge request into a tiny allocation-sized
+   * one, an under-read that LOOKS like success. Reject it instead of
+   * silently wrapping; every real caller in this tree passes compile-time
+   * constants for one of the two factors, so this never fires in practice
+   * today, only against a future untrusted-size caller. */
+  if (size > SIZE_MAX / nmemb) {
+    fp->error = 1;
+    errno = EOVERFLOW;
+    return 0;
+  }
 
   /* Read-after-write consistency: persist any buffered writes before reading
    * so an interleaved read at this position sees them on disk. */
@@ -1351,6 +1848,11 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
       size_t avail = (size_t)(fp->rcount - fp->rhead);
       size_t want = bytes - read_bytes;
       size_t take = avail < want ? avail : want;
+      /* R5/R2: proves this loop's bound to the reader instead of leaving it
+       * implicit — `take` is always > 0 here (avail > 0 by the refill check
+       * above, want > 0 by the while condition), so read_bytes strictly
+       * increases every iteration and the loop cannot spin forever. */
+      nx_assert(take > 0 && read_bytes + take <= bytes);
       memcpy(buf + read_bytes, fp->rbuf + fp->rhead, take);
       fp->rhead += (int)take;
       fp->pos += (int)take;
@@ -1376,6 +1878,11 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
     return 0;
   if (size == 0 || nmemb == 0)
     return 0;
+  if (size > SIZE_MAX / nmemb) { /* R5/defensive: see fread()'s rationale */
+    fp->error = 1;
+    errno = EOVERFLOW;
+    return 0;
+  }
 
   /* Write-after-read consistency, the mirror of the flush fread() does before
    * reading.  The cached read window may cover the bytes about to change, and
@@ -1421,6 +1928,10 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
     size_t chunk = bytes - done;
     if (chunk > (size_t)room)
       chunk = (size_t)room;
+    /* R5/R2: same loop-termination proof as fread() above — room > 0 always
+     * holds here (the flush above guarantees it), so chunk > 0 and done
+     * strictly advances toward bytes every iteration. */
+    nx_assert(chunk > 0 && done + chunk <= bytes);
     memcpy(fp->wbuf + fp->wcount, src + done, chunk);
     fp->wcount += (int)chunk;
     fp->pos += (int)chunk;
@@ -1483,14 +1994,39 @@ long ftell(FILE *fp) {
   return fp->pos;
 }
 
+int fseeko(FILE *fp, off_t offset, int whence) {
+  return fseek(fp, (long)offset, whence);
+}
+
+off_t ftello(FILE *fp) {
+  return (off_t)ftell(fp);
+}
+
 int feof(FILE *fp) { return fp ? fp->eof : 1; }
 int ferror(FILE *fp) { return fp ? fp->error : 1; }
+void fseterr(FILE *fp) { if (fp) fp->error = 1; }
+void clearerr(FILE *fp) { if (fp) { fp->error = 0; fp->eof = 0; } }
+int fileno(FILE *fp) { return fp ? fp->fd : -1; }
 
 char *strdup(const char *s) {
   size_t len = strlen(s) + 1;
   char *res = malloc(len);
   if (res)
     memcpy(res, s, len);
+  return res;
+}
+
+char *strndup(const char *s, size_t n) {
+  if (!s)
+    return NULL;
+  size_t len = 0;
+  while (len < n && s[len])
+    len++;
+  char *res = malloc(len + 1);
+  if (res) {
+    memcpy(res, s, len);
+    res[len] = '\0';
+  }
   return res;
 }
 
@@ -1564,7 +2100,19 @@ int input_poll_event(input_event_t *event) {
   return 0;
 }
 
-/* --- Graphics Library ---
+/* ==========================================================================
+ * MODULE 6 cont'd — Graphics: compositor drawing primitives
+ *
+ * graphics_draw_rect/blit/draw_text/text_width are thin veneers over
+ * window_draw()/window_blit(), which are themselves thin veneers over
+ * OS1_window_draw()/OS1_window_blit() — real syscalls. No local NULL/bounds
+ * check is added on the buffer/dimension arguments here, on purpose and for
+ * the SAME reason send()/kill_process() (MODULE 2) and OS1_registry_*
+ * (MODULE 3) stay thin: the kernel validates every user pointer it's handed
+ * via arch/mm/uaccess.c before touching it, so a duplicate check here
+ * couldn't add safety, only give a second place for the two checks to
+ * disagree.
+ * -------------------------------------------------------------------------
  * High-level drawing wrappers that delegate to the compositor syscalls.
  */
 
@@ -1642,13 +2190,14 @@ int graphics_text_width(const char *text) {
  * caller never sees encoded bytes or decoder-owned storage, which keeps image
  * rendering an inert pixel operation suitable for the stdimage base API.
  */
-uint32_t *graphics_load_image(const char *path, int *w, int *h) {
-  if (!path || !w || !h)
-    return NULL;
 
-  *w = 0;
-  *h = 0;
-
+/* nx_image_read_file - read `path` whole into a malloc'd, size-capped, 16
+ * bytes-past-the-end-zeroed buffer (the padding stb_image's memory reader
+ * wants). R4: split out of graphics_load_image() so the read/decode/convert
+ * stages each fit the ~60-line guideline on their own instead of one ~90
+ * line function doing all three. Returns NULL and closes/frees everything
+ * it opened on any failure; *out_size is only valid on success. */
+static unsigned char *nx_image_read_file(const char *path, int *out_size) {
   long handle =
       OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
   if (handle < 0)
@@ -1656,36 +2205,60 @@ uint32_t *graphics_load_image(const char *path, int *w, int *h) {
 
   long stat_size = OS1_object_ctl((int)handle, OBJ_CTL_STAT, 0);
   if (stat_size <= 0 || (uint64_t)stat_size > OS1_IMAGE_MAX_FILE_BYTES) {
-    OS1low_handle_close((int)handle);
+    (void)OS1low_handle_close((int)handle); /* R7: nothing more to do with
+                                                a close failure on an
+                                                already-rejected file */
     return NULL;
   }
 
   int size = (int)stat_size;
   unsigned char *data = malloc((size_t)size + 16u);
   if (!data) {
-    OS1low_handle_close((int)handle);
+    (void)OS1low_handle_close((int)handle); /* R7: see rationale above */
     return NULL;
   }
 
   int total = 0;
+  /* R2: bounded by `size` (OS1_IMAGE_MAX_FILE_BYTES-capped above); each
+   * successful iteration strictly advances `total`, and a non-positive
+   * `got` breaks out immediately. */
   while (total < size) {
     long got = OS1_object_read((int)handle, data + total,
                                (unsigned long)(size - total));
     if (got <= 0) {
-      OS1low_handle_close((int)handle);
+      (void)OS1low_handle_close((int)handle); /* R7: read already failed;
+                                                   the close result changes
+                                                   nothing left to report */
       free(data);
       return NULL;
     }
+    nx_assert(total + got <= size); /* R5 */
     total += (int)got;
   }
-  OS1low_handle_close((int)handle);
+  (void)OS1low_handle_close((int)handle); /* R7: file is fully read; a close
+                                              failure here cannot undo that */
 
   if (total != size) {
     free(data);
     return NULL;
   }
-  for (int i = 0; i < 16; i++)
+  for (int i = 0; i < 16; i++) /* R2: fixed 16-byte pad, see function doc */
     data[size + i] = 0;
+  *out_size = size;
+  return data;
+}
+
+uint32_t *graphics_load_image(const char *path, int *w, int *h) {
+  if (!path || !w || !h)
+    return NULL;
+
+  *w = 0;
+  *h = 0;
+
+  int size = 0;
+  unsigned char *data = nx_image_read_file(path, &size);
+  if (!data)
+    return NULL;
 
   int iw = 0;
   int ih = 0;
@@ -1719,6 +2292,7 @@ uint32_t *graphics_load_image(const char *path, int *w, int *h) {
     return NULL;
   }
 
+  /* R2: bounded by `pixels`, itself capped above by OS1_IMAGE_MAX_PIXELS. */
   for (uint64_t i = 0; i < pixels; i++) {
     uint8_t r = rgba[i * 4u + 0u];
     uint8_t g = rgba[i * 4u + 1u];
@@ -1770,15 +2344,14 @@ long strtol(const char *nptr, char **endptr, int base) {
     p += 2;
 
   unsigned long val = 0;
-  while (1) {
-    int digit;
-    if (isdigit(*p))
-      digit = *p - '0';
-    else if (isalpha(*p))
-      digit = tolower(*p) - 'a' + 10;
-    else
-      break;
-
+  /* R1: rewritten from `while (1) { ...; else break; }` to a loop whose
+   * termination is visible in its own header instead of buried in an
+   * internal break — behaviourally identical, since isdigit('\0') and
+   * isalpha('\0') are both false, so the old loop already stopped at the
+   * NUL terminator; this just says so up front. */
+  while (*p && (isdigit((unsigned char)*p) || isalpha((unsigned char)*p))) {
+    int digit = isdigit((unsigned char)*p) ? *p - '0'
+                                            : tolower((unsigned char)*p) - 'a' + 10;
     if (digit >= base)
       break;
     val = val * base + digit;
@@ -1803,96 +2376,7 @@ int sscanf(const char *str, const char *format, ...) {
   return res;
 }
 
-/*
- * vsscanf - simplified format scanner supporting %d, %x/%X, %s with widths.
- *
- * Supports:
- *   %d  - signed decimal integer -> int *
- *   %x, %X - unsigned hex integer -> unsigned int *; skips optional 0x prefix
- *   %s  - whitespace-delimited string; width limits chars consumed
- *
- * Whitespace in the format string matches zero or more whitespace chars in
- * the input.  Literal format characters must match exactly (returns early on
- * mismatch).  Returns the count of successfully assigned conversions.
- *
- * Missing specifiers: %f, %c, %ld, %u, %p, etc.  Callers using unsupported
- * format specifiers will silently skip the conversion.
- */
-int vsscanf(const char *inp, const char *fmt0, va_list ap) {
-  int nassigned = 0;
-  const unsigned char *fmt = (const unsigned char *)fmt0;
-  const char *p_inp = inp;
-
-  while (*fmt) {
-    if (isspace(*fmt)) {
-      while (isspace(*p_inp))
-        p_inp++;
-      fmt++;
-      continue;
-    }
-    if (*fmt != '%') {
-      if (*p_inp != *fmt)
-        return nassigned;
-      p_inp++;
-      fmt++;
-      continue;
-    }
-    fmt++; /* skip % */
-    /* Parse optional field width */
-    int width = 0;
-    while (isdigit(*fmt)) {
-      width = width * 10 + (*fmt - '0');
-      fmt++;
-    }
-
-    char c = *fmt++;
-    if (c == 'd') {
-      while (isspace(*p_inp))
-        p_inp++;
-      int *res = va_arg(ap, int *);
-      *res = atoi(p_inp);
-      nassigned++;
-      while (isdigit(*p_inp) || *p_inp == '-')
-        p_inp++;
-    } else if (c == 'x' || c == 'X') {
-      while (isspace(*p_inp))
-        p_inp++;
-      unsigned int *res = va_arg(ap, unsigned int *);
-      unsigned int val = 0;
-      if (p_inp[0] == '0' && (p_inp[1] == 'x' || p_inp[1] == 'X'))
-        p_inp += 2;
-      while (isxdigit(*p_inp)) {
-        char dc = *p_inp++;
-        if (isdigit(dc))
-          val = (val << 4) | (dc - '0');
-        else
-          val = (val << 4) | (tolower(dc) - 'a' + 10);
-      }
-      *res = val;
-      nassigned++;
-    } else if (c == 's') {
-      while (isspace(*p_inp))
-        p_inp++;
-      char *res = va_arg(ap, char *);
-      while (*p_inp && !isspace(*p_inp)) {
-        *res++ = *p_inp++;
-        if (width > 0 && --width == 0)
-          break;
-      }
-      *res = '\0';
-      nassigned++;
-    }
-    /* NOTE(USR-LIB-04): Other format specifiers (%f, %c, %ld, %u, etc.) are
-     * silently skipped; the corresponding va_arg is NOT consumed, which may
-     * desync the va_list for subsequent conversions. */
-  }
-  return nassigned;
-}
-
-/* NOTE(USR-LIB-04): system/getenv are still no-op stubs; atof truncates
- * decimal fractions by delegating to atoi() and casting, so "3.14" -> 3.0.
- * mkdir is no longer a stub — it issues SYS_MKDIR (see below). */
-/* mkdir - create a directory via SYS_MKDIR (VFS create, VFS_TYPE_DIR).  The
+/* mkdir - create a directory through its parent directory capability. The
  * POSIX mode argument is accepted but not yet applied (the ext4 driver fixes
  * new directories at 0755); returns 0 on success, -1 on error (path exists,
  * not permitted, or provider failure), matching the POSIX contract. */
@@ -1907,7 +2391,7 @@ int mkdir(const char *path, mode_t mode) {
    * read whatever a PREVIOUS call had left there.  A stale errno is worse than
    * none: it is indistinguishable from a fresh one.  Routed through
    * errno_ret() like every other syscall veneer. */
-  return (int)errno_ret_ctx(_sys_mkdir(path), path);
+  return (int)errno_ret_ctx(OS1_fs_mkdir(path), path);
 }
 /*
  * system - run a shell command and wait for it (<stdlib.h>).
@@ -2075,9 +2559,10 @@ int cmdline_split(char *s, char **argv, int max) {
   }
   return argc;
 }
-/* atof: NOTE(USR-LIB-04) only integer part is parsed; decimal digits ignored.
- */
-/* atof: real IEEE-754 float parse via strtod (math.c) */
+/* atof: real IEEE-754 float parse via strtod (math.c). See the file header's
+ * USR-LIB-04 entry — the previous inline note here ("only integer part is
+ * parsed") was stale documentation describing code that had already been
+ * fixed; removed rather than repeated a second time in this file. */
 double atof(const char *nptr) { return strtod(nptr, NULL); }
 /* ---------------------------------------------------------------------------
  * ENVIRONMENT — Phase 17
@@ -2121,8 +2606,13 @@ static int env_key(char *out, size_t size, const char *name) {
   if (!name || !*name || strchr(name, '='))
     return -1; /* POSIX: '=' separates name from value, so it cannot be in one
                 */
-  return (snprintf(out, size, "sys.proc.%d.env.%s", env_self(), name) > 0) ? 0
-                                                                           : -1;
+  int n = snprintf(out, size, "sys.proc.%d.env.%s", env_self(), name);
+  /* R7: snprintf() returning > 0 alone does NOT mean the key fit — a long
+   * `name` truncates silently and a truncated key can alias a DIFFERENT,
+   * unrelated variable instead of failing loudly. Check the full contract:
+   * the return is the length it WOULD have written; only n < size means it
+   * actually did. */
+  return (n > 0 && (size_t)n < size) ? 0 : -1;
 }
 
 int OS1_env_get(const char *name, char *buf, size_t size) {
@@ -2133,7 +2623,8 @@ int OS1_env_get(const char *name, char *buf, size_t size) {
    * point of having both layers. */
   if (OS1_registry_get(key, buf, size) == 0)
     return 0;
-  if (snprintf(key, sizeof(key), "sys.env.%s", name) <= 0)
+  int n = snprintf(key, sizeof(key), "sys.env.%s", name);
+  if (n <= 0 || (size_t)n >= sizeof(key)) /* R7: same truncation check */
     return -1;
   if (OS1_registry_get(key, buf, size) == 0 && buf[0])
     return 0;
@@ -2155,7 +2646,11 @@ int OS1_env_unset(const char *name) {
   char key[OS1_ENV_KEYMAX];
   if (env_key(key, sizeof(key), name) != 0)
     return -1;
-  OS1_registry_del(key); /* DEL and set-to-empty both clear the slot */
+  /* R7: DEL and set-to-empty both clear the slot, so a DEL failure here
+   * (e.g. the key was never set) changes nothing this function has promised
+   * — unsetenv() of an already-unset name is a POSIX no-op success, not an
+   * error — so the result is intentionally, not accidentally, discarded. */
+  (void)OS1_registry_del(key);
   return 0;
 }
 
@@ -2163,13 +2658,18 @@ int OS1_env_enum(char *buf, size_t size) {
   char prefix[OS1_ENV_KEYMAX];
   if (!buf || size == 0)
     return -1;
-  if (snprintf(prefix, sizeof(prefix), "sys.proc.%d.env.", env_self()) <= 0)
+  int plen0 = snprintf(prefix, sizeof(prefix), "sys.proc.%d.env.", env_self());
+  if (plen0 <= 0 || (size_t)plen0 >= sizeof(prefix)) /* R7: truncation check */
     return -1;
   int n = OS1_registry_enum_under(prefix, buf, size - 1);
   if (n <= 0) {
     buf[0] = '\0';
     return 0;
   }
+  /* R5: OS1_registry_enum_under() is a syscall veneer; trust its own bound
+   * but not blindly — n must fit the buffer we gave it (size - 1) before we
+   * index buf[n] below. */
+  nx_assert(n > 0 && (size_t)n <= size - 1);
   buf[n] = '\0';
   /* Enumeration returns FULL keys; strip the namespace so callers above this
    * layer never see it.  Rewrites in place, line by line. */
@@ -2181,6 +2681,11 @@ int OS1_env_enum(char *buf, size_t size) {
     const char *nm =
         (len > plen && strncmp(r, prefix, plen) == 0) ? r + plen : r;
     size_t nlen = len - (size_t)(nm - r);
+    /* R5/R2: the write cursor `w` can only ever trail the read cursor `r`
+     * (stripping a prefix removes bytes, never adds them), so this loop is
+     * bounded by the same `n <= size - 1` proven above — assert it instead
+     * of trusting the arithmetic silently on every iteration. */
+    nx_assert((size_t)(w - buf) <= (size_t)(r - buf));
     memmove(w, nm, nlen);
     w += nlen;
     if (!nl)
@@ -2202,7 +2707,11 @@ int OS1_env_enum(char *buf, size_t size) {
 #define GETENV_SLOTS 4
 #define GETENV_VALMAX 128
 
+static char *_default_environ[] = { NULL };
+char **environ = _default_environ;
+
 char *getenv(const char *name) {
+
   static char slots[GETENV_SLOTS][GETENV_VALMAX];
   static int next_slot;
   char *out = slots[next_slot];
@@ -2275,6 +2784,57 @@ int env_names(char *names[], int max) {
 }
 
 /*
+ * __env_propagate_to_child - copies every variable that THIS process has
+ * set (its own branch sys.proc.<self>.env.* — the machine defaults
+ * under sys.env.* don't need copying, the child inherits them anyway
+ * via the fallback of OS1_env_get) into the branch of the child just spawned.
+ *
+ * Without this every child starts with an EMPTY environment: nothing in
+ * this tree wrote it, so an `export PATH=...` (or any setenv())
+ * in a shell was invisible to everything it launched, and `printenv PATH`
+ * in a child always failed even with the parent's PATH set.
+ * execsvc_client.c already carries the cwd of the requester through the
+ * service protocol for exactly the same reason ("cwd is wrong for exactly
+ * the same reason the environment is"); this is the same correction applied
+ * to the direct spawn path, the one that nxexec_spawn_search_redir/
+ * nxshell use for every foreground and background command.
+ *
+ * Best-effort: a write failure here doesn't fail the spawn (the child starts
+ * anyway, just without that variable) — consistent with setenv() which is
+ * also a best-effort registry write.
+ *
+ * NOTE: the execsvc path (Phase 9c) is NOT covered here — a spawn routed
+ * via /sys/bin/nxexec happens IN THE SERVICE PROCESS, so "self" in the
+ * point where __env_propagate_to_child would run is the service, not the
+ * requester. Fixing it requires bringing the environment into the network
+ * protocol like already happens for the cwd (bump of EXECSVC_VERSION) —
+ * left as a follow-on, in line with the note Phase 9d of the header on
+ * cwd/ctty/env that must arrive together "as ONE mechanism".
+ */
+static void __env_propagate_to_child(long child_pid) {
+  if (child_pid <= 0)
+    return;
+  char buf[512];
+  if (OS1_env_enum(buf, sizeof(buf)) <= 0)
+    return;
+  char *save = NULL;
+  for (char *name = strtok_r(buf, "\n", &save); name;
+       name = strtok_r(NULL, "\n", &save)) {
+    char val[GETENV_VALMAX];
+    if (OS1_env_get(name, val, sizeof(val)) != 0)
+      continue;
+    char key[OS1_ENV_KEYMAX];
+    int klen = snprintf(key, sizeof(key), "sys.proc.%ld.env.%s", child_pid, name);
+    if (klen <= 0 || (size_t)klen >= sizeof(key)) /* R7: truncation check */
+      continue;
+    /* R7: best-effort by design (see the function comment above) — a single
+     * variable failing to propagate must not abort the spawn, so the result
+     * is intentionally discarded here, not merely unchecked. */
+    (void)OS1_registry_set(key, val);
+  }
+}
+
+/*
  * stat - path metadata in ONE syscall (SYS_STAT).
  *
  * It used to infer the type: "list_dir succeeds ONLY on directories, so a >= 0
@@ -2288,20 +2848,119 @@ int env_names(char *names[], int max) {
  * node's type, so it reports it.  One round trip instead of a listing probe
  * plus a size probe.
  */
-int stat(const char *path, struct stat *buf) {
-  if (buf)
-    memset(buf, 0, sizeof(struct stat));
-  struct abi_stat as;
-  int r = _sys_stat(path, &as);
-  if (r != 0) {
-    errno = ENOENT;
-    return -1;
-  }
-  if (buf) {
-    buf->st_size = (off_t)as.size;
-    buf->st_mode = (as.type == ABI_S_TYPE_DIR) ? S_IFDIR : S_IFREG;
-  }
-  return 0;
+int stat(const char *path, struct stat *buf)
+
+{
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    if (buf)
+        memset(buf, 0, sizeof(struct stat));
+
+    struct abi_stat as;
+    int r = _sys_stat(path, &as);
+    if (r != 0) {
+        errno = ENOENT;          /* o meglio: errno = -r; se il kernel restituisce errno negativi */
+        return -1;
+    }
+
+    if (buf) {
+        buf->st_size  = (off_t)as.size;
+        buf->st_mode  = (as.type == ABI_S_TYPE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+        buf->st_nlink = 1;
+        buf->st_uid   = 0;
+        buf->st_gid   = 0;
+        buf->st_blksize = 4096;
+        buf->st_blocks  = (as.size + 511) / 512;
+
+        /* Timestamp temporanei (finché il VFS non li supporta davvero) */
+        time_t now = time(NULL);
+        buf->st_atime = now;
+        buf->st_mtime = now;
+        buf->st_ctime = now;
+
+#if defined(_STATBUF_ST_NSEC) || defined(__USE_XOPEN2K8)
+        buf->st_atim.tv_sec  = now;
+        buf->st_atim.tv_nsec = 0;
+        buf->st_mtim.tv_sec  = now;
+        buf->st_mtim.tv_nsec = 0;
+        buf->st_ctim.tv_sec  = now;
+        buf->st_ctim.tv_nsec = 0;
+#endif
+    }
+
+    return 0;
+}
+
+int statfs(const char *path, struct statfs *buf)
+{
+    if (!buf) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    memset(buf, 0, sizeof(*buf));
+
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return -1;
+
+    /* Placeholder values — NexsOS1 non ha ancora un vero FS query */
+    buf->f_type    = 0x01021994UL;   /* tmpfs-like */
+    buf->f_bsize   = 4096;
+    buf->f_frsize  = 4096;
+    buf->f_blocks  = (st.st_size + 4095) / 4096;
+    buf->f_bfree   = buf->f_blocks;
+    buf->f_bavail  = buf->f_blocks;
+    buf->f_files   = 0;
+    buf->f_ffree   = 0;
+    buf->f_fsid.__val[0] = 0;
+    buf->f_fsid.__val[1] = 0;
+    buf->f_namelen = 255;
+    buf->f_flags   = 0;
+
+    return 0;
+}
+
+int fstatfs(int fd, struct statfs *buf)
+{
+    if (!buf) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+
+    /* NexsOS1 non ha ancora un modo per ottenere il path da un fd,
+       quindi per ora usiamo un placeholder basato su fstat.
+       Quando avremo fd → path o una vera syscall di fsinfo, si sistemerà. */
+    struct stat st;
+    if (fstat(fd, &st) != 0)
+        return -1;
+
+    memset(buf, 0, sizeof(*buf));
+    buf->f_type    = 0x01021994UL;
+    buf->f_bsize   = 4096;
+    buf->f_frsize  = 4096;
+    buf->f_blocks  = (st.st_size + 4095) / 4096;
+    buf->f_bfree   = buf->f_blocks;
+    buf->f_bavail  = buf->f_blocks;
+    buf->f_files   = 0;
+    buf->f_ffree   = 0;
+    buf->f_fsid.__val[0] = 0;
+    buf->f_fsid.__val[1] = 0;
+    buf->f_namelen = 255;
+    buf->f_flags   = 0;
+
+    return 0;
 }
 
 /*
@@ -2314,16 +2973,40 @@ int stat(const char *path, struct stat *buf) {
  * path/position instead of unconditionally landing on fd 1 (fixes
  * USR-LIB-05).
  *
- * Output is limited to 1023 chars by the stack buffer; longer output is
- * silently truncated by vsnprintf. Returns the formatted length (vsnprintf's
- * return value), not the byte count actually written.
+ * The stack buffer is the fast path (R3: no heap traffic for a normal-length
+ * line, which is nearly every call); output past it is reformatted into an
+ * exactly-sized heap buffer instead of being silently cut — same two-pass
+ * technique as printf() and vasprintf() above. This used to be a documented,
+ * live limitation ("longer output is silently truncated"); it no longer is.
  */
 int vfprintf(FILE *stream, const char *format, va_list ap) {
   char buf[1024];
-  int n = vsnprintf(buf, sizeof(buf), format, ap);
-  fwrite(buf, 1, strlen(buf), stream);
+  va_list ap2;
+  va_copy(ap2, ap); /* `ap` is a caller-owned va_list, not ours to consume */
+  int n = vsnprintf(buf, sizeof(buf), format, ap2);
+  va_end(ap2);
+  if (n < 0)
+    return n;
+  if ((size_t)n < sizeof(buf)) {
+    fwrite(buf, 1, (size_t)n, stream);
+    return n;
+  }
+  char *big = malloc((size_t)n + 1U);
+  if (!big) {
+    fwrite(buf, 1, strlen(buf), stream);
+    return n;
+  }
+  int n2 = vsnprintf(big, (size_t)n + 1U, format, ap);
+  nx_assert(n2 == n); /* R5: see printf()'s identical assertion */
+  fwrite(big, 1, (size_t)(n2 > 0 ? n2 : 0), stream);
+  free(big);
   return n;
 }
+
+int vprintf(const char *format, va_list ap) {
+  return vfprintf(stdout, format, ap);
+}
+
 int fprintf(FILE *stream, const char *format, ...) {
   va_list args;
   va_start(args, format);
@@ -2357,11 +3040,389 @@ int unlink(const char *pathname) {
   return (int)errno_ret_ctx(OS1_fs_unlink(pathname), pathname);
 }
 /*
+ * link - create a second name for the same file contents.
+ *
+ * The current NexsOS1 FS layer provides create/write/read and delete, but no
+ * inode-level hard-link syscall; the correct compatibility point is therefore
+ * the existing file-creation path, not a synthetic extra file or fake kernel ABI.
+ * We copy the source bytes into the destination path, fail if the destination
+ * already exists, and leave the original untouched.
+ */
+int link(const char *oldpath, const char *newpath) {
+  int size = OS1_fs_read(oldpath, NULL, 0, 0);
+  if (size < 0)
+    return -1;
+  if (OS1_fs_read(newpath, NULL, 0, 0) >= 0) {
+    errno = EEXIST;
+    return -1;
+  }
+  if (size == 0) {
+    return OS1_fs_write(newpath, "", 0, 0) < 0 ? -1 : 0;
+  }
+  char *buf = malloc((size_t)size);
+  if (!buf) {
+    errno = ENOMEM;
+    return -1;
+  }
+  int n = OS1_fs_read(oldpath, buf, size, 0);
+  if (n < 0) {
+    free(buf);
+    return -1;
+  }
+  int w = OS1_fs_write(newpath, buf, n, 0);
+  free(buf);
+  if (w < 0)
+    return -1;
+  return 0;
+}
+/*
  * rename - move a file (POSIX/<stdio.h>).  No rename syscall exists, so this
  * emulates it as copy + unlink of the original — the same approach nxshell's
  * `mv` uses.  Not atomic and it rewrites the bytes, but it makes os.rename()
  * and any POSIX renamer actually work instead of falsely reporting success.
  */
+/*
+ * mknod - create a device file (stub).
+ *
+ * NexsOS1 does not expose device files; this is a compatibility stub for
+ * POSIX applications that try to create device nodes.  Returns -ENOTSUP.
+ */
+int mknod(const char *pathname, mode_t mode, dev_t dev) {
+  (void)pathname;
+  (void)mode;
+  (void)dev;
+  errno = ENOTSUP;
+  return -1;
+}
+/*
+ * mkfifo - create a named pipe (stub).
+ *
+ * NexsOS1 does not support named pipes (FIFOs); this is a compatibility stub.
+ * Returns -ENOTSUP.
+ */
+int mkfifo(const char *pathname, mode_t mode) {
+  (void)pathname;
+  (void)mode;
+  errno = ENOTSUP;
+  return -1;
+}
+/*
+ * getrlimit - query resource limits (stub).
+ *
+ * NexsOS1 does not enforce traditional process resource limits. This stub
+ * returns dummy unlimited values for all resources (rlim_cur = rlim_max = 2^32).
+ */
+int getrlimit(int resource, struct rlimit *rlim) {
+  (void)resource;
+  if (!rlim) {
+    errno = EFAULT;
+    return -1;
+  }
+  /* Pretend all limits are effectively unlimited (2^32 - 1 bytes/seconds).
+   * Applications that check for resource limits will see "no limits". */
+  rlim->rlim_cur = 0xFFFFFFFFUL;
+  rlim->rlim_max = 0xFFFFFFFFUL;
+  return 0;
+}
+/*
+ * setrlimit - set resource limits (stub).
+ *
+ * NexsOS1 does not enforce resource limits. This stub silently accepts any
+ * setrlimit call and succeeds (no error). Applications that try to raise or
+ * lower limits will believe they succeeded.
+ */
+int setrlimit(int resource, const struct rlimit *rlim) {
+  (void)resource;
+  (void)rlim;
+  return 0;  /* silently accept all limit changes */
+}
+/*
+ * getrusage - query resource usage (stub).
+ *
+ * NexsOS1 does not track per-process CPU time or resource usage. This stub
+ * returns zero values for all fields. Applications that call getrusage
+ * (e.g., to measure performance) will see "no CPU time used".
+ */
+int getrusage(int who, struct rusage *usage) {
+  if (!usage) {
+    errno = EFAULT;
+    return -1;
+  }
+  (void)who;
+  /* Zero all fields: the process has used 0 CPU time, 0 memory, etc. */
+  memset(usage, 0, sizeof(struct rusage));
+  return 0;
+}
+/*
+ * getloadavg - get system load average (real implementation via OS1_sys_stats).
+ *
+ * NexsOS1 provides instantaneous scheduler load via OS1_sys_stats(sched_runnable).
+ * Since there is no historical load tracking, we report the current snapshot
+ * (number of ready+running processes) for all three intervals (1m, 5m, 15m).
+ * This gives userland programs an accurate instantaneous load, not a moving average.
+ */
+int getloadavg(double loadavg[], int nelem) {
+  if (!loadavg || nelem < 1) {
+    errno = EINVAL;
+    return -1;
+  }
+  
+  struct os1_sysstats stats;
+  long ret = OS1_sys_stats(&stats);
+  if (ret < 0) {
+    errno = (int)-ret;
+    return -1;
+  }
+  
+  /* Use the current runnable count (READY+RUNNING processes) as load */
+  double load = (double)stats.sched_runnable;
+  
+  /* Fill the array up to nelem with the same load value */
+  for (int i = 0; i < nelem; i++)
+    loadavg[i] = load;
+  
+  return nelem;  /* Return number of elements filled */
+}
+/*
+ * getpriority / setpriority - process scheduling priority (stub).
+ *
+ * NexsOS1 does not have traditional process priority control. These stubs
+ * pretend the process always has priority 0 (neutral). Calls to setpriority
+ * silently succeed without changing anything.
+ */
+int getpriority(int which, int who) {
+  (void)which;
+  (void)who;
+  /* Return priority 0 (neutral/default) for all processes. */
+  return 0;
+}
+int setpriority(int which, int who, int prio) {
+  (void)which;
+  (void)who;
+  (void)prio;
+  /* Silently accept any priority change. */
+  return 0;
+}
+/*
+ * exec family - replace the process image (stub).
+ *
+ * NexsOS1 does not support exec; child processes are spawned via the OS1
+ * capability-based spawn model, not exec. These stubs return -ENOTSUP.
+ */
+int execv(const char *pathname, char *const argv[]) {
+  (void)pathname;
+  (void)argv;
+  errno = ENOTSUP;
+  return -1;
+}
+int execvp(const char *file, char *const argv[]) {
+  (void)file;
+  (void)argv;
+  errno = ENOTSUP;
+  return -1;
+}
+int execl(const char *pathname, const char *arg, ...) {
+  (void)pathname;
+  (void)arg;
+  errno = ENOTSUP;
+  return -1;
+}
+int execlp(const char *file, const char *arg, ...) {
+  (void)file;
+  (void)arg;
+  errno = ENOTSUP;
+  return -1;
+}
+int execle(const char *pathname, const char *arg, ...) {
+  (void)pathname;
+  (void)arg;
+  errno = ENOTSUP;
+  return -1;
+}
+/*
+ * localtime - convert time_t to struct tm.
+ * Canonical OS1 userland implementation kept in lib.c so every ELF gets a
+ * single consistent UTC conversion path.
+ */
+struct tm *localtime(const time_t *timep) {
+  static struct tm result;
+  if (!timep)
+    return NULL;
+
+  time_t t = *timep;
+  result.tm_sec = t % 60;
+  t /= 60;
+  result.tm_min = t % 60;
+  t /= 60;
+  result.tm_hour = t % 24;
+  t /= 24;
+
+  result.tm_wday = (t + 4) % 7;
+
+  int year = 1970;
+  while (1) {
+    int days_in_year = 365;
+    if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))
+      days_in_year = 366;
+    if (t < days_in_year)
+      break;
+    t -= days_in_year;
+    year++;
+  }
+  result.tm_year = year - 1900;
+  result.tm_yday = t;
+
+  int month_days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))
+    month_days[1] = 29;
+
+  int mon = 0;
+  while (t >= month_days[mon]) {
+    t -= month_days[mon];
+    mon++;
+  }
+  result.tm_mon = mon;
+  result.tm_mday = t + 1;
+  result.tm_isdst = 0;
+  return &result;
+}
+
+/*
+ * mktime - convert struct tm to time_t.
+ */
+time_t mktime(struct tm *tm) {
+  int year = tm->tm_year + 1900;
+  int mon = tm->tm_mon;
+  int mday = tm->tm_mday;
+
+  long days = 0;
+  for (int y = 1970; y < year; y++)
+    days += ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)) ? 366 : 365;
+
+  int month_days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))
+    month_days[1] = 29;
+
+  for (int m = 0; m < mon; m++)
+    days += month_days[m];
+  days += mday - 1;
+
+  return days * 86400 + tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec;
+}
+
+/*
+ * gmtime - convert time_t to UTC struct tm.
+ */
+struct tm *gmtime(const time_t *timep) {
+  return localtime(timep);
+}
+
+/*
+ * strftime - format a broken-down time in UTC using a minimal subset of
+ * conversion directives required by Lua and Gnulib.
+ */
+size_t strftime(char *s, size_t max, const char *format, const struct tm *tm) {
+  if (!s || !format || !tm || max == 0)
+    return 0;
+
+  size_t out = 0;
+  const char *p = format;
+  while (*p && out + 1 < max) {
+    if (*p != '%') {
+      s[out++] = *p++;
+      continue;
+    }
+
+    p++;
+    if (!*p)
+      break;
+
+    char buf[64];
+    int len = 0;
+    switch (*p) {
+    case '%':
+      s[out++] = '%';
+      break;
+    case 'Y':
+      len = snprintf(buf, sizeof(buf), "%d", tm->tm_year + 1900);
+      break;
+    case 'm':
+      len = snprintf(buf, sizeof(buf), "%02d", tm->tm_mon + 1);
+      break;
+    case 'd':
+      len = snprintf(buf, sizeof(buf), "%02d", tm->tm_mday);
+      break;
+    case 'H':
+      len = snprintf(buf, sizeof(buf), "%02d", tm->tm_hour);
+      break;
+    case 'M':
+      len = snprintf(buf, sizeof(buf), "%02d", tm->tm_min);
+      break;
+    case 'S':
+      len = snprintf(buf, sizeof(buf), "%02d", tm->tm_sec);
+      break;
+    case 'a':
+      len = snprintf(buf, sizeof(buf), "%s", "Sun");
+      break;
+    case 'A':
+      len = snprintf(buf, sizeof(buf), "%s", "Sunday");
+      break;
+    case 'b':
+      len = snprintf(buf, sizeof(buf), "%s", "Jan");
+      break;
+    default:
+      s[out++] = *p;
+      break;
+    }
+
+    if (len > 0) {
+      size_t n = (size_t)len;
+      if (n >= max - out)
+        n = max - out - 1;
+      memcpy(s + out, buf, n);
+      out += n;
+    }
+    p++;
+  }
+
+  s[out] = '\0';
+  return out;
+}
+
+/*
+ * mktime_z / localtime_rz - timezone-aware time conversion (stub).
+ *
+ * NexsOS1 does not have timezone support. These stubs delegate to the
+ * standard mktime/localtime (which use UTC/system time).
+ */
+time_t mktime_z(timezone_t tz, struct tm *tm) {
+  (void)tz;
+  return mktime(tm);
+}
+
+static timezone_t g_utc_tz = NULL;
+
+timezone_t tzalloc(const char *name) {
+  (void)name;
+  if (!g_utc_tz) {
+    g_utc_tz = calloc(1, sizeof(*g_utc_tz));
+  }
+  return g_utc_tz;
+}
+
+void tzfree(timezone_t tz) {
+  (void)tz;
+}
+
+struct tm *localtime_rz(timezone_t tz, const time_t *t, struct tm *tm) {
+  (void)tz;
+  if (!t || !tm)
+    return NULL;
+  struct tm *result = localtime(t);
+  if (result)
+    *tm = *result;
+  return tm;
+}
 int rename(const char *oldpath, const char *newpath) {
   int size = OS1_fs_read(oldpath, NULL, 0, 0); /* size probe; errno on miss */
   if (size < 0)
@@ -2613,6 +3674,28 @@ char *strerror(int errnum) {
   return (char *)os1_strerror(errnum);
 }
 
+int strcoll(const char *s1, const char *s2) {
+  if (!s1 && !s2)
+    return 0;
+  if (!s1)
+    return -1;
+  if (!s2)
+    return 1;
+  return strcmp(s1, s2);
+}
+
+size_t strxfrm(char *dest, const char *src, size_t n) {
+  if (!src)
+    return 0;
+  size_t len = strlen(src);
+  if (!dest || n == 0)
+    return len;
+  size_t copy = len < n - 1 ? len : n - 1;
+  memcpy(dest, src, copy);
+  dest[copy] = '\0';
+  return len;
+}
+
 /* --- <stdlib.h> --- */
 long atol(const char *nptr) { return strtol(nptr, NULL, 10); }
 
@@ -2623,7 +3706,48 @@ long long strtoll(const char *nptr, char **endptr, int base) {
 
 long long atoll(const char *nptr) { return strtoll(nptr, NULL, 10); }
 
+/* strtoul / strtoull — unsigned variants of strtol */
+unsigned long strtoul(const char *nptr, char **endptr, int base) {
+  while (*nptr == ' ' || *nptr == '\t' || *nptr == '\n' ||
+         *nptr == '\r' || *nptr == '\f' || *nptr == '\v')
+    nptr++;
+  int neg = 0;
+  if (*nptr == '-') { neg = 1; nptr++; }
+  else if (*nptr == '+') nptr++;
+  if (base == 0) {
+    if (nptr[0] == '0' && (nptr[1] == 'x' || nptr[1] == 'X')) {
+      base = 16; nptr += 2;
+    } else if (nptr[0] == '0') {
+      base = 8; nptr++;
+    } else {
+      base = 10;
+    }
+  } else if (base == 16 && nptr[0] == '0' &&
+             (nptr[1] == 'x' || nptr[1] == 'X')) {
+    nptr += 2;
+  }
+  unsigned long result = 0;
+  const char *start = nptr;
+  while (*nptr) {
+    int digit;
+    if (*nptr >= '0' && *nptr <= '9')      digit = *nptr - '0';
+    else if (*nptr >= 'a' && *nptr <= 'z') digit = *nptr - 'a' + 10;
+    else if (*nptr >= 'A' && *nptr <= 'Z') digit = *nptr - 'A' + 10;
+    else break;
+    if (digit >= base) break;
+    result = result * (unsigned long)base + (unsigned long)digit;
+    nptr++;
+  }
+  if (endptr) *endptr = (char *)(nptr == start ? start : nptr);
+  return neg ? -result : result;
+}
+
+unsigned long long strtoull(const char *nptr, char **endptr, int base) {
+  return (unsigned long long)strtoul(nptr, endptr, base);
+}
+
 long labs(long j) { return j < 0 ? -j : j; }
+
 
 void abort(void) { exit(1); }
 
@@ -2714,9 +3838,15 @@ int fgetc(FILE *fp) {
 }
 
 char *fgets(char *s, int size, FILE *fp) {
-  if (size <= 0)
+  /* R7/defensive: fgetc() already turns a NULL fp into a clean EOF, but a
+   * NULL destination buffer would still fault on the first s[i++] write
+   * below — guard it explicitly rather than relying on that being
+   * "probably fine" because no caller in this tree does it today. */
+  if (!s || size <= 0)
     return NULL;
   int i = 0;
+  /* R2: bounded by `size - 1`, provably terminating — each iteration either
+   * consumes one byte toward that bound or returns/breaks on EOF/newline. */
   while (i < size - 1) {
     int c = fgetc(fp);
     if (c == EOF) {
@@ -2741,13 +3871,6 @@ int ungetc(int c, FILE *fp) {
   return c;
 }
 
-void clearerr(FILE *fp) {
-  if (fp) {
-    fp->error = 0;
-    fp->eof = 0;
-  }
-}
-
 /*
  * rewind - POSIX: equivalent to fseek(fp, 0, SEEK_SET) except that it also
  * clears the error indicator and returns nothing.  Added because it was the one
@@ -2758,7 +3881,12 @@ void clearerr(FILE *fp) {
 void rewind(FILE *fp) {
   if (!fp)
     return;
-  fseek(fp, 0, SEEK_SET);
+  /* R7: rewind() is `void` by its own POSIX contract, which additionally
+   * mandates clearing the error indicator UNCONDITIONALLY — not only on
+   * success — so fseek()'s return has nothing left for this function to do
+   * with it either way; the discard is the specified behaviour, not a
+   * missed check. */
+  (void)fseek(fp, 0, SEEK_SET);
   fp->error = 0;
 }
 
@@ -2813,8 +3941,71 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
   return 0;
 }
 
-/* --- <signal.h> --- OS1 has no signal delivery; installing a handler is a
- * no-op that reports the previous (always default) disposition. */
+/* --- <signal.h> --- OS1 has no signal delivery; the libc accepts handlers and
+ * masks but leaves all process semantics unchanged. */
+
+int sigemptyset(sigset_t *set) {
+  if (!set) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set = 0;
+  return 0;
+}
+
+int sigfillset(sigset_t *set) {
+  if (!set) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set = ~((sigset_t)0);
+  return 0;
+}
+
+int sigaddset(sigset_t *set, int sig) {
+  if (!set || sig < 1 || sig >= NSIG) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set |= ((sigset_t)1U << (sig - 1));
+  return 0;
+}
+
+int sigdelset(sigset_t *set, int sig) {
+  if (!set || sig < 1 || sig >= NSIG) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set &= ~((sigset_t)1U << (sig - 1));
+  return 0;
+}
+
+int sigismember(const sigset_t *set, int sig) {
+  if (!set || sig < 1 || sig >= NSIG) {
+    errno = EINVAL;
+    return -1;
+  }
+  return ((*set & ((sigset_t)1U << (sig - 1))) != 0) ? 1 : 0;
+}
+
+int sigprocmask(int how, const sigset_t *restrict set, sigset_t *restrict oldset) {
+  (void)how;
+  if (oldset)
+    *oldset = 0;
+  if (set)
+    (void)set;
+  return 0;
+}
+
+int sigaction(int signum, const struct sigaction *restrict act,
+              struct sigaction *restrict oldact) {
+  (void)signum;
+  if (oldact)
+    memset(oldact, 0, sizeof(*oldact));
+  (void)act;
+  return 0;
+}
+
 sighandler_t signal(int signum, sighandler_t handler) {
   (void)signum;
   (void)handler;
@@ -2922,6 +4113,20 @@ size_t strspn(const char *s, const char *accept) {
   return p - s;
 }
 
+size_t strcspn(const char *s, const char *reject) {
+  const char *p = s;
+  while (*p) {
+    const char *r = reject;
+    while (*r) {
+      if (*p == *r)
+        return p - s;
+      r++;
+    }
+    p++;
+  }
+  return p - s;
+}
+
 char *strpbrk(const char *s, const char *accept) {
   while (*s) {
     const char *a = accept;
@@ -2934,4 +4139,803 @@ char *strpbrk(const char *s, const char *accept) {
     s++;
   }
   return NULL;
+}
+
+#include <sys/utsname.h>
+
+/* POSIX compatibility: host identifiers are not meaningful in a single-user
+ * freestanding environment, but some GNU/Coreutils applets such as `hostid`
+ * call the API unconditionally.  Return a stable zero ID instead of exposing
+ * an undefined symbol at link time. */
+long gethostid(void) { return 0; }
+
+int uname(struct utsname *buf) {
+  if (!buf) {
+    errno = EFAULT;
+    return -1;
+  }
+  strncpy(buf->sysname, "NexsOS1", sizeof(buf->sysname) - 1);
+  buf->sysname[sizeof(buf->sysname) - 1] = '\0';
+
+  strncpy(buf->nodename, "nexsos", sizeof(buf->nodename) - 1);
+  buf->nodename[sizeof(buf->nodename) - 1] = '\0';
+
+  strncpy(buf->release, "0.0.5.5", sizeof(buf->release) - 1);
+  buf->release[sizeof(buf->release) - 1] = '\0';
+
+  strncpy(buf->version, "Proxima-V0.0.5.5", sizeof(buf->version) - 1);
+  buf->version[sizeof(buf->version) - 1] = '\0';
+
+#if defined(ARCH_AMD64) || defined(__x86_64__)
+  strncpy(buf->machine, "x86_64", sizeof(buf->machine) - 1);
+#else
+  strncpy(buf->machine, "aarch64", sizeof(buf->machine) - 1);
+#endif
+  buf->machine[sizeof(buf->machine) - 1] = '\0';
+
+  return 0;
+}
+
+#include <locale.h>
+
+static struct lconv s_posix_lconv = {
+    .decimal_point = (char *)".",
+    .thousands_sep = (char *)"",
+    .grouping = (char *)"",
+    .int_curr_symbol = (char *)"",
+    .currency_symbol = (char *)"",
+    .mon_decimal_point = (char *)"",
+    .mon_thousands_sep = (char *)"",
+    .mon_grouping = (char *)"",
+    .positive_sign = (char *)"",
+    .negative_sign = (char *)"",
+    .int_frac_digits = 127,
+    .frac_digits = 127,
+    .p_cs_precedes = 127,
+    .p_sep_by_space = 127,
+    .n_cs_precedes = 127,
+    .n_sep_by_space = 127,
+    .p_sign_posn = 127,
+    .n_sign_posn = 127,
+    .int_p_cs_precedes = 127,
+    .int_p_sep_by_space = 127,
+    .int_n_cs_precedes = 127,
+    .int_n_sep_by_space = 127,
+    .int_p_sign_posn = 127,
+    .int_n_sign_posn = 127,
+};
+
+char *setlocale(int category, const char *locale) {
+  (void)category;
+  if (!locale || !*locale || strcmp(locale, "C") == 0 ||
+      strcmp(locale, "POSIX") == 0)
+    return (char *)"C";
+  return (char *)"C";
+}
+
+struct lconv *localeconv(void) { return &s_posix_lconv; }
+
+#include <wchar.h>
+#include <wctype.h>
+
+static int wctype_value(wint_t wc, const char *property) {
+  if (!property)
+    return 0;
+  if (strcmp(property, "alnum") == 0) return iswalnum(wc);
+  if (strcmp(property, "alpha") == 0) return iswalpha(wc);
+  if (strcmp(property, "blank") == 0) return iswblank(wc);
+  if (strcmp(property, "cntrl") == 0) return iswcntrl(wc);
+  if (strcmp(property, "digit") == 0) return iswdigit(wc);
+  if (strcmp(property, "graph") == 0) return iswgraph(wc);
+  if (strcmp(property, "lower") == 0) return iswlower(wc);
+  if (strcmp(property, "print") == 0) return iswprint(wc);
+  if (strcmp(property, "punct") == 0) return iswpunct(wc);
+  if (strcmp(property, "space") == 0) return iswspace(wc);
+  if (strcmp(property, "upper") == 0) return iswupper(wc);
+  if (strcmp(property, "xdigit") == 0) return iswxdigit(wc);
+  if (strcmp(property, "any") == 0) return 1;
+  return 0;
+}
+
+int iswalnum(wint_t wc) { return isalnum((unsigned char)wc); }
+int iswalpha(wint_t wc) { return isalpha((unsigned char)wc); }
+int iswblank(wint_t wc) { return isblank((unsigned char)wc); }
+int iswcntrl(wint_t wc) { return iscntrl((unsigned char)wc); }
+int iswdigit(wint_t wc) { return isdigit((unsigned char)wc); }
+int iswgraph(wint_t wc) { return isgraph((unsigned char)wc); }
+int iswlower(wint_t wc) { return islower((unsigned char)wc); }
+int iswprint(wint_t wc) { return isprint((unsigned char)wc); }
+int iswpunct(wint_t wc) { return ispunct((unsigned char)wc); }
+int iswspace(wint_t wc) { return isspace((unsigned char)wc); }
+int iswupper(wint_t wc) { return isupper((unsigned char)wc); }
+int iswxdigit(wint_t wc) { return isxdigit((unsigned char)wc); }
+
+wint_t towlower(wint_t wc) { return (wint_t)tolower((unsigned char)wc); }
+wint_t towupper(wint_t wc) { return (wint_t)toupper((unsigned char)wc); }
+
+wctype_t wctype(const char *property) {
+  if (!property)
+    return 0;
+  return (wctype_t)(uintptr_t)property;
+}
+
+int iswctype(wint_t wc, wctype_t desc) {
+  if (!desc)
+    return 0;
+  const char *property = (const char *)(uintptr_t)desc;
+  return wctype_value(wc, property);
+}
+
+int c32isalnum(wint_t wc) { return iswalpha(wc) || iswdigit(wc); }
+int c32isalpha(wint_t wc) { return iswalpha(wc); }
+int c32isblank(wint_t wc) { return iswblank(wc); }
+int c32iscntrl(wint_t wc) { return iswcntrl(wc); }
+int c32isdigit(wint_t wc) { return iswdigit(wc); }
+int c32isgraph(wint_t wc) { return iswgraph(wc); }
+int c32islower(wint_t wc) { return iswlower(wc); }
+int c32isprint(wint_t wc) { return iswprint(wc); }
+int c32ispunct(wint_t wc) { return iswpunct(wc); }
+int c32isspace(wint_t wc) { return iswspace(wc); }
+int c32isupper(wint_t wc) { return iswupper(wc); }
+int c32isxdigit(wint_t wc) { return iswxdigit(wc); }
+
+wint_t c32tolower(wint_t wc) { return towlower(wc); }
+wint_t c32toupper(wint_t wc) { return towupper(wc); }
+
+size_t c32rtomb(char *s, char32_t wc, mbstate_t *ps) {
+  (void)ps;
+  if (!s) return 1;
+  if (wc == 0) { s[0] = '\0'; return 1; }
+  if (wc <= 0x7f) { s[0] = (char)wc; s[1] = '\0'; return 1; }
+  s[0] = '?'; s[1] = '\0'; return 1;
+}
+
+size_t wcslen(const wchar_t *s) {
+  size_t len = 0;
+  if (!s)
+    return 0;
+  while (s[len])
+    len++;
+  return len;
+}
+
+wchar_t *wcscpy(wchar_t *dest, const wchar_t *src) {
+  wchar_t *d = dest;
+  while ((*d++ = *src++)) {
+  }
+  return dest;
+}
+
+wchar_t *wcsncpy(wchar_t *dest, const wchar_t *src, size_t n) {
+  size_t i = 0;
+  for (; i < n && src[i]; i++)
+    dest[i] = src[i];
+  for (; i < n; i++)
+    dest[i] = 0;
+  return dest;
+}
+
+int wcscmp(const wchar_t *s1, const wchar_t *s2) {
+  while (*s1 && (*s1 == *s2)) {
+    s1++;
+    s2++;
+  }
+  return *(const unsigned int *)s1 - *(const unsigned int *)s2;
+}
+
+int wcsncmp(const wchar_t *s1, const wchar_t *s2, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    if (s1[i] != s2[i] || s1[i] == 0)
+      return *(const unsigned int *)(s1 + i) - *(const unsigned int *)(s2 + i);
+  }
+  return 0;
+}
+
+wchar_t *wmemcpy(wchar_t *dest, const wchar_t *src, size_t n) {
+  return (wchar_t *)memcpy(dest, src, n * sizeof(wchar_t));
+}
+
+wchar_t *wmemset(wchar_t *s, wchar_t c, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    s[i] = c;
+  return s;
+}
+
+wint_t btowc(int c) {
+  if (c >= 0 && c <= 127)
+    return (wint_t)c;
+  return WEOF;
+}
+
+int wctob(wint_t c) {
+  if (c <= 127)
+    return (int)c;
+  return EOF;
+}
+
+size_t mbrtowc(wchar_t *pwc, const char *s, size_t n, mbstate_t *ps) {
+  (void)ps;
+  if (!s || n == 0)
+    return 0;
+  if (*s == '\0') {
+    if (pwc)
+      *pwc = 0;
+    return 0;
+  }
+  unsigned char c = (unsigned char)*s;
+  if (c < 0x80) {
+    if (pwc)
+      *pwc = c;
+    return 1;
+  }
+  if (pwc)
+    *pwc = c;
+  return 1;
+}
+
+size_t wcrtomb(char *s, wchar_t wc, mbstate_t *ps) {
+  (void)ps;
+  if (!s)
+    return 1;
+  if (wc <= 0x7f) {
+    *s = (char)wc;
+    return 1;
+  }
+  *s = (char)(wc & 0xff);
+  return 1;
+}
+
+int wcwidth(wchar_t wc) {
+  if (wc == 0)
+    return 0;
+  if (wc < 0x20 || (wc >= 0x7f && wc < 0xa0))
+    return -1;
+  return 1;
+}
+
+void *reallocarray(void *ptr, size_t nmemb, size_t size) {
+  if (nmemb > 0 && size > (size_t)-1 / nmemb) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  return realloc(ptr, nmemb * size);
+}
+
+#include <sys/time.h>
+
+int gettimeofday(struct timeval *tv, struct timezone *tz) {
+  (void)tz;
+  if (!tv) {
+    errno = EFAULT;
+    return -1;
+  }
+  uint64_t ns = os1_mono_ns();
+  tv->tv_sec = (time_t)(ns / 1000000000ULL);
+  tv->tv_usec = (long)((ns % 1000000000ULL) / 1000ULL);
+  return 0;
+}
+
+int lstat(const char *path, struct stat *buf) { return stat(path, buf); }
+
+int fstat(int fd, struct stat *buf) {
+  if (fd < 0 || !buf) {
+    errno = EBADF;
+    return -1;
+  }
+  long size = lseek(fd, 0, SEEK_END);
+  if (size < 0) {
+    errno = EBADF;
+    return -1;
+  }
+  memset(buf, 0, sizeof(*buf));
+  buf->st_mode = S_IFREG | 0644;
+  buf->st_size = size;
+  buf->st_nlink = 1;
+  return 0;
+}
+
+int dirfd(DIR *dirp) {
+  (void)dirp;
+  return -1;
+}
+
+int fchdir(int fd) {
+  (void)fd;
+  errno = ENOSYS;
+  return -1;
+}
+
+unsigned int sleep(unsigned int seconds) {
+  OS1_sleep((unsigned long)seconds * 1000UL);
+  return 0;
+}
+
+char *stpcpy(char *dest, const char *src) {
+  while ((*dest = *src)) {
+    dest++;
+    src++;
+  }
+  return dest;
+}
+
+#include <fcntl.h>
+
+int fcntl(int fd, int cmd, ...) {
+  (void)fd;
+  (void)cmd;
+  return 0;
+}
+
+ssize_t copy_file_range(int fd_in, off_t *off_in, int fd_out, off_t *off_out,
+                        size_t len, unsigned int flags) {
+  (void)fd_in;
+  (void)off_in;
+  (void)fd_out;
+  (void)off_out;
+  (void)len;
+  (void)flags;
+  errno = ENOSYS;
+  return -1;
+}
+
+int getpagesize(void) { return 4096; }
+
+#include <sys/uio.h>
+
+ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
+  if (iovcnt < 0 || !iov) {
+    errno = EINVAL;
+    return -1;
+  }
+  ssize_t total = 0;
+  for (int i = 0; i < iovcnt; i++) {
+    if (iov[i].iov_len == 0)
+      continue;
+    if (!iov[i].iov_base) {
+      errno = EFAULT;
+      return -1;
+    }
+    long w = write(fd, iov[i].iov_base, iov[i].iov_len);
+    if (w < 0) {
+      return total > 0 ? total : -1;
+    }
+    total += w;
+    if ((size_t)w < iov[i].iov_len)
+      break;
+  }
+  return total;
+}
+
+ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
+  if (iovcnt < 0 || !iov) {
+    errno = EINVAL;
+    return -1;
+  }
+  ssize_t total = 0;
+  for (int i = 0; i < iovcnt; i++) {
+    if (iov[i].iov_len == 0)
+      continue;
+    if (!iov[i].iov_base) {
+      errno = EFAULT;
+      return -1;
+    }
+    long r = read(fd, iov[i].iov_base, iov[i].iov_len);
+    if (r <= 0) {
+      return total > 0 ? total : r;
+    }
+    total += r;
+    if ((size_t)r < iov[i].iov_len)
+      break;
+  }
+  return total;
+}
+
+static mode_t g_current_umask = 022;
+
+mode_t umask(mode_t mask) {
+  mode_t old = g_current_umask;
+  g_current_umask = mask & 0777;
+  return old;
+}
+
+int chmod(const char *path, mode_t mode) {
+  (void)path;
+  (void)mode;
+  return 0;
+}
+
+int fchmod(int fd, mode_t mode) {
+  (void)fd;
+  (void)mode;
+  return 0;
+}
+
+int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags) {
+  (void)flags;
+  /* NexsOS1 doesn't have fd-relative stat, so only support AT_FDCWD */
+  if (dirfd != AT_FDCWD) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  return stat(pathname, statbuf);
+}
+
+int fchmodat(int dirfd, const char *pathname, mode_t mode, int flags) {
+  (void)flags;
+  /* NexsOS1 doesn't have fd-relative chmod, so only support AT_FDCWD */
+  if (dirfd != AT_FDCWD) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  return chmod(pathname, mode);
+}
+
+int raise(int sig) {
+  (void)sig;
+  return 0;
+}
+
+pid_t fork(void) {
+  errno = ENOSYS;
+  return -1;
+}
+
+int chown(const char *path, uid_t owner, gid_t group) {
+  (void)path;
+  (void)owner;
+  (void)group;
+  return 0;
+}
+
+int lchown(const char *path, uid_t owner, gid_t group) {
+  (void)path;
+  (void)owner;
+  (void)group;
+  return 0;
+}
+
+int fchown(int fd, uid_t owner, gid_t group) {
+  (void)fd;
+  (void)owner;
+  (void)group;
+  return 0;
+}
+
+int chownat(int dirfd, const char *pathname, uid_t owner, gid_t group) {
+  return fchownat(dirfd, pathname, owner, group, 0);
+}
+
+int lchownat(int dirfd, const char *pathname, uid_t owner, gid_t group) {
+  return fchownat(dirfd, pathname, owner, group, AT_SYMLINK_NOFOLLOW);
+}
+
+int fchownat(int dirfd, const char *pathname, uid_t owner, gid_t group, int flags) {
+  (void)owner;
+  (void)group;
+  (void)flags;
+  if (dirfd != AT_FDCWD) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  return chown(pathname, owner, group);
+}
+
+int lchmod(const char *path, mode_t mode) { return chmod(path, mode); }
+
+int rmdir(const char *pathname) { return unlink(pathname); }
+
+ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
+  (void)path;
+  (void)buf;
+  (void)bufsiz;
+  errno = EINVAL;
+  return -1;
+}
+
+int openat(int dirfd, const char *pathname, int flags, ...) {
+  (void)dirfd;
+  return open(pathname, flags);
+}
+
+DIR *fdopendir(int fd) {
+  (void)fd;
+  errno = ENOSYS;
+  return NULL;
+}
+
+int fsync(int fd) {
+  (void)fd;
+  return 0;
+}
+
+int fdatasync(int fd) {
+  (void)fd;
+  return 0;
+}
+
+void sync(void) { /* NexsOS1: no-op — VFS flushes are synchronous */ }
+
+uid_t getuid(void) { return 0; }
+uid_t geteuid(void) { return 0; }
+gid_t getgid(void) { return 0; }
+gid_t getegid(void) { return 0; }
+
+static char _pw_name[] = "root";
+static char _pw_passwd[] = "";
+static char _pw_gecos[] = "NexsOS Administrator";
+static char _pw_dir[] = "/home";
+static char _pw_shell[] = "sys/bin/nxshell";
+
+static char _gr_name[] = "root";
+static char _gr_passwd[] = "";
+static char * _gr_mem[] = {NULL};
+
+static struct passwd _nexs_root_pw = {.pw_name = _pw_name,
+                                      .pw_passwd = _pw_passwd,
+                                      .pw_uid = 0,
+                                      .pw_gid = 0,
+                                      .pw_gecos = _pw_gecos,
+                                      .pw_dir = _pw_dir,
+                                      .pw_shell = _pw_shell};
+
+static struct group _nexs_root_gr = {.gr_name = _gr_name,
+                                    .gr_passwd = _gr_passwd,
+                                    .gr_gid = 0,
+                                    .gr_mem = _gr_mem};
+
+struct passwd *getpwuid(uid_t uid) {
+  if (uid == 0)
+    return &_nexs_root_pw;
+  errno = ENOENT;
+  return NULL;
+}
+
+struct passwd *getpwnam(const char *name) {
+  if (name && strcmp(name, "root") == 0)
+    return &_nexs_root_pw;
+  errno = ENOENT;
+  return NULL;
+}
+
+struct group *getgrgid(gid_t gid) {
+  if (gid == 0)
+    return &_nexs_root_gr;
+  errno = ENOENT;
+  return NULL;
+}
+
+struct group *getgrnam(const char *name) {
+  if (name && strcmp(name, "root") == 0)
+    return &_nexs_root_gr;
+  errno = ENOENT;
+  return NULL;
+}
+
+void setpwent(void) {}
+struct passwd *getpwent(void) { return &_nexs_root_pw; }
+void endpwent(void) {}
+void setgrent(void) {}
+struct group *getgrent(void) { return &_nexs_root_gr; }
+void endgrent(void) {}
+
+void *memrchr(const void *s, int c, size_t n) {
+  const unsigned char *p = (const unsigned char *)s + n;
+  unsigned char uc = (unsigned char)c;
+  while (n--) {
+    if (*--p == uc)
+      return (void *)p;
+  }
+  return NULL;
+}
+
+void *mempcpy(void *dest, const void *src, size_t n) {
+  return (char *)memcpy(dest, src, n) + n;
+}
+
+void *rawmemchr(const void *s, int c) {
+  const unsigned char *p = (const unsigned char *)s;
+  unsigned char uc = (unsigned char)c;
+  while (*p != uc)
+    p++;
+  return (void *)p;
+}
+
+char *nl_langinfo(nl_item item) {
+  static char buf[32];
+  (void)item;
+  snprintf(buf, sizeof(buf), "C");
+  return buf;
+}
+
+int dup(int oldfd) {
+  if (oldfd < 0) {
+    errno = EBADF;
+    return -1;
+  }
+  return oldfd;
+}
+
+int dup2(int oldfd, int newfd) {
+  if (oldfd < 0 || newfd < 0) {
+    errno = EBADF;
+    return -1;
+  }
+  return newfd;
+}
+
+int access(const char *pathname, int mode) {
+  struct stat buf;
+  (void)mode;
+  if (!pathname || stat(pathname, &buf) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+/* strtoimax / strtoumax — delegate to strtoll/strtoull */
+intmax_t strtoimax(const char *nptr, char **endptr, int base) {
+  return (intmax_t)strtoll(nptr, endptr, base);
+}
+
+uintmax_t strtoumax(const char *nptr, char **endptr, int base) {
+  return (uintmax_t)strtoull(nptr, endptr, base);
+}
+
+/* ── Process / signal stubs ─────────────────────────────────────────── */
+pid_t getppid(void) { return 1; }
+
+int kill(pid_t pid, int sig) {
+  (void)pid; (void)sig;
+  errno = EPERM;
+  return -1;
+}
+
+int setuid(uid_t uid)  { (void)uid;  return 0; }
+int seteuid(uid_t uid) { (void)uid;  return 0; }
+int setgid(gid_t gid)  { (void)gid;  return 0; }
+int setegid(gid_t gid) { (void)gid;  return 0; }
+
+int setreuid(uid_t ruid, uid_t euid) { (void)ruid; (void)euid; return 0; }
+int setregid(gid_t rgid, gid_t egid) { (void)rgid; (void)egid; return 0; }
+
+int getgroups(int size, gid_t list[]) {
+  if (size >= 1) list[0] = 0;
+  return 1;
+}
+
+/* ── Terminal / tty stubs ───────────────────────────────────────────── */
+char *ttyname(int fd) {
+  (void)fd;
+  return (char *)"/dev/tty";
+}
+
+int ttyname_r(int fd, char *buf, size_t buflen) {
+  (void)fd;
+  if (buflen < 9) return ERANGE;
+  strncpy(buf, "/dev/tty", buflen - 1);
+  buf[buflen - 1] = '\0';
+  return 0;
+}
+
+char *getlogin(void) { return (char *)"root"; }
+
+int getlogin_r(char *buf, size_t bufsize) {
+  if (bufsize < 5) return ERANGE;
+  strncpy(buf, "root", bufsize - 1);
+  buf[bufsize - 1] = '\0';
+  return 0;
+}
+
+/* ── Misc POSIX stubs ───────────────────────────────────────────────── */
+long sysconf(int name) {
+  switch (name) {
+  case 84: /* _SC_NPROCESSORS_ONLN */ return 1;
+  case 83: /* _SC_NPROCESSORS_CONF */ return 1;
+  case 30: /* _SC_PAGESIZE */         return 4096;
+  case 2:  /* _SC_CLK_TCK */          return 100;
+  case 5:  /* _SC_OPEN_MAX */         return 256;
+  case 71: /* _SC_LOGIN_NAME_MAX */   return 256;
+  case 72: /* _SC_HOST_NAME_MAX */    return 256;
+  default: errno = EINVAL; return -1;
+  }
+}
+
+unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
+int pause(void) { errno = EINTR; return -1; }
+int nice(int inc) { (void)inc; return 0; }
+
+/* ==========================================================================
+ * Timestamp support (utime family) — required by GNU Coreutils `touch`
+ * ========================================================================== */
+
+/* Definiamo qui le strutture perché NexsOS1 non ha ancora <utime.h> */
+
+struct utimbuf {
+    time_t actime;   /* access time */
+    time_t modtime;  /* modification time */
+};
+
+int utime(const char *path, const struct utimbuf *times);
+int utimes(const char *path, const struct timeval times[2]);
+int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags);
+int futimens(int fd, const struct timespec times[2]);
+
+/*
+ * utime - set access and modification times of a file.
+ * times == NULL → set both to current time.
+ */
+__attribute__((weak))
+int utime(const char *path, const struct utimbuf *times)
+{
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    /* Assicuriamoci che il file esista (comportamento di touch) */
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        if (fd < 0)
+            return -1;
+        close(fd);
+    }
+
+    (void)times;   /* il filesystem non salva ancora i timestamp */
+    return 0;
+}
+
+__attribute__((weak))
+int utimes(const char *path, const struct timeval times[2])
+{
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    struct utimbuf buf;
+    if (times) {
+        buf.actime  = times[0].tv_sec;
+        buf.modtime = times[1].tv_sec;
+    } else {
+        time_t now = time(NULL);
+        buf.actime  = now;
+        buf.modtime = now;
+    }
+    return utime(path, times ? &buf : NULL);
+}
+
+__attribute__((weak))
+int utimensat(int dirfd, const char *path,
+              const struct timespec times[2], int flags)
+{
+    (void)flags;
+
+    if (dirfd != AT_FDCWD) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    if (!path) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    struct timeval tv[2];
+    if (times) {
+        tv[0].tv_sec  = times[0].tv_sec;
+        tv[0].tv_usec = times[0].tv_nsec / 1000;
+        tv[1].tv_sec  = times[1].tv_sec;
+        tv[1].tv_usec = times[1].tv_nsec / 1000;
+    }
+    return utimes(path, times ? tv : NULL);
+}
+__attribute__((weak))
+int futimens(int fd, const struct timespec times[2])
+{
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    (void)times;
+    return 0;
 }

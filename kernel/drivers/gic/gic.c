@@ -27,10 +27,24 @@
  *               via GICD_ITARGETSR = 0x01010101 in gic_init_dist().  No
  *               affinity hints, no round-robin — all device interrupts
  *               serialise on core 0; blocks SMP load distribution.
- *   DRV-GIC-02  (W2 BUG) gic_eoi() writes only the IRQ number to GICC_EOIR.
- *               For SGIs (irq < 16), GICv2 requires bits [12:10] to hold the
- *               source CPU ID; writing an IRQ number without those bits may
- *               leave the SGI active on the distributor.
+ *   DRV-GIC-02  RESOLVED (this pass): gic_eoi() used to write only the
+ *               10-bit INTID (irq & 0x3FF) to GICC_EOIR.  Per the GICv2
+ *               spec (GICC_IAR / GICC_EOIR), for SGIs bits [12:10] of
+ *               GICC_IAR carry the source CPU interface ID and "the value
+ *               written to GICC_EOIR must be the INTID from GICC_IAR" — ARM
+ *               explicitly recommends preserving the ENTIRE register value
+ *               read from GICC_IAR and writing it back unchanged.  Losing
+ *               those bits on the EOI write for an SGI (irq < 16) risks
+ *               leaving the interrupt Active for the wrong source PE on the
+ *               distributor.  gic_ack() now returns the raw 13-bit field
+ *               (INTID + CPUID, GIC_IAR_VALUE_MASK) instead of masking down
+ *               to the bare INTID, and gic_eoi() writes that value straight
+ *               back — exactly ARM's recommended pattern, and the same
+ *               approach used by FreeBSD's and Xen's GICv2 drivers.  Every
+ *               non-SGI interrupt (irq >= 16) has bits [12:10] == RES0 per
+ *               spec, so this is a pure win for SGIs and a no-op for
+ *               PPIs/SPIs — irq.c's `== 0`, `== IRQ_TIMER`, `== 1023`
+ *               comparisons remain correct unchanged (see gic_ack() below).
  */
 #include <drivers/gic.h>
 #include "gic_regs.h"
@@ -48,6 +62,17 @@
 /* MMIO access */
 #define GICD_REG(off) (*(volatile uint32_t *)phys_to_virt(GICD_BASE + (off)))
 #define GICC_REG(off) (*(volatile uint32_t *)phys_to_virt(GICC_BASE + (off)))
+
+/* GIC_IAR_INTID_MASK: bits [9:0] of GICC_IAR/GICC_EOIR — the 10-bit
+ * Interrupt ID.  1023 (all-ones) is the architectural spurious sentinel. */
+#define GIC_IAR_INTID_MASK 0x3FFU
+
+/* GIC_IAR_VALUE_MASK: bits [12:0] of GICC_IAR/GICC_EOIR — INTID (bits
+ * [9:0]) PLUS, for SGIs only, the source CPU interface ID (bits [12:10]).
+ * Bits [23:13] are RES0 per spec.  DRV-GIC-02 (resolved): gic_ack() returns
+ * this full field rather than the bare INTID so gic_eoi() can write the
+ * exact value ARM's GICv2 spec requires back to GICC_EOIR. */
+#define GIC_IAR_VALUE_MASK 0x1FFFU
 
 /* gic_num_irqs: total interrupt lines reported by GICD_TYPER, clamped to
  * GIC_MAX_IRQS.  Set once in gic_init_dist(); read-only thereafter. */
@@ -270,27 +295,46 @@ static void gic_send_ipi(void) {
 }
 
 /*
- * gic_ack - acknowledge the current interrupt and return its ID.
+ * gic_ack - acknowledge the current interrupt and return its raw IAR value.
  *
  * Reads GICC_IAR (Interrupt Acknowledge Register, CPU interface offset
  * GICC_IAR).  This read both signals the acknowledgement to the GIC and
- * returns a 10-bit interrupt ID in bits [9:0].  Value 1023 = spurious.
+ * returns, in bits [9:0], the 10-bit Interrupt ID (1023 = spurious/none),
+ * and, for SGIs only, the source CPU interface ID in bits [12:10] (RES0
+ * for every other interrupt class).
+ *
+ * FIX(DRV-GIC-02): returns the masked-but-otherwise-intact 13-bit field
+ * (GIC_IAR_VALUE_MASK), not just the bare INTID.  This is ARM's documented
+ * recommendation ("software preserves the entire register value read from
+ * this register, and writes that value back to GICC_EOIR"): the CPUID bits
+ * exist only in this one read and cannot be reconstructed later, so they
+ * must be threaded through to gic_eoi() now.  Every caller in this codebase
+ * (irq_handler() in irq.c) compares the return value against 0
+ * (IRQ_PANIC_HALT_SGI), IRQ_TIMER (27), and IRQ_SPURIOUS (1023) — none of
+ * which collide with a nonzero CPUID field, so widening the return value is
+ * transparent to every existing comparison; callers that need the bare
+ * INTID alone can mask with GIC_IAR_INTID_MASK.
  *
  * Must be called at the start of interrupt processing; the GIC transitions
  * the interrupt to the Active state upon IAR read.
  *
  * MMIO register read: GICC_IAR.
- * Returns: interrupt ID (0..1022) or 1023 (spurious/no interrupt).
+ * Returns: (CPUID<<10 | INTID) for an SGI, or the bare INTID (0..1022) for
+ *          any other interrupt class, or 1023 (spurious/no interrupt).
  *
  * Locking: per-CPU GICC register; no cross-CPU contention.
  * IRQ context: YES — must be called from IRQ handler.
  */
-static uint32_t gic_ack(void) { return GICC_REG(GICC_IAR) & 0x3FF; }
+static uint32_t gic_ack(void) { return GICC_REG(GICC_IAR) & GIC_IAR_VALUE_MASK; }
 
 /*
  * gic_eoi - signal End-Of-Interrupt to the GIC CPU interface.
  *
- * @irq: interrupt ID returned by gic_ack() for this interrupt.
+ * @irq: the value gic_ack() returned for this interrupt (INTID, or
+ *       CPUID<<10 | INTID for an SGI) — NOT a bare, re-masked INTID.  This
+ *       is the exact value irq_handler() (irq.c) receives from
+ *       chip->acknowledge() and passes straight to chip->end(), so no
+ *       intermediate code needs to know or care about the CPUID field.
  *
  * Writes @irq to GICC_EOIR (End Of Interrupt Register) to transition the
  * interrupt from Active to Inactive, allowing lower-priority interrupts to
@@ -298,10 +342,15 @@ static uint32_t gic_ack(void) { return GICC_REG(GICC_IAR) & 0x3FF; }
  *
  * MMIO register written: GICC_EOIR.
  *
- * NOTE(DRV-GIC-02): For SGIs (irq < 16) the GICv2 spec requires bits [12:10]
- * of GICC_EOIR to contain the source CPU ID (from GICC_IAR bits [12:10]).
- * Writing only the IRQ number (bits[9:0]) with bits[12:10]=0 may leave the
- * SGI active on the distributor for the wrong source CPU.
+ * FIX(DRV-GIC-02): writes @irq back verbatim (masked to the architectural
+ * field width, GIC_IAR_VALUE_MASK, as a defensive bound — see Power-of-Ten
+ * note below) instead of the bare 10-bit INTID.  For SGIs this preserves
+ * the source CPU interface ID in bits [12:10] that gic_ack() captured;
+ * "the value written to GICC_EOIR must be the INTID from GICC_IAR" per the
+ * GICv2 spec, and ARM explicitly recommends writing the *whole* IAR value
+ * back unchanged rather than reconstructing part of it.  For every non-SGI
+ * interrupt those bits are already 0 (RES0 for PPIs/SPIs), so this is a
+ * pure fix for SGIs and a verified no-op for everything else.
  *
  * Locking: per-CPU GICC register; no lock needed.
  * IRQ context: YES — must be called from the IRQ dispatch path.
@@ -309,7 +358,11 @@ static uint32_t gic_ack(void) { return GICC_REG(GICC_IAR) & 0x3FF; }
 static void gic_eoi(uint32_t irq) {
   volatile uint32_t *eoir_reg =
       (volatile uint32_t *)phys_to_virt(GICC_BASE + GICC_EOIR);
-  *eoir_reg = irq;
+  /* Defensive mask (Power-of-Ten rule 5): even though every caller in this
+   * tree passes through gic_ack()'s own return value unmodified, bound the
+   * write to the architectural field width so a hypothetical future caller
+   * cannot smuggle garbage into GICC_EOIR's RES0 bits. */
+  *eoir_reg = irq & GIC_IAR_VALUE_MASK;
 }
 
 /* gic_chip: irq_chip vtable for the ARM GICv2 on aarch64.

@@ -991,7 +991,8 @@ static void redraw(void) {
       fb_circle(cx, g_dots_y, DOT_DIA / 2, c);
     }
   }
-  compositor_render();
+  /* SCHED-STACK-ISO: init pumps the compositor via flush(); window_blit()
+   * (called from the main loop after redraw()) marks damage. */
 }
 
 /* ============================================================
@@ -1129,7 +1130,6 @@ static void reinit_window(int ww, int wh) {
   g_wh = wh;
   recompute_layout();
   populate_slots();
-  compositor_render();
 }
 
 int main(void) {

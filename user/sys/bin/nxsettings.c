@@ -1044,7 +1044,8 @@ static int main_gui(void) {
   for (;;) {
     redraw();
     window_blit(g_win, 0, 0, g_ww, g_wh, g_fb);
-    compositor_render();
+    /* SCHED-STACK-ISO: init pumps the compositor via flush(); blit marks
+     * damage — no nested compositor_render() here. */
 
     input_event_t ev;
     while (input_poll_event(&ev) == 1) {

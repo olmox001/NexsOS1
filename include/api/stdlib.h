@@ -11,9 +11,14 @@ void *malloc(size_t size);
 void free(void *ptr);
 void *realloc(void *ptr, size_t size);
 void *calloc(size_t nmemb, size_t size);
+void *reallocarray(void *ptr, size_t nmemb, size_t size);
+
 void exit(int status);
 void _Exit(int status);
+void _exit(int status);
+int atexit(void (*function)(void));
 void abort(void);
+
 long strtol(const char *nptr, char **endptr, int base);
 long long strtoll(const char *nptr, char **endptr, int base);
 int atoi(const char *nptr);
@@ -22,6 +27,11 @@ long long atoll(const char *nptr);
 int stat(const char *path, struct stat *buf);
 int mkdir(const char *path, mode_t mode);
 double atof(const char *nptr);
+double strtod(const char *nptr, char **endptr);
+float strtof(const char *nptr, char **endptr);
+long double strtold(const char *nptr, char **endptr);
+unsigned long strtoul(const char *nptr, char **endptr, int base);
+unsigned long long strtoull(const char *nptr, char **endptr, int base);
 int abs(int j);
 long labs(long j);
 /* Environment (Phase 17).  Backed by the KERNEL's per-process block, reached
@@ -30,6 +40,7 @@ long labs(long j);
  * layering and the one documented deviation (getenv's returned pointer is
  * valid for a bounded number of further getenv calls, not until setenv). */
 char *getenv(const char *name);
+char *canonicalize_file_name(const char *name);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
 int putenv(char *string);
@@ -47,5 +58,9 @@ int system(const char *command);
 int cmdline_split(char *s, char **argv, int max);
 void qsort(void *base, size_t nmemb, size_t size,
            int (*compar)(const void *, const void *));
+
+/* getloadavg - get system load average (stub).
+ * NexsOS1 does not track load average; this stub returns dummy zeros. */
+int getloadavg(double loadavg[], int nelem);
 
 #endif

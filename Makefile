@@ -16,11 +16,27 @@ endif
 
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
+# Build flavour for userland size control.
+#   make BUILD=debug   → full symbols, no strip (default)
+#   make BUILD=release → --gc-sections + strip
+BUILD ?= debug
+
+# Optional escape hatch for incomplete userland compatibility layers: when set,
+# the user-space compile rules drop -Werror without weakening the kernel build.
+# GNU make does not accept arbitrary --bypas-sec switches, so the supported form
+# is a variable assignment such as: make ARCH=aarch64 BYPASS_SEC=1 run
+BYPASS_SEC ?= 0
+BYPASS_USERLAND_ERRORS ?= $(BYPASS_SEC)
+ifneq ($(BYPASS_USERLAND_ERRORS),0)
+USER_CFLAGS += -Wno-error
+endif
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.5.4
+VERSION ?= V0.0.5.5
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
+
+
 
 # Normalize ARCH typos
 ifeq ($(findstring aarch64,$(ARCH)),aarch64)
@@ -101,6 +117,15 @@ BOOT_DIR   = $(ARCH_DIR)/boot
     
     CFLAGS_BOOT = $(COMMON_FLAGS) $(INCLUDE)
     QEMU = qemu-system-aarch64
+endif
+
+# Userland: enable per-function/data sections so the linker can GC unused
+# code from the whole-archive lib.o (USR-BLOAT-01/02).  Kernel keeps the
+# original COMMON_FLAGS (no gc needed there).
+USER_CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) \
+              -ffunction-sections -fdata-sections
+ifneq ($(BYPASS_USERLAND_ERRORS),0)
+USER_CFLAGS += -Wno-error
 endif
 
 CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE)
@@ -563,6 +588,47 @@ $(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_
 		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
 		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
+# ==============================================================================
+# Gnulib static library (libgnulib)
+# ==============================================================================
+include user/sys/lib/portability/gnulib/overlay.mk
+
+GNULIB_OBJ_DIR := $(BUILD_DIR)/gnulib
+GNULIB_OBJS := $(patsubst %.c,$(GNULIB_OBJ_DIR)/%.o,$(GNULIB_OVERLAY_SRCS))
+GNULIB_LIB  := $(BUILD_DIR)/libgnulib.a
+
+GNULIB_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
+                -Wno-error \
+                -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+                -fno-common -fstack-protector-strong -fno-pic -fno-pie \
+                -fno-omit-frame-pointer \
+                -Iinclude/abi \
+                -Iinclude/api \
+                $(GNULIB_OVERLAY_CPPFLAGS)
+
+$(GNULIB_OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(GNULIB_CFLAGS) -c $< -o $@
+
+# Special rule for glue.c to define _GNULIB_OS1_GLUE_IMPL before config header
+$(GNULIB_OBJ_DIR)/user/sys/lib/portability/gnulib/gnulib_os1_glue.o: user/sys/lib/portability/gnulib/gnulib_os1_glue.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(GNULIB_CFLAGS) -D_GNULIB_OS1_GLUE_IMPL -c $< -o $@
+
+$(GNULIB_LIB): $(GNULIB_OBJS)
+	@echo "  [AR]     $@"
+	@$(AR) rcs $@ $^
+
+libgnulib: $(GNULIB_LIB)
+.PHONY: libgnulib
+
+# ==============================================================================
+# Coreutils compatibility overlay
+# ==============================================================================
+include user/sys/lib/portability/coreutils/overlay.mk
+
+
+
 
 # System ELFs (placed in /sys/bin)
 SYS_ELFS = $(BUILD_DIR)/nxinit.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
@@ -587,30 +653,34 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/stress.elf \
            $(BUILD_DIR)/restest.elf \
            $(BUILD_DIR)/env.elf \
-		   $(BUILD_DIR)/kilo.elf
+           $(BUILD_DIR)/gnulibtest.elf \
+           $(BUILD_DIR)/coreutils_test.elf \
+           $(BUILD_DIR)/kilo.elf \
+           $(COREUTILS_ELFS)
 
 USER_ELFS = $(SYS_ELFS) $(BIN_ELFS)
+
 
 user: $(USER_ELFS)
 
 # User Compilations
 $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/bin/%.o: $(USER_DIR)/bin/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 # Explicit dependencies for each user ELF
 $(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -622,18 +692,24 @@ $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(U
 # objects (which satisfy the archive's malloc/os1_video_* undefineds).
 $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o: $(USER_DIR)/bin/sdltest.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/sdltest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o: $(USER_DIR)/bin/raptor.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/raptor.elf: $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o: $(USER_DIR)/bin/nxempire.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/nxempire.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+$(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(USER_CFLAGS) -Wno-error -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+$(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/coreutils_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -692,6 +768,15 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 # kilo is linked like every other user ELF (prereqs declared above, generic
 # linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
 
+# Userland link flags.
+# --gc-sections drops unused functions/data from the whole-linked lib.o
+# (the main source of the ~50-70 KB bloat measured in counter.elf).
+# In release builds we also strip symbols; debug keeps everything.
+USER_LINK_FLAGS ?= -Wl,--gc-sections
+ifeq ($(BUILD),release)
+USER_LINK_FLAGS += -Wl,-s
+endif
+
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
 	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
@@ -717,11 +802,13 @@ $(BUILD_DIR)/%.o: %.cpp
 -include $(DEPS)
 
 # Disk Generation
-rootfs: user libsdl2 liblua
+rootfs: user libsdl2 liblua libgnulib coreutils
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
+	@mkdir -p $(BUILD_DIR)/rootfs/tmp
+	@mkdir -p $(BUILD_DIR)/rootfs/var/tmp
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/background
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Pictures/icon/dark
@@ -771,6 +858,7 @@ rootfs: user libsdl2 liblua
 	@cp $(SDL2_LIB) $(BUILD_DIR)/rootfs/sys/lib/libSDL2.a
 	@cp $(LUA_LIB) $(BUILD_DIR)/rootfs/sys/lib/liblua.a
 	@cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/libos1lua.a
+	@cp $(GNULIB_LIB) $(BUILD_DIR)/rootfs/sys/lib/libgnulib.a
 	@rm -rf $(BUILD_DIR)/rootfs/sys/lib/include
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/SDL2
 	@cp -r $(SDL2_DIR)/include/. $(BUILD_DIR)/rootfs/sys/lib/include/SDL2/
@@ -786,7 +874,17 @@ rootfs: user libsdl2 liblua
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
+	@# Rinomina i file cu_* togliendo il prefisso (senza duplicare)
+	@for cu in $(COREUTILS_NAMES); do \
+		if [ -f $(BUILD_DIR)/rootfs/bin/cu_$$cu ]; then \
+			mv $(BUILD_DIR)/rootfs/bin/cu_$$cu $(BUILD_DIR)/rootfs/bin/$$cu; \
+		fi; \
+	done
+
+	@# Keep a system-level env mirror in /sys/bin for direct invocation and PATH
+	@# resolution, matching the default runtime PATH configured by nxinit.
 	@-cp $(BUILD_DIR)/rootfs/bin/env $(BUILD_DIR)/rootfs/sys/bin/env 2>/dev/null || true
+
 
 disk: $(MKDISK) kernel rootfs bootloader
 	@mkdir -p $(BUILD_DIR)

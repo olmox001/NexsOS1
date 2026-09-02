@@ -365,8 +365,8 @@ int vfs_read_file(const char *path, void *buf, uint32_t size,
 
 /*
  * vfs_write_allowed - THE single write-authority seam for every VFS
- * write-class entry point (S-ALIGN F6): SYS_FILE_WRITE, SYS_UNLINK, and
- * open-for-write/handle acquisition (SYS_OPEN → sys_handle_create OS1_NS_FS).
+ * write-class entry point (S-ALIGN F6): open-for-write and MUTATE-handle
+ * acquisition (SYS_OPEN → sys_handle_create OS1_NS_FS).
  * Policy lives only here so the entry points cannot drift:
  *   - mutating the filesystem needs CAP_FS_WRITE (USR-SEC-03 #79);
  *   - the binary trees /sys,/bin are immutable for non-machine callers
@@ -382,6 +382,17 @@ int vfs_write_allowed(const char *resolved_path) {
     return -EPERM;
   if (proc_is_machine(current_process))
     return 0; /* machine identity: full filesystem authority */
+
+  /* /tmp, /var/tmp: scratch space POSIX-style, world-writable (sticky-bit
+   * convention).  coreutils/gnulib assume it's writable by anyone
+   * (mktemp, mkstemp, sort/cp/mv temp files, etc.) — without this branch
+   * any command touching /tmp is blocked by the generic ACL further down. */
+  if (strncmp(resolved_path, "/tmp/", 5) == 0 ||
+      strcmp(resolved_path, "/tmp") == 0 ||
+      strncmp(resolved_path, "/var/tmp/", 9) == 0 ||
+      strcmp(resolved_path, "/var/tmp") == 0) {
+    return 0;
+  }
 
   /* Tree ACL (maintainer policy, 2026-07-23 — the LEVEL model's filesystem
    * half; the capability mask is the other half):

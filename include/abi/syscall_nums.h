@@ -115,8 +115,10 @@
 #define SYS_GETCWD             256
 #define SYS_NANOSLEEP          257  /* real blocking sleep (POSIX nanosleep); arg0 = nanoseconds */
 #define SYS_CLOCK_GETTIME      258  /* Tier 3 clock; arg0: 0=MONOTONIC ns, 1=process CPU ns; returns ns */
-#define SYS_UNLINK             259  /* remove a file/namespace node by path (VFS unlink) */
-#define SYS_MKDIR              260  /* create a directory by path (VFS create, VFS_TYPE_DIR) */
+/* 259/260 RETIRED by Programme R1b: namespace mutation is a control message
+ * on a MUTATE capability to the PARENT DIRECTORY (OBJ_CTL_MKDIR/UNLINK), never
+ * an ambient path syscall.  These numbers remain dead so stale binaries get
+ * -ENOSYS rather than invoking a different operation. */
 #define SYS_PIPE               261  /* create an anonymous byte pipe; arg0 = user int[2] (read,write fds) */
 #define SYS_PORT_SEND_CAPS     262  /* port send that TRANSFERS handles with the message (Mach rights-in-a-message):
                                      * lets a client delegate to a service found by NAME, with no pid involved */

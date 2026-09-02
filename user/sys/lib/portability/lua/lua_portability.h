@@ -20,8 +20,8 @@
  * between the two would silently desync the ABI Lua's time functions and
  * every other syscall wrapper agree on). Only struct tm/localtime/gmtime/
  * strftime/mktime below are genuinely new - time.h does not declare them. */
-#include <time.h>
 #include <math.h>
+#include <time.h>
 
 /* Provide sig_atomic_t before Lua's <signal.h> include path resolves.
  * NexsOS1's <signal.h> does not declare it, but Lua's lstate.h uses it

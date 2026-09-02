@@ -425,7 +425,8 @@ static int run_window(const char *path, os1_image_t *img) {
   for (;;) {
     draw_view(img);
     window_blit(win, 0, 0, g_ww, g_wh, g_fb);
-    compositor_render();
+    /* SCHED-STACK-ISO: init pumps the compositor via flush(); blit marks
+     * damage — no nested compositor_render() here. */
 
     input_event_t ev;
     while (input_poll_event(&ev) == 1) {
@@ -728,7 +729,8 @@ static int run_video(const char *path) {
 
       draw_video_toolbar(v);
       window_blit(win, 0, 0, g_ww, g_wh, g_fb);
-      compositor_render();
+      /* SCHED-STACK-ISO: init pumps the compositor via flush(); blit marks
+       * damage — no nested compositor_render() here. */
     }
 
     if (os1vid_has_ended(v)) {

@@ -4,160 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Locale implementation */
-char *setlocale(int category, const char *locale) {
-  (void)category;
-  (void)locale;
-  return "C";
-}
+#include <locale.h>
 
-struct lconv *localeconv(void) {
-  static struct lconv c_locale = {.decimal_point = ".",
-                                  .thousands_sep = "",
-                                  .grouping = "",
-                                  .int_curr_symbol = "",
-                                  .currency_symbol = "",
-                                  .mon_decimal_point = "",
-                                  .mon_thousands_sep = "",
-                                  .mon_grouping = "",
-                                  .positive_sign = "",
-                                  .negative_sign = "",
-                                  .int_frac_digits = 127,
-                                  .frac_digits = 127,
-                                  .p_cs_precedes = 127,
-                                  .p_sep_by_space = 127,
-                                  .n_cs_precedes = 127,
-                                  .n_sep_by_space = 127,
-                                  .p_sign_posn = 127,
-                                  .n_sign_posn = 127};
-  return &c_locale;
-}
-
-/* Time implementation */
-time_t time(time_t *t) {
-  time_t sec = (time_t)get_time();
-  if (t) {
-    *t = sec;
-  }
-  return sec;
-}
-
-struct tm *localtime(const time_t *timep) {
-  static struct tm result;
-  if (!timep)
-    return NULL;
-
-  time_t t = *timep;
-  result.tm_sec = t % 60;
-  t /= 60;
-  result.tm_min = t % 60;
-  t /= 60;
-  result.tm_hour = t % 24;
-  t /= 24;
-
-  /* Epoch started Jan 1 1970, which was Thursday (wday = 4) */
-  result.tm_wday = (t + 4) % 7;
-
-  int year = 1970;
-  while (1) {
-    int days_in_year = 365;
-    if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-      days_in_year = 366;
-    }
-    if (t < days_in_year)
-      break;
-    t -= days_in_year;
-    year++;
-  }
-  result.tm_year = year - 1900;
-  result.tm_yday = t;
-
-  int month_days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-    month_days[1] = 29;
-  }
-
-  int mon = 0;
-  while (t >= month_days[mon]) {
-    t -= month_days[mon];
-    mon++;
-  }
-  result.tm_mon = mon;
-  result.tm_mday = t + 1;
-  result.tm_isdst = 0;
-  return &result;
-}
-
-struct tm *gmtime(const time_t *timep) { return localtime(timep); }
-
-size_t strftime(char *s, size_t max, const char *format, const struct tm *tm) {
-  size_t written = 0;
-  const char *p = format;
-  while (*p && written < max - 1) {
-    if (*p == '%') {
-      p++;
-      if (!*p)
-        break;
-      int len = 0;
-      switch (*p) {
-      case 'Y':
-        len = snprintf(s + written, max - written, "%d", tm->tm_year + 1900);
-        break;
-      case 'm':
-        len = snprintf(s + written, max - written, "%02d", tm->tm_mon + 1);
-        break;
-      case 'd':
-        len = snprintf(s + written, max - written, "%02d", tm->tm_mday);
-        break;
-      case 'H':
-        len = snprintf(s + written, max - written, "%02d", tm->tm_hour);
-        break;
-      case 'M':
-        len = snprintf(s + written, max - written, "%02d", tm->tm_min);
-        break;
-      case 'S':
-        len = snprintf(s + written, max - written, "%02d", tm->tm_sec);
-        break;
-      default:
-        s[written++] = '%';
-        if (written < max - 1)
-          s[written++] = *p;
-        len = 0;
-        break;
-      }
-      if (len > 0) {
-        written += len;
-      }
-    } else {
-      s[written++] = *p;
-    }
-    p++;
-  }
-  s[written] = '\0';
-  return written;
-}
-
-time_t mktime(struct tm *tm) {
-  int year = tm->tm_year + 1900;
-  int mon = tm->tm_mon;
-  int mday = tm->tm_mday;
-
-  long days = 0;
-  for (int y = 1970; y < year; y++) {
-    days += ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)) ? 366 : 365;
-  }
-  int month_days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-    month_days[1] = 29;
-  }
-  for (int m = 0; m < mon; m++) {
-    days += month_days[m];
-  }
-  days += mday - 1;
-
-  return days * 86400 + tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec;
-}
-
+/* Time implementation lives in the canonical NexsOS1 libc layer.
+ * Lua must use that single ABI surface instead of redefining time(). */
 
 char *tmpnam(char *s) {
   static char static_buf[128];
@@ -176,7 +26,9 @@ clock_t clock(void) { return (clock_t)os1_cpu_ns(); }
 
 double difftime(time_t time1, time_t time0) { return (double)(time1 - time0); }
 
-int strcoll(const char *s1, const char *s2) { return strcmp(s1, s2); }
+/* strcoll is provided by the central NexsOS libc compatibility layer so that
+ * both Coreutils and Lua share the same ABI surface without duplicate symbol
+ * definitions at link time. */
 
 /*
  * os1_lua_readline - REPL line reader for nxlua (lua_portability.h's

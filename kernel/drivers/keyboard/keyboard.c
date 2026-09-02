@@ -456,9 +456,7 @@ void keyboard_poll(void) {
   struct virtio_input_event event;
 
   while (virtio_input_poll(&event)) {
-    if (event.type == EV_KEY) {
-      keyboard_process_key(event.code, event.value);
-    }
+    input_report(event.type, event.code, event.value);
   }
 }
 

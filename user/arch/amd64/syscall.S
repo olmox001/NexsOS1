@@ -323,18 +323,6 @@ _sys_chdir:
     syscall
     ret
 
-.global _sys_unlink
-_sys_unlink:
-    movq $SYS_UNLINK, %rax
-    syscall
-    ret
-
-.global _sys_mkdir
-_sys_mkdir:
-    movq $SYS_MKDIR, %rax
-    syscall
-    ret
-
 /* int _sys_pipe(int fds[2]) — fds in rdi */
 .global _sys_pipe
 _sys_pipe:

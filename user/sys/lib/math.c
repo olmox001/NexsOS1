@@ -67,6 +67,31 @@ static inline uint64_t __f64_abs_bits(double x) {
   return __f64_bits(x) & 0x7fffffffffffffffULL;
 }
 
+/* libgcc ABI helpers emitted by GCC for the AArch64 long-double conversion and
+ * comparison paths used by strtold(), seq(), and other GNU programs.  These
+ * are the minimal helpers needed for a freestanding -nostdlib userland without
+ * libgcc. */
+long double __extenddftf2(double x);
+long double __extendsftf2(float x);
+double __trunctfdf2(long double x);
+float __trunctfsf2(long double x);
+float __trunctftf2(long double x);
+long double __addtf3(long double a, long double b);
+long double __subtf3(long double a, long double b);
+long double __multf3(long double a, long double b);
+long double __divtf3(long double a, long double b);
+long double __netf2(long double a);
+int __gttf2(long double a, long double b);
+int __lttf2(long double a, long double b);
+int __getf2(long double a, long double b);
+int __letf2(long double a, long double b);
+int __eqtf2(long double a, long double b);
+unsigned long long __fixunstfdi(long double a);
+unsigned int __fixunstfsi(long double a);
+long double __floatsitf(int a);
+long double __floatunsitf(unsigned int a);
+long double __floatunditf(unsigned long long a);
+
 /* ============================================================================
  * Classification
  * ============================================================================
@@ -1138,6 +1163,36 @@ double atan2(double y, double x) {
 
 float strtof(const char *nptr, char **endptr) {
   return (float)strtod(nptr, endptr);
+}
+
+/* AArch64 long-double ABI helpers: the bare-metal userland links with
+ * -nostdlib and no libgcc, but GCC emits helper calls for the long-double
+ * comparison/conversion arithmetic that GNU code triggers.  Providing the
+ * minimal libgcc ABI here keeps the compatibility layer self-contained without
+ * pulling in a full runtime library. */
+long double __extenddftf2(double x) { return (long double)x; }
+long double __extendsftf2(float x) { return (long double)x; }
+double __trunctfdf2(long double x) { return (double)x; }
+float __trunctfsf2(long double x) { return (float)x; }
+float __trunctftf2(long double x) { return (float)x; }
+long double __addtf3(long double a, long double b) { return a + b; }
+long double __subtf3(long double a, long double b) { return a - b; }
+long double __multf3(long double a, long double b) { return a * b; }
+long double __divtf3(long double a, long double b) { return a / b; }
+long double __netf2(long double a) { return -a; }
+int __gttf2(long double a, long double b) { return a > b; }
+int __lttf2(long double a, long double b) { return a < b; }
+int __getf2(long double a, long double b) { return a >= b; }
+int __letf2(long double a, long double b) { return a <= b; }
+int __eqtf2(long double a, long double b) { return a == b; }
+unsigned long long __fixunstfdi(long double a) { return (unsigned long long)a; }
+unsigned int __fixunstfsi(long double a) { return (unsigned int)a; }
+long double __floatsitf(int a) { return (long double)a; }
+long double __floatunsitf(unsigned int a) { return (long double)a; }
+long double __floatunditf(unsigned long long a) { return (long double)a; }
+
+long double strtold(const char *nptr, char **endptr) {
+  return (long double)strtod(nptr, endptr);
 }
 
 double strtod(const char *nptr, char **endptr) {

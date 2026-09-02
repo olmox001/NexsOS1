@@ -65,9 +65,10 @@
 #define OS1_RIGHT_DUPLICATE (1u << 3) /* OS1low_handle_duplicate               */
 #define OS1_RIGHT_TRANSFER  (1u << 4) /* OS1low_cap_grant to another process   */
 #define OS1_RIGHT_DESTROY   (1u << 5) /* destroy the underlying object         */
+#define OS1_RIGHT_MUTATE    (1u << 7) /* mutate the namespace rooted at a DIR  */
 #define OS1_RIGHT_ALL                                                          \
   (OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_WAIT | OS1_RIGHT_DUPLICATE |   \
-   OS1_RIGHT_TRANSFER | OS1_RIGHT_DESTROY)
+   OS1_RIGHT_TRANSFER | OS1_RIGHT_DESTROY | OS1_RIGHT_MUTATE)
 /* OS1_RIGHT_CREATE — ACQUISITION-ONLY flag for handle_create(OS1_NS_FS): a
  * missing path is created as an empty FILE through the provider (ASTRA §6.8,
  * open(O_CREAT) → handle_create), gated by the same vfs_write_allowed seam as
@@ -104,7 +105,13 @@
                              * write(fd,...,0) CANNOT express, since that is a no-op.
                              * Non-empty lengths are composed in libc's ftruncate()
                              * (read the head back, rewrite it from offset 0) and never
-                             * reach the kernel; arg != 0 returns -EINVAL.            */
+                             * reach the kernel; arg != 0 returns -EINVAL.    */
+#define OBJ_CTL_MKDIR    12 /* DIR: create the one-component name at user pointer
+                             * `arg` (needs RIGHT_MUTATE).  The parent directory
+                             * capability names the namespace being changed.      */
+#define OBJ_CTL_UNLINK   13 /* DIR: remove the one-component name at user pointer
+                             * `arg` (needs RIGHT_MUTATE).  Recursive removal is
+                             * deliberately a userland composition.              */
 
 /* Namespaces for handle_create: how the `path` argument is interpreted. */
 #define OS1_NS_FS   1 /* path is a filesystem path → OBJ_TYPE_FILE            */

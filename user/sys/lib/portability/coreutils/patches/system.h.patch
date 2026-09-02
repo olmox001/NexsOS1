@@ -1,0 +1,17 @@
+--- a/user/bin/coreutils/src/system.h
++++ b/user/bin/coreutils/src/system.h
+@@
+-/* Return whether the buffer consists entirely of NULs.
+-   Based on memeqzero in CCAN by Rusty Russell under CC0 (Public domain).  */
+-
+-/* Forward declaration for memeq (implemented in Gnulib or glue layer) */
+-int memeq(const void *a, const void *b, size_t n);
++/* NexsOS1 compatibility overlay:
++   keep this declaration in the portability layer instead of editing the
++   upstream Coreutils source tree.
++
++   int memeq(const void *a, const void *b, size_t n);
++ */
++
++/* The actual declaration is provided by the portability layer compatibility
++   headers and the Gnulib glue layer, not by user/bin/coreutils/src/system.h. */
