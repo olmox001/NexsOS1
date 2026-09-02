@@ -3,9 +3,12 @@
  * Userland C runtime and system call wrapper library
  *
  * This file is the sole C runtime for all userland processes.  It is
- * compiled into lib.o and linked WHOLE (no archive, no --gc-sections) into
- * every ELF (there is no shared library mechanism) — see USR-BLOAT-01/02
- * below for why that specific fact matters. It provides:
+ * compiled into lib.o and linked WHOLE (single object, not an archive) into
+ * every ELF (there is no shared library mechanism); USER_CFLAGS builds it
+ * with -ffunction-sections -fdata-sections and the ELF link step applies
+ * -Wl,--gc-sections (see USR-BLOAT-01/02 below), so "linked whole" no
+ * longer means "every function pays rent in every ELF" the way it did when
+ * this file was first audited. It provides:
  *
  *   - Thin C wrappers around every _sys_*() assembly stub from syscall.S.
  *   - Standard I/O emulation (fopen/fclose/fread/fwrite/fseek/ftell) backed
@@ -54,28 +57,21 @@
  * instead of being silently left out — see USR-BLOAT-01/02 and
  * USR-LIB-01 immediately below for the two structural ones.
  *
- * STB libraries (NOTE USR-BLOAT-01/02 — VERIFIED STILL OPEN, 2026-09,
- * cross-checked against the top-level Makefile in the provided source
- * bundle):
- *   STB_IMAGE_IMPLEMENTATION is compiled unconditionally into lib.o, and
- *   lib.o is linked as a single whole object (USER_LIB_O in the top-level
- *   Makefile) into every user-space ELF (all "*.elf" targets built from
- *   user/) with no -ffunction-sections/
- *   -fdata-sections, no -Wl,--gc-sections, and no strip step — confirmed by
- *   counter.c's own header, which measures counter.elf at ~503KB with ~52KB
- *   of unused stb_image/stb_easy_font code and ~70% DWARF debug data.
- *   DEVIATION(R3/perf): this is NOT fixable from inside lib.c — GCC already
- *   places each function in its own section under -ffunction-sections, so no
- *   source change here helps until the link step actually asks for
- *   --gc-sections and a strip pass. The concrete fix is a build-system
- *   change (documented separately for review, since it touches the shared
- *   top-level Makefile, not lib.c): add -ffunction-sections -fdata-sections
- *   to USER_CFLAGS, add -Wl,--gc-sections (and a BUILD=release
- *   `strip -s`/`-Wl,-s` step, keeping unstripped for BUILD=debug) to the ELF
- *   link rules. Text rendering itself no longer needs stb_easy_font — it now
- *   uses the OS1 packed bitmap font path — so once gc-sections works,
- *   non-image-loading binaries drop both libraries automatically with no
- *   further lib.c change.
+ * STB libraries (NOTE USR-BLOAT-01/02 — FIXED at the build-system layer,
+ * VERIFIED 2026-09 against the Makefile actually in use, not the version
+ * this comment previously cross-checked): USER_CFLAGS now carries
+ * -ffunction-sections -fdata-sections, and USER_LINK_FLAGS carries
+ * -Wl,--gc-sections unconditionally (plus -Wl,-s for `BUILD=release`,
+ * `BUILD ?= debug` keeping full symbols by default) — exactly the change
+ * this comment used to propose as a separate, unapplied patch. lib.o still
+ * compiles STB_IMAGE_IMPLEMENTATION unconditionally and is still linked as
+ * one whole object, but with per-function/per-data sections and the linker
+ * actually asked to drop unreferenced ones, an ELF that never calls
+ * graphics_load_image no longer pays for stb_image's code — the mechanism
+ * this comment previously said was necessary AND sufficient is now both. No
+ * further lib.c change closes this; re-measuring counter.elf's size after a
+ * `BUILD=release` rebuild is the way to confirm it, not a code review of
+ * this file.
  *
  * Kernel source inclusion (NOTE USR-LIB-01 — VERIFIED STILL OPEN):
  *   vsnprintf.c, math.c, string.c are sourced directly from kernel/lib/ via
@@ -138,8 +134,10 @@
  *                stay thin veneers on purpose; duplicating the check in
  *                userland cannot add real security since userland is not
  *                the trust boundary.
- *   USR-BLOAT-01 OPEN (see above).
- *   USR-BLOAT-02 OPEN (see above).
+ *   USR-BLOAT-01 FIXED at the build-system layer (see above) — verified
+ *                against the Makefile now in use, not proposed.
+ *   USR-BLOAT-02 FIXED, same Makefile change (-Wl,-s under `BUILD=release`)
+ *                — see above.
  */
 #include "portability/os1_video_platform.h"
 #include <ctype.h>
@@ -179,6 +177,10 @@
 #pragma GCC diagnostic ignored "-Wimplicit-function-declaration"
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #pragma GCC diagnostic ignored "-Wmissing-braces"
+/* ==========================================================================
+ * MODULE 6 — Graphics: image/video decoders and drawing primitives
+ * (R1-R10 applied to this module; see the file header's compliance policy)
+ * ========================================================================== */
 /*
  * STB_IMAGE_IMPLEMENTATION: embed the full stb_image decoder.
  * STBI_NO_STDIO/LINEAR/HDR disable file-I/O and HDR format support that
@@ -186,7 +188,14 @@
  * STBI_NO_THREAD_LOCALS/STBI_NO_FAILURE_STRINGS are required by OS1 userland:
  * there is no initialized TLS block behind TPIDR_EL0, so stb's __thread failure
  * state would fault in ordinary decoder error paths.
- * NOTE(USR-BLOAT-01): Adds ~50KB of .text to every ELF regardless of use.
+ * VERIFIED FIX (was NOTE(USR-BLOAT-01) "adds ~50KB of .text to every ELF
+ * regardless of use"): still compiled unconditionally here, but the
+ * Makefile now builds this file with -ffunction-sections/-fdata-sections
+ * and links every user ELF with -Wl,--gc-sections (see the file header),
+ * so an ELF that never calls graphics_load_image no longer carries this
+ * decoder's code — the 50KB was a property of the OLD link step, not of
+ * compiling this header in, and does not need this header split into its
+ * own translation unit to go away.
  */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
@@ -200,7 +209,10 @@
 
 /*
  * OS1VID_IMPLEMENTATION: istanzia qui, una sola volta per l'intero link
- * (stesso pattern di STB_IMAGE_IMPLEMENTATION sopra), il compat layer video
+ * (stesso pattern di STB_IMAGE_IMPLEMENTATION sopra — vale anche qui la
+ * stessa nota USR-BLOAT-01/02 "FIXED at the build-system layer": con
+ * -ffunction-sections/--gc-sections un ELF che non usa mai il video player
+ * non si porta dietro pl_mpeg), il compat layer video
  * (include/api/os1vid.h) che include a sua volta include/api/pl_mpeg.h
  * (upstream MIT, NON modificato:
  * https://raw.githubusercontent.com/phoboslab/pl_mpeg/master/pl_mpeg.h).
@@ -1242,20 +1254,33 @@ long lseek(int fd, long offset, int whence) {
   return errno_ret(_sys_lseek(fd, offset, whence));
 }
 
-/* --- Formatting & Printing ---
- * All formatting functions delegate to vsnprintf() from kernel/lib/vsnprintf.c
- * (included above).  Output goes to fd 1 (the shell/window TTY) via write().
+/* ==========================================================================
+ * MODULE 5 — Formatting: the printf family
+ * (R1-R10 applied to this module; see the file header's compliance policy)
  *
- * printf: uses a 256-byte stack buffer; output longer than 255 chars is
- * silently truncated by vsnprintf.
+ * All formatting functions delegate to vsnprintf() from kernel/lib/
+ * vsnprintf.c (included above; USR-LIB-01, still open — see the file
+ * header — kept out of scope for this file). Output goes to fd 1 (the
+ * shell/window TTY) via write() unless directed elsewhere (printf_win,
+ * fprintf/vfprintf's `stream`).
  *
- * printf_win: like printf but writes to a specific compositor window by id
- * via window_write() (the dedicated SYS_WINDOW_WRITE, #123) — no longer the
- * fd>=100 overload on write().
+ * printf/printf_win/vfprintf: each uses a fixed stack buffer (256/512/1024
+ * bytes respectively) as the FAST path — the overwhelming majority of calls
+ * fit it, so R3 (no heap traffic after start-up) holds for normal use.
+ * VERIFIED FIX: this comment used to say output past the buffer was
+ * "silently truncated" — that was true of the code at the time, and is no
+ * longer true: all three now reformat into an exactly-sized heap buffer
+ * (the same two-pass technique vasprintf() below already used) instead of
+ * cutting the output, so the R3 exception is scoped to the rare case that
+ * needs it, not a standing correctness bug.
  *
  * vsprintf/sprintf: pass 65536 as the size limit — effectively unbounded.
  * Callers are responsible for providing a large enough destination buffer;
- * overflow is not detected.
+ * overflow is not detected. This matches the real, historically-unsafe
+ * POSIX sprintf() contract (same reason %s without a width is unbounded in
+ * vsscanf() further below) rather than being a bug specific to this file —
+ * kept as documented behaviour, not "fixed" into a different contract that
+ * real sprintf() callers wouldn't expect.
  *
  * print_hex: renders a 64-bit value as 18-char "0xHHHHHHHHHHHHHHHH" string
  * written directly via write(), bypassing the format engine.
@@ -1269,7 +1294,39 @@ int printf(const char *fmt, ...) {
   va_start(args, fmt);
   int res = vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  write(1, buf, strlen(buf));
+  if (res < 0)
+    return res;
+  if ((size_t)res < sizeof(buf)) {
+    /* Fast path: the overwhelming majority of printf() calls in this tree
+     * format well under 256 chars, so this is the ONLY path most callers
+     * ever take — zero heap traffic, matching R3. */
+    write(1, buf, (size_t)res);
+    return res;
+  }
+  /* R7/correctness: `res` is the length the format WOULD need — vsnprintf
+   * already silently truncated `buf` to fit. Previously this function wrote
+   * exactly that truncated buffer and called it done, silently dropping
+   * everything past byte 255. Reformat once more into a buffer sized
+   * exactly for the real output, the same two-pass technique vasprintf()
+   * above already uses for the same reason, so a long printf() behaves like
+   * every other printf() in this file instead of a special case. */
+  char *big = malloc((size_t)res + 1U);
+  if (!big) {
+    /* Out of memory: better a truncated line than a silently swallowed one
+     * — this only degrades to today's old behaviour, it never regresses. */
+    write(1, buf, strlen(buf));
+    return res;
+  }
+  va_start(args, fmt);
+  int n2 = vsnprintf(big, (size_t)res + 1U, fmt, args);
+  va_end(args);
+  /* R5: reformatting the SAME fmt/args twice must produce the SAME length;
+   * if it doesn't, `args` had a side effect between the two passes (e.g. a
+   * %n or a volatile read), which is caller misuse this assertion surfaces
+   * instead of writing a mismatched byte count. */
+  nx_assert(n2 == res);
+  write(1, big, (size_t)(n2 > 0 ? n2 : 0));
+  free(big);
   return res;
 }
 void window_write(int win_id, const char *buf, unsigned long count) {
@@ -1283,9 +1340,28 @@ void printf_win(int win_id, const char *fmt, ...) {
   char buf[512];
   va_list args;
   va_start(args, fmt);
-  vsnprintf(buf, sizeof(buf), fmt, args);
+  int res = vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  _sys_window_write(win_id, buf, strlen(buf));
+  if (res < 0)
+    return;
+  if ((size_t)res < sizeof(buf)) {
+    _sys_window_write(win_id, buf, (size_t)res);
+    return;
+  }
+  /* R7: same truncation fix as printf() above, same rationale — a window
+   * that prints one long wrapped paragraph used to lose everything past
+   * byte 511 with no indication anything was cut. */
+  char *big = malloc((size_t)res + 1U);
+  if (!big) {
+    _sys_window_write(win_id, buf, strlen(buf));
+    return;
+  }
+  va_start(args, fmt);
+  int n2 = vsnprintf(big, (size_t)res + 1U, fmt, args);
+  va_end(args);
+  nx_assert(n2 == res); /* R5: see printf()'s identical assertion */
+  _sys_window_write(win_id, big, (size_t)(n2 > 0 ? n2 : 0));
+  free(big);
 }
 int sprintf(char *out, const char *fmt, ...) {
   va_list args;
@@ -1479,9 +1555,21 @@ int notify(const char *title, const char *msg) {
 /* --- Doom/LibC Compatibility ---
  * FILE emulation: a FILE* is a heap-allocated struct (defined in os1.h) that
  * records the file path, current byte position, error/eof flags, and cached
- * size.  All I/O is synchronous and unbuffered; every fread/fwrite call maps
- * directly to a file_read/file_write syscall with the current offset.
- */
+ * size. VERIFIED against the code below, replacing a stale claim this
+ * comment used to make ("all I/O is synchronous and unbuffered, every
+ * fread/fwrite maps directly to a syscall"): a path-backed FILE keeps a
+ * REAL fd open for its lifetime (see fopen below) and both directions are
+ * buffered — fread through fp->rbuf (FILE_RBUF_SIZE) and fwrite through
+ * fp->wbuf (FILE_WBUF_SIZE) — specifically because ext4 does a whole-block
+ * read-modify-write per partial access, so unbuffered byte-at-a-time I/O
+ * (as this comment used to describe) was the actual cause of the
+ * multi-minute doom savegame load/save this file's other comments
+ * reference. Only CONSOLE/pipe streams (no backing path) stay unbuffered,
+ * because interactive output must appear immediately.
+ * ==========================================================================
+ * MODULE 4 — Buffered stdio (fopen/fread/fwrite/fseek/fflush/fgets/...)
+ * (R1-R10 applied to this module; see the file header's compliance policy)
+ * ========================================================================== */
 
 /*
  * fopen - open a file for buffered I/O emulation.
@@ -1687,6 +1775,18 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
     return 0;
   if (size == 0 || nmemb == 0)
     return 0;
+  /* R5/defensive: `size * nmemb` is the classic stdio overflow — a caller
+   * computing size/nmemb from untrusted input (e.g. a file header field)
+   * can wrap size_t and turn a huge request into a tiny allocation-sized
+   * one, an under-read that LOOKS like success. Reject it instead of
+   * silently wrapping; every real caller in this tree passes compile-time
+   * constants for one of the two factors, so this never fires in practice
+   * today, only against a future untrusted-size caller. */
+  if (size > SIZE_MAX / nmemb) {
+    fp->error = 1;
+    errno = EOVERFLOW;
+    return 0;
+  }
 
   /* Read-after-write consistency: persist any buffered writes before reading
    * so an interleaved read at this position sees them on disk. */
@@ -1748,6 +1848,11 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
       size_t avail = (size_t)(fp->rcount - fp->rhead);
       size_t want = bytes - read_bytes;
       size_t take = avail < want ? avail : want;
+      /* R5/R2: proves this loop's bound to the reader instead of leaving it
+       * implicit — `take` is always > 0 here (avail > 0 by the refill check
+       * above, want > 0 by the while condition), so read_bytes strictly
+       * increases every iteration and the loop cannot spin forever. */
+      nx_assert(take > 0 && read_bytes + take <= bytes);
       memcpy(buf + read_bytes, fp->rbuf + fp->rhead, take);
       fp->rhead += (int)take;
       fp->pos += (int)take;
@@ -1773,6 +1878,11 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
     return 0;
   if (size == 0 || nmemb == 0)
     return 0;
+  if (size > SIZE_MAX / nmemb) { /* R5/defensive: see fread()'s rationale */
+    fp->error = 1;
+    errno = EOVERFLOW;
+    return 0;
+  }
 
   /* Write-after-read consistency, the mirror of the flush fread() does before
    * reading.  The cached read window may cover the bytes about to change, and
@@ -1818,6 +1928,10 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
     size_t chunk = bytes - done;
     if (chunk > (size_t)room)
       chunk = (size_t)room;
+    /* R5/R2: same loop-termination proof as fread() above — room > 0 always
+     * holds here (the flush above guarantees it), so chunk > 0 and done
+     * strictly advances toward bytes every iteration. */
+    nx_assert(chunk > 0 && done + chunk <= bytes);
     memcpy(fp->wbuf + fp->wcount, src + done, chunk);
     fp->wcount += (int)chunk;
     fp->pos += (int)chunk;
@@ -1986,7 +2100,19 @@ int input_poll_event(input_event_t *event) {
   return 0;
 }
 
-/* --- Graphics Library ---
+/* ==========================================================================
+ * MODULE 6 cont'd — Graphics: compositor drawing primitives
+ *
+ * graphics_draw_rect/blit/draw_text/text_width are thin veneers over
+ * window_draw()/window_blit(), which are themselves thin veneers over
+ * OS1_window_draw()/OS1_window_blit() — real syscalls. No local NULL/bounds
+ * check is added on the buffer/dimension arguments here, on purpose and for
+ * the SAME reason send()/kill_process() (MODULE 2) and OS1_registry_*
+ * (MODULE 3) stay thin: the kernel validates every user pointer it's handed
+ * via arch/mm/uaccess.c before touching it, so a duplicate check here
+ * couldn't add safety, only give a second place for the two checks to
+ * disagree.
+ * -------------------------------------------------------------------------
  * High-level drawing wrappers that delegate to the compositor syscalls.
  */
 
@@ -2064,13 +2190,14 @@ int graphics_text_width(const char *text) {
  * caller never sees encoded bytes or decoder-owned storage, which keeps image
  * rendering an inert pixel operation suitable for the stdimage base API.
  */
-uint32_t *graphics_load_image(const char *path, int *w, int *h) {
-  if (!path || !w || !h)
-    return NULL;
 
-  *w = 0;
-  *h = 0;
-
+/* nx_image_read_file - read `path` whole into a malloc'd, size-capped, 16
+ * bytes-past-the-end-zeroed buffer (the padding stb_image's memory reader
+ * wants). R4: split out of graphics_load_image() so the read/decode/convert
+ * stages each fit the ~60-line guideline on their own instead of one ~90
+ * line function doing all three. Returns NULL and closes/frees everything
+ * it opened on any failure; *out_size is only valid on success. */
+static unsigned char *nx_image_read_file(const char *path, int *out_size) {
   long handle =
       OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
   if (handle < 0)
@@ -2078,36 +2205,60 @@ uint32_t *graphics_load_image(const char *path, int *w, int *h) {
 
   long stat_size = OS1_object_ctl((int)handle, OBJ_CTL_STAT, 0);
   if (stat_size <= 0 || (uint64_t)stat_size > OS1_IMAGE_MAX_FILE_BYTES) {
-    OS1low_handle_close((int)handle);
+    (void)OS1low_handle_close((int)handle); /* R7: nothing more to do with
+                                                a close failure on an
+                                                already-rejected file */
     return NULL;
   }
 
   int size = (int)stat_size;
   unsigned char *data = malloc((size_t)size + 16u);
   if (!data) {
-    OS1low_handle_close((int)handle);
+    (void)OS1low_handle_close((int)handle); /* R7: see rationale above */
     return NULL;
   }
 
   int total = 0;
+  /* R2: bounded by `size` (OS1_IMAGE_MAX_FILE_BYTES-capped above); each
+   * successful iteration strictly advances `total`, and a non-positive
+   * `got` breaks out immediately. */
   while (total < size) {
     long got = OS1_object_read((int)handle, data + total,
                                (unsigned long)(size - total));
     if (got <= 0) {
-      OS1low_handle_close((int)handle);
+      (void)OS1low_handle_close((int)handle); /* R7: read already failed;
+                                                   the close result changes
+                                                   nothing left to report */
       free(data);
       return NULL;
     }
+    nx_assert(total + got <= size); /* R5 */
     total += (int)got;
   }
-  OS1low_handle_close((int)handle);
+  (void)OS1low_handle_close((int)handle); /* R7: file is fully read; a close
+                                              failure here cannot undo that */
 
   if (total != size) {
     free(data);
     return NULL;
   }
-  for (int i = 0; i < 16; i++)
+  for (int i = 0; i < 16; i++) /* R2: fixed 16-byte pad, see function doc */
     data[size + i] = 0;
+  *out_size = size;
+  return data;
+}
+
+uint32_t *graphics_load_image(const char *path, int *w, int *h) {
+  if (!path || !w || !h)
+    return NULL;
+
+  *w = 0;
+  *h = 0;
+
+  int size = 0;
+  unsigned char *data = nx_image_read_file(path, &size);
+  if (!data)
+    return NULL;
 
   int iw = 0;
   int ih = 0;
@@ -2141,6 +2292,7 @@ uint32_t *graphics_load_image(const char *path, int *w, int *h) {
     return NULL;
   }
 
+  /* R2: bounded by `pixels`, itself capped above by OS1_IMAGE_MAX_PIXELS. */
   for (uint64_t i = 0; i < pixels; i++) {
     uint8_t r = rgba[i * 4u + 0u];
     uint8_t g = rgba[i * 4u + 1u];
@@ -2192,15 +2344,14 @@ long strtol(const char *nptr, char **endptr, int base) {
     p += 2;
 
   unsigned long val = 0;
-  while (1) {
-    int digit;
-    if (isdigit(*p))
-      digit = *p - '0';
-    else if (isalpha(*p))
-      digit = tolower(*p) - 'a' + 10;
-    else
-      break;
-
+  /* R1: rewritten from `while (1) { ...; else break; }` to a loop whose
+   * termination is visible in its own header instead of buried in an
+   * internal break — behaviourally identical, since isdigit('\0') and
+   * isalpha('\0') are both false, so the old loop already stopped at the
+   * NUL terminator; this just says so up front. */
+  while (*p && (isdigit((unsigned char)*p) || isalpha((unsigned char)*p))) {
+    int digit = isdigit((unsigned char)*p) ? *p - '0'
+                                            : tolower((unsigned char)*p) - 'a' + 10;
     if (digit >= base)
       break;
     val = val * base + digit;
@@ -2240,6 +2391,9 @@ int sscanf(const char *str, const char *format, ...) {
  * Missing specifiers: %f, %c, %ld, %u, %p, etc.  Callers using unsupported
  * format specifiers will silently skip the conversion.
  */
+/* ==========================================================================
+ * MODULE 5 cont'd — Formatting: the scanf family
+ * ========================================================================== */
 int vsscanf(const char *inp, const char *fmt0, va_list ap) {
   int nassigned = 0;
   const unsigned char *fmt = (const unsigned char *)fmt0;
@@ -2296,6 +2450,13 @@ int vsscanf(const char *inp, const char *fmt0, va_list ap) {
       while (isspace(*p_inp))
         p_inp++;
       char *res = va_arg(ap, char *);
+      /* R2/documented hazard, NOT a bug specific to this file: a bare `%s`
+       * (width == 0, i.e. unspecified) has NO destination bound to check
+       * against here — this is the real POSIX scanf("%s", ...) contract
+       * (as unsafe as gets() without an explicit width, by the C standard's
+       * own design, same reason noted for sprintf() above), so `%Ns` is the
+       * caller's actual safety mechanism, not something this function can
+       * retrofit without silently changing what %s means. */
       while (*p_inp && !isspace(*p_inp)) {
         *res++ = *p_inp++;
         if (width > 0 && --width == 0)
@@ -2311,10 +2472,6 @@ int vsscanf(const char *inp, const char *fmt0, va_list ap) {
   return nassigned;
 }
 
-/* NOTE(USR-LIB-04): system/getenv are still no-op stubs; atof truncates
- * decimal fractions by delegating to atoi() and casting, so "3.14" -> 3.0.
- * mkdir is no longer a stub — it composes over a parent directory capability.
- */
 /* mkdir - create a directory through its parent directory capability. The
  * POSIX mode argument is accepted but not yet applied (the ext4 driver fixes
  * new directories at 0755); returns 0 on success, -1 on error (path exists,
@@ -2912,14 +3069,33 @@ int fstatfs(int fd, struct statfs *buf)
  * path/position instead of unconditionally landing on fd 1 (fixes
  * USR-LIB-05).
  *
- * Output is limited to 1023 chars by the stack buffer; longer output is
- * silently truncated by vsnprintf. Returns the formatted length (vsnprintf's
- * return value), not the byte count actually written.
+ * The stack buffer is the fast path (R3: no heap traffic for a normal-length
+ * line, which is nearly every call); output past it is reformatted into an
+ * exactly-sized heap buffer instead of being silently cut — same two-pass
+ * technique as printf() and vasprintf() above. This used to be a documented,
+ * live limitation ("longer output is silently truncated"); it no longer is.
  */
 int vfprintf(FILE *stream, const char *format, va_list ap) {
   char buf[1024];
-  int n = vsnprintf(buf, sizeof(buf), format, ap);
-  fwrite(buf, 1, strlen(buf), stream);
+  va_list ap2;
+  va_copy(ap2, ap); /* `ap` is a caller-owned va_list, not ours to consume */
+  int n = vsnprintf(buf, sizeof(buf), format, ap2);
+  va_end(ap2);
+  if (n < 0)
+    return n;
+  if ((size_t)n < sizeof(buf)) {
+    fwrite(buf, 1, (size_t)n, stream);
+    return n;
+  }
+  char *big = malloc((size_t)n + 1U);
+  if (!big) {
+    fwrite(buf, 1, strlen(buf), stream);
+    return n;
+  }
+  int n2 = vsnprintf(big, (size_t)n + 1U, format, ap);
+  nx_assert(n2 == n); /* R5: see printf()'s identical assertion */
+  fwrite(big, 1, (size_t)(n2 > 0 ? n2 : 0), stream);
+  free(big);
   return n;
 }
 
@@ -3758,9 +3934,15 @@ int fgetc(FILE *fp) {
 }
 
 char *fgets(char *s, int size, FILE *fp) {
-  if (size <= 0)
+  /* R7/defensive: fgetc() already turns a NULL fp into a clean EOF, but a
+   * NULL destination buffer would still fault on the first s[i++] write
+   * below — guard it explicitly rather than relying on that being
+   * "probably fine" because no caller in this tree does it today. */
+  if (!s || size <= 0)
     return NULL;
   int i = 0;
+  /* R2: bounded by `size - 1`, provably terminating — each iteration either
+   * consumes one byte toward that bound or returns/breaks on EOF/newline. */
   while (i < size - 1) {
     int c = fgetc(fp);
     if (c == EOF) {
@@ -3795,7 +3977,12 @@ int ungetc(int c, FILE *fp) {
 void rewind(FILE *fp) {
   if (!fp)
     return;
-  fseek(fp, 0, SEEK_SET);
+  /* R7: rewind() is `void` by its own POSIX contract, which additionally
+   * mandates clearing the error indicator UNCONDITIONALLY — not only on
+   * success — so fseek()'s return has nothing left for this function to do
+   * with it either way; the discard is the specified behaviour, not a
+   * missed check. */
+  (void)fseek(fp, 0, SEEK_SET);
   fp->error = 0;
 }
 
