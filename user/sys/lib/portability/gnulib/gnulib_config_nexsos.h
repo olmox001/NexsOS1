@@ -1,8 +1,3 @@
-/*
- * user/sys/lib/portability/gnulib/gnulib_config_nexsos.h
- * NexsOS1 Gnulib target configuration and portability definitions.
- */
-
 #ifndef _GNULIB_CONFIG_NEXSOS_H
 #define _GNULIB_CONFIG_NEXSOS_H
 
@@ -10,11 +5,22 @@
 #define _GNU_SOURCE 1
 #endif
 
+/* ============================================================
+ * IMPORTANTE: queste macro devono stare PRIMA degli include
+ * di sistema, altrimenti time.h definisce struct tm_zone.
+ * ============================================================ */
+#define HAVE_STRUCT_TM_ZONE     1
+#define HAVE_TIMEZONE_T         1
+#define HAVE_TZALLOC            1
+
+/* (eventualmente anche queste se le implementi davvero) */
+#define HAVE_LOCALTIME_RZ       1
+#define HAVE_MKTIME_Z           1
+
 #ifndef _NEXSOS_GETCWD_POSIX
 #define _NEXSOS_GETCWD_POSIX 1
 #endif
 
-/* C99+ supports flexible array members as the last field of a struct */
 #ifndef FLEXIBLE_ARRAY_MEMBER
 #define FLEXIBLE_ARRAY_MEMBER
 #endif
@@ -22,7 +28,7 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
+#include <stdlib.h>     /* ora time.h vedrà HAVE_STRUCT_TM_ZONE e non definirà la struct */
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -117,6 +123,7 @@ static inline char *getcwd(char *buf, size_t size) {
 #ifndef HAVE_MBRLEN
 #define HAVE_MBRLEN 1
 #endif
+
 
 #ifndef PROMOTED_MODE_T
 #define PROMOTED_MODE_T mode_t

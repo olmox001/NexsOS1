@@ -1,9 +1,9 @@
 #ifndef _KERNEL_SCHED_H
 #define _KERNEL_SCHED_H
 
-#include <kernel/nx_contract.h>
 #include <drivers/timer.h>
 #include <kernel/list.h>
+#include <kernel/nx_contract.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
 #include <stdint.h>
@@ -35,8 +35,8 @@ struct ipc_node {
  * to 3 (30ms): the old quantum let a CPU-bound task hog a core for 100ms before
  * an interactive task could preempt it (a real responsiveness tax).  ASID/PCID-
  * tagged switches (perf §3) made context switches cheap, so the finer quantum's
- * extra switches are nearly free — better interactivity at negligible throughput
- * cost. */
+ * extra switches are nearly free — better interactivity at negligible
+ * throughput cost. */
 #define DEFAULT_QUANTUM 3
 
 /* Wait Queue */
@@ -82,15 +82,15 @@ struct process {
   char name[PROCESS_NAME_MAX];
 
   /* Memory */
-  uint64_t *page_table;  /* Physical address of TTBR0_EL1 */
+  uint64_t *page_table; /* Physical address of TTBR0_EL1 */
   /* Address-space tag for TLB-tagged context switches (perf §3 / DIR-06 HAL).
    * Architecture-neutral name: the ISA layer maps it to its native tag — ASID
    * on aarch64 (TTBR0_EL1[63:48]), PCID on amd64 (CR3[11:0]).  Assigned in
-   * process_create() as (pool slot + 1), so it is unique among the <= MAX_PROCESSES
-   * live address spaces by construction (no generation/rollover needed); 0 is
-   * reserved for the kernel/idle address space.  The HAL uses it to switch
-   * address space WITHOUT a full TLB flush; teardown's arch_tlb_shootdown_all()
-   * clears the tag before its slot is recycled. */
+   * process_create() as (pool slot + 1), so it is unique among the <=
+   * MAX_PROCESSES live address spaces by construction (no generation/rollover
+   * needed); 0 is reserved for the kernel/idle address space.  The HAL uses it
+   * to switch address space WITHOUT a full TLB flush; teardown's
+   * arch_tlb_shootdown_all() clears the tag before its slot is recycled. */
   uint16_t asid;
   uint64_t kernel_stack; /* Kernel stack top */
   uint64_t heap_start;   /* Base address of user heap */
@@ -107,11 +107,12 @@ struct process {
   /* State, Priority and Permissions */
   int state;
   uint8_t first_run; /* 1 if never scheduled before (ELF context intact) */
-  uint8_t kill_pending; /* SCHED-UAF (Pitfall B): a kill of this PROC_CREATED
-                         * child was DEFERRED (it is mid-construction in
-                         * dispatch_spawn); process_finalize_spawn() releases it
-                         * instead of enqueuing, so the immediate-free path can
-                         * never pull the page table out from under the ELF load. */
+  uint8_t
+      kill_pending;  /* SCHED-UAF (Pitfall B): a kill of this PROC_CREATED
+                      * child was DEFERRED (it is mid-construction in
+                      * dispatch_spawn); process_finalize_spawn() releases it
+                      * instead of enqueuing, so the immediate-free path can
+                      * never pull the page table out from under the ELF load. */
   uint8_t reaping;   /* SCHED-UAF: set once when the process is queued for the
                       * deferred reaper (reap_push); a second push (prev==DEAD on
                       * one CPU racing a stale runqueue pick on another) is
@@ -130,8 +131,8 @@ struct process {
   int time_slice;    /* Ticks remaining */
   int quantum_reset; /* Reset value */
 
-  uint8_t level;  /* privilege level (PLVL_*) — see the capability model below */
-  uint32_t caps;  /* capability mask (CAP_*); machine level bypasses checks */
+  uint8_t level; /* privilege level (PLVL_*) — see the capability model below */
+  uint32_t caps; /* capability mask (CAP_*); machine level bypasses checks */
   /* ctty_win: controlling-terminal window (USR-TTY-01 #123).  Inherited from
    * the spawner at process_create: the launching shell's window.  A process
    * with NO window of its own (a POSIX-like CLI tool) writes stdout here, so
@@ -190,8 +191,8 @@ struct process {
   /* Tier 3 timed sleep (docs/TIMER-MODEL.md §4): a per-process software timer,
    * armed on the running core, wakes the process at the ABSOLUTE real-time
    * deadline wake_ns (mono_ns base). The wheel fires on a coarse jiffies edge;
-   * the fine wake condition is mono_ns() >= wake_ns, so the process wakes at the
-   * right wall-clock instant even if ticks were dropped. 0 = not sleeping.
+   * the fine wake condition is mono_ns() >= wake_ns, so the process wakes at
+   * the right wall-clock instant even if ticks were dropped. 0 = not sleeping.
    * cpu_time_counts: CPU time consumed by this process, accumulated in RAW
    * hardware-counter units across context switches (a cheap subtraction in the
    * scheduler hot path — no divide). Converted to ns only on read via
@@ -204,8 +205,8 @@ struct process {
    * calls within the current tick are counted in yield_count (for the tick
    * yield_jiffy). Beyond YIELD_SPIN_BUDGET the process is busy-spinning on
    * yield() rather than doing work and is put to sleep until the next tick via
-   * sleep_timer, so an unoptimised program cannot keep a core at 100% and freeze
-   * the system. */
+   * sleep_timer, so an unoptimised program cannot keep a core at 100% and
+   * freeze the system. */
   uint64_t yield_jiffy;
   uint32_t yield_count;
 
@@ -215,6 +216,7 @@ struct process {
       *ipc_msg; /* User-space pointer to message (for synchronous RECV) */
   struct list_head msg_queue; /* Buffered incoming messages */
   spinlock_t msg_lock;        /* Message queue protection */
+  int msg_count; /* SCHED-05: pending messages on msg_queue (flow control) */
 
   /* SMP state */
   int on_cpu; /* CPU ID running this process, -1 if none */
@@ -247,9 +249,10 @@ struct process {
 #define PROC_ZOMBIE 4
 #define PROC_DEAD 5
 #define PROC_READY 6
-#define PROC_STOPPED 7 /* suspended (Ctrl-Z/bg job): off the runqueue until a
-                        * process_cont() resumes it — modelled on PROC_SLEEPING
-                        * (Phase 2, job control). */
+#define PROC_STOPPED                                                           \
+  7 /* suspended (Ctrl-Z/bg job): off the runqueue until a                     \
+     * process_cont() resumes it — modelled on PROC_SLEEPING                 \
+     * (Phase 2, job control). */
 
 /* Process Priorities */
 #define PROC_PRIO_SYSTEM 0 /* Kernel-level service */
@@ -283,7 +286,8 @@ extern struct process *process_pool[MAX_PROCESSES];
  * single unprivileged process from exhausting it:
  *   MAX_PROCS_PER_PARENT  live-children quota for non-SYSTEM/ROOT creators;
  *   RESERVED_PROC_SLOTS   slots only SYSTEM/ROOT creators may dig into, so
- *                         kill/respawn recovery stays possible at saturation. */
+ *                         kill/respawn recovery stays possible at saturation.
+ */
 #define MAX_PROCS_PER_PARENT 32
 #define RESERVED_PROC_SLOTS 8
 
@@ -333,7 +337,8 @@ int process_kill_allowed(struct process *caller, int target_pid) NX_MUST_USE;
 int process_set_owner(int pid, int owner_pid) NX_MUST_USE;
 /* proc_get_lineage - spawning parent + LOGICAL owner of a pid (owner falls back
  * to parent when unset).  Lets userland follow inheritance across a service
- * spawn, where the mechanical parent is the service rather than the requester. */
+ * spawn, where the mechanical parent is the service rather than the requester.
+ */
 int proc_get_lineage(int pid, int *parent, int *owner) NX_MUST_USE;
 
 /* Per-process environment (Phase 17).  The AUTHORITY rule is deliberately the
@@ -369,7 +374,8 @@ void process_abort_spawn(struct process *p);
 /* process_kill_subtree - window-aware EXTERNAL kill: terminate root_pid + its
  * WINDOWLESS descendants, SPARE windowed descendants + their subtrees
  * (docs/PROCESS-KILL-MODEL.md).  Used by window_request_close, OBJ_CTL_KILL/
- * CLOSE and SYS_KILL of another process; self-exit/fault stay single-process. */
+ * CLOSE and SYS_KILL of another process; self-exit/fault stay single-process.
+ */
 void process_kill_subtree(int root_pid);
 /* process_wait - reap-poll a process. Returns pid (reaped), -1 (still alive),
  * or -2 (not found). If out_code != NULL and the process is reaped, *out_code
@@ -427,12 +433,12 @@ int sys_ipc_try_recv(int src_pid, void *msg_ptr) NX_MUST_USE;
 int kernel_ipc_send(int target_pid, struct ipc_message *msg) NX_MUST_USE;
 struct ipc_node *pop_message(struct process *proc, int src_pid);
 /* keyboard_focus_pid: scheduler-owned focus HINT (which PID keystrokes route to
- * and the schedule() focus boost favours). MUTATE ONLY via sched_set_focus_pid()
- * — the compositor and SYS_SET_FOCUS PUSH changes down to the scheduler
- * (GFX-COMP-01 #67); the compositor no longer writes this global directly. It is
- * a single int, so accesses are atomic and reads are lockless: it is a hint,
- * never load-bearing for correctness. Read via sched_get_focus_pid() (snapshot)
- * outside the compositor's own render path. */
+ * and the schedule() focus boost favours). MUTATE ONLY via
+ * sched_set_focus_pid() — the compositor and SYS_SET_FOCUS PUSH changes down to
+ * the scheduler (GFX-COMP-01 #67); the compositor no longer writes this global
+ * directly. It is a single int, so accesses are atomic and reads are lockless:
+ * it is a hint, never load-bearing for correctness. Read via
+ * sched_get_focus_pid() (snapshot) outside the compositor's own render path. */
 extern int keyboard_focus_pid;
 void sched_set_focus_pid(int pid);
 int sched_get_focus_pid(void) NX_MUST_USE;
@@ -441,13 +447,14 @@ int sched_get_focus_pid(void) NX_MUST_USE;
  * drive process lifecycle directly. */
 void window_request_close(int pid);
 long sys_getprocs(struct ps_info *user_buf, size_t max_count) NX_MUST_USE;
-/* Kernel-internal process introspection backing the OBJ_TYPE_PROCESS object read
- * (a process reports its state through the object mechanism, kernel/core/object.c).
- * proc_get_info: snapshot one pid into *out (0, or -1 if no such live proc).
- * proc_state_name: human-readable PROC_* state. */
+/* Kernel-internal process introspection backing the OBJ_TYPE_PROCESS object
+ * read (a process reports its state through the object mechanism,
+ * kernel/core/object.c). proc_get_info: snapshot one pid into *out (0, or -1 if
+ * no such live proc). proc_state_name: human-readable PROC_* state. */
 int proc_get_info(int pid, struct ps_info *out) NX_MUST_USE;
 const char *proc_state_name(int state);
-int proc_enum_pids(int *pids, int max) NX_MUST_USE; /* live pids -> 'pids' (cap 'max'); /proc listing */
+int proc_enum_pids(int *pids, int max)
+    NX_MUST_USE; /* live pids -> 'pids' (cap 'max'); /proc listing */
 /* OS1_sys_stats backend: one struct os1_sysstats snapshot to userland (perf
  * brief §1 instrumentation surface).  Forward-declared struct; the full layout
  * lives in include/api/sysstats.h. */

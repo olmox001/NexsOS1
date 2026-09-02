@@ -115,9 +115,7 @@ typedef struct {
 #define EOPNOTSUPP 95
 #define EOVERFLOW 75
 #define ENODATA 61
-
-
-
+#define ENOBUFS 105 /* No buffer space available (IPC queue full) */
 
 /* Success */
 #define EOK 0

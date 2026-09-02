@@ -13,11 +13,13 @@
 
 typedef long time_t;
 
+#ifndef HAVE_STRUCT_TM_ZONE
 struct tm_zone {
   struct tm_zone *next;
   char tz_is_set;
   char abbrs[];
 };
+#endif
 
 typedef struct tm_zone *timezone_t;
 
