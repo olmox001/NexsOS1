@@ -92,14 +92,6 @@ Below are live captures demonstrating window compositor features, overlap handli
  />
 </p>
 
-<p align="center">
-  <img width="90%" alt="TTY Shell and Desktop" src="https://github.com/user-attachments/assets/218a4ebf-b848-4f3f-9f4e-4d93a49cd307" />
-</p>
-
-<p align="center">
-  <img width="90%" alt="Compositor Window Stacking" src="https://github.com/user-attachments/assets/137020f5-9ca3-45a5-a330-ac891b4dc0e1" />
-</p>
-
 ---
 
 ## 🛠 Prerequisites & Toolchain Setup

@@ -4163,7 +4163,7 @@ int uname(struct utsname *buf) {
   strncpy(buf->release, "0.0.5.5", sizeof(buf->release) - 1);
   buf->release[sizeof(buf->release) - 1] = '\0';
 
-  strncpy(buf->version, "NexsOS1-V0.0.5.5", sizeof(buf->version) - 1);
+  strncpy(buf->version, "Proxima-V0.0.5.5", sizeof(buf->version) - 1);
   buf->version[sizeof(buf->version) - 1] = '\0';
 
 #if defined(ARCH_AMD64) || defined(__x86_64__)
