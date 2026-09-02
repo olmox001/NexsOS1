@@ -36,9 +36,9 @@
 	branch = nexsos-port
 [submodule "user/sys/lib/gnulib"]
 	path = user/sys/lib/gnulib
-	url = https://github.com/coreutils/gnulib.git
-	branch = nexsos-port
-
+	url = https://github.com/olmox001/gnulib
+	branch = master
 [submodule "user/bin/coreutils"]
 	path = user/bin/coreutils
-	url = https://github.com/coreutils/coreutils.git
+	url = https://github.com/olmox001/coreutils_NexsOS1
+	branch = nexsos-port
