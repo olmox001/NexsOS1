@@ -9,13 +9,13 @@
  * common handler and irq_dispatch(), not through this driver's own handler.
  *
  * Architecture:
- *   TX: uart_putc busy-waits on LSR.THRE (bit 5) before writing to THR.
- *       uart_puts adds an explicit '\r' before each '\n' (CR+LF expansion).
- *       No spinlock is used on the TX path — safe on single-core QEMU, but
- *       a data race on SMP.
+ *   TX: uart_putc / uart_puts acquire uart_lock (spinlock + IRQ save) and
+ *       busy-wait on LSR.THRE before writing to THR.  CR+LF expansion is
+ *       done inside the locked path for whole-string atomicity on SMP.
  *
  *   RX: uart_getc busy-waits on LSR.DR (bit 0); uart_getc_nonblock polls it
- *       once.  Neither function holds a lock; safe only on single-core.
+ *       once.  Neither function holds a lock; safe only on single-core for
+ *       concurrent readers (TX is independently locked).
  *
  * DLAB sequence (required to set baud divisor):
  *   1. Write 0x80 to LCR to set DLAB=1 (enables DLL/DLH at offsets 0/1).
@@ -27,25 +27,25 @@
  *   - uart_init() must be called once before any TX/RX operation.
  *   - I/O-port access via outb/inb requires no memory barrier on x86 because
  *     the processor serialises I/O instructions.
+ *   - All normal TX paths hold uart_lock; _uart_putc_unlocked is called only
+ *     while uart_lock is held.  uart_putc_emergency is the sole lock-free TX.
  *
- * Known issues:
- *   None from the 04-drivers-irq finding list apply specifically to this file;
- *   the absence of a lock on TX/RX is a latent SMP issue not tracked
- *   separately.
+ * FIX(SMP-UART-01): previously TX had no lock ("safe on single-core QEMU,
+ * a data race on SMP").  Under 4-core bring-up this produced character-level
+ * interleaving on the serial console (e.g. "INIT-SIPI-SSIPI", "L[C0]",
+ * Init/NXShell lines shredded).  Mirror the PL011 model: one global
+ * uart_lock, whole-message holds in uart_puts, per-char hold in uart_putc.
  */
-#include <kernel/types.h>
-#include <kernel/arch.h>
 #include <arch/amd64_internal.h>
 #include <drivers/uart.h>
+#include <kernel/arch.h>
 #include <kernel/io_poll.h>
+#include <kernel/spinlock.h>
+#include <kernel/types.h>
 
 /* COM1_PORT: I/O base address of the first serial port (COM1) on x86 PC. */
 #define COM1_PORT 0x3F8
 
-/* 16550 register offsets relative to COM1_PORT.
- * THR/RBR/DLL share offset 0; selection depends on DLAB bit in LCR and
- * whether the access is a read (RBR) or write (THR).  With DLAB=1 both
- * reads and writes at offset 0 access DLL. */
 /* Register offsets */
 #define UART_THR 0 /* Transmit Holding Register */
 #define UART_RBR 0 /* Receive Buffer Register */
@@ -57,25 +57,21 @@
 #define UART_DLL 0 /* Divisor Latch Low (when DLAB=1) */
 #define UART_DLH 1 /* Divisor Latch High (when DLAB=1) */
 
-/* LSR_DATA_READY: LSR bit 0 — set when the RX FIFO / holding register has
- *                 at least one character available to read.
- * LSR_THRE:       LSR bit 5 — set when the TX holding register is empty;
- *                 safe to write a new byte to THR. */
 /* LSR bits */
-#define LSR_DATA_READY  0x01
-#define LSR_THRE        0x20 /* Transmit Holding Register Empty */
+#define LSR_DATA_READY 0x01
+#define LSR_THRE 0x20 /* Transmit Holding Register Empty */
+
+/*
+ * uart_lock: spinlock protecting the TX path (THR writes).
+ * Held with IRQ save/restore so that a printk from an IRQ handler does not
+ * deadlock against a printk already in progress on the same CPU.
+ * Non-static: printk.c and the PL011 driver share the same symbol name and
+ * contract (one global TX lock for the console).
+ */
+DEFINE_SPINLOCK(uart_lock);
 
 /*
  * uart_init - initialise the 16550A UART at COM1 (0x3F8).
- *
- * Follows the standard DLAB-based initialisation sequence:
- *   1. IER = 0x00  — disable all UART interrupts while programming.
- *   2. LCR = 0x80  — set DLAB=1 to expose divisor latch registers.
- *   3. DLL = 0x01, DLH = 0x00 — divisor = 1 → 115200 baud at 1.8432 MHz.
- *   4. LCR = 0x03  — 8N1; clears DLAB so THR/RBR are accessible again.
- *   5. FCR = 0xC7  — enable FIFO, clear TX+RX FIFOs, 14-byte RX threshold.
- *   6. MCR = 0x0B  — DTR, RTS, OUT2 (required to enable IRQ delivery).
- *   7. IER = 0x01  — enable RX-data-available interrupt.
  *
  * Locking: none; called once from boot CPU before SMP.
  * IRQ context: NO.
@@ -97,77 +93,82 @@ void uart_init(void) {
   /* Enable FIFO, clear them, 14-byte threshold */
   outb(COM1_PORT + UART_FCR, 0xC7);
 
-  /* IRQs enabled, RTS/DSR set */
+  /* IRQs enabled, RTS/DSR set, OUT2 set (required for IRQ delivery) */
   outb(COM1_PORT + UART_MCR, 0x0B);
 
-  /* Enable receive data available interrupt */
+  /* Enable RX-data-available interrupt */
   outb(COM1_PORT + UART_IER, 0x01);
 }
 
 /*
- * uart_putc - transmit one character (polled, no lock).
+ * _uart_putc_unlocked - transmit one character; caller must hold uart_lock.
  *
- * @c: character to transmit.
- *
- * Busy-waits on LSR.THRE before writing to THR.  No CR+LF expansion here;
- * uart_puts() performs expansion instead.
- *
- * Locking: none (unsafe on SMP).
- * IRQ context: technically safe on single-core QEMU; SMP-unsafe.
+ * No CR+LF expansion here; uart_puts does that under the same lock so a
+ * whole string (including inserted CRs) is atomic on the wire.
  */
-void uart_putc(char c) {
-  /* Bounded: an absent/wedged UART must not hang printk — after the budget, drop
-   * the byte instead of spinning forever (io_poll.h). */
+static void _uart_putc_unlocked(char c) {
+  /* Bounded: an absent/wedged UART must not hang printk — after the budget,
+   * drop the byte instead of spinning forever (io_poll.h). */
   spin_until(inb(COM1_PORT + UART_LSR) & LSR_THRE, POLL_SPINS_DEFAULT);
   outb(COM1_PORT + UART_THR, (uint8_t)c);
 }
 
 /*
+ * uart_putc - transmit one character (lock-protected).
+ *
+ * Locking: acquires uart_lock (spinlock + IRQ save/restore).
+ * IRQ context: safe.
+ */
+void uart_putc(char c) {
+  uint64_t flags;
+  spin_lock_irqsave(&uart_lock, &flags);
+  _uart_putc_unlocked(c);
+  spin_unlock_irqrestore(&uart_lock, flags);
+}
+
+/*
  * uart_putc_emergency - fault-context TX (kernel/fault.h).
  *
- * On the 16550 the normal path is already lock-free port I/O (no page-table
- * walk, no spinlock), so the emergency path is the same; CR is inserted for
- * newlines because fault_printf bypasses uart_puts' expansion.
+ * Never takes uart_lock: usable from an exception handler even when the lock
+ * is held by a wedged CPU.  May interleave with concurrent normal output.
+ * Inserts CR before LF because fault_printf bypasses uart_puts expansion.
  */
 void uart_putc_emergency(char c) {
-  if (c == '\n')
-    uart_putc('\r');
-  uart_putc(c);
+  if (c == '\n') {
+    spin_until(inb(COM1_PORT + UART_LSR) & LSR_THRE, POLL_SPINS_DEFAULT);
+    outb(COM1_PORT + UART_THR, (uint8_t)'\r');
+  }
+  spin_until(inb(COM1_PORT + UART_LSR) & LSR_THRE, POLL_SPINS_DEFAULT);
+  outb(COM1_PORT + UART_THR, (uint8_t)c);
 }
 
 /*
  * uart_puts - transmit a NUL-terminated string with CR+LF expansion.
  *
- * @s: NUL-terminated string to transmit.
+ * Acquires uart_lock ONCE for the entire string so concurrent printk/puts
+ * from other CPUs cannot interleave characters mid-message (SMP-UART-01).
  *
- * Inserts '\r' before every '\n' so terminal emulators display correct line
- * breaks.  Each character is sent via uart_putc (polled).
- *
- * Locking: none (inherits no-lock from uart_putc).
- * IRQ context: same as uart_putc.
+ * Locking: acquires uart_lock (spinlock + IRQ save/restore).
+ * IRQ context: safe.
  */
 void uart_puts(const char *s) {
+  uint64_t flags;
+  spin_lock_irqsave(&uart_lock, &flags);
   while (*s) {
     if (*s == '\n')
-      uart_putc('\r');
-    uart_putc(*s++);
+      _uart_putc_unlocked('\r');
+    _uart_putc_unlocked(*s++);
   }
+  spin_unlock_irqrestore(&uart_lock, flags);
 }
 
 /*
  * uart_getc - receive one character (blocking, polled).
  *
- * Busy-waits on LSR.DR (bit 0) calling arch_idle() (HLT on x86) between
- * polls; reads and returns one byte from RBR once available.
- *
- * Returns: received character.
- *
  * Locking: none.
- * IRQ context: NO — calls arch_idle() (HLT); must not be called from an
- *              IRQ handler.
+ * IRQ context: NO — calls arch_idle() (HLT).
  */
 char uart_getc(void) {
-  /* Wait for data to be ready */
   while ((inb(COM1_PORT + UART_LSR) & LSR_DATA_READY) == 0) {
     arch_idle();
   }
@@ -176,11 +177,6 @@ char uart_getc(void) {
 
 /*
  * uart_getc_nonblock - receive one character without blocking.
- *
- * Checks LSR.DR once; if set reads and returns the byte from RBR, else
- * returns -1.
- *
- * Returns: received character cast to int, or -1 if no data available.
  *
  * Locking: none.
  * IRQ context: safe (no sleeping).
@@ -195,13 +191,8 @@ int uart_getc_nonblock(void) {
 /*
  * uart_puthex - transmit a 64-bit value in hexadecimal.
  *
- * @val: value to format and transmit.
- *
- * Formats @val as a fixed-width 16-digit hex string into a local stack
- * buffer and calls uart_puts().  Useful for early-boot diagnostics.
- *
- * Locking: none (via uart_puts).
- * IRQ context: same as uart_puts.
+ * Locking: via uart_puts (acquires uart_lock for each of the two calls;
+ *          early-boot only — acceptable).
  */
 void uart_puthex(uint64_t val) {
   static const char hex[] = "0123456789abcdef";
