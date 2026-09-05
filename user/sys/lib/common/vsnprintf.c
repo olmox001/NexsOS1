@@ -80,7 +80,7 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
             is_long = 1;
             fmt++;
             if (*fmt == 'l') { is_long = 2; fmt++; }
-        } else if (*fmt == 'z') {
+        } else if (*fmt == 'z' || *fmt == 'j' || *fmt == 't') {
             is_long = (sizeof(size_t) == 8) ? 2 : 1;
             fmt++;
         }

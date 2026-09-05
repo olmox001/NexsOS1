@@ -3,7 +3,9 @@
  * Real implementation connecting Gnulib abstractions to NexsOS1 syscalls and VFS.
  */
 
+#ifndef _GNULIB_OS1_GLUE_IMPL
 #define _GNULIB_OS1_GLUE_IMPL
+#endif
 #include "gnulib_os1_glue.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,50 +28,34 @@ int gnulib_os1_getdtablesize(void) {
     return NEXSOS_MAX_FD;
 }
 
-const char *gnulib_os1_getprogname(void) {
-    /* Se il buffer contiene ancora il default, prova a usare program_name
-       che gnulib ha impostato (es. "mkdir", "cat", "ls"). */
-    if (strcmp(g_progname_buf, "nexsos_app") == 0) {
-        if (program_name && program_name[0] != '\0')
-            return program_name;
+const char *getprogname(void) {
+    if (program_name && *program_name) {
+        return program_name;
     }
     return g_progname_buf;
 }
 
+void setprogname(const char *name) {
+    if (name && *name) {
+        strncpy(g_progname_buf, name, sizeof(g_progname_buf) - 1);
+        g_progname_buf[sizeof(g_progname_buf) - 1] = '\0';
+    }
+}
+
+const char *gnulib_os1_getprogname(void) {
+    return getprogname();
+}
+
 void gnulib_os1_setprogname(const char *name) {
-    if (!name || !*name)
-        return;
-    const char *p = strrchr(name, '/');
-    if (p)
-        name = p + 1;
-    strncpy(g_progname_buf, name, sizeof(g_progname_buf) - 1);
-    g_progname_buf[sizeof(g_progname_buf) - 1] = '\0';
+    setprogname(name);
 }
 
 ssize_t gnulib_os1_safe_read(int fd, void *buf, size_t count) {
-    if (fd < 0 || !buf) {
-        errno = EBADF;
-        return -1;
-    }
-    long ret = read(fd, (char *)buf, (unsigned long)count);
-    if (ret < 0) {
-        errno = (int)(-ret);
-        return -1;
-    }
-    return (ssize_t)ret;
+    return read(fd, (char *)buf, count);
 }
 
 ssize_t gnulib_os1_safe_write(int fd, const void *buf, size_t count) {
-    if (fd < 0 || !buf) {
-        errno = EBADF;
-        return -1;
-    }
-    long ret = write(fd, (const char *)buf, count);
-    if (ret < 0) {
-        errno = (int)(-ret);
-        return -1;
-    }
-    return (ssize_t)ret;
+    return write(fd, (const char *)buf, count);
 }
 
 void *gnulib_os1_rawmemchr(const void *s, int c) {
@@ -82,14 +68,14 @@ void *gnulib_os1_rawmemchr(const void *s, int c) {
 }
 
 void *gnulib_os1_memrchr(const void *s, int c, size_t n) {
-    if (n == 0 || !s)
-        return NULL;
-    const unsigned char *p = (const unsigned char *)s + n;
+    if (n == 0) return NULL;
+    const unsigned char *p = (const unsigned char *)s + n - 1;
     unsigned char uc = (unsigned char)c;
     while (n > 0) {
-        p--;
-        if (*p == uc)
+        if (*p == uc) {
             return (void *)p;
+        }
+        p--;
         n--;
     }
     return NULL;
@@ -104,10 +90,10 @@ void (*error_print_progname)(void) = NULL;
 
 void verror(int status, int errnum, const char *format, va_list args) {
     fflush(stdout);
+    const char *pname = getprogname();
     if (error_print_progname) {
         error_print_progname();
     } else {
-        const char *pname = getprogname();
         if (pname && *pname) {
             fprintf(stderr, "%s: ", pname);
         }
@@ -119,6 +105,13 @@ void verror(int status, int errnum, const char *format, va_list args) {
     fprintf(stderr, "\n");
     fflush(stderr);
     error_message_count++;
+
+    if (errnum) {
+        OS1_report_error(pname ? pname : "gnulib", errnum);
+    } else if (status) {
+        OS1_report_error(pname ? pname : "gnulib", EFAULT);
+    }
+
     if (status) {
         exit(status);
     }
@@ -134,10 +127,10 @@ void error(int status, int errnum, const char *format, ...) {
 void verror_at_line(int status, int errnum, const char *filename,
                     unsigned int linenumber, const char *format, va_list args) {
     fflush(stdout);
+    const char *pname = getprogname();
     if (error_print_progname) {
         error_print_progname();
     } else {
-        const char *pname = getprogname();
         if (pname && *pname) {
             fprintf(stderr, "%s:%s:%u: ", pname, filename ? filename : "", linenumber);
         } else {
@@ -151,6 +144,13 @@ void verror_at_line(int status, int errnum, const char *filename,
     fprintf(stderr, "\n");
     fflush(stderr);
     error_message_count++;
+
+    if (errnum) {
+        OS1_report_error(pname ? pname : "gnulib", errnum);
+    } else if (status) {
+        OS1_report_error(pname ? pname : "gnulib", EFAULT);
+    }
+
     if (status) {
         exit(status);
     }
@@ -166,14 +166,6 @@ void error_at_line(int status, int errnum, const char *filename,
 
 size_t __fpending(FILE *fp) {
     return fp ? (size_t)fp->wcount : 0;
-}
-
-const char *getprogname(void) {
-    return gnulib_os1_getprogname();
-}
-
-void setprogname(const char *name) {
-    gnulib_os1_setprogname(name);
 }
 
 /* memeq — external linkable version for when the static inline can't be used.

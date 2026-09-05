@@ -171,6 +171,8 @@
 #include <sys/statvfs.h>
 #include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <termios.h>
+#include <error.h>
+#include <uchar.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -641,10 +643,20 @@ void exit(int status) {
   fflush(stdout);
   fflush(stderr);
   OS1low_process_exit(status);
+  while (1)
+    ;
 }
 
-void _Exit(int status) { OS1low_process_exit(status); }
-void _exit(int status) { OS1low_process_exit(status); }
+void _Exit(int status) {
+  OS1low_process_exit(status);
+  while (1)
+    ;
+}
+void _exit(int status) {
+  OS1low_process_exit(status);
+  while (1)
+    ;
+}
 
 int spawn(const char *path) { return (int)OS1low_process_spawn(path, 0, 0); }
 int spawn_args(const char *path, int argc, char *const argv[]) {
@@ -1674,10 +1686,15 @@ FILE *fopen(const char *path, const char *mode) {
 }
 
 FILE *freopen(const char *filename, const char *mode, FILE *stream) {
-  if (stream) {
-    fclose(stream);
-  }
-  return fopen(filename, mode);
+  if (!stream)
+    return fopen(filename, mode);
+  fclose(stream);
+  FILE *new_fp = fopen(filename, mode);
+  if (!new_fp)
+    return NULL;
+  *stream = *new_fp;
+  free(new_fp);
+  return stream;
 }
 
 static int file_fd(FILE *fp);
@@ -3749,7 +3766,11 @@ unsigned long long strtoull(const char *nptr, char **endptr, int base) {
 long labs(long j) { return j < 0 ? -j : j; }
 
 
-void abort(void) { exit(1); }
+void abort(void) {
+  exit(1);
+  while (1)
+    ;
+}
 
 /* qsort: in-place insertion sort with byte-wise swaps (no temp buffer / VLA,
  * no recursion).  O(n^2) but adequate for the small arrays NEXS sorts. */
@@ -3910,6 +3931,8 @@ FILE *tmpfile(void) {
 }
 
 void perror(const char *s) {
+  if (errno != 0)
+    OS1_report_error(s && *s ? s : "libc", errno);
   if (s && *s)
     printf("%s: %s\n", s, strerror(errno));
   else
@@ -4288,6 +4311,27 @@ size_t c32rtomb(char *s, char32_t wc, mbstate_t *ps) {
   if (wc == 0) { s[0] = '\0'; return 1; }
   if (wc <= 0x7f) { s[0] = (char)wc; s[1] = '\0'; return 1; }
   s[0] = '?'; s[1] = '\0'; return 1;
+}
+
+size_t mbrtoc32(char32_t *pwc, const char *s, size_t n, mbstate_t *ps) {
+  (void)ps;
+  if (!s || n == 0)
+    return 0;
+  if (*s == '\0') {
+    if (pwc)
+      *pwc = 0;
+    return 0;
+  }
+  uint32_t code = 0;
+  int len = utf8_decode(s, n, &code);
+  if (len > 0) {
+    if (pwc)
+      *pwc = (char32_t)code;
+    return (size_t)len;
+  }
+  if (pwc)
+    *pwc = (unsigned char)*s;
+  return 1;
 }
 
 size_t wcslen(const wchar_t *s) {

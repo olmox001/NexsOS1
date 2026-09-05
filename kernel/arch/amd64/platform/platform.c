@@ -24,26 +24,36 @@
  *     but delivers the hvm_start_info pointer in %ebx with magic inside the
  *     struct's first field, not in a "magic register" value.  The code checks
  *     'mb_magic == PVH_MAGIC' expecting a saved register, but QEMU's PVH ABI
- *     sets mb_magic = the raw %eax (which is 0 or another value, not PVH_MAGIC).
- *     Result: the else branch fires and the 1 GB fallback is used.  [verified:
- *     serial shows "Magic: 0x0"]
- *   BOOT-02 (W4 BUG) Consequence of BOOT-01: hardcoded 1 GB RAM map at
- *     arch_platform_early_init:173-185.  The real RAM amount is ignored; '-m 4G'
- *     causes a crash downstream via DRV-VIRTIO-01.
- *   BOOT-03 (W2 REFINE) arch_cpu_wake_secondary sends INIT + one STARTUP IPI
- *     at :272-279.  Intel SDM recommends INIT + two SIPIs for reliability on
- *     real hardware.  QEMU accepts a single SIPI so no observed failure.
- *   BOOT-04 (W1 DOC/BAD-IMPL) 'secondary_ttbr0' and 'arch_vmm_set_secondary_pgd'
- *     at :224-228 use the AArch64 register name "ttbr0" for an x86 CR3 value —
- *     cross-architecture naming leak.
- *   ARCH-01 (W3 WRONG-DESIGN) amd64_count_cpus uses CPUID.01h EBX[23:16] which
- *     returns the max addressable APIC IDs (not online CPUs); on single-socket
- *     systems it may match, but on NUMA or hyperthreaded systems it over-counts.
- *     Should parse ACPI MADT for accurate online CPU discovery.
- *   ARCH-02 (W3 STUB) arch_pci_init is an empty stub at :222; amd64 has no
- *     ACPI table parsing; PCI enumeration relies solely on pci_enumerate/HAL.
- *   ARCH-03 (W2 STUB) timer_get_us returns jiffies*1000; 'jiffies' is a dummy
- *     counter incremented by the timer ISR and not a real microsecond source.
+ *     sets mb_magic = the raw %eax (which is 0 or another value, not
+ * PVH_MAGIC). Result: the else branch fires and the 1 GB fallback is used.
+ * [verified: serial shows "Magic: 0x0"] BOOT-02 (W4 BUG) Consequence of
+ * BOOT-01: hardcoded 1 GB RAM map at arch_platform_early_init:173-185.  The
+ * real RAM amount is ignored; '-m 4G' causes a crash downstream via
+ * DRV-VIRTIO-01. BOOT-03 RESOLVED (this pass, revised): a first attempt at the
+ * SDM's two-SIPI sequence caused a real regression — each AP ran its entire
+ *     GDT/IDT/LAPIC bring-up TWICE (observed in boot logs) because
+ *     trampoline.S was not reentrant and TRAMPOLINE_BASE is a single
+ *     shared scratch page reused serially for every AP; the system then
+ *     deadlocked on the first post-boot hardware IRQ.  That attempt was
+ *     reverted to a single SIPI.  The actual fix: trampoline.S now claims
+ *     a `lock btsw`-based re-entrancy guard (trampoline_busy) as its very
+ *     first instruction, before any state-mutating write, so a second
+ *     SIPI landing mid-flight spins instead of re-entering the 16->32->64
+ *     bit transition.  With the trampoline itself safe against re-entry,
+ *     arch_cpu_wake_secondary() now sends the SDM's real INIT + TWO
+ *     STARTUP IPIs sequence — see that function's header comment and
+ *     trampoline.S's file-header comment for the full analysis.
+ *   BOOT-04 (W1 DOC/BAD-IMPL) 'secondary_ttbr0' and
+ * 'arch_vmm_set_secondary_pgd' at :224-228 use the AArch64 register name
+ * "ttbr0" for an x86 CR3 value — cross-architecture naming leak. ARCH-01 (W3
+ * WRONG-DESIGN) amd64_count_cpus uses CPUID.01h EBX[23:16] which returns the
+ * max addressable APIC IDs (not online CPUs); on single-socket systems it may
+ * match, but on NUMA or hyperthreaded systems it over-counts. Should parse ACPI
+ * MADT for accurate online CPU discovery. ARCH-02 (W3 STUB) arch_pci_init is an
+ * empty stub at :222; amd64 has no ACPI table parsing; PCI enumeration relies
+ * solely on pci_enumerate/HAL. ARCH-03 (W2 STUB) timer_get_us returns
+ * jiffies*1000; 'jiffies' is a dummy counter incremented by the timer ISR and
+ * not a real microsecond source.
  */
 #include <arch/amd64/apic.h>
 #include <arch/amd64_internal.h>
@@ -51,6 +61,7 @@
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
 #include <kernel/hal.h>
+#include <kernel/memlayout.h>
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -66,7 +77,8 @@ extern void pit_init_hz(uint32_t hz);
 extern uint64_t mb_info_ptr;
 
 /*
- * struct hvm_start_info - Xen/PVH boot handoff structure (XEN_ELFNOTE_PHYS32_ENTRY).
+ * struct hvm_start_info - Xen/PVH boot handoff structure
+ * (XEN_ELFNOTE_PHYS32_ENTRY).
  *
  * On PVH boot, the firmware places a pointer to this struct in %ebx and stores
  * its identifying magic in hvm_start_info.magic (not in a CPU register).
@@ -129,9 +141,10 @@ struct mem_region *arch_platform_get_mem_regions(size_t *count) {
   return arch_mem_regions;
 }
 
-/* jiffies: wall-clock tick counter incremented by the timer ISR (kernel_timer_tick).
- * NOTE(ARCH-03): Not a real microsecond source; timer_get_us() multiplies this
- * by 1000 to produce a coarse millisecond-granularity pseudo-timestamp. */
+/* jiffies: wall-clock tick counter incremented by the timer ISR
+ * (kernel_timer_tick). NOTE(ARCH-03): Not a real microsecond source;
+ * timer_get_us() multiplies this by 1000 to produce a coarse
+ * millisecond-granularity pseudo-timestamp. */
 volatile uint64_t jiffies = 0;
 
 extern uint64_t mb_magic;
@@ -316,7 +329,8 @@ uint64_t timer_get_us(void) {
 extern uint32_t ticks_per_ms;
 void udelay(uint32_t us) {
   if (ticks_per_ms == 0) {
-    /* Fallback: rough delay via port 0x80 writes (~1µs each on legacy systems) */
+    /* Fallback: rough delay via port 0x80 writes (~1µs each on legacy systems)
+     */
     for (uint32_t i = 0; i < us * 10; i++) {
       outb(0x80, 0);
     }
@@ -351,19 +365,41 @@ void udelay(uint32_t us) {
 void arch_pci_init(void) { /* Minimal stub — NOTE(ARCH-02): no ACPI parsing */ }
 
 extern char __kernel_stack[];
-/* secondary_ttbr0: the kernel PML4 physical address written for AP trampoline use.
- * NOTE(BOOT-04): Named 'ttbr0' (an AArch64 register) for an x86 CR3 value —
- * cross-arch naming leak; should be 'secondary_cr3' or 'secondary_pgd_phys'. */
+/* secondary_ttbr0: the kernel PML4 physical address written for AP trampoline
+ * use. NOTE(BOOT-04): Named 'ttbr0' (an AArch64 register) for an x86 CR3 value
+ * — cross-arch naming leak; should be 'secondary_cr3' or 'secondary_pgd_phys'.
+ */
 uint64_t secondary_ttbr0 = 0;
 
 /*
- * arch_vmm_set_secondary_pgd - record the PML4 PA for AP trampoline use.
+ * REVERTED (was FIX(ARCH-AMD64-APPGD-01)): a prior change made this function
+ * also publish 'pgd' into kernel_pgd_phys, so the trampoline's 32-bit CR3
+ * patch (arch_cpu_wake_secondary, below) would load the LIVE kernel_pgd
+ * instead of boot_pml4.
  *
- * The trampoline reads trampoline_pml4 (patched in arch_cpu_wake_secondary)
- * directly; secondary_ttbr0 is a separate copy for callers that query the
- * current secondary PGD before waking the AP.
+ * That is unsafe: at the point the trampoline loads CR3 (trampoline_pm,
+ * still in 32-bit protected mode, before the long-mode jump), CR3 is a
+ * 32-BIT register — `mov eax, cr3` cannot express a physical address >=
+ * 4GB. kernel_pgd's own PML4 page is allocated dynamically via
+ * pmm_alloc_page() and can land anywhere in physical RAM; on any system
+ * with more than ~4GB installed (this target ships with 5GB, with a usable
+ * region at 0x100000000-0x180000000) there is no guarantee it stays below
+ * 4GB. If it doesn't, every AP's CR3 silently loses its high bits — not a
+ * type-width bug fixable in software, a hardware mode limitation.
  *
- * NOTE(BOOT-04): Cross-arch naming; 'secondary_ttbr0' is confusingly AArch64.
+ * It was also redundant: kernel/arch/amd64/cpu/cpu.c's arch_cpu_init()
+ * already adopts the live kernel_pgd safely, once each AP is executing
+ * 64-bit C code, via a proper 64-bit CR3 load (arch_vmm_set_pgd) — solving
+ * the ">4GB MMIO / full RAM map" gap this was trying to close, without the
+ * CR3-width hazard. This matches the documented design in mmu.c's own file
+ * header: "APs still boot on boot_pml4 and adopt kernel_pgd in
+ * arch_cpu_init."
+ *
+ * kernel_pgd_phys is therefore left untouched here — it keeps its
+ * statically-linked default (boot_pml4, see trampoline.S / start.S),
+ * which is guaranteed to be a low, sub-4GB physical page. Only
+ * secondary_ttbr0 (an informational copy, not read by the trampoline) is
+ * updated.
  */
 void arch_vmm_set_secondary_pgd(uint64_t pgd) { secondary_ttbr0 = pgd; }
 
@@ -376,7 +412,8 @@ void arch_vmm_set_secondary_pgd(uint64_t pgd) { secondary_ttbr0 = pgd; }
  *   &__kernel_stack[(N+1) * 131072]
  *
  * This address is passed to trampoline_stack in arch_cpu_wake_secondary and
- * will become the AP's RSP when it starts executing C code after the trampoline.
+ * will become the AP's RSP when it starts executing C code after the
+ * trampoline.
  *
  * Returns NULL if cpu_id >= MAX_CPUS.
  */
@@ -392,11 +429,12 @@ void *arch_get_kernel_stack(uint32_t cpu_id) {
 extern char trampoline_start[], trampoline_end[];
 extern uint32_t trampoline_pml4;
 extern uint64_t trampoline_stack, trampoline_entry;
+extern uint16_t trampoline_busy;
 extern uint64_t kernel_pgd_phys;
 extern void secondary_cpu_entry(void);
 
 /*
- * arch_cpu_wake_secondary - boot an AP from real mode via INIT-SIPI sequence.
+ * arch_cpu_wake_secondary - boot an AP from real mode via INIT-SIPI-SIPI.
  *
  * The AP starts executing in real mode at the 4KB-aligned physical address
  * given by the STARTUP IPI vector field (vector << 12 = 0x01 << 12 = 0x1000).
@@ -405,7 +443,9 @@ extern void secondary_cpu_entry(void);
  * Steps:
  *   1. Copy the trampoline blob (trampoline.S) to TRAMPOLINE_BASE (0x1000).
  *      The trampoline is position-independent; it references its own data
- *      using base-relative addressing (e.g. trampoline_pml4 - trampoline_start + 0x1000).
+ *      using base-relative addressing (e.g. trampoline_pml4 - trampoline_start
+ * + 0x1000). This copy ALSO resets trampoline_busy to 0 (its statically-linked
+ *      initial value) on every call — see FIX(BOOT-03) below.
  *   2. Patch the trampoline's PML4, stack, and entry-point fields at their
  *      relocated addresses inside the trampoline copy.
  *      - trampoline_pml4 (uint32_t): CR3 value for 64-bit mode.
@@ -413,17 +453,41 @@ extern void secondary_cpu_entry(void);
  *      - trampoline_entry (uint64_t): the C entry point (secondary_cpu_entry).
  *   3. Send INIT IPI (edge-triggered, assert, physical destination).
  *   4. Wait 10 ms (Intel SDM requirement between INIT and first STARTUP).
- *   5. Send STARTUP IPI with vector 0x01 (page 0x1000).
- *      NOTE(BOOT-03): SDM recommends two SIPIs (the second after 200µs) for
- *      robust bringup on real hardware.  Only one SIPI is sent here; QEMU
- *      accepts a single SIPI so no observed failure in emulation.
+ *   5. Send STARTUP IPI #1 with vector 0x01 (page 0x1000).
+ *   6. Wait 200 µs (Intel SDM requirement between the two STARTUP IPIs).
+ *   7. Send STARTUP IPI #2 (identical to #1).
+ *
+ * FIX(BOOT-03, revised): a first attempt at the SDM's two-SIPI sequence
+ *   caused a real regression — trampoline.S was not reentrant, and because
+ *   TRAMPOLINE_BASE is a SINGLE shared scratch page reused serially for
+ *   every AP, a second SIPI landing while the first pass was still
+ *   mid-flight through the 16->32->64-bit transition re-entered
+ *   trampoline_start with %cr3/%rsp/the temporary GDT still live,
+ *   corrupting bring-up state (observed: each AP running its entire
+ *   GDT/IDT/LAPIC init twice, then a deadlock on the first post-boot
+ *   hardware IRQ).  That attempt was reverted to a single SIPI.
+ *
+ *   This is the REAL fix, not a workaround: trampoline.S now claims a
+ *   re-entrancy guard (trampoline_busy, via `lock btsw`, atomic across
+ *   cores) as its very first instruction, before any state-mutating
+ *   write.  A second SIPI — whether a genuine duplicate to this AP, or,
+ *   in the shared-page design, a stray SIPI that reaches a DIFFERENT core
+ *   while this AP's pass is still in flight — finds the bit already set
+ *   and spins harmlessly instead of restarting the transition.  The flag
+ *   is cleared by step 1's memcpy on every call (trampoline_busy's
+ *   statically-linked value is 0), so each AP starts its own bring-up
+ *   with a clean guard without this function needing to touch the flag
+ *   directly.  See trampoline.S's file-header comment for the full
+ *   rationale.  With the trampoline itself now safe against re-entry, the
+ *   second SIPI is restored — this is the Intel SDM's actual recommended
+ *   sequence, not a partial version of it.
  *
  * Params:
  *   cpu_id - destination LAPIC ID.
  *   entry  - ignored (entry point is hard-coded to secondary_cpu_entry).
  *   stack  - top of the AP kernel stack (as returned by arch_get_kernel_stack).
  *
- * NOTE(CPU-TRAMP-01): The trampoline GDT (trampoline.S:76-81) has only 4
+ * NOTE(CPU-TRAMP-01): The trampoline GDT (trampoline.S) has only 4
  *   entries: null, 32-bit code, 32-bit data, 64-bit code.  After the far jump
  *   to 64-bit mode (ljmp $0x18), DS/ES/SS still hold 0x10 (the 32-bit data
  *   descriptor); no 64-bit data segment is present.  Some CPUs may enforce the
@@ -438,7 +502,10 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
     return -1;
 
   /* 1. Copy trampoline to TRAMPOLINE_BASE (physical address 0x1000).
-   * The low 1 MB is identity-mapped (RW) by arch_vmm_init_hw. */
+   * The low 1 MB is identity-mapped (RW) by arch_vmm_init_hw.  This also
+   * resets trampoline_busy to its statically-linked value (0) — see
+   * FIX(BOOT-03) above: every AP's bring-up starts with a freshly-cleared
+   * re-entrancy guard without this function touching the flag by hand. */
   uint8_t *dest = (uint8_t *)TRAMPOLINE_BASE;
   size_t size = trampoline_end - trampoline_start;
   memcpy(dest, trampoline_start, size);
@@ -456,25 +523,45 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
       (uint64_t *)(TRAMPOLINE_BASE + ((uintptr_t)&trampoline_entry -
                                       (uintptr_t)trampoline_start));
 
-  *p_pml4 = (uint32_t)kernel_pgd_phys;  /* CR3: kernel PML4 physical address */
-  *p_stack = (uint64_t)stack;            /* RSP: top of AP kernel stack */
+  *p_pml4 = (uint32_t)kernel_pgd_phys; /* CR3: kernel PML4 physical address */
+  *p_stack = (uint64_t)stack;          /* RSP: top of AP kernel stack */
   *p_entry = (uint64_t)secondary_cpu_entry; /* call target after long mode */
 
-  /* 3. Send INIT IPI: reset AP to 'wait-for-SIPI' state */
+  /* Ensure trampoline stores are visible before INIT/SIPI MMIO. */
+  __asm__ __volatile__("mfence" ::: "memory");
+
+  /* 3. INIT assert — put the AP into wait-for-SIPI.
+   * NOTE: do NOT send INIT Level-Deassert with ICR_PHYSICAL.  Per Intel SDM
+   * the deassert form requires destination shorthand All-Including-Self and
+   * is ignored/undefined with a per-CPU physical destination.  QEMU and
+   * modern xAPIC accept a single INIT assert; the deassert we tried earlier
+   * was a candidate for intermittent post-boot hangs. */
   lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL | ICR_PHYSICAL);
 
-  /* 4. Wait 10 ms (Intel SDM: 10ms between INIT and SIPI for spec compliance) */
+  /* 4. 10 ms between INIT and first STARTUP (Intel SDM). */
   udelay(10000);
 
-  /* 5. Send STARTUP IPI: vector 0x01 → AP starts at physical 0x1000.
-   * NOTE(BOOT-03): SDM recommends a second SIPI after 200µs; omitted here. */
+  /* 5. STARTUP IPI #1: vector 0x01 → AP starts at physical 0x1000. */
   lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
 
-  pr_info("AMD64: Sent INIT-SIPI to CPU %lu\n", cpu_id);
+  /* 6. 200 µs between the two STARTUP IPIs (Intel SDM minimum). */
+  udelay(200);
+
+  /* 7. STARTUP IPI #2 — SDM retry against a lost/coalesced first SIPI.
+   * Safe: trampoline_busy (trampoline.S) makes a second SIPI that lands
+   * mid-flight spin instead of re-entering the 16→32→64 transition. */
+  lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
+
+  /* 8. Settle so the AP can claim trampoline_busy before the next
+   * arch_cpu_wake_secondary() memcpy overwrites the shared page. */
+  udelay(200);
+
+  pr_info("AMD64: Sent INIT-SIPI-SIPI to CPU %lu\n", cpu_id);
   return 0;
 }
 
-/* arch_get_boot_info - return the physical address of the boot info structure. */
+/* arch_get_boot_info - return the physical address of the boot info structure.
+ */
 uint64_t arch_get_boot_info(void) { return (uint64_t)mb_info_ptr; }
 
 /*
@@ -499,17 +586,17 @@ static uint32_t amd64_count_cpus(void) {
 
   /* CPUID EAX=01h: EBX[23:16] = maximum addressable APIC IDs in package.
    * NOTE(ARCH-01): Over-counts on HT/NUMA; should use ACPI MADT instead. */
-  __asm__ volatile(
-      "movl $1, %%eax\n\t"
-      "cpuid\n\t"
-      : "=b"(ebx)
-      :
-      : "eax", "ecx", "edx"
-  );
+  __asm__ volatile("movl $1, %%eax\n\t"
+                   "cpuid\n\t"
+                   : "=b"(ebx)
+                   :
+                   : "eax", "ecx", "edx");
 
   cpu_count = (ebx >> 16) & 0xFF;
-  if (cpu_count == 0) cpu_count = 1;
-  if (cpu_count > MAX_CPUS) cpu_count = MAX_CPUS;
+  if (cpu_count == 0)
+    cpu_count = 1;
+  if (cpu_count > MAX_CPUS)
+    cpu_count = MAX_CPUS;
 
   pr_info("AMD64: CPUID reports %u logical processors\n", cpu_count);
   return cpu_count;
@@ -534,7 +621,8 @@ extern void secondary_cpu_entry(void);
  *
  * NOTE(ARCH-01): cpu_count from amd64_count_cpus may over-count; APs that
  * don't exist simply time out and emit a warning.
- * NOTE(BOOT-03): arch_cpu_wake_secondary sends only one SIPI; see BOOT-03.
+ * NOTE(BOOT-03): arch_cpu_wake_secondary sends INIT assert +
+ * two SIPIs; trampoline_busy guards re-entry (see trampoline.S).
  */
 void arch_smp_init(void) {
   uint32_t bsp_id = (uint32_t)hal_cpu_id();
@@ -543,9 +631,18 @@ void arch_smp_init(void) {
   /* Determine the number of CPUs to probe (like fdt_count_cpus() on aarch64).
    * NOTE(ARCH-01): CPUID-based; may over-count on HT/NUMA systems. */
   uint32_t cpu_count = amd64_count_cpus();
-  if (cpu_count > MAX_CPUS) cpu_count = MAX_CPUS;
+  if (cpu_count > MAX_CPUS)
+    cpu_count = MAX_CPUS;
 
-  pr_info("AMD64: Starting SMP initialization for %u potential cores\n", cpu_count);
+  pr_info("AMD64: Starting SMP initialization for %u potential cores\n",
+          cpu_count);
+
+  /* NOTE: no pre-publish of kernel_pgd into the trampoline here (reverted
+   * APPGD-01 — see arch_vmm_set_secondary_pgd()'s header comment above).
+   * The trampoline keeps loading kernel_pgd_phys's statically-linked
+   * default (boot_pml4, a guaranteed sub-4GB physical page); each AP
+   * safely adopts the live kernel_pgd itself, in 64-bit mode, at the end
+   * of arch_cpu_init() (kernel/arch/amd64/cpu/cpu.c). */
 
   /* Iterate only up to detected CPU count */
   for (uint32_t i = 1; i < cpu_count; i++) {
@@ -560,7 +657,8 @@ void arch_smp_init(void) {
     /* Shared bring-up primitive (S-ALIGN F8, B6 slice): idle-task-first
      * (#169/#170), the INIT-SIPI wake and the ack handshake all live in
      * kernel/core/smp.c — the ordering fix is reasoned about ONCE, not once
-     * per arch.  NOTE(BOOT-03): single SIPI only. */
+     * per arch.  NOTE(BOOT-03): INIT assert + two SIPIs; trampoline_busy guards
+     * re-entry. */
     if (smp_bringup_secondary(i, secondary_cpu_entry, stack_top) == 0) {
       pr_info("AMD64: CPU %u is online\n", i);
     } else {

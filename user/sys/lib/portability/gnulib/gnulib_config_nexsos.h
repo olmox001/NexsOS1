@@ -197,10 +197,6 @@ static inline char *getcwd(char *buf, size_t size) {
 #include <wchar.h>
 #include <string.h>
 
-#ifndef mbrtoc32
-#define mbrtoc32(pwc, s, n, ps) mbrtowc((wchar_t *)(pwc), s, n, ps)
-#endif
-
 /* memeq — gnulib uses this throughout; provided both as inline and extern */
 #ifndef GNULIB_defined_memeq
 #ifndef _GNULIB_OS1_GLUE_IMPL
@@ -241,6 +237,7 @@ static inline int streq(const char *s1, const char *s2) {
 /* mbszero — zero-initialize mbstate */
 #ifndef mbszero
 #define mbszero(ps) memset((ps), 0, sizeof(mbstate_t))
+#define GNULIB_defined_mbszero 1
 #endif
 
 
@@ -535,7 +532,11 @@ typedef ptrdiff_t idx_t;
 #endif
 
 #ifndef _GL_ARG_NONNULL
-#define _GL_ARG_NONNULL(params) _GL_ATTRIBUTE_NONNULL(params)
+#if __GNUC__ >= 3
+#define _GL_ARG_NONNULL(params) __attribute__((__nonnull__ params))
+#else
+#define _GL_ARG_NONNULL(params)
+#endif
 #endif
 
 #ifndef _GL_ATTRIBUTE_FORMAT

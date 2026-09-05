@@ -654,7 +654,8 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/restest.elf \
            $(BUILD_DIR)/env.elf \
            $(BUILD_DIR)/gnulibtest.elf \
-           $(BUILD_DIR)/coreutils_test.elf \
+           $(BUILD_DIR)/coreutils_test.elf $(BUILD_DIR)/coreutilstest.elf \
+           $(BUILD_DIR)/luatest.elf \
            $(BUILD_DIR)/kilo.elf \
            $(COREUTILS_ELFS)
 
@@ -710,6 +711,18 @@ $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@$(CC) $(USER_CFLAGS) -Wno-error -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/coreutils_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/coreutilstest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+$(BUILD_DIR)/$(USER_DIR)/bin/luatest.o: $(USER_DIR)/bin/luatest.c $(LUA_PORT_HDR)
+	@mkdir -p $(dir $@)
+	@$(CC) $(USER_CFLAGS) -I$(LUA_DIR) -I$(USER_LIB_DIR)/portability/lua -include lua_portability.h -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/luatest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+	@echo "  [LD]     $@"
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
+		$< \
+		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
+		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)

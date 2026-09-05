@@ -25,7 +25,9 @@
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
+#ifndef OS1_NO_COLLIDING_MACROS
 #define STACK_SIZE       131072
+#endif
 #define MAX_PROCESSES    64
 
 /* --- Data Structures --- */
@@ -47,7 +49,7 @@ extern long _sys_read(int fd, char *buf, unsigned long count);
 extern long _sys_write(int fd, const char *buf, size_t count);
 extern long _sys_get_time(void);
 extern int  _sys_get_pid(void);
-extern void _sys_exit(int status);
+extern void _sys_exit(int status) __attribute__((__noreturn__));
 /* arg3 = spawn-mode flags (SPAWN_FLAG_*, caps.h) — nxexec model #193. */
 extern int  _sys_spawn(const char *path, int argc, char *const argv[],
                        unsigned int flags);
@@ -175,7 +177,7 @@ int  OS1_process_stop(int pid);
 int  OS1_process_cont(int pid);
 void OS1low_process_yield(void);
 int  OS1low_process_self(void);
-void OS1low_process_exit(int status);
+void OS1low_process_exit(int status) __attribute__((__noreturn__));
 
 int utf8_decode(const char *s, size_t len, uint32_t *code);
 /* OS1_sleep: proprietary BASE-API blocking sleep, in MILLISECONDS (NOT POSIX
@@ -446,7 +448,9 @@ char *gets(char *s, int size);
 
 /* Fixed-Point Math (16.16) */
 #define FP_SHIFT 16
+#ifndef OS1_NO_COLLIDING_MACROS
 #define FP_ONE   (1 << FP_SHIFT)
+#endif
 #define FP_PI    205887
 #define DEG_TO_FP_RAD(d) (((d) * 1144))
 

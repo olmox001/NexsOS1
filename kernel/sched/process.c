@@ -190,7 +190,8 @@
  * ===========================================================================
  */
 
-static void __sched_assert_panic(const char *file, int line, const char *fmt, ...) {
+static void __sched_assert_panic(const char *file, int line, const char *fmt,
+                                 ...) {
   char buf[256];
   va_list args;
   va_start(args, fmt);
@@ -198,14 +199,15 @@ static void __sched_assert_panic(const char *file, int line, const char *fmt, ..
   va_end(args);
 
   char final_buf[512];
-  snprintf(final_buf, sizeof(final_buf), "SCHED ASSERT [%s:%d] %s", file, line, buf);
+  snprintf(final_buf, sizeof(final_buf), "SCHED ASSERT [%s:%d] %s", file, line,
+           buf);
   panic("%s", final_buf);
 }
 
-#define SCHED_ASSERT(cond, ...)                                           \
+#define SCHED_ASSERT(cond, ...)                                                \
   do {                                                                         \
     if (!(cond))                                                               \
-      __sched_assert_panic(__FILE__, __LINE__, __VA_ARGS__);   \
+      __sched_assert_panic(__FILE__, __LINE__, __VA_ARGS__);                   \
   } while (0)
 
 /* ===========================================================================
@@ -527,16 +529,45 @@ void sleep_on(struct wait_queue_head *wq) {
   spin_unlock_irqrestore(&wq->lock, flags);
 }
 
-/* wake_up - wake the first process sleeping on a wait queue. Lock order:
- * wq->lock is released BEFORE cpu->sched_lock is taken (no inversion with
- * __enqueue_task). */
+/* wake_up - wake the first process sleeping on a wait queue.
+ *
+ * SCHED-UAF-03 (fixed here): the old version dropped wq->lock — having
+ * already cleared p->wait_queue_ptr and spliced p off the wait list —
+ * before p was READY or on any runqueue. In that window p looked, to
+ * process_terminate(), like a plain SLEEPING process that is NOT parked
+ * on a wait queue (wait_queue_ptr already NULL, so
+ * __proc_terminate_detach_from_wait_queue() is a no-op): terminate would
+ * fall through to its common tail, mark p DEAD, remove it from
+ * process_pool[] and — if not current_task anywhere — free it
+ * immediately, all while CPU A was still about to touch p:
+ *
+ *   CPU A (wake_up)                CPU B (process_terminate)
+ *   wq_lock; list_del(p); unlock
+ *                                   sched_lock; (wait_queue_ptr==NULL,
+ *                                   state==SLEEPING) -> DEAD -> pool
+ *                                   remove -> free(p)
+ *   p->on_cpu = ...          <-- UAF
+ *   __enqueue_task(p)        <-- UAF
+ *
+ * Fix: hold the GLOBAL sched_lock for the whole operation. Because
+ * process_terminate() takes this same sched_lock as its very first step
+ * (before it can even look at wait_queue_ptr or state), it cannot
+ * interleave with any part of this function anymore. wq->lock nests
+ * inside sched_lock exactly as it already does in
+ * __proc_terminate_detach_from_wait_queue(), and target->sched_lock nests
+ * innermost, exactly as in __proc_terminate_mark_dead_on_runqueue() /
+ * process_finalize_spawn(). Net lock order everywhere in this file is now
+ * consistently: sched_lock -> wq->lock -> cpu->sched_lock. */
 void wake_up(struct wait_queue_head *wq) {
   SCHED_ASSERT(wq != NULL, "wake_up: NULL wait queue");
 
   uint64_t flags;
-  spin_lock_irqsave(&wq->lock, &flags);
+  spin_lock_irqsave(&sched_lock, &flags);
+
+  spin_lock(&wq->lock);
   if (list_empty(&wq->task_list)) {
-    spin_unlock_irqrestore(&wq->lock, flags);
+    spin_unlock(&wq->lock);
+    spin_unlock_irqrestore(&sched_lock, flags);
     return;
   }
 
@@ -546,20 +577,21 @@ void wake_up(struct wait_queue_head *wq) {
   list_del(&p->run_list);
   p->wait_queue_ptr = NULL;
   INIT_LIST_HEAD(&p->run_list); /* CRITICAL: clear stale pointers */
-  spin_unlock_irqrestore(&wq->lock, flags);
+  spin_unlock(&wq->lock);
 
+  /* p is off the wait queue but still protected: we have not released
+   * sched_lock, so process_terminate() still cannot touch it. */
   if (p->on_cpu < 0) {
-    uint64_t global_flags;
-    spin_lock_irqsave(&sched_lock, &global_flags);
     p->on_cpu = rr_cpu;
     rr_cpu = (rr_cpu + 1) % MAX_CPUS;
-    spin_unlock_irqrestore(&sched_lock, global_flags);
   }
 
   struct cpu_info *target = &cpu_data[(int)p->on_cpu];
-  spin_lock_irqsave(&target->sched_lock, &flags);
+  spin_lock(&target->sched_lock);
   __enqueue_task(p);
-  spin_unlock_irqrestore(&target->sched_lock, flags);
+  spin_unlock(&target->sched_lock);
+
+  spin_unlock_irqrestore(&sched_lock, flags);
 }
 
 /* idle_task_entry - idle task body for each CPU. Runs when no other task
@@ -2244,7 +2276,26 @@ int process_stop(int pid) {
 }
 
 /* process_cont - resume a stopped process (job control, Phase 2).
- * Re-enqueues it OUTSIDE sched_lock (enqueue_task takes its own lock). */
+ *
+ * SCHED-UAF-02 (fixed here): the old version located `target` under
+ * sched_lock, then RELEASED sched_lock, then wrote target->state and
+ * called enqueue_task() on the bare pointer. Between the unlock and the
+ * re-enqueue, process_terminate() (which itself starts by taking
+ * sched_lock) could find the same pid, mark it DEAD and free it — a
+ * classic lookup/use split UAF:
+ *
+ *   CPU A (process_cont)          CPU B (process_terminate)
+ *   sched_lock; target = p; unlock
+ *                                 sched_lock; remove p; unlock; free(p)
+ *   target->state = READY   <-- UAF
+ *   enqueue_task(target)    <-- UAF
+ *
+ * Fix: never release sched_lock between the lookup and the enqueue.
+ * Since process_terminate() itself cannot even begin (it takes sched_lock
+ * as its very first step) while we hold it, `target` cannot be freed out
+ * from under us. The nested target_cpu->sched_lock uses the SAME
+ * sched_lock -> target_cpu->sched_lock order already used by
+ * process_finalize_spawn() for the analogous SCHED-UAF Pitfall B case. */
 int process_cont(int pid) {
   uint64_t flags;
   int rc = -ESRCH;
@@ -2263,15 +2314,22 @@ int process_cont(int pid) {
     }
     break;
   }
-  spin_unlock_irqrestore(&sched_lock, flags);
 
   if (target) {
     /* Set READY before enqueue so it passes __enqueue_task's STOPPED
      * guard. A resumed sleeper re-runs its nanosleep and returns once the
-     * (now long-past) deadline is checked, continuing where it left off. */
+     * (now long-past) deadline is checked, continuing where it left off.
+     * Both the state write and the enqueue happen while STILL holding
+     * sched_lock — target cannot be reaped concurrently. */
+    int target_cpu_id = (target->on_cpu >= 0) ? (int)target->on_cpu : 0;
+    struct cpu_info *target_cpu = &cpu_data[target_cpu_id];
+
+    spin_lock(&target_cpu->sched_lock);
     target->state = PROC_READY;
-    enqueue_task(target);
+    __enqueue_task(target);
+    spin_unlock(&target_cpu->sched_lock);
   }
+  spin_unlock_irqrestore(&sched_lock, flags);
   return rc;
 }
 

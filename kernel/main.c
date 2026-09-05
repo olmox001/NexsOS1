@@ -70,6 +70,7 @@ const char *boot_phase_name(enum boot_phase p) {
 static void print_banner(void);
 static void init_memory(void);
 static void init_scheduler(void);
+static void init_compositor(void);
 static int spawn_init_process(void);
 
 /*
@@ -155,14 +156,30 @@ void kernel_main(uint64_t x0_arg) {
   pr_info("%s", "Initializing processes...\n");
   process_init();
 
-  /* Scheduler (K2): compositor + CPU0's idle task.  PID1 is NOT spawned
-   * here any more — K3 is gated below. */
+  /* Scheduler (K2): CPU0's idle task ONLY.  The compositor is no longer part
+   * of scheduler init — it is a graphics subsystem, brought up by
+   * init_compositor() below, after every CPU has an idle task.  PID1 is NOT
+   * spawned here — K3 is gated below. */
   pr_info("%s", "Initializing scheduler...\n");
   init_scheduler();
 
-  /* Wake secondary CPUs via Unified HAL (completes K1: whole machine up). */
+  /* Wake secondary CPUs via Unified HAL (completes K1: whole machine up).
+   * The arch SMP code publishes each AP's idle task BEFORE that AP can take
+   * a timer tick (SMP-IDLE-RACE #169/#170), so when this returns every
+   * cpu_info->idle_task in the machine is non-NULL. */
   pr_info("%s", "Waking secondary CPUs...\n");
   arch_smp_init();
+
+  /* Compositor (K2, graphics subsystem) — SEPARATED from the scheduler and
+   * deliberately started AFTER the idle tasks: scheduler init now owns
+   * nothing but scheduling, and the compositor comes up once the whole
+   * machine is idle-capable.  It still runs before the K3 gate, so userland
+   * never starts against an uninitialized compositor.  Ordering assumption:
+   * with the APs parked in their idle loops, nothing on the timer/schedule
+   * path calls into the compositor — userland is its only entry point, and
+   * userland starts later (K3). */
+  pr_info("%s", "Initializing compositor...\n");
+  init_compositor();
 
   /* ---- K3 GATE (S-ALIGN F9): K1+K2 confirmed, only now start userland. ----
    * Previously PID1 was created+enqueued in init_scheduler() BEFORE
@@ -301,15 +318,14 @@ static void init_memory(void) {
 /* smp_create_idle_task moved to arch-specific code or process.c */
 
 /*
- * init_scheduler (K2): compositor + CPU0's idle task.  Userland (PID1) is
- * deliberately NOT started here — that is K3, gated in kernel_main after
- * arch_smp_init() confirms the whole machine (S-ALIGN F9).
+ * init_scheduler (K2): pure scheduling concerns — CPU0's idle task only.
+ * The compositor used to live here; it is a graphics subsystem and is now
+ * initialized by init_compositor(), after all idle tasks exist.  Userland
+ * (PID1) is deliberately NOT started here either — that is K3, gated in
+ * kernel_main after arch_smp_init() confirms the whole machine (S-ALIGN F9).
  */
 static void init_scheduler(void) {
   pr_info("%s", "Scheduler: Initializing...\n");
-
-  /* Initialize Compositor */
-  compositor_init();
 
   /* Create Idle Task for CPU 0 */
   smp_create_idle_task(0);
@@ -317,6 +333,18 @@ static void init_scheduler(void) {
   /* Input server thread (DIR-02/DIR-03, #68/#194) is STAGED, not launched:
    * the arch_cpu_yield cooperative-switch-to-user path is still being
    * hardened.  Input dispatches synchronously meanwhile (see keyboard.c). */
+}
+
+/*
+ * init_compositor (K2, graphics): separated from the scheduler — it has no
+ * scheduling dependency.  It only needs the GPU/framebuffer bring-up already
+ * done in init_memory() (virtio_gpu_init / graphics_init) and a machine in
+ * which every CPU has an idle task, which is guaranteed after arch_smp_init()
+ * returns.  Called before the K3 gate so userland finds it ready.
+ */
+static void init_compositor(void) {
+  pr_info("%s", "Compositor: Initializing...\n");
+  compositor_init();
 }
 
 /*

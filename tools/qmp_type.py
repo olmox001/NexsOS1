@@ -59,6 +59,20 @@ def send_key(q, down):
     time.sleep(0.05)
 
 for ch in text:
+    if ch == '\x04':
+        send_key("ctrl", True)
+        send_key("d", True)
+        send_key("d", False)
+        send_key("ctrl", False)
+        time.sleep(0.15)
+        continue
+    if ch == '\x03':
+        send_key("ctrl", True)
+        send_key("c", True)
+        send_key("c", False)
+        send_key("ctrl", False)
+        time.sleep(0.15)
+        continue
     shifted = ch in SHIFTED
     q = SHIFTED[ch] if shifted else QCODE[ch]
     if shifted:
