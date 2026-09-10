@@ -3,9 +3,9 @@
  * VirtIO Input Device Driver (Keyboard/Mouse)
  * Full Virtqueue and Interrupt Implementation
  */
+#include <drivers/keyboard.h>
 #include <drivers/virtio.h>
 #include <drivers/virtio_input.h>
-#include <drivers/keyboard.h>
 #include <kernel/arch.h>
 #include <kernel/graphics.h>
 #include <kernel/irq.h>
@@ -126,6 +126,17 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   dev->avail->idx = INPUT_QSIZE;
   dev->last_used_idx = 0;
 
+  /* FIX(VINPUT-DMA-04): the device DMA-reads desc[]/avail as soon as
+   * v_notify() below runs; pmm_alloc_pages_dma() only cache-cleaned the
+   * freshly-zeroed page once, at allocation, not the descriptor table and
+   * available-ring contents just written above. Same hazard class as
+   * VGPU-DMA-02/VBLK-DMA-02: without this, whether the device's very
+   * first read of this queue sees valid descriptors depends on unrelated
+   * cache state on real hardware, and is always fine under QEMU/KVM. */
+  arch_cache_clean_range((void *)dev->desc, INPUT_QSIZE * sizeof(*dev->desc));
+  arch_cache_clean_range((void *)dev->avail, sizeof(*dev->avail));
+  arch_mb();
+
   /* Driver OK */
   v_write32(dev, VIRTIO_MMIO_STATUS,
             v_read32(dev, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_DRIVER_OK);
@@ -136,7 +147,8 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
    * failed registration. */
   if (irq_register(irq, virtio_input_handler, dev) != 0)
     pr_err("virtio-input: cannot register IRQ %u — this device will deliver no "
-           "events\n", irq);
+           "events\n",
+           irq);
 
   /* Notify device */
   v_notify(dev, 0);
@@ -158,10 +170,29 @@ static void virtio_input_handler(uint32_t irq, void *data) {
     uint32_t status = v_read32(dev, VIRTIO_MMIO_INTERRUPT_STATUS);
     uint16_t processed_count = 0;
 
+    /* FIX(VINPUT-DMA-01): the device writes dev->used (idx + ring entries)
+     * via DMA every time it reports an event; this CPU's cache can hold a
+     * stale copy of that line from before the event arrived. Without
+     * invalidating it here, this IRQ handler can read a used->idx this
+     * core already had cached — the same value as last time — and see NO
+     * new event at all, even though the device already wrote one to RAM.
+     * That is a hardware-timing-dependent "dropped IRQ" that depends on
+     * unrelated cache state, never reproducible under QEMU/KVM's emulated
+     * (always-coherent) memory: exactly the "works only after moving the
+     * mouse enough times" symptom this device's IRQ was implicated in. */
+    arch_cache_invalidate_range((void *)dev->used, sizeof(*dev->used));
+
     while (dev->last_used_idx != dev->used->idx) {
       struct vring_used_elem *e =
           &dev->used->ring[dev->last_used_idx % INPUT_QSIZE];
       uint32_t id = e->id;
+
+      /* FIX(VINPUT-DMA-02): dev->events[id] is the DMA target the device
+       * just wrote the actual event payload (type/code/value) into — a
+       * separate cache line from dev->used, and just as capable of being
+       * stale in this CPU's cache. */
+      arch_cache_invalidate_range((void *)&dev->events[id],
+                                  sizeof(dev->events[id]));
       struct virtio_input_event *evt = &dev->events[id];
 
       /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
@@ -169,10 +200,22 @@ static void virtio_input_handler(uint32_t irq, void *data) {
       input_report(evt->type, evt->code, evt->value);
 
       dev->avail->ring[dev->avail->idx % INPUT_QSIZE] = id;
-      arch_mb();
       dev->avail->idx++;
       dev->last_used_idx++;
       processed_count++;
+    }
+
+    /* FIX(VINPUT-DMA-03): the device DMA-reads dev->avail to learn which
+     * descriptor slots are free again (recycled just above); clean it so
+     * those writes are actually visible to the device's next DMA read,
+     * for the same reason as virtio_gpu.c's virtio_gpu_send()
+     * (VGPU-DMA-02) — arch_mb() alone does not push a dirty cache line
+     * out to physical RAM. Done once per IRQ, after the recycle loop,
+     * instead of per-iteration: avail is only consumed by the device on
+     * the v_notify() below, not before. */
+    if (processed_count > 0) {
+      arch_cache_clean_range((void *)dev->avail, sizeof(*dev->avail));
+      arch_mb();
     }
 
     if (status != 0) {

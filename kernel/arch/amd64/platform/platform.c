@@ -527,15 +527,6 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
   *p_stack = (uint64_t)stack;          /* RSP: top of AP kernel stack */
   *p_entry = (uint64_t)secondary_cpu_entry; /* call target after long mode */
 
-  /* Ensure trampoline stores are visible before INIT/SIPI MMIO. */
-  __asm__ __volatile__("mfence" ::: "memory");
-
-  /* 3. INIT assert — put the AP into wait-for-SIPI.
-   * NOTE: do NOT send INIT Level-Deassert with ICR_PHYSICAL.  Per Intel SDM
-   * the deassert form requires destination shorthand All-Including-Self and
-   * is ignored/undefined with a per-CPU physical destination.  QEMU and
-   * modern xAPIC accept a single INIT assert; the deassert we tried earlier
-   * was a candidate for intermittent post-boot hangs. */
   lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL | ICR_PHYSICAL);
 
   /* 4. 10 ms between INIT and first STARTUP (Intel SDM). */

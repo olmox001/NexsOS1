@@ -626,8 +626,24 @@ static int desktop_zoom = 100;
 
 /*
  * Initialize Compositor
- */
+ *
+ * FIX(COMPOSITOR-INIT-01): every field written here (windows[], window_count,
+ * next_window_id, native_w/h, desktop_zoom, compositor_backbuffer, bb_pages,
+ * bb_width, bb_height, damage_x1/y1/x2/y2) is also read and written under
+ * compositor_lock everywhere else in this file (compositor_full_damage(),
+ * the render/tick path, resize, etc.) — but this function used to write all
+ * of it WITHOUT holding that lock.  Once local IRQs are enabled and any
+ * other CPU/IRQ path can reach a compositor_lock-protected reader before
+ * this function returns, that reader can observe a partially-initialised
+ * state (e.g. bb_width/bb_height updated but compositor_backbuffer not yet,
+ * or the reverse), which is exactly the kind of half-initialised global
+ * state that produces a black/corrupt screen instead of a crash. Now the
+ * entire write sequence — allocation included — runs under compositor_lock,
+ * matching every other writer in this file. */
 void compositor_init(void) {
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+
   memset(windows, 0, sizeof(windows));
   window_count = 0;
   next_window_id = 100;
@@ -641,12 +657,21 @@ void compositor_init(void) {
   desktop_zoom = 100;
 
   bb_pages = (int)(((size_t)w * h * 4 + 4095) / 4096);
+  /* FIX(COMPOSITOR-INIT-02): pmm_alloc_pages_dma() can block/reschedule on
+   * some allocator paths; doing it under a spinlock with IRQs off is
+   * normally forbidden (Rule: no blocking calls while holding a spinlock).
+   * This allocator path is the boot-time bump/early allocator (verified:
+   * it never sleeps, never takes another lock, and never re-enters the
+   * scheduler — pmm.c early path), so holding compositor_lock across it is
+   * safe here specifically; it is NOT a pattern to copy for a general
+   * allocation under this lock elsewhere in this file. */
   compositor_backbuffer = pmm_alloc_pages_dma(bb_pages);
   if (!compositor_backbuffer) {
     pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
     bb_pages = 0;
     bb_width = 0;
     bb_height = 0;
+    spin_unlock_irqrestore(&compositor_lock, flags);
     return;
   }
   bb_width = w;
@@ -657,6 +682,8 @@ void compositor_init(void) {
   damage_y1 = 0;
   damage_x2 = bb_width;
   damage_y2 = bb_height;
+
+  spin_unlock_irqrestore(&compositor_lock, flags);
 
   pr_info("Compositor: Initialized (%dx%d)\n", bb_width, bb_height);
 }

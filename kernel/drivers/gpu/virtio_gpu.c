@@ -210,8 +210,8 @@ static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
  * vgpu_set_mode() takes to swap priv->backing_store and free the old buffer is
  * held for the entire copy, so the scanout can never be freed mid-memcpy (the
  * use-after-free behind the resize/zoom panics).  Geometry is validated against
- * the LIVE scanout under the lock; a mismatch (a mode change landed first) skips
- * the frame instead of copying past the new, smaller backing. */
+ * the LIVE scanout under the lock; a mismatch (a mode change landed first)
+ * skips the frame instead of copying past the new, smaller backing. */
 static int vgpu_present(struct gpu_device *dev, const uint32_t *src, int src_w,
                         int src_h, int x, int y, int w, int h) {
   if (!dev || !dev->priv || !src)
@@ -231,7 +231,8 @@ static int vgpu_present(struct gpu_device *dev, const uint32_t *src, int src_w,
     return -1;
   }
 
-  /* Clamp the region to the scanout (defensive; the compositor already clips) */
+  /* Clamp the region to the scanout (defensive; the compositor already clips)
+   */
   if (x < 0) {
     w += x;
     x = 0;
@@ -249,7 +250,8 @@ static int vgpu_present(struct gpu_device *dev, const uint32_t *src, int src_w,
     return 0;
   }
 
-  /* Row-by-row copy backbuffer -> scanout backing (both stride == dev->width). */
+  /* Row-by-row copy backbuffer -> scanout backing (both stride == dev->width).
+   */
   for (int row = y; row < y + h; row++) {
     memcpy((uint8_t *)fb + ((size_t)row * dev->width + x) * 4,
            (const uint8_t *)src + ((size_t)row * src_w + x) * 4, (size_t)w * 4);
@@ -418,6 +420,14 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
   desc[0].next = 1;
 
   volatile uint16_t *idx_ptr = &used->idx;
+
+  /* FIX(VGPU-DMA-01): invalidate 'used' before reading old_idx.  This CPU
+   * (or whichever CPU last polled this queue) may still hold a cached
+   * copy of this cache line from the previous command's poll loop below;
+   * without discarding it first, old_idx can be read from stale cache
+   * instead of the real value the device last wrote, corrupting every
+   * subsequent "did the device respond yet" comparison for this call. */
+  arch_cache_invalidate_range((void *)used, sizeof(*used));
   uint16_t old_idx = *idx_ptr;
 
   desc[1].addr = virt_to_phys(resp);
@@ -427,23 +437,74 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
 
   uint16_t ava_slot = avail->idx % priv->qsize;
   avail->ring[ava_slot] = 0;
-
-  arch_mb();
   avail->idx++;
+
+  /* FIX(VGPU-DMA-02): the device DMA-reads 'cmd' (the caller-filled command
+   * buffer), desc[] and avail — all plain cacheable RAM allocated by
+   * pmm_alloc_pages_dma(), which cache-cleans them ONLY once, at
+   * allocation.  Every write this function makes to desc[]/avail (and
+   * every write the caller made to 'cmd' just before calling this) can sit
+   * in this CPU's cache indefinitely: arch_mb()/mfence orders memory
+   * operations already visible to the coherency system, it does NOT push
+   * a dirty cache line out to physical RAM.  Under QEMU/KVM there is no
+   * real cache the device could see stale data in (the "device" is
+   * software touching the same emulated RAM array), so this was invisible
+   * there; on real hardware, whether the device ever sees these writes
+   * depends on unrelated platform cache/DMA-coherency behaviour.  Cleaning
+   * cmd/desc/avail here, unconditionally, on every send, removes that
+   * dependency instead of assuming it away. */
+  arch_cache_clean_range(cmd, cmd_len);
+  arch_cache_clean_range((void *)desc, 2 * sizeof(*desc));
+  arch_cache_clean_range((void *)avail, sizeof(*avail));
   arch_mb();
 
   virtio_notify(priv->handle, 0);
 
+  /* FIX(VGPU-POLL-01): this loop used to spin with no CPU-relax hint,
+   * hammering the same cache line (*idx_ptr) as fast as the core can issue
+   * loads. On real hardware this is a tight-loop bus/cache-coherency hog
+   * that competes with the device's own DMA write to that same line —
+   * never visible under QEMU/KVM's emulated memory, where there is no real
+   * bus contention. arch_yield() (PAUSE/YIELD/WFE depending on arch) is a
+   * no-op for correctness but lets the core back off between polls,
+   * matching how every other busy-wait in this tree is written.
+   *
+   * FIX(VGPU-DMA-03): each iteration also invalidates 'used' before the
+   * re-read.  Without this, once the CPU has cached *idx_ptr == old_idx
+   * once, a plain reload can keep hitting that same cached line forever
+   * even after the device's DMA write actually landed in RAM — the loop
+   * would then spin until pure timeout every single time on any hardware
+   * where the device write is not cache-coherent with this core, not just
+   * intermittently. */
   uint64_t timeout = 200000000;
-  while (*idx_ptr == old_idx && timeout > 0) {
+  while (timeout > 0) {
+    arch_cache_invalidate_range((void *)used, sizeof(*used));
+    if (*idx_ptr != old_idx)
+      break;
+    arch_yield();
     timeout--;
   }
-  virtio_read_reg(priv->handle, VIRTIO_MMIO_INTERRUPT_ACK);
 
+  /* FIX(VGPU-POLL-02): VIRTIO_MMIO_INTERRUPT_ACK used to be written
+   * unconditionally, even on timeout — acknowledging an interrupt that may
+   * never have been asserted, and masking the fact that this command never
+   * got a response. Only ACK (and only report success) once the used-ring
+   * index has actually advanced; a timeout is reported as the failure it
+   * is, with no ACK write, so a caller retrying (or the caller's caller,
+   * e.g. compositor_init()'s single vgpu_create_2d/attach/set_scanout
+   * chain) sees a real -1 instead of a silently swallowed timeout. */
   if (timeout == 0) {
-    pr_err("%s", "VirtIO-GPU: Timeout!\n");
+    pr_err("%s", "VirtIO-GPU: Timeout waiting for device response!\n");
     return -1;
   }
+
+  /* FIX(VGPU-DMA-04): invalidate 'resp' before the caller reads it — same
+   * stale-cache hazard as 'used' above, for the response payload itself
+   * (e.g. GET_DISPLAY_INFO's mode list, read by vgpu_query_display_info()
+   * immediately after this call returns). */
+  arch_cache_invalidate_range(resp, resp_len);
+
+  virtio_read_reg(priv->handle, VIRTIO_MMIO_INTERRUPT_ACK);
   return 0;
 }
 

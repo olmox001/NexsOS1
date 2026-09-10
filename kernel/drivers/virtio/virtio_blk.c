@@ -161,22 +161,47 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
    * snapshotting after avail->idx++ could miss a completion that lands
    * between publish and snapshot, and then poll for one that never comes. */
   volatile uint16_t *used_idx_ptr = &used->idx;
+
+  /* FIX(VBLK-DMA-01): invalidate 'used' before the snapshot read, for the
+   * same reason as virtio_gpu.c's virtio_gpu_send() (VGPU-DMA-01): a
+   * cached copy of this line from a previous request's poll loop can be
+   * stale, corrupting old_idx before the request is even issued. */
+  arch_cache_invalidate_range((void *)used, sizeof(*used));
   uint16_t old_idx = *used_idx_ptr;
 
   /* Publish in the Available Ring */
   uint16_t idx = avail->idx % virtio_blk_qsize;
   avail->ring[idx] = 0;
-
-  hal_mb();
   avail->idx++;
+
+  /* FIX(VBLK-DMA-02): the device DMA-reads blk_req, desc[] and avail — all
+   * plain cacheable RAM (pmm_alloc_pages_dma() cache-cleans them only once,
+   * at allocation) — same hazard as VGPU-DMA-02 in virtio_gpu.c.  hal_mb()
+   * orders memory operations already visible to the coherency system; it
+   * does not push a dirty cache line out to physical RAM.  Clean the
+   * request header, the data buffer on a WRITE (the device reads it), and
+   * the descriptor/avail ring unconditionally, before notifying. */
+  arch_cache_clean_range(&blk_req, sizeof(blk_req));
+  if (write)
+    arch_cache_clean_range(buf, count * 512);
+  arch_cache_clean_range((void *)desc, 3 * sizeof(*desc));
+  arch_cache_clean_range((void *)avail, sizeof(*avail));
   hal_mb();
 
   /* Notify */
   virtio_notify(virtio_blk_dev, 0);
 
-  /* Poll Used Ring (busy wait) */
+  /* Poll Used Ring (busy wait).
+   * FIX(VBLK-DMA-03): invalidate 'used' every iteration before re-reading
+   * it — without this a cached read can keep hitting the same stale line
+   * forever even after the device's completion write actually landed in
+   * RAM, on any hardware where that write is not cache-coherent with this
+   * core (see VGPU-DMA-03 in virtio_gpu.c for the identical hazard). */
   uint64_t timeout = 1000000000;
-  while (*used_idx_ptr == old_idx && timeout > 0) {
+  while (timeout > 0) {
+    arch_cache_invalidate_range((void *)used, sizeof(*used));
+    if (*used_idx_ptr != old_idx)
+      break;
     hal_cpu_yield();
     timeout--;
   }
@@ -192,6 +217,13 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
     spin_unlock_irqrestore(&virtio_blk_lock, flags);
     return -1;
   }
+
+  /* FIX(VBLK-DMA-04): invalidate the status byte and, on a READ, the data
+   * buffer, before this CPU reads what the device wrote via DMA — same
+   * hazard as VGPU-DMA-04 in virtio_gpu.c. */
+  arch_cache_invalidate_range((void *)&blk_status, sizeof(blk_status));
+  if (!write)
+    arch_cache_invalidate_range(buf, count * 512);
 
   /* Order the status read after the used-ring update we just observed. */
   hal_mb();

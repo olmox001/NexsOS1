@@ -73,6 +73,19 @@ static void init_scheduler(void);
 static void init_compositor(void);
 static int spawn_init_process(void);
 
+/* FIX(NASA-01, Power of Ten Rule 4 — short functions): kernel_main() used to
+ * be one ~110-line function covering K1 (hardware bring-up) through the
+ * idle loop.  Split into two named, single-purpose stage functions so each
+ * stays reviewable on its own and the K1/K2/K3 boundary already documented
+ * in comments is now also a function boundary, not just a comment.  Boot
+ * ORDER is UNCHANGED from the original — this is a pure decomposition, not
+ * a reordering: local_irq_enable() still runs at the very end, after the K3
+ * gate (spawn_init_process()), exactly as before.  Neither stage function
+ * is reentrant and each runs exactly once, from kernel_main(), on the BSP
+ * only — this is not a general-purpose helper. */
+static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1);
+static void kernel_stage_k2_k3(void);
+
 /*
  * Kernel main entry point
  */
@@ -87,20 +100,43 @@ extern void timer_init_percpu(void);
 /* Kernel entry point - receives multiboot info pointer from bootloader */
 #ifdef ARCH_AMD64
 void kernel_main(uint64_t magic, uint64_t mbi_ptr) {
+  kernel_stage_k1_hardware(magic, mbi_ptr);
+#else
+void kernel_main(uint64_t x0_arg) {
+  kernel_stage_k1_hardware(x0_arg, 0);
+#endif
+  kernel_stage_k2_k3();
+}
+
+/*
+ * kernel_stage_k1_hardware - K1: bring up this CPU and the raw platform
+ * (console, CPU exception/IDT state, IRQ controller, timer) to the point
+ * where memory management and the scheduler can be initialized.
+ *
+ * @boot_arg0: amd64: multiboot magic (RDI). aarch64: x0 (device tree blob
+ *             physical address).
+ * @boot_arg1: amd64: multiboot info pointer (RSI). aarch64: unused (0).
+ *
+ * Called exactly once, from kernel_main(), before kernel_stage_k2_k3().
+ * Not reentrant; must run on the BSP with a valid boot stack and nothing
+ * else concurrently touching arch/platform globals.
+ */
+static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
+#ifdef ARCH_AMD64
   /* For AMD64, bootloader passes mb_magic via RDI, mb_info_ptr via RSI */
   extern uint64_t mb_info_ptr;
   extern uint64_t mb_magic;
-  mb_info_ptr = mbi_ptr;
-  mb_magic = magic;
+  mb_info_ptr = boot_arg1;
+  mb_magic = boot_arg0;
 #else
-void kernel_main(uint64_t x0_arg) {
+  (void)boot_arg1;
 #endif
   /* Initialize UART first for debug output */
   driver_console_init();
 
 #ifndef ARCH_AMD64
   /* Ensure boot_fdt_ptr is set from the entry argument */
-  boot_fdt_ptr = x0_arg;
+  boot_fdt_ptr = boot_arg0;
   /* aarch64: the device tree IS the device-discovery mechanism.  Without it
    * nothing on the virtio-MMIO transport is found -- no block device, no
    * input, no GPU -- and the failure would surface much later as a system that
@@ -110,7 +146,7 @@ void kernel_main(uint64_t x0_arg) {
     panic("FDT: no usable device tree at 0x%lx — no MMIO device can be "
           "discovered on this platform",
           (unsigned long)boot_fdt_ptr);
-  pr_info("Kernel: Entry x0 = 0x%lx\n", x0_arg);
+  pr_info("Kernel: Entry x0 = 0x%lx\n", boot_arg0);
 #else
   boot_fdt_ptr = 0;
   /* amd64 has no device tree: devices come from PCI enumeration instead.  The
@@ -147,7 +183,20 @@ void kernel_main(uint64_t x0_arg) {
   pr_info("%s", "Initializing timer...\n");
   driver_timer_init();
   timer_init_percpu();
+}
 
+/*
+ * kernel_stage_k2_k3 - K2 (memory/process/scheduler/SMP/compositor
+ * subsystem bring-up) followed by the K3 gate (userland spawn) and the
+ * final interrupt-enable + idle loop.  Ordering is exactly as it was in
+ * the original monolithic kernel_main(): local_irq_enable() runs LAST,
+ * after spawn_init_process(), not before it.
+ *
+ * Called exactly once, from kernel_main(), immediately after
+ * kernel_stage_k1_hardware() returns. Never returns (ends in the idle
+ * loop). Not reentrant.
+ */
+static void kernel_stage_k2_k3(void) {
   /* Memory management */
   pr_info("%s", "Initializing memory...\n");
   init_memory();
@@ -201,7 +250,14 @@ void kernel_main(uint64_t x0_arg) {
   pr_info("%s", "Kernel initialized successfully!\n");
   pr_info("Boot info at: 0x%016lx\n", arch_get_boot_info());
 
-  /* CPU0 idle loop: from here on all work happens in scheduled tasks. */
+  /* CPU0 idle loop: from here on all work happens in scheduled tasks.
+   * NASA-02 (Power of Ten Rule 2 — bounded loops): this loop is intentionally
+   * unbounded. kernel_main() never returns on a running kernel by design —
+   * there is no caller to return to and no shutdown path that resumes this
+   * frame — so an upper iteration bound is not applicable here, unlike every
+   * other loop in this file (all of which are bounded and asserted below).
+   * Documented per the JPL exception process for the one genuine
+   * event-loop/idle-loop case a kernel entry point requires. */
   pr_info("%s", "Entering idle loop...\n");
   while (1) {
     hal_cpu_idle();
@@ -220,10 +276,31 @@ static void print_banner(void) {
   printk("\n");
 }
 
+/* FIX(NASA-01, Power of Ten Rule 4 — short functions): init_memory() used
+ * to be one function covering both physical/virtual memory bring-up and
+ * every K2 subsystem driver (bus/block/GPU/graphics/GPT/buffer/VFS/
+ * keyboard/registry/procfs).  Split at the boundary the code already named
+ * ("K1->K2 boundary", boot_phase_set(BOOT_PHASE_K2_SUBSYS)) into two
+ * single-purpose static functions; init_memory() itself is now a 3-line
+ * composition of the two, in the SAME order as the original.  Neither half
+ * is reentrant; both run exactly once, from init_memory(), on the BSP only. */
+static void init_memory_core(void);
+static void init_memory_subsystems(void);
+
 /*
  * Initialize memory subsystem
  */
 static void init_memory(void) {
+  init_memory_core();
+  init_memory_subsystems();
+}
+
+/*
+ * init_memory_core - K1 tail: physical/virtual memory manager bring-up.
+ * Brings PMM/VMM online and runs the post-MM unit test pass. Must run
+ * before init_memory_subsystems() (every K2 driver below allocates memory).
+ */
+static void init_memory_core(void) {
   /* Initialize physical memory manager with architecture-detected regions */
   size_t count = 0;
   struct mem_region *regions = arch_platform_get_mem_regions(&count);
@@ -260,7 +337,16 @@ static void init_memory(void) {
    * hal_bus_init() on is subsystem init (bus/block/GPU/graphics/GPT/buffer/
    * VFS/keyboard/registry/procfs — the kernel-audit §1.1 boot map). */
   boot_phase_set(BOOT_PHASE_K2_SUBSYS);
+}
 
+/*
+ * init_memory_subsystems - K2: bus/block/GPU/graphics/filesystem/input/
+ * registry driver bring-up. Must run after init_memory_core() (every
+ * driver here allocates through the PMM/VMM/kmalloc that function brings
+ * up) and before process_init()/init_scheduler() (K2 userland cannot read
+ * a filesystem or take keyboard input that has not been wired up yet).
+ */
+static void init_memory_subsystems(void) {
   /* Perform hardware discovery via Unified HAL */
   hal_bus_init();
 
