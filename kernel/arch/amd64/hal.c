@@ -154,13 +154,28 @@ static void amd64_pci_callback(int bdf, uint16_t vendor, uint16_t device_id) {
     uint8_t line = pci_get_interrupt(bdf);
     if (line == 0xFF || line >= 16) {
       /* PCI_INTLINE_FALLBACK_BASE: reserved for enumerated devices whose
-       * firmware-assigned Interrupt Line is missing/invalid.  224-255 is
+       * firmware-assigned Interrupt Line is missing/invalid.  224-231 is
        * unused by both the legacy 8259 remap (32-47) and every other
-       * fixed vector this tree assigns (LAPIC timer 32 alias aside,
-       * which is never reached this way); bdf is folded down to keep
-       * each device on a distinct, stable, deterministic vector across
-       * boots. */
-      uint32_t fallback = 224 + ((uint32_t)bdf & 0x1F);
+       * fixed vector this tree assigns; bdf is folded down to keep each
+       * device on a distinct, stable, deterministic vector across boots.
+       *
+       * FIX(HAL-IRQFALLBACK-01): the fold used to be '& 0x1F' (5 bits),
+       * which can reach 224+31 = 255 = 0xFF — the LAPIC spurious vector.
+       * amd64_isr_dispatch() special-cases vec==0xFF as "not a real
+       * interrupt, return with no dispatch and no EOI" (matching the
+       * LAPIC spurious-vector contract in the SVR). A device that actually
+       * landed on 255 this way would have every interrupt it raises
+       * silently dropped forever — no dispatch, no EOI, no log — which is
+       * indistinguishable from a dead device and, for a level-triggered
+       * line an unacknowledged vector can leave logically stuck, a
+       * candidate for a wider stall. With this codebase's current bdf
+       * encoding (function occupies only bits 0-2, bits 3-7 are always
+       * zero) the old mask never actually reached 0xFF, but nothing
+       * enforced that invariant here — folding on the PCI function field's
+       * real width ('& 0x7', matching every other bdf-to-function use in
+       * this same function just below) makes the ceiling 224+7 = 231
+       * structurally, not incidentally, safe. */
+      uint32_t fallback = 224 + ((uint32_t)bdf & 0x7);
       pr_warn("HAL: PCI %02x:%02x.%x has no usable Interrupt Line (0x%x) — "
               "assigning fallback vector %u\n",
               (bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, line, fallback);

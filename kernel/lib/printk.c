@@ -258,53 +258,43 @@ void panic(const char *fmt, ...) {
   /* Signal all CPUs to stop BEFORE printing so no interleaving after this */
   __sync_fetch_and_add(&panic_flag, 1);
 
-  /* Fault context (kernel/fault.h): printk would take printk_lock (possibly
-   * held by a wedged CPU) and needs get_cpu_info — on amd64 a LAPIC-MMIO read
-   * that may itself fault.  Use the lock-free emergency path instead; print
-   * FIRST, then attempt the quiesce IPI (its MMIO write may be the thing
-   * that is broken). */
-  if (fault_depth() > 0) {
-    fault_printf("\n\n*** KERNEL PANIC (fault context) ***\n");
-    fault_printf("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
-    va_start(args, fmt);
-    fault_vprintf(fmt, args);
-    va_end(args);
-    fault_printf("\n");
-    backtrace_here();
-    fault_printf("\nSystem halted.\n");
-    irq_send_ipi_all();
+  /* FIX(PANIC-LOCKFREE-01): panic() used to split into two paths — a
+   * lock-free one (fault_printf/fault_vprintf) when reached from inside a
+   * CPU exception handler, and an ordinary printk()/vprintk() path
+   * otherwise, on the reasoning that only the fault-handler case needed to
+   * survive a wedged CPU holding printk's locks.
+   *
+   * That reasoning does not hold: printk_lock and the driver's uart_lock
+   * are global, cross-CPU locks (kernel/lib/printk.c, kernel/drivers/uart/
+   * 16550.c). ANY CPU stuck while holding either — which is precisely the
+   * failure mode this function exists to report, whatever ordinary
+   * (non-exception) code path detects it and calls panic() — would block
+   * the "non-fault" branch forever inside printk()/vprintk(), turning what
+   * should have been a panic banner into a totally silent, undiagnosable
+   * full-system hang: the exact symptom this driver/scheduler audit was
+   * asked to rule out. fault_printf/fault_vprintf (kernel/fault.h) are
+   * lock-free by contract for exactly this reason; panic() now always uses
+   * them, regardless of whether it was reached from a CPU exception. Print
+   * BEFORE the cross-CPU quiesce IPI (matching the former fault-context
+   * ordering) so the banner still gets out even if the IPI mechanism
+   * itself is what is broken; the accepted trade is that another CPU's
+   * legitimate printk() output may interleave with it on the wire (see
+   * fault.h), which is strictly better than no output at all. */
+  fault_printf("\n\n*** KERNEL PANIC ***\n");
+  fault_printf("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
+  va_start(args, fmt);
+  fault_vprintf(fmt, args);
+  va_end(args);
+  fault_printf("\n");
+  backtrace_here();
+  fault_printf("\nSystem halted.\n");
 
-    /* DIR-05 #139: also paint the fault on the framebuffer (no-UART machines).
-     * fault_text() is the full transcript tee'd through fault_vprintf above. */
-    panic_screen(fault_text());
-
-    panic_reboot_after_grace(); /* DIR-05 #139: ~10 s grace, then hard reset */
-  }
-
-  /* Send IPI (SGI0) to halt all other CPUs */
   irq_send_ipi_all();
 
-  printk("\n\n*** KERNEL PANIC ***\n");
-  printk("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
-
-  va_start(args, fmt);
-  vprintk(fmt, args);
-  va_end(args);
-
-  printk("\n");
-  backtrace_here();
-  printk("\nSystem halted.\n");
-
-  /* DIR-05 #139: paint the panic reason on the framebuffer too (no-UART case).
-   * Non-fault context, so fault_text() is empty — format the reason directly.
-   */
-  {
-    char nb[256];
-    va_start(args, fmt);
-    vsnprintf(nb, sizeof(nb), fmt, args);
-    va_end(args);
-    panic_screen(nb);
-  }
+  /* DIR-05 #139: paint the panic reason on the framebuffer too (no-UART
+   * machines). fault_text() is the full transcript just tee'd through
+   * fault_printf/fault_vprintf above. */
+  panic_screen(fault_text());
 
   /* DIR-05 #139 watchdog: ~10 s grace to read the panic, then hard reset. */
   panic_reboot_after_grace();

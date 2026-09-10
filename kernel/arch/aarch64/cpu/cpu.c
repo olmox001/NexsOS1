@@ -7,8 +7,9 @@
  *   1. Per-CPU hardware initialisation (CPACR, NEON, VBAR installation).
  *   2. The C-level synchronous exception handler (sync_handler), which is the
  *      top of the dispatch chain entered from exception.S's vector_stub macro.
- *      It decodes ESR_EL1.EC and routes to the syscall handler, the memory-probe
- *      recovery path, or a per-EL fault printer / panic / process terminator.
+ *      It decodes ESR_EL1.EC and routes to the syscall handler, the
+ * memory-probe recovery path, or a per-EL fault printer / panic / process
+ * terminator.
  *   3. SMP helper routines: per-CPU kernel stack management, secondary-CPU PGD
  *      propagation, and the early MMU-enable sequence (arch_vmm_init_hw).
  *
@@ -16,8 +17,9 @@
  *   - sync_handler is called with IRQs already masked (DAIF.I/F set by hardware
  *     on exception entry); it may only re-enable IRQs under specific recovery
  *     paths (see is_kernel_user_access_fault branch).
- *   - arch_vmm_init_hw must be called exactly once on the primary CPU before any
- *     secondary CPU is woken; secondaries read secondary_ttbr0 after this point.
+ *   - arch_vmm_init_hw must be called exactly once on the primary CPU before
+ * any secondary CPU is woken; secondaries read secondary_ttbr0 after this
+ * point.
  *   - CPACR_EL1.FPEN is set to 0b11 on every CPU so that the full NEON register
  *     set can be saved/restored by exception.S (q0–q31, FPSR, FPCR).
  *
@@ -34,13 +36,12 @@
  *            no SMP TLB shootdown is performed when secondary CPUs arrive.
  *   CPU-AARCH64-01 (W2 REFINE) sync_handler: a wild kernel pointer that
  *            happens to fall in the user VA range is misclassified as a
- *            kernel-uaccess fault, leading to silent process termination instead
- *            of a kernel panic. [static]
- *   SYS-AARCH64-02 (W2 BAD-IMPL) The is_kernel_user_access_fault recovery
- *            path unconditionally releases current_process->mm_lock and calls
- *            local_irq_enable(), assuming exact lock discipline that is not
- *            documented or enforced. A future refactor of uaccess critical
- *            sections could silently violate this coupling.
+ *            kernel-uaccess fault, leading to silent process termination
+ * instead of a kernel panic. [static] SYS-AARCH64-02 (W2 BAD-IMPL) The
+ * is_kernel_user_access_fault recovery path unconditionally releases
+ * current_process->mm_lock and calls local_irq_enable(), assuming exact lock
+ * discipline that is not documented or enforced. A future refactor of uaccess
+ * critical sections could silently violate this coupling.
  */
 #include <kernel/printk.h>
 #include <kernel/string.h>
@@ -72,7 +73,8 @@ extern uint32_t nr_cpus;
  * the backtrace walk, with margin.  In .bss → identity-mapped in kernel_pgd.
  */
 #define FAULT_STACK_SIZE 16384
-static uint8_t fault_stacks[MAX_CPUS][FAULT_STACK_SIZE] __attribute__((aligned(16)));
+static uint8_t fault_stacks[MAX_CPUS][FAULT_STACK_SIZE]
+    __attribute__((aligned(16)));
 uint64_t arch_fault_stack_top[MAX_CPUS]; /* read by exception.S vectors */
 
 /*
@@ -113,7 +115,8 @@ extern void exception_vectors_install(void);
  *      which allows EL0 and EL1 to execute floating-point and NEON instructions
  *      without trapping to a higher EL.  An ISB is issued to ensure the CPACR
  *      write takes effect before any subsequent NEON instruction.
- *   4. Installs the exception vector table (VBAR_EL1) via exception_vectors_install.
+ *   4. Installs the exception vector table (VBAR_EL1) via
+ * exception_vectors_install.
  *
  * Side effects: modifies CPACR_EL1, VBAR_EL1; prints boot diagnostics.
  * EL context: called at EL1 (MMU may or may not be active; called both pre- and
@@ -158,14 +161,15 @@ void arch_cpu_init(void) {
 /*
  * probe_in_progress / probe_failed - volatile flags for safe memory probing.
  *
- * Set by the manual RAM discovery loop in platform.c (arch_platform_get_mem_regions)
- * when the FDT memory parse fails.  When probe_in_progress is true and a Data Abort
- * or Instruction Abort fires, sync_handler advances ELR_EL1 by 4 to skip the faulting
- * load and sets probe_failed so the caller knows the address is unmapped.
+ * Set by the manual RAM discovery loop in platform.c
+ * (arch_platform_get_mem_regions) when the FDT memory parse fails.  When
+ * probe_in_progress is true and a Data Abort or Instruction Abort fires,
+ * sync_handler advances ELR_EL1 by 4 to skip the faulting load and sets
+ * probe_failed so the caller knows the address is unmapped.
  *
  * Both flags must be volatile: they are written by C code and tested in the
- * exception handler on the same CPU; without volatile the compiler could optimise
- * away the test or hoist the write out of the loop.
+ * exception handler on the same CPU; without volatile the compiler could
+ * optimise away the test or hoist the write out of the loop.
  *
  * NOTE(ARCH-05): This mechanism works only because QEMU's virt machine delivers
  * aborts synchronously on an invalid load.  On real hardware with speculative
@@ -179,13 +183,15 @@ volatile bool probe_failed = false;
  * sync_handler - C-level synchronous exception handler called from exception.S.
  *
  * Parameters:
- *   frame  Pointer to the 816-byte exception frame pushed on the kernel stack by
- *          the vector_stub macro in exception.S.  The handler may modify frame->elr
+ *   frame  Pointer to the 816-byte exception frame pushed on the kernel stack
+ * by the vector_stub macro in exception.S.  The handler may modify frame->elr
  *          to change the return address (e.g., probe recovery), or swap in a
- *          different frame pointer entirely (e.g., schedule() returning a new task).
+ *          different frame pointer entirely (e.g., schedule() returning a new
+ * task).
  *
  * Returns: pointer to the exception frame that should be restored on eret.
- *          Normally the same frame; after schedule() it is the new task's frame.
+ *          Normally the same frame; after schedule() it is the new task's
+ * frame.
  *
  * EL context: entered at EL1 with IRQs masked (DAIF.I set by hardware).
  *
@@ -204,23 +210,25 @@ volatile bool probe_failed = false;
  *   probe_failed is marked and ELR_EL1 is advanced by 4 to skip the faulting
  *   single instruction.  This is the only case where the handler returns early
  *   without the full fault-classification logic.
- *   NOTE(ARCH-05): See probe_in_progress declaration for caveats on real hardware.
+ *   NOTE(ARCH-05): See probe_in_progress declaration for caveats on real
+ * hardware.
  *
  * Fault classification (for all non-SVC ECs):
- *   is_user_fault       — SPSR.M[3:0] == 0b0000 (EL0t, i.e. exception came from EL0).
- *   is_kernel_user_access_fault — kernel was executing but FAR_EL1 points into user
- *                         VA range; implies an arch_copy_from/to_user access faulted.
+ *   is_user_fault       — SPSR.M[3:0] == 0b0000 (EL0t, i.e. exception came from
+ * EL0). is_kernel_user_access_fault — kernel was executing but FAR_EL1 points
+ * into user VA range; implies an arch_copy_from/to_user access faulted.
  *
- *   NOTE(CPU-AARCH64-01): A wild kernel pointer coincidentally in user VA range is
- *   misclassified as is_kernel_user_access_fault and leads to process termination
- *   instead of a kernel panic.  [static]
+ *   NOTE(CPU-AARCH64-01): A wild kernel pointer coincidentally in user VA range
+ * is misclassified as is_kernel_user_access_fault and leads to process
+ * termination instead of a kernel panic.  [static]
  *
  * User / uaccess fault handling:
- *   The current process is terminated and schedule() is called to pick a new task.
- *   NOTE(SYS-AARCH64-02): If is_kernel_user_access_fault is true, this code assumes
- *   the faulting code held mm_lock and had IRQs disabled, and unconditionally calls
- *   spin_unlock + local_irq_enable before process_terminate.  This is fragile; any
- *   future change to the uaccess critical section discipline must update this path.
+ *   The current process is terminated and schedule() is called to pick a new
+ * task. NOTE(SYS-AARCH64-02): If is_kernel_user_access_fault is true, this code
+ * assumes the faulting code held mm_lock and had IRQs disabled, and
+ * unconditionally calls spin_unlock + local_irq_enable before
+ * process_terminate.  This is fragile; any future change to the uaccess
+ * critical section discipline must update this path.
  *
  * Kernel fault handling: dumps all registers and calls panic().
  */
@@ -232,9 +240,10 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     return NULL;
 
   /* Read exception syndrome */
-  esr = arch_get_fault_status(); /* ESR_EL1: exception syndrome register */
-  far = arch_get_fault_address(); /* FAR_EL1: fault address register (valid for aborts) */
-  elr = frame->elr; /* ELR_EL1 saved in frame by vector_stub */
+  esr = arch_get_fault_status();  /* ESR_EL1: exception syndrome register */
+  far = arch_get_fault_address(); /* FAR_EL1: fault address register (valid for
+                                     aborts) */
+  elr = frame->elr;               /* ELR_EL1 saved in frame by vector_stub */
 
   /* ESR_EL1[31:26]: Exception Class — identifies the exception type */
   ec = (esr >> 26) & 0x3F;
@@ -250,7 +259,8 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
    * fault_exit() runs on every resuming path below; the panic path keeps the
    * depth elevated so panic() selects its fault-safe output mode. */
   if (fault_enter() > 1) {
-    fault_printf("\n[FATAL] NESTED EL1 EXCEPTION EC=0x%x ELR=%016lx FAR=%016lx — halting\n",
+    fault_printf("\n[FATAL] NESTED EL1 EXCEPTION EC=0x%x ELR=%016lx FAR=%016lx "
+                 "— halting\n",
                  ec, elr, far);
     arch_cpu_halt();
   }
@@ -258,10 +268,12 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
   /* Probe recovery: if a Data Abort (EC=0x24/0x25) or Instruction Abort
    * (EC=0x20/0x21) fires while a RAM probe is in progress, set probe_failed
    * and skip the faulting instruction by advancing ELR_EL1 by 4.
-   * The probe load is always a single 4-byte instruction (ldr/ldur), so +4 is safe.
-   * NOTE(ARCH-05): On real hardware with speculative loads this may not be
-   * sufficient; a proper exception-table fixup (like Linux's extable) is safer. */
-  if (probe_in_progress && (ec == 0x24 || ec == 0x25 || ec == 0x20 || ec == 0x21)) {
+   * The probe load is always a single 4-byte instruction (ldr/ldur), so +4 is
+   * safe. NOTE(ARCH-05): On real hardware with speculative loads this may not
+   * be sufficient; a proper exception-table fixup (like Linux's extable) is
+   * safer. */
+  if (probe_in_progress &&
+      (ec == 0x24 || ec == 0x25 || ec == 0x20 || ec == 0x21)) {
     probe_failed = true;
     /* Skip the faulting instruction (increment ELR by 4) */
     frame->elr += 4;
@@ -272,7 +284,8 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
      * original SP (free space: stacks grow down) and return that instead,
      * so execution resumes with SP exactly as it was at the abort. */
     if (arch_frame_on_fault_stack(frame)) {
-      uint64_t old_sp = *(uint64_t *)((char *)frame + 816) + 16; /* +16: scratch push */
+      uint64_t old_sp =
+          *(uint64_t *)((char *)frame + 816) + 16; /* +16: scratch push */
       struct pt_regs *orig = (struct pt_regs *)(old_sp - 816);
       memcpy(orig, frame, sizeof(*frame));
       return orig;
@@ -288,16 +301,20 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     break;
 
   case 0x20: /* Instruction abort from lower EL (EL0 code page not mapped) */
-  case 0x21: /* Instruction abort from same EL (EL1 instruction fault — kernel bug) */
+  case 0x21: /* Instruction abort from same EL (EL1 instruction fault — kernel
+                bug) */
     fault_printf("Instruction abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
     break;
 
-  case 0x24: /* Data abort from lower EL (EL0 load/store to unmapped/protected addr) */
-  case 0x25: /* Data abort from same EL (EL1 load/store fault — kernel bug or probe) */
+  case 0x24: /* Data abort from lower EL (EL0 load/store to unmapped/protected
+                addr) */
+  case 0x25: /* Data abort from same EL (EL1 load/store fault — kernel bug or
+                probe) */
     fault_printf("Data abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
     break;
 
-  case 0x26: /* SP alignment fault — SP not 16-byte aligned on exception entry */
+  case 0x26: /* SP alignment fault — SP not 16-byte aligned on exception entry
+              */
     fault_printf("SP alignment fault at 0x%016lx\n", elr);
     break;
 
@@ -320,10 +337,10 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     if (next)
       return next;
 
-
     /* Kernel fault: the address space may be compromised — every line below
      * goes through fault_printf (lock-free, no per-CPU buffer).  panic() at
-     * the end sees fault_depth() > 0 and uses its fault-safe output mode. */
+     * the end (FIX(PANIC-LOCKFREE-01), kernel/lib/printk.c) always uses that
+     * same lock-free output path now, not only when fault_depth() > 0. */
     fault_printf("%s", "--- Kernel Exception Context Dump ---\n");
     fault_printf("Process: PID %d\n",
                  current_process ? (int)current_process->pid : -1);
@@ -342,17 +359,19 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     }
 
     if (elr == 0) {
-        fault_printf("%s", "CRITICAL: Kernel jumped to NULL! Check exception vector table and function pointers.\n");
-        fault_printf("Stack at 0x%lx:\n", (uint64_t)frame);
-        for (int i = 0; i < 8; i++) {
-            fault_printf("  [%p] 0x%016lx\n", (void*)&((uint64_t*)frame)[i*2], ((uint64_t*)frame)[i*2]);
-        }
+      fault_printf("%s", "CRITICAL: Kernel jumped to NULL! Check exception "
+                         "vector table and function pointers.\n");
+      fault_printf("Stack at 0x%lx:\n", (uint64_t)frame);
+      for (int i = 0; i < 8; i++) {
+        fault_printf("  [%p] 0x%016lx\n", (void *)&((uint64_t *)frame)[i * 2],
+                     ((uint64_t *)frame)[i * 2]);
+      }
     }
 
     for (int i = 0; i < 31; i += 2) {
       if (i + 1 < 31) {
-        fault_printf("X%02d: 0x%016lx  X%02d: 0x%016lx\n", i, frame->regs[i], i + 1,
-                     frame->regs[i + 1]);
+        fault_printf("X%02d: 0x%016lx  X%02d: 0x%016lx\n", i, frame->regs[i],
+                     i + 1, frame->regs[i + 1]);
       } else {
         fault_printf("X%02d: 0x%016lx\n", i, frame->regs[i]);
       }
@@ -383,8 +402,9 @@ struct pt_regs *fiq_handler(struct pt_regs *frame) {
     fault_printf("\n[FATAL] NESTED FIQ ELR=%016lx — halting\n", frame->elr);
     arch_cpu_halt();
   }
-  fault_printf("\n[FIQ] Unexpected FIQ: ELR=%016lx SPSR=%016lx (FIQ is never enabled)\n",
-               frame->elr, frame->spsr);
+  fault_printf(
+      "\n[FIQ] Unexpected FIQ: ELR=%016lx SPSR=%016lx (FIQ is never enabled)\n",
+      frame->elr, frame->spsr);
   struct pt_regs *next = fault_handle_user_or_panic(
       frame, (frame->spsr & 0xF) == 0, 0, frame->elr, "UNEXPECTED FIQ", 0);
   if (next)
@@ -403,13 +423,15 @@ struct pt_regs *fiq_handler(struct pt_regs *frame) {
  */
 struct pt_regs *aarch32_handler(struct pt_regs *frame) {
   if (fault_enter() > 1) {
-    fault_printf("\n[FATAL] NESTED AArch32 exception ELR=%016lx — halting\n", frame->elr);
+    fault_printf("\n[FATAL] NESTED AArch32 exception ELR=%016lx — halting\n",
+                 frame->elr);
     arch_cpu_halt();
   }
-  fault_printf("\n[EL0-32] AArch32 EL0 exception: ELR=%016lx SPSR=%016lx (unsupported)\n",
+  fault_printf("\n[EL0-32] AArch32 EL0 exception: ELR=%016lx SPSR=%016lx "
+               "(unsupported)\n",
                frame->elr, frame->spsr);
-  struct pt_regs *next = fault_handle_user_or_panic(
-      frame, 1, 0, frame->elr, "AARCH32 EL0 EXCEPTION", 0);
+  struct pt_regs *next = fault_handle_user_or_panic(frame, 1, 0, frame->elr,
+                                                    "AARCH32 EL0 EXCEPTION", 0);
   if (next)
     return next;
   backtrace_regs(frame->elr, frame->regs[29]);
@@ -418,13 +440,14 @@ struct pt_regs *aarch32_handler(struct pt_regs *frame) {
 }
 
 /*
- * arch_secondary_stacks[] - per-CPU kernel stack top pointers for CPUs 0..MAX_CPUS-1.
- * Index i holds the TOP (highest address) of the 128KB kernel stack for CPU i,
- * because AArch64 stacks grow downward.
- * Populated by arch_smp_setup_stacks() before any secondary CPU is woken.
+ * arch_secondary_stacks[] - per-CPU kernel stack top pointers for CPUs
+ * 0..MAX_CPUS-1. Index i holds the TOP (highest address) of the 128KB kernel
+ * stack for CPU i, because AArch64 stacks grow downward. Populated by
+ * arch_smp_setup_stacks() before any secondary CPU is woken.
  */
 void *arch_secondary_stacks[MAX_CPUS] = {0};
-extern char __kernel_stack[]; /* BSS symbol; MAX_CPUS * 128KB array, see start.S */
+extern char
+    __kernel_stack[]; /* BSS symbol; MAX_CPUS * 128KB array, see start.S */
 
 /*
  * arch_smp_setup_stacks - allocate and record kernel stack tops for all CPUs.
@@ -433,37 +456,41 @@ extern char __kernel_stack[]; /* BSS symbol; MAX_CPUS * 128KB array, see start.S
  *   cpu_count  Number of CPUs to prepare stacks for (clamped to MAX_CPUS).
  *
  * Strategy:
- *   CPUs 0..7 (indices 0-based) use a static BSS region (__kernel_stack) that is
- *   pre-allocated in the linker script as MAX_CPUS * 128KB.  The top of CPU i's
- *   slice is at &__kernel_stack[(i+1) * 131072] (131072 == 128 KB).
+ *   CPUs 0..7 (indices 0-based) use a static BSS region (__kernel_stack) that
+ * is pre-allocated in the linker script as MAX_CPUS * 128KB.  The top of CPU
+ * i's slice is at &__kernel_stack[(i+1) * 131072] (131072 == 128 KB).
  *
  *   CPUs 8 and above receive a dynamically allocated 128KB region from the PMM.
  *   The pointer stored is the HIGH end (top) because stacks grow downward.
  *
- * Side effects: writes arch_secondary_stacks[]; allocates PMM pages for CPUs >= 8.
- * Called by: arch_smp_init() in platform.c before arch_cpu_wake_secondary().
+ * Side effects: writes arch_secondary_stacks[]; allocates PMM pages for CPUs
+ * >= 8. Called by: arch_smp_init() in platform.c before
+ * arch_cpu_wake_secondary().
  */
 void arch_smp_setup_stacks(uint32_t cpu_count) {
-    if (cpu_count > MAX_CPUS) cpu_count = MAX_CPUS;
+  if (cpu_count > MAX_CPUS)
+    cpu_count = MAX_CPUS;
 
-    for (uint32_t i = 0; i < cpu_count; i++) {
-        if (i < 8) {
-            /* First 8 cores use the static BSS stack area (512KB reserved).
-             * Each 128KB slice: CPU i occupies [i*128KB .. (i+1)*128KB).
-             * The stack pointer is set to the TOP of the slice (+1 past end). */
-            arch_secondary_stacks[i] = (void *)&__kernel_stack[(uint64_t)(i + 1) * 131072];
-        } else {
-            /* Core 9+ needs dynamic allocation from PMM */
-            void *ptr = pmm_alloc_pages(131072 / 4096);
-            if (!ptr) {
-                pr_err("CPU: OOM! Cannot allocate stack for core %u\n", i);
-                break;
-            }
-            /* Stack grows down, return the TOP */
-            arch_secondary_stacks[i] = (void *)((uintptr_t)ptr + 131072);
-            pr_info("CPU: Core %u using dynamic stack at %p\n", i, arch_secondary_stacks[i]);
-        }
+  for (uint32_t i = 0; i < cpu_count; i++) {
+    if (i < 8) {
+      /* First 8 cores use the static BSS stack area (512KB reserved).
+       * Each 128KB slice: CPU i occupies [i*128KB .. (i+1)*128KB).
+       * The stack pointer is set to the TOP of the slice (+1 past end). */
+      arch_secondary_stacks[i] =
+          (void *)&__kernel_stack[(uint64_t)(i + 1) * 131072];
+    } else {
+      /* Core 9+ needs dynamic allocation from PMM */
+      void *ptr = pmm_alloc_pages(131072 / 4096);
+      if (!ptr) {
+        pr_err("CPU: OOM! Cannot allocate stack for core %u\n", i);
+        break;
+      }
+      /* Stack grows down, return the TOP */
+      arch_secondary_stacks[i] = (void *)((uintptr_t)ptr + 131072);
+      pr_info("CPU: Core %u using dynamic stack at %p\n", i,
+              arch_secondary_stacks[i]);
     }
+  }
 }
 
 /*
@@ -478,13 +505,15 @@ void arch_smp_setup_stacks(uint32_t cpu_count) {
  * Falls back to the BSS array formula for CPUs not yet set up (bootstrap path).
  */
 void *arch_get_kernel_stack(uint32_t cpu_id) {
-    if (cpu_id >= MAX_CPUS) return NULL;
+  if (cpu_id >= MAX_CPUS)
+    return NULL;
 
-    /* If dynamic stacks are set up, use them */
-    if (arch_secondary_stacks[cpu_id]) return arch_secondary_stacks[cpu_id];
+  /* If dynamic stacks are set up, use them */
+  if (arch_secondary_stacks[cpu_id])
+    return arch_secondary_stacks[cpu_id];
 
-    /* Bootstrap fallback: same formula as arch_smp_setup_stacks for CPUs < 8 */
-    return (void *)&__kernel_stack[(uint64_t)(cpu_id + 1) * 131072];
+  /* Bootstrap fallback: same formula as arch_smp_setup_stacks for CPUs < 8 */
+  return (void *)&__kernel_stack[(uint64_t)(cpu_id + 1) * 131072];
 }
 
 /*
@@ -502,9 +531,9 @@ void *arch_get_kernel_stack(uint32_t cpu_id) {
  */
 extern uint64_t secondary_ttbr1;
 void arch_vmm_set_secondary_pgd(uint64_t pgd) {
-    secondary_ttbr1 = pgd;
-    arch_cache_clean_range(&secondary_ttbr1, sizeof(secondary_ttbr1));
-    arch_mb();
+  secondary_ttbr1 = pgd;
+  arch_cache_clean_range(&secondary_ttbr1, sizeof(secondary_ttbr1));
+  arch_mb();
 }
 
 /*
@@ -572,7 +601,8 @@ static uint64_t idle_user_pgd_phys(void) {
  *   0x0A000000 VirtIO MMIO devices (VIRTIO_MMIO_BASE, 32 slots * 0x200)
  *
  * Called from kernel_main during early MMU setup for both the primary kernel
- * PGD and each process PGD (via arch_vmm_create_process_pgd -> arch_vmm_map_mmio).
+ * PGD and each process PGD (via arch_vmm_create_process_pgd ->
+ * arch_vmm_map_mmio).
  */
 void arch_vmm_map_mmio(uint64_t *pgd) {
   /* Map MMIO (UART, GIC, VirtIO) at its direct-map VA (phys_to_virt;
@@ -593,7 +623,8 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
 }
 
 /*
- * arch_cpu_switch_context - perform the architecture-specific address-space switch.
+ * arch_cpu_switch_context - perform the architecture-specific address-space
+ * switch.
  *
  * Parameters:
  *   next  Process descriptor for the task being scheduled in.
@@ -602,9 +633,9 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
  * L0 PGD).  The caller (schedule / ctx_switch) is responsible for saving and
  * restoring the general-purpose register context (via ctx_switch in context.S).
  *
- * A kernel thread (e.g. idle) has no private address space (page_table == NULL):
- * switch it onto the shared kernel_pgd instead of leaving the PREVIOUS process's
- * PGD active in TTBR0_EL1.
+ * A kernel thread (e.g. idle) has no private address space (page_table ==
+ * NULL): switch it onto the shared kernel_pgd instead of leaving the PREVIOUS
+ * process's PGD active in TTBR0_EL1.
  *
  * SCHED-UAF-01 (interactive-close residual, aarch64 HAL): the whole aarch64
  * kernel runs from TTBR0 only (EPD1=1, no TTBR1 higher-half — see
@@ -623,25 +654,25 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
  * which completes the switch — no further barrier is needed after it.
  */
 void arch_cpu_switch_context(struct process *next) {
-    /* TTBR0 is the USER half only (the kernel lives in TTBR1).  A process
-     * gets its own PGD; a kernel thread (idle) gets the EMPTY idle user
-     * PGD — never a stale process PGD (SCHED-UAF-01) and never the kernel
-     * PGD (which would alias all RAM into the user VA range).
-     *
-     * ASID-TAGGED SWITCH (perf §3, DIR-06): TTBR0_EL1[63:48] carries the
-     * address-space ASID (next->asid, assigned in process_create; 16-bit since
-     * TCR_EL1.AS=1).  Because every TLB entry is tagged with its ASID, the
-     * switch needs NO TLB flush: entries for other ASIDs stay valid, and this
-     * ASID's entries were cleared at the previous owner's teardown
-     * (arch_tlb_shootdown_all on PGD destroy) before the pool slot — hence the
-     * ASID — was recycled.  Kernel threads use the idle user PGD with ASID 0.
-     * An ISB after the TTBR0 write makes the new regime effective for the kernel
-     * epilogue; the ERET back to user is itself context-synchronizing. */
-    uint64_t pgd = next->page_table ? virt_to_phys(next->page_table)
-                                    : idle_user_pgd_phys();
-    if (pgd) {
-        uint64_t asid = next->page_table ? (uint64_t)next->asid : 0;
-        arch_vmm_set_pgd(pgd | (asid << 48));
-        arch_isb();
-    }
+  /* TTBR0 is the USER half only (the kernel lives in TTBR1).  A process
+   * gets its own PGD; a kernel thread (idle) gets the EMPTY idle user
+   * PGD — never a stale process PGD (SCHED-UAF-01) and never the kernel
+   * PGD (which would alias all RAM into the user VA range).
+   *
+   * ASID-TAGGED SWITCH (perf §3, DIR-06): TTBR0_EL1[63:48] carries the
+   * address-space ASID (next->asid, assigned in process_create; 16-bit since
+   * TCR_EL1.AS=1).  Because every TLB entry is tagged with its ASID, the
+   * switch needs NO TLB flush: entries for other ASIDs stay valid, and this
+   * ASID's entries were cleared at the previous owner's teardown
+   * (arch_tlb_shootdown_all on PGD destroy) before the pool slot — hence the
+   * ASID — was recycled.  Kernel threads use the idle user PGD with ASID 0.
+   * An ISB after the TTBR0 write makes the new regime effective for the kernel
+   * epilogue; the ERET back to user is itself context-synchronizing. */
+  uint64_t pgd =
+      next->page_table ? virt_to_phys(next->page_table) : idle_user_pgd_phys();
+  if (pgd) {
+    uint64_t asid = next->page_table ? (uint64_t)next->asid : 0;
+    arch_vmm_set_pgd(pgd | (asid << 48));
+    arch_isb();
+  }
 }

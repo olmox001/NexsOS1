@@ -55,10 +55,36 @@
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
 #include <kernel/printk.h>
+#include <kernel/spinlock.h>
 
 /* ticks_per_ms: LAPIC timer decrements per millisecond at LAPIC_TIMER_DIV16.
  * Set by lapic_timer_calibrate(); used by lapic_timer_setup() and udelay(). */
 uint32_t ticks_per_ms = 0;
+
+/* calib_lock - serialises tsc_calibrate()/lapic_timer_calibrate() against
+ * the shared, single-instance 8254 PIT.
+ *
+ * FIX(TIMER-CALIB-RACE-01): both functions guard their own body with a bare
+ * "if (already_done) return" on tsc_hz / ticks_per_ms.  That check-then-act
+ * sequence is idempotent ONLY as long as no two CPUs can ever be inside it
+ * at once — a property this file never enforced itself; it relied entirely
+ * on an invariant living in kernel/main.c and kernel/core/smp.c (BSP
+ * calibrates before any AP is woken, and APs are brought up strictly one at
+ * a time, ack-gated).  That invariant is real today, but it is invisible
+ * from this file, easy to violate by a future change to the boot sequence
+ * (or a bring-up path that does not go through smp_bringup_secondary), and
+ * its violation is exactly the class of bug that produces this system's
+ * reported symptom: two CPUs interleaving their PIT programming
+ * (PIT_CMD/PIT_CH0 writes) corrupts the ~10 ms measurement window for BOTH,
+ * silently publishing a garbage ticks_per_ms/tsc_hz that every CPU then
+ * trusts forever — a wrong (or zero-length) LAPIC periodic interval reads
+ * exactly like "the clock stopped", intermittently, depending on how the
+ * two calibration attempts happened to race.  Locking the whole
+ * check-and-calibrate sequence removes the dependency on that cross-file
+ * invariant instead of merely trusting it, at zero cost on the fast path
+ * (real calibration runs exactly once per boot; every other caller takes
+ * the lock only to observe the already-published value and return). */
+static spinlock_t calib_lock = SPINLOCK_INIT;
 
 /* tsc_hz: measured TSC frequency in counts/second (docs/TIMER-MODEL.md §1).
  * This is the real-time reference the whole 3-tier clock is built on:
@@ -237,10 +263,18 @@ static inline uint64_t rdtsc64(void) {
  * Locking: none; BSP-only, before SMP.  IRQ context: NO (busy-polls ~10 ms
  * with the PIT; must run with the timer IRQ not yet started).
  */
-void tsc_calibrate(void) {
-  if (tsc_hz != 0)
-    return;
-
+/*
+ * tsc_calibrate_locked - the actual TSC calibration work.
+ *
+ * FIX(TIMER-CALIB-RACE-01): factored out of tsc_calibrate() so
+ * lapic_timer_calibrate() can perform the TSC step WITHOUT recursively
+ * acquiring calib_lock (spinlock_t here is not reentrant — a naive "just
+ * call tsc_calibrate() from lapic_timer_calibrate() while already holding
+ * calib_lock" would self-deadlock the very first time real calibration
+ * ever ran). Caller MUST already hold calib_lock and MUST have already
+ * checked tsc_hz == 0.
+ */
+static void tsc_calibrate_locked(void) {
   /* Invariant-TSC advisory (CPUID 0x80000007 EDX bit 8).  When clear, the
    * TSC may change rate with P-states / deep C-states and the single BSP
    * calibration shared by all APs is theoretically unsafe.  QEMU advertises
@@ -294,6 +328,27 @@ void tsc_calibrate(void) {
 }
 
 /*
+ * tsc_calibrate - public, lock-acquiring entry point for TSC calibration.
+ *
+ * FIX(TIMER-CALIB-RACE-01): acquires calib_lock (IRQs saved) around the
+ * whole check-then-calibrate sequence so two CPUs can never interleave
+ * their PIT programming — see calib_lock's declaration for why this
+ * matters (a corrupted calibration silently poisons every CPU's clock for
+ * the rest of the boot). A CPU that finds tsc_hz already published just
+ * takes and releases an uncontended lock and returns immediately.
+ *
+ * Locking: acquires calib_lock (irqsave). IRQ context: NO (see
+ * tsc_calibrate_locked; unchanged from before this fix).
+ */
+void tsc_calibrate(void) {
+  uint64_t calib_flags;
+  spin_lock_irqsave(&calib_lock, &calib_flags);
+  if (tsc_hz == 0)
+    tsc_calibrate_locked();
+  spin_unlock_irqrestore(&calib_lock, calib_flags);
+}
+
+/*
  * lapic_timer_calibrate - determine LAPIC timer frequency using the PIT.
  *
  * Algorithm:
@@ -314,15 +369,33 @@ void tsc_calibrate(void) {
  * the calibrated LAPIC TCC, so the microsecond timestamp is inaccurate.
  */
 void lapic_timer_calibrate(void) {
-  if (ticks_per_ms != 0)
+  /* FIX(TIMER-CALIB-RACE-01): the entire function — including the TSC step
+   * below and the LAPIC/PIT measurement that follows — now runs under
+   * calib_lock, taken exactly ONCE here.  tsc_calibrate_locked() (not the
+   * lock-acquiring tsc_calibrate()) is called directly to avoid recursively
+   * acquiring the same non-reentrant spinlock. See calib_lock's declaration
+   * for why serialising this against every other CPU matters: without it,
+   * two CPUs racing into their first calibration attempt can interleave
+   * PIT_CMD/PIT_CH0 writes and each measure a corrupted ~10 ms window,
+   * publishing a garbage ticks_per_ms/tsc_hz that is then trusted by every
+   * CPU for the rest of the boot — the exact failure mode that reads back
+   * as "the clock stopped" together with a full system stall. */
+  uint64_t calib_flags;
+  spin_lock_irqsave(&calib_lock, &calib_flags);
+
+  if (ticks_per_ms != 0) {
+    spin_unlock_irqrestore(&calib_lock, calib_flags);
     return;
+  }
 
   /* Measure the TSC frequency first (docs/TIMER-MODEL.md §1): this must be
    * published into tsc_hz before the LAPIC timer starts, because the
    * arch-neutral mono_ns()/jiffies reconciliation begins on the first tick.
    * Idempotent and BSP-only — its own ~10 ms PIT window runs before the one
-   * below, both with the timer IRQ still off. */
-  tsc_calibrate();
+   * below, both with the timer IRQ still off, and both now under the same
+   * calib_lock critical section as one atomic calibration pass. */
+  if (tsc_hz == 0)
+    tsc_calibrate_locked();
 
   pr_info("LAPIC: Calibrating timer against PIT...\n");
 
@@ -365,6 +438,8 @@ void lapic_timer_calibrate(void) {
   outb(PIT_CMD, 0x30); /* channel 0, lobyte/hibyte, mode 0, no count loaded */
 
   pr_info("LAPIC: Timer calibrated: %u ticks per ms\n", ticks_per_ms);
+
+  spin_unlock_irqrestore(&calib_lock, calib_flags);
 }
 
 /*

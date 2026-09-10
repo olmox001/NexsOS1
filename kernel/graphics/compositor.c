@@ -637,10 +637,51 @@ static int desktop_zoom = 100;
  * this function returns, that reader can observe a partially-initialised
  * state (e.g. bb_width/bb_height updated but compositor_backbuffer not yet,
  * or the reverse), which is exactly the kind of half-initialised global
- * state that produces a black/corrupt screen instead of a crash. Now the
- * entire write sequence — allocation included — runs under compositor_lock,
- * matching every other writer in this file. */
+ * state that produces a black/corrupt screen instead of a crash.
+ *
+ * FIX(COMPOSITOR-INIT-02, revised): a prior version of this fix took
+ * compositor_lock (IRQs saved) around the ENTIRE function, including the
+ * pmm_alloc_pages_dma() call, on the strength of a comment asserting that
+ * this specific allocator path "never sleeps, never takes another lock,
+ * never re-enters the scheduler". That claim is not something this file
+ * can verify or enforce — pmm.c's allocator takes its own per-zone
+ * spinlock internally (alloc_pages_impl), and holding a second spinlock
+ * with IRQs off for the duration of an unbounded, size-dependent
+ * allocation (plus, on the failure path, a pr_err() that itself takes
+ * printk's locks) is exactly the shape of critical section this codebase
+ * otherwise avoids everywhere else. The allocation is done here BEFORE
+ * compositor_lock is taken at all: compositor_lock now protects only the
+ * bookkeeping-field PUBLISH step, which is the actual thing
+ * COMPOSITOR-INIT-01 needed atomic, and never overlaps with pmm's own
+ * lock or with I/O. */
 void compositor_init(void) {
+  /* Backbuffer == the GPU scanout size at boot (no hard-coded size).
+   * Reading gpu_get_primary()/dev fields here, before compositor_lock is
+   * held, is safe: no other code path publishes windows[]/bb_* before this
+   * function returns, so there is nothing yet for a concurrent reader to
+   * race against. */
+  struct gpu_device *dev = gpu_get_primary();
+  int w = dev ? dev->width : COMPOSITOR_FALLBACK_W;
+  int h = dev ? dev->height : COMPOSITOR_FALLBACK_H;
+  int pages = (int)(((size_t)w * h * 4 + 4095) / 4096);
+
+  /* Allocation happens OUTSIDE any lock held by this function — see
+   * FIX(COMPOSITOR-INIT-02) above. */
+  void *backbuffer = pmm_alloc_pages_dma(pages);
+  if (!backbuffer) {
+    pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
+    uint64_t flags;
+    spin_lock_irqsave(&compositor_lock, &flags);
+    bb_pages = 0;
+    bb_width = 0;
+    bb_height = 0;
+    compositor_backbuffer = NULL;
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return;
+  }
+
+  /* Everything below is now a short, bounded, I/O-free sequence of plain
+   * field writes — publish it atomically under compositor_lock. */
   uint64_t flags;
   spin_lock_irqsave(&compositor_lock, &flags);
 
@@ -648,32 +689,12 @@ void compositor_init(void) {
   window_count = 0;
   next_window_id = 100;
 
-  /* Backbuffer == the GPU scanout size at boot (no hard-coded size). */
-  struct gpu_device *dev = gpu_get_primary();
-  int w = dev ? dev->width : COMPOSITOR_FALLBACK_W;
-  int h = dev ? dev->height : COMPOSITOR_FALLBACK_H;
   native_w = w;
   native_h = h;
   desktop_zoom = 100;
 
-  bb_pages = (int)(((size_t)w * h * 4 + 4095) / 4096);
-  /* FIX(COMPOSITOR-INIT-02): pmm_alloc_pages_dma() can block/reschedule on
-   * some allocator paths; doing it under a spinlock with IRQs off is
-   * normally forbidden (Rule: no blocking calls while holding a spinlock).
-   * This allocator path is the boot-time bump/early allocator (verified:
-   * it never sleeps, never takes another lock, and never re-enters the
-   * scheduler — pmm.c early path), so holding compositor_lock across it is
-   * safe here specifically; it is NOT a pattern to copy for a general
-   * allocation under this lock elsewhere in this file. */
-  compositor_backbuffer = pmm_alloc_pages_dma(bb_pages);
-  if (!compositor_backbuffer) {
-    pr_err("%s", "Compositor: Failed to allocate backbuffer!\n");
-    bb_pages = 0;
-    bb_width = 0;
-    bb_height = 0;
-    spin_unlock_irqrestore(&compositor_lock, flags);
-    return;
-  }
+  bb_pages = pages;
+  compositor_backbuffer = backbuffer;
   bb_width = w;
   bb_height = h;
 

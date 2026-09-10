@@ -527,6 +527,20 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
   *p_stack = (uint64_t)stack;          /* RSP: top of AP kernel stack */
   *p_entry = (uint64_t)secondary_cpu_entry; /* call target after long mode */
 
+  /* FIX(SMP-TRAMP-BARRIER-01): ensure the trampoline_pml4/stack/entry stores
+   * above are globally visible BEFORE the INIT IPI is sent below. This was
+   * silently dropped in a later pass with no replacement and no correctness
+   * argument recorded anywhere; restored defensively. The AP that answers
+   * this INIT+SIPI reads these exact fields back out of this same shared
+   * page (TRAMPOLINE_BASE is reused for every AP in turn — see this
+   * function's header comment on FIX(BOOT-03)); nothing else in this
+   * function orders those writes relative to the IPI, which is itself a
+   * store to LAPIC ICR MMIO. A missing barrier here is the kind of bug
+   * that only shows up as an intermittent wrong RSP/entry/CR3 on a woken
+   * AP — i.e. exactly the class of "boots fine most of the time, hangs
+   * hard on some boots" symptom this driver has been asked to rule out. */
+  __asm__ __volatile__("mfence" ::: "memory");
+
   lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL | ICR_PHYSICAL);
 
   /* 4. 10 ms between INIT and first STARTUP (Intel SDM). */
