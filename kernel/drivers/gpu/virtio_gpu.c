@@ -475,14 +475,44 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
    * even after the device's DMA write actually landed in RAM — the loop
    * would then spin until pure timeout every single time on any hardware
    * where the device write is not cache-coherent with this core, not just
-   * intermittently. */
-  uint64_t timeout = 200000000;
-  while (timeout > 0) {
+   * intermittently.
+   *
+   * FIX(VGPU-STALL-01): the timeout budget used to be a raw ITERATION
+   * count (2e8), not a bounded wall-clock time. Every caller of this
+   * function that goes through vgpu_flush()/vgpu_xfer_flush_locked() (i.e.
+   * every compositor frame — nxinit drives this at ~30 FPS from its own
+   * process context, see kernel/graphics/compositor.c and user/sys/bin/
+   * nxinit.c) runs this loop TWICE per frame with gpu_lock held and this
+   * CPU's local IRQs disabled. An iteration count has no fixed real-time
+   * meaning, and this exact pass added a clflush + mfence to every single
+   * iteration (arch_cache_invalidate_range), multiplying the real
+   * wall-clock cost of "give up after 2e8 tries" by however expensive that
+   * turns out to be — an already risky "hold a lock with IRQs off across a
+   * device wait, on every frame" design gained a genuinely unbounded,
+   * unpredictable worst case. If this stalls on whichever CPU is driving
+   * jiffies (kernel/core/timer.c) — which for this driver is exactly the
+   * CPU calling flush() from nxinit's supervisor loop — that reads back as
+   * "the clock stopped" and "the whole desktop froze" at the same time:
+   * precisely the class of intermittent full-system hang this driver was
+   * audited for. Bounded to a fixed wall-clock deadline instead (same
+   * arch_timer_get_freq()/arch_timer_get_count() seam already used by
+   * kernel/core/smp.c's own bounded wait and by virtio_blk.c's matching
+   * fix), so the worst case per call is a known, small, real duration
+   * regardless of what future changes add to the loop body. A normal
+   * virtio-gpu round trip completes in microseconds; 500 ms is generous
+   * headroom for host scheduling jitter without letting one wedged frame
+   * hold the whole system's IRQs off anywhere near as long as the old
+   * budget could. */
+  uint64_t vgpu_deadline =
+      arch_timer_get_count() + arch_timer_get_freq() / 2ULL; /* +500 ms */
+  int completed = 0;
+  while ((int64_t)(vgpu_deadline - arch_timer_get_count()) > 0) {
     arch_cache_invalidate_range((void *)used, sizeof(*used));
-    if (*idx_ptr != old_idx)
+    if (*idx_ptr != old_idx) {
+      completed = 1;
       break;
+    }
     arch_yield();
-    timeout--;
   }
 
   /* FIX(VGPU-POLL-02): VIRTIO_MMIO_INTERRUPT_ACK used to be written
@@ -493,7 +523,7 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
    * is, with no ACK write, so a caller retrying (or the caller's caller,
    * e.g. compositor_init()'s single vgpu_create_2d/attach/set_scanout
    * chain) sees a real -1 instead of a silently swallowed timeout. */
-  if (timeout == 0) {
+  if (!completed) {
     pr_err("%s", "VirtIO-GPU: Timeout waiting for device response!\n");
     return -1;
   }

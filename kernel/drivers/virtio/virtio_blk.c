@@ -196,20 +196,49 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
    * it — without this a cached read can keep hitting the same stale line
    * forever even after the device's completion write actually landed in
    * RAM, on any hardware where that write is not cache-coherent with this
-   * core (see VGPU-DMA-03 in virtio_gpu.c for the identical hazard). */
-  uint64_t timeout = 1000000000;
-  while (timeout > 0) {
+   * core (see VGPU-DMA-03 in virtio_gpu.c for the identical hazard).
+   *
+   * FIX(VBLK-STALL-01): the timeout budget used to be a raw ITERATION
+   * count (1e9), not a bounded wall-clock time. This loop runs with
+   * virtio_blk_lock held and this CPU's local IRQs disabled (see the lock
+   * comment above) — every device driver on this CPU, this CPU's local
+   * timer tick, and (via the lock) every OTHER CPU trying to issue block
+   * I/O concurrently are all stalled for however long this loop actually
+   * takes to give up. An iteration count has no fixed real-time meaning:
+   * this exact pass added a clflush + two mfences to every single
+   * iteration (arch_cache_invalidate_range), which multiplies the real
+   * wall-clock cost of "give up after 1e9 tries" by however expensive
+   * that turns out to be on the running hardware — turning an already
+   * risky "hold a global lock with IRQs off across a device wait" design
+   * into one whose worst-case duration is not just large but genuinely
+   * unbounded and unpredictable. If this CPU happens to be the one
+   * driving jiffies (kernel/core/timer.c), that reads back as "the clock
+   * stopped"; system-wide it reads back as a full stall, matching exactly
+   * the class of intermittent hang this driver was audited for. Bounded
+   * to a fixed wall-clock deadline instead (same arch_timer_get_freq()/
+   * arch_timer_get_count() seam already used by kernel/core/smp.c's own
+   * bounded wait), so the worst case is a known, small, real duration
+   * regardless of what future changes add to the loop body. A normal
+   * virtio round trip completes in microseconds; 500 ms is generous
+   * headroom for host scheduling jitter without letting a genuinely wedged
+   * device hold the whole system's IRQs off for anything close to as long
+   * as the old budget could. */
+  uint64_t vblk_deadline =
+      arch_timer_get_count() + arch_timer_get_freq() / 2ULL; /* +500 ms */
+  int completed = 0;
+  while ((int64_t)(vblk_deadline - arch_timer_get_count()) > 0) {
     arch_cache_invalidate_range((void *)used, sizeof(*used));
-    if (*used_idx_ptr != old_idx)
+    if (*used_idx_ptr != old_idx) {
+      completed = 1;
       break;
+    }
     hal_cpu_yield();
-    timeout--;
   }
 
   /* Clear interrupt status (Legacy VirtIO requirement) */
   virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
 
-  if (timeout == 0) {
+  if (!completed) {
     uint32_t isr = virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
     pr_err("VirtIO-Blk: Timeout waiting for device response! (used->idx=%d "
            "old_idx=%d, ISR=%02x)\n",

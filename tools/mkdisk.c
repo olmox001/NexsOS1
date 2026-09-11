@@ -57,25 +57,26 @@
  * deliberately out of scope here.
  */
 /* MKDISK-MULTIGROUP-01
- * Each block group is indexed by one 4 KiB block bitmap = 32768 blocks = 128 MiB.
- * Multi-group support means total_blocks can be n_groups * BLOCKS_PER_GROUP.
- * MAX_GROUPS caps the GDT at one 4 KiB block (128 entries × 32 B = 4096 B).
- * At 32768 blocks/group that is 16 GiB; our images stay well under that.
- * The old single-group ceiling (EXT4_SINGLE_GROUP_MAX_BLOCKS) is kept as an
- * alias so the existing guard in write_ext4_partition still compiles. */
-#define BLOCKS_PER_GROUP       (8 * EXT4_BLOCK_SIZE)   /* 32768 = 128 MiB/group */
-#define MAX_GROUPS             128                       /* fits in one GDT block */
-#define EXT4_MAX_BLOCKS        ((uint64_t)MAX_GROUPS * BLOCKS_PER_GROUP)
+ * Each block group is indexed by one 4 KiB block bitmap = 32768 blocks = 128
+ * MiB. Multi-group support means total_blocks can be n_groups *
+ * BLOCKS_PER_GROUP. MAX_GROUPS caps the GDT at one 4 KiB block (128 entries ×
+ * 32 B = 4096 B). At 32768 blocks/group that is 16 GiB; our images stay well
+ * under that. The old single-group ceiling (EXT4_SINGLE_GROUP_MAX_BLOCKS) is
+ * kept as an alias so the existing guard in write_ext4_partition still
+ * compiles. */
+#define BLOCKS_PER_GROUP (8 * EXT4_BLOCK_SIZE) /* 32768 = 128 MiB/group */
+#define MAX_GROUPS 128                         /* fits in one GDT block */
+#define EXT4_MAX_BLOCKS ((uint64_t)MAX_GROUPS * BLOCKS_PER_GROUP)
 /* Alias kept for the one guard site still using the old name. */
 #define EXT4_SINGLE_GROUP_MAX_BLOCKS BLOCKS_PER_GROUP
 /* Metadata overhead of group 0 (superblock + GDT + 2 bitmaps + inode table). */
-#define G0_META_BLOCKS         BLK_DATA_START           /* == 68 */
+#define G0_META_BLOCKS BLK_DATA_START /* == 68 */
 /* Metadata overhead per group G > 0: block-bitmap + inode-bitmap + 1 dummy
  * inode-table block. Inodes all live in group 0; groups 1+ carry 0 free inodes
  * (bg_free_inodes_count_lo == 0) so the allocator never touches them.       */
-#define GN_META_BLOCKS         3
+#define GN_META_BLOCKS 3
 /* Minimum partition: 4 groups (512 MiB) as requested. */
-#define MIN_PARTITION_BLOCKS   (4 * BLOCKS_PER_GROUP)   /* 512 MiB */
+#define MIN_PARTITION_BLOCKS (4 * BLOCKS_PER_GROUP) /* 512 MiB */
 #define RUNTIME_RESERVE_BLOCKS 0
 
 /* GPT Constants */
@@ -385,8 +386,30 @@ struct ext4_superblock {
   uint16_t s_min_extra_isize;
   uint16_t s_want_extra_isize;
   uint32_t s_flags;
-  uint8_t padding[1024 - 364];
+  /* FIX(EXT4-SB-SIZE-01, mirrored from kernel/include/kernel/ext4.h): the
+   * named fields above sum to exactly 356 bytes (verified byte-by-byte),
+   * not 364 — this struct must be the on-disk mirror of the kernel's
+   * struct ext4_superblock (see this file's header and ext4.h's own
+   * header: "if you change a struct here, mkdisk.c's mirrored copy must
+   * change identically or the two will silently disagree about layout").
+   * The kernel side was fixed to 'padding[1024 - 356]' + a _Static_assert
+   * pinning the struct at exactly 1024 bytes; this copy was NOT updated
+   * along with it, leaving mkdisk.c's superblock at 1016 bytes. The
+   * effect was benign only by accident: xwrite(&sb, 1, sizeof(sb), f)
+   * below wrote 8 bytes short of the real 1024-byte (2-sector) superblock
+   * region, and every write after it (GDT, bitmaps, inode table) uses an
+   * explicit absolute xseek() rather than continuing from this write's
+   * file position, so nothing downstream was misplaced — but the last 8
+   * bytes of the on-disk superblock were left as whatever the freshly
+   * created image file already held there (typically a zero-filled hole)
+   * instead of being deterministically written by this tool, and any
+   * future field added to that trailing region would have silently
+   * disagreed between mkdisk.c and the kernel. Corrected to match. */
+  uint8_t padding[1024 - 356];
 } __attribute__((packed));
+_Static_assert(sizeof(struct ext4_superblock) == 1024,
+               "ext4_superblock must be exactly 1024 bytes (2 sectors) -- "
+               "on-disk layout contract with kernel/include/kernel/ext4.h");
 
 struct ext4_group_desc {
   uint32_t bg_block_bitmap_lo;
@@ -396,7 +419,8 @@ struct ext4_group_desc {
   uint16_t bg_free_inodes_count_lo;
   uint16_t bg_used_dirs_count_lo;
   uint16_t bg_flags;
-  uint8_t padding[12]; /* 20 named + 12 = 32 bytes, standard on-disk GDT entry size */
+  uint8_t padding[12]; /* 20 named + 12 = 32 bytes, standard on-disk GDT entry
+                          size */
 } __attribute__((packed));
 
 struct ext4_inode {
@@ -457,13 +481,13 @@ struct ext4_extent {
  * inode_bitmap covers group 0 only; groups 1+ have their inode bitmaps
  * written as all-1s (no free inodes) directly by write_ext4_partition. */
 static uint8_t **block_bitmaps = NULL; /* [n_groups] pointers */
-static uint8_t *inode_bitmap   = NULL; /* group 0 inode bitmap */
+static uint8_t *inode_bitmap = NULL;   /* group 0 inode bitmap */
 static uint32_t n_groups_alloc = 0;    /* how many bitmaps are allocated */
-static uint32_t next_free_block      = BLK_DATA_START;
-static uint32_t current_free_inode   = 11;
-static uint32_t total_blocks         = 0;
-static uint32_t free_blocks_count    = 0;
-static uint32_t free_inodes_count    = 1014;
+static uint32_t next_free_block = BLK_DATA_START;
+static uint32_t current_free_inode = 11;
+static uint32_t total_blocks = 0;
+static uint32_t free_blocks_count = 0;
+static uint32_t free_inodes_count = 1014;
 /* Inode layout: 1 = extent trees (mkfs.ext4 default, what the kernel must
  * handle on real images), 0 = legacy direct/indirect pointers (--legacy). */
 static int use_extents = 1;
@@ -577,10 +601,11 @@ static uint64_t plan_partition_blocks(const char *root_host) {
 
   /* Raw content in group 0 data area. */
   uint64_t content_blocks = BLK_DATA_START + plan.data_blocks +
-                             plan.extent_leaf_blocks + RUNTIME_RESERVE_BLOCKS;
+                            plan.extent_leaf_blocks + RUNTIME_RESERVE_BLOCKS;
 
   /* How many full groups do we need?  Group 0 fits G0_META_BLOCKS + its data;
-   * every extra group adds BLOCKS_PER_GROUP (GN_META_BLOCKS metadata + data). */
+   * every extra group adds BLOCKS_PER_GROUP (GN_META_BLOCKS metadata + data).
+   */
   uint64_t n_groups;
   if (content_blocks <= BLOCKS_PER_GROUP) {
     n_groups = 1;
@@ -662,7 +687,7 @@ void mark_block_used(uint32_t block) {
   }
   /* Multi-group: determine which group this block belongs to and mark its bit
    * in the per-group bitmap (MKDISK-MULTIGROUP-01). */
-  uint32_t g   = block / BLOCKS_PER_GROUP;
+  uint32_t g = block / BLOCKS_PER_GROUP;
   uint32_t off = block % BLOCKS_PER_GROUP; /* bit within that group's bitmap */
   if (g >= n_groups_alloc || !block_bitmaps[g]) {
     fprintf(stderr,
@@ -671,7 +696,7 @@ void mark_block_used(uint32_t block) {
     exit(1);
   }
   int byte = (int)(off / 8);
-  int bit  = (int)(off % 8);
+  int bit = (int)(off % 8);
   block_bitmaps[g][byte] |= (uint8_t)(1 << bit);
   free_blocks_count--;
 }
@@ -1083,9 +1108,9 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
 
   /* Reset the allocator state (supports multiple calls — see original comment).
    * Free any per-group bitmaps from a previous invocation. */
-  next_free_block   = BLK_DATA_START;
+  next_free_block = BLK_DATA_START;
   current_free_inode = 11;
-  free_inodes_count  = 1014;
+  free_inodes_count = 1014;
   if (block_bitmaps) {
     for (uint32_t g = 0; g < n_groups_alloc; g++)
       free(block_bitmaps[g]);
@@ -1109,22 +1134,30 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
   }
   uint32_t n_groups = total_blocks / BLOCKS_PER_GROUP;
   if (n_groups > MAX_GROUPS) {
-    fprintf(stderr,
-            "mkdisk: %u groups exceeds max %u (MKDISK-MULTIGROUP-01)\n",
+    fprintf(stderr, "mkdisk: %u groups exceeds max %u (MKDISK-MULTIGROUP-01)\n",
             n_groups, MAX_GROUPS);
     exit(1);
   }
 
   /* Allocate per-group block bitmaps (all zeroed = all free initially). */
   n_groups_alloc = n_groups;
-  block_bitmaps  = calloc(n_groups, sizeof(uint8_t *));
-  if (!block_bitmaps) { perror("calloc"); exit(1); }
+  block_bitmaps = calloc(n_groups, sizeof(uint8_t *));
+  if (!block_bitmaps) {
+    perror("calloc");
+    exit(1);
+  }
   for (uint32_t g = 0; g < n_groups; g++) {
     block_bitmaps[g] = calloc(1, EXT4_BLOCK_SIZE);
-    if (!block_bitmaps[g]) { perror("calloc"); exit(1); }
+    if (!block_bitmaps[g]) {
+      perror("calloc");
+      exit(1);
+    }
   }
   inode_bitmap = calloc(1, EXT4_BLOCK_SIZE);
-  if (!inode_bitmap) { perror("calloc"); exit(1); }
+  if (!inode_bitmap) {
+    perror("calloc");
+    exit(1);
+  }
 
   free_blocks_count = total_blocks;
 
@@ -1158,15 +1191,22 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
   /* -- Compute per-group free_blocks_count -- */
   /* Count free bits per group from the per-group bitmap. */
   uint32_t *grp_free = calloc(n_groups, sizeof(uint32_t));
-  if (!grp_free) { perror("calloc"); exit(1); }
+  if (!grp_free) {
+    perror("calloc");
+    exit(1);
+  }
   for (uint32_t g = 0; g < n_groups; g++) {
     uint32_t blks_in_group = (g == n_groups - 1)
-        ? (total_blocks - g * BLOCKS_PER_GROUP)
-        : BLOCKS_PER_GROUP;
+                                 ? (total_blocks - g * BLOCKS_PER_GROUP)
+                                 : BLOCKS_PER_GROUP;
     uint32_t free_in_g = 0;
-    for (uint32_t i = 0; i < (blks_in_group + 7) / 8 && i < EXT4_BLOCK_SIZE; i++) {
+    for (uint32_t i = 0; i < (blks_in_group + 7) / 8 && i < EXT4_BLOCK_SIZE;
+         i++) {
       uint8_t b = (uint8_t)~block_bitmaps[g][i];
-      while (b) { free_in_g++; b &= (uint8_t)(b - 1); }
+      while (b) {
+        free_in_g++;
+        b &= (uint8_t)(b - 1);
+      }
     }
     grp_free[g] = free_in_g;
   }
@@ -1174,18 +1214,18 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
   /* -- Write superblock -- */
   xseek(f, start_off + EXT4_SUPERBLOCK_OFFSET, SEEK_SET);
   struct ext4_superblock sb = {0};
-  sb.s_inodes_count        = 1024;
-  sb.s_blocks_count_lo     = total_blocks;
+  sb.s_inodes_count = 1024;
+  sb.s_blocks_count_lo = total_blocks;
   sb.s_free_blocks_count_lo = free_blocks_count;
-  sb.s_free_inodes_count   = free_inodes_count;
-  sb.s_log_block_size      = 2;
-  sb.s_magic               = EXT4_MAGIC;
-  sb.s_blocks_per_group    = BLOCKS_PER_GROUP;   /* was total_blocks */
-  sb.s_inodes_per_group    = 1024;
-  sb.s_state               = 1;
-  sb.s_rev_level           = 1;
-  sb.s_first_ino           = 11;
-  sb.s_inode_size          = EXT4_INODE_SIZE;
+  sb.s_free_inodes_count = free_inodes_count;
+  sb.s_log_block_size = 2;
+  sb.s_magic = EXT4_MAGIC;
+  sb.s_blocks_per_group = BLOCKS_PER_GROUP; /* was total_blocks */
+  sb.s_inodes_per_group = 1024;
+  sb.s_state = 1;
+  sb.s_rev_level = 1;
+  sb.s_first_ino = 11;
+  sb.s_inode_size = EXT4_INODE_SIZE;
   if (use_extents)
     sb.s_feature_incompat =
         EXT4_FEATURE_INCOMPAT_FILETYPE | EXT4_FEATURE_INCOMPAT_EXTENTS;
@@ -1196,16 +1236,17 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
   for (uint32_t g = 0; g < n_groups; g++) {
     struct ext4_group_desc bg = {0};
     if (g == 0) {
-      bg.bg_block_bitmap_lo    = BLK_BLK_BITMAP;
-      bg.bg_inode_bitmap_lo    = BLK_INODE_BITMAP;
-      bg.bg_inode_table_lo     = BLK_INODE_TABLE;
+      bg.bg_block_bitmap_lo = BLK_BLK_BITMAP;
+      bg.bg_inode_bitmap_lo = BLK_INODE_BITMAP;
+      bg.bg_inode_table_lo = BLK_INODE_TABLE;
       bg.bg_free_blocks_count_lo = (uint16_t)grp_free[0];
       bg.bg_free_inodes_count_lo = (uint16_t)free_inodes_count;
     } else {
-      /* Groups 1+: metadata at start of group (block g*BLOCKS_PER_GROUP + 0/1/2) */
-      bg.bg_block_bitmap_lo    = g * BLOCKS_PER_GROUP + 0;
-      bg.bg_inode_bitmap_lo    = g * BLOCKS_PER_GROUP + 1;
-      bg.bg_inode_table_lo     = g * BLOCKS_PER_GROUP + 2;
+      /* Groups 1+: metadata at start of group (block g*BLOCKS_PER_GROUP +
+       * 0/1/2) */
+      bg.bg_block_bitmap_lo = g * BLOCKS_PER_GROUP + 0;
+      bg.bg_inode_bitmap_lo = g * BLOCKS_PER_GROUP + 1;
+      bg.bg_inode_table_lo = g * BLOCKS_PER_GROUP + 2;
       bg.bg_free_blocks_count_lo = (uint16_t)grp_free[g];
       bg.bg_free_inodes_count_lo = 0; /* all inodes live in group 0 */
     }
@@ -1214,7 +1255,8 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
 
   /* -- Write block bitmaps for each group -- */
   for (uint32_t g = 0; g < n_groups; g++) {
-    uint64_t bmap_blk = (g == 0) ? BLK_BLK_BITMAP : (uint64_t)g * BLOCKS_PER_GROUP;
+    uint64_t bmap_blk =
+        (g == 0) ? BLK_BLK_BITMAP : (uint64_t)g * BLOCKS_PER_GROUP;
     xseek(f, start_off + bmap_blk * EXT4_BLOCK_SIZE, SEEK_SET);
     xwrite(block_bitmaps[g], 1, EXT4_BLOCK_SIZE, f);
   }
@@ -1225,7 +1267,10 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
 
   /* -- Write groups 1+ inode bitmaps (all-1s = no free inodes) -- */
   uint8_t *all_ones = malloc(EXT4_BLOCK_SIZE);
-  if (!all_ones) { perror("malloc"); exit(1); }
+  if (!all_ones) {
+    perror("malloc");
+    exit(1);
+  }
   memset(all_ones, 0xFF, EXT4_BLOCK_SIZE);
   for (uint32_t g = 1; g < n_groups; g++) {
     uint64_t imap_blk = (uint64_t)g * BLOCKS_PER_GROUP + 1;
