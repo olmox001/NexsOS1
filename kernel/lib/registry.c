@@ -256,15 +256,34 @@ void registry_init(void) {
           registry_count);
 }
 
+/* key_has_segment - does 'key' name at least one segment?  walk_path skips
+ * empty segments, so a key that is empty or all dots resolves to nothing:
+ * that is a bad argument, not an allocation failure (REG-ERRNO-01). */
+static bool key_has_segment(const char *key) {
+  for (const char *p = key; *p; p++)
+    if (*p != '.')
+      return true;
+  return false;
+}
+
 /*
  * registry_set - create or update a key.  Walks/creates the path, then sets the
  * leaf value.  First-writer-wins: an existing leaf owned by someone else (and
  * owner_pid != 0) returns -EACCES.  owner_pid 0 = kernel/system (full rights).
- * Returns 0, -EACCES on ownership violation, -1 on bad args / OOM.
+ * Returns 0, -EACCES on ownership violation, -EINVAL on bad args, -ENOMEM on
+ * allocation failure.
+ *
+ * REG-ERRNO-01: every failure used to be a bare -1 (the in-tree comment said
+ * "empty key or OOM" on that very return).  A bare -1 reaching userland is
+ * -EPERM in disguise — the same defect EXT4-ERRNO-01 fixed in ext4 — and OOM
+ * filed as a policy denial mislabels the most serious of the conditions
+ * OS1_report_error distinguishes.  Each cause now reports its own errno, so
+ * the /reg door, the OBJ_TYPE_REGKEY door and SYS_REGISTRY all give the SAME
+ * answer for the same refusal (R2).
  */
 int registry_set(const char *key, const char *value, int owner_pid) {
   if (!key || !value)
-    return -1;
+    return -EINVAL;
 
   /* R2: route the virtual per-process namespace HERE, at the shared seam, so
    * every entry point behaves identically.  It used to be routed only inside
@@ -285,7 +304,10 @@ int registry_set(const char *key, const char *value, int owner_pid) {
   struct reg_node *n = walk_path(key, 1);
   if (!n) {
     reg_write_unlock(flags);
-    return -1; /* empty key or OOM */
+    /* REG-ERRNO-01: walk_path fails two different ways — a key with no
+     * segments at all (empty / all dots) is a bad argument, a real key that
+     * could not be resolved means node_get_or_add could not allocate. */
+    return key_has_segment(key) ? -ENOMEM : -EINVAL;
   }
   /* Ownership ACL.  owner_pid 0 == the SYSTEM identity (machine/root, see
    * registry_caller_owner()); a non-zero owner_pid is an ordinary process
@@ -327,7 +349,8 @@ int registry_set(const char *key, const char *value, int owner_pid) {
 
 /*
  * registry_get - resolve a key to its leaf and copy the value.
- * Returns 0 on success, -1 if not found / not a leaf / bad args.
+ * Returns 0 on success, -ENOENT if not found / not a leaf, -EINVAL on bad
+ * args (REG-ERRNO-01: was a bare -1 for all three).
  */
 
 /*
@@ -406,11 +429,11 @@ static int reg_virtual_proc(const char *key, char *buf, size_t size) {
     return 1;
   }
   /* `env.<NAME>` — the per-process ENVIRONMENT (Phase 17), owned by the
-   * scheduler.  An UNSET variable answers -1 ("ours, and definitively absent")
-   * rather than an empty string: getenv() must be able to tell "not set" from
-   * "set to the empty string", and an empty answer would collapse the two.
-   * -1 also stops the lookup here instead of falling through to stored nodes,
-   * so nothing can shadow the live block. */
+   * scheduler.  An UNSET variable is "ours, and definitively absent": it must
+   * never answer an empty string, because getenv() has to tell "not set" from
+   * "set to the empty string", and it must not fall through to stored nodes,
+   * so nothing can shadow the live block.  Return -1 (the "handled, absent"
+   * sentinel below); registry_get reports it to callers as -ENOENT. */
   if (strncmp(p, "env.", 4) == 0) {
     if (!p[4])
       return -1;
@@ -471,13 +494,18 @@ static int reg_virtual_proc_write(const char *key, const char *value,
 
 int registry_get(const char *key, char *buffer, size_t size) {
   if (!key || !buffer || size == 0)
-    return -1;
+    return -EINVAL;
 
   /* Virtual keys are answered from live kernel state BEFORE consulting stored
-   * nodes, so a stale leftover can never shadow the truth. */
+   * nodes, so a stale leftover can never shadow the truth.  An UNSET variable
+   * reports -ENOENT ("ours, and definitively absent") rather than an empty
+   * string: getenv() must be able to tell "not set" from "set to the empty
+   * string", and an empty answer would collapse the two.  REG-ERRNO-01: the
+   * errno propagates verbatim from proc_env_get instead of collapsing to a
+   * bare -1, so every door reports the same answer. */
   int v = reg_virtual_proc(key, buffer, size);
   if (v)
-    return v > 0 ? 0 : -1;
+    return v > 0 ? 0 : -ENOENT;
 
   uint64_t flags;
   reg_read_lock(&flags);
@@ -485,7 +513,7 @@ int registry_get(const char *key, char *buffer, size_t size) {
   struct reg_node *n = walk_path(key, 0);
   if (!n || !n->is_leaf) {
     reg_read_unlock(flags);
-    return -1;
+    return -ENOENT;
   }
   strncpy(buffer, n->value, size - 1);
   buffer[size - 1] = '\0';
@@ -525,11 +553,12 @@ static void node_remove_child(struct reg_node *p, struct reg_node *child) {
  * ancestor directory (freeing the nodes), so deleting "a.b.c" reclaims "c",
  * then "b", then "a" if they become empty.  First-writer-wins: owner_pid != 0
  * may delete only its own key.  Returns 0, -ENOENT if absent/not a leaf,
- * -EACCES on ownership violation.
+ * -EACCES on ownership violation, -EINVAL on bad args (REG-ERRNO-01: the bad
+ * -args case was a bare -1, i.e. -EPERM in disguise).
  */
 int registry_del(const char *key, int owner_pid) {
   if (!key)
-    return -1;
+    return -EINVAL;
 
   /* R2: same seam-level routing as registry_set.  Deleting a virtual env key IS
    * unsetenv — an empty value clears the slot (see reg_virtual_proc_write). */
@@ -609,7 +638,7 @@ static void enum_dfs(struct reg_node *n, char *path, size_t path_len,
  */
 int registry_enum(const char *prefix, char *buf, size_t size) {
   if (!buf || size == 0)
-    return -1;
+    return -EINVAL;
 
   /* `sys.proc.<pid>.env.` is VIRTUAL: it has no stored nodes to walk, so a
    * plain DFS would report a process's environment as empty.  Answer it from
@@ -741,7 +770,7 @@ static int regfs_open(struct vfs_mount *mnt, const char *path,
   struct reg_node *n = key[0] ? walk_path(key, 0) : reg_root;
   if (!n) {
     reg_read_unlock(flags);
-    return -1;
+    return -ENOENT; /* REG-ERRNO-01: was a bare -1 */
   }
   out->mnt = mnt;
   out->id = (uint64_t)(uintptr_t)n; /* nodes are never freed -> stable handle */
@@ -755,12 +784,12 @@ static int regfs_read(struct vfs_node *node, uint64_t offset, void *buf,
                       uint32_t size) {
   struct reg_node *n = (struct reg_node *)(uintptr_t)node->id;
   if (!n)
-    return -1;
+    return -EINVAL; /* a vfs_node without a backing node: contract violation */
   uint64_t flags;
   reg_read_lock(&flags);
   if (!n->is_leaf) {
     reg_read_unlock(flags);
-    return -1;
+    return -EISDIR; /* REG-ERRNO-01: reading a directory as a byte stream */
   }
   size_t vlen = strlen(n->value);
   if (offset >= vlen) {
@@ -783,7 +812,7 @@ static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
   char key[MAX_KEY_LEN];
   regfs_path_to_key(path, key, sizeof(key));
   if (!key[0] || offset >= MAX_VAL_LEN - 1)
-    return -1;
+    return -EINVAL;
   /* R2: the key decides the authority.  A virtual per-process key is exempt
    * from CAP_REG_WRITE (setenv is unprivileged; proc_env_set applies the real
    * self-or-privileged rule) — the gate had to move BELOW the path→key
@@ -809,7 +838,12 @@ static int regfs_write(struct vfs_mount *mnt, const char *path, uint64_t offset,
   if (off + cnt >= curlen)
     val[off + cnt] = '\0';
 
-  return registry_set(key, val, registry_caller_owner()) == 0 ? (int)cnt : -1;
+  /* REG-ERRNO-01: propagate the provider errno instead of flattening every
+   * refusal to -1 — this is the door that made a real -EACCES reach userland
+   * as -EPERM through /reg while SYS_REGISTRY reported -EACCES (the recorded
+   * R2 divergence). */
+  int rc = registry_set(key, val, registry_caller_owner());
+  return rc == 0 ? (int)cnt : rc;
 }
 
 /* regfs_list - space-separated immediate child names of the node at 'path'
@@ -825,7 +859,7 @@ static int regfs_list(struct vfs_mount *mnt, const char *path, char *buf,
   struct reg_node *n = key[0] ? walk_path(key, 0) : reg_root;
   if (!n) {
     reg_read_unlock(flags);
-    return -1;
+    return -ENOENT; /* REG-ERRNO-01: was a bare -1 */
   }
   size_t off = 0;
   for (int i = 0; i < n->n_children; i++) {
@@ -847,19 +881,22 @@ static int regfs_list(struct vfs_mount *mnt, const char *path, char *buf,
  * keys exactly like regfs_write's implicit create does.  Same authority as
  * every registry write (registry_write_allowed + first-writer-wins ownership
  * inside registry_set).  Interior (directory) nodes appear implicitly when a
- * child leaf is set, so VFS_TYPE_DIR is not supported here. */
+ * child leaf is set, so VFS_TYPE_DIR is not supported here.
+ * REG-ERRNO-01: registry_set's errno propagates verbatim — this door used to
+ * flatten every refusal to -1 while regfs_unlink propagated, so /reg and
+ * SYS_REGISTRY gave different answers for the same refusal. */
 static int regfs_create(struct vfs_mount *mnt, const char *path,
                         uint32_t type) {
   (void)mnt;
   if (type != VFS_TYPE_FILE)
-    return -1;
+    return -EINVAL;
   if (!registry_write_allowed())
     return -EPERM;
   char key[MAX_KEY_LEN];
   regfs_path_to_key(path, key, sizeof(key));
   if (!key[0])
-    return -1;
-  return registry_set(key, "", registry_caller_owner()) == 0 ? 0 : -1;
+    return -EINVAL;
+  return registry_set(key, "", registry_caller_owner());
 }
 
 /* regfs_unlink - remove the registry key at 'path' (rm /reg/...). */
@@ -870,7 +907,7 @@ static int regfs_unlink(struct vfs_mount *mnt, const char *path) {
   char key[MAX_KEY_LEN];
   regfs_path_to_key(path, key, sizeof(key));
   if (!key[0])
-    return -1;
+    return -EINVAL;
   return registry_del(key, registry_caller_owner());
 }
 

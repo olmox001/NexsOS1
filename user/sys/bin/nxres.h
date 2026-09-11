@@ -33,7 +33,7 @@
  *     notification) goes to every singleton system service's registered
  *     pid — srv.dock_pid (nxui), srv.bar_pid (nxbar), srv.launcher_pid
  *     (nxlauncher) — published by init the same way it already publishes
- *     srv.notify_pid (register_service_pid, user/sys/bin/nxinit.c) and
+ *     srv.notify_pid (register_service_pid, user/sbin/nxinit.c) and
  *     refreshed on every respawn so the ping can never land on a corpse's
  *     stale pid.  A windowed app sees this ping as INPUT_TYPE_LOOK_CHANGED
  *     from its EXISTING input_poll_event() loop (input.h/lib.c) — NOT a

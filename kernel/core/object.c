@@ -1286,7 +1286,11 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
   } else if (o->type == OBJ_TYPE_REGKEY) {
     /* write = registry_set the key's value (ASTRA §6.6).  Ownership stays
      * first-writer-wins (registry_set), so a granted REGKEY cannot hijack
-     * another owner's key. */
+     * another owner's key.  REG-ERRNO-01: the provider errno propagates
+     * verbatim — the old `rc == -EACCES ? -EACCES : -EINVAL` collapse made
+     * this door report OOM (-ENOMEM) as a bad argument while the /reg and
+     * SYS_REGISTRY doors reported the true cause, the exact three-doors-
+     * disagree shape R2 exists to remove. */
     if (n == 0 || n > MAX_VAL_LEN) {
       ret = -EINVAL;
     } else {
@@ -1297,7 +1301,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
       } else {
         val[cn] = '\0';
         int rc = registry_set(o->path, val, registry_caller_owner());
-        ret = (rc == 0) ? (long)n : (rc == -EACCES ? -EACCES : -EINVAL);
+        ret = (rc == 0) ? (long)n : rc;
       }
     }
   } else if (o->type == OBJ_TYPE_CONSOLE) {

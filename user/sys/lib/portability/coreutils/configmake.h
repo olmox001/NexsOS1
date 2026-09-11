@@ -9,7 +9,7 @@
 #define PREFIX "/"
 #define EXEC_PREFIX "/"
 #define BINDIR "/bin"
-#define SBINDIR "/sys/bin"
+#define SBINDIR "/sbin"
 #define LIBEXECDIR "/sys/bin"
 #define DATAROOTDIR "/share"
 #define DATADIR "/share"

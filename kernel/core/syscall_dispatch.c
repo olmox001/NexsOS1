@@ -184,6 +184,8 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame);
  * writes under /sys,/bin), so the binaries backing this preset are immutable.
  */
 static uint8_t level_for_path(const char *path) {
+  if (path && strncmp(path, "/sbin/", 6) == 0)
+    return PLVL_MACHINE;
   if (path && strncmp(path, "/sys/bin/", 9) == 0)
     return PLVL_ROOT;
   return PLVL_USER;
