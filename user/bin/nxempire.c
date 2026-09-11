@@ -1353,7 +1353,7 @@ static void render_terrain(SDL_Surface *s) {
       Tile *t = &map[tile_idx(tx, ty)];
       int sx = tx * TILE - cam_x;
       int sy = ty * TILE - cam_y + TOP_H;
-      Uint8 *c = TCOLOR[t->terrain];
+      const Uint8 *c = TCOLOR[t->terrain];
       /* Add slight variation */
       Uint8 variation = (Uint8)((tx * 7 + ty * 13) % 16) - 8;
       fill_rect(s, sx, sy, TILE, TILE, (Uint8)(c[0] + variation),
@@ -1402,7 +1402,7 @@ static void render_buildings(SDL_Surface *s) {
     if (sx + sw < 0 || sx > WIN_W || sy + sh < TOP_H || sy > WIN_H - HUD_H)
       continue;
 
-    Uint8 *c = BCOL[b->owner][b->type];
+    const Uint8 *c = BCOL[b->owner][b->type];
     if (b->state == BS_BUILD) {
       /* Darker when building */
       fill_rect(s, sx, sy, sw, sh, c[0] / 2, c[1] / 2, c[2] / 2);
@@ -1474,10 +1474,11 @@ static void render_units(SDL_Surface *s) {
         sy > WIN_H - HUD_H + 16)
       continue;
 
-    Uint8 *c = UCOL[u->owner][u->type];
+    const Uint8 *c = UCOL[u->owner][u->type];
+    static const Uint8 white_flash[3] = {255, 255, 255};
     if (u->flash > 0 && (u->flash % 2) == 0) {
       /* Hit flash: white */
-      c = (Uint8[]){255, 255, 255};
+      c = white_flash;
     }
 
     int sz = 7;
@@ -1690,7 +1691,7 @@ static void render_hud_detailed(SDL_Surface *s) {
     Unit *u = &units[sel[0]];
     /* Unit info */
     fill_rect(s, 8, hud_y + 6, 200, 40, 35, 35, 50);
-    Uint8 *c = UCOL[u->owner][u->type];
+    const Uint8 *c = UCOL[u->owner][u->type];
     fill_rect(s, 14, hud_y + 12, 28, 28, c[0], c[1], c[2]);
     draw_hp_bar(s, 50, hud_y + 12, 150, u->hp, u->hp_max);
 
@@ -1719,7 +1720,7 @@ static void render_hud_detailed(SDL_Surface *s) {
   } else if (sel_bid >= 0) {
     Building *b = &blds[sel_bid];
     fill_rect(s, 8, hud_y + 6, 200, 40, 35, 35, 50);
-    Uint8 *c = BCOL[b->owner][b->type];
+    const Uint8 *c = BCOL[b->owner][b->type];
     fill_rect(s, 14, hud_y + 12, 28, 28, c[0], c[1], c[2]);
     draw_hp_bar(s, 50, hud_y + 12, 150, b->hp, b->hp_max);
     if (b->state == BS_BUILD) {
@@ -1787,7 +1788,7 @@ static void render_minimap(SDL_Surface *s) {
   for (int ty = 0; ty < MAP_H; ty += 1)
     for (int tx = 0; tx < MAP_W; tx += 1) {
       Tile *t = &map[tile_idx(tx, ty)];
-      Uint8 *c = TCOLOR[t->terrain];
+      const Uint8 *c = TCOLOR[t->terrain];
       fill_rect(s, mx0 + tx * sx, my0 + ty * sy, sx, sy, c[0], c[1], c[2]);
     }
 

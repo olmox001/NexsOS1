@@ -1,0 +1,2135 @@
+diff --git a/kernel/arch/amd64/cpu/apic.c b/kernel/arch/amd64/cpu/apic.c
+index e60a76f..c117088 100644
+--- a/kernel/arch/amd64/cpu/apic.c
++++ b/kernel/arch/amd64/cpu/apic.c
+@@ -6,8 +6,9 @@
+  *   - Enable the LAPIC via IA32_APIC_BASE MSR (bit 11 = APIC global enable).
+  *   - Set the Spurious Interrupt Vector Register (SVR) to enable the LAPIC
+  *     and assign vector 0xFF as the spurious vector.
+- *   - Configure LINT0 as ExtINT to forward legacy 8259 PIC interrupts when no
+- *     I/O APIC is present.
++ *   - Configure LINT0 as ExtINT, on the BSP only (FIX(APIC-01)), to forward
++ *     legacy 8259 PIC interrupts when no I/O APIC is present; every AP
++ *     explicitly masks LINT0 instead.
+  *   - Provide lapic_eoi() for hardware interrupt acknowledgement.
+  *   - Provide lapic_send_ipi() for inter-processor interrupts (SMP startup,
+  *     future TLB shootdown, etc.).
+@@ -21,22 +22,39 @@
+  *     this file's functions are called.
+  *   - ticks_per_ms is set once by lapic_timer_calibrate() and never cleared;
+  *     the guard 'if (ticks_per_ms != 0) return' makes calibration idempotent.
++ *   - LINT0-as-ExtINT is enabled on the BSP only; every AP masks it
++ *     (FIX(APIC-01), lapic_init()) — see PIC-01 in pic_pit.c for why no
++ *     amd64 IRQ line can be software-distributed across CPUs the way
++ *     GICv2 SPIs are on aarch64 (gic.c, DRV-GIC-01): this driver has no
++ *     I/O APIC and therefore no per-line destination register to program.
+  *
+  * Known issues:
++ *   APIC-01 RESOLVED (this pass): lapic_init() used to write LINT0 =
++ *     ExtINT-not-masked unconditionally on every CPU, BSP and APs alike.
++ *     Per the Intel MultiProcessor Specification, ExtINT-via-LINT0 virtual-
++ *     wire mode is a BSP-only configuration ("NMI and INTR must be
++ *     connected to the BSP"); enabling it on an AP too risks duplicate
++ *     interrupt delivery on hardware whose LINT0 wiring reaches more than
++ *     one core (documented failure mode in the Linux kernel mailing list's
++ *     virtual-wire-on-shutdown fix).  Fixed: only the CPU whose
++ *     lapic_get_id() == 0 (the BSP) programs LINT0 as ExtINT; every AP
++ *     explicitly masks LINT0 instead of leaving it at whatever the AP
++ *     happened to reset into.
+  *   EXC-AMD64-03 RESOLVED (Phase A step 14): the double-tick hazard came
+  *     from the PIT being left free-running (mode 2) after calibration while
+  *     LINT0 ExtINT can deliver PIC IRQ 0 on vector 32 — the same vector as
+  *     the LAPIC periodic timer.  lapic_timer_calibrate() now halts the PIT
+  *     (mode-0 control word, no count) before the LAPIC timer starts; PIC
+  *     IRQ 0 additionally stays masked (pic_init).  LINT0 remains ExtINT on
+- *     purpose: it is the only delivery path for legacy PIC lines (PCI INTx).
++ *     the BSP on purpose: it is the only delivery path for legacy PIC
++ *     lines (PCI INTx).
+  */
+ #include <arch/amd64/apic.h>
+-#include <kernel/printk.h>
++#include <arch/amd64_internal.h>
++#include <drivers/timer.h>
+ #include <kernel/arch.h>
+ #include <kernel/cpu.h>
+-#include <drivers/timer.h>
+-#include <arch/amd64_internal.h>
++#include <kernel/printk.h>
+ 
+ /* ticks_per_ms: LAPIC timer decrements per millisecond at LAPIC_TIMER_DIV16.
+  * Set by lapic_timer_calibrate(); used by lapic_timer_setup() and udelay(). */
+@@ -61,36 +79,64 @@ uint64_t tsc_hz = 0;
+  * Steps:
+  *   1. Read IA32_APIC_BASE (MSR 0x1B); set bit 11 (AEN) if not already set.
+  *   2. Write SVR: set Enable bit (bit 8) and spurious vector 0xFF.
+- *   3. Configure LINT0 as ExtINT (delivery mode 0x700, not masked) so the
+- *      legacy 8259 PIC can deliver its IRQs via the LAPIC when no I/O APIC
+- *      is present.
++ *   3. Configure LINT0 — ONLY on the BSP — as ExtINT (delivery mode 0x700)
++ *      so the legacy 8259 PIC can deliver its IRQs via the LAPIC when no
++ *      I/O APIC is present.  Every AP explicitly masks LINT0 instead.
++ *      FIX(APIC-01): see the note below this doc-comment for why this
++ *      guard was missing and what it could cause.
+  *
+  * NOTE(EXC-AMD64-03, resolved): the PIT is halted after calibration and PIC
+  * IRQ 0 stays masked, so vector 32 only ever comes from the LAPIC timer.
+  *
+- * The 'outb L' at the start is a debug breadcrumb on COM1 serial port
+- * (0x3F8 = COM1 data register).
++ * FIX(APIC-01): LINT0-as-ExtINT used to be written unconditionally on every
++ * CPU that called this function — BSP and every AP alike.  Per the Intel
++ * MultiProcessor Specification's definition of virtual-wire mode, ExtINT
++ * delivery through LINT0 is a BSP-only configuration ("NMI and INTR must be
++ * connected to the BSP"); programming it on an AP as well is documented
++ * (Linux kernel mailing list, kexec virtual-wire fix, 2004) to risk
++ * DUPLICATE interrupt delivery depending on the board's actual LINT0
++ * wiring — the 8259's single INTR line can, on some chipsets, reach more
++ * than one CPU's LINT0 pin, and an AP with ExtINT enabled would then also
++ * accept and (mis)dispatch a PIC interrupt meant to be serviced once, by
++ * the BSP, through irq_dispatch()/pic_chip.  QEMU's virt-wire wiring
++ * happens to route INTR to the BSP only, which is why this went
++ * unobserved in emulation; it is not something this driver should rely on
++ * for real hardware.  Every AP now explicitly masks LINT0 (delivery mode
++ * left at ExtINT for documentation purposes, but bit 16 = 1 disables
++ * delivery entirely) instead of leaving it in whatever state the AP
++ * happened to reset into.
++ *
+  */
+ void lapic_init(void) {
+-    /* Debug: Print 'L' using %dx for 16-bit port */
+-    __asm__ __volatile__("movw $0x3f8, %%dx; movb $'L', %%al; outb %%al, %%dx" ::: "ax", "dx");
+-
+-    /* Ensure APIC is enabled in MSR (bit 11 = APIC global enable) */
+-    uint64_t apic_msr = rdmsr(0x1B); /* IA32_APIC_BASE */
+-    if (!(apic_msr & 0x800)) {
+-        wrmsr(0x1B, apic_msr | 0x800);
+-    }
+-
+-    /* Set Spurious Interrupt Vector (0xFF) and enable LAPIC (SVR bit 8) */
+-    lapic_write(LAPIC_SVR, lapic_read(LAPIC_SVR) | 0xFF | LAPIC_SVR_ENABLE);
+-
+-    /* Configure LINT0 for ExtINT (Legacy PIC) — necessary if no IOAPIC is used.
+-     * Delivery mode 0x700 = ExtINT; not masked (bit 16 = 0).
+-     * NOTE(EXC-AMD64-03, resolved): PIC IRQ 0 could reach vector 32 through
+-     * here, but the PIT is halted after calibration and IRQ 0 stays masked. */
++  /* Ensure APIC is enabled in MSR (bit 11 = APIC global enable) */
++  uint64_t apic_msr = rdmsr(0x1B); /* IA32_APIC_BASE */
++  if (!(apic_msr & 0x800)) {
++    wrmsr(0x1B, apic_msr | 0x800);
++  }
++
++  /* Set Spurious Interrupt Vector (0xFF) and enable LAPIC (SVR bit 8) */
++  lapic_write(LAPIC_SVR, lapic_read(LAPIC_SVR) | 0xFF | LAPIC_SVR_ENABLE);
++
++  /* FIX(APIC-01): LINT0-as-ExtINT is a BSP-only configuration (Intel MP
++   * Spec virtual-wire mode: "NMI and INTR must be connected to the
++   * BSP") — see the function-header note for the duplicate-delivery
++   * risk of programming it on every CPU. */
++  if (lapic_get_id() == 0) {
++    /* Configure LINT0 for ExtINT (Legacy PIC) — necessary if no IOAPIC
++     * is used.  Delivery mode 0x700 = ExtINT; not masked (bit 16 = 0).
++     * NOTE(EXC-AMD64-03, resolved): PIC IRQ 0 could reach vector 32
++     * through here, but the PIT is halted after calibration and IRQ 0
++     * stays masked. */
+     lapic_write(LAPIC_LVT_LINT0, 0x00000700); /* ExtINT, not masked */
+-
+-    pr_info("AMD64: LAPIC %u initialized at 0x%lx\n", lapic_get_id(), LAPIC_DEFAULT_BASE);
++  } else {
++    /* FIX(APIC-01): explicitly masked rather than left at reset state
++     * — this AP must never accept an ExtINT-delivered PIC interrupt;
++     * the BSP above is the sole ExtINT receiver. Bit 16 = mask. */
++    lapic_write(LAPIC_LVT_LINT0, 0x00010700); /* ExtINT mode, MASKED */
++  }
++
++  pr_info("AMD64: LAPIC %u initialized at 0x%lx\n", lapic_get_id(),
++          LAPIC_DEFAULT_BASE);
+ }
+ 
+ /*
+@@ -104,9 +150,7 @@ void lapic_init(void) {
+  * Does NOT satisfy the 8259 PIC EOI for legacy vectors 32-47; idt.c calls
+  * pic_send_eoi() separately for those.
+  */
+-void lapic_eoi(void) {
+-    lapic_write(LAPIC_EOI, 0);
+-}
++void lapic_eoi(void) { lapic_write(LAPIC_EOI, 0); }
+ 
+ /*
+  * lapic_get_id - return the LAPIC ID of the calling CPU.
+@@ -114,9 +158,7 @@ void lapic_eoi(void) {
+  * The LAPIC ID register bits [31:24] hold the 8-bit APIC ID.  Used to index
+  * cpu_data[] and to address IPIs.
+  */
+-uint32_t lapic_get_id(void) {
+-    return lapic_read(LAPIC_ID) >> 24;
+-}
++uint32_t lapic_get_id(void) { return lapic_read(LAPIC_ID) >> 24; }
+ 
+ /*
+  * lapic_send_ipi - send an inter-processor interrupt.
+@@ -134,22 +176,22 @@ uint32_t lapic_get_id(void) {
+  * recommends INIT + two SIPIs for reliability.
+  */
+ void lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
+-    /* Wait for previous IPI to complete (ICR_SEND_PENDING bit must be clear) */
+-    while (lapic_read(LAPIC_ICR_LOW) & ICR_SEND_PENDING) {
+-        arch_yield();
+-    }
++  /* Wait for previous IPI to complete (ICR_SEND_PENDING bit must be clear) */
++  while (lapic_read(LAPIC_ICR_LOW) & ICR_SEND_PENDING) {
++    arch_yield();
++  }
+ 
+-    lapic_write(LAPIC_ICR_HIGH, lapic_id << 24); /* destination APIC ID */
+-    lapic_write(LAPIC_ICR_LOW, flags);            /* triggers IPI delivery */
++  lapic_write(LAPIC_ICR_HIGH, lapic_id << 24); /* destination APIC ID */
++  lapic_write(LAPIC_ICR_LOW, flags);           /* triggers IPI delivery */
+ }
+ 
+ /* PIT Constants for calibration */
+ #ifndef PIT_CH0
+ #define PIT_CH0 0x40 /* I/O port: 8254 PIT Channel 0 counter */
+-#endif /* PIT_CH0 */
++#endif               /* PIT_CH0 */
+ #ifndef PIT_CMD
+ #define PIT_CMD 0x43 /* I/O port: 8254 PIT command/mode register */
+-#endif /* PIT_CMD */
++#endif               /* PIT_CMD */
+ 
+ /*
+  * rdtsc64 - read the 64-bit Time Stamp Counter.
+@@ -161,9 +203,9 @@ void lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
+  * IRQ context: safe (plain register read, no side effects).
+  */
+ static inline uint64_t rdtsc64(void) {
+-    uint32_t lo, hi;
+-    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+-    return ((uint64_t)hi << 32) | lo;
++  uint32_t lo, hi;
++  __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
++  return ((uint64_t)hi << 32) | lo;
+ }
+ 
+ /*
+@@ -196,58 +238,59 @@ static inline uint64_t rdtsc64(void) {
+  * with the PIT; must run with the timer IRQ not yet started).
+  */
+ void tsc_calibrate(void) {
+-    if (tsc_hz != 0) return;
+-
+-    /* Invariant-TSC advisory (CPUID 0x80000007 EDX bit 8).  When clear, the
+-     * TSC may change rate with P-states / deep C-states and the single BSP
+-     * calibration shared by all APs is theoretically unsafe.  QEMU advertises
+-     * invariant TSC; we still proceed if it does not, but warn loudly. */
+-    {
+-        uint32_t eax, ebx, ecx, edx;
+-        __asm__ __volatile__("cpuid"
+-                             : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+-                             : "a"(0x80000000U));
+-        if (eax >= 0x80000007U) {
+-            __asm__ __volatile__("cpuid"
+-                                 : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+-                                 : "a"(0x80000007U));
+-            if (!(edx & (1U << 8))) {
+-                pr_info("TSC: WARNING — invariant TSC not advertised "
+-                        "(CPUID 80000007 EDX[8]=0); using shared BSP "
+-                        "calibration anyway\n");
+-            }
+-        }
++  if (tsc_hz != 0)
++    return;
++
++  /* Invariant-TSC advisory (CPUID 0x80000007 EDX bit 8).  When clear, the
++   * TSC may change rate with P-states / deep C-states and the single BSP
++   * calibration shared by all APs is theoretically unsafe.  QEMU advertises
++   * invariant TSC; we still proceed if it does not, but warn loudly. */
++  {
++    uint32_t eax, ebx, ecx, edx;
++    __asm__ __volatile__("cpuid"
++                         : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
++                         : "a"(0x80000000U));
++    if (eax >= 0x80000007U) {
++      __asm__ __volatile__("cpuid"
++                           : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
++                           : "a"(0x80000007U));
++      if (!(edx & (1U << 8))) {
++        pr_info("TSC: WARNING — invariant TSC not advertised "
++                "(CPUID 80000007 EDX[8]=0); using shared BSP "
++                "calibration anyway\n");
++      }
+     }
++  }
+ 
+-    pr_info("TSC: Calibrating against PIT...\n");
++  pr_info("TSC: Calibrating against PIT...\n");
+ 
+-    /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2). */
+-    outb(PIT_CMD, 0x34);
+-    outb(PIT_CH0, 0xFF); /* low byte of initial count  */
+-    outb(PIT_CH0, 0xFF); /* high byte of initial count */
++  /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2). */
++  outb(PIT_CMD, 0x34);
++  outb(PIT_CH0, 0xFF); /* low byte of initial count  */
++  outb(PIT_CH0, 0xFF); /* high byte of initial count */
+ 
+-    uint16_t start_tick = 0xFFFF;
++  uint16_t start_tick = 0xFFFF;
+ 
+-    uint64_t tsc_start = rdtsc64();
++  uint64_t tsc_start = rdtsc64();
+ 
+-    /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms). */
+-    uint16_t current_tick;
+-    do {
+-        outb(PIT_CMD, 0x00); /* latch Channel 0 count */
+-        current_tick = inb(PIT_CH0);
+-        current_tick |= (inb(PIT_CH0) << 8);
+-    } while ((uint16_t)(start_tick - current_tick) < 11932);
++  /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms). */
++  uint16_t current_tick;
++  do {
++    outb(PIT_CMD, 0x00); /* latch Channel 0 count */
++    current_tick = inb(PIT_CH0);
++    current_tick |= (inb(PIT_CH0) << 8);
++  } while ((uint16_t)(start_tick - current_tick) < 11932);
+ 
+-    uint64_t tsc_end = rdtsc64();
++  uint64_t tsc_end = rdtsc64();
+ 
+-    /* 10 ms window → multiply the delta by 100 to get counts per second. */
+-    tsc_hz = (tsc_end - tsc_start) * 100UL;
++  /* 10 ms window → multiply the delta by 100 to get counts per second. */
++  tsc_hz = (tsc_end - tsc_start) * 100UL;
+ 
+-    /* Halt the PIT (mode 0, no count loaded) so its IRQ0 line stays quiet —
+-     * same EXC-AMD64-03 double-tick hazard lapic_timer_calibrate() guards. */
+-    outb(PIT_CMD, 0x30);
++  /* Halt the PIT (mode 0, no count loaded) so its IRQ0 line stays quiet —
++   * same EXC-AMD64-03 double-tick hazard lapic_timer_calibrate() guards. */
++  outb(PIT_CMD, 0x30);
+ 
+-    pr_info("TSC: Calibrated: %lu Hz (%lu MHz)\n", tsc_hz, tsc_hz / 1000000UL);
++  pr_info("TSC: Calibrated: %lu Hz (%lu MHz)\n", tsc_hz, tsc_hz / 1000000UL);
+ }
+ 
+ /*
+@@ -271,56 +314,57 @@ void tsc_calibrate(void) {
+  * the calibrated LAPIC TCC, so the microsecond timestamp is inaccurate.
+  */
+ void lapic_timer_calibrate(void) {
+-    if (ticks_per_ms != 0) return;
+-
+-    /* Measure the TSC frequency first (docs/TIMER-MODEL.md §1): this must be
+-     * published into tsc_hz before the LAPIC timer starts, because the
+-     * arch-neutral mono_ns()/jiffies reconciliation begins on the first tick.
+-     * Idempotent and BSP-only — its own ~10 ms PIT window runs before the one
+-     * below, both with the timer IRQ still off. */
+-    tsc_calibrate();
+-
+-    pr_info("LAPIC: Calibrating timer against PIT...\n");
+-
+-    /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2) */
+-    outb(PIT_CMD, 0x34); /* Channel 0, lobyte/hibyte, rate generator (Mode 2) */
+-    outb(PIT_CH0, 0xFF); /* low byte of initial count */
+-    outb(PIT_CH0, 0xFF); /* high byte of initial count */
+-
+-    /* Set LAPIC Timer to Divide by 16 */
+-    lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
+-
+-    /* Record PIT start count (conceptually 0xFFFF; actual read not stored) */
+-    uint16_t start_tick = 0xFFFF;
+-
+-    /* Start LAPIC Timer with maximum initial count */
+-    lapic_write(LAPIC_TIC, 0xFFFFFFFF);
+-
+-    /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms).
+-     * PIT latch command (0x00 to PIT_CMD) freezes the counter for reading;
+-     * two reads from PIT_CH0 give the 16-bit current count (lo then hi). */
+-    uint16_t current_tick;
+-    do {
+-        outb(PIT_CMD, 0x00); /* Latch Channel 0 count */
+-        current_tick = inb(PIT_CH0);
+-        current_tick |= (inb(PIT_CH0) << 8);
+-    } while ((start_tick - current_tick) < 11932);
+-
+-    /* Read LAPIC Timer current count; elapsed = initial - current */
+-    uint32_t ticks = 0xFFFFFFFF - lapic_read(LAPIC_TCC);
+-    ticks_per_ms = ticks / 10; /* elapsed in 10 ms → convert to per-ms */
+-
+-    /* FIX(EXC-AMD64-03): silence the PIT now that calibration is done.
+-     * Mode 2 left the counter free-running, pulsing the IRQ0 line forever;
+-     * vector 32 must come from the LAPIC periodic timer ONLY.  Writing the
+-     * mode-0 control word without loading a count halts the counter (the
+-     * 8254 waits for a count after a control-word write), so the line stays
+-     * quiet even if PIC IRQ0 were ever unmasked.  LINT0 stays ExtINT — it is
+-     * the delivery path for every legacy PIC line (PCI INTx included) and
+-     * must NOT be masked. */
+-    outb(PIT_CMD, 0x30); /* channel 0, lobyte/hibyte, mode 0, no count loaded */
+-
+-    pr_info("LAPIC: Timer calibrated: %u ticks per ms\n", ticks_per_ms);
++  if (ticks_per_ms != 0)
++    return;
++
++  /* Measure the TSC frequency first (docs/TIMER-MODEL.md §1): this must be
++   * published into tsc_hz before the LAPIC timer starts, because the
++   * arch-neutral mono_ns()/jiffies reconciliation begins on the first tick.
++   * Idempotent and BSP-only — its own ~10 ms PIT window runs before the one
++   * below, both with the timer IRQ still off. */
++  tsc_calibrate();
++
++  pr_info("LAPIC: Calibrating timer against PIT...\n");
++
++  /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2) */
++  outb(PIT_CMD, 0x34); /* Channel 0, lobyte/hibyte, rate generator (Mode 2) */
++  outb(PIT_CH0, 0xFF); /* low byte of initial count */
++  outb(PIT_CH0, 0xFF); /* high byte of initial count */
++
++  /* Set LAPIC Timer to Divide by 16 */
++  lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
++
++  /* Record PIT start count (conceptually 0xFFFF; actual read not stored) */
++  uint16_t start_tick = 0xFFFF;
++
++  /* Start LAPIC Timer with maximum initial count */
++  lapic_write(LAPIC_TIC, 0xFFFFFFFF);
++
++  /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms).
++   * PIT latch command (0x00 to PIT_CMD) freezes the counter for reading;
++   * two reads from PIT_CH0 give the 16-bit current count (lo then hi). */
++  uint16_t current_tick;
++  do {
++    outb(PIT_CMD, 0x00); /* Latch Channel 0 count */
++    current_tick = inb(PIT_CH0);
++    current_tick |= (inb(PIT_CH0) << 8);
++  } while ((start_tick - current_tick) < 11932);
++
++  /* Read LAPIC Timer current count; elapsed = initial - current */
++  uint32_t ticks = 0xFFFFFFFF - lapic_read(LAPIC_TCC);
++  ticks_per_ms = ticks / 10; /* elapsed in 10 ms → convert to per-ms */
++
++  /* FIX(EXC-AMD64-03): silence the PIT now that calibration is done.
++   * Mode 2 left the counter free-running, pulsing the IRQ0 line forever;
++   * vector 32 must come from the LAPIC periodic timer ONLY.  Writing the
++   * mode-0 control word without loading a count halts the counter (the
++   * 8254 waits for a count after a control-word write), so the line stays
++   * quiet even if PIC IRQ0 were ever unmasked.  LINT0 stays ExtINT — it is
++   * the delivery path for every legacy PIC line (PCI INTx included) and
++   * must NOT be masked. */
++  outb(PIT_CMD, 0x30); /* channel 0, lobyte/hibyte, mode 0, no count loaded */
++
++  pr_info("LAPIC: Timer calibrated: %u ticks per ms\n", ticks_per_ms);
+ }
+ 
+ /*
+@@ -337,32 +381,32 @@ void lapic_timer_calibrate(void) {
+  *   hz - desired interrupt frequency (e.g. HZ = 1000 for 1 kHz timer).
+  */
+ void lapic_timer_setup(uint32_t hz) {
+-    if (ticks_per_ms == 0) {
+-        lapic_timer_calibrate();
+-    }
+-
+-    /* Stop current timer before reconfiguring */
+-    lapic_timer_stop();
+-
+-    /* Set up LAPIC Timer for periodic interrupts.
+-     * Vector 32 (IRQ 0 equivalent), periodic mode (LAPIC_LVT_PERIODIC).
+-     * NOTE(EXC-AMD64-03): same vector 32 as LAPIC LINT0 ExtINT path. */
+-    lapic_write(LAPIC_LVT_TIMER, 32 | LAPIC_LVT_PERIODIC);
+-    lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
+-
+-    /* Calculate ticks per interrupt: at hz=1000, interval_ms=1 */
+-    uint32_t interval_ms = 1000 / hz;
+-    lapic_write(LAPIC_TIC, ticks_per_ms * interval_ms);
+-
+-    /* Seed the Tier-2 per-CPU software schedule via the arch-neutral, HAL-driven
+-     * timer_percpu_arm() (kernel/core/timer.c), exactly as aarch64's
+-     * timer_init_percpu() does. The vector-32 ISR then calls timer_percpu_tick()
+-     * to advance it against the free-running TSC so a starved core recovers lost
+-     * time. arch_timer_set_compare() inside is a no-op (LAPIC is periodic). */
+-    timer_percpu_arm(get_cpu_info());
+-
+-    pr_info("LAPIC: CPU %u timer started at %u Hz (%u ticks/interval)\n",
+-            lapic_get_id(), hz, ticks_per_ms * interval_ms);
++  if (ticks_per_ms == 0) {
++    lapic_timer_calibrate();
++  }
++
++  /* Stop current timer before reconfiguring */
++  lapic_timer_stop();
++
++  /* Set up LAPIC Timer for periodic interrupts.
++   * Vector 32 (IRQ 0 equivalent), periodic mode (LAPIC_LVT_PERIODIC).
++   * NOTE(EXC-AMD64-03): same vector 32 as LAPIC LINT0 ExtINT path. */
++  lapic_write(LAPIC_LVT_TIMER, 32 | LAPIC_LVT_PERIODIC);
++  lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
++
++  /* Calculate ticks per interrupt: at hz=1000, interval_ms=1 */
++  uint32_t interval_ms = 1000 / hz;
++  lapic_write(LAPIC_TIC, ticks_per_ms * interval_ms);
++
++  /* Seed the Tier-2 per-CPU software schedule via the arch-neutral, HAL-driven
++   * timer_percpu_arm() (kernel/core/timer.c), exactly as aarch64's
++   * timer_init_percpu() does. The vector-32 ISR then calls timer_percpu_tick()
++   * to advance it against the free-running TSC so a starved core recovers lost
++   * time. arch_timer_set_compare() inside is a no-op (LAPIC is periodic). */
++  timer_percpu_arm(get_cpu_info());
++
++  pr_info("LAPIC: CPU %u timer started at %u Hz (%u ticks/interval)\n",
++          lapic_get_id(), hz, ticks_per_ms * interval_ms);
+ }
+ 
+ /*
+@@ -373,6 +417,6 @@ void lapic_timer_setup(uint32_t hz) {
+  * lapic_timer_setup() before reconfiguring the timer.
+  */
+ void lapic_timer_stop(void) {
+-    lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED); /* mask timer LVT entry */
+-    lapic_write(LAPIC_TIC, 0);                       /* stop countdown */
+-}
++  lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED); /* mask timer LVT entry */
++  lapic_write(LAPIC_TIC, 0);                      /* stop countdown */
++}
+\ No newline at end of file
+diff --git a/kernel/arch/amd64/cpu/idt.c b/kernel/arch/amd64/cpu/idt.c
+index d1d9550..9cb6fad 100644
+--- a/kernel/arch/amd64/cpu/idt.c
++++ b/kernel/arch/amd64/cpu/idt.c
+@@ -5,10 +5,11 @@
+  * Responsibilities:
+  *   - Define the 256-entry 64-bit IDT (struct idt_entry, 16 bytes each).
+  *   - Install all 256 ISR stubs (from isr_stub_table[] in isr_stubs.S) as
+- *     kernel-only interrupt gates (DPL=0, type=0x8E).  There is no user-callable
+- *     gate: the only syscall entry is syscall/sysret via LSTAR (SYS-AMD64-03).
+- *   - Dispatch CPU exceptions (vectors 0-31) and hardware IRQs (32-255) from the
+- *     single C entry point amd64_isr_dispatch.
++ *     kernel-only interrupt gates (DPL=0, type=0x8E).  There is no
++ * user-callable gate: the only syscall entry is syscall/sysret via LSTAR
++ * (SYS-AMD64-03).
++ *   - Dispatch CPU exceptions (vectors 0-31) and hardware IRQs (32-255) from
++ * the single C entry point amd64_isr_dispatch.
+  *   - Acknowledge the LAPIC and legacy 8259 PIC after hardware IRQs.
+  *
+  * Invariants:
+@@ -29,29 +30,38 @@
+  *     fault_handle_user_or_panic (kernel/core/fault.c) — user faults
+  *     terminate the process and schedule a successor; kernel faults dump,
+  *     print a symbolized backtrace and panic on the IST fault stacks.
+- *   EXC-AMD64-04 (W2 BUG) idt_initialized is a plain static int with no
+- *     volatile qualifier and no memory barrier.  APs spinning on
+- *     while (!idt_initialized) may cache a stale zero indefinitely; a release
+- *     barrier on the write side and a load-acquire on the read side are needed.
++ *   EXC-AMD64-04 RESOLVED (this pass): idt_initialized was a plain static
++ *     int with no volatile qualifier and no memory barrier — an AP spinning
++ *     on `while (!idt_initialized)` could cache a stale zero indefinitely
++ *     (the compiler is free to hoist the read out of the loop entirely
++ *     without a barrier, and even a volatile-only read gives no ordering
++ *     guarantee that the IDT WRITES that precede the flag update on CPU 0
++ *     are visible before the flag itself is).  Fixed with the same
++ *     acquire/release pattern kernel/core/smp.c already uses for
++ *     cpu_boot_ack: CPU 0 writes with __ATOMIC_RELEASE after every idt[]
++ *     entry is filled, so the release makes those writes visible-before-
++ *     the-flag; each AP polls with __ATOMIC_ACQUIRE, so observing the flag
++ *     set means the AP is guaranteed to see a fully-populated idt[] — not
++ *     just a non-zero flag.
+  *   SYS-AMD64-03 RESOLVED (#168): the legacy int 0x80 gate (DPL=3) was removed.
+- *     Vector 0x80 is now a kernel-only gate like every other; syscall/sysret via
+- *     LSTAR is the sole syscall surface.  A userland int 0x80 raises #GP and is
++ *     Vector 0x80 is now a kernel-only gate like every other; syscall/sysret
++ * via LSTAR is the sole syscall surface.  A userland int 0x80 raises #GP and is
+  *     handled as a user fault.
+  *   CPU-AMD64-01 RESOLVED (#38): FPU/SSE state is saved/restored per task in
+  *     arch_cpu_switch_context (cpu.c).  common_isr_entry still saves only GP
+  *     regs; the residual kernel-clobber window is tracked in #167.
+  */
+-#include <kernel/types.h>
+-#include <kernel/string.h>
+-#include <kernel/printk.h>
++#include <arch/amd64_internal.h>
++#include <arch/arch.h>
++#include <arch/pt_regs.h>
++#include <drivers/timer.h> /* HZ, for Tier-2 per-CPU tick accounting */
++#include <kernel/arch.h>
+ #include <kernel/cpu.h>
+ #include <kernel/fault.h>
+ #include <kernel/irq.h>
+-#include <drivers/timer.h> /* HZ, for Tier-2 per-CPU tick accounting */
+-#include <arch/pt_regs.h>
+-#include <arch/arch.h>
+-#include <arch/amd64_internal.h>
+-#include <kernel/arch.h>
++#include <kernel/printk.h>
++#include <kernel/string.h>
++#include <kernel/types.h>
+ 
+ #define IDT_ENTRIES 256
+ 
+@@ -69,13 +79,14 @@
+  *
+  * type_attr encoding:
+  *   0x8E = P=1 DPL=00 S=0 Type=1110 (64-bit interrupt gate, Ring 0 only)
+- *   0xEE = P=1 DPL=11 S=0 Type=1110 (64-bit interrupt gate, callable from Ring 3)
++ *   0xEE = P=1 DPL=11 S=0 Type=1110 (64-bit interrupt gate, callable from Ring
++ * 3)
+  */
+ struct idt_entry {
+   uint16_t offset_lo;
+   uint16_t selector;
+-  uint8_t  ist;       /* Interrupt Stack Table offset */
+-  uint8_t  type_attr; /* Type and Attributes */
++  uint8_t ist;       /* Interrupt Stack Table offset */
++  uint8_t type_attr; /* Type and Attributes */
+   uint16_t offset_mid;
+   uint32_t offset_hi;
+   uint32_t zero;
+@@ -111,70 +122,87 @@ extern uint64_t isr_stub_table[];
+  * The 64-bit offset is split across offset_lo/mid/hi as required by the
+  * x86-64 descriptor format.
+  */
+-static void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist) {
+-  idt[num].offset_lo  = (uint16_t)(base & 0xFFFF);
+-  idt[num].selector   = sel;
+-  idt[num].ist        = ist;
+-  idt[num].type_attr  = flags;
++static void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel,
++                         uint8_t flags, uint8_t ist) {
++  idt[num].offset_lo = (uint16_t)(base & 0xFFFF);
++  idt[num].selector = sel;
++  idt[num].ist = ist;
++  idt[num].type_attr = flags;
+   idt[num].offset_mid = (uint16_t)((base >> 16) & 0xFFFF);
+-  idt[num].offset_hi  = (uint32_t)(base >> 32);
+-  idt[num].zero       = 0;
++  idt[num].offset_hi = (uint32_t)(base >> 32);
++  idt[num].zero = 0;
+ }
+ 
+ /* idt_initialized: flag set by CPU 0 after filling the IDT; APs spin on it.
+- * NOTE(EXC-AMD64-04): This is a plain int with no volatile or memory barrier.
+- * On SMP the compiler and CPU are free to cache the zero in a register; the
+- * spin loop on APs may never observe the write.  A proper release/acquire pair
+- * (e.g. __atomic_store_n + __atomic_load_n) is needed for correctness. */
++ * FIX(EXC-AMD64-04): plain int -> still declared as int (the type itself
++ * doesn't need to change, __atomic_* builtins work on any integer type),
++ * but every access now goes through __atomic_store_n(..., __ATOMIC_RELEASE)
++ * on CPU 0 and __atomic_load_n(..., __ATOMIC_ACQUIRE) on the spinning APs —
++ * see idt_init() below.  The release/acquire pairing (not just volatile)
++ * is what guarantees an AP that observes idt_initialized==1 also observes
++ * every idt[] entry CPU 0 wrote before setting it; a bare volatile read
++ * would only stop the compiler from caching the value, not order the IDT
++ * writes relative to it. */
+ static int idt_initialized = 0;
+ 
+ /*
+  * idt_init - initialise and load the IDT for the calling CPU.
+  *
+  * CPU 0 path: fills all 256 entries with DPL-0 interrupt gates and sets
+- * idt_initialized = 1 when done.  SYS-AMD64-03 (#168): no DPL-3 gate is
+- * installed — the legacy int 0x80 syscall surface was removed; syscall/sysret
+- * via LSTAR is the sole syscall entry.
++ * idt_initialized = 1 (release store, FIX(EXC-AMD64-04)) when done.
++ * SYS-AMD64-03 (#168): no DPL-3 gate is installed — the legacy int 0x80
++ * syscall surface was removed; syscall/sysret via LSTAR is the sole
++ * syscall entry.
+  *
+- * AP path: spins on idt_initialized (NOTE EXC-AMD64-04: no memory barrier),
+- * then executes lidt with a CPU-local idtr pointing at the shared idt[].
+- * Each CPU must execute lidt itself; the IDTR is per-CPU.
++ * AP path: spins on idt_initialized with an acquire load (FIX(EXC-AMD64-04):
++ * pairs with CPU 0's release store, so observing the flag set also makes
++ * every idt[] write CPU 0 performed before the release visible to this AP —
++ * not just the flag), then executes lidt with a CPU-local idtr pointing at
++ * the shared idt[].  Each CPU must execute lidt itself; the IDTR is per-CPU.
+  */
+ void idt_init(void) {
+   if (arch_get_cpu_id() == 0) {
+-      memset(&idt, 0, sizeof(struct idt_entry) * IDT_ENTRIES);
+-
+-      /* Set up IDT gates: all 256 as kernel-only interrupt gates (0x8E) */
+-      for (int i = 0; i < IDT_ENTRIES; i++) {
+-        idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E, 0);
+-      }
+-
+-      /* SYS-AMD64-03 (#168): vector 0x80 intentionally stays a kernel-only gate
+-       * (DPL=0, set by the loop above).  The legacy int 0x80 syscall surface is
+-       * removed; the only syscall entry is syscall/sysret via LSTAR.  A userland
+-       * int 0x80 now raises #GP and is handled as a user fault. */
+-
+-      /* Dedicated IST fault stacks (Phase A step 3; stacks live in gdt.c):
+-       *   IST1 -> #GP (13) and #PF (14): the handler always runs on a fresh,
+-       *           always-mapped stack even if the faulting RSP is wild or the
+-       *           task kernel stack has overflowed.
+-       *   IST2 -> #DF (8): separate index so that even a #PF/#GP storm that
+-       *           clobbers IST1 cannot take down double-fault reporting.
+-       * NMI (2) deliberately stays IST=0: an IST NMI needs the paranoid
+-       * swapgs-entry pattern, out of scope here (see Phase A plan, Risks). */
+-      idt_set_gate(8,  isr_stub_table[8],  0x08, 0x8E, 2);
+-      idt_set_gate(13, isr_stub_table[13], 0x08, 0x8E, 1);
+-      idt_set_gate(14, isr_stub_table[14], 0x08, 0x8E, 1);
+-
+-      idt_initialized = 1;
++    memset(&idt, 0, sizeof(struct idt_entry) * IDT_ENTRIES);
++
++    /* Set up IDT gates: all 256 as kernel-only interrupt gates (0x8E) */
++    for (int i = 0; i < IDT_ENTRIES; i++) {
++      idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E, 0);
++    }
++
++    /* SYS-AMD64-03 (#168): vector 0x80 intentionally stays a kernel-only gate
++     * (DPL=0, set by the loop above).  The legacy int 0x80 syscall surface is
++     * removed; the only syscall entry is syscall/sysret via LSTAR.  A userland
++     * int 0x80 now raises #GP and is handled as a user fault. */
++
++    /* Dedicated IST fault stacks (Phase A step 3; stacks live in gdt.c):
++     *   IST1 -> #GP (13) and #PF (14): the handler always runs on a fresh,
++     *           always-mapped stack even if the faulting RSP is wild or the
++     *           task kernel stack has overflowed.
++     *   IST2 -> #DF (8): separate index so that even a #PF/#GP storm that
++     *           clobbers IST1 cannot take down double-fault reporting.
++     * NMI (2) deliberately stays IST=0: an IST NMI needs the paranoid
++     * swapgs-entry pattern, out of scope here (see Phase A plan, Risks). */
++    idt_set_gate(8, isr_stub_table[8], 0x08, 0x8E, 2);
++    idt_set_gate(13, isr_stub_table[13], 0x08, 0x8E, 1);
++    idt_set_gate(14, isr_stub_table[14], 0x08, 0x8E, 1);
++
++    /* FIX(EXC-AMD64-04): release store — every idt[] write above is
++     * guaranteed complete, in program order, before any other CPU can
++     * observe idt_initialized becoming non-zero via the matching acquire
++     * load below. */
++    __atomic_store_n(&idt_initialized, 1, __ATOMIC_RELEASE);
+   }
+ 
+-  /* Wait for CPU 0 to finish if needed (not strictly necessary with sequential boot) */
+-  while (!idt_initialized) arch_nop(); /* NOTE(EXC-AMD64-04): missing barrier */
++  /* FIX(EXC-AMD64-04): acquire load — pairs with CPU 0's release store
++   * above.  Guarantees this AP sees the fully-populated idt[] once the
++   * loop exits, not merely a non-zero flag; a bare `while (!idt_initialized)`
++   * gave neither guarantee (no forced re-read, no write-visibility order). */
++  while (!__atomic_load_n(&idt_initialized, __ATOMIC_ACQUIRE))
++    arch_nop();
+ 
+   struct idtr local_idtr;
+   local_idtr.limit = sizeof(struct idt_entry) * IDT_ENTRIES - 1;
+-  local_idtr.base  = (uint64_t)&idt;
++  local_idtr.base = (uint64_t)&idt;
+ 
+   __asm__ __volatile__("lidt %0" : : "m"(local_idtr));
+ }
+@@ -202,11 +230,16 @@ static int fault_cpu_id(void) {
+  * triple fault (SCHED-UAF-01 post-mortem).
+  */
+ static void amd64_dump_regs(struct pt_regs *regs) {
+-  fault_printf("RIP: %016lx CS: %02lx RFLAGS: %016lx\n", regs->rip, regs->cs, regs->rflags);
+-  fault_printf("RAX: %016lx RBX: %016lx RCX: %016lx RDX: %016lx\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
+-  fault_printf("RSI: %016lx RDI: %016lx RBP: %016lx RSP: %016lx\n", regs->rsi, regs->rdi, regs->rbp, regs->rsp);
+-  fault_printf("R8:  %016lx R9:  %016lx R10: %016lx R11: %016lx\n", regs->r8, regs->r9, regs->r10, regs->r11);
+-  fault_printf("R12: %016lx R13: %016lx R14: %016lx R15: %016lx\n", regs->r12, regs->r13, regs->r14, regs->r15);
++  fault_printf("RIP: %016lx CS: %02lx RFLAGS: %016lx\n", regs->rip, regs->cs,
++               regs->rflags);
++  fault_printf("RAX: %016lx RBX: %016lx RCX: %016lx RDX: %016lx\n", regs->rax,
++               regs->rbx, regs->rcx, regs->rdx);
++  fault_printf("RSI: %016lx RDI: %016lx RBP: %016lx RSP: %016lx\n", regs->rsi,
++               regs->rdi, regs->rbp, regs->rsp);
++  fault_printf("R8:  %016lx R9:  %016lx R10: %016lx R11: %016lx\n", regs->r8,
++               regs->r9, regs->r10, regs->r11);
++  fault_printf("R12: %016lx R13: %016lx R14: %016lx R15: %016lx\n", regs->r12,
++               regs->r13, regs->r14, regs->r15);
+   fault_printf("Vector: %ld, Error Code: %lx\n", regs->vec, regs->err);
+ }
+ 
+@@ -235,20 +268,17 @@ static struct pt_regs *amd64_page_fault_handler(struct pt_regs *regs) {
+   /* EXC-AMD64-02 resolved: user #PF (or a fault inside the explicit
+    * user-copy window) terminates the process and schedules a successor —
+    * it no longer halts the kernel. */
+-  struct pt_regs *next =
+-      fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, cr2, regs->rip,
+-                                 "PAGE FAULT", regs->err);
++  struct pt_regs *next = fault_handle_user_or_panic(
++      regs, (regs->cs & 3) == 3, cr2, regs->rip, "PAGE FAULT", regs->err);
+   if (next)
+     return next;
+ 
+-  fault_printf("\n[C%d] KERNEL PAGE FAULT: Access to 0x%lx\n", fault_cpu_id(), cr2);
++  fault_printf("\n[C%d] KERNEL PAGE FAULT: Access to 0x%lx\n", fault_cpu_id(),
++               cr2);
+   fault_printf("Frame: %p (IST1 fault stack)\n", (void *)regs);
+-  fault_printf("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n",
+-               error_code,
+-               (error_code & 1) ? 1 : 0,
+-               (error_code & 2) ? 1 : 0,
+-               (error_code & 4) ? 1 : 0,
+-               (error_code & 8) ? 1 : 0,
++  fault_printf("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n", error_code,
++               (error_code & 1) ? 1 : 0, (error_code & 2) ? 1 : 0,
++               (error_code & 4) ? 1 : 0, (error_code & 8) ? 1 : 0,
+                (error_code & 16) ? 1 : 0);
+ 
+   amd64_dump_regs(regs);
+@@ -275,16 +305,18 @@ static struct pt_regs *amd64_gpf_handler(struct pt_regs *regs) {
+   amd64_dump_regs(regs);
+   backtrace_regs(regs->rip, regs->rbp);
+   backtrace_scan(regs->rsp);
+-  panic("Unrecoverable kernel #GP at RIP 0x%lx (err 0x%lx)", regs->rip, regs->err);
++  panic("Unrecoverable kernel #GP at RIP 0x%lx (err 0x%lx)", regs->rip,
++        regs->err);
+ }
+ 
+ /*
+  * amd64_double_fault_handler - handle vector 8 (#DF).
+  *
+  * Double fault occurs when an exception fires while handling another exception.
+- * The CPU pushes a zero error code.  Recovery is impossible in the general case;
+- * a dedicated IST stack entry should be used for #DF to avoid stack-overflow
+- * recursion (IST=0 here, so it shares the TSS RSP0 stack — risky).
++ * The CPU pushes a zero error code.  Recovery is impossible in the general
++ * case; a dedicated IST stack entry should be used for #DF to avoid
++ * stack-overflow recursion (IST=0 here, so it shares the TSS RSP0 stack —
++ * risky).
+  */
+ static void amd64_double_fault_handler(struct pt_regs *regs) {
+   fault_printf("\n[C%d] DOUBLE FAULT\n", fault_cpu_id());
+@@ -334,7 +366,8 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
+      * with one raw line.  fault_exit() runs on every path below that resumes
+      * execution; the halting paths deliberately keep the depth elevated. */
+     if (fault_enter() > 1) {
+-      fault_printf("\n[C%d] NESTED CPU EXCEPTION vec=%lu err=0x%lx rip=%016lx — halting\n",
++      fault_printf("\n[C%d] NESTED CPU EXCEPTION vec=%lu err=0x%lx rip=%016lx "
++                   "— halting\n",
+                    fault_cpu_id(), vec, regs->err, regs->rip);
+       arch_cpu_halt();
+     }
+@@ -345,26 +378,26 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
+      * frame.  Kernel faults dump and panic.  #DF never attempts recovery:
+      * machine state is not trustworthy by definition. */
+     switch (vec) {
+-      case 8: /* Double Fault (#DF) */
+-        amd64_double_fault_handler(regs);
+-        break;
+-      case 13: /* General Protection Fault (#GP) */
+-        return amd64_gpf_handler(regs);
+-      case 14: /* Page Fault (#PF) — CR2 holds faulting address */
+-        return amd64_page_fault_handler(regs);
+-      default: {
+-        struct pt_regs *next =
+-            fault_handle_user_or_panic(regs, (regs->cs & 3) == 3, 0, regs->rip,
+-                                       "CPU EXCEPTION", regs->err);
+-        if (next)
+-          return next;
+-        fault_printf("\n[C%d] Unhandled kernel CPU Exception: %ld\n",
+-                     fault_cpu_id(), vec);
+-        amd64_dump_regs(regs);
+-        backtrace_regs(regs->rip, regs->rbp);
+-        backtrace_scan(regs->rsp);
+-        panic("Unrecoverable kernel exception (vec %lu) at RIP 0x%lx", vec, regs->rip);
+-      }
++    case 8: /* Double Fault (#DF) */
++      amd64_double_fault_handler(regs);
++      break;
++    case 13: /* General Protection Fault (#GP) */
++      return amd64_gpf_handler(regs);
++    case 14: /* Page Fault (#PF) — CR2 holds faulting address */
++      return amd64_page_fault_handler(regs);
++    default: {
++      struct pt_regs *next = fault_handle_user_or_panic(
++          regs, (regs->cs & 3) == 3, 0, regs->rip, "CPU EXCEPTION", regs->err);
++      if (next)
++        return next;
++      fault_printf("\n[C%d] Unhandled kernel CPU Exception: %ld\n",
++                   fault_cpu_id(), vec);
++      amd64_dump_regs(regs);
++      backtrace_regs(regs->rip, regs->rbp);
++      backtrace_scan(regs->rsp);
++      panic("Unrecoverable kernel exception (vec %lu) at RIP 0x%lx", vec,
++            regs->rip);
++    }
+     }
+   } else {
+     /* Hardware interrupts (32-255).  SYS-AMD64-03 (#168): the legacy int 0x80
+@@ -379,31 +412,31 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
+      * performs what is needed.  Likewise the LAPIC spurious vector (0xFF,
+      * set in SVR) requires no EOI and no dispatch. */
+     if ((vec == 39 || vec == 47) && pic_handle_spurious((uint32_t)vec)) {
+-        return ret_regs;
++      return ret_regs;
+     }
+     if (vec == 0xFF) {
+-        return ret_regs;
++      return ret_regs;
+     }
+ 
+     if (vec == 32) {
+-        /* Timer Interrupt (LAPIC periodic, vector 32; the PIT is halted
+-         * after calibration — EXC-AMD64-03 resolved).
+-         * NOTE(CPU-AMD64-01): No FPU save; ctx_switch on this path risks XMM
+-         * corruption between concurrently running kernel tasks. */
+-
+-        /* Tier-2 per-CPU drift accounting (docs/TIMER-MODEL.md §3): the
+-         * arch-neutral, HAL-driven timer_percpu_tick() advances the software
+-         * per-CPU schedule against the free-running TSC so lost ticks are
+-         * recovered per core. arch_timer_set_compare() is a no-op here (the
+-         * LAPIC stays periodic). Done BEFORE the tick so it reflects this IRQ. */
+-        timer_percpu_tick(get_cpu_info());
+-
+-        ret_regs = kernel_timer_tick(regs);
++      /* Timer Interrupt (LAPIC periodic, vector 32; the PIT is halted
++       * after calibration — EXC-AMD64-03 resolved).
++       * NOTE(CPU-AMD64-01): No FPU save; ctx_switch on this path risks XMM
++       * corruption between concurrently running kernel tasks. */
++
++      /* Tier-2 per-CPU drift accounting (docs/TIMER-MODEL.md §3): the
++       * arch-neutral, HAL-driven timer_percpu_tick() advances the software
++       * per-CPU schedule against the free-running TSC so lost ticks are
++       * recovered per core. arch_timer_set_compare() is a no-op here (the
++       * LAPIC stays periodic). Done BEFORE the tick so it reflects this IRQ. */
++      timer_percpu_tick(get_cpu_info());
++
++      ret_regs = kernel_timer_tick(regs);
+     } else {
+-        /* All other Hardware interrupts - route via generic system */
+-        pr_debug("AMD64: Hardware Interrupt Vector %lu triggered!\n", vec);
+-        extern struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs * regs);
+-        ret_regs = irq_dispatch(vec, regs);
++      /* All other Hardware interrupts - route via generic system */
++      pr_debug("AMD64: Hardware Interrupt Vector %lu triggered!\n", vec);
++      extern struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs);
++      ret_regs = irq_dispatch(vec, regs);
+     }
+ 
+     /* End-of-interrupt through the chip (IRQ-01 fix): pic_chip_end() owns
+@@ -414,4 +447,4 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
+   }
+ 
+   return regs;
+-}
++}
+\ No newline at end of file
+diff --git a/kernel/arch/amd64/kinit/start.S b/kernel/arch/amd64/kinit/start.S
+index 4f6ad5e..4552412 100644
+--- a/kernel/arch/amd64/kinit/start.S
++++ b/kernel/arch/amd64/kinit/start.S
+@@ -12,8 +12,8 @@
+  *   boot_pdpt[3]   -> boot_pd_high  (2MB pages, PA 3..4GB: LAPIC/MMIO,
+  *                                    visible both identity and at KVB+3GB)
+  * Sharing boot_pdpt between PML4[0] and PML4[256] gives the direct map
+- * and the identity map for free with one set of tables.  APs boot on the
+- * same boot_pml4 (kernel_pgd_phys is patched into the trampoline), so
++ * and the identity map for free with one set of tables.  APs boot on
++ * the same boot_pml4 (kernel_pgd_phys is patched into the trampoline), so
+  * they can reach the high secondary_cpu_entry before adopting the real
+  * kernel PGD in arch_cpu_init.
+  */
+@@ -45,8 +45,8 @@ multiboot2_header_end:
+     .long 4             /* Namesz */
+     .long 4             /* Descsz */
+     .long 18            /* Type (XEN_ELFNOTE_PHYS32_ENTRY) */
+-    .ascii "Xen\0"      /* Name */
+-    .long _start_32     /* Desc (Entry point) */
++    .ascii "Xen\0"       /* Name */
++    .long _start_32      /* Desc (Entry point) */
+ 
+ .section .text.boot, "ax"
+ .code32
+@@ -223,10 +223,46 @@ _start_64_high:
+ 
+ .global secondary_cpu_entry
+ secondary_cpu_entry:
+-    /* Debug: Print 'S' */
+-    movb $'S', %al
+-    movw $0x3f8, %dx
+-    outb %al, %dx
++    /*
++     * FIX(SMP-UART-02, companion to SMP-UART-01 in 16550.c):
++     *
++     * Removed the raw 'S' COM1 debug write that used to happen here:
++     *
++     *     movb $'S', %al
++     *     movw $0x3f8, %dx
++     *     outb %al, %dx
++     *
++     * That write bypassed uart_lock(), did not poll LSR.THRE, and could
++     * therefore interleave with another CPU's locked uart_puts()/printk()
++     * output or stomp a byte while the UART was still transmitting.
++     *
++     * The AP now proceeds directly through the normal secondary CPU
++     * initialization path.  kernel_secondary_main() performs the single
++     * cpu_init()/arch_cpu_init() call and eventually reports the CPU online
++     * through the normal locked UART path.
++     *
++     * FIX(SEC-CPU-DUP-01):
++     *
++     * arch_cpu_init() (== cpu_init(), kernel/cpu.h) used to be called HERE
++     * and then again as the first thing kernel_secondary_main() does — the
++     * same per-CPU bring-up (GDT/IDT/syscall MSRs/LAPIC, nr_cpus increment)
++     * ran twice for every AP.
++     *
++     * Harmless-looking on paper (idempotent-looking writes) but not actually
++     * safe: the SECOND lapic_init() re-touches LVT/SVR while the first pass's
++     * effects may still be settling, and nr_cpus is incremented via
++     * __sync_fetch_and_add on id!=0 — TWICE per AP — so nr_cpus ends up
++     * counting each AP twice, corrupting any code that trusts it as the
++     * online-CPU count.
++     *
++     * Observed directly in boot logs: every AP printed its entire
++     * "GDT/IDT/Syscall/LAPIC" sequence twice, back to back.
++     *
++     * arch_cpu_init() is called exactly once now, from
++     * kernel_secondary_main() (kernel/main.c) via cpu_init() — the same
++     * single call site the BSP already uses (kernel_main() -> cpu_init()),
++     * so the AP and BSP paths are symmetric.
++     */
+     cli
+     xorl %eax, %eax
+     movw %ax, %ds
+@@ -234,7 +270,7 @@ secondary_cpu_entry:
+     movw %ax, %fs
+     movw %ax, %gs
+     movw %ax, %ss
+-    call arch_cpu_init
++
+     call kernel_secondary_main
+ 
+ .global arch_yield
+@@ -296,4 +332,4 @@ kernel_pgd_phys: .quad boot_pml4
+ __kernel_stack:
+     .skip 131072 * MAX_CPUS
+ .global __kernel_stack_top
+-__kernel_stack_top:
++__kernel_stack_top:
+\ No newline at end of file
+diff --git a/kernel/arch/amd64/kinit/trampoline.S b/kernel/arch/amd64/kinit/trampoline.S
+index dd365ab..bbcf669 100644
+--- a/kernel/arch/amd64/kinit/trampoline.S
++++ b/kernel/arch/amd64/kinit/trampoline.S
+@@ -1,6 +1,39 @@
+ /*
+  * kernel/arch/amd64/boot/trampoline.S
+  * Secondary CPU Trampoline (16-bit -> 64-bit)
++ *
++ * HARDENING (trampoline re-entrancy, companion to BOOT-03 in platform.c):
++ *
++ * The Intel SDM's recommended AP bring-up sequence is INIT, then TWO
++ * STARTUP IPIs (SIPI) 200us apart — the second is a spec-mandated retry
++ * against a lost or coalesced first SIPI, not an optional extra.  This
++ * trampoline is copied to a SINGLE shared scratch page (TRAMPOLINE_BASE,
++ * see arch_cpu_wake_secondary() in platform.c) and re-used, serially, once
++ * per AP; a duplicate SIPI landing while THIS pass of the trampoline is
++ * still mid-flight through the 16->32->64-bit transition would re-enter
++ * trampoline_start with %cr3/%rsp/the temporary GDT still live from the
++ * first pass — corrupting bring-up state.  This was an observed, real
++ * regression (each AP printing its entire GDT/IDT/LAPIC bring-up twice,
++ * followed by a deadlock on the first post-boot hardware IRQ) when a
++ * second SIPI was added without this guard.
++ *
++ * Fix: trampoline_busy is a 16-bit flag, checked and atomically claimed
++ * (LOCK BTS — test-and-set that is atomic even against another logical
++ * CPU, not just re-entrant execution on this one) as the VERY FIRST
++ * instruction, before any segment, CR0, or GDT write.  A SIPI that lands
++ * on a core already executing this pass (whether a genuine duplicate to
++ * the SAME AP, or — in the shared-scratch-page design — a stray SIPI
++ * misdelivered to a DIFFERENT core while this AP's pass is still in
++ * flight) finds the bit already set and spins on it instead of restarting
++ * the transition.  The flag resets to 0 automatically on every AP wake:
++ * arch_cpu_wake_secondary() (platform.c) memcpy()s this entire blob —
++ * trampoline_busy's statically-linked 0 value included — to
++ * TRAMPOLINE_BASE before patching the per-CPU parameters and sending
++ * INIT/SIPI, so each fresh copy starts with the guard clear.  The running
++ * trampoline itself never clears the flag, because the AP that just
++ * claimed it has no safe way to know it is the LAST core that will ever
++ * execute this pass of the code before the BSP overwrites the shared page
++ * for the next one.
+  */
+ .section .trampoline, "ax"
+ .code16
+@@ -9,12 +42,35 @@
+ .global trampoline_end
+ 
+ trampoline_start:
++    /* FIX(trampoline re-entrancy): claim trampoline_busy before touching
++     * ANYTHING else that mutates shared/core state — a second SIPI racing
++     * in right at trampoline_start must see the flag BEFORE this core does
++     * any state-mutating work.  LOCK BTS (bit-test-and-set) is atomic
++     * across cores, not just against re-entry on the same one: if two
++     * STARTUP IPIs are ever in flight to two different APs at once and
++     * (due to the shared scratch page) BOTH read trampoline_start, only
++     * one can win the bit; the other spins below rather than racing the
++     * winner through CR0/CR3/GDT loads with data that may not even be its
++     * own yet.  bt/jc + a plain "or" would have a check-then-set window a
++     * second CPU's IPI could land inside; LOCK BTS has none.
++     *
++     * %ds is set to 0 first (matching every other absolute-offset access
++     * in this file, e.g. trampoline_pml4 at TRAMPOLINE_BASE+0x1000) so
++     * trampoline_busy's absolute address is correct — cli/cld/segment
++     * loads themselves touch no shared state and are safe to run before
++     * the claim. */
+     cli
+     cld
+-
+-    /* Set up segments */
+     xor %ax, %ax
+     mov %ax, %ds
++
++claim_busy:
++    lock btsw $0, (trampoline_busy - trampoline_start + 0x1000)
++    jc claim_busy          /* bit was already set: another pass is still
++                             * in flight on some core — spin, don't race it */
++
++    /* Set up remaining segments (safe now: this core alone owns the
++     * trampoline — %ds is already 0 from the claim sequence above). */
+     mov %ax, %es
+     mov %ax, %ss
+ 
+@@ -89,8 +145,22 @@ trampoline_gdt_ptr:
+ .global trampoline_pml4
+ .global trampoline_stack
+ .global trampoline_entry
++.global trampoline_busy
+ trampoline_pml4:  .long 0
+ trampoline_stack: .quad 0
+ trampoline_entry: .quad 0
+-
+-trampoline_end:
++/* trampoline_busy: re-entrancy guard (see the file-header note and the
++ * "claim_busy" code at trampoline_start).  Word-sized so `lock btsw`
++ * (16-bit form) has a naturally aligned operand; only bit 0 is used.
++ * Statically initialised to 0 here, in the LINKED copy of this blob —
++ * which is what makes the reset automatic: arch_cpu_wake_secondary()
++ * (platform.c) memcpy()s this entire blob, trampoline_busy included, to
++ * TRAMPOLINE_BASE before every AP wake, so each copy starts with the flag
++ * clear without any code needing to touch it directly.  The running
++ * trampoline itself never clears it — the AP that just claimed the bit
++ * has no safe way to know whether it is the last core that will ever
++ * execute this pass of the shared page before the BSP overwrites it for
++ * the next one. */
++trampoline_busy: .word 0
++
++trampoline_end:
+\ No newline at end of file
+diff --git a/kernel/arch/amd64/mm/mmu.c b/kernel/arch/amd64/mm/mmu.c
+index 97dbc15..34053aa 100644
+--- a/kernel/arch/amd64/mm/mmu.c
++++ b/kernel/arch/amd64/mm/mmu.c
+@@ -42,10 +42,10 @@
+  *     arch_vmm_map (which passes level=0 for the PML4→PDPT step, skipping the
+  *     block-split branch); the vmm.c generic walker does not understand 2MB/1GB
+  *     blocks at all — walking a region mapped by arch_vmm_map_range (2MB pages)
+- *     via vmm.c's get_next_table dereferences the block entry as a table pointer.
+- *   AMMU-05 (W2 SECURITY) All intermediate page-table entries (PDPT/PD/PT)
+- *     are tagged X86_PTE_US (user-accessible), making them more permissive than
+- *     necessary; only leaf PTEs for user pages need X86_PTE_US.
++ *     via vmm.c's get_next_table dereferences the block entry as a table
++ * pointer. AMMU-05 (W2 SECURITY) All intermediate page-table entries
++ * (PDPT/PD/PT) are tagged X86_PTE_US (user-accessible), making them more
++ * permissive than necessary; only leaf PTEs for user pages need X86_PTE_US.
+  *   AMMU-06 (W2 PERF) arch_vmm_map_mmio maps 0xFE000000–0xFFFFFFFF one 4KB
+  *     page at a time (~8192 iterations) at every PGD setup.  A single 2MB page
+  *     or a pre-computed PDPT entry would suffice.
+@@ -58,31 +58,31 @@
+  *     previously-absent VA needs no remote flush, and today's callers never
+  *     live-remap a VA that another CPU is concurrently using.
+  */
++#include "../../../include/kernel/pmm.h"
+ #include <arch/amd64_internal.h>
+ #include <arch/arch.h>
+-#include <kernel/pmm.h>
+ #include <kernel/platform.h>
++#include <kernel/pmm.h>
+ #include <kernel/printk.h>
+ #include <kernel/string.h>
+ #include <kernel/types.h>
+ #include <kernel/vmm.h>
+-#include "../../../include/kernel/pmm.h"
+ 
+ #ifndef PAGE_MASK
+ #endif /* PAGE_MASK */
+ /* ── Page Table Entry Flag Bits (Intel SDM Vol.3, Table 4-20) ──────────────
+  * These apply to all four levels (PML4E, PDPTE, PDE, PTE) where relevant.
+  * ─────────────────────────────────────────────────────────────────────────*/
+-#define X86_PTE_P   0x001         /* Present: entry is valid */
+-#define X86_PTE_RW  0x002         /* Read/Write: 0=read-only, 1=writable */
+-#define X86_PTE_US  0x004         /* User/Supervisor: 1=user-accessible */
+-#define X86_PTE_PWT 0x008         /* Page-level write-through cache policy */
+-#define X86_PTE_PCD 0x010         /* Page-level cache disable */
+-#define X86_PTE_A   0x020         /* Accessed: set by CPU on any access */
+-#define X86_PTE_D   0x040         /* Dirty: set by CPU on write */
+-#define X86_PTE_PAT 0x080         /* Page Attribute Table index bit */
+-#define X86_PTE_G   0x100         /* Global: don't flush from TLB on CR3 write */
+-#define X86_PTE_NX  (1ULL << 63)  /* No-Execute (requires IA32_EFER.NXE=1) */
++#define X86_PTE_P 0x001         /* Present: entry is valid */
++#define X86_PTE_RW 0x002        /* Read/Write: 0=read-only, 1=writable */
++#define X86_PTE_US 0x004        /* User/Supervisor: 1=user-accessible */
++#define X86_PTE_PWT 0x008       /* Page-level write-through cache policy */
++#define X86_PTE_PCD 0x010       /* Page-level cache disable */
++#define X86_PTE_A 0x020         /* Accessed: set by CPU on any access */
++#define X86_PTE_D 0x040         /* Dirty: set by CPU on write */
++#define X86_PTE_PAT 0x080       /* Page Attribute Table index bit */
++#define X86_PTE_G 0x100         /* Global: don't flush from TLB on CR3 write */
++#define X86_PTE_NX (1ULL << 63) /* No-Execute (requires IA32_EFER.NXE=1) */
+ 
+ /* PTE_ADDR_MASK: extract the 40-bit physical page-frame address from a PTE.
+  * Bits [11:0] are flags; bits [63:52] are reserved/NX; bits [51:12] are PA. */
+@@ -95,8 +95,8 @@
+  * PT:   VA[20:12] (9 bits) → one of 512 PT entries  → covers 4 KB each. */
+ #define PML4_INDEX(a) (((a) >> 39) & 0x1FF)
+ #define PDPT_INDEX(a) (((a) >> 30) & 0x1FF)
+-#define PD_INDEX(a)   (((a) >> 21) & 0x1FF)
+-#define PT_INDEX(a)   (((a) >> 12) & 0x1FF)
++#define PD_INDEX(a) (((a) >> 21) & 0x1FF)
++#define PT_INDEX(a) (((a) >> 12) & 0x1FF)
+ 
+ int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags);
+ int arch_vmm_unmap(uint64_t pgd, uint64_t va);
+@@ -113,9 +113,9 @@ extern uint64_t boot_pml4[];
+  *      boot_pml4 set up by start.S.
+  *   2. Identity-map the low 1 MB [0, 0x100000) for the SMP trampoline
+  *      (TRAMPOLINE_BASE = 0x1000) and legacy BIOS data areas.
+- *   3. Identity-map all usable RAM regions reported by arch_platform_get_mem_regions.
+- *      arch_vmm_map_range uses 2MB large pages where VA/PA are 2MB-aligned
+- *      for efficiency, then 4KB pages for the remainder.
++ *   3. Identity-map all usable RAM regions reported by
++ * arch_platform_get_mem_regions. arch_vmm_map_range uses 2MB large pages where
++ * VA/PA are 2MB-aligned for efficiency, then 4KB pages for the remainder.
+  *   4. Identity-map the MMIO window via arch_vmm_map_mmio.
+  *
+  * NOTE(AMMU-01): Kernel RAM is mapped PTE_RW without PTE_NX because the NX
+@@ -160,8 +160,8 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
+ 
+   for (size_t i = 0; i < count; i++) {
+     if (regions[i].type == MEM_REGION_USABLE) {
+-      pr_info("AMD64 VMM: Mapping RAM 0x%lx - 0x%lx\n",
+-              regions[i].base, regions[i].base + regions[i].size);
++      pr_info("AMD64 VMM: Mapping RAM 0x%lx - 0x%lx\n", regions[i].base,
++              regions[i].base + regions[i].size);
+       /* W^X section split (AMMU-01 resolved): text RX, rodata RO+NX,
+        * the rest RW+NX.  kernel_pgd is a PA here; vmm_map_ram_wx takes
+        * the pointer form. */
+@@ -217,13 +217,55 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
+    *    legacy BIOS data areas.
+    *  - [1MB, 2MB): the low-linked boot sections (kernel.ld) — platform.c
+    *    reads the trampoline blob via its low link address.
+-   * NX is safe: APs execute the trampoline in real mode (paging off) and
+-   * then on boot_pml4, never through these kernel_pgd entries. */
++   * NX is safe here again: APs execute the trampoline in real mode
++   * (paging off) and then on boot_pml4 (guaranteed physically <4GB, set
++   * up by start.S), never through these kernel_pgd entries — see
++   * arch_cpu.c's arch_cpu_init() for the SAFE, later 64-bit CR3 switch to
++   * this kernel_pgd, which runs once each AP is already executing 64-bit
++   * C code (arch_vmm_set_pgd()). */
+   /* The SMP trampoline lives in this window.  Dropping the result meant a
+    * failure surfaced later as secondary CPUs that never came online, which
+    * looks like an SMP bug rather than a mapping one. */
++  /* REVERTED (was FIX(ARCH-AMD64-APPGD-01 / NX-TRAMPOLINE)): a prior change
++   * made platform.c publish the LIVE kernel_pgd's physical address into the
++   * 32-bit trampoline_pml4 field patched by arch_cpu_wake_secondary(), so
++   * that each AP would load kernel_pgd directly instead of boot_pml4 during
++   * the 16→32→64-bit transition, and marked this low window PAGE_KERNEL_EXEC
++   * (W+X) to keep it executable under kernel_pgd.
++   *
++   * That approach is unsafe on real x86-64 hardware and has been reverted:
++   * in trampoline_pm (32-bit protected mode, BEFORE the long-mode jump),
++   * CR3 is loaded with `mov eax, cr3` — a 32-bit register write. CR3 is
++   * architecturally a 32-BIT register outside of 64-bit mode; there is no
++   * way to express a physical address >= 4GB in it at that point in the
++   * transition, full stop. kernel_pgd's own top-level PML4 page is
++   * allocated dynamically via pmm_alloc_page() and can legally land
++   * anywhere in physical RAM, including above 4GB on any system with more
++   * than ~4GB installed (e.g. this target's 5GB config, which has a usable
++   * region at 0x100000000-0x180000000). If kernel_pgd's PML4 page is ever
++   * allocated from that high region, every AP's CR3 silently gets the
++   * address's low 32 bits with the high bits discarded by the CPU — not a
++   * software truncation bug that a wider type could fix, but a hardware
++   * mode limitation. The resulting corrupt page tables on the affected AP
++   * range from an immediate triple fault (AP never comes online) to,
++   * worse, a corrupt-but-superficially-working aliasing of some unrelated
++   * physical page, which can manifest as a much later, hard-to-diagnose
++   * failure once that AP is scheduled real work.
++   *
++   * The change was also entirely redundant: kernel/arch/amd64/cpu/cpu.c's
++   * arch_cpu_init() ALREADY adopts the live kernel_pgd safely, once each AP
++   * is executing 64-bit C code (arch_vmm_set_pgd(virt_to_phys(kernel_pgd)),
++   * a proper 64-bit `mov reg64, cr3`), which is exactly the documented
++   * design this file's own header states: "APs still boot on boot_pml4 and
++   * adopt kernel_pgd in arch_cpu_init." That mechanism already gives every
++   * AP the full RAM/MMIO map (including >4GB VirtIO BARs) before its first
++   * IRQ can ever be unmasked, with no CR3-width hazard, because by then the
++   * AP is safely in 64-bit mode. Restoring PAGE_KERNEL (NX) here is
++   * therefore correct: kernel_pgd's low 2MB identity window is never
++   * executed through by any code path once this revert is in place. */
+   if (arch_vmm_map_range(virt_to_phys(pgd), 0, 0, 0x200000, PAGE_KERNEL) != 0)
+-    panic("arch_vmm_map_mmio: cannot identity-map the low 2MB (SMP trampoline)");
++    panic(
++        "arch_vmm_map_mmio: cannot identity-map the low 2MB (SMP trampoline)");
+ }
+ 
+ /*
+@@ -299,17 +341,21 @@ void arch_vmm_init(void) {
+  * pages at all: it will dereference a 2MB-block PDE as a table pointer and
+  * corrupt memory.  [inferred; cross-ref AMMU-04]
+  */
+-static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int level) {
++static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc,
++                                int level) {
+   uint64_t entry = table[index];
+ 
+   if (entry & X86_PTE_P) {
+     /* Check for 2MB/1GB block (PS bit = bit 7) */
+     if (entry & 0x080) {
+-      if (!alloc) return NULL;
++      if (!alloc)
++        return NULL;
+ 
+-      /* SPLIT BLOCK: allocate a new sub-table and fill it with fine-grained entries */
++      /* SPLIT BLOCK: allocate a new sub-table and fill it with fine-grained
++       * entries */
+       void *new_table = pmm_alloc_page();
+-      if (!new_table) return NULL;
++      if (!new_table)
++        return NULL;
+       memset(new_table, 0, PAGE_SIZE);
+ 
+       uint64_t block_pa = entry & PTE_ADDR_MASK;
+@@ -324,14 +370,16 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int
+       } else if (level == 2) {
+         /* 2MB Block → 512 × 4KB pages (clear PS bit: leaf PTEs have no PS) */
+         for (int i = 0; i < 512; i++) {
+-          sub_table[i] = (block_pa + (uint64_t)i * 4096) | (block_flags & ~0x080);
++          sub_table[i] =
++              (block_pa + (uint64_t)i * 4096) | (block_flags & ~0x080);
+         }
+       }
+ 
+       /* Replace the block entry with a pointer to the new sub-table.
+        * NOTE(AMMU-05): X86_PTE_US on an intermediate entry; kernel-only
+        * intermediate tables do not need to be user-accessible. */
+-      table[index] = virt_to_phys(new_table) | X86_PTE_P | X86_PTE_RW | X86_PTE_US;
++      table[index] =
++          virt_to_phys(new_table) | X86_PTE_P | X86_PTE_RW | X86_PTE_US;
+       return (uint64_t *)new_table;
+     }
+     /* Entry is present and not a large page: return the next-level table PA.
+@@ -339,11 +387,13 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int
+     return (uint64_t *)phys_to_virt(entry & PTE_ADDR_MASK);
+   }
+ 
+-  if (!alloc) return NULL;
++  if (!alloc)
++    return NULL;
+ 
+   /* Entry is absent: allocate a new page table page */
+   void *page = pmm_alloc_page();
+-  if (!page) return NULL;
++  if (!page)
++    return NULL;
+   memset(page, 0, PAGE_SIZE);
+ 
+   /* NOTE(AMMU-05): X86_PTE_US on intermediate table entry */
+@@ -380,7 +430,8 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int
+  * Returns 0 on success, -1 if any page-table page allocation fails.
+  */
+ /*
+- * x86_leaf_flags - translate arch-neutral PTE/PAGE profile bits to x86 PTE bits.
++ * x86_leaf_flags - translate arch-neutral PTE/PAGE profile bits to x86 PTE
++ * bits.
+  *
+  * Flag translation (AMMU-01 resolved): callers pass the amd64 PTE/PAGE
+  * profiles from vmm.h, which carry the final x86 bits — translate them
+@@ -411,13 +462,16 @@ int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags) {
+ 
+   /* Walk (and allocate if absent) PML4 → PDPT → PD → PT */
+   uint64_t *pdpt = get_next_table(pml4, PML4_INDEX(va), 1, 0);
+-  if (!pdpt) return -1;
++  if (!pdpt)
++    return -1;
+ 
+   uint64_t *pd = get_next_table(pdpt, PDPT_INDEX(va), 1, 1);
+-  if (!pd) return -1;
++  if (!pd)
++    return -1;
+ 
+   uint64_t *pt = get_next_table(pd, PD_INDEX(va), 1, 2);
+-  if (!pt) return -1;
++  if (!pt)
++    return -1;
+ 
+   /* Write the leaf PTE: physical address + flags */
+   pt[PT_INDEX(va)] = (pa & PTE_ADDR_MASK) | x86_flags;
+@@ -453,7 +507,8 @@ int arch_vmm_unmap(uint64_t pgd, uint64_t va) {
+ 
+   if (!(pml4[PML4_INDEX(va)] & X86_PTE_P))
+     return 0;
+-  uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(va)] & PTE_ADDR_MASK);
++  uint64_t *pdpt =
++      (uint64_t *)phys_to_virt(pml4[PML4_INDEX(va)] & PTE_ADDR_MASK);
+ 
+   if (!(pdpt[PDPT_INDEX(va)] & X86_PTE_P))
+     return 0;
+@@ -485,7 +540,8 @@ uint64_t arch_vmm_get_physical(uint64_t pgd, uint64_t va) {
+ 
+   if (!(pml4[PML4_INDEX(va)] & X86_PTE_P))
+     return 0;
+-  uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(va)] & PTE_ADDR_MASK);
++  uint64_t *pdpt =
++      (uint64_t *)phys_to_virt(pml4[PML4_INDEX(va)] & PTE_ADDR_MASK);
+ 
+   uint64_t pdpte = pdpt[PDPT_INDEX(va)];
+   if (!(pdpte & X86_PTE_P))
+@@ -595,31 +651,49 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
+ 
+   for (; v < end; v += 4096) {
+     uint64_t pml4e = pml4[PML4_INDEX(v)];
+-    if (!(pml4e & X86_PTE_P)) { rc = -1; break; }
++    if (!(pml4e & X86_PTE_P)) {
++      rc = -1;
++      break;
++    }
+     uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4e & PTE_ADDR_MASK);
+ 
+     uint64_t pdpte = pdpt[PDPT_INDEX(v)];
+-    if (!(pdpte & X86_PTE_P)) { rc = -1; break; }
++    if (!(pdpte & X86_PTE_P)) {
++      rc = -1;
++      break;
++    }
+     uint64_t *pd;
+     if (pdpte & 0x080) {
+       pd = get_next_table(pdpt, PDPT_INDEX(v), 1, 1); /* split 1GB page */
+-      if (!pd) { rc = -1; break; }
++      if (!pd) {
++        rc = -1;
++        break;
++      }
+     } else {
+       pd = (uint64_t *)phys_to_virt(pdpte & PTE_ADDR_MASK);
+     }
+ 
+     uint64_t pde = pd[PD_INDEX(v)];
+-    if (!(pde & X86_PTE_P)) { rc = -1; break; }
++    if (!(pde & X86_PTE_P)) {
++      rc = -1;
++      break;
++    }
+     uint64_t *pt;
+     if (pde & 0x080) {
+       pt = get_next_table(pd, PD_INDEX(v), 1, 2); /* split 2MB page */
+-      if (!pt) { rc = -1; break; }
++      if (!pt) {
++        rc = -1;
++        break;
++      }
+     } else {
+       pt = (uint64_t *)phys_to_virt(pde & PTE_ADDR_MASK);
+     }
+ 
+     uint64_t pte = pt[PT_INDEX(v)];
+-    if (!(pte & X86_PTE_P)) { rc = -1; break; }
++    if (!(pte & X86_PTE_P)) {
++      rc = -1;
++      break;
++    }
+     pt[PT_INDEX(v)] = (pte & PTE_ADDR_MASK) | x86_flags;
+   }
+ 
+@@ -628,7 +702,8 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
+ }
+ 
+ /*
+- * arch_vmm_map_range - map a contiguous VA→PA range, using 2MB pages where possible.
++ * arch_vmm_map_range - map a contiguous VA→PA range, using 2MB pages where
++ * possible.
+  *
+  * Iterates [va, va+size) and maps each chunk:
+  *   - If both VA and PA are 2MB-aligned AND remaining size >= 2MB: map a single
+@@ -645,21 +720,24 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
+  *
+  * Returns 0 on success, -1 if any allocation fails.
+  */
+-int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, uint64_t flags) {
++int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size,
++                       uint64_t flags) {
+   uint64_t v = va;
+   uint64_t p = pa;
+   uint64_t end = va + size;
+ 
+   while (v < end) {
+     uint64_t remaining = end - v;
+-    
++
+     if ((v & 0x1FFFFF) == 0 && (p & 0x1FFFFF) == 0 && remaining >= 0x200000) {
+       uint64_t *pml4 = (uint64_t *)phys_to_virt(pgd);
+       uint64_t *pdpt = get_next_table(pml4, PML4_INDEX(v), 1, 0);
+-      if (!pdpt) return -1;
++      if (!pdpt)
++        return -1;
+ 
+       uint64_t *pd = get_next_table(pdpt, PDPT_INDEX(v), 1, 1);
+-      if (!pd) return -1;
++      if (!pd)
++        return -1;
+ 
+       /* Level 2 2MB Page Mapping — same explicit translation as
+        * arch_vmm_map (opt-in RW, NX from PTE_NX or UXN+PXN). */
+@@ -669,11 +747,12 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
+       v += 0x200000;
+       p += 0x200000;
+     } else {
+-      if (arch_vmm_map(pgd, v, p, flags) != 0) return -1;
++      if (arch_vmm_map(pgd, v, p, flags) != 0)
++        return -1;
+       v += 4096;
+       p += 4096;
+     }
+   }
+   arch_tlb_flush_all();
+   return 0;
+-}
++}
+\ No newline at end of file
+diff --git a/kernel/arch/amd64/platform/platform.c b/kernel/arch/amd64/platform/platform.c
+index 370b004..b9a91c2 100644
+--- a/kernel/arch/amd64/platform/platform.c
++++ b/kernel/arch/amd64/platform/platform.c
+@@ -24,26 +24,36 @@
+  *     but delivers the hvm_start_info pointer in %ebx with magic inside the
+  *     struct's first field, not in a "magic register" value.  The code checks
+  *     'mb_magic == PVH_MAGIC' expecting a saved register, but QEMU's PVH ABI
+- *     sets mb_magic = the raw %eax (which is 0 or another value, not PVH_MAGIC).
+- *     Result: the else branch fires and the 1 GB fallback is used.  [verified:
+- *     serial shows "Magic: 0x0"]
+- *   BOOT-02 (W4 BUG) Consequence of BOOT-01: hardcoded 1 GB RAM map at
+- *     arch_platform_early_init:173-185.  The real RAM amount is ignored; '-m 4G'
+- *     causes a crash downstream via DRV-VIRTIO-01.
+- *   BOOT-03 (W2 REFINE) arch_cpu_wake_secondary sends INIT + one STARTUP IPI
+- *     at :272-279.  Intel SDM recommends INIT + two SIPIs for reliability on
+- *     real hardware.  QEMU accepts a single SIPI so no observed failure.
+- *   BOOT-04 (W1 DOC/BAD-IMPL) 'secondary_ttbr0' and 'arch_vmm_set_secondary_pgd'
+- *     at :224-228 use the AArch64 register name "ttbr0" for an x86 CR3 value —
+- *     cross-architecture naming leak.
+- *   ARCH-01 (W3 WRONG-DESIGN) amd64_count_cpus uses CPUID.01h EBX[23:16] which
+- *     returns the max addressable APIC IDs (not online CPUs); on single-socket
+- *     systems it may match, but on NUMA or hyperthreaded systems it over-counts.
+- *     Should parse ACPI MADT for accurate online CPU discovery.
+- *   ARCH-02 (W3 STUB) arch_pci_init is an empty stub at :222; amd64 has no
+- *     ACPI table parsing; PCI enumeration relies solely on pci_enumerate/HAL.
+- *   ARCH-03 (W2 STUB) timer_get_us returns jiffies*1000; 'jiffies' is a dummy
+- *     counter incremented by the timer ISR and not a real microsecond source.
++ *     sets mb_magic = the raw %eax (which is 0 or another value, not
++ * PVH_MAGIC). Result: the else branch fires and the 1 GB fallback is used.
++ * [verified: serial shows "Magic: 0x0"] BOOT-02 (W4 BUG) Consequence of
++ * BOOT-01: hardcoded 1 GB RAM map at arch_platform_early_init:173-185.  The
++ * real RAM amount is ignored; '-m 4G' causes a crash downstream via
++ * DRV-VIRTIO-01. BOOT-03 RESOLVED (this pass, revised): a first attempt at the
++ * SDM's two-SIPI sequence caused a real regression — each AP ran its entire
++ *     GDT/IDT/LAPIC bring-up TWICE (observed in boot logs) because
++ *     trampoline.S was not reentrant and TRAMPOLINE_BASE is a single
++ *     shared scratch page reused serially for every AP; the system then
++ *     deadlocked on the first post-boot hardware IRQ.  That attempt was
++ *     reverted to a single SIPI.  The actual fix: trampoline.S now claims
++ *     a `lock btsw`-based re-entrancy guard (trampoline_busy) as its very
++ *     first instruction, before any state-mutating write, so a second
++ *     SIPI landing mid-flight spins instead of re-entering the 16->32->64
++ *     bit transition.  With the trampoline itself safe against re-entry,
++ *     arch_cpu_wake_secondary() now sends the SDM's real INIT + TWO
++ *     STARTUP IPIs sequence — see that function's header comment and
++ *     trampoline.S's file-header comment for the full analysis.
++ *   BOOT-04 (W1 DOC/BAD-IMPL) 'secondary_ttbr0' and
++ * 'arch_vmm_set_secondary_pgd' at :224-228 use the AArch64 register name
++ * "ttbr0" for an x86 CR3 value — cross-architecture naming leak. ARCH-01 (W3
++ * WRONG-DESIGN) amd64_count_cpus uses CPUID.01h EBX[23:16] which returns the
++ * max addressable APIC IDs (not online CPUs); on single-socket systems it may
++ * match, but on NUMA or hyperthreaded systems it over-counts. Should parse ACPI
++ * MADT for accurate online CPU discovery. ARCH-02 (W3 STUB) arch_pci_init is an
++ * empty stub at :222; amd64 has no ACPI table parsing; PCI enumeration relies
++ * solely on pci_enumerate/HAL. ARCH-03 (W2 STUB) timer_get_us returns
++ * jiffies*1000; 'jiffies' is a dummy counter incremented by the timer ISR and
++ * not a real microsecond source.
+  */
+ #include <arch/amd64/apic.h>
+ #include <arch/amd64_internal.h>
+@@ -51,6 +61,7 @@
+ #include <kernel/arch.h>
+ #include <kernel/cpu.h>
+ #include <kernel/hal.h>
++#include <kernel/memlayout.h>
+ #include <kernel/platform.h>
+ #include <kernel/pmm.h>
+ #include <kernel/printk.h>
+@@ -66,7 +77,8 @@ extern void pit_init_hz(uint32_t hz);
+ extern uint64_t mb_info_ptr;
+ 
+ /*
+- * struct hvm_start_info - Xen/PVH boot handoff structure (XEN_ELFNOTE_PHYS32_ENTRY).
++ * struct hvm_start_info - Xen/PVH boot handoff structure
++ * (XEN_ELFNOTE_PHYS32_ENTRY).
+  *
+  * On PVH boot, the firmware places a pointer to this struct in %ebx and stores
+  * its identifying magic in hvm_start_info.magic (not in a CPU register).
+@@ -129,9 +141,10 @@ struct mem_region *arch_platform_get_mem_regions(size_t *count) {
+   return arch_mem_regions;
+ }
+ 
+-/* jiffies: wall-clock tick counter incremented by the timer ISR (kernel_timer_tick).
+- * NOTE(ARCH-03): Not a real microsecond source; timer_get_us() multiplies this
+- * by 1000 to produce a coarse millisecond-granularity pseudo-timestamp. */
++/* jiffies: wall-clock tick counter incremented by the timer ISR
++ * (kernel_timer_tick). NOTE(ARCH-03): Not a real microsecond source;
++ * timer_get_us() multiplies this by 1000 to produce a coarse
++ * millisecond-granularity pseudo-timestamp. */
+ volatile uint64_t jiffies = 0;
+ 
+ extern uint64_t mb_magic;
+@@ -316,7 +329,8 @@ uint64_t timer_get_us(void) {
+ extern uint32_t ticks_per_ms;
+ void udelay(uint32_t us) {
+   if (ticks_per_ms == 0) {
+-    /* Fallback: rough delay via port 0x80 writes (~1µs each on legacy systems) */
++    /* Fallback: rough delay via port 0x80 writes (~1µs each on legacy systems)
++     */
+     for (uint32_t i = 0; i < us * 10; i++) {
+       outb(0x80, 0);
+     }
+@@ -351,19 +365,41 @@ void udelay(uint32_t us) {
+ void arch_pci_init(void) { /* Minimal stub — NOTE(ARCH-02): no ACPI parsing */ }
+ 
+ extern char __kernel_stack[];
+-/* secondary_ttbr0: the kernel PML4 physical address written for AP trampoline use.
+- * NOTE(BOOT-04): Named 'ttbr0' (an AArch64 register) for an x86 CR3 value —
+- * cross-arch naming leak; should be 'secondary_cr3' or 'secondary_pgd_phys'. */
++/* secondary_ttbr0: the kernel PML4 physical address written for AP trampoline
++ * use. NOTE(BOOT-04): Named 'ttbr0' (an AArch64 register) for an x86 CR3 value
++ * — cross-arch naming leak; should be 'secondary_cr3' or 'secondary_pgd_phys'.
++ */
+ uint64_t secondary_ttbr0 = 0;
+ 
+ /*
+- * arch_vmm_set_secondary_pgd - record the PML4 PA for AP trampoline use.
++ * REVERTED (was FIX(ARCH-AMD64-APPGD-01)): a prior change made this function
++ * also publish 'pgd' into kernel_pgd_phys, so the trampoline's 32-bit CR3
++ * patch (arch_cpu_wake_secondary, below) would load the LIVE kernel_pgd
++ * instead of boot_pml4.
++ *
++ * That is unsafe: at the point the trampoline loads CR3 (trampoline_pm,
++ * still in 32-bit protected mode, before the long-mode jump), CR3 is a
++ * 32-BIT register — `mov eax, cr3` cannot express a physical address >=
++ * 4GB. kernel_pgd's own PML4 page is allocated dynamically via
++ * pmm_alloc_page() and can land anywhere in physical RAM; on any system
++ * with more than ~4GB installed (this target ships with 5GB, with a usable
++ * region at 0x100000000-0x180000000) there is no guarantee it stays below
++ * 4GB. If it doesn't, every AP's CR3 silently loses its high bits — not a
++ * type-width bug fixable in software, a hardware mode limitation.
+  *
+- * The trampoline reads trampoline_pml4 (patched in arch_cpu_wake_secondary)
+- * directly; secondary_ttbr0 is a separate copy for callers that query the
+- * current secondary PGD before waking the AP.
++ * It was also redundant: kernel/arch/amd64/cpu/cpu.c's arch_cpu_init()
++ * already adopts the live kernel_pgd safely, once each AP is executing
++ * 64-bit C code, via a proper 64-bit CR3 load (arch_vmm_set_pgd) — solving
++ * the ">4GB MMIO / full RAM map" gap this was trying to close, without the
++ * CR3-width hazard. This matches the documented design in mmu.c's own file
++ * header: "APs still boot on boot_pml4 and adopt kernel_pgd in
++ * arch_cpu_init."
+  *
+- * NOTE(BOOT-04): Cross-arch naming; 'secondary_ttbr0' is confusingly AArch64.
++ * kernel_pgd_phys is therefore left untouched here — it keeps its
++ * statically-linked default (boot_pml4, see trampoline.S / start.S),
++ * which is guaranteed to be a low, sub-4GB physical page. Only
++ * secondary_ttbr0 (an informational copy, not read by the trampoline) is
++ * updated.
+  */
+ void arch_vmm_set_secondary_pgd(uint64_t pgd) { secondary_ttbr0 = pgd; }
+ 
+@@ -376,7 +412,8 @@ void arch_vmm_set_secondary_pgd(uint64_t pgd) { secondary_ttbr0 = pgd; }
+  *   &__kernel_stack[(N+1) * 131072]
+  *
+  * This address is passed to trampoline_stack in arch_cpu_wake_secondary and
+- * will become the AP's RSP when it starts executing C code after the trampoline.
++ * will become the AP's RSP when it starts executing C code after the
++ * trampoline.
+  *
+  * Returns NULL if cpu_id >= MAX_CPUS.
+  */
+@@ -392,11 +429,12 @@ void *arch_get_kernel_stack(uint32_t cpu_id) {
+ extern char trampoline_start[], trampoline_end[];
+ extern uint32_t trampoline_pml4;
+ extern uint64_t trampoline_stack, trampoline_entry;
++extern uint16_t trampoline_busy;
+ extern uint64_t kernel_pgd_phys;
+ extern void secondary_cpu_entry(void);
+ 
+ /*
+- * arch_cpu_wake_secondary - boot an AP from real mode via INIT-SIPI sequence.
++ * arch_cpu_wake_secondary - boot an AP from real mode via INIT-SIPI-SIPI.
+  *
+  * The AP starts executing in real mode at the 4KB-aligned physical address
+  * given by the STARTUP IPI vector field (vector << 12 = 0x01 << 12 = 0x1000).
+@@ -405,7 +443,9 @@ extern void secondary_cpu_entry(void);
+  * Steps:
+  *   1. Copy the trampoline blob (trampoline.S) to TRAMPOLINE_BASE (0x1000).
+  *      The trampoline is position-independent; it references its own data
+- *      using base-relative addressing (e.g. trampoline_pml4 - trampoline_start + 0x1000).
++ *      using base-relative addressing (e.g. trampoline_pml4 - trampoline_start
++ * + 0x1000). This copy ALSO resets trampoline_busy to 0 (its statically-linked
++ *      initial value) on every call — see FIX(BOOT-03) below.
+  *   2. Patch the trampoline's PML4, stack, and entry-point fields at their
+  *      relocated addresses inside the trampoline copy.
+  *      - trampoline_pml4 (uint32_t): CR3 value for 64-bit mode.
+@@ -413,17 +453,41 @@ extern void secondary_cpu_entry(void);
+  *      - trampoline_entry (uint64_t): the C entry point (secondary_cpu_entry).
+  *   3. Send INIT IPI (edge-triggered, assert, physical destination).
+  *   4. Wait 10 ms (Intel SDM requirement between INIT and first STARTUP).
+- *   5. Send STARTUP IPI with vector 0x01 (page 0x1000).
+- *      NOTE(BOOT-03): SDM recommends two SIPIs (the second after 200µs) for
+- *      robust bringup on real hardware.  Only one SIPI is sent here; QEMU
+- *      accepts a single SIPI so no observed failure in emulation.
++ *   5. Send STARTUP IPI #1 with vector 0x01 (page 0x1000).
++ *   6. Wait 200 µs (Intel SDM requirement between the two STARTUP IPIs).
++ *   7. Send STARTUP IPI #2 (identical to #1).
++ *
++ * FIX(BOOT-03, revised): a first attempt at the SDM's two-SIPI sequence
++ *   caused a real regression — trampoline.S was not reentrant, and because
++ *   TRAMPOLINE_BASE is a SINGLE shared scratch page reused serially for
++ *   every AP, a second SIPI landing while the first pass was still
++ *   mid-flight through the 16->32->64-bit transition re-entered
++ *   trampoline_start with %cr3/%rsp/the temporary GDT still live,
++ *   corrupting bring-up state (observed: each AP running its entire
++ *   GDT/IDT/LAPIC init twice, then a deadlock on the first post-boot
++ *   hardware IRQ).  That attempt was reverted to a single SIPI.
++ *
++ *   This is the REAL fix, not a workaround: trampoline.S now claims a
++ *   re-entrancy guard (trampoline_busy, via `lock btsw`, atomic across
++ *   cores) as its very first instruction, before any state-mutating
++ *   write.  A second SIPI — whether a genuine duplicate to this AP, or,
++ *   in the shared-page design, a stray SIPI that reaches a DIFFERENT core
++ *   while this AP's pass is still in flight — finds the bit already set
++ *   and spins harmlessly instead of restarting the transition.  The flag
++ *   is cleared by step 1's memcpy on every call (trampoline_busy's
++ *   statically-linked value is 0), so each AP starts its own bring-up
++ *   with a clean guard without this function needing to touch the flag
++ *   directly.  See trampoline.S's file-header comment for the full
++ *   rationale.  With the trampoline itself now safe against re-entry, the
++ *   second SIPI is restored — this is the Intel SDM's actual recommended
++ *   sequence, not a partial version of it.
+  *
+  * Params:
+  *   cpu_id - destination LAPIC ID.
+  *   entry  - ignored (entry point is hard-coded to secondary_cpu_entry).
+  *   stack  - top of the AP kernel stack (as returned by arch_get_kernel_stack).
+  *
+- * NOTE(CPU-TRAMP-01): The trampoline GDT (trampoline.S:76-81) has only 4
++ * NOTE(CPU-TRAMP-01): The trampoline GDT (trampoline.S) has only 4
+  *   entries: null, 32-bit code, 32-bit data, 64-bit code.  After the far jump
+  *   to 64-bit mode (ljmp $0x18), DS/ES/SS still hold 0x10 (the 32-bit data
+  *   descriptor); no 64-bit data segment is present.  Some CPUs may enforce the
+@@ -438,7 +502,10 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
+     return -1;
+ 
+   /* 1. Copy trampoline to TRAMPOLINE_BASE (physical address 0x1000).
+-   * The low 1 MB is identity-mapped (RW) by arch_vmm_init_hw. */
++   * The low 1 MB is identity-mapped (RW) by arch_vmm_init_hw.  This also
++   * resets trampoline_busy to its statically-linked value (0) — see
++   * FIX(BOOT-03) above: every AP's bring-up starts with a freshly-cleared
++   * re-entrancy guard without this function touching the flag by hand. */
+   uint8_t *dest = (uint8_t *)TRAMPOLINE_BASE;
+   size_t size = trampoline_end - trampoline_start;
+   memcpy(dest, trampoline_start, size);
+@@ -456,25 +523,45 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
+       (uint64_t *)(TRAMPOLINE_BASE + ((uintptr_t)&trampoline_entry -
+                                       (uintptr_t)trampoline_start));
+ 
+-  *p_pml4 = (uint32_t)kernel_pgd_phys;  /* CR3: kernel PML4 physical address */
+-  *p_stack = (uint64_t)stack;            /* RSP: top of AP kernel stack */
++  *p_pml4 = (uint32_t)kernel_pgd_phys; /* CR3: kernel PML4 physical address */
++  *p_stack = (uint64_t)stack;          /* RSP: top of AP kernel stack */
+   *p_entry = (uint64_t)secondary_cpu_entry; /* call target after long mode */
+ 
+-  /* 3. Send INIT IPI: reset AP to 'wait-for-SIPI' state */
++  /* Ensure trampoline stores are visible before INIT/SIPI MMIO. */
++  __asm__ __volatile__("mfence" ::: "memory");
++
++  /* 3. INIT assert — put the AP into wait-for-SIPI.
++   * NOTE: do NOT send INIT Level-Deassert with ICR_PHYSICAL.  Per Intel SDM
++   * the deassert form requires destination shorthand All-Including-Self and
++   * is ignored/undefined with a per-CPU physical destination.  QEMU and
++   * modern xAPIC accept a single INIT assert; the deassert we tried earlier
++   * was a candidate for intermittent post-boot hangs. */
+   lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL | ICR_PHYSICAL);
+ 
+-  /* 4. Wait 10 ms (Intel SDM: 10ms between INIT and SIPI for spec compliance) */
++  /* 4. 10 ms between INIT and first STARTUP (Intel SDM). */
+   udelay(10000);
+ 
+-  /* 5. Send STARTUP IPI: vector 0x01 → AP starts at physical 0x1000.
+-   * NOTE(BOOT-03): SDM recommends a second SIPI after 200µs; omitted here. */
++  /* 5. STARTUP IPI #1: vector 0x01 → AP starts at physical 0x1000. */
+   lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
+ 
+-  pr_info("AMD64: Sent INIT-SIPI to CPU %lu\n", cpu_id);
++  /* 6. 200 µs between the two STARTUP IPIs (Intel SDM minimum). */
++  udelay(200);
++
++  /* 7. STARTUP IPI #2 — SDM retry against a lost/coalesced first SIPI.
++   * Safe: trampoline_busy (trampoline.S) makes a second SIPI that lands
++   * mid-flight spin instead of re-entering the 16→32→64 transition. */
++  lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
++
++  /* 8. Settle so the AP can claim trampoline_busy before the next
++   * arch_cpu_wake_secondary() memcpy overwrites the shared page. */
++  udelay(200);
++
++  pr_info("AMD64: Sent INIT-SIPI-SIPI to CPU %lu\n", cpu_id);
+   return 0;
+ }
+ 
+-/* arch_get_boot_info - return the physical address of the boot info structure. */
++/* arch_get_boot_info - return the physical address of the boot info structure.
++ */
+ uint64_t arch_get_boot_info(void) { return (uint64_t)mb_info_ptr; }
+ 
+ /*
+@@ -499,17 +586,17 @@ static uint32_t amd64_count_cpus(void) {
+ 
+   /* CPUID EAX=01h: EBX[23:16] = maximum addressable APIC IDs in package.
+    * NOTE(ARCH-01): Over-counts on HT/NUMA; should use ACPI MADT instead. */
+-  __asm__ volatile(
+-      "movl $1, %%eax\n\t"
+-      "cpuid\n\t"
+-      : "=b"(ebx)
+-      :
+-      : "eax", "ecx", "edx"
+-  );
++  __asm__ volatile("movl $1, %%eax\n\t"
++                   "cpuid\n\t"
++                   : "=b"(ebx)
++                   :
++                   : "eax", "ecx", "edx");
+ 
+   cpu_count = (ebx >> 16) & 0xFF;
+-  if (cpu_count == 0) cpu_count = 1;
+-  if (cpu_count > MAX_CPUS) cpu_count = MAX_CPUS;
++  if (cpu_count == 0)
++    cpu_count = 1;
++  if (cpu_count > MAX_CPUS)
++    cpu_count = MAX_CPUS;
+ 
+   pr_info("AMD64: CPUID reports %u logical processors\n", cpu_count);
+   return cpu_count;
+@@ -534,7 +621,8 @@ extern void secondary_cpu_entry(void);
+  *
+  * NOTE(ARCH-01): cpu_count from amd64_count_cpus may over-count; APs that
+  * don't exist simply time out and emit a warning.
+- * NOTE(BOOT-03): arch_cpu_wake_secondary sends only one SIPI; see BOOT-03.
++ * NOTE(BOOT-03): arch_cpu_wake_secondary sends INIT assert +
++ * two SIPIs; trampoline_busy guards re-entry (see trampoline.S).
+  */
+ void arch_smp_init(void) {
+   uint32_t bsp_id = (uint32_t)hal_cpu_id();
+@@ -543,9 +631,18 @@ void arch_smp_init(void) {
+   /* Determine the number of CPUs to probe (like fdt_count_cpus() on aarch64).
+    * NOTE(ARCH-01): CPUID-based; may over-count on HT/NUMA systems. */
+   uint32_t cpu_count = amd64_count_cpus();
+-  if (cpu_count > MAX_CPUS) cpu_count = MAX_CPUS;
++  if (cpu_count > MAX_CPUS)
++    cpu_count = MAX_CPUS;
++
++  pr_info("AMD64: Starting SMP initialization for %u potential cores\n",
++          cpu_count);
+ 
+-  pr_info("AMD64: Starting SMP initialization for %u potential cores\n", cpu_count);
++  /* NOTE: no pre-publish of kernel_pgd into the trampoline here (reverted
++   * APPGD-01 — see arch_vmm_set_secondary_pgd()'s header comment above).
++   * The trampoline keeps loading kernel_pgd_phys's statically-linked
++   * default (boot_pml4, a guaranteed sub-4GB physical page); each AP
++   * safely adopts the live kernel_pgd itself, in 64-bit mode, at the end
++   * of arch_cpu_init() (kernel/arch/amd64/cpu/cpu.c). */
+ 
+   /* Iterate only up to detected CPU count */
+   for (uint32_t i = 1; i < cpu_count; i++) {
+@@ -560,7 +657,8 @@ void arch_smp_init(void) {
+     /* Shared bring-up primitive (S-ALIGN F8, B6 slice): idle-task-first
+      * (#169/#170), the INIT-SIPI wake and the ack handshake all live in
+      * kernel/core/smp.c — the ordering fix is reasoned about ONCE, not once
+-     * per arch.  NOTE(BOOT-03): single SIPI only. */
++     * per arch.  NOTE(BOOT-03): INIT assert + two SIPIs; trampoline_busy guards
++     * re-entry. */
+     if (smp_bringup_secondary(i, secondary_cpu_entry, stack_top) == 0) {
+       pr_info("AMD64: CPU %u is online\n", i);
+     } else {
+diff --git a/kernel/drivers/timer/pic_pit.c b/kernel/drivers/timer/pic_pit.c
+index 65d721b..6010b74 100644
+--- a/kernel/drivers/timer/pic_pit.c
++++ b/kernel/drivers/timer/pic_pit.c
+@@ -35,15 +35,39 @@
+  *   - Spurious IRQ7/IRQ15 (vectors 39/47) must be filtered with
+  *     pic_handle_spurious() BEFORE dispatch: they are not real interrupts
+  *     and their EOI rules differ (none for IRQ7; master-only for IRQ15).
++ *
++ * PIC-01 (not a bug — hardware ceiling, analogous to GICv2's DRV-GIC-01 on
++ * the aarch64 side, but with no software fix available): every PIC-routed
++ * IRQ (the whole 0-15 range this chip owns) is delivered to exactly one
++ * CPU, and which CPU that is is NOT something this driver — or any
++ * driver — can select.  The 8259 has no per-line destination field; it
++ * asserts a single wire, and each CPU's LINT0-as-ExtINT (lapic_init(),
++ * apic.c) is how that wire reaches whichever core the platform's virtual-
++ * wire wiring happens to route it to (in practice, and in every reference
++ * on the subject, always the one core whose LINT0 the chipset drives — the
++ * BSP).  This is a documented, structural property of ExtINT delivery, not
++ * a configuration this kernel is failing to make: "no devices are
++ * connected to the LINT pins [in general]... it just doesn't work on
++ * multiprocessor systems (they inevitably get delivered to one core); in
++ * practice all devices are connected to the I/O APIC" is the standard
++ * description of exactly this limitation.  The GICv2 fix in gic.c
++ * (DRV-GIC-01) was possible because GICD_ITARGETSR is a per-SPI,
++ * software-writable destination field; the 8259 simply has no equivalent
++ * register — there is nothing to program.  The only real fix is an I/O
++ * APIC driver (ACPI MADT parse, IOAPIC MMIO redirection-table
++ * programming, per-line destination + vector), which does not exist
++ * anywhere in this tree today and is a new subsystem, not a bug fix to
++ * this one.  Everything below continues to serialise all device IRQs on
++ * one core, correctly and by design, until that subsystem is written.
+  */
+-#include <kernel/types.h>
++#include <arch/amd64/apic.h>
++#include <arch/amd64_internal.h>
++#include <arch/pt_regs.h>
++#include <kernel/arch.h>
+ #include <kernel/hal.h>
+ #include <kernel/irq.h>
+ #include <kernel/printk.h>
+-#include <kernel/arch.h>
+-#include <arch/pt_regs.h>
+-#include <arch/amd64_internal.h>
+-#include <arch/amd64/apic.h>
++#include <kernel/types.h>
+ 
+ /* Prototypes to satisfy -Wmissing-prototypes */
+ void pic_init(void);
+@@ -55,16 +79,16 @@ struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs);
+ /* PIC command and data I/O ports.
+  * PIC1 (master): CMD = 0x20, DATA = 0x21 (OCW1/ICW registers).
+  * PIC2 (slave):  CMD = 0xA0, DATA = 0xA1. */
+-#define PIC1_CMD  0x20
++#define PIC1_CMD 0x20
+ #define PIC1_DATA 0x21
+-#define PIC2_CMD  0xA0
++#define PIC2_CMD 0xA0
+ #define PIC2_DATA 0xA1
+ 
+ /* PIT (8253/8254) I/O ports.
+  * PIT_CH0 (0x40): Channel 0 data port (read/write counter).
+  * PIT_CMD (0x43): Mode/Command register (write-only). */
+-#define PIT_CH0   0x40
+-#define PIT_CMD   0x43
++#define PIT_CH0 0x40
++#define PIT_CMD 0x43
+ 
+ extern volatile uint64_t jiffies;
+ extern void timer_tick(void); /* generic scheduler tick */
+@@ -86,9 +110,9 @@ void pic_mask(uint8_t irq);
+  * IRQ context: safe on single-core.
+  */
+ static void pic_chip_enable(uint32_t irq) {
+-    if (irq >= 32 && irq < 48) {
+-        pic_unmask(irq - 32);
+-    }
++  if (irq >= 32 && irq < 48) {
++    pic_unmask(irq - 32);
++  }
+ }
+ 
+ /*
+@@ -104,16 +128,16 @@ static void pic_chip_enable(uint32_t irq) {
+  * IRQ context: safe.
+  */
+ void pic_mask(uint8_t irq) {
+-    uint16_t port;
+-    uint8_t value;
+-    if (irq < 8) {
+-        port = PIC1_DATA;
+-    } else {
+-        port = PIC2_DATA;
+-        irq -= 8;
+-    }
+-    value = hal_read8(port) | (1 << irq);
+-    hal_write8(port, value);
++  uint16_t port;
++  uint8_t value;
++  if (irq < 8) {
++    port = PIC1_DATA;
++  } else {
++    port = PIC2_DATA;
++    irq -= 8;
++  }
++  value = hal_read8(port) | (1 << irq);
++  hal_write8(port, value);
+ }
+ 
+ /*
+@@ -128,9 +152,9 @@ void pic_mask(uint8_t irq) {
+  * IRQ context: safe.
+  */
+ static void pic_chip_disable(uint32_t irq) {
+-    if (irq >= 32 && irq < 48) {
+-        pic_mask(irq - 32);
+-    }
++  if (irq >= 32 && irq < 48) {
++    pic_mask(irq - 32);
++  }
+ }
+ 
+ /*
+@@ -145,8 +169,8 @@ static void pic_chip_disable(uint32_t irq) {
+  * IRQ context: safe (never called in the amd64 hot path).
+  */
+ static uint32_t pic_chip_acknowledge(void) {
+-    /* Not used by PIC on x86 because the vector is in pt_regs */
+-    return 1023;
++  /* Not used by PIC on x86 because the vector is in pt_regs */
++  return 1023;
+ }
+ 
+ /*
+@@ -166,10 +190,10 @@ static uint32_t pic_chip_acknowledge(void) {
+  * IRQ context: YES — IDT path.
+  */
+ static void pic_chip_end(uint32_t irq) {
+-    lapic_eoi();
+-    if (irq >= 32 && irq < 48) {
+-        pic_send_eoi(irq - 32);
+-    }
++  lapic_eoi();
++  if (irq >= 32 && irq < 48) {
++    pic_send_eoi(irq - 32);
++  }
+ }
+ 
+ /* HALT_IPI_VECTOR: fixed LAPIC vector for the panic-halt broadcast.  The
+@@ -186,12 +210,12 @@ static void pic_chip_end(uint32_t irq) {
+  * so no EOI is issued — irrelevant during a panic.
+  */
+ static void halt_ipi_handler(uint32_t irq, void *data) {
+-    (void)irq;
+-    (void)data;
+-    extern volatile int panic_flag;
+-    panic_flag = 1;
+-    arch_timer_control(0);
+-    arch_cpu_halt();
++  (void)irq;
++  (void)data;
++  extern volatile int panic_flag;
++  panic_flag = 1;
++  arch_timer_control(0);
++  arch_cpu_halt();
+ }
+ 
+ /*
+@@ -201,8 +225,8 @@ static void halt_ipi_handler(uint32_t irq, void *data) {
+  * destination field is ignored when a shorthand is used).
+  */
+ static void pic_chip_send_ipi_all(void) {
+-    lapic_send_ipi(0, ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF |
+-                          HALT_IPI_VECTOR);
++  lapic_send_ipi(0,
++                 ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF | HALT_IPI_VECTOR);
+ }
+ 
+ /* pic_chip: irq_chip implementation for the 8259A PIC pair.
+@@ -236,7 +260,7 @@ static struct irq_chip pic_chip = {
+  * IRQ context: NO.
+  */
+ void pic_init(void) {
+-    irq_register_chip(&pic_chip);
++  irq_register_chip(&pic_chip);
+   /* Remap PIC IRQs 0-15 to interrupts 32-47 */
+   hal_write8(PIC1_CMD, 0x11); /* ICW1: Init + ICW4 */
+   hal_write8(PIC2_CMD, 0x11);
+@@ -308,9 +332,11 @@ extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
+  */
+ void pit_init_hz(uint32_t hz) {
+   /* Frequency = 1193182 / divisor */
+-  if (hz == 0) hz = 100;
++  if (hz == 0)
++    hz = 100;
+   uint32_t divisor = 1193182 / hz;
+-  if (divisor > 0xFFFF) divisor = 0xFFFF;
++  if (divisor > 0xFFFF)
++    divisor = 0xFFFF;
+ 
+   hal_write8(PIT_CMD, 0x36); /* Channel 0, lobyte/hibyte, square wave */
+   hal_write8(PIT_CH0, (uint8_t)(divisor & 0xFF));
+@@ -369,24 +395,24 @@ void pic_send_eoi(uint8_t irq) {
+  * IRQ context: YES — called from the IDT path before irq_dispatch().
+  */
+ int pic_handle_spurious(uint32_t vec) {
+-    if (vec == 39) { /* master IRQ7 */
+-        hal_write8(PIC1_CMD, 0x0B); /* OCW3: read ISR on next read */
+-        uint8_t isr = hal_read8(PIC1_CMD);
+-        if (!(isr & 0x80)) {
+-            return 1; /* spurious: no EOI */
+-        }
+-        return 0;
++  if (vec == 39) {              /* master IRQ7 */
++    hal_write8(PIC1_CMD, 0x0B); /* OCW3: read ISR on next read */
++    uint8_t isr = hal_read8(PIC1_CMD);
++    if (!(isr & 0x80)) {
++      return 1; /* spurious: no EOI */
+     }
+-    if (vec == 47) { /* slave IRQ15 */
+-        hal_write8(PIC2_CMD, 0x0B);
+-        uint8_t isr = hal_read8(PIC2_CMD);
+-        if (!(isr & 0x80)) {
+-            hal_write8(PIC1_CMD, 0x20); /* EOI the master's cascade (IRQ2) */
+-            return 1;
+-        }
+-        return 0;
++    return 0;
++  }
++  if (vec == 47) { /* slave IRQ15 */
++    hal_write8(PIC2_CMD, 0x0B);
++    uint8_t isr = hal_read8(PIC2_CMD);
++    if (!(isr & 0x80)) {
++      hal_write8(PIC1_CMD, 0x20); /* EOI the master's cascade (IRQ2) */
++      return 1;
+     }
+     return 0;
++  }
++  return 0;
+ }
+ 
+ /*
+@@ -402,18 +428,18 @@ int pic_handle_spurious(uint32_t vec) {
+  * IRQ context: safe (no sleeping).
+  */
+ void pic_unmask(uint8_t irq) {
+-    uint16_t port;
+-    uint8_t value;
++  uint16_t port;
++  uint8_t value;
+ 
+-    if(irq < 8) {
+-        port = PIC1_DATA;
+-    } else {
+-        port = PIC2_DATA;
+-        irq -= 8;
+-    }
+-    pr_info("PIC: Unmasking IRQ %u\n", irq);
+-    value = hal_read8(port) & ~(1 << irq);
+-    hal_write8(port, value);
++  if (irq < 8) {
++    port = PIC1_DATA;
++  } else {
++    port = PIC2_DATA;
++    irq -= 8;
++  }
++  pr_info("PIC: Unmasking IRQ %u\n", irq);
++  value = hal_read8(port) & ~(1 << irq);
++  hal_write8(port, value);
+ }
+ 
+-/* Keyboard interrupt is now handled in idt.c or via generic IRQ dispatch */
++/* Keyboard interrupt is now handled in idt.c or via generic IRQ dispatch */
+\ No newline at end of file
+diff --git a/user/bin/base-nexs b/user/bin/base-nexs
+--- a/user/bin/base-nexs
++++ b/user/bin/base-nexs
+@@ -1 +1 @@
+-Subproject commit 0e0d035247a583cdaf545305aa9f3d4dc346fb02
++Subproject commit 0e0d035247a583cdaf545305aa9f3d4dc346fb02-dirty

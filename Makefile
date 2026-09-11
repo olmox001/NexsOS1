@@ -635,7 +635,7 @@ SYS_ELFS = $(BUILD_DIR)/nxinit.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_
            $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
-           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf 
+           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf
 
 
 # User ELFs (placed in /bin)
@@ -654,7 +654,8 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/restest.elf \
            $(BUILD_DIR)/env.elf \
            $(BUILD_DIR)/gnulibtest.elf \
-           $(BUILD_DIR)/coreutils_test.elf \
+           $(BUILD_DIR)/coreutils_test.elf $(BUILD_DIR)/coreutilstest.elf \
+           $(BUILD_DIR)/luatest.elf \
            $(BUILD_DIR)/kilo.elf \
            $(COREUTILS_ELFS)
 
@@ -684,6 +685,7 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
 
 # Explicit dependencies for each user ELF
 $(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxenvinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxenvinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -710,6 +712,18 @@ $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@$(CC) $(USER_CFLAGS) -Wno-error -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/coreutils_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/coreutilstest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+$(BUILD_DIR)/$(USER_DIR)/bin/luatest.o: $(USER_DIR)/bin/luatest.c $(LUA_PORT_HDR)
+	@mkdir -p $(dir $@)
+	@$(CC) $(USER_CFLAGS) -I$(LUA_DIR) -I$(USER_LIB_DIR)/portability/lua -include lua_portability.h -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/luatest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+	@echo "  [LD]     $@"
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
+		$< \
+		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
+		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)

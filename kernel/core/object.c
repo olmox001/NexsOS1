@@ -1323,6 +1323,8 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
                      : -1;
     if (win_id <= 0 && current_process)
       win_id = current_process->ctty_win;
+    if (win_id <= 0 && keyboard_focus_pid > 0)
+      win_id = compositor_get_window_by_pid(keyboard_focus_pid);
     ret = window_text_write(win_id, (const char *)ubuf, n);
   } else if (o->type == OBJ_TYPE_PORT) {
     /* Port SEND (needs the send right).  The handle's WRITE right IS the

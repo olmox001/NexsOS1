@@ -18,12 +18,19 @@
 #define HAVE_STDDEF_H 1
 #define HAVE_STDINT_H 1
 
+/* Suppress colliding OS1 macros (STACK_SIZE, FP_ONE) when including <stdlib.h> -> <os1.h> */
+#define OS1_NO_COLLIDING_MACROS 1
+
 /* OS1 userland allocator: malloc/calloc/realloc/free from <stdlib.h>
  * (include/api), so SDL does not drag in its internal dlmalloc (which would
  * need sbrk/mmap). */
 #define HAVE_STDLIB_H 1
 #define HAVE_MALLOC 1
 #define SDL_NEXSOS 1
+
+/* NexsOS libc provides strtoll and strtoull */
+#define HAVE_STRTOLL 1
+#define HAVE_STRTOULL 1
 
 #ifdef __GNUC__
 #define HAVE_GCC_SYNC_LOCK_TEST_AND_SET 1

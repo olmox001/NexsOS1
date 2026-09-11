@@ -397,8 +397,8 @@ static void cpu_halt_from_ipi(void) {
  * IRQ context: YES — this is on the hot dispatch path for every device IRQ.
  */
 static inline void irq_lookup_and_clear_pending(uint32_t irq,
-                                                 irq_handler_t *out_handler,
-                                                 void **out_data) {
+                                                irq_handler_t *out_handler,
+                                                void **out_data) {
   *out_handler = NULL;
   *out_data = NULL;
 

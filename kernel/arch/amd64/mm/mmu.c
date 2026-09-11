@@ -42,10 +42,10 @@
  *     arch_vmm_map (which passes level=0 for the PML4→PDPT step, skipping the
  *     block-split branch); the vmm.c generic walker does not understand 2MB/1GB
  *     blocks at all — walking a region mapped by arch_vmm_map_range (2MB pages)
- *     via vmm.c's get_next_table dereferences the block entry as a table pointer.
- *   AMMU-05 (W2 SECURITY) All intermediate page-table entries (PDPT/PD/PT)
- *     are tagged X86_PTE_US (user-accessible), making them more permissive than
- *     necessary; only leaf PTEs for user pages need X86_PTE_US.
+ *     via vmm.c's get_next_table dereferences the block entry as a table
+ * pointer. AMMU-05 (W2 SECURITY) All intermediate page-table entries
+ * (PDPT/PD/PT) are tagged X86_PTE_US (user-accessible), making them more
+ * permissive than necessary; only leaf PTEs for user pages need X86_PTE_US.
  *   AMMU-06 (W2 PERF) arch_vmm_map_mmio maps 0xFE000000–0xFFFFFFFF one 4KB
  *     page at a time (~8192 iterations) at every PGD setup.  A single 2MB page
  *     or a pre-computed PDPT entry would suffice.
@@ -58,31 +58,31 @@
  *     previously-absent VA needs no remote flush, and today's callers never
  *     live-remap a VA that another CPU is concurrently using.
  */
+#include "../../../include/kernel/pmm.h"
 #include <arch/amd64_internal.h>
 #include <arch/arch.h>
-#include <kernel/pmm.h>
 #include <kernel/platform.h>
+#include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
-#include "../../../include/kernel/pmm.h"
 
 #ifndef PAGE_MASK
 #endif /* PAGE_MASK */
 /* ── Page Table Entry Flag Bits (Intel SDM Vol.3, Table 4-20) ──────────────
  * These apply to all four levels (PML4E, PDPTE, PDE, PTE) where relevant.
  * ─────────────────────────────────────────────────────────────────────────*/
-#define X86_PTE_P   0x001         /* Present: entry is valid */
-#define X86_PTE_RW  0x002         /* Read/Write: 0=read-only, 1=writable */
-#define X86_PTE_US  0x004         /* User/Supervisor: 1=user-accessible */
-#define X86_PTE_PWT 0x008         /* Page-level write-through cache policy */
-#define X86_PTE_PCD 0x010         /* Page-level cache disable */
-#define X86_PTE_A   0x020         /* Accessed: set by CPU on any access */
-#define X86_PTE_D   0x040         /* Dirty: set by CPU on write */
-#define X86_PTE_PAT 0x080         /* Page Attribute Table index bit */
-#define X86_PTE_G   0x100         /* Global: don't flush from TLB on CR3 write */
-#define X86_PTE_NX  (1ULL << 63)  /* No-Execute (requires IA32_EFER.NXE=1) */
+#define X86_PTE_P 0x001         /* Present: entry is valid */
+#define X86_PTE_RW 0x002        /* Read/Write: 0=read-only, 1=writable */
+#define X86_PTE_US 0x004        /* User/Supervisor: 1=user-accessible */
+#define X86_PTE_PWT 0x008       /* Page-level write-through cache policy */
+#define X86_PTE_PCD 0x010       /* Page-level cache disable */
+#define X86_PTE_A 0x020         /* Accessed: set by CPU on any access */
+#define X86_PTE_D 0x040         /* Dirty: set by CPU on write */
+#define X86_PTE_PAT 0x080       /* Page Attribute Table index bit */
+#define X86_PTE_G 0x100         /* Global: don't flush from TLB on CR3 write */
+#define X86_PTE_NX (1ULL << 63) /* No-Execute (requires IA32_EFER.NXE=1) */
 
 /* PTE_ADDR_MASK: extract the 40-bit physical page-frame address from a PTE.
  * Bits [11:0] are flags; bits [63:52] are reserved/NX; bits [51:12] are PA. */
@@ -95,8 +95,8 @@
  * PT:   VA[20:12] (9 bits) → one of 512 PT entries  → covers 4 KB each. */
 #define PML4_INDEX(a) (((a) >> 39) & 0x1FF)
 #define PDPT_INDEX(a) (((a) >> 30) & 0x1FF)
-#define PD_INDEX(a)   (((a) >> 21) & 0x1FF)
-#define PT_INDEX(a)   (((a) >> 12) & 0x1FF)
+#define PD_INDEX(a) (((a) >> 21) & 0x1FF)
+#define PT_INDEX(a) (((a) >> 12) & 0x1FF)
 
 int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags);
 int arch_vmm_unmap(uint64_t pgd, uint64_t va);
@@ -113,9 +113,9 @@ extern uint64_t boot_pml4[];
  *      boot_pml4 set up by start.S.
  *   2. Identity-map the low 1 MB [0, 0x100000) for the SMP trampoline
  *      (TRAMPOLINE_BASE = 0x1000) and legacy BIOS data areas.
- *   3. Identity-map all usable RAM regions reported by arch_platform_get_mem_regions.
- *      arch_vmm_map_range uses 2MB large pages where VA/PA are 2MB-aligned
- *      for efficiency, then 4KB pages for the remainder.
+ *   3. Identity-map all usable RAM regions reported by
+ * arch_platform_get_mem_regions. arch_vmm_map_range uses 2MB large pages where
+ * VA/PA are 2MB-aligned for efficiency, then 4KB pages for the remainder.
  *   4. Identity-map the MMIO window via arch_vmm_map_mmio.
  *
  * NOTE(AMMU-01): Kernel RAM is mapped PTE_RW without PTE_NX because the NX
@@ -160,8 +160,8 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
 
   for (size_t i = 0; i < count; i++) {
     if (regions[i].type == MEM_REGION_USABLE) {
-      pr_info("AMD64 VMM: Mapping RAM 0x%lx - 0x%lx\n",
-              regions[i].base, regions[i].base + regions[i].size);
+      pr_info("AMD64 VMM: Mapping RAM 0x%lx - 0x%lx\n", regions[i].base,
+              regions[i].base + regions[i].size);
       /* W^X section split (AMMU-01 resolved): text RX, rodata RO+NX,
        * the rest RW+NX.  kernel_pgd is a PA here; vmm_map_ram_wx takes
        * the pointer form. */
@@ -217,13 +217,55 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
    *    legacy BIOS data areas.
    *  - [1MB, 2MB): the low-linked boot sections (kernel.ld) — platform.c
    *    reads the trampoline blob via its low link address.
-   * NX is safe: APs execute the trampoline in real mode (paging off) and
-   * then on boot_pml4, never through these kernel_pgd entries. */
+   * NX is safe here again: APs execute the trampoline in real mode
+   * (paging off) and then on boot_pml4 (guaranteed physically <4GB, set
+   * up by start.S), never through these kernel_pgd entries — see
+   * arch_cpu.c's arch_cpu_init() for the SAFE, later 64-bit CR3 switch to
+   * this kernel_pgd, which runs once each AP is already executing 64-bit
+   * C code (arch_vmm_set_pgd()). */
   /* The SMP trampoline lives in this window.  Dropping the result meant a
    * failure surfaced later as secondary CPUs that never came online, which
    * looks like an SMP bug rather than a mapping one. */
+  /* REVERTED (was FIX(ARCH-AMD64-APPGD-01 / NX-TRAMPOLINE)): a prior change
+   * made platform.c publish the LIVE kernel_pgd's physical address into the
+   * 32-bit trampoline_pml4 field patched by arch_cpu_wake_secondary(), so
+   * that each AP would load kernel_pgd directly instead of boot_pml4 during
+   * the 16→32→64-bit transition, and marked this low window PAGE_KERNEL_EXEC
+   * (W+X) to keep it executable under kernel_pgd.
+   *
+   * That approach is unsafe on real x86-64 hardware and has been reverted:
+   * in trampoline_pm (32-bit protected mode, BEFORE the long-mode jump),
+   * CR3 is loaded with `mov eax, cr3` — a 32-bit register write. CR3 is
+   * architecturally a 32-BIT register outside of 64-bit mode; there is no
+   * way to express a physical address >= 4GB in it at that point in the
+   * transition, full stop. kernel_pgd's own top-level PML4 page is
+   * allocated dynamically via pmm_alloc_page() and can legally land
+   * anywhere in physical RAM, including above 4GB on any system with more
+   * than ~4GB installed (e.g. this target's 5GB config, which has a usable
+   * region at 0x100000000-0x180000000). If kernel_pgd's PML4 page is ever
+   * allocated from that high region, every AP's CR3 silently gets the
+   * address's low 32 bits with the high bits discarded by the CPU — not a
+   * software truncation bug that a wider type could fix, but a hardware
+   * mode limitation. The resulting corrupt page tables on the affected AP
+   * range from an immediate triple fault (AP never comes online) to,
+   * worse, a corrupt-but-superficially-working aliasing of some unrelated
+   * physical page, which can manifest as a much later, hard-to-diagnose
+   * failure once that AP is scheduled real work.
+   *
+   * The change was also entirely redundant: kernel/arch/amd64/cpu/cpu.c's
+   * arch_cpu_init() ALREADY adopts the live kernel_pgd safely, once each AP
+   * is executing 64-bit C code (arch_vmm_set_pgd(virt_to_phys(kernel_pgd)),
+   * a proper 64-bit `mov reg64, cr3`), which is exactly the documented
+   * design this file's own header states: "APs still boot on boot_pml4 and
+   * adopt kernel_pgd in arch_cpu_init." That mechanism already gives every
+   * AP the full RAM/MMIO map (including >4GB VirtIO BARs) before its first
+   * IRQ can ever be unmasked, with no CR3-width hazard, because by then the
+   * AP is safely in 64-bit mode. Restoring PAGE_KERNEL (NX) here is
+   * therefore correct: kernel_pgd's low 2MB identity window is never
+   * executed through by any code path once this revert is in place. */
   if (arch_vmm_map_range(virt_to_phys(pgd), 0, 0, 0x200000, PAGE_KERNEL) != 0)
-    panic("arch_vmm_map_mmio: cannot identity-map the low 2MB (SMP trampoline)");
+    panic(
+        "arch_vmm_map_mmio: cannot identity-map the low 2MB (SMP trampoline)");
 }
 
 /*
@@ -299,17 +341,21 @@ void arch_vmm_init(void) {
  * pages at all: it will dereference a 2MB-block PDE as a table pointer and
  * corrupt memory.  [inferred; cross-ref AMMU-04]
  */
-static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int level) {
+static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc,
+                                int level) {
   uint64_t entry = table[index];
 
   if (entry & X86_PTE_P) {
     /* Check for 2MB/1GB block (PS bit = bit 7) */
     if (entry & 0x080) {
-      if (!alloc) return NULL;
+      if (!alloc)
+        return NULL;
 
-      /* SPLIT BLOCK: allocate a new sub-table and fill it with fine-grained entries */
+      /* SPLIT BLOCK: allocate a new sub-table and fill it with fine-grained
+       * entries */
       void *new_table = pmm_alloc_page();
-      if (!new_table) return NULL;
+      if (!new_table)
+        return NULL;
       memset(new_table, 0, PAGE_SIZE);
 
       uint64_t block_pa = entry & PTE_ADDR_MASK;
@@ -324,14 +370,16 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
       } else if (level == 2) {
         /* 2MB Block → 512 × 4KB pages (clear PS bit: leaf PTEs have no PS) */
         for (int i = 0; i < 512; i++) {
-          sub_table[i] = (block_pa + (uint64_t)i * 4096) | (block_flags & ~0x080);
+          sub_table[i] =
+              (block_pa + (uint64_t)i * 4096) | (block_flags & ~0x080);
         }
       }
 
       /* Replace the block entry with a pointer to the new sub-table.
        * NOTE(AMMU-05): X86_PTE_US on an intermediate entry; kernel-only
        * intermediate tables do not need to be user-accessible. */
-      table[index] = virt_to_phys(new_table) | X86_PTE_P | X86_PTE_RW | X86_PTE_US;
+      table[index] =
+          virt_to_phys(new_table) | X86_PTE_P | X86_PTE_RW | X86_PTE_US;
       return (uint64_t *)new_table;
     }
     /* Entry is present and not a large page: return the next-level table PA.
@@ -339,11 +387,13 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
     return (uint64_t *)phys_to_virt(entry & PTE_ADDR_MASK);
   }
 
-  if (!alloc) return NULL;
+  if (!alloc)
+    return NULL;
 
   /* Entry is absent: allocate a new page table page */
   void *page = pmm_alloc_page();
-  if (!page) return NULL;
+  if (!page)
+    return NULL;
   memset(page, 0, PAGE_SIZE);
 
   /* NOTE(AMMU-05): X86_PTE_US on intermediate table entry */
@@ -380,7 +430,8 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
  * Returns 0 on success, -1 if any page-table page allocation fails.
  */
 /*
- * x86_leaf_flags - translate arch-neutral PTE/PAGE profile bits to x86 PTE bits.
+ * x86_leaf_flags - translate arch-neutral PTE/PAGE profile bits to x86 PTE
+ * bits.
  *
  * Flag translation (AMMU-01 resolved): callers pass the amd64 PTE/PAGE
  * profiles from vmm.h, which carry the final x86 bits — translate them
@@ -411,13 +462,16 @@ int arch_vmm_map(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t flags) {
 
   /* Walk (and allocate if absent) PML4 → PDPT → PD → PT */
   uint64_t *pdpt = get_next_table(pml4, PML4_INDEX(va), 1, 0);
-  if (!pdpt) return -1;
+  if (!pdpt)
+    return -1;
 
   uint64_t *pd = get_next_table(pdpt, PDPT_INDEX(va), 1, 1);
-  if (!pd) return -1;
+  if (!pd)
+    return -1;
 
   uint64_t *pt = get_next_table(pd, PD_INDEX(va), 1, 2);
-  if (!pt) return -1;
+  if (!pt)
+    return -1;
 
   /* Write the leaf PTE: physical address + flags */
   pt[PT_INDEX(va)] = (pa & PTE_ADDR_MASK) | x86_flags;
@@ -453,7 +507,8 @@ int arch_vmm_unmap(uint64_t pgd, uint64_t va) {
 
   if (!(pml4[PML4_INDEX(va)] & X86_PTE_P))
     return 0;
-  uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(va)] & PTE_ADDR_MASK);
+  uint64_t *pdpt =
+      (uint64_t *)phys_to_virt(pml4[PML4_INDEX(va)] & PTE_ADDR_MASK);
 
   if (!(pdpt[PDPT_INDEX(va)] & X86_PTE_P))
     return 0;
@@ -485,7 +540,8 @@ uint64_t arch_vmm_get_physical(uint64_t pgd, uint64_t va) {
 
   if (!(pml4[PML4_INDEX(va)] & X86_PTE_P))
     return 0;
-  uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(va)] & PTE_ADDR_MASK);
+  uint64_t *pdpt =
+      (uint64_t *)phys_to_virt(pml4[PML4_INDEX(va)] & PTE_ADDR_MASK);
 
   uint64_t pdpte = pdpt[PDPT_INDEX(va)];
   if (!(pdpte & X86_PTE_P))
@@ -595,31 +651,49 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
 
   for (; v < end; v += 4096) {
     uint64_t pml4e = pml4[PML4_INDEX(v)];
-    if (!(pml4e & X86_PTE_P)) { rc = -1; break; }
+    if (!(pml4e & X86_PTE_P)) {
+      rc = -1;
+      break;
+    }
     uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4e & PTE_ADDR_MASK);
 
     uint64_t pdpte = pdpt[PDPT_INDEX(v)];
-    if (!(pdpte & X86_PTE_P)) { rc = -1; break; }
+    if (!(pdpte & X86_PTE_P)) {
+      rc = -1;
+      break;
+    }
     uint64_t *pd;
     if (pdpte & 0x080) {
       pd = get_next_table(pdpt, PDPT_INDEX(v), 1, 1); /* split 1GB page */
-      if (!pd) { rc = -1; break; }
+      if (!pd) {
+        rc = -1;
+        break;
+      }
     } else {
       pd = (uint64_t *)phys_to_virt(pdpte & PTE_ADDR_MASK);
     }
 
     uint64_t pde = pd[PD_INDEX(v)];
-    if (!(pde & X86_PTE_P)) { rc = -1; break; }
+    if (!(pde & X86_PTE_P)) {
+      rc = -1;
+      break;
+    }
     uint64_t *pt;
     if (pde & 0x080) {
       pt = get_next_table(pd, PD_INDEX(v), 1, 2); /* split 2MB page */
-      if (!pt) { rc = -1; break; }
+      if (!pt) {
+        rc = -1;
+        break;
+      }
     } else {
       pt = (uint64_t *)phys_to_virt(pde & PTE_ADDR_MASK);
     }
 
     uint64_t pte = pt[PT_INDEX(v)];
-    if (!(pte & X86_PTE_P)) { rc = -1; break; }
+    if (!(pte & X86_PTE_P)) {
+      rc = -1;
+      break;
+    }
     pt[PT_INDEX(v)] = (pte & PTE_ADDR_MASK) | x86_flags;
   }
 
@@ -628,7 +702,8 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
 }
 
 /*
- * arch_vmm_map_range - map a contiguous VA→PA range, using 2MB pages where possible.
+ * arch_vmm_map_range - map a contiguous VA→PA range, using 2MB pages where
+ * possible.
  *
  * Iterates [va, va+size) and maps each chunk:
  *   - If both VA and PA are 2MB-aligned AND remaining size >= 2MB: map a single
@@ -645,21 +720,24 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
  *
  * Returns 0 on success, -1 if any allocation fails.
  */
-int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, uint64_t flags) {
+int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size,
+                       uint64_t flags) {
   uint64_t v = va;
   uint64_t p = pa;
   uint64_t end = va + size;
 
   while (v < end) {
     uint64_t remaining = end - v;
-    
+
     if ((v & 0x1FFFFF) == 0 && (p & 0x1FFFFF) == 0 && remaining >= 0x200000) {
       uint64_t *pml4 = (uint64_t *)phys_to_virt(pgd);
       uint64_t *pdpt = get_next_table(pml4, PML4_INDEX(v), 1, 0);
-      if (!pdpt) return -1;
+      if (!pdpt)
+        return -1;
 
       uint64_t *pd = get_next_table(pdpt, PDPT_INDEX(v), 1, 1);
-      if (!pd) return -1;
+      if (!pd)
+        return -1;
 
       /* Level 2 2MB Page Mapping — same explicit translation as
        * arch_vmm_map (opt-in RW, NX from PTE_NX or UXN+PXN). */
@@ -669,7 +747,8 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
       v += 0x200000;
       p += 0x200000;
     } else {
-      if (arch_vmm_map(pgd, v, p, flags) != 0) return -1;
+      if (arch_vmm_map(pgd, v, p, flags) != 0)
+        return -1;
       v += 4096;
       p += 4096;
     }

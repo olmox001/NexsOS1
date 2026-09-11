@@ -13,11 +13,11 @@ void *realloc(void *ptr, size_t size);
 void *calloc(size_t nmemb, size_t size);
 void *reallocarray(void *ptr, size_t nmemb, size_t size);
 
-void exit(int status);
-void _Exit(int status);
-void _exit(int status);
+void exit(int status) __attribute__((__noreturn__));
+void _Exit(int status) __attribute__((__noreturn__));
+void _exit(int status) __attribute__((__noreturn__));
 int atexit(void (*function)(void));
-void abort(void);
+void abort(void) __attribute__((__noreturn__));
 
 long strtol(const char *nptr, char **endptr, int base);
 long long strtoll(const char *nptr, char **endptr, int base);

@@ -1,9 +1,9 @@
 #ifndef _ARCH_AMD64_H
 #define _ARCH_AMD64_H
 
-#include <stdint.h>
 #include <kernel/memlayout.h>
 #include <kernel/types.h>
+#include <stdint.h>
 
 /* AMD64 HAL Implementation Primitives */
 #include <kernel/elf.h>
@@ -43,9 +43,7 @@ static inline void arch_impl_irq_restore_all(uint64_t flags) {
   arch_impl_irq_restore(flags);
 }
 
-static inline void arch_impl_irq_disable_all(void) {
-  arch_impl_irq_disable();
-}
+static inline void arch_impl_irq_disable_all(void) { arch_impl_irq_disable(); }
 
 /* --- CPU Control --- */
 static inline void arch_impl_nop(void) { __asm__ __volatile__("nop"); }
@@ -54,10 +52,18 @@ static inline void arch_impl_yield(void) { __asm__ __volatile__("pause"); }
 static inline void arch_impl_cpu_notify(void) { /* NOP on x86 for now */ }
 
 /* Barriers */
-static inline void arch_impl_isb(void) { __asm__ __volatile__("mfence" ::: "memory"); }
-static inline void arch_impl_mb(void)  { __asm__ __volatile__("mfence" ::: "memory"); }
-static inline void arch_impl_rmb(void) { __asm__ __volatile__("lfence" ::: "memory"); }
-static inline void arch_impl_wmb(void) { __asm__ __volatile__("sfence" ::: "memory"); }
+static inline void arch_impl_isb(void) {
+  __asm__ __volatile__("mfence" ::: "memory");
+}
+static inline void arch_impl_mb(void) {
+  __asm__ __volatile__("mfence" ::: "memory");
+}
+static inline void arch_impl_rmb(void) {
+  __asm__ __volatile__("lfence" ::: "memory");
+}
+static inline void arch_impl_wmb(void) {
+  __asm__ __volatile__("sfence" ::: "memory");
+}
 
 static inline uint32_t arch_impl_get_cpu_id(void) {
   /* Use the actual LAPIC ID register for more accuracy than CPUID leaf 1.
@@ -65,7 +71,8 @@ static inline uint32_t arch_impl_get_cpu_id(void) {
    * direct map (KERNEL_VIRT_BASE offset — identity while it is 0).  The
    * constant is open-coded instead of using phys_to_virt() to keep this
    * header free of include cycles with memlayout.h users. */
-  return (*(volatile uint32_t *)(uintptr_t)(0xFEE00020UL + KERNEL_VIRT_BASE)) >> 24;
+  return (*(volatile uint32_t *)(uintptr_t)(0xFEE00020UL + KERNEL_VIRT_BASE)) >>
+         24;
 }
 
 /* --- VMM / TLB --- */
@@ -93,9 +100,9 @@ static inline uint64_t arch_impl_get_kernel_pgd(void) {
 
 /* PCID-tagged TLB (perf §3, DIR-06): set in cpu.c arch_cpu_init when CPUID
  * reports PCID.  When PCID is enabled, a CR3 reload only flushes the CURRENT
- * PCID's entries, so the full-flush primitive — which the SMP teardown shootdown
- * (arch_tlb_shootdown_all in vmm_destroy_pgd) relies on to clear a dying address
- * space before its tag is recycled — must drop EVERY tag. */
+ * PCID's entries, so the full-flush primitive — which the SMP teardown
+ * shootdown (arch_tlb_shootdown_all in vmm_destroy_pgd) relies on to clear a
+ * dying address space before its tag is recycled — must drop EVERY tag. */
 extern int amd64_pcid_enabled;
 
 /* Flush ALL TLB entries — every PCID plus globals — WITHOUT needing INVPCID
@@ -153,6 +160,35 @@ static inline void arch_impl_cache_clean_range(void *start, size_t size) {
   for (; s < e; s += 64) {
     __asm__ __volatile__("clflush (%0)" ::"r"(s) : "memory");
   }
+  __asm__ __volatile__("mfence" ::: "memory");
+}
+
+/* arch_impl_cache_invalidate_range - discard any CPU-cached copy of
+ * [start, start+size) so the next load re-fetches from physical RAM.
+ *
+ * FIX(VGPU-DMA-01): required before the CPU reads a buffer a device wrote
+ * via DMA (e.g. the virtio used-ring index, or a command response
+ * buffer). On amd64 the memory type + snooping usually keeps this
+ * transparent (PCI DMA is normally cache-coherent), but this driver's
+ * DMA buffers are allocated as ordinary cacheable RAM with no explicit
+ * memory-type attribute set anywhere in this tree (no MTRR/PAT call, no
+ * non-cacheable mapping) — on real silicon/chipsets/firmware where that
+ * assumption does not hold (older or oddly configured platforms, or a
+ * non-coherent DMA path), a stale cache line is exactly the class of bug
+ * that reads back device data the CPU never actually re-fetched. clflush
+ * is used for both directions (matching arch_impl_cache_clean_range)
+ * since amd64 has no separate invalidate-without-writeback instruction;
+ * this call is only correct to use on a line the CPU is not concurrently
+ * writing. */
+static inline void arch_impl_cache_invalidate_range(void *start, size_t size) {
+  uint64_t s = (uint64_t)start;
+  uint64_t e = s + size;
+  s &= ~63UL;
+  __asm__ __volatile__("mfence" ::: "memory");
+  for (; s < e; s += 64) {
+    __asm__ __volatile__("clflush (%0)" ::"r"(s) : "memory");
+  }
+  __asm__ __volatile__("mfence" ::: "memory");
 }
 
 static inline void arch_impl_cache_sync_icache(void *start, size_t size) {
@@ -191,36 +227,38 @@ static inline void arch_impl_timer_control(uint32_t val) { (void)val; }
 /* arch_impl_hw_random: one attempt at RDRAND (the on-chip DRBG).  Returns 1 and
  * writes *out on success; 0 if CPUID.01h:ECX[30] does not advertise RDRAND (the
  * default QEMU CPU model) or the read transiently failed.  Pure ISA wrapper:
- * the retry/mix policy lives in the generic entropy layer (kernel/lib/entropy.c). */
+ * the retry/mix policy lives in the generic entropy layer
+ * (kernel/lib/entropy.c). */
 static inline int arch_impl_hw_random(uint64_t *out) {
-    uint32_t a, b, c, d;
-    __asm__ __volatile__("cpuid"
-                         : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
-                         : "0"(1u), "2"(0u));
-    if (!(c & (1u << 30)))
-        return 0; /* no RDRAND */
-    uint64_t r;
-    unsigned char ok;
-    __asm__ __volatile__("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
-    if (!ok)
-        return 0; /* transient failure */
-    *out = r;
-    return 1;
+  uint32_t a, b, c, d;
+  __asm__ __volatile__("cpuid"
+                       : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                       : "0"(1u), "2"(0u));
+  if (!(c & (1u << 30)))
+    return 0; /* no RDRAND */
+  uint64_t r;
+  unsigned char ok;
+  __asm__ __volatile__("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
+  if (!ok)
+    return 0; /* transient failure */
+  *out = r;
+  return 1;
 }
 
 /* --- Spinlocks --- */
 static inline void arch_impl_spin_lock(volatile uint32_t *lock) {
-    while (__sync_lock_test_and_set(lock, 1)) {
-        while (*lock) __asm__ __volatile__("pause");
-    }
+  while (__sync_lock_test_and_set(lock, 1)) {
+    while (*lock)
+      __asm__ __volatile__("pause");
+  }
 }
 
 static inline void arch_impl_spin_unlock(volatile uint32_t *lock) {
-    __sync_lock_release(lock);
+  __sync_lock_release(lock);
 }
 
 static inline int arch_impl_spin_trylock(volatile uint32_t *lock) {
-    return __sync_lock_test_and_set(lock, 1) == 0;
+  return __sync_lock_test_and_set(lock, 1) == 0;
 }
 
 /* --- System Registers --- */
@@ -287,7 +325,7 @@ static inline uint64_t arch_impl_get_fault_status(void) {
 
 /* --- Constants --- */
 #define HAL_RAM_START 0x0UL
-#define HAL_RAM_SIZE  0x40000000UL
+#define HAL_RAM_SIZE 0x40000000UL
 #define HAL_ALIAS_OFFSET 0x0UL
 
 #endif /* _ARCH_AMD64_H */

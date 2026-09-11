@@ -6,8 +6,9 @@
  *   - Enable the LAPIC via IA32_APIC_BASE MSR (bit 11 = APIC global enable).
  *   - Set the Spurious Interrupt Vector Register (SVR) to enable the LAPIC
  *     and assign vector 0xFF as the spurious vector.
- *   - Configure LINT0 as ExtINT to forward legacy 8259 PIC interrupts when no
- *     I/O APIC is present.
+ *   - Configure LINT0 as ExtINT, on the BSP only (FIX(APIC-01)), to forward
+ *     legacy 8259 PIC interrupts when no I/O APIC is present; every AP
+ *     explicitly masks LINT0 instead.
  *   - Provide lapic_eoi() for hardware interrupt acknowledgement.
  *   - Provide lapic_send_ipi() for inter-processor interrupts (SMP startup,
  *     future TLB shootdown, etc.).
@@ -21,26 +22,69 @@
  *     this file's functions are called.
  *   - ticks_per_ms is set once by lapic_timer_calibrate() and never cleared;
  *     the guard 'if (ticks_per_ms != 0) return' makes calibration idempotent.
+ *   - LINT0-as-ExtINT is enabled on the BSP only; every AP masks it
+ *     (FIX(APIC-01), lapic_init()) — see PIC-01 in pic_pit.c for why no
+ *     amd64 IRQ line can be software-distributed across CPUs the way
+ *     GICv2 SPIs are on aarch64 (gic.c, DRV-GIC-01): this driver has no
+ *     I/O APIC and therefore no per-line destination register to program.
  *
  * Known issues:
+ *   APIC-01 RESOLVED (this pass): lapic_init() used to write LINT0 =
+ *     ExtINT-not-masked unconditionally on every CPU, BSP and APs alike.
+ *     Per the Intel MultiProcessor Specification, ExtINT-via-LINT0 virtual-
+ *     wire mode is a BSP-only configuration ("NMI and INTR must be
+ *     connected to the BSP"); enabling it on an AP too risks duplicate
+ *     interrupt delivery on hardware whose LINT0 wiring reaches more than
+ *     one core (documented failure mode in the Linux kernel mailing list's
+ *     virtual-wire-on-shutdown fix).  Fixed: only the CPU whose
+ *     lapic_get_id() == 0 (the BSP) programs LINT0 as ExtINT; every AP
+ *     explicitly masks LINT0 instead of leaving it at whatever the AP
+ *     happened to reset into.
  *   EXC-AMD64-03 RESOLVED (Phase A step 14): the double-tick hazard came
  *     from the PIT being left free-running (mode 2) after calibration while
  *     LINT0 ExtINT can deliver PIC IRQ 0 on vector 32 — the same vector as
  *     the LAPIC periodic timer.  lapic_timer_calibrate() now halts the PIT
  *     (mode-0 control word, no count) before the LAPIC timer starts; PIC
  *     IRQ 0 additionally stays masked (pic_init).  LINT0 remains ExtINT on
- *     purpose: it is the only delivery path for legacy PIC lines (PCI INTx).
+ *     the BSP on purpose: it is the only delivery path for legacy PIC
+ *     lines (PCI INTx).
  */
 #include <arch/amd64/apic.h>
-#include <kernel/printk.h>
+#include <arch/amd64_internal.h>
+#include <drivers/timer.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
-#include <drivers/timer.h>
-#include <arch/amd64_internal.h>
+#include <kernel/printk.h>
+#include <kernel/spinlock.h>
 
 /* ticks_per_ms: LAPIC timer decrements per millisecond at LAPIC_TIMER_DIV16.
  * Set by lapic_timer_calibrate(); used by lapic_timer_setup() and udelay(). */
 uint32_t ticks_per_ms = 0;
+
+/* calib_lock - serialises tsc_calibrate()/lapic_timer_calibrate() against
+ * the shared, single-instance 8254 PIT.
+ *
+ * FIX(TIMER-CALIB-RACE-01): both functions guard their own body with a bare
+ * "if (already_done) return" on tsc_hz / ticks_per_ms.  That check-then-act
+ * sequence is idempotent ONLY as long as no two CPUs can ever be inside it
+ * at once — a property this file never enforced itself; it relied entirely
+ * on an invariant living in kernel/main.c and kernel/core/smp.c (BSP
+ * calibrates before any AP is woken, and APs are brought up strictly one at
+ * a time, ack-gated).  That invariant is real today, but it is invisible
+ * from this file, easy to violate by a future change to the boot sequence
+ * (or a bring-up path that does not go through smp_bringup_secondary), and
+ * its violation is exactly the class of bug that produces this system's
+ * reported symptom: two CPUs interleaving their PIT programming
+ * (PIT_CMD/PIT_CH0 writes) corrupts the ~10 ms measurement window for BOTH,
+ * silently publishing a garbage ticks_per_ms/tsc_hz that every CPU then
+ * trusts forever — a wrong (or zero-length) LAPIC periodic interval reads
+ * exactly like "the clock stopped", intermittently, depending on how the
+ * two calibration attempts happened to race.  Locking the whole
+ * check-and-calibrate sequence removes the dependency on that cross-file
+ * invariant instead of merely trusting it, at zero cost on the fast path
+ * (real calibration runs exactly once per boot; every other caller takes
+ * the lock only to observe the already-published value and return). */
+static spinlock_t calib_lock = SPINLOCK_INIT;
 
 /* tsc_hz: measured TSC frequency in counts/second (docs/TIMER-MODEL.md §1).
  * This is the real-time reference the whole 3-tier clock is built on:
@@ -61,36 +105,64 @@ uint64_t tsc_hz = 0;
  * Steps:
  *   1. Read IA32_APIC_BASE (MSR 0x1B); set bit 11 (AEN) if not already set.
  *   2. Write SVR: set Enable bit (bit 8) and spurious vector 0xFF.
- *   3. Configure LINT0 as ExtINT (delivery mode 0x700, not masked) so the
- *      legacy 8259 PIC can deliver its IRQs via the LAPIC when no I/O APIC
- *      is present.
+ *   3. Configure LINT0 — ONLY on the BSP — as ExtINT (delivery mode 0x700)
+ *      so the legacy 8259 PIC can deliver its IRQs via the LAPIC when no
+ *      I/O APIC is present.  Every AP explicitly masks LINT0 instead.
+ *      FIX(APIC-01): see the note below this doc-comment for why this
+ *      guard was missing and what it could cause.
  *
  * NOTE(EXC-AMD64-03, resolved): the PIT is halted after calibration and PIC
  * IRQ 0 stays masked, so vector 32 only ever comes from the LAPIC timer.
  *
- * The 'outb L' at the start is a debug breadcrumb on COM1 serial port
- * (0x3F8 = COM1 data register).
+ * FIX(APIC-01): LINT0-as-ExtINT used to be written unconditionally on every
+ * CPU that called this function — BSP and every AP alike.  Per the Intel
+ * MultiProcessor Specification's definition of virtual-wire mode, ExtINT
+ * delivery through LINT0 is a BSP-only configuration ("NMI and INTR must be
+ * connected to the BSP"); programming it on an AP as well is documented
+ * (Linux kernel mailing list, kexec virtual-wire fix, 2004) to risk
+ * DUPLICATE interrupt delivery depending on the board's actual LINT0
+ * wiring — the 8259's single INTR line can, on some chipsets, reach more
+ * than one CPU's LINT0 pin, and an AP with ExtINT enabled would then also
+ * accept and (mis)dispatch a PIC interrupt meant to be serviced once, by
+ * the BSP, through irq_dispatch()/pic_chip.  QEMU's virt-wire wiring
+ * happens to route INTR to the BSP only, which is why this went
+ * unobserved in emulation; it is not something this driver should rely on
+ * for real hardware.  Every AP now explicitly masks LINT0 (delivery mode
+ * left at ExtINT for documentation purposes, but bit 16 = 1 disables
+ * delivery entirely) instead of leaving it in whatever state the AP
+ * happened to reset into.
+ *
  */
 void lapic_init(void) {
-    /* Debug: Print 'L' using %dx for 16-bit port */
-    __asm__ __volatile__("movw $0x3f8, %%dx; movb $'L', %%al; outb %%al, %%dx" ::: "ax", "dx");
+  /* Ensure APIC is enabled in MSR (bit 11 = APIC global enable) */
+  uint64_t apic_msr = rdmsr(0x1B); /* IA32_APIC_BASE */
+  if (!(apic_msr & 0x800)) {
+    wrmsr(0x1B, apic_msr | 0x800);
+  }
 
-    /* Ensure APIC is enabled in MSR (bit 11 = APIC global enable) */
-    uint64_t apic_msr = rdmsr(0x1B); /* IA32_APIC_BASE */
-    if (!(apic_msr & 0x800)) {
-        wrmsr(0x1B, apic_msr | 0x800);
-    }
+  /* Set Spurious Interrupt Vector (0xFF) and enable LAPIC (SVR bit 8) */
+  lapic_write(LAPIC_SVR, lapic_read(LAPIC_SVR) | 0xFF | LAPIC_SVR_ENABLE);
 
-    /* Set Spurious Interrupt Vector (0xFF) and enable LAPIC (SVR bit 8) */
-    lapic_write(LAPIC_SVR, lapic_read(LAPIC_SVR) | 0xFF | LAPIC_SVR_ENABLE);
-
-    /* Configure LINT0 for ExtINT (Legacy PIC) — necessary if no IOAPIC is used.
-     * Delivery mode 0x700 = ExtINT; not masked (bit 16 = 0).
-     * NOTE(EXC-AMD64-03, resolved): PIC IRQ 0 could reach vector 32 through
-     * here, but the PIT is halted after calibration and IRQ 0 stays masked. */
+  /* FIX(APIC-01): LINT0-as-ExtINT is a BSP-only configuration (Intel MP
+   * Spec virtual-wire mode: "NMI and INTR must be connected to the
+   * BSP") — see the function-header note for the duplicate-delivery
+   * risk of programming it on every CPU. */
+  if (lapic_get_id() == 0) {
+    /* Configure LINT0 for ExtINT (Legacy PIC) — necessary if no IOAPIC
+     * is used.  Delivery mode 0x700 = ExtINT; not masked (bit 16 = 0).
+     * NOTE(EXC-AMD64-03, resolved): PIC IRQ 0 could reach vector 32
+     * through here, but the PIT is halted after calibration and IRQ 0
+     * stays masked. */
     lapic_write(LAPIC_LVT_LINT0, 0x00000700); /* ExtINT, not masked */
+  } else {
+    /* FIX(APIC-01): explicitly masked rather than left at reset state
+     * — this AP must never accept an ExtINT-delivered PIC interrupt;
+     * the BSP above is the sole ExtINT receiver. Bit 16 = mask. */
+    lapic_write(LAPIC_LVT_LINT0, 0x00010700); /* ExtINT mode, MASKED */
+  }
 
-    pr_info("AMD64: LAPIC %u initialized at 0x%lx\n", lapic_get_id(), LAPIC_DEFAULT_BASE);
+  pr_info("AMD64: LAPIC %u initialized at 0x%lx\n", lapic_get_id(),
+          LAPIC_DEFAULT_BASE);
 }
 
 /*
@@ -104,9 +176,7 @@ void lapic_init(void) {
  * Does NOT satisfy the 8259 PIC EOI for legacy vectors 32-47; idt.c calls
  * pic_send_eoi() separately for those.
  */
-void lapic_eoi(void) {
-    lapic_write(LAPIC_EOI, 0);
-}
+void lapic_eoi(void) { lapic_write(LAPIC_EOI, 0); }
 
 /*
  * lapic_get_id - return the LAPIC ID of the calling CPU.
@@ -114,9 +184,7 @@ void lapic_eoi(void) {
  * The LAPIC ID register bits [31:24] hold the 8-bit APIC ID.  Used to index
  * cpu_data[] and to address IPIs.
  */
-uint32_t lapic_get_id(void) {
-    return lapic_read(LAPIC_ID) >> 24;
-}
+uint32_t lapic_get_id(void) { return lapic_read(LAPIC_ID) >> 24; }
 
 /*
  * lapic_send_ipi - send an inter-processor interrupt.
@@ -134,22 +202,22 @@ uint32_t lapic_get_id(void) {
  * recommends INIT + two SIPIs for reliability.
  */
 void lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
-    /* Wait for previous IPI to complete (ICR_SEND_PENDING bit must be clear) */
-    while (lapic_read(LAPIC_ICR_LOW) & ICR_SEND_PENDING) {
-        arch_yield();
-    }
+  /* Wait for previous IPI to complete (ICR_SEND_PENDING bit must be clear) */
+  while (lapic_read(LAPIC_ICR_LOW) & ICR_SEND_PENDING) {
+    arch_yield();
+  }
 
-    lapic_write(LAPIC_ICR_HIGH, lapic_id << 24); /* destination APIC ID */
-    lapic_write(LAPIC_ICR_LOW, flags);            /* triggers IPI delivery */
+  lapic_write(LAPIC_ICR_HIGH, lapic_id << 24); /* destination APIC ID */
+  lapic_write(LAPIC_ICR_LOW, flags);           /* triggers IPI delivery */
 }
 
 /* PIT Constants for calibration */
 #ifndef PIT_CH0
 #define PIT_CH0 0x40 /* I/O port: 8254 PIT Channel 0 counter */
-#endif /* PIT_CH0 */
+#endif               /* PIT_CH0 */
 #ifndef PIT_CMD
 #define PIT_CMD 0x43 /* I/O port: 8254 PIT command/mode register */
-#endif /* PIT_CMD */
+#endif               /* PIT_CMD */
 
 /*
  * rdtsc64 - read the 64-bit Time Stamp Counter.
@@ -161,9 +229,9 @@ void lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
  * IRQ context: safe (plain register read, no side effects).
  */
 static inline uint64_t rdtsc64(void) {
-    uint32_t lo, hi;
-    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
+  uint32_t lo, hi;
+  __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((uint64_t)hi << 32) | lo;
 }
 
 /*
@@ -195,59 +263,89 @@ static inline uint64_t rdtsc64(void) {
  * Locking: none; BSP-only, before SMP.  IRQ context: NO (busy-polls ~10 ms
  * with the PIT; must run with the timer IRQ not yet started).
  */
-void tsc_calibrate(void) {
-    if (tsc_hz != 0) return;
-
-    /* Invariant-TSC advisory (CPUID 0x80000007 EDX bit 8).  When clear, the
-     * TSC may change rate with P-states / deep C-states and the single BSP
-     * calibration shared by all APs is theoretically unsafe.  QEMU advertises
-     * invariant TSC; we still proceed if it does not, but warn loudly. */
-    {
-        uint32_t eax, ebx, ecx, edx;
-        __asm__ __volatile__("cpuid"
-                             : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                             : "a"(0x80000000U));
-        if (eax >= 0x80000007U) {
-            __asm__ __volatile__("cpuid"
-                                 : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                                 : "a"(0x80000007U));
-            if (!(edx & (1U << 8))) {
-                pr_info("TSC: WARNING — invariant TSC not advertised "
-                        "(CPUID 80000007 EDX[8]=0); using shared BSP "
-                        "calibration anyway\n");
-            }
-        }
+/*
+ * tsc_calibrate_locked - the actual TSC calibration work.
+ *
+ * FIX(TIMER-CALIB-RACE-01): factored out of tsc_calibrate() so
+ * lapic_timer_calibrate() can perform the TSC step WITHOUT recursively
+ * acquiring calib_lock (spinlock_t here is not reentrant — a naive "just
+ * call tsc_calibrate() from lapic_timer_calibrate() while already holding
+ * calib_lock" would self-deadlock the very first time real calibration
+ * ever ran). Caller MUST already hold calib_lock and MUST have already
+ * checked tsc_hz == 0.
+ */
+static void tsc_calibrate_locked(void) {
+  /* Invariant-TSC advisory (CPUID 0x80000007 EDX bit 8).  When clear, the
+   * TSC may change rate with P-states / deep C-states and the single BSP
+   * calibration shared by all APs is theoretically unsafe.  QEMU advertises
+   * invariant TSC; we still proceed if it does not, but warn loudly. */
+  {
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ __volatile__("cpuid"
+                         : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                         : "a"(0x80000000U));
+    if (eax >= 0x80000007U) {
+      __asm__ __volatile__("cpuid"
+                           : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                           : "a"(0x80000007U));
+      if (!(edx & (1U << 8))) {
+        pr_info("TSC: WARNING — invariant TSC not advertised "
+                "(CPUID 80000007 EDX[8]=0); using shared BSP "
+                "calibration anyway\n");
+      }
     }
+  }
 
-    pr_info("TSC: Calibrating against PIT...\n");
+  pr_info("TSC: Calibrating against PIT...\n");
 
-    /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2). */
-    outb(PIT_CMD, 0x34);
-    outb(PIT_CH0, 0xFF); /* low byte of initial count  */
-    outb(PIT_CH0, 0xFF); /* high byte of initial count */
+  /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2). */
+  outb(PIT_CMD, 0x34);
+  outb(PIT_CH0, 0xFF); /* low byte of initial count  */
+  outb(PIT_CH0, 0xFF); /* high byte of initial count */
 
-    uint16_t start_tick = 0xFFFF;
+  uint16_t start_tick = 0xFFFF;
 
-    uint64_t tsc_start = rdtsc64();
+  uint64_t tsc_start = rdtsc64();
 
-    /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms). */
-    uint16_t current_tick;
-    do {
-        outb(PIT_CMD, 0x00); /* latch Channel 0 count */
-        current_tick = inb(PIT_CH0);
-        current_tick |= (inb(PIT_CH0) << 8);
-    } while ((uint16_t)(start_tick - current_tick) < 11932);
+  /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms). */
+  uint16_t current_tick;
+  do {
+    outb(PIT_CMD, 0x00); /* latch Channel 0 count */
+    current_tick = inb(PIT_CH0);
+    current_tick |= (inb(PIT_CH0) << 8);
+  } while ((uint16_t)(start_tick - current_tick) < 11932);
 
-    uint64_t tsc_end = rdtsc64();
+  uint64_t tsc_end = rdtsc64();
 
-    /* 10 ms window → multiply the delta by 100 to get counts per second. */
-    tsc_hz = (tsc_end - tsc_start) * 100UL;
+  /* 10 ms window → multiply the delta by 100 to get counts per second. */
+  tsc_hz = (tsc_end - tsc_start) * 100UL;
 
-    /* Halt the PIT (mode 0, no count loaded) so its IRQ0 line stays quiet —
-     * same EXC-AMD64-03 double-tick hazard lapic_timer_calibrate() guards. */
-    outb(PIT_CMD, 0x30);
+  /* Halt the PIT (mode 0, no count loaded) so its IRQ0 line stays quiet —
+   * same EXC-AMD64-03 double-tick hazard lapic_timer_calibrate() guards. */
+  outb(PIT_CMD, 0x30);
 
-    pr_info("TSC: Calibrated: %lu Hz (%lu MHz)\n", tsc_hz, tsc_hz / 1000000UL);
+  pr_info("TSC: Calibrated: %lu Hz (%lu MHz)\n", tsc_hz, tsc_hz / 1000000UL);
+}
+
+/*
+ * tsc_calibrate - public, lock-acquiring entry point for TSC calibration.
+ *
+ * FIX(TIMER-CALIB-RACE-01): acquires calib_lock (IRQs saved) around the
+ * whole check-then-calibrate sequence so two CPUs can never interleave
+ * their PIT programming — see calib_lock's declaration for why this
+ * matters (a corrupted calibration silently poisons every CPU's clock for
+ * the rest of the boot). A CPU that finds tsc_hz already published just
+ * takes and releases an uncontended lock and returns immediately.
+ *
+ * Locking: acquires calib_lock (irqsave). IRQ context: NO (see
+ * tsc_calibrate_locked; unchanged from before this fix).
+ */
+void tsc_calibrate(void) {
+  uint64_t calib_flags;
+  spin_lock_irqsave(&calib_lock, &calib_flags);
+  if (tsc_hz == 0)
+    tsc_calibrate_locked();
+  spin_unlock_irqrestore(&calib_lock, calib_flags);
 }
 
 /*
@@ -271,56 +369,77 @@ void tsc_calibrate(void) {
  * the calibrated LAPIC TCC, so the microsecond timestamp is inaccurate.
  */
 void lapic_timer_calibrate(void) {
-    if (ticks_per_ms != 0) return;
+  /* FIX(TIMER-CALIB-RACE-01): the entire function — including the TSC step
+   * below and the LAPIC/PIT measurement that follows — now runs under
+   * calib_lock, taken exactly ONCE here.  tsc_calibrate_locked() (not the
+   * lock-acquiring tsc_calibrate()) is called directly to avoid recursively
+   * acquiring the same non-reentrant spinlock. See calib_lock's declaration
+   * for why serialising this against every other CPU matters: without it,
+   * two CPUs racing into their first calibration attempt can interleave
+   * PIT_CMD/PIT_CH0 writes and each measure a corrupted ~10 ms window,
+   * publishing a garbage ticks_per_ms/tsc_hz that is then trusted by every
+   * CPU for the rest of the boot — the exact failure mode that reads back
+   * as "the clock stopped" together with a full system stall. */
+  uint64_t calib_flags;
+  spin_lock_irqsave(&calib_lock, &calib_flags);
 
-    /* Measure the TSC frequency first (docs/TIMER-MODEL.md §1): this must be
-     * published into tsc_hz before the LAPIC timer starts, because the
-     * arch-neutral mono_ns()/jiffies reconciliation begins on the first tick.
-     * Idempotent and BSP-only — its own ~10 ms PIT window runs before the one
-     * below, both with the timer IRQ still off. */
-    tsc_calibrate();
+  if (ticks_per_ms != 0) {
+    spin_unlock_irqrestore(&calib_lock, calib_flags);
+    return;
+  }
 
-    pr_info("LAPIC: Calibrating timer against PIT...\n");
+  /* Measure the TSC frequency first (docs/TIMER-MODEL.md §1): this must be
+   * published into tsc_hz before the LAPIC timer starts, because the
+   * arch-neutral mono_ns()/jiffies reconciliation begins on the first tick.
+   * Idempotent and BSP-only — its own ~10 ms PIT window runs before the one
+   * below, both with the timer IRQ still off, and both now under the same
+   * calib_lock critical section as one atomic calibration pass. */
+  if (tsc_hz == 0)
+    tsc_calibrate_locked();
 
-    /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2) */
-    outb(PIT_CMD, 0x34); /* Channel 0, lobyte/hibyte, rate generator (Mode 2) */
-    outb(PIT_CH0, 0xFF); /* low byte of initial count */
-    outb(PIT_CH0, 0xFF); /* high byte of initial count */
+  pr_info("LAPIC: Calibrating timer against PIT...\n");
 
-    /* Set LAPIC Timer to Divide by 16 */
-    lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
+  /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2) */
+  outb(PIT_CMD, 0x34); /* Channel 0, lobyte/hibyte, rate generator (Mode 2) */
+  outb(PIT_CH0, 0xFF); /* low byte of initial count */
+  outb(PIT_CH0, 0xFF); /* high byte of initial count */
 
-    /* Record PIT start count (conceptually 0xFFFF; actual read not stored) */
-    uint16_t start_tick = 0xFFFF;
+  /* Set LAPIC Timer to Divide by 16 */
+  lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
 
-    /* Start LAPIC Timer with maximum initial count */
-    lapic_write(LAPIC_TIC, 0xFFFFFFFF);
+  /* Record PIT start count (conceptually 0xFFFF; actual read not stored) */
+  uint16_t start_tick = 0xFFFF;
 
-    /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms).
-     * PIT latch command (0x00 to PIT_CMD) freezes the counter for reading;
-     * two reads from PIT_CH0 give the 16-bit current count (lo then hi). */
-    uint16_t current_tick;
-    do {
-        outb(PIT_CMD, 0x00); /* Latch Channel 0 count */
-        current_tick = inb(PIT_CH0);
-        current_tick |= (inb(PIT_CH0) << 8);
-    } while ((start_tick - current_tick) < 11932);
+  /* Start LAPIC Timer with maximum initial count */
+  lapic_write(LAPIC_TIC, 0xFFFFFFFF);
 
-    /* Read LAPIC Timer current count; elapsed = initial - current */
-    uint32_t ticks = 0xFFFFFFFF - lapic_read(LAPIC_TCC);
-    ticks_per_ms = ticks / 10; /* elapsed in 10 ms → convert to per-ms */
+  /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms).
+   * PIT latch command (0x00 to PIT_CMD) freezes the counter for reading;
+   * two reads from PIT_CH0 give the 16-bit current count (lo then hi). */
+  uint16_t current_tick;
+  do {
+    outb(PIT_CMD, 0x00); /* Latch Channel 0 count */
+    current_tick = inb(PIT_CH0);
+    current_tick |= (inb(PIT_CH0) << 8);
+  } while ((start_tick - current_tick) < 11932);
 
-    /* FIX(EXC-AMD64-03): silence the PIT now that calibration is done.
-     * Mode 2 left the counter free-running, pulsing the IRQ0 line forever;
-     * vector 32 must come from the LAPIC periodic timer ONLY.  Writing the
-     * mode-0 control word without loading a count halts the counter (the
-     * 8254 waits for a count after a control-word write), so the line stays
-     * quiet even if PIC IRQ0 were ever unmasked.  LINT0 stays ExtINT — it is
-     * the delivery path for every legacy PIC line (PCI INTx included) and
-     * must NOT be masked. */
-    outb(PIT_CMD, 0x30); /* channel 0, lobyte/hibyte, mode 0, no count loaded */
+  /* Read LAPIC Timer current count; elapsed = initial - current */
+  uint32_t ticks = 0xFFFFFFFF - lapic_read(LAPIC_TCC);
+  ticks_per_ms = ticks / 10; /* elapsed in 10 ms → convert to per-ms */
 
-    pr_info("LAPIC: Timer calibrated: %u ticks per ms\n", ticks_per_ms);
+  /* FIX(EXC-AMD64-03): silence the PIT now that calibration is done.
+   * Mode 2 left the counter free-running, pulsing the IRQ0 line forever;
+   * vector 32 must come from the LAPIC periodic timer ONLY.  Writing the
+   * mode-0 control word without loading a count halts the counter (the
+   * 8254 waits for a count after a control-word write), so the line stays
+   * quiet even if PIC IRQ0 were ever unmasked.  LINT0 stays ExtINT — it is
+   * the delivery path for every legacy PIC line (PCI INTx included) and
+   * must NOT be masked. */
+  outb(PIT_CMD, 0x30); /* channel 0, lobyte/hibyte, mode 0, no count loaded */
+
+  pr_info("LAPIC: Timer calibrated: %u ticks per ms\n", ticks_per_ms);
+
+  spin_unlock_irqrestore(&calib_lock, calib_flags);
 }
 
 /*
@@ -337,32 +456,32 @@ void lapic_timer_calibrate(void) {
  *   hz - desired interrupt frequency (e.g. HZ = 1000 for 1 kHz timer).
  */
 void lapic_timer_setup(uint32_t hz) {
-    if (ticks_per_ms == 0) {
-        lapic_timer_calibrate();
-    }
+  if (ticks_per_ms == 0) {
+    lapic_timer_calibrate();
+  }
 
-    /* Stop current timer before reconfiguring */
-    lapic_timer_stop();
+  /* Stop current timer before reconfiguring */
+  lapic_timer_stop();
 
-    /* Set up LAPIC Timer for periodic interrupts.
-     * Vector 32 (IRQ 0 equivalent), periodic mode (LAPIC_LVT_PERIODIC).
-     * NOTE(EXC-AMD64-03): same vector 32 as LAPIC LINT0 ExtINT path. */
-    lapic_write(LAPIC_LVT_TIMER, 32 | LAPIC_LVT_PERIODIC);
-    lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
+  /* Set up LAPIC Timer for periodic interrupts.
+   * Vector 32 (IRQ 0 equivalent), periodic mode (LAPIC_LVT_PERIODIC).
+   * NOTE(EXC-AMD64-03): same vector 32 as LAPIC LINT0 ExtINT path. */
+  lapic_write(LAPIC_LVT_TIMER, 32 | LAPIC_LVT_PERIODIC);
+  lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
 
-    /* Calculate ticks per interrupt: at hz=1000, interval_ms=1 */
-    uint32_t interval_ms = 1000 / hz;
-    lapic_write(LAPIC_TIC, ticks_per_ms * interval_ms);
+  /* Calculate ticks per interrupt: at hz=1000, interval_ms=1 */
+  uint32_t interval_ms = 1000 / hz;
+  lapic_write(LAPIC_TIC, ticks_per_ms * interval_ms);
 
-    /* Seed the Tier-2 per-CPU software schedule via the arch-neutral, HAL-driven
-     * timer_percpu_arm() (kernel/core/timer.c), exactly as aarch64's
-     * timer_init_percpu() does. The vector-32 ISR then calls timer_percpu_tick()
-     * to advance it against the free-running TSC so a starved core recovers lost
-     * time. arch_timer_set_compare() inside is a no-op (LAPIC is periodic). */
-    timer_percpu_arm(get_cpu_info());
+  /* Seed the Tier-2 per-CPU software schedule via the arch-neutral, HAL-driven
+   * timer_percpu_arm() (kernel/core/timer.c), exactly as aarch64's
+   * timer_init_percpu() does. The vector-32 ISR then calls timer_percpu_tick()
+   * to advance it against the free-running TSC so a starved core recovers lost
+   * time. arch_timer_set_compare() inside is a no-op (LAPIC is periodic). */
+  timer_percpu_arm(get_cpu_info());
 
-    pr_info("LAPIC: CPU %u timer started at %u Hz (%u ticks/interval)\n",
-            lapic_get_id(), hz, ticks_per_ms * interval_ms);
+  pr_info("LAPIC: CPU %u timer started at %u Hz (%u ticks/interval)\n",
+          lapic_get_id(), hz, ticks_per_ms * interval_ms);
 }
 
 /*
@@ -373,6 +492,6 @@ void lapic_timer_setup(uint32_t hz) {
  * lapic_timer_setup() before reconfiguring the timer.
  */
 void lapic_timer_stop(void) {
-    lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED); /* mask timer LVT entry */
-    lapic_write(LAPIC_TIC, 0);                       /* stop countdown */
+  lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED); /* mask timer LVT entry */
+  lapic_write(LAPIC_TIC, 0);                      /* stop countdown */
 }

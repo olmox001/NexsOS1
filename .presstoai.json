@@ -17,6 +17,10 @@
       "selected": false
     },
     {
+      "path": ".nexsconfig",
+      "selected": true
+    },
+    {
       "path": ".vscode/c_cpp_properties.json",
       "selected": false
     },
@@ -26,7 +30,7 @@
     },
     {
       "path": "LICENSE.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "Makefile",
@@ -46,7 +50,7 @@
     },
     {
       "path": "docs/ASTRA.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "docs/B3-POLISH-QUEUE.md",
@@ -58,7 +62,7 @@
     },
     {
       "path": "docs/DESIGN-2026-07-18-NXEXEC-DAEMON.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "docs/DESIGN-PERSISTENCE-INSTALL.md",
@@ -110,23 +114,23 @@
     },
     {
       "path": "docs/PIANO-LIBC-ASTRA-2026-07-16.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "docs/PLAN-2026-07-17-STRATIFICATION.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "docs/PLAN-2026-07-23-HARDENING-SDK-RUST.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "docs/PROCESS-KILL-MODEL.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "docs/PROJECT_CHARTER.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "docs/R0-CENSUS-LIB-SPLIT.md",
@@ -370,283 +374,283 @@
     },
     {
       "path": "include/abi/caps.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/font.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/nx_abi.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/object.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/posix_types.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/style_names.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/syscall_nums.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/sysstats.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/alloca.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/assert.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/byteswap.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/ctype.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/dirent.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/elf.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/errno.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/error.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/execsvc.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/fcntl.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/float.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/fnmatch.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/font_lib.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/getopt.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/glob.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/graphics.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/grp.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/image.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/input.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/inttypes.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/langinfo.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/lib.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/locale.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/math.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/os1.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/os1vid.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/pl_mpeg.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/poll.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/pwd.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/selinux/context.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/selinux/label.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/selinux/selinux.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/setjmp.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/signal.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stb_easy_font.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stb_image.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdbit.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdbool.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdckdint.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdcountof.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdio.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdlib.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/string.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/strings.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/ioctl.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/mman.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/random.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/resource.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/stat.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/statfs.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/statvfs.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/time.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/types.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/uio.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/utsname.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/wait.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/termios.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/time.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/uchar.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/unistd.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/wchar.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/wctype.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "kernel/arch/aarch64/boot/header.S",
@@ -1393,24 +1397,8 @@
       "selected": false
     },
     {
-      "path": "test/usr-lib-01-libc-split/README.md",
-      "selected": false
-    },
-    {
-      "path": "test/usr-lib-01-libc-split/libc_math.c",
-      "selected": false
-    },
-    {
-      "path": "test/usr-lib-01-libc-split/libc_string.c",
-      "selected": false
-    },
-    {
-      "path": "test/usr-lib-01-libc-split/libc_vsnprintf.c",
-      "selected": false
-    },
-    {
-      "path": "test/usr-lib-01-libc-split/usr-lib-01.patch",
-      "selected": false
+      "path": "tools/README_nxadb.md",
+      "selected": true
     },
     {
       "path": "tools/analyze_drift.py",
@@ -1450,11 +1438,19 @@
     },
     {
       "path": "tools/mkdisk.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/mkfont.c",
       "selected": false
+    },
+    {
+      "path": "tools/nxadb.py",
+      "selected": true
+    },
+    {
+      "path": "tools/nxrun.py",
+      "selected": true
     },
     {
       "path": "tools/nxrun.sh",
@@ -1469,16 +1465,12 @@
       "selected": false
     },
     {
-      "path": "tools/run-stress.sh",
-      "selected": false
-    },
-    {
       "path": "tools/setup-toolchain-linux.sh",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/setup-toolchain-macOS.sh",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/stb_truetype.h",
@@ -1489,12 +1481,16 @@
       "selected": false
     },
     {
+      "path": "unstaged.patch",
+      "selected": true
+    },
+    {
       "path": "user/arch/aarch64/syscall.S",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/arch/amd64/syscall.S",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/busybox/.git",
@@ -12682,27 +12678,27 @@
     },
     {
       "path": "user/bin/capipc.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/capipc_child.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/capkill.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/capkill_child.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/capreg.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/captest.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/coreutils/.git",
@@ -13917,10 +13913,6 @@
       "selected": false
     },
     {
-      "path": "user/bin/coreutils/src/dircolors.h",
-      "selected": false
-    },
-    {
       "path": "user/bin/coreutils/src/dircolors.hin",
       "selected": false
     },
@@ -13990,10 +13982,6 @@
     },
     {
       "path": "user/bin/coreutils/src/force-link.h",
-      "selected": false
-    },
-    {
-      "path": "user/bin/coreutils/src/fs.h",
       "selected": false
     },
     {
@@ -14098,6 +14086,10 @@
     },
     {
       "path": "user/bin/coreutils/src/ls.h",
+      "selected": false
+    },
+    {
+      "path": "user/bin/coreutils/src/make-prime-list",
       "selected": false
     },
     {
@@ -18074,131 +18066,135 @@
     },
     {
       "path": "user/bin/coreutils_test.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/counter.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/crash.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/crash1.c.old",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/crash2.c.old",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/demo3d.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/env.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/fdtest.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/forkbom.c.old",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/forkbomb.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/gnulibtest.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/hello.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/input_test.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/ipc_recv.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/ipc_send.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/kilo/.git",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/kilo/.gitignore",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/kilo/LICENSE",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/kilo/Makefile",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/kilo/README.md",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/kilo/TODO",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/kilo/kilo.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/libctest.c",
-      "selected": false
+      "selected": true
+    },
+    {
+      "path": "user/bin/luatest.c",
+      "selected": true
     },
     {
       "path": "user/bin/nxempire.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/nxtest.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/raptor.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/restest.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/sandboxchild.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/sandboxtest.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/sdltest.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/stress.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/bin/writetest.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/home/Settings/nxlauncher.cfg",
@@ -18210,19 +18206,19 @@
     },
     {
       "path": "user/sys/bin/init.cfg",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxassoc.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxbar.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxexec.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxexec.h",
@@ -18230,43 +18226,43 @@
     },
     {
       "path": "user/sys/bin/nxfilem/draw.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfilem/events.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfilem/fileops.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfilem/main.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfilem/nxfilem.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfilem/sort.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfilem/state.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfilem/ui.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfont/fonts/Rewir-Light.off",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxfont/nxfont.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxicon.h",
@@ -18274,11 +18270,11 @@
     },
     {
       "path": "user/sys/bin/nximage.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxinfo.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxinfo.h",
@@ -18286,7 +18282,7 @@
     },
     {
       "path": "user/sys/bin/nxinit.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxjobs.h",
@@ -18294,7 +18290,7 @@
     },
     {
       "path": "user/sys/bin/nxlauncher.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxline.h",
@@ -18302,7 +18298,7 @@
     },
     {
       "path": "user/sys/bin/nxmemstat.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxmemstat.h",
@@ -18310,15 +18306,15 @@
     },
     {
       "path": "user/sys/bin/nxnotify.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxntfy_srv.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxperm.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxperm.h",
@@ -18326,11 +18322,11 @@
     },
     {
       "path": "user/sys/bin/nxpower.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxproc.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxproc.h",
@@ -18338,11 +18334,11 @@
     },
     {
       "path": "user/sys/bin/nxreg.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxres.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxres.h",
@@ -18350,31 +18346,39 @@
     },
     {
       "path": "user/sys/bin/nxsettings.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxshell.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxshell.c.old",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxtop.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxui.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/bin/nxwins.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/lib/AUDIT_lib.c.md",
       "selected": false
+    },
+    {
+      "path": "user/sys/lib/common/string.c",
+      "selected": true
+    },
+    {
+      "path": "user/sys/lib/common/vsnprintf.c",
+      "selected": true
     },
     {
       "path": "user/sys/lib/direct3d/.editorconfig",
@@ -170422,11 +170426,11 @@
     },
     {
       "path": "user/sys/lib/os1LUA_lib.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/lib/os1LUA_lib.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/sys/lib/portability/coreutils/README.md",

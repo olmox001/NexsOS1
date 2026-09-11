@@ -14,19 +14,61 @@
  * Interrupt categories:
  *   SGI (IDs  0-15): Software-Generated Interrupts; per-CPU, used for IPIs.
  *   PPI (IDs 16-31): Private Peripheral Interrupts; per-CPU (timer at 27).
- *   SPI (IDs 32+):   Shared Peripheral Interrupts; routed to CPUs via ITARGETSR.
+ *   SPI (IDs 32+):   Shared Peripheral Interrupts; routed to CPUs via
+ * ITARGETSR.
  *
  * Invariants:
  *   - gic_init_dist() is called once on the boot CPU (via irq_init()).
  *   - gic_init_cpu() is called on every CPU (via irq_init_percpu()).
  *   - GICC_PMR = 0xFF: all interrupt priorities are accepted.
- *   - All SPIs are hard-routed to CPU 0 (GICD_ITARGETSR = 0x01010101).
+ *   - SPIs are round-robined across the CPUs that have ACTUALLY called
+ *     gic_init_cpu() so far (gic_online_cpus), re-distributed every time a
+ *     new CPU joins, up to GIC_ITARGETSR_MAX_CPUS (8) target bits (FIX
+ *     (DRV-GIC-01); previously all SPIs were hard-routed to CPU 0 only —
+ *     see gic_retarget_spis()).
  *
  * Known issues:
- *   DRV-GIC-01  (W3 WRONG-DESIGN) All SPIs permanently targeted to CPU 0
- *               via GICD_ITARGETSR = 0x01010101 in gic_init_dist().  No
- *               affinity hints, no round-robin — all device interrupts
- *               serialise on core 0; blocks SMP load distribution.
+ *   DRV-GIC-01  RESOLVED (this pass, revised): all SPIs used to be
+ *               hard-routed to CPU 0 via a fixed GICD_ITARGETSR = 0x01010101
+ *               write, with no affinity hints and no distribution — every
+ *               device interrupt serialised on core 0, defeating SMP load
+ *               spreading.
+ *
+ *               First attempt (superseded): estimate the eventual CPU count
+ *               from fdt_count_cpus() at gic_init_dist() time and round-
+ *               robin against that estimate.  Rejected on review: at
+ *               gic_init_dist() time (irq_init(), before arch_smp_init() —
+ *               see kernel_main() in main.c) no secondary CPU is online yet,
+ *               so that approach could route an SPI to a CPU that never
+ *               actually comes up, or that comes up much later than
+ *               whatever else the driver assumes — a real, if narrow, class
+ *               of "device interrupt vanishes because its target CPU isn't
+ *               there" bugs, not just a theoretical corner case.
+ *
+ *               ACTUAL FIX: SPI targeting is driven entirely by CPUs that
+ *               have PROVABLY called gic_init_cpu() — i.e. CPUs already
+ *               past arch_cpu_init() (cpu_data[id].online = 1) and already
+ *               running irq_init_percpu() on their own core.  gic_num_online
+ *               is incremented, under gic_target_lock, by each CPU's own
+ *               gic_init_cpu() call; gic_retarget_spis() then recomputes
+ *               the COMPLETE SPI -> CPU-bit assignment from that updated,
+ *               real count and rewrites every GICD_ITARGETSR word.  CPU 0
+ *               gets sole ownership of every SPI the moment gic_init_dist()
+ *               runs (gic_num_online starts at 1 — CPU 0 is, by construction,
+ *               the only CPU that can be running this code), and each
+ *               additional CPU's arrival redistributes the full SPI set
+ *               across the now-larger, now-real pool.  No estimate, no
+ *               device-tree dependency in this file, and no interrupt is
+ *               ever routed to a CPU that has not already proven it is
+ *               alive and running the GIC CPU-interface bring-up.  The one
+ *               constraint that remains, and cannot be removed by software,
+ *               is architectural: GICv2's GICD_ITARGETSR is an 8-bit-per-
+ *               interrupt field, so at most GIC_ITARGETSR_MAX_CPUS (8) CPUs
+ *               can ever be SPI targets through this register regardless of
+ *               how many actually come online — the 9th+ CPU handles SGIs/
+ *               PPIs (its own per-CPU lines) normally, but never receives a
+ *               distributor-routed SPI; this is logged explicitly rather
+ *               than silently degrading (see gic_init_cpu()).
  *   DRV-GIC-02  RESOLVED (this pass): gic_eoi() used to write only the
  *               10-bit INTID (irq & 0x3FF) to GICC_EOIR.  Per the GICv2
  *               spec (GICC_IAR / GICC_EOIR), for SGIs bits [12:10] of
@@ -46,12 +88,13 @@
  *               PPIs/SPIs — irq.c's `== 0`, `== IRQ_TIMER`, `== 1023`
  *               comparisons remain correct unchanged (see gic_ack() below).
  */
-#include <drivers/gic.h>
 #include "gic_regs.h"
+#include <drivers/gic.h>
 #include <kernel/irq.h>
 #include <kernel/memlayout.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
+#include <kernel/spinlock.h>
 #include <kernel/types.h>
 
 /* GICD_REG(off): dereference GICD MMIO register at GICD_BASE + off (32-bit).
@@ -79,6 +122,85 @@
 /* Number of interrupt lines */
 static uint32_t gic_num_irqs;
 
+/* GIC_ITARGETSR_MAX_CPUS: GICv2's GICD_ITARGETSR is architecturally an
+ * 8-bit-per-interrupt field (one bit per targetable CPU interface) — see
+ * the ARM GICv2 Architecture Specification and DRV-GIC-01 above.  No SPI
+ * can ever be routed to a CPU interface numbered 8 or higher through this
+ * register, independent of how many cores MAX_CPUS or the platform
+ * otherwise supports; GICv3+ lifts this limit, but this driver targets
+ * GICv2 (QEMU 'virt').  This is a hardware ceiling, not a software
+ * shortcut — no amount of restructuring this driver can route an SPI to a
+ * 9th CPU through this register. */
+#define GIC_ITARGETSR_MAX_CPUS 8U
+
+/* gic_num_online: count of CPUs that have PROVABLY finished gic_init_cpu()
+ * — i.e. real, running cores, never an estimate.  Starts implicitly at 0;
+ * gic_init_dist() does not touch it (CPU 0 has not called gic_init_cpu()
+ * yet at that point — see gic_init_dist()'s own call to gic_retarget_spis()
+ * below for how SPIs are still safely targeted before it does).  Every
+ * increment happens inside gic_init_cpu(), under gic_target_lock, by the
+ * CPU that just proved itself alive.
+ *
+ * gic_target_lock: serialises gic_num_online updates and the subsequent
+ * GICD_ITARGETSR rewrite in gic_retarget_spis() against a hypothetical
+ * concurrent gic_init_cpu() call on another core.  The current bring-up
+ * sequence (smp_bringup_secondary() in kernel/core/smp.c) brings up APs
+ * strictly one at a time with a blocking ack-wait, so no actual concurrency
+ * occurs today — the lock is cheap insurance against that assumption
+ * changing, not a response to an observed race (Power-of-Ten rule 5:
+ * defend the invariant, don't just document it). */
+static uint32_t gic_num_online;
+static DEFINE_SPINLOCK(gic_target_lock);
+
+/*
+ * gic_retarget_spis - rewrite every SPI's GICD_ITARGETSR entry for the
+ * current value of @online_count.
+ *
+ * @online_count: number of CPUs to round-robin SPIs across; the caller
+ *                holds gic_target_lock and has already clamped this to
+ *                [1, GIC_ITARGETSR_MAX_CPUS] (see gic_init_dist() and
+ *                gic_init_cpu()).
+ *
+ * Recomputes the COMPLETE SPI -> CPU-bit assignment from scratch and
+ * overwrites every GICD_ITARGETSR word — never an incremental OR of a new
+ * bit into old words, which could otherwise leave more than one target bit
+ * set per SPI (multiple simultaneous IRQ delivery to more than one CPU
+ * interface is legal per the GICv2 spec but is NOT this driver's design;
+ * every SPI here is meant to have exactly one target).  Called once from
+ * gic_init_dist() (online_count == 1, CPU 0 only — the only CPU that can
+ * possibly be executing this code at that point) and again from every
+ * gic_init_cpu() call after gic_num_online has just been incremented, so
+ * the full SPI set is always re-balanced across the current REAL pool
+ * rather than left partially assigned to a smaller, stale one.
+ *
+ * GICD_ITARGETSR packs FOUR interrupts' 8-bit target fields per 32-bit
+ * register (byte 0 = lowest-numbered SPI in the group); each byte gets
+ * exactly one bit set — (1 << cpu_bit) — following the single-CPU-per-byte
+ * convention this driver has always used (0x01 = "CPU 0 only").
+ *
+ * MMIO registers written: GICD_ITARGETSR[GIC_SPI_START/4 .. gic_num_irqs/4).
+ *
+ * Locking: caller holds gic_target_lock.
+ * IRQ context: NO — called only from gic_init_dist() (boot) and
+ *              gic_init_cpu() (CPU bring-up, before local IRQs are enabled).
+ */
+static void gic_retarget_spis(uint32_t online_count) {
+  uint32_t spi_index = 0; /* 0-based count of SPIs assigned so far */
+  uint32_t i;
+
+  for (i = GIC_SPI_START / 4; i < gic_num_irqs / 4; i++) {
+    uint32_t reg = 0;
+    uint32_t byte;
+
+    for (byte = 0; byte < 4; byte++, spi_index++) {
+      uint32_t cpu = spi_index % online_count;
+      reg |= (1U << cpu) << (byte * 8);
+    }
+
+    GICD_REG(GICD_ITARGETSR(i)) = reg;
+  }
+}
+
 /*
  * gic_init_dist - initialise the GIC distributor (boot CPU only).
  *
@@ -91,8 +213,14 @@ static uint32_t gic_num_irqs;
  *   4. Write 0xFFFFFFFF to every GICD_ICPENDR register to clear pending state.
  *   5. Set priority 0xA0 for all SPIs (IDs >= GIC_SPI_START = 32) via
  *      GICD_IPRIORITYR; 4 priorities per 32-bit register.
- *   6. Target all SPIs to CPU 0 via GICD_ITARGETSR = 0x01010101.
- *      NOTE(DRV-GIC-01): hard-codes all SPIs to CPU 0; no SMP distribution.
+ *   6. Target every SPI to CPU 0 via gic_retarget_spis(1) — CPU 0 is, by
+ *      construction, the only CPU that can be executing this code (called
+ *      once via irq_init() before any secondary CPU is woken — see
+ *      kernel_main() in main.c).  FIX(DRV-GIC-01): this is no longer a
+ *      hand-rolled 0x01010101 write; it is gic_retarget_spis()'s
+ *      online_count==1 case, so the very same recomputation logic runs
+ *      here and every time gic_init_cpu() brings up another real CPU —
+ *      see the file-header note.
  *   7. Configure all SPIs as level-triggered (GICD_ICFGR = 0 for word i>=2).
  *   8. Enable distributor (GICD_CTLR = 1).
  *
@@ -100,7 +228,10 @@ static uint32_t gic_num_irqs;
  *   GICD_IPRIORITYR[], GICD_ITARGETSR[], GICD_ICFGR[].
  * MMIO registers read: GICD_TYPER.
  *
- * Locking: called before SMP; no concurrent access.
+ * Locking: called before SMP; no concurrent access.  Takes gic_target_lock
+ *          around the gic_num_online/gic_retarget_spis() step purely for
+ *          symmetry with gic_init_cpu() — uncontended here, since no other
+ *          CPU is running yet.
  * IRQ context: NO.
  */
 /*
@@ -133,11 +264,19 @@ static void gic_init_dist(void) {
   for (i = GIC_SPI_START / 4; i < gic_num_irqs / 4; i++)
     GICD_REG(GICD_IPRIORITYR(i)) = 0xA0A0A0A0;
 
-  /* Target all SPIs to CPU 0 */
-  /* NOTE(DRV-GIC-01): 0x01010101 packs four CPU-target bytes each = 0x01
-   * (CPU 0 only).  All SPIs arrive exclusively on core 0; no SMP balancing. */
-  for (i = GIC_SPI_START / 4; i < gic_num_irqs / 4; i++)
-    GICD_REG(GICD_ITARGETSR(i)) = 0x01010101;
+  /* FIX(DRV-GIC-01): target every SPI to CPU 0 through the SAME
+   * recomputation path gic_init_cpu() uses for every later CPU, instead of
+   * a one-off hard-coded write.  gic_num_online is 0 here (no CPU, not even
+   * this one, has finished gic_init_cpu() yet — that happens right after
+   * irq_init() returns, via irq_init_percpu() in main.c); passing 1
+   * explicitly is correct because CPU 0 is, by construction, the only CPU
+   * that can be running this function. */
+  {
+    uint64_t flags;
+    spin_lock_irqsave(&gic_target_lock, &flags);
+    gic_retarget_spis(1);
+    spin_unlock_irqrestore(&gic_target_lock, flags);
+  }
 
   /* Configure all SPIs as level-triggered */
   for (i = 2; i < gic_num_irqs / 16; i++)
@@ -162,12 +301,30 @@ static void gic_init_dist(void) {
  *   3. GICC_PMR = 0xFF: priority mask allows all interrupts through.
  *   4. GICC_BPR = 0: no priority grouping / preemption splitting.
  *   5. GICC_CTLR = 1: enable this CPU's interface.
+ *   6. FIX(DRV-GIC-01): register this CPU as SPI-targetable and
+ *      re-balance every SPI across the now-larger, now-REAL online pool —
+ *      see gic_retarget_spis() and the file-header note.  A CPU beyond
+ *      GIC_ITARGETSR_MAX_CPUS (8) — the architectural ceiling of
+ *      GICD_ITARGETSR — still gets its own GICC interface enabled (steps
+ *      1-5) so its SGIs/PPIs work normally, but is logged as excluded from
+ *      SPI targeting rather than silently degrading: this driver never
+ *      claims to route an SPI to a CPU it cannot actually address.
  *
  * MMIO registers written: GICD_ICENABLER(0), GICD_IPRIORITYR(0..7),
- *   GICC_PMR, GICC_BPR, GICC_CTLR.
+ *   GICC_PMR, GICC_BPR, GICC_CTLR, and — for the first
+ *   GIC_ITARGETSR_MAX_CPUS callers — GICD_ITARGETSR[] via
+ *   gic_retarget_spis().
  *
- * Locking: operates on per-CPU (banked) GICC registers; no shared-state lock.
- * IRQ context: NO — called from CPU bring-up code.
+ * Locking: operates on per-CPU (banked) GICC registers; no shared-state
+ *          lock for those.  gic_target_lock (irqsave) guards the
+ *          gic_num_online increment and the subsequent GICD_ITARGETSR
+ *          rewrite — SEE the file-header note on why this is defensive
+ *          rather than a response to an observed race in the current
+ *          strictly-serial bring-up order.
+ * IRQ context: NO — called from CPU bring-up code, before local IRQs are
+ *              enabled on this CPU (see kernel_main()/kernel_secondary_main()
+ *              in main.c: irq_init_percpu() always precedes
+ *              local_irq_enable()).
  */
 /*
  * Initialize GIC CPU interface (called on each CPU)
@@ -190,6 +347,35 @@ static void gic_init_cpu(void) {
 
   /* Enable CPU interface */
   GICC_REG(GICC_CTLR) = 1;
+
+  /* FIX(DRV-GIC-01): this CPU has just proven it is alive and running (it
+   * reached this point via cpu_init() -> arch_cpu_init() setting
+   * cpu_data[id].online = 1, then irq_init_percpu() -> here).  Register it
+   * as a real SPI target and re-balance the whole SPI set across the
+   * updated, real online count — never an estimate. */
+  {
+    uint64_t flags;
+    uint32_t new_count;
+
+    spin_lock_irqsave(&gic_target_lock, &flags);
+    gic_num_online++;
+    new_count = gic_num_online;
+
+    if (new_count <= GIC_ITARGETSR_MAX_CPUS) {
+      gic_retarget_spis(new_count);
+    } else {
+      /* Hardware ceiling reached (see GIC_ITARGETSR_MAX_CPUS): this CPU's
+       * SGI/PPI interface above is still fully enabled, but it is not
+       * added to the SPI round-robin pool — GICD_ITARGETSR physically
+       * cannot address it.  Logged explicitly rather than silently
+       * dropping it from consideration. */
+      pr_warn("GIC: CPU online count %u exceeds GICD_ITARGETSR's "
+              "%u-CPU addressing limit — this CPU will not receive "
+              "distributor-routed SPIs (SGIs/PPIs are unaffected)\n",
+              new_count, GIC_ITARGETSR_MAX_CPUS);
+    }
+    spin_unlock_irqrestore(&gic_target_lock, flags);
+  }
 }
 
 /*
@@ -325,7 +511,9 @@ static void gic_send_ipi(void) {
  * Locking: per-CPU GICC register; no cross-CPU contention.
  * IRQ context: YES — must be called from IRQ handler.
  */
-static uint32_t gic_ack(void) { return GICC_REG(GICC_IAR) & GIC_IAR_VALUE_MASK; }
+static uint32_t gic_ack(void) {
+  return GICC_REG(GICC_IAR) & GIC_IAR_VALUE_MASK;
+}
 
 /*
  * gic_eoi - signal End-Of-Interrupt to the GIC CPU interface.
@@ -370,15 +558,15 @@ static void gic_eoi(uint32_t irq) {
  * in irq.c.  All ops are filled; the chip is fully used on aarch64. */
 /* irq_chip implementation */
 static struct irq_chip gic_chip = {
-  .name = "ARM GICv2",
-  .init = gic_init_dist,
-  .init_percpu = gic_init_cpu,
-  .enable = gic_enable,
-  .disable = gic_disable,
-  .set_priority = gic_set_prio,
-  .send_ipi_all = gic_send_ipi,
-  .acknowledge = gic_ack,
-  .end = gic_eoi,
+    .name = "ARM GICv2",
+    .init = gic_init_dist,
+    .init_percpu = gic_init_cpu,
+    .enable = gic_enable,
+    .disable = gic_disable,
+    .set_priority = gic_set_prio,
+    .send_ipi_all = gic_send_ipi,
+    .acknowledge = gic_ack,
+    .end = gic_eoi,
 };
 
 /*
@@ -390,6 +578,4 @@ static struct irq_chip gic_chip = {
  *
  * Locking: none; called before SMP.
  */
-void gic_register(void) {
-  irq_register_chip(&gic_chip);
-}
+void gic_register(void) { irq_register_chip(&gic_chip); }

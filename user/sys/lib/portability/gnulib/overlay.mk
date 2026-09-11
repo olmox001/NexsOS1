@@ -53,7 +53,6 @@ GNULIB_OVERLAY_SRCS := \
   $(GNULIB_DIR)/lib/gettime.c \
   $(GNULIB_DIR)/lib/posixtm.c \
   $(GNULIB_PORT_DIR)/parse-datetime.c \
-  $(GNULIB_DIR)/lib/utime.c \
   $(GNULIB_DIR)/lib/utimens.c \
   $(GNULIB_DIR)/lib/utimensat.c \
   $(GNULIB_DIR)/lib/futimens.c \

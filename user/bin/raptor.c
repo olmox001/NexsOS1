@@ -1278,9 +1278,8 @@ static void render_hud(SDL_Surface *surf) {
   draw_number(surf, fps_value, WIN_W - 30, WIN_H - 14, 1, 140, 255, 140);
 
   if (p_bomb_flash > 0) {
-    Uint8 a = (Uint8)(p_bomb_flash * 8);
-    if (a > 255)
-      a = 255;
+    int val = p_bomb_flash * 8;
+    Uint8 a = (Uint8)(val > 255 ? 255 : val);
     fillblock(surf, 0, 0, WIN_W, WIN_H, a, a, a);
   }
 }

@@ -55,6 +55,7 @@ int c32width(char32_t wc);
 wint_t c32tolower(wint_t wc);
 wint_t c32toupper(wint_t wc);
 size_t c32rtomb(char *s, char32_t wc, mbstate_t *ps);
+size_t mbrtoc32(char32_t *pwc, const char *s, size_t n, mbstate_t *ps);
 c32_type_test_t c32_get_type_test(const char *name);
 int c32_apply_type_test(wint_t wc, c32_type_test_t property);
 c32_mapping_t c32_get_mapping(const char *name);

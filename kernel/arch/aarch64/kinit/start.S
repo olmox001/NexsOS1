@@ -250,6 +250,24 @@ halt:
 /*
  * Secondary CPU startup (PSCI Entry Point) — entered at PA, MMU off.
  * x0 = context_id = kernel stack top (VIRTUAL, used only after MMU on)
+ *
+ * Re-entrancy note (companion to the amd64 trampoline hardening in
+ * trampoline.S/platform.c): amd64's AP bring-up needed an explicit
+ * software re-entrancy guard because a second STARTUP IPI can physically
+ * re-enter a SHARED, statically-addressed scratch page while an earlier
+ * pass is still mid-flight through its 16->32->64-bit transition — the
+ * kernel itself owns and re-triggers that delivery mechanism.  PSCI
+ * CPU_ON, used here, has no equivalent risk: it is a single firmware call
+ * per CPU (see arch_cpu_wake_secondary() below — called exactly once per
+ * CPU by smp_bringup_secondary(), kernel/core/smp.c, with no retry), and
+ * the PSCI specification defines CPU_ON as idempotent at the FIRMWARE
+ * level — calling it again on a core that is already ON (or coming ON)
+ * returns ALREADY_ON/ON_PENDING and does not re-invoke this entry point.
+ * There is also no shared scratch page here to race over: each CPU's
+ * context_id (x0, its own stack pointer) arrives as a PSCI call argument,
+ * not as a value patched into common memory ahead of time.  A software
+ * busy-flag guard would therefore be protecting against a class of
+ * re-entry this path cannot experience, not genuine defense-in-depth.
  */
 secondary_startup:
     mov sp, x0              /* high VA; untouched until the MMU is on */

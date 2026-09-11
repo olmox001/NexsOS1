@@ -51,9 +51,14 @@
 #ifndef c32isspace
 #define c32isspace(c) isspace((int)(c))
 #endif
-#ifndef mbszero
 
+#ifndef lint
+#define lint 1
+#endif
+
+#ifndef mbszero
 #define mbszero(ps) memset(ps, 0, sizeof(*(ps)))
+#define GNULIB_defined_mbszero 1
 #endif
 #ifndef streq
 #define streq(a, b) (strcmp(a, b) == 0)

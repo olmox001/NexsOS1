@@ -52,10 +52,11 @@ static inline void arch_impl_yield(void) { __asm__ __volatile__("yield"); }
 static inline void arch_impl_cpu_notify(void) { __asm__ __volatile__("sev"); }
 
 /* arch_impl_reboot - PSCI SYSTEM_RESET (function 0x84000009) over the HVC
- * conduit (the same conduit the SMP bring-up uses for PSCI CPU_ON) — DIR-05 #139
- * watchdog.  Used by the HAL arch_reboot() wrapper. */
+ * conduit (the same conduit the SMP bring-up uses for PSCI CPU_ON) — DIR-05
+ * #139 watchdog.  Used by the HAL arch_reboot() wrapper. */
 static inline void arch_impl_reboot(void) {
-  register unsigned long x0 __asm__("x0") = 0x84000009UL; /* PSCI SYSTEM_RESET */
+  register unsigned long x0 __asm__("x0") =
+      0x84000009UL; /* PSCI SYSTEM_RESET */
   __asm__ __volatile__("hvc #0" : "+r"(x0) : : "memory", "x1", "x2", "x3");
 }
 
@@ -137,6 +138,33 @@ static inline void arch_impl_cache_clean_range(void *start, size_t size) {
   for (; s < e; s += 64) {
     __asm__ __volatile__("dc cvac, %0" ::"r"(s) : "memory");
   }
+  __asm__ __volatile__("dsb sy" ::: "memory");
+}
+
+/* arch_impl_cache_invalidate_range - discard any CPU-cached copy of
+ * [start, start+size) so the next load re-fetches from physical RAM.
+ *
+ * FIX(VGPU-DMA-01): required before the CPU reads a buffer a device wrote
+ * via DMA (e.g. the virtio used-ring index, or a command response buffer).
+ * "dc cvac" (clean) alone is NOT enough for that direction: it only
+ * pushes CPU writes out to RAM, it does not discard a stale line the CPU
+ * already holds, so a subsequent load can still be satisfied from cache
+ * and return data the device never wrote. This uses "dc civac"
+ * (clean+invalidate) rather than a bare invalidate: on a line the CPU
+ * still holds dirty (e.g. this same buffer written earlier in a poll
+ * loop) a bare "dc ivac" would silently drop that write instead of
+ * committing it first — clean+invalidate is safe in both directions and
+ * is what every other cache-vs-DMA driver in this tree should use for the
+ * "make sure I see what the device wrote" side of the handshake. */
+static inline void arch_impl_cache_invalidate_range(void *start, size_t size) {
+  uint64_t s = (uint64_t)start;
+  uint64_t e = s + size;
+  s &= ~63UL;
+  __asm__ __volatile__("dsb sy" ::: "memory");
+  for (; s < e; s += 64) {
+    __asm__ __volatile__("dc civac, %0" ::"r"(s) : "memory");
+  }
+  __asm__ __volatile__("dsb sy" ::: "memory");
 }
 
 static inline void arch_impl_cache_sync_icache(void *start, size_t size) {
