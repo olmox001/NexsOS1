@@ -19,6 +19,14 @@
  *             fmin, fmax, round, trunc
  *   - int:    abs, labs
  *   - fixed:  sin_fp, cos_fp, fixmul (legacy 16.16, kept for compat)
+ *
+ * long double: strtold() is provided for both targets (narrows through
+ * strtod()).  The libgcc ABI helpers for binary128 arithmetic
+ * (__addtf3, __trunctfdf2, ...) live in math.c and are compiled only on
+ * aarch64 — GCC never references them on amd64, where long double is the
+ * x87 80-bit format and every operation is an inline x87 instruction.
+ * They are deliberately NOT declared in this public header: they are
+ * compiler-ABI symbols, not user API.
  * ============================================================================
  */
 
@@ -60,7 +68,6 @@ int32_t fixmul(int32_t a, int32_t b);
 #define HUGE_VALF INFINITY
 #define HUGE_VAL ((double)INFINITY)
 #define signbit(x) __builtin_signbit(x)
-
 
 int __float32_isnan(float x);
 int __float32_isinf(float x);
@@ -144,7 +151,7 @@ double frexp(double x, int *exp);
 double ldexp(double x, int exp);
 
 /* -------------------------------------------------------------------------- */
-/* Float/Double conversion                                                    */
+/* Float/Double/Long-Double conversion                                        */
 /* -------------------------------------------------------------------------- */
 float strtof(const char *nptr, char **endptr);
 double strtod(const char *nptr, char **endptr);

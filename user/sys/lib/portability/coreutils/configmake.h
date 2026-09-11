@@ -1,6 +1,14 @@
 /*
  * user/sys/lib/portability/coreutils/configmake.h
  * Directory and path constants for GNU Coreutils on NexsOS1.
+ *
+ * These MUST match include/api/utmp.h's _PATH_UTMP / _PATH_WTMP.
+ * The rootfs only pre-creates /home writable (vfs_write_allowed's tree
+ * ACL), so /var is not writable by ordinary callers on this tree —
+ * nxenvinit.c materialises /home/var/run/utmp and /home/var/log/wtmp and
+ * the constants below follow that location.  Without the match a
+ * coreutils file that composes "RUNSTATEDIR/utmp" resolves to a path the
+ * writer never populated.
  */
 
 #ifndef _CONFIGMAKE_H
@@ -14,9 +22,9 @@
 #define DATAROOTDIR "/share"
 #define DATADIR "/share"
 #define SYSCONFDIR "/etc"
-#define SHAREDSTATEDIR "/com"
-#define LOCALSTATEDIR "/var"
-#define RUNSTATEDIR "/var/run"
+#define SHAREDSTATEDIR "/home/com"
+#define LOCALSTATEDIR "/home/var"
+#define RUNSTATEDIR "/home/var/run"
 #define INCLUDEDIR "/sys/lib/include"
 #define OLDINCLUDEDIR "/sys/lib/include"
 #define DOCDIR "/share/doc/coreutils"

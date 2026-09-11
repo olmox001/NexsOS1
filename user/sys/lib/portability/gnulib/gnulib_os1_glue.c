@@ -1,18 +1,33 @@
 /*
  * user/sys/lib/portability/gnulib/gnulib_os1_glue.c
- * Real implementation connecting Gnulib abstractions to NexsOS1 syscalls and VFS.
+ * Real implementation connecting Gnulib abstractions to NexsOS1 syscalls and
+ * VFS.
+ *
+ * FIX(USR-FTS-01): fts_open()/fts_read()/fts_children()/fts_set()/
+ * fts_close() used to be unconditional ENOSYS stubs.  GNU Coreutils'
+ * chmod/chown/chgrp call fts_open() through gnulib's xfts_open() for
+ * EVERY invocation (not just -R), and xfts_open() reports ANY fts_open()
+ * failure as "memory exhausted" regardless of the real errno — so the
+ * stub made all three commands fail with that misleading message even
+ * on a single, non-recursive file argument.  fts_.h is now backed by a
+ * real (if intentionally scoped-down) directory-tree walker built on
+ * top of opendir()/readdir()/lstat(), which is everything already
+ * available in this libc.  See the FTS section below for what is and
+ * isn't implemented.
  */
 
 #ifndef _GNULIB_OS1_GLUE_IMPL
 #define _GNULIB_OS1_GLUE_IMPL
 #endif
 #include "gnulib_os1_glue.h"
+#include "fts_.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /* La variabile program_name viene impostata da gnulib (progname.c)
    tramite set_program_name() all'avvio di ogni programma GNU. */
@@ -20,65 +35,58 @@ extern char *program_name;
 
 static char g_progname_buf[64] = "nexsos_app";
 
-int gnulib_os1_getpagesize(void) {
-    return NEXSOS_PAGE_SIZE;
-}
+int gnulib_os1_getpagesize(void) { return NEXSOS_PAGE_SIZE; }
 
-int gnulib_os1_getdtablesize(void) {
-    return NEXSOS_MAX_FD;
-}
+int gnulib_os1_getdtablesize(void) { return NEXSOS_MAX_FD; }
 
 const char *getprogname(void) {
-    if (program_name && *program_name) {
-        return program_name;
-    }
-    return g_progname_buf;
+  if (program_name && *program_name) {
+    return program_name;
+  }
+  return g_progname_buf;
 }
 
 void setprogname(const char *name) {
-    if (name && *name) {
-        strncpy(g_progname_buf, name, sizeof(g_progname_buf) - 1);
-        g_progname_buf[sizeof(g_progname_buf) - 1] = '\0';
-    }
+  if (name && *name) {
+    strncpy(g_progname_buf, name, sizeof(g_progname_buf) - 1);
+    g_progname_buf[sizeof(g_progname_buf) - 1] = '\0';
+  }
 }
 
-const char *gnulib_os1_getprogname(void) {
-    return getprogname();
-}
+const char *gnulib_os1_getprogname(void) { return getprogname(); }
 
-void gnulib_os1_setprogname(const char *name) {
-    setprogname(name);
-}
+void gnulib_os1_setprogname(const char *name) { setprogname(name); }
 
 ssize_t gnulib_os1_safe_read(int fd, void *buf, size_t count) {
-    return read(fd, (char *)buf, count);
+  return read(fd, (char *)buf, count);
 }
 
 ssize_t gnulib_os1_safe_write(int fd, const void *buf, size_t count) {
-    return write(fd, (const char *)buf, count);
+  return write(fd, (const char *)buf, count);
 }
 
 void *gnulib_os1_rawmemchr(const void *s, int c) {
-    const unsigned char *p = (const unsigned char *)s;
-    unsigned char uc = (unsigned char)c;
-    while (*p != uc) {
-        p++;
-    }
-    return (void *)p;
+  const unsigned char *p = (const unsigned char *)s;
+  unsigned char uc = (unsigned char)c;
+  while (*p != uc) {
+    p++;
+  }
+  return (void *)p;
 }
 
 void *gnulib_os1_memrchr(const void *s, int c, size_t n) {
-    if (n == 0) return NULL;
-    const unsigned char *p = (const unsigned char *)s + n - 1;
-    unsigned char uc = (unsigned char)c;
-    while (n > 0) {
-        if (*p == uc) {
-            return (void *)p;
-        }
-        p--;
-        n--;
-    }
+  if (n == 0)
     return NULL;
+  const unsigned char *p = (const unsigned char *)s + n - 1;
+  unsigned char uc = (unsigned char)c;
+  while (n > 0) {
+    if (*p == uc) {
+      return (void *)p;
+    }
+    p--;
+    n--;
+  }
+  return NULL;
 }
 
 #include <error.h>
@@ -89,129 +97,388 @@ int error_one_per_line = 0;
 void (*error_print_progname)(void) = NULL;
 
 void verror(int status, int errnum, const char *format, va_list args) {
-    fflush(stdout);
-    const char *pname = getprogname();
-    if (error_print_progname) {
-        error_print_progname();
-    } else {
-        if (pname && *pname) {
-            fprintf(stderr, "%s: ", pname);
-        }
+  fflush(stdout);
+  const char *pname = getprogname();
+  if (error_print_progname) {
+    error_print_progname();
+  } else {
+    if (pname && *pname) {
+      fprintf(stderr, "%s: ", pname);
     }
-    vfprintf(stderr, format, args);
-    if (errnum) {
-        fprintf(stderr, ": %s", strerror(errnum));
-    }
-    fprintf(stderr, "\n");
-    fflush(stderr);
-    error_message_count++;
+  }
+  vfprintf(stderr, format, args);
+  if (errnum) {
+    fprintf(stderr, ": %s", strerror(errnum));
+  }
+  fprintf(stderr, "\n");
+  fflush(stderr);
+  error_message_count++;
 
-    if (errnum) {
-        OS1_report_error(pname ? pname : "gnulib", errnum);
-    } else if (status) {
-        OS1_report_error(pname ? pname : "gnulib", EFAULT);
-    }
+  if (errnum) {
+    OS1_report_error(pname ? pname : "gnulib", errnum);
+  } else if (status) {
+    OS1_report_error(pname ? pname : "gnulib", EFAULT);
+  }
 
-    if (status) {
-        exit(status);
-    }
+  if (status) {
+    exit(status);
+  }
 }
 
 void error(int status, int errnum, const char *format, ...) {
-    va_list args;
-    va_start(args, format);
-    verror(status, errnum, format, args);
-    va_end(args);
+  va_list args;
+  va_start(args, format);
+  verror(status, errnum, format, args);
+  va_end(args);
 }
 
 void verror_at_line(int status, int errnum, const char *filename,
                     unsigned int linenumber, const char *format, va_list args) {
-    fflush(stdout);
-    const char *pname = getprogname();
-    if (error_print_progname) {
-        error_print_progname();
+  fflush(stdout);
+  const char *pname = getprogname();
+  if (error_print_progname) {
+    error_print_progname();
+  } else {
+    if (pname && *pname) {
+      fprintf(stderr, "%s:%s:%u: ", pname, filename ? filename : "",
+              linenumber);
     } else {
-        if (pname && *pname) {
-            fprintf(stderr, "%s:%s:%u: ", pname, filename ? filename : "", linenumber);
-        } else {
-            fprintf(stderr, "%s:%u: ", filename ? filename : "", linenumber);
-        }
+      fprintf(stderr, "%s:%u: ", filename ? filename : "", linenumber);
     }
-    vfprintf(stderr, format, args);
-    if (errnum) {
-        fprintf(stderr, ": %s", strerror(errnum));
-    }
-    fprintf(stderr, "\n");
-    fflush(stderr);
-    error_message_count++;
+  }
+  vfprintf(stderr, format, args);
+  if (errnum) {
+    fprintf(stderr, ": %s", strerror(errnum));
+  }
+  fprintf(stderr, "\n");
+  fflush(stderr);
+  error_message_count++;
 
-    if (errnum) {
-        OS1_report_error(pname ? pname : "gnulib", errnum);
-    } else if (status) {
-        OS1_report_error(pname ? pname : "gnulib", EFAULT);
-    }
+  if (errnum) {
+    OS1_report_error(pname ? pname : "gnulib", errnum);
+  } else if (status) {
+    OS1_report_error(pname ? pname : "gnulib", EFAULT);
+  }
 
-    if (status) {
-        exit(status);
-    }
+  if (status) {
+    exit(status);
+  }
 }
 
 void error_at_line(int status, int errnum, const char *filename,
                    unsigned int linenumber, const char *format, ...) {
-    va_list args;
-    va_start(args, format);
-    verror_at_line(status, errnum, filename, linenumber, format, args);
-    va_end(args);
+  va_list args;
+  va_start(args, format);
+  verror_at_line(status, errnum, filename, linenumber, format, args);
+  va_end(args);
 }
 
-size_t __fpending(FILE *fp) {
-    return fp ? (size_t)fp->wcount : 0;
-}
+size_t __fpending(FILE *fp) { return fp ? (size_t)fp->wcount : 0; }
 
 /* memeq — external linkable version for when the static inline can't be used.
-   This is needed especially on aarch64 where the compiler doesn't always inline it.
-   The static inline version in gnulib_config_nexsos.h will be used when possible,
-   and this external version is used as a fallback. */
+   This is needed especially on aarch64 where the compiler doesn't always inline
+   it. The static inline version in gnulib_config_nexsos.h will be used when
+   possible, and this external version is used as a fallback. */
 int memeq(const void *a, const void *b, size_t n) {
-    return memcmp(a, b, n) == 0;
+  return memcmp(a, b, n) == 0;
 }
 
-/* fts stubs for chmod and other utilities that traverse directory trees */
-#include "fts_.h"
-#include <errno.h>
+/* ==========================================================================
+ * FTS — minimal but real file-hierarchy walker (USR-FTS-01)
+ *
+ * Scope: enough to make GNU Coreutils' chmod/chown/chgrp work correctly,
+ * both flat ("chmod 644 file") and recursive ("chmod -R 644 dir"), on a
+ * filesystem that (today) has no symlinks and no per-file permission
+ * bits of its own.  NOT implemented: fts_children() (used by tools like
+ * `du`/`ls -R`, none of which ship in this tree yet — it keeps returning
+ * ENOSYS, unchanged from before), sorting via fts_compar, and real
+ * cycle detection (harmless here: no symlinks means no symlink cycles,
+ * and the walker never revisits a directory it is still inside).
+ *
+ * Design: FTS (fts_.h) is a public struct that callers only ever hold a
+ * pointer to — nothing in this tree pokes its fields directly except
+ * fts_open()/fts_close() themselves — so `struct fts_impl` below embeds
+ * the public `FTS` as its first member and carries our private state
+ * after it.  A `struct fts_impl *` and a `FTS *` are therefore the same
+ * address; callers only ever see the latter.
+ *
+ * Traversal model: a stack of open directories (`fts_dirstack`).  Each
+ * fts_read() call either (a) hands back the next directory entry from
+ * the top-of-stack DIR*, descending into it first if the entry just
+ * returned was a directory the caller didn't fts_set(..., FTS_SKIP),
+ * or (b) when a directory is exhausted, pops it and re-yields its own
+ * FTSENT with fts_info flipped to FTS_DP (postorder) — chmod/chown/chgrp
+ * treat FTS_DP as a no-op (they already acted on FTS_D), so getting a
+ * "best-effort" postorder visit (skipped for directories fts couldn't
+ * open) costs nothing and matches real fts closely enough.
+ * ========================================================================== */
 
-FTS *fts_open(char * const *argv, int options, 
-              int (*compar)(const FTSENT **, const FTSENT **)) {
-    (void)argv;
-    (void)options;
-    (void)compar;
-    errno = ENOSYS;
+#define FTS_INTERNAL_PATH_MAX 1024
+
+struct fts_dirstack {
+  struct fts_dirstack *next;
+  DIR *dirp;
+  FTSENT *dir_ent; /* re-yielded (as FTS_DP) once this dir is exhausted */
+};
+
+struct fts_impl {
+  FTS pub; /* MUST be first: FTS* <-> fts_impl* */
+  char *const *argv;
+  int argv_pos;
+  struct fts_dirstack *stack; /* top of the open-directory stack   */
+  FTSENT *pending_descend;    /* FTS_D just returned, not yet acted on */
+  FTSENT *to_free_next_call;  /* entry from the PREVIOUS fts_read() call
+                               * that is safe to free now (mutually
+                               * exclusive with pending_descend: an
+                               * entry is in at most one of the two) */
+};
+
+static FTSENT *fts_alloc_ent(const char *name, const char *fullpath,
+                             FTSENT *parent, unsigned short level) {
+  size_t namelen = strlen(name);
+  /* fts_.h declares fts_name as char[1]; this allocates the extra
+   * bytes for the rest of the name right after the struct. */
+  FTSENT *e = malloc(sizeof(FTSENT) + namelen);
+  if (!e)
     return NULL;
+  memset(e, 0, sizeof(*e));
+  memcpy(e->fts_name, name, namelen + 1);
+  e->fts_namelen = (unsigned short)namelen;
+
+  size_t pathlen = strlen(fullpath);
+  char *path_copy = malloc(pathlen + 1);
+  if (!path_copy) {
+    free(e);
+    return NULL;
+  }
+  memcpy(path_copy, fullpath, pathlen + 1);
+  /* NOCHDIR-style traversal: we never chdir(), so accpath (the path to
+   * actually open()/stat()) and path (the path to report) are always
+   * identical, both the full path from the root argv entry down. */
+  e->fts_path = path_copy;
+  e->fts_accpath = path_copy;
+  e->fts_pathlen = (unsigned short)pathlen;
+
+  e->fts_parent = parent;
+  e->fts_level = level;
+  e->fts_instr = FTS_NOINSTR;
+
+  struct stat *st = malloc(sizeof(struct stat));
+  if (!st) {
+    free(path_copy);
+    free(e);
+    return NULL;
+  }
+  /* No symlinks exist on this filesystem yet, so lstat()/stat() never
+   * actually differ in practice; lstat() is the safe default for
+   * FTS_PHYSICAL (what chmod/chown/chgrp request) either way. */
+  if (lstat(fullpath, st) != 0) {
+    e->fts_errno = errno;
+    e->fts_info = FTS_NS; /* stat(2) failed */
+    free(st);
+    e->fts_statp = NULL;
+  } else {
+    e->fts_statp = st;
+    e->fts_info = S_ISDIR(st->st_mode) ? FTS_D : FTS_F;
+  }
+  return e;
+}
+
+static void fts_free_ent(FTSENT *e) {
+  if (!e)
+    return;
+  free(e->fts_statp);
+  free(e->fts_path); /* fts_accpath aliases fts_path: free once */
+  free(e);
+}
+
+/* Opens `dir_ent`'s directory and pushes a new stack frame for it.
+ * Returns 0 on success, -1 (errno set by opendir()) on failure — the
+ * caller treats failure as "don't descend", not a fatal fts error. */
+static int fts_push_dir(struct fts_impl *impl, FTSENT *dir_ent) {
+  DIR *d = opendir(dir_ent->fts_accpath);
+  if (!d)
+    return -1;
+  struct fts_dirstack *fr = malloc(sizeof(*fr));
+  if (!fr) {
+    closedir(d);
+    errno = ENOMEM;
+    return -1;
+  }
+  fr->dirp = d;
+  fr->dir_ent = dir_ent;
+  fr->next = impl->stack;
+  impl->stack = fr;
+  return 0;
+}
+
+FTS *fts_open(char *const *argv, int options,
+              int (*compar)(const FTSENT **, const FTSENT **)) {
+  (void)compar; /* sorting not implemented (see file-header note) */
+  if (!argv) {
+    errno = EINVAL;
+    return NULL;
+  }
+  struct fts_impl *impl = malloc(sizeof(*impl));
+  if (!impl) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  memset(impl, 0, sizeof(*impl));
+  impl->argv = argv;
+  impl->argv_pos = 0;
+  impl->pub.fts_options = options;
+  return &impl->pub;
 }
 
 FTSENT *fts_read(FTS *sp) {
-    (void)sp;
-    errno = ENOSYS;
+  struct fts_impl *impl = (struct fts_impl *)sp;
+  if (!impl) {
+    errno = EINVAL;
     return NULL;
+  }
+
+  /* Free whatever the PREVIOUS call returned, now that the caller has
+   * had this call's worth of time to look at it (matches the real fts
+   * contract: an FTSENT is valid only until the next fts_read()). */
+  if (impl->to_free_next_call) {
+    fts_free_ent(impl->to_free_next_call);
+    impl->to_free_next_call = NULL;
+  }
+
+  /* If the last entry handed out was a directory (preorder) and the
+   * caller didn't fts_set(sp, ent, FTS_SKIP) on it, descend now. */
+  if (impl->pending_descend) {
+    FTSENT *d = impl->pending_descend;
+    impl->pending_descend = NULL;
+    int descended = 0;
+    if (d->fts_instr != FTS_SKIP)
+      descended = (fts_push_dir(impl, d) == 0);
+    if (!descended) {
+      /* Either explicitly skipped, or opendir() failed (permission,
+       * race, ...). Either way there is nothing to iterate into;
+       * `d` is done and gets freed at the top of the NEXT call. */
+      impl->to_free_next_call = d;
+    }
+    /* else: `d` is now owned by the stack frame (fr->dir_ent == d);
+     * it gets reused for its FTS_DP postorder visit once the
+     * directory is exhausted, below. */
+  }
+
+  for (;;) {
+    if (impl->stack) {
+      struct fts_dirstack *top = impl->stack;
+      struct dirent *de = readdir(top->dirp);
+      if (de) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+          continue;
+
+        char childpath[FTS_INTERNAL_PATH_MAX];
+        const char *parent_path = top->dir_ent->fts_accpath;
+        size_t plen = strlen(parent_path);
+        if (plen > 0 && parent_path[plen - 1] == '/')
+          snprintf(childpath, sizeof(childpath), "%s%s", parent_path,
+                   de->d_name);
+        else
+          snprintf(childpath, sizeof(childpath), "%s/%s", parent_path,
+                   de->d_name);
+
+        FTSENT *ent =
+            fts_alloc_ent(de->d_name, childpath, top->dir_ent,
+                          (unsigned short)(top->dir_ent->fts_level + 1));
+        if (!ent) {
+          errno = ENOMEM;
+          return NULL;
+        }
+        if (ent->fts_info == FTS_D)
+          impl->pending_descend = ent;
+        else
+          impl->to_free_next_call = ent;
+        impl->pub.fts_cur = ent;
+        return ent;
+      }
+      /* Directory exhausted: pop the frame, re-yield its own entry
+       * in postorder (FTS_DP). */
+      closedir(top->dirp);
+      impl->stack = top->next;
+      FTSENT *dp = top->dir_ent;
+      free(top);
+      dp->fts_info = FTS_DP;
+      impl->to_free_next_call = dp;
+      impl->pub.fts_cur = dp;
+      return dp;
+    }
+    /* No directory currently open: pull the next root argument. */
+    const char *root = impl->argv[impl->argv_pos];
+    if (!root) {
+      impl->pub.fts_cur = NULL;
+      /* FIX(USR-FTS-02): glibc's fts_read() clears errno on the
+       * traversal-complete return; without this, a stale errno from
+       * the last opendir()/lstat() inside fts_alloc_ent() (typically
+       * ENOTSUP from a filesystem that doesn't support the operation)
+       * propagates out and coreutils' chmod/chown/chgrp print the
+       * misleading "fts_read failed: Operation not supported" after a
+       * SUCCESSFUL walk. coreutils checks `errno != 0` here, so the
+       * contract is real, not stylistic. */
+      errno = 0;
+      return NULL; /* traversal complete */
+    }
+    impl->argv_pos++;
+    FTSENT *ent = fts_alloc_ent(root, root, NULL, FTS_ROOTLEVEL);
+    if (!ent) {
+      errno = ENOMEM;
+      return NULL;
+    }
+    if (ent->fts_info == FTS_D)
+      impl->pending_descend = ent;
+    else
+      impl->to_free_next_call = ent;
+    impl->pub.fts_cur = ent;
+    return ent;
+  }
 }
 
+/* fts_children() (used by tools such as `du`/`ls -R` to look ahead at a
+ * directory's contents without descending) is intentionally NOT
+ * implemented: nothing in this tree calls it today (chmod/chown/chgrp
+ * only use fts_open/fts_read/fts_set/fts_close). Kept as an explicit
+ * ENOSYS rather than silently misbehaving if something starts calling
+ * it later. */
 FTSENT *fts_children(FTS *sp, int instr) {
-    (void)sp;
-    (void)instr;
-    errno = ENOSYS;
-    return NULL;
+  (void)sp;
+  (void)instr;
+  errno = ENOSYS;
+  return NULL;
 }
 
 int fts_set(FTS *sp, FTSENT *p, int instr) {
-    (void)sp;
-    (void)p;
-    (void)instr;
-    errno = ENOSYS;
+  struct fts_impl *impl = (struct fts_impl *)sp;
+  if (!impl) {
+    errno = EINVAL;
     return -1;
+  }
+  if (p)
+    p->fts_instr = instr;
+  return 0;
 }
 
 int fts_close(FTS *sp) {
-    (void)sp;
-    errno = ENOSYS;
+  struct fts_impl *impl = (struct fts_impl *)sp;
+  if (!impl) {
+    errno = EINVAL;
     return -1;
+  }
+  if (impl->to_free_next_call)
+    fts_free_ent(impl->to_free_next_call);
+  if (impl->pending_descend)
+    fts_free_ent(impl->pending_descend);
+  while (impl->stack) {
+    struct fts_dirstack *top = impl->stack;
+    impl->stack = top->next;
+    closedir(top->dirp);
+    fts_free_ent(top->dir_ent);
+    free(top);
+  }
+  free(impl);
+  return 0;
 }

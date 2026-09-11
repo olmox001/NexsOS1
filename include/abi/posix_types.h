@@ -203,6 +203,28 @@ static inline const char *os1_strerror(int err) {
     return "Function not implemented";
   case ENOTEMPTY:
     return "Directory not empty";
+  /* FIX(USR-STRERROR-01): these errnos are all #define'd above
+   * (ELOOP, ENAMETOOLONG, EILSEQ, ESTALE, ENOTSUP/EOPNOTSUPP, EOVERFLOW,
+   * ENODATA, ENOBUFS) but had no case here, so any caller that hit one
+   * fell through to "Unknown error" — e.g. execvp() stubs to
+   * errno = ENOTSUP, so `nice echo` printed "nice: 'echo': Unknown
+   * error" instead of a message that actually says what happened. */
+  case ELOOP:
+    return "Too many levels of symbolic links";
+  case ENAMETOOLONG:
+    return "File name too long";
+  case EILSEQ:
+    return "Invalid or incomplete multibyte or wide character";
+  case ESTALE:
+    return "Stale file handle";
+  case ENOTSUP: /* == EOPNOTSUPP on this platform (see #define above) */
+    return "Operation not supported";
+  case EOVERFLOW:
+    return "Value too large for defined data type";
+  case ENODATA:
+    return "No data available";
+  case ENOBUFS:
+    return "No buffer space available";
   default:
     return "Unknown error";
   }

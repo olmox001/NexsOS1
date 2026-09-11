@@ -45,6 +45,10 @@
       "selected": true
     },
     {
+      "path": "diff.txt",
+      "selected": true
+    },
+    {
       "path": "docs/ASTRA.md",
       "selected": true
     },
@@ -370,283 +374,287 @@
     },
     {
       "path": "include/abi/caps.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/font.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/nx_abi.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/object.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/posix_types.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/style_names.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/syscall_nums.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/abi/sysstats.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/alloca.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/assert.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/byteswap.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/ctype.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/dirent.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/elf.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/errno.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/error.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/execsvc.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/fcntl.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/float.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/fnmatch.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/font_lib.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/getopt.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/glob.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/graphics.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/grp.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/image.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/input.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/inttypes.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/langinfo.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/lib.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/locale.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/math.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/os1.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/os1vid.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/pl_mpeg.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/poll.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/pwd.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/selinux/context.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/selinux/label.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/selinux/selinux.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/setjmp.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/signal.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stb_easy_font.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stb_image.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdbit.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdbool.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdckdint.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdcountof.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdio.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/stdlib.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/string.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/strings.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/ioctl.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/mman.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/random.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/resource.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/stat.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/statfs.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/statvfs.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/time.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/types.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/uio.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/utsname.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/sys/wait.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/termios.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/time.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/uchar.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/unistd.h",
-      "selected": false
+      "selected": true
+    },
+    {
+      "path": "include/api/utmp.h",
+      "selected": true
     },
     {
       "path": "include/api/wchar.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "include/api/wctype.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "kernel/arch/aarch64/boot/header.S",
@@ -1371,10 +1379,6 @@
     {
       "path": "kernel/sched/process.c",
       "selected": true
-    },
-    {
-      "path": "modifiche_da_6b018113.txt",
-      "selected": false
     },
     {
       "path": "scripts/check-layering.sh",
@@ -170494,6 +170498,10 @@
     },
     {
       "path": "user/sys/lib/portability/d3d9/os1_d3d9_present.h",
+      "selected": true
+    },
+    {
+      "path": "user/sys/lib/portability/devnull.c",
       "selected": true
     },
     {

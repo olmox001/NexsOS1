@@ -7,20 +7,22 @@
 #define _COREUTILS_OS1_GLUE_H
 
 #include <os1.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <wchar.h> /* mbstate_t, usato da mbrlen() sotto */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct os1_utsname {
-    char sysname[32];
-    char nodename[32];
-    char release[32];
-    char version[32];
-    char machine[32];
+  char sysname[32];
+  char nodename[32];
+  char release[32];
+  char version[32];
+  char machine[32];
 };
 
 int coreutils_os1_uname(struct os1_utsname *buf);

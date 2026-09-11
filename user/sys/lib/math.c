@@ -70,7 +70,19 @@ static inline uint64_t __f64_abs_bits(double x) {
 /* libgcc ABI helpers emitted by GCC for the AArch64 long-double conversion and
  * comparison paths used by strtold(), seq(), and other GNU programs.  These
  * are the minimal helpers needed for a freestanding -nostdlib userland without
- * libgcc. */
+ * libgcc.
+ *
+ * NOTE(USR-MATH-01): these prototypes are unconditional, but the DEFINITIONS
+ * below are guarded by architecture.  On amd64, `long double` is the x87
+ * 80-bit format and GCC emits INLINE x87 instructions (fldt/faddp/fmulp/…)
+ * for every long-double operation — it never references a libgcc helper, so
+ * none is defined there.  On aarch64, `long double` is binary128 with no
+ * hardware support, so the compiler lowers every operation to one of these
+ * calls; the file must provide them.
+ *
+ * The __netf2 prototype is deliberately `int __netf2(long double, long
+ * double)` (the aarch64 ABI's "not equal" helper), NOT the single-argument
+ * unary-negate form some earlier revisions of this file carried. */
 long double __extenddftf2(double x);
 long double __extendsftf2(float x);
 double __trunctfdf2(long double x);
@@ -80,12 +92,13 @@ long double __addtf3(long double a, long double b);
 long double __subtf3(long double a, long double b);
 long double __multf3(long double a, long double b);
 long double __divtf3(long double a, long double b);
-long double __netf2(long double a);
+long double __negtf2(long double a);
 int __gttf2(long double a, long double b);
 int __lttf2(long double a, long double b);
 int __getf2(long double a, long double b);
 int __letf2(long double a, long double b);
 int __eqtf2(long double a, long double b);
+int __netf2(long double a, long double b);
 unsigned long long __fixunstfdi(long double a);
 unsigned int __fixunstfsi(long double a);
 long double __floatsitf(int a);
@@ -1165,32 +1178,291 @@ float strtof(const char *nptr, char **endptr) {
   return (float)strtod(nptr, endptr);
 }
 
-/* AArch64 long-double ABI helpers: the bare-metal userland links with
- * -nostdlib and no libgcc, but GCC emits helper calls for the long-double
- * comparison/conversion arithmetic that GNU code triggers.  Providing the
- * minimal libgcc ABI here keeps the compatibility layer self-contained without
- * pulling in a full runtime library. */
-long double __extenddftf2(double x) { return (long double)x; }
-long double __extendsftf2(float x) { return (long double)x; }
-double __trunctfdf2(long double x) { return (double)x; }
-float __trunctfsf2(long double x) { return (float)x; }
-float __trunctftf2(long double x) { return (float)x; }
-long double __addtf3(long double a, long double b) { return a + b; }
-long double __subtf3(long double a, long double b) { return a - b; }
-long double __multf3(long double a, long double b) { return a * b; }
-long double __divtf3(long double a, long double b) { return a / b; }
-long double __netf2(long double a) { return -a; }
-int __gttf2(long double a, long double b) { return a > b; }
-int __lttf2(long double a, long double b) { return a < b; }
-int __getf2(long double a, long double b) { return a >= b; }
-int __letf2(long double a, long double b) { return a <= b; }
-int __eqtf2(long double a, long double b) { return a == b; }
-unsigned long long __fixunstfdi(long double a) { return (unsigned long long)a; }
-unsigned int __fixunstfsi(long double a) { return (unsigned int)a; }
-long double __floatsitf(int a) { return (long double)a; }
-long double __floatunsitf(unsigned int a) { return (long double)a; }
-long double __floatunditf(unsigned long long a) { return (long double)a; }
+/* ============================================================================
+ * long double ABI helpers — architecture-conditional (USR-MATH-01).
+ *
+ * On AArch64 there is no 128-bit FP hardware, so GCC lowers every long
+ * double (binary128) operation to a libgcc call.  The bare-metal userland
+ * links with -nostdlib and no libgcc, so this file must provide them.
+ *
+ * The previous definitions — `long double __addtf3(ld a, ld b) { return
+ * a + b; }` — RECURSE: the compiler emits a call to __addtf3 for the
+ * `a + b` INSIDE __addtf3, which is a stack overflow (the data abort at
+ * 0xbfffffb0 that seq 1 3 produces).
+ *
+ * Full binary128 soft-float is unnecessary here: every long double that
+ * reaches these functions originates from strtold(), which narrows through
+ * strtod() and therefore carries at most 53 mantissa bits.  Each helper
+ * bridges its operands down to binary64, uses NATIVE double arithmetic
+ * (which the compiler CAN compile without helpers), and bridges the result
+ * back.  The bridges are pure integer bit manipulation.
+ *
+ * On AMD64, long double is x87 80-bit and GCC emits INLINE x87
+ * instructions for every operation — no libgcc helper is ever referenced.
+ * Nothing is defined there; the strtold below is architecture-independent.
+ *
+ * Layouts (standard IEEE 754):
+ *   binary128: 1 sign | 15 exp (bias 16383) | 112 mantissa (128 bits)
+ *   binary64 : 1 sign | 11 exp (bias 1023)  |  52 mantissa ( 64 bits)
+ *
+ * Correct for normal values, signed zeros, infinities and NaNs.
+ * Subnormals are flushed to zero — no caller in this tree produces them.
+ * ========================================================================== */
 
+#if defined(__aarch64__)
+
+/* --- Internal bit bridges (pure integer, no long-double arithmetic) --- */
+
+/* b128_to_b64 - (hi,lo) halves of a binary128 -> equivalent binary64. */
+static void b128_to_b64(uint64_t hi, uint64_t lo, double *out) {
+  uint64_t sign = (hi >> 63) & 1u;
+  int exp128 = (int)((hi >> 48) & 0x7FFFu);
+  uint64_t mhi = hi & 0x0000FFFFFFFFFFFFULL;
+  uint64_t mlo = lo;
+
+  if (exp128 == 0x7FFF) {
+    uint64_t b = (sign << 63) | 0x7FF0000000000000ULL;
+    if ((mhi | mlo) != 0)
+      b |= 0x0008000000000000ULL; /* quiet NaN */
+    memcpy(out, &b, 8);
+    return;
+  }
+  if (exp128 == 0) {
+    uint64_t b = sign << 63;
+    memcpy(out, &b, 8);
+    return;
+  }
+  int exp64 = exp128 - 16383 + 1023;
+  if (exp64 >= 0x7FF) {
+    uint64_t b = (sign << 63) | 0x7FF0000000000000ULL;
+    memcpy(out, &b, 8);
+    return;
+  }
+  if (exp64 <= 0) {
+    uint64_t b = sign << 63;
+    memcpy(out, &b, 8);
+    return;
+  }
+  uint64_t mant52 = ((mhi << 4) | (mlo >> 60)) & 0x000FFFFFFFFFFFFFULL;
+  uint64_t b = (sign << 63) | ((uint64_t)exp64 << 52) | mant52;
+  memcpy(out, &b, 8);
+}
+
+/* b64_to_b128 - binary64 -> (hi,lo) halves of binary128. */
+static void b64_to_b128(double in, uint64_t *hi_out, uint64_t *lo_out) {
+  uint64_t b;
+  memcpy(&b, &in, 8);
+  uint64_t sign = (b >> 63) & 1u;
+  int exp64 = (int)((b >> 52) & 0x7FFu);
+  uint64_t mant52 = b & 0x000FFFFFFFFFFFFFULL;
+
+  if (exp64 == 0x7FF) {
+    *hi_out = (sign << 63) | 0x7FFF000000000000ULL;
+    if (mant52 != 0)
+      *hi_out |= 0x0000800000000000ULL;
+    *lo_out = 0;
+    return;
+  }
+  if (exp64 == 0) {
+    *hi_out = sign << 63;
+    *lo_out = 0;
+    return;
+  }
+  int exp128 = exp64 - 1023 + 16383;
+  if (exp128 >= 0x7FFF) {
+    *hi_out = (sign << 63) | 0x7FFF000000000000ULL;
+    *lo_out = 0;
+    return;
+  }
+  *hi_out = (sign << 63) | ((uint64_t)exp128 << 48) | (mant52 >> 4);
+  *lo_out = mant52 << 60;
+}
+
+/* ld_load / ld_store — binary128 memory layout on little-endian aarch64.
+ *
+ * A binary128 value occupies 16 bytes.  On a little-endian target the
+ * LOW 64 bits (mantissa_low, bits 63..0) sit at the LOWER address and the
+ * HIGH 64 bits (sign | exponent | mantissa_high, bits 127..64) sit at the
+ * higher address.
+ *
+ * The previous version had these two roles reversed: it wrote `hi` into
+ * bytes 0..7 and `lo` into bytes 8..15.  Every __*tf* helper in this file
+ * therefore read a mantissa bit as a sign/exponent bit and vice versa, so
+ * `(long double)strtod("1")` produced a value that was not 1.0, and `seq`'s
+ * `x += step` never advanced x — the "1" printed forever. */
+static void ld_load(long double x, uint64_t *hi, uint64_t *lo) {
+  memcpy(lo, &x, 8);                     /* bytes 0..7  = low half  */
+  memcpy(hi, ((const char *)&x) + 8, 8); /* bytes 8..15 = high half */
+}
+static long double ld_store(uint64_t hi, uint64_t lo) {
+  long double r;
+  memcpy(&r, &lo, 8);               /* low half to low address  */
+  memcpy(((char *)&r) + 8, &hi, 8); /* high half to high address */
+  return r;
+}
+
+/* NaN detection by BIT inspection only — `a != a` on long double would
+ * itself emit __netf2/__eqtf2 and reintroduce the recursion. */
+static int ld_isnan(long double x) {
+  uint64_t hi, lo;
+  ld_load(x, &hi, &lo);
+  int exp = (int)((hi >> 48) & 0x7FFF);
+  uint64_t mant = (hi & 0x0000FFFFFFFFFFFFULL) | lo;
+  return (exp == 0x7FFF) && (mant != 0);
+}
+
+/* --- Arithmetic --- */
+
+long double __addtf3(long double a, long double b) {
+  uint64_t ah, al, bh, bl, rh, rl;
+  double da, db;
+  ld_load(a, &ah, &al);
+  ld_load(b, &bh, &bl);
+  b128_to_b64(ah, al, &da);
+  b128_to_b64(bh, bl, &db);
+  b64_to_b128(da + db, &rh, &rl);
+  return ld_store(rh, rl);
+}
+long double __subtf3(long double a, long double b) {
+  uint64_t ah, al, bh, bl, rh, rl;
+  double da, db;
+  ld_load(a, &ah, &al);
+  ld_load(b, &bh, &bl);
+  b128_to_b64(ah, al, &da);
+  b128_to_b64(bh, bl, &db);
+  b64_to_b128(da - db, &rh, &rl);
+  return ld_store(rh, rl);
+}
+long double __multf3(long double a, long double b) {
+  uint64_t ah, al, bh, bl, rh, rl;
+  double da, db;
+  ld_load(a, &ah, &al);
+  ld_load(b, &bh, &bl);
+  b128_to_b64(ah, al, &da);
+  b128_to_b64(bh, bl, &db);
+  b64_to_b128(da * db, &rh, &rl);
+  return ld_store(rh, rl);
+}
+long double __divtf3(long double a, long double b) {
+  uint64_t ah, al, bh, bl, rh, rl;
+  double da, db;
+  ld_load(a, &ah, &al);
+  ld_load(b, &bh, &bl);
+  b128_to_b64(ah, al, &da);
+  b128_to_b64(bh, bl, &db);
+  b64_to_b128(da / db, &rh, &rl);
+  return ld_store(rh, rl);
+}
+
+/* Unary minus: flips only the sign bit, no arithmetic. */
+long double __negtf2(long double a) {
+  uint64_t hi, lo;
+  ld_load(a, &hi, &lo);
+  return ld_store(hi ^ 0x8000000000000000ULL, lo);
+}
+
+/* --- Conversions --- */
+
+long double __extenddftf2(double x) {
+  uint64_t hi, lo;
+  b64_to_b128(x, &hi, &lo);
+  return ld_store(hi, lo);
+}
+long double __extendsftf2(float x) { return __extenddftf2((double)x); }
+
+double __trunctfdf2(long double x) {
+  uint64_t hi, lo;
+  ld_load(x, &hi, &lo);
+  double r;
+  b128_to_b64(hi, lo, &r);
+  return r;
+}
+float __trunctfsf2(long double x) { return (float)__trunctfdf2(x); }
+float __trunctftf2(long double x) { return (float)__trunctfdf2(x); }
+
+long double __floatsitf(int a) { return __extenddftf2((double)a); }
+long double __floatunsitf(unsigned int a) { return __extenddftf2((double)a); }
+long double __floatunditf(unsigned long long a) {
+  return __extenddftf2((double)a);
+}
+
+unsigned long long __fixunstfdi(long double a) {
+  return (unsigned long long)__trunctfdf2(a);
+}
+unsigned int __fixunstfsi(long double a) {
+  return (unsigned int)__trunctfdf2(a);
+}
+
+/* --- Comparisons ---
+ *
+ * Convention (GCC aarch64 caller side):
+ *   __lttf2 / __letf2 / __gttf2 / __getf2 return -1 (a < b), 0 (a == b),
+ *   +1 (a > b).  For NaN the ordering comparators return a value that
+ *   makes the caller's b<cond> NOT take the branch (so "less" is false).
+ *   __eqtf2 / __netf2 return 0 iff the respective predicate is TRUE and
+ *   nonzero otherwise, matching the caller's cbz/bne pattern. */
+
+static int cmp_tf(long double a, long double b) {
+  uint64_t ah, al, bh, bl;
+  double da, db;
+  ld_load(a, &ah, &al);
+  ld_load(b, &bh, &bl);
+  b128_to_b64(ah, al, &da);
+  b128_to_b64(bh, bl, &db);
+  if (da < db)
+    return -1;
+  if (da > db)
+    return 1;
+  return 0;
+}
+
+int __lttf2(long double a, long double b) {
+  if (ld_isnan(a) || ld_isnan(b))
+    return 1; /* blt not taken */
+  return cmp_tf(a, b);
+}
+int __letf2(long double a, long double b) {
+  if (ld_isnan(a) || ld_isnan(b))
+    return 1; /* ble not taken */
+  return cmp_tf(a, b);
+}
+int __gttf2(long double a, long double b) {
+  if (ld_isnan(a) || ld_isnan(b))
+    return -1; /* bgt not taken */
+  return cmp_tf(a, b);
+}
+int __getf2(long double a, long double b) {
+  if (ld_isnan(a) || ld_isnan(b))
+    return -1; /* bge not taken */
+  return cmp_tf(a, b);
+}
+int __eqtf2(long double a, long double b) {
+  if (ld_isnan(a) || ld_isnan(b))
+    return 1;
+  return (cmp_tf(a, b) == 0) ? 0 : 1;
+}
+int __netf2(long double a, long double b) {
+  /* libgcc aarch64 convention: return 0 iff a != b (including NaN),
+   * nonzero otherwise.  This is the OPPOSITE of __eqtf2, which returns
+   * 0 iff a == b.  The compiler branches on the return via cbz (for `!=`
+   * after this call). */
+  if (ld_isnan(a) || ld_isnan(b))
+    return 0; /* NaN is not equal to anything, so the predicate is true */
+  return (cmp_tf(a, b) == 0) ? 1 : 0;
+}
+
+#elif defined(__x86_64__) || defined(__amd64__)
+
+/* AMD64: long double is x87 80-bit extended; GCC emits inline x87
+ * instructions (fldt/faddp/fmulp/...) for every long-double operation and
+ * never references a libgcc helper.  Nothing to define here. */
+
+#endif /* __aarch64__ / __x86_64__ */
+
+/* strtold - long double parse.  Architecture-independent: it narrows
+ * through strtod() (whose precision limit is 53 bits, matching what every
+ * long-double helper above can represent) and widens the result.  This is
+ * the only entry point seq/gnulib reach on BOTH targets. */
 long double strtold(const char *nptr, char **endptr) {
   return (long double)strtod(nptr, endptr);
 }
@@ -1212,11 +1484,13 @@ double strtod(const char *nptr, char **endptr) {
 
   /* INF/INFINITY */
   if (strncasecmp(p, "infinity", 8) == 0) {
-    if (endptr) *endptr = (char *)(p + 8);
+    if (endptr)
+      *endptr = (char *)(p + 8);
     return sign * HUGE_VAL;
   }
   if (strncasecmp(p, "inf", 3) == 0) {
-    if (endptr) *endptr = (char *)(p + 3);
+    if (endptr)
+      *endptr = (char *)(p + 3);
     return sign * HUGE_VAL;
   }
 
@@ -1225,17 +1499,16 @@ double strtod(const char *nptr, char **endptr) {
     p += 3;
     if (*p == '(') {
       const char *q = p + 1;
-      while ((*q >= '0' && *q <= '9') ||
-             (*q >= 'a' && *q <= 'z') ||
-             (*q >= 'A' && *q <= 'Z') ||
-             *q == '_') {
+      while ((*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'z') ||
+             (*q >= 'A' && *q <= 'Z') || *q == '_') {
         q++;
       }
       if (*q == ')') {
         p = q + 1;
       }
     }
-    if (endptr) *endptr = (char *)p;
+    if (endptr)
+      *endptr = (char *)p;
     return sign < 0 ? -NAN : NAN;
   }
 

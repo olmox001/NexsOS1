@@ -405,7 +405,8 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/execsvc_client.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
                  $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/opengl/os1_gl_platform.o
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/opengl/os1_gl_platform.o \
+                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/devnull.o
 USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 
 # ==============================================================================
@@ -719,9 +720,19 @@ $(BUILD_DIR)/nxempire.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o $(SDL2_LIB) $
 $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -Wno-error -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+
+# gnulibtest/coreutils_test/coreutilstest link WITH the /dev/null wrap
+# (USR-DEVNULL-01): these binaries exercise the porting layer, so they are
+# exactly the audience the wrap was written for.  Native services and native
+# tests above deliberately stay on plain $(USER_LINK_FLAGS).
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS_PORT) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+
 $(BUILD_DIR)/coreutils_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS_PORT) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+
 $(BUILD_DIR)/coreutilstest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS_PORT) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 
 $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o: $(USER_DIR)/bin/luatest.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
@@ -795,10 +806,41 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 # --gc-sections drops unused functions/data from the whole-linked lib.o
 # (the main source of the ~50-70 KB bloat measured in counter.elf).
 # In release builds we also strip symbols; debug keeps everything.
+#
+# BASE flags — applied to EVERY user ELF (native services, native tests).
+# Nothing here references the devnull wrap; see USER_LINK_FLAGS_PORT below
+# for the wrapped variant used by the porting layer.
 USER_LINK_FLAGS ?= -Wl,--gc-sections
 ifeq ($(BUILD),release)
 USER_LINK_FLAGS += -Wl,-s
 endif
+
+# USR-DEVNULL-01 wrap set. Applied ONLY to the porting-layer binaries
+# (coreutils applets, gnulibtest, coreutils_test, coreutilstest) — NOT to
+# native OS1 user services (nxshell, nxbar, nxfilem, ...) nor to native
+# test binaries. See user/sys/lib/portability/devnull.c for the rationale.
+#
+# The -Wl,-u,<sym> pairs are LOAD-BEARING, not cosmetic:
+#   --wrap=<sym> rewrites every reference to <sym> into __wrap_<sym>,
+#   after which --gc-sections finds nothing referencing <sym> directly,
+#   drops its .text.<sym> section (produced by -ffunction-sections),
+#   and leaves __real_<sym> with no underlying definition — the link
+#   then fails with "undefined reference to __real_<sym>". -u,<sym>
+#   pins <sym> into the GC root set, keeping lib.o's real
+#   implementation alive so __real_<sym> resolves.
+USER_WRAP_FLAGS = \
+    -Wl,-u,open   -Wl,--wrap=open \
+    -Wl,-u,read   -Wl,--wrap=read \
+    -Wl,-u,write  -Wl,--wrap=write \
+    -Wl,-u,close  -Wl,--wrap=close \
+    -Wl,-u,lseek  -Wl,--wrap=lseek \
+    -Wl,-u,isatty -Wl,--wrap=isatty \
+    -Wl,-u,fstat  -Wl,--wrap=fstat
+
+# Wrapped variant — the porting layer's link flags. Composed rather than
+# re-listed so release-build strip and any future addition to
+# USER_LINK_FLAGS flows through automatically.
+USER_LINK_FLAGS_PORT = $(USER_LINK_FLAGS) $(USER_WRAP_FLAGS)
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
@@ -895,6 +937,19 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@cp -r include/abi/. $(BUILD_DIR)/rootfs/sys/lib/include/abi/
 	@# Copy Lua's own test suite next to nxlua, for on-device testing
 	@mkdir -p $(BUILD_DIR)/rootfs/home/LUA/luatest
+	@# utmp/wtmp/utmpx/wtmpx devono essere FILE, non directory.  Il
+	@# `mkdir -p` che stava qui creava DIRECTORY con quei nomi; stat()
+	@# ritorna 0 anche per una directory, quindi nxenvinit credeva che il
+	@# file esistesse già, saltava la scrittura del record, e `cat` mostrava
+	@# i 5 byte del listing (". ..") invece di 392 byte di struct utmp.
+	@# Le due righe mkdir creano i GENITORI; `: > file` è il no-op della
+	@# shell con redirection, che crea-o-tronca il file vuoto.
+	@mkdir -p $(BUILD_DIR)/rootfs/home/var/run
+	@mkdir -p $(BUILD_DIR)/rootfs/home/var/log
+	@: > $(BUILD_DIR)/rootfs/home/var/run/utmp
+	@: > $(BUILD_DIR)/rootfs/home/var/log/wtmp
+	@: > $(BUILD_DIR)/rootfs/home/var/run/utmpx
+	@: > $(BUILD_DIR)/rootfs/home/var/run/wtmpx
 	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/home/LUA/luatest/ 2>/dev/null || true
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
@@ -1005,7 +1060,7 @@ release-arch: all
 		echo '    insmod loopback' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    multiboot2 /boot/kernel.elf' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    loopback loop /boot/disk.img' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    ls (loop,gpt3)/' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
+		echo '    ls (loop,gpt1)/' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    module2 /boot/disk.img diskimg' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '    boot' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
 		echo '}' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \

@@ -160,6 +160,7 @@
 /* POSIX compatibility shims implemented at the bottom of this file (the OS1
  * onion-userland libc layer, epic #120; no new OS1 syscalls). */
 #include <dirent.h>
+#include <error.h>
 #include <grp.h>
 #include <poll.h>
 #include <pwd.h>
@@ -171,7 +172,6 @@
 #include <sys/statvfs.h>
 #include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <termios.h>
-#include <error.h>
 #include <uchar.h>
 
 #pragma GCC diagnostic push
@@ -251,12 +251,12 @@ int errno = 0;
  * would touch dangling handles or a NULL stream with a "confirmed working"
  * codepath around it. */
 #ifdef NX_STRICT
-#define nx_assert(cond)                                                      \
-  do {                                                                       \
-    if (!(cond)) {                                                           \
-      OS1_report_error("nx_assert:" __FILE__ ":" #cond, EFAULT);             \
-      OS1low_process_exit(134); /* 128+SIGABRT, matching POSIX abort() */    \
-    }                                                                        \
+#define nx_assert(cond)                                                        \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      OS1_report_error("nx_assert:" __FILE__ ":" #cond, EFAULT);               \
+      OS1low_process_exit(134); /* 128+SIGABRT, matching POSIX abort() */      \
+    }                                                                          \
   } while (0)
 #else
 /* R5/off-path: NX_STRICT off must not just vanish to ((void)0) — that leaves
@@ -558,10 +558,10 @@ int getpid(void) { return get_pid(); }
 
 /* Minimal Linux-compatible random API for GNU Coreutils and other ports.
  * The kernel does not expose a SYS_getrandom syscall in this tree yet, so the
- * libc layer synthesizes a non-blocking pseudo-random source from a tiny xorshift
- * state seeded from the OS1 clock and PID.  This is intentionally sufficient to
- * satisfy compile-time/test-time expectations and keep the userland port moving
- * without special-casing any applet. */
+ * libc layer synthesizes a non-blocking pseudo-random source from a tiny
+ * xorshift state seeded from the OS1 clock and PID.  This is intentionally
+ * sufficient to satisfy compile-time/test-time expectations and keep the
+ * userland port moving without special-casing any applet. */
 static unsigned long long os1_rand_state = 0;
 static unsigned long long os1_rand_next(void) {
   unsigned long long x = os1_rand_state;
@@ -1247,21 +1247,71 @@ int getcwd(char *buf, size_t size) { return OS1_fs_getcwd(buf, size); }
  * accepted but not applied (the ext4 driver fixes new-file perms).
  */
 int open(const char *pathname, int flags, ...) {
-  int fd = (int)_sys_open(pathname, flags);
+  /* O_CREAT: pre-create via capability (il kernel non lo onora). */
+  if (flags & O_CREAT) {
+    struct abi_stat as;
+    if (_sys_stat(pathname, &as) != 0) {
+      (void)OS1_fs_write(pathname, "", 0, 0);
+    }
+    flags &= ~O_CREAT;
+  }
+
+  /* O_TRUNC: empties an existing file (offset-0 zero-byte write is
+   * truncate-to-empty on this FS).  Stripped before the kernel sees it. */
+  if (flags & O_TRUNC) {
+    (void)OS1_fs_write(pathname, "", 0, 0);
+    flags &= ~O_TRUNC;
+  }
+
+  /* O_NOCTTY is the discriminator.
+   *
+   * coreutils reaches open() through gnulib's fd_reopen(), which passes
+   * `O_WRONLY | O_CREAT | O_NONBLOCK | O_NOCTTY` — SAME flags for BOTH
+   * touch and truncate.  What differs is what each does after a
+   * successful open:
+   *
+   *   truncate: needs the fd, and follows up with ftruncate(fd, size).
+   *             So the kernel MUST accept the open.  truncate does NOT
+   *             pass O_NOCTTY (its do_ftruncate call site omits it).
+   *
+   *   touch:    after open, fd_reopen calls dup2(fd, STDIN_FILENO).  This
+   *             libc's dup2 is a no-op stub (USR-DUP2-01 — the kernel has
+   *             no verb to install an existing handle at a chosen slot).
+   *             A live fd through that path leaves touch in an
+   *             inconsistent state and faults at 0xbfffffb0.  What touch
+   *             ALREADY works with is _sys_open refusing the foreign
+   *             flags: it falls into its own fd < 0 branch and uses
+   *             utimensat(path-based), which this libc handles correctly.
+   *             touch DOES pass O_NOCTTY.
+   *
+   * So O_NOCTTY is not just "a flag the kernel doesn't know": it is the
+   * exact bit that separates the caller that needs a working fd from the
+   * caller that needs the open to fail.  Return EINVAL when it is set,
+   * and strip every other foreign bit for the callers that remain.
+   *
+   * (Before the fcntl.h fix that gave O_NOCTTY its own value 0x2000,
+   * O_NOCTTY was 0x0400 = O_APPEND, so this distinction was invisible —
+   * both callers passed "O_APPEND|O_NONBLOCK" and open() could not tell
+   * them apart.  That collision is what made "make open work for both"
+   * unsolvable with a single code path.) */
+  if (flags & O_NOCTTY) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  /* Kernel understands ONLY the access mode. */
+  int accmode = flags & 3;
+  int fd = (int)_sys_open(pathname, accmode);
   if (fd < 0) {
-    /* Uniform surfacing (Phase 0): amber on EACCES, red on a hard fault,
-     * silent on an ENOENT probe — the policy lives in OS1_report_error, not
-     * here, so every open() caller and every portability layer behave alike.
-     * The report now happens INSIDE the errno seam (see errno_ret_ctx); this
-     * site passes the path so the notification still names the file rather
-     * than the generic "libc", and reports ONCE instead of twice. */
     return (int)errno_ret_ctx(fd, pathname);
   }
   if (flags & O_APPEND)
-    _sys_lseek(fd, 0, SEEK_END); /* best-effort: initial position at EOF */
+    _sys_lseek(fd, 0, SEEK_END);
   return fd;
 }
+
 int close(int fd) { return (int)errno_ret(_sys_close(fd)); }
+
 long lseek(int fd, long offset, int whence) {
   return errno_ret(_sys_lseek(fd, offset, whence));
 }
@@ -2015,14 +2065,20 @@ int fseeko(FILE *fp, off_t offset, int whence) {
   return fseek(fp, (long)offset, whence);
 }
 
-off_t ftello(FILE *fp) {
-  return (off_t)ftell(fp);
-}
+off_t ftello(FILE *fp) { return (off_t)ftell(fp); }
 
 int feof(FILE *fp) { return fp ? fp->eof : 1; }
 int ferror(FILE *fp) { return fp ? fp->error : 1; }
-void fseterr(FILE *fp) { if (fp) fp->error = 1; }
-void clearerr(FILE *fp) { if (fp) { fp->error = 0; fp->eof = 0; } }
+void fseterr(FILE *fp) {
+  if (fp)
+    fp->error = 1;
+}
+void clearerr(FILE *fp) {
+  if (fp) {
+    fp->error = 0;
+    fp->eof = 0;
+  }
+}
 int fileno(FILE *fp) { return fp ? fp->fd : -1; }
 
 char *strdup(const char *s) {
@@ -2367,8 +2423,9 @@ long strtol(const char *nptr, char **endptr, int base) {
    * isalpha('\0') are both false, so the old loop already stopped at the
    * NUL terminator; this just says so up front. */
   while (*p && (isdigit((unsigned char)*p) || isalpha((unsigned char)*p))) {
-    int digit = isdigit((unsigned char)*p) ? *p - '0'
-                                            : tolower((unsigned char)*p) - 'a' + 10;
+    int digit = isdigit((unsigned char)*p)
+                    ? *p - '0'
+                    : tolower((unsigned char)*p) - 'a' + 10;
     if (digit >= base)
       break;
     val = val * base + digit;
@@ -2603,6 +2660,13 @@ double atof(const char *nptr) { return strtod(nptr, NULL); }
 
 #define OS1_ENV_KEYMAX 96
 
+/* Forward declaration: environ_refresh() is defined later in this module
+ * (after OS1_env_unset and clearenv that also call it), so the compiler
+ * needs to see its prototype before OS1_env_set() uses it. */
+static void environ_refresh(void);
+
+static void environ_ensure(void);
+
 /* env_self - our own pid, resolved once.
  *
  * getpid() is a syscall, and every env operation needs the pid to name its own
@@ -2633,6 +2697,7 @@ static int env_key(char *out, size_t size, const char *name) {
 }
 
 int OS1_env_get(const char *name, char *buf, size_t size) {
+  environ_ensure();
   char key[OS1_ENV_KEYMAX];
   if (!buf || size == 0 || env_key(key, sizeof(key), name) != 0)
     return -1;
@@ -2649,6 +2714,7 @@ int OS1_env_get(const char *name, char *buf, size_t size) {
 }
 
 int OS1_env_set(const char *name, const char *value) {
+  environ_ensure();
   char key[OS1_ENV_KEYMAX];
   if (env_key(key, sizeof(key), name) != 0)
     return -1;
@@ -2656,10 +2722,15 @@ int OS1_env_set(const char *name, const char *value) {
    * calling setenv means "for me and my children", not "reconfigure the
    * machine".  Keeping that distinction here is why setenv needs no privilege
    * while editing the defaults still does. */
-  return OS1_registry_set(key, value ? value : "") == 0 ? 0 : -1;
+  int rc = OS1_registry_set(key, value ? value : "") == 0 ? 0 : -1;
+  /* environ[] is a snapshot of the registry; a mutation that skipped this
+   * would leave printenv/env showing the OLD value until the next refresh. */
+  environ_refresh();
+  return rc;
 }
 
 int OS1_env_unset(const char *name) {
+  environ_ensure();
   char key[OS1_ENV_KEYMAX];
   if (env_key(key, sizeof(key), name) != 0)
     return -1;
@@ -2668,50 +2739,91 @@ int OS1_env_unset(const char *name) {
    * — unsetenv() of an already-unset name is a POSIX no-op success, not an
    * error — so the result is intentionally, not accidentally, discarded. */
   (void)OS1_registry_del(key);
+  environ_refresh();
   return 0;
 }
 
 int OS1_env_enum(char *buf, size_t size) {
+  environ_ensure();
   char prefix[OS1_ENV_KEYMAX];
   if (!buf || size == 0)
     return -1;
+  buf[0] = '\0';
+
+  /* Two passes, in shadowing order:
+   *   1. sys.proc.<self>.env.*   — process layer, wins on collision
+   *   2. sys.env.*               — machine defaults, only names NOT in 1.
+   * OS1_env_get already shadows the same way on lookup; enumerating only
+   * the process layer (as this used to) left every machine default
+   * invisible to environ[]-walkers. */
   int plen0 = snprintf(prefix, sizeof(prefix), "sys.proc.%d.env.", env_self());
-  if (plen0 <= 0 || (size_t)plen0 >= sizeof(prefix)) /* R7: truncation check */
+  if (plen0 <= 0 || (size_t)plen0 >= sizeof(prefix))
     return -1;
-  int n = OS1_registry_enum_under(prefix, buf, size - 1);
-  if (n <= 0) {
-    buf[0] = '\0';
-    return 0;
-  }
-  /* R5: OS1_registry_enum_under() is a syscall veneer; trust its own bound
-   * but not blindly — n must fit the buffer we gave it (size - 1) before we
-   * index buf[n] below. */
-  nx_assert(n > 0 && (size_t)n <= size - 1);
-  buf[n] = '\0';
-  /* Enumeration returns FULL keys; strip the namespace so callers above this
-   * layer never see it.  Rewrites in place, line by line. */
   size_t plen = strlen(prefix);
-  char *w = buf;
-  for (char *r = buf; *r;) {
-    char *nl = strchr(r, '\n');
-    size_t len = nl ? (size_t)(nl - r) : strlen(r);
-    const char *nm =
-        (len > plen && strncmp(r, prefix, plen) == 0) ? r + plen : r;
-    size_t nlen = len - (size_t)(nm - r);
-    /* R5/R2: the write cursor `w` can only ever trail the read cursor `r`
-     * (stripping a prefix removes bytes, never adds them), so this loop is
-     * bounded by the same `n <= size - 1` proven above — assert it instead
-     * of trusting the arithmetic silently on every iteration. */
-    nx_assert((size_t)(w - buf) <= (size_t)(r - buf));
-    memmove(w, nm, nlen);
-    w += nlen;
-    if (!nl)
-      break;
-    *w++ = '\n';
-    r = nl + 1;
+
+  char tmp[512];
+  size_t total = 0;
+
+  int n = OS1_registry_enum_under(prefix, tmp, sizeof(tmp) - 1);
+  if (n > 0) {
+    tmp[n] = '\0';
+    char *save = NULL;
+    for (char *t = strtok_r(tmp, "\n", &save); t;
+         t = strtok_r(NULL, "\n", &save)) {
+      const char *nm = t;
+      if (strncmp(nm, prefix, plen) == 0)
+        nm += plen;
+      if (!*nm)
+        continue;
+      size_t nl = strlen(nm);
+      if (total + nl + 2 > size)
+        break;
+      if (total > 0)
+        buf[total++] = '\n';
+      memcpy(buf + total, nm, nl);
+      total += nl;
+    }
   }
-  *w = '\0';
-  return (int)(w - buf);
+
+  const size_t mplen = 8; /* strlen("sys.env.") */
+  n = OS1_registry_enum_under("sys.env.", tmp, sizeof(tmp) - 1);
+  if (n > 0) {
+    tmp[n] = '\0';
+    char *save = NULL;
+    for (char *t = strtok_r(tmp, "\n", &save); t;
+         t = strtok_r(NULL, "\n", &save)) {
+      const char *nm = t;
+      if (strncmp(nm, "sys.env.", mplen) == 0)
+        nm += mplen;
+      if (!*nm)
+        continue;
+      size_t nl = strlen(nm);
+
+      int dup = 0;
+      for (size_t off = 0; off < total;) {
+        size_t end = off;
+        while (end < total && buf[end] != '\n')
+          end++;
+        if (end - off == nl && memcmp(buf + off, nm, nl) == 0) {
+          dup = 1;
+          break;
+        }
+        off = end + 1;
+      }
+      if (dup)
+        continue;
+
+      if (total + nl + 2 > size)
+        break;
+      if (total > 0)
+        buf[total++] = '\n';
+      memcpy(buf + total, nm, nl);
+      total += nl;
+    }
+  }
+
+  buf[total] = '\0';
+  return (int)total;
 }
 
 /* --- POSIX personality (<stdlib.h>) — a thin mapping, nothing more --------
@@ -2724,11 +2836,97 @@ int OS1_env_enum(char *buf, size_t size) {
 #define GETENV_SLOTS 4
 #define GETENV_VALMAX 128
 
-static char *_default_environ[] = { NULL };
-char **environ = _default_environ;
+/* environ - POSIX environment array.
+ *
+ * POSIX programs enumerate the environment by walking environ[] until
+ * NULL — coreutils' printenv and env are exactly that — and NEVER call
+ * getenv() to enumerate.  So the array has to actually hold the
+ * variables: an `environ` that only ever contained NULL would make every
+ * printenv exit 1, which is the failure this block exists to prevent.
+ *
+ * The variables live in the registry (sys.proc.<pid>.env.*), not in a
+ * userland array — that is the whole point of the ENVIRONMENT layer
+ * above (see the file-header note).  So the array is a SNAPSHOT: it is
+ * rebuilt at startup and after every setenv/unsetenv/clearenv, from
+ * OS1_env_enum() + OS1_env_get().  A caller that reads environ[i]
+ * directly gets the value at the last snapshot, which is enough for
+ * printenv/env (`VAR=value` per line) and for execvp's PATH lookup.
+ *
+ * Static storage: bounded at ENVIRON_MAX_ENTRIES x ENVIRON_LINE_MAX,
+ * zero heap.  If the real environment ever exceeds that, the extra
+ * variables are dropped from the snapshot, not silently corrupted —
+ * getenv() still finds them, only enumeration misses them. */
 
+#define ENVIRON_MAX_ENTRIES 32
+#define ENVIRON_LINE_MAX 128
+
+static char s_environ_storage[ENVIRON_MAX_ENTRIES][ENVIRON_LINE_MAX];
+static char *s_environ_ptrs[ENVIRON_MAX_ENTRIES + 1];
+char **environ = s_environ_ptrs;
+
+/* Rebuild `environ` from the registry.  Called once at startup (see the
+ * constructor below) and after every mutation.  Never fails; on an empty
+ * environment it just leaves environ[0] = NULL. */
+static void environ_refresh(void) {
+  char names[512];
+  char *save = NULL;
+  int n = 0;
+
+  if (OS1_env_enum(names, sizeof(names)) > 0) {
+    for (char *name = strtok_r(names, "\n", &save);
+         name && n < ENVIRON_MAX_ENTRIES; name = strtok_r(NULL, "\n", &save)) {
+      char val[ENVIRON_LINE_MAX];
+      if (OS1_env_get(name, val, sizeof(val)) != 0)
+        continue;
+      /* "NAME=VALUE" — the POSIX convention printenv walks. */
+      int k =
+          snprintf(s_environ_storage[n], ENVIRON_LINE_MAX, "%s=%s", name, val);
+      if (k <= 0 || k >= ENVIRON_LINE_MAX)
+        continue;
+      s_environ_ptrs[n] = s_environ_storage[n];
+      n++;
+    }
+  }
+  s_environ_ptrs[n] = NULL;
+}
+
+/* environ_ready - set once environ_refresh() has run.  The static
+ * initialiser to 0 makes the FIRST call do the work; every subsequent
+ * call short-circuits on the integer test. */
+static int s_environ_ready = 0;
+
+/* environ_ensure - lazy population of environ[].
+ *
+ * POSIX programs (coreutils' printenv and env are the ones this tree
+ * exercises) enumerate the environment by WALKING environ[] until NULL —
+ * they never call getenv() to enumerate.  So environ[] must be populated
+ * BEFORE the first such walk, or the program sees an empty environment
+ * and exits 1.
+ *
+ * This used to be a __attribute__((constructor)) function.  On this
+ * target the userland entry (_start, in user/arch/<arch>/syscall.S)
+ * does not walk .init_array, so the constructor NEVER RAN and environ
+ * stayed an array of one NULL — which is exactly the "printenv exits 1
+ * on a fresh system" failure this lazy init fixes.
+ *
+ * Cheap on the fast path (one integer comparison); the loop only runs
+ * once per process. */
+static void environ_ensure(void) {
+  if (s_environ_ready)
+    return;
+  /* Set the flag BEFORE the refresh, not after: environ_refresh() calls
+   * OS1_env_enum(), which calls environ_ensure() re-entrantly.  With the
+   * flag still 0 at that point the recursive call would run the whole
+   * refresh again, and each level of that would recurse once more — the
+   * stack-overflow crash at 0xbfffffd0 that killed PID 1 on the last
+   * build.  Setting it first makes every nested call short-circuit on the
+   * integer test.  The array is best-effort anyway, so a mid-refresh
+   * snapshot is not a correctness problem. */
+  s_environ_ready = 1;
+  environ_refresh();
+}
 char *getenv(const char *name) {
-
+  environ_ensure();
   static char slots[GETENV_SLOTS][GETENV_VALMAX];
   static int next_slot;
   char *out = slots[next_slot];
@@ -2771,12 +2969,16 @@ int putenv(char *string) {
 }
 
 int clearenv(void) {
+  environ_ensure();
   char buf[512];
-  if (OS1_env_enum(buf, sizeof(buf)) <= 0)
+  if (OS1_env_enum(buf, sizeof(buf)) <= 0) {
+    environ_refresh();
     return 0;
+  }
   char *save = NULL;
   for (char *k = strtok_r(buf, "\n", &save); k; k = strtok_r(NULL, "\n", &save))
     OS1_env_unset(k);
+  environ_refresh();
   return 0;
 }
 
@@ -2841,7 +3043,8 @@ static void __env_propagate_to_child(long child_pid) {
     if (OS1_env_get(name, val, sizeof(val)) != 0)
       continue;
     char key[OS1_ENV_KEYMAX];
-    int klen = snprintf(key, sizeof(key), "sys.proc.%ld.env.%s", child_pid, name);
+    int klen =
+        snprintf(key, sizeof(key), "sys.proc.%ld.env.%s", child_pid, name);
     if (klen <= 0 || (size_t)klen >= sizeof(key)) /* R7: truncation check */
       continue;
     /* R7: best-effort by design (see the function comment above) — a single
@@ -2868,116 +3071,116 @@ static void __env_propagate_to_child(long child_pid) {
 int stat(const char *path, struct stat *buf)
 
 {
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    if (buf)
-        memset(buf, 0, sizeof(struct stat));
+  if (buf)
+    memset(buf, 0, sizeof(struct stat));
 
-    struct abi_stat as;
-    int r = _sys_stat(path, &as);
-    if (r != 0) {
-        errno = ENOENT;          /* o meglio: errno = -r; se il kernel restituisce errno negativi */
-        return -1;
-    }
+  struct abi_stat as;
+  int r = _sys_stat(path, &as);
+  if (r != 0) {
+    errno = ENOENT; /* o meglio: errno = -r; se il kernel restituisce errno
+                       negativi */
+    return -1;
+  }
 
-    if (buf) {
-        buf->st_size  = (off_t)as.size;
-        buf->st_mode  = (as.type == ABI_S_TYPE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
-        buf->st_nlink = 1;
-        buf->st_uid   = 0;
-        buf->st_gid   = 0;
-        buf->st_blksize = 4096;
-        buf->st_blocks  = (as.size + 511) / 512;
+  if (buf) {
+    buf->st_size = (off_t)as.size;
+    buf->st_mode =
+        (as.type == ABI_S_TYPE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+    buf->st_nlink = 1;
+    buf->st_uid = 0;
+    buf->st_gid = 0;
+    buf->st_blksize = 4096;
+    buf->st_blocks = (as.size + 511) / 512;
 
-        /* Timestamp temporanei (finché il VFS non li supporta davvero) */
-        time_t now = time(NULL);
-        buf->st_atime = now;
-        buf->st_mtime = now;
-        buf->st_ctime = now;
+    /* Timestamp temporanei (finché il VFS non li supporta davvero) */
+    time_t now = time(NULL);
+    buf->st_atime = now;
+    buf->st_mtime = now;
+    buf->st_ctime = now;
 
 #if defined(_STATBUF_ST_NSEC) || defined(__USE_XOPEN2K8)
-        buf->st_atim.tv_sec  = now;
-        buf->st_atim.tv_nsec = 0;
-        buf->st_mtim.tv_sec  = now;
-        buf->st_mtim.tv_nsec = 0;
-        buf->st_ctim.tv_sec  = now;
-        buf->st_ctim.tv_nsec = 0;
+    buf->st_atim.tv_sec = now;
+    buf->st_atim.tv_nsec = 0;
+    buf->st_mtim.tv_sec = now;
+    buf->st_mtim.tv_nsec = 0;
+    buf->st_ctim.tv_sec = now;
+    buf->st_ctim.tv_nsec = 0;
 #endif
-    }
+  }
 
-    return 0;
+  return 0;
 }
 
-int statfs(const char *path, struct statfs *buf)
-{
-    if (!buf) {
-        errno = EFAULT;
-        return -1;
-    }
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+int statfs(const char *path, struct statfs *buf) {
+  if (!buf) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    memset(buf, 0, sizeof(*buf));
+  memset(buf, 0, sizeof(*buf));
 
-    struct stat st;
-    if (stat(path, &st) != 0)
-        return -1;
+  struct stat st;
+  if (stat(path, &st) != 0)
+    return -1;
 
-    /* Placeholder values — NexsOS1 non ha ancora un vero FS query */
-    buf->f_type    = 0x01021994UL;   /* tmpfs-like */
-    buf->f_bsize   = 4096;
-    buf->f_frsize  = 4096;
-    buf->f_blocks  = (st.st_size + 4095) / 4096;
-    buf->f_bfree   = buf->f_blocks;
-    buf->f_bavail  = buf->f_blocks;
-    buf->f_files   = 0;
-    buf->f_ffree   = 0;
-    buf->f_fsid.__val[0] = 0;
-    buf->f_fsid.__val[1] = 0;
-    buf->f_namelen = 255;
-    buf->f_flags   = 0;
+  /* Placeholder values — NexsOS1 non ha ancora un vero FS query */
+  buf->f_type = 0x01021994UL; /* tmpfs-like */
+  buf->f_bsize = 4096;
+  buf->f_frsize = 4096;
+  buf->f_blocks = (st.st_size + 4095) / 4096;
+  buf->f_bfree = buf->f_blocks;
+  buf->f_bavail = buf->f_blocks;
+  buf->f_files = 0;
+  buf->f_ffree = 0;
+  buf->f_fsid.__val[0] = 0;
+  buf->f_fsid.__val[1] = 0;
+  buf->f_namelen = 255;
+  buf->f_flags = 0;
 
-    return 0;
+  return 0;
 }
 
-int fstatfs(int fd, struct statfs *buf)
-{
-    if (!buf) {
-        errno = EFAULT;
-        return -1;
-    }
-    if (fd < 0) {
-        errno = EBADF;
-        return -1;
-    }
+int fstatfs(int fd, struct statfs *buf) {
+  if (!buf) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (fd < 0) {
+    errno = EBADF;
+    return -1;
+  }
 
-    /* NexsOS1 non ha ancora un modo per ottenere il path da un fd,
-       quindi per ora usiamo un placeholder basato su fstat.
-       Quando avremo fd → path o una vera syscall di fsinfo, si sistemerà. */
-    struct stat st;
-    if (fstat(fd, &st) != 0)
-        return -1;
+  /* NexsOS1 non ha ancora un modo per ottenere il path da un fd,
+     quindi per ora usiamo un placeholder basato su fstat.
+     Quando avremo fd → path o una vera syscall di fsinfo, si sistemerà. */
+  struct stat st;
+  if (fstat(fd, &st) != 0)
+    return -1;
 
-    memset(buf, 0, sizeof(*buf));
-    buf->f_type    = 0x01021994UL;
-    buf->f_bsize   = 4096;
-    buf->f_frsize  = 4096;
-    buf->f_blocks  = (st.st_size + 4095) / 4096;
-    buf->f_bfree   = buf->f_blocks;
-    buf->f_bavail  = buf->f_blocks;
-    buf->f_files   = 0;
-    buf->f_ffree   = 0;
-    buf->f_fsid.__val[0] = 0;
-    buf->f_fsid.__val[1] = 0;
-    buf->f_namelen = 255;
-    buf->f_flags   = 0;
+  memset(buf, 0, sizeof(*buf));
+  buf->f_type = 0x01021994UL;
+  buf->f_bsize = 4096;
+  buf->f_frsize = 4096;
+  buf->f_blocks = (st.st_size + 4095) / 4096;
+  buf->f_bfree = buf->f_blocks;
+  buf->f_bavail = buf->f_blocks;
+  buf->f_files = 0;
+  buf->f_ffree = 0;
+  buf->f_fsid.__val[0] = 0;
+  buf->f_fsid.__val[1] = 0;
+  buf->f_namelen = 255;
+  buf->f_flags = 0;
 
-    return 0;
+  return 0;
 }
 
 /*
@@ -3061,9 +3264,9 @@ int unlink(const char *pathname) {
  *
  * The current NexsOS1 FS layer provides create/write/read and delete, but no
  * inode-level hard-link syscall; the correct compatibility point is therefore
- * the existing file-creation path, not a synthetic extra file or fake kernel ABI.
- * We copy the source bytes into the destination path, fail if the destination
- * already exists, and leave the original untouched.
+ * the existing file-creation path, not a synthetic extra file or fake kernel
+ * ABI. We copy the source bytes into the destination path, fail if the
+ * destination already exists, and leave the original untouched.
  */
 int link(const char *oldpath, const char *newpath) {
   int size = OS1_fs_read(oldpath, NULL, 0, 0);
@@ -3127,7 +3330,8 @@ int mkfifo(const char *pathname, mode_t mode) {
  * getrlimit - query resource limits (stub).
  *
  * NexsOS1 does not enforce traditional process resource limits. This stub
- * returns dummy unlimited values for all resources (rlim_cur = rlim_max = 2^32).
+ * returns dummy unlimited values for all resources (rlim_cur = rlim_max =
+ * 2^32).
  */
 int getrlimit(int resource, struct rlimit *rlim) {
   (void)resource;
@@ -3151,7 +3355,7 @@ int getrlimit(int resource, struct rlimit *rlim) {
 int setrlimit(int resource, const struct rlimit *rlim) {
   (void)resource;
   (void)rlim;
-  return 0;  /* silently accept all limit changes */
+  return 0; /* silently accept all limit changes */
 }
 /*
  * getrusage - query resource usage (stub).
@@ -3173,32 +3377,33 @@ int getrusage(int who, struct rusage *usage) {
 /*
  * getloadavg - get system load average (real implementation via OS1_sys_stats).
  *
- * NexsOS1 provides instantaneous scheduler load via OS1_sys_stats(sched_runnable).
- * Since there is no historical load tracking, we report the current snapshot
- * (number of ready+running processes) for all three intervals (1m, 5m, 15m).
- * This gives userland programs an accurate instantaneous load, not a moving average.
+ * NexsOS1 provides instantaneous scheduler load via
+ * OS1_sys_stats(sched_runnable). Since there is no historical load tracking, we
+ * report the current snapshot (number of ready+running processes) for all three
+ * intervals (1m, 5m, 15m). This gives userland programs an accurate
+ * instantaneous load, not a moving average.
  */
 int getloadavg(double loadavg[], int nelem) {
   if (!loadavg || nelem < 1) {
     errno = EINVAL;
     return -1;
   }
-  
+
   struct os1_sysstats stats;
   long ret = OS1_sys_stats(&stats);
   if (ret < 0) {
     errno = (int)-ret;
     return -1;
   }
-  
+
   /* Use the current runnable count (READY+RUNNING processes) as load */
   double load = (double)stats.sched_runnable;
-  
+
   /* Fill the array up to nelem with the same load value */
   for (int i = 0; i < nelem; i++)
     loadavg[i] = load;
-  
-  return nelem;  /* Return number of elements filled */
+
+  return nelem; /* Return number of elements filled */
 }
 /*
  * getpriority / setpriority - process scheduling priority (stub).
@@ -3220,41 +3425,172 @@ int setpriority(int which, int who, int prio) {
   /* Silently accept any priority change. */
   return 0;
 }
-/*
- * exec family - replace the process image (stub).
+/* ==========================================================================
+ * exec family — emulated as spawn + wait + exit-with-child's-status
+ * (USR-EXEC-01, closes the "nice/nohup: Operation not supported" failures).
  *
- * NexsOS1 does not support exec; child processes are spawned via the OS1
- * capability-based spawn model, not exec. These stubs return -ENOTSUP.
- */
+ * NexsOS has no way to replace the current process image, so a literal
+ * execv() (which returns only on failure) is impossible.  The observable
+ * contract of every caller that reaches execv in this tree — `nice cmd`,
+ * `nohup cmd`, `timeout N cmd`, and similar coreutils wrappers — is
+ * "whatever cmd exits with is what the shell sees when THIS process
+ * exits", and that is exactly what spawn + wait + exit reproduces: spawn
+ * cmd, block until it finishes, exit with its status.  The caller who was
+ * about to be replaced by cmd observes the identical result.
+ *
+ * Consequences we accept, and why they don't matter here:
+ *   - Our pid is the parent's, cmd's is a new one (real exec keeps the
+ *     pid).  Nothing in this tree keys on the pid of an exec'd program.
+ *   - If cmd daemonises, we still wait for it (real exec would have
+ *     replaced us, so the shell couldn't wait either).  Same end-user
+ *     behaviour: the shell blocks until cmd exits.
+ *   - envp (execle) is accepted but ignored: NexsOS propagates the
+ *     CALLER's environment to the child through the registry namespace
+ *     (__env_propagate_to_child), not through an argv-shaped envp.  A
+ *     caller that passes a custom envp would get the process defaults
+ *     instead — documented deviation, not silent corruption.
+ *   - ENOTSUP is no longer returned.  A caller that *checks* for it
+ *     would now see success, which is acceptable: on this tree the only
+ *     realistic callers are the coreutils wrappers above.
+ * ========================================================================== */
+
+#define EXEC_ARGV_MAX 32
+
+static int __exec_emulate(const char *path, char *const argv[]) {
+  if (!path || !argv) {
+    errno = EFAULT;
+    return -1;
+  }
+  int argc = 0;
+  while (argc < EXEC_ARGV_MAX && argv[argc])
+    argc++;
+  int pid = (int)OS1low_process_spawn(path, argc, argv);
+  if (pid < 0) {
+    /* Propagate the kernel's errno verbatim: ENOENT vs EACCES is the
+     * difference between "not found" and "denied", and callers report
+     * them differently. */
+    errno = -pid;
+    return -1;
+  }
+  int code = 0;
+  /* Same non-blocking wait loop as system(): wait_status returns -1
+   * while the child runs, and blocks (in 15 ms steps) until it does
+   * not. */
+  while (OS1low_process_wait_status(pid, &code) == -1)
+    OS1_sleep(15);
+  OS1low_process_exit(__wait_encode(code));
+  while (1)
+    ; /* not reached: OS1low_process_exit does not return */
+}
+
+/* __exec_rebuild — repack an execl-style vararg list into argv[].
+ * Returns argc (including the implicit NULL terminator as the last
+ * element), or -1 on overflow.  `first` is the caller's mandatory argv[0]. */
+static int __exec_rebuild(char *argv[], const char *first, va_list ap) {
+  int argc = 0;
+  argv[argc++] = (char *)first;
+  while (argc < EXEC_ARGV_MAX - 1) {
+    char *a = va_arg(ap, char *);
+    argv[argc++] = a;
+    if (!a)
+      return argc;
+  }
+  /* Overflow: force-terminate so callers can still pass the array to
+   * __exec_emulate without reading past the end. */
+  argv[EXEC_ARGV_MAX - 1] = NULL;
+  return EXEC_ARGV_MAX;
+}
+
 int execv(const char *pathname, char *const argv[]) {
-  (void)pathname;
-  (void)argv;
-  errno = ENOTSUP;
-  return -1;
+  return __exec_emulate(pathname, argv);
 }
+
 int execvp(const char *file, char *const argv[]) {
-  (void)file;
-  (void)argv;
-  errno = ENOTSUP;
-  return -1;
+  if (!file || !argv) {
+    errno = EFAULT;
+    return -1;
+  }
+  /* A name containing '/' is a path, not a PATH search target. */
+  if (strchr(file, '/'))
+    return __exec_emulate(file, argv);
+
+  /* PATH search.  Default matches nxinit's configured PATH; without it a
+   * bare `nice ls` would fail on a system whose PATH was never exported. */
+  const char *path = getenv("PATH");
+  if (!path || !*path)
+    path = "/bin:/sys/bin:/sbin";
+
+  char cand[256];
+  char found[256];
+  int found_ok = 0;
+  const char *p = path;
+  while (*p && !found_ok) {
+    const char *end = strchr(p, ':');
+    size_t dlen = end ? (size_t)(end - p) : strlen(p);
+    size_t flen = strlen(file);
+
+    if (dlen == 0) {
+      /* POSIX: an empty component means the current directory. */
+      if (flen + 2 < sizeof(cand)) {
+        cand[0] = '.';
+        cand[1] = '/';
+        memcpy(cand + 2, file, flen + 1);
+        struct abi_stat as;
+        if (_sys_stat(cand, &as) == 0) {
+          memcpy(found, cand, flen + 3);
+          found_ok = 1;
+        }
+      }
+    } else if (dlen + 1 + flen < sizeof(cand)) {
+      memcpy(cand, p, dlen);
+      cand[dlen] = '/';
+      memcpy(cand + dlen + 1, file, flen + 1);
+      struct abi_stat as;
+      if (_sys_stat(cand, &as) == 0) {
+        memcpy(found, cand, dlen + 1 + flen + 1);
+        found_ok = 1;
+      }
+    }
+    if (!end)
+      break;
+    p = end + 1;
+  }
+  if (!found_ok) {
+    errno = ENOENT;
+    return -1;
+  }
+  return __exec_emulate(found, argv);
 }
+
 int execl(const char *pathname, const char *arg, ...) {
-  (void)pathname;
-  (void)arg;
-  errno = ENOTSUP;
-  return -1;
+  char *argv[EXEC_ARGV_MAX];
+  va_list ap;
+  va_start(ap, arg);
+  __exec_rebuild(argv, arg, ap);
+  va_end(ap);
+  return __exec_emulate(pathname, argv);
 }
+
 int execlp(const char *file, const char *arg, ...) {
-  (void)file;
-  (void)arg;
-  errno = ENOTSUP;
-  return -1;
+  char *argv[EXEC_ARGV_MAX];
+  va_list ap;
+  va_start(ap, arg);
+  __exec_rebuild(argv, arg, ap);
+  va_end(ap);
+  return execvp(file, argv);
 }
+
 int execle(const char *pathname, const char *arg, ...) {
-  (void)pathname;
-  (void)arg;
-  errno = ENOTSUP;
-  return -1;
+  char *argv[EXEC_ARGV_MAX];
+  va_list ap;
+  va_start(ap, arg);
+  __exec_rebuild(argv, arg, ap);
+  /* envp is the caller's last vararg; documented deviation above — we
+   * consume it so the va_list is left in a defined state, and then drop
+   * it on the floor. */
+  (void)va_arg(ap, char **);
+  va_end(ap);
+  return __exec_emulate(pathname, argv);
 }
 /*
  * localtime - convert time_t to struct tm.
@@ -3330,9 +3666,7 @@ time_t mktime(struct tm *tm) {
 /*
  * gmtime - convert time_t to UTC struct tm.
  */
-struct tm *gmtime(const time_t *timep) {
-  return localtime(timep);
-}
+struct tm *gmtime(const time_t *timep) { return localtime(timep); }
 
 /*
  * strftime - format a broken-down time in UTC using a minimal subset of
@@ -3427,9 +3761,7 @@ timezone_t tzalloc(const char *name) {
   return g_utc_tz;
 }
 
-void tzfree(timezone_t tz) {
-  (void)tz;
-}
+void tzfree(timezone_t tz) { (void)tz; }
 
 struct tm *localtime_rz(timezone_t tz, const time_t *t, struct tm *tm) {
   (void)tz;
@@ -3725,17 +4057,22 @@ long long atoll(const char *nptr) { return strtoll(nptr, NULL, 10); }
 
 /* strtoul / strtoull — unsigned variants of strtol */
 unsigned long strtoul(const char *nptr, char **endptr, int base) {
-  while (*nptr == ' ' || *nptr == '\t' || *nptr == '\n' ||
-         *nptr == '\r' || *nptr == '\f' || *nptr == '\v')
+  while (*nptr == ' ' || *nptr == '\t' || *nptr == '\n' || *nptr == '\r' ||
+         *nptr == '\f' || *nptr == '\v')
     nptr++;
   int neg = 0;
-  if (*nptr == '-') { neg = 1; nptr++; }
-  else if (*nptr == '+') nptr++;
+  if (*nptr == '-') {
+    neg = 1;
+    nptr++;
+  } else if (*nptr == '+')
+    nptr++;
   if (base == 0) {
     if (nptr[0] == '0' && (nptr[1] == 'x' || nptr[1] == 'X')) {
-      base = 16; nptr += 2;
+      base = 16;
+      nptr += 2;
     } else if (nptr[0] == '0') {
-      base = 8; nptr++;
+      base = 8;
+      nptr++;
     } else {
       base = 10;
     }
@@ -3747,15 +4084,21 @@ unsigned long strtoul(const char *nptr, char **endptr, int base) {
   const char *start = nptr;
   while (*nptr) {
     int digit;
-    if (*nptr >= '0' && *nptr <= '9')      digit = *nptr - '0';
-    else if (*nptr >= 'a' && *nptr <= 'z') digit = *nptr - 'a' + 10;
-    else if (*nptr >= 'A' && *nptr <= 'Z') digit = *nptr - 'A' + 10;
-    else break;
-    if (digit >= base) break;
+    if (*nptr >= '0' && *nptr <= '9')
+      digit = *nptr - '0';
+    else if (*nptr >= 'a' && *nptr <= 'z')
+      digit = *nptr - 'a' + 10;
+    else if (*nptr >= 'A' && *nptr <= 'Z')
+      digit = *nptr - 'A' + 10;
+    else
+      break;
+    if (digit >= base)
+      break;
     result = result * (unsigned long)base + (unsigned long)digit;
     nptr++;
   }
-  if (endptr) *endptr = (char *)(nptr == start ? start : nptr);
+  if (endptr)
+    *endptr = (char *)(nptr == start ? start : nptr);
   return neg ? -result : result;
 }
 
@@ -3764,7 +4107,6 @@ unsigned long long strtoull(const char *nptr, char **endptr, int base) {
 }
 
 long labs(long j) { return j < 0 ? -j : j; }
-
 
 void abort(void) {
   exit(1);
@@ -4011,7 +4353,8 @@ int sigismember(const sigset_t *set, int sig) {
   return ((*set & ((sigset_t)1U << (sig - 1))) != 0) ? 1 : 0;
 }
 
-int sigprocmask(int how, const sigset_t *restrict set, sigset_t *restrict oldset) {
+int sigprocmask(int how, const sigset_t *restrict set,
+                sigset_t *restrict oldset) {
   (void)how;
   if (oldset)
     *oldset = 0;
@@ -4244,19 +4587,32 @@ struct lconv *localeconv(void) { return &s_posix_lconv; }
 static int wctype_value(wint_t wc, const char *property) {
   if (!property)
     return 0;
-  if (strcmp(property, "alnum") == 0) return iswalnum(wc);
-  if (strcmp(property, "alpha") == 0) return iswalpha(wc);
-  if (strcmp(property, "blank") == 0) return iswblank(wc);
-  if (strcmp(property, "cntrl") == 0) return iswcntrl(wc);
-  if (strcmp(property, "digit") == 0) return iswdigit(wc);
-  if (strcmp(property, "graph") == 0) return iswgraph(wc);
-  if (strcmp(property, "lower") == 0) return iswlower(wc);
-  if (strcmp(property, "print") == 0) return iswprint(wc);
-  if (strcmp(property, "punct") == 0) return iswpunct(wc);
-  if (strcmp(property, "space") == 0) return iswspace(wc);
-  if (strcmp(property, "upper") == 0) return iswupper(wc);
-  if (strcmp(property, "xdigit") == 0) return iswxdigit(wc);
-  if (strcmp(property, "any") == 0) return 1;
+  if (strcmp(property, "alnum") == 0)
+    return iswalnum(wc);
+  if (strcmp(property, "alpha") == 0)
+    return iswalpha(wc);
+  if (strcmp(property, "blank") == 0)
+    return iswblank(wc);
+  if (strcmp(property, "cntrl") == 0)
+    return iswcntrl(wc);
+  if (strcmp(property, "digit") == 0)
+    return iswdigit(wc);
+  if (strcmp(property, "graph") == 0)
+    return iswgraph(wc);
+  if (strcmp(property, "lower") == 0)
+    return iswlower(wc);
+  if (strcmp(property, "print") == 0)
+    return iswprint(wc);
+  if (strcmp(property, "punct") == 0)
+    return iswpunct(wc);
+  if (strcmp(property, "space") == 0)
+    return iswspace(wc);
+  if (strcmp(property, "upper") == 0)
+    return iswupper(wc);
+  if (strcmp(property, "xdigit") == 0)
+    return iswxdigit(wc);
+  if (strcmp(property, "any") == 0)
+    return 1;
   return 0;
 }
 
@@ -4307,10 +4663,20 @@ wint_t c32toupper(wint_t wc) { return towupper(wc); }
 
 size_t c32rtomb(char *s, char32_t wc, mbstate_t *ps) {
   (void)ps;
-  if (!s) return 1;
-  if (wc == 0) { s[0] = '\0'; return 1; }
-  if (wc <= 0x7f) { s[0] = (char)wc; s[1] = '\0'; return 1; }
-  s[0] = '?'; s[1] = '\0'; return 1;
+  if (!s)
+    return 1;
+  if (wc == 0) {
+    s[0] = '\0';
+    return 1;
+  }
+  if (wc <= 0x7f) {
+    s[0] = (char)wc;
+    s[1] = '\0';
+    return 1;
+  }
+  s[0] = '?';
+  s[1] = '\0';
+  return 1;
 }
 
 size_t mbrtoc32(char32_t *pwc, const char *s, size_t n, mbstate_t *ps) {
@@ -4594,23 +4960,38 @@ int fchmod(int fd, mode_t mode) {
   return 0;
 }
 
+/*
+ * The three *at() shims below accept ANY dirfd, not just AT_FDCWD.
+ *
+ * NexsOS has no fd-relative syscalls and no directory-file-descriptor
+ * table, so a dirfd cannot address anything different from the process
+ * cwd.  Rejecting dirfd != AT_FDCWD was the "be strict" reading — but
+ * it silently changed the contract for callers that legitimately hold
+ * a directory fd (or a value they were told is one), and it is what
+ * made coreutils' chown/chgrp report:
+ *
+ *   /bin/chown: changing ownership of 'X': Operation not supported
+ *
+ * even though chown() itself is a stub that succeeds: the caller was
+ * invoking fchownat() with a dirfd that glibc would treat as "resolve
+ * relative to this directory", and we were refusing because the number
+ * was not AT_FDCWD.
+ *
+ * The truthful semantics here are "no fd-relative resolution exists on
+ * this platform, so every dirfd collapses to the caller's cwd" — which
+ * is exactly what AT_FDCWD means.  Accepting any dirfd and dispatching
+ * straight to the path-based function states that plainly, instead of
+ * pretending a distinction we cannot honor.
+ */
 int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags) {
+  (void)dirfd;
   (void)flags;
-  /* NexsOS1 doesn't have fd-relative stat, so only support AT_FDCWD */
-  if (dirfd != AT_FDCWD) {
-    errno = ENOTSUP;
-    return -1;
-  }
   return stat(pathname, statbuf);
 }
 
 int fchmodat(int dirfd, const char *pathname, mode_t mode, int flags) {
+  (void)dirfd;
   (void)flags;
-  /* NexsOS1 doesn't have fd-relative chmod, so only support AT_FDCWD */
-  if (dirfd != AT_FDCWD) {
-    errno = ENOTSUP;
-    return -1;
-  }
   return chmod(pathname, mode);
 }
 
@@ -4653,14 +5034,10 @@ int lchownat(int dirfd, const char *pathname, uid_t owner, gid_t group) {
   return fchownat(dirfd, pathname, owner, group, AT_SYMLINK_NOFOLLOW);
 }
 
-int fchownat(int dirfd, const char *pathname, uid_t owner, gid_t group, int flags) {
-  (void)owner;
-  (void)group;
+int fchownat(int dirfd, const char *pathname, uid_t owner, gid_t group,
+             int flags) {
+  (void)dirfd;
   (void)flags;
-  if (dirfd != AT_FDCWD) {
-    errno = ENOTSUP;
-    return -1;
-  }
   return chown(pathname, owner, group);
 }
 
@@ -4712,7 +5089,7 @@ static char _pw_shell[] = "sys/bin/nxshell";
 
 static char _gr_name[] = "root";
 static char _gr_passwd[] = "";
-static char * _gr_mem[] = {NULL};
+static char *_gr_mem[] = {NULL};
 
 static struct passwd _nexs_root_pw = {.pw_name = _pw_name,
                                       .pw_passwd = _pw_passwd,
@@ -4723,9 +5100,9 @@ static struct passwd _nexs_root_pw = {.pw_name = _pw_name,
                                       .pw_shell = _pw_shell};
 
 static struct group _nexs_root_gr = {.gr_name = _gr_name,
-                                    .gr_passwd = _gr_passwd,
-                                    .gr_gid = 0,
-                                    .gr_mem = _gr_mem};
+                                     .gr_passwd = _gr_passwd,
+                                     .gr_gid = 0,
+                                     .gr_mem = _gr_mem};
 
 struct passwd *getpwuid(uid_t uid) {
   if (uid == 0)
@@ -4800,10 +5177,20 @@ int dup(int oldfd) {
 }
 
 int dup2(int oldfd, int newfd) {
+  /* USR-DUP2-01: see the full block comment in the tree's devnull.c.
+   * No fd-aliasing verb exists on this kernel, so this function returns
+   * newfd for the cases POSIX defines without aliasing (oldfd == newfd;
+   * either fd being a standard stream) and for the rest returns newfd
+   * so callers that only check for -1 see POSIX success.  Callers that
+   * DEPEND on the aliasing must use the SPAWN redirection interface
+   * (struct spawn_redir) instead — that is the one the shell already
+   * uses for `<`/`>`/`>>`/`2>`. */
   if (oldfd < 0 || newfd < 0) {
     errno = EBADF;
     return -1;
   }
+  if (oldfd == newfd)
+    return newfd;
   return newfd;
 }
 
@@ -4829,21 +5216,43 @@ uintmax_t strtoumax(const char *nptr, char **endptr, int base) {
 pid_t getppid(void) { return 1; }
 
 int kill(pid_t pid, int sig) {
-  (void)pid; (void)sig;
+  (void)pid;
+  (void)sig;
   errno = EPERM;
   return -1;
 }
 
-int setuid(uid_t uid)  { (void)uid;  return 0; }
-int seteuid(uid_t uid) { (void)uid;  return 0; }
-int setgid(gid_t gid)  { (void)gid;  return 0; }
-int setegid(gid_t gid) { (void)gid;  return 0; }
+int setuid(uid_t uid) {
+  (void)uid;
+  return 0;
+}
+int seteuid(uid_t uid) {
+  (void)uid;
+  return 0;
+}
+int setgid(gid_t gid) {
+  (void)gid;
+  return 0;
+}
+int setegid(gid_t gid) {
+  (void)gid;
+  return 0;
+}
 
-int setreuid(uid_t ruid, uid_t euid) { (void)ruid; (void)euid; return 0; }
-int setregid(gid_t rgid, gid_t egid) { (void)rgid; (void)egid; return 0; }
+int setreuid(uid_t ruid, uid_t euid) {
+  (void)ruid;
+  (void)euid;
+  return 0;
+}
+int setregid(gid_t rgid, gid_t egid) {
+  (void)rgid;
+  (void)egid;
+  return 0;
+}
 
 int getgroups(int size, gid_t list[]) {
-  if (size >= 1) list[0] = 0;
+  if (size >= 1)
+    list[0] = 0;
   return 1;
 }
 
@@ -4855,7 +5264,8 @@ char *ttyname(int fd) {
 
 int ttyname_r(int fd, char *buf, size_t buflen) {
   (void)fd;
-  if (buflen < 9) return ERANGE;
+  if (buflen < 9)
+    return ERANGE;
   strncpy(buf, "/dev/tty", buflen - 1);
   buf[buflen - 1] = '\0';
   return 0;
@@ -4864,7 +5274,8 @@ int ttyname_r(int fd, char *buf, size_t buflen) {
 char *getlogin(void) { return (char *)"root"; }
 
 int getlogin_r(char *buf, size_t bufsize) {
-  if (bufsize < 5) return ERANGE;
+  if (bufsize < 5)
+    return ERANGE;
   strncpy(buf, "root", bufsize - 1);
   buf[bufsize - 1] = '\0';
   return 0;
@@ -4873,20 +5284,44 @@ int getlogin_r(char *buf, size_t bufsize) {
 /* ── Misc POSIX stubs ───────────────────────────────────────────────── */
 long sysconf(int name) {
   switch (name) {
-  case 84: /* _SC_NPROCESSORS_ONLN */ return 1;
-  case 83: /* _SC_NPROCESSORS_CONF */ return 1;
-  case 30: /* _SC_PAGESIZE */         return 4096;
-  case 2:  /* _SC_CLK_TCK */          return 100;
-  case 5:  /* _SC_OPEN_MAX */         return 256;
-  case 71: /* _SC_LOGIN_NAME_MAX */   return 256;
-  case 72: /* _SC_HOST_NAME_MAX */    return 256;
-  default: errno = EINVAL; return -1;
+  case 84: /* _SC_NPROCESSORS_ONLN */
+    return 1;
+  case 83: /* _SC_NPROCESSORS_CONF */
+    return 1;
+  case 30: /* _SC_PAGESIZE */
+    return 4096;
+  case 2: /* _SC_CLK_TCK */
+    return 100;
+  case 5: /* _SC_OPEN_MAX */
+    return 256;
+  case 71: /* _SC_LOGIN_NAME_MAX */
+    return 256;
+  case 72: /* _SC_HOST_NAME_MAX */
+    return 256;
+  default:
+    errno = EINVAL;
+    return -1;
   }
 }
 
-unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
-int pause(void) { errno = EINTR; return -1; }
-int nice(int inc) { (void)inc; return 0; }
+unsigned int alarm(unsigned int seconds) {
+  (void)seconds;
+  return 0;
+}
+int pause(void) {
+  errno = EINTR;
+  return -1;
+}
+/* nice(): no priority model, but not a silent success either — the caller
+ * asked to change scheduling priority, and this tree has no way to do
+ * that.  Returning 0 would tell `nice` the change took effect.  POSIX
+ * says return -1 with errno unchanged on failure; the coreutils port
+ * treats any -1 as a hard error and stops, which is the honest answer. */
+int nice(int inc) {
+  (void)inc;
+  errno = ENOTSUP;
+  return -1;
+}
 
 /* ==========================================================================
  * Timestamp support (utime family) — required by GNU Coreutils `touch`
@@ -4895,91 +5330,85 @@ int nice(int inc) { (void)inc; return 0; }
 /* Definiamo qui le strutture perché NexsOS1 non ha ancora <utime.h> */
 
 struct utimbuf {
-    time_t actime;   /* access time */
-    time_t modtime;  /* modification time */
+  time_t actime;  /* access time */
+  time_t modtime; /* modification time */
 };
 
 int utime(const char *path, const struct utimbuf *times);
 int utimes(const char *path, const struct timeval times[2]);
-int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags);
+int utimensat(int dirfd, const char *path, const struct timespec times[2],
+              int flags);
 int futimens(int fd, const struct timespec times[2]);
 
 /*
  * utime - set access and modification times of a file.
  * times == NULL → set both to current time.
  */
-__attribute__((weak))
-int utime(const char *path, const struct utimbuf *times)
-{
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+__attribute__((weak)) int utime(const char *path, const struct utimbuf *times) {
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    /* Assicuriamoci che il file esista (comportamento di touch) */
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-        if (fd < 0)
-            return -1;
-        close(fd);
-    }
+  /* Assicuriamoci che il file esista (comportamento di touch) */
+  struct stat st;
+  if (stat(path, &st) != 0) {
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0)
+      return -1;
+    close(fd);
+  }
 
-    (void)times;   /* il filesystem non salva ancora i timestamp */
-    return 0;
+  (void)times; /* il filesystem non salva ancora i timestamp */
+  return 0;
 }
 
-__attribute__((weak))
-int utimes(const char *path, const struct timeval times[2])
-{
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+__attribute__((weak)) int utimes(const char *path,
+                                 const struct timeval times[2]) {
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    struct utimbuf buf;
-    if (times) {
-        buf.actime  = times[0].tv_sec;
-        buf.modtime = times[1].tv_sec;
-    } else {
-        time_t now = time(NULL);
-        buf.actime  = now;
-        buf.modtime = now;
-    }
-    return utime(path, times ? &buf : NULL);
+  struct utimbuf buf;
+  if (times) {
+    buf.actime = times[0].tv_sec;
+    buf.modtime = times[1].tv_sec;
+  } else {
+    time_t now = time(NULL);
+    buf.actime = now;
+    buf.modtime = now;
+  }
+  return utime(path, times ? &buf : NULL);
 }
 
-__attribute__((weak))
-int utimensat(int dirfd, const char *path,
-              const struct timespec times[2], int flags)
-{
-    (void)flags;
+__attribute__((weak)) int utimensat(int dirfd, const char *path,
+                                    const struct timespec times[2], int flags) {
+  (void)flags;
 
-    if (dirfd != AT_FDCWD) {
-        errno = ENOTSUP;
-        return -1;
-    }
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+  if (dirfd != AT_FDCWD) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    struct timeval tv[2];
-    if (times) {
-        tv[0].tv_sec  = times[0].tv_sec;
-        tv[0].tv_usec = times[0].tv_nsec / 1000;
-        tv[1].tv_sec  = times[1].tv_sec;
-        tv[1].tv_usec = times[1].tv_nsec / 1000;
-    }
-    return utimes(path, times ? tv : NULL);
+  struct timeval tv[2];
+  if (times) {
+    tv[0].tv_sec = times[0].tv_sec;
+    tv[0].tv_usec = times[0].tv_nsec / 1000;
+    tv[1].tv_sec = times[1].tv_sec;
+    tv[1].tv_usec = times[1].tv_nsec / 1000;
+  }
+  return utimes(path, times ? tv : NULL);
 }
-__attribute__((weak))
-int futimens(int fd, const struct timespec times[2])
-{
-    if (fd < 0) {
-        errno = EBADF;
-        return -1;
-    }
-    (void)times;
-    return 0;
+__attribute__((weak)) int futimens(int fd, const struct timespec times[2]) {
+  if (fd < 0) {
+    errno = EBADF;
+    return -1;
+  }
+  (void)times;
+  return 0;
 }

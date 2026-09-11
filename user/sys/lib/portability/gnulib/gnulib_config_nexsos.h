@@ -9,13 +9,13 @@
  * IMPORTANTE: queste macro devono stare PRIMA degli include
  * di sistema, altrimenti time.h definisce struct tm_zone.
  * ============================================================ */
-#define HAVE_STRUCT_TM_ZONE     1
-#define HAVE_TIMEZONE_T         1
-#define HAVE_TZALLOC            1
+#define HAVE_STRUCT_TM_ZONE 1
+#define HAVE_TIMEZONE_T 1
+#define HAVE_TZALLOC 1
 
 /* (eventualmente anche queste se le implementi davvero) */
-#define HAVE_LOCALTIME_RZ       1
-#define HAVE_MKTIME_Z           1
+#define HAVE_LOCALTIME_RZ 1
+#define HAVE_MKTIME_Z 1
 
 #ifndef _NEXSOS_GETCWD_POSIX
 #define _NEXSOS_GETCWD_POSIX 1
@@ -28,7 +28,16 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>     /* ora time.h vedrà HAVE_STRUCT_TM_ZONE e non definirà la struct */
+#include <stdlib.h> /* ora time.h vedrà HAVE_STRUCT_TM_ZONE e non definirà la struct */
+/* POSIX kill() — declared here because readutmp.c uses it to test
+ * whether a utmp entry's process is still alive (`kill(pid, 0)` and
+ * then `errno == ESRCH`).  <signal.h> is not pulled in transitively by
+ * readutmp.c, so on amd64 the call was an implicit declaration (a hard
+ * error there, a warning on aarch64).  The layer's lib.c provides the
+ * actual stub (returns -1 with errno=EPERM), but the compiler needs to
+ * see the prototype at the call site. */
+#include <sys/types.h>
+extern int kill(pid_t pid, int sig);
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -38,35 +47,35 @@
 #endif
 
 #ifndef UINT_WIDTH
-# if defined(__SIZEOF_INT__) && __SIZEOF_INT__ == 4
-#  define UINT_WIDTH 32
-# elif defined(__SIZEOF_INT__) && __SIZEOF_INT__ == 2
-#  define UINT_WIDTH 16
-# else
-#  define UINT_WIDTH 32
-# endif
+#if defined(__SIZEOF_INT__) && __SIZEOF_INT__ == 4
+#define UINT_WIDTH 32
+#elif defined(__SIZEOF_INT__) && __SIZEOF_INT__ == 2
+#define UINT_WIDTH 16
+#else
+#define UINT_WIDTH 32
+#endif
 #endif
 #ifndef ULONG_WIDTH
-# if defined(__SIZEOF_LONG__) && __SIZEOF_LONG__ == 8
-#  define ULONG_WIDTH 64
-# elif defined(__SIZEOF_LONG__) && __SIZEOF_LONG__ == 4
-#  define ULONG_WIDTH 32
-# elif ULONG_MAX == 0xffffffffffffffffUL
-#  define ULONG_WIDTH 64
-# elif ULONG_MAX == 0xffffffffUL
-#  define ULONG_WIDTH 32
-# else
-#  define ULONG_WIDTH 64
-# endif
+#if defined(__SIZEOF_LONG__) && __SIZEOF_LONG__ == 8
+#define ULONG_WIDTH 64
+#elif defined(__SIZEOF_LONG__) && __SIZEOF_LONG__ == 4
+#define ULONG_WIDTH 32
+#elif ULONG_MAX == 0xffffffffffffffffUL
+#define ULONG_WIDTH 64
+#elif ULONG_MAX == 0xffffffffUL
+#define ULONG_WIDTH 32
+#else
+#define ULONG_WIDTH 64
+#endif
 #endif
 #ifndef ULLONG_WIDTH
-# if defined(__SIZEOF_LONG_LONG__) && __SIZEOF_LONG_LONG__ == 8
-#  define ULLONG_WIDTH 64
-# elif defined(__SIZEOF_LONG_LONG__) && __SIZEOF_LONG_LONG__ == 4
-#  define ULLONG_WIDTH 32
-# else
-#  define ULLONG_WIDTH 64
-# endif
+#if defined(__SIZEOF_LONG_LONG__) && __SIZEOF_LONG_LONG__ == 8
+#define ULLONG_WIDTH 64
+#elif defined(__SIZEOF_LONG_LONG__) && __SIZEOF_LONG_LONG__ == 4
+#define ULLONG_WIDTH 32
+#else
+#define ULLONG_WIDTH 64
+#endif
 #endif
 
 /*
@@ -80,17 +89,67 @@ static inline char *getcwd(char *buf, size_t size) {
   if (!buf) {
     size = size ? size : 4096;
     ret = (char *)malloc(size);
-    if (!ret) return (char *)0;
+    if (!ret)
+      return (char *)0;
   }
   if (_sys_getcwd(ret, size) != 0) {
-    if (!buf) free(ret);
+    if (!buf)
+      free(ret);
     return (char *)0;
   }
   return ret;
 }
+#ifndef HAVE_UTMP_H
+#define HAVE_UTMP_H 1
+#endif
+/* NexsOS's include/api/utmp.h defines struct utmp with the full
+ * glibc LP64 field set.  gnulib's readutmp.c branches on each of these
+ * HAVE_STRUCT_UTMP_UT_* macros to decide which fields it can read;
+ * without them it falls into a "cannot parse this file" path and
+ * returns ENOSYS, which coreutils' who/users report verbatim. */
+#ifndef HAVE_STRUCT_UTMP
+#define HAVE_STRUCT_UTMP 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_TYPE
+#define HAVE_STRUCT_UTMP_UT_TYPE 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_PID
+#define HAVE_STRUCT_UTMP_UT_PID 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_LINE
+#define HAVE_STRUCT_UTMP_UT_LINE 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_ID
+#define HAVE_STRUCT_UTMP_UT_ID 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_USER
+#define HAVE_STRUCT_UTMP_UT_USER 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_HOST
+#define HAVE_STRUCT_UTMP_UT_HOST 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_EXIT
+#define HAVE_STRUCT_UTMP_UT_EXIT 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_SESSION
+#define HAVE_STRUCT_UTMP_UT_SESSION 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_TV
+#define HAVE_STRUCT_UTMP_UT_TV 1
+#endif
+#ifndef HAVE_STRUCT_UTMP_UT_ADDR_V6
+#define HAVE_STRUCT_UTMP_UT_ADDR_V6 1
+#endif
 
-
-
+/* The system utmp file lives at _PATH_UTMP from include/api/utmp.h.
+ * gnulib's readutmp.h defaults to a hardcoded path otherwise, which
+ * would not find a file created by nxenvinit.c. */
+#ifndef UTMP_FILE
+#define UTMP_FILE "/home/var/run/utmp"
+#endif
+#ifndef WTMP_FILE
+#define WTMP_FILE "/home/var/log/wtmp"
+#endif
 
 #ifndef _GL_CONFIG_H_INCLUDED
 #define _GL_CONFIG_H_INCLUDED 1
@@ -124,12 +183,9 @@ static inline char *getcwd(char *buf, size_t size) {
 #define HAVE_MBRLEN 1
 #endif
 
-
 #ifndef PROMOTED_MODE_T
 #define PROMOTED_MODE_T mode_t
 #endif
-
-
 
 #ifndef GNULIB_DIRNAME
 #define GNULIB_DIRNAME 1
@@ -171,7 +227,6 @@ static inline char *getcwd(char *buf, size_t size) {
 #define _GL_CMP(a, b) (((a) > (b)) - ((a) < (b)))
 #endif
 
-
 #ifndef alignof
 #define alignof _Alignof
 #endif
@@ -180,11 +235,9 @@ static inline char *getcwd(char *buf, size_t size) {
 #define static_assert(expr, ...) _Static_assert(expr, "" #expr)
 #endif
 
-
 #ifndef UINT_WIDTH
 #define UINT_WIDTH 32
 #endif
-
 
 #ifndef MB_CUR_MAX
 #define MB_CUR_MAX 1
@@ -194,17 +247,15 @@ static inline char *getcwd(char *buf, size_t size) {
 #define mbsinit(ps) 1
 #endif
 
-#include <wchar.h>
 #include <string.h>
+#include <wchar.h>
 
 /* memeq — gnulib uses this throughout; provided both as inline and extern */
 #ifndef GNULIB_defined_memeq
 #ifndef _GNULIB_OS1_GLUE_IMPL
 /* Provide as static inline for normal compilation units */
 #include <string.h>
-static inline int
-memeq(void const *s1, void const *s2, size_t n)
-{
+static inline int memeq(void const *s1, void const *s2, size_t n) {
   return memcmp(s1, s2, n) == 0;
 }
 #else
@@ -232,14 +283,11 @@ static inline int streq(const char *s1, const char *s2) {
 #define c32isspace(c) isspace((int)(c))
 #endif
 
-
-
 /* mbszero — zero-initialize mbstate */
 #ifndef mbszero
 #define mbszero(ps) memset((ps), 0, sizeof(mbstate_t))
 #define GNULIB_defined_mbszero 1
 #endif
-
 
 #ifndef c32isprint
 #define c32isprint(c) isprint(c)
@@ -252,13 +300,11 @@ typedef ptrdiff_t idx_t;
 
 #ifndef _GL_GNUC_PREREQ
 #if defined __GNUC__ && defined __GNUC_MINOR__
-# define _GL_GNUC_PREREQ(maj, min) \
-    ((maj) < __GNUC__ + ((min) <= __GNUC_MINOR__))
+#define _GL_GNUC_PREREQ(maj, min) ((maj) < __GNUC__ + ((min) <= __GNUC_MINOR__))
 #else
-# define _GL_GNUC_PREREQ(maj, min) 0
+#define _GL_GNUC_PREREQ(maj, min) 0
 #endif
 #endif
-
 
 #ifndef HAVE_NANOSLEEP
 #define HAVE_NANOSLEEP 1
@@ -271,9 +317,6 @@ typedef ptrdiff_t idx_t;
 #ifndef GNULIB_TEXT_DOMAIN
 #define GNULIB_TEXT_DOMAIN "gnulib"
 #endif
-
-
-
 
 #ifndef PACKAGE
 #define PACKAGE "coreutils"
@@ -315,10 +358,6 @@ typedef ptrdiff_t idx_t;
 #ifndef __NEXSOS__
 #define __NEXSOS__ 1
 #endif
-
-
-
-
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
@@ -438,13 +477,13 @@ typedef ptrdiff_t idx_t;
 #define HAVE_RAW_DECL_RAWMEMCHR 1
 
 /* Timestamp support for touch / coreutils */
-#define HAVE_UTIME              1
-#define HAVE_UTIMES             1
-#define HAVE_UTIMENSAT          1
-#define HAVE_FUTIMENS           1
-#define HAVE_STRUCT_TIMESPEC    1
-#define HAVE_STRUCT_UTIMBUF     1
-#define HAVE_STRUCT_TIMEVAL     1
+#define HAVE_UTIME 1
+#define HAVE_UTIMES 1
+#define HAVE_UTIMENSAT 1
+#define HAVE_FUTIMENS 1
+#define HAVE_STRUCT_TIMESPEC 1
+#define HAVE_STRUCT_UTIMBUF 1
+#define HAVE_STRUCT_TIMEVAL 1
 
 /* Architecture bitness */
 #define SIZEOF_VOID_P 8
@@ -643,9 +682,8 @@ typedef ptrdiff_t idx_t;
 #define _Noreturn __attribute__((__noreturn__))
 #endif
 
-
 /* Include standard OS1 definitions */
-#include <os1.h>
 #include <errno.h>
+#include <os1.h>
 
 #endif /* _GNULIB_CONFIG_NEXSOS_H */
