@@ -1,5 +1,5 @@
 /*
- * user/sys/bin/nxinit.c
+ * user/sbin/nxinit.c
  * Process 1 — System Initializer and Service Supervisor
  *
  * This is the first userland process launched by the kernel after boot.
@@ -44,7 +44,7 @@
  *                into init's own startup path.  See "Environment bootstrap"
  *                below for why it is awaited rather than fire-and-forget.
  */
-#include "nxinfo.h"
+#include "../sys/bin/nxinfo.h"
 #include <os1.h>
 #include <sys/wait.h> /* waitpid + status decode — Phase 2 supervisor logging */
 

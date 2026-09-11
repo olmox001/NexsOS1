@@ -353,6 +353,7 @@ dirs:
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/lib
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/lib
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/bin
+	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sbin
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_ARCH_DIR)
 	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/block
@@ -630,8 +631,11 @@ include user/sys/lib/portability/coreutils/overlay.mk
 
 
 
+# Init ELF (placed in /sbin — machine-level only, separate from services)
+SBIN_ELFS = $(BUILD_DIR)/nxinit.elf
+
 # System ELFs (placed in /sys/bin)
-SYS_ELFS = $(BUILD_DIR)/nxinit.elf $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
+SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
            $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
@@ -659,7 +663,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/kilo.elf \
            $(COREUTILS_ELFS)
 
-USER_ELFS = $(SYS_ELFS) $(BIN_ELFS)
+USER_ELFS = $(SBIN_ELFS) $(SYS_ELFS) $(BIN_ELFS)
 
 
 user: $(USER_ELFS)
@@ -683,8 +687,13 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
+$(BUILD_DIR)/$(USER_DIR)/sbin/%.o: $(USER_DIR)/sbin/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
+
 # Explicit dependencies for each user ELF
-$(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+# nxinit: source in user/sbin/ (machine-level init, separate from /sys/bin services)
+$(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sbin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxenvinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxenvinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -818,6 +827,7 @@ $(BUILD_DIR)/%.o: %.cpp
 # Disk Generation
 rootfs: user libsdl2 liblua libgnulib coreutils
 	@rm -rf $(BUILD_DIR)/rootfs
+	@mkdir -p $(BUILD_DIR)/rootfs/sbin
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
@@ -842,6 +852,7 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@mkdir -p $(BUILD_DIR)/rootfs/home/shared
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Settings
 	@-cp -r user/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
+	@cp $(SBIN_ELFS) $(BUILD_DIR)/rootfs/sbin/
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
@@ -888,6 +899,7 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@# Remove .elf extensions in rootfs
 	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/sbin/*.elf; do mv "$$f" "$${f%.elf}"; done
 	@# Rinomina i file cu_* togliendo il prefisso (senza duplicare)
 	@for cu in $(COREUTILS_NAMES); do \
 		if [ -f $(BUILD_DIR)/rootfs/bin/cu_$$cu ]; then \

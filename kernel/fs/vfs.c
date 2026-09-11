@@ -426,6 +426,8 @@ int vfs_write_allowed(const char *resolved_path) {
    * on the tree already existing. */
   if (strncmp(resolved_path, "/sys/bin/", 9) == 0 ||
       strcmp(resolved_path, "/sys/bin") == 0 ||
+      strncmp(resolved_path, "/sbin/", 6) == 0 ||
+      strcmp(resolved_path, "/sbin") == 0 ||
       strncmp(resolved_path, "/system/", 8) == 0 ||
       strcmp(resolved_path, "/system") == 0) {
     pr_warn("vfs: PID %d denied write to machine-only path '%s'\n",

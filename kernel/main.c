@@ -447,8 +447,8 @@ static int spawn_init_process(void) {
   pr_info("%s", "K3: Spawning First-Stage Init...\n");
   struct process *nxinit =
       process_create_caps("nxinit", PROC_PRIO_USER, PLVL_MACHINE, CAP_ALL);
-  if (nxinit && process_load_elf(nxinit, "/sys/bin/nxinit") == 0) {
-    pr_info("K3: Initialized PID %d (/sys/bin/nxinit)\n", nxinit->pid);
+  if (nxinit && process_load_elf(nxinit, "/sbin/nxinit") == 0) {
+    pr_info("K3: Initialized PID %d (/sbin/nxinit)\n", nxinit->pid);
     enqueue_task(nxinit);
     return 0;
   }

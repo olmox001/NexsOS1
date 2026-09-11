@@ -36,7 +36,7 @@ static void check_bool(const char *name, int cond) {
 }
 
 static void test_basename_dirname(void) {
-    const char *p1 = "/sys/bin/nxinit";
+    const char *p1 = "/sbin/nxinit";
     const char *b1 = last_component(p1);
     check_bool("basename last_component", strcmp(b1, "nxinit") == 0);
 
