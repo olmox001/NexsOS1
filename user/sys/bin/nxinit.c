@@ -4,10 +4,12 @@
  *
  * This is the first userland process launched by the kernel after boot.
  * It is responsible for:
- *   1. Spawning the two mandatory system services (notify_srv, shell) in order.
- *   2. Sending the "Boot Complete" notification via IPC to notify_srv.
- *   3. Running a non-blocking supervisor loop that detects child exits and
- *      respawns the dead service immediately.
+ *   1. Running the one-shot environment bootstrap (nxenvinit) and waiting
+ *      for it to complete before anything else starts.
+ *   2. Spawning the mandatory system services in order.
+ *   3. Sending the "Boot Complete" notification via IPC to notify_srv.
+ *   4. Running a non-blocking supervisor loop that detects child exits and
+ *      respawns the dead service, with decaying exponential backoff.
  *
  * Calling convention / runtime:
  *   _start (user/arch/<arch>/syscall.S) sets up the stack and calls main();
@@ -35,6 +37,12 @@
  *                register_notify_pid).  Full capability-based addressing
  *                (OBJ_TYPE_PROCESS handle) is the planned upgrade; see DIR-01
  *                M4.5 "IPC -> OBJ_TYPE_PORT".
+ *   NXENVINIT-01 (2026-07) registry_init_defaults() + create_utmp_file() used
+ *                to run inline here.  Moved to a SEPARATE one-shot process
+ *                (user/sys/bin/nxenvinit.c) so environment bootstrap has an
+ *                independent, idempotent lifecycle instead of being wedged
+ *                into init's own startup path.  See "Environment bootstrap"
+ *                below for why it is awaited rather than fire-and-forget.
  */
 #include "nxinfo.h"
 #include <os1.h>
@@ -60,89 +68,6 @@
 #define LAUNCHER_AUTOSTART 1
 
 /*
- * registry_init_defaults - completa le chiavi di registro con dati reali.
- *
- * Chiamata DOPO tutti gli spawn iniziali. Il kernel ha già creato le chiavi
- * base con valori placeholder; init le sovrascrive con l'architettura, la
- * versione OS, il timestamp di boot reale e i default del compositor.
- * Ogni binario /sys/bin gira a PLVL_ROOT (preset per-path) e quindi ha
- * CAP_REG_WRITE come tutti gli altri servizi di sistema; init non è
- * l'unico scrittore, ma è quello che pubblica i valori reali post-boot.
- * registry_caller_owner() tratta MACHINE e ROOT come owner 0 (system), così
- * le chiavi restano scrivibili da qualunque servizio di sistema anche dopo
- * un respawn con PID diverso (kernel/lib/registry.c).
- */
-static void registry_init_defaults(void) {
-  /* --- Sistema operativo e versione (da nxinfo.h) --- */
-  OS1_registry_set("system.os", NXINFO_OS_NAME);
-  OS1_registry_set("system.version", NXINFO_OS_VERSION);
-
-  /* --- Architettura (da build flags) --- */
-#if defined(__x86_64__) || defined(__amd64__)
-  OS1_registry_set("system.arch", "amd64");
-#elif defined(__aarch64__)
-  OS1_registry_set("system.arch", "arm64");
-#else
-  OS1_registry_set("system.arch", "generic");
-#endif
-
-  /* --- Hostname --- */
-  OS1_registry_set("system.hostname", "NeXs");
-
-  /* --- Tempo di boot reale (secondi dall'epoch, per nxbar e orologio) --- */
-  char boot_time[32];
-  snprintf(boot_time, sizeof(boot_time), "%ld", OS1_time_now());
-  OS1_registry_set("system.boot_time", boot_time);
-
-  /* --- Aspetto del compositor (valori predefiniti) --- */
-  OS1_registry_set("theme.color", "dark");
-  OS1_registry_set("style.name", "minimal");
-  OS1_registry_set("background.name", "blue");
-
-  /* --- Pannello notifiche (inizialmente chiuso) --- */
-  OS1_registry_set("sys.ntfy.panel_open", "0");
-
-  /* --- Input --- */
-  OS1_registry_set("mouse.sensitivity", "1.0");
-
-  /* --- Environment: the MACHINE's defaults (Phase 17) ---
-   * These are stored registry keys, not process state: they describe this
-   * installation's layout, so they belong to the configuration namespace
-   * (ASTRA §6.6) and outlive every process.  getenv() falls back here when a
-   * process has no value of its own, which is why nothing has to copy PATH
-   * into each new process at spawn.  Editing these reconfigures the machine
-   * and needs CAP_REG_WRITE; a process changing its OWN copy does not.
-   *
-   * Seed ONLY what has a verified consumer.  A default with no reader is not
-   * harmless documentation: it is a claim about the system that nothing keeps
-   * true, and the first program to believe it finds out the hard way.
-   *
-   *   HOME  read by nxexec_resolve_path()'s '~' tier and nxlauncher — and
-   *         nxexec.h already anticipates it ("a real per-user HOME later
-   *         becomes a getenv() change alone").
-   *   PATH  no reader YET: the bare-name search is hardcoded to /bin then
-   *         /sys/bin inside nxexec_spawn_search.  That hardcoded list IS this
-   *         key's meaning, and 17c makes the executor consume it, at which
-   *         point Phase 12's move to /sys/services becomes a registry edit
-   *         rather than a code edit.
-   *
-   * Deliberately NOT seeded:
-   *   TERM    there is no terminal TYPE yet.  term.c implements a real
-   *           ECMA-48 subset, but nothing names or describes that capability
-   *           set, so TERM would advertise a type with nothing behind it (17d).
-   *   USER    there is no user identity in this system.  Phase 11 owns that
-   *           model and is blocked on its design doc; inventing a name here
-   *           would pre-commit it.
-   *   SHELL   no reader.  system() uses the STANDARD shell by POSIX, not
-   * $SHELL. TMPDIR  no reader.  doom reads TEMP, and only under #if _WIN32.
-   */
-  OS1_registry_set("sys.env.HOME", "/home");
-  OS1_registry_set("sys.env.PATH", "/bin:/sys/bin");
-
-  printf("[Init] Registry defaults initialised.\n");
-}
-
-/*
  * register_service_pid - publish `pid` as the LIVE endpoint of a singleton
  * system service by writing it (decimal, NUL-terminated) to registry key
  * `key`.  Generalised from the original notify-only register_notify_pid
@@ -152,7 +77,7 @@ static void registry_init_defaults(void) {
  * way, and stays discoverable across a respawn.
  *
  * Called by init on the FIRST spawn AND on every RESPAWN of the service
- * (init.c main()).  Centralising the write in init fixes two bugs of the
+ * (main() below).  Centralising the write in init fixes two bugs of the
  * old "server self-registers" model:
  *   1. A respawn left the key pointing at the corpse's pid — anything
  *      addressing the service by that pid (notify_post(), or nxres_h's
@@ -177,23 +102,11 @@ static void register_service_pid(const char *key, int pid) {
 }
 
 /*
- * main - init entry point; never returns.
- *
- * Spawns notify_srv and shell, fires the "boot complete" notification, then
- * enters the supervisor loop.
- *
- * No parameters, no meaningful return value (return 0 is unreachable dead code
- * because the while(1) loop never exits).
- *
- * Side effects:
- *   - Creates two child processes via SYS_SPAWN.
- *   - Sends one IPC notify message to the notification server.
- *   - Calls SYS_FLUSH to push any buffered output before entering the loop.
- */
-/* service_gone - Phase 2 supervisor probe. WNOHANG-waitpid a supervised
+ * service_gone - Phase 2 supervisor probe. WNOHANG-waitpid a supervised
  * service; if it died, log HOW (clean exit code vs killed/faulted) and return
  * 1 so the caller respawns. 0 while still running. Replaces the ad-hoc
- * `wait(pid) == pid || -2` checks with one standard, status-aware seam. */
+ * `wait(pid) == pid || -2` checks with one standard, status-aware seam.
+ */
 static int service_gone(int pid, const char *name) {
   int status = 0;
   int r = waitpid(pid, &status, WNOHANG);
@@ -213,17 +126,12 @@ static int service_gone(int pid, const char *name) {
 int main(void) {
   print("[Init] System Initialization Starting...\n");
 
-  /* Completa il registro con i dati reali (timestamp, architettura, versione)
-   * prima di ogni spawn, così l'ambiente esiste già quando il primo processo
-   * utente parte. */
-  registry_init_defaults();
-
   /* Spawn Notification Server */
   /* NOTE(USR-INIT-02): Hardcoded path.  init.cfg would provide this path but
    * is never read; the cfg also lists wrong paths (see file header).
    * NOTE(NOTIFY-REG-01): init OWNS the srv.notify_pid registry key (see
-   * register_service_pid() below).  nxntfy_srv no longer publishes its own PID
-   * — otherwise a respawn leaves the key pointing at the corpse. */
+   * register_service_pid() above).  nxntfy_srv no longer publishes its own
+   * PID — otherwise a respawn leaves the key pointing at the corpse. */
   printf("[Init] Spawning Notification Server...\n");
   int pid_notify = spawn("/sys/bin/nxntfy_srv");
   if (pid_notify > 0) {
@@ -264,6 +172,45 @@ int main(void) {
     printf("[Init] Execution Service started (PID %d)\n", pid_execsvc);
   else
     print("[Init] Failed to spawn Execution Service!\n");
+
+  /*
+   * Environment bootstrap.
+   *
+   * registry_init_defaults() + create_utmp_file() now live in their OWN
+   * process (user/sys/bin/nxenvinit.c) instead of running inline here.  It
+   * is spawned here and ONLY here: not part of the supervisor's spawn
+   * queue below, no backoff slot, no respawn-on-death, because it is meant
+   * to run once and exit — nxenvinit itself is idempotent (checks
+   * "system.env_ready"), but init's OWN launch of it is still one-shot.
+   *
+   * POLL-WAITED rather than fire-and-forget: every spawn after this point
+   * assumes the registry is already seeded.  nxexec's bare-name search
+   * reads sys.env.PATH, and the '~' path tier + nxlauncher read
+   * sys.env.HOME.  Uses the same WNOHANG poll-loop contract the rest of
+   * this file already relies on for wait()/waitpid() (process_wait() is a
+   * non-blocking pure reporter — see the supervisor loop comment below).
+   * A failed/missing nxenvinit is logged, not fatal: none of the three
+   * mandatory services need it to succeed, they just start with an
+   * unseeded environment until a later manual run fixes it.
+   */
+  printf("[Init] Running environment bootstrap (nxenvinit)...\n");
+  int pid_envinit = spawn("/sys/bin/nxenvinit");
+  if (pid_envinit > 0) {
+    int status = 0, r;
+    do {
+      r = waitpid(pid_envinit, &status, WNOHANG);
+      if (r == 0)
+        OS1_sleep(10);
+    } while (r == 0);
+    if (r > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0)
+      printf("[Init] Environment bootstrap complete.\n");
+    else
+      printf("[Init] WARN: nxenvinit finished abnormally (status 0x%x)\n",
+             status);
+  } else {
+    print("[Init] Failed to spawn nxenvinit! Continuing without a "
+          "freshly-seeded environment.\n");
+  }
 
   /* Spawn the dock (window-manager UI).  Plain spawn(): the ASTRA per-path
    * preset gives any /sys/bin binary ROOT authority (F1), which is exactly what
@@ -321,6 +268,7 @@ int main(void) {
     print("[Init] Failed to spawn NXShell!\n");
   }
 
+  /* /etc/utmp is created by nxenvinit, above. */
   flush();
 
   /* The "Boot Complete" notification is sent from the supervisor loop below,
