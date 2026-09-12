@@ -43,17 +43,29 @@
  *                                 frames are recycled.
  *   MM-VMM-06  (W2 REFINE)       Generic map path is 4KB-only; 2MB blocks
  *                                 only via arch_vmm_map_range.
+ *   AMMU-04 as it applies to this file (RESOLVED, see the FIX(MM-VMM-06 /
+ *     AMMU-04) comment above vmm_check_range() below): the generic walker
+ *     used to dereference a 2MB/1GB block entry's physical-address field
+ *     as if it were a next-level table pointer, misreading arbitrary
+ *     physical memory as page-table bytes. This was reachable from
+ *     arch_copy_from_user()/arch_copy_to_user() (every syscall touching a
+ *     user pointer) because every process's page table shares the
+ *     kernel's block-mapped RAM identity map by reference. The
+ *     amd64/aarch64 arch-specific walkers (kernel/arch/{amd64,aarch64}/mm/
+ *     mmu.c) never
+ *     had this bug — they already check the block bit — so this was a
+ *     vmm.c-only defect, not a hardware/arch-layer one.
  *   MM-VMM-07  (W1 DOC)          File header mentions only AArch64.
  */
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
+#include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/string.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
-#include <kernel/platform.h>
 #include <stdint.h>
 
 /* Page Table Levels */
@@ -79,61 +91,58 @@ uint64_t *kernel_pgd;
 #define PTE_ADDR_MASK 0x0000FFFFFFFFF000UL
 
 /*
- * Get or create next level table
+ * FIX(MM-VMM-06 / AMMU-04): get_next_table() used to unconditionally treat
+ * ANY VALID directory entry as a pointer to a next-level table:
  *
- * get_next_table - walk one level of the page table, optionally allocating.
+ *   if (table[index] & PTE_VALID) {
+ *     uint64_t phys = table[index] & PTE_ADDR_MASK;
+ *     return (uint64_t *)phys_to_virt(phys);
+ *   }
  *
- * Parameters:
- *   table - pointer to the current-level page-table page (512 uint64_t entries).
- *   index - 9-bit index into 'table' for the next level.
- *   alloc - if non-zero and the entry is not present, allocate a new table page.
+ * This is wrong for a LARGE-PAGE (block) entry — a 2MB PDE or 1GB PDPTE
+ * with the page-size bit set (PTE_PS on amd64, the block encoding on
+ * aarch64; kernel/include/kernel/vmm.h's PTE_IS_TABLE() macro is the
+ * correct, already-existing test this file never used). For a block
+ * entry, the "physical address" field in the entry is the base of the
+ * MAPPED MEMORY ITSELF, not a pointer to an array of further PTEs.
+ * phys_to_virt() on that address and then indexing into it as if it were
+ * a page table means reading (and, had any caller ever passed alloc=1
+ * here, WRITING) raw bytes of whatever is actually stored in that memory
+ * — file cache contents, another process's data, kernel structures,
+ * anything — as though they were page-table entries. That is a
+ * page-table-integrity bug in general, but it is a REAL, live security
+ * bug specifically through this function's one caller,
+ * vmm_check_range(): every process's page table shares the kernel's
+ * upper-half PML4/PGD entries BY REFERENCE (vmm_create_pgd() /
+ * arch_vmm_create_process_pgd()), and the kernel's own RAM identity map
+ * is built almost entirely out of 2MB block entries
+ * (vmm_map_ram_wx()/arch_vmm_map_range(), preferred for the whole RAM
+ * range). vmm_check_range() is what arch_copy_from_user()/
+ * arch_copy_to_user() (kernel/arch/amd64/mm/uaccess.c and the aarch64
+ * equivalent) call to validate a user-supplied pointer/length BEFORE
+ * copying data to or from it — i.e. the syscall argument boundary check
+ * almost every syscall relies on. A user-controlled address landing in
+ * one of these 2MB-block regions would make the old get_next_table()
+ * dereference unrelated physical memory as bogus PTE bytes; if those
+ * bytes happened to satisfy the VALID bit and the requested flags_mask
+ * by coincidence, the check would report "yes, safely accessible" for an
+ * address it never actually validated — after which the caller proceeds
+ * to copy attacker-influenced data to, or leak kernel memory from,
+ * whatever physical location the copy actually lands on. That is
+ * "writing outside what the VMM is supposed to allow", caused entirely
+ * by this validation path, not by the copy itself.
  *
- * Returns: pointer to the next-level table, or NULL if not present and
- *          alloc==0, or NULL if pmm_alloc_page() fails.
- *
- * PA/VA: entries hold PHYSICAL addresses; dereferences go through
- * phys_to_virt() and new tables are installed via virt_to_phys()
- * (MM-VMM-02 resolved — see kernel/memlayout.h).
- *
- * Locking: caller must hold the relevant PGD/process mm_lock; this helper
- * does not take any lock itself.
+ * Fixed by inlining the walk in vmm_check_range() below and checking
+ * PTE_IS_TABLE() at every level: a block entry is evaluated against
+ * flags_mask DIRECTLY (it is itself a complete, valid mapping — just one
+ * that covers a whole 2MB/1GB span instead of one 4KB page) and the walk
+ * advances past that entire span, instead of ever dereferencing its
+ * address field as a table pointer. The old get_next_table() is removed;
+ * it had exactly one caller (this one) and no code anywhere ever passed
+ * alloc=1 to it, so the "get OR CREATE" half of its contract was dead
+ * code that only added a second, unaudited path capable of writing into
+ * a page-table slot.
  */
-static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
-  if (table[index] & PTE_VALID) {
-    /* Table entries store PHYSICAL addresses (48 bits supported); translate
-     * through phys_to_virt() (direct map, MM-VMM-02). */
-    uint64_t phys = table[index] & 0x0000FFFFFFFFF000UL;
-    return (uint64_t *)phys_to_virt(phys);
-  }
-
-  if (!alloc)
-    return NULL;
-
-  /* Allocate a new page for the table.  pmm_alloc_page() returns a pointer
-   * usable by the kernel; what gets STORED in the entry is its physical
-   * address (virt_to_phys below). */
-  void *page = pmm_alloc_page();
-  if (!page)
-    return NULL;
-
-  /* Zero and Flush the new table page */
-  memset(page, 0, 4096);
-  arch_cache_clean_range(page, 4096);
-  arch_mb();
-
-  /* Table entry flags:
-   * AArch64: Valid (bit 0), Table (bit 1), AF (bit 10), Inner Share (bits 8-9),
-   *          AP EL0 RW (bit 6-7, usually ignored for tables but safe).
-   * AMD64:   Present (bit 0), RW (bit 1), User (bit 2).
-   */
-  table[index] = virt_to_phys(page) | PTE_TABLE | PTE_VALID;
-
-  /* Flush the directory entry itself */
-  arch_cache_clean_range(&table[index], 8);
-  arch_mb();
-
-  return page;
-}
 
 /*
  * Map a page
@@ -195,9 +204,16 @@ int vmm_map_page_locked(struct process *proc, uint64_t virt, uint64_t phys,
  * vmm_check_range - verify every page in [virt, virt+size) is mapped with
  *                   all bits of 'flags_mask' set.
  *
- * Walks the four-level page table using get_next_table() with alloc=0.
- * Returns 0 if every PTE is present and satisfies the flags_mask, or -1 as
- * soon as any level is missing or a PTE fails the mask check.
+ * Walks the four-level page table by hand (PGD -> PUD -> PMD -> PT),
+ * checking PTE_IS_TABLE() at every level (FIX(MM-VMM-06/AMMU-04) — see the
+ * long comment above this function): a directory entry that is a
+ * large-page BLOCK (2MB at the PMD level, 1GB at the PUD level) is
+ * evaluated against flags_mask directly and the walk skips to the end of
+ * that block's span, instead of ever misreading its physical-address
+ * field as a pointer to a further table. Returns 0 if every page (or
+ * covering block) in the range is present and satisfies the flags_mask,
+ * or -1 as soon as any level is missing, corrupt, or a PTE/block entry
+ * fails the mask check.
  *
  * Parameters:
  *   pgd        - PGD to walk (kernel virtual pointer).
@@ -205,7 +221,8 @@ int vmm_map_page_locked(struct process *proc, uint64_t virt, uint64_t phys,
  *   size       - length in bytes (rounded up to 4KB boundary).
  *   flags_mask - set of PTE bits that must all be present; 0 skips flag check.
  *
- * Returns: 0 if fully mapped, -1 on first missing or non-conforming page.
+ * Returns: 0 if fully mapped, -1 on first missing, corrupt, or
+ *          non-conforming page/block.
  * Locking: caller must ensure the page table is not concurrently modified.
  */
 int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
@@ -214,19 +231,41 @@ int vmm_check_range(uint64_t *pgd, uint64_t virt, uint64_t size,
   uint64_t e = (virt + size + 4095) & ~0xFFFUL;
 
   while (v < e) {
-    uint64_t *pud, *pmd, *pt;
-
-    pud = get_next_table(pgd, PGD_INDEX(v), 0);
-    if (!pud)
+    uint64_t pgd_entry = pgd[PGD_INDEX(v)];
+    if (!(pgd_entry & PTE_VALID))
       return -1;
-
-    pmd = get_next_table(pud, PUD_INDEX(v), 0);
-    if (!pmd)
+    if (!PTE_IS_TABLE(pgd_entry)) {
+      /* The top level never legitimately holds a block entry in this
+       * 4-level/4KB-granule format on either arch; treat it as corrupt
+       * rather than guess at a span size for it. */
       return -1;
+    }
+    uint64_t *pud = (uint64_t *)phys_to_virt(pgd_entry & PTE_ADDR_MASK);
 
-    pt = get_next_table(pmd, PMD_INDEX(v), 0);
-    if (!pt)
+    uint64_t pud_entry = pud[PUD_INDEX(v)];
+    if (!(pud_entry & PTE_VALID))
       return -1;
+    if (!PTE_IS_TABLE(pud_entry)) {
+      /* 1GB block. */
+      if (flags_mask && (pud_entry & flags_mask) != flags_mask)
+        return -1;
+      v = (v & ~(0x40000000UL - 1)) + 0x40000000UL;
+      continue;
+    }
+    uint64_t *pmd = (uint64_t *)phys_to_virt(pud_entry & PTE_ADDR_MASK);
+
+    uint64_t pmd_entry = pmd[PMD_INDEX(v)];
+    if (!(pmd_entry & PTE_VALID))
+      return -1;
+    if (!PTE_IS_TABLE(pmd_entry)) {
+      /* 2MB block — the common case in practice, since arch_vmm_map_range()
+       * prefers 2MB pages for the whole RAM identity map. */
+      if (flags_mask && (pmd_entry & flags_mask) != flags_mask)
+        return -1;
+      v = (v & ~(0x200000UL - 1)) + 0x200000UL;
+      continue;
+    }
+    uint64_t *pt = (uint64_t *)phys_to_virt(pmd_entry & PTE_ADDR_MASK);
 
     uint64_t entry = pt[PT_INDEX(v)];
     if (!(entry & PTE_VALID))
@@ -308,7 +347,8 @@ void vmm_unmap_page_locked(struct process *proc, uint64_t virt) {
 /*
  * Map a range of memory
  *
- * vmm_map - map a contiguous virtual range [virt, virt+size) to [phys, phys+size).
+ * vmm_map - map a contiguous virtual range [virt, virt+size) to [phys,
+ * phys+size).
  *
  * Both 'virt' and 'phys' are rounded down to 4KB; 'size' is rounded up.
  * Calls vmm_map_page() once per 4KB page, stopping and returning -1 on the
@@ -479,7 +519,8 @@ void vmm_dynamic_remap(void) {
 
   /* Allocate a temporary PGD to build the new map */
   uint64_t *new_pgd = pmm_alloc_page();
-  if (!new_pgd) panic("VMM: Failed to allocate new dynamic PGD");
+  if (!new_pgd)
+    panic("VMM: Failed to allocate new dynamic PGD");
   memset(new_pgd, 0, 4096);
 
   /* 1. Map all discovered memory regions with the W^X section split
@@ -489,8 +530,8 @@ void vmm_dynamic_remap(void) {
   struct mem_region *regions = arch_platform_get_mem_regions(&count);
   for (size_t i = 0; i < count; i++) {
     if (regions[i].type == MEM_REGION_USABLE) {
-      pr_info("VMM: Mapping region 0x%lx - 0x%lx\n",
-              regions[i].base, regions[i].base + regions[i].size);
+      pr_info("VMM: Mapping region 0x%lx - 0x%lx\n", regions[i].base,
+              regions[i].base + regions[i].size);
       vmm_map_ram_wx(new_pgd, regions[i].base, regions[i].size);
     }
   }
@@ -511,13 +552,15 @@ void vmm_dynamic_remap(void) {
   arch_mb();
   arch_isb();
 
-  /* 4. Cleanup old table - currently deferred until all CPUs have switched to new PGD */
-  /* TODO: Implement proper synchronization (IPI broadcast) to safely free old_pgd
-   *       after all secondary CPUs have transitioned to the new kernel_pgd.
+  /* 4. Cleanup old table - currently deferred until all CPUs have switched to
+   * new PGD */
+  /* TODO: Implement proper synchronization (IPI broadcast) to safely free
+   * old_pgd after all secondary CPUs have transitioned to the new kernel_pgd.
    *       This requires arch_send_ipi and a TLB flush callback on all CPUs. */
   (void)old_pgd;
 
-  pr_info("%s", "VMM: Dynamic remapping successful. All discovered RAM is now accessible.\n");
+  pr_info("%s", "VMM: Dynamic remapping successful. All discovered RAM is now "
+                "accessible.\n");
 }
 
 /*
@@ -586,11 +629,13 @@ void vmm_destroy_pgd(uint64_t *pgd) {
   uint64_t freed_frames = 0;
   uint64_t freed_tables = 0;
 
-  uint64_t *pud0 =
-      (pgd[0] & PTE_VALID) ? (uint64_t *)phys_to_virt(pgd[0] & PTE_ADDR_MASK) : NULL;
-  uint64_t *k_pud0 = (kernel_pgd[0] & PTE_VALID)
-                         ? (uint64_t *)phys_to_virt(kernel_pgd[0] & PTE_ADDR_MASK)
-                         : NULL;
+  uint64_t *pud0 = (pgd[0] & PTE_VALID)
+                       ? (uint64_t *)phys_to_virt(pgd[0] & PTE_ADDR_MASK)
+                       : NULL;
+  uint64_t *k_pud0 =
+      (kernel_pgd[0] & PTE_VALID)
+          ? (uint64_t *)phys_to_virt(kernel_pgd[0] & PTE_ADDR_MASK)
+          : NULL;
 
   if (pud0 && pud0 != k_pud0) {
     for (int i = 0; i < 512; i++) {
@@ -640,6 +685,7 @@ void vmm_destroy_pgd(uint64_t *pgd) {
   freed_tables++;
 
   pr_debug("VMM: PGD %p destroyed: freed %lu user frames, %lu table pages "
-          "(free now %lu)\n",
-          (void *)pgd, freed_frames, freed_tables, pmm_get_free_pages()); /* hot path: demoted (perf §1) */
+           "(free now %lu)\n",
+           (void *)pgd, freed_frames, freed_tables,
+           pmm_get_free_pages()); /* hot path: demoted (perf §1) */
 }

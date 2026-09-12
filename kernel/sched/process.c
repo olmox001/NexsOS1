@@ -173,6 +173,11 @@
 #include <kernel/string.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
+
+#ifdef ARCH_AMD64
+extern void amd64_fpu_init_task(struct process *task);
+extern void amd64_fpu_restore_task(const struct process *task);
+#endif
 #include <stdint.h>
 #include <sysstats.h> /* struct os1_sysstats — shared OS1_sys_stats ABI */
 
@@ -294,6 +299,16 @@ static uint32_t sched_focus_streak[MAX_CPUS];
  * other panic() in this file guards against, so this matches that
  * pattern rather than silently giving up. */
 #define SCHED_MARK_DEAD_MAX_RETRIES 100000
+
+/* PROC_TERM_COMPOSITOR_TRYLOCK_RETRIES (AB-BA fix, see process_terminate()):
+ * how many times process_terminate() trylocks compositor_lock WHILE STILL
+ * HOLDING sched_lock before giving up and taking the safe (lock-free of
+ * sched_lock) fallback path.  Kept small and bounded — under normal load the
+ * compositor is rarely held for more than a frame's worth of work, so a
+ * handful of immediate retries clears transient contention without ever
+ * turning this into an unbounded spin under sched_lock (which would be the
+ * same class of problem this fix removes, just moved). */
+#define PROC_TERM_COMPOSITOR_TRYLOCK_RETRIES 8
 
 /* Reaped-status retention (Phase 9b) — POSIX zombie semantics, cheaply.
  *
@@ -1201,6 +1216,9 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   proc->context =
       (struct pt_regs *)(proc->kernel_stack - sizeof(struct pt_regs));
   memset(proc->context, 0, sizeof(struct pt_regs));
+#ifdef ARCH_AMD64
+  amd64_fpu_init_task(proc);
+#endif
   proc->on_cpu = -1; /* not running on any CPU yet */
 
   SCHED_ASSERT(proc->state == PROC_CREATED,
@@ -1532,12 +1550,59 @@ int process_terminate(int pid) {
   pr_debug("Terminating process '%s' PID=%d\n", proc->name, pid);
 
   /* Mark ->dying FIRST so a racing SYS_CREATE_WINDOW on this process's own
-   * CPU is refused, then tear down its windows. compositor_lock is taken
-   * here (BLOCKING) — this is the sched_lock -> compositor_lock order;
-   * nothing may take the two in reverse. */
+   * CPU is refused, then tear down its windows.
+   *
+   * AB-BA FIX (docs/PROCESS-KILL-MODEL.md §4, Pitfall A): this MUST be a
+   * TRYLOCK on compositor_lock while sched_lock is held — a blocking
+   * acquire here closes a cycle against any path that (now or in the
+   * future) takes compositor_lock and then needs sched_lock, and is
+   * exactly the intermittent whole-system-freeze-with-clock-stopped bug
+   * this fix addresses. A short bounded number of immediate retries
+   * absorbs ordinary transient contention (the compositor rarely holds
+   * its lock for more than a frame's worth of work); if it still hasn't
+   * cleared, sched_lock is released so the (now perfectly safe, because
+   * sched_lock is no longer held) blocking acquire can run lock-free of
+   * sched_lock, and sched_lock is re-taken afterward to continue the
+   * teardown. proc cannot have been freed or removed from the pool in
+   * that window: proc->dying is already set (a racing SYS_CREATE_WINDOW
+   * is refused), and every path that frees a process or removes it from
+   * process_pool[] requires sched_lock first — the same lock we are
+   * holding again by the time we touch proc below. proc->state may have
+   * changed (e.g. READY -> RUNNING under the owning CPU's scheduler, or a
+   * second process_terminate() call observing DEAD/ZOMBIE and returning
+   * early) — both are already handled by the state checks that follow,
+   * exactly as they handle a state that changed for any other reason. */
   proc->dying = 1;
+  extern int compositor_destroy_windows_by_pid_trylock(int pid);
   extern void compositor_destroy_windows_by_pid(int pid);
-  compositor_destroy_windows_by_pid(pid);
+  int windows_destroyed = 0;
+  for (int attempt = 0; attempt < PROC_TERM_COMPOSITOR_TRYLOCK_RETRIES;
+       attempt++) {
+    if (compositor_destroy_windows_by_pid_trylock(pid)) {
+      windows_destroyed = 1;
+      break;
+    }
+    arch_nop(); /* contention backoff, same pattern as
+                 * __proc_terminate_mark_dead_on_runqueue below */
+  }
+  if (!windows_destroyed) {
+    /* Persistent contention: fall back to a blocking acquire, but only
+     * AFTER releasing sched_lock — at that point compositor_lock ->
+     * sched_lock can no longer cycle back to us, so blocking is safe. */
+    spin_unlock_irqrestore(&sched_lock, flags);
+    compositor_destroy_windows_by_pid(pid);
+    spin_lock_irqsave(&sched_lock, &flags);
+    /* Re-validate: proc is guaranteed to still be a valid pointer (nothing
+     * frees it without sched_lock, which we just re-took), but its STATE
+     * may have moved on while we did not hold sched_lock. Re-run the
+     * idempotency check exactly as at entry, so a concurrent
+     * process_terminate() that already finished this pid is handled the
+     * same way it would be on any other re-entry. */
+    if (proc->state == PROC_DEAD || proc->state == PROC_ZOMBIE) {
+      spin_unlock_irqrestore(&sched_lock, flags);
+      return 0;
+    }
+  }
 
   /* Self-termination: standing on this process's kernel stack, cannot
    * free it now. schedule() auto-reaps the zombie once we switch away. */
@@ -1758,6 +1823,12 @@ void start_user_process(struct process *proc) {
 
   proc->state = PROC_RUNNING;
   proc->on_cpu = cpu_id();
+#ifdef ARCH_AMD64
+  /* PID 1 reaches ring 3 without passing through restore_context, unlike all
+   * later scheduler-selected tasks.  Load its freshly-created reset image
+   * explicitly so it cannot inherit boot-kernel SIMD state. */
+  amd64_fpu_restore_task(proc);
+#endif
   arch_enter_user_mode(proc->user_entry, proc->user_stack, proc->kernel_stack);
 }
 

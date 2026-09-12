@@ -67,11 +67,51 @@
  *   _lseek + sys_handle_close).  There is no separate fd array.
  *
  * Known issues:
- *   ABI-07  (W2 BUG) SYS_SPAWN disables IRQs across process_create +
- *           process_load_elf, which may trigger blocking virtio/ext4 disk I/O.
- *   GFX-FONT-01  (W4 SECURITY/BUG) SYS_SET_FONT: stores a raw user
- *           pointer into kernel globals; dereferenced in IRQ-context rendering
- *           (sys_set_font in graphics/font.c) → UAF / info-leak.
+ *   ABI-07  RESOLVED (verified against kernel/sched/process.c,
+ *           kernel/sched/elf.c, kernel/drivers/virtio/virtio_blk.c,
+ *           kernel/fs/{vfs,ext4}.c, kernel/drivers/block/block.c,
+ *           2026-08).  dispatch_spawn() used to call
+ *           arch_local_irq_disable() before process_create/_caps AND
+ *           process_load_elf_args(), on the theory that ELF loading could
+ *           block on a virtio/ext4 completion IRQ.  Two facts made that
+ *           global IRQ-disable both unnecessary and actively harmful:
+ *             (1) the entire disk I/O path in this kernel
+ *                 (vfs.c -> ext4.c -> block.c -> virtio_blk_xfer) is
+ *                 SYNCHRONOUS BUSY-POLLING with its own local
+ *                 spin_lock_irqsave() and a bounded 500 ms wall-clock
+ *                 timeout (virtio_blk.c) — it never sleeps, never calls
+ *                 schedule(), and never depends on the caller's IRQ state
+ *                 to complete.  There is no completion interrupt to miss.
+ *             (2) process_create_caps(), process_finalize_spawn() and
+ *                 process_abort_spawn() already take sched_lock via
+ *                 spin_lock_irqsave()/irqrestore() internally (process.c);
+ *                 they do not rely on the caller having pre-disabled IRQs
+ *                 globally.  The kill_pending/SCHED-UAF Pitfall B race is
+ *                 closed by sched_lock, not by dispatch_spawn's IRQ state.
+ *           So the old global disable across process_load_elf_args (which
+ *           issues one vfs_read() per ELF header/phdr/segment page) bought
+ *           no additional safety while holding this CPU's local IRQs off —
+ *           timer tick included — for however long the busy-poll disk
+ *           reads took, up to hundreds of milliseconds for a
+ *           multi-segment binary.  Fixed by removing the IRQ-disable
+ *           around process_create_caps/process_load_elf_args entirely;
+ *           the only place IRQs are still disabled is the short,
+ *           allocation-free pid-capture + process_finalize_spawn() commit
+ *           (see dispatch_spawn()), which is the actual atomicity
+ *           requirement SCHED-UAF Pitfall B describes.
+ *   GFX-FONT-01  RESOLVED (verified against kernel/graphics/font.c,
+ *           2026-08).  sys_set_font() no longer stores a raw userland
+ *           pointer: it copies the whole blob into a kmalloc'd kernel
+ *           buffer, validates it against the kernel copy (magic, metrics,
+ *           per-glyph bitmap bounds), and publishes an immutable
+ *           descriptor behind font_lock, retiring the previous one under
+ *           the same lock.  This closes the dangling-pointer UAF (process
+ *           exit after set-font), the kernel-VA info-leak, and the
+ *           size-overflow path.  This file's own SYS_SET_FONT case
+ *           already gates the call with CAP_WINDOW; that check is a
+ *           privilege gate on WHO may restyle the desktop font, orthogonal
+ *           to the memory-safety fix in font.c — both are needed and both
+ *           are now in place.
  */
 #include <arch/pt_regs.h>
 #include <kernel/cpu.h>
@@ -164,8 +204,12 @@ extern int keyboard_focus_pid;
  * IRQ context: no — syscalls run in kernel mode with IRQs enabled (normal
  *          exception-level transition on aarch64; ring 3->0 on amd64).
  *
- * NOTE(ABI-07): case 220 (SPAWN) calls arch_local_irq_disable() before
- *          process_create + process_load_elf, which may block on virtio I/O.
+ * NOTE(ABI-07, resolved): case 220 (SPAWN) no longer disables IRQs across
+ *          process_create/process_load_elf — see dispatch_spawn() and the
+ *          file-header note above for why the global disable was both
+ *          unneeded (the disk I/O path never sleeps) and harmful (it held
+ *          this CPU's IRQs off, timer tick included, for the full
+ *          busy-poll duration of loading a binary).
  */
 struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame);
 
@@ -208,17 +252,41 @@ static int spawn_path_is_sane(const char *path) {
   if (!path || !path[0])
     return 0;
   for (const char *p = path; *p; p++)
-    if (p[0] == '.' && p[1] == '.' &&
-        (p == path || p[-1] == '/') && (p[2] == '/' || p[2] == '\0'))
+    if (p[0] == '.' && p[1] == '.' && (p == path || p[-1] == '/') &&
+        (p[2] == '/' || p[2] == '\0'))
       return 0; /* a ".." path component */
   return 1;
 }
 
 /* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
  *
- * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
- * across blocking virtio/ext4 disk I/O.  Pre-existing; kept verbatim so the
- * new capability path does not widen the critical section. */
+ * NOTE(ABI-07, resolved — see the file-header note for the full analysis):
+ * this used to disable IRQs globally across process_create/_caps AND
+ * process_load_elf_args.  Verified against the actual implementations:
+ *
+ *   - process_create_caps() (process.c) takes sched_lock via
+ *     spin_lock_irqsave()/irqrestore() itself; it does not need the
+ *     caller to have pre-disabled IRQs.
+ *   - process_load_elf_args() (elf.c) never touches sched_lock or the
+ *     scheduler at all.  Its disk reads (vfs_read -> ext4 -> block ->
+ *     virtio_blk_xfer) are synchronous busy-polls with their own local
+ *     spin_lock_irqsave() and a bounded 500 ms wall-clock timeout
+ *     (virtio_blk.c) — they never sleep and never depend on this CPU's
+ *     IRQ state to make progress.
+ *   - process_finalize_spawn()/process_abort_spawn() (process.c) also take
+ *     sched_lock internally; the kill_pending race (SCHED-UAF Pitfall B)
+ *     is closed by that lock, not by dispatch_spawn's IRQ state.
+ *
+ * So the old disable protected nothing while it was held across ELF
+ * loading, and cost this CPU its local IRQs (timer tick included) for the
+ * full busy-poll duration of every disk read the load performed.  The
+ * PROC-REF-01 comment a few lines below independently reaches the same
+ * conclusion for the redirect path: holding IRQs disabled around code
+ * that may allocate is a hang risk, not a safety measure.
+ *
+ * IRQs are now only disabled around the short, allocation-free pid
+ * capture + process_finalize_spawn() commit below, which is the actual
+ * atomicity requirement SCHED-UAF Pitfall B describes. */
 static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
                            int use_caps, int argc, char *const kargv[],
                            uint32_t flags, const struct spawn_redir *redir,
@@ -234,7 +302,8 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
   if (!use_caps || level < path_lvl)
     level = path_lvl;
 
-  arch_local_irq_disable();
+  /* IRQs stay enabled across process_create_caps(): it manages sched_lock
+   * (and its own irqsave/irqrestore) internally — see the note above. */
   struct process *p =
       use_caps ? process_create_caps(path, PROC_PRIO_USER, level, caps)
                : process_create(path, PROC_PRIO_USER, level);
@@ -253,8 +322,8 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
     for (int i = 0; i < nredir; i++) {
       if (redir[i].source_pid == 0) {
         /* Ordinary case: the fds belong to whoever called spawn. */
-        rerr = process_redirect_child_fd(p, redir[i].child_fd,
-                                         redir[i].parent_fd);
+        rerr =
+            process_redirect_child_fd(p, redir[i].child_fd, redir[i].parent_fd);
       } else {
         /* An execution SERVICE spawning on a client's behalf: the fds live in
          * the CLIENT's table.  Reaching into another process's handle table is
@@ -303,26 +372,38 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
         break;
     }
     if (rerr != 0) {
+      /* process_abort_spawn() manages sched_lock/irqsave itself; no
+       * surrounding IRQ state to restore here (see the note above
+       * dispatch_spawn). */
       process_abort_spawn(p);
-      arch_local_irq_enable();
       return rerr;
     }
+    /* IRQs stay enabled across process_load_elf_args(): its disk reads are
+     * synchronous busy-polls with their own local locking/timeout and never
+     * touch the scheduler (see the note above dispatch_spawn). Loading a
+     * multi-segment binary with this CPU's IRQs disabled the whole time
+     * bought no safety and blocked its timer tick for no reason. */
     if (process_load_elf_args(p, path, argc, kargv) == 0) {
-      /* SCHED-UAF Pitfall B: commit the child atomically against a concurrent
-       * kill.  Capture the pid first — process_finalize_spawn may RELEASE p (if
-       * a kill was deferred while the ELF loaded), so p must not be read after.
-       */
+      /* SCHED-UAF Pitfall B: commit the child atomically against a
+       * concurrent kill.  Capture the pid first — process_finalize_spawn may
+       * RELEASE p (if a kill was deferred while the ELF loaded), so p must
+       * not be read after.  This IS the narrow window that must be atomic:
+       * disabling IRQs here (rather than around the whole function) keeps
+       * the critical section allocation-free and bounded, matching what
+       * process_finalize_spawn's own sched_lock actually protects. */
+      arch_local_irq_disable();
       long pid = (long)p->pid;
       process_finalize_spawn(p);
+      arch_local_irq_enable();
       ret = pid;
     } else {
+      /* process_abort_spawn() manages sched_lock/irqsave itself. */
       process_abort_spawn(p); /* load failed: release the half-built child */
       ret = -ENOENT;          /* path missing or unloadable ELF */
     }
   } else {
     ret = -EAGAIN; /* quota hit or process table exhausted */
   }
-  arch_local_irq_enable();
   return ret;
 }
 
@@ -330,13 +411,35 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
  * truncation; capped at SYSCALL_MAX_IO_BYTES), mirror it to the UART serial
  * log, and append it to compositor window win_id.  Shared by the FD_WIN
  * stdout sink and SYS_WINDOW_WRITE (#123).  Replaces the old 1023-byte
- * syscall_buf truncation (retires ABI-06 on the window path). */
+ * syscall_buf truncation (retires ABI-06 on the window path).
+ *
+ * GFX-WIN-WRITE-01-REGR (found 2026-08, audit programme A follow-up):
+ * window_write_allowed() below is the RIGHT check for a win_id supplied by
+ * USERLAND (SYS_WINDOW_WRITE, arg0 is attacker-controlled) — that is what
+ * GFX-WIN-WRITE-01 fixed.  But this function is ALSO the OBJ_TYPE_CONSOLE
+ * stdout/stderr backend (object.c, sys_object_write), where win_id is
+ * resolved by the KERNEL itself: own window, else ctty_win, else — when
+ * neither exists, e.g. a system service spawned before any terminal
+ * exists — the window of whichever process currently holds keyboard
+ * focus (object.c's documented fallback, "an implicit stdout write ...
+ * lands SOMEWHERE sane").  That third fallback is NOT the caller's own
+ * window and is NOT its ctty, so window_write_allowed() rejected it for
+ * any non-machine process — silently dropping the graphical half of a
+ * legitimate implicit stdout write GFX-WIN-WRITE-01 was never meant to
+ * touch (the UART mirror below still received it, masking the loss).
+ * The two callers now say which trust model applies via 'from_userland':
+ * true (SYS_WINDOW_WRITE) keeps the ownership check exactly as
+ * GFX-WIN-WRITE-01 defined it; false (the CONSOLE backend) skips it,
+ * because authorization there is already implicit in HOW win_id was
+ * resolved, not in who currently owns it. */
 extern void uart_puts(const char *str);
 /* Non-static: also the OBJ_TYPE_CONSOLE stdout/stderr backend, called from
  * kernel/core/object.c (sys_object_write).  Shared by SYS_WINDOW_WRITE. */
 /*
  * GFX-WIN-WRITE-01 (found 2026-07-23, audit programme A) — may 'current' put
  * text into window 'win_id'?
+ * (Applies only when from_userland is true — see GFX-WIN-WRITE-01-REGR above
+ * for the CONSOLE-backend case where this check must not run.)
  *
  * SYS_WINDOW_WRITE was gated by CAP_WINDOW and nothing else, while every
  * sibling verb had already been closed: DRAW and BLIT pass the caller's pid so
@@ -375,12 +478,19 @@ static int window_write_allowed(int win_id) {
   return (owner < 0) || (owner == (int)current_process->pid);
 }
 
-long window_text_write(int win_id, const char *ubuf, size_t count) {
+long window_text_write(int win_id, const char *ubuf, size_t count,
+                       int from_userland) {
   if (count == 0)
     return 0;
   if (count > SYSCALL_MAX_IO_BYTES)
     return -EINVAL;
-  if (win_id > 0 && !window_write_allowed(win_id))
+  /* Ownership check applies only to a win_id chosen by USERLAND
+   * (SYS_WINDOW_WRITE).  When win_id was resolved by the kernel itself
+   * (the CONSOLE stdout/stderr backend in object.c), authorization is
+   * already implicit in that resolution — including its focus-follows
+   * fallback, which by design targets a window the current process does
+   * NOT own (GFX-WIN-WRITE-01-REGR). */
+  if (from_userland && win_id > 0 && !window_write_allowed(win_id))
     return -EPERM;
   char *k = kmalloc(count + 1);
   if (!k)
@@ -434,8 +544,8 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     if (flags & (O_CREAT | O_TRUNC)) {
       char kpath[128];
-      if (arch_copy_string_from_user(kpath, (const char *)arg0, sizeof(kpath)) !=
-          0) {
+      if (arch_copy_string_from_user(kpath, (const char *)arg0,
+                                     sizeof(kpath)) != 0) {
         pt_regs_set_return(frame, -EFAULT);
         break;
       }
@@ -590,8 +700,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
-    pt_regs_set_return(
-        frame, window_text_write((int)arg0, (const char *)arg1, (size_t)arg2));
+    pt_regs_set_return(frame, window_text_write((int)arg0, (const char *)arg1,
+                                                (size_t)arg2,
+                                                /*from_userland=*/1));
     break;
   case SYS_WINDOW_OF_PID: {
     /* Read-only: the compositor window id of a pid, or 0 if it has none.
@@ -711,27 +822,27 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       rc |= r;
       if (r == 0 && (int)arg0 < OS1_STYLE_COUNT)
         if (registry_set("style.name", os1_style_names[(int)arg0], 0) != 0)
-        rc |= -EIO; /* applied but NOT persisted: it survives until
-                     * reboot and then silently reverts, which is
-                     * worse than failing now */
+          rc |= -EIO; /* applied but NOT persisted: it survives until
+                       * reboot and then silently reverts, which is
+                       * worse than failing now */
     }
     if ((int)arg1 >= 0) {
       int r = compositor_set_theme((int)arg1);
       rc |= r;
       if (r == 0 && (int)arg1 < OS1_THEME_COUNT)
         if (registry_set("theme.color", os1_theme_names[(int)arg1], 0) != 0)
-        rc |= -EIO; /* applied but NOT persisted: it survives until
-                     * reboot and then silently reverts, which is
-                     * worse than failing now */
+          rc |= -EIO; /* applied but NOT persisted: it survives until
+                       * reboot and then silently reverts, which is
+                       * worse than failing now */
     }
     if ((int)arg2 >= 0) {
       int r = compositor_set_background((int)arg2);
       rc |= r;
       if (r == 0 && (int)arg2 < OS1_BG_COUNT)
         if (registry_set("background.name", os1_bg_names[(int)arg2], 0) != 0)
-        rc |= -EIO; /* applied but NOT persisted: it survives until
-                     * reboot and then silently reverts, which is
-                     * worse than failing now */
+          rc |= -EIO; /* applied but NOT persisted: it survives until
+                       * reboot and then silently reverts, which is
+                       * worse than failing now */
     }
     pt_regs_set_return(frame, rc);
     break;
@@ -1039,7 +1150,8 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     long wr = process_wait((int)arg0, &wcode);
     /* The (void) cast that used to be here did not suppress the attribute, it
      * only made the omission look deliberate.  A bad status pointer is -EFAULT
-     * under POSIX, not a successful wait whose status silently never arrived. */
+     * under POSIX, not a successful wait whose status silently never arrived.
+     */
     if (arg1 && wr >= 0 &&
         arch_copy_to_user((void *)arg1, &wcode, sizeof(wcode)) != 0)
       wr = -EFAULT;
@@ -1058,10 +1170,11 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * had two costs the composition could not absorb:
      *
      *  - CORRECTNESS.  opendir() and stat() both relied on the invariant "the
-     *    list primitive succeeds ONLY on a directory".  Once a READ handle could
-     *    be acquired on any path, object_read on a FILE returned its CONTENT, so
-     *    opendir() succeeded on regular files — the file manager then marked
-     *    every file a directory and double-clicking one tried to chdir into it
+     *    list primitive succeeds ONLY on a directory".  Once a READ handle
+     * could be acquired on any path, object_read on a FILE returned its
+     * CONTENT, so opendir() succeeded on regular files — the file manager then
+     * marked every file a directory and double-clicking one tried to chdir into
+     * it
      *    ("Cannot open directory").  The type distinction has to come from the
      *    kernel, which is the only place that knows it.
      *  - COST.  The size probe became handle_create + OBJ_CTL_STAT + close:
@@ -1139,14 +1252,14 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
   case SYS_PORT_SEND_CAPS:
     /* port send carrying capabilities; see sys_port_send_caps() for why a
      * service found by NAME must not need its pid to receive rights. */
-    pt_regs_set_return(frame,
-                       sys_port_send_caps((int)arg0, (const void *)arg1,
-                                          (const int *)arg2, (int)arg3));
+    pt_regs_set_return(frame, sys_port_send_caps((int)arg0, (const void *)arg1,
+                                                 (const int *)arg2, (int)arg3));
     break;
   case SYS_PIPE:
-    /* pipe(int fds[2]) → OBJ_TYPE_PIPE; installs read+write ends in the caller's
-     * handle table (fds[0]=read, fds[1]=write).  The shell wires `cmd | cmd` by
-     * dup'ing the ends into the children's fd 0/1 (the same spawn-redir path). */
+    /* pipe(int fds[2]) → OBJ_TYPE_PIPE; installs read+write ends in the
+     * caller's handle table (fds[0]=read, fds[1]=write).  The shell wires `cmd
+     * | cmd` by dup'ing the ends into the children's fd 0/1 (the same
+     * spawn-redir path). */
     pt_regs_set_return(frame, sys_pipe((int *)arg0));
     break;
   /* --- Object / capability ABI (ASTRA §6.1/6.2/6.5, kernel/object.h) ---
@@ -1374,8 +1487,9 @@ void sys_exit(int status) {
   if (current_process) {
     pr_debug("PID %d exiting with status %d\n", current_process->pid,
              status); /* hot path: demoted (perf §1) */
-    current_process->exit_code = status & 0xff; /* Phase 2: collectable by a waiter */
-    current_process->exited = 1;                 /* voluntary exit (not killed) */
+    current_process->exit_code =
+        status & 0xff;           /* Phase 2: collectable by a waiter */
+    current_process->exited = 1; /* voluntary exit (not killed) */
     /* Nothing to propagate to: the caller is exiting.  Reported so a failure
      * to tear down is visible instead of leaving a process that believes it
      * exited still in the pool. */

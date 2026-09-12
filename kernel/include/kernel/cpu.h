@@ -2,8 +2,9 @@
 #define _KERNEL_CPU_H
 
 #ifndef __ASSEMBLER__
-#include <kernel/nx_contract.h>
+#include <kernel/cpu_asm_offsets.h>
 #include <kernel/list.h>
+#include <kernel/nx_contract.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
 
@@ -15,16 +16,17 @@ struct cpu_info {
   struct cpu_info *self; /* Must be at offset 0 for %gs:0 access on x86_64 */
   uint32_t cpu_id;
   uint32_t online;
-  uint64_t stack_top;      /* Kernel Stack Top */
-  uint64_t user_stack_tmp; /* Temp storage for user RSP during syscall/interrupt */
+  uint64_t stack_top; /* Kernel Stack Top */
+  uint64_t
+      user_stack_tmp; /* Temp storage for user RSP during syscall/interrupt */
   struct process *current_task;
   uint64_t next_tick_target;
   uint64_t tick_error_acc;
   uint64_t tick_count;
-  /* Raw hardware-counter value at which the current task last started running on
-   * this CPU; schedule() charges (arch_timer_get_count() - sched_run_count) to
-   * the outgoing task's cpu_time_counts (Tier 3 per-process CPU time, converted
-   * to ns only on read — docs/TIMER-MODEL.md §4). */
+  /* Raw hardware-counter value at which the current task last started running
+   * on this CPU; schedule() charges (arch_timer_get_count() - sched_run_count)
+   * to the outgoing task's cpu_time_counts (Tier 3 per-process CPU time,
+   * converted to ns only on read — docs/TIMER-MODEL.md §4). */
   uint64_t sched_run_count;
 
   /* Scheduler Local Data (Multicore Optimization) */
@@ -65,14 +67,30 @@ struct cpu_info {
   struct process *deferred_free_proc;
   /* SCHED-UAF (#169/#170): a task preempted on this CPU is held here for ONE
    * schedule before going back on a runqueue.  If it were re-enqueued
-   * immediately, another CPU could work-steal and run it while THIS CPU is still
-   * executing on its kernel stack (the IRQ EOI + dispatch epilogue run on prev's
-   * stack AFTER schedule() returns, before the iretq switches away; the LAPIC EOI
-   * MMIO write widens that window on UTM).  Two CPUs on one stack smash the
-   * in-flight return frame.  Drained at the top of the next schedule() here,
-   * after this CPU has provably iretq'd off that stack — mirrors deferred_free. */
+   * immediately, another CPU could work-steal and run it while THIS CPU is
+   * still executing on its kernel stack (the IRQ EOI + dispatch epilogue run on
+   * prev's stack AFTER schedule() returns, before the iretq switches away; the
+   * LAPIC EOI MMIO write widens that window on UTM).  Two CPUs on one stack
+   * smash the in-flight return frame.  Drained at the top of the next
+   * schedule() here, after this CPU has provably iretq'd off that stack —
+   * mirrors deferred_free. */
   struct process *pending_reenqueue;
 };
+
+/*
+ * amd64's hand-written assembly (kernel/arch/amd64/cpu/syscall.S,
+ * kernel/arch/amd64/cpu/isr_stubs.S) reaches these four fields through
+ * %gs-relative displacements it cannot spell as C member names — see
+ * <kernel/cpu_asm_offsets.h> for why these constants exist and where they
+ * are consumed.  Pinning them here means a field added, removed or
+ * reordered above that shifts one of these offsets is a BUILD failure at
+ * this line instead of a corrupted kernel stack pointer discovered at
+ * runtime on the first syscall or interrupt.
+ */
+NX_ASSERT_OFFSET(struct cpu_info, self, CPU_INFO_SELF_OFF);
+NX_ASSERT_OFFSET(struct cpu_info, stack_top, CPU_INFO_STACK_TOP_OFF);
+NX_ASSERT_OFFSET(struct cpu_info, user_stack_tmp, CPU_INFO_USER_STACK_TMP_OFF);
+NX_ASSERT_OFFSET(struct cpu_info, current_task, CPU_INFO_CURRENT_TASK_OFF);
 #endif
 
 #define MAX_CPUS 64
@@ -87,12 +105,13 @@ void smp_create_idle_task(uint32_t cpu_id);
  * smp_bringup_secondary: idle-task-first (#169/#170) + arch wake + bounded
  * acquire-wait for the ack.  0 = online, -1 = wake failed, -2 = ack timeout.
  * smp_ack_boot: release-store ack, called by the secondary once initialized. */
-int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) NX_MUST_USE;
+int smp_bringup_secondary(uint32_t cpu, void (*entry)(void),
+                          void *stack_top) NX_MUST_USE;
 void smp_ack_boot(uint32_t cpu);
 
 /* These are now provided by arch.h HAL macros/functions */
-#include <kernel/hal_unified.h>
 #include <kernel/arch.h>
+#include <kernel/hal_unified.h>
 
 #define cpu_id() hal_cpu_id()
 #define cpu_init() arch_cpu_init()

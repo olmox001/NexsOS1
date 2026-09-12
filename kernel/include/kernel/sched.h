@@ -100,6 +100,15 @@ struct process {
   /* Context for switching */
   struct pt_regs *context;
 
+#ifdef ARCH_AMD64
+  /* x87/MMX/SSE architectural state for this task.  FXSAVE/FXRSTOR require a
+   * 16-byte operand alignment; process descriptors come from page-aligned PMM
+   * storage and this member keeps that alignment explicit at the ABI boundary.
+   * AVX is not enabled by arch_cpu_init(), so the architectural 512-byte FXSAVE
+   * image is the complete floating-point/SIMD state supported by this kernel. */
+  uint8_t amd64_fxstate[512] __attribute__((aligned(16)));
+#endif
+
   /* User Context (Initial) */
   uint64_t user_entry;
   uint64_t user_stack;

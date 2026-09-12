@@ -1329,7 +1329,8 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
       win_id = current_process->ctty_win;
     if (win_id <= 0 && keyboard_focus_pid > 0)
       win_id = compositor_get_window_by_pid(keyboard_focus_pid);
-    ret = window_text_write(win_id, (const char *)ubuf, n);
+    ret = window_text_write(win_id, (const char *)ubuf, n,
+                            /*from_userland=*/0);
   } else if (o->type == OBJ_TYPE_PORT) {
     /* Port SEND (needs the send right).  The handle's WRITE right IS the
      * authority — deliberately NO process_ipc_allowed() check, exactly as the
@@ -1639,12 +1640,13 @@ long sys_object_ctl(int handle, int cmd, long arg) {
       ret = -EFAULT;
     } else {
       char name[OBJ_FILE_PATH_MAX];
-      if (arch_copy_string_from_user(name, (const char *)arg, sizeof(name)) != 0) {
+      if (arch_copy_string_from_user(name, (const char *)arg, sizeof(name)) !=
+          0) {
         ret = -EFAULT;
       } else {
         size_t nlen = strlen(name);
-        int invalid = nlen == 0 || strcmp(name, ".") == 0 ||
-                      strcmp(name, "..") == 0;
+        int invalid =
+            nlen == 0 || strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
         for (size_t i = 0; i < nlen; i++)
           if (name[i] == '/')
             invalid = 1;
@@ -1661,9 +1663,8 @@ long sys_object_ctl(int handle, int cmd, long arg) {
             if (sep)
               child[plen++] = '/';
             memcpy(child + plen, name, nlen + 1);
-            ret = (cmd == OBJ_CTL_MKDIR)
-                      ? vfs_create(child, VFS_TYPE_DIR)
-                      : vfs_unlink(child);
+            ret = (cmd == OBJ_CTL_MKDIR) ? vfs_create(child, VFS_TYPE_DIR)
+                                         : vfs_unlink(child);
           }
         }
       }

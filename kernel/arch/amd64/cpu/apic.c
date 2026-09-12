@@ -51,6 +51,7 @@
  */
 #include <arch/amd64/apic.h>
 #include <arch/amd64_internal.h>
+#include <arch/irq_vectors.h>
 #include <drivers/timer.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
@@ -140,8 +141,9 @@ void lapic_init(void) {
     wrmsr(0x1B, apic_msr | 0x800);
   }
 
-  /* Set Spurious Interrupt Vector (0xFF) and enable LAPIC (SVR bit 8) */
-  lapic_write(LAPIC_SVR, lapic_read(LAPIC_SVR) | 0xFF | LAPIC_SVR_ENABLE);
+  /* Set Spurious Interrupt Vector and enable LAPIC (SVR bit 8) */
+  lapic_write(LAPIC_SVR,
+              lapic_read(LAPIC_SVR) | SPURIOUS_APIC_VECTOR | LAPIC_SVR_ENABLE);
 
   /* FIX(APIC-01): LINT0-as-ExtINT is a BSP-only configuration (Intel MP
    * Spec virtual-wire mode: "NMI and INTR must be connected to the
@@ -464,9 +466,9 @@ void lapic_timer_setup(uint32_t hz) {
   lapic_timer_stop();
 
   /* Set up LAPIC Timer for periodic interrupts.
-   * Vector 32 (IRQ 0 equivalent), periodic mode (LAPIC_LVT_PERIODIC).
-   * NOTE(EXC-AMD64-03): same vector 32 as LAPIC LINT0 ExtINT path. */
-  lapic_write(LAPIC_LVT_TIMER, 32 | LAPIC_LVT_PERIODIC);
+   * LOCAL_TIMER_VECTOR (IRQ 0 equivalent), periodic mode (LAPIC_LVT_PERIODIC).
+   * NOTE(EXC-AMD64-03): same vector as the LAPIC LINT0 ExtINT path. */
+  lapic_write(LAPIC_LVT_TIMER, LOCAL_TIMER_VECTOR | LAPIC_LVT_PERIODIC);
   lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
 
   /* Calculate ticks per interrupt: at hz=1000, interval_ms=1 */

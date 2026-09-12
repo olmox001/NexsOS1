@@ -1562,10 +1562,12 @@ void compositor_destroy_window(int window_id) {
 /*
  * Destroy all windows owned by a specific PID
  */
-void compositor_destroy_windows_by_pid(int pid) {
-  uint64_t flags;
+/* __compositor_destroy_windows_by_pid_locked - shared body; caller holds
+ * compositor_lock (by whichever means it acquired it). Extracted so the
+ * blocking and trylock entry points below share one implementation instead
+ * of two hand-duplicated copies that could drift. */
+static void __compositor_destroy_windows_by_pid_locked(int pid) {
   int refocus = 0;
-  spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id != 0 && windows[i].pid == pid) {
       if (windows[i].pid == keyboard_focus_pid) {
@@ -1590,7 +1592,43 @@ void compositor_destroy_windows_by_pid(int pid) {
      * the top-most SURVIVING window (or the shell default). */
     __focus_topmost_locked();
   }
+}
+
+void compositor_destroy_windows_by_pid(int pid) {
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  __compositor_destroy_windows_by_pid_locked(pid);
   spin_unlock_irqrestore(&compositor_lock, flags);
+}
+
+/*
+ * compositor_destroy_windows_by_pid_trylock - AB-BA-safe variant for
+ * process_terminate() (docs/PROCESS-KILL-MODEL.md §4, Pitfall A).
+ *
+ * process_terminate() calls this WHILE HOLDING sched_lock.  compositor_lock
+ * must therefore be acquired with a TRYLOCK here, never a blocking
+ * spin_lock: the design (and compositor_create_window()'s own
+ * GFX-COMP-RESERVE-02 comment) documents "process_terminate() takes
+ * sched_lock then trylocks compositor_lock" as the invariant that keeps
+ * sched_lock -> compositor_lock and compositor_lock -> sched_lock from ever
+ * being able to close into a cycle. A prior revision of this call site had
+ * drifted to a blocking acquire without the trylock wrapper being updated to
+ * match, silently reintroducing the exact AB-BA the design note warns
+ * against — intermittent whole-system freezes under SMP contention (one CPU
+ * holding sched_lock and blocked on compositor_lock while another holds
+ * compositor_lock and blocks on sched_lock), which is consistent with the
+ * "everything is up but frozen, clock stopped" symptom this fixes.
+ *
+ * Returns 1 if the lock was acquired and the windows were destroyed, 0 if
+ * the trylock did not succeed (caller must fall back to a lock-free-of-
+ * sched_lock blocking acquire — see process_terminate()). */
+int compositor_destroy_windows_by_pid_trylock(int pid) {
+  uint64_t flags;
+  if (!spin_trylock_irqsave(&compositor_lock, &flags))
+    return 0;
+  __compositor_destroy_windows_by_pid_locked(pid);
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  return 1;
 }
 
 /*

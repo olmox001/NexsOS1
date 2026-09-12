@@ -52,6 +52,7 @@
 #include <kernel/fault.h>
 #include <kernel/sched.h>
 
+#include <arch/esr.h>
 #include <kernel/arch.h>
 #include <kernel/vmm.h>
 
@@ -246,11 +247,11 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
   elr = frame->elr;               /* ELR_EL1 saved in frame by vector_stub */
 
   /* ESR_EL1[31:26]: Exception Class — identifies the exception type */
-  ec = (esr >> 26) & 0x3F;
+  ec = (uint32_t)ESR_ELx_EC(esr);
 
   /* SVC from EL0 is a syscall, not a fault: bypass the recursion guard and
    * every fault-path primitive entirely. */
-  if (ec == 0x15)
+  if (ec == ESR_ELx_EC_SVC64)
     return syscall_handler(frame);
 
   /* Fault recursion guard (Phase A step 7): an abort inside this handler used
@@ -273,7 +274,8 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
    * be sufficient; a proper exception-table fixup (like Linux's extable) is
    * safer. */
   if (probe_in_progress &&
-      (ec == 0x24 || ec == 0x25 || ec == 0x20 || ec == 0x21)) {
+      (ec == ESR_ELx_EC_DABT_LOW || ec == ESR_ELx_EC_DABT_CUR ||
+       ec == ESR_ELx_EC_IABT_LOW || ec == ESR_ELx_EC_IABT_CUR)) {
     probe_failed = true;
     /* Skip the faulting instruction (increment ELR by 4) */
     frame->elr += 4;
@@ -296,25 +298,25 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
   /* One-line classification banner.  fault_printf (not printk): the address
    * space and lock state are unknown at this point for EL1-origin faults. */
   switch (ec) {
-  case 0x00: /* Unknown exception — ESR does not encode a specific cause */
+  case ESR_ELx_EC_UNKNOWN: /* ESR does not encode a specific cause */
     fault_printf("Unknown exception at 0x%016lx\n", elr);
     break;
 
-  case 0x20: /* Instruction abort from lower EL (EL0 code page not mapped) */
-  case 0x21: /* Instruction abort from same EL (EL1 instruction fault — kernel
-                bug) */
+  case ESR_ELx_EC_IABT_LOW: /* Instruction abort, lower EL (EL0 code page not
+                               mapped) */
+  case ESR_ELx_EC_IABT_CUR: /* Instruction abort, same EL (EL1 instruction fault
+                               — kernel bug) */
     fault_printf("Instruction abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
     break;
 
-  case 0x24: /* Data abort from lower EL (EL0 load/store to unmapped/protected
-                addr) */
-  case 0x25: /* Data abort from same EL (EL1 load/store fault — kernel bug or
-                probe) */
+  case ESR_ELx_EC_DABT_LOW: /* Data abort, lower EL (EL0 load/store to
+                               unmapped/protected addr) */
+  case ESR_ELx_EC_DABT_CUR: /* Data abort, same EL (EL1 load/store fault —
+                               kernel bug or probe) */
     fault_printf("Data abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
     break;
 
-  case 0x26: /* SP alignment fault — SP not 16-byte aligned on exception entry
-              */
+  case ESR_ELx_EC_SP_ALIGN: /* SP not 16-byte aligned on exception entry */
     fault_printf("SP alignment fault at 0x%016lx\n", elr);
     break;
 
@@ -333,7 +335,8 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
      * arch_uaccess_fault_fixup next to the code that takes those locks.
      * A wild kernel pointer that merely lands in user VA now panics below. */
     struct pt_regs *next = fault_handle_user_or_panic(
-        frame, (frame->spsr & 0xF) == 0, far, elr, "SYNC EXCEPTION", esr);
+        frame, (frame->spsr & PSTATE_M_MASK) == PSTATE_M_EL0T, far, elr,
+        "SYNC EXCEPTION", esr);
     if (next)
       return next;
 
@@ -348,7 +351,17 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     fault_printf("ELR_EL1:  0x%016lx\n", frame->elr);
     fault_printf("FAR_EL1:  0x%016lx\n", far);
     fault_printf("ESR_EL1:  0x%016lx\n", esr);
-    fault_printf("EC: 0x%x, ISS: 0x%x\n", ec, (uint32_t)(esr & 0xFFFFFF));
+    /* CPU-AARCH64-ISS-01 RESOLVED: this used to mask ISS to 0xFFFFFF (24
+     * bits), one bit narrower than the architectural 25-bit ISS field
+     * (ESR_ELx_ISS_MASK, esr.h) that syscall.c's iss computation already
+     * used correctly — bit 24 of ISS is meaningful for some Data Abort
+     * encodings (e.g. ISV). Verified this fault_printf call is the ONLY
+     * reader of this masked value anywhere in the tree (nothing parses,
+     * compares, or stores the printed ISS), so widening it to match the
+     * real field is a pure diagnostic-accuracy fix with no other call site
+     * to keep in sync. */
+    fault_printf("EC: 0x%x, ISS: 0x%x\n", ec,
+                 (uint32_t)(esr & ESR_ELx_ISS_MASK));
     if (arch_frame_on_fault_stack(frame)) {
       /* The vector switched us onto the per-CPU fault stack; the SP at the
        * moment of the abort was parked just above the frame. */

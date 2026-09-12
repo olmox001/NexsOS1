@@ -36,14 +36,15 @@
  *     pic_handle_spurious() BEFORE dispatch: they are not real interrupts
  *     and their EOI rules differ (none for IRQ7; master-only for IRQ15).
  */
-#include <kernel/types.h>
+#include <arch/amd64/apic.h>
+#include <arch/amd64_internal.h>
+#include <arch/irq_vectors.h>
+#include <arch/pt_regs.h>
+#include <kernel/arch.h>
 #include <kernel/hal.h>
 #include <kernel/irq.h>
 #include <kernel/printk.h>
-#include <kernel/arch.h>
-#include <arch/pt_regs.h>
-#include <arch/amd64_internal.h>
-#include <arch/amd64/apic.h>
+#include <kernel/types.h>
 
 /* Prototypes to satisfy -Wmissing-prototypes */
 void pic_init(void);
@@ -55,16 +56,16 @@ struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs);
 /* PIC command and data I/O ports.
  * PIC1 (master): CMD = 0x20, DATA = 0x21 (OCW1/ICW registers).
  * PIC2 (slave):  CMD = 0xA0, DATA = 0xA1. */
-#define PIC1_CMD  0x20
+#define PIC1_CMD 0x20
 #define PIC1_DATA 0x21
-#define PIC2_CMD  0xA0
+#define PIC2_CMD 0xA0
 #define PIC2_DATA 0xA1
 
 /* PIT (8253/8254) I/O ports.
  * PIT_CH0 (0x40): Channel 0 data port (read/write counter).
  * PIT_CMD (0x43): Mode/Command register (write-only). */
-#define PIT_CH0   0x40
-#define PIT_CMD   0x43
+#define PIT_CH0 0x40
+#define PIT_CMD 0x43
 
 extern volatile uint64_t jiffies;
 extern void timer_tick(void); /* generic scheduler tick */
@@ -86,9 +87,9 @@ void pic_mask(uint8_t irq);
  * IRQ context: safe on single-core.
  */
 static void pic_chip_enable(uint32_t irq) {
-    if (irq >= 32 && irq < 48) {
-        pic_unmask(irq - 32);
-    }
+  if (irq >= IRQ0_VECTOR && irq <= LEGACY_VECTOR_END) {
+    pic_unmask((uint8_t)(irq - IRQ0_VECTOR));
+  }
 }
 
 /*
@@ -104,16 +105,16 @@ static void pic_chip_enable(uint32_t irq) {
  * IRQ context: safe.
  */
 void pic_mask(uint8_t irq) {
-    uint16_t port;
-    uint8_t value;
-    if (irq < 8) {
-        port = PIC1_DATA;
-    } else {
-        port = PIC2_DATA;
-        irq -= 8;
-    }
-    value = hal_read8(port) | (1 << irq);
-    hal_write8(port, value);
+  uint16_t port;
+  uint8_t value;
+  if (irq < 8) {
+    port = PIC1_DATA;
+  } else {
+    port = PIC2_DATA;
+    irq -= 8;
+  }
+  value = hal_read8(port) | (1 << irq);
+  hal_write8(port, value);
 }
 
 /*
@@ -128,9 +129,9 @@ void pic_mask(uint8_t irq) {
  * IRQ context: safe.
  */
 static void pic_chip_disable(uint32_t irq) {
-    if (irq >= 32 && irq < 48) {
-        pic_mask(irq - 32);
-    }
+  if (irq >= IRQ0_VECTOR && irq <= LEGACY_VECTOR_END) {
+    pic_mask((uint8_t)(irq - IRQ0_VECTOR));
+  }
 }
 
 /*
@@ -145,8 +146,8 @@ static void pic_chip_disable(uint32_t irq) {
  * IRQ context: safe (never called in the amd64 hot path).
  */
 static uint32_t pic_chip_acknowledge(void) {
-    /* Not used by PIC on x86 because the vector is in pt_regs */
-    return 1023;
+  /* Not used by PIC on x86 because the vector is in pt_regs */
+  return 1023;
 }
 
 /*
@@ -166,17 +167,19 @@ static uint32_t pic_chip_acknowledge(void) {
  * IRQ context: YES — IDT path.
  */
 static void pic_chip_end(uint32_t irq) {
-    lapic_eoi();
-    if (irq >= 32 && irq < 48) {
-        pic_send_eoi(irq - 32);
-    }
+  lapic_eoi();
+  if (irq >= IRQ0_VECTOR && irq <= LEGACY_VECTOR_END) {
+    pic_send_eoi((uint8_t)(irq - IRQ0_VECTOR));
+  }
 }
 
-/* HALT_IPI_VECTOR: fixed LAPIC vector for the panic-halt broadcast.  The
- * GIC counterpart is SGI0 (gic_send_ipi); the amd64 chip previously left
+/* HALT_IPI_VECTOR: fixed LAPIC vector for the panic-halt broadcast (defined
+ * in <arch/irq_vectors.h>, the single source of truth for this vector — it
+ * must also be the vector amd64_tlb_ipi_init()/apic.c wire up an IPI handler
+ * for, and previously risked drifting if either file edited its own copy).
+ * The GIC counterpart is SGI0 (gic_send_ipi); the amd64 chip previously left
  * send_ipi_all NULL, so panic() never stopped the other CPUs — they kept
  * running against a dying kernel. */
-#define HALT_IPI_VECTOR 0xFE
 
 /*
  * halt_ipi_handler - peer-CPU side of the panic-halt broadcast.
@@ -186,12 +189,12 @@ static void pic_chip_end(uint32_t irq) {
  * so no EOI is issued — irrelevant during a panic.
  */
 static void halt_ipi_handler(uint32_t irq, void *data) {
-    (void)irq;
-    (void)data;
-    extern volatile int panic_flag;
-    panic_flag = 1;
-    arch_timer_control(0);
-    arch_cpu_halt();
+  (void)irq;
+  (void)data;
+  extern volatile int panic_flag;
+  panic_flag = 1;
+  arch_timer_control(0);
+  arch_cpu_halt();
 }
 
 /*
@@ -201,8 +204,8 @@ static void halt_ipi_handler(uint32_t irq, void *data) {
  * destination field is ignored when a shorthand is used).
  */
 static void pic_chip_send_ipi_all(void) {
-    lapic_send_ipi(0, ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF |
-                          HALT_IPI_VECTOR);
+  lapic_send_ipi(0,
+                 ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF | HALT_IPI_VECTOR);
 }
 
 /* pic_chip: irq_chip implementation for the 8259A PIC pair.
@@ -236,13 +239,13 @@ static struct irq_chip pic_chip = {
  * IRQ context: NO.
  */
 void pic_init(void) {
-    irq_register_chip(&pic_chip);
+  irq_register_chip(&pic_chip);
   /* Remap PIC IRQs 0-15 to interrupts 32-47 */
   hal_write8(PIC1_CMD, 0x11); /* ICW1: Init + ICW4 */
   hal_write8(PIC2_CMD, 0x11);
 
-  hal_write8(PIC1_DATA, 0x20); /* ICW2: PIC1 vector offset 32 */
-  hal_write8(PIC2_DATA, 0x28); /* ICW2: PIC2 vector offset 40 */
+  hal_write8(PIC1_DATA, IRQ0_VECTOR);      /* ICW2: PIC1 vector offset (32) */
+  hal_write8(PIC2_DATA, IRQ0_VECTOR + 8U); /* ICW2: PIC2 vector offset (40) */
 
   hal_write8(PIC1_DATA, 0x04); /* ICW3: PIC1 has slave on IRQ2 */
   hal_write8(PIC2_DATA, 0x02); /* ICW3: PIC2 cascade identity */
@@ -308,9 +311,11 @@ extern struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
  */
 void pit_init_hz(uint32_t hz) {
   /* Frequency = 1193182 / divisor */
-  if (hz == 0) hz = 100;
+  if (hz == 0)
+    hz = 100;
   uint32_t divisor = 1193182 / hz;
-  if (divisor > 0xFFFF) divisor = 0xFFFF;
+  if (divisor > 0xFFFF)
+    divisor = 0xFFFF;
 
   hal_write8(PIT_CMD, 0x36); /* Channel 0, lobyte/hibyte, square wave */
   hal_write8(PIT_CH0, (uint8_t)(divisor & 0xFF));
@@ -369,24 +374,24 @@ void pic_send_eoi(uint8_t irq) {
  * IRQ context: YES — called from the IDT path before irq_dispatch().
  */
 int pic_handle_spurious(uint32_t vec) {
-    if (vec == 39) { /* master IRQ7 */
-        hal_write8(PIC1_CMD, 0x0B); /* OCW3: read ISR on next read */
-        uint8_t isr = hal_read8(PIC1_CMD);
-        if (!(isr & 0x80)) {
-            return 1; /* spurious: no EOI */
-        }
-        return 0;
-    }
-    if (vec == 47) { /* slave IRQ15 */
-        hal_write8(PIC2_CMD, 0x0B);
-        uint8_t isr = hal_read8(PIC2_CMD);
-        if (!(isr & 0x80)) {
-            hal_write8(PIC1_CMD, 0x20); /* EOI the master's cascade (IRQ2) */
-            return 1;
-        }
-        return 0;
+  if (vec == IRQ7_VECTOR) {     /* master IRQ7 */
+    hal_write8(PIC1_CMD, 0x0B); /* OCW3: read ISR on next read */
+    uint8_t isr = hal_read8(PIC1_CMD);
+    if (!(isr & 0x80)) {
+      return 1; /* spurious: no EOI */
     }
     return 0;
+  }
+  if (vec == IRQ15_VECTOR) { /* slave IRQ15 */
+    hal_write8(PIC2_CMD, 0x0B);
+    uint8_t isr = hal_read8(PIC2_CMD);
+    if (!(isr & 0x80)) {
+      hal_write8(PIC1_CMD, 0x20); /* EOI the master's cascade (IRQ2) */
+      return 1;
+    }
+    return 0;
+  }
+  return 0;
 }
 
 /*
@@ -402,18 +407,18 @@ int pic_handle_spurious(uint32_t vec) {
  * IRQ context: safe (no sleeping).
  */
 void pic_unmask(uint8_t irq) {
-    uint16_t port;
-    uint8_t value;
+  uint16_t port;
+  uint8_t value;
 
-    if(irq < 8) {
-        port = PIC1_DATA;
-    } else {
-        port = PIC2_DATA;
-        irq -= 8;
-    }
-    pr_info("PIC: Unmasking IRQ %u\n", irq);
-    value = hal_read8(port) & ~(1 << irq);
-    hal_write8(port, value);
+  if (irq < 8) {
+    port = PIC1_DATA;
+  } else {
+    port = PIC2_DATA;
+    irq -= 8;
+  }
+  pr_info("PIC: Unmasking IRQ %u\n", irq);
+  value = hal_read8(port) & ~(1 << irq);
+  hal_write8(port, value);
 }
 
 /* Keyboard interrupt is now handled in idt.c or via generic IRQ dispatch */

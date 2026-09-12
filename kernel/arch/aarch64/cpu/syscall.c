@@ -2,6 +2,7 @@
  * kernel/arch/aarch64/cpu/syscall.c
  * System Call Handler
  */
+#include <arch/esr.h>
 #include <drivers/uart.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
@@ -103,7 +104,8 @@ int arch_copy_to_user(void *dest, const void *src, size_t n) {
   if (!current_process || !current_process->page_table)
     return -1;
 
-  if (vmm_check_range(current_process->page_table, dest_addr, n, PTE_VALID) != 0)
+  if (vmm_check_range(current_process->page_table, dest_addr, n, PTE_VALID) !=
+      0)
     return -1;
 
   uint64_t flagsptr = local_irq_save();
@@ -202,14 +204,15 @@ int arch_copy_string_from_user_n(char *dest, const char *src, size_t max_len,
      * repeats the i == 0 walk whenever src IS aligned, on the hottest string
      * path in the kernel. */
     if (i == 0 || ((uint64_t)&src[i] & 0xFFF) == 0) {
-       if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1, PTE_VALID) != 0) {
-         /* HAL-0: a failed validation is a FAILURE.  This used to `goto out`
-          * with ret still 0, so a string that ran into an unmapped page was
-          * reported as a successful (silently truncated) copy — the caller then
-          * acted on a partial path/key.  amd64 already returned -1 here. */
-         ret = -1;
-         goto out;
-       }
+      if (vmm_check_range(current_process->page_table, (uint64_t)&src[i], 1,
+                          PTE_VALID) != 0) {
+        /* HAL-0: a failed validation is a FAILURE.  This used to `goto out`
+         * with ret still 0, so a string that ran into an unmapped page was
+         * reported as a successful (silently truncated) copy — the caller then
+         * acted on a partial path/key.  amd64 already returned -1 here. */
+        ret = -1;
+        goto out;
+      }
     }
 
     dest[i] = src[i];
@@ -239,18 +242,22 @@ out:
 struct pt_regs *syscall_handler(struct pt_regs *frame) {
   /* Check Exception Syndrome to distinguish SVC from Aborts */
   uint64_t esr = arch_get_fault_status();
-  uint64_t ec = (esr >> 26) & 0x3F;
+  uint64_t ec = ESR_ELx_EC(esr);
 
-  /* EC 0x15 = SVC from AArch64 */
-  if (ec != 0x15) {
+  /* Anything other than an actual SVC reaching this handler is a
+   * misrouted/synthetic call — real faults go through sync_handler
+   * (cpu.c), which is the only caller of syscall_handler(), and only for
+   * ec == ESR_ELx_EC_SVC64. This branch is defensive. */
+  if (ec != ESR_ELx_EC_SVC64) {
     uint64_t far = arch_get_fault_address();
-    uint64_t iss = esr & 0x1FFFFFF;
+    uint64_t iss = esr & ESR_ELx_ISS_MASK;
 
     /* Recursion guard (Phase A step 7): a fault while handling this EL0
      * fault arrives as an EL1 sync abort, but guard this path too so e.g. a
      * fault inside process_terminate stops cleanly. */
     if (fault_enter() > 1) {
-      fault_printf("\n[FATAL] NESTED EXCEPTION in EL0-fault path EC=0x%lx ELR=%016lx — halting\n",
+      fault_printf("\n[FATAL] NESTED EXCEPTION in EL0-fault path EC=0x%lx "
+                   "ELR=%016lx — halting\n",
                    ec, frame->elr);
       arch_cpu_halt();
     }
@@ -263,22 +270,22 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
      * below, mirroring amd64 (DIR-06 HAL conformance: one reporting path). */
     const char *ec_name = "Unknown";
     switch (ec) {
-    case 0x00:
+    case ESR_ELx_EC_UNKNOWN:
       ec_name = "Unknown/Uncategorized";
       break;
-    case 0x01:
+    case ESR_ELx_EC_WFx:
       ec_name = "WFI/WFE";
       break;
-    case 0x20:
+    case ESR_ELx_EC_IABT_LOW:
       ec_name = "Instruction Abort (Lower EL)";
       break;
-    case 0x21:
+    case ESR_ELx_EC_IABT_CUR:
       ec_name = "Instruction Abort (Same EL)";
       break;
-    case 0x24:
+    case ESR_ELx_EC_DABT_LOW:
       ec_name = "Data Abort (Lower EL)";
       break;
-    case 0x25:
+    case ESR_ELx_EC_DABT_CUR:
       ec_name = "Data Abort (Same EL)";
       break;
     default:
@@ -293,16 +300,16 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
           fault_handle_user_or_panic(frame, 1, far, frame->elr, ec_name, esr);
       if (next)
         return next;
-      pr_err(
-          "PID %d EXCEPTION: EC=0x%lx ESR=0x%lx FAR=0x%lx ELR=0x%lx ISS=0x%lx\n",
-          current_process ? (int)current_process->pid : -1, ec, esr, far,
-          frame->elr, iss);
+      pr_err("PID %d EXCEPTION: EC=0x%lx ESR=0x%lx FAR=0x%lx ELR=0x%lx "
+             "ISS=0x%lx\n",
+             current_process ? (int)current_process->pid : -1, ec, esr, far,
+             frame->elr, iss);
       panic("Fatal EL0 exception with no current task (EC=0x%lx)", ec);
     }
   }
 
   /* Dispatch via agnostic core */
-  extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *regs);
+  extern struct pt_regs *kernel_syscall_dispatcher(struct pt_regs * regs);
   return kernel_syscall_dispatcher(frame);
 }
 

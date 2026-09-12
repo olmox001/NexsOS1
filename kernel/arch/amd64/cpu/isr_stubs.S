@@ -6,10 +6,17 @@
  *   2. Pushes the vector number
  *   3. Jumps to common_isr_entry
  *
- * common_isr_entry saves all GP registers and calls nexs_isr_dispatch(IsrFrame*).
+ * common_isr_entry saves all GP registers and calls amd64_isr_dispatch(struct
+ * pt_regs *). (Renamed from the stale "nexs_isr_dispatch" this comment used
+ * to say — that symbol has not existed since amd64_isr_dispatch was
+ * introduced; see kernel/arch/amd64/cpu/idt.c.)
  * ============================================================ */
+#include <kernel/cpu_asm_offsets.h>
+#include <arch/irq_vectors.h>
 
 .extern amd64_isr_dispatch
+.extern amd64_fpu_save_task
+.extern amd64_fpu_restore_task
 
 /* (The old HAS_ERR(v) macro was defined but never referenced — the ERR vs
  * NOERR split is done by the explicit ISR_ERR/ISR_NOERR emission below, so it
@@ -77,9 +84,9 @@ ISR_ERR   29
 ISR_ERR   30
 ISR_NOERR 31
 
-/* IRQs / Software interrupts 32-255 */
-.set V, 32
-.rept 224
+/* IRQs / Software interrupts FIRST_EXTERNAL_VECTOR (32) - 255. */
+.set V, FIRST_EXTERNAL_VECTOR
+.rept (256 - FIRST_EXTERNAL_VECTOR)
 MAKE_ISR_NOERR V
 .set V, V+1
 .endr
@@ -110,6 +117,15 @@ common_isr_entry:
     pushq %r14
     pushq %r15
 
+    /* Snapshot the interrupted task's x87/MMX/SSE state BEFORE entering C.
+     * current_task is at CPU_INFO_CURRENT_TASK_OFF; every GP register is
+     * already on the frame, so using rdi here cannot alter the task's saved
+     * register image. */
+    movq  %gs:CPU_INFO_CURRENT_TASK_OFF, %rdi
+    testq %rdi, %rdi
+    jz    2f
+    call  amd64_fpu_save_task
+2:
     /* Pass pointer to pt_regs as first argument */
     movq  %rsp, %rdi
     call  amd64_isr_dispatch
@@ -166,6 +182,11 @@ arch_cpu_yield:
     pushq %r13
     pushq %r14
     pushq %r15
+    movq  %gs:CPU_INFO_CURRENT_TASK_OFF, %rdi
+    testq %rdi, %rdi
+    jz    2f
+    call  amd64_fpu_save_task
+2:
     movq  %rsp, %rdi
     call  schedule
     /* schedule() returned the next context in rax; restore it via the ONE
@@ -185,6 +206,16 @@ arch_cpu_yield:
  */
 .global restore_context
 restore_context:
+    /* schedule() has published the selected task in cpu_info before returning
+     * its pt_regs pointer.  Preserve that pointer across the C-ABI call, then
+     * restore the task's FXSAVE image before exposing its GP state. */
+    pushq %rax
+    movq  %gs:CPU_INFO_CURRENT_TASK_OFF, %rdi
+    testq %rdi, %rdi
+    jz    2f
+    call  amd64_fpu_restore_task
+2:
+    popq  %rax
     movq  %rax, %rsp
     popq  %r15
     popq  %r14

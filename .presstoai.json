@@ -617,6 +617,10 @@
       "selected": true
     },
     {
+      "path": "include/api/sys/ucontext.h",
+      "selected": true
+    },
+    {
       "path": "include/api/sys/uio.h",
       "selected": true
     },
@@ -641,6 +645,10 @@
       "selected": true
     },
     {
+      "path": "include/api/ucontext.h",
+      "selected": true
+    },
+    {
       "path": "include/api/unistd.h",
       "selected": true
     },
@@ -658,727 +666,739 @@
     },
     {
       "path": "kernel/arch/aarch64/boot/header.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/boot/linker.ld",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/boot/stage1.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/boot/stage2.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/cpu/cpu.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/cpu/exception.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/cpu/syscall.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/hal.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/include/arch/arch.h",
+      "selected": false
+    },
+    {
+      "path": "kernel/arch/aarch64/include/arch/esr.h",
       "selected": true
     },
     {
       "path": "kernel/arch/aarch64/include/arch/platform.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/include/arch/pt_regs.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/kernel.ld",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/kinit/start.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/mm/mmu.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/platform.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/aarch64/virtio.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/boot/boot.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/boot/header.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/boot/linker.ld",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/boot/stage1.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/boot/stage2.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/apic.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/context.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/cpu.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/gdt.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/gdt_defs.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/idt.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/isr_stubs.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/msr.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/syscall.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/cpu/syscall_hal.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/hal.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/include/arch/amd64_internal.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/include/arch/arch.h",
-      "selected": true
+      "selected": false
+    },
+    {
+      "path": "kernel/arch/amd64/include/arch/irq_vectors.h",
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/include/arch/platform.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/include/arch/pt_regs.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/kernel.ld",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/kinit/start.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/kinit/trampoline.S",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/mm/mmu.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/mm/tlb.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/mm/uaccess.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/platform/platform.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/arch/amd64/virtio.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/core/fault.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/core/hal_bus.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/core/object.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/core/smp.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/core/syscall_dispatch.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/core/timer.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/cpu.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/block/block.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/block/ramdisk.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/console.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/cpp_test.cpp",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/gic/gic.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/gic/gic_regs.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/gpu/gpu_core.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/gpu/virtio_gpu.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/irq_ctrl.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/keyboard/keyboard.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/pci/pci.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/ps2/ps2.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/sys_timer.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/timer/pic_pit.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/timer/timer.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/uart/16550.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/uart/pl011.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/usb/ehci.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/usb/uhci.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/usb/usb_core.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/usb/usb_hid.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/usb/xhci.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/virtio/virtio_blk.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/drivers/virtio/virtio_input.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/fs/ext4.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/fs/gpt.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/fs/procfs.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/fs/vfs.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/chrome.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/compositor.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/compositor.c.new",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/compositor_style.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/draw2d.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/draw3d.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/font.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/gl.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/graphics.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/region.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/surface.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/graphics/term.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/arch/amd64/apic.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/gic.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/gpu/gpu.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/keyboard.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/pci.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/ps2.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/timer.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/uart.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/usb/usb.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/virtio.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/virtio_blk.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/virtio_gpu.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/virtio_hal.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/drivers/virtio_input.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/graphics/default_font.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/graphics/gl.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/arch.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/block.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/bootmodule.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/bootphase.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/buffer.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/compositor_style.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/cpu.h",
+      "selected": false
+    },
+    {
+      "path": "kernel/include/kernel/cpu_asm_offsets.h",
       "selected": true
     },
     {
       "path": "kernel/include/kernel/driver.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/drivers.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/elf.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/entropy.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/ext4.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/fault.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/fdt.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/gfx_chrome.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/gfx_surface.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/gpt.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/graphics.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/hal.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/hal_device.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/hal_platform.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/hal_uaccess.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/hal_unified.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/io_poll.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/irq.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/kmalloc.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/list.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/math.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/memlayout.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/multiboot2.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/nx_contract.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/object.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/platform.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/pmm.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/printk.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/procfs.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/region.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/registry.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/registry.h.new",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/sched.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/sha256.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/spinlock.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/ssp.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/string.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/term.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/test.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/timer.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/types.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/vfs.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/virtio_hal.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/include/kernel/vmm.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/irq/irq.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/backtrace.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/crc32.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/entropy.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/fault_print.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/fdt.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/kmalloc.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/ktest.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/ktest_samples.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/math.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/printk.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/registry.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/sha256.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/stack_protector.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/string.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/utf8.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/lib/vsnprintf.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/main.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/mm/buffer.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/mm/pmm.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/mm/vmm.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/sched/elf.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "kernel/sched/process.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "scripts/check-layering.sh",
@@ -1406,39 +1426,39 @@
     },
     {
       "path": "tools/analyze_drift.py",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/compile_to_nximage.py",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/coreutils_full_check.py",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/gen_ksyms.sh",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/kernel_doctor/install_deps.sh",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/kernel_doctor/kernel_doctor.py",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/kernel_validator.py",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/make-bootable-img.sh",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/make-bootable-iso.sh",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/mkdisk.c",
@@ -1446,7 +1466,7 @@
     },
     {
       "path": "tools/mkfont.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/nxadb.py",
@@ -1458,15 +1478,15 @@
     },
     {
       "path": "tools/nxrun.sh",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/qmp_keys.py",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/qmp_type.py",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/setup-toolchain-linux.sh",
@@ -1478,11 +1498,11 @@
     },
     {
       "path": "tools/stb_truetype.h",
-      "selected": false
+      "selected": true
     },
     {
       "path": "tools/ttf2off.c",
-      "selected": false
+      "selected": true
     },
     {
       "path": "user/arch/aarch64/syscall.S",
@@ -5202,35 +5222,35 @@
     },
     {
       "path": "user/bin/busybox/shell/Config.src",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/Kbuild.src",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/README",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/README.job",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/ash.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/ash_doc.txt",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/ash_ptr_hack.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/ash_remove_unnecessary_code_in_backquote_expansion.patch",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/ash_test/.gitignore",
@@ -7954,23 +7974,23 @@
     },
     {
       "path": "user/bin/busybox/shell/brace.txt",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/cttyhack.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/hush.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/hush_doc.txt",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/hush_leaktool.sh",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/hush_test/.gitignore",
@@ -10854,35 +10874,35 @@
     },
     {
       "path": "user/bin/busybox/shell/match.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/match.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/math.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/math.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/random.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/random.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/shell_common.c",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/shell/shell_common.h",
-      "selected": true
+      "selected": false
     },
     {
       "path": "user/bin/busybox/size_single_applets.sh",
@@ -18190,6 +18210,58 @@
     },
     {
       "path": "user/bin/stress.c",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/.gitignore",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/LICENSE",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/README.md",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/include/float.h",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/include/stdalign.h",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/include/stdarg.h",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/include/stdbool.h",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/include/stddef.h",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/include/stdnoreturn.h",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/include/tcclib.h",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/include/varargs.h",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/tinycc.c",
+      "selected": true
+    },
+    {
+      "path": "user/bin/tinycc/tinycc.h",
       "selected": true
     },
     {
@@ -170634,6 +170706,22 @@
     },
     {
       "path": "user/sys/lib/portability/sdl2/overlay.mk",
+      "selected": true
+    },
+    {
+      "path": "user/sys/lib/portability/tinycc/overlay.mk",
+      "selected": true
+    },
+    {
+      "path": "user/sys/lib/portability/tinycc/patches/tinycc.c.patch",
+      "selected": true
+    },
+    {
+      "path": "user/sys/lib/portability/tinycc/patches/tinycc.h.patch",
+      "selected": true
+    },
+    {
+      "path": "user/sys/lib/portability/tinycc/tinycc_config_nexsos.h",
       "selected": true
     },
     {

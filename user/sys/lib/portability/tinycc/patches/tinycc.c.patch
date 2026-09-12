@@ -1,0 +1,35 @@
+--- a/user/bin/tinycc/tinycc.c
++++ b/user/bin/tinycc/tinycc.c
+@@ -1,5 +1,22 @@
+ #include "tinycc.h"
+ 
++/* NexsOS1 port (user/sys/lib/portability/tinycc/): every TCCState this
++ * process creates must come up in this system's only supported link model
++ * BEFORE any -o/-l/-static command-line processing happens, so the user can
++ * still override either setting explicitly if they ever need to.
++ *
++ *  - static_link=1: there is no ld.so on NexsOS1 (execv*() are -ENOTSUP
++ *    stubs; the real process-creation path is execsvc_spawn, see
++ *    include/api/execsvc.h) — a PT_INTERP executable would just never run.
++ *  - -Wl,-Ttext=0x80000000: the fixed load address every other NexsOS1
++ *    userland binary is linked at (see
++ *    user/sys/lib/portability/coreutils/overlay.mk's -Ttext=0x80000000
++ *    -e _start link line). tcc's own crt1.o IS that same _start (see this
++ *    directory's overlay.mk — it's a copy of user/arch/$(ARCH)/syscall.o),
++ *    so no change to the entry symbol itself is needed. */
++static void tinycc_os1_apply_defaults(TCCState *s)
++{
++    s->static_link = 1;
++    tcc_set_options(s, "-Wl,-Ttext=0x80000000");
++}
++
+ int main(int argc0, char **argv0)
+ {
+     TCCState *s, *s1;
+@@ -13,6 +30,7 @@ redo:
+     argc = argc0, argv = argv0;
+     s = s1 = tcc_new();
++    tinycc_os1_apply_defaults(s);
+     opt = tcc_parse_args(s, &argc, &argv, 1);
+ 
+     if (n == 0) {

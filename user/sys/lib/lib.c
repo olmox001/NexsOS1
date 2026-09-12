@@ -170,6 +170,7 @@
 #include <sys/resource.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
+#include <sys/ucontext.h>
 #include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <termios.h>
 #include <uchar.h>
@@ -4372,6 +4373,16 @@ int sigaction(int signum, const struct sigaction *restrict act,
   return 0;
 }
 
+static stack_t s_user_sigstack;
+
+int sigaltstack(const stack_t *restrict ss, stack_t *restrict oss) {
+  if (oss)
+    *oss = s_user_sigstack;
+  if (ss)
+    s_user_sigstack = *ss;
+  return 0;
+}
+
 sighandler_t signal(int signum, sighandler_t handler) {
   (void)signum;
   (void)handler;
@@ -4396,6 +4407,130 @@ int munmap(void *addr, size_t length) {
   (void)length;
   free(addr);
   return 0;
+}
+
+int mprotect(void *addr, size_t length, int prot) {
+  (void)addr;
+  (void)length;
+  (void)prot;
+  return 0;
+}
+
+void __clear_cache(void *beginning, void *end) {
+  (void)beginning;
+  (void)end;
+}
+
+/* --- <sys/ucontext.h> --- architecture-aware context capture and restoration */
+int getcontext(ucontext_t *ucp) {
+  if (!ucp) {
+    errno = EFAULT;
+    return -1;
+  }
+  memset(ucp, 0, sizeof(*ucp));
+  volatile uintptr_t sp_approx = 0;
+  sp_approx = (uintptr_t)&sp_approx;
+#if defined(__x86_64__) || defined(ARCH_AMD64)
+  ucp->uc_mcontext.gregs[REG_RSP] = (unsigned long)sp_approx;
+  ucp->uc_mcontext.gregs[REG_RBP] = (unsigned long)__builtin_frame_address(0);
+  ucp->uc_mcontext.gregs[REG_RIP] = (unsigned long)__builtin_return_address(0);
+  ucp->__jb[1] = (unsigned long long)ucp->uc_mcontext.gregs[REG_RBP];
+  ucp->__jb[6] = (unsigned long long)sp_approx;
+  ucp->__jb[7] = (unsigned long long)ucp->uc_mcontext.gregs[REG_RIP];
+  ucp->__jb_valid = 1;
+#elif defined(__aarch64__) || defined(ARCH_AARCH64)
+  ucp->uc_mcontext.sp = (unsigned long long)sp_approx;
+  ucp->uc_mcontext.regs[29] = (unsigned long long)__builtin_frame_address(0);
+  ucp->uc_mcontext.regs[30] = (unsigned long long)__builtin_return_address(0);
+  ucp->uc_mcontext.pc = (unsigned long long)__builtin_return_address(0);
+  ucp->__jb[10] = ucp->uc_mcontext.regs[29];
+  ucp->__jb[11] = (unsigned long long)sp_approx;
+  ucp->__jb[12] = ucp->uc_mcontext.pc;
+  ucp->__jb_valid = 1;
+#endif
+  return 0;
+}
+
+int setcontext(const ucontext_t *ucp) {
+  if (!ucp) {
+    errno = EFAULT;
+    return -1;
+  }
+  jmp_buf jb;
+  memset(jb, 0, sizeof(jb));
+#if defined(__x86_64__) || defined(ARCH_AMD64)
+  if (ucp->__jb_valid) {
+    memcpy(jb, ucp->__jb, sizeof(jb));
+  } else {
+    jb[0] = (unsigned long long)ucp->uc_mcontext.gregs[REG_RBX];
+    jb[1] = (unsigned long long)ucp->uc_mcontext.gregs[REG_RBP];
+    jb[2] = (unsigned long long)ucp->uc_mcontext.gregs[REG_R12];
+    jb[3] = (unsigned long long)ucp->uc_mcontext.gregs[REG_R13];
+    jb[4] = (unsigned long long)ucp->uc_mcontext.gregs[REG_R14];
+    jb[5] = (unsigned long long)ucp->uc_mcontext.gregs[REG_R15];
+    jb[6] = (unsigned long long)ucp->uc_mcontext.gregs[REG_RSP];
+    jb[7] = (unsigned long long)ucp->uc_mcontext.gregs[REG_RIP];
+  }
+  if (jb[6] != 0 && jb[7] != 0) {
+    longjmp(jb, 1);
+  }
+#elif defined(__aarch64__) || defined(ARCH_AARCH64)
+  if (ucp->__jb_valid) {
+    memcpy(jb, ucp->__jb, sizeof(jb));
+  } else {
+    for (int i = 0; i < 10; i++)
+      jb[i] = (unsigned long long)ucp->uc_mcontext.regs[19 + i];
+    jb[10] = (unsigned long long)ucp->uc_mcontext.regs[29];
+    jb[11] = (unsigned long long)ucp->uc_mcontext.sp;
+    jb[12] = (unsigned long long)(ucp->uc_mcontext.pc ? ucp->uc_mcontext.pc : ucp->uc_mcontext.regs[30]);
+  }
+  if (jb[11] != 0 && jb[12] != 0) {
+    longjmp(jb, 1);
+  }
+#endif
+  return 0;
+}
+
+void makecontext(ucontext_t *ucp, void (*func)(void), int argc, ...) {
+  if (!ucp || !func)
+    return;
+  if (ucp->uc_stack.ss_sp && ucp->uc_stack.ss_size > 0) {
+    uintptr_t sp = (uintptr_t)((char *)ucp->uc_stack.ss_sp + ucp->uc_stack.ss_size);
+#if defined(__x86_64__) || defined(ARCH_AMD64)
+    sp = (sp & ~15UL) - 8;
+    *(uintptr_t *)sp = 0;
+    ucp->uc_mcontext.gregs[REG_RSP] = (unsigned long)sp;
+    ucp->uc_mcontext.gregs[REG_RIP] = (unsigned long)func;
+    ucp->uc_mcontext.gregs[REG_RBP] = 0;
+    memset(ucp->__jb, 0, sizeof(ucp->__jb));
+    ucp->__jb[6] = (unsigned long long)sp;
+    ucp->__jb[7] = (unsigned long long)func;
+    ucp->__jb_valid = 1;
+#elif defined(__aarch64__) || defined(ARCH_AARCH64)
+    sp = sp & ~15ULL;
+    ucp->uc_mcontext.sp = (unsigned long long)sp;
+    ucp->uc_mcontext.pc = (unsigned long long)func;
+    ucp->uc_mcontext.regs[29] = 0;
+    ucp->uc_mcontext.regs[30] = 0;
+    memset(ucp->__jb, 0, sizeof(ucp->__jb));
+    ucp->__jb[11] = (unsigned long long)sp;
+    ucp->__jb[12] = (unsigned long long)func;
+    ucp->__jb_valid = 1;
+#endif
+  }
+  (void)argc;
+}
+
+int swapcontext(ucontext_t *restrict oucp, const ucontext_t *restrict ucp) {
+  if (!ucp) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (oucp) {
+    if (getcontext(oucp) < 0)
+      return -1;
+  }
+  return setcontext(ucp);
 }
 
 /* --- <sys/ioctl.h> --- only TIOCGWINSZ, answered from the window grid. */

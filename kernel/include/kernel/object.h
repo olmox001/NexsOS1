@@ -102,8 +102,17 @@ long sys_object_lseek(int handle, long off, int whence) NX_MUST_USE;
 /* window_text_write - copy a user buffer to window win_id (UART mirror +
  * compositor append); defined in kernel/core/syscall_dispatch.c.  The shared
  * backend of SYS_WINDOW_WRITE and the OBJ_TYPE_CONSOLE stdout/stderr handle
- * (declared here so kernel/core/object.c's console write can reach it). */
-long window_text_write(int win_id, const char *ubuf, size_t count) NX_MUST_USE;
+ * (declared here so kernel/core/object.c's console write can reach it).
+ *
+ * from_userland: GFX-WIN-WRITE-01-REGR.  Pass 1 when win_id came from a
+ * user-supplied syscall argument (SYS_WINDOW_WRITE) — the ownership check
+ * (GFX-WIN-WRITE-01) applies.  Pass 0 when win_id was resolved by the
+ * kernel itself (the CONSOLE backend's own-window/ctty/focus-follows
+ * fallback chain in object.c) — that resolution already IS the
+ * authorization, and the focus-follows fallback deliberately targets a
+ * window the caller does not own. */
+long window_text_write(int win_id, const char *ubuf, size_t count,
+                       int from_userland) NX_MUST_USE;
 
 /* process_install_stdio - eagerly allocate p's handle table and pre-install the
  * standard trio: handles 0/1/2 share one CONSOLE object (0 = read/stdin, 1/2 =

@@ -104,6 +104,7 @@ unsigned int __fixunstfsi(long double a);
 long double __floatsitf(int a);
 long double __floatunsitf(unsigned int a);
 long double __floatunditf(unsigned long long a);
+long double __floatditf(long long a);
 
 /* ============================================================================
  * Classification
@@ -1383,6 +1384,9 @@ float __trunctftf2(long double x) { return (float)__trunctfdf2(x); }
 long double __floatsitf(int a) { return __extenddftf2((double)a); }
 long double __floatunsitf(unsigned int a) { return __extenddftf2((double)a); }
 long double __floatunditf(unsigned long long a) {
+  return __extenddftf2((double)a);
+}
+long double __floatditf(long long a) {
   return __extenddftf2((double)a);
 }
 

@@ -54,10 +54,53 @@ typedef void (*sighandler_t)(int);
 
 #define NSIG 32
 
+#define SA_NOCLDSTOP 1
+#define SA_NOCLDWAIT 2
+#define SA_SIGINFO   4
+#define SA_ONSTACK   0x08000000
+#define SA_RESTART   0x10000000
+#define SA_NODEFER   0x40000000
+#define SA_RESETHAND 0x80000000
+
+#define FPE_INTDIV 1
+#define FPE_INTOVF 2
+#define FPE_FLTDIV 3
+#define FPE_FLTOVF 4
+#define FPE_FLTUND 5
+#define FPE_FLTRES 6
+#define FPE_FLTINV 7
+#define FPE_FLTSUB 8
+
+#ifndef _SIGINFO_T
+#define _SIGINFO_T
+typedef struct {
+  int si_signo;
+  int si_errno;
+  int si_code;
+  int si_pid;
+  int si_uid;
+  void *si_addr;
+  int si_status;
+  long si_band;
+  union {
+    int _pad[28];
+  } _sifields;
+} siginfo_t;
+#endif
+
+#ifndef _STACK_T_DEFINED
+#define _STACK_T_DEFINED
+typedef struct {
+  void *ss_sp;
+  int ss_flags;
+  size_t ss_size;
+} stack_t;
+#endif
+
 struct sigaction {
   union {
     void (*sa_handler)(int);
-    void (*sa_sigaction)(int, void *, void *);
+    void (*sa_sigaction)(int, siginfo_t *, void *);
   } __sa_handler;
   sigset_t sa_mask;
   int sa_flags;
@@ -74,6 +117,7 @@ int sigismember(const sigset_t *set, int sig);
 int sigprocmask(int how, const sigset_t *restrict set, sigset_t *restrict oldset);
 int sigaction(int signum, const struct sigaction *restrict act,
               struct sigaction *restrict oldact);
+int sigaltstack(const stack_t *restrict ss, stack_t *restrict oss);
 
 sighandler_t signal(int signum, sighandler_t handler);
 int raise(int sig);

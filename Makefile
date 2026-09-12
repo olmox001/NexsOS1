@@ -629,6 +629,11 @@ libgnulib: $(GNULIB_LIB)
 # ==============================================================================
 include user/sys/lib/portability/coreutils/overlay.mk
 
+# ==============================================================================
+# TinyCC (self-hosted compiler) compatibility overlay
+# ==============================================================================
+include user/sys/lib/portability/tinycc/overlay.mk
+
 
 
 
@@ -640,7 +645,8 @@ SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxr
            $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
-           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf
+           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf \
+           $(TINYCC_ELF)
 
 
 # User ELFs (placed in /bin)
@@ -867,7 +873,7 @@ $(BUILD_DIR)/%.o: %.cpp
 -include $(DEPS)
 
 # Disk Generation
-rootfs: user libsdl2 liblua libgnulib coreutils
+rootfs: user libsdl2 liblua libgnulib coreutils tinycc
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sbin
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
@@ -926,6 +932,14 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@cp $(LUA_LIB) $(BUILD_DIR)/rootfs/sys/lib/liblua.a
 	@cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/libos1lua.a
 	@cp $(GNULIB_LIB) $(BUILD_DIR)/rootfs/sys/lib/libgnulib.a
+	@# TinyCC's own link runtime (crt1.o/crti.o/crtn.o/libc.a/include) — the
+	@# paths under /sys/lib/tcc MUST match CONFIG_TCCDIR / CONFIG_TCC_CRTPREFIX
+	@# in user/sys/lib/portability/tinycc/tinycc_config_nexsos.h.
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/tcc
+	@cp $(TINYCC_RT_DIR)/crt1.o $(TINYCC_RT_DIR)/crti.o $(TINYCC_RT_DIR)/crtn.o \
+	    $(TINYCC_RT_DIR)/libc.a $(BUILD_DIR)/rootfs/sys/lib/tcc/
+	@rm -rf $(BUILD_DIR)/rootfs/sys/lib/tcc/include
+	@cp -r $(TINYCC_RT_DIR)/include $(BUILD_DIR)/rootfs/sys/lib/tcc/include
 	@rm -rf $(BUILD_DIR)/rootfs/sys/lib/include
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/SDL2
 	@cp -r $(SDL2_DIR)/include/. $(BUILD_DIR)/rootfs/sys/lib/include/SDL2/
@@ -1080,7 +1094,6 @@ release-arch: all
 		echo "-> Creo ISO con $$GRUB_MKRESCUE..."; \
 		$$GRUB_MKRESCUE -o $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso $(RELEASE_DIR)/iso; \
 		echo "-> Rimuovo MBR hybrid per renderla leggibile da macOS..."; \
-		dd if=/dev/zero of=$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso bs=512 count=1 conv=notrunc 2>/dev/null; \
 		echo "ISO creata: $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso"; \
 	else \
 		cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img; \

@@ -1,0 +1,22 @@
+--- a/user/bin/tinycc/tinycc.h
++++ b/user/bin/tinycc/tinycc.h
+@@ -191,6 +191,17 @@
+ # elif defined __riscv && defined __LP64__ && defined TCC_TARGET_RISCV64
+ #  define TCC_IS_NATIVE
+ # endif
+ #endif
+ 
++/* NexsOS1 port (user/sys/lib/portability/tinycc/):
++ * __x86_64__/__aarch64__ match TCC_TARGET_* above (we ARE compiling for
++ * that ISA), so the block just above turns TCC_IS_NATIVE on unconditionally
++ * — but there is no working POSIX -run environment here: mmap() is
++ * heap-backed rather than real demand-paged memory (include/api/sys/mman.h),
++ * there is no dlfcn.h, and sigaction()-based SIGSEGV/SIGFPE recovery for
++ * the JIT backtrace path has no kernel support to rely on. Force it back
++ * off so tccrun.c's dlopen/dlsym/mprotect/sigaction/backtrace block never
++ * gets compiled in. See tinycc_config_nexsos.h for TCC_TARGET_NEXSOS. */
++#ifdef TCC_TARGET_NEXSOS
++# undef TCC_IS_NATIVE
++#endif
++
+ #if defined TCC_IS_NATIVE && !defined CONFIG_TCCBOOT

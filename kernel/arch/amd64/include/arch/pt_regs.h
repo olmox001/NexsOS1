@@ -10,6 +10,11 @@
 
 #include <kernel/nx_contract.h>
 #include <stdint.h>
+/* Named ring0/ring3 selectors (GDT_*_SEL below) — single source of truth in
+ * kernel/arch/amd64/cpu/gdt_defs.h, shared with syscall.S and msr.c so the
+ * segment values a hand-built pt_regs frame uses can never drift from what
+ * gdt_init()/amd64_syscall_init() actually programmed. */
+#include "../../cpu/gdt_defs.h"
 
 /*
  * Full Register State for x86-64 exceptions/syscalls.
@@ -68,9 +73,7 @@ NX_ASSERT_SIZE(struct pt_regs, 0xB0);
 /* ─── Architecture-Agnostic Accessors ─── */
 
 /* Syscall number: RAX on x86-64 (Linux convention) */
-static inline uint64_t pt_regs_syscall_num(struct pt_regs *r) {
-  return r->rax;
-}
+static inline uint64_t pt_regs_syscall_num(struct pt_regs *r) { return r->rax; }
 
 /* Syscall arguments: RDI, RSI, RDX, R10, R8, R9 (Linux x86-64 ABI) */
 static inline uint64_t pt_regs_arg(struct pt_regs *r, int n) {
@@ -101,9 +104,7 @@ static inline void pt_regs_set_return(struct pt_regs *r, uint64_t v) {
 static inline uint64_t pt_regs_pc(struct pt_regs *r) { return r->rip; }
 
 /* Set program counter */
-static inline void pt_regs_set_pc(struct pt_regs *r, uint64_t v) {
-  r->rip = v;
-}
+static inline void pt_regs_set_pc(struct pt_regs *r, uint64_t v) { r->rip = v; }
 
 /* Get user stack pointer (RSP from iret frame) */
 static inline uint64_t pt_regs_user_sp(struct pt_regs *r) { return r->rsp; }
@@ -116,17 +117,17 @@ static inline void pt_regs_set_user_sp(struct pt_regs *r, uint64_t v) {
 /* Retry syscall: rewind PC by 2 bytes (syscall instruction is 0F 05) */
 static inline void pt_regs_retry_syscall(struct pt_regs *r) { r->rip -= 2; }
 
-/* Initialize context for a user-mode process (ELF entry)
- * GDT_USER_CODE=0x20 → selector 0x23 (ring3), GDT_USER_DATA=0x18 → 0x1B */
+/* Initialize context for a user-mode process (ELF entry).
+ * USER_CS_SEL/USER_DS_SEL (gdt_defs.h) = GDT_USER_CODE/GDT_USER_DATA | RPL3. */
 static inline void pt_regs_init_user_task(struct pt_regs *r, uint64_t entry,
-                                           uint64_t usp) {
-  r->rip    = entry;
-  r->rsp    = usp;
-  r->rflags = 0x202;  /* IF + reserved */
-  r->cs     = 0x23;   /* user code segment, ring 3 */
-  r->ss     = 0x1B;   /* user data segment, ring 3 */
-  
-  /* For AMD64, SYSRET uses RCX for RIP and R11 for RFLAGS. 
+                                          uint64_t usp) {
+  r->rip = entry;
+  r->rsp = usp;
+  r->rflags = 0x202;   /* IF + reserved */
+  r->cs = USER_CS_SEL; /* user code segment, ring 3 */
+  r->ss = USER_DS_SEL; /* user data segment, ring 3 */
+
+  /* For AMD64, SYSRET uses RCX for RIP and R11 for RFLAGS.
    * If we return via sysretq path (context switch during syscall),
    * these must be correctly initialized. */
   r->rcx = entry;
@@ -143,12 +144,12 @@ static inline void pt_regs_set_user_args(struct pt_regs *r, uint64_t argc,
 
 /* Initialize context for a kernel-mode thread */
 static inline void pt_regs_init_kernel_task(struct pt_regs *r, uint64_t entry,
-                                             uint64_t ksp) {
-  r->rip    = entry;
-  r->cs     = 0x08;   /* kernel code segment */
-  r->rflags = 0x202;  /* IF + reserved */
-  r->rsp    = ksp;
-  r->ss     = 0x10;   /* kernel data segment */
+                                            uint64_t ksp) {
+  r->rip = entry;
+  r->cs = KERN_CS_SEL; /* kernel code segment */
+  r->rflags = 0x202;   /* IF + reserved */
+  r->rsp = ksp;
+  r->ss = KERN_DS_SEL; /* kernel data segment */
 }
 
 #endif /* _ARCH_AMD64_PT_REGS_H */

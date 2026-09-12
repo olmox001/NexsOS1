@@ -22,24 +22,18 @@
  *     stack_top=16, user_stack_tmp=24 — matching syscall.S lines 41-43.)
  *
  * Known issues:
- *   CPU-AMD64-01 (W3 MISSING) isr_stubs.S common_isr_entry saves only the 15
- *     GP registers.  No FXSAVE/XSAVE of XMM/AVX state is performed.  This
- *     file enables SSE (CR4.OSFXSR, :36-39), so the compiler may use XMM regs
- *     in kernel code.  A preemptive context switch on a timer IRQ between two
- *     kernel tasks can silently corrupt their XMM state.  Cross-ref:
- *     isr_stubs.S:95-109, context.S:12-36.
  *   UACC-AMD64-01 (W2 DOC/MISSING) CR4.SMAP is NOT set here (:36-39); only
  *     OSFXSR and OSXMMEXCPT are enabled.  uaccess.c's header claims SMAP is
  *     active — that is wrong.  See uaccess.c Known issues.
  */
+#include <arch/amd64/apic.h>
+#include <arch/amd64_internal.h>
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/string.h>
 #include <kernel/vmm.h>
-#include <arch/amd64_internal.h>
-#include <arch/amd64/apic.h>
 
 #include <cpuid.h>
 
@@ -55,7 +49,60 @@ int amd64_pcid_enabled = 0;
 extern void gdt_init(void);
 extern void idt_init(void);
 extern void amd64_syscall_init(void);
+void amd64_fpu_save_task(struct process *task);
+void amd64_fpu_restore_task(const struct process *task);
+void amd64_fpu_init_task(struct process *task);
 
+/* The CPU enables OSFXSR below, but it does not enable OSXSAVE/AVX.  The
+ * 512-byte legacy image is therefore the entire live x87/MMX/SSE state. */
+_Static_assert(sizeof(((struct process *)0)->amd64_fxstate) == 512,
+               "AMD64 FXSAVE image must be 512 bytes");
+_Static_assert(__alignof__(((struct process *)0)->amd64_fxstate) >= 16,
+               "AMD64 FXSAVE image must be 16-byte aligned");
+
+static const uint32_t amd64_mxcsr_reset = 0x1f80u;
+
+/* These three helpers are called by assembly only after it has saved all
+ * general-purpose registers.  Keep the actual FXSAVE/FXRSTOR in one C unit so
+ * the process-member offset never leaks into handwritten assembly. */
+void amd64_fpu_save_task(struct process *task) {
+  if (task)
+    __asm__ __volatile__("fxsave64 %0" : "=m"(task->amd64_fxstate)::"memory");
+}
+
+void amd64_fpu_restore_task(const struct process *task) {
+  if (task)
+    __asm__ __volatile__("fxrstor64 %0"
+                         :
+                         : "m"(task->amd64_fxstate)
+                         : "memory");
+}
+
+/* A new task must never restore a zeroed FXSAVE image: that image has an
+ * invalid x87 control word and architecture-dependent MXCSR bits.  Build the
+ * documented reset image while preserving the task that is currently running.
+ * IRQs stay masked for the small interval so an interrupt cannot snapshot the
+ * temporary reset state into the current task. */
+void amd64_fpu_init_task(struct process *task) {
+  struct {
+    uint8_t bytes[512];
+  } __attribute__((aligned(16))) saved;
+  uint64_t flags;
+
+  if (!task)
+    return;
+
+  flags = local_irq_save();
+  __asm__ __volatile__("fxsave64 %0\n\t"
+                       "fninit\n\t"
+                       "ldmxcsr %2\n\t"
+                       "fxsave64 %1\n\t"
+                       "fxrstor64 %0"
+                       : "=m"(saved), "=m"(task->amd64_fxstate)
+                       : "m"(amd64_mxcsr_reset)
+                       : "memory");
+  local_irq_restore(flags);
+}
 
 /*
  * arch_cpu_init - per-CPU initialization entry point.
@@ -65,10 +112,9 @@ extern void amd64_syscall_init(void);
  *   SSE → GDT → GS base → IDT → SYSCALL MSRs → LAPIC
  *
  * SSE is enabled FIRST because C code called after this point (including
- * the GDT/IDT helpers) may be compiled with -msse or auto-vectorised.
- * NOTE(CPU-AMD64-01): FXSAVE/XSAVE is not used in ctx_switch or
- * common_isr_entry; enabling SSE here creates the hazard without the
- * save/restore infrastructure.
+ * the GDT/IDT helpers) may be compiled with -msse or auto-vectorised.  The
+ * assembly entries save the interrupted task's FXSAVE image before any C
+ * dispatcher runs, then restore the selected task's image before IRETQ.
  *
  * GS base is written AFTER gdt_init() because lgdt wipes all segment
  * selectors including GS; writing IA32_GS_BASE before lgdt would be lost.
@@ -94,16 +140,25 @@ void arch_cpu_init(void) {
   __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
   cr0 &= ~(1 << 2); /* Clear EM (Emulation) */
   cr0 |= (1 << 1);  /* Set MP (Monitor co-processor) */
-  __asm__ __volatile__("mov %0, %%cr0" :: "r"(cr0));
+  __asm__ __volatile__("mov %0, %%cr0" ::"r"(cr0));
 
-  /* NOTE(CPU-AMD64-01): OSFXSR+OSXMMEXCPT enable fxsave/fxrstor and unmasked
-   * SIMD FP exceptions, but no FXSAVE is inserted in ctx_switch or the ISR
-   * entry path.  CR4.SMAP is intentionally NOT set here — uaccess.c's claim
-   * of SMAP protection is therefore inaccurate (UACC-AMD64-01). */
+  /* CR4.SMAP is intentionally NOT set here — uaccess.c's claim of SMAP
+   * protection is therefore inaccurate (UACC-AMD64-01). */
   __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4));
-  cr4 |= (1 << 9);  /* OSFXSR (OS support for fxsave/fxrstor) */
-  cr4 |= (1 << 10); /* OSXMMEXCPT (OS support for unmasked simd fp exceptions) */
-  __asm__ __volatile__("mov %0, %%cr4" :: "r"(cr4));
+  cr4 |= (1 << 9); /* OSFXSR (OS support for fxsave/fxrstor) */
+  cr4 |=
+      (1 << 10); /* OSXMMEXCPT (OS support for unmasked simd fp exceptions) */
+  __asm__ __volatile__("mov %0, %%cr4" ::"r"(cr4));
+
+  {
+    unsigned int eax, ebx, ecx, edx;
+    int has_fxsr =
+        __get_cpuid(1, &eax, &ebx, &ecx, &edx) && ((edx & (1u << 24)) != 0);
+    if (!has_fxsr)
+      panic("AMD64: FXSAVE/FXRSTOR is required for task isolation");
+    if (id == 0)
+      pr_info("CPU: per-task x87/SSE context enabled (FXSAVE/FXRSTOR)\n");
+  }
 
   /* PCID-tagged TLB (perf §3, DIR-06): enable CR4.PCIDE per-CPU iff the CPU
    * supports PCID (CPUID.01h:ECX[17]).  INVPCID is NOT required — the teardown
@@ -112,8 +167,8 @@ void arch_cpu_init(void) {
    * but not INVPCID (e.g. HVF here).  CR4.PCIDE may only be set while
    * CR3[11:0]==0, which holds here (boot CR3 is page-aligned).  Portable: a CPU
    * without PCID keeps flush-on-switch.  Runs on every CPU (BSP + APs), so each
-   * enables its own CR4.PCIDE before it ever runs the scheduler; the global flag
-   * is published for the fast paths. */
+   * enables its own CR4.PCIDE before it ever runs the scheduler; the global
+   * flag is published for the fast paths. */
   {
     unsigned int eax, ebx, ecx, edx;
     int has_pcid = 0, has_invpcid = 0;
@@ -157,15 +212,16 @@ void arch_cpu_init(void) {
   lapic_init();
 
   if (id == 0) {
-      nr_cpus = 1;
+    nr_cpus = 1;
   } else {
-      __sync_fetch_and_add(&nr_cpus, 1);
+    __sync_fetch_and_add(&nr_cpus, 1);
   }
 
-  pr_info("AMD64 CPU %u initialized (GDT, IDT, Syscall, SSE, GS enabled)\n", id);
+  pr_info("AMD64 CPU %u initialized (GDT, IDT, Syscall, SSE, GS enabled)\n",
+          id);
 
-  /* ARCH-AMD64-APPGD-01 (amd64 HAL only): the AP trampoline brings each AP up on
-   * the stale boot_pml4 (32-bit CR3), which lacks the >4GB device MMIO at
+  /* ARCH-AMD64-APPGD-01 (amd64 HAL only): the AP trampoline brings each AP up
+   * on the stale boot_pml4 (32-bit CR3), which lacks the >4GB device MMIO at
    * PML4[1] (e.g. the virtio-input ISR window at 0xc000005000).  Once the live
    * kernel_pgd exists (built by vmm_dynamic_remap + arch_vmm_map_device before
    * SMP bringup), adopt it here so a device IRQ taken on this CPU cannot
@@ -192,7 +248,8 @@ void arch_cpu_init(void) {
  */
 struct cpu_info *get_cpu_info(void) {
   uint32_t id = arch_get_cpu_id();
-  if (id >= MAX_CPUS) return &cpu_data[0];
+  if (id >= MAX_CPUS)
+    return &cpu_data[0];
   return &cpu_data[id];
 }
 
@@ -229,22 +286,21 @@ struct cpu_info *arch_cpu_info_fault_safe(void) {
  *
  *   cpu->stack_top:    read by syscall_entry (%gs:16) to load the kernel RSP
  *                      on the SYSCALL fast path.
- *   cpu->current_task: used by the generic scheduler and kernel_syscall_dispatcher
- *                      to find current_process.
- *   CR3:               loaded with next->page_table (physical PA of PML4), or
- *                      with the shared kernel_pgd when page_table is NULL
- *                      (kernel thread — SCHED-UAF-01: never leave the previous
- *                      process's possibly-freed PGD active).
- *   TSS RSP0:          updated via gdt_set_rsp0 so that hardware interrupt
- *                      delivery from Ring 3 uses the correct kernel stack.
+ *   cpu->current_task: used by the generic scheduler and
+ * kernel_syscall_dispatcher to find current_process. CR3:               loaded
+ * with next->page_table (physical PA of PML4), or with the shared kernel_pgd
+ * when page_table is NULL (kernel thread — SCHED-UAF-01: never leave the
+ * previous process's possibly-freed PGD active). TSS RSP0:          updated via
+ * gdt_set_rsp0 so that hardware interrupt delivery from Ring 3 uses the correct
+ * kernel stack.
  *
  * Params:
  *   next - the process to switch to; must not be NULL.
  *
- * NOTE(CPU-AMD64-01): No FPU/XMM state save/restore is done here.  This is the
- * cooperative switch path; the Intel ABI treats XMM regs as caller-saved, so
- * a cooperative switch is safe.  The hazard is preemptive switches via the
- * timer ISR in common_isr_entry, which does not save/restore XMM state.
+ * x87/SSE state is saved before the dispatcher is entered and restored by the
+ * assembly return path after the scheduler has installed `next` as the current
+ * task.  It cannot be done here because schedule() has already published the
+ * next task in cpu->current_task when this function is called.
  */
 void arch_cpu_switch_context(struct process *next) {
   struct cpu_info *cpu = get_cpu_info();
@@ -264,13 +320,15 @@ void arch_cpu_switch_context(struct process *next) {
    * (which includes printk) vanishes, so the next kernel fetch #PFs; the amd64
    * #PF handler then calls printk, which #PFs again -> recursive fault ->
    * stack overflow -> #DF -> triple fault.  That is the "Terminating process
-   * ... PID" -> instant reboot seen on window close.  Confined to the amd64 HAL. */
+   * ... PID" -> instant reboot seen on window close.  Confined to the amd64
+   * HAL. */
   {
     extern uint64_t *kernel_pgd;
     /* page_table / kernel_pgd are kernel virtual pointers; CR3 takes the
      * PHYSICAL PML4 base — translate with virt_to_phys. */
-    uint64_t pgd = next->page_table ? virt_to_phys(next->page_table)
-                                    : (kernel_pgd ? virt_to_phys(kernel_pgd) : 0);
+    uint64_t pgd = next->page_table
+                       ? virt_to_phys(next->page_table)
+                       : (kernel_pgd ? virt_to_phys(kernel_pgd) : 0);
     if (pgd) {
       if (amd64_pcid_enabled) {
         /* PCID-tagged, flush-free switch (perf §3, DIR-06): CR3[11:0] = PCID
