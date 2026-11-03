@@ -2427,7 +2427,7 @@ int sys_ipc_send(int target_pid, void *msg_ptr) {
    * parent or a descendant. */
   if (!process_ipc_allowed(current_process, target_pid))
     return -EPERM;
-  k_msg.from = current_process->pid;
+  k_msg.from = (int)current_process->pid;
   return kernel_ipc_send(target_pid, &k_msg);
 }
 

@@ -55,8 +55,10 @@ static inline uint64_t pt_regs_arg(struct pt_regs *r, int n) {
 }
 
 /* Set syscall return value: x0 on AArch64 */
-static inline void pt_regs_set_return(struct pt_regs *r, uint64_t v) {
-  r->regs[0] = v;
+static inline void pt_regs_set_return(struct pt_regs *r, long v) {
+  /* Syscall returns are signed long (negative errno); preserve the ABI bit
+   * pattern explicitly when storing it in the unsigned hardware register. */
+  r->regs[0] = (uint64_t)v;
 }
 
 /* Get program counter (ELR_EL1) */

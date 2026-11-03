@@ -43,11 +43,15 @@ COREUTILS_ELFS := $(patsubst %,$(BUILD_DIR)/cu_%.elf,$(COREUTILS_NAMES))
 # ---------------------------------------------------------------------------
 $(COREUTILS_SRC_DIR)/primes.h: $(COREUTILS_SRC_DIR)/make-prime-list.c
 	@echo "  [GEN]    $@"
-	@mkdir -p $(BUILD_DIR)
-	@cc -O2 -o $(BUILD_DIR)/make-prime-list $<
-	@$(BUILD_DIR)/make-prime-list 5000 > $@
-	@rm -f $(BUILD_DIR)/make-prime-list
-	@chmod a-w $@
+	@set -eu; \
+	  mkdir -p $(BUILD_DIR); \
+	  generator="$(BUILD_DIR)/make-prime-list"; \
+	  output="$@.tmp"; \
+	  trap 'rm -f "$$generator" "$$output"' EXIT; \
+	  cc -O2 -o "$$generator" "$<"; \
+	  "$$generator" 5000 > "$$output"; \
+	  chmod a-w "$$output"; \
+	  mv -f "$$output" "$@"
 
 
 # Make factor.o depend on the generated header

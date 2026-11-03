@@ -577,11 +577,11 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     pt_regs_set_return(frame, compositor_create_window(
                                   (int)arg0, (int)arg1, (int)arg2, (int)arg3,
-                                  k_title, current_process->pid));
+                                  k_title, (int)current_process->pid));
   } break;
   case SYS_WINDOW_DRAW:
     compositor_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4,
-                         (uint32_t)arg5, current_process->pid);
+                         (uint32_t)arg5, (int)current_process->pid);
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WINDOW_WRITE:
@@ -774,7 +774,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   case SYS_WINDOW_BLIT:
     compositor_blit((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4,
-                    (const uint32_t *)arg5, current_process->pid);
+                    (const uint32_t *)arg5, (int)current_process->pid);
     /* This process now owns custom pixel content in a window's buffer —
      * see struct process.self_rendered (sched.h) for why the own-window-
      * first stdout path (window_text_write below) must stop drawing text
@@ -1415,7 +1415,7 @@ void sys_exit(int status) {
     /* Nothing to propagate to: the caller is exiting.  Reported so a failure
      * to tear down is visible instead of leaving a process that believes it
      * exited still in the pool. */
-    if (process_terminate(current_process->pid) != 0)
-      pr_err("exit: process_terminate(%d) failed\n", current_process->pid);
+    if (process_terminate((int)current_process->pid) != 0)
+      pr_err("exit: process_terminate(%d) failed\n", (int)current_process->pid);
   }
 }

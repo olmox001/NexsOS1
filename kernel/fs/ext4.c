@@ -2322,7 +2322,7 @@ static int ext4_mount_read_superblock(struct ext4_fs *fs, struct partition *p) {
     return -1;
   }
 
-  uint32_t bad_incompat = fs->sb.s_feature_incompat & ~EXT4_INCOMPAT_SUPPORTED;
+  uint32_t bad_incompat = fs->sb.s_feature_incompat & ~(uint32_t)EXT4_INCOMPAT_SUPPORTED;
   if (bad_incompat) {
     pr_err("Ext4: unsupported INCOMPAT features 0x%x (supported mask 0x%x) "
            "- refusing to mount\n",
@@ -2341,7 +2341,7 @@ static int ext4_mount_read_superblock(struct ext4_fs *fs, struct partition *p) {
   }
 
   uint32_t bad_rocompat =
-      fs->sb.s_feature_ro_compat & ~EXT4_RO_COMPAT_WRITE_SAFE;
+      fs->sb.s_feature_ro_compat & ~(uint32_t)EXT4_RO_COMPAT_WRITE_SAFE;
   fs->read_only = bad_rocompat ? 1 : 0;
   if (bad_rocompat)
     pr_warn("Ext4: RO_COMPAT features 0x%x not write-safe - mounting "

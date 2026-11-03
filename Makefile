@@ -83,10 +83,10 @@ COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
                -fno-omit-frame-pointer \
                -O2 -g
 
-# NX_STRICT=1 turns the nx_contract.h annotations into enforced attributes
-# (NX_MUST_USE -> warn_unused_result).  With -Werror that makes every ignored
-# -errno a hard error, which is the point: `make NX_STRICT=1` is the report of
-# how much of the surface still drops failures on the floor.
+# Enforce the contract annotations on every ordinary build.  Both release
+# architectures have been rebuilt successfully with NX_STRICT=1; keep the
+# explicit 0 override only for temporary compiler/porting experiments.
+NX_STRICT ?= 1
 ifeq ($(NX_STRICT),1)
 COMMON_FLAGS += -DNX_STRICT
 endif
@@ -130,7 +130,23 @@ ifneq ($(BYPASS_USERLAND_ERRORS),0)
 USER_CFLAGS += -Wno-error
 endif
 
-CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE)
+# Optional conversion/sign-conversion discovery profile. These two classes
+# still expose legacy sites in PCI/USB/graphics and remain non-fatal until
+# audited and corrected. Other zero-warning classes are permanent gates below.
+NX_DIAG_WARNINGS ?= 0
+ifeq ($(NX_DIAG_WARNINGS),1)
+NX_DIAG_WARNING_FLAGS = -Wconversion -Wsign-conversion
+NX_DIAG_WARNING_MODE = -Wno-error
+endif
+
+# Warning classes exercised on both architectures with zero diagnostics in the
+# inventory pass are now permanent kernel gates. Conversion/sign-conversion
+# remain in the opt-in audit profile until the legacy call sites are corrected.
+KERNEL_HARDEN_FLAGS = -Wundef -Wformat=2 -Wcast-align -Wpointer-arith \
+                      -Wswitch-enum -Wdouble-promotion -Wvla \
+                      -Wmissing-declarations
+CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) $(KERNEL_HARDEN_FLAGS) \
+         $(NX_DIAG_WARNING_FLAGS) $(NX_DIAG_WARNING_MODE)
 CXXFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) -fno-exceptions -fno-rtti
 
 # Tools
@@ -1150,3 +1166,16 @@ include $(DOOM_ARCH_MAKEFILE)
 else
 $(warning DOOM make fragment is unavailable; run 'make setup-deps' before building the complete userland)
 endif
+
+# Real QEMU hardening run for the selected architecture. Captures the display,
+# checks kernel KTEST and nxwins, then supervises the live guest for 30 seconds.
+.PHONY: test test-all
+test: all boot-iso check
+	@python3 tools/test_nxadb_capture.py
+	@python3 tools/nxadb.py --arch $(ARCH) test --soak-seconds 30 --display default
+
+# Release-architecture gate. Runs each guest sequentially so QEMU/firmware
+# resources and per-architecture logs never race.
+test-all:
+	@$(MAKE) ARCH=amd64 test
+	@$(MAKE) ARCH=aarch64 test

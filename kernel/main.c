@@ -61,8 +61,10 @@ const char *boot_phase_name(enum boot_phase p) {
     return "K2-subsys";
   case BOOT_PHASE_K3_USERLAND:
     return "K3-userland";
-  default:
+  case BOOT_PHASE_RUNNING:
     return "running";
+  default:
+    return "unknown";
   }
 }
 
@@ -304,6 +306,8 @@ static void init_memory_core(void) {
   /* Initialize physical memory manager with architecture-detected regions */
   size_t count = 0;
   struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  if (regions == NULL)
+    panic("%s", "BOOT-MEM: platform returned NULL region array");
 
   /* Reserve a boot module (the release rootfs disk.img, loaded into RAM by
    * GRUB) BEFORE the PMM is built, so it is never handed out as free RAM and
@@ -318,6 +322,40 @@ static void init_memory_core(void) {
       count++;
     }
   }
+
+  /* Emit the exact map consumed by PMM.  Report usable sum separately from
+   * highest-end span: address holes and reserved overlays are not RAM. */
+  uint64_t boot_usable_bytes = 0;
+  uint64_t boot_highest_usable_end = ARCH_RAM_START;
+  uint64_t boot_highest_reserved_end = 0;
+  size_t boot_reserved_regions = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (regions[i].size > UINT64_MAX - regions[i].base)
+      panic("BOOT-MEM: region %zu overflows physical address space", i);
+    uint64_t end = regions[i].base + regions[i].size;
+    pr_info("BOOT-MEM: region[%zu] type=%u base=0x%lx size=0x%lx end=0x%lx\n",
+            i, (unsigned)regions[i].type,
+            (unsigned long)regions[i].base,
+            (unsigned long)regions[i].size, (unsigned long)end);
+    if (regions[i].type == MEM_REGION_USABLE) {
+      if (regions[i].size > UINT64_MAX - boot_usable_bytes)
+        panic("BOOT-MEM: usable byte sum overflow");
+      boot_usable_bytes += regions[i].size;
+      if (end > boot_highest_usable_end)
+        boot_highest_usable_end = end;
+    } else {
+      boot_reserved_regions++;
+      if (end > boot_highest_reserved_end)
+        boot_highest_reserved_end = end;
+    }
+  }
+  pr_info("BOOT-MEM: regions=%zu usable=%lu MiB usable_span=%lu MiB "
+          "base=0x%lx reserved_descriptors=%zu highest_reserved_end=0x%lx\n",
+          count, (unsigned long)(boot_usable_bytes / (1024UL * 1024UL)),
+          (unsigned long)((boot_highest_usable_end - ARCH_RAM_START) /
+                          (1024UL * 1024UL)),
+          (unsigned long)ARCH_RAM_START, boot_reserved_regions,
+          (unsigned long)boot_highest_reserved_end);
 
   pmm_early_init(regions, count);
   pmm_init(regions, count);

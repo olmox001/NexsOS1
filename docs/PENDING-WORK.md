@@ -232,3 +232,129 @@ Dettagli, log e misure: `docs/report/TIMER-SMP-DIAGNOSTIC-2026-11-03.md`.
 - KTEST 8/8, timerdiag PASS, NXShell responsiva e faults=0 su entrambe. Soak NXShell di circa 60 s per arch completato con sei comandi distanziati; entrambi terminati con shell=yes e faults=0. VM arrestate.
 - Nuovi `GFX-TIMING`: `render_hold` 34.7–72.3 ms AMD64 e 40.7–130.0 ms AArch64. `compositor_render()` mantiene `compositor_lock` con IRQ locali disabilitati durante tutto il rendering sincrono; serve refactor con snapshot/ownership e gestione IRQ, non basta rimuovere irqsave.
 - `make ARCH={amd64,aarch64} all` e `boot-iso` sequenziali PASS anche dopo la modifica condivisa SMP. Restano stress combinato, riduzione critical section/jitter e bug POSIX `time()` ms/sec.
+
+
+## 15. Migrazione grafica in userland / surface manager kernel — **PIANIFICATO** · NEXS-NG
+
+Decisione architetturale 2026-11-03: compositor, window/scene policy e librerie
+grafiche devono essere servizi/librerie ring-3. Il kernel conserva soltanto il
+gestore capability di buffer/surface e il relativo controllo: memoria,
+metadati, validazione, mapping, diritti, lifetime, pinning, sincronizzazione,
+commit e hand-off sicuro alla presentazione. Nessun raster/compositing/GL/font
+nel kernel NG.
+
+- **Piano dettagliato:** `docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.
+- **Documenti allineati:** NEXS-NG-CORE-DESIGN, NEXS-NG-CLEANROOM, DIR-02,
+  DIR-07, graphics-port README/STATE. La vecchia frase "compositor nella HAL"
+  è esplicitamente superata per NG.
+- **Inventario sorgente:** `compositor.c` → `services/compositord` (da
+  spezzare in scene/window policy, input/event handling, frame scheduling e
+  composizione); `gl.c`, `draw2d.c`, `draw3d.c`, `font.c`, `chrome.c`,
+  `compositor_style.c`, `region.c`, `term.c` → userland; `surface.c`
+  va diviso tra gestione oggetti/mapping nel kernel e primitive pixel in
+  userland; driver GPU/display diventano servizi isolati con MMIO/IRQ/DMA
+  capability. Il kernel mantiene una piccola console panic indipendente.
+- **Punto critico:** il `gfx_surface` attuale è un wrapper di rendering
+  basato su `gl_surface`/puntatori, non un gestore di oggetti capability.
+  Non va semplicemente spostato in userland o rinominato: va sostituito nel
+  kernel NG da veri oggetti buffer/surface con lifetime e mapping verificabili.
+- **Ordine:** GFX-NG-0 inventario ABI/callers → GFX-NG-1 buffer/surface manager
+  nel tree parallelo `kernel-ng` → GFX-NG-2 display/GPU service minimo →
+  GFX-NG-3 compositord + broker ABI v1 → GFX-NG-4 librerie grafiche →
+  GFX-NG-5 accelerazione e stress.
+- **Vincolo di migrazione:** non spostare massivamente i file del kernel legacy
+  né interrompere il sistema attuale. La vecchia implementazione resta il
+  riferimento bootabile finché il nuovo kernel e la compatibilità ABI non
+  superano i gate G0–G6. Nessuna nuova syscall grafica ambientale; riusare
+  object/VM/port capabilities e aggiungere solo primitive indispensabili.
+- **Stato attuale:** decisione e piano documentati; nessun compositor o driver
+  è stato ancora estratto dal kernel legacy e nessun nuovo oggetto
+  buffer/surface è stato implementato. Prossimo task concreto: completare
+  GFX-NG-0 mappando syscall, handle, chiamanti, IRQ, GPU e layout pixel, poi
+  fissare i descriptor ABI prima di scrivere il manager.
+
+
+**Avanzamento GFX-NG-0 (2026-11-03):** primo inventario statico aggiunto
+in §10 di `GRAPHICS-USERLAND-MIGRATION.md`: syscall grafiche 200/202,
+210–215, 217–219, 253, 270–275; oggetti/capability esistenti; seam
+`os1_video_platform`; footprint sorgente (7.232 righe nel perimetro
+misurato); dipendenze principali e destinazioni. Non è ancora l'inventario
+semantico completo dei caller e dei flussi IRQ/input; nessun ABI buffer/surface
+è stato assegnato e nessun codice runtime è stato spostato.
+
+
+## 16. NEXS-NG integrated hardening / boot / device / graphics programme — **DOCUMENTED, NOT IMPLEMENTED**
+
+Nuovi documenti di riferimento (2026-11-03):
+- `docs/architecture/NEXS-NG-INTEGRATED-IMPLEMENTATION-PLAN-2026-11-03.md`
+- `docs/architecture/NEXS-NG-DIAGNOSTICS-AND-TESTING.md`
+- `docs/architecture/NEXS-NG-DEVICE-LIFECYCLE-AND-HOTPLUG.md`
+- `docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`
+
+Punti emersi dall'audit:
+- ASTRA §7.10 descrive render in process context, non estrazione ring-3;
+  correzione aggiunta in ASTRA.
+- Object manager legacy: handle slot index, 32 slot, refcount, rights
+  attenuabili; generation/stale-handle model da verificare e formalizzare.
+- Programme R mantiene la sequenza R1/R1b/R2/R3/R4/R5/R6; la nuova migrazione
+  grafica deve integrarsi in R3, non duplicarlo.
+- `hal_bus.c` è registry statico boot-only (MAX 64); hotplug dinamico non
+  implementato. PIANO-DRIVER-MATURITY Fase 2 e Programme G5 restano la fonte
+  per il comportamento attach/detach.
+- `fdt.c` ha problemi di bounds/reservation-map esplicitamente documentati;
+  hardening e test fuzz precedono device discovery estesa.
+- AArch64 EFI stub è presente, AMD64 ISO attuale è BIOS GRUB: UEFI dual-arch
+  non è completo né certificato.
+- `nxadb.py` avvia QEMU con display none; screenshot QMP e sessione visuale
+  sono da implementare e verificare.
+- Flag attuali sono già rigorosi; NX_STRICT è opzionale. Nuovi warning e
+  sanitizer saranno introdotti in profili misurabili, uno step per volta.
+
+**Sequenza:** baseline e strumenti → syscall/object/registry crosswalk +
+boot/FDT/device audit → hardening → device lifecycle → surface manager +
+diagnostica → display/compositor userland. Entrambe le arch obbligatorie.
+Nessun runtime refactor è stato ancora eseguito in questo blocco.
+
+
+**Crosswalk syscall/object completato come prima ricognizione:** vedere
+`docs/architecture/SYSCALL-OBJECT-CAPABILITY-CROSSWALK-2026-11-03.md`.
+Conferma: file POSIX già passa da FILE handles; registry mantiene SYS_REGISTRY
+diretto + REGKEY inutilizzato + /reg; PID IPC coesiste con PORT; kill/wait
+coesistono con PROCESS object; le window syscall restano collegate direttamente
+al compositor kernel. La sequenza R2–R5 resta vincolante.
+
+
+**Osservabilità reale implementata e provata:** `nxadb screenshot` ora
+cattura esplicitamente `nxgpu0/head 0`, valida PNG e scrive manifest;
+`nxadb mouse dx dy --click` controlla il puntatore; `nxadb start
+--display default` abilita finestra QEMU visibile; delay tastiera portato a
+75ms dopo test di perdita caratteri. Screenshot + command round-trip verificati
+su amd64 e aarch64; click launcher e nxsettings verificato su amd64. Artefatti
+in `build/runs/<arch>/`. Vedere
+`docs/architecture/NEXS-NG-DIAGNOSTICS-AND-TESTING.md`.
+
+
+**Audit hardware approfondito:** `pci.c` abilita BusMaster per ogni device
+prima del binding/DMA, mappa BAR con span fisso 128 KiB e non dimensiona BAR
+64-bit completi; USB core dichiara esplicitamente hotplug runtime come Fase 2
+non implementata; GPU registry non drena refcount su unregister. Il nuovo
+device manager non deve riutilizzare queste semantiche. In più UEFI passa solo
+il puntatore DTB in x0, non la lunghezza: BootInfo comune deve trasportare
+`fdt_phys + fdt_size`.
+
+
+**2026-11-03 — boot capture / RAM map / hardening milestone:** nxadb now keeps
+per-run UART/QEMU stdout/stderr and manifests, complete bootlog, screenshots,
+QMP input, and 30-second make test gates. AMD64 and AArch64 QEMU runs both pass
+KTEST 8/8, nxwins enumerate+focus, two screenshots and zero faults. Kernel
+default strict/warning gates expanded. BOOT-MEM logs distinguish usable sum,
+usable span and reserved descriptors. See
+docs/architecture/NEXS-NG-DIAGNOSTICS-AND-TESTING.md.
+
+**Blocking next step:** AArch64 UEFI knows DtbSpan but efi_handoff.S currently
+zeros x1; kernel fdt_init accepts pointer only. fdt.c walks structure/string
+blocks without bounds and ignores off_mem_rsvmap and /reserved-memory. The
+DTB itself is not explicitly appended to PMM's reserved map. Implement BOOT-1
+before treating FDT memory/device discovery as hardened. Then DEV-1 typed
+device catalogue and safe hotplug; DEV-2 simulated PCI/virtio/USB/display
+matrix; DIAG-1 central fault/performance event catalogue.

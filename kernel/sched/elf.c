@@ -130,8 +130,8 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
               phdr.p_vaddr, phdr.p_filesz, phdr.p_memsz); /* hot path: demoted (perf §1) */
 
       /* Allocate Pages for Memory Segment */
-      uint64_t start_vpage = phdr.p_vaddr & ~(0xFFF);
-      uint64_t end_vpage = (phdr.p_vaddr + phdr.p_memsz + 4095) & ~(0xFFF);
+      uint64_t start_vpage = phdr.p_vaddr & ~(uint64_t)0xFFF;
+      uint64_t end_vpage = (phdr.p_vaddr + phdr.p_memsz + 4095) & ~(uint64_t)0xFFF;
 
       if (end_vpage > max_vaddr) {
         max_vaddr = end_vpage;

@@ -763,3 +763,64 @@ mkdir) fixed the shared layers rather than the apps — no app-specific code:
   `docs/PIANO-LIBC-ASTRA-2026-07-16.md` for the plan and the userland
   restructuring macroplan (OS1lib_OS1/POSIX/LIBC split, services, nxauth,
   `.X` executable format, per-user partition VFS vision).
+
+
+---
+
+## 8. Status correction — compositor process context is not userland (2026-11-03)
+
+The historical title of §7.10 is ambiguous and must not be used as evidence
+that the compositor was extracted from the kernel. The 2026-07-12 change moved
+the render call out of timer IRQ context and made PID1 invoke
+`SYS_COMPOSITOR_RENDER` in process context. The implementation remains
+`kernel/graphics/compositor.c`, linked into the kernel by the Makefile; this is
+**kernel process context**, not ring-3 userland.
+
+Therefore:
+- IRQ-stack isolation: completed and regression-tested as described in §7.10.
+- Kernel compositor removal / ring-3 compositor service: **not completed**.
+- `nxui` is a userland window-server/dock service, not the compositor.
+- The NEXS-NG destination is `compositord` in userland, with kernel-only
+  buffer/surface capability management and secure presentation control.
+
+The current implementation plan is
+`docs/architecture/NEXS-NG-INTEGRATED-IMPLEMENTATION-PLAN-2026-11-03.md`;
+surface migration:
+`docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.
+
+
+## 7.13 Graphics boundary correction and next migration (2026-11-03)
+
+**Correction to §7.10 wording:** SCHED-STACK-ISO moved the compositor render
+call out of timer-IRQ context and into a normal process/syscall path. It did
+NOT move the compositor implementation or its graphics libraries into ring-3
+userland: compositor_render_internal(), window policy, surface pixel storage,
+GPU provider dispatch and drawing helpers are still kernel code. "Userspace"
+in the historical §7.10 title must not be read as "unprivileged userland
+service." The 2026-11-03 decision is to move compositor/window/scene policy,
+rasterizers, fonts, terminal rendering and graphics libraries into supervised
+ring-3 services/libraries. The kernel retains only capability-checked buffer
+and surface resource management, mappings, synchronization, generation,
+lifetime and commit/presentation control. See
+docs/architecture/GRAPHICS-USERLAND-MIGRATION.md (GFX-NG-0..5).
+
+ASTRA separation must also be enforced below the graphics stack:
+- ISA code owns register/exception/context-switch/cache primitives only.
+- platform discovery parses ACPI/FDT and emits typed resource descriptors.
+- bus enumeration owns PCI/USB/virtio discovery and resource assignment.
+- device drivers consume MMIO/PIO/DMA/IRQ capabilities and implement device
+  protocols; they do not call application syscalls.
+- protocol libraries implement VirtIO rings, USB transfers, HID reports, etc.
+- core services consume abstract device/event/queue contracts, not device IDs.
+- userland policy services own window/focus/desktop/input routing.
+
+IPC and MMIO are different trust boundaries. IPC is a message/queue protocol
+between protection domains; MMIO is a bounded device-memory capability with
+ordering/cache/IRQ/DMA rules. Do not route MMIO through an IPC-shaped API or
+allow arbitrary user services to map raw physical addresses.
+
+The FDT audit now has concrete blocking findings: pointer-only fdt_init,
+unbounded structure/string walks, ignored reserve-map entries and
+/reserved-memory nodes. UEFI already knows DtbSpan but the handoff currently
+zeros x1 instead of passing it to the kernel. Fix the boot-info contract and
+bounded parser before relying on FDT as the complete device/memory catalogue.

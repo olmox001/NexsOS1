@@ -34,6 +34,7 @@
  * old portrait 720x1280 that forced sideways rendering — #54). */
 #define VGPU_DEFAULT_W 1024
 #define VGPU_DEFAULT_H 768
+#define VGPU_MAX_DIMENSION 8192u
 
 /* virtio-gpu device-config field offsets (struct virtio_gpu_config), read via
  * the transport-agnostic virtio_config_read32/write32 (works on MMIO + PCI). */
@@ -68,19 +69,25 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
 
 static int vgpu_create_2d(struct virtio_gpu_state *priv, uint32_t res_id, int w,
                           int h) {
+  if (!priv || !priv->cmd_buf || !priv->resp_buf || w <= 0 || h <= 0 ||
+      (uint32_t)w > VGPU_MAX_DIMENSION ||
+      (uint32_t)h > VGPU_MAX_DIMENSION)
+    return -1;
   memset(priv->cmd_buf, 0, 4096);
   struct virtio_gpu_resource_create_2d *c = priv->cmd_buf;
   c->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
   c->resource_id = res_id;
   c->format = VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM;
-  c->width = w;
-  c->height = h;
+  c->width = (uint32_t)w;
+  c->height = (uint32_t)h;
   return virtio_gpu_send(priv, c, sizeof(*c), priv->resp_buf,
                          sizeof(struct virtio_gpu_ctrl_hdr));
 }
 
 static int vgpu_attach_backing(struct virtio_gpu_state *priv, uint32_t res_id,
                                void *backing, uint32_t len) {
+  if (!priv || !priv->cmd_buf || !priv->resp_buf || !backing || len == 0)
+    return -1;
   memset(priv->cmd_buf, 0, 4096);
   struct virtio_gpu_resource_attach_backing *a = priv->cmd_buf;
   struct virtio_gpu_mem_entry *ent =
@@ -96,6 +103,10 @@ static int vgpu_attach_backing(struct virtio_gpu_state *priv, uint32_t res_id,
 
 static int vgpu_set_scanout(struct virtio_gpu_state *priv, uint32_t res_id,
                             int w, int h) {
+  if (!priv || !priv->cmd_buf || !priv->resp_buf || w <= 0 || h <= 0 ||
+      (uint32_t)w > VGPU_MAX_DIMENSION ||
+      (uint32_t)h > VGPU_MAX_DIMENSION)
+    return -1;
   memset(priv->cmd_buf, 0, 4096);
   struct virtio_gpu_set_scanout *s = priv->cmd_buf;
   s->hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
@@ -103,8 +114,8 @@ static int vgpu_set_scanout(struct virtio_gpu_state *priv, uint32_t res_id,
   s->resource_id = res_id;
   s->r.x = 0;
   s->r.y = 0;
-  s->r.width = w;
-  s->r.height = h;
+  s->r.width = (uint32_t)w;
+  s->r.height = (uint32_t)h;
   return virtio_gpu_send(priv, s, sizeof(*s), priv->resp_buf,
                          sizeof(struct virtio_gpu_ctrl_hdr));
 }
@@ -135,12 +146,14 @@ static int vgpu_query_display_info(struct virtio_gpu_state *priv, int *w,
     return -1;
 
   for (int i = 0; i < VIRTIO_GPU_MAX_SCANOUTS; i++) {
-    if (resp->pmodes[i].enabled && resp->pmodes[i].r.width > 0 &&
-        resp->pmodes[i].r.height > 0) {
+    uint32_t mode_w = resp->pmodes[i].r.width;
+    uint32_t mode_h = resp->pmodes[i].r.height;
+    if (resp->pmodes[i].enabled && mode_w > 0 && mode_h > 0 &&
+        mode_w <= VGPU_MAX_DIMENSION && mode_h <= VGPU_MAX_DIMENSION) {
       if (w)
-        *w = (int)resp->pmodes[i].r.width;
+        *w = (int)mode_w;
       if (h)
-        *h = (int)resp->pmodes[i].r.height;
+        *h = (int)mode_h;
       return 0;
     }
   }
@@ -155,38 +168,79 @@ static int vgpu_query_display_info(struct virtio_gpu_state *priv, int *w,
  * region (x,y,w,h) against the CURRENT scanout resource.  Caller MUST hold
  * gpu_lock (or be in single-threaded fault context): it touches priv->cmd_buf
  * and priv->resource_id, which set_mode also mutates. */
-static void vgpu_xfer_flush_locked(struct virtio_gpu_state *priv,
-                                   struct gpu_device *dev, int x, int y, int w,
-                                   int h) {
+static int vgpu_xfer_flush_locked(struct virtio_gpu_state *priv,
+                                  struct gpu_device *dev, int x, int y, int w,
+                                  int h) {
+  /* Every caller clips against the live scanout before reaching this helper.
+   * Keep a final guard here because these coordinates become unsigned wire
+   * fields and are also used in a DMA backing offset. */
+  if (!priv || !priv->cmd_buf || !priv->resp_buf || !dev || x < 0 || y < 0 ||
+      w <= 0 || h <= 0 || x >= dev->width || y >= dev->height)
+    return -1;
+  if ((int64_t)x + w > dev->width)
+    w = dev->width - x;
+  if ((int64_t)y + h > dev->height)
+    h = dev->height - y;
+  if (w <= 0 || h <= 0)
+    return 0;
+
+  uint32_t ux = (uint32_t)x;
+  uint32_t uy = (uint32_t)y;
+  uint32_t uw = (uint32_t)w;
+  uint32_t uh = (uint32_t)h;
+
   /* 1. Transfer guest memory to the host resource. */
   memset(priv->cmd_buf, 0, 4096);
   struct virtio_gpu_transfer_to_host_2d *xfer = priv->cmd_buf;
   xfer->hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
-  xfer->r.x = x;
-  xfer->r.y = y;
-  xfer->r.width = w;
-  xfer->r.height = h;
-  xfer->offset = (uint64_t)y * dev->width * 4 + (x * 4);
+  xfer->r.x = ux;
+  xfer->r.y = uy;
+  xfer->r.width = uw;
+  xfer->r.height = uh;
+  xfer->offset = (uint64_t)uy * (uint64_t)(uint32_t)dev->width * 4u +
+                 (uint64_t)ux * 4u;
   xfer->resource_id = priv->resource_id;
-  virtio_gpu_send(priv, xfer, sizeof(*xfer), priv->resp_buf,
-                  sizeof(struct virtio_gpu_ctrl_hdr));
+  if (virtio_gpu_send(priv, xfer, sizeof(*xfer), priv->resp_buf,
+                      sizeof(struct virtio_gpu_ctrl_hdr)) != 0)
+    return -1;
 
   /* 2. Flush the host resource to the display. */
   memset(priv->cmd_buf, 0, 4096);
   struct virtio_gpu_resource_flush *fl = priv->cmd_buf;
   fl->hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-  fl->r.x = x;
-  fl->r.y = y;
-  fl->r.width = w;
-  fl->r.height = h;
+  fl->r.x = ux;
+  fl->r.y = uy;
+  fl->r.width = uw;
+  fl->r.height = uh;
   fl->resource_id = priv->resource_id;
-  virtio_gpu_send(priv, fl, sizeof(*fl), priv->resp_buf,
-                  sizeof(struct virtio_gpu_ctrl_hdr));
+  return virtio_gpu_send(priv, fl, sizeof(*fl), priv->resp_buf,
+                         sizeof(struct virtio_gpu_ctrl_hdr));
 }
 
 static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
-  if (!dev || !dev->priv)
+  if (!dev || !dev->priv || dev->width <= 0 || dev->height <= 0)
     return -1;
+  if (w <= 0 || h <= 0)
+    return 0;
+
+  /* Clip in 64-bit signed space before converting to the unsigned VirtIO
+   * rectangle fields; x+w/y+h must not overflow signed int. */
+  int64_t x1 = x, y1 = y;
+  int64_t x2 = (int64_t)x + w;
+  int64_t y2 = (int64_t)y + h;
+  if (x2 <= 0 || y2 <= 0 || x1 >= dev->width || y1 >= dev->height)
+    return 0;
+  if (x1 < 0) x1 = 0;
+  if (y1 < 0) y1 = 0;
+  if (x2 > dev->width) x2 = dev->width;
+  if (y2 > dev->height) y2 = dev->height;
+  if (x2 <= x1 || y2 <= y1)
+    return 0;
+
+  x = (int)x1;
+  y = (int)y1;
+  w = (int)(x2 - x1);
+  h = (int)(y2 - y1);
   struct virtio_gpu_state *priv = (struct virtio_gpu_state *)dev->priv;
 
   /* In a panic/fault context the gpu_lock holder may be a now-halted CPU; the
@@ -197,11 +251,11 @@ static int vgpu_flush(struct gpu_device *dev, int x, int y, int w, int h) {
   if (!faulting)
     spin_lock_irqsave(&gpu_lock, &flags);
 
-  vgpu_xfer_flush_locked(priv, dev, x, y, w, h);
+  int result = vgpu_xfer_flush_locked(priv, dev, x, y, w, h);
 
   if (!faulting)
     spin_unlock_irqrestore(&gpu_lock, flags);
-  return 0;
+  return result;
 }
 
 /* vgpu_present - RC2 fix: copy the backbuffer region into the scanout backing
@@ -231,36 +285,55 @@ static int vgpu_present(struct gpu_device *dev, const uint32_t *src, int src_w,
     return -1;
   }
 
-  /* Clamp the region to the scanout (defensive; the compositor already clips)
-   */
-  if (x < 0) {
-    w += x;
-    x = 0;
+  if (src_w <= 0 || src_h <= 0 || dev->width <= 0 || dev->height <= 0) {
+    spin_unlock_irqrestore(&gpu_lock, flags);
+    return -1;
   }
-  if (y < 0) {
-    h += y;
-    y = 0;
-  }
-  if (x + w > dev->width)
-    w = dev->width - x;
-  if (y + h > dev->height)
-    h = dev->height - y;
+
+  /* Clip in 64-bit signed space before any pointer arithmetic. */
   if (w <= 0 || h <= 0) {
     spin_unlock_irqrestore(&gpu_lock, flags);
     return 0;
   }
+  int64_t x1 = x, y1 = y;
+  int64_t x2 = (int64_t)x + w;
+  int64_t y2 = (int64_t)y + h;
+  if (x2 <= 0 || y2 <= 0 || x1 >= dev->width || y1 >= dev->height) {
+    spin_unlock_irqrestore(&gpu_lock, flags);
+    return 0;
+  }
+  if (x1 < 0) x1 = 0;
+  if (y1 < 0) y1 = 0;
+  if (x2 > dev->width) x2 = dev->width;
+  if (y2 > dev->height) y2 = dev->height;
+  if (x2 <= x1 || y2 <= y1) {
+    spin_unlock_irqrestore(&gpu_lock, flags);
+    return 0;
+  }
+
+  x = (int)x1;
+  y = (int)y1;
+  w = (int)(x2 - x1);
+  h = (int)(y2 - y1);
 
   /* Row-by-row copy backbuffer -> scanout backing (both stride == dev->width).
    */
-  for (int row = y; row < y + h; row++) {
-    memcpy((uint8_t *)fb + ((size_t)row * dev->width + x) * 4,
-           (const uint8_t *)src + ((size_t)row * src_w + x) * 4, (size_t)w * 4);
+  size_t dst_stride = (size_t)(uint32_t)dev->width;
+  size_t src_stride = (size_t)(uint32_t)src_w;
+  size_t copy_x = (size_t)(uint32_t)x;
+  size_t copy_bytes = (size_t)(uint32_t)w * sizeof(uint32_t);
+  size_t end_y = (size_t)(uint32_t)(y + h);
+  for (size_t row = (size_t)(uint32_t)y; row < end_y; row++) {
+    size_t dst_offset = (row * dst_stride + copy_x) * sizeof(uint32_t);
+    size_t src_offset = (row * src_stride + copy_x) * sizeof(uint32_t);
+    memcpy((uint8_t *)fb + dst_offset, (const uint8_t *)src + src_offset,
+           copy_bytes);
   }
 
-  vgpu_xfer_flush_locked(priv, dev, x, y, w, h);
+  int present_result = vgpu_xfer_flush_locked(priv, dev, x, y, w, h);
 
   spin_unlock_irqrestore(&gpu_lock, flags);
-  return 0;
+  return present_result;
 }
 
 static void *vgpu_get_framebuffer(struct gpu_device *dev, size_t *size) {
@@ -290,8 +363,11 @@ static int vgpu_set_mode(struct gpu_device *dev, int width, int height) {
   if (width == dev->width && height == dev->height)
     return 0; /* nothing to do */
 
-  size_t new_size = (size_t)width * height * 4;
-  int new_pages = (new_size + 4095) / 4096;
+  size_t new_size = (size_t)(uint32_t)width * (size_t)(uint32_t)height *
+                    sizeof(uint32_t);
+  if (new_size > UINT32_MAX)
+    return -1; /* VirtIO mem_entry.length is a 32-bit byte count. */
+  size_t new_pages = (new_size + 4095u) / 4096u;
   void *new_backing = pmm_alloc_pages_dma(new_pages);
   if (!new_backing) {
     pr_err("VirtIO-GPU: set_mode %dx%d: out of memory\n", width, height);
@@ -302,18 +378,41 @@ static int vgpu_set_mode(struct gpu_device *dev, int width, int height) {
   uint64_t flags;
   spin_lock_irqsave(&gpu_lock, &flags);
 
+  /* Another caller may have completed this mode while the new backing was
+   * being allocated outside the lock. */
+  if (width == dev->width && height == dev->height) {
+    spin_unlock_irqrestore(&gpu_lock, flags);
+    pmm_free_pages(new_backing, new_pages);
+    return 0;
+  }
+
   uint32_t old_res = priv->resource_id;
   void *old_backing = priv->backing_store;
   size_t old_size = dev->framebuffer_size;
   uint32_t new_res = priv->next_resource_id++;
 
-  if (vgpu_create_2d(priv, new_res, width, height) != 0 ||
-      vgpu_attach_backing(priv, new_res, new_backing, (uint32_t)new_size) !=
-          0 ||
-      vgpu_set_scanout(priv, new_res, width, height) != 0) {
-    /* Roll back: keep the old resource/backing as the live scanout. */
+  if (vgpu_create_2d(priv, new_res, width, height) != 0) {
     spin_unlock_irqrestore(&gpu_lock, flags);
     pmm_free_pages(new_backing, new_pages);
+    pr_err("VirtIO-GPU: set_mode %dx%d resource creation failed\n", width,
+           height);
+    return -1;
+  }
+
+  if (vgpu_attach_backing(priv, new_res, new_backing, (uint32_t)new_size) !=
+          0 ||
+      vgpu_set_scanout(priv, new_res, width, height) != 0) {
+    /* The new resource exists.  Release it before freeing attached memory;
+     * if the device cannot confirm unref, retain the backing rather than risk
+     * DMA into freed pages. */
+    int unref_result = vgpu_unref(priv, new_res);
+    spin_unlock_irqrestore(&gpu_lock, flags);
+    if (unref_result == 0)
+      pmm_free_pages(new_backing, new_pages);
+    else
+      pr_err("VirtIO-GPU: set_mode rollback could not unref resource %u; "
+             "backing retained for DMA safety\n",
+             new_res);
     pr_err("VirtIO-GPU: set_mode %dx%d failed; keeping %dx%d\n", width, height,
            dev->width, dev->height);
     return -1;
@@ -326,11 +425,19 @@ static int vgpu_set_mode(struct gpu_device *dev, int width, int height) {
   dev->height = height;
   dev->framebuffer_size = new_size;
 
-  vgpu_unref(priv, old_res);
+  int old_unref_result = vgpu_unref(priv, old_res);
   spin_unlock_irqrestore(&gpu_lock, flags);
 
-  if (old_backing)
-    pmm_free_pages(old_backing, (old_size + 4095) / 4096);
+  if (old_backing) {
+    if (old_unref_result == 0) {
+      pmm_free_pages(old_backing, (old_size + 4095u) / 4096u);
+    } else {
+      /* The old resource may still DMA from its backing.  Retain it rather
+       * than freeing pages whose ownership the device has not released. */
+      pr_err("VirtIO-GPU: old resource %u unref failed; backing retained\n",
+             old_res);
+    }
+  }
 
   pr_info("VirtIO-GPU: mode set to %dx%d (resource %u)\n", width, height,
           new_res);
@@ -385,9 +492,50 @@ static int vgpu_poll_events(struct gpu_device *dev, int *new_w, int *new_h) {
   return 1;
 }
 
+/* Caller must first stop new submissions and quiesce device DMA/IRQs.
+ * A successful status reset is required before returning DMA-visible pages. */
+static int vgpu_reset_device(struct virtio_gpu_state *priv) {
+  if (!priv || !priv->handle)
+    return 0;
+  virtio_write_reg(priv->handle, VIRTIO_MMIO_STATUS, 0);
+  for (uint32_t timeout = 0; timeout < 1000000u; timeout++) {
+    if (virtio_read_reg(priv->handle, VIRTIO_MMIO_STATUS) == 0)
+      return 0;
+    arch_yield();
+  }
+  return -1;
+}
+
+static int vgpu_release_resources(struct gpu_device *dev,
+                                  struct virtio_gpu_state *priv) {
+  if (vgpu_reset_device(priv) != 0) {
+    /* Do not free memory while the device may still DMA into it.  This is an
+     * intentional quarantine/leak on reset failure, not a use-after-free. */
+    pr_err("%s", "VirtIO-GPU: reset did not quiesce; DMA memory quarantined\n");
+    return -1;
+  }
+
+  if (priv && priv->backing_store && dev && dev->framebuffer_size) {
+    size_t pages = (dev->framebuffer_size + 4095u) / 4096u;
+    pmm_free_pages(priv->backing_store, pages);
+  }
+  if (priv && priv->resp_buf)
+    pmm_free_page(priv->resp_buf);
+  if (priv && priv->cmd_buf)
+    pmm_free_page(priv->cmd_buf);
+  if (priv && priv->desc)
+    pmm_free_pages(priv->desc, 2u);
+  if (priv)
+    kfree(priv);
+  if (dev)
+    kfree(dev);
+  return 0;
+}
+
 static void vgpu_destroy(struct gpu_device *dev) {
-  kfree(dev->priv);
-  kfree(dev);
+  if (!dev)
+    return;
+  vgpu_release_resources(dev, (struct virtio_gpu_state *)dev->priv);
 }
 
 static struct gpu_ops vgpu_ops = {
@@ -406,7 +554,9 @@ static struct gpu_ops vgpu_ops = {
 
 static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
                            uint32_t cmd_len, void *resp, uint32_t resp_len) {
-  if (!priv->handle)
+  if (!priv || !priv->handle || !priv->desc || !priv->avail || !priv->used ||
+      !priv->cmd_buf || !priv->resp_buf || priv->qsize == 0 ||
+      priv->qsize > UINT16_MAX)
     return -1;
 
   struct vring_desc *desc = priv->desc;
@@ -435,7 +585,7 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
   desc[1].flags = VRING_DESC_F_WRITE;
   desc[1].next = 0;
 
-  uint16_t ava_slot = avail->idx % priv->qsize;
+  uint16_t ava_slot = (uint16_t)(avail->idx % (uint16_t)priv->qsize);
   avail->ring[ava_slot] = 0;
   avail->idx++;
 
@@ -551,28 +701,42 @@ void virtio_gpu_init(void) {
   if (!(virtio_read_reg(dev_handle, VIRTIO_MMIO_STATUS) &
         VIRTIO_STATUS_FEATURES_OK)) {
     pr_err("%s", "VirtIO-GPU: Negotiation failed\n");
-    kfree(dev);
-    kfree(priv);
+    vgpu_release_resources(dev, priv);
     return;
   }
 
   /* Control queue (queue 0) setup — per-device rings (#53). */
   virtio_write_reg(dev_handle, VIRTIO_MMIO_QUEUE_SEL, 0);
   uint32_t qmax = virtio_read_reg(dev_handle, VIRTIO_MMIO_QUEUE_NUM_MAX);
-  priv->qsize = (qmax > 16) ? 16 : qmax;
+  if (qmax < 2) {
+    pr_err("VirtIO-GPU: invalid control queue size %u\n", qmax);
+    vgpu_release_resources(dev, priv);
+    return;
+  }
+  priv->qsize = (qmax > 16) ? 16u : qmax;
   virtio_write_reg(dev_handle, VIRTIO_MMIO_QUEUE_NUM, priv->qsize);
 
-  void *qmem = pmm_alloc_pages_dma(2);
+  void *qmem = pmm_alloc_pages_dma(2u);
+  if (!qmem) {
+    pr_err("%s", "VirtIO-GPU: cannot allocate control queue memory\n");
+    vgpu_release_resources(dev, priv);
+    return;
+  }
   memset(qmem, 0, 8192);
   priv->desc = (struct vring_desc *)qmem;
-  priv->avail = (struct vring_avail *)((uint8_t *)qmem + priv->qsize * 16);
-  priv->used = (struct vring_used *)((uint8_t *)qmem + 4096);
+  priv->avail = (struct vring_avail *)((uint8_t *)qmem + priv->qsize * 16u);
+  priv->used = (struct vring_used *)((uint8_t *)qmem + 4096u);
 
   virtio_setup_queue(dev_handle, 0, virt_to_phys(priv->desc),
                      virt_to_phys(priv->avail), virt_to_phys(priv->used));
 
   priv->cmd_buf = pmm_alloc_page_dma();
   priv->resp_buf = pmm_alloc_page_dma();
+  if (!priv->cmd_buf || !priv->resp_buf) {
+    pr_err("%s", "VirtIO-GPU: cannot allocate command/response buffers\n");
+    vgpu_release_resources(dev, priv);
+    return;
+  }
 
   /* Driver OK. */
   virtio_write_reg(dev_handle, VIRTIO_MMIO_STATUS,
@@ -592,10 +756,16 @@ void virtio_gpu_init(void) {
   dev->width = qw;
   dev->height = qh;
   dev->bpp = 32;
-  dev->framebuffer_size = (size_t)qw * qh * 4;
+  dev->framebuffer_size = (size_t)(uint32_t)qw * (size_t)(uint32_t)qh *
+                          sizeof(uint32_t);
 
-  int pages = (dev->framebuffer_size + 4095) / 4096;
+  size_t pages = (dev->framebuffer_size + 4095u) / 4096u;
   priv->backing_store = pmm_alloc_pages_dma(pages);
+  if (!priv->backing_store) {
+    pr_err("%s", "VirtIO-GPU: cannot allocate scanout backing store\n");
+    vgpu_release_resources(dev, priv);
+    return;
+  }
   memset(priv->backing_store, 0, dev->framebuffer_size);
   /* panic_screen/graphics and the compositor all reach this backing store
    * through the ops->get_framebuffer contract (S-ALIGN F7) — there is no
@@ -604,11 +774,20 @@ void virtio_gpu_init(void) {
   priv->resource_id = 1;
   priv->next_resource_id = 2;
 
-  /* Create the scanout resource at the queried size. */
-  vgpu_create_2d(priv, priv->resource_id, dev->width, dev->height);
-  vgpu_attach_backing(priv, priv->resource_id, priv->backing_store,
-                      (uint32_t)dev->framebuffer_size);
-  vgpu_set_scanout(priv, priv->resource_id, dev->width, dev->height);
+  /* Create the scanout resource at the queried size.  Do not publish a
+   * partially initialized device: every control command must succeed first. */
+  if (vgpu_create_2d(priv, priv->resource_id, dev->width, dev->height) != 0 ||
+      vgpu_attach_backing(priv, priv->resource_id, priv->backing_store,
+                          (uint32_t)dev->framebuffer_size) != 0 ||
+      vgpu_set_scanout(priv, priv->resource_id, dev->width, dev->height) != 0) {
+    pr_err("%s", "VirtIO-GPU: scanout resource initialization failed\n");
+    vgpu_release_resources(dev, priv);
+    return;
+  }
 
-  gpu_register(dev); /* publish last: flush/set_mode cannot race init (#53) */
+  if (gpu_register(dev) != 0) {
+    pr_err("%s", "VirtIO-GPU: GPU registry rejected device\n");
+    vgpu_release_resources(dev, priv);
+    return;
+  } /* publish last: flush/set_mode cannot race init (#53) */
 }

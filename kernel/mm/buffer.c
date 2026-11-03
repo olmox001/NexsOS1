@@ -324,7 +324,7 @@ void buffer_sync(void) {
              (unsigned long)dirty[i]->block);
     spin_lock_irqsave(&buffer_lock, &flags);
     if (wb >= 0)
-      dirty[i]->flags &= ~BUFFER_DIRTY;
+      dirty[i]->flags &= ~(uint32_t)BUFFER_DIRTY;
     if (dirty[i]->ref_count > 0)
       dirty[i]->ref_count--;
     spin_unlock_irqrestore(&buffer_lock, flags);

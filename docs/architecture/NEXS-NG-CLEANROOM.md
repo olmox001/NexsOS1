@@ -185,3 +185,20 @@ idempotent metadata-only correction to that path before recursive checkout.
 No Coreutils source code or pinned gitlink revision is changed. The corrected
 nested `.gitmodules` remains a local metadata modification inside the
 Coreutils submodule and is intentional until the upstream fork fixes it.
+
+
+## 12. Graphics service boundary — 2026-11-03
+
+The graphics migration is specified in
+`docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`: compositord and all
+rendering/API libraries are userland; kernel retains only surface/buffer object
+management, capability enforcement, safe mappings, lifetime/synchronization
+and presentation control. GPU/display device services run in userland where
+possible with explicit MMIO/IRQ/DMA capabilities. The kernel keeps a minimal
+panic/serial display path.
+
+This refines migration step 6 in §6 ("Compositor/window services") and
+supersedes older DIR-02/DIR-07 wording that placed the compositor in the HAL.
+The current legacy kernel is not to be mass-moved in place; implement the
+surface manager and services in the parallel NG tree, preserving the old boot
+path until G0–G6 pass.

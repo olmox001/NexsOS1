@@ -82,3 +82,22 @@ and graphics state** across a kernel-core recovery (see DIR-05), and matches the
   instead of PID-derived addressing), `window_present`/`window_commit`, and
   compositor-as-HAL-component. No `kernel/hal`-level compositor placement exists
   in the source tree as of this date.
+
+
+## Architecture decision update — 2026-11-03 (supersedes HAL placement)
+
+The old §4 diagram ("compositor in the HAL") is **superseded** for NEXS-NG.
+The compositor is a ring-3 supervised userland service, not a kernel/HAL
+component. The scheduler has no compositor dependency.
+
+The kernel retains a deliberately narrow surface/buffer/control manager:
+capability-owned backing storage, validated surface metadata, safe mappings,
+rights, lifetime/pinning, synchronization, commit validation and controlled
+presentation hand-off. It performs no composition or pixel rasterization.
+Window geometry, z-order, focus, damage policy, frame pacing, vsync policy,
+decorations, cursor composition and animation belong to `compositord`.
+
+This is a stronger boundary than the original DIR-02 "compositor as HAL
+component" thesis. The legacy compositor remains in the current kernel only
+for compatibility until the parallel NG service stack passes its migration
+gates. See `docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.

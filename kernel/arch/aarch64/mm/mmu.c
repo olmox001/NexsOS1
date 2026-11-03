@@ -143,7 +143,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
           /* L1 Block (1GB) -> L2 Table (512 x 2MB blocks).
            * Each child is a 2MB block, so bit 1 stays 0 (block); bit 0 stays 1. */
           for (int i = 0; i < 512; i++) {
-            sub_table[i] = (block_pa + (uint64_t)i * 0x200000) | (block_flags & ~0x2) | 0x1;
+            sub_table[i] = (block_pa + (uint64_t)i * 0x200000) | (block_flags & ~(uint64_t)0x2) | 0x1;
           }
       } else if (level == 3) {
           /* L2 Block (2MB) -> L3 Table (512 x 4KB pages).
@@ -476,7 +476,7 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
        *   hardware interprets this as a block, not a table pointer.
        *   | 0x1: set PTE_VALID.
        * Result: hardware-correct 2MB block OA=p with flags' attributes. */
-      pmd[PMD_INDEX(v)] = p | (flags & ~0x2) | 0x1;
+      pmd[PMD_INDEX(v)] = p | (flags & ~(uint64_t)0x2) | 0x1;
 
       arch_cache_clean_range(&pmd[PMD_INDEX(v)], 8); /* flush entry to PoC */
       v += 0x200000;

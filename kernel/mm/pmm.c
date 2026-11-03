@@ -581,17 +581,19 @@ static void *zone_alloc_page(struct zone *z, int dma) {
     return NULL;
   }
 
-  /* Update next_free_pfn for next caller */
-  z->next_free_pfn = (pfn + 1) % npages;
+  /* The negative sentinel was rejected above; the PFN is now zone-relative
+   * and non-negative.  Convert once to the bitmap's unsigned index type. */
+  uint64_t found_pfn = (uint64_t)pfn;
+  z->next_free_pfn = (found_pfn + 1) % npages;
 
-  bitmap_set(z->bitmap, pfn);
+  bitmap_set(z->bitmap, found_pfn);
   z->free_pages--;
 
   spin_unlock_irqrestore(&z->lock, flags);
 
   /* Convert to absolute PFN, then to the page's kernel virtual address
    * (direct map; identity while KERNEL_VIRT_BASE == 0). */
-  uint64_t abs_pfn = z->start_pfn + pfn;
+  uint64_t abs_pfn = z->start_pfn + found_pfn;
   struct page *pg = &page_array[abs_pfn];
   pg->flags = 0;
   pg->refcount = 1;
@@ -703,16 +705,20 @@ static void *alloc_pages_impl(size_t count, int dma) {
     return NULL;
   }
 
+  /* The negative sentinel was rejected above; convert the zone-relative
+   * start PFN once before using it as an unsigned bitmap/page-array index. */
+  uint64_t found_pfn = (uint64_t)pfn;
+
   /* Mark all pages as used */
   for (size_t i = 0; i < count; i++) {
-    bitmap_set(z->bitmap, pfn + i);
+    bitmap_set(z->bitmap, found_pfn + i);
   }
   z->free_pages -= count;
 
   spin_unlock_irqrestore(&z->lock, flags);
 
   /* Initialize pages */
-  uint64_t abs_pfn = z->start_pfn + pfn;
+  uint64_t abs_pfn = z->start_pfn + found_pfn;
   for (size_t i = 0; i < count; i++) {
     struct page *pg = &page_array[abs_pfn + i];
     pg->flags = 0;
@@ -771,7 +777,7 @@ void pmm_free_page(void *page) {
     return;
 
   uint64_t phys = virt_to_phys(page);
-#if ARCH_MEMORY_BASE > 0
+#if ARCH_RAM_START > 0
   if (phys < MEMORY_BASE) {
     pr_err("PMM: Attempt to free invalid address %p (below MEMORY_BASE)\n",
            page);
@@ -911,7 +917,7 @@ void *pmm_alloc_aligned(size_t size, size_t align) {
  * 'phys' is a PHYSICAL address; pointer callers must virt_to_phys() first.
  */
 struct page *pmm_phys_to_page(uint64_t phys) {
-#if ARCH_MEMORY_BASE > 0
+#if ARCH_RAM_START > 0
   if (phys < MEMORY_BASE)
     return NULL;
 #endif
@@ -926,14 +932,32 @@ struct page *pmm_phys_to_page(uint64_t phys) {
  *
  * pmm_page_to_phys - return the physical address corresponding to a struct page.
  *
- * Computes pfn = page - page_array, then returns MEMORY_BASE + pfn_to_phys(pfn).
- * The caller is responsible for ensuring 'page' is a valid entry in page_array.
+ * Validates that 'page' is an aligned entry in page_array, then returns
+ * MEMORY_BASE + pfn_to_phys(pfn).  Returns physical zero for an invalid entry.
  *
  * The returned value is a PHYSICAL address; use phys_to_virt() to get a
  * dereferenceable pointer.
  */
 uint64_t pmm_page_to_phys(struct page *page) {
-  uint64_t pfn = page - page_array;
+  if (!page || !page_array)
+    return 0;
+
+  /* Use integer bounds before deriving the PFN: subtracting unrelated C
+   * pointers is undefined, and a negative ptrdiff_t must never become a
+   * huge unsigned frame number.  Physical zero is reserved and is the
+   * invalid sentinel for this legacy helper. */
+  uintptr_t base = (uintptr_t)page_array;
+  uintptr_t addr = (uintptr_t)page;
+  if (addr < base)
+    return 0;
+  uintptr_t offset = addr - base;
+  if (total_pages > UINTPTR_MAX / sizeof(*page))
+    return 0;
+  uintptr_t bytes = (uintptr_t)total_pages * sizeof(*page);
+  if (offset >= bytes || (offset % sizeof(*page)) != 0)
+    return 0;
+
+  uint64_t pfn = (uint64_t)(offset / sizeof(*page));
   return MEMORY_BASE + pfn_to_phys(pfn);
 }
 

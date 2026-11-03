@@ -162,3 +162,57 @@ Limitations
 
 nxadb turns the existing NXShell into a practical, scriptable remote
 interface for NeXs OS development and testing.
+
+Visual inspection and pointer input
+-----------------------------------
+
+  nxadb start --display default       Start QEMU with a visible host window
+  nxadb start --display none          Headless (default; QMP screenshots still work)
+  nxadb screenshot                    Capture VirtIO-GPU head 0 as verified PNG
+  nxadb screenshot gui-after-click.png
+                                      Save under build/runs/<arch>/
+  nxadb mouse <dx> <dy>               Move guest relative pointer
+  nxadb mouse <dx> <dy> --click       Move and left-click
+  nxadb mouse <dx> <dy> --click --button right
+                                      Right-click after moving
+
+Screenshots are captured from QMP device `nxgpu0`, not the first/default VGA
+adapter. This matters on AMD64 where firmware VGA and VirtIO-GPU are separate
+display devices. Each PNG has a JSON manifest and raw PPM alongside it.
+The tool refuses to overwrite an existing capture and constrains output paths
+to `build/runs/<arch>/`.
+
+QMP typing uses a conservative 75ms per-key delay to avoid lost characters
+when the guest is under rendering load. Mouse press/release edges are sent as
+separate QMP events so a short click is not collapsed into one input frame.
+
+
+Boot capture and visual hardening (2026-11-03)
+---------------------------------------------
+
+Every QEMU start preserves the previous runtime UART/stdout/stderr files under
+build/runs/<arch>/boot-<timestamp>-<id>/ and writes a persistent run-*.json
+manifest containing the exact command and log paths. QEMU stdout is no longer
+discarded. The current complete channels are:
+
+  build/runtime/nxadb/<arch>/serial.log
+  build/runtime/nxadb/<arch>/qemu.stdout.log
+  build/runtime/nxadb/<arch>/qemu.stderr.log
+
+Use nxadb bootlog to print all captured channels and the latest manifest.
+Use nxadb bootlog --history to list previous archived captures. logcat
+continues to follow the guest UART only. Error messages may show a bounded
+last-6000-character excerpt, but explicitly identify it as an excerpt; the
+full log remains on disk.
+
+nxadb test --soak-seconds 30 --display default performs a real QEMU run:
+baseline screenshot, NXShell input, nxwins window enumeration, focus of the
+active shell window, 30-second process/fault supervision and final screenshot.
+The screenshots are stored under build/runs/<arch>/ and verified as PNGs.
+make test runs the selected architecture; make test-all runs amd64 and
+aarch64 sequentially. Both release architectures must pass independently.
+
+A successful current gate is KTEST 8/8, NXShell prompt, nxwins enumeration
+and focus, two 1280x800 screenshots, 30 seconds with no kernel fault match.
+This is a minimum smoke/hardening gate, not a substitute for longer stress,
+hardware diversity, or physical-device validation.
