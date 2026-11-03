@@ -28,6 +28,31 @@
 
 #include <kernel/cpu.h>
 
+/*
+ * Linux ARM64 Image header consumed by GRUB's `linux` command.
+ * This is only a boot protocol: the payload remains the NexsOS kernel.
+ * text_offset=0x80000 matches the current QEMU virt DRAM base 0x40000000.
+ * flags=2 declares little-endian + 4KB granule, with the image placed near
+ * the beginning of DRAM. The linker resolves image_size including BSS.
+ */
+.section .linux_header, "ax"
+.balign 8
+.global __arm64_image_header
+__arm64_image_header:
+    b _start
+    nop
+    .quad 0x80000
+    .quad __kernel_size
+    .quad 0x2
+    .quad 0
+    .quad 0
+    .quad 0
+    .word 0x644d5241
+    .word 0
+.if (. - __arm64_image_header) != 64
+.error "AArch64 Image header must be exactly 64 bytes"
+.endif
+
 /* Keep in sync with KERNEL_VIRT_BASE in kernel/include/kernel/memlayout.h */
 #define KVB 0xFFFF000000000000
 

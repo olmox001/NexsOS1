@@ -3130,11 +3130,33 @@ static void compositor_render_internal(void) {
  * Composite All Windows to Screen (Public - Locks)
  */
 void compositor_render(void) {
+  static uint32_t slow_render_logs = 0;
+  const uint64_t render_timer_freq = arch_timer_get_freq();
+  const uint64_t lock_wait_start = arch_timer_get_count();
   uint64_t flags;
+
   spin_lock_irqsave(&compositor_lock, &flags);
+  const uint64_t lock_acquired = arch_timer_get_count();
   compositor_render_internal();
   compositor_dirty = 0;
+  const uint64_t render_finished = arch_timer_get_count();
   spin_unlock_irqrestore(&compositor_lock, flags);
+
+  /* Separate time spent waiting for compositor_lock from time spent rendering.
+   * Both intervals currently run with local IRQs masked; keeping them separate
+   * determines whether contention or the renderer itself dominates latency. */
+  const uint64_t cycles_per_us = render_timer_freq / 1000000ULL;
+  const uint64_t lock_wait_us =
+      cycles_per_us ? (lock_acquired - lock_wait_start) / cycles_per_us : 0;
+  const uint64_t render_hold_us =
+      cycles_per_us ? (render_finished - lock_acquired) / cycles_per_us : 0;
+  if ((lock_wait_us > 5000ULL || render_hold_us > 5000ULL) &&
+      slow_render_logs < 12U) {
+    ++slow_render_logs;
+    pr_info("[GFX-TIMING] lock_wait=%llu us render_hold=%llu us\n",
+            (unsigned long long)lock_wait_us,
+            (unsigned long long)render_hold_us);
+  }
 }
 
 /*

@@ -74,6 +74,7 @@
  *           (sys_set_font in graphics/font.c) → UAF / info-leak.
  */
 #include <arch/pt_regs.h>
+#include <drivers/keyboard.h>
 #include <kernel/cpu.h>
 #include <kernel/kmalloc.h>
 #include <kernel/object.h>
@@ -747,16 +748,27 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     break;
   }
   case SYS_COMPOSITOR_RENDER:
-    /* The single compositor-push syscall (the duplicate SYS_FLUSH was retired
-     * and folded here).  Forcing a global re-render is a display effect: gated
-     * by CAP_WINDOW, so a capability-stripped worker (spawned without
-     * CAP_WINDOW) cannot drive the compositor.  Every default preset (incl.
-     * GUEST) holds CAP_WINDOW, and machine processes bypass — so nothing
-     * legitimate breaks. */
+    /* Single compositor-push syscall (the duplicate SYS_FLUSH was retired and
+     * folded here). CAP_WINDOW authorizes a process to request presentation;
+     * PID 1 is the sole renderer/input pump below. Other apps' flush() calls
+     * return promptly and the supervisor presents their damage on its next
+     * frame. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
+    /* PID 1 (nxinit) is the sole compositor/input frame pump. All other
+     * CAP_WINDOW processes may submit window damage, but their flush() calls
+     * are hints: init's 33 ms supervisor loop presents the accumulated state.
+     * This prevents concurrent USB HCD polling, multi-consumer input dispatch,
+     * and N app processes contending on compositor_lock with IRQs masked. */
+    if (current_process->pid != 1) {
+      pt_regs_set_return(frame, 0);
+      break;
+    }
+    extern void usb_hid_poll(void);
+    usb_hid_poll();
+    input_drain();
     compositor_render();
     pt_regs_set_return(frame, 0);
     break;
@@ -1267,8 +1279,35 @@ static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
     return regs;
   }
 
-  /* (Re)arm the coarse wheel trigger at the deadline's tick. Rounding up by one
-   * tick keeps us from busy-spinning if mono_ns() is just shy of wake_ns. */
+  /*
+   * SLEEP-WAKE-01: close the lost-wakeup window.
+   *
+   * The old order armed the timer while p was still RUNNING, then changed
+   * p->state to PROC_SLEEPING. If the owning CPU's tick fired in between,
+   * proc_sleep_wake() observed RUNNING and intentionally skipped enqueue_task;
+   * the caller then went to sleep with no timer left to wake it. This is
+   * observable as user processes (notably NXShell) accepting one input line
+   * and then remaining asleep at the next prompt.
+   *
+   * Mask local IRQs across the state transition and timer publication. The
+   * timer belongs to this CPU (timer_add uses get_cpu_info()), so its callback
+   * cannot run until schedule() has switched away with IRQs still masked.
+   */
+  arch_local_irq_disable();
+
+  now = mono_ns();
+  if (now >= p->wake_ns) {
+    p->wake_ns = 0;
+    timer_del(&p->sleep_timer);
+    arch_local_irq_enable();
+    pt_regs_set_return(regs, 0);
+    return regs;
+  }
+
+  p->state = PROC_SLEEPING;
+
+  /* (Re)arm the coarse wheel trigger at the deadline's tick. Rounding up by
+   * one tick keeps us from busy-spinning if mono_ns() is just shy of wake_ns. */
   if (!timer_pending(&p->sleep_timer)) {
     uint64_t ticks = (p->wake_ns - now + (NS_PER_TICK - 1)) / NS_PER_TICK;
     if (ticks == 0)
@@ -1277,9 +1316,6 @@ static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
     timer_add(&p->sleep_timer, jiffies + ticks);
   }
 
-  arch_local_irq_disable();
-  p->state = PROC_SLEEPING;
-  arch_local_irq_enable();
   pt_regs_retry_syscall(regs);
   return schedule(regs);
 }

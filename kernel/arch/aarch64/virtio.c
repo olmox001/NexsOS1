@@ -139,6 +139,21 @@ void arch_virtio_scan(void) {
  * silent descriptor corruption.  Callers must lay out the virtqueue exactly
  * as specified in VirtIO 1.0 Section 2.4 (legacy MMIO layout).
  */
+uint32_t virtio_queue_set_size(virtio_handle_t dev, uint32_t queue_idx,
+                               uint32_t requested_size) {
+    if (!dev || requested_size == 0)
+        return 0;
+
+    virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_SEL, queue_idx);
+    uint32_t qmax = virtio_read_reg(dev, VIRTIO_MMIO_QUEUE_NUM_MAX);
+    if (qmax == 0)
+        return 0;
+
+    uint32_t qsize = requested_size < qmax ? requested_size : qmax;
+    virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_NUM, qsize);
+    return qsize;
+}
+
 void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx, uint64_t desc_addr, uint64_t avail_addr, uint64_t used_addr) {
     (void)avail_addr; /* unused: legacy MMIO derives ring offsets from QueuePFN */
     (void)used_addr;  /* unused: same reason */

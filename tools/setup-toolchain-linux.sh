@@ -5,10 +5,9 @@
 # Install the EXACT NexsOS1 / NEXS dual-arch cross toolchain on Linux,
 # matching the macOS environment as closely as possible.
 #
-# amd64    : x86_64-elf-binutils + x86_64-elf-gcc/g++       (built from GNU source)
-#            -> prefix x86_64-elf-      (same as macOS Makefile)
-# aarch64  : aarch64-none-elf-binutils + aarch64-none-elf-gcc/g++ 7.2.0  (built from GNU source)
-#            -> prefix aarch64-none-elf- (same as macOS Makefile / sergiobenitez/osxct tap)
+# amd64    : x86_64-elf-binutils 2.46.1 + x86_64-elf-gcc/g++ 16.1.0
+# aarch64  : aarch64-none-elf-binutils 2.29.1 + aarch64-none-elf-gcc/g++ 7.2.0
+# Exact versions are shared with macOS in tools/toolchain-versions.env.
 #
 # WHY GCC 7.2.0 for aarch64, and why NOT the distro aarch64-linux-gnu-gcc:
 #   The kernel links -nostdlib (no libc) and boots a raw freestanding image.
@@ -44,7 +43,7 @@
 # defensively, but if the aarch64-none-elf build still fails, send me the
 # actual configure/make error output (not just the exit code) and we patch
 # it — do NOT assume the x86_64-elf build path will behave identically,
-# since that one builds a modern GCC (13.2.0) with no such friction.
+# since that one builds the locked GCC 16.1.0 release with no such friction.
 #
 # Idempotent: safe to re-run (skips build if the target compiler is already
 # present at the expected version).
@@ -65,17 +64,13 @@ else
 fi
 
 init_submodules() {
-    info "Initializing git submodules..."
-    (cd "$REPO_ROOT" && git submodule sync --recursive) || warn "Failed to sync submodules."
-    (cd "$REPO_ROOT" && git submodule update --init --recursive) || warn "Failed to initialize submodules."
+    info "Initializing pinned project dependencies..."
+    "$REPO_ROOT/tools/setup-dependencies.sh" --init
 }
 
 # ==============================================================================
 # Configuration — bump these to upgrade the cross toolchain
 # ==============================================================================
-BINUTILS_VERSION=2.42
-GCC_VERSION=13.2.0
-TARGET=x86_64-elf
 # Overridable: some distros/users prefer ~/.local or /opt over sudo-writing
 # into /usr/local. Left at /usr/local by default to match the Makefile's
 # assumption that cross-gcc is already on PATH without extra configuration.
@@ -83,16 +78,15 @@ PREFIX=${PREFIX:-/usr/local}
 JOBS=$(nproc 2>/dev/null || echo 4)
 GNU_MIRROR=https://ftp.gnu.org/gnu
 
-# aarch64 side — pinned to match the macOS sergiobenitez/osxct tap exactly.
-# BEST-EFFORT binutils pairing for GCC 7.2.0 (crosstool-ng-era recipes commonly
-# pair 7.2.0 with binutils in the 2.28-2.30 range). If you have access to the
-# Mac, confirm the exact binutils version with `aarch64-none-elf-ld --version`
-# and change AARCH64_BINUTILS_VERSION below to match precisely — ld/as version
-# skew is far less likely to break freestanding boot than the GCC version, but
-# for a "byte for byte" match it's worth checking.
-AARCH64_BINUTILS_VERSION=2.30
-AARCH64_GCC_VERSION=7.2.0
-AARCH64_TARGET=aarch64-none-elf
+# Shared lock: versions are verified against the current macOS toolchain.
+# Do not update these independently; validate both targets on both host OSes.
+source "$REPO_ROOT/tools/toolchain-versions.env"
+BINUTILS_VERSION="$NEXS_X86_64_BINUTILS_VERSION"
+GCC_VERSION="$NEXS_X86_64_GCC_VERSION"
+TARGET="$NEXS_X86_64_TARGET"
+AARCH64_BINUTILS_VERSION="$NEXS_AARCH64_BINUTILS_VERSION"
+AARCH64_GCC_VERSION="$NEXS_AARCH64_GCC_VERSION"
+AARCH64_TARGET="$NEXS_AARCH64_TARGET"
 
 # ==============================================================================
 # 0. Detect distro
@@ -173,42 +167,15 @@ install_packages() {
                 wget curl git
             ;;
         arch|manjaro|endeavouros)
-			info "Installing build dependencies and tools via pacman..."
-
-			read -rp "Run a full system upgrade (pacman -Syu)? [y/N] " reply
-			if [[ "$reply" =~ ^[Yy]$ ]]; then
-				"${SUDO[@]}" pacman -Syu
-			fi
-
-			echo
-			info "The following packages will be installed if missing:"
-			cat <<EOF
-base-devel
-file
-gmp libmpc mpfr isl zstd
-texinfo
-qemu-system-x86 qemu-system-aarch64
-grub libisoburn mtools
-gdb
-wget git
-EOF
-			echo
-
-			read -rp "Install these packages? [Y/n] " reply
-			if [[ ! "$reply" =~ ^[Nn]$ ]]; then
-				"${SUDO[@]}" pacman -S --needed \
-					base-devel \
-					file \
-					gmp libmpc mpfr isl zstd \
-					texinfo \
-					qemu-system-x86 qemu-system-aarch64 \
-					grub libisoburn mtools \
-					gdb \
-					wget git
-			else
-				warn "Package installation skipped."
-				return 1
-			fi
+            info "Installing the pinned host build prerequisites via pacman..."
+            # Do not run a full system upgrade as a side effect of project setup.
+            "${SUDO[@]}" pacman -S --needed --noconfirm \
+                base-devel file \
+                gmp libmpc mpfr isl zstd \
+                texinfo \
+                qemu-system-x86 qemu-system-aarch64 \
+                grub libisoburn mtools gdb \
+                wget curl git
             ;;
         alpine)
             info "Installing build dependencies and tools via apk..."
@@ -219,15 +186,12 @@ EOF
                 bison flex \
                 gmp-dev mpc1-dev mpfr-dev \
                 texinfo \
-                grep \
                 qemu-system-x86_64 qemu-system-aarch64 \
                 grub xorriso mtools \
                 gdb \
                 wget curl git bash
-            # NOTE: Alpine's default /bin/grep is busybox grep, which does NOT
-            # support -oP (PCRE). The version-check below in
-            # build_cross_toolchain() relies on `grep -oP`, so the GNU `grep`
-            # package above is mandatory, not cosmetic.
+            # Version checks use GCC's -dumpfullversion and sed; BusyBox grep
+            # is sufficient and no PCRE-specific grep option is required.
             ;;
         *)
             warn "Distro '$DISTRO' not directly supported."
@@ -239,19 +203,46 @@ EOF
     esac
 }
 
+verify_sha512() {
+    local archive="$1" expected="$2" actual
+    if command -v sha512sum >/dev/null 2>&1; then
+        actual="$(sha512sum "$archive" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 512 "$archive" | awk '{print $1}')"
+    else
+        fail "Neither sha512sum nor shasum is available; cannot verify $archive."
+    fi
+    [ "$actual" = "$expected" ] || fail "SHA-512 mismatch for $archive (expected $expected, got $actual)."
+    info "SHA-512 verified: $archive"
+}
+
 build_gnu_cross_toolchain() {
     # $1=target-triple  $2=binutils-version  $3=gcc-version  $4=extra gcc configure flags (word-split)
     local t="$1" bv="$2" gv="$3"
-    local extra_gcc_flags="$4"
+    local extra_gcc_flags="$4" binutils_sha gcc_sha
+    case "$t" in
+        "$TARGET")
+            binutils_sha="$NEXS_X86_64_BINUTILS_SHA512"
+            gcc_sha="$NEXS_X86_64_GCC_SHA512"
+            ;;
+        "$AARCH64_TARGET")
+            binutils_sha="$NEXS_AARCH64_BINUTILS_SHA512"
+            gcc_sha="$NEXS_AARCH64_GCC_SHA512"
+            ;;
+        *)
+            fail "No SHA-512 lock entries exist for target '$t'."
+            ;;
+    esac
 
-    if command -v "${t}-gcc" >/dev/null 2>&1; then
-        local installed_ver
-        installed_ver=$("${t}-gcc" --version 2>/dev/null | head -1 | grep -oP '\d+\.\d+\.\d+' || echo "unknown")
-        if [ "$installed_ver" = "$gv" ]; then
-            info "${t}-gcc $gv already installed — skipping build."
+    if command -v "${t}-gcc" >/dev/null 2>&1 && command -v "${t}-ld" >/dev/null 2>&1; then
+        local installed_ver installed_binutils
+        installed_ver=$("${t}-gcc" -dumpfullversion -dumpversion 2>/dev/null || echo "unknown")
+        installed_binutils=$("${t}-ld" --version 2>/dev/null | head -1 | sed -E 's/.* ([0-9]+([.][0-9]+)+)$/\1/' || echo "unknown")
+        if [ "$installed_ver" = "$gv" ] && [ "$installed_binutils" = "$bv" ]; then
+            info "${t}-gcc $gv + binutils $bv already installed — skipping build."
             return 0
         else
-            info "${t}-gcc found ($installed_ver) but expected $gv — rebuilding."
+            info "${t} toolchain found (GCC $installed_ver, binutils $installed_binutils); expected GCC $gv + binutils $bv — rebuilding."
         fi
     fi
 
@@ -296,6 +287,7 @@ build_gnu_cross_toolchain() {
         # --- binutils ---
         info "Downloading binutils-${bv}..."
         wget -q "${GNU_MIRROR}/binutils/binutils-${bv}.tar.xz"
+        verify_sha512 "binutils-${bv}.tar.xz" "$binutils_sha"
         tar xf "binutils-${bv}.tar.xz"
         mkdir -p build-binutils && cd build-binutils
         info "Configuring binutils..."
@@ -315,6 +307,7 @@ build_gnu_cross_toolchain() {
         # --- gcc ---
         info "Downloading gcc-${gv}..."
         wget -q "${GNU_MIRROR}/gcc/gcc-${gv}/gcc-${gv}.tar.xz"
+        verify_sha512 "gcc-${gv}.tar.xz" "$gcc_sha"
         tar xf "gcc-${gv}.tar.xz"
         mkdir -p build-gcc && cd build-gcc
         info "Configuring gcc..."
@@ -480,9 +473,9 @@ verify_toolchain() {
     fi
 
     echo
-    info "make check ARCH=amd64:"; make -C "$REPO_ROOT" check ARCH=amd64 || true
+    info "make check ARCH=amd64:"; make -C "$REPO_ROOT" check ARCH=amd64
     echo
-    info "make check ARCH=aarch64:"; make -C "$REPO_ROOT" check ARCH=aarch64 || true
+    info "make check ARCH=aarch64:"; make -C "$REPO_ROOT" check ARCH=aarch64
     echo
     info "Toolchain ready. Build: make all ARCH=amd64 | make all ARCH=aarch64"
 }

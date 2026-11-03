@@ -220,3 +220,15 @@ Tracciato in GitHub e in `docs/review/REVIEW.md` (#19, ~220 finding). Epic e clu
   #72 registry (#71 SSP ✓) · #106 doom fire button.
 
 > Questo registro va aggiornato man mano che gli item vengono chiusi.
+
+
+## 14. Diagnostica timer/SMP e compositor — 2026-11-03 **PARZIALE**
+Dettagli, log e misure: `docs/report/TIMER-SMP-DIAGNOSTIC-2026-11-03.md`.
+- `nxbar` usa `get_time()` monotono in millisecondi e `OS1_sleep(33)`; il diagnostico aggiornato conferma clock coerente su entrambe le architetture: 160 campioni, 0 regressioni/mismatch e `failures=0` per arch.
+- AArch64: corretti due difetti distinti: `SEV` dopo il rilascio degli spinlock AArch64; ack SMP pubblicato prima di abilitare gli IRQ in `kernel_secondary_main()` (race di preemption tra IRQ-enable e ack). Boot SMP=4 successivo: BSP conferma CPU1/2/3 online, nessun timeout.
+- AMD64: SMP=4 confermato (CPU1/2/3 online), incluso il boot dopo la modifica condivisa dell'ordine ack/IRQ.
+- `SYS_COMPOSITOR_RENDER` è single-owner PID 1 (nxinit); le altre chiamate CAP_WINDOW sono hint. Modifica compilata e boot-testata su entrambe le architetture.
+- Timer dopo il fix SMP: AMD64 OS1_sleep media 42.15 ms/max 84.32 ms; nanosleep 39.41/61.94 ms. AArch64 OS1_sleep 46.95/132.91 ms; nanosleep 49.25/121.63 ms. `get_time()` gap finale 1/0 ms, 0 regressioni e mismatch.
+- KTEST 8/8, timerdiag PASS, NXShell responsiva e faults=0 su entrambe. Soak NXShell di circa 60 s per arch completato con sei comandi distanziati; entrambi terminati con shell=yes e faults=0. VM arrestate.
+- Nuovi `GFX-TIMING`: `render_hold` 34.7–72.3 ms AMD64 e 40.7–130.0 ms AArch64. `compositor_render()` mantiene `compositor_lock` con IRQ locali disabilitati durante tutto il rendering sincrono; serve refactor con snapshot/ownership e gestione IRQ, non basta rimuovere irqsave.
+- `make ARCH={amd64,aarch64} all` e `boot-iso` sequenziali PASS anche dopo la modifica condivisa SMP. Restano stress combinato, riduzione critical section/jitter e bug POSIX `time()` ms/sec.

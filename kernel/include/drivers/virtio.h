@@ -133,6 +133,11 @@ uint32_t virtio_config_read32(virtio_handle_t dev, uint32_t offset);
 void virtio_config_write32(virtio_handle_t dev, uint32_t offset, uint32_t val);
 
 /* Discovery & Setup */
+/* Select a queue and configure its size using transport-correct semantics.
+ * Returns the actual size the device will use (zero on failure). Legacy PCI
+ * has a fixed, read-only Queue Size; MMIO/modern PCI can accept a requested size. */
+uint32_t virtio_queue_set_size(virtio_handle_t dev, uint32_t queue_idx,
+                               uint32_t requested_size);
 void arch_virtio_scan(void);
 int arch_virtio_get_count(uint32_t device_id);
 int arch_virtio_get_device(uint32_t device_id, int index,

@@ -3,8 +3,12 @@ nxadb — Primitive ADB for NeXs OS
 
 nxadb is a command-line tool that provides an ADB-like interface for
 interacting with a NeXs OS guest running under QEMU.
-It is built on top of the existing nxshell (especially nxshell -c) and
-uses the guest’s native commands (ls, cat, write, echo, redirections, etc.).
+It sends keyboard input through QEMU's QMP interface to the active NXShell
+prompt and uses the guest's native commands (ls, cat, write, echo, redirections,
+etc.). QMP input is routed to the named virtual display device `nxgpu0`; the
+keyboard and mouse devices are explicitly bound to that display. One-shot
+command status is inferred from the resulting prompt and output;
+it is not a host-side process exit status from a separate nxshell process.
 
 
 Quick Start
@@ -43,8 +47,8 @@ Shell & Execution
 
   nxadb shell              Interactive shell (supports arrows, backspace,
                            delete)
-  nxadb shell "<command>"  Run a single command via nxshell -c and print
-                           cleaned output
+  nxadb shell "<command>"  Type a single command at the active NXShell
+                           prompt and print cleaned output
 
 File System Helpers
 ~~~~~~~~~~~~~~~~~~~
@@ -95,7 +99,7 @@ Examples
   nxadb logcat
 
   # Run the full test suite
-  nxadb test -c captest -c libctest -e captest=64 -e libctest=18
+  nxadb test -c captest -c libctest -e captest=64 -e libctest=20
 
   # Multi-run smoke test on amd64
   nxadb -a amd64 test -n 3
@@ -108,13 +112,14 @@ Examples
 Design Notes
 ------------
 
-- One-shot commands always go through nxshell -c "…". This gives real exit
-  status propagation and correct handling of builtins, pipelines,
-  && / || / ;, redirections, etc.
+- One-shot commands are typed into the active NXShell session through QMP.
+  This preserves the guest shell's own parsing and builtins. The host infers
+  success/failure from prompt return and recognized error output; arbitrary
+  guest exit codes are not yet transported as a separate structured result.
 
-- Output capture waits for the real NXShell prompt (NXShell:…>) and log
-  stability instead of using fixed timeouts or naïve size checks. This
-  greatly reduces truncated output.
+- Output capture waits for the real NXShell prompt (NXShell:…>) plus a short
+  settle interval. It also returns immediately on a detected kernel fault;
+  periodic guest diagnostics cannot keep the prompt detector waiting forever.
 
 - Interactive shell uses full QMP key mapping (including Left/Right/Up/Down,
   Backspace, Delete, Home, End).
@@ -124,15 +129,24 @@ Design Notes
     push  → rm + write (small files) or line-by-line echo "…" >> file
             (larger files)
 
-- The tool automatically kills leftover QEMU instances, uses short paths for
-  the QMP socket (AF_UNIX limit), and builds the DTB on aarch64 when needed.
+- QEMU lifecycle is tracked by a per-architecture PID file and unique QMP
+  socket. Stop only targets the recorded process after verifying its command
+  line; unrelated QEMU processes are not killed.
+- QMP's `input-send-event.device` selects a display device, not the keyboard
+  device. nxqemu assigns `nxgpu0` to the virtual GPU and binds both input
+  devices to it so injected key events reach the guest console.
+- Mutating nxadb operations are serialized by a per-architecture file lock,
+  preventing simultaneous test runs or shell commands from racing over one
+  guest console and serial log.
 
 
 Exit Codes
 ----------
 
   0          success
-  non-zero   boot failure, test failure, command failure, or user interrupt (130)
+  1          boot failure, test failure, or command failure
+  75         busy: another mutating operation owns this architecture's session
+  130        user interrupt
 
 
 Limitations
