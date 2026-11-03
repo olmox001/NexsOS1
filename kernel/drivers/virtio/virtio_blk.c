@@ -67,36 +67,67 @@ void virtio_blk_init(void) {
   uint32_t status = VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER;
   virtio_write_reg(dev, VIRTIO_MMIO_STATUS, status);
 
-  /* Feature negotiation */
-  uint32_t features = virtio_read_reg(dev, VIRTIO_MMIO_DEVICE_FEATURES);
+  /* This driver currently implements only the base block request
+   * protocol. Do not claim optional legacy-PCI features (EVENT_IDX,
+   * INDIRECT_DESC, MQ, etc.) that this single-queue implementation does not
+   * consume. Modern negotiation is retained as before pending 64-bit feature
+   * selector support in the transport layer. */
+  uint32_t offered_features =
+      virtio_read_reg(dev, VIRTIO_MMIO_DEVICE_FEATURES);
+  uint32_t features = dev->is_legacy ? 0U : offered_features;
   virtio_write_reg(dev, VIRTIO_MMIO_DRIVER_FEATURES, features);
+  if (dev->is_legacy) {
+    pr_info("VirtIO: Legacy PCI block features offered=%08x accepted=%08x\n",
+            offered_features, features);
+  }
 
   if (version >= 2) {
     status |= VIRTIO_STATUS_FEATURES_OK;
     virtio_write_reg(dev, VIRTIO_MMIO_STATUS, status);
   }
 
-  /* Queue 0 setup */
-  virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_SEL, 0);
-  uint32_t qmax = virtio_read_reg(dev, VIRTIO_MMIO_QUEUE_NUM_MAX);
-  uint32_t qsize = (qmax > 16) ? 16 : qmax;
+  /* Queue 0 size is transport-specific: legacy PCI has a fixed, read-only
+   * QueueSize, while MMIO/modern PCI accept a requested size. The transport
+   * returns the actual size so the ring layout always matches the device. */
+  uint32_t qsize = virtio_queue_set_size(dev, 0, 16);
   virtio_blk_qsize = qsize;
   if (virtio_blk_qsize == 0) {
     pr_err("%s", "VirtIO-Blk: Invalid queue size (0)!\n");
     return;
   }
-  virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_NUM, qsize);
 
-  void *qmem = pmm_alloc_pages_dma(2);
+  /* Legacy PCI fixes QueueSize in hardware, so the Used Ring offset is
+   * ALIGN(desc_bytes + avail_bytes, 4096), not always 4096. Include the
+   * optional EVENT_IDX trailer space as well, even when not negotiated. */
+  const size_t queue_page_size = 4096U;
+  const size_t desc_bytes = (size_t)qsize * sizeof(struct vring_desc);
+  const size_t avail_bytes =
+      sizeof(struct vring_avail) +
+      (size_t)qsize * sizeof(uint16_t) + sizeof(uint16_t);
+  const size_t used_offset =
+      (desc_bytes + avail_bytes + queue_page_size - 1U) &
+      ~(queue_page_size - 1U);
+  const size_t used_bytes =
+      sizeof(struct vring_used) +
+      (size_t)qsize * sizeof(struct vring_used_elem) + sizeof(uint16_t);
+  const size_t total_bytes = used_offset + used_bytes;
+  const uint32_t qpages =
+      (uint32_t)((total_bytes + queue_page_size - 1U) / queue_page_size);
+
+  void *qmem = pmm_alloc_pages_dma(qpages);
   if (!qmem) {
-    pr_err("%s", "VirtIO: Failed to allocate queue memory\n");
+    pr_err("VirtIO: Failed to allocate %u pages for queue memory\n",
+           (unsigned)qpages);
     return;
   }
-  memset(qmem, 0, 8192);
+  memset(qmem, 0, (size_t)qpages * queue_page_size);
 
   desc = (struct vring_desc *)qmem;
-  avail = (struct vring_avail *)((uint8_t *)qmem + qsize * 16);
-  used = (struct vring_used *)((uint8_t *)qmem + 4096);
+  avail = (struct vring_avail *)((uint8_t *)qmem + desc_bytes);
+  used = (struct vring_used *)((uint8_t *)qmem + used_offset);
+  pr_info("VirtIO: Block queue layout qsize=%u pages=%u avail_off=%u "
+          "used_off=%u\n",
+          qsize, qpages, (unsigned)desc_bytes, (unsigned)used_offset);
 
   /* Unified HAL API handles Legacy/Modern address registration.
    * The device needs PHYSICAL ring addresses (virt_to_phys). */
@@ -183,37 +214,61 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
    * the descriptor/avail ring unconditionally, before notifying. */
   arch_cache_clean_range(&blk_req, sizeof(blk_req));
   if (write)
-    arch_cache_clean_range(buf, count * 512);
+    arch_cache_clean_range(buf, (size_t)count * 512U);
+  else
+    arch_cache_invalidate_range(buf, (size_t)count * 512U);
   arch_cache_clean_range((void *)desc, 3 * sizeof(*desc));
-  arch_cache_clean_range((void *)avail, sizeof(*avail));
+  arch_cache_clean_range(
+      (void *)avail,
+      sizeof(*avail) +
+          (size_t)virtio_blk_qsize * sizeof(uint16_t) + sizeof(uint16_t));
   hal_mb();
 
   /* Notify */
   virtio_notify(virtio_blk_dev, 0);
 
-  /* Poll Used Ring (busy wait).
-   * FIX(VBLK-DMA-03): invalidate 'used' every iteration before re-reading
-   * it — without this a cached read can keep hitting the same stale line
-   * forever even after the device's completion write actually landed in
-   * RAM, on any hardware where that write is not cache-coherent with this
-   * core (see VGPU-DMA-03 in virtio_gpu.c for the identical hazard). */
-  uint64_t timeout = 1000000000;
-  while (timeout > 0) {
+  /* Poll the Used Ring against the free-running hardware counter.
+   * A fixed 1,000,000,000-iteration loop is not a time bound: its duration
+   * changes with CPU/ISA/emulator speed and can monopolise the BSP while
+   * IRQs are masked by virtio_blk_lock. Use a measured 2 s deadline instead.
+   * The counter is available before userland and does not depend on jiffies
+   * or on the timer interrupt being enabled. */
+  const uint64_t timer_freq = arch_timer_get_freq();
+  const uint64_t timeout_cycles =
+      (timer_freq / 1000ULL) * 2000ULL; /* 2,000 ms in hardware-counter units */
+  const uint64_t timeout_start = arch_timer_get_count();
+  uint64_t polls = 0;
+  int completed = 0;
+
+  while (arch_timer_get_count() - timeout_start < timeout_cycles) {
     arch_cache_invalidate_range((void *)used, sizeof(*used));
-    if (*used_idx_ptr != old_idx)
+    if (*used_idx_ptr != old_idx) {
+      completed = 1;
       break;
+    }
     hal_cpu_yield();
-    timeout--;
+    ++polls;
   }
 
-  /* Clear interrupt status (Legacy VirtIO requirement) */
-  virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
+  /* Read/ack the interrupt status exactly once: legacy VirtIO acknowledges
+   * the ISR on read, so a second read would erase the diagnostic evidence. */
+  const uint32_t isr =
+      virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
 
-  if (timeout == 0) {
-    uint32_t isr = virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
-    pr_err("VirtIO-Blk: Timeout waiting for device response! (used->idx=%d "
-           "old_idx=%d, ISR=%02x)\n",
-           *used_idx_ptr, old_idx, isr);
+  if (!completed) {
+    const uint64_t elapsed_cycles =
+        arch_timer_get_count() - timeout_start;
+    const uint64_t elapsed_ms =
+        timer_freq ? (elapsed_cycles * 1000ULL) / timer_freq : 0;
+    const uint32_t device_status =
+        virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_STATUS);
+    pr_err("VirtIO-Blk: timeout after %llu ms; used=%u old=%u avail=%u "
+           "qsize=%u blk_status=%02x dev_status=%02x ISR=%02x polls=%llu\n",
+           (unsigned long long)elapsed_ms, (unsigned)*used_idx_ptr,
+           (unsigned)old_idx, (unsigned)avail->idx,
+           (unsigned)virtio_blk_qsize, (unsigned)blk_status,
+           (unsigned)device_status, (unsigned)isr,
+           (unsigned long long)polls);
     spin_unlock_irqrestore(&virtio_blk_lock, flags);
     return -1;
   }

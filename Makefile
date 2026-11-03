@@ -1,10 +1,12 @@
 # Makefile for NexsOS1 (AMD64 / AArch64)
+.DEFAULT_GOAL := all
 # Cross-compilation for bare-metal kernel
 # ==============================================================================
 # Configuration
 # ==============================================================================
 
 NEXSOS_SHARED_MAKE := 1
+include tools/toolchain-versions.env
 HOST_OS ?= $(shell uname -s)
 ifeq ($(HOST_OS),Linux)
     include Makefile.linux
@@ -149,6 +151,19 @@ GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || comman
 # Directories
 BUILD_ROOT = build
 BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
+
+# GRUB-first boot media. AArch64 EFI embeds kernel Image + generated DTB;
+# AMD64 boots the Multiboot2 ELF.
+HOST_CLANG ?= $(shell command -v clang 2>/dev/null)
+LLD_LINK ?= $(shell command -v lld-link 2>/dev/null)
+GRUB_ARM64_BUILD = $(BUILD_ROOT)/grub/arm64-efi
+AMD64_GRUB_ISO = $(BUILD_DIR)/grub-bios.iso
+AARCH64_UEFI_ISO = $(BUILD_DIR)/grub-efi/nexsos-aarch64-uefi.iso
+ifeq ($(ARCH),aarch64)
+BOOT_ISO = $(AARCH64_UEFI_ISO)
+else
+BOOT_ISO = $(AMD64_GRUB_ISO)
+endif
 USER_DIR   = user
 USER_SYS_DIR = $(USER_DIR)/sys
 USER_LIB_DIR = $(USER_SYS_DIR)/lib
@@ -309,13 +324,20 @@ KERN_OBJECTS = $(KERN_ASM_OBJECTS) $(KERN_C_OBJECTS)
 # no compile error to flag it.  Globbing every .d already on disk (kernel
 # and user alike) closes that gap; empty on a clean tree (no .d files yet),
 # which is fine — -include tolerates a missing/empty list.
-DEPS = $(shell find $(BUILD_ROOT) -name '*.d' 2>/dev/null)
+DEPS = $(shell find $(BUILD_ROOT) -type f -name '*.d' 2>/dev/null)
 
 # ==============================================================================
 # Build Rules
 # ==============================================================================
 
-.PHONY: all clean run run-direct debug disasm check dirs bootloader kernel disk rootfs release test-release help
+.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel disk rootfs release test-release help
+
+# Bootstrap exact third-party revisions recorded as Git submodule gitlinks.
+setup-deps:
+	@tools/setup-dependencies.sh --init
+
+check-deps:
+	@tools/setup-dependencies.sh --check
 
 # Default target
 all: dirs bootloader kernel user $(MKDISK) disk
@@ -646,7 +668,7 @@ SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxr
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
            $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf\
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
-           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
+           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf $(BUILD_DIR)/nxtimerdiag.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
            $(BUILD_DIR)/captest.elf $(BUILD_DIR)/libctest.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
@@ -772,6 +794,7 @@ $(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LI
 $(BUILD_DIR)/nxexec.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxexec.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nximage.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nximage.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxfont.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/nxfont.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
@@ -920,62 +943,49 @@ $(MKDISK): tools/mkdisk.c
 	@mkdir -p tools
 	@gcc -o $(MKDISK) tools/mkdisk.c
 
-# ==============================================================================
+# =============================================================================
 # QEMU Flags
-# ==============================================================================
+# =============================================================================
 
-# A terminal launched from a snap-packaged GUI app (VS Code's integrated
-# terminal is the common case on Ubuntu) exports GTK_PATH/GTK_EXE_PREFIX/
-# GTK_MODULES/GIO_MODULE_DIR/XDG_DATA_DIRS/LOCPATH pointing into that snap's
-# own bundle (e.g. /snap/code/<rev>/usr/lib/.../gtk-3.0). Any GTK app started
-# from that shell — including QEMU with -display default, which is a GTK
-# frontend — inherits them and tries to dlopen its GTK module set from the
-# wrong snap's directory tree, which pulls in an old bundled libpthread.so.0
-# incompatible with the host's glibc (undefined symbol __libc_pthread_init,
-# GLIBC_PRIVATE) and QEMU dies before ever opening a window. None of these
-# vars are needed for our own display: strip them unconditionally (no-op if
-# unset, so this is a no-op on macOS/BSD too) rather than ask every
-# contributor to remember to launch from a "clean" terminal.
+# Direct-kernel fallback is retained for low-level debugging. Normal runs use
+# GRUB boot ISOs through tools/nxqemu.py.
 QEMU_RUN = env -u GTK_PATH -u GTK_EXE_PREFIX -u GTK_MODULES -u GTK_IM_MODULE_FILE \
                -u GIO_MODULE_DIR -u GSETTINGS_SCHEMA_DIR -u XDG_DATA_DIRS \
                -u XDG_DATA_HOME -u LOCPATH $(QEMU)
 
-ifeq ($(ARCH), amd64)
-QEMU_FLAGS = -m 5G -smp 4 -serial mon:stdio \
-             -display default,show-cursor=on \
-			 -vga none \
+ifeq ($(ARCH),amd64)
+QEMU_FLAGS = -machine q35 -cpu max -m 5G -smp 4 -serial mon:stdio \
+             -display default,show-cursor=on -vga none \
              -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
              -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
              -device virtio-mouse-pci,disable-legacy=on,disable-modern=off \
              -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
              -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
-
-QEMU_RELEASE_FLAGS = -m 5G -smp 4 -serial mon:stdio \
-                     -display default,show-cursor=on \
-                     -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
-                     -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
-                     -device virtio-mouse-pci,disable-legacy=on,disable-modern=off
 else
-# AArch64: pass -dtb $(VIRT_DTB) so QEMU loads the pre-generated device tree into RAM
-# and sets x0 = dtb_load_address in its aarch64 boot stub.  Without -dtb, QEMU does not
-# generate/load a DTB for bare-metal ELF kernels and x0 arrives as 0 at _start.
-QEMU_FLAGS = -M virt -cpu cortex-a57 -m 5G -smp 4 -serial mon:stdio \
+QEMU_FLAGS = -machine virt -cpu cortex-a57 -m 5G -smp 4 -serial mon:stdio \
              -display default,show-cursor=on \
-             -device virtio-gpu-device \
-             -device virtio-keyboard-device -device virtio-mouse-device \
-             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
-             -dtb $(VIRT_DTB)
-
-QEMU_RELEASE_FLAGS = -M virt -cpu cortex-a57 -m 5G -smp 4 -serial mon:stdio \
-                     -display default,show-cursor=on \
-                     -device virtio-gpu-device \
-                     -device virtio-keyboard-device -device virtio-mouse-device \
-                     -drive if=none,file=$(RELEASE_DIR)/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0
+             -device virtio-gpu-device -device virtio-keyboard-device \
+             -device virtio-mouse-device \
+             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
+             -device virtio-blk-device,drive=hd0 -dtb $(VIRT_DTB)
 endif
 
-# ==============================================================================
+.PHONY: grub-arm64-tools boot-iso
+
+grub-arm64-tools:
+	@tools/build-grub-arm64.sh
+
+ifeq ($(ARCH),amd64)
+boot-iso: all
+	@tools/build-amd64-grub-iso.sh
+else
+boot-iso: all $(VIRT_DTB) grub-arm64-tools
+	@tools/build-aarch64-uefi-image.sh
+endif
+
+# =============================================================================
 # Release Generation
-# ==============================================================================
+# =============================================================================
 
 release:
 	@echo "========================================"
@@ -988,108 +998,77 @@ release:
 	@echo "  Location: $(RELEASE_BASE)"
 	@echo "========================================"
 
-release-arch: all
-	@echo "--> Building $(ARCH) release..."
+# Keep boot ISO and root filesystem as separate artifacts. This exercises the
+# same VirtIO block path in development and release builds.
+release-arch: all boot-iso
+	@echo "--> Packaging $(ARCH) release..."
 	@rm -rf $(RELEASE_DIR)
 	@mkdir -p $(RELEASE_DIR)
-	@if [ "$(ARCH)" = "amd64" ]; then \
-		set -e; \
-		mkdir -p $(RELEASE_DIR)/boot/grub; \
-		cp $(KERNEL_ELF) $(RELEASE_DIR)/boot/kernel.elf; \
-		cp $(DISK_IMG) $(RELEASE_DIR)/boot/disk.img; \
-		echo 'set timeout=0' > $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo 'set default=0' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo 'menuentry "NexsOS1" {' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    insmod part_gpt' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    insmod ext2' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    insmod loopback' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    multiboot2 /boot/kernel.elf' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    loopback loop /boot/disk.img' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    ls (loop,gpt3)/' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    module2 /boot/disk.img diskimg' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '    boot' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo '}' >> $(RELEASE_DIR)/boot/grub/grub.cfg; \
-		echo "AMD64 files ready: boot/kernel.elf, boot/disk.img"; \
-		mkdir -p $(RELEASE_DIR)/iso/boot/grub; \
-		cp -r $(RELEASE_DIR)/boot/* $(RELEASE_DIR)/iso/boot/; \
-		GRUB_MKRESCUE=""; \
-		for c in i686-elf-grub-mkrescue grub-mkrescue; do \
-			if command -v $$c >/dev/null 2>&1; then \
-				GRUB_MKRESCUE=$$c; break; \
-			fi; \
-		done; \
-		if [ -z "$$GRUB_MKRESCUE" ]; then \
-			echo "Errore: grub-mkrescue non trovato"; \
-			exit 1; \
-		fi; \
-		echo "-> Creo ISO con $$GRUB_MKRESCUE..."; \
-		$$GRUB_MKRESCUE -o $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso $(RELEASE_DIR)/iso; \
-		echo "-> Rimuovo MBR hybrid per renderla leggibile da macOS..."; \
-		dd if=/dev/zero of=$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso bs=512 count=1 conv=notrunc 2>/dev/null; \
-		echo "ISO creata: $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso"; \
-	else \
+	@cp $(BOOT_ISO) $(RELEASE_DIR)/NexsOS1-$(ARCH)-$(VERSION).iso
+	@cp $(DISK_IMG) $(RELEASE_DIR)/disk.img
+	@if [ "$(ARCH)" = "amd64" ]; then cp $(KERNEL_ELF) $(RELEASE_DIR)/kernel.elf; fi
+	@if [ "$(ARCH)" = "aarch64" ]; then \
 		cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img; \
-		cp $(DISK_IMG) $(RELEASE_DIR)/disk.img; \
-		echo "AArch64 release: kernel.img + disk.img"; \
+		cp $(VIRT_DTB) $(RELEASE_DIR)/virt.dtb; \
+		cp $(BUILD_DIR)/grub-efi/manifest.txt $(RELEASE_DIR)/boot-manifest.txt; \
 	fi
+	@printf 'architecture=%s\nversion=%s\nbootloader=GRUB\nboot_iso=%s\nrootfs=disk.img\n' \
+		'$(ARCH)' '$(VERSION)' 'NexsOS1-$(ARCH)-$(VERSION).iso' > $(RELEASE_DIR)/manifest.txt
+	@echo "Release ready: $(RELEASE_DIR)"
 
 test-release: release-arch
-	@echo "Starting QEMU Release Test for $(ARCH) (Version: $(VERSION))..."
-ifeq ($(ARCH), amd64)
-	$(QEMU_RUN) $(QEMU_RELEASE_FLAGS) \
-		-drive if=none,file=$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION).iso,id=hd0,format=raw \
-		-device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
-else
-	$(QEMU_RUN) $(QEMU_RELEASE_FLAGS) -kernel $(RELEASE_DIR)/kernel.img
-endif
+	@echo "Starting GRUB release test for $(ARCH) ($(VERSION))..."
+	@python3 tools/nxqemu.py --arch $(ARCH) \
+		--iso "$(RELEASE_DIR)/NexsOS1-$(ARCH)-$(VERSION).iso" \
+		--disk "$(RELEASE_DIR)/disk.img" --serial stdio
 
-# ==============================================================================
+# =============================================================================
 # Development Execution
-# ==============================================================================
+# =============================================================================
 
-# AArch64: generate the QEMU virt device tree for the exact machine configuration
-# used in the run target.  The DTB must match the devices, memory size, and SMP
-# count so that fdt_get_mem_regions() and fdt_count_cpus() see accurate data.
-# dumpdtb exits immediately after writing the DTB; no kernel is required.
-# amd64 does not use a DTB (discovery via multiboot2), so this target is aarch64-only.
-ifeq ($(ARCH), aarch64)
+# The QEMU virt DTB must match the AArch64 emulated hardware profile. It is
+# embedded into the project-owned EFI loader and passed to the kernel in x0.
+ifeq ($(ARCH),aarch64)
 $(VIRT_DTB): disk | $(BUILD_DIR)
 	@echo "  [DTB]    Generating QEMU virt device tree -> $@"
-	@ERRLOG=$$(mktemp); \
+	@ERRLOG="$(BUILD_DIR)/qemu-dtb.err"; rm -f "$$ERRLOG"; \
 	if ! $(QEMU_RUN) -M virt -cpu cortex-a57 -m 5G -smp 4 \
 	         -device virtio-gpu-device \
 	         -device virtio-keyboard-device -device virtio-mouse-device \
 	         -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
 	         -device virtio-blk-device,drive=hd0 \
 	         -machine dumpdtb=$@ 2>"$$ERRLOG"; then \
-	    cat "$$ERRLOG" >&2; rm -f "$$ERRLOG"; \
-	    echo "  [DTB]    $(QEMU_RUN) failed — see stderr above (broken/snap-shadowed QEMU install is a common cause)." >&2; \
+	    cat "$$ERRLOG" >&2; \
+	    echo "  [DTB]    QEMU DTB generation failed; see $$ERRLOG" >&2; \
 	    exit 1; \
 	fi; \
 	rm -f "$$ERRLOG"
 	@echo "  [DTB]    Done ($$($(STAT_SIZE) $@) bytes)"
-
-# AArch64 run: use kernel.bin (raw binary) so QEMU's aarch64 boot stub sets x0 = dtb_addr.
-# A raw binary triggers QEMU's arm_load_kernel image-loading path; combined with -dtb,
-# QEMU loads the DTB into RAM and passes its address in x0 before jumping to the entry.
-# Using kernel.elf (ELF) without a Linux image header leaves x0=0 (no DTB handover).
-run: all $(VIRT_DTB)
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
-
-run-direct: run
-
-debug: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
-else
-run: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-
-run-direct: run
-
-debug: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 endif
 
+# Default run/debug path: boot through GRUB, not QEMU's direct -kernel loader.
+run: all boot-iso
+	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" \
+		--disk "$(DISK_IMG)" --serial stdio
+
+debug: all boot-iso
+	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" \
+		--disk "$(DISK_IMG)" --serial stdio --debug
+
+# Explicit legacy/debug fallback. nxrun/nxadb never use these targets.
+ifeq ($(ARCH),aarch64)
+run-direct: all $(VIRT_DTB)
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
+
+debug-direct: all $(VIRT_DTB)
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
+else
+run-direct: all
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+
+debug-direct: all
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
+endif
 
 # lockcheck — the two memory/lock rules as a build gate (scripts/check-lockrules.py).
 # Not yet wired into `all`: the transitive closure is deliberately over-eager
@@ -1103,13 +1082,37 @@ disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 	$(OBJDUMP) -d $(BOOTLOADER_ELF) > $(BUILD_DIR)/bootloader.disasm
 	$(OBJDUMP) -d $(USER_ELF) > $(BUILD_DIR)/init.disasm
 
-check:
-	@which $(CC) > /dev/null && echo "✓ CC: $(CC)" || echo "✗ CC not found"
-	@which $(AS) > /dev/null && echo "✓ AS: $(AS)" || echo "✗ AS not found"
-	@which $(LD) > /dev/null && echo "✓ LD: $(LD)" || echo "✗ LD not found"
-	@which $(QEMU) > /dev/null && echo "✓ QEMU: $(QEMU)" || echo "✗ QEMU not found"
-	@if [ -n "$(GRUB_MKRESCUE)" ]; then echo "✓ GRUB: $(GRUB_MKRESCUE)"; else echo "✗ GRUB mancante"; fi
+EXPECTED_GCC_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_GCC_VERSION),$(NEXS_AARCH64_GCC_VERSION))
+EXPECTED_BINUTILS_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_BINUTILS_VERSION),$(NEXS_AARCH64_BINUTILS_VERSION))
 
+check:
+	@set -eu; for tool in "$(CC)" "$(AS)" "$(LD)" "$(OBJCOPY)" "$(OBJDUMP)" "$(NM)" "$(AR)" "$(QEMU)" python3 xorriso gawk mformat mmd mcopy; do \
+		command -v "$$tool" >/dev/null 2>&1 || { echo "ERROR: required tool not found: $$tool" >&2; exit 1; }; \
+	done
+	@target="$$($(CC) -dumpmachine)"; \
+	case "$(ARCH):$$target" in \
+		amd64:x86_64-elf|aarch64:aarch64-none-elf) echo "✓ Target: $$target ($(ARCH))" ;; \
+		*) echo "ERROR: $(CC) targets '$$target', expected freestanding target for $(ARCH)" >&2; exit 1 ;; \
+	esac
+	@cc_version="$$($(CC) -dumpfullversion -dumpversion)"; \
+	[ "$$cc_version" = "$(EXPECTED_GCC_VERSION)" ] || { echo "ERROR: $(CC) is $$cc_version; expected $(EXPECTED_GCC_VERSION)" >&2; exit 1; }
+	@set -eu; for tool in "$(AS)" "$(LD)" "$(OBJCOPY)" "$(OBJDUMP)" "$(NM)" "$(AR)"; do \
+		tool_version="$$($$tool --version | sed -E -n '1s/.* ([0-9]+([.][0-9]+)+)$$/\1/p')"; \
+		[ "$$tool_version" = "$(EXPECTED_BINUTILS_VERSION)" ] || { echo "ERROR: $$tool is $$tool_version; expected Binutils $(EXPECTED_BINUTILS_VERSION)" >&2; exit 1; }; \
+	done
+	@echo "✓ CC: $$($(CC) --version | head -1)"
+	@echo "✓ LD: $$($(LD) --version | head -1)"
+	@echo "✓ QEMU: $$($(QEMU) --version | head -1)"
+ifeq ($(ARCH),amd64)
+	@test -n "$(GRUB_MKRESCUE)" || { echo "ERROR: grub-mkrescue (or i686-elf-grub-mkrescue) is required" >&2; exit 1; }
+	@echo "✓ GRUB BIOS: $(GRUB_MKRESCUE)"
+else
+	@command -v "$(HOST_CLANG)" >/dev/null 2>&1 || { echo "ERROR: clang is required for the AArch64 EFI loader" >&2; exit 1; }
+	@command -v "$(LLD_LINK)" >/dev/null 2>&1 || { echo "ERROR: lld-link is required for the AArch64 EFI loader" >&2; exit 1; }
+	@test -x "$(GRUB_ARM64_BUILD)/grub-mkimage" || { echo "ERROR: run 'make grub-arm64-tools' to build GRUB arm64-efi" >&2; exit 1; }
+	@python3 -c 'import sys; sys.path.insert(0,"tools"); from nxqemu import find_qemu_efi_firmware; print("✓ AArch64 UEFI:", find_qemu_efi_firmware())'
+	@echo "✓ GRUB arm64-efi: $(GRUB_ARM64_BUILD)/grub-mkimage"
+endif
 clean:
 	-@rm -rf build/aarch64 2>/dev/null || true
 	-@rm -rf build/amd64 2>/dev/null || true
@@ -1124,12 +1127,26 @@ help:
 	@echo "  all          - Build bootloader, kernel, and disk image"
 	@echo "  release      - Build production files (Use: make release VERSION=0.4.1)"
 	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.4.1)"
-	@echo "  run          - Build and run kernel directly"
-	@echo "  clean        - Remove build artifacts"
+	@echo "  boot-iso     - Build the GRUB boot ISO for the selected architecture"
+	@echo "  run          - Build and boot through GRUB (QEMU)"
+	@echo "  run-direct   - Legacy direct-kernel boot for debugging only"
+	@echo "  debug        - Boot through GRUB and wait for GDB"
+	@echo "  grub-arm64-tools - Build pinned GRUB arm64-efi host tools/modules"
+	@echo "  clean        - Remove generated build/release artifacts"
+	@echo "  setup-deps   - Initialize pinned external repositories"
+	@echo "  check-deps   - Verify external repository revisions"
+	@echo "  check        - Verify cross-toolchain and emulator"
 
-# Include architecture-specific Doom makefiles
-ifeq ($(ARCH), aarch64)
-    include user/bin/doom/doom-nexs-aarch64.make
-else ifeq ($(ARCH), amd64)
-    include user/bin/doom/doom-nexs-amd64.make
+# The DOOM make fragments live in the pinned DOOM submodule.  Keep
+# metadata/help/check targets usable before dependency bootstrap on a fresh
+# clone; setup-dependencies.sh initializes the exact gitlink revisions.
+ifeq ($(ARCH),aarch64)
+DOOM_ARCH_MAKEFILE := user/bin/doom/doom-nexs-aarch64.make
+else ifeq ($(ARCH),amd64)
+DOOM_ARCH_MAKEFILE := user/bin/doom/doom-nexs-amd64.make
+endif
+ifneq ($(wildcard $(DOOM_ARCH_MAKEFILE)),)
+include $(DOOM_ARCH_MAKEFILE)
+else
+$(warning DOOM make fragment is unavailable; run 'make setup-deps' before building the complete userland)
 endif

@@ -18,6 +18,7 @@ set -euo pipefail
 NM="$1"; ELF="$2"; OUT="$3"
 
 "$NM" -n "$ELF" | awk '
+  BEGIN { n = 0 }
   $3 != "" && ($2 == "T" || $2 == "t" || $2 == "W" || $2 == "w") {
     addr[n] = $1; name[n] = $3; n++;
   }

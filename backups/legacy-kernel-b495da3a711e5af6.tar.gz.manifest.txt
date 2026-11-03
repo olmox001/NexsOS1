@@ -1,0 +1,9 @@
+NEXS legacy kernel backup
+source_revision=b495da3a711e5af64dd826c29c6da4777c487074
+source_path=kernel/
+tracked_files=183
+source_size=2,8M
+archive=/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/backups/legacy-kernel-b495da3a711e5af6.tar.gz
+archive_sha256=069c18940ef98cec74424956060ca8c3872dcc31405584b582a0a47569c0daab
+restore_verification=PASS (tar listing + extracted tree diff)
+created_utc=2026-11-02T21:33:01Z

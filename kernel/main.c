@@ -477,13 +477,17 @@ void kernel_secondary_main(void) {
   while (!__atomic_load_n(&ci->idle_task, __ATOMIC_ACQUIRE))
     __asm__ volatile("" ::: "memory");
 
-  /* Enable interrupts */
-  local_irq_enable();
-
-  /* Acknowledge boot to primary core (release store inside smp_ack_boot:
-   * everything this CPU initialized above is visible before the BSP sees
-   * the ack — the handshake lives in kernel/core/smp.c, S-ALIGN F8). */
+  /* Acknowledge boot BEFORE enabling interrupts.  The idle task is already
+   * published and all per-CPU hardware state above is initialized, so the BSP
+   * may safely observe this CPU as ready.  Reversing these two operations is
+   * essential: if the local timer IRQ fires immediately after IRQ enable, the
+   * scheduler can preempt this boot path before smp_ack_boot(), leaving the
+   * BSP spinning until its handshake timeout even though the AP has started.
+   * Release-store in smp_ack_boot publishes all per-CPU initialization. */
   smp_ack_boot(cpu);
+
+  /* Only now allow the timer/scheduler to preempt the secondary boot path. */
+  local_irq_enable();
 
   pr_info("Secondary CPU %u online and ready\n", cpu);
 

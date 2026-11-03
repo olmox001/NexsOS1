@@ -30,25 +30,37 @@ warn()  { printf '\033[1;33m[toolchain]\033[0m %s\n' "$*"; }
 fail()  { printf '\033[1;31m[toolchain]\033[0m %s\n' "$*" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-info "Initializing git submodules..."
-(cd "$REPO_ROOT" && git submodule update --init --recursive) || warn "Failed to initialize submodules."
+source "$REPO_ROOT/tools/toolchain-versions.env"
 
 # 1. Preconditions ------------------------------------------------------------
 [ "$(uname -s)" = "Darwin" ] || fail "This script targets macOS (Darwin)."
 command -v brew >/dev/null 2>&1 || fail "Homebrew not found — install from https://brew.sh and re-run."
 if [ "$(uname -m)" = "arm64" ]; then
-  warn "Apple Silicon host: sergiobenitez/osxct ships aarch64-none-elf as an x86_64 binary."
-  warn "It requires Rosetta 2 ('softwareupdate --install-rosetta --agree-to-license') and may"
-  warn "need an Intel Homebrew under /usr/local (invoke it via 'arch -x86_64 brew ...')."
-  warn "Proceeding — if the aarch64 install fails, set up Rosetta/Intel-brew and re-run."
+  # osxct currently distributes its GCC 7.2.0 toolchain as an Intel binary.
+  # Use the Intel Homebrew prefix explicitly; do not accidentally install the
+  # formula into the native ARM Homebrew tree.
+  [ -x /usr/local/bin/brew ] || fail "Apple Silicon requires Intel Homebrew at /usr/local/bin/brew for the pinned osxct toolchain. Install Rosetta 2 and Intel Homebrew, then re-run."
+  BREW=/usr/local/bin/brew
+  arch -x86_64 "$BREW" --version >/dev/null 2>&1 || fail "Rosetta 2 is unavailable. Run: softwareupdate --install-rosetta --agree-to-license"
+else
+  BREW="$(command -v brew)"
 fi
+brew() {
+  if [ "$(uname -m)" = "arm64" ]; then
+    arch -x86_64 "$BREW" "$@"
+  else
+    "$BREW" "$@"
+  fi
+}
 if ! xcode-select -p >/dev/null 2>&1; then
   warn "Xcode Command Line Tools not detected — triggering install (a GUI dialog may appear)."
   xcode-select --install || true
   fail "Re-run this script once the CLT install completes."
 fi
 export HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1
+
+info "Initializing pinned project dependencies..."
+"$REPO_ROOT/tools/setup-dependencies.sh" --init
 
 brew_install_if_missing() {  # $1 = formula (may be fully qualified tap/name)
   local f="$1" name="${1##*/}"
@@ -70,7 +82,27 @@ info "Tapping sergiobenitez/osxct (aarch64-none-elf 7.2.0) ..."
 brew tap sergiobenitez/osxct >/dev/null 2>&1 || true
 brew_install_if_missing sergiobenitez/osxct/aarch64-none-elf
 
-# 4. Optional: ISO/release tooling (only needed for `make release-iso`) --------
+# 4. Verify the locked compiler and linker versions --------------------------
+verify_gcc_version() {
+  local tool="$1" expected="$2" actual
+  command -v "$tool" >/dev/null 2>&1 || fail "Required tool missing: $tool"
+  actual="$("$tool" -dumpfullversion -dumpversion)"
+  [ "$actual" = "$expected" ] || fail "$tool is $actual; expected locked version $expected."
+  info "$tool $actual"
+}
+verify_binutils_version() {
+  local tool="$1" expected="$2" actual
+  command -v "$tool" >/dev/null 2>&1 || fail "Required tool missing: $tool"
+  actual="$("$tool" --version | sed -E -n '1s/.* ([0-9]+([.][0-9]+)+)$/\1/p')"
+  [ "$actual" = "$expected" ] || fail "$tool is $actual; expected locked version $expected."
+  info "$tool $actual"
+}
+verify_gcc_version x86_64-elf-gcc "$NEXS_X86_64_GCC_VERSION"
+verify_binutils_version x86_64-elf-ld "$NEXS_X86_64_BINUTILS_VERSION"
+verify_gcc_version aarch64-none-elf-gcc "$NEXS_AARCH64_GCC_VERSION"
+verify_binutils_version aarch64-none-elf-ld "$NEXS_AARCH64_BINUTILS_VERSION"
+
+# 5. Optional: ISO/release tooling (only needed for `make release-iso`) --------
 # Non-fatal: skip silently if unavailable.  `make all` / `make run` do not need these.
 if [ "${NEXS_WITH_ISO:-0}" = "1" ]; then
   info "Installing optional ISO tooling (i686-elf-grub, xorriso) ..."
@@ -80,7 +112,7 @@ else
   info "Skipping optional ISO tooling (set NEXS_WITH_ISO=1 to include i686-elf-grub/xorriso)."
 fi
 
-# 5. Verify -------------------------------------------------------------------
+# 6. Report -------------------------------------------------------------------
 echo
 info "Installed versions:"
 x86_64-elf-gcc --version       2>/dev/null | head -1 || warn "x86_64-elf-gcc missing"
@@ -101,8 +133,8 @@ else
 fi
 
 echo
-info "make check ARCH=amd64:";   make -C "$REPO_ROOT" check ARCH=amd64   || true
+info "make check ARCH=amd64:";   make -C "$REPO_ROOT" check ARCH=amd64
 echo
-info "make check ARCH=aarch64:"; make -C "$REPO_ROOT" check ARCH=aarch64 || true
+info "make check ARCH=aarch64:"; make -C "$REPO_ROOT" check ARCH=aarch64
 echo
 info "Toolchain ready. Build:  make all ARCH=amd64   |   make all ARCH=aarch64"

@@ -316,6 +316,34 @@ int arch_virtio_get_device(uint32_t device_id, int index,
   return -1;
 }
 
+uint32_t virtio_queue_set_size(virtio_handle_t dev, uint32_t queue_idx,
+                               uint32_t requested_size) {
+  if (!dev || requested_size == 0)
+    return 0;
+
+  virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_SEL, queue_idx);
+  const uint32_t qmax =
+      virtio_read_reg(dev, VIRTIO_MMIO_QUEUE_NUM_MAX);
+  if (qmax == 0)
+    return 0;
+
+  if (dev->is_legacy) {
+    /* Legacy PCI exposes QueueSize at 0x0C as READ-ONLY. There is no
+     * writable QueueNum register in this transport. The device always derives
+     * the avail-ring offset from its full QueueSize, so the caller must lay
+     * out the ring using exactly qmax; writing a smaller value to 0x0C is
+     * ignored and silently corrupts the queue layout. */
+    pr_info("VirtIO: Legacy PCI queue %u fixed size=%u (requested=%u)\n",
+            queue_idx, qmax, requested_size);
+    return qmax;
+  }
+
+  const uint32_t qsize =
+      requested_size < qmax ? requested_size : qmax;
+  virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_NUM, qsize);
+  return qsize;
+}
+
 void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
                         uint64_t desc_addr, uint64_t avail_addr,
                         uint64_t used_addr) {

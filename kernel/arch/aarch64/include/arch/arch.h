@@ -280,7 +280,12 @@ static inline void arch_impl_spin_lock(volatile uint32_t *lock) {
 }
 
 static inline void arch_impl_spin_unlock(volatile uint32_t *lock) {
+  /* A waiter may be in WFE with local IRQs masked (spin_lock_irqsave).
+   * Releasing the word alone does not wake it: send an event after the
+   * release-store so every contending CPU can leave its WFE loop and retry
+   * the acquire operation. */
   __sync_lock_release(lock);
+  __asm__ __volatile__("sev" ::: "memory");
 }
 
 static inline int arch_impl_spin_trylock(volatile uint32_t *lock) {

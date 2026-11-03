@@ -1,6 +1,7 @@
 /*
  * Kernel linker script for AArch64
- * Loaded at PHYSICAL 0x40080000 (QEMU -kernel raw binary), linked in the
+ * Loaded at PHYSICAL 0x40080000 by the ARM64 Image boot protocol
+ * (GRUB `linux` / QEMU -kernel, text_offset=0x80000), linked in the
  * higher half at KERNEL_VIRT_BASE (0xFFFF000000000000) + load PA, so the
  * single direct-map offset converts every kernel VA (memlayout.h).
  * start.S runs PC-relative at the load PA until it enables the MMU
@@ -15,7 +16,8 @@ SECTIONS
     /* Code section */
     .text : {
         __text_start = .;       /* W^X RX window start (vmm_map_ram_wx) */
-        KEEP(*(.text.boot))     /* Boot code first */
+        KEEP(*(.linux_header))  /* ARM64 Image header at file offset 0 */
+        KEEP(*(.text.boot))     /* Boot code immediately follows header */
         *(.text)
         *(.text.*)
     }

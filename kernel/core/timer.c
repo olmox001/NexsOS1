@@ -6,15 +6,14 @@
  *   - kernel_timer_tick(): the central per-tick ISR hook called by the
  *     arch-specific timer IRQ handler (aarch64: drivers/timer/timer.c;
  *     amd64: arch/amd64/platform/platform.c via PIT/APIC).
- *   - A software timer list (struct timer), run on CPU 0 every tick.
- *   - Compositor pacing: fires compositor_tick() at ~30 FPS on CPU 0.
+ *   - Per-CPU software timer lists (struct timer), fired by each CPU's tick.
+ *   - Per-CPU clock accounting reconciled against the free-running HAL counter.
  *   - Arch-specific per-CPU timer init via __attribute__((weak)) stubs
  *     that each arch overrides.
  *
  * Layering:
- *   arch IRQ -> kernel_timer_tick() -> schedule()
- *                                   -> software timer callbacks (CPU 0)
- *                                   -> compositor_tick()          (CPU 0)
+ *   arch IRQ -> kernel_timer_tick() -> per-CPU timer callbacks -> schedule()
+ *   compositor/input work stays in the SYS_COMPOSITOR_RENDER process path.
  *
  * Key invariants:
  *   - jiffies is incremented only by CPU 0 to avoid SMP races; all other
@@ -41,16 +40,14 @@
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
 
-/* USB has no IRQ wired (polled HCDs); the tick drives HID input on CPU 0 so it
- * works even when no virtio/PS-2 interrupt ever fires (e.g. UTM, real HW). */
-extern void usb_hid_poll(void);
+/* USB HID polling and input dispatch run from SYS_COMPOSITOR_RENDER in
+ * process context; the timer IRQ path only accounts time, fires timers and
+ * invokes the scheduler. */
 extern volatile int panic_flag;
-/* NOTE(SCHED-STACK-ISO): the compositor render is no longer driven from the
- * timer tick — it runs in process context (init -> SYS_COMPOSITOR_RENDER) so it
- * never nests on an interrupted task's kernel stack.  compositor_interval /
- * COMPOSITOR_TARGET_FPS / the compositor_tick() hook were removed here with that
- * change (kernel/graphics/compositor.c still defines compositor_tick() for the
- * public SYS path, it is just not called from the IRQ any more). */
+/* NOTE(SCHED-STACK-ISO): compositor rendering is not driven from the timer
+ * tick. SYS_COMPOSITOR_RENDER runs in process context, so the renderer never
+ * nests on an interrupted task's kernel stack. compositor_tick() remains as a
+ * legacy trylock helper in compositor.c but is not wired into this IRQ path. */
 
 /* Software timers are PER-CPU: each CPU owns a timer_list + timer_lock in its
  * struct cpu_info (kernel/cpu.h), fired by that CPU in kernel_timer_tick against
@@ -246,32 +243,12 @@ struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
     spin_unlock_irqrestore(&cpu->timer_lock, tflags);
   }
 
-  /* CPU 0 only: input polling + compositor. */
-  if (cpu->cpu_id == 0) {
-    /* Dispatch queued raw input events here (bottom-half): the virtio/ps2
-     * input IRQs only enqueue, so they never take compositor_lock or mutate
-     * the window-list from IRQ context (#68/#194).  Runs before the render so
-     * this tick reflects the freshest input. */
-    extern void input_drain(void);
-    input_drain();
-
-    /* Poll USB HID every tick (CPU 0): keyboard events feed the evdev buffer,
-     * pointer motion goes straight to the compositor. Cheap when idle (just an
-     * event-ring head check per device). */
-    usb_hid_poll();
-
-    /* SCHED-STACK-ISO (ASTRA DIR-02, "compositor render in userspace"): the
-     * heavy compositor render is NO LONGER driven from here.  Running it from
-     * the timer IRQ nested it on whatever task's kernel stack CPU0 interrupted;
-     * its deep call chain then smashed a live frame — on amd64 a syscall's
-     * current_process spill (the click/nanosleep panic), on aarch64 the
-     * callee-saved base register restored across timer_handler, faulting the
-     * current_chip->end() EOI at a NULL deref.  The render now runs in PROCESS
-     * context: init drives it via SYS_COMPOSITOR_RENDER (flush()) in its
-     * supervisor loop, on init's own kernel stack — never nested on an
-     * interrupted task.  Input is still dispatched here (input_drain above), but
-     * that path is shallow and takes no deep call chain. */
-  }
+  /* Hard-IRQ path deliberately does not poll USB or dispatch input.
+   * input_drain() can enter compositor/window code and contend on
+   * compositor_lock; doing that here can stall timer delivery behind a
+   * long terminal/compositor critical section. USB polling is device work,
+   * not a timer-IRQ responsibility. PID 1 performs both in its serialized
+   * SYS_COMPOSITOR_RENDER process-context frame loop. */
 
   /* Call Scheduler for Preemption */
   return schedule(regs);

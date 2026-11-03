@@ -96,9 +96,9 @@ Below are live captures demonstrating window compositor features, overlap handli
 
 ## 🛠 Prerequisites & Toolchain Setup
 
-To compile and execute NexsOS1, you will need the official cross-compiler toolchain. The official toolchain can be installed via `setup-toolchain-macos.sh` and `setup-toolchain-linux.sh`. The build system has been fully verified on macOS (Intel/Apple Silicon) and Linux (Ubuntu, Debian, and Arch). BSD is not yet supported.
+To compile and execute NexsOS1, use the host-detecting `tools/setup-project.sh` bootstrap. The intended build hosts are macOS Intel, macOS Apple Silicon and Linux (Ubuntu/Debian/Arch/Alpine); each host/target pair must pass the strict toolchain checks and both architecture builds before it is marked verified. BSD is not yet supported.
 
-The setup scripts automate the builds of pinned GNU compilers directly from source (`x86_64-elf-gcc` 13.2.0, `aarch64-none-elf-gcc` 7.2.0), taking about 10-30 minutes. It also auto-downloads the required userland repositories from GitHub, including ported libraries and applications such as `kilo`, `freedoom`, `sdl`, `musl`, `busybox`, `lua`, `opengl`, and `direct3d9`.
+The cross-toolchain versions are centralized in `tools/toolchain-versions.env` and checked by both host setup paths and `make check`: `x86_64-elf-gcc` 16.1.0 with Binutils 2.46.1, and `aarch64-none-elf-gcc` 7.2.0 with Binutils 2.29.1. Linux builds the GNU toolchains from the versioned source releases and verifies official SHA-512 checksums before extraction; macOS installs the matching Homebrew/osxct packages and rejects version drift. On Apple Silicon, the pinned osxct compiler currently requires Rosetta 2 and Intel Homebrew under `/usr/local`. The bootstrap also initializes the external userland repositories (SDL, Mesa, Wine/D3D, Lua, musl, Gnulib, BusyBox, Coreutils, DOOM, kilo, and base-nexs) at the exact Git revisions pinned by the superproject.
 
 *(Note: On WSL2, the script automatically prints configuration guides for WSLg graphics and KVM permissions.)*
 
@@ -108,21 +108,29 @@ git clone https://github.com/olmox001/NexsOS1
 cd NexsOS1
 ```
 
-### 2. Configure Your Build Environment
-Run the corresponding script for your operating system:
+### 2. Reproducible Project Setup
+Run the single host-detecting bootstrap entry point. It initializes every
+recursive Git submodule at the exact commit recorded by the superproject,
+then installs/checks the host build dependencies and cross-toolchains:
 
-*   **For Linux (Ubuntu, Debian, Arch, Alpine):**
-    ```bash
-    ./tools/setup-toolchain-linux.sh
-    ```
+```bash
+./tools/setup-project.sh
+```
 
-*   **For macOS:**
-    ```bash
-    ./tools/setup-toolchain-macos.sh
-    ```
+The setup is safe to re-run. It fails if a pinned dependency cannot be
+initialized; it does not silently continue with an incomplete userland.
+To initialize/check only the external source dependencies:
+
+```bash
+make setup-deps
+make check-deps
+```
+
+The submodule gitlinks, not the optional branch hints in `.gitmodules`, are
+the source of truth for dependency versions.
 
 ### 3. Verify the Installation
-Ensure the cross-compilers are correctly linked and ready:
+Ensure the cross-compilers and emulators are available:
 ```bash
 make check ARCH=aarch64
 make check ARCH=amd64

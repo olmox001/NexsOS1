@@ -275,7 +275,8 @@ static void keyboard_process_key(uint16_t code, int32_t value) {
 }
 
 /* Compositor sinks for pointer events (graphics layer). These update window
- * state + damage; the repaint is the compositor's own 30 Hz tick. */
+ * state + damage; init's process-context SYS_COMPOSITOR_RENDER loop presents
+ * the accumulated changes. */
 extern void compositor_update_mouse(int dx, int dy, int absolute);
 extern void compositor_handle_click(int button, int state);
 
@@ -285,11 +286,11 @@ extern void compositor_handle_click(int button, int state);
  * The hardware input IRQs (virtio-input, PS/2) no longer touch the compositor.
  * They ONLY enqueue a raw evdev event into the ring below (input_report); the
  * dispatch — key->layout+IPC, pointer->compositor — runs in input_drain(),
- * called from the compositor tick (timer IRQ, CPU0).  So the input IRQs never
- * take compositor_lock and never mutate the window-list, killing the
- * cross-core input-IRQ-vs-render stall (#194) and the IRQ-context window
- * mutation from those paths (#68).  Dispatch is now a single serialized
- * bottom-half in one context (the tick), reflected in the same tick's render.
+ * called from SYS_COMPOSITOR_RENDER in process context by PID 1 (nxinit), the
+ * sole compositor/input frame pump. Other CAP_WINDOW processes can request a
+ * frame but do not poll devices or drain the input ring. Input IRQs therefore
+ * only enqueue events and never take compositor_lock or mutate the window list
+ * (#194/#68).
  *
  * DO NOT MIGRATE to the kthread path (input_thread_entry / input_server_start):
  * that kthread infra is UNSTABLE and DISABLED — see docs/report/KTHREAD-STATUS.md
@@ -298,7 +299,7 @@ extern void compositor_handle_click(int button, int state);
  * outside the per-CPU idle-task ordering the SMP scheduler relies on.  The
  * correct end state for IRQ-decoupled input is a SUPERVISED USERLAND PROCESS
  * (the notification-service model), not a kernel thread.  Until then, dispatch
- * stays in this tick bottom-half.
+ * stays in the serialized SYS_COMPOSITOR_RENDER process-context path.
  * ------------------------------------------------------------------------- */
 
 struct input_evt {
@@ -349,9 +350,9 @@ static void input_dispatch(uint16_t type, uint16_t code, int32_t value) {
 /*
  * input_report - the single entry point for every input provider (IRQ / poll
  * context).  DIAGNOSTIC/bottom-half mode: enqueue the raw event; the actual
- * dispatch runs in input_drain() from the compositor tick (timer IRQ, CPU0) —
- * proven context — so the virtio/ps2 INPUT IRQs no longer take compositor_lock
- * (kills the cross-core input-IRQ-vs-render stall, #194/#68).
+ * dispatch runs in input_drain() from the serialized SYS_COMPOSITOR_RENDER
+ * process-context path, so virtio/PS2 INPUT IRQs only enqueue events and never
+ * take compositor_lock or mutate the window list (#194/#68).
  */
 void input_report(uint16_t type, uint16_t code, int32_t value) {
   uint64_t flags;
@@ -368,17 +369,16 @@ void input_report(uint16_t type, uint16_t code, int32_t value) {
   spin_unlock_irqrestore(&input_ring_lock, flags);
 }
 
-/* input_drain - dispatch all queued raw events.  Called from the compositor
- * tick (timer IRQ, CPU0), so input dispatch is serialized with the render in
- * one context and never spins cross-core on compositor_lock from an input IRQ. */
+/* input_drain - dispatch all queued raw events. Called only by PID 1's
+ * SYS_COMPOSITOR_RENDER path in process context, never from an input IRQ. */
 void input_drain(void) {
   struct input_evt e;
   while (input_ring_pop(&e))
     input_dispatch(e.type, e.code, e.value);
 }
 
-/* input_ring_pop - consumer side (input thread): pull one event, or 0 if empty.
- * Part of the staged decoupling plumbing (unused until the thread is on). */
+/* input_ring_pop - the single consumer pulls one event, or 0 if empty.
+ * A future supervised input service may replace the current PID 1 consumer. */
 static int input_ring_pop(struct input_evt *out) {
   uint64_t flags;
   int got = 0;
@@ -427,8 +427,9 @@ static void __attribute__((unused)) input_thread_entry(void) {
  *   2. A kthread created here lives OUTSIDE the per-CPU idle-task ordering the
  *      SMP scheduler relies on for process sandboxing, so it can perturb the
  *      idle/pick invariants (#169/#170 family).
- * Input is dispatched safely instead from the timer-tick bottom-half
- * (input_drain, kernel/core/timer.c).  The correct end state is input as a
+ * Input is dispatched safely instead from the serialized process-context
+ * SYS_COMPOSITOR_RENDER path (input_drain, kernel/core/syscall_dispatch.c).
+ * The correct end state is input as a
  * SUPERVISED USERLAND PROCESS (the notification-service model), NOT a kthread.
  *
  * The body is compiled out unless NEXS_ENABLE_UNSTABLE_KTHREAD_INPUT is defined,
@@ -445,7 +446,7 @@ void input_server_start(void) {
 #else
   (void)input_ring_dropped;
   pr_warn("%s", "input_server_start: DISABLED (unstable kthread infra — see "
-                "docs/report/KTHREAD-STATUS.md); using tick bottom-half\n");
+                "docs/report/KTHREAD-STATUS.md); using serialized SYS_COMPOSITOR_RENDER path\n");
 #endif
 }
 
