@@ -164,6 +164,7 @@
  */
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
+#include <kernel/fault.h>
 #include <kernel/kmalloc.h>
 #include <kernel/list.h>
 #include <kernel/object.h>
@@ -223,6 +224,149 @@ static void __sched_assert_panic(const char *file, int line, const char *fmt,
  * CPU. */
 struct process *process_pool[MAX_PROCESSES];
 static int active_count = 0; /* Number of active processes */
+
+/* Bounded per-CPU scheduler history.  It records only actual context switches
+ * and is dumped from the fault-safe panic path; no locks, allocations, or
+ * printk calls are used in the scheduler hot path.  The last eight records per
+ * CPU are enough to correlate a fatal SSP/ELR event with task/stack ownership. */
+#define SCHED_TRACE_DEPTH 32u
+#define SCHED_TRACE_DUMP_COUNT 8u
+struct sched_trace_entry {
+  uint64_t seq;
+  uint64_t frame;
+  uint64_t pc;
+  uint64_t sp;
+  uint64_t fp;
+  uint64_t lr;
+  uint64_t status;
+  uint64_t prev_stack_low;
+  uint64_t prev_stack_high;
+  uint64_t next_stack_low;
+  uint64_t next_stack_high;
+  uint64_t pending_stack_low;
+  uint64_t pending_stack_high;
+  uint64_t deferred_stack_low;
+  uint64_t deferred_stack_high;
+  uint32_t cpu;
+  uint32_t origin_mode;
+  uint32_t prev_pid;
+  uint32_t next_pid;
+  uint32_t pending_pid;
+  uint32_t deferred_pid;
+};
+static struct sched_trace_entry sched_trace[MAX_CPUS][SCHED_TRACE_DEPTH];
+static volatile uint32_t sched_trace_head[MAX_CPUS];
+
+/* kernel_stack is the exclusive high address of the fixed-size process stack.
+ * Keep both bounds in the trace so a saved FP/SP can be checked without
+ * dereferencing a potentially corrupted frame during panic reporting. */
+static uint64_t sched_trace_stack_low(const struct process *proc) {
+  return (proc && proc->kernel_stack >= STACK_SIZE)
+             ? proc->kernel_stack - STACK_SIZE
+             : 0;
+}
+
+static void sched_trace_record(uint32_t cpu, struct cpu_info *cpu_ptr,
+                               struct process *prev, struct process *next,
+                               struct pt_regs *regs) {
+  uint32_t ticket = __atomic_fetch_add(&sched_trace_head[cpu], 1u,
+                                       __ATOMIC_RELAXED);
+  struct sched_trace_entry *entry =
+      &sched_trace[cpu][ticket % SCHED_TRACE_DEPTH];
+  struct process *pending = cpu_ptr->pending_stack_release;
+  struct process *deferred = cpu_ptr->deferred_free_proc;
+
+  entry->seq = 0;
+  entry->frame = (uint64_t)(uintptr_t)regs;
+  entry->pc = regs ? pt_regs_pc(regs) : 0;
+  entry->sp = 0;
+  entry->origin_mode = UINT32_MAX;
+#ifdef ARCH_AARCH64
+  entry->fp = regs ? regs->regs[29] : 0;
+  entry->lr = regs ? regs->regs[30] : 0;
+  entry->status = regs ? regs->spsr : 0;
+  if (regs) {
+    /* Exception entry saves SP_EL0 for EL0 origins.  For an EL1-origin
+     * exception, the full pt_regs frame is allocated on the interrupted
+     * EL1 stack, so frame + sizeof(*regs) is the interrupted SP_EL1. */
+    entry->origin_mode = (uint32_t)(regs->spsr & 0x0fu);
+    entry->sp = (entry->origin_mode == 0u)
+                    ? regs->sp_el0
+                    : (uint64_t)(uintptr_t)regs + sizeof(*regs);
+  }
+#else
+  entry->fp = regs ? regs->rbp : 0;
+  entry->lr = regs ? regs->rip : 0;
+  entry->status = regs ? regs->cs : 0;
+  if (regs) {
+    /* The CPU pushes RSP/SS only on a privilege transition.  On a CPL0
+     * interrupt, &regs->rsp is exactly the interrupted kernel RSP slot
+     * immediately above the hardware-pushed RIP/CS/RFLAGS frame. */
+    entry->origin_mode = (uint32_t)(regs->cs & 3u);
+    entry->sp = (entry->origin_mode == 3u)
+                    ? regs->rsp
+                    : (uint64_t)(uintptr_t)&regs->rsp;
+  }
+#endif
+  entry->prev_stack_low = sched_trace_stack_low(prev);
+  entry->prev_stack_high = prev ? prev->kernel_stack : 0;
+  entry->next_stack_low = sched_trace_stack_low(next);
+  entry->next_stack_high = next ? next->kernel_stack : 0;
+  entry->pending_stack_low = sched_trace_stack_low(pending);
+  entry->pending_stack_high = pending ? pending->kernel_stack : 0;
+  entry->deferred_stack_low = sched_trace_stack_low(deferred);
+  entry->deferred_stack_high = deferred ? deferred->kernel_stack : 0;
+  entry->cpu = cpu;
+  entry->prev_pid = prev ? prev->pid : UINT32_MAX;
+  entry->next_pid = next ? next->pid : UINT32_MAX;
+  entry->pending_pid = pending ? pending->pid : UINT32_MAX;
+  entry->deferred_pid = deferred ? deferred->pid : UINT32_MAX;
+  __atomic_store_n(&entry->seq, (uint64_t)ticket + 1u, __ATOMIC_RELEASE);
+}
+
+void sched_trace_dump(void);
+void sched_trace_dump(void) {
+  fault_printf("[SCHED-TRACE] last %u context switches per CPU (ring=%u)\n",
+               SCHED_TRACE_DUMP_COUNT, SCHED_TRACE_DEPTH);
+  for (uint32_t cpu = 0; cpu < MAX_CPUS; cpu++) {
+    uint32_t head = __atomic_load_n(&sched_trace_head[cpu], __ATOMIC_ACQUIRE);
+    uint32_t first = head > SCHED_TRACE_DUMP_COUNT
+                         ? head - SCHED_TRACE_DUMP_COUNT
+                         : 0;
+    for (uint32_t ticket = first; ticket < head; ticket++) {
+      struct sched_trace_entry *entry =
+          &sched_trace[cpu][ticket % SCHED_TRACE_DEPTH];
+      uint64_t published =
+          __atomic_load_n(&entry->seq, __ATOMIC_ACQUIRE);
+      if (published != (uint64_t)ticket + 1u)
+        continue;
+#ifdef ARCH_AARCH64
+      const char *origin = entry->origin_mode == 0u ? "EL0" : "EL1";
+#else
+      const char *origin = entry->origin_mode == 3u ? "CPL3" : "CPL0";
+#endif
+      fault_printf("[SCHED-TRACE] cpu=%u seq=%llu origin=%s(%x) "
+                   "prev=%u next=%u pc=%016lx sp=%016lx fp=%016lx "
+                   "lr=%016lx status=%016lx frame=%016lx "
+                   "prev_stack=[%016lx,%016lx) next_stack=[%016lx,%016lx) "
+                   "pending=%u[%016lx,%016lx) deferred=%u[%016lx,%016lx)\n",
+                   entry->cpu, (unsigned long long)(published - 1u), origin,
+                   entry->origin_mode, entry->prev_pid, entry->next_pid,
+                   (unsigned long)entry->pc, (unsigned long)entry->sp,
+                   (unsigned long)entry->fp, (unsigned long)entry->lr,
+                   (unsigned long)entry->status, (unsigned long)entry->frame,
+                   (unsigned long)entry->prev_stack_low,
+                   (unsigned long)entry->prev_stack_high,
+                   (unsigned long)entry->next_stack_low,
+                   (unsigned long)entry->next_stack_high, entry->pending_pid,
+                   (unsigned long)entry->pending_stack_low,
+                   (unsigned long)entry->pending_stack_high,
+                   entry->deferred_pid,
+                   (unsigned long)entry->deferred_stack_low,
+                   (unsigned long)entry->deferred_stack_high);
+    }
+  }
+}
 static int next_pid = 1;     /* Global PID counter (never resets) */
 
 /* Real online-CPU count (kernel/cpu.c), set during SMP bring-up. Reported
@@ -457,6 +601,15 @@ static void __enqueue_task(struct process *p) {
 
   int target_cpu_id = (p->on_cpu >= 0) ? (int)p->on_cpu : 0;
   struct cpu_info *target_cpu = &cpu_data[target_cpu_id];
+
+  /* A wakeup/IPC/continue may arrive after schedule() selected another task
+   * but before the architecture epilogue has left this task's old stack.
+   * Publish READY, but keep it off every runqueue until the owner CPU releases
+   * pending_stack_release at its next schedule() entry. */
+  if (target_cpu->pending_stack_release == p) {
+    p->state = PROC_READY;
+    return;
+  }
 
   p->state = PROC_READY;
   p->on_cpu = target_cpu_id; /* Track which CPU's runqueue we are on */
@@ -1063,8 +1216,8 @@ static void __proc_create_identity(struct process *proc, int slot,
  * SCHED-UAF-01) — kernel-thread creation stays free of compositor/object/
  * vmm lock traffic. Returns 0 on success, -1 on failure (caller rolls
  * back the pool slot). */
-static int __proc_create_stdio_and_pgd(struct process *proc,
-                                       struct process *creator,
+static int __proc_create_stdio_and_pgd(struct process *proc, int creator_pid,
+                                       int creator_ctty_win,
                                        uint8_t priority) {
   proc->ctty_win = -1;
 
@@ -1073,34 +1226,38 @@ static int __proc_create_stdio_and_pgd(struct process *proc,
     return 0;
   }
 
-  if (creator) {
+  if (creator_pid > 0) {
     extern int compositor_get_window_by_pid(int pid);
-    int term = compositor_get_window_by_pid((int)creator->pid);
-    proc->ctty_win = (term > 0) ? term : creator->ctty_win;
+    int term = compositor_get_window_by_pid(creator_pid);
+    proc->ctty_win = (term > 0) ? term : creator_ctty_win;
   }
 
   /* stdin/stdout/stderr as capability handles 0/1/2 (ASTRA §6.2). Done
    * after ctty so the console's stdout resolves correctly. */
-  if (process_install_stdio(proc, creator) != 0)
+  if (process_install_stdio(proc, NULL) != 0)
     return -1;
 
   proc->page_table = vmm_create_pgd();
+  if (!proc->page_table)
+    return -1;
   return 0;
 }
 
 /* __proc_create_rollback - undo a partially-created process on any
  * failure path below. Caller holds NO lock. slot must be the pool index
  * proc currently occupies. */
-static void __proc_create_rollback(struct process *proc, int slot,
-                                   struct env_block *envblk) {
+static void __proc_create_rollback(struct process *proc, int slot) {
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
   process_pool[slot] = NULL;
   active_count--;
   __child_count_dec(proc);
   spin_unlock_irqrestore(&sched_lock, flags);
-  if (envblk)
-    pmm_free_page(envblk);
+
+  /* Undo every resource acquired before the failed create could be
+   * published: stdio/object handles, environment page, and user PGD. */
+  process_handles_destroy(proc);
+  proc_env_free(proc);
   if (proc->page_table)
     vmm_destroy_pgd(proc->page_table);
   pmm_free_page(proc);
@@ -1138,15 +1295,29 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   struct env_block *envblk = NULL;
   if (priority != PROC_PRIO_IDLE)
     envblk = (struct env_block *)pmm_alloc_page();
+  /* env allocation is deliberately best-effort: NULL means the process
+   * inherits system defaults, as documented in struct process. */
+
+  /* The descriptor page also comes from PMM, whose zone allocator takes
+   * its own lock. Never enter it with sched_lock held and IRQs masked. */
+  struct process *proc = (struct process *)pmm_alloc_page();
+  if (!proc) {
+    if (envblk)
+      pmm_free_page(envblk);
+    return NULL;
+  }
 
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
 
   struct process *creator = current_process;
+  int creator_pid = creator ? (int)creator->pid : 0;
+  int creator_ctty_win = creator ? creator->ctty_win : -1;
   if (__proc_create_check_quota(creator, name) != 0) {
     spin_unlock_irqrestore(&sched_lock, flags);
     if (envblk)
       pmm_free_page(envblk);
+    pmm_free_page(proc);
     return NULL;
   }
 
@@ -1155,15 +1326,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
     spin_unlock_irqrestore(&sched_lock, flags);
     if (envblk)
       pmm_free_page(envblk);
+    pmm_free_page(proc);
     pr_err("%s", "Process pool full!\n");
-    return NULL;
-  }
-
-  struct process *proc = (struct process *)pmm_alloc_page();
-  if (!proc) {
-    spin_unlock_irqrestore(&sched_lock, flags);
-    if (envblk)
-      pmm_free_page(envblk);
     return NULL;
   }
   /* No memset here: pmm_alloc_page() already returns a fully zeroed page
@@ -1183,8 +1347,9 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   pr_debug("process_create: '%s' PID=%u slot=%u Prio=%d\n", name,
            (uint32_t)proc->pid, (uint32_t)slot, (int)proc->priority);
 
-  if (__proc_create_stdio_and_pgd(proc, creator, priority) != 0) {
-    __proc_create_rollback(proc, slot, NULL /* envblk already owned by proc */);
+  if (__proc_create_stdio_and_pgd(proc, creator_pid, creator_ctty_win,
+                                   priority) != 0) {
+    __proc_create_rollback(proc, slot);
     return NULL;
   }
 
@@ -1194,7 +1359,7 @@ struct process *process_create_caps(const char *name, uint8_t priority,
    * again). */
   void *kstack_base = pmm_alloc_pages(STACK_SIZE / 4096);
   if (!kstack_base) {
-    __proc_create_rollback(proc, slot, NULL);
+    __proc_create_rollback(proc, slot);
     return NULL;
   }
   proc->kernel_stack = (uint64_t)kstack_base + STACK_SIZE;
@@ -1435,7 +1600,10 @@ static int __proc_still_current_anywhere(struct process *proc) {
     struct cpu_info *vc = &cpu_data[c];
     int hit;
     spin_lock(&vc->sched_lock);
-    hit = (vc->current_task == proc);
+    /* current_task changes before restore_context switches SP/RSP. The
+     * outgoing stack is still live during that return tail, so the explicit
+     * per-CPU pin is part of the liveness test. */
+    hit = (vc->current_task == proc || vc->pending_stack_release == proc);
     spin_unlock(&vc->sched_lock);
     if (hit)
       return 1;
@@ -1830,21 +1998,21 @@ static void __sched_account_time(struct cpu_info *cpu_ptr,
   cpu_ptr->sched_run_count = now_cnt;
 }
 
-/* __sched_requeue_pending - re-enqueue the task deferred by the PREVIOUS
- * schedule() on THIS CPU (SCHED-UAF #169/#170: by now we have iretq'd off
- * its kernel stack, so it is safe for another CPU to run it). If it was
- * killed while parked here, reap it instead of resurrecting it. Caller
- * holds cpu_ptr->sched_lock. */
-static void __sched_requeue_pending(struct cpu_info *cpu_ptr) {
-  struct process *pr = cpu_ptr->pending_reenqueue;
+/* __sched_release_pending_stack - release the outgoing task pinned by the
+ * PREVIOUS schedule() on THIS CPU. We are now executing after that call's
+ * architecture restore epilogue, so the old kernel stack is no longer active.
+ * READY tasks may re-enter a runqueue; DEAD/ZOMBIE tasks go to the reaper;
+ * SLEEPING/STOPPED tasks remain parked. Caller holds cpu_ptr->sched_lock. */
+static void __sched_release_pending_stack(struct cpu_info *cpu_ptr) {
+  struct process *pr = cpu_ptr->pending_stack_release;
   if (!pr)
     return;
-  cpu_ptr->pending_reenqueue = NULL;
+  cpu_ptr->pending_stack_release = NULL;
 
   if (pr->state == PROC_DEAD || pr->state == PROC_ZOMBIE) {
     pr->on_cpu = -1;
     reap_push(cpu_ptr, pr);
-  } else {
+  } else if (pr->state == PROC_READY) {
     __enqueue_task(pr);
   }
 }
@@ -2074,7 +2242,7 @@ static void __sched_stack_alias_check(uint32_t cpu, struct process *next) {
  * here instead of being pushed into a helper):
  *   0. __sched_reap_deferred     — free what the previous call parked.
  *   1. __sched_account_time      — CPU-time accounting for prev.
- *   2. __sched_requeue_pending   — re-enqueue what THIS CPU parked.
+ *   2. __sched_release_pending_stack — release the previous outgoing stack pin.
  *   3. __sched_retire_prev       — save/requeue/reap the outgoing task.
  *   4. __sched_pick_local        — focus boost, then O(1) fair pick.
  *   5. __sched_steal_work        — cross-CPU steal if step 4 found nothing.
@@ -2108,7 +2276,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   uint64_t flags;
   spin_lock_irqsave(&cpu_ptr->sched_lock, &flags);
 
-  __sched_requeue_pending(cpu_ptr);
+  __sched_release_pending_stack(cpu_ptr);
 
   int focus_pid = keyboard_focus_pid; /* lockless hint read, SCHED-01 */
 
@@ -2165,16 +2333,17 @@ struct pt_regs *schedule(struct pt_regs *regs) {
     return regs;
   }
 
-  /* Switching to a DIFFERENT task. SCHED-UAF #169/#170: pull `prev` back
-   * OFF the runqueue (it was re-enqueued in __sched_retire_prev above)
-   * and hold it in pending_reenqueue so no other CPU can work-steal and
-   * run it while THIS CPU is still executing on prev's kernel stack (the
-   * IRQ EOI + iretq run on prev's stack after schedule() returns). It
-   * returns to the runqueue at the NEXT schedule() here, after we have
-   * iretq'd off its stack. */
-  if (prev && prev->state == PROC_READY && prev->priority != PROC_PRIO_IDLE) {
-    __dequeue_task(prev);
-    cpu_ptr->pending_reenqueue = prev;
+  /* Switching to a DIFFERENT task. Pin EVERY non-idle outgoing process,
+   * not just READY tasks. current_task is updated below, but the IRQ/exception
+   * return epilogue still executes on prev's stack until restore_context loads
+   * next->context. A concurrent terminator must see this pin, and wake/continue
+   * paths must not enqueue it until the next schedule() entry on this CPU. */
+  if (prev && prev->priority != PROC_PRIO_IDLE) {
+    if (prev->state == PROC_READY)
+      __dequeue_task(prev);
+    SCHED_ASSERT(cpu_ptr->pending_stack_release == NULL,
+                 "CPU%d pending outgoing stack was not released", cpu);
+    cpu_ptr->pending_stack_release = prev;
   }
 
   cpu_ptr->current_task = next;
@@ -2188,6 +2357,10 @@ struct pt_regs *schedule(struct pt_regs *regs) {
                (int)next->pid);
   if (pt_regs_pc(next->context) == 0)
     panic("SCHED: PC is 0 for PID %d (Name: %s)", next->pid, next->name);
+
+  /* Record the transition before the architecture changes address space or
+   * restores another task's frame.  The ring is bounded and lock-free. */
+  sched_trace_record(cpu, cpu_ptr, prev, next, regs);
 
   /* Address-space switch is delegated entirely to
    * arch_cpu_switch_context() — the single source of truth for both

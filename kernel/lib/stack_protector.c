@@ -32,6 +32,8 @@
  *               result into __stack_chk_guard before any guarded function runs.
  */
 #include <kernel/entropy.h>
+#include <kernel/cpu.h>
+#include <kernel/fault.h>
 #include <kernel/printk.h>
 #include <kernel/ssp.h>
 #include <stdint.h>
@@ -85,7 +87,23 @@ void __stack_chk_fail(void);
  * Locking: none; inherits panic()'s uart_lock acquisition.
  * Side effects: halts the entire system.
  */
+void __stack_chk_fail(void) __attribute__((noinline));
 void __stack_chk_fail(void) {
-  uint64_t ret_addr = (uint64_t)__builtin_return_address(0);
-  panic("SSP: Stack Smash at 0x%lx\n", ret_addr);
+  uintptr_t ret_addr = (uintptr_t)__builtin_return_address(0);
+  uintptr_t *self_fp = (uintptr_t *)__builtin_frame_address(0);
+  uintptr_t caller_fp = self_fp ? self_fp[0] : 0;
+  struct cpu_info *cpu = arch_cpu_info_fault_safe();
+
+  /* Do not dereference the caller frame here: on a real stack-corruption
+   * event it may be invalid.  Preserve its address and the per-CPU ownership
+   * pointers as raw values; the panic owner can correlate them with the
+   * disassembly and scheduler trace without risking a nested data abort. */
+  panic("SSP: Stack Smash ret=0x%lx caller_fp=0x%lx cpu=%u "
+        "current_task=%p pending_stack_release=%p deferred_free=%p guard=0x%lx\n",
+        (unsigned long)ret_addr, (unsigned long)caller_fp,
+        cpu ? cpu->cpu_id : UINT32_MAX,
+        cpu ? (void *)cpu->current_task : NULL,
+        cpu ? (void *)cpu->pending_stack_release : NULL,
+        cpu ? (void *)cpu->deferred_free_proc : NULL,
+        (unsigned long)__stack_chk_guard);
 }

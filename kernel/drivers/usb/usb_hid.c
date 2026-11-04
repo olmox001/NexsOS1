@@ -15,7 +15,8 @@
 #include <kernel/string.h>
 
 /* HID reports are translated to evdev events and pushed through the unified
- * input_report() sink (keyboard.c), exactly like virtio-input and PS/2. */
+ * input_report_from() sink (keyboard.c), exactly like virtio-input and PS/2.
+ */
 
 #define MAX_HID_DEVICES 8
 
@@ -74,7 +75,7 @@ static void hid_handle_keyboard(struct hid_dev *h, const uint8_t *r, int len) {
     uint8_t changed = r[0] ^ prev[0];
     for (int b = 0; b < 8; b++) {
         if (changed & (1 << b))
-            input_report(EV_KEY, mod_to_evdev[b], (r[0] >> b) & 1);
+            input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, mod_to_evdev[b], (r[0] >> b) & 1);
     }
 
     /* Released keys: present in prev[2..7], absent in new. */
@@ -83,7 +84,7 @@ static void hid_handle_keyboard(struct hid_dev *h, const uint8_t *r, int len) {
         if (k <= 3) continue;
         int still = 0;
         for (int j = 2; j < 8; j++) if (r[j] == k) { still = 1; break; }
-        if (!still) input_report(EV_KEY, hid_to_evdev[k], 0);
+        if (!still) input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, hid_to_evdev[k], 0);
     }
     /* Pressed keys: present in new, absent in prev. */
     for (int i = 2; i < 8; i++) {
@@ -91,10 +92,10 @@ static void hid_handle_keyboard(struct hid_dev *h, const uint8_t *r, int len) {
         if (k <= 3) continue;
         int was = 0;
         for (int j = 2; j < 8; j++) if (prev[j] == k) { was = 1; break; }
-        if (!was) input_report(EV_KEY, hid_to_evdev[k], 1);
+        if (!was) input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, hid_to_evdev[k], 1);
     }
     memcpy(h->prev, r, 8);
-    input_report(EV_SYN, 0, 0);
+    input_report_from(INPUT_PROVIDER_USB_HID, EV_SYN, 0, 0);
 }
 
 static void hid_handle_mouse(struct hid_dev *h, const uint8_t *r, int len) {
@@ -105,15 +106,15 @@ static void hid_handle_mouse(struct hid_dev *h, const uint8_t *r, int len) {
 
     /* Buttons: report on change; motion as relative deltas; EV_SYN repaints. */
     uint8_t changed = buttons ^ h->prev[0];
-    if (changed & 0x01) input_report(EV_KEY, BTN_LEFT, buttons & 0x01);
-    if (changed & 0x02) input_report(EV_KEY, BTN_RIGHT, (buttons >> 1) & 1);
-    if (changed & 0x04) input_report(EV_KEY, BTN_MIDDLE, (buttons >> 2) & 1);
+    if (changed & 0x01) input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, BTN_LEFT, buttons & 0x01);
+    if (changed & 0x02) input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, BTN_RIGHT, (buttons >> 1) & 1);
+    if (changed & 0x04) input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, BTN_MIDDLE, (buttons >> 2) & 1);
 
-    if (dx) input_report(EV_REL, REL_X, dx);
-    if (dy) input_report(EV_REL, REL_Y, dy);
+    if (dx) input_report_from(INPUT_PROVIDER_USB_HID, EV_REL, REL_X, dx);
+    if (dy) input_report_from(INPUT_PROVIDER_USB_HID, EV_REL, REL_Y, dy);
 
     h->prev[0] = buttons;
-    input_report(EV_SYN, 0, 0);
+    input_report_from(INPUT_PROVIDER_USB_HID, EV_SYN, 0, 0);
 }
 
 /* Extract `bits` (<=32) at bit offset `off` from a little-endian HID report. */
@@ -146,14 +147,14 @@ static void hid_handle_tablet(struct hid_dev *h, const uint8_t *r, int len) {
     if (dev->hid_btn_off >= 0) {
         uint8_t btn = (uint8_t)hid_get_bits(r, len, (uint32_t)dev->hid_btn_off, 3);
         uint8_t changed = btn ^ h->prev[0];
-        if (changed & 0x01) input_report(EV_KEY, BTN_LEFT, btn & 0x01);
-        if (changed & 0x02) input_report(EV_KEY, BTN_RIGHT, (btn >> 1) & 1);
-        if (changed & 0x04) input_report(EV_KEY, BTN_MIDDLE, (btn >> 2) & 1);
+        if (changed & 0x01) input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, BTN_LEFT, btn & 0x01);
+        if (changed & 0x02) input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, BTN_RIGHT, (btn >> 1) & 1);
+        if (changed & 0x04) input_report_from(INPUT_PROVIDER_USB_HID, EV_KEY, BTN_MIDDLE, (btn >> 2) & 1);
         h->prev[0] = btn;
     }
-    input_report(EV_ABS, ABS_X, nx);
-    input_report(EV_ABS, ABS_Y, ny);
-    input_report(EV_SYN, 0, 0);
+    input_report_from(INPUT_PROVIDER_USB_HID, EV_ABS, ABS_X, nx);
+    input_report_from(INPUT_PROVIDER_USB_HID, EV_ABS, ABS_Y, ny);
+    input_report_from(INPUT_PROVIDER_USB_HID, EV_SYN, 0, 0);
 }
 
 void usb_hid_poll(void) {

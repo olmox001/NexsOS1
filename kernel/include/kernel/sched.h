@@ -396,6 +396,8 @@ extern int process_load_elf_args(struct process *proc, const char *path,
 void start_user_process(struct process *proc);
 void process_init(void);
 struct pt_regs *schedule(struct pt_regs *regs);
+/* Fault-safe dump of the bounded per-CPU context-switch history. */
+void sched_trace_dump(void);
 
 /* Exception Handlers */
 struct pt_regs *syscall_handler(struct pt_regs *frame);

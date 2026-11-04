@@ -137,18 +137,33 @@ int main(int argc, char *argv[]) {
       next_stat = elapsed + interval_ns;
     }
 
-    /* --- spawn lane (primary): spawn a trivial child and reap it --- */
+    /* --- spawn lane (primary): spawn a trivial child and reap it ---
+     * wait(pid) is non-blocking: -1 means still alive, while pid/-2 mean
+     * the child has exited or is already gone. Poll to completion before
+     * spawning another child; using captest here opened many GUI windows and
+     * ran its full port/VFS suite concurrently, invalidating the stress lane. */
     if (lanes & LANE_SPAWN) {
       int do_fault = (fault_pct > 0) && ((int)(xrand() % 100) < fault_pct);
-      const char *path = do_fault ? "/bin/crash" : "/bin/captest";
+      const char *path = do_fault ? "/bin/crash" : "/bin/true";
       int pid = spawn(path);
       if (pid > 0) {
-        wait(pid);
-        spawns++;
-        if (do_fault)
-          faults++;
-      } else
+        int waited;
+        do {
+          waited = wait(pid);
+          if (waited == -1)
+            yield();
+        } while (waited == -1);
+
+        if (waited == pid || waited == -2) {
+          spawns++;
+          if (do_fault)
+            faults++;
+        } else {
+          errs++;
+        }
+      } else {
         errs++;
+      }
     }
 
     /* --- alloc lane: malloc/free across size classes (sbrk -> PMM) --- */

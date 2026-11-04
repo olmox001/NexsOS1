@@ -10,6 +10,8 @@
 #include <drivers/usb/usb.h>
 #include <drivers/virtio_input.h>
 #include <kernel/arch.h>
+#include <kernel/cpu.h>
+#include <kernel/fault.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
@@ -303,6 +305,10 @@ extern void compositor_handle_click(int button, int state);
  * ------------------------------------------------------------------------- */
 
 struct input_evt {
+  uint64_t seq;
+  uint32_t producer_cpu;
+  uint8_t provider;
+  uint8_t _reserved[3];
   uint16_t type;
   uint16_t code;
   int32_t value;
@@ -310,6 +316,24 @@ struct input_evt {
 
 #define INPUT_RING_SZ 256 /* power of two; ~256 evdev events of backlog */
 static struct input_evt input_ring[INPUT_RING_SZ];
+static uint64_t input_event_seq;
+
+#define INPUT_TRACE_DEPTH 64u
+#define INPUT_TRACE_DUMP_COUNT 16u
+struct input_trace_entry {
+  uint64_t seq;
+  uint64_t event_seq;
+  uint32_t producer_cpu;
+  uint32_t dispatch_cpu;
+  int32_t focus_pid;
+  uint8_t provider;
+  uint8_t _reserved[3];
+  uint16_t type;
+  uint16_t code;
+  int32_t value;
+};
+static struct input_trace_entry input_trace[INPUT_TRACE_DEPTH];
+static volatile uint32_t input_trace_head;
 static volatile uint32_t input_ring_head; /* producer index (IRQ) */
 static volatile uint32_t input_ring_tail; /* consumer index (thread) */
 static DEFINE_SPINLOCK(input_ring_lock);
@@ -318,8 +342,8 @@ static struct wait_queue_head input_wait_queue;
 static int input_ring_pop(struct input_evt *out);
 
 /* input_dispatch - the actual event handling (key->layout+IPC, pointer->
- * compositor).  Currently invoked SYNCHRONOUSLY from input_report; becomes
- * the input server thread's body once the yield-to-user path is fixed. */
+ * compositor). It runs only in input_drain() from the serialized PID 1
+ * SYS_COMPOSITOR_RENDER path, never from the hardware producer/IRQ. */
 static void input_dispatch(uint16_t type, uint16_t code, int32_t value) {
   switch (type) {
   case EV_KEY:
@@ -354,27 +378,79 @@ static void input_dispatch(uint16_t type, uint16_t code, int32_t value) {
  * process-context path, so virtio/PS2 INPUT IRQs only enqueue events and never
  * take compositor_lock or mutate the window list (#194/#68).
  */
-void input_report(uint16_t type, uint16_t code, int32_t value) {
+void input_report_from(uint8_t provider, uint16_t type, uint16_t code,
+                       int32_t value) {
   uint64_t flags;
+  struct cpu_info *cpu = arch_cpu_info_fault_safe();
   spin_lock_irqsave(&input_ring_lock, &flags);
   uint32_t next = (input_ring_head + 1) & (INPUT_RING_SZ - 1);
   if (next == input_ring_tail) {
     input_ring_dropped++;
   } else {
-    input_ring[input_ring_head].type = type;
-    input_ring[input_ring_head].code = code;
-    input_ring[input_ring_head].value = value;
+    struct input_evt *event = &input_ring[input_ring_head];
+    event->seq = ++input_event_seq;
+    event->producer_cpu = cpu ? cpu->cpu_id : UINT32_MAX;
+    event->provider = provider;
+    event->type = type;
+    event->code = code;
+    event->value = value;
     input_ring_head = next;
   }
   spin_unlock_irqrestore(&input_ring_lock, flags);
+}
+
+/* Compatibility sink for older providers; new drivers should identify their
+ * transport explicitly with input_report_from(). */
+void input_report(uint16_t type, uint16_t code, int32_t value) {
+  input_report_from(INPUT_PROVIDER_UNKNOWN, type, code, value);
 }
 
 /* input_drain - dispatch all queued raw events. Called only by PID 1's
  * SYS_COMPOSITOR_RENDER path in process context, never from an input IRQ. */
 void input_drain(void) {
   struct input_evt e;
-  while (input_ring_pop(&e))
+  while (input_ring_pop(&e)) {
+    struct cpu_info *dispatch_cpu = arch_cpu_info_fault_safe();
+    uint32_t ticket = __atomic_fetch_add(&input_trace_head, 1u,
+                                         __ATOMIC_RELAXED);
+    struct input_trace_entry *trace =
+        &input_trace[ticket % INPUT_TRACE_DEPTH];
+    trace->seq = 0;
+    trace->event_seq = e.seq;
+    trace->producer_cpu = e.producer_cpu;
+    trace->dispatch_cpu = dispatch_cpu ? dispatch_cpu->cpu_id : UINT32_MAX;
+    trace->focus_pid = sched_get_focus_pid();
+    trace->provider = e.provider;
+    trace->type = e.type;
+    trace->code = e.code;
+    trace->value = e.value;
+    __atomic_store_n(&trace->seq, (uint64_t)ticket + 1u, __ATOMIC_RELEASE);
     input_dispatch(e.type, e.code, e.value);
+  }
+}
+
+void input_trace_dump(void);
+void input_trace_dump(void) {
+  uint32_t head = __atomic_load_n(&input_trace_head, __ATOMIC_ACQUIRE);
+  uint32_t first = head > INPUT_TRACE_DUMP_COUNT
+                       ? head - INPUT_TRACE_DUMP_COUNT
+                       : 0;
+  fault_printf("[INPUT-TRACE] head=%u event_seq=%llu ring_dropped=%llu "
+               "key_delivery_dropped=%lu\n",
+               head, (unsigned long long)input_event_seq,
+               (unsigned long long)input_ring_dropped, kbd_dropped_events);
+  for (uint32_t ticket = first; ticket < head; ticket++) {
+    struct input_trace_entry *entry =
+        &input_trace[ticket % INPUT_TRACE_DEPTH];
+    uint64_t published = __atomic_load_n(&entry->seq, __ATOMIC_ACQUIRE);
+    if (published != (uint64_t)ticket + 1u)
+      continue;
+    fault_printf("[INPUT-TRACE] seq=%llu provider=%u type=%u code=%u "
+                 "value=%d producer_cpu=%u dispatch_cpu=%u focus=%d\n",
+                 (unsigned long long)entry->event_seq, entry->provider,
+                 entry->type, entry->code, entry->value,
+                 entry->producer_cpu, entry->dispatch_cpu, entry->focus_pid);
+  }
 }
 
 /* input_ring_pop - the single consumer pulls one event, or 0 if empty.
@@ -457,7 +533,7 @@ void keyboard_poll(void) {
   struct virtio_input_event event;
 
   while (virtio_input_poll(&event)) {
-    input_report(event.type, event.code, event.value);
+    input_report_from(INPUT_PROVIDER_VIRTIO, event.type, event.code, event.value);
   }
 }
 

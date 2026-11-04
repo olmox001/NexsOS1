@@ -30,6 +30,7 @@ struct virtio_input_dev {
   virtio_handle_t handle;
   uint32_t irq;
   int active;
+  int irq_handler_registered;
   int is_pci;
   struct vring_desc *desc;
   struct vring_avail *avail;
@@ -49,6 +50,18 @@ static volatile uint32_t input_tail = 0;
 
 /* Forward declarations */
 static void virtio_input_handler(uint32_t irq, void *data);
+
+/* One handler services every VirtIO input device sharing its IRQ.  The
+ * handler deliberately scans input_devs[] and filters by irq, so registering
+ * it again for a second device on the same line is both unnecessary and
+ * rejected by irq_register() as -EBUSY. */
+static int virtio_input_irq_has_handler(uint32_t irq) {
+  for (int i = 0; i < input_dev_count; i++) {
+    if (input_devs[i].irq == irq && input_devs[i].irq_handler_registered)
+      return 1;
+  }
+  return 0;
+}
 
 /* Helper macros / functions for transport abstraction */
 #define v_read32(dev, off) virtio_read_reg((dev)->handle, (off))
@@ -75,6 +88,7 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   dev->handle = handle;
   dev->irq = irq;
   dev->active = 0;
+  dev->irq_handler_registered = 0;
 
   /* Reset */
   v_write32(dev, VIRTIO_MMIO_STATUS, 0);
@@ -141,19 +155,33 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   v_write32(dev, VIRTIO_MMIO_STATUS,
             v_read32(dev, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_DRIVER_OK);
 
-  /* Register and Enable Interrupt */
-  /* A device whose IRQ line is not wired delivers nothing: no keystrokes, no
-   * mouse.  Dropping this made that look like a dead device rather than a
-   * failed registration. */
-  if (irq_register(irq, virtio_input_handler, dev) != 0)
-    pr_err("virtio-input: cannot register IRQ %u — this device will deliver no "
-           "events\n",
-           irq);
+  /* Register one handler per IRQ line.  virtio_input_handler() scans all
+   * active input devices on the acknowledged line, so keyboard and mouse may
+   * safely share one PCI INTx/GIC IRQ without a second irq_register() call. */
+  if (!virtio_input_irq_has_handler(irq)) {
+    if (irq_register(irq, virtio_input_handler, NULL) != 0) {
+      pr_err("virtio-input: cannot register IRQ %u; disabling provider\n",
+             irq);
+      v_write32(dev, VIRTIO_MMIO_STATUS, 0);
+      pmm_free_page(dev->events);
+      pmm_free_pages(dev->desc, 2);
+      dev->events = NULL;
+      dev->desc = NULL;
+      dev->avail = NULL;
+      dev->used = NULL;
+      input_dev_count--;
+      return;
+    }
+    dev->irq_handler_registered = 1;
+  } else {
+    pr_info("VirtIO-Input: sharing IRQ %u with existing input handler\n",
+            irq);
+  }
 
-  /* Notify device */
-  v_notify(dev, 0);
-
+  /* Publish the device before notifying it: an immediate interrupt must see
+   * active=1 when the shared handler scans input_devs[]. */
   dev->active = 1;
+  v_notify(dev, 0);
 }
 
 static void virtio_input_handler(uint32_t irq, void *data) {
@@ -197,7 +225,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 
       /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
        * EV_SYN -> repaint. Same path PS/2 and USB HID use now. */
-      input_report(evt->type, evt->code, evt->value);
+      input_report_from(INPUT_PROVIDER_VIRTIO, evt->type, evt->code, evt->value);
 
       dev->avail->ring[dev->avail->idx % INPUT_QSIZE] = id;
       dev->avail->idx++;

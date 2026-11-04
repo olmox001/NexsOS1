@@ -44,7 +44,12 @@ class SessionBusyError(RuntimeError):
 
 FAULT_RE = re.compile(
     r"KERNEL PANIC|KERNEL PAGE FAULT|GENERAL PROTECTION FAULT|"
-    r"Unrecoverable kernel|Invalid magic"
+    r"Unrecoverable kernel|Invalid magic|"
+    r"\[FATAL\]\s*NESTED\s+(?:EL1|SError|AArch32|EXCEPTION)|"
+    r"\bNESTED CPU EXCEPTION\b|"
+    r"\bStack Smash at\b|"
+    r"\bSystem halted\b",
+    re.IGNORECASE,
 )
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SHELL_ALIVE_RE = re.compile(
@@ -1001,22 +1006,41 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
                 time.sleep(1.0)
             results.append(f"SOAK={int(time.monotonic() - soak_start)}s")
             if verdict != "FAULT":
+                # QEMU can remain alive while the guest kernel is halted or
+                # the only shell task has died. Prove the guest still services
+                # a real command after the soak; process liveness alone is not
+                # a health signal.
+                health_code, health_output = run_shell_c(
+                    session, "/sys/bin/nxwins", timeout=20
+                )
+                health_text = strip_ansi(health_output)
+                shell_row = re.search(
+                    r"(?m)^\s*\d+\s+\d+\s+focus\s+.*nxshell",
+                    health_text, re.IGNORECASE,
+                )
+                if health_code != 0 or "ID   PID  STATE" not in health_text or not shell_row:
+                    results.append(f"GUEST-HEALTH-FAIL({health_code})")
+                    verdict = "FAULT"
+                else:
+                    results.append("GUEST-HEALTH=PASS")
                 try:
                     cmd_screenshot(session)
                     results.append("SCREENSHOT-END=PASS")
                 except Exception as exc:
                     results.append(f"SCREENSHOT-END-FAIL({exc})")
-                    verdict = "FAIL"
+                    if verdict != "FAULT":
+                        verdict = "FAIL"
 
         text = session.log_text()
         ktest = ktest_re.search(text)
         if not ktest:
             results.append("KTEST=NO-RESULT")
-            verdict = "FAIL"
+            if verdict != "FAULT":
+                verdict = "FAIL"
         else:
             passed, failed = map(int, ktest.groups())
             results.append(f"KTEST={passed} passed/{failed} failed")
-            if passed == 0 or failed != 0:
+            if (passed == 0 or failed != 0) and verdict != "FAULT":
                 verdict = "FAIL"
 
         for command in cmds:

@@ -22,8 +22,9 @@
  *     interleave characters mid-line (FIX SMP-UART-01).
  *   - A per-CPU recursion guard (cpu->in_printk) detects recursive printk calls
  *     (e.g. from a fault handler that fires during printk).
- *   - panic() sets panic_flag atomically so other CPUs can halt via IPI, then
- *     prints and spins.
+ *   - panic() elects exactly one CPU owner, sets panic_flag, emits one
+ *     fault-safe transcript, stops the other CPUs, paints the panic screen
+ *     and enters the watchdog/reboot path.
  *
  * Invariants:
  *   - printk_lock is always acquired with IRQs saved (spin_lock_irqsave) so
@@ -40,6 +41,7 @@
  *                  vsnprintf with no dropped-message counter.
  */
 #include <drivers/uart.h>
+#include <drivers/keyboard.h>
 #include <kernel/arch.h>
 #include <kernel/bootphase.h>
 #include <kernel/cpu.h>
@@ -56,8 +58,10 @@
  * Initialized to KERN_INFO; may be adjusted at runtime. */
 int console_loglevel = KERN_INFO;
 
-/* Set by panic() to signal all CPUs to halt */
+/* Set by the first panic owner to stop every other CPU. */
 volatile int panic_flag = 0;
+#define PANIC_OWNER_UNCLAIMED (UINT32_MAX - 1u)
+static volatile uint32_t panic_owner_cpu = PANIC_OWNER_UNCLAIMED;
 
 /* vsnprintf is now in vsnprintf.c */
 
@@ -252,35 +256,41 @@ static void panic_reboot_after_grace(void) {
   arch_reboot();
 }
 
+void panic(const char *fmt, ...);
 void panic(const char *fmt, ...) {
   va_list args;
+  struct cpu_info *cpu = arch_cpu_info_fault_safe();
+  uint32_t cpu_id = cpu ? cpu->cpu_id : UINT32_MAX;
 
-  /* Signal all CPUs to stop BEFORE printing so no interleaving after this */
-  __sync_fetch_and_add(&panic_flag, 1);
+  /* Exactly one CPU owns the fatal transcript.  Previously every concurrent
+   * panic caller incremented panic_flag and continued printing through the
+   * lock-free UART path; two CPUs could therefore interleave panic banners,
+   * register dumps and SSP messages, destroying the evidence.  A losing CPU
+   * halts immediately and never writes another byte.  The unclaimed sentinel
+   * differs from UINT32_MAX so an early-boot panic without cpu_info is still
+   * claimed exactly once. */
+  if (!__sync_bool_compare_and_swap(&panic_owner_cpu,
+                                    PANIC_OWNER_UNCLAIMED, cpu_id))
+    arch_cpu_halt();
 
-  /* FIX(PANIC-LOCKFREE-01): panic() used to split into two paths — a
-   * lock-free one (fault_printf/fault_vprintf) when reached from inside a
-   * CPU exception handler, and an ordinary printk()/vprintk() path
-   * otherwise, on the reasoning that only the fault-handler case needed to
-   * survive a wedged CPU holding printk's locks.
-   *
-   * That reasoning does not hold: printk_lock and the driver's uart_lock
-   * are global, cross-CPU locks (kernel/lib/printk.c, kernel/drivers/uart/
-   * 16550.c). ANY CPU stuck while holding either — which is precisely the
-   * failure mode this function exists to report, whatever ordinary
-   * (non-exception) code path detects it and calls panic() — would block
-   * the "non-fault" branch forever inside printk()/vprintk(), turning what
-   * should have been a panic banner into a totally silent, undiagnosable
-   * full-system hang: the exact symptom this driver/scheduler audit was
-   * asked to rule out. fault_printf/fault_vprintf (kernel/fault.h) are
-   * lock-free by contract for exactly this reason; panic() now always uses
-   * them, regardless of whether it was reached from a CPU exception. Print
-   * BEFORE the cross-CPU quiesce IPI (matching the former fault-context
-   * ordering) so the banner still gets out even if the IPI mechanism
-   * itself is what is broken; the accepted trade is that another CPU's
-   * legitimate printk() output may interleave with it on the wire (see
-   * fault.h), which is strictly better than no output at all. */
-  fault_printf("\n\n*** KERNEL PANIC ***\n");
+  __sync_lock_test_and_set(&panic_flag, 1);
+
+  /* fault_printf is lock-free and safe even if another CPU owns printk/uart
+   * locks.  Emit this first line before the quiesce IPI: if IPI delivery itself
+   * is broken, at least the owner and task pointers survive in the UART log. */
+  fault_printf("\n\n*** KERNEL PANIC CPU%u owner=%u ***\n", cpu_id,
+               cpu_id);
+  fault_printf("[panic-context] current_task=%p pending_stack_release=%p "
+               "deferred_free=%p\n",
+               cpu ? (void *)cpu->current_task : NULL,
+               cpu ? (void *)cpu->pending_stack_release : NULL,
+               cpu ? (void *)cpu->deferred_free_proc : NULL);
+
+  /* Stop other CPUs before reading the lock-free diagnostic rings. */
+  irq_send_ipi_all();
+  sched_trace_dump();
+  input_trace_dump();
+
   fault_printf("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
   va_start(args, fmt);
   fault_vprintf(fmt, args);
@@ -288,8 +298,6 @@ void panic(const char *fmt, ...) {
   fault_printf("\n");
   backtrace_here();
   fault_printf("\nSystem halted.\n");
-
-  irq_send_ipi_all();
 
   /* DIR-05 #139: paint the panic reason on the framebuffer too (no-UART
    * machines). fault_text() is the full transcript just tee'd through

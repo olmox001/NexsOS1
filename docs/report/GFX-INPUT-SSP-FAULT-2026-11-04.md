@@ -89,3 +89,21 @@ The earlier AArch64 SSP incident at compositor_window_write() remains a separate
 The input migration is already planned: the kernel currently translates scancodes/layouts/characters and routes pointer events; the disabled kernel-thread prototype is explicitly not the target. The intended end state is a supervised userland nxinput service, with raw device event delivery separated from layout, character semantics and policy. The kernel must retain only the minimum mechanism needed for interrupt delivery, device ownership and safe event transport until the driver/service capability model is ready.
 
 The compositor/surface split and the terminal-lock/SSP investigation remain gated by docs/architecture/GRAPHICS-USERLAND-MIGRATION.md and docs/report/GFX-LEGACY-TERMINAL-CONCURRENCY-2026-11-03.md. Do not move code or remove IRQ-safe locking as a response to this incident.
+
+## 9. Instrumentation implementation status — 2026-11-04
+
+The current unstaged source now contains a first bounded instrumentation pass. This is **instrumentation progress, not a root-cause fix**:
+
+- **First-panic ownership:** `kernel/lib/printk.c` elects one panic CPU with an atomic compare-and-swap. Secondary panic callers halt without emitting a second transcript. The owner emits CPU/task/pending-reenqueue/deferred-free context, sends the quiesce IPI, then dumps the scheduler and input rings through `fault_printf`.
+- **Scheduler transition ring:** `kernel/sched/process.c` records 32 transitions per CPU without allocation, locks or printk in the scheduling path; panic dumps the latest eight per CPU. Captured fields include PC, FP, LR, status, register-frame address, previous/next stack bases and pending/deferred process IDs/stack bases.
+- **Input event trace:** `kernel/drivers/keyboard/keyboard.c` tags accepted raw events with a monotonically increasing sequence, provider ID and producer CPU. The consumer trace records dispatch CPU, focus PID, event type/code/value; panic dumps the latest 16 and the input-ring / keyboard-delivery drop counters.
+- **SSP failure context:** `kernel/lib/stack_protector.c` now reports return PC, caller FP value, CPU, current task, pending/deferred task pointers and global guard. It deliberately does not dereference the caller frame.
+
+Remaining instrumentation gaps before the fault-reproduction gate:
+
+1. Scheduler records do not yet include the interrupted SP, explicit kernel-stack low/high bounds, or an explicit EL0-vs-EL1 interrupted-mode classification (the saved status field is present but not decoded).
+2. SSP diagnostics do not yet validate the caller FP against the current task's stack bounds and do not safely snapshot the saved canary after that validation.
+3. The original exception frame (pt_regs plus ESR/FAR/SPSR/ELR) is not yet explicitly frozen as a first-fault record before nested panic handling.
+4. The input sequence currently advances for accepted ring entries; dropped producer attempts are represented by the drop counter, not an event sequence record.
+
+The subsequent clean `test-all` log reports AMD64 and AArch64 PASS, KTEST 10/10 and 11/11, NXWINS/focus PASS, 30-second soak PASS and faults=0. This confirms the instrumentation build does not break the normal tested paths; it does **not** reproduce or close either intermittent SSP incident. Keep both incidents OPEN until a captured failure identifies the writer/context or an equivalent proof establishes the root cause.

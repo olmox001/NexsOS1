@@ -63,15 +63,15 @@ struct cpu_info {
    * drained at the top of the next schedule() on this CPU, after we have
    * switched away from them. */
   struct process *deferred_free_proc;
-  /* SCHED-UAF (#169/#170): a task preempted on this CPU is held here for ONE
-   * schedule before going back on a runqueue.  If it were re-enqueued
-   * immediately, another CPU could work-steal and run it while THIS CPU is still
-   * executing on its kernel stack (the IRQ EOI + dispatch epilogue run on prev's
-   * stack AFTER schedule() returns, before the iretq switches away; the LAPIC EOI
-   * MMIO write widens that window on UTM).  Two CPUs on one stack smash the
-   * in-flight return frame.  Drained at the top of the next schedule() here,
-   * after this CPU has provably iretq'd off that stack — mirrors deferred_free. */
-  struct process *pending_reenqueue;
+  /* SCHED-UAF outgoing-stack pin: every non-idle task switched away from
+   * remains pinned here until the NEXT schedule() entry on this CPU. The
+   * interrupt/exception restore epilogue still runs on the outgoing stack
+   * after schedule() returns and only then installs the selected frame.
+   * Termination must treat this pointer as live; wake/continue paths may mark
+   * it READY but must not enqueue it while the pin is present. At the next
+   * schedule() entry (after the prior epilogue has switched stacks), release
+   * the pin: requeue READY, reap DEAD/ZOMBIE, leave SLEEPING/STOPPED parked. */
+  struct process *pending_stack_release;
 };
 #endif
 
