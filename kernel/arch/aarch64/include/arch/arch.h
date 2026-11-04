@@ -294,7 +294,8 @@ static inline int arch_impl_spin_trylock(volatile uint32_t *lock) {
 
 /* --- Constants --- */
 #define HAL_RAM_START 0x40000000UL
-#define HAL_RAM_SIZE 0x80000000UL /* 2GB */
+#define ARCH_PHYS_MAP_LIMIT 0x2000000000ULL /* 128 GiB, exclusive */
+#define ARCH_BOOTSTRAP_PHYS_MAP_LIMIT ARCH_PHYS_MAP_LIMIT
 #define HAL_ALIAS_OFFSET 0x40000000UL
 
 #endif /* _ARCH_AARCH64_H */

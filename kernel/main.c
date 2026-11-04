@@ -13,6 +13,9 @@
 #include <kernel/drivers.h>
 #include <kernel/ext4.h>
 #include <kernel/fdt.h>
+#ifndef ARCH_AMD64
+#include <kernel/boot_info.h>
+#endif
 #include <kernel/gpt.h>
 #include <kernel/graphics.h>
 #include <kernel/hal.h>
@@ -95,7 +98,7 @@ static void kernel_stage_k2_k3(void);
 #ifdef ARCH_AMD64
 void kernel_main(uint64_t magic, uint64_t mbi_ptr);
 #else
-void kernel_main(uint64_t x0_arg);
+void kernel_main(uint64_t x0_arg, uint64_t x1_arg);
 #endif
 extern void timer_init_percpu(void);
 
@@ -104,8 +107,8 @@ extern void timer_init_percpu(void);
 void kernel_main(uint64_t magic, uint64_t mbi_ptr) {
   kernel_stage_k1_hardware(magic, mbi_ptr);
 #else
-void kernel_main(uint64_t x0_arg) {
-  kernel_stage_k1_hardware(x0_arg, 0);
+void kernel_main(uint64_t x0_arg, uint64_t x1_arg) {
+  kernel_stage_k1_hardware(x0_arg, x1_arg);
 #endif
   kernel_stage_k2_k3();
 }
@@ -115,9 +118,9 @@ void kernel_main(uint64_t x0_arg) {
  * (console, CPU exception/IDT state, IRQ controller, timer) to the point
  * where memory management and the scheduler can be initialized.
  *
- * @boot_arg0: amd64: multiboot magic (RDI). aarch64: x0 (device tree blob
- *             physical address).
- * @boot_arg1: amd64: multiboot info pointer (RSI). aarch64: unused (0).
+ * @boot_arg0: amd64: multiboot magic (RDI). aarch64: x0 (DTB physical base).
+ * @boot_arg1: amd64: multiboot info pointer (RSI). aarch64: x1 (validated DTB
+ *             available span; zero only for the explicit legacy adapter).
  *
  * Called exactly once, from kernel_main(), before kernel_stage_k2_k3().
  * Not reentrant; must run on the BSP with a valid boot stack and nothing
@@ -130,49 +133,67 @@ static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
   extern uint64_t mb_magic;
   mb_info_ptr = boot_arg1;
   mb_magic = boot_arg0;
-#else
-  (void)boot_arg1;
 #endif
-  /* Initialize UART first for debug output */
+  /* Initialize UART first for debug output. */
   driver_console_init();
 
-#ifndef ARCH_AMD64
-  /* Ensure boot_fdt_ptr is set from the entry argument */
-  boot_fdt_ptr = boot_arg0;
-  /* aarch64: the device tree IS the device-discovery mechanism.  Without it
-   * nothing on the virtio-MMIO transport is found -- no block device, no
-   * input, no GPU -- and the failure would surface much later as a system that
-   * booted into a shell with no storage, which is nothing like "the DTB was
-   * not parsed". */
-  if (fdt_init(boot_fdt_ptr) != 0)
-    panic("FDT: no usable device tree at 0x%lx — no MMIO device can be "
-          "discovered on this platform",
-          (unsigned long)boot_fdt_ptr);
-  pr_info("Kernel: Entry x0 = 0x%lx\n", boot_arg0);
-#else
-  boot_fdt_ptr = 0;
-  /* amd64 has no device tree: devices come from PCI enumeration instead.  The
-   * scan is still attempted because a DTB in RAM would be usable if present,
-   * and NOT finding one is the EXPECTED answer here -- so it is reported as
-   * information, not dropped.  The same call is fatal on aarch64 above; that
-   * asymmetry is the point, and it is now stated instead of implied. */
-  if (fdt_init(0) != 0)
-    pr_info("%s", "FDT: no device tree found — expected on amd64, devices come "
-                  "from PCI enumeration\n");
-#endif
-
-  /* Print kernel banner */
+  /* Print kernel banner before the exception vectors are installed. */
   print_banner();
 
   /* Reseed the SSP stack canary from arch entropy before any deep call chain
-   * runs (LIB-SSP-01 / #71).  Safe here: kernel_main never returns through a
-   * canary-checked epilogue, so replacing the global guard mid-boot cannot
-   * trip a stale-canary check on a frame already on the stack. */
+   * runs (LIB-SSP-01 / #71). Safe here because kernel_main never returns
+   * through a canary-checked epilogue. */
   stack_guard_init();
 
   /* CPU initialization (exception vectors, per-CPU data) */
   pr_info("%s", "Initializing CPU...\n");
   cpu_init();
+
+#ifndef ARCH_AMD64
+  /* Validate the handoff record before touching the physical DTB. */
+  if (boot_info.magic != BOOT_INFO_MAGIC ||
+      boot_info.version != BOOT_INFO_VERSION ||
+      boot_info.size != BOOT_INFO_SIZE ||
+      boot_info.fdt_phys != boot_arg0 ||
+      boot_info.fdt_size != boot_arg1)
+    panic("BootInfo: invalid AArch64 handoff record");
+
+  boot_info.source = boot_arg1 != 0
+      ? BOOT_INFO_SOURCE_AARCH64_EFI : BOOT_INFO_SOURCE_LEGACY;
+  boot_info.flags = 0; /* Commit flags only after successful DTB validation. */
+
+  size_t actual_fdt_size = 0;
+  int fdt_status = boot_arg1 != 0
+      ? fdt_init((uintptr_t)boot_arg0, (size_t)boot_arg1)
+      : fdt_init_legacy((uintptr_t)boot_arg0, &actual_fdt_size);
+  if (fdt_status != FDT_PARSER_OK)
+    panic("FDT: validation failed status=%d base=0x%lx span=0x%lx",
+          fdt_status, boot_arg0, boot_arg1);
+
+  if (boot_arg1 == 0 && actual_fdt_size != boot_fdt_size)
+    panic("BootInfo: legacy DTB length mismatch handoff=0x%lx parsed=0x%lx",
+          (uint64_t)actual_fdt_size, boot_fdt_size);
+
+  /* Store the actual validated FDT totalsize, not the EFI input span. */
+  boot_info.fdt_phys = boot_fdt_ptr;
+  boot_info.fdt_size = boot_fdt_size;
+  if (boot_arg1 != 0) {
+    boot_info.flags = BOOT_INFO_FLAG_FDT_SIZE_VALID;
+  } else if (boot_arg0 != 0) {
+    boot_info.flags = BOOT_INFO_FLAG_LEGACY_TRUSTED_INPUT;
+  } else {
+    boot_info.flags = BOOT_INFO_FLAG_LEGACY_SEARCH;
+  }
+  pr_info("BootInfo: source=%u DTB=0x%lx size=0x%lx flags=0x%x\n",
+          boot_info.source, boot_info.fdt_phys, boot_info.fdt_size,
+          boot_info.flags);
+  pr_info("Kernel: Entry x0 = 0x%lx x1 = 0x%lx\n",
+          boot_arg0, boot_arg1);
+#else
+  if (fdt_init(0, 0) != FDT_PARSER_OK)
+    pr_info("%s", "FDT: no device tree found — expected on amd64, devices come "
+                  "from PCI enumeration\n");
+#endif
 
   /* Platform-specific hardware registration */
   arch_platform_early_init();
@@ -306,8 +327,8 @@ static void init_memory_core(void) {
   /* Initialize physical memory manager with architecture-detected regions */
   size_t count = 0;
   struct mem_region *regions = arch_platform_get_mem_regions(&count);
-  if (regions == NULL)
-    panic("%s", "BOOT-MEM: platform returned NULL region array");
+  if (regions == NULL || count == 0)
+    panic("%s", "BOOT-MEM: platform returned no validated memory regions");
 
   /* Reserve a boot module (the release rootfs disk.img, loaded into RAM by
    * GRUB) BEFORE the PMM is built, so it is never handed out as free RAM and
@@ -315,7 +336,9 @@ static void init_memory_core(void) {
    * (aarch64, or the virtio-blk dev loop). */
   {
     uint64_t mb_base, mb_size;
-    if (arch_platform_get_boot_module(&mb_base, &mb_size) && count < 32) {
+    if (arch_platform_get_boot_module(&mb_base, &mb_size)) {
+      if (count >= ARCH_MAX_MEM_REGIONS)
+        panic("%s", "BOOT-MEM: no room for reserved boot-module descriptor");
       regions[count].base = mb_base;
       regions[count].size = mb_size;
       regions[count].type = MEM_REGION_RESERVED;
@@ -338,9 +361,6 @@ static void init_memory_core(void) {
             (unsigned long)regions[i].base,
             (unsigned long)regions[i].size, (unsigned long)end);
     if (regions[i].type == MEM_REGION_USABLE) {
-      if (regions[i].size > UINT64_MAX - boot_usable_bytes)
-        panic("BOOT-MEM: usable byte sum overflow");
-      boot_usable_bytes += regions[i].size;
       if (end > boot_highest_usable_end)
         boot_highest_usable_end = end;
     } else {
@@ -349,6 +369,14 @@ static void init_memory_core(void) {
         boot_highest_reserved_end = end;
     }
   }
+  if (boot_highest_usable_end <= ARCH_RAM_START)
+    panic("%s", "BOOT-MEM: no usable RAM above architecture memory base");
+  boot_highest_usable_end &= ~((uint64_t)PAGE_SIZE - 1ULL);
+  boot_usable_bytes = pmm_calculate_usable_bytes(
+      regions, count, ARCH_RAM_START, boot_highest_usable_end);
+  if (boot_usable_bytes == 0)
+    panic("%s", "BOOT-MEM: usable RAM union is empty after page alignment");
+
   pr_info("BOOT-MEM: regions=%zu usable=%lu MiB usable_span=%lu MiB "
           "base=0x%lx reserved_descriptors=%zu highest_reserved_end=0x%lx\n",
           count, (unsigned long)(boot_usable_bytes / (1024UL * 1024UL)),

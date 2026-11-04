@@ -8,6 +8,8 @@
 #include <kernel/nx_contract.h>
 #include <kernel/pmm.h>
 
+#define ARCH_MAX_MEM_REGIONS 768U
+
 /* IRQ numbers for QEMU virt machine */
 #define PLATFORM_IRQ_TIMER_VIRT 27
 #define PLATFORM_IRQ_TIMER_PHYS 30
@@ -22,6 +24,11 @@
 /* Platform Functions */
 void arch_platform_early_init(void);
 struct mem_region *arch_platform_get_mem_regions(size_t *count);
+
+#ifdef ARCH_AARCH64
+/* Synchronous early-boot physical read with an exact exception fixup. */
+int arch_platform_probe_read32(uint64_t physical, uint32_t *value);
+#endif
 
 /* arch_platform_get_boot_module - report a firmware-loaded boot module (the
  * release rootfs image in RAM): amd64 = GRUB multiboot2 MODULE tag; aarch64 =

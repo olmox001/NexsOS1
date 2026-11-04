@@ -162,3 +162,25 @@ shootdown; (5) buffer-cache hardening (hard cap, per-buffer lock, full sync).
   boot shortly after kmalloc init. The 4GB result on amd64 is therefore **not**
   reproduced on this path (see the cross-cutting boot/arch findings; this is an
   architecture-parity defect, not strictly an `mm` defect).
+
+
+## Addendum BOOT-1 — memory-map ownership update (2026-11-03)
+
+The static review above predates the current BOOT-1 implementation. The PMM
+now receives the FDT usable-region union plus RESERVED overlays for the FDT
+reservation map, static `/reserved-memory` entries and the DTB itself. It counts
+complete usable pages without double-counting overlaps, avoids reserved
+intervals when placing metadata, and reserves every PFN gap outside the usable
+union. Physical ranges outside the architecture direct-map window are rejected
+for usable RAM; reserved overlays are clipped to the represented PFN span.
+
+The VMM direct map is built from usable regions only and checks the same
+architecture window. AArch64's current bootstrap tables map a 128 GiB physical
+window (Device [0,1 GiB), Normal [1,128 GiB)); this is not a 128 MiB RAM size and
+not evidence that RAM exists at every mapped address. The stale `HAL_RAM_SIZE`
+constant has been removed. AMD64 remains based on its Multiboot2/PVH memory map.
+
+Host parser/region tests pass 61 ASan/UBSan checks including the QEMU DTB. The
+new KTEST checks for the PMM region union and DTB PFN exclusion are source-added
+but still require clean QEMU runtime verification on both architectures.
+See `docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.

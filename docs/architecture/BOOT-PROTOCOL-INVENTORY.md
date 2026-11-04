@@ -69,10 +69,13 @@ W^X mappings.
 ### AArch64
 
 The actual kinit entry receives the DTB in X0, uses a temporary 4 KiB-granule
-translation setup, maps early device space and a broad RAM window, enables
-MMU/caches, and jumps to the higher half. The normal VMM later replaces the
-temporary translation tables. Secondary CPU startup uses PSCI CPU_ON and
-passes a per-CPU stack through context_id.
+translation setup, maps L1[0] as Device for [0,1 GiB) and L1[1..127] as Normal
+2 MiB blocks for [1 GiB,128 GiB), enables MMU/caches, and jumps to the higher
+half. This is a 128 GiB mapped physical window, not a 128 MiB RAM size and not
+proof that all mapped addresses contain RAM. The normal VMM later replaces
+the temporary translation tables with the discovered usable-memory map.
+Secondary CPU startup uses PSCI CPU_ON and passes a per-CPU stack through
+context_id.
 
 These mappings are bootstrap-only. NG must build a small, explicit early map
 from validated BootInfo memory and device ranges, then replace it with the
@@ -290,3 +293,52 @@ per-region log; PMM reports a 7168 MiB span with gaps reserved.
 The corrected AMD64 kernel was rebuilt and booted in QEMU. KTEST 8/8,
 NXShell input, nxwins list and focus of window 104, two 1280x800 screenshots,
 30-second supervision, and zero fault matches all passed.
+## 14. BOOT-1 FDT handoff and memory ownership — 2026-11-03
+
+This section supersedes the historical pointer-only gap recorded in §§10 and 12.
+It describes the current implementation state, not a claim that the complete
+multi-architecture BootInfo/UEFI programme is finished.
+
+- AArch64 EFI now passes the validated DTB totalsize in x1; the entry preserves
+  x0/x1 in the 32-byte BootInfo v1 record. C validates the record, invokes
+  `fdt_init(base, available_length)`, then normalizes `fdt_size` to the actual
+  FDT totalsize. Legacy x1=0 remains supported through `fdt_init_legacy()`.
+- `kernel/lib/fdt_parser.c` is a bounded parser shared by memory-region and
+  CPU discovery. It validates header/block/token/string/property/reservation
+  bounds, static `/reserved-memory`, cell widths and structure depth. Dynamic
+  `size`/allocation-based reserved-memory nodes are explicitly rejected.
+- The legacy zero-pointer search preserves the existing 1 GiB window and now
+  probes 4 KiB pages, scans 8-byte-aligned candidates, and validates each
+  candidate's complete blob. AArch64 page probing uses an exact-LDR Data Abort
+  fixup.
+- The PMM input includes FDT reservation-map entries, static reserved-memory,
+  and the DTB itself. PMM counts the usable-region union, reserves all overlays
+  and address-space holes, and places metadata only in a suitable usable
+  interval. VMM maps only usable ranges within the architecture direct-map
+  ceiling.
+- The AArch64 bootstrap map in `start.S` covers the 128 GiB physical window
+  described in §3; it is not a claim that the full window is populated by RAM.
+  `ARCH_PHYS_MAP_LIMIT` is 128 GiB on AArch64 and 256 GiB on AMD64.
+- Host validation: `make test-fdt` compiles with ASan/UBSan and requires the
+  generated QEMU DTB. Last observed result: 61 checks PASS; QEMU DTB 1 MiB,
+  2 resulting regions (RAM + DTB reservation), 4 CPUs. Tests live under
+  `kernel/test/fdt_parser_test.c`.
+
+Runtime status: **PASS (2026-11-03)**. Clean builds completed on AMD64 and
+AArch64; `make test-all` exited 0. AMD64 booted the GRUB BIOS ISO (10/10 KTEST);
+AArch64 booted the GRUB arm64-efi UEFI ISO (11/11 KTEST), with BootInfo source=1
+and x1 carrying the 1 MiB DTB span. The AArch64 KTEST also invokes the legacy
+x1=0 adapter and confirms page-by-page search finds the real QEMU DTB at
+0x40000000 after removing its own synthetic fixture. Both architectures passed
+NXShell readiness, nxwins focus, 30-second soak, 1280x800 screenshot and
+zero-fault scan. Full logs: `docs/report/logs/`; implementation record:
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`. Fuzzing, dynamic reserved-memory,
+generic FDT device discovery, AMD64 UEFI and hardware certification remain
+separate future work.
+
+Detailed implementation and verification record:
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.
+
+Still outside BOOT-1: common AMD64+AArch64 BootInfo with EFI memory map/ACPI/
+framebuffer/modules, AMD64 UEFI adapter, generic FDT device/interrupt discovery,
+continuous fuzzing and real-hardware certification.

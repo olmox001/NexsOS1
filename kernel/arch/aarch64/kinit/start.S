@@ -27,6 +27,7 @@
  */
 
 #include <kernel/cpu.h>
+#include <kernel/boot_info.h>
 
 /*
  * Linux ARM64 Image header consumed by GRUB's `linux` command.
@@ -72,17 +73,22 @@ __arm64_image_header:
 
 /*
  * Kernel entry point
- * Called from bootloader/QEMU with:
- *   x0 = DTB pointer (PHYSICAL)
- *   x1 = 0 (reserved)
+ * Called from a bootloader with:
+ *   x0 = DTB physical address
+ *   x1 = DTB available span from the NexsOS EFI stub; zero for legacy Image
+ *        loaders that only provide the DTB address.
  *
- * QEMU virt machine starts kernel at EL1 directly
+ * The x1 length extension is part of the NexsOS handoff contract. GRUB's
+ * legacy ARM64 Image path continues to pass zero and uses fdt_init_legacy().
  */
 _start:
-    /* Save boot info (DTB physical address) immediately */
+    /* Preserve both handoff arguments before any setup code can clobber them. */
     mov x20, x0
-    adrp x1, boot_info
-    str x0, [x1, :lo12:boot_info]
+    mov x21, x1
+    adrp x2, boot_info
+    add x2, x2, :lo12:boot_info
+    str x20, [x2, #BOOT_INFO_FDT_PHYS_OFFSET]
+    str x21, [x2, #BOOT_INFO_FDT_SIZE_OFFSET]
 
     /* Disable interrupts */
     msr daifset, #0xf
@@ -263,8 +269,11 @@ boot_high_entry:
     add x0, x0, :lo12:__kernel_stack_top
     mov sp, x0
 
-    /* Call kernel main with the DTB physical address */
-    mov x0, x20
+    /* Reload the physical DTB base and available span from BootInfo. */
+    adrp x9, boot_info
+    add x9, x9, :lo12:boot_info
+    ldr x0, [x9, #BOOT_INFO_FDT_PHYS_OFFSET]
+    ldr x1, [x9, #BOOT_INFO_FDT_SIZE_OFFSET]
     bl kernel_main
 
     /* Should never return */
@@ -363,7 +372,8 @@ arch_cpu_wake_secondary:
     ret
 
 /*
- * Get boot info pointer (the stored value is the DTB's PHYSICAL address)
+ * Get legacy boot argument (the stored value is the DTB PHYSICAL address).
+ * The full typed BootInfo record is exported as the boot_info data symbol.
  */
 .global arch_get_boot_info
 arch_get_boot_info:
@@ -380,7 +390,13 @@ arch_get_boot_info:
 
 .global boot_info
 boot_info:
-    .quad 0
+    .quad 0                              /* fdt_phys */
+    .quad 0                              /* fdt_size */
+    .long BOOT_INFO_MAGIC
+    .short BOOT_INFO_VERSION
+    .short BOOT_INFO_SIZE
+    .long BOOT_INFO_SOURCE_UNKNOWN
+    .long 0                              /* flags */
 
 cpu_spin_table:
     .skip MAX_CPUS * 16     /* MAX_CPUS entries */

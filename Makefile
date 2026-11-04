@@ -18,6 +18,7 @@ endif
 
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
+HOST_CC ?= cc
 # Build flavour for userland size control.
 #   make BUILD=debug   → full symbols, no strip (default)
 #   make BUILD=release → --gc-sections + strip
@@ -317,6 +318,7 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/graphics/compositor.c \
     $(KERNEL_DIR)/irq/irq.c \
     $(KERNEL_DIR)/lib/fdt.c \
+    $(KERNEL_DIR)/lib/fdt_parser.c \
     $(KERNEL_DIR)/main.c \
     $(KERNEL_DIR)/drivers/ps2/ps2.c
 
@@ -1152,6 +1154,7 @@ help:
 	@echo "  setup-deps   - Initialize pinned external repositories"
 	@echo "  check-deps   - Verify external repository revisions"
 	@echo "  check        - Verify cross-toolchain and emulator"
+	@echo "  test-fdt     - Run bounded FDT parser host tests and QEMU DTB validation"
 
 # The DOOM make fragments live in the pinned DOOM submodule.  Keep
 # metadata/help/check targets usable before dependency bootstrap on a fresh
@@ -1167,15 +1170,31 @@ else
 $(warning DOOM make fragment is unavailable; run 'make setup-deps' before building the complete userland)
 endif
 
+# Host-side bounded FDT parser tests. The QEMU AArch64 DTB is a mandatory input.
+.PHONY: test-fdt
+test-fdt:
+	@$(MAKE) ARCH=aarch64 build/aarch64/virt.dtb
+	@mkdir -p build/host
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+		-fsanitize=address,undefined -Ikernel/include \
+		kernel/test/fdt_parser_test.c kernel/lib/fdt_parser.c \
+		-o build/host/fdt_parser_test
+	@./build/host/fdt_parser_test build/aarch64/virt.dtb
+
 # Real QEMU hardening run for the selected architecture. Captures the display,
 # checks kernel KTEST and nxwins, then supervises the live guest for 30 seconds.
 .PHONY: test test-all
 test: all boot-iso check
+	@$(MAKE) test-fdt
 	@python3 tools/test_nxadb_capture.py
 	@python3 tools/nxadb.py --arch $(ARCH) test --soak-seconds 30 --display default
 
-# Release-architecture gate. Runs each guest sequentially so QEMU/firmware
-# resources and per-architecture logs never race.
+# Release-architecture gate. Keep only one guest alive at a time. The EXIT
+# trap also stops both sessions if either architecture test fails.
 test-all:
-	@$(MAKE) ARCH=amd64 test
-	@$(MAKE) ARCH=aarch64 test
+	@set -e; \
+	trap 'python3 tools/nxadb.py --arch amd64 stop >/dev/null 2>&1 || true; python3 tools/nxadb.py --arch aarch64 stop >/dev/null 2>&1 || true' EXIT; \
+	$(MAKE) ARCH=amd64 test; \
+	python3 tools/nxadb.py --arch amd64 stop; \
+	$(MAKE) ARCH=aarch64 test; \
+	python3 tools/nxadb.py --arch aarch64 stop

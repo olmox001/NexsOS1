@@ -156,7 +156,9 @@ Stato confermato nel codice attuale:
   unregister; la registrazione è solo prima del bring-up SMP.
 - `driver_register/driver_match_all` fanno binding statico, non un lifecycle
   attach/detach concorrente.
-- Il parser FDT corrente non ha bounds checks completi e non legge reservation
-  map; non può diventare la base per resource discovery sicura senza hardening.
+- **Storico superato da BOOT-1 (2026-11-03):** il parser FDT ora ha bounds
+  checks, reservation map, `/reserved-memory` statico e DTB RESERVED; 61 host
+  checks e runtime QEMU dual-arch PASS. La discovery generica di device/interrupt
+  resta fuori scope e richiede il futuro devmgr/snapshot normalizzato.
 - Il device tree deve essere convertito in snapshot normalizzato, validato e
   kernel-owned; matching e policy appartengono a devmgr.

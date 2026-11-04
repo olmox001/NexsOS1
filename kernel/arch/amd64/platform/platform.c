@@ -122,9 +122,9 @@ struct mb1_info {
 };
 
 /* arch_mem_regions[]: PMM-visible memory map built from boot protocol data.
- * Holds up to 32 regions; populated by arch_platform_early_init and consumed
- * by arch_platform_get_mem_regions (called by vmm/pmm init code). */
-static struct mem_region arch_mem_regions[32];
+ * Holds up to ARCH_MAX_MEM_REGIONS descriptors; populated by
+ * arch_platform_early_init and consumed by vmm/pmm init code. */
+static struct mem_region arch_mem_regions[ARCH_MAX_MEM_REGIONS];
 static size_t arch_region_count = 0;
 
 /* Minimal Multiboot2 tags we care about */
@@ -197,7 +197,7 @@ void arch_platform_early_init(void) {
       uint32_t mmap_len = mb1->mmap_len;
       uint32_t processed = 0;
 
-      while (processed < mmap_len && arch_region_count < 32) {
+      while (processed < mmap_len && arch_region_count < ARCH_MAX_MEM_REGIONS) {
         uint32_t size = *(uint32_t *)(uintptr_t)mmap_ptr;
         struct mb2_mmap_entry *entry =
             (struct mb2_mmap_entry *)(uintptr_t)(mmap_ptr + 4);
@@ -226,13 +226,13 @@ void arch_platform_early_init(void) {
      * Tags are 8-byte aligned; the loop advances by (tag->size + 7) & ~7. */
     uint8_t *mb_data = (uint8_t *)mb_info_ptr;
     struct mb2_tag *tag = (struct mb2_tag *)(mb_data + 8);
-    while (tag->type != MB2_TAG_TYPE_END && arch_region_count < 32) {
+    while (tag->type != MB2_TAG_TYPE_END && arch_region_count < ARCH_MAX_MEM_REGIONS) {
       if (tag->type == MB2_TAG_TYPE_MMAP) {
         struct mb2_tag_mmap *mmap = (struct mb2_tag_mmap *)tag;
         uint32_t entry_size = mmap->entry_size;
         uint32_t num_entries =
             (mmap->size - sizeof(struct mb2_tag_mmap)) / entry_size;
-        for (uint32_t i = 0; i < num_entries && arch_region_count < 32; i++) {
+        for (uint32_t i = 0; i < num_entries && arch_region_count < ARCH_MAX_MEM_REGIONS; i++) {
           struct mb2_mmap_entry *entry =
               (struct mb2_mmap_entry *)((uint8_t *)mmap->entries +
                                         i * entry_size);
@@ -264,7 +264,7 @@ void arch_platform_early_init(void) {
 
     struct hvm_memmap_table_entry *entries =
         (struct hvm_memmap_table_entry *)pvh->memmap_paddr;
-    for (uint32_t i = 0; i < pvh->memmap_entries && arch_region_count < 32;
+    for (uint32_t i = 0; i < pvh->memmap_entries && arch_region_count < ARCH_MAX_MEM_REGIONS;
          i++) {
       arch_mem_regions[arch_region_count].base = entries[i].addr;
       arch_mem_regions[arch_region_count].size = entries[i].len;

@@ -325,7 +325,8 @@ static inline uint64_t arch_impl_get_fault_status(void) {
 
 /* --- Constants --- */
 #define HAL_RAM_START 0x0UL
-#define HAL_RAM_SIZE 0x40000000UL
+#define ARCH_PHYS_MAP_LIMIT (256ULL << 30) /* PMM/direct-map safety ceiling */
+#define ARCH_BOOTSTRAP_PHYS_MAP_LIMIT (1ULL << 30) /* start.S maps PA 0..1 GiB */
 #define HAL_ALIAS_OFFSET 0x0UL
 
 #endif /* _ARCH_AMD64_H */

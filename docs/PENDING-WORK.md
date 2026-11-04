@@ -231,6 +231,7 @@ Dettagli, log e misure: `docs/report/TIMER-SMP-DIAGNOSTIC-2026-11-03.md`.
 - Timer dopo il fix SMP: AMD64 OS1_sleep media 42.15 ms/max 84.32 ms; nanosleep 39.41/61.94 ms. AArch64 OS1_sleep 46.95/132.91 ms; nanosleep 49.25/121.63 ms. `get_time()` gap finale 1/0 ms, 0 regressioni e mismatch.
 - KTEST 8/8, timerdiag PASS, NXShell responsiva e faults=0 su entrambe. Soak NXShell di circa 60 s per arch completato con sei comandi distanziati; entrambi terminati con shell=yes e faults=0. VM arrestate.
 - Nuovi `GFX-TIMING`: `render_hold` 34.7–72.3 ms AMD64 e 40.7–130.0 ms AArch64. `compositor_render()` mantiene `compositor_lock` con IRQ locali disabilitati durante tutto il rendering sincrono; serve refactor con snapshot/ownership e gestione IRQ, non basta rimuovere irqsave.
+- **GFX-LEGACY-TERMINAL-01 — OPEN / INTERMITTENTE:** una clean AArch64 test-all del 2026-11-03 ha registrato SSP: Stack Smash al ritorno da `compositor_window_write()` (PID 8, dopo KTEST 11/11); simbolo ed epilogo verificati con addr2line/disassembly. Un run diagnostico successivo ha passato 30 s con faults=0: non è una chiusura. Il percorso `window_text_write → compositor_window_write → term_write → gl_draw_char` rasterizza mentre `compositor_lock` è acquisito con irqsave. La causa della sovrascrittura canary non è ancora provata. Ipotesi da discriminare: timer IRQ pending subito dopo irqrestore, perché kernel_timer_tick() può schedulare anche frame EL1. Auditare il context-switch e i vincoli pending_reenqueue senza presupporre che sia la causa. Non rimuovere irqsave né rilasciare la lock senza un protocollo di pin/lifetime e serializzazione terminale. Piano, evidenze e gate: `docs/report/GFX-LEGACY-TERMINAL-CONCURRENCY-2026-11-03.md`; chiudere come preflight GFX-NG-0 prima di GFX-NG-1.
 - `make ARCH={amd64,aarch64} all` e `boot-iso` sequenziali PASS anche dopo la modifica condivisa SMP. Restano stress combinato, riduzione critical section/jitter e bug POSIX `time()` ms/sec.
 
 
@@ -301,19 +302,17 @@ Punti emersi dall'audit:
 - `hal_bus.c` è registry statico boot-only (MAX 64); hotplug dinamico non
   implementato. PIANO-DRIVER-MATURITY Fase 2 e Programme G5 restano la fonte
   per il comportamento attach/detach.
-- `fdt.c` ha problemi di bounds/reservation-map esplicitamente documentati;
-  hardening e test fuzz precedono device discovery estesa.
+- **BOOT-1 FDT hardening completato:** parser bounded, reservation-map, `/reserved-memory` statico e DTB reservation; host gate 61/61 PASS sul DTB QEMU; clean build, boot GRUB BIOS AMD64 e GRUB arm64-efi AArch64, EFI x0/x1, legacy search, KTEST, shell/nxwins, soak 30 s e fault scan 0 verificati su entrambe le architetture. Restano fuori scope fuzzing continuo, discovery device generica e certificazione hardware.
 - AArch64 EFI stub è presente, AMD64 ISO attuale è BIOS GRUB: UEFI dual-arch
   non è completo né certificato.
-- `nxadb.py` avvia QEMU con display none; screenshot QMP e sessione visuale
-  sono da implementare e verificare.
+- `nxadb.py` mantiene il default headless e supporta `--display default`; screenshot QMP, manifest, input e round-trip visuali sono stati implementati e verificati nei run documentati sotto.
 - Flag attuali sono già rigorosi; NX_STRICT è opzionale. Nuovi warning e
   sanitizer saranno introdotti in profili misurabili, uno step per volta.
 
 **Sequenza:** baseline e strumenti → syscall/object/registry crosswalk +
 boot/FDT/device audit → hardening → device lifecycle → surface manager +
 diagnostica → display/compositor userland. Entrambe le arch obbligatorie.
-Nessun runtime refactor è stato ancora eseguito in questo blocco.
+BOOT-1 è il primo hardening runtime del percorso legacy avviato da questo programma; le fasi NEXS-NG (object/device/surface manager) restano non implementate e vincolate ai gate successivi.
 
 
 **Crosswalk syscall/object completato come prima ricognizione:** vedere
@@ -338,12 +337,13 @@ in `build/runs/<arch>/`. Vedere
 prima del binding/DMA, mappa BAR con span fisso 128 KiB e non dimensiona BAR
 64-bit completi; USB core dichiara esplicitamente hotplug runtime come Fase 2
 non implementata; GPU registry non drena refcount su unregister. Il nuovo
-device manager non deve riutilizzare queste semantiche. In più UEFI passa solo
-il puntatore DTB in x0, non la lunghezza: BootInfo comune deve trasportare
-`fdt_phys + fdt_size`.
+device manager non deve riutilizzare queste semantiche. BOOT-1 ora trasmette
+anche x1/DtbSpan nel percorso EFI AArch64 e normalizza il record BootInfo v1
+con `fdt_phys + fdt_size`; il record comune multi-arch e gli altri dati EFI
+restano lavoro futuro.
 
 
-**2026-11-03 — boot capture / RAM map / hardening milestone:** nxadb now keeps
+**2026-11-03 — boot capture / RAM map / hardening baseline (pre-BOOT-1):** nxadb now keeps
 per-run UART/QEMU stdout/stderr and manifests, complete bootlog, screenshots,
 QMP input, and 30-second make test gates. AMD64 and AArch64 QEMU runs both pass
 KTEST 8/8, nxwins enumerate+focus, two screenshots and zero faults. Kernel
@@ -351,10 +351,74 @@ default strict/warning gates expanded. BOOT-MEM logs distinguish usable sum,
 usable span and reserved descriptors. See
 docs/architecture/NEXS-NG-DIAGNOSTICS-AND-TESTING.md.
 
-**Blocking next step:** AArch64 UEFI knows DtbSpan but efi_handoff.S currently
-zeros x1; kernel fdt_init accepts pointer only. fdt.c walks structure/string
-blocks without bounds and ignores off_mem_rsvmap and /reserved-memory. The
-DTB itself is not explicitly appended to PMM's reserved map. Implement BOOT-1
-before treating FDT memory/device discovery as hardened. Then DEV-1 typed
-device catalogue and safe hotplug; DEV-2 simulated PCI/virtio/USB/display
-matrix; DIAG-1 central fault/performance event catalogue.
+**BOOT-1 — COMPLETATO (2026-11-03):** il handoff EFI conserva x1/DtbSpan;
+`fdt_init(base, available_length)` usa il parser bounded condiviso; reservation
+map, `/reserved-memory` statico e DTB entrano nei descrittori RESERVED del PMM.
+Il test host ASan/UBSan ha superato 61 controlli includendo il DTB QEMU reale
+(1 MiB, 4 CPU). Clean build AMD64+AArch64, ISO GRUB BIOS/arm64-efi, boot EFI
+AArch64, KTEST (10/10 AMD64, 11/11 AArch64), fallback legacy page-by-page,
+NXShell, nxwins focus, soak 30 s, screenshot 1280×800 e fault scan 0 sono PASS.
+Log completi e dettagli in `docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md` e
+`docs/report/logs/`. DEV-1/DEV-2/DIAG-1 restano le fasi successive e non sono
+state avviate da questo gate.
+
+
+## 17. BOOT-1 — DTB/FDT handoff, ricerca e ownership PMM (COMPLETATO)
+
+BOOT-1 è stato completato sul kernel legacy esistente: non rimuove Image+DTB/GRUB,
+non sostituisce Multiboot2/PVH su AMD64 e non avvia la migrazione a devmgr o ad
+altri servizi NEXS-NG.
+
+**Implementato e verificato:** handoff EFI AArch64 x0/x1; BootInfo v1; adapter
+legacy x1=0; parser FDT bounded; reservation map, /reserved-memory statico e
+DTB RESERVED; region union/overlap/hole handling nel PMM; usable-only VMM map;
+ricerca legacy page-by-page entro la finestra originaria da 1 GiB. Il test host
+è in `kernel/test/fdt_parser_test.c`; `make test-fdt` genera il DTB QEMU come
+input obbligatorio e ha superato 61 controlli ASan/UBSan. I test runtime sono
+PASS su AMD64 e AArch64, incluso il ramo legacy x1=0 esercitato da KTEST.
+
+**Restano fuori scope e aperti per fasi dedicate:** discovery generica device,
+interrupti e phandle; riserve dinamiche size-based; fuzzing continuo/libFuzzer;
+certificazione su hardware fisico. Non sono gate bloccanti per chiudere BOOT-1.
+
+Fonte di dettaglio e risultati: `docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.
+
+## 18. DEV-1 — Device discovery catalogue and lifecycle audit (AUDIT COMPLETATO, IMPLEMENTAZIONE NON AVVIATA)
+
+La ricognizione source-level è stata completata su HAL registry, driver binding,
+FDT parser, PCI AMD64/AArch64, USB HCD/core e GPU registry. Il report conserva
+i riferimenti e distingue codice legacy effettivo, decisioni architetturali
+NEXS-NG e lavoro ancora da implementare:
+
+`docs/report/DEV-1-DEVICE-DISCOVERY-AUDIT-2026-11-03.md`
+
+Conferme principali:
+- il parser FDT BOOT-1 non esporta ancora nodi device generici; ECAM, finestre
+  PCI, slot VirtIO-MMIO e IRQ AArch64 sono ancora configurati da costanti;
+- il registro HAL legacy è statico/append-only (64 elementi), senza remove,
+  generation o refcount; `hal_device_t` e `struct hal_device` sono due
+  descrittori distinti;
+- il matching driver legacy è una scansione esplicita chiamata da `usb_init`,
+  non un attach/hotplug runtime;
+- entrambi i percorsi PCI abilitano BusMaster prima del binding/DMA ownership;
+  BAR sizing/mapping non è ancora completo;
+- USB runtime disconnect/reconnect e GPU lifetime drain non sono implementati.
+
+**Sequenza DEV-1:** parser FDT generic node/property bounded → compatible,
+status, phandle e raw resource tuples → traduzione `reg` tramite `ranges`
+validati → decode interrupt parent/cells → host tests ASan/UBSan → confronto
+con le costanti QEMU-virt attuali. Il parser produce metadata non privilegiati:
+nessuna capability MMIO/IRQ/DMA viene concessa dalla discovery.
+
+DEV-2 (PCI resource ownership/BAR lifecycle) e DIAG-1 (snapshot/eventi device)
+restano gate distinti. USB hotplug, GPU refcount/quiescence e il servizio
+userland `devmgrd` non vanno accorpati alla modifica parser.
+
+
+## 19. Input-time SSP / kernel context fault (OPEN — 2026-11-04)
+
+Una sessione interattiva AArch64 ha riprodotto un panic mentre NXShell stava ancora ricevendo caratteri: lo screenshot prova che cat /reg/system.version non è stato eseguito. Non classificare il fault come VFS/registry read. La seriale riporta instruction abort a ELR/FAR zero, PID 32002 (idle CPU2 nella tabella nxproc) e SSP return address 0xffff0000400a0ab4, simbolizzato come sys_registry+0x3b4. Il ramo del syscall e il writer della corruzione non sono noti.
+
+Evidenze complete: docs/report/GFX-INPUT-SSP-FAULT-2026-11-04.md e docs/report/logs/GFX-runtime-fault-aarch64-20261104-001123/. È un evento distinto dal precedente SSP in compositor_window_write().
+
+**Prossimo gate:** aggiungere diagnostica SSP sicura con caller FP/LR e stack bounds, preservare il primo pt_regs, aggiungere trace per-CPU delle transizioni scheduler (prev/next, frame EL0/EL1, stack, pending_reenqueue/deferred reap) e trace input a sequenza limitata. Poi riprodurre digitazione QMP, focus/mouse e registry reads. Non modificare VFS/registry né togliere lock compositor prima di aver identificato il writer. Clean build e test-all AMD64+AArch64 dopo ogni fix.

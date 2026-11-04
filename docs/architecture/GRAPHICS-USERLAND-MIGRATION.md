@@ -98,6 +98,7 @@ The compositor is independently scheduled and owns its frame pacing/vsync subscr
 - Keep the current legacy kernel as the bootable reference; do not delete or mass-move its files.
 - Map every graphics syscall, object type, caller, IRQ path, GPU provider and build target to the new boundary.
 - Record current pixel formats, resize semantics, input delivery, window ownership and failure behavior.
+- Before relying on the legacy compatibility broker, close the legacy terminal/concurrency preflight: `window_text_write → compositor_window_write → term_write → font rasterization`, compositor/terminal lock ownership, IRQ masking, actual backing-buffer lifetime, and the intermittent AArch64 SSP failure. Evidence and acceptance tests: `docs/report/GFX-LEGACY-TERMINAL-CONCURRENCY-2026-11-03.md` and `docs/PENDING-WORK.md` §14. This is a correctness gate, not permission to move/delete the legacy compositor or change the approved ring-3 target.
 - Acceptance: ABI inventory and dependency graph reviewed; current AMD64/AArch64 baseline remains buildable.
 
 ### GFX-NG-1 — kernel buffer/surface manager

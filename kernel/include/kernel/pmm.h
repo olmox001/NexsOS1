@@ -42,8 +42,8 @@
 /* Memory zones */
 /* NOTE(MM-PMM-04): pmm_alloc_pages() and pmm_alloc_aligned() only search
  * ZONE_NORMAL; contiguous DMA-zone allocations are not supported. */
-#define ZONE_DMA 0    /* 0-16MB, for legacy DMA */
-#define ZONE_NORMAL 1 /* 16MB-end, normal allocations */
+#define ZONE_DMA 0    /* First 16 MiB above MEMORY_BASE (PFN-relative) */
+#define ZONE_NORMAL 1 /* Remaining represented PFNs above the DMA window */
 #define ZONE_COUNT 2
 
 /* Page flags */
@@ -126,9 +126,12 @@ struct mem_region {
 
 /* Initialize PMM with memory regions */
 void pmm_early_init(struct mem_region *regions, size_t count);
+uint64_t pmm_calculate_usable_bytes(struct mem_region *regions, size_t count,
+                                    uint64_t base, uint64_t span_end);
 void pmm_init(struct mem_region *regions, size_t count);
-/* Physical end address of the PMM metadata (page_array + bitmaps), valid after
- * pmm_early_init(); vmm_init() maps the bootstrap window up to here. */
+/* Physical end address of PMM metadata (page_array + bitmaps), valid after
+ * pmm_early_init(). Placement must remain inside the architecture bootstrap
+ * physical map because metadata is touched before the full VMM map is installed. */
 uint64_t pmm_metadata_top(void);
 /* NOTE(MM-PMM-01): pmm_init_region() is a stub; it only prints and returns. */
 void pmm_init_region(uint64_t base, uint64_t size);

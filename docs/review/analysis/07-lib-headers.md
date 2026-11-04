@@ -52,12 +52,14 @@ user/sys/lib/lib.c ──▶ _sys_* wrappers ──▶ syscall instruction
 FDT pipeline (aarch64 only):
 
 ```
-QEMU DTB ──▶ kernel_main (x0_arg) ──▶ fdt_init(boot_fdt_ptr)
-                                              │
-                    fdt_get_mem_regions ◀──────┤──▶ fdt_count_cpus
-                                              │
-                    aarch64/platform.c ◀──────┘
-                    (mem-regions → pmm, cpu count → SMP init)
+Legacy Image/GRUB: x0, x1=0 ──▶ fdt_init_legacy() ─┐
+EFI AArch64: x0 + x1/DtbSpan ──▶ BootInfo v1 ──────┴──▶ fdt_init(base, length)
+                                                          │
+                                               fdt_parser_validate()
+                                                          │
+                                     fdt_get_mem_regions / fdt_count_cpus
+                                                          │
+                                         aarch64/platform.c → PMM / SMP
 ```
 
 ---
@@ -71,7 +73,7 @@ QEMU DTB ──▶ kernel_main (x0_arg) ──▶ fdt_init(boot_fdt_ptr)
 - **stack_protector.c**: `__stack_chk_fail` panics with the return address, surfacing the corruption site.
 - **utf8.c**: Handles 1-, 2-, 3-, and 4-byte sequences; validates continuation bytes on all paths.
 - **ktest**: The `.ktests` ELF section trick correctly auto-collects test cases; `ktest_run_all` is actually called at boot (`kernel/main.c:87`).
-- **fdt.c**: Correctly implements big-endian ↔ host byte-swap for the DTB fields; the `fdt_get_mem_regions` parser handles `#address-cells` and `#size-cells` from the root node, supporting both 32- and 64-bit address/size encodings.
+- **FDT (post-BOOT-1)**: byte parsing is separated into `fdt_parser.c`; header/block/token/string/property bounds, memory/CPU nodes, reservation map and static `/reserved-memory` are validated. `fdt.c` is the physical-address/legacy adapter and PMM conversion layer. Host ASan/UBSan: 61 checks PASS including QEMU DTB; runtime dual-arch PASS (AMD64 10/10 KTEST, AArch64 11/11 KTEST).
 - **Shared type foundation**: `posix_types.h` is included by both `kernel/include/kernel/types.h` and `include/api/os1.h`, giving a single source of `pid_t`, `off_t`, `ino_t`, `ipc_message`, etc. across the kernel/userland boundary.
 
 ---
@@ -88,7 +90,7 @@ The public API has no versioning, no stable syscall ABI guarantee, and multiple 
 
 ### 4.3 FDT is aarch64-only; AMD64 uses no device tree
 
-The amd64 implementations of `fdt_init` and `fdt_find_in_memory` are explicit stubs returning `-1`/`0`. Memory detection on amd64 uses multiboot2. FDT is used productively on aarch64: it drives `pmm` memory-region discovery and SMP CPU counting. The parser is minimal — it covers exactly the two properties the system needs.
+The amd64 implementations of `fdt_init` and `fdt_find_in_memory` are explicit stubs returning `-1`/`0`. Memory detection on amd64 uses multiboot2. FDT is used productively on aarch64: it drives `pmm` memory-region discovery and SMP CPU counting. At the time of this static review the parser was minimal; BOOT-1 has since added a bounded parser and memory reservations. Generic device/interrupt/compatible discovery remains out of scope.
 
 ---
 
@@ -109,10 +111,10 @@ The amd64 implementations of `fdt_init` and `fdt_find_in_memory` are explicit st
 | LIB-REG-02 | W3 | SECURITY | `kernel/lib/registry.c:10` | No permission check on registry writes. Any process can call `sys_registry(REG_OP_WRITE, "system.hostname", ...)` and overwrite system configuration. The comment defers this to "if needed later." |
 | LIB-REG-03 | W1 | BAD-IMPL | `kernel/lib/registry.c:13,16` | `<kernel/vmm.h>` is included twice. |
 | LIB-REG-04 | W2 | MISSING | `kernel/lib/registry.c` | No API to enumerate keys (list all entries). Userland cannot discover the registry contents without knowing key names in advance. |
-| LIB-FDT-01 | W2 | REFINE | `kernel/lib/fdt.c:96-167` | No bounds-checking of offsets against `fdt_ptr->totalsize`. A malformed DTB (even from QEMU) can produce an out-of-bounds `p`/`end` pointer dereference in `fdt_get_mem_regions`. |
-| LIB-FDT-02 | W1 | MISSING | `kernel/lib/fdt.c` | Memory reservation map (`off_mem_rsvmap`) is never parsed. If the firmware reserves RAM regions the kernel could overwrite them. |
+| LIB-FDT-01 | W2 | FIXED (BOOT-1) | `kernel/lib/fdt_parser.c` + `kernel/lib/fdt.c` | Header, block, token, string and property offsets are validated against the bounded blob; host ASan/UBSan 61 checks and runtime dual-arch PASS. |
+| LIB-FDT-02 | W1 | FIXED (BOOT-1) | `kernel/lib/fdt_parser.c` + PMM | Reservation map, static `/reserved-memory` and DTB span are converted to RESERVED descriptors; KTEST verifies DTB PFNs are not allocated on AArch64. |
 | LIB-FDT-03 | W1 | STUB | `kernel/lib/fdt.c:48-52,73-77` | AMD64 implementations of `fdt_init` and `fdt_find_in_memory` return -1/0 unconditionally. This is expected behavior; the stubs are explicitly guarded by `#else`. |
-| LIB-FDT-04 | W2 | SECURITY | `kernel/lib/fdt.c:55-70` | `fdt_find_in_memory` scans raw RAM byte-by-byte checking for a magic value but does **not** then validate `totalsize` or structure offsets of the candidate. A crafted RAM layout could produce a false positive pointing into arbitrary memory. |
+| LIB-FDT-04 | W2 | FIXED (BOOT-1) | `kernel/lib/fdt.c` + `kernel/lib/fdt_parser.c` | Legacy scan is page-by-page in the original 1 GiB window; each 8-byte-aligned candidate is fully validated before acceptance. KTEST finds the real QEMU DTB after removing its own fixture. |
 | LIB-FDT-05 | W0 | DOC | `kernel/lib/fdt.c:31-32` | Comment "// ... just manual print for now to avoid dependency on sprintf if not ready" is stale; `printk`/`snprintf` are fully available at the point `fdt_init` is called. |
 | LIB-KTEST-01 | W3 | BUG | `kernel/lib/ktest.c:23-26,29` | If a test function panics or returns early via `KASSERT`, `ktest_run_all` still increments `passed`. The final summary always prints N PASSED / 0 FAILED regardless of actual pass/fail count. |
 | LIB-UTF8-01 | W2 | SECURITY | `kernel/lib/utf8.c:17-29` | Continuation bytes in 2-, 3-, and 4-byte sequences are validated for the `0x80` pattern, but the function reads `s[1]`, `s[2]`, `s[3]` without knowing the string length. A non-NUL-terminated input or a partial sequence at a buffer boundary will read past the end. |
@@ -205,9 +207,9 @@ The ABI looks POSIX-like enough to attract ports, but the divergences will produ
 
 `fdt.c` provides four functions. On AArch64 (`#ifndef ARCH_AMD64`):
 
-- `fdt_init(addr)`: Validates the `0xd00dfeed` magic, stores `fdt_ptr`. Falls back to a RAM scan via `fdt_find_in_memory` if `addr == 0`.
-- `fdt_find_in_memory(start, end)`: Byte-scans aligned addresses for the big-endian magic (`0xedfe0dd0`); does not validate `totalsize` or structure offsets of the candidate (LIB-FDT-04).
-- `fdt_get_mem_regions`: Walks the structure block, finds all `memory@*` nodes, reads `reg` properties respecting `#address-cells`/`#size-cells`. Correctly handles 32- and 64-bit encodings. Used by `arch/aarch64/platform.c:46` to feed `pmm`.
+- `fdt_init(addr, available_length)`: validates the physical span, parses it with the bounded FDT parser, and stores the validated blob/size; the explicit `fdt_init_legacy()` adapter preserves pointer-only and zero-pointer legacy protocols.
+- `fdt_find_in_memory(start, end)`: historical behavior was a magic-only byte scan (LIB-FDT-04); BOOT-1 replaces it with page-by-page scanning and full bounded candidate validation.
+- `fdt_get_mem_regions`: consumes the already validated parser result, returns usable memory plus RESERVED overlays (reservation map, static `/reserved-memory`, DTB span), and feeds PMM through `arch/aarch64/platform.c`.
 - `fdt_count_cpus`: Counts `cpu@*` nodes under the `cpus` node. Used by `arch/aarch64/platform.c:112` to determine SMP count.
 
 On AMD64: `fdt_init` and `fdt_find_in_memory` return `-1`/`0` unconditionally. No device-tree is used. Memory comes from multiboot2.
@@ -216,14 +218,14 @@ On AMD64: `fdt_init` and `fdt_find_in_memory` return `-1`/`0` unconditionally. N
 
 - **No IRQ controller discovery.** The GIC base address and interrupt map are not parsed from the DT. These are currently hardcoded in `arch/aarch64/platform.c` via `HAL_*` constants.
 - **No `compatible` string matching.** There is no generic device probing mechanism; drivers must know their MMIO addresses a priori from HAL constants, not from DT data.
-- **No reserve map** (`off_mem_rsvmap`) is parsed (LIB-FDT-02). Firmware-reserved RAM (e.g. ATF secure memory, GPU memory carveout) can be overwritten by the PMM.
-- **No bounds validation** on structure offsets (LIB-FDT-01). A malformed DTB can produce out-of-bounds reads; however, in the current boot path the DTB is the QEMU-generated blob, which is well-formed. Risk is low for now but rises if real hardware is targeted.
+- **Reservation map:** parsed and emitted as RESERVED descriptors; static `/reserved-memory` and the DTB allocation are also reserved by BOOT-1.
+- **Bounds:** the parser now rejects malformed/truncated blocks, tokens, strings, properties and region tuples before the PMM consumes them. Continuous fuzzing and real-hardware coverage remain future work.
 
 **Who calls what:**
 
-The call chain is: `kernel_main` (aarch64) → `fdt_init(x0_arg)` → `arch_platform_early_init()` → `aarch64/platform.c:fdt_get_mem_regions` + `fdt_count_cpus`. The FDT result feeds directly into PMM initialization, making it on the critical boot path for aarch64. On amd64, `main.c:79-80` sets `boot_fdt_ptr = 0` and calls `fdt_init(0)` which immediately returns `-1`.
+Historical call-chain note: the original path called `fdt_init(x0_arg)` directly. BOOT-1 now validates the AArch64 BootInfo v1 x0/x1 contract, invokes `fdt_init(base, available_length)`, and shares the bounded parser between memory-region and CPU discovery; the legacy x1=0 adapter remains explicit. The FDT result still feeds PMM on AArch64. AMD64 intentionally retains Multiboot2/PVH and explicit FDT stubs.
 
-**Assessment:** FDT handling is purposefully minimal — it extracts exactly what the kernel needs (memory map, CPU count) and no more. This is appropriate for the project's current scope. The gaps (IRQ, `compatible`, reserve map) will matter when targeting real AArch64 hardware beyond the `virt` QEMU machine.
+**Assessment:** FDT handling is purposefully minimal — it extracts exactly what the kernel needs (memory map, CPU count) and no more. This is appropriate for the project's current scope. The remaining gaps (IRQ controller, `compatible` matching, arbitrary bus ranges/phandles) matter when targeting real AArch64 hardware beyond the `virt` QEMU machine.
 
 ---
 
@@ -297,3 +299,19 @@ The following would be needed for a **[verified]** pass:
 - Build both arches with `-Werror`; the broken `kernel/elf.h` guard (ABI-HDR-01) will cause the missing `#define _KERNEL_ELF_H` to allow `include/api/elf.h` (which uses the *same* guard token) to set the flag first. A subsequent include of `kernel/elf.h` in the same TU is then silently skipped, leaving `EM_X86_64` undefined — which breaks `#define ARCH_TYPE EM_X86_64` in `kernel/arch/amd64/include/arch/arch.h:9`. The `sin_fp`/`cos_fp`/`fixmul` redeclaration in `os1.h` may produce conflicting-type warnings under `-Wstrict-prototypes`.
 - Runtime: call `sin_fp(205887)` (the correct numeric value of π × 2^16) from a ktest and assert the result is ≈ 0 (within ±64 in 16.16 representation). In a kernel build with `FP_PI = 411775`, the reflection step computes `411775 − 205887 = 205888` and Taylor-evaluates at ≈ π, returning ≈ 34800 (~0.53), so the assertion fails — exposing LIB-MATH-01. Using `sin_fp(FP_PI)` would not expose the bug because the broken reflection maps 411775→0 correctly by accident. The bug is also confirmed by the 3D renderer caller (`kernel/graphics/draw3d.c:114-115`) using `k_sin_fp`/`k_cos_fp`, which delegate to `sin_fp`/`cos_fp` — all rotation math in the kernel is wrong for angles in (0, 2π].
 - Runtime: call `registry_set("x", "y")` from a non-root process and assert it fails. Currently it succeeds (LIB-REG-02).
+
+
+## 8. BOOT-1 source/runtime addendum — 2026-11-03
+
+This file's findings table remains a historical static-review snapshot; its
+original line numbers and statements describe the pre-BOOT-1 tree. The current
+FDT implementation is described in `docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`
+and the current boot inventory. In particular, LIB-FDT-01/02/04 are now
+implemented at source/host-test level; runtime boot, PMM PFN exclusion and the
+legacy physical search still require QEMU verification. LIB-FDT-03 remains an
+intentional AMD64 stub because AMD64 uses its existing boot memory-map path.
+
+The host parser is now a separate pure module (`kernel/lib/fdt_parser.c`) with
+its tests under `kernel/test/`; the physical adapter remains in `kernel/lib/fdt.c`.
+The 61-check ASan/UBSan result includes the generated QEMU DTB. It does not
+replace the required clean build and runtime tests on both architectures.

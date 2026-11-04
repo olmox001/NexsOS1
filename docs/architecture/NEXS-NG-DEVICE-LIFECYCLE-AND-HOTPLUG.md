@@ -19,7 +19,7 @@ Il grafo è una vista normalizzata, non un duplicato delle tabelle firmware. Ogn
 - LIB-FDT-04: ricerca in RAM valida solo il magic;
 - string offset e terminatori non validati in modo completo.
 
-L'attuale `fdt_init` dereferenzia header prima di verificare che l'intera struttura rientri in una regione accessibile. `fdt_get_mem_regions` usa off_dt_struct/size_dt_struct e string offsets senza bounds checks completi. Il kernel non deve passare da questo parser a discovery completa prima di risolvere i problemi.
+**Finding storico dell'audit iniziale, superato da BOOT-1 (2026-11-03):** l'adapter FDT ora valida il range fisico e delega a `fdt_parser.c`, che controlla header, blocchi, token, stringhe, proprietà e reservation map entro i bounds del blob. `/reserved-memory` statico e DTB sono inclusi nei descrittori RESERVED del PMM; il fallback legacy valida il candidato completo. Questo non implementa ancora discovery generica `compatible`/interrupt/phandle né autorizza a passare direttamente a devmgr.
 
 ### HAL registry
 `kernel/core/hal_bus.c` è un array flat `hal_devices[]`, MAX 64, senza rimozione; il commento dice che registrazione è solo pre-SMP e non lockata. Questo non è un device manager runtime.
@@ -186,3 +186,35 @@ quiescence before resource destruction.
    from the NG architecture entirely.
 5. Build a virtual hotplug test with in-flight input and GPU requests; QEMU
    unplug is not considered safe until queue, IRQ and DMA quiescence is proven.
+## 11. BOOT-1 FDT implementation update — 2026-11-03
+
+The legacy FDT hardening prerequisites above are partially implemented in
+`kernel/lib/fdt_parser.c` and `kernel/lib/fdt.c`; this is not yet generic
+device discovery and does not close the full device-manager prerequisite list.
+
+Implemented in BOOT-1:
+- bounded AArch64 EFI x0/x1 handoff and BootInfo v1; x1=0 remains an explicit
+  compatibility adapter for legacy Image/GRUB paths;
+- bounded header, block, token, string, property, cell and structure parsing;
+- reservation-map parsing, static `/reserved-memory` `reg` tuples, DTB span
+  reservation and fail-closed rejection of dynamic `size`/allocation nodes;
+- shared validated tree walk for memory regions and CPU counting;
+- host ASan/UBSan suite: 61 checks PASS including the generated QEMU DTB.
+
+Not implemented by BOOT-1:
+- generic `compatible`, interrupt-map, phandle, clock/reset/power-domain and
+  arbitrary bus `ranges` discovery;
+- EFI memory-map ingestion into PMM, ACPI/RSDP normalization, complete module
+  handoff and framebuffer BootInfo;
+- full owned copy/snapshot before reclaiming all firmware/bootloader memory;
+- continuous fuzzing and real-hardware coverage.
+
+The page-by-page scan is retained only for the legacy zero-pointer case and
+preserves the existing bounded 1 GiB QEMU-virt search window. It is not used to
+replace a valid loader-provided DTB pointer/length.
+
+BOOT-1 runtime status: **PASS (2026-11-03)**. Clean builds and QEMU tests pass
+on AMD64 and AArch64; AArch64 GRUB arm64-efi/UEFI proves non-zero x1/DtbSpan,
+and its KTEST exercises the legacy x1=0 search. Full logs and metrics are in
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md` and `docs/report/logs/`.
+DEV-1 device catalogue and hotplug remain separate next-phase work.

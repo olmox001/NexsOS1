@@ -53,6 +53,8 @@
 #include <kernel/sched.h>
 
 #include <kernel/arch.h>
+#include <kernel/memlayout.h>
+#include <kernel/platform.h>
 #include <kernel/vmm.h>
 
 /* External definitions from core */
@@ -179,6 +181,48 @@ void arch_cpu_init(void) {
 volatile bool probe_in_progress = false;
 volatile bool probe_failed = false;
 
+extern char aarch64_probe_read32_instruction[];
+extern char aarch64_probe_read32_fixup[];
+
+/*
+ * arch_platform_probe_read32 - read one physical word through the early direct
+ * map, recovering only from a Data Abort at the exact LDR instruction.
+ *
+ * Callers are early-boot, primary-CPU code with IRQs masked. This is not a
+ * general MMIO accessor; the caller must restrict probes to a platform-defined
+ * RAM window. The exact-PC fixup prevents unrelated faults from being hidden.
+ */
+__attribute__((noinline))
+int arch_platform_probe_read32(uint64_t physical, uint32_t *value) {
+  const uint64_t phys_limit = ARCH_PHYS_MAP_LIMIT;
+  if (!value || (physical & 3ULL) != 0 ||
+      physical < ARCH_RAM_START ||
+      physical > phys_limit - sizeof(uint32_t) || probe_in_progress)
+    return -1;
+
+  uint32_t read_value = 0;
+  uintptr_t virtual_address = (uintptr_t)phys_to_virt(physical);
+  probe_failed = false;
+  probe_in_progress = true;
+  __asm__ volatile("" ::: "memory");
+  __asm__ volatile(
+      ".global aarch64_probe_read32_instruction\n"
+      "aarch64_probe_read32_instruction:\n"
+      "ldr %w0, [%1]\n"
+      ".global aarch64_probe_read32_fixup\n"
+      "aarch64_probe_read32_fixup:\n"
+      : "=&r"(read_value)
+      : "r"(virtual_address)
+      : "memory");
+  __asm__ volatile("" ::: "memory");
+  probe_in_progress = false;
+
+  if (probe_failed)
+    return -1;
+  *value = read_value;
+  return 0;
+}
+
 /*
  * sync_handler - C-level synchronous exception handler called from exception.S.
  *
@@ -206,8 +250,8 @@ volatile bool probe_failed = false;
  *   other  Unhandled — print and panic (kernel) or terminate (user).
  *
  * Probe recovery path (probe_in_progress == true):
- *   If a Data or Instruction Abort occurs while probe_in_progress is set,
- *   probe_failed is marked and ELR_EL1 is advanced by 4 to skip the faulting
+ *   If a Data Abort occurs at the exact probe LDR while probe_in_progress is
+ *   set, probe_failed is marked and ELR_EL1 is moved to the LDR fixup label
  *   single instruction.  This is the only case where the handler returns early
  *   without the full fault-classification logic.
  *   NOTE(ARCH-05): See probe_in_progress declaration for caveats on real
@@ -265,18 +309,13 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
     arch_cpu_halt();
   }
 
-  /* Probe recovery: if a Data Abort (EC=0x24/0x25) or Instruction Abort
-   * (EC=0x20/0x21) fires while a RAM probe is in progress, set probe_failed
-   * and skip the faulting instruction by advancing ELR_EL1 by 4.
-   * The probe load is always a single 4-byte instruction (ldr/ldur), so +4 is
-   * safe. NOTE(ARCH-05): On real hardware with speculative loads this may not
-   * be sufficient; a proper exception-table fixup (like Linux's extable) is
-   * safer. */
+  /* Recover only the exact physical-probe LDR. Do not hide an unrelated
+   * kernel Data Abort merely because a probe flag is momentarily set. */
   if (probe_in_progress &&
-      (ec == 0x24 || ec == 0x25 || ec == 0x20 || ec == 0x21)) {
+      (ec == 0x24 || ec == 0x25) &&
+      elr == (uint64_t)(uintptr_t)aarch64_probe_read32_instruction) {
     probe_failed = true;
-    /* Skip the faulting instruction (increment ELR by 4) */
-    frame->elr += 4;
+    frame->elr = (uint64_t)(uintptr_t)aarch64_probe_read32_fixup;
     fault_exit();
     /* If the vector switched us onto the per-CPU fault stack, the eret
      * epilogue computes the final SP as frame+816 — which would resume the

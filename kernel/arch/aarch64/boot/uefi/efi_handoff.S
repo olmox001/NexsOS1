@@ -90,8 +90,8 @@ nexs_efi_handoff:
 .Lafter_disable:
     dsb     sy
     isb
-    mov     x0, x20                  /* Linux ARM64 convention: x0 = FDT */
-    mov     x1, xzr
+    mov     x0, x20                  /* DTB physical address */
+    mov     x1, x22                  /* NexsOS: validated DTB available span */
     mov     x2, xzr
     mov     x3, xzr
     br      x19                      /* execute Image header at load PA */

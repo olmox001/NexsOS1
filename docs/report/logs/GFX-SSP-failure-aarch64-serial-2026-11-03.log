@@ -1,0 +1,277 @@
+UEFI firmware (version edk2-stable202408-prebuilt.qemu.org built at 16:28:50 on Sep 12 2024)
+ArmTrngLib could not be correctly initialized.
+Error: Image at 0017FDB6000 start failed: 00000001
+Error: Image at 0017FD6D000 start failed: Not Found
+Error: Image at 0017FCBA000 start failed: Unsupported
+Error: Image at 0017FC3F000 start failed: Not Found
+Error: Image at 0017FB65000 start failed: Aborted
+Tpm2SubmitCommand - Tcg2 - Not Found
+Tpm2GetCapabilityPcrs fail!
+Tpm2SubmitCommand - Tcg2 - Not Found
+Image type X64 can't be loaded on AARCH64 UEFI system.
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU QEMU CD-ROM " from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0036000A00000000)/Scsi(0x0,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU QEMU CD-ROM " from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0036000A00000000)/Scsi(0x0,0x0)
+[0m[30m[40m[2J[01;01H[0m[37m[40mNEXSOS_GRUB_ARM64_CHAINLOAD_STUB
+NEXSOS_EFI_STUB_START
+NEXSOS_KERNEL_IMAGE_LOADED
+NEXSOS_DTB_EMBEDDED
+NEXSOS_EXIT_BOOT_SERVICES
+[C0] [INFO] Console driver initialized
+[C0] 
+[C0] ========================================
+[C0]  AArch64 NexsOS1 v0.0.5.5
+[C0] ========================================
+[C0] 
+[C0] [INFO] SSP: stack canary reseeded from arch entropy
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] CPU: Primary core 0 initialized
+[C0] [INFO] CPU: Vector Table set to 0xffff000040081000
+[C0] [INFO] FDT: validated base=0x17a5b8000 size=0x100000 version=17
+[C0] [INFO] BootInfo: source=1 DTB=0x17a5b8000 size=0x100000 flags=0x1
+[C0] [INFO] Kernel: Entry x0 = 0x17a5b8000 x1 = 0x100000
+PLATFORM: arch_platform_early_init starting
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [INFO] AArch64: validated FDT at 0x17a5b8000 size=0x100000
+[C0] [INFO] Initializing IRQ...
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [INFO] IRQ driver initialized via HAL
+[C0] [INFO] GIC: 256 interrupt lines
+[C0] [INFO] GIC: Distributor initialized
+[C0] [INFO] Initializing timer...
+[C0] [INFO] Timer: Frequency 62500000 Hz
+[C0] [INFO] Timer: System tick rate 1000 Hz
+[C0] [INFO] Timer driver initialized via HAL
+[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x189afef8, Ctl: 0x1
+[C0] [INFO] Initializing memory...
+[C0] [INFO] AArch64: FDT region [0] type=1 0x40000000-0x180000000 size=0x140000000
+[C0] [INFO] AArch64: FDT region [1] type=2 0x17a5b8000-0x17a6b8000 size=0x100000
+[C0] [INFO] BOOT-MEM: region[0] type=1 base=0x40000000 size=0x140000000 end=0x180000000
+[C0] [INFO] BOOT-MEM: region[1] type=2 base=0x17a5b8000 size=0x100000 end=0x17a6b8000
+[C0] [INFO] BOOT-MEM: regions=2 usable=5120 MiB usable_span=5120 MiB base=0x40000000 reserved_descriptors=1 highest_reserved_end=0x17a6b8000
+[C0] [INFO] PMM: Metadata initialized at 0x40a54000 (41120 KB)
+[C0] [INFO] PMM: Usable RAM: 5120 MB (address span 5120 MB; MEMORY_BASE=0x40000000)
+[C0] [INFO] PMM: 5120 MB usable, 5069 MB free (span 5120 MB; gaps/reservations excluded)
+[C0] [INFO] PMM: DMA zone: 128 pages, Normal zone: 1297540 pages
+[C0] [INFO] VMM: Initializing MMU (Phase 1: Bootstrap)...
+[C0] [INFO] VMM: bootstrap usable region[0] 0x40000000-0x180000000 (5120 MiB)
+[C0] [INFO] AArch64 VMM: Installing kernel PGD 0x4327c000 in TTBR1
+[C0] [INFO] AArch64 VMM: Kernel PGD active (TTBR1).
+[C0] [INFO] VMM: Bootstrap complete; usable intervals mapped without holes.
+[C0] [INFO] VMM: Performing RAM-aware dynamic remapping...
+[C0] [INFO] VMM: dynamic usable region[0] 0x40000000-0x180000000 (5120 MiB)
+[C0] [INFO] VMM: Dynamic remapping successful. All discovered RAM is now accessible.
+[C0] 
+[KTEST] Starting Kernel Unit Tests (11 cases found)...
+[C0] [KTEST] Running: test_vmm_protect... [C0] PASS
+[C0] [KTEST] Running: test_kmalloc_growth... [C0] [INFO] kmalloc: Initialized bucket allocator. Chunk: 4 MB at 0xffff000043291000 (growable)
+[C0] [INFO] kmalloc: heap grown to 8 MB (new chunk at 0xffff000043691000)
+[C0] PASS
+[C0] [KTEST] Running: test_vfs_mount_lifecycle... [C0] [INFO] VFS: mounted ktestfs at /ktestfs
+[C0] [INFO] VFS: unmounted ktestfs from /ktestfs
+[C0] PASS
+[C0] [KTEST] Running: test_gfx_chrome_contract... [C0] PASS
+[C0] [KTEST] Running: test_gfx_surface_contract... [C0] PASS
+[C0] [KTEST] Running: test_fdt_pages_reserved_from_pmm... [C0] PASS
+[C0] [KTEST] Running: test_fdt_page_by_page_search... [C0] [WARN] FDT: legacy page search [0x409d6000, 0x409d9000)
+[C0] [INFO] FDT: legacy search found valid blob at 0x409d7080 size=0x48
+[C0] [WARN] FDT: legacy page search [0x40000000, 0x80000000)
+[C0] [INFO] FDT: legacy search found valid blob at 0x40000000 size=0x100000
+[C0] [INFO] FDT: validated base=0x40000000 size=0x100000 version=17
+[C0] [INFO] FDT: validated base=0x17a5b8000 size=0x100000 version=17
+[C0] PASS
+[C0] [KTEST] Running: test_pmm_region_union... [C0] PASS
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 11 PASSED, 0 FAILED
+
+[C0] [INFO] HAL: Initializing Bus Manager...
+[C0] [INFO] HAL: Scanning Platform Bus (MMIO)...
+[C0] [INFO] HAL: Registered device 'VirtIO-8' (Bus=2, ID=1af4:0008, Class=00:00:00, Base=0xa003600, IRQ=75)
+[C0] [INFO] HAL: Registered device 'VirtIO-2' (Bus=2, ID=1af4:0002, Class=00:00:00, Base=0xa003800, IRQ=76)
+[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Class=00:00:00, Base=0xa003a00, IRQ=77)
+[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Class=00:00:00, Base=0xa003c00, IRQ=78)
+[C0] [INFO] HAL: Registered device 'VirtIO-16' (Bus=2, ID=1af4:0010, Class=00:00:00, Base=0xa003e00, IRQ=79)
+[C0] [INFO] PCI: scanning config space (ECAM/port)...
+[C0] [INFO] HAL: Registered device 'PCI-1b36:0008' (Bus=1, ID=1b36:0008, Class=06:00:00, Base=0x0, IRQ=0)
+[C0] [INFO] HAL: Registered device 'VirtIO-4096' (Bus=1, ID=1af4:1000, Class=02:00:00, Base=0x0, IRQ=0)
+[C0] [INFO] VirtIO: Probing for block device...
+[C0] [INFO] VirtIO: Found Block Device (IRQ 76)
+[C0] [INFO] VirtIO: Version 1
+[C0] [INFO] VirtIO: Block queue layout qsize=16 pages=2 avail_off=256 used_off=4096
+[C0] [INFO] VirtIO: Block Device Initialized successfully
+[C0] [INFO] block: active backend 'virtio-blk'
+[C0] [INFO] VirtIO-GPU: Probing...
+[C0] [INFO] VirtIO-GPU: Found device (IRQ 79)
+[C0] [INFO] VirtIO-GPU: host display 1280x800
+[C0] [INFO] GPU: Primary device set to VirtIO-GPU
+[C0] [INFO] GPU: Registered VirtIO-GPU
+[C0] [INFO] VirtIO-GPU: Done.
+[C0] [INFO] Graphics: Initialized via HAL (1280x800)
+[C0] [INFO] Partition: Initializing...
+[C0] [INFO] GPT: Valid signature found. Entries: 128 @ LBA 2
+[C0] [INFO] GPT: Partition 0: Start=34, Size=1048576 sectors
+[C0] [INFO] GPT: Found 1 partitions
+[C0] [INFO] GPT: Done.
+[C0] [INFO] BufferCache: Initializing...
+[C0] [INFO] Buffer: Done.
+[C0] [INFO] Ext4: 4 block group(s), 32768 blocks/group
+[C0] [INFO] Ext4: Mounted. Vol=, Inodes=1024, features incompat=0x42
+[C0] [INFO] VFS: mounted ext4 on partition 0 as /
+[C0] [INFO] VFS: Done.
+[C0] [INFO] Input: Initializing input subsystem...
+[C0] [INFO] VirtIO-Input: Probing devices...
+[C0] [INFO] VirtIO-Input: 2 input device(s) initialized
+[C0] [INFO] USB: Initializing host controllers...
+[C0] [INFO] Keyboard: Initialized (Layout: it)
+[C0] [INFO] Registry: Initialized with 10 default keys (namespace tree).
+[C0] [INFO] VFS: mounted regfs at /reg
+[C0] [INFO] VFS: mounted procfs at /proc
+[C0] [INFO] Registry: Initialized.
+[C0] [INFO] Initializing processes...
+[C0] [INFO] Process: Initializing scheduler subsystem...
+[C0] [INFO] Process: limit 128 (pool 128, kstack 128KB, 8 reserved for SYSTEM/ROOT, 32 children max per user process)
+[C0] [INFO] Initializing scheduler...
+[C0] [INFO] Scheduler: Initializing...
+[C0] [INFO] Waking secondary CPUs...
+[C0] [INFO] AArch64: Starting SMP initialization for 4 potential cores
+[C1] [INFO] CPU: Vector Table set to 0xffff000040081000
+[C1] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x19cf7641, Ctl: 0x1
+[C1] [INFO] Secondary CPU 1 online and ready
+[C0] [INFO] AArch64: CPU 1 online
+[C2] [INFO] CPU: Vector Table set to 0xffff000040081000
+[C2] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x19d291aa, Ctl: 0x1
+[C2] [INFO] Secondary CPU 2 online and ready
+[C0] [INFO] AArch64: CPU 2 online
+[C3] [INFO] CPU: Vector Table set to 0xffff000040081000
+[C3] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x19d5cbd6, Ctl: 0x1
+[C3] [INFO] Secondary CPU 3 online and ready
+[C0] [INFO] AArch64: CPU 3 online
+[C0] [INFO] Initializing compositor...
+[C0] [INFO] Compositor: Initializing...
+[C0] [INFO] Compositor: Initialized (1280x800)
+[C0] [INFO] K3: Spawning First-Stage Init...
+[C0] [INFO] K3: Initialized PID 1 (/sbin/nxinit)
+[C0] [INFO] Enabling interrupts...
+[Init] System Initialization Starting...
+[Init] Spawning Notification Server...
+[Init] Notification Server started (PID 2)
+[Init] Spawning Execution Service (nxexec --service)...
+[Notify] Server started (PID 2)
+[Init] Execution Service started (PID 3)
+nxexec: execution service listening on OS1nx_exec
+[Init] Running environment bootstrap (nxenvinit)...
+[EnvInit] Initialising system environment...
+[EnvInit] Registry defaults initialised.
+[EnvInit] Created /etc/utmp (identity: root)
+[EnvInit] Environment initialised.
+[Init] Environment bootstrap complete.
+[Init] Spawning Dock (nxui)...
+[Init] Dock started (PID 5)
+[Init] Spawning Top Bar (nxbar)...
+[Init] nxbar started (PID 6)
+[Init] Spawning Launcher (nxlauncher)...
+[Init] Launcher started (PID 7)
+[Init] Spawning Nxshell...
+[Init] NXShell started (PID 8)
+[C3] [INFO] [GFX-TIMING] lock_wait=37 us render_hold=40877 us
+[Init] Entering supervisor loop
+[C3] [INFO] [GFX-TIMING] lock_wait=1 us render_hold=49470 us
+
+[NXShell] TTY Window 0x0000000000000068 active (PID 8).
+
+[32mNXShell[0m:[34m/home[0m> [C3] [INFO] [GFX-TIMING] lock_wait=53 us render_hold=89822 us
+[C2] [INFO] [GFX-TIMING] lock_wait=4609 us render_hold=60758 us
+[C2] [INFO] [GFX-TIMING] lock_wait=7329 us render_hold=72089 us
+/[C2] [INFO] [GFX-TIMING] lock_wait=1 us render_hold=53532 us
+s[C2] [INFO] [GFX-TIMING] lock_wait=2 us render_hold=50721 us
+ys[C2] [INFO] [GFX-TIMING] lock_wait=3 us render_hold=52019 us
+/[C2] [INFO] [GFX-TIMING] lock_wait=1 us render_hold=66425 us
+b[C2] [INFO] [GFX-TIMING] lock_wait=1 us render_hold=62157 us
+in[C2] [INFO] [GFX-TIMING] lock_wait=2 us render_hold=53503 us
+/n[C2] [INFO] [GFX-TIMING] lock_wait=1 us render_hold=47555 us
+xwins
+[1;33mID   PID  STATE   TITLE[0m
+100  2  shown  /sys/bin/nxntfy_srv
+101  5  shown  /sys/bin/nxui
+102  6  shown  /sys/bin/nxbar
+103  7  min  /sys/bin/nxlauncher
+104  8  focus  /sys/bin/nxshell
+
+[32mNXShell[0m:[34m/home[0m> /s
+
+*** KERNEL PANIC ***
+Unhandled exception EC=0x22 at 0x00000000[boot-phase: K3-userland]
+8001eb1b
+SSP: Stack Smash at 0xffff0000400af0b8
+
+Backtrace (fp chain, max 24):
+--- Kernel Exception Context Dump ---
+Process: PID 8
+SPSR_EL1: 0x00000000800003c5
+ELR_EL1:  0x000000008001eb1b
+FAR_EL1:  0x000000008001eb1b
+ESR_EL1:  0x000000008a000000
+EC: 0x22, ISS: 0x0
+Frame: 0xffff0000408d30d0 (per-CPU fault stack), faulting SP: 0xffff00004477e8a0
+X00: 0x0000000000000000  X01: 0x0000000000000002
+X02: 0x0000000000001290  X03: 0x0000000000000001
+X04: 0x0000000000000073  X05: 0xffff000044bd7050
+X06: 0xffff000000000000  X07: 0x000000008001f000
+  #0  ffff00004009d64X08: 0x0000000000000000  X09: 0xffffff80ffffffc8
+X10: 0x00000000c000 pffcf0  X11: 0x00000000c00ffcf0
+anic+0xe0
+X12: 0x000000008001a378  X13: 0x00000000c00ffc90
+X14: 0x0000000000000009  X15: 0x0000000000000000
+X16: 0x0000000000004070  X17: 0x0000000000000000
+X18: 0x0000000000000000  X19: 0x0000000000000000
+X20: 0x0000000000000001  X21: 0x000001b800000300
+X22: 0x0000000000000300  X23: 0xffff000044ffd020
+X  #1  ffff00004009d640 panic+0xe0
+24: 0x0000000000000000  X25: 0x0000000000052800
+X26: 0x0000000000000001  X27: 0x0000000000000073
+X28: 0x000000008001eb08  X29: 0x000000008001eb1b
+
+System halted.
+X30: 0x000000008001eb1b
+SP_EL0:  0x00000000c00ffd90
+-----------------------------
+Backtrace (fp chain, max 24):
+  #0  000000008001eb1b
+Stack raw @ffff0000408d30d0 (low->high; +sym = return addr):
+  ffff0000408d30d0: 0000000000000000
+  ffff0000408d30d8: 0000000000000002
+  ffff0000408d30e0: 0000000000001290
+  ffff0000408d30e8: 0000000000000001
+  ffff0000408d30f0: 0000000000000073
+  ffff0000408d30f8: ffff000044bd7050
+  ffff0000408d3100: ffff000000000000
+  ffff0000408d3108: 000000008001f000
+  ffff0000408d3110: 0000000000000000
+  ffff0000408d3118: ffffff80ffffffc8
+  ffff0000408d3120: 00000000c00ffcf0
+  ffff0000408d3128: 00000000c00ffcf0
+  ffff0000408d3130: 000000008001a378
+  ffff0000408d3138: 00000000c00ffc90
+  ffff0000408d3140: 0000000000000009
+  ffff0000408d3148: 0000000000000000
+  ffff0000408d3150: 0000000000004070
+  ffff0000408d3158: 0000000000000000
+  ffff0000408d3160: 0000000000000000
+  ffff0000408d3168: 0000000000000000
+  ffff0000408d3170: 0000000000000001
+  ffff0000408d3178: 000001b800000300
+  ffff0000408d3180: 0000000000000300
+  ffff0000408d3188: ffff000044ffd020
+Call path (text words up the stack):
+
+
+*** KERNEL PANIC ***
+[boot-phase: K3-userland]
+Unrecoverable kernel exception
+Backtrace (fp chain, max 24):
+  #0  ffff00004009d640 panic+0xe0
+  #1  ffff00004009d640 panic+0xe0
+
+System halted.
+

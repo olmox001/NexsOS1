@@ -7,30 +7,30 @@
  *   kernel/include/kernel/platform.h for the AArch64 target.  It is responsible
  *   for three tasks:
  *   1. Early init (arch_platform_early_init): register the GIC interrupt
- *      controller and initialise the FDT/DTB parser.
+ *      controller. kernel_stage_k1_hardware validates the FDT after cpu_init.
  *   2. Memory discovery (arch_platform_get_mem_regions): obtain a list of usable
- *      RAM regions for the PMM.  Primary path: FDT "memory" node parse.  Fallback:
- *      manual physical-page probe using the probe_in_progress / probe_failed flags
- *      and the EL1 Data Abort recovery path in sync_handler (cpu.c).
+ *      RAM regions for the PMM. Primary path: bounded FDT memory-node parse.
+ *      Fallback: QEMU-virt-only page-by-page probe through the exact-LDR
+ *      synchronous Data Abort fixup in cpu.c.
  *   3. SMP bring-up (arch_smp_init): wake secondary CPUs via PSCI CPU_ON
  *      (arch_cpu_wake_secondary, start.S), wait for each to acknowledge, and
  *      create an idle task for each newly-online CPU.
  *
- * Known issues:
- *   ARCH-04 (W2 BAD-IMPL·BUG) The manual probe fallback writes arch_mem_regions[0]
- *            TWICE: once at lines 83–86 (after finding found_end), and again at
- *            91–94 (the "safety" adjustment).  The second write silently overwrites
- *            the first, making the lines 83–86 dead.  The size computed in the second
- *            write also subtracts PAGE_SIZE regardless of whether found_end > probe_base,
- *            which can produce size == 0 when found_end == probe_base. [static]
- *   ARCH-05 (W2 REFINE) The probe reads at 128MB intervals (0x08000000) from the
- *            QEMU virt base.  On real hardware some physical addresses in the probe
- *            range map to device registers that do not cleanly abort; a read could
- *            trigger an unintended device side-effect before the sync exception fires.
+ * Memory discovery invariants:
+ *   - The FDT parser is the primary source and returns usable ranges plus
+ *     RESERVED overlays (reservation map, /reserved-memory, DTB allocation).
+ *   - Only an explicit NO_MEMORY result permits the QEMU-virt legacy probe.
+ *     Malformed/unsupported reservation data fails closed.
+ *   - The legacy probe begins at ARCH_RAM_START and tests each 4 KiB page.
+ *     It is not a generic physical-hardware probe and must not be reused by a
+ *     different platform without a platform-owned safe RAM window.
+ *     The 0x00000000..ARCH_RAM_START gap is deliberately outside the PMM span.
+ *   - Probe abort recovery is tied to the exact LDR instruction address in
+ *     cpu.c; unrelated kernel aborts are never swallowed.
  */
-#include <kernel/fdt.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
+#include <kernel/fdt.h>
 #include <kernel/memlayout.h>
 #include <kernel/pmm.h>
 #include <kernel/platform.h>
@@ -39,162 +39,145 @@
 #include <drivers/uart.h>
 
 /*
- * arch_mem_regions[] - static array of usable RAM descriptors filled by
- * arch_platform_get_mem_regions() from FDT or the manual probe.
- * Sized to MAX_CPUS * 2 which is larger than the typical 1–2 QEMU virt
- * memory regions; this avoids dynamic allocation during early boot.
+ * Static early-boot region storage. It includes usable RAM and reserved
+ * overlays, so its capacity is independent of CPU count.
  */
-static struct mem_region arch_mem_regions[MAX_CPUS * 2]; /* Enough slots */
+#define ARCH_MEM_REGION_CAPACITY ARCH_MAX_MEM_REGIONS
+static struct mem_region arch_mem_regions[ARCH_MEM_REGION_CAPACITY];
 static size_t arch_region_count = 0;
+/* 0 = not initialized, 1 = valid cached map, -1 = terminal discovery failure. */
+static int arch_region_state = 0;
 
 /*
- * arch_platform_early_init - very early platform setup before PMM is available.
- *
- * Called by kernel_main() before memory discovery; must not call kmalloc.
- *
- * Actions:
- *   1. Register the GIC (Generic Interrupt Controller) driver via gic_register().
- *      This installs the GIC's irq_ctrl_ops into the kernel IRQ subsystem;
- *      the GIC is not yet initialised for per-CPU distributor/redistributor
- *      setup (that happens later in arch_irq_init / hal.c).
- *   2. Parse the Device Tree Blob (DTB) passed by the firmware/QEMU in x0 at
- *      kernel entry.  The DTB pointer is saved as boot_fdt_ptr in start.S.
- *      fdt_init() makes the FDT available for subsequent fdt_get_mem_regions()
- *      and fdt_count_cpus() calls.
- *
- * If boot_fdt_ptr is NULL (no DTB from firmware), hardware discovery falls back
- * to the manual probe path in arch_platform_get_mem_regions (ARCH-04/05).
+ * arch_platform_early_init - register platform interrupt-controller ops.
+ * FDT validation has already completed in kernel_stage_k1_hardware(), after
+ * cpu_init() installed the exception vectors. Do not reinitialize or discard
+ * the validated DTB view here.
  */
 void arch_platform_early_init(void) {
     uart_puts("PLATFORM: arch_platform_early_init starting\n");
-    /*
-     * Register the Interrupt Controller.
-     * gic_register() installs the GIC irq_ctrl_ops; the physical GIC init
-     * (GICD/GICR programming) happens later in arch_irq_init().
-     */
+    /* GIC registration is independent of the already-validated FDT view. */
     gic_register();
 
-    /* Initialize FDT parser from the DTB pointer saved by start.S at _start. */
-    if (boot_fdt_ptr) {
-        if (fdt_init(boot_fdt_ptr) == 0) {
-            pr_info("AArch64: IDTF/FDT initialized from 0x%lx\n", boot_fdt_ptr);
-        } else {
-            pr_warn("AArch64: [IDTF] Failed to initialize FDT from 0x%lx! Hardware discovery compromised.\n", boot_fdt_ptr);
-        }
+    if (boot_fdt_ptr != 0 && boot_fdt_size != 0) {
+        pr_info("AArch64: validated FDT at 0x%lx size=0x%lx\n",
+                boot_fdt_ptr, boot_fdt_size);
     } else {
-        pr_warn("%s", "AArch64: [IDTF] No Hardware Description Tree (DTB) found! System will attempt manual discovery.\n");
+        pr_warn("%s", "AArch64: no validated FDT handoff record is available\n");
     }
 }
-
 /*
- * arch_platform_get_mem_regions - discover and return usable RAM regions.
+ * The FDT is authoritative. A missing /memory node is the only condition that
+ * permits the legacy QEMU-virt RAM probe; malformed reservations, unsupported
+ * dynamic reserved-memory requests, and capacity errors fail closed.
  *
- * Parameters:
- *   count  Output: number of valid entries in the returned array.
- * Returns: pointer to the static arch_mem_regions[] array.
- *
- * Idempotent: if arch_region_count > 0 the cached result is returned immediately.
- *
- * Primary path — FDT memory parse:
- *   fdt_get_mem_regions() walks the FDT "/memory" nodes and fills arch_mem_regions[].
- *   On QEMU virt with a DTB, this correctly discovers all RAM (e.g., 3967 MB at
- *   0x40000000 for "-m 4G").
- *
- * Fallback path — manual physical probe (NOTE(ARCH-04), NOTE(ARCH-05)):
- *   When FDT parse fails or returns 0 regions, the code performs a bus-abort probe:
- *   - Start at 0x40000000 + 1GB (skip the kernel's own 1GB).
- *   - Advance in 128MB (0x08000000) steps up to a 128GB ceiling.
- *   - For each candidate address: set probe_in_progress, attempt a volatile read,
- *     then check probe_failed (set by sync_handler if a Data Abort fires).
- *   - Stop when probe_failed is true; found_end is the last successfully read addr.
- *
- *   NOTE(ARCH-04): The probe result is written to arch_mem_regions[0] TWICE:
- *     First write (lines 83–86): base=probe_base, size=found_end-probe_base.
- *       This is immediately followed by arch_region_count=1 and a pr_info.
- *     Second write (lines 91–94): base=probe_base, size=(found_end-probe_base-PAGE_SIZE)
- *       or 0.  This is the effective write; lines 83–86 are dead code.
- *     The second write also sets arch_region_count=1 redundantly.
- *     If found_end == probe_base (nothing found), size is set to 0.
- *
- *   NOTE(ARCH-05): The probe reads at 128MB intervals from 0x40000000+1GB.
- *   On QEMU virt this is safe because physical RAM is at 0x40000000 and the
- *   machine model aborts reads above the configured RAM ceiling.  On real
- *   hardware some addresses in the range may be device registers; a read can
- *   cause an unintended side-effect before the abort arrives.
+ * The legacy probe is deliberately limited to this QEMU virt platform. It
+ * walks every 4 KiB page beginning at ARCH_RAM_START (not RAM_BASE + 1 GiB),
+ * and records the end as the first page that raises a synchronous Data Abort.
+ * The kernel image is included in the discovered RAM interval and is reserved
+ * later by PMM. The physical hole below ARCH_RAM_START is never counted.
  */
 struct mem_region *arch_platform_get_mem_regions(size_t *count) {
-    if (arch_region_count > 0) {
-        /* Cached from a previous call; return immediately. */
-        if (count) *count = arch_region_count;
-        return arch_mem_regions;
+    if (arch_region_state != 0) {
+        if (count)
+            *count = arch_region_count;
+        return arch_region_state > 0 ? arch_mem_regions : NULL;
     }
 
-    if (fdt_get_mem_regions(arch_mem_regions, MAX_CPUS * 2, &arch_region_count) == 0 && arch_region_count > 0) {
-        /* FDT parse succeeded; log each discovered region. */
-        for (size_t i = 0; i < arch_region_count; i++) {
-            pr_info("AArch64: IDTF RAM Region [%zu]: 0x%lx - 0x%lx\n",
-                    i, arch_mem_regions[i].base, arch_mem_regions[i].base + arch_mem_regions[i].size);
+    size_t discovered_count = 0;
+    int fdt_status = fdt_get_mem_regions(arch_mem_regions,
+                                         ARCH_MEM_REGION_CAPACITY,
+                                         &discovered_count);
+
+    if (fdt_status == FDT_PARSER_OK && discovered_count > 0) {
+        for (size_t i = 0; i < discovered_count; i++) {
+            if (arch_mem_regions[i].type != MEM_REGION_USABLE)
+                continue;
+            if (arch_mem_regions[i].base < ARCH_RAM_START ||
+                arch_mem_regions[i].base >
+                    UINT64_MAX - arch_mem_regions[i].size ||
+                arch_mem_regions[i].base + arch_mem_regions[i].size >
+                    ARCH_PHYS_MAP_LIMIT) {
+                pr_err("AArch64: FDT RAM region[%zu] is outside the mapped "
+                       "physical window: base=0x%lx size=0x%lx\n",
+                       i, arch_mem_regions[i].base, arch_mem_regions[i].size);
+                arch_region_count = 0;
+                arch_region_state = -1;
+                if (count)
+                    *count = 0;
+                return NULL;
+            }
         }
-    } else {
-        extern volatile bool probe_in_progress;
-        extern volatile bool probe_failed;
+        arch_region_count = discovered_count;
+        arch_region_state = 1;
+        for (size_t i = 0; i < arch_region_count; i++) {
+            uint64_t end = arch_mem_regions[i].base +
+                           arch_mem_regions[i].size;
+            pr_info("AArch64: FDT region [%zu] type=%u 0x%lx-0x%lx size=0x%lx\n",
+                    i, arch_mem_regions[i].type,
+                    arch_mem_regions[i].base, end,
+                    arch_mem_regions[i].size);
+        }
+    } else if (fdt_status == FDT_PARSER_NO_MEMORY) {
+        /* Reserved entries (including the DTB itself) remain in the array. */
+        pr_warn("AArch64: FDT has no enabled memory node; "
+                "retaining %zu reservations and probing QEMU RAM page by page\n",
+                discovered_count);
 
-        pr_warn("%s", "AArch64: [IDTF] Memory discovery failed! Attempting manual page-by-page probe...\n");
+        const uint64_t probe_base = (uint64_t)ARCH_RAM_START;
+        const uint64_t probe_limit = ARCH_PHYS_MAP_LIMIT;
+        uint64_t found_end = probe_base;
+        uint64_t fault_address = probe_limit;
 
-        /* Manual Probe Fallback: scan physical RAM in 128MB steps.
-         * QEMU virt places RAM at 0x40000000; probe_base skips the kernel's 1GB. */
-        uint64_t probe_base  = 0x40000000UL;
-        uint64_t probe_limit = 0x40000000UL + (128UL << 30); /* cap at 128GB total */
-        uint64_t found_end   = probe_base;
-
-        for (uint64_t addr = probe_base + (1UL << 30); addr < probe_limit; addr += 0x08000000UL) {
-            /* Signal sync_handler to recover from an abort at this address. */
-            probe_in_progress = true;
-            probe_failed = false;
-            arch_mb(); /* DSB: ensure flags visible before the load */
-
-            /* Issue the probe load; if addr is unmapped, a Data Abort fires.
-             * sync_handler sets probe_failed=true and increments ELR_EL1 by 4
-             * to skip this instruction, then returns to the instruction below. */
-            /* 'addr' is a PHYSICAL address; probe through its direct-map
-             * VA (identity while KERNEL_VIRT_BASE == 0). */
-            volatile uint64_t *ptr = (volatile uint64_t *)phys_to_virt(addr);
-            (void)*ptr;
-
-            arch_mb(); /* DSB: ensure probe_failed is current after handler runs */
-            if (probe_failed) {
-                probe_in_progress = false;
-                break; /* addr is unmapped; stop probing */
+        for (uint64_t address = probe_base;
+             address < probe_limit;
+             address += PAGE_SIZE) {
+            uint32_t probe_value = 0;
+            if (arch_platform_probe_read32(address, &probe_value) != 0) {
+                fault_address = address;
+                break;
             }
 
-            probe_in_progress = false;
-            found_end = addr; /* addr is mapped; extend found_end */
+            found_end = address + PAGE_SIZE;
+            if (((address - probe_base) &
+                 ((256ULL * 1024ULL * 1024ULL) - 1ULL)) == 0 &&
+                address != probe_base) {
+                pr_info("AArch64: RAM page probe reached 0x%lx\n",
+                        address);
+            }
         }
 
-        /* NOTE(ARCH-04): Dead write — immediately overwritten by lines 91–94 below.
-         * The intent was to save the result before applying the PAGE_SIZE safety trim.
-         * In practice the second write clobbers this unconditionally. */
-        if (found_end > probe_base) {
-            arch_mem_regions[0].base = probe_base;
-            arch_mem_regions[0].size = found_end - probe_base;
-            arch_mem_regions[0].type = MEM_REGION_USABLE;
-            arch_region_count = 1;
-            pr_info("AArch64: Manual discovery found %lu MB RAM\n", arch_mem_regions[0].size / 1024 / 1024);
+        if (found_end <= probe_base ||
+            discovered_count >= ARCH_MEM_REGION_CAPACITY ||
+            boot_fdt_ptr < probe_base || boot_fdt_size == 0 ||
+            boot_fdt_ptr > UINT64_MAX - boot_fdt_size ||
+            boot_fdt_ptr + boot_fdt_size > found_end) {
+            pr_err("AArch64: page-by-page RAM probe failed at 0x%lx\n",
+                   fault_address);
+            arch_region_count = 0;
+            arch_region_state = -1;
+        } else {
+            arch_mem_regions[discovered_count].base = probe_base;
+            arch_mem_regions[discovered_count].size = found_end - probe_base;
+            arch_mem_regions[discovered_count].type = MEM_REGION_USABLE;
+            arch_region_count = discovered_count + 1U;
+            arch_region_state = 1;
+            pr_info("AArch64: page probe RAM [0x%lx,0x%lx) size=0x%lx "
+                    "(%llu MiB); first absent page=0x%lx\n",
+                    probe_base, found_end, found_end - probe_base,
+                    (found_end - probe_base) / (1024ULL * 1024ULL),
+                    fault_address);
         }
-
-        /* Effective write (NOTE(ARCH-04)): subtract PAGE_SIZE to avoid mapping the
-         * last probed page which may not be fully present.  If found_end == probe_base
-         * (probe found nothing), size is set to 0. */
-        arch_mem_regions[0].base = probe_base;
-        arch_mem_regions[0].size = (found_end > probe_base) ? (found_end - probe_base - PAGE_SIZE) : 0;
-        arch_mem_regions[0].type = MEM_REGION_USABLE;
-        arch_region_count = 1;
-
-        pr_info("AArch64: Manual probe discovered %lu MB RAM\n", arch_mem_regions[0].size / (1024 * 1024));
+    } else {
+        pr_err("AArch64: refusing unsafe RAM fallback; FDT region parse status=%d\n",
+               fdt_status);
+        arch_region_count = 0;
+        arch_region_state = -1;
     }
 
-    if (count) *count = arch_region_count;
-    return arch_mem_regions;
+    if (count)
+        *count = arch_region_count;
+    return arch_region_state > 0 ? arch_mem_regions : NULL;
 }
 extern void *arch_secondary_stacks[MAX_CPUS];
 extern void kernel_secondary_main(void);

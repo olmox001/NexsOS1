@@ -819,8 +819,14 @@ between protection domains; MMIO is a bounded device-memory capability with
 ordering/cache/IRQ/DMA rules. Do not route MMIO through an IPC-shaped API or
 allow arbitrary user services to map raw physical addresses.
 
-The FDT audit now has concrete blocking findings: pointer-only fdt_init,
-unbounded structure/string walks, ignored reserve-map entries and
-/reserved-memory nodes. UEFI already knows DtbSpan but the handoff currently
-zeros x1 instead of passing it to the kernel. Fix the boot-info contract and
-bounded parser before relying on FDT as the complete device/memory catalogue.
+**BOOT-1 status (2026-11-03):** the AArch64 EFI handoff now preserves
+DtbSpan in x1 and the kernel uses a versioned 32-byte BootInfo v1 record.
+The legacy pointer-only loader path remains isolated in `fdt_init_legacy()`.
+A bounded parser now validates block/token/string/property bounds, reservation
+map, static `/reserved-memory`, memory regions and CPU nodes; the DTB itself
+is added to PMM RESERVED overlays. Host ASan/UBSan tests pass 61 checks against
+synthetic fixtures and the real QEMU DTB. Clean dual-architecture builds,
+runtime PMM/KTEST checks and separate AArch64 EFI boot verification remain
+open. FDT is not yet a complete device/interrupt catalogue; do not start
+dynamic device discovery until BOOT-1 runtime gates pass. See
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.

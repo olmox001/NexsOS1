@@ -3,10 +3,9 @@
  * Sample unit tests
  *
  * Purpose:
- *   Provides three minimal KTEST_CASE entries that exercise the string library
- *   and a trivial arithmetic sanity check.  These are proof-of-concept examples
- *   for the ktest framework and run unconditionally at every boot via
- *   ktest_run_all() (kernel/main.c:87).
+ *   Provides core string/arithmetic, PMM memory-map, architecture-specific
+ *   boot-reservation, graphics, VFS, allocator and VMM checks. They run at boot
+ *   via ktest_run_all() (kernel/main.c).
  *
  * Role:
  *   - test_string_length: verifies strlen() for a non-empty and an empty string.
@@ -29,6 +28,10 @@
  *   (see LIB-KTEST-01 in kernel/lib/ktest.c and docs/review/analysis/07-lib-headers.md).
  */
 #include <kernel/test.h>
+#include <kernel/arch.h>
+#include <kernel/platform.h>
+#include <kernel/memlayout.h>
+#include <kernel/printk.h>
 #include <kernel/string.h>
 #include <kernel/kmalloc.h>
 #include <kernel/gfx_chrome.h>
@@ -36,6 +39,10 @@
 #include <kernel/vfs.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
+#ifndef ARCH_AMD64
+#include <kernel/fdt.h>
+#include <kernel/fdt_parser.h>
+#endif
 
 /* test_string_length - verify strlen() for a literal and an empty string.
  * Failure: KASSERT_EQ prints the mismatch and returns (see LIB-KTEST-01). */
@@ -59,6 +66,186 @@ KTEST_CASE(test_math_basic) {
     int b = 20;
     KASSERT_EQ(a + b, 30);
 }
+
+/* The boot map may be unsorted and contain overlapping usable descriptors.
+ * The PMM must count the union of complete pages, not sum overlapping lengths
+ * or treat RESERVED overlays as additional RAM. */
+KTEST_CASE(test_pmm_region_union) {
+    struct mem_region regions[] = {
+        {.base = 0x2000, .size = 0x3000, .type = MEM_REGION_USABLE},
+        {.base = 0x3000, .size = 0x2000, .type = MEM_REGION_RESERVED},
+        {.base = 0x1000, .size = 0x3000, .type = MEM_REGION_USABLE},
+        {.base = 0x9000, .size = 0x1000, .type = MEM_REGION_USABLE},
+    };
+    KASSERT_EQ(pmm_calculate_usable_bytes(regions, 4, 0x1000, 0xA000),
+               0x5000);
+    KASSERT_EQ(pmm_calculate_usable_bytes(regions, 4, 0x2000, 0xA000),
+               0x4000);
+    /* Metadata is touched before the dynamic VMM map is installed. */
+    KASSERT(pmm_metadata_top() != 0);
+    KASSERT(pmm_metadata_top() <= ARCH_BOOTSTRAP_PHYS_MAP_LIMIT);
+}
+
+#ifdef ARCH_AMD64
+/* The QEMU 5 GiB layout has the PCI/MMIO aperture at 3-4 GiB. If a different
+ * machine reports RAM there, the check is not applicable and is logged; on
+ * the QEMU test configuration every PFN in the hole must be RESERVED. */
+KTEST_CASE(test_amd64_pci_hole_reserved) {
+    size_t count = 0;
+    struct mem_region *regions = arch_platform_get_mem_regions(&count);
+    KASSERT(regions != NULL);
+    KASSERT(count != 0);
+
+    const uint64_t hole_start = 0xC0000000ULL;
+    const uint64_t hole_end = 0x100000000ULL;
+    int usable_overlap = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (regions[i].type != MEM_REGION_USABLE ||
+            regions[i].size == 0 ||
+            regions[i].base > UINT64_MAX - regions[i].size)
+            continue;
+        uint64_t region_end = regions[i].base + regions[i].size;
+        if (regions[i].base < hole_end && region_end > hole_start) {
+            usable_overlap = 1;
+            break;
+        }
+    }
+
+    if (usable_overlap ||
+        pmm_phys_to_page(hole_start) == NULL ||
+        pmm_phys_to_page(hole_end - PAGE_SIZE) == NULL) {
+        pr_info("%s", "KTEST: AMD64 3-4 GiB PCI-hole assertion not applicable "
+                      "for this memory map/span\n");
+        return;
+    }
+
+    for (uint64_t physical = hole_start; physical < hole_end;
+         physical += PAGE_SIZE) {
+        struct page *descriptor = pmm_phys_to_page(physical);
+        KASSERT(descriptor != NULL);
+        KASSERT((descriptor->flags & PG_RESERVED) != 0);
+    }
+
+    for (unsigned i = 0; i < 32U; i++) {
+        void *allocated = pmm_alloc_page();
+        KASSERT(allocated != NULL);
+        uint64_t physical = virt_to_phys(allocated);
+        int in_hole = physical >= hole_start && physical < hole_end;
+        pmm_free_page(allocated);
+        KASSERT(!in_hole);
+    }
+}
+#else
+/* Exercise the physical page scanner against a valid in-kernel FDT fixture.
+ * The invalid magic+oversized-length candidate in page 0 must be skipped;
+ * the valid blob in page 1 must be found by the 4 KiB page walk. */
+static uint8_t fdt_search_test_area[3U * PAGE_SIZE]
+    __attribute__((aligned(PAGE_SIZE)));
+static const uint8_t fdt_search_test_blob[72] = {
+    [0] = 0xD0, [1] = 0x0D, [2] = 0xFE, [3] = 0xED,
+    [4] = 0x00, [5] = 0x00, [6] = 0x00, [7] = 0x48,
+    [8] = 0x00, [9] = 0x00, [10] = 0x00, [11] = 0x38,
+    [12] = 0x00, [13] = 0x00, [14] = 0x00, [15] = 0x48,
+    [16] = 0x00, [17] = 0x00, [18] = 0x00, [19] = 0x28,
+    [20] = 0x00, [21] = 0x00, [22] = 0x00, [23] = 0x11,
+    [24] = 0x00, [25] = 0x00, [26] = 0x00, [27] = 0x10,
+    [36] = 0x00, [37] = 0x00, [38] = 0x00, [39] = 0x10,
+    [56] = 0x00, [57] = 0x00, [58] = 0x00, [59] = 0x01,
+    [60] = 0x00,
+    [64] = 0x00, [65] = 0x00, [66] = 0x00, [67] = 0x02,
+    [68] = 0x00, [69] = 0x00, [70] = 0x00, [71] = 0x09,
+};
+
+KTEST_CASE(test_fdt_page_by_page_search) {
+    memset(fdt_search_test_area, 0, sizeof(fdt_search_test_area));
+
+    /* A false-positive header must not stop the scan. */
+    const uint8_t invalid_header[8] = {
+        0xD0, 0x0D, 0xFE, 0xED, 0xFF, 0xFF, 0xFF, 0xFF
+    };
+    memcpy(fdt_search_test_area + 64U, invalid_header,
+           sizeof(invalid_header));
+
+    const size_t blob_offset = PAGE_SIZE + 128U;
+    memcpy(fdt_search_test_area + blob_offset, fdt_search_test_blob,
+           sizeof(fdt_search_test_blob));
+
+    uint64_t physical = virt_to_phys(fdt_search_test_area);
+    KASSERT((physical & ((uint64_t)PAGE_SIZE - 1ULL)) == 0);
+    KASSERT(physical >= ARCH_RAM_START);
+    KASSERT(physical <= ARCH_PHYS_MAP_LIMIT - sizeof(fdt_search_test_area));
+
+    size_t found_size = 0;
+    uintptr_t found = fdt_find_in_memory(
+        (uintptr_t)physical,
+        (uintptr_t)(physical + sizeof(fdt_search_test_area)),
+        &found_size);
+    KASSERT_EQ(found, physical + blob_offset);
+    KASSERT_EQ(found_size, sizeof(fdt_search_test_blob));
+
+    /* Exercise the complete x0=0 legacy adapter. It temporarily activates
+     * the first valid DTB in the original 1 GiB search window; restore the
+     * firmware-provided DTB before allowing later KTESTs/boot stages to run. */
+    extern uint64_t boot_fdt_ptr;
+    extern uint64_t boot_fdt_size;
+    uint64_t original_ptr = boot_fdt_ptr;
+    uint64_t original_size = boot_fdt_size;
+    KASSERT(original_ptr != 0 && original_size >= 40U);
+
+    /* Remove the valid synthetic blob before the global legacy scan: the
+     * fixture lives in kernel BSS, which itself lies inside the scan window. */
+    memset(fdt_search_test_area, 0, sizeof(fdt_search_test_area));
+
+    size_t legacy_size = 0;
+    int legacy_status = fdt_init_legacy(0, &legacy_size);
+    uint64_t legacy_ptr = boot_fdt_ptr;
+    uint64_t activated_size = boot_fdt_size;
+    int restore_status = fdt_init((uintptr_t)original_ptr,
+                                  (size_t)original_size);
+
+    KASSERT_EQ(legacy_status, FDT_PARSER_OK);
+    KASSERT(legacy_ptr >= ARCH_RAM_START);
+    KASSERT(legacy_ptr < ARCH_RAM_START + (1ULL << 30));
+    KASSERT(legacy_size != 0);
+    KASSERT_EQ(legacy_size, activated_size);
+    KASSERT_EQ(restore_status, FDT_PARSER_OK);
+    KASSERT_EQ(boot_fdt_ptr, original_ptr);
+    KASSERT_EQ(boot_fdt_size, original_size);
+}
+
+/* The FDT allocation is part of the memory map's RESERVED overlays. Check
+ * every PFN touched by the validated blob after PMM construction, then sample
+ * allocator output to ensure the live allocator never returns a DTB PFN. */
+KTEST_CASE(test_fdt_pages_reserved_from_pmm) {
+    extern uint64_t boot_fdt_ptr;
+    extern uint64_t boot_fdt_size;
+    KASSERT(boot_fdt_ptr != 0);
+    KASSERT(boot_fdt_size >= 40U);
+    KASSERT(boot_fdt_ptr <= UINT64_MAX - boot_fdt_size);
+
+    uint64_t dtb_end = boot_fdt_ptr + boot_fdt_size;
+    uint64_t page = boot_fdt_ptr & ~((uint64_t)PAGE_SIZE - 1ULL);
+    KASSERT(dtb_end <= UINT64_MAX - (PAGE_SIZE - 1ULL));
+    uint64_t page_end =
+        (dtb_end + PAGE_SIZE - 1ULL) & ~((uint64_t)PAGE_SIZE - 1ULL);
+    for (; page < page_end; page += PAGE_SIZE) {
+        struct page *descriptor = pmm_phys_to_page(page);
+        KASSERT(descriptor != NULL);
+        KASSERT((descriptor->flags & PG_RESERVED) != 0);
+    }
+
+    for (unsigned i = 0; i < 32U; i++) {
+        void *allocated = pmm_alloc_page();
+        KASSERT(allocated != NULL);
+        uint64_t physical = virt_to_phys(allocated);
+        int overlaps_dtb = physical >=
+                (boot_fdt_ptr & ~((uint64_t)PAGE_SIZE - 1ULL)) &&
+            physical < page_end;
+        pmm_free_page(allocated);
+        KASSERT(!overlaps_dtb);
+    }
+}
+#endif
 
 /* test_gfx_surface_contract - test the provider-neutral ARGB8888 facade using
  * caller-owned memory: clipping, source-over composition and ABGR conversion

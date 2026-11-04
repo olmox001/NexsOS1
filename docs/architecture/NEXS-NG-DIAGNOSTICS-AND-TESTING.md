@@ -251,12 +251,12 @@ Do not conflate:
 - address-space holes (which consume metadata span but must remain reserved);
 - DMA-reachable memory (constrained separately by device DMA mask/IOMMU).
 
-The AArch64 arch header still declares HAL_RAM_SIZE=2 GiB, while the captured
-FDT/PMM run discovers 5 GiB. The current VMM bootstrap uses a 128 MiB window and
-then remaps each discovered usable FDT region, so this constant is not the source
-of the 5 GiB result; nevertheless the stale constant is an unsafe source of truth
-for any future caller. Replace static RAM size assumptions with explicit boot
-memory-map queries or remove unused constants after a whole-tree reference audit.
+The historical AArch64 arch header declared HAL_RAM_SIZE=2 GiB; BOOT-1 has
+removed that stale constant after a whole-tree reference audit. The source
+translation tables in `kernel/arch/aarch64/kinit/start.S` map a 128 GiB physical
+window: L1[0] is Device [0,1 GiB), L1[1..127] are Normal 2 MiB blocks
+[1 GiB,128 GiB). This is an address-translation window, not installed RAM.
+The VMM now maps only discovered usable regions within ARCH_PHYS_MAP_LIMIT.
 
 The AMD64 5 GiB QEMU layout is different: the PCI/MMIO hole can make address span
 larger than physical RAM. Tests must assert usable_pages against region sums,
@@ -275,28 +275,33 @@ probes and which indicate a malformed/mismatched EFI artifact. Validate the ISO
 EFI directory and PE machine types; record firmware image hash/version and boot
 entry chosen. Require explicit milestones from stub and kernel in tests.
 
-fdt_init() currently receives only a pointer in the kernel API despite the stub
-knowing DtbSpan; the full parser uses unbounded pointer/string walks. The boot
-protocol must pass and enforce DTB length end-to-end before FDT parsing is
-considered hardened.
+Baseline finding superseded by BOOT-1 implementation: the AArch64 EFI handoff
+now passes DtbSpan in x1, BootInfo v1 preserves it, and `fdt_init(base,
+available_length)` invokes the bounded parser. Legacy x1=0 remains isolated in
+`fdt_init_legacy()`. Host ASan/UBSan validation is 61/61 including the real
+QEMU DTB; clean dual-arch builds and runtime verification subsequently passed on 2026-11-03 (see §11 and BOOT-1 report).
 
 ## 11. AArch64 runtime evidence — 2026-11-03
 
-The updated nxadb test completed a real QEMU/EDK2 AArch64 boot with:
-KTEST 8/8, NXShell prompt, nxwins enumeration and focus, 30-second live
-supervision, two verified 1280x800 screenshots, and zero kernel fault matches.
-GFX-TIMING render_hold remained approximately 45–85 ms and is tracked as a
-latency warning, not a fatal fault.
+Historical baseline run before BOOT-1: QEMU/EDK2 AArch64 boot with KTEST 8/8,
+NXShell prompt, nxwins enumeration and focus, 30-second live supervision, two
+verified 1280x800 screenshots, and zero kernel fault matches. The later BOOT-1
+verification supersedes these counts: AMD64 10/10 KTEST and AArch64 11/11,
+with 61 host ASan/UBSan checks, clean builds, GRUB BIOS/UEFI boots, nxwins focus,
+30-second soak, 1280x800 screenshot and zero faults on both architectures.
+GFX-TIMING render_hold remains a latency warning, not a fatal fault; see the
+BOOT-1 report and persistent logs for the complete current run.
 
 The captured Boot0001 entry is the QEMU CD-ROM. The EDK2 warning probes precede
 NEXSOS_GRUB_ARM64_CHAINLOAD_STUB and the ordered EFI milestones. See
 BOOT-PROTOCOL-INVENTORY.md for the full log and classification.
 
-The memory instrumentation reports exactly one usable region at
+The pre-BOOT-1 memory instrumentation reported one usable region at
 0x40000000..0x180000000 (5120 MiB); PMM free 5070 MiB and metadata at
-0x40a49000. This does NOT prove the complete ownership map is safe: fdt.c
-still ignores off_mem_rsvmap, the reserved-memory nodes and DTB's own span.
-Those are explicit blocking issues for the next boot-protocol patch.
+0x40a49000. At that point the ownership map was incomplete. BOOT-1 now parses
+the reservation map and static /reserved-memory nodes and adds the DTB span to
+the RESERVED overlays. The host parser test validates the QEMU DTB; runtime
+PMM PFN/allocator checks are added but have not yet been boot-tested.
 
 ## 12. AMD64 boot-map and soak evidence — 2026-11-03
 
@@ -310,3 +315,24 @@ AMD64 and AArch64 each passed a fresh QEMU 30-second hardening test after the
 logging/capture updates: KTEST 8/8, NXShell keyboard input, nxwins enumeration
 and focus, two QMP screenshots at 1280x800, zero kernel fault matches.
 The detailed per-architecture transcripts are under build/runs/{amd64,aarch64}.
+## 13. BOOT-1 FDT/PMM verification status — 2026-11-03
+
+The host parser suite is now located at `kernel/test/fdt_parser_test.c`.
+`make test-fdt` builds the AArch64 QEMU DTB as a required input, compiles with
+AddressSanitizer and UndefinedBehaviorSanitizer, and does not silently skip the
+real-DTB test. Last observed result: **61 checks PASS**; DTB size 1 MiB,
+2 output regions (usable RAM + DTB reservation), 4 enabled CPUs.
+
+Runtime KTEST additions cover the PMM usable-region union on both architectures
+and, on AArch64, every PFN occupied by the DTB plus allocator samples that must
+not return a DTB PFN. Expected suite totals after the baseline eight tests are
+9/9 AMD64 and 10/10 AArch64; these are expected counts, not yet observed.
+
+The clean build and runtime gates have not yet been run after the complete BOOT-1
+diff. Required evidence remains sequential AMD64/AArch64 build and boot, KTEST,
+shell round-trip, nxwins, complete serial/stdout/stderr/manifest capture, fault
+scan and soak. The AArch64 EFI path must be tested separately from Image+DTB to
+exercise the non-zero x1 length handoff.
+
+Detailed source and implementation status:
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.

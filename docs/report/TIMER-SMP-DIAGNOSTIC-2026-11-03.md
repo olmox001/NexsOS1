@@ -165,3 +165,20 @@ Entrambi i guest sono stati arrestati con `nxadb stop`; `nxadb status` conferma 
 ### Restano aperti
 
 La race di ack SMP è stata corretta e verificata su entrambe le architetture. Restano il refactor del compositor per evitare IRQ mascherati durante `compositor_render_internal()` (snapshot/ownership dei buffer e protezione dei mutatori), la riduzione del jitter del timer e lo stress combinato di applicazioni. Il soak di shell non equivale ancora allo stress combinato richiesto. Il bug POSIX `time()` millisecondi/secondi resta separato.
+
+## Audit aggiuntivo: terminal output e SSP — 2026-11-03
+
+L'audit del percorso legacy ha esteso il rilievo oltre compositor_render(): anche compositor_window_write() acquisisce compositor_lock con spin_lock_irqsave() e mantiene la lock durante term_write(), inclusi parsing ANSI, aggiornamento della griglia/caret e rasterizzazione dei glifi tramite font_lock. La lock globale protegge attualmente anche la lifetime della finestra e del buffer; non è corretto rimuoverla o rilasciarla prima del rendering senza un protocollo di pin/generation e serializzazione terminale.
+
+Una clean AArch64 test-all ha registrato un singolo SSP mismatch al ritorno da compositor_window_write() (PID 8, dopo KTEST 11/11); il simbolo/epilogo sono stati verificati con addr2line e disassembly. Il guasto non è stato riprodotto nei successivi run diagnostici; quindi il canary mismatch resta intermittente e la sua causa non è attribuita al lock hold. Non classificare il caso come risolto sulla base dei run passati.
+
+Ulteriore ipotesi da discriminare, non causa accertata: dopo spin_unlock_irqrestore() può arrivare un timer IRQ pendente; kernel_timer_tick() chiama schedule(regs) anche quando il frame interrotto è EL1. Va verificato il salvataggio/ripristino di frame EL1 e il protocollo pending_reenqueue rispetto al kernel stack sospeso. Non introdurre una disabilitazione globale della preemption come workaround.
+
+Piano, limiti dell'evidenza, ordine di correzione e gate: docs/report/GFX-LEGACY-TERMINAL-CONCURRENCY-2026-11-03.md. La correzione va integrata come preflight di GFX-NG-0 prima di GFX-NG-1; mantenere la compatibilità legacy e non sostituire superficialmente irqsave con spin_lock.
+
+
+## Nuovo fault interattivo AArch64 — 2026-11-04
+
+Durante test NXADB di input e shell, un secondo SSP panic è avvenuto mentre NXShell stava ancora ricevendo il comando cat /reg/system.version; lo screenshot mostra il comando incompleto, quindi non è stato eseguito alcun accesso VFS. Il return address SSP 0xffff0000400a0ab4 è nel check epilogue di sys_registry+0x3b4, ma l'operazione e il PID del chiamante non sono stati catturati. Il dump indica PID 32002 (idle CPU2 nella tabella processi), ELR_EL1=0, FAR_EL1=0, ESR_EL1=0x86000004, SPSR_EL1=0x20000305.
+
+La nuova evidenza non dimostra un difetto del registry: servizi concorrenti leggono/scrivono registry mentre il comando è ancora digitato. Il percorso input corrente traduce keymap/caratteri nel kernel e il timer IRQ può invocare schedule(regs) su frame EL1. La priorità è acquisire caller FP/LR, stack bounds, task/CPU, saved canary e transizioni scheduler prima di scegliere il sottosistema da correggere. Report e log integrali: docs/report/GFX-INPUT-SSP-FAULT-2026-11-04.md.

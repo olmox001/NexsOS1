@@ -229,7 +229,6 @@ int arch_virtio_probe(uint32_t device_id, uintptr_t *out_base,
 
 /* Platform constants */
 #define ARCH_RAM_START HAL_RAM_START
-#define ARCH_RAM_SIZE HAL_RAM_SIZE
 #define ARCH_ALIAS_OFFSET HAL_ALIAS_OFFSET
 
 #endif /* _KERNEL_ARCH_H */

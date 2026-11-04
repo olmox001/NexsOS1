@@ -1,0 +1,90 @@
+
+=== run 1/5 (aarch64) ===
+[nxadb] stopped
+[nxadb] QEMU started via GRUB (aarch64, pid 32032)
+[nxadb] complete UART: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/serial.log
+[nxadb] QEMU stdout/stderr: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stdout.log | /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stderr.log
+[nxadb] previous run archived: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/boot-20261103-224832-488823000
+[nxadb] waiting for kernel............................ ok
+[nxadb] waiting for NXShell prompt... ready
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-224840-191484000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-224840-191484000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-224915-724409000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-224915-724409000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+run1/aarch64: ok NXWINS=PASS(window=104,focus=PASS) SOAK=30s SCREENSHOT-END=PASS KTEST=11 passed/0 failed faults=0
+
+=== run 2/5 (aarch64) ===
+[nxadb] stopped
+[nxadb] QEMU started via GRUB (aarch64, pid 32348)
+[nxadb] complete UART: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/serial.log
+[nxadb] QEMU stdout/stderr: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stdout.log | /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stderr.log
+[nxadb] previous run archived: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/boot-20261103-224915-895494000
+[nxadb] waiting for kernel............................ ok
+[nxadb] waiting for NXShell prompt.... ready
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-224923-980977000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-224923-980977000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-224959-142817000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-224959-142817000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+run2/aarch64: ok NXWINS=PASS(window=104,focus=PASS) SOAK=30s SCREENSHOT-END=PASS KTEST=11 passed/0 failed faults=0
+
+=== run 3/5 (aarch64) ===
+[nxadb] stopped
+[nxadb] QEMU started via GRUB (aarch64, pid 32520)
+[nxadb] complete UART: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/serial.log
+[nxadb] QEMU stdout/stderr: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stdout.log | /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stderr.log
+[nxadb] previous run archived: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/boot-20261103-224959-305777000
+[nxadb] waiting for kernel............................ ok
+[nxadb] waiting for NXShell prompt... ready
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225006-996906000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225006-996906000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225041-973103000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225041-973103000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+run3/aarch64: ok NXWINS=PASS(window=104,focus=PASS) SOAK=30s SCREENSHOT-END=PASS KTEST=11 passed/0 failed faults=0
+
+=== run 4/5 (aarch64) ===
+[nxadb] stopped
+[nxadb] QEMU started via GRUB (aarch64, pid 32658)
+[nxadb] complete UART: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/serial.log
+[nxadb] QEMU stdout/stderr: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stdout.log | /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stderr.log
+[nxadb] previous run archived: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/boot-20261103-225042-144735000
+[nxadb] waiting for kernel............................ ok
+[nxadb] waiting for NXShell prompt... ready
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225049-904575000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225049-904575000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225125-153412000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225125-153412000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+run4/aarch64: ok NXWINS=PASS(window=104,focus=PASS) SOAK=30s SCREENSHOT-END=PASS KTEST=11 passed/0 failed faults=0
+
+=== run 5/5 (aarch64) ===
+[nxadb] stopped
+[nxadb] QEMU started via GRUB (aarch64, pid 32813)
+[nxadb] complete UART: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/serial.log
+[nxadb] QEMU stdout/stderr: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stdout.log | /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/aarch64/qemu.stderr.log
+[nxadb] previous run archived: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/boot-20261103-225125-320847000
+[nxadb] waiting for kernel............................. ok
+[nxadb] waiting for NXShell prompt... ready
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225133-350775000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225133-350775000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+[nxadb] screenshot verified: /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225208-653303000.png
+/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225208-653303000.png
+  pixelWidth: 1280
+  pixelHeight: 800
+run5/aarch64: ok NXWINS=PASS(window=104,focus=PASS) SOAK=30s SCREENSHOT-END=PASS KTEST=11 passed/0 failed faults=0

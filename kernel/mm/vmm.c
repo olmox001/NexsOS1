@@ -22,7 +22,7 @@
  *   PHYSICAL address, so every delegation below converts with
  *   virt_to_phys().  PTE output addresses are physical and are converted
  *   with phys_to_virt() before being dereferenced (get_next_table) or
- *   freed (vmm_destroy_pgd).  Identity while KERNEL_VIRT_BASE == 0.
+ *   freed (vmm_destroy_pgd). The direct map is VA = PA + KERNEL_VIRT_BASE.
  *
  * Known issues:
  *   MM-VMM-01  (FIXED)           W^X enforced via vmm_map_ram_wx(): kernel
@@ -391,65 +391,85 @@ void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size) {
   }
 }
 
+
+/* Map the validated usable-region union, never the flat span between
+ * ARCH_RAM_START and the highest physical end. This keeps address holes and
+ * reserved-only intervals out of the normal-memory direct map. The old boot
+ * page tables remain active while all new tables are constructed. */
+static void vmm_map_detected_usable_regions(uint64_t *pgd,
+                                            const char *phase) {
+  size_t count = 0;
+  struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  if (!regions || count == 0)
+    panic("VMM: %s has no validated platform memory map", phase);
+
+  size_t mapped = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (regions[i].type != MEM_REGION_USABLE || regions[i].size == 0)
+      continue;
+    if (regions[i].base > UINT64_MAX - regions[i].size)
+      panic("VMM: %s region[%zu] physical end overflow", phase, i);
+
+    uint64_t start = regions[i].base;
+    uint64_t end = start + regions[i].size;
+#if defined(ARCH_AARCH64)
+    if (start < ARCH_RAM_START || end > ARCH_PHYS_MAP_LIMIT)
+#else
+    if (end > ARCH_PHYS_MAP_LIMIT)
+#endif
+      panic("VMM: %s region[%zu] outside direct-map window "
+            "[0x%lx,0x%lx)", phase, i, start, end);
+    if (start > UINT64_MAX - (PAGE_SIZE - 1ULL))
+      panic("VMM: %s region[%zu] page alignment overflow", phase, i);
+    start = (start + PAGE_SIZE - 1ULL) & ~((uint64_t)PAGE_SIZE - 1ULL);
+    end &= ~((uint64_t)PAGE_SIZE - 1ULL);
+    if (end <= start)
+      continue;
+
+    pr_info("VMM: %s usable region[%zu] 0x%lx-0x%lx (%lu MiB)\n",
+            phase, i, start, end,
+            (unsigned long)((end - start) / (1024ULL * 1024ULL)));
+    vmm_map_ram_wx(pgd, start, end - start);
+    mapped++;
+  }
+
+  if (mapped == 0)
+    panic("VMM: %s memory map contains no complete usable pages", phase);
+}
+
 /*
  * Initialize VMM and Enable MMU
  *
- * vmm_init - phase-1 VMM bring-up: build the first real kernel PGD (128 MB
- *            bootstrap window) and install it as the kernel root.
+ * vmm_init - phase-1 VMM bring-up: build the first real kernel PGD and map
+ *            each validated usable physical interval independently.
  *
- * The MMU itself is already ON when this runs: the boot assembly (both
- * arches) enables it with boot tables so C executes at its higher-half
- * link address from the first instruction.
+ * The MMU is already ON when this runs: boot assembly enables it with
+ * bootstrap tables so C executes at its higher-half link address.
  *
  * Steps:
- *   1. Allocate and zero the kernel PGD from the PMM (sets global kernel_pgd).
- *   2. Map [ARCH_RAM_START, ARCH_RAM_START+128MB) at the direct-map VAs via
- *      vmm_map_ram_wx() (W^X section split).
+ *   1. Allocate and zero the kernel PGD from the PMM.
+ *   2. Map every page-aligned MEM_REGION_USABLE interval independently using
+ *      the W^X section split. Physical holes are never bridged.
  *   3. Map MMIO regions via arch_vmm_map_mmio().
- *   4. Install virt_to_phys(kernel_pgd) as the kernel root via
- *      arch_vmm_init_hw() (TTBR1 on aarch64, CR3 on amd64).
+ *   4. Install virt_to_phys(kernel_pgd) as the kernel root.
  *
- * After vmm_init() only the first 128 MB of RAM are mapped;
- * vmm_dynamic_remap() extends coverage to all detected RAM.
- *
+ * vmm_dynamic_remap() retains the phase-2 rebuild/optimization pass.
  * Locking: must be called single-threaded before SMP bring-up.
  */
 void vmm_init(void) {
   pr_info("%s", "VMM: Initializing MMU (Phase 1: Bootstrap)...\n");
 
-  /* Allocate Kernel PGD */
   kernel_pgd = pmm_alloc_page();
-  if (!kernel_pgd) {
-    panic("VMM: Failed to allocate kernel PGD\n");
-  }
+  if (!kernel_pgd)
+    panic("%s", "VMM: Failed to allocate kernel PGD");
   memset(kernel_pgd, 0, 4096);
   arch_cache_clean_range(kernel_pgd, 4096);
 
-  /* 1. Map RAM (bootstrap) with the W^X section split: text RX, rodata RO+NX,
-   * the rest RW+NX (MM-VMM-01).  Map at least 128MB, but always far enough to
-   * cover the PMM metadata: arch_vmm_init_hw() switches the page table and then
-   * touches page_array via pmm_alloc_page(), so the metadata must be mapped in
-   * THIS pgd.  A boot module (release rootfs) can push the metadata well past
-   * the kernel image, so a fixed 128MB window is not enough — extend to the
-   * metadata top. */
-  uint64_t ram_start = ARCH_RAM_START;
-  uint64_t ram_size = 128UL * 1024 * 1024; /* Enough to boot */
-  uint64_t meta_top = pmm_metadata_top();
-  if (meta_top > ram_start) {
-    uint64_t need = PAGE_ALIGN(meta_top - ram_start + 2UL * 1024 * 1024);
-    if (need > ram_size)
-      ram_size = need;
-  }
-
-  vmm_map_ram_wx(kernel_pgd, ram_start, ram_size);
-
-  /* 2. Map MMIO */
+  vmm_map_detected_usable_regions(kernel_pgd, "bootstrap");
   arch_vmm_map_mmio(kernel_pgd);
-
-  /* 3. Enable MMU */
   arch_vmm_init_hw(virt_to_phys(kernel_pgd));
 
-  pr_info("%s", "VMM: Bootstrap complete.\n");
+  pr_info("%s", "VMM: Bootstrap complete; usable intervals mapped without holes.\n");
 }
 
 /*
@@ -482,18 +502,9 @@ void vmm_dynamic_remap(void) {
   if (!new_pgd) panic("VMM: Failed to allocate new dynamic PGD");
   memset(new_pgd, 0, 4096);
 
-  /* 1. Map all discovered memory regions with the W^X section split
-   * (text RX, rodata RO+NX, all other RAM RW+NX — MM-VMM-01 resolved).
-   * arch_vmm_map_range still uses 2MB blocks inside each window. */
-  size_t count = 0;
-  struct mem_region *regions = arch_platform_get_mem_regions(&count);
-  for (size_t i = 0; i < count; i++) {
-    if (regions[i].type == MEM_REGION_USABLE) {
-      pr_info("VMM: Mapping region 0x%lx - 0x%lx\n",
-              regions[i].base, regions[i].base + regions[i].size);
-      vmm_map_ram_wx(new_pgd, regions[i].base, regions[i].size);
-    }
-  }
+  /* 1. Rebuild the same validated usable intervals with the W^X split and
+   * architecture large-page mappings. No non-RAM gap is mapped as RAM. */
+  vmm_map_detected_usable_regions(new_pgd, "dynamic");
 
   /* 2. Re-map MMIO */
   arch_vmm_map_mmio(new_pgd);

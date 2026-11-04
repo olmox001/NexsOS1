@@ -28,9 +28,9 @@ In caso di conflitto, valgono le decisioni più recenti e più specifiche, ma la
 | Registry | albero `reg_node`, mount `/reg`, ACL/ownership e lock propri | Il registry è un namespace/servizio logico esistente, ma non è ancora un discovery protocol uniforme per ogni device/service |
 | Syscall | legacy file syscalls già delegano a handle/object; molti verbi process/input/window/device restano percorsi dedicati | Non rinominare soltanto: fare mapping semantico e migrare ogni call site a object/port |
 | Device discovery | FDT minimale su AArch64; PCI scan AMD64; HAL registry array fisso e boot-only | nessun hotplug generale; la discovery completa appartiene a devmgr |
-| FDT | parser commenta esplicitamente bounds-check mancanti e reservation map non letta | hardening FDT prima di accettare DTB non fidato o usare FDT per risorse dinamiche |
+| FDT | BOOT-1 completato: parser bounded, reservation map, `/reserved-memory` statico e riserva DTB; 61 host checks PASS e runtime QEMU dual-arch PASS | fuzzing continuo, riserve dinamiche e device discovery restano fasi separate |
 | UEFI | AArch64 ISO EFI + GRUB AA64 + EFI stub embedded kernel/DTB; AMD64 ISO BIOS GRUB | non esiste ancora un percorso UEFI completo e verificato su entrambe le architetture |
-| Diagnostica | UART/serial log e QMP input; `nxadb` attuale avvia QEMU headless `display=none` | aggiungere cattura schermo e sessione grafica controllata; seriale resta canale indipendente |
+| Diagnostica | `nxadb` conserva serial/stdout/stderr, manifest per run, screenshot QMP e input QMP; default headless con `--display default` visuale | mantenere i canali separati e verificare la matrice su ogni architettura/boot mode |
 | Build hardening | `-Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings -Wmissing-prototypes -Wstrict-prototypes`, freestanding, stack protector, frame pointers, O2/g | NX_STRICT è opzionale; aumentare controlli con profili espliciti, non con flag indiscriminati |
 
 ### 2.1 Correzione ASTRA §7.10
@@ -221,26 +221,37 @@ defers runtime hotplug to Driver Maturity Fase 2; GPU unregister lacks
 reference-drain semantics. These are blockers for safe dynamic device services,
 not features to carry into NG unchanged.
 
-The boot inventory now records that EFI stub validates only DTB header/total
-size and passes pointer-only x0; kernel FDT API lacks available length. Common
-BootInfo must pass both physical address and length.
+The boot inventory now records BOOT-1's AArch64 handoff: EFI passes DTB
+physical address in x0 and validated totalsize in x1; the kernel normalizes
+this into the 32-byte BootInfo v1 record and calls the bounded
+`fdt_init(base, available_length)`. Legacy x1=0 paths remain behind the
+explicit pointer-only adapter. A common AMD64/AArch64 BootInfo carrying EFI
+memory map, ACPI and framebuffer remains future Track 6 work.
 
 ## 13. Newly confirmed priorities from the full boot transcript
 
-Before more graphics/kernel extraction, fix the test observability foundation:
-- archive every boot run's serial, QEMU stdout/stderr, build log, command/firmware
-  manifest, QMP actions and screenshots;
-- remove silent truncation from nxadb's error path;
-- add input acknowledgement and window/focus assertions, including nxwins;
-- treat UEFI firmware output as a separate channel from guest serial;
-- include boot stage/fault identifiers and GFX-TIMING events in one catalog.
+The test-observability foundation from this audit has since been implemented
+in `nxadb`: per-run serial and QEMU stdout/stderr, build/command manifests,
+QMP actions and screenshots are retained; visual mode is explicit; input and
+window/focus assertions use nxwins; firmware output remains separate from guest
+serial. Keep these artifacts complete and do not reintroduce silent truncation.
+The BOOT-1 instrumentation was rerun after clean builds on both architectures:
+AMD64 and AArch64 both passed NXShell readiness, nxwins focus, 30-second soak,
+1280x800 screenshot capture and zero-fault scan. AArch64 used the GRUB arm64-efi
+UEFI ISO and passed the x0/x1 DTB handoff; see the BOOT-1 report and retained
+run logs for complete UART/QEMU channels and manifests.
 
-The memory report is a 5 GiB FDT usable region at 0x40000000, PMM metadata at
-0x40a48000 (41120 KiB), 5070 MiB free. AArch64 HAL_RAM_SIZE remains a stale
-2 GiB constant; bootstrap currently maps only 128 MiB plus metadata and then
-dynamically maps discovered FDT regions. Audit/remove stale constants and test
-non-contiguous regions plus reserved holes. On AMD64 explicitly exercise the
-3–4 GiB PCI hole under a 5 GiB guest.
+The historical baseline memory report is a 5 GiB FDT usable region at
+0x40000000, PMM metadata at 0x40a48000 (41120 KiB), 5070 MiB free. Source review
+of `kernel/arch/aarch64/kinit/start.S` shows the bootstrap translation map is
+128 GiB, not 128 MiB: L1[0] maps [0,1 GiB) as Device and L1[1..127] map
+[1 GiB,128 GiB) as Normal 2 MiB blocks. This is a mapped physical window, not
+proof that RAM exists throughout it. The stale AArch64 `HAL_RAM_SIZE=2 GiB`
+constant has been removed and explicit `ARCH_PHYS_MAP_LIMIT` values now bound
+the PMM/VMM direct map. BOOT-1 union/overlay handling, DTB reservations and
+runtime gates are now PASS on both architectures. A separate AMD64 exercise of
+the 3–4 GiB PCI hole under a 5 GiB guest remains an explicit follow-up for the
+broader memory-map/PCI audit; it is not represented as a BOOT-1 test result.
 
 UEFI warnings in the attached transcript precede successful NEXS EFI stub and
 kernel milestones. Keep them in the artifact; classify each warning only after
@@ -335,3 +346,28 @@ object/VM lifetime audits. Compositor, window manager, CPU renderer, fonts,
 terminal and GPU policy are ring-3. Kernel surface manager remains mechanism
 only; GPU transport/driver remains a device service where hardware isolation
 permits. Preserve the legacy syscall broker until compatibility tests pass.
+
+
+## 14. BOOT-1 execution status — 2026-11-03
+
+BOOT-1 is the current active implementation gate; no later track is authorized
+until its source, clean-build and runtime checks close. It does not replace the
+legacy boot paths and does not claim to finish Track 6's common multi-arch
+BootInfo or AMD64 UEFI work.
+
+Completed at source/host-test level:
+- AArch64 EFI x0/x1 DTB handoff and BootInfo v1 length normalization;
+- explicit legacy x1=0 adapter and bounded page-by-page zero-pointer search;
+- bounded FDT parser with memory/CPU parsing, reservation map, static
+  `/reserved-memory`, and DTB reservation;
+- PMM union/overlay/hole handling and VMM usable-only direct-map checks;
+- host test relocated to `kernel/test/fdt_parser_test.c`, with mandatory QEMU
+  DTB input and 61 ASan/UBSan checks PASS.
+
+Runtime gate completed on 2026-11-03: clean builds for AMD64 and AArch64;
+61 ASan/UBSan host checks; GRUB BIOS AMD64 and GRUB arm64-efi/UEFI AArch64 ISO
+builds and boots; KTEST 10/10 AMD64 and 11/11 AArch64; AArch64 x0/x1 handoff
+and legacy x1=0 page-by-page search; NXShell, nxwins focus, 30-second soak,
+1280x800 screenshots and zero-fault scans. Complete logs are retained under
+`docs/report/logs/`. BOOT-1 is closed; DEV-1/DEV-2/DIAG-1 remain separate next
+tracks, not part of this verified change. See `docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.
