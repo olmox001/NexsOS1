@@ -3,38 +3,55 @@
 Status: inspected against the current Makefile and architecture entry sources.  
 Source baseline: b495da3a711e5af64dd826c29c6da4777c487074.
 
-## 1. Actual boot path used by current targets
+## 1. Actual boot paths used by current targets
+
+The default `make run` path is GRUB ISO boot on both architectures, matching
+`nxadb`, `nxrun` and the release media. Raw QEMU kernel loading is retained
+only as an explicit diagnostic path (`BOOT_MODE=direct` or `run-direct`).
+Do not conflate the direct loader's register contract with the GRUB handoff.
 
 ### x86-64 / amd64
 
-- Build output: build/amd64/kernel.elf.
-- Development run: QEMU receives -kernel build/amd64/kernel.elf.
-- Release ISO: GRUB configuration uses multiboot2 /boot/kernel.elf.
-- Actual kernel entry: kernel/arch/amd64/kinit/start.S.
-- The entry object contains a Multiboot2 header with the entry-address header
-  tag and a Xen PVH note. It receives the Multiboot2 magic in EAX and the
-  information pointer in EBX, saves both, establishes low boot mappings and
-  enters the higher-half kernel.
-- The actual x86 kernel boot path is not kernel/arch/amd64/boot/boot.S.
+- Build output: `build/amd64/kernel.elf`.
+- Default development/release boot: GRUB BIOS ISO, then Multiboot2
+  `/boot/kernel.elf`; the entry receives the Multiboot2 magic in EAX and the
+  information pointer in EBX.
+- Actual kernel entry: `kernel/arch/amd64/kinit/start.S`.
+- The entry object contains a Multiboot2 header with the standard entry-address
+  header tag and a Xen PVH note. It saves the incoming boot registers,
+  establishes low boot mappings and enters the higher-half kernel.
+- Diagnostic direct boot: QEMU receives `-kernel build/amd64/kernel.elf`.
+  This bypasses GRUB. The captured direct-loader run reported
+  `Magic: 0x0`, unlike GRUB's `0x36d76289`; it is not evidence of the
+  Multiboot2 handoff and must be tracked separately.
+- The actual x86 kernel boot path is not `kernel/arch/amd64/boot/boot.S`.
 
 ### AArch64
 
-- Build output: build/aarch64/kernel.bin, produced from the linked ELF with
-  objcopy -O binary.
-- Development run: QEMU receives -M virt -cpu cortex-a57 -m 5G -smp 4,
-  the VirtIO GPU/input/block devices, -kernel build/aarch64/kernel.bin and
-  -dtb build/aarch64/virt.dtb.
-- The DTB is generated from the same QEMU machine configuration.
-- QEMU's AArch64 raw-kernel stub passes the DTB physical address in X0.
-- Actual kernel entry: kernel/arch/aarch64/kinit/start.S.
-- The entry accepts X0 as the DTB pointer, checks CurrentEL, and has EL3,
+- Build output: `build/aarch64/kernel.bin`, produced from the linked ELF with
+  `objcopy -O binary`.
+- Default development/release boot: GRUB arm64-efi ISO chainloads the
+  project-owned `nexsos-efi-loader.efi`, which loads the kernel and embedded
+  QEMU-generated DTB, validates the FDT span, exits boot services and passes
+  the DTB physical address in `x0` and validated available size in `x1`.
+- Actual kernel entry: `kernel/arch/aarch64/kinit/start.S`.
+- The entry preserves the handoff registers, checks CurrentEL, and has EL3,
   EL2 and EL1 transition paths before enabling the MMU and entering the
   higher-half kernel.
+- Diagnostic direct boot: QEMU receives `-kernel build/aarch64/kernel.bin`
+  and `-dtb build/aarch64/virt.dtb`. QEMU supplies the DTB pointer in `x0`
+  but not its available size in `x1`; the kernel therefore uses the explicitly
+  retained legacy pointer-only adapter. This does not exercise the sized EFI
+  handoff.
 
-The development targets are not using the separate bootloader.elf as the
-kernel loader. The current bootloader target builds a separate artifact from
-kernel/arch/<arch>/boot/header.S, stage1.S and stage2.S; it is included in
-make all but is not used by the run or release boot path described above.
+The separate `bootloader.elf`/`bootloader.bin` target is built from
+`kernel/arch/<arch>/boot/header.S`, `stage1.S` and `stage2.S`, but is not
+the loader used by GRUB ISO, default `make run`, `nxadb`, `nxrun` or release.
+The current `mkdisk` implementation explicitly accepts but ignores its
+bootloader/kernel arguments and creates a GPT root-filesystem image; that
+image is not independently bootable. The separate experimental bootloader
+sources contain protocol defects documented in §2 and must not be advertised
+as a working no-GRUB disk boot path.
 
 ## 2. Legacy boot code that must not be reused without repair
 

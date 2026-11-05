@@ -117,17 +117,21 @@ then installs/checks the host build dependencies and cross-toolchains:
 ./tools/setup-project.sh
 ```
 
-The setup is safe to re-run. It fails if a pinned dependency cannot be
-initialized; it does not silently continue with an incomplete userland.
-To initialize/check only the external source dependencies:
+Run this bootstrap once after cloning. It initializes the pinned recursive
+submodules and installs the complete host toolchain, including the GRUB ISO
+build tools used by nxadb/nxrun. Build and run targets never invoke setup
+scripts.
+
+For a read-only dependency verification later (without reinitializing
+submodules), use:
 
 ```bash
-make setup-deps
 make check-deps
 ```
 
-The submodule gitlinks, not the optional branch hints in `.gitmodules`, are
-the source of truth for dependency versions.
+make setup-deps is a manual recovery command only if the initial submodule
+checkout was skipped or incomplete. The submodule gitlinks, not the optional
+branch hints in .gitmodules, are the source of truth for dependency versions.
 
 ### 3. Verify the Installation
 Ensure the cross-compilers and emulators are available:
@@ -140,15 +144,34 @@ make check ARCH=amd64
 
 ## 💻 Compilation & Execution
 
-NexsOS1 uses a streamlined `Makefile` interface. To compile the bootloader, kernel, and userland disk image, and immediately boot them in QEMU, run:
+NexsOS1's normal developer run uses the same GRUB boot media as the
+interactive `nxadb`/`nxrun` tests and release path. This is the authoritative
+boot-chain test: AMD64 uses GRUB BIOS + Multiboot2; AArch64 uses GRUB arm64-efi,
+the project EFI handoff stub, and a bounded DTB handoff (`x0` address,
+`x1` validated size).
 
 ```bash
-# Build and run the ARM64 (AArch64) graphical system (Reference)
 make run ARCH=aarch64
-
-# Build and run the x86_64 (AMD64) graphical system
 make run ARCH=amd64
 ```
+
+The raw QEMU kernel-loader path is retained for low-level diagnostics only:
+
+```bash
+make run ARCH=aarch64 BOOT_MODE=direct
+make run ARCH=amd64 BOOT_MODE=direct
+# Equivalent compatibility targets: make run-direct ARCH=<arch>
+```
+
+Direct AArch64 loading supplies the DTB pointer in `x0` but has no explicit
+length register; it therefore exercises the documented legacy pointer-only
+adapter (`x1=0`), not the sized EFI handoff. Direct AMD64 loading also bypasses
+the GRUB Multiboot2 entry and must be treated as a separate diagnostic path,
+not as bootable installation media. Neither direct mode replaces GRUB boot
+verification.
+
+For a headless GRUB ISO run, add `RUN_DISPLAY=none` and
+`RUN_SERIAL=file:build/runs/run-ARCH.serial`.
 
 ### Additional Build Targets
 
@@ -157,7 +180,7 @@ make run ARCH=amd64
 | `make all ARCH=<arch>` | Compiles the operating system without launching QEMU. |
 | `make debug ARCH=<arch>` | Boots QEMU with GDB stub debugging enabled (`-s -S`). |
 | `make release VERSION=x.y` | Builds release-ready packages (e.g., hybrid, bootable AMD64 ISOs via GRUB). |
-| `make clean` | Wipes build outputs. Strongly recommended after userland changes in `user/` to make modifications effective. |
+| `make clean` | Removes architecture/GRUB build outputs while preserving the pinned source cache and diagnostic/runtime logs. |
 
 The official kernel API for userspace can be found inside `include/api/`, focusing primarily on `os1.h` and `object.h`.
 

@@ -10,21 +10,23 @@
  * once per --interval, default 60 s, not per cycle).
  *
  * Lanes (each exercises the kernel paths the campaign touches):
- *   spawn  — spawn a trivial child (/bin/hello) and wait it: process_create /
- *            teardown, PMM, scheduler, ASID/PCID switch, object-handle
- * teardown, the timer/sleep teardown path.  A --fault fraction spawns
- * /bin/crash instead, exercising the ABNORMAL (fault-kill) teardown path. alloc
- * — userland malloc/free across zipf-ish size classes: sbrk -> PMM. file   —
- * open/write/read/close churn: VFS + ext4 + buffer cache. gui    —
- * create_window/destroy_window churn: compositor window paths.
+ *   spawn      — spawn /bin/true or /bin/crash and wait: process creation,
+ *                normal exit and abnormal fault-kill teardown.
+ *   timer-kill — spawn /bin/sleep with a short fractional deadline, then kill
+ *                near/after expiry and wait: timed sleep, timer callback,
+ *                timer_del synchronization and process reaping.
+ *   alloc      — userland malloc/free across size classes: sbrk -> PMM.
+ *   file       — open/write/read/close churn: VFS + ext4 + buffer cache.
+ *   gui        — create_window/destroy_window churn: compositor window paths.
  *
  * Usage (run from the shell, headless serial captured to a file):
  *   stress [--dur S] [--seed HEX] [--interval S] [--fault PCT]
- *          [--spawn] [--alloc] [--file] [--gui] [--all]
+ *          [--spawn] [--timer-kill] [--alloc] [--file] [--gui] [--all]
  *   Defaults: --all lanes, --dur 7200 (2 h), --seed 0xDEADBEEF, --interval 60,
  *             --fault 7.  If any explicit lane flag is given, only those run.
  */
 #include <os1.h>
+#include <errno.h> /* ESRCH: distinguish a natural exit racing the kill */
 #include <stdlib.h> /* atoi, atoll, malloc, free */
 #include <string.h> /* strcmp */
 
@@ -69,6 +71,7 @@ static unsigned long long xrand(void) {
 #define LANE_ALLOC 2u
 #define LANE_FILE 4u
 #define LANE_GUI 8u
+#define LANE_TIMER_KILL 16u
 
 static int str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }
 
@@ -96,11 +99,13 @@ int main(int argc, char *argv[]) {
       lanes |= LANE_FILE;
     else if (str_eq(argv[i], "--gui"))
       lanes |= LANE_GUI;
+    else if (str_eq(argv[i], "--timer-kill"))
+      lanes |= LANE_TIMER_KILL;
     else if (str_eq(argv[i], "--all"))
-      lanes |= (LANE_SPAWN | LANE_ALLOC | LANE_FILE | LANE_GUI);
+      lanes |= (LANE_SPAWN | LANE_TIMER_KILL | LANE_ALLOC | LANE_FILE | LANE_GUI);
   }
   if (lanes == 0)
-    lanes = (LANE_SPAWN | LANE_ALLOC | LANE_FILE | LANE_GUI);
+    lanes = (LANE_SPAWN | LANE_TIMER_KILL | LANE_ALLOC | LANE_FILE | LANE_GUI);
   rng_state = seed ? seed : 1;
 
   unsigned long long start = os1_mono_ns();
@@ -108,17 +113,31 @@ int main(int argc, char *argv[]) {
   unsigned long long interval_ns = interval_s * 1000000000ULL;
   unsigned long long next_stat = 0; /* emit one immediately */
   unsigned long long cycles = 0, spawns = 0, faults = 0, allocs = 0, files = 0,
-                     guis = 0, errs = 0;
+                     guis = 0, timer_tests = 0, timer_killed = 0,
+                     timer_completed = 0, timer_errors = 0, errs = 0;
 
   printf("[stress] start seed=0x%lx dur=%lus interval=%lus fault=%d%% "
          "lanes=0x%x\n",
          (unsigned long)seed, (unsigned long)dur_s, (unsigned long)interval_s,
          fault_pct, lanes);
+  if (lanes & LANE_TIMER_KILL) {
+    /* SYS_KILL must propagate both policy denial and a missing-target result;
+     * otherwise the timer lane cannot distinguish a real kill from a no-op. */
+    int protected_rc = kill_process(1);
+    int missing_rc = kill_process(0x7fffffff);
+    if (protected_rc != -EPERM || missing_rc != -ESRCH) {
+      printf("[stress] FAIL kill API: protected=%d (expected %d), "
+             "missing=%d (expected %d)\n",
+             protected_rc, -EPERM, missing_rc, -ESRCH);
+      timer_errors++;
+      errs++;
+    }
+  }
   /* Stats CSV is emitted by /sys/bin/nxmemstat --log (a ROOT NX service): the
    * OS1_sys_stats syscall is ROOT-gated, and stress runs as an unprivileged
-   * /bin USER process, so it only DRIVES load here.  run-stress.sh starts
-   * nxmemstat
-   * --log alongside; this loop just prints a periodic liveness heartbeat. */
+   * /bin USER process, so it only DRIVES load here. Run nxmemstat --log
+   * <interval> --run /bin/stress ... when a MEMSTAT time series is required;
+   * this loop also prints a periodic liveness heartbeat. */
 
   for (;;) {
     unsigned long long now = os1_mono_ns();
@@ -129,10 +148,13 @@ int main(int argc, char *argv[]) {
     /* periodic liveness heartbeat (load counts only; no privileged stats) */
     if (elapsed >= next_stat) {
       printf("[stress] t=%lus cycles=%lu spawns=%lu faults=%lu allocs=%lu "
-             "files=%lu guis=%lu errs=%lu\n",
+             "files=%lu guis=%lu timer_tests=%lu timer_killed=%lu "
+             "timer_completed=%lu timer_errors=%lu errs=%lu\n",
              (unsigned long)(elapsed / 1000000000ULL), (unsigned long)cycles,
              (unsigned long)spawns, (unsigned long)faults,
              (unsigned long)allocs, (unsigned long)files, (unsigned long)guis,
+             (unsigned long)timer_tests, (unsigned long)timer_killed,
+             (unsigned long)timer_completed, (unsigned long)timer_errors,
              (unsigned long)errs);
       next_stat = elapsed + interval_ns;
     }
@@ -162,6 +184,76 @@ int main(int argc, char *argv[]) {
           errs++;
         }
       } else {
+        errs++;
+      }
+    }
+
+    /* --- timer-kill lane: kill a short sleeper around its timer deadline --- */
+    if (lanes & LANE_TIMER_KILL) {
+      char sleep_name[] = "sleep";
+      char sleep_delay[] = "0.020";
+      char *sleep_argv[] = {sleep_name, sleep_delay, NULL};
+      int pid = spawn_args("/bin/sleep", 2, sleep_argv);
+      if (pid > 0) {
+        /* The first yield lets the child enter nanosleep. Use a deterministic
+         * three-band delay distribution: mostly before expiry, some directly
+         * around the 20 ms deadline, and some clearly after it. This guarantees
+         * the run exercises pending cancellation and natural timer completion
+         * instead of relying on a single unconstrained random window. */
+        yield();
+        unsigned long long phase = cycles % 10ULL;
+        unsigned long long delay_ms;
+        if (phase < 6ULL)
+          delay_ms = (xrand() % 15ULL) + 1ULL;       /* 1..15 ms: before */
+        else if (phase < 8ULL)
+          delay_ms = 18ULL + (xrand() % 5ULL);       /* 18..22 ms: boundary */
+        else
+          delay_ms = 25ULL + (xrand() % 6ULL);       /* 25..30 ms: after */
+        unsigned long long delay_ns = delay_ms * 1000000ULL;
+        unsigned long long kill_start = os1_mono_ns();
+        while (os1_mono_ns() - kill_start < delay_ns)
+          yield();
+
+        /* wait() is non-blocking. If the child has already exited at the
+         * deadline, count a natural timer completion rather than claiming a
+         * kill. Otherwise ask the kernel to terminate it and trust only the
+         * kernel's now-propagated SYS_KILL result. ESRCH can legitimately race
+         * the timer expiry between this wait and the kill syscall. */
+        int waited = wait(pid);
+        if (waited == pid || waited == -2) {
+          timer_tests++;
+          timer_completed++;
+        } else if (waited == -1) {
+          int kill_rc = kill_process(pid);
+          unsigned long long reap_deadline =
+              os1_mono_ns() + 2000000000ULL;
+          waited = wait(pid);
+          while (waited == -1 && os1_mono_ns() < reap_deadline) {
+            yield();
+            waited = wait(pid);
+          }
+
+          if (waited == pid || waited == -2) {
+            if (kill_rc == 0) {
+              timer_tests++;
+              timer_killed++;
+            } else if (kill_rc == -ESRCH) {
+              timer_tests++;
+              timer_completed++;
+            } else {
+              timer_errors++;
+              errs++;
+            }
+          } else {
+            timer_errors++;
+            errs++;
+          }
+        } else {
+          timer_errors++;
+          errs++;
+        }
+      } else {
+        timer_errors++;
         errs++;
       }
     }
@@ -227,9 +319,26 @@ int main(int argc, char *argv[]) {
 
   unsigned long long total_s = (os1_mono_ns() - start) / 1000000000ULL;
   printf("[stress] DONE cycles=%lu spawns=%lu faults=%lu allocs=%lu files=%lu "
-         "guis=%lu errs=%lu in %lus\n",
+         "guis=%lu timer_tests=%lu timer_killed=%lu timer_completed=%lu "
+         "timer_errors=%lu errs=%lu in %lus\n",
          (unsigned long)cycles, (unsigned long)spawns, (unsigned long)faults,
          (unsigned long)allocs, (unsigned long)files, (unsigned long)guis,
+         (unsigned long)timer_tests, (unsigned long)timer_killed,
+         (unsigned long)timer_completed, (unsigned long)timer_errors,
          (unsigned long)errs, (unsigned long)total_s);
-  return 0;
+
+  if (lanes & LANE_TIMER_KILL) {
+    bool timer_pass = timer_tests > 0 && timer_killed > 0 &&
+                      timer_completed > 0 &&
+                      timer_tests == timer_killed + timer_completed &&
+                      timer_errors == 0 && errs == 0;
+    printf("[stress] TIMER-KILL %s tests=%lu killed=%lu completed=%lu "
+           "errors=%lu\n",
+           timer_pass ? "PASS" : "FAIL", (unsigned long)timer_tests,
+           (unsigned long)timer_killed, (unsigned long)timer_completed,
+           (unsigned long)timer_errors);
+    /* Standard [name] done: passed/total marker consumed by nxadb --expect. */
+    printf("[stress] done: %d/1\n", timer_pass ? 1 : 0);
+  }
+  return errs ? 1 : 0;
 }

@@ -20,6 +20,7 @@ void graphics_init(void);
  * Returns 0, or -1 if no GPU/framebuffer.  (Replaces graphics_get_screen_
  * surface()'s SMP-unsafe static return and the stale graphics_context cache.) */
 struct gl_surface;
+struct process;
 int graphics_screen_surface(struct gl_surface *out) NX_MUST_USE;
 void graphics_swap_buffers(void);
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
@@ -61,7 +62,7 @@ int compositor_set_zoom(int percent) NX_MUST_USE;
  * reference (resets zoom). Call alongside gpu_set_mode + compositor_resize. */
 void compositor_set_native_mode(int w, int h);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
-                             int pid) NX_MUST_USE;
+                             struct process *owner) NX_MUST_USE;
 void compositor_destroy_window(int window_id);
 /* compositor_window_owner: owning PID of a window id, -1 if not found.
  * Used by the SYS_DESTROY_WINDOW capability check (ABI-04). */

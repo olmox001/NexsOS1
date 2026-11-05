@@ -448,21 +448,29 @@ def start_qemu(session: Session, wait: bool = True) -> None:
     if wait:
         if not wait_for_boot(session, timeout=90):
             tail = session.log_text()[-6000:]
+            qemu_err = session.qemu_err.read_text(errors="replace")[-6000:] if session.qemu_err.exists() else ""
+            qemu_out = session.qemu_out.read_text(errors="replace")[-6000:] if session.qemu_out.exists() else ""
             stop_qemu(session)
             raise RuntimeError(
                 "guest did not reach supervisor loop; captured output is NOT truncated on disk.\n"
                 f"UART: {session.ser_log}\nQEMU stdout: {session.qemu_out}\n"
                 f"QEMU stderr: {session.qemu_err}\nPrevious archive: {archive}\n"
-                f"--- last 6000 characters of UART only ---\n{tail}"
+                f"--- last 6000 characters of UART ---\n{tail}\n"
+                f"--- last 6000 characters of QEMU stderr ---\n{qemu_err}\n"
+                f"--- last 6000 characters of QEMU stdout ---\n{qemu_out}"
             )
         if not wait_for_shell(session):
             tail = session.log_text()[-6000:]
+            qemu_err = session.qemu_err.read_text(errors="replace")[-6000:] if session.qemu_err.exists() else ""
+            qemu_out = session.qemu_out.read_text(errors="replace")[-6000:] if session.qemu_out.exists() else ""
             stop_qemu(session)
             raise RuntimeError(
                 "NXShell prompt did not become ready; captured output is NOT truncated on disk.\n"
                 f"UART: {session.ser_log}\nQEMU stdout: {session.qemu_out}\n"
                 f"QEMU stderr: {session.qemu_err}\nPrevious archive: {archive}\n"
-                f"--- last 6000 characters of UART only ---\n{tail}"
+                f"--- last 6000 characters of UART ---\n{tail}\n"
+                f"--- last 6000 characters of QEMU stderr ---\n{qemu_err}\n"
+                f"--- last 6000 characters of QEMU stdout ---\n{qemu_out}"
             )
 
 
@@ -524,6 +532,11 @@ def wait_for_boot(session: Session, timeout: int = 90) -> bool:
         if FAULT_RE.search(text):
             print(" FAULT")
             return False
+        # QEMU can exit immediately when another run owns the writable disk
+        # image. Do not burn the full boot timeout polling a dead guest.
+        if time.time() - t0 >= 1.5 and not session.process_matches(session.pid()):
+            print(" QEMU-EXITED")
+            return False
         time.sleep(0.3)
         print(".", end="", flush=True)
     print(" TIMEOUT")
@@ -544,6 +557,9 @@ def wait_for_shell(session: Session, timeout: int = 50) -> bool:
             return True
         if FAULT_RE.search(text):
             print(" FAULT")
+            return False
+        if time.time() - t0 >= 1.5 and not session.process_matches(session.pid()):
+            print(" QEMU-EXITED")
             return False
         time.sleep(0.35)
         print(".", end="", flush=True)
@@ -1044,7 +1060,7 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
                 verdict = "FAIL"
 
         for command in cmds:
-            name = command.split()[0]
+            name = Path(command.split()[0]).name
             before_size = session.log_size()
             code, output = run_shell_c(session, command, timeout=180)
             if code != 0:
@@ -1052,7 +1068,11 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
                 if verdict != "FAULT":
                     verdict = "FAIL"
 
-            if not name.endswith("test"):
+            # Explicit --expect entries may opt any command into the standard
+            # [basename] done: passed/total result contract; commands ending
+            # in "test" retain the historical automatic KTEST-style parsing.
+            has_expectation = any(expected.startswith(f"{name}=") for expected in expect)
+            if not name.endswith("test") and not has_expectation:
                 continue
 
             done_re = re.compile(

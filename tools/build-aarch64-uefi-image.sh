@@ -18,6 +18,17 @@ KERNEL="$BUILD/kernel.bin"
 DTB="$BUILD/virt.dtb"
 HOST_CLANG="${NEXS_HOST_CLANG:-$(command -v clang || true)}"
 LLD_LINK="${NEXS_LLD_LINK:-$(command -v lld-link || true)}"
+if [[ -z "$LLD_LINK" ]]; then
+    for candidate in /usr/local/opt/llvm/bin/lld-link /opt/homebrew/opt/llvm/bin/lld-link; do
+        if [[ -x "$candidate" ]]; then LLD_LINK="$candidate"; break; fi
+    done
+fi
+if [[ -z "$LLD_LINK" ]] && command -v brew >/dev/null 2>&1; then
+    LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || true)"
+    if [[ -n "$LLVM_PREFIX" && -x "$LLVM_PREFIX/bin/lld-link" ]]; then
+        LLD_LINK="$LLVM_PREFIX/bin/lld-link"
+    fi
+fi
 JOBS="${NEXS_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 
 for tool in xorriso mformat mmd mcopy python3; do

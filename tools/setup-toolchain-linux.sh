@@ -155,7 +155,7 @@ install_packages() {
             "${SUDO[@]}" apt-get install -y \
                 build-essential \
                 file \
-                bison flex \
+                bison flex gawk clang lld \
                 libgmp-dev libmpc-dev libmpfr-dev \
                 libisl-dev libzstd-dev \
                 texinfo \
@@ -171,6 +171,7 @@ install_packages() {
             # Do not run a full system upgrade as a side effect of project setup.
             "${SUDO[@]}" pacman -S --needed --noconfirm \
                 base-devel file \
+                bison flex gawk clang lld \
                 gmp libmpc mpfr isl zstd \
                 texinfo \
                 qemu-system-x86 qemu-system-aarch64 \
@@ -183,7 +184,7 @@ install_packages() {
             "${SUDO[@]}" apk add \
                 build-base \
                 file \
-                bison flex \
+                bison flex gawk clang lld \
                 gmp-dev mpc1-dev mpfr-dev \
                 texinfo \
                 qemu-system-x86_64 qemu-system-aarch64 \
@@ -195,7 +196,7 @@ install_packages() {
             ;;
         *)
             warn "Distro '$DISTRO' not directly supported."
-            warn "Please install manually: build-essential, bison, flex, libgmp-dev,"
+            warn "Please install manually: build-essential, bison, flex, gawk, clang, lld, libgmp-dev,"
             warn "libmpc-dev, libmpfr-dev, libisl-dev, libzstd-dev, texinfo, qemu, grub, xorriso."
             warn "Both cross-compilers (x86_64-elf and aarch64-none-elf) are built from"
             warn "source by this script — no distro cross-gcc package is required."

@@ -1060,213 +1060,106 @@ static void __mouse_capture_motion_locked(int old_mx, int old_my, int *out_pid,
 /* Interrupt Locking Helpers from cpu.h */
 
 int compositor_create_window(int x, int y, int w, int h, const char *title,
-                             int pid) {
-  /*
-   * GFX-COMP-RESERVE-02: the caller's privilege is resolved BEFORE
-   * compositor_lock is taken, and as an int rather than a struct pointer.
-   *
-   * Both properties are load-bearing.  process_terminate() holds sched_lock and
-   * TRYLOCKS compositor_lock (docs/PROCESS-KILL-MODEL.md §4, Pitfall A); a
-   * blocking compositor_lock -> sched_lock here would close that AB-BA, on the
-   * hottest path the compositor has.  And a `struct process *` fetched by
-   * process_find_by_pid() is already stale when the function returns — the
-   * target can be terminated and its page freed before it is dereferenced.
-   * proc_pid_is_privileged() answers under sched_lock and lets nothing escape.
-   *
-   * An unknown pid (a caller that raced its own exit) reads as UNPRIVILEGED:
-   * fail closed into the smaller user-window budget rather than hand reserved
-   * capacity to a caller that can no longer be identified.
-   */
-  int privileged = proc_pid_is_privileged(pid);
+                             struct process *owner) {
+  if (!owner || !title ||
+      __atomic_load_n(&owner->dying, __ATOMIC_ACQUIRE))
+    return -EPERM;
+  if (w <= 0 || h <= 0 || w > 4096 || h > 4096)
+    return -EINVAL;
+
+  int pid = (int)owner->pid;
+  int privileged = proc_is_privileged(owner);
+  int char_w = graphics_font_max_width();
+  int char_h = graphics_font_height();
+  if (char_w <= 0 || char_h <= 0)
+    return -EINVAL;
+
+  struct window fresh;
+  memset(&fresh, 0, sizeof(fresh));
+  size_t pixels = (size_t)w * (size_t)h;
+  fresh.buffer = (uint32_t *)kmalloc(pixels * sizeof(uint32_t));
+  if (!fresh.buffer)
+    return -ENOMEM;
+
+  uint32_t bg = compositor_theme_active()->win_bg;
+  fresh.width = w;
+  fresh.height = h;
+  fresh.draw_w = w;
+  fresh.draw_h = h;
+  fresh.visible = 1;
+  fresh.pid = pid;
+  fresh.bg_color = bg;
+  fresh.has_alpha = ((bg >> 24) != 0xFF);
+  fresh.protected = (pid == 2);
+  for (size_t i = 0; i < pixels; i++)
+    fresh.buffer[i] = bg;
+
+  int len = 0;
+  while (title[len] && len < (int)sizeof(fresh.title) - 1) {
+    fresh.title[len] = title[len];
+    len++;
+  }
+  fresh.title[len] = '\0';
+
+  if (term_init(&fresh.term, w / char_w, h / char_h, COLOR_FG, bg) != 0) {
+    kfree(fresh.buffer);
+    return -ENOMEM;
+  }
 
   uint64_t flags;
   spin_lock_irqsave(&compositor_lock, &flags);
-
-  if (w <= 0 || h <= 0 || w > 4096 || h > 4096) {
-    pr_err("Compositor: Invalid window dimensions %dx%d\n", w, h);
+  if (__atomic_load_n(&owner->dying, __ATOMIC_ACQUIRE)) {
     spin_unlock_irqrestore(&compositor_lock, flags);
-    return -1;
+    term_free(&fresh.term);
+    kfree(fresh.buffer);
+    return -EPERM;
   }
 
-  /*
-   * An unprivileged caller (ordinary app) is capped below the full pool so it
-   * can never crowd out the reserved slots a respawning system service needs.
-   * A privileged caller (PLVL_ROOT / PLVL_MACHINE — /sys/bin services under
-   * the ASTRA per-path preset) is checked against the full MAX_WINDOWS:
-   * privileged windows are a small, fixed, supervised set (dock, nxbar,
-   * launcher, plus transient destroy+recreate overlap), never something a
-   * stress test grows without bound, so they don't need — and shouldn't get —
-   * a *tighter* cap than before.  `privileged` was resolved at entry; see the
-   * note there for why it cannot be resolved here.
-   */
   int cap = privileged ? MAX_WINDOWS : MAX_USER_WINDOWS;
-
-  if (window_count >= cap) {
-    pr_err(
-        "%s",
-        privileged
-            ? "Compositor: Max windows reached\n"
-            : "Compositor: Max user windows reached (system slots reserved)\n");
-    spin_unlock_irqrestore(&compositor_lock, flags);
-    return -1;
-  }
-
-  /* Find free slot */
   int slot = -1;
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id == 0) {
-      slot = i;
-      break;
+  if (window_count < cap) {
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+      if (windows[i].id == 0) {
+        slot = i;
+        break;
+      }
     }
   }
-
   if (slot < 0) {
     spin_unlock_irqrestore(&compositor_lock, flags);
-    return -1;
+    term_free(&fresh.term);
+    kfree(fresh.buffer);
+    return -ENOSPC;
   }
 
-  /*
-   * FIX(GFX-COMP-NEWWIN-01): clamp the initial position so a newly created
-   * window (including its title bar / close button) lands fully on-screen.
-   * compositor_update_mouse() already enforces these same bounds while
-   * dragging a window; without this check here, a window created near a
-   * screen edge (or larger than the screen) would have its title bar and
-   * close button off-screen until the user dragged it at least once.
-   * Mirrors the clamp order used in compositor_update_mouse().
-   */
-  {
-    /* Clamp into the desktop-virtual area (where windows live), not the
-     * physical scanout — they differ under zoom (F2).  We already hold
-     * compositor_lock, so read bb_width/bb_height directly (compositor_get_size
-     * would re-lock). */
-    int screen_w = bb_width > 0 ? bb_width : 800;
-    int screen_h = bb_height > 0 ? bb_height : 600;
+  int screen_w = bb_width > 0 ? bb_width : 800;
+  int screen_h = bb_height > 0 ? bb_height : 600;
+  if (x + w > screen_w)
+    x = screen_w - w;
+  if (x < 0)
+    x = 0;
+  int top = compositor_reserved_top_locked(0);
+  int bottom = compositor_reserved_bottom_locked(0);
+  if (y + h > screen_h - bottom)
+    y = screen_h - bottom - h;
+  if (y < top)
+    y = top;
 
-    if (x + w > screen_w)
-      x = screen_w - w;
-    if (x < 0)
-      x = 0;
-
-    /* FIX(GFX-COMP-RESERVE-01): clamp against the LIVE top/bottom chrome
-     * reservation (nxbar/nxui), not just compositor_titlebar_height() at the
-     * top and the bare screen edge at the bottom — see the helper comment
-     * above. exclude_id=0: this window has no id yet, nothing to exclude. */
-    int reserved_top = compositor_reserved_top_locked(0);
-    int reserved_bottom = compositor_reserved_bottom_locked(0);
-
-    if (y + h > screen_h - reserved_bottom)
-      y = screen_h - reserved_bottom - h;
-    if (y < reserved_top)
-      y = reserved_top;
-  }
-
-  /* Allocate window buffer.  (size_t)w * h is safe from overflow: w and h
-   * are already bounded to <=4096 above, so the product fits well within
-   * both a 32-bit and 64-bit size_t before the *4 for the pixel format. */
-  size_t buffer_size = (size_t)w * (size_t)h * sizeof(uint32_t);
-  uint32_t *buffer = (uint32_t *)kmalloc(buffer_size);
-  if (!buffer) {
-    pr_err("%s", "Compositor: Failed to allocate window buffer\n");
-    spin_unlock_irqrestore(&compositor_lock, flags);
-    return -1;
-  }
-  uint32_t default_bg = compositor_theme_active()->win_bg;
-
-  /* Initialize window */
-  windows[slot].id = next_window_id++;
-  windows[slot].x = x;
-  windows[slot].y = y;
-  windows[slot].width = w;
-  windows[slot].height = h;
-  windows[slot].draw_w = w; /* on-screen == logical until a resize scales it */
-  windows[slot].draw_h = h;
-  windows[slot].z_order = window_count;
-  windows[slot].visible = 1;
-  windows[slot].minimized = 0;
-  windows[slot].pid = pid;
-  windows[slot].buffer = buffer;
-  windows[slot].bg_color = default_bg;
-
-  /*
-   * Initialize the embedded terminal emulator (cell grid from font metrics).
-   *
-   * FIX(GFX-COMP-DIV0-01): char_w/char_h come from the active font and were
-   * used as divisors with no zero-check.  A font driver bug or an
-   * uninitialised font table returning 0 here would fault the kernel with a
-   * divide-by-zero inside window creation — a state fully outside the
-   * caller's control (this is a font-subsystem invariant, not a bad
-   * argument), so failing the call cleanly is the right response rather
-   * than crashing.
-   */
-  int char_w = graphics_font_max_width();
-  int char_h = graphics_font_height();
-  if (char_w <= 0 || char_h <= 0) {
-    pr_err("Compositor: invalid font metrics (%dx%d), cannot size terminal\n",
-           char_w, char_h);
-    kfree(buffer);
-    windows[slot].id = 0;
-    spin_unlock_irqrestore(&compositor_lock, flags);
-    return -1;
-  }
-  if (term_init(&windows[slot].term, w / char_w, h / char_h, COLOR_FG,
-                default_bg) != 0) {
-    pr_err("%s", "Compositor: Failed to allocate terminal grids\n");
-    kfree(buffer);
-    windows[slot].id = 0;
-    spin_unlock_irqrestore(&compositor_lock, flags);
-    return -1;
-  }
-
-  /* Copy title */
-  int len = 0;
-  while (title[len] && len < 63) {
-    windows[slot].title[len] = title[len];
-    len++;
-  }
-  windows[slot].title[len] = '\0';
-
-  windows[slot].has_alpha = ((default_bg >> 24) != 0xFF);
-
-  /*
-   * FIX(GFX-COMP-PERF-01): the buffer used to be filled with default_bg
-   * TWICE — once right after allocation, then again here with
-   * windows[slot].bg_color, which is set to the exact same default_bg value
-   * a few lines above.  For a large window (up to 4096x4096) that is up to
-   * ~64 MB of pointless duplicate writes performed while holding
-   * compositor_lock.  A single fill, done once with the buffer's actual
-   * bg_color (which is what a reader of this code would expect to see, and
-   * which stays correct if a future change ever makes the two diverge), is
-   * both cheaper and clearer about which value is authoritative.
-   */
-  for (int i = 0; i < w * h; i++)
-    buffer[i] = windows[slot].bg_color;
-
-  /* Mark main shell (PID 2) as protected */
-  windows[slot].protected = (pid == 2) ? 1 : 0;
-  windows[slot].top_most = 0;
-  windows[slot].passive = 0;
-
+  int id = next_window_id++;
+  fresh.id = id;
+  fresh.x = x;
+  fresh.y = y;
+  fresh.z_order = window_count;
+  windows[slot] = fresh;
   window_count++;
-
-  /* ============================================================
-   * VECCHIO: nessuna chiamata a expand_damage, nessun compositor_dirty
-   * ============================================================ */
-
-  /* ============================================================
-   * NUOVO: marca l'intera area della finestra (contenuto + barra
-   * del titolo) come danneggiata così il prossimo compositor_tick
-   * la ridisegna immediatamente.
-   * ============================================================ */
-  int ddw = windows[slot].draw_w > 0 ? windows[slot].draw_w : w;
-  int ddh = windows[slot].draw_h > 0 ? windows[slot].draw_h : h;
-  expand_damage(x, y - compositor_titlebar_height(), ddw,
-                ddh + compositor_titlebar_height());
+  expand_damage(x, y - compositor_titlebar_height(), w,
+                h + compositor_titlebar_height());
   compositor_dirty = 1;
-
-  pr_debug("Compositor: Created window '%s' (%dx%d) at (%d,%d)\n", title, w, h,
-           x, y); /* hot path under GUI churn: demoted (perf §1) */
   spin_unlock_irqrestore(&compositor_lock, flags);
-  return windows[slot].id;
+
+  pr_debug("Compositor: Created window '%s' (%dx%d) at (%d,%d)\n", title, w,
+           h, x, y);
+  return id;
 }
 
 /*
@@ -1526,71 +1419,102 @@ int compositor_window_grid(int window_id, int *cols, int *rows) {
 }
 
 /*
- * Destroy Window
+ * Detach window-owned allocations under compositor_lock, then release them
+ * after unlocking. Allocator calls must not be nested under compositor_lock:
+ * resize/create and process teardown otherwise invert allocator/compositor
+ * lock order under SMP load.
  */
-void compositor_destroy_window(int window_id) {
-  uint64_t flags;
-  spin_lock_irqsave(&compositor_lock, &flags);
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id == window_id) {
-      int refocus = (windows[i].pid == keyboard_focus_pid);
-      /* #118: damage the vacated footprint BEFORE zeroing so the area under the
-       * window (and lower windows) is recomposited at the next tick — no ghost.
-       */
-      int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
-      int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
-      expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
-                    ddw, ddh + compositor_titlebar_height());
-      compositor_dirty = 1;
-      if (windows[i].buffer) {
-        kfree(windows[i].buffer);
-      }
-      term_free(&windows[i].term);
-      memset(&windows[i], 0, sizeof(struct window));
-      window_count--;
-      if (refocus) {
-        /* The focused window is gone: hand focus to the next in Z-order. */
-        __focus_topmost_locked();
-      }
-      spin_unlock_irqrestore(&compositor_lock, flags);
-      return;
-    }
-  }
-  spin_unlock_irqrestore(&compositor_lock, flags);
+struct retired_window_resources {
+  uint32_t *buffer;
+  uint8_t *text_grid;
+  uint32_t *attr_grid;
+};
+
+static void __free_retired_window_resources(
+    struct retired_window_resources *resources) {
+  if (resources->buffer)
+    kfree(resources->buffer);
+  if (resources->text_grid)
+    kfree(resources->text_grid);
+  if (resources->attr_grid)
+    kfree(resources->attr_grid);
+  resources->buffer = NULL;
+  resources->text_grid = NULL;
+  resources->attr_grid = NULL;
 }
 
-/*
- * Destroy all windows owned by a specific PID
- */
-void compositor_destroy_windows_by_pid(int pid) {
+/* Destroy one window. The slot is unpublished before its storage is freed. */
+void compositor_destroy_window(int window_id) {
+  struct retired_window_resources retired = {0};
   uint64_t flags;
-  int refocus = 0;
   spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id != 0 && windows[i].pid == pid) {
-      if (windows[i].pid == keyboard_focus_pid) {
-        refocus = 1;
-      }
-      /* #118: damage the vacated footprint before zeroing (no ghost window). */
-      int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
-      int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
-      expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
-                    ddw, ddh + compositor_titlebar_height());
-      compositor_dirty = 1;
-      if (windows[i].buffer) {
-        kfree(windows[i].buffer);
-      }
-      term_free(&windows[i].term);
-      memset(&windows[i], 0, sizeof(struct window));
+    if (windows[i].id != window_id)
+      continue;
+
+    int refocus = (windows[i].pid == keyboard_focus_pid);
+    int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+    int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+    expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
+                  ddw, ddh + compositor_titlebar_height());
+    compositor_dirty = 1;
+
+    retired.buffer = windows[i].buffer;
+    retired.text_grid = windows[i].term.text_grid;
+    retired.attr_grid = windows[i].term.attr_grid;
+    memset(&windows[i], 0, sizeof(struct window));
+    if (window_count > 0)
       window_count--;
-    }
-  }
-  if (refocus) {
-    /* All of the dying PID's windows are zeroed by now, so the scan picks
-     * the top-most SURVIVING window (or the shell default). */
-    __focus_topmost_locked();
+    else
+      panic("Compositor: window_count underflow destroying id=%d", window_id);
+
+    if (refocus)
+      __focus_topmost_locked();
+    break;
   }
   spin_unlock_irqrestore(&compositor_lock, flags);
+
+  __free_retired_window_resources(&retired);
+}
+
+/* Destroy all windows owned by a PID. A bounded local resource list makes the
+ * table update atomic while keeping kfree outside compositor_lock. */
+void compositor_destroy_windows_by_pid(int pid) {
+  struct retired_window_resources retired[MAX_WINDOWS] = {{0}};
+  int retired_count = 0;
+  int refocus = 0;
+  uint64_t flags;
+
+  spin_lock_irqsave(&compositor_lock, &flags);
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    if (windows[i].id == 0 || windows[i].pid != pid)
+      continue;
+
+    if (windows[i].pid == keyboard_focus_pid)
+      refocus = 1;
+    int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
+    int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
+    expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
+                  ddw, ddh + compositor_titlebar_height());
+    compositor_dirty = 1;
+
+    retired[retired_count].buffer = windows[i].buffer;
+    retired[retired_count].text_grid = windows[i].term.text_grid;
+    retired[retired_count].attr_grid = windows[i].term.attr_grid;
+    retired_count++;
+    memset(&windows[i], 0, sizeof(struct window));
+    if (window_count > 0)
+      window_count--;
+    else
+      panic("Compositor: window_count underflow destroying PID=%d", pid);
+  }
+
+  if (refocus)
+    __focus_topmost_locked();
+  spin_unlock_irqrestore(&compositor_lock, flags);
+
+  for (int i = 0; i < retired_count; i++)
+    __free_retired_window_resources(&retired[i]);
 }
 
 /*

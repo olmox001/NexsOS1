@@ -59,10 +59,20 @@ Key make targets: `all`, `run`, `debug`, `release`, `test-release`, `clean`, `ch
 ## 3. Running & debugging
 
 ```bash
-make run ARCH=aarch64        # graphical; window with TTY shell appears after boot
-make run ARCH=amd64          # boots to shell (default -m 5G)
-make debug ARCH=<arch>       # same, plus QEMU gdb stub (-s -S): connect with gdb, target remote :1234
+make run ARCH=aarch64                    # GRUB arm64-efi / UEFI ISO (default)
+make run ARCH=amd64                      # GRUB BIOS ISO (default)
+make debug ARCH=<arch>                  # GRUB ISO with QEMU GDB stub (-s -S)
+make run ARCH=aarch64 BOOT_MODE=direct  # raw QEMU kernel + DTB (diagnostic only)
+make run ARCH=amd64 BOOT_MODE=direct    # raw QEMU kernel ELF (diagnostic only)
+make debug ARCH=<arch> BOOT_MODE=direct # debug the direct-kernel path
 ```
+
+The default `make run` and `make debug` paths intentionally exercise GRUB,
+matching `nxadb`, `nxrun` and release media. AArch64 GRUB/EFI uses the
+project-owned EFI stub to validate and pass both DTB address and size to the
+kernel. The direct AArch64 path passes only the DTB pointer in `x0` and
+exercises the legacy `x1=0` adapter; direct AMD64 loading bypasses the GRUB
+Multiboot2 handoff. Keep these modes separate in diagnostics and reports.
 
 Headless serial capture (useful for CI / boot logs), AArch64 example:
 ```bash
@@ -70,20 +80,26 @@ qemu-system-aarch64 -M virt -cpu cortex-a57 -m 4G -smp 4 -display none \
   -serial file:/tmp/serial.log \
   -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device \
   -drive if=none,file=build/aarch64/disk.img,id=hd0,format=raw -device virtio-blk-device,drive=hd0 \
-  -kernel build/aarch64/kernel.elf
+  -dtb build/aarch64/virt.dtb -kernel build/aarch64/kernel.bin
 ```
 
-**amd64 caveats:** the `-kernel` path (what `make run` uses) boots via **PVH** and now
-parses the real memory map (the old "1 GB fallback", BOOT-01/02, is fixed). Two things
-remain: (a) virtio-pci devices **must** be declared with `disable-legacy=on` — the legacy
-transport hangs at the first block read; (b) total-RAM accounting derives `total_pages`
-from the highest region end address, so with `-m 5G` the log reports 6144 MB and the
-3–4 GB PCI hole is treated as allocatable RAM (epic #94).
+**AMD64 boot contract and memory map:** the default GRUB BIOS path enters
+through Multiboot2 (`EAX=0x36d76289`, `EBX=info pointer`). The verified QEMU
+5 GiB map contains 5119 MiB of usable RAM; the 3–4 GiB PCI hole and high MMIO
+aperture are represented as reserved descriptors and are not counted as RAM.
+The former 1 GiB fallback and 6144 MiB over-count described in older reports
+are historical defects, not the current GRUB result. The explicit
+`BOOT_MODE=direct` diagnostic path bypasses GRUB: QEMU supplies `EAX=0` and a
+PVH start-info pointer in `EBX`; the kernel detects `PVH_MAGIC` inside that
+structure and parses its memory map. Keep these two register contracts separate.
 
 ## 4. Boot flow
 
-Entry: `kernel_main` (`kernel/main.c`). AArch64 receives the DTB pointer in `x0`; amd64
-receives the (multiboot/PVH) magic+info in registers, saved by `arch/amd64/boot/start.S`.
+Entry: `kernel_main` (`kernel/main.c`). On AMD64, GRUB supplies Multiboot2
+magic+info; the direct QEMU diagnostic path supplies the PVH start-info pointer
+with `EAX=0`. On AArch64, the default GRUB/EFI path supplies DTB physical base
+in `x0` and validated available length in `x1`; direct QEMU supplies only
+`x0` and exercises the explicit legacy `x1=0` adapter.
 
 ```
 driver_console_init            (UART up for early logs)

@@ -84,6 +84,10 @@ for marker in markers:
                     and extern in lines[i - 1]), None)
         if end is None:
             raise SystemExit("unterminated Darwin compatibility block in config-util.h")
+        # Remove the separator blank line too; otherwise each invocation
+        # inserts another one and touches config-util.h, forcing a full rebuild.
+        while start > 0 and not lines[start - 1].strip():
+            start -= 1
         del lines[start:end + 1]
 
 guard = next((i for i, line in enumerate(lines)
@@ -109,7 +113,9 @@ block = [
     "#endif\n",
 ]
 lines[guard_end + 1:guard_end + 1] = block
-p.write_text("".join(lines))
+content = "".join(lines)
+if p.read_text() != content:
+    p.write_text(content)
 PY
 
     # The GRUB 2.14 tarball carries a stale generated gnulib wchar.h with
@@ -147,7 +153,8 @@ if old not in wchar:
     raise SystemExit("cannot disable stale gnulib mbrtowc replacement on Darwin")
 wchar = wchar.replace(old, new, 1)
 wchar_target.parent.mkdir(parents=True, exist_ok=True)
-wchar_target.write_text(wchar)
+if not wchar_target.exists() or wchar_target.read_text() != wchar:
+    wchar_target.write_text(wchar)
 
 # The distributed generated string.h was produced for a host with mempcpy and
 # memrchr. Configure detects both as absent on Darwin; expose their declarations
@@ -160,7 +167,8 @@ for symbol in ("mempcpy", "memrchr"):
         raise SystemExit(f"cannot apply Darwin gnulib {symbol} declaration override")
     string = string.replace(old, new, 1)
 string_target.parent.mkdir(parents=True, exist_ok=True)
-string_target.write_text(string)
+if not string_target.exists() or string_target.read_text() != string:
+    string_target.write_text(string)
 PY
 fi
 
@@ -179,15 +187,26 @@ fi
 echo "[grub-arm64] building host gnulib archive"
 make -C "$BUILD/grub-core/lib/gnulib" -j"$JOBS" AWK=gawk "${HOST_ARCHIVE_ARGS[@]}" libgnu.a
 
+# GRUB 2.14 generates grub_script.tab.h as a side effect of the bison
+# grub_script.tab.c target. Its generated module rules do not consistently
+# express that prerequisite before compiling yylex.l in parallel. Materialize
+# the parser/header serially before launching the parallel EFI module build.
+echo "[grub-arm64] generating script parser/header before parallel module compilation"
+make -C "$BUILD/grub-core" -j1 AWK=gawk grub_script.tab.c
+if [[ ! -s "$BUILD/grub-core/grub_script.tab.h" ]]; then
+    echo "[grub-arm64] bison did not produce grub_script.tab.h" >&2
+    exit 1
+fi
+
 echo "[grub-arm64] building host grub-mkimage"
 make -C "$BUILD" -j"$JOBS" AWK=gawk "${HOST_ARCHIVE_ARGS[@]}" grub-mkimage
 
 echo "[grub-arm64] building arm64-efi GRUB modules"
 make -C "$BUILD/grub-core" -j"$JOBS" AWK=gawk "${HOST_ARCHIVE_ARGS[@]}" all
 
-[[ -x "$BUILD/grub-mkimage" ]] || { echo "grub-mkimage was not produced" >&2; exit 1; }
-[[ -f "$BUILD/grub-core/chain.mod" ]] || { echo "GRUB chain module missing" >&2; exit 1; }
-[[ -f "$BUILD/grub-core/iso9660.mod" ]] || { echo "GRUB iso9660 module missing" >&2; exit 1; }
+test -x "$BUILD/grub-mkimage" || { echo "grub-mkimage was not produced: $BUILD/grub-mkimage" >&2; exit 1; }
+test -f "$BUILD/grub-core/chain.mod" || { echo "GRUB chain module missing: $BUILD/grub-core/chain.mod" >&2; exit 1; }
+test -f "$BUILD/grub-core/iso9660.mod" || { echo "GRUB iso9660 module missing: $BUILD/grub-core/iso9660.mod" >&2; exit 1; }
 "$BUILD/grub-mkimage" --version | grep -F "$VERSION" >/dev/null
 printf '%s' "$EXPECTED_INFO" > "$BUILD_INFO"
 echo "[grub-arm64] ready: $BUILD/grub-mkimage"

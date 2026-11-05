@@ -16,21 +16,19 @@
  *   compositor/input work stays in the SYS_COMPOSITOR_RENDER process path.
  *
  * Key invariants:
- *   - jiffies is incremented only by CPU 0 to avoid SMP races; all other
- *     CPUs still go through kernel_timer_tick() for preemption but do not
- *     touch jiffies or the software timer list.
- *   - timer_lock protects the timer_list linked list; callbacks are invoked
- *     while timer_lock is held — callbacks must not try to acquire timer_lock.
+ *   - CPU 0 is the sole writer of global jiffies; every CPU reads it through
+ *     atomic snapshots and processes only its own per-CPU timer_list.
+ *   - timer_lock protects each CPU's timer_list; callbacks run under that
+ *     lock. timer_del() keeps the owner published until callback completion,
+ *     so teardown can synchronously wait before freeing callback data.
  *   - The weak timer_handler() stub returns regs unchanged; per-arch overrides
  *     may perform additional bookkeeping (e.g. EOI).
  *
  * Known issues:
- *   ARCH-03  (W2 STUB) timer_get_us() (defined in the arch platform files)
- *            returns jiffies*1000 on amd64 — a "dummy for now" value, not a
- *            real microsecond clock.  sys_get_time() is therefore inaccurate
- *            on amd64.  aarch64 uses the arch counter and is accurate.
- *            (This defect is in the arch platform file, not in this file;
- *            cited here because kernel_timer_tick drives jiffies.)
+ *   ARCH-03 is now limited to the legacy amd64 timer_get_us() API, which still
+ *   returns jiffies*1000 (millisecond granularity, not microseconds). The
+ *   monotonic syscall path uses mono_ns() and is not affected; platform.c keeps
+ *   the legacy stub until the planned B4 cleanup.
  */
 #include <drivers/timer.h>
 #include <kernel/arch.h>
@@ -191,12 +189,12 @@ __attribute__((weak)) struct pt_regs *timer_handler(struct pt_regs *regs) {
  *   1. Halt this CPU immediately if another CPU has set panic_flag.
  *   2. Increment cpu->tick_count (per-CPU; no lock needed).
  *   3. CPU 0 only: increment the global jiffies counter.
- *   4. CPU 0 only: fire expired software timers under timer_lock.
+ *   4. Every CPU: fire expired software timers from its local timer_list.
  *   5. CPU 0 only: call compositor_tick() every compositor_interval ticks.
  *   6. All CPUs: invoke schedule(regs) for preemptive multitasking.
  *
- * Locking: acquires timer_lock (irqsave) around the software timer walk on
- *          CPU 0; no other locks held on entry.
+ * Locking: each CPU acquires its own timer_lock (irqsave) around its local
+ *          software timer list; no other locks held on entry.
  * IRQ context: yes — called directly from the architecture timer IRQ handler.
  * Returns: the pt_regs pointer returned by schedule() (may differ from regs
  *          if a context switch occurs).
@@ -219,8 +217,10 @@ struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
    * per tick, so normal behaviour is unchanged. */
   if (cpu->cpu_id == 0) {
     uint64_t expected = mono_ns() / NS_PER_TICK;
-    if (expected > jiffies)
-      jiffies = expected;
+    uint64_t current_jiffies =
+        __atomic_load_n(&jiffies, __ATOMIC_RELAXED);
+    if (expected > current_jiffies)
+      __atomic_store_n(&jiffies, expected, __ATOMIC_RELEASE);
   }
 
   /* Fire THIS CPU's expired software timers — every CPU, against the global
@@ -230,14 +230,23 @@ struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
   {
     struct timer *t, *tmp;
     uint64_t tflags;
+    uint64_t current_jiffies =
+        __atomic_load_n(&jiffies, __ATOMIC_ACQUIRE);
     spin_lock_irqsave(&cpu->timer_lock, &tflags);
     list_for_each_entry_safe(t, tmp, &cpu->timer_list, list) {
-      if (jiffies >= t->expires) {
-        list_del(&t->list);
-        t->pending = false;
-        t->cpu = -1;
+      if (current_jiffies >= t->expires) {
+        /* Detach and restore the self-linked idle state. Besides making
+         * list_empty() truthful, this lets a fired timer be safely re-armed
+         * without relying on stale NULL links left by list_del(). */
+        list_del_init(&t->list);
+        __atomic_store_n(&t->pending, false, __ATOMIC_RELEASE);
+        /* Keep the owner CPU published while the callback is executing.
+         * timer_del() snapshots this owner and takes its timer_lock; because
+         * callbacks run under that lock, a remote cancellation waits until the
+         * callback has finished before the process/opaque data can be freed. */
         if (t->callback)
           t->callback(t->data);
+        __atomic_store_n(&t->cpu, -1, __ATOMIC_RELEASE);
       }
     }
     spin_unlock_irqrestore(&cpu->timer_lock, tflags);
@@ -268,8 +277,8 @@ void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
   INIT_LIST_HEAD(&t->list);
   t->callback = callback;
   t->data = data;
-  t->pending = false;
-  t->cpu = -1; /* not armed on any CPU yet */
+  __atomic_store_n(&t->pending, false, __ATOMIC_RELAXED);
+  __atomic_store_n(&t->cpu, -1, __ATOMIC_RELAXED); /* fully quiescent */
 }
 
 /*
@@ -277,79 +286,71 @@ void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
  *
  * Adds t to the tail of timer_list.  'expires' is an absolute jiffies value;
  * use (jiffies + delay_ticks) to express a relative delay.
- * The timer will fire on the next kernel_timer_tick() on CPU 0 after
- * jiffies >= expires.
+ * The timer will fire on the next kernel_timer_tick() on its recorded owner
+ * CPU after jiffies >= expires.
  *
- * Locking: acquires timer_lock (irqsave) — safe to call from any context
- *          including IRQ handlers, but NOT from inside a timer callback
- *          (would deadlock on timer_lock).
- * Side effects: sets t->pending = true.
+ * Locking: synchronously cancels any prior queue/callback on its owner CPU,
+ *          then acquires the current CPU's timer_lock (irqsave). It may spin
+ *          until a remote callback completes. Do not call from a timer callback
+ *          (callbacks execute under timer_lock).
+ * Side effects: links t on the current CPU and sets t->pending = true.
  */
 void timer_add(struct timer *t, uint64_t expires) {
-  /* Defence in depth (TIMER-UAF-01): never link the same node twice.  If the
-   * timer is somehow still queued — a re-arm of a not-yet-fired timer, or a
-   * caller that bypassed timer_pending() — unlink it from its current CPU
-   * FIRST.  A double list_add_tail() (or a timer_setup()/INIT_LIST_HEAD on a
-   * still-linked node) corrupts the per-CPU timer_list and later crashes
-   * kernel_timer_tick() with a double list_del (write to NULL+8 on aarch64,
-   * a clobbered return address -> #GP on amd64).  timer_del() takes the owner
-   * CPU's timer_lock, which we do not hold here, so there is no recursion. */
-  if (t->pending)
-    timer_del(t);
+  /* Re-arm through the synchronous cancel path, even when pending is already
+   * false.  A fired timer keeps its owner CPU published until its callback
+   * returns, so timer_del() also waits for an in-flight callback before this
+   * timer's list node or opaque data can be reused.  This additionally keeps
+   * TIMER-UAF-01's single-link invariant: the node is detached before reuse. */
+  timer_del(t);
 
   struct cpu_info *c = get_cpu_info();
   uint64_t flags;
   spin_lock_irqsave(&c->timer_lock, &flags);
   t->expires = expires;
-  t->pending = true;
-  t->cpu = (int)c->cpu_id; /* armed on the current core; fired by its tick */
+  /* Publish the owner before pending.  timer_del() reads cpu atomically, then
+   * serializes with this list update using the owner's timer_lock. */
+  __atomic_store_n(&t->cpu, (int)c->cpu_id, __ATOMIC_RELAXED);
   list_add_tail(&t->list, &c->timer_list);
+  __atomic_store_n(&t->pending, true, __ATOMIC_RELEASE);
   spin_unlock_irqrestore(&c->timer_lock, flags);
 }
 
 /*
- * timer_del - cancel a pending software timer.
+ * timer_del - synchronously cancel a timer or wait for its callback to finish.
  *
- * Removes t from timer_list only if t->pending is true.  Safe to call on a
- * timer that has already fired or was never added (no-op in that case).
+ * A queued timer is unlinked and its list node reinitialized on its owner CPU.
+ * Once the tick dequeues it,
+ * pending becomes false but cpu remains the owner until the callback returns.
+ * Therefore a remote timer_del() still finds the owner, waits on that CPU's
+ * timer_lock, revalidates the owner, and returns only after the callback is
+ * quiescent.  This is required before process teardown can free callback data.
  *
- * Locking: acquires timer_lock (irqsave).
- * IRQ context: safe.
- * Side effects: sets t->pending = false.
+ * Locking: acquires the owner timer_lock (irqsave); retries if ownership moved.
+ * IRQ context: safe, but may spin until a remote callback completes.
+ * Serialization: callers must serialize this operation against timer_add() and
+ * timer_setup() for the same timer; concurrent timer_del() calls are safe.
+ * Callback restriction: callbacks execute under timer_lock and must not call
+ * timer_add() or timer_del() on any timer protected by that same lock.
  */
 void timer_del(struct timer *t) {
   uint64_t flags;
-  /* TIMER-UAF-02: t->cpu is read WITHOUT a lock (we don't know which CPU's
-   * timer_lock to take until we read it).  Under SMP that snapshot can be stale
-   * vs. a concurrent timer_add() on the owning core, which publishes
-   * t->pending=true BEFORE t->cpu — so an unlocked reader may momentarily see
-   * (pending=true, cpu=-1).  The previous code took the cpu<0 fast path here and
-   * cleared t->pending WITHOUT unlinking; that broke the pending<=>linked
-   * invariant, after which the post-DEAD reaper's timer_del() trusted
-   * pending==false and skipped list_del() too, leaving a still-linked timer on a
-   * process that was then freed and poisoned (0xCC) — the kernel_timer_tick UAF.
-   *
-   * Fix: (1) never clear t->pending in the unlocked cpu<0 branch — leaving the
-   * invariant intact means a later timer_del()/timer_add() still cancels it
-   * correctly; (2) re-validate t->cpu UNDER the owning timer_lock and retry if it
-   * moved, so the unlink always happens against the list the node is really on. */
   for (;;) {
-    int cpu = t->cpu;
+    int cpu = __atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE);
     if (cpu < 0 || cpu >= MAX_CPUS)
-      return; /* not armed on a valid CPU (or arm mid-publish): leave pending */
+      return; /* no queued timer and no callback in flight */
 
     spin_lock_irqsave(&cpu_data[cpu].timer_lock, &flags);
-    if (t->cpu != cpu) {
-      /* fired (tick set cpu=-1) or re-armed on another core meanwhile —
-       * re-snapshot and decide again with the correct lock. */
+    int owner = __atomic_load_n(&t->cpu, __ATOMIC_ACQUIRE);
+    if (owner != cpu) {
+      /* The owner completed or moved while this CPU lock was acquired. */
       spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
       continue;
     }
-    if (t->pending) {
-      list_del(&t->list);
-      t->pending = false;
-      t->cpu = -1;
+    if (__atomic_load_n(&t->pending, __ATOMIC_ACQUIRE)) {
+      list_del_init(&t->list);
+      __atomic_store_n(&t->pending, false, __ATOMIC_RELEASE);
     }
+    __atomic_store_n(&t->cpu, -1, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
     return;
   }
@@ -358,7 +359,11 @@ void timer_del(struct timer *t) {
 /*
  * timer_pending - check whether a timer is on the pending list.
  *
- * Returns t->pending.  No lock taken — caller must accept a stale snapshot
- * (the timer may fire between this read and any subsequent action).
+ * Returns whether t is linked on an owner timer_list.  No lock is taken, so
+ * the result may be stale. It is false while a dequeued callback is executing;
+ * it is NOT a quiescence/lifetime check. Use timer_del() before freeing callback
+ * data or reinitialising the timer.
  */
-bool timer_pending(struct timer *t) { return t->pending; }
+bool timer_pending(struct timer *t) {
+  return __atomic_load_n(&t->pending, __ATOMIC_ACQUIRE);
+}

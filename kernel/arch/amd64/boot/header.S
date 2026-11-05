@@ -9,7 +9,7 @@
 .set MB2_HEADER_LEN,   (mb2_header_end - mb2_header_start)
 .set MB2_CHECKSUM,     -(MB2_MAGIC + MB2_ARCH_I386 + MB2_HEADER_LEN)
 
-.section .multiboot2_header
+.section .multiboot2_header, "a"
 .align 8
 mb2_header_start:
     .long MB2_MAGIC

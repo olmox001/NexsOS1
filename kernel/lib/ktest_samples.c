@@ -11,6 +11,8 @@
  *   - test_string_length: verifies strlen() for a non-empty and an empty string.
  *   - test_string_compare: verifies strcmp() for equal and unequal strings.
  *   - test_math_basic: verifies compiler arithmetic (integer add).
+ *   - test_timer_rearm_cancel: verifies per-CPU timer re-arm, unlink and
+ *     idempotent synchronous cancellation before callback data leaves scope.
  *
  * KTEST_CASE expansion (from kernel/include/kernel/test.h):
  *   Each KTEST_CASE(name) macro emits a ktest_case_t descriptor into the
@@ -39,6 +41,7 @@
 #include <kernel/vfs.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
+#include <drivers/timer.h>
 #ifndef ARCH_AMD64
 #include <kernel/fdt.h>
 #include <kernel/fdt_parser.h>
@@ -65,6 +68,41 @@ KTEST_CASE(test_math_basic) {
     int a = 10;
     int b = 20;
     KASSERT_EQ(a + b, 30);
+}
+
+/* The callback data deliberately lives on this test's stack. The test queues,
+ * re-arms and cancels before returning; timer_del must unlink the node and
+ * leave no callback able to access the stack data after the test exits. */
+static void ktest_timer_count_callback(void *data) {
+    int *count = (int *)data;
+    __atomic_add_fetch(count, 1, __ATOMIC_RELAXED);
+}
+
+KTEST_CASE(test_timer_rearm_cancel) {
+    struct timer timer;
+    int callback_count = 0;
+    uint64_t now = __atomic_load_n(&jiffies, __ATOMIC_ACQUIRE);
+
+    timer_setup(&timer, ktest_timer_count_callback, &callback_count);
+    timer_add(&timer, now + 1000ULL);
+    bool first_pending = timer_pending(&timer);
+    timer_add(&timer, now + 2000ULL);
+    bool rearmed_pending = timer_pending(&timer);
+
+    /* Always clean up before assertions: a failed assertion must not leave a
+     * stack-backed timer linked for a later tick. */
+    timer_del(&timer);
+    bool cancelled = !timer_pending(&timer);
+    int owner = __atomic_load_n(&timer.cpu, __ATOMIC_ACQUIRE);
+    bool unlinked = list_empty(&timer.list);
+    timer_del(&timer); /* repeated cancellation is explicitly idempotent */
+
+    KASSERT(first_pending);
+    KASSERT(rearmed_pending);
+    KASSERT(cancelled);
+    KASSERT_EQ(owner, -1);
+    KASSERT(unlinked);
+    KASSERT_EQ(__atomic_load_n(&callback_count, __ATOMIC_ACQUIRE), 0);
 }
 
 /* The boot map may be unsorted and contain overlapping usable descriptors.

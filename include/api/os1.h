@@ -137,6 +137,8 @@ int  spawn_args(const char *path, int argc, char *const argv[]);
  * spawn_level() uses the level's default capability preset. */
 long spawn_caps(const char *path, int level, unsigned long caps);
 long spawn_level(const char *path, int level);
+/* Returns 0 when the target/subtree termination is accepted, or a negative
+ * POSIX error (e.g. -EPERM, -ESRCH, -EAGAIN) from the kernel SYS_KILL path. */
 int  kill_process(int pid);
 int  wait(int pid);
 void yield(void);

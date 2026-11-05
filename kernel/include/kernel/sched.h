@@ -373,10 +373,13 @@ void process_finalize_spawn(struct process *p);
 void process_abort_spawn(struct process *p);
 /* process_kill_subtree - window-aware EXTERNAL kill: terminate root_pid + its
  * WINDOWLESS descendants, SPARE windowed descendants + their subtrees
- * (docs/PROCESS-KILL-MODEL.md).  Used by window_request_close, OBJ_CTL_KILL/
+ * (docs/PROCESS-KILL-MODEL.md). Used by window_request_close, OBJ_CTL_KILL/
  * CLOSE and SYS_KILL of another process; self-exit/fault stay single-process.
+ * Returns 0 on completion (including snapshot PIDs already gone), -ESRCH if
+ * the explicit root is gone, -EPERM for a protected root, or -EAGAIN if a
+ * selected victim remains live after its termination attempt.
  */
-void process_kill_subtree(int root_pid);
+int process_kill_subtree(int root_pid);
 /* process_wait - reap-poll a process. Returns pid (reaped), -1 (still alive),
  * or -2 (not found). If out_code != NULL and the process is reaped, *out_code
  * receives its exit_code (raw). Non-blocking. */
@@ -407,6 +410,9 @@ struct pt_regs *sync_handler(struct pt_regs *frame);
 /* API Declarations */
 void enqueue_task(struct process *p);
 void sleep_on(struct wait_queue_head *wq);
+struct timer;
+int process_sleep_timer_arm(struct process *p, struct timer *timer,
+                            void (*callback)(void *), uint64_t expires);
 void wake_up(struct wait_queue_head *wq);
 
 /* Kernel service threads (ASTRA "every service is a process", kernel side).

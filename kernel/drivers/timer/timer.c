@@ -26,7 +26,8 @@
  *   - timer_freq must be non-zero before timer_handler() is called.
  *   - cpu->next_tick_target is per-CPU; updated only by timer_handler() on
  *     the owning CPU.
- *   - jiffies is global and volatile; incremented by kernel_timer_tick().
+ *   - CPU 0 reconciles global jiffies in kernel/core/timer.c; all CPUs read
+ *     atomic snapshots and process their own local software timer lists.
  *
  * Known issues:
  *   IRQ-03  (W1 DOC) The comment in timer_init() says "We handle IRQ 27
@@ -53,9 +54,8 @@
 /* Timer frequency */
 uint64_t timer_freq;
 
-/* jiffies: global monotonic tick counter incremented by kernel_timer_tick()
- * on every timer IRQ on the boot CPU.  Declared volatile because it is read
- * from non-IRQ contexts without a lock. */
+/* jiffies is defined here for AArch64. CPU 0 reconciles it against mono_ns()
+ * in kernel/core/timer.c; all other CPUs consume atomic snapshots. */
 /* System tick counter */
 volatile uint64_t jiffies = 0;
 

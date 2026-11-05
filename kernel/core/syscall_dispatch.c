@@ -119,7 +119,7 @@ long sys_clock_gettime(int clk);
 extern void graphics_draw_rect(int x, int y, int w, int h, uint32_t color);
 extern void compositor_render(void);
 extern int compositor_create_window(int x, int y, int w, int h,
-                                    const char *title, int pid);
+                                    const char *title, struct process *owner);
 extern void compositor_draw_rect(int window_id, int x, int y, int w, int h,
                                  uint32_t color, int caller_pid);
 extern void compositor_blit(int win_id, int x, int y, int w, int h,
@@ -565,7 +565,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * process_terminate already destroyed its windows — it would be orphaned
      * (owner dead -> un-closeable).  The killer sets ->dying before the
      * teardown. */
-    if (current_process->dying) {
+    if (__atomic_load_n(&current_process->dying, __ATOMIC_ACQUIRE)) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
@@ -577,7 +577,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     }
     pt_regs_set_return(frame, compositor_create_window(
                                   (int)arg0, (int)arg1, (int)arg2, (int)arg3,
-                                  k_title, (int)current_process->pid));
+                                  k_title, current_process));
   } break;
   case SYS_WINDOW_DRAW:
     compositor_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4,
@@ -941,8 +941,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     if (current_process && (int)arg0 == (int)current_process->pid) {
       pt_regs_set_return(frame, process_terminate((int)arg0));
     } else {
-      process_kill_subtree((int)arg0);
-      pt_regs_set_return(frame, 0);
+      pt_regs_set_return(frame, process_kill_subtree((int)arg0));
     }
     break;
   case SYS_GETPROCS:
@@ -1271,51 +1270,30 @@ static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
   if (p->wake_ns == 0)
     p->wake_ns = mono_ns() + ns; /* absolute real-time deadline */
 
+  /* Sample immediately before publishing timer + SLEEPING atomically
+   * against process_stop()/process_terminate(). */
   uint64_t now = mono_ns();
   if (now >= p->wake_ns) {
     p->wake_ns = 0;
-    timer_del(&p->sleep_timer); /* cancel if somehow still pending */
-    pt_regs_set_return(regs, 0);
-    return regs;
-  }
-
-  /*
-   * SLEEP-WAKE-01: close the lost-wakeup window.
-   *
-   * The old order armed the timer while p was still RUNNING, then changed
-   * p->state to PROC_SLEEPING. If the owning CPU's tick fired in between,
-   * proc_sleep_wake() observed RUNNING and intentionally skipped enqueue_task;
-   * the caller then went to sleep with no timer left to wake it. This is
-   * observable as user processes (notably NXShell) accepting one input line
-   * and then remaining asleep at the next prompt.
-   *
-   * Mask local IRQs across the state transition and timer publication. The
-   * timer belongs to this CPU (timer_add uses get_cpu_info()), so its callback
-   * cannot run until schedule() has switched away with IRQs still masked.
-   */
-  arch_local_irq_disable();
-
-  now = mono_ns();
-  if (now >= p->wake_ns) {
-    p->wake_ns = 0;
     timer_del(&p->sleep_timer);
-    arch_local_irq_enable();
     pt_regs_set_return(regs, 0);
     return regs;
   }
 
-  p->state = PROC_SLEEPING;
-
-  /* (Re)arm the coarse wheel trigger at the deadline's tick. Rounding up by
-   * one tick keeps us from busy-spinning if mono_ns() is just shy of wake_ns. */
-  if (!timer_pending(&p->sleep_timer)) {
-    uint64_t ticks = (p->wake_ns - now + (NS_PER_TICK - 1)) / NS_PER_TICK;
-    if (ticks == 0)
-      ticks = 1;
-    timer_setup(&p->sleep_timer, proc_sleep_wake, p);
-    timer_add(&p->sleep_timer, jiffies + ticks);
+  uint64_t ticks = (p->wake_ns - now + (NS_PER_TICK - 1)) / NS_PER_TICK;
+  if (ticks == 0)
+    ticks = 1;
+  uint64_t current_jiffies =
+      __atomic_load_n(&jiffies, __ATOMIC_ACQUIRE);
+  int arm_rc = process_sleep_timer_arm(
+      p, &p->sleep_timer, proc_sleep_wake, current_jiffies + ticks);
+  if (arm_rc < 0) {
+    pt_regs_set_return(regs, arm_rc);
+    return regs;
   }
 
+  /* A stopped task retries after CONT so it can re-evaluate its absolute
+   * deadline and re-arm if the deadline has not elapsed. */
   pt_regs_retry_syscall(regs);
   return schedule(regs);
 }
@@ -1351,8 +1329,10 @@ static struct pt_regs *sys_yield(struct pt_regs *regs) {
   if (!p)
     return schedule(regs);
 
-  if (p->yield_jiffy != jiffies) {
-    p->yield_jiffy = jiffies;
+  uint64_t current_jiffies =
+      __atomic_load_n(&jiffies, __ATOMIC_ACQUIRE);
+  if (p->yield_jiffy != current_jiffies) {
+    p->yield_jiffy = current_jiffies;
     p->yield_count = 0;
   }
 
@@ -1360,22 +1340,10 @@ static struct pt_regs *sys_yield(struct pt_regs *regs) {
     /* Busy-spinning on yield() this tick — throttle to a 1-tick per-process
      * timed sleep. Reset the budget; it refills next tick on wake. */
     p->yield_count = 0;
-    /* TIMER-UAF-01: only (re)arm when the per-process timer is NOT already
-     * queued — exactly like sys_nanosleep. The sleeper can have been
-     * force-woken by a non-timer path (kernel_ipc_send flips
-     * PROC_SLEEPING->READY WITHOUT cancelling sleep_timer, process.c) with its
-     * timer still linked; calling timer_setup()/INIT_LIST_HEAD on that
-     * still-linked node re-initialises a live list entry and corrupts the
-     * per-CPU timer_list, later faulting in kernel_timer_tick() as a double
-     * list_del. If it is already pending, the existing 1-tick trigger will wake
-     * us, so we just re-sleep. */
-    if (!timer_pending(&p->sleep_timer)) {
-      timer_setup(&p->sleep_timer, proc_sleep_wake, p);
-      timer_add(&p->sleep_timer, jiffies + 1);
-    }
-    arch_local_irq_disable();
-    p->state = PROC_SLEEPING;
-    arch_local_irq_enable();
+    /* Replace any old per-CPU timer and serialize SLEEPING with
+     * process_stop()/process_terminate(). */
+    (void)process_sleep_timer_arm(p, &p->sleep_timer, proc_sleep_wake,
+                                  current_jiffies + 1);
   }
 
   return schedule(regs);

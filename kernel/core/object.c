@@ -1477,8 +1477,7 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     if (o->type == OBJ_TYPE_PROCESS) {
       /* window-aware kill: the target + its windowless helpers die; its own
        * windowed children are spared (docs/PROCESS-KILL-MODEL.md). */
-      process_kill_subtree(o->pid);
-      ret = 0;
+      ret = process_kill_subtree(o->pid);
     } else {
       ret = -EINVAL;
     }
@@ -1541,8 +1540,7 @@ long sys_object_ctl(int handle, int cmd, long arg) {
        * THAT it only destroyed the WINDOW, leaving the app headless ("close
        * does not kill").  Machine-level owners stay protected inside
        * process_terminate. */
-      process_kill_subtree(o->pid);
-      ret = 0;
+      ret = process_kill_subtree(o->pid);
     }
     obj_unref(o);
     return ret;

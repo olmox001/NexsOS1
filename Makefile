@@ -169,10 +169,10 @@ GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || comman
 BUILD_ROOT = build
 BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
 
-# GRUB-first boot media. AArch64 EFI embeds kernel Image + generated DTB;
-# AMD64 boots the Multiboot2 ELF.
+# Optional GRUB ISO media for BOOT_MODE=iso and nxadb/nxrun. AArch64 EFI
+# embeds kernel Image + generated DTB; AMD64 boots the Multiboot2 ELF.
 HOST_CLANG ?= $(shell command -v clang 2>/dev/null)
-LLD_LINK ?= $(shell command -v lld-link 2>/dev/null)
+LLD_LINK ?= $(shell command -v lld-link 2>/dev/null || { for p in /usr/local/opt/llvm/bin/lld-link /opt/homebrew/opt/llvm/bin/lld-link; do if test -x "$$p"; then echo "$$p"; exit 0; fi; done; if command -v brew >/dev/null 2>&1; then p="$$(brew --prefix llvm 2>/dev/null)/bin/lld-link"; test -x "$$p" && echo "$$p"; fi; })
 GRUB_ARM64_BUILD = $(BUILD_ROOT)/grub/arm64-efi
 AMD64_GRUB_ISO = $(BUILD_DIR)/grub-bios.iso
 AARCH64_UEFI_ISO = $(BUILD_DIR)/grub-efi/nexsos-aarch64-uefi.iso
@@ -405,8 +405,8 @@ dirs:
 # Bootloader
 bootloader: $(BOOTLOADER_BIN)
 
-$(BOOTLOADER_ELF): $(BOOT_OBJECTS)
-	@$(LD) $(LDFLAGS_BOOT) -o $@ $^
+$(BOOTLOADER_ELF): $(BOOT_OBJECTS) $(BOOT_DIR)/linker.ld
+	@$(LD) $(LDFLAGS_BOOT) -o $@ $(BOOT_OBJECTS)
 
 $(BOOTLOADER_BIN): $(BOOTLOADER_ELF)
 	@$(OBJCOPY) -O binary $< $@
@@ -1047,6 +1047,12 @@ test-release: release-arch
 # The QEMU virt DTB must match the AArch64 emulated hardware profile. It is
 # embedded into the project-owned EFI loader and passed to the kernel in x0.
 ifeq ($(ARCH),aarch64)
+# The DTB target may be the first consumer after a clean build; define its
+# directory as a real Make target instead of relying on the side effect of
+# dirs (which is not a prerequisite of this standalone target).
+$(BUILD_DIR):
+	@mkdir -p $@
+
 $(VIRT_DTB): disk | $(BUILD_DIR)
 	@echo "  [DTB]    Generating QEMU virt device tree -> $@"
 	@ERRLOG="$(BUILD_DIR)/qemu-dtb.err"; rm -f "$$ERRLOG"; \
@@ -1064,26 +1070,48 @@ $(VIRT_DTB): disk | $(BUILD_DIR)
 	@echo "  [DTB]    Done ($$($(STAT_SIZE) $@) bytes)"
 endif
 
-# Default run/debug path: boot through GRUB, not QEMU's direct -kernel loader.
+# ISO mode exercises the GRUB chain used by nxadb/nxrun and release media.
+# Direct mode is the explicit legacy test path: AArch64 receives the generated
+# DTB through the ARM64 Image handoff (x0=DTB, x1=0); AMD64 receives QEMU's PVH
+# start-info rather than GRUB's Multiboot2 information structure.
+BOOT_MODE ?= iso
+RUN_DISPLAY ?= default
+RUN_SERIAL ?= stdio
+# Headless is nxadb's own default and prevents host keyboard input contaminating
+# the guest command/health transaction during automated test-all runs.
+TEST_DISPLAY ?= none
+# Exercise process termination across a timed nanosleep in every QEMU test.
+TEST_TIMER_SECONDS ?= 10
+ifeq ($(BOOT_MODE),iso)
 run: all boot-iso
-	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" \
-		--disk "$(DISK_IMG)" --serial stdio
-
+	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)"
 debug: all boot-iso
-	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" \
-		--disk "$(DISK_IMG)" --serial stdio --debug
+	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" --debug
+else ifeq ($(BOOT_MODE),direct)
+ifeq ($(ARCH),aarch64)
+run: all $(VIRT_DTB)
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
+debug: all $(VIRT_DTB)
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
+else
+run: all
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+debug: all
+	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
+endif
+else
+$(error BOOT_MODE must be 'direct' or 'iso'; got '$(BOOT_MODE)')
+endif
 
-# Explicit legacy/debug fallback. nxrun/nxadb never use these targets.
+# Backwards-compatible direct-kernel targets remain available.
 ifeq ($(ARCH),aarch64)
 run-direct: all $(VIRT_DTB)
 	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
-
 debug-direct: all $(VIRT_DTB)
 	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
 else
 run-direct: all
 	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-
 debug-direct: all
 	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
 endif
@@ -1127,17 +1155,16 @@ ifeq ($(ARCH),amd64)
 else
 	@command -v "$(HOST_CLANG)" >/dev/null 2>&1 || { echo "ERROR: clang is required for the AArch64 EFI loader" >&2; exit 1; }
 	@command -v "$(LLD_LINK)" >/dev/null 2>&1 || { echo "ERROR: lld-link is required for the AArch64 EFI loader" >&2; exit 1; }
-	@test -x "$(GRUB_ARM64_BUILD)/grub-mkimage" || { echo "ERROR: run 'make grub-arm64-tools' to build GRUB arm64-efi" >&2; exit 1; }
-	@python3 -c 'import sys; sys.path.insert(0,"tools"); from nxqemu import find_qemu_efi_firmware; print("✓ AArch64 UEFI:", find_qemu_efi_firmware())'
-	@echo "✓ GRUB arm64-efi: $(GRUB_ARM64_BUILD)/grub-mkimage"
+	@python3 -c 'import sys; sys.path.insert(0,"tools"); from nxqemu import find_qemu_efi_firmware; print("✓ AArch64 UEFI firmware:", find_qemu_efi_firmware())'
+	@echo "✓ GRUB arm64-efi prerequisites ready (grub-mkimage is built by boot-iso)."
 endif
 clean:
-	-@rm -rf build/aarch64 2>/dev/null || true
-	-@rm -rf build/amd64 2>/dev/null || true
-	-@rm -rf build/*.img build/*.iso 2>/dev/null || true
-	-@rm -rf $(BUILD_ROOT) 2>/dev/null || true
+	-@rm -rf $(BUILD_ROOT)/aarch64 $(BUILD_ROOT)/amd64 2>/dev/null || true
+	-@rm -rf $(BUILD_ROOT)/grub 2>/dev/null || true
+	-@rm -f $(BUILD_ROOT)/*.img $(BUILD_ROOT)/*.iso $(BUILD_ROOT)/*.map 2>/dev/null || true
 	-@rm -rf release 2>/dev/null || true
-	-@rm $(MKDISK) 2>/dev/null || true
+	-@rm -f $(MKDISK) 2>/dev/null || true
+	@echo "Build outputs removed; preserving build/cache and diagnostic/runtime logs."
 
 help:
 	@echo "$(ARCH) Kernel Build System"
@@ -1146,9 +1173,9 @@ help:
 	@echo "  release      - Build production files (Use: make release VERSION=0.4.1)"
 	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.4.1)"
 	@echo "  boot-iso     - Build the GRUB boot ISO for the selected architecture"
-	@echo "  run          - Build and boot through GRUB (QEMU)"
-	@echo "  run-direct   - Legacy direct-kernel boot for debugging only"
-	@echo "  debug        - Boot through GRUB and wait for GDB"
+	@echo "  run          - GRUB ISO boot (default); BOOT_MODE=direct selects raw-kernel diagnostics"
+	@echo "  run-direct   - Raw direct-kernel boot (diagnostic compatibility target)"
+	@echo "  debug        - GRUB ISO debug boot (default); BOOT_MODE=direct selects raw-kernel diagnostics"
 	@echo "  grub-arm64-tools - Build pinned GRUB arm64-efi host tools/modules"
 	@echo "  clean        - Remove generated build/release artifacts"
 	@echo "  setup-deps   - Initialize pinned external repositories"
@@ -1181,13 +1208,17 @@ test-fdt:
 		-o build/host/fdt_parser_test
 	@./build/host/fdt_parser_test build/aarch64/virt.dtb
 
-# Real QEMU hardening run for the selected architecture. Captures the display,
-# checks kernel KTEST and nxwins, then supervises the live guest for 30 seconds.
+# Real QEMU hardening run for the selected architecture. Captures guest screens,
+# checks KTEST/NXWINS, supervises the guest for 30 seconds and runs the timed
+# process-kill stress lane (TEST_TIMER_SECONDS, default 10).
+# TEST_DISPLAY defaults to nxadb's headless mode; set it to default for visual runs.
 .PHONY: test test-all
 test: all boot-iso check
 	@$(MAKE) test-fdt
 	@python3 tools/test_nxadb_capture.py
-	@python3 tools/nxadb.py --arch $(ARCH) test --soak-seconds 30 --display default
+	@python3 tools/nxadb.py --arch $(ARCH) test --soak-seconds 30 --display $(TEST_DISPLAY) \
+		--cmd "/bin/stress --dur $(TEST_TIMER_SECONDS) --seed 0xA11CE --interval 1 --fault 0 --timer-kill" \
+		--expect stress=1
 
 # Release-architecture gate. Keep only one guest alive at a time. The EXIT
 # trap also stops both sessions if either architecture test fails.

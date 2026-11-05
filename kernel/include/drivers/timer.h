@@ -79,14 +79,18 @@ struct timer {
   uint64_t expires; /* Expiration time in jiffies (global monotonic base) */
   timer_callback_t callback;
   void *data;
-  bool pending;
-  int cpu; /* CPU whose per-CPU timer_list this timer is armed on (-1 = none) */
+  bool pending; /* linked on an owner timer_list; false while callback runs */
+  int cpu; /* owner CPU while queued OR callback executes; -1 when quiescent */
 };
 
 /* Software timer functions */
 void timer_setup(struct timer *t, timer_callback_t callback, void *data);
 void timer_add(struct timer *t, uint64_t expires);
+/* Synchronous for the currently published arm: after return, that callback
+ * is quiescent. Callers must serialize timer_add()/timer_setup() against
+ * timer_del() on this timer. */
 void timer_del(struct timer *t);
+/* Queued-list state only; false does not imply a callback is quiescent. */
 bool timer_pending(struct timer *t);
 
 #endif /* _DRIVERS_TIMER_H */
