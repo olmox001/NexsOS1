@@ -1,15 +1,17 @@
 # NEXS-NG — Graphics userland migration and kernel surface manager
 
 **Decision:** 2026-11-03
-**Status:** migration incomplete. On 2026-11-08 a supervised ring-3 frame-loop service and initial userland ARGB8888 raster primitives were added. The legacy scene, window policy, compositor renderer, input path and display drivers remain in the kernel; no capability-backed shared surface manager exists yet.
+**Status (2026-11-08):** migration incomplete. `nxcompositor` now composes frames in ring 3; separate `nxmoused` and `nxkeyboardd` services interpret input. The unused kernel frame renderer and pointer/drag handlers have been removed. Kernel window policy/storage, terminal rasterization, graphics libraries and GPU/display implementations still remain; no capability-backed shared surface manager exists yet. Full rendering/input parity and a performance improvement are not certified. See [the current handoff](../report/GFX-USERLAND-HANDOFF-2026-11-08.md) and [function catalog](GFX-KERNEL-FUNCTION-CATALOG.md) for implementation state and evidence.
 **Supersedes:** the DIR-02 and DIR-07 wording that places the compositor inside the HAL.
 **Parent specifications:** NEXS-NG-CORE-DESIGN.md, NEXS-NG-HARDWARE-AND-ISOLATION.md, ABI-COMPATIBILITY-MATRIX.md, graphics-port/README.md.
 
+**Scope update (2026-11-08):** following the current migration instruction, kernel policy and window/process lifecycle stay in the kernel. This supersedes the earlier ownership rows below wherever they assign window policy to `compositord`.
+
 ## 1. Decision
 
-The compositor, window-management policy, rasterizers and graphics API libraries execute in **userland services/libraries**. The kernel retains a small **surface/buffer/control manager**: capability-protected objects, backing-memory ownership, mappings, access rights, lifetime, synchronization, validation and controlled presentation hand-off.
+The rendering implementation, rasterizers, terminal drawing, input device aggregation and graphics API libraries execute in **userland services/libraries**. The kernel retains window/process policy and lifecycle, plus a small **surface/buffer/control manager**: capability-protected objects, backing-memory ownership, mappings, access rights, lifetime, synchronization, validation and controlled presentation hand-off. Kernel policy chooses and authorizes window ownership, focus, visibility, stacking, close/minimize/resize and process relationships; userland implements rendering, decoration, event interpretation, presentation pacing and graphics libraries.
 
-The kernel MUST NOT render pixels, composite windows, rasterize fonts, parse GL/D3D commands, maintain a desktop scene graph, choose z-order, draw decorations or run an application-facing graphics toolkit.
+The kernel MUST NOT render pixels, composite windows, rasterize fonts, parse GL/D3D commands, draw decorations or run an application-facing graphics toolkit. It may retain bounded metadata and policy for windows and processes; it does not own framebuffer rendering.
 
 This is a mechanism/policy split, not a relocation of the current 3,000-line compositor as one privileged process.
 
@@ -20,15 +22,16 @@ This is a mechanism/policy split, not a relocation of the current 3,000-line com
 | Buffer object manager | Kernel | Allocate/import page-backed storage; bounds, format/stride metadata, pinning, mapping, cache attributes, lifetime/refcounts, DMA leases, revocation |
 | Surface object manager | Kernel | Capability object referencing a buffer/range; dimensions/format/usage; owner and rights; attach/detach; generation; acquire/release/commit state |
 | Presentation control | Kernel | Validate presenter capability, surface generation, damage rectangles and buffer state; serialize commit sequence; deliver bounded completion/error notifications; protect scanout ownership |
-| Window / scene manager | `compositord` userland | Window objects and policy, z-order, focus, placement, clipping, occlusion, damage aggregation, resize policy, animation, frame pacing |
+| Window/process policy manager | Kernel | Window objects and process ownership, authorization, z-order, focus, visibility, close/minimize/resize state and lifecycle |
+| Render scene implementation | `compositord` userland | Snapshot window policy state; clipping, occlusion, damage aggregation, decoration, frame pacing and pixel composition |
 | Software composition | Userland library/service | Pixel blending, scaling, transforms, effects, shadows, decorations, cursor composition and CPU fallback |
 | Font and text | `fontd` / userland libraries | Font parsing, glyph rasterization/cache, text shaping, terminal rendering |
 | 2D / 3D APIs | Userland libraries | Drawing primitives, 2D toolkit, software 3D, Mesa/OpenGL, SDL and D3D compatibility |
 | Display/GPU service | Userland driver service | Device discovery, mode selection, command submission and scanout programming using granted MMIO/IRQ/DMA capabilities |
-| Input aggregation | `inputd` userland service | HID policy, pointer/key event aggregation and delivery to the compositor/window owner |
+| Input | Kernel + `nxmoused`/`nxkeyboardd` userland services | Kernel enforces device/resource and service-role access; userland aggregates per-device input, maps gestures and routes events to windows |
 | Emergency console | Minimal kernel path | Serial output and a tiny panic framebuffer writer only; no dependency on compositord, fonts or allocator-heavy graphics |
 
-The word **control** means kernel-enforced authority and resource state, not desktop policy. The kernel controls who may create/map/write/share/commit/present/destroy a surface and when its backing pages may be reused. It does not decide which window is focused or where it appears.
+Surface **control** means kernel-enforced authority and resource state: who may create/map/write/share/commit/present/destroy a surface and when its backing pages may be reused. Window/process policy remains a separate kernel responsibility under the scope update above.
 
 ## 3. Kernel object model
 
@@ -68,15 +71,15 @@ Do not implement a fake GPU fence. A fence object is introduced only when an act
 
 ### Window object distinction
 
-A **window is not a kernel scene-graph object** in NG. `compositord` owns title, geometry, z-order, focus, decoration and application relationships. A window may reference one or more kernel surface capabilities. Legacy `OBJ_TYPE_WINDOW` handles/IDs remain supported by the v1 compatibility adapter and resolve to compositor-owned remote objects; they must not pull the compositor back into the kernel.
+A window policy object and a render scene are distinct. Under the 2026-11-08 scope update, the kernel retains ownership, geometry, z-order, focus and process/window lifecycle; `nxcompositor` consumes validated snapshots to render the scene and decorations. A window should reference kernel surface capabilities once those exist. Today legacy `OBJ_TYPE_WINDOW` handles still resolve to kernel window objects and copied pixel storage; this is a compatibility path, not the completed surface design.
 
 ## 4. Userland service topology
 
 - `system_init`: starts and supervises the graphics service group.
 - `displayd`: owns display discovery, modes and display lifecycle policy.
 - `gpud` / per-device driver process: owns the device-specific GPU implementation and receives only its MMIO, IRQ and DMA capabilities.
-- `compositord`: owns windows, scene graph, frame scheduling, composition and presentation requests.
-- `inputd`: owns input aggregation and sends capability-authenticated events.
+- `nxcompositor`: owns the render scene, frame scheduling, composition and presentation requests; kernel window policy supplies the state.
+- `nxmoused` and `nxkeyboardd`: separate supervised pointer and keyboard services. Touch extends the pointer path; complete touch protocol support and capability-authenticated event delivery remain work to do.
 - `fontd`: optional isolated font resource/raster service; it may initially be a library inside compositord if isolation has no measurable benefit.
 - `libos1-gfx`: stable userland surface/window/event API.
 - SDL, Mesa/OpenGL, software 2D/3D and D3D personalities consume `libos1-gfx` / `os1_video_platform`; upstream submodules remain unmodified.
@@ -114,7 +117,7 @@ The compositor is independently scheduled and owns its frame pacing/vsync subscr
 - Acceptance: kernel can boot and recover its console without the display service; display service failure does not panic the kernel.
 
 ### GFX-NG-3 — userland compositor and compatibility broker
-- Port window policy, scene graph, dirty regions, frame scheduler, software blending/scaling, chrome and cursor into `compositord`.
+- Port render scene, dirty regions, frame scheduler, software blending/scaling, chrome and cursor into `nxcompositor`; retain kernel window/process policy as specified above.
 - Replace direct scheduler/process/IPC calls with capability ports and process/window events.
 - Add `window_create`, `window_present/commit`, `window_resize`, `window_focus` and event APIs in libos1.
 - Implement the v1 compatibility broker so unchanged legacy applications continue to work.
@@ -136,7 +139,7 @@ The compositor is independently scheduled and owns its frame pacing/vsync subscr
 
 | Current source | NG destination |
 |---|---|
-| `kernel/graphics/compositor.c` | `services/compositord/` (split into scene/window policy, event handling, frame scheduler and composition) |
+| `kernel/graphics/compositor.c` | Split: kernel window/process policy and lifecycle; `user/sys/bin/nxcompositor.c` rendering and `user/sys/bin/nxmoused.c` pointer interpretation |
 | `kernel/graphics/chrome.c`, `compositor_style.c`, `region.c` | userland compositor libraries |
 | `kernel/graphics/gl.c`, `draw2d.c`, `draw3d.c` | `user/sys/lib/gfx` / libos1-gfx |
 | `kernel/graphics/font.c` | `fontd` and userland font library |
@@ -147,7 +150,7 @@ The compositor is independently scheduled and owns its frame pacing/vsync subscr
 | `kernel/core/syscall_dispatch.c` graphics cases | v1 compatibility broker to compositord/displayd; only object/VM/IPC primitives remain kernel |
 | `include/api/graphics.h`, `user/sys/lib/portability/os1_video_platform.h` | stable libos1-gfx API and compatibility wrappers |
 
-This is a destination map, not permission to move the current files in-place. The legacy tree remains the regression baseline until NG meets G0–G6.
+This is a destination map, not a statement of completed work. The 2026-11-08 implementation is in the active tree; preserve original source/history and validate behavior against the function catalog before retiring further compatibility paths.
 
 ## 8. Non-goals / safety invariants
 
@@ -157,17 +160,19 @@ This is a destination map, not permission to move the current files in-place. Th
 - Do not expose kernel pointers, physical addresses or unvalidated DMA descriptors to applications.
 - Do not couple the scheduler to window focus or compositor policy.
 - Do not remove the emergency panic display path until an independent recovery console exists.
-- Do not claim the legacy compositor has already moved: the current kernel still contains it.
+- Do not equate a ring-3 frame loop or removal of dead code with complete migration: kernel raster libraries, terminal drawing and device implementations must also leave the normal rendering path.
 
 ## 9. Immediate next increment
 
-Implement GFX-NG-0 as a complete graphics syscall/object/caller inventory and define the surface/buffer ABI descriptor layouts against the actual existing object manager. Then implement GFX-NG-1 in the parallel NG tree. Do not attempt to extract the legacy compositor by copying its current implementation wholesale.
+Resume from the [2026-11-08 handoff](../report/GFX-USERLAND-HANDOFF-2026-11-08.md). Complete source/behavior parity using the original function catalog, implement real surface/buffer capabilities against the existing object manager, and move the remaining terminal/library/GPU paths. Do not start a second renderer or discard the current ports. Retire compatibility syscalls only after their callers have working replacements and regression coverage.
 
 
 ## 10. GFX-NG-0 inventory — current legacy tree (2026-11-03)
 
-This inventory is based on the current source tree, not only the earlier
-architecture review.
+This is the historical 2026-11-03 baseline, not the current implementation.
+In particular, `SYS_COMPOSITOR_RENDER` now returns without rendering, and
+snapshot/present/raw-input service operations exist. Current ownership and
+remaining gaps are recorded in the linked handoff and function catalog.
 
 ### Existing syscall surface
 

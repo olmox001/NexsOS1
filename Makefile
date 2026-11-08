@@ -235,6 +235,7 @@ $(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/chrome.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/theme.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/math.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/font_lib.o \
@@ -1016,6 +1017,15 @@ test-fdt:
 		kernel/test/fdt_parser_test.c kernel/lib/fdt_parser.c \
 		-o build/host/fdt_parser_test
 	@./build/host/fdt_parser_test build/aarch64/virt.dtb
+
+.PHONY: test-gfx-chrome
+test-gfx-chrome:
+	@mkdir -p build/host
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+		-fsanitize=address,undefined -idirafter system/include/api \
+		system/lib/tests/gfx_chrome_test.c system/lib/gfx/chrome.c \
+		-o build/host/gfx_chrome_test
+	@./build/host/gfx_chrome_test
 
 # Real QEMU hardening run for the selected architecture. Captures guest screens,
 # checks KTEST/NXWINS, supervises the guest for 30 seconds and runs the timed

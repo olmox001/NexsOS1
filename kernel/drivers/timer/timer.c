@@ -119,8 +119,6 @@ static inline void write_cntv_ctl(uint64_t val) {
  * Timer interrupt handler (Internal C handler called by GIC)
  * Now accepts regs for Preemption.
  */
-extern void compositor_tick(void);
-
 /* Global panic flag set by panic() to halt all CPUs */
 extern volatile int panic_flag;
 

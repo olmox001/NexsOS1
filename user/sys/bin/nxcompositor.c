@@ -30,7 +30,8 @@ static int pointer_y = 400;
 static void consume_pointer_updates(void) {
   struct ipc_message msg;
   for (unsigned i = 0; i < 32; ++i) {
-    if (OS1low_ipc_try_recv(-1, &msg) != 0) break;
+    if (OS1low_ipc_try_recv(-1, &msg) != 0)
+      break;
     if (msg.type == IPC_POINTER_POS) {
       pointer_x = (int)(uint32_t)msg.data1;
       pointer_y = (int)(uint32_t)msg.data2;
@@ -43,8 +44,9 @@ static void consume_pointer_updates(void) {
   }
 }
 
-static void paint_background(struct os1_gfx_surface *frame,
-                             const struct os1_compositor_background *background) {
+static void
+paint_background(struct os1_gfx_surface *frame,
+                 const struct os1_compositor_background *background) {
   uint32_t top = background->bg_top;
   uint32_t bottom = background->bg_bottom;
   for (size_t y = 0; y < frame->height; ++y) {
@@ -52,11 +54,14 @@ static void paint_background(struct os1_gfx_surface *frame,
     if (frame->height > 1) {
       uint32_t weight = (uint32_t)(y * 255u / (frame->height - 1));
       uint32_t inverse = 255u - weight;
-      uint32_t red = (((top >> 16) & 255u) * inverse +
-                      ((bottom >> 16) & 255u) * weight) / 255u;
-      uint32_t green = (((top >> 8) & 255u) * inverse +
-                        ((bottom >> 8) & 255u) * weight) / 255u;
-      uint32_t blue = ((top & 255u) * inverse + (bottom & 255u) * weight) / 255u;
+      uint32_t red =
+          (((top >> 16) & 255u) * inverse + ((bottom >> 16) & 255u) * weight) /
+          255u;
+      uint32_t green =
+          (((top >> 8) & 255u) * inverse + ((bottom >> 8) & 255u) * weight) /
+          255u;
+      uint32_t blue =
+          ((top & 255u) * inverse + (bottom & 255u) * weight) / 255u;
       row_color = 0xff000000u | (red << 16) | (green << 8) | blue;
     }
     struct os1_gfx_rect row = {0, (int)y, (int)frame->width, 1};
@@ -81,29 +86,67 @@ static void paint_window_chrome(struct os1_gfx_surface *frame,
   struct os1_gfx_rect title = {window->x, title_y, window->draw_width,
                                title_height};
   os1_gfx_fill_rect(frame, &title, title_color);
+  int64_t title_left = window->x < 0 ? 0 : window->x;
+  int64_t title_right = (int64_t)window->x + window->draw_width;
+  int64_t title_top = title_y < 0 ? 0 : title_y;
+  int64_t title_bottom = (int64_t)title_y + title_height;
+  if (title_right > (int64_t)frame->width)
+    title_right = (int64_t)frame->width;
+  if (title_bottom > (int64_t)frame->height)
+    title_bottom = (int64_t)frame->height;
+  for (int64_t ty = title_top; ty < title_bottom; ++ty) {
+    for (int64_t tx = title_left; tx < title_right; ++tx) {
+      size_t index = (size_t)ty * frame->stride + (size_t)tx;
+      frame->pixels[index] = os1_gfx_titlebar_tint(
+          style->shadows ? style->shadow_type : 0, (int)(ty - title_y),
+          title_height, frame->pixels[index]);
+    }
+  }
 
-  int close_x = style->button_side == 0
-                    ? window->x + 14
-                    : window->x + window->draw_width - 14;
-  int close_y = title_y + title_height / 2;
-  struct os1_gfx_rect close = {close_x - 5, close_y - 5, 10, 10};
-  os1_gfx_fill_rect(frame, &close, theme->close_btn);
-  for (int d = -2; d <= 2; ++d) {
-    struct os1_gfx_rect slash = {close_x + d, close_y + d, 1, 1};
-    struct os1_gfx_rect backslash = {close_x + d, close_y - d, 1, 1};
-    os1_gfx_fill_rect(frame, &slash, theme->title_text_active);
-    os1_gfx_fill_rect(frame, &backslash, theme->title_text_active);
+  struct os1_gfx_button_geometry buttons;
+  os1_gfx_button_geometry(window->x, window->draw_width, title_y, title_height,
+                          style->button_shape, style->button_side, &buttons);
+  if (!(window->flags & WININFO_PROTECTED)) {
+    int left[2] = {buttons.close_cx - buttons.size / 2,
+                   buttons.bg_cx - buttons.size / 2};
+    for (int button = 0; button < 2; ++button) {
+      for (int by = 0; by <= buttons.size; ++by) {
+        int sy = buttons.top + by;
+        if (sy < 0 || (size_t)sy >= frame->height)
+          continue;
+        for (int bx = 0; bx < buttons.size; ++bx) {
+          int sx = left[button] + bx;
+          if (sx < 0 || (size_t)sx >= frame->width)
+            continue;
+          size_t index = (size_t)sy * frame->stride + (size_t)sx;
+          frame->pixels[index] = os1_gfx_button_pixel(
+              &buttons, style->button_shape, sx, sy, theme->close_btn,
+              0xfffebc2eu, style->shadows && style->shadow_type == 2,
+              frame->pixels[index]);
+        }
+      }
+    }
+    /* The yellow background/minimize button keeps its small horizontal bar,
+     * the previous desktop's visual cue, over every supported button shape. */
+    int bar_y = buttons.top + buttons.size / 2;
+    for (int dx = -3; dx <= 3; ++dx) {
+      int sx = buttons.bg_cx + dx;
+      if (sx < 0 || (size_t)sx >= frame->width || bar_y < 0 ||
+          (size_t)bar_y >= frame->height)
+        continue;
+      size_t index = (size_t)bar_y * frame->stride + (size_t)sx;
+      frame->pixels[index] = theme->title_text_active;
+    }
   }
 
   if (style->window_borders) {
     struct os1_gfx_rect top = {window->x, title_y, window->draw_width, 1};
-    struct os1_gfx_rect bottom = {window->x,
-                                  window->y + window->draw_height - 1,
-                                  window->draw_width, 1};
+    struct os1_gfx_rect bottom = {
+        window->x, window->y + window->draw_height - 1, window->draw_width, 1};
     struct os1_gfx_rect left = {window->x, title_y, 1,
                                 title_height + window->draw_height};
-    struct os1_gfx_rect right = {window->x + window->draw_width - 1, title_y,
-                                 1, title_height + window->draw_height};
+    struct os1_gfx_rect right = {window->x + window->draw_width - 1, title_y, 1,
+                                 title_height + window->draw_height};
     os1_gfx_fill_rect(frame, &top, theme->border);
     os1_gfx_fill_rect(frame, &bottom, theme->border);
     os1_gfx_fill_rect(frame, &left, theme->border);
@@ -111,15 +154,12 @@ static void paint_window_chrome(struct os1_gfx_surface *frame,
   }
 
   if (font && window->title[0])
-    font_draw_string_surface(frame, font,
-                             window->x + (style->button_side == 0 ? 28 : 12),
-                             title_y + 2,
-                             window->title,
-                             (window->flags & WININFO_FOCUSED)
-                                 ? theme->title_text_active
-                                 : theme->title_text_inactive);
+    font_draw_string_surface(
+        frame, font, window->x + (style->button_side == 0 ? 28 : 12),
+        title_y + 2, window->title,
+        (window->flags & WININFO_FOCUSED) ? theme->title_text_active
+                                          : theme->title_text_inactive);
 }
-
 static int snapshot_less(const struct os1_window_snapshot_v1 *a,
                          const struct os1_window_snapshot_v1 *b) {
   if ((a->flags & WININFO_TOPMOST) != (b->flags & WININFO_TOPMOST))
@@ -140,9 +180,8 @@ static int render_frame(void) {
   uint32_t *frame_pixels_buf = malloc(frame_pixels * sizeof(uint32_t));
   if (!frame_pixels_buf)
     return -1;
-  struct os1_gfx_surface frame = {(uint32_t *)frame_pixels_buf,
-                                  (size_t)width, (size_t)height,
-                                  (size_t)width, frame_pixels};
+  struct os1_gfx_surface frame = {(uint32_t *)frame_pixels_buf, (size_t)width,
+                                  (size_t)height, (size_t)width, frame_pixels};
   paint_background(&frame, os1_theme_background_active());
 
   struct window_info legacy[NXCOMPOSITOR_MAX_WINDOWS];
@@ -199,8 +238,8 @@ static int render_frame(void) {
     window->pixel_capacity = pixel_count;
     if (OS1_window_snapshot(window) == 0) {
       struct os1_gfx_surface source = {pixels, (size_t)window->width,
-                                        (size_t)window->height,
-                                        (size_t)window->width, pixel_count};
+                                       (size_t)window->height,
+                                       (size_t)window->width, pixel_count};
       paint_window_chrome(&frame, window, style, theme, compositor_font);
       os1_gfx_composite_scaled(&frame, &source, window->x, window->y,
                                window->draw_width, window->draw_height);
@@ -220,8 +259,10 @@ static int render_frame(void) {
           (size_t)cy >= frame.height)
         continue;
       char p = cursor_bits[y][x];
-      if (p == 'X') frame.pixels[(size_t)cy * frame.stride + (size_t)cx] = 0xffffffffu;
-      else if (p == '.') frame.pixels[(size_t)cy * frame.stride + (size_t)cx] = 0xff000000u;
+      if (p == 'X')
+        frame.pixels[(size_t)cy * frame.stride + (size_t)cx] = 0xffffffffu;
+      else if (p == '.')
+        frame.pixels[(size_t)cy * frame.stride + (size_t)cx] = 0xff000000u;
     }
   }
   struct os1_compositor_present_v1 present = {

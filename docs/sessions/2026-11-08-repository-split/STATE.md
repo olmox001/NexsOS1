@@ -158,3 +158,19 @@ Read-only inspection and documentation correction only. No source migration, Git
 - The root .gitignore and all upstream submodule source trees remain untouched.
 - NX-VIOLA and NX-SDK are not yet independent build repositories. Work now
   continues on the SDK library/runtime export and then the VIOLA app build.
+
+## Live checkout reconciliation — 2026-11-08
+
+A fresh read of the requested checkout at `/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1` found:
+
+- HEAD is `f2aa85a8ca94be0ab8e4ea391506748f53034a34` (`DEV-Resurrection`), aligned with `origin/DEV-Resurrection`.
+- The checkout has active staged and unstaged graphics/ABI changes and a modified Coreutils gitlink. These pre-existing changes are preserved; this repository-split pass does not edit the compositor, graphics ABI, or their Makefile hunks.
+- `kernel/Makefile` and `kernel/build.mk` exist; the standalone NX-CORE extraction is present. The older statement in this file that HEAD was `9f09f2e` is historical and not the live revision.
+- No `user/Makefile` or `system/Makefile` exists in the live checkout. Userland and SDK source/link rules still reside in the superproject Makefile, so NX-VIOLA and NX-SDK do not yet have independent builds.
+- NexsOS-owned SDK sources now live under `system/`; external library gitlinks and `.gitmodules` paths are under `user/lib/`. No root `.gitignore`, `.gitmodules`, external gitlink, or upstream source tree was changed in this inspection.
+- `make -C kernel check ARCH=amd64` was attempted. Contract snapshot validation failed for `include/abi/object.h` and `include/abi/syscall_nums.h`; these overlap active graphics/ABI work and were deliberately left untouched. No kernel build or boot test was run in this pass.
+- The earlier clean-build/GRUB boot records in `BOOT-ACCEPTANCE.md` are existing dated evidence, not tests run during this reconciliation.
+
+### Contract-check diagnosis
+
+The checksum manifest at `kernel/contracts/abi-snapshot.sha256` is stale for two different reasons: `include/abi/object.h` has an active staged ABI edit, and the committed `include/abi/syscall_nums.h` already hashes to a different value from the manifest. The latter is not a working-tree change. No checksum or contract header was regenerated during this pass; the correct baseline must be agreed with the ABI/compositor work before updating the snapshot. The session documents `BOOT-ACCEPTANCE.md`, `BUILD-INVENTORY.md`, and `LIBRARY-CLASSIFICATION.md` also retain pre-move paths and statements about a `user/Makefile`; treat those passages as historical until reconciled against the current checkout.

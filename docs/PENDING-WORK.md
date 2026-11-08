@@ -235,7 +235,14 @@ Dettagli, log e misure: `docs/report/TIMER-SMP-DIAGNOSTIC-2026-11-03.md`.
 - `make ARCH={amd64,aarch64} all` e `boot-iso` sequenziali PASS anche dopo la modifica condivisa SMP. Restano stress combinato, riduzione critical section/jitter e bug POSIX `time()` ms/sec.
 
 
-## 15. Migrazione grafica in userland / surface manager kernel — **PIANIFICATO** · NEXS-NG
+## 15. Migrazione grafica in userland / surface manager kernel — **PARZIALE** · NEXS-NG
+
+**Stato corrente e punto di ripresa (2026-11-08):**
+[handoff verificato](report/GFX-USERLAND-HANDOFF-2026-11-08.md) e
+[catalogo delle 182 funzioni originali](architecture/GFX-KERNEL-FUNCTION-CATALOG.md).
+Il piano storico qui sotto va letto con l'aggiornamento di confine in
+`GRAPHICS-USERLAND-MIGRATION.md`: policy/lifecycle finestre e processi restano
+nel kernel; implementazioni di rendering e input passano in userland.
 
 Decisione architetturale 2026-11-03: compositor, window/scene policy e librerie
 grafiche devono essere servizi/librerie ring-3. Il kernel conserva soltanto il
@@ -268,16 +275,23 @@ nel kernel NG.
   riferimento bootabile finché il nuovo kernel e la compatibilità ABI non
   superano i gate G0–G6. Nessuna nuova syscall grafica ambientale; riusare
   object/VM/port capabilities e aggiungere solo primitive indispensabili.
-- **Stato attuale (2026-11-08):** `nxcompositor` è stato aggiunto come
-  processo ring-3 supervisionato e possiede il frame loop; una libreria
-  userland `os1_gfx` contiene primitive ARGB8888 e `OS1_window_draw` le usa
-  prima della presentazione v1. Il renderer, la scena, il window manager,
-  l'input e i driver restano nel kernel legacy; `SYS_COMPOSITOR_RENDER` è
-  ancora il backend di compatibilità. Non esistono ancora oggetti
-  buffer/surface capability né mapping condivisi. Questo è uno scaffold
-  eseguibile, non il completamento della migrazione. Prossimo gate: completare
-  l'inventario semantico GFX-NG-0 e definire i descriptor ABI rispetto agli
-  oggetti/VM/port effettivi prima di introdurre il surface manager.
+- **Stato attuale (2026-11-08):** `nxcompositor` compone realmente i frame
+  in ring 3; `nxmoused` e `nxkeyboardd` sono processi separati avviati dopo
+  l'execution service e prima della UI. Rimossi renderer/tick e handler
+  puntatore inutilizzati del kernel; `SYS_COMPOSITOR_RENDER` resta un no-op
+  di compatibilità. Condivisi in userland geometria, disegno e hit test dei
+  pulsanti; ripristinata la barretta sul pulsante minimizza. Restano kernel
+  policy/storage finestre, raster terminale, librerie grafiche e GPU/display.
+  Mancano oggetti buffer/surface capability, mapping condivisi, piena parità
+  di chrome/resize/capture e l'intera matrice PS/2/VirtIO/USB/touch.
+  Immagini GRUB rigenerate: KTEST AMD64 11/11, AArch64 12/12; focus,
+  health soak 30 s, mouse minimizza/ripristina e tastiera verificati su entrambe.
+  Nessuna certificazione di migrazione completa o miglioramento prestazionale.
+- **Vincolo latenze (2026-11-08):** eliminare il pacing fisso di 33 ms nel
+  compositor e il polling con sleep di 5 ms nei due servizi input. Servono
+  attese su eventi e pacing del display, non costanti arbitrarie o busy loop.
+  La soglia di 250 ms del diagnostico non è un budget di accettazione delle
+  prestazioni. Distinzione tra stimolo del test e latenza misurata nel handoff.
 
 
 **Avanzamento GFX-NG-0 (2026-11-03):** primo inventario statico aggiunto
@@ -287,8 +301,8 @@ in §10 di `GRAPHICS-USERLAND-MIGRATION.md`: syscall grafiche 200/202,
 misurato); dipendenze principali e destinazioni. Non è ancora l'inventario
 semantico completo dei caller e dei flussi IRQ/input; nessun ABI buffer/surface
 è stato assegnato. L'incremento runtime descritto nello stato aggiornato
-aggiunge il frame service e primitive userland, ma non estrae ancora i
-componenti legacy né implementa il surface manager.
+estrae composizione e interpretazione input in servizi userland, ma non
+completa la parità dei componenti legacy né implementa il surface manager.
 
 
 ## 16. NEXS-NG integrated hardening / boot / device / graphics programme — **DOCUMENTED, NOT IMPLEMENTED**

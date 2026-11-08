@@ -139,6 +139,7 @@
 #define WININFO_TOPMOST   (1u << 2) /* always-on-top overlay, no decorations    */
 #define WININFO_FOCUSED   (1u << 3) /* owns keyboard focus                      */
 #define WININFO_PASSIVE   (1u << 4) /* click-through (system popup)             */
+#define WININFO_PROTECTED (1u << 5) /* chrome actions disabled by window policy */
 
 /* One enumerated window.  Returned in bulk by SYS_WINDOW_ENUM / OS1_window_enum
  * and singly by OS1_object_read() on an OBJ_TYPE_WINDOW handle.  `title` mirrors

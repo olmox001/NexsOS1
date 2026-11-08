@@ -29,7 +29,6 @@ extern int compositor_create_window(int x, int y, int w, int h,
                                     const char *title, struct process *owner);
 extern void compositor_draw_rect(int window_id, int x, int y, int w, int h,
                                  uint32_t color, int caller_pid);
-extern void compositor_render(void);
 extern void compositor_set_window_flags(int window_id, int flags);
 
 /* Secure memory access helpers with Page Table Switching */

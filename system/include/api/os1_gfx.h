@@ -30,6 +30,35 @@ struct os1_gfx_rect {
   int height;
 };
 
+/* Window chrome primitives shared by the userland renderer and input
+ * service. Geometry is intentionally identical to the legacy kernel chrome
+ * until its remaining rendering helpers have been migrated. */
+struct os1_gfx_button_geometry {
+  int size;
+  int top;
+  int close_cx;
+  int bg_cx;
+};
+
+enum os1_gfx_button_hit {
+  OS1_GFX_BUTTON_NONE = 0,
+  OS1_GFX_BUTTON_CLOSE = 1,
+  OS1_GFX_BUTTON_BACKGROUND = 2,
+};
+
+int os1_gfx_rrect_contains(int x, int y, int width, int height, int radius);
+void os1_gfx_button_geometry(int frame_x, int frame_width, int titlebar_y,
+                             int titlebar_height, int shape, int side,
+                             struct os1_gfx_button_geometry *out);
+int os1_gfx_button_hit(const struct os1_gfx_button_geometry *geometry,
+                       int x, int y);
+uint32_t os1_gfx_titlebar_tint(int shadow_type, int y, int titlebar_height,
+                               uint32_t base);
+uint32_t os1_gfx_button_pixel(const struct os1_gfx_button_geometry *geometry,
+                             int shape, int x, int y, uint32_t close_argb,
+                             uint32_t background_argb, int drop_shadow,
+                             uint32_t base);
+
 int os1_gfx_surface_valid(const struct os1_gfx_surface *surface);
 void os1_gfx_clear(struct os1_gfx_surface *surface, uint32_t argb);
 void os1_gfx_fill_rect(struct os1_gfx_surface *surface,

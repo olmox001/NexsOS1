@@ -82,9 +82,6 @@ void compositor_move_window(int window_id, int x, int y);
  * (reallocates the buffer, reflows the terminal).  Process context only.
  * Returns 0 on success, -1 on failure.  Backs SYS_WINDOW_RESIZE (GFX-DYN-01). */
 int compositor_resize_window(int window_id, int w, int h) NX_MUST_USE;
-void compositor_render(void);
-void compositor_handle_click(int button, int state);
-void compositor_update_mouse(int dx, int dy, int absolute);
 void compositor_window_write(int win_id, const char *buf, size_t count);
 
 /* Protected drawing (with PID check) */
@@ -125,6 +122,4 @@ int compositor_get_window_by_pid(int pid) NX_MUST_USE;
 static inline int compositor_primary_window_of_pid(int pid) {
   return compositor_get_window_by_pid(pid);
 }
-void compositor_tick(void);
-
 #endif /* _KERNEL_GRAPHICS_H */

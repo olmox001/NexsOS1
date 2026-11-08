@@ -1,5 +1,6 @@
 /* nxmoused: ring-3 pointer aggregation, hit testing, focus and capture. */
 #include <os1.h>
+#include <os1_gfx.h>
 #include <os1_input.h>
 #include <os1_theme.h>
 #include <stdint.h>
@@ -125,13 +126,20 @@ static void button_event(unsigned code, int value) {
     (void)OS1_window_focus(s.id);
     int title = (s.flags & WININFO_TOPMOST) ? 0 : titlebar_height();
     const struct os1_compositor_style *style = os1_theme_style_active();
-    int button_side = style ? style->button_side : 1;
-    int close_x = button_side == 0 ? s.x + 14 : s.x + s.draw_width - 14;
-    int close_y = s.y - title / 2;
-    if (title && px >= close_x - 7 && px <= close_x + 7 &&
-        py >= close_y - 7 && py <= close_y + 7) {
-      (void)OS1_window_close(s.id);
-      return;
+    if (title && style && !(s.flags & WININFO_PROTECTED)) {
+      struct os1_gfx_button_geometry geometry;
+      os1_gfx_button_geometry(s.x, s.draw_width, s.y - title, title,
+                              style->button_shape, style->button_side,
+                              &geometry);
+      int hit = os1_gfx_button_hit(&geometry, px, py);
+      if (hit == OS1_GFX_BUTTON_CLOSE) {
+        (void)OS1_window_close(s.id);
+        return;
+      }
+      if (hit == OS1_GFX_BUTTON_BACKGROUND) {
+        (void)OS1_window_minimize(s.id);
+        return;
+      }
     }
     if (px >= s.x + s.draw_width - 12 && py >= s.y + s.draw_height - 12) {
       resizing = s.id; resize_x = px; resize_y = py;
