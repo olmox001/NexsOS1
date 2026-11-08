@@ -51,7 +51,7 @@
  *                                region; the boot log reports the real usable
  *                                sum next to the span.
  */
-#include <arch/arch.h>
+#include <hal/config.h>
 #include <kernel/memlayout.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -59,7 +59,7 @@
 #include <kernel/string.h>
 
 /* Memory configuration from architecture */
-#define MEMORY_BASE ARCH_RAM_START
+#define MEMORY_BASE HAL_RAM_START
 #define DMA_ZONE_END (MEMORY_BASE + 0x1000000UL) /* 16MB for DMA zone */
 
 /* Forward declaration */
@@ -117,7 +117,7 @@ static uint64_t pmm_metadata_end_phys;
 /* --- Instrumentation counters (perf brief §1; surfaced via OS1_sys_stats).
  * Updated with relaxed atomics off the lock so the hot path pays only a single
  * fetch-and-add; *_max uses a racy compare (a lost update on a stat is benign).
- * search_ticks_* are raw arch_timer_get_count() ticks; the collector converts
+ * search_ticks_* are raw hal_timer_get_count() ticks; the collector converts
  * to ns via timer_counts_to_ns().  These measure the bitmap-SEARCH cost only —
  * the fragmentation-sensitive part — not the memset/cache-clean tail. */
 static uint64_t stat_alloc_calls;
@@ -283,7 +283,7 @@ static void zone_init(struct zone *z, const char *name, uint64_t start_pfn,
  *
  * Called during K1 after the boot MMU/direct map is active, but before PMM
  * allocation and VMM reconfiguration. Scans the mem_region table to determine the highest
- * usable physical end (rejecting extents beyond ARCH_PHYS_MAP_LIMIT), computes the sizes
+ * usable physical end (rejecting extents beyond HAL_PHYS_MAP_LIMIT), computes the sizes
  * of page_array, dma_bitmap, and normal_bitmap, and places them contiguously
  * in the lowest sufficiently large usable interval above __kernel_end while
  * avoiding all reserved overlays.
@@ -400,11 +400,7 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
             regions[i].base, regions[i].size);
 
     uint64_t end = regions[i].base + regions[i].size;
-#if defined(ARCH_AARCH64)
-    if (regions[i].base < MEMORY_BASE || end > ARCH_PHYS_MAP_LIMIT)
-#else
-    if (end > ARCH_PHYS_MAP_LIMIT)
-#endif
+    if (!hal_phys_range_valid(regions[i].base, end))
       panic("PMM: usable region outside direct-map window "
             "[0x%lx,0x%lx)", regions[i].base, end);
     if (end > max_detected)
@@ -414,7 +410,7 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
   if (max_detected <= MEMORY_BASE)
     panic("PMM: no usable RAM above MEMORY_BASE=0x%lx", (uint64_t)MEMORY_BASE);
 
-  uint64_t span_limit = ARCH_PHYS_MAP_LIMIT;
+  uint64_t span_limit = HAL_PHYS_MAP_LIMIT;
   if (MEMORY_BASE >= span_limit)
     panic("%s", "PMM: MEMORY_BASE is outside the architecture physical map");
   if (max_detected > span_limit)
@@ -484,10 +480,10 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
       region_end = mem_end;
     /* pmm_early_init touches metadata before VMM remaps all RAM. Restrict
      * placement to memory already reachable through the bootstrap tables. */
-    if (region_start >= ARCH_BOOTSTRAP_PHYS_MAP_LIMIT)
+    if (region_start >= HAL_BOOTSTRAP_PHYS_MAP_LIMIT)
       continue;
-    if (region_end > ARCH_BOOTSTRAP_PHYS_MAP_LIMIT)
-      region_end = ARCH_BOOTSTRAP_PHYS_MAP_LIMIT;
+    if (region_end > HAL_BOOTSTRAP_PHYS_MAP_LIMIT)
+      region_end = HAL_BOOTSTRAP_PHYS_MAP_LIMIT;
 
     region_start = pmm_align_up_page(region_start);
     region_end &= ~((uint64_t)PAGE_SIZE - 1ULL);
@@ -739,7 +735,7 @@ void pmm_init(struct mem_region *regions, size_t count) {
  *   - decrements z->free_pages (under lock) and global free_pages (atomic).
  *   - initialises struct page (flags=0, refcount=1).
  *   - zeroes the page data (memset), cleans the D-cache line, issues a full
- *     memory barrier (arch_mb).  This ensures DMA coherency for the caller.
+ *     memory barrier (hal_mb).  This ensures DMA coherency for the caller.
  *
  * Returns phys_to_virt(MEMORY_BASE + pfn_to_phys(abs_pfn)): the page's
  * kernel virtual address in the direct map (MM-PMM-07 resolved).
@@ -753,13 +749,13 @@ static void *zone_alloc_page(struct zone *z, int dma) {
   spin_lock_irqsave(&z->lock, &flags);
 
   uint64_t npages = z->end_pfn - z->start_pfn;
-  uint64_t search_t0 = arch_timer_get_count();
+  uint64_t search_t0 = hal_timer_get_count();
   int64_t pfn = bitmap_find_free(z->bitmap, z->next_free_pfn, npages);
   if (pfn < 0) {
     /* Wrap around and search from the beginning */
     pfn = bitmap_find_free(z->bitmap, 0, z->next_free_pfn);
   }
-  uint64_t search_ticks = arch_timer_get_count() - search_t0;
+  uint64_t search_ticks = hal_timer_get_count() - search_t0;
 
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
@@ -791,8 +787,8 @@ static void *zone_alloc_page(struct zone *z, int dma) {
      * vast majority (page tables, kernel stacks, struct process, user/sbrk
      * pages, kmalloc chunks) are CPU-only and skip the per-page DC CVAC loop +
      * full barrier, the dominant fixed cost on the spawn hot path. */
-    arch_cache_clean_range(addr, PAGE_SIZE);
-    arch_mb();
+    hal_cache_clean(addr, PAGE_SIZE);
+    hal_mb();
   }
 
   __sync_fetch_and_sub(&free_pages, 1);
@@ -860,7 +856,7 @@ void *pmm_alloc_page_dma(void) {
  * through this path.
  *
  * Like the single-page path, the returned memory is zeroed, cache-cleaned
- * (arch_cache_clean_range) and barrier-fenced (arch_mb) so a device can DMA
+ * (hal_cache_clean) and barrier-fenced (hal_mb) so a device can DMA
  * to/from it immediately (MM-PMM-02 resolved; pmm_alloc_aligned inherits the
  * guarantee since it carves from this function).
  *
@@ -881,10 +877,10 @@ static void *alloc_pages_impl(size_t count, int dma) {
 
   spin_lock_irqsave(&z->lock, &flags);
 
-  uint64_t search_t0 = arch_timer_get_count();
+  uint64_t search_t0 = hal_timer_get_count();
   int64_t pfn =
       bitmap_find_contiguous(z->bitmap, 0, z->end_pfn - z->start_pfn, count);
-  uint64_t search_ticks = arch_timer_get_count() - search_t0;
+  uint64_t search_ticks = hal_timer_get_count() - search_t0;
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
     return NULL;
@@ -914,8 +910,8 @@ static void *alloc_pages_impl(size_t count, int dma) {
   memset(addr, 0, PAGE_SIZE * count);
   if (dma) {
     /* DMA-coherency prep — only for device buffers (perf §3.1). */
-    arch_cache_clean_range(addr, PAGE_SIZE * count);
-    arch_mb();
+    hal_cache_clean(addr, PAGE_SIZE * count);
+    hal_mb();
   }
 
   __sync_fetch_and_sub(&free_pages, count);
@@ -962,7 +958,7 @@ void pmm_free_page(void *page) {
     return;
 
   uint64_t phys = virt_to_phys(page);
-#if ARCH_RAM_START > 0
+#if HAL_RAM_START > 0
   if (phys < MEMORY_BASE) {
     pr_err("PMM: Attempt to free invalid address %p (below MEMORY_BASE)\n",
            page);
@@ -1102,7 +1098,7 @@ void *pmm_alloc_aligned(size_t size, size_t align) {
  * 'phys' is a PHYSICAL address; pointer callers must virt_to_phys() first.
  */
 struct page *pmm_phys_to_page(uint64_t phys) {
-#if ARCH_RAM_START > 0
+#if HAL_RAM_START > 0
   if (phys < MEMORY_BASE)
     return NULL;
 #endif
@@ -1204,7 +1200,7 @@ void pmm_dump_stats(void) {
 /*
  * pmm_get_counters - read the cumulative allocator counters (perf brief §1).
  *
- * search_ticks_* are raw arch_timer_get_count() ticks; the caller converts to
+ * search_ticks_* are raw hal_timer_get_count() ticks; the caller converts to
  * ns via timer_counts_to_ns().  All four out-params are optional (NULL-skip).
  * Lock-free reads of relaxed atomics — values are a coherent-enough snapshot.
  */

@@ -5,6 +5,7 @@
 #ifndef _KERNEL_PLATFORM_H
 #define _KERNEL_PLATFORM_H
 
+#include <hal/config.h>
 #include <kernel/nx_contract.h>
 #include <kernel/pmm.h>
 
@@ -25,7 +26,7 @@
 void arch_platform_early_init(void);
 struct mem_region *arch_platform_get_mem_regions(size_t *count);
 
-#ifdef ARCH_AARCH64
+#if HAL_HAS_PHYS_PROBE
 /* Synchronous early-boot physical read with an exact exception fixup. */
 int arch_platform_probe_read32(uint64_t physical, uint32_t *value);
 #endif

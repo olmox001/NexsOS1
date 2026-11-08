@@ -354,7 +354,7 @@ void irq_send_ipi_all(void) {
  * cpu_halt_from_ipi - halt this CPU after receiving a panic IPI (SGI0).
  *
  * Sets the global panic_flag, stops the arch timer (prevents further timer
- * IRQs on this core), and calls arch_cpu_halt() to enter an infinite WFI
+ * IRQs on this core), and calls hal_cpu_halt() to enter an infinite WFI
  * loop.  Called only from irq_handler() when irq == IRQ_PANIC_HALT_SGI.
  * Mirrors halt_ipi_handler() on the amd64/PIC path (pic_pit.c) — same
  * contract, one per arch because each arch's IPI delivery is different
@@ -365,13 +365,13 @@ void irq_send_ipi_all(void) {
  *          since all CPUs are being halted simultaneously and there is no
  *          "after" state to protect.
  * IRQ context: called from IRQ handler after chip->end(IRQ_PANIC_HALT_SGI);
- *              IRQs are effectively disabled by arch_cpu_halt() thereafter.
+ *              IRQs are effectively disabled by hal_cpu_halt() thereafter.
  */
 static void cpu_halt_from_ipi(void) {
   extern volatile int panic_flag;
   panic_flag = 1;
-  arch_timer_control(0);
-  arch_cpu_halt(); /* noreturn in practice: infinite WFI/HLT loop */
+  hal_timer_control(0);
+  hal_cpu_halt(); /* noreturn in practice: infinite WFI/HLT loop */
 }
 
 /*
@@ -482,8 +482,8 @@ static inline void irq_run_registered_or_warn(uint32_t irq) {
  * Locking: runs with IRQs implicitly masked (exception entry).
  * IRQ context: YES — this IS the IRQ entry point on aarch64.
  */
-struct pt_regs *irq_handler(struct pt_regs *regs) {
-  struct pt_regs *ret_regs = regs;
+hal_frame_t *irq_handler(hal_frame_t *regs) {
+  hal_frame_t *ret_regs = regs;
   uint32_t iterations;
 
   if (!current_chip)
@@ -517,7 +517,7 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
     /* Scheduler tick (fixed-function; bypasses irq_handlers[] by design —
      * see the file-header invariants).  FIX(IRQ-03): IRQ_TIMER only. */
     if (intid == IRQ_TIMER) {
-      extern struct pt_regs *timer_handler(struct pt_regs * regs);
+      extern hal_frame_t *timer_handler(hal_frame_t * regs);
 
       ret_regs = timer_handler(ret_regs);
       current_chip->end(irq_raw);
@@ -567,7 +567,7 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
  *          the table read against concurrent register/unregister.
  * IRQ context: YES — called from the amd64 IDT handler.
  */
-struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs) {
+hal_frame_t *irq_dispatch(uint32_t irq, hal_frame_t *regs) {
   irq_run_registered_or_warn(irq);
   return regs;
 }

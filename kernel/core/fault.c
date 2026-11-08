@@ -30,7 +30,7 @@
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 
-extern struct pt_regs *schedule(struct pt_regs *regs);
+extern hal_frame_t *schedule(hal_frame_t *regs);
 extern int process_terminate(int pid);
 
 /* fault_notify_user - post a RED notification (severity 2) about a crashing user
@@ -63,7 +63,7 @@ static void fault_notify_user(struct process *task, const char *desc) {
                  npid, m.payload);
 }
 
-struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
+hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
                                            uint64_t fault_addr, uint64_t fault_pc,
                                            const char *desc, uint64_t syndrome) {
   /* Fault context: locate per-CPU state via the MSR/MPIDR path, never via

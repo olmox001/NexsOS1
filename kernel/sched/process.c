@@ -60,7 +60,7 @@
  *        -> DONE except one place, fixed here: process_terminate()'s
  *           on-runqueue "wait for on_cpu to stabilize" loop was a bare
  *           `for (;;)`. It is now bounded by SCHED_MARK_DEAD_MAX_RETRIES
- *           with an arch_nop() backoff between attempts (also a perf win
+ *           with an hal_cpu_nop() backoff between attempts (also a perf win
  *           under contention — matches the pattern smp.c already uses for
  *           its ack-wait spin) and a panic() naming the invariant violated
  *           if the bound is ever exhausted, exactly like every other
@@ -110,7 +110,7 @@
  *
  * PERFORMANCE — what changed, and what deliberately did NOT
  *   - process_terminate()'s stabilization retry now backs off with
- *     arch_nop() instead of a bare spin, reducing cache-line ping-pong on
+ *     hal_cpu_nop() instead of a bare spin, reducing cache-line ping-pong on
  *     proc->on_cpu under contention (same technique smp.c already uses).
  *   - The three separate, hand-duplicated "free a process's resources"
  *     sequences (process_terminate() common tail, schedule()'s deferred-
@@ -268,7 +268,7 @@ static uint64_t sched_trace_stack_low(const struct process *proc) {
 
 static void sched_trace_record(uint32_t cpu, struct cpu_info *cpu_ptr,
                                struct process *prev, struct process *next,
-                               struct pt_regs *regs) {
+                               hal_frame_t *regs) {
   uint32_t ticket = __atomic_fetch_add(&sched_trace_head[cpu], 1u,
                                        __ATOMIC_RELAXED);
   struct sched_trace_entry *entry =
@@ -278,36 +278,14 @@ static void sched_trace_record(uint32_t cpu, struct cpu_info *cpu_ptr,
 
   entry->seq = 0;
   entry->frame = (uint64_t)(uintptr_t)regs;
-  entry->pc = regs ? pt_regs_pc(regs) : 0;
-  entry->sp = 0;
-  entry->origin_mode = UINT32_MAX;
-#ifdef ARCH_AARCH64
-  entry->fp = regs ? regs->regs[29] : 0;
-  entry->lr = regs ? regs->regs[30] : 0;
-  entry->status = regs ? regs->spsr : 0;
-  if (regs) {
-    /* Exception entry saves SP_EL0 for EL0 origins.  For an EL1-origin
-     * exception, the full pt_regs frame is allocated on the interrupted
-     * EL1 stack, so frame + sizeof(*regs) is the interrupted SP_EL1. */
-    entry->origin_mode = (uint32_t)(regs->spsr & 0x0fu);
-    entry->sp = (entry->origin_mode == 0u)
-                    ? regs->sp_el0
-                    : (uint64_t)(uintptr_t)regs + sizeof(*regs);
-  }
-#else
-  entry->fp = regs ? regs->rbp : 0;
-  entry->lr = regs ? regs->rip : 0;
-  entry->status = regs ? regs->cs : 0;
-  if (regs) {
-    /* The CPU pushes RSP/SS only on a privilege transition.  On a CPL0
-     * interrupt, &regs->rsp is exactly the interrupted kernel RSP slot
-     * immediately above the hardware-pushed RIP/CS/RFLAGS frame. */
-    entry->origin_mode = (uint32_t)(regs->cs & 3u);
-    entry->sp = (entry->origin_mode == 3u)
-                    ? regs->rsp
-                    : (uint64_t)(uintptr_t)&regs->rsp;
-  }
-#endif
+  struct hal_frame_snapshot frame_snapshot;
+  hal_frame_snapshot(regs, &frame_snapshot);
+  entry->pc = frame_snapshot.pc;
+  entry->sp = frame_snapshot.sp;
+  entry->fp = frame_snapshot.fp;
+  entry->lr = frame_snapshot.lr;
+  entry->status = frame_snapshot.status;
+  entry->origin_mode = (uint32_t)frame_snapshot.origin;
   entry->prev_stack_low = sched_trace_stack_low(prev);
   entry->prev_stack_high = prev ? prev->kernel_stack : 0;
   entry->next_stack_low = sched_trace_stack_low(next);
@@ -340,11 +318,12 @@ void sched_trace_dump(void) {
           __atomic_load_n(&entry->seq, __ATOMIC_ACQUIRE);
       if (published != (uint64_t)ticket + 1u)
         continue;
-#ifdef ARCH_AARCH64
-      const char *origin = entry->origin_mode == 0u ? "EL0" : "EL1";
-#else
-      const char *origin = entry->origin_mode == 3u ? "CPL3" : "CPL0";
-#endif
+      const char *origin =
+          entry->origin_mode == (uint32_t)HAL_FRAME_ORIGIN_USER
+              ? "user"
+              : (entry->origin_mode == (uint32_t)HAL_FRAME_ORIGIN_KERNEL
+                     ? "kernel"
+                     : "unknown");
       fault_printf("[SCHED-TRACE] cpu=%u seq=%llu origin=%s(%x) "
                    "prev=%u next=%u pc=%016lx sp=%016lx fp=%016lx "
                    "lr=%016lx status=%016lx frame=%016lx "
@@ -643,7 +622,7 @@ void enqueue_task(struct process *p) {
     spin_lock_irqsave(&target_cpu->sched_lock, &flags);
     if (((p->on_cpu >= 0) ? (int)p->on_cpu : 0) != target_cpu_id) {
       spin_unlock_irqrestore(&target_cpu->sched_lock, flags);
-      arch_nop();
+      hal_cpu_nop();
       continue;
     }
     __enqueue_task(p);
@@ -1435,8 +1414,8 @@ struct process *process_create_caps(const char *name, uint8_t priority,
   }
   proc->kernel_stack = (uint64_t)kstack_base + STACK_SIZE;
   proc->context =
-      (struct pt_regs *)(proc->kernel_stack - sizeof(struct pt_regs));
-  memset(proc->context, 0, sizeof(struct pt_regs));
+      (hal_frame_t *)(proc->kernel_stack - hal_frame_size());
+  memset(proc->context, 0, hal_frame_size());
   proc->on_cpu = -1; /* not running on any CPU yet */
 
   SCHED_ASSERT(proc->state == PROC_CREATED,
@@ -1467,12 +1446,12 @@ void smp_create_idle_task(uint32_t cpu_id) {
   struct cpu_info *info = &cpu_data[cpu_id];
   info->idle_task = idle;
 
-  memset(idle->context, 0, sizeof(struct pt_regs));
-  pt_regs_init_kernel_task(idle->context, (uint64_t)idle_task_entry,
+  memset(idle->context, 0, hal_frame_size());
+  hal_frame_init_kernel_task(idle->context, (uint64_t)idle_task_entry,
                            idle->kernel_stack);
 
   hal_cache_clean(idle, sizeof(struct process));
-  hal_cache_clean(idle->context, sizeof(struct pt_regs));
+  hal_cache_clean(idle->context, hal_frame_size());
   hal_mb();
   hal_isb();
 }
@@ -1488,11 +1467,11 @@ struct process *kthread_create(const char *name, void (*entry)(void)) {
   if (!t)
     return NULL;
 
-  memset(t->context, 0, sizeof(struct pt_regs));
-  pt_regs_init_kernel_task(t->context, (uint64_t)entry, t->kernel_stack);
+  memset(t->context, 0, hal_frame_size());
+  hal_frame_init_kernel_task(t->context, (uint64_t)entry, t->kernel_stack);
 
   hal_cache_clean(t, sizeof(struct process));
-  hal_cache_clean(t->context, sizeof(struct pt_regs));
+  hal_cache_clean(t->context, hal_frame_size());
   hal_mb();
   hal_isb();
 
@@ -1653,7 +1632,7 @@ static void __proc_terminate_detach_from_wait_queue(struct process *proc) {
  * lock, so once we hold it the victim cannot migrate further) — re-check
  * after locking and retry if it moved.
  *
- * POT10 rule 2: bounded by SCHED_MARK_DEAD_MAX_RETRIES with an arch_nop()
+ * POT10 rule 2: bounded by SCHED_MARK_DEAD_MAX_RETRIES with an hal_cpu_nop()
  * backoff between attempts (was a bare `for(;;)` — see file header). */
 static void __proc_terminate_mark_dead_on_cpu(struct process *proc) {
   for (int attempt = 0; attempt < SCHED_MARK_DEAD_MAX_RETRIES; attempt++) {
@@ -1666,7 +1645,7 @@ static void __proc_terminate_mark_dead_on_cpu(struct process *proc) {
     spin_lock(&vc->sched_lock);
     if ((proc->on_cpu >= 0 ? proc->on_cpu : 0) != vcpu) {
       spin_unlock(&vc->sched_lock);
-      arch_nop(); /* contention backoff, same pattern as smp.c's ack wait */
+      hal_cpu_nop(); /* contention backoff, same pattern as smp.c's ack wait */
       continue;
     }
     proc->state = PROC_DEAD;
@@ -1778,7 +1757,7 @@ static int __proc_park_locked(struct process *proc) {
     spin_lock(&vc->sched_lock);
     if (((proc->on_cpu >= 0) ? proc->on_cpu : 0) != vcpu) {
       spin_unlock(&vc->sched_lock);
-      arch_nop();
+      hal_cpu_nop();
       continue;
     }
 
@@ -2181,11 +2160,11 @@ static void __sched_reap_deferred(struct cpu_info *cpu_ptr) {
  * §4): charge the raw counter delta since the last schedule on this CPU to
  * whoever was running (prev), then mark the start count for the task
  * about to be picked. No divide in the hot path; conversion to ns happens
- * only when the value is read. arch_timer_get_count() is lock-free/
+ * only when the value is read. hal_timer_get_count() is lock-free/
  * IRQ-safe. */
 static void __sched_account_time(struct cpu_info *cpu_ptr,
                                  struct process *prev) {
-  uint64_t now_cnt = arch_timer_get_count();
+  uint64_t now_cnt = hal_timer_get_count();
   if (prev && cpu_ptr->sched_run_count)
     prev->cpu_time_counts += now_cnt - cpu_ptr->sched_run_count;
   cpu_ptr->sched_run_count = now_cnt;
@@ -2225,7 +2204,7 @@ enum sched_retire_result {
  * which a return already does. Caller holds cpu_ptr->sched_lock. */
 static enum sched_retire_result __sched_retire_prev(struct cpu_info *cpu_ptr,
                                                     struct process *prev,
-                                                    struct pt_regs *regs) {
+                                                    hal_frame_t *regs) {
   if (!prev)
     return SCHED_RETIRE_HANDLED;
 
@@ -2447,12 +2426,12 @@ static void __sched_stack_alias_check(uint32_t cpu, struct process *next) {
  * context-switch exit deliberately returns with IRQs masked — the
  * dispatcher's IRET/ERET loads the next context's saved flags.
  */
-struct pt_regs *schedule(struct pt_regs *regs) {
+hal_frame_t *schedule(hal_frame_t *regs) {
   uint64_t sched_irq_flags = local_irq_save();
 
   struct cpu_info *cpu_ptr = get_cpu_info();
   if (!cpu_ptr) {
-    if (regs && pt_regs_pc(regs) == 0)
+    if (regs && hal_frame_pc(regs) == 0)
       panic("SCHED: [EARLY] pc==0 on return");
     local_irq_restore(sched_irq_flags);
     return regs;
@@ -2486,7 +2465,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
     if (!next) {
       /* Nothing to steal either. If prev is still READY, keep running it. */
       if (prev && prev->state == PROC_RUNNING) {
-        if (pt_regs_pc(regs) == 0)
+        if (hal_frame_pc(regs) == 0)
           panic("SCHED: [CPU%d] BUG pc==0 on PROC_RUNNING fast-path, PID %d",
                 cpu, prev->pid);
         spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
@@ -2504,7 +2483,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
           panic("SCHED: [CPU%d] reaped current task with no idle task to "
                 "switch to",
                 cpu);
-        if (regs && pt_regs_pc(regs) == 0)
+        if (regs && hal_frame_pc(regs) == 0)
           panic("SCHED: [CPU%d] BUG pc==0 on idle-fallback return, PID %d", cpu,
                 prev ? (int)prev->pid : -1);
         spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
@@ -2516,7 +2495,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
 
   /* Same task selected: no context switch needed. */
   if (prev == next) {
-    if (pt_regs_pc(regs) == 0)
+    if (hal_frame_pc(regs) == 0)
       panic("SCHED: [CPU%d] BUG pc==0 on same-task return, PID %d", cpu,
             prev->pid);
     next->state = PROC_RUNNING;
@@ -2548,7 +2527,7 @@ struct pt_regs *schedule(struct pt_regs *regs) {
   SCHED_ASSERT(next != NULL, "schedule: BUG next is NULL at switch");
   SCHED_ASSERT(next->context != NULL, "schedule: invalid context for PID %d",
                (int)next->pid);
-  if (pt_regs_pc(next->context) == 0)
+  if (hal_frame_pc(next->context) == 0)
     panic("SCHED: PC is 0 for PID %d (Name: %s)", next->pid, next->name);
 
   /* Record the transition before the architecture changes address space or
@@ -2699,7 +2678,7 @@ int process_cont(int pid) {
       spin_lock(&target_cpu->sched_lock);
       if (((target->on_cpu >= 0) ? (int)target->on_cpu : 0) != target_cpu_id) {
         spin_unlock(&target_cpu->sched_lock);
-        arch_nop();
+        hal_cpu_nop();
         continue;
       }
       if (target->state == PROC_STOPPED) {
@@ -2987,7 +2966,7 @@ long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size) {
   memset(&s, 0, sizeof(s));
   s.version = OS1_SYSSTATS_VERSION;
   s.struct_size = (unsigned int)sizeof(s);
-  s.uptime_ns = timer_counts_to_ns(arch_timer_get_count());
+  s.uptime_ns = timer_counts_to_ns(hal_timer_get_count());
 
   /* MM-PMM-09 (#94): report USABLE RAM, not the metadata span (which
    * includes the sub-4GB PCI/MMIO hole on amd64) — every "used" consumer

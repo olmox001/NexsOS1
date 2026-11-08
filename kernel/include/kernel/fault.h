@@ -13,12 +13,12 @@
 #ifndef _KERNEL_FAULT_H
 #define _KERNEL_FAULT_H
 
+#include <hal/frame.h>
 #include <kernel/nx_contract.h>
 #include <stdarg.h>
 #include <kernel/types.h>
 
 struct cpu_info;
-struct pt_regs;
 
 /*
  * fault_printf / fault_vprintf - lock-free emergency console output.
@@ -88,7 +88,7 @@ int arch_frame_on_fault_stack(const void *frame) NX_MUST_USE;
  * uniformly so the user-fault debug is identical across arches (DIR-06 HAL
  * conformance: the reporting lives HERE, not duplicated per arch).
  */
-struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
+hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
                                            uint64_t fault_addr, uint64_t fault_pc,
                                            const char *desc, uint64_t syndrome);
 

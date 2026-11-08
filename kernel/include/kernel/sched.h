@@ -29,7 +29,7 @@ struct ipc_node {
 };
 
 /* Architecture-specific register frame layout */
-#include <arch/pt_regs.h>
+#include <hal/frame.h>
 
 /* Scheduler time-slice in ticks (HZ=100 -> 10ms/tick).  Lowered from 10 (100ms)
  * to 3 (30ms): the old quantum let a CPU-bound task hog a core for 100ms before
@@ -90,7 +90,7 @@ struct process {
    * MAX_PROCESSES live address spaces by construction (no generation/rollover
    * needed); 0 is reserved for the kernel/idle address space.  The HAL uses it
    * to switch address space WITHOUT a full TLB flush; teardown's
-   * arch_tlb_shootdown_all() clears the tag before its slot is recycled. */
+   * hal_tlb_shootdown_all() clears the tag before its slot is recycled. */
   uint16_t asid;
   uint64_t kernel_stack; /* Kernel stack top */
   uint64_t heap_start;   /* Base address of user heap */
@@ -98,7 +98,7 @@ struct process {
   spinlock_t mm_lock;    /* Protects page table modifications */
 
   /* Context for switching */
-  struct pt_regs *context;
+  hal_frame_t *context;
 
   /* User Context (Initial) */
   uint64_t user_entry;
@@ -398,14 +398,14 @@ extern int process_load_elf_args(struct process *proc, const char *path,
                                  int argc, char *const kargv[]);
 void start_user_process(struct process *proc);
 void process_init(void);
-struct pt_regs *schedule(struct pt_regs *regs);
+hal_frame_t *schedule(hal_frame_t *regs);
 /* Fault-safe dump of the bounded per-CPU context-switch history. */
 void sched_trace_dump(void);
 
 /* Exception Handlers */
-struct pt_regs *syscall_handler(struct pt_regs *frame);
-struct pt_regs *irq_handler(struct pt_regs *frame);
-struct pt_regs *sync_handler(struct pt_regs *frame);
+hal_frame_t *syscall_handler(hal_frame_t *frame);
+hal_frame_t *irq_handler(hal_frame_t *frame);
+hal_frame_t *sync_handler(hal_frame_t *frame);
 
 /* API Declarations */
 void enqueue_task(struct process *p);

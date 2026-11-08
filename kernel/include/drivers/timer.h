@@ -5,6 +5,7 @@
 #ifndef _DRIVERS_TIMER_H
 #define _DRIVERS_TIMER_H
 
+#include <hal/frame.h>
 #include <kernel/list.h>
 #include <kernel/types.h>
 
@@ -39,7 +40,7 @@ void timer_delay_us(uint64_t us);
 void timer_delay_ms(uint64_t ms);
 
 /* mono_ns - monotonic nanoseconds since boot, derived from the free-running
- * hardware counter (arch_timer_get_count / arch_timer_get_freq). This is the
+ * hardware counter (hal_timer_get_count / hal_timer_get_freq). This is the
  * arch-neutral REAL-TIME reference every timer tier compares against to recover
  * lost ticks; jiffies is a cheap integer view of it. Defined in core/timer.c.
  */
@@ -54,21 +55,19 @@ uint64_t timer_get_ns(void);
 uint64_t timer_counts_to_ns(uint64_t counts);
 
 /* Tier 2 per-CPU clock — HAL-driven, arch-neutral (docs/TIMER-MODEL.md §3).
- * timer_percpu_tick(): per-tick drift accounting + compare reprogram against
- * the hardware counter (arch_timer_get_freq/count/set_compare); catch-up clamp
+ * timer_percpu_tick_current(): per-tick drift accounting + compare reprogram against
+ * the hardware counter (hal_timer_get_freq/count/set_compare); catch-up clamp
  *   recovers lost ticks. Called from each arch's timer IRQ before the scheduler
- *   tick. arch_timer_set_compare() reprograms a one-shot timer (aarch64) and is
+ *   tick. hal_timer_set_compare() reprograms a one-shot timer (aarch64) and is
  *   a no-op for a periodic timer (amd64), so the one routine serves both.
- * timer_percpu_arm(): seed the per-CPU schedule on this core's timer bring-up.
+ * timer_percpu_arm_current(): seed the per-CPU schedule on this core's timer bring-up.
  */
-struct cpu_info;
-void timer_percpu_tick(struct cpu_info *cpu);
-void timer_percpu_arm(struct cpu_info *cpu);
+uint64_t timer_percpu_tick_current(void);
+uint64_t timer_percpu_arm_current(void);
 
 /* Internal Handlers */
-struct pt_regs;
-struct pt_regs *timer_handler(struct pt_regs *regs);
-struct pt_regs *kernel_timer_tick(struct pt_regs *regs);
+hal_frame_t *timer_handler(hal_frame_t *regs);
+hal_frame_t *kernel_timer_tick(hal_frame_t *regs);
 
 /* Timer callback type */
 typedef void (*timer_callback_t)(void *data);

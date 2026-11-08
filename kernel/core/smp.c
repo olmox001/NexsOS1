@@ -10,7 +10,7 @@
  * ordering invariant and the ack handshake live here, once.
  *
  * The ack wait is bounded by wall time through the HAL timer contract
- * (arch_timer_get_count/_get_freq — the DIR-06 reference seam, same pattern as
+ * (hal_timer_get_count/_get_freq — the DIR-06 reference seam, same pattern as
  * the panic watchdog in printk.c), replacing the per-arch nop-count/udelay
  * divergence.  The handshake variable is acquire/release-paired with
  * smp_ack_boot() so the secondary's per-CPU initialization writes are visible
@@ -67,12 +67,12 @@ int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) {
 
   /* 3. Bounded acquire-wait for the ack (~10 s wall time, generous for a
    * slow hypervisor; the watchdog in printk.c uses the same timer seam). */
-  uint64_t freq = arch_timer_get_freq();
-  uint64_t deadline = arch_timer_get_count() + freq * 10ULL;
+  uint64_t freq = hal_timer_get_freq();
+  uint64_t deadline = hal_timer_get_count() + freq * 10ULL;
   while (__atomic_load_n(&cpu_boot_ack, __ATOMIC_ACQUIRE) != cpu) {
-    if ((int64_t)(deadline - arch_timer_get_count()) <= 0)
+    if ((int64_t)(deadline - hal_timer_get_count()) <= 0)
       return -2;
-    arch_nop();
+    hal_cpu_nop();
   }
   return 0;
 }

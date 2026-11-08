@@ -150,15 +150,15 @@ void graphics_clear(uint32_t color) {
  *
  * The system runs in single-buffered mode: there is no second framebuffer to
  * swap.  This function exists as an API hook for future double-buffered
- * support. Currently it only issues arch_mb() to ensure all preceding pixel
+ * support. Currently it only issues hal_mb() to ensure all preceding pixel
  * writes are visible to the GPU DMA engine before any following flush.
  *
- * Side effects: arch_mb() — a full store/load barrier on the current arch.
+ * Side effects: hal_mb() — a full store/load barrier on the current arch.
  * Locking: none required; barrier is inherently CPU-local.
  */
 void graphics_swap_buffers(void) {
   /* In single-buffered modes, this is a flush/barrier */
-  arch_mb();
+  hal_mb();
 }
 
 /*

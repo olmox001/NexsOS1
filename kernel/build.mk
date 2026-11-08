@@ -1,59 +1,12 @@
 # NX-CORE canonical source manifest and build rules.
 # Included by the integration Makefile and NX-CORE standalone Makefile.
 
-ifeq ($(ARCH), amd64)
-BOOT_SOURCES = \
-    $(BOOT_DIR)/header.S \
-    $(BOOT_DIR)/stage1.S \
-    $(BOOT_DIR)/stage2.S
-
-KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/kinit/start.S \
-    $(ARCH_DIR)/cpu/isr_stubs.S \
-    $(ARCH_DIR)/cpu/syscall.S \
-    $(ARCH_DIR)/cpu/context.S \
-    $(ARCH_DIR)/kinit/trampoline.S
+include $(KERNEL_DIR)/HAL/sources.mk
 
 KERN_C_SOURCES = \
-    $(ARCH_DIR)/cpu/cpu.c \
-    $(ARCH_DIR)/cpu/idt.c \
-    $(ARCH_DIR)/cpu/gdt.c \
-    $(ARCH_DIR)/cpu/msr.c \
-    $(ARCH_DIR)/cpu/syscall_hal.c \
-    $(ARCH_DIR)/cpu/apic.c \
-    $(ARCH_DIR)/mm/mmu.c \
-    $(ARCH_DIR)/mm/tlb.c \
-    $(ARCH_DIR)/mm/uaccess.c \
-    $(KERNEL_DIR)/drivers/uart/16550.c \
-    $(KERNEL_DIR)/drivers/timer/pic_pit.c \
-    $(ARCH_DIR)/platform/platform.c \
-    $(ARCH_DIR)/hal.c \
-    $(ARCH_DIR)/virtio.c
-else
-BOOT_SOURCES = \
-    $(BOOT_DIR)/header.S \
-    $(BOOT_DIR)/stage1.S \
-    $(BOOT_DIR)/stage2.S
-
-KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/kinit/start.S \
-    $(ARCH_DIR)/cpu/exception.S
-
-KERN_C_SOURCES = \
-    $(ARCH_DIR)/cpu/cpu.c \
-    $(ARCH_DIR)/cpu/syscall.c \
-    $(ARCH_DIR)/mm/mmu.c \
-    $(ARCH_DIR)/platform.c \
-    $(ARCH_DIR)/hal.c \
-    $(ARCH_DIR)/virtio.c \
-    $(KERNEL_DIR)/drivers/uart/pl011.c \
-    $(KERNEL_DIR)/drivers/gic/gic.c \
-    $(KERNEL_DIR)/drivers/timer/timer.c
-endif
-
-KERN_C_SOURCES += \
     $(KERNEL_DIR)/core/hal_bus.c \
     $(KERNEL_DIR)/core/syscall_dispatch.c \
+    $(KERNEL_DIR)/core/hal_core_adapter.c \
     $(KERNEL_DIR)/core/object.c \
     $(KERNEL_DIR)/core/fault.c \
     $(KERNEL_DIR)/core/smp.c \
@@ -114,11 +67,17 @@ KERN_C_SOURCES += \
     $(KERNEL_DIR)/main.c \
     $(KERNEL_DIR)/drivers/ps2/ps2.c
 
-# Object files
-BOOT_OBJECTS = $(patsubst %.S,$(BUILD_DIR)/%.o,$(BOOT_SOURCES))
-KERN_ASM_OBJECTS = $(KERN_ASM_SOURCES:%.S=$(BUILD_DIR)/%.o)
+# Object files. HAL is built as one real archive and linked as a unit.
+HAL_REL_BOOT = $(patsubst $(HAL_ROOT)/%,%,$(HAL_BOOT_SOURCES))
+HAL_REL_ASM = $(patsubst $(HAL_ROOT)/%,%,$(HAL_ASM_SOURCES))
+HAL_REL_C = $(patsubst $(HAL_ROOT)/%,%,$(HAL_C_SOURCES))
+BOOT_OBJECTS = $(addprefix $(BUILD_DIR)/HAL/,$(HAL_REL_BOOT:.S=.o))
+HAL_ASM_OBJECTS = $(addprefix $(BUILD_DIR)/HAL/,$(HAL_REL_ASM:.S=.o))
+HAL_C_OBJECTS = $(addprefix $(BUILD_DIR)/HAL/,$(HAL_REL_C:.c=.o))
+HAL_OBJECTS = $(HAL_ASM_OBJECTS) $(HAL_C_OBJECTS)
+HAL_LIB = $(BUILD_DIR)/HAL/libnxhal.a
 KERN_C_OBJECTS = $(KERN_C_SOURCES:%.c=$(BUILD_DIR)/%.o)
-KERN_OBJECTS = $(KERN_ASM_OBJECTS) $(KERN_C_OBJECTS)
+KERN_OBJECTS = $(KERN_C_OBJECTS)
 
 # Dependency files
 # Every %.o: %.c rule (kernel AND user, see "Common compilation rules" below)
@@ -135,9 +94,14 @@ DEPS = $(shell find $(BUILD_DIR) -type f -name '*.d' 2>/dev/null)
 
 
 # NX-CORE-owned kernel and bootloader build rules.
-.PHONY: kernel bootloader
+.PHONY: hal kernel bootloader
+hal: $(HAL_LIB)
 kernel: $(KERNEL_BIN)
 bootloader: $(BOOTLOADER_BIN)
+
+$(HAL_LIB): $(HAL_OBJECTS)
+	@mkdir -p $(dir $@)
+	@$(AR) rcs $@ $^
 
 $(BOOTLOADER_ELF): $(BOOT_OBJECTS) $(BOOT_DIR)/linker.ld
 	@mkdir -p $(dir $@)
@@ -149,17 +113,24 @@ NM = $(CROSS_COMPILE)nm
 KERNEL_PRE = $(BUILD_DIR)/kernel.pre.elf
 KSYMS_S = $(BUILD_DIR)/ksyms.S
 KSYMS_O = $(BUILD_DIR)/ksyms.o
-$(KERNEL_PRE): $(KERN_OBJECTS)
+$(KERNEL_PRE): $(KERN_OBJECTS) $(HAL_LIB)
 	@mkdir -p $(dir $@)
-	@$(LD) $(LDFLAGS_KERN) -o $@ $^
+	@$(LD) $(LDFLAGS_KERN) -o $@ $(KERN_OBJECTS) --whole-archive $(HAL_LIB) --no-whole-archive
 $(KSYMS_O): $(KERNEL_PRE) $(KERNEL_DIR)/tools/gen_ksyms.sh
 	@$(KERNEL_DIR)/tools/gen_ksyms.sh "$(NM)" $(KERNEL_PRE) $(KSYMS_S)
 	@$(CC) $(KERNEL_CFLAGS) -c -o $@ $(KSYMS_S)
-$(KERNEL_ELF): $(KERN_OBJECTS) $(KSYMS_O)
+$(KERNEL_ELF): $(KERN_OBJECTS) $(HAL_LIB) $(KSYMS_O)
 	@mkdir -p $(dir $@)
-	@$(LD) $(LDFLAGS_KERN) -o $@ $^
+	@$(LD) $(LDFLAGS_KERN) -o $@ $(KERN_OBJECTS) $(KSYMS_O) --whole-archive $(HAL_LIB) --no-whole-archive
 $(KERNEL_BIN): $(KERNEL_ELF)
 	@$(OBJCOPY) -O binary $< $@
+
+$(BUILD_DIR)/HAL/%.o: $(HAL_ROOT)/%.S
+	@mkdir -p $(dir $@)
+	@$(CC) $(KERNEL_CFLAGS) -c -o $@ $<
+$(BUILD_DIR)/HAL/%.o: $(HAL_ROOT)/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(KERNEL_CFLAGS) -MMD -MP -c -o $@ $<
 
 $(BUILD_DIR)/$(BOOT_DIR)/%.o: $(BOOT_DIR)/%.S
 	@mkdir -p $(dir $@)

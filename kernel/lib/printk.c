@@ -131,7 +131,8 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
  */
 static spinlock_t printk_lock = SPINLOCK_INIT;
 
-int vprintk(const char *fmt, va_list args) {
+static int vprintk_prefixed(const char *message_prefix, const char *fmt,
+                             va_list args) {
   struct cpu_info *cpu = get_cpu_info();
   uint64_t flags;
   int len;
@@ -140,7 +141,13 @@ int vprintk(const char *fmt, va_list args) {
    * through uart_puts (driver lock = whole-message atomicity). */
   if (!cpu) {
     char buf[512];
-    len = vsnprintf(buf, sizeof(buf), fmt, args);
+    size_t prefix_len = message_prefix ? strlen(message_prefix) : 0U;
+    if (prefix_len >= sizeof(buf))
+      prefix_len = sizeof(buf) - 1U;
+    if (prefix_len != 0U)
+      memcpy(buf, message_prefix, prefix_len);
+    buf[prefix_len] = '\0';
+    len = vsnprintf(buf + prefix_len, sizeof(buf) - prefix_len, fmt, args);
     uart_puts("[BOOT] ");
     uart_puts(buf);
     return len;
@@ -162,9 +169,20 @@ int vprintk(const char *fmt, va_list args) {
   if (pfx < 0)
     pfx = 0;
 
-  /* Format the actual message after the prefix */
-  len = vsnprintf(cpu->printk_buf + pfx, sizeof(cpu->printk_buf) - pfx, fmt,
-                  args);
+  /* Optional severity prefix is part of the same atomic UART message. */
+  if (message_prefix != NULL) {
+    size_t message_prefix_len = strlen(message_prefix);
+    size_t available = sizeof(cpu->printk_buf) - (size_t)pfx;
+    if (message_prefix_len >= available)
+      message_prefix_len = available - 1U;
+    memcpy(cpu->printk_buf + pfx, message_prefix, message_prefix_len);
+    pfx += (int)message_prefix_len;
+    cpu->printk_buf[pfx] = '\0';
+  }
+
+  /* Format the actual message after the CPU/severity prefixes. */
+  len = vsnprintf(cpu->printk_buf + pfx, sizeof(cpu->printk_buf) - (size_t)pfx,
+                  fmt, args);
 
   if (len >= (int)(sizeof(cpu->printk_buf) - pfx - 1)) {
     cpu->printk_dropped++;
@@ -183,6 +201,17 @@ int vprintk(const char *fmt, va_list args) {
   spin_unlock_irqrestore(&printk_lock, flags);
 
   return len;
+}
+
+int vprintk(const char *fmt, va_list args) {
+  return vprintk_prefixed(NULL, fmt, args);
+}
+
+int vprintk_level(int level, const char *message_prefix, const char *fmt,
+                  va_list args) {
+  if (console_loglevel < level)
+    return 0;
+  return vprintk_prefixed(message_prefix, fmt, args);
 }
 
 /*
@@ -222,7 +251,7 @@ int printk(const char *fmt, ...) {
  *   3. Prints "*** KERNEL PANIC ***" banner.
  *   4. Formats and prints the caller-supplied message via vprintk.
  *   5. Prints "System halted."
- *   6. Disables all exceptions (arch_local_irq_save_all) and spins forever.
+ *   6. Disables all exceptions (hal_irq_save_all) and spins forever.
  *   7. Marks the spin as unreachable for the compiler.
  *
  * Params:
@@ -239,26 +268,24 @@ int printk(const char *fmt, ...) {
  * + red panic_screen), wait a readable grace (~10 s) then HARD-RESET so an
  * unattended machine self-recovers from a kernel fault.  IRQs stay masked; the
  * grace spins on the free-running hardware counter (it advances without
- * interrupts) — NOT arch_idle(), which would wfi/hlt forever with IRQs off.  If
+ * interrupts) — NOT hal_cpu_idle(), which would wfi/hlt forever with IRQs off.  If
  * the timer frequency is not up yet (very early boot) the grace is skipped and
- * we reset immediately.  arch_reboot() is __noreturn (resets, or halts if reset
+ * we reset immediately.  hal_reboot() is __noreturn (resets, or halts if reset
  * does not take). */
 static void panic_reboot_after_grace(void) __noreturn;
 static void panic_reboot_after_grace(void) {
   uint64_t f;
-  arch_local_irq_save_all(&f);
-  uint64_t freq = arch_timer_get_freq();
+  hal_irq_save_all(&f);
+  uint64_t freq = hal_timer_get_freq();
   if (freq) {
-    uint64_t end = arch_timer_get_count() + freq * 10ULL; /* ~10 seconds */
-    while ((int64_t)(end - arch_timer_get_count()) > 0)
+    uint64_t end = hal_timer_get_count() + freq * 10ULL; /* ~10 seconds */
+    while ((int64_t)(end - hal_timer_get_count()) > 0)
       __asm__ __volatile__("" ::: "memory");
   }
-  arch_reboot();
+  hal_reboot();
 }
 
-void panic(const char *fmt, ...);
-void panic(const char *fmt, ...) {
-  va_list args;
+void vpanic(const char *fmt, va_list args) {
   struct cpu_info *cpu = arch_cpu_info_fault_safe();
   uint32_t cpu_id = cpu ? cpu->cpu_id : UINT32_MAX;
 
@@ -271,7 +298,7 @@ void panic(const char *fmt, ...) {
    * claimed exactly once. */
   if (!__sync_bool_compare_and_swap(&panic_owner_cpu,
                                     PANIC_OWNER_UNCLAIMED, cpu_id))
-    arch_cpu_halt();
+    hal_cpu_halt();
 
   __sync_lock_test_and_set(&panic_flag, 1);
 
@@ -292,9 +319,7 @@ void panic(const char *fmt, ...) {
   input_trace_dump();
 
   fault_printf("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
-  va_start(args, fmt);
   fault_vprintf(fmt, args);
-  va_end(args);
   fault_printf("\n");
   backtrace_here();
   fault_printf("\nSystem halted.\n");
@@ -307,5 +332,12 @@ void panic(const char *fmt, ...) {
   /* DIR-05 #139 watchdog: ~10 s grace to read the panic, then hard reset. */
   panic_reboot_after_grace();
 
+  __builtin_unreachable();
+}
+
+void panic(const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  vpanic(fmt, args);
   __builtin_unreachable();
 }

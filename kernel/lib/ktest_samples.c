@@ -42,7 +42,7 @@
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <drivers/timer.h>
-#ifndef ARCH_AMD64
+#if HAL_HAS_FDT
 #include <kernel/fdt.h>
 #include <kernel/fdt_parser.h>
 #endif
@@ -121,10 +121,10 @@ KTEST_CASE(test_pmm_region_union) {
                0x4000);
     /* Metadata is touched before the dynamic VMM map is installed. */
     KASSERT(pmm_metadata_top() != 0);
-    KASSERT(pmm_metadata_top() <= ARCH_BOOTSTRAP_PHYS_MAP_LIMIT);
+    KASSERT(pmm_metadata_top() <= HAL_BOOTSTRAP_PHYS_MAP_LIMIT);
 }
 
-#ifdef ARCH_AMD64
+#if HAL_TEST_PCI_3G_HOLE
 /* The QEMU 5 GiB layout has the PCI/MMIO aperture at 3-4 GiB. If a different
  * machine reports RAM there, the check is not applicable and is logged; on
  * the QEMU test configuration every PFN in the hole must be RESERVED. */
@@ -210,8 +210,8 @@ KTEST_CASE(test_fdt_page_by_page_search) {
 
     uint64_t physical = virt_to_phys(fdt_search_test_area);
     KASSERT((physical & ((uint64_t)PAGE_SIZE - 1ULL)) == 0);
-    KASSERT(physical >= ARCH_RAM_START);
-    KASSERT(physical <= ARCH_PHYS_MAP_LIMIT - sizeof(fdt_search_test_area));
+    KASSERT(physical >= HAL_RAM_START);
+    KASSERT(physical <= HAL_PHYS_MAP_LIMIT - sizeof(fdt_search_test_area));
 
     size_t found_size = 0;
     uintptr_t found = fdt_find_in_memory(
@@ -242,8 +242,8 @@ KTEST_CASE(test_fdt_page_by_page_search) {
                                   (size_t)original_size);
 
     KASSERT_EQ(legacy_status, FDT_PARSER_OK);
-    KASSERT(legacy_ptr >= ARCH_RAM_START);
-    KASSERT(legacy_ptr < ARCH_RAM_START + (1ULL << 30));
+    KASSERT(legacy_ptr >= HAL_RAM_START);
+    KASSERT(legacy_ptr < HAL_RAM_START + (1ULL << 30));
     KASSERT(legacy_size != 0);
     KASSERT_EQ(legacy_size, activated_size);
     KASSERT_EQ(restore_status, FDT_PARSER_OK);
@@ -514,7 +514,7 @@ KTEST_CASE(test_vmm_protect) {
 
     /* RW+NX → RO+NX */
     KASSERT_EQ(vmm_protect(kernel_pgd, (uint64_t)page, 4096, PAGE_KERNEL_RO), 0);
-#ifdef ARCH_AARCH64
+#if HAL_TEST_VMM_AP_RO
     /* AP[7:6] = 0b10 (EL1 read-only) must now be set */
     KASSERT_EQ(vmm_check_range(kernel_pgd, (uint64_t)page, 4096, PTE_AP_EL1_RO), 0);
 #else
@@ -528,7 +528,7 @@ KTEST_CASE(test_vmm_protect) {
 
     /* back to RW+NX, prove writes work again */
     KASSERT_EQ(vmm_protect(kernel_pgd, (uint64_t)page, 4096, PAGE_KERNEL), 0);
-#ifndef ARCH_AARCH64
+#if HAL_TEST_VMM_RW_BIT
     KASSERT_EQ(vmm_check_range(kernel_pgd, (uint64_t)page, 4096, PTE_RW), 0);
 #endif
     page[1] = 0xCD;

@@ -69,7 +69,7 @@ extern volatile uint64_t jiffies;
  *
  * Only the EPOCH (clk_boot_count) is captured once, lazily, on the first call.
  * The frequency is re-read fresh every call (a cheap inline counter accessor),
- * deliberately NOT latched: on amd64 arch_timer_get_freq() returns a 1 GHz
+ * deliberately NOT latched: on amd64 hal_timer_get_freq() returns a 1 GHz
  * fallback until the TSC is calibrated, and latching that stale value would
  * permanently skew the clock. Reading it live means the clock self-corrects the
  * instant calibration publishes the real frequency. In practice the first call
@@ -87,7 +87,7 @@ static volatile int clk_ready;
  * Used by mono_ns() and by the per-process CPU-time read path, which accumulates
  * raw counts in the scheduler hot path and converts only when queried. */
 uint64_t timer_counts_to_ns(uint64_t counts) {
-  uint64_t freq = arch_timer_get_freq();
+  uint64_t freq = hal_timer_get_freq();
   if (freq == 0)
     freq = 1; /* guard div-by-zero before any frequency source is up */
   return (uint64_t)(((__uint128_t)counts * NSEC_PER_SEC) / freq);
@@ -95,16 +95,16 @@ uint64_t timer_counts_to_ns(uint64_t counts) {
 
 uint64_t mono_ns(void) {
   if (!clk_ready) {
-    clk_boot_count = arch_timer_get_count();
+    clk_boot_count = hal_timer_get_count();
     clk_ready = 1;
   }
-  return timer_counts_to_ns(arch_timer_get_count() - clk_boot_count);
+  return timer_counts_to_ns(hal_timer_get_count() - clk_boot_count);
 }
 
 uint64_t timer_get_ns(void) { return mono_ns(); }
 
 /*
- * timer_percpu_tick - Tier 2 per-CPU clock accounting + rearm (HAL-driven).
+ * timer_percpu_tick_current - Tier 2 per-CPU clock accounting + rearm (HAL-driven).
  *
  * One arch-neutral routine replaces the previously duplicated per-arch drift
  * logic (aarch64 timer_handler, amd64 idt.c). Everything is expressed in
@@ -116,14 +116,15 @@ uint64_t timer_get_ns(void) { return mono_ns(); }
  *      (ticks lost to IRQ latency / a long critical section), reset to
  *      now + interval — the per-CPU "compare against real time to recover lost
  *      time" rule, instead of replaying a burst.
- *   4. Reprogram the compare via arch_timer_set_compare(): a real reprogram on
+ *   4. Reprogram the compare via hal_timer_set_compare(): a real reprogram on
  *      one-shot timers (aarch64 CNTV_CVAL), a no-op on periodic timers (amd64
  *      LAPIC), so this serves both arches unchanged.
  *
  * Locking: touches only this CPU's cpu_info; no lock. IRQ context: YES.
  */
-void timer_percpu_tick(struct cpu_info *cpu) {
-  uint64_t freq = arch_timer_get_freq();
+uint64_t timer_percpu_tick_current(void) {
+  struct cpu_info *cpu = get_cpu_info();
+  uint64_t freq = hal_timer_get_freq();
   uint64_t interval = freq / HZ;
   uint64_t remainder = freq % HZ;
 
@@ -134,15 +135,16 @@ void timer_percpu_tick(struct cpu_info *cpu) {
   }
 
   cpu->next_tick_target += interval;
-  uint64_t now = arch_timer_get_count();
+  uint64_t now = hal_timer_get_count();
   if (cpu->next_tick_target <= now)
     cpu->next_tick_target = now + interval;
 
-  arch_timer_set_compare(cpu->next_tick_target);
+  hal_timer_set_compare(cpu->next_tick_target);
+  return cpu->next_tick_target;
 }
 
 /*
- * timer_percpu_arm - seed this CPU's tick schedule on timer bring-up.
+ * timer_percpu_arm_current - seed this CPU's tick schedule on timer bring-up.
  *
  * Sets next_tick_target one interval out from the live counter, clears the
  * fractional accumulator, and programs the first compare via the HAL. Called
@@ -150,11 +152,13 @@ void timer_percpu_tick(struct cpu_info *cpu) {
  * amd64 lapic_timer_setup); the arch path still owns enabling the timer and
  * unmasking its IRQ.
  */
-void timer_percpu_arm(struct cpu_info *cpu) {
-  uint64_t freq = arch_timer_get_freq();
-  cpu->next_tick_target = arch_timer_get_count() + freq / HZ;
+uint64_t timer_percpu_arm_current(void) {
+  struct cpu_info *cpu = get_cpu_info();
+  uint64_t freq = hal_timer_get_freq();
+  cpu->next_tick_target = hal_timer_get_count() + freq / HZ;
   cpu->tick_error_acc = 0;
-  arch_timer_set_compare(cpu->next_tick_target);
+  hal_timer_set_compare(cpu->next_tick_target);
+  return cpu->next_tick_target;
 }
 
 /* Weak stubs for arch-specific timer functions (can be overridden) */
@@ -178,7 +182,7 @@ __attribute__((weak)) void timer_init_percpu(void) {}
  * IRQ context: yes — runs inside the timer interrupt.
  * Returns: the (possibly modified) pt_regs pointer.
  */
-__attribute__((weak)) struct pt_regs *timer_handler(struct pt_regs *regs) {
+__attribute__((weak)) hal_frame_t *timer_handler(hal_frame_t *regs) {
   return regs;
 }
 
@@ -199,11 +203,11 @@ __attribute__((weak)) struct pt_regs *timer_handler(struct pt_regs *regs) {
  * Returns: the pt_regs pointer returned by schedule() (may differ from regs
  *          if a context switch occurs).
  */
-struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
+hal_frame_t *kernel_timer_tick(hal_frame_t *regs) {
   /* Halt this CPU if another CPU panicked */
   if (panic_flag) {
-    arch_timer_control(0);
-    arch_cpu_halt();
+    hal_timer_control(0);
+    hal_cpu_halt();
   }
 
   struct cpu_info *cpu = get_cpu_info();

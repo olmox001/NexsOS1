@@ -24,6 +24,8 @@ extern int console_loglevel;
 /* Core printing functions */
 int printk(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 int vprintk(const char *fmt, va_list args);
+int vprintk_level(int level, const char *message_prefix, const char *fmt,
+                  va_list args);
 int snprintf(char *buf, size_t size, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list args);
@@ -71,6 +73,7 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args);
   } while (0)
 
 /* Panic - halt the system */
+void vpanic(const char *fmt, va_list args) __noreturn;
 void panic(const char *fmt, ...) __noreturn
     __attribute__((format(printf, 1, 2)));
 

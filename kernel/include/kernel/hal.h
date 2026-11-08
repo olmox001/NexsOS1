@@ -3,7 +3,8 @@
 
 #include <kernel/nx_contract.h>
 #include <kernel/types.h>
-#include <kernel/hal_unified.h>
+#include <hal/config.h>
+#include <hal/core.h>
 #include <kernel/hal_device.h>
 #include <kernel/hal_platform.h>
 
@@ -54,21 +55,14 @@ void arch_timer_init(void);
 
 /* Helper for automatic resource type detection */
 static inline hal_res_type_t hal_auto_type(uintptr_t addr) {
-#ifdef ARCH_AMD64
-    if (addr < 0x10000) return HAL_RES_PORT;
-#else
-    (void)addr;
-#endif
+    if (HAL_HAS_IOPORT && addr < 0x10000)
+        return HAL_RES_PORT;
     return HAL_RES_MMIO;
 }
 
 static inline hal_bus_type_t hal_auto_bus(uintptr_t addr) {
-#ifdef ARCH_AMD64
-    if (addr < 0x10000) return HAL_BUS_TYPE_PCI;
-#else
-    (void)addr;
-#endif
-    /* Default to platform if not a small port on x86 */
+    if (HAL_HAS_IOPORT && addr < 0x10000)
+        return HAL_BUS_TYPE_PCI;
     return HAL_BUS_TYPE_PLATFORM;
 }
 

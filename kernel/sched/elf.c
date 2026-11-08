@@ -80,9 +80,9 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
 
   /* 2. Verify Header */
   if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
-      ehdr.e_ident[EI_CLASS] != ELFCLASS64 || ehdr.e_machine != ARCH_TYPE) {
+      ehdr.e_ident[EI_CLASS] != ELFCLASS64 || ehdr.e_machine != HAL_ELF_MACHINE) {
     pr_err("ELF: Invalid format (Machine: 0x%x, Expected: 0x%x)\n", 
-           ehdr.e_machine, ARCH_TYPE);
+           ehdr.e_machine, HAL_ELF_MACHINE);
     return -1;
   }
 
@@ -194,7 +194,7 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
 
         /* Clean DC to PoU and invalid IC for executable pages */
         if (phdr.p_flags & PF_X) {
-          arch_cache_sync_icache(kaddr, 4096);
+          hal_cache_sync_icache(kaddr, 4096);
         }
       }
     }
@@ -244,10 +244,10 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
             proc->pid, (void*)proc->context, proc->context->elr,
        proc->context->sp_el0); */
 
-    memset(proc->context, 0, sizeof(struct pt_regs));
-    pt_regs_init_user_task(proc->context, proc->user_entry, proc->user_stack);
+    memset(proc->context, 0, hal_frame_size());
+    hal_frame_init_user_task(proc->context, proc->user_entry, proc->user_stack);
     /* main(argc, argv) — argv_uva is 0 (NULL) when no arguments were given. */
-    pt_regs_set_user_args(proc->context, (uint64_t)argc, argv_uva);
+    hal_frame_set_user_args(proc->context, (uint64_t)argc, argv_uva);
 
     /* pr_info("ELF: After init - PID %d\n", proc->pid);
     pr_info("ELF:   ELR=0x%lx\n", proc->context->elr);
@@ -255,14 +255,14 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
     pr_info("ELF:   SPSR=0x%lx\n", proc->context->spsr); */
 
     /* CRITICAL: Flush the register frame to PoC so the scheduled CPU sees it */
-    arch_cache_clean_range(proc->context, sizeof(struct pt_regs));
+    hal_cache_clean(proc->context, hal_frame_size());
   } else {
     pr_err("%s", "ELF: proc->context is NULL!\n");
   }
 
   /* Ensure context is visible before enqueueing */
-  arch_mb();
-  arch_isb();
+  hal_mb();
+  hal_isb();
 
   return 0;
 }

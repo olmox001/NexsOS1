@@ -2,6 +2,7 @@
 #define _KERNEL_CPU_H
 
 #ifndef __ASSEMBLER__
+#include <hal/frame.h>
 #include <kernel/nx_contract.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
@@ -22,7 +23,7 @@ struct cpu_info {
   uint64_t tick_error_acc;
   uint64_t tick_count;
   /* Raw hardware-counter value at which the current task last started running on
-   * this CPU; schedule() charges (arch_timer_get_count() - sched_run_count) to
+   * this CPU; schedule() charges (hal_timer_get_count() - sched_run_count) to
    * the outgoing task's cpu_time_counts (Tier 3 per-process CPU time, converted
    * to ns only on read — docs/TIMER-MODEL.md §4). */
   uint64_t sched_run_count;
@@ -91,7 +92,7 @@ int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) NX
 void smp_ack_boot(uint32_t cpu);
 
 /* These are now provided by arch.h HAL macros/functions */
-#include <kernel/hal_unified.h>
+#include <hal/core.h>
 #include <kernel/arch.h>
 
 #define cpu_id() hal_cpu_id()
@@ -100,11 +101,10 @@ void smp_ack_boot(uint32_t cpu);
 #define local_irq_disable() hal_irq_disable()
 #define local_irq_save() hal_irq_save_val()
 #define local_irq_restore(flags) hal_irq_restore(flags)
-struct pt_regs; /* forward decl */
-struct pt_regs *serror_handler(struct pt_regs *frame);
+hal_frame_t *serror_handler(hal_frame_t *frame);
 /* aarch64 coverage handlers (exception.S, Phase A step 13) */
-struct pt_regs *fiq_handler(struct pt_regs *frame);
-struct pt_regs *aarch32_handler(struct pt_regs *frame);
+hal_frame_t *fiq_handler(hal_frame_t *frame);
+hal_frame_t *aarch32_handler(hal_frame_t *frame);
 #endif
 
 #endif /* _KERNEL_CPU_H */

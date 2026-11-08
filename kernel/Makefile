@@ -21,23 +21,25 @@ ifeq ($(findstring amd64,$(ARCH)),amd64)
   override ARCH := amd64
   CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
   ARCH_CFLAGS := -DARCH_AMD64 -mno-red-zone -mcmodel=large
-  ARCH_DIR := ./arch/amd64
+  HAL_ARCH_DIR := HAL/arch/amd64
   QEMU := qemu-system-x86_64
 else ifeq ($(findstring aarch64,$(ARCH)),aarch64)
   override ARCH := aarch64
   CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
   ARCH_CFLAGS := -DARCH_AARCH64 -mcpu=cortex-a57
-  ARCH_DIR := ./arch/aarch64
+  HAL_ARCH_DIR := HAL/arch/aarch64
   QEMU := qemu-system-aarch64
 else
   $(error ARCH must be amd64 or aarch64)
 endif
 
 KERNEL_DIR := .
-BOOT_DIR := $(ARCH_DIR)/boot
+HAL_ROOT := HAL
+BOOT_DIR := $(HAL_ARCH_DIR)/boot
 BUILD_DIR := $(BUILD_ROOT)/$(ARCH)
 CC := $(CROSS_COMPILE)gcc
 AS := $(CROSS_COMPILE)as
+AR := $(CROSS_COMPILE)ar
 LD := $(CROSS_COMPILE)ld
 OBJCOPY := $(CROSS_COMPILE)objcopy
 OBJDUMP := $(CROSS_COMPILE)objdump
@@ -46,7 +48,7 @@ COMMON_FLAGS := -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
   -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin \
   -nostdlib -nostartfiles -fno-common -fstack-protector-strong \
   -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DNX_STRICT
-KERNEL_INCLUDE := -I$(KERNEL_DIR)/include -I$(ARCH_DIR)/include \
+KERNEL_INCLUDE := -I$(HAL_ROOT) -I$(KERNEL_DIR)/include -I$(HAL_ROOT)/include -I$(HAL_ARCH_DIR)/include \
   -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api
 KERNEL_HARDEN_FLAGS := -Wundef -Wformat=2 -Wcast-align -Wpointer-arith \
   -Wswitch-enum -Wdouble-promotion -Wvla -Wmissing-declarations
@@ -58,14 +60,15 @@ KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 BOOTLOADER_ELF := $(BUILD_DIR)/bootloader.elf
 BOOTLOADER_BIN := $(BUILD_DIR)/bootloader.bin
 LDFLAGS_BOOT := -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
-LDFLAGS_KERN := -nostdlib -static -z noexecstack -T $(ARCH_DIR)/kernel.ld \
+LDFLAGS_KERN := -nostdlib -static -z noexecstack -T $(HAL_ARCH_DIR)/kernel.ld \
   -Map $(BUILD_DIR)/kernel.map
 
 include build.mk
 -include $(DEPS)
 
-.PHONY: all check check-contracts setup-deps clean run boot help
+.PHONY: all hal check check-contracts setup-deps clean run boot help
 all: kernel bootloader
+hal: $(HAL_LIB)
 
 check: check-contracts
 	@set -eu; for tool in "$(CC)" "$(LD)" "$(OBJCOPY)" "$(CROSS_COMPILE)nm"; do \
@@ -129,4 +132,4 @@ boot: run
 
 help:
 	@echo "NX-CORE standalone: make [ARCH=amd64|aarch64] all"
-	@echo "Targets: kernel bootloader check run/boot clean"
+	@echo "Targets: hal kernel bootloader check run/boot clean"

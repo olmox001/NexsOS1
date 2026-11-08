@@ -13,7 +13,7 @@
 #include <kernel/drivers.h>
 #include <kernel/ext4.h>
 #include <kernel/fdt.h>
-#ifndef ARCH_AMD64
+#if HAL_BOOT_ABI_FDT
 #include <kernel/boot_info.h>
 #endif
 #include <kernel/gpt.h>
@@ -38,11 +38,7 @@
 #define KERNEL_VERSION_PATCH 5
 #define KERNEL_VERSION_BUILD 5
 
-#ifdef ARCH_AMD64
-#define KERNEL_NAME "AMD64 NexsOS1"
-#else
-#define KERNEL_NAME "AArch64 NexsOS1"
-#endif
+#define KERNEL_NAME "NexsOS1/" HAL_PLATFORM_NAME
 
 /* External symbols */
 extern void secondary_cpu_entry(void); /* Assembly wrapper for AMD64 */
@@ -94,22 +90,12 @@ static void kernel_stage_k2_k3(void);
 /*
  * Kernel main entry point
  */
-/* Forward declaration for kernel_main */
-#ifdef ARCH_AMD64
-void kernel_main(uint64_t magic, uint64_t mbi_ptr);
-#else
-void kernel_main(uint64_t x0_arg, uint64_t x1_arg);
-#endif
+/* Stable HAL handoff entry: provider assigns meaning to the two boot words. */
+void kernel_main(uint64_t boot_arg0, uint64_t boot_arg1);
 extern void timer_init_percpu(void);
 
-/* Kernel entry point - receives multiboot info pointer from bootloader */
-#ifdef ARCH_AMD64
-void kernel_main(uint64_t magic, uint64_t mbi_ptr) {
-  kernel_stage_k1_hardware(magic, mbi_ptr);
-#else
-void kernel_main(uint64_t x0_arg, uint64_t x1_arg) {
-  kernel_stage_k1_hardware(x0_arg, x1_arg);
-#endif
+void kernel_main(uint64_t boot_arg0, uint64_t boot_arg1) {
+  kernel_stage_k1_hardware(boot_arg0, boot_arg1);
   kernel_stage_k2_k3();
 }
 
@@ -127,7 +113,7 @@ void kernel_main(uint64_t x0_arg, uint64_t x1_arg) {
  * else concurrently touching arch/platform globals.
  */
 static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
-#ifdef ARCH_AMD64
+#if HAL_BOOT_ABI_MULTIBOOT2
   /* For AMD64, bootloader passes mb_magic via RDI, mb_info_ptr via RSI */
   extern uint64_t mb_info_ptr;
   extern uint64_t mb_magic;
@@ -149,7 +135,7 @@ static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
   pr_info("%s", "Initializing CPU...\n");
   cpu_init();
 
-#ifndef ARCH_AMD64
+#if HAL_BOOT_ABI_FDT
   /* Validate the handoff record before touching the physical DTB. */
   if (boot_info.magic != BOOT_INFO_MAGIC ||
       boot_info.version != BOOT_INFO_VERSION ||
@@ -349,7 +335,7 @@ static void init_memory_core(void) {
   /* Emit the exact map consumed by PMM.  Report usable sum separately from
    * highest-end span: address holes and reserved overlays are not RAM. */
   uint64_t boot_usable_bytes = 0;
-  uint64_t boot_highest_usable_end = ARCH_RAM_START;
+  uint64_t boot_highest_usable_end = HAL_RAM_START;
   uint64_t boot_highest_reserved_end = 0;
   size_t boot_reserved_regions = 0;
   for (size_t i = 0; i < count; i++) {
@@ -369,20 +355,20 @@ static void init_memory_core(void) {
         boot_highest_reserved_end = end;
     }
   }
-  if (boot_highest_usable_end <= ARCH_RAM_START)
+  if (boot_highest_usable_end <= HAL_RAM_START)
     panic("%s", "BOOT-MEM: no usable RAM above architecture memory base");
   boot_highest_usable_end &= ~((uint64_t)PAGE_SIZE - 1ULL);
   boot_usable_bytes = pmm_calculate_usable_bytes(
-      regions, count, ARCH_RAM_START, boot_highest_usable_end);
+      regions, count, HAL_RAM_START, boot_highest_usable_end);
   if (boot_usable_bytes == 0)
     panic("%s", "BOOT-MEM: usable RAM union is empty after page alignment");
 
   pr_info("BOOT-MEM: regions=%zu usable=%lu MiB usable_span=%lu MiB "
           "base=0x%lx reserved_descriptors=%zu highest_reserved_end=0x%lx\n",
           count, (unsigned long)(boot_usable_bytes / (1024UL * 1024UL)),
-          (unsigned long)((boot_highest_usable_end - ARCH_RAM_START) /
+          (unsigned long)((boot_highest_usable_end - HAL_RAM_START) /
                           (1024UL * 1024UL)),
-          (unsigned long)ARCH_RAM_START, boot_reserved_regions,
+          (unsigned long)HAL_RAM_START, boot_reserved_regions,
           (unsigned long)boot_highest_reserved_end);
 
   pmm_early_init(regions, count);

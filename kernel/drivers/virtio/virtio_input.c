@@ -14,9 +14,6 @@
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 
-#ifdef ARCH_AMD64
-#include <drivers/pci.h>
-#endif
 
 #define MAX_INPUT_DEVS 2
 #define INPUT_QSIZE 16
@@ -144,9 +141,9 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
    * VGPU-DMA-02/VBLK-DMA-02: without this, whether the device's very
    * first read of this queue sees valid descriptors depends on unrelated
    * cache state on real hardware, and is always fine under QEMU/KVM. */
-  arch_cache_clean_range((void *)dev->desc, INPUT_QSIZE * sizeof(*dev->desc));
-  arch_cache_clean_range((void *)dev->avail, sizeof(*dev->avail));
-  arch_mb();
+  hal_cache_clean((void *)dev->desc, INPUT_QSIZE * sizeof(*dev->desc));
+  hal_cache_clean((void *)dev->avail, sizeof(*dev->avail));
+  hal_mb();
 
   /* Driver OK */
   v_write32(dev, VIRTIO_MMIO_STATUS,
@@ -205,7 +202,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
      * unrelated cache state, never reproducible under QEMU/KVM's emulated
      * (always-coherent) memory: exactly the "works only after moving the
      * mouse enough times" symptom this device's IRQ was implicated in. */
-    arch_cache_invalidate_range((void *)dev->used, sizeof(*dev->used));
+    hal_cache_invalidate((void *)dev->used, sizeof(*dev->used));
 
     while (dev->last_used_idx != dev->used->idx) {
       struct vring_used_elem *e =
@@ -216,7 +213,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
        * just wrote the actual event payload (type/code/value) into — a
        * separate cache line from dev->used, and just as capable of being
        * stale in this CPU's cache. */
-      arch_cache_invalidate_range((void *)&dev->events[id],
+      hal_cache_invalidate((void *)&dev->events[id],
                                   sizeof(dev->events[id]));
       struct virtio_input_event *evt = &dev->events[id];
 
@@ -236,13 +233,13 @@ static void virtio_input_handler(uint32_t irq, void *data) {
      * descriptor slots are free again (recycled just above); clean it so
      * those writes are actually visible to the device's next DMA read,
      * for the same reason as virtio_gpu.c's virtio_gpu_send()
-     * (VGPU-DMA-02) — arch_mb() alone does not push a dirty cache line
+     * (VGPU-DMA-02) — hal_mb() alone does not push a dirty cache line
      * out to physical RAM. Done once per IRQ, after the recycle loop,
      * instead of per-iteration: avail is only consumed by the device on
      * the v_notify() below, not before. */
     if (processed_count > 0) {
-      arch_cache_clean_range((void *)dev->avail, sizeof(*dev->avail));
-      arch_mb();
+      hal_cache_clean((void *)dev->avail, sizeof(*dev->avail));
+      hal_mb();
     }
 
     if (status != 0) {

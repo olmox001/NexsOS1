@@ -56,17 +56,17 @@ EFI_CFLAGS=(
 )
 
 "$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11 \
-    -c "$ROOT/arch/aarch64/boot/uefi/efi_stub.c" \
+    -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_stub.c" \
     -o "$BUILD/efi_stub.obj"
 "$HOST_CLANG" --target=aarch64-pc-windows-msvc -ffreestanding \
     -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables \
-    -c "$ROOT/arch/aarch64/boot/uefi/efi_handoff.S" \
+    -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_handoff.S" \
     -o "$BUILD/efi_handoff.obj"
 (
     cd "$ROOT"
     "$HOST_CLANG" --target=aarch64-pc-windows-msvc -ffreestanding \
         -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables \
-        -c arch/aarch64/boot/uefi/efi_payload.S \
+        -c HAL/arch/aarch64/boot/uefi/efi_payload.S \
         -o "$BUILD/efi_payload.obj"
 )
 "$LLD_LINK" /subsystem:efi_application /entry:efi_main /nodefaultlib \

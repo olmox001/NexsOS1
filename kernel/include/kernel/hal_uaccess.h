@@ -18,7 +18,7 @@
  * It was not treated as one.  `arch_copy_string_from_user` had no HAL contract
  * at all: <kernel/vmm.h> macro-aliased it, and kernel/core/syscall_dispatch.c
  * re-declared it by hand as a local `extern`.  So the two implementations
- * (kernel/arch/aarch64/cpu/syscall.c, kernel/arch/amd64/mm/uaccess.c) had
+ * (kernel/HAL/arch/aarch64/cpu/syscall.c, kernel/HAL/arch/amd64/mm/uaccess.c) had
  * nothing binding them to the same semantics, and they drifted apart in
  * precisely the way an unwritten contract always does.  Naming the contract is
  * the fix; the truncation problem below is what made the absence visible.

@@ -1,5 +1,5 @@
 /* kernel/drivers/ps2/ps2.c */
-#include <arch/arch.h> // ← Questo include inb/outb
+#include <hal/core.h>
 #include <drivers/keyboard.h>
 #include <drivers/ps2.h>
 #include <drivers/virtio_input.h>
@@ -7,7 +7,6 @@
 #include <kernel/irq.h>
 #include <kernel/printk.h>
 
-#ifdef ARCH_AMD64
 
 /* The 8259 PIC remaps IRQ n -> IDT vector 32+n (pic_init).  irq_register(),
  * irq_dispatch() and pic_chip_enable() all key on the VECTOR, not the bare
@@ -19,13 +18,13 @@
  * naive wait would never progress. Bring-up must degrade, never block. */
 static int ps2_wait_write(void) {
   int ok;
-  poll_until(ok, !(inb(0x64) & 0x02), 100000);
+  poll_until(ok, !(hal_inb(0x64) & 0x02), 100000);
   return ok ? 0 : -1;
 }
 
 static int ps2_wait_read(void) {
   int ok;
-  poll_until(ok, inb(0x64) & 0x01, 100000);
+  poll_until(ok, hal_inb(0x64) & 0x01, 100000);
   return ok ? 0 : -1;
 }
 
@@ -33,21 +32,21 @@ static int ps2_wait_read(void) {
 static int ps2_read_data(uint8_t *out) {
   if (ps2_wait_read() != 0)
     return -1;
-  *out = inb(0x60);
+  *out = hal_inb(0x60);
   return 0;
 }
 
 static int ps2_write_cmd(uint8_t cmd) {
   if (ps2_wait_write() != 0)
     return -1;
-  outb(0x64, cmd);
+  hal_outb(0x64, cmd);
   return 0;
 }
 
 static int ps2_write_data(uint8_t data) {
   if (ps2_wait_write() != 0)
     return -1;
-  outb(0x60, data);
+  hal_outb(0x60, data);
   return 0;
 }
 
@@ -67,7 +66,7 @@ static uint8_t ps2_mouse_cmd(uint8_t cmd) {
 static void ps2_keyboard_handler(uint32_t irq, void *data) {
   (void)irq;
   (void)data;
-  uint8_t scancode = inb(0x60);
+  uint8_t scancode = hal_inb(0x60);
 
   uint16_t code = scancode & 0x7F;
   int pressed = (scancode & 0x80) == 0;
@@ -87,7 +86,7 @@ static void ps2_mouse_handler(uint32_t irq, void *data) {
   (void)irq;
   (void)data;
 
-  uint8_t byte = inb(0x60);
+  uint8_t byte = hal_inb(0x60);
 
   /* Packet resync: packet[0] (status) always has bit 3 set. If the byte we
    * expect as the first one doesn't, the stream is misaligned (a leftover init
@@ -123,13 +122,18 @@ static void ps2_mouse_handler(uint32_t irq, void *data) {
 }
 
 void ps2_init(void) {
+  if (!hal_ioport_available()) {
+    pr_info("%s", "PS/2: HAL provider has no port-I/O transport — skipping\n");
+    return;
+  }
+
   pr_info("%s", "PS/2: Initializing controller...\n");
 
   /* Non-blocking presence gate. On machines without an 8042 (many amd64 VMs,
    * e.g. UTM on Apple silicon) the status port floats to 0xFF; the old
-   * unbounded "while (inb(0x64) & 1) inb(0x60);" flush then spun forever and
+   * unbounded "while (hal_inb(0x64) & 1) hal_inb(0x60);" flush then spun forever and
    * hung the boot. Detect the absent controller and skip cleanly. */
-  if (inb(0x64) == 0xFF) {
+  if (hal_inb(0x64) == 0xFF) {
     pr_info("%s", "PS/2: no controller present (0xFF) — skipping\n");
     return;
   }
@@ -138,8 +142,8 @@ void ps2_init(void) {
   ps2_write_cmd(0xA7); /* disable mouse (AUX) port during setup */
 
   /* Bounded output-buffer flush (this loop was the UTM hang). */
-  for (int i = 0; i < 16 && (inb(0x64) & 0x01); i++)
-    (void)inb(0x60);
+  for (int i = 0; i < 16 && (hal_inb(0x64) & 0x01); i++)
+    (void)hal_inb(0x60);
 
   /* Controller self-test: 0xAA must answer 0x55. Any other reply — or a read
    * timeout — means there is no usable controller, so skip non-blocking. */
@@ -184,8 +188,8 @@ void ps2_init(void) {
 
   /* Drain bytes the mouse queued while we were configuring it so the IRQ handler
    * starts on a packet boundary (the handler also resyncs on the status bit). */
-  for (int i = 0; i < 16 && (inb(0x64) & 0x01); i++)
-    (void)inb(0x60);
+  for (int i = 0; i < 16 && (hal_inb(0x64) & 0x01); i++)
+    (void)hal_inb(0x60);
 
   /* Register keyboard (IRQ 1) at vector 33 and mouse (IRQ 12) at vector 44. */
   if (irq_register(PIC_VECTOR_BASE + 1, ps2_keyboard_handler, NULL) != 0)
@@ -195,10 +199,3 @@ void ps2_init(void) {
 
   pr_info("%s", "PS/2: Keyboard + Mouse ready (IRQ 1/12 -> vec 33/44)\n");
 }
-
-#else
-
-/* Stub per AArch64 */
-void ps2_init(void) { /* Do nothing on AArch64 */ }
-
-#endif

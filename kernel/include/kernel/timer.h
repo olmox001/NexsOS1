@@ -1,9 +1,10 @@
 #ifndef _KERNEL_TIMER_H
 #define _KERNEL_TIMER_H
 
+#include <hal/frame.h>
 #include <kernel/sched.h>
 
 void timer_init(void);
-struct pt_regs *timer_handler(struct pt_regs *regs);
+hal_frame_t *timer_handler(hal_frame_t *regs);
 
 #endif

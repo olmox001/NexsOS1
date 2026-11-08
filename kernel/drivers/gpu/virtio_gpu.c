@@ -501,7 +501,7 @@ static int vgpu_reset_device(struct virtio_gpu_state *priv) {
   for (uint32_t timeout = 0; timeout < 1000000u; timeout++) {
     if (virtio_read_reg(priv->handle, VIRTIO_MMIO_STATUS) == 0)
       return 0;
-    arch_yield();
+    hal_cpu_yield();
   }
   return -1;
 }
@@ -577,7 +577,7 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
    * without discarding it first, old_idx can be read from stale cache
    * instead of the real value the device last wrote, corrupting every
    * subsequent "did the device respond yet" comparison for this call. */
-  arch_cache_invalidate_range((void *)used, sizeof(*used));
+  hal_cache_invalidate((void *)used, sizeof(*used));
   uint16_t old_idx = *idx_ptr;
 
   desc[1].addr = virt_to_phys(resp);
@@ -594,7 +594,7 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
    * pmm_alloc_pages_dma(), which cache-cleans them ONLY once, at
    * allocation.  Every write this function makes to desc[]/avail (and
    * every write the caller made to 'cmd' just before calling this) can sit
-   * in this CPU's cache indefinitely: arch_mb()/mfence orders memory
+   * in this CPU's cache indefinitely: hal_mb()/mfence orders memory
    * operations already visible to the coherency system, it does NOT push
    * a dirty cache line out to physical RAM.  Under QEMU/KVM there is no
    * real cache the device could see stale data in (the "device" is
@@ -603,10 +603,10 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
    * depends on unrelated platform cache/DMA-coherency behaviour.  Cleaning
    * cmd/desc/avail here, unconditionally, on every send, removes that
    * dependency instead of assuming it away. */
-  arch_cache_clean_range(cmd, cmd_len);
-  arch_cache_clean_range((void *)desc, 2 * sizeof(*desc));
-  arch_cache_clean_range((void *)avail, sizeof(*avail));
-  arch_mb();
+  hal_cache_clean(cmd, cmd_len);
+  hal_cache_clean((void *)desc, 2 * sizeof(*desc));
+  hal_cache_clean((void *)avail, sizeof(*avail));
+  hal_mb();
 
   virtio_notify(priv->handle, 0);
 
@@ -615,7 +615,7 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
    * loads. On real hardware this is a tight-loop bus/cache-coherency hog
    * that competes with the device's own DMA write to that same line —
    * never visible under QEMU/KVM's emulated memory, where there is no real
-   * bus contention. arch_yield() (PAUSE/YIELD/WFE depending on arch) is a
+   * bus contention. hal_cpu_yield() (PAUSE/YIELD/WFE depending on arch) is a
    * no-op for correctness but lets the core back off between polls,
    * matching how every other busy-wait in this tree is written.
    *
@@ -628,10 +628,10 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
    * intermittently. */
   uint64_t timeout = 200000000;
   while (timeout > 0) {
-    arch_cache_invalidate_range((void *)used, sizeof(*used));
+    hal_cache_invalidate((void *)used, sizeof(*used));
     if (*idx_ptr != old_idx)
       break;
-    arch_yield();
+    hal_cpu_yield();
     timeout--;
   }
 
@@ -652,7 +652,7 @@ static int virtio_gpu_send(struct virtio_gpu_state *priv, void *cmd,
    * stale-cache hazard as 'used' above, for the response payload itself
    * (e.g. GET_DISPLAY_INFO's mode list, read by vgpu_query_display_info()
    * immediately after this call returns). */
-  arch_cache_invalidate_range(resp, resp_len);
+  hal_cache_invalidate(resp, resp_len);
 
   virtio_read_reg(priv->handle, VIRTIO_MMIO_INTERRUPT_ACK);
   return 0;

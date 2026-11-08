@@ -2,7 +2,7 @@
 #define _KERNEL_HAL_DEVICE_H
 
 #include <kernel/types.h>
-#include <kernel/hal_unified.h>
+#include <hal/core.h>
 #include <kernel/memlayout.h>
 
 /**

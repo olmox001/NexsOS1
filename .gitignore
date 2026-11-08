@@ -17,3 +17,5 @@ tools/__pycache__/nxadb.cpython-314.pyc
 tools/__pycache__/nxqemu.cpython-314.pyc
 tools/__pycache__/nxrun.cpython-314.pyc
 docs/report/logs
+kernel/HAL/build/
+kernel/HAL/tests/build/

@@ -18,7 +18,7 @@
 uint64_t boot_fdt_ptr = 0;
 uint64_t boot_fdt_size = 0;
 
-#ifndef ARCH_AMD64
+#if HAL_HAS_FDT
 
 static struct fdt_blob_view active_fdt;
 static int active_fdt_valid;
@@ -31,9 +31,9 @@ static uint32_t fdt_read_be32(const uint8_t *p) {
 }
 
 static int fdt_probe_physical_range(uint64_t base, uint64_t length) {
-    if (length == 0 || base < ARCH_RAM_START ||
-        base >= ARCH_PHYS_MAP_LIMIT ||
-        length > ARCH_PHYS_MAP_LIMIT - base)
+    if (length == 0 || base < HAL_RAM_START ||
+        base >= HAL_PHYS_MAP_LIMIT ||
+        length > HAL_PHYS_MAP_LIMIT - base)
         return -1;
 
     uint64_t end = base + length;
@@ -57,8 +57,8 @@ int fdt_init(uintptr_t base, size_t available_length) {
     uint64_t physical = (uint64_t)base;
     if (physical == 0 || (physical & 7ULL) != 0 ||
         available_length == 0 ||
-        physical >= ARCH_PHYS_MAP_LIMIT ||
-        (uint64_t)available_length > ARCH_PHYS_MAP_LIMIT - physical ||
+        physical >= HAL_PHYS_MAP_LIMIT ||
+        (uint64_t)available_length > HAL_PHYS_MAP_LIMIT - physical ||
         available_length > FDT_LEGACY_MAX_SIZE) {
         pr_err("FDT: invalid physical span base=0x%lx length=0x%lx\n",
                physical, (uint64_t)available_length);
@@ -97,8 +97,8 @@ uintptr_t fdt_find_in_memory(uintptr_t start, uintptr_t end,
 
     uint64_t scan_start = (uint64_t)start;
     uint64_t scan_end = (uint64_t)end;
-    if (scan_start < ARCH_RAM_START || scan_start >= scan_end ||
-        scan_end - scan_start < 8ULL || scan_end > ARCH_PHYS_MAP_LIMIT)
+    if (scan_start < HAL_RAM_START || scan_start >= scan_end ||
+        scan_end - scan_start < 8ULL || scan_end > HAL_PHYS_MAP_LIMIT)
         return 0;
 
     pr_warn("FDT: legacy page search [0x%lx, 0x%lx)\n",
@@ -166,9 +166,9 @@ int fdt_init_legacy(uintptr_t base, size_t *actual_length) {
         *actual_length = 0;
 
     if (base == 0) {
-        uint64_t scan_start = (uint64_t)ARCH_RAM_START;
+        uint64_t scan_start = (uint64_t)HAL_RAM_START;
         uint64_t scan_end = scan_start + FDT_LEGACY_SCAN_SIZE;
-        if (scan_end < scan_start || scan_end > ARCH_PHYS_MAP_LIMIT)
+        if (scan_end < scan_start || scan_end > HAL_PHYS_MAP_LIMIT)
             return FDT_PARSER_INVALID;
 
         size_t found_size = 0;
@@ -186,7 +186,7 @@ int fdt_init_legacy(uintptr_t base, size_t *actual_length) {
 
     uint64_t physical = (uint64_t)base;
     if ((physical & 7ULL) != 0 ||
-        physical >= ARCH_PHYS_MAP_LIMIT ||
+        physical >= HAL_PHYS_MAP_LIMIT ||
         fdt_probe_physical_range(physical, 8U) != 0)
         return FDT_PARSER_INVALID;
 
@@ -196,7 +196,7 @@ int fdt_init_legacy(uintptr_t base, size_t *actual_length) {
 
     uint32_t total_size = fdt_read_be32(header + 4U);
     if (total_size < 36U || total_size > FDT_LEGACY_MAX_SIZE ||
-        (uint64_t)total_size > ARCH_PHYS_MAP_LIMIT - physical)
+        (uint64_t)total_size > HAL_PHYS_MAP_LIMIT - physical)
         return FDT_PARSER_INVALID;
 
     pr_warn("FDT: legacy pointer-only adapter at 0x%lx; "

@@ -38,7 +38,7 @@
  *   MM-VMM-05  RESOLVED (Phase B2): unmap paths now satisfy the cross-CPU
  *                                 shootdown contract — AArch64 in hardware
  *                                 (broadcast IS TLBI), amd64 via LAPIC IPI
- *                                 (kernel/arch/amd64/mm/tlb.c); teardown
+ *                                 (kernel/HAL/arch/amd64/mm/tlb.c); teardown
  *                                 broadcasts one full shootdown before
  *                                 frames are recycled.
  *   MM-VMM-06  (W2 REFINE)       Generic map path is 4KB-only; 2MB blocks
@@ -73,7 +73,7 @@
  * directory (the hardware register gets virt_to_phys(kernel_pgd): TTBR1 on
  * aarch64, CR3 on amd64).  Updated atomically (pointer assignment) in
  * vmm_dynamic_remap() after the hardware root has been switched; secondary
- * CPUs read it after arch_mb(). */
+ * CPUs read it after hal_mb(). */
 uint64_t *kernel_pgd;
 
 #define PTE_ADDR_MASK 0x0000FFFFFFFFF000UL
@@ -118,8 +118,8 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
 
   /* Zero and Flush the new table page */
   memset(page, 0, 4096);
-  arch_cache_clean_range(page, 4096);
-  arch_mb();
+  hal_cache_clean(page, 4096);
+  hal_mb();
 
   /* Table entry flags:
    * AArch64: Valid (bit 0), Table (bit 1), AF (bit 10), Inner Share (bits 8-9),
@@ -129,8 +129,8 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
   table[index] = virt_to_phys(page) | PTE_TABLE | PTE_VALID;
 
   /* Flush the directory entry itself */
-  arch_cache_clean_range(&table[index], 8);
-  arch_mb();
+  hal_cache_clean(&table[index], 8);
+  hal_mb();
 
   return page;
 }
@@ -393,7 +393,7 @@ void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size) {
 
 
 /* Map the validated usable-region union, never the flat span between
- * ARCH_RAM_START and the highest physical end. This keeps address holes and
+ * HAL_RAM_START and the highest physical end. This keeps address holes and
  * reserved-only intervals out of the normal-memory direct map. The old boot
  * page tables remain active while all new tables are constructed. */
 static void vmm_map_detected_usable_regions(uint64_t *pgd,
@@ -412,11 +412,7 @@ static void vmm_map_detected_usable_regions(uint64_t *pgd,
 
     uint64_t start = regions[i].base;
     uint64_t end = start + regions[i].size;
-#if defined(ARCH_AARCH64)
-    if (start < ARCH_RAM_START || end > ARCH_PHYS_MAP_LIMIT)
-#else
-    if (end > ARCH_PHYS_MAP_LIMIT)
-#endif
+    if (!hal_phys_range_valid(start, end))
       panic("VMM: %s region[%zu] outside direct-map window "
             "[0x%lx,0x%lx)", phase, i, start, end);
     if (start > UINT64_MAX - (PAGE_SIZE - 1ULL))
@@ -463,7 +459,7 @@ void vmm_init(void) {
   if (!kernel_pgd)
     panic("%s", "VMM: Failed to allocate kernel PGD");
   memset(kernel_pgd, 0, 4096);
-  arch_cache_clean_range(kernel_pgd, 4096);
+  hal_cache_clean(kernel_pgd, 4096);
 
   vmm_map_detected_usable_regions(kernel_pgd, "bootstrap");
   arch_vmm_map_mmio(kernel_pgd);
@@ -480,7 +476,7 @@ void vmm_init(void) {
  * Builds a new PGD from scratch, using arch_vmm_map_range() (which uses 2MB
  * block entries where possible) to map every MEM_REGION_USABLE region returned
  * by arch_platform_get_mem_regions().  Re-maps MMIO.  Then atomically switches
- * the hardware to the new PGD with arch_vmm_set_pgd() and updates kernel_pgd.
+ * the hardware to the new PGD with hal_vmm_set_pgd() and updates kernel_pgd.
  *
  * NOTE(MM-VMM-03): The old PGD (bootstrap) is stored in 'old_pgd' and then
  * abandoned -- it is never freed.  A correct implementation would broadcast an
@@ -488,7 +484,7 @@ void vmm_init(void) {
  * old PGD pages to the PMM.  The (void)old_pgd suppresses the unused-variable
  * warning.
  *
- * NOTE(MM-VMM-05): arch_vmm_set_pgd() flushes the local TLB; no IPI is sent
+ * NOTE(MM-VMM-05): hal_vmm_set_pgd() flushes the local TLB; no IPI is sent
  * to secondary CPUs.  If any secondary is running at this point it may access
  * the old (now leaked) PGD's tables.
  *
@@ -517,10 +513,10 @@ void vmm_dynamic_remap(void) {
   uint64_t *old_pgd = kernel_pgd;
   kernel_pgd = new_pgd;
 
-  arch_vmm_set_kernel_pgd(new_phys);
-  arch_tlb_flush_local();
-  arch_mb();
-  arch_isb();
+  hal_vmm_set_kernel_pgd(new_phys);
+  hal_tlb_flush_local();
+  hal_mb();
+  hal_isb();
 
   /* 4. Cleanup old table - currently deferred until all CPUs have switched to new PGD */
   /* TODO: Implement proper synchronization (IPI broadcast) to safely free old_pgd
@@ -592,7 +588,7 @@ void vmm_destroy_pgd(uint64_t *pgd) {
    * process earlier may still hold user translations into frames we are
    * about to recycle.  One full round here covers the whole address space;
    * the per-PTE walk below then frees without further TLB traffic. */
-  arch_tlb_shootdown_all();
+  hal_tlb_shootdown_all();
 
   uint64_t freed_frames = 0;
   uint64_t freed_tables = 0;
