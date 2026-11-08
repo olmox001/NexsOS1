@@ -35,6 +35,7 @@
 #define BTN_LEFT 0x110
 #define BTN_RIGHT 0x111
 #define BTN_MIDDLE 0x112
+#define BTN_TOUCH 0x14A
 
 /* Common Key Codes */
 #define KEY_RESERVED 0

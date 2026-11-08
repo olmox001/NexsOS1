@@ -113,6 +113,7 @@ static void usb_hid_parse_report_desc(struct usb_device *dev, const uint8_t *d, 
     uint16_t usages[8];
     int nusage = 0;
     dev->hid_btn_off = -1;
+    dev->hid_touch_off = -1;
 
     int i = 0;
     while (i < len) {
@@ -140,6 +141,13 @@ static void usb_hid_parse_report_desc(struct usb_device *dev, const uint8_t *d, 
             if (!(val & 0x01)) {              /* skip constant padding */
                 if (usage_page == 0x09 && dev->hid_btn_off < 0) {
                     dev->hid_btn_off = (int16_t)bit;          /* first button bit */
+                } else if (usage_page == 0x0D && dev->hid_touch_off < 0) {
+                    for (int f = 0; f < nusage; ++f) {
+                        if (usages[f] == 0x42) { /* Digitizer Tip Switch */
+                            dev->hid_touch_off = (int16_t)(bit + (uint32_t)f * report_size);
+                            break;
+                        }
+                    }
                 } else if (usage_page == 0x01 && !(val & 0x04)) { /* absolute GD */
                     for (uint32_t f = 0; f < report_count; f++) {
                         uint16_t u = (f < (uint32_t)nusage) ? usages[f] : 0;

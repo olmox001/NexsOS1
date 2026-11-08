@@ -75,8 +75,11 @@
  */
 #include <arch/pt_regs.h>
 #include <drivers/keyboard.h>
+#include <graphics/gl.h>
+#include <kernel/gfx_surface.h>
 #include <kernel/cpu.h>
 #include <kernel/kmalloc.h>
+#include <kernel/graphics.h>
 #include <kernel/object.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
@@ -116,8 +119,6 @@ extern void sys_exit(int status);
 extern long sys_get_time(void);
 long sys_clock_gettime(int clk);
 
-extern void graphics_draw_rect(int x, int y, int w, int h, uint32_t color);
-extern void compositor_render(void);
 extern int compositor_create_window(int x, int y, int w, int h,
                                     const char *title, struct process *owner);
 extern void compositor_draw_rect(int window_id, int x, int y, int w, int h,
@@ -145,6 +146,8 @@ int sys_set_font(void *data, size_t size);
  * `extern`s right here, which is why the two providers had nothing binding them
  * to the same semantics.  The contract now lives in one place. */
 #include <kernel/hal_uaccess.h>
+#include <os1_compositor.h>
+#include <os1_input.h>
 
 extern int keyboard_focus_pid;
 
@@ -757,19 +760,113 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       pt_regs_set_return(frame, -EPERM);
       break;
     }
-    /* PID 1 (nxinit) is the sole compositor/input frame pump. All other
-     * CAP_WINDOW processes may submit window damage, but their flush() calls
-     * are hints: init's 33 ms supervisor loop presents the accumulated state.
-     * This prevents concurrent USB HCD polling, multi-consumer input dispatch,
-     * and N app processes contending on compositor_lock with IRQs masked. */
-    if (current_process->pid != 1) {
+    /* The sole renderer is the supervised ring-3 nxcompositor process. Spawn
+     * stores the canonical executable path in process->name; checking its
+     * parent as well prevents an ordinary user from claiming renderer
+     * authority by spawning that system binary themselves. */
+    int compositor_service =
+        current_process->parent_pid == 1 &&
+        strncmp(current_process->name, "/sys/bin/nxcompositor",
+                sizeof("/sys/bin/nxcompositor")) == 0;
+    if (!compositor_service) {
       pt_regs_set_return(frame, 0);
       break;
     }
-    extern void usb_hid_poll(void);
-    usb_hid_poll();
-    input_drain();
-    compositor_render();
+    /* Retained v1 flush ABI. Device input is now drained by the supervised
+     * userland service through SYS_INPUT_NEXT_RAW; this call never renders. */
+    pt_regs_set_return(frame, 0);
+    break;
+  case SYS_WINDOW_SNAPSHOT: {
+    int snapshot_compositor_service =
+        strncmp(current_process->name, "/sys/bin/nxcompositor",
+                sizeof("/sys/bin/nxcompositor")) == 0;
+    int snapshot_mouse_service =
+        strncmp(current_process->name, "/sys/bin/nxmoused",
+                sizeof("/sys/bin/nxmoused")) == 0;
+    if (!proc_has_cap(current_process, CAP_WINDOW) ||
+        current_process->parent_pid != 1 ||
+        (!snapshot_compositor_service && !snapshot_mouse_service)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    pt_regs_set_return(
+        frame, compositor_window_snapshot(
+                   (struct os1_window_snapshot_v1 *)arg0));
+    break;
+  }
+  case SYS_DISPLAY_PRESENT: {
+    if (!proc_has_cap(current_process, CAP_WINDOW) ||
+        current_process->parent_pid != 1 ||
+        strncmp(current_process->name, "/sys/bin/nxcompositor",
+                sizeof("/sys/bin/nxcompositor")) != 0) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    struct os1_compositor_present_v1 user_present;
+    if (arch_copy_from_user(&user_present, (const void *)arg0,
+                            sizeof(user_present)) != 0) {
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    if (user_present.abi_version != OS1_COMPOSITOR_ABI_V1 ||
+        user_present.struct_size < sizeof(user_present) ||
+        user_present.width <= 0 || user_present.height <= 0 ||
+        user_present.stride != user_present.width ||
+        !user_present.pixels) {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    size_t pixel_count = (size_t)user_present.width *
+                         (size_t)user_present.height;
+    if (pixel_count / (size_t)user_present.width !=
+            (size_t)user_present.height ||
+        pixel_count > 16u * 1024u * 1024u ||
+        user_present.pixel_capacity < pixel_count) {
+      pt_regs_set_return(frame, -EINVAL);
+      break;
+    }
+    size_t bytes = pixel_count * sizeof(uint32_t);
+    uint32_t *pixels = (uint32_t *)kmalloc(bytes);
+    if (!pixels) {
+      pt_regs_set_return(frame, -ENOMEM);
+      break;
+    }
+    if (arch_copy_from_user(pixels, user_present.pixels, bytes) != 0) {
+      kfree(pixels);
+      pt_regs_set_return(frame, -EFAULT);
+      break;
+    }
+    int rc = graphics_present_argb8888(
+        pixels, user_present.width, user_present.height,
+        user_present.stride, user_present.pixel_capacity);
+    kfree(pixels);
+    pt_regs_set_return(frame, rc);
+    break;
+  }
+  case SYS_INPUT_NEXT_RAW:
+    if (!proc_has_cap(current_process, CAP_WINDOW) || current_process->parent_pid != 1) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    if ((arg1 == OS1_INPUT_ROLE_KEYBOARD &&
+         strncmp(current_process->name, "/sys/bin/nxkeyboardd", sizeof("/sys/bin/nxkeyboardd")) != 0) ||
+        (arg1 == OS1_INPUT_ROLE_MOUSE &&
+         strncmp(current_process->name, "/sys/bin/nxmoused", sizeof("/sys/bin/nxmoused")) != 0)) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    pt_regs_set_return(frame, input_next_raw_event(
+        (struct os1_raw_input_event_v1 *)arg0, (unsigned)arg1));
+    break;
+  case SYS_WINDOW_MOVE:
+    if (!proc_has_cap(current_process, CAP_WINDOW) ||
+        current_process->parent_pid != 1 ||
+        strncmp(current_process->name, "/sys/bin/nxmoused",
+                sizeof("/sys/bin/nxmoused")) != 0) {
+      pt_regs_set_return(frame, -EPERM);
+      break;
+    }
+    compositor_move_window((int)arg0, (int)arg1, (int)arg2);
     pt_regs_set_return(frame, 0);
     break;
   case SYS_WINDOW_BLIT:

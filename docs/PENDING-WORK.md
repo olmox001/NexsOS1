@@ -268,11 +268,16 @@ nel kernel NG.
   riferimento bootabile finché il nuovo kernel e la compatibilità ABI non
   superano i gate G0–G6. Nessuna nuova syscall grafica ambientale; riusare
   object/VM/port capabilities e aggiungere solo primitive indispensabili.
-- **Stato attuale:** decisione e piano documentati; nessun compositor o driver
-  è stato ancora estratto dal kernel legacy e nessun nuovo oggetto
-  buffer/surface è stato implementato. Prossimo task concreto: completare
-  GFX-NG-0 mappando syscall, handle, chiamanti, IRQ, GPU e layout pixel, poi
-  fissare i descriptor ABI prima di scrivere il manager.
+- **Stato attuale (2026-11-08):** `nxcompositor` è stato aggiunto come
+  processo ring-3 supervisionato e possiede il frame loop; una libreria
+  userland `os1_gfx` contiene primitive ARGB8888 e `OS1_window_draw` le usa
+  prima della presentazione v1. Il renderer, la scena, il window manager,
+  l'input e i driver restano nel kernel legacy; `SYS_COMPOSITOR_RENDER` è
+  ancora il backend di compatibilità. Non esistono ancora oggetti
+  buffer/surface capability né mapping condivisi. Questo è uno scaffold
+  eseguibile, non il completamento della migrazione. Prossimo gate: completare
+  l'inventario semantico GFX-NG-0 e definire i descriptor ABI rispetto agli
+  oggetti/VM/port effettivi prima di introdurre il surface manager.
 
 
 **Avanzamento GFX-NG-0 (2026-11-03):** primo inventario statico aggiunto
@@ -281,7 +286,9 @@ in §10 di `GRAPHICS-USERLAND-MIGRATION.md`: syscall grafiche 200/202,
 `os1_video_platform`; footprint sorgente (7.232 righe nel perimetro
 misurato); dipendenze principali e destinazioni. Non è ancora l'inventario
 semantico completo dei caller e dei flussi IRQ/input; nessun ABI buffer/surface
-è stato assegnato e nessun codice runtime è stato spostato.
+è stato assegnato. L'incremento runtime descritto nello stato aggiornato
+aggiunge il frame service e primitive userland, ma non estrae ancora i
+componenti legacy né implementa il surface manager.
 
 
 ## 16. NEXS-NG integrated hardening / boot / device / graphics programme — **DOCUMENTED, NOT IMPLEMENTED**

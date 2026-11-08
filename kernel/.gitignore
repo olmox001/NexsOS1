@@ -1,0 +1,11 @@
+/build/
+*.o
+*.d
+*.elf
+*.bin
+*.map
+*.disasm
+*.log
+*.iso
+*.dtb
+/.toolchain-build-tmp/

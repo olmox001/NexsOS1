@@ -169,6 +169,7 @@ struct usb_device {
     uint8_t  hid_abs_bits;    /* X/Y field size in bits */
     uint32_t hid_abs_max;     /* logical max of X/Y (for scaling) */
     int16_t  hid_btn_off;     /* bit offset of the first button, -1 if none */
+    int16_t  hid_touch_off;   /* Digitizer Tip Switch bit, -1 if not present */
     int      in_use;
 };
 

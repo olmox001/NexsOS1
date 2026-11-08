@@ -17,103 +17,13 @@
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
 #include <kernel/types.h>
-#include <posix_types.h>
-
-/* kbd_dropped_events - keystrokes the kernel could not deliver.  Read it
- * when someone reports missed input; it is the difference between a driver
- * bug and a receiver that stopped draining its queue. */
-unsigned long kbd_dropped_events;
-
-/* Keyboard state */
-static int shift_pressed = 0;
-static int ctrl_pressed = 0;
-static int caps_lock = 0;
-
-typedef struct {
-  const char *name;
-  const char *ascii_map;
-  const char *shifted_map;
-  struct {
-    uint16_t code;
-    int shifted;
-    const char *utf8;
-  } utf8_overrides[16];
-} keyboard_layout_t;
-
-/* Scancode to ASCII table (US layout) */
-static const char scancode_to_ascii[128] = {
-    0,    0,   '1', '2',  '3',  '4', '5',  '6',  /* 0-7 */
-    '7',  '8', '9', '0',  '-',  '=', '\b', '\t', /* 8-15 */
-    'q',  'w', 'e', 'r',  't',  'y', 'u',  'i',  /* 16-23 */
-    'o',  'p', '[', ']',  '\n', 0,   'a',  's',  /* 24-31 */
-    'd',  'f', 'g', 'h',  'j',  'k', 'l',  ';',  /* 32-39 */
-    '\'', '`', 0,   '\\', 'z',  'x', 'c',  'v',  /* 40-47 */
-    'b',  'n', 'm', ',',  '.',  '/', 0,    '*',  /* 48-55 */
-    0,    ' ', 0,   0,    0,    0,   0,    0,    /* 56-63 (space at 57) */
-    0,    0,   0,   0,    0,    0,   0,    0,    /* 64-71 */
-    0,    0,   0,   0,    0,    0,   0,    0,    /* 72-79 */
-    0,    0,   0,   0,    0,    0,   0,    0,    /* 80-87 */
-    0,    0,   0,   0,    0,    0,   0,    0,    /* 88-95 */
-    0,    0,   0,   0,    0,    0,   0,    0,    /* 96-103 */
-    0,    0,   0,   0,    0,    0,   0,    0,    /* 104-111 */
-    0,    0,   0,   0,    0,    0,   0,    0,    /* 112-119 */
-    0,    0,   0,   0,    0,    0,   0,    0     /* 120-127 */
-};
-
-/* Shifted scancode to ASCII */
-static const char scancode_to_ascii_shift[128] = {
-    0,   0,   '!', '@', '#',  '$', '%',  '^',  /* 0-7 */
-    '&', '*', '(', ')', '_',  '+', '\b', '\t', /* 8-15 */
-    'Q', 'W', 'E', 'R', 'T',  'Y', 'U',  'I',  /* 16-23 */
-    'O', 'P', '{', '}', '\n', 0,   'A',  'S',  /* 24-31 */
-    'D', 'F', 'G', 'H', 'J',  'K', 'L',  ':',  /* 32-39 */
-    '"', '~', 0,   '|', 'Z',  'X', 'C',  'V',  /* 40-47 */
-    'B', 'N', 'M', '<', '>',  '?', 0,    '*',  /* 48-55 */
-    0,   ' ', 0,   0,   0,    0,   0,    0,    /* 56-63 */
-    0,   0,   0,   0,   0,    0,   0,    0,    /* 64-71 */
-    0,   0,   0,   0,   0,    0,   0,    0,    /* 72-79 */
-    0,   0,   0,   0,   0,    0,   0,    0,    /* 80-87 */
-    0,   0,   0,   0,   0,    0,   0,    0,    /* 88-95 */
-    0,   0,   0,   0,   0,    0,   0,    0,    /* 96-103 */
-    0,   0,   0,   0,   0,    0,   0,    0,    /* 104-111 */
-    0,   0,   0,   0,   0,    0,   0,    0,    /* 112-119 */
-    0,   0,   0,   0,   0,    0,   0,    0     /* 120-127 */
-};
-
-/* Keyboard layouts.  Each layout supplies the base scancode->ASCII maps (so a
- * future layout can remap keys without touching the driver) plus optional
- * UTF-8 overrides for accented keys.  The driver consults current_layout for
- * every keystroke (KBD-LAYOUT-01): previously these maps were unused and the
- * static US tables were read directly. */
-static const keyboard_layout_t layout_us = {
-    .name = "us",
-    .ascii_map = scancode_to_ascii,
-    .shifted_map = scancode_to_ascii_shift,
-};
-
-static const keyboard_layout_t layout_it = {
-    .name = "it",
-    .ascii_map = scancode_to_ascii,
-    .shifted_map = scancode_to_ascii_shift,
-    .utf8_overrides = {{40, 0, "\xC3\xA0"}, // à
-                       {40, 1, "\xC3\x80"}, // À
-                       {26, 0, "\xC3\xA8"}, // è
-                       {26, 1, "\xC3\xA9"}, // é
-                       {39, 0, "\xC3\xB2"}, // ò
-                       {41, 0, "\xC3\xB9"}, // ù
-                       {43, 0, "\xC3\xAC"}, // ì
-                       {0, 0, NULL}}};
-
-static const keyboard_layout_t *current_layout = &layout_us;
+#include <kernel/vmm.h>
+#include <os1_input.h>
 
 /*
  * Initialize keyboard subsystem
  */
 void keyboard_init(void) {
-  shift_pressed = 0;
-  ctrl_pressed = 0;
-  caps_lock = 0;
-
   pr_info("%s", "Input: Initializing input subsystem...\n");
 
   /* Device-manager-driven bring-up: probe every input provider; each one
@@ -125,12 +35,10 @@ void keyboard_init(void) {
   usb_init();          /* xHCI/EHCI/UHCI via the PCI driver manager + USB HID */
   ps2_init();          /* legacy 8042 (amd64 only; no-op elsewhere) */
 
-  current_layout = &layout_it;
-
   INIT_LIST_HEAD(&keyboard_wait_queue.task_list);
   spin_lock_init(&keyboard_wait_queue.lock);
 
-  pr_info("Keyboard: Initialized (Layout: %s)\n", current_layout->name);
+  pr_info("%s", "Keyboard: Raw input providers initialized\n");
 }
 
 /* Wait Queue for blocking reads */
@@ -148,387 +56,151 @@ void keyboard_notify_input(void) {
   wake_up(&keyboard_wait_queue);
 }
 
-/*
- * Process a key event
- */
-static void keyboard_process_key(uint16_t code, int32_t value) {
-  /* value: 0 = released, 1 = pressed, 2 = repeat */
+/* Key translation and client routing execute in ring-3 nxkeyboardd. */
 
-  /* Handle modifier keys */
-  if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) {
-    shift_pressed = (value != 0);
-    return;
-  }
-
-  if (code == KEY_LEFTCTRL) {
-    ctrl_pressed = (value != 0);
-    return;
-  }
-
-  if (code == KEY_CAPSLOCK && value == 1) {
-    caps_lock = !caps_lock;
-    return;
-  }
-
-  /* Convert scancode to ASCII */
-  if (code >= 128)
-    return;
-
-  char c;
-  int use_shift = shift_pressed;
-
-  /* Apply caps lock to letters */
-  if (code >= KEY_Q && code <= KEY_P)
-    use_shift ^= caps_lock;
-  if (code >= KEY_A && code <= KEY_L)
-    use_shift ^= caps_lock;
-  if (code >= KEY_Z && code <= KEY_M)
-    use_shift ^= caps_lock;
-
-  /* Read the ASCII from the active layout's maps (KBD-LAYOUT-01), falling back
-   * to the built-in US tables if a layout omits them. */
-  const char *amap =
-      (current_layout && current_layout->ascii_map) ? current_layout->ascii_map
-                                                     : scancode_to_ascii;
-  const char *smap = (current_layout && current_layout->shifted_map)
-                         ? current_layout->shifted_map
-                         : scancode_to_ascii_shift;
-  if (use_shift)
-    c = smap[code];
-  else
-    c = amap[code];
-
-  /* Ctrl + key -> control code (TTY semantics): Ctrl-A..Ctrl-Z => 0x01..0x1A,
-   * Ctrl-@..Ctrl-_ => 0x00..0x1F.  Generalises the old Ctrl-C-only path so
-   * full-screen apps (kilo: Ctrl-S/Q/F) and the shell's Ctrl-C all work
-   * uniformly.  When folding to a control code we skip the UTF-8 override
-   * pass below (a control char is never an accented glyph). */
-  int is_ctrl_combo = 0;
-  if (ctrl_pressed && c) {
-    unsigned char uc = (unsigned char)c;
-    if (uc >= 'a' && uc <= 'z') {
-      c = (char)(uc - 'a' + 1);
-      is_ctrl_combo = 1;
-    } else if (uc >= 'A' && uc <= 'Z') {
-      c = (char)(uc - 'A' + 1);
-      is_ctrl_combo = 1;
-    } else if (uc >= '@' && uc <= '_') {
-      c = (char)(uc - '@');
-      is_ctrl_combo = 1;
-    }
-  }
-
-  /* Per-keystroke logging is debug-only: at pr_info level every press AND
-   * release printed a line from IRQ context, flooding the serial log and
-   * serialising all CPUs on the printk path while typing. */
-  /* Snapshot the focus hint ONCE (#67): route this keystroke to a single,
-   * consistent target instead of re-reading the shared global between the test
-   * and the send (where the compositor could change it). */
-  int focus_pid = sched_get_focus_pid();
-
-  if (c != 0) {
-    pr_debug("Keyboard: Char='%c' (val=%d) -> PID %d\n", c, value, focus_pid);
-  }
-
-  /* Send IPC message if we have a focus PID */
-  if (focus_pid > 0) {
-    struct ipc_message msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.from = 0; /* Kernel/Driver */
-    msg.type = IPC_TYPE_INPUT;
-    msg.data1 = ((uint64_t)code << 16) | (uint8_t)c;
-    msg.data2 = (uint64_t)value; /* 0=release, 1=press, 2=repeat */
-
-    /* UTF-8 Handling */
-    if (c != 0) {
-      msg.payload[0] = c;
-      msg.payload[1] = '\0';
-    }
-
-    /* Apply Layout Overrides (skipped for Ctrl-folded control codes) */
-    if (value != 0 && current_layout && !is_ctrl_combo) {
-      for (int i = 0; i < 16 && current_layout->utf8_overrides[i].utf8 != NULL;
-           i++) {
-        if (current_layout->utf8_overrides[i].code == code &&
-            current_layout->utf8_overrides[i].shifted == shift_pressed) {
-          strlcpy(msg.payload, current_layout->utf8_overrides[i].utf8,
-                  sizeof(msg.payload));
-          break;
-        }
-      }
-    }
-
-    /* A failed send here IS a lost keystroke: the focused process is gone or
-     * its queue is full.  Discarding it made "the shell sometimes misses keys"
-     * unattributable, which is the worst possible property for an input path.
-     *
-     * IRQ context, so there is no caller to return to and no room to log per
-     * event -- a full queue would become an interrupt storm of its own.  The
-     * loss is therefore COUNTED, and only the transition into a lossy state is
-     * announced.  A counter that can be read after the fact turns an anecdote
-     * into a number. */
-    if (kernel_ipc_send(focus_pid, &msg) != 0) {
-      if (kbd_dropped_events++ == 0)
-        pr_err("keyboard: input to pid %d is being DROPPED (receiver gone or "
-               "queue full); further drops are counted, not logged\n",
-               focus_pid);
-    }
-  }
-}
-
-/* Compositor sinks for pointer events (graphics layer). These update window
- * state + damage; init's process-context SYS_COMPOSITOR_RENDER loop presents
- * the accumulated changes. */
-extern void compositor_update_mouse(int dx, int dy, int absolute);
-extern void compositor_handle_click(int button, int state);
-
-/* ------------------------------------------------------------------------- *
- * INPUT DECOUPLING (DIR-02/DIR-03, #68/#131/#194).
- *
- * The hardware input IRQs (virtio-input, PS/2) no longer touch the compositor.
- * They ONLY enqueue a raw evdev event into the ring below (input_report); the
- * dispatch — key->layout+IPC, pointer->compositor — runs in input_drain(),
- * called from SYS_COMPOSITOR_RENDER in process context by PID 1 (nxinit), the
- * sole compositor/input frame pump. Other CAP_WINDOW processes can request a
- * frame but do not poll devices or drain the input ring. Input IRQs therefore
- * only enqueue events and never take compositor_lock or mutate the window list
- * (#194/#68).
- *
- * DO NOT MIGRATE to the kthread path (input_thread_entry / input_server_start):
- * that kthread infra is UNSTABLE and DISABLED — see docs/report/KTHREAD-STATUS.md
- * and the banner on input_server_start() below.  kthread_block/arch_cpu_yield
- * stall CPU0 on the yield-to-USER leg, and a kthread created that way lives
- * outside the per-CPU idle-task ordering the SMP scheduler relies on.  The
- * correct end state for IRQ-decoupled input is a SUPERVISED USERLAND PROCESS
- * (the notification-service model), not a kernel thread.  Until then, dispatch
- * stays in the serialized SYS_COMPOSITOR_RENDER process-context path.
- * ------------------------------------------------------------------------- */
+/* IRQ and polling providers enqueue only; nxkeyboardd and nxmoused consume
+ * independent raw queues and own all input policy in ring 3. */
 
 struct input_evt {
   uint64_t seq;
   uint32_t producer_cpu;
   uint8_t provider;
-  uint8_t _reserved[3];
+  uint8_t device_id;
+  uint8_t _reserved[2];
   uint16_t type;
   uint16_t code;
   int32_t value;
 };
 
-#define INPUT_RING_SZ 256 /* power of two; ~256 evdev events of backlog */
-static struct input_evt input_ring[INPUT_RING_SZ];
+#define INPUT_RING_SZ 256u
+static struct input_evt keyboard_ring[INPUT_RING_SZ];
+static struct input_evt mouse_ring[INPUT_RING_SZ];
+static volatile uint32_t keyboard_head, keyboard_tail;
+static volatile uint32_t mouse_head, mouse_tail;
 static uint64_t input_event_seq;
-
-#define INPUT_TRACE_DEPTH 64u
-#define INPUT_TRACE_DUMP_COUNT 16u
-struct input_trace_entry {
-  uint64_t seq;
-  uint64_t event_seq;
-  uint32_t producer_cpu;
-  uint32_t dispatch_cpu;
-  int32_t focus_pid;
-  uint8_t provider;
-  uint8_t _reserved[3];
-  uint16_t type;
-  uint16_t code;
-  int32_t value;
-};
-static struct input_trace_entry input_trace[INPUT_TRACE_DEPTH];
-static volatile uint32_t input_trace_head;
-static volatile uint32_t input_ring_head; /* producer index (IRQ) */
-static volatile uint32_t input_ring_tail; /* consumer index (thread) */
-static DEFINE_SPINLOCK(input_ring_lock);
 static uint64_t input_ring_dropped;
-static struct wait_queue_head input_wait_queue;
-static int input_ring_pop(struct input_evt *out);
+static uint8_t input_frame_pending[256];
+static DEFINE_SPINLOCK(input_ring_lock);
+static DEFINE_SPINLOCK(input_poll_lock);
 
-/* input_dispatch - the actual event handling (key->layout+IPC, pointer->
- * compositor). It runs only in input_drain() from the serialized PID 1
- * SYS_COMPOSITOR_RENDER path, never from the hardware producer/IRQ. */
-static void input_dispatch(uint16_t type, uint16_t code, int32_t value) {
-  switch (type) {
-  case EV_KEY:
-    if (code == BTN_LEFT || code == BTN_RIGHT || code == BTN_MIDDLE) {
-      /* All pointer buttons reach the compositor; it drives WM actions
-       * (drag/resize/titlebar) from BTN_LEFT only and forwards every
-       * button to the focused app (right/middle were silently dropped
-       * before, so apps could never see them). */
-      compositor_handle_click((int)code, value);
-    } else {
-      keyboard_process_key(code, value);
-      wake_up(&keyboard_wait_queue);
-    }
-    break;
-  case EV_REL:
-    if (code == REL_X) compositor_update_mouse(value, 0, 0);
-    else if (code == REL_Y) compositor_update_mouse(0, value, 0);
-    break;
-  case EV_ABS:
-    if (code == ABS_X) compositor_update_mouse(value, -1, 1);
-    else if (code == ABS_Y) compositor_update_mouse(-1, value, 1);
-    break;
-  default: /* EV_SYN and others */
-    break;
-  }
-}
-
-/*
- * input_report - the single entry point for every input provider (IRQ / poll
- * context).  DIAGNOSTIC/bottom-half mode: enqueue the raw event; the actual
- * dispatch runs in input_drain() from the serialized SYS_COMPOSITOR_RENDER
- * process-context path, so virtio/PS2 INPUT IRQs only enqueue events and never
- * take compositor_lock or mutate the window list (#194/#68).
- */
-void input_report_from(uint8_t provider, uint16_t type, uint16_t code,
-                       int32_t value) {
+/* Hardware providers only enqueue raw events. Each userland input service
+ * owns a separate queue, so key and pointer consumers cannot steal events. */
+void input_report_from_device(uint8_t provider, uint8_t device_id,
+                              uint16_t type, uint16_t code, int32_t value) {
   uint64_t flags;
   struct cpu_info *cpu = arch_cpu_info_fault_safe();
   spin_lock_irqsave(&input_ring_lock, &flags);
-  uint32_t next = (input_ring_head + 1) & (INPUT_RING_SZ - 1);
-  if (next == input_ring_tail) {
-    input_ring_dropped++;
+  uint64_t sequence = ++input_event_seq;
+  if (type == EV_SYN) {
+    struct input_evt event = {
+        .seq = sequence, .producer_cpu = cpu ? cpu->cpu_id : UINT32_MAX,
+        .provider = provider, .device_id = device_id,
+        .type = type, .code = code, .value = value};
+    if (input_frame_pending[device_id] & 1u) {
+      uint32_t next = (keyboard_head + 1u) & (INPUT_RING_SZ - 1u);
+      if (next == keyboard_tail) ++input_ring_dropped;
+      else { keyboard_ring[keyboard_head] = event; keyboard_head = next; }
+    }
+    if (input_frame_pending[device_id] & 2u) {
+      uint32_t next = (mouse_head + 1u) & (INPUT_RING_SZ - 1u);
+      if (next == mouse_tail) ++input_ring_dropped;
+      else { mouse_ring[mouse_head] = event; mouse_head = next; }
+    }
+    input_frame_pending[device_id] = 0;
+    spin_unlock_irqrestore(&input_ring_lock, flags);
+    return;
+  }
+  int is_mouse = (type == EV_REL || type == EV_ABS) ||
+                 (type == EV_KEY && (code == BTN_LEFT || code == BTN_RIGHT ||
+                                     code == BTN_MIDDLE || code == BTN_TOUCH));
+  if (is_mouse) input_frame_pending[device_id] |= 2u;
+  else if (type == EV_KEY || type == EV_MSC)
+    input_frame_pending[device_id] |= 1u;
+  struct input_evt *ring = is_mouse ? mouse_ring : keyboard_ring;
+  volatile uint32_t *head = is_mouse ? &mouse_head : &keyboard_head;
+  volatile uint32_t *tail = is_mouse ? &mouse_tail : &keyboard_tail;
+  uint32_t next = (*head + 1u) & (INPUT_RING_SZ - 1u);
+  if (next == *tail) {
+    ++input_ring_dropped;
   } else {
-    struct input_evt *event = &input_ring[input_ring_head];
-    event->seq = ++input_event_seq;
-    event->producer_cpu = cpu ? cpu->cpu_id : UINT32_MAX;
-    event->provider = provider;
-    event->type = type;
-    event->code = code;
-    event->value = value;
-    input_ring_head = next;
+    ring[*head] = (struct input_evt){
+        .seq = sequence,
+        .producer_cpu = cpu ? cpu->cpu_id : UINT32_MAX,
+        .provider = provider,
+        .device_id = device_id,
+        .type = type,
+        .code = code,
+        .value = value,
+    };
+    *head = next;
   }
   spin_unlock_irqrestore(&input_ring_lock, flags);
 }
 
-/* Compatibility sink for older providers; new drivers should identify their
- * transport explicitly with input_report_from(). */
+void input_report_from(uint8_t provider, uint16_t type, uint16_t code,
+                       int32_t value) {
+  input_report_from_device(provider, provider, type, code, value);
+}
+
 void input_report(uint16_t type, uint16_t code, int32_t value) {
-  input_report_from(INPUT_PROVIDER_UNKNOWN, type, code, value);
+  input_report_from_device(INPUT_PROVIDER_UNKNOWN, INPUT_PROVIDER_UNKNOWN,
+                           type, code, value);
 }
 
-/* input_drain - dispatch all queued raw events. Called only by PID 1's
- * SYS_COMPOSITOR_RENDER path in process context, never from an input IRQ. */
-void input_drain(void) {
-  struct input_evt e;
-  while (input_ring_pop(&e)) {
-    struct cpu_info *dispatch_cpu = arch_cpu_info_fault_safe();
-    uint32_t ticket = __atomic_fetch_add(&input_trace_head, 1u,
-                                         __ATOMIC_RELAXED);
-    struct input_trace_entry *trace =
-        &input_trace[ticket % INPUT_TRACE_DEPTH];
-    trace->seq = 0;
-    trace->event_seq = e.seq;
-    trace->producer_cpu = e.producer_cpu;
-    trace->dispatch_cpu = dispatch_cpu ? dispatch_cpu->cpu_id : UINT32_MAX;
-    trace->focus_pid = sched_get_focus_pid();
-    trace->provider = e.provider;
-    trace->type = e.type;
-    trace->code = e.code;
-    trace->value = e.value;
-    __atomic_store_n(&trace->seq, (uint64_t)ticket + 1u, __ATOMIC_RELEASE);
-    input_dispatch(e.type, e.code, e.value);
-  }
-}
-
-void input_trace_dump(void);
 void input_trace_dump(void) {
-  uint32_t head = __atomic_load_n(&input_trace_head, __ATOMIC_ACQUIRE);
-  uint32_t first = head > INPUT_TRACE_DUMP_COUNT
-                       ? head - INPUT_TRACE_DUMP_COUNT
-                       : 0;
-  fault_printf("[INPUT-TRACE] head=%u event_seq=%llu ring_dropped=%llu "
-               "key_delivery_dropped=%lu\n",
-               head, (unsigned long long)input_event_seq,
-               (unsigned long long)input_ring_dropped, kbd_dropped_events);
-  for (uint32_t ticket = first; ticket < head; ticket++) {
-    struct input_trace_entry *entry =
-        &input_trace[ticket % INPUT_TRACE_DEPTH];
-    uint64_t published = __atomic_load_n(&entry->seq, __ATOMIC_ACQUIRE);
-    if (published != (uint64_t)ticket + 1u)
-      continue;
-    fault_printf("[INPUT-TRACE] seq=%llu provider=%u type=%u code=%u "
-                 "value=%d producer_cpu=%u dispatch_cpu=%u focus=%d\n",
-                 (unsigned long long)entry->event_seq, entry->provider,
-                 entry->type, entry->code, entry->value,
-                 entry->producer_cpu, entry->dispatch_cpu, entry->focus_pid);
-  }
+  fault_printf("[INPUT-TRACE] event_seq=%llu ring_dropped=%llu\n",
+               (unsigned long long)input_event_seq,
+               (unsigned long long)input_ring_dropped);
 }
 
-/* input_ring_pop - the single consumer pulls one event, or 0 if empty.
- * A future supervised input service may replace the current PID 1 consumer. */
-static int input_ring_pop(struct input_evt *out) {
+static int input_service_ring_pop(struct input_evt *out, unsigned role) {
   uint64_t flags;
   int got = 0;
   spin_lock_irqsave(&input_ring_lock, &flags);
-  if (input_ring_tail != input_ring_head) {
-    *out = input_ring[input_ring_tail];
-    input_ring_tail = (input_ring_tail + 1) & (INPUT_RING_SZ - 1);
+  volatile uint32_t *head = role == OS1_INPUT_ROLE_MOUSE ? &mouse_head : &keyboard_head;
+  volatile uint32_t *tail = role == OS1_INPUT_ROLE_MOUSE ? &mouse_tail : &keyboard_tail;
+  struct input_evt *ring = role == OS1_INPUT_ROLE_MOUSE ? mouse_ring : keyboard_ring;
+  if (*tail != *head) {
+    *out = ring[*tail];
+    *tail = (*tail + 1u) & (INPUT_RING_SZ - 1u);
     got = 1;
   }
   spin_unlock_irqrestore(&input_ring_lock, flags);
   return got;
 }
 
-/* input_ring_nonempty - lost-wakeup guard: evaluated under the wq lock,
- * serialized against a producer's wake_up() (see kthread_block).
- * __attribute__((unused)): referenced only by the DISABLED kthread input server
- * (input_server_start's body is compiled out — see KTHREAD-STATUS.md), kept as
- * reference skeleton without tripping -Werror=unused-function. */
-static int __attribute__((unused)) input_ring_nonempty(void *arg) {
-  (void)arg;
-  return input_ring_head != input_ring_tail;
+long input_next_raw_event(struct os1_raw_input_event_v1 *user_event,
+                          unsigned role) {
+  if (!user_event)
+    return -EFAULT;
+  if (role != OS1_INPUT_ROLE_KEYBOARD && role != OS1_INPUT_ROLE_MOUSE)
+    return -EINVAL;
+  uint64_t poll_flags;
+  spin_lock_irqsave(&input_poll_lock, &poll_flags);
+  usb_hid_poll();
+  keyboard_poll();
+  spin_unlock_irqrestore(&input_poll_lock, poll_flags);
+  struct input_evt event;
+  if (!input_service_ring_pop(&event, role))
+    return 0;
+  struct os1_raw_input_event_v1 out = {
+      .abi_version = OS1_INPUT_ABI_V1,
+      .struct_size = sizeof(out),
+      .sequence = event.seq,
+      .producer_cpu = event.producer_cpu,
+      .provider = event.provider,
+      .device_id = event.device_id,
+      .type = event.type,
+      .code = event.code,
+      .value = event.value,
+  };
+  return vmm_copy_to_user(user_event, &out, sizeof(out)) == 0 ? 1 : -EFAULT;
 }
 
-/* input_thread_entry - the input server kernel thread body (staged): drains
- * the ring and dispatches in TASK context, blocking when idle.  DISABLED —
- * input_server_start (its only user) is compiled out (KTHREAD-STATUS.md); kept
- * as the reference skeleton for the future USERLAND input service.  unused so
- * -Werror=unused-function does not fire. */
-static void __attribute__((unused)) input_thread_entry(void) {
-  for (;;) {
-    struct input_evt e;
-    while (input_ring_pop(&e))
-      input_dispatch(e.type, e.code, e.value);
-    kthread_block(&input_wait_queue, input_ring_nonempty, NULL);
-  }
-}
+/* Retained source-compatibility entry point; no kernel input thread is used. */
+void input_server_start(void) {}
 
-/* input_server_start - create the input server kernel thread.
- *
- * !!! DISABLED — DO NOT ENABLE (KTHREAD-STATUS, docs/report/KTHREAD-STATUS.md).
- * The kthread-based input server is UNSTABLE and UNTESTED.  Two problems, both
- * unfixed:
- *   1. kthread_block()/arch_cpu_yield() cooperatively switch TO a freshly-woken
- *      task; the yield-to-USER leg stalls CPU0 (a cross-CPU EL0-return quirk in
- *      the hand-rolled epilogue).
- *   2. A kthread created here lives OUTSIDE the per-CPU idle-task ordering the
- *      SMP scheduler relies on for process sandboxing, so it can perturb the
- *      idle/pick invariants (#169/#170 family).
- * Input is dispatched safely instead from the serialized process-context
- * SYS_COMPOSITOR_RENDER path (input_drain, kernel/core/syscall_dispatch.c).
- * The correct end state is input as a
- * SUPERVISED USERLAND PROCESS (the notification-service model), NOT a kthread.
- *
- * The body is compiled out unless NEXS_ENABLE_UNSTABLE_KTHREAD_INPUT is defined,
- * so this can never be wired up by accident (an unguarded call is a no-op that
- * warns).  See also kthread_create()/kthread_block() (kernel/sched/process.c)
- * and arch_cpu_yield() (kernel/include/kernel/arch.h): same status. */
-void input_server_start(void) {
-#ifdef NEXS_ENABLE_UNSTABLE_KTHREAD_INPUT
-  INIT_LIST_HEAD(&input_wait_queue.task_list);
-  spin_lock_init(&input_wait_queue.lock);
-  (void)input_ring_dropped;
-  kthread_create("input", input_thread_entry);
-  pr_info("%s", "Input: server thread started (IRQ-decoupled dispatch)\n");
-#else
-  (void)input_ring_dropped;
-  pr_warn("%s", "input_server_start: DISABLED (unstable kthread infra — see "
-                "docs/report/KTHREAD-STATUS.md); using serialized SYS_COMPOSITOR_RENDER path\n");
-#endif
-}
-
-/*
- * Poll keyboard for new input
- */
+/* Poll provider queues for the supervised ring-3 input daemons. */
 void keyboard_poll(void) {
   struct virtio_input_event event;
 

@@ -57,6 +57,10 @@
 #define SYS_DISPLAY_POLL       273  /* apply a pending host display-change; returns 1 if resized */
 #define SYS_SET_STYLE          274  /* compositor look: arg0=style, arg1=theme, arg2=bg (-1 = keep) */
 #define SYS_SET_ZOOM           275  /* desktop zoom percent (HiDPI/zoom); arg0=percent [25..400] */
+#define SYS_WINDOW_SNAPSHOT    276  /* versioned window metadata + pixels for compositord */
+#define SYS_DISPLAY_PRESENT    277  /* versioned full-frame hand-off from compositord */
+#define SYS_INPUT_NEXT_RAW     278  /* dequeue one raw device event for ring-3 input service */
+#define SYS_WINDOW_MOVE        279  /* compositor policy request to move a legacy window */
 
 /* --- Memory --- */
 #define SYS_SBRK               216

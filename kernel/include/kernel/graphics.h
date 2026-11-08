@@ -22,6 +22,8 @@ void graphics_init(void);
 struct gl_surface;
 struct process;
 int graphics_screen_surface(struct gl_surface *out) NX_MUST_USE;
+int graphics_present_argb8888(const uint32_t *pixels, int width, int height,
+                              int stride, size_t pixel_capacity) NX_MUST_USE;
 void graphics_swap_buffers(void);
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
@@ -97,11 +99,14 @@ void compositor_set_window_flags(int window_id, int flags);
  * titlebar background button.  minimize/restore/focus return 0 or -ESRCH;
  * sys_window_enum returns the window count (or a negative errno). */
 struct window_info; /* defined in include/api/object.h (shared ABI) */
+struct os1_window_snapshot_v1;
 int compositor_minimize_window(int window_id) NX_MUST_USE;
 int compositor_restore_window(int window_id) NX_MUST_USE;
 int compositor_focus_window(int window_id) NX_MUST_USE;
 int compositor_window_info(int window_id, struct window_info *out) NX_MUST_USE;
 long sys_window_enum(struct window_info *ubuf, size_t max) NX_MUST_USE;
+long compositor_window_snapshot(struct os1_window_snapshot_v1 *user_snapshot)
+    NX_MUST_USE;
 
 /* Process/System seam (DIR-02).
  *

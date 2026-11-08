@@ -7,7 +7,6 @@
 #include <drivers/virtio.h>
 #include <drivers/virtio_input.h>
 #include <kernel/arch.h>
-#include <kernel/graphics.h>
 #include <kernel/irq.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -18,8 +17,6 @@
 #ifdef ARCH_AMD64
 #include <drivers/pci.h>
 #endif
-
-extern void compositor_update_mouse(int dx, int dy, int absolute);
 
 #define MAX_INPUT_DEVS 2
 #define INPUT_QSIZE 16
@@ -225,7 +222,9 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 
       /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
        * EV_SYN -> repaint. Same path PS/2 and USB HID use now. */
-      input_report_from(INPUT_PROVIDER_VIRTIO, evt->type, evt->code, evt->value);
+      input_report_from_device(INPUT_PROVIDER_VIRTIO,
+                               (uint8_t)(INPUT_DEVICE_VIRTIO_BASE + i),
+                               evt->type, evt->code, evt->value);
 
       dev->avail->ring[dev->avail->idx % INPUT_QSIZE] = id;
       dev->avail->idx++;

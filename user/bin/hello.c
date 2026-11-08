@@ -23,7 +23,7 @@
  * The renderer is CPU-bound; at 960x540 it is faithful to the original.
  * Reduce WIDTH/HEIGHT for faster frame rates on slower cores.
  */
-#include "../sys/lib/portability/opengl/os1_gl_platform.h"
+#include <os1_gl_platform.h>
 #include <input.h>
 #include <math.h>
 #include <os1.h>

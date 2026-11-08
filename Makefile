@@ -94,69 +94,48 @@ endif
 
 ifeq ($(ARCH), amd64)
     CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
-    KERNEL_DIR = kernel
-    ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
-BOOT_DIR   = $(ARCH_DIR)/boot
-    
     ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large
     ASFLAGS = -g --fatal-warnings
-    
-    LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
-    LDFLAGS_KERN = -nostdlib -static -z noexecstack -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
-    
-    CFLAGS_BOOT = $(filter-out -mcmodel=large,$(COMMON_FLAGS)) $(INCLUDE) -m32
     QEMU = qemu-system-x86_64
 else
     CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
-    KERNEL_DIR = kernel
-    ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
-BOOT_DIR   = $(ARCH_DIR)/boot
-    
     ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57 $(AARCH64_ARCH_CFLAGS_EXTRA)
     ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
-    
-    LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
-    LDFLAGS_KERN = -nostdlib -static -z noexecstack -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
-    
-    CFLAGS_BOOT = $(COMMON_FLAGS) $(INCLUDE)
     QEMU = qemu-system-aarch64
 endif
+KERNEL_DIR = kernel
+
+# NX-SDK owns the public API and its versioned kernel-contract snapshot.
+# The legacy shared root include/abi directory is intentionally absent.
+USER_INCLUDE = -Isystem/include/contract -Isystem/include/api -Iuser/lib/stb -Iuser/lib/pl_mpeg
+# Compatibility variable consumed by pinned upstream build fragments (e.g. DOOM).
+INCLUDE = $(USER_INCLUDE)
 
 # Userland: enable per-function/data sections so the linker can GC unused
-# code from the whole-archive lib.o (USR-BLOAT-01/02).  Kernel keeps the
-# original COMMON_FLAGS (no gc needed there).
-USER_CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) \
-              -ffunction-sections -fdata-sections
+# code from the whole-archive runtime objects (USR-BLOAT-01/02).
+USER_CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(USER_INCLUDE) -ffunction-sections -fdata-sections
 ifneq ($(BYPASS_USERLAND_ERRORS),0)
 USER_CFLAGS += -Wno-error
 endif
 
-# Optional conversion/sign-conversion discovery profile. These two classes
-# still expose legacy sites in PCI/USB/graphics and remain non-fatal until
-# audited and corrected. Other zero-warning classes are permanent gates below.
+# Optional conversion/sign-conversion discovery profile.
 NX_DIAG_WARNINGS ?= 0
 ifeq ($(NX_DIAG_WARNINGS),1)
 NX_DIAG_WARNING_FLAGS = -Wconversion -Wsign-conversion
 NX_DIAG_WARNING_MODE = -Wno-error
+USER_CFLAGS += $(NX_DIAG_WARNING_FLAGS) $(NX_DIAG_WARNING_MODE)
 endif
-
-# Warning classes exercised on both architectures with zero diagnostics in the
-# inventory pass are now permanent kernel gates. Conversion/sign-conversion
-# remain in the opt-in audit profile until the legacy call sites are corrected.
-KERNEL_HARDEN_FLAGS = -Wundef -Wformat=2 -Wcast-align -Wpointer-arith \
-                      -Wswitch-enum -Wdouble-promotion -Wvla \
-                      -Wmissing-declarations
-CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) $(KERNEL_HARDEN_FLAGS) \
-         $(NX_DIAG_WARNING_FLAGS) $(NX_DIAG_WARNING_MODE)
-CXXFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) -fno-exceptions -fno-rtti
+# CFLAGS is the userland-facing convention used by upstream build fragments.
+CFLAGS = $(USER_CFLAGS)
 
 # Tools
 CC      = $(CROSS_COMPILE)gcc
-CXX     = $(CROSS_COMPILE)g++
 AS      = $(CROSS_COMPILE)as
 LD      = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
+NM = $(CROSS_COMPILE)nm
+AR = $(CROSS_COMPILE)ar
 MKDISK  = tools/mkdisk
 # Rootfs inode layout: --extents (mkfs.ext4-like, default) or --legacy
 # (direct/indirect pointer blocks, the pre-B1 format kept for regression).
@@ -183,14 +162,9 @@ BOOT_ISO = $(AMD64_GRUB_ISO)
 endif
 USER_DIR   = user
 USER_SYS_DIR = $(USER_DIR)/sys
-USER_LIB_DIR = $(USER_SYS_DIR)/lib
+USER_LIB_DIR = system/lib
 USER_BIN_DIR = $(USER_SYS_DIR)/bin
-USER_ARCH_DIR = $(USER_DIR)/arch/$(ARCH)
-# include/abi = the neutral kernel<->userland ABI contract (syscall numbers,
-# object/caps/rights, posix ABI types, sysstats, style names, font structs).
-# include/api = the userland-only base API (OS1low_/OS1_ + libc headers) —
-# the kernel must never grow includes from it (ASTRA layer separation).
-INCLUDE    = -I$(KERNEL_DIR)/include -I$(ARCH_DIR)/include -Iinclude/abi -Iinclude/api
+USER_ARCH_DIR = system/arch/$(ARCH)
 
 # Output files
 BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
@@ -209,146 +183,9 @@ VIRT_DTB   = $(BUILD_DIR)/virt.dtb
 # Source Files
 # ==============================================================================
 
-ifeq ($(ARCH), amd64)
-BOOT_SOURCES = \
-    $(BOOT_DIR)/header.S \
-    $(BOOT_DIR)/stage1.S \
-    $(BOOT_DIR)/stage2.S
-
-KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/kinit/start.S \
-    $(ARCH_DIR)/cpu/isr_stubs.S \
-    $(ARCH_DIR)/cpu/syscall.S \
-    $(ARCH_DIR)/cpu/context.S \
-    $(ARCH_DIR)/kinit/trampoline.S
-
-KERN_C_SOURCES = \
-    $(ARCH_DIR)/cpu/cpu.c \
-    $(ARCH_DIR)/cpu/idt.c \
-    $(ARCH_DIR)/cpu/gdt.c \
-    $(ARCH_DIR)/cpu/msr.c \
-    $(ARCH_DIR)/cpu/syscall_hal.c \
-    $(ARCH_DIR)/cpu/apic.c \
-    $(ARCH_DIR)/mm/mmu.c \
-    $(ARCH_DIR)/mm/tlb.c \
-    $(ARCH_DIR)/mm/uaccess.c \
-    $(KERNEL_DIR)/drivers/uart/16550.c \
-    $(KERNEL_DIR)/drivers/timer/pic_pit.c \
-    $(ARCH_DIR)/platform/platform.c \
-    $(ARCH_DIR)/hal.c \
-    $(ARCH_DIR)/virtio.c
-else
-BOOT_SOURCES = \
-    $(BOOT_DIR)/header.S \
-    $(BOOT_DIR)/stage1.S \
-    $(BOOT_DIR)/stage2.S
-
-KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/kinit/start.S \
-    $(ARCH_DIR)/cpu/exception.S
-
-KERN_C_SOURCES = \
-    $(ARCH_DIR)/cpu/cpu.c \
-    $(ARCH_DIR)/cpu/syscall.c \
-    $(ARCH_DIR)/mm/mmu.c \
-    $(ARCH_DIR)/platform.c \
-    $(ARCH_DIR)/hal.c \
-    $(ARCH_DIR)/virtio.c \
-    $(KERNEL_DIR)/drivers/uart/pl011.c \
-    $(KERNEL_DIR)/drivers/gic/gic.c \
-    $(KERNEL_DIR)/drivers/timer/timer.c
-endif
-
-KERN_C_SOURCES += \
-    $(KERNEL_DIR)/core/hal_bus.c \
-    $(KERNEL_DIR)/core/syscall_dispatch.c \
-    $(KERNEL_DIR)/core/object.c \
-    $(KERNEL_DIR)/core/fault.c \
-    $(KERNEL_DIR)/core/smp.c \
-    $(KERNEL_DIR)/core/timer.c \
-    $(KERNEL_DIR)/drivers/console.c \
-    $(KERNEL_DIR)/drivers/irq_ctrl.c \
-    $(KERNEL_DIR)/drivers/sys_timer.c \
-    $(KERNEL_DIR)/drivers/block/block.c \
-    $(KERNEL_DIR)/drivers/block/ramdisk.c \
-    $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
-    $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
-    $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
-    $(KERNEL_DIR)/drivers/gpu/gpu_core.c \
-    $(KERNEL_DIR)/drivers/pci/pci.c \
-    $(KERNEL_DIR)/drivers/usb/usb_core.c \
-    $(KERNEL_DIR)/drivers/usb/usb_hid.c \
-    $(KERNEL_DIR)/drivers/usb/xhci.c \
-    $(KERNEL_DIR)/drivers/usb/ehci.c \
-    $(KERNEL_DIR)/drivers/usb/uhci.c \
-    $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
-    $(KERNEL_DIR)/fs/gpt.c \
-    $(KERNEL_DIR)/fs/ext4.c \
-    $(KERNEL_DIR)/fs/vfs.c \
-    $(KERNEL_DIR)/fs/procfs.c \
-    $(KERNEL_DIR)/mm/pmm.c \
-    $(KERNEL_DIR)/mm/vmm.c \
-    $(KERNEL_DIR)/mm/buffer.c \
-    $(KERNEL_DIR)/lib/string.c \
-    $(KERNEL_DIR)/lib/crc32.c \
-    $(KERNEL_DIR)/lib/sha256.c \
-    $(KERNEL_DIR)/lib/vsnprintf.c \
-    $(KERNEL_DIR)/lib/printk.c \
-    $(KERNEL_DIR)/lib/fault_print.c \
-    $(KERNEL_DIR)/lib/backtrace.c \
-    $(KERNEL_DIR)/lib/stack_protector.c \
-    $(KERNEL_DIR)/lib/entropy.c \
-    $(KERNEL_DIR)/lib/math.c \
-    $(KERNEL_DIR)/lib/kmalloc.c \
-    $(KERNEL_DIR)/lib/registry.c \
-    $(KERNEL_DIR)/lib/ktest.c \
-    $(KERNEL_DIR)/lib/ktest_samples.c \
-    $(KERNEL_DIR)/lib/utf8.c \
-    $(KERNEL_DIR)/cpu.c \
-    $(KERNEL_DIR)/sched/process.c \
-    $(KERNEL_DIR)/sched/elf.c \
-    $(KERNEL_DIR)/graphics/graphics.c \
-    $(KERNEL_DIR)/graphics/surface.c \
-    $(KERNEL_DIR)/graphics/chrome.c \
-    $(KERNEL_DIR)/graphics/region.c \
-    $(KERNEL_DIR)/graphics/gl.c \
-    $(KERNEL_DIR)/graphics/font.c \
-    $(KERNEL_DIR)/graphics/term.c \
-    $(KERNEL_DIR)/graphics/compositor_style.c \
-    $(KERNEL_DIR)/graphics/compositor.c \
-    $(KERNEL_DIR)/irq/irq.c \
-    $(KERNEL_DIR)/lib/fdt.c \
-    $(KERNEL_DIR)/lib/fdt_parser.c \
-    $(KERNEL_DIR)/main.c \
-    $(KERNEL_DIR)/drivers/ps2/ps2.c
-
-KERN_CPP_SOURCES = \
-    $(KERNEL_DIR)/drivers/cpp_test.cpp
-
-# Object files
-BOOT_OBJECTS = $(patsubst %.S,$(BUILD_DIR)/%.o,$(BOOT_SOURCES))
-KERN_ASM_OBJECTS = $(KERN_ASM_SOURCES:%.S=$(BUILD_DIR)/%.o)
-KERN_C_OBJECTS = $(KERN_C_SOURCES:%.c=$(BUILD_DIR)/%.o)
-KERN_OBJECTS = $(KERN_ASM_OBJECTS) $(KERN_C_OBJECTS)
-
-# Dependency files
-# Every %.o: %.c rule (kernel AND user, see "Common compilation rules" below)
-# passes -MMD -MP, so a per-TU .d file listing every header it pulled in
-# lands next to each .o.  DEPS used to be JUST the kernel ones
-# (KERN_C_OBJECTS:.o=.d) — userland .o files (nxres.o, nxsettings.o, ...)
-# never got their .d included, so `make` had no idea a userland .c depended
-# on a header like nxres.h/style_names.h: editing ONLY the header left every
-# .o that #included it stale and un-rebuilt, silently running old code with
-# no compile error to flag it.  Globbing every .d already on disk (kernel
-# and user alike) closes that gap; empty on a clean tree (no .d files yet),
-# which is fine — -include tolerates a missing/empty list.
-DEPS = $(shell find $(BUILD_ROOT) -type f -name '*.d' 2>/dev/null)
-
-# ==============================================================================
-# Build Rules
 # ==============================================================================
 
-.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel disk rootfs release test-release help
+.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel user disk rootfs release test-release help
 
 # Bootstrap exact third-party revisions recorded as Git submodule gitlinks.
 setup-deps:
@@ -370,83 +207,45 @@ endif
 
 # Create build directories
 dirs:
-	@mkdir -p $(BUILD_DIR)/$(BOOT_DIR)
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/boot
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/cpu
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/mm
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/platform
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/drivers
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/uart
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/gic
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/timer
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/virtio
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/gpu
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/keyboard
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/fs
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/mm
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/lib
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/sched
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/graphics
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/irq
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/pci
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/core
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/lib
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/lib
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sbin
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_ARCH_DIR)
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/block
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/ps2
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/usb
 	@mkdir -p $(BUILD_DIR)/lua
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/lib/portability/lua
 
-# Bootloader
-bootloader: $(BOOTLOADER_BIN)
+# NX-CORE owns the kernel and bootloader build. The superproject passes only
+# the shared output root and target architecture, then consumes the artifacts.
+.PHONY: kernel bootloader
+kernel:
+	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) kernel
 
-$(BOOTLOADER_ELF): $(BOOT_OBJECTS) $(BOOT_DIR)/linker.ld
-	@$(LD) $(LDFLAGS_BOOT) -o $@ $(BOOT_OBJECTS)
+bootloader:
+	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) bootloader
 
-$(BOOTLOADER_BIN): $(BOOTLOADER_ELF)
-	@$(OBJCOPY) -O binary $< $@
+$(KERNEL_BIN) $(KERNEL_ELF): | kernel
+	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
 
-# Kernel
-kernel: $(KERNEL_BIN)
-
-# Two-pass link for the in-kernel symbol table (Phase A, kernel/lib/backtrace.c):
-# pass 1 links without .ksyms, gen_ksyms.sh derives the table from `nm -n` of
-# pass 1, pass 2 relinks with it.  .ksyms sits after .text in both kernel.ld
-# scripts, so text addresses are identical across the passes (the table stays
-# valid).  If generation ever fails the empty-table fallback in backtrace.c
-# keeps the kernel functional (raw addresses).
-NM = $(CROSS_COMPILE)nm
-KERNEL_PRE = $(BUILD_DIR)/kernel.pre.elf
-KSYMS_S    = $(BUILD_DIR)/ksyms.S
-KSYMS_O    = $(BUILD_DIR)/ksyms.o
-
-$(KERNEL_PRE): $(KERN_OBJECTS)
-	@$(LD) $(LDFLAGS_KERN) -o $@ $^
-
-$(KSYMS_O): $(KERNEL_PRE) tools/gen_ksyms.sh
-	@tools/gen_ksyms.sh "$(NM)" $(KERNEL_PRE) $(KSYMS_S)
-	@$(CC) $(CFLAGS) -c -o $@ $(KSYMS_S)
-
-$(KERNEL_ELF): $(KERN_OBJECTS) $(KSYMS_O)
-	@$(LD) $(LDFLAGS_KERN) -o $@ $^
-
-$(KERNEL_BIN): $(KERNEL_ELF)
-	@$(OBJCOPY) -O binary $< $@
+$(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
+	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
 
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
-USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/math.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/execsvc_client.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/opengl/os1_gl_platform.o
-USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
+USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/theme.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/math.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/font_lib.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/image/image.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/video/video.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/notify_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/os1_video_platform.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/d3d9/os1_d3d9_present.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/opengl/os1_gl_platform.o
+USER_MALLOC_O  = $(BUILD_DIR)/$(USER_LIB_DIR)/malloc.o
 
 # ==============================================================================
 # SDL2 static library (graphics-port: SDL cross-build over the OS1 libc)
@@ -458,8 +257,8 @@ USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 # link rules because prerequisite lists expand immediately.
 AR = $(CROSS_COMPILE)ar
 
-SDL2_DIR := $(USER_LIB_DIR)/sdl
-include user/sys/lib/portability/sdl2/overlay.mk
+SDL2_DIR := user/lib/sdl
+include system/lib/portability/sdl2/overlay.mk
 
 SDL2_SRCS := \
   $(wildcard $(SDL2_DIR)/src/*.c) \
@@ -507,7 +306,7 @@ SDL2_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
               -ffreestanding -fno-builtin -nostdlib -nostartfiles \
               -fno-common -fstack-protector-strong -fno-pic -fno-pie \
               -fno-omit-frame-pointer \
-              -Iinclude/abi -Iinclude/api -I$(SDL2_DIR)/include \
+              $(USER_INCLUDE) -I$(SDL2_DIR)/include \
               $(SDL_NEXSOS_OVERLAY_CPPFLAGS)
 
 $(SDL2_OBJ_DIR)/%.o: %.c
@@ -524,7 +323,7 @@ libsdl2: $(SDL2_LIB)
 # ==============================================================================
 # Lua static library and runtime (lua)
 # ==============================================================================
-LUA_DIR := $(USER_LIB_DIR)/lua
+LUA_DIR := user/lib/lua
 
 LUA_CORE_SRCS := \
   $(LUA_DIR)/lapi.c \
@@ -590,8 +389,7 @@ LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
              -fno-common -fstack-protector-strong -fno-pic -fno-pie \
              -fno-omit-frame-pointer \
              -DLUA_USE_NEXSOS \
-             -Iinclude/abi \
-             -Iinclude/api \
+             $(USER_INCLUDE) \
              -I$(LUA_DIR) \
              -I$(USER_LIB_DIR)/portability/lua \
              -include lua_portability.h
@@ -632,7 +430,7 @@ $(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_
 # ==============================================================================
 # Gnulib static library (libgnulib)
 # ==============================================================================
-include user/sys/lib/portability/gnulib/overlay.mk
+include user/portability/gnulib/overlay.mk
 
 GNULIB_OBJ_DIR := $(BUILD_DIR)/gnulib
 GNULIB_OBJS := $(patsubst %.c,$(GNULIB_OBJ_DIR)/%.o,$(GNULIB_OVERLAY_SRCS))
@@ -643,8 +441,7 @@ GNULIB_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
                 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
                 -fno-common -fstack-protector-strong -fno-pic -fno-pie \
                 -fno-omit-frame-pointer \
-                -Iinclude/abi \
-                -Iinclude/api \
+                $(USER_INCLUDE) \
                 $(GNULIB_OVERLAY_CPPFLAGS)
 
 $(GNULIB_OBJ_DIR)/%.o: %.c
@@ -652,7 +449,7 @@ $(GNULIB_OBJ_DIR)/%.o: %.c
 	@$(CC) $(GNULIB_CFLAGS) -c $< -o $@
 
 # Special rule for glue.c to define _GNULIB_OS1_GLUE_IMPL before config header
-$(GNULIB_OBJ_DIR)/user/sys/lib/portability/gnulib/gnulib_os1_glue.o: user/sys/lib/portability/gnulib/gnulib_os1_glue.c
+$(GNULIB_OBJ_DIR)/user/portability/gnulib/gnulib_os1_glue.o: user/portability/gnulib/gnulib_os1_glue.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(GNULIB_CFLAGS) -D_GNULIB_OS1_GLUE_IMPL -c $< -o $@
 
@@ -666,7 +463,7 @@ libgnulib: $(GNULIB_LIB)
 # ==============================================================================
 # Coreutils compatibility overlay
 # ==============================================================================
-include user/sys/lib/portability/coreutils/overlay.mk
+include user/portability/coreutils/overlay.mk
 
 
 
@@ -679,7 +476,8 @@ SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxr
            $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
-           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf
+           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf \
+           $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf $(BUILD_DIR)/nxmoused.elf
 
 
 # User ELFs (placed in /bin)
@@ -706,7 +504,15 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
 USER_ELFS = $(SBIN_ELFS) $(SYS_ELFS) $(BIN_ELFS)
 
 
-user: $(USER_ELFS)
+# Userland build remains defined exactly once here until its complete source
+# manifest and rules are transferred to NX-VIOLA and NX-SDK.
+user: __nexsos_user_module
+
+.PHONY: __nexsos_user_module
+__nexsos_user_module: $(USER_ELFS)
+
+.PHONY: __user
+__user: $(USER_ELFS)
 
 # User Compilations
 $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
@@ -716,6 +522,9 @@ $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
+
+# NX-SDK system library implementations (including userland graphics).
+$(BUILD_DIR)/$(USER_LIB_DIR)/%.o: $(USER_LIB_DIR)/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -735,6 +544,9 @@ $(BUILD_DIR)/$(USER_DIR)/sbin/%.o: $(USER_DIR)/sbin/%.c
 # nxinit: source in user/sbin/ (machine-level init, separate from /sys/bin services)
 $(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sbin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxenvinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxenvinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxcompositor.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxcompositor.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxkeyboardd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxkeyboardd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxmoused.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxmoused.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -827,7 +639,7 @@ $(BUILD_DIR)/nxfilem.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/main.o \
 
 $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 # kilo is linked like every other user ELF (prereqs declared above, generic
 # linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
@@ -843,25 +655,18 @@ endif
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(USER_CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 
 
-# Common compilation rules
-$(BUILD_DIR)/%.o: %.S
+# Compilation rules are split by ownership and compiler domain.  No generic
+# assembly rule is allowed to compile kernel objects with userland flags.
+$(BUILD_DIR)/$(USER_ARCH_DIR)/%.o: $(USER_ARCH_DIR)/%.S
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -c -o $@ $<
-
-$(BUILD_DIR)/kernel/%.o: kernel/%.c
-	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -DKERNEL -MMD -MP -c -o $@ $<
+	@$(CC) $(USER_CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
-
-$(BUILD_DIR)/%.o: %.cpp
-	@mkdir -p $(dir $@)
-	@$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c -o $@ $<
 
 -include $(DEPS)
 
@@ -931,9 +736,9 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/lua
 	@cp $(LUA_DIR)/*.h $(BUILD_DIR)/rootfs/sys/lib/include/lua/
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/api
-	@cp -r include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
-	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/abi
-	@cp -r include/abi/. $(BUILD_DIR)/rootfs/sys/lib/include/abi/
+	@cp -r system/include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/contract
+	@cp -r system/include/contract/. $(BUILD_DIR)/rootfs/sys/lib/include/contract/
 	@# Copy Lua's own test suite next to nxlua, for on-device testing
 	@mkdir -p $(BUILD_DIR)/rootfs/home/LUA/luatest
 	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/home/LUA/luatest/ 2>/dev/null || true
@@ -1123,6 +928,10 @@ endif
 lockcheck:
 	@python3 scripts/check-lockrules.py
 
+check-kernel-contracts:
+	@cmp tools/toolchain-versions.env kernel/config/toolchain-versions.env
+	@kernel/tools/check-contract-snapshot.sh
+
 disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 	$(OBJDUMP) -d $(KERNEL_ELF) > $(BUILD_DIR)/kernel.disasm
 	$(OBJDUMP) -d $(BOOTLOADER_ELF) > $(BUILD_DIR)/bootloader.disasm
@@ -1131,7 +940,7 @@ disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 EXPECTED_GCC_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_GCC_VERSION),$(NEXS_AARCH64_GCC_VERSION))
 EXPECTED_BINUTILS_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_BINUTILS_VERSION),$(NEXS_AARCH64_BINUTILS_VERSION))
 
-check:
+check: check-kernel-contracts
 	@set -eu; for tool in "$(CC)" "$(AS)" "$(LD)" "$(OBJCOPY)" "$(OBJDUMP)" "$(NM)" "$(AR)" "$(QEMU)" python3 xorriso gawk mformat mmd mcopy; do \
 		command -v "$$tool" >/dev/null 2>&1 || { echo "ERROR: required tool not found: $$tool" >&2; exit 1; }; \
 	done

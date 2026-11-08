@@ -212,6 +212,32 @@ int main(void) {
           "freshly-seeded environment.\n");
   }
 
+  /* The desktop frame loop is owned by nxcompositor in userland.  Its first
+   * implementation still calls the v1 renderer through a restricted
+   * compatibility syscall while the pixel-composition code is extracted. */
+  printf("[Init] Spawning userland compositor (nxcompositor)...\n");
+  int pid_compositor = spawn("/sys/bin/nxcompositor");
+  if (pid_compositor > 0) {
+    printf("[Init] nxcompositor started (PID %d)\n", pid_compositor);
+    register_service_pid("srv.compositor_pid", pid_compositor);
+  } else
+    print("[Init] Failed to spawn nxcompositor!\n");
+
+  printf("[Init] Spawning keyboard service (nxkeyboardd)...\n");
+  int pid_keyboard = spawn("/sys/bin/nxkeyboardd");
+  if (pid_keyboard > 0)
+    printf("[Init] nxkeyboardd started (PID %d)\n", pid_keyboard);
+  else
+    print("[Init] Failed to spawn nxkeyboardd!\n");
+
+  printf("[Init] Spawning mouse service (nxmoused)...\n");
+  int pid_mouse = spawn("/sys/bin/nxmoused");
+  if (pid_mouse > 0) {
+    printf("[Init] nxmoused started (PID %d)\n", pid_mouse);
+    register_service_pid("srv.mouse_pid", pid_mouse);
+  } else
+    print("[Init] Failed to spawn nxmoused!\n");
+
   /* Spawn the dock (window-manager UI).  Plain spawn(): the ASTRA per-path
    * preset gives any /sys/bin binary ROOT authority (F1), which is exactly what
    * a window manager needs to acquire OBJ_TYPE_WINDOW control capabilities to
@@ -268,8 +294,8 @@ int main(void) {
     print("[Init] Failed to spawn NXShell!\n");
   }
 
-  /* /etc/utmp is created by nxenvinit, above. */
-  flush();
+  /* /etc/utmp is created by nxenvinit, above.  nxcompositor owns all
+   * subsequent presentation; init never renders a frame itself. */
 
   /* The "Boot Complete" notification is sent from the supervisor loop below,
    * NOT here: notify() resolves the target from the registry key
@@ -341,7 +367,7 @@ int main(void) {
 #define SPAWN_STABLE_MS                                                        \
   10000 /* alive this long since last (re)spawn -> backoff resets */
 #define SPAWN_QUEUE_MAX                                                        \
-  8 /* one slot per supervised service, same indexing as before */
+  9 /* one slot per supervised service, same indexing as before */
 
   struct spawn_req {
     int pending; /* 1 if a respawn is currently queued for this slot */
@@ -375,6 +401,12 @@ int main(void) {
     spawnq[3].last_spawn_ms = now_ms;
   if (pid_nxlauncher > 0)
     spawnq[4].last_spawn_ms = now_ms;
+  if (pid_compositor > 0)
+    spawnq[6].last_spawn_ms = now_ms;
+  if (pid_keyboard > 0)
+    spawnq[7].last_spawn_ms = now_ms;
+  if (pid_mouse > 0)
+    spawnq[8].last_spawn_ms = now_ms;
 #ifndef LAUNCHER_AUTOSTART
   if (pid_shell > 0)
     spawnq[5].last_spawn_ms = now_ms;
@@ -547,26 +579,47 @@ int main(void) {
     }
 #endif
 
+    /* Respawn the userland compositor independently of the desktop clients. */
+    if (spawnq_idle(6) && service_gone(pid_compositor, "Compositor"))
+      spawnq_enqueue(6, "Compositor", 0);
+    if (spawnq_due(6)) {
+      pid_compositor = spawn("/sys/bin/nxcompositor");
+      if (pid_compositor > 0) {
+        register_service_pid("srv.compositor_pid", pid_compositor);
+        spawnq_mark_spawned(6);
+      } else
+        spawnq_enqueue(6, "Compositor", 1);
+    }
+
+    if (spawnq_idle(7) && service_gone(pid_keyboard, "Keyboard Service"))
+      spawnq_enqueue(7, "Keyboard Service", 0);
+    if (spawnq_due(7)) {
+      pid_keyboard = spawn("/sys/bin/nxkeyboardd");
+      if (pid_keyboard > 0)
+        spawnq_mark_spawned(7);
+      else
+        spawnq_enqueue(7, "Keyboard Service", 1);
+    }
+
+    if (spawnq_idle(8) && service_gone(pid_mouse, "Mouse Service"))
+      spawnq_enqueue(8, "Mouse Service", 0);
+    if (spawnq_due(8)) {
+      pid_mouse = spawn("/sys/bin/nxmoused");
+      if (pid_mouse > 0) {
+        register_service_pid("srv.mouse_pid", pid_mouse);
+        spawnq_mark_spawned(8);
+      } else
+        spawnq_enqueue(8, "Mouse Service", 1);
+    }
+
     /* NOTE(GFX-DYN-01): host display-change auto-resize is intentionally NOT
      * polled here — a per-iteration poll wastes cycles.  It will be re-added
      * event-driven (virtio-gpu display-change IRQ → deferred handler).  The
      * manual path (nxres / SYS_SET_DISPLAY_MODE) remains.  SYS_DISPLAY_POLL is
      * kept for that future event-driven caller. */
 
-    /* SCHED-STACK-ISO (ASTRA DIR-02): DRIVE THE COMPOSITOR RENDER from here, in
-     * process context, instead of the kernel timer IRQ.  Running the heavy
-     * render from the tick nested it on an arbitrary interrupted task's kernel
-     * stack and smashed live frames on other CPUs (the amd64 click/nanosleep
-     * panic and the aarch64 current_chip #PF).  flush() ->
-     * SYS_COMPOSITOR_RENDER runs the render on init's OWN kernel stack — never
-     * nested.  The render is damage-clipped, so an idle pass with nothing dirty
-     * is cheap.  ~30 FPS pacing (33 ms) matches the old tick cadence. */
-    flush();
-
-    /* Sleep between supervisor passes.  33 ms ≈ 30 FPS: init is the
-     * compositor's frame pump now, so the desktop refresh cadence lives here.
-     * With the real kernel timer (SYS_NANOSLEEP) init is descheduled between
-     * frames (~0% CPU at idle) and woken by its core's tick. */
+    /* The compositor has its own userland frame loop.  Init only supervises
+     * services; it never renders or polls input on their behalf. */
     OS1_sleep(33);
   }
   return 0;

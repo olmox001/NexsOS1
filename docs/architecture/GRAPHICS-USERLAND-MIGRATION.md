@@ -1,7 +1,7 @@
 # NEXS-NG — Graphics userland migration and kernel surface manager
 
 **Decision:** 2026-11-03
-**Status:** architecture decision / implementation plan; no graphics subsystem has yet been moved out of the legacy kernel.
+**Status:** migration incomplete. On 2026-11-08 a supervised ring-3 frame-loop service and initial userland ARGB8888 raster primitives were added. The legacy scene, window policy, compositor renderer, input path and display drivers remain in the kernel; no capability-backed shared surface manager exists yet.
 **Supersedes:** the DIR-02 and DIR-07 wording that places the compositor inside the HAL.
 **Parent specifications:** NEXS-NG-CORE-DESIGN.md, NEXS-NG-HARDWARE-AND-ISOLATION.md, ABI-COMPATIBILITY-MATRIX.md, graphics-port/README.md.
 

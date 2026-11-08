@@ -158,6 +158,7 @@
 #include <kernel/term.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
+#include <os1_compositor.h>
 #include <object.h> /* struct window_info, WININFO_* — windows as objects (§6.7) */
 #include <stdint.h>
 
@@ -1390,6 +1391,111 @@ long sys_window_enum(struct window_info *ubuf, size_t max) {
   }
   kfree(kbuf);
   return (long)n;
+}
+
+/* Copy one legacy window surface to the userland compositor.  This is the
+ * compatibility bridge while v1 window objects are converted to mapped
+ * capability surfaces: pixel composition and all scene policy belong to
+ * compositord; the kernel only pins the window under its lock long enough to
+ * make a bounded immutable copy. */
+long compositor_window_snapshot(struct os1_window_snapshot_v1 *user_snapshot) {
+  struct os1_window_snapshot_v1 request;
+  if (!user_snapshot ||
+      vmm_copy_from_user(&request, user_snapshot, sizeof(request)) != 0)
+    return -EFAULT;
+  if (request.abi_version != OS1_COMPOSITOR_ABI_V1 ||
+      request.struct_size < sizeof(request) || request.id <= 0)
+    return -EINVAL;
+
+  struct os1_window_snapshot_v1 result = {0};
+  uint32_t *source = NULL;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    const struct window *win = &windows[i];
+    if (win->id != request.id)
+      continue;
+    result.abi_version = OS1_COMPOSITOR_ABI_V1;
+    result.struct_size = sizeof(result);
+    result.id = win->id;
+    result.pid = win->pid;
+    result.x = win->x;
+    result.y = win->y;
+    result.width = win->width;
+    result.height = win->height;
+    result.draw_width = win->draw_w > 0 ? win->draw_w : win->width;
+    result.draw_height = win->draw_h > 0 ? win->draw_h : win->height;
+    result.z_order = win->z_order;
+    result.background_argb = win->bg_color;
+    result.pixel_count = (size_t)win->width * (size_t)win->height;
+    result.pixels = request.pixels;
+    result.pixel_capacity = request.pixel_capacity;
+    result.flags = 0;
+    if (win->visible)
+      result.flags |= WININFO_VISIBLE;
+    if (win->minimized)
+      result.flags |= WININFO_MINIMIZED;
+    if (win->top_most)
+      result.flags |= WININFO_TOPMOST;
+    if (win->passive)
+      result.flags |= WININFO_PASSIVE;
+    if (win->pid == keyboard_focus_pid)
+      result.flags |= WININFO_FOCUSED;
+    memcpy(result.title, win->title, sizeof(result.title));
+    result.title[sizeof(result.title) - 1] = '\0';
+    if (win->width <= 0 || win->height <= 0 || win->width > 4096 ||
+        win->height > 4096 || result.pixel_count > 16u * 1024u * 1024u) {
+      spin_unlock_irqrestore(&compositor_lock, flags);
+      return -EINVAL;
+    }
+    source = win->buffer;
+    break;
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  if (result.id == 0)
+    return -ESRCH;
+
+  if (!request.pixels) {
+    return vmm_copy_to_user(user_snapshot, &result, sizeof(result)) == 0
+               ? 0
+               : -EFAULT;
+  }
+  if (request.pixel_capacity < result.pixel_count)
+    return -ENOSPC;
+  if (!source)
+    return -EIO;
+
+  size_t bytes = result.pixel_count * sizeof(uint32_t);
+  uint32_t *copy = (uint32_t *)kmalloc(bytes);
+  if (!copy)
+    return -ENOMEM;
+
+  /* Revalidate the buffer identity after allocation; destroy/resize may have
+   * happened while the lock was dropped.  A stale pointer is never read. */
+  int copied = 0;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  for (int i = 0; i < MAX_WINDOWS; i++) {
+    const struct window *win = &windows[i];
+    if (win->id == request.id && win->buffer == source &&
+        win->width == result.width && win->height == result.height) {
+      memcpy(copy, source, bytes);
+      copied = 1;
+      break;
+    }
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  if (!copied) {
+    kfree(copy);
+    return -EAGAIN;
+  }
+
+  int rc = vmm_copy_to_user(request.pixels, copy, bytes);
+  kfree(copy);
+  if (rc != 0)
+    return -EFAULT;
+  return vmm_copy_to_user(user_snapshot, &result, sizeof(result)) == 0
+             ? 0
+             : -EFAULT;
 }
 
 /*
