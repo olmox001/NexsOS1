@@ -20,3 +20,4 @@ docs/report/logs
 kernel/HAL/build/
 kernel/HAL/tests/build/
 kernel/HAL/references/
+*.pyc
