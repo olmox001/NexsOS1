@@ -11,11 +11,11 @@
 #include <os1.h>
 #include <os1_gfx.h>
 #include <os1_theme.h>
+#include <os1_surface.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 
-#define NXCOMPOSITOR_FRAME_MS 33
 #define NXCOMPOSITOR_MAX_WINDOWS 40
 #define NXCOMPOSITOR_MAX_PIXELS (16u * 1024u * 1024u)
 #define IPC_POINTER_POS 0x30
@@ -74,92 +74,42 @@ static void paint_window_chrome(struct os1_gfx_surface *frame,
                                 const struct os1_compositor_style *style,
                                 const struct os1_compositor_theme *theme,
                                 struct font_ctx *font) {
-  if (!style->titlebar || (window->flags & WININFO_TOPMOST))
-    return;
+  if (window->flags & WININFO_TOPMOST) return;
+  struct os1_gfx_rect content = {window->x, window->y,
+                                window->draw_width, window->draw_height};
+  os1_gfx_window_decoration(frame, &content, style, theme,
+      (window->flags & WININFO_FOCUSED) != 0,
+      (window->flags & WININFO_PROTECTED) != 0);
+  if (!style->titlebar || !font || !window->title[0]) return;
   int title_height = style->titlebar_height;
-  if (title_height <= 0)
-    return;
-  int title_y = window->y - title_height;
-  uint32_t title_color = (window->flags & WININFO_FOCUSED)
-                             ? theme->title_active
-                             : theme->title_inactive;
-  struct os1_gfx_rect title = {window->x, title_y, window->draw_width,
-                               title_height};
-  os1_gfx_fill_rect(frame, &title, title_color);
-  int64_t title_left = window->x < 0 ? 0 : window->x;
-  int64_t title_right = (int64_t)window->x + window->draw_width;
-  int64_t title_top = title_y < 0 ? 0 : title_y;
-  int64_t title_bottom = (int64_t)title_y + title_height;
-  if (title_right > (int64_t)frame->width)
-    title_right = (int64_t)frame->width;
-  if (title_bottom > (int64_t)frame->height)
-    title_bottom = (int64_t)frame->height;
-  for (int64_t ty = title_top; ty < title_bottom; ++ty) {
-    for (int64_t tx = title_left; tx < title_right; ++tx) {
-      size_t index = (size_t)ty * frame->stride + (size_t)tx;
-      frame->pixels[index] = os1_gfx_titlebar_tint(
-          style->shadows ? style->shadow_type : 0, (int)(ty - title_y),
-          title_height, frame->pixels[index]);
-    }
-  }
-
+  int64_t top = (int64_t)window->y - title_height;
+  int64_t left = (int64_t)window->x + 12;
+  int64_t right = (int64_t)window->x + window->draw_width - 12;
   struct os1_gfx_button_geometry buttons;
-  os1_gfx_button_geometry(window->x, window->draw_width, title_y, title_height,
-                          style->button_shape, style->button_side, &buttons);
-  if (!(window->flags & WININFO_PROTECTED)) {
-    int left[2] = {buttons.close_cx - buttons.size / 2,
-                   buttons.bg_cx - buttons.size / 2};
-    for (int button = 0; button < 2; ++button) {
-      for (int by = 0; by <= buttons.size; ++by) {
-        int sy = buttons.top + by;
-        if (sy < 0 || (size_t)sy >= frame->height)
-          continue;
-        for (int bx = 0; bx < buttons.size; ++bx) {
-          int sx = left[button] + bx;
-          if (sx < 0 || (size_t)sx >= frame->width)
-            continue;
-          size_t index = (size_t)sy * frame->stride + (size_t)sx;
-          frame->pixels[index] = os1_gfx_button_pixel(
-              &buttons, style->button_shape, sx, sy, theme->close_btn,
-              0xfffebc2eu, style->shadows && style->shadow_type == 2,
-              frame->pixels[index]);
-        }
-      }
-    }
-    /* The yellow background/minimize button keeps its small horizontal bar,
-     * the previous desktop's visual cue, over every supported button shape. */
-    int bar_y = buttons.top + buttons.size / 2;
-    for (int dx = -3; dx <= 3; ++dx) {
-      int sx = buttons.bg_cx + dx;
-      if (sx < 0 || (size_t)sx >= frame->width || bar_y < 0 ||
-          (size_t)bar_y >= frame->height)
-        continue;
-      size_t index = (size_t)bar_y * frame->stride + (size_t)sx;
-      frame->pixels[index] = theme->title_text_active;
-    }
+  os1_gfx_button_geometry(window->x, window->draw_width, (int)top,
+      title_height, style->button_shape, style->button_side, &buttons);
+  if (!(window->flags & WININFO_PROTECTED) && buttons.size) {
+    if (style->button_side == 0) left = buttons.bg_cx + buttons.size / 2 + 8;
+    else right = buttons.bg_cx - buttons.size / 2 - 8;
   }
-
-  if (style->window_borders) {
-    struct os1_gfx_rect top = {window->x, title_y, window->draw_width, 1};
-    struct os1_gfx_rect bottom = {
-        window->x, window->y + window->draw_height - 1, window->draw_width, 1};
-    struct os1_gfx_rect left = {window->x, title_y, 1,
-                                title_height + window->draw_height};
-    struct os1_gfx_rect right = {window->x + window->draw_width - 1, title_y, 1,
-                                 title_height + window->draw_height};
-    os1_gfx_fill_rect(frame, &top, theme->border);
-    os1_gfx_fill_rect(frame, &bottom, theme->border);
-    os1_gfx_fill_rect(frame, &left, theme->border);
-    os1_gfx_fill_rect(frame, &right, theme->border);
-  }
-
-  if (font && window->title[0])
-    font_draw_string_surface(
-        frame, font, window->x + (style->button_side == 0 ? 28 : 12),
-        title_y + 2, window->title,
-        (window->flags & WININFO_FOCUSED) ? theme->title_text_active
-                                          : theme->title_text_inactive);
+  int64_t bottom = top + title_height - 2;
+  int64_t text_x = left, text_y = top + 2;
+  if (left < 0) left = 0;
+  if (top < 0) top = 0;
+  if (right > (int64_t)frame->width) right = (int64_t)frame->width;
+  if (bottom > (int64_t)frame->height) bottom = (int64_t)frame->height;
+  if (left >= right || top >= bottom) return;
+  size_t offset = (size_t)top * frame->stride + (size_t)left;
+  /* The view clips even a long UTF-8 title before it reaches the controls. */
+  struct os1_gfx_surface label = {frame->pixels + offset,
+      (size_t)(right - left), (size_t)(bottom - top), frame->stride,
+      frame->capacity - offset};
+  font_draw_string_surface(&label, font, (int)(text_x - left),
+      (int)(text_y - top), window->title,
+      (window->flags & WININFO_FOCUSED) ? theme->title_text_active :
+                                        theme->title_text_inactive);
 }
+
 static int snapshot_less(const struct os1_window_snapshot_v1 *a,
                          const struct os1_window_snapshot_v1 *b) {
   if ((a->flags & WININFO_TOPMOST) != (b->flags & WININFO_TOPMOST))
@@ -167,6 +117,23 @@ static int snapshot_less(const struct os1_window_snapshot_v1 *a,
   if (a->z_order != b->z_order)
     return a->z_order < b->z_order;
   return a->id < b->id;
+}
+
+/* Reused staging storage. A resize allocates before releasing the old buffer;
+ * ordinary frames perform no allocation in this process. Snapshot storage is
+ * shared sequentially by windows, keeping memory bounded independently of count. */
+static uint32_t *frame_storage, *snapshot_storage;
+static size_t frame_capacity, snapshot_capacity;
+
+static int reserve_pixels(uint32_t **pixels, size_t *capacity, size_t required) {
+  if (!required || required > NXCOMPOSITOR_MAX_PIXELS) return -1;
+  if (*capacity >= required) return 0;
+  uint32_t *replacement = malloc(required * sizeof(*replacement));
+  if (!replacement) return -1;
+  free(*pixels);
+  *pixels = replacement;
+  *capacity = required;
+  return 0;
 }
 
 static int render_frame(void) {
@@ -177,9 +144,8 @@ static int render_frame(void) {
       (size_t)width > NXCOMPOSITOR_MAX_PIXELS / (size_t)height)
     return -1;
   size_t frame_pixels = (size_t)width * (size_t)height;
-  uint32_t *frame_pixels_buf = malloc(frame_pixels * sizeof(uint32_t));
-  if (!frame_pixels_buf)
-    return -1;
+  if (reserve_pixels(&frame_storage, &frame_capacity, frame_pixels)) return -1;
+  uint32_t *frame_pixels_buf = frame_storage;
   struct os1_gfx_surface frame = {(uint32_t *)frame_pixels_buf, (size_t)width,
                                   (size_t)height, (size_t)width, frame_pixels};
   paint_background(&frame, os1_theme_background_active());
@@ -231,20 +197,23 @@ static int render_frame(void) {
     size_t pixel_count = window->pixel_count;
     if (pixel_count == 0 || pixel_count > NXCOMPOSITOR_MAX_PIXELS)
       continue;
-    uint32_t *pixels = malloc(pixel_count * sizeof(uint32_t));
-    if (!pixels)
+    if (reserve_pixels(&snapshot_storage, &snapshot_capacity, pixel_count))
       continue;
+    uint32_t *pixels = snapshot_storage;
     window->pixels = pixels;
     window->pixel_capacity = pixel_count;
     if (OS1_window_snapshot(window) == 0) {
       struct os1_gfx_surface source = {pixels, (size_t)window->width,
                                        (size_t)window->height,
                                        (size_t)window->width, pixel_count};
+      struct os1_gfx_rect content = {window->x, window->y,
+                                      window->draw_width, window->draw_height};
+      int decorated = !(window->flags & WININFO_TOPMOST);
+      int title_height = decorated && style->titlebar ? style->titlebar_height : 0;
+      int radius = decorated && style->rounded_corners ? style->border_radius : 0;
+      os1_gfx_composite_rounded(&frame, &source, &content, title_height, radius);
       paint_window_chrome(&frame, window, style, theme, compositor_font);
-      os1_gfx_composite_scaled(&frame, &source, window->x, window->y,
-                               window->draw_width, window->draw_height);
     }
-    free(pixels);
   }
   /* Preserve the original 12x16 monochrome system cursor exactly. */
   static const char *cursor_bits[16] = {
@@ -275,16 +244,24 @@ static int render_frame(void) {
       .pixel_capacity = frame_pixels,
   };
   int rc = (int)OS1_display_present(&present);
-  free(frame_pixels_buf);
   return rc;
 }
 
 int main(void) {
   print("[nxcompositor] ring-3 scene compositor started\n");
+  long events = OS1_surface_events_open(OS1_RIGHT_READ | OS1_RIGHT_WAIT);
+  if (events < 0) {
+    print("[nxcompositor] surface capability unavailable\n");
+    return 1;
+  }
   for (;;) {
-    (void)OS1_display_poll();
+    struct os1_surface_state_v1 state;
+    if (OS1_surface_state((int)events, &state) != 0) return 1;
     consume_pointer_updates();
-    (void)render_frame();
-    OS1_sleep(NXCOMPOSITOR_FRAME_MS);
+    if (render_frame() != 0) {
+      print("[nxcompositor] presentation failed\n");
+      return 1;
+    }
+    if (OS1_surface_wait((int)events, state.generation) != 0) return 1;
   }
 }

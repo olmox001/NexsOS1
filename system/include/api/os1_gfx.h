@@ -10,6 +10,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <os1_theme.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +48,13 @@ enum os1_gfx_button_hit {
 };
 
 int os1_gfx_rrect_contains(int x, int y, int width, int height, int radius);
+unsigned os1_gfx_rrect_coverage(int x, int y, int width, int height, int radius);
+void os1_gfx_window_decoration(struct os1_gfx_surface *frame,
+    const struct os1_gfx_rect *content, const os1_compositor_style_t *style,
+    const os1_compositor_theme_t *theme, int focused, int protected_window);
+void os1_gfx_composite_rounded(struct os1_gfx_surface *destination,
+    const struct os1_gfx_surface *source, const struct os1_gfx_rect *content,
+    int title_height, int radius);
 void os1_gfx_button_geometry(int frame_x, int frame_width, int titlebar_y,
                              int titlebar_height, int shape, int side,
                              struct os1_gfx_button_geometry *out);

@@ -219,6 +219,8 @@ static void kobj_free(struct kobject *o) {
   }
   if (o->type == OBJ_TYPE_PORT && o->port)
     kfree(o->port); /* already unpublished when its last receiver closed */
+  if (o->resource_ops && o->resource_ops->release)
+    o->resource_ops->release(o->resource_state);
   kfree(o);
 }
 
@@ -297,6 +299,19 @@ static long install_new_object(struct process *process, struct kobject *object,
   if (handle < 0)
     kobj_free(object);
   return handle;
+}
+
+static long handle_create_resource(struct process *process, const char *path,
+                                  uint32_t rights, int type) {
+  if (type != OBJ_TYPE_RESOURCE) return -EINVAL;
+  struct kobject *object = kobj_alloc(OBJ_TYPE_RESOURCE);
+  if (!object) return -ENOMEM;
+  int result = nx_resource_acquire(process, path, rights, object);
+  if (result != 0) {
+    kobj_free(object);
+    return result;
+  }
+  return install_new_object(process, object, rights);
 }
 
 static long handle_create_time(struct process *process, const char *path,
@@ -569,6 +584,8 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
     return -ENOMEM;
 
   switch (ns) {
+  case OS1_NS_RESOURCE:
+    return handle_create_resource(process, path, rights, type);
   case OS1_NS_TIME:
     return handle_create_time(process, path, rights, type);
   case OS1_NS_FS:
@@ -1188,6 +1205,10 @@ static long object_read_pipe(struct kobject *object, void *user_buffer,
 static long object_read_dispatch(struct kobject *object, void *user_buffer,
                                  size_t size) {
   switch (object->type) {
+  case OBJ_TYPE_RESOURCE:
+    return object->resource_ops && object->resource_ops->read ?
+        object->resource_ops->read(object->resource_state, user_buffer, size) :
+        -EINVAL;
   case OBJ_TYPE_FILE:
     return object_read_file(object, user_buffer, size);
   case OBJ_TYPE_TIMER:
@@ -1238,7 +1259,10 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
     return err;
 
   long ret;
-  if (o->type == OBJ_TYPE_FILE) {
+  if (o->type == OBJ_TYPE_RESOURCE) {
+    ret = o->resource_ops && o->resource_ops->write ?
+        o->resource_ops->write(o->resource_state, ubuf, n) : -EINVAL;
+  } else if (o->type == OBJ_TYPE_FILE) {
     if (n == 0) {
       ret = 0;
     } else {
@@ -1433,7 +1457,10 @@ long sys_object_wait(int handle, long arg) {
     return err;
 
   long ret;
-  if (o->type == OBJ_TYPE_PROCESS) {
+  if (o->type == OBJ_TYPE_RESOURCE) {
+    ret = o->resource_ops && o->resource_ops->wait ?
+        o->resource_ops->wait(o->resource_state, arg) : -EINVAL;
+  } else if (o->type == OBJ_TYPE_PROCESS) {
     /* Phase 2: `arg`, if non-NULL, is a user int* that receives the reaped
      * process's exit_code (raw). The libc personality (waitpid) wraps it in
      * the POSIX status encoding. Only meaningful on reap (ret == pid). */

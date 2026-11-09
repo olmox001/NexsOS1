@@ -129,6 +129,7 @@
  *     of this file's scope.
  * =========================================================================
  */
+#include <kernel/resource.h>
 #include <drivers/gpu/gpu.h>
 #include <drivers/timer.h> /* mono_ns: motion-event rate limiting */
 #include <drivers/virtio_input.h>
@@ -391,6 +392,7 @@ static void expand_damage(int x, int y, int w, int h) {
   if (y + h > damage_y2)
     damage_y2 = y + h;
   compositor_dirty = 1;
+  nx_surface_changed();
 }
 
 static void expand_window_content_damage(struct window *win, int x, int y,
@@ -538,6 +540,7 @@ void compositor_full_damage(void) {
   damage_y2 = bb_height;
   compositor_dirty = 1;
   spin_unlock_irqrestore(&compositor_lock, flags);
+  nx_surface_changed();
 }
 
 /* Report the current desktop (compositor backbuffer) size.  Backs

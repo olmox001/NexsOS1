@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "constants": {
+    "OS1_SURFACE_ABI_VERSION": "1U",
+    "OS1_SURFACE_TIMING_COMPLETION": "1U",
+    "OS1_RESOURCE_SURFACE_EVENTS": "\"surface/events\"",
+    "OS1_RESOURCE_DISPLAY": "\"display/0\"",
+    "OS1_RESOURCE_KEYBOARD": "\"input/keyboard\"",
+    "OS1_RESOURCE_POINTER": "\"input/pointer\"",
+    "OS1_RESOURCE_WINDOW_STORAGE": "\"surface/window-v1\""
+  },
+  "structs": [
+    {
+      "name": "os1_surface_state_v1",
+      "size": 40,
+      "fields": [
+        [
+          "uint32_t",
+          "abi_version",
+          0
+        ],
+        [
+          "uint32_t",
+          "struct_size",
+          4
+        ],
+        [
+          "uint64_t",
+          "generation",
+          8
+        ],
+        [
+          "uint64_t",
+          "monotonic_ns",
+          16
+        ],
+        [
+          "uint32_t",
+          "width",
+          24
+        ],
+        [
+          "uint32_t",
+          "height",
+          28
+        ],
+        [
+          "uint32_t",
+          "timing",
+          32
+        ],
+        [
+          "uint32_t",
+          "reserved",
+          36
+        ]
+      ]
+    },
+    {
+      "name": "os1_input_request_v1",
+      "size": 48,
+      "fields": [
+        [
+          "uint32_t",
+          "abi_version",
+          0
+        ],
+        [
+          "uint32_t",
+          "struct_size",
+          4
+        ],
+        [
+          "uint32_t",
+          "mode",
+          8
+        ],
+        [
+          "uint32_t",
+          "reserved",
+          12
+        ],
+        [
+          "struct os1_raw_input_event_v1",
+          "event",
+          16
+        ]
+      ]
+    },
+    {
+      "name": "os1_surface_move_v1",
+      "size": 20,
+      "fields": [
+        [
+          "uint32_t",
+          "abi_version",
+          0
+        ],
+        [
+          "uint32_t",
+          "struct_size",
+          4
+        ],
+        [
+          "int32_t",
+          "id",
+          8
+        ],
+        [
+          "int32_t",
+          "x",
+          12
+        ],
+        [
+          "int32_t",
+          "y",
+          16
+        ]
+      ]
+    }
+  ]
+}

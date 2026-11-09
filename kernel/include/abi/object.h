@@ -44,7 +44,8 @@
                             * children's fd 0/1 (ASTRA §6.2).                   */
 #define OBJ_TYPE_PORT    7 /* named service mailbox capability */
 #define OBJ_TYPE_TIMER   8 /* read-only system time snapshot capability */
-#define OBJ_TYPE_COUNT   9 /* number of distinct OBJ_TYPE_* values */
+#define OBJ_TYPE_RESOURCE 9 /* provider-defined hardware/resource capability */
+#define OBJ_TYPE_COUNT   10 /* number of distinct OBJ_TYPE_* values */
 /* Reserved for later migrations (ASTRA §6.2/§6.7): gpu, audio. */
 
 /* Access rights — a per-handle subset, separable and attenuable (seL4). */
@@ -114,6 +115,7 @@
                        * a SEND-only capability to an existing port, which is how
                        * a client reaches a SERVICE BY NAME instead of by pid. */
 #define OS1_NS_TIME 6 /* path "system" → privileged read-only OBJ_TYPE_TIMER */
+#define OS1_NS_RESOURCE 7 /* provider resource name; authority is the handle */
 
 /* cap_query packs the object type and the held rights into one return value:
  * (type << 24) | rights.  A negative return is an errno (-EBADF). */

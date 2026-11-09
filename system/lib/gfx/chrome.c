@@ -22,15 +22,6 @@ static int int64_fits_int(int64_t value) {
   return value >= INT_MIN && value <= INT_MAX;
 }
 
-static int circle_contains(int64_t dx, int64_t dy, int radius,
-                           int extra_radius_squared) {
-  if (radius < 0 || dx < -radius - 1 || dx > radius + 1 ||
-      dy < -radius - 1 || dy > radius + 1)
-    return 0;
-  int64_t distance_squared = dx * dx + dy * dy;
-  return distance_squared <= (int64_t)radius * radius + extra_radius_squared;
-}
-
 uint32_t os1_gfx_titlebar_tint(int shadow_type, int y, int titlebar_height,
                                uint32_t base) {
   if (titlebar_height <= 0) return base;
@@ -48,22 +39,7 @@ uint32_t os1_gfx_titlebar_tint(int shadow_type, int y, int titlebar_height,
 }
 
 int os1_gfx_rrect_contains(int x, int y, int width, int height, int radius) {
-  if (radius <= 0) return 1;
-  if (width <= 0 || height <= 0 || x < 0 || y < 0 || x >= width || y >= height)
-    return 0;
-  int cx, cy;
-  if (x < radius && y < radius) {
-    cx = radius - 1 - x; cy = radius - 1 - y;
-  } else if (x >= width - radius && y < radius) {
-    cx = x - (width - radius); cy = radius - 1 - y;
-  } else if (x < radius && y >= height - radius) {
-    cx = radius - 1 - x; cy = y - (height - radius);
-  } else if (x >= width - radius && y >= height - radius) {
-    cx = x - (width - radius); cy = y - (height - radius);
-  } else {
-    return 1;
-  }
-  return (int64_t)cx * cx + (int64_t)cy * cy <= (int64_t)radius * radius;
+  return os1_gfx_rrect_coverage(x, y, width, height, radius) >= 128U;
 }
 
 void os1_gfx_button_geometry(int frame_x, int frame_width, int titlebar_y,
@@ -74,11 +50,13 @@ void os1_gfx_button_geometry(int frame_x, int frame_width, int titlebar_y,
   out->top = 0;
   out->close_cx = 0;
   out->bg_cx = 0;
-  if (frame_width <= 0 || titlebar_height < 0 || shape < 0 || shape > 2 ||
+  if (frame_width <= 0 || titlebar_height < 8 || shape < 0 || shape > 2 ||
       side < 0 || side > 1)
     return;
   int size = CHROME_BUTTON_SIZE;
   if (shape == 1 || shape == 2) size -= 2;
+  if (size > titlebar_height - 4) size = titlebar_height - 4;
+  if (frame_width < 2 * size + CHROME_BUTTON_GAP + 8) return;
   int64_t top = (int64_t)titlebar_y + (titlebar_height - size) / 2;
   int64_t close_cx, bg_cx;
   if (side == 0) {
@@ -118,55 +96,33 @@ uint32_t os1_gfx_button_pixel(const struct os1_gfx_button_geometry *g,
                              uint32_t base) {
   if (!g || g->size <= 0 || g->size > CHROME_BUTTON_SIZE || shape < 0 ||
       shape > 2) return base;
-  int size = g->size;
-  int64_t local_y = (int64_t)y - g->top;
-  int64_t local_close = (int64_t)x - g->close_cx + size / 2;
-  int64_t local_bg = (int64_t)x - g->bg_cx + size / 2;
-  if (shape == 1) {
-    if (local_close >= 0 && local_close < size && local_y >= 0 && local_y < size)
-      return close_argb;
-    if (local_bg >= 0 && local_bg < size && local_y >= 0 && local_y < size)
-      return background_argb;
-    if (drop_shadow && local_y == size) {
-      if (local_close >= 0 && local_close < size) return blend(0x60000000, base);
-      if (local_bg >= 0 && local_bg < size) return blend(0x60000000, base);
-    }
-    return base;
+  int hit = os1_gfx_button_hit(g, x, y);
+  if (hit == OS1_GFX_BUTTON_NONE) return base;
+  int cx = hit == OS1_GFX_BUTTON_CLOSE ? g->close_cx : g->bg_cx;
+  int lx = (int)((int64_t)x - cx + g->size / 2);
+  int ly = (int)((int64_t)y - g->top);
+  int radius = shape == 0 ? g->size / 2 : (shape == 2 ? 4 : 0);
+  unsigned coverage = os1_gfx_rrect_coverage(lx, ly, g->size, g->size, radius);
+  uint32_t accent = hit == OS1_GFX_BUTTON_CLOSE ? close_argb : background_argb;
+  /* Inset controls, a fine accent rim and explicit high-contrast glyphs.
+   * Shape and hit geometry remain shared with the input service. */
+  unsigned inner = os1_gfx_rrect_coverage(lx - 1, ly - 1,
+      g->size - 2, g->size - 2, radius > 0 ? radius - 1 : 0);
+  unsigned rim = coverage > inner ? coverage - inner : 0;
+  unsigned opacity = (48U * coverage + 72U * rim) / 255U;
+  if (drop_shadow && ly == g->size - 1) opacity += coverage / 8U;
+  uint32_t result = blend((accent & 0x00ffffffU) | (opacity << 24), base);
+  int dx = 2 * lx - (g->size - 1), dy = 2 * ly - (g->size - 1);
+  int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+  int diagonal = ax - ay;
+  if (diagonal < 0) diagonal = -diagonal;
+  int glyph = hit == OS1_GFX_BUTTON_CLOSE ?
+      (ax <= 7 && ay <= 7 && diagonal <= 2) : (ax <= 7 && ay <= 1);
+  if (glyph) {
+    unsigned luminance = ((base >> 16) & 255U) * 54U +
+                         ((base >> 8) & 255U) * 183U + (base & 255U) * 19U;
+    uint32_t ink = luminance < 32768U ? 0xfff4f5f7U : 0xff252830U;
+    result = blend((ink & 0x00ffffffU) | (coverage << 24), result);
   }
-  if (shape == 2) {
-    if (local_close >= INT_MIN && local_close <= INT_MAX &&
-        local_y >= INT_MIN && local_y <= INT_MAX &&
-        os1_gfx_rrect_contains((int)local_close, (int)local_y, size, size, 6))
-      return close_argb;
-    if (local_bg >= INT_MIN && local_bg <= INT_MAX &&
-        local_y >= INT_MIN && local_y <= INT_MAX &&
-        os1_gfx_rrect_contains((int)local_bg, (int)local_y, size, size, 6))
-      return background_argb;
-    if (drop_shadow) {
-      if (local_y > INT_MIN && local_y <= INT_MAX &&
-          ((local_close >= INT_MIN && local_close <= INT_MAX &&
-            os1_gfx_rrect_contains((int)local_close, (int)local_y - 1,
-                                   size, size, 6)) ||
-           (local_bg >= INT_MIN && local_bg <= INT_MAX &&
-            os1_gfx_rrect_contains((int)local_bg, (int)local_y - 1,
-                                   size, size, 6))))
-        return blend(0x50000000, base);
-    }
-    return base;
-  }
-  int radius = size / 2 - 1;
-  int64_t dy = (int64_t)y - ((int64_t)g->top + size / 2);
-  int64_t dx_close = (int64_t)x - g->close_cx;
-  int64_t dx_bg = (int64_t)x - g->bg_cx;
-  if (circle_contains(dx_close, dy, radius, 0))
-    return close_argb;
-  if (circle_contains(dx_bg, dy, radius, 0))
-    return background_argb;
-  if (drop_shadow) {
-    int64_t sy = dy - 1;
-    if (circle_contains(dx_close, sy, radius, 2) ||
-        circle_contains(dx_bg, sy, radius, 2))
-      return blend(0x40000000, base);
-  }
-  return base;
+  return result;
 }

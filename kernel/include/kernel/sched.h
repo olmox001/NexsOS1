@@ -407,6 +407,7 @@ int OS1libkernel_process_sleep_timer_arm(
     struct process *process, struct OS1libkernel_timer *timer,
     OS1libkernel_timer_callback_t callback, uint64_t deadline_ns);
 void wake_up(struct wait_queue_head *wq);
+void wake_up_all(struct wait_queue_head *wq);
 
 /* Kernel service threads (ASTRA "every service is a process", kernel side).
  * kthread_create: runnable kernel thread at PROC_PRIO_SYSTEM (no user address

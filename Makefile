@@ -233,6 +233,7 @@ USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/chrome.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/decoration.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/theme.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/math.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/font_lib.o \
@@ -241,6 +242,7 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/notify_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/time_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/surface_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/os1_video_platform.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/d3d9/os1_d3d9_present.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/opengl/os1_gl_platform.o
@@ -1111,6 +1113,7 @@ test-gfx-chrome:
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
 		-fsanitize=address,undefined -idirafter system/include/api \
 		system/lib/tests/gfx_chrome_test.c system/lib/gfx/chrome.c \
+		system/lib/gfx/decoration.c system/lib/gfx/raster.c \
 		-o build/host/gfx_chrome_test
 	@./build/host/gfx_chrome_test
 

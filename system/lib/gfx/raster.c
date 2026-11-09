@@ -22,9 +22,9 @@ int os1_gfx_surface_valid(const struct os1_gfx_surface *surface) {
       surface->stride < surface->width || surface->width > 0x7fffffffU ||
       surface->height > 0x7fffffffU)
     return 0;
-  if (surface->height > (size_t)-1 / surface->stride)
+  if (surface->height - 1 > ((size_t)-1 - surface->width) / surface->stride)
     return 0;
-  return surface->height * surface->stride <= surface->capacity;
+  return (surface->height - 1) * surface->stride + surface->width <= surface->capacity;
 }
 
 void os1_gfx_clear(struct os1_gfx_surface *surface, uint32_t argb) {
@@ -101,6 +101,10 @@ void os1_gfx_composite_scaled(struct os1_gfx_surface *destination,
   if (!os1_gfx_surface_valid(destination) ||
       !os1_gfx_surface_valid(source) || width <= 0 || height <= 0)
     return;
+  if ((size_t)width == source->width && (size_t)height == source->height) {
+    os1_gfx_composite_over(destination, source, x, y);
+    return;
+  }
   int64_t x0 = x < 0 ? 0 : x;
   int64_t y0 = y < 0 ? 0 : y;
   int64_t x1 = (int64_t)x + width;
@@ -110,9 +114,9 @@ void os1_gfx_composite_scaled(struct os1_gfx_surface *destination,
   if (y1 > (int64_t)destination->height)
     y1 = (int64_t)destination->height;
   for (int64_t dy = y0; dy < y1; ++dy) {
-    size_t sy = (size_t)((dy - y) * source->height / height);
+    size_t sy = (size_t)(dy - y) * source->height / (size_t)height;
     for (int64_t dx = x0; dx < x1; ++dx) {
-      size_t sx = (size_t)((dx - x) * source->width / width);
+      size_t sx = (size_t)(dx - x) * source->width / (size_t)width;
       uint32_t *dst = destination->pixels + (size_t)dy * destination->stride +
                       (size_t)dx;
       uint32_t src = source->pixels[sy * source->stride + sx];

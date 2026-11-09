@@ -757,6 +757,19 @@ void sleep_on(struct wait_queue_head *wq) {
  * innermost, exactly as in __proc_terminate_mark_dead_on_cpu() /
  * process_finalize_spawn(). Net lock order everywhere in this file is now
  * consistently: sched_lock -> wq->lock -> cpu->sched_lock. */
+void wake_up_all(struct wait_queue_head *wq) {
+  /* At most the process-pool bound can be asleep. Never hold the queue lock
+   * while acquiring sched_lock; wake_up owns the canonical lock order. */
+  for (unsigned i = 0; i < MAX_PROCESSES; ++i) {
+    uint64_t flags;
+    spin_lock_irqsave(&wq->lock, &flags);
+    int empty = list_empty(&wq->task_list);
+    spin_unlock_irqrestore(&wq->lock, flags);
+    if (empty) break;
+    wake_up(wq);
+  }
+}
+
 void wake_up(struct wait_queue_head *wq) {
   SCHED_ASSERT(wq != NULL, "wake_up: NULL wait queue");
 

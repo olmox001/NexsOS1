@@ -760,32 +760,13 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
-    /* The sole renderer is the supervised ring-3 nxcompositor process. Spawn
-     * stores the canonical executable path in process->name; checking its
-     * parent as well prevents an ordinary user from claiming renderer
-     * authority by spawning that system binary themselves. */
-    int compositor_service =
-        current_process->parent_pid == 1 &&
-        strncmp(current_process->name, "/sys/bin/nxcompositor",
-                sizeof("/sys/bin/nxcompositor")) == 0;
-    if (!compositor_service) {
-      hal_frame_set_return(frame, 0);
-      break;
-    }
-    /* Retained v1 flush ABI. Device input is now drained by the supervised
-     * userland service through SYS_INPUT_RAW_READ; this call never renders. */
+    /* Legacy flush is a compatibility hint; rendering is resource I/O. */
     hal_frame_set_return(frame, 0);
     break;
   case SYS_WINDOW_SNAPSHOT: {
-    int snapshot_compositor_service =
-        strncmp(current_process->name, "/sys/bin/nxcompositor",
-                sizeof("/sys/bin/nxcompositor")) == 0;
-    int snapshot_mouse_service =
-        strncmp(current_process->name, "/sys/bin/nxmoused",
-                sizeof("/sys/bin/nxmoused")) == 0;
+    /* Legacy ABI acquisition gate. Native SDK clients use resource handles. */
     if (!proc_has_cap(current_process, CAP_WINDOW) ||
-        current_process->parent_pid != 1 ||
-        (!snapshot_compositor_service && !snapshot_mouse_service)) {
+        !proc_is_privileged(current_process)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
@@ -796,9 +777,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
   }
   case SYS_DISPLAY_PRESENT: {
     if (!proc_has_cap(current_process, CAP_WINDOW) ||
-        current_process->parent_pid != 1 ||
-        strncmp(current_process->name, "/sys/bin/nxcompositor",
-                sizeof("/sys/bin/nxcompositor")) != 0) {
+        !proc_is_privileged(current_process)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
@@ -846,18 +825,8 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
   case SYS_INPUT_RAW_READ: {
     struct os1_raw_input_event_v1 event;
     long result;
-
     if (!proc_has_cap(current_process, CAP_WINDOW) ||
-        current_process->parent_pid != 1) {
-      hal_frame_set_return(frame, -EPERM);
-      break;
-    }
-    if ((arg1 == OS1_INPUT_ROLE_KEYBOARD &&
-         strncmp(current_process->name, "/sys/bin/nxkeyboardd",
-                 sizeof("/sys/bin/nxkeyboardd")) != 0) ||
-        (arg1 == OS1_INPUT_ROLE_MOUSE &&
-         strncmp(current_process->name, "/sys/bin/nxmoused",
-                 sizeof("/sys/bin/nxmoused")) != 0)) {
+        !proc_is_privileged(current_process)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
@@ -871,9 +840,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
   }
   case SYS_WINDOW_MOVE:
     if (!proc_has_cap(current_process, CAP_WINDOW) ||
-        current_process->parent_pid != 1 ||
-        strncmp(current_process->name, "/sys/bin/nxmoused",
-                sizeof("/sys/bin/nxmoused")) != 0) {
+        !proc_is_privileged(current_process)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }

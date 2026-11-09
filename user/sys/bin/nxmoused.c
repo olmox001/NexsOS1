@@ -1,4 +1,5 @@
 /* nxmoused: ring-3 pointer aggregation, hit testing, focus and capture. */
+#include <os1_surface.h>
 #include <os1.h>
 #include <os1_gfx.h>
 #include <os1_input.h>
@@ -90,7 +91,7 @@ static void publish_pointer(void) {
   m.type = IPC_POINTER_POS;
   m.data1 = (uint32_t)px;
   m.data2 = (uint32_t)py;
-  (void)OS1low_ipc_send(to, &m);
+  if (OS1low_ipc_send(to, &m) == 0) (void)OS1_surface_invalidate();
 }
 
 static void clamp_pointer(void) {

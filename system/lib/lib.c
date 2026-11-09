@@ -80,6 +80,7 @@
  *   similar names. The directory name 'common' currently means common within
  *   the userland runtime, not shared with NX-CORE.
  */
+#include <os1_surface.h>
 #include <os1_video_platform.h>
 #include <ctype.h>
 #include <errno.h>
@@ -566,12 +567,12 @@ long OS1_window_enum(struct window_info *buf, unsigned long max) {
 long OS1_window_snapshot(struct os1_window_snapshot_v1 *snapshot) {
   if (!snapshot)
     return -1;
-  return _sys_window_snapshot(snapshot);
+  return OS1_surface_snapshot(snapshot);
 }
 long OS1_display_present(struct os1_compositor_present_v1 *present) {
   if (!present)
     return -1;
-  return _sys_display_present(present);
+  return OS1_surface_present(present);
 }
 long OS1low_input_read_raw(struct os1_raw_input_event_v1 *event,
                            unsigned int role, unsigned int mode) {
@@ -581,7 +582,7 @@ long OS1low_input_read_raw(struct os1_raw_input_event_v1 *event,
     return -EINVAL;
   if (mode != OS1_INPUT_READ_TRY && mode != OS1_INPUT_READ_WAIT)
     return -EINVAL;
-  return _sys_input_raw_read(event, (int)role, mode);
+  return OS1_input_resource_read(event, role, mode);
 }
 
 long OS1_input_next_keyboard(struct os1_raw_input_event_v1 *event) {
@@ -604,7 +605,7 @@ long OS1_input_wait_mouse(struct os1_raw_input_event_v1 *event) {
                                OS1_INPUT_READ_WAIT);
 }
 long OS1_window_move(int window_id, int x, int y) {
-  return _sys_window_move(window_id, x, y);
+  return OS1_surface_move(window_id, x, y);
 }
 
 /* System statistics snapshot (perf §1).  Forwards to the SYS_SYSSTATS stub,
@@ -906,6 +907,7 @@ static void __theme_broadcast(unsigned type, int first, int second) {
     message.data1 = (uint64_t)(int64_t)first;
     message.data2 = (uint64_t)(int64_t)second;
     (void)OS1low_ipc_send(pid, &message);
+    (void)OS1_surface_invalidate();
   }
 }
 int OS1_display_set_style(int style_id, int theme_id) {
