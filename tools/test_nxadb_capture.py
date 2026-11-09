@@ -33,7 +33,8 @@ class NxadbCaptureTests(unittest.TestCase):
             ):
                 nxadb.start_qemu(session, wait=False)
 
-            archives = list((root / "build/runs/aarch64").glob("boot-*"))
+            run_dir = root / "build/runs/aarch64" / session.lane_name()
+            archives = list(run_dir.glob("boot-*"))
             self.assertEqual(len(archives), 1)
             archive = archives[0]
             self.assertEqual((archive / "serial.log").read_text(),
@@ -47,8 +48,10 @@ class NxadbCaptureTests(unittest.TestCase):
             self.assertEqual(live["pid"], 4242)
             self.assertIn("qemu_stdout", live["logs"])
             self.assertIn("qemu_stderr", live["logs"])
-            manifests = list((root / "build/runs/aarch64").glob("run-*.json"))
+            manifests = list(run_dir.glob("run-*.json"))
             self.assertEqual(len(manifests), 1)
+            self.assertEqual(live["firmware"], "uefi")
+            self.assertEqual(live["lane"], "iso-uefi")
             self.assertEqual(json.loads(manifests[0].read_text())["command"],
                              ["qemu-system-aarch64", "-m", "5G"])
 

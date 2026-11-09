@@ -1,7 +1,8 @@
 # NEXS Legacy Boot Path Inventory and NG Boot Contract
 
-Status: inspected against the current Makefile and architecture entry sources.  
-Source baseline: b495da3a711e5af64dd826c29c6da4777c487074.
+Status: inspected against the current Makefile and HAL architecture entry sources.
+The 2026-11-09 qualification in §15 supersedes older statements that AMD64 UEFI
+was unavailable; historical sections retain their original evidence context.
 
 ## 1. Actual boot paths used by current targets
 
@@ -13,10 +14,12 @@ Do not conflate the direct loader's register contract with the GRUB handoff.
 ### x86-64 / amd64
 
 - Build output: `build/amd64/kernel.elf`.
-- Default development/release boot: GRUB BIOS ISO, then Multiboot2
-  `/boot/kernel.elf`; the entry receives the Multiboot2 magic in EAX and the
+- Default `make run` firmware remains GRUB BIOS when
+  `RUN_FIRMWARE=auto`; an independently qualified GRUB x86_64-efi/OVMF lane is
+  selected with `RUN_FIRMWARE=uefi`. Releases carry both BIOS and UEFI media.
+  Both image paths enter the same Multiboot2 kernel ABI: magic in EAX and the
   information pointer in EBX.
-- Actual kernel entry: `kernel/arch/amd64/kinit/start.S`.
+- Actual kernel entry: `kernel/HAL/arch/amd64/kinit/start.S`.
 - The entry object contains a Multiboot2 header with the standard entry-address
   header tag and a Xen PVH note. It saves the incoming boot registers,
   establishes low boot mappings and enters the higher-half kernel.
@@ -24,7 +27,7 @@ Do not conflate the direct loader's register contract with the GRUB handoff.
   This bypasses GRUB. The captured direct-loader run reported
   `Magic: 0x0`, unlike GRUB's `0x36d76289`; it is not evidence of the
   Multiboot2 handoff and must be tracked separately.
-- The actual x86 kernel boot path is not `kernel/arch/amd64/boot/boot.S`.
+- The actual x86 kernel boot path is not `kernel/HAL/arch/amd64/boot/boot.S`.
 
 ### AArch64
 
@@ -34,7 +37,7 @@ Do not conflate the direct loader's register contract with the GRUB handoff.
   project-owned `nexsos-efi-loader.efi`, which loads the kernel and embedded
   QEMU-generated DTB, validates the FDT span, exits boot services and passes
   the DTB physical address in `x0` and validated available size in `x1`.
-- Actual kernel entry: `kernel/arch/aarch64/kinit/start.S`.
+- Actual kernel entry: `kernel/HAL/arch/aarch64/kinit/start.S`.
 - The entry preserves the handoff registers, checks CurrentEL, and has EL3,
   EL2 and EL1 transition paths before enabling the MMU and entering the
   higher-half kernel.
@@ -45,7 +48,7 @@ Do not conflate the direct loader's register contract with the GRUB handoff.
   handoff.
 
 The separate `bootloader.elf`/`bootloader.bin` target is built from
-`kernel/arch/<arch>/boot/header.S`, `stage1.S` and `stage2.S`, but is not
+`kernel/HAL/arch/<arch>/boot/header.S`, `stage1.S` and `stage2.S`, but is not
 the loader used by GRUB ISO, default `make run`, `nxadb`, `nxrun` or release.
 The current `mkdisk` implementation explicitly accepts but ignores its
 bootloader/kernel arguments and creates a GPT root-filesystem image; that
@@ -55,7 +58,7 @@ as a working no-GRUB disk boot path.
 
 ## 2. Legacy boot code that must not be reused without repair
 
-- kernel/arch/amd64/boot/boot.S is not listed in BOOT_SOURCES and is not
+- kernel/HAL/arch/amd64/boot/boot.S is not listed in BOOT_SOURCES and is not
   compiled by the current Makefile.
 - The separate amd64 bootloader header.S declares an entry-address tag with
   type 5, while the Multiboot2 standard entry-address header tag is type 3.
@@ -359,3 +362,58 @@ Detailed implementation and verification record:
 Still outside BOOT-1: common AMD64+AArch64 BootInfo with EFI memory map/ACPI/
 framebuffer/modules, AMD64 UEFI adapter, generic FDT device/interrupt discovery,
 continuous fuzzing and real-hardware certification.
+
+## 15. GRUB source unification and five-lane boot qualification — 2026-11-09
+
+This section supersedes the older availability statements in §§10 and 14. It
+does not rewrite their historical evidence.
+
+GRUB source ownership is now singular: `boot/grub/upstream` is the pinned GNU
+GRUB 2.14 submodule at
+`d38d6a1a9b79427848976f53d474392cd29c2a71`. Project compatibility patches
+are applied only to a generated source cache; the submodule remains clean.
+One builder produces `i386-pc`, `x86_64-efi` and `arm64-efi`. Verified
+installed stages are fingerprinted under
+`build/cache/grub/prebuilt/<target>`, survive `make clean`, and can be
+packaged/installed with commit, pipeline, host and tree-hash verification.
+
+AMD64 now has two independent GRUB image lanes:
+
+- BIOS: `i386-pc` El Torito media, preserving the existing regression path.
+- UEFI: OVMF/EDK2 loads a GRUB `x86_64-efi` El Torito image. GRUB emits
+  `NEXSOS_GRUB_AMD64_UEFI_MULTIBOOT2` and enters the existing Multiboot2
+  kernel ABI with magic `0x36d76289`.
+- The AMD64 UEFI runtime explicitly reports no FDT, which is expected:
+  platform/device discovery remains PCI/ACPI-oriented and the boot path does
+  not acquire an AArch64-style DTB dependency.
+- The current UEFI/Multiboot2 memory handoff normalizes through the compatibility
+  platform map; the captured UEFI run reported 25 records versus 10 in the BIOS
+  run. A future native EFI-to-common-BootInfo adapter may replace that
+  compatibility normalization, but AMD64 UEFI boot support itself is no longer
+  absent.
+
+AArch64 continues to use GRUB `arm64-efi` to chainload the project EFI stub,
+which exits boot services and passes the validated DTB address+size to the
+kernel. Its generated ISO remains UEFI-only.
+
+Runtime acceptance is now five independent lanes. On 2026-11-09 each lane
+reached an interactive NXShell through `nxadb`, passed timer diagnostics,
+advancing counter heartbeat and post-heartbeat shell interaction, and produced
+zero detected kernel faults:
+
+- AMD64 GRUB-BIOS: 22 KTEST passed, 0 failed.
+- AMD64 GRUB-UEFI: 22 KTEST passed, 0 failed.
+- AMD64 direct kernel: 22 KTEST passed, 0 failed.
+- AArch64 GRUB-UEFI: 23 KTEST passed, 0 failed.
+- AArch64 direct kernel: 23 KTEST passed, 0 failed.
+
+The independent `make run` path was also executed for all five lanes and each
+reached `NXShell: Alive`. Runtime QEMU policy for GRUB and direct modes is now
+centralized in `tools/nxqemu.py`; the duplicate architecture-specific
+`QEMU_FLAGS` block was removed. The direct diagnostic path and GRUB image
+paths remain separate boot protocols even though they share one QEMU launcher.
+
+This qualification closes the prior “AMD64 UEFI unavailable” gap. It does not
+close the broader common BootInfo programme: ACPI/GOP/module normalization,
+full EFI descriptor semantics, generic firmware/device discovery and
+real-hardware qualification remain separate work.

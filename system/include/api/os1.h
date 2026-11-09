@@ -118,7 +118,7 @@ extern long _sys_object_ctl(int handle, int cmd, long arg);
 extern long _sys_window_enum(struct window_info *buf, unsigned long max);
 extern long _sys_window_snapshot(struct os1_window_snapshot_v1 *snapshot);
 extern long _sys_display_present(struct os1_compositor_present_v1 *present);
-extern long _sys_input_next_raw_role(struct os1_raw_input_event_v1 *event, int role);
+extern long _sys_input_raw_read(struct os1_raw_input_event_v1 *event, int role, unsigned int mode);
 extern long _sys_window_move(int window_id, int x, int y);
 
 /* Standard C-like Library Functions */
@@ -282,8 +282,12 @@ void OS1_input_pump(void);
 long OS1_window_enum(struct window_info *buf, unsigned long max);
 long OS1_window_snapshot(struct os1_window_snapshot_v1 *snapshot);
 long OS1_display_present(struct os1_compositor_present_v1 *present);
+long OS1low_input_read_raw(struct os1_raw_input_event_v1 *event,
+                           unsigned int role, unsigned int mode);
 long OS1_input_next_keyboard(struct os1_raw_input_event_v1 *event);
 long OS1_input_next_mouse(struct os1_raw_input_event_v1 *event);
+long OS1_input_wait_keyboard(struct os1_raw_input_event_v1 *event);
+long OS1_input_wait_mouse(struct os1_raw_input_event_v1 *event);
 long OS1_window_move(int window_id, int x, int y);
 
 /* System statistics (perf §1 instrumentation): fill *out with one snapshot.

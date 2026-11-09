@@ -28,7 +28,6 @@ void hal_reboot(void) __attribute__((noreturn));
 void hal_bus_scan(void);
 void hal_irq_controller_init(void);
 void hal_timer_global_init(void);
-void hal_timer_percpu_init(void);
 
 /* Local interrupt state. */
 void hal_irq_enable(void);
@@ -74,16 +73,9 @@ void hal_cache_clean(void *va, size_t size);
 void hal_cache_invalidate(void *va, size_t size);
 void hal_cache_sync_icache(void *va, size_t size);
 
-/* Fault metadata and entropy. */
+/* Fault metadata. Entropy has its own versioned contract in <hal/entropy.h>. */
 uint64_t hal_fault_address(void);
 uint64_t hal_fault_status(void);
-int hal_hw_random(uint64_t *out);
-
-/* Monotonic hardware timer primitive. */
-uint64_t hal_timer_get_freq(void);
-uint64_t hal_timer_get_count(void);
-void hal_timer_set_compare(uint64_t value);
-void hal_timer_control(uint32_t value);
 
 /* Lock primitive used by the generic spinlock policy. */
 void hal_spin_lock(volatile uint32_t *lock);

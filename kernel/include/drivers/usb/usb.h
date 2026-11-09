@@ -9,7 +9,7 @@
  * struct usb_hcd implementing usb_hcd_ops. The core enumerates each port,
  * reads standard descriptors over the control pipe, and hands HID interfaces
  * to usb_hid.c, which translates reports into the existing evdev input core
- * (virtio_input_add_event). The HCD never knows about HID; the HID driver
+ * (OS1driver_input_publish). The HCD never knows about HID; the HID driver
  * never knows whether the transport is xHCI/EHCI/UHCI.
  *
  * Addressing is delegated to the HCD via enumerate_port(): UHCI/EHCI send a
@@ -218,9 +218,10 @@ int  usb_control(struct usb_device *dev, uint8_t bmRequestType, uint8_t bRequest
  * each present controller is probed. Called from the input init path. */
 void usb_init(void);
 
-/* Periodic poll of all bound HID endpoints; drives the evdev input core.
- * Called from the same place keyboard_poll() is serviced. */
+/* Compatibility poll for HCDs whose interrupt endpoints are not IRQ-driven. */
 void usb_hid_poll(void);
+/* True when at least one bound HID still requires the compatibility poll path. */
+int usb_hid_polling_required(void);
 
 /* Internal: usb_hid.c entry, called by the core for each enumerated device. */
 void usb_hid_probe_device(struct usb_device *dev);

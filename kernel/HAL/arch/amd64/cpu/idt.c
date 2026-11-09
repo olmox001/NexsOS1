@@ -397,7 +397,7 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
         /* Tier-2 per-CPU drift accounting (docs/TIMER-MODEL.md §3): the
          * arch-neutral, HAL-driven nxhal_timer_tick_current() advances the software
          * per-CPU schedule against the free-running TSC so lost ticks are
-         * recovered per core. hal_timer_set_compare() is a no-op here (the
+         * recovered per core. The LAPIC clockevent is periodic here (the
          * LAPIC stays periodic). Done BEFORE the tick so it reflects this IRQ. */
         (void)nxhal_timer_tick_current();
 

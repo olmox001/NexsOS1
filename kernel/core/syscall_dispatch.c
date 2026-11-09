@@ -74,7 +74,7 @@
  *           (sys_set_font in graphics/font.c) → UAF / info-leak.
  */
 #include <hal/frame.h>
-#include <drivers/keyboard.h>
+#include <drivers/input.h>
 #include <graphics/gl.h>
 #include <kernel/gfx_surface.h>
 #include <kernel/cpu.h>
@@ -773,7 +773,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       break;
     }
     /* Retained v1 flush ABI. Device input is now drained by the supervised
-     * userland service through SYS_INPUT_NEXT_RAW; this call never renders. */
+     * userland service through SYS_INPUT_RAW_READ; this call never renders. */
     hal_frame_set_return(frame, 0);
     break;
   case SYS_WINDOW_SNAPSHOT: {
@@ -843,21 +843,32 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     hal_frame_set_return(frame, rc);
     break;
   }
-  case SYS_INPUT_NEXT_RAW:
-    if (!proc_has_cap(current_process, CAP_WINDOW) || current_process->parent_pid != 1) {
+  case SYS_INPUT_RAW_READ: {
+    struct os1_raw_input_event_v1 event;
+    long result;
+
+    if (!proc_has_cap(current_process, CAP_WINDOW) ||
+        current_process->parent_pid != 1) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
     if ((arg1 == OS1_INPUT_ROLE_KEYBOARD &&
-         strncmp(current_process->name, "/sys/bin/nxkeyboardd", sizeof("/sys/bin/nxkeyboardd")) != 0) ||
+         strncmp(current_process->name, "/sys/bin/nxkeyboardd",
+                 sizeof("/sys/bin/nxkeyboardd")) != 0) ||
         (arg1 == OS1_INPUT_ROLE_MOUSE &&
-         strncmp(current_process->name, "/sys/bin/nxmoused", sizeof("/sys/bin/nxmoused")) != 0)) {
+         strncmp(current_process->name, "/sys/bin/nxmoused",
+                 sizeof("/sys/bin/nxmoused")) != 0)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
-    hal_frame_set_return(frame, input_next_raw_event(
-        (struct os1_raw_input_event_v1 *)arg0, (unsigned)arg1));
+    result = OS1libkernel_input_read_raw(&event, (unsigned)arg1,
+                                         (unsigned)arg2);
+    if (result > 0 &&
+        hal_copy_to_user((void *)arg0, &event, sizeof(event)) != 0)
+      result = -EFAULT;
+    hal_frame_set_return(frame, result);
     break;
+  }
   case SYS_WINDOW_MOVE:
     if (!proc_has_cap(current_process, CAP_WINDOW) ||
         current_process->parent_pid != 1 ||

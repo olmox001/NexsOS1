@@ -28,6 +28,7 @@ HAL_C_SOURCES := \
     $(HAL_ARCH_DIR)/platform/platform.c \
     $(HAL_ARCH_DIR)/boot_memory.c \
     $(HAL_ARCH_DIR)/hal.c \
+    $(HAL_ARCH_DIR)/entropy.c \
     $(HAL_ARCH_DIR)/virtio.c \
     $(HAL_ARCH_DIR)/devices/uart_16550.c \
     $(HAL_ARCH_DIR)/devices/pic_pit.c
@@ -48,6 +49,7 @@ HAL_C_SOURCES := \
     $(HAL_ARCH_DIR)/platform.c \
     $(HAL_ARCH_DIR)/boot_memory.c \
     $(HAL_ARCH_DIR)/hal.c \
+    $(HAL_ARCH_DIR)/entropy.c \
     $(HAL_ARCH_DIR)/virtio.c \
     $(HAL_ARCH_DIR)/devices/uart_pl011.c \
     $(HAL_ARCH_DIR)/devices/gic.c \
@@ -58,6 +60,8 @@ endif
 
 HAL_C_SOURCES += $(HAL_ROOT)/common/boot_memory_record.c \
                  $(HAL_ROOT)/core/core.c \
+                 $(HAL_ROOT)/core/time.c \
+                 $(HAL_ROOT)/core/entropy.c \
                  $(HAL_ROOT)/core/frame.c \
                  $(HAL_ROOT)/core/core_protocol.c \
                  $(HAL_ROOT)/core/fault_protocol.c \
@@ -66,7 +70,6 @@ HAL_C_SOURCES += $(HAL_ROOT)/common/boot_memory_record.c \
                  $(HAL_ROOT)/core/smp_protocol.c \
                  $(HAL_ROOT)/core/device_protocol.c \
                  $(HAL_ROOT)/core/irq.c \
-                 $(HAL_ROOT)/core/input_protocol.c \
                  $(HAL_ROOT)/core/fatal_protocol.c \
                  $(HAL_ROOT)/core/cpu_protocol.c \
                  $(HAL_ROOT)/core/uaccess.c \

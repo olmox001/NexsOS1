@@ -210,14 +210,13 @@ static inline void arch_impl_cache_sync_icache(void *start, size_t size) {
  * Zero until calibration runs on the BSP. */
 extern uint64_t tsc_hz;
 
-/* arch_impl_timer_get_freq - the HAL real-time-reference frequency (Hz).
+/* arch_impl_timer_get_freq - calibrated TSC frequency in Hz.
  *
- * Returns the calibrated TSC frequency (tsc_hz).  Before tsc_calibrate() runs
- * on the BSP, tsc_hz is 0; this returns a SAFE 1 GHz fallback so early callers
- * of the arch-neutral mono_ns() (kernel/core/timer.c) never divide by zero.
- * After calibration the real measured value is returned. */
+ * Zero means the clocksource is not ready.  A guessed frequency is never
+ * published as time: the public NX-HAL clocksource contract validates the
+ * provider after calibration before NX-CORE starts timekeeping. */
 static inline uint64_t arch_impl_timer_get_freq(void) {
-  return tsc_hz ? tsc_hz : 1000000000ULL; /* fallback until BSP calibration */
+  return tsc_hz;
 }
 
 static inline uint64_t arch_impl_timer_get_count(void) {

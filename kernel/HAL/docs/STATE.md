@@ -58,3 +58,66 @@
   pass, and consolidated HAL objects have no old SMP reverse-edge symbols.
 - Linker-defined image symbols and the single Core boot entry are tracked
   separately and are not mistaken for service dependencies.
+- Timekeeping now has one versioned NX-HAL clocksource/clockevent contract in
+  `hal/time.h`; NX-CORE scheduler, SMP waits, VirtIO deadlines, PMM timing and
+  panic-time clock reads no longer depend on the retired generic raw
+  `hal_timer_get_count` interface.
+- Early SSP entropy is intentionally separate from timekeeping. The versioned
+  `hal/entropy.h` contract exposes architected hardware randomness and an
+  explicitly non-temporal early jitter sample, with provider-private ISA
+  adapters on amd64/aarch64 and direct host/sanitizer/static tests.
+- Scheduler policy is no longer encoded as a number of timer IRQs. The previous
+  `DEFAULT_QUANTUM=3` silently became a 3 ms quantum after the clockevent moved
+  to 1 kHz and the timer path invoked `schedule()` every millisecond. The
+  scheduler now owns a 30 ms monotonic deadline and timer IRQs reschedule only
+  when that deadline expires (idle/non-running states remain immediate).
+- The time/scheduler snapshot passes clean NX-CORE builds on both ISAs and the
+  full five-lane nxadb matrix: amd64 GRUB-BIOS/GRUB-UEFI/direct 22/22 KTEST,
+  AArch64 GRUB-UEFI/direct 23/23 KTEST, timerdiag + counter heartbeat +
+  shell-after-heartbeat PASS, zero detected faults.
+- Performance measurement after removing 1 kHz forced preemption still observes
+  roughly 1.06-1.12k context switches/s on the current amd64 desktop. This is
+  not closed: keyboard now blocks on raw-event readiness, but polling-only USB
+  HID fallback, the 5 ms mouse service loop, 10 ms shell loop and other timed
+  service loops remain, while nxcompositor allocates/free
+  frame and per-window pixel buffers on every 33 ms frame. Those are the next
+  measured wakeup/allocation targets; do not attribute the residual rate to the
+  scheduler tick without new evidence.
+- The first input migration micro-phase is build- and runtime-qualified.
+  Input no longer uses or extends the generic object ABI: there is no
+  `OBJ_TYPE_INPUT`/`OS1_NS_INPUT`. A single `drivers/input/core.c` owns the raw
+  keyboard/mouse queues; PS/2, USB HID and VirtIO publish through
+  `OS1driver_input_publish`, and the dead secondary VirtIO input buffer/API was
+  removed. Syscall 278 is retained as the stable number but is now the bounded
+  `SYS_INPUT_RAW_READ(event, role, mode)` contract with TRY/WAIT modes and one
+  `OS1low_input_read_raw` user ABI. `nxkeyboardd` uses the blocking path, with
+  an explicit `-EAGAIN` fallback only while polling-only USB HCD support remains.
+- The misnamed HAL `nxhal_input_protocol_v1` was removed rather than preserved
+  as a no-op alias. Its sole provider was PL011 UART RX and its sole Core action
+  woke a keyboard wait queue with no real HID consumer; UART and HID/input are
+  now kept as distinct subsystems.
+- Two pre-provider KTEST cases exercise keyboard and mouse queue routing plus
+  invalid role/mode rejection. The new input core passes the local Power12 AST
+  gate (no heap/goto/unbounded loops and all functions <=50 physical lines).
+  HAL host/cross/sanitizer/static, both standalone HAL boundary audits, clean
+  NX-CORE builds and complete amd64/aarch64 rootfs builds pass. All five nxadb
+  runtime lanes pass with interactive shell/timerdiag/heartbeat/post-heartbeat
+  shell and zero faults: amd64 GRUB-BIOS/GRUB-UEFI/direct 22/22 KTEST and
+  AArch64 GRUB-UEFI/direct 23/23 KTEST.
+- Independent `make run` boot qualification reaches NXShell in all five
+  current Makefile lanes: amd64 GRUB-BIOS, amd64 GRUB-UEFI, amd64 direct,
+  AArch64 GRUB-UEFI and AArch64 direct. Runtime policy for both image and direct
+  boots is centralized in `tools/nxqemu.py`; the dead duplicate QEMU flag set
+  was removed. AMD64 UEFI uses OVMF + GRUB x86_64-efi Multiboot2 and explicitly
+  boots with no DTB dependency.
+- GRUB source/build ownership is now unified around the clean
+  `boot/grub/upstream` submodule pinned at
+  `d38d6a1a9b79427848976f53d474392cd29c2a71` (GRUB 2.14). One builder and one
+  versioned patchset produce i386-pc, x86_64-efi and arm64-efi from that pin.
+  Host-specific installed stages are fingerprinted and published under
+  `build/cache/grub/prebuilt/<target>`, survive `make clean`, and are reused
+  without recreating `build/grub/<target>`. Package/install round trips with
+  version, commit, pipeline, host and tree-hash validation pass; all three
+  targets also pass delete-scratch/reuse tests. Clean AMD64 BIOS+UEFI and
+  AArch64 UEFI media builds consume those prebuilt stages, and El Torito
+  inspection confirms distinct BIOS/UEFI boot entries.

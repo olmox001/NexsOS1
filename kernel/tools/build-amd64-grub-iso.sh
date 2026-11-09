@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_ROOT="${NEXS_BUILD_ROOT:-$ROOT/build}"
+PROJECT_ROOT="$(cd "$ROOT/.." && pwd)"
+BUILD_ROOT="${NEXS_BUILD_ROOT:-$PROJECT_ROOT/build}"
 case "$BUILD_ROOT" in
     /*) ;;
     *) echo "[amd64-grub] NEXS_BUILD_ROOT must be absolute: $BUILD_ROOT" >&2; exit 1 ;;
@@ -12,19 +13,16 @@ LOG_DIR="$BUILD_ROOT/logs"
 STAGE="$BUILD/grub-bios"
 ISO="$BUILD/grub-bios.iso"
 KERNEL="$BUILD/kernel.elf"
-GRUB_MKRESCUE="${NEXS_GRUB_MKRESCUE:-}"
+GRUB_STAGE="$BUILD_ROOT/cache/grub/prebuilt/i386-pc"
+GRUB_MKRESCUE="$GRUB_STAGE/bin/grub-mkrescue"
+GRUB_MODULE_DIR="$GRUB_STAGE/lib/grub/i386-pc"
 
-if [[ -z "$GRUB_MKRESCUE" ]]; then
-    if command -v i686-elf-grub-mkrescue >/dev/null 2>&1; then
-        GRUB_MKRESCUE="$(command -v i686-elf-grub-mkrescue)"
-    elif command -v grub-mkrescue >/dev/null 2>&1; then
-        GRUB_MKRESCUE="$(command -v grub-mkrescue)"
-    else
-        echo "[amd64-grub] missing grub-mkrescue (i686-elf-grub-mkrescue on macOS)" >&2
-        exit 1
-    fi
-fi
 command -v xorriso >/dev/null 2>&1 || { echo "[amd64-grub] xorriso is required" >&2; exit 1; }
+"$ROOT/tools/build-grub-i386-pc.sh"
+[[ -x "$GRUB_MKRESCUE" && -f "$GRUB_MODULE_DIR/multiboot2.mod" ]] || {
+    echo "[amd64-grub] reusable GRUB i386-pc stage is incomplete" >&2
+    exit 1
+}
 [[ -s "$KERNEL" ]] || { echo "[amd64-grub] missing kernel: $KERNEL (build kernel first)" >&2; exit 1; }
 
 case "$STAGE" in "$BUILD_ROOT"/amd64/grub-bios) ;; *) echo "unsafe GRUB staging path: $STAGE" >&2; exit 1 ;; esac
@@ -45,7 +43,7 @@ menuentry "NexsOS1 AMD64" {
 }
 GRUB_CONFIG
 
-"$GRUB_MKRESCUE" -o "$ISO" "$STAGE" \
+PATH="$GRUB_STAGE/bin:$PATH" "$GRUB_MKRESCUE" -d "$GRUB_MODULE_DIR" -o "$ISO" "$STAGE" \
     > "$LOG_DIR/grub-mkrescue-amd64.log" 2>&1
 xorriso -indev "$ISO" -report_el_torito plain \
     > "$LOG_DIR/amd64-grub-el-torito.txt" 2>&1

@@ -524,13 +524,17 @@ int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack) {
    * hard on some boots" symptom this driver has been asked to rule out. */
   __asm__ __volatile__("mfence" ::: "memory");
 
-  lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL | ICR_PHYSICAL);
+  if (lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL |
+                              ICR_PHYSICAL) != 0)
+    return -1;
 
   /* 4. 10 ms between INIT and first STARTUP (Intel SDM). */
   udelay(10000);
 
   /* 5. STARTUP IPI #1: vector 0x01 → AP starts at physical 0x1000. */
-  lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
+  if (lapic_send_ipi(cpu_id, ICR_STARTUP | UINT32_C(0x01) |
+                              ICR_PHYSICAL) != 0)
+    return -1;
 
   /* 6. 200 µs between the two STARTUP IPIs (Intel SDM minimum). */
   udelay(200);
@@ -538,7 +542,9 @@ int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack) {
   /* 7. STARTUP IPI #2 — SDM retry against a lost/coalesced first SIPI.
    * Safe: trampoline_busy (trampoline.S) makes a second SIPI that lands
    * mid-flight spin instead of re-entering the 16→32→64 transition. */
-  lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
+  if (lapic_send_ipi(cpu_id, ICR_STARTUP | UINT32_C(0x01) |
+                              ICR_PHYSICAL) != 0)
+    return -1;
 
   /* 8. Settle so the AP can claim trampoline_busy before the next
    * arch_impl_smp_wake_secondary() memcpy overwrites the shared page. */

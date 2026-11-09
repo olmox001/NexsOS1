@@ -7,6 +7,9 @@
 #define OS1_INPUT_ROLE_KEYBOARD 1u
 #define OS1_INPUT_ROLE_MOUSE 2u
 
+#define OS1_INPUT_READ_TRY 0u
+#define OS1_INPUT_READ_WAIT 1u
+
 struct os1_raw_input_event_v1 {
   uint32_t abi_version;
   uint32_t struct_size;

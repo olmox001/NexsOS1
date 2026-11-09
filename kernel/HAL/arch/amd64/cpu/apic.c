@@ -206,240 +206,208 @@ uint32_t lapic_get_id(void) { return lapic_read(LAPIC_ID) >> 24; }
  * NOTE(BOOT-03): platform.c sends only a single STARTUP IPI; the SDM
  * recommends INIT + two SIPIs for reliability.
  */
-void lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
-  /* Wait for previous IPI to complete (ICR_SEND_PENDING bit must be clear) */
-  while (lapic_read(LAPIC_ICR_LOW) & ICR_SEND_PENDING) {
+enum {
+  LAPIC_IPI_POLL_BUDGET = 65536
+};
+
+static inline uint64_t rdtsc64(void);
+
+int lapic_send_ipi(uint32_t lapic_id, uint32_t flags) {
+  uint64_t start = rdtsc64();
+  uint64_t timeout = tsc_hz == 0U ? 0U : tsc_hz / UINT64_C(100);
+
+  for (uint32_t poll = 0U; poll < LAPIC_IPI_POLL_BUDGET; ++poll) {
+    if ((lapic_read(LAPIC_ICR_LOW) & ICR_SEND_PENDING) == 0U) {
+      lapic_write(LAPIC_ICR_HIGH, lapic_id << 24);
+      lapic_write(LAPIC_ICR_LOW, flags);
+      return 0;
+    }
+    if (timeout != 0U && (rdtsc64() - start) >= timeout)
+      break;
     hal_cpu_yield();
   }
-
-  lapic_write(LAPIC_ICR_HIGH, lapic_id << 24); /* destination APIC ID */
-  lapic_write(LAPIC_ICR_LOW, flags);           /* triggers IPI delivery */
+  nxhal_diag_error("LAPIC: IPI transport timeout dest=%u flags=0x%x\n",
+                   lapic_id, flags);
+  return -1;
 }
 
-/* PIT Constants for calibration */
-#ifndef PIT_CH0
-#define PIT_CH0 0x40 /* I/O port: 8254 PIT Channel 0 counter */
-#endif               /* PIT_CH0 */
-#ifndef PIT_CMD
-#define PIT_CMD 0x43 /* I/O port: 8254 PIT command/mode register */
-#endif               /* PIT_CMD */
+/* 8254 PIT channel 0 reference used only during early calibration.
+ * The poll budget is a boot-resource bound: four observations for each value
+ * in the 16-bit hardware counter domain. Exhaustion is calibration failure,
+ * never permission to publish a guessed clock. */
+enum {
+  PIT_CH0 = 0x40,
+  PIT_CMD = 0x43,
+  PIT_REFERENCE_HZ = 1193182,
+  PIT_CALIBRATION_COUNTS = 11932,
+  PIT_CALIBRATION_POLL_BUDGET = 262144,
+  TSC_CALIBRATION_SAMPLES = 3,
+  TSC_MAX_DEVIATION_DIVISOR = 10
+};
 
-/*
- * rdtsc64 - read the 64-bit Time Stamp Counter.
- *
- * Returns the current TSC value (EDX:EAX).  This is the same free-running
- * counter arch_impl_timer_get_count() exposes; sampled here across a known
- * PIT window to derive its frequency.
- *
- * IRQ context: safe (plain register read, no side effects).
- */
 static inline uint64_t rdtsc64(void) {
-  uint32_t lo, hi;
+  uint32_t lo;
+  uint32_t hi;
+
   __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
   return ((uint64_t)hi << 32) | lo;
 }
 
-/*
- * tsc_calibrate - measure the TSC frequency against the 8254 PIT.
- *
- * Critical for docs/TIMER-MODEL.md §1: until this runs,
- * arch_impl_timer_get_freq() returns a hardcoded 1 GHz fallback and every
- * derived clock (mono_ns, jiffies reconciliation, nanosleep deadlines) is
- * wrong.  This publishes the *measured* TSC rate into the global tsc_hz.
- *
- * Algorithm (mirrors lapic_timer_calibrate's PIT-window technique):
- *   1. Program PIT Channel 0 in Rate Generator mode (mode 2), count 0xFFFF.
- *   2. Sample RDTSC, then busy-poll the PIT until it has counted down by
- *      11932 ticks (11932 / 1193.18 kHz ≈ 10 ms), then sample RDTSC again.
- *   3. tsc_hz = (tsc_end - tsc_start) * 100  (the 10 ms window is 1/100 s).
- *   4. Halt the PIT (mode-0 control word, no count) so its IRQ0 line stays
- *      quiet — same EXC-AMD64-03 hazard lapic_timer_calibrate() guards.
- *
- * Idempotent: returns immediately if tsc_hz is already non-zero.  Called once
- * on the BSP from lapic_timer_calibrate() (before the LAPIC timer starts);
- * APs reuse the published value (constant/invariant TSC assumed on the QEMU
- * targets — CPUID 0x80000007 EDX[8] is checked and a warning logged when the
- * TSC is *not* advertised invariant, but calibration proceeds regardless).
- *
- * All math is native 64-bit: the multiply by 100 cannot overflow for any sane
- * host TSC (a 184-EHz TSC would be needed to wrap), and there is no 128-bit
- * division — the toolchain links with no libgcc, so __udivti3 is unavailable.
- *
- * Locking: none; BSP-only, before SMP.  IRQ context: NO (busy-polls ~10 ms
- * with the PIT; must run with the timer IRQ not yet started).
- */
-/*
- * tsc_calibrate_locked - the actual TSC calibration work.
- *
- * FIX(TIMER-CALIB-RACE-01): factored out of tsc_calibrate() so
- * lapic_timer_calibrate() can perform the TSC step WITHOUT recursively
- * acquiring calib_lock (spinlock_t here is not reentrant — a naive "just
- * call tsc_calibrate() from lapic_timer_calibrate() while already holding
- * calib_lock" would self-deadlock the very first time real calibration
- * ever ran). Caller MUST already hold calib_lock and MUST have already
- * checked tsc_hz == 0.
- */
-static void tsc_calibrate_locked(void) {
-  /* Invariant-TSC advisory (CPUID 0x80000007 EDX bit 8).  When clear, the
-   * TSC may change rate with P-states / deep C-states and the single BSP
-   * calibration shared by all APs is theoretically unsafe.  QEMU advertises
-   * invariant TSC; we still proceed if it does not, but warn loudly. */
-  {
-    uint32_t eax = 0U, ebx = 0U, ecx = 0U, edx = 0U;
-    arch_isa_cpuid(UINT32_C(0x80000000), 0U, &eax, &ebx, &ecx, &edx);
-    if (eax >= UINT32_C(0x80000007)) {
-      arch_isa_cpuid(UINT32_C(0x80000007), 0U, &eax, &ebx, &ecx, &edx);
-      if (!(edx & (1U << 8))) {
-        nxhal_diag_info("TSC: WARNING — invariant TSC not advertised "
-                "(CPUID 80000007 EDX[8]=0); using shared BSP "
-                "calibration anyway\n");
-      }
-    }
-  }
-
-  nxhal_diag_info("TSC: Calibrating against PIT...\n");
-
-  /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2). */
-  outb(PIT_CMD, 0x34);
-  outb(PIT_CH0, 0xFF); /* low byte of initial count  */
-  outb(PIT_CH0, 0xFF); /* high byte of initial count */
-
-  uint16_t start_tick = 0xFFFF;
-
-  uint64_t tsc_start = rdtsc64();
-
-  /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms). */
-  uint16_t current_tick;
-  do {
-    outb(PIT_CMD, 0x00); /* latch Channel 0 count */
-    current_tick = inb(PIT_CH0);
-    current_tick |= (inb(PIT_CH0) << 8);
-  } while ((uint16_t)(start_tick - current_tick) < 11932);
-
-  uint64_t tsc_end = rdtsc64();
-
-  /* 10 ms window → multiply the delta by 100 to get counts per second. */
-  tsc_hz = (tsc_end - tsc_start) * 100UL;
-
-  /* Halt the PIT (mode 0, no count loaded) so its IRQ0 line stays quiet —
-   * same EXC-AMD64-03 double-tick hazard lapic_timer_calibrate() guards. */
-  outb(PIT_CMD, 0x30);
-
-  nxhal_diag_info("TSC: Calibrated: %lu Hz (%lu MHz)\n", tsc_hz, tsc_hz / 1000000UL);
+static void pit_calibration_start(void) {
+  outb(PIT_CMD, UINT8_C(0x34));
+  outb(PIT_CH0, UINT8_C(0xff));
+  outb(PIT_CH0, UINT8_C(0xff));
 }
 
-/*
- * tsc_calibrate - public, lock-acquiring entry point for TSC calibration.
- *
- * FIX(TIMER-CALIB-RACE-01): acquires calib_lock (IRQs saved) around the
- * whole check-then-calibrate sequence so two CPUs can never interleave
- * their PIT programming — see calib_lock's declaration for why this
- * matters (a corrupted calibration silently poisons every CPU's clock for
- * the rest of the boot). A CPU that finds tsc_hz already published just
- * takes and releases an uncontended lock and returns immediately.
- *
- * Locking: acquires calib_lock (irqsave). IRQ context: NO (see
- * tsc_calibrate_locked; unchanged from before this fix).
- */
+static void pit_calibration_stop(void) {
+  outb(PIT_CMD, UINT8_C(0x30));
+}
+
+static uint16_t pit_calibration_read(void) {
+  uint16_t count;
+
+  outb(PIT_CMD, UINT8_C(0x00));
+  count = (uint16_t)inb(PIT_CH0);
+  count |= (uint16_t)((uint16_t)inb(PIT_CH0) << 8);
+  return count;
+}
+
+static int pit_wait_calibration_window(void) {
+  for (uint32_t poll = 0U; poll < PIT_CALIBRATION_POLL_BUDGET; ++poll) {
+    uint16_t current = pit_calibration_read();
+    uint16_t elapsed = (uint16_t)(UINT16_MAX - current);
+    if (elapsed >= PIT_CALIBRATION_COUNTS)
+      return 0;
+    hal_cpu_nop();
+  }
+  return -1;
+}
+
+static uint64_t pit_measure_tsc_hz(void) {
+  uint64_t start;
+  uint64_t end;
+  uint64_t delta;
+
+  pit_calibration_start();
+  start = rdtsc64();
+  if (pit_wait_calibration_window() != 0) {
+    pit_calibration_stop();
+    return 0U;
+  }
+  end = rdtsc64();
+  pit_calibration_stop();
+  if (end <= start)
+    return 0U;
+  delta = end - start;
+  if (delta > UINT64_MAX / PIT_REFERENCE_HZ)
+    return 0U;
+  return (delta * PIT_REFERENCE_HZ) / PIT_CALIBRATION_COUNTS;
+}
+
+static int tsc_samples_consistent(const uint64_t *samples) {
+  uint64_t low = samples[0];
+  uint64_t high = samples[0];
+
+  for (uint32_t i = 1U; i < TSC_CALIBRATION_SAMPLES; ++i) {
+    if (samples[i] < low)
+      low = samples[i];
+    if (samples[i] > high)
+      high = samples[i];
+  }
+  if (low == 0U || high == 0U)
+    return 0;
+  return (high - low) <= (high / TSC_MAX_DEVIATION_DIVISOR);
+}
+
+static uint64_t tsc_samples_midpoint(const uint64_t *samples) {
+  uint64_t low = samples[0];
+  uint64_t high = samples[0];
+
+  for (uint32_t i = 1U; i < TSC_CALIBRATION_SAMPLES; ++i) {
+    if (samples[i] < low)
+      low = samples[i];
+    if (samples[i] > high)
+      high = samples[i];
+  }
+  return low + ((high - low) / UINT64_C(2));
+}
+
+static int tsc_calibrate_locked(void) {
+  uint64_t samples[TSC_CALIBRATION_SAMPLES];
+
+  nxhal_diag_info("%s", "TSC: bounded PIT calibration start\n");
+  for (uint32_t i = 0U; i < TSC_CALIBRATION_SAMPLES; ++i) {
+    samples[i] = pit_measure_tsc_hz();
+    if (samples[i] == 0U) {
+      nxhal_diag_error("TSC: PIT calibration sample %u failed\n", i);
+      return -1;
+    }
+  }
+  if (!tsc_samples_consistent(samples)) {
+    nxhal_diag_error("TSC: inconsistent calibration %lu/%lu/%lu Hz\n",
+                     samples[0], samples[1], samples[2]);
+    return -1;
+  }
+  tsc_hz = tsc_samples_midpoint(samples);
+  nxhal_diag_info("TSC: calibrated %lu Hz (%lu MHz)\n",
+                  tsc_hz, tsc_hz / UINT64_C(1000000));
+  return 0;
+}
+
 void tsc_calibrate(void) {
   uint64_t calib_flags;
+
   spin_lock_irqsave(&calib_lock, &calib_flags);
-  if (tsc_hz == 0)
-    tsc_calibrate_locked();
+  if (tsc_hz == 0U)
+    (void)tsc_calibrate_locked();
   spin_unlock_irqrestore(&calib_lock, calib_flags);
 }
 
-/*
- * lapic_timer_calibrate - determine LAPIC timer frequency using the PIT.
- *
- * Algorithm:
- *   1. Program the PIT Channel 0 in Rate Generator mode (mode 2) with
- *      count 0xFFFF (the maximum, ~54.9 ms at 1.19318 MHz PIT clock).
- *   2. Set LAPIC timer divisor to /16 and initial count to 0xFFFFFFFF.
- *   3. Busy-poll the PIT current count until it has decreased by 11932 ticks
- *      (11932 / 1193.18 kHz ≈ 10 ms).
- *   4. The LAPIC ticks elapsed = 0xFFFFFFFF - LAPIC_TCC.
- *   5. ticks_per_ms = elapsed / 10.
- *
- * The calibration is idempotent: if ticks_per_ms is already non-zero the
- * function returns immediately.  BSP calls this once in arch_timer_init();
- * APs do not re-calibrate (ticks_per_ms is a shared global — no race since
- * APs start after BSP calibration completes).
- *
- * NOTE(ARCH-03): timer_get_us() (platform.c) uses jiffies*1000 rather than
- * the calibrated LAPIC TCC, so the microsecond timestamp is inaccurate.
- */
-void lapic_timer_calibrate(void) {
-  /* FIX(TIMER-CALIB-RACE-01): the entire function — including the TSC step
-   * below and the LAPIC/PIT measurement that follows — now runs under
-   * calib_lock, taken exactly ONCE here.  tsc_calibrate_locked() (not the
-   * lock-acquiring tsc_calibrate()) is called directly to avoid recursively
-   * acquiring the same non-reentrant spinlock. See calib_lock's declaration
-   * for why serialising this against every other CPU matters: without it,
-   * two CPUs racing into their first calibration attempt can interleave
-   * PIT_CMD/PIT_CH0 writes and each measure a corrupted ~10 ms window,
-   * publishing a garbage ticks_per_ms/tsc_hz that is then trusted by every
-   * CPU for the rest of the boot — the exact failure mode that reads back
-   * as "the clock stopped" together with a full system stall. */
-  uint64_t calib_flags;
-  spin_lock_irqsave(&calib_lock, &calib_flags);
+static int lapic_measure_ticks_per_ms(uint32_t *out_ticks_per_ms) {
+  uint64_t event_hz;
+  uint32_t elapsed;
 
-  if (ticks_per_ms != 0) {
+  pit_calibration_start();
+  lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
+  lapic_write(LAPIC_TIC, UINT32_MAX);
+  if (pit_wait_calibration_window() != 0) {
+    pit_calibration_stop();
+    lapic_timer_stop();
+    return -1;
+  }
+  elapsed = UINT32_MAX - lapic_read(LAPIC_TCC);
+  pit_calibration_stop();
+  if (elapsed == 0U)
+    return -1;
+  event_hz = ((uint64_t)elapsed * PIT_REFERENCE_HZ) /
+             PIT_CALIBRATION_COUNTS;
+  if (event_hz < UINT64_C(1000) ||
+      (event_hz / UINT64_C(1000)) > UINT32_MAX)
+    return -1;
+  *out_ticks_per_ms = (uint32_t)(event_hz / UINT64_C(1000));
+  return *out_ticks_per_ms == 0U ? -1 : 0;
+}
+
+void lapic_timer_calibrate(void) {
+  uint64_t calib_flags;
+  uint32_t measured = 0U;
+
+  spin_lock_irqsave(&calib_lock, &calib_flags);
+  if (ticks_per_ms != 0U) {
     spin_unlock_irqrestore(&calib_lock, calib_flags);
     return;
   }
-
-  /* Measure the TSC frequency first (docs/TIMER-MODEL.md §1): this must be
-   * published into tsc_hz before the LAPIC timer starts, because the
-   * arch-neutral mono_ns()/jiffies reconciliation begins on the first tick.
-   * Idempotent and BSP-only — its own ~10 ms PIT window runs before the one
-   * below, both with the timer IRQ still off, and both now under the same
-   * calib_lock critical section as one atomic calibration pass. */
-  if (tsc_hz == 0)
-    tsc_calibrate_locked();
-
-  nxhal_diag_info("LAPIC: Calibrating timer against PIT...\n");
-
-  /* Program PIT Channel 0: lobyte/hibyte access, Rate Generator (mode 2) */
-  outb(PIT_CMD, 0x34); /* Channel 0, lobyte/hibyte, rate generator (Mode 2) */
-  outb(PIT_CH0, 0xFF); /* low byte of initial count */
-  outb(PIT_CH0, 0xFF); /* high byte of initial count */
-
-  /* Set LAPIC Timer to Divide by 16 */
-  lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
-
-  /* Record PIT start count (conceptually 0xFFFF; actual read not stored) */
-  uint16_t start_tick = 0xFFFF;
-
-  /* Start LAPIC Timer with maximum initial count */
-  lapic_write(LAPIC_TIC, 0xFFFFFFFF);
-
-  /* Busy-poll PIT until it has ticked down by 11932 counts (~10 ms).
-   * PIT latch command (0x00 to PIT_CMD) freezes the counter for reading;
-   * two reads from PIT_CH0 give the 16-bit current count (lo then hi). */
-  uint16_t current_tick;
-  do {
-    outb(PIT_CMD, 0x00); /* Latch Channel 0 count */
-    current_tick = inb(PIT_CH0);
-    current_tick |= (inb(PIT_CH0) << 8);
-  } while ((start_tick - current_tick) < 11932);
-
-  /* Read LAPIC Timer current count; elapsed = initial - current */
-  uint32_t ticks = 0xFFFFFFFF - lapic_read(LAPIC_TCC);
-  ticks_per_ms = ticks / 10; /* elapsed in 10 ms → convert to per-ms */
-
-  /* FIX(EXC-AMD64-03): silence the PIT now that calibration is done.
-   * Mode 2 left the counter free-running, pulsing the IRQ0 line forever;
-   * vector 32 must come from the LAPIC periodic timer ONLY.  Writing the
-   * mode-0 control word without loading a count halts the counter (the
-   * 8254 waits for a count after a control-word write), so the line stays
-   * quiet even if PIC IRQ0 were ever unmasked.  LINT0 stays ExtINT — it is
-   * the delivery path for every legacy PIC line (PCI INTx included) and
-   * must NOT be masked. */
-  outb(PIT_CMD, 0x30); /* channel 0, lobyte/hibyte, mode 0, no count loaded */
-
-  nxhal_diag_info("LAPIC: Timer calibrated: %u ticks per ms\n", ticks_per_ms);
-
+  if (tsc_hz == 0U && tsc_calibrate_locked() != 0) {
+    spin_unlock_irqrestore(&calib_lock, calib_flags);
+    return;
+  }
+  if (lapic_measure_ticks_per_ms(&measured) != 0) {
+    nxhal_diag_error("%s", "LAPIC: bounded PIT calibration failed\n");
+    spin_unlock_irqrestore(&calib_lock, calib_flags);
+    return;
+  }
+  ticks_per_ms = measured;
+  nxhal_diag_info("LAPIC: calibrated %u ticks/ms\n", ticks_per_ms);
   spin_unlock_irqrestore(&calib_lock, calib_flags);
 }
 
@@ -456,33 +424,32 @@ void lapic_timer_calibrate(void) {
  * Params:
  *   hz - desired interrupt frequency (e.g. HZ = 1000 for 1 kHz timer).
  */
-void lapic_timer_setup(uint32_t hz) {
-  if (ticks_per_ms == 0) {
+int lapic_timer_setup(uint64_t hz) {
+  uint64_t event_hz;
+  uint64_t interval;
+
+  if (ticks_per_ms == 0U)
     lapic_timer_calibrate();
-  }
+  if (ticks_per_ms == 0U || hz == 0U)
+    return -1;
 
-  /* Stop current timer before reconfiguring */
+  event_hz = (uint64_t)ticks_per_ms * UINT64_C(1000);
+  if (hz > event_hz)
+    return -1;
+  interval = event_hz / hz;
+  if ((event_hz % hz) != 0U)
+    ++interval;
+  if (interval == 0U || interval > UINT32_MAX)
+    return -1;
+
   lapic_timer_stop();
-
-  /* Set up LAPIC Timer for periodic interrupts.
-   * Vector 32 (IRQ 0 equivalent), periodic mode (LAPIC_LVT_PERIODIC).
-   * NOTE(EXC-AMD64-03): same vector 32 as LAPIC LINT0 ExtINT path. */
-  lapic_write(LAPIC_LVT_TIMER, 32 | LAPIC_LVT_PERIODIC);
+  lapic_write(LAPIC_LVT_TIMER, UINT32_C(32) | LAPIC_LVT_PERIODIC);
   lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
-
-  /* Calculate ticks per interrupt: at hz=1000, interval_ms=1 */
-  uint32_t interval_ms = 1000 / hz;
-  lapic_write(LAPIC_TIC, ticks_per_ms * interval_ms);
-
-  /* Seed the Tier-2 per-CPU software schedule via the arch-neutral, HAL-driven
-   * nxhal_timer_arm_current() (kernel/core/timer.c), exactly as aarch64's
-   * timer_init_percpu() does. The vector-32 ISR then calls nxhal_timer_tick_current()
-   * to advance it against the free-running TSC so a starved core recovers lost
-   * time. hal_timer_set_compare() inside is a no-op (LAPIC is periodic). */
+  lapic_write(LAPIC_TIC, (uint32_t)interval);
   (void)nxhal_timer_arm_current();
-
-  nxhal_diag_info("LAPIC: CPU %u timer started at %u Hz (%u ticks/interval)\n",
-          lapic_get_id(), hz, ticks_per_ms * interval_ms);
+  nxhal_diag_info("LAPIC: CPU %u timer started at %lu Hz (%lu ticks/interval)\n",
+                  lapic_get_id(), hz, interval);
+  return 0;
 }
 
 /*

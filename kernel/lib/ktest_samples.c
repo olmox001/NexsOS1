@@ -36,6 +36,7 @@
 #include <kernel/platform.h>
 #include <kernel/memlayout.h>
 #include <kernel/printk.h>
+#include <kernel/sched.h>
 #include <kernel/string.h>
 #include <kernel/kmalloc.h>
 #include <kernel/gfx_chrome.h>
@@ -43,7 +44,9 @@
 #include <kernel/vfs.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
+#include <drivers/input.h>
 #include <drivers/timer.h>
+#include <drivers/virtio_input.h>
 #if HAL_HAS_FDT
 #include <kernel/fdt.h>
 #include <kernel/fdt_parser.h>
@@ -125,6 +128,69 @@ KTEST_CASE(test_time_snapshot_monotonic) {
     KASSERT(second.sequence > first.sequence);
     KASSERT(second.monotonic_ns >= first.monotonic_ns);
     KASSERT_EQ(second.cpu_record_size, sizeof(struct os1_time_cpu_v1));
+}
+
+KTEST_CASE(test_sched_quantum_not_due) {
+    KASSERT(!OS1libkernel_sched_quantum_due(UINT64_C(100), UINT64_C(99)));
+    KASSERT(!OS1libkernel_sched_quantum_due(UINT64_MAX, UINT64_MAX - 1U));
+    KASSERT(OS1LIBKERNEL_SCHED_QUANTUM_NS >
+            OS1LIBKERNEL_NSEC_PER_TICK);
+}
+
+KTEST_CASE(test_sched_quantum_due) {
+    KASSERT(OS1libkernel_sched_quantum_due(UINT64_C(100), UINT64_C(100)));
+    KASSERT(OS1libkernel_sched_quantum_due(UINT64_C(100), UINT64_C(101)));
+    KASSERT(OS1libkernel_sched_quantum_due(UINT64_C(0), UINT64_C(0)));
+    KASSERT_EQ(OS1LIBKERNEL_SCHED_QUANTUM_NS,
+               UINT64_C(30) * OS1LIBKERNEL_NSEC_PER_MSEC);
+}
+
+KTEST_CASE(test_input_keyboard_queue) {
+    struct os1_raw_input_event_v1 event;
+
+    OS1driver_input_core_init();
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xF0),
+                            EV_KEY, KEY_A, 1);
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xF0),
+                            EV_SYN, 0, 0);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_KEYBOARD, OS1_INPUT_READ_TRY), 1);
+    KASSERT_EQ(event.type, EV_KEY);
+    KASSERT_EQ(event.code, KEY_A);
+    KASSERT_EQ(event.value, 1);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_KEYBOARD, OS1_INPUT_READ_TRY), 1);
+    KASSERT_EQ(event.type, EV_SYN);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_KEYBOARD, OS1_INPUT_READ_TRY), 0);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY), 0);
+}
+
+KTEST_CASE(test_input_mouse_queue) {
+    struct os1_raw_input_event_v1 event;
+
+    OS1driver_input_core_init();
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xF1),
+                            EV_REL, REL_X, 7);
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xF1),
+                            EV_SYN, 0, 0);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY), 1);
+    KASSERT_EQ(event.type, EV_REL);
+    KASSERT_EQ(event.code, REL_X);
+    KASSERT_EQ(event.value, 7);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY), 1);
+    KASSERT_EQ(event.type, EV_SYN);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY), 0);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_KEYBOARD, OS1_INPUT_READ_TRY), 0);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, UINT32_C(99), OS1_INPUT_READ_TRY), -EINVAL);
+    KASSERT_EQ(OS1libkernel_input_read_raw(
+                   &event, OS1_INPUT_ROLE_MOUSE, UINT32_C(99)), -EINVAL);
 }
 
 /* The boot map may be unsorted and contain overlapping usable descriptors.

@@ -443,9 +443,9 @@ _sys_display_present:
     svc #0
     ret
 
-.global _sys_input_next_raw_role
-_sys_input_next_raw_role:
-    mov x8, #SYS_INPUT_NEXT_RAW
+.global _sys_input_raw_read
+_sys_input_raw_read:
+    mov x8, #SYS_INPUT_RAW_READ
     svc #0
     ret
 

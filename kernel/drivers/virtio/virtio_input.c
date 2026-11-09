@@ -3,7 +3,7 @@
  * VirtIO Input Device Driver (Keyboard/Mouse)
  * Full Virtqueue and Interrupt Implementation
  */
-#include <drivers/keyboard.h>
+#include <drivers/input.h>
 #include <drivers/virtio.h>
 #include <drivers/virtio_input.h>
 #include <kernel/arch.h>
@@ -17,8 +17,6 @@
 
 #define MAX_INPUT_DEVS 2
 #define INPUT_QSIZE 16
-
-void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value);
 
 struct virtio_input_dev {
   virtio_handle_t handle;
@@ -35,12 +33,6 @@ struct virtio_input_dev {
 
 static struct virtio_input_dev input_devs[MAX_INPUT_DEVS];
 static int input_dev_count = 0;
-
-/* Global Input Buffer (Shared by all devices) */
-#define INPUT_BUFFER_SIZE 256
-static struct virtio_input_event input_buffer[INPUT_BUFFER_SIZE];
-static volatile uint32_t input_head = 0;
-static volatile uint32_t input_tail = 0;
 
 /* Forward declarations */
 static void virtio_input_handler(uint32_t irq, void *data);
@@ -61,17 +53,6 @@ static int virtio_input_irq_has_handler(uint32_t irq) {
 #define v_read32(dev, off) virtio_read_reg((dev)->handle, (off))
 #define v_write32(dev, off, val) virtio_write_reg((dev)->handle, (off), (val))
 #define v_notify(dev, q) virtio_notify((dev)->handle, (q))
-
-void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value) {
-  uint32_t next = (input_head + 1) % INPUT_BUFFER_SIZE;
-  if (next == input_tail) {
-    input_tail = (input_tail + 1) % INPUT_BUFFER_SIZE;
-  }
-  input_buffer[input_head].type = type;
-  input_buffer[input_head].code = code;
-  input_buffer[input_head].value = value;
-  input_head = next;
-}
 
 static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   (void)is_pci;
@@ -219,7 +200,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 
       /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
        * EV_SYN -> repaint. Same path PS/2 and USB HID use now. */
-      input_report_from_device(INPUT_PROVIDER_VIRTIO,
+      OS1driver_input_publish(INPUT_PROVIDER_VIRTIO,
                                (uint8_t)(INPUT_DEVICE_VIRTIO_BASE + i),
                                evt->type, evt->code, evt->value);
 
@@ -273,12 +254,3 @@ void virtio_input_init(void) {
 }
 int virtio_input_get_dev_count(void) { return input_dev_count; }
 
-int virtio_input_poll(struct virtio_input_event *event) {
-  if (input_head == input_tail)
-    return 0;
-  *event = input_buffer[input_tail];
-  input_tail = (input_tail + 1) % INPUT_BUFFER_SIZE;
-  return 1;
-}
-
-int virtio_input_has_event(void) { return input_head != input_tail; }

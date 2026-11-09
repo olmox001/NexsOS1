@@ -121,9 +121,6 @@ struct virtio_input_event {
 
 /* Driver API */
 void virtio_input_init(void);
-int virtio_input_poll(struct virtio_input_event *event);
-int virtio_input_has_event(void);
-void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value);
 int virtio_input_get_dev_count(void);
 
 #endif /* _DRIVERS_VIRTIO_INPUT_H */

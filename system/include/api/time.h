@@ -58,8 +58,9 @@ int clock_gettime(clockid_t clk, struct timespec *ts);
 /* nanosleep: POSIX blocking sleep for req->tv_sec + req->tv_nsec, on top of the
  * SYS_NANOSLEEP primitive (the caller is descheduled, no busy-wait). Sleeps are
  * not interruptible here, so they always run to completion: *rem (if non-NULL)
- * is zeroed and 0 is returned. -1 on a NULL/invalid req. The kernel rounds the
- * deadline up to the tick (~10 ms at HZ=100) but tracks it in real wall time.
+ * is zeroed and 0 is returned. -1 on a NULL/invalid req. The kernel stores an
+ * absolute monotonic deadline; delivery is quantized by the per-CPU clockevent
+ * cadence (currently 1 ms) rather than by a separate jiffies time base.
  */
 int nanosleep(const struct timespec *req, struct timespec *rem);
 

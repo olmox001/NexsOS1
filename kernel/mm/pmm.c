@@ -57,6 +57,7 @@
 #include <kernel/printk.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
+#include <kernel/timer.h>
 
 /* Memory configuration from architecture */
 #define MEMORY_BASE HAL_RAM_START
@@ -117,8 +118,8 @@ static uint64_t pmm_metadata_end_phys;
 /* --- Instrumentation counters (perf brief §1; surfaced via OS1_sys_stats).
  * Updated with relaxed atomics off the lock so the hot path pays only a single
  * fetch-and-add; *_max uses a racy compare (a lost update on a stat is benign).
- * search_ticks_* are raw hal_timer_get_count() ticks; the collector converts
- * to ns via OS1libkernel_time_counts_to_ns().  These measure the bitmap-SEARCH cost only —
+ * search_ticks_* are validated NX-CORE clocksource counts; the collector
+ * converts them to ns via OS1libkernel_time_counts_to_ns(). These measure the bitmap-SEARCH cost only —
  * the fragmentation-sensitive part — not the memset/cache-clean tail. */
 static uint64_t stat_alloc_calls;
 static uint64_t stat_free_calls;
@@ -749,13 +750,13 @@ static void *zone_alloc_page(struct zone *z, int dma) {
   spin_lock_irqsave(&z->lock, &flags);
 
   uint64_t npages = z->end_pfn - z->start_pfn;
-  uint64_t search_t0 = hal_timer_get_count();
+  uint64_t search_t0 = OS1libkernel_time_counter_read();
   int64_t pfn = bitmap_find_free(z->bitmap, z->next_free_pfn, npages);
   if (pfn < 0) {
     /* Wrap around and search from the beginning */
     pfn = bitmap_find_free(z->bitmap, 0, z->next_free_pfn);
   }
-  uint64_t search_ticks = hal_timer_get_count() - search_t0;
+  uint64_t search_ticks = OS1libkernel_time_counter_read() - search_t0;
 
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
@@ -877,10 +878,10 @@ static void *alloc_pages_impl(size_t count, int dma) {
 
   spin_lock_irqsave(&z->lock, &flags);
 
-  uint64_t search_t0 = hal_timer_get_count();
+  uint64_t search_t0 = OS1libkernel_time_counter_read();
   int64_t pfn =
       bitmap_find_contiguous(z->bitmap, 0, z->end_pfn - z->start_pfn, count);
-  uint64_t search_ticks = hal_timer_get_count() - search_t0;
+  uint64_t search_ticks = OS1libkernel_time_counter_read() - search_t0;
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
     return NULL;
@@ -1200,8 +1201,8 @@ void pmm_dump_stats(void) {
 /*
  * pmm_get_counters - read the cumulative allocator counters (perf brief §1).
  *
- * search_ticks_* are raw hal_timer_get_count() ticks; the caller converts to
- * ns via OS1libkernel_time_counts_to_ns().  All four out-params are optional (NULL-skip).
+ * search_ticks_* are validated NX-CORE clocksource counts; the caller converts
+ * them to ns via OS1libkernel_time_counts_to_ns(). All four out-params are optional.
  * Lock-free reads of relaxed atomics — values are a coherent-enough snapshot.
  */
 void pmm_get_counters(uint64_t *alloc_calls, uint64_t *free_calls,

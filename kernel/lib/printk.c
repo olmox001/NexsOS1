@@ -41,7 +41,8 @@
  *                  vsnprintf with no dropped-message counter.
  */
 #include <drivers/uart.h>
-#include <drivers/keyboard.h>
+#include <drivers/input.h>
+#include <hal/time.h>
 #include <kernel/arch.h>
 #include <kernel/bootphase.h>
 #include <kernel/cpu.h>
@@ -263,25 +264,40 @@ int printk(const char *fmt, ...) {
  * when panic() is called, the first printk may spin briefly. Side effects: sets
  * panic_flag, sends IPI, halts all CPUs.
  */
-/* panic_reboot_after_grace - DIR-05 #139 watchdog: after the panic is shown
- * (UART
- * + red panic_screen), wait a readable grace (~10 s) then HARD-RESET so an
- * unattended machine self-recovers from a kernel fault.  IRQs stay masked; the
- * grace spins on the free-running hardware counter (it advances without
- * interrupts) — NOT hal_cpu_idle(), which would wfi/hlt forever with IRQs off.  If
- * the timer frequency is not up yet (very early boot) the grace is skipped and
- * we reset immediately.  hal_reboot() is __noreturn (resets, or halts if reset
- * does not take). */
+#define PANIC_GRACE_SECONDS UINT64_C(10)
+#define PANIC_GRACE_POLL_BUDGET UINT64_C(250000000)
+
+static void panic_wait_clocksource_grace(void) {
+  struct nxhal_clocksource_v1 source;
+  uint64_t start;
+  uint64_t delta;
+
+  if (nxhal_time_clocksource_info(&source) != NXHAL_TIME_OK)
+    return;
+  if (source.frequency_hz > UINT64_MAX / PANIC_GRACE_SECONDS)
+    return;
+  delta = source.frequency_hz * PANIC_GRACE_SECONDS;
+  if (delta == 0U || delta > source.max_delta_counts)
+    return;
+  if (nxhal_time_counter_read(&start) != NXHAL_TIME_OK)
+    return;
+
+  for (uint64_t poll = 0U; poll < PANIC_GRACE_POLL_BUDGET; ++poll) {
+    uint64_t now;
+    if (nxhal_time_counter_read(&now) != NXHAL_TIME_OK)
+      return;
+    if ((now - start) >= delta)
+      return;
+    hal_cpu_nop();
+  }
+}
+
 static void panic_reboot_after_grace(void) __noreturn;
 static void panic_reboot_after_grace(void) {
-  uint64_t f;
-  hal_irq_save_all(&f);
-  uint64_t freq = hal_timer_get_freq();
-  if (freq) {
-    uint64_t end = hal_timer_get_count() + freq * 10ULL; /* ~10 seconds */
-    while ((int64_t)(end - hal_timer_get_count()) > 0)
-      __asm__ __volatile__("" ::: "memory");
-  }
+  uint64_t flags;
+
+  hal_irq_save_all(&flags);
+  panic_wait_clocksource_grace();
   hal_reboot();
 }
 
@@ -316,7 +332,7 @@ void vpanic(const char *fmt, va_list args) {
   /* Stop other CPUs before reading the lock-free diagnostic rings. */
   irq_send_ipi_all();
   sched_trace_dump();
-  input_trace_dump();
+  OS1libkernel_input_trace_dump();
 
   fault_printf("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
   fault_vprintf(fmt, args);

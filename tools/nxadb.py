@@ -274,6 +274,7 @@ class Session:
     root: Path
     build_root: Path
     boot_mode: str
+    firmware: str
     tmp: Path
     ser_log: Path
     qmp_sock: Path
@@ -287,12 +288,24 @@ class Session:
     @classmethod
     def create(
         cls, arch: str, root: Path, boot_mode: str = "iso",
-        build_root: Path = Path("build"),
+        build_root: Path = Path("build"), firmware: str = "auto",
     ) -> "Session":
         root = root.resolve()
         boot_mode = boot_mode.lower()
+        firmware = firmware.lower()
         if boot_mode not in ("iso", "direct"):
             raise ValueError(f"unsupported boot mode: {boot_mode}")
+        if firmware not in ("auto", "bios", "uefi"):
+            raise ValueError(f"unsupported firmware mode: {firmware}")
+        if boot_mode == "direct":
+            if firmware != "auto":
+                raise ValueError("firmware selection applies only to ISO boot mode")
+        elif arch == "aarch64":
+            if firmware == "bios":
+                raise ValueError("AArch64 ISO boot requires UEFI firmware")
+            firmware = "uefi"
+        elif firmware == "auto":
+            firmware = "bios"
         resolved_build = (
             build_root if build_root.is_absolute() else root / build_root
         ).resolve()
@@ -303,7 +316,8 @@ class Session:
         if relative_build == Path("."):
             raise ValueError("--build-root cannot be the project root")
 
-        state_dir = resolved_build / "runtime" / "nxadb" / arch / boot_mode
+        state_key = boot_mode if boot_mode == "direct" else f"{boot_mode}-{firmware}"
+        state_dir = resolved_build / "runtime" / "nxadb" / arch / state_key
         state_dir.mkdir(parents=True, exist_ok=True)
         qmp_dir = resolved_build / "q"
         qmp_dir.mkdir(parents=True, exist_ok=True)
@@ -312,9 +326,10 @@ class Session:
             root=root,
             build_root=resolved_build,
             boot_mode=boot_mode,
+            firmware=firmware,
             tmp=state_dir,
             ser_log=state_dir / "serial.log",
-            qmp_sock=qmp_dir / f"{arch}-{boot_mode}.sock",
+            qmp_sock=qmp_dir / f"{arch}-{state_key}.sock",
             qemu_err=state_dir / "qemu.stderr.log",
             qemu_out=state_dir / "qemu.stdout.log",
             pid_file=state_dir / "qemu.pid.json",
@@ -370,8 +385,15 @@ class Session:
 
     def boot_iso(self) -> Path:
         if self.arch == "amd64":
+            if self.firmware == "uefi":
+                return self.build_dir() / "grub-uefi" / "nexsos-amd64-uefi.iso"
             return self.build_dir() / "grub-bios.iso"
         return self.build_dir() / "grub-efi" / "nexsos-aarch64-uefi.iso"
+
+    def lane_name(self) -> str:
+        if self.boot_mode == "direct":
+            return "direct"
+        return f"iso-{self.firmware}"
 
     def kernel_image(self) -> Path:
         name = "kernel.elf" if self.arch == "amd64" else "kernel.bin"
@@ -425,17 +447,23 @@ def build_qemu_cmdline(session: Session) -> List[str]:
         boot_mode=session.boot_mode,
         kernel=session.kernel_image(),
         dtb=session.dtb_image(),
+        firmware=session.firmware,
     )
 
 
 def ensure_artifacts(session: Session) -> None:
     required = session.required_artifacts()
-    target = "boot-iso" if session.boot_mode == "iso" else "direct-artifacts"
+    if session.boot_mode == "direct":
+        target = "direct-artifacts"
+    elif session.arch == "amd64" and session.firmware == "uefi":
+        target = "boot-uefi"
+    else:
+        target = "boot-iso"
     print(
         f"[nxadb] verifying build ARCH={session.arch} "
-        f"mode={session.boot_mode} target={target}"
+        f"lane={session.lane_name()} target={target}"
     )
-    run_dir = session.build_root / "runs" / session.arch / session.boot_mode
+    run_dir = session.build_root / "runs" / session.arch / session.lane_name()
     run_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     build_log = (
@@ -467,15 +495,25 @@ def start_qemu(session: Session, wait: bool = True) -> None:
         print(f"[nxadb] already running (pid {session.pid() or 'QMP-owned'})")
         return
 
-    sibling_mode = "direct" if session.boot_mode == "iso" else "iso"
-    sibling = Session.create(
-        session.arch, session.root, sibling_mode,
-        session.build_root.relative_to(session.root),
+    sibling_specs = (
+        ("direct", "auto"),
+        ("iso", "bios"),
+        ("iso", "uefi"),
     )
-    if sibling.is_running():
+    for sibling_mode, sibling_firmware in sibling_specs:
+        try:
+            sibling = Session.create(
+                session.arch, session.root, sibling_mode,
+                session.build_root.relative_to(session.root),
+                firmware=sibling_firmware,
+            )
+        except ValueError:
+            continue
+        if sibling.tmp == session.tmp or not sibling.is_running():
+            continue
         print(
-            f"[nxadb] stopping sibling {session.arch}/{sibling_mode} guest "
-            "that owns the shared rootfs image"
+            f"[nxadb] stopping sibling {session.arch}/{sibling.lane_name()} "
+            "guest that owns the shared rootfs image"
         )
         stop_qemu(sibling)
 
@@ -486,7 +524,7 @@ def start_qemu(session: Session, wait: bool = True) -> None:
     # A failed boot must never erase the only copy of an earlier firmware log.
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     archive = (
-        session.build_root / "runs" / session.arch / session.boot_mode /
+        session.build_root / "runs" / session.arch / session.lane_name() /
         f"boot-{stamp}-{time.time_ns() % 1000000000:09d}"
     )
     archive.mkdir(parents=True, exist_ok=False)
@@ -508,6 +546,8 @@ def start_qemu(session: Session, wait: bool = True) -> None:
         "pid": proc.pid,
         "arch": session.arch,
         "boot_mode": session.boot_mode,
+        "firmware": session.firmware,
+        "lane": session.lane_name(),
         "build_root": str(session.build_root.relative_to(session.root)),
         "qmp_socket": str(session.qmp_sock),
         "qemu": session.qemu_bin,
@@ -525,7 +565,7 @@ def start_qemu(session: Session, wait: bool = True) -> None:
     manifest_path = archive.parent / f"run-{stamp}-{time.time_ns() % 1000000000:09d}.json"
     manifest_path.write_text(json.dumps(run_manifest, indent=2) + "\n")
     print(
-        f"[nxadb] QEMU started ({session.arch}, mode={session.boot_mode}, "
+        f"[nxadb] QEMU started ({session.arch}, lane={session.lane_name()}, "
         f"pid {proc.pid})"
     )
     print(f"[nxadb] complete UART: {session.ser_log}")
@@ -929,7 +969,7 @@ def cmd_screenshot(session: Session, requested_path: Optional[str] = None) -> in
         raise RuntimeError(f"{session.arch} guest is not running")
 
     run_dir = (
-        session.build_root / "runs" / session.arch / session.boot_mode
+        session.build_root / "runs" / session.arch / session.lane_name()
     ).resolve()
     if requested_path:
         output = Path(requested_path).expanduser()
@@ -1018,7 +1058,7 @@ def cmd_bootlog(session: Session, history: bool = False) -> None:
                 print()
         else:
             print("[not captured]")
-    run_dir = session.build_root / "runs" / session.arch / session.boot_mode
+    run_dir = session.build_root / "runs" / session.arch / session.lane_name()
     manifests = sorted(run_dir.glob("run-*.json"))
     if manifests:
         selected = manifests if history else manifests[-1:]
@@ -1035,6 +1075,8 @@ def cmd_status(session: Session) -> None:
     running = session.is_running()
     print(f"arch     : {session.arch}")
     print(f"mode     : {session.boot_mode}")
+    print(f"firmware : {session.firmware}")
+    print(f"lane     : {session.lane_name()}")
     print(f"build    : {session.build_root.relative_to(session.root)}")
     print(f"running  : {running}")
     print(f"UART     : {session.ser_log}")
@@ -1082,8 +1124,7 @@ def _counter_heartbeat_count(text: str) -> int:
 def _run_counter_heartbeat(session: Session) -> Tuple[bool, float]:
     before = _counter_heartbeat_count(session.log_text())
     code, _ = run_shell_c(session, "/bin/counter", timeout=20)
-    initial = _counter_heartbeat_count(session.log_text())
-    if code != 0 or initial <= before:
+    if code != 0:
         return False, 0.0
 
     started = time.monotonic()
@@ -1092,9 +1133,9 @@ def _run_counter_heartbeat(session: Session) -> Tuple[bool, float]:
         live = session.log_text()
         if FAULT_RE.search(live) or not session.is_running():
             return False, time.monotonic() - started
-        if _counter_heartbeat_count(live) > initial:
+        if _counter_heartbeat_count(live) > before:
             return True, time.monotonic() - started
-        time.sleep(0.5)
+        time.sleep(0.25)
     return False, time.monotonic() - started
 
 
@@ -1113,7 +1154,7 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
     for run_index in range(1, runs + 1):
         print(
             f"\n=== run {run_index}/{runs} "
-            f"({session.arch}/{session.boot_mode}) ==="
+            f"({session.arch}/{session.lane_name()}) ==="
         )
         stop_qemu(session)
         start_qemu(session)
@@ -1309,7 +1350,7 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
             verdict = "FAULT"
 
         print(
-            f"run{run_index}/{session.arch}/{session.boot_mode}: {verdict} "
+            f"run{run_index}/{session.arch}/{session.lane_name()}: {verdict} "
             f"{' '.join(results)} faults={faults}"
         )
         if verdict != "ok":
@@ -1349,6 +1390,10 @@ Examples:
     parser.add_argument(
         "--boot-mode", choices=["iso", "direct"], default="iso",
         help="iso=GRUB image path; direct=QEMU -kernel with the same rootfs",
+    )
+    parser.add_argument(
+        "--firmware", choices=["auto", "bios", "uefi"], default="auto",
+        help="ISO firmware: amd64 auto=bios; aarch64 auto=uefi",
     )
     parser.add_argument(
         "--build-root", type=Path, default=Path("build"),
@@ -1422,7 +1467,8 @@ Examples:
     root = script.parent.parent if script.parent.name == "tools" else script.parent
     os.chdir(root)
     session = Session.create(
-        args.arch, root, boot_mode=args.boot_mode, build_root=args.build_root
+        args.arch, root, boot_mode=args.boot_mode, build_root=args.build_root,
+        firmware=args.firmware,
     )
     lock_file = None
     lock_acquired = False
@@ -1432,7 +1478,12 @@ Examples:
         # per-architecture lock. This prevents concurrent nxadb/nxrun callers
         # from racing over the same QMP socket, serial log and guest prompt.
         if args.cmd in MUTATING_COMMANDS:
-            lock_file = (session.tmp / "session.lock").open("a+")
+            lock_path = (
+                session.build_root / "runtime" / "nxadb" /
+                session.arch / "session.lock"
+            )
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = lock_path.open("a+")
             deadline = time.monotonic() + SESSION_LOCK_TIMEOUT
             while True:
                 try:

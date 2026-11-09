@@ -77,14 +77,20 @@ int main(void) {
   static struct keyboard_state state[256];
   print("[nxkeyboardd] ring-3 keyboard service started\n");
   for (;;) {
-    struct os1_raw_input_event_v1 e = {
-      .abi_version = OS1_INPUT_ABI_V1, .struct_size = sizeof(e)
-    };
-    unsigned drained = 0;
-    while (drained < 128 && OS1_input_next_keyboard(&e) > 0) {
-      if (e.type == EV_KEY) route_key(e.code, e.value, &state[e.device_id]);
-      ++drained;
+    struct os1_raw_input_event_v1 event = {
+        .abi_version = OS1_INPUT_ABI_V1, .struct_size = sizeof(event)};
+    long result = OS1_input_wait_keyboard(&event);
+
+    if (result > 0) {
+      if (event.type == EV_KEY)
+        route_key(event.code, event.value, &state[event.device_id]);
+      continue;
     }
-    OS1_sleep(5);
+    if (result == -EAGAIN) {
+      OS1_sleep(5);
+      continue;
+    }
+    printf("[nxkeyboardd] raw input wait failed: %ld\n", result);
+    OS1_sleep(50);
   }
 }
