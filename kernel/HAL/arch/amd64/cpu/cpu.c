@@ -36,18 +36,29 @@
 #include <hal/core_protocol.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
-#include <kernel/cpu.h>
-#include <kernel/fault.h>
-#include <kernel/sched.h>
+#include <hal/cpu_protocol.h>
+#include <hal/provider.h>
 #include <kernel/string.h>
-#include <kernel/vmm.h>
 #include <arch/arch.h>
 #include <arch/amd64_internal.h>
 #include <arch/amd64/apic.h>
+#include <stddef.h>
+#include <stdint.h>
 
-extern struct cpu_info cpu_data[MAX_CPUS];
-extern uint32_t nr_cpus;
+struct nxhal_amd64_cpu_local {
+  struct nxhal_amd64_cpu_local *self;
+  uint32_t cpu_id;
+  uint32_t online;
+  uint64_t stack_top;
+  uint64_t user_stack_tmp;
+};
 
+_Static_assert(offsetof(struct nxhal_amd64_cpu_local, stack_top) == 16,
+               "amd64 GS stack_top offset must remain 16");
+_Static_assert(offsetof(struct nxhal_amd64_cpu_local, user_stack_tmp) == 24,
+               "amd64 GS user_stack_tmp offset must remain 24");
+
+static struct nxhal_amd64_cpu_local amd64_cpu_local[NXHAL_CPU_LIMIT];
 /* PCID-tagged TLB support (perf §3, DIR-06): 1 once CPUID has confirmed PCID +
  * INVPCID and CR4.PCIDE has been enabled.  Read by the arch.h flush primitives
  * and arch_cpu_switch_context; 0 (default) keeps the legacy flush-on-switch
@@ -81,15 +92,13 @@ extern void amd64_syscall_init(void);
  * nr_cpus: BSP sets unconditionally to 1 (no RMW needed); APs use
  * __sync_fetch_and_add to safely increment the shared counter.
  */
-void arch_cpu_init(void) {
+void nxhal_provider_cpu_local_init(void) {
   uint32_t id = hal_cpu_id();
 
-  if (id >= MAX_CPUS) {
+  if (id >= NXHAL_CPU_LIMIT) {
     /* Fallback for early printk if LAPIC ID is weird */
     id = 0;
   }
-
-  cpu_data[id].cpu_id = id;
 
   /* Enable SSE EARLY (Functions like memset might use XMM registers) */
   uint64_t cr0 = arch_isa_cr0();
@@ -142,10 +151,12 @@ void arch_cpu_init(void) {
               has_pcid, has_invpcid);
   }
 
-  struct cpu_info *cpu = &cpu_data[id];
+  struct nxhal_amd64_cpu_local *cpu = &amd64_cpu_local[id];
   cpu->self = cpu;
-  cpu->online = 1;
-  spin_lock_init(&cpu->sched_lock);
+  cpu->cpu_id = id;
+  cpu->online = 1U;
+  if (nxhal_cpu_online(id) != 0)
+    nxhal_diag_panic("AMD64 CPU %u cannot publish online state", id);
 
   nxhal_diag_info("CPU: Initializing GDT...\n");
   gdt_init();
@@ -164,12 +175,6 @@ void arch_cpu_init(void) {
   nxhal_diag_info("CPU: Initializing LAPIC...\n");
   lapic_init();
 
-  if (id == 0) {
-      nr_cpus = 1;
-  } else {
-      __sync_fetch_and_add(&nr_cpus, 1);
-  }
-
   nxhal_diag_info("AMD64 CPU %u initialized (GDT, IDT, Syscall, SSE, GS enabled)\n", id);
 
   /* ARCH-AMD64-APPGD-01 (amd64 HAL only): the AP trampoline brings each AP up on
@@ -182,48 +187,21 @@ void arch_cpu_init(void) {
    * already runs on kernel_pgd via vmm_dynamic_remap().  Confined to the amd64
    * HAL; platform.c is untouched. */
   {
-    extern uint64_t *kernel_pgd;
-    if (kernel_pgd)
-      hal_vmm_set_pgd(virt_to_phys(kernel_pgd)); /* CR3 takes the PA */
+    uint64_t kernel_root = hal_vmm_get_kernel_pgd();
+    if (kernel_root != 0U)
+      hal_vmm_set_pgd(kernel_root);
   }
 }
 
-/*
- * get_cpu_info - return the per-CPU struct for the calling CPU.
- *
- * Reads the LAPIC ID (hal_cpu_id) and indexes cpu_data[].  Falls back to
- * cpu_data[0] if the ID is out of range (paranoia guard for early boot).
- *
- * Side effects: none.  May be called from interrupt context.
- * NOTE: hal_cpu_id reads LAPIC MMIO — NOT safe from a fault handler on a
- * compromised address space; fault paths use arch_cpu_info_fault_safe below.
- */
-struct cpu_info *get_cpu_info(void) {
-  uint32_t id = hal_cpu_id();
-  if (id >= MAX_CPUS) return &cpu_data[0];
-  return &cpu_data[id];
-}
-
-/*
- * arch_cpu_info_fault_safe - per-CPU info with no faultable dependencies
- * (kernel/fault.h, Phase A step 5).
- *
- * The LAPIC-MMIO read in hal_cpu_id needs a live page-table mapping —
- * exactly what a freed-PGD fault destroys.  Instead read the IA32_GS_BASE MSR
- * (rdmsr: register-only, cannot fault) and validate it against the cpu_data[]
- * bounds BEFORE any dereference.  This also covers the two GS hazards:
- *   - user GS base (fault inside the syscall-entry window before swapgs):
- *     fails the bounds check -> NULL, no wild dereference;
- *   - pre-cpu_init MSR garbage: same.
- */
-struct cpu_info *arch_cpu_info_fault_safe(void) {
+int32_t nxhal_provider_cpu_id_fault_safe(void) {
   uintptr_t p = (uintptr_t)arch_isa_rdmsr(UINT32_C(0xC0000101));
-  uintptr_t base = (uintptr_t)&cpu_data[0];
-  if (p < base || p >= base + sizeof(cpu_data))
-    return NULL;
-  if ((p - base) % sizeof(struct cpu_info) != 0)
-    return NULL;
-  return (struct cpu_info *)p;
+  uintptr_t base = (uintptr_t)&amd64_cpu_local[0];
+
+  if (p < base || p >= base + sizeof(amd64_cpu_local))
+    return -1;
+  if ((p - base) % sizeof(struct nxhal_amd64_cpu_local) != 0U)
+    return -1;
+  return (int32_t)((p - base) / sizeof(struct nxhal_amd64_cpu_local));
 }
 
 /*
@@ -252,12 +230,19 @@ struct cpu_info *arch_cpu_info_fault_safe(void) {
  * a cooperative switch is safe.  The hazard is preemptive switches via the
  * timer ISR in common_isr_entry, which does not save/restore XMM state.
  */
-void arch_cpu_switch_context(struct process *next) {
-  struct cpu_info *cpu = get_cpu_info();
+void nxhal_provider_cpu_switch_context(
+    const struct nxhal_cpu_context_switch *context) {
+  uint32_t id = hal_cpu_id();
+  struct nxhal_amd64_cpu_local *cpu;
+
+  if (context == NULL)
+    hal_cpu_halt();
+  if (id >= NXHAL_CPU_LIMIT)
+    id = 0U;
+  cpu = &amd64_cpu_local[id];
 
   /* Update per-CPU data for assembly stubs (syscall.S / isr_stubs.S) */
-  cpu->stack_top = next->kernel_stack;
-  cpu->current_task = next;
+  cpu->stack_top = context->kernel_stack_top;
 
   /* Switch address space.  A kernel thread (e.g. idle) has no private address
    * space (page_table == NULL): switch it onto the shared kernel_pgd instead of
@@ -272,26 +257,22 @@ void arch_cpu_switch_context(struct process *next) {
    * stack overflow -> #DF -> triple fault.  That is the "Terminating process
    * ... PID" -> instant reboot seen on window close.  Confined to the amd64 HAL. */
   {
-    extern uint64_t *kernel_pgd;
-    /* page_table / kernel_pgd are kernel virtual pointers; CR3 takes the
-     * PHYSICAL PML4 base — translate with virt_to_phys. */
-    uint64_t pgd = next->page_table ? virt_to_phys(next->page_table)
-                                    : (kernel_pgd ? virt_to_phys(kernel_pgd) : 0);
-    if (pgd) {
+    uint64_t pgd = (context->flags & NXHAL_CPU_CONTEXT_HAS_USER_ROOT)
+                       ? context->user_root_phys
+                       : hal_vmm_get_kernel_pgd();
+    if (pgd != 0U) {
       if (amd64_pcid_enabled) {
-        /* PCID-tagged, flush-free switch (perf §3, DIR-06): CR3[11:0] = PCID
-         * (next->asid; 0 for kernel/idle), bit 63 set = PRESERVE this PCID's
-         * cached TLB entries (no flush) — the entries are this address space's
-         * own and were cleared at the previous owner's teardown before the tag
-         * was recycled.  Mirrors the aarch64 ASID-tagged TTBR0 switch. */
-        uint64_t pcid = next->page_table ? (uint64_t)next->asid : 0;
-        hal_vmm_set_pgd(pgd | pcid | (1ULL << 63));
+        uint64_t pcid =
+            (context->flags & NXHAL_CPU_CONTEXT_HAS_USER_ROOT)
+                ? (uint64_t)context->asid
+                : 0U;
+        hal_vmm_set_pgd(pgd | pcid | (UINT64_C(1) << 63));
       } else {
-        hal_vmm_set_pgd(pgd); /* legacy: CR3 reload implicitly flushes */
+        hal_vmm_set_pgd(pgd);
       }
     }
   }
 
   /* Update TSS RSP0 for interrupt stack switching */
-  gdt_set_rsp0(next->kernel_stack);
+  gdt_set_rsp0(context->kernel_stack_top);
 }

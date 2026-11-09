@@ -7,10 +7,12 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/core/hal_bus.c \
     $(KERNEL_DIR)/core/syscall_dispatch.c \
     $(KERNEL_DIR)/core/hal_core_adapter.c \
+    $(KERNEL_DIR)/core/boot_memory.c \
     $(KERNEL_DIR)/core/object.c \
     $(KERNEL_DIR)/core/fault.c \
     $(KERNEL_DIR)/core/smp.c \
     $(KERNEL_DIR)/core/timer.c \
+    $(KERNEL_DIR)/core/uaccess.c \
     $(KERNEL_DIR)/drivers/console.c \
     $(KERNEL_DIR)/drivers/irq_ctrl.c \
     $(KERNEL_DIR)/drivers/sys_timer.c \
@@ -20,7 +22,6 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
     $(KERNEL_DIR)/drivers/gpu/gpu_core.c \
-    $(KERNEL_DIR)/drivers/pci/pci.c \
     $(KERNEL_DIR)/drivers/usb/usb_core.c \
     $(KERNEL_DIR)/drivers/usb/usb_hid.c \
     $(KERNEL_DIR)/drivers/usb/xhci.c \

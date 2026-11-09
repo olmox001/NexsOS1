@@ -14,12 +14,21 @@
 
 /* CPU lifecycle/control. */
 uint32_t hal_cpu_id(void);
+int32_t hal_cpu_id_fault_safe(void);
+void hal_cpu_local_init(void);
 void hal_cpu_nop(void);
 void hal_cpu_idle(void);
 void hal_cpu_yield(void);
 void hal_cpu_notify(void);
+int hal_smp_wake_secondary(uint64_t cpu_id, void *stack_top);
 void hal_cpu_halt(void) __attribute__((noreturn));
 void hal_reboot(void) __attribute__((noreturn));
+
+/* Provider lifecycle. */
+void hal_bus_scan(void);
+void hal_irq_controller_init(void);
+void hal_timer_global_init(void);
+void hal_timer_percpu_init(void);
 
 /* Local interrupt state. */
 void hal_irq_enable(void);
@@ -40,7 +49,16 @@ void hal_wmb(void);
 /* Provider physical direct-map contract. end is exclusive. */
 int hal_phys_range_valid(uint64_t base, uint64_t end);
 
+/* Explicit MMIO transport. Physical addresses must already be mapped. */
+int hal_mmio_read8(uint64_t address, uint8_t *out_value);
+int hal_mmio_read16(uint64_t address, uint16_t *out_value);
+int hal_mmio_read32(uint64_t address, uint32_t *out_value);
+int hal_mmio_write8(uint64_t address, uint8_t value);
+int hal_mmio_write16(uint64_t address, uint16_t value);
+int hal_mmio_write32(uint64_t address, uint32_t value);
+
 /* Address-space roots and translation maintenance. */
+int hal_vmm_map_device(uint64_t base, uint64_t size);
 void hal_vmm_set_pgd(uint64_t pgd);
 uint64_t hal_vmm_get_pgd(void);
 void hal_vmm_set_kernel_pgd(uint64_t pgd);

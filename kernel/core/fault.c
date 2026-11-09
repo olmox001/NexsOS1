@@ -68,7 +68,7 @@ hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
                                            const char *desc, uint64_t syndrome) {
   /* Fault context: locate per-CPU state via the MSR/MPIDR path, never via
    * the LAPIC-MMIO read (kernel/fault.h). */
-  struct cpu_info *ci = arch_cpu_info_fault_safe();
+  struct cpu_info *ci = cpu_info_fault_safe();
   struct process *task = ci ? ci->current_task : NULL;
 
   int uaccess = (!user_mode && ci && ci->uaccess_active &&
@@ -85,7 +85,7 @@ hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
     if (uaccess) {
       /* Release the arch uaccess critical section (locks/IRQ state/flag);
        * the address-space switch is reconciled by the scheduler below. */
-      arch_uaccess_fault_fixup();
+      uaccess_fault_fixup();
     }
 
     fault_notify_user(task, desc); /* DIR-05 #139: red crash popup, best-effort */
@@ -107,6 +107,10 @@ hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
    * "KERNEL PAGE FAULT", classifying the same condition as something else
    * entirely.  Each caller still dumps its own register set — those genuinely
    * differ — but the diagnosis no longer depends on which arch you are on. */
+  if (!user_mode && !uaccess && task)
+    fault_printf("[FAULT] kernel exception while PID %d (%s) is current on cpu %d\n",
+                 task->pid, task->name, ci ? (int)ci->cpu_id : -1);
+
   if ((user_mode || uaccess) && !task)
     fault_printf("\n[FAULT] %s from user mode with NO CURRENT TASK on cpu %d — "
                  "scheduler-state corruption (pc=0x%016lx addr=0x%016lx "

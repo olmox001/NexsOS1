@@ -7,15 +7,21 @@ set -a
 source "$ROOT/config/toolchain-versions.env"
 set +a
 
-BUILD="$ROOT/build/aarch64"
-GRUB_BUILD="$ROOT/build/grub/arm64-efi"
+BUILD_ROOT="${NEXS_BUILD_ROOT:-$ROOT/build}"
+case "$BUILD_ROOT" in
+    /*) ;;
+    *) echo "[aarch64-uefi] NEXS_BUILD_ROOT must be absolute: $BUILD_ROOT" >&2; exit 1 ;;
+esac
+BUILD="$BUILD_ROOT/aarch64"
+GRUB_BUILD="$BUILD_ROOT/grub/arm64-efi"
+LOG_DIR="$BUILD_ROOT/logs"
 EFI_ROOT="$BUILD/grub-efi"
 ISO_STAGE="$EFI_ROOT/iso"
 EFI_IMAGE="$EFI_ROOT/efi.img"
 EFI_STUB="$BUILD/nexsos-efi-loader.efi"
 ISO="$EFI_ROOT/nexsos-aarch64-uefi.iso"
-KERNEL="$BUILD/kernel.bin"
-DTB="$BUILD/virt.dtb"
+KERNEL="${NEXS_KERNEL_IMAGE:-$BUILD/kernel.bin}"
+DTB="${NEXS_DTB_PATH:-$BUILD/virt.dtb}"
 HOST_CLANG="${NEXS_HOST_CLANG:-$(command -v clang || true)}"
 LLD_LINK="${NEXS_LLD_LINK:-$(command -v lld-link || true)}"
 if [[ -z "$LLD_LINK" ]]; then
@@ -46,35 +52,49 @@ if [[ ! -x "$GRUB_BUILD/grub-mkimage" || ! -f "$GRUB_BUILD/grub-core/chain.mod" 
     "$ROOT/tools/build-grub-arm64.sh"
 fi
 
-mkdir -p "$BUILD" "$EFI_ROOT" "$ROOT/build/logs"
+mkdir -p "$BUILD" "$EFI_ROOT" "$LOG_DIR"
 
 EFI_CFLAGS=(
     --target=aarch64-pc-windows-msvc
     -ffreestanding -fno-stack-protector -fno-builtin -fno-exceptions
     -fno-unwind-tables -fno-asynchronous-unwind-tables -mgeneral-regs-only
     -O2 -Wall -Wextra -Werror
+    -I"$ROOT/HAL" -I"$ROOT/HAL/arch/aarch64/include"
+    -I"$ROOT/HAL/include" -I"$ROOT/include"
 )
 
 "$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11 \
     -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_stub.c" \
     -o "$BUILD/efi_stub.obj"
+"$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11 \
+    -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_exit_adapter.c" \
+    -o "$BUILD/efi_exit_adapter.obj"
+"$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11 \
+    -c "$ROOT/HAL/capability/uefi_exit.c" \
+    -o "$BUILD/uefi_exit.obj"
+"$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11 \
+    -c "$ROOT/HAL/capability/uefi_memory_map.c" \
+    -o "$BUILD/uefi_memory_map.obj"
 "$HOST_CLANG" --target=aarch64-pc-windows-msvc -ffreestanding \
     -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables \
     -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_handoff.S" \
     -o "$BUILD/efi_handoff.obj"
-(
-    cd "$ROOT"
-    "$HOST_CLANG" --target=aarch64-pc-windows-msvc -ffreestanding \
-        -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables \
-        -c HAL/arch/aarch64/boot/uefi/efi_payload.S \
-        -o "$BUILD/efi_payload.obj"
-)
+KERNEL_ABS="$(cd "$(dirname "$KERNEL")" && pwd)/$(basename "$KERNEL")"
+DTB_ABS="$(cd "$(dirname "$DTB")" && pwd)/$(basename "$DTB")"
+"$HOST_CLANG" --target=aarch64-pc-windows-msvc -ffreestanding \
+    -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables \
+    -DNEXS_EFI_KERNEL_IMAGE="\"$KERNEL_ABS\"" \
+    -DNEXS_EFI_DTB_IMAGE="\"$DTB_ABS\"" \
+    -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_payload.S" \
+    -o "$BUILD/efi_payload.obj"
 "$LLD_LINK" /subsystem:efi_application /entry:efi_main /nodefaultlib \
     /machine:arm64 /out:"$EFI_STUB" \
-    "$BUILD/efi_stub.obj" "$BUILD/efi_handoff.obj" "$BUILD/efi_payload.obj"
+    "$BUILD/efi_stub.obj" "$BUILD/efi_exit_adapter.obj" \
+    "$BUILD/uefi_exit.obj" "$BUILD/uefi_memory_map.obj" \
+    "$BUILD/efi_handoff.obj" "$BUILD/efi_payload.obj"
 
 # Recreate only generated EFI/ISO staging directories, never source directories.
-case "$ISO_STAGE" in "$ROOT"/build/aarch64/grub-efi/iso) ;; *) echo "unsafe ISO staging path: $ISO_STAGE" >&2; exit 1 ;; esac
+case "$ISO_STAGE" in "$BUILD_ROOT"/aarch64/grub-efi/iso) ;; *) echo "unsafe ISO staging path: $ISO_STAGE" >&2; exit 1 ;; esac
 rm -rf "$ISO_STAGE"
 mkdir -p "$ISO_STAGE/boot/grub" "$EFI_ROOT/EFI/BOOT"
 
@@ -115,13 +135,13 @@ GRUB_CONFIG
 
 xorriso -as mkisofs -R -J -V NEXSAA64 \
     -o "$ISO" -e boot/grub/efi.img -no-emul-boot "$ISO_STAGE" \
-    > "$ROOT/build/logs/xorriso-aarch64-uefi.log" 2>&1
+    > "$LOG_DIR/xorriso-aarch64-uefi.log" 2>&1
 
 xorriso -indev "$ISO" -report_el_torito plain \
-    > "$ROOT/build/logs/aarch64-uefi-el-torito.txt" 2>&1
-grep -Eiq 'Platform Id: *0xEF|UEFI' "$ROOT/build/logs/aarch64-uefi-el-torito.txt" || {
+    > "$LOG_DIR/aarch64-uefi-el-torito.txt" 2>&1
+grep -Eiq 'Platform Id: *0xEF|UEFI' "$LOG_DIR/aarch64-uefi-el-torito.txt" || {
     echo "[aarch64-uefi] ISO has no UEFI El Torito boot entry" >&2
-    cat "$ROOT/build/logs/aarch64-uefi-el-torito.txt" >&2
+    cat "$LOG_DIR/aarch64-uefi-el-torito.txt" >&2
     exit 1
 }
 

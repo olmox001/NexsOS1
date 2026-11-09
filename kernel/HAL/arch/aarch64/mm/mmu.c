@@ -40,6 +40,8 @@
 #include <arch/pt_regs.h>
 #include <arch/arch.h>
 #include <hal/core.h>
+#include <hal/memory_protocol.h>
+#include <hal/provider.h>
 #include <kernel/arch.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
@@ -124,7 +126,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
       if (!alloc) return NULL; /* caller did not request allocation; fail cleanly */
 
       /* SPLIT BLOCK: Convert Block to Table */
-      void *new_table = pmm_alloc_page();
+      void *new_table = nxhal_memory_alloc_page();
       if (!new_table) return NULL;
       memset(new_table, 0, 4096);
 
@@ -158,7 +160,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
           /* L0 entries are architecturally always table descriptors; a
            * "block" here means corruption — refuse instead of fabricating
            * an empty table. */
-          pmm_free_page(new_table);
+          nxhal_memory_free_page(new_table);
           return NULL;
       }
 
@@ -184,7 +186,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc, int 
   /* Entry is absent (not valid); allocate a new table page if permitted. */
   if (!alloc) return NULL;
 
-  void *page = pmm_alloc_page();
+  void *page = nxhal_memory_alloc_page();
   if (!page) return NULL;
 
   memset(page, 0, 4096);
@@ -495,7 +497,7 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
 }
 
 /*
- * arch_vmm_map_device - map a device MMIO region [base, base+size) into the
+ * nxhal_provider_vmm_map_device - map a device MMIO region [base, base+size) into the
  * kernel's higher-half direct map as Device-nGnRnE memory (PAGE_DEVICE).
  *
  * Mirrors the amd64 contract used by the PCI scan / USB-xHCI BAR mapping. On
@@ -504,8 +506,7 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size, ui
  * phys_to_virt(bar). Needed for the PCIe-ECAM bring-up and any PCI BAR above
  * the boot-time MMIO window.
  */
-int arch_vmm_map_device(uint64_t base, uint64_t size);
-int arch_vmm_map_device(uint64_t base, uint64_t size) {
+int nxhal_provider_vmm_map_device(uint64_t base, uint64_t size) {
   if (!base || !size)
     return -1;
   uint64_t pgd = arch_impl_get_kernel_pgd();
@@ -540,7 +541,7 @@ int arch_vmm_map_device(uint64_t base, uint64_t size) {
  * table page reachable from this PGD belongs to the process.
  */
 uint64_t arch_vmm_create_process_pgd(void) {
-  uint64_t *pgd = (uint64_t *)pmm_alloc_page();
+  uint64_t *pgd = (uint64_t *)nxhal_memory_alloc_page();
   if (!pgd) return 0;
   memset(pgd, 0, 4096);
 

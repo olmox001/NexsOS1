@@ -29,8 +29,10 @@
  *   None specific to this file.  Test reporting accuracy depends on the runner
  *   (see LIB-KTEST-01 in kernel/lib/ktest.c and docs/review/analysis/07-lib-headers.md).
  */
+#include <hal/boot_memory.h>
 #include <kernel/test.h>
 #include <kernel/arch.h>
+#include <kernel/boot_memory.h>
 #include <kernel/platform.h>
 #include <kernel/memlayout.h>
 #include <kernel/printk.h>
@@ -79,23 +81,21 @@ static void ktest_timer_count_callback(void *data) {
 }
 
 KTEST_CASE(test_timer_rearm_cancel) {
-    struct timer timer;
+    struct OS1libkernel_timer timer;
     int callback_count = 0;
-    uint64_t now = __atomic_load_n(&jiffies, __ATOMIC_ACQUIRE);
+    uint64_t now = OS1libkernel_time_monotonic_ns();
 
-    timer_setup(&timer, ktest_timer_count_callback, &callback_count);
-    timer_add(&timer, now + 1000ULL);
-    bool first_pending = timer_pending(&timer);
-    timer_add(&timer, now + 2000ULL);
-    bool rearmed_pending = timer_pending(&timer);
+    OS1libkernel_timer_setup(&timer, ktest_timer_count_callback, &callback_count);
+    OS1libkernel_timer_arm_deadline(&timer, now + UINT64_C(1000000000));
+    bool first_pending = OS1libkernel_timer_pending(&timer);
+    OS1libkernel_timer_arm_deadline(&timer, now + UINT64_C(2000000000));
+    bool rearmed_pending = OS1libkernel_timer_pending(&timer);
 
-    /* Always clean up before assertions: a failed assertion must not leave a
-     * stack-backed timer linked for a later tick. */
-    timer_del(&timer);
-    bool cancelled = !timer_pending(&timer);
+    OS1libkernel_timer_cancel(&timer);
+    bool cancelled = !OS1libkernel_timer_pending(&timer);
     int owner = __atomic_load_n(&timer.cpu, __ATOMIC_ACQUIRE);
     bool unlinked = list_empty(&timer.list);
-    timer_del(&timer); /* repeated cancellation is explicitly idempotent */
+    OS1libkernel_timer_cancel(&timer);
 
     KASSERT(first_pending);
     KASSERT(rearmed_pending);
@@ -103,6 +103,28 @@ KTEST_CASE(test_timer_rearm_cancel) {
     KASSERT_EQ(owner, -1);
     KASSERT(unlinked);
     KASSERT_EQ(__atomic_load_n(&callback_count, __ATOMIC_ACQUIRE), 0);
+}
+
+KTEST_CASE(test_time_snapshot_cpu0) {
+    struct os1_time_snapshot_v1 snapshot;
+    KASSERT_EQ(OS1libkernel_time_snapshot(&snapshot), 0);
+    KASSERT_EQ(snapshot.abi_version, OS1_TIME_ABI_VERSION);
+    KASSERT(snapshot.cpu_count >= 1U);
+    KASSERT(snapshot.cpu_count <= OS1_TIME_MAX_CPUS);
+    KASSERT(snapshot.counter_frequency_hz != 0U);
+    KASSERT_EQ(snapshot.scheduler_tick_hz, OS1LIBKERNEL_TIMER_HZ);
+    KASSERT_EQ(snapshot.cpu[0].cpu_id, 0U);
+    KASSERT((snapshot.cpu[0].flags & OS1_TIME_CPU_ARMED) != 0U);
+}
+
+KTEST_CASE(test_time_snapshot_monotonic) {
+    struct os1_time_snapshot_v1 first;
+    struct os1_time_snapshot_v1 second;
+    KASSERT_EQ(OS1libkernel_time_snapshot(&first), 0);
+    KASSERT_EQ(OS1libkernel_time_snapshot(&second), 0);
+    KASSERT(second.sequence > first.sequence);
+    KASSERT(second.monotonic_ns >= first.monotonic_ns);
+    KASSERT_EQ(second.cpu_record_size, sizeof(struct os1_time_cpu_v1));
 }
 
 /* The boot map may be unsorted and contain overlapping usable descriptors.
@@ -124,13 +146,46 @@ KTEST_CASE(test_pmm_region_union) {
     KASSERT(pmm_metadata_top() <= HAL_BOOTSTRAP_PHYS_MAP_LIMIT);
 }
 
+KTEST_CASE(test_boot_memory_snapshot_consistent) {
+    size_t count = 0U;
+    struct mem_region *regions = boot_memory_regions(&count);
+    uint32_t hal_count = nxhal_boot_memory_count();
+    int usable = 0;
+
+    KASSERT(regions != NULL);
+    KASSERT(count != 0U);
+    KASSERT(count <= (size_t)NXHAL_BOOT_MEMORY_MAX_RECORDS + 1U);
+    if (hal_count != 0U)
+        KASSERT(count >= (size_t)hal_count);
+
+    for (size_t index = 0U; index < count; ++index) {
+        KASSERT(regions[index].size != 0U);
+        KASSERT(regions[index].base <= UINT64_MAX - regions[index].size);
+        if (regions[index].type == MEM_REGION_USABLE)
+            usable = 1;
+    }
+    KASSERT(usable);
+
+    for (uint32_t index = 0U; index < hal_count; ++index) {
+        struct nxhal_boot_memory_region source;
+        KASSERT_EQ(nxhal_boot_memory_get(index, &source),
+                   NXHAL_BOOT_MEMORY_OK);
+        KASSERT_EQ(regions[index].base, source.base);
+        KASSERT_EQ(regions[index].size, source.length);
+        if (source.type == (uint32_t)NXHAL_BOOT_MEMORY_USABLE)
+            KASSERT_EQ(regions[index].type, MEM_REGION_USABLE);
+        else
+            KASSERT(regions[index].type != MEM_REGION_USABLE);
+    }
+}
+
 #if HAL_TEST_PCI_3G_HOLE
 /* The QEMU 5 GiB layout has the PCI/MMIO aperture at 3-4 GiB. If a different
  * machine reports RAM there, the check is not applicable and is logged; on
  * the QEMU test configuration every PFN in the hole must be RESERVED. */
 KTEST_CASE(test_amd64_pci_hole_reserved) {
     size_t count = 0;
-    struct mem_region *regions = arch_platform_get_mem_regions(&count);
+    struct mem_region *regions = boot_memory_regions(&count);
     KASSERT(regions != NULL);
     KASSERT(count != 0);
 
@@ -490,6 +545,71 @@ KTEST_CASE(test_kmalloc_growth) {
     }
     KASSERT_EQ(allocated, KMG_BLOCKS);
     KASSERT_EQ(corrupt, 0);
+}
+
+KTEST_CASE(test_vmm_kernel_text_mapping) {
+    extern uint64_t *kernel_pgd;
+    extern char __text_start[];
+    uint64_t virtual_address = (uint64_t)__text_start;
+    uint64_t expected = virt_to_phys(__text_start);
+
+    KASSERT(kernel_pgd != NULL);
+    KASSERT_EQ(vmm_get_phys(kernel_pgd, virtual_address), expected);
+}
+
+KTEST_CASE(test_vmm_kernel_bss_mapping) {
+    extern uint64_t *kernel_pgd;
+    extern char __bss_start[];
+    uint64_t virtual_address = (uint64_t)__bss_start;
+    uint64_t expected = virt_to_phys(__bss_start);
+
+    KASSERT(kernel_pgd != NULL);
+    KASSERT_EQ(vmm_get_phys(kernel_pgd, virtual_address), expected);
+}
+
+static int ktest_boot_live_span(uint32_t kind,
+                                struct nxhal_boot_live_span *out) {
+    uint32_t count = nxhal_boot_live_span_count();
+
+    if (count > (uint32_t)NXHAL_BOOT_LIVE_ROLE_COUNT)
+        return 0;
+    for (uint32_t index = 0U; index < count; ++index) {
+        if (nxhal_boot_live_span_get(index, out) != NXHAL_BOOT_MEMORY_OK)
+            return 0;
+        if (out->kind == kind)
+            return 1;
+    }
+    return 0;
+}
+
+KTEST_CASE(test_vmm_boot_fdt_mapping) {
+    extern uint64_t *kernel_pgd;
+    struct nxhal_boot_live_span span;
+
+    if (!HAL_HAS_FDT)
+        return;
+    KASSERT(ktest_boot_live_span(NXHAL_BOOT_LIVE_FDT, &span));
+    KASSERT(span.length != 0U);
+    KASSERT_EQ(vmm_get_phys(kernel_pgd, (uint64_t)phys_to_virt(span.base)),
+               span.base);
+    KASSERT_EQ(vmm_get_phys(kernel_pgd,
+                           (uint64_t)phys_to_virt(span.base + span.length - 1U)),
+               span.base + span.length - 1U);
+}
+
+KTEST_CASE(test_vmm_boot_firmware_map_mapping) {
+    extern uint64_t *kernel_pgd;
+    struct nxhal_boot_live_span span;
+
+    if (nxhal_boot_memory_count() == 0U)
+        return;
+    KASSERT(ktest_boot_live_span(NXHAL_BOOT_LIVE_FIRMWARE_MAP, &span));
+    KASSERT(span.length != 0U);
+    KASSERT_EQ(vmm_get_phys(kernel_pgd, (uint64_t)phys_to_virt(span.base)),
+               span.base);
+    KASSERT_EQ(vmm_get_phys(kernel_pgd,
+                           (uint64_t)phys_to_virt(span.base + span.length - 1U)),
+               span.base + span.length - 1U);
 }
 
 /* test_vmm_protect - prove arch_vmm_protect rewrites live PTEs (AMMU-02).

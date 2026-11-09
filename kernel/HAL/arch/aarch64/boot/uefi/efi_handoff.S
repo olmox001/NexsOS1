@@ -3,9 +3,10 @@
 .globl nexs_efi_handoff
 
 /*
- * void nexs_efi_handoff(kernel_image_pa, dtb_pa, kernel_span, dtb_span)
+ * void nexs_efi_handoff(kernel_image_pa, dtb_pa, kernel_span, dtb_span,
+ *                        firmware_map_pa, firmware_record_count, ebs_evidence)
  *
- * Called only after ExitBootServices(). Clean both loaded ranges to PoC,
+ * Called only after ExitBootServices(). Clean loaded/handoff ranges to PoC,
  * invalidate the instruction cache, disable the active EL's MMU/caches,
  * mask interrupts and enter the ARM64 Image header at its physical base.
  * The Image header branches to the kernel's _start with x0=DTB.
@@ -15,6 +16,11 @@ nexs_efi_handoff:
     mov     x20, x1                  /* DTB physical base */
     mov     x21, x2                  /* kernel memory span incl. BSS */
     mov     x22, x3                  /* DTB span */
+    mov     x23, x4                  /* normalized firmware map base */
+    mov     x24, x5                  /* normalized firmware record count */
+    mov     x25, x6                  /* low32 attempts, high32 growths */
+    mov     x26, #40
+    mul     x26, x24, x26            /* normalized map byte span */
     msr     daifset, #0xf
 
     /* D-cache line size = 4 << CTR_EL0.DminLine. */
@@ -40,10 +46,22 @@ nexs_efi_handoff:
     add     x14, x20, x22
 .Lclean_dtb:
     cmp     x13, x14
-    b.hs    .Lcache_sync
+    b.hs    .Lclean_map_start
     dc      cvac, x13
     add     x13, x13, x11
     b       .Lclean_dtb
+
+    /* Clean normalized UEFI memory-map records written after EBS. */
+.Lclean_map_start:
+    cbz     x23, .Lcache_sync
+    bic     x13, x23, x12
+    add     x14, x23, x26
+.Lclean_map:
+    cmp     x13, x14
+    b.hs    .Lcache_sync
+    dc      cvac, x13
+    add     x13, x13, x11
+    b       .Lclean_map
 
 .Lcache_sync:
     dsb     sy
@@ -91,11 +109,14 @@ nexs_efi_handoff:
     dsb     sy
     isb
     mov     x0, x20                  /* DTB physical address */
-    mov     x1, x22                  /* NexsOS: validated DTB available span */
-    mov     x2, xzr
-    mov     x3, xzr
+    mov     x1, x22                  /* validated DTB available span */
+    mov     x2, x23                  /* normalized UEFI memory map */
+    mov     x3, x24                  /* normalized memory record count */
+    mov     x4, x25                  /* EBS attempt/growth evidence */
     br      x19                      /* execute Image header at load PA */
 
+.global nexs_efi_post_exit_halt
+nexs_efi_post_exit_halt:
 .Ldead:
     wfe
     b       .Ldead

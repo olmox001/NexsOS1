@@ -10,6 +10,7 @@ CFLAGS := -std=c17 -O2 -Wall -Wextra -Werror -Wpedantic
 CROSS_CFLAGS := -std=c17 -ffreestanding -fno-stack-protector -fno-builtin \
 	-Wall -Wextra -Werror -Wpedantic
 COMMON := \
+	$(ROOT)/common/boot_memory_record.c \
 	$(ROOT)/common/hcd_crc64.c \
 	$(ROOT)/common/hcd_parser.c \
 	$(ROOT)/common/hcd_semantics.c \
@@ -33,11 +34,12 @@ $(BUILD):
 	@mkdir -p $@
 
 define host_test
-	$(CC) $(CFLAGS) -I$(ROOT) $(1) $(UNIT)/$(2).c -o $(BUILD)/$(2)
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(1) $(UNIT)/$(2).c -o $(BUILD)/$(2)
 	$(BUILD)/$(2)
 endef
 
 test-host: | $(BUILD)
+	$(call host_test,$(ROOT)/common/boot_memory_record.c,boot_memory_record_test)
 	$(call host_test,$(CAPABILITY),isa_snapshot_test)
 	$(call host_test,$(CAPABILITY),isa_mmu_test)
 	$(call host_test,$(CAPABILITY),hw_access_policy_test)
@@ -56,6 +58,26 @@ test-host: | $(BUILD)
 	$(BUILD)/diagnostic_protocol_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/timer_protocol.c $(UNIT)/timer_protocol_test.c -o $(BUILD)/timer_protocol_test
 	$(BUILD)/timer_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/smp_protocol.c $(UNIT)/smp_protocol_test.c -o $(BUILD)/smp_protocol_test
+	$(BUILD)/smp_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/device_protocol.c $(UNIT)/device_protocol_test.c -o $(BUILD)/device_protocol_test
+	$(BUILD)/device_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/irq.c $(UNIT)/irq_protocol_test.c -o $(BUILD)/irq_protocol_test
+	$(BUILD)/irq_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/input_protocol.c $(UNIT)/input_protocol_test.c -o $(BUILD)/input_protocol_test
+	$(BUILD)/input_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fatal_protocol.c $(UNIT)/fatal_protocol_test.c -o $(BUILD)/fatal_protocol_test
+	$(BUILD)/fatal_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/memory_protocol.c $(UNIT)/memory_protocol_test.c -o $(BUILD)/memory_protocol_test
+	$(BUILD)/memory_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/resource.c $(UNIT)/resource_test.c -o $(BUILD)/resource_test
+	$(BUILD)/resource_test
+	$(CC) $(CFLAGS) -I$(ROOT)/include $(UNIT)/resource_abi_test.c -o $(BUILD)/resource_abi_test
+	$(BUILD)/resource_abi_test
+	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/resource.c $(UNIT)/resource_mutation_test.c -o $(BUILD)/resource_mutation_test
+	$(BUILD)/resource_mutation_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/pci.c $(UNIT)/pci_test.c -o $(BUILD)/pci_test
+	$(BUILD)/pci_test
 	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/device_name.c $(UNIT)/device_name_test.c -o $(BUILD)/device_name_test
 	$(BUILD)/device_name_test
 	$(CC) $(CFLAGS) -I$(ROOT) $(UNIT)/hcd_layout_test.c -o $(BUILD)/hcd_layout_test
@@ -70,7 +92,7 @@ test-cross: | $(BUILD)
 	  n=0; \
 	  for source in $(COMMON) $(CAPABILITY); do \
 	    n=$$((n+1)); object="$(BUILD)/protocol-$$n-$$target.o"; \
-	    $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT) -c "$$source" -o "$$object"; \
+	    $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT) -I$(ROOT)/include -c "$$source" -o "$$object"; \
 	    objects="$$objects $$object"; \
 	  done; \
 	  case "$$target" in \
@@ -87,21 +109,38 @@ test-cross: | $(BUILD)
 	  fi; \
 	  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT) -c $(UNIT)/hcd_layout_test.c \
 	    -o "$(BUILD)/hcd-layout-$$target.o"; \
-	  printf 'PASS: NX-HAL protocol freestanding cross-link %s\n' "$$target"; \
+	  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT)/include -c $(ROOT)/core/resource.c \
+	    -o "$(BUILD)/resource-core-$$target.o"; \
+	  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT)/include -c $(UNIT)/resource_abi_test.c \
+	    -o "$(BUILD)/resource-abi-$$target.o"; \
+	  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT) -I$(ROOT)/include -c $(ROOT)/core/pci.c \
+	    -o "$(BUILD)/pci-core-$$target.o"; \
+	  "$$linker" -r "$(BUILD)/resource-core-$$target.o" "$(BUILD)/resource-abi-$$target.o" \
+	    -o "$(BUILD)/nxhal-resource-$$target.o"; \
+	  unresolved=$$(nm -u "$(BUILD)/nxhal-resource-$$target.o"); \
+	  if [ -n "$$unresolved" ]; then \
+	    printf 'UNRESOLVED NX-HAL RESOURCE SYMBOLS (%s):\n%s\n' "$$target" "$$unresolved" >&2; exit 1; \
+	  fi; \
+	  printf 'PASS: NX-HAL protocol/resource freestanding cross-link %s\n' "$$target"; \
 	done
 
 test-sanitize: | $(BUILD)
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include \
+	  $(ROOT)/common/boot_memory_record.c $(UNIT)/boot_memory_record_test.c \
+	  -o $(BUILD)/boot_memory_record_test-sanitize
+	$(BUILD)/boot_memory_record_test-sanitize
 	@set -eu; \
 	for test in isa_snapshot_test isa_mmu_test hw_access_policy_test \
 	            uefi_memory_map_test multiboot2_memory_map_test \
 	            multiboot2_efi_map_test; do \
 	  $(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    -Wall -Wextra -Werror -Wpedantic -I$(ROOT) $(CAPABILITY) \
+	    -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(CAPABILITY) \
 	    "$(UNIT)/$$test.c" -o "$(BUILD)/$$test-sanitize"; \
 	  "$(BUILD)/$$test-sanitize"; \
 	done
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) $(ROOT)/capability/uefi_exit.c \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/capability/uefi_exit.c \
 	  $(UNIT)/uefi_exit_test.c -o $(BUILD)/uefi_exit_test-sanitize
 	$(BUILD)/uefi_exit_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -117,20 +156,56 @@ test-sanitize: | $(BUILD)
 	  $(UNIT)/timer_protocol_test.c -o $(BUILD)/timer_protocol_test-sanitize
 	$(BUILD)/timer_protocol_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/smp_protocol.c \
+	  $(UNIT)/smp_protocol_test.c -o $(BUILD)/smp_protocol_test-sanitize
+	$(BUILD)/smp_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/device_protocol.c \
+	  $(UNIT)/device_protocol_test.c -o $(BUILD)/device_protocol_test-sanitize
+	$(BUILD)/device_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/irq.c \
+	  $(UNIT)/irq_protocol_test.c -o $(BUILD)/irq_protocol_test-sanitize
+	$(BUILD)/irq_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/input_protocol.c \
+	  $(UNIT)/input_protocol_test.c -o $(BUILD)/input_protocol_test-sanitize
+	$(BUILD)/input_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fatal_protocol.c \
+	  $(UNIT)/fatal_protocol_test.c -o $(BUILD)/fatal_protocol_test-sanitize
+	$(BUILD)/fatal_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/memory_protocol.c \
+	  $(UNIT)/memory_protocol_test.c -o $(BUILD)/memory_protocol_test-sanitize
+	$(BUILD)/memory_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT)/include $(ROOT)/core/resource.c \
+	  $(UNIT)/resource_test.c -o $(BUILD)/resource_test-sanitize
+	$(BUILD)/resource_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT)/include $(ROOT)/core/resource.c \
+	  $(UNIT)/resource_mutation_test.c -o $(BUILD)/resource_mutation_test-sanitize
+	$(BUILD)/resource_mutation_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/pci.c \
+	  $(UNIT)/pci_test.c -o $(BUILD)/pci_test-sanitize
+	$(BUILD)/pci_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT)/include $(ROOT)/core/device_name.c \
 	  $(UNIT)/device_name_test.c -o $(BUILD)/device_name_test-sanitize
 	$(BUILD)/device_name_test-sanitize
 	@set -eu; \
 	for test in memory_plan_test hcd_builder_test hcd_core_profile_test hcd_parser_test; do \
 	  $(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    -Wall -Wextra -Werror -Wpedantic -I$(ROOT) $(COMMON) \
+	    -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(COMMON) \
 	    "$(UNIT)/$$test.c" -o "$(BUILD)/$$test-sanitize"; \
 	  "$(BUILD)/$$test-sanitize"; \
 	done
 	@printf '%s\n' "PASS: NX-HAL integrated ASan/UBSan"
 
 test-static:
-	$(CLANG_TIDY) $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/device_name.c \
+	$(CLANG_TIDY) $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/input_protocol.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters' \
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/include
 	$(CLANG_TIDY) $(ROOT)/capability/amd64/isa.c --extra-arg=--target=x86_64-elf \
@@ -140,7 +215,7 @@ test-static:
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters,-portability-no-assembler' \
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/arch/aarch64/include
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
-	  -I$(ROOT) -I$(ROOT)/include $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/device_name.c \
+	  -I$(ROOT) -I$(ROOT)/include $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/input_protocol.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
 	  $(UNIT)/*.c
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
 	  -I$(ROOT) -I$(ROOT)/arch/amd64/include $(ROOT)/capability/amd64/isa.c

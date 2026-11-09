@@ -19,8 +19,9 @@
  *     secondary CPU, not from here.
  */
 #include <kernel/drivers.h>
-#include <kernel/hal.h>
+#include <hal/core.h>
 #include <kernel/printk.h>
+#include <kernel/timer.h>
 
 /*
  * driver_timer_init - initialise the platform system timer.
@@ -32,6 +33,9 @@
  * MMIO side effects: delegated to arch_timer_init().
  */
 void driver_timer_init(void) {
-    arch_timer_init();
-    pr_info("%s", "Timer driver initialized via HAL\n");
+    hal_timer_global_init();
+    OS1libkernel_time_init();
+    pr_info("Timer driver initialized via HAL: counter=%lu Hz, scheduler=%lu Hz\n",
+            OS1libkernel_time_counter_frequency(),
+            (uint64_t)OS1LIBKERNEL_TIMER_HZ);
 }

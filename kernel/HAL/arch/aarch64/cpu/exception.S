@@ -14,6 +14,9 @@
 
 .section .text
 
+/* SError policy is Core-owned and reached through the HAL fatal protocol. */
+.set serror_handler, nxhal_fatal_serror
+
 /*
  * arch_cpu_yield - cooperative reschedule from KERNEL (task) context.
  *

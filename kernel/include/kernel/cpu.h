@@ -1,8 +1,11 @@
 #ifndef _KERNEL_CPU_H
 #define _KERNEL_CPU_H
 
+#include <hal/limits.h>
+
 #ifndef __ASSEMBLER__
 #include <hal/frame.h>
+#include <hal/cpu_protocol.h>
 #include <kernel/nx_contract.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
@@ -76,19 +79,21 @@ struct cpu_info {
 };
 #endif
 
-#define MAX_CPUS 64
+#define MAX_CPUS NXHAL_CPU_LIMIT
 
 #ifndef __ASSEMBLER__
 /* API */
 extern struct cpu_info cpu_data[MAX_CPUS];
+extern uint32_t nr_cpus;
 struct cpu_info *get_cpu_info(void);
+struct cpu_info *cpu_info_fault_safe(void);
 void smp_create_idle_task(uint32_t cpu_id);
 
 /* Arch-neutral secondary bring-up (kernel/core/smp.c, B6 slice — S-ALIGN F8).
  * smp_bringup_secondary: idle-task-first (#169/#170) + arch wake + bounded
  * acquire-wait for the ack.  0 = online, -1 = wake failed, -2 = ack timeout.
  * smp_ack_boot: release-store ack, called by the secondary once initialized. */
-int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) NX_MUST_USE;
+int smp_bringup_secondary(uint32_t cpu, void *stack_top) NX_MUST_USE;
 void smp_ack_boot(uint32_t cpu);
 
 /* These are now provided by arch.h HAL macros/functions */
@@ -96,7 +101,6 @@ void smp_ack_boot(uint32_t cpu);
 #include <kernel/arch.h>
 
 #define cpu_id() hal_cpu_id()
-#define cpu_init() arch_cpu_init()
 #define local_irq_enable() hal_irq_enable()
 #define local_irq_disable() hal_irq_disable()
 #define local_irq_save() hal_irq_save_val()

@@ -3,6 +3,19 @@
 
 GNULIB_PORT_DIR   := user/portability/gnulib
 GNULIB_DIR        := user/lib/gnulib
+GNULIB_GEN_INC_DIR := $(BUILD_DIR)/gnulib-include
+GNULIB_GENERATED_HEADERS := \
+  $(GNULIB_GEN_INC_DIR)/unitypes.h \
+  $(GNULIB_GEN_INC_DIR)/uniwidth.h
+
+$(GNULIB_GEN_INC_DIR)/unitypes.h: $(GNULIB_DIR)/lib/unitypes.in.h
+	@mkdir -p $(dir $@)
+	@cp $< $@
+
+$(GNULIB_GEN_INC_DIR)/uniwidth.h: $(GNULIB_DIR)/lib/uniwidth.in.h \
+                                  $(GNULIB_GEN_INC_DIR)/unitypes.h
+	@mkdir -p $(dir $@)
+	@cp $< $@
 
 GNULIB_OVERLAY_SRCS := \
   $(GNULIB_PORT_DIR)/gnulib_os1_glue.c \
@@ -136,4 +149,7 @@ GNULIB_OVERLAY_SRCS := \
 
 GNULIB_OVERLAY_CONFIG := $(GNULIB_PORT_DIR)/gnulib_config_nexsos.h
 
-GNULIB_OVERLAY_CPPFLAGS := -D__NEXSOS__ -DFLEXIBLE_ARRAY_MEMBER= -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib -include $(GNULIB_OVERLAY_CONFIG)
+GNULIB_OVERLAY_CPPFLAGS := -D__NEXSOS__ -DFLEXIBLE_ARRAY_MEMBER= \
+                           -I$(GNULIB_GEN_INC_DIR) \
+                           -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib \
+                           -include $(GNULIB_OVERLAY_CONFIG)

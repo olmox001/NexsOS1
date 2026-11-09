@@ -16,22 +16,13 @@
  */
 struct process;
 
-void arch_cpu_init(void);
 void arch_smp_init(void);
 void arch_smp_setup_stacks(uint32_t cpu_count);
-int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void),
-                            void *stack) NX_MUST_USE;
-void arch_cpu_switch_context(struct process *next);
 void arch_cpu_yield(void);
 
 void arch_enter_user_mode(uint64_t entry, uint64_t stack, uint64_t ksp);
 void *arch_get_kernel_stack(uint32_t cpu_id);
 uint64_t arch_get_boot_info(void);
-
-int arch_copy_from_user(void *dest, const void *src, size_t n) NX_MUST_USE;
-int arch_copy_to_user(void *dest, const void *src, size_t n) NX_MUST_USE;
-int arch_copy_string_from_user(char *dest, const char *src,
-                               size_t max_len) NX_MUST_USE;
 
 void arch_vmm_init_hw(uint64_t kernel_pgd);
 void arch_vmm_map_mmio(uint64_t *pgd);

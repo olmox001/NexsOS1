@@ -6,7 +6,6 @@
 #define _DRIVERS_VIRTIO_H
 
 #include <kernel/types.h>
-#include <kernel/hal_device.h>
 #include <kernel/spinlock.h>
 
 /* VirtIO MMIO Register Layout */
@@ -67,7 +66,6 @@ struct virtio_transport_ops {
 };
 
 struct virtio_device {
-  hal_device_t hal_dev;
   uintptr_t base;
   uint32_t irq;
   uint32_t device_id;
@@ -75,6 +73,7 @@ struct virtio_device {
   const struct virtio_transport_ops *ops;
   uintptr_t isr_base;
   uintptr_t notify_base;
+  uint32_t notify_off_multiplier;
   void *priv;
   spinlock_t lock;
 };

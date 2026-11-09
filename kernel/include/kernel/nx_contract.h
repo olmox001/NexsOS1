@@ -68,7 +68,7 @@
  * the author state the justification where the next reader will look, so a
  * discard can be reviewed instead of merely noticed.  Note that a plain (void)
  * cast does NOT suppress warn_unused_result under GCC — the tree already had
- * `(void)arch_copy_to_user(...)` sitting in SYS_WAIT, which looked deliberate
+ * `(void)hal_copy_to_user(...)` sitting in SYS_WAIT, which looked deliberate
  * and silenced nothing.
  *
  * Legitimate uses are narrow: an error-unwind path where the failure of the

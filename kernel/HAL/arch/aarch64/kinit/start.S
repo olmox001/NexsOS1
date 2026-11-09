@@ -27,7 +27,7 @@
  */
 
 #include <kernel/cpu.h>
-#include <kernel/boot_info.h>
+#include <hal/boot_info.h>
 
 /*
  * Linux ARM64 Image header consumed by GRUB's `linux` command.
@@ -82,13 +82,25 @@ __arm64_image_header:
  * legacy ARM64 Image path continues to pass zero and uses fdt_init_legacy().
  */
 _start:
-    /* Preserve both handoff arguments before any setup code can clobber them. */
+    /* Preserve the architecture-neutral NX-HAL handoff before setup. */
     mov x20, x0
     mov x21, x1
-    adrp x2, boot_info
-    add x2, x2, :lo12:boot_info
-    str x20, [x2, #BOOT_INFO_FDT_PHYS_OFFSET]
-    str x21, [x2, #BOOT_INFO_FDT_SIZE_OFFSET]
+    mov x22, x2
+    mov x23, x3
+    mov x24, x4
+    adrp x5, nxhal_boot_info
+    add x5, x5, :lo12:nxhal_boot_info
+    str x20, [x5, #NXHAL_BOOT_INFO_FDT_PHYS_OFFSET]
+    str x21, [x5, #NXHAL_BOOT_INFO_FDT_SIZE_OFFSET]
+    cbz x21, .Lboot_handoff_saved
+    str x22, [x5, #NXHAL_BOOT_INFO_FW_MAP_PHYS_OFFSET]
+    str w23, [x5, #NXHAL_BOOT_INFO_FW_MAP_COUNT_OFFSET]
+    mov w6, #NXHAL_UEFI_MEMORY_RECORD_SIZE
+    str w6, [x5, #NXHAL_BOOT_INFO_FW_MAP_RECORD_SIZE_OFFSET]
+    str w24, [x5, #NXHAL_BOOT_INFO_EBS_ATTEMPTS_OFFSET]
+    lsr x6, x24, #32
+    str w6, [x5, #NXHAL_BOOT_INFO_MAP_GROWTHS_OFFSET]
+.Lboot_handoff_saved:
 
     /* Disable interrupts */
     msr daifset, #0xf
@@ -270,10 +282,10 @@ boot_high_entry:
     mov sp, x0
 
     /* Reload the physical DTB base and available span from BootInfo. */
-    adrp x9, boot_info
-    add x9, x9, :lo12:boot_info
-    ldr x0, [x9, #BOOT_INFO_FDT_PHYS_OFFSET]
-    ldr x1, [x9, #BOOT_INFO_FDT_SIZE_OFFSET]
+    adrp x9, nxhal_boot_info
+    add x9, x9, :lo12:nxhal_boot_info
+    ldr x0, [x9, #NXHAL_BOOT_INFO_FDT_PHYS_OFFSET]
+    ldr x1, [x9, #NXHAL_BOOT_INFO_FDT_SIZE_OFFSET]
     bl nxcore_hal_boot_entry
 
     /* Should never return */
@@ -292,7 +304,7 @@ halt:
  * pass is still mid-flight through its 16->32->64-bit transition — the
  * kernel itself owns and re-triggers that delivery mechanism.  PSCI
  * CPU_ON, used here, has no equivalent risk: it is a single firmware call
- * per CPU (see arch_cpu_wake_secondary() below — called exactly once per
+ * per CPU (see arch_impl_smp_wake_secondary() below — called exactly once per
  * CPU by smp_bringup_secondary(), kernel/core/smp.c, with no retry), and
  * the PSCI specification defines CPU_ON as idempotent at the FIRMWARE
  * level — calling it again on a core that is already ON (or coming ON)
@@ -342,18 +354,13 @@ secondary_startup:
     b halt
 
 /*
- * Wake secondary CPU
- */
-.global cpu_wake_secondary
-/*
  * Wake secondary CPU via PSCI
  * x0 = cpu id
- * x1 = entry point (user C function) - ignored, we use secondary_startup
- * x2 = stack pointer - passed as context_id
+ * x1 = stack pointer - passed as context_id
  */
-.global arch_cpu_wake_secondary
-arch_cpu_wake_secondary:
-    mov x3, x2          /* x3 = context_id (stack, virtual) */
+.global arch_impl_smp_wake_secondary
+arch_impl_smp_wake_secondary:
+    mov x3, x1          /* x3 = context_id (stack, virtual) */
 
     /* PSCI needs the PHYSICAL entry point.  adrp at a high PC yields the
      * link (virtual) address — subtract KERNEL_VIRT_BASE. */
@@ -373,12 +380,12 @@ arch_cpu_wake_secondary:
 
 /*
  * Get legacy boot argument (the stored value is the DTB PHYSICAL address).
- * The full typed BootInfo record is exported as the boot_info data symbol.
+ * The full typed BootInfo record is exported as the nxhal_boot_info data symbol.
  */
 .global arch_get_boot_info
 arch_get_boot_info:
-    adrp x0, boot_info
-    add x0, x0, :lo12:boot_info
+    adrp x0, nxhal_boot_info
+    add x0, x0, :lo12:nxhal_boot_info
     ldr x0, [x0]
     ret
 
@@ -388,15 +395,21 @@ arch_get_boot_info:
 .section .data
 .balign 8
 
-.global boot_info
-boot_info:
+.global nxhal_boot_info
+nxhal_boot_info:
     .quad 0                              /* fdt_phys */
     .quad 0                              /* fdt_size */
-    .long BOOT_INFO_MAGIC
-    .short BOOT_INFO_VERSION
-    .short BOOT_INFO_SIZE
-    .long BOOT_INFO_SOURCE_UNKNOWN
+    .long NXHAL_BOOT_INFO_MAGIC
+    .short NXHAL_BOOT_INFO_VERSION
+    .short NXHAL_BOOT_INFO_SIZE
+    .long NXHAL_BOOT_SOURCE_UNKNOWN
     .long 0                              /* flags */
+    .quad 0                              /* firmware_map_phys */
+    .long 0                              /* firmware_map_record_count */
+    .long 0                              /* firmware_map_record_size */
+    .long 0                              /* ebs_attempts */
+    .long 0                              /* map_growths */
+    .quad 0                              /* reserved0 */
 
 cpu_spin_table:
     .skip MAX_CPUS * 16     /* MAX_CPUS entries */

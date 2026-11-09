@@ -49,9 +49,6 @@ struct hal_device *hal_device_find_class(uint8_t class_code, uint8_t subclass,
 
 /* Internal HAL APIs for architecture-specific code */
 void hal_register_device(struct hal_device *dev);
-void arch_bus_scan(void);
-void arch_irq_init(void);
-void arch_timer_init(void);
 
 /* Helper for automatic resource type detection */
 static inline hal_res_type_t hal_auto_type(uintptr_t addr) {

@@ -40,13 +40,14 @@
 #include <hal/core_protocol.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
+#include <hal/irq.h>
+#include <hal/input_protocol.h>
 #include <drivers/uart.h>
 #include <kernel/arch.h>
 #include <kernel/io_poll.h>
 #include <kernel/irq.h>
 #include <kernel/memlayout.h>
 #include <kernel/platform.h>
-#include <kernel/sched.h>
 #include <kernel/types.h>
 #include <stdint.h>
 
@@ -129,9 +130,8 @@ static void uart_irq_handler(uint32_t irq, void *data) {
     /* Clear interrupt */
     UART_REG(UART_ICR) = UART_ICR_RXIC;
 
-    /* Wake up waiting processes */
-    extern struct wait_queue_head keyboard_wait_queue;
-    wake_up(&keyboard_wait_queue);
+    /* Notify the Core input service without exposing scheduler objects. */
+    nxhal_input_rx_ready();
   }
 }
 
@@ -185,7 +185,7 @@ void uart_init(void) {
   /* The UART is the diagnostic channel of last resort: losing its IRQ
    * silently is exactly the failure that leaves you with no way to see
    * failures. */
-  if (irq_register(PLATFORM_IRQ_UART0, uart_irq_handler, NULL) != 0)
+  if (nxhal_irq_register_handler(PLATFORM_IRQ_UART0, uart_irq_handler, NULL) != 0)
     nxhal_diag_error("%s", "pl011: cannot register UART0 IRQ — input on the serial "
                  "console will not be delivered\n");
 

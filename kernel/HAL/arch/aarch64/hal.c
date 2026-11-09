@@ -23,14 +23,15 @@
  */
 #include <hal/diagnostic_protocol.h>
 #include <hal/device_name.h>
+#include <hal/device_protocol.h>
+#include <hal/pci.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
+#include <hal/provider.h>
 #include <kernel/hal.h>
-#include <kernel/string.h>
 #include <kernel/platform.h>
 #include <arch/platform.h>
 #include <drivers/virtio.h>
-#include <drivers/pci.h>
 
 /* QEMU virt PCIe ECAM (compatible "pci-host-ecam-generic"). Base taken from the
  * board DTB pcie node: reg = <0x40 0x10000000 ...> -> 0x4010000000, 256 MB,
@@ -39,22 +40,30 @@
  * NOTE(ASTRA-VIOLATION): base is hardcoded for the QEMU virt board; derive it
  * from the FDT pcie node once an FDT parser exists. Only the first buses are
  * populated on virt, so we map and bound the scan to a 16 MB window. */
-#define VIRT_ECAM_BASE  0x4010000000UL
-#define VIRT_ECAM_BUSES 16
+#define VIRT_ECAM_BASE UINT64_C(0x4010000000)
+#define VIRT_ECAM_BUSES NXHAL_PCI_BUS_COUNT
 
 static uint32_t ecam_off(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
   return ((uint32_t)bus << 20) | ((uint32_t)dev << 15) |
          ((uint32_t)fn << 12) | (off & 0xFFC);
 }
-static uint32_t ecam_read32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
-  if (bus >= VIRT_ECAM_BUSES) return 0xFFFFFFFF;
-  return *(volatile uint32_t *)phys_to_virt(VIRT_ECAM_BASE + ecam_off(bus, dev, fn, off));
+static uint32_t ecam_read32(uint8_t bus, uint8_t dev, uint8_t fn,
+                            uint8_t off) {
+  uint32_t value;
+
+  if (hal_mmio_read32(VIRT_ECAM_BASE + ecam_off(bus, dev, fn, off),
+                      &value) != 0)
+    return NXHAL_PCI_CONFIG_INVALID;
+  return value;
 }
-static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t v) {
-  if (bus >= VIRT_ECAM_BUSES) return;
-  *(volatile uint32_t *)phys_to_virt(VIRT_ECAM_BASE + ecam_off(bus, dev, fn, off)) = v;
+
+static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t fn,
+                         uint8_t off, uint32_t value) {
+  if (hal_mmio_write32(VIRT_ECAM_BASE + ecam_off(bus, dev, fn, off),
+                       value) != 0)
+    nxhal_diag_error("%s", "HAL: PCI ECAM write rejected\n");
 }
-static struct pci_config_ops ecam_ops = { ecam_read32, ecam_write32 };
+static const struct nxhal_pci_config_ops ecam_ops = { ecam_read32, ecam_write32 };
 
 /* arch_platform_get_boot_module (HAL contract, platform.h): aarch64 boots a
  * raw kernel + a virtio-blk disk, with no GRUB/initrd module today.  Returns
@@ -85,45 +94,60 @@ int arch_platform_get_boot_module(uint64_t *base, uint64_t *size) {
  * (SPI 16 in GIC terms); device i uses IRQ 48 + i.
  * Vendor ID 0x1AF4 is the standard VirtIO PCI/MMIO vendor.
  */
-void arch_bus_scan(void) {
+static int aarch64_publish_virtio_slot(uint32_t slot) {
+    struct nxhal_device_desc dev = {0};
+    uint64_t base = (uint64_t)VIRTIO_MMIO_BASE +
+                    ((uint64_t)slot * (uint64_t)VIRTIO_MMIO_STRIDE);
+    uint32_t magic;
+    uint32_t device_id;
+
+    if (hal_mmio_read32(base + VIRTIO_MMIO_MAGIC_VALUE, &magic) != 0)
+        return -1;
+    if (magic != UINT32_C(0x74726976))
+        return 0;
+    if (hal_mmio_read32(base + VIRTIO_MMIO_DEVICE_ID, &device_id) != 0)
+        return -1;
+    if (device_id == 0U)
+        return 0;
+    dev.bus_type = NXHAL_BUS_VIRTIO_MMIO;
+    dev.vendor_id = UINT16_C(0x1af4);
+    dev.device_id = (uint16_t)device_id;
+    dev.base = (uintptr_t)base;
+    dev.irq = UINT32_C(48) + slot;
+    nxhal_device_name_virtio(dev.name, sizeof(dev.name), device_id);
+    nxhal_device_publish(&dev);
+    return 0;
+}
+
+void nxhal_provider_bus_scan(void) {
+    uint32_t slot;
+
     nxhal_diag_info("%s", "HAL: Scanning Platform Bus (MMIO)...\n");
-
-    for (int i = 0; i < VIRTIO_COUNT; i++) {
-        uintptr_t base = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_STRIDE;
-        /* Read the VirtIO magic value; valid devices return "virt" (0x74726976). */
-        uint32_t magic = hal_read32(base + VIRTIO_MMIO_MAGIC_VALUE);
-
-        if (magic == 0x74726976) { /* "virt" in little-endian ASCII */
-            uint32_t dev_id = hal_read32(base + VIRTIO_MMIO_DEVICE_ID);
-            if (dev_id != 0) { /* device_id == 0 means slot is empty */
-                struct hal_device dev;
-                memset(&dev, 0, sizeof(dev));
-
-                dev.bus_type  = HAL_BUS_TYPE_VIRTIO_MMIO;
-                dev.vendor_id = 0x1AF4;           /* VirtIO standard vendor */
-                dev.device_id = (uint16_t)dev_id; /* e.g. 1=net, 2=blk, 9=gpu */
-                dev.base      = base;
-                dev.irq       = 48 + i;           /* QEMU virt IRQ allocation */
-
-                nxhal_device_name_virtio(dev.name, sizeof(dev.name), dev_id);
-
-                hal_register_device(&dev);
-            }
+    for (slot = 0U; slot < (uint32_t)VIRTIO_COUNT; ++slot) {
+        if (aarch64_publish_virtio_slot(slot) != 0) {
+            nxhal_diag_error("%s", "HAL: VirtIO MMIO probe failed\n");
+            return;
         }
     }
 
     /* Unify with amd64: bring up the PCIe ECAM bus so the same PCI providers
      * (xHCI/VGA/...) enumerate here too. virtio stays on MMIO above; this adds
      * the PCI side (e.g. -device qemu-xhci) behind the same HAL registry. */
-    extern int arch_vmm_map_device(uint64_t base, uint64_t size);
-    arch_vmm_map_device(VIRT_ECAM_BASE, (uint64_t)VIRT_ECAM_BUSES << 20);
-    pci_set_config_ops(&ecam_ops);
-    /* PCI MMIO windows from the virt DTB pcie ranges (32-bit @ 0x10000000,
-     * 64-bit @ 0x80_00000000), used to assign BARs the (absent) firmware did
-     * not program. */
-    pci_set_mmio_windows(0x10000000UL, 0x2eff0000UL,
-                         0x8000000000UL, 0x8000000000UL);
-    pci_scan_and_register();
+    if (hal_vmm_map_device(VIRT_ECAM_BASE,
+                           (uint64_t)VIRT_ECAM_BUSES << 20U) != 0) {
+        nxhal_diag_error("%s", "HAL: PCI ECAM mapping failed\n");
+        return;
+    }
+    if (nxhal_pci_set_config_ops(&ecam_ops) != 0) {
+        nxhal_diag_error("%s", "HAL: PCI ECAM backend registration failed\n");
+        return;
+    }
+    /* Temporary QEMU-virt window source. This is replaced by the HCD/FDT
+     * resource record in the next hardware-resource migration step. */
+    if (nxhal_pci_set_mmio_windows(0x10000000UL, 0x2eff0000UL,
+                                   0x8000000000UL, 0x8000000000UL) != 0 ||
+        nxhal_pci_scan_and_register() != 0)
+        nxhal_diag_error("%s", "HAL: PCI resource scan failed\n");
 }
 
 /*
@@ -136,7 +160,7 @@ void arch_bus_scan(void) {
  *
  * Must be called before any IRQ is enabled or any driver calls request_irq().
  */
-void arch_irq_init(void) {
+void nxhal_provider_irq_init(void) {
     extern void gic_register(void);
     gic_register();
 }
@@ -148,7 +172,32 @@ void arch_irq_init(void) {
  * ARM Generic Timer (CNTP_CTL_EL0 / CNTP_TVAL_EL0 or equivalent) to fire
  * periodic interrupts for the kernel scheduler tick.
  */
-void arch_timer_init(void) {
+void nxhal_provider_timer_global_init(void) {
     extern void timer_init(void);
     timer_init();
+}
+
+void nxhal_provider_uaccess_enter(uint64_t user_root_phys,
+                                  struct nxhal_uaccess_hw_state *state) {
+    if (state == NULL)
+        return;
+    state->saved_root = hal_vmm_get_pgd();
+    hal_vmm_set_pgd(user_root_phys);
+    hal_tlb_flush_all();
+    hal_isb();
+}
+
+void nxhal_provider_uaccess_exit(
+    const struct nxhal_uaccess_hw_state *state) {
+    if (state == NULL)
+        return;
+    hal_vmm_set_pgd(state->saved_root);
+    hal_tlb_flush_all();
+    hal_isb();
+}
+
+void nxhal_provider_uaccess_fault_abort(void) {
+    /* Preserve the historical aarch64 fixup behaviour: allow IRQ progress
+     * before the scheduler restores the successor frame. */
+    hal_irq_enable();
 }

@@ -92,7 +92,7 @@ void __stack_chk_fail(void) {
   uintptr_t ret_addr = (uintptr_t)__builtin_return_address(0);
   uintptr_t *self_fp = (uintptr_t *)__builtin_frame_address(0);
   uintptr_t caller_fp = self_fp ? self_fp[0] : 0;
-  struct cpu_info *cpu = arch_cpu_info_fault_safe();
+  struct cpu_info *cpu = cpu_info_fault_safe();
 
   /* Do not dereference the caller frame here: on a real stack-corruption
    * event it may be invalid.  Preserve its address and the per-CPU ownership

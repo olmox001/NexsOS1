@@ -49,11 +49,13 @@
 #include <arch/pt_regs.h>
 #include <arch/arch.h>
 #include <hal/core.h>
+#include <hal/memory_protocol.h>
+#include <hal/cpu_protocol.h>
+#include <hal/provider.h>
 #include <kernel/string.h>
 #include <kernel/types.h>
 
 /* Exception frame structure */
-#include <kernel/cpu.h>
 #include <kernel/fault.h>
 #include <kernel/sched.h>
 
@@ -63,9 +65,6 @@
 #include <kernel/vmm.h>
 
 /* External definitions from core */
-extern struct cpu_info cpu_data[MAX_CPUS];
-extern uint32_t nr_cpus;
-
 /*
  * Per-CPU EL1 fault (abort) stacks — Phase A step 4.
  *
@@ -80,9 +79,9 @@ extern uint32_t nr_cpus;
  * the backtrace walk, with margin.  In .bss → identity-mapped in kernel_pgd.
  */
 #define FAULT_STACK_SIZE 16384
-static uint8_t fault_stacks[MAX_CPUS][FAULT_STACK_SIZE]
+static uint8_t fault_stacks[NXHAL_CPU_LIMIT][FAULT_STACK_SIZE]
     __attribute__((aligned(16)));
-uint64_t arch_fault_stack_top[MAX_CPUS]; /* read by exception.S vectors */
+uint64_t arch_fault_stack_top[NXHAL_CPU_LIMIT]; /* read by exception.S vectors */
 
 /*
  * arch_frame_on_fault_stack - is this exception frame on a per-CPU fault stack?
@@ -102,11 +101,11 @@ int arch_frame_on_fault_stack(const void *frame) {
  * On aarch64 the CPU id comes from MPIDR_EL1 — a system-register read that
  * cannot fault — so this is simply the bounds-checked cpu_data[] lookup.
  */
-struct cpu_info *arch_cpu_info_fault_safe(void) {
+int32_t nxhal_provider_cpu_id_fault_safe(void) {
   uint32_t id = arch_impl_get_cpu_id();
-  if (id >= MAX_CPUS)
-    return NULL;
-  return &cpu_data[id];
+  if (id >= NXHAL_CPU_LIMIT)
+    return -1;
+  return (int32_t)id;
 }
 
 /* External functions from assembly */
@@ -129,25 +128,21 @@ extern void exception_vectors_install(void);
  * EL context: called at EL1 (MMU may or may not be active; called both pre- and
  *             post-MMU during primary and secondary CPU bring-up).
  */
-void arch_cpu_init(void) {
+void nxhal_provider_cpu_local_init(void) {
   uint32_t id = hal_cpu_id();
 
-  cpu_data[id].cpu_id = id;
-  cpu_data[id].online = 1;
+  if (id >= NXHAL_CPU_LIMIT)
+    nxhal_diag_panic("AArch64 CPU id %u exceeds NXHAL_CPU_LIMIT", id);
+  if (nxhal_cpu_online(id) != 0)
+    nxhal_diag_panic("AArch64 CPU %u cannot publish online state", id);
 
   /* Publish this CPU's EL1 fault-stack top BEFORE installing the vectors:
    * from the first VBAR exception onward, handle_el1_spx_sync/serror switch
    * onto it (a zero entry makes the vector stay on the current stack). */
   arch_fault_stack_top[id] = (uint64_t)&fault_stacks[id][FAULT_STACK_SIZE];
 
-  if (id == 0) {
-    nr_cpus = 1;
+  if (id == 0)
     nxhal_diag_info("CPU: Primary core %u initialized\n", id);
-  } else {
-    /* Avoid pr_info here as it might cause lock contention with primary core
-     * boot logs */
-    __sync_fetch_and_add(&nr_cpus, 1);
-  }
 
   /* Enable FPU/SIMD (NEON) - set CPACR_EL1.FPEN = 0b11.
    * FPEN[21:20] == 0b00 traps FP/NEON from EL0+EL1 to EL1.
@@ -386,8 +381,6 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
      * the end (FIX(PANIC-LOCKFREE-01), kernel/lib/printk.c) always uses that
      * same lock-free output path now, not only when fault_depth() > 0. */
     nxhal_diag_fault("%s", "--- Kernel Exception Context Dump ---\n");
-    nxhal_diag_fault("Process: PID %d\n",
-                 current_process ? (int)current_process->pid : -1);
     nxhal_diag_fault("SPSR_EL1: 0x%016lx\n", frame->spsr);
     nxhal_diag_fault("ELR_EL1:  0x%016lx\n", frame->elr);
     nxhal_diag_fault("FAR_EL1:  0x%016lx\n", far);
@@ -489,7 +482,7 @@ struct pt_regs *aarch32_handler(struct pt_regs *frame) {
  * stack for CPU i, because AArch64 stacks grow downward. Populated by
  * arch_smp_setup_stacks() before any secondary CPU is woken.
  */
-void *arch_secondary_stacks[MAX_CPUS] = {0};
+void *arch_secondary_stacks[NXHAL_CPU_LIMIT] = {0};
 extern char
     __kernel_stack[]; /* BSS symbol; MAX_CPUS * 128KB array, see start.S */
 
@@ -509,11 +502,11 @@ extern char
  *
  * Side effects: writes arch_secondary_stacks[]; allocates PMM pages for CPUs
  * >= 8. Called by: arch_smp_init() in platform.c before
- * arch_cpu_wake_secondary().
+ * arch_impl_smp_wake_secondary().
  */
 void arch_smp_setup_stacks(uint32_t cpu_count) {
-  if (cpu_count > MAX_CPUS)
-    cpu_count = MAX_CPUS;
+  if (cpu_count > NXHAL_CPU_LIMIT)
+    cpu_count = NXHAL_CPU_LIMIT;
 
   for (uint32_t i = 0; i < cpu_count; i++) {
     if (i < 8) {
@@ -524,7 +517,7 @@ void arch_smp_setup_stacks(uint32_t cpu_count) {
           (void *)&__kernel_stack[(uint64_t)(i + 1) * 131072];
     } else {
       /* Core 9+ needs dynamic allocation from PMM */
-      void *ptr = pmm_alloc_pages(131072 / 4096);
+      void *ptr = nxhal_memory_alloc_pages(131072 / 4096);
       if (!ptr) {
         nxhal_diag_error("CPU: OOM! Cannot allocate stack for core %u\n", i);
         break;
@@ -549,7 +542,7 @@ void arch_smp_setup_stacks(uint32_t cpu_count) {
  * Falls back to the BSS array formula for CPUs not yet set up (bootstrap path).
  */
 void *arch_get_kernel_stack(uint32_t cpu_id) {
-  if (cpu_id >= MAX_CPUS)
+  if (cpu_id >= NXHAL_CPU_LIMIT)
     return NULL;
 
   /* If dynamic stacks are set up, use them */
@@ -606,7 +599,7 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
    * kernel thread maps NO user half at all (instead of a stale process
    * PGD — SCHED-UAF-01 — or the kernel PGD aliased into the low half). */
   if (!aarch64_idle_user_pgd) {
-    aarch64_idle_user_pgd = pmm_alloc_page();
+    aarch64_idle_user_pgd = nxhal_memory_alloc_page();
     if (aarch64_idle_user_pgd) {
       memset(aarch64_idle_user_pgd, 0, 4096);
       hal_cache_clean(aarch64_idle_user_pgd, 4096);
@@ -697,25 +690,21 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
  * barriers, and hal_tlb_flush_all already ends with DSB ISH + ISB (arch.h),
  * which completes the switch — no further barrier is needed after it.
  */
-void arch_cpu_switch_context(struct process *next) {
-  /* TTBR0 is the USER half only (the kernel lives in TTBR1).  A process
-   * gets its own PGD; a kernel thread (idle) gets the EMPTY idle user
-   * PGD — never a stale process PGD (SCHED-UAF-01) and never the kernel
-   * PGD (which would alias all RAM into the user VA range).
-   *
-   * ASID-TAGGED SWITCH (perf §3, DIR-06): TTBR0_EL1[63:48] carries the
-   * address-space ASID (next->asid, assigned in process_create; 16-bit since
-   * TCR_EL1.AS=1).  Because every TLB entry is tagged with its ASID, the
-   * switch needs NO TLB flush: entries for other ASIDs stay valid, and this
-   * ASID's entries were cleared at the previous owner's teardown
-   * (hal_tlb_shootdown_all on PGD destroy) before the pool slot — hence the
-   * ASID — was recycled.  Kernel threads use the idle user PGD with ASID 0.
-   * An ISB after the TTBR0 write makes the new regime effective for the kernel
-   * epilogue; the ERET back to user is itself context-synchronizing. */
-  uint64_t pgd =
-      next->page_table ? virt_to_phys(next->page_table) : idle_user_pgd_phys();
-  if (pgd) {
-    uint64_t asid = next->page_table ? (uint64_t)next->asid : 0;
+void nxhal_provider_cpu_switch_context(
+    const struct nxhal_cpu_context_switch *context) {
+  uint64_t pgd;
+  uint64_t asid;
+
+  if (context == NULL)
+    hal_cpu_halt();
+
+  pgd = (context->flags & NXHAL_CPU_CONTEXT_HAS_USER_ROOT)
+            ? context->user_root_phys
+            : idle_user_pgd_phys();
+  asid = (context->flags & NXHAL_CPU_CONTEXT_HAS_USER_ROOT)
+             ? (uint64_t)context->asid
+             : 0U;
+  if (pgd != 0U) {
     hal_vmm_set_pgd(pgd | (asid << 48));
     hal_isb();
   }

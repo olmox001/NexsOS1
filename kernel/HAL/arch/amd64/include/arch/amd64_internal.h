@@ -23,7 +23,6 @@ void uart_init(void);
 struct pt_regs *amd64_timer_interrupt(struct pt_regs *regs);
 struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs);
 
-uint64_t timer_get_us(void);
 void udelay(uint32_t us);
 void arch_pci_init(void);
 

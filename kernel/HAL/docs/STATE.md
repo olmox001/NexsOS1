@@ -47,5 +47,14 @@
   `get_cpu_info` dependency belongs to uaccess and is tracked separately.
   Host/cross/sanitizer/static gates plus standalone and integrated amd64/aarch64
   builds pass with this seam.
+- SMP bring-up no longer forms a Core/provider symbol cycle. Core policy owns
+  idle-task-first and the bounded ACK wait, calls the outbound
+  `hal_smp_wake_secondary(cpu, stack)` primitive, and providers request policy
+  only through versioned `nxhal_smp_protocol_v1`. The dead Core entry-function
+  argument was removed from both providers; aarch64's assembly wake ABI is now
+  `(cpu_id, stack_top)` and amd64 uses the same provider-private primitive.
+  No legacy `arch_cpu_wake_secondary`/`cpu_wake_secondary` alias remains.
+  Host/cross/sanitizer/static plus standalone/integrated amd64+aarch64 builds
+  pass, and consolidated HAL objects have no old SMP reverse-edge symbols.
 - Linker-defined image symbols and the single Core boot entry are tracked
   separately and are not mistaken for service dependencies.

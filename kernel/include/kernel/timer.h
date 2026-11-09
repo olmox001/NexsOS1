@@ -1,10 +1,43 @@
-#ifndef _KERNEL_TIMER_H
-#define _KERNEL_TIMER_H
+#ifndef OS1LIBKERNEL_TIMER_H
+#define OS1LIBKERNEL_TIMER_H
 
 #include <hal/frame.h>
-#include <kernel/sched.h>
+#include <kernel/list.h>
+#include <kernel/types.h>
+#include <os1_time.h>
 
-void timer_init(void);
-hal_frame_t *timer_handler(hal_frame_t *regs);
+#define OS1LIBKERNEL_TIMER_HZ UINT64_C(1000)
+#define OS1LIBKERNEL_NSEC_PER_SEC UINT64_C(1000000000)
+#define OS1LIBKERNEL_NSEC_PER_TICK \
+  (OS1LIBKERNEL_NSEC_PER_SEC / OS1LIBKERNEL_TIMER_HZ)
 
-#endif
+typedef void (*OS1libkernel_timer_callback_t)(void *data);
+
+struct OS1libkernel_timer {
+  struct list_head list;
+  uint64_t deadline_ns;
+  OS1libkernel_timer_callback_t callback;
+  void *data;
+  bool pending;
+  int cpu;
+};
+
+void OS1libkernel_time_init(void);
+uint64_t OS1libkernel_time_monotonic_ns(void);
+uint64_t OS1libkernel_time_counts_to_ns(uint64_t counts);
+uint64_t OS1libkernel_time_counter_frequency(void);
+int OS1libkernel_time_snapshot(struct os1_time_snapshot_v1 *out);
+
+uint64_t OS1libkernel_timer_percpu_arm(void);
+uint64_t OS1libkernel_timer_percpu_tick(void);
+hal_frame_t *OS1libkernel_timer_tick(hal_frame_t *frame);
+
+void OS1libkernel_timer_setup(struct OS1libkernel_timer *timer,
+                              OS1libkernel_timer_callback_t callback,
+                              void *data);
+void OS1libkernel_timer_arm_deadline(struct OS1libkernel_timer *timer,
+                                     uint64_t deadline_ns);
+void OS1libkernel_timer_cancel(struct OS1libkernel_timer *timer);
+bool OS1libkernel_timer_pending(const struct OS1libkernel_timer *timer);
+
+#endif /* OS1LIBKERNEL_TIMER_H */

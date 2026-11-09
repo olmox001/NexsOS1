@@ -7,6 +7,7 @@
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
 #include <kernel/bootmodule.h>
+#include <kernel/boot_memory.h>
 #include <kernel/bootphase.h>
 #include <kernel/buffer.h>
 #include <kernel/cpu.h>
@@ -14,7 +15,8 @@
 #include <kernel/ext4.h>
 #include <kernel/fdt.h>
 #if HAL_BOOT_ABI_FDT
-#include <kernel/boot_info.h>
+#include <hal/boot_info.h>
+#include <hal/config.h>
 #endif
 #include <kernel/gpt.h>
 #include <kernel/graphics.h>
@@ -87,12 +89,92 @@ static int spawn_init_process(void);
 static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1);
 static void kernel_stage_k2_k3(void);
 
+#if HAL_BOOT_ABI_FDT
+static void validate_uefi_boot_info(const struct nxhal_boot_info *info) {
+  uint64_t bytes;
+
+  if (info->firmware_map_phys == 0U ||
+      info->firmware_map_record_count == 0U ||
+      info->firmware_map_record_size != NXHAL_UEFI_MEMORY_RECORD_SIZE ||
+      info->ebs_attempts == 0U ||
+      info->ebs_attempts > NXHAL_UEFI_EXIT_MAX_ATTEMPTS ||
+      info->map_growths > NXHAL_UEFI_MAP_MAX_GROWTHS ||
+      info->reserved0 != 0U)
+    panic("BootInfo: malformed UEFI memory-map handoff");
+  if (info->firmware_map_phys >= HAL_PHYS_MAP_LIMIT)
+    panic("BootInfo: UEFI map base outside physical map");
+  bytes = (uint64_t)info->firmware_map_record_count *
+          (uint64_t)info->firmware_map_record_size;
+  if (bytes > HAL_PHYS_MAP_LIMIT - info->firmware_map_phys)
+    panic("BootInfo: UEFI map span outside physical map");
+}
+
+static void validate_legacy_boot_info(const struct nxhal_boot_info *info) {
+  if (info->firmware_map_phys != 0U ||
+      info->firmware_map_record_count != 0U ||
+      info->firmware_map_record_size != 0U ||
+      info->ebs_attempts != 0U || info->map_growths != 0U ||
+      info->reserved0 != 0U)
+    panic("BootInfo: legacy handoff carried firmware-only fields");
+}
+
+static void validate_nxhal_boot_info(uint64_t boot_arg0, uint64_t boot_arg1) {
+  const struct nxhal_boot_info *info = &nxhal_boot_info;
+
+  if (info->magic != NXHAL_BOOT_INFO_MAGIC ||
+      info->version != NXHAL_BOOT_INFO_VERSION ||
+      info->size != NXHAL_BOOT_INFO_SIZE ||
+      info->source != NXHAL_BOOT_SOURCE_UNKNOWN || info->flags != 0U ||
+      info->fdt_phys != boot_arg0 || info->fdt_size != boot_arg1)
+    panic("BootInfo: invalid AArch64 NX-HAL handoff record");
+  if (boot_arg1 != 0U)
+    validate_uefi_boot_info(info);
+  else
+    validate_legacy_boot_info(info);
+}
+
+static void init_fdt_boot_handoff(uint64_t boot_arg0, uint64_t boot_arg1) {
+  size_t actual_fdt_size = 0;
+  int fdt_status;
+
+  validate_nxhal_boot_info(boot_arg0, boot_arg1);
+  nxhal_boot_info.source = boot_arg1 != 0U
+      ? NXHAL_BOOT_SOURCE_AARCH64_EFI : NXHAL_BOOT_SOURCE_LEGACY;
+  fdt_status = boot_arg1 != 0U
+      ? fdt_init((uintptr_t)boot_arg0, (size_t)boot_arg1)
+      : fdt_init_legacy((uintptr_t)boot_arg0, &actual_fdt_size);
+  if (fdt_status != FDT_PARSER_OK)
+    panic("FDT: validation failed status=%d base=0x%lx span=0x%lx",
+          fdt_status, boot_arg0, boot_arg1);
+  if (boot_arg1 == 0U && actual_fdt_size != boot_fdt_size)
+    panic("BootInfo: legacy DTB length mismatch handoff=0x%lx parsed=0x%lx",
+          (uint64_t)actual_fdt_size, boot_fdt_size);
+
+  nxhal_boot_info.fdt_phys = boot_fdt_ptr;
+  nxhal_boot_info.fdt_size = boot_fdt_size;
+  if (boot_arg1 != 0U)
+    nxhal_boot_info.flags = NXHAL_BOOT_FLAG_FDT_SIZE_VALID |
+                           NXHAL_BOOT_FLAG_UEFI_MAP_VALID;
+  else if (boot_arg0 != 0U)
+    nxhal_boot_info.flags = NXHAL_BOOT_FLAG_LEGACY_TRUSTED_INPUT;
+  else
+    nxhal_boot_info.flags = NXHAL_BOOT_FLAG_LEGACY_SEARCH;
+  pr_info("BootInfo: source=%u DTB=0x%lx size=0x%lx flags=0x%x\n",
+          nxhal_boot_info.source, nxhal_boot_info.fdt_phys,
+          nxhal_boot_info.fdt_size, nxhal_boot_info.flags);
+  if (boot_arg1 != 0U)
+    pr_info("UEFI: map=0x%lx records=%u attempts=%u growths=%u\n",
+            nxhal_boot_info.firmware_map_phys,
+            nxhal_boot_info.firmware_map_record_count,
+            nxhal_boot_info.ebs_attempts, nxhal_boot_info.map_growths);
+}
+#endif
+
 /*
  * Kernel main entry point
  */
 /* Stable HAL handoff entry: provider assigns meaning to the two boot words. */
 void kernel_main(uint64_t boot_arg0, uint64_t boot_arg1);
-extern void timer_init_percpu(void);
 
 void kernel_main(uint64_t boot_arg0, uint64_t boot_arg1) {
   kernel_stage_k1_hardware(boot_arg0, boot_arg1);
@@ -133,46 +215,10 @@ static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
 
   /* CPU initialization (exception vectors, per-CPU data) */
   pr_info("%s", "Initializing CPU...\n");
-  cpu_init();
+  hal_cpu_local_init();
 
 #if HAL_BOOT_ABI_FDT
-  /* Validate the handoff record before touching the physical DTB. */
-  if (boot_info.magic != BOOT_INFO_MAGIC ||
-      boot_info.version != BOOT_INFO_VERSION ||
-      boot_info.size != BOOT_INFO_SIZE ||
-      boot_info.fdt_phys != boot_arg0 ||
-      boot_info.fdt_size != boot_arg1)
-    panic("BootInfo: invalid AArch64 handoff record");
-
-  boot_info.source = boot_arg1 != 0
-      ? BOOT_INFO_SOURCE_AARCH64_EFI : BOOT_INFO_SOURCE_LEGACY;
-  boot_info.flags = 0; /* Commit flags only after successful DTB validation. */
-
-  size_t actual_fdt_size = 0;
-  int fdt_status = boot_arg1 != 0
-      ? fdt_init((uintptr_t)boot_arg0, (size_t)boot_arg1)
-      : fdt_init_legacy((uintptr_t)boot_arg0, &actual_fdt_size);
-  if (fdt_status != FDT_PARSER_OK)
-    panic("FDT: validation failed status=%d base=0x%lx span=0x%lx",
-          fdt_status, boot_arg0, boot_arg1);
-
-  if (boot_arg1 == 0 && actual_fdt_size != boot_fdt_size)
-    panic("BootInfo: legacy DTB length mismatch handoff=0x%lx parsed=0x%lx",
-          (uint64_t)actual_fdt_size, boot_fdt_size);
-
-  /* Store the actual validated FDT totalsize, not the EFI input span. */
-  boot_info.fdt_phys = boot_fdt_ptr;
-  boot_info.fdt_size = boot_fdt_size;
-  if (boot_arg1 != 0) {
-    boot_info.flags = BOOT_INFO_FLAG_FDT_SIZE_VALID;
-  } else if (boot_arg0 != 0) {
-    boot_info.flags = BOOT_INFO_FLAG_LEGACY_TRUSTED_INPUT;
-  } else {
-    boot_info.flags = BOOT_INFO_FLAG_LEGACY_SEARCH;
-  }
-  pr_info("BootInfo: source=%u DTB=0x%lx size=0x%lx flags=0x%x\n",
-          boot_info.source, boot_info.fdt_phys, boot_info.fdt_size,
-          boot_info.flags);
+  init_fdt_boot_handoff(boot_arg0, boot_arg1);
   pr_info("Kernel: Entry x0 = 0x%lx x1 = 0x%lx\n",
           boot_arg0, boot_arg1);
 #else
@@ -191,7 +237,7 @@ static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
   /* System timer */
   pr_info("%s", "Initializing timer...\n");
   driver_timer_init();
-  timer_init_percpu();
+  hal_timer_percpu_init();
 }
 
 /*
@@ -310,27 +356,16 @@ static void init_memory(void) {
  * before init_memory_subsystems() (every K2 driver below allocates memory).
  */
 static void init_memory_core(void) {
-  /* Initialize physical memory manager with architecture-detected regions */
   size_t count = 0;
-  struct mem_region *regions = arch_platform_get_mem_regions(&count);
-  if (regions == NULL || count == 0)
-    panic("%s", "BOOT-MEM: platform returned no validated memory regions");
+  struct mem_region *regions;
 
-  /* Reserve a boot module (the release rootfs disk.img, loaded into RAM by
-   * GRUB) BEFORE the PMM is built, so it is never handed out as free RAM and
-   * the metadata is placed clear of it.  No-op when there is no module
-   * (aarch64, or the virtio-blk dev loop). */
-  {
-    uint64_t mb_base, mb_size;
-    if (arch_platform_get_boot_module(&mb_base, &mb_size)) {
-      if (count >= ARCH_MAX_MEM_REGIONS)
-        panic("%s", "BOOT-MEM: no room for reserved boot-module descriptor");
-      regions[count].base = mb_base;
-      regions[count].size = mb_size;
-      regions[count].type = MEM_REGION_RESERVED;
-      count++;
-    }
-  }
+  /* Freeze exactly one boot-memory snapshot. PMM, VMM and post-MM tests all
+   * consume this same map; EFI boots prefer the validated NX-HAL firmware map,
+   * while direct/legacy boots use the compatibility provider during migration. */
+  boot_memory_init();
+  regions = boot_memory_regions(&count);
+  if (regions == NULL || count == 0U)
+    panic("%s", "BOOT-MEM: no validated boot-memory snapshot");
 
   /* Emit the exact map consumed by PMM.  Report usable sum separately from
    * highest-end span: address holes and reserved overlays are not RAM. */
@@ -514,9 +549,9 @@ void kernel_secondary_main(void) {
   uint32_t cpu = (uint32_t)hal_cpu_id();
 
   /* Initialize per-CPU state */
-  cpu_init();
+  hal_cpu_local_init();
   irq_init_percpu();
-  timer_init_percpu();
+  hal_timer_percpu_init();
 
   /* SMP-IDLE-RACE (#169/#170): do NOT enable interrupts — which lets the timer
    * drive schedule() — until this CPU's idle task is visible.  schedule() picks

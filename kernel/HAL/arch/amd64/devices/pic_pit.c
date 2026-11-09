@@ -39,9 +39,9 @@
 #include <hal/diagnostic_protocol.h>
 #include <hal/core_protocol.h>
 #include <hal/core.h>
+#include <hal/irq.h>
 #include <kernel/types.h>
 #include <kernel/hal.h>
-#include <kernel/irq.h>
 #include <kernel/arch.h>
 #include <arch/pt_regs.h>
 #include <arch/amd64_internal.h>
@@ -68,8 +68,6 @@ struct pt_regs *amd64_keyboard_interrupt(struct pt_regs *regs);
 #define PIT_CH0   0x40
 #define PIT_CMD   0x43
 
-extern volatile uint64_t jiffies;
-extern void timer_tick(void); /* generic scheduler tick */
 void pit_init_hz(uint32_t hz);
 
 void pic_unmask(uint8_t irq);
@@ -210,9 +208,9 @@ static void pic_chip_send_ipi_all(void) {
  * .init is NULL because pic_init() itself calls irq_register_chip() and
  * then initialises the PIC; there is no separate init() callback needed.
  * .acknowledge returns 1023 by design (vectored dispatch — see above). */
-static struct irq_chip pic_chip = {
-    .name = "8259 PIC",
-    .init = NULL,
+static const struct nxhal_irq_controller_ops pic_chip = {
+    .init_global = NULL,
+    .init_percpu = NULL,
     .enable = pic_chip_enable,
     .disable = pic_chip_disable,
     .acknowledge = pic_chip_acknowledge,
@@ -237,7 +235,7 @@ static struct irq_chip pic_chip = {
  * IRQ context: NO.
  */
 void pic_init(void) {
-    irq_register_chip(&pic_chip);
+    (void)nxhal_irq_controller_install(&pic_chip);
   /* Remap PIC IRQs 0-15 to interrupts 32-47 */
   hal_write8(PIC1_CMD, 0x11); /* ICW1: Init + ICW4 */
   hal_write8(PIC2_CMD, 0x11);
@@ -276,7 +274,7 @@ void pic_init(void) {
    * settled here.  Suppressing the second CALL outright was tried and broke the
    * boot, so the second call is doing work the first does not. */
   {
-    int hr = irq_register(HALT_IPI_VECTOR, halt_ipi_handler, NULL);
+    int hr = nxhal_irq_register_handler(HALT_IPI_VECTOR, halt_ipi_handler, NULL);
     if (hr != 0 && hr != -EBUSY)
       nxhal_diag_error("PIC: cannot register the halt-IPI handler on vector %d (%d) — a "
              "kernel fault on one core will not stop the others\n",

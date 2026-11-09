@@ -1,4 +1,5 @@
 #include "uefi_memory_map.h"
+#include <hal/boot_info.h>
 
 #include "common/hcd_endian.h"
 #include "common/hcd_wire.h"
@@ -305,7 +306,7 @@ static enum preboot_uefi_memory_map_error validate_map_input(
         return PREBOOT_UEFI_MEMORY_MAP_E_BAD_MAP_SIZE;
     }
     if ((map->exit_attempts == 0U) ||
-        (map->exit_attempts > PREBOOT_UEFI_EXIT_MAX_ATTEMPTS)) {
+        (map->exit_attempts > NXHAL_UEFI_EXIT_MAX_ATTEMPTS)) {
         return PREBOOT_UEFI_MEMORY_MAP_E_EBS_NOT_COMPLETE;
     }
     if (map->descriptor_version != PREBOOT_UEFI_MEMORY_DESCRIPTOR_V1) {

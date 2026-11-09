@@ -45,9 +45,16 @@ static inline void arch_impl_irq_disable_all(void) {
   __asm__ __volatile__("msr daifset, #0xf" ::: "memory");
 }
 
+/* Provider SMP wake primitive. */
+int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack);
+
 /* --- CPU Control --- */
 static inline void arch_impl_nop(void) { __asm__ __volatile__("nop"); }
 static inline void arch_impl_idle(void) { __asm__ __volatile__("wfi"); }
+static inline __attribute__((noreturn)) void arch_impl_halt(void) {
+  __asm__ __volatile__("msr daifset, #0xf\n1:\twfi\n\tb 1b" ::: "memory");
+  __builtin_unreachable();
+}
 static inline void arch_impl_yield(void) { __asm__ __volatile__("yield"); }
 static inline void arch_impl_cpu_notify(void) { __asm__ __volatile__("sev"); }
 

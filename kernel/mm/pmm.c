@@ -118,7 +118,7 @@ static uint64_t pmm_metadata_end_phys;
  * Updated with relaxed atomics off the lock so the hot path pays only a single
  * fetch-and-add; *_max uses a racy compare (a lost update on a stat is benign).
  * search_ticks_* are raw hal_timer_get_count() ticks; the collector converts
- * to ns via timer_counts_to_ns().  These measure the bitmap-SEARCH cost only —
+ * to ns via OS1libkernel_time_counts_to_ns().  These measure the bitmap-SEARCH cost only —
  * the fragmentation-sensitive part — not the memset/cache-clean tail. */
 static uint64_t stat_alloc_calls;
 static uint64_t stat_free_calls;
@@ -1201,7 +1201,7 @@ void pmm_dump_stats(void) {
  * pmm_get_counters - read the cumulative allocator counters (perf brief §1).
  *
  * search_ticks_* are raw hal_timer_get_count() ticks; the caller converts to
- * ns via timer_counts_to_ns().  All four out-params are optional (NULL-skip).
+ * ns via OS1libkernel_time_counts_to_ns().  All four out-params are optional (NULL-skip).
  * Lock-free reads of relaxed atomics — values are a coherent-enough snapshot.
  */
 void pmm_get_counters(uint64_t *alloc_calls, uint64_t *free_calls,

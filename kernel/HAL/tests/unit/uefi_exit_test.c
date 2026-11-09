@@ -16,7 +16,7 @@ struct fixture {
     uint32_t exit_calls;
     uint32_t event_count;
     char events[16];
-    enum preboot_uefi_status exit_status[PREBOOT_UEFI_EXIT_MAX_ATTEMPTS];
+    enum preboot_uefi_status exit_status[NXHAL_UEFI_EXIT_MAX_ATTEMPTS];
     uint32_t always_too_small;
     uint32_t invalid_map;
     uint32_t allocation_failure;
@@ -94,7 +94,7 @@ static enum preboot_uefi_status exit_boot_services(
     record_event(fixture, 'X');
     assert(image_handle == (uintptr_t)0x1234U);
     assert(map_key == (UINT64_C(100) + (uint64_t)fixture->get_calls));
-    assert(call < PREBOOT_UEFI_EXIT_MAX_ATTEMPTS);
+    assert(call < NXHAL_UEFI_EXIT_MAX_ATTEMPTS);
     return fixture->exit_status[call];
 }
 
@@ -108,7 +108,7 @@ static struct fixture make_fixture(void)
 {
     struct fixture fixture = {0};
     uint32_t index;
-    for (index = 0U; index < PREBOOT_UEFI_EXIT_MAX_ATTEMPTS; ++index) {
+    for (index = 0U; index < NXHAL_UEFI_EXIT_MAX_ATTEMPTS; ++index) {
         fixture.exit_status[index] = PREBOOT_UEFI_STATUS_SUCCESS;
     }
     return fixture;
@@ -176,14 +176,14 @@ static void test_retry_budget_and_failure_output(void)
     struct fixture fixture = make_fixture();
     struct preboot_uefi_exit_map result = make_result();
     uint32_t index;
-    for (index = 0U; index < PREBOOT_UEFI_EXIT_MAX_ATTEMPTS; ++index) {
+    for (index = 0U; index < NXHAL_UEFI_EXIT_MAX_ATTEMPTS; ++index) {
         fixture.exit_status[index] = PREBOOT_UEFI_STATUS_INVALID_PARAMETER;
     }
     enum preboot_uefi_exit_error error = preboot_uefi_exit_boot_services(
         &SERVICES, &fixture, (uintptr_t)0x1234U,
         fixture.initial_buffer, sizeof(fixture.initial_buffer), &result);
     assert(error == PREBOOT_UEFI_EXIT_E_RETRIES_EXHAUSTED);
-    assert(fixture.exit_calls == PREBOOT_UEFI_EXIT_MAX_ATTEMPTS);
+    assert(fixture.exit_calls == NXHAL_UEFI_EXIT_MAX_ATTEMPTS);
     assert(result.buffer == (void *)0);
     assert(result.size == 0U);
     assert(result.exit_attempts == 0U);
@@ -200,7 +200,7 @@ static void test_invalid_map_and_growth_limit(void)
         fixture.initial_buffer, 0U, &result);
     assert(error == PREBOOT_UEFI_EXIT_E_MAP_CAPACITY);
     assert(fixture.exit_calls == 0U);
-    assert(fixture.allocate_calls == PREBOOT_UEFI_MAP_MAX_GROWTHS);
+    assert(fixture.allocate_calls == NXHAL_UEFI_MAP_MAX_GROWTHS);
     assert(result.buffer == (void *)0);
 
     fixture = make_fixture();

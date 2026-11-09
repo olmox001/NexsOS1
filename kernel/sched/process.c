@@ -34,7 +34,7 @@
  *             correct and intentional, kept as-is — see header hierarchy),
  *             BUT the queue itself was unbounded: a sender could OOM a
  *             receiver's kmalloc arena with no flow control. Added
- *             MSG_QUEUE_MAX with an explicit per-process pending count;
+ *             OS1LIBKERNEL_IPC_QUEUE_MAX with an explicit per-process pending count;
  *             kernel_ipc_send() now returns -ENOBUFS past the cap instead
  *             of growing without limit.
  *   SCHED-06  PARTIALLY STALE. parent_pid / child_count / ancestry walks
@@ -74,7 +74,7 @@
  *           out of scope for a scheduler patch). What IS done, in the
  *           spirit of the rule: every allocation site here draws from a
  *           BOUNDED pool (process_pool[MAX_PROCESSES], the new
- *           MSG_QUEUE_MAX cap, the fixed-size reaped_ring) — nothing in
+ *           OS1LIBKERNEL_IPC_QUEUE_MAX cap, the fixed-size reaped_ring) — nothing in
  *           this file can allocate without a hard ceiling.
  *   4. No function longer than what fits on one printed page.
  *        -> DONE for the scheduler core (schedule(), process_terminate(),
@@ -97,7 +97,7 @@
  *   7. Check the return value of every non-void function; check the
  *      validity of every parameter.
  *        -> Already true in the original for allocation/copy calls; the
- *           new MSG_QUEUE_MAX check adds one more.
+ *           new OS1LIBKERNEL_IPC_QUEUE_MAX check adds one more.
  *   8. Restrict the use of the preprocessor.
  *        -> Unchanged: only simple object-like macros (sizes, flags), no
  *           macro-generated control flow.
@@ -143,7 +143,7 @@
  *     marked PROC_DEAD and freed on the *next* schedule() call on that CPU,
  *     after the kernel stack is no longer in use.
  *   - A kmalloc-backed linked-list IPC per process (msg_queue, now capped
- *     at MSG_QUEUE_MAX pending messages), with sleeping-receiver wakeup on
+ *     at OS1LIBKERNEL_IPC_QUEUE_MAX pending messages), with sleeping-receiver wakeup on
  *     send.
  *   - sys_sbrk: demand-mapped user heap extending upward from the top of
  *     the ELF segments, bounded by SBRK_HEAP_LIMIT below the fixed user
@@ -162,6 +162,7 @@
  *   - PIDs are assigned from next_pid (monotonically increasing, never
  *     reused).
  */
+#include <hal/cpu_protocol.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
@@ -398,14 +399,13 @@ int keyboard_focus_pid = 7; /* Default to Shell PID */
 #define FOCUS_BOOST_MAX 4
 static uint32_t sched_focus_streak[MAX_CPUS];
 
-/* MSG_QUEUE_MAX (SCHED-05 fix): hard ceiling on a process's pending IPC
+/* OS1LIBKERNEL_IPC_QUEUE_MAX (SCHED-05 fix): hard ceiling on a process's pending IPC
  * messages. Without this, kernel_ipc_send() had unbounded kmalloc growth
  * on the RECEIVER's behalf, driven entirely by the SENDER — a classic
  * remote-triggered OOM. 256 pending messages is generous for any
  * request/response or event-stream workload in this kernel while making
  * the failure mode for a runaway sender an explicit -ENOBUFS instead of a
  * starved allocator. */
-#define MSG_QUEUE_MAX 256
 
 /* SCHED_MARK_DEAD_MAX_RETRIES (POT10 rule 2 fix): bound for the
  * "wait for proc->on_cpu to stabilize" retry in process_terminate(). In
@@ -660,44 +660,41 @@ static void __dequeue_task(struct process *p) {
  * per-CPU timer is armed, then the state transition is committed under the
  * owning CPU's scheduler lock. Returns 0 when armed, 1 when stopped/dying
  * (caller must schedule), or a negative errno. */
-int process_sleep_timer_arm(struct process *p, struct timer *timer,
-                            void (*callback)(void *), uint64_t expires) {
-  if (!p || !timer || !callback)
-    return -EINVAL;
-
+int OS1libkernel_process_sleep_timer_arm(
+    struct process *process, struct OS1libkernel_timer *timer,
+    OS1libkernel_timer_callback_t callback, uint64_t deadline_ns) {
+  struct cpu_info *cpu;
   uint64_t flags;
+
+  if (process == NULL || timer == NULL || callback == NULL || deadline_ns == 0U)
+    return -EINVAL;
   spin_lock_irqsave(&sched_lock, &flags);
-  if (p->state == PROC_STOPPED || p->state == PROC_DEAD ||
-      p->state == PROC_ZOMBIE) {
+  if (process->state == PROC_STOPPED || process->state == PROC_DEAD ||
+      process->state == PROC_ZOMBIE) {
     spin_unlock_irqrestore(&sched_lock, flags);
     return 1;
   }
-
-  struct cpu_info *cpu = get_cpu_info();
-  if (!cpu || cpu->current_task != p) {
+  cpu = get_cpu_info();
+  if (cpu == NULL || cpu->current_task != process) {
     spin_unlock_irqrestore(&sched_lock, flags);
     return -ESRCH;
   }
-
-  /* Cancel first: the timer may still belong to a previous CPU after a
-   * non-timer wake/migration. timer_del waits for an in-flight callback. */
-  timer_del(timer);
-  timer_setup(timer, callback, p);
-  timer_add(timer, expires);
+  OS1libkernel_timer_cancel(timer);
+  OS1libkernel_timer_setup(timer, callback, process);
+  OS1libkernel_timer_arm_deadline(timer, deadline_ns);
 
   spin_lock(&cpu->sched_lock);
-  if (cpu->current_task != p || p->on_cpu != (int)cpu->cpu_id ||
-      p->state == PROC_STOPPED || p->state == PROC_DEAD ||
-      p->state == PROC_ZOMBIE) {
+  if (cpu->current_task != process || process->on_cpu != (int)cpu->cpu_id ||
+      process->state == PROC_STOPPED || process->state == PROC_DEAD ||
+      process->state == PROC_ZOMBIE) {
     spin_unlock(&cpu->sched_lock);
     spin_unlock_irqrestore(&sched_lock, flags);
     return 1;
   }
-  /* A previous timer callback may have queued this now-current task before
-   * timer_del acquired its lock. Remove that stale queue entry before sleep. */
-  if (p->state == PROC_READY && p->run_list.next != &p->run_list)
-    __dequeue_task(p);
-  p->state = PROC_SLEEPING;
+  if (process->state == PROC_READY &&
+      process->run_list.next != &process->run_list)
+    __dequeue_task(process);
+  process->state = PROC_SLEEPING;
   spin_unlock(&cpu->sched_lock);
   spin_unlock_irqrestore(&sched_lock, flags);
   return 0;
@@ -1744,7 +1741,7 @@ static void __proc_terminate_free_ipc(struct list_head *nodes) {
 /* Caller holds sched_lock. Park a non-self victim, removing every asynchronous
  * wake source and any READY runqueue link before publishing PROC_STOPPED. */
 static int __proc_park_locked(struct process *proc) {
-  timer_del(&proc->sleep_timer);
+  OS1libkernel_timer_cancel(&proc->sleep_timer);
   __proc_terminate_detach_from_wait_queue(proc);
 
   for (int attempt = 0; attempt < SCHED_MARK_DEAD_MAX_RETRIES; attempt++) {
@@ -1851,7 +1848,7 @@ int process_terminate(int pid) {
   if (self) {
     /* Keep the current task runnable while cleanup completes; it may be
      * preempted and resumed, then sys_exit() schedules the resulting zombie. */
-    timer_del(&victim->sleep_timer);
+    OS1libkernel_timer_cancel(&victim->sleep_timer);
     __proc_terminate_detach_from_wait_queue(victim);
   } else {
     /* Park before dropping the lifetime lock. The victim cannot be continued,
@@ -2150,7 +2147,7 @@ static void __sched_reap_deferred(struct cpu_info *cpu_ptr) {
      * callback can never fire on freed memory. Defensive on every free
      * path even though a process with an armed timer is PROC_SLEEPING
      * (cannot self-exit): makes the no-UAF invariant hold everywhere. */
-    timer_del(&to_free->sleep_timer);
+    OS1libkernel_timer_cancel(&to_free->sleep_timer);
 
     __process_free_resources(to_free);
   }
@@ -2540,7 +2537,16 @@ hal_frame_t *schedule(hal_frame_t *regs) {
    * (SCHED-UAF-01). Unconditional here: the prev==next case already
    * returned above. */
   __sync_fetch_and_add(&stat_ctx_switches, 1); /* perf brief §1 */
-  arch_cpu_switch_context(next);
+  {
+    struct nxhal_cpu_context_switch hw_context = {
+        .kernel_stack_top = next->kernel_stack,
+        .user_root_phys =
+            next->page_table ? virt_to_phys(next->page_table) : UINT64_C(0),
+        .asid = next->page_table ? next->asid : 0U,
+        .flags = next->page_table ? NXHAL_CPU_CONTEXT_HAS_USER_ROOT : 0U,
+    };
+    hal_cpu_switch_context(&hw_context);
+  }
 
   spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
   /* SCHED-IRQ-01: context-switch exit — deliberately NO local_irq_restore.
@@ -2730,7 +2736,7 @@ struct ipc_node *pop_message(struct process *proc, int src_pid) {
 
 /* kernel_ipc_send - internal IPC implementation.
  *
- * SCHED-05 fix: MSG_QUEUE_MAX now caps a target's pending-message count.
+ * SCHED-05 fix: OS1LIBKERNEL_IPC_QUEUE_MAX now caps a target's pending-message count.
  * The cap is checked under target->msg_lock (the same lock the append
  * happens under), so the count can never be read stale relative to the
  * append it gates.
@@ -2755,7 +2761,7 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
 
   spin_lock(&target->msg_lock);
 
-  if (target->msg_count >= MSG_QUEUE_MAX) {
+  if (target->msg_count >= OS1LIBKERNEL_IPC_QUEUE_MAX) {
     spin_unlock(&target->msg_lock);
     spin_unlock_irqrestore(&sched_lock, flags);
     kfree(node);
@@ -2879,7 +2885,7 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
     strncpy(k_buf[count].name, p->name, 32);
     k_buf[count].state = p->state;
     k_buf[count].priority = p->priority;
-    k_buf[count].cpu_time = timer_counts_to_ns(p->cpu_time_counts) / 1000000ULL;
+    k_buf[count].cpu_time = OS1libkernel_time_counts_to_ns(p->cpu_time_counts) / 1000000ULL;
     k_buf[count].on_cpu = p->on_cpu;
     count++;
   }
@@ -2930,7 +2936,7 @@ int proc_get_info(int pid, struct ps_info *out) {
     out->name[sizeof(out->name) - 1] = '\0';
     out->state = p->state;
     out->priority = p->priority;
-    out->cpu_time = timer_counts_to_ns(p->cpu_time_counts) / 1000000ULL;
+    out->cpu_time = OS1libkernel_time_counts_to_ns(p->cpu_time_counts) / 1000000ULL;
     out->on_cpu = p->on_cpu;
     rc = 0;
     break;
@@ -2966,7 +2972,7 @@ long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size) {
   memset(&s, 0, sizeof(s));
   s.version = OS1_SYSSTATS_VERSION;
   s.struct_size = (unsigned int)sizeof(s);
-  s.uptime_ns = timer_counts_to_ns(hal_timer_get_count());
+  s.uptime_ns = OS1libkernel_time_monotonic_ns();
 
   /* MM-PMM-09 (#94): report USABLE RAM, not the metadata span (which
    * includes the sub-4GB PCI/MMIO hole on amd64) — every "used" consumer
@@ -2983,8 +2989,8 @@ long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size) {
     pmm_get_counters(&a_calls, &f_calls, &st_total, &st_max);
     s.pmm_alloc_calls = a_calls;
     s.pmm_free_calls = f_calls;
-    s.pmm_alloc_search_ns_total = timer_counts_to_ns(st_total);
-    s.pmm_alloc_search_ns_max = timer_counts_to_ns(st_max);
+    s.pmm_alloc_search_ns_total = OS1libkernel_time_counts_to_ns(st_total);
+    s.pmm_alloc_search_ns_max = OS1libkernel_time_counts_to_ns(st_max);
   }
 
   {

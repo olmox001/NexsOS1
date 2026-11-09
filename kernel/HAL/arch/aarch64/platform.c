@@ -13,7 +13,7 @@
  *      Fallback: QEMU-virt-only page-by-page probe through the exact-LDR
  *      synchronous Data Abort fixup in cpu.c.
  *   3. SMP bring-up (arch_smp_init): wake secondary CPUs via PSCI CPU_ON
- *      (arch_cpu_wake_secondary, start.S), wait for each to acknowledge, and
+ *      (arch_impl_smp_wake_secondary, start.S), wait for each to acknowledge, and
  *      create an idle task for each newly-online CPU.
  *
  * Memory discovery invariants:
@@ -30,8 +30,10 @@
  */
 #include <hal/diagnostic_protocol.h>
 #include <hal/core_protocol.h>
+#include <hal/smp_protocol.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
+#include <hal/memory_protocol.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
 #include <kernel/fdt.h>
@@ -200,9 +202,9 @@ extern void *arch_secondary_stacks[MAX_CPUS];
  *      This must be done before any CPU is woken to avoid races on the stack
  *      array.
  *   4. For each secondary CPU i (1 .. cpu_count-1): obtain/allocate its stack
- *      top, then hand off to smp_bringup_secondary() (kernel/core/smp.c) —
+ *      top, then hand off to nxhal_smp_bringup_secondary() —
  *      the shared arch-neutral primitive that owns the idle-task-first
- *      invariant (#169/#170), the PSCI wake via arch_cpu_wake_secondary, and
+ *      invariant (#169/#170), the PSCI wake via arch_impl_smp_wake_secondary, and
  *      the acquire/release ack handshake with a wall-time timeout.  Only the
  *      per-arch failure POLICY lives here (PSCI failure = remaining CPUs
  *      absent -> break; ack timeout = skip this CPU, free its dynamic stack).
@@ -244,7 +246,7 @@ void arch_smp_init(void) {
             stack = arch_get_kernel_stack(i);
         } else {
             /* CPUs 8+: allocate a dynamic 128KB stack from PMM. */
-            void *ptr = pmm_alloc_pages(131072 / 4096);
+            void *ptr = nxhal_memory_alloc_pages(131072 / 4096);
             if (!ptr) {
                 nxhal_diag_error("AArch64: Failed to allocate stack for CPU %d\n", i);
                 break;
@@ -260,8 +262,7 @@ void arch_smp_init(void) {
          * live in kernel/core/smp.c.  Only the failure POLICY stays here:
          * a PSCI failure means the remaining CPUs are absent too (break),
          * an ack timeout skips just this CPU. */
-        int ret = smp_bringup_secondary(
-            i, (void (*)(void))nxhal_core_secondary_entry, stack);
+        int ret = nxhal_smp_bringup_secondary(i, stack);
 
         if (ret == 0) {
             nxhal_diag_info("AArch64: CPU %d online\n", i);
@@ -269,13 +270,13 @@ void arch_smp_init(void) {
             nxhal_diag_warn("AArch64: CPU %d failed to acknowledge boot (timeout)\n", i);
             if (allocated) {
                 /* Reclaim the dynamic stack; ptr = top - 131072. */
-                pmm_free_pages((void *)((uintptr_t)stack - 131072), 32);
+                nxhal_memory_free_pages((void *)((uintptr_t)stack - 131072), 32);
                 arch_secondary_stacks[i] = 0;
             }
         } else {
             /* PSCI CPU_ON failed (e.g., CPU not present or firmware error). */
             if (allocated) {
-                pmm_free_pages((void *)((uintptr_t)stack - 131072), 32);
+                nxhal_memory_free_pages((void *)((uintptr_t)stack - 131072), 32);
                 arch_secondary_stacks[i] = 0;
             }
             break; /* assume remaining CPUs are also absent */

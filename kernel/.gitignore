@@ -9,3 +9,6 @@
 *.iso
 *.dtb
 /.toolchain-build-tmp/
+HAL/build/
+HAL/tests/build/
+HAL/references/

@@ -39,6 +39,8 @@
 #include <hal/timer_protocol.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
+#include <hal/irq.h>
+#include <hal/provider.h>
 #include <kernel/irq.h>
 #include <drivers/timer.h>
 #include <kernel/arch.h>
@@ -56,12 +58,7 @@
  * Used to compute tick intervals and by timer_get_us(). */
 /* Timer frequency */
 /* Timer frequency */
-uint64_t timer_freq;
-
-/* jiffies is defined here for AArch64. CPU 0 reconciles it against mono_ns()
- * in kernel/core/timer.c; all other CPUs consume atomic snapshots. */
-/* System tick counter */
-volatile uint64_t jiffies = 0;
+static uint64_t timer_freq;
 
 /*
  * read_cntfrq - read the ARM generic timer frequency register.
@@ -120,42 +117,6 @@ static inline void write_cntv_ctl(uint64_t val) {
 }
 
 /*
- * Timer interrupt handler (Internal C handler called by GIC)
- * Now accepts regs for Preemption.
- */
-/*
- * timer_handler - ARM generic timer IRQ handler (EL1 virtual timer, PPI 27).
- *
- * @regs: saved register state from the exception entry; passed through to
- *        nxhal_core_timer_tick() for potential context-switch use.
- *
- * Called directly from nxhal_core_irq_entry() in irq.c when irq == IRQ_TIMER (27) or 30.
- * Delegates the precision per-CPU tick accounting + CNTV_CVAL reprogram to the
- * arch-neutral, HAL-driven nxhal_timer_tick_current() (kernel/core/timer.c), then runs
- * nxhal_core_timer_tick(regs) for the scheduler tick + preemption.
- *
- * Returns the (potentially switched) register state from nxhal_core_timer_tick().
- *
- * Locking: per-CPU data (cpu_info); no cross-CPU locking needed.
- * IRQ context: YES — called from the IRQ dispatch loop in nxhal_core_irq_entry().
- */
-struct pt_regs *timer_handler(struct pt_regs *regs) {
-  /* Tier 2 per-CPU drift accounting + CNTV_CVAL reprogram is the arch-neutral,
-   * HAL-driven nxhal_timer_tick_current() (kernel/core/timer.c): it advances
-   * next_tick_target against CNTVCT with fractional correction and a catch-up
-   * clamp, then hal_timer_set_compare() writes CNTV_CVAL. The arch handler is
-   * now just: account, then run the generic scheduler tick. */
-  (void)nxhal_timer_tick_current();
-  return nxhal_core_timer_tick(regs);
-}
-
-/* Legacy static handler used by irq_register?
-   No, we call timer_handler directly from GIC now.
-   We can remove the static wrapper or keep it for compatibility if other IRQs
-   use it. But GIC logic above handles IRQ 27 explicitly.
-*/
-
-/*
  * Initialize timer (called once on boot CPU)
  */
 /*
@@ -176,11 +137,11 @@ void timer_init(void) {
   timer_freq = read_cntfrq();
 
   nxhal_diag_info("Timer: Frequency %lu Hz\n", timer_freq);
-  nxhal_diag_info("Timer: System tick rate %d Hz\n", HZ);
+  nxhal_diag_info("Timer: System tick rate %lu Hz\n", (uint64_t)HZ);
 
   /* Register virtual timer interrupt (IRQ 27 on QEMU virt) */
   /* We handle IRQ 27 explicitly in gic.c dispatch to pass regs */
-  irq_enable(IRQ_TIMER);
+  hal_irq_line_enable(IRQ_TIMER);
 }
 
 /*
@@ -191,7 +152,7 @@ void timer_init(void) {
  *   2. Zero Core-owned fractional accumulator (fractional remainder accumulator).
  *   3. Write next_tick_target to CNTV_CVAL_EL0.
  *   4. Write 1 to CNTV_CTL_EL0 (ENABLE=1, IMASK=0) to start the timer.
- *   5. Call irq_enable(IRQ_TIMER) to unmask PPI 27 in the GIC for this CPU.
+ *   5. Call hal_irq_line_enable(IRQ_TIMER) to unmask PPI 27 in the GIC for this CPU.
  *
  * Must be called after gic_init_cpu() has enabled the GICC interface on this
  * CPU.  Called once per secondary CPU during SMP bring-up.
@@ -204,7 +165,7 @@ void timer_init(void) {
  * NOTE: Timer disabled temporarily - causes SError in QEMU -kernel mode
  * Timer works correctly with UEFI boot (./build_iso.sh run)
  */
-void timer_init_percpu(void) {
+void nxhal_provider_timer_percpu_init(void) {
   /* Seed the Core-owned per-CPU tick schedule without exposing cpu_info. */
   uint64_t next_tick_target = nxhal_timer_arm_current();
 
@@ -212,7 +173,7 @@ void timer_init_percpu(void) {
   write_cntv_ctl(1);
 
   /* Enable virtual timer IRQ in GIC (PPI, already per-CPU) */
-  irq_enable(IRQ_TIMER);
+  hal_irq_line_enable(IRQ_TIMER);
 
   nxhal_diag_info("Timer: Per-CPU virtual timer enabled (IRQ %d). Next: 0x%lx, Ctl: "
           "0x1\n",
@@ -230,24 +191,6 @@ void timer_init_percpu(void) {
  * Get current timer ticks
  */
 uint64_t timer_get_ticks(void) { return read_cntvct(); }
-
-/*
- * timer_get_us - return microseconds elapsed since boot.
- *
- * Computes (CNTVCT_EL0 * 1000000) / timer_freq.  May overflow for very large
- * counter values if timer_freq is small, but at 54 MHz (typical QEMU) the
- * 64-bit numerator overflows after ~340 years.
- *
- * Returns: elapsed microseconds since counter was reset (at boot).
- *
- * IRQ context: safe.
- */
-/*
- * Get microseconds since boot
- */
-uint64_t timer_get_us(void) {
-  return (read_cntvct() * USEC_PER_SEC) / timer_freq;
-}
 
 /*
  * timer_delay_us - busy-wait for at least @us microseconds.

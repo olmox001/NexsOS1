@@ -64,7 +64,7 @@ void hal_bus_init(void) {
     pr_info("%s", "HAL: Initializing Bus Manager...\n");
     
     /* Architecture-specific bus discovery (PCI, Platform MMIO, etc) */
-    arch_bus_scan();
+    hal_bus_scan();
 
     /* Discover VirtIO devices based on found bus devices */
     arch_virtio_scan();

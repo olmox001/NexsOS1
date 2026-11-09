@@ -173,6 +173,20 @@ int main(void) {
   else
     print("[Init] Failed to spawn Execution Service!\n");
 
+  /* The time service owns the privileged OS1_NS_TIME capability and exports
+   * sanitized per-CPU snapshots over the named OS1nx_time port.  It must be
+   * started by init so the ROOT preset can acquire the low-level timer object;
+   * ordinary applications only receive the service-level view. */
+  printf("[Init] Spawning Time Service (nxtimerdiag --service)...\n");
+  char *timesvc_argv[2];
+  timesvc_argv[0] = (char *)"/sys/bin/nxtimerdiag";
+  timesvc_argv[1] = (char *)"--service";
+  int pid_timesvc = spawn_args("/sys/bin/nxtimerdiag", 2, timesvc_argv);
+  if (pid_timesvc > 0)
+    printf("[Init] Time Service started (PID %d)\n", pid_timesvc);
+  else
+    print("[Init] Failed to spawn Time Service!\n");
+
   /*
    * Environment bootstrap.
    *
@@ -367,7 +381,7 @@ int main(void) {
 #define SPAWN_STABLE_MS                                                        \
   10000 /* alive this long since last (re)spawn -> backoff resets */
 #define SPAWN_QUEUE_MAX                                                        \
-  9 /* one slot per supervised service, same indexing as before */
+  10 /* slots 0..8 preserved; slot 9 is the OS1nx_time service */
 
   struct spawn_req {
     int pending; /* 1 if a respawn is currently queued for this slot */
@@ -407,6 +421,8 @@ int main(void) {
     spawnq[7].last_spawn_ms = now_ms;
   if (pid_mouse > 0)
     spawnq[8].last_spawn_ms = now_ms;
+  if (pid_timesvc > 0)
+    spawnq[9].last_spawn_ms = now_ms;
 #ifndef LAUNCHER_AUTOSTART
   if (pid_shell > 0)
     spawnq[5].last_spawn_ms = now_ms;
@@ -532,6 +548,21 @@ int main(void) {
         spawnq_mark_spawned(1);
       else
         spawnq_enqueue(1, "Execution Service", 1);
+    }
+
+    /* OS1nx_time uses the same named-port lifecycle as OS1nx_exec.  No PID
+     * registry entry is published: the port capability is the service identity. */
+    if (spawnq_idle(9) && service_gone(pid_timesvc, "Time Service"))
+      spawnq_enqueue(9, "Time Service", 0);
+    if (spawnq_due(9)) {
+      char *targv[2];
+      targv[0] = (char *)"/sys/bin/nxtimerdiag";
+      targv[1] = (char *)"--service";
+      pid_timesvc = spawn_args("/sys/bin/nxtimerdiag", 2, targv);
+      if (pid_timesvc > 0)
+        spawnq_mark_spawned(9);
+      else
+        spawnq_enqueue(9, "Time Service", 1);
     }
 
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as

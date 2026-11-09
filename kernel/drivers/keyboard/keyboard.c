@@ -88,7 +88,7 @@ static DEFINE_SPINLOCK(input_poll_lock);
 void input_report_from_device(uint8_t provider, uint8_t device_id,
                               uint16_t type, uint16_t code, int32_t value) {
   uint64_t flags;
-  struct cpu_info *cpu = arch_cpu_info_fault_safe();
+  struct cpu_info *cpu = cpu_info_fault_safe();
   spin_lock_irqsave(&input_ring_lock, &flags);
   uint64_t sequence = ++input_event_seq;
   if (type == EV_SYN) {

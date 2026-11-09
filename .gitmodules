@@ -42,3 +42,6 @@
 	path = user/bin/coreutils
 	url = https://github.com/olmox001/coreutils_NexsOS1.git
 	branch = nexsos-port
+[submodule "boot/grub/upstream"]
+	path = boot/grub/upstream
+	url = https://gitlab.freedesktop.org/gnu-grub/grub.git

@@ -18,7 +18,7 @@
  *     64-bit BAR entries (type bits [2:1] = 0b10), the high 32 bits of the
  *     MMIO base address are in the NEXT BAR register and are not read.  When
  *     QEMU places the virtio-blk BAR above 4 GB ('-m 4G'), the low 32 bits
- *     returned by pci_get_bar(bdf, 4) are 0 or an alias, so dev->base is
+ *     returned by nxhal_pci_get_bar(bdf, 4) are 0 or an alias, so dev->base is
  *     wrong.  The virtio driver reads QUEUE_NUM_MAX from the wrong address and
  *     gets 0 → "Invalid queue size (0)!" → downstream divide-by-zero crash.
  *     Cross-ref: DRV-PCI-02 (pci.c:106-111).
@@ -27,15 +27,15 @@
  */
 #include <hal/diagnostic_protocol.h>
 #include <hal/device_name.h>
+#include <hal/device_protocol.h>
+#include <hal/pci.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
+#include <hal/provider.h>
 #include <arch/amd64/apic.h>
-#include <drivers/pci.h>
 #include <drivers/timer.h>
-#include <kernel/hal.h>
 #include <kernel/multiboot2.h>
 #include <kernel/platform.h>
-#include <kernel/string.h>
 
 /* arch_platform_get_boot_module (HAL contract, platform.h): walk the GRUB
  * multiboot2 tag chain for a MODULE (the release rootfs disk.img loaded into
@@ -76,147 +76,132 @@ int arch_platform_get_boot_module(uint64_t *base, uint64_t *size) {
   return 0;
 }
 
-static void amd64_pci_callback(int bdf, uint16_t vendor, uint16_t device_id) {
-  struct hal_device dev;
-  memset(&dev, 0, sizeof(dev));
+static void amd64_pci_fill_identity(struct nxhal_device_desc *dev,
+                                    uint32_t bdf, uint16_t vendor,
+                                    uint16_t device_id) {
+  uint32_t class_word = nxhal_pci_get_class(bdf);
 
-  dev.bus_type = HAL_BUS_TYPE_PCI;
-  dev.vendor_id = vendor;
-  dev.device_id = device_id;
-  dev.pci_bdf = (uint32_t)bdf;
+  dev->bus_type = NXHAL_BUS_PCI;
+  dev->vendor_id = vendor;
+  dev->device_id = device_id;
+  dev->pci_bdf = bdf;
+  dev->class_code = (uint8_t)(class_word >> 24U);
+  dev->subclass = (uint8_t)(class_word >> 16U);
+  dev->prog_if = (uint8_t)(class_word >> 8U);
+  dev->header_type = nxhal_pci_get_header_type(bdf);
+}
 
-  /* Class triplet (offset 0x08): lets the driver-binding layer match generic
-   * controllers (xHCI/AHCI/VGA/NVMe) by function instead of vendor:device. */
-  uint32_t cls = pci_get_class(bdf);
-  dev.class_code = (cls >> 24) & 0xFF;
-  dev.subclass = (cls >> 16) & 0xFF;
-  dev.prog_if = (cls >> 8) & 0xFF;
-  dev.header_type = pci_get_header_type(bdf);
+static int amd64_pci_prepare_bar(uint32_t bdf, int modern,
+                                 struct nxhal_device_desc *dev) {
+  struct nxhal_pci_bar bar;
+  uint32_t index = modern != 0 ? 4U : 0U;
 
-  /* Enable PCI Bus Master and IO/Mem space */
-  uint32_t cmd =
-      pci_config_read((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, 0x04);
-  pci_config_write((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, 0x04,
-                   cmd | 0x7);
+  if (nxhal_pci_get_bar(bdf, index, &bar) != 0)
+    return -1;
+  dev->base = (uintptr_t)bar.base;
+  if (bar.is_io == 0U && bar.base != 0U && bar.size != 0U &&
+      hal_vmm_map_device(bar.base, bar.size) != 0)
+    return -1;
+  return 0;
+}
 
-  /* Get BAR address. Modern devices use BAR4 for MMIO usually. Legacy uses BAR0
-   * for Port I/O. */
-  uint32_t b0 = pci_get_bar(bdf, 0);
-  uint32_t b4 = pci_get_bar(bdf, 4);
+static void amd64_pci_enable(uint32_t bdf) {
+  uint8_t bus = (uint8_t)(bdf >> 16U);
+  uint8_t device = (uint8_t)(bdf >> 8U);
+  uint8_t function = (uint8_t)bdf;
+  uint32_t command = nxhal_pci_config_read(bus, device, function, 0x04U);
 
-  bool is_modern = (vendor == 0x1AF4 && device_id >= 0x1041);
+  nxhal_pci_config_write(bus, device, function, 0x04U,
+                         command | UINT32_C(7));
+}
 
-  if (is_modern && b4 != 0 && !(b4 & 1)) {
-    /* FIX(DRV-VIRTIO-01): read the FULL 64-bit BAR. For a 64-bit memory BAR
-     * (type bits [2:1] == 0b10) the high 32 bits live in BAR5; reading only
-     * BAR4 truncates the base when QEMU places it above 4GB ('-m 4G'),
-     * yielding a wrong dev.base -> virtio reads QUEUE_NUM_MAX as 0 -> crash. */
-    dev.base = (uintptr_t)(b4 & ~0xFU);
-    if ((b4 & 0x6) == 0x4) { /* 64-bit memory BAR */
-      uint32_t b5 = pci_get_bar(bdf, 5);
-      dev.base |= ((uintptr_t)b5 << 32);
-    }
-    /* FIX(AMMU-07): map the BAR MMIO so it is reachable even above 4GB
-     * (the fixed 0xFE000000-0xFFFFFFFF identity window does not cover it). */
-    extern int arch_vmm_map_device(uint64_t base, uint64_t size);
-    arch_vmm_map_device(dev.base, 0x10000);
-  } else {
-    dev.base = b0;
-    if (dev.base & 1)
-      dev.base &= ~3;
-    else
-      dev.base &= ~0xF;
+static void amd64_pci_translate_virtio(struct nxhal_device_desc *dev,
+                                       uint16_t raw_device_id) {
+  uint8_t bus;
+  uint8_t device;
+  uint8_t function;
+  uint32_t subsystem;
+
+  if (dev->vendor_id != UINT16_C(0x1af4))
+    return;
+  if (raw_device_id >= UINT16_C(0x1041)) {
+    dev->device_id = (uint16_t)(raw_device_id - UINT16_C(0x1040));
+    return;
   }
+  bus = (uint8_t)(dev->pci_bdf >> 16U);
+  device = (uint8_t)(dev->pci_bdf >> 8U);
+  function = (uint8_t)dev->pci_bdf;
+  subsystem = nxhal_pci_config_read(bus, device, function, UINT8_C(0x2c));
+  dev->device_id = (uint16_t)(subsystem >> 16U);
+}
 
-  /* Handle VirtIO ID translation */
-  if (vendor == 0x1AF4) {
-    if (is_modern) {
-      dev.device_id = device_id - 0x1040;
-    } else {
-      /* Legacy device: Use Subsystem Device ID for type */
-      uint32_t sub_id = pci_config_read((bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF,
-                                        bdf & 0x7, 0x2C);
-      dev.device_id = sub_id >> 16;
-    }
-  }
+static uint32_t amd64_pci_irq(uint32_t bdf) {
+  uint8_t line = nxhal_pci_get_interrupt(bdf);
 
-  /* dev.irq: PCI Interrupt Line register (config offset 0x3C) is firmware-
-   * written and, per the PCI spec, 0xFF means "no legacy line assigned"
-   * (or simply not programmed on firmware that skips this field on real
-   * boards, unlike QEMU/SeaBIOS which always sets it).  32 + 0xFF = 287
-   * is a vector this driver's PIC chip (32-47) never masks/unmasks/EOIs,
-   * so the device silently gets an IRQ it can never receive — no crash,
-   * no log, just a dead input/block/gpu device on affected hardware.
-   * aarch64's virtio.c never trusts firmware for this: every virtio-mmio
-   * slot gets a fixed, sequential IRQ (48 + slot index) assigned by this
-   * kernel itself.  Mirror that here instead of trusting an unvalidated
-   * PCI field: reject the sentinel/out-of-range case explicitly and fall
-   * back to a fixed, kernel-assigned vector per bus/device/function so
-   * every enumerated device always gets a receivable IRQ. */
-  {
-    uint8_t line = pci_get_interrupt(bdf);
-    if (line == 0xFF || line >= 16) {
-      /* PCI_INTLINE_FALLBACK_BASE: reserved for enumerated devices whose
-       * firmware-assigned Interrupt Line is missing/invalid.  224-231 is
-       * unused by both the legacy 8259 remap (32-47) and every other
-       * fixed vector this tree assigns; bdf is folded down to keep each
-       * device on a distinct, stable, deterministic vector across boots.
-       *
-       * FIX(HAL-IRQFALLBACK-01): the fold used to be '& 0x1F' (5 bits),
-       * which can reach 224+31 = 255 = 0xFF — the LAPIC spurious vector.
-       * amd64_isr_dispatch() special-cases vec==0xFF as "not a real
-       * interrupt, return with no dispatch and no EOI" (matching the
-       * LAPIC spurious-vector contract in the SVR). A device that actually
-       * landed on 255 this way would have every interrupt it raises
-       * silently dropped forever — no dispatch, no EOI, no log — which is
-       * indistinguishable from a dead device and, for a level-triggered
-       * line an unacknowledged vector can leave logically stuck, a
-       * candidate for a wider stall. With this codebase's current bdf
-       * encoding (function occupies only bits 0-2, bits 3-7 are always
-       * zero) the old mask never actually reached 0xFF, but nothing
-       * enforced that invariant here — folding on the PCI function field's
-       * real width ('& 0x7', matching every other bdf-to-function use in
-       * this same function just below) makes the ceiling 224+7 = 231
-       * structurally, not incidentally, safe. */
-      uint32_t fallback = 224 + ((uint32_t)bdf & 0x7);
-      nxhal_diag_warn("HAL: PCI %02x:%02x.%x has no usable Interrupt Line (0x%x) — "
-              "assigning fallback vector %u\n",
-              (bdf >> 16) & 0xFF, (bdf >> 8) & 0xFF, bdf & 0x7, line, fallback);
-      dev.irq = fallback;
-    } else {
-      dev.irq = 32 + line;
-    }
-  }
+  if (line != UINT8_C(0xff) && line < UINT8_C(16))
+    return UINT32_C(32) + line;
+  nxhal_diag_warn("HAL: PCI %02x:%02x.%x lacks usable INTx line 0x%x\n",
+                  (unsigned)(bdf >> 16U), (unsigned)((bdf >> 8U) & 0xffU),
+                  (unsigned)(bdf & 7U), (unsigned)line);
+  return UINT32_C(224) + (bdf & UINT32_C(7));
+}
 
-  /* Basic naming */
-  if (vendor == 0x1AF4) {
-    nxhal_device_name_virtio(dev.name, sizeof(dev.name), device_id);
-  } else {
+static int amd64_pci_callback(uint32_t bdf, uint16_t vendor,
+                              uint16_t device_id) {
+  struct nxhal_device_desc dev = {0};
+  int modern = vendor == UINT16_C(0x1af4) &&
+               device_id >= UINT16_C(0x1041);
+
+  amd64_pci_fill_identity(&dev, bdf, vendor, device_id);
+  amd64_pci_enable(bdf);
+  if (amd64_pci_prepare_bar(bdf, modern, &dev) != 0)
+    return -1;
+  amd64_pci_translate_virtio(&dev, device_id);
+  dev.irq = amd64_pci_irq(bdf);
+  if (vendor == UINT16_C(0x1af4))
+    nxhal_device_name_virtio(dev.name, sizeof(dev.name), dev.device_id);
+  else
     nxhal_device_name_pci(dev.name, sizeof(dev.name), vendor, device_id);
-  }
-
-  hal_register_device(&dev);
+  nxhal_device_publish(&dev);
+  return 0;
 }
 
-void arch_bus_scan(void) {
+void nxhal_provider_bus_scan(void) {
   nxhal_diag_info("%s", "HAL: Scanning PCI Bus...\n");
-  pci_enumerate(amd64_pci_callback);
+  if (nxhal_pci_enumerate(amd64_pci_callback) != 0)
+    nxhal_diag_error("%s", "HAL: PCI enumeration failed\n");
 }
 
-void arch_irq_init(void) {
+void nxhal_provider_irq_init(void) {
   extern void pic_init(void);
   pic_init();
 }
 
-void arch_timer_init(void) {
+void nxhal_provider_timer_global_init(void) {
   /* BSP Global Timer initialization.
    * We perform LAPIC calibration here once using the legacy PIT. */
   nxhal_diag_info("HAL: Initializing global timer state (LAPIC calibration)\n");
   lapic_timer_calibrate();
 }
 
-void timer_init_percpu(void) {
+void nxhal_provider_timer_percpu_init(void) {
   /* Initialize local APIC timer for the current CPU at configured HZ.
    * This is called by every CPU during its local initialization. */
   lapic_timer_setup(HZ);
+}
+
+void nxhal_provider_uaccess_enter(uint64_t user_root_phys,
+                                  struct nxhal_uaccess_hw_state *state) {
+  (void)user_root_phys;
+  if (state != NULL)
+    state->saved_root = 0U;
+}
+
+void nxhal_provider_uaccess_exit(
+    const struct nxhal_uaccess_hw_state *state) {
+  (void)state;
+}
+
+void nxhal_provider_uaccess_fault_abort(void) {
+  /* amd64 keeps the fault path IRQ state masked until the restored frame. */
 }

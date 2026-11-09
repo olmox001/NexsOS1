@@ -45,7 +45,9 @@
  *                                 only via arch_vmm_map_range.
  *   MM-VMM-07  (W1 DOC)          File header mentions only AArch64.
  */
+#include <hal/boot_memory.h>
 #include <kernel/arch.h>
+#include <kernel/boot_memory.h>
 #include <kernel/cpu.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -391,15 +393,63 @@ void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size) {
   }
 }
 
+static void vmm_map_kernel_image(uint64_t *pgd, const char *phase) {
+  extern char __kernel_start[], __kernel_end[];
+  uint64_t start = virt_to_phys(__kernel_start) & ~((uint64_t)PAGE_SIZE - 1U);
+  uint64_t end = virt_to_phys(__kernel_end);
+
+  if (end > UINT64_MAX - (PAGE_SIZE - 1U))
+    panic("VMM: %s kernel image alignment overflow", phase);
+  end = (end + PAGE_SIZE - 1U) & ~((uint64_t)PAGE_SIZE - 1U);
+  if (end <= start || !hal_phys_range_valid(start, end))
+    panic("VMM: %s kernel image outside direct-map window [0x%lx,0x%lx)",
+          phase, start, end);
+
+  pr_info("VMM: %s kernel image 0x%lx-0x%lx (%lu KiB)\n", phase, start, end,
+          (unsigned long)((end - start) / 1024U));
+  vmm_map_ram_wx(pgd, start, end - start);
+}
+
+static void vmm_map_boot_live_spans(uint64_t *pgd, const char *phase) {
+  uint32_t count = nxhal_boot_live_span_count();
+
+  if (count > (uint32_t)NXHAL_BOOT_LIVE_ROLE_COUNT)
+    panic("VMM: %s HAL boot-live span count %u exceeds ABI roles", phase, count);
+  for (uint32_t index = 0U; index < count; ++index) {
+    struct nxhal_boot_live_span span;
+    uint64_t start;
+    uint64_t end;
+
+    if (nxhal_boot_live_span_get(index, &span) != NXHAL_BOOT_MEMORY_OK ||
+        span.reserved != 0U || span.length == 0U ||
+        span.base > UINT64_MAX - span.length)
+      panic("VMM: %s invalid boot-live span %u", phase, index);
+    start = span.base & ~((uint64_t)PAGE_SIZE - 1U);
+    end = span.base + span.length;
+    if (end > UINT64_MAX - (PAGE_SIZE - 1U))
+      panic("VMM: %s boot-live span %u alignment overflow", phase, index);
+    end = (end + PAGE_SIZE - 1U) & ~((uint64_t)PAGE_SIZE - 1U);
+    if (end <= start || !hal_phys_range_valid(start, end))
+      panic("VMM: %s boot-live span %u outside direct-map window", phase, index);
+    if (arch_vmm_map_range(virt_to_phys(pgd), (uint64_t)phys_to_virt(start),
+                           start, end - start, PAGE_KERNEL_RO) != 0)
+      panic("VMM: %s boot-live span %u map failed", phase, index);
+    pr_info("VMM: %s boot-live[%u] kind=%u 0x%lx-0x%lx\n",
+            phase, index, span.kind, start, end);
+  }
+}
+
 
 /* Map the validated usable-region union, never the flat span between
  * HAL_RAM_START and the highest physical end. This keeps address holes and
- * reserved-only intervals out of the normal-memory direct map. The old boot
- * page tables remain active while all new tables are constructed. */
+ * reserved-only intervals out of the normal-memory direct map. The kernel
+ * image is mapped separately because firmware/bootloaders correctly reserve
+ * its physical span from the allocator. The old boot page tables remain
+ * active while all new tables are constructed. */
 static void vmm_map_detected_usable_regions(uint64_t *pgd,
                                             const char *phase) {
   size_t count = 0;
-  struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  struct mem_region *regions = boot_memory_regions(&count);
   if (!regions || count == 0)
     panic("VMM: %s has no validated platform memory map", phase);
 
@@ -461,7 +511,9 @@ void vmm_init(void) {
   memset(kernel_pgd, 0, 4096);
   hal_cache_clean(kernel_pgd, 4096);
 
+  vmm_map_kernel_image(kernel_pgd, "bootstrap");
   vmm_map_detected_usable_regions(kernel_pgd, "bootstrap");
+  vmm_map_boot_live_spans(kernel_pgd, "bootstrap");
   arch_vmm_map_mmio(kernel_pgd);
   arch_vmm_init_hw(virt_to_phys(kernel_pgd));
 
@@ -500,7 +552,9 @@ void vmm_dynamic_remap(void) {
 
   /* 1. Rebuild the same validated usable intervals with the W^X split and
    * architecture large-page mappings. No non-RAM gap is mapped as RAM. */
+  vmm_map_kernel_image(new_pgd, "dynamic");
   vmm_map_detected_usable_regions(new_pgd, "dynamic");
+  vmm_map_boot_live_spans(new_pgd, "dynamic");
 
   /* 2. Re-map MMIO */
   arch_vmm_map_mmio(new_pgd);

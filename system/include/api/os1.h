@@ -19,6 +19,7 @@
 /* Object/handle/capability ABI (OBJ_TYPE_*, OS1_RIGHT_*, OS1_NS_*) — ASTRA
  * §6.1/6.2/6.5. The OS1low_/OS1_object_ surface below operates on these. */
 #include <object.h>
+#include <os1_time.h>
 #include <os1_compositor.h>
 #include <os1_input.h>
 /* System statistics snapshot ABI (struct os1_sysstats) — perf §1 instrumentation
@@ -200,9 +201,14 @@ void OS1_sleep(int ms);
  *   os1_cpu_ns():  this process's consumed CPU time in real nanoseconds. */
 unsigned long long os1_mono_ns(void);
 unsigned long long os1_cpu_ns(void);
-/* OS1_time_now: wall-clock seconds (the OS1_ canonical for the bare get_time;
- * DIR-01 F4). os1_mono_ns/os1_cpu_ns above are the low-level ns primitives. */
+/* Legacy monotonic milliseconds. Kept stable for existing OS1_ callers;
+ * POSIX time() converts this value to seconds. */
 long OS1_time_now(void);
+
+/* Privileged low-level time capability. Normal applications should use the
+ * OS1nx_time service instead of acquiring this hardware-facing snapshot. */
+long OS1low_time_open(void);
+long OS1low_time_snapshot(int handle, struct os1_time_snapshot_v1 *snapshot);
 
 void *OS1low_vm_sbrk(intptr_t increment); /* canonical; sbrk is its shim (DIR-01 F4) */
 void *sbrk(intptr_t increment);
@@ -390,6 +396,7 @@ long OS1_object_write(int handle, const void *buf, unsigned long n);
  * NAMING STANDARD for system services (2026-07-18): "OS1nx_<service>".
  */
 #define OS1NX_PORT_EXEC "OS1nx_exec" /* the nxexec execution service */
+#define OS1NX_PORT_TIME "OS1nx_time" /* privileged time/scheduler service */
 
 /* OS1_port_create - publish a service port and take its RECEIVE right (making
  * this process its owner).  Fails with -EEXIST if the name is already served,

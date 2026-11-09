@@ -35,7 +35,12 @@ static int nxhal_core_protocol_valid(
 }
 
 int nxhal_core_bind(const struct nxhal_core_protocol_v1 *protocol) {
+  if (hal_ioport_available())
+    hal_outb(UINT16_C(0x3f8), (uint8_t)'I');
+
   int valid = nxhal_core_protocol_valid(protocol);
+  if (hal_ioport_available())
+    hal_outb(UINT16_C(0x3f8), (uint8_t)'J');
   uint32_t expected = NXHAL_CORE_STATE_UNBOUND;
 
   if (valid != NXHAL_CORE_BIND_OK)
@@ -45,6 +50,9 @@ int nxhal_core_bind(const struct nxhal_core_protocol_v1 *protocol) {
                                    NXHAL_CORE_STATE_BINDING, 0,
                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return NXHAL_CORE_BIND_E_STATE;
+
+  if (hal_ioport_available())
+    hal_outb(UINT16_C(0x3f8), (uint8_t)'K');
 
   /* Copy field-by-field: no libc/runtime dependency and no partial publish. */
   core_protocol.abi_version = protocol->abi_version;
@@ -58,8 +66,13 @@ int nxhal_core_bind(const struct nxhal_core_protocol_v1 *protocol) {
   core_protocol.timer_tick = protocol->timer_tick;
   core_protocol.secondary_entry = protocol->secondary_entry;
 
+  if (hal_ioport_available())
+    hal_outb(UINT16_C(0x3f8), (uint8_t)'L');
+
   __atomic_store_n(&core_protocol_state, NXHAL_CORE_STATE_BOUND,
                    __ATOMIC_RELEASE);
+  if (hal_ioport_available())
+    hal_outb(UINT16_C(0x3f8), (uint8_t)'M');
   return NXHAL_CORE_BIND_OK;
 }
 

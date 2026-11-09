@@ -16,7 +16,7 @@
  * smp_ack_boot() so the secondary's per-CPU initialization writes are visible
  * to the BSP before the ack is (S-ALIGN F3).
  */
-#include <kernel/arch.h>
+#include <hal/core.h>
 #include <kernel/cpu.h>
 #include <kernel/printk.h>
 #include <kernel/types.h>
@@ -42,9 +42,7 @@ void smp_ack_boot(uint32_t cpu) {
  * create it (NULL idle task -> context switch into NULL).
  *
  * cpu:       logical CPU id to start.
- * entry:     arch entry point handed to arch_cpu_wake_secondary (PSCI target /
- *            SIPI trampoline).
- * stack_top: top of the CPU's kernel stack (stacks descend), passed through
+ *  * stack_top: top of the CPU's kernel stack (stacks descend), passed through
  *            the arch wake contract.
  *
  * Returns 0 when the CPU acked, -1 if the arch wake call itself failed
@@ -53,7 +51,7 @@ void smp_ack_boot(uint32_t cpu) {
  * still schedules safely).  Failure POLICY (skip vs. abort the loop) stays
  * with the arch caller: only the mechanism is shared.
  */
-int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) {
+int smp_bringup_secondary(uint32_t cpu, void *stack_top) {
   /* Fresh handshake for this CPU (uniform: amd64 always reset, aarch64
    * relied on ids never repeating — resetting is correct for both). */
   __atomic_store_n(&cpu_boot_ack, 0u, __ATOMIC_RELAXED);
@@ -62,7 +60,7 @@ int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) {
   smp_create_idle_task(cpu);
 
   /* 2. Wake through the arch contract. */
-  if (arch_cpu_wake_secondary(cpu, entry, stack_top) != 0)
+  if (hal_smp_wake_secondary(cpu, stack_top) != 0)
     return -1;
 
   /* 3. Bounded acquire-wait for the ack (~10 s wall time, generous for a

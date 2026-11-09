@@ -6,6 +6,7 @@
 #define HAL_ALIAS_OFFSET                 0x40000000UL
 #define HAL_PHYS_MAP_LIMIT               0x2000000000ULL
 #define HAL_BOOTSTRAP_PHYS_MAP_LIMIT     HAL_PHYS_MAP_LIMIT
+#define HAL_PAGE_SIZE                      4096UL
 #define HAL_DIRECT_MAP_BASE              0xFFFF000000000000UL
 #define HAL_ELF_MACHINE                  183U
 #define HAL_HAS_IOPORT                   0

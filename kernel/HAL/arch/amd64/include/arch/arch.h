@@ -45,9 +45,16 @@ static inline void arch_impl_irq_restore_all(uint64_t flags) {
 
 static inline void arch_impl_irq_disable_all(void) { arch_impl_irq_disable(); }
 
+/* Provider SMP wake primitive. */
+int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack);
+
 /* --- CPU Control --- */
 static inline void arch_impl_nop(void) { __asm__ __volatile__("nop"); }
 static inline void arch_impl_idle(void) { __asm__ __volatile__("hlt"); }
+static inline __attribute__((noreturn)) void arch_impl_halt(void) {
+  __asm__ __volatile__("cli\n1:\thlt\n\tjmp 1b" ::: "memory");
+  __builtin_unreachable();
+}
 static inline void arch_impl_yield(void) { __asm__ __volatile__("pause"); }
 static inline void arch_impl_cpu_notify(void) { /* NOP on x86 for now */ }
 

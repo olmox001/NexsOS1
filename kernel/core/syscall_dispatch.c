@@ -18,7 +18,7 @@
  *
  * Key invariants:
  *   - All user pointers (arg0..arg5) must be validated via
- * arch_copy_*_from_user or arch_copy_string_from_user before being dereferenced
+ * arch_copy_*_from_user or hal_copy_string_from_user before being dereferenced
  * in the kernel.
  *   - Syscall implementations must not return directly; they write the return
  *     value via hal_frame_set_return() and fall through to "return frame", OR
@@ -389,7 +389,7 @@ long window_text_write(int win_id, const char *ubuf, size_t count) {
   char *k = kmalloc(count + 1);
   if (!k)
     return -ENOMEM;
-  if (arch_copy_from_user(k, ubuf, count) != 0) {
+  if (hal_copy_from_user(k, ubuf, count) != 0) {
     kfree(k);
     return -EFAULT;
   }
@@ -438,7 +438,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     }
     if (flags & (O_CREAT | O_TRUNC)) {
       char kpath[128];
-      if (arch_copy_string_from_user(kpath, (const char *)arg0, sizeof(kpath)) !=
+      if (hal_copy_string_from_user(kpath, (const char *)arg0, sizeof(kpath)) !=
           0) {
         hal_frame_set_return(frame, -EFAULT);
         break;
@@ -574,7 +574,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     }
     struct cpu_info *cpu = get_cpu_info();
     char *k_title = cpu->syscall_buf;
-    if (arch_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
+    if (hal_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
     }
@@ -803,7 +803,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       break;
     }
     struct os1_compositor_present_v1 user_present;
-    if (arch_copy_from_user(&user_present, (const void *)arg0,
+    if (hal_copy_from_user(&user_present, (const void *)arg0,
                             sizeof(user_present)) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
@@ -831,7 +831,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       hal_frame_set_return(frame, -ENOMEM);
       break;
     }
-    if (arch_copy_from_user(pixels, user_present.pixels, bytes) != 0) {
+    if (hal_copy_from_user(pixels, user_present.pixels, bytes) != 0) {
       kfree(pixels);
       hal_frame_set_return(frame, -EFAULT);
       break;
@@ -930,7 +930,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     }
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+    if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
     }
@@ -946,7 +946,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     char *argv_store = NULL;
     if (argc > 0) {
       void *uptrs[SPAWN_MAX_ARGS];
-      if (arch_copy_from_user(uptrs, (const void *)arg2,
+      if (hal_copy_from_user(uptrs, (const void *)arg2,
                               (size_t)argc * sizeof(void *)) != 0) {
         hal_frame_set_return(frame, -EFAULT);
         break;
@@ -959,7 +959,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       int bad = 0;
       for (int i = 0; i < argc; i++) {
         kargv[i] = argv_store + (size_t)i * SPAWN_ARG_LEN;
-        if (arch_copy_string_from_user(kargv[i], (const char *)uptrs[i],
+        if (hal_copy_string_from_user(kargv[i], (const char *)uptrs[i],
                                        SPAWN_ARG_LEN) != 0) {
           bad = 1;
           break;
@@ -986,7 +986,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       break;
     }
     if (nredir > 0 &&
-        arch_copy_from_user(kredir, (const void *)arg4,
+        hal_copy_from_user(kredir, (const void *)arg4,
                             (size_t)nredir * sizeof(struct spawn_redir)) != 0) {
       if (argv_store)
         kfree(argv_store);
@@ -1016,7 +1016,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     }
     struct cpu_info *cpu = get_cpu_info();
     char *k_path = cpu->syscall_buf;
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+    if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
     }
@@ -1149,7 +1149,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
      * only made the omission look deliberate.  A bad status pointer is -EFAULT
      * under POSIX, not a successful wait whose status silently never arrived. */
     if (arg1 && wr >= 0 &&
-        arch_copy_to_user((void *)arg1, &wcode, sizeof(wcode)) != 0)
+        hal_copy_to_user((void *)arg1, &wcode, sizeof(wcode)) != 0)
       wr = -EFAULT;
     hal_frame_set_return(frame, wr);
   } break;
@@ -1184,7 +1184,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
      * ("cpu->syscall_buf is used for path/title copies; only one such copy is
      * in flight per CPU"), not on the kernel stack. */
     char *k_path = get_cpu_info()->syscall_buf;
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+    if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
     }
@@ -1199,7 +1199,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     memset(&ast, 0, sizeof(ast));
     ast.size = vst.size;
     ast.type = vst.type; /* ABI_S_TYPE_* match VFS_TYPE_* by value */
-    if (arch_copy_to_user((void *)arg1, &ast, sizeof(ast)) != 0) {
+    if (hal_copy_to_user((void *)arg1, &ast, sizeof(ast)) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
     }
@@ -1218,7 +1218,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     break;
   case SYS_CHDIR: {
     char k_path[128];
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+    if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
     }
@@ -1238,7 +1238,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
   } break;
   case SYS_GETCWD: {
     size_t size = (size_t)arg1;
-    if (arch_copy_to_user((void *)arg0, current_process->cwd, size) != 0) {
+    if (hal_copy_to_user((void *)arg0, current_process->cwd, size) != 0) {
       hal_frame_set_return(frame, -EFAULT);
     } else {
       hal_frame_set_return(frame, 0);
@@ -1302,148 +1302,86 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
 }
 
 /*
- * sys_get_time - return monotonic time in milliseconds.
- *
- * Derived from mono_ns() (the real-time hardware-counter clock, docs/
- * TIMER-MODEL.md), so it is accurate on BOTH arches — amd64 no longer returns
- * the jiffies*1000 stub (ARCH-03 retired for the real-time path).
- *
- * Locking: none.  IRQ context: no.
+ * SYS_GET_TIME remains the compatibility millisecond view. New code uses the
+ * object/time ABI or SYS_CLOCK_GETTIME nanoseconds.
  */
-long sys_get_time(void) { return (long)(mono_ns() / 1000000ULL); }
-
-/*
- * sys_clock_gettime - Tier 3 userland clock (SYS_CLOCK_GETTIME).
- *
- * Returns a 64-bit nanosecond value directly (both arches return 64 bits):
- *   clk == 0 (MONOTONIC)  : mono_ns() — monotonic ns since boot.
- *   clk == 1 (PROCESS_CPU): the caller's consumed CPU time in real ns.
- * Any other clock id falls back to MONOTONIC. This is the minimal seL4-style
- * mechanism; POSIX clock_gettime() is built on top in <time.h>. Capability
- * timer OBJECTS (arm-and-notify) are issue #135.
- */
-long sys_clock_gettime(int clk) {
-  if (clk == 1) {
-    struct process *p = current_process;
-    return p ? (long)timer_counts_to_ns(p->cpu_time_counts) : 0;
-  }
-  return (long)mono_ns();
+long sys_get_time(void) {
+  return (long)(OS1libkernel_time_monotonic_ns() / UINT64_C(1000000));
 }
 
-/* Global monotonic tick counter (drivers/timer.c / platform.c). */
-extern volatile uint64_t jiffies;
+long sys_clock_gettime(int clock_id) {
+  if (clock_id == 1) {
+    struct process *process = current_process;
+    return process
+        ? (long)OS1libkernel_time_counts_to_ns(process->cpu_time_counts)
+        : 0;
+  }
+  return (long)OS1libkernel_time_monotonic_ns();
+}
 
-/*
- * proc_sleep_wake - per-process sleep timer callback (fired by the owning
- * core's tick when the coarse deadline is reached). Makes the sleeper runnable
- * again; it will re-run sys_nanosleep (retry), test mono_ns() >= wake_ns, and
- * either return (deadline reached) or re-arm and sleep again (woken a tick
- * early). Runs under that CPU's timer_lock; enqueue_task takes only a per-CPU
- * sched_lock (lock order timer_lock > per-CPU sched_lock — no inversion).
- */
 static void proc_sleep_wake(void *data) {
-  struct process *p = (struct process *)data;
-  if (p && p->state == PROC_SLEEPING)
-    enqueue_task(p);
+  struct process *process = (struct process *)data;
+  if (process != NULL && process->state == PROC_SLEEPING)
+    enqueue_task(process);
 }
 
-/*
- * sys_nanosleep - block the caller for `ns` nanoseconds (POSIX nanosleep core,
- * Tier 3 of docs/TIMER-MODEL.md).
- *
- * The deadline is stored as an ABSOLUTE real-time instant (p->wake_ns, mono_ns
- * base) on first entry, so the sleep recovers lost time: the per-CPU software
- * timer is only a coarse jiffies-edge trigger, and the precise wake condition
- * is mono_ns() >= wake_ns. Retry-based like the blocking read — re-entered on
- * each wakeup. If the coarse timer fires a tick early, mono_ns() is still short
- * of wake_ns, so we re-arm and sleep again; a genuine deadline returns 0.
- */
-static hal_frame_t *sys_nanosleep(hal_frame_t *regs, uint64_t ns) {
-  struct process *p = current_process;
-  if (!p || ns == 0) {
-    hal_frame_set_return(regs, 0);
-    return regs;
-  }
-  if (p->wake_ns == 0)
-    p->wake_ns = mono_ns() + ns; /* absolute real-time deadline */
+static hal_frame_t *sys_nanosleep(hal_frame_t *frame, uint64_t ns) {
+  struct process *process = current_process;
+  uint64_t now;
+  int arm_status;
 
-  /* Sample immediately before publishing timer + SLEEPING atomically
-   * against process_stop()/process_terminate(). */
-  uint64_t now = mono_ns();
-  if (now >= p->wake_ns) {
-    p->wake_ns = 0;
-    timer_del(&p->sleep_timer);
-    hal_frame_set_return(regs, 0);
-    return regs;
+  if (process == NULL || ns == 0U) {
+    hal_frame_set_return(frame, 0);
+    return frame;
   }
-
-  uint64_t ticks = (p->wake_ns - now + (NS_PER_TICK - 1)) / NS_PER_TICK;
-  if (ticks == 0)
-    ticks = 1;
-  uint64_t current_jiffies =
-      __atomic_load_n(&jiffies, __ATOMIC_ACQUIRE);
-  int arm_rc = process_sleep_timer_arm(
-      p, &p->sleep_timer, proc_sleep_wake, current_jiffies + ticks);
-  if (arm_rc < 0) {
-    hal_frame_set_return(regs, arm_rc);
-    return regs;
+  now = OS1libkernel_time_monotonic_ns();
+  if (process->wake_ns == 0U) {
+    if (ns > UINT64_MAX - now) {
+      hal_frame_set_return(frame, -EINVAL);
+      return frame;
+    }
+    process->wake_ns = now + ns;
   }
-
-  /* A stopped task retries after CONT so it can re-evaluate its absolute
-   * deadline and re-arm if the deadline has not elapsed. */
-  hal_frame_retry_syscall(regs);
-  return schedule(regs);
+  if (now >= process->wake_ns) {
+    process->wake_ns = 0U;
+    OS1libkernel_timer_cancel(&process->sleep_timer);
+    hal_frame_set_return(frame, 0);
+    return frame;
+  }
+  arm_status = OS1libkernel_process_sleep_timer_arm(
+      process, &process->sleep_timer, proc_sleep_wake, process->wake_ns);
+  if (arm_status < 0) {
+    hal_frame_set_return(frame, arm_status);
+    return frame;
+  }
+  hal_frame_retry_syscall(frame);
+  return schedule(frame);
 }
 
-/* YIELD_SPIN_BUDGET: how many yield() calls a process may make within a single
- * tick (10 ms at HZ=100) before it is treated as busy-spinning. A program doing
- * real work between yields never approaches this; a `while(1) yield()` spinner
- * (an unoptimised app, or an old-style poll loop) trips it and is descheduled
- * to the next tick, capping its duty cycle so it cannot keep a core at 100% and
- * freeze the system. The bounded focus boost (process.c) stops a focused
- * CPU-hog from STARVING others; this stops a yield-spinner from SATURATING a
- * core. */
-#define YIELD_SPIN_BUDGET 64
+#define YIELD_SPIN_BUDGET 64U
 
-/*
- * sys_yield - cooperative yield with a per-process anti-spin throttle
- * (SYS_YIELD, docs/TIMER-MODEL.md §4).
- *
- * Normally just reschedules (gives up the rest of the slice). But it counts
- * yields within the current tick; once a process exceeds YIELD_SPIN_BUDGET it
- * is busy-spinning on yield(), so instead of an immediate reschedule it is put
- * to sleep until the next tick via its per-process timer (sleep_timer) — the
- * same mechanism nanosleep uses. The spinner therefore relinquishes the core
- * for a full tick, dropping its CPU duty cycle to near zero. The counter resets
- * each tick (and after a throttle), so legitimate cooperative yielding is
- * untouched.
- *
- * Note: this does NOT touch wake_ns (the nanosleep deadline) — a process cannot
- * be both yielding and nanosleeping. On wake the yield() simply returns.
- */
-static hal_frame_t *sys_yield(hal_frame_t *regs) {
-  struct process *p = current_process;
-  if (!p)
-    return schedule(regs);
+static hal_frame_t *sys_yield(hal_frame_t *frame) {
+  struct process *process = current_process;
+  uint64_t now;
+  uint64_t window;
 
-  uint64_t current_jiffies =
-      __atomic_load_n(&jiffies, __ATOMIC_ACQUIRE);
-  if (p->yield_jiffy != current_jiffies) {
-    p->yield_jiffy = current_jiffies;
-    p->yield_count = 0;
+  if (process == NULL)
+    return schedule(frame);
+  now = OS1libkernel_time_monotonic_ns();
+  window = now - (now % OS1LIBKERNEL_NSEC_PER_TICK);
+  if (process->yield_window_ns != window) {
+    process->yield_window_ns = window;
+    process->yield_count = 0U;
   }
-
-  if (++p->yield_count > YIELD_SPIN_BUDGET) {
-    /* Busy-spinning on yield() this tick — throttle to a 1-tick per-process
-     * timed sleep. Reset the budget; it refills next tick on wake. */
-    p->yield_count = 0;
-    /* Replace any old per-CPU timer and serialize SLEEPING with
-     * process_stop()/process_terminate(). */
-    (void)process_sleep_timer_arm(p, &p->sleep_timer, proc_sleep_wake,
-                                  current_jiffies + 1);
+  ++process->yield_count;
+  if (process->yield_count > YIELD_SPIN_BUDGET) {
+    uint64_t deadline = window + OS1LIBKERNEL_NSEC_PER_TICK;
+    process->yield_count = 0U;
+    if (deadline > window)
+      (void)OS1libkernel_process_sleep_timer_arm(
+          process, &process->sleep_timer, proc_sleep_wake, deadline);
   }
-
-  return schedule(regs);
+  return schedule(frame);
 }
 
 /*

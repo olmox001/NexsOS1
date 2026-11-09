@@ -40,7 +40,7 @@
 
 #include "object.h" /* OBJ_TYPE_COUNT — real object-type source of truth */
 
-#define OS1_SYSSTATS_VERSION 1
+#define OS1_SYSSTATS_VERSION 2
 
 struct os1_sysstats {
   unsigned int version;     /* = OS1_SYSSTATS_VERSION                            */

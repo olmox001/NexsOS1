@@ -25,6 +25,7 @@
  */
 #include <kernel/cpu.h>
 #include <kernel/graphics.h> /* OBJ_TYPE_WINDOW backends: compositor_* (§6.7) */
+#include <kernel/hal_uaccess.h>
 #include <kernel/kmalloc.h>
 #include <kernel/nx_contract.h>
 #include <kernel/object.h>
@@ -33,6 +34,7 @@
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
+#include <kernel/timer.h>
 #include <kernel/types.h>
 #include <kernel/vfs.h>
 
@@ -41,10 +43,6 @@
  * kernel for an absurd allocation). */
 #define OBJ_MAX_IO_BYTES (16u * 1024u * 1024u)
 
-extern int arch_copy_from_user(void *dest, const void *src, size_t n);
-extern int arch_copy_to_user(void *dest, const void *src, size_t n);
-extern int arch_copy_string_from_user(char *dest, const char *src,
-                                      size_t max_len);
 
 /* Serialises refcount changes and handle-table slot mutations. */
 static DEFINE_SPINLOCK(object_lock);
@@ -288,319 +286,304 @@ static void obj_unref(struct kobject *o) {
     kobj_free(to_free);
 }
 
+static long install_new_object(struct process *process, struct kobject *object,
+                               uint32_t rights) {
+  uint64_t flags;
+  int handle;
+
+  spin_lock_irqsave(&object_lock, &flags);
+  handle = handle_install_locked(process, object, rights);
+  spin_unlock_irqrestore(&object_lock, flags);
+  if (handle < 0)
+    kobj_free(object);
+  return handle;
+}
+
+static long handle_create_time(struct process *process, const char *path,
+                               uint32_t rights, int type) {
+  const uint32_t allowed = OS1_RIGHT_READ | OS1_RIGHT_DUPLICATE |
+                           OS1_RIGHT_TRANSFER;
+  struct kobject *object;
+
+  if (type != OBJ_TYPE_TIMER || strcmp(path, "system") != 0)
+    return -EINVAL;
+  if ((rights & OS1_RIGHT_READ) == 0U || (rights & ~allowed) != 0U)
+    return -EPERM;
+  if (!proc_is_privileged(process))
+    return -EPERM;
+  object = kobj_alloc(OBJ_TYPE_TIMER);
+  if (object == NULL)
+    return -ENOMEM;
+  return install_new_object(process, object, rights);
+}
+
+static long fs_resolve_or_create(const char *path, uint32_t rights,
+                                 int want_create, struct vfs_objref *reference) {
+  int status = vfs_resolve_object(path, reference);
+
+  if (status == -2) {
+    if ((rights & OS1_RIGHT_WRITE) != 0U || want_create)
+      return -EISDIR;
+    status = 0;
+  }
+  if (status == 0)
+    return 0;
+  if (!want_create || (rights & OS1_RIGHT_WRITE) == 0U)
+    return -ENOENT;
+  status = (int)vfs_write_allowed(path);
+  if (status != 0)
+    return status;
+  if (vfs_create(path, VFS_TYPE_FILE) != 0)
+    return -EIO;
+  return vfs_resolve_object(path, reference) == 0 ? 0 : -ENOENT;
+}
+
+static long fs_file_object(struct process *process, const char *path,
+                           uint32_t rights,
+                           const struct vfs_objref *reference) {
+  struct kobject *object;
+  long permission;
+
+  if ((rights & OS1_RIGHT_WRITE) != 0U) {
+    permission = vfs_write_allowed(path);
+    if (permission != 0)
+      return permission;
+  }
+  if ((rights & OS1_RIGHT_MUTATE) != 0U) {
+    if (reference->node.type != VFS_TYPE_DIR)
+      return -ENOTDIR;
+    permission = vfs_write_allowed(path);
+    if (permission != 0)
+      return permission;
+  }
+  object = kobj_alloc(OBJ_TYPE_FILE);
+  if (object == NULL)
+    return -ENOMEM;
+  object->node = reference->node;
+  object->offset = 0U;
+  strncpy(object->path, path, OBJ_FILE_PATH_MAX - 1);
+  object->path[OBJ_FILE_PATH_MAX - 1] = '\0';
+  return install_new_object(process, object, rights);
+}
+
+static long fs_process_object(struct process *process, uint32_t rights,
+                              const struct vfs_objref *reference) {
+  struct kobject *object;
+
+  if ((rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) != 0U &&
+      !process_kill_allowed(process, reference->pid))
+    return -EPERM;
+  object = kobj_alloc(OBJ_TYPE_PROCESS);
+  if (object == NULL)
+    return -ENOMEM;
+  object->pid = reference->pid;
+  return install_new_object(process, object, rights);
+}
+
+static long handle_create_fs(struct process *process, const char *path,
+                             uint32_t rights, int want_create) {
+  char resolved[OBJ_FILE_PATH_MAX];
+  struct vfs_objref reference;
+  long status;
+
+  vfs_resolve_path(path, resolved, OBJ_FILE_PATH_MAX);
+  memset(&reference, 0, sizeof(reference));
+  status = fs_resolve_or_create(resolved, rights, want_create, &reference);
+  if (status != 0)
+    return status;
+  if (reference.obj_type == OBJ_TYPE_FILE)
+    return fs_file_object(process, resolved, rights, &reference);
+  if (reference.obj_type == OBJ_TYPE_PROCESS)
+    return fs_process_object(process, rights, &reference);
+  return -EINVAL;
+}
+
+static int port_free_slot_locked(void) {
+  for (int slot = 0; slot < PORT_TABLE_MAX; ++slot)
+    if (port_table[slot] == NULL)
+      return slot;
+  return -1;
+}
+
+static long handle_create_port_sender(struct process *process, const char *name,
+                                      uint32_t rights) {
+  uint64_t flags;
+  struct kobject *existing;
+  int handle;
+
+  spin_lock_irqsave(&object_lock, &flags);
+  existing = port_find_locked(name);
+  if (existing == NULL) {
+    spin_unlock_irqrestore(&object_lock, flags);
+    return -ENOENT;
+  }
+  handle = handle_install_locked(process, existing,
+                                 rights & ~OS1_RIGHT_READ);
+  spin_unlock_irqrestore(&object_lock, flags);
+  return handle;
+}
+
+static struct kobject *port_receiver_object(struct process *process,
+                                            const char *name) {
+  struct kport *port = kmalloc(sizeof(*port));
+  struct kobject *object;
+
+  if (port == NULL)
+    return NULL;
+  memset(port, 0, sizeof(*port));
+  port->owner_pid = (int)process->pid;
+  snprintf(port->name, PORT_NAME_MAX, "%s", name);
+  INIT_LIST_HEAD(&port->rq.task_list);
+  spin_lock_init(&port->rq.lock);
+  INIT_LIST_HEAD(&port->wq.task_list);
+  spin_lock_init(&port->wq.lock);
+  object = kobj_alloc(OBJ_TYPE_PORT);
+  if (object == NULL) {
+    kfree(port);
+    return NULL;
+  }
+  object->port = port;
+  object->pid = (int)process->pid;
+  return object;
+}
+
+static long handle_create_port_receiver(struct process *process,
+                                        const char *name, uint32_t rights) {
+  struct kobject *object = port_receiver_object(process, name);
+  uint64_t flags;
+  int slot;
+  int handle;
+
+  if (object == NULL)
+    return -ENOMEM;
+  spin_lock_irqsave(&object_lock, &flags);
+  if (port_find_locked(name) != NULL) {
+    spin_unlock_irqrestore(&object_lock, flags);
+    kobj_free(object);
+    return -EEXIST;
+  }
+  slot = port_free_slot_locked();
+  if (slot < 0) {
+    spin_unlock_irqrestore(&object_lock, flags);
+    kobj_free(object);
+    return -ENOSPC;
+  }
+  handle = handle_install_locked(process, object, rights);
+  if (handle >= 0)
+    port_table[slot] = object;
+  spin_unlock_irqrestore(&object_lock, flags);
+  if (handle < 0)
+    kobj_free(object);
+  return handle;
+}
+
+static long handle_create_port(struct process *process, const char *name,
+                               uint32_t rights) {
+  if ((rights & OS1_RIGHT_READ) == 0U)
+    return handle_create_port_sender(process, name, rights);
+  return handle_create_port_receiver(process, name, rights);
+}
+
+static long handle_create_process(struct process *process, const char *path,
+                                  uint32_t rights, int type) {
+  struct kobject *object;
+  int pid;
+
+  if (type != OBJ_TYPE_PROCESS)
+    return -EINVAL;
+  pid = atoi(path);
+  if (pid <= 0)
+    return -EINVAL;
+  if ((rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) != 0U &&
+      !process_kill_allowed(process, pid))
+    return -EPERM;
+  if (process_find_by_pid(pid) == NULL)
+    return -ESRCH;
+  object = kobj_alloc(OBJ_TYPE_PROCESS);
+  if (object == NULL)
+    return -ENOMEM;
+  object->pid = pid;
+  return install_new_object(process, object, rights);
+}
+
+static long handle_create_registry(struct process *process, const char *path,
+                                   uint32_t rights, int type) {
+  struct kobject *object;
+
+  if (type != OBJ_TYPE_REGKEY || path[0] == '\0')
+    return -EINVAL;
+  if ((rights & OS1_RIGHT_WRITE) != 0U &&
+      !registry_key_is_virtual(path) && !registry_write_allowed())
+    return -EPERM;
+  object = kobj_alloc(OBJ_TYPE_REGKEY);
+  if (object == NULL)
+    return -ENOMEM;
+  strncpy(object->path, path, MAX_KEY_LEN - 1);
+  object->path[MAX_KEY_LEN - 1] = '\0';
+  return install_new_object(process, object, rights);
+}
+
+static long handle_create_window(struct process *process, const char *path,
+                                 uint32_t rights, int type) {
+  struct kobject *object;
+  int window_id;
+  int owner;
+
+  if (type != OBJ_TYPE_WINDOW)
+    return -EINVAL;
+  window_id = atoi(path);
+  if (window_id <= 0)
+    return -EINVAL;
+  owner = compositor_window_owner(window_id);
+  if (owner < 0)
+    return -ESRCH;
+  if (owner != (int)process->pid &&
+      (rights & (OS1_RIGHT_WRITE | OS1_RIGHT_DESTROY)) != 0U &&
+      !proc_is_machine(process) && process->level > PLVL_ROOT)
+    return -EPERM;
+  object = kobj_alloc(OBJ_TYPE_WINDOW);
+  if (object == NULL)
+    return -ENOMEM;
+  object->window_id = window_id;
+  object->pid = owner;
+  return install_new_object(process, object, rights);
+}
+
 /*
- * sys_handle_create - OS1low_handle_create(ns, path, rights, type).
- * Acquire a fresh capability (handle) to a named object.
+ * sys_handle_create - acquire a named object capability through one explicit
+ * namespace dispatcher. Namespace helpers own all ambient acquisition policy;
+ * once installed, the handle rights are the authority.
  */
 long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
-  struct process *cur = current_process;
-  if (!cur)
+  struct process *process = current_process;
+  char path[OBJ_FILE_PATH_MAX];
+  int want_create;
+
+  if (process == NULL)
     return -EPERM;
-  /* CREATE is acquisition-only (open(O_CREAT) semantics, FS namespace):
-   * capture it, then strip it via the OS1_RIGHT_ALL mask so it never lands
-   * in the installed handle's rights (cannot be duplicated/granted). */
-  int want_create = (rights & OS1_RIGHT_CREATE) != 0;
+  want_create = (rights & OS1_RIGHT_CREATE) != 0U;
   rights &= OS1_RIGHT_ALL;
-
-  char kpath[OBJ_FILE_PATH_MAX];
-  if (arch_copy_string_from_user(kpath, upath, OBJ_FILE_PATH_MAX) != 0)
+  if (hal_copy_string_from_user(path, upath, sizeof(path)) != 0)
     return -EFAULT;
-
-  if (handles_ensure(cur) != 0)
+  if (handles_ensure(process) != 0)
     return -ENOMEM;
 
-  if (ns == OS1_NS_FS) {
-    /* open() ≡ handle_create(OS1_NS_FS): the PATH'S PROVIDER decides the object
-     * TYPE (FILE for ext4/regfs, PROCESS for /proc/<pid>, …) — the namespace IS
-     * the object space.  The 'type' argument is only a hint; the resolution is
-     * the single source of truth. */
-    (void)type;
-    char resolved[OBJ_FILE_PATH_MAX];
-    vfs_resolve_path(kpath, resolved, OBJ_FILE_PATH_MAX);
-    struct vfs_objref ref;
-    memset(&ref, 0, sizeof(ref));
-    int rr = vfs_resolve_object(resolved, &ref);
-    if (rr == -2) {
-      /*
-       * A DIRECTORY IS A FILE YOU READ (ASTRA §6.3, Programme R1).
-       *
-       * vfs_resolve_object reports -2 for a directory but has already filled
-       * `ref` (OBJ_TYPE_FILE + the dir node), so everything needed is here —
-       * acquisition simply used to refuse.  A READ-only handle is now allowed,
-       * which is what makes sys_object_read's VFS_TYPE_DIR branch reachable and
-       * lets OS1_fs_list() be handle_create + object_read + close instead of a
-       * private ambient verb.
-       *
-       * WRITE stays -EISDIR: writing a directory as a byte stream is not an
-       * operation the VFS has, and silently accepting the handle would move the
-       * failure to the first write.  Directory MUTATION (create/remove a node)
-       * needs its own verb — tracked as R1b, still open.
-       *
-       * Found by the maintainer: `ls` broke with "cannot list ." because the
-       * listing path could not acquire the handle at all.  The dir-read code
-       * was unreachable until this gate opened.
-       */
-      if (rights & (OS1_RIGHT_WRITE | OS1_RIGHT_CREATE))
-        return -EISDIR;
-      rr = 0;
-    }
-    if (rr != 0) {
-      /* O_CREAT semantics (ASTRA §6.8: open(O_CREAT) → handle_create): a
-       * missing path with CREATE+WRITE is created as an empty FILE through
-       * the provider, behind the SAME vfs_write_allowed seam every other
-       * write-class modification uses (S-ALIGN F6).  CREATE without WRITE
-       * is meaningless and stays -ENOENT. */
-      if (!want_create || !(rights & OS1_RIGHT_WRITE))
-        return -ENOENT;
-      long cperm = vfs_write_allowed(resolved);
-      if (cperm != 0)
-        return cperm;
-      if (vfs_create(resolved, VFS_TYPE_FILE) != 0)
-        return -EIO;
-      rr = vfs_resolve_object(resolved, &ref);
-      if (rr != 0)
-        return -ENOENT;
-    }
-
-    struct kobject *o;
-    if (ref.obj_type == OBJ_TYPE_FILE) {
-      /* Ambient gate to ACQUIRE a write capability — the SAME
-       * vfs_write_allowed() seam used by every write-capability acquisition
-       * (S-ALIGN F6).
-       * Use of an already-held handle is rights-only (seL4/Mach delegation). */
-      if (rights & OS1_RIGHT_WRITE) {
-        long wperm = vfs_write_allowed(resolved);
-        if (wperm != 0)
-          return wperm;
-      }
-      /* Namespace mutation is distinct from writing a directory as a byte
-       * stream. WRITE on a directory remains -EISDIR above; MUTATE is a
-       * capability to this directory's children, acquired through the same
-       * VFS ACL and then delegable like every other object right. */
-      if (rights & OS1_RIGHT_MUTATE) {
-        if (ref.node.type != VFS_TYPE_DIR)
-          return -ENOTDIR;
-        long mperm = vfs_write_allowed(resolved);
-        if (mperm != 0)
-          return mperm;
-      }
-      o = kobj_alloc(OBJ_TYPE_FILE);
-      if (!o)
-        return -ENOMEM;
-      o->node = ref.node;
-      o->offset = 0;
-      strncpy(o->path, resolved, OBJ_FILE_PATH_MAX - 1);
-      o->path[OBJ_FILE_PATH_MAX - 1] = '\0';
-    } else if (ref.obj_type == OBJ_TYPE_PROCESS) {
-      /* Same acquisition gate as OS1_NS_PROC: a destructive handle (kill /
-       * IPC-send) needs kill authority; a READ/WAIT status handle only needs
-       * the process to exist (object_at already verified it). */
-      if ((rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) &&
-          !process_kill_allowed(cur, ref.pid))
-        return -EPERM;
-      o = kobj_alloc(OBJ_TYPE_PROCESS);
-      if (!o)
-        return -ENOMEM;
-      o->pid = ref.pid;
-    } else {
-      return -EINVAL; /* namespace path resolved to an unsupported type */
-    }
-
-    uint64_t flags;
-    spin_lock_irqsave(&object_lock, &flags);
-    int h = handle_install_locked(cur, o, rights);
-    spin_unlock_irqrestore(&object_lock, flags);
-    if (h < 0) {
-      kobj_free(o); /* never installed: refcount stayed 0 */
-      return h;
-    }
-    return h;
+  switch (ns) {
+  case OS1_NS_TIME:
+    return handle_create_time(process, path, rights, type);
+  case OS1_NS_FS:
+    return handle_create_fs(process, path, rights, want_create);
+  case OS1_NS_PORT:
+    return handle_create_port(process, path, rights);
+  case OS1_NS_PROC:
+    return handle_create_process(process, path, rights, type);
+  case OS1_NS_REG:
+    return handle_create_registry(process, path, rights, type);
+  case OS1_NS_WIN:
+    return handle_create_window(process, path, rights, type);
+  default:
+    return -EINVAL;
   }
-
-  /*
-   * OS1_NS_PORT — acquire a capability to a NAMED service port (ASTRA §6.5).
-   * This is the verb that lets a client address a SERVICE instead of a pid.
-   *
-   * Acquisition policy:
-   *   - asking for the RECEIVE right (OS1_RIGHT_READ) PUBLISHES the port and
-   *     makes the caller its owner — that is how a service announces itself.
-   *     A second receiver for an existing name is refused (-EADDRINUSE-ish
-   *     -EEXIST): one mailbox, one service, so a rogue process cannot steal a
-   *     service's identity by racing it.
-   *   - asking without READ yields a SEND-only capability to an EXISTING port;
-   *     possession is thereafter the authority (no ambient pid check).
-   */
-  if (ns == OS1_NS_PORT) {
-    (void)type;
-    if (handles_ensure(cur) != 0)
-      return -ENOMEM;
-    int want_recv = (rights & OS1_RIGHT_READ) != 0;
-
-    uint64_t pflags;
-    spin_lock_irqsave(&object_lock, &pflags);
-    struct kobject *existing = port_find_locked(kpath);
-    if (!want_recv) {
-      if (!existing) {
-        spin_unlock_irqrestore(&object_lock, pflags);
-        return -ENOENT; /* no such service published */
-      }
-      int h = handle_install_locked(cur, existing, rights & ~OS1_RIGHT_READ);
-      spin_unlock_irqrestore(&object_lock, pflags);
-      return h;
-    }
-    if (existing) {
-      spin_unlock_irqrestore(&object_lock, pflags);
-      return -EEXIST; /* a service already owns this name */
-    }
-    int slot = -1;
-    for (int i = 0; i < PORT_TABLE_MAX; i++) {
-      if (!port_table[i]) {
-        slot = i;
-        break;
-      }
-    }
-    spin_unlock_irqrestore(&object_lock, pflags);
-    if (slot < 0)
-      return -ENOSPC; /* port table full */
-
-    /* Allocate with the lock released (kmalloc), then publish under it. */
-    struct kport *kp = kmalloc(sizeof(struct kport));
-    if (!kp)
-      return -ENOMEM;
-    memset(kp, 0, sizeof(*kp));
-    kp->owner_pid = (int)cur->pid;
-    snprintf(kp->name, PORT_NAME_MAX, "%s", kpath);
-    INIT_LIST_HEAD(&kp->rq.task_list);
-    spin_lock_init(&kp->rq.lock);
-    INIT_LIST_HEAD(&kp->wq.task_list);
-    spin_lock_init(&kp->wq.lock);
-
-    struct kobject *o = kobj_alloc(OBJ_TYPE_PORT);
-    if (!o) {
-      kfree(kp);
-      return -ENOMEM;
-    }
-    o->port = kp;
-    o->pid = (int)cur->pid;
-
-    spin_lock_irqsave(&object_lock, &pflags);
-    if (port_find_locked(kpath)) { /* lost a publish race */
-      spin_unlock_irqrestore(&object_lock, pflags);
-      kobj_free(o); /* never installed: refcount still 0 */
-      return -EEXIST;
-    }
-    int h = handle_install_locked(cur, o, rights);
-    if (h >= 0)
-      port_table[slot] = o;
-    spin_unlock_irqrestore(&object_lock, pflags);
-    if (h < 0)
-      kobj_free(o);
-    return h;
-  }
-
-  if (ns == OS1_NS_PROC && type == OBJ_TYPE_PROCESS) {
-    int pid = atoi(kpath); /* libkernel parser (kernel/lib/string.c) */
-    if (pid <= 0)
-      return -EINVAL;
-    /* Acquisition policy (seL4 separable rights, F4 M4.5): a DESTRUCTIVE handle
-     * — one that can kill (DESTROY) or IPC-send (WRITE) — still needs kill
-     * authority. A non-destructive WAIT/READ-only handle (status query, the
-     * OS1_object_wait path behind OS1low_process_wait) only needs the process
-     * to exist, matching the permissive ambient SYS_WAIT.  This separates
-     * wait-right from kill-right without widening kill/send acquisition. */
-    int destructive = (rights & (OS1_RIGHT_DESTROY | OS1_RIGHT_WRITE)) != 0;
-    if (destructive && !process_kill_allowed(cur, pid))
-      return -EPERM;
-    if (!process_find_by_pid(pid))
-      return -ESRCH;
-
-    struct kobject *o = kobj_alloc(OBJ_TYPE_PROCESS);
-    if (!o)
-      return -ENOMEM;
-    o->pid = pid;
-
-    uint64_t flags;
-    spin_lock_irqsave(&object_lock, &flags);
-    int h = handle_install_locked(cur, o, rights);
-    spin_unlock_irqrestore(&object_lock, flags);
-    if (h < 0) {
-      kobj_free(o); /* never installed: refcount stayed 0 */
-      return h;
-    }
-    return h;
-  }
-
-  if (ns == OS1_NS_REG && type == OBJ_TYPE_REGKEY) {
-    /* A registry key is a capability too (ASTRA §6.6: every node has an
-     * associated capability).  A WRITE handle needs CAP_REG_WRITE to acquire —
-     * the SAME registry_write_allowed() seam sys_registry and regfs check, so
-     * the three entry points cannot drift (S-ALIGN F5); reads are open.  The
-     * key is stored in the kobject's path field, capped at the registry key
-     * length so create/get/set all agree on the same string. */
-    /* R2: a VIRTUAL per-process key (sys.proc.<pid>.env.*) is exempt from
-     * CAP_REG_WRITE — writing your own environment is ordinary unprivileged
-     * work, and proc_env_set enforces the real rule (self always, others only
-     * if privileged).  sys_registry already worked this way; this door demanded
-     * the machine-reconfiguration capability for a setenv, so the same
-     * operation succeeded or failed depending on which entry point was used. */
-    if ((rights & OS1_RIGHT_WRITE) && !registry_key_is_virtual(kpath) &&
-        !registry_write_allowed())
-      return -EPERM;
-    if (kpath[0] == '\0')
-      return -EINVAL;
-    struct kobject *o = kobj_alloc(OBJ_TYPE_REGKEY);
-    if (!o)
-      return -ENOMEM;
-    strncpy(o->path, kpath, MAX_KEY_LEN - 1);
-    o->path[MAX_KEY_LEN - 1] = '\0';
-
-    uint64_t flags;
-    spin_lock_irqsave(&object_lock, &flags);
-    int h = handle_install_locked(cur, o, rights);
-    spin_unlock_irqrestore(&object_lock, flags);
-    if (h < 0) {
-      kobj_free(o); /* never installed: refcount stayed 0 */
-      return h;
-    }
-    return h;
-  }
-
-  if (ns == OS1_NS_WIN && type == OBJ_TYPE_WINDOW) {
-    /* A compositor window is a capability object (ASTRA §6.7).  Acquisition is
-     * ambient-gated like the other types: a handle to YOUR OWN window is free;
-     * a WRITE/DESTROY handle to ANOTHER process's window is window-manager
-     * authority (machine/root only) — that is how /sys/bin/nxui (the dock) can
-     * minimize/restore/focus/close any app.  READ stays open (inspect).  Once
-     * held, the handle's rights are the only authority that matters. */
-    int wid = atoi(kpath);
-    if (wid <= 0)
-      return -EINVAL;
-    int owner = compositor_window_owner(wid);
-    if (owner < 0)
-      return -ESRCH;
-    if (owner != (int)cur->pid &&
-        (rights & (OS1_RIGHT_WRITE | OS1_RIGHT_DESTROY)) &&
-        !proc_is_machine(cur) && cur->level > PLVL_ROOT)
-      return -EPERM;
-
-    struct kobject *o = kobj_alloc(OBJ_TYPE_WINDOW);
-    if (!o)
-      return -ENOMEM;
-    o->window_id = wid;
-    o->pid = owner;
-
-    uint64_t flags;
-    spin_lock_irqsave(&object_lock, &flags);
-    int h = handle_install_locked(cur, o, rights);
-    spin_unlock_irqrestore(&object_lock, flags);
-    if (h < 0) {
-      kobj_free(o); /* never installed: refcount stayed 0 */
-      return h;
-    }
-    return h;
-  }
-
-  return -EINVAL;
 }
 
 /*
@@ -797,7 +780,7 @@ long sys_pipe(int *ufds) {
   }
 
   int fds[2] = {rfd, wfd};
-  if (arch_copy_to_user(ufds, fds, sizeof(fds)) != 0) {
+  if (hal_copy_to_user(ufds, fds, sizeof(fds)) != 0) {
     NX_DISCARD(sys_handle_close(rfd), "unwinding a failed copy_to_user");
     NX_DISCARD(sys_handle_close(wfd), "unwinding a failed copy_to_user");
     return -EFAULT;
@@ -866,8 +849,8 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
   int fds[4];
   if (o->type != OBJ_TYPE_PORT || !kp) {
     ret = -EINVAL;
-  } else if (arch_copy_from_user(&m, umsg, sizeof(m)) != 0 ||
-             (nfds > 0 && arch_copy_from_user(
+  } else if (hal_copy_from_user(&m, umsg, sizeof(m)) != 0 ||
+             (nfds > 0 && hal_copy_from_user(
                               fds, ufds, (size_t)nfds * sizeof(int)) != 0)) {
     ret = -EFAULT;
   } else {
@@ -975,256 +958,271 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
   return ret;
 }
 
-/*
- * sys_object_read - OS1_object_read(handle, buf, n).  Needs OS1_RIGHT_READ.
- * FILE: VFS read at the object's offset (shared across handles to it).
- */
-long sys_object_read(int handle, void *ubuf, size_t n) {
-  if (n > OBJ_MAX_IO_BYTES)
-    return -EINVAL;
-  long err = 0;
-  struct kobject *o = pin_handle(handle, OS1_RIGHT_READ, &err);
-  if (!o)
-    return err;
+static int object_read_directory(struct kobject *object, uint8_t *buffer,
+                                 size_t size) {
+  size_t window = (size_t)object->offset + size;
+  char *listing;
+  int total;
+  int copied;
 
-  long ret;
-  if (o->type == OBJ_TYPE_FILE) {
-    if (n == 0) {
-      ret = 0;
-    } else {
-      uint8_t *kb = kmalloc(n);
-      if (!kb) {
-        ret = -ENOMEM;
-      } else {
-        /* A2 (capability read/write symmetry): re-sync the cached node from the
-         * handle's path before reading, exactly as sys_object_write refreshes
-         * it after writing.  Without this a long-lived READ handle keeps the
-         * size it saw at handle_create and never sees data a later writer
-         * appended.  The path is the handle's stable identity; the node is a
-         * cache.  Best-effort: if the path vanished, fall back to the cached
-         * node (an open handle to a since-deleted file still reads what it last
-         * resolved). */
-        NX_DISCARD(vfs_open(o->path, &o->node),
-                   "best-effort refresh: on failure the CACHED node is the "
-                   "documented fallback, so an open handle to a since-deleted "
-                   "file still reads what it last resolved");
-        int got;
-        if (o->node.type == VFS_TYPE_DIR) {
-          /*
-           * A DIRECTORY IS A FILE YOU READ (ASTRA §6.3, Programme R1).
-           *
-           * Reading a directory handle yields its listing, which is the Plan 9
-           * rule the whole namespace model rests on — and it is what lets
-           * OS1_fs_list() be handle_create + object_read + close instead of a
-           * private ambient verb (SYS_LIST_DIR) reaching into the VFS beside
-           * the object layer.
-           *
-           * The listing is produced WHOLE, and the offset is treated as a byte
-           * cursor into it: vfs_list_dir has no incremental form, so a partial
-           * read cannot be resumed mid-directory without re-listing.  That is
-           * why the cursor advances by what was handed out — a second read
-           * returns the tail, and a read past the end returns 0 (EOF), which is
-           * the behaviour any reader loop already expects from a file.
-           */
-          /* Scratch is sized from the CALLER's request plus the cursor, not
-           * from OBJ_MAX_IO_BYTES.  The first version allocated the 16 MiB
-           * ceiling on every single listing — the old ambient verb allocated
-           * exactly what the caller asked for, and a per-`ls` 16 MiB kmalloc is
-           * a performance defect, not a safety margin.  A listing longer than
-           * (offset + n) is simply truncated at the cursor window, which is the
-           * same thing a short read does on any file. */
-          size_t want = (size_t)o->offset + n;
-          if (want > OBJ_MAX_IO_BYTES)
-            want = OBJ_MAX_IO_BYTES;
-          char *full = kmalloc(want);
-          if (!full) {
-            got = -1;
-          } else {
-            int total = vfs_list_dir(o->path, full, (uint32_t)want);
-            if (total < 0) {
-              got = -1;
-            } else if (o->offset >= (uint64_t)total) {
-              got = 0; /* cursor past the end: EOF */
-            } else {
-              size_t avail = (size_t)total - (size_t)o->offset;
-              got = (int)(avail < n ? avail : n);
-              memcpy(kb, full + o->offset, (size_t)got);
-            }
-            kfree(full);
-          }
-        } else {
-          got = vfs_read(&o->node, o->offset, kb, (uint32_t)n);
-        }
-        if (got < 0) {
-          ret = -EIO;
-        } else if (got > 0 && arch_copy_to_user(ubuf, kb, (size_t)got) != 0) {
-          ret = -EFAULT;
-        } else {
-          o->offset +=
-              (uint64_t)got; /* benign shared-offset race, documented */
-          ret = got;
-        }
-        kfree(kb);
-      }
-    }
-  } else if (o->type == OBJ_TYPE_REGKEY) {
-    /* read = registry_get the key's value (ASTRA §6.6) */
-    char val[MAX_VAL_LEN];
-    if (registry_get(o->path, val, sizeof(val)) != 0) {
-      ret = -ENOENT;
-    } else {
-      size_t vlen = strlen(val) + 1; /* include NUL */
-      if (vlen > n)
-        vlen = n;
-      ret = (vlen > 0 && arch_copy_to_user(ubuf, val, vlen) != 0) ? -EFAULT
-                                                                  : (long)vlen;
-    }
-  } else if (o->type == OBJ_TYPE_WINDOW) {
-    /* read = this window's info record (ASTRA §6.7).  A short read (n <
-     * sizeof) copies a prefix, like the other object reads. */
-    struct window_info wi;
-    if (compositor_window_info(o->window_id, &wi) != 0) {
-      ret = -ESRCH;
-    } else {
-      size_t cn = sizeof(wi);
-      if (cn > n)
-        cn = n;
-      ret = (cn > 0 && arch_copy_to_user(ubuf, &wi, cn) != 0) ? -EFAULT
-                                                              : (long)cn;
-    }
-  } else if (o->type == OBJ_TYPE_CONSOLE) {
-    /* stdin: drain the IPC input queue for one pressed/repeat key (the
-     * folded-in FD_KBD path).  Release events and non-input messages are
-     * discarded, as before.  When nothing is pending we return -EAGAIN; the
-     * SYS_READ dispatcher turns that into a blocking sleep — rescheduling needs
-     * the trap frame, which lives in the dispatcher, not here. */
-    if (n == 0) {
-      ret = 0;
-    } else {
-      ret = -EAGAIN;
-      while (1) {
-        struct ipc_node *node = pop_message(current_process, -1); /* from ANY */
-        if (!node)
-          break; /* queue empty → -EAGAIN, caller blocks */
-        if (node->msg.type == IPC_TYPE_INPUT && node->msg.data2 != 0) {
-          char c = (char)node->msg.data1;
-          ret = (arch_copy_to_user(ubuf, &c, 1) != 0) ? -EFAULT : 1;
-          kfree(node);
-          break;
-        }
-        kfree(node); /* release event / non-input: discard */
-      }
-    }
-  } else if (o->type == OBJ_TYPE_PROCESS) {
-    /* read = the process's live state as a text status block.  The process
-     * object NOTIFIES its state THROUGH the unified object mechanism (parallels
-     * OBJ_TYPE_WINDOW returning window_info) — not a side-channel.  Acquiring a
-     * READ handle is the ambient "status query" gate (sys_handle_create PROC
-     * branch); this is its payload.  A short buffer truncates, like the
-     * REGKEY/WINDOW reads. */
-    struct ps_info pi;
-    /* Lineage is read separately rather than widened into ps_info: that struct
-     * is a userland ABI read as an ARRAY by ps/nxproc, so growing it would move
-     * every element. */
-    int lin_parent = 0, lin_owner = 0;
-    NX_DISCARD(proc_get_lineage(o->pid, &lin_parent, &lin_owner),
-               "lineage is optional in this status block; the zero-initialised "
-               "parent/owner above are the intended fallback");
-    if (proc_get_info(o->pid, &pi) != 0) {
-      ret = -ESRCH;
-    } else {
-      char stbuf[256];
-      int len = snprintf(
-          stbuf, sizeof(stbuf),
-          "pid=%d\nname=%s\nstate=%s\nprio=%d\ncpu_ms=%llu\noncpu=%d\n"
-          "parent=%d\nowner=%d\n",
-          pi.pid, pi.name, proc_state_name(pi.state), pi.priority,
-          (unsigned long long)pi.cpu_time, pi.on_cpu, lin_parent, lin_owner);
-      size_t cn = (len > 0) ? (size_t)len : 0;
-      if (cn > n)
-        cn = n;
-      ret = (cn > 0 && arch_copy_to_user(ubuf, stbuf, cn) != 0) ? -EFAULT
-                                                                : (long)cn;
-    }
-  } else if (o->type == OBJ_TYPE_PORT) {
-    /* Port RECEIVE (needs the receive right, checked by pin_handle above).
-     * Dequeues one whole ipc_message — the message is the unit, unlike the
-     * pipe's byte stream.  Blocks while empty and a sender still exists;
-     * returns 0 when the last sender is gone, so a service loop terminates
-     * instead of hanging. */
-    struct kport *kp = o->port;
-    if (!kp) {
-      ret = -EIO;
-    } else if (n < sizeof(struct ipc_message)) {
-      ret = -EINVAL; /* a partial message would desync the mailbox */
-    } else {
-      for (;;) {
-        uint64_t f2;
-        spin_lock_irqsave(&object_lock, &f2);
-        if (kp->count > 0) {
-          struct ipc_message m = kp->q[kp->head];
-          kp->head = (kp->head + 1) % PORT_QUEUE_MAX;
-          kp->count--;
-          spin_unlock_irqrestore(&object_lock, f2);
-          wake_up(&kp->wq); /* freed a slot → wake a blocked sender */
-          ret = (arch_copy_to_user(ubuf, &m, sizeof(m)) != 0) ? -EFAULT
-                                                              : (long)sizeof(m);
-          break;
-        }
-        if (kp->senders == 0) { /* nobody left to send → end of service */
-          spin_unlock_irqrestore(&object_lock, f2);
-          ret = 0;
-          break;
-        }
-        spin_unlock_irqrestore(&object_lock, f2);
-        kthread_block(&kp->rq, port_readable_block, o);
-      }
-    }
-  } else if (o->type == OBJ_TYPE_PIPE) {
-    /* Pipe read: block until data is available or every writer has closed
-     * (EOF → 0).  The still-block predicate is re-checked under the reader wait
-     * queue lock so a writer's publish-then-wake_up can never be lost. */
-    struct kpipe *kp = o->pipe;
-    if (n == 0 || !kp) {
-      ret = (n == 0) ? 0 : -EIO;
-    } else {
-      uint8_t *kb = kmalloc(n);
-      if (!kb) {
-        ret = -ENOMEM;
-      } else {
-        for (;;) {
-          uint64_t f2;
-          spin_lock_irqsave(&object_lock, &f2);
-          if (kp->count > 0) {
-            uint32_t take = (kp->count < n) ? kp->count : (uint32_t)n;
-            for (uint32_t i = 0; i < take; i++) {
-              kb[i] = kp->buf[kp->head];
-              kp->head = (kp->head + 1) % PIPE_BUF_SIZE;
-            }
-            kp->count -= take;
-            spin_unlock_irqrestore(&object_lock, f2);
-            wake_up(&kp->wq); /* freed space → wake a blocked writer */
-            ret =
-                (arch_copy_to_user(ubuf, kb, take) != 0) ? -EFAULT : (long)take;
-            break;
-          }
-          if (kp->writers == 0) { /* empty and no writers → EOF */
-            spin_unlock_irqrestore(&object_lock, f2);
-            ret = 0;
-            break;
-          }
-          spin_unlock_irqrestore(&object_lock, f2);
-          kthread_block(&kp->rq, pipe_readable_block, o);
-        }
-        kfree(kb);
-      }
-    }
-  } else {
-    ret = -EINVAL;
+  if (window > OBJ_MAX_IO_BYTES)
+    window = OBJ_MAX_IO_BYTES;
+  listing = kmalloc(window);
+  if (listing == NULL)
+    return -ENOMEM;
+  total = vfs_list_dir(object->path, listing, (uint32_t)window);
+  if (total < 0) {
+    kfree(listing);
+    return -EIO;
   }
+  if (object->offset >= (uint64_t)total) {
+    kfree(listing);
+    return 0;
+  }
+  size_t available = (size_t)total - (size_t)object->offset;
+  copied = (int)(available < size ? available : size);
+  memcpy(buffer, listing + object->offset, (size_t)copied);
+  kfree(listing);
+  return copied;
+}
 
-  obj_unref(o);
-  return ret;
+static long object_read_file(struct kobject *object, void *user_buffer,
+                             size_t size) {
+  uint8_t *buffer;
+  int got;
+
+  if (size == 0U)
+    return 0;
+  buffer = kmalloc(size);
+  if (buffer == NULL)
+    return -ENOMEM;
+  NX_DISCARD(vfs_open(object->path, &object->node),
+             "best-effort node refresh; cached open-handle node remains valid");
+  got = object->node.type == VFS_TYPE_DIR
+      ? object_read_directory(object, buffer, size)
+      : vfs_read(&object->node, object->offset, buffer, (uint32_t)size);
+  if (got < 0) {
+    kfree(buffer);
+    return got == -ENOMEM ? -ENOMEM : -EIO;
+  }
+  if (got > 0 && hal_copy_to_user(user_buffer, buffer, (size_t)got) != 0) {
+    kfree(buffer);
+    return -EFAULT;
+  }
+  object->offset += (uint64_t)got;
+  kfree(buffer);
+  return got;
+}
+
+static long object_read_timer(void *user_buffer, size_t size) {
+  struct os1_time_snapshot_v1 snapshot;
+  const size_t header_size = offsetof(struct os1_time_snapshot_v1, cpu);
+  size_t copy_size;
+
+  if (size < header_size)
+    return -EINVAL;
+  if (OS1libkernel_time_snapshot(&snapshot) != 0)
+    return -EAGAIN;
+  copy_size = sizeof(snapshot);
+  if (copy_size > size)
+    copy_size = size;
+  return hal_copy_to_user(user_buffer, &snapshot, copy_size) != 0
+      ? -EFAULT : (long)copy_size;
+}
+
+static long object_read_registry(const struct kobject *object,
+                                 void *user_buffer, size_t size) {
+  char value[MAX_VAL_LEN];
+  size_t length;
+
+  if (registry_get(object->path, value, sizeof(value)) != 0)
+    return -ENOENT;
+  length = strlen(value) + 1U;
+  if (length > size)
+    length = size;
+  if (length != 0U && hal_copy_to_user(user_buffer, value, length) != 0)
+    return -EFAULT;
+  return (long)length;
+}
+
+static long object_read_window(const struct kobject *object, void *user_buffer,
+                               size_t size) {
+  struct window_info info;
+  size_t copy_size;
+
+  if (compositor_window_info(object->window_id, &info) != 0)
+    return -ESRCH;
+  copy_size = sizeof(info);
+  if (copy_size > size)
+    copy_size = size;
+  if (copy_size != 0U &&
+      hal_copy_to_user(user_buffer, &info, copy_size) != 0)
+    return -EFAULT;
+  return (long)copy_size;
+}
+
+static long object_read_console(void *user_buffer, size_t size) {
+  if (size == 0U)
+    return 0;
+  /* The queue is statically bounded by OS1LIBKERNEL_IPC_QUEUE_MAX. Draining at most that
+   * many messages prevents malformed traffic from turning one read into an
+   * unbounded kernel loop. */
+  for (uint32_t scan = 0U; scan < OS1LIBKERNEL_IPC_QUEUE_MAX; ++scan) {
+    struct ipc_node *node = pop_message(current_process, -1);
+    if (node == NULL)
+      return -EAGAIN;
+    if (node->msg.type == IPC_TYPE_INPUT && node->msg.data2 != 0U) {
+      char character = (char)node->msg.data1;
+      long result = hal_copy_to_user(user_buffer, &character, 1U) != 0
+          ? -EFAULT : 1;
+      kfree(node);
+      return result;
+    }
+    kfree(node);
+  }
+  return -EAGAIN;
+}
+
+static long object_read_process(const struct kobject *object, void *user_buffer,
+                                size_t size) {
+  struct ps_info info;
+  int parent = 0;
+  int owner = 0;
+  char status[256];
+  int length;
+  size_t copy_size;
+
+  NX_DISCARD(proc_get_lineage(object->pid, &parent, &owner),
+             "lineage is optional in process status");
+  if (proc_get_info(object->pid, &info) != 0)
+    return -ESRCH;
+  length = snprintf(status, sizeof(status),
+                    "pid=%d\nname=%s\nstate=%s\nprio=%d\ncpu_ms=%llu\n"
+                    "oncpu=%d\nparent=%d\nowner=%d\n",
+                    info.pid, info.name, proc_state_name(info.state),
+                    info.priority, (unsigned long long)info.cpu_time,
+                    info.on_cpu, parent, owner);
+  copy_size = length > 0 ? (size_t)length : 0U;
+  if (copy_size > size)
+    copy_size = size;
+  if (copy_size != 0U &&
+      hal_copy_to_user(user_buffer, status, copy_size) != 0)
+    return -EFAULT;
+  return (long)copy_size;
+}
+
+static long object_read_port(struct kobject *object, void *user_buffer,
+                             size_t size) {
+  struct kport *port = object->port;
+
+  if (port == NULL)
+    return -EIO;
+  if (size < sizeof(struct ipc_message))
+    return -EINVAL;
+  /* Blocking service receive is an intentional kernel wait loop. kthread_block
+   * sleeps until the queue predicate changes, so the loop does not busy-spin. */
+  for (;;) {
+    struct ipc_message message;
+    uint64_t flags;
+
+    spin_lock_irqsave(&object_lock, &flags);
+    if (port->count > 0U) {
+      message = port->q[port->head];
+      port->head = (port->head + 1U) % PORT_QUEUE_MAX;
+      --port->count;
+      spin_unlock_irqrestore(&object_lock, flags);
+      wake_up(&port->wq);
+      return hal_copy_to_user(user_buffer, &message, sizeof(message)) != 0
+          ? -EFAULT : (long)sizeof(message);
+    }
+    if (port->senders == 0) {
+      spin_unlock_irqrestore(&object_lock, flags);
+      return 0;
+    }
+    spin_unlock_irqrestore(&object_lock, flags);
+    kthread_block(&port->rq, port_readable_block, object);
+  }
+}
+
+static long object_read_pipe(struct kobject *object, void *user_buffer,
+                             size_t size) {
+  struct kpipe *pipe = object->pipe;
+  uint8_t *buffer;
+
+  if (size == 0U)
+    return 0;
+  if (pipe == NULL)
+    return -EIO;
+  buffer = kmalloc(size);
+  if (buffer == NULL)
+    return -ENOMEM;
+  /* Pipe read is intentionally blocking, not a busy loop; kthread_block waits
+   * on a bounded kernel queue until data or EOF changes the predicate. */
+  for (;;) {
+    uint64_t flags;
+    spin_lock_irqsave(&object_lock, &flags);
+    if (pipe->count > 0U) {
+      uint32_t take = pipe->count < size ? pipe->count : (uint32_t)size;
+      for (uint32_t index = 0U; index < take; ++index) {
+        buffer[index] = pipe->buf[pipe->head];
+        pipe->head = (pipe->head + 1U) % PIPE_BUF_SIZE;
+      }
+      pipe->count -= take;
+      spin_unlock_irqrestore(&object_lock, flags);
+      wake_up(&pipe->wq);
+      long result = hal_copy_to_user(user_buffer, buffer, take) != 0
+          ? -EFAULT : (long)take;
+      kfree(buffer);
+      return result;
+    }
+    if (pipe->writers == 0) {
+      spin_unlock_irqrestore(&object_lock, flags);
+      kfree(buffer);
+      return 0;
+    }
+    spin_unlock_irqrestore(&object_lock, flags);
+    kthread_block(&pipe->rq, pipe_readable_block, object);
+  }
+}
+
+static long object_read_dispatch(struct kobject *object, void *user_buffer,
+                                 size_t size) {
+  switch (object->type) {
+  case OBJ_TYPE_FILE:
+    return object_read_file(object, user_buffer, size);
+  case OBJ_TYPE_TIMER:
+    return object_read_timer(user_buffer, size);
+  case OBJ_TYPE_REGKEY:
+    return object_read_registry(object, user_buffer, size);
+  case OBJ_TYPE_WINDOW:
+    return object_read_window(object, user_buffer, size);
+  case OBJ_TYPE_CONSOLE:
+    return object_read_console(user_buffer, size);
+  case OBJ_TYPE_PROCESS:
+    return object_read_process(object, user_buffer, size);
+  case OBJ_TYPE_PORT:
+    return object_read_port(object, user_buffer, size);
+  case OBJ_TYPE_PIPE:
+    return object_read_pipe(object, user_buffer, size);
+  default:
+    return -EINVAL;
+  }
+}
+
+/* sys_object_read - pin the capability once, dispatch by object type, unpin. */
+long sys_object_read(int handle, void *user_buffer, size_t size) {
+  long error = 0;
+  struct kobject *object;
+  long result;
+
+  if (size > OBJ_MAX_IO_BYTES)
+    return -EINVAL;
+  object = pin_handle(handle, OS1_RIGHT_READ, &error);
+  if (object == NULL)
+    return error;
+  result = object_read_dispatch(object, user_buffer, size);
+  obj_unref(object);
+  return result;
 }
 
 /*
@@ -1247,7 +1245,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
       uint8_t *kb = kmalloc(n);
       if (!kb) {
         ret = -ENOMEM;
-      } else if (arch_copy_from_user(kb, ubuf, n) != 0) {
+      } else if (hal_copy_from_user(kb, ubuf, n) != 0) {
         kfree(kb);
         ret = -EFAULT;
       } else {
@@ -1276,7 +1274,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
       ret = -EINVAL;
     } else {
       struct ipc_message m;
-      if (arch_copy_from_user(&m, ubuf, sizeof(m)) != 0) {
+      if (hal_copy_from_user(&m, ubuf, sizeof(m)) != 0) {
         ret = -EFAULT;
       } else {
         m.from = current_process ? (int)current_process->pid : 0;
@@ -1296,7 +1294,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
     } else {
       size_t cn = (n < MAX_VAL_LEN) ? n : (MAX_VAL_LEN - 1);
       char val[MAX_VAL_LEN];
-      if (arch_copy_from_user(val, ubuf, cn) != 0) {
+      if (hal_copy_from_user(val, ubuf, cn) != 0) {
         ret = -EFAULT;
       } else {
         val[cn] = '\0';
@@ -1343,7 +1341,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
       ret = -EINVAL;
     } else {
       struct ipc_message m;
-      if (arch_copy_from_user(&m, ubuf, sizeof(m)) != 0) {
+      if (hal_copy_from_user(&m, ubuf, sizeof(m)) != 0) {
         ret = -EFAULT;
       } else {
         m.from = current_process ? (int)current_process->pid : 0;
@@ -1380,7 +1378,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
       uint8_t *kb = kmalloc(n);
       if (!kb) {
         ret = -ENOMEM;
-      } else if (arch_copy_from_user(kb, ubuf, n) != 0) {
+      } else if (hal_copy_from_user(kb, ubuf, n) != 0) {
         kfree(kb);
         ret = -EFAULT;
       } else {
@@ -1442,11 +1440,10 @@ long sys_object_wait(int handle, long arg) {
     int code = 0;
     ret = process_wait(o->pid, &code);
     if (arg) {
-      extern int arch_copy_to_user(void *dst, const void *src, size_t n);
-      /* A bad status pointer is -EFAULT, not a reap that quietly delivered no
+            /* A bad status pointer is -EFAULT, not a reap that quietly delivered no
        * status.  The (void) cast here suppressed nothing and only made the
        * omission read as intentional. */
-      if (arch_copy_to_user((void *)arg, &code, sizeof(code)) != 0)
+      if (hal_copy_to_user((void *)arg, &code, sizeof(code)) != 0)
         ret = -EFAULT;
     }
   } else {
@@ -1637,7 +1634,7 @@ long sys_object_ctl(int handle, int cmd, long arg) {
       ret = -EFAULT;
     } else {
       char name[OBJ_FILE_PATH_MAX];
-      if (arch_copy_string_from_user(name, (const char *)arg, sizeof(name)) != 0) {
+      if (hal_copy_string_from_user(name, (const char *)arg, sizeof(name)) != 0) {
         ret = -EFAULT;
       } else {
         size_t nlen = strlen(name);

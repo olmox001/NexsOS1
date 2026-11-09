@@ -1,4 +1,5 @@
-#include <arch/pt_regs.h>
+#include <hal/config.h>
+#include "efi_exit_adapter.h"
 #include "uefi_min.h"
 
 #define NEXS_KERNEL_LOAD_ADDRESS 0x40080000ULL
@@ -15,8 +16,11 @@ extern const UINT8 nexs_embedded_kernel_end[];
 extern const UINT8 nexs_embedded_dtb_start[];
 extern const UINT8 nexs_embedded_dtb_end[];
 extern void nexs_efi_handoff(UINT64 KernelPA, UINT64 DtbPA,
-                             UINT64 KernelSpan, UINT64 DtbSpan)
+                             UINT64 KernelSpan, UINT64 DtbSpan,
+                             UINT64 FirmwareMapPA, UINT64 FirmwareRecordCount,
+                             UINT64 EbsEvidence)
     __attribute__((noreturn));
+extern void nexs_efi_post_exit_halt(void) __attribute__((noreturn));
 
 static EFI_SYSTEM_TABLE *gSystemTable;
 static EFI_BOOT_SERVICES *gBootServices;
@@ -193,50 +197,14 @@ static EFI_STATUS load_dtb(EFI_SYSTEM_TABLE *SystemTable,
     return Status;
 }
 
-static EFI_STATUS exit_boot_services(EFI_HANDLE ImageHandle)
-{
-    UINTN Capacity = 256U * 1024U;
-    void *Map = 0;
-    EFI_STATUS Status;
-    UINTN Attempt;
-
-    Status = gBootServices->AllocatePool(EFI_LOADER_DATA, Capacity, &Map);
-    if (EFI_ERROR(Status)) return Status;
-
-    for (Attempt = 0; Attempt < 4; ++Attempt) {
-        UINTN MapSize = Capacity;
-        UINTN MapKey = 0;
-        UINTN DescriptorSize = 0;
-        UINT32 DescriptorVersion = 0;
-
-        Status = gBootServices->GetMemoryMap(&MapSize, Map, &MapKey,
-                                             &DescriptorSize,
-                                             &DescriptorVersion);
-        if (Status == EFI_BUFFER_TOO_SMALL) {
-            gBootServices->FreePool(Map);
-            Capacity = MapSize + (DescriptorSize ? DescriptorSize * 16 : 65536);
-            Status = gBootServices->AllocatePool(EFI_LOADER_DATA, Capacity, &Map);
-            if (EFI_ERROR(Status)) return Status;
-            continue;
-        }
-        if (EFI_ERROR(Status)) {
-            gBootServices->FreePool(Map);
-            return Status;
-        }
-
-        Status = gBootServices->ExitBootServices(ImageHandle, MapKey);
-        if (Status == EFI_SUCCESS) return EFI_SUCCESS;
-        if (Status != EFI_INVALID_PARAMETER) return Status;
-    }
-
-    return EFI_ABORTED;
-}
-
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
+    struct nexs_efi_memory_handoff MemoryHandoff;
+    enum nexs_efi_exit_result ExitResult;
     EFI_STATUS Status;
     UINT64 KernelPA = 0, KernelSpan = 0;
     UINT64 DtbPA = 0, DtbSpan = 0;
+    UINT64 EbsEvidence;
 
     gSystemTable = SystemTable;
     gBootServices = SystemTable ? SystemTable->BootServices : 0;
@@ -260,8 +228,18 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
 
     console(msg_exit);
-    Status = exit_boot_services(ImageHandle);
-    if (EFI_ERROR(Status)) return Status;
+    ExitResult = nexs_efi_exit_and_normalize(
+        ImageHandle, gBootServices, &MemoryHandoff);
+    if (ExitResult == NEXS_EFI_EXIT_PRE_EXIT_FAILURE) {
+        console(msg_error);
+        return EFI_ABORTED;
+    }
+    if (ExitResult != NEXS_EFI_EXIT_OK)
+        nexs_efi_post_exit_halt();
 
-    nexs_efi_handoff(KernelPA, DtbPA, KernelSpan, DtbSpan);
+    EbsEvidence = (UINT64)MemoryHandoff.exit_attempts |
+                  ((UINT64)MemoryHandoff.buffer_growths << 32);
+    nexs_efi_handoff(KernelPA, DtbPA, KernelSpan, DtbSpan,
+                     MemoryHandoff.record_base,
+                     (UINT64)MemoryHandoff.record_count, EbsEvidence);
 }

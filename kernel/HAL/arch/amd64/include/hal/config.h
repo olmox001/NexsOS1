@@ -4,8 +4,10 @@
 /* Provider-selected constants consumed through the HAL vocabulary. */
 #define HAL_RAM_START                    0x0UL
 #define HAL_ALIAS_OFFSET                 0x0UL
-#define HAL_PHYS_MAP_LIMIT               (256ULL << 30)
+/* Four pre-populated direct-map PML4 slots cover physical 0..2 TiB. */
+#define HAL_PHYS_MAP_LIMIT               (2ULL << 40)
 #define HAL_BOOTSTRAP_PHYS_MAP_LIMIT     (1ULL << 30)
+#define HAL_PAGE_SIZE                      4096UL
 #define HAL_DIRECT_MAP_BASE              0xFFFF800000000000UL
 #define HAL_ELF_MACHINE                  62U
 #define HAL_HAS_IOPORT                   1

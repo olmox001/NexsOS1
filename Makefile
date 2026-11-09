@@ -243,6 +243,7 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/video/video.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/notify_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/time_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/os1_video_platform.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/d3d9/os1_d3d9_present.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/opengl/os1_gl_platform.o
@@ -437,6 +438,8 @@ GNULIB_OBJ_DIR := $(BUILD_DIR)/gnulib
 GNULIB_OBJS := $(patsubst %.c,$(GNULIB_OBJ_DIR)/%.o,$(GNULIB_OVERLAY_SRCS))
 GNULIB_LIB  := $(BUILD_DIR)/libgnulib.a
 
+$(GNULIB_OBJS): $(GNULIB_GENERATED_HEADERS)
+
 GNULIB_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
                 -Wno-error \
                 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
@@ -478,14 +481,15 @@ SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxr
            $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
            $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf \
-           $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf $(BUILD_DIR)/nxmoused.elf
+           $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf $(BUILD_DIR)/nxmoused.elf \
+           $(BUILD_DIR)/nxtimerdiag.elf
 
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
            $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf\
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
-           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf $(BUILD_DIR)/nxtimerdiag.elf \
+           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
            $(BUILD_DIR)/captest.elf $(BUILD_DIR)/libctest.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
@@ -625,7 +629,7 @@ $(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LI
 $(BUILD_DIR)/nxexec.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxexec.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nximage.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nximage.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxfont.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/nxfont.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
@@ -797,14 +801,15 @@ endif
 .PHONY: grub-arm64-tools boot-iso
 
 grub-arm64-tools:
-	@tools/build-grub-arm64.sh
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-grub-arm64.sh
 
 ifeq ($(ARCH),amd64)
 boot-iso: all
-	@tools/build-amd64-grub-iso.sh
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-amd64-grub-iso.sh
 else
 boot-iso: all $(VIRT_DTB) grub-arm64-tools
-	@tools/build-aarch64-uefi-image.sh
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" \
+	  NEXS_DTB_PATH="$(abspath $(VIRT_DTB))" tools/build-aarch64-uefi-image.sh
 endif
 
 # =============================================================================
@@ -883,6 +888,13 @@ endif
 BOOT_MODE ?= iso
 RUN_DISPLAY ?= default
 RUN_SERIAL ?= stdio
+.PHONY: direct-artifacts
+ifeq ($(ARCH),aarch64)
+direct-artifacts: all $(VIRT_DTB)
+else
+direct-artifacts: all
+endif
+
 # Headless is nxadb's own default and prevents host keyboard input contaminating
 # the guest command/health transaction during automated test-all runs.
 TEST_DISPLAY ?= none

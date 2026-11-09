@@ -46,6 +46,7 @@
 #include <hal/core_protocol.h>
 #include <hal/timer_protocol.h>
 #include <hal/core.h>
+#include <hal/irq.h>
 #include <kernel/types.h>
 #include <kernel/string.h>
 #include <kernel/cpu.h>
@@ -189,8 +190,7 @@ void idt_init(void) {
  * corrupted GS); never touches LAPIC MMIO (kernel/fault.h, step 5).
  */
 static int fault_cpu_id(void) {
-  struct cpu_info *ci = arch_cpu_info_fault_safe();
-  return ci ? (int)ci->cpu_id : -1;
+  return (int)hal_cpu_id_fault_safe();
 }
 
 /*
@@ -410,7 +410,7 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
 
     /* End-of-interrupt through the chip (IRQ-01 fix): pic_chip_end() owns
      * the complete LAPIC + 8259 sequence; nothing here EOIs by hand. */
-    irq_chip_end((uint32_t)vec);
+    hal_irq_end((uint32_t)vec);
 
     return ret_regs;
   }

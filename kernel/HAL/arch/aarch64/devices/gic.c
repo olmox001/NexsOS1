@@ -88,12 +88,12 @@
  *               PPIs/SPIs — irq.c's `== 0`, `== IRQ_TIMER`, `== 1023`
  *               comparisons remain correct unchanged (see gic_ack() below).
  */
+#include <hal/irq.h>
 #include <hal/diagnostic_protocol.h>
 #include <hal/core_protocol.h>
 #include <arch/pt_regs.h>
 #include "gic_regs.h"
 #include <drivers/gic.h>
-#include <kernel/irq.h>
 #include <kernel/memlayout.h>
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
@@ -559,9 +559,8 @@ static void gic_eoi(uint32_t irq) {
  * Registered via gic_register() → irq_register_chip(); becomes current_chip
  * in irq.c.  All ops are filled; the chip is fully used on aarch64. */
 /* irq_chip implementation */
-static struct irq_chip gic_chip = {
-    .name = "ARM GICv2",
-    .init = gic_init_dist,
+static const struct nxhal_irq_controller_ops gic_chip = {
+    .init_global = gic_init_dist,
     .init_percpu = gic_init_cpu,
     .enable = gic_enable,
     .disable = gic_disable,
@@ -580,4 +579,4 @@ static struct irq_chip gic_chip = {
  *
  * Locking: none; called before SMP.
  */
-void gic_register(void) { irq_register_chip(&gic_chip); }
+void gic_register(void) { (void)nxhal_irq_controller_install(&gic_chip); }

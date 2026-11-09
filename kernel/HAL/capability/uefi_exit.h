@@ -1,14 +1,14 @@
 #ifndef NXEC_PREBOOT_UEFI_EXIT_H
 #define NXEC_PREBOOT_UEFI_EXIT_H
 
+#include <hal/boot_info.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
 #define PREBOOT_UEFI_MEMORY_DESCRIPTOR_V1 UINT32_C(1)
 #define PREBOOT_UEFI_MEMORY_DESCRIPTOR_V1_SIZE ((size_t)40U)
 #define PREBOOT_UEFI_MAP_SLACK_DESCRIPTORS UINT32_C(8)
-#define PREBOOT_UEFI_EXIT_MAX_ATTEMPTS UINT32_C(3)
-#define PREBOOT_UEFI_MAP_MAX_GROWTHS UINT32_C(4)
 
 enum preboot_uefi_status {
     PREBOOT_UEFI_STATUS_SUCCESS = 0,

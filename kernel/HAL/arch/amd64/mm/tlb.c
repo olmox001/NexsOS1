@@ -40,10 +40,11 @@
 #include <hal/diagnostic_protocol.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
+#include <hal/cpu_protocol.h>
+#include <hal/irq.h>
 #include <arch/arch.h>
 #include <arch/amd64/apic.h>
 #include <kernel/arch.h>
-#include <kernel/cpu.h>
 #include <kernel/irq.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
@@ -104,7 +105,7 @@ static void tlb_ipi_handler(uint32_t irq, void *data) {
  * 8259; delivery is pure LAPIC fixed-vector.
  */
 void amd64_tlb_ipi_init(void) {
-  if (irq_register(TLB_IPI_VECTOR, tlb_ipi_handler, NULL) == 0) {
+  if (nxhal_irq_register_handler(TLB_IPI_VECTOR, tlb_ipi_handler, NULL) == 0) {
     tlb_ipi_ready = 1;
     nxhal_diag_info("AMD64 TLB: shootdown IPI registered on vector 0x%x\n",
             TLB_IPI_VECTOR);
@@ -136,8 +137,8 @@ static void tlb_shootdown(uintptr_t va) {
    * matching the width of tlb_shoot_waiting). */
   uint64_t mask = 0;
   uint32_t me = hal_cpu_id();
-  for (uint32_t i = 0; i < MAX_CPUS && i < 64; i++) {
-    if (i != me && cpu_data[i].online)
+  for (uint32_t i = 0; i < NXHAL_CPU_LIMIT && i < 64U; i++) {
+    if (i != me && nxhal_cpu_is_online(i))
       mask |= 1UL << i;
   }
   if (!mask)

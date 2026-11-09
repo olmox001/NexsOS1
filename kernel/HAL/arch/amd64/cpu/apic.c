@@ -202,7 +202,7 @@ uint32_t lapic_get_id(void) { return lapic_read(LAPIC_ID) >> 24; }
  * previous IPI has been accepted by the interconnect.  The write to ICR_HIGH
  * must precede the write to ICR_LOW because the latter triggers the IPI.
  *
- * Used by arch_cpu_wake_secondary in platform.c for INIT-SIPI sequence.
+ * Used by arch_impl_smp_wake_secondary in platform.c for INIT-SIPI sequence.
  * NOTE(BOOT-03): platform.c sends only a single STARTUP IPI; the SDM
  * recommends INIT + two SIPIs for reliability.
  */

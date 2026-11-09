@@ -213,6 +213,11 @@ _start_64_high:
     addq $131072, %rsp
     movq %rsp, %rbp
 
+    /* Early boot diagnostic: stack established, about to enter NX-CORE. */
+    movb $'H', %al
+    movw $0x3f8, %dx
+    outb %al, %dx
+
     movq mb_magic(%rip), %rdi
     movq mb_info_ptr(%rip), %rsi
     call nxcore_hal_boot_entry
@@ -234,7 +239,7 @@ secondary_cpu_entry:
     movw %ax, %fs
     movw %ax, %gs
     movw %ax, %ss
-    call arch_cpu_init
+    call hal_cpu_local_init
     call nxhal_core_secondary_entry
 
 .global arch_yield

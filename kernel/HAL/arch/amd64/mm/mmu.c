@@ -26,7 +26,7 @@
  *     established by start.S; the kernel switches to the dynamic PML4 in
  *     arch_vmm_init_hw; APs still boot on boot_pml4 and adopt kernel_pgd
  *     in arch_cpu_init.
- *   - Intermediate page-table pages are allocated from pmm_alloc_page() and
+ *   - Intermediate page-table pages are allocated from nxhal_memory_alloc_page() and
  *     are never freed; the page-table tree only grows.
  *
  * Known issues:
@@ -61,6 +61,8 @@
 #include <hal/diagnostic_protocol.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
+#include <hal/memory_protocol.h>
+#include <hal/provider.h>
 #include <kernel/pmm.h>
 #include <arch/amd64_internal.h>
 #include <arch/arch.h>
@@ -129,8 +131,8 @@ extern uint64_t boot_pml4[];
  * point since APs have not enabled paging yet.
  */
 void arch_vmm_init_hw(uint64_t kernel_pgd) {
-  /* Switch to the new kernel PML4 */
-  hal_vmm_set_pgd(kernel_pgd);
+  /* Publish and install the canonical kernel root in NX-HAL. */
+  hal_vmm_set_kernel_pgd(kernel_pgd);
   nxhal_diag_info("AMD64 VMM: Switched to kernel PGD at %p\n", (void *)kernel_pgd);
 
   /* Register the TLB shootdown IPI (MM-VMM-05/AMMU-08).  Before this point
@@ -140,13 +142,13 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
   /* Pre-populate the kernel half's top-level slots (PML4 256..259, i.e.
    * direct-map VAs for PA 0..2TB) with empty PDPTs.  Process PML4s share
    * the kernel half by COPYING entries 256..511 at creation time; a
-   * top-level entry created later (e.g. arch_vmm_map_device for a >512GB
+   * top-level entry created later (e.g. nxhal_provider_vmm_map_device for a >512GB
    * BAR) would be invisible to already-created processes.  Pre-allocating
    * the PDPTs makes those slots shared pointers from day one. */
   uint64_t *pml4_va = (uint64_t *)phys_to_virt(kernel_pgd);
   for (int i = 256; i < 260; i++) {
     if (!(pml4_va[i] & X86_PTE_P)) {
-      void *pdpt = pmm_alloc_page();
+      void *pdpt = nxhal_memory_alloc_page();
       if (!pdpt)
         break;
       memset(pdpt, 0, PAGE_SIZE);
@@ -154,26 +156,9 @@ void arch_vmm_init_hw(uint64_t kernel_pgd) {
     }
   }
 
-  /* Map all detected RAM regions (the low-2MB identity window for the
-   * SMP trampoline is part of arch_vmm_map_mmio, so EVERY kernel PGD —
-   * this one and vmm_dynamic_remap's — gets it). */
-  size_t count = 0;
-  struct mem_region *regions = arch_platform_get_mem_regions(&count);
-
-  for (size_t i = 0; i < count; i++) {
-    if (regions[i].type == MEM_REGION_USABLE) {
-      nxhal_diag_info("AMD64 VMM: Mapping RAM 0x%lx - 0x%lx\n", regions[i].base,
-              regions[i].base + regions[i].size);
-      /* W^X section split (AMMU-01 resolved): text RX, rodata RO+NX,
-       * the rest RW+NX.  kernel_pgd is a PA here; vmm_map_ram_wx takes
-       * the pointer form. */
-      vmm_map_ram_wx((uint64_t *)phys_to_virt(kernel_pgd), regions[i].base,
-                     regions[i].size);
-    }
-  }
-
-  /* Map MMIO regions (LAPIC, VirtIO, PCI) */
-  arch_vmm_map_mmio((uint64_t *)phys_to_virt(kernel_pgd));
+  /* RAM W^X and base MMIO are Core policy and were already mapped by
+   * vmm_init() before this hardware-root activation.  Repeating that work
+   * here would invert the Core->HAL boundary and duplicate page-table policy. */
 }
 
 /*
@@ -215,7 +200,7 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
    * called for the phase-1 PGD and for vmm_dynamic_remap's, never for
    * process PGDs):
    *  - [0, 1MB): SMP trampoline target (TRAMPOLINE_BASE 0x1000 must be
-   *    writable: arch_cpu_wake_secondary copies and patches it there) and
+   *    writable: arch_impl_smp_wake_secondary copies and patches it there) and
    *    legacy BIOS data areas.
    *  - [1MB, 2MB): the low-linked boot sections (kernel.ld) — platform.c
    *    reads the trampoline blob via its low link address.
@@ -230,7 +215,7 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
    * looks like an SMP bug rather than a mapping one. */
   /* REVERTED (was FIX(ARCH-AMD64-APPGD-01 / NX-TRAMPOLINE)): a prior change
    * made platform.c publish the LIVE kernel_pgd's physical address into the
-   * 32-bit trampoline_pml4 field patched by arch_cpu_wake_secondary(), so
+   * 32-bit trampoline_pml4 field patched by arch_impl_smp_wake_secondary(), so
    * that each AP would load kernel_pgd directly instead of boot_pml4 during
    * the 16→32→64-bit transition, and marked this low window PAGE_KERNEL_EXEC
    * (W+X) to keep it executable under kernel_pgd.
@@ -241,7 +226,7 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
    * architecturally a 32-BIT register outside of 64-bit mode; there is no
    * way to express a physical address >= 4GB in it at that point in the
    * transition, full stop. kernel_pgd's own top-level PML4 page is
-   * allocated dynamically via pmm_alloc_page() and can legally land
+   * allocated dynamically via nxhal_memory_alloc_page() and can legally land
    * anywhere in physical RAM, including above 4GB on any system with more
    * than ~4GB installed (e.g. this target's 5GB config, which has a usable
    * region at 0x100000000-0x180000000). If kernel_pgd's PML4 page is ever
@@ -271,7 +256,7 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
 }
 
 /*
- * arch_vmm_map_device - identity-map a device MMIO region [base, base+size)
+ * nxhal_provider_vmm_map_device - identity-map a device MMIO region [base, base+size)
  * into the active kernel page tables as uncached device memory (PCD|PWT).
  *
  * FIX(DRV-VIRTIO-01 / AMMU-07): called by the amd64 PCI scan for a device's
@@ -279,10 +264,9 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
  * (e.g. with '-m 4G'), which the fixed 0xFE000000-0xFFFFFFFF window misses.
  * Identity (VA==PA), consistent with the rest of the amd64 MMU model.
  */
-int arch_vmm_map_device(uint64_t base, uint64_t size);
-int arch_vmm_map_device(uint64_t base, uint64_t size) {
-  extern uint64_t *kernel_pgd;
-  if (!base || !size)
+int nxhal_provider_vmm_map_device(uint64_t base, uint64_t size) {
+  uint64_t kernel_root = hal_vmm_get_kernel_pgd();
+  if (!base || !size || kernel_root == 0U)
     return -1;
   uint64_t start = base & ~0xFFFUL;
   uint64_t end = (base + size + 0xFFFUL) & ~0xFFFUL;
@@ -291,7 +275,7 @@ int arch_vmm_map_device(uint64_t base, uint64_t size) {
      * driver must be told about, not a dead kernel.  Previously the loop
      * returned 0 whatever happened, so the caller mapped nothing and believed
      * it had. */
-    if (arch_vmm_map(virt_to_phys(kernel_pgd), (uint64_t)phys_to_virt(a), a,
+    if (arch_vmm_map(kernel_root, (uint64_t)phys_to_virt(a), a,
                      PAGE_DEVICE) != 0) {
       hal_tlb_flush_all();
       return -ENOMEM;
@@ -355,7 +339,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc,
 
       /* SPLIT BLOCK: allocate a new sub-table and fill it with fine-grained
        * entries */
-      void *new_table = pmm_alloc_page();
+      void *new_table = nxhal_memory_alloc_page();
       if (!new_table)
         return NULL;
       memset(new_table, 0, PAGE_SIZE);
@@ -393,7 +377,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc,
     return NULL;
 
   /* Entry is absent: allocate a new page table page */
-  void *page = pmm_alloc_page();
+  void *page = nxhal_memory_alloc_page();
   if (!page)
     return NULL;
   memset(page, 0, PAGE_SIZE);
@@ -586,7 +570,7 @@ uint64_t arch_vmm_create_process_pgd(void);
  * Returns the physical address of the new PML4, or 0 on allocation failure.
  */
 uint64_t arch_vmm_create_process_pgd(void) {
-  uint64_t *new_pml4 = (uint64_t *)pmm_alloc_page();
+  uint64_t *new_pml4 = (uint64_t *)nxhal_memory_alloc_page();
   if (!new_pml4)
     return 0;
 
@@ -605,9 +589,18 @@ uint64_t arch_vmm_create_process_pgd(void) {
    *                       visible to every process automatically.
    * Nothing else is cloned: no low identity, no per-process MMIO map.
    */
-  extern uint64_t *kernel_pgd;
-  for (int i = 256; i < 512; i++) {
-    new_pml4[i] = kernel_pgd[i];
+  {
+    uint64_t kernel_root = hal_vmm_get_kernel_pgd();
+    uint64_t *kernel_pml4;
+
+    if (kernel_root == 0U) {
+      nxhal_memory_free_page(new_pml4);
+      return 0;
+    }
+
+    kernel_pml4 = (uint64_t *)phys_to_virt(kernel_root);
+    for (int i = 256; i < 512; i++)
+      new_pml4[i] = kernel_pml4[i];
   }
 
   /* Contract: return the PGD's PHYSICAL address (vmm_create_pgd converts). */

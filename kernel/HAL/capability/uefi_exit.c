@@ -1,4 +1,5 @@
 #include "uefi_exit.h"
+#include <hal/boot_info.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -75,7 +76,7 @@ enum preboot_uefi_exit_error preboot_uefi_exit_boot_services(
     }
 
     attempt = 0U;
-    while (attempt < PREBOOT_UEFI_EXIT_MAX_ATTEMPTS) {
+    while (attempt < NXHAL_UEFI_EXIT_MAX_ATTEMPTS) {
         size_t map_size = capacity;
         size_t descriptor_size = 0U;
         uint32_t descriptor_version = 0U;
@@ -93,7 +94,7 @@ enum preboot_uefi_exit_error preboot_uefi_exit_boot_services(
             size_t new_capacity = 0U;
             void *new_buffer = (void *)0;
 
-            if (growths >= PREBOOT_UEFI_MAP_MAX_GROWTHS ||
+            if (growths >= NXHAL_UEFI_MAP_MAX_GROWTHS ||
                 map_size <= capacity ||
                 !minimum_capacity(map_size, descriptor_size, &required_capacity)) {
                 return PREBOOT_UEFI_EXIT_E_MAP_CAPACITY;
@@ -133,7 +134,7 @@ enum preboot_uefi_exit_error preboot_uefi_exit_boot_services(
         if (status != PREBOOT_UEFI_STATUS_INVALID_PARAMETER) {
             return PREBOOT_UEFI_EXIT_E_EXIT_FAILED;
         }
-        if (attempt >= PREBOOT_UEFI_EXIT_MAX_ATTEMPTS) {
+        if (attempt >= NXHAL_UEFI_EXIT_MAX_ATTEMPTS) {
             return PREBOOT_UEFI_EXIT_E_RETRIES_EXHAUSTED;
         }
     }

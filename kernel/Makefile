@@ -20,7 +20,7 @@ include config/toolchain-versions.env
 ifeq ($(findstring amd64,$(ARCH)),amd64)
   override ARCH := amd64
   CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
-  ARCH_CFLAGS := -DARCH_AMD64 -mno-red-zone -mcmodel=large
+  ARCH_CFLAGS := -DARCH_AMD64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=large
   HAL_ARCH_DIR := HAL/arch/amd64
   QEMU := qemu-system-x86_64
 else ifeq ($(findstring aarch64,$(ARCH)),aarch64)
@@ -93,10 +93,13 @@ clean:
 
 UEFI_CODE ?= $(firstword $(wildcard /usr/local/share/qemu/edk2-aarch64-code.fd /usr/local/Cellar/qemu/*/share/qemu/edk2-aarch64-code.fd /opt/homebrew/share/qemu/edk2-aarch64-code.fd /usr/share/AAVMF/AAVMF_CODE.fd /usr/share/qemu-efi-aarch64/QEMU_EFI_CODE.fd))
 UEFI_VARS_TEMPLATE ?= $(firstword $(wildcard /usr/local/share/qemu/edk2-arm-vars.fd /usr/local/Cellar/qemu/*/share/qemu/edk2-arm-vars.fd /opt/homebrew/share/qemu/edk2-arm-vars.fd /usr/share/AAVMF/AAVMF_VARS.fd /usr/share/qemu-efi-aarch64/QEMU_VARS.fd))
-.PHONY: boot-iso run-direct
+.PHONY: boot-iso run-direct grub-arm64-tools
+grub-arm64-tools:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-grub-arm64.sh
+
 ifeq ($(ARCH),amd64)
 boot-iso: kernel
-	@tools/build-amd64-grub-iso.sh
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-amd64-grub-iso.sh
 run: boot-iso
 	$(QEMU) -machine q35 -cpu max -m 5G -smp 4 -serial stdio \
 	  -display none -no-reboot -cdrom $(BUILD_DIR)/grub-bios.iso
@@ -110,7 +113,7 @@ $(BUILD_DIR)/virt.dtb:
 	  -device virtio-gpu-device -device virtio-keyboard-device \
 	  -device virtio-mouse-device -machine dumpdtb=$@
 boot-iso: kernel $(BUILD_DIR)/virt.dtb
-	@tools/build-aarch64-uefi-image.sh
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-aarch64-uefi-image.sh
 run: boot-iso
 	@test -f "$(UEFI_CODE)" || { echo "Missing AArch64 EDK2 code image; set UEFI_CODE" >&2; exit 1; }
 	@test -f "$(UEFI_VARS_TEMPLATE)" || { echo "Missing AArch64 EDK2 vars template; set UEFI_VARS_TEMPLATE" >&2; exit 1; }

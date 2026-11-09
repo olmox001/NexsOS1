@@ -1,4 +1,6 @@
 #include <hal/core.h>
+#include <hal/config.h>
+#include <hal/provider.h>
 #include <arch/arch.h>
 
 /*
@@ -7,22 +9,30 @@
  */
 
 uint32_t hal_cpu_id(void) { return arch_impl_get_cpu_id(); }
+int32_t hal_cpu_id_fault_safe(void) { return nxhal_provider_cpu_id_fault_safe(); }
+void hal_cpu_local_init(void) { nxhal_provider_cpu_local_init(); }
 void hal_cpu_nop(void) { arch_impl_nop(); }
 void hal_cpu_idle(void) { arch_impl_idle(); }
 void hal_cpu_yield(void) { arch_impl_yield(); }
 void hal_cpu_notify(void) { arch_impl_cpu_notify(); }
+void hal_bus_scan(void) { nxhal_provider_bus_scan(); }
+void hal_irq_controller_init(void) { nxhal_provider_irq_init(); }
+void hal_timer_global_init(void) { nxhal_provider_timer_global_init(); }
+void hal_timer_percpu_init(void) { nxhal_provider_timer_percpu_init(); }
+int hal_vmm_map_device(uint64_t base, uint64_t size) {
+  return nxhal_provider_vmm_map_device(base, size);
+}
+int hal_smp_wake_secondary(uint64_t cpu_id, void *stack_top) {
+  return arch_impl_smp_wake_secondary(cpu_id, stack_top);
+}
 
 void hal_cpu_halt(void) {
-  arch_impl_irq_disable_all();
-  for (;;)
-    arch_impl_idle();
+  arch_impl_halt();
 }
 
 void hal_reboot(void) {
   arch_impl_reboot();
-  arch_impl_irq_disable_all();
-  for (;;)
-    arch_impl_idle();
+  arch_impl_halt();
 }
 
 void hal_irq_enable(void) { arch_impl_irq_enable(); }
@@ -57,10 +67,95 @@ int hal_phys_range_valid(uint64_t base, uint64_t end) {
   return 1;
 }
 
+static int hal_mmio_pointer(uint64_t address, size_t width,
+                            volatile void **out_pointer) {
+  uint64_t virtual_address;
+
+  if (out_pointer == NULL || width == 0U ||
+      address > UINT64_MAX - (uint64_t)width ||
+      address > UINT64_MAX - (uint64_t)HAL_DIRECT_MAP_BASE ||
+      (address % (uint64_t)width) != 0U)
+    return -1;
+  virtual_address = address + (uint64_t)HAL_DIRECT_MAP_BASE;
+  *out_pointer = (volatile void *)(uintptr_t)virtual_address;
+  return 0;
+}
+
+int hal_mmio_read8(uint64_t address, uint8_t *out_value) {
+  volatile void *pointer;
+
+  if (out_value == NULL || hal_mmio_pointer(address, 1U, &pointer) != 0)
+    return -1;
+  *out_value = *(volatile uint8_t *)pointer;
+  hal_rmb();
+  return 0;
+}
+
+int hal_mmio_read16(uint64_t address, uint16_t *out_value) {
+  volatile void *pointer;
+
+  if (out_value == NULL || hal_mmio_pointer(address, 2U, &pointer) != 0)
+    return -1;
+  *out_value = *(volatile uint16_t *)pointer;
+  hal_rmb();
+  return 0;
+}
+
+int hal_mmio_read32(uint64_t address, uint32_t *out_value) {
+  volatile void *pointer;
+
+  if (out_value == NULL || hal_mmio_pointer(address, 4U, &pointer) != 0)
+    return -1;
+  *out_value = *(volatile uint32_t *)pointer;
+  hal_rmb();
+  return 0;
+}
+
+int hal_mmio_write8(uint64_t address, uint8_t value) {
+  volatile void *pointer;
+
+  if (hal_mmio_pointer(address, 1U, &pointer) != 0)
+    return -1;
+  hal_wmb();
+  *(volatile uint8_t *)pointer = value;
+  hal_wmb();
+  return 0;
+}
+
+int hal_mmio_write16(uint64_t address, uint16_t value) {
+  volatile void *pointer;
+
+  if (hal_mmio_pointer(address, 2U, &pointer) != 0)
+    return -1;
+  hal_wmb();
+  *(volatile uint16_t *)pointer = value;
+  hal_wmb();
+  return 0;
+}
+
+int hal_mmio_write32(uint64_t address, uint32_t value) {
+  volatile void *pointer;
+
+  if (hal_mmio_pointer(address, 4U, &pointer) != 0)
+    return -1;
+  hal_wmb();
+  *(volatile uint32_t *)pointer = value;
+  hal_wmb();
+  return 0;
+}
+
+static uint64_t nxhal_kernel_root_phys;
+
 void hal_vmm_set_pgd(uint64_t pgd) { arch_impl_set_pgd(pgd); }
 uint64_t hal_vmm_get_pgd(void) { return arch_impl_get_pgd(); }
-void hal_vmm_set_kernel_pgd(uint64_t pgd) { arch_impl_set_kernel_pgd(pgd); }
-uint64_t hal_vmm_get_kernel_pgd(void) { return arch_impl_get_kernel_pgd(); }
+void hal_vmm_set_kernel_pgd(uint64_t pgd) {
+  arch_impl_set_kernel_pgd(pgd);
+  __atomic_store_n(&nxhal_kernel_root_phys, pgd, __ATOMIC_RELEASE);
+}
+uint64_t hal_vmm_get_kernel_pgd(void) {
+  uint64_t root = __atomic_load_n(&nxhal_kernel_root_phys, __ATOMIC_ACQUIRE);
+  return root != 0U ? root : arch_impl_get_kernel_pgd();
+}
 
 void hal_tlb_flush_local(void) { arch_impl_tlb_flush_local(); }
 void hal_tlb_flush_all(void) { arch_impl_tlb_flush_all(); }

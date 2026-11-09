@@ -1,3 +1,4 @@
+#include <hal/core.h>
 /*
  * kernel/drivers/usb/xhci.c
  * xHCI (USB 3.x) host controller driver — polled, boot-input oriented.
@@ -11,20 +12,18 @@
  * usb_hid_poll()). Memory for rings/contexts is page-allocated (pmm_alloc_page
  * returns a kernel VA; the controller is programmed with virt_to_phys()).
  *
- * NOTE(ASTRA-VIOLATION): calls arch_vmm_map_device() directly (amd64). The
+ * NOTE(ASTRA-VIOLATION): calls hal_vmm_map_device() directly (amd64). The
  * aarch64 ECAM phase adds the per-arch implementation behind the platform
  * contract; tracked with the PCI-ECAM work.
  */
 
 #include <drivers/usb/usb.h>
-#include <drivers/pci.h>
 #include <kernel/driver.h>
 #include <kernel/hal.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
 
-extern int arch_vmm_map_device(uint64_t base, uint64_t size);
 
 /* --- Capability registers (offset from MMIO base) --- */
 #define XHCI_CAPLENGTH   0x00 /* u8 */
@@ -559,7 +558,7 @@ static int xhci_probe(struct hal_device *dev) {
     memset(x, 0, sizeof(*x));
 
     uint64_t base = dev->base;
-    arch_vmm_map_device(base, 0x20000);
+    hal_vmm_map_device(base, 0x20000);
     x->base = (volatile uint8_t *)phys_to_virt(base);
 
     uint8_t caplen = *(volatile uint8_t *)(x->base + XHCI_CAPLENGTH);

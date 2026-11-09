@@ -29,11 +29,16 @@ from nxqemu import build_qemu_command, clean_qemu_environment
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-STATE_DIR = PROJECT_ROOT / "build" / "runtime" / "nxadb"
-QMP_DIR = PROJECT_ROOT / "build" / "q"
 DEFAULT_ARCH = os.environ.get("ARCH", "aarch64")
 QMP_INPUT_DISPLAY = "nxgpu0"
 SESSION_LOCK_TIMEOUT = 60.0
+COUNTER_FRAME_SLEEP_MS = 100
+COUNTER_HEARTBEAT_FRAMES = 10
+COUNTER_HEARTBEAT_BUDGET_MULTIPLIER = 3
+COUNTER_HEARTBEAT_TIMEOUT = (
+    COUNTER_FRAME_SLEEP_MS * COUNTER_HEARTBEAT_FRAMES *
+    COUNTER_HEARTBEAT_BUDGET_MULTIPLIER / 1000.0
+)
 MUTATING_COMMANDS = {"start", "stop", "restart", "shell", "ls", "cat",
                      "push", "pull", "test", "screenshot", "mouse"}
 
@@ -267,6 +272,8 @@ def qmp_special(sock_path: Path, name: str) -> None:
 class Session:
     arch: str
     root: Path
+    build_root: Path
+    boot_mode: str
     tmp: Path
     ser_log: Path
     qmp_sock: Path
@@ -278,24 +285,40 @@ class Session:
     display: str = "none"
 
     @classmethod
-    def create(cls, arch: str, root: Path) -> "Session":
+    def create(
+        cls, arch: str, root: Path, boot_mode: str = "iso",
+        build_root: Path = Path("build"),
+    ) -> "Session":
         root = root.resolve()
-        state_dir = root / "build" / "runtime" / "nxadb"
+        boot_mode = boot_mode.lower()
+        if boot_mode not in ("iso", "direct"):
+            raise ValueError(f"unsupported boot mode: {boot_mode}")
+        resolved_build = (
+            build_root if build_root.is_absolute() else root / build_root
+        ).resolve()
+        try:
+            relative_build = resolved_build.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("--build-root must stay inside the project") from exc
+        if relative_build == Path("."):
+            raise ValueError("--build-root cannot be the project root")
+
+        state_dir = resolved_build / "runtime" / "nxadb" / arch / boot_mode
         state_dir.mkdir(parents=True, exist_ok=True)
-        tmp = state_dir / arch
-        tmp.mkdir(parents=True, exist_ok=True)
-        qmp_dir = root / "build" / "q"
+        qmp_dir = resolved_build / "q"
         qmp_dir.mkdir(parents=True, exist_ok=True)
         return cls(
             arch=arch,
             root=root,
-            tmp=tmp,
-            ser_log=tmp / "serial.log",
-            qmp_sock=qmp_dir / f"{arch}.sock",
-            qemu_err=tmp / "qemu.stderr.log",
-            qemu_out=tmp / "qemu.stdout.log",
-            pid_file=tmp / "qemu.pid.json",
-            vars_file=tmp / "uefi-vars.fd",
+            build_root=resolved_build,
+            boot_mode=boot_mode,
+            tmp=state_dir,
+            ser_log=state_dir / "serial.log",
+            qmp_sock=qmp_dir / f"{arch}-{boot_mode}.sock",
+            qemu_err=state_dir / "qemu.stderr.log",
+            qemu_out=state_dir / "qemu.stdout.log",
+            pid_file=state_dir / "qemu.pid.json",
+            vars_file=state_dir / "uefi-vars.fd",
         )
 
     def pid(self) -> Optional[int]:
@@ -321,7 +344,9 @@ class Session:
             capture_output=True, text=True,
         )
         command = result.stdout.strip()
-        return bool(command and str(self.qmp_sock) in command and "qemu-system-" in command)
+        return bool(
+            command and str(self.qmp_sock) in command and "qemu-system-" in command
+        )
 
     def is_running(self) -> bool:
         if self.qmp_sock.exists():
@@ -333,17 +358,45 @@ class Session:
                         return True
                 finally:
                     qmp_close(sock)
-            except (OSError, RuntimeError, ValueError, ConnectionError, json.JSONDecodeError):
+            except (
+                OSError, RuntimeError, ValueError, ConnectionError,
+                json.JSONDecodeError,
+            ):
                 pass
         return self.process_matches(self.pid())
 
+    def build_dir(self) -> Path:
+        return self.build_root / self.arch
+
     def boot_iso(self) -> Path:
         if self.arch == "amd64":
-            return self.root / "build" / "amd64" / "grub-bios.iso"
-        return self.root / "build" / "aarch64" / "grub-efi" / "nexsos-aarch64-uefi.iso"
+            return self.build_dir() / "grub-bios.iso"
+        return self.build_dir() / "grub-efi" / "nexsos-aarch64-uefi.iso"
+
+    def kernel_image(self) -> Path:
+        name = "kernel.elf" if self.arch == "amd64" else "kernel.bin"
+        return self.build_dir() / name
+
+    def dtb_image(self) -> Optional[Path]:
+        if self.arch != "aarch64":
+            return None
+        return self.build_dir() / "virt.dtb"
 
     def disk_image(self) -> Path:
-        return self.root / "build" / self.arch / "disk.img"
+        return self.build_dir() / "disk.img"
+
+    def make_build_root(self) -> str:
+        return str(self.build_root.relative_to(self.root))
+
+    def required_artifacts(self) -> List[Path]:
+        artifacts = [self.disk_image(), self.kernel_image()]
+        if self.boot_mode == "iso":
+            artifacts.append(self.boot_iso())
+        elif self.arch == "aarch64":
+            dtb = self.dtb_image()
+            if dtb is not None:
+                artifacts.append(dtb)
+        return artifacts
 
     def log_text(self) -> str:
         if self.ser_log.exists():
@@ -363,36 +416,50 @@ class Session:
 def build_qemu_cmdline(session: Session) -> List[str]:
     return build_qemu_command(
         session.arch,
-        session.boot_iso(),
+        session.boot_iso() if session.boot_mode == "iso" else None,
         session.disk_image(),
         serial=f"file:{session.ser_log}",
         display=session.display,
         qmp_socket=session.qmp_sock,
         uefi_vars_file=session.vars_file,
+        boot_mode=session.boot_mode,
+        kernel=session.kernel_image(),
+        dtb=session.dtb_image(),
     )
 
 
 def ensure_artifacts(session: Session) -> None:
-    if session.boot_iso().is_file() and session.disk_image().is_file():
-        return
-    print(f"[nxadb] boot artifacts missing; building ARCH={session.arch} boot-iso")
-    run_dir = session.root / "build" / "runs" / session.arch
+    required = session.required_artifacts()
+    target = "boot-iso" if session.boot_mode == "iso" else "direct-artifacts"
+    print(
+        f"[nxadb] verifying build ARCH={session.arch} "
+        f"mode={session.boot_mode} target={target}"
+    )
+    run_dir = session.build_root / "runs" / session.arch / session.boot_mode
     run_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    build_log = run_dir / f"nxadb-build-{stamp}-{time.time_ns() % 1000000000:09d}.log"
+    build_log = (
+        run_dir / f"nxadb-build-{stamp}-{time.time_ns() % 1000000000:09d}.log"
+    )
+    command = [
+        "make", f"BUILD_ROOT={session.make_build_root()}",
+        f"ARCH={session.arch}", target,
+    ]
     with build_log.open("w") as output:
         result = subprocess.run(
-            ["make", f"ARCH={session.arch}", "boot-iso"],
-            cwd=session.root, stdout=output, stderr=subprocess.STDOUT,
+            command, cwd=session.root, stdout=output, stderr=subprocess.STDOUT,
         )
     print(f"[nxadb] build transcript: {build_log}")
     if result.returncode != 0:
         raise RuntimeError(
-            f"make ARCH={session.arch} boot-iso failed ({result.returncode}); "
+            f"{' '.join(command)} failed ({result.returncode}); "
             f"complete build transcript: {build_log}"
         )
-    if not session.boot_iso().is_file() or not session.disk_image().is_file():
-        raise RuntimeError("boot-iso target completed without producing ISO and disk image")
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            f"{target} completed without required artifacts: {', '.join(missing)}"
+        )
 
 
 def start_qemu(session: Session, wait: bool = True) -> None:
@@ -400,13 +467,28 @@ def start_qemu(session: Session, wait: bool = True) -> None:
         print(f"[nxadb] already running (pid {session.pid() or 'QMP-owned'})")
         return
 
+    sibling_mode = "direct" if session.boot_mode == "iso" else "iso"
+    sibling = Session.create(
+        session.arch, session.root, sibling_mode,
+        session.build_root.relative_to(session.root),
+    )
+    if sibling.is_running():
+        print(
+            f"[nxadb] stopping sibling {session.arch}/{sibling_mode} guest "
+            "that owns the shared rootfs image"
+        )
+        stop_qemu(sibling)
+
     ensure_artifacts(session)
     session.tmp.mkdir(parents=True, exist_ok=True)
     session.qmp_sock.parent.mkdir(parents=True, exist_ok=True)
     # Preserve every previous capture before QEMU opens its file-backed UART.
     # A failed boot must never erase the only copy of an earlier firmware log.
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    archive = session.root / "build" / "runs" / session.arch / f"boot-{stamp}-{time.time_ns() % 1000000000:09d}"
+    archive = (
+        session.build_root / "runs" / session.arch / session.boot_mode /
+        f"boot-{stamp}-{time.time_ns() % 1000000000:09d}"
+    )
     archive.mkdir(parents=True, exist_ok=False)
     for source in (session.ser_log, session.qemu_err, session.qemu_out):
         if source.exists():
@@ -425,6 +507,8 @@ def start_qemu(session: Session, wait: bool = True) -> None:
     run_manifest = {
         "pid": proc.pid,
         "arch": session.arch,
+        "boot_mode": session.boot_mode,
+        "build_root": str(session.build_root.relative_to(session.root)),
         "qmp_socket": str(session.qmp_sock),
         "qemu": session.qemu_bin,
         "display": session.display,
@@ -440,7 +524,10 @@ def start_qemu(session: Session, wait: bool = True) -> None:
     session.pid_file.write_text(json.dumps(run_manifest, indent=2) + "\n")
     manifest_path = archive.parent / f"run-{stamp}-{time.time_ns() % 1000000000:09d}.json"
     manifest_path.write_text(json.dumps(run_manifest, indent=2) + "\n")
-    print(f"[nxadb] QEMU started via GRUB ({session.arch}, pid {proc.pid})")
+    print(
+        f"[nxadb] QEMU started ({session.arch}, mode={session.boot_mode}, "
+        f"pid {proc.pid})"
+    )
     print(f"[nxadb] complete UART: {session.ser_log}")
     print(f"[nxadb] QEMU stdout/stderr: {session.qemu_out} | {session.qemu_err}")
     print(f"[nxadb] previous run archived: {archive}")
@@ -841,7 +928,9 @@ def cmd_screenshot(session: Session, requested_path: Optional[str] = None) -> in
     if not session.is_running():
         raise RuntimeError(f"{session.arch} guest is not running")
 
-    run_dir = (session.root / "build" / "runs" / session.arch).resolve()
+    run_dir = (
+        session.build_root / "runs" / session.arch / session.boot_mode
+    ).resolve()
     if requested_path:
         output = Path(requested_path).expanduser()
         if not output.is_absolute():
@@ -929,7 +1018,7 @@ def cmd_bootlog(session: Session, history: bool = False) -> None:
                 print()
         else:
             print("[not captured]")
-    run_dir = session.root / "build" / "runs" / session.arch
+    run_dir = session.build_root / "runs" / session.arch / session.boot_mode
     manifests = sorted(run_dir.glob("run-*.json"))
     if manifests:
         selected = manifests if history else manifests[-1:]
@@ -945,6 +1034,8 @@ def cmd_bootlog(session: Session, history: bool = False) -> None:
 def cmd_status(session: Session) -> None:
     running = session.is_running()
     print(f"arch     : {session.arch}")
+    print(f"mode     : {session.boot_mode}")
+    print(f"build    : {session.build_root.relative_to(session.root)}")
     print(f"running  : {running}")
     print(f"UART     : {session.ser_log}")
     print(f"QEMU out : {session.qemu_out}")
@@ -955,6 +1046,56 @@ def cmd_status(session: Session) -> None:
         print(f"shell    : {'yes' if SHELL_ALIVE_RE.search(strip_ansi(text)) else 'no'}")
         print(f"faults   : {len(FAULT_RE.findall(text))}")
         print(f"log size : {session.log_size()} characters")
+
+
+def _shell_health_probe(session: Session) -> Tuple[bool, str]:
+    code, output = run_shell_c(session, "pwd", timeout=20)
+    clean_lines = [
+        strip_ansi(line).strip() for line in output.splitlines()
+        if strip_ansi(line).strip()
+    ]
+    healthy = code == 0 and any(line == "/home" for line in clean_lines)
+    return healthy, output
+
+
+def _run_timerdiag(session: Session) -> Tuple[bool, str]:
+    code, output = run_shell_c(session, "/sys/bin/nxtimerdiag --probe", timeout=45)
+    clean = strip_ansi(output)
+    done = re.search(
+        r"\[TIMERDIAG\]\s+DONE\b[^\r\n]*failures=(\d+)",
+        clean, re.IGNORECASE,
+    )
+    return code == 0 and done is not None and int(done.group(1)) == 0, output
+
+
+def _counter_heartbeat_count(text: str) -> int:
+    clean = strip_ansi(text)
+    current = re.findall(
+        r"(?m)^\s*\[COUNTER\]\s+frame=0x[0-9a-fA-F]+\s+"
+        r"mono_ms=0x[0-9a-fA-F]+\s*$",
+        clean,
+    )
+    legacy = re.findall(r"(?m)^\s*Count:\s*0x[0-9a-fA-F]+\s*$", clean)
+    return len(current) + len(legacy)
+
+
+def _run_counter_heartbeat(session: Session) -> Tuple[bool, float]:
+    before = _counter_heartbeat_count(session.log_text())
+    code, _ = run_shell_c(session, "/bin/counter", timeout=20)
+    initial = _counter_heartbeat_count(session.log_text())
+    if code != 0 or initial <= before:
+        return False, 0.0
+
+    started = time.monotonic()
+    deadline = started + COUNTER_HEARTBEAT_TIMEOUT
+    while time.monotonic() < deadline:
+        live = session.log_text()
+        if FAULT_RE.search(live) or not session.is_running():
+            return False, time.monotonic() - started
+        if _counter_heartbeat_count(live) > initial:
+            return True, time.monotonic() - started
+        time.sleep(0.5)
+    return False, time.monotonic() - started
 
 
 def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
@@ -970,12 +1111,54 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
     )
 
     for run_index in range(1, runs + 1):
-        print(f"\n=== run {run_index}/{runs} ({session.arch}) ===")
+        print(
+            f"\n=== run {run_index}/{runs} "
+            f"({session.arch}/{session.boot_mode}) ==="
+        )
         stop_qemu(session)
         start_qemu(session)
 
         verdict = "ok"
         results: List[str] = []
+        healthy, _ = _shell_health_probe(session)
+        if healthy:
+            results.append("SHELL-INTERACTION=PASS")
+        else:
+            results.append("SHELL-INTERACTION=FAIL")
+            verdict = "FAULT"
+
+        if verdict != "FAULT":
+            timer_ok, _ = _run_timerdiag(session)
+            if timer_ok:
+                results.append("TIMERDIAG=PASS")
+            else:
+                results.append("TIMERDIAG=FAIL")
+                verdict = "FAULT"
+            post_timer_ok, _ = _shell_health_probe(session)
+            if post_timer_ok:
+                results.append("SHELL-AFTER-TIMER=PASS")
+            else:
+                results.append("SHELL-AFTER-TIMER=FAIL")
+                verdict = "FAULT"
+
+        if verdict != "FAULT":
+            heartbeat_ok, heartbeat_seconds = _run_counter_heartbeat(session)
+            if heartbeat_ok:
+                results.append(
+                    f"COUNTER-HEARTBEAT=PASS({heartbeat_seconds:.1f}s)"
+                )
+            else:
+                results.append(
+                    f"COUNTER-HEARTBEAT=FAIL({heartbeat_seconds:.1f}s)"
+                )
+                verdict = "FAULT"
+            post_heartbeat_ok, _ = _shell_health_probe(session)
+            if post_heartbeat_ok:
+                results.append("SHELL-AFTER-HEARTBEAT=PASS")
+            else:
+                results.append("SHELL-AFTER-HEARTBEAT=FAIL")
+                verdict = "FAULT"
+
         if soak_seconds:
             # Capture a baseline screen, exercise the userland window listing,
             # then supervise the live guest for the requested hardening window.
@@ -1125,7 +1308,10 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
         if faults:
             verdict = "FAULT"
 
-        print(f"run{run_index}/{session.arch}: {verdict} {' '.join(results)} faults={faults}")
+        print(
+            f"run{run_index}/{session.arch}/{session.boot_mode}: {verdict} "
+            f"{' '.join(results)} faults={faults}"
+        )
         if verdict != "ok":
             rc = 1
             print(f"  serial log → {session.ser_log}")
@@ -1159,6 +1345,14 @@ Examples:
     )
     parser.add_argument(
         "-a", "--arch", default=DEFAULT_ARCH, choices=["amd64", "aarch64"]
+    )
+    parser.add_argument(
+        "--boot-mode", choices=["iso", "direct"], default="iso",
+        help="iso=GRUB image path; direct=QEMU -kernel with the same rootfs",
+    )
+    parser.add_argument(
+        "--build-root", type=Path, default=Path("build"),
+        help="project-relative isolated build namespace (default: build)",
     )
 
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1199,7 +1393,7 @@ Examples:
 
     p_screen = sub.add_parser("screenshot", help="Capture and verify the QEMU display via QMP")
     p_screen.add_argument("path", nargs="?", default=None,
-                          help="optional PNG path under build/runs/<arch>/")
+                          help="optional PNG path under <build-root>/runs/<arch>/<mode>/")
 
     p_mouse = sub.add_parser("mouse", help="Move guest pointer; optionally click")
     p_mouse.add_argument("dx", type=int, help="relative horizontal movement")
@@ -1215,6 +1409,10 @@ Examples:
     p_test.add_argument("-n", "--runs", type=int, default=1)
     p_test.add_argument("--soak-seconds", type=int, default=0,
                         help="supervise the guest for N seconds and capture screens")
+    p_test.add_argument(
+        "--timerdiag", action="store_true",
+        help="compatibility option; timer diagnostics are now always in the full gate",
+    )
     p_test.add_argument("--display", choices=["none", "default"], default="none",
                         help="QEMU display mode for screen/input verification")
 
@@ -1223,7 +1421,9 @@ Examples:
     script = Path(__file__).resolve()
     root = script.parent.parent if script.parent.name == "tools" else script.parent
     os.chdir(root)
-    session = Session.create(args.arch, root)
+    session = Session.create(
+        args.arch, root, boot_mode=args.boot_mode, build_root=args.build_root
+    )
     lock_file = None
     lock_acquired = False
 
@@ -1284,8 +1484,10 @@ Examples:
             if args.soak_seconds < 0 or args.soak_seconds > 3600:
                 raise ValueError("--soak-seconds must be between 0 and 3600")
             session.display = args.display
-            return cmd_test(session, args.cmds, args.expect, args.runs,
-                            args.soak_seconds)
+            return cmd_test(
+                session, args.cmds, args.expect, args.runs,
+                args.soak_seconds,
+            )
     except KeyboardInterrupt:
         print("\n[nxadb] interrupted")
         return 130

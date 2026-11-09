@@ -40,7 +40,7 @@
  *     first instruction, before any state-mutating write, so a second
  *     SIPI landing mid-flight spins instead of re-entering the 16->32->64
  *     bit transition.  With the trampoline itself safe against re-entry,
- *     arch_cpu_wake_secondary() now sends the SDM's real INIT + TWO
+ *     arch_impl_smp_wake_secondary() now sends the SDM's real INIT + TWO
  *     STARTUP IPIs sequence — see that function's header comment and
  *     trampoline.S's file-header comment for the full analysis.
  *   BOOT-04 (W1 DOC/BAD-IMPL) 'secondary_ttbr0' and
@@ -57,8 +57,10 @@
  */
 #include <hal/diagnostic_protocol.h>
 #include <hal/core_protocol.h>
+#include <hal/smp_protocol.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
+#include <hal/memory_protocol.h>
 #include <arch/amd64/apic.h>
 #include <arch/amd64_internal.h>
 #include <arch/arch.h>
@@ -143,12 +145,6 @@ struct mem_region *arch_platform_get_mem_regions(size_t *count) {
     *count = arch_region_count;
   return arch_mem_regions;
 }
-
-/* jiffies: wall-clock tick counter incremented by the timer ISR
- * (nxhal_core_timer_tick). NOTE(ARCH-03): Not a real microsecond source;
- * timer_get_us() multiplies this by 1000 to produce a coarse
- * millisecond-granularity pseudo-timestamp. */
-volatile uint64_t jiffies = 0;
 
 extern uint64_t mb_magic;
 
@@ -296,21 +292,6 @@ void arch_platform_early_init(void) {
 }
 
 /*
- * timer_get_us - return a pseudo-microsecond timestamp.
- *
- * NOTE(ARCH-03): This is a stub.  'jiffies' is a tick counter incremented by
- * nxhal_core_timer_tick at HZ rate.  Multiplying by 1000 converts ticks to rough
- * millisecond values, not microseconds.  A real implementation would read the
- * TSC (with a calibrated ns/tick ratio) or the HPET.
- *
- * Returns: jiffies * 1000 (milliseconds, labelled as "microseconds").
- */
-uint64_t timer_get_us(void) {
-  /* NOTE(ARCH-03): jiffies*1000 is millisecond granularity, not microseconds */
-  return jiffies * 1000;
-}
-
-/*
  * udelay - spin for approximately 'us' microseconds.
  *
  * If the LAPIC timer has been calibrated (ticks_per_ms != 0), reads LAPIC_TCC
@@ -377,14 +358,14 @@ uint64_t secondary_ttbr0 = 0;
 /*
  * REVERTED (was FIX(ARCH-AMD64-APPGD-01)): a prior change made this function
  * also publish 'pgd' into kernel_pgd_phys, so the trampoline's 32-bit CR3
- * patch (arch_cpu_wake_secondary, below) would load the LIVE kernel_pgd
+ * patch (arch_impl_smp_wake_secondary, below) would load the LIVE kernel_pgd
  * instead of boot_pml4.
  *
  * That is unsafe: at the point the trampoline loads CR3 (trampoline_pm,
  * still in 32-bit protected mode, before the long-mode jump), CR3 is a
  * 32-BIT register — `mov eax, cr3` cannot express a physical address >=
  * 4GB. kernel_pgd's own PML4 page is allocated dynamically via
- * pmm_alloc_page() and can land anywhere in physical RAM; on any system
+ * nxhal_memory_alloc_page() and can land anywhere in physical RAM; on any system
  * with more than ~4GB installed (this target ships with 5GB, with a usable
  * region at 0x100000000-0x180000000) there is no guarantee it stays below
  * 4GB. If it doesn't, every AP's CR3 silently loses its high bits — not a
@@ -414,7 +395,7 @@ void arch_vmm_set_secondary_pgd(uint64_t pgd) { secondary_ttbr0 = pgd; }
  * The stack grows downward, so the top of CPU N's slice is at:
  *   &__kernel_stack[(N+1) * 131072]
  *
- * This address is passed to trampoline_stack in arch_cpu_wake_secondary and
+ * This address is passed to trampoline_stack in arch_impl_smp_wake_secondary and
  * will become the AP's RSP when it starts executing C code after the
  * trampoline.
  *
@@ -437,7 +418,7 @@ extern uint64_t kernel_pgd_phys;
 extern void secondary_cpu_entry(void);
 
 /*
- * arch_cpu_wake_secondary - boot an AP from real mode via INIT-SIPI-SIPI.
+ * arch_impl_smp_wake_secondary - boot an AP from real mode via INIT-SIPI-SIPI.
  *
  * The AP starts executing in real mode at the 4KB-aligned physical address
  * given by the STARTUP IPI vector field (vector << 12 = 0x01 << 12 = 0x1000).
@@ -498,8 +479,7 @@ extern void secondary_cpu_entry(void);
  *
  * Returns 0 on success, -1 if cpu_id is out of range.
  */
-int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
-  (void)entry; /* hard-coded to secondary_cpu_entry in trampoline patch below */
+int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack) {
 
   if (cpu_id >= MAX_CPUS)
     return -1;
@@ -561,7 +541,7 @@ int arch_cpu_wake_secondary(uint64_t cpu_id, void (*entry)(void), void *stack) {
   lapic_send_ipi(cpu_id, ICR_STARTUP | 0x01 | ICR_PHYSICAL);
 
   /* 8. Settle so the AP can claim trampoline_busy before the next
-   * arch_cpu_wake_secondary() memcpy overwrites the shared page. */
+   * arch_impl_smp_wake_secondary() memcpy overwrites the shared page. */
   udelay(200);
 
   nxhal_diag_info("AMD64: Sent INIT-SIPI-SIPI to CPU %lu\n", cpu_id);
@@ -620,16 +600,16 @@ extern void secondary_cpu_entry(void);
  *
  * For each AP: compute its kernel stack slice (arch_get_kernel_stack returns
  * the bottom; stack_top = bottom + 131072 for 128 KB per CPU), then hand off
- * to smp_bringup_secondary() (kernel/core/smp.c) — the shared arch-neutral
+ * to nxhal_smp_bringup_secondary() — the shared arch-neutral
  * primitive owning the idle-task-first invariant (#169/#170), the INIT-SIPI
- * wake via arch_cpu_wake_secondary, and the acquire/release ack handshake
+ * wake via arch_impl_smp_wake_secondary, and the acquire/release ack handshake
  * with a ~10 s wall-time timeout.  A timeout just skips the CPU (absent AP
  * or very slow hypervisor — its idle task already exists, so a late-arriving
  * AP still schedules safely).
  *
  * NOTE(ARCH-01): cpu_count from amd64_count_cpus may over-count; APs that
  * don't exist simply time out and emit a warning.
- * NOTE(BOOT-03): arch_cpu_wake_secondary sends INIT assert +
+ * NOTE(BOOT-03): arch_impl_smp_wake_secondary sends INIT assert +
  * two SIPIs; trampoline_busy guards re-entry (see trampoline.S).
  */
 void arch_smp_init(void) {
@@ -667,7 +647,7 @@ void arch_smp_init(void) {
      * kernel/core/smp.c — the ordering fix is reasoned about ONCE, not once
      * per arch.  NOTE(BOOT-03): INIT assert + two SIPIs; trampoline_busy guards
      * re-entry. */
-    if (smp_bringup_secondary(i, secondary_cpu_entry, stack_top) == 0) {
+    if (nxhal_smp_bringup_secondary(i, stack_top) == 0) {
       nxhal_diag_info("AMD64: CPU %u is online\n", i);
     } else {
       /* Wake failed, or the AP did not respond in time (absent, or a very

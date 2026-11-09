@@ -208,7 +208,7 @@ long OS1_time_now(void) { return _sys_get_time(); }
 long get_time(void) { return OS1_time_now(); } /* compat shim (DIR-01 F4) */
 
 time_t time(time_t *t) {
-  time_t sec = (time_t)OS1_time_now();
+  time_t sec = (time_t)(OS1_time_now() / 1000L);
   if (t)
     *t = sec;
   return sec;
@@ -502,6 +502,15 @@ long OS1low_handle_close(int handle) { return _sys_handle_close(handle); }
 long OS1low_cap_query(int handle) { return _sys_cap_query(handle); }
 long OS1low_cap_grant(int target_pid, int handle, unsigned int rights) {
   return _sys_cap_grant(target_pid, handle, rights);
+}
+long OS1low_time_open(void) {
+  return OS1low_handle_create(OS1_NS_TIME, "system", OS1_RIGHT_READ,
+                              OBJ_TYPE_TIMER);
+}
+long OS1low_time_snapshot(int handle, struct os1_time_snapshot_v1 *snapshot) {
+  if (snapshot == NULL)
+    return -EINVAL;
+  return OS1_object_read(handle, snapshot, sizeof(*snapshot));
 }
 long OS1_object_read(int handle, void *buf, unsigned long n) {
   return _sys_object_read(handle, buf, n);

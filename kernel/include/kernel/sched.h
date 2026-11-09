@@ -1,7 +1,7 @@
 #ifndef _KERNEL_SCHED_H
 #define _KERNEL_SCHED_H
 
-#include <drivers/timer.h>
+#include <kernel/timer.h>
 #include <kernel/list.h>
 #include <kernel/nx_contract.h>
 #include <kernel/spinlock.h>
@@ -12,6 +12,7 @@
 #define PROCESS_NAME_MAX 32
 #define STACK_SIZE 131072
 #define MAX_PRIO 32
+#define OS1LIBKERNEL_IPC_QUEUE_MAX 256U
 
 /* Process Info for Diagnostics */
 struct ps_info {
@@ -188,26 +189,17 @@ struct process {
   struct wait_queue_head *wait_queue_ptr;
   struct wait_queue_head wait_queue;
 
-  /* Tier 3 timed sleep (docs/TIMER-MODEL.md §4): a per-process software timer,
-   * armed on the running core, wakes the process at the ABSOLUTE real-time
-   * deadline wake_ns (mono_ns base). The wheel fires on a coarse jiffies edge;
-   * the fine wake condition is mono_ns() >= wake_ns, so the process wakes at
-   * the right wall-clock instant even if ticks were dropped. 0 = not sleeping.
-   * cpu_time_counts: CPU time consumed by this process, accumulated in RAW
-   * hardware-counter units across context switches (a cheap subtraction in the
-   * scheduler hot path — no divide). Converted to ns only on read via
-   * timer_counts_to_ns() for os1_cpu_ns()/ps_info. */
+  /* Timed sleep uses an absolute monotonic-nanosecond deadline. The software
+   * timer itself is also keyed by nanoseconds; jiffies is no longer part of
+   * the wakeup correctness path. cpu_time_counts remains raw hardware-counter
+   * time and is converted only at the API boundary. */
   uint64_t wake_ns;
   uint64_t cpu_time_counts;
-  struct timer sleep_timer;
+  struct OS1libkernel_timer sleep_timer;
 
-  /* Yield-throttle anti-spin (per-process, docs/TIMER-MODEL.md §4): yield()
-   * calls within the current tick are counted in yield_count (for the tick
-   * yield_jiffy). Beyond YIELD_SPIN_BUDGET the process is busy-spinning on
-   * yield() rather than doing work and is put to sleep until the next tick via
-   * sleep_timer, so an unoptimised program cannot keep a core at 100% and
-   * freeze the system. */
-  uint64_t yield_jiffy;
+  /* Yield anti-spin budget is measured in monotonic scheduler windows rather
+   * than CPU0-owned jiffies, so every CPU observes the same time contract. */
+  uint64_t yield_window_ns;
   uint32_t yield_count;
 
   /* IPC state */
@@ -216,7 +208,7 @@ struct process {
       *ipc_msg; /* User-space pointer to message (for synchronous RECV) */
   struct list_head msg_queue; /* Buffered incoming messages */
   spinlock_t msg_lock;        /* Message queue protection */
-  int msg_count; /* SCHED-05: pending messages on msg_queue (flow control) */
+  uint32_t msg_count; /* pending messages on msg_queue, bounded by OS1LIBKERNEL_IPC_QUEUE_MAX */
 
   /* SMP state */
   int on_cpu; /* CPU ID running this process, -1 if none */
@@ -410,9 +402,9 @@ hal_frame_t *sync_handler(hal_frame_t *frame);
 /* API Declarations */
 void enqueue_task(struct process *p);
 void sleep_on(struct wait_queue_head *wq);
-struct timer;
-int process_sleep_timer_arm(struct process *p, struct timer *timer,
-                            void (*callback)(void *), uint64_t expires);
+int OS1libkernel_process_sleep_timer_arm(
+    struct process *process, struct OS1libkernel_timer *timer,
+    OS1libkernel_timer_callback_t callback, uint64_t deadline_ns);
 void wake_up(struct wait_queue_head *wq);
 
 /* Kernel service threads (ASTRA "every service is a process", kernel side).

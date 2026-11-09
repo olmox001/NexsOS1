@@ -42,20 +42,9 @@
                             * (EOF); write() appends.  Created by SYS_PIPE; the
                             * shell wires `cmd | cmd` by dup'ing the ends into the
                             * children's fd 0/1 (ASTRA §6.2).                   */
-#define OBJ_TYPE_PORT    7 /* a MACH-style PORT: a first-class message mailbox that
-                            * IS a capability (ASTRA §6.5).  Rights are the port
-                            * rights: OS1_RIGHT_WRITE = send right,
-                            * OS1_RIGHT_READ = receive right.  A service keeps the
-                            * receive right and hands clients attenuated SEND-only
-                            * handles, so a client addresses the SERVICE rather
-                            * than a pid — repairing the seL4 rule "no
-                            * PID-by-number access without a capability" that the
-                            * ambient pid-addressed SYS_SEND violates.  The
-                            * semantics ride on the existing IPC message type; a
-                            * port only relocates the QUEUE and the AUTHORITY. */
-#define OBJ_TYPE_COUNT   8 /* number of distinct OBJ_TYPE_* values (NONE..PORT);
-                            * sizes per-type accounting arrays (e.g. live-object
-                            * stats in include/api/sysstats.h)                 */
+#define OBJ_TYPE_PORT    7 /* named service mailbox capability */
+#define OBJ_TYPE_TIMER   8 /* read-only system time snapshot capability */
+#define OBJ_TYPE_COUNT   9 /* number of distinct OBJ_TYPE_* values */
 /* Reserved for later migrations (ASTRA §6.2/§6.7): gpu, audio. */
 
 /* Access rights — a per-handle subset, separable and attenuable (seL4). */
@@ -124,6 +113,7 @@
                        * service publishes itself; acquiring without READ yields
                        * a SEND-only capability to an existing port, which is how
                        * a client reaches a SERVICE BY NAME instead of by pid. */
+#define OS1_NS_TIME 6 /* path "system" → privileged read-only OBJ_TYPE_TIMER */
 
 /* cap_query packs the object type and the held rights into one return value:
  * (type << 24) | rights.  A negative return is an errno (-EBADF). */

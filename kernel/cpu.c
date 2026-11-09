@@ -11,8 +11,8 @@
 struct cpu_info cpu_data[MAX_CPUS];
 uint32_t nr_cpus = 0;
 
-/* Generic implementation (weak - can be overridden by arch-specific) */
-__attribute__((weak)) struct cpu_info *get_cpu_info(void) {
+/* Architecture-neutral lookup: the HAL supplies only the CPU identifier. */
+struct cpu_info *get_cpu_info(void) {
   uint32_t id = hal_cpu_id();
   if (id >= MAX_CPUS) {
     /* Critical failure if CPU ID is out of bounds */
@@ -20,6 +20,13 @@ __attribute__((weak)) struct cpu_info *get_cpu_info(void) {
       ;
   }
   return &cpu_data[id];
+}
+
+struct cpu_info *cpu_info_fault_safe(void) {
+  int32_t id = hal_cpu_id_fault_safe();
+  if (id < 0 || (uint32_t)id >= MAX_CPUS)
+    return NULL;
+  return &cpu_data[(uint32_t)id];
 }
 
 /*

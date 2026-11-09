@@ -25,8 +25,8 @@ HAL_C_SOURCES := \
     $(HAL_ARCH_DIR)/cpu/apic.c \
     $(HAL_ARCH_DIR)/mm/mmu.c \
     $(HAL_ARCH_DIR)/mm/tlb.c \
-    $(HAL_ARCH_DIR)/mm/uaccess.c \
     $(HAL_ARCH_DIR)/platform/platform.c \
+    $(HAL_ARCH_DIR)/boot_memory.c \
     $(HAL_ARCH_DIR)/hal.c \
     $(HAL_ARCH_DIR)/virtio.c \
     $(HAL_ARCH_DIR)/devices/uart_16550.c \
@@ -46,6 +46,7 @@ HAL_C_SOURCES := \
     $(HAL_ARCH_DIR)/cpu/syscall.c \
     $(HAL_ARCH_DIR)/mm/mmu.c \
     $(HAL_ARCH_DIR)/platform.c \
+    $(HAL_ARCH_DIR)/boot_memory.c \
     $(HAL_ARCH_DIR)/hal.c \
     $(HAL_ARCH_DIR)/virtio.c \
     $(HAL_ARCH_DIR)/devices/uart_pl011.c \
@@ -55,12 +56,23 @@ else
 $(error HAL: unsupported ARCH $(ARCH))
 endif
 
-HAL_C_SOURCES += $(HAL_ROOT)/core/core.c \
+HAL_C_SOURCES += $(HAL_ROOT)/common/boot_memory_record.c \
+                 $(HAL_ROOT)/core/core.c \
                  $(HAL_ROOT)/core/frame.c \
                  $(HAL_ROOT)/core/core_protocol.c \
                  $(HAL_ROOT)/core/fault_protocol.c \
                  $(HAL_ROOT)/core/diagnostic_protocol.c \
                  $(HAL_ROOT)/core/timer_protocol.c \
+                 $(HAL_ROOT)/core/smp_protocol.c \
+                 $(HAL_ROOT)/core/device_protocol.c \
+                 $(HAL_ROOT)/core/irq.c \
+                 $(HAL_ROOT)/core/input_protocol.c \
+                 $(HAL_ROOT)/core/fatal_protocol.c \
+                 $(HAL_ROOT)/core/cpu_protocol.c \
+                 $(HAL_ROOT)/core/uaccess.c \
+                 $(HAL_ROOT)/core/memory_protocol.c \
+                 $(HAL_ROOT)/core/resource.c \
+                 $(HAL_ROOT)/core/pci.c \
                  $(HAL_ROOT)/core/device_name.c
 
 NXHAL_PROTOCOL_SOURCES := \

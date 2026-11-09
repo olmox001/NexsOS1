@@ -3,6 +3,7 @@
 
 #include "hcd_assert.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 static inline uint16_t hcd_load_le16(const uint8_t *buffer, uint64_t offset)

@@ -286,7 +286,7 @@ static void panic_reboot_after_grace(void) {
 }
 
 void vpanic(const char *fmt, va_list args) {
-  struct cpu_info *cpu = arch_cpu_info_fault_safe();
+  struct cpu_info *cpu = cpu_info_fault_safe();
   uint32_t cpu_id = cpu ? cpu->cpu_id : UINT32_MAX;
 
   /* Exactly one CPU owns the fatal transcript.  Previously every concurrent
