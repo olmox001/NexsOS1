@@ -2,18 +2,23 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$ROOT/.." && pwd)"
+GRUB_MANIFEST="$PROJECT_ROOT/boot/grub/manifest.env"
 # shellcheck disable=SC1091
 set -a
 source "$ROOT/config/toolchain-versions.env"
+source "$GRUB_MANIFEST"
 set +a
 
-BUILD_ROOT="${NEXS_BUILD_ROOT:-$ROOT/build}"
+BUILD_ROOT="${NEXS_BUILD_ROOT:-$PROJECT_ROOT/build}"
 case "$BUILD_ROOT" in
     /*) ;;
     *) echo "[aarch64-uefi] NEXS_BUILD_ROOT must be absolute: $BUILD_ROOT" >&2; exit 1 ;;
 esac
 BUILD="$BUILD_ROOT/aarch64"
-GRUB_BUILD="$BUILD_ROOT/grub/arm64-efi"
+GRUB_STAGE="$BUILD_ROOT/cache/grub/prebuilt/arm64-efi"
+GRUB_MKIMAGE="$GRUB_STAGE/bin/grub-mkimage"
+GRUB_MODULE_DIR="$GRUB_STAGE/lib/grub/arm64-efi"
 LOG_DIR="$BUILD_ROOT/logs"
 EFI_ROOT="$BUILD/grub-efi"
 ISO_STAGE="$EFI_ROOT/iso"
@@ -48,9 +53,11 @@ done
 [[ -s "$KERNEL" ]] || { echo "[aarch64-uefi] missing kernel image: $KERNEL (build kernel first)" >&2; exit 1; }
 [[ -s "$DTB" ]] || { echo "[aarch64-uefi] missing Device Tree: $DTB (generate DTB first)" >&2; exit 1; }
 
-if [[ ! -x "$GRUB_BUILD/grub-mkimage" || ! -f "$GRUB_BUILD/grub-core/chain.mod" ]]; then
-    "$ROOT/tools/build-grub-arm64.sh"
-fi
+"$ROOT/tools/build-grub-arm64.sh"
+[[ -x "$GRUB_MKIMAGE" && -f "$GRUB_MODULE_DIR/chain.mod" ]] || {
+    echo "[aarch64-uefi] reusable GRUB arm64-efi stage is incomplete" >&2
+    exit 1
+}
 
 mkdir -p "$BUILD" "$EFI_ROOT" "$LOG_DIR"
 
@@ -103,8 +110,8 @@ search --no-floppy --file --set=root /boot/grub/grub.cfg
 configfile /boot/grub/grub.cfg
 GRUB_EMBEDDED
 
-"$GRUB_BUILD/grub-mkimage" -O arm64-efi \
-    -d "$GRUB_BUILD/grub-core" \
+"$GRUB_MKIMAGE" -O arm64-efi \
+    -d "$GRUB_MODULE_DIR" \
     -o "$EFI_ROOT/EFI/BOOT/BOOTAA64.EFI" \
     -p /boot/grub -c "$EFI_ROOT/embedded.cfg" \
     normal chain iso9660 search search_fs_file configfile echo \

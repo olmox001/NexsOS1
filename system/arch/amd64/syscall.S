@@ -420,9 +420,9 @@ _sys_display_present:
     syscall
     ret
 
-.global _sys_input_next_raw_role
-_sys_input_next_raw_role:
-    movq $SYS_INPUT_NEXT_RAW, %rax
+.global _sys_input_raw_read
+_sys_input_raw_read:
+    movq $SYS_INPUT_RAW_READ, %rax
     syscall
     ret
 

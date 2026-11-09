@@ -10,7 +10,7 @@
  * ordering invariant and the ack handshake live here, once.
  *
  * The ack wait is bounded by wall time through the HAL timer contract
- * (hal_timer_get_count/_get_freq — the DIR-06 reference seam, same pattern as
+ * (NX-CORE monotonic deadline API — the DIR-06 reference seam, same pattern as
  * the panic watchdog in printk.c), replacing the per-arch nop-count/udelay
  * divergence.  The handshake variable is acquire/release-paired with
  * smp_ack_boot() so the secondary's per-CPU initialization writes are visible
@@ -19,6 +19,7 @@
 #include <hal/core.h>
 #include <kernel/cpu.h>
 #include <kernel/printk.h>
+#include <kernel/timer.h>
 #include <kernel/types.h>
 
 /* The boot-ack handshake cell.  Written ONLY through smp_ack_boot() by the
@@ -63,12 +64,13 @@ int smp_bringup_secondary(uint32_t cpu, void *stack_top) {
   if (hal_smp_wake_secondary(cpu, stack_top) != 0)
     return -1;
 
-  /* 3. Bounded acquire-wait for the ack (~10 s wall time, generous for a
-   * slow hypervisor; the watchdog in printk.c uses the same timer seam). */
-  uint64_t freq = hal_timer_get_freq();
-  uint64_t deadline = hal_timer_get_count() + freq * 10ULL;
+  /* 3. Bounded acquire-wait in the Core monotonic domain. */
+  uint64_t deadline;
+  if (OS1libkernel_time_deadline_after_ns(
+          UINT64_C(10) * OS1LIBKERNEL_NSEC_PER_SEC, &deadline) != 0)
+    return -2;
   while (__atomic_load_n(&cpu_boot_ack, __ATOMIC_ACQUIRE) != cpu) {
-    if ((int64_t)(deadline - hal_timer_get_count()) <= 0)
+    if (OS1libkernel_time_deadline_reached(deadline))
       return -2;
     hal_cpu_nop();
   }

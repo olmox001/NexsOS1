@@ -115,6 +115,7 @@
 #include <hal/core_protocol.h>
 #include <hal/irq.h>
 #include <hal/timer_protocol.h>
+#include <hal/time.h>
 #include <kernel/irq.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
@@ -340,7 +341,7 @@ void irq_send_ipi_all(void) {
 static void cpu_halt_from_ipi(void) {
   extern volatile int panic_flag;
   panic_flag = 1;
-  hal_timer_control(0);
+  (void)nxhal_time_event_stop();
   hal_cpu_halt(); /* noreturn in practice: infinite WFI/HLT loop */
 }
 

@@ -25,7 +25,11 @@ Quick Start
 Global Options
 --------------
 
-  -a, --arch ARCH     Architecture: aarch64 (default) or amd64
+  -a, --arch ARCH            Architecture: aarch64 (default) or amd64
+  --boot-mode {iso,direct}   GRUB media or direct QEMU -kernel diagnostics
+  --firmware {auto,bios,uefi}
+                             ISO firmware. amd64 auto=bios; aarch64 auto=uefi
+  --build-root PATH          Isolated project-relative build namespace
 
 
 Commands
@@ -101,8 +105,15 @@ Examples
   # Run the full test suite
   nxadb test -c captest -c libctest -e captest=64 -e libctest=20
 
-  # Multi-run smoke test on amd64
-  nxadb -a amd64 test -n 3
+  # AMD64 BIOS and UEFI are distinct, independently captured lanes
+  nxadb -a amd64 --boot-mode iso --firmware bios test -n 1
+  nxadb -a amd64 --boot-mode iso --firmware uefi test -n 1
+
+  # Direct-kernel diagnostic lane
+  nxadb -a amd64 --boot-mode direct test -n 1
+
+  # AArch64 ISO is always UEFI
+  nxadb -a aarch64 --boot-mode iso --firmware uefi test -n 1
 
   # Status & shutdown
   nxadb status
@@ -129,15 +140,16 @@ Design Notes
     push  → rm + write (small files) or line-by-line echo "…" >> file
             (larger files)
 
-- QEMU lifecycle is tracked by a per-architecture PID file and unique QMP
-  socket. Stop only targets the recorded process after verifying its command
-  line; unrelated QEMU processes are not killed.
+- QEMU lifecycle is tracked per lane. BIOS, UEFI and direct boots have
+  distinct PID manifests, QMP sockets and log directories. Stop only targets
+  the recorded process after verifying its command line; unrelated QEMU
+  processes are not killed.
 - QMP's `input-send-event.device` selects a display device, not the keyboard
   device. nxqemu assigns `nxgpu0` to the virtual GPU and binds both input
   devices to it so injected key events reach the guest console.
-- Mutating nxadb operations are serialized by a per-architecture file lock,
-  preventing simultaneous test runs or shell commands from racing over one
-  guest console and serial log.
+- Mutating nxadb operations share one lock per architecture/build-root.
+  This intentionally serializes BIOS, UEFI and direct lanes because they share
+  the same writable rootfs image; one lane cannot race another over disk/QMP.
 
 
 Exit Codes
@@ -170,7 +182,7 @@ Visual inspection and pointer input
   nxadb start --display none          Headless (default; QMP screenshots still work)
   nxadb screenshot                    Capture VirtIO-GPU head 0 as verified PNG
   nxadb screenshot gui-after-click.png
-                                      Save under build/runs/<arch>/
+                                      Save under build/runs/<arch>/<lane>/
   nxadb mouse <dx> <dy>               Move guest relative pointer
   nxadb mouse <dx> <dy> --click       Move and left-click
   nxadb mouse <dx> <dy> --click --button right
@@ -180,7 +192,7 @@ Screenshots are captured from QMP device `nxgpu0`, not the first/default VGA
 adapter. This matters on AMD64 where firmware VGA and VirtIO-GPU are separate
 display devices. Each PNG has a JSON manifest and raw PPM alongside it.
 The tool refuses to overwrite an existing capture and constrains output paths
-to `build/runs/<arch>/`.
+to `build/runs/<arch>/<lane>/`.
 
 QMP typing uses a conservative 75ms per-key delay to avoid lost characters
 when the guest is under rendering load. Mouse press/release edges are sent as
@@ -191,13 +203,18 @@ Boot capture and visual hardening (2026-11-03)
 ---------------------------------------------
 
 Every QEMU start preserves the previous runtime UART/stdout/stderr files under
-build/runs/<arch>/boot-<timestamp>-<id>/ and writes a persistent run-*.json
-manifest containing the exact command and log paths. QEMU stdout is no longer
-discarded. The current complete channels are:
+build/runs/<arch>/<lane>/boot-<timestamp>-<id>/ and writes a persistent
+run-*.json manifest containing architecture, boot mode, firmware, lane, exact
+QEMU command and log paths. QEMU stdout is no longer discarded. The current
+complete channels are:
 
-  build/runtime/nxadb/<arch>/serial.log
-  build/runtime/nxadb/<arch>/qemu.stdout.log
-  build/runtime/nxadb/<arch>/qemu.stderr.log
+  build/runtime/nxadb/<arch>/<lane>/serial.log
+  build/runtime/nxadb/<arch>/<lane>/qemu.stdout.log
+  build/runtime/nxadb/<arch>/<lane>/qemu.stderr.log
+
+Lane names are `iso-bios`, `iso-uefi` and `direct`. AArch64 rejects BIOS;
+AMD64 has independent BIOS and UEFI ISO lanes. AMD64 UEFI uses OVMF/EDK2
+through the shared nxqemu firmware discovery and does not require a DTB.
 
 Use nxadb bootlog to print all captured channels and the latest manifest.
 Use nxadb bootlog --history to list previous archived captures. logcat
@@ -208,11 +225,13 @@ full log remains on disk.
 nxadb test --soak-seconds 30 --display default performs a real QEMU run:
 baseline screenshot, NXShell input, nxwins window enumeration, focus of the
 active shell window, 30-second process/fault supervision and final screenshot.
-The screenshots are stored under build/runs/<arch>/ and verified as PNGs.
+The screenshots are stored under build/runs/<arch>/<lane>/ and verified as PNGs.
 make test runs the selected architecture; make test-all runs amd64 and
 aarch64 sequentially. Both release architectures must pass independently.
 
-A successful current gate is KTEST 8/8, NXShell prompt, nxwins enumeration
-and focus, two 1280x800 screenshots, 30 seconds with no kernel fault match.
-This is a minimum smoke/hardening gate, not a substitute for longer stress,
-hardware diversity, or physical-device validation.
+A successful gate requires every KTEST case to pass, a real NXShell command
+before and after the liveness probe, timer diagnostics, advancing counter
+heartbeat within its bounded timeout and zero kernel-fault matches. Optional
+visual soak adds nxwins/focus and verified screenshots. AMD64 BIOS, AMD64 UEFI,
+AMD64 direct, AArch64 UEFI and AArch64 direct are qualified independently;
+adding a new lane never inherits evidence from another lane.

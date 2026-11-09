@@ -64,12 +64,14 @@ test-host: | $(BUILD)
 	$(BUILD)/device_protocol_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/irq.c $(UNIT)/irq_protocol_test.c -o $(BUILD)/irq_protocol_test
 	$(BUILD)/irq_protocol_test
-	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/input_protocol.c $(UNIT)/input_protocol_test.c -o $(BUILD)/input_protocol_test
-	$(BUILD)/input_protocol_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fatal_protocol.c $(UNIT)/fatal_protocol_test.c -o $(BUILD)/fatal_protocol_test
 	$(BUILD)/fatal_protocol_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/memory_protocol.c $(UNIT)/memory_protocol_test.c -o $(BUILD)/memory_protocol_test
 	$(BUILD)/memory_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/time.c $(UNIT)/time_test.c -o $(BUILD)/time_test
+	$(BUILD)/time_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/entropy.c $(UNIT)/entropy_test.c -o $(BUILD)/entropy_test
+	$(BUILD)/entropy_test
 	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/resource.c $(UNIT)/resource_test.c -o $(BUILD)/resource_test
 	$(BUILD)/resource_test
 	$(CC) $(CFLAGS) -I$(ROOT)/include $(UNIT)/resource_abi_test.c -o $(BUILD)/resource_abi_test
@@ -168,10 +170,6 @@ test-sanitize: | $(BUILD)
 	  $(UNIT)/irq_protocol_test.c -o $(BUILD)/irq_protocol_test-sanitize
 	$(BUILD)/irq_protocol_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/input_protocol.c \
-	  $(UNIT)/input_protocol_test.c -o $(BUILD)/input_protocol_test-sanitize
-	$(BUILD)/input_protocol_test-sanitize
-	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fatal_protocol.c \
 	  $(UNIT)/fatal_protocol_test.c -o $(BUILD)/fatal_protocol_test-sanitize
 	$(BUILD)/fatal_protocol_test-sanitize
@@ -179,6 +177,14 @@ test-sanitize: | $(BUILD)
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/memory_protocol.c \
 	  $(UNIT)/memory_protocol_test.c -o $(BUILD)/memory_protocol_test-sanitize
 	$(BUILD)/memory_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/time.c \
+	  $(UNIT)/time_test.c -o $(BUILD)/time_test-sanitize
+	$(BUILD)/time_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/entropy.c \
+	  $(UNIT)/entropy_test.c -o $(BUILD)/entropy_test-sanitize
+	$(BUILD)/entropy_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT)/include $(ROOT)/core/resource.c \
 	  $(UNIT)/resource_test.c -o $(BUILD)/resource_test-sanitize
@@ -205,7 +211,7 @@ test-sanitize: | $(BUILD)
 	@printf '%s\n' "PASS: NX-HAL integrated ASan/UBSan"
 
 test-static:
-	$(CLANG_TIDY) $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/input_protocol.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
+	$(CLANG_TIDY) $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/time.c $(ROOT)/core/entropy.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters' \
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/include
 	$(CLANG_TIDY) $(ROOT)/capability/amd64/isa.c --extra-arg=--target=x86_64-elf \
@@ -215,7 +221,7 @@ test-static:
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters,-portability-no-assembler' \
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/arch/aarch64/include
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
-	  -I$(ROOT) -I$(ROOT)/include $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/input_protocol.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
+	  -I$(ROOT) -I$(ROOT)/include $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/time.c $(ROOT)/core/entropy.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
 	  $(UNIT)/*.c
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
 	  -I$(ROOT) -I$(ROOT)/arch/amd64/include $(ROOT)/capability/amd64/isa.c

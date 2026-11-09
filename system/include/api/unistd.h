@@ -53,10 +53,10 @@
 #define STDERR_FILENO 2
 
 /* usleep(usec): microseconds, POSIX-compatible, backed by the real kernel timer
- * (SYS_NANOSLEEP) — the caller is descheduled and woken by its core's tick, no
- * busy-wait.  The primitive is nanosleep-granular (rounded up to the tick,
- * ~10 ms at HZ=100).  For ns/timespec sleeps and the monotonic clock use
- * <time.h> (nanosleep(), clock_gettime()). */
+ * (SYS_NANOSLEEP) — the caller is descheduled and woken by its core's
+ * monotonic-deadline timer, with no busy-wait. Delivery follows the current
+ * per-CPU clockevent cadence (1 ms); the stored deadline remains nanosecond
+ * based. For timespec sleeps and the monotonic clock use <time.h>. */
 int usleep(unsigned int usec);
 
 /* pipe: a real anonymous byte pipe (OBJ_TYPE_PIPE via SYS_PIPE).  pipefd[0] is

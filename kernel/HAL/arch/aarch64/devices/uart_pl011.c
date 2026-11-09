@@ -41,7 +41,6 @@
 #include <arch/pt_regs.h>
 #include <hal/core.h>
 #include <hal/irq.h>
-#include <hal/input_protocol.h>
 #include <drivers/uart.h>
 #include <kernel/arch.h>
 #include <kernel/io_poll.h>
@@ -91,8 +90,7 @@ static DEFINE_SPINLOCK(rx_lock);
  * Called from nxhal_core_irq_entry() when the GIC delivers PLATFORM_IRQ_UART0.
  * Checks UART_MIS (masked interrupt status, offset 0x040) for the RX bit;
  * drains the RX FIFO into rx_buf[] until UART_FR.RXFE (FIFO empty, bit 4)
- * is set or the ring buffer is full; clears the interrupt via UART_ICR;
- * wakes up keyboard_wait_queue.
+ * is set or the ring buffer is full; clears the interrupt via UART_ICR.
  *
  * MMIO registers touched:
  *   UART_MIS  (0x040) read  — masked interrupt status.
@@ -130,8 +128,6 @@ static void uart_irq_handler(uint32_t irq, void *data) {
     /* Clear interrupt */
     UART_REG(UART_ICR) = UART_ICR_RXIC;
 
-    /* Notify the Core input service without exposing scheduler objects. */
-    nxhal_input_rx_ready();
   }
 }
 

@@ -18,7 +18,6 @@ void hal_cpu_notify(void) { arch_impl_cpu_notify(); }
 void hal_bus_scan(void) { nxhal_provider_bus_scan(); }
 void hal_irq_controller_init(void) { nxhal_provider_irq_init(); }
 void hal_timer_global_init(void) { nxhal_provider_timer_global_init(); }
-void hal_timer_percpu_init(void) { nxhal_provider_timer_percpu_init(); }
 int hal_vmm_map_device(uint64_t base, uint64_t size) {
   return nxhal_provider_vmm_map_device(base, size);
 }
@@ -177,14 +176,6 @@ void hal_cache_sync_icache(void *va, size_t size) {
 
 uint64_t hal_fault_address(void) { return arch_impl_get_fault_address(); }
 uint64_t hal_fault_status(void) { return arch_impl_get_fault_status(); }
-int hal_hw_random(uint64_t *out) { return arch_impl_hw_random(out); }
-
-uint64_t hal_timer_get_freq(void) { return arch_impl_timer_get_freq(); }
-uint64_t hal_timer_get_count(void) { return arch_impl_timer_get_count(); }
-void hal_timer_set_compare(uint64_t value) {
-  arch_impl_timer_set_compare(value);
-}
-void hal_timer_control(uint32_t value) { arch_impl_timer_control(value); }
 
 void hal_spin_lock(volatile uint32_t *lock) { arch_impl_spin_lock(lock); }
 void hal_spin_unlock(volatile uint32_t *lock) { arch_impl_spin_unlock(lock); }

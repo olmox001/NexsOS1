@@ -141,9 +141,6 @@ MKDISK  = tools/mkdisk
 # (direct/indirect pointer blocks, the pre-B1 format kept for regression).
 MKDISK_LAYOUT ?= --extents
 
-# Resolve grub-mkrescue
-GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || command -v grub-mkrescue 2>/dev/null || echo "")
-
 # Directories
 BUILD_ROOT = build
 BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
@@ -152,8 +149,8 @@ BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
 # embeds kernel Image + generated DTB; AMD64 boots the Multiboot2 ELF.
 HOST_CLANG ?= $(shell command -v clang 2>/dev/null)
 LLD_LINK ?= $(shell command -v lld-link 2>/dev/null || { for p in /usr/local/opt/llvm/bin/lld-link /opt/homebrew/opt/llvm/bin/lld-link; do if test -x "$$p"; then echo "$$p"; exit 0; fi; done; if command -v brew >/dev/null 2>&1; then p="$$(brew --prefix llvm 2>/dev/null)/bin/lld-link"; test -x "$$p" && echo "$$p"; fi; })
-GRUB_ARM64_BUILD = $(BUILD_ROOT)/grub/arm64-efi
 AMD64_GRUB_ISO = $(BUILD_DIR)/grub-bios.iso
+AMD64_UEFI_ISO = $(BUILD_DIR)/grub-uefi/nexsos-amd64-uefi.iso
 AARCH64_UEFI_ISO = $(BUILD_DIR)/grub-efi/nexsos-aarch64-uefi.iso
 ifeq ($(ARCH),aarch64)
 BOOT_ISO = $(AARCH64_UEFI_ISO)
@@ -775,41 +772,52 @@ $(MKDISK): tools/mkdisk.c
 # QEMU Flags
 # =============================================================================
 
-# Direct-kernel fallback is retained for low-level debugging. Normal runs use
-# GRUB boot ISOs through tools/nxqemu.py.
+# QEMU runtime policy lives in tools/nxqemu.py for both GRUB and direct
+# boots. QEMU_RUN remains only for the bounded QEMU DTB-generation command.
 QEMU_RUN = env -u GTK_PATH -u GTK_EXE_PREFIX -u GTK_MODULES -u GTK_IM_MODULE_FILE \
                -u GIO_MODULE_DIR -u GSETTINGS_SCHEMA_DIR -u XDG_DATA_DIRS \
                -u XDG_DATA_HOME -u LOCPATH $(QEMU)
 
-ifeq ($(ARCH),amd64)
-QEMU_FLAGS = -machine q35 -cpu max -m 5G -smp 4 -serial mon:stdio \
-             -display default,show-cursor=on -vga none \
-             -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
-             -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
-             -device virtio-mouse-pci,disable-legacy=on,disable-modern=off \
-             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
-             -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
-else
-QEMU_FLAGS = -machine virt -cpu cortex-a57 -m 5G -smp 4 -serial mon:stdio \
-             -display default,show-cursor=on \
-             -device virtio-gpu-device -device virtio-keyboard-device \
-             -device virtio-mouse-device \
-             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
-             -device virtio-blk-device,drive=hd0 -dtb $(VIRT_DTB)
-endif
+.PHONY: grub-i386-pc-tools grub-x86_64-efi-tools grub-arm64-efi-tools
+.PHONY: grub-tools grub-prebuilt grub-prebuilt-target grub-prebuilt-install
+.PHONY: boot-iso boot-uefi
 
-.PHONY: grub-arm64-tools boot-iso
+grub-i386-pc-tools:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-grub-i386-pc.sh
 
-grub-arm64-tools:
-	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-grub-arm64.sh
+grub-x86_64-efi-tools:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-grub-x86_64.sh
+
+grub-arm64-efi-tools:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-grub-arm64.sh
+
+grub-tools: grub-i386-pc-tools grub-x86_64-efi-tools grub-arm64-efi-tools
+
+GRUB_TARGET ?= all
+GRUB_ARCHIVE ?=
+
+grub-prebuilt:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/package-grub-target.sh all
+
+grub-prebuilt-target:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/package-grub-target.sh "$(GRUB_TARGET)"
+
+grub-prebuilt-install:
+	@test -n "$(GRUB_ARCHIVE)" || { echo "GRUB_ARCHIVE=<archive.tar.gz> is required" >&2; exit 2; }
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/install-grub-prebuilt.sh "$(GRUB_ARCHIVE)"
 
 ifeq ($(ARCH),amd64)
 boot-iso: all
 	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-amd64-grub-iso.sh
+
+boot-uefi: all
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-amd64-uefi-image.sh
 else
-boot-iso: all $(VIRT_DTB) grub-arm64-tools
+boot-iso: all $(VIRT_DTB)
 	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" \
 	  NEXS_DTB_PATH="$(abspath $(VIRT_DTB))" tools/build-aarch64-uefi-image.sh
+
+boot-uefi: boot-iso
 endif
 
 # =============================================================================
@@ -827,29 +835,57 @@ release:
 	@echo "  Location: $(RELEASE_BASE)"
 	@echo "========================================"
 
-# Keep boot ISO and root filesystem as separate artifacts. This exercises the
-# same VirtIO block path in development and release builds.
-release-arch: all boot-iso
+# Keep boot media and root filesystem as separate artifacts. AMD64 releases
+# carry both BIOS and UEFI GRUB media; AArch64 release media is UEFI-only.
+ifeq ($(ARCH),amd64)
+RELEASE_BOOT_TARGETS = boot-iso boot-uefi
+else
+RELEASE_BOOT_TARGETS = boot-iso
+endif
+
+release-arch: all $(RELEASE_BOOT_TARGETS)
 	@echo "--> Packaging $(ARCH) release..."
 	@rm -rf $(RELEASE_DIR)
 	@mkdir -p $(RELEASE_DIR)
-	@cp $(BOOT_ISO) $(RELEASE_DIR)/NexsOS1-$(ARCH)-$(VERSION).iso
 	@cp $(DISK_IMG) $(RELEASE_DIR)/disk.img
-	@if [ "$(ARCH)" = "amd64" ]; then cp $(KERNEL_ELF) $(RELEASE_DIR)/kernel.elf; fi
-	@if [ "$(ARCH)" = "aarch64" ]; then \
+	@if [ "$(ARCH)" = "amd64" ]; then \
+		cp $(AMD64_GRUB_ISO) $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION)-bios.iso; \
+		cp $(AMD64_UEFI_ISO) $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION)-uefi.iso; \
+		cp $(KERNEL_ELF) $(RELEASE_DIR)/kernel.elf; \
+		printf 'architecture=amd64\nversion=%s\nbootloader=GRUB\nbios_iso=%s\nuefi_iso=%s\nrootfs=disk.img\n' \
+			'$(VERSION)' 'NexsOS1-amd64-$(VERSION)-bios.iso' \
+			'NexsOS1-amd64-$(VERSION)-uefi.iso' > $(RELEASE_DIR)/manifest.txt; \
+	else \
+		cp $(BOOT_ISO) $(RELEASE_DIR)/NexsOS1-aarch64-$(VERSION)-uefi.iso; \
 		cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img; \
 		cp $(VIRT_DTB) $(RELEASE_DIR)/virt.dtb; \
 		cp $(BUILD_DIR)/grub-efi/manifest.txt $(RELEASE_DIR)/boot-manifest.txt; \
+		printf 'architecture=aarch64\nversion=%s\nbootloader=GRUB\nuefi_iso=%s\nrootfs=disk.img\n' \
+			'$(VERSION)' 'NexsOS1-aarch64-$(VERSION)-uefi.iso' > $(RELEASE_DIR)/manifest.txt; \
 	fi
-	@printf 'architecture=%s\nversion=%s\nbootloader=GRUB\nboot_iso=%s\nrootfs=disk.img\n' \
-		'$(ARCH)' '$(VERSION)' 'NexsOS1-$(ARCH)-$(VERSION).iso' > $(RELEASE_DIR)/manifest.txt
 	@echo "Release ready: $(RELEASE_DIR)"
 
+ifeq ($(ARCH),amd64)
 test-release: release-arch
-	@echo "Starting GRUB release test for $(ARCH) ($(VERSION))..."
-	@python3 tools/nxqemu.py --arch $(ARCH) \
-		--iso "$(RELEASE_DIR)/NexsOS1-$(ARCH)-$(VERSION).iso" \
+	@echo "Starting AMD64 BIOS GRUB release test ($(VERSION))..."
+	@python3 tools/nxqemu.py --arch amd64 --boot-mode iso --firmware bios \
+		--iso "$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION)-bios.iso" \
 		--disk "$(RELEASE_DIR)/disk.img" --serial stdio
+
+test-release-uefi: release-arch
+	@echo "Starting AMD64 UEFI GRUB release test ($(VERSION))..."
+	@python3 tools/nxqemu.py --arch amd64 --boot-mode iso --firmware uefi \
+		--iso "$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION)-uefi.iso" \
+		--disk "$(RELEASE_DIR)/disk.img" --serial stdio
+else
+test-release: release-arch
+	@echo "Starting AArch64 UEFI GRUB release test ($(VERSION))..."
+	@python3 tools/nxqemu.py --arch aarch64 --boot-mode iso --firmware uefi \
+		--iso "$(RELEASE_DIR)/NexsOS1-aarch64-$(VERSION)-uefi.iso" \
+		--disk "$(RELEASE_DIR)/disk.img" --serial stdio
+
+test-release-uefi: test-release
+endif
 
 # =============================================================================
 # Development Execution
@@ -886,12 +922,51 @@ endif
 # DTB through the ARM64 Image handoff (x0=DTB, x1=0); AMD64 receives QEMU's PVH
 # start-info rather than GRUB's Multiboot2 information structure.
 BOOT_MODE ?= iso
+RUN_FIRMWARE ?= auto
 RUN_DISPLAY ?= default
+
+ifeq ($(BOOT_MODE),direct)
+ifneq ($(RUN_FIRMWARE),auto)
+$(error RUN_FIRMWARE applies only to ISO boot; direct mode requires RUN_FIRMWARE=auto)
+endif
+endif
 RUN_SERIAL ?= stdio
+
+ifeq ($(ARCH),amd64)
+ifeq ($(RUN_FIRMWARE),auto)
+RUN_ISO_TARGET = boot-iso
+RUN_ISO_IMAGE = $(AMD64_GRUB_ISO)
+RUN_ISO_FIRMWARE = bios
+else ifeq ($(RUN_FIRMWARE),bios)
+RUN_ISO_TARGET = boot-iso
+RUN_ISO_IMAGE = $(AMD64_GRUB_ISO)
+RUN_ISO_FIRMWARE = bios
+else ifeq ($(RUN_FIRMWARE),uefi)
+RUN_ISO_TARGET = boot-uefi
+RUN_ISO_IMAGE = $(AMD64_UEFI_ISO)
+RUN_ISO_FIRMWARE = uefi
+else
+$(error RUN_FIRMWARE must be 'auto', 'bios' or 'uefi'; got '$(RUN_FIRMWARE)')
+endif
+else
+ifeq ($(RUN_FIRMWARE),bios)
+$(error AArch64 has no BIOS lane; use RUN_FIRMWARE=auto or uefi)
+endif
+RUN_ISO_TARGET = boot-uefi
+RUN_ISO_IMAGE = $(AARCH64_UEFI_ISO)
+RUN_ISO_FIRMWARE = uefi
+endif
+
 .PHONY: direct-artifacts
 ifeq ($(ARCH),aarch64)
+DIRECT_KERNEL = $(KERNEL_BIN)
+DIRECT_DTB_ARG = --dtb "$(VIRT_DTB)"
+DIRECT_PREREQS = all $(VIRT_DTB)
 direct-artifacts: all $(VIRT_DTB)
 else
+DIRECT_KERNEL = $(KERNEL_ELF)
+DIRECT_DTB_ARG =
+DIRECT_PREREQS = all
 direct-artifacts: all
 endif
 
@@ -901,38 +976,25 @@ TEST_DISPLAY ?= none
 # Exercise process termination across a timed nanosleep in every QEMU test.
 TEST_TIMER_SECONDS ?= 10
 ifeq ($(BOOT_MODE),iso)
-run: all boot-iso
-	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)"
-debug: all boot-iso
-	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" --debug
+run: all $(RUN_ISO_TARGET)
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode iso --firmware $(RUN_ISO_FIRMWARE) 		--iso "$(RUN_ISO_IMAGE)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)"
+debug: all $(RUN_ISO_TARGET)
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode iso --firmware $(RUN_ISO_FIRMWARE) 		--iso "$(RUN_ISO_IMAGE)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" --debug
 else ifeq ($(BOOT_MODE),direct)
-ifeq ($(ARCH),aarch64)
-run: all $(VIRT_DTB)
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
-debug: all $(VIRT_DTB)
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
-else
-run: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-debug: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
-endif
+run: $(DIRECT_PREREQS)
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode direct --kernel "$(DIRECT_KERNEL)" $(DIRECT_DTB_ARG) --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)"
+debug: $(DIRECT_PREREQS)
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode direct --kernel "$(DIRECT_KERNEL)" $(DIRECT_DTB_ARG) --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" --debug
 else
 $(error BOOT_MODE must be 'direct' or 'iso'; got '$(BOOT_MODE)')
 endif
 
-# Backwards-compatible direct-kernel targets remain available.
-ifeq ($(ARCH),aarch64)
-run-direct: all $(VIRT_DTB)
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
-debug-direct: all $(VIRT_DTB)
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
-else
-run-direct: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-debug-direct: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
-endif
+# Backwards-compatible names delegate to the single direct nxqemu path.
+run-direct:
+	@$(MAKE) ARCH=$(ARCH) BOOT_MODE=direct RUN_FIRMWARE=auto RUN_DISPLAY="$(RUN_DISPLAY)" RUN_SERIAL="$(RUN_SERIAL)" run
+
+debug-direct:
+	@$(MAKE) ARCH=$(ARCH) BOOT_MODE=direct RUN_FIRMWARE=auto RUN_DISPLAY="$(RUN_DISPLAY)" RUN_SERIAL="$(RUN_SERIAL)" debug
 
 # lockcheck — the two memory/lock rules as a build gate (scripts/check-lockrules.py).
 # Not yet wired into `all`: the transitive closure is deliberately over-eager
@@ -971,9 +1033,17 @@ check: check-kernel-contracts
 	@echo "✓ CC: $$($(CC) --version | head -1)"
 	@echo "✓ LD: $$($(LD) --version | head -1)"
 	@echo "✓ QEMU: $$($(QEMU) --version | head -1)"
+	@expected_grub="$$(. boot/grub/manifest.env; printf '%s' "$$NEXS_GRUB_COMMIT")"; \
+	actual_grub="$$(git -C boot/grub/upstream rev-parse HEAD 2>/dev/null || true)"; \
+	[ "$$actual_grub" = "$$expected_grub" ] || { \
+		echo "ERROR: GRUB submodule is $$actual_grub; expected $$expected_grub" >&2; exit 1; \
+	}; \
+	echo "✓ GRUB source pin: $$actual_grub"
 ifeq ($(ARCH),amd64)
-	@test -n "$(GRUB_MKRESCUE)" || { echo "ERROR: grub-mkrescue (or i686-elf-grub-mkrescue) is required" >&2; exit 1; }
-	@echo "✓ GRUB BIOS: $(GRUB_MKRESCUE)"
+	@set -eu; for tool in i686-elf-gcc i686-elf-objcopy; do \
+		command -v "$$tool" >/dev/null 2>&1 || { echo "ERROR: $$tool is required for i386-pc GRUB" >&2; exit 1; }; \
+	done
+	@echo "✓ GRUB targets: i386-pc + x86_64-efi are project-built"
 else
 	@command -v "$(HOST_CLANG)" >/dev/null 2>&1 || { echo "ERROR: clang is required for the AArch64 EFI loader" >&2; exit 1; }
 	@command -v "$(LLD_LINK)" >/dev/null 2>&1 || { echo "ERROR: lld-link is required for the AArch64 EFI loader" >&2; exit 1; }
@@ -993,13 +1063,18 @@ help:
 	@echo "Targets:"
 	@echo "  all          - Build bootloader, kernel, and disk image"
 	@echo "  release      - Build production files (Use: make release VERSION=0.4.1)"
-	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.4.1)"
-	@echo "  boot-iso     - Build the GRUB boot ISO for the selected architecture"
-	@echo "  run          - GRUB ISO boot (default); BOOT_MODE=direct selects raw-kernel diagnostics"
+	@echo "  test-release - Test the architecture default release firmware in QEMU"
+	@echo "  test-release-uefi - Test the UEFI release lane explicitly"
+	@echo "  boot-iso     - Build default GRUB media (AMD64 BIOS, AArch64 UEFI)"
+	@echo "  boot-uefi    - Build GRUB UEFI media for the selected architecture"
+	@echo "  grub-tools   - Build/publish i386-pc, x86_64-efi and arm64-efi prebuilt stages"
+	@echo "  grub-prebuilt - Package all host-specific GRUB stages under release/grub"
+	@echo "  grub-prebuilt-target - Package GRUB_TARGET=<target>"
+	@echo "  grub-prebuilt-install - Install GRUB_ARCHIVE=<archive.tar.gz> into persistent cache"
+	@echo "  run          - GRUB ISO boot; AMD64 RUN_FIRMWARE=bios|uefi, BOOT_MODE=direct for raw kernel"
 	@echo "  run-direct   - Raw direct-kernel boot (diagnostic compatibility target)"
 	@echo "  debug        - GRUB ISO debug boot (default); BOOT_MODE=direct selects raw-kernel diagnostics"
-	@echo "  grub-arm64-tools - Build pinned GRUB arm64-efi host tools/modules"
-	@echo "  clean        - Remove generated build/release artifacts"
+	@echo "  clean        - Remove generated build/release artifacts; preserve build/cache"
 	@echo "  setup-deps   - Initialize pinned external repositories"
 	@echo "  check-deps   - Verify external repository revisions"
 	@echo "  check        - Verify cross-toolchain and emulator"

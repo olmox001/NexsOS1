@@ -1,0 +1,27 @@
+From: NexsOS1 build compatibility layer
+Subject: [backport] i386/pc/int.h: keep BIOS interrupt declaration PCBIOS-only
+
+GRUB 2.14 declares grub_bios_interrupt() for all i386-family builds and adds
+regparm(3). GCC 16 diagnoses the ignored attribute when building x86_64-efi,
+and the EFI target has no reason to expose a PC BIOS interrupt interface.
+
+This is the shape present in GRUB upstream master
+0f04137b2e127664bde4d2366d30814317d1d44c after the 2.14 release. Keep the
+upstream gitlink pinned and apply this backport only to the generated source
+cache.
+
+--- a/include/grub/i386/pc/int.h
++++ b/include/grub/i386/pc/int.h
+@@ -22,11 +22,11 @@
+ #include <grub/symbol.h>
+ #include <grub/i386/pc/int_types.h>
+ 
++#ifdef GRUB_MACHINE_PCBIOS
+ void EXPORT_FUNC (grub_bios_interrupt) (grub_uint8_t intno,
+ 					struct grub_bios_int_registers *regs)
+      __attribute__ ((regparm(3)));
+ 
+-#ifdef GRUB_MACHINE_PCBIOS
+ extern struct grub_i386_idt *EXPORT_VAR(grub_realidt);
+ #endif
+ 

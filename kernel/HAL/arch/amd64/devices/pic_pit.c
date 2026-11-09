@@ -39,6 +39,7 @@
 #include <hal/diagnostic_protocol.h>
 #include <hal/core_protocol.h>
 #include <hal/core.h>
+#include <hal/time.h>
 #include <hal/irq.h>
 #include <kernel/types.h>
 #include <kernel/hal.h>
@@ -189,7 +190,7 @@ static void pic_chip_end(uint32_t irq) {
 static void halt_ipi_handler(uint32_t irq, void *data) {
     (void)irq;
     (void)data;
-    hal_timer_control(0);
+    (void)nxhal_time_event_stop();
     hal_cpu_halt();
 }
 
@@ -200,8 +201,9 @@ static void halt_ipi_handler(uint32_t irq, void *data) {
  * destination field is ignored when a shorthand is used).
  */
 static void pic_chip_send_ipi_all(void) {
-    lapic_send_ipi(0, ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF |
-                          HALT_IPI_VECTOR);
+    if (lapic_send_ipi(0, ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF |
+                           HALT_IPI_VECTOR) != 0)
+        nxhal_diag_error("%s", "PIC: panic IPI broadcast failed\n");
 }
 
 /* pic_chip: irq_chip implementation for the 8259A PIC pair.

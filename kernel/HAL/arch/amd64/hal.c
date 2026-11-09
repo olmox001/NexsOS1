@@ -29,11 +29,11 @@
 #include <hal/device_name.h>
 #include <hal/device_protocol.h>
 #include <hal/pci.h>
+#include <arch/arch.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
 #include <hal/provider.h>
 #include <arch/amd64/apic.h>
-#include <drivers/timer.h>
 #include <kernel/multiboot2.h>
 #include <kernel/platform.h>
 
@@ -178,16 +178,91 @@ void nxhal_provider_irq_init(void) {
 }
 
 void nxhal_provider_timer_global_init(void) {
-  /* BSP Global Timer initialization.
-   * We perform LAPIC calibration here once using the legacy PIT. */
   nxhal_diag_info("HAL: Initializing global timer state (LAPIC calibration)\n");
   lapic_timer_calibrate();
 }
 
-void nxhal_provider_timer_percpu_init(void) {
-  /* Initialize local APIC timer for the current CPU at configured HZ.
-   * This is called by every CPU during its local initialization. */
-  lapic_timer_setup(HZ);
+static uint32_t amd64_clocksource_flags(void) {
+  uint32_t eax = 0U;
+  uint32_t ebx = 0U;
+  uint32_t ecx = 0U;
+  uint32_t edx = 0U;
+  uint32_t flags = NXHAL_CLOCKSOURCE_CONTINUOUS |
+                   NXHAL_CLOCKSOURCE_CALIBRATED;
+
+  arch_isa_cpuid(UINT32_C(0x80000000), 0U, &eax, &ebx, &ecx, &edx);
+  if (eax >= UINT32_C(0x80000007)) {
+    arch_isa_cpuid(UINT32_C(0x80000007), 0U, &eax, &ebx, &ecx, &edx);
+    if ((edx & UINT32_C(0x00000100)) != 0U)
+      return flags | NXHAL_CLOCKSOURCE_INVARIANT;
+  }
+  return flags | NXHAL_CLOCKSOURCE_MUST_VERIFY;
+}
+
+int nxhal_provider_clocksource_info(struct nxhal_clocksource_v1 *out) {
+  if (out == NULL)
+    return NXHAL_TIME_E_NULL;
+  if (tsc_hz == 0U)
+    return NXHAL_TIME_E_NOT_READY;
+
+  *out = (struct nxhal_clocksource_v1){
+      .abi_version = NXHAL_TIME_ABI_VERSION,
+      .struct_size = sizeof(*out),
+      .source_id = NXHAL_CLOCKSOURCE_ID_AMD64_TSC,
+      .flags = amd64_clocksource_flags(),
+      .counter_bits = 64U,
+      .frequency_hz = tsc_hz,
+      .mask = UINT64_MAX,
+      .max_delta_counts = INT64_MAX,
+  };
+  return NXHAL_TIME_OK;
+}
+
+int nxhal_provider_clocksource_read(uint64_t *out_count) {
+  if (out_count == NULL)
+    return NXHAL_TIME_E_NULL;
+  if (tsc_hz == 0U)
+    return NXHAL_TIME_E_NOT_READY;
+  *out_count = arch_impl_timer_get_count();
+  return NXHAL_TIME_OK;
+}
+
+int nxhal_provider_clockevent_info(struct nxhal_clockevent_v1 *out) {
+  if (out == NULL)
+    return NXHAL_TIME_E_NULL;
+  if (ticks_per_ms == 0U)
+    return NXHAL_TIME_E_NOT_READY;
+
+  *out = (struct nxhal_clockevent_v1){
+      .abi_version = NXHAL_TIME_ABI_VERSION,
+      .struct_size = sizeof(*out),
+      .event_id = NXHAL_CLOCKEVENT_ID_AMD64_LAPIC,
+      .flags = NXHAL_CLOCKEVENT_PER_CPU | NXHAL_CLOCKEVENT_PERIODIC,
+      .irq = UINT32_C(32),
+      .frequency_hz = (uint64_t)ticks_per_ms * UINT64_C(1000),
+      .min_delta_counts = 1U,
+      .max_delta_counts = UINT32_MAX,
+  };
+  return NXHAL_TIME_OK;
+}
+
+int nxhal_provider_clockevent_percpu_init(uint64_t frequency_hz) {
+  return lapic_timer_setup(frequency_hz) == 0 ? NXHAL_TIME_OK
+                                             : NXHAL_TIME_E_INVALID;
+}
+
+int nxhal_provider_clockevent_program_absolute(uint64_t count) {
+  (void)count;
+  return NXHAL_TIME_E_UNSUPPORTED;
+}
+
+int nxhal_provider_clockevent_program_periodic(uint64_t frequency_hz) {
+  return nxhal_provider_clockevent_percpu_init(frequency_hz);
+}
+
+int nxhal_provider_clockevent_stop(void) {
+  lapic_timer_stop();
+  return NXHAL_TIME_OK;
 }
 
 void nxhal_provider_uaccess_enter(uint64_t user_root_phys,

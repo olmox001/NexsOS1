@@ -144,18 +144,29 @@ static void tlb_shootdown(uintptr_t va) {
   if (!mask)
     return;
 
-  /* Serialise rounds; service the in-flight one while waiting (deadlock
-   * safety — see file header). */
+  /* Serialise rounds; service the in-flight one while waiting. The same
+   * resource budget used for peer acknowledgement also bounds lock acquisition:
+   * a stalled peer can degrade this round, but cannot stall this CPU forever. */
   uint64_t flags;
+  uint64_t lock_spins = 0U;
   while (!spin_trylock_irqsave(&tlb_shoot_lock, &flags)) {
     tlb_ipi_service();
+    if (++lock_spins >= TLB_ACK_TIMEOUT_SPINS) {
+      nxhal_diag_warn("%s", "AMD64 TLB: shootdown lock timeout; local flush only\n");
+      return;
+    }
     __asm__ __volatile__("pause");
   }
 
   tlb_shoot_waiting = mask;
   hal_wmb();
-  lapic_send_ipi(0, ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF |
-                        TLB_IPI_VECTOR);
+  if (lapic_send_ipi(0, ICR_FIXED | ICR_ASSERT | ICR_ALL_EXCL_SELF |
+                         TLB_IPI_VECTOR) != 0) {
+    nxhal_diag_error("%s", "AMD64 TLB: shootdown IPI transport failed\n");
+    tlb_shoot_waiting = 0U;
+    spin_unlock_irqrestore(&tlb_shoot_lock, flags);
+    return;
+  }
 
   uint64_t spins = 0;
   while (tlb_shoot_waiting != 0) {

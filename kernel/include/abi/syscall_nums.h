@@ -59,7 +59,7 @@
 #define SYS_SET_ZOOM           275  /* desktop zoom percent (HiDPI/zoom); arg0=percent [25..400] */
 #define SYS_WINDOW_SNAPSHOT    276  /* versioned window metadata + pixels for compositord */
 #define SYS_DISPLAY_PRESENT    277  /* versioned full-frame hand-off from compositord */
-#define SYS_INPUT_NEXT_RAW     278  /* dequeue one raw device event for ring-3 input service */
+#define SYS_INPUT_RAW_READ     278  /* bounded raw input read: event, role, OS1_INPUT_READ_* */
 #define SYS_WINDOW_MOVE        279  /* compositor policy request to move a legacy window */
 
 /* --- Memory --- */

@@ -6,7 +6,6 @@
 #include <hal/smp_protocol.h>
 #include <hal/device_protocol.h>
 #include <hal/irq.h>
-#include <hal/input_protocol.h>
 #include <hal/fatal_protocol.h>
 #include <hal/cpu_protocol.h>
 #include <hal/memory_protocol.h>
@@ -18,7 +17,6 @@
 #include <kernel/sched.h>
 #include <kernel/hal.h>
 #include <drivers/timer.h>
-#include <drivers/keyboard.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -207,10 +205,6 @@ static void core_irq_unregister_handler(uint32_t irq) {
   irq_unregister(irq);
 }
 
-static void core_input_rx_ready(void) {
-  wake_up(&keyboard_wait_queue);
-}
-
 static hal_frame_t *core_fatal_serror(hal_frame_t *frame) {
   return serror_handler(frame);
 }
@@ -278,14 +272,6 @@ static const struct nxhal_fatal_protocol_v1 fatal_protocol = {
     .flags = 0U,
     .reserved0 = 0U,
     .serror = core_fatal_serror,
-};
-
-static const struct nxhal_input_protocol_v1 input_protocol = {
-    .abi_version = NXHAL_INPUT_PROTOCOL_ABI_VERSION,
-    .struct_size = sizeof(struct nxhal_input_protocol_v1),
-    .flags = 0U,
-    .reserved0 = 0U,
-    .rx_ready = core_input_rx_ready,
 };
 
 static const struct nxhal_irq_core_protocol_v1 irq_core_protocol = {
@@ -363,8 +349,6 @@ void nxcore_hal_boot_entry(uint64_t boot_arg0, uint64_t boot_arg1) {
   if (nxhal_device_bind(&device_protocol) != NXHAL_DEVICE_BIND_OK)
     hal_cpu_halt();
   if (nxhal_irq_core_bind(&irq_core_protocol) != NXHAL_IRQ_CORE_BIND_OK)
-    hal_cpu_halt();
-  if (nxhal_input_bind(&input_protocol) != NXHAL_INPUT_BIND_OK)
     hal_cpu_halt();
   if (nxhal_fatal_bind(&fatal_protocol) != NXHAL_FATAL_BIND_OK)
     hal_cpu_halt();

@@ -32,13 +32,13 @@ struct ipc_node {
 /* Architecture-specific register frame layout */
 #include <hal/frame.h>
 
-/* Scheduler time-slice in ticks (HZ=100 -> 10ms/tick).  Lowered from 10 (100ms)
- * to 3 (30ms): the old quantum let a CPU-bound task hog a core for 100ms before
- * an interactive task could preempt it (a real responsiveness tax).  ASID/PCID-
- * tagged switches (perf §3) made context switches cheap, so the finer quantum's
- * extra switches are nearly free — better interactivity at negligible
- * throughput cost. */
-#define DEFAULT_QUANTUM 3
+/*
+ * Scheduler quantum is a time policy, not a timer-IRQ count. Keeping it in
+ * monotonic nanoseconds prevents a clockevent frequency change from silently
+ * changing scheduling policy (the former 3-tick value became 3 ms at 1 kHz).
+ */
+#define OS1LIBKERNEL_SCHED_QUANTUM_NS \
+  (UINT64_C(30) * OS1LIBKERNEL_NSEC_PER_MSEC)
 
 /* Wait Queue */
 struct wait_queue_head {
@@ -128,9 +128,8 @@ struct process {
                       * process reached the grave via KILL/fault, so a waiter can
                       * tell "Done (N)" from "Killed" (the NEXS stand-in for
                       * WIFEXITED vs WIFSIGNALED — there is no signal model). */
-  int priority;      /* 0 (High) - 31 (Low) */
-  int time_slice;    /* Ticks remaining */
-  int quantum_reset; /* Reset value */
+  int priority; /* 0 (High) - 31 (Low) */
+  uint64_t quantum_deadline_ns; /* 0 until the task is selected to run */
 
   uint8_t level; /* privilege level (PLVL_*) — see the capability model below */
   uint32_t caps; /* capability mask (CAP_*); machine level bypasses checks */
@@ -390,6 +389,8 @@ extern int process_load_elf_args(struct process *proc, const char *path,
                                  int argc, char *const kargv[]);
 void start_user_process(struct process *proc);
 void process_init(void);
+bool OS1libkernel_sched_quantum_due(uint64_t deadline_ns, uint64_t now_ns);
+hal_frame_t *OS1libkernel_sched_timer_tick(hal_frame_t *regs, uint64_t now_ns);
 hal_frame_t *schedule(hal_frame_t *regs);
 /* Fault-safe dump of the bounded per-CPU context-switch history. */
 void sched_trace_dump(void);

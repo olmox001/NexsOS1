@@ -1,188 +1,237 @@
-# TIMER-MODEL — the three-tier time subsystem (NEXS)
+# TIMER-MODEL — NX-HAL time, deadlines and scheduler cadence
 
-> Status: **design + in-progress implementation** (branch `comprehensive-review`).
-> Supersedes the ad-hoc notes in MANUAL §6 and PIANO-DRIVER-MATURITY about the
-> per-CPU software timers landed in `00a83e6`. This document is the single
-> reference for *how time works* in the kernel and *what userland sees*.
+Status: implemented and runtime-qualified on amd64 and aarch64. This document
+describes the current source; older jiffies/HZ=100 notes are historical.
 
-## 0. Why
+## 1. Ownership
 
-After `00a83e6` the kernel had per-CPU software-timer wheels and a real blocking
-`nanosleep`, but the **time base itself was naive**: `jiffies` was just `++`'d by
-CPU 0 on every tick. If a timer IRQ was late or dropped (IRQ latency, a long
-critical section, a focused CPU-bound task), `jiffies` silently fell behind the
-wall clock and *never recovered* — sleeps drifted long, `get_time()` lagged real
-time, and there was no agreement between cores. On amd64 it was worse:
-`timer_get_us()` was a stub (`jiffies*1000`, ARCH-03) and the LAPIC timer had no
-drift correction at all.
+Time is split into three layers with one dependency direction:
 
-The requirement: **three clocks, each compared against real hardware time so lost
-time is recovered**, in the seL4 spirit (kernel exposes the minimal mechanism;
-userland builds policy).
-
-## 1. The real-time reference (HAL primitive)
-
-The one thing the kernel trusts is a **free-running hardware counter** and its
-frequency. Both are already ASTRA HAL primitives (`kernel/include/kernel/arch.h`):
-
-| | aarch64 | amd64 |
-|---|---|---|
-| `arch_timer_get_count()` | `CNTVCT_EL0` (virtual counter) | `RDTSC` |
-| `arch_timer_get_freq()`  | `CNTFRQ_EL0` | **calibrated TSC Hz** (was a hardcoded `1e9` stub — fixed) |
-
-From these the core derives one arch-neutral function:
-
-```c
-/* kernel/core/timer.c — monotonic nanoseconds since boot, the real-time base
- * every tier compares against. 128-bit mul/div so it never overflows. */
-uint64_t mono_ns(void);   /* = (count - boot_count) * 1e9 / hw_freq */
+```text
+architecture provider -> NX-HAL time ABI -> NX-CORE time policy -> OS1 user ABI
 ```
 
-`mono_ns()` is the **truth**. `jiffies` is a derived, cheap, integer view of it.
+Architecture code owns hardware discovery/programming only. NX-CORE owns elapsed
+time, deadlines, software timers and scheduler policy. Userland never reads an
+architecture counter directly.
 
-`mono_ns()` uses the natural `(__uint128_t)delta * NSEC_PER_SEC / freq` form.
-The kernel and userland both link `-nostdlib` with no libgcc, so the `__int128`
-runtime helpers the compiler emits (`__udivti3`/`__umodti3`/`__multi3`) are
-provided in the shared math library `kernel/lib/math.c` (compiled into the
-kernel and into `lib.o`). This makes `__uint128_t` a first-class type across the
-codebase. (Use the predefined `__uint128_t`/`__int128_t` typedefs, not the bare
-`__int128` keyword, which trips `-Wpedantic -Werror`.)
+Early entropy is not part of timekeeping. `hal/entropy.h` exposes an
+architected hardware-random sample and a changing early jitter sample. The
+jitter value has no frequency or wall-time semantics and exists so SSP entropy
+can initialize before the runtime clocksource is published.
 
-### amd64 TSC calibration
+## 2. Stable NX-HAL time ABI
 
-`arch_impl_timer_get_freq()` must return the *measured* TSC frequency, not a
-constant. Calibration reuses the existing PIT path in
-`kernel/arch/amd64/cpu/apic.c` (NOT `platform.c`, which is frozen until B4):
-sample `RDTSC` across a known PIT interval (the same ~10 ms window
-`lapic_timer_calibrate()` already busy-polls) and publish `tsc_hz` into a global
-that `arch_impl_timer_get_freq()` reads. Done once on the BSP before SMP; APs
-share the value (constant-rate / invariant TSC assumed on the QEMU targets —
-gate behind CPUID `0x80000007` EDX[8] when present, else trust the calibration).
+The public contract is `kernel/HAL/include/hal/time.h`, ABI version 1.
 
-## 2. Tier 1 — the global clock (kernel, CPU 0 owns it, synced to real time)
+A clocksource descriptor reports:
 
-`jiffies` stays the global monotonic tick counter, but CPU 0 no longer blindly
-increments it. On every tick CPU 0 **reconciles** it against `mono_ns()`:
+- source identity;
+- capability flags (continuous/calibrated/invariant/global/verify);
+- counter width and mask;
+- measured/architected frequency;
+- maximum safe delta.
 
-```c
-/* CPU 0 only, in kernel_timer_tick(): */
-uint64_t expected = mono_ns() / NS_PER_TICK;   /* NS_PER_TICK = 1e9 / HZ */
-if (expected > jiffies)
-    jiffies = expected;                        /* recover dropped ticks, monotonic */
+A clockevent descriptor reports:
+
+- event identity and IRQ;
+- per-CPU/periodic/oneshot/absolute capabilities;
+- hardware frequency;
+- minimum and maximum programmable deltas.
+
+Public operations are:
+
+- `nxhal_time_clocksource_info`;
+- `nxhal_time_clockevent_info`;
+- `nxhal_time_counter_read`;
+- `nxhal_time_event_percpu_init`;
+- `nxhal_time_event_program_absolute`;
+- `nxhal_time_event_program_periodic`;
+- `nxhal_time_event_stop`.
+
+NX-CORE must not infer architecture from these values and must not call the
+provider-private `arch_impl_timer_*` primitives.
+
+## 3. Providers
+
+### amd64
+
+The runtime clocksource is the TSC. Its frequency is calibrated against the PIT
+using bounded measurement windows and consistency checks in the existing APIC/
+PIT provider. The LAPIC is the per-CPU clockevent. The provider declares its
+actual periodic/absolute capabilities; Core does not pretend a periodic LAPIC is
+a one-shot comparator.
+
+AMD64 has no DTB requirement. The normal hardware-discovery path is PCI/ACPI/
+firmware information. Absence of FDT is therefore valid and must not degrade
+timekeeping or device enumeration.
+
+### AArch64
+
+The runtime clocksource is the architected virtual counter (`CNTVCT_EL0`) at
+the architected `CNTFRQ_EL0` frequency. The virtual timer is the per-CPU
+clockevent and uses its architected comparator/control registers.
+
+FDT/EFI handoff is a boot-discovery input, not part of the time ABI.
+
+## 4. NX-CORE monotonic clock
+
+`kernel/core/timer.c` initializes the HAL descriptors once, validates the
+reported capabilities and records the boot counter epoch. The Core API exposes:
+
+- `OS1libkernel_time_counter_read()`;
+- `OS1libkernel_time_monotonic_ns()`;
+- checked absolute-deadline construction;
+- deadline comparison;
+- counter-to-nanosecond conversion;
+- versioned OS1 time snapshots.
+
+Counter scaling uses checked wide arithmetic. A failed or unavailable runtime
+clocksource after initialization is a kernel invariant failure, not silently
+replaced with a fake frequency.
+
+`jiffies` remains only a derived compatibility/instrumentation view:
+
+```text
+jiffies = monotonic_ns / OS1LIBKERNEL_NSEC_PER_TICK
 ```
 
-* **Tied to core 0**: only CPU 0 writes `jiffies`, so there is no SMP write race
-  (other cores read it). This is the *synchrony mechanism*: one authoritative
-  clock, advanced to match real elapsed time.
-* **Comparison + recovery**: if three ticks were lost, `expected` jumps ahead and
-  `jiffies` catches up in one step instead of limping one-per-tick. It never goes
-  backwards (`expected > jiffies` guard).
-* A normal tick advances `expected` by exactly 1, so steady state is unchanged.
+Software-timer correctness does not depend on incrementing jiffies once per IRQ.
 
-## 3. Tier 2 — the per-CPU clock (kernel)
+## 5. Clockevent cadence versus scheduler policy
 
-Each core keeps its own tick cadence and **corrects its own drift against the
-hardware counter**, so a core that was starved still programs its next interrupt
-relative to *real* time, not relative to when it happened to run.
+The per-CPU clockevent currently runs at:
 
-The accounting is **one arch-neutral, HAL-driven routine** —
-`timer_percpu_tick()` in `kernel/core/timer.c` — so the logic is not duplicated
-per arch. Expressed entirely in HAL counter units (`arch_timer_get_freq()` /
-`arch_timer_get_count()`), it advances `cpu->next_tick_target` by the per-tick
-interval with `tick_error_acc` fractional correction and a catch-up clamp
-(`next_tick_target <= now → now + interval`), then reprograms the compare via
-`arch_timer_set_compare()`:
-
-* **aarch64** (one-shot CNTV timer): `arch_timer_set_compare()` writes
-  `CNTV_CVAL_EL0`, so each tick rearms the next interrupt. `timer_handler()`
-  (drivers/timer/timer.c) is now just `timer_percpu_tick(); kernel_timer_tick();`.
-* **amd64** (periodic LAPIC): `arch_timer_set_compare()` is a **no-op** (the LAPIC
-  auto-reloads), so the same routine maintains the per-CPU *software* schedule
-  against the TSC without touching the hardware. The vector-32 ISR
-  (`kernel/arch/amd64/cpu/idt.c`) calls `timer_percpu_tick()` before the tick.
-
-Both arches seed the schedule on per-CPU bring-up with `timer_percpu_arm()`. The
-shared fields live in `struct cpu_info` (`next_tick_target`, `tick_error_acc`,
-`tick_count`). This is the ASTRA shape: the arch exposes only the HAL timer
-primitives; the per-CPU clock logic is core.
-
-The per-CPU software **timer wheel** (`cpu->timer_list` + `cpu->timer_lock`,
-landed in `00a83e6`) is unchanged: each core fires its own timers against the now
-real-time-synced global `jiffies`.
-
-## 4. Tier 3 — the per-process clock (userland)
-
-Two notions, both on the `mono_ns()` base:
-
-1. **Sleep / timeout deadlines are absolute real time.** `nanosleep` arms the
-   per-process `sleep_timer` (already per-CPU, woken locally), but the deadline is
-   stored as **`wake_ns` (absolute `mono_ns`)**, not raw `wake_jiffies`. The wheel
-   still fires on a jiffies edge, but the wake condition is `mono_ns() >= wake_ns`,
-   so the process wakes at the right *wall-clock* instant even if ticks were lost
-   (recovers lost time at the per-process level too). The jiffies-based arming is
-   just the coarse trigger; `mono_ns()` is the fine check on re-entry.
-2. **Per-process CPU time** (`struct process.cpu_time`, reported in `ps_info`) is
-   accumulated in real ns from `mono_ns()` deltas across context switches, so
-   `get_procs()` reports true CPU consumption rather than a tick count.
-
-### Userland API (os1.h is the base; POSIX built on top)
-
-os1.h is NEXS's **proprietary base API** (POSIX-like + graphics + primitives);
-the real POSIX/libc layer is built *on* it. Time primitives added to os1.h:
-
-```c
-/* os1.h — proprietary base */
-uint64_t os1_mono_ns(void);    /* monotonic ns since boot (SYS_CLOCK_GETTIME) */
-uint64_t os1_cpu_ns(void);     /* this process's consumed CPU time, ns */
-/* existing: get_time() ms, sleep()/usleep()/nanosleep blocking */
+```text
+OS1LIBKERNEL_TIMER_HZ = 1000 Hz
 ```
 
-```c
-/* <time.h> POSIX layer, on top of os1_mono_ns(): */
-int clock_gettime(int clk, struct timespec *ts);  /* MONOTONIC, REALTIME→MONOTONIC for now */
+That 1 ms event cadence is mechanism, not the scheduler quantum.
+
+The historical scheduler stored `DEFAULT_QUANTUM=3` ticks. After the clockevent
+moved from 100 Hz to 1 kHz that silently changed the intended 30 ms policy into
+3 ms. Worse, every timer IRQ called `schedule()` and the outgoing RUNNING task
+was made READY even while its tick counter had not expired. That made scheduler
+activity effectively track the 1 kHz interrupt cadence.
+
+The current scheduler instead stores an absolute monotonic deadline:
+
+```text
+OS1LIBKERNEL_SCHED_QUANTUM_NS = 30 ms
+process.quantum_deadline_ns
 ```
 
-New syscall: `SYS_CLOCK_GETTIME 258` returns ns directly (64-bit return register,
-both arches), `arg0` selects the clock id (0 = monotonic, 1 = per-process CPU).
+`OS1libkernel_sched_timer_tick(frame, now_ns)` returns the interrupted frame
+unchanged while a normal running task remains inside its quantum. It invokes the
+full scheduler only when:
 
-### Not in scope (filed separately)
+- the quantum expires;
+- the CPU has no current task;
+- the current task is idle;
+- the current task is no longer RUNNING.
 
-Capability-based **timer objects** (arm-and-notify, timer-fd, multiple concurrent
-timeouts) are the next seL4 step but need the real handle table — see
-**issue #135 (TIMER-CAP-01)**.
+Blocking IPC, sleep, exit, fault handling and explicit yield still call
+`schedule()` immediately; they do not wait for quantum expiry.
 
-## 5. ASTRA / layering compliance
+This separates timer frequency from scheduling policy and keeps a future
+clockevent-frequency change from silently changing task fairness.
 
-* Arch provides only the four HAL timer primitives (`arch_timer_get_count` /
-  `_get_freq` / `_set_compare` / `_control`) and the periodic tick IRQ. ALL clock
-  *logic* — `mono_ns`, the Tier-1 reconciliation, and the Tier-2 per-CPU
-  accounting (`timer_percpu_tick`/`timer_percpu_arm`) — is arch-neutral in
-  `kernel/core/timer.c`. The per-arch difference collapses to the
-  `arch_timer_set_compare` implementation (writes CNTV_CVAL on aarch64, a no-op
-  on the periodic amd64 LAPIC). The arch timer IRQ handlers
-  (`drivers/timer/timer.c`, `arch/amd64/cpu/idt.c`) are thin: call
-  `timer_percpu_tick()`, then `kernel_timer_tick()`.
-* No new code in `kernel/arch/amd64/platform/platform.c` (frozen until B4). The
-  amd64 provider work lives in `apic.c` (TSC calibration → `tsc_hz`) and `arch.h`
-  (`arch_impl_timer_get_freq` returns `tsc_hz`); the drift logic is shared core,
-  not arch. The legacy `timer_get_us()` stub in `platform.c` is left dead and
-  removed with the rest of that file in B4; nothing real calls it.
-* `__uint128_t` runtime helpers live in the shared `kernel/lib/math.c` (kernel +
-  userland), keeping `mono_ns()` in its natural 128-bit form without libgcc.
+## 6. Per-CPU timer accounting
 
-## 6. Verification (both arches mandatory)
+Each CPU tracks its clockevent target/error accounting in `struct cpu_info`.
+`OS1libkernel_timer_percpu_arm/tick` reconcile the software schedule against
+the free-running clocksource and use checked provider programming.
 
+Lost/late timer IRQs do not create a second time base. The next event is derived
+from hardware time, and Core monotonic time continues to advance independently
+of IRQ delivery.
+
+## 7. Software timers and sleeps
+
+`struct OS1libkernel_timer` carries an absolute monotonic nanosecond deadline.
+Timers live on the owning CPU's bounded timer list and wake through Core-owned
+callbacks. `nanosleep`/OS1 sleep therefore block the process and wake against a
+real absolute deadline; they are not busy loops and are not specified as
+"one HZ tick" delays.
+
+SMP bring-up waits and VirtIO block completion deadlines also use the Core
+monotonic deadline API instead of raw counter loops.
+
+The panic watchdog is a deliberate exception: IRQs are disabled and normal Core
+scheduling is unavailable, so it reads the already-published HAL clocksource
+directly using a bounded polling budget before reboot.
+
+## 8. User ABI and diagnostics
+
+The OS1 time ABI exposes monotonic and process-CPU time. POSIX
+`clock_gettime(CLOCK_MONOTONIC)`, `get_time()` and `nanosleep()` are
+adapters over that same source, not independent clocks.
+
+`/sys/bin/nxtimerdiag --probe` validates these surfaces by bracketing each
+compatibility read between two OS1 snapshots. A sequential fixed-tolerance
+comparison is forbidden because a normal preemption between two reads can look
+like clock drift.
+
+`/bin/counter` is a scheduler/liveness diagnostic. It emits approximately one
+UART heartbeat per second:
+
+```text
+[COUNTER] frame=<...> mono_ms=<...>
 ```
-make all ARCH=aarch64    # needs build/aarch64/virt.dtb once
-make all ARCH=amd64
-# headless boot per docs/PHASE-B-PLAN.md; health:
-grep -cE 'PANIC|NESTED|Unhandled interrupt' /tmp/nexs.log   # want 0
-```
 
-Functional checks:
-* `get_time()` advances at real-time rate on **both** arches (amd64 no longer
-  stubbed): ~1000 over ~1 s.
-* A focused CPU-bound task that previously made `jiffies` lag: after the rework,
-  `get_time()` still tracks wall clock (reconciliation recovers the stolen ticks).
-* `sleep(1000)` wakes after ~1 real second under load, not long.
-* `notify_srv` and other services idle at ~0% CPU (blocking, USR-NOTIFY-02 #134).
+The UART heartbeat is diagnostic output only. Graphical applications render
+through the window/surface APIs; debug printing is not part of the graphical UI.
+
+## 9. Current verification
+
+The current time/scheduler snapshot has passed:
+
+- standalone NX-HAL build and boundary audit on amd64 and aarch64;
+- NX-HAL host tests, ASan/UBSan and static-analysis gates;
+- clean NX-CORE builds on both ISAs;
+- amd64 GRUB-BIOS image: interactive NXShell, timerdiag PASS, heartbeat PASS,
+  shell-after-heartbeat PASS, 22/22 KTEST, zero detected faults;
+- amd64 direct kernel + rootfs: same result, 22/22 KTEST;
+- AArch64 GRUB/UEFI image: same result, 23/23 KTEST;
+- AArch64 direct kernel + DTB + rootfs: same result, 23/23 KTEST;
+- independent `make run` reaches NXShell in all four current Makefile lanes.
+  The amd64 image lane is still GRUB-BIOS; amd64 UEFI is a separate open boot
+  requirement and must not be conflated with the validated BIOS image lane.
+
+The direct and image lanes are mutually exclusive per architecture in nxadb
+because they share one writable disk image; nxadb stops the sibling lane before
+starting another profile.
+
+## 10. Open performance work
+
+Removing the accidental 1 kHz forced preemption did not by itself remove the
+observed desktop context-switch rate. An amd64 MEMSTAT sample after the fix
+still measured roughly 1.06–1.12k context switches/s.
+
+Source audit identifies independent wakeup sources that must be converted to
+event-driven services rather than hidden by a larger scheduler quantum:
+
+- keyboard service now blocks on the raw-input wait path for IRQ-driven
+  providers; polling-only USB HID explicitly falls back with `-EAGAIN`;
+- mouse service still polls every 5 ms because it also multiplexes control IPC
+  and a generic wait-many ABI is not implemented yet;
+- shell still polls every 10 ms;
+- several 33/50 ms service loops remain;
+- compositor frame allocation/free churn remains on every frame and per window.
+
+These are separate defects. They must be measured and converted to blocking
+input/IPC/object waits and persistent bounded buffers while retaining the 30 ms
+scheduler policy.
+
+## 11. Required next time/IPC work
+
+1. Replace fake POSIX `poll()` (which currently ignores timeout/readiness) with
+   one generic readiness/wait-many contract over kernel wait queues and
+   monotonic deadlines. The contract must remain device-class neutral; object
+   code must not learn keyboard/mouse policy.
+2. Convert the remaining mouse/shell/USB-HID polling loops to blocking event
+   delivery using that generic readiness model.
+3. Keep IPC timeout semantics on the same absolute monotonic clock.
+4. Add per-operation wakeup/context-switch instrumentation so service-level
+   sources can be attributed without guessing.
+5. Re-run idle -> load -> post-load MEMSTAT campaigns on both architectures.

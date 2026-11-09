@@ -573,13 +573,35 @@ long OS1_display_present(struct os1_compositor_present_v1 *present) {
     return -1;
   return _sys_display_present(present);
 }
-long OS1_input_next_keyboard(struct os1_raw_input_event_v1 *event) {
-  if (!event) return -1;
-  return _sys_input_next_raw_role(event, OS1_INPUT_ROLE_KEYBOARD);
+long OS1low_input_read_raw(struct os1_raw_input_event_v1 *event,
+                           unsigned int role, unsigned int mode) {
+  if (event == NULL)
+    return -EINVAL;
+  if (role != OS1_INPUT_ROLE_KEYBOARD && role != OS1_INPUT_ROLE_MOUSE)
+    return -EINVAL;
+  if (mode != OS1_INPUT_READ_TRY && mode != OS1_INPUT_READ_WAIT)
+    return -EINVAL;
+  return _sys_input_raw_read(event, (int)role, mode);
 }
+
+long OS1_input_next_keyboard(struct os1_raw_input_event_v1 *event) {
+  return OS1low_input_read_raw(event, OS1_INPUT_ROLE_KEYBOARD,
+                               OS1_INPUT_READ_TRY);
+}
+
 long OS1_input_next_mouse(struct os1_raw_input_event_v1 *event) {
-  if (!event) return -1;
-  return _sys_input_next_raw_role(event, OS1_INPUT_ROLE_MOUSE);
+  return OS1low_input_read_raw(event, OS1_INPUT_ROLE_MOUSE,
+                               OS1_INPUT_READ_TRY);
+}
+
+long OS1_input_wait_keyboard(struct os1_raw_input_event_v1 *event) {
+  return OS1low_input_read_raw(event, OS1_INPUT_ROLE_KEYBOARD,
+                               OS1_INPUT_READ_WAIT);
+}
+
+long OS1_input_wait_mouse(struct os1_raw_input_event_v1 *event) {
+  return OS1low_input_read_raw(event, OS1_INPUT_ROLE_MOUSE,
+                               OS1_INPUT_READ_WAIT);
 }
 long OS1_window_move(int window_id, int x, int y) {
   return _sys_window_move(window_id, x, y);

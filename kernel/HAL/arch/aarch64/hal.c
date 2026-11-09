@@ -25,7 +25,9 @@
 #include <hal/device_name.h>
 #include <hal/device_protocol.h>
 #include <hal/pci.h>
+#include <arch/arch.h>
 #include <arch/pt_regs.h>
+#include <arch/timer.h>
 #include <hal/core.h>
 #include <hal/provider.h>
 #include <kernel/hal.h>
@@ -173,8 +175,7 @@ void nxhal_provider_irq_init(void) {
  * periodic interrupts for the kernel scheduler tick.
  */
 void nxhal_provider_timer_global_init(void) {
-    extern void timer_init(void);
-    timer_init();
+    nxhal_arm64_timer_global_init();
 }
 
 void nxhal_provider_uaccess_enter(uint64_t user_root_phys,

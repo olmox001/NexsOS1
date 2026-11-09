@@ -54,6 +54,35 @@ static uint64_t abs_diff_u64(uint64_t left, uint64_t right) {
   return left >= right ? left - right : right - left;
 }
 
+static uint64_t interval_gap(uint64_t value_low, uint64_t value_high,
+                             uint64_t lower, uint64_t upper) {
+  if (value_high < lower)
+    return lower - value_high;
+  if (value_low > upper)
+    return value_low - upper;
+  return 0U;
+}
+
+static uint64_t point_gap(uint64_t value, uint64_t lower, uint64_t upper) {
+  return interval_gap(value, value, lower, upper);
+}
+
+static uint64_t millis_gap(long milliseconds, uint64_t lower,
+                           uint64_t upper) {
+  uint64_t value_low;
+  uint64_t value_high;
+
+  if (milliseconds < 0)
+    return UINT64_MAX;
+  if ((uint64_t)milliseconds > UINT64_MAX / UINT64_C(1000000))
+    return UINT64_MAX;
+  value_low = (uint64_t)milliseconds * UINT64_C(1000000);
+  if (value_low > UINT64_MAX - UINT64_C(999999))
+    return UINT64_MAX;
+  value_high = value_low + UINT64_C(999999);
+  return interval_gap(value_low, value_high, lower, upper);
+}
+
 static void stats_init(struct sleep_stats *stats) {
   memset(stats, 0, sizeof(*stats));
   stats->min_ns = UINT64_MAX;
@@ -236,52 +265,90 @@ static void diag_account(struct diag_state *state, int is_posix,
   state->previous_get_time = after_get_time;
 }
 
+struct diag_post_clocks {
+  long get_time_ms;
+  uint64_t wake_mono;
+  uint64_t wake_cpu;
+  uint64_t after_mono;
+  uint64_t after_cpu;
+  uint64_t get_gap;
+  uint64_t mono_gap;
+  uint64_t cpu_gap;
+  int mono_rc;
+  int cpu_rc;
+};
+
+static void diag_read_post_clocks(struct diag_post_clocks *out) {
+  struct timespec posix_mono = {0, 0};
+  struct timespec posix_cpu = {0, 0};
+  uint64_t lower;
+  uint64_t upper;
+
+  out->wake_mono = os1_mono_ns();
+  out->wake_cpu = os1_cpu_ns();
+
+  lower = os1_mono_ns();
+  out->get_time_ms = get_time();
+  upper = os1_mono_ns();
+  out->get_gap = millis_gap(out->get_time_ms, lower, upper);
+
+  lower = os1_mono_ns();
+  out->mono_rc = clock_gettime(CLOCK_MONOTONIC, &posix_mono);
+  upper = os1_mono_ns();
+  out->mono_gap = point_gap(timespec_ns(&posix_mono), lower, upper);
+
+  lower = os1_cpu_ns();
+  out->cpu_rc = clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &posix_cpu);
+  upper = os1_cpu_ns();
+  out->cpu_gap = point_gap(timespec_ns(&posix_cpu), lower, upper);
+  out->after_mono = os1_mono_ns();
+  out->after_cpu = os1_cpu_ns();
+}
+
+static int diag_do_sleep(int is_posix) {
+  if (is_posix != 0) {
+    struct timespec request = {0, (long)TIMERDIAG_SLEEP_NS};
+    struct timespec remaining = {0, 0};
+    return nanosleep(&request, &remaining);
+  }
+  OS1_sleep((int)TIMERDIAG_SLEEP_MS);
+  return 0;
+}
+
 static void diag_sample(struct diag_state *state, unsigned int index) {
+  struct diag_post_clocks post;
   const int is_posix = (int)(index & 1U);
   const char *api = is_posix != 0 ? "nanosleep" : "OS1_sleep";
   const int emit = index < 2U || (index & 31U) == 0U;
   long before_ms = get_time();
   uint64_t before_mono = os1_mono_ns();
   uint64_t before_cpu = os1_cpu_ns();
-  int sleep_rc = 0;
+  int sleep_rc;
 
   if (emit != 0)
     printf("[TIMERDIAG] PRE i=%u api=%s\n", index, api);
-  if (is_posix != 0) {
-    struct timespec request = {0, (long)TIMERDIAG_SLEEP_NS};
-    struct timespec remaining = {0, 0};
-    sleep_rc = nanosleep(&request, &remaining);
-  } else {
-    OS1_sleep((int)TIMERDIAG_SLEEP_MS);
-  }
+  sleep_rc = diag_do_sleep(is_posix);
+  diag_read_post_clocks(&post);
 
-  uint64_t after_mono = os1_mono_ns();
-  uint64_t after_cpu = os1_cpu_ns();
-  long after_ms = get_time();
-  struct timespec posix_mono = {0, 0};
-  struct timespec posix_cpu = {0, 0};
-  int mono_rc = clock_gettime(CLOCK_MONOTONIC, &posix_mono);
-  int cpu_rc = clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &posix_cpu);
-  uint64_t elapsed = after_mono >= before_mono ? after_mono - before_mono : 0U;
-  uint64_t cpu_delta = after_cpu >= before_cpu ? after_cpu - before_cpu : 0U;
-  uint64_t get_gap = abs_diff_u64((uint64_t)after_ms * UINT64_C(1000000),
-                                  after_mono);
-  uint64_t mono_gap = abs_diff_u64(timespec_ns(&posix_mono), after_mono);
-  uint64_t cpu_gap = abs_diff_u64(timespec_ns(&posix_cpu), after_cpu);
-  const char *status = diag_status(sleep_rc, mono_rc, cpu_rc, elapsed,
-                                   get_gap, mono_gap, cpu_gap);
-
-  if (after_ms < before_ms)
+  uint64_t elapsed = post.wake_mono >= before_mono
+                         ? post.wake_mono - before_mono : 0U;
+  uint64_t cpu_delta = post.wake_cpu >= before_cpu
+                           ? post.wake_cpu - before_cpu : 0U;
+  const char *status = diag_status(sleep_rc, post.mono_rc, post.cpu_rc,
+                                   elapsed, post.get_gap, post.mono_gap,
+                                   post.cpu_gap);
+  if (post.get_time_ms < before_ms)
     status = "CLOCK_REGRESSION";
-  diag_account(state, is_posix, elapsed, after_ms, after_mono, after_cpu,
-               get_gap, status);
+  diag_account(state, is_posix, elapsed, post.get_time_ms, post.after_mono,
+               post.after_cpu, post.get_gap, status);
   if (emit != 0 || status[0] != 'O')
     printf("[TIMERDIAG] POST i=%u api=%s status=%s get_time_ms=%ld "
            "elapsed_ns=%llu cpu_delta_ns=%llu get_time_gap_ns=%llu "
            "libc_mono_gap_ns=%llu libc_cpu_gap_ns=%llu\n",
-           index, api, status, after_ms, (unsigned long long)elapsed,
-           (unsigned long long)cpu_delta, (unsigned long long)get_gap,
-           (unsigned long long)mono_gap, (unsigned long long)cpu_gap);
+           index, api, status, post.get_time_ms, (unsigned long long)elapsed,
+           (unsigned long long)cpu_delta, (unsigned long long)post.get_gap,
+           (unsigned long long)post.mono_gap,
+           (unsigned long long)post.cpu_gap);
 }
 
 static int diag_finish(struct diag_state *state) {

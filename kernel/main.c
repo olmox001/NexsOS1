@@ -2,7 +2,7 @@
  * kernel/kernel.c
  * Main kernel initialization and entry point
  */
-#include <drivers/keyboard.h>
+#include <drivers/input.h>
 #include <drivers/virtio_blk.h>
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
@@ -21,6 +21,7 @@
 #include <kernel/gpt.h>
 #include <kernel/graphics.h>
 #include <kernel/hal.h>
+#include <hal/time.h>
 #include <kernel/irq.h>
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
@@ -31,6 +32,7 @@
 #include <kernel/ssp.h>
 #include <kernel/string.h>
 #include <kernel/test.h>
+#include <kernel/timer.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 
@@ -237,7 +239,8 @@ static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
   /* System timer */
   pr_info("%s", "Initializing timer...\n");
   driver_timer_init();
-  hal_timer_percpu_init();
+  if (nxhal_time_event_percpu_init(OS1LIBKERNEL_TIMER_HZ) != NXHAL_TIME_OK)
+    panic("%s", "TIME: BSP clockevent initialization failed");
 }
 
 /*
@@ -415,6 +418,10 @@ static void init_memory_core(void) {
   /* Phase 2: Dynamic RAM-aware remapping */
   vmm_dynamic_remap();
 
+  /* Input queue core has no hardware dependency and is initialized before
+   * KTEST so queue semantics can be tested without live providers. */
+  OS1driver_input_core_init();
+
   /* Run unit tests now that PMM/VMM/kmalloc are live: memory tests (kmalloc
    * growth, vmm_protect) need real allocators, so the runner sits after the
    * MM bring-up instead of right after the banner. */
@@ -472,8 +479,8 @@ static void init_memory_subsystems(void) {
   vfs_init();
   pr_info("%s", "VFS: Done.\n");
 
-  /* Initialize Keyboard */
-  keyboard_init();
+  /* Initialize modular input providers after bus/device discovery. */
+  OS1driver_input_providers_init();
 
   /* Initialize System Registry */
   registry_init();
@@ -551,7 +558,8 @@ void kernel_secondary_main(void) {
   /* Initialize per-CPU state */
   hal_cpu_local_init();
   irq_init_percpu();
-  hal_timer_percpu_init();
+  if (nxhal_time_event_percpu_init(OS1LIBKERNEL_TIMER_HZ) != NXHAL_TIME_OK)
+    panic("%s", "TIME: secondary clockevent initialization failed");
 
   /* SMP-IDLE-RACE (#169/#170): do NOT enable interrupts — which lets the timer
    * drive schedule() — until this CPU's idle task is visible.  schedule() picks

@@ -1228,8 +1228,7 @@ static void __proc_create_identity(struct process *proc, int slot,
 
   proc->state = PROC_CREATED;
   proc->first_run = 1; /* ELF loader will initialize context */
-  proc->time_slice = DEFAULT_QUANTUM;
-  proc->quantum_reset = DEFAULT_QUANTUM;
+  proc->quantum_deadline_ns = 0U;
   proc->on_cpu = -1;
   INIT_LIST_HEAD(&proc->wait_queue.task_list);
   spin_lock_init(&proc->wait_queue.lock);
@@ -2157,11 +2156,11 @@ static void __sched_reap_deferred(struct cpu_info *cpu_ptr) {
  * §4): charge the raw counter delta since the last schedule on this CPU to
  * whoever was running (prev), then mark the start count for the task
  * about to be picked. No divide in the hot path; conversion to ns happens
- * only when the value is read. hal_timer_get_count() is lock-free/
- * IRQ-safe. */
+ * only when the value is read. OS1libkernel_time_counter_read() is the
+ * single validated NX-CORE clocksource read path and is IRQ-safe. */
 static void __sched_account_time(struct cpu_info *cpu_ptr,
                                  struct process *prev) {
-  uint64_t now_cnt = hal_timer_get_count();
+  uint64_t now_cnt = OS1libkernel_time_counter_read();
   if (prev && cpu_ptr->sched_run_count)
     prev->cpu_time_counts += now_cnt - cpu_ptr->sched_run_count;
   cpu_ptr->sched_run_count = now_cnt;
@@ -2223,15 +2222,9 @@ static enum sched_retire_result __sched_retire_prev(struct cpu_info *cpu_ptr,
   if (prev->first_run)
     prev->first_run = 0;
 
-  if (prev->state == PROC_RUNNING) {
-    prev->time_slice--;
-    if (prev->time_slice <= 0) {
-      prev->time_slice = prev->quantum_reset; /* quantum exhausted */
-      prev->state = PROC_READY;
-    } else {
-      prev->state = PROC_READY; /* preempted or yielded */
-    }
-  }
+  prev->quantum_deadline_ns = 0U;
+  if (prev->state == PROC_RUNNING)
+    prev->state = PROC_READY;
 
   if (prev->state == PROC_READY) {
     /* Never re-enqueue the CPU-bound idle task: two CPUs sharing one idle
@@ -2400,11 +2393,51 @@ static void __sched_stack_alias_check(uint32_t cpu, struct process *next) {
   }
 }
 
+bool OS1libkernel_sched_quantum_due(uint64_t deadline_ns,
+                                        uint64_t now_ns) {
+  return deadline_ns == 0U || now_ns >= deadline_ns;
+}
+
+static void __sched_arm_quantum(struct process *process) {
+  uint64_t deadline = 0U;
+
+  SCHED_ASSERT(process != NULL, "__sched_arm_quantum: NULL process");
+  SCHED_ASSERT(process->state == PROC_RUNNING,
+               "__sched_arm_quantum: PID %d not RUNNING", (int)process->pid);
+  if (process->priority == PROC_PRIO_IDLE) {
+    process->quantum_deadline_ns = 0U;
+    return;
+  }
+  if (OS1libkernel_time_deadline_after_ns(
+          OS1LIBKERNEL_SCHED_QUANTUM_NS, &deadline) != 0)
+    panic("SCHED: quantum deadline overflow for PID %d", (int)process->pid);
+  process->quantum_deadline_ns = deadline;
+}
+
+hal_frame_t *OS1libkernel_sched_timer_tick(hal_frame_t *regs,
+                                           uint64_t now_ns) {
+  struct cpu_info *cpu = get_cpu_info();
+  struct process *current;
+
+  if (cpu == NULL)
+    panic("%s", "SCHED: timer tick without CPU state");
+  current = cpu->current_task;
+  if (current == NULL || current->priority == PROC_PRIO_IDLE)
+    return schedule(regs);
+  if (current->state != PROC_RUNNING)
+    return schedule(regs);
+  if (!OS1libkernel_sched_quantum_due(current->quantum_deadline_ns, now_ns))
+    return regs;
+
+  current->quantum_deadline_ns = 0U;
+  return schedule(regs);
+}
+
 /*
  * schedule - select and switch to the next runnable process.
  *
- * Called from kernel_timer_tick() (preemption) and from sys_exit /
- * sys_ipc_recv / the YIELD syscall (voluntary yield).
+ * Called for forced scheduling decisions (block, exit, yield, fault) and by
+ * OS1libkernel_sched_timer_tick() only when the monotonic quantum expires.
  *
  * Stages (each a helper above; schedule() itself owns every lock and
  * every IRQ transition — see the SECTION 8 banner for why that stays
@@ -2497,6 +2530,7 @@ hal_frame_t *schedule(hal_frame_t *regs) {
             prev->pid);
     next->state = PROC_RUNNING;
     next->on_cpu = cpu;
+    __sched_arm_quantum(next);
     spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
     local_irq_restore(sched_irq_flags); /* SCHED-IRQ-01: no-switch exit */
     return regs;
@@ -2518,6 +2552,7 @@ hal_frame_t *schedule(hal_frame_t *regs) {
   cpu_ptr->current_task = next;
   next->state = PROC_RUNNING;
   next->on_cpu = cpu;
+  __sched_arm_quantum(next);
 
   __sched_stack_alias_check(cpu, next);
 

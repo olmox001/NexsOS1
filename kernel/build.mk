@@ -27,7 +27,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/drivers/usb/xhci.c \
     $(KERNEL_DIR)/drivers/usb/ehci.c \
     $(KERNEL_DIR)/drivers/usb/uhci.c \
-    $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
+    $(KERNEL_DIR)/drivers/input/core.c \
     $(KERNEL_DIR)/fs/gpt.c \
     $(KERNEL_DIR)/fs/ext4.c \
     $(KERNEL_DIR)/fs/vfs.c \

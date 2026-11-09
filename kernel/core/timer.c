@@ -5,6 +5,7 @@
  * epoch, scheduler cadence, per-CPU time state and software deadlines.
  */
 #include <hal/core.h>
+#include <hal/time.h>
 #include <kernel/cpu.h>
 #include <kernel/list.h>
 #include <kernel/printk.h>
@@ -31,6 +32,7 @@ static uint64_t timer_cpu_late[MAX_CPUS];
 static uint64_t time_boot_counter;
 static uint64_t time_frequency_hz;
 static uint64_t time_snapshot_sequence;
+static uint32_t time_event_flags;
 static uint32_t time_ready;
 
 static uint64_t time_scale_counts(uint64_t counts, uint64_t frequency) {
@@ -46,14 +48,28 @@ static uint64_t time_counter_to_ns(uint64_t counter) {
   return time_scale_counts(counter - time_boot_counter, time_frequency_hz);
 }
 
-void OS1libkernel_time_init(void) {
-  uint64_t frequency = hal_timer_get_freq();
-  uint64_t counter = hal_timer_get_count();
+uint64_t OS1libkernel_time_counter_read(void) {
+  uint64_t counter = 0U;
 
-  if (frequency == 0U)
-    panic("%s", "TIME: HAL published zero counter frequency");
-  time_boot_counter = counter;
-  time_frequency_hz = frequency;
+  if (nxhal_time_counter_read(&counter) != NXHAL_TIME_OK)
+    panic("%s", "TIME: clocksource read failed");
+  return counter;
+}
+
+void OS1libkernel_time_init(void) {
+  struct nxhal_clocksource_v1 source;
+  struct nxhal_clockevent_v1 event;
+
+  if (nxhal_time_clocksource_info(&source) != NXHAL_TIME_OK)
+    panic("%s", "TIME: no validated HAL clocksource");
+  if (nxhal_time_clockevent_info(&event) != NXHAL_TIME_OK)
+    panic("%s", "TIME: no validated HAL clockevent");
+  if ((source.flags & NXHAL_CLOCKSOURCE_MUST_VERIFY) != 0U)
+    pr_warn("%s", "TIME: clocksource requires runtime verification\n");
+
+  time_boot_counter = OS1libkernel_time_counter_read();
+  time_frequency_hz = source.frequency_hz;
+  time_event_flags = event.flags;
   __atomic_store_n(&jiffies, 0U, __ATOMIC_RELEASE);
   __atomic_store_n(&time_ready, 1U, __ATOMIC_RELEASE);
 }
@@ -69,12 +85,28 @@ uint64_t OS1libkernel_time_counts_to_ns(uint64_t counts) {
 }
 
 uint64_t OS1libkernel_time_monotonic_ns(void) {
-  uint64_t counter;
-
   if (__atomic_load_n(&time_ready, __ATOMIC_ACQUIRE) == 0U)
     panic("%s", "TIME: monotonic clock requested before initialization");
-  counter = hal_timer_get_count();
-  return time_counter_to_ns(counter);
+  return time_counter_to_ns(OS1libkernel_time_counter_read());
+}
+
+int OS1libkernel_time_deadline_after_ns(uint64_t delta_ns,
+                                        uint64_t *deadline_ns) {
+  uint64_t now;
+
+  if (deadline_ns == NULL || delta_ns == 0U)
+    return -1;
+  now = OS1libkernel_time_monotonic_ns();
+  if (delta_ns > UINT64_MAX - now)
+    return -1;
+  *deadline_ns = now + delta_ns;
+  return 0;
+}
+
+bool OS1libkernel_time_deadline_reached(uint64_t deadline_ns) {
+  if (deadline_ns == 0U)
+    return true;
+  return OS1libkernel_time_monotonic_ns() >= deadline_ns;
 }
 
 static uint64_t timer_interval_counts(struct cpu_info *cpu) {
@@ -89,6 +121,25 @@ static uint64_t timer_interval_counts(struct cpu_info *cpu) {
     cpu->tick_error_acc -= OS1LIBKERNEL_TIMER_HZ;
   }
   return interval;
+}
+
+static uint64_t timer_checked_add(uint64_t value, uint64_t delta) {
+  if (delta > UINT64_MAX - value)
+    panic("%s", "TIME: hardware counter deadline overflow");
+  return value + delta;
+}
+
+static void timer_program_target(uint64_t target) {
+  int status;
+
+  if ((time_event_flags & NXHAL_CLOCKEVENT_ABSOLUTE) == 0U) {
+    if ((time_event_flags & NXHAL_CLOCKEVENT_PERIODIC) != 0U)
+      return;
+    panic("%s", "TIME: clockevent has no scheduling mode");
+  }
+  status = nxhal_time_event_program_absolute(target);
+  if (status != NXHAL_TIME_OK)
+    panic("TIME: absolute clockevent programming failed: %d", status);
 }
 
 static void timer_publish_cpu(struct cpu_info *cpu, uint64_t counter,
@@ -118,18 +169,19 @@ static void timer_publish_cpu(struct cpu_info *cpu, uint64_t counter,
 
 uint64_t OS1libkernel_timer_percpu_arm(void) {
   struct cpu_info *cpu = get_cpu_info();
-  uint64_t now;
   uint64_t interval;
+  uint64_t now;
 
   if (cpu == NULL)
     panic("%s", "TIME: per-CPU arm without CPU state");
   if (__atomic_load_n(&time_ready, __ATOMIC_ACQUIRE) == 0U)
     panic("%s", "TIME: per-CPU arm before global clock initialization");
+
   cpu->tick_error_acc = 0U;
   interval = timer_interval_counts(cpu);
-  now = hal_timer_get_count();
-  cpu->next_tick_target = now + interval;
-  hal_timer_set_compare(cpu->next_tick_target);
+  now = OS1libkernel_time_counter_read();
+  cpu->next_tick_target = timer_checked_add(now, interval);
+  timer_program_target(cpu->next_tick_target);
   timer_publish_cpu(cpu, now, cpu->next_tick_target, cpu->tick_count);
   return cpu->next_tick_target;
 }
@@ -142,13 +194,13 @@ uint64_t OS1libkernel_timer_percpu_tick(void) {
   if (cpu == NULL)
     panic("%s", "TIME: timer IRQ without CPU state");
   interval = timer_interval_counts(cpu);
-  now = hal_timer_get_count();
-  cpu->next_tick_target += interval;
+  now = OS1libkernel_time_counter_read();
+  cpu->next_tick_target = timer_checked_add(cpu->next_tick_target, interval);
   if (cpu->next_tick_target <= now) {
     ++timer_cpu_late[cpu->cpu_id];
-    cpu->next_tick_target = now + interval;
+    cpu->next_tick_target = timer_checked_add(now, interval);
   }
-  hal_timer_set_compare(cpu->next_tick_target);
+  timer_program_target(cpu->next_tick_target);
   timer_publish_cpu(cpu, now, cpu->next_tick_target, cpu->tick_count + 1U);
   return cpu->next_tick_target;
 }
@@ -223,7 +275,7 @@ hal_frame_t *OS1libkernel_timer_tick(hal_frame_t *frame) {
   uint64_t now_ns;
 
   if (panic_flag != 0) {
-    hal_timer_control(0U);
+    (void)nxhal_time_event_stop();
     hal_cpu_halt();
   }
   cpu = get_cpu_info();
@@ -236,7 +288,7 @@ hal_frame_t *OS1libkernel_timer_tick(hal_frame_t *frame) {
     __atomic_store_n(&jiffies, expected, __ATOMIC_RELEASE);
   }
   timer_fire_due(cpu, now_ns);
-  return schedule(frame);
+  return OS1libkernel_sched_timer_tick(frame, now_ns);
 }
 
 void OS1libkernel_timer_setup(struct OS1libkernel_timer *timer,

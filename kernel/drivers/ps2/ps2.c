@@ -1,6 +1,6 @@
 /* kernel/drivers/ps2/ps2.c */
 #include <hal/core.h>
-#include <drivers/keyboard.h>
+#include <drivers/input.h>
 #include <drivers/ps2.h>
 #include <drivers/virtio_input.h>
 #include <kernel/io_poll.h>
@@ -71,9 +71,9 @@ static void ps2_keyboard_handler(uint32_t irq, void *data) {
   uint16_t code = scancode & 0x7F;
   int pressed = (scancode & 0x80) == 0;
 
-  input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_KEYBOARD,
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_KEYBOARD,
                            EV_KEY, code, pressed ? 1 : 0);
-  input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_KEYBOARD,
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_KEYBOARD,
                            EV_SYN, 0, 0);
 }
 
@@ -102,23 +102,23 @@ static void ps2_mouse_handler(uint32_t irq, void *data) {
 
   uint8_t status = mouse_packet[0];
 
-  input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_LEFT, (status & 0x01) ? 1 : 0);
-  input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_RIGHT, (status & 0x02) ? 1 : 0);
-  input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_MIDDLE, (status & 0x04) ? 1 : 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_LEFT, (status & 0x01) ? 1 : 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_RIGHT, (status & 0x02) ? 1 : 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_MIDDLE, (status & 0x04) ? 1 : 0);
 
   /* Skip motion when the device flags an X/Y overflow — the deltas are bogus. */
   if (!(status & 0xC0)) {
     int dx = (int8_t)mouse_packet[1];
     int dy = -(int8_t)mouse_packet[2];
     if (dx)
-      input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_X, dx);
+      OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_X, dx);
     if (dy)
-      input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_Y, dy);
+      OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_Y, dy);
     if (mouse_has_wheel && mouse_packet[3] != 0)
-      input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_WHEEL, (int8_t)mouse_packet[3]);
+      OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_WHEEL, (int8_t)mouse_packet[3]);
   }
 
-  input_report_from_device(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_SYN, 0, 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_SYN, 0, 0);
 }
 
 void ps2_init(void) {

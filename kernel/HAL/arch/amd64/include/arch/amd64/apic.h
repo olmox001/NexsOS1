@@ -78,9 +78,9 @@ static inline void lapic_write(uint32_t reg, uint32_t val) {
 void lapic_init(void);
 void lapic_eoi(void);
 uint32_t lapic_get_id(void);
-void lapic_send_ipi(uint32_t lapic_id, uint32_t flags);
+int lapic_send_ipi(uint32_t lapic_id, uint32_t flags);
 void lapic_timer_calibrate(void);
-void lapic_timer_setup(uint32_t hz);
+int lapic_timer_setup(uint64_t hz);
 void lapic_timer_stop(void);
 
 /* tsc_calibrate: measure the TSC frequency against the PIT and publish it into
@@ -89,5 +89,6 @@ void lapic_timer_stop(void);
  * arch_impl_timer_get_freq() (arch/arch.h) to feed the arch-neutral mono_ns(). */
 void tsc_calibrate(void);
 extern uint64_t tsc_hz;
+extern uint32_t ticks_per_ms;
 
 #endif /* ARCH_AMD64_APIC_H */
