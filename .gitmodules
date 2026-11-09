@@ -44,4 +44,5 @@
 	branch = nexsos-port
 [submodule "boot/grub/upstream"]
 	path = boot/grub/upstream
-	url = https://gitlab.freedesktop.org/gnu-grub/grub.git
+	url = https://github.com/olmox001/grub.git
+	branch = nexsos-port

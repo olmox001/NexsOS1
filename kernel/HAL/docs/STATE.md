@@ -142,3 +142,90 @@
   build observed during qualification was a full userland/rootfs rebuild
   (SDL/Lua/gnulib/apps + ext4 image population), not a GRUB rebuild; incremental
   rootfs/userland dependency granularity remains a separate build-system task.
+
+## Diagnostic stop point — 2026-11-09
+
+The HAL split is not complete.  The current tree has a useful mechanical
+boundary and several real versioned protocols, but it must not be described as
+repository-independent or semantically clean yet.
+
+Verified strengths at this stop point:
+
+- NX-CORE generic C/H source has zero direct `arch/*` includes and zero
+  `ARCH_AMD64`/`ARCH_AARCH64` conditional branches under the boundary scan.
+- NX-CORE links architecture implementation through one `libnxhal.a` archive.
+- Versioned Core/HAL protocols exist for fault, diagnostics, timer, SMP, device,
+  IRQ, CPU, uaccess and memory interactions.
+- Consolidated link audits currently leave only runtime/compiler/image symbols
+  on amd64; AArch64 additionally retains the FDT/boot reverse edges listed
+  below.
+- Both architecture builds and the five runtime lanes were qualified before
+  this stop point; keyboard-navigation regression coverage is permanent in
+  `nxadb test`.
+
+Blocking architectural debt still present:
+
+1. **Device drivers are still inside HAL providers.**
+   `arch/aarch64/devices/gic.c`, `uart_pl011.c`,
+   `arch/amd64/devices/uart_16550.c` and `pic_pit.c` contain real driver
+   policy, buffering, IRQ registration and device/controller behavior.  They
+   are not ISA primitives.  `virtio.c` under both provider trees also depends
+   on the kernel driver interface.  These must be moved to the proper
+   driver/service layer and consume HAL resource/transport primitives instead.
+   Interrupt/timer hardware primitives that genuinely belong to the provider
+   must be separated from driver policy rather than moving the current files
+   wholesale.
+
+2. **HAL provider source still depends on NX-CORE private headers.**
+   28 provider files currently include `kernel/*` headers, including scheduler,
+   fault, IRQ, PMM/VMM, platform, memory-layout and string/type internals.  The
+   standalone HAL build hides this problem by adding `-I$(KERNEL_ROOT)/include`
+   plus the Core ABI/API include paths.
+
+3. **The HAL core still contains provider selection.**
+   `HAL/core/core.c` directly includes `arch/arch.h` and still has an
+   `ARCH_AMD64` conditional for port I/O.  `HAL/core/frame.c` directly
+   includes `arch/pt_regs.h` and branches on `ARCH_AARCH64`.  Provider-private
+   frame/ISA implementation must sit behind provider operations so the HAL core
+   itself is architecture-neutral.
+
+4. **AArch64 still has direct FDT/Core reverse edges.**
+   The consolidated AArch64 HAL object still imports `boot_fdt_ptr`,
+   `boot_fdt_size`, `fdt_count_cpus` and `fdt_get_mem_regions`.
+   Boot/FDT data must cross a normalized HAL-owned boot descriptor/protocol,
+   never Core globals/functions.
+
+5. **NX-CORE build is not independent of HAL/provider selection.**
+   `kernel/Makefile` still selects `HAL/arch/<isa>`, passes `-DARCH_*`,
+   exposes the private provider include directory and consumes the provider
+   linker script directly.  A future standalone NX-CORE repository must
+   compile against only a neutral HAL SDK/contract; provider selection and
+   image/link integration belong to the coordinating build layer.
+
+6. **NX-HAL standalone build is not standalone.**
+   `HAL/Makefile` includes `../config/toolchain-versions.env` and Core
+   include/ABI/API directories.  A clone of HAL by itself cannot currently
+   build from its own declared dependencies.
+
+7. **Resource/capability semantics are not yet the authoritative device path.**
+   `hal/resource.h` has bounded resources, grants and rights, but live device
+   discovery still publishes raw `nxhal_device_desc.base` and `.irq`.
+   Provider/device code does not yet consume grants/resources as the mandatory
+   access path, so the capability model is presently parallel validation rather
+   than enforced hardware authority.
+
+8. **The boundary gate is incomplete by design.**
+   `tools/audit-boundary.sh` rejects selected migrated symbol families and
+   generic NX-CORE ISA leaks, but does not reject HAL provider inclusion of
+   Core-private headers.  Its PASS therefore means “no regression in the
+   already-migrated symbol families”, not “HAL/Core separation complete”.
+
+9. **Assembly/frame ABI reconstruction remains unfinished.**
+   AMD64 syscall/ISR/context assembly and AArch64 exception assembly still carry
+   hand-maintained provider frame offsets.  C static assertions protect some
+   layouts, but there is not yet one assembler-safe provider ABI definition
+   consumed and checked by both sides.
+
+Work is intentionally stopped at this diagnostic checkpoint.  No further HAL
+migration should be marked complete until these debts are addressed and
+requalified on both architectures.

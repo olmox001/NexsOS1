@@ -50,3 +50,25 @@
     pipeline/host fingerprint changes. Separately make userland/rootfs image
     construction incremental so a HAL/kernel-only change does not rebuild
     unrelated SDL/Lua/gnulib/apps or repopulate the whole ext4 image.
+
+## Resume order after diagnostic stop point
+
+20. Remove full device/controller drivers from HAL ownership.  First separate
+    provider primitives from driver policy for UART, GIC/PIC, PIT/timer and
+    VirtIO; then place drivers in the driver/service layer and make them consume
+    explicit HAL resources/transports.
+21. Make HAL source independent from NX-CORE headers and types.  Turn the
+    current 28 provider-private `kernel/*` includes into neutral HAL ABI types
+    or versioned inbound protocols; remove Core include paths from HAL/Makefile.
+22. Remove ISA/provider selection from HAL/core and from the NX-CORE build:
+    provider-private frame/port-I/O/ISA operations belong behind provider ops,
+    while provider/linker selection moves to the coordinating build layer.
+23. Normalize the remaining AArch64 FDT globals/functions into the HAL boot
+    descriptor and require a zero unapproved reverse-edge link audit.
+24. Make the resource/grant model authoritative for discovered devices and
+    hardware access; raw base/IRQ descriptors must not bypass resource rights.
+25. Strengthen the boundary gate to fail on HAL -> Core private includes,
+    provider-layout leakage and forbidden raw device-driver dependencies.
+26. Standardize assembly-visible trap/syscall/context frame offsets from one
+    provider-private ABI definition and re-run static, cross, standalone,
+    five-lane nxadb and independent `make run` qualification.

@@ -1,8 +1,11 @@
 # NexsOS1 GRUB source, build and prebuilt contract
 
 `boot/grub/upstream` is the only GRUB source checkout owned by this project.
-It is a git submodule pinned by the top-level gitlink and locked again by
-`boot/grub/manifest.env`.
+It is a git submodule fetched from `https://github.com/olmox001/grub.git`
+(branch `nexsos-port`), pinned by the top-level gitlink and locked again by
+`boot/grub/manifest.env`.  The official GNU GRUB GitLab repository remains the
+`upstream` remote inside that checkout; NexsOS1 consumes the GitHub repository
+exactly like the other project-owned external submodules.
 
 Current source lock:
 
