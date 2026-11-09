@@ -3,19 +3,19 @@
  * USB HID boot-protocol class driver.
  *
  * Translates boot keyboard (8-byte) and boot mouse (3-4 byte) reports into the
- * existing evdev input core (OS1driver_input_publish), exactly as the PS/2 and
- * virtio-input drivers do. usb_hid_poll() is called from the same place that
- * services keyboard_poll().
+ * unified evdev-style input core (OS1driver_input_publish), exactly as the
+ * PS/2 and virtio-input providers do. usb_hid_poll() is retained only for
+ * controllers that still require bounded compatibility polling.
  */
 
 #include <drivers/usb/usb.h>
-#include <drivers/virtio_input.h>
+#include <drivers/input_codes.h>
 #include <drivers/input.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
 
-/* HID reports are translated to evdev events and pushed through the unified
- * input_report_from() sink (keyboard.c), exactly like virtio-input and PS/2.
+/* HID reports are translated to evdev events and published through the
+ * driver-neutral input core, exactly like VirtIO input and PS/2.
  */
 
 #define MAX_HID_DEVICES 8

@@ -86,6 +86,31 @@ class NxadbFirmwareTests(unittest.TestCase):
                 nxadb.build_qemu_cmdline(session)
             self.assertEqual(build.call_args.kwargs["firmware"], "uefi")
 
+    def test_shell_navigation_probe_replays_history(self) -> None:
+        session = SimpleNamespace(qmp_sock=Path("/tmp/qmp"), log_size=lambda: 17)
+        marker = "NXADB_NAV_UP_HISTORY"
+        with (
+            patch.object(nxadb, "run_shell_c", return_value=(0, marker + "\n")),
+            patch.object(nxadb, "qmp_special") as special,
+            patch.object(nxadb, "wait_for_prompt", return_value=marker + "\n"),
+        ):
+            healthy, _ = nxadb._shell_navigation_probe(session)
+        self.assertTrue(healthy)
+        self.assertEqual(
+            [call.args[1] for call in special.call_args_list], ["up", "ret"]
+        )
+
+    def test_shell_navigation_probe_rejects_missing_replay(self) -> None:
+        session = SimpleNamespace(qmp_sock=Path("/tmp/qmp"), log_size=lambda: 23)
+        marker = "NXADB_NAV_UP_HISTORY"
+        with (
+            patch.object(nxadb, "run_shell_c", return_value=(0, marker + "\n")),
+            patch.object(nxadb, "qmp_special"),
+            patch.object(nxadb, "wait_for_prompt", return_value="NXShell:/home> "),
+        ):
+            healthy, _ = nxadb._shell_navigation_probe(session)
+        self.assertFalse(healthy)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -72,8 +72,8 @@
   scheduler now owns a 30 ms monotonic deadline and timer IRQs reschedule only
   when that deadline expires (idle/non-running states remain immediate).
 - The time/scheduler snapshot passes clean NX-CORE builds on both ISAs and the
-  full five-lane nxadb matrix: amd64 GRUB-BIOS/GRUB-UEFI/direct 22/22 KTEST,
-  AArch64 GRUB-UEFI/direct 23/23 KTEST, timerdiag + counter heartbeat +
+  full five-lane nxadb matrix: amd64 GRUB-BIOS/GRUB-UEFI/direct 24/24 KTEST,
+  AArch64 GRUB-UEFI/direct 25/25 KTEST, timerdiag + counter heartbeat +
   shell-after-heartbeat PASS, zero detected faults.
 - Performance measurement after removing 1 kHz forced preemption still observes
   roughly 1.06-1.12k context switches/s on the current amd64 desktop. This is
@@ -102,8 +102,24 @@
   HAL host/cross/sanitizer/static, both standalone HAL boundary audits, clean
   NX-CORE builds and complete amd64/aarch64 rootfs builds pass. All five nxadb
   runtime lanes pass with interactive shell/timerdiag/heartbeat/post-heartbeat
-  shell and zero faults: amd64 GRUB-BIOS/GRUB-UEFI/direct 22/22 KTEST and
-  AArch64 GRUB-UEFI/direct 23/23 KTEST.
+  shell and zero faults: amd64 GRUB-BIOS/GRUB-UEFI/direct 24/24 KTEST and
+  AArch64 GRUB-UEFI/direct 25/25 KTEST.
+- Keyboard navigation is now explicitly qualified end-to-end. Common evdev
+  codes live in `drivers/input_codes.h` instead of the VirtIO driver header;
+  PS/2 Set-1 has a bounded E0/E1 decoder that maps arrows/navigation/right-side
+  modifiers to canonical evdev codes, and `nxkeyboardd` forwards scancode-only
+  keys with ASCII=0 instead of dropping them. Two new KTEST cases cover PS/2
+  extended press/release and navigation decoding. The PS/2 controller bring-up
+  was also split into bounded controller/mouse/IRQ helpers: source-local
+  Power12 audit reports no heap/goto/unbounded loops, `ps2_init` is 17 lines,
+  the largest IRQ handler is 38 lines, and the decoder is 31 lines.
+  `nxadb test` now includes `SHELL-UP-HISTORY=PASS`, proving real Up-arrow
+  history recall through the VirtIO/input-core/user-service/IPC/NXShell path on
+  every runtime lane.
+- The post-fix five-lane navigation gate passes on amd64 BIOS/UEFI/direct and
+  AArch64 UEFI/direct with timerdiag, short heartbeat, post-heartbeat shell,
+  24/24 (amd64) or 25/25 (AArch64) KTEST and zero detected faults. Separate
+  `make run` image/direct gates also reach NXShell on both architectures.
 - Independent `make run` boot qualification reaches NXShell in all five
   current Makefile lanes: amd64 GRUB-BIOS, amd64 GRUB-UEFI, amd64 direct,
   AArch64 GRUB-UEFI and AArch64 direct. Runtime policy for both image and direct
@@ -118,6 +134,11 @@
   `build/cache/grub/prebuilt/<target>`, survive `make clean`, and are reused
   without recreating `build/grub/<target>`. Package/install round trips with
   version, commit, pipeline, host and tree-hash validation pass; all three
-  targets also pass delete-scratch/reuse tests. Clean AMD64 BIOS+UEFI and
-  AArch64 UEFI media builds consume those prebuilt stages, and El Torito
-  inspection confirms distinct BIOS/UEFI boot entries.
+  targets also pass delete-scratch/reuse tests. Measured warm reuse on the
+  current macOS host is 0-1 seconds for i386-pc, x86_64-efi and arm64-efi,
+  with no configure/build tree recreation. Clean AMD64 BIOS+UEFI and AArch64
+  UEFI media builds consume those prebuilt stages, and El Torito inspection
+  confirms distinct BIOS/UEFI boot entries. The remaining long AArch64 image
+  build observed during qualification was a full userland/rootfs rebuild
+  (SDL/Lua/gnulib/apps + ext4 image population), not a GRUB rebuild; incremental
+  rootfs/userland dependency granularity remains a separate build-system task.

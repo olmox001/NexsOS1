@@ -34,10 +34,11 @@ static void route_key(unsigned code, int value, struct keyboard_state *state) {
   if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) { state->shift = value != 0; return; }
   if (code == KEY_LEFTCTRL || code == KEY_RIGHTCTRL) { state->ctrl = value != 0; return; }
   if (code == KEY_CAPSLOCK && value == 1) { state->caps = !state->caps; return; }
-  if (code >= 128) return;
   int upper = state->shift;
+  unsigned char ch = 0;
   if (letter(code)) upper ^= state->caps;
-  unsigned char ch = (unsigned char)(upper ? shifted_map[code] : plain[code]);
+  if (code < 128)
+    ch = (unsigned char)(upper ? shifted_map[code] : plain[code]);
   int ctrl_key = 0;
   if (state->ctrl && ch >= 'a' && ch <= 'z') { ch = (unsigned char)(ch - 'a' + 1); ctrl_key = 1; }
   else if (state->ctrl && ch >= 'A' && ch <= 'Z') { ch = (unsigned char)(ch - 'A' + 1); ctrl_key = 1; }
@@ -48,7 +49,6 @@ static void route_key(unsigned code, int value, struct keyboard_state *state) {
     else if (code == 41) ch = 0xf9;
     else if (code == 43) ch = 0xec;
   }
-  if (!ch) return;
   struct window_info windows[40];
   long n = OS1_window_enum(windows, 40);
   int focus = 0;

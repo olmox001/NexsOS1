@@ -45,8 +45,9 @@
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
 #include <drivers/input.h>
+#include <drivers/input_codes.h>
+#include <drivers/ps2.h>
 #include <drivers/timer.h>
-#include <drivers/virtio_input.h>
 #if HAL_HAS_FDT
 #include <kernel/fdt.h>
 #include <kernel/fdt_parser.h>
@@ -191,6 +192,48 @@ KTEST_CASE(test_input_mouse_queue) {
                    &event, UINT32_C(99), OS1_INPUT_READ_TRY), -EINVAL);
     KASSERT_EQ(OS1libkernel_input_read_raw(
                    &event, OS1_INPUT_ROLE_MOUSE, UINT32_C(99)), -EINVAL);
+}
+
+KTEST_CASE(test_ps2_set1_arrow_decode) {
+    struct ps2_keyboard_decoder decoder;
+    struct ps2_key_event event = {0};
+
+    ps2_keyboard_decoder_init(&decoder);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xE0), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0x48), &event), 1);
+    KASSERT_EQ(event.code, KEY_UP);
+    KASSERT_EQ(event.value, 1);
+
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xE0), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xC8), &event), 1);
+    KASSERT_EQ(event.code, KEY_UP);
+    KASSERT_EQ(event.value, 0);
+}
+
+KTEST_CASE(test_ps2_set1_navigation_decode) {
+    struct ps2_keyboard_decoder decoder;
+    struct ps2_key_event event = {0};
+
+    ps2_keyboard_decoder_init(&decoder);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0x1E), &event), 1);
+    KASSERT_EQ(event.code, KEY_A);
+    KASSERT_EQ(event.value, 1);
+
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xE0), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0x4B), &event), 1);
+    KASSERT_EQ(event.code, KEY_LEFT);
+
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xE0), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xD3), &event), 1);
+    KASSERT_EQ(event.code, KEY_DELETE);
+    KASSERT_EQ(event.value, 0);
+
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xE1), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0x1D), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0x45), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xE1), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0x9D), &event), 0);
+    KASSERT_EQ(ps2_keyboard_decode_set1(&decoder, UINT8_C(0xC5), &event), 0);
 }
 
 /* The boot map may be unsorted and contain overlapping usable descriptors.

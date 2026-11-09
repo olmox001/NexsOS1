@@ -1100,6 +1100,29 @@ def _shell_health_probe(session: Session) -> Tuple[bool, str]:
     return healthy, output
 
 
+def _shell_navigation_probe(session: Session) -> Tuple[bool, str]:
+    marker = "NXADB_NAV_UP_HISTORY"
+    code, output = run_shell_c(session, f"echo {marker}", timeout=20)
+    if code != 0:
+        return False, output
+
+    initial_lines = [
+        strip_ansi(line).strip() for line in output.replace("\r", "").splitlines()
+    ]
+    if marker not in initial_lines:
+        return False, output
+
+    before = session.log_size()
+    qmp_special(session.qmp_sock, "up")
+    qmp_special(session.qmp_sock, "ret")
+    repeated = wait_for_prompt(session, before, timeout=10)
+    repeated_lines = [
+        strip_ansi(line).strip()
+        for line in repeated.replace("\r", "").splitlines()
+    ]
+    return marker in repeated_lines, repeated
+
+
 def _run_timerdiag(session: Session) -> Tuple[bool, str]:
     code, output = run_shell_c(session, "/sys/bin/nxtimerdiag --probe", timeout=45)
     clean = strip_ansi(output)
@@ -1167,6 +1190,14 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
         else:
             results.append("SHELL-INTERACTION=FAIL")
             verdict = "FAULT"
+
+        if verdict != "FAULT":
+            navigation_ok, _ = _shell_navigation_probe(session)
+            if navigation_ok:
+                results.append("SHELL-UP-HISTORY=PASS")
+            else:
+                results.append("SHELL-UP-HISTORY=FAIL")
+                verdict = "FAULT"
 
         if verdict != "FAULT":
             timer_ok, _ = _run_timerdiag(session)

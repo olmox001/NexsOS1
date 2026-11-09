@@ -41,3 +41,12 @@
     deadline model; never encode device readiness as object-type policy.
 17. After each driver/service migration, measure wakeups/context switches and
     repeat all five runtime lanes before claiming a performance improvement.
+18. Keep navigation-key regression coverage permanent: PS/2 extended Set-1
+    decoding must have direct KTEST coverage and every nxadb runtime lane must
+    pass the real `SHELL-UP-HISTORY` probe through the userland keyboard
+    service; ASCII-only tests are insufficient.
+19. Keep GRUB source builds out of ordinary iteration. Reuse only fingerprinted
+    `build/cache/grub/prebuilt/<target>` stages unless the source/patchset/
+    pipeline/host fingerprint changes. Separately make userland/rootfs image
+    construction incremental so a HAL/kernel-only change does not rebuild
+    unrelated SDL/Lua/gnulib/apps or repopulate the whole ext4 image.
