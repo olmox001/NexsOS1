@@ -91,7 +91,7 @@ The generated kernel TIME statistics transport currently uses
 `os1_timer_stats_snapshot_v4`, but the public SDK API no longer embeds
 a revision-suffixed TIME statistics type. `system/lib/lib.c` exposes a
 caller-sized privileged raw read without naming the wire structure.
-`nxtimerd` alone reads that revisioned object and validates wire ABI version,
+`nxtimerdd` alone reads that revisioned object and validates wire ABI version,
 record sizes and bounded CPU count. It copies the 23 meaningful fields of each
 CPU record into the stable SDK service model; the SDK client checks the
 bounded response before presenting it to `nxtimerdiag` and future programs.

@@ -648,12 +648,25 @@ def stop_qemu(session: Session) -> None:
     print("[nxadb] stopped")
 
 
+def boot_has_live_userland(text: str) -> bool:
+    """Boot acceptance needs evidence of a real running shell, not a K3 log.
+
+    Accept the prior supervisor marker for older images, but recognize the
+    new kernel-agnostic initial-task handoff plus a live userland shell.
+    wait_for_shell() separately verifies the actual interactive prompt.
+    """
+    if "Entering supervisor loop" in text:
+        return True
+    return bool(re.search(r"K3: Initialized PID 1\b", text) and
+                SHELL_ALIVE_RE.search(strip_ansi(text)))
+
+
 def wait_for_boot(session: Session, timeout: int = 90) -> bool:
     print("[nxadb] waiting for kernel...", end="", flush=True)
     t0 = time.time()
     while time.time() - t0 < timeout:
         text = session.log_text()
-        if "Entering supervisor loop" in text:
+        if boot_has_live_userland(text):
             print(" ok")
             return True
         if FAULT_RE.search(text):

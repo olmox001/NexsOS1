@@ -66,6 +66,10 @@
  * OS1_RIGHT_ALL: it is stripped before the handle is installed, so it never
  * appears in cap_query results and cannot be duplicated/granted. */
 #define OS1_RIGHT_CREATE    (1u << 6)
+/* Acquisition-only private service PORT creation. The creator must have
+ * MACHINE authority, and only a delegated SEND handle reaches userland.
+ * The flag is stripped from installed rights and cannot be inherited. */
+#define OS1_PORT_CREATE_PRIVATE (1u << 8)
 
 /* Control verbs for OS1_object_ctl(handle, cmd, arg) — type-specific actions
  * on an object you hold a capability to (seL4: the right IS the authority). */
@@ -99,6 +103,9 @@
 #define OBJ_CTL_MKDIR    12 /* DIR: create the one-component name at user pointer
                              * `arg` (needs RIGHT_MUTATE).  The parent directory
                              * capability names the namespace being changed.      */
+/* PORT: non-blocking dequeue. arg is a user struct ipc_message*; READ right
+ * required. Returns message bytes, -EAGAIN when empty, -EPIPE if closed. */
+#define OBJ_CTL_PORT_TRY_RECV 14
 #define OBJ_CTL_UNLINK   13 /* DIR: remove the one-component name at user pointer
                              * `arg` (needs RIGHT_MUTATE).  Recursive removal is
                              * deliberately a userland composition.              */

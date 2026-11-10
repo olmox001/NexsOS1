@@ -13,7 +13,7 @@
 #define OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT UINT32_C(4096)
 
 /* Stable service data model. The kernel TIME wire ABI version is private to
- * nxtimerd; applications do not depend on revision-suffixed contract structs.
+ * nxtimerdd; applications do not depend on revision-suffixed contract structs.
  * Changes to kernel wire transport are translated by the privileged service. */
 struct os1_time_service_timer_cpu {
   uint32_t cpu_id;
@@ -52,7 +52,6 @@ struct os1_time_service_timer_stats {
  * The privileged daemon owns the underlying OS1_NS_TIME capability; clients do
  * not acquire hardware-facing timer objects directly. */
 int OS1_time_service_snapshot(struct os1_time_snapshot_v1 *snapshot);
-int OS1_time_service_timer_stats(
-    struct os1_time_service_timer_stats *snapshot);
+int OS1_time_service_timer_stats(struct os1_time_service_timer_stats *snapshot);
 
 #endif /* OS1_TIME_SERVICE_H */

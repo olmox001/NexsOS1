@@ -90,14 +90,14 @@
     "system/include/api/os1_time_service.h::OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT": {
       "kind": "security_policy",
       "provenance": "supervised service generation policy",
-      "rationale": "bounds requests handled by one nxtimerd process generation before nxinit rotates the service"
+      "rationale": "bounds requests handled by one nxtimerdd process generation before nxinit rotates the service"
     },
-    "user/sys/services/nxtimerd.c::TIMERD_MAX_REPLY": {
+    "user/sys/services/nxtimerdd.c::TIMERD_MAX_REPLY": {
       "kind": "wire_contract",
       "provenance": "sizeof(struct os1_time_service_timer_stats)",
       "rationale": "largest TIME service response defined by the generated TIME ABI contract"
     },
-    "user/sys/services/nxtimerd.c::TIMERD_CLAIM_TRIES": {
+    "user/sys/services/nxtimerdd.c::TIMERD_CLAIM_TRIES": {
       "kind": "service_restart_policy",
       "provenance": "nxinit supervised named-port handover window",
       "rationale": "bounds name-claim retries after a prior service receiver is being torn down"
@@ -131,6 +131,38 @@
       "kind": "test_quantum",
       "provenance": "10 ms diagnostic polling quantum",
       "rationale": "limits observation overhead while preserving a finite stress timeout"
+    },
+    "kernel/main.c::NX_BOOT_EXEC_MAX": {
+      "kind": "boot_manifest_contract",
+      "provenance": "kernel K3 bounded initial executable path, /sbin basename <= 89 ASCII chars",
+      "rationale": "reject overflow or malformed manifest before allocating authoritative PID1"
+    },
+    "system/include/api/os1.h::MAX_PROCESSES": {
+      "kind": "process_pool_contract",
+      "provenance": "NX-CORE kernel/include/abi/sched ABI process pool count 64; dynamic CPU idle band separate",
+      "rationale": "public process inventory and userland test resource budgeting use the same bound"
+    },
+    "user/sys/bin/nxtestrunner.c::NXTEST_POLL_LIMIT": {
+      "kind": "test_timeout",
+      "provenance": "6000 x NXTEST_POLL_MS=20ms, at most 120s for each real child",
+      "rationale": "failed or hung userland test must fail and be killed, not falsely count as pass"
+    },
+    "user/sys/bin/nxtestrunner.c::NXTEST_REAP_LIMIT": {
+      "kind": "test_timeout",
+      "provenance": "20 x NXTEST_POLL_MS=20ms, 400ms bounded post-kill reap",
+      "rationale": "failed child teardown is reported without indefinite waiting"
+    }
+  },
+  "operations": {
+    "kernel/include/abi/object.h::OBJ_CTL_PORT_TRY_RECV": {
+      "id": 14,
+      "owner": "NX-CORE object capability PORT operation, shared kernel/SDK wire contract",
+      "work_bound": "dequeue at most one 88-byte message from a 32-cell kernel PORT ring, -EAGAIN if empty"
+    },
+    "system/include/contract/object.h::OBJ_CTL_PORT_TRY_RECV": {
+      "id": 14,
+      "owner": "NX-CORE object capability PORT operation, shared kernel/SDK wire contract",
+      "work_bound": "dequeue at most one 88-byte message from a 32-cell kernel PORT ring, -EAGAIN if empty"
     }
   }
 }

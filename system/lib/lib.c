@@ -545,6 +545,12 @@ int OS1_port_create(const char *name) {
       OS1_RIGHT_READ | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE,
       OBJ_TYPE_PORT));
 }
+int OS1_port_create_private(const char *name) {
+  return (int)OS1low_handle_create(
+      OS1_NS_PORT, name,
+      OS1_RIGHT_READ | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE |
+      OS1_PORT_CREATE_PRIVATE, OBJ_TYPE_PORT);
+}
 int OS1_port_open(const char *name) {
   /* No READ: a client gets a SEND-only capability to an existing service. */
   return (int)errno_ret(OS1low_handle_create(
@@ -559,6 +565,11 @@ long OS1_port_send_caps(int handle, struct ipc_message *msg, const int *fds,
 }
 long OS1_port_recv(int handle, struct ipc_message *msg) {
   return errno_ret(OS1_object_read(handle, msg, sizeof(struct ipc_message)));
+}
+long OS1_port_try_recv(int handle, struct ipc_message *msg) {
+  if (msg == NULL)
+    return -EFAULT;
+  return OS1_object_ctl(handle, OBJ_CTL_PORT_TRY_RECV, (long)msg);
 }
 long OS1_object_ctl(int handle, int cmd, long arg) {
   return _sys_object_ctl(handle, cmd, arg);

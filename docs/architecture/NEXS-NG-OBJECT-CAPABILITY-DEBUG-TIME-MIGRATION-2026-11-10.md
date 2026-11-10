@@ -162,7 +162,7 @@ Target:
 7. NX-SDK reads the hardware counter directly only when HAL explicitly declares and configures a user-readable invariant/global source. AArch64 therefore requires verified CNTKCTL_EL1 EL0 counter access; amd64 requires TSC stability and ordering validation.
 8. If direct user counter access is unavailable or runtime verification fails, the SDK uses the TIME object gateway path. The fallback is the same semantic clock, not a second implementation.
 9. Process CPU time remains authority-mediated because it is scheduler accounting.
-10. /sys/services/nxtimerd owns privileged timer telemetry/control and publishes OS1nx_time.
+10. /sys/services/nxtimerdd owns privileged timer telemetry/control and publishes OS1nx_time.
 11. /sys/bin/nxtimerdiag is only a test/diagnostic client.
 12. Timer service RPC uses capability messages/reply endpoints, not kernel POSIX pipes.
 
@@ -361,7 +361,7 @@ B5. Add scheduler/timer counters and latency/lateness accounting.
 B6. Implement clockevent next-deadline programming only after provider capability is real and verified.
 B7. Implement read-only time conversion page and architecture user-counter support with runtime verification.
 B8. Update NX-SDK monotonic/clock_gettime/SDL/Lua time paths to use the common fast path.
-B9. Split nxtimerdiag into /sys/services/nxtimerd + /sys/bin/nxtimerdiag; remove pipe RPC.
+B9. Split nxtimerdiag into /sys/services/nxtimerdd + /sys/bin/nxtimerdiag; remove pipe RPC.
 B10. Add timer stress, cross-CPU monotonic, migration, lateness, overflow and fallback tests.
 
 2026-11-10 measured checkpoint:
@@ -547,7 +547,7 @@ A separate recovery checkpoint is recorded in
 `BUILD-BOOT-STABILITY-2026-11-10.md`. Four fresh dual-architecture nxadb
 lanes and two controlled crash/recovery probes passed. Timer statistics
 applications now use a stable SDK service data model; the generated v4
-transport is decoded and validated by nxtimerd.
+transport is decoded and validated by nxtimerdd.
 
 Phase A's **full strict Power12 qualification is not complete**. The
 project-wide checker still fails on catalog and AST findings. Normal

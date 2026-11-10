@@ -36,6 +36,7 @@
 #include <kernel/timer.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
+#include <kernel/vfs.h>
 
 /* Version */
 #define KERNEL_VERSION_MAJOR 0
@@ -77,7 +78,7 @@ static void print_banner(void);
 static void init_memory(void);
 static void init_scheduler(void);
 static void init_compositor(void);
-static int spawn_init_process(void);
+static int spawn_bootstrap_extension(void);
 
 /* FIX(NASA-01, Power of Ten Rule 4 — short functions): kernel_main() used to
  * be one ~110-line function covering K1 (hardware bring-up) through the
@@ -295,8 +296,8 @@ static void kernel_stage_k2_k3(void) {
    * load) no longer panics a healthy K1+K2: the kernel stays alive and
    * diagnosable on the UART (kernel-alone mode). */
   boot_phase_set(BOOT_PHASE_K3_USERLAND);
-  if (spawn_init_process() != 0)
-    pr_err("%s", "K3: userland failed to start — kernel-alone mode "
+  if (spawn_bootstrap_extension() != 0)
+    pr_err("%s", "K3: bootstrap extension failed — kernel-alone mode "
                  "(K1+K2 healthy, no reboot; inspect via UART)\n");
 
   /* Enable interrupts on primary core */
@@ -527,26 +528,52 @@ static void init_compositor(void) {
   compositor_init();
 }
 
-/*
- * spawn_init_process (K3): create, load and enqueue PID1 (nx).
- * ROOT + explicit caps, NOT machine: PLVL_MACHINE is the machine's own
- * identity (B3 §3.1) — it would make PID1 unkillable and exempt from every
- * capability check and from the creator clamp for all its children.
- *
- * Returns 0 on success, -1 if userland could not be started — the caller
- * keeps the kernel alive (kernel-alone mode) instead of panicking: a
- * K3-only failure must not take down a healthy K1+K2.
- */
-static int spawn_init_process(void) {
-  pr_info("%s", "K3: Spawning First-Stage Init...\n");
-  struct process *nxinit =
-      process_create_caps("nxinit", PROC_PRIO_USER, PLVL_MACHINE, CAP_ALL);
-  if (nxinit && process_load_elf(nxinit, "/sbin/nxinit") == 0) {
-    pr_info("K3: Initialized PID %d (/sbin/nxinit)\n", nxinit->pid);
-    enqueue_task(nxinit);
-    return 0;
+/* The kernel knows only the immutable initial-ELF entry contract, never the
+ * names of a userland supervisor, init implementation or test suite.
+ * The payload comes from the machine-only VFS boot manifest. */
+#define NX_BOOT_ENTRY "/system/boot/entry"
+#define NX_BOOT_EXEC_MAX 96U
+
+static int bootstrap_entry_path(char path[NX_BOOT_EXEC_MAX]) {
+  int n = vfs_read_file(NX_BOOT_ENTRY, path, NX_BOOT_EXEC_MAX - 1U, 0U);
+  if (n <= 6 || n >= (int)NX_BOOT_EXEC_MAX)
+    return -1;
+  path[n] = '\0';
+  if (n > 0 && path[n - 1] == '\n')
+    path[--n] = '\0';
+  if (n > 0 && path[n - 1] == '\r')
+    path[--n] = '\0';
+  if (strncmp(path, "/sbin/", 6U) != 0 || path[6] == '\0')
+    return -1;
+  for (int i = 6; i < (int)NX_BOOT_EXEC_MAX; ++i) {
+    if (i >= n)
+      break;
+    char c = path[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '-' || c == '_'))
+      return -1;
   }
-  return -1;
+  return 0;
+}
+
+/* K3 creates exactly one machine-authorized initial task. The selected ELF
+ * owns all subsequent userland bootstrap; no service or process names here.
+ * On malformed/missing manifest the Core remains in kernel-only mode. */
+static int spawn_bootstrap_extension(void) {
+  char path[NX_BOOT_EXEC_MAX];
+  if (bootstrap_entry_path(path) != 0) {
+    pr_err("%s", "K3: invalid/missing machine boot entry manifest\n");
+    return -1;
+  }
+  struct process *first =
+      process_create_caps("boot-extension", PROC_PRIO_USER, PLVL_MACHINE, CAP_ALL);
+  if (first == NULL || process_load_elf(first, path) != 0) {
+    pr_err("%s", "K3: unable to load initial extension\n");
+    return -1;
+  }
+  pr_info("K3: Initialized PID %d (boot extension %s)\n", first->pid, path);
+  enqueue_task(first);
+  return 0;
 }
 
 /*

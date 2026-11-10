@@ -5,10 +5,10 @@
 #ifndef _OS1_API_H
 #define _OS1_API_H
 
-#include <stddef.h>
-#include <stdarg.h>
-#include <stdint.h>
 #include <posix_types.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 /* Syscall numbers: single source of truth shared with the kernel dispatch
  * switch and the .S stubs (ABI-01/ABI-SYS-01).
  * Error model (ABI-02): syscalls return negative errno values from
@@ -19,30 +19,30 @@
 /* Object/handle/capability ABI (OBJ_TYPE_*, OS1_RIGHT_*, OS1_NS_*) — ASTRA
  * §6.1/6.2/6.5. The OS1low_/OS1_object_ surface below operates on these. */
 #include <object.h>
-#include <os1_time.h>
 #include <os1_compositor.h>
 #include <os1_input.h>
-/* System statistics snapshot ABI (struct os1_sysstats) — perf §1 instrumentation
- * surface, read via OS1_sys_stats() below. */
+#include <os1_time.h>
+/* System statistics snapshot ABI (struct os1_sysstats) — perf §1
+ * instrumentation surface, read via OS1_sys_stats() below. */
 #include <sysstats.h>
 
 /* --- System Constants --- */
 #define PROCESS_NAME_MAX 32
 #ifndef OS1_NO_COLLIDING_MACROS
-#define STACK_SIZE       131072
+#define STACK_SIZE 131072
 #endif
-#define MAX_PROCESSES    64
+#define MAX_PROCESSES 64
 
 /* --- Data Structures --- */
 
 /* Process information for diagnostics */
 struct ps_info {
-    int pid;
-    char name[PROCESS_NAME_MAX];
-    int state;
-    int priority;
-    uint64_t cpu_time;
-    int on_cpu;
+  int pid;
+  char name[PROCESS_NAME_MAX];
+  int state;
+  int priority;
+  uint64_t cpu_time;
+  int on_cpu;
 };
 
 /* --- Public API Functions --- */
@@ -51,62 +51,70 @@ struct ps_info {
 extern long _sys_read(int fd, char *buf, unsigned long count);
 extern long _sys_write(int fd, const char *buf, size_t count);
 extern long _sys_get_time(void);
-extern int  _sys_get_pid(void);
+extern int _sys_get_pid(void);
 extern void _sys_exit(int status) __attribute__((__noreturn__));
 /* arg3 = spawn-mode flags (SPAWN_FLAG_*, caps.h) — nxexec model #193. */
-extern int  _sys_spawn(const char *path, int argc, char *const argv[],
-                       unsigned int flags);
+extern int _sys_spawn(const char *path, int argc, char *const argv[],
+                      unsigned int flags);
 /* arg4/arg5 = fd-redirection list + count (Phase 4 shell `<`/`>`/`>>`/`2>`).
  * Same SYS_SPAWN; the stub passes the extra registers through where the plain
  * _sys_spawn zeroes them. */
-extern int  _sys_spawn_redir(const char *path, int argc, char *const argv[],
-                             unsigned int flags, const struct spawn_redir *redir,
-                             int nredir);
+extern int _sys_spawn_redir(const char *path, int argc, char *const argv[],
+                            unsigned int flags, const struct spawn_redir *redir,
+                            int nredir);
 extern long _sys_spawn_caps(const char *path, int level, unsigned long caps,
                             unsigned int flags);
-extern int  _sys_kill(int pid);
-extern int  _sys_wait(int pid);
+extern int _sys_kill(int pid);
+extern int _sys_wait(int pid);
 /* arg1 = optional int* receiving the exit status (Phase 9b); NULL is legal. */
-extern int  _sys_wait_status(int pid, int *code);
+extern int _sys_wait_status(int pid, int *code);
 extern void _sys_yield(void);
 extern void _sys_nanosleep(unsigned long long ns);
 extern long _sys_clock_gettime(int clk);
 extern void _sys_draw(int x, int y, int w, int h, int color);
-extern int  _sys_create_window(int x, int y, int w, int h, const char *title);
+extern int _sys_create_window(int x, int y, int w, int h, const char *title);
 extern void _sys_destroy_window(int win_id);
-extern void _sys_window_draw(int win_id, int x, int y, int w, int h, unsigned int color);
+extern void _sys_window_draw(int win_id, int x, int y, int w, int h,
+                             unsigned int color);
 extern long _sys_window_write(int win_id, const char *buf, unsigned long count);
-extern int  _sys_window_of_pid(int pid);
+extern int _sys_window_of_pid(int pid);
 extern long _sys_window_grid(int win_id);
-extern void _sys_window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf);
+extern void _sys_window_blit(int win_id, int x, int y, int w, int h,
+                             const unsigned int *buf);
 extern void _sys_compositor_render(void);
 extern void _sys_window_set_flags(int win_id, int flags);
 /* Display / framebuffer (GFX-DYN-01) */
-extern long _sys_display_info(void);              /* current desktop (w<<16)|h */
-extern int  _sys_set_display_mode(int w, int h);  /* set resolution; desktop adapts */
-extern int  _sys_window_resize(int win_id, int w, int h); /* resize own window surface */
-extern int  _sys_display_poll(void);              /* apply pending host resize; 1 if changed */
-extern int  _sys_set_style(int style_id, int theme_id, int bg_id); /* -1 = keep */
-extern int  _sys_set_zoom(int percent);           /* desktop HiDPI/zoom percent */
-extern void* _sys_sbrk(intptr_t increment);
+extern long _sys_display_info(void); /* current desktop (w<<16)|h */
+extern int _sys_set_display_mode(int w,
+                                 int h); /* set resolution; desktop adapts */
+extern int _sys_window_resize(int win_id, int w,
+                              int h); /* resize own window surface */
+extern int
+_sys_display_poll(void); /* apply pending host resize; 1 if changed */
+extern int _sys_set_style(int style_id, int theme_id,
+                          int bg_id);  /* -1 = keep */
+extern int _sys_set_zoom(int percent); /* desktop HiDPI/zoom percent */
+extern void *_sys_sbrk(intptr_t increment);
 extern long _sys_registry(int op, const char *key, char *value, size_t size);
 extern long _sys_get_procs(void *procs, size_t max_count);
 extern long _sys_get_identity(void);
 extern long _sys_sysstats(void *buf, size_t buf_size);
-extern int  _sys_send(int pid, struct ipc_message *msg);
-extern int  _sys_recv(int pid, struct ipc_message *msg);
-extern int  _sys_chdir(const char *path);
+extern int _sys_send(int pid, struct ipc_message *msg);
+extern int _sys_recv(int pid, struct ipc_message *msg);
+extern int _sys_chdir(const char *path);
 /* _sys_stat: path metadata (type + size) in ONE round trip.  `out` is a
  * `struct abi_stat *` (include/abi/posix_types.h).  0, or a negative errno. */
-extern int  _sys_stat(const char *path, void *out);
-extern int  _sys_getcwd(char *buf, size_t size);
-extern int  _sys_pipe(int fds[2]);
-extern long _sys_port_send_caps(int handle, const void *msg, const int *fds, int nfds);
-extern int  _sys_open(const char *path, int flags);
-extern int  _sys_close(int fd);
+extern int _sys_stat(const char *path, void *out);
+extern int _sys_getcwd(char *buf, size_t size);
+extern int _sys_pipe(int fds[2]);
+extern long _sys_port_send_caps(int handle, const void *msg, const int *fds,
+                                int nfds);
+extern int _sys_open(const char *path, int flags);
+extern int _sys_close(int fd);
 extern long _sys_lseek(int fd, long offset, int whence);
 /* Object / capability ABI low-level stubs (ASTRA §6.1/6.2/6.5). */
-extern long _sys_handle_create(int ns, const char *path, unsigned int rights, int type);
+extern long _sys_handle_create(int ns, const char *path, unsigned int rights,
+                               int type);
 extern long _sys_handle_dup(int handle, unsigned int new_rights);
 extern long _sys_handle_close(int handle);
 extern long _sys_cap_query(int handle);
@@ -118,7 +126,8 @@ extern long _sys_object_ctl(int handle, int cmd, long arg);
 extern long _sys_window_enum(struct window_info *buf, unsigned long max);
 extern long _sys_window_snapshot(struct os1_window_snapshot_v1 *snapshot);
 extern long _sys_display_present(struct os1_compositor_present_v1 *present);
-extern long _sys_input_raw_read(struct os1_raw_input_event_v1 *event, int role, unsigned int mode);
+extern long _sys_input_raw_read(struct os1_raw_input_event_v1 *event, int role,
+                                unsigned int mode);
 extern long _sys_window_move(int window_id, int x, int y);
 
 /* Standard C-like Library Functions */
@@ -127,17 +136,17 @@ long read(int fd, char *buf, unsigned long count);
  * read().  Was void; widened to long so ported POSIX code can check the count
  * (libc-layer change only — the SYS_WRITE syscall already returns it). */
 long write(int fd, const char *buf, size_t count);
-long get_time(void);   /* compat shim for OS1_time_now() (DIR-01 F4) */
-int  get_pid(void);
+long get_time(void); /* compat shim for OS1_time_now() (DIR-01 F4) */
+int get_pid(void);
 void exit(int status);
 long gethostid(void);
-int  spawn(const char *path);
+int spawn(const char *path);
 /* spawn_args: like spawn(), but hands the child an argv vector (the shell
  * uses it to pass a filename, e.g. `kilo notes.txt`).  argv[0] is the program
  * name as invoked; argv[argc] need not be NULL (the kernel terminates the
  * copy at argc).  The kernel marshals the strings onto the child's stack and
  * sets argc/argv as main()'s first two arguments per the C ABI. */
-int  spawn_args(const char *path, int argc, char *const argv[]);
+int spawn_args(const char *path, int argc, char *const argv[]);
 /* Sandboxed spawn (USR-SEC-03 #79).  level = PLVL_*; caps = OR of CAP_*.
  * The kernel clamps both: a child is never more privileged than its parent,
  * never above the level's ceiling, never more than the parent holds.
@@ -146,8 +155,8 @@ long spawn_caps(const char *path, int level, unsigned long caps);
 long spawn_level(const char *path, int level);
 /* Returns 0 when the target/subtree termination is accepted, or a negative
  * POSIX error (e.g. -EPERM, -ESRCH, -EAGAIN) from the kernel SYS_KILL path. */
-int  kill_process(int pid);
-int  wait(int pid);
+int kill_process(int pid);
+int wait(int pid);
 void yield(void);
 
 /* --- Process control: OS1low_ canonical primitives (ASTRA §6.1, DIR-01 F4) ---
@@ -164,9 +173,9 @@ long OS1low_process_spawn_detached(const char *path, int argc,
                                    char *const argv[]);
 /* OS1low_process_spawn_redir (Phase 4): spawn with the spawner's open fds dup'd
  * into the child (shell `<`/`>`/`>>`/`2>`).  The caller opens the redirect
- * targets, fills redir[] with {child_fd, parent_fd} pairs (SPAWN_MAX_REDIR max),
- * then closes its own copies once this returns.  Returns the child pid, or a
- * negative errno (a bad parent_fd fails the whole spawn). */
+ * targets, fills redir[] with {child_fd, parent_fd} pairs (SPAWN_MAX_REDIR
+ * max), then closes its own copies once this returns.  Returns the child pid,
+ * or a negative errno (a bad parent_fd fails the whole spawn). */
 long OS1low_process_spawn_redir(const char *path, int argc, char *const argv[],
                                 unsigned int flags,
                                 const struct spawn_redir *redir, int nredir);
@@ -174,25 +183,26 @@ long OS1low_process_spawn_caps(const char *path, int level, unsigned long caps);
 /* OS1low_pipe (Phase 4): create an anonymous byte pipe (OBJ_TYPE_PIPE); fds[0]
  * is the READ end, fds[1] the WRITE end.  Returns 0 or a negative errno.  The
  * POSIX pipe() (unistd.h) is a thin wrapper over this. */
-int  OS1low_pipe(int fds[2]);
-int  OS1low_process_kill(int pid);
-int  OS1low_process_wait(int pid);
+int OS1low_pipe(int fds[2]);
+int OS1low_process_kill(int pid);
+int OS1low_process_wait(int pid);
 /* Like OS1low_process_wait, but on reap writes the process's raw exit_code to
  * *code (the POSIX personality wraps it). *code untouched if not reaped. */
-int  OS1low_process_wait_status(int pid, int *code);
+int OS1low_process_wait_status(int pid, int *code);
 /* Job control (Phase 2): suspend/resume a process via its PROCESS capability
  * (OBJ_CTL_STOP/CONT). Returns 0 or a negative errno. */
-int  OS1_process_stop(int pid);
-int  OS1_process_cont(int pid);
+int OS1_process_stop(int pid);
+int OS1_process_cont(int pid);
 void OS1low_process_yield(void);
-int  OS1low_process_self(void);
+int OS1low_process_self(void);
 void OS1low_process_exit(int status) __attribute__((__noreturn__));
 
 int utf8_decode(const char *s, size_t len, uint32_t *code);
 /* OS1_sleep: proprietary BASE-API blocking sleep, in MILLISECONDS (NOT POSIX
- * seconds). Prefixed OS1_ to keep the NEXS base API distinct from the POSIX/libc
- * surface built on top of it (usleep/nanosleep in <unistd.h>/<time.h>); the bare
- * name `sleep` is reserved for a future real POSIX sleep(unsigned seconds). */
+ * seconds). Prefixed OS1_ to keep the NEXS base API distinct from the
+ * POSIX/libc surface built on top of it (usleep/nanosleep in
+ * <unistd.h>/<time.h>); the bare name `sleep` is reserved for a future real
+ * POSIX sleep(unsigned seconds). */
 void OS1_sleep(int ms);
 
 /* Tier 3 time primitives (docs/TIMER-MODEL.md §4). os1.h is the proprietary
@@ -210,14 +220,14 @@ long OS1_time_now(void);
 long OS1low_time_open(void);
 long OS1low_time_snapshot(int handle, struct os1_time_snapshot_v1 *snapshot);
 long OS1low_time_stats_open(void);
-/* Raw privileged TIME resource read. Only nxtimerd knows its wire revision. */
-long OS1low_time_stats_snapshot(int handle, void *buffer,
-                               unsigned long size);
+/* Raw privileged TIME resource read. Only nxtimerdd knows its wire revision. */
+long OS1low_time_stats_snapshot(int handle, void *buffer, unsigned long size);
 
-void *OS1low_vm_sbrk(intptr_t increment); /* canonical; sbrk is its shim (DIR-01 F4) */
+void *OS1low_vm_sbrk(
+    intptr_t increment); /* canonical; sbrk is its shim (DIR-01 F4) */
 void *sbrk(intptr_t increment);
 void *malloc(size_t size);
-void  free(void *ptr);
+void free(void *ptr);
 void *realloc(void *ptr, size_t size);
 void *calloc(size_t nmemb, size_t size);
 
@@ -227,12 +237,14 @@ void *calloc(size_t nmemb, size_t size);
 long OS1low_ipc_send(int pid, struct ipc_message *msg);
 long OS1low_ipc_recv(int pid, struct ipc_message *msg);
 long OS1low_ipc_try_recv(int pid, struct ipc_message *msg);
-int  OS1_notify_post(const char *title, const char *msg);
-int  OS1_notify_warn(const char *title, const char *msg); /* yellow (severity 1) */
-int  OS1_notify_error(const char *title, const char *msg); /* red (severity 2) — was
-                                                            * kernel-crash-only (fault.c);
-                                                            * now reachable from
-                                                            * userland too */
+int OS1_notify_post(const char *title, const char *msg);
+int OS1_notify_warn(const char *title,
+                    const char *msg); /* yellow (severity 1) */
+int OS1_notify_error(const char *title,
+                     const char *msg); /* red (severity 2) — was
+                                        * kernel-crash-only (fault.c);
+                                        * now reachable from
+                                        * userland too */
 /* OS1_report_error - map an errno (positive or raw -errno) to a notification
  * by severity class (hard faults -> red, policy denials -> amber, normal
  * control-flow errors -> silent). THE single error-surfacing seam every libc
@@ -245,30 +257,34 @@ int try_recv(int pid, struct ipc_message *msg);
 int notify(const char *title, const char *msg);
 
 /* Window Management & Graphics */
-int  create_window(int x, int y, int w, int h, const char *title);
+int create_window(int x, int y, int w, int h, const char *title);
 void destroy_window(int win_id);
 void window_draw(int win_id, int x, int y, int w, int h, unsigned int color);
-void window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf);
+void window_blit(int win_id, int x, int y, int w, int h,
+                 const unsigned int *buf);
 void compositor_render(void);
 void set_window_flags(int win_id, int flags);
 void set_focus(int pid);
 void draw(int x, int y, int w, int h, int color);
 void flush(void);
 
-/* Window / graphics: OS1_window_ and OS1_gfx_ canonical names (ASTRA section 6.7,
- * DIR-01 F4).  The bare verbs above (and window_write/_of_pid/_grid below) are kept
- * as zero-breakage compat shims forwarding to these.  set_focus -> OS1_window_set_focus
- * will later unify with the OBJ_CTL_FOCUS capability path (OBJ-WIN-FOCUS, M4.5). */
-int  OS1_window_create(int x, int y, int w, int h, const char *title);
+/* Window / graphics: OS1_window_ and OS1_gfx_ canonical names (ASTRA
+ * section 6.7, DIR-01 F4).  The bare verbs above (and
+ * window_write/_of_pid/_grid below) are kept as zero-breakage compat shims
+ * forwarding to these.  set_focus -> OS1_window_set_focus will later unify with
+ * the OBJ_CTL_FOCUS capability path (OBJ-WIN-FOCUS, M4.5). */
+int OS1_window_create(int x, int y, int w, int h, const char *title);
 void OS1_window_destroy(int win_id);
-void OS1_window_draw(int win_id, int x, int y, int w, int h, unsigned int color);
-void OS1_window_blit(int win_id, int x, int y, int w, int h, const unsigned int *buf);
+void OS1_window_draw(int win_id, int x, int y, int w, int h,
+                     unsigned int color);
+void OS1_window_blit(int win_id, int x, int y, int w, int h,
+                     const unsigned int *buf);
 void OS1_window_write(int win_id, const char *buf, unsigned long count);
-int  OS1_window_of_pid(int pid);
-int  OS1_window_grid(int win_id, int *cols, int *rows);
+int OS1_window_of_pid(int pid);
+int OS1_window_grid(int win_id, int *cols, int *rows);
 void OS1_window_set_flags(int win_id, int flags);
 void OS1_window_set_focus(int pid);
-int  OS1_window_resize(int win_id, int w, int h);
+int OS1_window_resize(int win_id, int w, int h);
 void OS1_gfx_draw(int x, int y, int w, int h, int color);
 void OS1_gfx_flush(void);
 void OS1_gfx_render(void);
@@ -280,9 +296,10 @@ void OS1_input_pump(void);
  * snapshots all windows into buf (returns the count, or a negative errno).  The
  * control wrappers act through an OBJ_TYPE_WINDOW capability (handle_create →
  * object_ctl → handle_close): an app may always drive its OWN window, while
- * driving another process's window needs window-manager authority (machine/root)
- * — used by the dock /sys/bin/nxui.  They return 0 on success or a negative
- * errno (e.g. -EPERM without authority, -ESRCH for an unknown window). */
+ * driving another process's window needs window-manager authority
+ * (machine/root) — used by the dock /sys/bin/nxui.  They return 0 on success or
+ * a negative errno (e.g. -EPERM without authority, -ESRCH for an unknown
+ * window). */
 long OS1_window_enum(struct window_info *buf, unsigned long max);
 long OS1_window_snapshot(struct os1_window_snapshot_v1 *snapshot);
 long OS1_display_present(struct os1_compositor_present_v1 *present);
@@ -299,21 +316,21 @@ long OS1_window_move(int window_id, int x, int y);
  * aggregate stats expose no per-object authority.  Read by /bin/memstat. */
 long OS1_sys_stats(struct os1_sysstats *out);
 
-int  OS1_window_minimize(int win_id);
-int  OS1_window_restore(int win_id);
-int  OS1_window_focus(int win_id);
-int  OS1_window_close(int win_id);
+int OS1_window_minimize(int win_id);
+int OS1_window_restore(int win_id);
+int OS1_window_focus(int win_id);
+int OS1_window_close(int win_id);
 
-/* Display / compositor control (ASTRA §6.7) — canonical OS1_display_* names over
- * the raw _sys_ stubs (which had no bare wrapper; callers used _sys_ directly).
- * DIR-01 F4. */
-long OS1_display_info(void);                  /* current desktop, packed (w<<16)|h */
-int  OS1_display_set_mode(int w, int h);      /* set resolution; desktop adapts */
-int  OS1_display_poll(void);                  /* apply pending host resize; 1 if changed */
-int  OS1_display_set_style(int style_id, int theme_id); /* -1 = keep */
-int  OS1_display_set_background(int bg_id);
-int  OS1_display_set_zoom(int percent);       /* desktop HiDPI/zoom percent */
-int  OS1_display_set_font(void *data, size_t size);     /* set_font is its shim */
+/* Display / compositor control (ASTRA §6.7) — canonical OS1_display_* names
+ * over the raw _sys_ stubs (which had no bare wrapper; callers used _sys_
+ * directly). DIR-01 F4. */
+long OS1_display_info(void);            /* current desktop, packed (w<<16)|h */
+int OS1_display_set_mode(int w, int h); /* set resolution; desktop adapts */
+int OS1_display_poll(void); /* apply pending host resize; 1 if changed */
+int OS1_display_set_style(int style_id, int theme_id); /* -1 = keep */
+int OS1_display_set_background(int bg_id);
+int OS1_display_set_zoom(int percent); /* desktop HiDPI/zoom percent */
+int OS1_display_set_font(void *data, size_t size); /* set_font is its shim */
 
 /* Registry API (ASTRA §6.6; the capability path is OBJ_TYPE_REGKEY). */
 int OS1_registry_get(const char *key, char *buf, size_t size);
@@ -336,7 +353,7 @@ int OS1_fs_list(const char *path, char *buf, size_t size);
 int OS1_fs_chdir(const char *path);
 int OS1_fs_getcwd(char *buf, size_t size);
 int OS1_fs_mkdir(const char *path);  /* create a directory through its parent */
-int OS1_fs_unlink(const char *path); /* remove a node through its parent dir   */
+int OS1_fs_unlink(const char *path); /* remove a node through its parent dir */
 
 /* Environment — the OS1 NATIVE surface (ASTRA §6.8: POSIX is a personality
  * ABOVE this, never beside it).
@@ -377,7 +394,7 @@ int getcwd(char *buf, size_t size);
 /* POSIX-style fd I/O (ABI-03 fd table; open() is declared in fcntl.h, the
  * O_ and SEEK_ values in posix_types.h).  read()/write() above work on any
  * fd: 0=stdin, 1/2=own window, open()ed files >= 3. */
-int  close(int fd);
+int close(int fd);
 long lseek(int fd, long offset, int whence);
 
 /* Object / capability API (ASTRA §6.1/6.2) — the OS1 NATIVE base surface.
@@ -385,7 +402,8 @@ long lseek(int fd, long offset, int whence);
  * mask.  OS1low_ = stable low-level primitives; OS1_object_* = uniform object
  * I/O.  POSIX (open/read/write) is a personality layered ON TOP of these, not
  * the reverse.  ns/rights/type constants live in <object.h>. */
-long OS1low_handle_create(int ns, const char *path, unsigned int rights, int type);
+long OS1low_handle_create(int ns, const char *path, unsigned int rights,
+                          int type);
 long OS1low_handle_duplicate(int handle, unsigned int new_rights);
 long OS1low_handle_close(int handle);
 long OS1low_cap_query(int handle);
@@ -409,16 +427,22 @@ long OS1_object_write(int handle, const void *buf, unsigned long n);
 /* OS1_port_create - publish a service port and take its RECEIVE right (making
  * this process its owner).  Fails with -EEXIST if the name is already served,
  * so a rogue process cannot steal a service identity by racing it. */
-int  OS1_port_create(const char *name);
+int OS1_port_create(const char *name);
+/* Machine-authorized private PORT: SEND cannot be obtained by name from a
+ * non-machine process. The owner delegates an attenuated SEND capability. */
+int OS1_port_create_private(const char *name);
 /* OS1_port_open - acquire a SEND-only capability to an existing service port.
  * -ENOENT if no service published that name. */
-int  OS1_port_open(const char *name);
+int OS1_port_open(const char *name);
 /* OS1_port_send / OS1_port_recv - one whole ipc_message per call.  send needs
  * the send right and recv the receive right.  A published receiver remains
  * blocked while idle even when no sender handles exist; only receive-right
  * revocation terminates that wait.  The kernel stamps msg->from. */
 long OS1_port_send(int handle, const struct ipc_message *msg);
 long OS1_port_recv(int handle, struct ipc_message *msg);
+/* Non-blocking consume from the identical bounded capability PORT queue.
+ * Returns sizeof(ipc_message), -EAGAIN, or another negative kernel errno. */
+long OS1_port_try_recv(int handle, struct ipc_message *msg);
 /* OS1_port_send_caps - send a message AND transfer handles with it.  Every
  * transferred source handle must carry OS1_RIGHT_TRANSFER.  Receiver-side
  * indices are written into the leading int slots of msg->payload, so delegation
@@ -432,15 +456,15 @@ long OS1_object_ctl(int handle, int cmd, long arg);
  * OS1_identity fills the caller's OWN privilege level (PLVL_*) and capability
  * mask (CAP_*) — a process may always read its own identity.  This is the
  * primitive behind the level-based permission view (the gestore nxperm): apps
- * are meant to reason in terms of a LEVEL (machine/root/user/guest), not the raw
- * capability bits.  Returns 0. */
+ * are meant to reason in terms of a LEVEL (machine/root/user/guest), not the
+ * raw capability bits.  Returns 0. */
 int OS1_identity(int *level, unsigned int *mask);
 int OS1_level(void); /* shorthand: just the privilege level (PLVL_*) */
 
 /* Formatting & Printing */
 void print(const char *s);
 void print_hex(unsigned long val);
-int  printf(const char *fmt, ...);
+int printf(const char *fmt, ...);
 void printf_win(int win_id, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 /* window_write: write text straight to a window you own, by id (#123).
@@ -448,15 +472,15 @@ void printf_win(int win_id, const char *fmt, ...)
 void window_write(int win_id, const char *buf, unsigned long count);
 /* window_of_pid: compositor window id of a pid, 0 if it has none (#123).
  * The shell uses it to run windowless programs in-shell (foreground). */
-int  window_of_pid(int pid);
+int window_of_pid(int pid);
 /* window_grid: terminal character grid of a window you own, as (cols<<16)|rows
  * (the compositor terminal cell size depends on the active font, so a windowed
  * TTY app must query this instead of assuming a fixed 80x25).  < 0 on error. */
-int  window_grid(int win_id, int *cols, int *rows);
-int  sprintf(char *out, const char *fmt, ...);
-int  snprintf(char *out, size_t size, const char *fmt, ...);
-int  vsnprintf(char *out, size_t size, const char *fmt, va_list args);
-int  vsprintf(char *out, const char *fmt, va_list args);
+int window_grid(int win_id, int *cols, int *rows);
+int sprintf(char *out, const char *fmt, ...);
+int snprintf(char *out, size_t size, const char *fmt, ...);
+int vsnprintf(char *out, size_t size, const char *fmt, va_list args);
+int vsprintf(char *out, const char *fmt, va_list args);
 
 /* Fixed-point Math */
 int32_t fixmul(int32_t a, int32_t b);
@@ -472,16 +496,16 @@ int strcasecmp(const char *s1, const char *s2);
 int atoi(const char *s);
 
 /* Standard I/O */
-int   getchar(void);
-int   putchar(int c);
+int getchar(void);
+int putchar(int c);
 char *gets(char *s, int size);
 
 /* Fixed-Point Math (16.16) */
 #define FP_SHIFT 16
 #ifndef OS1_NO_COLLIDING_MACROS
-#define FP_ONE   (1 << FP_SHIFT)
+#define FP_ONE (1 << FP_SHIFT)
 #endif
-#define FP_PI    205887
+#define FP_PI 205887
 #define DEG_TO_FP_RAD(d) (((d) * 1144))
 
 int sin_fp(int x);

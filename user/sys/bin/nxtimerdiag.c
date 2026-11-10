@@ -1,13 +1,13 @@
 /*
  * nxtimerdiag - OS1nx_time diagnostics client.
  *
- * The privileged service lives in /sys/services/nxtimerd.  This tool only
+ * The privileged service lives in /sys/services/nxtimerdd.  This tool only
  * validates service snapshots, timer-queue telemetry and public clock/sleep
  * APIs; it never owns the TIME hardware-facing capabilities.
  */
 #include <os1_time_service.h>
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -71,8 +71,7 @@ static uint64_t point_gap(uint64_t value, uint64_t lower, uint64_t upper) {
   return interval_gap(value, value, lower, upper);
 }
 
-static uint64_t millis_gap(long milliseconds, uint64_t lower,
-                           uint64_t upper) {
+static uint64_t millis_gap(long milliseconds, uint64_t lower, uint64_t upper) {
   uint64_t value_low;
   uint64_t value_high;
 
@@ -108,8 +107,8 @@ static void stats_add(struct sleep_stats *stats, uint64_t elapsed) {
 }
 
 static void stats_print(const char *name, const struct sleep_stats *stats) {
-  uint64_t average = stats->count != 0U
-      ? stats->total_ns / (uint64_t)stats->count : 0U;
+  uint64_t average =
+      stats->count != 0U ? stats->total_ns / (uint64_t)stats->count : 0U;
   printf("[TIMERDIAG] API=%s n=%u min_ns=%llu avg_ns=%llu max_ns=%llu "
          "late_10ms=%u late_50ms=%u late_250ms=%u\n",
          name, stats->count,
@@ -147,18 +146,8 @@ static uint64_t timer_counter_delta(uint64_t before, uint64_t after) {
   return after >= before ? after - before : 0U;
 }
 
-static int timer_stats_fetch_print(
-    const char *phase, struct os1_time_service_timer_stats *snapshot) {
-  if (OS1_time_service_timer_stats(snapshot) != 0) {
-    printf("[TIMERDIAG] TIMERQ phase=%s status=UNAVAILABLE\n", phase);
-    return -1;
-  }
-  printf("[TIMERDIAG] TIMERQ phase=%s cpus=%u mono_ns=%llu\n",
-         phase, snapshot->cpu_count,
-         (unsigned long long)snapshot->monotonic_ns);
-  for (uint32_t index = 0U;
-       index < snapshot->cpu_count && index < OS1_TIME_MAX_CPUS; ++index) {
-    const struct os1_time_service_timer_cpu *cpu = &snapshot->cpu[index];
+static int timer_stats_print_cpu(const char *phase,
+    const struct os1_time_service_timer_cpu *cpu) {
     uint64_t avg_late_ns =
         cpu->late_fire_count != 0U
             ? cpu->fire_lateness_ns_total / cpu->late_fire_count
@@ -171,7 +160,7 @@ static int timer_stats_fetch_print(
         cpu->irq_mask_interval_count != 0U
             ? cpu->irq_mask_total_ns / cpu->irq_mask_interval_count
             : 0U;
-    printf("[TIMERDIAG] TIMERQ phase=%s cpu=%u depth=%u high=%u "
+    if (printf("[TIMERDIAG] TIMERQ phase=%s cpu=%u depth=%u high=%u "
            "arm=%llu cancel=%llu fire=%llu scan=%llu passes=%llu "
            "late_fire=%llu avg_late_ns=%llu max_late_ns=%llu "
            "event_late=%llu event_avg_ns=%llu event_max_ns=%llu "
@@ -196,16 +185,36 @@ static int timer_stats_fetch_print(
            (unsigned long long)cpu->irq_mask_max_ns,
            (unsigned long long)cpu->irq_mask_invalid_sample_count,
            (unsigned long long)cpu->irq_mask_active_ns, cpu->irq_mask_flags,
-           cpu->max_scan_per_pass, cpu->max_fire_per_pass);
+           cpu->max_scan_per_pass, cpu->max_fire_per_pass) < 0)
+      return -1;
+    return 0;
+}
+
+static int timer_stats_fetch_print(const char *phase,
+                        struct os1_time_service_timer_stats *snapshot) {
+  if (OS1_time_service_timer_stats(snapshot) != 0) {
+    if (printf("[TIMERDIAG] TIMERQ phase=%s status=UNAVAILABLE\n", phase) < 0)
+      return -1;
+    return -1;
+  }
+  if (printf("[TIMERDIAG] TIMERQ phase=%s cpus=%u mono_ns=%llu\n", phase,
+             snapshot->cpu_count,
+             (unsigned long long)snapshot->monotonic_ns) < 0)
+    return -1;
+  for (uint32_t index = 0U; index < OS1_TIME_MAX_CPUS; ++index) {
+    if (index >= snapshot->cpu_count)
+      break;
+    if (timer_stats_print_cpu(phase, &snapshot->cpu[index]) != 0)
+      return -1;
   }
   return snapshot->cpu_count != 0U ? 0 : -1;
 }
 
-static void timer_stats_print_delta(
-    const struct os1_time_service_timer_stats *before,
-    const struct os1_time_service_timer_stats *after) {
-  uint32_t count = before->cpu_count < after->cpu_count
-      ? before->cpu_count : after->cpu_count;
+static void
+timer_stats_print_delta(const struct os1_time_service_timer_stats *before,
+                        const struct os1_time_service_timer_stats *after) {
+  uint32_t count = before->cpu_count < after->cpu_count ? before->cpu_count
+                                                        : after->cpu_count;
   for (uint32_t index = 0U; index < count; ++index) {
     const struct os1_time_service_timer_cpu *left = &before->cpu[index];
     const struct os1_time_service_timer_cpu *right = &after->cpu[index];
@@ -227,8 +236,7 @@ static void timer_stats_print_delta(
                                             right->absolute_program_count);
     uint64_t avg_scan_x1000 = passes != 0U ? (scans * 1000U) / passes : 0U;
     uint64_t avg_late_ns = late != 0U ? late_ns / late : 0U;
-    uint64_t event_avg_ns =
-        event_late != 0U ? event_late_ns / event_late : 0U;
+    uint64_t event_avg_ns = event_late != 0U ? event_late_ns / event_late : 0U;
     printf("[TIMERDIAG] TIMERQ_DELTA cpu=%u arm=%llu cancel=%llu fire=%llu "
            "scan=%llu passes=%llu avg_scan_x1000=%llu late_fire=%llu "
            "avg_late_ns=%llu max_late_ns=%llu event_late=%llu "
@@ -245,11 +253,10 @@ static void timer_stats_print_delta(
            (unsigned long long)avg_scan_x1000, (unsigned long long)late,
            (unsigned long long)avg_late_ns,
            (unsigned long long)right->max_fire_lateness_ns,
-           (unsigned long long)event_late,
-           (unsigned long long)event_avg_ns,
+           (unsigned long long)event_late, (unsigned long long)event_avg_ns,
            (unsigned long long)right->max_clockevent_lateness_ns,
-           (unsigned long long)programs,
-           right->queue_depth, right->queue_high_water);
+           (unsigned long long)programs, right->queue_depth,
+           right->queue_high_water);
   }
 }
 
@@ -371,13 +378,12 @@ static void diag_sample(struct diag_state *state, unsigned int index) {
   sleep_rc = diag_do_sleep(is_posix);
   diag_read_post_clocks(&post);
 
-  uint64_t elapsed = post.wake_mono >= before_mono
-                         ? post.wake_mono - before_mono : 0U;
-  uint64_t cpu_delta = post.wake_cpu >= before_cpu
-                           ? post.wake_cpu - before_cpu : 0U;
-  const char *status = diag_status(sleep_rc, post.mono_rc, post.cpu_rc,
-                                   elapsed, post.get_gap, post.mono_gap,
-                                   post.cpu_gap);
+  uint64_t elapsed =
+      post.wake_mono >= before_mono ? post.wake_mono - before_mono : 0U;
+  uint64_t cpu_delta =
+      post.wake_cpu >= before_cpu ? post.wake_cpu - before_cpu : 0U;
+  const char *status = diag_status(sleep_rc, post.mono_rc, post.cpu_rc, elapsed,
+                                   post.get_gap, post.mono_gap, post.cpu_gap);
   if (post.get_time_ms < before_ms)
     status = "CLOCK_REGRESSION";
   diag_account(state, is_posix, elapsed, post.get_time_ms, post.after_mono,
@@ -388,8 +394,7 @@ static void diag_sample(struct diag_state *state, unsigned int index) {
            "libc_mono_gap_ns=%llu libc_cpu_gap_ns=%llu\n",
            index, api, status, post.get_time_ms, (unsigned long long)elapsed,
            (unsigned long long)cpu_delta, (unsigned long long)post.get_gap,
-           (unsigned long long)post.mono_gap,
-           (unsigned long long)post.cpu_gap);
+           (unsigned long long)post.mono_gap, (unsigned long long)post.cpu_gap);
 }
 
 static int diag_finish(struct diag_state *state) {
@@ -398,7 +403,8 @@ static int diag_finish(struct diag_state *state) {
   uint64_t mono_elapsed_ms =
       (final_mono - state->first_mono) / UINT64_C(1000000);
   uint64_t get_elapsed_ms = final_ms >= state->first_get_time
-      ? (uint64_t)(final_ms - state->first_get_time) : 0U;
+                                ? (uint64_t)(final_ms - state->first_get_time)
+                                : 0U;
   uint64_t elapsed_gap = abs_diff_u64(get_elapsed_ms, mono_elapsed_ms);
 
   if (elapsed_gap > 2U || state->get_time_regressions != 0U)
@@ -420,11 +426,11 @@ static int diag_finish(struct diag_state *state) {
   return state->failures != 0U ? 1 : 0;
 }
 
-static uint32_t timer_stats_total_depth(
-    const struct os1_time_service_timer_stats *snapshot) {
+static uint32_t
+timer_stats_total_depth(const struct os1_time_service_timer_stats *snapshot) {
   uint32_t total = 0U;
-  uint32_t count = snapshot->cpu_count < OS1_TIME_MAX_CPUS
-                       ? snapshot->cpu_count : OS1_TIME_MAX_CPUS;
+  uint32_t count = snapshot->cpu_count < OS1_TIME_MAX_CPUS ? snapshot->cpu_count
+                                                           : OS1_TIME_MAX_CPUS;
   for (uint32_t index = 0U; index < count; ++index)
     total += snapshot->cpu[index].queue_depth;
   return total;
@@ -443,8 +449,8 @@ static unsigned int timer_stress_spawn(int *pids) {
   return spawned;
 }
 
-static uint32_t timer_stress_wait_armed(
-    struct os1_time_service_timer_stats *snapshot) {
+static uint32_t
+timer_stress_wait_armed(struct os1_time_service_timer_stats *snapshot) {
   uint32_t depth = 0U;
   for (unsigned int poll = 0U; poll < TIMERDIAG_STRESS_ARM_POLLS; ++poll) {
     if (OS1_time_service_timer_stats(snapshot) != 0)
@@ -495,8 +501,11 @@ static int timer_queue_stress(void) {
     return 1;
   unsigned int spawned = timer_stress_spawn(pids);
   uint32_t depth = timer_stress_wait_armed(&during);
-  printf("[TIMERDIAG] STRESS spawned=%u active_depth=%u target=%u\n",
-         spawned, depth, TIMERDIAG_STRESS_MIN_ACTIVE);
+  if (printf("[TIMERDIAG] STRESS spawned=%u active_depth=%u target=%u\n",
+             spawned, depth, TIMERDIAG_STRESS_MIN_ACTIVE) < 0) {
+    timer_stress_cleanup(pids, spawned);
+    return 1;
+  }
   if (timer_stats_fetch_print("stress-during", &during) != 0) {
     timer_stress_cleanup(pids, spawned);
     return 1;

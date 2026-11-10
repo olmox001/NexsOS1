@@ -214,12 +214,17 @@ static uint8_t level_for_path(const char *path) {
 static int spawn_path_is_sane(const char *path) {
   /* The ELF loader resolves VFS paths, not the raw privilege preset string.
    * Only canonical absolute paths can carry a pathname security decision.
-   * In particular, syscall-origin /sbin execution is ALWAYS denied: PID1 is
-   * created only by the kernel K3 entry, not through the user spawn ABI.
-   * This protects against a duplicate nxinit even from ROOT/MACHINE code. */
+   * Only the kernel-created PID1 machine extension may launch /sbin.
+   * ROOT/USER/GUEST and unrelated machine processes cannot create a second
+   * authority daemon or independently bootstrap init. */
   if (path == NULL || path[0] != '/' || path[1] == '\0' || path[1] == '/')
     return 0;
-  if (strncmp(path, "/sbin/", 6U) == 0)
+  /* PID1 is the sole extension authority allowed to bootstrap an /sbin
+   * initializer. Other machine processes and all ROOT/USER/GUEST clients
+   * are denied before any child object is allocated. */
+  if (strncmp(path, "/sbin/", 6U) == 0 &&
+      (current_process == NULL || current_process->pid != 1 ||
+       !proc_is_machine(current_process)))
     return 0;
   for (uint32_t i = 1U; i < 128U; ++i) {
     char c = path[i];

@@ -26,6 +26,7 @@
 #include <execsvc.h> /* execution-service protocol (Phase 9 section below) */
 #include <fcntl.h>
 #include <os1.h>
+#include <nxmanage.h>
 #include <stdio.h>
 #include <stdlib.h> /* getenv/setenv/unsetenv (Phase 17 section) */
 #include <string.h>
@@ -254,6 +255,27 @@ int main(void) {
   int pcli = OS1_port_open(pname);
   check(win_id, "port-open-send", pcli >= 0);
 
+  /* The read-only receiver must get immediate -EAGAIN on an empty queue;
+   * the send-only handle must not be promoted into a read capability. */
+  struct ipc_message initial_empty = {0};
+  check(win_id, "port-try-empty",
+        psrv >= 0 && OS1_port_try_recv(psrv, &initial_empty) == -EAGAIN);
+  check(win_id, "port-try-deny-sender",
+        pcli >= 0 && OS1_port_try_recv(pcli, &initial_empty) == -EPERM);
+  /* A public name does NOT confer send authority to a private MACHINE port. */
+  long forbidden_port = OS1low_handle_create(
+      OS1_NS_PORT, NXMANAGE_PORT, OS1_RIGHT_WRITE, OBJ_TYPE_PORT);
+  check(win_id, "nxmanage-private-deny-open", forbidden_port == -EPERM);
+  if (forbidden_port >= 0)
+    OS1low_handle_close((int)forbidden_port);
+  long forbidden_create = OS1low_handle_create(
+      OS1_NS_PORT, "OS1nx_fake_private",
+      OS1_RIGHT_READ | OS1_PORT_CREATE_PRIVATE, OBJ_TYPE_PORT);
+  check(win_id, "private-port-deny-nonmachine",
+        forbidden_create == -EPERM);
+  if (forbidden_create >= 0)
+    OS1low_handle_close((int)forbidden_create);
+
   /* 17. A plain SEND capability is intentionally non-delegable.  The raw
    * syscall result is inspected here so -EPERM is not collapsed to libc -1. */
   struct ipc_message denied_transfer;
@@ -276,6 +298,20 @@ int main(void) {
        OS1_port_recv(psrv, &rx) == (long)sizeof(rx) && rx.type == 4242 &&
        rx.data1 == 0xC0FFEE && rx.from == get_pid();
   check(win_id, "port-roundtrip+from-unforgeable", ok);
+  tx.type = 4243;
+  tx.from = 999999;
+  ok = pcli >= 0 && psrv >= 0 &&
+       OS1_port_send(pcli, &tx) == (long)sizeof(tx) &&
+       OS1_port_try_recv(psrv, &rx) == (long)sizeof(rx) &&
+       rx.type == 4243 && rx.from == get_pid() &&
+       OS1_port_try_recv(psrv, &rx) == -EAGAIN;
+  check(win_id, "port-try-one-record+stamped-sender", ok);
+  char authority[24] = {0};
+  check(win_id, "nxmanage-registry-authority-readonly",
+        OS1_registry_get("system.manage.pid", authority,
+                         sizeof(authority)) == 0 &&
+        strcmp(authority, "1") == 0 &&
+        OS1_registry_set("system.manage.pid", "9999") == -EACCES);
 
   /* 19. an unpublished name yields no capability at all. */
   int pmiss = OS1_port_open("OS1nx_nosuchservice");

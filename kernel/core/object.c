@@ -101,6 +101,7 @@ struct kport {
   int senders;   /* open handles holding the SEND right    */
   int receivers; /* open handles holding the RECEIVE right */
   int owner_pid;
+  int private_port; /* generic MACHINE-created, grant-only service endpoint */
   char name[PORT_NAME_MAX];
   struct wait_queue_head rq; /* receivers waiting for a message  */
   struct wait_queue_head wq; /* senders waiting for queue space  */
@@ -490,6 +491,10 @@ static long handle_create_port_sender(struct process *process, const char *name,
     spin_unlock_irqrestore(&object_lock, flags);
     return -ENOENT;
   }
+  if (existing->port->private_port && !proc_is_machine(process)) {
+    spin_unlock_irqrestore(&object_lock, flags);
+    return -EPERM;
+  }
   handle = handle_install_locked(process, existing,
                                  rights & ~OS1_RIGHT_READ);
   spin_unlock_irqrestore(&object_lock, flags);
@@ -497,7 +502,11 @@ static long handle_create_port_sender(struct process *process, const char *name,
 }
 
 static struct kobject *port_receiver_object(struct process *process,
-                                            const char *name) {
+                                            const char *name, int is_private) {
+  /* Reject unrepresentable names before allocating the port object. */
+  size_t name_len = strlen(name);
+  if (name_len == 0U || name_len >= PORT_NAME_MAX)
+    return NULL;
   struct kport *port = kmalloc(sizeof(*port));
   struct kobject *object;
 
@@ -505,7 +514,12 @@ static struct kobject *port_receiver_object(struct process *process,
     return NULL;
   memset(port, 0, sizeof(*port));
   port->owner_pid = (int)process->pid;
-  snprintf(port->name, PORT_NAME_MAX, "%s", name);
+  port->private_port = is_private;
+  for (size_t i = 0U; i < PORT_NAME_MAX; ++i) {
+    if (i > name_len)
+      break;
+    port->name[i] = name[i];
+  }
   INIT_LIST_HEAD(&port->rq.task_list);
   spin_lock_init(&port->rq.lock);
   INIT_LIST_HEAD(&port->wq.task_list);
@@ -521,8 +535,9 @@ static struct kobject *port_receiver_object(struct process *process,
 }
 
 static long handle_create_port_receiver(struct process *process,
-                                        const char *name, uint32_t rights) {
-  struct kobject *object = port_receiver_object(process, name);
+                                        const char *name, uint32_t rights,
+                                        int is_private) {
+  struct kobject *object = port_receiver_object(process, name, is_private);
   uint64_t flags;
   int slot;
   int handle;
@@ -551,10 +566,10 @@ static long handle_create_port_receiver(struct process *process,
 }
 
 static long handle_create_port(struct process *process, const char *name,
-                               uint32_t rights) {
+                               uint32_t rights, int is_private) {
   if ((rights & OS1_RIGHT_READ) == 0U)
     return handle_create_port_sender(process, name, rights);
-  return handle_create_port_receiver(process, name, rights);
+  return handle_create_port_receiver(process, name, rights, is_private);
 }
 
 static long handle_create_process(struct process *process, const char *path,
@@ -631,8 +646,13 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
   struct process *process = current_process;
   char path[OBJ_FILE_PATH_MAX];
   int want_create;
+  int private_port = (rights & OS1_PORT_CREATE_PRIVATE) != 0U;
 
   if (process == NULL)
+    return -EPERM;
+  if (private_port && (ns != OS1_NS_PORT ||
+                       (rights & OS1_RIGHT_READ) == 0U ||
+                       !proc_is_machine(process)))
     return -EPERM;
   want_create = (rights & OS1_RIGHT_CREATE) != 0U;
   rights &= OS1_RIGHT_ALL;
@@ -649,7 +669,7 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
   case OS1_NS_FS:
     return handle_create_fs(process, path, rights, want_create);
   case OS1_NS_PORT:
-    return handle_create_port(process, path, rights);
+    return handle_create_port(process, path, rights, private_port);
   case OS1_NS_PROC:
     return handle_create_process(process, path, rights, type);
   case OS1_NS_REG:
@@ -1223,6 +1243,28 @@ static long object_read_process(const struct kobject *object, void *user_buffer,
   return (long)copy_size;
 }
 
+/* Shared dequeue for blocking and non-blocking port consumers. The message
+ * remains in a bounded kernel ring and the sender PID is kernel-stamped.
+ * Returns 1/0 or -EPIPE, with exactly one locked queue transition. */
+static int port_pop(struct kobject *object, struct ipc_message *message) {
+  struct kport *port = object->port;
+  if (port == NULL)
+    return -EIO;
+  uint64_t flags;
+  spin_lock_irqsave(&object_lock, &flags);
+  if (port->count > 0U) {
+    *message = port->q[port->head];
+    port->head = (port->head + 1U) % PORT_QUEUE_MAX;
+    --port->count;
+    spin_unlock_irqrestore(&object_lock, flags);
+    wake_up(&port->wq);
+    return 1;
+  }
+  int result = port->receivers == 0 ? -EPIPE : 0;
+  spin_unlock_irqrestore(&object_lock, flags);
+  return result;
+}
+
 static long object_read_port(struct kobject *object, void *user_buffer,
                              size_t size) {
   struct kport *port = object->port;
@@ -1235,23 +1277,12 @@ static long object_read_port(struct kobject *object, void *user_buffer,
    * sleeps until the queue predicate changes, so the loop does not busy-spin. */
   for (;;) {
     struct ipc_message message;
-    uint64_t flags;
-
-    spin_lock_irqsave(&object_lock, &flags);
-    if (port->count > 0U) {
-      message = port->q[port->head];
-      port->head = (port->head + 1U) % PORT_QUEUE_MAX;
-      --port->count;
-      spin_unlock_irqrestore(&object_lock, flags);
-      wake_up(&port->wq);
+    int result = port_pop(object, &message);
+    if (result < 0)
+      return result;
+    if (result > 0)
       return hal_copy_to_user(user_buffer, &message, sizeof(message)) != 0
           ? -EFAULT : (long)sizeof(message);
-    }
-    if (port->receivers == 0) {
-      spin_unlock_irqrestore(&object_lock, flags);
-      return -EPIPE;
-    }
-    spin_unlock_irqrestore(&object_lock, flags);
     kthread_block(&port->rq, port_readable_block, object);
   }
 }
@@ -1584,6 +1615,26 @@ long sys_object_wait(int handle, long arg) {
  * delegation of the kill right; acquisition was gated at handle_create time).
  */
 long sys_object_ctl(int handle, int cmd, long arg) {
+  /* A non-blocking read of the SAME buffered PORT queue used by blocking
+   * receive. No new syscall and no polling inside the kernel. */
+  if (cmd == OBJ_CTL_PORT_TRY_RECV) {
+    long err = 0;
+    struct kobject *object = pin_handle(handle, OS1_RIGHT_READ, &err);
+    if (object == NULL)
+      return err;
+    long result = -EINVAL;
+    if (object->type == OBJ_TYPE_PORT && arg != 0) {
+      struct ipc_message message;
+      int popped = port_pop(object, &message);
+      if (popped == 1)
+        result = hal_copy_to_user((void *)arg, &message, sizeof(message)) != 0
+                     ? -EFAULT : (long)sizeof(message);
+      else
+        result = popped == 0 ? -EAGAIN : popped;
+    }
+    obj_unref(object);
+    return result;
+  }
   /* PROCESS: terminate via a DESTROY capability (seL4 delegable kill). */
   if (cmd == OBJ_CTL_KILL) {
     long err = 0;

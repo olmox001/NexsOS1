@@ -210,3 +210,12 @@ remains open despite successful runtime boot qualification.
 
 No certification, complete Power12 conformance or final product readiness is
 asserted. New files and worktree changes are not automatically committed.
+
+## 2026-11-10: nxmanageDD userland authority catalog
+
+The first user-mode NX-CORE extension has its actual boot/protocol reference
+at docs/architecture/NXMANAGE-DD-BOOT-CAPABILITY-2026-11-10.md.
+Its UART severity prefix is NXMANAGE/WARN or NXMANAGE/ERROR; the existing
+NXPAX fault ring is NOT claimed to ingest userland messages without a
+versioned broker publisher and an end-to-end test. The NXTEST test catalog
+uses stable case IDs and real child process exit status; no simulated PASS.

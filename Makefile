@@ -23,6 +23,8 @@ HOST_CC ?= cc
 #   make BUILD=debug   → full symbols, no strip (default)
 #   make BUILD=release → --gc-sections + strip
 BUILD ?= debug
+# Opt-in boot-time userland suite, separate from the normal debug symbols.
+MDEBUG ?= 0
 
 # Release Versioning (default V9.9.9)
 VERSION ?= V0.0.6.1
@@ -160,6 +162,8 @@ VIRT_DTB   = $(BUILD_DIR)/virt.dtb
 # ==============================================================================
 
 .PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel user disk rootfs release test-release help
+# 'make debug' is the explicit MDEBUG boot profile; normal 'run' stays quiet.
+debug: MDEBUG=1
 
 # Bootstrap exact third-party revisions recorded as Git submodule gitlinks.
 setup-deps:
@@ -194,7 +198,7 @@ dirs:
 # the shared output root and target architecture, then consumes the artifacts.
 .PHONY: kernel bootloader
 kernel: power12
-	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) kernel
+	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) MDEBUG=$(MDEBUG) kernel
 
 bootloader: power12
 	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) bootloader
@@ -449,8 +453,10 @@ include user/portability/coreutils/overlay.mk
 
 
 
-# Init ELF (placed in /sbin — machine-level only, separate from services)
-SBIN_ELFS = $(BUILD_DIR)/nxinit.elf
+# The bootstrap authority extension belongs to NX-CORE but is built with
+# the ordinary userland toolchain, never linked into the kernel image.
+# PID1 is nxmanageDD; nxinit is a ROOT-level declarative child of PID1.
+SBIN_ELFS = $(BUILD_DIR)/nxmanageDD.elf $(BUILD_DIR)/nxinit.elf
 
 # System ELFs (placed in /sys/bin)
 SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
@@ -459,10 +465,10 @@ SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxr
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
            $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf \
            $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf $(BUILD_DIR)/nxmoused.elf \
-           $(BUILD_DIR)/nxtimerdiag.elf $(BUILD_DIR)/nxpax.elf
+           $(BUILD_DIR)/nxtimerdiag.elf $(BUILD_DIR)/nxpax.elf $(BUILD_DIR)/nxtestrunner.elf
 
 # Supervised system services (placed in /sys/services).
-SYS_SERVICE_ELFS = $(BUILD_DIR)/nxtimerd.elf
+SYS_SERVICE_ELFS = $(BUILD_DIR)/nxtimerdd.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
@@ -531,6 +537,7 @@ $(BUILD_DIR)/$(USER_DIR)/sbin/%.o: $(USER_DIR)/sbin/%.c
 
 # Explicit dependencies for each user ELF
 # nxinit: source in user/sbin/ (machine-level init, separate from /sys/bin services)
+$(BUILD_DIR)/nxmanageDD.elf: $(BUILD_DIR)/kernel/user/extension/nxmanageDD/main.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sbin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxenvinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxenvinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxcompositor.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxcompositor.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -616,8 +623,9 @@ $(BUILD_DIR)/nxexec.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxexec.o $(USER_LIB_O)
 $(BUILD_DIR)/nximage.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nximage.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxtimerd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxtimerd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxtimerdd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxtimerdd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxpax.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxpax.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxtestrunner.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtestrunner.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxfont.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/nxfont.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
@@ -670,6 +678,16 @@ $(BUILD_DIR)/%.o: %.c
 # Track programs, libraries, the packaging recipe and resource directories;
 # directory mtimes also catch addition/removal of an asset.
 ROOTFS_STAMP = $(BUILD_DIR)/rootfs-ready.stamp
+# MDEBUG is USERLAND image policy, never a kernel compile-time branch. The
+# value file updates only on profile changes and invalidates the rootfs.
+NX_BOOT_PROFILE = $(BUILD_DIR)/nx-boot-profile.value
+.PHONY: nx-boot-profile-force
+nx-boot-profile-force:
+$(NX_BOOT_PROFILE): nx-boot-profile-force
+	@mkdir -p $(dir $@)
+	@printf '%s\n' "$(MDEBUG)" > "$@.tmp"; \
+	  if test -r "$@" && cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; \
+	  else mv "$@.tmp" "$@"; fi
 ROOTFS_ASSET_DIRS = user/home/Settings user/home/Pictures user/home/Video \
                     user/sys/bin/nxfont/fonts user/sys/bin/background
 # Escape whitespace inside asset paths so fonts such as "Orkney Light.ttf"
@@ -677,18 +695,20 @@ ROOTFS_ASSET_DIRS = user/home/Settings user/home/Pictures user/home/Video \
 ROOTFS_ASSETS = $(shell find $(ROOTFS_ASSET_DIRS) \
                   \( -type f -o -type d -o -type l \) 2>/dev/null | \
                   sed 's/ /\\ /g') \
-                user/sys/bin/init.cfg $(wildcard user/bin/doom/freedoom*.wad)
+                user/sys/boot/entry user/sys/boot/manager.conf \
+                user/sys/boot/services.conf $(wildcard user/bin/doom/freedoom*.wad)
 rootfs: user libsdl2 liblua libgnulib coreutils $(ROOTFS_STAMP)
 	@test -d "$(BUILD_DIR)/rootfs" || { \
 	  echo "ERROR: rootfs missing while $(ROOTFS_STAMP) exists" >&2; exit 1; }
 $(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
-                $(GNULIB_LIB) $(ROOTFS_ASSETS) Makefile
+                $(GNULIB_LIB) $(ROOTFS_ASSETS) $(NX_BOOT_PROFILE) Makefile
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sbin
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/services
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
+	@mkdir -p $(BUILD_DIR)/rootfs/system/boot
 	@mkdir -p $(BUILD_DIR)/rootfs/tmp
 	@mkdir -p $(BUILD_DIR)/rootfs/var/tmp
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
@@ -714,7 +734,10 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(SYS_SERVICE_ELFS) $(BUILD_DIR)/rootfs/sys/services/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
-	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
+	@cp user/sys/boot/entry $(BUILD_DIR)/rootfs/system/boot/entry
+	@cp user/sys/boot/manager.conf $(BUILD_DIR)/rootfs/system/boot/manager.conf
+	@cp user/sys/boot/services.conf $(BUILD_DIR)/rootfs/system/boot/services.conf
+	@cp $(NX_BOOT_PROFILE) $(BUILD_DIR)/rootfs/system/boot/profile
 	@# Pre-create a 16KB scratch file for the /bin/stress file lane: the FS has no
 	@# runtime file creation (O_CREAT -> -EINVAL), and file_write only extends an
 	@# EXISTING file, so ship one (perf §6 stress harness).

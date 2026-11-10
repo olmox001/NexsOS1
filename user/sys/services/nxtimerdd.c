@@ -1,19 +1,19 @@
 /*
- * nxtimerd - supervised NexsOS time/telemetry service.
+ * nxtimerdd - supervised NexsOS time/telemetry service.
  *
  * Owns the privileged TIME object capabilities and exposes sanitized snapshots
  * through OS1nx_time.  The process serves a bounded request epoch and exits;
  * nxinit owns restart policy and reclaims the named receive endpoint.
  */
 #include <os1_time_service.h>
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
 #define TIMERD_CLAIM_TRIES UINT32_C(20)
 #define TIMERD_CLAIM_WAIT_MS 100
-#define TIMERD_MAX_REPLY \
+#define TIMERD_MAX_REPLY                                                       \
   ((unsigned long)sizeof(struct os1_time_service_timer_stats))
 
 static int timerd_write_full(int fd, const void *buffer, unsigned long size) {
@@ -21,8 +21,8 @@ static int timerd_write_full(int fd, const void *buffer, unsigned long size) {
   unsigned long done = 0U;
   if (size > TIMERD_MAX_REPLY)
     return -1;
-  for (unsigned long step = 0U;
-       step < TIMERD_MAX_REPLY && done < size; ++step) {
+  for (unsigned long step = 0U; step < TIMERD_MAX_REPLY && done < size;
+       ++step) {
     long written = write(fd, (const char *)bytes + done, size - done);
     if (written <= 0)
       return -1;
@@ -76,19 +76,26 @@ static int timerd_reply_stats(int reply, int stats_handle) {
       wire.cpu_record_size != sizeof(struct os1_timer_cpu_stats_v4) ||
       wire.cpu_count == 0U || wire.cpu_count > OS1_TIME_MAX_CPUS)
     return -1;
-  memset(&published, 0, sizeof(published));
+  published = (struct os1_time_service_timer_stats){0};
   published.cpu_count = wire.cpu_count;
   published.sequence = wire.sequence;
   published.monotonic_ns = wire.monotonic_ns;
-  for (uint32_t index = 0U; index < wire.cpu_count; ++index)
+  for (uint32_t index = 0U; index < OS1_TIME_MAX_CPUS; ++index) {
+    if (index >= wire.cpu_count)
+      break;
     timerd_copy_cpu(&published.cpu[index], &wire.cpu[index]);
+  }
   return timerd_write_full(reply, &published, sizeof(published));
 }
 
 static int timerd_handle_request(const struct ipc_message *message,
                                  int time_handle, int stats_handle) {
   int reply = -1;
-  memcpy(&reply, message->payload, sizeof(reply));
+  /* The transferred handle is a native 32-bit capability descriptor.
+   * Decode exactly four bytes; no unaligned aliasing or unchecked memcpy. */
+  unsigned char *target = (unsigned char *)&reply;
+  for (unsigned i = 0U; i < sizeof(reply); ++i)
+    target[i] = (unsigned char)message->payload[i];
   if (reply < 0)
     return -1;
   int status = -1;
@@ -114,8 +121,8 @@ static int timerd_claim(void) {
 }
 
 static int timerd_serve_epoch(int port, int time_handle, int stats_handle) {
-  for (uint32_t request = 0U;
-       request < OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT; ++request) {
+  for (uint32_t request = 0U; request < OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT;
+       ++request) {
     struct ipc_message message;
     long received = OS1_port_recv(port, &message);
     if (received != (long)sizeof(message))
@@ -135,7 +142,9 @@ int main(void) {
   int port = timerd_claim();
   if (port < 0)
     return 1;
-  printf("[nxtimerd] service listening on %s\n", OS1NX_PORT_TIME);
+  if (printf("[nxtimerdd] service listening on %s\n",
+             OS1NX_PORT_TIME) < 0)
+    return 1;
   int status = timerd_serve_epoch(port, time_handle, stats_handle);
   int close_port = OS1low_handle_close(port);
   int close_stats = OS1low_handle_close(stats_handle);

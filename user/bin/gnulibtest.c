@@ -41,7 +41,7 @@ static void test_basename_dirname(void) {
     check_bool("basename last_component", strcmp(b1, "nxinit") == 0);
 
     char *d1 = mdir_name(p1);
-    check_bool("dirname mdir_name", d1 && strcmp(d1, "/sys/bin") == 0);
+    check_bool("dirname mdir_name", d1 && strcmp(d1, "/sbin") == 0);
     if (d1) free(d1);
 
     char path_buf[64];

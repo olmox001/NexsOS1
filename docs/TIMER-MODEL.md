@@ -868,14 +868,14 @@ remain prohibited until that boundary is measured.
 ## 13. Stable service-facing timer statistics (2026-11-10)
 
 TIME statistics transport is owned by NX-CORE and the privileged
-`/sys/services/nxtimerd` broker. The kernel object exports the generated
+`/sys/services/nxtimerdd` broker. The kernel object exports the generated
 `os1_timer_stats_snapshot_v4` ABI, and the broker validates its version,
 complete wire size, per-CPU record size and CPU count before publishing
 any response. The wire type and version are never used by ordinary programs.
 
 The SDK's `OS1low_time_stats_snapshot(handle, buffer, size)` reads a
 caller-sized privileged TIME object and does not embed the wire type in
-`system/include/api/os1.h` or `system/lib/lib.c`. Only nxtimerd calls
+`system/include/api/os1.h` or `system/lib/lib.c`. Only nxtimerdd calls
 this low-level method for the timer-statistics transport.
 
 The supervised broker converts each wire CPU record field-by-field into

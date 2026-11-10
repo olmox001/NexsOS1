@@ -5,6 +5,11 @@
 ARCH ?= aarch64
 BUILD ?= debug
 BUILD_ROOT ?= build
+# MDEBUG enables a separate boot-time userland test shell, not a different HAL.
+MDEBUG ?= 0
+ifneq ($(filter $(MDEBUG),0 1),$(MDEBUG))
+  $(error MDEBUG must be 0 or 1)
+endif
 HOST_OS ?= $(shell uname -s)
 ifeq ($(HOST_OS),Darwin)
   AMD64_CROSS_COMPILE ?= x86_64-elf-
@@ -72,7 +77,19 @@ KERNEL_INCLUDE := -I$(HAL_ROOT) -I$(KERNEL_DIR)/include -I$(HAL_ROOT)/include -I
 KERNEL_HARDEN_FLAGS := -Wundef -Wformat=2 -Wcast-align -Wpointer-arith \
   -Wswitch-enum -Wdouble-promotion -Wvla -Wmissing-declarations
 KERNEL_CFLAGS := $(COMMON_FLAGS) $(ARCH_CFLAGS) $(KERNEL_INCLUDE) \
-  $(KERNEL_HARDEN_FLAGS) -DKERNEL
+  $(KERNEL_HARDEN_FLAGS) -DKERNEL -DNX_MDEBUG_BOOT=$(MDEBUG)
+
+# Make changes to MDEBUG recompile the K3 composition root reliably, even
+# when the same output tree is reused. All other kernel objects remain intact.
+.PHONY: mdebug-config-force
+mdebug-config-force:
+MDEBUG_CONFIG := $(BUILD_DIR)/mdebug-config.value
+$(MDEBUG_CONFIG): mdebug-config-force
+	@mkdir -p $(dir $@)
+	@printf '%s\n' "$(MDEBUG)" > "$@.tmp"; \
+	  if test -r "$@" && cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; \
+	  else mv "$@.tmp" "$@"; fi
+$(BUILD_DIR)/main.o: $(MDEBUG_CONFIG)
 
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
