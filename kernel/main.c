@@ -2,6 +2,7 @@
  * kernel/kernel.c
  * Main kernel initialization and entry point
  */
+#include <kernel/resource.h>
 #include <drivers/input.h>
 #include <drivers/virtio_blk.h>
 #include <drivers/virtio_gpu.h>
@@ -425,6 +426,7 @@ static void init_memory_core(void) {
   /* Run unit tests now that PMM/VMM/kmalloc are live: memory tests (kmalloc
    * growth, vmm_protect) need real allocators, so the runner sits after the
    * MM bring-up instead of right after the banner. */
+  nx_buffer_init();
   ktest_run_all();
 
   /* K1→K2 boundary (S-ALIGN F9): memory/hardware is up; everything from

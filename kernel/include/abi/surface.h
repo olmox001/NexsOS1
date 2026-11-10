@@ -11,6 +11,13 @@
 #define OS1_RESOURCE_KEYBOARD "input/keyboard"
 #define OS1_RESOURCE_POINTER "input/pointer"
 #define OS1_RESOURCE_WINDOW_STORAGE "surface/window-v1"
+#define OS1_RESOURCE_BUFFER "memory/buffer"
+#define OS1_BUFFER_INFO 0x00080001U
+#define OS1_BUFFER_ALLOCATE 0x00080002U
+#define OS1_BUFFER_MAP 0x00080003U
+#define OS1_BUFFER_UNMAP 0x00080004U
+#define OS1_BUFFER_WRITABLE 1U
+#define OS1_BUFFER_ACCOUNT_UNKNOWN UINT64_MAX
 struct os1_surface_state_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -73,5 +80,36 @@ NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, struct_size) == 4, "surfa
 NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, id) == 8, "surface ABI offset");
 NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, x) == 12, "surface ABI offset");
 NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, y) == 16, "surface ABI offset");
+#undef NX_SURFACE_ASSERT
+struct os1_buffer_request_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t operation;
+  uint32_t flags;
+  uint64_t byte_length;
+  uint64_t page_offset;
+  uint64_t address;
+  uint64_t completed;
+  uint64_t total_pages;
+  uint64_t work_units;
+  uint64_t hardware_cycles;
+};
+#if defined(__cplusplus)
+#define NX_SURFACE_ASSERT static_assert
+#else
+#define NX_SURFACE_ASSERT _Static_assert
+#endif
+NX_SURFACE_ASSERT(sizeof(struct os1_buffer_request_v1) == 72, "surface ABI size");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, abi_version) == 0, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, struct_size) == 4, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, operation) == 8, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, flags) == 12, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, byte_length) == 16, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, page_offset) == 24, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, address) == 32, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, completed) == 40, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, total_pages) == 48, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, work_units) == 56, "surface ABI offset");
+NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, hardware_cycles) == 64, "surface ABI offset");
 #undef NX_SURFACE_ASSERT
 #endif

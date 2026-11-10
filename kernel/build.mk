@@ -10,6 +10,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/core/boot_memory.c \
     $(KERNEL_DIR)/core/object.c \
     $(KERNEL_DIR)/resources/display.c \
+    $(KERNEL_DIR)/resources/buffer.c \
     $(KERNEL_DIR)/resources/input.c \
     $(KERNEL_DIR)/resources/window_compat.c \
     $(KERNEL_DIR)/core/fault.c \

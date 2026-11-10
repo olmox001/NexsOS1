@@ -2,6 +2,7 @@
 #define OS1_THEME_H
 
 #include <stdint.h>
+#include <style_names.h>
 
 typedef struct os1_compositor_style {
   int titlebar, window_borders, rounded_corners, shadows, animations;
@@ -18,13 +19,13 @@ typedef struct os1_compositor_background {
 } os1_compositor_background_t;
 
 enum { OS1_STYLE_NEXS, OS1_STYLE_CLASSIC, OS1_STYLE_MATERIAL,
-       OS1_STYLE_GLASS, OS1_STYLE_MINIMAL, OS1_STYLE_RETRO, OS1_STYLE_COUNT };
-enum { OS1_THEME_LIGHT, OS1_THEME_DARK, OS1_THEME_COUNT };
+       OS1_STYLE_GLASS, OS1_STYLE_MINIMAL, OS1_STYLE_RETRO };
+enum { OS1_THEME_LIGHT, OS1_THEME_DARK };
 enum { OS1_BG_BLACK, OS1_BG_RED, OS1_BG_GREEN, OS1_BG_YELLOW, OS1_BG_BLUE,
        OS1_BG_MAGENTA, OS1_BG_CYAN, OS1_BG_WHITE, OS1_BG_GRAY,
        OS1_BG_BRIGHT_RED, OS1_BG_BRIGHT_GREEN, OS1_BG_BRIGHT_YELLOW,
        OS1_BG_BRIGHT_BLUE, OS1_BG_BRIGHT_MAGENTA, OS1_BG_BRIGHT_CYAN,
-       OS1_BG_BRIGHT_WHITE, OS1_BG_COUNT };
+       OS1_BG_BRIGHT_WHITE };
 
 const os1_compositor_style_t *os1_theme_style_active(void);
 const os1_compositor_theme_t *os1_theme_palette_active(void);

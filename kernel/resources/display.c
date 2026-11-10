@@ -121,6 +121,8 @@ static const struct nx_resource_ops display_ops = {
 
 int nx_resource_acquire(struct process *caller, const char *path,
                         uint32_t rights, struct kobject *object) {
+  if (caller && strcmp(path, OS1_RESOURCE_BUFFER) == 0)
+    return nx_buffer_resource_acquire(rights, object);
   const uint32_t allowed = OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_WAIT |
                           OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE;
   if (!caller || !proc_is_privileged(caller) ||

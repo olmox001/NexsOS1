@@ -7,7 +7,6 @@
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
 #include <stdint.h>
-#pragma GCC optimize("O2")
 
 #define PROCESS_NAME_MAX 32
 #define STACK_SIZE 131072
@@ -96,6 +95,7 @@ struct process {
   uint64_t kernel_stack; /* Kernel stack top */
   uint64_t heap_start;   /* Base address of user heap */
   uint64_t heap_end;     /* Current end of user heap */
+  uint64_t shared_next_va; /* next reservation in the shared-memory arena */
   spinlock_t mm_lock;    /* Protects page table modifications */
 
   /* Context for switching */
@@ -203,6 +203,7 @@ struct process {
 
   /* IPC state */
   int ipc_target_pid; /* PID we want to talk to (-1 for ANY) */
+  bool ipc_waiting; /* only legacy receive may be woken by legacy IPC send */
   struct ipc_message
       *ipc_msg; /* User-space pointer to message (for synchronous RECV) */
   struct list_head msg_queue; /* Buffered incoming messages */

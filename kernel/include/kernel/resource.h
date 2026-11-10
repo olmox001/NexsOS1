@@ -19,4 +19,7 @@ int nx_input_resource_acquire(const char *path, uint32_t rights,
                               struct kobject *object);
 int nx_window_resource_acquire(const char *path, uint32_t rights,
                                struct kobject *object);
+void nx_buffer_init(void);
+int nx_buffer_resource_acquire(uint32_t rights, struct kobject *object);
+void nx_buffer_process_detach(struct process *process);
 #endif

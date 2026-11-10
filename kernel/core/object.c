@@ -1879,6 +1879,8 @@ int process_redirect_child_fd(struct process *child, int child_slot,
 void process_handles_destroy(struct process *p) {
   if (!p)
     return;
+  struct kobject *retired[NPROC_HANDLES];
+  unsigned retired_count = 0;
   uint64_t flags;
   spin_lock_irqsave(&object_lock, &flags);
   struct handle_entry *tbl = p->handles;
@@ -1894,8 +1896,12 @@ void process_handles_destroy(struct process *p) {
     pipe_handle_count(o, tbl[i].rights, -1); /* untrack pipe reader/writer */
     tbl[i].obj = NULL;
     if (--o->refcount <= 0)
-      kobj_free(o); /* object_lock -> kmalloc_lock order is consistent */
+      retired[retired_count++] = o;
   }
   spin_unlock_irqrestore(&object_lock, flags);
+  /* Provider teardown may release page catalogs. Keep object_lock limited to
+   * handle/refcount publication, never a resource's potentially long release. */
+  for (unsigned i = 0; i < retired_count; ++i)
+    kobj_free(retired[i]);
   kfree(tbl);
 }

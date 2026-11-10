@@ -243,6 +243,7 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/time_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/surface_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/buffer_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/os1_video_platform.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/d3d9/os1_d3d9_present.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/opengl/os1_gl_platform.o
@@ -490,7 +491,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
-           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/libctest.elf \
+           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
            $(BUILD_DIR)/capreg.elf \
            $(BUILD_DIR)/capkill.elf $(BUILD_DIR)/capkill_child.elf \
@@ -608,6 +609,7 @@ $(BUILD_DIR)/nxsettings.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxsettings.o $(USE
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/buffertest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/buffertest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/libctest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/libctest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -1006,8 +1008,13 @@ lockcheck:
 	@python3 scripts/check-lockrules.py
 
 check-kernel-contracts:
+	@python3 tools/generate-surface-contract.py --check
 	@cmp tools/toolchain-versions.env kernel/config/toolchain-versions.env
 	@kernel/tools/check-contract-snapshot.sh
+
+.PHONY: check-buffer-source
+check-buffer-source:
+	@python3 tools/check-buffer-source.py
 
 disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 	$(OBJDUMP) -d $(KERNEL_ELF) > $(BUILD_DIR)/kernel.disasm
@@ -1111,7 +1118,7 @@ test-fdt:
 test-gfx-chrome:
 	@mkdir -p build/host
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
-		-fsanitize=address,undefined -idirafter system/include/api \
+		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
 		system/lib/tests/gfx_chrome_test.c system/lib/gfx/chrome.c \
 		system/lib/gfx/decoration.c system/lib/gfx/raster.c \
 		-o build/host/gfx_chrome_test

@@ -1555,6 +1555,7 @@ void kthread_block(struct wait_queue_head *wq, int (*still_block)(void *),
 static void __process_free_resources(struct process *p) {
   SCHED_ASSERT(p != NULL, "__process_free_resources: NULL process");
 
+  nx_buffer_process_detach(p); /* unmap shared frames before private PGD teardown */
   process_handles_destroy(p); /* close capability handles, free objects */
   proc_env_free(p);           /* Phase 17: release the environment page */
   if (p->kernel_stack)
@@ -2819,9 +2820,11 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
   list_add_tail(&node->list, &target->msg_queue);
   target->msg_count++;
 
-  if (target->state == PROC_SLEEPING &&
+  if (target->state == PROC_SLEEPING && target->ipc_waiting &&
+      target->wait_queue_ptr == NULL &&
       (target->ipc_target_pid == -1 ||
        target->ipc_target_pid == (int)msg->from)) {
+    target->ipc_waiting = false;
     target->state = PROC_READY;
 
     int t_id = (target->on_cpu >= 0) ? target->on_cpu : 0;
@@ -2865,6 +2868,7 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
 
   struct ipc_node *node = pop_message(self, src_pid);
   if (node) {
+    self->ipc_waiting = false;
     spin_unlock_irqrestore(&sched_lock, flags);
     if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) !=
         0) {
@@ -2884,6 +2888,7 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
   }
   spin_lock(&cpu->sched_lock);
   self->ipc_target_pid = src_pid;
+  self->ipc_waiting = true;
   self->state = PROC_SLEEPING;
   spin_unlock(&cpu->sched_lock);
   spin_unlock_irqrestore(&sched_lock, flags);
