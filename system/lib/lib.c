@@ -515,11 +515,11 @@ long OS1low_time_stats_open(void) {
   return OS1low_handle_create(OS1_NS_TIME, OS1_TIME_OBJECT_STATS,
                               OS1_RIGHT_READ, OBJ_TYPE_TIMER);
 }
-long OS1low_time_stats_snapshot(
-    int handle, struct os1_timer_stats_snapshot_v3 *snapshot) {
-  if (snapshot == NULL)
+long OS1low_time_stats_snapshot(int handle, void *buffer,
+                               unsigned long size) {
+  if (buffer == NULL || size == 0U)
     return -EINVAL;
-  return OS1_object_read(handle, snapshot, sizeof(*snapshot));
+  return OS1_object_read(handle, buffer, size);
 }
 long OS1_object_read(int handle, void *buf, unsigned long n) {
   return _sys_object_read(handle, buf, n);

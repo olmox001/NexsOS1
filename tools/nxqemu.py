@@ -229,7 +229,10 @@ def build_qemu_command(
         cmd += ["-boot", "order=d"]
 
     if arch == "amd64":
-        cmd += ["-machine", "q35", "-cpu", "max"]
+        amd64_cpu = os.environ.get("NEXS_QEMU_AMD64_CPU", "max").strip()
+        if not amd64_cpu:
+            raise ValueError("NEXS_QEMU_AMD64_CPU must not be empty")
+        cmd += ["-machine", "q35", "-cpu", amd64_cpu]
         if boot_mode == "iso":
             if firmware == "uefi":
                 x86_firmware = find_qemu_x86_efi_firmware()

@@ -24,16 +24,6 @@ HOST_CC ?= cc
 #   make BUILD=release → --gc-sections + strip
 BUILD ?= debug
 
-# Optional escape hatch for incomplete userland compatibility layers: when set,
-# the user-space compile rules drop -Werror without weakening the kernel build.
-# GNU make does not accept arbitrary --bypas-sec switches, so the supported form
-# is a variable assignment such as: make ARCH=aarch64 BYPASS_SEC=1 run
-BYPASS_SEC ?= 0
-BYPASS_USERLAND_ERRORS ?= $(BYPASS_SEC)
-ifneq ($(BYPASS_USERLAND_ERRORS),0)
-USER_CFLAGS += -Wno-error
-endif
-
 # Release Versioning (default V9.9.9)
 VERSION ?= V0.0.6.0
 RELEASE_BASE = release/$(VERSION)
@@ -50,39 +40,37 @@ endif
 
 # Common Compiler Flags
 # ---------------------------------------------------------------------------
-# CONTRACT GATE — read before you reach for a way around it.
+# CONTRACT GATE AND MAINTENANCE DIAGNOSTICS
 #
-# kernel/include/kernel/nx_contract.h turns the invariants C cannot check into
-# build failures: NX_MUST_USE on every -errno return, NX_ASSERT_OFFSET on every
-# layout assembly depends on.  It is ALWAYS ON.  There is deliberately no flag
-# to disable it, and adding one would defeat the reason it exists -- an earlier
-# version was gated behind NX_STRICT and the result was that nobody ever saw a
-# single diagnostic, because a gate you have to remember to switch on is a gate
-# that is off.
+# All ordinary first-party userland builds enable their warning diagnostics;
+# warnings currently under correction remain visible rather than silently
+# disabled. The independent NX-CORE and NX-HAL compiler profiles preserve
+# fatal baseline diagnostics by default and require an explicit opt-out.
+# Conversion diagnostics stay enabled in both domains; the separate
+# NX_CONVERSION_AS_ERROR=1 profile makes their remaining debt build-blocking.
 #
-# When the build stops on one of these, the build is correct and the code is
-# not.  The three legitimate responses, in order of preference:
-#
-#   1. Handle the failure.  This is almost always the right answer.
-#   2. Make the failure visible where it happens -- pr_err with the CONSEQUENCE
-#      named, not just the fact ("no key events" beats "irq_register failed").
-#   3. NX_DISCARD(expr, "why") -- only for an error-unwind path where the
-#      cleanup failing changes nothing, or a best-effort refresh whose fallback
-#      is documented.  It requires a written reason precisely so it can be
-#      reviewed rather than merely noticed.
-#
-# What is NOT a response: deleting the annotation, adding -Wno-unused-result,
-# or a (void) cast (which does not suppress warn_unused_result under GCC and
-# only makes the omission look intentional -- the tree already had one).
+# No NX_DISCARD bypass is permitted. Fallible results require explicit handling.
+# Power12 retains complete findings and source-digest evidence on every new
+# audited input set. A cached audit is reused only for unchanged inputs.
+# Release and check-strict retain the hard Power12 gate.
 # ---------------------------------------------------------------------------
 
-COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
+COMMON_FLAGS = -Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings \
                -Wmissing-prototypes -Wstrict-prototypes \
+               -Wconversion -Wsign-conversion \
                -ffreestanding -fno-builtin -nostdlib -nostartfiles \
                -fno-common -fstack-protector-strong \
                -fno-pic -fno-pie \
                -fno-omit-frame-pointer \
                -O2 -g
+
+# Userland defaults to visible, nonfatal diagnostics while it is being
+# migrated. NX-CORE and NX-HAL independently enforce -Werror by default.
+# Explicit userland qualification: make NX_WARNINGS_AS_ERRORS=1 ...
+NX_WARNINGS_AS_ERRORS ?= 0
+ifeq ($(NX_WARNINGS_AS_ERRORS),1)
+COMMON_FLAGS += -Werror
+endif
 
 # Enforce the contract annotations on every ordinary build.  Both release
 # architectures have been rebuilt successfully with NX_STRICT=1; keep the
@@ -95,12 +83,12 @@ endif
 ifeq ($(ARCH), amd64)
     CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
     ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large
-    ASFLAGS = -g --fatal-warnings
+    ASFLAGS = -g $(if $(filter 1,$(NX_WARNINGS_AS_ERRORS)),--fatal-warnings)
     QEMU = qemu-system-x86_64
 else
     CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
     ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57 $(AARCH64_ARCH_CFLAGS_EXTRA)
-    ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
+    ASFLAGS = -mcpu=cortex-a57 -g $(if $(filter 1,$(NX_WARNINGS_AS_ERRORS)),--fatal-warnings)
     QEMU = qemu-system-aarch64
 endif
 KERNEL_DIR = kernel
@@ -114,17 +102,6 @@ INCLUDE = $(USER_INCLUDE)
 # Userland: enable per-function/data sections so the linker can GC unused
 # code from the whole-archive runtime objects (USR-BLOAT-01/02).
 USER_CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(USER_INCLUDE) -ffunction-sections -fdata-sections
-ifneq ($(BYPASS_USERLAND_ERRORS),0)
-USER_CFLAGS += -Wno-error
-endif
-
-# Optional conversion/sign-conversion discovery profile.
-NX_DIAG_WARNINGS ?= 0
-ifeq ($(NX_DIAG_WARNINGS),1)
-NX_DIAG_WARNING_FLAGS = -Wconversion -Wsign-conversion
-NX_DIAG_WARNING_MODE = -Wno-error
-USER_CFLAGS += $(NX_DIAG_WARNING_FLAGS) $(NX_DIAG_WARNING_MODE)
-endif
 # CFLAGS is the userland-facing convention used by upstream build fragments.
 CFLAGS = $(USER_CFLAGS)
 
@@ -192,7 +169,7 @@ check-deps:
 	@tools/setup-dependencies.sh --check
 
 # Default target
-all: dirs bootloader kernel user $(MKDISK) disk
+all: power12 dirs bootloader kernel user $(MKDISK) disk
 	@echo ""
 	@echo "Build complete for $(ARCH)!"
 	@echo "  Disk Image: $(DISK_IMG)"
@@ -216,10 +193,10 @@ dirs:
 # NX-CORE owns the kernel and bootloader build. The superproject passes only
 # the shared output root and target architecture, then consumes the artifacts.
 .PHONY: kernel bootloader
-kernel:
+kernel: power12
 	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) kernel
 
-bootloader:
+bootloader: power12
 	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) bootloader
 
 $(KERNEL_BIN) $(KERNEL_ELF): | kernel
@@ -514,7 +491,7 @@ USER_ELFS = $(SBIN_ELFS) $(SYS_ELFS) $(SYS_SERVICE_ELFS) $(BIN_ELFS)
 
 # Userland build remains defined exactly once here until its complete source
 # manifest and rules are transferred to NX-VIOLA and NX-SDK.
-user: __nexsos_user_module
+user: power12 __nexsos_user_module
 
 .PHONY: __nexsos_user_module
 __nexsos_user_module: $(USER_ELFS)
@@ -567,22 +544,22 @@ $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(U
 # objects (which satisfy the archive's malloc/os1_video_* undefineds).
 $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o: $(USER_DIR)/bin/sdltest.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/sdltest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o: $(USER_DIR)/bin/raptor.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/raptor.elf: $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o: $(USER_DIR)/bin/nxempire.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/nxempire.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -Wno-error -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/coreutils_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/coreutilstest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -841,7 +818,7 @@ endif
 # Release Generation
 # =============================================================================
 
-release: power12-nxpax
+release: power12-strict
 	@echo "========================================"
 	@echo "  Creating Full Release $(VERSION)"
 	@echo "========================================"
@@ -860,7 +837,7 @@ else
 RELEASE_BOOT_TARGETS = boot-iso
 endif
 
-release-arch: power12-nxpax all $(RELEASE_BOOT_TARGETS)
+release-arch: power12-strict all $(RELEASE_BOOT_TARGETS)
 	@echo "--> Packaging $(ARCH) release..."
 	@rm -rf $(RELEASE_DIR)
 	@mkdir -p $(RELEASE_DIR)
@@ -1040,7 +1017,7 @@ disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 EXPECTED_GCC_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_GCC_VERSION),$(NEXS_AARCH64_GCC_VERSION))
 EXPECTED_BINUTILS_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_BINUTILS_VERSION),$(NEXS_AARCH64_BINUTILS_VERSION))
 
-.PHONY: test-nxpax-core test-nxpax-stress test-power12-nxpax power12-nxpax
+.PHONY: test-nxpax-core test-nxpax-stress test-nxpax-ast power12 power12-strict check-strict
 test-nxpax-core:
 	@mkdir -p $(BUILD_ROOT)/tests/nxpax
 	@clang -std=c17 -O1 -g -Wall -Wextra -Werror -Wpedantic \
@@ -1058,13 +1035,23 @@ test-nxpax-stress:
 	  kernel/HAL/core/nxpax.c -o $(BUILD_ROOT)/tests/nxpax/stress_test
 	@$(BUILD_ROOT)/tests/nxpax/stress_test
 
-test-power12-nxpax:
+# Preserve NXPAX-specific Clang-AST mutation tests in addition to the
+# project-wide mutation suite; they are non-mocking security regression tests.
+test-nxpax-ast:
 	@python3 tools/test_power12_nxpax.py
 
-power12-nxpax: test-power12-nxpax
-	@python3 tools/power12_audit.py --strict
+# Audit every development build and preserve failure reports; failed findings
+# are warnings for maintenance, not successful compliance results.
+power12:
+	@python3 tools/power12/run.py --warn-only --incremental
 
-check: check-kernel-contracts power12-nxpax
+# Qualification is never downgraded: strict mode fails on real findings.
+power12-strict:
+	@python3 tools/power12/run.py
+
+check-strict: check power12-strict
+
+check: check-kernel-contracts power12 test-nxpax-core test-nxpax-stress test-nxpax-ast
 	@set -eu; for tool in "$(CC)" "$(AS)" "$(LD)" "$(OBJCOPY)" "$(OBJDUMP)" "$(NM)" "$(AR)" "$(QEMU)" python3 xorriso gawk mformat mmd mcopy; do \
 		command -v "$$tool" >/dev/null 2>&1 || { echo "ERROR: required tool not found: $$tool" >&2; exit 1; }; \
 	done

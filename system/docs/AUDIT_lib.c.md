@@ -96,16 +96,11 @@ Makefile completo (non più assunte):
    effect visto che una condizione di assert non deve averne), il che conta
    come "uso" per il compilatore e chiude il warning in entrambe le
    modalità.
-3. **Scoperta collaterale utile**: il progetto ha già una propria convenzione
-   reale per "nessun valore di ritorno ignorato senza motivo" —
-   `NX_MUST_USE`/`NX_DISCARD(expr, "perché")` in `kernel/nx_contract.h`, con
-   tanto di nota esplicita che **un cast `(void)` nudo NON sopprime
-   `warn_unused_result` sotto GCC**. Non è ancora esposta in userland
-   (`include/api/os1.h` dichiara `OS1low_handle_close` senza `NX_MUST_USE`,
-   quindi il mio `(void)OS1low_handle_close(...)` non genera un warning
-   oggi), ma è il meccanismo giusto da riusare — non da reinventare — se in
-   un prossimo modulo `NX_MUST_USE` arriva anche lato userland. Lo lascio
-   annotato qui per non riscoprirlo da zero al modulo 3.
+3. **Aggiornamento Power12 (2026-11-10)**: `NX_DISCARD` è stato rimosso.
+   `NX_MUST_USE` resta il contratto per i risultati fallibili, ma non esiste
+   più un escape hatch per scartarli. Ogni caller deve propagare l'errore oppure
+   rendere espliciti rollback/fallback nel control flow. Anche un cast `(void)`
+   non è una soluzione accettata per un risultato fallibile.
 
 
 1. **Ambiente & registry** (`OS1_env_*`, `getenv`/`setenv`, `OS1_registry_*`) — già solido, serve solo R5/R7/banner.

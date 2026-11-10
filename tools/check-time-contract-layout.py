@@ -55,8 +55,8 @@ def dump_layout(target: str) -> tuple[dict[str, dict] | None, str]:
             '#include "os1_time.h"\n'
             "struct os1_time_cpu_v1 probe_time_cpu;\n"
             "struct os1_time_snapshot_v1 probe_time_snapshot;\n"
-            "struct os1_timer_cpu_stats_v3 probe_timer_cpu;\n"
-            "struct os1_timer_stats_snapshot_v3 probe_timer_snapshot;\n"
+            "struct os1_timer_cpu_stats_v4 probe_timer_cpu;\n"
+            "struct os1_timer_stats_snapshot_v4 probe_timer_snapshot;\n"
         )
         cmd = [
             "clang",

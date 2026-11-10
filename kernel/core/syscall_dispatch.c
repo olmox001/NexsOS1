@@ -548,8 +548,14 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
-    graphics_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3,
-                       (uint32_t)arg4);
+    if (arg0 > UINT32_MAX || arg1 > UINT32_MAX ||
+        arg2 == 0U || arg2 > UINT32_MAX ||
+        arg3 == 0U || arg3 > UINT32_MAX) {
+      hal_frame_set_return(frame, -EINVAL);
+      break;
+    }
+    graphics_draw_rect((uint32_t)arg0, (uint32_t)arg1,
+                       (uint32_t)arg2, (uint32_t)arg3, (uint32_t)arg4);
     hal_frame_set_return(frame, 0);
     break;
   case SYS_WINDOW_ENUM: {

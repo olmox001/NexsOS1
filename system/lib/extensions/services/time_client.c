@@ -2,7 +2,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define TIME_REPLY_MAX_BYTES ((unsigned long)sizeof(struct os1_timer_stats_snapshot_v3))
+#define TIME_REPLY_MAX_BYTES ((unsigned long)sizeof(struct os1_time_service_timer_stats))
 
 static int time_read_full(int fd, void *buffer, unsigned long size) {
   unsigned char *bytes = (unsigned char *)buffer;
@@ -69,14 +69,14 @@ int OS1_time_service_snapshot(struct os1_time_snapshot_v1 *snapshot) {
 }
 
 int OS1_time_service_timer_stats(
-    struct os1_timer_stats_snapshot_v3 *snapshot) {
+    struct os1_time_service_timer_stats *snapshot) {
   if (snapshot == NULL)
     return -1;
   if (time_service_request(OS1_TIME_SERVICE_REQUEST_TIMER_STATS, snapshot,
                            sizeof(*snapshot)) != 0)
     return -1;
-  if (snapshot->abi_version != OS1_TIMER_STATS_ABI_VERSION ||
-      snapshot->struct_size != sizeof(*snapshot))
+  if (snapshot->cpu_count == 0U ||
+      snapshot->cpu_count > OS1_TIME_MAX_CPUS)
     return -1;
   return 0;
 }

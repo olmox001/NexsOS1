@@ -523,11 +523,9 @@ second VFS-mounted typed-object namespace:
   `/proc/<pid>` reads go through the PROCESS object's `sys_object_read`, not a
   procfs-local formatter, so there is no side-channel around the capability
   model.
-- **Known stray file**: `kernel/include/kernel/registry.h.new` is an
-  unreferenced draft header left over from the migration (last touched
-  `749bed5`, missing `REG_OP_DEL`/`registry_del`/`registry_mount_vfs` that the
-  live `registry.h` has). Not wired into any build rule — safe to delete
-  whenever someone is in the area, not urgent.
+- **Obsolete draft closed (2026-11-10)**: `kernel/include/kernel/registry.h.new`
+  was removed after comparison with the canonical header confirmed it lacked
+  delete, virtual-authority, mount and MUST_USE contracts.
 
 ## 7.7 Notification model rework (§6.4, DIR-05) ✅ DONE (2026-07-02)
 
@@ -711,15 +709,10 @@ Also still open, verified 2026-07-02:
   (`input_poll_event`) is unified.
 - **DIR-02/DIR-07 remaining**: no system-driven desktop-resize broadcast to
   all windows (still per-window only, on `SYS_WINDOW_RESIZE`).
-- **Known stray files** (harmless, cleanup candidates): `kernel/graphics/
-  compositor.c.old` and `.c.new` (both last touched `8ad8c51`, unreferenced by
-  any build rule — kept deliberately as a "transform reference" per that
-  commit's message, see `docs/PENDING-WORK.md` item 9); `kernel/include/kernel/
-  registry.h.new` (§7.6, unreferenced draft).
-- `compositor_get_focus_pid()` — the dead-code cleanup `docs/PENDING-WORK.md`
-  item 3 asked for is **already done**: the live `kernel/graphics/compositor.c`
-  no longer defines it (only a comment at `compositor.c:934` explains its
-  removal); it survives only in the two stray `.old`/`.new` files above.
+- **Obsolete-source closure (2026-11-10)**: alternate compositor, registry and
+  shell sources were removed after comparison. Terminal CSI/SGR/caret logic is
+  canonical in `kernel/graphics/term.c`; Material/shadow decoration belongs to
+  `system/lib/gfx` + the ring-3 compositor. No alternate source remains.
 
 ## 7.12 Filesystem/libc stabilization batch (2026-07-16) ✅ DONE (runtime-verified aarch64)
 

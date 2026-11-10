@@ -91,6 +91,16 @@ def clang_args(rel: str, arch: str) -> list[str]:
         ]
     for item in include_dirs:
         args += ["-I", str(ROOT / item)]
+    if rel == "user/bin/gnulibtest.c" or rel.startswith("user/portability/gnulib/"):
+        args += [
+            "-D__NEXSOS__", "-DFLEXIBLE_ARRAY_MEMBER=",
+            "-include", str(ROOT / "user/portability/gnulib/gnulib_config_nexsos.h"),
+        ]
+    if rel.startswith("user/portability/coreutils/"):
+        args += [
+            "-include",
+            str(ROOT / "user/portability/coreutils/coreutils_config_nexsos.h"),
+        ]
     return args
 
 def clang_ast(path: Path, arch: str) -> tuple[dict | None, str]:

@@ -14,7 +14,7 @@
 #define TIMERD_CLAIM_TRIES UINT32_C(20)
 #define TIMERD_CLAIM_WAIT_MS 100
 #define TIMERD_MAX_REPLY \
-  ((unsigned long)sizeof(struct os1_timer_stats_snapshot_v3))
+  ((unsigned long)sizeof(struct os1_time_service_timer_stats))
 
 static int timerd_write_full(int fd, const void *buffer, unsigned long size) {
   const unsigned char *bytes = (const unsigned char *)buffer;
@@ -39,12 +39,50 @@ static int timerd_reply_snapshot(int reply, int time_handle) {
   return timerd_write_full(reply, &snapshot, sizeof(snapshot));
 }
 
+static void timerd_copy_cpu(struct os1_time_service_timer_cpu *dest,
+                            const struct os1_timer_cpu_stats_v4 *src) {
+  dest->cpu_id = src->cpu_id;
+  dest->arm_count = src->arm_count;
+  dest->cancel_count = src->cancel_count;
+  dest->fire_count = src->fire_count;
+  dest->scan_count = src->scan_count;
+  dest->scan_pass_count = src->scan_pass_count;
+  dest->queue_depth = src->queue_depth;
+  dest->queue_high_water = src->queue_high_water;
+  dest->max_scan_per_pass = src->max_scan_per_pass;
+  dest->max_fire_per_pass = src->max_fire_per_pass;
+  dest->late_fire_count = src->late_fire_count;
+  dest->fire_lateness_ns_total = src->fire_lateness_ns_total;
+  dest->max_fire_lateness_ns = src->max_fire_lateness_ns;
+  dest->clockevent_late_count = src->clockevent_late_count;
+  dest->clockevent_lateness_ns_total = src->clockevent_lateness_ns_total;
+  dest->max_clockevent_lateness_ns = src->max_clockevent_lateness_ns;
+  dest->absolute_program_count = src->absolute_program_count;
+  dest->irq_mask_interval_count = src->irq_mask_interval_count;
+  dest->irq_mask_total_ns = src->irq_mask_total_ns;
+  dest->irq_mask_max_ns = src->irq_mask_max_ns;
+  dest->irq_mask_invalid_sample_count = src->irq_mask_invalid_sample_count;
+  dest->irq_mask_active_ns = src->irq_mask_active_ns;
+  dest->irq_mask_flags = src->irq_mask_flags;
+}
+
 static int timerd_reply_stats(int reply, int stats_handle) {
-  static struct os1_timer_stats_snapshot_v3 snapshot;
-  long status = OS1low_time_stats_snapshot(stats_handle, &snapshot);
-  if (status != (long)sizeof(snapshot))
+  static struct os1_timer_stats_snapshot_v4 wire;
+  static struct os1_time_service_timer_stats published;
+  long status = OS1low_time_stats_snapshot(stats_handle, &wire, sizeof(wire));
+  if (status != (long)sizeof(wire) ||
+      wire.abi_version != OS1_TIMER_STATS_ABI_VERSION ||
+      wire.struct_size != sizeof(wire) ||
+      wire.cpu_record_size != sizeof(struct os1_timer_cpu_stats_v4) ||
+      wire.cpu_count == 0U || wire.cpu_count > OS1_TIME_MAX_CPUS)
     return -1;
-  return timerd_write_full(reply, &snapshot, sizeof(snapshot));
+  memset(&published, 0, sizeof(published));
+  published.cpu_count = wire.cpu_count;
+  published.sequence = wire.sequence;
+  published.monotonic_ns = wire.monotonic_ns;
+  for (uint32_t index = 0U; index < wire.cpu_count; ++index)
+    timerd_copy_cpu(&published.cpu[index], &wire.cpu[index]);
+  return timerd_write_full(reply, &published, sizeof(published));
 }
 
 static int timerd_handle_request(const struct ipc_message *message,

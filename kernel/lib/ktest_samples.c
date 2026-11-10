@@ -189,14 +189,14 @@ KTEST_CASE(test_timer_stats_accounting) {
 }
 
 KTEST_CASE(test_timer_stats_export) {
-    struct os1_timer_stats_snapshot_v3 snapshot;
+    struct os1_timer_stats_snapshot_v4 snapshot;
     uint32_t current = cpu_id();
     int found = 0;
 
     if (OS1libkernel_timer_stats_export(&snapshot) != 0 ||
         snapshot.abi_version != OS1_TIMER_STATS_ABI_VERSION ||
         snapshot.struct_size != sizeof(snapshot) ||
-        snapshot.cpu_record_size != sizeof(struct os1_timer_cpu_stats_v3) ||
+        snapshot.cpu_record_size != sizeof(struct os1_timer_cpu_stats_v4) ||
         snapshot.cpu_count == 0U ||
         snapshot.cpu_count > OS1_TIME_MAX_CPUS) {
         ktest_test_failed = 1;

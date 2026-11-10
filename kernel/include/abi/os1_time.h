@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #define OS1_TIME_ABI_VERSION UINT32_C(1)
-#define OS1_TIMER_STATS_ABI_VERSION UINT32_C(3)
+#define OS1_TIMER_STATS_ABI_VERSION UINT32_C(4)
 #define OS1_TIME_MAX_CPUS UINT32_C(64)
 #define OS1_TIME_CPU_ONLINE UINT32_C(0x00000001)
 #define OS1_TIME_CPU_ARMED UINT32_C(0x00000002)
@@ -36,7 +36,7 @@ struct os1_time_snapshot_v1 {
   struct os1_time_cpu_v1 cpu[OS1_TIME_MAX_CPUS];
 };
 
-struct os1_timer_cpu_stats_v3 {
+struct os1_timer_cpu_stats_v4 {
   uint32_t cpu_id;
   uint32_t reserved;
   uint64_t arm_count;
@@ -55,16 +55,23 @@ struct os1_timer_cpu_stats_v3 {
   uint64_t clockevent_lateness_ns_total;
   uint64_t max_clockevent_lateness_ns;
   uint64_t absolute_program_count;
+  uint64_t irq_mask_interval_count;
+  uint64_t irq_mask_total_ns;
+  uint64_t irq_mask_max_ns;
+  uint64_t irq_mask_invalid_sample_count;
+  uint64_t irq_mask_active_ns;
+  uint32_t irq_mask_flags;
+  uint32_t reserved2;
 };
 
-struct os1_timer_stats_snapshot_v3 {
+struct os1_timer_stats_snapshot_v4 {
   uint32_t abi_version;
   uint32_t struct_size;
   uint32_t cpu_count;
   uint32_t cpu_record_size;
   uint64_t sequence;
   uint64_t monotonic_ns;
-  struct os1_timer_cpu_stats_v3 cpu[OS1_TIME_MAX_CPUS];
+  struct os1_timer_cpu_stats_v4 cpu[OS1_TIME_MAX_CPUS];
 };
 
 #endif /* OS1_TIME_ABI_H */

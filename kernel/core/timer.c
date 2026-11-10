@@ -5,6 +5,7 @@
  * epoch, scheduler cadence, per-CPU time state and software deadlines.
  */
 #include <hal/core.h>
+#include <hal/irq_mask_stats.h>
 #include <hal/time.h>
 #include <kernel/cpu.h>
 #include <kernel/list.h>
@@ -41,10 +42,12 @@ static uint32_t time_event_deadline_mode;
 static uint32_t time_ready;
 
 static uint64_t time_scale_counts(uint64_t counts, uint64_t frequency) {
+  __uint128_t scaled;
+
   if (frequency == 0U)
     panic("%s", "TIME: zero hardware counter frequency");
-  return (uint64_t)(((__uint128_t)counts * OS1LIBKERNEL_NSEC_PER_SEC) /
-                    frequency);
+  scaled = ((__uint128_t)counts * OS1LIBKERNEL_NSEC_PER_SEC) / frequency;
+  return scaled > UINT64_MAX ? UINT64_MAX : (uint64_t)scaled;
 }
 
 static uint64_t time_counter_to_ns(uint64_t counter) {
@@ -567,18 +570,65 @@ int OS1libkernel_timer_stats_snapshot(
   return 0;
 }
 
+static void timer_export_queue_stats(
+    struct os1_timer_cpu_stats_v4 *record,
+    const struct OS1libkernel_timer_stats *stats) {
+  record->arm_count = stats->arm_count;
+  record->cancel_count = stats->cancel_count;
+  record->fire_count = stats->fire_count;
+  record->scan_count = stats->scan_count;
+  record->scan_pass_count = stats->scan_pass_count;
+  record->late_fire_count = stats->late_fire_count;
+  record->fire_lateness_ns_total = stats->fire_lateness_ns_total;
+  record->max_fire_lateness_ns = stats->max_fire_lateness_ns;
+  record->clockevent_late_count = stats->clockevent_late_count;
+  record->clockevent_lateness_ns_total = stats->clockevent_lateness_ns_total;
+  record->max_clockevent_lateness_ns = stats->max_clockevent_lateness_ns;
+  record->absolute_program_count = stats->absolute_program_count;
+  record->queue_depth = stats->queue_depth;
+  record->queue_high_water = stats->queue_high_water;
+  record->max_scan_per_pass = stats->max_scan_per_pass;
+  record->max_fire_per_pass = stats->max_fire_per_pass;
+}
+
+static int timer_export_irq_mask_stats(
+    uint32_t cpu_id, uint64_t now_counter,
+    struct os1_timer_cpu_stats_v4 *record) {
+  struct nxhal_irq_mask_stats_v1 stats;
+  int status = nxhal_irq_mask_stats_snapshot(cpu_id, &stats);
+
+  if (status != NXHAL_IRQ_MASK_STATS_OK)
+    return -1;
+  record->irq_mask_interval_count = stats.interval_count;
+  record->irq_mask_total_ns =
+      time_scale_counts(stats.total_counts, time_frequency_hz);
+  record->irq_mask_max_ns =
+      time_scale_counts(stats.max_counts, time_frequency_hz);
+  record->irq_mask_invalid_sample_count = stats.invalid_sample_count;
+  record->irq_mask_flags = stats.flags;
+  if ((stats.flags & NXHAL_IRQ_MASK_STATS_ACTIVE) != 0U &&
+      now_counter >= stats.active_start_count)
+    record->irq_mask_active_ns =
+        time_scale_counts(now_counter - stats.active_start_count,
+                          time_frequency_hz);
+  return 0;
+}
+
 int OS1libkernel_timer_stats_export(
-    struct os1_timer_stats_snapshot_v3 *out) {
+    struct os1_timer_stats_snapshot_v4 *out) {
+  uint64_t now_counter;
   uint32_t count = 0U;
+
   if (out == NULL)
     return -1;
   memset(out, 0, sizeof(*out));
+  now_counter = OS1libkernel_time_counter_read();
   out->abi_version = OS1_TIMER_STATS_ABI_VERSION;
   out->struct_size = (uint32_t)sizeof(*out);
-  out->cpu_record_size = (uint32_t)sizeof(struct os1_timer_cpu_stats_v3);
+  out->cpu_record_size = (uint32_t)sizeof(struct os1_timer_cpu_stats_v4);
   out->sequence =
       __atomic_add_fetch(&time_snapshot_sequence, 1U, __ATOMIC_RELAXED);
-  out->monotonic_ns = OS1libkernel_time_monotonic_ns();
+  out->monotonic_ns = time_counter_to_ns(now_counter);
   for (uint32_t cpu_id = 0U; cpu_id < MAX_CPUS; ++cpu_id) {
     struct os1_time_cpu_v1 time_record;
     struct OS1libkernel_timer_stats stats;
@@ -589,25 +639,11 @@ int OS1libkernel_timer_stats_export(
       continue;
     if (OS1libkernel_timer_stats_snapshot(cpu_id, &stats) != 0)
       return -1;
-    struct os1_timer_cpu_stats_v3 *record = &out->cpu[count];
+    struct os1_timer_cpu_stats_v4 *record = &out->cpu[count];
     record->cpu_id = cpu_id;
-    record->arm_count = stats.arm_count;
-    record->cancel_count = stats.cancel_count;
-    record->fire_count = stats.fire_count;
-    record->scan_count = stats.scan_count;
-    record->scan_pass_count = stats.scan_pass_count;
-    record->late_fire_count = stats.late_fire_count;
-    record->fire_lateness_ns_total = stats.fire_lateness_ns_total;
-    record->max_fire_lateness_ns = stats.max_fire_lateness_ns;
-    record->clockevent_late_count = stats.clockevent_late_count;
-    record->clockevent_lateness_ns_total =
-        stats.clockevent_lateness_ns_total;
-    record->max_clockevent_lateness_ns = stats.max_clockevent_lateness_ns;
-    record->absolute_program_count = stats.absolute_program_count;
-    record->queue_depth = stats.queue_depth;
-    record->queue_high_water = stats.queue_high_water;
-    record->max_scan_per_pass = stats.max_scan_per_pass;
-    record->max_fire_per_pass = stats.max_fire_per_pass;
+    timer_export_queue_stats(record, &stats);
+    if (timer_export_irq_mask_stats(cpu_id, now_counter, record) != 0)
+      return -1;
     ++count;
   }
   out->cpu_count = count;

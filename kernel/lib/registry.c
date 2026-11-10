@@ -420,11 +420,10 @@ static int reg_virtual_proc(const char *key, char *buf, size_t size) {
   }
   if (strcmp(p, "parent") == 0 || strcmp(p, "owner") == 0) {
     int par = 0, own = 0;
-    NX_DISCARD(
-        proc_get_lineage(pid, &par, &own),
-        "a pid with no lineage (or already reaped) reports 0/0, which is "
-        "the same answer this virtual key gives for init; the caller is "
-        "reading a status field, not performing an operation");
+    if (proc_get_lineage(pid, &par, &own) != 0) {
+      par = 0;
+      own = 0;
+    }
     snprintf(buf, size, "%d", (strcmp(p, "owner") == 0) ? own : par);
     return 1;
   }

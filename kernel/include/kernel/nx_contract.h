@@ -55,31 +55,9 @@
  */
 #define NX_NONNULL(...) __attribute__((nonnull(__VA_ARGS__)))
 
-/*
- * NX_DISCARD(expr, why) — deliberately drop a must-use result, with a reason.
- *
- * Without an escape hatch a must-use gate does not get satisfied, it gets
- * DELETED: the first person who meets a legitimately ignorable result and has
- * no way to say so removes the attribute, and the annotation is gone for every
- * caller.  So the hatch exists — and it is deliberately more typing than
- * handling the error, because the common case should be the easy one.
- *
- * `why` is a string literal that generates nothing.  Its only job is to make
- * the author state the justification where the next reader will look, so a
- * discard can be reviewed instead of merely noticed.  Note that a plain (void)
- * cast does NOT suppress warn_unused_result under GCC — the tree already had
- * `(void)hal_copy_to_user(...)` sitting in SYS_WAIT, which looked deliberate
- * and silenced nothing.
- *
- * Legitimate uses are narrow: an error-unwind path where the failure of the
- * cleanup changes nothing, and a genuinely best-effort refresh whose fallback
- * is documented.  "I do not know what to do with this" is not one of them.
- */
-#define NX_DISCARD(expr, why)                                                  \
-  do {                                                                         \
-    __typeof__(expr) _nx_discarded __attribute__((unused)) = (expr);           \
-    (void)sizeof(why);                                                         \
-  } while (0)
+/* Fallible results have no discard escape hatch.  Callers must either
+ * propagate the failure or make the fallback/rollback explicit in control
+ * flow so the behavior is testable and visible to static analysis. */
 
 /*
  * NX_NO_ALLOC / NX_ALLOCATES — the memory contract, for the checker.

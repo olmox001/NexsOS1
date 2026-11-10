@@ -10,6 +10,16 @@
 #include <arch/isa.h>
 
 /* --- Interrupt Control --- */
+static inline uint64_t arch_impl_irq_state_read(void) {
+  uint64_t flags;
+  __asm__ __volatile__("pushfq\n\tpopq %0" : "=r"(flags) :: "memory");
+  return flags;
+}
+
+static inline int arch_impl_irq_flags_enabled(uint64_t flags) {
+  return (flags & UINT64_C(0x200)) != 0U;
+}
+
 static inline void arch_impl_irq_enable(void) {
   __asm__ __volatile__("sti" ::: "memory");
 }

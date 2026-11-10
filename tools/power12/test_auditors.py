@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from audit_ast import analyze_translation_unit, preprocess_findings
+from audit_limits import is_material_operation_id
 from common import ROOT, load_policy
 
 class Power12MutationTests(unittest.TestCase):
@@ -32,6 +33,18 @@ class Power12MutationTests(unittest.TestCase):
 
     def has(self, findings, rule):
         return any(item["rule"] == rule for item in findings)
+
+    def test_r11_rejects_direction_and_hardware_bit_false_positives(self):
+        for name in ("KEY_RIGHT", "BTN_RIGHT", "MOUSE_RIGHT",
+                     "NS_PER_TICK", "VIRTIO_GPU_EVENT_DISPLAY"):
+            self.assertFalse(is_material_operation_id(name), name)
+
+    def test_r11_preserves_real_operation_and_authority_identifiers(self):
+        for name in ("REG_OP_READ", "NXHAL_OP_HARDWARE_DMA_VALIDATE",
+                     "OS1_RIGHT_READ", "OS1_NS_TIME",
+                     "IPC_TYPE_SERVICE", "OBJ_TYPE_TIMER",
+                     "SYS_OBJECT_CTL", "OS1_EVENT_FAULT"):
+            self.assertTrue(is_material_operation_id(name), name)
 
     def test_goto_is_structural_failure(self):
         result = self.analyze("int f(int x){goto out; out:return x;}\n")

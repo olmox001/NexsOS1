@@ -11,9 +11,23 @@ LIMIT_NAME = re.compile(
     r"(?:^|_)(?:MAX|MIN|LIMIT|CAPACITY|RETRIES|RETRY|SLOTS|POOL|BUDGET|"
     r"QUANTUM|DEPTH|TIMEOUT|INTERVAL|HZ|PAGES|BYTES)(?:_|$)"
 )
+# R11 applies to material operation/authority identifiers, not to ordinary
+# directional names (KEY_RIGHT, BTN_RIGHT), time units (NS_PER_TICK), or
+# hardware status bits (VIRTIO_GPU_EVENT_DISPLAY).
 OP_NAME = re.compile(
-    r"(?:^|_)(?:OP|CTL|REQUEST|EVENT|IPC_TYPE|OBJ_TYPE|RIGHT|NS)(?:_|$)"
+    r"(?:^|_)(?:OP|CTL|REQUEST|IPC_TYPE|OBJ_TYPE)(?:_|$)"
 )
+RIGHT_NAME = re.compile(r"(?:^|_)RIGHT_[A-Za-z0-9_]+$")
+NAMESPACE_PREFIXES = ("OS1_NS_", "NX_NS_", "NXHAL_NS_")
+PUBLIC_EVENT_PREFIXES = ("OS1_EVENT_", "NX_EVENT_", "NXHAL_EVENT_")
+
+
+def is_material_operation_id(name: str) -> bool:
+    return (OP_NAME.search(name) is not None or
+            RIGHT_NAME.search(name) is not None or
+            name.startswith(NAMESPACE_PREFIXES) or
+            name.startswith(PUBLIC_EVENT_PREFIXES))
+
 DEFINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+?)\s*$")
 
 def main() -> int:
@@ -44,7 +58,7 @@ def main() -> int:
                     if missing:
                         findings.append(finding("R12", rel, number, name,
                                                 "limit provenance missing fields: "+",".join(missing)))
-            if OP_NAME.search(name):
+            if is_material_operation_id(name):
                 entry = declared_ops.get(key)
                 if not isinstance(entry, dict):
                     findings.append(finding("R11", rel, number, name,

@@ -863,3 +863,33 @@ guest keeps IRQs masked across long critical sections.  The next required
 measurement is therefore bounded per-CPU IRQ-off duration telemetry.  Timer
 container replacement, artificial early deadlines and scheduler compensation
 remain prohibited until that boundary is measured.
+
+
+## 13. Stable service-facing timer statistics (2026-11-10)
+
+TIME statistics transport is owned by NX-CORE and the privileged
+`/sys/services/nxtimerd` broker. The kernel object exports the generated
+`os1_timer_stats_snapshot_v4` ABI, and the broker validates its version,
+complete wire size, per-CPU record size and CPU count before publishing
+any response. The wire type and version are never used by ordinary programs.
+
+The SDK's `OS1low_time_stats_snapshot(handle, buffer, size)` reads a
+caller-sized privileged TIME object and does not embed the wire type in
+`system/include/api/os1.h` or `system/lib/lib.c`. Only nxtimerd calls
+this low-level method for the timer-statistics transport.
+
+The supervised broker converts each wire CPU record field-by-field into
+`struct os1_time_service_timer_cpu` and publishes the stable
+`struct os1_time_service_timer_stats`. The SDK client validates the bounded
+CPU count, while ordinary programs (including `nxtimerdiag`) consume the
+stable model through `OS1_time_service_timer_stats`. No version-suffixed
+TIME statistics structure appears in the public SDK service API or in the
+diagnostic program. A future kernel wire revision updates the broker's
+decoder, not every consumer's type name.
+
+The 2026-11-10 freshly cleaned AMD64/ISO and AMD64/direct boots each
+passed 28/28 KTEST and timerdiag, with no unexpected faults. The same
+AArch64/UEFI and AArch64/direct matrix passed 29/29 KTEST and timerdiag.
+This verifies the real service route for the current wire ABI; future wire
+changes still require exact ABI, negative-size, permissions and guest
+interoperability regression tests.

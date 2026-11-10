@@ -85,9 +85,9 @@ Style and Theme never touch the scene graph, surfaces, input or buffers — only
 Retro (style) and Light / Dark (theme).  `SYS_SET_STYLE` (and `nxres style|theme
 <name>`) switch them live.  Default = Classic + Light (the previous look).
 
-> **Desktop vs mobile** (future): the two policies map to the two test targets —
-> amd64 = desktop, aarch64 = mobile — and build on `compositor.c.new` once the
-> compositor is stabilised.  Tiling/mobile policies are hooks today.
+> **Desktop vs mobile** (future): policy remains a ring-3 compositor/theme
+> concern. The obsolete `compositor.c.new` transform draft was removed; new
+> policy work must build on the canonical userland compositor and style APIs.
 
 ## ASTRA mapping
 

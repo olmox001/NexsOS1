@@ -94,7 +94,7 @@
     },
     "user/sys/services/nxtimerd.c::TIMERD_MAX_REPLY": {
       "kind": "wire_contract",
-      "provenance": "sizeof(struct os1_timer_stats_snapshot_v3)",
+      "provenance": "sizeof(struct os1_time_service_timer_stats)",
       "rationale": "largest TIME service response defined by the generated TIME ABI contract"
     },
     "user/sys/services/nxtimerd.c::TIMERD_CLAIM_TRIES": {

@@ -31,10 +31,28 @@ endif
 CC := $(CROSS_COMPILE)gcc
 AR := $(CROSS_COMPILE)ar
 BUILD_DIR := $(BUILD_ROOT)/$(ARCH)
-COMMON_FLAGS := -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
-  -Wmissing-prototypes -Wstrict-prototypes -ffreestanding -fno-builtin \
+COMMON_FLAGS := -Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings \
+  -Wmissing-prototypes -Wstrict-prototypes -Wconversion -Wsign-conversion \
+  -ffreestanding -fno-builtin \
   -nostdlib -nostartfiles -fno-common -fstack-protector-strong \
   -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DNX_STRICT
+# Fatal by default for the baseline correctness/hardening warning classes.
+# Conversion diagnostics remain visible in every build while each narrowing
+# site is proved and repaired. No -Wno-error or warning suppressions.
+# NX_WARNINGS_AS_ERRORS=0 explicitly opts out of fatal baseline warnings;
+# NX_CONVERSION_AS_ERROR=1 makes the conversion migration fail-fast as well.
+NX_WARNINGS_AS_ERRORS ?= 1
+NX_CONVERSION_AS_ERROR ?= 0
+ifeq ($(NX_WARNINGS_AS_ERRORS),1)
+COMMON_FLAGS += -Werror=all -Werror=extra -Werror=pedantic \
+  -Werror=shadow -Werror=write-strings -Werror=missing-prototypes \
+  -Werror=strict-prototypes -Werror=undef -Werror=format=2 -Werror=cast-align \
+  -Werror=pointer-arith -Werror=switch-enum -Werror=double-promotion \
+  -Werror=vla -Werror=missing-declarations
+endif
+ifeq ($(NX_CONVERSION_AS_ERROR),1)
+COMMON_FLAGS += -Werror=conversion -Werror=sign-conversion
+endif
 HAL_INCLUDE := -I$(HAL_ROOT) -I$(HAL_ROOT)/include -I$(KERNEL_ROOT)/include -I$(HAL_ROOT)/arch/$(ARCH)/include \
   -I$(KERNEL_ROOT)/include/abi -I$(KERNEL_ROOT)/include/api
 HAL_CFLAGS := $(COMMON_FLAGS) $(ARCH_CFLAGS) $(HAL_INCLUDE) \

@@ -210,8 +210,9 @@ long OS1_time_now(void);
 long OS1low_time_open(void);
 long OS1low_time_snapshot(int handle, struct os1_time_snapshot_v1 *snapshot);
 long OS1low_time_stats_open(void);
-long OS1low_time_stats_snapshot(
-    int handle, struct os1_timer_stats_snapshot_v3 *snapshot);
+/* Raw privileged TIME resource read. Only nxtimerd knows its wire revision. */
+long OS1low_time_stats_snapshot(int handle, void *buffer,
+                               unsigned long size);
 
 void *OS1low_vm_sbrk(intptr_t increment); /* canonical; sbrk is its shim (DIR-01 F4) */
 void *sbrk(intptr_t increment);

@@ -255,3 +255,55 @@ injection, host/sanitizer and concurrent stress evidence.
 unproved requirements and actual findings; existing HAL/Core boundary debts
 listed above remain open. Successful NXPAX tests do not certify HAL
 separation, complete fault coverage or Power12.
+
+
+## 2026-11-10 — HAL IRQ-mask duration telemetry checkpoint
+
+NX-HAL now has allocation-free per-CPU telemetry for explicit local IRQ-mask
+intervals.  The instrumentation lives at the HAL IRQ primitive boundary, so it
+covers direct enable/disable and save/restore users, including irqsave
+spinlocks, without teaching NX-CORE about DAIF or RFLAGS.
+
+The implementation derives interval nesting from the architectural IRQ state
+captured before masking.  Only an enabled-to-disabled transition starts an
+interval; nested saves while already masked do not create a second interval,
+and only a restore/enable that returns to an enabled state closes it.  Raw
+clocksource counts come from the provider clocksource; early calls made before
+that clocksource is ready are recorded as invalid samples rather than using a
+fabricated frequency.  The public snapshot is sequence-validated and bounded to
+four read attempts; it reports interval count, total/max raw counts, active
+start and invalid samples.
+
+Qualification at this checkpoint is deliberately limited to the HAL boundary:
+the dedicated optimized host test and ASan/UBSan test pass; the full NX-HAL
+host and sanitizer suites pass; and both amd64 and AArch64 kernels compile with
+their existing warning-as-error policy.  The test exercises nesting, multiple
+interval accumulation, an unavailable clocksource, a backwards counter sample,
+NULL output and CPU bounds.  No assert, heap allocation, goto, unbounded loop or
+warning suppression was added.
+
+This is not yet runtime evidence that long guest IRQ-off sections explain the
+AArch64/QEMU timer lateness.  The next step is to expose the snapshot through
+the common diagnostic/object path and measure it during the same nxadb timer
+campaign before changing timer or scheduler policy.
+
+
+## 2026-11-10 — Dual-architecture clean-build and boot stability checkpoint
+
+NX-HAL's canonical source list, fault protocol and IRQ-mask telemetry remain
+in place. The two architectures compile through NX-CORE's standalone build,
+and the HAL host test suite passes. Kernel/HAL compiler profiles retain
+blocking baseline correctness warnings; conversion warnings remain visible,
+with a separate fail-fast conversion qualification switch and explicit debt.
+
+On the fresh complete build, nxadb booted and interacted with all four
+lanes: AMD64 GRUB BIOS ISO, AMD64 direct, AArch64 GRUB UEFI ISO, and AArch64
+direct. The respective kernel test summaries were 28/28 and 29/29; each
+lane completed the shell, timerdiag, heartbeat and NXPAX service probe
+with zero unexpected faults. No new HAL architecture ABI was introduced
+to achieve those passes. This establishes boot qualification, not complete
+Power12 qualification or verified IRQ-off root-cause attribution.
+
+Power12 audit findings remain recorded and block strict qualification.
+Refer to `../../../docs/architecture/BUILD-BOOT-STABILITY-2026-11-10.md`
+for the exact build profile, logs, open safety work and handoff status.

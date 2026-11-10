@@ -8,8 +8,7 @@ COREUTILS_SRC_DIR  := $(COREUTILS_DIR)/src
 
 
 COREUTILS_CONFIG   := $(COREUTILS_PORT_DIR)/coreutils_config_nexsos.h
-COREUTILS_CFLAGS   := $(ARCH_CFLAGS) -O2 -g -Wall \
-                      -Wno-error \
+COREUTILS_CFLAGS   := $(ARCH_CFLAGS) -O2 -g -Wall -Wextra -Wpedantic \
                       -ffreestanding -fno-builtin -nostdlib -nostartfiles \
                       -fno-common -fstack-protector-strong -fno-pic -fno-pie \
                       -fno-omit-frame-pointer \
@@ -198,3 +197,8 @@ $(foreach app,$(filter-out true false uname chown chgrp cut realpath,$(COREUTILS
 
 coreutils: $(COREUTILS_ELFS)
 .PHONY: coreutils
+
+# Preserve all warnings by default; escalate only on explicit qualification.
+ifeq ($(NX_WARNINGS_AS_ERRORS),1)
+COREUTILS_CFLAGS += -Werror
+endif

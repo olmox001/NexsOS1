@@ -2,6 +2,7 @@
 #include <hal/config.h>
 #include <hal/provider.h>
 #include <arch/arch.h>
+#include "irq_mask_stats_internal.h"
 
 /*
  * The only translation point between the public HAL language and the selected
@@ -34,20 +35,50 @@ void hal_reboot(void) {
   arch_impl_halt();
 }
 
-void hal_irq_enable(void) { arch_impl_irq_enable(); }
-void hal_irq_disable(void) { arch_impl_irq_disable(); }
+void hal_irq_enable(void) {
+  uint64_t flags = arch_impl_irq_state_read();
+  nxhal_irq_mask_note_will_enable(!arch_impl_irq_flags_enabled(flags));
+  arch_impl_irq_enable();
+}
+
+void hal_irq_disable(void) {
+  uint64_t flags = arch_impl_irq_state_read();
+  arch_impl_irq_disable();
+  nxhal_irq_mask_note_disabled(arch_impl_irq_flags_enabled(flags));
+}
 
 uint64_t hal_irq_save_val(void) {
-  uint64_t flags = 0;
+  uint64_t flags = 0U;
   arch_impl_irq_save(&flags);
+  nxhal_irq_mask_note_disabled(arch_impl_irq_flags_enabled(flags));
   return flags;
 }
 
-void hal_irq_save(uint64_t *flags) { arch_impl_irq_save(flags); }
-void hal_irq_restore(uint64_t flags) { arch_impl_irq_restore(flags); }
-void hal_irq_save_all(uint64_t *flags) { arch_impl_irq_save_all(flags); }
-void hal_irq_restore_all(uint64_t flags) { arch_impl_irq_restore_all(flags); }
-void hal_irq_disable_all(void) { arch_impl_irq_disable_all(); }
+void hal_irq_save(uint64_t *flags) {
+  arch_impl_irq_save(flags);
+  nxhal_irq_mask_note_disabled(arch_impl_irq_flags_enabled(*flags));
+}
+
+void hal_irq_restore(uint64_t flags) {
+  nxhal_irq_mask_note_will_enable(arch_impl_irq_flags_enabled(flags));
+  arch_impl_irq_restore(flags);
+}
+
+void hal_irq_save_all(uint64_t *flags) {
+  arch_impl_irq_save_all(flags);
+  nxhal_irq_mask_note_disabled(arch_impl_irq_flags_enabled(*flags));
+}
+
+void hal_irq_restore_all(uint64_t flags) {
+  nxhal_irq_mask_note_will_enable(arch_impl_irq_flags_enabled(flags));
+  arch_impl_irq_restore_all(flags);
+}
+
+void hal_irq_disable_all(void) {
+  uint64_t flags = arch_impl_irq_state_read();
+  arch_impl_irq_disable_all();
+  nxhal_irq_mask_note_disabled(arch_impl_irq_flags_enabled(flags));
+}
 
 void hal_isb(void) { arch_impl_isb(); }
 void hal_mb(void) { arch_impl_mb(); }

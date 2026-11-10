@@ -66,6 +66,8 @@ test-host: | $(BUILD)
 	$(BUILD)/device_protocol_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/irq.c $(UNIT)/irq_protocol_test.c -o $(BUILD)/irq_protocol_test
 	$(BUILD)/irq_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/irq_mask_stats.c $(UNIT)/irq_mask_stats_test.c -o $(BUILD)/irq_mask_stats_test
+	$(BUILD)/irq_mask_stats_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fatal_protocol.c $(UNIT)/fatal_protocol_test.c -o $(BUILD)/fatal_protocol_test
 	$(BUILD)/fatal_protocol_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/memory_protocol.c $(UNIT)/memory_protocol_test.c -o $(BUILD)/memory_protocol_test
@@ -175,6 +177,10 @@ test-sanitize: | $(BUILD)
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/irq.c \
 	  $(UNIT)/irq_protocol_test.c -o $(BUILD)/irq_protocol_test-sanitize
 	$(BUILD)/irq_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/irq_mask_stats.c \
+	  $(UNIT)/irq_mask_stats_test.c -o $(BUILD)/irq_mask_stats_test-sanitize
+	$(BUILD)/irq_mask_stats_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fatal_protocol.c \
 	  $(UNIT)/fatal_protocol_test.c -o $(BUILD)/fatal_protocol_test-sanitize

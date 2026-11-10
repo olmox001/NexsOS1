@@ -145,10 +145,10 @@ namespace tree — vedi `docs/ASTRA.md` §7.1/§7.6.
 - Pushato come **non funzionante** (commit `dc80001`), su tua indicazione
   ("è da pushare ma non funziona, ci lavoreremo in seguito"). Da completare.
 
-## 9. compositor.c.new — protocollo video — **PARCHEGGIATO**
-- La modifica al protocollo video "non è ancora il momento di applicarla": resta parcheggiata
-  in `kernel/graphics/compositor.c.new` (il `.c` è stato riportato allo stato stabile).
-- **Cleanup pendente:** `kernel/graphics/compositor.c.old` è un backup da rimuovere quando non serve più.
+## 9. Alternate compositor source — **CHIUSO 2026-11-10**
+- Il vecchio `compositor.c.new` è stato confrontato con il sorgente canonico e rimosso.
+- Le routine terminali utili sono già in `kernel/graphics/term.c`; shadow/radius/Material
+  sono nel graphics/theme stack userland, coerente con DIR-02. Nessun backup sorgente resta.
 
 ## 10. Follow-up dei timer — **FOLLOW-UP**
 - **TIMER-UAF-02** (hardening, non difetto): far cancellare `sleep_timer` a `kernel_ipc_send`

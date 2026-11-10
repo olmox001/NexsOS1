@@ -306,6 +306,42 @@ static void obj_unref(struct kobject *o) {
     kobj_free(to_free);
 }
 
+static int handle_release_exact(struct process *process, int handle,
+                                struct kobject *expected) {
+  struct kobject *to_free = NULL;
+  uint32_t wake = ENDPOINT_WAKE_NONE;
+  uint64_t flags;
+  int status = 0;
+
+  if (process == NULL || expected == NULL || handle < 0 ||
+      handle >= NPROC_HANDLES)
+    return -EINVAL;
+  spin_lock_irqsave(&object_lock, &flags);
+  struct handle_entry *entry = &process->handles[handle];
+  if (entry->obj != expected) {
+    status = -EBADF;
+  } else {
+    wake = endpoint_handle_drop_locked(expected, entry->rights);
+    entry->obj = NULL;
+    entry->rights = 0U;
+    if (--expected->refcount <= 0)
+      to_free = expected;
+  }
+  spin_unlock_irqrestore(&object_lock, flags);
+  endpoint_wake(expected, wake);
+  if (to_free != NULL)
+    kobj_free(to_free);
+  return status;
+}
+
+static void object_refresh_cached_node(struct kobject *object) {
+  struct vfs_node refreshed;
+  if (object == NULL)
+    return;
+  if (vfs_open(object->path, &refreshed) == 0)
+    object->node = refreshed;
+}
+
 static long install_new_object(struct process *process, struct kobject *object,
                                uint32_t rights) {
   uint64_t flags;
@@ -809,20 +845,19 @@ long sys_pipe(int *ufds) {
   spin_unlock_irqrestore(&object_lock, flags);
 
   if (rfd < 0 || wfd < 0) {
-    if (rfd >= 0)
-      NX_DISCARD(
-          sys_handle_close(rfd),
-          "error unwind: the pipe creation already failed, and a failing "
-          "close changes nothing the caller can act on");
-    else
-      kobj_free(o); /* never installed: refcount 0, free the whole pipe */
+    if (rfd >= 0 && handle_release_exact(cur, rfd, o) != 0)
+      return -EIO;
+    if (rfd < 0)
+      kobj_free(o);
     return (rfd < 0) ? rfd : wfd;
   }
 
   int fds[2] = {rfd, wfd};
   if (hal_copy_to_user(ufds, fds, sizeof(fds)) != 0) {
-    NX_DISCARD(sys_handle_close(rfd), "unwinding a failed copy_to_user");
-    NX_DISCARD(sys_handle_close(wfd), "unwinding a failed copy_to_user");
+    int read_release = handle_release_exact(cur, rfd, o);
+    int write_release = handle_release_exact(cur, wfd, o);
+    if (read_release != 0 || write_release != 0)
+      return -EIO;
     return -EFAULT;
   }
   return 0;
@@ -1051,8 +1086,7 @@ static long object_read_file(struct kobject *object, void *user_buffer,
   buffer = kmalloc(size);
   if (buffer == NULL)
     return -ENOMEM;
-  NX_DISCARD(vfs_open(object->path, &object->node),
-             "best-effort node refresh; cached open-handle node remains valid");
+  object_refresh_cached_node(object);
   got = object->node.type == VFS_TYPE_DIR
       ? object_read_directory(object, buffer, size)
       : vfs_read(&object->node, object->offset, buffer, (uint32_t)size);
@@ -1084,8 +1118,8 @@ static long object_read_time_system(void *user_buffer, size_t size) {
 }
 
 static long object_read_time_stats(void *user_buffer, size_t size) {
-  struct os1_timer_stats_snapshot_v3 snapshot;
-  const size_t header_size = offsetof(struct os1_timer_stats_snapshot_v3, cpu);
+  struct os1_timer_stats_snapshot_v4 snapshot;
+  const size_t header_size = offsetof(struct os1_timer_stats_snapshot_v4, cpu);
   size_t copy_size = sizeof(snapshot);
   if (size < header_size)
     return -EINVAL;
@@ -1168,8 +1202,10 @@ static long object_read_process(const struct kobject *object, void *user_buffer,
   int length;
   size_t copy_size;
 
-  NX_DISCARD(proc_get_lineage(object->pid, &parent, &owner),
-             "lineage is optional in process status");
+  if (proc_get_lineage(object->pid, &parent, &owner) != 0) {
+    parent = 0;
+    owner = 0;
+  }
   if (proc_get_info(object->pid, &info) != 0)
     return -ESRCH;
   length = snprintf(status, sizeof(status),
@@ -1338,9 +1374,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
           ret = -EIO;
         } else {
           o->offset += (uint64_t)wr;
-          NX_DISCARD(vfs_open(o->path, &o->node),
-                     "best-effort size refresh after a successful write; the "
-                     "write itself already succeeded and is what we report");
+          object_refresh_cached_node(o);
           ret = wr;
         }
       }
@@ -1692,10 +1726,7 @@ long sys_object_ctl(int handle, int cmd, long arg) {
       ret = -EIO;
     } else {
       o->offset = 0;
-      NX_DISCARD(
-          vfs_open(o->path, &o->node),
-          "best-effort refresh after a successful truncate; the truncate "
-          "is what we report, and the cached node is the fallback");
+      object_refresh_cached_node(o);
       ret = 0;
     }
     obj_unref(o);
@@ -1775,9 +1806,7 @@ long sys_object_ctl(int handle, int cmd, long arg) {
        * that doubled the VFS work for no new information.  vfs_open refreshes
        * the node in place, the same way sys_object_read does before a read, so
        * a long-lived handle still sees a writer's appended size. */
-      NX_DISCARD(vfs_open(o->path, &o->node),
-                 "best-effort: on failure the cached node's size is returned, "
-                 "which is the last value this handle actually resolved");
+      object_refresh_cached_node(o);
       ret = (long)o->node.size;
     }
     obj_unref(o);

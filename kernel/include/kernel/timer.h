@@ -68,6 +68,6 @@ bool OS1libkernel_timer_pending(const struct OS1libkernel_timer *timer);
 int OS1libkernel_timer_stats_snapshot(
     uint32_t cpu_id, struct OS1libkernel_timer_stats *out);
 int OS1libkernel_timer_stats_export(
-    struct os1_timer_stats_snapshot_v3 *out);
+    struct os1_timer_stats_snapshot_v4 *out);
 
 #endif /* OS1LIBKERNEL_TIMER_H */

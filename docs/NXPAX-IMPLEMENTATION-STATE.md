@@ -102,33 +102,33 @@ unsynchronized volatile state.
   `/tmp/nxpax-cas-final-probe-{amd64,aarch64}.log` and corresponding UART
   captures. Both guest command sequences returned success.
 
-## Power12 gate — honesty and blocking status
+## Power12 audit — maintenance versus qualification
 
-`tools/power12_audit.py` is new source-based tooling, **not** the obsolete
-pre-existing pyc or build/power12 report. `make test-power12-nxpax` passes
-nine real Clang-AST mutation controls: goto despite harmless names, direct
-recursion, bounded and deceptively mutated loops, unsupported while loops,
-heap calls, overlong functions, token-pasting macros, and double indirection. Its scope is declared: the four new
-NXPAX production C modules. It uses Clang JSON AST for C function bodies and
-checks real call edges, recursion, forbidden control constructs, simple
-statically demonstrable induction limits, allocation calls, macro complexity
-and function sizes. Unsupported proofs are NEVER converted to pass by
-renaming or by token-count tricks. Source compilation warnings fail the AST
-stage.
+The project-wide source/AST/mutation pipeline under `tools/power12/` remains
+authoritative for Power12 qualification. Development builds run
+`make power12` in a **warning-only, content-digest-cached mode** so already
+catalogued findings do not prevent `make run` or nxadb. Reports retain
+non-zero stage statuses and `verified=false`; the mode never reports
+nonconforming code as qualified. A changed audited input invalidates the cache.
 
-Run `make power12-nxpax`: it currently FAILS as intended. The Makefile
-connects the strict gate to `check`, `release`, and the separately invocable
-`release-arch` entry point. Known findings include
-a genuinely unbounded service-lifetime event loop (bounded work per
-message, but no whole-life iteration limit) and the compulsory standard C
-`main(int, char **)` double-indirection entry signature. Neither finding
-is waived or falsely suppressed. Full-callgraph allocation liveness,
-side-effect-free assertion evidence, narrow scope, result checking, indirect
-authority, complete static-analysis matrix, work accounting and resource-limit
-proofs are all explicitly NOT_VERIFIED, and therefore fail strict mode.
-The scope does **not** prove all legacy kernel/userland code Power12 compliant.
-The project rules require any nonliteral deviation to have an approved ID,
-rationale, bounded scope, mitigation and tests: no such approval is claimed.
+`make power12-strict`, `make check-strict`, release and release-arch remain
+blocking. The strict gate has open genuine findings in owned source and is
+not yet a release acceptance result.
+
+The dedicated NXPAX-specific tools `tools/power12_audit.py` and
+`tools/test_power12_nxpax.py` were restored unmodified from HEAD following
+the 2026-11-10 accidental deletion. `make test-nxpax-ast` runs the nine
+real-C mutation controls; it is additive to the thirteen project-wide
+mutation controls, not a duplicate runtime fault implementation. The old
+strict NXPAX source audit intentionally reports unresolved proof obligations.
+
+NX-CORE and NX-HAL use a separate compiler warning policy: the baseline
+correctness/hardening warnings are errors by default, with
+`NX_WARNINGS_AS_ERRORS=0` as an explicit opt-out. Conversion and sign
+conversion warnings are present for both domains while the outstanding
+narrowing sites are repaired; `NX_CONVERSION_AS_ERROR=1` is the fail-fast
+conversion qualification profile. The complete Power12 strict obligation
+remains open despite successful runtime boot qualification.
 
 ## Remaining acceptance requirements
 

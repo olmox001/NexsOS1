@@ -5,15 +5,6 @@
 #include <kernel/types.h>
 #include <stdint.h>
 
-/* 3D Math Types */
-typedef struct {
-  float x, y, z, w;
-} vec4_t;
-
-typedef struct {
-  float m[4][4];
-} mat4_t;
-
 void graphics_init(void);
 /* graphics_screen_surface: THE single accessor to the scanout (S-ALIGN F7) —
  * fills the caller-owned 'out' via the gpu_ops.get_framebuffer contract.
@@ -43,10 +34,6 @@ int graphics_font_max_width(void) NX_MUST_USE;
 void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
                           uint32_t color);
 int sys_set_font(void *data, size_t size) NX_MUST_USE;
-
-/* 3D Renderer API */
-void render3d_init(uint32_t width, uint32_t height);
-void render3d_clear_zbuffer(void);
 
 /* Compositor API */
 void compositor_init(void);
