@@ -72,3 +72,11 @@
 26. Standardize assembly-visible trap/syscall/context frame offsets from one
     provider-private ABI definition and re-run static, cross, standalone,
     five-lane nxadb and independent `make run` qualification.
+
+27. Continue the comparative XNU/Linux timer work using
+    ../../../docs/architecture/TIMER-XNU-LINUX-POWER12-2026-11-10.md.
+    Preserve measured PIT/TSC and ARM virtual timers, complete timer
+    FIRING/cancel/teardown/CPU migration proof and run all five boot lanes.
+28. Run make power12-changed on each staged/unstaged change. Do not relax
+    the complete project-wide Power12 qualification or suppress warnings.
+    Inspect full compiler/UART/NXPAX evidence before staging a checkpoint.

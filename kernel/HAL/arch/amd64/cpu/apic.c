@@ -327,6 +327,18 @@ static uint64_t pit_measure_tsc_hz(void) {
   return ((end - start) * PIT_REFERENCE_HZ) / pit_elapsed;
 }
 
+static void tsc_samples_sort(uint64_t *sorted, uint32_t valid) {
+  for (uint32_t i = 0U; i < TSC_CALIBRATION_SAMPLES; ++i) {
+    for (uint32_t j = 0U; j < TSC_CALIBRATION_SAMPLES; ++j) {
+      if (i < valid && j > i && j < valid && sorted[j] < sorted[i]) {
+        uint64_t value = sorted[i];
+        sorted[i] = sorted[j];
+        sorted[j] = value;
+      }
+    }
+  }
+}
+
 /* Select only a real 3-sample cluster, not a hard-coded CPU frequency.
  * Invalid PIT windows are omitted and a missing quorum is an actual error.
  * Sorting uses fixed-capacity bounded loops for early boot safety. */
@@ -342,18 +354,14 @@ static int tsc_samples_select(const uint64_t *samples, uint64_t *frequency) {
   }
   if (valid < TSC_CALIBRATION_QUORUM)
     return -1;
-  for (uint32_t i = 0U; i < valid; ++i) {
-    for (uint32_t j = i + 1U; j < valid; ++j) {
-      if (sorted[j] < sorted[i]) {
-        uint64_t value = sorted[i];
-        sorted[i] = sorted[j];
-        sorted[j] = value;
-      }
-    }
-  }
+  /* Every sorting/index step has a static seven-sample bound.
+   * The valid count only masks unused slots, never controls the loop. */
+  tsc_samples_sort(sorted, valid);
   uint64_t best_span = UINT64_MAX;
   uint64_t selected = 0U;
-  for (uint32_t i = 0U; i + TSC_CALIBRATION_QUORUM <= valid; ++i) {
+  for (uint32_t i = 0U; i < TSC_CALIBRATION_SAMPLES; ++i) {
+    if (i + TSC_CALIBRATION_QUORUM > valid)
+      continue;
     uint64_t low = sorted[i];
     uint64_t high = sorted[i + TSC_CALIBRATION_QUORUM - 1U];
     uint64_t span = high - low;
@@ -373,21 +381,40 @@ static int tsc_calibrate_locked(void) {
   uint64_t samples[TSC_CALIBRATION_SAMPLES];
   uint64_t selected = 0U;
 
-  nxhal_diag_info("%s", "TSC: bounded PIT calibration start\n");
+  if (nxhal_diag_info("%s", "TSC: bounded PIT calibration start\n") < 0)
+    return -1;
   for (uint32_t i = 0U; i < TSC_CALIBRATION_SAMPLES; ++i) {
     samples[i] = pit_measure_tsc_hz();
-    if (samples[i] == 0U)
-      nxhal_diag_warn("TSC: invalid PIT sample %u (ignored)\n", i);
-    else
-      nxhal_diag_debug("TSC: PIT sample %u=%lu Hz\n", i, samples[i]);
+    if (samples[i] == 0U) {
+      if (nxhal_diag_warn("TSC: invalid PIT sample %u (ignored)\n", i) < 0)
+        return -1;
+    } else if (nxhal_diag_debug("TSC: PIT sample %u=%lu Hz\n",
+                               i, samples[i]) < 0) {
+      return -1;
+    }
   }
   if (tsc_samples_select(samples, &selected) != 0) {
-    nxhal_diag_error("%s", "TSC: no validated PIT calibration quorum\n");
+    if (nxhal_diag_error("%s",
+                         "TSC: no validated PIT calibration quorum\n") < 0)
+      return -1;
     return -1;
   }
+  /* A real quorum is usable; it does not erase the discrepant samples.
+   * They remain visible as warnings (and NXPAX diagnostics) for audit. */
+  for (uint32_t i = 0U; i < TSC_CALIBRATION_SAMPLES; ++i) {
+    if (samples[i] == 0U)
+      continue;
+    uint64_t deviation = samples[i] > selected ? samples[i] - selected
+                                               : selected - samples[i];
+    if (deviation > selected / TSC_MAX_DEVIATION_DIVISOR &&
+        nxhal_diag_warn("TSC: PIT sample %u outlier=%lu Hz selected=%lu Hz\n",
+                        i, samples[i], selected) < 0)
+      return -1;
+  }
   tsc_hz = selected;
-  nxhal_diag_info("TSC: validated %lu Hz (%lu MHz)\n",
-                  tsc_hz, tsc_hz / UINT64_C(1000000));
+  if (nxhal_diag_info("TSC: validated %lu Hz (%lu MHz)\n",
+                      tsc_hz, tsc_hz / UINT64_C(1000000)) < 0)
+    return -1;
   return 0;
 }
 

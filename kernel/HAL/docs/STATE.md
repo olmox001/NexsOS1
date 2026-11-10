@@ -307,3 +307,15 @@ Power12 qualification or verified IRQ-off root-cause attribution.
 Power12 audit findings remain recorded and block strict qualification.
 Refer to `../../../docs/architecture/BUILD-BOOT-STABILITY-2026-11-10.md`
 for the exact build profile, logs, open safety work and handoff status.
+
+## Timer and scoped Power12 checkpoint, 2026-11-10
+
+The existing hardware clock providers, Core intrusive timer queues and
+callbacks remain authoritative. Current work extends real PIT/TSC outlier
+warnings, bounded sample selection, safe wide deadline conversion and
+real timer KTEST coverage. The new scoped, blocking Power12 gate operates
+alongside the unchanged full-project strict gate. See
+../../../docs/architecture/TIMER-XNU-LINUX-POWER12-2026-11-10.md for the
+source references, current evidence and mandatory remaining engineering.
+Do not call callback lifetime, hardware discovery, five-lane timer behavior
+or full Power12 qualified until separate acceptance evidence exists.

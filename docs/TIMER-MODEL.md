@@ -893,3 +893,11 @@ AArch64/UEFI and AArch64/direct matrix passed 29/29 KTEST and timerdiag.
 This verifies the real service route for the current wire ABI; future wire
 changes still require exact ABI, negative-size, permissions and guest
 interoperability regression tests.
+
+## 14. XNU/Linux and incremental Power12 checkpoint (2026-11-10)
+
+The timer reference comparison, real deadline/calibration fixes, mandatory
+callback-lifetime work, scoped Power12 gate and current verification state are
+documented in architecture/TIMER-XNU-LINUX-POWER12-2026-11-10.md. The existing
+intrusive queues and generic callback/data contract are preserved. The full
+project Power12 audit and five-lane timer qualification remain separate gates.

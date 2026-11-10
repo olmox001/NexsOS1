@@ -68,6 +68,19 @@ class Power12MutationTests(unittest.TestCase):
         r2 = [item for item in result if item["rule"] == "R2"]
         self.assertFalse(r2, r2)
 
+    def test_bounded_indexed_array_write_is_not_loop_counter_mutation(self):
+        result = self.analyze(
+            "int f(void){int a[7]={0};for(unsigned i=0;i<7;++i)"
+            "{a[i]=1;}return a[6];}\n")
+        r2 = [item for item in result if item["rule"] == "R2"]
+        self.assertFalse(r2, r2)
+
+    def test_mutating_loop_counter_in_body_remains_rejected(self):
+        result = self.analyze(
+            "int f(void){int a[7]={0};for(unsigned i=0;i<7;++i)"
+            "{a[i]=1;i=3;}return a[6];}\n")
+        self.assertTrue(self.has(result, "R2"), result)
+
     def test_allocator_call_fails(self):
         result = self.analyze(
             "extern void *kmalloc(unsigned long);"

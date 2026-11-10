@@ -1036,7 +1036,7 @@ disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 EXPECTED_GCC_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_GCC_VERSION),$(NEXS_AARCH64_GCC_VERSION))
 EXPECTED_BINUTILS_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_BINUTILS_VERSION),$(NEXS_AARCH64_BINUTILS_VERSION))
 
-.PHONY: test-nxpax-core test-nxpax-stress test-nxpax-ast power12 power12-strict check-strict
+.PHONY: test-nxpax-core test-nxpax-stress test-nxpax-ast power12 power12-changed power12-strict check-strict
 test-nxpax-core:
 	@mkdir -p $(BUILD_ROOT)/tests/nxpax
 	@clang -std=c17 -O1 -g -Wall -Wextra -Werror -Wpedantic \
@@ -1063,6 +1063,11 @@ test-nxpax-ast:
 # are warnings for maintenance, not successful compliance results.
 power12:
 	@python3 tools/power12/run.py --warn-only --incremental
+	@$(MAKE) --no-print-directory power12-changed
+
+power12-changed:
+	@python3 tools/power12/test_changed_gate.py
+	@python3 tools/power12/changed_gate.py
 
 # Qualification is never downgraded: strict mode fails on real findings.
 power12-strict:

@@ -160,11 +160,19 @@ static int timer_uses_deadline_event(void) {
 
 static uint64_t timer_ns_to_counter_ceil(uint64_t deadline_ns) {
   __uint128_t scaled = (__uint128_t)deadline_ns * time_frequency_hz;
-  uint64_t delta = (uint64_t)(scaled / OS1LIBKERNEL_NSEC_PER_SEC);
-  if ((scaled % OS1LIBKERNEL_NSEC_PER_SEC) != 0U && delta != UINT64_MAX)
-    ++delta;
-  if (delta > UINT64_MAX - time_boot_counter)
+  __uint128_t count = scaled / OS1LIBKERNEL_NSEC_PER_SEC;
+  uint64_t available = UINT64_MAX - time_boot_counter;
+
+  /* Check the wide quotient before narrowing. A far-future deadline must
+   * saturate, never wrap to an earlier physical clockevent. */
+  if (count > available)
     return UINT64_MAX;
+  uint64_t delta = (uint64_t)count;
+  if ((scaled % OS1LIBKERNEL_NSEC_PER_SEC) != 0U) {
+    if (delta == available)
+      return UINT64_MAX;
+    ++delta;
+  }
   return time_boot_counter + delta;
 }
 

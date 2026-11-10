@@ -142,19 +142,31 @@ def find_static_comparison(condition: dict) -> tuple[str, str] | None:
             return next(iter(right_names)), reverse[part.get("opcode", "")]
     return None
 
+def direct_variable_write_target(node: dict, name: str) -> bool:
+    """An indexed array write does not mutate its index variable.
+
+    The prior broad refs() check treated samples[i] = value as if it assigned
+    i itself, producing a false R2 finding for a genuinely bounded loop.
+    """
+    direct = unwrap(node)
+    return (direct.get("kind") == "DeclRefExpr" and
+            direct.get("referencedDecl", {}).get("name") == name)
+
+
 def progress_for(body: dict, name: str, direction: str) -> bool:
     wanted = {"<": "++", "<=": "++", ">": "--", ">=": "--"}[direction]
     matches = 0
     for part in walk(body):
         if part.get("kind") == "UnaryOperator" and part.get("opcode") in ("++", "--"):
-            if name in refs(part):
+            operands = node_children(part)
+            if operands and direct_variable_write_target(operands[0], name):
                 if part.get("opcode") != wanted:
                     return False
                 matches += 1
         if part.get("kind") in ("BinaryOperator", "CompoundAssignOperator"):
             op = part.get("opcode")
             operands = node_children(part)
-            if operands and name in refs(operands[0]) and op in ("=", "+=", "-=", "*=", "/="):
+            if operands and direct_variable_write_target(operands[0], name) and op in ("=", "+=", "-=", "*=", "/="):
                 return False
     return matches == 1
 
@@ -185,11 +197,13 @@ def loop_proved(node: dict) -> bool:
             return False
         for part in walk(body or {}):
             kind = part.get("kind")
-            if kind == "UnaryOperator" and name in refs(part):
-                return False
+            if kind == "UnaryOperator":
+                operands = node_children(part)
+                if operands and direct_variable_write_target(operands[0], name):
+                    return False
             if kind in ("BinaryOperator", "CompoundAssignOperator"):
                 operands = node_children(part)
-                if operands and name in refs(operands[0]) and part.get("opcode") in (
+                if operands and direct_variable_write_target(operands[0], name) and part.get("opcode") in (
                         "=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "|=", "^="):
                     return False
         return True

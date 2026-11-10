@@ -155,6 +155,39 @@ KTEST_CASE(test_timer_rearm_cancel) {
     OS1libkernel_timer_cancel(&timer);
 }
 
+/* The real time API must reject overflow without changing caller storage.
+ * This is a live hardware-monotonic test, not a synthetic timebase. */
+KTEST_CASE(test_time_deadline_overflow) {
+    uint64_t deadline = UINT64_C(0x123456789);
+    if (OS1libkernel_time_deadline_after_ns(UINT64_MAX, &deadline) != -1 ||
+        deadline != UINT64_C(0x123456789))
+        ktest_test_failed = 1;
+    if (OS1libkernel_time_deadline_after_ns(0U, &deadline) != -1 ||
+        deadline != UINT64_C(0x123456789))
+        ktest_test_failed = 1;
+}
+
+/* Exercise the actual queue and clockevent with an extreme future deadline.
+ * Even with unrelated earlier timers, the far timer must stay queued until
+ * explicitly canceled; the callback must never outlive this stack frame. */
+KTEST_CASE(test_timer_far_deadline_cancel) {
+    struct OS1libkernel_timer timer;
+    int callback_count = 0;
+
+    OS1libkernel_timer_setup(&timer, ktest_timer_count_callback, &callback_count);
+    OS1libkernel_timer_arm_deadline(&timer, UINT64_MAX);
+    if (!OS1libkernel_timer_pending(&timer) ||
+        timer.deadline_ns != UINT64_MAX ||
+        list_empty(&timer.list))
+        ktest_test_failed = 1;
+    OS1libkernel_timer_cancel(&timer);
+    if (OS1libkernel_timer_pending(&timer) ||
+        !list_empty(&timer.list) ||
+        __atomic_load_n(&timer.cpu, __ATOMIC_ACQUIRE) != -1 ||
+        __atomic_load_n(&callback_count, __ATOMIC_ACQUIRE) != 0)
+        ktest_test_failed = 1;
+}
+
 KTEST_CASE(test_timer_stats_accounting) {
     struct OS1libkernel_timer timer;
     struct OS1libkernel_timer_stats before;

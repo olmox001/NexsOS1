@@ -558,3 +558,12 @@ NX-HAL and NX-CORE separately enforce their baseline compiler warning/error
 classes by default; conversion warnings remain active and must be corrected
 per call site before enabling their hard conversion qualification profile.
 This checkpoint does not close Phase A6 or authorize suppression of findings.
+
+## Timer source and incremental Power12 checkpoint (2026-11-10)
+
+Phase B continues under TIMER-XNU-LINUX-POWER12-2026-11-10.md. The new
+make power12-changed blocks changed staged, unstaged and untracked source
+without masking full-project strict findings. XNU/Linux are verification
+references, while NX-CORE and NX-HAL ownership remains unchanged. A verified
+timer solution still requires real callback-cancellation lifetime, hardware
+clock verification, measured performance and full guest acceptance.
