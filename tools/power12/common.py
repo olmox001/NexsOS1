@@ -77,18 +77,19 @@ def clang_args(rel: str, arch: str) -> list[str]:
     ]
     if rel.startswith("kernel/") and arch != "host":
         args += ["-DKERNEL"]
-    if arch == "host":
-        include_dirs = ["kernel/HAL", "kernel/HAL/include"]
-    else:
-        include_dirs = [
-            "kernel/HAL", "kernel/HAL/include", arch_inc,
-            "kernel/include", "kernel/include/abi", "kernel/include/api",
-            "system/include/contract", "system/include/api",
-            "user/lib/stb", "user/lib/pl_mpeg", "user/lib/sdl/include",
-            "user/lib/lua", "user/lib/portability/lua",
-            "user/portability/coreutils", "user/portability/gnulib",
-            "user/lib/gnulib/lib", "user/bin/coreutils/gnulib/lib",
-        ]
+    # Host verification of HAL tests must use the same contract/header
+    # dependencies as its compiled ISA-specific test executable. Omitting
+    # Core ABI and provider includes made valid native-frame tests unparseable;
+    # this is a compile-context correction, not an audit exemption.
+    include_dirs = [
+        "kernel/HAL", "kernel/HAL/include", arch_inc,
+        "kernel/include", "kernel/include/abi", "kernel/include/api",
+        "system/include/contract", "system/include/api",
+        "user/lib/stb", "user/lib/pl_mpeg", "user/lib/sdl/include",
+        "user/lib/lua", "user/lib/portability/lua",
+        "user/portability/coreutils", "user/portability/gnulib",
+        "user/lib/gnulib/lib", "user/bin/coreutils/gnulib/lib",
+    ]
     for item in include_dirs:
         args += ["-I", str(ROOT / item)]
     if rel == "user/bin/gnulibtest.c" or rel.startswith("user/portability/gnulib/"):

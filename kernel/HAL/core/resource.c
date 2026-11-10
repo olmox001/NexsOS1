@@ -1,4 +1,6 @@
 #include <hal/resource.h>
+#include <nxolmo/base/checked.h>
+#include <nxolmo/base/status.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -80,23 +82,6 @@ static uint64_t nxhal_resource_type_rights(uint32_t type) {
   default:
     return 0U;
   }
-}
-
-static int nxhal_spans_overlap(const void *left, size_t left_size,
-                               const void *right, size_t right_size) {
-  uintptr_t left_base = (uintptr_t)left;
-  uintptr_t right_base = (uintptr_t)right;
-  uintptr_t left_end;
-  uintptr_t right_end;
-
-  if (left_size == 0U || right_size == 0U)
-    return 0;
-  if (left_base > UINTPTR_MAX - (left_size - 1U) ||
-      right_base > UINTPTR_MAX - (right_size - 1U))
-    return 1;
-  left_end = left_base + left_size - 1U;
-  right_end = right_base + right_size - 1U;
-  return left_base <= right_end && right_base <= left_end;
 }
 
 static int nxhal_aligned(const void *ptr, size_t alignment) {
@@ -187,10 +172,9 @@ static enum nxhal_resource_status nxhal_resource_range(
       !nxhal_power_of_two(resource->alignment) ||
       (resource->resource_offset % resource->alignment) != 0U)
     return NXHAL_RESOURCE_E_MALFORMED;
-  if (resource->resource_offset > UINT64_MAX - resource->resource_length)
+  if (nx_u64_add(resource->resource_offset, resource->resource_length,
+                 &ignored_end) != NX_STATUS_OK)
     return NXHAL_RESOURCE_E_OVERFLOW;
-  ignored_end = resource->resource_offset + resource->resource_length;
-  (void)ignored_end;
   return NXHAL_RESOURCE_OK;
 }
 
@@ -320,11 +304,11 @@ static int nxhal_common_args_valid(
   if (grant != NULL &&
       !nxhal_aligned(grant, _Alignof(struct nxhal_resource_grant)))
     return 0;
-  if (nxhal_spans_overlap(report, sizeof(*report), resource,
+  if (nx_pointer_ranges_overlap(report, sizeof(*report), resource,
                           sizeof(*resource)))
     return 0;
   if (grant != NULL &&
-      nxhal_spans_overlap(report, sizeof(*report), grant, sizeof(*grant)))
+      nx_pointer_ranges_overlap(report, sizeof(*report), grant, sizeof(*grant)))
     return 0;
   return 1;
 }
@@ -356,7 +340,7 @@ enum nxhal_resource_status nxhal_resource_grant_validate(
       required_rights == 0U ||
       (required_rights & ~NXHAL_RESOURCE_ALL_RIGHTS) != 0U)
     return NXHAL_RESOURCE_E_INVALID;
-  if (nxhal_spans_overlap(resource, sizeof(*resource), grant, sizeof(*grant)))
+  if (nx_pointer_ranges_overlap(resource, sizeof(*resource), grant, sizeof(*grant)))
     return NXHAL_RESOURCE_E_INVALID;
   nxhal_report_begin(report, NXHAL_OP_HARDWARE_GRANT_VALIDATE,
                      NXHAL_GRANT_WORK, sizeof(*resource) + sizeof(*grant), 2U);
@@ -383,10 +367,9 @@ static enum nxhal_resource_status nxhal_range_internal(
     return NXHAL_RESOURCE_E_NOT_SUPPORTED;
   if (nxhal_work_step(report) != NXHAL_RESOURCE_OK)
     return NXHAL_RESOURCE_E_BUDGET;
-  if (offset > resource->resource_length ||
-      length > resource->resource_length - offset)
+  if (nx_range_validate(offset, length, resource->resource_length,
+                        end) != NX_STATUS_OK)
     return NXHAL_RESOURCE_E_LIMIT;
-  *end = offset + length;
   return NXHAL_RESOURCE_OK;
 }
 
@@ -396,11 +379,11 @@ static int nxhal_range_outputs_valid(
     const struct nxhal_operation_report *report) {
   if (!nxhal_aligned(end_offset, _Alignof(uint64_t)))
     return 0;
-  if (nxhal_spans_overlap(end_offset, sizeof(*end_offset), resource,
+  if (nx_pointer_ranges_overlap(end_offset, sizeof(*end_offset), resource,
                           sizeof(*resource)) ||
-      nxhal_spans_overlap(end_offset, sizeof(*end_offset), grant,
+      nx_pointer_ranges_overlap(end_offset, sizeof(*end_offset), grant,
                           sizeof(*grant)) ||
-      nxhal_spans_overlap(end_offset, sizeof(*end_offset), report,
+      nx_pointer_ranges_overlap(end_offset, sizeof(*end_offset), report,
                           sizeof(*report)))
     return 0;
   return 1;

@@ -62,7 +62,6 @@ void hal_frame_snapshot(const hal_frame_t *frame,
   if (!frame)
     return;
 
-#ifdef ARCH_AARCH64
   snapshot->pc = frame->elr;
   snapshot->fp = frame->regs[29];
   snapshot->lr = frame->regs[30];
@@ -74,17 +73,4 @@ void hal_frame_snapshot(const hal_frame_t *frame,
     snapshot->origin = HAL_FRAME_ORIGIN_KERNEL;
     snapshot->sp = (uint64_t)(uintptr_t)frame + sizeof(*frame);
   }
-#else
-  snapshot->pc = frame->rip;
-  snapshot->fp = frame->rbp;
-  snapshot->lr = frame->rip;
-  snapshot->status = frame->cs;
-  if ((frame->cs & 3u) == 3u) {
-    snapshot->origin = HAL_FRAME_ORIGIN_USER;
-    snapshot->sp = frame->rsp;
-  } else {
-    snapshot->origin = HAL_FRAME_ORIGIN_KERNEL;
-    snapshot->sp = (uint64_t)(uintptr_t)&frame->rsp;
-  }
-#endif
 }

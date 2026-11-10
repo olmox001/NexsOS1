@@ -76,11 +76,19 @@ test-host: | $(BUILD)
 	$(BUILD)/time_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/entropy.c $(UNIT)/entropy_test.c -o $(BUILD)/entropy_test
 	$(BUILD)/entropy_test
-	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/resource.c $(UNIT)/resource_test.c -o $(BUILD)/resource_test
+	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/resource.c $(ROOT)/base/checked.c $(UNIT)/resource_test.c -o $(BUILD)/resource_test
 	$(BUILD)/resource_test
 	$(CC) $(CFLAGS) -I$(ROOT)/include $(UNIT)/resource_abi_test.c -o $(BUILD)/resource_abi_test
 	$(BUILD)/resource_abi_test
-	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/resource.c $(UNIT)/resource_mutation_test.c -o $(BUILD)/resource_mutation_test
+	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/base/checked.c $(UNIT)/checked_test.c -o $(BUILD)/checked_test
+	$(BUILD)/checked_test
+	@set -eu; for isa in amd64 aarch64; do \
+	  $(CC) $(CFLAGS) -I$(ROOT)/include -I$(ROOT)/../include -I$(ROOT)/../include/abi -I$(ROOT)/../include/api \
+	    -I$(ROOT)/arch/$$isa/include $(ROOT)/arch/$$isa/cpu/frame.c \
+	    $(UNIT)/frame_$${isa}_test.c -o $(BUILD)/frame_$${isa}_test; \
+	  $(BUILD)/frame_$${isa}_test; \
+	done
+	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/resource.c $(ROOT)/base/checked.c $(UNIT)/resource_mutation_test.c -o $(BUILD)/resource_mutation_test
 	$(BUILD)/resource_mutation_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/pci.c $(UNIT)/pci_test.c -o $(BUILD)/pci_test
 	$(BUILD)/pci_test
@@ -117,11 +125,13 @@ test-cross: | $(BUILD)
 	    -o "$(BUILD)/hcd-layout-$$target.o"; \
 	  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT)/include -c $(ROOT)/core/resource.c \
 	    -o "$(BUILD)/resource-core-$$target.o"; \
+  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT)/include -c $(ROOT)/base/checked.c \
+	    -o "$(BUILD)/resource-checked-$$target.o"; \
 	  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT)/include -c $(UNIT)/resource_abi_test.c \
 	    -o "$(BUILD)/resource-abi-$$target.o"; \
 	  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT) -I$(ROOT)/include -c $(ROOT)/core/pci.c \
 	    -o "$(BUILD)/pci-core-$$target.o"; \
-	  "$$linker" -r "$(BUILD)/resource-core-$$target.o" "$(BUILD)/resource-abi-$$target.o" \
+	  "$$linker" -r "$(BUILD)/resource-core-$$target.o" "$(BUILD)/resource-abi-$$target.o" "$(BUILD)/resource-checked-$$target.o" \
 	    -o "$(BUILD)/nxhal-resource-$$target.o"; \
 	  unresolved=$$(nm -u "$(BUILD)/nxhal-resource-$$target.o"); \
 	  if [ -n "$$unresolved" ]; then \
@@ -199,12 +209,24 @@ test-sanitize: | $(BUILD)
 	$(BUILD)/entropy_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT)/include $(ROOT)/core/resource.c \
-	  $(UNIT)/resource_test.c -o $(BUILD)/resource_test-sanitize
+	  $(ROOT)/base/checked.c $(UNIT)/resource_test.c -o $(BUILD)/resource_test-sanitize
 	$(BUILD)/resource_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT)/include $(ROOT)/core/resource.c \
-	  $(UNIT)/resource_mutation_test.c -o $(BUILD)/resource_mutation_test-sanitize
+	  $(ROOT)/base/checked.c $(UNIT)/resource_mutation_test.c -o $(BUILD)/resource_mutation_test-sanitize
 	$(BUILD)/resource_mutation_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT)/include $(ROOT)/base/checked.c \
+	  $(UNIT)/checked_test.c -o $(BUILD)/checked_test-sanitize
+	$(BUILD)/checked_test-sanitize
+	@set -eu; for isa in amd64 aarch64; do \
+	  $(CC) -std=c17 -O1 -g -fsanitize=address,undefined \
+	    -fno-omit-frame-pointer -Wall -Wextra -Werror -Wpedantic \
+	    -I$(ROOT)/include -I$(ROOT)/../include -I$(ROOT)/../include/abi -I$(ROOT)/../include/api \
+	    -I$(ROOT)/arch/$$isa/include $(ROOT)/arch/$$isa/cpu/frame.c \
+	    $(UNIT)/frame_$${isa}_test.c -o $(BUILD)/frame_$${isa}_test-sanitize; \
+	  $(BUILD)/frame_$${isa}_test-sanitize; \
+	done
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/pci.c \
 	  $(UNIT)/pci_test.c -o $(BUILD)/pci_test-sanitize
@@ -223,7 +245,7 @@ test-sanitize: | $(BUILD)
 	@printf '%s\n' "PASS: NX-HAL integrated ASan/UBSan"
 
 test-static:
-	$(CLANG_TIDY) $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/time.c $(ROOT)/core/entropy.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
+	$(CLANG_TIDY) $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/time.c $(ROOT)/core/entropy.c $(ROOT)/base/checked.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters' \
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/include
 	$(CLANG_TIDY) $(ROOT)/capability/amd64/isa.c --extra-arg=--target=x86_64-elf \
@@ -233,7 +255,7 @@ test-static:
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters,-portability-no-assembler' \
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/arch/aarch64/include
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
-	  -I$(ROOT) -I$(ROOT)/include $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/time.c $(ROOT)/core/entropy.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
+	  -I$(ROOT) -I$(ROOT)/include $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/time.c $(ROOT)/core/entropy.c $(ROOT)/base/checked.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
 	  $(UNIT)/*.c
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
 	  -I$(ROOT) -I$(ROOT)/arch/amd64/include $(ROOT)/capability/amd64/isa.c

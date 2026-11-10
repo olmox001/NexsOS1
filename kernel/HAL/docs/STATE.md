@@ -319,3 +319,27 @@ alongside the unchanged full-project strict gate. See
 source references, current evidence and mandatory remaining engineering.
 Do not call callback lifetime, hardware discovery, five-lane timer behavior
 or full Power12 qualified until separate acceptance evidence exists.
+
+## 2026-11-10 — verified ISA-native frame provider migration
+
+Generic HAL/core/frame.c is retired. The provider-specific frame
+implementation now belongs to HAL/arch/<ISA>/cpu/frame.c, while the
+existing public hal/frame.h contract remains invariant. Both kernels and
+GRUB images compile; both HAL host and ASan/UBSan suites, ABI contracts
+and changed Power12 gate pass. NXADB amd64 ISO BIOS passed 30/30 kernel
+tests; AArch64 UEFI ISO passed 31/31. Shell, history, timer, heartbeat
+and NXPAX passed with zero unexpected faults. The remaining assembly
+layout verification, HAL private-Core dependency removal, resource/state
+convergence, full Power12 qualification and further runtime lanes are OPEN.
+See docs/architecture/HAL-NXOLMO-ISA-STATE-CONVERGENCE-PLAN-2026-11-10.md.
+
+## 2026-11-10 — NXOLMO checked arithmetic/resource ownership cutover
+
+The HAL now links its own canonical nxolmo/base/checked implementation.
+HAL/core/resource.c uses the NXOLMO overflow, bounded-range and overlap
+algorithms instead of the retired private overlap helper/manual arithmetic.
+HAL host, real mutation, ASan/UBSan, both freestanding cross links, static
+clang-tidy/cppcheck, both kernel builds and ISO NXADB boot lanes pass,
+with 30/30 amd64 and 31/31 AArch64 KTEST and zero unexpected faults.
+Changed Power12 reports zero findings; global Power12 qualification and
+the other NXOLMO modules are OPEN.

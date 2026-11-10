@@ -80,3 +80,21 @@
 28. Run make power12-changed on each staged/unstaged change. Do not relax
     the complete project-wide Power12 qualification or suppress warnings.
     Inspect full compiler/UART/NXPAX evidence before staging a checkpoint.
+
+## ISA/NXOLMO convergence checkpoint — 2026-11-10
+
+The native frame-provider cutover passed both ISO guest lanes and all
+host/sanitizer/changed-code Power12 gates. Continue the complete core/ISA
+dependency extraction and function-by-function NXOLMO source crosswalk in
+docs/architecture/HAL-NXOLMO-ISA-STATE-CONVERGENCE-PLAN-2026-11-10.md.
+Independent HAL/Core and entire NXOLMO migration remain OPEN.
+
+## NXOLMO first canonical library link — 2026-11-10
+
+The checked-arithmetic, span/range and pointer-overlap family from NXOLMO
+base is now compiled as the authoritative HAL source and used by real
+HAL resource validators. The old duplicate overlap function is removed.
+Host, cross, sanitizers, static analysis and both ISA guest ISO lanes PASS.
+Next: audit and migrate NXOLMO base types/results, then runtime budget,
+metrics and authority/hardware resource grant enforcement, preserving one
+capability owner and actual device access through it.

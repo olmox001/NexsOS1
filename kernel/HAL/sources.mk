@@ -22,6 +22,7 @@ HAL_C_SOURCES := \
     $(HAL_ARCH_DIR)/cpu/gdt.c \
     $(HAL_ARCH_DIR)/cpu/msr.c \
     $(HAL_ARCH_DIR)/cpu/syscall_hal.c \
+    $(HAL_ARCH_DIR)/cpu/frame.c \
     $(HAL_ARCH_DIR)/cpu/apic.c \
     $(HAL_ARCH_DIR)/mm/mmu.c \
     $(HAL_ARCH_DIR)/mm/tlb.c \
@@ -45,6 +46,7 @@ HAL_ASM_SOURCES := \
 HAL_C_SOURCES := \
     $(HAL_ARCH_DIR)/cpu/cpu.c \
     $(HAL_ARCH_DIR)/cpu/syscall.c \
+    $(HAL_ARCH_DIR)/cpu/frame.c \
     $(HAL_ARCH_DIR)/mm/mmu.c \
     $(HAL_ARCH_DIR)/platform.c \
     $(HAL_ARCH_DIR)/boot_memory.c \
@@ -58,11 +60,11 @@ else
 $(error HAL: unsupported ARCH $(ARCH))
 endif
 
-HAL_C_SOURCES += $(HAL_ROOT)/common/boot_memory_record.c \
+HAL_C_SOURCES += $(HAL_ROOT)/base/checked.c \
+                 $(HAL_ROOT)/common/boot_memory_record.c \
                  $(HAL_ROOT)/core/core.c \
                  $(HAL_ROOT)/core/time.c \
                  $(HAL_ROOT)/core/entropy.c \
-                 $(HAL_ROOT)/core/frame.c \
                  $(HAL_ROOT)/core/core_protocol.c \
                  $(HAL_ROOT)/core/fault_protocol.c \
                  $(HAL_ROOT)/core/nxpax.c \
