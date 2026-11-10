@@ -147,8 +147,12 @@ def audit_delta(policy: dict, changed: dict[str, set[int]]) -> list[dict]:
                     touched = touched_functions(path, arch, changed_lines)
                     modified_functions[(rel, arch)] = touched
                     for item in current:
-                        if (item["line"] == 0 or item["line"] in changed_lines or
-                                (item["symbol"] and item["symbol"] in touched)):
+                        # The full gate keeps existing file/function debt.
+                        # The changed-only gate reports only findings at lines
+                        # actually added/changed (plus unparseable units).
+                        # Otherwise one edit to a 600-line legacy test would
+                        # misreport its original 100+ findings as regressions.
+                        if item["line"] == 0 or item["line"] in changed_lines:
                             report.append(item)
                     edges.extend((rel, arch, a, b, line)
                                  for a, b, line in local_edges)

@@ -65,6 +65,23 @@ int main(void) {
   printf_win(win_id, "Object/capability tests...\n");
   printf("[captest] start (OS1 native object/capability ABI)\n");
 
+  /* PID1 is created exclusively by the kernel. Neither normal spawn nor
+   * spawn_caps may execute /sbin as USER, ROOT or a requested MACHINE child.
+   * These are actual syscall calls, not mock policy checks. */
+  section(win_id, "process authority and init singleton");
+  check(win_id, "deny-second-nxinit-user",
+        spawn("/sbin/nxinit") == -EINVAL);
+  check(win_id, "deny-second-nxinit-caps-machine",
+        spawn_caps("/sbin/nxinit", PLVL_MACHINE, CAP_ALL) == -EINVAL);
+  check(win_id, "deny-sbin-alias-dot",
+        spawn("/./sbin/nxinit") == -EINVAL);
+  check(win_id, "deny-sbin-alias-double-slash",
+        spawn("//sbin/nxinit") == -EINVAL);
+  check(win_id, "deny-sbin-alias-relative",
+        spawn("sbin/nxinit") == -EINVAL);
+  check(win_id, "deny-sbin-path-escape",
+        spawn("/bin/../sbin/nxinit") == -EINVAL);
+
   /* 1. create a READ capability to a file and read through it */
   int h =
       (int)OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);

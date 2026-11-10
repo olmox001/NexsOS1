@@ -212,13 +212,28 @@ static uint8_t level_for_path(const char *path) {
  * path containing ".." (verified across the tree), so refusing them costs
  * nothing and makes level_for_path()'s prefix match sound. */
 static int spawn_path_is_sane(const char *path) {
-  if (!path || !path[0])
+  /* The ELF loader resolves VFS paths, not the raw privilege preset string.
+   * Only canonical absolute paths can carry a pathname security decision.
+   * In particular, syscall-origin /sbin execution is ALWAYS denied: PID1 is
+   * created only by the kernel K3 entry, not through the user spawn ABI.
+   * This protects against a duplicate nxinit even from ROOT/MACHINE code. */
+  if (path == NULL || path[0] != '/' || path[1] == '\0' || path[1] == '/')
     return 0;
-  for (const char *p = path; *p; p++)
-    if (p[0] == '.' && p[1] == '.' &&
-        (p == path || p[-1] == '/') && (p[2] == '/' || p[2] == '\0'))
-      return 0; /* a ".." path component */
-  return 1;
+  if (strncmp(path, "/sbin/", 6U) == 0)
+    return 0;
+  for (uint32_t i = 1U; i < 128U; ++i) {
+    char c = path[i];
+    if (c == '\0')
+      return 1;
+    if (c == '/' && (path[i + 1U] == '/' || path[i + 1U] == '\0'))
+      return 0;
+    if (c == '.' && path[i - 1U] == '/' &&
+        (path[i + 1U] == '/' || path[i + 1U] == '\0' ||
+         (path[i + 1U] == '.' &&
+          (path[i + 2U] == '/' || path[i + 2U] == '\0'))))
+      return 0;
+  }
+  return 0;
 }
 
 /* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
