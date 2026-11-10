@@ -2983,13 +2983,16 @@ int sys_ipc_recv(int src_pid, void *msg_ptr) {
 }
 
 int sys_ipc_try_recv(int src_pid, void *msg_ptr) {
+  /* A clean empty mailbox and an invalid destination are distinct outcomes.
+   * Userland INPUT consumers must not mistake normal polling for a fault. */
+  if (msg_ptr == NULL)
+    return -EFAULT;
   struct ipc_node *node = pop_message(current_process, src_pid);
-  if (!node)
-    return -1; /* EAGAIN */
-
+  if (node == NULL)
+    return -EAGAIN;
   if (vmm_copy_to_user(msg_ptr, &node->msg, sizeof(struct ipc_message)) != 0) {
     kfree(node);
-    return -1;
+    return -EFAULT;
   }
   kfree(node);
   return 0;

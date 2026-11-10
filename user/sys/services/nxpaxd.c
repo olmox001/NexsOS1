@@ -21,11 +21,13 @@ static int nxpax_write_full(int handle,
        ++step) {
     long result = OS1_object_write(handle, bytes + done,
                                    sizeof(*query) - done);
-    if (result <= 0 || (size_t)result > sizeof(*query) - done)
-      return -1;
+    if (result <= 0)
+      return result < 0 ? (int)result : -EPIPE;
+    if ((size_t)result > sizeof(*query) - done)
+      return -EIO;
     done += (size_t)result;
   }
-  return done == sizeof(*query) ? 0 : -1;
+  return done == sizeof(*query) ? 0 : -EIO;
 }
 
 static int nxpax_claim_port(void) {

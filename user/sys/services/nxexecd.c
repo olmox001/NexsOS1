@@ -160,7 +160,7 @@ static int execsvc_assign_owner(int pid, int requester) {
   return 0;
 }
 
-static int execsvc_spawn(struct execsvc_ctx *ctx) {
+static int execsvc_run_spawn(struct execsvc_ctx *ctx) {
   int rc = execsvc_make_redirs(ctx);
   if (rc != 0) return rc;
   int adopted = 0;
@@ -219,7 +219,7 @@ static void execsvc_handle_spawn(const struct ipc_message *message) {
   int rc = execsvc_decode_handles(&ctx, message);
   if (rc == 0) rc = execsvc_read_header(&ctx);
   if (rc == 0) rc = execsvc_parse(&ctx);
-  if (rc == 0) rc = execsvc_spawn(&ctx);
+  if (rc == 0) rc = execsvc_run_spawn(&ctx);
   ctx.result.pid = rc > 0 ? rc : rc < 0 ? rc : -EIO;
   if (rc < 0) OS1_report_error("nxexecd.spawn_request", rc);
   if (ctx.reply >= 0) {
@@ -243,7 +243,7 @@ static int nxexec_service(void) {
   int failed = 0;
   for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
     struct ipc_message message;
-    long n = OS1_port_recv(port, &message);
+    long n = OS1_object_read(port, &message, sizeof(message));
     if (n == 0) break;
     if (n < 0) {
       OS1_report_error("nxexecd.port_receive", (int)n);

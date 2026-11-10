@@ -1,555 +1,325 @@
 /*
- * user/sys/services/nxntfy_srv.c
- * System-wide Notification Server + UI (nxntfy_srv): IPC popup service + a
- * registry-visible log of recent notifications (read by the nxnotify CLI).
+ * nxntfy_srv: authenticated named-port notification receiver, legacy kernel
+ * fault mailbox consumer, GUI popup renderer and registry read-receipt ring.
+ * All mutable state belongs to one supervised userland service generation.
  *
- * Maintains a small always-on-top, PASSIVE (click-through) compositor window in
- * the top-right corner of the screen.  The window is initially hidden; it
- * becomes visible when an IPC message of type IPC_TYPE_NOTIFY arrives, and is
- * automatically hidden again after 2 seconds.
- *
- * Render gating (USR-NOTIFY-03): the popup is shown ONLY on a freshly received
- * NOTIFY (gated on the recv return code), never on msg.type alone —
- * IPC_TYPE_RAW is 0 and collides with a "nothing waiting" buffer, which used to
- * re-render the stale payload forever (the popup never auto-hid) and turned a
- * click (delivered as IPC_TYPE_MOUSE) into a stray rendered glyph.
- *
- * Discovery mechanism (see USR-SEC-01):
- *   On startup, notify_srv writes its own PID as a decimal string to the
- *   global registry key "srv.notify_pid".  Any caller that wants to send a
- *   notification reads this key via registry_read() and sends an IPC message
- *   to that PID.  There is no authentication: any process can overwrite
- *   "srv.notify_pid" and redirect all notifications to itself.
- *
- * Event loop design (USR-NOTIFY-02 #134):
- *   Idle, the loop BLOCKS on recv(-1, &msg) so it consumes ~0% CPU until a
- *   notification arrives (the old try_recv()+yield() loop busy-spun a core).
- *   While the popup is visible it polls with try_recv() and a real blocking
- *   OS1_sleep(100) so the 2 s auto-hide can still fire, then drops back to the
- *   blocking branch. A recv-with-timeout (issue #135) would unify both.
- *
- * Known issues:
- *   USR-SEC-01  (W3 SECURITY) registry_write("srv.notify_pid", ...) has no
- *               authentication; any process can overwrite this key to intercept
- *               or forge system notifications.
- *   USR-BLOAT-01/02 (W2 BAD-IMPL·PERF) The ELF is ~500KB because lib.o
- *               bundles stb_image/stb_easy_font unconditionally and debug
- *               DWARF is not stripped.
+ * WARN notifications are deduplicated per sender and panel-only. ERROR/INFO
+ * show a passive topmost popup unless the notification panel is visible.
+ * This receiver must never notify itself when its own delivery path fails:
+ * self-diagnostics persist to the registry with a bounded failure record.
  */
 #include <font_lib.h>
 #include <input.h>
 #include <os1.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
+#include "../bin/nxres.h"
 
-#include "../bin/nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
-
-/* ------------------------------------------------------------------ */
-/* Adaptive geometry – aligned with nxbar                              */
-/* ------------------------------------------------------------------ */
 #define NOTIFY_WIDTH 280
 #define NOTIFY_HEIGHT 56
 #define NOTIFY_RADIUS 10
-/* NOTIFY-RESIZE-01: idle-loop poll cadence (see the event-loop comment below)
- * — bounded so a host display resize is noticed within ~1/3 s even with the
- * popup hidden and no notification activity, while staying near-0% CPU. */
-#define IDLE_POLL_MS 300
-
-/* Matches nxbar's BAR_MARGIN_SIDE and BAR_H */
-#define BAR_MARGIN_SIDE 7
-#define BAR_H 26
-#define TOP_GAP 4 /* space between bar and popup */
-
-/* ------------------------------------------------------------------ */
-/* Glass colour palette (same as nxbar) — COL_BG/COL_TEXT/COL_TITLE track
- * theme.color (nxres.h); COL_ERROR_BG/COL_WARN_BG are severity colours and
- * stay fixed across both themes, same reasoning as nxbar's badge/glyph. */
-/* ------------------------------------------------------------------ */
-static uint32_t g_col_bg;
-static uint32_t g_col_text;
-static uint32_t g_col_title;
-#define COL_ERROR_BG 0xD0FF3B30u /* red tint */
-#define COL_WARN_BG 0xD0FF9500u  /* amber tint */
-/* WARN/ERROR popups always sit on their OWN fixed, saturated background
- * (COL_WARN_BG/COL_ERROR_BG above) — independent of theme.color, same
- * reasoning as nxbar's badge/glyph staying fixed.  Their text must follow
- * THAT background, not the desktop theme: white reads on both amber and
- * red regardless of whether the desktop is in light or dark mode. Using
- * the theme-derived g_col_title/g_col_text there (this file's first light-
- * theme pass) flipped it to near-black in light mode, which is low-contrast
- * on the red/amber tint — the bug the "manca tema light" report was about. */
+#define NOTIFY_PIXELS (NOTIFY_WIDTH * NOTIFY_HEIGHT)
+#define NOTIFY_POLL_MS 300
+#define NOTIFY_TOP_GAP (7 + 26 + 4)
+#define WARN_DEDUP_MAX 16
+#define COL_ERROR_BG 0xD0FF3B30u
+#define COL_WARN_BG 0xD0FF9500u
 #define COL_SEV_TEXT 0xFFFFFFFFu
 
-static void nxntfy_load_palette(int light) {
-  if (light) {
-    g_col_bg = 0xE8F5F5F7u; /* semi-transparent light */
-    g_col_text = 0xFF1C1C1Eu;
-    g_col_title = 0xFF000000u;
-  } else {
-    g_col_bg = 0xE81C1C24u; /* semi-transparent dark */
-    g_col_text = 0xFFF0F0F5u;
-    g_col_title = 0xFFFFFFFFu;
-  }
-}
+struct notify_state {
+  uint32_t col_bg, col_text, col_title;
+  uint32_t *pixels;
+  struct font_ctx *font;
+  int window, screen_w, screen_h;
+  int warn_pid[WARN_DEDUP_MAX];
+  char warn_text[WARN_DEDUP_MAX][64];
+  int warn_count, warn_evict;
+  int visible, ring_head, pending_slot, pending_from, pending_severity;
+  long visible_since;
+  char pending_text[56];
+};
 
-/* ============================================================
- *           Pixel + font helpers (same technique as nxbar)
- * ============================================================ */
-static uint32_t *g_fb;
-static int g_bw, g_bh; /* buffer (window) size */
-static struct font_ctx *g_font;
-
-/* fb_rrect - filled rounded rectangle (corners clipped to a quarter-circle of
- * radius r).  Same technique as nxui's fb_rrect (GFX-NXBAR-04 / GFX-NXUI-04):
- * relies on the compositor honoring per-pixel alpha on window_blit. */
-static void fb_rrect(int x, int y, int w, int h, int r, uint32_t c) {
-  for (int j = 0; j < h; j++) {
-    for (int i = 0; i < w; i++) {
-      int cx = -1, cy = 0;
-      if (i < r && j < r) {
-        cx = r;
-        cy = r;
-      } else if (i >= w - r && j < r) {
-        cx = w - r - 1;
-        cy = r;
-      } else if (i < r && j >= h - r) {
-        cx = r;
-        cy = h - r - 1;
-      } else if (i >= w - r && j >= h - r) {
-        cx = w - r - 1;
-        cy = h - r - 1;
-      }
-      if (cx >= 0) {
-        int dx = i - cx, dy = j - cy;
-        if (dx * dx + dy * dy > r * r)
-          continue;
-      }
-      int px = x + i, py = y + j;
-      if (px >= 0 && px < g_bw && py >= 0 && py < g_bh)
-        g_fb[py * g_bw + px] = c;
-    }
-  }
-}
-
-static void buf_draw_glyph(int x, int y, uint32_t cp, uint32_t color) {
-  if (!g_font)
-    return;
-  int idx = (int)cp - g_font->header.first_char;
-  if (idx < 0 || idx >= g_font->header.num_chars)
-    return;
-  struct font_glyph_info *gi = &g_font->glyphs[idx];
-  uint8_t *bitmap = g_font->bitmap + gi->data_offset;
-  int sx = x + gi->x0, sy = y + g_font->header.ascent + gi->y0;
-  for (int gy = 0; gy < gi->height; gy++) {
-    for (int gx = 0; gx < gi->width; gx++) {
-      if (bitmap[gy * gi->width + gx] > 64) {
-        int px = sx + gx, py = sy + gy;
-        if (px >= 0 && px < g_bw && py >= 0 && py < g_bh)
-          g_fb[py * g_bw + px] = color;
-      }
-    }
-  }
-}
-
-static void buf_draw_text(int x, int y, const char *s, uint32_t color) {
-  if (!g_font || !s)
-    return;
-  uint32_t cp;
-  int consumed, cursor = x;
-  size_t rem = strlen(s);
-  const char *p = s;
-  while (*p) {
-    consumed = utf8_decode(p, rem, &cp);
-    if (consumed <= 0) {
-      p++;
-      rem--;
-      continue;
-    }
-    buf_draw_glyph(cursor, y, cp, color);
-    int idx = (int)cp - g_font->header.first_char;
-    if (idx >= 0 && idx < g_font->header.num_chars)
-      cursor += g_font->glyphs[idx].advance;
-    if ((size_t)consumed > rem)
-      return; /* reject malformed UTF-8 decoder advancement */
-    p += consumed;
-    rem -= (size_t)consumed;
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* Warning dedup — consecutive-repeat suppression, WARNINGS ONLY        */
-/* ------------------------------------------------------------------ */
-/* Per-process "last warning text seen" table.  A warning (severity 1) whose
- * text is IDENTICAL to the last one already recorded for the SAME sender
- * pid is a repeat of something already visible in nxbar's panel — skipped
- * entirely (no second ring entry) so a process stuck emitting the same
- * warning in a loop cannot flood the panel with copies of one line.  A
- * DIFFERENT warning from the same process, or the same text from a
- * different process, is never suppressed — nothing distinct is ever
- * dropped.  Errors and plain notifications never go through this table. */
-#define WARN_DEDUP_MAX 16
-static int g_warn_pid[WARN_DEDUP_MAX];
-static char g_warn_text[WARN_DEDUP_MAX][64];
-static int g_warn_n;    /* slots in use */
-static int g_warn_next; /* rotating eviction cursor once the table is full */
-
-static int warn_is_dup(int pid, const char *text) {
-  for (int i = 0; i < g_warn_n; i++)
-    if (g_warn_pid[i] == pid)
-      return strncmp(g_warn_text[i], text, sizeof(g_warn_text[i])) == 0;
-  return 0;
-}
-
-static void warn_remember(int pid, const char *text) {
-  for (int i = 0; i < g_warn_n; i++) {
-    if (g_warn_pid[i] == pid) {
-      size_t j = 0U;
-      for (; j + 1U < sizeof(g_warn_text[i]) && text[j]; ++j)
-        g_warn_text[i][j] = text[j];
-      g_warn_text[i][j] = '\0';
-      return;
-    }
-  }
-  int idx;
-  if (g_warn_n < WARN_DEDUP_MAX) {
-    idx = g_warn_n++;
-  } else {
-    idx = g_warn_next; /* table full: evict the oldest tracked process */
-    g_warn_next = (g_warn_next + 1) % WARN_DEDUP_MAX;
-  }
-  g_warn_pid[idx] = pid;
-  size_t j = 0U;
-  for (; j + 1U < sizeof(g_warn_text[idx]) && text[j]; ++j)
-    g_warn_text[idx][j] = text[j];
-  g_warn_text[idx][j] = '\0';
-}
-
-/* ------------------------------------------------------------------ */
-/* Window management – adaptive position (like nxbar's bar_reinit)      */
-/* ------------------------------------------------------------------ */
-static int g_win = -1;
-static int g_sw, g_sh; /* last seen screen size */
-
-static void notif_reinit(int sw, int sh) {
-  g_sw = sw;
-  g_sh = sh;
-  g_bw = NOTIFY_WIDTH;
-  g_bh = NOTIFY_HEIGHT;
-
-  /* Position: right edge – margin, just below the top bar */
-  int wx = sw - g_bw - BAR_MARGIN_SIDE;
-  int wy = BAR_MARGIN_SIDE + BAR_H +
-           TOP_GAP; /* nxbar top margin + bar height + gap */
-
-  if (g_win >= 0)
-    destroy_window(g_win);
-  free(g_fb);
-  if (g_bw <= 0 || g_bh <= 0)
-    return;
-  size_t count = (size_t)g_bw * (size_t)g_bh;
-  if (count > SIZE_MAX / sizeof(*g_fb))
-    return;
-  g_fb = (uint32_t *)malloc(count * sizeof(*g_fb));
-  if (!g_fb)
-    return;
-  memset(g_fb, 0, count * sizeof(*g_fb));
-
-  g_win = create_window(wx, wy, g_bw, g_bh, "nxntfy_srv");
-  if (g_win >= 0)
-    set_window_flags(g_win, 1 | 4 | 8); /* top_most, hidden, passive */
-}
-
-/*
- * main - notification server entry point; does not return.
- *
- * Creates a top-most, initially hidden compositor window.  Registers this
- * process's PID in the registry so callers can discover the endpoint.
- * Enters the event loop:
- *   1. try_recv: if a NOTIFY or RAW IPC message arrives, render its payload
- *      (up to 64 bytes) in the window and show it.
- *   2. Auto-hide: if the window has been visible for >2000 ms, hide it.
- *   3. Paced sleep while visible.
- *
- * Returns 1 on window creation failure, never returns otherwise.
- *
- * Side effects: creates a compositor window; writes registry key
- *   "srv.notify_pid"; draws to the window on each notification.
- *
- * NOTE(USR-SEC-01): Writing to "srv.notify_pid" is unauthenticated; any
- *   process can overwrite it and intercept subsequent notify() calls.
- */
-/* One shared authorization model for notification delivery. The server
- * drains the named capability PORT and the legacy kernel fault mailbox;
- * the latter must remain available for kernel crash reporting. */
-static int notification_receive(int port, struct ipc_message *msg) {
-  long n = OS1_port_try_recv(port, msg);
-  if (n == (long)sizeof(*msg))
-    return 1;
-  if (n == -EAGAIN)
-    return try_recv(-1, msg) == 0 ? 1 : 0;
-  return (int)n < 0 ? (int)n : -EIO;
-}
-
-static int notif_fail(const char *phase, int failure) {
+static int notif_fail(const char *phase, int code) {
   char record[80];
-  int len = snprintf(record, sizeof(record), "%s|%d", phase, failure);
+  int len = snprintf(record, sizeof(record), "%s|%d", phase, code);
   if (len > 0 && (size_t)len < sizeof(record)) {
-    long saved = OS1_registry_set("sys.ntfy.fault", record);
-    if (saved != 0)
-      return 1;
+    long published = OS1_registry_set("sys.ntfy.fault", record);
+    if (published != 0) return 1;
   }
   return 1;
 }
 
-static int notif_publish_record(int slot, int from, int severity,
-                                char state, const char *message) {
+static void notif_palette(struct notify_state *s, int light) {
+  if (light) {
+    s->col_bg = 0xE8F5F5F7u;
+    s->col_text = 0xFF1C1C1Eu;
+    s->col_title = 0xFF000000u;
+  } else {
+    s->col_bg = 0xE81C1C24u;
+    s->col_text = 0xFFF0F0F5u;
+    s->col_title = 0xFFFFFFFFu;
+  }
+}
+
+static void notif_rect(struct notify_state *s, int radius, uint32_t color) {
+  for (int y = 0; y < NOTIFY_HEIGHT; ++y) {
+    for (int x = 0; x < NOTIFY_WIDTH; ++x) {
+      int cx = -1, cy = 0;
+      if (x < radius && y < radius) { cx = radius; cy = radius; }
+      else if (x >= NOTIFY_WIDTH - radius && y < radius)
+        { cx = NOTIFY_WIDTH - radius - 1; cy = radius; }
+      else if (x < radius && y >= NOTIFY_HEIGHT - radius)
+        { cx = radius; cy = NOTIFY_HEIGHT - radius - 1; }
+      else if (x >= NOTIFY_WIDTH - radius && y >= NOTIFY_HEIGHT - radius)
+        { cx = NOTIFY_WIDTH - radius - 1; cy = NOTIFY_HEIGHT - radius - 1; }
+      if (cx >= 0) {
+        int dx = x - cx, dy = y - cy;
+        if (dx * dx + dy * dy > radius * radius) continue;
+      }
+      s->pixels[y * NOTIFY_WIDTH + x] = color;
+    }
+  }
+}
+
+static void notif_glyph(struct notify_state *s, int x, int y,
+                        uint32_t cp, uint32_t color) {
+  if (!s->font) return;
+  int index = (int)cp - s->font->header.first_char;
+  if (index < 0 || index >= s->font->header.num_chars) return;
+  struct font_glyph_info *glyph = &s->font->glyphs[index];
+  uint8_t *bitmap = s->font->bitmap + glyph->data_offset;
+  int sx = x + glyph->x0;
+  int sy = y + s->font->header.ascent + glyph->y0;
+  for (int gy = 0; gy < NOTIFY_HEIGHT; ++gy) {
+    if (gy >= glyph->height) break;
+    for (int gx = 0; gx < NOTIFY_WIDTH; ++gx) {
+      if (gx >= glyph->width) break;
+      int px = sx + gx, py = sy + gy;
+      if (px >= 0 && px < NOTIFY_WIDTH && py >= 0 &&
+          py < NOTIFY_HEIGHT && bitmap[gy * glyph->width + gx] > 64)
+        s->pixels[py * NOTIFY_WIDTH + px] = color;
+    }
+  }
+}
+
+static void notif_text(struct notify_state *s, int x, int y,
+                       const char *text, uint32_t color) {
+  if (!s->font || !text) return;
+  size_t remaining = strnlen(text, 64U);
+  const char *position = text;
+  int cursor = x;
+  for (size_t step = 0U; step < 64U; ++step) {
+    if (remaining == 0U) break;
+    uint32_t codepoint = 0U;
+    int consumed = utf8_decode(position, remaining, &codepoint);
+    if (consumed <= 0) consumed = 1;
+    if ((size_t)consumed > remaining) break;
+    notif_glyph(s, cursor, y, codepoint, color);
+    int index = (int)codepoint - s->font->header.first_char;
+    if (index >= 0 && index < s->font->header.num_chars)
+      cursor += s->font->glyphs[index].advance;
+    position += consumed;
+    remaining -= (size_t)consumed;
+  }
+}
+
+static int notif_warn_duplicate(const struct notify_state *s, int pid,
+                                const char *text) {
+  for (int i = 0; i < WARN_DEDUP_MAX; ++i) {
+    if (i >= s->warn_count) break;
+    if (s->warn_pid[i] == pid)
+      return strncmp(s->warn_text[i], text, sizeof(s->warn_text[i])) == 0;
+  }
+  return 0;
+}
+
+static void notif_copy_text(char destination[64], const char *text) {
+  size_t index = 0U;
+  for (; index < 63U && text[index]; ++index)
+    destination[index] = text[index];
+  destination[index] = '\0';
+}
+
+static void notif_warn_remember(struct notify_state *s, int pid,
+                                const char *text) {
+  int slot = s->warn_count;
+  for (int i = 0; i < WARN_DEDUP_MAX; ++i) {
+    if (i >= s->warn_count) break;
+    if (s->warn_pid[i] == pid) { slot = i; break; }
+  }
+  if (slot >= s->warn_count) {
+    if (s->warn_count < WARN_DEDUP_MAX) ++s->warn_count;
+    else {
+      slot = s->warn_evict;
+      s->warn_evict = (s->warn_evict + 1) % WARN_DEDUP_MAX;
+    }
+  }
+  s->warn_pid[slot] = pid;
+  notif_copy_text(s->warn_text[slot], text);
+}
+
+static int notif_window_resize(struct notify_state *s, int sw, int sh) {
+  /* Fixed BSS-backed notification surface is process-owned. */
+  if (s->pixels == NULL) return -EFAULT;
+  int x = sw - NOTIFY_WIDTH - 7;
+  int y = NOTIFY_TOP_GAP;
+  int replacement = create_window(x, y, NOTIFY_WIDTH, NOTIFY_HEIGHT,
+                                  "nxntfy_srv");
+  if (replacement < 0) return -EIO;
+  if (s->window >= 0) destroy_window(s->window);
+  s->window = replacement;
+  s->screen_w = sw;
+  s->screen_h = sh;
+  set_window_flags(s->window, 1 | 4 | 8);
+  return 0;
+}
+
+static int notif_receive(int port, struct ipc_message *message) {
+  long result = OS1_port_try_recv(port, message);
+  if (result == (long)sizeof(*message)) return 1;
+  if (result != -EAGAIN) return result < 0 ? (int)result : -EIO;
+  /* Keep kernel fault notifications on the original process mailbox. */
+  long legacy = OS1low_ipc_try_recv(-1, message);
+  if (legacy == 0) return 1;
+  if (legacy == -EAGAIN) return 0;
+  return legacy < 0 ? (int)legacy : -EIO;
+}
+
+static int notif_publish(int slot, int pid, int severity, char state,
+                         const char *text) {
   char key[24], record[80];
-  int key_len = snprintf(key, sizeof(key), "sys.ntfy.log.%d", slot);
-  int record_len = snprintf(record, sizeof(record), "%d|%d|%c|%.48s",
-                            from, severity, state, message);
-  if (key_len <= 0 || (size_t)key_len >= sizeof(key) ||
-      record_len <= 0 || (size_t)record_len >= sizeof(record))
+  int a = snprintf(key, sizeof(key), "sys.ntfy.log.%d", slot);
+  int b = snprintf(record, sizeof(record), "%d|%d|%c|%.48s",
+                   pid, severity, state, text);
+  if (a <= 0 || (size_t)a >= sizeof(key) ||
+      b <= 0 || (size_t)b >= sizeof(record))
     return -EOVERFLOW;
-  long saved = OS1_registry_set(key, record);
-  return saved < 0 ? (int)saved : saved == 0 ? 0 : -EIO;
+  long written = OS1_registry_set(key, record);
+  return written == 0 ? 0 : written < 0 ? (int)written : -EIO;
+}
+
+static int notif_show(struct notify_state *s,
+                      const struct ipc_message *message) {
+  char panel[2] = {0};
+  int open = OS1_registry_get("sys.ntfy.panel_open", panel,
+                              sizeof(panel)) == 0 && panel[0] == '1';
+  if (open) return 0;
+  uint32_t bg = s->col_bg, text = s->col_text, title = s->col_title;
+  const char *heading = "Notification";
+  if (message->data1 == 2U) {
+    bg = COL_ERROR_BG; text = COL_SEV_TEXT;
+    title = COL_SEV_TEXT; heading = "ERROR";
+  }
+  if (!s->pixels || !s->font) return -ENOMEM;
+  notif_rect(s, NOTIFY_RADIUS, bg);
+  notif_text(s, 12, 10, heading, title);
+  notif_text(s, 12, 30, message->payload, text);
+  window_blit(s->window, 0, 0, NOTIFY_WIDTH, NOTIFY_HEIGHT, s->pixels);
+  set_window_flags(s->window, 1 | 2 | 8);
+  s->visible = 1;
+  s->visible_since = get_time();
+  return 1;
+}
+
+static void notif_remember_receipt(struct notify_state *s, int slot,
+                                   const struct ipc_message *message) {
+  s->pending_slot = slot;
+  s->pending_from = (int)message->from;
+  s->pending_severity = (int)message->data1;
+  size_t index = 0U;
+  for (; index < sizeof(s->pending_text) - 1U && message->payload[index];
+       ++index)
+    s->pending_text[index] = message->payload[index];
+  s->pending_text[index] = '\0';
+}
+
+static int notif_handle_message(struct notify_state *s,
+                                struct ipc_message *message) {
+  if (message->type != IPC_TYPE_NOTIFY) return 0;
+  if (message->data2 == IPC_LOOK_PING_MAGIC) {
+    notif_palette(s, nxres_theme_is_light());
+    return 0;
+  }
+  message->payload[sizeof(message->payload) - 1U] = '\0';
+  int warning = message->data1 == 1U;
+  if (warning && notif_warn_duplicate(s, (int)message->from,
+                                      message->payload)) return 0;
+  if (warning) notif_warn_remember(s, (int)message->from, message->payload);
+  int shown = warning ? 0 : notif_show(s, message);
+  if (shown < 0) return shown;
+  int slot = s->ring_head & 0x0F;
+  int result = notif_publish(slot, (int)message->from,
+                             (int)message->data1, 'U', message->payload);
+  if (result != 0) return result;
+  ++s->ring_head;
+  if (shown > 0) notif_remember_receipt(s, slot, message);
+  return 0;
+}
+
+static int notif_hide_if_elapsed(struct notify_state *s) {
+  if (!s->visible || get_time() - s->visible_since < 2000) return 0;
+  set_window_flags(s->window, 1 | 4 | 8);
+  s->visible = 0;
+  if (s->pending_slot >= 0) {
+    int saved = notif_publish(s->pending_slot, s->pending_from,
+                              s->pending_severity, 'R', s->pending_text);
+    if (saved != 0) return saved;
+    s->pending_slot = -1;
+  }
+  return 0;
+}
+
+static int notif_iteration(struct notify_state *s, int port) {
+  long packed = OS1_display_info();
+  int sw = (int)((packed >> 16) & 0xffff);
+  int sh = (int)(packed & 0xffff);
+  if (sw > 0 && sh > 0 &&
+      (sw != s->screen_w || sh != s->screen_h)) {
+    int resized = notif_window_resize(s, sw, sh);
+    if (resized != 0) return resized;
+  }
+  struct ipc_message message = {0};
+  int received = notif_receive(port, &message);
+  if (received < 0) return received;
+  if (received > 0) {
+    int handled = notif_handle_message(s, &message);
+    if (handled != 0) return handled;
+  }
+  int hidden = notif_hide_if_elapsed(s);
+  if (hidden != 0) return hidden;
+  OS1_sleep(s->visible ? 100 : NOTIFY_POLL_MS);
+  return 0;
 }
 
 int main(void) {
-  g_font = font_load("/fonts/Rewir-Light.off");
-  nxntfy_load_palette(nxres_theme_is_light());
-
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF), sh = (int)(di & 0xFFFF);
-  if (sw <= 0)
-    sw = 800;
-  if (sh <= 0)
-    sh = 600;
-  notif_reinit(sw, sh);
-  if (g_win < 0) {
-    return notif_fail("window_create", -ENOMEM);
+  /* Bounded process-local surface avoids heap allocation during service
+   * restart, resizing or the resident notification event loop. */
+  static uint32_t frame[NOTIFY_PIXELS];
+  struct notify_state state = {
+      .pixels = frame, .window = -1, .pending_slot = -1};
+  state.font = font_load("/fonts/Rewir-Light.off");
+  if (state.font == NULL) return notif_fail("font_load", -ENOENT);
+  notif_palette(&state, nxres_theme_is_light());
+  long info = OS1_display_info();
+  int sw = (int)((info >> 16) & 0xffff);
+  int sh = (int)(info & 0xffff);
+  if (sw <= 0) sw = 800;
+  if (sh <= 0) sh = 600;
+  int result = notif_window_resize(&state, sw, sh);
+  if (result == 0) {
+    int port = OS1_port_create(OS1NX_PORT_NOTIFY);
+    if (port >= 0) {
+      for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
+        result = notif_iteration(&state, port);
+        if (result != 0) break;
+      }
+      long closed = OS1low_handle_close(port);
+      if (closed < 0 && result == 0) result = (int)closed;
+    } else result = port;
   }
-
-  int port = OS1_port_create(OS1NX_PORT_NOTIFY);
-  if (port < 0) {
-    return notif_fail("port_claim", port);
-  }
-  /* The claimed PORT and initialized surface constitute service readiness. */
-
-  /* The legacy srv.notify_pid record remains a compatibility observation.
-   * SDK clients address this PORT by a SEND-only capability instead, while
-   * direct kernel fault/appearance notifications still reach the process
-   * mailbox and use the unchanged read/visibility/registry log semantics. */
-
-  struct ipc_message msg;
-  long last_notify_time = 0;
-  int is_visible = 0; /* Tracks whether the window is currently shown */
-  int ring_idx = 0;   /* registry log ring head: sys.ntfy.log.<i>, 16 deep */
-  /* Last logged record, kept so the auto-hide can flip its state to READ (the
-   * read receipt): record format is "<from>|<sev>|<state>|<text>". */
-  int last_log_idx = -1, last_from = 0, last_sev = 0;
-  char last_text[56] = {0};
-
-  /* Event loop (USR-NOTIFY-02 #134): never busy-spin.
-   *   - Idle (window hidden): poll at a LOW rate (see IDLE_POLL_MS below) so
-   *     the process is descheduled between ticks (near-0% CPU) but still
-   *     notices a host display resize without needing a live notification.
-   *   - Visible (auto-hide pending): we cannot block forever or the 2 s hide
-   *     would never fire, so poll with try_recv() and a REAL blocking
-   * OS1_sleep(100) — 10 wakeups/s, not a yield-spin — until the window hides
-   * and we drop back to the idle branch. A recv-with-timeout would collapse
-   * both branches; that needs the capability timer objects of issue #135. */
-  while (1) {
-    /* Adaptive resolution check (like nxbar) */
-    long d = OS1_display_info();
-    int cw = (int)((d >> 16) & 0xFFFF), ch = (int)(d & 0xFFFF);
-    if (cw > 0 && ch > 0 && (cw != g_sw || ch != g_sh))
-      notif_reinit(cw, ch);
-
-    /* `got` is true ONLY when a message was actually received this round.
-     * Gate the popup on the receive RETURN CODE, never on msg.type alone:
-     * IPC_TYPE_RAW == 0 (posix_types.h) collides with a zeroed / "nothing
-     * waiting" buffer, so the old `msg.type == IPC_TYPE_RAW` test re-rendered
-     * the STALE payload on every empty poll — the popup never auto-hid (each
-     * re-render reset last_notify_time), and a click on the popup delivered an
-     * IPC_TYPE_MOUSE message whose coordinate bytes were then rendered as a
-     * stray glyph. */
-    int got;
-    if (!is_visible) {
-      /* FIX(NOTIFY-RESIZE-01): this used to be a plain blocking recv(-1,&msg)
-       * — zero CPU while idle, but it ALSO froze the "adaptive resolution
-       * check" above: that check only runs once per loop iteration, and a
-       * blocking recv() means the NEXT iteration (and therefore the next
-       * resize check) does not happen until a real notification arrives to
-       * wake it. A host display resize that lands while idle (the common
-       * state — the popup is hidden almost all the time) was invisible to
-       * this process until something else woke it, leaving the popup's
-       * window stuck at its OLD position/possibly off-screen until the next
-       * notification "touched" it. Poll at IDLE_POLL_MS instead of blocking
-       * forever: still near-0% CPU (a ~3 Hz sleep-based wait, same technique
-       * nxbar/nxui already use at 30 Hz for their own resize polling), but
-       * the resize check now runs on a bounded cadence regardless of
-       * notification activity. */
-      got = notification_receive(port, &msg);
-      if (got == 0) {
-        OS1_sleep(IDLE_POLL_MS);
-        continue;
-      }
-    } else {
-      /* Visible: non-blocking poll so the 2 s auto-hide can still fire. */
-      got = notification_receive(port, &msg);
-    }
-
-    if (got < 0) {
-      return notif_fail("port_receive", got);
-    }
-
-    /* A look-changed ping (nxres_broadcast_look, nxres.h) rides the SAME
-     * IPC_TYPE_NOTIFY transport as a real user notification, tagged via
-     * data2 so it never gets mistaken for one — no popup, no ring log,
-     * just refresh this window's own palette (it draws itself with the
-     * same glass colours as nxbar/nxsettings, so it needs to react too). */
-    if (got && msg.type == IPC_TYPE_NOTIFY &&
-        msg.data2 == IPC_LOOK_PING_MAGIC) {
-      nxntfy_load_palette(nxres_theme_is_light());
-      continue;
-    }
-
-    /* Only a freshly-received NOTIFY shows the popup. Any other message type
-     * (e.g. IPC_TYPE_MOUSE from a click on the window) is drained and ignored.
-     */
-    if (got && msg.type == IPC_TYPE_NOTIFY) {
-      /* Wire payload is 64 bytes, not an unbounded C string. */
-      msg.payload[sizeof(msg.payload) - 1U] = '\0';
-      int is_warning = (msg.data1 == 1);
-
-      /* Exact repeat of the last warning from THIS process: already visible
-       * in nxbar's panel from its first occurrence — skip entirely (no
-       * second ring entry either) instead of piling up identical lines.
-       * Errors and plain notifications are never deduped. */
-      if (is_warning && warn_is_dup((int)msg.from, msg.payload))
-        continue;
-      if (is_warning)
-        warn_remember((int)msg.from, msg.payload);
-
-      /* Colour the popup by severity (msg.data1): 2 = error (red), 1 = warning
-       * (amber), else info.  The kernel posts data1=2 for a userland crash;
-       * userland may post data1=1 for warnings.  WARN/ERROR sit on their own
-       * fixed, saturated tint (COL_WARN_BG/COL_ERROR_BG) — text follows THAT
-       * background (COL_SEV_TEXT, always legible), not the desktop theme;
-       * only the neutral info background (g_col_bg) uses the theme-derived
-       * title/text colours. */
-      uint32_t bg = g_col_bg;
-      uint32_t text_col = g_col_text;
-      uint32_t title_col = g_col_title;
-      const char *title = "Notification";
-      if (msg.data1 == 2) {
-        bg = COL_ERROR_BG;
-        title = "ERROR";
-        text_col = COL_SEV_TEXT;
-        title_col = COL_SEV_TEXT;
-      } else if (is_warning) {
-        bg = COL_WARN_BG;
-        title = "WARN";
-        text_col = COL_SEV_TEXT;
-        title_col = COL_SEV_TEXT;
-      }
-
-      /* Warnings are reported ONLY in nxbar's notification panel (the ring
-       * log below) — never as an on-screen popup, so a process emitting
-       * several DIFFERENT warnings in a row does not toast-spam the desktop
-       * the way an error or a plain notification legitimately still does
-       * (those are rarer and worth interrupting for). */
-      int popup_shown = 0;
-      if (!is_warning) {
-        /* Non mostriamo il popup se il pannello notifiche di nxbar è già
-         * aperto.
-         */
-        char panel_flag[2] = {0};
-        int panel_open = (OS1_registry_get("sys.ntfy.panel_open", panel_flag,
-                                           sizeof(panel_flag)) == 0 &&
-                          panel_flag[0] == '1');
-
-        if (!panel_open) {
-          /* Render with modern glass style */
-          if (g_fb) {
-            fb_rrect(0, 0, g_bw, g_bh, NOTIFY_RADIUS, bg);
-            buf_draw_text(12, 10, title, title_col);
-            buf_draw_text(12, 30, msg.payload, text_col);
-            window_blit(g_win, 0, 0, g_bw, g_bh, g_fb);
-          }
-
-          /* Show window: 1=top_most, 2=visible, 8=passive (click-through, no
-           * focus). */
-          set_window_flags(g_win, 1 | 2 | 8);
-          is_visible = 1;
-          popup_shown = 1;
-          last_notify_time = get_time();
-          /* SCHED-STACK-ISO: blit + set_window_flags mark damage; init flush()
-           * presents — no nested compositor_render() here. */
-        }
-      }
-
-      /* Log to a bounded registry ring so notifications are VISIBLE in the
-       * namespace and readable by the nxnotify CLI (ASTRA: everything is a
-       * registry node).  16 entries cap the buffer (anti-spam / fixed size).
-       * Record = "<from>|<sev>|<state>|<text>": carries the sender PID (group
-       * by process), severity, and the receipt state (U=unread/received,
-       * R=read) — the registry-message model.  Always written (warnings
-       * included, so nxbar's panel/badge see them) regardless of whether a
-       * popup was shown. */
-      {
-        int idx = ring_idx & 0x0F;
-        int recorded = notif_publish_record(idx, (int)msg.from,
-                                            (int)msg.data1, 'U', msg.payload);
-        if (recorded != 0)
-          return notif_fail("log_unread", recorded);
-        ring_idx++;
-
-        /* The pending-read-receipt bookkeeping below (flipped to 'R' by the
-         * auto-hide branch when the ON-SCREEN POPUP disappears) must track
-         * whichever ring entry that popup is actually showing — NOT
-         * unconditionally the latest ring write.  A warning (or a
-         * panel-open-suppressed notification) never shows a popup, so it
-         * must never steal this slot from whatever IS currently on screen:
-         * if it did, the auto-hide would mark the WRONG entry 'R' — the
-         * true source of the popup would stay 'unread' forever, and this
-         * unrelated entry would be marked 'read' despite never having been
-         * shown. */
-        if (popup_shown) {
-          last_log_idx = idx;
-          last_from = (int)msg.from;
-          last_sev = (int)msg.data1;
-          int t = 0;
-          for (const char *p = msg.payload; *p && t < 55; p++)
-            last_text[t++] = *p;
-          last_text[t] = '\0';
-        }
-      }
-    }
-
-    /* Auto-hide 2 s (2000 ms; get_time() is real ms) after the last
-     * notification, then the next iteration blocks on recv() again. */
-    if (is_visible && (get_time() - last_notify_time >= 2000)) {
-      set_window_flags(g_win, 1 | 4 | 8); /* 1=top_most, 4=hidden, 8=passive */
-      is_visible = 0;
-      /* SCHED-STACK-ISO: set_window_flags marks damage; init flush() presents
-       * the hide — no nested compositor_render() here. */
-      /* The user has now seen the popup: confirm READ in the registry record
-       * (the read receipt of the message model). */
-      if (last_log_idx >= 0) {
-        int recorded = notif_publish_record(last_log_idx, last_from,
-                                            last_sev, 'R', last_text);
-        if (recorded != 0)
-          return notif_fail("log_read", recorded);
-        last_log_idx = -1;
-      }
-    }
-
-    /* While the popup is up, pace the auto-hide poll with a real blocking sleep
-     * (descheduled, no busy-wait). Skipped once we are hidden — that path
-     * blocks on recv() at the top instead. */
-    if (is_visible)
-      OS1_sleep(100);
-  }
-
-  return 0;
+  if (state.window >= 0) destroy_window(state.window);
+  font_free(state.font);
+  return notif_fail("notification_service", result ? result : -EIO);
 }

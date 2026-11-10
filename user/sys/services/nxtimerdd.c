@@ -7,6 +7,7 @@
  */
 #include <os1_time_service.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -124,7 +125,7 @@ static int timerd_serve_epoch(int port, int time_handle, int stats_handle) {
   for (uint32_t request = 0U; request < OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT;
        ++request) {
     struct ipc_message message;
-    long received = OS1_port_recv(port, &message);
+    long received = OS1_object_read(port, &message, sizeof(message));
     if (received != (long)sizeof(message))
       return -1;
     if (message.type == OS1_TIME_SERVICE_IPC_TYPE &&
@@ -157,17 +158,23 @@ int main(void) {
   }
   /* Readiness is the successfully claimed authoritative service PORT. */
   int status = timerd_serve_epoch(port, time_handle, stats_handle);
-  int close_port = OS1low_handle_close(port);
-  int close_stats = OS1low_handle_close(stats_handle);
-  int close_time = OS1low_handle_close(time_handle);
+  long close_port = OS1low_handle_close(port);
+  long close_stats = OS1low_handle_close(stats_handle);
+  long close_time = OS1low_handle_close(time_handle);
   if (status != 0)
     OS1_report_error("nxtimerdd.serve_epoch", status);
   if (close_port != 0)
-    OS1_report_error("nxtimerdd.port_close", close_port);
+    OS1_report_error("nxtimerdd.port_close",
+                     close_port >= INT_MIN && close_port <= INT_MAX ?
+                     (int)close_port : -EOVERFLOW);
   if (close_stats != 0)
-    OS1_report_error("nxtimerdd.stats_close", close_stats);
+    OS1_report_error("nxtimerdd.stats_close",
+                     close_stats >= INT_MIN && close_stats <= INT_MAX ?
+                     (int)close_stats : -EOVERFLOW);
   if (close_time != 0)
-    OS1_report_error("nxtimerdd.time_close", close_time);
+    OS1_report_error("nxtimerdd.time_close",
+                     close_time >= INT_MIN && close_time <= INT_MAX ?
+                     (int)close_time : -EOVERFLOW);
   if (status != 0 || close_port != 0 || close_stats != 0 || close_time != 0)
     return 1;
   return 0;

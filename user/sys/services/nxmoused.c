@@ -282,7 +282,7 @@ int main(void) {
   struct nxmouse_state state = {.px = 400, .py = 300};
   /* Synchronize the cursor even when no device motion arrives after boot. */
   publish_pointer(&state);
-  for (;;) {
+  for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
     struct ipc_message control;
     for (unsigned i = 0; i < 8; ++i) {
       long received = OS1low_ipc_try_recv(-1, &control);
@@ -323,4 +323,5 @@ int main(void) {
     }
     OS1_sleep(5);
   }
+  return 1; /* Service generation exhausted its finite work epoch. */
 }

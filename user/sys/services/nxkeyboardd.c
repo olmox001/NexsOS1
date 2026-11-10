@@ -81,7 +81,7 @@ static void route_key(unsigned code, int value, struct keyboard_state *state) {
 
 int main(void) {
   static struct keyboard_state state[256];
-  for (;;) {
+  for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
     struct os1_raw_input_event_v1 event = {
         .abi_version = OS1_INPUT_ABI_V1, .struct_size = sizeof(event)};
     long result = OS1_input_wait_keyboard(&event);
@@ -99,4 +99,5 @@ int main(void) {
                      (int)(result < 0 ? result : -EIO));
     OS1_sleep(50);
   }
+  return 1; /* Service generation exhausted its finite work epoch. */
 }
