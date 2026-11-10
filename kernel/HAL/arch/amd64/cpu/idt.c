@@ -37,9 +37,8 @@
  *     Vector 0x80 is now a kernel-only gate like every other; syscall/sysret via
  *     LSTAR is the sole syscall surface.  A userland int 0x80 raises #GP and is
  *     handled as a user fault.
- *   CPU-AMD64-01 RESOLVED (#38): FPU/SSE state is saved/restored per task in
- *     arch_cpu_switch_context (cpu.c).  common_isr_entry still saves only GP
- *     regs; the residual kernel-clobber window is tracked in #167.
+ *   CPU-AMD64-01: common_isr_entry saves FXSAVE64 before entering C; the
+ *     selected task frame is restored through the common assembly epilogue.
  */
 #include <hal/diagnostic_protocol.h>
 #include <hal/fault_protocol.h>
@@ -324,8 +323,7 @@ static void amd64_double_fault_handler(struct pt_regs *regs) {
  * Calling convention: called from assembly with a C ABI call; RDI = &pt_regs.
  * Returns RAX = new RSP (next task's pt_regs or the same regs on no-switch).
  *
- * NOTE(CPU-AMD64-01): No FXSAVE in common_isr_entry; XMM state is not
- * preserved across a preemptive switch triggered by the timer IRQ (vec==32).
+ * FP/XMM state is already saved in the opaque HAL frame on entry.
  */
 struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
   uint64_t vec = regs->vec;
@@ -392,8 +390,7 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
         /* LAPIC clockevent interrupt (vector 32; the PIT is halted after
          * calibration — EXC-AMD64-03 resolved).  The selected mode may be
          * TSC-deadline, LAPIC one-shot countdown, or periodic fallback.
-         * NOTE(CPU-AMD64-01): No FPU save; ctx_switch on this path risks XMM
-         * corruption between concurrently running kernel tasks. */
+         * The entry frame already owns the interrupted FP/XMM state. */
 
         /* Tier-2 per-CPU drift accounting (docs/TIMER-MODEL.md §3): the
          * arch-neutral, HAL-driven nxhal_timer_tick_current() advances the software

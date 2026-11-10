@@ -76,32 +76,14 @@ syscall_entry:
     pushq %r14
     pushq %r15
 
+    subq $512, %rsp
+    fxsave64 (%rsp)
+    fninit
+    ldmxcsr amd64_kernel_mxcsr(%rip)
+
     /* Call C handler */
     movq %rsp, %rdi
     call nxhal_core_syscall
-    movq %rax, %rsp
-
-    /* Restore registers */
-    /* Restore GP registers (Reverse order of pushes!) */
-    popq  %r15
-    popq  %r14
-    popq  %r13
-    popq  %r12
-    popq  %r11
-    popq  %r10
-    popq  %r9
-    popq  %r8
-    popq  %rbp
-    popq  %rdi
-    popq  %rsi
-    popq  %rdx
-    popq  %rcx
-    popq  %rbx
-    popq  %rax
-
-    /* Skip error code and vector */
-    addq $16, %rsp
-
-    /* Return via iretq (more robust than sysretq for now) */
-    swapgs
-    iretq
+    /* A blocking syscall may return a different task, including a kernel
+     * task. Restore both FP and GP state through the single IRQ epilogue. */
+    jmp restore_context

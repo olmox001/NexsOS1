@@ -16,6 +16,9 @@
  * Pushed by isr_stubs.S (GP regs) + CPU (iret frame).
  */
 struct pt_regs {
+  /* FXSAVE64 image, 16-byte aligned by every entry and frame allocator.
+   * This covers x87/MMX, MXCSR and XMM0-15, not AVX/AVX-512 state. */
+  uint8_t fxstate[512];
   /* Pushed by software (isr_stubs.S common_isr_entry) */
   uint64_t r15;
   uint64_t r14;
@@ -53,17 +56,28 @@ struct pt_regs {
  * nothing connecting them, so inserting a field here would silently shift
  * every offset the assembly writes and the dispatcher reads.
  *
- * `rip` at 0x88 is not a decorative number: it is the offset the compiler
+ * `rip` at 0x288 includes the 512-byte FXSAVE64 prefix: it is the offset the compiler
  * emits for pt_regs_retry_syscall's `r->rip -= 2`, and a kernel #PF writing to
- * frame+0x88 is what made that visible.  Pinning these three makes a reorder a
+ * the historical frame+0x88 made that visible before the FP prefix.  Pinning these three makes a reorder a
  * BUILD failure at the edit instead of a page fault at runtime.
  */
-NX_ASSERT_OFFSET(struct pt_regs, rbx, 0x68);
-NX_ASSERT_OFFSET(struct pt_regs, rax, 0x70);
-NX_ASSERT_OFFSET(struct pt_regs, vec, 0x78);
-NX_ASSERT_OFFSET(struct pt_regs, err, 0x80);
-NX_ASSERT_OFFSET(struct pt_regs, rip, 0x88);
-NX_ASSERT_SIZE(struct pt_regs, 0xB0);
+NX_ASSERT_OFFSET(struct pt_regs, rbx, 0x268);
+NX_ASSERT_OFFSET(struct pt_regs, rax, 0x270);
+NX_ASSERT_OFFSET(struct pt_regs, vec, 0x278);
+NX_ASSERT_OFFSET(struct pt_regs, err, 0x280);
+NX_ASSERT_OFFSET(struct pt_regs, rip, 0x288);
+NX_ASSERT_SIZE(struct pt_regs, 0x2B0);
+
+/* New processes must not inherit another principal's vector registers or
+ * floating-point control mode. The image is an architectural reset state. */
+static inline void pt_regs_init_fp(struct pt_regs *r) {
+  for (unsigned i = 0; i < sizeof(r->fxstate); ++i)
+    r->fxstate[i] = 0;
+  r->fxstate[0] = 0x7f;
+  r->fxstate[1] = 0x03;
+  r->fxstate[24] = 0x80;
+  r->fxstate[25] = 0x1f;
+}
 
 /* ─── Architecture-Agnostic Accessors ─── */
 
@@ -122,6 +136,7 @@ static inline void pt_regs_retry_syscall(struct pt_regs *r) { r->rip -= 2; }
  * GDT_USER_CODE=0x20 → selector 0x23 (ring3), GDT_USER_DATA=0x18 → 0x1B */
 static inline void pt_regs_init_user_task(struct pt_regs *r, uint64_t entry,
                                            uint64_t usp) {
+  pt_regs_init_fp(r);
   r->rip    = entry;
   r->rsp    = usp;
   r->rflags = 0x202;  /* IF + reserved */
@@ -146,6 +161,7 @@ static inline void pt_regs_set_user_args(struct pt_regs *r, uint64_t argc,
 /* Initialize context for a kernel-mode thread */
 static inline void pt_regs_init_kernel_task(struct pt_regs *r, uint64_t entry,
                                              uint64_t ksp) {
+  pt_regs_init_fp(r);
   r->rip    = entry;
   r->cs     = 0x08;   /* kernel code segment */
   r->rflags = 0x202;  /* IF + reserved */

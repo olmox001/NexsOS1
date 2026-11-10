@@ -44,9 +44,12 @@ struct notify_state {
 static int notif_fail(const char *phase, int code) {
   char record[80];
   int len = snprintf(record, sizeof(record), "%s|%d", phase, code);
+  /* A dead notification UI cannot be its own only diagnostic sink.
+   * Standard user stdout is mirrored to UART by the existing kernel ABI. */
+  int logged = printf("[NXNOTIFY][ERROR] %s: status=%d\n", phase, code);
   if (len > 0 && (size_t)len < sizeof(record)) {
     long published = OS1_registry_set("sys.ntfy.fault", record);
-    if (published != 0) return 1;
+    if (published != 0 || logged < 0) return 1;
   }
   return 1;
 }
@@ -243,6 +246,19 @@ static int notif_handle_message(struct notify_state *s,
     return 0;
   }
   message->payload[sizeof(message->payload) - 1U] = '\0';
+  /* UART must record every received message independently of windows,
+   * warning de-duplication and the bounded GUI receipt registry. */
+  char uart_text[sizeof(message->payload)];
+  for (unsigned i = 0U; i < sizeof(uart_text); ++i) {
+    unsigned char ch = (unsigned char)message->payload[i];
+    uart_text[i] = ch == 0U ? '\0' :
+                   (ch < 32U || ch == 127U) ? '?' : (char)ch;
+  }
+  const char *severity = message->data1 == 2U ? "ERROR" :
+                         message->data1 == 1U ? "WARN" : "INFO";
+  if (printf("[NXNOTIFY][%s] pid=%d %s\n",
+             severity, (int)message->from, uart_text) < 0)
+    return -EIO;
   int warning = message->data1 == 1U;
   if (warning && notif_warn_duplicate(s, (int)message->from,
                                       message->payload)) return 0;

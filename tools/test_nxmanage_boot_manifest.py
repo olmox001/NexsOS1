@@ -42,7 +42,7 @@ def main() -> int:
         if name in seen_names:
             return fail(f'line {number}: duplicate service name')
         seen_names.add(name)
-        if mode not in {'lock', 'once', 'debug'}:
+        if mode not in {'lock', 'once', 'start', 'debug'}:
             return fail(f'line {number}: unrecognized lifecycle mode')
         if not re.fullmatch(r'/sys/(?:bin|services)/[A-Za-z0-9_-]+', path):
             return fail(f'line {number}: noncanonical service path')
@@ -60,15 +60,15 @@ def main() -> int:
         records.append((name, mode, path, arguments, key))
     if len(records) == 0 or len(records) > MAX_SLOTS:
         return fail(f'invalid slot count {len(records)}')
-    if ('shell', 'lock', '/sys/bin/nxshell', '', '') not in records:
-        return fail('interactive shell must be persistent, never wait-for-exit once')
+    if ('shell', 'start', '/sys/bin/nxshell', '', '') not in records:
+        return fail('interactive shell must start once without deadline or respawn')
     if ('environment', 'once', '/sys/bin/nxenvinit', '', '') not in records:
         return fail('environment initializer must complete before dependents')
     if ('tests', 'debug', '/sys/bin/nxshell', '-c /sys/bin/nxtestrunner', '') not in records:
         return fail('headless mdebug suite is not declared as a separate one-shot')
     if ('roleprobe', 'debug', '/sys/bin/nxroleprobe', '', '') not in records:
         return fail('ROOT-capability regression program missing from mdebug')
-    if records.index(('environment', 'once', '/sys/bin/nxenvinit', '', '')) > records.index(('shell', 'lock', '/sys/bin/nxshell', '', '')):
+    if records.index(('environment', 'once', '/sys/bin/nxenvinit', '', '')) > records.index(('shell', 'start', '/sys/bin/nxshell', '', '')):
         return fail('environment initialization must precede the shell')
     core = (ROOT / 'kernel/main.c').read_text()
     for forbidden in ('/sbin/nxinit', 'nxmanageDD', 'nxtestrunner'):

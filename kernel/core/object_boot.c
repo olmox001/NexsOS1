@@ -4,9 +4,9 @@
  * here; actual ELF loading uses the existing process loader contract.
  */
 #include <kernel/object_boot.h>
+#include <kernel/printk.h>
 #include <kernel/registry.h>
 #include <kernel/sched.h>
-#include <kernel/printk.h>
 #include <kernel/string.h>
 
 #define NX_BOOT_EXEC_PREFIX "/krnl/extension/"
@@ -20,8 +20,7 @@ static int nx_object_boot_entry(char out[NX_BOOT_EXEC_PATH_MAX]) {
     if (out[size] == '\0')
       break;
   }
-  if (size <= NX_BOOT_EXEC_PREFIX_LEN ||
-      size >= NX_BOOT_EXEC_PATH_MAX ||
+  if (size <= NX_BOOT_EXEC_PREFIX_LEN || size >= NX_BOOT_EXEC_PATH_MAX ||
       strncmp(out, NX_BOOT_EXEC_PREFIX, NX_BOOT_EXEC_PREFIX_LEN) != 0)
     return -1;
   /* The only initial executable is an extension basename, without
@@ -44,9 +43,8 @@ int nx_object_bootstrap_launch(void) {
     pr_err("%s", "K3: missing/invalid initial object registry entry\n");
     return -1;
   }
-  struct process *first =
-      process_create_caps("boot-extension", PROC_PRIO_USER,
-                          PLVL_MACHINE, CAP_ALL);
+  struct process *first = process_create_caps("boot-extension", PROC_PRIO_USER,
+                                              PLVL_MACHINE, CAP_ALL);
   if (first == NULL)
     return -1;
   if (process_load_elf(first, entry) != 0) {
@@ -54,8 +52,7 @@ int nx_object_bootstrap_launch(void) {
     pr_err("%s", "K3: could not load initial registry-selected extension\n");
     return -1;
   }
-  pr_info("K3: Initialized PID %d (boot extension %s)\n",
-          first->pid, entry);
+  pr_info("K3: Initialized PID %d (boot-extension %s)\n", first->pid, entry);
   enqueue_task(first);
   return 0;
 }

@@ -75,6 +75,56 @@ static void nxpax_serve_request(const struct ipc_message *message, int source) {
     OS1_report_error("nxpaxd.reply_close", (int)closed);
 }
 
+/* Mirror each newly published HAL/Core event to UART from the existing
+ * privileged broker; ring reads are snapshots, not destructive dequeues.
+ * The output contains no raw PC/address and never depends on NXShell. */
+static int nxpax_uart_drain(int source, uint64_t *cursor) {
+  if (cursor == NULL)
+    return -EINVAL;
+  for (unsigned step = 0U; step < NXPAX_MAX_PROBE; ++step) {
+    struct os1_nxpax_query query = {0};
+    query.abi_version = OS1_NXPAX_ABI_VERSION;
+    query.struct_size = sizeof(query);
+    query.operation_id = OS1_NXPAX_OP_READ_RECORD;
+    query.cursor = *cursor;
+    long read = OS1_object_read(source, &query, sizeof(query));
+    if (read == -EAGAIN)
+      return 0; /* a reserved sequence is not yet published */
+    if (read != (long)sizeof(query))
+      return read < 0 ? (int)read : -EIO;
+    if (query.abi_version != OS1_NXPAX_ABI_VERSION ||
+        query.struct_size != sizeof(query) ||
+        query.operation_id != OS1_NXPAX_OP_READ_RECORD)
+      return -EINVAL;
+    if (query.status == OS1_NXPAX_STATUS_EMPTY)
+      return 0;
+    if ((query.status != OS1_NXPAX_STATUS_EVENT &&
+         query.status != OS1_NXPAX_STATUS_OVERRUN) ||
+        query.cursor <= *cursor)
+      return -EIO;
+    const char *severity =
+        query.kind == OS1_NXPAX_KIND_DIAGNOSTIC_WARNING ||
+        query.kind == OS1_NXPAX_KIND_USER_TERMINATED ? "WARN" :
+        query.kind == OS1_NXPAX_KIND_DIAGNOSTIC_ERROR ||
+        query.kind == OS1_NXPAX_KIND_TERMINATION_FAILED ? "ERROR" :
+        query.kind == OS1_NXPAX_KIND_KERNEL_FATAL ? "FATAL" : "FAULT";
+    int logged = printf("[NXPAX][%s] seq=%llu cpu=%d pid=%d kind=%u flags=%u "
+           "overrun=%u dropped=%llu fingerprint=0x%016llx\n",
+           severity, (unsigned long long)query.cursor,
+           query.cpu_id, query.pid, query.kind, query.flags,
+           query.status == OS1_NXPAX_STATUS_OVERRUN ? 1U : 0U,
+           (unsigned long long)query.dropped,
+           (unsigned long long)(
+               query.kind == OS1_NXPAX_KIND_DIAGNOSTIC_WARNING ||
+               query.kind == OS1_NXPAX_KIND_DIAGNOSTIC_ERROR
+                   ? query.syndrome : 0U));
+    if (logged < 0)
+      return -EIO;
+    *cursor = query.cursor;
+  }
+  return 0; /* bounded per-service-turn work; continue next turn */
+}
+
 static int nxpax_service(void) {
   int source = (int)OS1low_handle_create(OS1_NS_RESOURCE, OS1_NXPAX_RESOURCE,
                                         OS1_RIGHT_READ, OBJ_TYPE_RESOURCE);
@@ -90,19 +140,33 @@ static int nxpax_service(void) {
       OS1_report_error("nxpaxd.resource_close", (int)closed);
     return 1;
   }
-  /* PORT ownership, not console output, constitutes service readiness. */
-  /* Resident broker: each individual receive/request path is bounded.
-   * Blocking on the capability port does not busy-spin a CPU. */
+  /* The same service receives client IPC and mirrors newly recorded
+   * diagnostics. Nonblocking PORT reads prevent a quiet client queue from
+   * indefinitely suppressing UART streaming. Both loops are bounded. */
+  uint64_t cursor = 0U;
+  int status = 0;
   for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
-    struct ipc_message message = {0};
-    long received = OS1_port_recv(port, &message);
-    if (received == (long)sizeof(message))
+    for (unsigned request = 0U; request < 32U; ++request) {
+      struct ipc_message message = {0};
+      long received = OS1_port_try_recv(port, &message);
+      if (received == -EAGAIN)
+        break;
+      if (received != (long)sizeof(message)) {
+        status = received < 0 ? (int)received : -EIO;
+        break;
+      }
       nxpax_serve_request(&message, source);
-    else {
-      OS1_report_error("nxpaxd.port_receive",
-                       (int)(received < 0 ? received : -EIO));
+    }
+    if (status != 0) {
+      OS1_report_error("nxpaxd.port_receive", status);
       break;
     }
+    status = nxpax_uart_drain(source, &cursor);
+    if (status != 0) {
+      OS1_report_error("nxpaxd.uart_drain", status);
+      break;
+    }
+    OS1_sleep(20);
   }
   long closed_port = OS1low_handle_close(port);
   long closed_source = OS1low_handle_close(source);

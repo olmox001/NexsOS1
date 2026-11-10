@@ -22,12 +22,9 @@
  *     stack_top=16, user_stack_tmp=24 — matching syscall.S lines 41-43.)
  *
  * Known issues:
- *   CPU-AMD64-01 (W3 MISSING) isr_stubs.S common_isr_entry saves only the 15
- *     GP registers.  No FXSAVE/XSAVE of XMM/AVX state is performed.  This
- *     file enables SSE (CR4.OSFXSR, :36-39), so the compiler may use XMM regs
- *     in kernel code.  A preemptive context switch on a timer IRQ between two
- *     kernel tasks can silently corrupt their XMM state.  Cross-ref:
- *     isr_stubs.S:95-109, context.S:12-36.
+ *   CPU-AMD64-01: IRQ, syscall and cooperative schedule frames now include
+ *     an FXSAVE64 image, restored by the common assembly epilogue. This does
+ *     not provide XSAVE/YMM/ZMM support; those features remain unavailable.
  *   UACC-AMD64-01 (W2 DOC/MISSING) CR4.SMAP is NOT set here (:36-39); only
  *     OSFXSR and OSXMMEXCPT are enabled.  uaccess.c's header claims SMAP is
  *     active — that is wrong.  See uaccess.c Known issues.
@@ -80,9 +77,7 @@ extern void amd64_syscall_init(void);
  *
  * SSE is enabled FIRST because C code called after this point (including
  * the GDT/IDT helpers) may be compiled with -msse or auto-vectorised.
- * NOTE(CPU-AMD64-01): FXSAVE/XSAVE is not used in ctx_switch or
- * common_isr_entry; enabling SSE here creates the hazard without the
- * save/restore infrastructure.
+ * The FXSAVE64 frame is owned by each entry stub, before any C dispatch.
  *
  * GS base is written AFTER gdt_init() because lgdt wipes all segment
  * selectors including GS; writing IA32_GS_BASE before lgdt would be lost.
@@ -109,8 +104,8 @@ void nxhal_provider_cpu_local_init(void) {
   arch_isa_write_cr0(cr0);
 
   /* NOTE(CPU-AMD64-01): OSFXSR+OSXMMEXCPT enable fxsave/fxrstor and unmasked
-   * SIMD FP exceptions, but no FXSAVE is inserted in ctx_switch or the ISR
-   * entry path.  CR4.SMAP is intentionally NOT set here — uaccess.c's claim
+   * SIMD FP exceptions. Entry stubs save FP/XMM before C.
+   * CR4.SMAP is intentionally NOT set here — uaccess.c's claim
    * of SMAP protection is therefore inaccurate (UACC-AMD64-01). */
   cr4 = arch_isa_cr4();
   cr4 |= (1 << 9);  /* OSFXSR (OS support for fxsave/fxrstor) */
@@ -226,10 +221,8 @@ int32_t nxhal_provider_cpu_id_fault_safe(void) {
  * Params:
  *   next - the process to switch to; must not be NULL.
  *
- * NOTE(CPU-AMD64-01): No FPU/XMM state save/restore is done here.  This is the
- * cooperative switch path; the Intel ABI treats XMM regs as caller-saved, so
- * a cooperative switch is safe.  The hazard is preemptive switches via the
- * timer ISR in common_isr_entry, which does not save/restore XMM state.
+ * FP/XMM state belongs to the saved entry frame, not this address-space
+ * switch helper. restore_context reloads the selected frame after C returns.
  */
 void nxhal_provider_cpu_switch_context(
     const struct nxhal_cpu_context_switch *context) {

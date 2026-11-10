@@ -1,22 +1,6 @@
 /* Userland ARGB8888 raster operations used by compositord and graphics APIs. */
 #include <os1_gfx.h>
 
-static uint32_t blend_over(uint32_t src, uint32_t dst) {
-  uint32_t alpha = src >> 24;
-  if (alpha == 255)
-    return src;
-  if (alpha == 0)
-    return dst;
-  uint32_t inverse = 255 - alpha;
-  uint32_t red =
-      (((src >> 16) & 255) * alpha + ((dst >> 16) & 255) * inverse) / 255;
-  uint32_t green =
-      (((src >> 8) & 255) * alpha + ((dst >> 8) & 255) * inverse) / 255;
-  uint32_t blue =
-      ((src & 255) * alpha + (dst & 255) * inverse) / 255;
-  return 0xff000000u | (red << 16) | (green << 8) | blue;
-}
-
 int os1_gfx_surface_valid(const struct os1_gfx_surface *surface) {
   if (!surface || !surface->pixels || !surface->width || !surface->height ||
       surface->stride < surface->width || surface->width > 0x7fffffffU ||
@@ -90,7 +74,8 @@ void os1_gfx_composite_over(struct os1_gfx_surface *destination,
     for (int64_t sx = left; sx < right; ++sx) {
       uint32_t source_pixel = *src++;
       uint32_t destination_pixel = *dst;
-      *dst++ = blend_over(source_pixel, destination_pixel);
+      *dst++ = (source_pixel >> 24) == 255 ? source_pixel :
+          os1_gfx_argb_over(source_pixel, destination_pixel);
     }
   }
 }
@@ -120,7 +105,7 @@ void os1_gfx_composite_scaled(struct os1_gfx_surface *destination,
       uint32_t *dst = destination->pixels + (size_t)dy * destination->stride +
                       (size_t)dx;
       uint32_t src = source->pixels[sy * source->stride + sx];
-      *dst = blend_over(src, *dst);
+      *dst = (src >> 24) == 255 ? src : os1_gfx_argb_over(src, *dst);
     }
   }
 }

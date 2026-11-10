@@ -12,13 +12,8 @@ static uint32_t over_coverage(uint32_t color, uint32_t base, unsigned coverage) 
   unsigned alpha = (color >> 24) * coverage / 255U;
   if (alpha == 255U) return color;
   if (alpha == 0U) return base;
-  unsigned inverse = 255U - alpha;
-  unsigned r = (((color >> 16) & 255U) * alpha +
-                ((base >> 16) & 255U) * inverse) / 255U;
-  unsigned g = (((color >> 8) & 255U) * alpha +
-                ((base >> 8) & 255U) * inverse) / 255U;
-  unsigned b = ((color & 255U) * alpha + (base & 255U) * inverse) / 255U;
-  return 0xff000000U | (r << 16) | (g << 8) | b;
+  uint32_t covered = (color & 0x00ffffffU) | (alpha << 24);
+  return os1_gfx_argb_over(covered, base);
 }
 
 unsigned os1_gfx_rrect_coverage(int x, int y, int width, int height, int radius) {

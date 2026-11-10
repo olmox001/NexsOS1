@@ -12,6 +12,7 @@
 #include <os1_gfx.h>
 #include <os1_theme.h>
 #include <os1_surface.h>
+#include <os1_gfx_buffer.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -24,17 +25,13 @@
 
 /* The process owns frame/snapshot allocations and device state. No
  * translation-unit mutable storage or cross-service pointer ownership. */
-struct compositor_buffer {
-  uint32_t *pixels;
-  size_t capacity;
-};
 struct compositor_state {
   struct font_ctx *font;
   int font_loaded;
   int pointer_x;
   int pointer_y;
-  struct compositor_buffer frame;
-  struct compositor_buffer snapshot;
+  struct os1_gfx_buffer frame;
+  struct os1_gfx_buffer snapshot;
 };
 
 static void consume_pointer_updates(struct compositor_state *owner) {
@@ -144,23 +141,6 @@ static int snapshot_less(const struct os1_window_snapshot_v1 *a,
   return a->id < b->id;
 }
 
-/* Resize allocates before releasing the old process-owned buffer, retaining
- * the previous valid image if a new allocation is denied. */
-static int reserve_pixels(struct compositor_buffer *buffer, size_t required) {
-  if (required == 0U || required > NXCOMPOSITOR_MAX_PIXELS)
-    return -E2BIG;
-  if (required <= buffer->capacity)
-    return 0;
-  uint32_t *replacement = malloc(required * sizeof(*replacement));
-  if (replacement == NULL)
-    return -ENOMEM;
-  uint32_t *previous = buffer->pixels;
-  buffer->pixels = replacement;
-  buffer->capacity = required;
-  free(previous);
-  return 0;
-}
-
 static int enumerate_windows(struct os1_window_snapshot_v1 windows[
                                  NXCOMPOSITOR_MAX_WINDOWS]) {
   struct window_info legacy[NXCOMPOSITOR_MAX_WINDOWS];
@@ -218,13 +198,13 @@ static int draw_windows(struct compositor_state *owner,
     struct os1_window_snapshot_v1 *window = &windows[i];
     size_t pixels = window->pixel_count;
     if (pixels == 0U || pixels > NXCOMPOSITOR_MAX_PIXELS) continue;
-    int rc = reserve_pixels(&owner->snapshot, pixels);
+    int rc = OS1_gfx_buffer_reserve(&owner->snapshot, pixels);
     if (rc != 0) return rc;
-    window->pixels = owner->snapshot.pixels;
+    window->pixels = owner->snapshot.active.view.address;
     window->pixel_capacity = pixels;
     if (OS1_window_snapshot(window) != 0) continue;
     struct os1_gfx_surface source = {
-        owner->snapshot.pixels, (size_t)window->width,
+        owner->snapshot.active.view.address, (size_t)window->width,
         (size_t)window->height, (size_t)window->width, pixels};
     struct os1_gfx_rect content = {
         window->x, window->y, window->draw_width, window->draw_height};
@@ -267,10 +247,10 @@ static int render_frame(struct compositor_state *owner) {
       (size_t)width > NXCOMPOSITOR_MAX_PIXELS / (size_t)height)
     return -EINVAL;
   size_t total = (size_t)width * (size_t)height;
-  int allocated = reserve_pixels(&owner->frame, total);
+  int allocated = OS1_gfx_buffer_reserve(&owner->frame, total);
   if (allocated != 0) return allocated;
   struct os1_gfx_surface frame = {
-      owner->frame.pixels, (size_t)width, (size_t)height,
+      owner->frame.active.view.address, (size_t)width, (size_t)height,
       (size_t)width, total};
   paint_background(&frame, os1_theme_background_active());
   int drawn = draw_windows(owner, &frame);
@@ -280,13 +260,15 @@ static int render_frame(struct compositor_state *owner) {
       .abi_version = OS1_COMPOSITOR_ABI_V1,
       .struct_size = sizeof(present),
       .width = width, .height = height, .stride = width,
-      .pixels = owner->frame.pixels, .pixel_capacity = total
+      .pixels = owner->frame.active.view.address, .pixel_capacity = total
   };
   return (int)OS1_display_present(&present);
 }
 
 int main(void) {
   struct compositor_state owner = {.pointer_x = 640, .pointer_y = 400};
+  OS1_gfx_buffer_init(&owner.frame);
+  OS1_gfx_buffer_init(&owner.snapshot);
   long events = OS1_surface_events_open(OS1_RIGHT_READ | OS1_RIGHT_WAIT);
   if (events < 0) {
     OS1_report_error("nxcompositor.surface_events_open", (int)events);
@@ -313,10 +295,14 @@ int main(void) {
       break;
     }
   }
-  /* A failed resident service generation releases its owned surfaces before
-   * the manager restarts it. No surface memory remains shared with NX-CORE. */
-  free(owner.snapshot.pixels);
-  free(owner.frame.pixels);
+  /* Retain explicit mapping/handle ownership through error cleanup. The
+   * provider also detaches outstanding mappings when this process exits. */
+  int snapshot_closed = OS1_gfx_buffer_release(&owner.snapshot);
+  int frame_closed = OS1_gfx_buffer_release(&owner.frame);
+  if (snapshot_closed != 0)
+    OS1_report_error("nxcompositor.snapshot_release", snapshot_closed);
+  if (frame_closed != 0)
+    OS1_report_error("nxcompositor.frame_release", frame_closed);
   long closed = OS1low_handle_close((int)events);
   if (closed != 0)
     OS1_report_error("nxcompositor.events_close",

@@ -166,6 +166,8 @@ static int nxinit_line(int port, unsigned slot, char *line, int mdebug) {
     mode = NXMANAGE_MODE_LOCK;
   else if (strcmp(field[1], "once") == 0)
     mode = NXMANAGE_MODE_ONCE;
+  else if (strcmp(field[1], "start") == 0)
+    mode = NXMANAGE_MODE_START_ONCE;
   else if (strcmp(field[1], "debug") == 0) {
     if (!mdebug)
       return 0; /* skipped by boot profile, not executed */
@@ -242,11 +244,7 @@ int main(void) {
     if (delivered != 0)
       OS1_report_error("nxinit.boot_notification", delivered);
   }
-  /* The machine registry records ownership and delivery status. */
-  /* Stay available for authenticated reconfiguration protocol extensions.
-   * No duplicate service-status polling or respawn scheduling in init. */
-  for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
-    OS1_sleep(1000);
-  }
-  return 1; /* finite lifetime bound exhausted */
+  /* Init owns boot configuration, not subsequent process supervision.
+   * The MACHINE PID1 manager continues to own service lifecycles. */
+  return 0;
 }

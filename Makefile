@@ -213,6 +213,7 @@ $(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/posix_environment.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/alpha.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/chrome.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/decoration.o \
@@ -225,6 +226,7 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/time_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/surface_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/gfx_buffer.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/buffer_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/os1_video_platform.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/portability/d3d9/os1_d3d9_present.o \
@@ -489,7 +491,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
            $(BUILD_DIR)/captest.elf $(BUILD_DIR)/notifytest.elf \
-           $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf \
+           $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf $(BUILD_DIR)/gfxbuffertest.elf $(BUILD_DIR)/gfxalphatest.elf $(BUILD_DIR)/simdtest.elf $(BUILD_DIR)/simdchild.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
            $(BUILD_DIR)/portidle_child.elf \
            $(BUILD_DIR)/capreg.elf \
@@ -643,6 +645,10 @@ $(BUILD_DIR)/nxpax.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxpax.o $(USER_LIB_O) $
 $(BUILD_DIR)/nxpaxd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxpaxd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtestrunner.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtestrunner.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxroleprobe.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxroleprobe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/gfxalphatest.elf: $(BUILD_DIR)/user/bin/gfxalphatest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/gfxbuffertest.elf: $(BUILD_DIR)/user/bin/gfxbuffertest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/simdtest.elf: $(BUILD_DIR)/user/bin/simdtest.o $(BUILD_DIR)/$(USER_ARCH_DIR)/simd_probe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/simdchild.elf: $(BUILD_DIR)/user/bin/simdchild.o $(BUILD_DIR)/$(USER_ARCH_DIR)/simd_probe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxfont.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/nxfont.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
@@ -675,6 +681,10 @@ endif
 $(BUILD_DIR)/%.elf:
 	@$(CC) $(USER_CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
 
+
+# The scalar foundation must remain executable without vector instructions.
+# ISA-specific accelerators are separate units, selected by usable capabilities.
+$(BUILD_DIR)/$(USER_LIB_DIR)/gfx/alpha.o: USER_CFLAGS += -mgeneral-regs-only
 
 # Compilation rules are split by ownership and compiler domain.  No generic
 # assembly rule is allowed to compile kernel objects with userland flags.
@@ -1226,7 +1236,7 @@ test-gfx-chrome:
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
 		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
 		system/lib/tests/gfx_chrome_test.c system/lib/gfx/chrome.c \
-		system/lib/gfx/decoration.c system/lib/gfx/raster.c \
+		system/lib/gfx/decoration.c system/lib/gfx/raster.c system/lib/gfx/alpha.c \
 		-o build/host/gfx_chrome_test
 	@./build/host/gfx_chrome_test
 
@@ -1251,3 +1261,11 @@ test-all:
 	python3 tools/nxadb.py --arch amd64 stop; \
 	$(MAKE) ARCH=aarch64 test; \
 	python3 tools/nxadb.py --arch aarch64 stop
+
+.PHONY: test-gfx-alpha
+test-gfx-alpha:
+	@mkdir -p build/host
+	@$(HOST_CC) -std=c11 -O2 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
+		user/bin/gfxalphatest.c system/lib/gfx/alpha.c -o build/host/gfx_alpha_test
+	@./build/host/gfx_alpha_test

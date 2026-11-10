@@ -26,6 +26,8 @@
 #define NXMANAGE_MODE_LOCK UINT32_C(1)
 #define NXMANAGE_MODE_ONCE UINT32_C(2)
 #define NXMANAGE_MODE_ASYNC_ONCE UINT32_C(3)
+/* Start once and ACK spawn immediately. Never respawn or terminate on deadline. */
+#define NXMANAGE_MODE_START_ONCE UINT32_C(4)
 
 enum {
   NXMANAGE_SLOTS = 16,       /* per-boot configured service slots */

@@ -110,6 +110,12 @@ common_isr_entry:
     pushq %r14
     pushq %r15
 
+    /* Preserve the interrupted vector state BEFORE entering C. Nested IRQs
+     * own separate images on their stacks, just like the GP register frame. */
+    subq  $512, %rsp
+    fxsave64 (%rsp)
+    fninit
+    ldmxcsr amd64_kernel_mxcsr(%rip)
     /* Pass pointer to pt_regs as first argument */
     movq  %rsp, %rdi
     call  amd64_isr_dispatch
@@ -166,6 +172,10 @@ arch_cpu_yield:
     pushq %r13
     pushq %r14
     pushq %r15
+    subq  $512, %rsp
+    fxsave64 (%rsp)
+    fninit
+    ldmxcsr amd64_kernel_mxcsr(%rip)
     movq  %rsp, %rdi
     call  nxhal_core_schedule
     /* schedule() returned the next context in rax; restore it via the ONE
@@ -186,6 +196,8 @@ arch_cpu_yield:
 .global restore_context
 restore_context:
     movq  %rax, %rsp
+    fxrstor64 (%rsp)
+    addq  $512, %rsp
     popq  %r15
     popq  %r14
     popq  %r13
@@ -218,6 +230,16 @@ restore_context:
 
 /* ── Table of stub addresses (used by idt_init) ─────────── */
 .section .rodata
+.balign 16
+.global amd64_initial_fxstate
+amd64_initial_fxstate:
+    .short 0x037f, 0
+    .long 0
+    .quad 0, 0
+.global amd64_kernel_mxcsr
+amd64_kernel_mxcsr:
+    .long 0x1f80, 0
+    .zero 480
 .global isr_stub_table
 isr_stub_table:
 .set V, 0

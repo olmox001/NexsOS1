@@ -48,6 +48,9 @@ arch_enter_user_mode:
      * Wait, if we change RSP now, we lose the return address. But we don't return.
      */
     movq %rdx, %rsp
+    /* Direct first-user entry bypasses restore_context. Reset the FP/vector
+     * image here as well, so bootloader/kernel state cannot leak to PID1. */
+    fxrstor64 amd64_initial_fxstate(%rip)
 
     /* Construct iretq frame for Ring 3 */
     /* Push SS (GDT_USER_DATA | 3) */

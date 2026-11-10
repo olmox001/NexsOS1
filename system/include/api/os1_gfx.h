@@ -67,6 +67,14 @@ uint32_t os1_gfx_button_pixel(const struct os1_gfx_button_geometry *geometry,
                              uint32_t background_argb, int drop_shadow,
                              uint32_t base);
 
+/* ARGB8888 straight-alpha storage remains the existing surface contract.
+ * Premultiplied operations are explicit; both variants retain output alpha.
+ * Integer channel calculations round down; opaque destinations retain the
+ * historical raster results exactly. */
+uint32_t os1_gfx_argb_over(uint32_t source, uint32_t destination);
+uint32_t os1_gfx_argb_premultiply(uint32_t source);
+uint32_t os1_gfx_premult_over(uint32_t source, uint32_t destination);
+
 int os1_gfx_surface_valid(const struct os1_gfx_surface *surface);
 void os1_gfx_clear(struct os1_gfx_surface *surface, uint32_t argb);
 void os1_gfx_fill_rect(struct os1_gfx_surface *surface,

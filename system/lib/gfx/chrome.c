@@ -5,19 +5,6 @@
 #define CHROME_BUTTON_SIZE 16
 #define CHROME_BUTTON_GAP 6
 
-static uint32_t blend(uint32_t src, uint32_t dst) {
-  uint32_t alpha = src >> 24;
-  if (alpha == 255) return src;
-  if (alpha == 0) return dst;
-  uint32_t inverse = 255 - alpha;
-  uint32_t red = (((src >> 16) & 255) * alpha +
-                  ((dst >> 16) & 255) * inverse) / 255;
-  uint32_t green = (((src >> 8) & 255) * alpha +
-                    ((dst >> 8) & 255) * inverse) / 255;
-  uint32_t blue = ((src & 255) * alpha + (dst & 255) * inverse) / 255;
-  return 0xff000000u | (red << 16) | (green << 8) | blue;
-}
-
 static int int64_fits_int(int64_t value) {
   return value >= INT_MIN && value <= INT_MAX;
 }
@@ -26,13 +13,13 @@ uint32_t os1_gfx_titlebar_tint(int shadow_type, int y, int titlebar_height,
                                uint32_t base) {
   if (titlebar_height <= 0) return base;
   if (shadow_type == 1) {
-    if (y == 0) base = blend(0x20ffffffu, base);
+    if (y == 0) base = os1_gfx_argb_over(0x20ffffffu, base);
   } else if (shadow_type == 2) {
-    if (y == 0) base = blend(0x40ffffffu, base);
+    if (y == 0) base = os1_gfx_argb_over(0x40ffffffu, base);
     int64_t gradient = ((int64_t)y * 24) / titlebar_height;
     if (gradient > 0) {
       if (gradient > 255) gradient = 255;
-      base = blend(((uint32_t)gradient << 24), base);
+      base = os1_gfx_argb_over(((uint32_t)gradient << 24), base);
     }
   }
   return base;
@@ -111,7 +98,7 @@ uint32_t os1_gfx_button_pixel(const struct os1_gfx_button_geometry *g,
   unsigned rim = coverage > inner ? coverage - inner : 0;
   unsigned opacity = (48U * coverage + 72U * rim) / 255U;
   if (drop_shadow && ly == g->size - 1) opacity += coverage / 8U;
-  uint32_t result = blend((accent & 0x00ffffffU) | (opacity << 24), base);
+  uint32_t result = os1_gfx_argb_over((accent & 0x00ffffffU) | (opacity << 24), base);
   int dx = 2 * lx - (g->size - 1), dy = 2 * ly - (g->size - 1);
   int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
   int diagonal = ax - ay;
@@ -122,7 +109,7 @@ uint32_t os1_gfx_button_pixel(const struct os1_gfx_button_geometry *g,
     unsigned luminance = ((base >> 16) & 255U) * 54U +
                          ((base >> 8) & 255U) * 183U + (base & 255U) * 19U;
     uint32_t ink = luminance < 32768U ? 0xfff4f5f7U : 0xff252830U;
-    result = blend((ink & 0x00ffffffU) | (coverage << 24), result);
+    result = os1_gfx_argb_over((ink & 0x00ffffffU) | (coverage << 24), result);
   }
   return result;
 }
