@@ -22,12 +22,22 @@
 #define IPC_THEME_STYLE 0x31
 #define IPC_THEME_BACKGROUND 0x32
 
-static struct font_ctx *compositor_font;
-static int compositor_font_loaded;
-static int pointer_x = 640;
-static int pointer_y = 400;
+/* The process owns frame/snapshot allocations and device state. No
+ * translation-unit mutable storage or cross-service pointer ownership. */
+struct compositor_buffer {
+  uint32_t *pixels;
+  size_t capacity;
+};
+struct compositor_state {
+  struct font_ctx *font;
+  int font_loaded;
+  int pointer_x;
+  int pointer_y;
+  struct compositor_buffer frame;
+  struct compositor_buffer snapshot;
+};
 
-static void consume_pointer_updates(void) {
+static void consume_pointer_updates(struct compositor_state *owner) {
   struct ipc_message msg;
   for (unsigned i = 0; i < 32; ++i) {
     long received = OS1low_ipc_try_recv(-1, &msg);
@@ -39,8 +49,8 @@ static void consume_pointer_updates(void) {
       break;
     }
     if (msg.type == IPC_POINTER_POS) {
-      pointer_x = (int)(uint32_t)msg.data1;
-      pointer_y = (int)(uint32_t)msg.data2;
+      owner->pointer_x = (int)(uint32_t)msg.data1;
+      owner->pointer_y = (int)(uint32_t)msg.data2;
     } else if (msg.type == IPC_THEME_STYLE) {
       int style_rc = os1_theme_set_style((int)(int64_t)msg.data1);
       if (style_rc != 0)
@@ -63,7 +73,8 @@ paint_background(struct os1_gfx_surface *frame,
                  const struct os1_compositor_background *background) {
   uint32_t top = background->bg_top;
   uint32_t bottom = background->bg_bottom;
-  for (size_t y = 0; y < frame->height; ++y) {
+  for (size_t y = 0U; y < NXCOMPOSITOR_MAX_PIXELS; ++y) {
+    if (y >= frame->height) break;
     uint32_t row_color = top;
     if (frame->height > 1) {
       uint32_t weight = (uint32_t)(y * 255u / (frame->height - 1));
@@ -133,52 +144,36 @@ static int snapshot_less(const struct os1_window_snapshot_v1 *a,
   return a->id < b->id;
 }
 
-/* Reused staging storage. A resize allocates before releasing the old buffer;
- * ordinary frames perform no allocation in this process. Snapshot storage is
- * shared sequentially by windows, keeping memory bounded independently of count. */
-static uint32_t *frame_storage, *snapshot_storage;
-static size_t frame_capacity, snapshot_capacity;
-
-static int reserve_pixels(uint32_t **pixels, size_t *capacity, size_t required) {
-  if (!required || required > NXCOMPOSITOR_MAX_PIXELS) return -E2BIG;
-  if (*capacity >= required) return 0;
+/* Resize allocates before releasing the old process-owned buffer, retaining
+ * the previous valid image if a new allocation is denied. */
+static int reserve_pixels(struct compositor_buffer *buffer, size_t required) {
+  if (required == 0U || required > NXCOMPOSITOR_MAX_PIXELS)
+    return -E2BIG;
+  if (required <= buffer->capacity)
+    return 0;
   uint32_t *replacement = malloc(required * sizeof(*replacement));
-  if (!replacement) return -ENOMEM;
-  free(*pixels);
-  *pixels = replacement;
-  *capacity = required;
+  if (replacement == NULL)
+    return -ENOMEM;
+  uint32_t *previous = buffer->pixels;
+  buffer->pixels = replacement;
+  buffer->capacity = required;
+  free(previous);
   return 0;
 }
 
-static int render_frame(void) {
-  long packed = OS1_display_info();
-  int width = (int)((packed >> 16) & 0xffff);
-  int height = (int)(packed & 0xffff);
-  if (width <= 0 || height <= 0 ||
-      (size_t)width > NXCOMPOSITOR_MAX_PIXELS / (size_t)height)
-    return -EINVAL;
-  size_t frame_pixels = (size_t)width * (size_t)height;
-  int allocated = reserve_pixels(&frame_storage, &frame_capacity, frame_pixels);
-  if (allocated != 0) return allocated;
-  uint32_t *frame_pixels_buf = frame_storage;
-  struct os1_gfx_surface frame = {(uint32_t *)frame_pixels_buf, (size_t)width,
-                                  (size_t)height, (size_t)width, frame_pixels};
-  paint_background(&frame, os1_theme_background_active());
-
+static int enumerate_windows(struct os1_window_snapshot_v1 windows[
+                                 NXCOMPOSITOR_MAX_WINDOWS]) {
   struct window_info legacy[NXCOMPOSITOR_MAX_WINDOWS];
   long count = OS1_window_enum(legacy, NXCOMPOSITOR_MAX_WINDOWS);
-  if (count < 0)
-    count = 0;
-  if (count > NXCOMPOSITOR_MAX_WINDOWS)
-    count = NXCOMPOSITOR_MAX_WINDOWS;
-
-  struct os1_window_snapshot_v1 windows[NXCOMPOSITOR_MAX_WINDOWS];
-  int window_count = 0;
-  for (long i = 0; i < count; ++i) {
-    struct os1_window_snapshot_v1 snapshot = {0};
-    snapshot.abi_version = OS1_COMPOSITOR_ABI_V1;
-    snapshot.struct_size = sizeof(snapshot);
-    snapshot.id = legacy[i].id;
+  if (count < 0) return (int)count;
+  int found = 0;
+  for (int i = 0; i < NXCOMPOSITOR_MAX_WINDOWS; ++i) {
+    if ((long)i >= count) break;
+    struct os1_window_snapshot_v1 snapshot = {
+        .abi_version = OS1_COMPOSITOR_ABI_V1,
+        .struct_size = sizeof(snapshot),
+        .id = legacy[i].id
+    };
     if (snapshot.id <= 0 || OS1_window_snapshot(&snapshot) != 0)
       continue;
     if (!(snapshot.flags & WININFO_VISIBLE) || snapshot.width <= 0 ||
@@ -186,53 +181,65 @@ static int render_frame(void) {
         snapshot.draw_height <= 0 ||
         snapshot.pixel_count > NXCOMPOSITOR_MAX_PIXELS)
       continue;
-    windows[window_count++] = snapshot;
+    windows[found++] = snapshot;
   }
+  return found;
+}
 
-  /* Stable insertion sort: low z-order is painted first; topmost policy is
-   * applied by the comparison and remains independent from window IDs. */
-  for (int i = 1; i < window_count; ++i) {
+static void sort_windows(struct os1_window_snapshot_v1 windows[
+                             NXCOMPOSITOR_MAX_WINDOWS], int count) {
+  for (int i = 1; i < NXCOMPOSITOR_MAX_WINDOWS; ++i) {
+    if (i >= count) break;
     struct os1_window_snapshot_v1 key = windows[i];
     int j = i;
-    while (j > 0 && snapshot_less(&key, &windows[j - 1])) {
+    for (int step = 0; step < NXCOMPOSITOR_MAX_WINDOWS; ++step) {
+      if (j == 0 || !snapshot_less(&key, &windows[j - 1])) break;
       windows[j] = windows[j - 1];
       --j;
     }
     windows[j] = key;
   }
+}
 
+static int draw_windows(struct compositor_state *owner,
+                        struct os1_gfx_surface *frame) {
+  struct os1_window_snapshot_v1 windows[NXCOMPOSITOR_MAX_WINDOWS];
+  int count = enumerate_windows(windows);
+  if (count < 0) return count;
+  sort_windows(windows, count);
   const struct os1_compositor_style *style = os1_theme_style_active();
   const struct os1_compositor_theme *theme = os1_theme_palette_active();
-  if (!compositor_font_loaded) {
-    compositor_font = font_load("/fonts/Rewir-Light.off");
-    compositor_font_loaded = 1;
+  if (!owner->font_loaded) {
+    owner->font = font_load("/fonts/Rewir-Light.off");
+    owner->font_loaded = 1;
   }
-  for (int i = 0; i < window_count; ++i) {
+  for (int i = 0; i < NXCOMPOSITOR_MAX_WINDOWS; ++i) {
+    if (i >= count) break;
     struct os1_window_snapshot_v1 *window = &windows[i];
-    size_t pixel_count = window->pixel_count;
-    if (pixel_count == 0 || pixel_count > NXCOMPOSITOR_MAX_PIXELS)
-      continue;
-    int allocation = reserve_pixels(&snapshot_storage, &snapshot_capacity,
-                                    pixel_count);
-    if (allocation != 0)
-      return allocation;
-    uint32_t *pixels = snapshot_storage;
-    window->pixels = pixels;
-    window->pixel_capacity = pixel_count;
-    if (OS1_window_snapshot(window) == 0) {
-      struct os1_gfx_surface source = {pixels, (size_t)window->width,
-                                       (size_t)window->height,
-                                       (size_t)window->width, pixel_count};
-      struct os1_gfx_rect content = {window->x, window->y,
-                                      window->draw_width, window->draw_height};
-      int decorated = !(window->flags & WININFO_TOPMOST);
-      int title_height = decorated && style->titlebar ? style->titlebar_height : 0;
-      int radius = decorated && style->rounded_corners ? style->border_radius : 0;
-      os1_gfx_composite_rounded(&frame, &source, &content, title_height, radius);
-      paint_window_chrome(&frame, window, style, theme, compositor_font);
-    }
+    size_t pixels = window->pixel_count;
+    if (pixels == 0U || pixels > NXCOMPOSITOR_MAX_PIXELS) continue;
+    int rc = reserve_pixels(&owner->snapshot, pixels);
+    if (rc != 0) return rc;
+    window->pixels = owner->snapshot.pixels;
+    window->pixel_capacity = pixels;
+    if (OS1_window_snapshot(window) != 0) continue;
+    struct os1_gfx_surface source = {
+        owner->snapshot.pixels, (size_t)window->width,
+        (size_t)window->height, (size_t)window->width, pixels};
+    struct os1_gfx_rect content = {
+        window->x, window->y, window->draw_width, window->draw_height};
+    int decorated = !(window->flags & WININFO_TOPMOST);
+    int title = decorated && style->titlebar ? style->titlebar_height : 0;
+    int radius = decorated && style->rounded_corners ? style->border_radius : 0;
+    os1_gfx_composite_rounded(frame, &source, &content, title, radius);
+    paint_window_chrome(frame, window, style, theme, owner->font);
   }
-  /* Preserve the original 12x16 monochrome system cursor exactly. */
+  return 0;
+}
+
+/* Unchanged 12x16 monochrome system cursor, clipped to the display. */
+static void draw_cursor(const struct compositor_state *owner,
+                        struct os1_gfx_surface *frame) {
   static const char *cursor_bits[16] = {
       "X           ", "XX          ", "X.X         ", "X..X        ",
       "X...X       ", "X....X      ", "X.....X     ", "X......X    ",
@@ -240,37 +247,52 @@ static int render_frame(void) {
       "X.X X..X    ", "XX  X..X    ", "X    XX     ", "     XX     "};
   for (int y = 0; y < 16; ++y) {
     for (int x = 0; x < 12; ++x) {
-      int cx = pointer_x + x, cy = pointer_y + y;
-      if (cx < 0 || cy < 0 || (size_t)cx >= frame.width ||
-          (size_t)cy >= frame.height)
-        continue;
-      char p = cursor_bits[y][x];
-      if (p == 'X')
-        frame.pixels[(size_t)cy * frame.stride + (size_t)cx] = 0xffffffffu;
-      else if (p == '.')
-        frame.pixels[(size_t)cy * frame.stride + (size_t)cx] = 0xff000000u;
+      int cx = owner->pointer_x + x, cy = owner->pointer_y + y;
+      if (cx < 0 || cy < 0 || (size_t)cx >= frame->width ||
+          (size_t)cy >= frame->height) continue;
+      char pixel = cursor_bits[y][x];
+      if (pixel == 'X')
+        frame->pixels[(size_t)cy * frame->stride + (size_t)cx] = 0xffffffffu;
+      else if (pixel == '.')
+        frame->pixels[(size_t)cy * frame->stride + (size_t)cx] = 0xff000000u;
     }
   }
+}
+
+static int render_frame(struct compositor_state *owner) {
+  long packed = OS1_display_info();
+  int width = (int)((packed >> 16) & 0xffff);
+  int height = (int)(packed & 0xffff);
+  if (width <= 0 || height <= 0 ||
+      (size_t)width > NXCOMPOSITOR_MAX_PIXELS / (size_t)height)
+    return -EINVAL;
+  size_t total = (size_t)width * (size_t)height;
+  int allocated = reserve_pixels(&owner->frame, total);
+  if (allocated != 0) return allocated;
+  struct os1_gfx_surface frame = {
+      owner->frame.pixels, (size_t)width, (size_t)height,
+      (size_t)width, total};
+  paint_background(&frame, os1_theme_background_active());
+  int drawn = draw_windows(owner, &frame);
+  if (drawn != 0) return drawn;
+  draw_cursor(owner, &frame);
   struct os1_compositor_present_v1 present = {
       .abi_version = OS1_COMPOSITOR_ABI_V1,
       .struct_size = sizeof(present),
-      .width = width,
-      .height = height,
-      .stride = width,
-      .pixels = frame_pixels_buf,
-      .pixel_capacity = frame_pixels,
+      .width = width, .height = height, .stride = width,
+      .pixels = owner->frame.pixels, .pixel_capacity = total
   };
-  int rc = (int)OS1_display_present(&present);
-  return rc;
+  return (int)OS1_display_present(&present);
 }
 
 int main(void) {
+  struct compositor_state owner = {.pointer_x = 640, .pointer_y = 400};
   long events = OS1_surface_events_open(OS1_RIGHT_READ | OS1_RIGHT_WAIT);
   if (events < 0) {
     OS1_report_error("nxcompositor.surface_events_open", (int)events);
     return 1;
   }
-  for (;;) {
+  for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
     struct os1_surface_state_v1 state;
     long current = OS1_surface_state((int)events, &state);
     if (current != 0) {
@@ -278,8 +300,8 @@ int main(void) {
                        (int)(current < 0 ? current : -EIO));
       break;
     }
-    consume_pointer_updates();
-    int rendered = render_frame();
+    consume_pointer_updates(&owner);
+    int rendered = render_frame(&owner);
     if (rendered != 0) {
       OS1_report_error("nxcompositor.render_frame", rendered);
       break;
@@ -291,6 +313,10 @@ int main(void) {
       break;
     }
   }
+  /* A failed resident service generation releases its owned surfaces before
+   * the manager restarts it. No surface memory remains shared with NX-CORE. */
+  free(owner.snapshot.pixels);
+  free(owner.frame.pixels);
   long closed = OS1low_handle_close((int)events);
   if (closed != 0)
     OS1_report_error("nxcompositor.events_close",
