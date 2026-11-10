@@ -104,6 +104,22 @@ static void reset_mocks(void) {
   mock_event = event_periodic();
 }
 
+static int test_contract_layout(void) {
+  if (sizeof(struct nxhal_clocksource_v1) != 48U)
+    return 1;
+  if (offsetof(struct nxhal_clocksource_v1, frequency_hz) != 24U)
+    return 2;
+  if (offsetof(struct nxhal_clocksource_v1, max_delta_counts) != 40U)
+    return 3;
+  if (sizeof(struct nxhal_clockevent_v1) != 48U)
+    return 4;
+  if (offsetof(struct nxhal_clockevent_v1, frequency_hz) != 24U)
+    return 5;
+  if (offsetof(struct nxhal_clockevent_v1, max_delta_counts) != 40U)
+    return 6;
+  return 0;
+}
+
 static int test_clocksource_contract(void) {
   struct nxhal_clocksource_v1 out;
 
@@ -185,13 +201,15 @@ static int test_event_operations(void) {
 }
 
 int main(void) {
-  if (test_clocksource_contract() != 0)
+  if (test_contract_layout() != 0)
     return 1;
-  if (test_clockevent_contract() != 0)
+  if (test_clocksource_contract() != 0)
     return 2;
-  if (test_counter_and_errors() != 0)
+  if (test_clockevent_contract() != 0)
     return 3;
-  if (test_event_operations() != 0)
+  if (test_counter_and_errors() != 0)
     return 4;
+  if (test_event_operations() != 0)
+    return 5;
   return 0;
 }

@@ -52,8 +52,10 @@ test-host: | $(BUILD)
 	$(call host_test,$(COMMON),hcd_core_profile_test)
 	$(call host_test,$(COMMON),hcd_builder_test)
 	$(call host_test,$(COMMON),memory_plan_test)
-	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fault_protocol.c $(UNIT)/fault_protocol_test.c -o $(BUILD)/fault_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fault_protocol.c $(ROOT)/core/nxpax.c $(UNIT)/fault_protocol_test.c -o $(BUILD)/fault_protocol_test
 	$(BUILD)/fault_protocol_test
+	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/nxpax.c $(UNIT)/nxpax_test.c -o $(BUILD)/nxpax_test
+	$(BUILD)/nxpax_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/diagnostic_protocol.c $(UNIT)/diagnostic_protocol_test.c -o $(BUILD)/diagnostic_protocol_test
 	$(BUILD)/diagnostic_protocol_test
 	$(CC) $(CFLAGS) -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/timer_protocol.c $(UNIT)/timer_protocol_test.c -o $(BUILD)/timer_protocol_test
@@ -146,9 +148,13 @@ test-sanitize: | $(BUILD)
 	  $(UNIT)/uefi_exit_test.c -o $(BUILD)/uefi_exit_test-sanitize
 	$(BUILD)/uefi_exit_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fault_protocol.c \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/fault_protocol.c $(ROOT)/core/nxpax.c \
 	  $(UNIT)/fault_protocol_test.c -o $(BUILD)/fault_protocol_test-sanitize
 	$(BUILD)/fault_protocol_test-sanitize
+	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT)/include \
+	  $(ROOT)/core/nxpax.c $(UNIT)/nxpax_test.c -o $(BUILD)/nxpax_test-sanitize
+	$(BUILD)/nxpax_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	  -Wall -Wextra -Werror -Wpedantic -I$(ROOT) -I$(ROOT)/include $(ROOT)/core/diagnostic_protocol.c \
 	  $(UNIT)/diagnostic_protocol_test.c -o $(BUILD)/diagnostic_protocol_test-sanitize

@@ -32,6 +32,7 @@
 #include <hal/boot_memory.h>
 #include <kernel/test.h>
 #include <kernel/arch.h>
+#include <kernel/cpu.h>
 #include <kernel/boot_memory.h>
 #include <kernel/platform.h>
 #include <kernel/memlayout.h>
@@ -76,6 +77,35 @@ KTEST_CASE(test_math_basic) {
     KASSERT_EQ(a + b, 30);
 }
 
+/* Force the freestanding compiler-runtime div/mod path with non-constant
+ * operands.  amd64 emits __udivmodti4 when quotient and remainder are both
+ * required; the invariant below catches a bad quotient, remainder or store. */
+KTEST_CASE(test_u128_divmod_timer_scale) {
+    volatile uint64_t hi = UINT64_C(0x0000000123456789);
+    volatile uint64_t lo = UINT64_C(0xfedcba9876543210);
+    __uint128_t numerator = ((__uint128_t)hi << 64) | (__uint128_t)lo;
+    __uint128_t divisor = (__uint128_t)UINT64_C(1000000000);
+    __uint128_t quotient = numerator / divisor;
+    __uint128_t remainder = numerator % divisor;
+
+    if (remainder >= divisor || quotient * divisor + remainder != numerator)
+        ktest_test_failed = 1;
+}
+
+/* Exercise the full 128/128 ABI, not only the timer's 128/64 divisor. */
+KTEST_CASE(test_u128_divmod_wide_divisor) {
+    volatile uint64_t hi = UINT64_C(0xfedcba9876543210);
+    volatile uint64_t lo = UINT64_C(0x0123456789abcdef);
+    __uint128_t numerator = ((__uint128_t)hi << 64) | (__uint128_t)lo;
+    __uint128_t divisor = ((__uint128_t)UINT64_C(3) << 64) |
+                          (__uint128_t)UINT64_C(0x1020304050607080);
+    __uint128_t quotient = numerator / divisor;
+    __uint128_t remainder = numerator % divisor;
+
+    if (remainder >= divisor || quotient * divisor + remainder != numerator)
+        ktest_test_failed = 1;
+}
+
 /* The callback data deliberately lives on this test's stack. The test queues,
  * re-arms and cancels before returning; timer_del must unlink the node and
  * leave no callback able to access the stack data after the test exits. */
@@ -87,26 +117,100 @@ static void ktest_timer_count_callback(void *data) {
 KTEST_CASE(test_timer_rearm_cancel) {
     struct OS1libkernel_timer timer;
     int callback_count = 0;
+    uint32_t cpu = cpu_id();
     uint64_t now = OS1libkernel_time_monotonic_ns();
+    uint64_t previous = cpu_data[cpu].timer_next_deadline_ns;
+    uint64_t first = now + UINT64_C(1000000000);
+    uint64_t second = now + UINT64_C(2000000000);
 
     OS1libkernel_timer_setup(&timer, ktest_timer_count_callback, &callback_count);
+    OS1libkernel_timer_arm_deadline(&timer, first);
+    uint64_t first_expected = previous != 0U && previous < first ? previous : first;
+    if (!OS1libkernel_timer_pending(&timer) ||
+        cpu_data[cpu].timer_next_deadline_ns != first_expected) {
+        OS1libkernel_timer_cancel(&timer);
+        ktest_test_failed = 1;
+        return;
+    }
+
+    OS1libkernel_timer_arm_deadline(&timer, second);
+    uint64_t second_expected =
+        previous != 0U && previous < second ? previous : second;
+    if (!OS1libkernel_timer_pending(&timer) ||
+        cpu_data[cpu].timer_next_deadline_ns != second_expected) {
+        OS1libkernel_timer_cancel(&timer);
+        ktest_test_failed = 1;
+        return;
+    }
+
+    OS1libkernel_timer_cancel(&timer);
+    if (OS1libkernel_timer_pending(&timer) ||
+        __atomic_load_n(&timer.cpu, __ATOMIC_ACQUIRE) != -1 ||
+        !list_empty(&timer.list) ||
+        cpu_data[cpu].timer_next_deadline_ns != previous ||
+        __atomic_load_n(&callback_count, __ATOMIC_ACQUIRE) != 0) {
+        ktest_test_failed = 1;
+        return;
+    }
+    OS1libkernel_timer_cancel(&timer);
+}
+
+KTEST_CASE(test_timer_stats_accounting) {
+    struct OS1libkernel_timer timer;
+    struct OS1libkernel_timer_stats before;
+    struct OS1libkernel_timer_stats armed;
+    struct OS1libkernel_timer_stats after;
+    int callback_count = 0;
+    uint32_t cpu = cpu_id();
+    uint64_t now = OS1libkernel_time_monotonic_ns();
+
+    if (OS1libkernel_timer_stats_snapshot(cpu, &before) != 0) {
+        ktest_test_failed = 1;
+        return;
+    }
+    OS1libkernel_timer_setup(&timer, ktest_timer_count_callback, &callback_count);
     OS1libkernel_timer_arm_deadline(&timer, now + UINT64_C(1000000000));
-    bool first_pending = OS1libkernel_timer_pending(&timer);
-    OS1libkernel_timer_arm_deadline(&timer, now + UINT64_C(2000000000));
-    bool rearmed_pending = OS1libkernel_timer_pending(&timer);
-
+    if (OS1libkernel_timer_stats_snapshot(cpu, &armed) != 0 ||
+        armed.arm_count != before.arm_count + 1U ||
+        armed.queue_depth != before.queue_depth + 1U ||
+        armed.queue_high_water < armed.queue_depth) {
+        OS1libkernel_timer_cancel(&timer);
+        ktest_test_failed = 1;
+        return;
+    }
     OS1libkernel_timer_cancel(&timer);
-    bool cancelled = !OS1libkernel_timer_pending(&timer);
-    int owner = __atomic_load_n(&timer.cpu, __ATOMIC_ACQUIRE);
-    bool unlinked = list_empty(&timer.list);
-    OS1libkernel_timer_cancel(&timer);
+    if (OS1libkernel_timer_stats_snapshot(cpu, &after) != 0 ||
+        after.cancel_count != before.cancel_count + 1U ||
+        after.queue_depth != before.queue_depth ||
+        __atomic_load_n(&callback_count, __ATOMIC_ACQUIRE) != 0) {
+        ktest_test_failed = 1;
+        return;
+    }
+}
 
-    KASSERT(first_pending);
-    KASSERT(rearmed_pending);
-    KASSERT(cancelled);
-    KASSERT_EQ(owner, -1);
-    KASSERT(unlinked);
-    KASSERT_EQ(__atomic_load_n(&callback_count, __ATOMIC_ACQUIRE), 0);
+KTEST_CASE(test_timer_stats_export) {
+    struct os1_timer_stats_snapshot_v3 snapshot;
+    uint32_t current = cpu_id();
+    int found = 0;
+
+    if (OS1libkernel_timer_stats_export(&snapshot) != 0 ||
+        snapshot.abi_version != OS1_TIMER_STATS_ABI_VERSION ||
+        snapshot.struct_size != sizeof(snapshot) ||
+        snapshot.cpu_record_size != sizeof(struct os1_timer_cpu_stats_v3) ||
+        snapshot.cpu_count == 0U ||
+        snapshot.cpu_count > OS1_TIME_MAX_CPUS) {
+        ktest_test_failed = 1;
+        return;
+    }
+    for (uint32_t index = 0U;
+         index < snapshot.cpu_count && index < OS1_TIME_MAX_CPUS; ++index) {
+        if (snapshot.cpu[index].cpu_id == current) {
+            found = 1;
+            break;
+        }
+    }
+    if (found == 0)
+        ktest_test_failed = 1;
 }
 
 KTEST_CASE(test_time_snapshot_cpu0) {

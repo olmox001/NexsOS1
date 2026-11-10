@@ -8,10 +8,12 @@ static unsigned enable_calls;
 static unsigned disable_calls;
 static unsigned priority_calls;
 static unsigned ipi_calls;
+static unsigned reschedule_calls;
 static unsigned end_calls;
 static unsigned register_calls;
 static unsigned unregister_calls;
 static uint32_t last_irq;
+static uint32_t last_reschedule_cpu;
 
 void hal_irq_disable_all(void) { abort(); }
 void hal_cpu_halt(void) { abort(); }
@@ -25,6 +27,11 @@ static void test_priority(uint32_t irq, uint8_t priority) {
     ++priority_calls;
 }
 static void test_ipi(void) { ++ipi_calls; }
+static int test_reschedule(uint32_t cpu_id) {
+  ++reschedule_calls;
+  last_reschedule_cpu = cpu_id;
+  return 23;
+}
 static uint32_t test_ack(void) { return UINT32_C(0x123); }
 static void test_end(uint32_t irq) { ++end_calls; last_irq = irq; }
 
@@ -51,6 +58,8 @@ static const struct nxhal_irq_controller_ops controller = {
     .disable = test_disable,
     .set_priority = test_priority,
     .send_ipi_all = test_ipi,
+    .send_reschedule = test_reschedule,
+    .reschedule_irq = UINT32_C(42),
     .acknowledge = test_ack,
     .end = test_end,
 };
@@ -62,6 +71,8 @@ static const struct nxhal_irq_controller_ops other_controller = {
     .disable = test_disable,
     .set_priority = test_priority,
     .send_ipi_all = test_ipi,
+    .send_reschedule = test_reschedule,
+    .reschedule_irq = UINT32_C(42),
     .acknowledge = test_ack,
     .end = test_end,
 };
@@ -87,6 +98,14 @@ int main(void) {
   incomplete.end = NULL;
   if (nxhal_irq_controller_install(&incomplete) != NXHAL_IRQ_CONTROLLER_E_MISSING)
     return 2;
+  incomplete = controller;
+  incomplete.send_reschedule = NULL;
+  if (nxhal_irq_controller_install(&incomplete) != NXHAL_IRQ_CONTROLLER_E_MISSING)
+    return 20;
+  incomplete = controller;
+  incomplete.reschedule_irq = NXHAL_IRQ_SPURIOUS;
+  if (nxhal_irq_controller_install(&incomplete) != NXHAL_IRQ_CONTROLLER_E_STATE)
+    return 21;
   if (hal_irq_controller_available())
     return 3;
   if (nxhal_irq_controller_install(&controller) != NXHAL_IRQ_CONTROLLER_OK)
@@ -105,13 +124,18 @@ int main(void) {
   hal_irq_line_disable(UINT32_C(34));
   hal_irq_set_priority(UINT32_C(9), UINT8_C(0x55));
   hal_irq_send_ipi_all();
+  if (hal_irq_send_reschedule(UINT32_C(3)) != 23 ||
+      !hal_irq_is_reschedule(UINT32_C(42)) ||
+      hal_irq_is_reschedule(UINT32_C(41)))
+    return 22;
   if (hal_irq_acknowledge() != UINT32_C(0x123))
     return 8;
   hal_irq_end(UINT32_C(35));
   if (global_init_calls != 1U || percpu_init_calls != 1U ||
       enable_calls != 1U || disable_calls != 1U ||
-      priority_calls != 1U || ipi_calls != 1U || end_calls != 1U ||
-      last_irq != UINT32_C(35))
+      priority_calls != 1U || ipi_calls != 1U ||
+      reschedule_calls != 1U || last_reschedule_cpu != UINT32_C(3) ||
+      end_calls != 1U || last_irq != UINT32_C(35))
     return 9;
 
   if (nxhal_irq_core_bind(NULL) != NXHAL_IRQ_CORE_BIND_E_NULL)

@@ -13,7 +13,8 @@
  *   - Provide lapic_send_ipi() for inter-processor interrupts (SMP startup,
  *     future TLB shootdown, etc.).
  *   - Calibrate the LAPIC timer against the 8254 PIT to determine
- *     ticks_per_ms, then set up a periodic timer at a given HZ rate.
+ *     ticks_per_ms, then provide TSC-deadline, LAPIC one-shot countdown,
+ *     and periodic fallback clockevent modes.
  *
  * Invariants:
  *   - LAPIC registers are accessed via lapic_read/lapic_write (defined in
@@ -63,8 +64,18 @@
 #include <kernel/spinlock.h>
 
 /* ticks_per_ms: LAPIC timer decrements per millisecond at LAPIC_TIMER_DIV16.
- * Set by lapic_timer_calibrate(); used by lapic_timer_setup() and udelay(). */
+ * Set by lapic_timer_calibrate(); used by periodic fallback and udelay(). */
 uint32_t ticks_per_ms = 0;
+
+int lapic_tsc_deadline_supported(void) {
+  uint32_t eax = 0U;
+  uint32_t ebx = 0U;
+  uint32_t ecx = 0U;
+  uint32_t edx = 0U;
+
+  arch_isa_cpuid(1U, 0U, &eax, &ebx, &ecx, &edx);
+  return (ecx & (UINT32_C(1) << 24U)) != 0U;
+}
 
 /* calib_lock - serialises tsc_calibrate()/lapic_timer_calibrate() against
  * the shared, single-instance 8254 PIT.
@@ -446,20 +457,134 @@ int lapic_timer_setup(uint64_t hz) {
   lapic_write(LAPIC_LVT_TIMER, UINT32_C(32) | LAPIC_LVT_PERIODIC);
   lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
   lapic_write(LAPIC_TIC, (uint32_t)interval);
-  (void)nxhal_timer_arm_current();
+  if (nxhal_timer_arm_current() == 0U)
+    return -1;
   nxhal_diag_info("LAPIC: CPU %u timer started at %lu Hz (%lu ticks/interval)\n",
                   lapic_get_id(), hz, interval);
   return 0;
 }
 
-/*
- * lapic_timer_stop - mask and zero the LAPIC timer.
- *
- * Sets LAPIC_LVT_MASKED in the LVT timer entry (bit 16 = mask) and writes 0
- * to LAPIC_TIC (initial count register) to halt the countdown.  Called by
- * lapic_timer_setup() before reconfiguring the timer.
- */
+static int lapic_muldiv_floor(uint64_t left, uint64_t right,
+                               uint64_t divisor, uint64_t *quotient,
+                               uint64_t *remainder) {
+  uint64_t high;
+  uint64_t low;
+  uint64_t q;
+  uint64_t r;
+
+  if (divisor == 0U || quotient == NULL || remainder == NULL)
+    return -1;
+  __asm__ __volatile__("mulq %3"
+                       : "=a"(low), "=d"(high)
+                       : "a"(left), "r"(right)
+                       : "cc");
+  if (high >= divisor)
+    return -1;
+  __asm__ __volatile__("divq %4"
+                       : "=a"(q), "=d"(r)
+                       : "a"(low), "d"(high), "r"(divisor)
+                       : "cc");
+  *quotient = q;
+  *remainder = r;
+  return 0;
+}
+
+static uint64_t lapic_oneshot_event_hz(void) {
+  if (ticks_per_ms == 0U)
+    return 0U;
+  return (uint64_t)ticks_per_ms * UINT64_C(1000);
+}
+
+uint64_t lapic_timer_oneshot_min_tsc_delta(void) {
+  uint64_t event_hz = lapic_oneshot_event_hz();
+  if (tsc_hz == 0U || event_hz == 0U)
+    return 0U;
+  uint64_t delta = tsc_hz / event_hz;
+  if ((tsc_hz % event_hz) != 0U)
+    ++delta;
+  return delta == 0U ? 1U : delta;
+}
+
+uint64_t lapic_timer_oneshot_max_tsc_delta(void) {
+  uint64_t event_hz = lapic_oneshot_event_hz();
+  uint64_t quotient = 0U;
+  uint64_t remainder = 0U;
+  if (tsc_hz == 0U || event_hz == 0U)
+    return 0U;
+  if (lapic_muldiv_floor(UINT32_MAX, tsc_hz, event_hz,
+                         &quotient, &remainder) != 0)
+    return UINT64_MAX;
+  return quotient == 0U ? 1U : quotient;
+}
+
+static uint32_t lapic_oneshot_ticks_for_tsc_delta(uint64_t delta) {
+  uint64_t event_hz = lapic_oneshot_event_hz();
+  uint64_t quotient = 0U;
+  uint64_t remainder = 0U;
+  if (delta == 0U || event_hz == 0U || tsc_hz == 0U)
+    return 1U;
+  if (lapic_muldiv_floor(delta, event_hz, tsc_hz,
+                         &quotient, &remainder) != 0)
+    return UINT32_MAX;
+  if (remainder != 0U && quotient != UINT64_MAX)
+    ++quotient;
+  if (quotient == 0U)
+    quotient = 1U;
+  if (quotient > UINT32_MAX)
+    quotient = UINT32_MAX;
+  return (uint32_t)quotient;
+}
+
+int lapic_timer_oneshot_setup(void) {
+  if (tsc_hz == 0U || ticks_per_ms == 0U)
+    return -1;
+  lapic_timer_stop();
+  lapic_write(LAPIC_LVT_TIMER, UINT32_C(32));
+  lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
+  nxhal_diag_info("LAPIC: CPU %u one-shot countdown mode enabled\n",
+                  lapic_get_id());
+  return 0;
+}
+
+int lapic_timer_oneshot_program_tsc(uint64_t deadline) {
+  if (deadline == 0U || tsc_hz == 0U || ticks_per_ms == 0U)
+    return -1;
+  uint64_t now = rdtsc64();
+  uint64_t delta = deadline > now ? deadline - now : 1U;
+  lapic_write(LAPIC_TIC, lapic_oneshot_ticks_for_tsc_delta(delta));
+  return 0;
+}
+
+int lapic_timer_deadline_setup(void) {
+  if (tsc_hz == 0U || lapic_tsc_deadline_supported() == 0)
+    return -1;
+
+  lapic_timer_stop();
+  lapic_write(LAPIC_LVT_TIMER,
+              UINT32_C(32) | LAPIC_LVT_TSC_DEADLINE);
+  /* Intel SDM: in xAPIC mode LVTT and IA32_TSC_DEADLINE writes are not
+   * serialized.  Match the reference sequence and order the mode write before
+   * the first deadline-MSR access. */
+  __asm__ __volatile__("mfence" ::: "memory");
+  wrmsr(IA32_TSC_DEADLINE_MSR, 0U);
+  nxhal_diag_info("LAPIC: CPU %u TSC-deadline mode enabled\n", lapic_get_id());
+  return 0;
+}
+
+int lapic_timer_deadline_program(uint64_t deadline) {
+  if (deadline == 0U || tsc_hz == 0U ||
+      lapic_tsc_deadline_supported() == 0)
+    return -1;
+  wrmsr(IA32_TSC_DEADLINE_MSR, deadline);
+  return 0;
+}
+
+/* Stop either selected LAPIC timer mode.  Masking alone is insufficient on
+ * CPUs affected by historical deadline-timer errata, so clear both backing
+ * count registers when the TSC-deadline feature exists. */
 void lapic_timer_stop(void) {
-  lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED); /* mask timer LVT entry */
-  lapic_write(LAPIC_TIC, 0);                      /* stop countdown */
+  lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED);
+  lapic_write(LAPIC_TIC, 0U);
+  if (lapic_tsc_deadline_supported() != 0)
+    wrmsr(IA32_TSC_DEADLINE_MSR, 0U);
 }

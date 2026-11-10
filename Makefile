@@ -35,7 +35,7 @@ USER_CFLAGS += -Wno-error
 endif
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.5.5
+VERSION ?= V0.0.6.0
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -482,8 +482,10 @@ SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxr
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
            $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf \
            $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf $(BUILD_DIR)/nxmoused.elf \
-           $(BUILD_DIR)/nxtimerdiag.elf
+           $(BUILD_DIR)/nxtimerdiag.elf $(BUILD_DIR)/nxpax.elf
 
+# Supervised system services (placed in /sys/services).
+SYS_SERVICE_ELFS = $(BUILD_DIR)/nxtimerd.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
@@ -493,6 +495,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
            $(BUILD_DIR)/captest.elf $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
+           $(BUILD_DIR)/portidle_child.elf \
            $(BUILD_DIR)/capreg.elf \
            $(BUILD_DIR)/capkill.elf $(BUILD_DIR)/capkill_child.elf \
            $(BUILD_DIR)/sandboxtest.elf $(BUILD_DIR)/sandboxchild.elf \
@@ -506,7 +509,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/kilo.elf \
            $(COREUTILS_ELFS)
 
-USER_ELFS = $(SBIN_ELFS) $(SYS_ELFS) $(BIN_ELFS)
+USER_ELFS = $(SBIN_ELFS) $(SYS_ELFS) $(SYS_SERVICE_ELFS) $(BIN_ELFS)
 
 
 # Userland build remains defined exactly once here until its complete source
@@ -538,6 +541,10 @@ $(BUILD_DIR)/$(USER_DIR)/bin/%.o: $(USER_DIR)/bin/%.c
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/$(USER_DIR)/sys/services/%.o: $(USER_DIR)/sys/services/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -613,6 +620,7 @@ $(BUILD_DIR)/buffertest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/buffertest.o $(USER_LI
 $(BUILD_DIR)/libctest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/libctest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/portidle_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/portidle_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capreg.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capreg.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capkill.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capkill.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capkill_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capkill_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -631,6 +639,8 @@ $(BUILD_DIR)/nxexec.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxexec.o $(USER_LIB_O)
 $(BUILD_DIR)/nximage.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nximage.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxtimerd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxtimerd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxpax.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxpax.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxfont.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/nxfont.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
@@ -681,6 +691,7 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sbin
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/services
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
 	@mkdir -p $(BUILD_DIR)/rootfs/tmp
@@ -706,6 +717,7 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@-cp -r user/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
 	@cp $(SBIN_ELFS) $(BUILD_DIR)/rootfs/sbin/
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
+	@cp $(SYS_SERVICE_ELFS) $(BUILD_DIR)/rootfs/sys/services/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
 	@# Pre-create a 16KB scratch file for the /bin/stress file lane: the FS has no
@@ -749,9 +761,10 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@mkdir -p $(BUILD_DIR)/rootfs/home/LUA/luatest
 	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/home/LUA/luatest/ 2>/dev/null || true
 	@# Remove .elf extensions in rootfs
-	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
-	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
-	@for f in $(BUILD_DIR)/rootfs/sbin/*.elf; do mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/sys/services/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/sbin/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
 	@# Rinomina i file cu_* togliendo il prefisso (senza duplicare)
 	@for cu in $(COREUTILS_NAMES); do \
 		if [ -f $(BUILD_DIR)/rootfs/bin/cu_$$cu ]; then \
@@ -828,7 +841,7 @@ endif
 # Release Generation
 # =============================================================================
 
-release:
+release: power12-nxpax
 	@echo "========================================"
 	@echo "  Creating Full Release $(VERSION)"
 	@echo "========================================"
@@ -847,7 +860,7 @@ else
 RELEASE_BOOT_TARGETS = boot-iso
 endif
 
-release-arch: all $(RELEASE_BOOT_TARGETS)
+release-arch: power12-nxpax all $(RELEASE_BOOT_TARGETS)
 	@echo "--> Packaging $(ARCH) release..."
 	@rm -rf $(RELEASE_DIR)
 	@mkdir -p $(RELEASE_DIR)
@@ -1009,8 +1022,11 @@ lockcheck:
 
 check-kernel-contracts:
 	@python3 tools/generate-surface-contract.py --check
+	@python3 tools/generate-time-contract.py --check
+	@python3 tools/check-time-contract-layout.py
 	@cmp tools/toolchain-versions.env kernel/config/toolchain-versions.env
 	@kernel/tools/check-contract-snapshot.sh
+	@cmp kernel/include/abi/nxpax.h system/include/contract/nxpax.h
 
 .PHONY: check-buffer-source
 check-buffer-source:
@@ -1024,7 +1040,31 @@ disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 EXPECTED_GCC_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_GCC_VERSION),$(NEXS_AARCH64_GCC_VERSION))
 EXPECTED_BINUTILS_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_BINUTILS_VERSION),$(NEXS_AARCH64_BINUTILS_VERSION))
 
-check: check-kernel-contracts
+.PHONY: test-nxpax-core test-nxpax-stress test-power12-nxpax power12-nxpax
+test-nxpax-core:
+	@mkdir -p $(BUILD_ROOT)/tests/nxpax
+	@clang -std=c17 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+	  -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Ikernel/HAL/include -Ikernel/include \
+	  kernel/test/nxpax_core_test.c kernel/core/nxpax.c \
+	  kernel/HAL/core/nxpax.c -o $(BUILD_ROOT)/tests/nxpax/core_test
+	@$(BUILD_ROOT)/tests/nxpax/core_test
+
+test-nxpax-stress:
+	@mkdir -p $(BUILD_ROOT)/tests/nxpax
+	@clang -std=c17 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+	  -fsanitize=address,undefined -fno-omit-frame-pointer -pthread \
+	  -Ikernel/HAL/include kernel/HAL/tests/unit/nxpax_stress_test.c \
+	  kernel/HAL/core/nxpax.c -o $(BUILD_ROOT)/tests/nxpax/stress_test
+	@$(BUILD_ROOT)/tests/nxpax/stress_test
+
+test-power12-nxpax:
+	@python3 tools/test_power12_nxpax.py
+
+power12-nxpax: test-power12-nxpax
+	@python3 tools/power12_audit.py --strict
+
+check: check-kernel-contracts power12-nxpax
 	@set -eu; for tool in "$(CC)" "$(AS)" "$(LD)" "$(OBJCOPY)" "$(OBJDUMP)" "$(NM)" "$(AR)" "$(QEMU)" python3 xorriso gawk mformat mmd mcopy; do \
 		command -v "$$tool" >/dev/null 2>&1 || { echo "ERROR: required tool not found: $$tool" >&2; exit 1; }; \
 	done

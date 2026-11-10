@@ -5,7 +5,13 @@
 #include <stdint.h>
 
 static struct nxhal_diagnostic_protocol_v1 diagnostic_protocol;
-static volatile uint32_t diagnostic_bound;
+enum nxhal_diagnostic_state {
+  NXHAL_DIAGNOSTIC_UNBOUND = 0,
+  NXHAL_DIAGNOSTIC_BINDING = 1,
+  NXHAL_DIAGNOSTIC_BOUND = 2
+};
+
+static uint32_t diagnostic_bound;
 
 static void nxhal_diagnostic_unbound(void) __attribute__((noreturn));
 static void nxhal_diagnostic_unbound(void) {
@@ -25,17 +31,21 @@ int nxhal_diagnostic_bind(const struct nxhal_diagnostic_protocol_v1 *protocol) {
   if (protocol->vlog == NULL || protocol->vfault == NULL ||
       protocol->vpanic == NULL)
     return NXHAL_DIAGNOSTIC_BIND_E_MISSING;
-  if (!__sync_bool_compare_and_swap(&diagnostic_bound, 0U, 1U))
+  uint32_t expected = NXHAL_DIAGNOSTIC_UNBOUND;
+  if (!__atomic_compare_exchange_n(&diagnostic_bound, &expected,
+                                   NXHAL_DIAGNOSTIC_BINDING, 0,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return NXHAL_DIAGNOSTIC_BIND_E_STATE;
 
   diagnostic_protocol = *protocol;
-  __sync_synchronize();
-  diagnostic_bound = 2U;
+  __atomic_store_n(&diagnostic_bound, NXHAL_DIAGNOSTIC_BOUND,
+                   __ATOMIC_RELEASE);
   return NXHAL_DIAGNOSTIC_BIND_OK;
 }
 
 int nxhal_diagnostic_is_bound(void) {
-  return diagnostic_bound == 2U;
+  return __atomic_load_n(&diagnostic_bound, __ATOMIC_ACQUIRE) ==
+         NXHAL_DIAGNOSTIC_BOUND;
 }
 
 static int nxhal_diag_vlog(uint32_t level, const char *fmt, va_list args) {

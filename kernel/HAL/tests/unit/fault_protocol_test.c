@@ -9,6 +9,8 @@ static unsigned regs_calls;
 static unsigned scan_calls;
 static hal_frame_t *expected_frame;
 
+int32_t hal_cpu_id_fault_safe(void) { return 5; }
+
 void hal_irq_disable_all(void) {
   abort();
 }

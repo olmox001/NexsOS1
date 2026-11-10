@@ -163,6 +163,7 @@
  *     reused).
  */
 #include <hal/cpu_protocol.h>
+#include <hal/irq.h>
 #include <kernel/arch.h>
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
@@ -531,6 +532,18 @@ static int __claim_reaped(int pid, int *out_code) {
   return 0;
 }
 
+/* Select the next real online CPU for a task with no affinity yet.
+ * rr_cpu is protected by sched_lock; callers must hold that lock. */
+static int __sched_next_online_cpu_locked(void) {
+  for (int attempt = 0; attempt < MAX_CPUS; ++attempt) {
+    int candidate = rr_cpu;
+    rr_cpu = (rr_cpu + 1) % MAX_CPUS;
+    if (__atomic_load_n(&cpu_data[candidate].online, __ATOMIC_ACQUIRE) != 0U)
+      return candidate;
+  }
+  panic("%s", "SCHED: no online CPU available for runnable task");
+}
+
 /* reap_push - queue a terminated process for deferred destruction on this
  * CPU. The process must already be off every runqueue and must not be
  * current_task on any CPU. Nodes are chained through the otherwise-unused
@@ -559,74 +572,83 @@ static void reap_push(struct cpu_info *cpu, struct process *p) {
   cpu->deferred_free_proc = p;
 }
 
-/* __enqueue_task - add a process to its assigned CPU's priority runqueue.
- *
- * Caller MUST hold target_cpu->sched_lock. Sets p->state = PROC_READY,
- * appends p to the tail of runqueues[prio], and sets the prio_bitmap bit.
- * Calls hal_cpu_notify() to wake any idling CPUs.
- *
- * If p is already on a runqueue (run_list.next != &p->run_list) and in
- * PROC_READY, returns immediately (idempotent guard). A DEAD/ZOMBIE/
- * STOPPED process is never (re)enqueued — SCHED-UAF-01 and job control. */
-static void __enqueue_task(struct process *p) {
+/* __enqueue_task - publish one READY task on its assigned runqueue.
+ * Caller holds target_cpu->sched_lock. Return 1 only when a newly queued task
+ * needs to kick a CPU that has no current task or is executing its idle task.
+ * The caller performs that kick after dropping every scheduler lock. */
+static int __enqueue_task(struct process *p) {
   SCHED_ASSERT(p != NULL, "__enqueue_task: NULL process");
-
-  if (p->state == PROC_DEAD || p->state == PROC_ZOMBIE)
-    return;
-  if (p->state == PROC_STOPPED)
-    return; /* only process_cont() may resume a STOPPED task */
+  if (__atomic_load_n(&p->reaping, __ATOMIC_ACQUIRE) != 0U)
+    return 0;
+  if (p->state == PROC_DEAD || p->state == PROC_ZOMBIE ||
+      p->state == PROC_STOPPED)
+    return 0;
   if (p->state == PROC_READY && p->run_list.next != &p->run_list)
-    return; /* already queued */
+    return 0;
 
   int target_cpu_id = (p->on_cpu >= 0) ? (int)p->on_cpu : 0;
   struct cpu_info *target_cpu = &cpu_data[target_cpu_id];
-
-  /* A wakeup/IPC/continue may arrive after schedule() selected another task
-   * but before the architecture epilogue has left this task's old stack.
-   * Publish READY, but keep it off every runqueue until the owner CPU releases
-   * pending_stack_release at its next schedule() entry. */
   if (target_cpu->pending_stack_release == p) {
+    /* The old stack is still pinned until this CPU enters schedule() again.
+     * Publish READY but do not queue it yet.  Under tickless idle, that next
+     * schedule entry must be requested explicitly or the wake can stall
+     * forever waiting for a periodic tick that no longer exists. */
     p->state = PROC_READY;
-    return;
+    return target_cpu->current_task == NULL ||
+           target_cpu->current_task == target_cpu->idle_task;
   }
 
   p->state = PROC_READY;
-  p->on_cpu = target_cpu_id; /* Track which CPU's runqueue we are on */
-
+  p->on_cpu = target_cpu_id;
   int prio = p->priority;
   if (prio >= MAX_PRIO)
     prio = MAX_PRIO - 1;
-
   list_add_tail(&p->run_list, &target_cpu->runqueues[prio]);
-  target_cpu->prio_bitmap |= (1u << prio);
+  target_cpu->prio_bitmap |= (UINT32_C(1) << prio);
 
-  hal_cpu_notify(); /* wake any idling CPU */
-
+  int needs_kick = target_cpu->current_task == NULL ||
+                   target_cpu->current_task == target_cpu->idle_task;
   SCHED_ASSERT(p->state == PROC_READY, "__enqueue_task: postcondition");
+  return needs_kick;
 }
 
-/* enqueue_task - public wrapper: lock the target CPU's runqueue and
- * enqueue p. Safe to call from process creation (before SMP) or from any
- * context. */
+static void sched_kick_cpu(int cpu_id) {
+  if (cpu_id < 0 || cpu_id >= MAX_CPUS)
+    panic("SCHED: invalid reschedule target CPU %d", cpu_id);
+  if (cpu_data[cpu_id].online == 0U)
+    panic("SCHED: reschedule target CPU %d is offline", cpu_id);
+  if (hal_irq_send_reschedule((uint32_t)cpu_id) != 0)
+    panic("SCHED: reschedule IPI failed for CPU %d", cpu_id);
+}
+
+/* enqueue_task - publish p using the global->per-CPU lock order.  A task
+ * with no affinity receives the next online CPU from the scheduler's single
+ * round-robin policy; the reschedule kick is sent only after both locks drop. */
 void enqueue_task(struct process *p) {
   SCHED_ASSERT(p != NULL, "enqueue_task: NULL process");
-
-  for (int attempt = 0; attempt < SCHED_MARK_DEAD_MAX_RETRIES; attempt++) {
+  for (int attempt = 0; attempt < SCHED_MARK_DEAD_MAX_RETRIES; ++attempt) {
     uint64_t flags;
-    int target_cpu_id = (p->on_cpu >= 0) ? (int)p->on_cpu : 0;
+    spin_lock_irqsave(&sched_lock, &flags);
+    if (p->on_cpu < 0)
+      p->on_cpu = __sched_next_online_cpu_locked();
+    int target_cpu_id = (int)p->on_cpu;
     if (target_cpu_id < 0 || target_cpu_id >= MAX_CPUS)
       panic("SCHED: PID %d has invalid on_cpu=%d during enqueue",
             (int)p->pid, p->on_cpu);
     struct cpu_info *target_cpu = &cpu_data[target_cpu_id];
 
-    spin_lock_irqsave(&target_cpu->sched_lock, &flags);
-    if (((p->on_cpu >= 0) ? (int)p->on_cpu : 0) != target_cpu_id) {
-      spin_unlock_irqrestore(&target_cpu->sched_lock, flags);
+    spin_lock(&target_cpu->sched_lock);
+    if ((int)p->on_cpu != target_cpu_id) {
+      spin_unlock(&target_cpu->sched_lock);
+      spin_unlock_irqrestore(&sched_lock, flags);
       hal_cpu_nop();
       continue;
     }
-    __enqueue_task(p);
-    spin_unlock_irqrestore(&target_cpu->sched_lock, flags);
+    int needs_kick = __enqueue_task(p);
+    spin_unlock(&target_cpu->sched_lock);
+    spin_unlock_irqrestore(&sched_lock, flags);
+    if (needs_kick != 0)
+      sched_kick_cpu(target_cpu_id);
     return;
   }
   panic("SCHED: PID %d on_cpu never stabilized during enqueue", (int)p->pid);
@@ -654,6 +676,29 @@ static void __dequeue_task(struct process *p) {
  * SECTION 3 — Public scheduling primitives: sleep/wake, idle task, init
  * ===========================================================================
  */
+
+/* A timer callback runs while the owning CPU's timer_lock is held.  A timed
+ * sleeper already has stable CPU affinity, so wake it through only that CPU's
+ * runqueue lock.  Taking global sched_lock here would invert teardown's
+ * sched_lock -> timer_lock order and deadlock under SMP. */
+void OS1libkernel_process_sleep_timer_wake(struct process *process) {
+  if (process == NULL)
+    return;
+  int target_cpu_id = process->on_cpu;
+  if (target_cpu_id < 0 || target_cpu_id >= MAX_CPUS)
+    panic("SCHED: sleeping PID %d has invalid on_cpu=%d",
+          (int)process->pid, process->on_cpu);
+  struct cpu_info *target = &cpu_data[target_cpu_id];
+  uint64_t flags;
+  spin_lock_irqsave(&target->sched_lock, &flags);
+  int needs_kick = 0;
+  if (process->state == PROC_SLEEPING &&
+      __atomic_load_n(&process->dying, __ATOMIC_ACQUIRE) == 0U)
+    needs_kick = __enqueue_task(process);
+  spin_unlock_irqrestore(&target->sched_lock, flags);
+  if (needs_kick != 0)
+    sched_kick_cpu(target_cpu_id);
+}
 
 /* process_sleep_timer_arm - atomically publish a timed sleep against
  * process_stop()/process_terminate(). IRQs are masked by sched_lock while the
@@ -793,27 +838,27 @@ void wake_up(struct wait_queue_head *wq) {
 
   /* p is off the wait queue but still protected: we have not released
    * sched_lock, so process_terminate() still cannot touch it. */
-  if (p->on_cpu < 0) {
-    p->on_cpu = rr_cpu;
-    rr_cpu = (rr_cpu + 1) % MAX_CPUS;
-  }
+  if (p->on_cpu < 0)
+    p->on_cpu = __sched_next_online_cpu_locked();
 
-  struct cpu_info *target = &cpu_data[(int)p->on_cpu];
+  int target_cpu_id = (int)p->on_cpu;
+  struct cpu_info *target = &cpu_data[target_cpu_id];
   spin_lock(&target->sched_lock);
-  __enqueue_task(p);
+  int needs_kick = __enqueue_task(p);
   spin_unlock(&target->sched_lock);
 
   spin_unlock_irqrestore(&sched_lock, flags);
+  if (needs_kick != 0)
+    sched_kick_cpu(target_cpu_id);
 }
 
-/* idle_task_entry - idle task body for each CPU. Runs when no other task
- * is runnable on this CPU. Never returns; never calls schedule() itself
- * (the timer IRQ is the only scheduler entry point from idle). */
+/* idle_task_entry - idle body for each CPU.  Timer deadlines and targeted
+ * reschedule IPIs are the interrupt-driven scheduler entry points from idle. */
 void idle_task_entry(void) {
   while (1) {
     hal_cpu_idle(); /* WFI / HLT until the next interrupt */
-    /* The timer IRQ handler calls schedule() if a task became runnable;
-     * if we're back here, nothing was ready, so loop again. */
+    /* Timer deadlines and reschedule IPIs enter the scheduler in IRQ context;
+     * returning here means that entry found no context switch to perform. */
   }
 }
 
@@ -848,8 +893,7 @@ void process_init(void) {
       INIT_LIST_HEAD(&cpu_data[c].runqueues[i]);
     cpu_data[c].prio_bitmap = 0;
     spin_lock_init(&cpu_data[c].sched_lock);
-    INIT_LIST_HEAD(&cpu_data[c].timer_list);
-    spin_lock_init(&cpu_data[c].timer_lock);
+    cpu_data[c].migration_inflight = NULL;
   }
 }
 
@@ -1598,17 +1642,23 @@ void process_finalize_spawn(struct process *p) {
     return;
 
   uint64_t flags;
+  int kick_cpu = -1;
   spin_lock_irqsave(&sched_lock, &flags);
   int killed = p->kill_pending;
   if (!killed) {
-    int tcpu = (p->on_cpu >= 0) ? (int)p->on_cpu : 0;
+    if (p->on_cpu < 0)
+      p->on_cpu = __sched_next_online_cpu_locked();
+    int tcpu = (int)p->on_cpu;
     struct cpu_info *tc = &cpu_data[tcpu];
     spin_lock(&tc->sched_lock);
-    __enqueue_task(p);
+    if (__enqueue_task(p) != 0)
+      kick_cpu = tcpu;
     spin_unlock(&tc->sched_lock);
   }
   spin_unlock_irqrestore(&sched_lock, flags);
 
+  if (kick_cpu >= 0)
+    sched_kick_cpu(kick_cpu);
   if (killed)
     __process_release_created(p);
 }
@@ -1667,28 +1717,16 @@ static void __proc_terminate_mark_dead_on_cpu(struct process *proc) {
         (int)proc->pid, SCHED_MARK_DEAD_MAX_RETRIES);
 }
 
-/* __proc_still_current_anywhere - is proc reachable by any CPU right now?
- * Scan current_task, pending_stack_release, and every runqueue under each
- * CPU's sched_lock rather than trusting proc->on_cpu (which can be stale
- * during migration). Also honor the atomic reaping flag for deferred-free
- * entries already removed from a runqueue. */
-static int __proc_still_current_anywhere(struct process *proc) {
-  if (!proc)
+static int __proc_scheduler_referenced(struct process *proc) {
+  if (proc == NULL)
     return 0;
-  if (__sync_fetch_and_add(&proc->reaping, 0))
-    return 1; /* already linked on a per-CPU deferred-free chain */
-
-  for (int c = 0; c < MAX_CPUS; c++) {
+  for (int c = 0; c < MAX_CPUS; ++c) {
     struct cpu_info *vc = &cpu_data[c];
     int hit = 0;
     spin_lock(&vc->sched_lock);
-
-    /* A process remains live while current, pinned across the restore
-     * epilogue, OR linked on any priority runqueue. The old test only checked
-     * current_task/pending_stack_release and could free a STOPPED task that
-     * was still linked on a runqueue. */
-    hit = (vc->current_task == proc || vc->pending_stack_release == proc);
-    for (int prio = 0; !hit && prio < MAX_PRIO; prio++) {
+    hit = (vc->current_task == proc || vc->pending_stack_release == proc ||
+           vc->migration_inflight == proc);
+    for (int prio = 0; !hit && prio < MAX_PRIO; ++prio) {
       struct list_head *pos;
       list_for_each(pos, &vc->runqueues[prio]) {
         if (list_entry(pos, struct process, run_list) == proc) {
@@ -1697,14 +1735,24 @@ static int __proc_still_current_anywhere(struct process *proc) {
         }
       }
     }
-
     spin_unlock(&vc->sched_lock);
     if (hit)
       return 1;
   }
-  /* A scheduler may have queued the corpse while a different CPU was being
-   * scanned. The flag is set under that CPU's sched_lock before it is linked. */
-  return __sync_fetch_and_add(&proc->reaping, 0) != 0;
+  return 0;
+}
+
+/* Termination treats an already queued reaper entry as live authority too.
+ * The reaper itself uses __proc_scheduler_referenced() so it can distinguish
+ * its own deferred ownership from an unsafe CPU/runqueue reference. */
+static int __proc_still_current_anywhere(struct process *proc) {
+  if (proc == NULL)
+    return 0;
+  if (__atomic_load_n(&proc->reaping, __ATOMIC_ACQUIRE) != 0U)
+    return 1;
+  if (__proc_scheduler_referenced(proc))
+    return 1;
+  return __atomic_load_n(&proc->reaping, __ATOMIC_ACQUIRE) != 0U;
 }
 
 /* __proc_terminate_pool_remove - drop proc from process_pool[], retain its
@@ -2137,32 +2185,40 @@ void start_user_process(struct process *proc) {
  * MAX_PROCESSES (a process can be queued at most once — reap_push's
  * test-and-set guarantees that). */
 static void __sched_reap_deferred(struct cpu_info *cpu_ptr) {
-  while (cpu_ptr->deferred_free_proc) {
+  struct process *retry_head = NULL;
+  struct process *retry_tail = NULL;
+
+  for (int step = 0; step < MAX_PROCESSES; ++step) {
     struct process *to_free = cpu_ptr->deferred_free_proc;
+    if (to_free == NULL)
+      break;
     cpu_ptr->deferred_free_proc = to_free->next;
     to_free->next = NULL;
+
+    if (__proc_scheduler_referenced(to_free)) {
+      if (retry_tail != NULL)
+        retry_tail->next = to_free;
+      else
+        retry_head = to_free;
+      retry_tail = to_free;
+      continue;
+    }
 
     uint64_t gflags;
     spin_lock_irqsave(&sched_lock, &gflags);
     __proc_terminate_pool_remove(to_free);
     spin_unlock_irqrestore(&sched_lock, gflags);
 
-    /* Drain leftover IPC messages. process_terminate() drains the queue
-     * for an externally-killed victim; a self-terminated zombie keeps any
-     * already-queued nodes, so this path must drain too — under
-     * msg_lock, matching pop_message()'s lock, or this is a double
-     * list_del + double kfree of the same node. */
     struct list_head drained_msgs;
     __proc_terminate_drain_ipc(to_free, &drained_msgs);
     __proc_terminate_free_ipc(&drained_msgs);
-
-    /* Cancel any pending per-process timer BEFORE freeing the PCB so its
-     * callback can never fire on freed memory. Defensive on every free
-     * path even though a process with an armed timer is PROC_SLEEPING
-     * (cannot self-exit): makes the no-UAF invariant hold everywhere. */
     OS1libkernel_timer_cancel(&to_free->sleep_timer);
-
     __process_free_resources(to_free);
+  }
+
+  if (retry_tail != NULL) {
+    retry_tail->next = cpu_ptr->deferred_free_proc;
+    cpu_ptr->deferred_free_proc = retry_head;
   }
 }
 
@@ -2318,12 +2374,15 @@ static struct process *__sched_pick_local(struct cpu_info *cpu_ptr, int cpu,
     if (!next)
       return NULL; /* both runqueue paths exhausted: nothing local */
 
-    if (next->state == PROC_DEAD) {
+    if (next->state == PROC_DEAD || next->state == PROC_ZOMBIE ||
+        __atomic_load_n(&next->reaping, __ATOMIC_ACQUIRE) != 0U) {
       reap_push(cpu_ptr, next);
-      continue; /* picked a corpse: try again */
+      continue; /* picked a corpse/reaping task: never make it RUNNING */
     }
     if (next->state == PROC_STOPPED)
       continue; /* stopped while READY: leave it dequeued, try again */
+    if (next->state != PROC_READY)
+      continue; /* only READY is a schedulable runqueue state */
 
     return next;
   }
@@ -2366,24 +2425,37 @@ static struct process *__sched_steal_work(struct cpu_info *cpu_ptr) {
       continue;
 
     struct process *next = NULL;
-    if (other_cpu->prio_bitmap != 0) {
+    if (other_cpu->prio_bitmap != 0U) {
       int p = __builtin_ctz(other_cpu->prio_bitmap);
       if (!list_empty(&other_cpu->runqueues[p])) {
         struct list_head *entry = other_cpu->runqueues[p].next;
         next = container_of(entry, struct process, run_list);
-
-        if (next->priority == PROC_PRIO_IDLE || next->state == PROC_DEAD) {
+        uint32_t reaping =
+            __atomic_load_n(&next->reaping, __ATOMIC_ACQUIRE);
+        if (next->priority == PROC_PRIO_IDLE || next->state != PROC_READY ||
+            reaping != 0U) {
+          if (next->state == PROC_DEAD || next->state == PROC_ZOMBIE ||
+              next->state == PROC_STOPPED || reaping != 0U) {
+            list_del_init(&next->run_list);
+            if (list_empty(&other_cpu->runqueues[p]))
+              other_cpu->prio_bitmap &= ~(1u << p);
+            if (next->state == PROC_DEAD || next->state == PROC_ZOMBIE ||
+                reaping != 0U)
+              reap_push(other_cpu, next);
+          }
           next = NULL;
         } else {
           list_del_init(&next->run_list);
           if (list_empty(&other_cpu->runqueues[p]))
             other_cpu->prio_bitmap &= ~(1u << p);
+          next->on_cpu = (int)cpu_ptr->cpu_id;
+          cpu_ptr->migration_inflight = next;
         }
       }
     }
     spin_unlock(&other_cpu->sched_lock);
 
-    if (next)
+    if (next != NULL)
       return next;
   }
   return NULL;
@@ -2564,9 +2636,12 @@ hal_frame_t *schedule(hal_frame_t *regs) {
   }
 
   cpu_ptr->current_task = next;
+  if (cpu_ptr->migration_inflight == next)
+    cpu_ptr->migration_inflight = NULL;
   next->state = PROC_RUNNING;
   next->on_cpu = cpu;
   __sched_arm_quantum(next);
+  OS1libkernel_timer_reschedule_local();
 
   __sched_stack_alias_check(cpu, next);
 
@@ -2701,6 +2776,7 @@ int process_stop(int pid) {
 int process_cont(int pid) {
   uint64_t flags;
   int rc = -ESRCH;
+  int kick_cpu = -1;
   struct process *target = NULL;
 
   spin_lock_irqsave(&sched_lock, &flags);
@@ -2724,7 +2800,9 @@ int process_cont(int pid) {
      * under the owning lock before publishing READY. */
     int resumed = 0;
     for (int attempt = 0; attempt < SCHED_MARK_DEAD_MAX_RETRIES; attempt++) {
-      int target_cpu_id = (target->on_cpu >= 0) ? (int)target->on_cpu : 0;
+      if (target->on_cpu < 0)
+        target->on_cpu = __sched_next_online_cpu_locked();
+      int target_cpu_id = (int)target->on_cpu;
       if (target_cpu_id < 0 || target_cpu_id >= MAX_CPUS)
         panic("SCHED: PID %d has invalid on_cpu=%d during continue", pid,
               target->on_cpu);
@@ -2738,7 +2816,8 @@ int process_cont(int pid) {
       }
       if (target->state == PROC_STOPPED) {
         target->state = PROC_READY;
-        __enqueue_task(target);
+        if (__enqueue_task(target) != 0)
+          kick_cpu = target_cpu_id;
         resumed = 1;
       }
       spin_unlock(&target_cpu->sched_lock);
@@ -2748,6 +2827,8 @@ int process_cont(int pid) {
       rc = -EINVAL;
   }
   spin_unlock_irqrestore(&sched_lock, flags);
+  if (kick_cpu >= 0)
+    sched_kick_cpu(kick_cpu);
   return rc;
 }
 
@@ -2799,6 +2880,7 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
   memcpy(&node->msg, msg, sizeof(struct ipc_message));
 
   uint64_t flags;
+  int kick_cpu = -1;
   spin_lock_irqsave(&sched_lock, &flags);
 
   struct process *target = __process_find_by_pid(target_pid);
@@ -2827,15 +2909,20 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
     target->ipc_waiting = false;
     target->state = PROC_READY;
 
-    int t_id = (target->on_cpu >= 0) ? target->on_cpu : 0;
+    if (target->on_cpu < 0)
+      target->on_cpu = __sched_next_online_cpu_locked();
+    int t_id = target->on_cpu;
     struct cpu_info *target_cpu = &cpu_data[t_id];
     spin_lock(&target_cpu->sched_lock);
-    __enqueue_task(target);
+    if (__enqueue_task(target) != 0)
+      kick_cpu = t_id;
     spin_unlock(&target_cpu->sched_lock);
   }
 
   spin_unlock(&target->msg_lock);
   spin_unlock_irqrestore(&sched_lock, flags);
+  if (kick_cpu >= 0)
+    sched_kick_cpu(kick_cpu);
   return 0;
 }
 

@@ -177,6 +177,7 @@ static void pic_chip_end(uint32_t irq) {
  * GIC counterpart is SGI0 (gic_send_ipi); the amd64 chip previously left
  * send_ipi_all NULL, so nxhal_diag_panic() never stopped the other CPUs — they kept
  * running against a dying kernel. */
+#define RESCHEDULE_IPI_VECTOR 0xFC
 #define HALT_IPI_VECTOR 0xFE
 
 /*
@@ -206,6 +207,13 @@ static void pic_chip_send_ipi_all(void) {
         nxhal_diag_error("%s", "PIC: panic IPI broadcast failed\n");
 }
 
+static int pic_chip_send_reschedule(uint32_t cpu_id) {
+    if (cpu_id > UINT8_MAX)
+        return -1;
+    return lapic_send_ipi(cpu_id, ICR_FIXED | ICR_ASSERT |
+                                      RESCHEDULE_IPI_VECTOR);
+}
+
 /* pic_chip: irq_chip implementation for the 8259A PIC pair.
  * .init is NULL because pic_init() itself calls irq_register_chip() and
  * then initialises the PIC; there is no separate init() callback needed.
@@ -217,6 +225,8 @@ static const struct nxhal_irq_controller_ops pic_chip = {
     .disable = pic_chip_disable,
     .acknowledge = pic_chip_acknowledge,
     .send_ipi_all = pic_chip_send_ipi_all,
+    .send_reschedule = pic_chip_send_reschedule,
+    .reschedule_irq = RESCHEDULE_IPI_VECTOR,
     .end = pic_chip_end,
 };
 

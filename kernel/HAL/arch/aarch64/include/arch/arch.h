@@ -248,7 +248,10 @@ static inline void arch_impl_timer_set_compare(uint64_t val) {
 }
 
 static inline void arch_impl_timer_control(uint32_t val) {
-  __asm__ __volatile__("msr cntv_ctl_el0, %0" ::"r"((uint64_t)val));
+  __asm__ __volatile__("msr cntv_ctl_el0, %0\n\t"
+                       "isb"
+                       ::"r"((uint64_t)val)
+                       : "memory");
 }
 
 /* --- Entropy (ISA primitive) --- */

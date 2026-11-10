@@ -5,12 +5,15 @@
  * Proves the REAL capability layer end to end, using the OS1 NATIVE base API
  * (OS1low_* / OS1_object_*) — not POSIX:
  *   1. handle_create(FILE, READ) yields a handle; OS1_object_read works.
- *   2. rights are SEPARABLE+ENFORCED: write through a READ-only handle -> -EPERM.
+ *   2. rights are SEPARABLE+ENFORCED: write through a READ-only handle ->
+ * -EPERM.
  *   3. cap_query reports (type, rights).
  *   4. UNFORGEABILITY: a handle integer with no slot -> -EBADF (query + read).
- *   5. ATTENUATION: duplicate(READ|WRITE) of a READ|DUP handle yields READ only.
+ *   5. ATTENUATION: duplicate(READ|WRITE) of a READ|DUP handle yields READ
+ * only.
  *   6. duplicate needs OS1_RIGHT_DUPLICATE on the source -> else -EPERM.
- *   7. lifecycle: close -> 0; use after close -> -EBADF; double close -> -EBADF.
+ *   7. lifecycle: close -> 0; use after close -> -EBADF; double close ->
+ * -EBADF.
  *   8. PROCESS object: a handle to self; rights enforced (read needs READ).
  *   9. DELEGATION is gated: grant without OS1_RIGHT_TRANSFER -> -EPERM.
  *  10. O_CREAT: CREATE|WRITE creates a missing file; CREATE bit is stripped.
@@ -63,7 +66,8 @@ int main(void) {
   printf("[captest] start (OS1 native object/capability ABI)\n");
 
   /* 1. create a READ capability to a file and read through it */
-  int h = (int)OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
+  int h =
+      (int)OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
   memset(a, 0, sizeof(a));
   ok = h >= 0 && OS1_object_read(h, a, 8) == 8;
   check(win_id, "create+object_read", ok);
@@ -80,14 +84,12 @@ int main(void) {
 
   /* 4. unforgeability: a handle with no installed slot is -EBADF */
   ok = OS1low_cap_query(9999) == -EBADF &&
-       OS1_object_read(9999, a, 1) == -EBADF &&
-       OS1low_cap_query(-1) == -EBADF;
+       OS1_object_read(9999, a, 1) == -EBADF && OS1low_cap_query(-1) == -EBADF;
   check(win_id, "unforgeable", ok);
 
   /* 5. attenuation: dup(READ|WRITE) of a READ|DUP handle yields READ only */
-  int hd = (int)OS1low_handle_create(OS1_NS_FS, path,
-                                     OS1_RIGHT_READ | OS1_RIGHT_DUPLICATE,
-                                     OBJ_TYPE_FILE);
+  int hd = (int)OS1low_handle_create(
+      OS1_NS_FS, path, OS1_RIGHT_READ | OS1_RIGHT_DUPLICATE, OBJ_TYPE_FILE);
   int h2 = (int)OS1low_handle_duplicate(hd, OS1_RIGHT_READ | OS1_RIGHT_WRITE);
   long q2 = (h2 >= 0) ? OS1low_cap_query(h2) : -1;
   ok = hd >= 0 && h2 >= 0 && q2 >= 0 &&
@@ -113,7 +115,8 @@ int main(void) {
        OS1_CAPQ_RIGHTS(pq) == OS1_RIGHT_WAIT &&
        OS1_object_read(ph, a, 1) == -EPERM; /* no READ right on a process */
   check(win_id, "process-object", ok);
-  printf("[captest] object_wait(self)=%ld (alive=-1)\n", OS1_object_wait(ph, 0));
+  printf("[captest] object_wait(self)=%ld (alive=-1)\n",
+         OS1_object_wait(ph, 0));
 
   /* 8b. PROCESS object READ (state via the object mechanism): a READ handle to
    * self reads the live status block — it begins "pid=" and is non-empty.  This
@@ -133,13 +136,14 @@ int main(void) {
 
   /* 8c. namespace → TYPED object (deep fusion): acquire /proc/<self> via the
    * filesystem namespace (a PATH, not a pid) — it resolves to the SAME PROCESS
-   * capability object (cap_query confirms the type) and reads its state.  Proves
+   * capability object (cap_query confirms the type) and reads its state. Proves
    * "everything resolvable in the namespace is a typed capability object". */
   {
     char procpath[32];
     sprintf(procpath, "/proc/%d", get_pid());
-    int pf = (int)OS1low_handle_create(OS1_NS_FS, procpath, OS1_RIGHT_READ,
-                                       OBJ_TYPE_FILE); /* type hint overridden */
+    int pf =
+        (int)OS1low_handle_create(OS1_NS_FS, procpath, OS1_RIGHT_READ,
+                                  OBJ_TYPE_FILE); /* type hint overridden */
     long pq2 = (pf >= 0) ? OS1low_cap_query(pf) : -1;
     char st2[128];
     memset(st2, 0, sizeof(st2));
@@ -152,8 +156,8 @@ int main(void) {
   }
 
   /* 9. delegation gated: grant without OS1_RIGHT_TRANSFER -> -EPERM */
-  int hng = (int)OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ,
-                                      OBJ_TYPE_FILE);
+  int hng =
+      (int)OS1low_handle_create(OS1_NS_FS, path, OS1_RIGHT_READ, OBJ_TYPE_FILE);
   ok = hng >= 0 && OS1low_cap_grant(get_pid(), hng, OS1_RIGHT_READ) == -EPERM;
   check(win_id, "grant-needs-transfer", ok);
 
@@ -164,9 +168,8 @@ int main(void) {
   {
     const char *npath = "/home/captest.tmp";
     OS1_fs_unlink(npath); /* ensure missing; ignore result */
-    int hc = (int)OS1low_handle_create(OS1_NS_FS, npath,
-                                       OS1_RIGHT_WRITE | OS1_RIGHT_CREATE,
-                                       OBJ_TYPE_FILE);
+    int hc = (int)OS1low_handle_create(
+        OS1_NS_FS, npath, OS1_RIGHT_WRITE | OS1_RIGHT_CREATE, OBJ_TYPE_FILE);
     long qc = (hc >= 0) ? OS1low_cap_query(hc) : -1;
     long wn = (hc >= 0) ? OS1_object_write(hc, "cap!", 4) : -1;
     if (hc >= 0)
@@ -186,8 +189,8 @@ int main(void) {
 
   /* 11. creation is explicit: a missing path without CREATE stays -ENOENT,
    * and CREATE without WRITE is meaningless (also -ENOENT). */
-  ok = OS1low_handle_create(OS1_NS_FS, "/home/captest.missing",
-                            OS1_RIGHT_WRITE, OBJ_TYPE_FILE) == -ENOENT &&
+  ok = OS1low_handle_create(OS1_NS_FS, "/home/captest.missing", OS1_RIGHT_WRITE,
+                            OBJ_TYPE_FILE) == -ENOENT &&
        OS1low_handle_create(OS1_NS_FS, "/home/captest.missing",
                             OS1_RIGHT_READ | OS1_RIGHT_CREATE,
                             OBJ_TYPE_FILE) == -ENOENT;
@@ -204,8 +207,8 @@ int main(void) {
   /* 13. R1b: directory namespace mutation is a message on a parent-directory
    * capability. The parent ACL gates acquisition; the held capability names
    * the namespace, and the child name cannot contain a path separator. */
-  int home_dir = (int)OS1low_handle_create(OS1_NS_FS, "/home",
-                                            OS1_RIGHT_MUTATE, OBJ_TYPE_FILE);
+  int home_dir = (int)OS1low_handle_create(OS1_NS_FS, "/home", OS1_RIGHT_MUTATE,
+                                           OBJ_TYPE_FILE);
   long escaped = (home_dir >= 0)
                      ? OS1_object_ctl(home_dir, OBJ_CTL_MKDIR, (long)"a/b")
                      : -1;
@@ -234,7 +237,16 @@ int main(void) {
   int pcli = OS1_port_open(pname);
   check(win_id, "port-open-send", pcli >= 0);
 
-  /* 17. round-trip: send through the client capability, receive on the service
+  /* 17. A plain SEND capability is intentionally non-delegable.  The raw
+   * syscall result is inspected here so -EPERM is not collapsed to libc -1. */
+  struct ipc_message denied_transfer;
+  memset(&denied_transfer, 0, sizeof(denied_transfer));
+  denied_transfer.type = 4241;
+  long denied =
+      pcli >= 0 ? _sys_port_send_caps(pcli, &denied_transfer, &pcli, 1) : 0;
+  check(win_id, "port-send-caps-needs-transfer", denied == -EPERM);
+
+  /* 18. round-trip: send through the client capability, receive on the service
    * capability, and the kernel-stamped `from` must be our own pid (unforgeable
    * — we deliberately fill it with a lie below). */
   struct ipc_message tx, rx;
@@ -243,20 +255,38 @@ int main(void) {
   tx.type = 4242;
   tx.data1 = 0xC0FFEE;
   tx.from = 999999; /* forged: the kernel must overwrite this */
-  ok = pcli >= 0 && psrv >= 0 &&
-       OS1_port_send(pcli, &tx) == (long)sizeof(tx) &&
+  ok = pcli >= 0 && psrv >= 0 && OS1_port_send(pcli, &tx) == (long)sizeof(tx) &&
        OS1_port_recv(psrv, &rx) == (long)sizeof(rx) && rx.type == 4242 &&
        rx.data1 == 0xC0FFEE && rx.from == get_pid();
   check(win_id, "port-roundtrip+from-unforgeable", ok);
 
-  /* 18. an unpublished name yields no capability at all. */
+  /* 19. an unpublished name yields no capability at all. */
   int pmiss = OS1_port_open("OS1nx_nosuchservice");
   check(win_id, "port-open-missing", pmiss < 0);
   if (pmiss >= 0)
     OS1low_handle_close(pmiss);
 
-  if (pcli >= 0) OS1low_handle_close(pcli);
-  if (psrv >= 0) OS1low_handle_close(psrv);
+  /* 20. A published receiver is a durable service endpoint even with zero
+   * senders.  The child waits before opening the name, so this recv must sleep
+   * first and then wake on the late client's message; zero senders is not EOF.
+   */
+  int idle_srv = OS1_port_create("OS1nx_capidle");
+  int idle_child = idle_srv >= 0 ? spawn("/bin/portidle_child") : -1;
+  struct ipc_message idle_rx;
+  memset(&idle_rx, 0, sizeof(idle_rx));
+  long idle_got = (idle_srv >= 0 && idle_child > 0)
+                      ? OS1_port_recv(idle_srv, &idle_rx)
+                      : -1;
+  ok = idle_got == (long)sizeof(idle_rx) && idle_rx.type == 0x431 &&
+       idle_rx.data1 == UINT64_C(0x504F525449444C45);
+  check(win_id, "port-idle-late-sender", ok);
+  if (idle_srv >= 0)
+    OS1low_handle_close(idle_srv);
+
+  if (pcli >= 0)
+    OS1low_handle_close(pcli);
+  if (psrv >= 0)
+    OS1low_handle_close(psrv);
 
   /* ================= process ownership / authority (Q3) ================= */
   section(win_id, "process ownership");
@@ -296,8 +326,10 @@ int main(void) {
                                         OBJ_TYPE_PROCESS);
     }
     check(win_id, "own-ancestry-walk-intact", waith >= 0);
-    if (waith >= 0) OS1low_handle_close(waith);
-    if (selfh >= 0) OS1low_handle_close(selfh);
+    if (waith >= 0)
+      OS1low_handle_close(waith);
+    if (selfh >= 0)
+      OS1low_handle_close(selfh);
   }
 
   /* ============================ pipes (§6.2) ============================ */
@@ -341,8 +373,8 @@ int main(void) {
     check(win_id, "posix-getpid-matches-OS1", getpid() == get_pid());
 
     /* isatty is a real capability-TYPE test, not "fd < 3".  This is exactly the
-     * property that made `echo ... | lua` work: with a redirected stdin lua must
-     * see isatty()==0 and EXECUTE stdin instead of opening a REPL. */
+     * property that made `echo ... | lua` work: with a redirected stdin lua
+     * must see isatty()==0 and EXECUTE stdin instead of opening a REPL. */
     check(win_id, "posix-isatty-console", isatty(1) == 1);
     int pf2[2] = {-1, -1};
     if (pipe(pf2) == 0) {
@@ -435,9 +467,9 @@ int main(void) {
     const char *got = getenv("CAPTEST_A");
     check(win_id, "env-get-roundtrip", got && strcmp(got, "one") == 0);
 
-    check(win_id, "env-overwrite", setenv("CAPTEST_A", "two", 1) == 0 &&
-                                       (got = getenv("CAPTEST_A")) &&
-                                       strcmp(got, "two") == 0);
+    check(win_id, "env-overwrite",
+          setenv("CAPTEST_A", "two", 1) == 0 && (got = getenv("CAPTEST_A")) &&
+              strcmp(got, "two") == 0);
 
     /* overwrite=0 must NOT replace an existing value. */
     setenv("CAPTEST_A", "three", 0);
@@ -508,7 +540,8 @@ int main(void) {
     /* A child that fails FAST is reaped before its parent polls, and the status
      * used to die with the corpse — so a FAILING command reported SUCCESS.
      * Timing-dependent, hence it looked like flakiness.  Spawn a child that
-     * exits non-zero immediately and only THEN wait, which is the losing order. */
+     * exits non-zero immediately and only THEN wait, which is the losing order.
+     */
     char *av[3];
     av[0] = (char *)"/bin/lua";
     av[1] = (char *)"-e";
@@ -525,9 +558,10 @@ int main(void) {
       check(win_id, "status-reported-after-reap", w == pid);
       printf("[captest] status raw=0x%x exited=%d code=%d signalled=%d\n", st,
              WIFEXITED(st) ? 1 : 0, WEXITSTATUS(st), WIFSIGNALED(st) ? 1 : 0);
-      check(win_id, "status-nonzero-survives", w == pid && WIFEXITED(st) &&
-                                                   WEXITSTATUS(st) == 3);
-      /* Collected once, like a real wait(): a second call must NOT re-report. */
+      check(win_id, "status-nonzero-survives",
+            w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 3);
+      /* Collected once, like a real wait(): a second call must NOT re-report.
+       */
       int st2 = 0;
       check(win_id, "status-consumed-once", waitpid(pid, &st2, 0) != pid);
     }
@@ -539,7 +573,8 @@ int main(void) {
     /* Connect — never spawn.  A client that spawned the service would get an
      * UNPRIVILEGED one (monotonic creator clamp), and the daemon's defining
      * powers (SETOWNER, taking client fds) are privileged-only: it would answer
-     * requests but silently fail to delegate.  The service is started by init. */
+     * requests but silently fail to delegate.  The service is started by init.
+     */
     int svc = OS1_port_open(OS1NX_PORT_EXEC);
     check(win_id, "exec-service-published", svc >= 0);
 
@@ -559,21 +594,25 @@ int main(void) {
         hdr.argc = 3;
         hdr.nredir = 0;
         body[off++] = '\0'; /* cwd: empty */
-        memcpy(body + off, a0, strlen(a0) + 1); off += strlen(a0) + 1;
-        memcpy(body + off, a1, strlen(a1) + 1); off += strlen(a1) + 1;
-        memcpy(body + off, a2, strlen(a2) + 1); off += strlen(a2) + 1;
+        memcpy(body + off, a0, strlen(a0) + 1);
+        off += strlen(a0) + 1;
+        memcpy(body + off, a1, strlen(a1) + 1);
+        off += strlen(a1) + 1;
+        memcpy(body + off, a2, strlen(a2) + 1);
+        off += strlen(a2) + 1;
         hdr.body_len = off;
 
         struct ipc_message m;
         memset(&m, 0, sizeof(m));
         m.type = EXECSVC_REQ_SPAWN;
 
-        /* Transfer the two channels THROUGH the port.  A handle index only means
-         * something in one process's table, so the rights must travel with the
-         * message; the kernel installs them in the service and rewrites the
-         * leading payload slots with the indices IT will see.  Doing this by
-         * cap_grant instead would need the service's PID — dragging pid
-         * addressing back into the one path that exists to remove it. */
+        /* Transfer the two channels THROUGH the port.  A handle index only
+         * means something in one process's table, so the rights must travel
+         * with the message; the kernel installs them in the service and
+         * rewrites the leading payload slots with the indices IT will see.
+         * Doing this by cap_grant instead would need the service's PID —
+         * dragging pid addressing back into the one path that exists to remove
+         * it. */
         int give[2] = {reqp[0], repp[1]};
         long sent = OS1_port_send_caps(svc, &m, give, 2);
         check(win_id, "exec-caps-transferred", sent == (long)sizeof(m));
@@ -588,11 +627,11 @@ int main(void) {
           memset(&rep, 0, sizeof(rep));
           long got = read(repp[0], (char *)&rep, sizeof(rep));
           check(win_id, "exec-reply-received", got == (long)sizeof(rep));
-          check(win_id, "exec-spawned-pid", got == (long)sizeof(rep) &&
-                                                 rep.pid > 0);
+          check(win_id, "exec-spawned-pid",
+                got == (long)sizeof(rep) && rep.pid > 0);
           /* THE Q3 PROPERTY: the job must belong to US, not to the service that
-           * mechanically spawned it — otherwise a shell migrated onto the daemon
-           * would silently lose kill/stop/cont over its own jobs. */
+           * mechanically spawned it — otherwise a shell migrated onto the
+           * daemon would silently lose kill/stop/cont over its own jobs. */
           check(win_id, "exec-owner-is-requester",
                 got == (long)sizeof(rep) && rep.owner_pid == get_pid());
           if (got == (long)sizeof(rep) && rep.pid > 0)
@@ -609,10 +648,14 @@ int main(void) {
     }
   }
 
-  if (hd >= 0) OS1low_handle_close(hd);
-  if (h2 >= 0) OS1low_handle_close(h2);
-  if (ph >= 0) OS1low_handle_close(ph);
-  if (hng >= 0) OS1low_handle_close(hng);
+  if (hd >= 0)
+    OS1low_handle_close(hd);
+  if (h2 >= 0)
+    OS1low_handle_close(h2);
+  if (ph >= 0)
+    OS1low_handle_close(ph);
+  if (hng >= 0)
+    OS1low_handle_close(hng);
 
   printf_win(win_id, "done: %d/%d passed, %d failure(s)\n", checks - failures,
              checks, failures);

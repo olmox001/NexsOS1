@@ -359,6 +359,8 @@ static __uint128_t u128_divmod(__uint128_t num, __uint128_t den,
  * -Wmissing-prototypes; the compiler emits calls to these by name. */
 __uint128_t __udivti3(__uint128_t a, __uint128_t b);
 __uint128_t __umodti3(__uint128_t a, __uint128_t b);
+__uint128_t __udivmodti4(__uint128_t a, __uint128_t b,
+                         __uint128_t *remainder);
 __int128_t __multi3(__int128_t a, __int128_t b);
 
 __uint128_t __udivti3(__uint128_t a, __uint128_t b) {
@@ -369,6 +371,11 @@ __uint128_t __umodti3(__uint128_t a, __uint128_t b) {
   __uint128_t r;
   u128_divmod(a, b, &r);
   return r;
+}
+
+__uint128_t __udivmodti4(__uint128_t a, __uint128_t b,
+                         __uint128_t *remainder) {
+  return u128_divmod(a, b, remainder);
 }
 
 __int128_t __multi3(__int128_t a, __int128_t b) {

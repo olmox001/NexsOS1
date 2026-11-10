@@ -58,8 +58,11 @@
 #define ICR_ALL_INCL_SELF   0x80000
 #define ICR_ALL_EXCL_SELF   0xC0000
 
-#define LAPIC_LVT_MASKED    0x10000
-#define LAPIC_LVT_PERIODIC  0x20000
+#define LAPIC_LVT_MASKED       0x10000
+#define LAPIC_LVT_PERIODIC     0x20000
+#define LAPIC_LVT_TSC_DEADLINE 0x40000
+
+#define IA32_TSC_DEADLINE_MSR  0x000006E0
 
 #define LAPIC_TIMER_DIV16   0x03
 
@@ -81,6 +84,13 @@ uint32_t lapic_get_id(void);
 int lapic_send_ipi(uint32_t lapic_id, uint32_t flags);
 void lapic_timer_calibrate(void);
 int lapic_timer_setup(uint64_t hz);
+int lapic_tsc_deadline_supported(void);
+int lapic_timer_deadline_setup(void);
+int lapic_timer_deadline_program(uint64_t deadline);
+int lapic_timer_oneshot_setup(void);
+int lapic_timer_oneshot_program_tsc(uint64_t deadline);
+uint64_t lapic_timer_oneshot_min_tsc_delta(void);
+uint64_t lapic_timer_oneshot_max_tsc_delta(void);
 void lapic_timer_stop(void);
 
 /* tsc_calibrate: measure the TSC frequency against the PIT and publish it into

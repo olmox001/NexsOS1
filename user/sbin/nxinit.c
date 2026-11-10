@@ -177,15 +177,22 @@ int main(void) {
    * sanitized per-CPU snapshots over the named OS1nx_time port.  It must be
    * started by init so the ROOT preset can acquire the low-level timer object;
    * ordinary applications only receive the service-level view. */
-  printf("[Init] Spawning Time Service (nxtimerdiag --service)...\n");
-  char *timesvc_argv[2];
-  timesvc_argv[0] = (char *)"/sys/bin/nxtimerdiag";
-  timesvc_argv[1] = (char *)"--service";
-  int pid_timesvc = spawn_args("/sys/bin/nxtimerdiag", 2, timesvc_argv);
+  printf("[Init] Spawning Time Service (/sys/services/nxtimerd)...\n");
+  int pid_timesvc = spawn("/sys/services/nxtimerd");
   if (pid_timesvc > 0)
     printf("[Init] Time Service started (PID %d)\n", pid_timesvc);
   else
     print("[Init] Failed to spawn Time Service!\n");
+
+  /* NXPAX runs outside the kernel and reads the existing privileged
+   * resource object; clients only acquire a named port SEND capability. */
+  printf("[Init] Spawning NXPAX diagnostic service...\n");
+  char *paxargv[2] = {(char *)"/sys/bin/nxpax", (char *)"--service"};
+  int pid_pax = spawn_args("/sys/bin/nxpax", 2, paxargv);
+  if (pid_pax > 0)
+    printf("[Init] NXPAX started (PID %d)\n", pid_pax);
+  else
+    print("[Init] Failed to spawn NXPAX!\n");
 
   /*
    * Environment bootstrap.
@@ -381,7 +388,7 @@ int main(void) {
 #define SPAWN_STABLE_MS                                                        \
   10000 /* alive this long since last (re)spawn -> backoff resets */
 #define SPAWN_QUEUE_MAX                                                        \
-  10 /* slots 0..8 preserved; slot 9 is the OS1nx_time service */
+  11 /* slots 0..9 preserved; slot 10 is the NXPAX service */
 
   struct spawn_req {
     int pending; /* 1 if a respawn is currently queued for this slot */
@@ -423,6 +430,8 @@ int main(void) {
     spawnq[8].last_spawn_ms = now_ms;
   if (pid_timesvc > 0)
     spawnq[9].last_spawn_ms = now_ms;
+  if (pid_pax > 0)
+    spawnq[10].last_spawn_ms = now_ms;
 #ifndef LAUNCHER_AUTOSTART
   if (pid_shell > 0)
     spawnq[5].last_spawn_ms = now_ms;
@@ -555,14 +564,23 @@ int main(void) {
     if (spawnq_idle(9) && service_gone(pid_timesvc, "Time Service"))
       spawnq_enqueue(9, "Time Service", 0);
     if (spawnq_due(9)) {
-      char *targv[2];
-      targv[0] = (char *)"/sys/bin/nxtimerdiag";
-      targv[1] = (char *)"--service";
-      pid_timesvc = spawn_args("/sys/bin/nxtimerdiag", 2, targv);
+      pid_timesvc = spawn("/sys/services/nxtimerd");
       if (pid_timesvc > 0)
         spawnq_mark_spawned(9);
       else
         spawnq_enqueue(9, "Time Service", 1);
+    }
+
+    /* NXPAX is a named-port service; its receive handle is revoked on exit. */
+    if (spawnq_idle(10) && service_gone(pid_pax, "NXPAX"))
+      spawnq_enqueue(10, "NXPAX", 0);
+    if (spawnq_due(10)) {
+      char *pargv[2] = {(char *)"/sys/bin/nxpax", (char *)"--service"};
+      pid_pax = spawn_args("/sys/bin/nxpax", 2, pargv);
+      if (pid_pax > 0)
+        spawnq_mark_spawned(10);
+      else
+        spawnq_enqueue(10, "NXPAX", 1);
     }
 
     /* Respawn the dock if it dies (ROOT via the /sys/bin path preset, as

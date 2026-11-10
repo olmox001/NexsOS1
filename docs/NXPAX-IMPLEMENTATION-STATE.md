@@ -1,0 +1,163 @@
+# NXPAX — implementation, evidence and acceptance state
+
+Date: 2026-11-10. Branch: DEV-Resurrection. Status: implemented and tested in
+the current worktree; **Power12 qualification OPEN; release gate BLOCKED**.
+
+## Authority and non-regression boundaries
+
+The source of truth is the checked-out code, current Git commit and the current
+documentation: ASTRA, DIR-05/06, NEXS-NG diagnostics/testing, NX-HAL
+PLAN/STATE/NXOLMO integration, and the NASA/JPL Power-of-Ten document.
+Rejected historic NXPAX designs and Desktop Commander call history are not
+implementation inputs. The active object-only ABI migration is authoritative;
+NXPAX adds neither a syscall number nor a new object type/dispatcher, and it
+does not move POSIX policy or userland services into the kernel.
+
+## Architecture and ownership
+
+1. **HAL:** `kernel/HAL/core/fault_protocol.c` records machine exception facts
+   before delegating to the existing Core fault handler. The existing amd64 and
+   aarch64 exception entry/decoding paths and HAL fault protocol remain in
+   place. `kernel/HAL/core/nxpax.c` uses a static typed ring, monotonically
+   assigned sequences, per-slot atomic nonblocking acquisition, and an
+   explicit drop counter. Events include raw pc, address, syndrome, fault
+   privilege, fault-safe CPU ID, and optional disposition data. The ring has
+   `2 * NXHAL_CPU_LIMIT = 128` slots: a resource-window budget derived from
+   the maximum 64 HAL CPU entries and the hardware/Core two-stage reporting
+   model, **not** a guarantee that a burst cannot exceed the capacity.
+   The ring allocates no memory and takes no sleeping locks in a fault.
+2. **Kernel/Core:** `kernel/core/fault.c` retains user-fault termination,
+   kernel-fatal reporting, panic/backtrace and screen fallback. The
+   `kernel/core/nxpax.c` adapter adds disposition records without changing
+   exception classification. `kernel/resources/nxpax.c` registers the
+   `diagnostics/nxpax` resource through the existing `OBJ_TYPE_RESOURCE`
+   path, not a dedicated syscall. Acquisition requires privileged process
+   level and **exactly OS1_RIGHT_READ**; neither TRANSFER nor DUPLICATE is
+   granted. Direct reads copy a typed request from userspace, enforce ABI
+   version/record size/operation ID, return at most one event, account one
+   attempted slot read, report cursor/newest/overrun/drops and copy the result
+   back using the existing guarded user-access path. No raw addresses are
+   published through a public nonprivileged handle.
+3. **Userland:** `user/sys/bin/nxpax.c` is a supervised, privileged broker,
+   started/restarted by `user/sbin/nxinit.c` using the existing bounded
+   restart backoff (slot 10). `nxpax --service` reads the resource and serves
+   the existing `OS1nx_pax` named capability port; reply rights travel
+   through the existing transferred-pipe mechanism. **PC, fault address and
+   syndrome are cleared** before the client-visible reply. `nxpax --probe`
+   traverses at most the published ring-window budget. The broker is not a
+   recovery authority: if Core/HAL is no longer alive, this process cannot
+   repair the kernel and does not claim to do so.
+
+The shared ABI is mirrored exactly in `kernel/include/abi/nxpax.h` and
+`system/include/contract/nxpax.h` (88-byte query). Read has stable operation
+ID `OS1_NXPAX_OP_READ_RECORD`. `work_units` counts attempted ring reads and
+does **not** purport to count clock cycles. Its ABI hash is tracked by the
+kernel contract snapshot and identical headers are checked by the Makefile.
+
+The HAL diagnostic callback binder was also repaired to use atomic
+compare/exchange, release publication and acquire observation rather than
+unsynchronized volatile state.
+
+## Reproducible verification already performed
+
+- `make -C kernel/HAL test-host`: PASS. This includes the real NXPAX HAL
+  ring tests for empty/invalid requests, typed records, CPU IDs, overwritten
+  events, wrapping and dropped-record accounting.
+- `make -C kernel/HAL test-sanitize`: PASS (AddressSanitizer and UBSan),
+  repeated after the nonwaiting reader ownership CAS change.
+- `make test-nxpax-stress`: PASS with the real HAL ring linked under
+  ASan/UBSan and pthread concurrency. Scenario A processes 1,000,000
+  hardware events and concurrent reads; scenario B processes 2,000,000
+  events from two writers and a reader. Successful snapshots are verified
+  against independently generated PC/address/syndrome/CPU checksums.
+  The logger reports genuine nonzero drops under contention (not hidden or
+  reclassified as success); the test establishes integrity and accounting,
+  **not** lossless forensic retention under arbitrary load.
+- `make test-nxpax-core`: PASS under ASan/UBSan, linking the actual Core and
+  HAL modules; separately verifies user termination and fatal disposition
+  data, including the CPU ID.
+- `make ARCH=amd64 kernel`, `make ARCH=aarch64 kernel` and separate user
+  ELF builds for both architectures: PASS for the latest tested sources.
+- Both `make ARCH=amd64 RUN_DISPLAY=none RUN_SERIAL=stdio run` and
+  `make ARCH=aarch64 RUN_DISPLAY=none RUN_SERIAL=stdio run` reached an
+  interactive NXShell through their respective GRUB BIOS/UEFI paths.
+  QEMU was terminated intentionally by `gtimeout 45s` after observing
+  NXShell; timeout exit code 124 is **not** a spontaneous guest failure.
+- `make check-kernel-contracts`: PASS; matched public NXPAX headers and
+  a hash-verified kernel ABI snapshot.
+- Both `nxadb test -n 1 -c '/sys/bin/nxpax --probe'` guest runs **after**
+  the CPU-ID/88-byte ABI expansion: PASS, NXShell interactive, history,
+  timerdiag, heartbeat, 24/24 amd64 or 25/25 aarch64 in-kernel tests, zero
+  unexpected faults. UART showed the NXPAX service listening and the
+  client's `end newest=0 dropped=0`. Latest complete guest logs:
+  `/tmp/nxpax-cas-final-amd64.log`, `/tmp/nxpax-cas-final-aarch64.log`.
+  These runs also verify the final nonwaiting slot-read CAS implementation.
+- Both architectures then ran the **existing** real `/bin/crash` executable
+  (null-pointer page fault / lower EL data abort) on the latest ABI. Core
+  logged PID 17 and successfully terminated the process; `nxpax --probe`
+  read sequence 1 HAL hardware event and sequence 2 Core user-termination
+  event, with `units=1` for each record, zero dropped records, and the shell
+  still usable. CPU IDs were 3 for both final CAS test runs.
+  Actual evidence: `/tmp/nxpax-cas-final-crash-{amd64,aarch64}.log`,
+  `/tmp/nxpax-cas-final-probe-{amd64,aarch64}.log` and corresponding UART
+  captures. Both guest command sequences returned success.
+
+## Power12 gate — honesty and blocking status
+
+`tools/power12_audit.py` is new source-based tooling, **not** the obsolete
+pre-existing pyc or build/power12 report. `make test-power12-nxpax` passes
+nine real Clang-AST mutation controls: goto despite harmless names, direct
+recursion, bounded and deceptively mutated loops, unsupported while loops,
+heap calls, overlong functions, token-pasting macros, and double indirection. Its scope is declared: the four new
+NXPAX production C modules. It uses Clang JSON AST for C function bodies and
+checks real call edges, recursion, forbidden control constructs, simple
+statically demonstrable induction limits, allocation calls, macro complexity
+and function sizes. Unsupported proofs are NEVER converted to pass by
+renaming or by token-count tricks. Source compilation warnings fail the AST
+stage.
+
+Run `make power12-nxpax`: it currently FAILS as intended. The Makefile
+connects the strict gate to `check`, `release`, and the separately invocable
+`release-arch` entry point. Known findings include
+a genuinely unbounded service-lifetime event loop (bounded work per
+message, but no whole-life iteration limit) and the compulsory standard C
+`main(int, char **)` double-indirection entry signature. Neither finding
+is waived or falsely suppressed. Full-callgraph allocation liveness,
+side-effect-free assertion evidence, narrow scope, result checking, indirect
+authority, complete static-analysis matrix, work accounting and resource-limit
+proofs are all explicitly NOT_VERIFIED, and therefore fail strict mode.
+The scope does **not** prove all legacy kernel/userland code Power12 compliant.
+The project rules require any nonliteral deviation to have an approved ID,
+rationale, bounded scope, mitigation and tests: no such approval is claimed.
+
+## Remaining acceptance requirements
+
+- Keep both guest boot lanes and real `/bin/crash` fault tests as mandatory
+  acceptance gates on every later functional ABI or exception-path change.
+- Test permission denial and unsupported request/ABI size and operation ID in
+  the guest, plus fault escalation/negative tests (not just successful shell
+  and an empty queue). Stress-tested host concurrency is **not** identical
+  to interrupt-context SMP execution with actual concurrent guest CPUs.
+- Harden reply-pipe validation in the userland broker: the current port wire
+  message has no explicit kernel-attested transferred-handle count. The
+  existing `sys_port_send_caps` rewrites payload handles, but the ordinary
+  PORT send path can carry untrusted payload bytes. The broker must not trust
+  or close arbitrary client-supplied indices. Until authenticated capability
+  provenance is enforced, a malicious client may induce confused-deputy
+  writes/closes of another in-process handle. This is a SECURITY BLOCKER.
+- Resolve event-stream gaps before claiming lossless/complete collection:
+  sequence reservation is visible before record publication, and a drop can
+  leave the next sequence absent. A response with status EMPTY and newer
+  sequence available must not be treated as a verified end-of-stream. Provide
+  an explicit in-flight/gap protocol with bounded retry and honest loss
+  accounting; the current broker is not an archival event journal.
+- Extend instrumentation to all required fault categories and coverage points
+  after verifying ownership against actual HAL/kernel/userland sources, rather
+  than introducing a second fault-dispatch layer.
+- Add a complete Power12 proof/test matrix and resolve or formally approve
+  individually justified divergences. The strict gate must stay red while
+  obligations remain open; never weaken flags, disable checks or fabricate
+  acceptance evidence.
+
+No certification, complete Power12 conformance or final product readiness is
+asserted. New files and worktree changes are not automatically committed.

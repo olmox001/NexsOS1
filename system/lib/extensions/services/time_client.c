@@ -2,11 +2,16 @@
 #include <string.h>
 #include <unistd.h>
 
+#define TIME_REPLY_MAX_BYTES ((unsigned long)sizeof(struct os1_timer_stats_snapshot_v3))
+
 static int time_read_full(int fd, void *buffer, unsigned long size) {
   unsigned char *bytes = (unsigned char *)buffer;
   unsigned long done = 0U;
 
-  for (unsigned long step = 0U; step < size && done < size; ++step) {
+  if (size > TIME_REPLY_MAX_BYTES)
+    return -1;
+  for (unsigned long step = 0U;
+       step < TIME_REPLY_MAX_BYTES && done < size; ++step) {
     long got = read(fd, (char *)bytes + done, size - done);
     if (got <= 0)
       return -1;
@@ -15,12 +20,13 @@ static int time_read_full(int fd, void *buffer, unsigned long size) {
   return done == size ? 0 : -1;
 }
 
-int OS1_time_service_snapshot(struct os1_time_snapshot_v1 *snapshot) {
+static int time_service_request(uint64_t request, void *output,
+                                unsigned long size) {
   struct ipc_message message;
   int reply[2] = {-1, -1};
   int service;
 
-  if (snapshot == NULL)
+  if (output == NULL || size > TIME_REPLY_MAX_BYTES)
     return -1;
   service = OS1_port_open(OS1NX_PORT_TIME);
   if (service < 0)
@@ -31,7 +37,7 @@ int OS1_time_service_snapshot(struct os1_time_snapshot_v1 *snapshot) {
   }
   memset(&message, 0, sizeof(message));
   message.type = OS1_TIME_SERVICE_IPC_TYPE;
-  message.data1 = OS1_TIME_SERVICE_REQUEST_SNAPSHOT;
+  message.data1 = request;
   message.data2 = OS1_TIME_SERVICE_VERSION;
   if (OS1_port_send_caps(service, &message, &reply[1], 1) !=
       (long)sizeof(message)) {
@@ -42,12 +48,34 @@ int OS1_time_service_snapshot(struct os1_time_snapshot_v1 *snapshot) {
   }
   close(reply[1]);
   OS1low_handle_close(service);
-  if (time_read_full(reply[0], snapshot, sizeof(*snapshot)) != 0) {
+  if (time_read_full(reply[0], output, size) != 0) {
     close(reply[0]);
     return -1;
   }
   close(reply[0]);
+  return 0;
+}
+
+int OS1_time_service_snapshot(struct os1_time_snapshot_v1 *snapshot) {
+  if (snapshot == NULL)
+    return -1;
+  if (time_service_request(OS1_TIME_SERVICE_REQUEST_SNAPSHOT, snapshot,
+                           sizeof(*snapshot)) != 0)
+    return -1;
   if (snapshot->abi_version != OS1_TIME_ABI_VERSION ||
+      snapshot->struct_size != sizeof(*snapshot))
+    return -1;
+  return 0;
+}
+
+int OS1_time_service_timer_stats(
+    struct os1_timer_stats_snapshot_v3 *snapshot) {
+  if (snapshot == NULL)
+    return -1;
+  if (time_service_request(OS1_TIME_SERVICE_REQUEST_TIMER_STATS, snapshot,
+                           sizeof(*snapshot)) != 0)
+    return -1;
+  if (snapshot->abi_version != OS1_TIMER_STATS_ABI_VERSION ||
       snapshot->struct_size != sizeof(*snapshot))
     return -1;
   return 0;

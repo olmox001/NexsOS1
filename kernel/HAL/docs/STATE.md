@@ -229,3 +229,29 @@ Blocking architectural debt still present:
 Work is intentionally stopped at this diagnostic checkpoint.  No further HAL
 migration should be marked complete until these debts are addressed and
 requalified on both architectures.
+
+
+## 2026-11-10 — NXPAX fault telemetry increment (separate from HAL boundary qualification)
+
+The existing HAL/Core fault protocol now emits a typed, bounded NXPAX hardware
+event before delegating fault policy back to the existing Core implementation.
+This retains architecture-owned exception decoding on amd64 and aarch64.
+The production ring is in `HAL/core/nxpax.c` and is capacity-linked to
+`2 * NXHAL_CPU_LIMIT`. Sequence/slot ownership and drops are atomic; slot
+reads use a single nonwaiting ownership CAS, so an interrupt-path producer
+does not wait on a reader and concurrent snapshots cannot mix two records.
+The diagnostic callback publication path was also corrected from volatile
+flagging to release/acquire atomic publication.
+
+The Core consumes no new HAL-internal policy and adds only a disposition
+report in `kernel/core/nxpax.c`. Userland reads the existing RESOURCE object
+through `sys/bin/nxpax` and the named capability port; no new syscall ID
+or object type was introduced. Direct fault-register/resource access is
+privileged and non-transferable. See `../../../docs/NXPAX-IMPLEMENTATION-STATE.md`
+for exact ABI, source map, latest kernel/userland builds, guest runs, crash
+injection, host/sanitizer and concurrent stress evidence.
+
+**Qualification limitation:** Power12 strict gate is active but RED due to
+unproved requirements and actual findings; existing HAL/Core boundary debts
+listed above remain open. Successful NXPAX tests do not certify HAL
+separation, complete fault coverage or Power12.

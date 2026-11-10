@@ -29,10 +29,15 @@ struct timer_cpu_buffer {
 
 static struct timer_cpu_buffer timer_cpu_buffers[MAX_CPUS];
 static uint64_t timer_cpu_late[MAX_CPUS];
+static struct OS1libkernel_timer_stats timer_cpu_stats[MAX_CPUS];
 static uint64_t time_boot_counter;
 static uint64_t time_frequency_hz;
 static uint64_t time_snapshot_sequence;
+static uint64_t time_event_frequency_hz;
+static uint64_t time_event_min_delta_counts;
+static uint64_t time_event_max_delta_counts;
 static uint32_t time_event_flags;
+static uint32_t time_event_deadline_mode;
 static uint32_t time_ready;
 
 static uint64_t time_scale_counts(uint64_t counts, uint64_t frequency) {
@@ -69,9 +74,25 @@ void OS1libkernel_time_init(void) {
 
   time_boot_counter = OS1libkernel_time_counter_read();
   time_frequency_hz = source.frequency_hz;
+  time_event_frequency_hz = event.frequency_hz;
+  time_event_min_delta_counts = event.min_delta_counts;
+  time_event_max_delta_counts = event.max_delta_counts;
   time_event_flags = event.flags;
+  time_event_deadline_mode =
+      ((event.flags & (NXHAL_CLOCKEVENT_ONESHOT | NXHAL_CLOCKEVENT_ABSOLUTE)) ==
+       (NXHAL_CLOCKEVENT_ONESHOT | NXHAL_CLOCKEVENT_ABSOLUTE)) &&
+      event.frequency_hz == source.frequency_hz;
   __atomic_store_n(&jiffies, 0U, __ATOMIC_RELEASE);
   __atomic_store_n(&time_ready, 1U, __ATOMIC_RELEASE);
+}
+
+void OS1libkernel_timer_core_init(void) {
+  memset(timer_cpu_stats, 0, sizeof(timer_cpu_stats));
+  for (uint32_t cpu_id = 0U; cpu_id < MAX_CPUS; ++cpu_id) {
+    INIT_LIST_HEAD(&cpu_data[cpu_id].timer_list);
+    spin_lock_init(&cpu_data[cpu_id].timer_lock);
+    cpu_data[cpu_id].timer_next_deadline_ns = 0U;
+  }
 }
 
 uint64_t OS1libkernel_time_counter_frequency(void) {
@@ -129,7 +150,67 @@ static uint64_t timer_checked_add(uint64_t value, uint64_t delta) {
   return value + delta;
 }
 
-static void timer_program_target(uint64_t target) {
+static int timer_uses_deadline_event(void) {
+  return time_event_deadline_mode != 0U &&
+         time_event_frequency_hz == time_frequency_hz;
+}
+
+static uint64_t timer_ns_to_counter_ceil(uint64_t deadline_ns) {
+  __uint128_t scaled = (__uint128_t)deadline_ns * time_frequency_hz;
+  uint64_t delta = (uint64_t)(scaled / OS1LIBKERNEL_NSEC_PER_SEC);
+  if ((scaled % OS1LIBKERNEL_NSEC_PER_SEC) != 0U && delta != UINT64_MAX)
+    ++delta;
+  if (delta > UINT64_MAX - time_boot_counter)
+    return UINT64_MAX;
+  return time_boot_counter + delta;
+}
+
+static uint64_t timer_clamp_target(uint64_t now, uint64_t target) {
+  uint64_t min_target = timer_checked_add(now, time_event_min_delta_counts);
+  uint64_t max_delta = time_event_max_delta_counts;
+  uint64_t max_target =
+      max_delta > UINT64_MAX - now ? UINT64_MAX : now + max_delta;
+  if (target < min_target)
+    return min_target;
+  if (target > max_target)
+    return max_target;
+  return target;
+}
+
+static uint64_t timer_idle_delta_counts(void) {
+  /* With no logical deadline there is nothing to convert from nanoseconds.
+   * Sleep for the provider's longest representable absolute-event delta. */
+  return time_event_max_delta_counts;
+}
+
+static uint64_t timer_target_for_deadline(uint64_t now, uint64_t deadline_ns) {
+  if (deadline_ns == 0U) {
+    uint64_t delta = timer_idle_delta_counts();
+    return delta > UINT64_MAX - now ? UINT64_MAX : now + delta;
+  }
+  return timer_clamp_target(now, timer_ns_to_counter_ceil(deadline_ns));
+}
+
+static uint64_t timer_min_deadline(uint64_t first, uint64_t second) {
+  if (first == 0U)
+    return second;
+  if (second == 0U)
+    return first;
+  return first < second ? first : second;
+}
+
+static uint64_t timer_current_deadline_ns(struct cpu_info *cpu) {
+  uint64_t software =
+      __atomic_load_n(&cpu->timer_next_deadline_ns, __ATOMIC_ACQUIRE);
+  struct process *current = cpu->current_task;
+  uint64_t quantum = current == NULL
+                         ? 0U
+                         : __atomic_load_n(&current->quantum_deadline_ns,
+                                           __ATOMIC_ACQUIRE);
+  return timer_min_deadline(software, quantum);
+}
+
+static void timer_program_target(struct cpu_info *cpu, uint64_t target) {
   int status;
 
   if ((time_event_flags & NXHAL_CLOCKEVENT_ABSOLUTE) == 0U) {
@@ -140,6 +221,10 @@ static void timer_program_target(uint64_t target) {
   status = nxhal_time_event_program_absolute(target);
   if (status != NXHAL_TIME_OK)
     panic("TIME: absolute clockevent programming failed: %d", status);
+  if (cpu == NULL || cpu->cpu_id >= MAX_CPUS)
+    panic("%s", "TIME: absolute clockevent programmed without CPU state");
+  if (timer_cpu_stats[cpu->cpu_id].absolute_program_count != UINT64_MAX)
+    ++timer_cpu_stats[cpu->cpu_id].absolute_program_count;
 }
 
 static void timer_publish_cpu(struct cpu_info *cpu, uint64_t counter,
@@ -167,6 +252,21 @@ static void timer_publish_cpu(struct cpu_info *cpu, uint64_t counter,
   __atomic_store_n(&buffer->publish_sequence, sequence, __ATOMIC_RELEASE);
 }
 
+void OS1libkernel_timer_reschedule_local(void) {
+  if (!timer_uses_deadline_event())
+    return;
+  struct cpu_info *cpu = get_cpu_info();
+  if (cpu == NULL)
+    return;
+  uint64_t now = OS1libkernel_time_counter_read();
+  uint64_t deadline_ns = timer_current_deadline_ns(cpu);
+  uint64_t target = timer_target_for_deadline(now, deadline_ns);
+  if (target == cpu->next_tick_target)
+    return;
+  cpu->next_tick_target = target;
+  timer_program_target(cpu, target);
+}
+
 uint64_t OS1libkernel_timer_percpu_arm(void) {
   struct cpu_info *cpu = get_cpu_info();
   uint64_t interval;
@@ -181,27 +281,47 @@ uint64_t OS1libkernel_timer_percpu_arm(void) {
   interval = timer_interval_counts(cpu);
   now = OS1libkernel_time_counter_read();
   cpu->next_tick_target = timer_checked_add(now, interval);
-  timer_program_target(cpu->next_tick_target);
+  timer_program_target(cpu, cpu->next_tick_target);
   timer_publish_cpu(cpu, now, cpu->next_tick_target, cpu->tick_count);
   return cpu->next_tick_target;
 }
 
+static void timer_stats_note_clockevent_lateness(struct cpu_info *cpu,
+                                                 uint64_t now) {
+  uint64_t target = cpu->next_tick_target;
+  if (target == 0U || now <= target)
+    return;
+  uint64_t lateness_ns = time_scale_counts(now - target, time_frequency_hz);
+  struct OS1libkernel_timer_stats *stats = &timer_cpu_stats[cpu->cpu_id];
+  if (stats->clockevent_late_count != UINT64_MAX)
+    ++stats->clockevent_late_count;
+  if (UINT64_MAX - stats->clockevent_lateness_ns_total < lateness_ns)
+    stats->clockevent_lateness_ns_total = UINT64_MAX;
+  else
+    stats->clockevent_lateness_ns_total += lateness_ns;
+  if (lateness_ns > stats->max_clockevent_lateness_ns)
+    stats->max_clockevent_lateness_ns = lateness_ns;
+}
+
 uint64_t OS1libkernel_timer_percpu_tick(void) {
   struct cpu_info *cpu = get_cpu_info();
-  uint64_t interval;
   uint64_t now;
 
   if (cpu == NULL)
     panic("%s", "TIME: timer IRQ without CPU state");
-  interval = timer_interval_counts(cpu);
   now = OS1libkernel_time_counter_read();
-  cpu->next_tick_target = timer_checked_add(cpu->next_tick_target, interval);
-  if (cpu->next_tick_target <= now) {
-    ++timer_cpu_late[cpu->cpu_id];
-    cpu->next_tick_target = timer_checked_add(now, interval);
+  if (timer_uses_deadline_event()) {
+    uint64_t deadline_ns = timer_current_deadline_ns(cpu);
+    cpu->next_tick_target = timer_target_for_deadline(now, deadline_ns);
+  } else {
+    uint64_t interval = timer_interval_counts(cpu);
+    cpu->next_tick_target =
+        timer_checked_add(cpu->next_tick_target, interval);
+    if (cpu->next_tick_target <= now)
+      cpu->next_tick_target = timer_checked_add(now, interval);
   }
-  timer_program_target(cpu->next_tick_target);
-  timer_publish_cpu(cpu, now, cpu->next_tick_target, cpu->tick_count + 1U);
+  timer_program_target(cpu, cpu->next_tick_target);
+  timer_publish_cpu(cpu, now, cpu->next_tick_target, cpu->tick_count);
   return cpu->next_tick_target;
 }
 
@@ -252,26 +372,80 @@ int OS1libkernel_time_snapshot(struct os1_time_snapshot_v1 *out) {
   return 0;
 }
 
+static uint64_t timer_find_next_locked(struct cpu_info *cpu) {
+  struct list_head *node;
+  uint64_t earliest = 0U;
+  list_for_each(node, &cpu->timer_list) {
+    struct OS1libkernel_timer *timer =
+        list_entry(node, struct OS1libkernel_timer, list);
+    if (earliest == 0U || timer->deadline_ns < earliest)
+      earliest = timer->deadline_ns;
+  }
+  return earliest;
+}
+
+static void timer_stats_note_lateness(struct OS1libkernel_timer_stats *stats,
+                                      uint64_t deadline_ns,
+                                      uint64_t now_ns) {
+  if (now_ns <= deadline_ns)
+    return;
+  uint64_t lateness = now_ns - deadline_ns;
+  if (stats->late_fire_count != UINT64_MAX)
+    ++stats->late_fire_count;
+  if (UINT64_MAX - stats->fire_lateness_ns_total < lateness)
+    stats->fire_lateness_ns_total = UINT64_MAX;
+  else
+    stats->fire_lateness_ns_total += lateness;
+  if (lateness > stats->max_fire_lateness_ns)
+    stats->max_fire_lateness_ns = lateness;
+}
+
 static void timer_fire_due(struct cpu_info *cpu, uint64_t now_ns) {
   struct OS1libkernel_timer *timer;
   struct OS1libkernel_timer *next;
+  struct OS1libkernel_timer_stats *stats = &timer_cpu_stats[cpu->cpu_id];
+  uint32_t visited = 0U;
+  uint32_t fired = 0U;
   uint64_t flags;
+  uint64_t earliest = 0U;
 
   spin_lock_irqsave(&cpu->timer_lock, &flags);
+  ++stats->scan_pass_count;
+  if (cpu->timer_next_deadline_ns == 0U ||
+      now_ns < cpu->timer_next_deadline_ns) {
+    spin_unlock_irqrestore(&cpu->timer_lock, flags);
+    return;
+  }
   list_for_each_entry_safe(timer, next, &cpu->timer_list, list) {
-    if (now_ns < timer->deadline_ns)
+    ++visited;
+    if (now_ns < timer->deadline_ns) {
+      if (earliest == 0U || timer->deadline_ns < earliest)
+        earliest = timer->deadline_ns;
       continue;
+    }
     list_del_init(&timer->list);
     __atomic_store_n(&timer->pending, false, __ATOMIC_RELEASE);
+    if (stats->queue_depth != 0U)
+      --stats->queue_depth;
+    ++stats->fire_count;
+    timer_stats_note_lateness(stats, timer->deadline_ns, now_ns);
+    ++fired;
     if (timer->callback != NULL)
       timer->callback(timer->data);
     __atomic_store_n(&timer->cpu, -1, __ATOMIC_RELEASE);
   }
+  cpu->timer_next_deadline_ns = earliest;
+  stats->scan_count += visited;
+  if (visited > stats->max_scan_per_pass)
+    stats->max_scan_per_pass = visited;
+  if (fired > stats->max_fire_per_pass)
+    stats->max_fire_per_pass = fired;
   spin_unlock_irqrestore(&cpu->timer_lock, flags);
 }
 
 hal_frame_t *OS1libkernel_timer_tick(hal_frame_t *frame) {
   struct cpu_info *cpu;
+  uint64_t now_counter;
   uint64_t now_ns;
 
   if (panic_flag != 0) {
@@ -281,8 +455,13 @@ hal_frame_t *OS1libkernel_timer_tick(hal_frame_t *frame) {
   cpu = get_cpu_info();
   if (cpu == NULL)
     panic("%s", "TIME: scheduler tick without CPU state");
+  now_counter = OS1libkernel_time_counter_read();
+  timer_stats_note_clockevent_lateness(cpu, now_counter);
+  if (cpu->next_tick_target != 0U && now_counter > cpu->next_tick_target &&
+      timer_cpu_late[cpu->cpu_id] != UINT64_MAX)
+    ++timer_cpu_late[cpu->cpu_id];
   ++cpu->tick_count;
-  now_ns = OS1libkernel_time_monotonic_ns();
+  now_ns = time_counter_to_ns(now_counter);
   if (cpu->cpu_id == 0U) {
     uint64_t expected = now_ns / OS1LIBKERNEL_NSEC_PER_TICK;
     __atomic_store_n(&jiffies, expected, __ATOMIC_RELEASE);
@@ -321,11 +500,23 @@ void OS1libkernel_timer_cancel(struct OS1libkernel_timer *timer) {
       continue;
     }
     if (__atomic_load_n(&timer->pending, __ATOMIC_ACQUIRE)) {
+      int was_earliest =
+          timer->deadline_ns == cpu_data[cpu].timer_next_deadline_ns;
       list_del_init(&timer->list);
       __atomic_store_n(&timer->pending, false, __ATOMIC_RELEASE);
+      struct OS1libkernel_timer_stats *stats = &timer_cpu_stats[cpu];
+      if (stats->queue_depth != 0U)
+        --stats->queue_depth;
+      ++stats->cancel_count;
+      if (was_earliest)
+        cpu_data[cpu].timer_next_deadline_ns =
+            timer_find_next_locked(&cpu_data[cpu]);
     }
     __atomic_store_n(&timer->cpu, -1, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
+    struct cpu_info *local = get_cpu_info();
+    if (local != NULL && local->cpu_id == (uint32_t)cpu)
+      OS1libkernel_timer_reschedule_local();
     return;
   }
   panic("%s", "TIME: software timer owner changed during bounded cancellation");
@@ -346,12 +537,79 @@ void OS1libkernel_timer_arm_deadline(struct OS1libkernel_timer *timer,
   timer->deadline_ns = deadline_ns;
   __atomic_store_n(&timer->cpu, (int)cpu->cpu_id, __ATOMIC_RELAXED);
   list_add_tail(&timer->list, &cpu->timer_list);
+  if (cpu->timer_next_deadline_ns == 0U ||
+      deadline_ns < cpu->timer_next_deadline_ns)
+    cpu->timer_next_deadline_ns = deadline_ns;
+  struct OS1libkernel_timer_stats *stats = &timer_cpu_stats[cpu->cpu_id];
+  ++stats->arm_count;
+  ++stats->queue_depth;
+  if (stats->queue_depth > stats->queue_high_water)
+    stats->queue_high_water = stats->queue_depth;
   __atomic_store_n(&timer->pending, true, __ATOMIC_RELEASE);
   spin_unlock_irqrestore(&cpu->timer_lock, flags);
+  OS1libkernel_timer_reschedule_local();
 }
 
 bool OS1libkernel_timer_pending(const struct OS1libkernel_timer *timer) {
   if (timer == NULL)
     return false;
   return __atomic_load_n(&timer->pending, __ATOMIC_ACQUIRE);
+}
+
+int OS1libkernel_timer_stats_snapshot(
+    uint32_t cpu_id, struct OS1libkernel_timer_stats *out) {
+  if (out == NULL || cpu_id >= MAX_CPUS)
+    return -1;
+  uint64_t flags;
+  spin_lock_irqsave(&cpu_data[cpu_id].timer_lock, &flags);
+  *out = timer_cpu_stats[cpu_id];
+  spin_unlock_irqrestore(&cpu_data[cpu_id].timer_lock, flags);
+  return 0;
+}
+
+int OS1libkernel_timer_stats_export(
+    struct os1_timer_stats_snapshot_v3 *out) {
+  uint32_t count = 0U;
+  if (out == NULL)
+    return -1;
+  memset(out, 0, sizeof(*out));
+  out->abi_version = OS1_TIMER_STATS_ABI_VERSION;
+  out->struct_size = (uint32_t)sizeof(*out);
+  out->cpu_record_size = (uint32_t)sizeof(struct os1_timer_cpu_stats_v3);
+  out->sequence =
+      __atomic_add_fetch(&time_snapshot_sequence, 1U, __ATOMIC_RELAXED);
+  out->monotonic_ns = OS1libkernel_time_monotonic_ns();
+  for (uint32_t cpu_id = 0U; cpu_id < MAX_CPUS; ++cpu_id) {
+    struct os1_time_cpu_v1 time_record;
+    struct OS1libkernel_timer_stats stats;
+    int status = timer_read_cpu(cpu_id, &time_record);
+    if (status < 0)
+      return -1;
+    if (status == 0)
+      continue;
+    if (OS1libkernel_timer_stats_snapshot(cpu_id, &stats) != 0)
+      return -1;
+    struct os1_timer_cpu_stats_v3 *record = &out->cpu[count];
+    record->cpu_id = cpu_id;
+    record->arm_count = stats.arm_count;
+    record->cancel_count = stats.cancel_count;
+    record->fire_count = stats.fire_count;
+    record->scan_count = stats.scan_count;
+    record->scan_pass_count = stats.scan_pass_count;
+    record->late_fire_count = stats.late_fire_count;
+    record->fire_lateness_ns_total = stats.fire_lateness_ns_total;
+    record->max_fire_lateness_ns = stats.max_fire_lateness_ns;
+    record->clockevent_late_count = stats.clockevent_late_count;
+    record->clockevent_lateness_ns_total =
+        stats.clockevent_lateness_ns_total;
+    record->max_clockevent_lateness_ns = stats.max_clockevent_lateness_ns;
+    record->absolute_program_count = stats.absolute_program_count;
+    record->queue_depth = stats.queue_depth;
+    record->queue_high_water = stats.queue_high_water;
+    record->max_scan_per_pass = stats.max_scan_per_pass;
+    record->max_fire_per_pass = stats.max_fire_per_pass;
+    ++count;
+  }
+  out->cpu_count = count;
+  return 0;
 }

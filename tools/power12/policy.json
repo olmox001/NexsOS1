@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "profile": "NEXS-Power12",
+  "source_roots": [
+    "kernel",
+    "system",
+    "user/sbin",
+    "user/sys",
+    "user/portability"
+  ],
+  "first_party_root_globs": [
+    "user/bin/*.c",
+    "user/bin/*.h"
+  ],
+  "extensions": [
+    ".c",
+    ".h",
+    ".S",
+    ".s"
+  ],
+  "excluded_prefixes": [
+    "kernel/build/",
+    "kernel/HAL/build/",
+    "kernel/HAL/references/",
+    "kernel/HAL/tests/build/",
+    "user/lib/",
+    "user/bin/base-nexs/",
+    "user/bin/busybox/",
+    "user/bin/coreutils/",
+    "user/bin/doom/",
+    "user/bin/kilo/"
+  ],
+  "stale_suffixes": [
+    ".c.new",
+    ".h.new",
+    ".c.old",
+    ".h.old"
+  ],
+  "general_allocators": [
+    "malloc",
+    "calloc",
+    "realloc",
+    "free",
+    "kmalloc",
+    "kfree",
+    "pmm_alloc_page",
+    "pmm_alloc_pages",
+    "pmm_alloc_pages_dma",
+    "pmm_free_page",
+    "pmm_free_pages"
+  ],
+  "forbidden_jump_calls": [
+    "setjmp",
+    "longjmp",
+    "_setjmp",
+    "_longjmp",
+    "sigsetjmp",
+    "siglongjmp"
+  ],
+  "assertion_calls": [
+    "assert",
+    "__assert_fail",
+    "__assert_rtn",
+    "KASSERT",
+    "KASSERT_EQ",
+    "NX_ASSERT",
+    "SCHED_ASSERT"
+  ],
+  "assertion_tokens": [
+    "assert(",
+    "KASSERT(",
+    "KASSERT_EQ(",
+    "NX_ASSERT(",
+    "SCHED_ASSERT(",
+    "_Static_assert",
+    "static_assert"
+  ],
+  "allowed_function_pointer_prefixes": [
+    "kernel/HAL/include/hal/",
+    "kernel/HAL/core/",
+    "kernel/include/drivers/",
+    "kernel/drivers/"
+  ],
+  "function_max_lines": 50,
+  "audit_arches": [
+    "amd64",
+    "aarch64"
+  ],
+  "limits": {
+    "system/include/api/os1_time_service.h::OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT": {
+      "kind": "security_policy",
+      "provenance": "supervised service generation policy",
+      "rationale": "bounds requests handled by one nxtimerd process generation before nxinit rotates the service"
+    },
+    "user/sys/services/nxtimerd.c::TIMERD_MAX_REPLY": {
+      "kind": "wire_contract",
+      "provenance": "sizeof(struct os1_timer_stats_snapshot_v3)",
+      "rationale": "largest TIME service response defined by the generated TIME ABI contract"
+    },
+    "user/sys/services/nxtimerd.c::TIMERD_CLAIM_TRIES": {
+      "kind": "service_restart_policy",
+      "provenance": "nxinit supervised named-port handover window",
+      "rationale": "bounds name-claim retries after a prior service receiver is being torn down"
+    },
+    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_CHILDREN": {
+      "kind": "resource_budget",
+      "provenance": "kernel MAX_PROCS_PER_PARENT=32; diagnostic uses 24",
+      "rationale": "keeps eight child slots of per-parent quota outside the stress swarm"
+    },
+    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_MIN_ACTIVE": {
+      "kind": "test_acceptance",
+      "provenance": "16 of 24 requested stress children",
+      "rationale": "requires at least two thirds of requested sleepers to be concurrently armed"
+    },
+    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_CHILD_SLEEP_MS": {
+      "kind": "test_window",
+      "provenance": "1500 ms diagnostic sleeper lifetime",
+      "rationale": "keeps child timers armed long enough for bounded spawn and stats sampling on emulated aarch64"
+    },
+    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_ARM_POLLS": {
+      "kind": "test_timeout",
+      "provenance": "40 polls at TIMERDIAG_STRESS_POLL_MS",
+      "rationale": "bounds concurrent-arm observation to 400 ms"
+    },
+    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_REAP_POLLS": {
+      "kind": "test_timeout",
+      "provenance": "400 polls at TIMERDIAG_STRESS_POLL_MS",
+      "rationale": "bounds child reap observation to 4 seconds"
+    },
+    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_POLL_MS": {
+      "kind": "test_quantum",
+      "provenance": "10 ms diagnostic polling quantum",
+      "rationale": "limits observation overhead while preserving a finite stress timeout"
+    }
+  }
+}

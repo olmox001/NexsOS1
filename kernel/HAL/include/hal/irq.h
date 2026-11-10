@@ -15,6 +15,8 @@ struct nxhal_irq_controller_ops {
   void (*disable)(uint32_t irq);
   void (*set_priority)(uint32_t irq, uint8_t priority);
   void (*send_ipi_all)(void);
+  int (*send_reschedule)(uint32_t cpu_id);
+  uint32_t reschedule_irq;
   uint32_t (*acknowledge)(void);
   void (*end)(uint32_t irq);
 };
@@ -34,6 +36,8 @@ void hal_irq_line_enable(uint32_t irq);
 void hal_irq_line_disable(uint32_t irq);
 void hal_irq_set_priority(uint32_t irq, uint8_t priority);
 void hal_irq_send_ipi_all(void);
+int hal_irq_send_reschedule(uint32_t cpu_id);
+int hal_irq_is_reschedule(uint32_t irq);
 uint32_t hal_irq_acknowledge(void);
 void hal_irq_end(uint32_t irq);
 

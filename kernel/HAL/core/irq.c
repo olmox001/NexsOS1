@@ -26,8 +26,11 @@ int nxhal_irq_controller_install(const struct nxhal_irq_controller_ops *ops) {
   if (ops == NULL)
     return NXHAL_IRQ_CONTROLLER_E_NULL;
   if (ops->enable == NULL || ops->disable == NULL ||
-      ops->acknowledge == NULL || ops->end == NULL)
+      ops->send_reschedule == NULL || ops->acknowledge == NULL ||
+      ops->end == NULL)
     return NXHAL_IRQ_CONTROLLER_E_MISSING;
+  if (ops->reschedule_irq >= NXHAL_IRQ_SPURIOUS)
+    return NXHAL_IRQ_CONTROLLER_E_STATE;
 
   installed = __atomic_load_n(&irq_controller, __ATOMIC_ACQUIRE);
   if (installed == ops)
@@ -86,6 +89,18 @@ void hal_irq_send_ipi_all(void) {
   const struct nxhal_irq_controller_ops *ops = nxhal_irq_controller();
   if (ops != NULL && ops->send_ipi_all != NULL)
     ops->send_ipi_all();
+}
+
+int hal_irq_send_reschedule(uint32_t cpu_id) {
+  const struct nxhal_irq_controller_ops *ops = nxhal_irq_controller();
+  if (ops == NULL || ops->send_reschedule == NULL)
+    return NXHAL_IRQ_CONTROLLER_E_MISSING;
+  return ops->send_reschedule(cpu_id);
+}
+
+int hal_irq_is_reschedule(uint32_t irq) {
+  const struct nxhal_irq_controller_ops *ops = nxhal_irq_controller();
+  return ops != NULL && irq == ops->reschedule_irq;
 }
 
 uint32_t hal_irq_acknowledge(void) {

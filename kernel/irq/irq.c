@@ -113,6 +113,7 @@
  *           in irq.h.
  */
 #include <hal/core_protocol.h>
+#include <hal/diagnostic_protocol.h>
 #include <hal/irq.h>
 #include <hal/timer_protocol.h>
 #include <hal/time.h>
@@ -485,11 +486,21 @@ hal_frame_t *irq_handler(hal_frame_t *regs) {
       /* unreachable: cpu_halt_from_ipi() halts this core permanently */
     }
 
+    /* Reschedule IPI is a fixed-function scheduler event, not a timer tick:
+     * do not advance timer accounting or fire software timers here. */
+    if (hal_irq_is_reschedule(intid)) {
+      ret_regs = nxhal_core_schedule(ret_regs);
+      hal_irq_end(irq_raw);
+      return ret_regs;
+    }
+
     /* Scheduler tick (fixed-function; bypasses irq_handlers[] by design —
      * see the file-header invariants).  FIX(IRQ-03): IRQ_TIMER only. */
     if (intid == IRQ_TIMER) {
-      (void)nxhal_timer_tick_current();
       ret_regs = nxhal_core_timer_tick(ret_regs);
+      uint64_t next_target = nxhal_timer_tick_current();
+      if (next_target == 0U)
+        nxhal_diag_error("%s", "IRQ: timer accounting returned no target\n");
       hal_irq_end(irq_raw);
       return ret_regs;
     }
@@ -538,6 +549,8 @@ hal_frame_t *irq_handler(hal_frame_t *regs) {
  * IRQ context: YES — called from the amd64 IDT handler.
  */
 hal_frame_t *irq_dispatch(uint32_t irq, hal_frame_t *regs) {
+  if (hal_irq_is_reschedule(irq))
+    return nxhal_core_schedule(regs);
   irq_run_registered_or_warn(irq);
   return regs;
 }

@@ -2,27 +2,27 @@
  * kernel/kernel.c
  * Main kernel initialization and entry point
  */
-#include <kernel/resource.h>
 #include <drivers/input.h>
 #include <drivers/virtio_blk.h>
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
-#include <kernel/bootmodule.h>
 #include <kernel/boot_memory.h>
+#include <kernel/bootmodule.h>
 #include <kernel/bootphase.h>
 #include <kernel/buffer.h>
 #include <kernel/cpu.h>
 #include <kernel/drivers.h>
 #include <kernel/ext4.h>
 #include <kernel/fdt.h>
+#include <kernel/resource.h>
 #if HAL_BOOT_ABI_FDT
 #include <hal/boot_info.h>
 #include <hal/config.h>
 #endif
+#include <hal/time.h>
 #include <kernel/gpt.h>
 #include <kernel/graphics.h>
 #include <kernel/hal.h>
-#include <hal/time.h>
 #include <kernel/irq.h>
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
@@ -40,10 +40,10 @@
 /* Version */
 #define KERNEL_VERSION_MAJOR 0
 #define KERNEL_VERSION_MINOR 0
-#define KERNEL_VERSION_PATCH 5
-#define KERNEL_VERSION_BUILD 5
+#define KERNEL_VERSION_PATCH 6
+#define KERNEL_VERSION_BUILD 0
 
-#define KERNEL_NAME "NexsOS1/" HAL_PLATFORM_NAME
+#define KERNEL_NAME "NX-Core/" HAL_PLATFORM_NAME
 
 /* External symbols */
 extern void secondary_cpu_entry(void); /* Assembly wrapper for AMD64 */
@@ -96,13 +96,11 @@ static void kernel_stage_k2_k3(void);
 static void validate_uefi_boot_info(const struct nxhal_boot_info *info) {
   uint64_t bytes;
 
-  if (info->firmware_map_phys == 0U ||
-      info->firmware_map_record_count == 0U ||
+  if (info->firmware_map_phys == 0U || info->firmware_map_record_count == 0U ||
       info->firmware_map_record_size != NXHAL_UEFI_MEMORY_RECORD_SIZE ||
       info->ebs_attempts == 0U ||
       info->ebs_attempts > NXHAL_UEFI_EXIT_MAX_ATTEMPTS ||
-      info->map_growths > NXHAL_UEFI_MAP_MAX_GROWTHS ||
-      info->reserved0 != 0U)
+      info->map_growths > NXHAL_UEFI_MAP_MAX_GROWTHS || info->reserved0 != 0U)
     panic("BootInfo: malformed UEFI memory-map handoff");
   if (info->firmware_map_phys >= HAL_PHYS_MAP_LIMIT)
     panic("BootInfo: UEFI map base outside physical map");
@@ -113,11 +111,9 @@ static void validate_uefi_boot_info(const struct nxhal_boot_info *info) {
 }
 
 static void validate_legacy_boot_info(const struct nxhal_boot_info *info) {
-  if (info->firmware_map_phys != 0U ||
-      info->firmware_map_record_count != 0U ||
-      info->firmware_map_record_size != 0U ||
-      info->ebs_attempts != 0U || info->map_growths != 0U ||
-      info->reserved0 != 0U)
+  if (info->firmware_map_phys != 0U || info->firmware_map_record_count != 0U ||
+      info->firmware_map_record_size != 0U || info->ebs_attempts != 0U ||
+      info->map_growths != 0U || info->reserved0 != 0U)
     panic("BootInfo: legacy handoff carried firmware-only fields");
 }
 
@@ -141,14 +137,14 @@ static void init_fdt_boot_handoff(uint64_t boot_arg0, uint64_t boot_arg1) {
   int fdt_status;
 
   validate_nxhal_boot_info(boot_arg0, boot_arg1);
-  nxhal_boot_info.source = boot_arg1 != 0U
-      ? NXHAL_BOOT_SOURCE_AARCH64_EFI : NXHAL_BOOT_SOURCE_LEGACY;
+  nxhal_boot_info.source = boot_arg1 != 0U ? NXHAL_BOOT_SOURCE_AARCH64_EFI
+                                           : NXHAL_BOOT_SOURCE_LEGACY;
   fdt_status = boot_arg1 != 0U
-      ? fdt_init((uintptr_t)boot_arg0, (size_t)boot_arg1)
-      : fdt_init_legacy((uintptr_t)boot_arg0, &actual_fdt_size);
+                   ? fdt_init((uintptr_t)boot_arg0, (size_t)boot_arg1)
+                   : fdt_init_legacy((uintptr_t)boot_arg0, &actual_fdt_size);
   if (fdt_status != FDT_PARSER_OK)
-    panic("FDT: validation failed status=%d base=0x%lx span=0x%lx",
-          fdt_status, boot_arg0, boot_arg1);
+    panic("FDT: validation failed status=%d base=0x%lx span=0x%lx", fdt_status,
+          boot_arg0, boot_arg1);
   if (boot_arg1 == 0U && actual_fdt_size != boot_fdt_size)
     panic("BootInfo: legacy DTB length mismatch handoff=0x%lx parsed=0x%lx",
           (uint64_t)actual_fdt_size, boot_fdt_size);
@@ -156,8 +152,8 @@ static void init_fdt_boot_handoff(uint64_t boot_arg0, uint64_t boot_arg1) {
   nxhal_boot_info.fdt_phys = boot_fdt_ptr;
   nxhal_boot_info.fdt_size = boot_fdt_size;
   if (boot_arg1 != 0U)
-    nxhal_boot_info.flags = NXHAL_BOOT_FLAG_FDT_SIZE_VALID |
-                           NXHAL_BOOT_FLAG_UEFI_MAP_VALID;
+    nxhal_boot_info.flags =
+        NXHAL_BOOT_FLAG_FDT_SIZE_VALID | NXHAL_BOOT_FLAG_UEFI_MAP_VALID;
   else if (boot_arg0 != 0U)
     nxhal_boot_info.flags = NXHAL_BOOT_FLAG_LEGACY_TRUSTED_INPUT;
   else
@@ -222,8 +218,7 @@ static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
 
 #if HAL_BOOT_ABI_FDT
   init_fdt_boot_handoff(boot_arg0, boot_arg1);
-  pr_info("Kernel: Entry x0 = 0x%lx x1 = 0x%lx\n",
-          boot_arg0, boot_arg1);
+  pr_info("Kernel: Entry x0 = 0x%lx x1 = 0x%lx\n", boot_arg0, boot_arg1);
 #else
   if (fdt_init(0, 0) != FDT_PARSER_OK)
     pr_info("%s", "FDT: no device tree found — expected on amd64, devices come "
@@ -365,7 +360,8 @@ static void init_memory_core(void) {
 
   /* Freeze exactly one boot-memory snapshot. PMM, VMM and post-MM tests all
    * consume this same map; EFI boots prefer the validated NX-HAL firmware map,
-   * while direct/legacy boots use the compatibility provider during migration. */
+   * while direct/legacy boots use the compatibility provider during migration.
+   */
   boot_memory_init();
   regions = boot_memory_regions(&count);
   if (regions == NULL || count == 0U)
@@ -382,8 +378,7 @@ static void init_memory_core(void) {
       panic("BOOT-MEM: region %zu overflows physical address space", i);
     uint64_t end = regions[i].base + regions[i].size;
     pr_info("BOOT-MEM: region[%zu] type=%u base=0x%lx size=0x%lx end=0x%lx\n",
-            i, (unsigned)regions[i].type,
-            (unsigned long)regions[i].base,
+            i, (unsigned)regions[i].type, (unsigned long)regions[i].base,
             (unsigned long)regions[i].size, (unsigned long)end);
     if (regions[i].type == MEM_REGION_USABLE) {
       if (end > boot_highest_usable_end)
@@ -397,8 +392,8 @@ static void init_memory_core(void) {
   if (boot_highest_usable_end <= HAL_RAM_START)
     panic("%s", "BOOT-MEM: no usable RAM above architecture memory base");
   boot_highest_usable_end &= ~((uint64_t)PAGE_SIZE - 1ULL);
-  boot_usable_bytes = pmm_calculate_usable_bytes(
-      regions, count, HAL_RAM_START, boot_highest_usable_end);
+  boot_usable_bytes = pmm_calculate_usable_bytes(regions, count, HAL_RAM_START,
+                                                 boot_highest_usable_end);
   if (boot_usable_bytes == 0)
     panic("%s", "BOOT-MEM: usable RAM union is empty after page alignment");
 

@@ -23,6 +23,8 @@
 #include <kernel/nx_contract.h>
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
+#include <kernel/nxpax.h>
+#include <hal/nxpax.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
 #include <kernel/sched.h>
@@ -92,9 +94,17 @@ hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
     /* We are already in the fault handler for this task; there is no caller
      * left to propagate to.  Reported so a teardown that fails does not leave a
      * faulted process silently alive and schedulable. */
-    if (process_terminate(task->pid) != 0)
+    int pid = task->pid;
+    int terminated = process_terminate(pid);
+    nxpax_kernel_record(pid,
+                        terminated == 0 ? NXHAL_NXPAX_KIND_USER_TERMINATED :
+                                          NXHAL_NXPAX_KIND_TERMINATION_FAILED,
+                        fault_pc, fault_addr, syndrome,
+                        (user_mode ? NXHAL_NXPAX_FLAG_USER : 0U) |
+                        (uaccess ? NXHAL_NXPAX_FLAG_UACCESS : 0U));
+    if (terminated != 0)
       fault_printf("[FAULT] process_terminate(%d) FAILED after a user fault\n",
-                   task->pid);
+                   pid);
     fault_exit(); /* fault handled — unwind the recursion guard */
     return schedule(regs);
   }
@@ -118,5 +128,8 @@ hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
                  desc, ci ? (int)ci->cpu_id : -1, fault_pc, fault_addr,
                  syndrome);
 
+  nxpax_kernel_record(task ? (int32_t)task->pid : INT32_C(-1),
+                      NXHAL_NXPAX_KIND_KERNEL_FATAL, fault_pc, fault_addr,
+                      syndrome, user_mode ? NXHAL_NXPAX_FLAG_USER : 0U);
   return NULL; /* kernel fault: caller dumps registers and panics */
 }

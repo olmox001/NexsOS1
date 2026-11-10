@@ -41,6 +41,7 @@ struct cpu_info {
    * derived compatibility counter and is not the timer correctness source. */
   struct list_head timer_list;
   spinlock_t timer_lock;
+  uint64_t timer_next_deadline_ns;
 
   char printk_buf[2048];
   char syscall_buf[2048];
@@ -74,6 +75,10 @@ struct cpu_info {
    * schedule() entry (after the prior epilogue has switched stacks), release
    * the pin: requeue READY, reap DEAD/ZOMBIE, leave SLEEPING/STOPPED parked. */
   struct process *pending_stack_release;
+  /* Work-steal handoff pin. A stolen task is removed from the source runqueue
+   * before it can be published as current_task on this CPU.  Keeping it here
+   * closes that ownership gap for termination/reap validation. */
+  struct process *migration_inflight;
 };
 #endif
 

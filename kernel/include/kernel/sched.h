@@ -407,6 +407,7 @@ void sleep_on(struct wait_queue_head *wq);
 int OS1libkernel_process_sleep_timer_arm(
     struct process *process, struct OS1libkernel_timer *timer,
     OS1libkernel_timer_callback_t callback, uint64_t deadline_ns);
+void OS1libkernel_process_sleep_timer_wake(struct process *process);
 void wake_up(struct wait_queue_head *wq);
 void wake_up_all(struct wait_queue_head *wq);
 

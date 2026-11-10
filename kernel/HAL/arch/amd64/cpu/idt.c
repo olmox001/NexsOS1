@@ -389,19 +389,22 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
     }
 
     if (vec == 32) {
-        /* Timer Interrupt (LAPIC periodic, vector 32; the PIT is halted
-         * after calibration — EXC-AMD64-03 resolved).
+        /* LAPIC clockevent interrupt (vector 32; the PIT is halted after
+         * calibration — EXC-AMD64-03 resolved).  The selected mode may be
+         * TSC-deadline, LAPIC one-shot countdown, or periodic fallback.
          * NOTE(CPU-AMD64-01): No FPU save; ctx_switch on this path risks XMM
          * corruption between concurrently running kernel tasks. */
 
         /* Tier-2 per-CPU drift accounting (docs/TIMER-MODEL.md §3): the
          * arch-neutral, HAL-driven nxhal_timer_tick_current() advances the software
          * per-CPU schedule against the free-running TSC so lost ticks are
-         * recovered per core. The LAPIC clockevent is periodic here (the
-         * LAPIC stays periodic). Done BEFORE the tick so it reflects this IRQ. */
-        (void)nxhal_timer_tick_current();
-
+         * recovered per core. Done BEFORE the tick so it reflects this
+         * clockevent regardless of the provider's selected LAPIC mode. */
         ret_regs = nxhal_core_timer_tick(regs);
+
+        uint64_t next_target = nxhal_timer_tick_current();
+        if (next_target == 0U)
+            nxhal_diag_error("%s", "AMD64: timer accounting returned no target\n");
     } else {
         /* All other Hardware interrupts - route via generic system */
         nxhal_diag_debug("AMD64: Hardware Interrupt Vector %lu triggered!\n", vec);

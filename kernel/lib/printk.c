@@ -323,10 +323,10 @@ void vpanic(const char *fmt, va_list args) {
    * is broken, at least the owner and task pointers survive in the UART log. */
   fault_printf("\n\n*** KERNEL PANIC CPU%u owner=%u ***\n", cpu_id,
                cpu_id);
-  fault_printf("[panic-context] current_task=%p pending_stack_release=%p "
-               "deferred_free=%p\n",
+  fault_printf("[panic-context] current=%p pending=%p migrate=%p deferred=%p\n",
                cpu ? (void *)cpu->current_task : NULL,
                cpu ? (void *)cpu->pending_stack_release : NULL,
+               cpu ? (void *)cpu->migration_inflight : NULL,
                cpu ? (void *)cpu->deferred_free_proc : NULL);
 
   /* Stop other CPUs before reading the lock-free diagnostic rings. */

@@ -23,7 +23,27 @@ struct OS1libkernel_timer {
   int cpu;
 };
 
+struct OS1libkernel_timer_stats {
+  uint64_t arm_count;
+  uint64_t cancel_count;
+  uint64_t fire_count;
+  uint64_t scan_count;
+  uint64_t scan_pass_count;
+  uint64_t late_fire_count;
+  uint64_t fire_lateness_ns_total;
+  uint64_t max_fire_lateness_ns;
+  uint64_t clockevent_late_count;
+  uint64_t clockevent_lateness_ns_total;
+  uint64_t max_clockevent_lateness_ns;
+  uint64_t absolute_program_count;
+  uint32_t queue_depth;
+  uint32_t queue_high_water;
+  uint32_t max_scan_per_pass;
+  uint32_t max_fire_per_pass;
+};
+
 void OS1libkernel_time_init(void);
+void OS1libkernel_timer_core_init(void);
 uint64_t OS1libkernel_time_counter_read(void);
 uint64_t OS1libkernel_time_monotonic_ns(void);
 int OS1libkernel_time_deadline_after_ns(uint64_t delta_ns,
@@ -35,6 +55,7 @@ int OS1libkernel_time_snapshot(struct os1_time_snapshot_v1 *out);
 
 uint64_t OS1libkernel_timer_percpu_arm(void);
 uint64_t OS1libkernel_timer_percpu_tick(void);
+void OS1libkernel_timer_reschedule_local(void);
 hal_frame_t *OS1libkernel_timer_tick(hal_frame_t *frame);
 
 void OS1libkernel_timer_setup(struct OS1libkernel_timer *timer,
@@ -44,5 +65,9 @@ void OS1libkernel_timer_arm_deadline(struct OS1libkernel_timer *timer,
                                      uint64_t deadline_ns);
 void OS1libkernel_timer_cancel(struct OS1libkernel_timer *timer);
 bool OS1libkernel_timer_pending(const struct OS1libkernel_timer *timer);
+int OS1libkernel_timer_stats_snapshot(
+    uint32_t cpu_id, struct OS1libkernel_timer_stats *out);
+int OS1libkernel_timer_stats_export(
+    struct os1_timer_stats_snapshot_v3 *out);
 
 #endif /* OS1LIBKERNEL_TIMER_H */

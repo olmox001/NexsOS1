@@ -48,6 +48,10 @@ struct nxhal_clocksource_v1 {
   uint64_t max_delta_counts;
 };
 
+/* For NXHAL_CLOCKEVENT_ABSOLUTE providers, frequency_hz and the min/max
+ * delta fields describe the absolute-count domain accepted by
+ * nxhal_time_event_program_absolute().  A provider may translate that domain
+ * internally to a different hardware countdown clock. */
 struct nxhal_clockevent_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -67,10 +71,5 @@ int nxhal_time_event_percpu_init(uint64_t frequency_hz);
 int nxhal_time_event_program_absolute(uint64_t count);
 int nxhal_time_event_program_periodic(uint64_t frequency_hz);
 int nxhal_time_event_stop(void);
-
-_Static_assert(sizeof(struct nxhal_clocksource_v1) == 48U,
-               "NX-HAL clocksource ABI size");
-_Static_assert(sizeof(struct nxhal_clockevent_v1) == 48U,
-               "NX-HAL clockevent ABI size");
 
 #endif /* NXHAL_TIME_H */

@@ -123,49 +123,67 @@ static struct kobject *port_find_locked(const char *name) {
   return NULL;
 }
 
-/* endpoint_handle_count - adjust a PIPE's or PORT's open endpoint counts by
- * 'delta' for a handle carrying 'rights'.  Called (under object_lock) at EVERY
- * handle lifecycle edge — install (+1), close/destroy/redirect-overwrite (-1) —
- * so the counts exactly track live handles.  A no-op for other types, so
- * callers need not special-case.  For a pipe, closing the last writer wakes
- * blocked readers (EOF) and closing the last reader wakes blocked writers
- * (EPIPE); a port behaves the same way, so a client blocked on a reply is
- * released when the service dies instead of hanging forever. */
-static void pipe_handle_count(struct kobject *o, uint32_t rights, int delta) {
-  if (o && o->type == OBJ_TYPE_PORT && o->port) {
-    if (rights & OS1_RIGHT_READ) {
-      o->port->receivers += delta;
-      if (delta < 0 && o->port->receivers == 0) {
-        /* The service released its receive right: UNPUBLISH the name here,
-         * under object_lock, so no new client can resolve a send capability to
-         * a dead service.  Doing it at free time instead would race, because
-         * kobj_free runs both inside and outside the lock. */
-        for (int i = 0; i < PORT_TABLE_MAX; i++) {
-          if (port_table[i] == o)
-            port_table[i] = NULL;
-        }
-        wake_up(&o->port->wq); /* service gone → senders stop waiting */
-      }
-    }
-    if (rights & OS1_RIGHT_WRITE) {
-      o->port->senders += delta;
-      if (delta < 0 && o->port->senders == 0)
-        wake_up(&o->port->rq); /* last client gone → receiver wakes */
-    }
+enum endpoint_wake_flags {
+  ENDPOINT_WAKE_NONE = 0U,
+  ENDPOINT_WAKE_READERS = UINT32_C(1),
+  ENDPOINT_WAKE_WRITERS = UINT32_C(2)
+};
+
+static void endpoint_handle_add_locked(struct kobject *object,
+                                       uint32_t rights) {
+  if (object != NULL && object->type == OBJ_TYPE_PORT && object->port != NULL) {
+    if ((rights & OS1_RIGHT_READ) != 0U)
+      ++object->port->receivers;
+    if ((rights & OS1_RIGHT_WRITE) != 0U)
+      ++object->port->senders;
     return;
   }
-  if (!o || o->type != OBJ_TYPE_PIPE || !o->pipe)
+  if (object == NULL || object->type != OBJ_TYPE_PIPE || object->pipe == NULL)
     return;
-  if (rights & OS1_RIGHT_READ) {
-    o->pipe->readers += delta;
-    if (delta < 0 && o->pipe->readers == 0)
-      wake_up(&o->pipe->wq); /* last reader gone → writers get EPIPE */
+  if ((rights & OS1_RIGHT_READ) != 0U)
+    ++object->pipe->readers;
+  if ((rights & OS1_RIGHT_WRITE) != 0U)
+    ++object->pipe->writers;
+}
+
+static uint32_t endpoint_handle_drop_locked(struct kobject *object,
+                                            uint32_t rights) {
+  uint32_t wake = ENDPOINT_WAKE_NONE;
+  if (object != NULL && object->type == OBJ_TYPE_PORT && object->port != NULL) {
+    if ((rights & OS1_RIGHT_READ) != 0U && --object->port->receivers == 0) {
+      for (int slot = 0; slot < PORT_TABLE_MAX; ++slot)
+        if (port_table[slot] == object)
+          port_table[slot] = NULL;
+      wake |= ENDPOINT_WAKE_READERS | ENDPOINT_WAKE_WRITERS;
+    }
+    if ((rights & OS1_RIGHT_WRITE) != 0U)
+      --object->port->senders;
+    return wake;
   }
-  if (rights & OS1_RIGHT_WRITE) {
-    o->pipe->writers += delta;
-    if (delta < 0 && o->pipe->writers == 0)
-      wake_up(&o->pipe->rq); /* last writer gone → readers see EOF */
+  if (object == NULL || object->type != OBJ_TYPE_PIPE || object->pipe == NULL)
+    return wake;
+  if ((rights & OS1_RIGHT_READ) != 0U && --object->pipe->readers == 0)
+    wake |= ENDPOINT_WAKE_WRITERS;
+  if ((rights & OS1_RIGHT_WRITE) != 0U && --object->pipe->writers == 0)
+    wake |= ENDPOINT_WAKE_READERS;
+  return wake;
+}
+
+static void endpoint_wake(struct kobject *object, uint32_t wake) {
+  struct wait_queue_head *readers = NULL;
+  struct wait_queue_head *writers = NULL;
+  if (object != NULL && object->type == OBJ_TYPE_PORT && object->port != NULL) {
+    readers = &object->port->rq;
+    writers = &object->port->wq;
+  } else if (object != NULL && object->type == OBJ_TYPE_PIPE &&
+             object->pipe != NULL) {
+    readers = &object->pipe->rq;
+    writers = &object->pipe->wq;
   }
+  if ((wake & ENDPOINT_WAKE_READERS) != 0U && readers != NULL)
+    wake_up(readers);
+  if ((wake & ENDPOINT_WAKE_WRITERS) != 0U && writers != NULL)
+    wake_up(writers);
 }
 
 /* pipe still-block predicates for kthread_block (return 1 = keep sleeping).  A
@@ -180,12 +198,12 @@ static int pipe_writable_block(void *arg) {
   struct kpipe *kp = ((struct kobject *)arg)->pipe;
   return kp->count == PIPE_BUF_SIZE && kp->readers > 0;
 }
-/* Port equivalents: a receiver sleeps while the mailbox is empty AND a sender
- * still exists; a sender sleeps while it is full AND a receiver still exists.
- */
+/* A published service receiver remains valid while no client is connected.
+ * Sender count is therefore not an EOF condition.  Only receiver revocation
+ * terminates the wait; message publication wakes the receiver normally. */
 static int port_readable_block(void *arg) {
   struct kport *kp = ((struct kobject *)arg)->port;
-  return kp->count == 0 && kp->senders > 0;
+  return kp->count == 0 && kp->receivers > 0;
 }
 static int port_writable_block(void *arg) {
   struct kport *kp = ((struct kobject *)arg)->port;
@@ -269,7 +287,7 @@ static int handle_install_locked(struct process *p, struct kobject *o,
       p->handles[i].obj = o;
       p->handles[i].rights = rights;
       o->refcount++;
-      pipe_handle_count(o, rights, +1); /* track a new pipe reader/writer */
+      endpoint_handle_add_locked(o, rights);
       return i;
     }
   }
@@ -320,7 +338,10 @@ static long handle_create_time(struct process *process, const char *path,
                            OS1_RIGHT_TRANSFER;
   struct kobject *object;
 
-  if (type != OBJ_TYPE_TIMER || strcmp(path, "system") != 0)
+  if (type != OBJ_TYPE_TIMER)
+    return -EINVAL;
+  if (strcmp(path, OS1_TIME_OBJECT_SYSTEM) != 0 &&
+      strcmp(path, OS1_TIME_OBJECT_STATS) != 0)
     return -EINVAL;
   if ((rights & OS1_RIGHT_READ) == 0U || (rights & ~allowed) != 0U)
     return -EPERM;
@@ -329,6 +350,7 @@ static long handle_create_time(struct process *process, const char *path,
   object = kobj_alloc(OBJ_TYPE_TIMER);
   if (object == NULL)
     return -ENOMEM;
+  strlcpy(object->path, path, sizeof(object->path));
   return install_new_object(process, object, rights);
 }
 
@@ -649,12 +671,13 @@ long sys_handle_close(int handle) {
     return -EBADF;
   }
   struct kobject *o = e->obj;
-  pipe_handle_count(o, e->rights, -1); /* untrack this pipe reader/writer */
+  uint32_t wake = endpoint_handle_drop_locked(o, e->rights);
   e->obj = NULL;
   e->rights = 0;
   if (--o->refcount <= 0)
     to_free = o;
   spin_unlock_irqrestore(&object_lock, flags);
+  endpoint_wake(o, wake);
   if (to_free)
     kobj_free(to_free);
   return 0;
@@ -891,6 +914,9 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
       int installed[4];
       int n_ok = 0;
       struct kobject *to_free = NULL;
+      struct kobject *wake_objects[4] = {NULL, NULL, NULL, NULL};
+      uint32_t wake_flags[4] = {0U, 0U, 0U, 0U};
+      int wake_count = 0;
       ret = 0;
       spin_lock(&object_lock); /* nested under sched_lock; IRQs already off */
       for (int i = 0; i < nfds; i++) {
@@ -901,6 +927,10 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
           break;
         }
         struct handle_entry *src = &current_process->handles[fds[i]];
+        if ((src->rights & OS1_RIGHT_TRANSFER) == 0U) {
+          ret = -EPERM;
+          break;
+        }
         int h = handle_install_locked(rcv, src->obj, src->rights);
         if (h < 0) {
           ret = h;
@@ -956,15 +986,23 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
          * each installed slot holds exactly one reference. */
         for (int i = 0; i < n_ok; i++) {
           struct handle_entry *e = &rcv->handles[installed[i]];
-          pipe_handle_count(e->obj, e->rights, -1);
-          if (--e->obj->refcount <= 0)
-            to_free = e->obj;
+          struct kobject *dropped = e->obj;
+          uint32_t wake = endpoint_handle_drop_locked(dropped, e->rights);
+          if (wake != 0U && wake_count < 4) {
+            wake_objects[wake_count] = dropped;
+            wake_flags[wake_count] = wake;
+            ++wake_count;
+          }
+          if (--dropped->refcount <= 0)
+            to_free = dropped;
           e->obj = NULL;
           e->rights = 0;
         }
       }
       spin_unlock(&object_lock);
       spin_unlock_irqrestore(&sched_lock, sflags);
+      for (int i = 0; i < wake_count; ++i)
+        endpoint_wake(wake_objects[i], wake_flags[i]);
       if (to_free)
         kobj_free(to_free); /* frees (kfree) — never under sched_lock */
       if (ret > 0)
@@ -1031,20 +1069,41 @@ static long object_read_file(struct kobject *object, void *user_buffer,
   return got;
 }
 
-static long object_read_timer(void *user_buffer, size_t size) {
+static long object_read_time_system(void *user_buffer, size_t size) {
   struct os1_time_snapshot_v1 snapshot;
   const size_t header_size = offsetof(struct os1_time_snapshot_v1, cpu);
-  size_t copy_size;
-
+  size_t copy_size = sizeof(snapshot);
   if (size < header_size)
     return -EINVAL;
   if (OS1libkernel_time_snapshot(&snapshot) != 0)
     return -EAGAIN;
-  copy_size = sizeof(snapshot);
   if (copy_size > size)
     copy_size = size;
   return hal_copy_to_user(user_buffer, &snapshot, copy_size) != 0
       ? -EFAULT : (long)copy_size;
+}
+
+static long object_read_time_stats(void *user_buffer, size_t size) {
+  struct os1_timer_stats_snapshot_v3 snapshot;
+  const size_t header_size = offsetof(struct os1_timer_stats_snapshot_v3, cpu);
+  size_t copy_size = sizeof(snapshot);
+  if (size < header_size)
+    return -EINVAL;
+  if (OS1libkernel_timer_stats_export(&snapshot) != 0)
+    return -EAGAIN;
+  if (copy_size > size)
+    copy_size = size;
+  return hal_copy_to_user(user_buffer, &snapshot, copy_size) != 0
+      ? -EFAULT : (long)copy_size;
+}
+
+static long object_read_timer(const struct kobject *object, void *user_buffer,
+                              size_t size) {
+  if (strcmp(object->path, OS1_TIME_OBJECT_SYSTEM) == 0)
+    return object_read_time_system(user_buffer, size);
+  if (strcmp(object->path, OS1_TIME_OBJECT_STATS) == 0)
+    return object_read_time_stats(user_buffer, size);
+  return -EINVAL;
 }
 
 static long object_read_registry(const struct kobject *object,
@@ -1152,9 +1211,9 @@ static long object_read_port(struct kobject *object, void *user_buffer,
       return hal_copy_to_user(user_buffer, &message, sizeof(message)) != 0
           ? -EFAULT : (long)sizeof(message);
     }
-    if (port->senders == 0) {
+    if (port->receivers == 0) {
       spin_unlock_irqrestore(&object_lock, flags);
-      return 0;
+      return -EPIPE;
     }
     spin_unlock_irqrestore(&object_lock, flags);
     kthread_block(&port->rq, port_readable_block, object);
@@ -1212,7 +1271,7 @@ static long object_read_dispatch(struct kobject *object, void *user_buffer,
   case OBJ_TYPE_FILE:
     return object_read_file(object, user_buffer, size);
   case OBJ_TYPE_TIMER:
-    return object_read_timer(user_buffer, size);
+    return object_read_timer(object, user_buffer, size);
   case OBJ_TYPE_REGKEY:
     return object_read_registry(object, user_buffer, size);
   case OBJ_TYPE_WINDOW:
@@ -1832,6 +1891,7 @@ int process_redirect_child_fd_from(struct process *owner, struct process *child,
     return -ENOMEM;
 
   struct kobject *to_free = NULL;
+  uint32_t wake = ENDPOINT_WAKE_NONE;
   uint64_t flags;
   spin_lock_irqsave(&object_lock, &flags);
   struct handle_entry *src = &parent->handles[parent_fd];
@@ -1847,13 +1907,15 @@ int process_redirect_child_fd_from(struct process *owner, struct process *child,
   dst->obj = src->obj;
   dst->rights = src->rights;
   src->obj->refcount++;
-  pipe_handle_count(src->obj, src->rights, +1); /* child gains a pipe end */
+  endpoint_handle_add_locked(src->obj, src->rights);
   if (old) {
-    pipe_handle_count(old, old_rights, -1); /* child loses the old handle */
+    wake = endpoint_handle_drop_locked(old, old_rights);
     if (--old->refcount <= 0)
-      to_free = old; /* last ref to the console → free outside the lock */
+      to_free = old;
   }
   spin_unlock_irqrestore(&object_lock, flags);
+  if (old != NULL)
+    endpoint_wake(old, wake);
   if (to_free)
     kobj_free(to_free);
   return 0;
@@ -1877,31 +1939,39 @@ int process_redirect_child_fd(struct process *child, int child_slot,
  * deferred reaper) before the struct process page is freed.  NULL-safe.
  */
 void process_handles_destroy(struct process *p) {
-  if (!p)
-    return;
   struct kobject *retired[NPROC_HANDLES];
-  unsigned retired_count = 0;
+  struct kobject *wake_objects[NPROC_HANDLES];
+  uint32_t wake_flags[NPROC_HANDLES];
+  unsigned retired_count = 0U;
+  unsigned wake_count = 0U;
   uint64_t flags;
+  if (p == NULL)
+    return;
   spin_lock_irqsave(&object_lock, &flags);
   struct handle_entry *tbl = p->handles;
-  p->handles = NULL; /* blocks a concurrent grant-into-dead under this lock */
-  if (!tbl) {
+  p->handles = NULL;
+  if (tbl == NULL) {
     spin_unlock_irqrestore(&object_lock, flags);
     return;
   }
-  for (int i = 0; i < NPROC_HANDLES; i++) {
-    struct kobject *o = tbl[i].obj;
-    if (!o)
+  for (int i = 0; i < NPROC_HANDLES; ++i) {
+    struct kobject *object = tbl[i].obj;
+    if (object == NULL)
       continue;
-    pipe_handle_count(o, tbl[i].rights, -1); /* untrack pipe reader/writer */
+    uint32_t wake = endpoint_handle_drop_locked(object, tbl[i].rights);
+    if (wake != 0U) {
+      wake_objects[wake_count] = object;
+      wake_flags[wake_count] = wake;
+      ++wake_count;
+    }
     tbl[i].obj = NULL;
-    if (--o->refcount <= 0)
-      retired[retired_count++] = o;
+    if (--object->refcount <= 0)
+      retired[retired_count++] = object;
   }
   spin_unlock_irqrestore(&object_lock, flags);
-  /* Provider teardown may release page catalogs. Keep object_lock limited to
-   * handle/refcount publication, never a resource's potentially long release. */
-  for (unsigned i = 0; i < retired_count; ++i)
+  for (unsigned i = 0U; i < wake_count; ++i)
+    endpoint_wake(wake_objects[i], wake_flags[i]);
+  for (unsigned i = 0U; i < retired_count; ++i)
     kobj_free(retired[i]);
   kfree(tbl);
 }

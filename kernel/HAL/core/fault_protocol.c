@@ -1,6 +1,7 @@
 #include <hal/core.h>
 #include <hal/fault_protocol.h>
 #include <hal/frame.h>
+#include <hal/nxpax.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -84,6 +85,8 @@ void nxhal_fault_exit(void) {
 hal_frame_t *nxhal_fault_handle(hal_frame_t *frame, int user_mode,
                                 uint64_t fault_addr, uint64_t fault_pc,
                                 const char *description, uint64_t syndrome) {
+  nxhal_nxpax_fault(fault_pc, fault_addr, syndrome, user_mode,
+                   hal_cpu_id_fault_safe());
   return nxhal_fault_protocol()->handle(frame, user_mode, fault_addr, fault_pc,
                                         description, syndrome);
 }

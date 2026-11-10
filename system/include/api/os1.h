@@ -209,6 +209,9 @@ long OS1_time_now(void);
  * OS1nx_time service instead of acquiring this hardware-facing snapshot. */
 long OS1low_time_open(void);
 long OS1low_time_snapshot(int handle, struct os1_time_snapshot_v1 *snapshot);
+long OS1low_time_stats_open(void);
+long OS1low_time_stats_snapshot(
+    int handle, struct os1_timer_stats_snapshot_v3 *snapshot);
 
 void *OS1low_vm_sbrk(intptr_t increment); /* canonical; sbrk is its shim (DIR-01 F4) */
 void *sbrk(intptr_t increment);
@@ -410,16 +413,15 @@ int  OS1_port_create(const char *name);
  * -ENOENT if no service published that name. */
 int  OS1_port_open(const char *name);
 /* OS1_port_send / OS1_port_recv - one whole ipc_message per call.  send needs
- * the send right, recv the receive right; recv BLOCKS until a message arrives
- * and returns 0 when the last sender is gone (so a service loop terminates).
- * The kernel stamps msg->from, so the sender identity cannot be forged. */
+ * the send right and recv the receive right.  A published receiver remains
+ * blocked while idle even when no sender handles exist; only receive-right
+ * revocation terminates that wait.  The kernel stamps msg->from. */
 long OS1_port_send(int handle, const struct ipc_message *msg);
 long OS1_port_recv(int handle, struct ipc_message *msg);
-/* OS1_port_send_caps - send a message AND transfer handles with it.  The
- * receiver-side indices are written into the leading int slots of msg->payload,
- * so a service reads usable handles directly.  This is what lets a client
- * delegate (e.g. pipe ends) to a service it found BY NAME, without ever needing
- * the service's pid — the property ports exist to provide. */
+/* OS1_port_send_caps - send a message AND transfer handles with it.  Every
+ * transferred source handle must carry OS1_RIGHT_TRANSFER.  Receiver-side
+ * indices are written into the leading int slots of msg->payload, so delegation
+ * remains capability-based and never needs the service pid. */
 long OS1_port_send_caps(int handle, struct ipc_message *msg, const int *fds,
                         int nfds);
 long OS1_object_wait(int handle, long arg);

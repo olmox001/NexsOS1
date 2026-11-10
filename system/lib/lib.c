@@ -80,21 +80,21 @@
  *   similar names. The directory name 'common' currently means common within
  *   the userland runtime, not shared with NX-CORE.
  */
-#include <os1_surface.h>
-#include <os1_video_platform.h>
 #include <ctype.h>
 #include <errno.h>
 #include <execsvc.h>
 #include <fcntl.h>
+#include <font_lib.h>
 #include <graphics.h>
 #include <input.h>
 #include <inttypes.h>
 #include <langinfo.h>
 #include <limits.h> /* INT_MAX — nx_assert() bound checks (R5) */
 #include <math.h>
-#include <os1_gfx.h>
 #include <os1.h>
-#include <font_lib.h>
+#include <os1_gfx.h>
+#include <os1_surface.h>
+#include <os1_video_platform.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -104,6 +104,7 @@
 /* POSIX compatibility shims implemented at the bottom of this file (the OS1
  * onion-userland libc layer, epic #120; no new OS1 syscalls). */
 #include <dirent.h>
+#include <error.h>
 #include <grp.h>
 #include <poll.h>
 #include <pwd.h>
@@ -115,12 +116,9 @@
 #include <sys/statvfs.h>
 #include <sys/wait.h> /* waitpid(), WNOHANG, WEXITSTATUS (Phase 2) */
 #include <termios.h>
-#include <error.h>
 #include <uchar.h>
 
 /* Image decoder implementation is in extensions/image/image.c. */
-
-
 
 /* Video decoding is implemented by extensions/video/video.c. */
 
@@ -377,10 +375,10 @@ int getpid(void) { return get_pid(); }
 
 /* Minimal Linux-compatible random API for GNU Coreutils and other ports.
  * The kernel does not expose a SYS_getrandom syscall in this tree yet, so the
- * libc layer synthesizes a non-blocking pseudo-random source from a tiny xorshift
- * state seeded from the OS1 clock and PID.  This is intentionally sufficient to
- * satisfy compile-time/test-time expectations and keep the userland port moving
- * without special-casing any applet. */
+ * libc layer synthesizes a non-blocking pseudo-random source from a tiny
+ * xorshift state seeded from the OS1 clock and PID.  This is intentionally
+ * sufficient to satisfy compile-time/test-time expectations and keep the
+ * userland port moving without special-casing any applet. */
 static unsigned long long os1_rand_state = 0;
 static unsigned long long os1_rand_next(void) {
   unsigned long long x = os1_rand_state;
@@ -505,10 +503,20 @@ long OS1low_cap_grant(int target_pid, int handle, unsigned int rights) {
   return _sys_cap_grant(target_pid, handle, rights);
 }
 long OS1low_time_open(void) {
-  return OS1low_handle_create(OS1_NS_TIME, "system", OS1_RIGHT_READ,
-                              OBJ_TYPE_TIMER);
+  return OS1low_handle_create(OS1_NS_TIME, OS1_TIME_OBJECT_SYSTEM,
+                              OS1_RIGHT_READ, OBJ_TYPE_TIMER);
 }
 long OS1low_time_snapshot(int handle, struct os1_time_snapshot_v1 *snapshot) {
+  if (snapshot == NULL)
+    return -EINVAL;
+  return OS1_object_read(handle, snapshot, sizeof(*snapshot));
+}
+long OS1low_time_stats_open(void) {
+  return OS1low_handle_create(OS1_NS_TIME, OS1_TIME_OBJECT_STATS,
+                              OS1_RIGHT_READ, OBJ_TYPE_TIMER);
+}
+long OS1low_time_stats_snapshot(
+    int handle, struct os1_timer_stats_snapshot_v3 *snapshot) {
   if (snapshot == NULL)
     return -EINVAL;
   return OS1_object_read(handle, snapshot, sizeof(*snapshot));
@@ -529,14 +537,14 @@ long OS1_object_wait(int handle, long arg) {
  * authority decision, and send/receive are ordinary object writes/reads.
  */
 int OS1_port_create(const char *name) {
-  /* RECEIVE right publishes the port and claims ownership; TRANSFER lets the
-   * owner delegate send rights onward (cap_grant) without re-opening by name.
-   */
-  return (int)errno_ret(OS1low_handle_create(OS1_NS_PORT, name,
-                                             OS1_RIGHT_READ | OS1_RIGHT_WRITE |
-                                                 OS1_RIGHT_TRANSFER |
-                                                 OS1_RIGHT_DUPLICATE,
-                                             OBJ_TYPE_PORT));
+  /* Publishing a service grants only RECEIVE authority.  A service that also
+   * needs a SEND right must acquire it explicitly with OS1_port_open(), so the
+   * endpoint does not count itself as a client and least privilege is visible
+   * in the handle rights. */
+  return (int)errno_ret(OS1low_handle_create(
+      OS1_NS_PORT, name,
+      OS1_RIGHT_READ | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE,
+      OBJ_TYPE_PORT));
 }
 int OS1_port_open(const char *name) {
   /* No READ: a client gets a SEND-only capability to an existing service. */
@@ -591,8 +599,7 @@ long OS1_input_next_keyboard(struct os1_raw_input_event_v1 *event) {
 }
 
 long OS1_input_next_mouse(struct os1_raw_input_event_v1 *event) {
-  return OS1low_input_read_raw(event, OS1_INPUT_ROLE_MOUSE,
-                               OS1_INPUT_READ_TRY);
+  return OS1low_input_read_raw(event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY);
 }
 
 long OS1_input_wait_keyboard(struct os1_raw_input_event_v1 *event) {
@@ -899,9 +906,11 @@ static void __theme_broadcast(unsigned type, int first, int second) {
   char value[20];
   const char *keys[] = {"srv.compositor_pid", "srv.mouse_pid"};
   for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-    if (OS1_registry_get(keys[i], value, sizeof(value)) != 0) continue;
+    if (OS1_registry_get(keys[i], value, sizeof(value)) != 0)
+      continue;
     int pid = atoi(value);
-    if (pid <= 0) continue;
+    if (pid <= 0)
+      continue;
     struct ipc_message message = {0};
     message.type = (int)type;
     message.data1 = (uint64_t)(int64_t)first;
@@ -912,12 +921,14 @@ static void __theme_broadcast(unsigned type, int first, int second) {
 }
 int OS1_display_set_style(int style_id, int theme_id) {
   int rc = _sys_set_style(style_id, theme_id, -1);
-  if (rc == 0) __theme_broadcast(0x31u, style_id, theme_id);
+  if (rc == 0)
+    __theme_broadcast(0x31u, style_id, theme_id);
   return rc;
 }
 int OS1_display_set_background(int bg_id) {
   int rc = _sys_set_style(-1, -1, bg_id);
-  if (rc == 0) __theme_broadcast(0x32u, bg_id, 0);
+  if (rc == 0)
+    __theme_broadcast(0x32u, bg_id, 0);
   return rc;
 }
 int OS1_display_set_zoom(int percent) { return _sys_set_zoom(percent); }
@@ -1879,14 +1890,20 @@ int fseeko(FILE *fp, off_t offset, int whence) {
   return fseek(fp, (long)offset, whence);
 }
 
-off_t ftello(FILE *fp) {
-  return (off_t)ftell(fp);
-}
+off_t ftello(FILE *fp) { return (off_t)ftell(fp); }
 
 int feof(FILE *fp) { return fp ? fp->eof : 1; }
 int ferror(FILE *fp) { return fp ? fp->error : 1; }
-void fseterr(FILE *fp) { if (fp) fp->error = 1; }
-void clearerr(FILE *fp) { if (fp) { fp->error = 0; fp->eof = 0; } }
+void fseterr(FILE *fp) {
+  if (fp)
+    fp->error = 1;
+}
+void clearerr(FILE *fp) {
+  if (fp) {
+    fp->error = 0;
+    fp->eof = 0;
+  }
+}
 int fileno(FILE *fp) { return fp ? fp->fd : -1; }
 
 char *strdup(const char *s) {
@@ -2101,8 +2118,9 @@ long strtol(const char *nptr, char **endptr, int base) {
    * isalpha('\0') are both false, so the old loop already stopped at the
    * NUL terminator; this just says so up front. */
   while (*p && (isdigit((unsigned char)*p) || isalpha((unsigned char)*p))) {
-    int digit = isdigit((unsigned char)*p) ? *p - '0'
-                                            : tolower((unsigned char)*p) - 'a' + 10;
+    int digit = isdigit((unsigned char)*p)
+                    ? *p - '0'
+                    : tolower((unsigned char)*p) - 'a' + 10;
     if (digit >= base)
       break;
     val = val * base + digit;
@@ -2458,7 +2476,7 @@ int OS1_env_enum(char *buf, size_t size) {
 #define GETENV_SLOTS 4
 #define GETENV_VALMAX 128
 
-static char *_default_environ[] = { NULL };
+static char *_default_environ[] = {NULL};
 char **environ = _default_environ;
 
 char *getenv(const char *name) {
@@ -2575,7 +2593,8 @@ static void __env_propagate_to_child(long child_pid) {
     if (OS1_env_get(name, val, sizeof(val)) != 0)
       continue;
     char key[OS1_ENV_KEYMAX];
-    int klen = snprintf(key, sizeof(key), "sys.proc.%ld.env.%s", child_pid, name);
+    int klen =
+        snprintf(key, sizeof(key), "sys.proc.%ld.env.%s", child_pid, name);
     if (klen <= 0 || (size_t)klen >= sizeof(key)) /* R7: truncation check */
       continue;
     /* R7: best-effort by design (see the function comment above) — a single
@@ -2602,116 +2621,116 @@ static void __env_propagate_to_child(long child_pid) {
 int stat(const char *path, struct stat *buf)
 
 {
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    if (buf)
-        memset(buf, 0, sizeof(struct stat));
+  if (buf)
+    memset(buf, 0, sizeof(struct stat));
 
-    struct abi_stat as;
-    int r = _sys_stat(path, &as);
-    if (r != 0) {
-        errno = ENOENT;          /* o meglio: errno = -r; se il kernel restituisce errno negativi */
-        return -1;
-    }
+  struct abi_stat as;
+  int r = _sys_stat(path, &as);
+  if (r != 0) {
+    errno = ENOENT; /* o meglio: errno = -r; se il kernel restituisce errno
+                       negativi */
+    return -1;
+  }
 
-    if (buf) {
-        buf->st_size  = (off_t)as.size;
-        buf->st_mode  = (as.type == ABI_S_TYPE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
-        buf->st_nlink = 1;
-        buf->st_uid   = 0;
-        buf->st_gid   = 0;
-        buf->st_blksize = 4096;
-        buf->st_blocks  = (as.size + 511) / 512;
+  if (buf) {
+    buf->st_size = (off_t)as.size;
+    buf->st_mode =
+        (as.type == ABI_S_TYPE_DIR) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+    buf->st_nlink = 1;
+    buf->st_uid = 0;
+    buf->st_gid = 0;
+    buf->st_blksize = 4096;
+    buf->st_blocks = (as.size + 511) / 512;
 
-        /* Timestamp temporanei (finché il VFS non li supporta davvero) */
-        time_t now = time(NULL);
-        buf->st_atime = now;
-        buf->st_mtime = now;
-        buf->st_ctime = now;
+    /* Timestamp temporanei (finché il VFS non li supporta davvero) */
+    time_t now = time(NULL);
+    buf->st_atime = now;
+    buf->st_mtime = now;
+    buf->st_ctime = now;
 
 #if defined(_STATBUF_ST_NSEC) || defined(__USE_XOPEN2K8)
-        buf->st_atim.tv_sec  = now;
-        buf->st_atim.tv_nsec = 0;
-        buf->st_mtim.tv_sec  = now;
-        buf->st_mtim.tv_nsec = 0;
-        buf->st_ctim.tv_sec  = now;
-        buf->st_ctim.tv_nsec = 0;
+    buf->st_atim.tv_sec = now;
+    buf->st_atim.tv_nsec = 0;
+    buf->st_mtim.tv_sec = now;
+    buf->st_mtim.tv_nsec = 0;
+    buf->st_ctim.tv_sec = now;
+    buf->st_ctim.tv_nsec = 0;
 #endif
-    }
+  }
 
-    return 0;
+  return 0;
 }
 
-int statfs(const char *path, struct statfs *buf)
-{
-    if (!buf) {
-        errno = EFAULT;
-        return -1;
-    }
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+int statfs(const char *path, struct statfs *buf) {
+  if (!buf) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    memset(buf, 0, sizeof(*buf));
+  memset(buf, 0, sizeof(*buf));
 
-    struct stat st;
-    if (stat(path, &st) != 0)
-        return -1;
+  struct stat st;
+  if (stat(path, &st) != 0)
+    return -1;
 
-    /* Placeholder values — NexsOS1 non ha ancora un vero FS query */
-    buf->f_type    = 0x01021994UL;   /* tmpfs-like */
-    buf->f_bsize   = 4096;
-    buf->f_frsize  = 4096;
-    buf->f_blocks  = (st.st_size + 4095) / 4096;
-    buf->f_bfree   = buf->f_blocks;
-    buf->f_bavail  = buf->f_blocks;
-    buf->f_files   = 0;
-    buf->f_ffree   = 0;
-    buf->f_fsid.__val[0] = 0;
-    buf->f_fsid.__val[1] = 0;
-    buf->f_namelen = 255;
-    buf->f_flags   = 0;
+  /* Placeholder values — NexsOS1 non ha ancora un vero FS query */
+  buf->f_type = 0x01021994UL; /* tmpfs-like */
+  buf->f_bsize = 4096;
+  buf->f_frsize = 4096;
+  buf->f_blocks = (st.st_size + 4095) / 4096;
+  buf->f_bfree = buf->f_blocks;
+  buf->f_bavail = buf->f_blocks;
+  buf->f_files = 0;
+  buf->f_ffree = 0;
+  buf->f_fsid.__val[0] = 0;
+  buf->f_fsid.__val[1] = 0;
+  buf->f_namelen = 255;
+  buf->f_flags = 0;
 
-    return 0;
+  return 0;
 }
 
-int fstatfs(int fd, struct statfs *buf)
-{
-    if (!buf) {
-        errno = EFAULT;
-        return -1;
-    }
-    if (fd < 0) {
-        errno = EBADF;
-        return -1;
-    }
+int fstatfs(int fd, struct statfs *buf) {
+  if (!buf) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (fd < 0) {
+    errno = EBADF;
+    return -1;
+  }
 
-    /* NexsOS1 non ha ancora un modo per ottenere il path da un fd,
-       quindi per ora usiamo un placeholder basato su fstat.
-       Quando avremo fd → path o una vera syscall di fsinfo, si sistemerà. */
-    struct stat st;
-    if (fstat(fd, &st) != 0)
-        return -1;
+  /* NexsOS1 non ha ancora un modo per ottenere il path da un fd,
+     quindi per ora usiamo un placeholder basato su fstat.
+     Quando avremo fd → path o una vera syscall di fsinfo, si sistemerà. */
+  struct stat st;
+  if (fstat(fd, &st) != 0)
+    return -1;
 
-    memset(buf, 0, sizeof(*buf));
-    buf->f_type    = 0x01021994UL;
-    buf->f_bsize   = 4096;
-    buf->f_frsize  = 4096;
-    buf->f_blocks  = (st.st_size + 4095) / 4096;
-    buf->f_bfree   = buf->f_blocks;
-    buf->f_bavail  = buf->f_blocks;
-    buf->f_files   = 0;
-    buf->f_ffree   = 0;
-    buf->f_fsid.__val[0] = 0;
-    buf->f_fsid.__val[1] = 0;
-    buf->f_namelen = 255;
-    buf->f_flags   = 0;
+  memset(buf, 0, sizeof(*buf));
+  buf->f_type = 0x01021994UL;
+  buf->f_bsize = 4096;
+  buf->f_frsize = 4096;
+  buf->f_blocks = (st.st_size + 4095) / 4096;
+  buf->f_bfree = buf->f_blocks;
+  buf->f_bavail = buf->f_blocks;
+  buf->f_files = 0;
+  buf->f_ffree = 0;
+  buf->f_fsid.__val[0] = 0;
+  buf->f_fsid.__val[1] = 0;
+  buf->f_namelen = 255;
+  buf->f_flags = 0;
 
-    return 0;
+  return 0;
 }
 
 /*
@@ -2795,9 +2814,9 @@ int unlink(const char *pathname) {
  *
  * The current NexsOS1 FS layer provides create/write/read and delete, but no
  * inode-level hard-link syscall; the correct compatibility point is therefore
- * the existing file-creation path, not a synthetic extra file or fake kernel ABI.
- * We copy the source bytes into the destination path, fail if the destination
- * already exists, and leave the original untouched.
+ * the existing file-creation path, not a synthetic extra file or fake kernel
+ * ABI. We copy the source bytes into the destination path, fail if the
+ * destination already exists, and leave the original untouched.
  */
 int link(const char *oldpath, const char *newpath) {
   int size = OS1_fs_read(oldpath, NULL, 0, 0);
@@ -2861,7 +2880,8 @@ int mkfifo(const char *pathname, mode_t mode) {
  * getrlimit - query resource limits (stub).
  *
  * NexsOS1 does not enforce traditional process resource limits. This stub
- * returns dummy unlimited values for all resources (rlim_cur = rlim_max = 2^32).
+ * returns dummy unlimited values for all resources (rlim_cur = rlim_max =
+ * 2^32).
  */
 int getrlimit(int resource, struct rlimit *rlim) {
   (void)resource;
@@ -2885,7 +2905,7 @@ int getrlimit(int resource, struct rlimit *rlim) {
 int setrlimit(int resource, const struct rlimit *rlim) {
   (void)resource;
   (void)rlim;
-  return 0;  /* silently accept all limit changes */
+  return 0; /* silently accept all limit changes */
 }
 /*
  * getrusage - query resource usage (stub).
@@ -2907,32 +2927,33 @@ int getrusage(int who, struct rusage *usage) {
 /*
  * getloadavg - get system load average (real implementation via OS1_sys_stats).
  *
- * NexsOS1 provides instantaneous scheduler load via OS1_sys_stats(sched_runnable).
- * Since there is no historical load tracking, we report the current snapshot
- * (number of ready+running processes) for all three intervals (1m, 5m, 15m).
- * This gives userland programs an accurate instantaneous load, not a moving average.
+ * NexsOS1 provides instantaneous scheduler load via
+ * OS1_sys_stats(sched_runnable). Since there is no historical load tracking, we
+ * report the current snapshot (number of ready+running processes) for all three
+ * intervals (1m, 5m, 15m). This gives userland programs an accurate
+ * instantaneous load, not a moving average.
  */
 int getloadavg(double loadavg[], int nelem) {
   if (!loadavg || nelem < 1) {
     errno = EINVAL;
     return -1;
   }
-  
+
   struct os1_sysstats stats;
   long ret = OS1_sys_stats(&stats);
   if (ret < 0) {
     errno = (int)-ret;
     return -1;
   }
-  
+
   /* Use the current runnable count (READY+RUNNING processes) as load */
   double load = (double)stats.sched_runnable;
-  
+
   /* Fill the array up to nelem with the same load value */
   for (int i = 0; i < nelem; i++)
     loadavg[i] = load;
-  
-  return nelem;  /* Return number of elements filled */
+
+  return nelem; /* Return number of elements filled */
 }
 /*
  * getpriority / setpriority - process scheduling priority (stub).
@@ -3064,9 +3085,7 @@ time_t mktime(struct tm *tm) {
 /*
  * gmtime - convert time_t to UTC struct tm.
  */
-struct tm *gmtime(const time_t *timep) {
-  return localtime(timep);
-}
+struct tm *gmtime(const time_t *timep) { return localtime(timep); }
 
 /*
  * strftime - format a broken-down time in UTC using a minimal subset of
@@ -3161,9 +3180,7 @@ timezone_t tzalloc(const char *name) {
   return g_utc_tz;
 }
 
-void tzfree(timezone_t tz) {
-  (void)tz;
-}
+void tzfree(timezone_t tz) { (void)tz; }
 
 struct tm *localtime_rz(timezone_t tz, const time_t *t, struct tm *tm) {
   (void)tz;
@@ -3387,7 +3404,8 @@ int utf8_decode(const char *s, size_t len, uint32_t *code) {
  * API; NO new OS1 syscalls are added (the maintainer's directive: "il resto va
  * portato nella libc e in posix, non in os1").  strcat/strncat/memchr/atoi/...
  * live in userland common/string.c (included above); the functions here are
- * the remaining POSIX surface needed by ported programs (base-nexs, kilo, doom).
+ * the remaining POSIX surface needed by ported programs (base-nexs, kilo,
+ * doom).
  * ========================================================================== */
 
 /* --- <string.h> --- */
@@ -3459,17 +3477,22 @@ long long atoll(const char *nptr) { return strtoll(nptr, NULL, 10); }
 
 /* strtoul / strtoull — unsigned variants of strtol */
 unsigned long strtoul(const char *nptr, char **endptr, int base) {
-  while (*nptr == ' ' || *nptr == '\t' || *nptr == '\n' ||
-         *nptr == '\r' || *nptr == '\f' || *nptr == '\v')
+  while (*nptr == ' ' || *nptr == '\t' || *nptr == '\n' || *nptr == '\r' ||
+         *nptr == '\f' || *nptr == '\v')
     nptr++;
   int neg = 0;
-  if (*nptr == '-') { neg = 1; nptr++; }
-  else if (*nptr == '+') nptr++;
+  if (*nptr == '-') {
+    neg = 1;
+    nptr++;
+  } else if (*nptr == '+')
+    nptr++;
   if (base == 0) {
     if (nptr[0] == '0' && (nptr[1] == 'x' || nptr[1] == 'X')) {
-      base = 16; nptr += 2;
+      base = 16;
+      nptr += 2;
     } else if (nptr[0] == '0') {
-      base = 8; nptr++;
+      base = 8;
+      nptr++;
     } else {
       base = 10;
     }
@@ -3481,15 +3504,21 @@ unsigned long strtoul(const char *nptr, char **endptr, int base) {
   const char *start = nptr;
   while (*nptr) {
     int digit;
-    if (*nptr >= '0' && *nptr <= '9')      digit = *nptr - '0';
-    else if (*nptr >= 'a' && *nptr <= 'z') digit = *nptr - 'a' + 10;
-    else if (*nptr >= 'A' && *nptr <= 'Z') digit = *nptr - 'A' + 10;
-    else break;
-    if (digit >= base) break;
+    if (*nptr >= '0' && *nptr <= '9')
+      digit = *nptr - '0';
+    else if (*nptr >= 'a' && *nptr <= 'z')
+      digit = *nptr - 'a' + 10;
+    else if (*nptr >= 'A' && *nptr <= 'Z')
+      digit = *nptr - 'A' + 10;
+    else
+      break;
+    if (digit >= base)
+      break;
     result = result * (unsigned long)base + (unsigned long)digit;
     nptr++;
   }
-  if (endptr) *endptr = (char *)(nptr == start ? start : nptr);
+  if (endptr)
+    *endptr = (char *)(nptr == start ? start : nptr);
   return neg ? -result : result;
 }
 
@@ -3498,7 +3527,6 @@ unsigned long long strtoull(const char *nptr, char **endptr, int base) {
 }
 
 long labs(long j) { return j < 0 ? -j : j; }
-
 
 void abort(void) {
   exit(1);
@@ -3745,7 +3773,8 @@ int sigismember(const sigset_t *set, int sig) {
   return ((*set & ((sigset_t)1U << (sig - 1))) != 0) ? 1 : 0;
 }
 
-int sigprocmask(int how, const sigset_t *restrict set, sigset_t *restrict oldset) {
+int sigprocmask(int how, const sigset_t *restrict set,
+                sigset_t *restrict oldset) {
   (void)how;
   if (oldset)
     *oldset = 0;
@@ -3917,10 +3946,10 @@ int uname(struct utsname *buf) {
   strncpy(buf->nodename, "nexsos", sizeof(buf->nodename) - 1);
   buf->nodename[sizeof(buf->nodename) - 1] = '\0';
 
-  strncpy(buf->release, "0.0.5.5", sizeof(buf->release) - 1);
+  strncpy(buf->release, "0.0.6.0", sizeof(buf->release) - 1);
   buf->release[sizeof(buf->release) - 1] = '\0';
 
-  strncpy(buf->version, "Proxima-V0.0.5.5", sizeof(buf->version) - 1);
+  strncpy(buf->version, "Proxima-V0.0.6.0", sizeof(buf->version) - 1);
   buf->version[sizeof(buf->version) - 1] = '\0';
 
 #if defined(ARCH_AMD64) || defined(__x86_64__)
@@ -3978,19 +4007,32 @@ struct lconv *localeconv(void) { return &s_posix_lconv; }
 static int wctype_value(wint_t wc, const char *property) {
   if (!property)
     return 0;
-  if (strcmp(property, "alnum") == 0) return iswalnum(wc);
-  if (strcmp(property, "alpha") == 0) return iswalpha(wc);
-  if (strcmp(property, "blank") == 0) return iswblank(wc);
-  if (strcmp(property, "cntrl") == 0) return iswcntrl(wc);
-  if (strcmp(property, "digit") == 0) return iswdigit(wc);
-  if (strcmp(property, "graph") == 0) return iswgraph(wc);
-  if (strcmp(property, "lower") == 0) return iswlower(wc);
-  if (strcmp(property, "print") == 0) return iswprint(wc);
-  if (strcmp(property, "punct") == 0) return iswpunct(wc);
-  if (strcmp(property, "space") == 0) return iswspace(wc);
-  if (strcmp(property, "upper") == 0) return iswupper(wc);
-  if (strcmp(property, "xdigit") == 0) return iswxdigit(wc);
-  if (strcmp(property, "any") == 0) return 1;
+  if (strcmp(property, "alnum") == 0)
+    return iswalnum(wc);
+  if (strcmp(property, "alpha") == 0)
+    return iswalpha(wc);
+  if (strcmp(property, "blank") == 0)
+    return iswblank(wc);
+  if (strcmp(property, "cntrl") == 0)
+    return iswcntrl(wc);
+  if (strcmp(property, "digit") == 0)
+    return iswdigit(wc);
+  if (strcmp(property, "graph") == 0)
+    return iswgraph(wc);
+  if (strcmp(property, "lower") == 0)
+    return iswlower(wc);
+  if (strcmp(property, "print") == 0)
+    return iswprint(wc);
+  if (strcmp(property, "punct") == 0)
+    return iswpunct(wc);
+  if (strcmp(property, "space") == 0)
+    return iswspace(wc);
+  if (strcmp(property, "upper") == 0)
+    return iswupper(wc);
+  if (strcmp(property, "xdigit") == 0)
+    return iswxdigit(wc);
+  if (strcmp(property, "any") == 0)
+    return 1;
   return 0;
 }
 
@@ -4041,10 +4083,20 @@ wint_t c32toupper(wint_t wc) { return towupper(wc); }
 
 size_t c32rtomb(char *s, char32_t wc, mbstate_t *ps) {
   (void)ps;
-  if (!s) return 1;
-  if (wc == 0) { s[0] = '\0'; return 1; }
-  if (wc <= 0x7f) { s[0] = (char)wc; s[1] = '\0'; return 1; }
-  s[0] = '?'; s[1] = '\0'; return 1;
+  if (!s)
+    return 1;
+  if (wc == 0) {
+    s[0] = '\0';
+    return 1;
+  }
+  if (wc <= 0x7f) {
+    s[0] = (char)wc;
+    s[1] = '\0';
+    return 1;
+  }
+  s[0] = '?';
+  s[1] = '\0';
+  return 1;
 }
 
 size_t mbrtoc32(char32_t *pwc, const char *s, size_t n, mbstate_t *ps) {
@@ -4387,7 +4439,8 @@ int lchownat(int dirfd, const char *pathname, uid_t owner, gid_t group) {
   return fchownat(dirfd, pathname, owner, group, AT_SYMLINK_NOFOLLOW);
 }
 
-int fchownat(int dirfd, const char *pathname, uid_t owner, gid_t group, int flags) {
+int fchownat(int dirfd, const char *pathname, uid_t owner, gid_t group,
+             int flags) {
   (void)owner;
   (void)group;
   (void)flags;
@@ -4446,7 +4499,7 @@ static char _pw_shell[] = "sys/bin/nxshell";
 
 static char _gr_name[] = "root";
 static char _gr_passwd[] = "";
-static char * _gr_mem[] = {NULL};
+static char *_gr_mem[] = {NULL};
 
 static struct passwd _nexs_root_pw = {.pw_name = _pw_name,
                                       .pw_passwd = _pw_passwd,
@@ -4457,9 +4510,9 @@ static struct passwd _nexs_root_pw = {.pw_name = _pw_name,
                                       .pw_shell = _pw_shell};
 
 static struct group _nexs_root_gr = {.gr_name = _gr_name,
-                                    .gr_passwd = _gr_passwd,
-                                    .gr_gid = 0,
-                                    .gr_mem = _gr_mem};
+                                     .gr_passwd = _gr_passwd,
+                                     .gr_gid = 0,
+                                     .gr_mem = _gr_mem};
 
 struct passwd *getpwuid(uid_t uid) {
   if (uid == 0)
@@ -4563,21 +4616,43 @@ uintmax_t strtoumax(const char *nptr, char **endptr, int base) {
 pid_t getppid(void) { return 1; }
 
 int kill(pid_t pid, int sig) {
-  (void)pid; (void)sig;
+  (void)pid;
+  (void)sig;
   errno = EPERM;
   return -1;
 }
 
-int setuid(uid_t uid)  { (void)uid;  return 0; }
-int seteuid(uid_t uid) { (void)uid;  return 0; }
-int setgid(gid_t gid)  { (void)gid;  return 0; }
-int setegid(gid_t gid) { (void)gid;  return 0; }
+int setuid(uid_t uid) {
+  (void)uid;
+  return 0;
+}
+int seteuid(uid_t uid) {
+  (void)uid;
+  return 0;
+}
+int setgid(gid_t gid) {
+  (void)gid;
+  return 0;
+}
+int setegid(gid_t gid) {
+  (void)gid;
+  return 0;
+}
 
-int setreuid(uid_t ruid, uid_t euid) { (void)ruid; (void)euid; return 0; }
-int setregid(gid_t rgid, gid_t egid) { (void)rgid; (void)egid; return 0; }
+int setreuid(uid_t ruid, uid_t euid) {
+  (void)ruid;
+  (void)euid;
+  return 0;
+}
+int setregid(gid_t rgid, gid_t egid) {
+  (void)rgid;
+  (void)egid;
+  return 0;
+}
 
 int getgroups(int size, gid_t list[]) {
-  if (size >= 1) list[0] = 0;
+  if (size >= 1)
+    list[0] = 0;
   return 1;
 }
 
@@ -4589,7 +4664,8 @@ char *ttyname(int fd) {
 
 int ttyname_r(int fd, char *buf, size_t buflen) {
   (void)fd;
-  if (buflen < 9) return ERANGE;
+  if (buflen < 9)
+    return ERANGE;
   strncpy(buf, "/dev/tty", buflen - 1);
   buf[buflen - 1] = '\0';
   return 0;
@@ -4598,7 +4674,8 @@ int ttyname_r(int fd, char *buf, size_t buflen) {
 char *getlogin(void) { return (char *)"root"; }
 
 int getlogin_r(char *buf, size_t bufsize) {
-  if (bufsize < 5) return ERANGE;
+  if (bufsize < 5)
+    return ERANGE;
   strncpy(buf, "root", bufsize - 1);
   buf[bufsize - 1] = '\0';
   return 0;
@@ -4607,20 +4684,38 @@ int getlogin_r(char *buf, size_t bufsize) {
 /* ── Misc POSIX stubs ───────────────────────────────────────────────── */
 long sysconf(int name) {
   switch (name) {
-  case 84: /* _SC_NPROCESSORS_ONLN */ return 1;
-  case 83: /* _SC_NPROCESSORS_CONF */ return 1;
-  case 30: /* _SC_PAGESIZE */         return 4096;
-  case 2:  /* _SC_CLK_TCK */          return 100;
-  case 5:  /* _SC_OPEN_MAX */         return 256;
-  case 71: /* _SC_LOGIN_NAME_MAX */   return 256;
-  case 72: /* _SC_HOST_NAME_MAX */    return 256;
-  default: errno = EINVAL; return -1;
+  case 84: /* _SC_NPROCESSORS_ONLN */
+    return 1;
+  case 83: /* _SC_NPROCESSORS_CONF */
+    return 1;
+  case 30: /* _SC_PAGESIZE */
+    return 4096;
+  case 2: /* _SC_CLK_TCK */
+    return 100;
+  case 5: /* _SC_OPEN_MAX */
+    return 256;
+  case 71: /* _SC_LOGIN_NAME_MAX */
+    return 256;
+  case 72: /* _SC_HOST_NAME_MAX */
+    return 256;
+  default:
+    errno = EINVAL;
+    return -1;
   }
 }
 
-unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
-int pause(void) { errno = EINTR; return -1; }
-int nice(int inc) { (void)inc; return 0; }
+unsigned int alarm(unsigned int seconds) {
+  (void)seconds;
+  return 0;
+}
+int pause(void) {
+  errno = EINTR;
+  return -1;
+}
+int nice(int inc) {
+  (void)inc;
+  return 0;
+}
 
 /* ==========================================================================
  * Timestamp support (utime family) — required by GNU Coreutils `touch`
@@ -4629,91 +4724,85 @@ int nice(int inc) { (void)inc; return 0; }
 /* Definiamo qui le strutture perché NexsOS1 non ha ancora <utime.h> */
 
 struct utimbuf {
-    time_t actime;   /* access time */
-    time_t modtime;  /* modification time */
+  time_t actime;  /* access time */
+  time_t modtime; /* modification time */
 };
 
 int utime(const char *path, const struct utimbuf *times);
 int utimes(const char *path, const struct timeval times[2]);
-int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags);
+int utimensat(int dirfd, const char *path, const struct timespec times[2],
+              int flags);
 int futimens(int fd, const struct timespec times[2]);
 
 /*
  * utime - set access and modification times of a file.
  * times == NULL → set both to current time.
  */
-__attribute__((weak))
-int utime(const char *path, const struct utimbuf *times)
-{
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+__attribute__((weak)) int utime(const char *path, const struct utimbuf *times) {
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    /* Assicuriamoci che il file esista (comportamento di touch) */
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-        if (fd < 0)
-            return -1;
-        close(fd);
-    }
+  /* Assicuriamoci che il file esista (comportamento di touch) */
+  struct stat st;
+  if (stat(path, &st) != 0) {
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0)
+      return -1;
+    close(fd);
+  }
 
-    (void)times;   /* il filesystem non salva ancora i timestamp */
-    return 0;
+  (void)times; /* il filesystem non salva ancora i timestamp */
+  return 0;
 }
 
-__attribute__((weak))
-int utimes(const char *path, const struct timeval times[2])
-{
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+__attribute__((weak)) int utimes(const char *path,
+                                 const struct timeval times[2]) {
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    struct utimbuf buf;
-    if (times) {
-        buf.actime  = times[0].tv_sec;
-        buf.modtime = times[1].tv_sec;
-    } else {
-        time_t now = time(NULL);
-        buf.actime  = now;
-        buf.modtime = now;
-    }
-    return utime(path, times ? &buf : NULL);
+  struct utimbuf buf;
+  if (times) {
+    buf.actime = times[0].tv_sec;
+    buf.modtime = times[1].tv_sec;
+  } else {
+    time_t now = time(NULL);
+    buf.actime = now;
+    buf.modtime = now;
+  }
+  return utime(path, times ? &buf : NULL);
 }
 
-__attribute__((weak))
-int utimensat(int dirfd, const char *path,
-              const struct timespec times[2], int flags)
-{
-    (void)flags;
+__attribute__((weak)) int utimensat(int dirfd, const char *path,
+                                    const struct timespec times[2], int flags) {
+  (void)flags;
 
-    if (dirfd != AT_FDCWD) {
-        errno = ENOTSUP;
-        return -1;
-    }
-    if (!path) {
-        errno = EFAULT;
-        return -1;
-    }
+  if (dirfd != AT_FDCWD) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  if (!path) {
+    errno = EFAULT;
+    return -1;
+  }
 
-    struct timeval tv[2];
-    if (times) {
-        tv[0].tv_sec  = times[0].tv_sec;
-        tv[0].tv_usec = times[0].tv_nsec / 1000;
-        tv[1].tv_sec  = times[1].tv_sec;
-        tv[1].tv_usec = times[1].tv_nsec / 1000;
-    }
-    return utimes(path, times ? tv : NULL);
+  struct timeval tv[2];
+  if (times) {
+    tv[0].tv_sec = times[0].tv_sec;
+    tv[0].tv_usec = times[0].tv_nsec / 1000;
+    tv[1].tv_sec = times[1].tv_sec;
+    tv[1].tv_usec = times[1].tv_nsec / 1000;
+  }
+  return utimes(path, times ? tv : NULL);
 }
-__attribute__((weak))
-int futimens(int fd, const struct timespec times[2])
-{
-    if (fd < 0) {
-        errno = EBADF;
-        return -1;
-    }
-    (void)times;
-    return 0;
+__attribute__((weak)) int futimens(int fd, const struct timespec times[2]) {
+  if (fd < 0) {
+    errno = EBADF;
+    return -1;
+  }
+  (void)times;
+  return 0;
 }

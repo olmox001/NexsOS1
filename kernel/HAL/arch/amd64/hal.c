@@ -11,7 +11,8 @@
  *     HAL device list.
  *   - arch_irq_init: initialises the legacy 8259 PIC.
  *   - arch_timer_init: runs LAPIC calibration once on the BSP.
- *   - timer_init_percpu: starts the per-CPU LAPIC periodic timer at HZ.
+ *   - clockevent: selects TSC-deadline when advertised, otherwise the
+ *     calibrated LAPIC one-shot countdown; periodic mode remains fallback.
  *
  * Known issues:
  *   DRV-VIRTIO-01 (W5 BUG) pci_get_bar (pci.c:106) returns uint32_t.  For
@@ -33,6 +34,7 @@
 #include <arch/pt_regs.h>
 #include <hal/core.h>
 #include <hal/provider.h>
+#include <hal/timer_protocol.h>
 #include <arch/amd64/apic.h>
 #include <kernel/multiboot2.h>
 #include <kernel/platform.h>
@@ -230,34 +232,60 @@ int nxhal_provider_clocksource_read(uint64_t *out_count) {
 int nxhal_provider_clockevent_info(struct nxhal_clockevent_v1 *out) {
   if (out == NULL)
     return NXHAL_TIME_E_NULL;
-  if (ticks_per_ms == 0U)
+  if (tsc_hz == 0U || ticks_per_ms == 0U)
+    return NXHAL_TIME_E_NOT_READY;
+
+  uint64_t min_delta = lapic_tsc_deadline_supported() != 0
+                           ? 1U
+                           : lapic_timer_oneshot_min_tsc_delta();
+  uint64_t max_delta = lapic_tsc_deadline_supported() != 0
+                           ? INT64_MAX
+                           : lapic_timer_oneshot_max_tsc_delta();
+  if (min_delta == 0U || max_delta < min_delta)
     return NXHAL_TIME_E_NOT_READY;
 
   *out = (struct nxhal_clockevent_v1){
       .abi_version = NXHAL_TIME_ABI_VERSION,
       .struct_size = sizeof(*out),
       .event_id = NXHAL_CLOCKEVENT_ID_AMD64_LAPIC,
-      .flags = NXHAL_CLOCKEVENT_PER_CPU | NXHAL_CLOCKEVENT_PERIODIC,
+      .flags = NXHAL_CLOCKEVENT_PER_CPU | NXHAL_CLOCKEVENT_PERIODIC |
+               NXHAL_CLOCKEVENT_ONESHOT | NXHAL_CLOCKEVENT_ABSOLUTE,
       .irq = UINT32_C(32),
-      .frequency_hz = (uint64_t)ticks_per_ms * UINT64_C(1000),
-      .min_delta_counts = 1U,
-      .max_delta_counts = UINT32_MAX,
+      /* Absolute programming is normalized to the TSC clocksource domain.
+       * The LAPIC countdown fallback translates that deadline internally. */
+      .frequency_hz = tsc_hz,
+      .min_delta_counts = min_delta,
+      .max_delta_counts = max_delta,
   };
   return NXHAL_TIME_OK;
 }
 
 int nxhal_provider_clockevent_percpu_init(uint64_t frequency_hz) {
-  return lapic_timer_setup(frequency_hz) == 0 ? NXHAL_TIME_OK
-                                             : NXHAL_TIME_E_INVALID;
+  uint64_t target;
+  int setup_status = lapic_tsc_deadline_supported() != 0
+                         ? lapic_timer_deadline_setup()
+                         : lapic_timer_oneshot_setup();
+  if (setup_status != 0)
+    return NXHAL_TIME_E_INVALID;
+  target = nxhal_timer_arm_current();
+  if (target == 0U)
+    return NXHAL_TIME_E_INVALID;
+  nxhal_diag_info("LAPIC: CPU %u absolute event armed at 0x%lx\n",
+                  lapic_get_id(), target);
+  (void)frequency_hz;
+  return NXHAL_TIME_OK;
 }
 
 int nxhal_provider_clockevent_program_absolute(uint64_t count) {
-  (void)count;
-  return NXHAL_TIME_E_UNSUPPORTED;
+  int status = lapic_tsc_deadline_supported() != 0
+                   ? lapic_timer_deadline_program(count)
+                   : lapic_timer_oneshot_program_tsc(count);
+  return status == 0 ? NXHAL_TIME_OK : NXHAL_TIME_E_INVALID;
 }
 
 int nxhal_provider_clockevent_program_periodic(uint64_t frequency_hz) {
-  return nxhal_provider_clockevent_percpu_init(frequency_hz);
+  return lapic_timer_setup(frequency_hz) == 0 ? NXHAL_TIME_OK
+                                             : NXHAL_TIME_E_INVALID;
 }
 
 int nxhal_provider_clockevent_stop(void) {

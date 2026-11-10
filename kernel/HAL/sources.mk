@@ -65,6 +65,7 @@ HAL_C_SOURCES += $(HAL_ROOT)/common/boot_memory_record.c \
                  $(HAL_ROOT)/core/frame.c \
                  $(HAL_ROOT)/core/core_protocol.c \
                  $(HAL_ROOT)/core/fault_protocol.c \
+                 $(HAL_ROOT)/core/nxpax.c \
                  $(HAL_ROOT)/core/diagnostic_protocol.c \
                  $(HAL_ROOT)/core/timer_protocol.c \
                  $(HAL_ROOT)/core/smp_protocol.c \

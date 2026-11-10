@@ -134,6 +134,7 @@ static uint32_t gic_num_irqs;
  * shortcut — no amount of restructuring this driver can route an SPI to a
  * 9th CPU through this register. */
 #define GIC_ITARGETSR_MAX_CPUS 8U
+#define GIC_RESCHEDULE_SGI UINT32_C(1)
 
 /* gic_num_online: count of CPUs that have PROVABLY finished gic_init_cpu()
  * — i.e. real, running cores, never an estimate.  Starts implicitly at 0;
@@ -482,6 +483,15 @@ static void gic_send_ipi(void) {
   GICD_REG(GICD_SGIR) = (1U << 24) | 0; /* filter=broadcast-except-self, SGI0 */
 }
 
+static int gic_send_reschedule(uint32_t cpu_id) {
+  if (cpu_id >= GIC_ITARGETSR_MAX_CPUS)
+    return -1;
+  uint32_t target = UINT32_C(1) << cpu_id;
+  __asm__ __volatile__("dsb ishst" ::: "memory");
+  GICD_REG(GICD_SGIR) = (target << 16) | GIC_RESCHEDULE_SGI;
+  return 0;
+}
+
 /*
  * gic_ack - acknowledge the current interrupt and return its raw IAR value.
  *
@@ -566,6 +576,8 @@ static const struct nxhal_irq_controller_ops gic_chip = {
     .disable = gic_disable,
     .set_priority = gic_set_prio,
     .send_ipi_all = gic_send_ipi,
+    .send_reschedule = gic_send_reschedule,
+    .reschedule_irq = GIC_RESCHEDULE_SGI,
     .acknowledge = gic_ack,
     .end = gic_eoi,
 };

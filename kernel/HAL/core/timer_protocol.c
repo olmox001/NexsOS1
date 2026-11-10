@@ -3,8 +3,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+enum nxhal_timer_bind_state {
+  NXHAL_TIMER_UNBOUND = 0,
+  NXHAL_TIMER_BINDING = 1,
+  NXHAL_TIMER_BOUND = 2
+};
+
 static struct nxhal_timer_protocol_v1 timer_protocol;
-static volatile uint32_t timer_bound;
+static uint32_t timer_bound;
 
 static void nxhal_timer_unbound(void) __attribute__((noreturn));
 static void nxhal_timer_unbound(void) {
@@ -23,17 +29,20 @@ int nxhal_timer_bind(const struct nxhal_timer_protocol_v1 *protocol) {
     return NXHAL_TIMER_BIND_E_RESERVED;
   if (protocol->arm_current == NULL || protocol->tick_current == NULL)
     return NXHAL_TIMER_BIND_E_MISSING;
-  if (!__sync_bool_compare_and_swap(&timer_bound, 0U, 1U))
+  uint32_t expected = NXHAL_TIMER_UNBOUND;
+  if (!__atomic_compare_exchange_n(&timer_bound, &expected,
+                                   NXHAL_TIMER_BINDING, 0,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return NXHAL_TIMER_BIND_E_STATE;
 
   timer_protocol = *protocol;
-  __sync_synchronize();
-  timer_bound = 2U;
+  __atomic_store_n(&timer_bound, NXHAL_TIMER_BOUND, __ATOMIC_RELEASE);
   return NXHAL_TIMER_BIND_OK;
 }
 
 int nxhal_timer_is_bound(void) {
-  return timer_bound == 2U;
+  return __atomic_load_n(&timer_bound, __ATOMIC_ACQUIRE) ==
+         NXHAL_TIMER_BOUND;
 }
 
 uint64_t nxhal_timer_arm_current(void) {

@@ -178,10 +178,11 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame);
 #define SPAWN_MAX_ARGS 16
 #define SPAWN_ARG_LEN 128
 
-/* level_for_path - the capability PRESET a binary gets from its location in the
- * VFS (ASTRA per-path stratification, F1): a /sys/bin service runs at ROOT
- * (system authority — refined per service later), everything else (notably
- * /bin) at USER.  This is a CEILING + default, NOT an escalation:
+/* level_for_path - transitional capability preset from the executable VFS
+ * location. /sys/services and /sys/bin are ROOT system code; /sbin is MACHINE;
+ * /bin is USER.  Service capability manifests replace this path-derived policy
+ * in the object/capability migration.  This is a CEILING + default, not an
+ * escalation:
  * process_create_caps still clamps the child to no more privileged than its
  * creator, so a USER shell launching a /sys/bin binary does NOT gain root.
  * /sys/bin is also write- protected (object.c handle_create denies non-machine
@@ -191,6 +192,8 @@ static uint8_t level_for_path(const char *path) {
   if (path && strncmp(path, "/sbin/", 6) == 0)
     return PLVL_MACHINE;
   if (path && strncmp(path, "/sys/bin/", 9) == 0)
+    return PLVL_ROOT;
+  if (path && strncmp(path, "/sys/services/", 14) == 0)
     return PLVL_ROOT;
   return PLVL_USER;
 }
@@ -1298,9 +1301,7 @@ long sys_clock_gettime(int clock_id) {
 }
 
 static void proc_sleep_wake(void *data) {
-  struct process *process = (struct process *)data;
-  if (process != NULL && process->state == PROC_SLEEPING)
-    enqueue_task(process);
+  OS1libkernel_process_sleep_timer_wake((struct process *)data);
 }
 
 static hal_frame_t *sys_nanosleep(hal_frame_t *frame, uint64_t ns) {

@@ -21,3 +21,4 @@ kernel/HAL/build/
 kernel/HAL/tests/build/
 kernel/HAL/references/
 *.pyc
+user/home/Pictures/icon.zip
