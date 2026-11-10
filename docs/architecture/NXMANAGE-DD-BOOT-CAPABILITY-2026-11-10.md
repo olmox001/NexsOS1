@@ -133,3 +133,74 @@ SMP stress, loss/backpressure accounting, source-wide libc function coverage
 and strict project-wide Power12 remain mandatory independent qualifications.
 A successful compile or boot does not prove them. Evidence must be recorded
 only after execution, not inferred from code or design.
+
+## 2026-11-10: userland diagnostic services, IPC errno, and two-arch ISO acceptance
+
+Scope: \`kernel/sched/process.c\`, \`user/sys/services/nxexecd.c\`,
+\`nxkeyboardd.c\`, \`nxmoused.c\`, \`nxntfy_srv.c\`, \`nxpaxd.c\`, and
+\`nxtimerdd.c\`. The existing userland \`OS1_report_error\` classifier and
+notification PORT are used for service error reporting, rather than emitting
+ad-hoc severity messages with \`print\`/\`printf\`. The notification receiver
+does not recursively notify itself; it records local delivery failures in its
+existing registry transport. The exec broker validates bounded pipe protocol
+data, owns request/reply/granted handles, and reports failures instead of
+claiming success. Keyboard, mouse, and compositor service routing preserve
+input/frame semantics. The legacy non-blocking kernel process mailbox syscall
+now returns \`-EAGAIN\` for an empty queue and \`-EFAULT\` for an invalid
+destination rather than the ambiguous \`-1\`.
+
+**Actual verification evidence** (two real, freshly rebuilt GRUB ISO guests,
+not a simulated test and not merely a compiler check):
+
+| Verification | AMD64 BIOS ISO | AArch64 UEFI ISO |
+| --- | --- | --- |
+| \`make ARCH=<arch> BUILD_ROOT=build/nxservice-audit[-arm64] -j4 boot-iso\` | PASS | PASS |
+| Kernel boot tests | 30/30 | 31/31 |
+| Interactive NXShell, \`echo\`, \`uname -s\` | PASS | PASS |
+| \`/sys/bin/nxpax --probe\` | PASS | PASS |
+| \`/bin/notifytest\` INFO/WARN/ERROR live PORT and registry | 0 failures | 0 failures |
+| \`/bin/capipc\` delegated capability message | 0 failures | 0 failures |
+| \`/bin/captest\` kernel object/exec-service ownership tests | 82/82, 0 failures | 82/82, 0 failures |
+| Kernel panic in observed ISO guest | none observed | none observed |
+
+The \`captest\` shell returns a prompt before the independently running test
+finishes. Acceptance therefore waits for the actual guest UART
+\`[captest] done: 82/82 passed, 0 failure(s)\` and rejects any observed
+\`[captest] ...: FAIL\`; observing the shell prompt alone is **not** accepted.
+The \`exec-service\` portion verifies a real transferred-handle reply, a
+spawned PID, and process ownership by the requesting client. Each QEMU guest
+was stopped after capture.
+
+Reproducible host sources and transcript paths:
+
+- AMD64: \`/tmp/nexs-debugfix-amd64-bootiso-final-20261110.log\`,
+  \`/tmp/nexs-debugfix-amd64-isoaccept-final-20261110.log\`,
+  \`build/nxservice-audit/runtime/nxadb/amd64/iso-bios/serial.log\`.
+- AArch64: \`/tmp/nexs-debugfix-aarch64-bootiso-final-20261110.log\`,
+  \`/tmp/nexs-debugfix-aarch64-isoaccept-final-20261110.log\`,
+  \`build/nxservice-audit-arm64/runtime/nxadb/aarch64/iso-uefi/serial.log\`.
+- The temporary diagnostic harness is
+  \`/tmp/nexs_debugfix_iso_accept_20261110.py\`. It uses isolated NXADB
+  sessions, shortened QMP Unix socket paths, and skips NXADB's **duplicate**
+  implicit make invocation only because \`boot-iso\` was independently run
+  successfully for each exact image first. No actual boot, userland command,
+  service test, test-result check or Power12 failure was replaced with fake
+  output. Original UART files are retained outside staged source.
+- \`make check-kernel-contracts\`: PASS.
+  \`make test-nxpax-core\`: PASS.
+  \`make test-nxpax-stress\`: PASS (one million and two million genuine
+  concurrent-writer events, with nonzero bounded-ring drop accounting).
+- \`make power12-changed\` passed with zero findings **before** the services
+  were committed. This is **not** full Power12 qualification: the last full
+  project audit still reported 371 provenance findings and 4650 structural
+  AST findings. Full strict qualification remains open. The original
+  interactive \`make run\` target itself has a persistent QEMU process by
+  design; the corresponding exact GRUB ISO/QEMU boots were validated here.
+
+**Git state:** while the verification was running, another concurrent actor
+created commit \`2e5da18\` on the authorized \`DEV-Resurrection\` branch
+containing the above seven-file change set. This verification process did
+**not** invoke \`git commit\`, amend, reset, or switch branches. The source
+files were already committed and the working tree clean when the evidence was
+prepared. This record is staged separately for review; it does not pretend
+the code is still awaiting its commit.
