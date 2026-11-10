@@ -1,36 +1,16 @@
 /*
- * NXPAX: supervised userland diagnostic broker.
- * Reads the privileged OS1_NS_RESOURCE object and serves sanitized records
- * through the existing named capability port and transferred reply pipe.
- * HAL owns hardware facts; Core owns disposition; this process only reports.
+ * NXPAX: diagnostic command client.
+ * Queries the dedicated /sys/services/nxpaxd broker through a capability
+ * port and transferred response pipe. It never opens the privileged resource
+ * or instantiates the server.
  */
 #include <os1.h>
 #include <nxpax.h>
+#include <nxpax_service.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
-
-#define NXPAX_PORT "OS1nx_pax"
-#define NXPAX_IPC_READ 0x220
-#define NXPAX_CLAIM_TRIES 20U
-#define NXPAX_MAX_PROBE OS1_NXPAX_MAX_WINDOW_RECORDS
-static int nxpax_write_full(int handle,
-                            const struct os1_nxpax_query *query) {
-  const uint8_t *bytes = (const uint8_t *)query;
-  size_t done = 0U;
-  if (query == NULL)
-    return -1;
-  for (size_t step = 0U; step < sizeof(*query) && done < sizeof(*query);
-       ++step) {
-    long result = OS1_object_write(handle, bytes + done,
-                                   sizeof(*query) - done);
-    if (result <= 0 || (size_t)result > sizeof(*query) - done)
-      return -1;
-    done += (size_t)result;
-  }
-  return done == sizeof(*query) ? 0 : -1;
-}
 
 static int nxpax_read_full(int handle, struct os1_nxpax_query *query) {
   uint8_t *bytes = (uint8_t *)query;
@@ -46,73 +26,6 @@ static int nxpax_read_full(int handle, struct os1_nxpax_query *query) {
     done += (size_t)result;
   }
   return done == sizeof(*query) ? 0 : -1;
-}
-
-static int nxpax_claim_port(void) {
-  for (uint32_t step = 0U; step < NXPAX_CLAIM_TRIES; ++step) {
-    int handle = OS1_port_create(NXPAX_PORT);
-    if (handle >= 0)
-      return handle;
-    OS1_sleep(100);
-  }
-  return -1;
-}
-
-static void nxpax_serve_request(const struct ipc_message *message, int source) {
-  struct os1_nxpax_query query = {0};
-  int reply = -1;
-  memcpy(&reply, message->payload, sizeof(reply));
-  if (reply < 0)
-    return;
-  if (message->type == NXPAX_IPC_READ &&
-      message->data2 == OS1_NXPAX_ABI_VERSION &&
-      message->data1 != UINT64_MAX) {
-    query.abi_version = OS1_NXPAX_ABI_VERSION;
-    query.operation_id = OS1_NXPAX_OP_READ_RECORD;
-    query.struct_size = sizeof(query);
-    query.cursor = message->data1;
-    if (OS1_object_read(source, &query, sizeof(query)) == (long)sizeof(query)) {
-      /* The service deliberately does not delegate machine addresses to
-       * clients with only an OS1nx_pax send capability. */
-      query.fault_pc = 0U;
-      query.fault_address = 0U;
-      if (query.kind != OS1_NXPAX_KIND_DIAGNOSTIC_WARNING &&
-          query.kind != OS1_NXPAX_KIND_DIAGNOSTIC_ERROR)
-        query.syndrome = 0U;
-      if (nxpax_write_full(reply, &query) != 0)
-        printf("[NXPAX] delivery failed for requester %d\n", message->from);
-    }
-  }
-  if (OS1low_handle_close(reply) < 0)
-    printf("[NXPAX] failed to close response handle\n");
-}
-
-static int nxpax_service(void) {
-  int source = (int)OS1low_handle_create(OS1_NS_RESOURCE, OS1_NXPAX_RESOURCE,
-                                        OS1_RIGHT_READ, OBJ_TYPE_RESOURCE);
-  if (source < 0) {
-    printf("[NXPAX] cannot acquire diagnostic resource (%d)\n", source);
-    return 1;
-  }
-  int port = nxpax_claim_port();
-  if (port < 0) {
-    printf("[NXPAX] cannot claim %s\n", NXPAX_PORT);
-    OS1low_handle_close(source);
-    return 1;
-  }
-  printf("[NXPAX] service listening on %s\n", NXPAX_PORT);
-  /* Resident broker: each individual receive/request path is bounded.
-   * Blocking on the capability port does not busy-spin a CPU. */
-  for (;;) {
-    struct ipc_message message = {0};
-    long received = OS1_port_recv(port, &message);
-    if (received == (long)sizeof(message))
-      nxpax_serve_request(&message, source);
-    else if (received < 0) {
-      printf("[NXPAX] port receive failed (%ld)\n", received);
-      return 1;
-    }
-  }
 }
 
 static int nxpax_client_read(uint64_t cursor, struct os1_nxpax_query *output) {
@@ -192,10 +105,12 @@ static int nxpax_probe(void) {
 }
 
 int main(int argc, char **argv) {
+  /* Diagnostics cannot escalate a command to the server personality. */
   if (argc == 2 && strcmp(argv[1], "--service") == 0)
-    return nxpax_service();
+    return 1;
   if (argc == 1 || (argc == 2 && strcmp(argv[1], "--probe") == 0))
     return nxpax_probe();
-  printf("usage: nxpax [--probe|--service]\n");
+  if (printf("usage: nxpax [--probe]\n") < 0)
+    return 1;
   return 1;
 }

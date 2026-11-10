@@ -59,7 +59,9 @@ int main(void) {
   if (win_id < 0)
     return 1;
 
-  const char *path = "/etc/init.cfg"; /* readable+writable rootfs file */
+  /* The real rootfs image builder provisions this 16 KiB I/O fixture.
+   * The former /etc/init.cfg is intentionally obsolete and no longer packed. */
+  const char *path = "/etc/stress.tmp";
   char a[16];
   int ok;
 
@@ -82,6 +84,11 @@ int main(void) {
         spawn("sbin/nxinit") == -EINVAL);
   check(win_id, "deny-sbin-path-escape",
         spawn("/bin/../sbin/nxinit") == -EINVAL);
+  check(win_id, "deny-machine-extension-user",
+        spawn("/krnl/extension/nxmanageDD") == -EINVAL);
+  check(win_id, "deny-machine-extension-caps",
+        spawn_caps("/krnl/extension/nxmanageDD",
+                   PLVL_MACHINE, CAP_ALL) == -EINVAL);
 
   /* 1. create a READ capability to a file and read through it */
   int h =
@@ -275,6 +282,19 @@ int main(void) {
         forbidden_create == -EPERM);
   if (forbidden_create >= 0)
     OS1low_handle_close((int)forbidden_create);
+  /* Claiming an unoccupied system-service name must fail BEFORE checking
+   * for existence; this prevents a USER race during service restart.
+   * Public SEND access to an existing service remains capability-based. */
+  long service_takeover = OS1low_handle_create(
+      OS1_NS_PORT, OS1NX_PORT_EXEC, OS1_RIGHT_READ, OBJ_TYPE_PORT);
+  check(win_id, "deny-system-port-receiver", service_takeover == -EPERM);
+  if (service_takeover >= 0)
+    OS1low_handle_close((int)service_takeover);
+  long machine_takeover = OS1low_handle_create(
+      OS1_NS_PORT, NXMANAGE_PORT, OS1_RIGHT_READ, OBJ_TYPE_PORT);
+  check(win_id, "deny-machine-port-receiver", machine_takeover == -EPERM);
+  if (machine_takeover >= 0)
+    OS1low_handle_close((int)machine_takeover);
 
   /* 17. A plain SEND capability is intentionally non-delegable.  The raw
    * syscall result is inspected here so -EPERM is not collapsed to libc -1. */

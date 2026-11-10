@@ -212,6 +212,7 @@ $(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
 USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/posix_environment.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/chrome.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/decoration.o \
@@ -456,19 +457,30 @@ include user/portability/coreutils/overlay.mk
 # The bootstrap authority extension belongs to NX-CORE but is built with
 # the ordinary userland toolchain, never linked into the kernel image.
 # PID1 is nxmanageDD; nxinit is a ROOT-level declarative child of PID1.
-SBIN_ELFS = $(BUILD_DIR)/nxmanageDD.elf $(BUILD_DIR)/nxinit.elf
+SBIN_ELFS = $(BUILD_DIR)/nxinit.elf
+# MACHINE-only kernel-owned user extension, installed at /krnl/extension;
+# never linked into the kernel executable and never published as /sbin.
+NX_MACHINE_EXTENSION_ELFS = $(BUILD_DIR)/nxmanageDD.elf
 
-# System ELFs (placed in /sys/bin)
-SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
-           $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
-           $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
-           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
-           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf \
-           $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf $(BUILD_DIR)/nxmoused.elf \
-           $(BUILD_DIR)/nxtimerdiag.elf $(BUILD_DIR)/nxpax.elf $(BUILD_DIR)/nxtestrunner.elf
+# System commands and graphical applications, installed under /sys/bin.
+SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxres.elf \
+           $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf \
+           $(BUILD_DIR)/nxfilem.elf $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf \
+           $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
+           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf \
+           $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf \
+           $(BUILD_DIR)/nxwins.elf $(BUILD_DIR)/nxnotify.elf \
+           $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf \
+           $(BUILD_DIR)/nxenvinit.elf $(BUILD_DIR)/nxtimerdiag.elf \
+           $(BUILD_DIR)/nxpax.elf $(BUILD_DIR)/nxtestrunner.elf \
+           $(BUILD_DIR)/nxroleprobe.elf
 
-# Supervised system services (placed in /sys/services).
-SYS_SERVICE_ELFS = $(BUILD_DIR)/nxtimerdd.elf
+# Dedicated ROOT service executables, installed under /sys/services.
+# None is linked into or inherits the MACHINE-only kernel extension runtime.
+SYS_SERVICE_ELFS = $(BUILD_DIR)/nxtimerdd.elf $(BUILD_DIR)/nxntfy_srv.elf \
+                   $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf \
+                   $(BUILD_DIR)/nxmoused.elf $(BUILD_DIR)/nxexecd.elf \
+                   $(BUILD_DIR)/nxpaxd.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
@@ -476,7 +488,8 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
-           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf \
+           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/notifytest.elf \
+           $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
            $(BUILD_DIR)/portidle_child.elf \
            $(BUILD_DIR)/capreg.elf \
@@ -492,7 +505,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/kilo.elf \
            $(COREUTILS_ELFS)
 
-USER_ELFS = $(SBIN_ELFS) $(SYS_ELFS) $(SYS_SERVICE_ELFS) $(BIN_ELFS)
+USER_ELFS = $(SBIN_ELFS) $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(SYS_SERVICE_ELFS) $(BIN_ELFS)
 
 
 # Userland build remains defined exactly once here until its complete source
@@ -540,9 +553,9 @@ $(BUILD_DIR)/$(USER_DIR)/sbin/%.o: $(USER_DIR)/sbin/%.c
 $(BUILD_DIR)/nxmanageDD.elf: $(BUILD_DIR)/kernel/user/extension/nxmanageDD/main.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sbin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxenvinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxenvinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxcompositor.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxcompositor.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxkeyboardd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxkeyboardd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxmoused.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxmoused.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxcompositor.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxcompositor.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxkeyboardd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxkeyboardd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxmoused.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxmoused.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -585,7 +598,7 @@ $(BUILD_DIR)/luatest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o $(LUA_OS1_LIB) 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxntfy_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxntfy_srv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxntfy_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxntfy_srv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxreg.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxreg.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtop.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtop.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -600,6 +613,7 @@ $(BUILD_DIR)/nxsettings.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxsettings.o $(USE
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/notifytest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/notifytest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/buffertest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/buffertest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/libctest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/libctest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -620,12 +634,15 @@ $(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $
 $(BUILD_DIR)/nxwins.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxwins.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxexec.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxexec.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxexecd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxexecd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nximage.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nximage.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtimerdd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxtimerdd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxpax.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxpax.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxpaxd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxpaxd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtestrunner.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtestrunner.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxroleprobe.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxroleprobe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxfont.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/nxfont.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
@@ -669,6 +686,13 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c -o $@ $<
 
+# Root Makefile used -include $(DEPS) without ever DEFINING DEPS.
+# The variable existed only in NX-CORE's independent kernel/build.mk. Thus
+# header edits relinked user ELFs against stale .o files compiled with old
+# protocol constants, even though GCC had generated accurate .d files.
+# Resolve the active architecture/build root once at parse time; newly
+# generated .d files take effect on the next incremental invocation.
+DEPS := $(shell find "$(BUILD_DIR)" -type f -name '*.d' 2>/dev/null)
 -include $(DEPS)
 
 # Disk Generation
@@ -704,6 +728,7 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
                 $(GNULIB_LIB) $(ROOTFS_ASSETS) $(NX_BOOT_PROFILE) Makefile
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sbin
+	@mkdir -p $(BUILD_DIR)/rootfs/krnl/extension
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/services
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
@@ -728,9 +753,15 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Documents/doom
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Video
 	@mkdir -p $(BUILD_DIR)/rootfs/home/shared
+	@# Two independent real RW ext4 fixtures for the USER-level fd/writes tests.
+	@# Their contents are on-disk files, not a test double or a runtime alias.
+	@printf 'FDTEST00FDTEST01: real file descriptor and seek fixture.\n' > $(BUILD_DIR)/rootfs/home/shared/fdtest.fixture
+	@printf '# writetest seed block\n' > $(BUILD_DIR)/rootfs/home/shared/writetest.fixture
+	@printf 'GNULIB-FIXTURE: real read-write ext4 file.\n' > $(BUILD_DIR)/rootfs/home/shared/gnulib.fixture
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Settings
 	@-cp -r user/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
 	@cp $(SBIN_ELFS) $(BUILD_DIR)/rootfs/sbin/
+	@cp $(NX_MACHINE_EXTENSION_ELFS) $(BUILD_DIR)/rootfs/krnl/extension/
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
 	@cp $(SYS_SERVICE_ELFS) $(BUILD_DIR)/rootfs/sys/services/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
@@ -783,6 +814,7 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
 	@for f in $(BUILD_DIR)/rootfs/sys/services/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
 	@for f in $(BUILD_DIR)/rootfs/sbin/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/krnl/extension/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
 	@# Rinomina i file cu_* togliendo il prefisso (senza duplicare)
 	@for cu in $(COREUTILS_NAMES); do \
 		if [ -f $(BUILD_DIR)/rootfs/bin/cu_$$cu ]; then \

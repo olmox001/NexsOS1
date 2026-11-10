@@ -132,11 +132,6 @@
       "provenance": "10 ms diagnostic polling quantum",
       "rationale": "limits observation overhead while preserving a finite stress timeout"
     },
-    "kernel/main.c::NX_BOOT_EXEC_MAX": {
-      "kind": "boot_manifest_contract",
-      "provenance": "kernel K3 bounded initial executable path, /sbin basename <= 89 ASCII chars",
-      "rationale": "reject overflow or malformed manifest before allocating authoritative PID1"
-    },
     "system/include/api/os1.h::MAX_PROCESSES": {
       "kind": "process_pool_contract",
       "provenance": "NX-CORE kernel/include/abi/sched ABI process pool count 64; dynamic CPU idle band separate",
@@ -151,6 +146,46 @@
       "kind": "test_timeout",
       "provenance": "20 x NXTEST_POLL_MS=20ms, 400ms bounded post-kill reap",
       "rationale": "failed child teardown is reported without indefinite waiting"
+    },
+    "kernel/include/kernel/object_boot.h::NX_BOOT_EXEC_PATH_MAX": {
+      "kind": "boot_object_contract",
+      "provenance": "96-byte immutable bootstrap executable path from verified on-image registry import",
+      "rationale": "bounds K3 object key resolution and executable-name validation before machine process creation"
+    },
+    "system/include/api/nxmanage.h::NXMANAGE_NAME_MAX": {
+      "kind": "service_registry_contract",
+      "provenance": "maximum 23 service-name bytes plus terminator in 64-byte service metadata PORT payload",
+      "rationale": "bounds canonical system.manage.service.<name> registry names below kernel MAX_KEY_LEN=64"
+    },
+    "system/include/api/nxpax_service.h::NXPAX_MAX_PROBE": {
+      "kind": "wire_contract",
+      "provenance": "OS1_NXPAX_MAX_WINDOW_RECORDS in nxpax.h",
+      "rationale": "bounds exactly the NXPAX ABI historical reader window"
+    },
+    "user/sys/services/nxcompositor.c::NXCOMPOSITOR_MAX_WINDOWS": {
+      "kind": "screen_resource_contract",
+      "provenance": "existing window enumeration ABI maximum of 40",
+      "rationale": "bounds per-frame window snapshots in user compositor"
+    },
+    "user/sys/services/nxcompositor.c::NXCOMPOSITOR_MAX_PIXELS": {
+      "kind": "screen_resource_contract",
+      "provenance": "16 Mi pixel present/snapshot buffer validation in original compositor",
+      "rationale": "bounds userland allocation and composition to 64 MiB per buffer"
+    },
+    "user/sys/services/nxmoused.c::MAX_WINDOWS": {
+      "kind": "screen_resource_contract",
+      "provenance": "40 legacy window enumeration entries",
+      "rationale": "bounded pointer hit-test snapshot scan"
+    },
+    "user/sys/services/nxntfy_srv.c::WARN_DEDUP_MAX": {
+      "kind": "notification_policy",
+      "provenance": "existing fixed warning deduplication store, 16 entries",
+      "rationale": "bounds deduplicated notification state without unbounded userland growth"
+    },
+    "user/sys/services/nxmoused.c::NX_MOUSE_MAX_DEVICES": {
+      "kind": "wire_contract",
+      "provenance": "system/include/api/os1_input.h: os1_raw_input_event_v1.device_id is uint8_t, exactly 256 representable values",
+      "rationale": "index a per-device 3-button state array for every representable device_id (0..255) without narrowing or leaking global mutable state"
     }
   },
   "operations": {

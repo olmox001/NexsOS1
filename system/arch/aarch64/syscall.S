@@ -14,9 +14,17 @@
 .text
 .global _start
 _start:
-    /* SP is already set by kernel */
+    /* Shared SDK environment contract, preserving the machine entry ABI. */
+    stp x0, x1, [sp, #-16]!
+    bl os1_posix_environ_init
+    cmp w0, #0
+    ldp x0, x1, [sp], #16
+    b.ne .Lenv_failure
     bl main
     /* Exit with main's return value */
+    bl exit
+.Lenv_failure:
+    mov x0, #1
     bl exit
     /* Should never reach here */
 1:  b 1b

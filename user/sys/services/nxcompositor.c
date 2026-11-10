@@ -30,16 +30,30 @@ static int pointer_y = 400;
 static void consume_pointer_updates(void) {
   struct ipc_message msg;
   for (unsigned i = 0; i < 32; ++i) {
-    if (OS1low_ipc_try_recv(-1, &msg) != 0)
+    long received = OS1low_ipc_try_recv(-1, &msg);
+    if (received == -EAGAIN)
       break;
+    if (received != 0) {
+      OS1_report_error("nxcompositor.input_receive",
+                       (int)(received < 0 ? received : -EIO));
+      break;
+    }
     if (msg.type == IPC_POINTER_POS) {
       pointer_x = (int)(uint32_t)msg.data1;
       pointer_y = (int)(uint32_t)msg.data2;
     } else if (msg.type == IPC_THEME_STYLE) {
-      (void)os1_theme_set_style((int)(int64_t)msg.data1);
-      (void)os1_theme_set_palette((int)(int64_t)msg.data2);
+      int style_rc = os1_theme_set_style((int)(int64_t)msg.data1);
+      if (style_rc != 0)
+        OS1_report_error("nxcompositor.theme_style", style_rc);
+      else {
+        int palette_rc = os1_theme_set_palette((int)(int64_t)msg.data2);
+        if (palette_rc != 0)
+          OS1_report_error("nxcompositor.theme_palette", palette_rc);
+      }
     } else if (msg.type == IPC_THEME_BACKGROUND) {
-      (void)os1_theme_set_background((int)(int64_t)msg.data1);
+      int background_rc = os1_theme_set_background((int)(int64_t)msg.data1);
+      if (background_rc != 0)
+        OS1_report_error("nxcompositor.theme_background", background_rc);
     }
   }
 }
@@ -126,10 +140,10 @@ static uint32_t *frame_storage, *snapshot_storage;
 static size_t frame_capacity, snapshot_capacity;
 
 static int reserve_pixels(uint32_t **pixels, size_t *capacity, size_t required) {
-  if (!required || required > NXCOMPOSITOR_MAX_PIXELS) return -1;
+  if (!required || required > NXCOMPOSITOR_MAX_PIXELS) return -E2BIG;
   if (*capacity >= required) return 0;
   uint32_t *replacement = malloc(required * sizeof(*replacement));
-  if (!replacement) return -1;
+  if (!replacement) return -ENOMEM;
   free(*pixels);
   *pixels = replacement;
   *capacity = required;
@@ -142,9 +156,10 @@ static int render_frame(void) {
   int height = (int)(packed & 0xffff);
   if (width <= 0 || height <= 0 ||
       (size_t)width > NXCOMPOSITOR_MAX_PIXELS / (size_t)height)
-    return -1;
+    return -EINVAL;
   size_t frame_pixels = (size_t)width * (size_t)height;
-  if (reserve_pixels(&frame_storage, &frame_capacity, frame_pixels)) return -1;
+  int allocated = reserve_pixels(&frame_storage, &frame_capacity, frame_pixels);
+  if (allocated != 0) return allocated;
   uint32_t *frame_pixels_buf = frame_storage;
   struct os1_gfx_surface frame = {(uint32_t *)frame_pixels_buf, (size_t)width,
                                   (size_t)height, (size_t)width, frame_pixels};
@@ -197,8 +212,10 @@ static int render_frame(void) {
     size_t pixel_count = window->pixel_count;
     if (pixel_count == 0 || pixel_count > NXCOMPOSITOR_MAX_PIXELS)
       continue;
-    if (reserve_pixels(&snapshot_storage, &snapshot_capacity, pixel_count))
-      continue;
+    int allocation = reserve_pixels(&snapshot_storage, &snapshot_capacity,
+                                    pixel_count);
+    if (allocation != 0)
+      return allocation;
     uint32_t *pixels = snapshot_storage;
     window->pixels = pixels;
     window->pixel_capacity = pixel_count;
@@ -248,20 +265,35 @@ static int render_frame(void) {
 }
 
 int main(void) {
-  print("[nxcompositor] ring-3 scene compositor started\n");
   long events = OS1_surface_events_open(OS1_RIGHT_READ | OS1_RIGHT_WAIT);
   if (events < 0) {
-    print("[nxcompositor] surface capability unavailable\n");
+    OS1_report_error("nxcompositor.surface_events_open", (int)events);
     return 1;
   }
   for (;;) {
     struct os1_surface_state_v1 state;
-    if (OS1_surface_state((int)events, &state) != 0) return 1;
-    consume_pointer_updates();
-    if (render_frame() != 0) {
-      print("[nxcompositor] presentation failed\n");
-      return 1;
+    long current = OS1_surface_state((int)events, &state);
+    if (current != 0) {
+      OS1_report_error("nxcompositor.surface_state",
+                       (int)(current < 0 ? current : -EIO));
+      break;
     }
-    if (OS1_surface_wait((int)events, state.generation) != 0) return 1;
+    consume_pointer_updates();
+    int rendered = render_frame();
+    if (rendered != 0) {
+      OS1_report_error("nxcompositor.render_frame", rendered);
+      break;
+    }
+    long waited = OS1_surface_wait((int)events, state.generation);
+    if (waited != 0) {
+      OS1_report_error("nxcompositor.surface_wait",
+                       (int)(waited < 0 ? waited : -EIO));
+      break;
+    }
   }
+  long closed = OS1low_handle_close((int)events);
+  if (closed != 0)
+    OS1_report_error("nxcompositor.events_close",
+                     (int)(closed < 0 ? closed : -EIO));
+  return 1;
 }

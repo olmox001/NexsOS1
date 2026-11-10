@@ -137,18 +137,37 @@ static int timerd_serve_epoch(int port, int time_handle, int stats_handle) {
 int main(void) {
   int time_handle = (int)OS1low_time_open();
   int stats_handle = (int)OS1low_time_stats_open();
-  if (time_handle < 0 || stats_handle < 0)
+  if (time_handle < 0 || stats_handle < 0) {
+    if (time_handle < 0)
+      OS1_report_error("nxtimerdd.time_open", time_handle);
+    if (stats_handle < 0)
+      OS1_report_error("nxtimerdd.stats_open", stats_handle);
+    if (time_handle >= 0)
+      (void)OS1low_handle_close(time_handle);
+    if (stats_handle >= 0)
+      (void)OS1low_handle_close(stats_handle);
     return 1;
+  }
   int port = timerd_claim();
-  if (port < 0)
+  if (port < 0) {
+    OS1_report_error("nxtimerdd.port_claim", port);
+    (void)OS1low_handle_close(stats_handle);
+    (void)OS1low_handle_close(time_handle);
     return 1;
-  if (printf("[nxtimerdd] service listening on %s\n",
-             OS1NX_PORT_TIME) < 0)
-    return 1;
+  }
+  /* Readiness is the successfully claimed authoritative service PORT. */
   int status = timerd_serve_epoch(port, time_handle, stats_handle);
   int close_port = OS1low_handle_close(port);
   int close_stats = OS1low_handle_close(stats_handle);
   int close_time = OS1low_handle_close(time_handle);
+  if (status != 0)
+    OS1_report_error("nxtimerdd.serve_epoch", status);
+  if (close_port != 0)
+    OS1_report_error("nxtimerdd.port_close", close_port);
+  if (close_stats != 0)
+    OS1_report_error("nxtimerdd.stats_close", close_stats);
+  if (close_time != 0)
+    OS1_report_error("nxtimerdd.time_close", close_time);
   if (status != 0 || close_port != 0 || close_stats != 0 || close_time != 0)
     return 1;
   return 0;

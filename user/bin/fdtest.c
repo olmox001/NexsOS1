@@ -3,8 +3,8 @@
  * Per-process fd-table test app (ABI-03, epic #93).
  *
  * Exercises the POSIX-style descriptor path end to end against the rootfs
- * file /etc/init.cfg (also used by writetest — config files are writable,
- * /bin and /sys are not):
+ * dedicated writable /home/shared/fdtest.fixture (writetest uses a separate
+ * fixture so offset/sparse tests cannot collide; /sys/bin is machine-only):
  *   1. open(O_RDONLY) returns a fd >= 3; sequential read()s advance the
  *      offset (two reads return different, adjacent content);
  *   2. lseek(SEEK_SET 0) rewinds: the next read returns the first bytes
@@ -12,11 +12,13 @@
  *      file_read size probe);
  *   3. open(O_RDWR): write at offset 0 through the fd, lseek back, read
  *      back and compare, then restore the original bytes;
- *   4. denials: open("/bin/nxshell", O_WRONLY) -> -EACCES (user process),
- *      open missing path -> -ENOENT, read/lseek on a closed fd -> -EBADF,
- *      write on an O_RDONLY fd -> -EBADF, O_CREAT -> -EINVAL.
+ *   4. denials: open("/sys/bin/nxshell", O_WRONLY) -> -1/EACCES,
+ *      missing path -> -1/ENOENT; closed fd read/lseek/close -> -1/EBADF,
+ *      write on O_RDONLY handle leaves bytes unchanged, and invalid flag
+ *      bits are refused with -1/EINVAL. Each checks the actual POSIX seam.
  * Results go to the window AND the serial console (printf).
  */
+#include <errno.h>
 #include <fcntl.h>
 #include <os1.h>
 #include <string.h>
@@ -35,7 +37,7 @@ int main(void) {
   if (win_id < 0)
     return 1;
 
-  const char *path = "/etc/init.cfg";
+  const char *path = "/home/shared/fdtest.fixture";
   char a[9], b[9], c[9], orig[9];
   int ok;
 
@@ -79,11 +81,19 @@ int main(void) {
   check(win_id, "rdwr-write-readback", ok);
 
   /* 4a. capability: /bin is read-only for user processes */
-  ok = open("/bin/nxshell", O_WRONLY) == -EACCES;
+  errno = 0;
+  int rejected = open("/sys/bin/nxshell", O_WRONLY);
+  ok = rejected == -1 && errno == EACCES;
+  if (rejected >= 0)
+    close(rejected);
   check(win_id, "deny-bin-wronly", ok);
 
   /* 4b. missing path, closed fd, mode and flag misuse */
-  ok = open("/no/such/file", O_RDONLY) == -ENOENT;
+  errno = 0;
+  int missing = open("/no/such/file", O_RDONLY);
+  ok = missing == -1 && errno == ENOENT;
+  if (missing >= 0)
+    close(missing);
   check(win_id, "enoent", ok);
 
   int rfd = open(path, O_RDONLY);
@@ -96,12 +106,29 @@ int main(void) {
   ok = rfd >= 3 && file_read(path, c, 8, 0) == 8 && memcmp(c, orig, 8) == 0;
   check(win_id, "deny-write-on-rdonly", ok);
 
-  ok = rfd >= 3 && close(rfd) == 0 && read(rfd, a, 1) == -EBADF &&
-       lseek(rfd, 0, SEEK_SET) == -EBADF && close(rfd) == -EBADF;
+  int originally_closed = rfd >= 3 && close(rfd) == 0;
+  errno = 0;
+  long invalid_read = read(rfd, a, 1);
+  int read_errno = errno;
+  errno = 0;
+  long invalid_seek = lseek(rfd, 0, SEEK_SET);
+  int seek_errno = errno;
+  errno = 0;
+  int invalid_close = close(rfd);
+  int close_errno = errno;
+  ok = originally_closed && invalid_read == -1 && read_errno == EBADF &&
+       invalid_seek == -1 && seek_errno == EBADF &&
+       invalid_close == -1 && close_errno == EBADF;
   check(win_id, "ebadf-after-close", ok);
 
-  ok = open(path, O_RDONLY | O_CREAT) == -EINVAL;
-  check(win_id, "einval-o-creat", ok);
+  /* O_CREAT on an existing file is valid POSIX. Test a genuinely invalid,
+   * unsupported bit and require the exact POSIX errno mapping. */
+  errno = 0;
+  int invalid_flags = open(path, O_RDONLY | 0x40000000);
+  ok = invalid_flags == -1 && errno == EINVAL;
+  if (invalid_flags >= 0)
+    close(invalid_flags);
+  check(win_id, "invalid-flags-not-ignored", ok);
 
   if (fd >= 0)
     close(fd);

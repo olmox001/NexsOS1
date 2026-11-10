@@ -119,9 +119,9 @@ $(COREUTILS_OBJ_DIR)/true-mode-false.o:
 	@echo "int true_mode = 1;" | $(CC) $(COREUTILS_CFLAGS) -x c -c - -o $@
 
 
-$(COREUTILS_OBJ_DIR)/uname-mode.o:
+$(COREUTILS_OBJ_DIR)/uname-mode.o: $(COREUTILS_SRC_DIR)/uname.h
 	@mkdir -p $(dir $@)
-	@echo "int uname_mode = 1;" | $(CC) $(COREUTILS_CFLAGS) -x c -c - -o $@
+	@printf '#include "uname.h"\nenum uname_modes uname_mode = UNAME_UNAME;\n' | $(CC) $(COREUTILS_CFLAGS) -x c -c - -o $@
 
 
 $(COREUTILS_OBJ_DIR)/uname-uname.o: $(COREUTILS_SRC_DIR)/uname.c

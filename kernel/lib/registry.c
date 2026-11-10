@@ -281,9 +281,32 @@ static bool key_has_segment(const char *key) {
  * the /reg door, the OBJ_TYPE_REGKEY door and SYS_REGISTRY all give the SAME
  * answer for the same refusal (R2).
  */
+/* Protect machine control metadata independently from the historical
+ * ROOT/MACHINE shared owner=0 model. Acquiring or retaining a REGKEY
+ * capability cannot bypass this provider-level current-principal check.
+ * Component boundaries are segment-aware: system.boot_time is NOT a child
+ * of system.boot, and remains writable by regular system services. */
+static int registry_subtree(const char *key, const char *root) {
+  size_t prefix = strlen(root);
+  return strncmp(key, root, prefix) == 0 &&
+         (key[prefix] == '\0' || key[prefix] == '.');
+}
+
+int registry_machine_key_write_allowed(const char *key) {
+  if (key == NULL)
+    return 0;
+  if (registry_subtree(key, "system.boot") ||
+      registry_subtree(key, "system.manage") ||
+      registry_subtree(key, "system.service"))
+    return proc_is_machine(current_process);
+  return 1;
+}
+
 int registry_set(const char *key, const char *value, int owner_pid) {
   if (!key || !value)
     return -EINVAL;
+  if (!registry_machine_key_write_allowed(key))
+    return -EACCES;
 
   /* R2: route the virtual per-process namespace HERE, at the shared seam, so
    * every entry point behaves identically.  It used to be routed only inside
@@ -556,6 +579,8 @@ static void node_remove_child(struct reg_node *p, struct reg_node *child) {
  * -args case was a bare -1, i.e. -EPERM in disguise).
  */
 int registry_del(const char *key, int owner_pid) {
+  if (key == NULL || !registry_machine_key_write_allowed(key))
+    return -EACCES;
   if (!key)
     return -EINVAL;
 
@@ -910,12 +935,30 @@ static int regfs_unlink(struct vfs_mount *mnt, const char *path) {
   return registry_del(key, registry_caller_owner());
 }
 
+/* Registry provider-specific ACL: CAP_FS_WRITE is already checked by the
+ * generic VFS gate. Namespace mutation here still requires registry
+ * capability, and MACHINE-only keys are checked again in registry_set/del
+ * at the actual use site. No path-based access exception is installed in VFS. */
+static int regfs_authorize_write(struct vfs_mount *mnt, const char *path) {
+  (void)mnt;
+  char key[MAX_KEY_LEN];
+  regfs_path_to_key(path, key, sizeof(key));
+  if (key[0] == '\0')
+    return -EINVAL;
+  if (!registry_machine_key_write_allowed(key))
+    return -EACCES;
+  if (!registry_key_is_virtual(key) && !registry_write_allowed())
+    return -EPERM;
+  return 0;
+}
+
 static const struct fs_ops regfs_ops = {
     .name = "regfs",
     .mount = regfs_mount,
     .open = regfs_open,
     .read = regfs_read,
     .write = regfs_write,
+    .authorize_write = regfs_authorize_write,
     .create = regfs_create,
     .list = regfs_list,
     .unlink = regfs_unlink,

@@ -9,7 +9,7 @@ def main() -> int:
         ("K3-only", "K3: Initialized PID 1 (/sbin/extension)", False),
         ("shell-only", "NXShell: Alive", False),
         ("old-supervisor", "[Init] Entering supervisor loop", True),
-        ("new-extension", "K3: Initialized PID 1 (boot extension /sbin/nxmanageDD)\nNXShell: Alive", True),
+        ("new-extension", "K3: Initialized PID 1 (boot extension /krnl/extension/nxmanageDD)\nNXShell: Alive", True),
         ("wrong-K3-PID", "K3: Initialized PID 12\nNXShell: Alive", False),
         ("unstarted-shell", "K3: Initialized PID 1\n[Init] failed to spawn shell", False),
     )

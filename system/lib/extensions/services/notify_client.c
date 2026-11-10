@@ -1,10 +1,10 @@
 /*
  * NX-SDK service extension: notification client.
  *
- * NX-VIOLA owns and supervises nxntfy_srv. nxinit publishes its current PID
- * under srv.notify_pid after spawning the service. This client resolves that
- * endpoint for each request and sends IPC_TYPE_NOTIFY through the native IPC
- * API. An unavailable or stale endpoint returns an error; no PID is guessed.
+ * NX-VIOLA owns the notification server. The public client acquires an
+ * attenuated SEND capability for the named system service PORT and posts one
+ * bounded IPC_TYPE_NOTIFY. No PID is trusted or guessed. The compatibility
+ * srv.notify_pid registry entry is not used for client authorization.
  *
  * Error classification is also an extension because its visible reporting
  * path depends on the boot-started notification service. The C/POSIX runtime
@@ -57,7 +57,9 @@ void OS1_report_error(const char *ctx, int err) {
 }
 
 static int notify_send(const char *title, const char *msg, int sev) {
-  struct ipc_message imsg;
+  if (title == NULL || msg == NULL)
+    return -EINVAL;
+  struct ipc_message imsg = {0};
   imsg.type = IPC_TYPE_NOTIFY;
   imsg.data1 = (uint64_t)sev;
   imsg.data2 = 0;
@@ -71,18 +73,23 @@ static int notify_send(const char *title, const char *msg, int sev) {
   while (*msg && i < 63)
     imsg.payload[i++] = *msg++;
   imsg.payload[i] = '\0';
-  /* Resolve the notify_srv endpoint from the registry. If the key is absent
-   * (notify_srv not up / not yet registered) FAIL instead of sending to a
-   * guessed PID — the old pid=2 fallback delivered a stray IPC message to
-   * whatever process happened to hold PID 2 and the notification was lost
-   * anyway. Callers that need the boot popup wait for the key (see init.c). */
-  char pid_buf[16];
-  if (OS1_registry_get("srv.notify_pid", pid_buf, sizeof(pid_buf)) != 0)
-    return -1;
-  int pid = atoi(pid_buf);
-  if (pid <= 0)
-    return -1;
-  return (int)OS1low_ipc_send(pid, &imsg);
+  /* Use the normal object PORT capability, never a mutable registry PID.
+   * Kernel-stamped sender and bounded queue semantics are shared with the
+   * execution, time and diagnostic services. No fallback to ambient PID IPC. */
+  /* This is the bottommost error-reporting transport. Do not call the
+   * POSIX port convenience wrappers: their errno_ret_ctx hook invokes
+   * OS1_report_error and would recursively send another notification if the
+   * service is missing. The same object operations and kernel capability
+   * checks remain authoritative, but there is no recursive report hook. */
+  long port = OS1low_handle_create(
+      OS1_NS_PORT, OS1NX_PORT_NOTIFY, OS1_RIGHT_WRITE, OBJ_TYPE_PORT);
+  if (port < 0)
+    return (int)port;
+  long sent = OS1_object_write((int)port, &imsg, sizeof(imsg));
+  long closed = OS1low_handle_close((int)port);
+  if (sent != (long)sizeof(imsg))
+    return sent < 0 ? (int)sent : -EIO;
+  return closed == 0 ? 0 : (int)closed;
 }
 int OS1_notify_post(const char *title, const char *msg) {
   return notify_send(title, msg, 0);

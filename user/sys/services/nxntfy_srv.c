@@ -1,5 +1,5 @@
 /*
- * user/sys/bin/nxntfy_srv.c
+ * user/sys/services/nxntfy_srv.c
  * System-wide Notification Server + UI (nxntfy_srv): IPC popup service + a
  * registry-visible log of recent notifications (read by the nxnotify CLI).
  *
@@ -41,7 +41,7 @@
 #include <os1.h>
 #include <string.h>
 
-#include "nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
+#include "../bin/nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
 
 /* ------------------------------------------------------------------ */
 /* Adaptive geometry – aligned with nxbar                              */
@@ -81,11 +81,11 @@ static uint32_t g_col_title;
 
 static void nxntfy_load_palette(int light) {
   if (light) {
-    g_col_bg = 0xE8F5F5F7u;    /* semi-transparent light */
+    g_col_bg = 0xE8F5F5F7u; /* semi-transparent light */
     g_col_text = 0xFF1C1C1Eu;
     g_col_title = 0xFF000000u;
   } else {
-    g_col_bg = 0xE81C1C24u;    /* semi-transparent dark */
+    g_col_bg = 0xE81C1C24u; /* semi-transparent dark */
     g_col_text = 0xFFF0F0F5u;
     g_col_title = 0xFFFFFFFFu;
   }
@@ -168,8 +168,10 @@ static void buf_draw_text(int x, int y, const char *s, uint32_t color) {
     int idx = (int)cp - g_font->header.first_char;
     if (idx >= 0 && idx < g_font->header.num_chars)
       cursor += g_font->glyphs[idx].advance;
+    if ((size_t)consumed > rem)
+      return; /* reject malformed UTF-8 decoder advancement */
     p += consumed;
-    rem -= consumed;
+    rem -= (size_t)consumed;
   }
 }
 
@@ -186,9 +188,9 @@ static void buf_draw_text(int x, int y, const char *s, uint32_t color) {
  * dropped.  Errors and plain notifications never go through this table. */
 #define WARN_DEDUP_MAX 16
 static int g_warn_pid[WARN_DEDUP_MAX];
-static char g_warn_text[WARN_DEDUP_MAX][56];
-static int g_warn_n;      /* slots in use */
-static int g_warn_next;   /* rotating eviction cursor once the table is full */
+static char g_warn_text[WARN_DEDUP_MAX][64];
+static int g_warn_n;    /* slots in use */
+static int g_warn_next; /* rotating eviction cursor once the table is full */
 
 static int warn_is_dup(int pid, const char *text) {
   for (int i = 0; i < g_warn_n; i++)
@@ -200,7 +202,10 @@ static int warn_is_dup(int pid, const char *text) {
 static void warn_remember(int pid, const char *text) {
   for (int i = 0; i < g_warn_n; i++) {
     if (g_warn_pid[i] == pid) {
-      snprintf(g_warn_text[i], sizeof(g_warn_text[i]), "%s", text);
+      size_t j = 0U;
+      for (; j + 1U < sizeof(g_warn_text[i]) && text[j]; ++j)
+        g_warn_text[i][j] = text[j];
+      g_warn_text[i][j] = '\0';
       return;
     }
   }
@@ -212,7 +217,10 @@ static void warn_remember(int pid, const char *text) {
     g_warn_next = (g_warn_next + 1) % WARN_DEDUP_MAX;
   }
   g_warn_pid[idx] = pid;
-  snprintf(g_warn_text[idx], sizeof(g_warn_text[idx]), "%s", text);
+  size_t j = 0U;
+  for (; j + 1U < sizeof(g_warn_text[idx]) && text[j]; ++j)
+    g_warn_text[idx][j] = text[j];
+  g_warn_text[idx][j] = '\0';
 }
 
 /* ------------------------------------------------------------------ */
@@ -235,10 +243,15 @@ static void notif_reinit(int sw, int sh) {
   if (g_win >= 0)
     destroy_window(g_win);
   free(g_fb);
-  g_fb = (uint32_t *)malloc((size_t)g_bw * g_bh * 4);
+  if (g_bw <= 0 || g_bh <= 0)
+    return;
+  size_t count = (size_t)g_bw * (size_t)g_bh;
+  if (count > SIZE_MAX / sizeof(*g_fb))
+    return;
+  g_fb = (uint32_t *)malloc(count * sizeof(*g_fb));
   if (!g_fb)
     return;
-  memset(g_fb, 0, (size_t)g_bw * g_bh * 4);
+  memset(g_fb, 0, count * sizeof(*g_fb));
 
   g_win = create_window(wx, wy, g_bw, g_bh, "nxntfy_srv");
   if (g_win >= 0)
@@ -264,6 +277,42 @@ static void notif_reinit(int sw, int sh) {
  * NOTE(USR-SEC-01): Writing to "srv.notify_pid" is unauthenticated; any
  *   process can overwrite it and intercept subsequent notify() calls.
  */
+/* One shared authorization model for notification delivery. The server
+ * drains the named capability PORT and the legacy kernel fault mailbox;
+ * the latter must remain available for kernel crash reporting. */
+static int notification_receive(int port, struct ipc_message *msg) {
+  long n = OS1_port_try_recv(port, msg);
+  if (n == (long)sizeof(*msg))
+    return 1;
+  if (n == -EAGAIN)
+    return try_recv(-1, msg) == 0 ? 1 : 0;
+  return (int)n < 0 ? (int)n : -EIO;
+}
+
+static int notif_fail(const char *phase, int failure) {
+  char record[80];
+  int len = snprintf(record, sizeof(record), "%s|%d", phase, failure);
+  if (len > 0 && (size_t)len < sizeof(record)) {
+    long saved = OS1_registry_set("sys.ntfy.fault", record);
+    if (saved != 0)
+      return 1;
+  }
+  return 1;
+}
+
+static int notif_publish_record(int slot, int from, int severity,
+                                char state, const char *message) {
+  char key[24], record[80];
+  int key_len = snprintf(key, sizeof(key), "sys.ntfy.log.%d", slot);
+  int record_len = snprintf(record, sizeof(record), "%d|%d|%c|%.48s",
+                            from, severity, state, message);
+  if (key_len <= 0 || (size_t)key_len >= sizeof(key) ||
+      record_len <= 0 || (size_t)record_len >= sizeof(record))
+    return -EOVERFLOW;
+  long saved = OS1_registry_set(key, record);
+  return saved < 0 ? (int)saved : saved == 0 ? 0 : -EIO;
+}
+
 int main(void) {
   g_font = font_load("/fonts/Rewir-Light.off");
   nxntfy_load_palette(nxres_theme_is_light());
@@ -276,21 +325,19 @@ int main(void) {
     sh = 600;
   notif_reinit(sw, sh);
   if (g_win < 0) {
-    printf("[Notify] Failed to create window\n");
-    return 1;
+    return notif_fail("window_create", -ENOMEM);
   }
 
-  printf("[Notify] Server started (PID %d)\n", get_pid());
+  int port = OS1_port_create(OS1NX_PORT_NOTIFY);
+  if (port < 0) {
+    return notif_fail("port_claim", port);
+  }
+  /* The claimed PORT and initialized surface constitute service readiness. */
 
-  /* NOTE(NOTIFY-REG-01): srv.notify_pid is now published by init (parent),
-   * not by the server itself.  Self-publishing broke respawn: after the
-   * server died and init spawned a fresh copy, the registry key still held
-   * the corpse's pid and every notify_post() lost its messages.  Init owns
-   * the key (it knows the live pid on every spawn + respawn), and re-publishes
-   * it after each respawn so any registry hijack between respawns is undone.
-   * Discovery of this endpoint from a caller:
-   * OS1_registry_get("srv.notify_pid").
-   */
+  /* The legacy srv.notify_pid record remains a compatibility observation.
+   * SDK clients address this PORT by a SEND-only capability instead, while
+   * direct kernel fault/appearance notifications still reach the process
+   * mailbox and use the unchanged read/visibility/registry log semantics. */
 
   struct ipc_message msg;
   long last_notify_time = 0;
@@ -341,14 +388,18 @@ int main(void) {
        * nxbar/nxui already use at 30 Hz for their own resize polling), but
        * the resize check now runs on a bounded cadence regardless of
        * notification activity. */
-      got = (try_recv(-1, &msg) == 0);
-      if (!got) {
+      got = notification_receive(port, &msg);
+      if (got == 0) {
         OS1_sleep(IDLE_POLL_MS);
         continue;
       }
     } else {
       /* Visible: non-blocking poll so the 2 s auto-hide can still fire. */
-      got = (try_recv(-1, &msg) == 0);
+      got = notification_receive(port, &msg);
+    }
+
+    if (got < 0) {
+      return notif_fail("port_receive", got);
     }
 
     /* A look-changed ping (nxres_broadcast_look, nxres.h) rides the SAME
@@ -366,6 +417,8 @@ int main(void) {
      * (e.g. IPC_TYPE_MOUSE from a click on the window) is drained and ignored.
      */
     if (got && msg.type == IPC_TYPE_NOTIFY) {
+      /* Wire payload is 64 bytes, not an unbounded C string. */
+      msg.payload[sizeof(msg.payload) - 1U] = '\0';
       int is_warning = (msg.data1 == 1);
 
       /* Exact repeat of the last warning from THIS process: already visible
@@ -407,7 +460,8 @@ int main(void) {
        * (those are rarer and worth interrupting for). */
       int popup_shown = 0;
       if (!is_warning) {
-        /* Non mostriamo il popup se il pannello notifiche di nxbar è già aperto.
+        /* Non mostriamo il popup se il pannello notifiche di nxbar è già
+         * aperto.
          */
         char panel_flag[2] = {0};
         int panel_open = (OS1_registry_get("sys.ntfy.panel_open", panel_flag,
@@ -444,11 +498,10 @@ int main(void) {
        * popup was shown. */
       {
         int idx = ring_idx & 0x0F;
-        char key[24], rec[80];
-        snprintf(key, sizeof(key), "sys.ntfy.log.%d", idx);
-        snprintf(rec, sizeof(rec), "%d|%d|U|%.48s", (int)msg.from,
-                 (int)msg.data1, msg.payload);
-        OS1_registry_set(key, rec);
+        int recorded = notif_publish_record(idx, (int)msg.from,
+                                            (int)msg.data1, 'U', msg.payload);
+        if (recorded != 0)
+          return notif_fail("log_unread", recorded);
         ring_idx++;
 
         /* The pending-read-receipt bookkeeping below (flipped to 'R' by the
@@ -483,11 +536,10 @@ int main(void) {
       /* The user has now seen the popup: confirm READ in the registry record
        * (the read receipt of the message model). */
       if (last_log_idx >= 0) {
-        char key[24], rec[80];
-        snprintf(key, sizeof(key), "sys.ntfy.log.%d", last_log_idx);
-        snprintf(rec, sizeof(rec), "%d|%d|R|%.48s", last_from, last_sev,
-                 last_text);
-        OS1_registry_set(key, rec);
+        int recorded = notif_publish_record(last_log_idx, last_from,
+                                            last_sev, 'R', last_text);
+        if (recorded != 0)
+          return notif_fail("log_read", recorded);
         last_log_idx = -1;
       }
     }

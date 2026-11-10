@@ -7,15 +7,22 @@
  */
 #include <stdint.h>
 
-#define NXMANAGE_PORT "OS1nx_manage"
+#define NXMANAGE_PORT "OS1nx_machine_manage"
 #define NXMANAGE_INIT_CONFIG "/system/boot/manager.conf"
 #define NXMANAGE_SERVICES_CONFIG "/system/boot/services.conf"
 #define NXMANAGE_PROFILE_CONFIG "/system/boot/profile"
-#define NXMANAGE_PROTO_VERSION UINT32_C(1)
+#define NXMANAGE_PROTO_VERSION UINT32_C(2)
 #define NXMANAGE_REQ_HELLO 0x4E584D00
 #define NXMANAGE_REP_HELLO 0x4E584D03
 #define NXMANAGE_REQ_REGISTER 0x4E584D01
 #define NXMANAGE_REP_REGISTER 0x4E584D02
+#define NXMANAGE_REQ_NAME 0x4E584D04
+#define NXMANAGE_REP_NAME 0x4E584D05
+/* Bounded, unique service name; canonical registry key is
+ * system.manage.service.<name>, whose value is one atomic generation record.
+ * The service name travels as a separate authenticated PORT message so the
+ * existing 64-byte control payload never truncates executable paths. */
+#define NXMANAGE_NAME_MAX 24U
 #define NXMANAGE_MODE_LOCK UINT32_C(1)
 #define NXMANAGE_MODE_ONCE UINT32_C(2)
 #define NXMANAGE_MODE_ASYNC_ONCE UINT32_C(3)
@@ -32,7 +39,8 @@ enum {
   NXMANAGE_CEILING_MS = 30000
 };
 
-/* The request's payload is a sequence of three terminated strings:
+/* NAME requests carry one NUL-terminated canonical service name.
+ * The request's payload is a sequence of three terminated strings:
  * absolute executable path, blank-separated bounded arguments (0-2),
  * optional srv.* registry key. Data1=slot, data2=mode.
  * A request is authorized ONLY when the kernel-stamped sender is the

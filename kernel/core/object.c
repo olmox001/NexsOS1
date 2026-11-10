@@ -565,10 +565,32 @@ static long handle_create_port_receiver(struct process *process,
   return handle;
 }
 
+/* Generic protocol namespace acquisition, independent of any service's
+ * executable, PID, or protocol semantics. Opening SEND on a public port is
+ * still available to USER holders; RECEIVER creation is restricted:
+ *   OS1nx_machine_*  only MACHINE
+ *   OS1nx_svc_*      ROOT or MACHINE
+ * All other OS1nx_* names remain available to ordinary capability owners;
+ * otherwise this guard would break the existing user PORT ABI.
+ * Other names retain ordinary unprivileged PORT behavior.
+ * This closes public service-name squatting during supervisor restarts. */
+static int port_receiver_authorized(const struct process *process,
+                                    const char *name) {
+  if (strncmp(name, "OS1nx_machine_", sizeof("OS1nx_machine_") - 1U) == 0)
+    return proc_is_machine(process);
+  if (strncmp(name, "OS1nx_svc_", sizeof("OS1nx_svc_") - 1U) == 0)
+    return proc_is_privileged(process);
+  return 1;
+}
+
 static long handle_create_port(struct process *process, const char *name,
                                uint32_t rights, int is_private) {
+  if (strlen(name) == 0U || strlen(name) >= PORT_NAME_MAX)
+    return -ENAMETOOLONG;
   if ((rights & OS1_RIGHT_READ) == 0U)
     return handle_create_port_sender(process, name, rights);
+  if (!port_receiver_authorized(process, name))
+    return -EPERM;
   return handle_create_port_receiver(process, name, rights, is_private);
 }
 
@@ -600,6 +622,13 @@ static long handle_create_registry(struct process *process, const char *path,
 
   if (type != OBJ_TYPE_REGKEY || path[0] == '\0')
     return -EINVAL;
+  /* Names must be representable without truncation: a truncated authority
+   * path could resolve an entirely different registry object. */
+  if (strlen(path) >= MAX_KEY_LEN)
+    return -ENAMETOOLONG;
+  if ((rights & OS1_RIGHT_WRITE) != 0U &&
+      !registry_machine_key_write_allowed(path))
+    return -EACCES;
   if ((rights & OS1_RIGHT_WRITE) != 0U &&
       !registry_key_is_virtual(path) && !registry_write_allowed())
     return -EPERM;

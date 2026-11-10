@@ -189,7 +189,8 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame);
  * writes under /sys,/bin), so the binaries backing this preset are immutable.
  */
 static uint8_t level_for_path(const char *path) {
-  if (path && strncmp(path, "/sbin/", 6) == 0)
+  if (path && (strncmp(path, "/sbin/", 6) == 0 ||
+               strncmp(path, "/krnl/extension/", 16) == 0))
     return PLVL_MACHINE;
   if (path && strncmp(path, "/sys/bin/", 9) == 0)
     return PLVL_ROOT;
@@ -222,7 +223,8 @@ static int spawn_path_is_sane(const char *path) {
   /* PID1 is the sole extension authority allowed to bootstrap an /sbin
    * initializer. Other machine processes and all ROOT/USER/GUEST clients
    * are denied before any child object is allocated. */
-  if (strncmp(path, "/sbin/", 6U) == 0 &&
+  if ((strncmp(path, "/sbin/", 6U) == 0 ||
+       strncmp(path, "/krnl/extension/", 16U) == 0) &&
       (current_process == NULL || current_process->pid != 1 ||
        !proc_is_machine(current_process)))
     return 0;

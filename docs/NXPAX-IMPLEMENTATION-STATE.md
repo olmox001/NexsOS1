@@ -40,7 +40,7 @@ does not move POSIX policy or userland services into the kernel.
    published through a public nonprivileged handle.
 3. **Userland:** `user/sys/bin/nxpax.c` is a supervised, privileged broker,
    started/restarted by `user/sbin/nxinit.c` using the existing bounded
-   restart backoff (slot 10). `nxpax --service` reads the resource and serves
+   restart backoff (slot 10). /sys/services/nxpaxd reads the resource and serves
    the existing `OS1nx_pax` named capability port; reply rights travel
    through the existing transferred-pipe mechanism. **PC and fault address
    are cleared** before the client-visible reply; the syndrome is also
@@ -219,3 +219,11 @@ Its UART severity prefix is NXMANAGE/WARN or NXMANAGE/ERROR; the existing
 NXPAX fault ring is NOT claimed to ingest userland messages without a
 versioned broker publisher and an end-to-end test. The NXTEST test catalog
 uses stable case IDs and real child process exit status; no simulated PASS.
+
+## 2026-11-10: dedicated broker/source ownership
+
+The ROOT diagnostic broker is now installed as /sys/services/nxpaxd.
+Its SDK control constants are shared through nxpax_service.h.
+The /sys/bin/nxpax command remains a client and cannot start the
+privileged broker as a command-line personality. The on-guest
+broker restart and end-to-end severity tests remain OPEN until run.

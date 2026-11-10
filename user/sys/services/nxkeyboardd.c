@@ -51,6 +51,10 @@ static void route_key(unsigned code, int value, struct keyboard_state *state) {
   }
   struct window_info windows[40];
   long n = OS1_window_enum(windows, 40);
+  if (n < 0) {
+    OS1_report_error("nxkeyboardd.window_enum", (int)n);
+    return;
+  }
   int focus = 0;
   for (long i = 0; i < n && i < 40; ++i)
     if (windows[i].flags & WININFO_FOCUSED) { focus = windows[i].pid; break; }
@@ -70,12 +74,13 @@ static void route_key(unsigned code, int value, struct keyboard_state *state) {
     else if (code == 43) utf8 = "\xC3\xAC";
     if (utf8) { m.payload[0] = utf8[0]; m.payload[1] = utf8[1]; m.payload[2] = 0; }
   }
-  (void)OS1low_ipc_send(focus, &m);
+  long delivered = OS1low_ipc_send(focus, &m);
+  if (delivered != 0)
+    OS1_report_error("nxkeyboardd.focused_input", (int)(delivered < 0 ? delivered : -EIO));
 }
 
 int main(void) {
   static struct keyboard_state state[256];
-  print("[nxkeyboardd] ring-3 keyboard service started\n");
   for (;;) {
     struct os1_raw_input_event_v1 event = {
         .abi_version = OS1_INPUT_ABI_V1, .struct_size = sizeof(event)};
@@ -90,7 +95,8 @@ int main(void) {
       OS1_sleep(5);
       continue;
     }
-    printf("[nxkeyboardd] raw input wait failed: %ld\n", result);
+    OS1_report_error("nxkeyboardd.input_wait",
+                     (int)(result < 0 ? result : -EIO));
     OS1_sleep(50);
   }
 }

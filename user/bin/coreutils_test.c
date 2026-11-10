@@ -26,11 +26,13 @@ static int run_case(const char *prog, const struct coreutils_case *tc) {
     int rc = system(tc->cmd);
     int ok = (tc->expect_nonzero) ? (rc != 0) : (rc == 0);
 
+    /* Real system() exit status, visible in the separate headless
+     * debug session through the existing UART-only destination. */
+    printf_win(0, "[%s][%s] %s rc=%d\n",
+               prog, ok ? "PASS" : "FAIL", tc->name, rc);
     printf("[%s] %s %s -> rc=%d\n",
-           prog,
-           ok ? "PASS" : "FAIL",
-           tc->name,
-           rc);
+           prog, ok ? "PASS" : "FAIL",
+           tc->name, rc);
     return ok ? 0 : 1;
 }
 
@@ -53,27 +55,27 @@ int main(int argc, char **argv) {
         { "mkdir", "mkdir /tmp/nxctestdir", 0 },
         { "touch", "touch /tmp/nxctestdir/file.txt", 0 },
         { "cat", "cat /tmp/nxctestdir/file.txt", 0 },
-        { "wc", "wc -c /etc/init.cfg", 0 },
-        { "head", "head -n 2 /etc/init.cfg", 0 },
-        { "tail", "tail -n 1 /etc/init.cfg", 0 },
+        { "wc", "wc -c /system/boot/services.conf", 0 },
+        { "head", "head -n 2 /system/boot/services.conf", 0 },
+        { "tail", "tail -n 1 /system/boot/services.conf", 0 },
         { "sync", "sync", 0 },
         { "whoami", "whoami", 0 },
         { "seq", "seq 1 3", 0 },
-        { "basename2", "basename /etc/init.cfg", 0 },
-        { "dirname2", "dirname /etc/init.cfg", 0 },
+        { "basename2", "basename /system/boot/services.conf", 0 },
+        { "dirname2", "dirname /system/boot/services.conf", 0 },
         { "readlink", "readlink /bin/echo", 0 },
         { "realpath", "realpath /bin/echo", 0 },
         { "tty", "tty", 0 },
         { "expr", "expr 10 + 20", 0 },
         { "factor", "factor 42", 0 },
-        { "cut", "cut -b 1-4 /etc/init.cfg", 0 },
-        { "fold", "fold -w 20 /etc/init.cfg", 0 },
-        { "fmt", "fmt -w 40 /etc/init.cfg", 0 },
-        { "nl", "nl /etc/init.cfg", 0 },
+        { "cut", "cut -b 1-4 /system/boot/services.conf", 0 },
+        { "fold", "fold -w 20 /system/boot/services.conf", 0 },
+        { "fmt", "fmt -w 40 /system/boot/services.conf", 0 },
+        { "nl", "nl /system/boot/services.conf", 0 },
         { "nproc", "nproc", 0 },
-        { "paste", "paste /etc/init.cfg /etc/init.cfg", 0 },
+        { "paste", "paste /system/boot/services.conf /system/boot/services.conf", 0 },
         { "shuf", "shuf -i 1-5 -n 2", 0 },
-        { "uniq", "uniq /etc/init.cfg", 0 },
+        { "uniq", "uniq /system/boot/services.conf", 0 },
         { "uptime", "uptime", 0 },
         { "users", "users", 0 },
         { "hostid", "hostid", 0 },
@@ -102,7 +104,10 @@ int main(int argc, char **argv) {
     }
 
     size_t passed = (failed <= (int)ntests) ? (ntests - (size_t)failed) : 0;
-    printf("[%s] done: %zu/%zu passed, %d failure(s)\n", prog, passed, ntests, failed);
+    printf_win(0, "[%s] done: %zu/%zu passed, %d failure(s)\n",
+               prog, passed, ntests, failed);
+    printf("[%s] done: %zu/%zu passed, %d failure(s)\n",
+           prog, passed, ntests, failed);
     if (strcmp(prog, "coreutilstest") != 0) {
         printf("[coreutilstest] done: %zu/%zu passed, %d failure(s)\n", passed, ntests, failed);
     }

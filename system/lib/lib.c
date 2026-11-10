@@ -502,6 +502,48 @@ long OS1low_cap_query(int handle) { return _sys_cap_query(handle); }
 long OS1low_cap_grant(int target_pid, int handle, unsigned int rights) {
   return _sys_cap_grant(target_pid, handle, rights);
 }
+/* Registry object helpers acquire minimal per-key rights and close them in
+ * all paths. Bounds match the 64-byte registry key and 128-byte value ABI. */
+int OS1_registry_object_get(const char *key, char *out, size_t capacity) {
+  if (key == NULL || out == NULL || capacity == 0U || capacity > 128U)
+    return -EINVAL;
+  int h = (int)OS1low_handle_create(OS1_NS_REG, key, OS1_RIGHT_READ,
+                                    OBJ_TYPE_REGKEY);
+  if (h < 0)
+    return h;
+  long read_count = OS1_object_read(h, out, capacity);
+  long closed = OS1low_handle_close(h);
+  if (read_count < 0)
+    return (int)read_count;
+  if (closed < 0 || read_count == 0 || (size_t)read_count > capacity ||
+      out[read_count - 1] != '\0')
+    return -EIO;
+  return 0;
+}
+
+int OS1_registry_object_set(const char *key, const char *value) {
+  if (key == NULL || value == NULL)
+    return -EINVAL;
+  size_t length = 0U;
+  for (; length < 128U; ++length) {
+    if (value[length] == '\0')
+      break;
+  }
+  if (length >= 128U)
+    return -EINVAL;
+  int h = (int)OS1low_handle_create(OS1_NS_REG, key, OS1_RIGHT_WRITE,
+                                    OBJ_TYPE_REGKEY);
+  if (h < 0)
+    return h;
+  long written = OS1_object_write(h, value, length + 1U);
+  long closed = OS1low_handle_close(h);
+  if (written < 0)
+    return (int)written;
+  if (closed < 0 || written != (long)(length + 1U))
+    return -EIO;
+  return 0;
+}
+
 long OS1low_time_open(void) {
   return OS1low_handle_create(OS1_NS_TIME, OS1_TIME_OBJECT_SYSTEM,
                               OS1_RIGHT_READ, OBJ_TYPE_TIMER);
@@ -552,9 +594,12 @@ int OS1_port_create_private(const char *name) {
       OS1_PORT_CREATE_PRIVATE, OBJ_TYPE_PORT);
 }
 int OS1_port_open(const char *name) {
-  /* No READ: a client gets a SEND-only capability to an existing service. */
+  /* Public SEND acquisition grants only WRITE, not DUPLICATE or TRANSFER.
+   * Clients don't need amplification rights; protocol handle delegation
+   * operates on the separately held handles being transferred. This also
+   * matches the exact cap_query contract tested by the notification suite. */
   return (int)errno_ret(OS1low_handle_create(
-      OS1_NS_PORT, name, OS1_RIGHT_WRITE | OS1_RIGHT_DUPLICATE, OBJ_TYPE_PORT));
+      OS1_NS_PORT, name, OS1_RIGHT_WRITE, OBJ_TYPE_PORT));
 }
 long OS1_port_send(int handle, const struct ipc_message *msg) {
   return errno_ret(OS1_object_write(handle, msg, sizeof(struct ipc_message)));
@@ -2235,7 +2280,7 @@ int system(const char *command) {
    * ("exec service" section), so the daemon stays verified while it is off the
    * POSIX critical path.  Re-enable here — and nowhere else — once 9d lands. */
   int pid = spawn_args(NXSHELL_PATH, 3, argv);
-  if (pid < 0) {
+  if (pid <= 0) {
     errno = ENOENT;
     return -1;
   }
@@ -2250,9 +2295,13 @@ int system(const char *command) {
   while ((w = OS1low_process_wait_status(pid, &code)) == -1)
     OS1_sleep(15);
 
-  /* POSIX system() status word: WEXITSTATUS reads (status>>8)&0xff (Phase 2).
-   * A -2 "reaped elsewhere" leaves code 0 — the command still ran. */
-  (void)w;
+  /* A lost/reaped-elsewhere child has no verifiable command outcome.
+   * Report ECHILD instead of the previous invented exit status 0 (false PASS).
+   * Only an actual successful process wait may encode the child's exit code. */
+  if (w < 0) {
+    errno = ECHILD;
+    return -1;
+  }
   return __wait_encode(code);
 }
 
@@ -2486,8 +2535,9 @@ int OS1_env_enum(char *buf, size_t size) {
 #define GETENV_SLOTS 4
 #define GETENV_VALMAX 128
 
-static char *_default_environ[] = {NULL};
-char **environ = _default_environ;
+/* The process-local POSIX environ view is owned by posix_environment.c,
+ * while OS1_env_* remains the authoritative registry-backed API. */
+extern int os1_posix_environ_init(void);
 
 char *getenv(const char *name) {
 
@@ -2503,10 +2553,26 @@ char *getenv(const char *name) {
 int setenv(const char *name, const char *value, int overwrite) {
   if (!overwrite && getenv(name))
     return 0;
-  return OS1_env_set(name, value);
+  int result = OS1_env_set(name, value);
+  if (result != 0)
+    return result;
+  if (os1_posix_environ_init() != 0) {
+    errno = EOVERFLOW;
+    return -1;
+  }
+  return 0;
 }
 
-int unsetenv(const char *name) { return OS1_env_unset(name); }
+int unsetenv(const char *name) {
+  int result = OS1_env_unset(name);
+  if (result != 0)
+    return result;
+  if (os1_posix_environ_init() != 0) {
+    errno = EOVERFLOW;
+    return -1;
+  }
+  return 0;
+}
 
 /*
  * putenv - POSIX's older "NAME=VALUE" form.

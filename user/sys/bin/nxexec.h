@@ -515,10 +515,17 @@ fail:
  * kernel dup'd them into the child).  nredir == 0 behaves exactly like
  * nxexec_spawn_search.  Returns the PID or <= 0 on failure.
  */
-static inline int nxexec_spawn_search_redir(int argc, char *argv[],
-                                            char *out_path, int detached,
-                                            const struct spawn_redir *redir,
-                                            int nredir) {
+/* Shared resolver/dispatcher. user_only is an execution-service safety
+ * boundary: the ROOT daemon can only launch USER-class executables from
+ * /bin; /sys system programs and MACHINE extensions require the caller's
+ * own authority, so clients fall back to direct capability-clamped spawn.
+ * The hosted command uses the exact same resolver with user_only=0. */
+static inline int nxexec_spawn_search_redir_scoped(int argc, char *argv[],
+                                                   char *out_path,
+                                                   int detached,
+                                                   const struct spawn_redir *redir,
+                                                   int nredir,
+                                                   int user_only) {
   unsigned int flags = detached ? SPAWN_FLAG_DETACHED : 0u;
   static char clean_name[NXEXEC_PATH_MAX];
   argv[0] =
@@ -534,6 +541,8 @@ static inline int nxexec_spawn_search_redir(int argc, char *argv[],
    * `/bin/lua` from the launcher but bare `lua` from the shell). */
   int r = nxexec_resolve_path(name, out_path, NXEXEC_PATH_MAX);
   if (r == 0) {
+    if (user_only && strncmp(out_path, "/bin/", 5U) != 0)
+      return -EPERM;
     argv[0] = out_path;
     return (int)OS1low_process_spawn_redir(out_path, argc, argv, flags, redir,
                                            nredir);
@@ -550,10 +559,22 @@ static inline int nxexec_spawn_search_redir(int argc, char *argv[],
                                             nredir);
   if (pid > 0)
     return pid;
+  if (user_only)
+    return -EPERM; /* never fall through to ROOT-level /sys/bin */
   snprintf(out_path, NXEXEC_PATH_MAX, "/sys/bin/%s", name);
   argv[0] = out_path;
   return (int)OS1low_process_spawn_redir(out_path, argc, argv, flags, redir,
                                          nredir);
+}
+
+/* Command/launcher personality: same resolver with its own caller's
+ * privilege clamp; the privileged service alone chooses user_only=1. */
+static inline int nxexec_spawn_search_redir(int argc, char *argv[],
+                                            char *out_path, int detached,
+                                            const struct spawn_redir *redir,
+                                            int nredir) {
+  return nxexec_spawn_search_redir_scoped(
+      argc, argv, out_path, detached, redir, nredir, 0);
 }
 
 /*

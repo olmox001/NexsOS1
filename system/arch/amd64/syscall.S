@@ -14,10 +14,21 @@
 .text
 .global _start
 _start:
-    /* SP is already set by kernel ELF loader */
+    /* Preserve the kernel-supplied argc/argv across SDK environment init.
+     * No main() is entered with a silently truncated POSIX environment. */
+    pushq %rdi
+    pushq %rsi
+    call os1_posix_environ_init
+    popq %rsi
+    popq %rdi
+    testl %eax, %eax
+    jnz .Lenv_failure
     call main
     /* Exit with main's return value */
     movq %rax, %rdi
+    call _sys_exit
+.Lenv_failure:
+    movq $1, %rdi
     call _sys_exit
 1:  hlt
     jmp 1b

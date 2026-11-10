@@ -96,6 +96,12 @@ def clang_args(rel: str, arch: str) -> list[str]:
             "-D__NEXSOS__", "-DFLEXIBLE_ARRAY_MEMBER=",
             "-include", str(ROOT / "user/portability/gnulib/gnulib_config_nexsos.h"),
         ]
+    if rel == "user/portability/gnulib/gnulib_os1_glue.c":
+        # This translation unit intentionally owns the externally linked
+        # memeq; the production Makefile compiles it with the same define.
+        # Without it the forced Gnulib config header declares a second
+        # static inline memeq and AST analysis reports a false parse failure.
+        args += ["-D_GNULIB_OS1_GLUE_IMPL"]
     if rel.startswith("user/portability/coreutils/"):
         args += [
             "-include",

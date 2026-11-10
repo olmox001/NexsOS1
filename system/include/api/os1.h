@@ -408,6 +408,10 @@ long OS1low_handle_duplicate(int handle, unsigned int new_rights);
 long OS1low_handle_close(int handle);
 long OS1low_cap_query(int handle);
 long OS1low_cap_grant(int target_pid, int handle, unsigned int rights);
+/* Canonical registry-object helpers; all authority travels via an
+ * OS1_NS_REG handle and OS1_object_read/write, not an ambient registry call. */
+int OS1_registry_object_get(const char *key, char *out, size_t capacity);
+int OS1_registry_object_set(const char *key, const char *value);
 long OS1_object_read(int handle, void *buf, unsigned long n);
 long OS1_object_write(int handle, const void *buf, unsigned long n);
 
@@ -421,8 +425,9 @@ long OS1_object_write(int handle, const void *buf, unsigned long n);
  *
  * NAMING STANDARD for system services (2026-07-18): "OS1nx_<service>".
  */
-#define OS1NX_PORT_EXEC "OS1nx_exec" /* the nxexec execution service */
-#define OS1NX_PORT_TIME "OS1nx_time" /* privileged time/scheduler service */
+#define OS1NX_PORT_EXEC "OS1nx_svc_exec" /* the nxexec execution service */
+#define OS1NX_PORT_TIME "OS1nx_svc_time" /* privileged time/scheduler service */
+#define OS1NX_PORT_NOTIFY "OS1nx_svc_notify" /* capability notification service */
 
 /* OS1_port_create - publish a service port and take its RECEIVE right (making
  * this process its owner).  Fails with -EEXIST if the name is already served,

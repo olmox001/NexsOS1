@@ -26,6 +26,8 @@ static int g_passed = 0;
 static int g_failed = 0;
 
 static void check_bool(const char *name, int cond) {
+    /* Each real check is visible in mdebug without a controlling window. */
+    printf_win(0, "[GNULIB][%s] %s\n", cond ? "PASS" : "FAIL", name);
     if (cond) {
         printf("  [PASS] %s\n", name);
         g_passed++;
@@ -125,17 +127,37 @@ static void test_gnulib_os1_glue(void) {
 }
 
 static void test_gnulib_vfs_io(void) {
-    int fd = open("/etc/stress.tmp", O_RDWR, 0644);
-    if (fd < 0) {
-        /* Fallback read test */
-        fd = open("/etc/init.cfg", O_RDONLY, 0644);
+    /* Validate the real on-image machine-owned service manifest, not an
+     * obsolete /etc fixture; user read access remains supported. */
+    int source = open("/system/boot/services.conf", O_RDONLY);
+    check_bool("vfs service manifest open", source >= 3);
+    if (source >= 3) {
+        char header[64] = {0};
+        ssize_t count = gnulib_os1_safe_read(source, header,
+                                             sizeof(header) - 1U);
+        check_bool("vfs gnulib safe_read", count > 0 &&
+                   strstr(header, "name|mode") != NULL);
+        check_bool("vfs service manifest close", close(source) == 0);
     }
-    check_bool("vfs open existing file", fd >= 0);
-    if (fd >= 0) {
-        char buf[64];
-        ssize_t n = gnulib_os1_safe_read(fd, buf, sizeof(buf) - 1);
-        check_bool("vfs safe_read", n > 0);
-        close(fd);
+
+    /* A distinct real writable ext4 file tests safe_write and readback.
+     * This is not a synthetic success or reuse of fdtest's live data. */
+    int fd = open("/home/shared/gnulib.fixture", O_RDWR);
+    check_bool("vfs gnulib ext4 fixture open", fd >= 3);
+    if (fd >= 3) {
+        const char payload[] = "GNULIB-RW-1234";
+        char verify[sizeof(payload)] = {0};
+        ssize_t n = gnulib_os1_safe_write(fd, payload,
+                                          sizeof(payload) - 1U);
+        check_bool("vfs gnulib safe_write",
+                   n == (ssize_t)(sizeof(payload) - 1U));
+        check_bool("vfs gnulib seek rewind", lseek(fd, 0, SEEK_SET) == 0);
+        ssize_t readback = gnulib_os1_safe_read(fd, verify,
+                                                sizeof(payload) - 1U);
+        check_bool("vfs gnulib byte roundtrip",
+                   readback == (ssize_t)(sizeof(payload) - 1U) &&
+                   memcmp(verify, payload, sizeof(payload) - 1U) == 0);
+        check_bool("vfs gnulib file close", close(fd) == 0);
     }
 }
 
@@ -152,10 +174,11 @@ int main(int argc, char **argv) {
     test_gnulib_os1_glue();
     test_gnulib_vfs_io();
 
-    int total_suites = 7;
-    int passed_suites = (g_failed == 0) ? total_suites : (total_suites - g_failed);
-    if (passed_suites < 0) passed_suites = 0;
-
-    printf("gnulibtest] done: %d/%d passed, %d failure(s)\n", passed_suites, total_suites, g_failed);
-    return (g_failed == 0) ? 0 : 1;
+    /* Report individual checks, not seven artificial suite counts. */
+    printf_win(0, "[gnulibtest] done: %d/%d passed, %d failure(s)\n",
+               g_passed, g_passed + g_failed, g_failed);
+    if (printf("[gnulibtest] done: %d/%d passed, %d failure(s)\n",
+               g_passed, g_passed + g_failed, g_failed) < 0)
+        return 1;
+    return g_failed == 0 ? 0 : 1;
 }

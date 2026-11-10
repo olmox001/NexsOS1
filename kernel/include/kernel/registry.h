@@ -27,6 +27,10 @@ int registry_get(const char *key, char *buffer, size_t size) NX_MUST_USE;
  * sys_registry, the OS1_NS_REG acquisition, regfs_write — consults this and
  * they cannot disagree about the same key (R2). */
 int registry_key_is_virtual(const char *key) NX_MUST_USE;
+/* Unified object/registry acquisition gate for protected MACHINE-owned
+ * namespace subtrees. Also enforced at the actual mutation point so
+ * pre-existing delegated handles cannot bypass it. */
+int registry_machine_key_write_allowed(const char *key) NX_MUST_USE;
 /* registry_enum: write the newline-separated list of used keys into 'buf'
  * (NUL-terminated, bounded by 'size'); returns the number of bytes written
  * (excluding the NUL), or -1 on bad args (LIB-REG-04).

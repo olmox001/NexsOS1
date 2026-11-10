@@ -383,6 +383,23 @@ int vfs_write_allowed(const char *resolved_path) {
   if (proc_is_machine(current_process))
     return 0; /* machine identity: full filesystem authority */
 
+  /* Mounted object providers may carry stricter per-node authorization
+   * than the ordinary filesystem tree ACL. Delegation stays in fs_ops,
+   * NOT a special-case registry pathname in the generic VFS dispatcher.
+   * The provider performs its actual write/delete permission check too. */
+  const char *relative = NULL;
+  struct vfs_mount *authority_mount =
+      vfs_acquire(resolved_path, &relative);
+  if (authority_mount != NULL) {
+    if (authority_mount->ops->authorize_write != NULL) {
+      int authorized = authority_mount->ops->authorize_write(
+          authority_mount, relative);
+      vfs_release(authority_mount);
+      return authorized;
+    }
+    vfs_release(authority_mount);
+  }
+
   /* /tmp, /var/tmp: scratch space POSIX-style, world-writable (sticky-bit
    * convention).  coreutils/gnulib assume it's writable by anyone
    * (mktemp, mkstemp, sort/cp/mv temp files, etc.) — without this branch
@@ -430,6 +447,8 @@ int vfs_write_allowed(const char *resolved_path) {
       strcmp(resolved_path, "/sys/services") == 0 ||
       strncmp(resolved_path, "/sbin/", 6) == 0 ||
       strcmp(resolved_path, "/sbin") == 0 ||
+      strncmp(resolved_path, "/krnl/", 6) == 0 ||
+      strcmp(resolved_path, "/krnl") == 0 ||
       strncmp(resolved_path, "/system/", 8) == 0 ||
       strcmp(resolved_path, "/system") == 0) {
     pr_warn("vfs: PID %d denied write to machine-only path '%s'\n",

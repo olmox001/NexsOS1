@@ -14,9 +14,10 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-/* La variabile program_name viene impostata da gnulib (progname.c)
-   tramite set_program_name() all'avvio di ogni programma GNU. */
-extern char *program_name;
+/* The GNU progname provider owns program_name. NexsOS getprogname and
+ * setprogname share that one canonical value instead of maintaining a
+ * shadow that is silently ignored after GNU has initialized it. */
+extern const char *program_name;
 
 static char g_progname_buf[64] = "nexsos_app";
 
@@ -36,10 +37,23 @@ const char *getprogname(void) {
 }
 
 void setprogname(const char *name) {
-    if (name && *name) {
-        strncpy(g_progname_buf, name, sizeof(g_progname_buf) - 1);
-        g_progname_buf[sizeof(g_progname_buf) - 1] = '\0';
+    if (name == NULL || name[0] == '\0')
+        return;
+    /* BSD getprogname returns the leaf, unlike GNU program_name which
+     * generally contains argv[0]. Keep GNU's public storage canonical
+     * while preserving the short BSD accessor's exact contract. */
+    const char *leaf = strrchr(name, '/');
+    leaf = leaf == NULL ? name : leaf + 1;
+    size_t len = strlen(leaf);
+    if (len == 0U || len >= sizeof(g_progname_buf))
+        return;
+    /* The bound is constant for analysis and len was validated above. */
+    for (size_t i = 0U; i < sizeof(g_progname_buf); ++i) {
+        g_progname_buf[i] = leaf[i];
+        if (i == len)
+            break;
     }
+    program_name = g_progname_buf;
 }
 
 const char *gnulib_os1_getprogname(void) {

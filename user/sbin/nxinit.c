@@ -21,7 +21,7 @@ static int nxinit_boot_profile(void) {
   char mode[8] = {0};
   int n = file_read(NXMANAGE_PROFILE_CONFIG, mode, sizeof(mode) - 1U, 0);
   if (n != 2 || mode[1] != '\n' || (mode[0] != '0' && mode[0] != '1')) {
-    print("[Init][ERROR] malformed machine-only boot profile\n");
+    OS1_report_error("nxinit.boot_profile", -EIO);
     return -1;
   }
   return mode[0] == '1' ? 1 : 0;
@@ -80,26 +80,55 @@ static int nxinit_pack(char *dst, unsigned cap, const char *path,
   return 0;
 }
 
-static int nxinit_ack(unsigned slot) {
+static int nxinit_ack(unsigned slot, uint32_t expected_type) {
   for (unsigned poll = 0U; poll < NXMANAGE_ACK_STEPS; ++poll) {
     struct ipc_message reply = {0};
     if (OS1low_ipc_try_recv(-1, &reply) == 0) {
-      if (reply.from != 1 || reply.type != NXMANAGE_REP_REGISTER ||
+      if (reply.from != 1 || reply.type != (int)expected_type ||
           reply.data1 != slot) {
-        print("[Init][WARN] ignored unrelated management reply\n");
+        OS1_report_error("nxinit.management_reply", -EPERM);
         continue;
       }
       return (int)(int64_t)reply.data2;
     }
     OS1_sleep(NXINIT_ACK_POLL_MS);
   }
-  print("[Init][ERROR] supervisor ACK deadline exceeded\n");
+  OS1_report_error("nxinit.ack_timeout", -EIO);
   return -EIO;
 }
 
+/* Service names are explicit immutable manifest metadata, transported over
+ * the same authenticated bounded PORT as the registration body. Separate
+ * NAME/REGISTER records avoid truncating the path or allocating another pipe. */
+static int nxinit_name(int port, unsigned slot, const char *name) {
+  struct ipc_message request = {0};
+  unsigned len = 0U;
+  if (name == NULL)
+    return -EINVAL;
+  for (; len < NXMANAGE_NAME_MAX; ++len) {
+    if (name[len] == '\0')
+      break;
+  }
+  if (len == 0U || len >= NXMANAGE_NAME_MAX)
+    return -EINVAL;
+  request.type = NXMANAGE_REQ_NAME;
+  request.data1 = slot;
+  request.data2 = NXMANAGE_PROTO_VERSION;
+  for (unsigned i = 0U; i < NXMANAGE_NAME_MAX; ++i) {
+    request.payload[i] = name[i];
+    if (name[i] == '\0')
+      break;
+  }
+  if (OS1_port_send(port, &request) != (long)sizeof(request))
+    return -EIO;
+  return nxinit_ack(slot, NXMANAGE_REP_NAME);
+}
+
 static int nxinit_declare(int port, unsigned slot, uint32_t mode,
-                          const char *path, const char *args,
-                          const char *registry) {
+                          const char *name, const char *path,
+                          const char *args, const char *registry) {
+  if (nxinit_name(port, slot, name) != 0)
+    return -EPERM;
   struct ipc_message message = {0};
   message.type = NXMANAGE_REQ_REGISTER;
   message.data1 = slot;
@@ -109,12 +138,10 @@ static int nxinit_declare(int port, unsigned slot, uint32_t mode,
     return -EINVAL;
   if (OS1_port_send(port, &message) != (long)sizeof(message))
     return -EIO;
-  int pid = nxinit_ack(slot);
-  if (pid <= 0)
-    printf("[Init][WARN] service slot %u not running (result %d)\n", slot,
-           pid);
-  else
-    printf("[Init] service slot %u started (PID %d)\n", slot, pid);
+  int pid = nxinit_ack(slot, NXMANAGE_REP_REGISTER);
+  if (pid < 0)
+    OS1_report_error("nxinit.service_registration", pid);
+  /* Manager publishes authoritative status per named service and slot. */
   return pid;
 }
 
@@ -122,31 +149,32 @@ static int nxinit_declare(int port, unsigned slot, uint32_t mode,
  * The three separators are mandatory so malformed lines cannot silently
  * change the interpretation of executable paths or registry authority. */
 static int nxinit_line(int port, unsigned slot, char *line, int mdebug) {
-  char *field[4] = {line, NULL, NULL, NULL};
+  char *field[5] = {line, NULL, NULL, NULL, NULL};
   unsigned split = 1U;
   for (unsigned i = 0U; i < NXINIT_LINE_BYTES && line[i] != '\0'; ++i) {
     if (line[i] == '|') {
-      if (split >= 4U)
+      if (split >= 5U)
         return -EINVAL;
       line[i] = '\0';
       field[split++] = line + i + 1U;
     }
   }
-  if (split != 4U || field[1][0] != '/')
+  if (split != 5U || field[2][0] != '/')
     return -EINVAL;
   uint32_t mode = 0U;
-  if (strcmp(field[0], "lock") == 0)
+  if (strcmp(field[1], "lock") == 0)
     mode = NXMANAGE_MODE_LOCK;
-  else if (strcmp(field[0], "once") == 0)
+  else if (strcmp(field[1], "once") == 0)
     mode = NXMANAGE_MODE_ONCE;
-  else if (strcmp(field[0], "debug") == 0) {
+  else if (strcmp(field[1], "debug") == 0) {
     if (!mdebug)
       return 0; /* skipped by boot profile, not executed */
     mode = NXMANAGE_MODE_ASYNC_ONCE;
   } else {
     return -EINVAL;
   }
-  int result = nxinit_declare(port, slot, mode, field[1], field[2], field[3]);
+  int result = nxinit_declare(port, slot, mode,
+                              field[0], field[2], field[3], field[4]);
   if (result <= 0 && mode == NXMANAGE_MODE_ONCE)
     return -EIO; /* dependent services must not start after failed bootstrap */
   return result <= 0 ? 1 : 0; /* persistent lock can be retried by manager */
@@ -182,14 +210,12 @@ static int nxinit_manifest(int port, int mdebug) {
     }
     start = i + 1U;
   }
-  if (printf("[Init] declared %u service slots to NXMANAGE\n", slot) < 0)
-    return -EIO;
   return 0;
 }
 
 int main(void) {
   if (get_pid() == 1) {
-    print("[Init][ERROR] initializer cannot run as machine PID1\n");
+    OS1_report_error("nxinit.machine_pid_denied", -EPERM);
     return 1;
   }
   int mdebug = nxinit_boot_profile();
@@ -197,26 +223,26 @@ int main(void) {
     return 1;
   int port = nxinit_port_claim();
   if (port < 0) {
-    print("[Init][ERROR] NXMANAGE authority port unavailable\n");
+    OS1_report_error("nxinit.manager_port", port);
     return 1;
   }
-  if (printf("[Init] Declarative startup from %s (mdebug=%d)\n",
-             NXMANAGE_SERVICES_CONFIG, mdebug) < 0)
+  int manifest = nxinit_manifest(port, mdebug);
+  if (manifest != 0)
+    OS1_report_error("nxinit.manifest", manifest);
+  long closed = OS1low_handle_close(port);
+  if (closed < 0)
+    OS1_report_error("nxinit.manager_handle_close", (int)closed);
+  if (manifest != 0 || closed < 0)
     return 1;
-  if (nxinit_manifest(port, mdebug) != 0) {
-    print("[Init][ERROR] service manifest rejected or dependency failed\n");
-    if (OS1low_handle_close(port) < 0)
-      print("[Init][WARN] failed to close authority handle\n");
-    return 1;
-  }
-  if (OS1low_handle_close(port) < 0)
-    print("[Init][WARN] failed to close authority handle\n");
   OS1_sleep(1000);
   char notify_pid[24] = {0};
-  if (OS1_registry_get("srv.notify_pid", notify_pid,
-                       sizeof(notify_pid)) == 0)
-    notify("System", "Boot Complete - NEXS");
-  print("[Init] Configuration delivered; lifecycle owned by NXMANAGE\n");
+  if (OS1_registry_object_get("srv.notify_pid", notify_pid,
+                               sizeof(notify_pid)) == 0) {
+    int delivered = OS1_notify_post("System", "Boot Complete - NEXS");
+    if (delivered != 0)
+      OS1_report_error("nxinit.boot_notification", delivered);
+  }
+  /* The machine registry records ownership and delivery status. */
   /* Stay available for authenticated reconfiguration protocol extensions.
    * No duplicate service-status polling or respawn scheduling in init. */
   for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {

@@ -80,6 +80,12 @@ struct fs_ops {
               uint32_t size);
   int (*write)(struct vfs_mount *mnt, const char *path, uint64_t offset,
                const void *buf, uint32_t size);
+  /* Optional provider authority contract for mounted object namespaces.
+   * The outer VFS gate still requires CAP_FS_WRITE; this callback supplies
+   * the object provider's own per-key capability policy. A NULL callback
+   * retains ordinary immutable filesystem tree ACLs. No VFS hardcoded
+   * registry path prefix or bypass of provider write/delete validation. */
+  int (*authorize_write)(struct vfs_mount *mnt, const char *path);
   int (*list)(struct vfs_mount *mnt, const char *path, char *buf,
               uint32_t size);
   /* unlink: remove the file/node at 'path' (provider may not support it:

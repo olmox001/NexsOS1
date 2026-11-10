@@ -38,10 +38,17 @@ static const struct nx_test_case cases[] = {
     {"10nxtest_capkill", "/bin/capkill", NULL, 2000U},
     {"11nxtest_nxpax", "/sys/bin/nxpax", "--probe", 1000U},
     {"12nxtest_timerqueue", "/sys/bin/nxtimerdiag", "--queue-stress", 4000U},
+    {"13nxtest_notify", "/bin/notifytest", NULL, 2000U},
 };
 
 static int nx_test_report(const struct nx_test_case *test, const char *state,
                           int status) {
+  /* mdebug runs in a separate headless nxshell; stdout may have no
+   * terminal. The existing window diagnostic output with id 0 mirrors
+   * bytes to UART WITHOUT creating a graphical window. Exit-status logic
+   * still comes from real waitpid and is never inferred from the print. */
+  printf_win(0, "[NXTEST][%s] %s status=%d\n",
+             state, test->id, status);
   int n = printf("[NXTEST][%s] %s status=%d\n", state, test->id, status);
   return n < 0 ? -1 : 0;
 }
@@ -109,7 +116,9 @@ int main(void) {
   const uint32_t count = (uint32_t)(sizeof(cases) / sizeof(cases[0]));
   uint32_t passed = 0U;
   uint32_t failed = 0U;
-  print("[NXTEST] real userland suite started in isolated mdebug shell\n");
+  printf_win(0, "[NXTEST] real userland suite started in isolated mdebug shell\n");
+  if (printf("[NXTEST] real userland suite started in isolated mdebug shell\n") < 0)
+    return 1;
   for (uint32_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     int result = nx_test_run(&cases[i]);
     if (result == 0)
@@ -117,6 +126,8 @@ int main(void) {
     else
       ++failed;
   }
+  printf_win(0, "[NXTEST] done: %u/%u passed, %u failure(s)\n",
+             passed, count, failed);
   if (printf("[NXTEST] done: %u/%u passed, %u failure(s)\n",
              passed, count, failed) < 0)
     return 1;

@@ -15,6 +15,8 @@
 #include <sys/wait.h>
 
 struct nxm_slot {
+  char name[NXMANAGE_NAME_MAX]; /* authoritative registry object identity */
+  int named;
   char path[56];
   char args[48];
   char registry[40];
@@ -159,20 +161,34 @@ static int nxm_spawn(const struct nxm_slot *slot) {
   return spawn_args(slot->path, (int)argc, argv);
 }
 
+/* One stable registry object per canonical service name; a reader cannot
+ * observe a half-updated multi-key service record. The old numeric slot and
+ * optional legacy discovery key remain readable, never authoritative. */
 static void nxm_publish(const struct nxm_slot *slot, unsigned id) {
-  char slotkey[40], value[48], pidbuf[24];
-  int k = snprintf(slotkey, sizeof(slotkey), "system.manage.slot.%02u", id);
-  int v = snprintf(value, sizeof(value), "%d:%u:%u", slot->pid,
-                   slot->generation, (unsigned)slot->active);
-  int p = snprintf(pidbuf, sizeof(pidbuf), "%d", slot->pid);
-  if (k < 0 || k >= (int)sizeof(slotkey) ||
-      v < 0 || v >= (int)sizeof(value) ||
-      p < 0 || p >= (int)sizeof(pidbuf))
+  char namekey[64], slotkey[40], record[48], pidbuf[24];
+  if (!slot->named)
     return;
-  if (OS1_registry_set(slotkey, value) != 0 ||
-      (slot->registry[0] != '\0' &&
-       OS1_registry_set(slot->registry, pidbuf) != 0))
-    print("[NXMANAGE][WARN] registry publication failed\n");
+  int k = snprintf(namekey, sizeof(namekey),
+                   "system.manage.service.%s", slot->name);
+  int i = snprintf(slotkey, sizeof(slotkey), "system.manage.slot.%02u", id);
+  unsigned status = slot->queued ? 2U :
+                    slot->once_finished ? 3U :
+                    slot->pid > 0 ? 1U : 0U;
+  int r = snprintf(record, sizeof(record), "%d:%u:%u:%u",
+                   slot->pid, slot->generation, slot->mode, status);
+  int n = snprintf(pidbuf, sizeof(pidbuf), "%d", slot->pid);
+  if (k < 0 || k >= (int)sizeof(namekey) ||
+      i < 0 || i >= (int)sizeof(slotkey) ||
+      r < 0 || r >= (int)sizeof(record) ||
+      n < 0 || n >= (int)sizeof(pidbuf))
+    return;
+  int first = OS1_registry_object_set(namekey, record);
+  int second = OS1_registry_object_set(slotkey, record);
+  int third = slot->registry[0] != '\0'
+                  ? OS1_registry_object_set(slot->registry, pidbuf) : 0;
+  if (first != 0) OS1_report_error("nxmanage.service_publish", first);
+  if (second != 0) OS1_report_error("nxmanage.slot_publish", second);
+  if (third != 0) OS1_report_error("nxmanage.pid_publish", third);
 }
 
 static int nxm_start_slot(struct nxm_slot *slot, unsigned id,
@@ -204,6 +220,44 @@ static int nxm_matching(const struct nxm_slot *old,
          strcmp(old->registry, candidate->registry) == 0;
 }
 
+/* Authenticated service identity reservation. Service names are not
+ * inferred from path basenames and are never hardcoded in this daemon.
+ * A live slot is immutable; distinct slots cannot share registry identity. */
+static int nxm_name(struct nxm_state *state,
+                    const struct ipc_message *message) {
+  unsigned id = (unsigned)message->data1;
+  if (id >= NXMANAGE_SLOTS ||
+      message->data2 != NXMANAGE_PROTO_VERSION)
+    return -EINVAL;
+  const char *name = message->payload;
+  unsigned len = 0U;
+  for (; len < NXMANAGE_NAME_MAX; ++len) {
+    char ch = name[len];
+    if (ch == '\0')
+      break;
+    if (!((ch >= 'a' && ch <= 'z') ||
+          (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'))
+      return -EINVAL;
+  }
+  if (len == 0U || len >= NXMANAGE_NAME_MAX)
+    return -EINVAL;
+  for (unsigned n = 0U; n < NXMANAGE_SLOTS; ++n) {
+    if (n != id && state->slots[n].named &&
+        strcmp(state->slots[n].name, name) == 0)
+      return -EEXIST;
+  }
+  struct nxm_slot *slot = &state->slots[id];
+  if (slot->named)
+    return strcmp(slot->name, name) == 0 ? 0 : -EPERM;
+  for (unsigned i = 0U; i < NXMANAGE_NAME_MAX; ++i) {
+    slot->name[i] = name[i];
+    if (name[i] == '\0')
+      break;
+  }
+  slot->named = 1;
+  return 0;
+}
+
 static int nxm_register(struct nxm_state *state,
                         const struct ipc_message *message) {
   unsigned id = (unsigned)message->data1;
@@ -217,6 +271,11 @@ static int nxm_register(struct nxm_state *state,
   if (nxm_unpack(message, &candidate) != 0)
     return -EINVAL;
   struct nxm_slot *slot = &state->slots[id];
+  if (!slot->named)
+    return -EPERM;
+  for (unsigned i = 0U; i < NXMANAGE_NAME_MAX; ++i)
+    candidate.name[i] = slot->name[i];
+  candidate.named = 1;
   if (slot->active) {
     if (!nxm_matching(slot, &candidate))
       return -EPERM;
@@ -238,7 +297,8 @@ static int nxm_register(struct nxm_state *state,
     slot->queued = 1;
     slot->due_ms = os1_mono_ns() / UINT64_C(1000000) +
                    slot->backoff_ms;
-    print("[NXMANAGE][WARN] initial service spawn queued for retry\n");
+    nxm_publish(slot, id);
+    OS1_report_error("nxmanage.spawn_retry", result);
   }
   return result;
 }
@@ -254,7 +314,7 @@ static void nxm_auth_init(struct nxm_state *state, int send_handle) {
     if (hello.from != state->init_pid ||
         hello.type != NXMANAGE_REQ_HELLO ||
         hello.data1 != NXMANAGE_PROTO_VERSION) {
-      print("[NXMANAGE][WARN] unauthorized authority handshake denied\n");
+      OS1_report_error("nxmanage.unauthorized_hello", -EPERM);
       continue;
     }
     long granted = OS1low_cap_grant(hello.from, send_handle, OS1_RIGHT_WRITE);
@@ -262,18 +322,30 @@ static void nxm_auth_init(struct nxm_state *state, int send_handle) {
     reply.type = NXMANAGE_REP_HELLO;
     reply.data1 = (uint64_t)granted;
     reply.data2 = NXMANAGE_PROTO_VERSION;
-    if (OS1low_ipc_send(hello.from, &reply) != 0)
-      print("[NXMANAGE][ERROR] failed to deliver authority grant\n");
+    long delivered = OS1low_ipc_send(hello.from, &reply);
+    if (delivered != 0)
+      OS1_report_error("nxmanage.authority_grant",
+                       (int)(delivered < 0 ? delivered : -EIO));
   }
 }
 
-static void nxm_reply(int target_pid, unsigned slot, int result) {
+static void nxm_reply_kind(int target_pid, unsigned slot, int result,
+                           uint32_t kind) {
   struct ipc_message response = {0};
-  response.type = NXMANAGE_REP_REGISTER;
+  /* Protocol request/reply types are fixed positive 32-bit enum tags. */
+  if (kind > INT32_MAX)
+    return;
+  response.type = (int)kind;
   response.data1 = slot;
   response.data2 = (uint64_t)(int64_t)result;
-  if (OS1low_ipc_send(target_pid, &response) != 0)
-    print("[NXMANAGE][WARN] failed to reply to init\n");
+  long sent = OS1low_ipc_send(target_pid, &response);
+  if (sent != 0)
+    OS1_report_error("nxmanage.manager_reply",
+                     (int)(sent < 0 ? sent : -EIO));
+}
+
+static void nxm_reply(int target_pid, unsigned slot, int result) {
+  nxm_reply_kind(target_pid, slot, result, NXMANAGE_REP_REGISTER);
 }
 
 static void nxm_drain(struct nxm_state *state, int port) {
@@ -283,16 +355,25 @@ static void nxm_drain(struct nxm_state *state, int port) {
     if (result == -EAGAIN)
       return;
     if (result != (long)sizeof(request)) {
-      print("[NXMANAGE][ERROR] buffered port receive failed\n");
+      OS1_report_error("nxmanage.buffered_receive",
+                       (int)(result < 0 ? result : -EIO));
       return;
     }
-    if (request.from != state->init_pid || request.type != NXMANAGE_REQ_REGISTER) {
-      print("[NXMANAGE][WARN] rejected unauthorized management request\n");
+    if (request.from != state->init_pid) {
+      OS1_report_error("nxmanage.unauthorized_request", -EPERM);
       continue;
     }
-    int status = nxm_register(state, &request);
-    if (status != 0)
-      nxm_reply(request.from, (unsigned)request.data1, status);
+    if (request.type == NXMANAGE_REQ_NAME) {
+      int status = nxm_name(state, &request);
+      nxm_reply_kind(request.from, (unsigned)request.data1, status,
+                     NXMANAGE_REP_NAME);
+    } else if (request.type == NXMANAGE_REQ_REGISTER) {
+      int status = nxm_register(state, &request);
+      if (status != 0)
+        nxm_reply(request.from, (unsigned)request.data1, status);
+    } else {
+      OS1_report_error("nxmanage.unknown_operation", -EPERM);
+    }
   }
 }
 
@@ -326,9 +407,10 @@ static void nxm_check_once(struct nxm_slot *slot, unsigned id,
   if (polled == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0)
     outcome = pid;
   if (polled == 0) {
-    if (kill_process(pid) < 0)
-      print("[NXMANAGE][ERROR] one-shot deadline kill failed\n");
-    print("[NXMANAGE][ERROR] one-shot deadline exhausted\n");
+    int killed = kill_process(pid);
+    if (killed < 0)
+      OS1_report_error("nxmanage.oneshot_kill", killed);
+    OS1_report_error("nxmanage.oneshot_deadline", -EIO);
   }
   slot->pid = 0;
   slot->once_finished = 1;
@@ -340,10 +422,8 @@ static void nxm_check_once(struct nxm_slot *slot, unsigned id,
     slot->ack_target = 0;
   }
   if (outcome < 0)
-    print("[NXMANAGE][ERROR] one-shot child failed\n");
-  else if (printf("[NXMANAGE] one-shot slot %u complete PID %d\n",
-                  id, pid) < 0)
-    print("[NXMANAGE][ERROR] one-shot diagnostic output failed\n");
+    OS1_report_error("nxmanage.oneshot_result", outcome);
+  /* Outcome, PID and generation are published to manager registry keys. */
 }
 
 static void nxm_supervise(struct nxm_state *state, uint64_t now_ms) {
@@ -362,7 +442,7 @@ static void nxm_supervise(struct nxm_state *state, uint64_t now_ms) {
         continue;
       nxm_schedule(slot, now_ms);
       nxm_publish(slot, id);
-      print("[NXMANAGE][WARN] supervised child exited: restart queued\n");
+      OS1_report_error("nxmanage.lock_service_exited", -EIO);
     }
     if (slot->queued && now_ms >= slot->due_ms) {
       slot->queued = 0;
@@ -381,17 +461,21 @@ static void nxm_supervise_init(struct nxm_state *state, uint64_t now_ms) {
     state->init_due_ms = now_ms + state->init_backoff_ms;
     if (state->init_backoff_ms < NXMANAGE_CEILING_MS)
       state->init_backoff_ms *= 2U;
-    print("[NXMANAGE][WARN] initializer exited: retry queued\n");
+    OS1_report_error("nxmanage.initializer_exited", -EIO);
   }
   if (state->init_pid == 0 && now_ms >= state->init_due_ms) {
     state->init_pid = (int)spawn_caps(state->init_path, PLVL_ROOT, CAP_ALL);
     if (state->init_pid > 0) {
       char value[20];
-      if (snprintf(value, sizeof(value), "%d", state->init_pid) > 0 &&
-          OS1_registry_set("system.manage.init_pid", value) != 0)
-        print("[NXMANAGE][WARN] init PID publication failed\n");
-      if (printf("[NXMANAGE] initializer PID %d\n", state->init_pid) < 0)
-        print("[NXMANAGE][ERROR] initializer log output failed\n");
+      int len = snprintf(value, sizeof(value), "%d", state->init_pid);
+      if (len <= 0 || (size_t)len >= sizeof(value))
+        OS1_report_error("nxmanage.init_pid_encode", -EOVERFLOW);
+      else {
+        int published = OS1_registry_object_set("system.manage.init_pid",
+                                                 value);
+        if (published != 0)
+          OS1_report_error("nxmanage.init_pid_publish", published);
+      }
     } else {
       state->init_pid = 0;
       state->init_due_ms = now_ms + state->init_backoff_ms;
@@ -403,7 +487,7 @@ int main(void) {
   struct nxm_state state = {0};
   state.init_backoff_ms = NXMANAGE_BASE_MS;
   if (get_pid() != 1 || nxm_boot_init_path(state.init_path) != 0) {
-    print("[NXMANAGE][ERROR] invalid PID1 authority or bootstrap config\n");
+    OS1_report_error("nxmanage.pid1_boot_config", -EPERM);
     return 1;
   }
   int port = OS1_port_create_private(NXMANAGE_PORT);
@@ -411,13 +495,12 @@ int main(void) {
       OS1_NS_PORT, NXMANAGE_PORT, OS1_RIGHT_WRITE | OS1_RIGHT_TRANSFER,
       OBJ_TYPE_PORT);
   if (port < 0 || send_handle < 0 ||
-      OS1_registry_set("system.manage.pid", "1") != 0) {
-    print("[NXMANAGE][ERROR] failed to bind authority port/registry\n");
+      OS1_registry_object_set("system.manage.pid", "1") != 0) {
+    OS1_report_error("nxmanage.bind_authority", -EIO);
     return 1;
   }
-  if (printf("[NXMANAGE] PID1 authority active, port %s\n",
-             NXMANAGE_PORT) < 0)
-    return 1;
+  /* Port and machine registry ownership are the authoritative readiness
+   * contract; console writes cannot determine supervisor availability. */
   nxm_supervise_init(&state, os1_mono_ns() / UINT64_C(1000000));
   for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
     nxm_auth_init(&state, send_handle);
