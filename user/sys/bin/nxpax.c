@@ -76,7 +76,9 @@ static void nxpax_serve_request(const struct ipc_message *message, int source) {
        * clients with only an OS1nx_pax send capability. */
       query.fault_pc = 0U;
       query.fault_address = 0U;
-      query.syndrome = 0U;
+      if (query.kind != OS1_NXPAX_KIND_DIAGNOSTIC_WARNING &&
+          query.kind != OS1_NXPAX_KIND_DIAGNOSTIC_ERROR)
+        query.syndrome = 0U;
       if (nxpax_write_full(reply, &query) != 0)
         printf("[NXPAX] delivery failed for requester %d\n", message->from);
     }
@@ -164,11 +166,24 @@ static int nxpax_probe(void) {
     if (query.status != OS1_NXPAX_STATUS_EVENT &&
         query.status != OS1_NXPAX_STATUS_OVERRUN)
       return 1;
-    printf("[NXPAX] seq=%llu cpu=%d pid=%d kind=%u flags=%u overrun=%u units=%llu\n",
+    const char *severity =
+        query.kind == OS1_NXPAX_KIND_DIAGNOSTIC_WARNING ||
+                query.kind == OS1_NXPAX_KIND_USER_TERMINATED
+            ? "WARN"
+            : query.kind == OS1_NXPAX_KIND_DIAGNOSTIC_ERROR ||
+                      query.kind == OS1_NXPAX_KIND_TERMINATION_FAILED
+                  ? "ERROR"
+                  : query.kind == OS1_NXPAX_KIND_KERNEL_FATAL ? "FATAL" : "FAULT";
+    printf("[NXPAX][%s] seq=%llu cpu=%d pid=%d kind=%u flags=%u overrun=%u units=%llu\n",
+           severity,
            (unsigned long long)query.cursor, query.cpu_id, query.pid,
            query.kind, query.flags,
            query.status == OS1_NXPAX_STATUS_OVERRUN ? 1U : 0U,
            (unsigned long long)query.work_units);
+    if (query.kind == OS1_NXPAX_KIND_DIAGNOSTIC_WARNING ||
+        query.kind == OS1_NXPAX_KIND_DIAGNOSTIC_ERROR)
+      printf("[NXPAX] diagnostic fingerprint=0x%016llx\n",
+             (unsigned long long)query.syndrome);
     if (query.cursor <= cursor)
       return 1;
     cursor = query.cursor;

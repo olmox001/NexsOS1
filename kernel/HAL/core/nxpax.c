@@ -60,6 +60,27 @@ void nxhal_nxpax_fault(uint64_t pc, uint64_t addr, uint64_t syndrome,
   nxhal_nxpax_note(&event);
 }
 
+/* The bounded digest correlates a published diagnostic event with the
+ * complete text emitted by the kernel logger. It is not a security token. */
+int nxhal_nxpax_diagnostic(uint32_t kind, const char *text, int32_t cpu_id) {
+  uint64_t fingerprint = UINT64_C(14695981039346656037);
+
+  if (text == NULL ||
+      (kind != NXHAL_NXPAX_KIND_DIAGNOSTIC_WARNING &&
+       kind != NXHAL_NXPAX_KIND_DIAGNOSTIC_ERROR))
+    return -1;
+  for (uint32_t i = 0U; i < UINT32_C(2048); ++i) {
+    uint8_t c = (uint8_t)text[i];
+    if (c == 0U)
+      break;
+    fingerprint = (fingerprint ^ c) * UINT64_C(1099511628211);
+  }
+  const struct nxhal_nxpax_event event = {
+      .pid = -1, .kind = kind, .syndrome = fingerprint, .cpu_id = cpu_id};
+  nxhal_nxpax_note(&event);
+  return 0;
+}
+
 int nxhal_nxpax_read(uint64_t sequence, struct nxhal_nxpax_event *event) {
   if (event == NULL || sequence == 0U)
     return -1;

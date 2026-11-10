@@ -43,6 +43,7 @@
 #include <drivers/uart.h>
 #include <drivers/input.h>
 #include <hal/time.h>
+#include <hal/nxpax.h>
 #include <kernel/arch.h>
 #include <kernel/bootphase.h>
 #include <kernel/cpu.h>
@@ -132,6 +133,24 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
  */
 static spinlock_t printk_lock = SPINLOCK_INIT;
 
+/* Capture real recoverable diagnostics in NXPAX, including pr_warn/pr_err
+ * and HAL warning/error messages. No fault or panic is reclassified here.
+ * This path is called only after the normal formatter produced the text. */
+static void printk_nxpax_capture(const char *prefix, const char *fmt,
+                                 const char *emitted, int32_t cpu_id) {
+  const char *tag = prefix != NULL ? prefix : fmt;
+  uint32_t kind = 0U;
+
+  if (tag == NULL || emitted == NULL)
+    return;
+  if (strncmp(tag, "[WARN] ", 7U) == 0)
+    kind = NXHAL_NXPAX_KIND_DIAGNOSTIC_WARNING;
+  else if (strncmp(tag, "[ERROR] ", 8U) == 0)
+    kind = NXHAL_NXPAX_KIND_DIAGNOSTIC_ERROR;
+  if (kind != 0U)
+    (void)nxhal_nxpax_diagnostic(kind, emitted, cpu_id);
+}
+
 static int vprintk_prefixed(const char *message_prefix, const char *fmt,
                              va_list args) {
   struct cpu_info *cpu = get_cpu_info();
@@ -149,6 +168,7 @@ static int vprintk_prefixed(const char *message_prefix, const char *fmt,
       memcpy(buf, message_prefix, prefix_len);
     buf[prefix_len] = '\0';
     len = vsnprintf(buf + prefix_len, sizeof(buf) - prefix_len, fmt, args);
+    printk_nxpax_capture(message_prefix, fmt, buf, -1);
     uart_puts("[BOOT] ");
     uart_puts(buf);
     return len;
@@ -196,6 +216,8 @@ static int vprintk_prefixed(const char *message_prefix, const char *fmt,
 
   /* One uart_puts for the whole line — driver's uart_lock is held for the
    * entire string, so other CPUs cannot interleave characters mid-message. */
+  printk_nxpax_capture(message_prefix, fmt, cpu->printk_buf,
+                       (int32_t)cpu->cpu_id);
   uart_puts(cpu->printk_buf);
 
   cpu->in_printk = 0;

@@ -19,6 +19,8 @@
 #define OS1_NXPAX_KIND_USER_TERMINATED UINT32_C(2)
 #define OS1_NXPAX_KIND_TERMINATION_FAILED UINT32_C(3)
 #define OS1_NXPAX_KIND_KERNEL_FATAL UINT32_C(4)
+#define OS1_NXPAX_KIND_DIAGNOSTIC_WARNING UINT32_C(5)
+#define OS1_NXPAX_KIND_DIAGNOSTIC_ERROR UINT32_C(6)
 
 /* Cursor = last consumed sequence. work_units counts attempted ring-slot
  * reads (0 or 1), not cycles or elapsed execution time. Addresses are only

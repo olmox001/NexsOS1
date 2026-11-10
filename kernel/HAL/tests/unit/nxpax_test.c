@@ -41,5 +41,26 @@ int main(void) {
     return 7;
   if (nxhal_nxpax_dropped() != 0U)
     return 8;
+  if (nxhal_nxpax_diagnostic(NXHAL_NXPAX_KIND_DIAGNOSTIC_WARNING,
+                             "[C0] [WARN] recoverable", 0) != 0)
+    return 9;
+  if (nxhal_nxpax_read(nxhal_nxpax_latest(), &event) != 1 ||
+      event.kind != NXHAL_NXPAX_KIND_DIAGNOSTIC_WARNING ||
+      event.cpu_id != 0 || event.pid != -1 ||
+      event.syndrome == 0U || event.fault_address != 0U)
+    return 10;
+  uint64_t fingerprint = event.syndrome;
+  if (nxhal_nxpax_diagnostic(NXHAL_NXPAX_KIND_DIAGNOSTIC_ERROR,
+                             "[C0] [WARN] recoverable", 1) != 0)
+    return 11;
+  if (nxhal_nxpax_read(nxhal_nxpax_latest(), &event) != 1 ||
+      event.kind != NXHAL_NXPAX_KIND_DIAGNOSTIC_ERROR ||
+      event.cpu_id != 1 || event.syndrome != fingerprint)
+    return 12;
+  if (nxhal_nxpax_diagnostic(NXHAL_NXPAX_KIND_HARDWARE, "invalid", 0) != -1 ||
+      nxhal_nxpax_diagnostic(NXHAL_NXPAX_KIND_DIAGNOSTIC_WARNING, NULL, 0) != -1)
+    return 13;
+  if (nxhal_nxpax_dropped() != 0U)
+    return 14;
   return 0;
 }

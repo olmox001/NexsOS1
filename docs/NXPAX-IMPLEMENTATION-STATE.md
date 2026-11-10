@@ -42,8 +42,10 @@ does not move POSIX policy or userland services into the kernel.
    started/restarted by `user/sbin/nxinit.c` using the existing bounded
    restart backoff (slot 10). `nxpax --service` reads the resource and serves
    the existing `OS1nx_pax` named capability port; reply rights travel
-   through the existing transferred-pipe mechanism. **PC, fault address and
-   syndrome are cleared** before the client-visible reply. `nxpax --probe`
+   through the existing transferred-pipe mechanism. **PC and fault address
+   are cleared** before the client-visible reply; the syndrome is also
+   cleared for hardware/fault events, but retained as a non-address text
+   fingerprint for typed diagnostic WARNING/ERROR records. `nxpax --probe`
    traverses at most the published ring-window budget. The broker is not a
    recovery authority: if Core/HAL is no longer alive, this process cannot
    repair the kernel and does not claim to do so.
@@ -57,6 +59,46 @@ kernel contract snapshot and identical headers are checked by the Makefile.
 The HAL diagnostic callback binder was also repaired to use atomic
 compare/exchange, release publication and acquire observation rather than
 unsynchronized volatile state.
+
+## Warning observability regression correction (2026-11-10)
+
+The fatal and ordinary-log transports remain distinct. The earlier diagnostic
+protocol required vlog, vfault and vpanic together; the current
+implementation requires vlog at the diagnostic bind and separately requires
+fault-safe vprint and vpanic at the mandatory fault-output bind. Both binds
+run during Core/HAL boot. This separation MUST NOT remove diagnostic events.
+
+Kernel printk now captures the **actual formatted** warning/error text
+emitted by both Core pr_warn/pr_err and HAL nxhal_diag_warn/
+nxhal_diag_error and appends an NXPAX event to the production HAL ring.
+The two additive public event kinds are DIAGNOSTIC_WARNING (5) and
+DIAGNOSTIC_ERROR (6). The ring retains a bounded 64-bit fingerprint of the
+displayed text, the recording CPU, sequence and severity kind. The full text
+continues to print on UART; it is not invented from a synthetic test string.
+The privileged broker exposes the fingerprint, not arbitrary kernel text or
+addresses. The 88-byte public record layout and existing op ID are unchanged.
+The synchronized contract snapshot hash is updated; the two public headers
+must remain byte-for-byte identical.
+
+An NXPAX USER_TERMINATED disposition is now shown as WARN by the CLI because
+the kernel has recovered by terminating the faulty process. TERMINATION_FAILED,
+KERNEL_FATAL and hardware fault records keep distinct severities. An ordinary
+error message is NOT automatically converted to WARN: a caller must classify
+the operation's recoverability. A nonrecoverable kernel exception still panics.
+
+Verification of this correction: NX-HAL host suite PASS, Core NXPAX
+ASan/UBSan PASS, 1M- and 2M-event production-ring stress PASS (with real
+contention drop accounting), and make check-kernel-contracts PASS. Fresh
+interactive NXADB tests passed on AMD64 GRUB BIOS (28 kernel tests passed,
+no failures) and AArch64 GRUB UEFI (29 passed, no failures); timerdiag,
+heartbeat and shell interaction also passed. Real serial logs show
+[NXPAX][WARN] kind=5 and newest=1 dropped=0 for AMD64, and two FDT
+warnings with newest=2 dropped=0 for AArch64. Logs:
+/tmp/nexs-nxpax-warning-{amd64,aarch64}-20261110.log and the matching
+build/runtime/nxadb/.../serial.log files. This establishes the warning
+event pipeline; it does not claim complete classification of silent error
+return paths, complete Power12 qualification, or a new end-to-end injected
+fault test in this correction.
 
 ## Reproducible verification already performed
 
