@@ -9,7 +9,8 @@
 #define OS1_NXPAX_RESOURCE "diagnostics/nxpax"
 #define OS1_NXPAX_OP_READ_RECORD UINT32_C(0x00220001)
 
-/* Resource budget: two diagnostic transitions per supported HAL CPU slot. */
+/* Bounded retention: two ring slots per supported CPU, shared by fault,
+ * Core disposition, and diagnostic severity records; not lossless. */
 #define OS1_NXPAX_CAPTURE_CPU_LIMIT UINT32_C(64)
 #define OS1_NXPAX_MAX_WINDOW_RECORDS (2U * OS1_NXPAX_CAPTURE_CPU_LIMIT)
 #define OS1_NXPAX_STATUS_EMPTY UINT32_C(0)

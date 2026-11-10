@@ -95,10 +95,17 @@ heartbeat and shell interaction also passed. Real serial logs show
 [NXPAX][WARN] kind=5 and newest=1 dropped=0 for AMD64, and two FDT
 warnings with newest=2 dropped=0 for AArch64. Logs:
 /tmp/nexs-nxpax-warning-{amd64,aarch64}-20261110.log and the matching
-build/runtime/nxadb/.../serial.log files. This establishes the warning
-event pipeline; it does not claim complete classification of silent error
-return paths, complete Power12 qualification, or a new end-to-end injected
-fault test in this correction.
+build/runtime/nxadb/.../serial.log files. The same source was subsequently exercised with the real /bin/crash
+executable on both architectures. On AMD64 the hardware event was seq=2
+kind=1 and the actual terminated process (PID 16) was seq=3 kind=2
+displayed as WARN; AArch64 recorded the corresponding events at seq=3
+and seq=4 (PID 16). Both probes reported dropped=0, both shells remained
+interactive, and neither UART contained an unexpected KERNEL PANIC.
+The crash runs passed NXADB with 28/28 and 29/29 kernel tests respectively.
+Evidence: /tmp/nexs-nxpax-warning-crash-{amd64,aarch64}-20261110.log
+and matching serial logs. This verifies warning and actual fault event
+transport; it does not claim complete classification of silent error
+return paths or complete Power12 qualification.
 
 ## Reproducible verification already performed
 
