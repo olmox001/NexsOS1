@@ -41,7 +41,7 @@
 #define KERNEL_VERSION_MAJOR 0
 #define KERNEL_VERSION_MINOR 0
 #define KERNEL_VERSION_PATCH 6
-#define KERNEL_VERSION_BUILD 0
+#define KERNEL_VERSION_BUILD 1
 
 #define KERNEL_NAME "NX-Core/" HAL_PLATFORM_NAME
 
@@ -220,9 +220,12 @@ static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
   init_fdt_boot_handoff(boot_arg0, boot_arg1);
   pr_info("Kernel: Entry x0 = 0x%lx x1 = 0x%lx\n", boot_arg0, boot_arg1);
 #else
-  if (fdt_init(0, 0) != FDT_PARSER_OK)
-    pr_info("%s", "FDT: no device tree found — expected on amd64, devices come "
-                  "from PCI enumeration\n");
+  /* GRUB BIOS and GRUB UEFI both use the Multiboot2 x86 handoff.
+   * ACPI firmware tables and DTB are distinct discovery formats; do not
+   * fake an AMD64 DTB by probing an AArch64-only FDT parser.
+   * ACPI table interpretation remains a separate, explicit HAL task. */
+  pr_info("%s", "Boot discovery: AMD64 GRUB Multiboot2; PCI enabled, "
+                "ACPI table discovery not yet implemented; no DTB assumed\n");
 #endif
 
   /* Platform-specific hardware registration */

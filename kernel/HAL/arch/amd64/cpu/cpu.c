@@ -32,6 +32,7 @@
  *     OSFXSR and OSXMMEXCPT are enabled.  uaccess.c's header claims SMAP is
  *     active — that is wrong.  See uaccess.c Known issues.
  */
+#include <hal/fault_protocol.h>
 #include <hal/diagnostic_protocol.h>
 #include <hal/core_protocol.h>
 #include <arch/pt_regs.h>
@@ -156,7 +157,7 @@ void nxhal_provider_cpu_local_init(void) {
   cpu->cpu_id = id;
   cpu->online = 1U;
   if (nxhal_cpu_online(id) != 0)
-    nxhal_diag_panic("AMD64 CPU %u cannot publish online state", id);
+    nxhal_fault_panic("AMD64 CPU %u cannot publish online state", id);
 
   nxhal_diag_info("CPU: Initializing GDT...\n");
   gdt_init();

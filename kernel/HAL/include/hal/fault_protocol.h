@@ -2,6 +2,7 @@
 #define NXHAL_FAULT_PROTOCOL_H
 
 #include <hal/frame.h>
+#include <stdarg.h>
 #include <stdint.h>
 
 #define NXHAL_FAULT_PROTOCOL_ABI_VERSION UINT32_C(1)
@@ -38,6 +39,36 @@ struct nxhal_fault_protocol_v1 {
   void (*backtrace_regs)(uint64_t pc, uint64_t fp);
   void (*backtrace_scan)(uint64_t sp);
 };
+
+/*
+ * Fault-only, lock-free output transport. Ordinary logs are never routed
+ * through this interface; failure in an exception context must never depend
+ * on printk locks, allocations, or an asynchronous userland consumer.
+ */
+#define NXHAL_FAULT_OUTPUT_ABI_VERSION UINT32_C(1)
+struct nxhal_fault_output_protocol_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t flags;
+  uint32_t reserved0;
+  void (*vprint)(const char *fmt, va_list args);
+  void (*vpanic)(const char *fmt, va_list args);
+};
+enum nxhal_fault_output_bind_status {
+  NXHAL_FAULT_OUTPUT_BIND_OK = 0,
+  NXHAL_FAULT_OUTPUT_BIND_E_NULL = -1,
+  NXHAL_FAULT_OUTPUT_BIND_E_VERSION = -2,
+  NXHAL_FAULT_OUTPUT_BIND_E_SIZE = -3,
+  NXHAL_FAULT_OUTPUT_BIND_E_RESERVED = -4,
+  NXHAL_FAULT_OUTPUT_BIND_E_MISSING = -5,
+  NXHAL_FAULT_OUTPUT_BIND_E_STATE = -6
+};
+int nxhal_fault_output_bind(const struct nxhal_fault_output_protocol_v1 *protocol);
+int nxhal_fault_output_is_bound(void);
+void nxhal_fault_print(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+void nxhal_fault_panic(const char *fmt, ...)
+    __attribute__((noreturn, format(printf, 1, 2)));
 
 int nxhal_fault_bind(const struct nxhal_fault_protocol_v1 *protocol);
 int nxhal_fault_is_bound(void);

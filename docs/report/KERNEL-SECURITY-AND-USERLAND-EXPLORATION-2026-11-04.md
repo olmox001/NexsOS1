@@ -32,7 +32,7 @@ Important tool semantics confirmed from `tools/nxadb.py`:
 
 Commands exercised in the guest:
 - `ls /sys/bin`: confirmed the system tools are installed under /sys/bin.
-- `/sys/bin/nxinfo`: reported AArch64 NexsOS1 V0.0.6.0, 1280x800, uptime and PID.
+- `/sys/bin/nxinfo`: reported AArch64 NexsOS1 V0.0.6.0, 1280x800, uptime and PID. This is the historical result recorded on 2026-11-04; the subsequent V0.0.6.1 build must be tested separately.
 - `/sys/bin/nxperm`: reported root caller and spawn/files/ipc/windows/registry services.
 - `/sys/bin/nxproc`: showed idle tasks and system process states across CPUs.
 - `/sys/bin/nxwins`: showed window IDs, owner PIDs, visibility/minimized/focus state.

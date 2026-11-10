@@ -36,6 +36,7 @@
  *     pic_handle_spurious() BEFORE dispatch: they are not real interrupts
  *     and their EOI rules differ (none for IRQ7; master-only for IRQ15).
  */
+#include <hal/fault_protocol.h>
 #include <hal/diagnostic_protocol.h>
 #include <hal/core_protocol.h>
 #include <hal/core.h>
@@ -175,7 +176,7 @@ static void pic_chip_end(uint32_t irq) {
 
 /* HALT_IPI_VECTOR: fixed LAPIC vector for the panic-halt broadcast.  The
  * GIC counterpart is SGI0 (gic_send_ipi); the amd64 chip previously left
- * send_ipi_all NULL, so nxhal_diag_panic() never stopped the other CPUs — they kept
+ * send_ipi_all NULL, so nxhal_fault_panic() never stopped the other CPUs — they kept
  * running against a dying kernel. */
 #define RESCHEDULE_IPI_VECTOR 0xFC
 #define HALT_IPI_VECTOR 0xFE

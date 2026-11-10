@@ -206,12 +206,12 @@ static int fault_cpu_id(void) {
  * triple fault (SCHED-UAF-01 post-mortem).
  */
 static void amd64_dump_regs(struct pt_regs *regs) {
-  nxhal_diag_fault("RIP: %016lx CS: %02lx RFLAGS: %016lx\n", regs->rip, regs->cs, regs->rflags);
-  nxhal_diag_fault("RAX: %016lx RBX: %016lx RCX: %016lx RDX: %016lx\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
-  nxhal_diag_fault("RSI: %016lx RDI: %016lx RBP: %016lx RSP: %016lx\n", regs->rsi, regs->rdi, regs->rbp, regs->rsp);
-  nxhal_diag_fault("R8:  %016lx R9:  %016lx R10: %016lx R11: %016lx\n", regs->r8, regs->r9, regs->r10, regs->r11);
-  nxhal_diag_fault("R12: %016lx R13: %016lx R14: %016lx R15: %016lx\n", regs->r12, regs->r13, regs->r14, regs->r15);
-  nxhal_diag_fault("Vector: %ld, Error Code: %lx\n", regs->vec, regs->err);
+  nxhal_fault_print("RIP: %016lx CS: %02lx RFLAGS: %016lx\n", regs->rip, regs->cs, regs->rflags);
+  nxhal_fault_print("RAX: %016lx RBX: %016lx RCX: %016lx RDX: %016lx\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
+  nxhal_fault_print("RSI: %016lx RDI: %016lx RBP: %016lx RSP: %016lx\n", regs->rsi, regs->rdi, regs->rbp, regs->rsp);
+  nxhal_fault_print("R8:  %016lx R9:  %016lx R10: %016lx R11: %016lx\n", regs->r8, regs->r9, regs->r10, regs->r11);
+  nxhal_fault_print("R12: %016lx R13: %016lx R14: %016lx R15: %016lx\n", regs->r12, regs->r13, regs->r14, regs->r15);
+  nxhal_fault_print("Vector: %ld, Error Code: %lx\n", regs->vec, regs->err);
 }
 
 /*
@@ -245,9 +245,9 @@ static struct pt_regs *amd64_page_fault_handler(struct pt_regs *regs) {
   if (next)
     return next;
 
-  nxhal_diag_fault("\n[C%d] KERNEL PAGE FAULT: Access to 0x%lx\n", fault_cpu_id(), cr2);
-  nxhal_diag_fault("Frame: %p (IST1 fault stack)\n", (void *)regs);
-  nxhal_diag_fault("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n",
+  nxhal_fault_print("\n[C%d] KERNEL PAGE FAULT: Access to 0x%lx\n", fault_cpu_id(), cr2);
+  nxhal_fault_print("Frame: %p (IST1 fault stack)\n", (void *)regs);
+  nxhal_fault_print("Error Code: 0x%lx (P:%d, W:%d, U:%d, R:%d, I:%d)\n",
                error_code,
                (error_code & 1) ? 1 : 0,
                (error_code & 2) ? 1 : 0,
@@ -258,7 +258,7 @@ static struct pt_regs *amd64_page_fault_handler(struct pt_regs *regs) {
   amd64_dump_regs(regs);
   nxhal_fault_backtrace_regs(regs->rip, regs->rbp);
   nxhal_fault_backtrace_scan(regs->rsp);
-  nxhal_diag_panic("Unrecoverable kernel #PF at RIP 0x%lx (CR2 0x%lx)", regs->rip, cr2);
+  nxhal_fault_panic("Unrecoverable kernel #PF at RIP 0x%lx (CR2 0x%lx)", regs->rip, cr2);
 }
 
 /*
@@ -275,11 +275,11 @@ static struct pt_regs *amd64_gpf_handler(struct pt_regs *regs) {
   if (next)
     return next;
 
-  nxhal_diag_fault("\n[C%d] KERNEL GENERAL PROTECTION FAULT\n", fault_cpu_id());
+  nxhal_fault_print("\n[C%d] KERNEL GENERAL PROTECTION FAULT\n", fault_cpu_id());
   amd64_dump_regs(regs);
   nxhal_fault_backtrace_regs(regs->rip, regs->rbp);
   nxhal_fault_backtrace_scan(regs->rsp);
-  nxhal_diag_panic("Unrecoverable kernel #GP at RIP 0x%lx (err 0x%lx)", regs->rip, regs->err);
+  nxhal_fault_panic("Unrecoverable kernel #GP at RIP 0x%lx (err 0x%lx)", regs->rip, regs->err);
 }
 
 /*
@@ -291,7 +291,7 @@ static struct pt_regs *amd64_gpf_handler(struct pt_regs *regs) {
  * recursion (IST=0 here, so it shares the TSS RSP0 stack — risky).
  */
 static void amd64_double_fault_handler(struct pt_regs *regs) {
-  nxhal_diag_fault("\n[C%d] DOUBLE FAULT\n", fault_cpu_id());
+  nxhal_fault_print("\n[C%d] DOUBLE FAULT\n", fault_cpu_id());
   amd64_dump_regs(regs);
   nxhal_fault_backtrace_regs(regs->rip, regs->rbp);
   nxhal_fault_backtrace_scan(regs->rsp);
@@ -337,7 +337,7 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
      * with one raw line.  nxhal_fault_exit() runs on every path below that resumes
      * execution; the halting paths deliberately keep the depth elevated. */
     if (nxhal_fault_enter() > 1) {
-      nxhal_diag_fault("\n[C%d] NESTED CPU EXCEPTION vec=%lu err=0x%lx rip=%016lx — halting\n",
+      nxhal_fault_print("\n[C%d] NESTED CPU EXCEPTION vec=%lu err=0x%lx rip=%016lx — halting\n",
                    fault_cpu_id(), vec, regs->err, regs->rip);
       hal_cpu_halt();
     }
@@ -361,12 +361,12 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
                                        "CPU EXCEPTION", regs->err);
         if (next)
           return next;
-        nxhal_diag_fault("\n[C%d] Unhandled kernel CPU Exception: %ld\n",
+        nxhal_fault_print("\n[C%d] Unhandled kernel CPU Exception: %ld\n",
                      fault_cpu_id(), vec);
         amd64_dump_regs(regs);
         nxhal_fault_backtrace_regs(regs->rip, regs->rbp);
         nxhal_fault_backtrace_scan(regs->rsp);
-        nxhal_diag_panic("Unrecoverable kernel exception (vec %lu) at RIP 0x%lx", vec, regs->rip);
+        nxhal_fault_panic("Unrecoverable kernel exception (vec %lu) at RIP 0x%lx", vec, regs->rip);
       }
     }
   } else {

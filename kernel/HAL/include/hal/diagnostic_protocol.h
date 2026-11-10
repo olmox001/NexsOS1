@@ -33,8 +33,6 @@ struct nxhal_diagnostic_protocol_v1 {
   uint32_t flags;
   uint32_t reserved0;
   int (*vlog)(uint32_t level, const char *fmt, va_list args);
-  void (*vfault)(const char *fmt, va_list args);
-  void (*vpanic)(const char *fmt, va_list args);
 };
 
 int nxhal_diagnostic_bind(const struct nxhal_diagnostic_protocol_v1 *protocol);
@@ -50,9 +48,5 @@ int nxhal_diag_error(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 int nxhal_diag_debug(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
-void nxhal_diag_fault(const char *fmt, ...)
-    __attribute__((format(printf, 1, 2)));
-void nxhal_diag_panic(const char *fmt, ...)
-    __attribute__((noreturn, format(printf, 1, 2)));
 
 #endif /* NXHAL_DIAGNOSTIC_PROTOCOL_H */

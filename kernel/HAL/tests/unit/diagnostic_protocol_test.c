@@ -5,7 +5,6 @@
 #include <string.h>
 
 static unsigned log_calls;
-static unsigned fault_calls;
 static uint32_t last_level;
 static char last_text[64];
 
@@ -32,17 +31,6 @@ static int test_vlog(uint32_t level, const char *fmt, va_list args) {
   return capture_text(fmt, args);
 }
 
-static void test_vfault(const char *fmt, va_list args) {
-  ++fault_calls;
-  (void)capture_text(fmt, args);
-}
-
-static void test_vpanic(const char *fmt, va_list args) {
-  (void)fmt;
-  (void)args;
-  abort();
-}
-
 static struct nxhal_diagnostic_protocol_v1 valid_protocol(void) {
   struct nxhal_diagnostic_protocol_v1 protocol = {
       .abi_version = NXHAL_DIAGNOSTIC_PROTOCOL_ABI_VERSION,
@@ -50,8 +38,6 @@ static struct nxhal_diagnostic_protocol_v1 valid_protocol(void) {
       .flags = 0U,
       .reserved0 = 0U,
       .vlog = test_vlog,
-      .vfault = test_vfault,
-      .vpanic = test_vpanic,
   };
   return protocol;
 }
@@ -98,9 +84,6 @@ int main(void) {
   if (log_calls != 2U || last_level != NXHAL_DIAG_WARNING)
     return 13;
 
-  nxhal_diag_fault("value=%u", 5U);
-  if (fault_calls != 1U || strcmp(last_text, "5") != 0)
-    return 14;
 
   return 0;
 }

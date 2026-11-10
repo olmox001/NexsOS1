@@ -53,7 +53,7 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
      * fault arrives as an EL1 sync abort, but guard this path too so e.g. a
      * fault inside process_terminate stops cleanly. */
     if (nxhal_fault_enter() > 1) {
-      nxhal_diag_fault("\n[FATAL] NESTED EXCEPTION in EL0-fault path EC=0x%lx ELR=%016lx — halting\n",
+      nxhal_fault_print("\n[FATAL] NESTED EXCEPTION in EL0-fault path EC=0x%lx ELR=%016lx — halting\n",
                    ec, frame->elr);
       hal_cpu_halt();
     }
@@ -99,7 +99,7 @@ struct pt_regs *syscall_handler(struct pt_regs *frame) {
       nxhal_diag_error(
           "EL0 EXCEPTION: EC=0x%lx ESR=0x%lx FAR=0x%lx ELR=0x%lx ISS=0x%lx\n",
           ec, esr, far, frame->elr, iss);
-      nxhal_diag_panic("Fatal EL0 exception with no current task (EC=0x%lx)", ec);
+      nxhal_fault_panic("Fatal EL0 exception with no current task (EC=0x%lx)", ec);
     }
   }
 

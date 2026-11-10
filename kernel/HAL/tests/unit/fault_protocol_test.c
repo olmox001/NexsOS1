@@ -1,6 +1,53 @@
 #include <hal/fault_protocol.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <string.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static unsigned print_calls;
+static char last_print[32];
+
+static void test_fault_print(const char *fmt, va_list args) {
+  ++print_calls;
+  if (strcmp(fmt, "fault=%u") != 0)
+    abort();
+  unsigned value = va_arg(args, unsigned);
+  last_print[0] = '0' + (char)(value % 10U);
+  last_print[1] = 0;
+}
+
+/* Positive test checks real panic routing; negative checks that a
+ * misbehaving panic callback cannot return to the faulted kernel. */
+static int panic_callback_returns;
+
+static void test_fault_panic(const char *fmt, va_list args) {
+  if (strcmp(fmt, "panic=%u") != 0 || va_arg(args, unsigned) != 7U)
+    _Exit(74);
+  if (panic_callback_returns)
+    return;
+  _Exit(73);
+}
+
+static int test_panic_forwarding(int return_from_callback) {
+  pid_t child = fork();
+  int status = 0;
+
+  if (child < 0)
+    return -1;
+  if (child == 0) {
+    panic_callback_returns = return_from_callback;
+    nxhal_fault_panic("panic=%u", 7U);
+    _Exit(75);
+  }
+  if (waitpid(child, &status, 0) != child)
+    return -1;
+  if (return_from_callback)
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT ? 0 : -1;
+  return WIFEXITED(status) && WEXITSTATUS(status) == 73 ? 0 : -1;
+}
 
 static unsigned enter_calls;
 static unsigned exit_calls;
@@ -100,6 +147,32 @@ int main(void) {
     return 8;
   if (nxhal_fault_bind(&protocol) != NXHAL_FAULT_BIND_E_STATE)
     return 9;
+
+  struct nxhal_fault_output_protocol_v1 output = {
+      .abi_version = NXHAL_FAULT_OUTPUT_ABI_VERSION,
+      .struct_size = sizeof(struct nxhal_fault_output_protocol_v1),
+      .flags = 0U,
+      .reserved0 = 0U,
+      .vprint = test_fault_print,
+      .vpanic = test_fault_panic,
+  };
+  if (nxhal_fault_output_bind(NULL) != NXHAL_FAULT_OUTPUT_BIND_E_NULL)
+    return 15;
+  output.vprint = NULL;
+  if (nxhal_fault_output_bind(&output) != NXHAL_FAULT_OUTPUT_BIND_E_MISSING)
+    return 16;
+  output.vprint = test_fault_print;
+  if (nxhal_fault_output_bind(&output) != NXHAL_FAULT_OUTPUT_BIND_OK)
+    return 17;
+  if (nxhal_fault_output_bind(&output) != NXHAL_FAULT_OUTPUT_BIND_E_STATE)
+    return 18;
+  nxhal_fault_print("fault=%u", 5U);
+  if (print_calls != 1U || strcmp(last_print, "5") != 0)
+    return 19;
+  if (test_panic_forwarding(0) != 0)
+    return 20;
+  if (test_panic_forwarding(1) != 0)
+    return 21;
 
   expected_frame = (hal_frame_t *)(uintptr_t)UINT64_C(0x1000);
   if (nxhal_fault_enter() != 7U || enter_calls != 1U)

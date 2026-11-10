@@ -539,3 +539,22 @@ Other baseline findings:
 - assertions/static assertions remain in first-party code and tests.
 
 These are baseline failures to fix. They are not accepted exceptions.
+
+
+## 2026-11-10 build/boot stabilization checkpoint
+
+A separate recovery checkpoint is recorded in
+`BUILD-BOOT-STABILITY-2026-11-10.md`. Four fresh dual-architecture nxadb
+lanes and two controlled crash/recovery probes passed. Timer statistics
+applications now use a stable SDK service data model; the generated v4
+transport is decoded and validated by nxtimerd.
+
+Phase A's **full strict Power12 qualification is not complete**. The
+project-wide checker still fails on catalog and AST findings. Normal
+maintenance builds temporarily use a report-preserving warning profile with
+a digest-validated cache to unblock QEMU execution. `make power12-strict`,
+`make check-strict` and release keep the original hard obligation.
+NX-HAL and NX-CORE separately enforce their baseline compiler warning/error
+classes by default; conversion warnings remain active and must be corrected
+per call site before enabling their hard conversion qualification profile.
+This checkpoint does not close Phase A6 or authorize suppression of findings.

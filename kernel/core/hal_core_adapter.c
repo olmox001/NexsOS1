@@ -103,13 +103,22 @@ static int core_diag_vlog(uint32_t level, const char *fmt, va_list args) {
   return vprintk_level((int)level, core_diag_prefix(level), fmt, args);
 }
 
-static void core_diag_vfault(const char *fmt, va_list args) {
+static void core_fault_vprint(const char *fmt, va_list args) {
   fault_vprintf(fmt, args);
 }
 
-static void core_diag_vpanic(const char *fmt, va_list args) {
+static void core_fault_vpanic(const char *fmt, va_list args) {
   vpanic(fmt, args);
 }
+
+static const struct nxhal_fault_output_protocol_v1 fault_output_protocol = {
+    .abi_version = NXHAL_FAULT_OUTPUT_ABI_VERSION,
+    .struct_size = sizeof(struct nxhal_fault_output_protocol_v1),
+    .flags = 0U,
+    .reserved0 = 0U,
+    .vprint = core_fault_vprint,
+    .vpanic = core_fault_vpanic,
+};
 
 static const struct nxhal_diagnostic_protocol_v1 diagnostic_protocol = {
     .abi_version = NXHAL_DIAGNOSTIC_PROTOCOL_ABI_VERSION,
@@ -117,8 +126,6 @@ static const struct nxhal_diagnostic_protocol_v1 diagnostic_protocol = {
     .flags = 0U,
     .reserved0 = 0U,
     .vlog = core_diag_vlog,
-    .vfault = core_diag_vfault,
-    .vpanic = core_diag_vpanic,
 };
 
 
@@ -339,6 +346,9 @@ void nxcore_hal_boot_entry(uint64_t boot_arg0, uint64_t boot_arg1) {
   if (nxhal_core_bind(&core_protocol) != NXHAL_CORE_BIND_OK)
     hal_cpu_halt();
   if (nxhal_fault_bind(&fault_protocol) != NXHAL_FAULT_BIND_OK)
+    hal_cpu_halt();
+  if (nxhal_fault_output_bind(&fault_output_protocol) !=
+      NXHAL_FAULT_OUTPUT_BIND_OK)
     hal_cpu_halt();
   if (nxhal_diagnostic_bind(&diagnostic_protocol) != NXHAL_DIAGNOSTIC_BIND_OK)
     hal_cpu_halt();

@@ -25,7 +25,7 @@ HOST_CC ?= cc
 BUILD ?= debug
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.6.0
+VERSION ?= V0.0.6.1
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -664,7 +664,25 @@ $(BUILD_DIR)/%.o: %.c
 -include $(DEPS)
 
 # Disk Generation
-rootfs: user libsdl2 liblua libgnulib coreutils
+# Publishing rootfs is a real artifact dependency, not an unconditional phony
+# directory deletion on every make run / nxadb invocation. The marker sits
+# outside the guest image and is created only after all copies succeed.
+# Track programs, libraries, the packaging recipe and resource directories;
+# directory mtimes also catch addition/removal of an asset.
+ROOTFS_STAMP = $(BUILD_DIR)/rootfs-ready.stamp
+ROOTFS_ASSET_DIRS = user/home/Settings user/home/Pictures user/home/Video \
+                    user/sys/bin/nxfont/fonts user/sys/bin/background
+# Escape whitespace inside asset paths so fonts such as "Orkney Light.ttf"
+# remain real Make prerequisites instead of silently skipped input files.
+ROOTFS_ASSETS = $(shell find $(ROOTFS_ASSET_DIRS) \
+                  \( -type f -o -type d -o -type l \) 2>/dev/null | \
+                  sed 's/ /\\ /g') \
+                user/sys/bin/init.cfg $(wildcard user/bin/doom/freedoom*.wad)
+rootfs: user libsdl2 liblua libgnulib coreutils $(ROOTFS_STAMP)
+	@test -d "$(BUILD_DIR)/rootfs" || { \
+	  echo "ERROR: rootfs missing while $(ROOTFS_STAMP) exists" >&2; exit 1; }
+$(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
+                $(GNULIB_LIB) $(ROOTFS_ASSETS) Makefile
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sbin
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
@@ -725,7 +743,7 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@cp $(LUA_LIB) $(BUILD_DIR)/rootfs/sys/lib/liblua.a
 	@cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/libos1lua.a
 	@cp $(GNULIB_LIB) $(BUILD_DIR)/rootfs/sys/lib/libgnulib.a
-	@rm -rf $(BUILD_DIR)/rootfs/sys/lib/include
+	@# The include tree was created empty above: do not delete it mid-build.
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/SDL2
 	@cp -r $(SDL2_DIR)/include/. $(BUILD_DIR)/rootfs/sys/lib/include/SDL2/
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/lua
@@ -752,6 +770,7 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@# Keep a system-level env mirror in /sys/bin for direct invocation and PATH
 	@# resolution, matching the default runtime PATH configured by nxinit.
 	@-cp $(BUILD_DIR)/rootfs/bin/env $(BUILD_DIR)/rootfs/sys/bin/env 2>/dev/null || true
+	@touch "$(ROOTFS_STAMP)"
 
 
 disk: $(MKDISK) kernel rootfs bootloader

@@ -58,6 +58,7 @@
  *     previously-absent VA needs no remote flush, and today's callers never
  *     live-remap a VA that another CPU is concurrently using.
  */
+#include <hal/fault_protocol.h>
 #include <hal/diagnostic_protocol.h>
 #include <arch/pt_regs.h>
 #include <hal/core.h>
@@ -193,7 +194,7 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
      * says so at the point it happens. */
     if (arch_vmm_map(virt_to_phys(pgd), (uint64_t)phys_to_virt(addr), addr,
                      PAGE_DEVICE) != 0)
-      nxhal_diag_panic("arch_vmm_map_mmio: cannot map MMIO page 0x%lx", addr);
+      nxhal_fault_panic("arch_vmm_map_mmio: cannot map MMIO page 0x%lx", addr);
   }
 
   /* Identity-map the low 2MB into every KERNEL PGD (this function is
@@ -251,7 +252,7 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
    * therefore correct: kernel_pgd's low 2MB identity window is never
    * executed through by any code path once this revert is in place. */
   if (arch_vmm_map_range(virt_to_phys(pgd), 0, 0, 0x200000, PAGE_KERNEL) != 0)
-    nxhal_diag_panic(
+    nxhal_fault_panic(
         "arch_vmm_map_mmio: cannot identity-map the low 2MB (SMP trampoline)");
 }
 

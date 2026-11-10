@@ -515,8 +515,7 @@ long OS1low_time_stats_open(void) {
   return OS1low_handle_create(OS1_NS_TIME, OS1_TIME_OBJECT_STATS,
                               OS1_RIGHT_READ, OBJ_TYPE_TIMER);
 }
-long OS1low_time_stats_snapshot(int handle, void *buffer,
-                               unsigned long size) {
+long OS1low_time_stats_snapshot(int handle, void *buffer, unsigned long size) {
   if (buffer == NULL || size == 0U)
     return -EINVAL;
   return OS1_object_read(handle, buffer, size);
@@ -3946,10 +3945,10 @@ int uname(struct utsname *buf) {
   strncpy(buf->nodename, "nexsos", sizeof(buf->nodename) - 1);
   buf->nodename[sizeof(buf->nodename) - 1] = '\0';
 
-  strncpy(buf->release, "0.0.6.0", sizeof(buf->release) - 1);
+  strncpy(buf->release, "0.0.6.1", sizeof(buf->release) - 1);
   buf->release[sizeof(buf->release) - 1] = '\0';
 
-  strncpy(buf->version, "Proxima-V0.0.6.0", sizeof(buf->version) - 1);
+  strncpy(buf->version, "Alioth-V0.0.6.1", sizeof(buf->version) - 1);
   buf->version[sizeof(buf->version) - 1] = '\0';
 
 #if defined(ARCH_AMD64) || defined(__x86_64__)

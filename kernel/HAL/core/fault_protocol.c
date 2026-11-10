@@ -3,6 +3,7 @@
 #include <hal/frame.h>
 #include <hal/nxpax.h>
 #include <stddef.h>
+#include <stdarg.h>
 #include <stdint.h>
 
 enum nxhal_fault_protocol_state {
@@ -97,4 +98,54 @@ void nxhal_fault_backtrace_regs(uint64_t pc, uint64_t fp) {
 
 void nxhal_fault_backtrace_scan(uint64_t sp) {
   nxhal_fault_protocol()->backtrace_scan(sp);
+}
+
+
+static struct nxhal_fault_output_protocol_v1 fault_output_protocol;
+static uint32_t fault_output_state;
+
+int nxhal_fault_output_bind(const struct nxhal_fault_output_protocol_v1 *protocol) {
+  if (protocol == NULL)
+    return NXHAL_FAULT_OUTPUT_BIND_E_NULL;
+  if (protocol->abi_version != NXHAL_FAULT_OUTPUT_ABI_VERSION)
+    return NXHAL_FAULT_OUTPUT_BIND_E_VERSION;
+  if (protocol->struct_size != sizeof(struct nxhal_fault_output_protocol_v1))
+    return NXHAL_FAULT_OUTPUT_BIND_E_SIZE;
+  if (protocol->flags != 0U || protocol->reserved0 != 0U)
+    return NXHAL_FAULT_OUTPUT_BIND_E_RESERVED;
+  if (protocol->vprint == NULL || protocol->vpanic == NULL)
+    return NXHAL_FAULT_OUTPUT_BIND_E_MISSING;
+  uint32_t expected = NXHAL_FAULT_STATE_UNBOUND;
+  if (!__atomic_compare_exchange_n(&fault_output_state, &expected,
+                                   NXHAL_FAULT_STATE_BINDING, 0,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return NXHAL_FAULT_OUTPUT_BIND_E_STATE;
+  fault_output_protocol = *protocol;
+  __atomic_store_n(&fault_output_state, NXHAL_FAULT_STATE_BOUND,
+                   __ATOMIC_RELEASE);
+  return NXHAL_FAULT_OUTPUT_BIND_OK;
+}
+
+int nxhal_fault_output_is_bound(void) {
+  return __atomic_load_n(&fault_output_state, __ATOMIC_ACQUIRE) ==
+         NXHAL_FAULT_STATE_BOUND;
+}
+
+void nxhal_fault_print(const char *fmt, ...) {
+  va_list args;
+  if (!nxhal_fault_output_is_bound())
+    nxhal_fault_protocol_stop();
+  va_start(args, fmt);
+  fault_output_protocol.vprint(fmt, args);
+  va_end(args);
+}
+
+void nxhal_fault_panic(const char *fmt, ...) {
+  va_list args;
+  if (!nxhal_fault_output_is_bound())
+    nxhal_fault_protocol_stop();
+  va_start(args, fmt);
+  fault_output_protocol.vpanic(fmt, args);
+  va_end(args);
+  nxhal_fault_protocol_stop();
 }

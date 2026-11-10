@@ -132,9 +132,9 @@ void nxhal_provider_cpu_local_init(void) {
   uint32_t id = hal_cpu_id();
 
   if (id >= NXHAL_CPU_LIMIT)
-    nxhal_diag_panic("AArch64 CPU id %u exceeds NXHAL_CPU_LIMIT", id);
+    nxhal_fault_panic("AArch64 CPU id %u exceeds NXHAL_CPU_LIMIT", id);
   if (nxhal_cpu_online(id) != 0)
-    nxhal_diag_panic("AArch64 CPU %u cannot publish online state", id);
+    nxhal_fault_panic("AArch64 CPU %u cannot publish online state", id);
 
   /* Publish this CPU's EL1 fault-stack top BEFORE installing the vectors:
    * from the first VBAR exception onward, handle_el1_spx_sync/serror switch
@@ -274,7 +274,7 @@ int arch_platform_probe_read32(uint64_t physical, uint32_t *value) {
  * process_terminate.  This is fragile; any future change to the uaccess
  * critical section discipline must update this path.
  *
- * Kernel fault handling: dumps all registers and calls nxhal_diag_panic().
+ * Kernel fault handling: dumps all registers and calls nxhal_fault_panic().
  */
 struct pt_regs *sync_handler(struct pt_regs *frame) {
   uint64_t esr, far, elr;
@@ -301,9 +301,9 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
    * to recurse on the kernel stack until silent death.  Detect nesting FIRST
    * — before anything that could itself abort — and stop with one raw line.
    * nxhal_fault_exit() runs on every resuming path below; the panic path keeps the
-   * depth elevated so nxhal_diag_panic() selects its fault-safe output mode. */
+   * depth elevated so nxhal_fault_panic() selects its fault-safe output mode. */
   if (nxhal_fault_enter() > 1) {
-    nxhal_diag_fault("\n[FATAL] NESTED EL1 EXCEPTION EC=0x%x ELR=%016lx FAR=%016lx "
+    nxhal_fault_print("\n[FATAL] NESTED EL1 EXCEPTION EC=0x%x ELR=%016lx FAR=%016lx "
                  "— halting\n",
                  ec, elr, far);
     hal_cpu_halt();
@@ -336,29 +336,29 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
    * space and lock state are unknown at this point for EL1-origin faults. */
   switch (ec) {
   case 0x00: /* Unknown exception — ESR does not encode a specific cause */
-    nxhal_diag_fault("Unknown exception at 0x%016lx\n", elr);
+    nxhal_fault_print("Unknown exception at 0x%016lx\n", elr);
     break;
 
   case 0x20: /* Instruction abort from lower EL (EL0 code page not mapped) */
   case 0x21: /* Instruction abort from same EL (EL1 instruction fault — kernel
                 bug) */
-    nxhal_diag_fault("Instruction abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
+    nxhal_fault_print("Instruction abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
     break;
 
   case 0x24: /* Data abort from lower EL (EL0 load/store to unmapped/protected
                 addr) */
   case 0x25: /* Data abort from same EL (EL1 load/store fault — kernel bug or
                 probe) */
-    nxhal_diag_fault("Data abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
+    nxhal_fault_print("Data abort at 0x%016lx, FAR=0x%016lx\n", elr, far);
     break;
 
   case 0x26: /* SP alignment fault — SP not 16-byte aligned on exception entry
               */
-    nxhal_diag_fault("SP alignment fault at 0x%016lx\n", elr);
+    nxhal_fault_print("SP alignment fault at 0x%016lx\n", elr);
     break;
 
   default:
-    nxhal_diag_fault("Unhandled exception EC=0x%x at 0x%016lx\n", ec, elr);
+    nxhal_fault_print("Unhandled exception EC=0x%x at 0x%016lx\n", ec, elr);
     break;
   }
 
@@ -377,47 +377,47 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
       return next;
 
     /* Kernel fault: the address space may be compromised — every line below
-     * goes through fault_printf (lock-free, no per-CPU buffer).  nxhal_diag_panic() at
+     * goes through fault_printf (lock-free, no per-CPU buffer).  nxhal_fault_panic() at
      * the end (FIX(PANIC-LOCKFREE-01), kernel/lib/printk.c) always uses that
      * same lock-free output path now, not only when fault_depth() > 0. */
-    nxhal_diag_fault("%s", "--- Kernel Exception Context Dump ---\n");
-    nxhal_diag_fault("SPSR_EL1: 0x%016lx\n", frame->spsr);
-    nxhal_diag_fault("ELR_EL1:  0x%016lx\n", frame->elr);
-    nxhal_diag_fault("FAR_EL1:  0x%016lx\n", far);
-    nxhal_diag_fault("ESR_EL1:  0x%016lx\n", esr);
-    nxhal_diag_fault("EC: 0x%x, ISS: 0x%x\n", ec, (uint32_t)(esr & 0xFFFFFF));
+    nxhal_fault_print("%s", "--- Kernel Exception Context Dump ---\n");
+    nxhal_fault_print("SPSR_EL1: 0x%016lx\n", frame->spsr);
+    nxhal_fault_print("ELR_EL1:  0x%016lx\n", frame->elr);
+    nxhal_fault_print("FAR_EL1:  0x%016lx\n", far);
+    nxhal_fault_print("ESR_EL1:  0x%016lx\n", esr);
+    nxhal_fault_print("EC: 0x%x, ISS: 0x%x\n", ec, (uint32_t)(esr & 0xFFFFFF));
     if (arch_frame_on_fault_stack(frame)) {
       /* The vector switched us onto the per-CPU fault stack; the SP at the
        * moment of the abort was parked just above the frame. */
-      nxhal_diag_fault("Frame: %p (per-CPU fault stack), faulting SP: 0x%016lx\n",
+      nxhal_fault_print("Frame: %p (per-CPU fault stack), faulting SP: 0x%016lx\n",
                    (void *)frame, *(uint64_t *)((char *)frame + 816) + 16);
     } else {
-      nxhal_diag_fault("Frame: %p (faulting kernel stack)\n", (void *)frame);
+      nxhal_fault_print("Frame: %p (faulting kernel stack)\n", (void *)frame);
     }
 
     if (elr == 0) {
-      nxhal_diag_fault("%s", "CRITICAL: Kernel jumped to NULL! Check exception "
+      nxhal_fault_print("%s", "CRITICAL: Kernel jumped to NULL! Check exception "
                          "vector table and function pointers.\n");
-      nxhal_diag_fault("Stack at 0x%lx:\n", (uint64_t)frame);
+      nxhal_fault_print("Stack at 0x%lx:\n", (uint64_t)frame);
       for (int i = 0; i < 8; i++) {
-        nxhal_diag_fault("  [%p] 0x%016lx\n", (void *)&((uint64_t *)frame)[i * 2],
+        nxhal_fault_print("  [%p] 0x%016lx\n", (void *)&((uint64_t *)frame)[i * 2],
                      ((uint64_t *)frame)[i * 2]);
       }
     }
 
     for (int i = 0; i < 31; i += 2) {
       if (i + 1 < 31) {
-        nxhal_diag_fault("X%02d: 0x%016lx  X%02d: 0x%016lx\n", i, frame->regs[i],
+        nxhal_fault_print("X%02d: 0x%016lx  X%02d: 0x%016lx\n", i, frame->regs[i],
                      i + 1, frame->regs[i + 1]);
       } else {
-        nxhal_diag_fault("X%02d: 0x%016lx\n", i, frame->regs[i]);
+        nxhal_fault_print("X%02d: 0x%016lx\n", i, frame->regs[i]);
       }
     }
-    nxhal_diag_fault("SP_EL0:  0x%016lx\n", frame->sp_el0);
-    nxhal_diag_fault("%s", "-----------------------------\n");
+    nxhal_fault_print("SP_EL0:  0x%016lx\n", frame->sp_el0);
+    nxhal_fault_print("%s", "-----------------------------\n");
     nxhal_fault_backtrace_regs(frame->elr, frame->regs[29]);
     nxhal_fault_backtrace_scan((uint64_t)frame);
-    nxhal_diag_panic("Unrecoverable kernel exception");
+    nxhal_fault_panic("Unrecoverable kernel exception");
   }
 
   /* Unreachable today (the block above either schedules or panics); kept so
@@ -436,10 +436,10 @@ struct pt_regs *sync_handler(struct pt_regs *frame) {
  */
 struct pt_regs *fiq_handler(struct pt_regs *frame) {
   if (nxhal_fault_enter() > 1) {
-    nxhal_diag_fault("\n[FATAL] NESTED FIQ ELR=%016lx — halting\n", frame->elr);
+    nxhal_fault_print("\n[FATAL] NESTED FIQ ELR=%016lx — halting\n", frame->elr);
     hal_cpu_halt();
   }
-  nxhal_diag_fault(
+  nxhal_fault_print(
       "\n[FIQ] Unexpected FIQ: ELR=%016lx SPSR=%016lx (FIQ is never enabled)\n",
       frame->elr, frame->spsr);
   struct pt_regs *next = nxhal_fault_handle(
@@ -448,7 +448,7 @@ struct pt_regs *fiq_handler(struct pt_regs *frame) {
     return next;
   nxhal_fault_backtrace_regs(frame->elr, frame->regs[29]);
   nxhal_fault_backtrace_scan((uint64_t)frame);
-  nxhal_diag_panic("Unexpected FIQ at EL1 (ELR 0x%lx)", frame->elr);
+  nxhal_fault_panic("Unexpected FIQ at EL1 (ELR 0x%lx)", frame->elr);
 }
 
 /*
@@ -460,11 +460,11 @@ struct pt_regs *fiq_handler(struct pt_regs *frame) {
  */
 struct pt_regs *aarch32_handler(struct pt_regs *frame) {
   if (nxhal_fault_enter() > 1) {
-    nxhal_diag_fault("\n[FATAL] NESTED AArch32 exception ELR=%016lx — halting\n",
+    nxhal_fault_print("\n[FATAL] NESTED AArch32 exception ELR=%016lx — halting\n",
                  frame->elr);
     hal_cpu_halt();
   }
-  nxhal_diag_fault("\n[EL0-32] AArch32 EL0 exception: ELR=%016lx SPSR=%016lx "
+  nxhal_fault_print("\n[EL0-32] AArch32 EL0 exception: ELR=%016lx SPSR=%016lx "
                "(unsupported)\n",
                frame->elr, frame->spsr);
   struct pt_regs *next = nxhal_fault_handle(frame, 1, 0, frame->elr,
@@ -473,7 +473,7 @@ struct pt_regs *aarch32_handler(struct pt_regs *frame) {
     return next;
   nxhal_fault_backtrace_regs(frame->elr, frame->regs[29]);
   nxhal_fault_backtrace_scan((uint64_t)frame);
-  nxhal_diag_panic("AArch32 exception with no current task (ELR 0x%lx)", frame->elr);
+  nxhal_fault_panic("AArch32 exception with no current task (ELR 0x%lx)", frame->elr);
 }
 
 /*
@@ -655,7 +655,7 @@ void arch_vmm_map_mmio(uint64_t *pgd) {
   if (arch_vmm_map_range(virt_to_phys(pgd),
                          (uint64_t)phys_to_virt(0x08000000UL), 0x08000000UL,
                          0x02800000UL, PAGE_DEVICE) != 0)
-    nxhal_diag_panic("arch_vmm_map_mmio: cannot map the 0x08000000..0x0A800000 MMIO "
+    nxhal_fault_panic("arch_vmm_map_mmio: cannot map the 0x08000000..0x0A800000 MMIO "
           "window — GIC, UART and VirtIO are all unreachable");
 }
 

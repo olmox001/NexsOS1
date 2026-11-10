@@ -9,7 +9,10 @@
 #define NEXS_PHYSICAL_MAP_LIMIT  0x0000002000000000ULL /* exclusive: 128 GiB */
 #define NEXS_FDT_MAGIC           0xD00DFEEDU
 #define NEXS_ARM64_IMAGE_MAGIC   0x644D5241U
-#define NEXS_EFI_PREFER_FIRMWARE_DTB 0U
+/* Project-bound UEFI configuration table scan. The firmware DTB is
+ * authoritative when published; the embedded QEMU virt DTB is only a
+ * compatibility fallback when the GUID is genuinely absent. */
+#define NEXS_EFI_CONFIG_TABLE_LIMIT 4096U
 
 extern const UINT8 nexs_embedded_kernel_start[];
 extern const UINT8 nexs_embedded_kernel_end[];
@@ -81,11 +84,14 @@ static EFI_STATUS validate_fdt(UINT64 Address, UINT64 Available, UINT64 *FdtSize
 {
     const UINT8 *Fdt = (const UINT8 *)(UINTN)Address;
     UINT32 Total;
-    if (!Fdt || Available < 8 || read_be32(Fdt) != NEXS_FDT_MAGIC)
+    if (!Fdt || FdtSize == 0 || Available < 8 ||
+        Address >= NEXS_PHYSICAL_MAP_LIMIT ||
+        Available > NEXS_PHYSICAL_MAP_LIMIT - Address)
+        return EFI_LOAD_ERROR;
+    if (read_be32(Fdt) != NEXS_FDT_MAGIC)
         return EFI_LOAD_ERROR;
     Total = read_be32(Fdt + 4);
     if (Total < 40 || Total > NEXS_DTB_MAX_SIZE || Total > Available ||
-        Address >= NEXS_PHYSICAL_MAP_LIMIT ||
         (UINT64)Total > NEXS_PHYSICAL_MAP_LIMIT - Address)
         return EFI_LOAD_ERROR;
     *FdtSize = Total;
@@ -134,18 +140,36 @@ static EFI_STATUS find_firmware_dtb(EFI_SYSTEM_TABLE *SystemTable,
                                     UINT64 *DtbPA, UINT64 *DtbSpan)
 {
     UINTN i;
-    for (i = 0; i < SystemTable->NumberOfTableEntries; ++i) {
-        EFI_CONFIGURATION_TABLE *Entry = &SystemTable->ConfigurationTable[i];
-        if (guid_equal(&Entry->VendorGuid, &EFI_DTB_TABLE_GUID)) {
-            UINT64 Address = (UINT64)(UINTN)Entry->VendorTable;
-            EFI_STATUS Status = validate_fdt(Address, NEXS_DTB_MAX_SIZE,
-                                             DtbSpan);
-            if (EFI_ERROR(Status)) return Status;
-            *DtbPA = Address;
-            return EFI_SUCCESS;
-        }
+    UINTN matches = 0U;
+    UINT64 address = 0U;
+    EFI_STATUS result;
+
+    if (SystemTable == 0 || DtbPA == 0 || DtbSpan == 0 ||
+        SystemTable->NumberOfTableEntries > NEXS_EFI_CONFIG_TABLE_LIMIT ||
+        (SystemTable->NumberOfTableEntries != 0U &&
+         SystemTable->ConfigurationTable == 0))
+        return EFI_LOAD_ERROR;
+    for (i = 0U; i < SystemTable->NumberOfTableEntries; ++i) {
+        EFI_CONFIGURATION_TABLE *entry = &SystemTable->ConfigurationTable[i];
+        if (!guid_equal(&entry->VendorGuid, &EFI_DTB_TABLE_GUID))
+            continue;
+        ++matches;
+        if (matches > 1U)
+            return EFI_LOAD_ERROR;
+        address = (UINT64)(UINTN)entry->VendorTable;
     }
-    return EFI_LOAD_ERROR;
+    if (matches == 0U)
+        return EFI_NOT_FOUND;
+    if (address == 0U || address >= NEXS_PHYSICAL_MAP_LIMIT)
+        return EFI_LOAD_ERROR;
+    result = validate_fdt(address,
+                          NEXS_PHYSICAL_MAP_LIMIT - address < NEXS_DTB_MAX_SIZE
+                              ? NEXS_PHYSICAL_MAP_LIMIT - address
+                              : NEXS_DTB_MAX_SIZE, DtbSpan);
+    if (EFI_ERROR(result))
+        return result;
+    *DtbPA = address;
+    return EFI_SUCCESS;
 }
 
 static EFI_STATUS load_embedded_dtb(UINT64 *DtbPA, UINT64 *DtbSpan)
@@ -176,25 +200,19 @@ static EFI_STATUS load_embedded_dtb(UINT64 *DtbPA, UINT64 *DtbSpan)
 static EFI_STATUS load_dtb(EFI_SYSTEM_TABLE *SystemTable,
                            UINT64 *DtbPA, UINT64 *DtbSpan)
 {
-    EFI_STATUS Status;
-#if NEXS_EFI_PREFER_FIRMWARE_DTB
-    Status = find_firmware_dtb(SystemTable, DtbPA, DtbSpan);
-    if (!EFI_ERROR(Status)) {
+    EFI_STATUS status = find_firmware_dtb(SystemTable, DtbPA, DtbSpan);
+    if (status == EFI_SUCCESS) {
         console(msg_dtb_firmware);
         return EFI_SUCCESS;
     }
-    Status = load_embedded_dtb(DtbPA, DtbSpan);
-    if (!EFI_ERROR(Status)) console(msg_dtb_embedded);
-#else
-    Status = load_embedded_dtb(DtbPA, DtbSpan);
-    if (!EFI_ERROR(Status)) {
+    /* Malformed/duplicate firmware DTBs are fatal; fallback is permitted
+     * only when there is no firmware DTB GUID in this QEMU-virt boot profile. */
+    if (status != EFI_NOT_FOUND)
+        return status;
+    status = load_embedded_dtb(DtbPA, DtbSpan);
+    if (status == EFI_SUCCESS)
         console(msg_dtb_embedded);
-        return EFI_SUCCESS;
-    }
-    Status = find_firmware_dtb(SystemTable, DtbPA, DtbSpan);
-    if (!EFI_ERROR(Status)) console(msg_dtb_firmware);
-#endif
-    return Status;
+    return status;
 }
 
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)

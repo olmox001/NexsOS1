@@ -252,8 +252,10 @@ enum {
   PIT_REFERENCE_HZ = 1193182,
   PIT_CALIBRATION_COUNTS = 11932,
   PIT_CALIBRATION_POLL_BUDGET = 262144,
-  TSC_CALIBRATION_SAMPLES = 3,
-  TSC_MAX_DEVIATION_DIVISOR = 10
+  PIT_CALIBRATION_MAX_COUNTS = PIT_CALIBRATION_COUNTS * 2,
+  TSC_CALIBRATION_SAMPLES = 7,
+  TSC_CALIBRATION_QUORUM = 3,
+  TSC_MAX_DEVIATION_DIVISOR = 20
 };
 
 static inline uint64_t rdtsc64(void) {
@@ -283,84 +285,108 @@ static uint16_t pit_calibration_read(void) {
   return count;
 }
 
-static int pit_wait_calibration_window(void) {
+/* The PIT is the actual reference. A 10 ms target is not the observed
+ * duration: host scheduling may delay the final latch and TSC sample.
+ * Detect reloads and reject an overlong window rather than normalizing to
+ * an unobserved duration. Both bounds come from the physical PIT counter. */
+static int pit_wait_calibration_window(uint32_t *elapsed_out) {
+  uint16_t previous = UINT16_MAX;
+
+  if (elapsed_out == NULL)
+    return -1;
   for (uint32_t poll = 0U; poll < PIT_CALIBRATION_POLL_BUDGET; ++poll) {
     uint16_t current = pit_calibration_read();
-    uint16_t elapsed = (uint16_t)(UINT16_MAX - current);
-    if (elapsed >= PIT_CALIBRATION_COUNTS)
+    uint32_t elapsed = (uint32_t)(UINT16_MAX - current);
+    if (current > previous || elapsed > PIT_CALIBRATION_MAX_COUNTS)
+      return -1;
+    if (elapsed >= PIT_CALIBRATION_COUNTS) {
+      *elapsed_out = elapsed;
       return 0;
+    }
+    previous = current;
     hal_cpu_nop();
   }
   return -1;
 }
 
 static uint64_t pit_measure_tsc_hz(void) {
+  uint32_t pit_elapsed = 0U;
   uint64_t start;
   uint64_t end;
-  uint64_t delta;
+  int status;
 
   pit_calibration_start();
   start = rdtsc64();
-  if (pit_wait_calibration_window() != 0) {
-    pit_calibration_stop();
-    return 0U;
-  }
+  status = pit_wait_calibration_window(&pit_elapsed);
   end = rdtsc64();
   pit_calibration_stop();
-  if (end <= start)
+  if (status != 0 || end <= start || pit_elapsed == 0U)
     return 0U;
-  delta = end - start;
-  if (delta > UINT64_MAX / PIT_REFERENCE_HZ)
+  if ((end - start) > UINT64_MAX / PIT_REFERENCE_HZ)
     return 0U;
-  return (delta * PIT_REFERENCE_HZ) / PIT_CALIBRATION_COUNTS;
+  return ((end - start) * PIT_REFERENCE_HZ) / pit_elapsed;
 }
 
-static int tsc_samples_consistent(const uint64_t *samples) {
-  uint64_t low = samples[0];
-  uint64_t high = samples[0];
+/* Select only a real 3-sample cluster, not a hard-coded CPU frequency.
+ * Invalid PIT windows are omitted and a missing quorum is an actual error.
+ * Sorting uses fixed-capacity bounded loops for early boot safety. */
+static int tsc_samples_select(const uint64_t *samples, uint64_t *frequency) {
+  uint64_t sorted[TSC_CALIBRATION_SAMPLES];
+  uint32_t valid = 0U;
 
-  for (uint32_t i = 1U; i < TSC_CALIBRATION_SAMPLES; ++i) {
-    if (samples[i] < low)
-      low = samples[i];
-    if (samples[i] > high)
-      high = samples[i];
+  if (samples == NULL || frequency == NULL)
+    return -1;
+  for (uint32_t i = 0U; i < TSC_CALIBRATION_SAMPLES; ++i) {
+    if (samples[i] != 0U)
+      sorted[valid++] = samples[i];
   }
-  if (low == 0U || high == 0U)
-    return 0;
-  return (high - low) <= (high / TSC_MAX_DEVIATION_DIVISOR);
-}
-
-static uint64_t tsc_samples_midpoint(const uint64_t *samples) {
-  uint64_t low = samples[0];
-  uint64_t high = samples[0];
-
-  for (uint32_t i = 1U; i < TSC_CALIBRATION_SAMPLES; ++i) {
-    if (samples[i] < low)
-      low = samples[i];
-    if (samples[i] > high)
-      high = samples[i];
+  if (valid < TSC_CALIBRATION_QUORUM)
+    return -1;
+  for (uint32_t i = 0U; i < valid; ++i) {
+    for (uint32_t j = i + 1U; j < valid; ++j) {
+      if (sorted[j] < sorted[i]) {
+        uint64_t value = sorted[i];
+        sorted[i] = sorted[j];
+        sorted[j] = value;
+      }
+    }
   }
-  return low + ((high - low) / UINT64_C(2));
+  uint64_t best_span = UINT64_MAX;
+  uint64_t selected = 0U;
+  for (uint32_t i = 0U; i + TSC_CALIBRATION_QUORUM <= valid; ++i) {
+    uint64_t low = sorted[i];
+    uint64_t high = sorted[i + TSC_CALIBRATION_QUORUM - 1U];
+    uint64_t span = high - low;
+    if (span <= high / TSC_MAX_DEVIATION_DIVISOR &&
+        span < best_span) {
+      best_span = span;
+      selected = sorted[i + TSC_CALIBRATION_QUORUM / 2U];
+    }
+  }
+  if (selected == 0U)
+    return -1;
+  *frequency = selected;
+  return 0;
 }
 
 static int tsc_calibrate_locked(void) {
   uint64_t samples[TSC_CALIBRATION_SAMPLES];
+  uint64_t selected = 0U;
 
   nxhal_diag_info("%s", "TSC: bounded PIT calibration start\n");
   for (uint32_t i = 0U; i < TSC_CALIBRATION_SAMPLES; ++i) {
     samples[i] = pit_measure_tsc_hz();
-    if (samples[i] == 0U) {
-      nxhal_diag_error("TSC: PIT calibration sample %u failed\n", i);
-      return -1;
-    }
+    if (samples[i] == 0U)
+      nxhal_diag_warn("TSC: invalid PIT sample %u (ignored)\n", i);
+    else
+      nxhal_diag_debug("TSC: PIT sample %u=%lu Hz\n", i, samples[i]);
   }
-  if (!tsc_samples_consistent(samples)) {
-    nxhal_diag_error("TSC: inconsistent calibration %lu/%lu/%lu Hz\n",
-                     samples[0], samples[1], samples[2]);
+  if (tsc_samples_select(samples, &selected) != 0) {
+    nxhal_diag_error("%s", "TSC: no validated PIT calibration quorum\n");
     return -1;
   }
-  tsc_hz = tsc_samples_midpoint(samples);
-  nxhal_diag_info("TSC: calibrated %lu Hz (%lu MHz)\n",
+  tsc_hz = selected;
+  nxhal_diag_info("TSC: validated %lu Hz (%lu MHz)\n",
                   tsc_hz, tsc_hz / UINT64_C(1000000));
   return 0;
 }
@@ -375,25 +401,25 @@ void tsc_calibrate(void) {
 }
 
 static int lapic_measure_ticks_per_ms(uint32_t *out_ticks_per_ms) {
+  uint32_t pit_elapsed = 0U;
+  uint32_t lapic_elapsed;
+  int status;
   uint64_t event_hz;
-  uint32_t elapsed;
 
+  if (out_ticks_per_ms == NULL)
+    return -1;
   pit_calibration_start();
   lapic_write(LAPIC_TDCR, LAPIC_TIMER_DIV16);
   lapic_write(LAPIC_TIC, UINT32_MAX);
-  if (pit_wait_calibration_window() != 0) {
-    pit_calibration_stop();
-    lapic_timer_stop();
-    return -1;
-  }
-  elapsed = UINT32_MAX - lapic_read(LAPIC_TCC);
+  status = pit_wait_calibration_window(&pit_elapsed);
+  lapic_elapsed = UINT32_MAX - lapic_read(LAPIC_TCC);
   pit_calibration_stop();
-  if (elapsed == 0U)
+  lapic_timer_stop();
+  if (status != 0 || lapic_elapsed == 0U || pit_elapsed == 0U)
     return -1;
-  event_hz = ((uint64_t)elapsed * PIT_REFERENCE_HZ) /
-             PIT_CALIBRATION_COUNTS;
+  event_hz = ((uint64_t)lapic_elapsed * PIT_REFERENCE_HZ) / pit_elapsed;
   if (event_hz < UINT64_C(1000) ||
-      (event_hz / UINT64_C(1000)) > UINT32_MAX)
+      event_hz / UINT64_C(1000) > UINT32_MAX)
     return -1;
   *out_ticks_per_ms = (uint32_t)(event_hz / UINT64_C(1000));
   return *out_ticks_per_ms == 0U ? -1 : 0;
