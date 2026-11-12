@@ -10,7 +10,7 @@
 #include <math.h>
 
 #define STB_TRUETYPE_IMPLEMENTATION
-#include "stb_truetype.h"
+#include "../system/tools/include/stb_truetype.h"
 
 #define FONT_MAGIC 0x31534F // "OS1"
 

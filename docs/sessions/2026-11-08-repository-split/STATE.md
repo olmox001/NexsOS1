@@ -174,3 +174,137 @@ A fresh read of the requested checkout at `/Users/shsh/Documents/github/NexsOS1/
 ### Contract-check diagnosis
 
 The checksum manifest at `kernel/contracts/abi-snapshot.sha256` is stale for two different reasons: `include/abi/object.h` has an active staged ABI edit, and the committed `include/abi/syscall_nums.h` already hashes to a different value from the manifest. The latter is not a working-tree change. No checksum or contract header was regenerated during this pass; the correct baseline must be agreed with the ABI/compositor work before updating the snapshot. The session documents `BOOT-ACCEPTANCE.md`, `BUILD-INVENTORY.md`, and `LIBRARY-CLASSIFICATION.md` also retain pre-move paths and statements about a `user/Makefile`; treat those passages as historical until reconciled against the current checkout.
+
+
+## Repository extraction completion — 2026-11-12
+
+The live `DEV-Resurrection` integration checkout now pins the kernel and SDK as
+real Git submodules instead of storing their implementation files directly in
+the superproject:
+
+- `kernel/` -> `olmox001/NX-CORE` at
+  `7d4045e5d9be39381ce1ebe669567bfb9c449856`.
+- `system/` -> `olmox001/NX-SDK` at
+  `13d5168d88e432f79e4fb457d5c81eb863201616`.
+- The initial module histories were produced with subtree extraction from the
+  existing prefixes, so the new repositories retain the relevant project
+  history instead of starting from copied source snapshots.
+- `tools/setup-dependencies.sh --check` recognizes both new gitlinks together
+  with the existing recursive upstream dependencies and passes with every
+  checkout at its pinned revision.
+
+NX-SDK now owns its build manifest and standalone entrypoint. `system/sdk.mk`
+is the single integration object manifest; the superproject consumes it instead
+of repeating the SDK object list. The SDK core builds without optional media
+headers. The full module requires explicit `STB_INCLUDE` and
+`PL_MPEG_INCLUDE` locations, so a standalone checkout never reaches into a
+parent `user/lib` tree implicitly. Clean external NX-SDK check builds passed
+for amd64 and aarch64.
+
+NX-CORE retains its existing standalone `Makefile` and canonical
+`build.mk`. Fresh exported checkouts built `check all` for amd64 and
+aarch64 without any parent-project source. Existing conversion warnings remain
+visible; no warning suppression was introduced.
+
+### ABI/API revision gates
+
+The former kernel checksum gate did not enumerate the complete public boundary:
+`os1_compositor.h` and `os1_input.h` were not covered by the old ABI
+snapshot, and the superproject compared only selected headers directly. The new
+gates are repository-local plus an integration check:
+
+- NX-CORE snapshots all 13 `include/abi/*.h` headers and both
+  `include/api/*.h` support headers.
+- NX-SDK snapshots all 13 `include/contract/*.h` headers and all 73 current
+  `include/api/*.h` headers.
+- `contracts/version.json` carries explicit scope revisions. A changed public
+  header must update its complete snapshot and increase the relevant revision.
+- Snapshot verification rejects missing, stale, duplicate or hash-mismatched
+  entries.
+- The superproject maps and byte-compares every one of the 13 NX-CORE wire ABI
+  headers against the correct NX-SDK counterpart; `os1_input.h` is
+  intentionally mapped to the SDK API tree rather than guessed by directory
+  name.
+- Surface/time generated-contract and layout checks remain integration gates.
+
+The resulting contract checks pass with NX-CORE ABI revision 1 and NX-SDK ABI
+revision 1.
+
+### Post-split nxadb and TTY/UART acceptance
+
+The first post-split runs booted successfully but exposed an existing,
+architecture-independent input race: NXShell printed its UART-visible prompt
+before `nxttyd` completed its 500 ms own-window grace period and focused the
+host TTY window. `nxadb` therefore detected the prompt and injected `pwd`
+while `nxkeyboardd` still had no focused window target. The command never
+reached NXShell; this was not an UART-output failure.
+
+For the already-known hosted shell personality, `nxttyd` now publishes and
+focuses its TTY before spawning NXShell. The existing grace period remains for
+unclassified non-shell programs. No syscall, focus-by-UART policy or kernel TTY
+routing was added.
+
+Fresh post-fix acceptance:
+
+- amd64 GRUB BIOS: shell interaction PASS, history PASS, timer diagnostic PASS,
+  post-timer shell PASS, counter heartbeat PASS, post-heartbeat shell PASS,
+  KTEST 32/32, zero kernel faults.
+- aarch64 GRUB UEFI: the same gates PASS, KTEST 33/33, zero kernel faults.
+- On both architectures an external `env` process printed
+  `NX_TTY_PORT=OS1nx_tty_14`; the marker was independently found in bytes
+  appended to the UART serial capture. This verifies the current hosted path
+  `process stdout -> TTY capability PORT -> nxttyd -> CONSOLE object ->
+  diagnostic UART mirror`.
+
+The UART remains a diagnostic log transport, not the graphical shell's
+controlling terminal. The planned move of normal debug/ADB policy to separate
+userland services and capabilities remains open, as does moving the UART device
+provider out of HAL into the kernel driver boundary. NX-VIOLA repository
+extraction, the global Power12 debt, and the remaining graphics/font/service
+migration are also still open and are not implied complete by this split.
+
+
+## SDK tooling / nested GRUB / standalone userland increment — 2026-11-12
+
+This section is authoritative for the current uncommitted verification pass.
+No project commit has been created by this pass.
+
+- NX-SDK now owns the canonical cross-toolchain lock and versioned host
+  development tooling. Root setup scripts delegate to the SDK; NX-CORE can
+  locate the integrated SDK through `tools/setup-dependencies.sh --locate`, or
+  use `NEXS_SDK_ROOT`, an XDG-style installed SDK, or a standalone SDK cache.
+- SDK use by NX-CORE is development tooling only. `check-sdk-boundary` rejects
+  SDK include/runtime inputs in compiled kernel/HAL sources and the kernel link.
+  The separately built `nxmanageDD.elf` is user mode and may use SDK runtime.
+- NX-SDK installation is componentized into tools, headers and per-architecture
+  runtime variants under a versioned prefix. Direct SDK `check archive` passed
+  for amd64 and aarch64; modular installation of tools, headers and both target
+  runtimes passed.
+- The first-party userland build manifest is `user/userland.mk`; no new build
+  layer uses the former VIOLA name. Integrated/source-SDK and isolated
+  installed-SDK builds each produced 67 first-party ELFs for amd64 and
+  aarch64. External SDL/Lua/Gnulib/Coreutils/DOOM/kilo/etc. remain managed by
+  the superproject.
+- `stb_truetype.h`, which was a root-relative development/build header used by
+  nxfont and host font tools, moved into the SDK development-tool component;
+  the standalone userland no longer reaches into root `tools/`.
+- GRUB source ownership moved to NX-CORE as nested external gitlink
+  `kernel/external/grub`, pinned by `kernel/config/grub.env`. Clean standalone
+  NX-CORE boot-media builds produced amd64 GRUB BIOS and aarch64 GRUB UEFI ISOs
+  without the former root `boot/grub` source path.
+- NX-CORE standalone `check all machine-extension` passed for amd64/aarch64
+  using only the installed SDK tooling/runtime components required by the
+  development build and user-mode machine extension. NXPAX core and 1M/2M
+  concurrent-event stress diagnostics passed.
+- Final integrated nxadb interaction passed on both targets: NXShell ready,
+  `/bin/env` exposed `NX_TTY_PORT`, `nxtimerdiag` completed with zero failures,
+  an explicit AArch64 shell marker was observed, headless MDEBUG `nxroleprobe`
+  records appeared on UART, and nxadb reported zero kernel faults. The duplicate
+  NXROLE lines are intentional: nxroleprobe emits both explicit UART
+  `printf_win(0)` and ordinary stdout `printf`, not a duplicated nxttyd mirror.
+- MDEBUG's existing Coreutils suite remains 42/50 and therefore the aggregate
+  userland runner reports 17/18. The eight failures are existing POSIX gaps
+  (readlink/utmp users+who/nice/nohup/chmod/chown/chgrp) and are not hidden by
+  this split. Strict whole-tree Power12 qualification likewise remains open;
+  the changed-file gate is clean, while the warn-only full audit retains the
+  pre-existing project debt.

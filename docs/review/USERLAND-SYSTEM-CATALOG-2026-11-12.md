@@ -350,3 +350,22 @@ Current audits in docs/architecture and this review must be checked against curr
 - Initial staged and unstaged patches preserved separately in /tmp/nexs-review-{staged,unstaged}.patch; original status in /tmp/nexs-review-status.txt. All changes unstaged for incremental review.
 - No PR has been published and no existing local work has been discarded.
 - Pending: clean builds and shell interaction via nxadb for aarch64 and amd64; full guest suite; resize screenshots/input; Power12/NXPAX gates.
+
+
+## Repository ownership update — 2026-11-12
+
+The source inventory above remains the ownership catalog for the first-party
+SDK and userland implementation, but `system/` is now the pinned NX-SDK
+gitlink at `13d5168d88e432f79e4fb457d5c81eb863201616`, not a source directory
+owned directly by the integration repository. NX-SDK additionally owns its
+standalone Makefile, `sdk.mk`, contract revision snapshots and local contract
+checker. `kernel/` is the pinned NX-CORE gitlink at
+`7d4045e5d9be39381ce1ebe669567bfb9c449856`.
+
+The integration repository continues to own `user/`, including the eight
+dedicated service executables, system commands, boot/service manifest and
+third-party application/library gitlinks. The service count remains 14 named
+manifest entries, 8 dedicated server entrypoints and 7 SDK service-client
+modules. `tools/test_nxservice_layout.py` now validates the canonical
+`system/sdk.mk` client manifest rather than requiring a duplicate linker list
+in the superproject Makefile.

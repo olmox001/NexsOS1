@@ -22,6 +22,7 @@
     "kernel/build/",
     "kernel/HAL/build/",
     "kernel/HAL/references/",
+    "kernel/external/",
     "kernel/HAL/tests/build/",
     "user/lib/",
     "user/bin/base-nexs/",

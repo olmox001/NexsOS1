@@ -603,7 +603,7 @@ static void run_command_line(char *line) {
     nxperm_mask_str(mask, m, (int)sizeof(m));
     printf("pid=%d level=%s caps=%s\n", get_pid(), nxperm_level_name(level), m);
   } else if (strcmp(cmd, "about") == 0) {
-    print("\n\033[1;36mNexsOS V0.0.6.1\033[0m\n");
+    print("\n\033[1;36mNexsOS V0.0.6.3\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
     print("\033[32mLibrary:\033[0m POSIX-like userlib with printf support\n");

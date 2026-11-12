@@ -339,6 +339,13 @@ struct tty_argv_vector {
   char *values[NXEXEC_ARGV_MAX];
 };
 
+static void tty_publish_session(struct tty_session *s) {
+  if (!s || s->visible || s->win <= 0) return;
+  set_window_flags(s->win, 2);
+  set_focus(get_pid());
+  s->visible = 1;
+}
+
 static int tty_open_session(struct tty_session *s, const char *title) {
   int server_pid = get_pid();
   int written = snprintf(s->name, sizeof(s->name), "%s%d",
@@ -360,9 +367,12 @@ static int tty_open_session(struct tty_session *s, const char *title) {
   set_window_flags(s->win, 4);
   /* First paint must cover every pixel, not just full text-cell rows. */
   OS1_window_blit(s->win, 0, 0, s->width, s->height, s->pixels);
-  /* Establish self_rendered before the first child message arrives. The
-   * surface stays hidden until nxexec has classified its ELF behavior. */
+  /* Establish self_rendered before the first child message arrives.
+   * A hosted shell is already classified: publish/focus its TTY before
+   * spawning it so the first prompt cannot race keyboard routing. Other
+   * programs stay hidden during the existing own-window grace period. */
   tty_flush(s);
+  if (s->shell) tty_publish_session(s);
   /* Environment propagation is the EXISTING process-create mechanism.
    * stdout/stderr remain ordinary CONSOLE descriptor types; file/pipe
    * redirections continue bypassing the TTY renderer. */
@@ -408,23 +418,23 @@ static int tty_spawn_job(struct tty_session *s, int argc,
 
 static int tty_wait_job(struct tty_session *s) {
   if (s->finished) {
-    set_window_flags(s->win, 2);
-    set_focus(get_pid());
+    tty_publish_session(s);
     tty_flush(s);
     return 0;
   }
   int last_win = -1, stable = 0;
-  for (unsigned probe = 0U; probe < TTY_GRACE_MS / TTY_POLL_MS && !s->finished; ++probe) {
-    if (s->pid > 0 && nxexec_window_stable(s->pid, &last_win, &stable))
-      return 1;
-    if (s->pid > 0 && OS1low_process_wait_status(s->pid, &s->status) != -1) {
-      s->finished = 1;
+  if (!s->visible) {
+    for (unsigned probe = 0U;
+         probe < TTY_GRACE_MS / TTY_POLL_MS && !s->finished; ++probe) {
+      if (s->pid > 0 && nxexec_window_stable(s->pid, &last_win, &stable))
+        return 1;
+      if (s->pid > 0 &&
+          OS1low_process_wait_status(s->pid, &s->status) != -1)
+        s->finished = 1;
+      if (!s->finished && tty_step(s, 0) < 0) return -EIO;
     }
-    if (!s->finished && tty_step(s, 0) < 0) return -EIO;
+    tty_publish_session(s);
   }
-  set_window_flags(s->win, 2);
-  set_focus(get_pid());
-  s->visible = 1;
   if (s->pid > 0 && !s->finished) {
     for (uint64_t step = 0U; step < UINT64_MAX && !s->finished; ++step) {
       if (nxexec_window_stable(s->pid, &last_win, &stable)) return 1;

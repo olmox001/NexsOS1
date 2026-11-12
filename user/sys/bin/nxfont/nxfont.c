@@ -136,7 +136,7 @@ static double acos(double x) {
 }
 
 #define STB_TRUETYPE_IMPLEMENTATION
-#include "../../../../tools/stb_truetype.h"
+#include <stb_truetype.h>
 
 /*
  * main - nxfont entry point.

@@ -6,7 +6,7 @@
 # ==============================================================================
 
 NEXSOS_SHARED_MAKE := 1
-include tools/toolchain-versions.env
+include system/config/toolchain-versions.env
 HOST_OS ?= $(shell uname -s)
 ifeq ($(HOST_OS),Linux)
     include Makefile.linux
@@ -27,7 +27,7 @@ BUILD ?= debug
 MDEBUG ?= 0
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.6.1
+VERSION ?= V0.0.6.3
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -94,10 +94,11 @@ else
     QEMU = qemu-system-aarch64
 endif
 KERNEL_DIR = kernel
+NXSDK_DIR = system
 
 # NX-SDK owns the public API and its versioned kernel-contract snapshot.
 # The legacy shared root include/abi directory is intentionally absent.
-USER_INCLUDE = -Isystem/include/contract -Isystem/include/api -Iuser/lib/stb -Iuser/lib/pl_mpeg
+USER_INCLUDE = -I$(NXSDK_DIR)/include/contract -I$(NXSDK_DIR)/include/api -I$(NXSDK_DIR)/tools/include -Iuser/lib/stb -Iuser/lib/pl_mpeg
 # Compatibility variable consumed by pinned upstream build fragments (e.g. DOOM).
 INCLUDE = $(USER_INCLUDE)
 
@@ -124,6 +125,11 @@ MKDISK_LAYOUT ?= --extents
 BUILD_ROOT = build
 BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
 
+# Consume the independently buildable NX-SDK manifest.  The object namespace
+# remains build/<arch>/system so extraction does not alter link inputs.
+NXSDK_ROOT := $(NXSDK_DIR)
+include $(NXSDK_DIR)/sdk.mk
+
 # Optional GRUB ISO media for BOOT_MODE=iso and nxadb/nxrun. AArch64 EFI
 # embeds kernel Image + generated DTB; AMD64 boots the Multiboot2 ELF.
 HOST_CLANG ?= $(shell command -v clang 2>/dev/null)
@@ -138,9 +144,9 @@ BOOT_ISO = $(AMD64_GRUB_ISO)
 endif
 USER_DIR   = user
 USER_SYS_DIR = $(USER_DIR)/sys
-USER_LIB_DIR = system/lib
+USER_LIB_DIR = $(NXSDK_DIR)/lib
 USER_BIN_DIR = $(USER_SYS_DIR)/bin
-USER_ARCH_DIR = system/arch/$(ARCH)
+USER_ARCH_DIR = $(NXSDK_DIR)/arch/$(ARCH)
 
 # Output files
 BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
@@ -161,7 +167,7 @@ VIRT_DTB   = $(BUILD_DIR)/virt.dtb
 
 # ==============================================================================
 
-.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel user disk rootfs release test-release help
+.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel sdk user disk rootfs release test-release help
 # 'make debug' is the explicit MDEBUG boot profile; normal 'run' stays quiet.
 debug: MDEBUG=1
 
@@ -198,10 +204,10 @@ dirs:
 # the shared output root and target architecture, then consumes the artifacts.
 .PHONY: kernel bootloader
 kernel: power12
-	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) MDEBUG=$(MDEBUG) kernel
+	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) MDEBUG=$(MDEBUG) kernel
 
 bootloader: power12
-	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) bootloader
+	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) bootloader
 
 $(KERNEL_BIN) $(KERNEL_ELF): | kernel
 	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
@@ -209,32 +215,23 @@ $(KERNEL_BIN) $(KERNEL_ELF): | kernel
 $(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
 	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
 
-# Userland
-USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
-USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/posix_environment.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/alpha.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/chrome.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/decoration.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/tty_model.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/theme.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/math.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/font_lib.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/input/nxkeyboard_layout.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/image/image.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/video/video.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/notify_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/port_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/time_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/surface_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/gfx_buffer.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/buffer_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/os1_video_platform.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/d3d9/os1_d3d9_present.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/opengl/os1_gl_platform.o
-USER_MALLOC_O  = $(BUILD_DIR)/$(USER_LIB_DIR)/malloc.o
+# NX-SDK builds its own complete object set. The integration layer supplies
+# the two external media-header locations explicitly; the SDK never reaches
+# into ../user by convention or hidden relative paths.
+sdk:
+	+$(MAKE) -C $(NXSDK_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) \
+		NX_WARNINGS_AS_ERRORS=$(NX_WARNINGS_AS_ERRORS) NX_STRICT=$(NX_STRICT) \
+		STB_INCLUDE="$(abspath user/lib/stb)" \
+		PL_MPEG_INCLUDE="$(abspath user/lib/pl_mpeg)" module
+
+$(NXSDK_MODULE_OBJECTS): | sdk
+	@test -f "$@" || { echo "NX-SDK did not produce $@" >&2; exit 1; }
+
+# Userland consumes the NX-SDK artifact manifest instead of duplicating its
+# source/object list in the superproject.
+USER_SYSCALL_O := $(NXSDK_SYSCALL_OBJECT)
+USER_LIB_O := $(NXSDK_LIB_OBJECTS)
+USER_MALLOC_O := $(NXSDK_MALLOC_OBJECT)
 
 # ==============================================================================
 # SDL2 static library (graphics-port: SDL cross-build over the OS1 libc)
@@ -461,69 +458,35 @@ include user/portability/coreutils/overlay.mk
 
 
 
-# The bootstrap authority extension belongs to NX-CORE but is built with
-# the ordinary userland toolchain, never linked into the kernel image.
-# PID1 is nxmanageDD; nxinit is a ROOT-level declarative child of PID1.
-SBIN_ELFS = $(BUILD_DIR)/nxinit.elf
-# MACHINE-only kernel-owned user extension, installed at /krnl/extension;
-# never linked into the kernel executable and never published as /sbin.
-NX_MACHINE_EXTENSION_ELFS = $(BUILD_DIR)/nxmanageDD.elf
+# The NexsOS userland owns the canonical first-party manifest.  The integration
+# repository supplies SDK object paths and adds external applications below.
+OBJ_DIR := $(BUILD_DIR)/$(USER_DIR)
+NEXS_USERLAND_SDK_LINK_INPUTS := $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+NEXS_USERLAND_SDK_SIMD_OBJECT := $(BUILD_DIR)/$(USER_ARCH_DIR)/simd_probe.o
+include user/userland.mk
 
-# System commands and graphical applications, installed under /sys/bin.
-SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxres.elf \
-           $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxkeymap.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf \
-           $(BUILD_DIR)/nxfilem.elf $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf \
-           $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
-           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf \
-           $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf \
-           $(BUILD_DIR)/nxwins.elf $(BUILD_DIR)/nxnotify.elf \
-           $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf \
-           $(BUILD_DIR)/nxenvinit.elf $(BUILD_DIR)/nxtimerdiag.elf \
-           $(BUILD_DIR)/nxpax.elf $(BUILD_DIR)/nxtestrunner.elf \
-           $(BUILD_DIR)/nxroleprobe.elf
+SBIN_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_SBIN_PROGRAMS)))
+NX_MACHINE_EXTENSION_ELFS := $(BUILD_DIR)/nxmanageDD.elf
+SYS_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_SYS_PROGRAMS) $(NEXS_USERLAND_COMPLEX_PROGRAMS) $(NEXS_USERLAND_MEDIA_PROGRAMS) $(NEXS_USERLAND_MEDIA_COMPLEX_PROGRAMS)))
+SYS_SERVICE_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_SERVICE_PROGRAMS)))
+NEXS_USERLAND_BIN_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_BIN_PROGRAMS) $(NEXS_USERLAND_ALIAS_PROGRAMS)))
+EXTERNAL_BIN_ELFS := $(BUILD_DIR)/sdltest.elf $(BUILD_DIR)/raptor.elf \
+  $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf $(BUILD_DIR)/doom.elf \
+  $(BUILD_DIR)/gnulibtest.elf $(BUILD_DIR)/luatest.elf $(BUILD_DIR)/kilo.elf \
+  $(COREUTILS_ELFS)
+BIN_ELFS := $(NEXS_USERLAND_BIN_ELFS) $(EXTERNAL_BIN_ELFS)
+USER_ELFS := $(SBIN_ELFS) $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(SYS_SERVICE_ELFS) $(BIN_ELFS)
 
-# Dedicated ROOT service executables, installed under /sys/services.
-# None is linked into or inherits the MACHINE-only kernel extension runtime.
-SYS_SERVICE_ELFS = $(BUILD_DIR)/nxtimerdd.elf $(BUILD_DIR)/nxntfy_srv.elf \
-                   $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf \
-                   $(BUILD_DIR)/nxmoused.elf $(BUILD_DIR)/nxexecd.elf \
-                   $(BUILD_DIR)/nxttyd.elf $(BUILD_DIR)/nxpaxd.elf
-
-# User ELFs (placed in /bin)
-BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
-           $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf\
-           $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
-           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
-           $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
-           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/notifytest.elf $(BUILD_DIR)/porttest.elf \
-           $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf $(BUILD_DIR)/gfxbuffertest.elf $(BUILD_DIR)/gfxalphatest.elf $(BUILD_DIR)/simdtest.elf $(BUILD_DIR)/simdchild.elf \
-           $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
-           $(BUILD_DIR)/portidle_child.elf \
-           $(BUILD_DIR)/capreg.elf \
-           $(BUILD_DIR)/capkill.elf $(BUILD_DIR)/capkill_child.elf \
-           $(BUILD_DIR)/sandboxtest.elf $(BUILD_DIR)/sandboxchild.elf \
-           $(BUILD_DIR)/hello.elf \
-           $(BUILD_DIR)/stress.elf \
-           $(BUILD_DIR)/restest.elf \
-           $(BUILD_DIR)/env.elf \
-           $(BUILD_DIR)/gnulibtest.elf \
-           $(BUILD_DIR)/coreutils_test.elf $(BUILD_DIR)/coreutilstest.elf \
-           $(BUILD_DIR)/luatest.elf \
-           $(BUILD_DIR)/kilo.elf \
-           $(COREUTILS_ELFS)
-
-USER_ELFS = $(SBIN_ELFS) $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(SYS_SERVICE_ELFS) $(BIN_ELFS)
-
-
-# Userland build remains defined exactly once here until its complete source
-# manifest and rules are transferred to NX-VIOLA and NX-SDK.
-user: power12 __nexsos_user_module
-
-.PHONY: __nexsos_user_module
+user: power12 sdk __nexsos_user_module
+.PHONY: __nexsos_user_module __user
 __nexsos_user_module: $(USER_ELFS)
-
-.PHONY: __user
 __user: $(USER_ELFS)
+
+# NX-CORE owns and builds the MACHINE user-mode extension.
+$(BUILD_DIR)/nxmanageDD.elf:
+	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) \
+	  NXSDK_ROOT="$(abspath $(NXSDK_DIR))" machine-extension
+	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
 
 # User Compilations
 $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
@@ -531,11 +494,6 @@ $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
-	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
-
-# NX-SDK system library implementations (including userland graphics).
-$(BUILD_DIR)/$(USER_LIB_DIR)/%.o: $(USER_LIB_DIR)/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -555,17 +513,6 @@ $(BUILD_DIR)/$(USER_DIR)/sbin/%.o: $(USER_DIR)/sbin/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
-# Explicit dependencies for each user ELF
-# nxinit: source in user/sbin/ (machine-level init, separate from /sys/bin services)
-$(BUILD_DIR)/nxmanageDD.elf: $(BUILD_DIR)/kernel/user/extension/nxmanageDD/main.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sbin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxenvinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxenvinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxcompositor.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxcompositor.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxkeyboardd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxkeyboardd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxmoused.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxmoused.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 # sdltest: first SDL2 client; the object needs the SDL headers + injected
 # NexsOS config, the ELF links the cross-built archive before the OS1 libc
 # objects (which satisfy the archive's malloc/os1_video_* undefineds).
@@ -588,8 +535,6 @@ $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/coreutils_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/coreutilstest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o: $(USER_DIR)/bin/luatest.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
@@ -603,76 +548,6 @@ $(BUILD_DIR)/luatest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o $(LUA_OS1_LIB) 
 		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O) $(USER_RUNTIME_LIBS)
 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxntfy_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxntfy_srv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxreg.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxreg.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxkeymap.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxkeymap.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxtop.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtop.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxproc.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxproc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxinfo.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinfo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxperm.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxperm.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxui.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxui.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxbar.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxbar.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxpower.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxpower.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxlauncher.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxlauncher.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxsettings.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxsettings.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/porttest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/porttest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/notifytest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/notifytest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/buffertest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/buffertest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/libctest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/libctest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/capipc.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/capipc_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/portidle_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/portidle_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/capreg.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capreg.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/capkill.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capkill.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/capkill_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capkill_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/forkbomb.elf: $(BUILD_DIR)/$(USER_DIR)/bin/forkbomb.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/sandboxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/sandboxchild.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sandboxchild.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/hello.elf: $(BUILD_DIR)/$(USER_DIR)/bin/hello.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxmemstat.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxmemstat.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/stress.elf: $(BUILD_DIR)/$(USER_DIR)/bin/stress.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/restest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/restest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/env.elf: $(BUILD_DIR)/$(USER_DIR)/bin/env.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxwins.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxwins.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxexec.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxexec.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxexecd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxexecd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxttyd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxttyd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nximage.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nximage.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxtimerdd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxtimerdd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxpax.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxpax.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxpaxd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxpaxd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxtestrunner.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtestrunner.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxroleprobe.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxroleprobe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/gfxalphatest.elf: $(BUILD_DIR)/user/bin/gfxalphatest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/gfxbuffertest.elf: $(BUILD_DIR)/user/bin/gfxbuffertest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/simdtest.elf: $(BUILD_DIR)/user/bin/simdtest.o $(BUILD_DIR)/$(USER_ARCH_DIR)/simd_probe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/simdchild.elf: $(BUILD_DIR)/user/bin/simdchild.o $(BUILD_DIR)/$(USER_ARCH_DIR)/simd_probe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxfont.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/nxfont.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-
-$(BUILD_DIR)/nxfilem.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/main.o \
-                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/state.o \
-                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/sort.o \
-                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/ui.o \
-                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/draw.o \
-                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/events.o \
-                          $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/fileops.o \
-                          $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-
-$(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
-	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
-
 # kilo is linked like every other user ELF (prereqs declared above, generic
 # linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
 
@@ -693,15 +568,9 @@ $(BUILD_DIR)/%.elf:
 	@$(CC) $(USER_CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
-# The scalar foundation must remain executable without vector instructions.
-# ISA-specific accelerators are separate units, selected by usable capabilities.
-$(BUILD_DIR)/$(USER_LIB_DIR)/gfx/alpha.o: USER_CFLAGS += -mgeneral-regs-only
-
-# Compilation rules are split by ownership and compiler domain.  No generic
-# assembly rule is allowed to compile kernel objects with userland flags.
-$(BUILD_DIR)/$(USER_ARCH_DIR)/%.o: $(USER_ARCH_DIR)/%.S
-	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -c -o $@ $<
+# NX-SDK owns its C/assembly compilation rules, including the scalar alpha
+# profile and architecture startup veneers. The superproject compiles only
+# userland/integration-owned translation units below.
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -1096,9 +965,10 @@ check-kernel-contracts:
 	@python3 tools/generate-surface-contract.py --check
 	@python3 tools/generate-time-contract.py --check
 	@python3 tools/check-time-contract-layout.py
-	@cmp tools/toolchain-versions.env kernel/config/toolchain-versions.env
+	@test "$$(cd system && pwd)" = "$$(make -s -C kernel print-sdk-root)"
 	@kernel/tools/check-contract-snapshot.sh
-	@cmp kernel/include/abi/nxpax.h system/include/contract/nxpax.h
+	@python3 system/tools/check-contract-snapshot.py
+	@python3 tools/check-cross-repo-contracts.py
 
 .PHONY: check-buffer-source
 check-buffer-source:
@@ -1169,8 +1039,8 @@ check: check-kernel-contracts power12 test-nxpax-core test-nxpax-stress test-nxp
 	@echo "✓ CC: $$($(CC) --version | head -1)"
 	@echo "✓ LD: $$($(LD) --version | head -1)"
 	@echo "✓ QEMU: $$($(QEMU) --version | head -1)"
-	@expected_grub="$$(. boot/grub/manifest.env; printf '%s' "$$NEXS_GRUB_COMMIT")"; \
-	actual_grub="$$(git -C boot/grub/upstream rev-parse HEAD 2>/dev/null || true)"; \
+	@expected_grub="$$(. kernel/config/grub.env; printf '%s' "$$NEXS_GRUB_COMMIT")"; \
+	actual_grub="$$(git -C kernel/external/grub rev-parse HEAD 2>/dev/null || true)"; \
 	[ "$$actual_grub" = "$$expected_grub" ] || { \
 		echo "ERROR: GRUB submodule is $$actual_grub; expected $$expected_grub" >&2; exit 1; \
 	}; \

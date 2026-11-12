@@ -5,6 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:---init}"
+MODULE_QUERY="${2:-}"
 COREUTILS="$ROOT/user/bin/coreutils"
 
 command -v git >/dev/null 2>&1 || {
@@ -57,6 +58,20 @@ materialize_incomplete_submodule_checkouts() {
   '
 }
 
+
+locate_module() {
+  local query="$1" key path
+  [ -n "$query" ] || { echo "[deps] ERROR: --locate requires a submodule name or path." >&2; exit 2; }
+  key="submodule.$query.path"
+  path="$(git -C "$ROOT" config -f .gitmodules --get "$key" 2>/dev/null || true)"
+  if [ -z "$path" ]; then
+    path="$(git -C "$ROOT" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk -v q="$query" '$2==q {print $2; exit}')"
+  fi
+  [ -n "$path" ] || { echo "[deps] ERROR: submodule not declared: $query" >&2; exit 1; }
+  [ -e "$ROOT/$path/.git" ] || [ -d "$ROOT/$path/.git" ] || { echo "[deps] ERROR: submodule is not initialized: $path" >&2; exit 1; }
+  (cd "$ROOT/$path" && pwd)
+}
+
 verify_materialized_submodule_checkouts() {
   git -C "$ROOT" submodule foreach --recursive '
     tracked_count=$(git ls-files | wc -l | tr -d " ")
@@ -69,6 +84,10 @@ verify_materialized_submodule_checkouts() {
 }
 
 case "$MODE" in
+  --locate)
+    locate_module "$MODULE_QUERY"
+    exit 0
+    ;;
   --init)
     echo "[deps] Synchronizing top-level submodule URLs..."
     git -C "$ROOT" submodule sync
@@ -92,7 +111,7 @@ case "$MODE" in
     verify_materialized_submodule_checkouts
     ;;
   *)
-    echo "Usage: $0 [--init|--check]" >&2
+    echo "Usage: $0 [--init|--check|--locate NAME_OR_PATH]" >&2
     exit 2
     ;;
 esac

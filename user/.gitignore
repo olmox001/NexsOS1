@@ -1,0 +1,6 @@
+
+/.nxsdk/
+/build/
+*.o
+*.d
+*.elf

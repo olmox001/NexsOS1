@@ -22,10 +22,10 @@ int coreutils_os1_uname(struct os1_utsname *buf) {
   strncpy(buf->nodename, "nexsos", sizeof(buf->nodename) - 1);
   buf->nodename[sizeof(buf->nodename) - 1] = '\0';
 
-  strncpy(buf->release, "0.0.6.1", sizeof(buf->release) - 1);
+  strncpy(buf->release, "0.0.6.3", sizeof(buf->release) - 1);
   buf->release[sizeof(buf->release) - 1] = '\0';
 
-  strncpy(buf->version, "Alioth-V0.0.6.1", sizeof(buf->version) - 1);
+  strncpy(buf->version, "Alioth-V0.0.6.3", sizeof(buf->version) - 1);
   buf->version[sizeof(buf->version) - 1] = '\0';
 
 #if defined(ARCH_AMD64) || defined(__x86_64__)
