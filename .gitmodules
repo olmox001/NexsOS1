@@ -46,3 +46,9 @@
 	path = boot/grub/upstream
 	url = https://github.com/olmox001/grub.git
 	branch = nexsos-port
+[submodule "kernel"]
+	path = kernel
+	url = https://github.com/olmox001/NX-CORE.git
+[submodule "system"]
+	path = system
+	url = https://github.com/olmox001/NX-SDK.git
