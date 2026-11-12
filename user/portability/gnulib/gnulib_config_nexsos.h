@@ -284,7 +284,7 @@ typedef ptrdiff_t idx_t;
 #endif
 
 #ifndef PACKAGE_PACKAGER_VERSION
-#define PACKAGE_PACKAGER_VERSION "0.0.6.1"
+#define PACKAGE_PACKAGER_VERSION "0.0.6.3"
 #endif
 
 #ifndef PACKAGE_PACKAGER_BUG_REPORTS

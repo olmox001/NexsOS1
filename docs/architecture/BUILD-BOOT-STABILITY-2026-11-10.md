@@ -4,7 +4,7 @@ Date: 2026-11-10. Branch: `DEV-Resurrection`. Recovery started from
 `34a6bf5`; the tested source changes were subsequently committed as
 `3b71274` (2026-11-10 11:19 +0100). This checkpoint concerns the tested
 implementation, not a certified release or proof of every remaining obligation.
-The separately staged `V0.0.6.1` version update requires its own clean-build
+The separately staged `V0.0.6.3` version update requires its own clean-build
 and NXADB acceptance evidence before being treated as verified.
 
 ## Goal and scope
