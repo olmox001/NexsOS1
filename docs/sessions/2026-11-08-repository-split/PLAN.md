@@ -465,3 +465,30 @@ location user/lib without changing refs, and extract the SDK build. Then
 extract NX-VIOLA's application build against the SDK manifest. Do not create a
 root sdk/ directory or nest NX-SDK inside NX-VIOLA; select the peer checkout
 path from the completed ownership matrix.
+
+
+## Maintainer direction update — 2026-11-12 (SDK development tooling)
+
+This amendment supersedes earlier ownership wording where it conflicts.
+
+- NX-SDK owns the canonical, versioned development-tool plane in addition to
+  its userland SDK runtime/API: toolchain lock, host setup/build tooling and
+  development-only headers. Root wrappers orchestrate that tooling; they do not
+  maintain independent copies.
+- NX-CORE is allowed and expected to consume the SDK development-tool plane.
+  This does not relax the kernel boundary: kernel/HAL source must not include
+  SDK libc/POSIX/userland API headers and the kernel image must not link SDK
+  userland runtime archives. Enforce this mechanically.
+- When NX-CORE is inside the NexsOS superproject, module discovery must use the
+  superproject dependency-control metadata. A standalone NX-CORE checkout may
+  use an explicitly selected SDK, a versioned installed SDK, or bootstrap an
+  SDK tooling checkout. Do not hardcode sibling paths.
+- The live first-party application/service build layer is called **NexsOS
+  userland** and its manifest is `user/userland.mk`; do not introduce VIOLA as
+  a new build-layer name. External userland modules remain superproject-owned.
+- GRUB source/build ownership belongs to NX-CORE under `external/grub`; the
+  superproject controls the recursive gitlink graph and consumes NX-CORE boot
+  artifacts for integrated disk/release assembly.
+- Acceptance requires direct SDK, standalone NX-CORE, standalone first-party
+  userland, integrated superproject builds, and real nxadb shell interaction on
+  amd64 and aarch64. Compilation alone is insufficient.

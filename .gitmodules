@@ -42,10 +42,6 @@
 	path = user/bin/coreutils
 	url = https://github.com/olmox001/coreutils_NexsOS1.git
 	branch = nexsos-port
-[submodule "boot/grub/upstream"]
-	path = boot/grub/upstream
-	url = https://github.com/olmox001/grub.git
-	branch = nexsos-port
 [submodule "kernel"]
 	path = kernel
 	url = https://github.com/olmox001/NX-CORE.git

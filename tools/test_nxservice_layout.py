@@ -21,25 +21,43 @@ def require(ok, description):
         raise ValueError(description)
 
 
-def make_set(lines, var):
+def make_text(lines, var):
     for i, line in enumerate(lines):
-        if not line.startswith(var + " ="):
+        match = re.match(r"^" + re.escape(var) + r"\s*:?=\s*(.*)$", line)
+        if not match:
             continue
-        text = line.partition("=")[2].strip()
+        text = match.group(1).strip()
         while text.endswith("\\") and i + 1 < len(lines):
             i += 1
             text = text[:-1] + " " + lines[i].strip()
-        return set(re.findall(r"\$\(BUILD_DIR\)/([a-zA-Z0-9_]+)\.elf", text))
+        return text
     raise ValueError("missing Makefile variable: " + var)
+
+
+def make_elf_set(lines, var):
+    return set(re.findall(r"\$\(BUILD_DIR\)/([a-zA-Z0-9_]+)\.elf",
+                          make_text(lines, var)))
+
+
+def make_word_set(lines, var):
+    text = make_text(lines, var)
+    require("$(" not in text, "manifest variable requires expansion: " + var)
+    return set(text.split())
 
 
 def source_roles():
     source = (ROOT / "Makefile").read_text()
     lines = source.splitlines()
-    machine = make_set(lines, "NX_MACHINE_EXTENSION_ELFS")
-    initializers = make_set(lines, "SBIN_ELFS")
-    servers = make_set(lines, "SYS_SERVICE_ELFS")
-    commands = make_set(lines, "SYS_ELFS")
+    require("include user/userland.mk" in source,
+            "superproject does not consume canonical userland manifest")
+    user_lines = (ROOT / "user/userland.mk").read_text().splitlines()
+    machine = make_elf_set(lines, "NX_MACHINE_EXTENSION_ELFS")
+    initializers = make_word_set(user_lines, "NEXS_USERLAND_SBIN_PROGRAMS")
+    servers = make_word_set(user_lines, "NEXS_USERLAND_SERVICE_PROGRAMS")
+    commands = (make_word_set(user_lines, "NEXS_USERLAND_SYS_PROGRAMS") |
+                make_word_set(user_lines, "NEXS_USERLAND_COMPLEX_PROGRAMS") |
+                make_word_set(user_lines, "NEXS_USERLAND_MEDIA_PROGRAMS") |
+                make_word_set(user_lines, "NEXS_USERLAND_MEDIA_COMPLEX_PROGRAMS"))
     require(machine == MACHINE, "machine executable set differs")
     require(initializers == SBIN, "initializer executable set differs")
     require(servers == SERVERS, "dedicated daemon executable set differs")

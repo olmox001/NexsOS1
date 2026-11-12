@@ -84,7 +84,7 @@ def clang_args(rel: str, arch: str) -> list[str]:
     include_dirs = [
         "kernel/HAL", "kernel/HAL/include", arch_inc,
         "kernel/include", "kernel/include/abi", "kernel/include/api",
-        "system/include/contract", "system/include/api",
+        "system/include/contract", "system/include/api", "system/tools/include",
         "user/lib/stb", "user/lib/pl_mpeg", "user/lib/sdl/include",
         "user/lib/lua", "user/lib/portability/lua",
         "user/portability/coreutils", "user/portability/gnulib",

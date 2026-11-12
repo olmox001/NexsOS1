@@ -11,14 +11,12 @@ permission to recreate or duplicate those recipes.
 
 | Project | Owns | Must build without |
 |---|---|---|
-| NX-CORE | Existing kernel, per-ISA HAL, kernel tests, boot assembly, linker scripts, symbol generation, kernel-only build and direct QEMU boot | NX-VIOLA, NX-SDK implementation, superproject |
-| NX-VIOLA | Existing programs, init, shell, services, resources, app manifests and userland tests | NX-CORE checkout and superproject |
-| NX-SDK | NexsOS-owned libc/runtime/native API, audited ABI/API headers, startup/syscall client objects, portability adapters, system-library archives, SDK build/test metadata | NX-CORE checkout and NX-VIOLA sources |
+| NX-CORE | Existing kernel, per-ISA HAL, kernel tests, boot assembly, linker scripts, symbol generation, kernel-only build and GRUB/direct QEMU boot | NexsOS userland and superproject; NX-SDK is development tooling only, never a kernel userland API/runtime input |
+| NexsOS userland | Existing programs, init, shell, services, resources, app manifests and userland tests | NX-CORE checkout and superproject |
+| NX-SDK | NexsOS-owned libc/runtime/native API, audited ABI/API headers, startup/syscall client objects, portability adapters, system-library archives, versioned development/build tools and SDK build/test metadata | NX-CORE implementation and userland sources |
 | NexsOS1 integration | Pins the three repos and upstream dependencies; assembles rootfs, GRUB/EFI media, disk images and release; coordinates module builds and nxadb tests | No private module implementation duplicated here |
 
-NX-SDK is a peer repository, conceptually the SDK layer of NX-VIOLA. NX-CORE
-may consume only a separately versioned kernel-safe contract package, not SDK
-implementation code.
+NX-SDK is a peer repository. NX-CORE consumes its development-tool plane (toolchain lock/setup/build/debug tooling) but not its userland API/runtime. Kernel/HAL source continues to use NX-CORE-owned contract snapshots; cross-repository compatibility is verified by the superproject.
 
 ## Existing root Makefile ownership map
 
@@ -43,15 +41,9 @@ implementation code.
 
 ## Existing non-Makefile dependencies
 
-- tools/toolchain-versions.env: shared lock for both cross compilers. It cannot
-  remain an implicit root-relative include. Independent builds need a pinned
-  toolchain contract; do not create drifting copies.
+- system/config/toolchain-versions.env: canonical NX-SDK-owned lock for both cross compilers. Root and NX-CORE setup entrypoints delegate to the SDK tooling instead of carrying drifting copies.
 - tools/gen_ksyms.sh: kernel build input; canonical owner NX-CORE.
-- tools/build-amd64-grub-iso.sh, tools/build-aarch64-uefi-image.sh and
-  tools/build-grub-arm64.sh: integration boot-media tooling. They currently
-  hardcode root build paths; AArch64 EFI compilation reaches back into
-  kernel/arch/aarch64/boot/uefi. Replace these with explicit artifact inputs,
-  not duplicate UEFI source.
+- kernel/tools/build-amd64-grub-iso.sh, kernel/tools/build-aarch64-uefi-image.sh and the GRUB target helpers are NX-CORE boot-media tooling. The pinned upstream source is the nested `kernel/external/grub` gitlink and `kernel/config/grub.env` records the source/build contract. The superproject consumes the resulting boot artifacts for integrated media/release assembly.
 - tools/mkdisk.c: integration-owned host utility; recipe currently hardcodes
   gcc instead of HOST_CC.
 - tools/nxqemu.py, nxadb.py, nxrun.py and capture/test scripts: integration
@@ -99,17 +91,17 @@ implementation code.
   zero panic/fault state.
 - Prove dependency graph has no user/, NX-SDK implementation or root path.
 
-### NX-VIOLA + NX-SDK only
-- Clone NX-VIOLA and NX-SDK without NX-CORE or superproject.
+### NexsOS userland + NX-SDK only
+- Build/copy the first-party userland with NX-SDK without NX-CORE or the superproject; external upstream modules remain superproject-managed.
 - Build SDK headers, startup/runtime objects and all declared libraries.
 - Compile and link a freestanding SDK sample for both target ISAs.
-- Build NX-VIOLA userland ELFs against only the SDK exported interface.
+- Build first-party userland ELFs against only the SDK exported interface.
 - Prove no dependency on kernel/, kernel-private include roots, kernel objects,
   root Makefile variables or rootfs outputs.
 
 ### Integration after both module gates pass
 - Pin exact module commits and upstream gitlinks.
-- Build rootfs from SDK and VIOLA install manifests.
+- Build rootfs from SDK/userland install manifests and the superproject-owned external module graph.
 - Assemble GRUB BIOS and arm64-efi media and disk images.
 - Run nxadb shell acceptance and release tests on both ISAs.
 - Verify clean clone bootstrap without dirtying source trees.

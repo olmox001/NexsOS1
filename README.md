@@ -97,7 +97,7 @@ Below are live captures demonstrating window compositor features, overlap handli
 
 To compile and execute NexsOS1, use the host-detecting `tools/setup-project.sh` bootstrap. The intended build hosts are macOS Intel, macOS Apple Silicon and Linux (Ubuntu/Debian/Arch/Alpine); each host/target pair must pass the strict toolchain checks and both architecture builds before it is marked verified. BSD is not yet supported.
 
-The cross-toolchain versions are centralized in `tools/toolchain-versions.env` and checked by both host setup paths and `make check`: `x86_64-elf-gcc` 16.1.0 with Binutils 2.46.1, and `aarch64-none-elf-gcc` 7.2.0 with Binutils 2.29.1. Linux builds the GNU toolchains from the versioned source releases and verifies official SHA-512 checksums before extraction; macOS installs the matching Homebrew/osxct packages and rejects version drift. On Apple Silicon, the pinned osxct compiler currently requires Rosetta 2 and Intel Homebrew under `/usr/local`. The bootstrap also initializes the external userland repositories (SDL, Mesa, Wine/D3D, Lua, musl, Gnulib, BusyBox, Coreutils, DOOM, kilo, and base-nexs) at the exact Git revisions pinned by the superproject.
+The cross-toolchain versions are owned by **NX-SDK** in `system/config/toolchain-versions.env`. The root setup scripts are thin integration wrappers around the SDK development-tooling entrypoints, and `make check` verifies the same lock: `x86_64-elf-gcc` 16.1.0 with Binutils 2.46.1, and `aarch64-none-elf-gcc` 7.2.0 with Binutils 2.29.1. Linux builds the GNU toolchains from the versioned source releases and verifies official SHA-512 checksums before extraction; macOS installs the matching Homebrew/osxct packages and rejects version drift. On Apple Silicon, the pinned osxct compiler currently requires Rosetta 2 and Intel Homebrew under `/usr/local`. The bootstrap also initializes the external userland repositories (SDL, Mesa, Wine/D3D, Lua, musl, Gnulib, BusyBox, Coreutils, DOOM, kilo, and base-nexs) at the exact Git revisions pinned by the superproject.
 
 *(Note: On WSL2, the script automatically prints configuration guides for WSLg graphics and KVM permissions.)*
 
@@ -183,15 +183,19 @@ For a headless GRUB ISO run, add `RUN_DISPLAY=none` and
 
 The public userspace API is owned by the pinned **NX-SDK** submodule under `system/`. Its primary surface is `system/include/api/` (especially `os1.h`) together with the versioned wire contracts under `system/include/contract/`. NX-CORE carries an independently checksummed kernel-side ABI snapshot; the superproject verifies the two repositories for drift.
 
+NX-SDK also owns the versioned **development-tool plane** (cross-toolchain lock, setup/build tooling and SDK development headers). NX-CORE may resolve that tooling from the integrated superproject, an installed SDK, or its standalone SDK cache. This does **not** make the SDK userland API/runtime a kernel dependency: kernel/HAL translation units compile against NX-CORE-owned headers and the kernel image must not link `libnxsdk*.a`. `make -C kernel check-sdk-boundary` enforces this boundary.
+
+SDK installation is componentized so tool updates do not require reinstalling the target runtime: `make -C system install-tools`, `install-headers`, and per-architecture `install-runtime`/`install-runtime-core` install under a versioned prefix with a `current` selector.
+
 ---
 
 ## 📁 Project Layout
 
 ```text
 .
-├── boot/grub/                  # Pinned GRUB source and boot-media integration
 ├── docs/                       # Architecture, reviews, reports and historical plans
 ├── kernel/                     # NX-CORE pinned Git submodule
+│   ├── external/grub/          # Pinned external GRUB source used by NX-CORE boot media
 │   ├── HAL/                    # ISA adapters and hardware abstraction contracts
 │   ├── core/                   # Object manager, dispatch and kernel mechanisms
 │   ├── sched/                  # Process scheduling and lifecycle
@@ -205,6 +209,7 @@ The public userspace API is owned by the pinned **NX-SDK** submodule under `syst
 │   ├── arch/                   # Architecture-specific SDK entry veneers
 │   ├── include/api/            # Public SDK and C/POSIX personality declarations
 │   ├── include/contract/       # SDK-facing versioned wire declarations
+│   ├── tools/                  # Versioned cross-toolchain/build development tooling
 │   └── lib/                    # Runtime, graphics, codecs and client extensions
 ├── user/
 │   ├── sbin/                   # Root initialization policy
@@ -215,7 +220,7 @@ The public userspace API is owned by the pinned **NX-SDK** submodule under `syst
 │   ├── lib/                    # Pinned external libraries
 │   ├── portability/            # Upstream adaptation layers
 │   └── home/                   # Initial user files and assets
-└── tools/                      # Build, contracts, Power12 and nxadb verification
+└── tools/                      # Integration orchestration, Power12 and nxadb acceptance
 ```
 
 ---

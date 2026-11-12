@@ -9,12 +9,12 @@ moves and gitlink relocation are the next execution phase.
 | Project | Repository identity | Superproject mount | Owns |
 |---|---|---|---|
 | Kernel | NX-CORE | kernel/ | Kernel implementation, per-ISA HAL, drivers, kernel tests, linker scripts, kernel boot handoff, kernel build and boot verification |
-| Userland | NX-VIOLA | user/ | User programs, init, services, shells, app resources, application-specific integration and tests |
-| System SDK | NX-SDK | system/ | NexsOS-owned system runtime/library implementations, public userland API headers, startup/syscall ABI objects, portability adapters, SDK manifests and SDK conformance tests |
-| Integration | NexsOS1 | repository root | Pins all project/dependency revisions, coordinates module builds, rootfs installation manifests, GRUB/EFI image and disk/release packaging, cross-project acceptance |
+| Userland | NexsOS userland | user/ | User programs, init, services, shells, app resources, application-specific integration and tests |
+| System SDK | NX-SDK | system/ | NexsOS-owned system runtime/library implementations, public userland API headers, startup/syscall ABI objects, portability adapters, versioned development/build tooling, SDK manifests and SDK conformance tests |
+| Integration | NexsOS1 | repository root | Pins project/dependency revisions, coordinates module builds, external userland modules, rootfs/disk/release assembly and cross-project nxadb acceptance; GRUB source/build ownership is NX-CORE |
 
 The SDK mount is system/, not sdk/. This is a peer project root, not a
-subdirectory of NX-VIOLA. The name reflects the source ownership found in the
+subdirectory of the userland tree. The name reflects the source ownership found in the
 audit: system API, runtime, startup, and portability. It avoids both the
 unauthorized root sdk/ proposal and nesting NX-SDK inside user/.
 
@@ -35,7 +35,7 @@ unauthorized root sdk/ proposal and nesting NX-SDK inside user/.
 | user/bin/{base-nexs,busybox,coreutils,doom,kilo} gitlinks | user/bin/* | Existing app/port dependencies remain attached to the relevant userland ports |
 | root Makefile | integration coordinator | Delegates to module Makefiles; owns only orchestration and image assembly |
 
-The upstream gitlinks are not owned by NX-VIOLA or NX-SDK merely because they
+The upstream gitlinks are not owned by the first-party userland or NX-SDK merely because they
 are mounted below user/. The userland repository may pin these dependencies
 through nested gitlinks, while their source remains upstream-owned. The root
 superproject coordinates recursive initialization and the exact module refs.
@@ -69,7 +69,7 @@ the enabled SDK feature profile. Build the SDK runtime, headers, startup
 objects, library archives and a freestanding SDK sample for amd64/aarch64.
 It must not need kernel/ or user/.
 
-### NX-VIOLA
+### NexsOS userland
 
 Clone user/ plus system/ and its declared upstream dependencies. Build
 userland ELF programs against only the SDK export manifest. It must not need

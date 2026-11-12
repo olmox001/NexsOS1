@@ -262,3 +262,49 @@ userland services and capabilities remains open, as does moving the UART device
 provider out of HAL into the kernel driver boundary. NX-VIOLA repository
 extraction, the global Power12 debt, and the remaining graphics/font/service
 migration are also still open and are not implied complete by this split.
+
+
+## SDK tooling / nested GRUB / standalone userland increment — 2026-11-12
+
+This section is authoritative for the current uncommitted verification pass.
+No project commit has been created by this pass.
+
+- NX-SDK now owns the canonical cross-toolchain lock and versioned host
+  development tooling. Root setup scripts delegate to the SDK; NX-CORE can
+  locate the integrated SDK through `tools/setup-dependencies.sh --locate`, or
+  use `NEXS_SDK_ROOT`, an XDG-style installed SDK, or a standalone SDK cache.
+- SDK use by NX-CORE is development tooling only. `check-sdk-boundary` rejects
+  SDK include/runtime inputs in compiled kernel/HAL sources and the kernel link.
+  The separately built `nxmanageDD.elf` is user mode and may use SDK runtime.
+- NX-SDK installation is componentized into tools, headers and per-architecture
+  runtime variants under a versioned prefix. Direct SDK `check archive` passed
+  for amd64 and aarch64; modular installation of tools, headers and both target
+  runtimes passed.
+- The first-party userland build manifest is `user/userland.mk`; no new build
+  layer uses the former VIOLA name. Integrated/source-SDK and isolated
+  installed-SDK builds each produced 67 first-party ELFs for amd64 and
+  aarch64. External SDL/Lua/Gnulib/Coreutils/DOOM/kilo/etc. remain managed by
+  the superproject.
+- `stb_truetype.h`, which was a root-relative development/build header used by
+  nxfont and host font tools, moved into the SDK development-tool component;
+  the standalone userland no longer reaches into root `tools/`.
+- GRUB source ownership moved to NX-CORE as nested external gitlink
+  `kernel/external/grub`, pinned by `kernel/config/grub.env`. Clean standalone
+  NX-CORE boot-media builds produced amd64 GRUB BIOS and aarch64 GRUB UEFI ISOs
+  without the former root `boot/grub` source path.
+- NX-CORE standalone `check all machine-extension` passed for amd64/aarch64
+  using only the installed SDK tooling/runtime components required by the
+  development build and user-mode machine extension. NXPAX core and 1M/2M
+  concurrent-event stress diagnostics passed.
+- Final integrated nxadb interaction passed on both targets: NXShell ready,
+  `/bin/env` exposed `NX_TTY_PORT`, `nxtimerdiag` completed with zero failures,
+  an explicit AArch64 shell marker was observed, headless MDEBUG `nxroleprobe`
+  records appeared on UART, and nxadb reported zero kernel faults. The duplicate
+  NXROLE lines are intentional: nxroleprobe emits both explicit UART
+  `printf_win(0)` and ordinary stdout `printf`, not a duplicated nxttyd mirror.
+- MDEBUG's existing Coreutils suite remains 42/50 and therefore the aggregate
+  userland runner reports 17/18. The eight failures are existing POSIX gaps
+  (readlink/utmp users+who/nice/nohup/chmod/chown/chgrp) and are not hidden by
+  this split. Strict whole-tree Power12 qualification likewise remains open;
+  the changed-file gate is clean, while the warn-only full audit retains the
+  pre-existing project debt.
