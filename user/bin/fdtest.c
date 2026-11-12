@@ -61,6 +61,37 @@ static int truncate_descriptor_test(void) {
   return result;
 }
 
+static int nonblock_file_test(void) {
+  const char *path = "/home/shared/fdtest.nonblock";
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, 0644);
+  if (fd < 0) return 1;
+  int result = write(fd, "abcdef", 6) == 6 && ftruncate(fd, 3) == 0 ? 0 : 2;
+  if (close(fd) != 0) result = 3;
+  char bytes[8] = {0};
+  fd = open(path, O_RDONLY | O_NONBLOCK);
+  if (fd < 0 || read(fd, bytes, sizeof(bytes)) != 3 ||
+      memcmp(bytes, "abc", 3) != 0) result = 4;
+  if (fd >= 0 && close(fd) != 0) result = 5;
+  errno = 0;
+  fd = open(path, O_NONBLOCK | O_ACCMODE | O_TRUNC);
+  if (fd >= 0 || errno != EINVAL || file_read(path, NULL, 0, 0) != 3)
+    result = 6;
+  if (fd >= 0 && close(fd) != 0) result = 7;
+  if (OS1_fs_unlink(path) != 0) result = 8;
+  return result;
+}
+
+static int nonblock_type_denial(void) {
+  char path[32];
+  int length = snprintf(path, sizeof(path), "/proc/%d", get_pid());
+  if (length <= 0 || (size_t)length >= sizeof(path)) return 1;
+  errno = 0;
+  int fd = open(path, O_RDONLY | O_NONBLOCK);
+  int error = errno;
+  if (fd >= 0 && close(fd) != 0) return 2;
+  return fd == -1 && error == ENOTSUP ? 0 : 3;
+}
+
 int main(void) {
   int win_id = create_window(120, 120, 400, 300, "FD Test");
   if (win_id < 0)
@@ -111,6 +142,8 @@ int main(void) {
   check(win_id, "rdwr-write-readback", ok);
   check(win_id, "truncate-writeonly-position-and-zero-tail",
         truncate_descriptor_test() == 0);
+  check(win_id, "nonblock-file-read-write-and-truncate", nonblock_file_test() == 0);
+  check(win_id, "nonblock-process-refused", nonblock_type_denial() == 0);
 
   /* 4a. capability: /bin is read-only for user processes */
   errno = 0;

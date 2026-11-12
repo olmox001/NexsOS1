@@ -17,6 +17,9 @@ $(GNULIB_GEN_INC_DIR)/uniwidth.h: $(GNULIB_DIR)/lib/uniwidth.in.h \
 	@mkdir -p $(dir $@)
 	@cp $< $@
 
+# HAVE_FUTIMENS=1 selects the SDK provider. Gnulib's unrenamed futimens.c
+# fallback calls fdutimens, which in that configuration calls native futimens:
+# linking both under the same symbol recurses instead of reaching the SDK.
 GNULIB_OVERLAY_SRCS := \
   $(GNULIB_PORT_DIR)/gnulib_os1_glue.c \
   $(GNULIB_PORT_DIR)/hard_locale_compat.c \
@@ -65,7 +68,6 @@ GNULIB_OVERLAY_SRCS := \
   $(GNULIB_PORT_DIR)/parse-datetime.c \
   $(GNULIB_DIR)/lib/utimens.c \
   $(GNULIB_DIR)/lib/utimensat.c \
-  $(GNULIB_DIR)/lib/futimens.c \
   $(GNULIB_DIR)/lib/fdutimensat.c \
   $(GNULIB_DIR)/lib/save-cwd.c \
   $(GNULIB_DIR)/lib/openat-proc.c \

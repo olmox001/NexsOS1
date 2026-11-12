@@ -1338,8 +1338,25 @@ int getcwd(char *buf, size_t size) { return OS1_fs_getcwd(buf, size); }
  * the kernel does not track per-write append).  The variadic mode argument is
  * accepted but not applied (the ext4 driver fixes new-file perms).
  */
+/* The native acquisition itself does not wait for a peer. NONBLOCK has no
+ * I/O effect on the current FILE providers; other capability types require
+ * their own nonblocking protocol and must not be silently accepted here.
+ * Inspect the acquired object, not a pathname/stat guess before acquisition.
+ * File status flag introspection through fcntl remains a separate obligation. */
+static int open_check_nonblock(int fd, int flags) {
+  if ((flags & O_NONBLOCK) == 0) return fd;
+  long capability = OS1low_cap_query(fd);
+  if (capability >= 0 && OS1_CAPQ_TYPE(capability) == OBJ_TYPE_FILE) return fd;
+  int error = capability < 0 ? (int)capability : -ENOTSUP;
+  long closed = OS1low_handle_close(fd);
+  return closed < 0 ? (int)closed : error;
+}
+
 int open(const char *pathname, int flags, ...) {
-  int fd = (int)_sys_open(pathname, flags);
+  if ((flags & O_ACCMODE) == O_ACCMODE)
+    return (int)errno_ret_ctx(-EINVAL, pathname);
+  int fd = (int)_sys_open(pathname, flags & ~O_NONBLOCK);
+  if (fd >= 0) fd = open_check_nonblock(fd, flags);
   if (fd < 0) {
     /* Uniform surfacing (Phase 0): amber on EACCES, red on a hard fault,
      * silent on an ENOENT probe — the policy lives in OS1_report_error, not

@@ -444,9 +444,11 @@ $(GNULIB_OBJ_DIR)/user/portability/gnulib/gnulib_os1_glue.o: user/portability/gn
 	@mkdir -p $(dir $@)
 	@$(CC) $(GNULIB_CFLAGS) -D_GNULIB_OS1_GLUE_IMPL -c $< -o $@
 
-$(GNULIB_LIB): $(GNULIB_OBJS)
+$(GNULIB_LIB): $(GNULIB_OBJS) user/portability/gnulib/overlay.mk Makefile
 	@echo "  [AR]     $@"
-	@$(AR) rcs $@ $^
+	@rm -f $@.tmp
+	@$(AR) rcs $@.tmp $(GNULIB_OBJS)
+	@mv -f $@.tmp $@
 
 libgnulib: $(GNULIB_LIB)
 .PHONY: libgnulib
@@ -1307,6 +1309,13 @@ test-file-length:
 
 test-getcwd-contract:
 	@python3 tools/test_getcwd_contract.py
+
+.PHONY: test-open-nonblock test-gnulib-archive
+test-open-nonblock:
+	@python3 tools/test_open_nonblock.py
+
+test-gnulib-archive:
+	@python3 tools/test_gnulib_archive.py
 
 .PHONY: test-keyboard-layout test-tty-model
 test-keyboard-layout:
