@@ -181,7 +181,7 @@ For a headless GRUB ISO run, add `RUN_DISPLAY=none` and
 | `make release VERSION=x.y` | Builds release-ready packages (e.g., hybrid, bootable AMD64 ISOs via GRUB). |
 | `make clean` | Removes architecture/GRUB build outputs while preserving the pinned source cache and diagnostic/runtime logs. |
 
-The official kernel API for userspace can be found inside `system/include/api/`, focusing primarily on `os1.h` and the corresponding `system/include/contract/object.h` contract.
+The public userspace API is owned by the pinned **NX-SDK** submodule under `system/`. Its primary surface is `system/include/api/` (especially `os1.h`) together with the versioned wire contracts under `system/include/contract/`. NX-CORE carries an independently checksummed kernel-side ABI snapshot; the superproject verifies the two repositories for drift.
 
 ---
 
@@ -191,7 +191,7 @@ The official kernel API for userspace can be found inside `system/include/api/`,
 .
 ├── boot/grub/                  # Pinned GRUB source and boot-media integration
 ├── docs/                       # Architecture, reviews, reports and historical plans
-├── kernel/
+├── kernel/                     # NX-CORE pinned Git submodule
 │   ├── HAL/                    # ISA adapters and hardware abstraction contracts
 │   ├── core/                   # Object manager, dispatch and kernel mechanisms
 │   ├── sched/                  # Process scheduling and lifecycle
@@ -201,7 +201,7 @@ The official kernel API for userspace can be found inside `system/include/api/`,
 │   ├── resources/              # Capability resource providers
 │   ├── graphics/               # Remaining legacy window/terminal/font mechanisms
 │   └── user/extension/         # Machine-owned user-mode bootstrap extension
-├── system/
+├── system/                     # NX-SDK pinned Git submodule
 │   ├── arch/                   # Architecture-specific SDK entry veneers
 │   ├── include/api/            # Public SDK and C/POSIX personality declarations
 │   ├── include/contract/       # SDK-facing versioned wire declarations

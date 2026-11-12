@@ -65,8 +65,12 @@ def source_roles():
     require("system.manage.service.%s" in
             (ROOT / "kernel/user/extension/nxmanageDD/main.c").read_text(),
             "named REGKEY service records missing")
-    module_names = set(re.findall(r"extensions/services/([a-z_]+)\.o", source))
+    sdk_manifest = (ROOT / "system/sdk.mk").read_text()
+    module_names = set(
+        re.findall(r"extensions/services/([a-z_]+)\.o", sdk_manifest))
     require(module_names == SDK_CLIENTS, "SDK client linker set differs")
+    require("USER_LIB_O := $(NXSDK_LIB_OBJECTS)" in source,
+            "superproject does not consume the canonical NX-SDK object manifest")
     for name in SDK_CLIENTS:
         path = ROOT / "system/lib/extensions/services" / (name + ".c")
         require(path.is_file() and not re.search(r"\bint\s+main\s*\(",

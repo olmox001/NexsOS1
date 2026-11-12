@@ -27,7 +27,7 @@ BUILD ?= debug
 MDEBUG ?= 0
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.6.1
+VERSION ?= V0.0.6.3
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -94,10 +94,11 @@ else
     QEMU = qemu-system-aarch64
 endif
 KERNEL_DIR = kernel
+NXSDK_DIR = system
 
 # NX-SDK owns the public API and its versioned kernel-contract snapshot.
 # The legacy shared root include/abi directory is intentionally absent.
-USER_INCLUDE = -Isystem/include/contract -Isystem/include/api -Iuser/lib/stb -Iuser/lib/pl_mpeg
+USER_INCLUDE = -I$(NXSDK_DIR)/include/contract -I$(NXSDK_DIR)/include/api -Iuser/lib/stb -Iuser/lib/pl_mpeg
 # Compatibility variable consumed by pinned upstream build fragments (e.g. DOOM).
 INCLUDE = $(USER_INCLUDE)
 
@@ -124,6 +125,11 @@ MKDISK_LAYOUT ?= --extents
 BUILD_ROOT = build
 BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
 
+# Consume the independently buildable NX-SDK manifest.  The object namespace
+# remains build/<arch>/system so extraction does not alter link inputs.
+NXSDK_ROOT := $(NXSDK_DIR)
+include $(NXSDK_DIR)/sdk.mk
+
 # Optional GRUB ISO media for BOOT_MODE=iso and nxadb/nxrun. AArch64 EFI
 # embeds kernel Image + generated DTB; AMD64 boots the Multiboot2 ELF.
 HOST_CLANG ?= $(shell command -v clang 2>/dev/null)
@@ -138,9 +144,9 @@ BOOT_ISO = $(AMD64_GRUB_ISO)
 endif
 USER_DIR   = user
 USER_SYS_DIR = $(USER_DIR)/sys
-USER_LIB_DIR = system/lib
+USER_LIB_DIR = $(NXSDK_DIR)/lib
 USER_BIN_DIR = $(USER_SYS_DIR)/bin
-USER_ARCH_DIR = system/arch/$(ARCH)
+USER_ARCH_DIR = $(NXSDK_DIR)/arch/$(ARCH)
 
 # Output files
 BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
@@ -161,7 +167,7 @@ VIRT_DTB   = $(BUILD_DIR)/virt.dtb
 
 # ==============================================================================
 
-.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel user disk rootfs release test-release help
+.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel sdk user disk rootfs release test-release help
 # 'make debug' is the explicit MDEBUG boot profile; normal 'run' stays quiet.
 debug: MDEBUG=1
 
@@ -209,32 +215,23 @@ $(KERNEL_BIN) $(KERNEL_ELF): | kernel
 $(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
 	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
 
-# Userland
-USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
-USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/posix_environment.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/alpha.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/chrome.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/decoration.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/tty_model.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/theme.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/math.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/font_lib.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/input/nxkeyboard_layout.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/image/image.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/video/video.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/notify_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/port_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/time_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/surface_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/gfx_buffer.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/buffer_client.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/os1_video_platform.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/d3d9/os1_d3d9_present.o \
-                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/opengl/os1_gl_platform.o
-USER_MALLOC_O  = $(BUILD_DIR)/$(USER_LIB_DIR)/malloc.o
+# NX-SDK builds its own complete object set. The integration layer supplies
+# the two external media-header locations explicitly; the SDK never reaches
+# into ../user by convention or hidden relative paths.
+sdk:
+	+$(MAKE) -C $(NXSDK_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) \
+		NX_WARNINGS_AS_ERRORS=$(NX_WARNINGS_AS_ERRORS) NX_STRICT=$(NX_STRICT) \
+		STB_INCLUDE="$(abspath user/lib/stb)" \
+		PL_MPEG_INCLUDE="$(abspath user/lib/pl_mpeg)" module
+
+$(NXSDK_MODULE_OBJECTS): | sdk
+	@test -f "$@" || { echo "NX-SDK did not produce $@" >&2; exit 1; }
+
+# Userland consumes the NX-SDK artifact manifest instead of duplicating its
+# source/object list in the superproject.
+USER_SYSCALL_O := $(NXSDK_SYSCALL_OBJECT)
+USER_LIB_O := $(NXSDK_LIB_OBJECTS)
+USER_MALLOC_O := $(NXSDK_MALLOC_OBJECT)
 
 # ==============================================================================
 # SDL2 static library (graphics-port: SDL cross-build over the OS1 libc)
@@ -517,7 +514,7 @@ USER_ELFS = $(SBIN_ELFS) $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(SYS_SERVICE_
 
 # Userland build remains defined exactly once here until its complete source
 # manifest and rules are transferred to NX-VIOLA and NX-SDK.
-user: power12 __nexsos_user_module
+user: power12 sdk __nexsos_user_module
 
 .PHONY: __nexsos_user_module
 __nexsos_user_module: $(USER_ELFS)
@@ -531,11 +528,6 @@ $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
-	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
-
-# NX-SDK system library implementations (including userland graphics).
-$(BUILD_DIR)/$(USER_LIB_DIR)/%.o: $(USER_LIB_DIR)/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -693,15 +685,9 @@ $(BUILD_DIR)/%.elf:
 	@$(CC) $(USER_CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
-# The scalar foundation must remain executable without vector instructions.
-# ISA-specific accelerators are separate units, selected by usable capabilities.
-$(BUILD_DIR)/$(USER_LIB_DIR)/gfx/alpha.o: USER_CFLAGS += -mgeneral-regs-only
-
-# Compilation rules are split by ownership and compiler domain.  No generic
-# assembly rule is allowed to compile kernel objects with userland flags.
-$(BUILD_DIR)/$(USER_ARCH_DIR)/%.o: $(USER_ARCH_DIR)/%.S
-	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -c -o $@ $<
+# NX-SDK owns its C/assembly compilation rules, including the scalar alpha
+# profile and architecture startup veneers. The superproject compiles only
+# NX-VIOLA/integration-owned translation units below.
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -1098,7 +1084,8 @@ check-kernel-contracts:
 	@python3 tools/check-time-contract-layout.py
 	@cmp tools/toolchain-versions.env kernel/config/toolchain-versions.env
 	@kernel/tools/check-contract-snapshot.sh
-	@cmp kernel/include/abi/nxpax.h system/include/contract/nxpax.h
+	@python3 system/tools/check-contract-snapshot.py
+	@python3 tools/check-cross-repo-contracts.py
 
 .PHONY: check-buffer-source
 check-buffer-source:
