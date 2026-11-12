@@ -75,6 +75,7 @@ static void handle_sgr(struct terminal *t) {
     t->fg_color = t->default_fg;
     t->curr_bg_color = t->bg_color;
     t->bold = 0;
+    t->reverse = 0;
     return;
   }
 
@@ -84,6 +85,11 @@ static void handle_sgr(struct terminal *t) {
       t->fg_color = t->default_fg;
       t->curr_bg_color = t->bg_color;
       t->bold = 0;
+      t->reverse = 0;
+    } else if (v == 7) {
+      t->reverse = 1;
+    } else if (v == 27) {
+      t->reverse = 0;
     } else if (v == 1) {
       t->bold = 1;
     } else if (v == 22) {
@@ -139,8 +145,9 @@ static void term_clear_cell(struct terminal *t, struct gl_surface *surf, int cx,
                             int cy, int char_w, int char_h) {
   if (cx < 0 || cy < 0 || cx >= t->cols || cy >= t->rows)
     return;
+  /* Erase inherits the active SGR background, including reverse video. */
   term_fill_rect(surf, cx * char_w, cy * char_h, char_w, char_h,
-                 t->curr_bg_color);
+                 t->reverse ? t->fg_color : t->curr_bg_color);
   if (t->text_grid && t->attr_grid) {
     int idx = cy * t->cols + cx;
     t->text_grid[idx] = ' ';
@@ -333,6 +340,7 @@ int term_init(struct terminal *t, int cols, int rows, uint32_t fg,
   t->bg_color = bg;
   t->curr_bg_color = bg;
   t->bold = 0;
+  t->reverse = 0;
   t->saved_x = 0;
   t->saved_y = 0;
   t->escape_state = 0;
@@ -455,16 +463,18 @@ void term_write(struct terminal *t, struct gl_surface *surf, const char *buf,
         }
 
         /* Clear the glyph cell to the current background, then draw the glyph. */
+        uint32_t glyph_fg = t->reverse ? t->curr_bg_color : t->fg_color;
+        uint32_t glyph_bg = t->reverse ? t->fg_color : t->curr_bg_color;
         term_fill_rect(surf, t->cursor_x * char_w, t->cursor_y * char_h, char_w,
-                       char_h, t->curr_bg_color);
+                       char_h, glyph_bg);
         gl_draw_char(surf, t->cursor_x * char_w, t->cursor_y * char_h, c,
-                     t->fg_color);
+                     glyph_fg);
 
         if (t->text_grid && t->attr_grid) {
           int idx = t->cursor_y * cols + t->cursor_x;
           if (idx < cols * rows) {
             t->text_grid[idx] = c;
-            t->attr_grid[idx] = t->fg_color;
+            t->attr_grid[idx] = glyph_fg;
           }
         }
 

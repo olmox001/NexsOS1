@@ -255,3 +255,13 @@ kernel dall'albero userland (direzione sbagliata). Proposta da confermare:
 - `Makefile:478` — Lua CFLAGS `-Iinclude/api`
 - `Makefile:715-716` — copia header nel rootfs:
   `cp -r include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/`
+
+
+## Errata 2026-11-08 — coupling diretto kernel/userland
+
+La frase storica secondo cui lib.c compilerebbe 1567 linee di sorgente kernel
+non è valida per il checkout corrente. lib.c include userland
+common/string.c, common/vsnprintf.c e font_lib.c; nessuno di questi è
+kernel/lib/*. Le implementazioni kernel e userland sono distinte. L'inventario
+dei simboli resta una base storica e deve essere ri-verificato contro simboli
+esportati e call-site attuali prima di qualsiasi split.

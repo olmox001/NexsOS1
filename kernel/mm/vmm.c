@@ -22,7 +22,7 @@
  *   PHYSICAL address, so every delegation below converts with
  *   virt_to_phys().  PTE output addresses are physical and are converted
  *   with phys_to_virt() before being dereferenced (get_next_table) or
- *   freed (vmm_destroy_pgd).  Identity while KERNEL_VIRT_BASE == 0.
+ *   freed (vmm_destroy_pgd). The direct map is VA = PA + KERNEL_VIRT_BASE.
  *
  * Known issues:
  *   MM-VMM-01  (FIXED)           W^X enforced via vmm_map_ram_wx(): kernel
@@ -38,14 +38,16 @@
  *   MM-VMM-05  RESOLVED (Phase B2): unmap paths now satisfy the cross-CPU
  *                                 shootdown contract — AArch64 in hardware
  *                                 (broadcast IS TLBI), amd64 via LAPIC IPI
- *                                 (kernel/arch/amd64/mm/tlb.c); teardown
+ *                                 (kernel/HAL/arch/amd64/mm/tlb.c); teardown
  *                                 broadcasts one full shootdown before
  *                                 frames are recycled.
  *   MM-VMM-06  (W2 REFINE)       Generic map path is 4KB-only; 2MB blocks
  *                                 only via arch_vmm_map_range.
  *   MM-VMM-07  (W1 DOC)          File header mentions only AArch64.
  */
+#include <hal/boot_memory.h>
 #include <kernel/arch.h>
+#include <kernel/boot_memory.h>
 #include <kernel/cpu.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -73,7 +75,7 @@
  * directory (the hardware register gets virt_to_phys(kernel_pgd): TTBR1 on
  * aarch64, CR3 on amd64).  Updated atomically (pointer assignment) in
  * vmm_dynamic_remap() after the hardware root has been switched; secondary
- * CPUs read it after arch_mb(). */
+ * CPUs read it after hal_mb(). */
 uint64_t *kernel_pgd;
 
 #define PTE_ADDR_MASK 0x0000FFFFFFFFF000UL
@@ -118,8 +120,8 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
 
   /* Zero and Flush the new table page */
   memset(page, 0, 4096);
-  arch_cache_clean_range(page, 4096);
-  arch_mb();
+  hal_cache_clean(page, 4096);
+  hal_mb();
 
   /* Table entry flags:
    * AArch64: Valid (bit 0), Table (bit 1), AF (bit 10), Inner Share (bits 8-9),
@@ -129,8 +131,8 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc) {
   table[index] = virt_to_phys(page) | PTE_TABLE | PTE_VALID;
 
   /* Flush the directory entry itself */
-  arch_cache_clean_range(&table[index], 8);
-  arch_mb();
+  hal_cache_clean(&table[index], 8);
+  hal_mb();
 
   return page;
 }
@@ -391,65 +393,131 @@ void vmm_map_ram_wx(uint64_t *pgd, uint64_t base, uint64_t size) {
   }
 }
 
+static void vmm_map_kernel_image(uint64_t *pgd, const char *phase) {
+  extern char __kernel_start[], __kernel_end[];
+  uint64_t start = virt_to_phys(__kernel_start) & ~((uint64_t)PAGE_SIZE - 1U);
+  uint64_t end = virt_to_phys(__kernel_end);
+
+  if (end > UINT64_MAX - (PAGE_SIZE - 1U))
+    panic("VMM: %s kernel image alignment overflow", phase);
+  end = (end + PAGE_SIZE - 1U) & ~((uint64_t)PAGE_SIZE - 1U);
+  if (end <= start || !hal_phys_range_valid(start, end))
+    panic("VMM: %s kernel image outside direct-map window [0x%lx,0x%lx)",
+          phase, start, end);
+
+  pr_info("VMM: %s kernel image 0x%lx-0x%lx (%lu KiB)\n", phase, start, end,
+          (unsigned long)((end - start) / 1024U));
+  vmm_map_ram_wx(pgd, start, end - start);
+}
+
+static void vmm_map_boot_live_spans(uint64_t *pgd, const char *phase) {
+  uint32_t count = nxhal_boot_live_span_count();
+
+  if (count > (uint32_t)NXHAL_BOOT_LIVE_ROLE_COUNT)
+    panic("VMM: %s HAL boot-live span count %u exceeds ABI roles", phase, count);
+  for (uint32_t index = 0U; index < count; ++index) {
+    struct nxhal_boot_live_span span;
+    uint64_t start;
+    uint64_t end;
+
+    if (nxhal_boot_live_span_get(index, &span) != NXHAL_BOOT_MEMORY_OK ||
+        span.reserved != 0U || span.length == 0U ||
+        span.base > UINT64_MAX - span.length)
+      panic("VMM: %s invalid boot-live span %u", phase, index);
+    start = span.base & ~((uint64_t)PAGE_SIZE - 1U);
+    end = span.base + span.length;
+    if (end > UINT64_MAX - (PAGE_SIZE - 1U))
+      panic("VMM: %s boot-live span %u alignment overflow", phase, index);
+    end = (end + PAGE_SIZE - 1U) & ~((uint64_t)PAGE_SIZE - 1U);
+    if (end <= start || !hal_phys_range_valid(start, end))
+      panic("VMM: %s boot-live span %u outside direct-map window", phase, index);
+    if (arch_vmm_map_range(virt_to_phys(pgd), (uint64_t)phys_to_virt(start),
+                           start, end - start, PAGE_KERNEL_RO) != 0)
+      panic("VMM: %s boot-live span %u map failed", phase, index);
+    pr_info("VMM: %s boot-live[%u] kind=%u 0x%lx-0x%lx\n",
+            phase, index, span.kind, start, end);
+  }
+}
+
+
+/* Map the validated usable-region union, never the flat span between
+ * HAL_RAM_START and the highest physical end. This keeps address holes and
+ * reserved-only intervals out of the normal-memory direct map. The kernel
+ * image is mapped separately because firmware/bootloaders correctly reserve
+ * its physical span from the allocator. The old boot page tables remain
+ * active while all new tables are constructed. */
+static void vmm_map_detected_usable_regions(uint64_t *pgd,
+                                            const char *phase) {
+  size_t count = 0;
+  struct mem_region *regions = boot_memory_regions(&count);
+  if (!regions || count == 0)
+    panic("VMM: %s has no validated platform memory map", phase);
+
+  size_t mapped = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (regions[i].type != MEM_REGION_USABLE || regions[i].size == 0)
+      continue;
+    if (regions[i].base > UINT64_MAX - regions[i].size)
+      panic("VMM: %s region[%zu] physical end overflow", phase, i);
+
+    uint64_t start = regions[i].base;
+    uint64_t end = start + regions[i].size;
+    if (!hal_phys_range_valid(start, end))
+      panic("VMM: %s region[%zu] outside direct-map window "
+            "[0x%lx,0x%lx)", phase, i, start, end);
+    if (start > UINT64_MAX - (PAGE_SIZE - 1ULL))
+      panic("VMM: %s region[%zu] page alignment overflow", phase, i);
+    start = (start + PAGE_SIZE - 1ULL) & ~((uint64_t)PAGE_SIZE - 1ULL);
+    end &= ~((uint64_t)PAGE_SIZE - 1ULL);
+    if (end <= start)
+      continue;
+
+    pr_info("VMM: %s usable region[%zu] 0x%lx-0x%lx (%lu MiB)\n",
+            phase, i, start, end,
+            (unsigned long)((end - start) / (1024ULL * 1024ULL)));
+    vmm_map_ram_wx(pgd, start, end - start);
+    mapped++;
+  }
+
+  if (mapped == 0)
+    panic("VMM: %s memory map contains no complete usable pages", phase);
+}
+
 /*
  * Initialize VMM and Enable MMU
  *
- * vmm_init - phase-1 VMM bring-up: build the first real kernel PGD (128 MB
- *            bootstrap window) and install it as the kernel root.
+ * vmm_init - phase-1 VMM bring-up: build the first real kernel PGD and map
+ *            each validated usable physical interval independently.
  *
- * The MMU itself is already ON when this runs: the boot assembly (both
- * arches) enables it with boot tables so C executes at its higher-half
- * link address from the first instruction.
+ * The MMU is already ON when this runs: boot assembly enables it with
+ * bootstrap tables so C executes at its higher-half link address.
  *
  * Steps:
- *   1. Allocate and zero the kernel PGD from the PMM (sets global kernel_pgd).
- *   2. Map [ARCH_RAM_START, ARCH_RAM_START+128MB) at the direct-map VAs via
- *      vmm_map_ram_wx() (W^X section split).
+ *   1. Allocate and zero the kernel PGD from the PMM.
+ *   2. Map every page-aligned MEM_REGION_USABLE interval independently using
+ *      the W^X section split. Physical holes are never bridged.
  *   3. Map MMIO regions via arch_vmm_map_mmio().
- *   4. Install virt_to_phys(kernel_pgd) as the kernel root via
- *      arch_vmm_init_hw() (TTBR1 on aarch64, CR3 on amd64).
+ *   4. Install virt_to_phys(kernel_pgd) as the kernel root.
  *
- * After vmm_init() only the first 128 MB of RAM are mapped;
- * vmm_dynamic_remap() extends coverage to all detected RAM.
- *
+ * vmm_dynamic_remap() retains the phase-2 rebuild/optimization pass.
  * Locking: must be called single-threaded before SMP bring-up.
  */
 void vmm_init(void) {
   pr_info("%s", "VMM: Initializing MMU (Phase 1: Bootstrap)...\n");
 
-  /* Allocate Kernel PGD */
   kernel_pgd = pmm_alloc_page();
-  if (!kernel_pgd) {
-    panic("VMM: Failed to allocate kernel PGD\n");
-  }
+  if (!kernel_pgd)
+    panic("%s", "VMM: Failed to allocate kernel PGD");
   memset(kernel_pgd, 0, 4096);
-  arch_cache_clean_range(kernel_pgd, 4096);
+  hal_cache_clean(kernel_pgd, 4096);
 
-  /* 1. Map RAM (bootstrap) with the W^X section split: text RX, rodata RO+NX,
-   * the rest RW+NX (MM-VMM-01).  Map at least 128MB, but always far enough to
-   * cover the PMM metadata: arch_vmm_init_hw() switches the page table and then
-   * touches page_array via pmm_alloc_page(), so the metadata must be mapped in
-   * THIS pgd.  A boot module (release rootfs) can push the metadata well past
-   * the kernel image, so a fixed 128MB window is not enough — extend to the
-   * metadata top. */
-  uint64_t ram_start = ARCH_RAM_START;
-  uint64_t ram_size = 128UL * 1024 * 1024; /* Enough to boot */
-  uint64_t meta_top = pmm_metadata_top();
-  if (meta_top > ram_start) {
-    uint64_t need = PAGE_ALIGN(meta_top - ram_start + 2UL * 1024 * 1024);
-    if (need > ram_size)
-      ram_size = need;
-  }
-
-  vmm_map_ram_wx(kernel_pgd, ram_start, ram_size);
-
-  /* 2. Map MMIO */
+  vmm_map_kernel_image(kernel_pgd, "bootstrap");
+  vmm_map_detected_usable_regions(kernel_pgd, "bootstrap");
+  vmm_map_boot_live_spans(kernel_pgd, "bootstrap");
   arch_vmm_map_mmio(kernel_pgd);
-
-  /* 3. Enable MMU */
   arch_vmm_init_hw(virt_to_phys(kernel_pgd));
 
-  pr_info("%s", "VMM: Bootstrap complete.\n");
+  pr_info("%s", "VMM: Bootstrap complete; usable intervals mapped without holes.\n");
 }
 
 /*
@@ -460,7 +528,7 @@ void vmm_init(void) {
  * Builds a new PGD from scratch, using arch_vmm_map_range() (which uses 2MB
  * block entries where possible) to map every MEM_REGION_USABLE region returned
  * by arch_platform_get_mem_regions().  Re-maps MMIO.  Then atomically switches
- * the hardware to the new PGD with arch_vmm_set_pgd() and updates kernel_pgd.
+ * the hardware to the new PGD with hal_vmm_set_pgd() and updates kernel_pgd.
  *
  * NOTE(MM-VMM-03): The old PGD (bootstrap) is stored in 'old_pgd' and then
  * abandoned -- it is never freed.  A correct implementation would broadcast an
@@ -468,7 +536,7 @@ void vmm_init(void) {
  * old PGD pages to the PMM.  The (void)old_pgd suppresses the unused-variable
  * warning.
  *
- * NOTE(MM-VMM-05): arch_vmm_set_pgd() flushes the local TLB; no IPI is sent
+ * NOTE(MM-VMM-05): hal_vmm_set_pgd() flushes the local TLB; no IPI is sent
  * to secondary CPUs.  If any secondary is running at this point it may access
  * the old (now leaked) PGD's tables.
  *
@@ -482,18 +550,11 @@ void vmm_dynamic_remap(void) {
   if (!new_pgd) panic("VMM: Failed to allocate new dynamic PGD");
   memset(new_pgd, 0, 4096);
 
-  /* 1. Map all discovered memory regions with the W^X section split
-   * (text RX, rodata RO+NX, all other RAM RW+NX — MM-VMM-01 resolved).
-   * arch_vmm_map_range still uses 2MB blocks inside each window. */
-  size_t count = 0;
-  struct mem_region *regions = arch_platform_get_mem_regions(&count);
-  for (size_t i = 0; i < count; i++) {
-    if (regions[i].type == MEM_REGION_USABLE) {
-      pr_info("VMM: Mapping region 0x%lx - 0x%lx\n",
-              regions[i].base, regions[i].base + regions[i].size);
-      vmm_map_ram_wx(new_pgd, regions[i].base, regions[i].size);
-    }
-  }
+  /* 1. Rebuild the same validated usable intervals with the W^X split and
+   * architecture large-page mappings. No non-RAM gap is mapped as RAM. */
+  vmm_map_kernel_image(new_pgd, "dynamic");
+  vmm_map_detected_usable_regions(new_pgd, "dynamic");
+  vmm_map_boot_live_spans(new_pgd, "dynamic");
 
   /* 2. Re-map MMIO */
   arch_vmm_map_mmio(new_pgd);
@@ -506,10 +567,10 @@ void vmm_dynamic_remap(void) {
   uint64_t *old_pgd = kernel_pgd;
   kernel_pgd = new_pgd;
 
-  arch_vmm_set_kernel_pgd(new_phys);
-  arch_tlb_flush_local();
-  arch_mb();
-  arch_isb();
+  hal_vmm_set_kernel_pgd(new_phys);
+  hal_tlb_flush_local();
+  hal_mb();
+  hal_isb();
 
   /* 4. Cleanup old table - currently deferred until all CPUs have switched to new PGD */
   /* TODO: Implement proper synchronization (IPI broadcast) to safely free old_pgd
@@ -581,7 +642,7 @@ void vmm_destroy_pgd(uint64_t *pgd) {
    * process earlier may still hold user translations into frames we are
    * about to recycle.  One full round here covers the whole address space;
    * the per-PTE walk below then frees without further TLB traffic. */
-  arch_tlb_shootdown_all();
+  hal_tlb_shootdown_all();
 
   uint64_t freed_frames = 0;
   uint64_t freed_tables = 0;

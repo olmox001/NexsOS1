@@ -342,8 +342,7 @@ static int ext4_open(struct vfs_mount *mnt, const char *path,
                      struct vfs_node *out);
 static int ext4_read(struct vfs_node *node, uint64_t offset, void *buf,
                      uint32_t size);
-static uint32_t ext4_write_new_size(uint32_t offset, uint32_t old_size,
-                                    uint32_t end_offset);
+static uint32_t ext4_write_new_size(uint32_t old_size, uint32_t end_offset);
 static int ext4_write(struct vfs_mount *mnt, const char *path,
                       uint64_t offset64, const void *vbuf, uint32_t size);
 static int ext4_list(struct vfs_mount *mnt, const char *path, char *buf,
@@ -2322,7 +2321,7 @@ static int ext4_mount_read_superblock(struct ext4_fs *fs, struct partition *p) {
     return -1;
   }
 
-  uint32_t bad_incompat = fs->sb.s_feature_incompat & ~EXT4_INCOMPAT_SUPPORTED;
+  uint32_t bad_incompat = fs->sb.s_feature_incompat & ~(uint32_t)EXT4_INCOMPAT_SUPPORTED;
   if (bad_incompat) {
     pr_err("Ext4: unsupported INCOMPAT features 0x%x (supported mask 0x%x) "
            "- refusing to mount\n",
@@ -2341,7 +2340,7 @@ static int ext4_mount_read_superblock(struct ext4_fs *fs, struct partition *p) {
   }
 
   uint32_t bad_rocompat =
-      fs->sb.s_feature_ro_compat & ~EXT4_RO_COMPAT_WRITE_SAFE;
+      fs->sb.s_feature_ro_compat & ~(uint32_t)EXT4_RO_COMPAT_WRITE_SAFE;
   fs->read_only = bad_rocompat ? 1 : 0;
   if (bad_rocompat)
     pr_warn("Ext4: RO_COMPAT features 0x%x not write-safe - mounting "
@@ -2506,24 +2505,10 @@ static int ext4_read(struct vfs_node *node, uint64_t offset, void *buf,
  * ext4_write_new_size - compute the inode's new i_size_lo after a write
  * that touched bytes [offset, end_offset).
  *
- * A write that STARTS at offset 0 replaces the file from the beginning
- * (a whole-file write: an editor save, a cp, a config rewrite), so the
- * file must END exactly where this write ends — a SHORTER rewrite then
- * truncates the stale tail instead of leaving old bytes past the new
- * content (the "shortening a file in the editor leaves trailing
- * characters" bug: extend-only i_size never shrank). A write at a
- * NON-zero offset is positional (append / in-place overlay) and keeps
- * extend-only semantics, so it never shrinks a file it is only patching.
- *
- * Blocks past the new EOF are not freed here (there is no truncate
- * primitive yet): they are stale-but-unreachable (reads stop at i_size, a
- * later write reuses them), so this is correct on read, with only a
- * transient space cost.
+ * Every descriptor write is positional, including offset zero. Explicit
+ * truncation owns shrinking; replacement clients request it before writing.
  */
-static uint32_t ext4_write_new_size(uint32_t offset, uint32_t old_size,
-                                    uint32_t end_offset) {
-  if (offset == 0)
-    return end_offset;
+static uint32_t ext4_write_new_size(uint32_t old_size, uint32_t end_offset) {
   return (end_offset > old_size) ? end_offset : old_size;
 }
 
@@ -2639,7 +2624,7 @@ static int ext4_write(struct vfs_mount *mnt, const char *path,
   icache_release(&cache);
 
   inode.i_size_lo =
-      ext4_write_new_size(offset, inode.i_size_lo, current_offset);
+      ext4_write_new_size(inode.i_size_lo, current_offset);
 
   if (ext4_update_inode(fs, ino, &inode) != 0) {
     pr_err("%s", "Ext4: Failed to update inode\n");
@@ -2652,6 +2637,48 @@ fail:
   kfree(block_buf);
   icache_release(&cache);
   return -1;
+}
+
+/* Reuse the existing data/mapping writer. Each growth byte is explicitly
+ * zeroed, including previously mapped blocks hidden by an earlier shrink.
+ * Work is bounded by the provider's 32-bit file range, with one block per
+ * iteration and no allocation proportional to the requested file length. */
+static int ext4_extend_zero(struct vfs_mount *mount, const char *path,
+                             uint32_t old_size, uint32_t length) {
+  static const uint8_t zeros[EXT4_BLOCK_SIZE] = {0};
+  uint64_t position = old_size;
+  for (uint32_t block = old_size / EXT4_BLOCK_SIZE;
+       block <= UINT32_MAX / EXT4_BLOCK_SIZE && position < length; ++block) {
+    uint32_t count = length - (uint32_t)position;
+    if (count > EXT4_BLOCK_SIZE) count = EXT4_BLOCK_SIZE;
+    int written = ext4_write(mount, path, position, zeros, count);
+    if (written < 0) return -EIO;
+    if ((uint32_t)written != count) return -EIO;
+    position += count;
+  }
+  return position == length ? 0 : -EFBIG;
+}
+
+static int ext4_truncate(struct vfs_mount *mount, const char *path,
+                          uint64_t length) {
+  struct ext4_fs *fs = mount->fs_private;
+  if (fs->read_only) return -EROFS;
+  if (length > UINT32_MAX) return -EFBIG;
+  uint32_t number;
+  if (ext4_find_ino(fs, path, &number) != 0) return -ENOENT;
+  struct ext4_inode inode;
+  if (get_inode_struct(fs, number, &inode) != 0) return -EIO;
+  if ((inode.i_mode & 0xf000U) == 0x4000U) return -EISDIR;
+  if ((inode.i_mode & 0xf000U) != 0x8000U) return -EINVAL;
+  if (inode.i_size_high != 0U) return -EFBIG;
+  if (length > inode.i_size_lo)
+    return ext4_extend_zero(mount, path, inode.i_size_lo, (uint32_t)length);
+  if (length == inode.i_size_lo) return 0;
+  /* Keep existing mappings, as the previous replacement path did. Reclaiming
+   * blocks needs a separately verified extent/indirect shrink transaction.
+   * A later extension always zeroes the hidden tail before exposing it. */
+  inode.i_size_lo = (uint32_t)length;
+  return ext4_update_inode(fs, number, &inode) == 0 ? 0 : -EIO;
 }
 
 /*
@@ -2909,6 +2936,7 @@ const struct fs_ops ext4_fs_ops = {
     .open = ext4_open,
     .read = ext4_read,
     .write = ext4_write,
+    .truncate = ext4_truncate,
     .list = ext4_list,
     .unlink = ext4_unlink,
     .create = ext4_create,

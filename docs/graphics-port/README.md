@@ -41,3 +41,18 @@ resource, shader or queue semantics.
 The compositor remains a scene/composition service. It must not acquire
 OpenGL/D3D parsing or API state; themes and styles are presentation policy over
 the same surface contract.
+
+
+## NEXS-NG placement decision — 2026-11-03
+
+All graphics API semantics and rendering libraries remain in userland:
+SDL, Mesa/OpenGL, D3D personalities, software 2D/3D, font rasterization and
+the compositor. The NG kernel exposes only capability-mediated buffer and
+surface resources plus mapping, synchronization, lifetime and presentation
+control. The kernel must not become a GL/D3D implementation or pixel renderer.
+
+The current `gfx_surface` facade is a legacy kernel raster helper, not the
+future surface object manager. Split it: retain checked metadata/resource
+validation and object/mapping control in the kernel; move fill, clear, blend,
+blit and every pixel operation to userland. See
+`docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.

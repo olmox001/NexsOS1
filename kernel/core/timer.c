@@ -1,364 +1,659 @@
 /*
- * kernel/core/timer.c
- * Generic Timer Logic (Jiffies, Software Timers, Scheduling)
+ * NX-CORE time engine.
  *
- * This file is the arch-agnostic timer layer.  It owns:
- *   - kernel_timer_tick(): the central per-tick ISR hook called by the
- *     arch-specific timer IRQ handler (aarch64: drivers/timer/timer.c;
- *     amd64: arch/amd64/platform/platform.c via PIT/APIC).
- *   - Per-CPU software timer lists (struct timer), fired by each CPU's tick.
- *   - Per-CPU clock accounting reconciled against the free-running HAL counter.
- *   - Arch-specific per-CPU timer init via __attribute__((weak)) stubs
- *     that each arch overrides.
- *
- * Layering:
- *   arch IRQ -> kernel_timer_tick() -> per-CPU timer callbacks -> schedule()
- *   compositor/input work stays in the SYS_COMPOSITOR_RENDER process path.
- *
- * Key invariants:
- *   - jiffies is incremented only by CPU 0 to avoid SMP races; all other
- *     CPUs still go through kernel_timer_tick() for preemption but do not
- *     touch jiffies or the software timer list.
- *   - timer_lock protects the timer_list linked list; callbacks are invoked
- *     while timer_lock is held — callbacks must not try to acquire timer_lock.
- *   - The weak timer_handler() stub returns regs unchanged; per-arch overrides
- *     may perform additional bookkeeping (e.g. EOI).
- *
- * Known issues:
- *   ARCH-03  (W2 STUB) timer_get_us() (defined in the arch platform files)
- *            returns jiffies*1000 on amd64 — a "dummy for now" value, not a
- *            real microsecond clock.  sys_get_time() is therefore inaccurate
- *            on amd64.  aarch64 uses the arch counter and is accurate.
- *            (This defect is in the arch platform file, not in this file;
- *            cited here because kernel_timer_tick drives jiffies.)
+ * HAL owns raw counter/frequency/compare primitives. NX-CORE owns the clock
+ * epoch, scheduler cadence, per-CPU time state and software deadlines.
  */
-#include <drivers/timer.h>
-#include <kernel/arch.h>
+#include <hal/core.h>
+#include <hal/irq_mask_stats.h>
+#include <hal/time.h>
 #include <kernel/cpu.h>
 #include <kernel/list.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
+#include <kernel/string.h>
+#include <kernel/timer.h>
 
-/* USB HID polling and input dispatch run from SYS_COMPOSITOR_RENDER in
- * process context; the timer IRQ path only accounts time, fires timers and
- * invokes the scheduler. */
+#define TIMER_SNAPSHOT_RETRIES 4U
+#define TIMER_CANCEL_RETRIES 8U
+
 extern volatile int panic_flag;
-/* NOTE(SCHED-STACK-ISO): compositor rendering is not driven from the timer
- * tick. SYS_COMPOSITOR_RENDER runs in process context, so the renderer never
- * nests on an interrupted task's kernel stack. compositor_tick() remains as a
- * legacy trylock helper in compositor.c but is not wired into this IRQ path. */
 
-/* Software timers are PER-CPU: each CPU owns a timer_list + timer_lock in its
- * struct cpu_info (kernel/cpu.h), fired by that CPU in kernel_timer_tick against
- * the global jiffies clock. timer_add() arms on the current CPU and the timer
- * records its owner CPU (t->cpu) so timer_del() removes it from the right list.
- * This keeps a process's sleep timer on the core that holds it: local wakeup, no
- * cross-CPU dependency and no global timer-lock contention. */
+/* Compatibility telemetry only. No scheduler/sleep decision uses jiffies. */
+volatile uint64_t jiffies;
 
-/* jiffies and timer_freq are defined in drivers/timer/timer.c for AArch64
- * or in arch/amd64/platform/platform.c for AMD64. */
-extern volatile uint64_t jiffies;
+struct timer_cpu_buffer {
+  uint64_t publish_sequence;
+  struct os1_time_cpu_v1 slots[2];
+};
 
-/* ---------------------------------------------------------------------------
- * Real-time reference (docs/TIMER-MODEL.md §1)
- *
- * mono_ns() is the single source of truth: monotonic nanoseconds since boot,
- * computed from the free-running hardware counter (CNTVCT on aarch64, TSC on
- * amd64) and its frequency, both arch HAL primitives. jiffies is a cheap
- * integer view that CPU 0 reconciles against mono_ns() every tick so dropped
- * ticks are recovered (Tier 1).
- *
- * Only the EPOCH (clk_boot_count) is captured once, lazily, on the first call.
- * The frequency is re-read fresh every call (a cheap inline counter accessor),
- * deliberately NOT latched: on amd64 arch_timer_get_freq() returns a 1 GHz
- * fallback until the TSC is calibrated, and latching that stale value would
- * permanently skew the clock. Reading it live means the clock self-corrects the
- * instant calibration publishes the real frequency. In practice the first call
- * already happens after calibration (it runs in early arch init, before any
- * scheduling or timer tick), so no skew is observed.
- * ------------------------------------------------------------------------- */
-static uint64_t clk_boot_count;
-static volatile int clk_ready;
+static struct timer_cpu_buffer timer_cpu_buffers[MAX_CPUS];
+static uint64_t timer_cpu_late[MAX_CPUS];
+static struct OS1libkernel_timer_stats timer_cpu_stats[MAX_CPUS];
+static uint64_t time_boot_counter;
+static uint64_t time_frequency_hz;
+static uint64_t time_snapshot_sequence;
+static uint64_t time_event_frequency_hz;
+static uint64_t time_event_min_delta_counts;
+static uint64_t time_event_max_delta_counts;
+static uint32_t time_event_flags;
+static uint32_t time_event_deadline_mode;
+static uint32_t time_ready;
 
-/* timer_counts_to_ns - convert a hardware-counter delta to nanoseconds.
- *
- * The single place that scales counter units to ns: counts * 1e9 / freq via a
- * 128-bit intermediate (counts * 1e9 needs > 64 bits within minutes). Backed by
- * __udivti3/__multi3 in kernel/lib/math.c (no libgcc in this -nostdlib build).
- * Used by mono_ns() and by the per-process CPU-time read path, which accumulates
- * raw counts in the scheduler hot path and converts only when queried. */
-uint64_t timer_counts_to_ns(uint64_t counts) {
-  uint64_t freq = arch_timer_get_freq();
-  if (freq == 0)
-    freq = 1; /* guard div-by-zero before any frequency source is up */
-  return (uint64_t)(((__uint128_t)counts * NSEC_PER_SEC) / freq);
+static uint64_t time_scale_counts(uint64_t counts, uint64_t frequency) {
+  __uint128_t scaled;
+
+  if (frequency == 0U)
+    panic("%s", "TIME: zero hardware counter frequency");
+  scaled = ((__uint128_t)counts * OS1LIBKERNEL_NSEC_PER_SEC) / frequency;
+  return scaled > UINT64_MAX ? UINT64_MAX : (uint64_t)scaled;
 }
 
-uint64_t mono_ns(void) {
-  if (!clk_ready) {
-    clk_boot_count = arch_timer_get_count();
-    clk_ready = 1;
+static uint64_t time_counter_to_ns(uint64_t counter) {
+  if (counter < time_boot_counter)
+    return 0U;
+  return time_scale_counts(counter - time_boot_counter, time_frequency_hz);
+}
+
+uint64_t OS1libkernel_time_counter_read(void) {
+  uint64_t counter = 0U;
+
+  if (nxhal_time_counter_read(&counter) != NXHAL_TIME_OK)
+    panic("%s", "TIME: clocksource read failed");
+  return counter;
+}
+
+void OS1libkernel_time_init(void) {
+  struct nxhal_clocksource_v1 source;
+  struct nxhal_clockevent_v1 event;
+
+  if (nxhal_time_clocksource_info(&source) != NXHAL_TIME_OK)
+    panic("%s", "TIME: no validated HAL clocksource");
+  if (nxhal_time_clockevent_info(&event) != NXHAL_TIME_OK)
+    panic("%s", "TIME: no validated HAL clockevent");
+  if ((source.flags & NXHAL_CLOCKSOURCE_MUST_VERIFY) != 0U)
+    pr_warn("%s", "TIME: clocksource requires runtime verification\n");
+
+  time_boot_counter = OS1libkernel_time_counter_read();
+  time_frequency_hz = source.frequency_hz;
+  time_event_frequency_hz = event.frequency_hz;
+  time_event_min_delta_counts = event.min_delta_counts;
+  time_event_max_delta_counts = event.max_delta_counts;
+  time_event_flags = event.flags;
+  time_event_deadline_mode =
+      ((event.flags & (NXHAL_CLOCKEVENT_ONESHOT | NXHAL_CLOCKEVENT_ABSOLUTE)) ==
+       (NXHAL_CLOCKEVENT_ONESHOT | NXHAL_CLOCKEVENT_ABSOLUTE)) &&
+      event.frequency_hz == source.frequency_hz;
+  __atomic_store_n(&jiffies, 0U, __ATOMIC_RELEASE);
+  __atomic_store_n(&time_ready, 1U, __ATOMIC_RELEASE);
+}
+
+void OS1libkernel_timer_core_init(void) {
+  memset(timer_cpu_stats, 0, sizeof(timer_cpu_stats));
+  for (uint32_t cpu_id = 0U; cpu_id < MAX_CPUS; ++cpu_id) {
+    INIT_LIST_HEAD(&cpu_data[cpu_id].timer_list);
+    spin_lock_init(&cpu_data[cpu_id].timer_lock);
+    cpu_data[cpu_id].timer_next_deadline_ns = 0U;
   }
-  return timer_counts_to_ns(arch_timer_get_count() - clk_boot_count);
 }
 
-uint64_t timer_get_ns(void) { return mono_ns(); }
+uint64_t OS1libkernel_time_counter_frequency(void) {
+  if (__atomic_load_n(&time_ready, __ATOMIC_ACQUIRE) == 0U)
+    panic("%s", "TIME: frequency requested before initialization");
+  return time_frequency_hz;
+}
 
-/*
- * timer_percpu_tick - Tier 2 per-CPU clock accounting + rearm (HAL-driven).
- *
- * One arch-neutral routine replaces the previously duplicated per-arch drift
- * logic (aarch64 timer_handler, amd64 idt.c). Everything is expressed in
- * HARDWARE COUNTER units via the HAL timer primitives:
- *   1. interval = freq/HZ; accumulate the freq%HZ remainder in tick_error_acc
- *      and add one extra count when it crosses HZ (long-term-rate exact).
- *   2. Advance cpu->next_tick_target by the corrected interval.
- *   3. Catch-up clamp: if the target already fell behind the live counter
- *      (ticks lost to IRQ latency / a long critical section), reset to
- *      now + interval — the per-CPU "compare against real time to recover lost
- *      time" rule, instead of replaying a burst.
- *   4. Reprogram the compare via arch_timer_set_compare(): a real reprogram on
- *      one-shot timers (aarch64 CNTV_CVAL), a no-op on periodic timers (amd64
- *      LAPIC), so this serves both arches unchanged.
- *
- * Locking: touches only this CPU's cpu_info; no lock. IRQ context: YES.
- */
-void timer_percpu_tick(struct cpu_info *cpu) {
-  uint64_t freq = arch_timer_get_freq();
-  uint64_t interval = freq / HZ;
-  uint64_t remainder = freq % HZ;
+uint64_t OS1libkernel_time_counts_to_ns(uint64_t counts) {
+  return time_scale_counts(counts, OS1libkernel_time_counter_frequency());
+}
 
+uint64_t OS1libkernel_time_monotonic_ns(void) {
+  if (__atomic_load_n(&time_ready, __ATOMIC_ACQUIRE) == 0U)
+    panic("%s", "TIME: monotonic clock requested before initialization");
+  return time_counter_to_ns(OS1libkernel_time_counter_read());
+}
+
+int OS1libkernel_time_deadline_after_ns(uint64_t delta_ns,
+                                        uint64_t *deadline_ns) {
+  uint64_t now;
+
+  if (deadline_ns == NULL || delta_ns == 0U)
+    return -1;
+  now = OS1libkernel_time_monotonic_ns();
+  if (delta_ns > UINT64_MAX - now)
+    return -1;
+  *deadline_ns = now + delta_ns;
+  return 0;
+}
+
+bool OS1libkernel_time_deadline_reached(uint64_t deadline_ns) {
+  if (deadline_ns == 0U)
+    return true;
+  return OS1libkernel_time_monotonic_ns() >= deadline_ns;
+}
+
+static uint64_t timer_interval_counts(struct cpu_info *cpu) {
+  uint64_t interval = time_frequency_hz / OS1LIBKERNEL_TIMER_HZ;
+  uint64_t remainder = time_frequency_hz % OS1LIBKERNEL_TIMER_HZ;
+
+  if (interval == 0U)
+    interval = 1U;
   cpu->tick_error_acc += remainder;
-  if (cpu->tick_error_acc >= HZ) {
-    interval += 1;
-    cpu->tick_error_acc -= HZ;
+  if (cpu->tick_error_acc >= OS1LIBKERNEL_TIMER_HZ) {
+    ++interval;
+    cpu->tick_error_acc -= OS1LIBKERNEL_TIMER_HZ;
   }
-
-  cpu->next_tick_target += interval;
-  uint64_t now = arch_timer_get_count();
-  if (cpu->next_tick_target <= now)
-    cpu->next_tick_target = now + interval;
-
-  arch_timer_set_compare(cpu->next_tick_target);
+  return interval;
 }
 
-/*
- * timer_percpu_arm - seed this CPU's tick schedule on timer bring-up.
- *
- * Sets next_tick_target one interval out from the live counter, clears the
- * fractional accumulator, and programs the first compare via the HAL. Called
- * once per CPU from the arch per-CPU timer init (aarch64 timer_init_percpu,
- * amd64 lapic_timer_setup); the arch path still owns enabling the timer and
- * unmasking its IRQ.
- */
-void timer_percpu_arm(struct cpu_info *cpu) {
-  uint64_t freq = arch_timer_get_freq();
-  cpu->next_tick_target = arch_timer_get_count() + freq / HZ;
-  cpu->tick_error_acc = 0;
-  arch_timer_set_compare(cpu->next_tick_target);
+static uint64_t timer_checked_add(uint64_t value, uint64_t delta) {
+  if (delta > UINT64_MAX - value)
+    panic("%s", "TIME: hardware counter deadline overflow");
+  return value + delta;
 }
 
-/* Weak stubs for arch-specific timer functions (can be overridden) */
-/*
- * timer_init_percpu - per-CPU timer hardware init (weak stub).
- *
- * Each arch overrides this to program its local timer (e.g. aarch64 CNTV_CTL,
- * amd64 LAPIC timer).  The weak no-op is used when no arch override is linked.
- *
- * IRQ context: no — called once from the per-CPU boot path with IRQs off.
- */
-__attribute__((weak)) void timer_init_percpu(void) {}
-
-/*
- * timer_handler - arch-specific timer IRQ hook (weak stub).
- *
- * Called from the arch timer IRQ handler *before* kernel_timer_tick().
- * Allows arch code to perform EOI or counter reprogramming.  The weak stub
- * is a pass-through that returns regs unchanged.
- *
- * IRQ context: yes — runs inside the timer interrupt.
- * Returns: the (possibly modified) pt_regs pointer.
- */
-__attribute__((weak)) struct pt_regs *timer_handler(struct pt_regs *regs) {
-  return regs;
+static int timer_uses_deadline_event(void) {
+  return time_event_deadline_mode != 0U &&
+         time_event_frequency_hz == time_frequency_hz;
 }
 
-/*
- * kernel_timer_tick - central per-tick entry point called from the timer IRQ.
- *
- * Called on every CPU on every timer interrupt.  Responsibilities:
- *   1. Halt this CPU immediately if another CPU has set panic_flag.
- *   2. Increment cpu->tick_count (per-CPU; no lock needed).
- *   3. CPU 0 only: increment the global jiffies counter.
- *   4. CPU 0 only: fire expired software timers under timer_lock.
- *   5. CPU 0 only: call compositor_tick() every compositor_interval ticks.
- *   6. All CPUs: invoke schedule(regs) for preemptive multitasking.
- *
- * Locking: acquires timer_lock (irqsave) around the software timer walk on
- *          CPU 0; no other locks held on entry.
- * IRQ context: yes — called directly from the architecture timer IRQ handler.
- * Returns: the pt_regs pointer returned by schedule() (may differ from regs
- *          if a context switch occurs).
- */
-struct pt_regs *kernel_timer_tick(struct pt_regs *regs) {
-  /* Halt this CPU if another CPU panicked */
-  if (panic_flag) {
-    arch_timer_control(0);
-    arch_cpu_halt();
+static uint64_t timer_ns_to_counter_ceil(uint64_t deadline_ns) {
+  __uint128_t scaled = (__uint128_t)deadline_ns * time_frequency_hz;
+  __uint128_t count = scaled / OS1LIBKERNEL_NSEC_PER_SEC;
+  uint64_t available = UINT64_MAX - time_boot_counter;
+
+  /* Check the wide quotient before narrowing. A far-future deadline must
+   * saturate, never wrap to an earlier physical clockevent. */
+  if (count > available)
+    return UINT64_MAX;
+  uint64_t delta = (uint64_t)count;
+  if ((scaled % OS1LIBKERNEL_NSEC_PER_SEC) != 0U) {
+    if (delta == available)
+      return UINT64_MAX;
+    ++delta;
   }
+  return time_boot_counter + delta;
+}
 
+static uint64_t timer_clamp_target(uint64_t now, uint64_t target) {
+  uint64_t min_target = timer_checked_add(now, time_event_min_delta_counts);
+  uint64_t max_delta = time_event_max_delta_counts;
+  uint64_t max_target =
+      max_delta > UINT64_MAX - now ? UINT64_MAX : now + max_delta;
+  if (target < min_target)
+    return min_target;
+  if (target > max_target)
+    return max_target;
+  return target;
+}
+
+static uint64_t timer_idle_delta_counts(void) {
+  /* With no logical deadline there is nothing to convert from nanoseconds.
+   * Sleep for the provider's longest representable absolute-event delta. */
+  return time_event_max_delta_counts;
+}
+
+static uint64_t timer_target_for_deadline(uint64_t now, uint64_t deadline_ns) {
+  if (deadline_ns == 0U) {
+    uint64_t delta = timer_idle_delta_counts();
+    return delta > UINT64_MAX - now ? UINT64_MAX : now + delta;
+  }
+  return timer_clamp_target(now, timer_ns_to_counter_ceil(deadline_ns));
+}
+
+static uint64_t timer_min_deadline(uint64_t first, uint64_t second) {
+  if (first == 0U)
+    return second;
+  if (second == 0U)
+    return first;
+  return first < second ? first : second;
+}
+
+static uint64_t timer_current_deadline_ns(struct cpu_info *cpu) {
+  uint64_t software =
+      __atomic_load_n(&cpu->timer_next_deadline_ns, __ATOMIC_ACQUIRE);
+  struct process *current = cpu->current_task;
+  uint64_t quantum = current == NULL
+                         ? 0U
+                         : __atomic_load_n(&current->quantum_deadline_ns,
+                                           __ATOMIC_ACQUIRE);
+  return timer_min_deadline(software, quantum);
+}
+
+static void timer_program_target(struct cpu_info *cpu, uint64_t target) {
+  int status;
+
+  if ((time_event_flags & NXHAL_CLOCKEVENT_ABSOLUTE) == 0U) {
+    if ((time_event_flags & NXHAL_CLOCKEVENT_PERIODIC) != 0U)
+      return;
+    panic("%s", "TIME: clockevent has no scheduling mode");
+  }
+  status = nxhal_time_event_program_absolute(target);
+  if (status != NXHAL_TIME_OK)
+    panic("TIME: absolute clockevent programming failed: %d", status);
+  if (cpu == NULL || cpu->cpu_id >= MAX_CPUS)
+    panic("%s", "TIME: absolute clockevent programmed without CPU state");
+  if (timer_cpu_stats[cpu->cpu_id].absolute_program_count != UINT64_MAX)
+    ++timer_cpu_stats[cpu->cpu_id].absolute_program_count;
+}
+
+static void timer_publish_cpu(struct cpu_info *cpu, uint64_t counter,
+                              uint64_t next_counter, uint64_t tick_count) {
+  uint32_t id = cpu->cpu_id;
+  struct timer_cpu_buffer *buffer;
+  struct os1_time_cpu_v1 *record;
+  uint64_t sequence;
+
+  if (id >= MAX_CPUS)
+    panic("TIME: invalid CPU id %u", id);
+  buffer = &timer_cpu_buffers[id];
+  sequence = __atomic_load_n(&buffer->publish_sequence, __ATOMIC_RELAXED) + 1U;
+  record = &buffer->slots[sequence & 1U];
+  record->cpu_id = id;
+  record->flags = OS1_TIME_CPU_ARMED | OS1_TIME_CPU_SYNCHRONIZED;
+  if (__atomic_load_n(&cpu->online, __ATOMIC_ACQUIRE) != 0U)
+    record->flags |= OS1_TIME_CPU_ONLINE;
+  record->sequence = sequence;
+  record->counter = counter;
+  record->monotonic_ns = time_counter_to_ns(counter);
+  record->next_deadline_ns = time_counter_to_ns(next_counter);
+  record->tick_count = tick_count;
+  record->late_tick_count = timer_cpu_late[id];
+  __atomic_store_n(&buffer->publish_sequence, sequence, __ATOMIC_RELEASE);
+}
+
+void OS1libkernel_timer_reschedule_local(void) {
+  if (!timer_uses_deadline_event())
+    return;
   struct cpu_info *cpu = get_cpu_info();
-  cpu->tick_count++;
+  if (cpu == NULL)
+    return;
+  uint64_t now = OS1libkernel_time_counter_read();
+  uint64_t deadline_ns = timer_current_deadline_ns(cpu);
+  uint64_t target = timer_target_for_deadline(now, deadline_ns);
+  if (target == cpu->next_tick_target)
+    return;
+  cpu->next_tick_target = target;
+  timer_program_target(cpu, target);
+}
 
-  /* Tier 1 — global clock (docs/TIMER-MODEL.md §2): only CPU 0 writes jiffies
-   * (no SMP write race), and instead of a blind ++ it reconciles jiffies with
-   * real time. If ticks were dropped (IRQ latency, a long critical section, a
-   * CPU-bound focused task), 'expected' jumps ahead and jiffies catches up in
-   * one step. The guard keeps it monotonic; steady state advances by exactly 1
-   * per tick, so normal behaviour is unchanged. */
-  if (cpu->cpu_id == 0) {
-    uint64_t expected = mono_ns() / NS_PER_TICK;
-    if (expected > jiffies)
-      jiffies = expected;
+uint64_t OS1libkernel_timer_percpu_arm(void) {
+  struct cpu_info *cpu = get_cpu_info();
+  uint64_t interval;
+  uint64_t now;
+
+  if (cpu == NULL)
+    panic("%s", "TIME: per-CPU arm without CPU state");
+  if (__atomic_load_n(&time_ready, __ATOMIC_ACQUIRE) == 0U)
+    panic("%s", "TIME: per-CPU arm before global clock initialization");
+
+  cpu->tick_error_acc = 0U;
+  interval = timer_interval_counts(cpu);
+  now = OS1libkernel_time_counter_read();
+  cpu->next_tick_target = timer_checked_add(now, interval);
+  timer_program_target(cpu, cpu->next_tick_target);
+  timer_publish_cpu(cpu, now, cpu->next_tick_target, cpu->tick_count);
+  return cpu->next_tick_target;
+}
+
+static void timer_stats_note_clockevent_lateness(struct cpu_info *cpu,
+                                                 uint64_t now) {
+  uint64_t target = cpu->next_tick_target;
+  if (target == 0U || now <= target)
+    return;
+  uint64_t lateness_ns = time_scale_counts(now - target, time_frequency_hz);
+  struct OS1libkernel_timer_stats *stats = &timer_cpu_stats[cpu->cpu_id];
+  if (stats->clockevent_late_count != UINT64_MAX)
+    ++stats->clockevent_late_count;
+  if (UINT64_MAX - stats->clockevent_lateness_ns_total < lateness_ns)
+    stats->clockevent_lateness_ns_total = UINT64_MAX;
+  else
+    stats->clockevent_lateness_ns_total += lateness_ns;
+  if (lateness_ns > stats->max_clockevent_lateness_ns)
+    stats->max_clockevent_lateness_ns = lateness_ns;
+}
+
+uint64_t OS1libkernel_timer_percpu_tick(void) {
+  struct cpu_info *cpu = get_cpu_info();
+  uint64_t now;
+
+  if (cpu == NULL)
+    panic("%s", "TIME: timer IRQ without CPU state");
+  now = OS1libkernel_time_counter_read();
+  if (timer_uses_deadline_event()) {
+    uint64_t deadline_ns = timer_current_deadline_ns(cpu);
+    cpu->next_tick_target = timer_target_for_deadline(now, deadline_ns);
+  } else {
+    uint64_t interval = timer_interval_counts(cpu);
+    cpu->next_tick_target =
+        timer_checked_add(cpu->next_tick_target, interval);
+    if (cpu->next_tick_target <= now)
+      cpu->next_tick_target = timer_checked_add(now, interval);
   }
+  timer_program_target(cpu, cpu->next_tick_target);
+  timer_publish_cpu(cpu, now, cpu->next_tick_target, cpu->tick_count);
+  return cpu->next_tick_target;
+}
 
-  /* Fire THIS CPU's expired software timers — every CPU, against the global
-   * jiffies clock — so a process that slept on this core is woken here, locally.
-   * Callbacks run inside this CPU's timer_lock and must not call timer_add/_del
-   * or anything that re-acquires it. */
-  {
-    struct timer *t, *tmp;
-    uint64_t tflags;
-    spin_lock_irqsave(&cpu->timer_lock, &tflags);
-    list_for_each_entry_safe(t, tmp, &cpu->timer_list, list) {
-      if (jiffies >= t->expires) {
-        list_del(&t->list);
-        t->pending = false;
-        t->cpu = -1;
-        if (t->callback)
-          t->callback(t->data);
-      }
+static int timer_read_cpu(uint32_t cpu_id, struct os1_time_cpu_v1 *out) {
+  struct timer_cpu_buffer *buffer = &timer_cpu_buffers[cpu_id];
+
+  for (uint32_t attempt = 0U; attempt < TIMER_SNAPSHOT_RETRIES; ++attempt) {
+    uint64_t before =
+        __atomic_load_n(&buffer->publish_sequence, __ATOMIC_ACQUIRE);
+    if (before == 0U)
+      return 0;
+    *out = buffer->slots[before & 1U];
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (before ==
+        __atomic_load_n(&buffer->publish_sequence, __ATOMIC_ACQUIRE))
+      return 1;
+  }
+  return -1;
+}
+
+int OS1libkernel_time_snapshot(struct os1_time_snapshot_v1 *out) {
+  uint32_t count = 0U;
+
+  if (out == NULL)
+    return -1;
+  memset(out, 0, sizeof(*out));
+  out->abi_version = OS1_TIME_ABI_VERSION;
+  out->struct_size = (uint32_t)sizeof(*out);
+  out->cpu_count = 0U;
+  out->cpu_record_size = (uint32_t)sizeof(struct os1_time_cpu_v1);
+  out->sequence =
+      __atomic_add_fetch(&time_snapshot_sequence, 1U, __ATOMIC_RELAXED);
+  out->monotonic_ns = OS1libkernel_time_monotonic_ns();
+  out->counter_frequency_hz = OS1libkernel_time_counter_frequency();
+  out->scheduler_tick_hz = OS1LIBKERNEL_TIMER_HZ;
+
+  for (uint32_t cpu_id = 0U; cpu_id < MAX_CPUS; ++cpu_id) {
+    struct os1_time_cpu_v1 record;
+    int status = timer_read_cpu(cpu_id, &record);
+    if (status < 0)
+      return -1;
+    if (status == 0)
+      continue;
+    out->cpu[count] = record;
+    ++count;
+  }
+  out->cpu_count = count;
+  return 0;
+}
+
+static uint64_t timer_find_next_locked(struct cpu_info *cpu) {
+  struct list_head *node;
+  uint64_t earliest = 0U;
+  list_for_each(node, &cpu->timer_list) {
+    struct OS1libkernel_timer *timer =
+        list_entry(node, struct OS1libkernel_timer, list);
+    if (earliest == 0U || timer->deadline_ns < earliest)
+      earliest = timer->deadline_ns;
+  }
+  return earliest;
+}
+
+static void timer_stats_note_lateness(struct OS1libkernel_timer_stats *stats,
+                                      uint64_t deadline_ns,
+                                      uint64_t now_ns) {
+  if (now_ns <= deadline_ns)
+    return;
+  uint64_t lateness = now_ns - deadline_ns;
+  if (stats->late_fire_count != UINT64_MAX)
+    ++stats->late_fire_count;
+  if (UINT64_MAX - stats->fire_lateness_ns_total < lateness)
+    stats->fire_lateness_ns_total = UINT64_MAX;
+  else
+    stats->fire_lateness_ns_total += lateness;
+  if (lateness > stats->max_fire_lateness_ns)
+    stats->max_fire_lateness_ns = lateness;
+}
+
+static void timer_fire_due(struct cpu_info *cpu, uint64_t now_ns) {
+  struct OS1libkernel_timer *timer;
+  struct OS1libkernel_timer *next;
+  struct OS1libkernel_timer_stats *stats = &timer_cpu_stats[cpu->cpu_id];
+  uint32_t visited = 0U;
+  uint32_t fired = 0U;
+  uint64_t flags;
+  uint64_t earliest = 0U;
+
+  spin_lock_irqsave(&cpu->timer_lock, &flags);
+  ++stats->scan_pass_count;
+  if (cpu->timer_next_deadline_ns == 0U ||
+      now_ns < cpu->timer_next_deadline_ns) {
+    spin_unlock_irqrestore(&cpu->timer_lock, flags);
+    return;
+  }
+  list_for_each_entry_safe(timer, next, &cpu->timer_list, list) {
+    ++visited;
+    if (now_ns < timer->deadline_ns) {
+      if (earliest == 0U || timer->deadline_ns < earliest)
+        earliest = timer->deadline_ns;
+      continue;
     }
-    spin_unlock_irqrestore(&cpu->timer_lock, tflags);
+    list_del_init(&timer->list);
+    __atomic_store_n(&timer->pending, false, __ATOMIC_RELEASE);
+    if (stats->queue_depth != 0U)
+      --stats->queue_depth;
+    ++stats->fire_count;
+    timer_stats_note_lateness(stats, timer->deadline_ns, now_ns);
+    ++fired;
+    if (timer->callback != NULL)
+      timer->callback(timer->data);
+    __atomic_store_n(&timer->cpu, -1, __ATOMIC_RELEASE);
   }
-
-  /* Hard-IRQ path deliberately does not poll USB or dispatch input.
-   * input_drain() can enter compositor/window code and contend on
-   * compositor_lock; doing that here can stall timer delivery behind a
-   * long terminal/compositor critical section. USB polling is device work,
-   * not a timer-IRQ responsibility. PID 1 performs both in its serialized
-   * SYS_COMPOSITOR_RENDER process-context frame loop. */
-
-  /* Call Scheduler for Preemption */
-  return schedule(regs);
+  cpu->timer_next_deadline_ns = earliest;
+  stats->scan_count += visited;
+  if (visited > stats->max_scan_per_pass)
+    stats->max_scan_per_pass = visited;
+  if (fired > stats->max_fire_per_pass)
+    stats->max_fire_per_pass = fired;
+  spin_unlock_irqrestore(&cpu->timer_lock, flags);
 }
 
-/*
- * timer_setup - initialise a struct timer before first use.
- *
- * Sets the callback, opaque data pointer, pending=false, and initialises the
- * embedded list_head.  Must be called before timer_add().
- *
- * Locking: none — caller owns t exclusively at this point.
- * IRQ context: safe (no locks taken, no shared state written).
- */
-/* Software timer management */
-void timer_setup(struct timer *t, timer_callback_t callback, void *data) {
-  INIT_LIST_HEAD(&t->list);
-  t->callback = callback;
-  t->data = data;
-  t->pending = false;
-  t->cpu = -1; /* not armed on any CPU yet */
+hal_frame_t *OS1libkernel_timer_tick(hal_frame_t *frame) {
+  struct cpu_info *cpu;
+  uint64_t now_counter;
+  uint64_t now_ns;
+
+  if (panic_flag != 0) {
+    (void)nxhal_time_event_stop();
+    hal_cpu_halt();
+  }
+  cpu = get_cpu_info();
+  if (cpu == NULL)
+    panic("%s", "TIME: scheduler tick without CPU state");
+  now_counter = OS1libkernel_time_counter_read();
+  timer_stats_note_clockevent_lateness(cpu, now_counter);
+  if (cpu->next_tick_target != 0U && now_counter > cpu->next_tick_target &&
+      timer_cpu_late[cpu->cpu_id] != UINT64_MAX)
+    ++timer_cpu_late[cpu->cpu_id];
+  ++cpu->tick_count;
+  now_ns = time_counter_to_ns(now_counter);
+  if (cpu->cpu_id == 0U) {
+    uint64_t expected = now_ns / OS1LIBKERNEL_NSEC_PER_TICK;
+    __atomic_store_n(&jiffies, expected, __ATOMIC_RELEASE);
+  }
+  timer_fire_due(cpu, now_ns);
+  return OS1libkernel_sched_timer_tick(frame, now_ns);
 }
 
-/*
- * timer_add - schedule a software timer to fire at tick 'expires'.
- *
- * Adds t to the tail of timer_list.  'expires' is an absolute jiffies value;
- * use (jiffies + delay_ticks) to express a relative delay.
- * The timer will fire on the next kernel_timer_tick() on CPU 0 after
- * jiffies >= expires.
- *
- * Locking: acquires timer_lock (irqsave) — safe to call from any context
- *          including IRQ handlers, but NOT from inside a timer callback
- *          (would deadlock on timer_lock).
- * Side effects: sets t->pending = true.
- */
-void timer_add(struct timer *t, uint64_t expires) {
-  /* Defence in depth (TIMER-UAF-01): never link the same node twice.  If the
-   * timer is somehow still queued — a re-arm of a not-yet-fired timer, or a
-   * caller that bypassed timer_pending() — unlink it from its current CPU
-   * FIRST.  A double list_add_tail() (or a timer_setup()/INIT_LIST_HEAD on a
-   * still-linked node) corrupts the per-CPU timer_list and later crashes
-   * kernel_timer_tick() with a double list_del (write to NULL+8 on aarch64,
-   * a clobbered return address -> #GP on amd64).  timer_del() takes the owner
-   * CPU's timer_lock, which we do not hold here, so there is no recursion. */
-  if (t->pending)
-    timer_del(t);
-
-  struct cpu_info *c = get_cpu_info();
-  uint64_t flags;
-  spin_lock_irqsave(&c->timer_lock, &flags);
-  t->expires = expires;
-  t->pending = true;
-  t->cpu = (int)c->cpu_id; /* armed on the current core; fired by its tick */
-  list_add_tail(&t->list, &c->timer_list);
-  spin_unlock_irqrestore(&c->timer_lock, flags);
+void OS1libkernel_timer_setup(struct OS1libkernel_timer *timer,
+                              OS1libkernel_timer_callback_t callback,
+                              void *data) {
+  if (timer == NULL || callback == NULL)
+    panic("%s", "TIME: invalid software timer setup");
+  INIT_LIST_HEAD(&timer->list);
+  timer->deadline_ns = 0U;
+  timer->callback = callback;
+  timer->data = data;
+  __atomic_store_n(&timer->pending, false, __ATOMIC_RELAXED);
+  __atomic_store_n(&timer->cpu, -1, __ATOMIC_RELAXED);
 }
 
-/*
- * timer_del - cancel a pending software timer.
- *
- * Removes t from timer_list only if t->pending is true.  Safe to call on a
- * timer that has already fired or was never added (no-op in that case).
- *
- * Locking: acquires timer_lock (irqsave).
- * IRQ context: safe.
- * Side effects: sets t->pending = false.
- */
-void timer_del(struct timer *t) {
-  uint64_t flags;
-  /* TIMER-UAF-02: t->cpu is read WITHOUT a lock (we don't know which CPU's
-   * timer_lock to take until we read it).  Under SMP that snapshot can be stale
-   * vs. a concurrent timer_add() on the owning core, which publishes
-   * t->pending=true BEFORE t->cpu — so an unlocked reader may momentarily see
-   * (pending=true, cpu=-1).  The previous code took the cpu<0 fast path here and
-   * cleared t->pending WITHOUT unlinking; that broke the pending<=>linked
-   * invariant, after which the post-DEAD reaper's timer_del() trusted
-   * pending==false and skipped list_del() too, leaving a still-linked timer on a
-   * process that was then freed and poisoned (0xCC) — the kernel_timer_tick UAF.
-   *
-   * Fix: (1) never clear t->pending in the unlocked cpu<0 branch — leaving the
-   * invariant intact means a later timer_del()/timer_add() still cancels it
-   * correctly; (2) re-validate t->cpu UNDER the owning timer_lock and retry if it
-   * moved, so the unlink always happens against the list the node is really on. */
-  for (;;) {
-    int cpu = t->cpu;
-    if (cpu < 0 || cpu >= MAX_CPUS)
-      return; /* not armed on a valid CPU (or arm mid-publish): leave pending */
+void OS1libkernel_timer_cancel(struct OS1libkernel_timer *timer) {
+  if (timer == NULL)
+    panic("%s", "TIME: cancel of NULL software timer");
 
+  for (uint32_t attempt = 0U; attempt < TIMER_CANCEL_RETRIES; ++attempt) {
+    int cpu = __atomic_load_n(&timer->cpu, __ATOMIC_ACQUIRE);
+    uint64_t flags;
+    if (cpu < 0)
+      return;
+    if (cpu >= MAX_CPUS)
+      panic("TIME: corrupt software timer owner %d", cpu);
     spin_lock_irqsave(&cpu_data[cpu].timer_lock, &flags);
-    if (t->cpu != cpu) {
-      /* fired (tick set cpu=-1) or re-armed on another core meanwhile —
-       * re-snapshot and decide again with the correct lock. */
+    if (__atomic_load_n(&timer->cpu, __ATOMIC_ACQUIRE) != cpu) {
       spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
       continue;
     }
-    if (t->pending) {
-      list_del(&t->list);
-      t->pending = false;
-      t->cpu = -1;
+    if (__atomic_load_n(&timer->pending, __ATOMIC_ACQUIRE)) {
+      int was_earliest =
+          timer->deadline_ns == cpu_data[cpu].timer_next_deadline_ns;
+      list_del_init(&timer->list);
+      __atomic_store_n(&timer->pending, false, __ATOMIC_RELEASE);
+      struct OS1libkernel_timer_stats *stats = &timer_cpu_stats[cpu];
+      if (stats->queue_depth != 0U)
+        --stats->queue_depth;
+      ++stats->cancel_count;
+      if (was_earliest)
+        cpu_data[cpu].timer_next_deadline_ns =
+            timer_find_next_locked(&cpu_data[cpu]);
     }
+    __atomic_store_n(&timer->cpu, -1, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&cpu_data[cpu].timer_lock, flags);
+    struct cpu_info *local = get_cpu_info();
+    if (local != NULL && local->cpu_id == (uint32_t)cpu)
+      OS1libkernel_timer_reschedule_local();
     return;
   }
+  panic("%s", "TIME: software timer owner changed during bounded cancellation");
 }
 
-/*
- * timer_pending - check whether a timer is on the pending list.
- *
- * Returns t->pending.  No lock taken — caller must accept a stale snapshot
- * (the timer may fire between this read and any subsequent action).
- */
-bool timer_pending(struct timer *t) { return t->pending; }
+void OS1libkernel_timer_arm_deadline(struct OS1libkernel_timer *timer,
+                                     uint64_t deadline_ns) {
+  struct cpu_info *cpu;
+  uint64_t flags;
+
+  if (timer == NULL || deadline_ns == 0U)
+    panic("%s", "TIME: invalid software timer deadline");
+  OS1libkernel_timer_cancel(timer);
+  cpu = get_cpu_info();
+  if (cpu == NULL)
+    panic("%s", "TIME: software timer arm without CPU state");
+  spin_lock_irqsave(&cpu->timer_lock, &flags);
+  timer->deadline_ns = deadline_ns;
+  __atomic_store_n(&timer->cpu, (int)cpu->cpu_id, __ATOMIC_RELAXED);
+  list_add_tail(&timer->list, &cpu->timer_list);
+  if (cpu->timer_next_deadline_ns == 0U ||
+      deadline_ns < cpu->timer_next_deadline_ns)
+    cpu->timer_next_deadline_ns = deadline_ns;
+  struct OS1libkernel_timer_stats *stats = &timer_cpu_stats[cpu->cpu_id];
+  ++stats->arm_count;
+  ++stats->queue_depth;
+  if (stats->queue_depth > stats->queue_high_water)
+    stats->queue_high_water = stats->queue_depth;
+  __atomic_store_n(&timer->pending, true, __ATOMIC_RELEASE);
+  spin_unlock_irqrestore(&cpu->timer_lock, flags);
+  OS1libkernel_timer_reschedule_local();
+}
+
+bool OS1libkernel_timer_pending(const struct OS1libkernel_timer *timer) {
+  if (timer == NULL)
+    return false;
+  return __atomic_load_n(&timer->pending, __ATOMIC_ACQUIRE);
+}
+
+int OS1libkernel_timer_stats_snapshot(
+    uint32_t cpu_id, struct OS1libkernel_timer_stats *out) {
+  if (out == NULL || cpu_id >= MAX_CPUS)
+    return -1;
+  uint64_t flags;
+  spin_lock_irqsave(&cpu_data[cpu_id].timer_lock, &flags);
+  *out = timer_cpu_stats[cpu_id];
+  spin_unlock_irqrestore(&cpu_data[cpu_id].timer_lock, flags);
+  return 0;
+}
+
+static void timer_export_queue_stats(
+    struct os1_timer_cpu_stats_v4 *record,
+    const struct OS1libkernel_timer_stats *stats) {
+  record->arm_count = stats->arm_count;
+  record->cancel_count = stats->cancel_count;
+  record->fire_count = stats->fire_count;
+  record->scan_count = stats->scan_count;
+  record->scan_pass_count = stats->scan_pass_count;
+  record->late_fire_count = stats->late_fire_count;
+  record->fire_lateness_ns_total = stats->fire_lateness_ns_total;
+  record->max_fire_lateness_ns = stats->max_fire_lateness_ns;
+  record->clockevent_late_count = stats->clockevent_late_count;
+  record->clockevent_lateness_ns_total = stats->clockevent_lateness_ns_total;
+  record->max_clockevent_lateness_ns = stats->max_clockevent_lateness_ns;
+  record->absolute_program_count = stats->absolute_program_count;
+  record->queue_depth = stats->queue_depth;
+  record->queue_high_water = stats->queue_high_water;
+  record->max_scan_per_pass = stats->max_scan_per_pass;
+  record->max_fire_per_pass = stats->max_fire_per_pass;
+}
+
+static int timer_export_irq_mask_stats(
+    uint32_t cpu_id, uint64_t now_counter,
+    struct os1_timer_cpu_stats_v4 *record) {
+  struct nxhal_irq_mask_stats_v1 stats;
+  int status = nxhal_irq_mask_stats_snapshot(cpu_id, &stats);
+
+  if (status != NXHAL_IRQ_MASK_STATS_OK)
+    return -1;
+  record->irq_mask_interval_count = stats.interval_count;
+  record->irq_mask_total_ns =
+      time_scale_counts(stats.total_counts, time_frequency_hz);
+  record->irq_mask_max_ns =
+      time_scale_counts(stats.max_counts, time_frequency_hz);
+  record->irq_mask_invalid_sample_count = stats.invalid_sample_count;
+  record->irq_mask_flags = stats.flags;
+  if ((stats.flags & NXHAL_IRQ_MASK_STATS_ACTIVE) != 0U &&
+      now_counter >= stats.active_start_count)
+    record->irq_mask_active_ns =
+        time_scale_counts(now_counter - stats.active_start_count,
+                          time_frequency_hz);
+  return 0;
+}
+
+int OS1libkernel_timer_stats_export(
+    struct os1_timer_stats_snapshot_v4 *out) {
+  uint64_t now_counter;
+  uint32_t count = 0U;
+
+  if (out == NULL)
+    return -1;
+  memset(out, 0, sizeof(*out));
+  now_counter = OS1libkernel_time_counter_read();
+  out->abi_version = OS1_TIMER_STATS_ABI_VERSION;
+  out->struct_size = (uint32_t)sizeof(*out);
+  out->cpu_record_size = (uint32_t)sizeof(struct os1_timer_cpu_stats_v4);
+  out->sequence =
+      __atomic_add_fetch(&time_snapshot_sequence, 1U, __ATOMIC_RELAXED);
+  out->monotonic_ns = time_counter_to_ns(now_counter);
+  for (uint32_t cpu_id = 0U; cpu_id < MAX_CPUS; ++cpu_id) {
+    struct os1_time_cpu_v1 time_record;
+    struct OS1libkernel_timer_stats stats;
+    int status = timer_read_cpu(cpu_id, &time_record);
+    if (status < 0)
+      return -1;
+    if (status == 0)
+      continue;
+    if (OS1libkernel_timer_stats_snapshot(cpu_id, &stats) != 0)
+      return -1;
+    struct os1_timer_cpu_stats_v4 *record = &out->cpu[count];
+    record->cpu_id = cpu_id;
+    timer_export_queue_stats(record, &stats);
+    if (timer_export_irq_mask_stats(cpu_id, now_counter, record) != 0)
+      return -1;
+    ++count;
+  }
+  out->cpu_count = count;
+  return 0;
+}

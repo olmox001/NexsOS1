@@ -15,7 +15,7 @@
 #include <os1.h>
 #include <string.h>
 
-#define CAPIPC_MAGIC 0xCAFE
+#include "capipc_protocol.h"
 
 int main(void) {
   int win = create_window(160, 160, 440, 200, "Cap IPC");
@@ -42,17 +42,28 @@ int main(void) {
   printf("[capipc] grant-send-cap-to-child: %s (child slot=%ld)\n",
          t3 ? "PASS" : "FAIL", gslot);
 
+  /* Child-side indexes are process-local: send the REAL slot returned by
+   * the kernel grant, never assume child slot 0 (reserved for its console).
+   * Sender PID in the mailbox is kernel stamped and the child verifies the
+   * granted PROCESS WRITE capability before writing a reply through it. */
+  struct ipc_message ready = {0};
+  ready.type = CAPIPC_GRANT_READY;
+  ready.data1 = (uint64_t)gslot;
+  ready.data2 = CAPIPC_MAGIC;
+  int signal_ok = t3 && OS1low_ipc_send((int)child, &ready) == 0;
+  printf("[capipc] grant-ready-delivered: %s\n",
+         signal_ok ? "PASS" : "FAIL");
   /* 4. receive the child's message, sent through the delegated capability */
   struct ipc_message msg;
   memset(&msg, 0, sizeof(msg));
   int got = 0;
-  for (int i = 0; i < 4000 && !got; i++) {
+  for (unsigned i = 0U; i < CAPIPC_WAIT_STEPS && !got; ++i) {
     if (try_recv((int)child, &msg) == 0)
       got = 1;
     else
-      yield();
+      OS1_sleep(1);
   }
-  int t4 = got && msg.from == (int)child &&
+  int t4 = signal_ok && got && msg.from == (int)child &&
            (unsigned int)msg.data1 == CAPIPC_MAGIC;
   printf("[capipc] recv-via-delegated-cap: %s (from=%d data1=0x%x)\n",
          t4 ? "PASS" : "FAIL", msg.from, (unsigned int)msg.data1);

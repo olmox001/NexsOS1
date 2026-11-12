@@ -18,14 +18,14 @@ typedef struct {
 
 static inline void spin_lock_init(spinlock_t *lock) { lock->lock = 0; }
 
-static inline void spin_lock(spinlock_t *lock) { arch_spin_lock(&lock->lock); }
+static inline void spin_lock(spinlock_t *lock) { hal_spin_lock(&lock->lock); }
 
 static inline void spin_unlock(spinlock_t *lock) {
-  arch_spin_unlock(&lock->lock);
+  hal_spin_unlock(&lock->lock);
 }
 
 static inline int spin_trylock(spinlock_t *lock) {
-  return arch_spin_trylock(&lock->lock);
+  return hal_spin_trylock(&lock->lock);
 }
 
 /* IRQ-safe spinlock */

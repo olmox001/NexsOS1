@@ -49,7 +49,7 @@
  * draws both, see fb_rrect_px().  Folder tiles are untouched
  * (draw_folder_tile).
  */
-#include "nxexec.h"
+#include <execsvc.h>
 #include "nxicon.h" /* nxicon_get()/nxicon_classify_path() — app-tile icons (shared with nxui.c) */
 #include "nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
 #include <font_lib.h>
@@ -578,15 +578,15 @@ static enum cat parse_cat(const char *s) {
 
 static void load_cfg(void) {
   /* $HOME/settings/nxlauncher.cfg — same dynamic HOME lookup as nxexec.h's
-   * '~' resolution (getenv("HOME"), falling back to NXEXEC_HOME_DIR "/home"
+   * '~' resolution (getenv("HOME"), falling back to EXECSVC_HOME_DEFAULT "/home"
    * only if HOME is unset/empty), so this and every '~'-relative path a cfg
    * entry might use agree on the same HOME without a second definition of
    * "where is home" to keep in sync. Previously hardcoded to /sys/bin,
    * alongside the system binaries instead of the user's own settings. */
-  char cfg_path[NXEXEC_PATH_MAX];
+  char cfg_path[EXECSVC_PATH_MAX];
   const char *home = getenv("HOME");
   if (!home || !*home)
-    home = NXEXEC_HOME_DIR;
+    home = EXECSVC_HOME_DEFAULT;
   snprintf(cfg_path, sizeof(cfg_path), "%s/settings/nxlauncher.cfg", home);
 
   int sz = file_read(cfg_path, (char *)0, 0, 0);
@@ -1088,7 +1088,8 @@ static void handle_click(int mx, int my) {
        * The host decides at runtime: windowed app -> host vanishes unseen;
        * terminal program -> a shell window appears hosting its output
        * ("i processi terminale ottengono una shell come padre"). */
-      int pid = nxexec_spawn_hosted(g_apps[idx].path);
+      char *program_argv[1] = {g_apps[idx].path};
+      int pid = execsvc_launch_hosted(1, program_argv);
       if (pid <= 0) {
         /* g_win is already up and actively self-rendering at this point in
          * the session (unlike main()'s startup path) — printf() here would

@@ -5,22 +5,16 @@
 #include <kernel/types.h>
 #include <stdint.h>
 
-/* 3D Math Types */
-typedef struct {
-  float x, y, z, w;
-} vec4_t;
-
-typedef struct {
-  float m[4][4];
-} mat4_t;
-
 void graphics_init(void);
 /* graphics_screen_surface: THE single accessor to the scanout (S-ALIGN F7) —
  * fills the caller-owned 'out' via the gpu_ops.get_framebuffer contract.
  * Returns 0, or -1 if no GPU/framebuffer.  (Replaces graphics_get_screen_
  * surface()'s SMP-unsafe static return and the stale graphics_context cache.) */
 struct gl_surface;
+struct process;
 int graphics_screen_surface(struct gl_surface *out) NX_MUST_USE;
+int graphics_present_argb8888(const uint32_t *pixels, int width, int height,
+                              int stride, size_t pixel_capacity) NX_MUST_USE;
 void graphics_swap_buffers(void);
 void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
@@ -41,10 +35,6 @@ void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
                           uint32_t color);
 int sys_set_font(void *data, size_t size) NX_MUST_USE;
 
-/* 3D Renderer API */
-void render3d_init(uint32_t width, uint32_t height);
-void render3d_clear_zbuffer(void);
-
 /* Compositor API */
 void compositor_init(void);
 /* compositor_resize: retarget the desktop/backbuffer to w x h (GFX-DYN-01).
@@ -61,7 +51,7 @@ int compositor_set_zoom(int percent) NX_MUST_USE;
  * reference (resets zoom). Call alongside gpu_set_mode + compositor_resize. */
 void compositor_set_native_mode(int w, int h);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
-                             int pid) NX_MUST_USE;
+                             struct process *owner) NX_MUST_USE;
 void compositor_destroy_window(int window_id);
 /* compositor_window_owner: owning PID of a window id, -1 if not found.
  * Used by the SYS_DESTROY_WINDOW capability check (ABI-04). */
@@ -79,9 +69,9 @@ void compositor_move_window(int window_id, int x, int y);
  * (reallocates the buffer, reflows the terminal).  Process context only.
  * Returns 0 on success, -1 on failure.  Backs SYS_WINDOW_RESIZE (GFX-DYN-01). */
 int compositor_resize_window(int window_id, int w, int h) NX_MUST_USE;
-void compositor_render(void);
-void compositor_handle_click(int button, int state);
-void compositor_update_mouse(int dx, int dy, int absolute);
+/* Change only the presentation extent of the existing window object.
+ * The source pixels stay stable; nxcompositor (userland) scales them. */
+int compositor_set_window_draw_size(int id, int w, int h) NX_MUST_USE;
 void compositor_window_write(int win_id, const char *buf, size_t count);
 
 /* Protected drawing (with PID check) */
@@ -96,11 +86,14 @@ void compositor_set_window_flags(int window_id, int flags);
  * titlebar background button.  minimize/restore/focus return 0 or -ESRCH;
  * sys_window_enum returns the window count (or a negative errno). */
 struct window_info; /* defined in include/api/object.h (shared ABI) */
+struct os1_window_snapshot_v1;
 int compositor_minimize_window(int window_id) NX_MUST_USE;
 int compositor_restore_window(int window_id) NX_MUST_USE;
 int compositor_focus_window(int window_id) NX_MUST_USE;
 int compositor_window_info(int window_id, struct window_info *out) NX_MUST_USE;
 long sys_window_enum(struct window_info *ubuf, size_t max) NX_MUST_USE;
+long compositor_window_snapshot(struct os1_window_snapshot_v1 *user_snapshot)
+    NX_MUST_USE;
 
 /* Process/System seam (DIR-02).
  *
@@ -119,6 +112,4 @@ int compositor_get_window_by_pid(int pid) NX_MUST_USE;
 static inline int compositor_primary_window_of_pid(int pid) {
   return compositor_get_window_by_pid(pid);
 }
-void compositor_tick(void);
-
 #endif /* _KERNEL_GRAPHICS_H */

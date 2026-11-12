@@ -1,89 +1,52 @@
 /*
  * user/bin/counter.c
- * Counter Demo — animated progress-bar window
  *
- * Demonstrates the compositor window API: creates a small window, then in a
- * tight loop draws a dark background and an incrementing green progress bar
- * whose width cycles through 0..198 pixels (i % 100 * 2).
+ * Windowed scheduler/timer liveness probe.
  *
- * Every 256 (0x100) iterations the current counter value is printed to UART
- * via print_hex() to give a heartbeat on the serial console.
- *
- * text rendering:
- *   window_draw() only fills solid rectangles; there is no userland text
- *   renderer available via this syscall, so the counter value cannot be shown
- *   as digits in the window.  UART output is the fallback.
- *
- * Known issues:
- *   USR-BLOAT-01 (W2 BAD-IMPL·PERF) counter.elf is ~503KB [verified]; 70% is
- *                DWARF debug data (-g), ~52KB is stb_image/stb_easy_font from
- *                lib.o that counter never uses.
- *   USR-BLOAT-02 (W2 BAD-IMPL) No --gc-sections or strip step in the link
- *                rule; debug symbols not removed for release builds.
+ * The process updates a compositor window, sleeps for 100 ms and emits a UART
+ * heartbeat every ten iterations. Each heartbeat includes both the frame
+ * counter and the monotonic millisecond clock so nxadb can distinguish task
+ * progress from a guest that merely remains alive.
  */
 #include <os1.h>
 
-/* Duplicate #include <os1.h> below is a copy-paste artifact; harmless due to
- * header include guards but indicates sloppy editing. */
-#include <os1.h>
+enum {
+  COUNTER_SLEEP_MS = 100,
+  COUNTER_HEARTBEAT_FRAMES = 10
+};
 
-/*
- * main - counter entry point; does not return.
- *
- * Creates a 200x100 compositor window at (700, 50).  On each iteration:
- *   1. Fills background with dark grey (0xFF222222).
- *   2. Draws a green bar of width (i % 100)*2 pixels — a visual progress
- *      indicator cycling every 100 increments.
- *   3. Calls flush() (-> SYS_FLUSH/#201) to push the update to the display.
- *   4. Every 256 iterations prints the counter to UART for serial monitoring.
- *   5. Sleeps ~100ms (real milliseconds) between frames.
- *
- * Returns 1 if window creation fails; never returns otherwise.
- */
+static void counter_heartbeat(int frame) {
+  print("[COUNTER] frame=");
+  print_hex(frame);
+  print(" mono_ms=");
+  print_hex(get_time());
+  print("\n");
+}
+
 int main(void) {
-  print("Counter Process Started\n");
-
   char title[32];
+  int frame = 0;
+  int win;
+
+  print("[COUNTER] START\n");
   sprintf(title, "Counter PID %d", get_pid());
-  int win = create_window(700, 50, 200, 100, title);
+  win = create_window(700, 50, 200, 100, title);
   if (win <= 0) {
-    print("Counter: Failed to create window\n");
+    print("[COUNTER] ERROR create_window\n");
     return 1;
   }
 
-  int i = 0;
-  while (1) {
-    /* Draw Background */
+  for (;;) {
+    int bar_width = (frame % 100) * 2;
+
     window_draw(win, 0, 0, 200, 100, 0xFFFCFCFD);
-
-    /* Draw Count */
-    /* Crude digit drawing or assume window_draw handles text? No, it's just
-       rects. We need a text drawing helper. For now, just visually flash or use
-       printf to UART. */
-    /* Since we don't have window_draw_text in lib.c yet, we rely on UART for
-       text. But to satisfy "drawing correctly", I should draw a progress bar or
-       rect! */
-
-    /* Progress bar: width cycles 0..198 pixels (i%100 * 2), green fill. */
-    int bar_width = (i % 100) * 2;
     window_draw(win, 10, 40, bar_width, 20, 0xFF00FF00);
-
-    /* Flush global compositor */
-    // _sys_compositor_render();
-    // Wait, flush() does that.
     flush();
 
-    /* Print counter to UART every 256 iterations as a serial heartbeat. */
-    if ((i & 0xFF) == 0) {
-      print("Count: ");
-      print_hex(i);
-      print("\n");
-    }
-    i++;
+    if ((frame % COUNTER_HEARTBEAT_FRAMES) == 0)
+      counter_heartbeat(frame);
 
-    /* Sleep ~100ms between frames (OS1_sleep() now takes milliseconds). */
-    OS1_sleep(100);
+    ++frame;
+    OS1_sleep(COUNTER_SLEEP_MS);
   }
-
-  return 0;
 }

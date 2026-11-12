@@ -1,0 +1,382 @@
+{
+  "base_commit": "80359034fe7fcd487a198d7b477d0f47b42cdc93",
+  "date": "2026-11-12",
+  "guest": {
+    "amd64": {
+      "arch": "amd64",
+      "records": [
+        {
+          "name": "fd-repeat",
+          "command": "/bin/fdtest",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/fdtestTesting fd table on /home/shared/fdtest.fixture...\n[fdtest] target /home/shared/fdtest.fixture\nopen+seq-read: PASS\n[fdtest] open+seq-read: PASS\nlseek-rewind+end: PASS\n[fdtest] lseek-rewind+end: PASS\nrdwr-write-readback: PASS\n\n\n[fdtest] rdwr-write-readback: PASS\ntruncate-writeonly-position-and-zero-tail: PASS\n[fdtest] truncate-writeonly-position-and-zero-tail: PASS\nnonblock-file-read-write-and-truncate: PASS\n[fdtest] nonblock-file-read-write-and-truncate: PASS\nnonblock-process-refused: PASS\n[fdtest] nonblock-process-refused: PASS\n[C3] [WARN] vfs: PID 164 denied write to machine-only path '/sys/bin/nxshell'\ndeny-bin-wronly: PASS\n[fdtest] deny-bin-wronly: PASS\nenoent: PASS\n[fdtest] enoent: PASS\ndeny-write-on-rdonly: PASS\n[NXPAX][WARN] seq=8 cpu=3 pid=-1 kind=5 flags=0 overrun=0 dropped=0 fingerprint=0x13566ac0b6a4e6b1\n[fdtest] deny-write-on-rdonly: PASS\nebadf-after-close: PASS\n[fdtest] ebadf-after-close: PASS\ninvalid-flags-not-ignored: PASS\n[fdtest] invalid-flags-not-ignored: PASS\ndone: 0 failure(s)\n[fdtest] done: 0 failure(s)\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "create",
+          "command": "/bin/truncate -s 16 /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/truncate -s 16 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "size-16",
+          "command": "/bin/wc -c /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/wc -c /home/shared/nonblock-cli.fixture\n\n16 /home/shared/nonblock-cli.fixture\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "shrink",
+          "command": "/bin/truncate -s 4 /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/truncate -s 4 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "size-4",
+          "command": "/bin/wc -c /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/wc -c /home/shared/nonblock-cli.fixture\n\n4 /home/shared/nonblock-cli.fixture\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "grow",
+          "command": "/bin/truncate -s 32 /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/truncate -s 32 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "size-32",
+          "command": "/bin/wc -c /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/wc -c /home/shared/nonblock-cli.fixture\n\n32 /home/shared/nonblock-cli.fixture\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "zeros",
+          "command": "/bin/base64 /home/shared/nonblock-cli.fixture",
+          "capture_status": 127,
+          "verified": false,
+          "output": "/bin/base64 /home/shared/nonblock-cli.fixture\n\nUnknown command: /bin/base64\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "pipeline-control",
+          "command": "echo Z | /bin/tr -d '\\000' | /bin/wc -c",
+          "capture_status": 0,
+          "verified": false,
+          "output": "echo Z | /bin/tr -d '\\000' | /bin/wc -c\n\n/bin/tr: extra operand \u2018|\u2019\nTry '/bin/tr --help' for more information.\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "pipeline-one",
+          "command": "echo Z | /bin/tr '\\000' Y",
+          "capture_status": 0,
+          "verified": true,
+          "output": "echo Z | /bin/tr '\\000' Y\n\nZ\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "zeros-Y",
+          "command": "/bin/tr '\\000' Y < /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/tr '\\000' Y < /home/shared/nonblock-cli.fixture\n\nYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY\n\nNXShell:/home> "
+        },
+        {
+          "name": "zeros-Z",
+          "command": "/bin/tr '\\000' Z < /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/tr '\\000' Z < /home/shared/nonblock-cli.fixture\n\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\n\nNXShell:/home> "
+        },
+        {
+          "name": "cleanup",
+          "command": "/bin/unlink /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/unlink /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "alive",
+          "command": "echo OPEN_FLAGS_ALIVE_AMD64",
+          "capture_status": 0,
+          "verified": true,
+          "output": "echo OPEN_FLAGS_ALIVE_AMD64\n\nOPEN_FLAGS_ALIVE_AMD64\n\n\nNXShell:/home> "
+        }
+      ],
+      "kernel_summary": [
+        "[KTEST] Completed. Summary: 32 PASSED, 0 FAILED"
+      ],
+      "suite_summary": [
+        "[NXTEST] done: 17/18 passed, 1 failure(s)"
+      ],
+      "coreutils_summary": [
+        "[coreutilstest] done: 42/50 passed, 8 failure(s)",
+        "[coreutilstest] done: 42/50 passed, 8 failure(s)"
+      ],
+      "coreutils_failures": [
+        "[coreutilstest] FAIL readlink -> rc=256",
+        "[coreutilstest] FAIL users -> rc=256",
+        "[coreutilstest] FAIL who -> rc=256",
+        "[coreutilstest] FAIL nice -> rc=32256",
+        "[coreutilstest] FAIL nohup -> rc=32000",
+        "[coreutilstest] FAIL chmod -> rc=256",
+        "[coreutilstest] FAIL chown -> rc=256",
+        "[coreutilstest] FAIL chgrp -> rc=256"
+      ],
+      "serial_path": "build/runtime/nxadb/amd64/iso-bios/serial.log",
+      "serial_sha256": "1549c9f74a2a33168d5037219ee0eb65a108c98ac89375103baf6708b3712bbb",
+      "futimens_symbol": [
+        "000000008000bb80 W futimens"
+      ],
+      "unrenamed_futimens_member_absent": true
+    },
+    "aarch64": {
+      "arch": "aarch64",
+      "records": [
+        {
+          "name": "fd-repeat",
+          "command": "/bin/fdtest",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/fdtest\n\nTesting fd table on /home/shared/fdtest.fixture...\n\n[fdtest] target /home/shared/fdtest.fixture\n\nopen+seq-read: PASS\n\n[fdtest] open+seq-read: PASS\n\nlseek-rewind+end: PASS\n\n[fdtest] lseek-rewind+end: PASS\n\nrdwr-write-readback: PASS\n\n[fdtest] rdwr-write-readback: PASS\n\ntruncate-writeonly-position-and-zero-tail: PASS\n\n[fdtest] truncate-writeonly-position-and-zero-tail: PASS\n\nnonblock-file-read-write-and-truncate: PASS\n\n[fdtest] nonblock-file-read-write-and-truncate: PASS\n\nnonblock-process-refused: PASS\n\n[fdtest] nonblock-process-refused: PASS\n\n[C3] [WARN] vfs: PID 164 denied write to machine-only path '/sys/bin/nxshell'\n\n[NXPAX][WARN] seq=10 cpu=3 pid=-1 kind=5 flags=0 overrun=0 dropped=0 fingerprint=0x13566ac0b6a4e6b1\n\ndeny-bin-wronly: PASS\n\n\n\n[fdtest] deny-bin-wronly: PASS\n\nenoent: PASS\n\n[fdtest] enoent: PASS\n\ndeny-write-on-rdonly: PASS\n\nNXShell:/home> [fdtest] deny-write-on-rdonly: PASS\n\nebadf-after-close: PASS\n\n[fdtest] ebadf-after-close: PASS\n\ninvalid-flags-not-ignored: PASS\n\n[fdtest] invalid-flags-not-ignored: PASS\n\ndone: 0 failure(s)\n\n[fdtest] done: 0 failure(s)\n\n"
+        },
+        {
+          "name": "create",
+          "command": "/bin/truncate -s 16 /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/truncate -s 16 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "size-16",
+          "command": "/bin/wc -c /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/wc -c /home/shared/nonblock-cli.fixture\n\n16 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "shrink",
+          "command": "/bin/truncate -s 4 /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/truncate -s 4 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "size-4",
+          "command": "/bin/wc -c /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/wc -c /home/shared/nonblock-cli.fixture\n\n4 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "grow",
+          "command": "/bin/truncate -s 32 /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/truncate -s 32 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "size-32",
+          "command": "/bin/wc -c /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/wc -c /home/shared/nonblock-cli.fixture\n\n32 /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "zeros",
+          "command": "/bin/base64 /home/shared/nonblock-cli.fixture",
+          "capture_status": 127,
+          "verified": false,
+          "output": "/bin/base64 /home/shared/nonblock-cli.fixture\n\nUnknown command: /bin/base64\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "pipeline-control",
+          "command": "echo Z | /bin/tr -d '\\000' | /bin/wc -c",
+          "capture_status": 0,
+          "verified": false,
+          "output": "echo Z | /bin/tr -d '\\000' | /bin/wc -c\n\n/bin/tr: extra operand \u2018|\u2019\n\nTry '/bin/tr --help' for more information.\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "pipeline-one",
+          "command": "echo Z | /bin/tr '\\000' Y",
+          "capture_status": 0,
+          "verified": true,
+          "output": "echo Z | /bin/tr '\\000' Y\n\nZ\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "zeros-Y",
+          "command": "/bin/tr '\\000' Y < /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/tr '\\000' Y < /home/shared/nonblock-cli.fixture\n\nYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY\n\nNXShell:/home> "
+        },
+        {
+          "name": "zeros-Z",
+          "command": "/bin/tr '\\000' Z < /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/tr '\\000' Z < /home/shared/nonblock-cli.fixture\n\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\n\nNXShell:/home> "
+        },
+        {
+          "name": "cleanup",
+          "command": "/bin/unlink /home/shared/nonblock-cli.fixture",
+          "capture_status": 0,
+          "verified": true,
+          "output": "/bin/unlink /home/shared/nonblock-cli.fixture\n\n\n\nNXShell:/home> "
+        },
+        {
+          "name": "alive",
+          "command": "echo OPEN_FLAGS_ALIVE_AARCH64",
+          "capture_status": 0,
+          "verified": true,
+          "output": "echo OPEN_FLAGS_ALIVE_AARCH64\n\nOPEN_FLAGS_ALIVE_AARCH64\n\n\n\nNXShell:/home> "
+        }
+      ],
+      "kernel_summary": [
+        "[KTEST] Completed. Summary: 33 PASSED, 0 FAILED"
+      ],
+      "suite_summary": [
+        "[NXTEST] done: 17/18 passed, 1 failure(s)"
+      ],
+      "coreutils_summary": [
+        "[coreutilstest] done: 42/50 passed, 8 failure(s)",
+        "[coreutilstest] done: 42/50 passed, 8 failure(s)"
+      ],
+      "coreutils_failures": [
+        "[coreutilstest] FAIL readlink -> rc=256",
+        "[coreutilstest] FAIL users -> rc=256",
+        "[coreutilstest] FAIL who -> rc=256",
+        "[coreutilstest] FAIL nice -> rc=32256",
+        "[coreutilstest] FAIL nohup -> rc=32000",
+        "[coreutilstest] FAIL chmod -> rc=256",
+        "[coreutilstest] FAIL chown -> rc=256",
+        "[coreutilstest] FAIL chgrp -> rc=256"
+      ],
+      "serial_path": "build/runtime/nxadb/aarch64/iso-uefi/serial.log",
+      "serial_sha256": "ed887174f286dc2f7dd206abf7ce5ffcaef50d54b0ebeb983aabf50627b9536a",
+      "futimens_symbol": [
+        "0000000080008c60 W futimens"
+      ],
+      "unrenamed_futimens_member_absent": true
+    }
+  },
+  "host": [
+    {
+      "log": "/tmp/nexs-open-final-host.log",
+      "sha256": "06a838291b3654d066ac104863b54f1c20d8c5e532af182dacdadfd9e8f8e8bc",
+      "tail": [
+        "",
+        "OK",
+        ".",
+        "----------------------------------------------------------------------",
+        "Ran 1 test in 0.262s",
+        "",
+        "OK"
+      ]
+    },
+    {
+      "log": "/tmp/nexs-open-baseline.log",
+      "sha256": "fe6099bde30db1108a87de33bebb33ce889a6832dd0bdd899f2df0643492f42f",
+      "tail": [
+        "    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^",
+        "AssertionError: 1 != 0",
+        "",
+        "----------------------------------------------------------------------",
+        "Ran 1 test in 0.751s",
+        "",
+        "FAILED (failures=1)"
+      ]
+    },
+    {
+      "log": "/tmp/nexs-open-archive-baseline.log",
+      "sha256": "0373ed96a8d1996171bcd2812dc1268597182897f71ac1e98702cde9351991fc",
+      "tail": [
+        "- ['active.o', 'obsolete_fallback.o']",
+        "+ ['active.o'] : ar rcs on the old archive retains a removed provider",
+        "",
+        "----------------------------------------------------------------------",
+        "Ran 1 test in 0.241s",
+        "",
+        "FAILED (failures=1)"
+      ]
+    },
+    {
+      "log": "/tmp/nexs-open-final-delta.log",
+      "sha256": "2d4b48fa6dc6bde4944926b4531070c6dff748226ef91369db595033c3b97082",
+      "tail": [
+        "Power12 changed gate: 5 scoped files, 0 findings; full-project qualification remains separate"
+      ]
+    },
+    {
+      "log": "/tmp/nexs-open-amd64-check.log",
+      "sha256": "e2d01a51ff9dabd58e75a2735f06a048f45975bd7e57bb53d9e091f75104716a",
+      "tail": [
+        "OK",
+        "\u2713 Target: x86_64-elf (amd64)",
+        "\u2713 CC: x86_64-elf-gcc (GCC) 16.1.0",
+        "\u2713 LD: GNU ld (GNU Binutils) 2.46.1",
+        "\u2713 QEMU: QEMU emulator version 11.1.1",
+        "\u2713 GRUB source pin: d38d6a1a9b79427848976f53d474392cd29c2a71",
+        "\u2713 GRUB targets: i386-pc + x86_64-efi are project-built"
+      ]
+    },
+    {
+      "log": "/tmp/nexs-open-aarch64-check.log",
+      "sha256": "45ab20cfac9351a93e0105945c3f31e7dbd636e272e57e360aec3590de96d27c",
+      "tail": [
+        "\u2713 Target: aarch64-none-elf (aarch64)",
+        "\u2713 CC: aarch64-none-elf-gcc (GCC) 7.2.0",
+        "\u2713 LD: GNU ld (GNU Binutils) 2.29.1",
+        "\u2713 QEMU: QEMU emulator version 11.1.1",
+        "\u2713 GRUB source pin: d38d6a1a9b79427848976f53d474392cd29c2a71",
+        "\u2713 AArch64 UEFI firmware: {'mode': 'split', 'code': PosixPath('/usr/local/share/qemu/edk2-aarch64-code.fd'), 'vars': PosixPath('/usr/local/share/qemu/edk2-arm-vars.fd')}",
+        "\u2713 GRUB arm64-efi prerequisites ready (grub-mkimage is built by boot-iso)."
+      ]
+    }
+  ],
+  "limits": [
+    "full-project Power12 not qualified",
+    "fcntl file status flags not implemented",
+    "native futimens does not persist timestamps",
+    "two-pipe shell command unsupported; base64 absent"
+  ],
+  "files": [
+    {
+      "path": "Makefile",
+      "sha256": "41d68fb26f079aa66a3adaa639a812ea036e7977a7f83983e97532306c027e3f"
+    },
+    {
+      "path": "docs/review/OPEN-FLAGS-2026-11-12.md",
+      "sha256": "50b13c4728bdc4c08b3b4d49a33e0244d71cdf321282af47994a2f51808616b1"
+    },
+    {
+      "path": "docs/review/README.md",
+      "sha256": "9423d02741270732ba09b1ef045f256298b0f54bd55a76cdd799540041818e80"
+    },
+    {
+      "path": "system/lib/lib.c",
+      "sha256": "e9c615de404016c330216575c541946d870f4a0dbd43e8c3a952fdd0146cec32"
+    },
+    {
+      "path": "tools/test_gnulib_archive.py",
+      "sha256": "824cf934e4dcf62789df3d3839cc51076367d27954dca4f8d443c712c416b2e8"
+    },
+    {
+      "path": "tools/test_open_nonblock.py",
+      "sha256": "24527dbaa904a7975f14be292c54fb55a16cdc75be731c202d163b61c039fd18"
+    },
+    {
+      "path": "user/bin/fdtest.c",
+      "sha256": "94c648c9e06aca21f7dd84a82d21f50d9e45f320e21533da83167a53a9b44fac"
+    },
+    {
+      "path": "user/portability/gnulib/README.md",
+      "sha256": "1c1ab015d51e3d780aad7d85b984db5ba7aa4ca02ca517dd5964becf057ceaa5"
+    },
+    {
+      "path": "user/portability/gnulib/overlay.mk",
+      "sha256": "b48f948255d270699253e00b19a3f37b997adcb5720fccbd6734e478e1727c58"
+    }
+  ]
+}

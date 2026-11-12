@@ -102,15 +102,15 @@ verify_binutils_version x86_64-elf-ld "$NEXS_X86_64_BINUTILS_VERSION"
 verify_gcc_version aarch64-none-elf-gcc "$NEXS_AARCH64_GCC_VERSION"
 verify_binutils_version aarch64-none-elf-ld "$NEXS_AARCH64_BINUTILS_VERSION"
 
-# 5. Optional: ISO/release tooling (only needed for `make release-iso`) --------
-# Non-fatal: skip silently if unavailable.  `make all` / `make run` do not need these.
-if [ "${NEXS_WITH_ISO:-0}" = "1" ]; then
-  info "Installing optional ISO tooling (i686-elf-grub, xorriso) ..."
-  brew_install_if_missing i686-elf-grub || warn "i686-elf-grub unavailable (ISO only)."
-  brew_install_if_missing xorriso       || warn "xorriso unavailable (ISO only)."
-else
-  info "Skipping optional ISO tooling (set NEXS_WITH_ISO=1 to include i686-elf-grub/xorriso)."
-fi
+# 5. GRUB ISO toolchain --------------------------------------------------------
+# nxadb/nxrun exercise GRUB ISOs on both architectures. Install the complete
+# host-side ISO toolchain during the one-time clone bootstrap, not at build/run.
+info "Installing GRUB BIOS/UEFI ISO tools ..."
+brew_install_if_missing i686-elf-grub
+brew_install_if_missing xorriso
+brew_install_if_missing gawk
+brew_install_if_missing mtools
+brew_install_if_missing llvm
 
 # 6. Report -------------------------------------------------------------------
 echo

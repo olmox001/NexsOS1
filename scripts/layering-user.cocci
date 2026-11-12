@@ -124,6 +124,26 @@
 @@
 @@
 
+- #include "../kernel/lib/fdt_parser.c"
+
+@@
+@@
+
+- #include "../../kernel/lib/fdt_parser.c"
+
+@@
+@@
+
+- #include "../../../kernel/lib/fdt_parser.c"
+
+@@
+@@
+
+- #include "../../../../kernel/lib/fdt_parser.c"
+
+@@
+@@
+
 - #include "../kernel/lib/kmalloc.c"
 
 @@
@@ -240,6 +260,26 @@
 @@
 
 - #include "../../../../kernel/lib/registry.c"
+
+@@
+@@
+
+- #include "../kernel/lib/sha256.c"
+
+@@
+@@
+
+- #include "../../kernel/lib/sha256.c"
+
+@@
+@@
+
+- #include "../../../kernel/lib/sha256.c"
+
+@@
+@@
+
+- #include "../../../../kernel/lib/sha256.c"
 
 @@
 @@

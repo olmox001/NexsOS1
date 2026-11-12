@@ -1012,11 +1012,11 @@ Le seguenti vulnerabilità erano già documentate nel sorgente con i loro ID ori
 
 | ID originale | File | Stato | Note |
 |---|---|---|---|
-| LIB-FDT-01 | `fdt.c` | **Aperta** | Impatto più grave del documentato — vedi LIB-FDT-01, FDT-BUG-02, FDT-BUG-03, FDT-BUG-04 |
-| LIB-FDT-02 | `fdt.c` | **Aperta** | Nessuna mitigazione implementata |
-| LIB-FDT-03 | `fdt.c` | **Per design** | Stub AMD64, comportamento atteso |
-| LIB-FDT-04 | `fdt.c` | **Aperta** | Solo magic validato — vedi LIB-FDT-04 |
-| LIB-FDT-05 | `fdt.c` | **Aperta** | Commento stale, nessun impatto funzionale |
+| LIB-FDT-01 | `fdt.c` / `fdt_parser.c` | **BOOT-1 FIXED; host/runtime PASS** | Header, blocchi, token e payload bounded; 61 ASan/UBSan checks, clean build e runtime dual-arch PASS; vedere report BOOT-1 |
+| LIB-FDT-02 | `fdt_parser.c` / PMM | **BOOT-1 FIXED; runtime PASS** | Reservation map, `/reserved-memory` statico e DTB RESERVED; KTEST verifica PFN DTB e allocator AArch64 |
+| LIB-FDT-03 | `fdt.c` | **Per design** | Stub AMD64, comportamento atteso: AMD64 usa Multiboot2/PVH |
+| LIB-FDT-04 | `fdt.c` / `fdt_parser.c` | **BOOT-1 FIXED; fallback runtime PASS** | Ricerca page-by-page con validazione completa; KTEST AArch64 trova il DTB QEMU reale nella finestra legacy da 1 GiB |
+| LIB-FDT-05 | `fdt.c` | **Risolta nel refactor BOOT-1** | Il vecchio commento stale è stato rimosso con la sostituzione dell'adapter |
 | LIB-KTEST-01 | `ktest.c` | **Risolta** | Flag `ktest_test_failed` implementato correttamente |
 | LIB-MATH-01 | `math.c` | **Aperta** | `FP_PI == FP_2PI` nei build kernel |
 | LIB-MATH-03 | `math.c` | **Aperta** | Range reduction O(n) |
@@ -1042,3 +1042,26 @@ Le seguenti vulnerabilità erano già documentate nel sorgente con i loro ID ori
 ---
 
 *Fine del report — 39 vulnerabilità totali in 17 file.*
+
+## 9. BOOT-1 FDT remediation status — 2026-11-03
+
+The detailed FDT findings above describe the pre-BOOT-1 implementation. The
+bounded parser in `kernel/lib/fdt_parser.c` replaces the old unbounded walkers
+and addresses the corresponding FDT-BUG-02/03/04/05/06 and LIB-FDT-01b classes:
+checked block extents, bounded node/property/string parsing, checked tuple
+lengths/cell widths, balanced depth/tokens, and one shared traversal for memory
+regions and CPU counting. The FDT reservation map, static `/reserved-memory`
+entries and DTB span are now emitted as PMM RESERVED overlays.
+
+The page-by-page legacy search validates each complete candidate through that
+parser. Its physical page-probe exception path and zero-pointer fallback still
+require QEMU runtime verification. AMD64 FDT stubs remain intentional because
+AMD64 memory/CPU discovery uses its existing Multiboot2/PVH/ACPI paths; BOOT-1
+does not add FDT to AMD64.
+
+Host validation currently passes 61 ASan/UBSan checks including the real QEMU
+DTB. This is not runtime proof: clean builds, PMM KTEST checks, allocator
+exclusion of DTB PFNs, both QEMU architectures and AArch64 EFI x1 handoff remain
+pending. Dynamic allocation-based `/reserved-memory` nodes are rejected rather
+than implemented. See
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.

@@ -11,6 +11,7 @@
 #include <kernel/printk.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
+#include <kernel/timer.h>
 #include <kernel/vmm.h>
 
 static virtio_handle_t virtio_blk_dev = NULL;
@@ -197,7 +198,7 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
    * same reason as virtio_gpu.c's virtio_gpu_send() (VGPU-DMA-01): a
    * cached copy of this line from a previous request's poll loop can be
    * stale, corrupting old_idx before the request is even issued. */
-  arch_cache_invalidate_range((void *)used, sizeof(*used));
+  hal_cache_invalidate((void *)used, sizeof(*used));
   uint16_t old_idx = *used_idx_ptr;
 
   /* Publish in the Available Ring */
@@ -212,13 +213,13 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
    * does not push a dirty cache line out to physical RAM.  Clean the
    * request header, the data buffer on a WRITE (the device reads it), and
    * the descriptor/avail ring unconditionally, before notifying. */
-  arch_cache_clean_range(&blk_req, sizeof(blk_req));
+  hal_cache_clean(&blk_req, sizeof(blk_req));
   if (write)
-    arch_cache_clean_range(buf, (size_t)count * 512U);
+    hal_cache_clean(buf, (size_t)count * 512U);
   else
-    arch_cache_invalidate_range(buf, (size_t)count * 512U);
-  arch_cache_clean_range((void *)desc, 3 * sizeof(*desc));
-  arch_cache_clean_range(
+    hal_cache_invalidate(buf, (size_t)count * 512U);
+  hal_cache_clean((void *)desc, 3 * sizeof(*desc));
+  hal_cache_clean(
       (void *)avail,
       sizeof(*avail) +
           (size_t)virtio_blk_qsize * sizeof(uint16_t) + sizeof(uint16_t));
@@ -227,21 +228,21 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
   /* Notify */
   virtio_notify(virtio_blk_dev, 0);
 
-  /* Poll the Used Ring against the free-running hardware counter.
-   * A fixed 1,000,000,000-iteration loop is not a time bound: its duration
-   * changes with CPU/ISA/emulator speed and can monopolise the BSP while
-   * IRQs are masked by virtio_blk_lock. Use a measured 2 s deadline instead.
-   * The counter is available before userland and does not depend on jiffies
-   * or on the timer interrupt being enabled. */
-  const uint64_t timer_freq = arch_timer_get_freq();
-  const uint64_t timeout_cycles =
-      (timer_freq / 1000ULL) * 2000ULL; /* 2,000 ms in hardware-counter units */
-  const uint64_t timeout_start = arch_timer_get_count();
-  uint64_t polls = 0;
+  /* Poll against the Core monotonic domain. Device completion policy is an
+   * absolute deadline; raw counter frequency is not a driver concern. */
+  uint64_t timeout_start_ns = OS1libkernel_time_monotonic_ns();
+  uint64_t timeout_deadline_ns = 0U;
+  uint64_t polls = 0U;
   int completed = 0;
 
-  while (arch_timer_get_count() - timeout_start < timeout_cycles) {
-    arch_cache_invalidate_range((void *)used, sizeof(*used));
+  if (OS1libkernel_time_deadline_after_ns(
+          UINT64_C(2) * OS1LIBKERNEL_NSEC_PER_SEC,
+          &timeout_deadline_ns) != 0) {
+    spin_unlock_irqrestore(&virtio_blk_lock, flags);
+    return -1;
+  }
+  while (!OS1libkernel_time_deadline_reached(timeout_deadline_ns)) {
+    hal_cache_invalidate((void *)used, sizeof(*used));
     if (*used_idx_ptr != old_idx) {
       completed = 1;
       break;
@@ -256,10 +257,9 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
       virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_INTERRUPT_ACK);
 
   if (!completed) {
-    const uint64_t elapsed_cycles =
-        arch_timer_get_count() - timeout_start;
-    const uint64_t elapsed_ms =
-        timer_freq ? (elapsed_cycles * 1000ULL) / timer_freq : 0;
+    const uint64_t elapsed_ns =
+        OS1libkernel_time_monotonic_ns() - timeout_start_ns;
+    const uint64_t elapsed_ms = elapsed_ns / UINT64_C(1000000);
     const uint32_t device_status =
         virtio_read_reg(virtio_blk_dev, VIRTIO_MMIO_STATUS);
     pr_err("VirtIO-Blk: timeout after %llu ms; used=%u old=%u avail=%u "
@@ -276,9 +276,9 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
   /* FIX(VBLK-DMA-04): invalidate the status byte and, on a READ, the data
    * buffer, before this CPU reads what the device wrote via DMA — same
    * hazard as VGPU-DMA-04 in virtio_gpu.c. */
-  arch_cache_invalidate_range((void *)&blk_status, sizeof(blk_status));
+  hal_cache_invalidate((void *)&blk_status, sizeof(blk_status));
   if (!write)
-    arch_cache_invalidate_range(buf, count * 512);
+    hal_cache_invalidate(buf, count * 512);
 
   /* Order the status read after the used-ring update we just observed. */
   hal_mb();

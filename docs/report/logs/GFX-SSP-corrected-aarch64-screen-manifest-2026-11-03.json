@@ -1,0 +1,10 @@
+{
+  "arch": "aarch64",
+  "pid": 32813,
+  "display": "default",
+  "captured_utc": "2026-11-03T22:52:08Z",
+  "image": "build/runs/aarch64/aarch64-20261103-225208-653303000.png",
+  "raw_ppm": "build/runs/aarch64/aarch64-20261103-225208-653303000.ppm",
+  "serial_log": "build/runtime/nxadb/aarch64/serial.log",
+  "dimensions": "/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/aarch64/aarch64-20261103-225208-653303000.png\n  pixelWidth: 1280\n  pixelHeight: 800"
+}

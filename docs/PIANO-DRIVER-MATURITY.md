@@ -137,3 +137,28 @@
   output con `bin`/`fonts`), mouse (eventi `input: type=2/3`), **nessun hang/panic**.
 - Regressione chiave Fase 0: la release amd64 (ISO ramdisk) deve bootare su UTM **senza
   impiantarsi** sul PS/2.
+
+
+---
+
+## 2026-11-03 — allineamento con NEXS-NG device lifecycle
+
+La Fase 2 resta il piano di riferimento per il hotplug kernel legacy; per il
+microkernel NG il modello viene realizzato tramite devmgr userland e capability
+kernel, non estendendo semplicemente l'array legacy `hal_devices[]`.
+
+Dettagli di lifecycle, code bounded, generation, semafori, DMA quiescence,
+revoca e quarantine:
+`docs/architecture/NEXS-NG-DEVICE-LIFECYCLE-AND-HOTPLUG.md`.
+
+Stato confermato nel codice attuale:
+- `hal_bus.c` mantiene un array flat di max 64 dispositivi, senza lock e senza
+  unregister; la registrazione è solo prima del bring-up SMP.
+- `driver_register/driver_match_all` fanno binding statico, non un lifecycle
+  attach/detach concorrente.
+- **Storico superato da BOOT-1 (2026-11-03):** il parser FDT ora ha bounds
+  checks, reservation map, `/reserved-memory` statico e DTB RESERVED; 61 host
+  checks e runtime QEMU dual-arch PASS. La discovery generica di device/interrupt
+  resta fuori scope e richiede il futuro devmgr/snapshot normalizzato.
+- Il device tree deve essere convertito in snapshot normalizzato, validato e
+  kernel-owned; matching e policy appartengono a devmgr.

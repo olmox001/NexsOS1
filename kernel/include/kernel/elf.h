@@ -1,7 +1,7 @@
 #ifndef _KERNEL_ELF_H
 
 #include <kernel/types.h>
-#include "../../../../include/api/elf.h"
+#include <elf.h>
 
 /* ELF Header */
 

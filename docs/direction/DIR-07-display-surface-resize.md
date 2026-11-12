@@ -85,9 +85,9 @@ Style and Theme never touch the scene graph, surfaces, input or buffers — only
 Retro (style) and Light / Dark (theme).  `SYS_SET_STYLE` (and `nxres style|theme
 <name>`) switch them live.  Default = Classic + Light (the previous look).
 
-> **Desktop vs mobile** (future): the two policies map to the two test targets —
-> amd64 = desktop, aarch64 = mobile — and build on `compositor.c.new` once the
-> compositor is stabilised.  Tiling/mobile policies are hooks today.
+> **Desktop vs mobile** (future): policy remains a ring-3 compositor/theme
+> concern. The obsolete `compositor.c.new` transform draft was removed; new
+> policy work must build on the canonical userland compositor and style APIs.
 
 ## ASTRA mapping
 
@@ -168,3 +168,24 @@ were orthogonal to the display/surface/resize model this doc covers and did
 not touch it. `compositor_update_mouse` did gain a lock fix (commit `492e5ec`,
 see DIR-02 status) but that is a correctness fix to existing mouse-delivery
 code, not a surface/resize change in this doc's scope.
+
+
+## Architecture decision update — 2026-11-03
+
+The original layered pixel model remains useful, but its ownership table and
+"Compositor in the HAL" statement are **legacy implementation descriptions**,
+not the NEXS-NG target.
+
+For NG, application and compositor surfaces are kernel-managed capability
+objects backed by explicit buffer objects. The kernel validates geometry,
+format, mappings, ownership, rights, pinning and commit lifetime; it does not
+own app pixels or a compositor backbuffer and does not rasterize/scale/composite.
+The userland compositor owns the scene graph and all logical-to-display
+transforms. A userland display/GPU service owns device-specific mode and
+scanout policy using explicit device capabilities. The kernel retains only
+the secure presentation/control seam and a minimal emergency panic writer.
+
+Legacy `SYS_WINDOW_RESIZE`, `SYS_SET_DISPLAY_MODE` and the current
+`compositor_resize` remain supported by the v1 compatibility layer during
+migration. The detailed target model and gates are in
+`docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.

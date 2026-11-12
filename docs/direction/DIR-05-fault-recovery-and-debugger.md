@@ -64,3 +64,22 @@ bridge that this doc did not originally scope but belongs here:
   that quiesces/resets a subsystem instead of `panic()` (verified: no
   `recovery_mode`/`kernel_recover` symbol anywhere in `kernel/`). Both remain
   exactly as scoped in §1/§2 above.
+
+
+## NXPAX implementation linkage (2026-11-10)
+
+NXPAX augments the existing fault protocol instead of replacing it. HAL
+captures fault hardware facts; Core retains fault classification, user-task
+termination and fatal diagnostics; the supervised userland broker exposes
+redacted telemetry using the existing object RESOURCE and capability port
+interface. The kernel object dispatcher gains no NXPAX-specific type or
+syscall. The resource is read-only and not transferable. A bounded
+static ring reports sequence gaps and actual contentions explicitly.
+
+Both guest architectures reached NXShell, passed interactive/timerdiag
+checks, and returned correlated HAL+Core records after the pre-existing
+`/bin/crash` test, with the shell remaining available. The source-based
+Power12 gate blocks `check`/`release` while actual findings and proof
+obligations remain. Refer to
+`../NXPAX-IMPLEMENTATION-STATE.md` for reproductions, evidence and
+unclosed verification items.

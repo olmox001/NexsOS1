@@ -23,7 +23,7 @@
  *
  * Known issues:
  *   HAL-02  (W2 BAD-IMPL) The broader HAL is spread over four headers
- *           (hal.h, hal_unified.h, hal_device.h, hal_platform.h); this file
+ *           (hal.h, HAL/include/hal/core.h, hal_device.h, hal_platform.h); this file
  *           is the one piece the review explicitly calls "genuinely thin and
  *           fine."  The defect is in the header layer, not here.
  *   HAL-01  (W3 WRONG-DESIGN/PERF) hal_read32() in hal.h synthesises a
@@ -64,7 +64,7 @@ void hal_bus_init(void) {
     pr_info("%s", "HAL: Initializing Bus Manager...\n");
     
     /* Architecture-specific bus discovery (PCI, Platform MMIO, etc) */
-    arch_bus_scan();
+    hal_bus_scan();
 
     /* Discover VirtIO devices based on found bus devices */
     arch_virtio_scan();

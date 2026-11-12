@@ -3,25 +3,28 @@
  * USB HID boot-protocol class driver.
  *
  * Translates boot keyboard (8-byte) and boot mouse (3-4 byte) reports into the
- * existing evdev input core (virtio_input_add_event), exactly as the PS/2 and
- * virtio-input drivers do. usb_hid_poll() is called from the same place that
- * services keyboard_poll().
+ * unified evdev-style input core (OS1driver_input_publish), exactly as the
+ * PS/2 and virtio-input providers do. usb_hid_poll() is retained only for
+ * controllers that still require bounded compatibility polling.
  */
 
 #include <drivers/usb/usb.h>
-#include <drivers/virtio_input.h>
-#include <drivers/keyboard.h>
+#include <drivers/input_codes.h>
+#include <drivers/input.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
 
-/* HID reports are translated to evdev events and pushed through the unified
- * input_report() sink (keyboard.c), exactly like virtio-input and PS/2. */
+/* HID reports are translated to evdev events and published through the
+ * driver-neutral input core, exactly like VirtIO input and PS/2.
+ */
 
 #define MAX_HID_DEVICES 8
 
 struct hid_dev {
     struct usb_device *dev;
     uint8_t prev[8];   /* last report (for press/release diffing) */
+    uint8_t touch_prev;
+    uint8_t device_id;
     int     in_use;
 };
 
@@ -59,7 +62,9 @@ void usb_hid_probe_device(struct usb_device *dev) {
         if (!hid_devs[i].in_use) {
             hid_devs[i].in_use = 1;
             hid_devs[i].dev = dev;
+            hid_devs[i].device_id = (uint8_t)(INPUT_DEVICE_USB_HID_BASE + i);
             memset(hid_devs[i].prev, 0, sizeof(hid_devs[i].prev));
+            hid_devs[i].touch_prev = 0;
             return;
         }
     }
@@ -74,7 +79,7 @@ static void hid_handle_keyboard(struct hid_dev *h, const uint8_t *r, int len) {
     uint8_t changed = r[0] ^ prev[0];
     for (int b = 0; b < 8; b++) {
         if (changed & (1 << b))
-            input_report(EV_KEY, mod_to_evdev[b], (r[0] >> b) & 1);
+            OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, mod_to_evdev[b], (r[0] >> b) & 1);
     }
 
     /* Released keys: present in prev[2..7], absent in new. */
@@ -83,7 +88,7 @@ static void hid_handle_keyboard(struct hid_dev *h, const uint8_t *r, int len) {
         if (k <= 3) continue;
         int still = 0;
         for (int j = 2; j < 8; j++) if (r[j] == k) { still = 1; break; }
-        if (!still) input_report(EV_KEY, hid_to_evdev[k], 0);
+        if (!still) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, hid_to_evdev[k], 0);
     }
     /* Pressed keys: present in new, absent in prev. */
     for (int i = 2; i < 8; i++) {
@@ -91,10 +96,10 @@ static void hid_handle_keyboard(struct hid_dev *h, const uint8_t *r, int len) {
         if (k <= 3) continue;
         int was = 0;
         for (int j = 2; j < 8; j++) if (prev[j] == k) { was = 1; break; }
-        if (!was) input_report(EV_KEY, hid_to_evdev[k], 1);
+        if (!was) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, hid_to_evdev[k], 1);
     }
     memcpy(h->prev, r, 8);
-    input_report(EV_SYN, 0, 0);
+    OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_SYN, 0, 0);
 }
 
 static void hid_handle_mouse(struct hid_dev *h, const uint8_t *r, int len) {
@@ -105,15 +110,15 @@ static void hid_handle_mouse(struct hid_dev *h, const uint8_t *r, int len) {
 
     /* Buttons: report on change; motion as relative deltas; EV_SYN repaints. */
     uint8_t changed = buttons ^ h->prev[0];
-    if (changed & 0x01) input_report(EV_KEY, BTN_LEFT, buttons & 0x01);
-    if (changed & 0x02) input_report(EV_KEY, BTN_RIGHT, (buttons >> 1) & 1);
-    if (changed & 0x04) input_report(EV_KEY, BTN_MIDDLE, (buttons >> 2) & 1);
+    if (changed & 0x01) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, BTN_LEFT, buttons & 0x01);
+    if (changed & 0x02) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, BTN_RIGHT, (buttons >> 1) & 1);
+    if (changed & 0x04) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, BTN_MIDDLE, (buttons >> 2) & 1);
 
-    if (dx) input_report(EV_REL, REL_X, dx);
-    if (dy) input_report(EV_REL, REL_Y, dy);
+    if (dx) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_REL, REL_X, dx);
+    if (dy) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_REL, REL_Y, dy);
 
     h->prev[0] = buttons;
-    input_report(EV_SYN, 0, 0);
+    OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_SYN, 0, 0);
 }
 
 /* Extract `bits` (<=32) at bit offset `off` from a little-endian HID report. */
@@ -137,7 +142,8 @@ static uint32_t hid_get_bits(const uint8_t *r, int len, uint32_t off, uint32_t b
 static void hid_handle_tablet(struct hid_dev *h, const uint8_t *r, int len) {
     struct usb_device *dev = h->dev;
     uint32_t bits = dev->hid_abs_bits ? dev->hid_abs_bits : 16;
-    uint32_t max = dev->hid_abs_max ? dev->hid_abs_max : ((1u << bits) - 1);
+    uint32_t max = dev->hid_abs_max ? dev->hid_abs_max
+                                    : (bits >= 32 ? UINT32_MAX : ((1u << bits) - 1));
     uint32_t x = hid_get_bits(r, len, dev->hid_abs_x_off, bits);
     uint32_t y = hid_get_bits(r, len, dev->hid_abs_y_off, bits);
     int32_t nx = (int32_t)((uint64_t)x * INPUT_ABS_MAX / max);
@@ -146,14 +152,34 @@ static void hid_handle_tablet(struct hid_dev *h, const uint8_t *r, int len) {
     if (dev->hid_btn_off >= 0) {
         uint8_t btn = (uint8_t)hid_get_bits(r, len, (uint32_t)dev->hid_btn_off, 3);
         uint8_t changed = btn ^ h->prev[0];
-        if (changed & 0x01) input_report(EV_KEY, BTN_LEFT, btn & 0x01);
-        if (changed & 0x02) input_report(EV_KEY, BTN_RIGHT, (btn >> 1) & 1);
-        if (changed & 0x04) input_report(EV_KEY, BTN_MIDDLE, (btn >> 2) & 1);
+        if (changed & 0x01) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY,
+                                               dev->hid_touch_off >= 0 ? BTN_TOUCH : BTN_LEFT,
+                                               btn & 0x01);
+        if (changed & 0x02) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, BTN_RIGHT, (btn >> 1) & 1);
+        if (changed & 0x04) OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, BTN_MIDDLE, (btn >> 2) & 1);
         h->prev[0] = btn;
     }
-    input_report(EV_ABS, ABS_X, nx);
-    input_report(EV_ABS, ABS_Y, ny);
-    input_report(EV_SYN, 0, 0);
+    if (dev->hid_touch_off >= 0) {
+        uint8_t touch = (uint8_t)hid_get_bits(r, len,
+                                               (uint32_t)dev->hid_touch_off, 1);
+        if (touch != h->touch_prev) {
+            OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_KEY, BTN_TOUCH, touch);
+            h->touch_prev = touch;
+        }
+    }
+    OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_ABS, ABS_X, nx);
+    OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_ABS, ABS_Y, ny);
+    OS1driver_input_publish(INPUT_PROVIDER_USB_HID, h->device_id, EV_SYN, 0, 0);
+}
+
+int usb_hid_polling_required(void) {
+    for (int i = 0; i < MAX_HID_DEVICES; ++i) {
+        struct hid_dev *h = &hid_devs[i];
+        if (h->in_use && h->dev && h->dev->hcd && h->dev->hcd->ops &&
+            h->dev->hcd->ops->intr_poll)
+            return 1;
+    }
+    return 0;
 }
 
 void usb_hid_poll(void) {

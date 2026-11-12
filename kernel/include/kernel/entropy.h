@@ -1,16 +1,31 @@
 #ifndef _KERNEL_ENTROPY_H
 #define _KERNEL_ENTROPY_H
 
-#include <kernel/types.h>
+#include <stdint.h>
+
+enum entropy_source {
+  ENTROPY_SOURCE_ARCH_RNG,
+  ENTROPY_SOURCE_COUNTER_MIX,
+  ENTROPY_SOURCE_ADDRESS_MIX
+};
+
+struct entropy_sample {
+  uint64_t value;
+  enum entropy_source source;
+};
+
+/* Source provenance is not an entropy estimate or a cryptographic guarantee.
+ * The early counter/address fallback has no qualified minimum strength. */
+struct entropy_sample entropy_sample_u64(void);
 
 /*
  * entropy_u64 - 64 bits of best-effort entropy, unified across architectures.
  *
- * One implementation drives both arches (ASTRA: divergence is a bug): it prefers
- * the CPU hardware RNG via the arch_hw_random() HAL primitive and, when that is
- * unavailable, mixes successive monotonic cycle-counter samples
- * (arch_timer_get_count) carrying boot-time jitter through splitmix64.  The only
- * per-arch code is the ISA wrapper arch_impl_hw_random.
+ * One policy drives both architectures. It first requests architected hardware
+ * randomness through <hal/entropy.h>; when unavailable it mixes bounded early
+ * jitter samples from the same entropy ABI. Jitter samples are explicitly not
+ * runtime timekeeping values, so early SSP reseeding does not depend on the
+ * clocksource having been calibrated or published.
  */
 uint64_t entropy_u64(void);
 

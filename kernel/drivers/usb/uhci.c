@@ -11,7 +11,7 @@
  */
 
 #include <drivers/usb/usb.h>
-#include <drivers/pci.h>
+#include <hal/pci.h>
 #include <kernel/driver.h>
 #include <kernel/hal.h>
 #include <kernel/pmm.h>
@@ -356,13 +356,14 @@ static int uhci_probe(struct hal_device *dev) {
     struct uhci *u = &uhci_ctrls[uhci_count];
     memset(u, 0, sizeof(*u));
 
-    /* BAR4 is the UHCI I/O BAR on PIIX/ICH; fall back to dev->base. */
-    uint32_t bar4 = pci_get_bar(dev->pci_bdf, 4);
-    uint16_t io = (uint16_t)((bar4 & 1) ? (bar4 & ~0x3u) : (dev->base & 0xFFFF));
-    if (!io) return -1;
-    u->io = io;
+    /* BAR4 is the UHCI I/O BAR on PIIX/ICH. */
+    struct nxhal_pci_bar bar4;
+    if (nxhal_pci_get_bar(dev->pci_bdf, 4U, &bar4) != 0 ||
+        bar4.is_io == 0U || bar4.base == 0U || bar4.base > UINT16_MAX)
+        return -1;
+    u->io = (uint16_t)bar4.base;
 
-    pr_info("UHCI: %s io=0x%04x\n", dev->name, io);
+    pr_info("UHCI: %s io=0x%04x\n", dev->name, u->io);
 
     /* Global + host reset. */
     hal_outw(u->io + UHCI_USBCMD, CMD_GRESET);

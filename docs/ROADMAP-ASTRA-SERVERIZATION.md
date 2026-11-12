@@ -304,9 +304,10 @@ sporadic, not stress-reproducible — do not burn time re-reproducing):
   contention (Phase 2) + IRQ-context mutation (Phase 1/3). Boot-phase stamping
   (F9) makes future transcripts diagnostic.
 - **Standing obsolete-code closure** (do continuously, never batch at the end):
-  stray files (`compositor.c.old/.c.new`, `registry.h.new`), dead helpers,
-  stale comments, the `SYS_FLUSH`/dual-path remnants, `init.cfg` never read
-  (S-13), `nxfilem` rework (in progress). Every phase deletes what it obsoletes.
+  dead helpers, stale comments, the `SYS_FLUSH`/dual-path remnants,
+  `init.cfg` never read (S-13), and the `nxfilem` rework. The historical
+  compositor/registry/shell alternate-source files were removed on 2026-11-10
+  after their useful terminal/style work was verified as migrated to canonical modules.
 - **DIR-05 remaining**: DWARF `file:line` backtrace, kernel recovery-mode
   (quiesce a subsystem instead of `panic()`) — natural once subsystems are
   restartable servers (Phase 3).

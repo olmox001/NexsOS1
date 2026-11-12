@@ -23,6 +23,8 @@
 #include <kernel/nx_contract.h>
 #include <kernel/cpu.h>
 #include <kernel/fault.h>
+#include <kernel/nxpax.h>
+#include <hal/nxpax.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
 #include <kernel/sched.h>
@@ -30,7 +32,7 @@
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 
-extern struct pt_regs *schedule(struct pt_regs *regs);
+extern hal_frame_t *schedule(hal_frame_t *regs);
 extern int process_terminate(int pid);
 
 /* fault_notify_user - post a RED notification (severity 2) about a crashing user
@@ -49,7 +51,7 @@ static void fault_notify_user(struct process *task, const char *desc) {
   m.from = task->pid; /* group the crash notification under the crashing process */
   m.type = IPC_TYPE_NOTIFY;
   m.data1 = 2; /* severity: error -> red popup (1 = warning/yellow, 0 = info) */
-  m.data2 = (uint64_t)task->pid;
+  m.data2 = 0U; /* Normal notification protocol; from already carries PID. */
   snprintf(m.payload, sizeof(m.payload), "%s crashed: %s", task->name, desc);
   /* DIR-05's contract is that a userland crash is VISIBLE, not that an IPC was
    * attempted.  Discarding the result satisfied the letter and lost the point:
@@ -63,12 +65,40 @@ static void fault_notify_user(struct process *task, const char *desc) {
                  npid, m.payload);
 }
 
-struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
+static const int fault_debug_boot = NX_MDEBUG_BOOT;
+
+/* Bounded current-process instruction evidence for diagnostic boots. The
+ * architecture reports the vector separately; bytes distinguish an actual
+ * unsupported instruction from a stale/corrupted executable mapping. */
+static void fault_debug_instruction(struct process *task, uint64_t pc) {
+  uint8_t bytes[16];
+  if (!vmm_is_user_addr(pc) || !vmm_is_user_addr(pc + sizeof(bytes) - 1U)) return;
+  if (vmm_copy_from_user(bytes, (const void *)(uintptr_t)pc, sizeof(bytes)) != 0) {
+    fault_printf("[FAULT-BYTES] current instruction unavailable\n");
+    return;
+  }
+  uint64_t physical = task && task->page_table ?
+      vmm_get_phys(task->page_table, pc) : 0U;
+  fault_printf("[FAULT-BYTES] pc=0x%016lx phys=0x%016lx "
+               "%02x %02x %02x %02x %02x %02x %02x %02x "
+               "%02x %02x %02x %02x %02x %02x %02x %02x\n",
+               pc, physical,
+               (unsigned)bytes[0], (unsigned)bytes[1],
+               (unsigned)bytes[2], (unsigned)bytes[3],
+               (unsigned)bytes[4], (unsigned)bytes[5],
+               (unsigned)bytes[6], (unsigned)bytes[7],
+               (unsigned)bytes[8], (unsigned)bytes[9],
+               (unsigned)bytes[10], (unsigned)bytes[11],
+               (unsigned)bytes[12], (unsigned)bytes[13],
+               (unsigned)bytes[14], (unsigned)bytes[15]);
+}
+
+hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
                                            uint64_t fault_addr, uint64_t fault_pc,
                                            const char *desc, uint64_t syndrome) {
   /* Fault context: locate per-CPU state via the MSR/MPIDR path, never via
    * the LAPIC-MMIO read (kernel/fault.h). */
-  struct cpu_info *ci = arch_cpu_info_fault_safe();
+  struct cpu_info *ci = cpu_info_fault_safe();
   struct process *task = ci ? ci->current_task : NULL;
 
   int uaccess = (!user_mode && ci && ci->uaccess_active &&
@@ -81,20 +111,29 @@ struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
     fault_printf("\n[FAULT] %s%s: PID %d (%s) pc=0x%016lx addr=0x%016lx cause=0x%016lx — terminating\n",
                  desc, uaccess ? " (uaccess)" : "", task->pid, task->name,
                  fault_pc, fault_addr, syndrome);
+    if (user_mode && fault_debug_boot) fault_debug_instruction(task, fault_pc);
 
     if (uaccess) {
       /* Release the arch uaccess critical section (locks/IRQ state/flag);
        * the address-space switch is reconciled by the scheduler below. */
-      arch_uaccess_fault_fixup();
+      uaccess_fault_fixup();
     }
 
     fault_notify_user(task, desc); /* DIR-05 #139: red crash popup, best-effort */
     /* We are already in the fault handler for this task; there is no caller
      * left to propagate to.  Reported so a teardown that fails does not leave a
      * faulted process silently alive and schedulable. */
-    if (process_terminate(task->pid) != 0)
+    int pid = task->pid;
+    int terminated = process_terminate(pid);
+    nxpax_kernel_record(pid,
+                        terminated == 0 ? NXHAL_NXPAX_KIND_USER_TERMINATED :
+                                          NXHAL_NXPAX_KIND_TERMINATION_FAILED,
+                        fault_pc, fault_addr, syndrome,
+                        (user_mode ? NXHAL_NXPAX_FLAG_USER : 0U) |
+                        (uaccess ? NXHAL_NXPAX_FLAG_UACCESS : 0U));
+    if (terminated != 0)
       fault_printf("[FAULT] process_terminate(%d) FAILED after a user fault\n",
-                   task->pid);
+                   pid);
     fault_exit(); /* fault handled — unwind the recursion guard */
     return schedule(regs);
   }
@@ -107,6 +146,10 @@ struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
    * "KERNEL PAGE FAULT", classifying the same condition as something else
    * entirely.  Each caller still dumps its own register set — those genuinely
    * differ — but the diagnosis no longer depends on which arch you are on. */
+  if (!user_mode && !uaccess && task)
+    fault_printf("[FAULT] kernel exception while PID %d (%s) is current on cpu %d\n",
+                 task->pid, task->name, ci ? (int)ci->cpu_id : -1);
+
   if ((user_mode || uaccess) && !task)
     fault_printf("\n[FAULT] %s from user mode with NO CURRENT TASK on cpu %d — "
                  "scheduler-state corruption (pc=0x%016lx addr=0x%016lx "
@@ -114,5 +157,8 @@ struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
                  desc, ci ? (int)ci->cpu_id : -1, fault_pc, fault_addr,
                  syndrome);
 
+  nxpax_kernel_record(task ? (int32_t)task->pid : INT32_C(-1),
+                      NXHAL_NXPAX_KIND_KERNEL_FATAL, fault_pc, fault_addr,
+                      syndrome, user_mode ? NXHAL_NXPAX_FLAG_USER : 0U);
   return NULL; /* kernel fault: caller dumps registers and panics */
 }

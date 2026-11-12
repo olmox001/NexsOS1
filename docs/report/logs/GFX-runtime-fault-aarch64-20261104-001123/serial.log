@@ -1,0 +1,1597 @@
+UEFI firmware (version edk2-stable202408-prebuilt.qemu.org built at 16:28:50 on Sep 12 2024)
+ArmTrngLib could not be correctly initialized.
+Error: Image at 0017FDB6000 start failed: 00000001
+Error: Image at 0017FD6D000 start failed: Not Found
+Error: Image at 0017FCBA000 start failed: Unsupported
+Error: Image at 0017FC3F000 start failed: Not Found
+Error: Image at 0017FB65000 start failed: Aborted
+Tpm2SubmitCommand - Tcg2 - Not Found
+Tpm2GetCapabilityPcrs fail!
+Tpm2SubmitCommand - Tcg2 - Not Found
+Image type X64 can't be loaded on AARCH64 UEFI system.
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU QEMU CD-ROM " from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0036000A00000000)/Scsi(0x0,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU QEMU CD-ROM " from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0036000A00000000)/Scsi(0x0,0x0)
+[0m[30m[40m[2J[01;01H[0m[37m[40mNEXSOS_GRUB_ARM64_CHAINLOAD_STUB
+NEXSOS_EFI_STUB_START
+NEXSOS_KERNEL_IMAGE_LOADED
+NEXSOS_DTB_EMBEDDED
+NEXSOS_EXIT_BOOT_SERVICES
+[C0] [INFO] Console driver initialized
+[C0] 
+[C0] ========================================
+[C0]  AArch64 NexsOS1 v0.0.5.5
+[C0] ========================================
+[C0] 
+[C0] [INFO] SSP: stack canary reseeded from arch entropy
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] CPU: Primary core 0 initialized
+[C0] [INFO] CPU: Vector Table set to 0xffff000040081000
+[C0] [INFO] FDT: validated base=0x17a5b8000 size=0x100000 version=17
+[C0] [INFO] BootInfo: source=1 DTB=0x17a5b8000 size=0x100000 flags=0x1
+[C0] [INFO] Kernel: Entry x0 = 0x17a5b8000 x1 = 0x100000
+PLATFORM: arch_platform_early_init starting
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [INFO] AArch64: validated FDT at 0x17a5b8000 size=0x100000
+[C0] [INFO] Initializing IRQ...
+[C0] [INFO] IRQ: Registered chip ARM GICv2
+[C0] [INFO] IRQ driver initialized via HAL
+[C0] [INFO] GIC: 256 interrupt lines
+[C0] [INFO] GIC: Distributor initialized
+[C0] [INFO] Initializing timer...
+[C0] [INFO] Timer: Frequency 62500000 Hz
+[C0] [INFO] Timer: System tick rate 1000 Hz
+[C0] [INFO] Timer driver initialized via HAL
+[C0] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x18b43550, Ctl: 0x1
+[C0] [INFO] Initializing memory...
+[C0] [INFO] AArch64: FDT region [0] type=1 0x40000000-0x180000000 size=0x140000000
+[C0] [INFO] AArch64: FDT region [1] type=2 0x17a5b8000-0x17a6b8000 size=0x100000
+[C0] [INFO] BOOT-MEM: region[0] type=1 base=0x40000000 size=0x140000000 end=0x180000000
+[C0] [INFO] BOOT-MEM: region[1] type=2 base=0x17a5b8000 size=0x100000 end=0x17a6b8000
+[C0] [INFO] BOOT-MEM: regions=2 usable=5120 MiB usable_span=5120 MiB base=0x40000000 reserved_descriptors=1 highest_reserved_end=0x17a6b8000
+[C0] [INFO] PMM: Metadata initialized at 0x40a54000 (41120 KB)
+[C0] [INFO] PMM: Usable RAM: 5120 MB (address span 5120 MB; MEMORY_BASE=0x40000000)
+[C0] [INFO] PMM: 5120 MB usable, 5069 MB free (span 5120 MB; gaps/reservations excluded)
+[C0] [INFO] PMM: DMA zone: 128 pages, Normal zone: 1297540 pages
+[C0] [INFO] VMM: Initializing MMU (Phase 1: Bootstrap)...
+[C0] [INFO] VMM: bootstrap usable region[0] 0x40000000-0x180000000 (5120 MiB)
+[C0] [INFO] AArch64 VMM: Installing kernel PGD 0x4327c000 in TTBR1
+[C0] [INFO] AArch64 VMM: Kernel PGD active (TTBR1).
+[C0] [INFO] VMM: Bootstrap complete; usable intervals mapped without holes.
+[C0] [INFO] VMM: Performing RAM-aware dynamic remapping...
+[C0] [INFO] VMM: dynamic usable region[0] 0x40000000-0x180000000 (5120 MiB)
+[C0] [INFO] VMM: Dynamic remapping successful. All discovered RAM is now accessible.
+[C0] 
+[KTEST] Starting Kernel Unit Tests (11 cases found)...
+[C0] [KTEST] Running: test_vmm_protect... [C0] PASS
+[C0] [KTEST] Running: test_kmalloc_growth... [C0] [INFO] kmalloc: Initialized bucket allocator. Chunk: 4 MB at 0xffff000043291000 (growable)
+[C0] [INFO] kmalloc: heap grown to 8 MB (new chunk at 0xffff000043691000)
+[C0] PASS
+[C0] [KTEST] Running: test_vfs_mount_lifecycle... [C0] [INFO] VFS: mounted ktestfs at /ktestfs
+[C0] [INFO] VFS: unmounted ktestfs from /ktestfs
+[C0] PASS
+[C0] [KTEST] Running: test_gfx_chrome_contract... [C0] PASS
+[C0] [KTEST] Running: test_gfx_surface_contract... [C0] PASS
+[C0] [KTEST] Running: test_fdt_pages_reserved_from_pmm... [C0] PASS
+[C0] [KTEST] Running: test_fdt_page_by_page_search... [C0] [WARN] FDT: legacy page search [0x409d6000, 0x409d9000)
+[C0] [INFO] FDT: legacy search found valid blob at 0x409d7080 size=0x48
+[C0] [WARN] FDT: legacy page search [0x40000000, 0x80000000)
+[C0] [INFO] FDT: legacy search found valid blob at 0x40000000 size=0x100000
+[C0] [INFO] FDT: validated base=0x40000000 size=0x100000 version=17
+[C0] [INFO] FDT: validated base=0x17a5b8000 size=0x100000 version=17
+[C0] PASS
+[C0] [KTEST] Running: test_pmm_region_union... [C0] PASS
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 11 PASSED, 0 FAILED
+
+[C0] [INFO] HAL: Initializing Bus Manager...
+[C0] [INFO] HAL: Scanning Platform Bus (MMIO)...
+[C0] [INFO] HAL: Registered device 'VirtIO-8' (Bus=2, ID=1af4:0008, Class=00:00:00, Base=0xa003600, IRQ=75)
+[C0] [INFO] HAL: Registered device 'VirtIO-2' (Bus=2, ID=1af4:0002, Class=00:00:00, Base=0xa003800, IRQ=76)
+[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Class=00:00:00, Base=0xa003a00, IRQ=77)
+[C0] [INFO] HAL: Registered device 'VirtIO-18' (Bus=2, ID=1af4:0012, Class=00:00:00, Base=0xa003c00, IRQ=78)
+[C0] [INFO] HAL: Registered device 'VirtIO-16' (Bus=2, ID=1af4:0010, Class=00:00:00, Base=0xa003e00, IRQ=79)
+[C0] [INFO] PCI: scanning config space (ECAM/port)...
+[C0] [INFO] HAL: Registered device 'PCI-1b36:0008' (Bus=1, ID=1b36:0008, Class=06:00:00, Base=0x0, IRQ=0)
+[C0] [INFO] HAL: Registered device 'VirtIO-4096' (Bus=1, ID=1af4:1000, Class=02:00:00, Base=0x0, IRQ=0)
+[C0] [INFO] VirtIO: Probing for block device...
+[C0] [INFO] VirtIO: Found Block Device (IRQ 76)
+[C0] [INFO] VirtIO: Version 1
+[C0] [INFO] VirtIO: Block queue layout qsize=16 pages=2 avail_off=256 used_off=4096
+[C0] [INFO] VirtIO: Block Device Initialized successfully
+[C0] [INFO] block: active backend 'virtio-blk'
+[C0] [INFO] VirtIO-GPU: Probing...
+[C0] [INFO] VirtIO-GPU: Found device (IRQ 79)
+[C0] [INFO] VirtIO-GPU: host display 1280x800
+[C0] [INFO] GPU: Primary device set to VirtIO-GPU
+[C0] [INFO] GPU: Registered VirtIO-GPU
+[C0] [INFO] VirtIO-GPU: Done.
+[C0] [INFO] Graphics: Initialized via HAL (1280x800)
+[C0] [INFO] Partition: Initializing...
+[C0] [INFO] GPT: Valid signature found. Entries: 128 @ LBA 2
+[C0] [INFO] GPT: Partition 0: Start=34, Size=1048576 sectors
+[C0] [INFO] GPT: Found 1 partitions
+[C0] [INFO] GPT: Done.
+[C0] [INFO] BufferCache: Initializing...
+[C0] [INFO] Buffer: Done.
+[C0] [INFO] Ext4: 4 block group(s), 32768 blocks/group
+[C0] [INFO] Ext4: Mounted. Vol=, Inodes=1024, features incompat=0x42
+[C0] [INFO] VFS: mounted ext4 on partition 0 as /
+[C0] [INFO] VFS: Done.
+[C0] [INFO] Input: Initializing input subsystem...
+[C0] [INFO] VirtIO-Input: Probing devices...
+[C0] [INFO] VirtIO-Input: 2 input device(s) initialized
+[C0] [INFO] USB: Initializing host controllers...
+[C0] [INFO] Keyboard: Initialized (Layout: it)
+[C0] [INFO] Registry: Initialized with 10 default keys (namespace tree).
+[C0] [INFO] VFS: mounted regfs at /reg
+[C0] [INFO] VFS: mounted procfs at /proc
+[C0] [INFO] Registry: Initialized.
+[C0] [INFO] Initializing processes...
+[C0] [INFO] Process: Initializing scheduler subsystem...
+[C0] [INFO] Process: limit 128 (pool 128, kstack 128KB, 8 reserved for SYSTEM/ROOT, 32 children max per user process)
+[C0] [INFO] Initializing scheduler...
+[C0] [INFO] Scheduler: Initializing...
+[C0] [INFO] Waking secondary CPUs...
+[C0] [INFO] AArch64: Starting SMP initialization for 4 potential cores
+[C1] [INFO] CPU: Vector Table set to 0xffff000040081000
+[C1] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x19d3ef46, Ctl: 0x1
+[C1] [INFO] Secondary CPU 1 online and ready
+[C0] [INFO] AArch64: CPU 1 online
+[C2] [INFO] CPU: Vector Table set to 0xffff000040081000
+[C2] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x19d6e9b9, Ctl: 0x1
+[C2] [INFO] Secondary CPU 2 online and ready
+[C0] [INFO] AArch64: CPU 2 online
+[C3] [INFO] CPU: Vector Table set to 0xffff000040081000
+[C3] [INFO] Timer: Per-CPU virtual timer enabled (IRQ 27). Next: 0x19da3b94, Ctl: 0x1
+[C3] [INFO] Secondary CPU 3 online and ready
+[C0] [INFO] AArch64: CPU 3 online
+[C0] [INFO] Initializing compositor...
+[C0] [INFO] Compositor: Initializing...
+[C0] [INFO] Compositor: Initialized (1280x800)
+[C0] [INFO] K3: Spawning First-Stage Init...
+[C0] [INFO] K3: Initialized PID 1 (/sbin/nxinit)
+[C0] [INFO] Enabling interrupts...
+[Init] System Initialization Starting...
+[Init] Spawning Notification Server...
+[Init] Notification Server started (PID 2)
+[Init] Spawning Execution Service (nxexec --service)...
+[Notify] Server started (PID 2)
+[Init] Execution Service started (PID 3)
+[Init] Running environment bootstrap (nxenvinit)...
+nxexec: execution service listening on OS1nx_exec
+[EnvInit] Initialising system environment...
+[EnvInit] Registry defaults initialised.
+[EnvInit] Environment initialised.
+[Init] Environment bootstrap complete.
+[Init] Spawning Dock (nxui)...
+[Init] Dock started (PID 5)
+[Init] Spawning Top Bar (nxbar)...
+[Init] nxbar started (PID 6)
+[Init] Spawning Launcher (nxlauncher)...
+[Init] Launcher started (PID 7)
+[Init] Spawning Nxshell...
+[Init] NXShell started (PID 8)
+[C3] [INFO] [GFX-TIMING] lock_wait=31 us render_hold=38182 us
+[Init] Entering supervisor loop
+[C3] [INFO] [GFX-TIMING] lock_wait=7741 us render_hold=67520 us
+
+[NXShell] TTY Window 0x0000000000000068 active (PID 8).
+
+[32mNXShell[0m:[34m/home[0m> [C3] [INFO] [GFX-TIMING] lock_wait=1 us render_hold=109719 us
+[C3] [INFO] [GFX-TIMING] lock_wait=1 us render_hold=104278 us
+[C3] [INFO] [GFX-TIMING] lock_wait=141195 us render_hold=54897 us
+[C3] [INFO] [GFX-TIMING] lock_wait=25754 us render_hold=80253 us
+[C3] [INFO] [GFX-TIMING] lock_wait=17035 us render_hold=31775 us
+[C3] [INFO] [GFX-TIMING] lock_wait=49609 us render_hold=55781 us
+[C3] [INFO] [GFX-TIMING] lock_wait=33044 us render_hold=30450 us
+[C3] [INFO] [GFX-TIMING] lock_wait=32409 us render_hold=31270 us
+[C3] [INFO] [GFX-TIMING] lock_wait=38583 us render_hold=33091 us
+[C3] [INFO] [GFX-TIMING] lock_wait=2 us render_hold=31864 us
+ls /sys/bin
+. .. nxenvinit nxperm nxsettings nxlauncher nxres nxtop nxproc nxreg env nxwins nxui nximage nxbar nxshell nxntfy_srv nxfont nxfilem nxmemstat nxexec nxnotify nxpower nxinfo 
+
+[32mNXShell[0m:[34m/home[0m> help
+
+[1;33mBuilt-in commands:[0m
+  help            Show this help
+  clear           Clear the screen
+  time            Show uptime
+  ls [path]       List directory
+  cd [path]       Change directory (/ if omitted)
+  pwd             Print working directory
+  cat <path>      Show file contents
+  echo [text...]  Print arguments
+  rm <path>       Remove a file
+  mkdir <path>    Create a directory
+  cp <src> <dst>  Copy file
+  write <p> <txt> Write text to a file
+  kill <pid>      Terminate a process
+  focus <id>      Focus a window by id
+  id              Show privilege level and capabilities
+  about           About this system
+  exec <prog>     Run a program with arguments
+  jobs            List jobs ('+' = current, '-' = previous)
+  fg [job]        Bring a job to the foreground
+  bg [job]        Resume a stopped job in the background
+  attach <pid>    Track an already-running process as a job
+  disown [job]    Stop tracking a job (it keeps running)
+  exit            Close this shell
+
+[1;33mLine editing:[0m
+  ←/→ Home/End   move cursor    Delete   forward-delete
+  ↑/↓            history        Tab      complete command/path
+  Ctrl-A/E        line start/end Ctrl-L   clear screen
+  Ctrl-R          search history Ctrl-D   delete-fwd (or exit on empty line)
+  <cmd> &         run in background
+
+[1;33mRedirection & pipes:[0m
+  cmd > file      stdout to file      cmd >> file   append
+  cmd < file      stdin from file     cmd 2> file   stderr to file
+  cmd | cmd       pipe stdout into the next command
+
+[1;33mJob ids (POSIX):[0m
+  (omitted)       the current job     %%  %+   the current job
+  %N  or  N       job number N        %-       the previous job
+  %str            command starts with str
+  %?str           command contains str
+
+[1;33mSequencing:[0m
+  a ; b           run b after a, whatever a returned
+  a && b          run b only if a succeeded
+  a || b          run b only if a failed
+
+[1;33mPrograms in /sys/bin:[0m
+.               ..              nxenvinit       nxperm          
+nxsettings      nxlauncher      nxres           nxtop           
+nxproc          nxreg           env             nxwins          
+nxui            nximage         nxbar           nxshell         
+nxntfy_srv      nxfont          nxfilem         nxmemstat       
+nxexec          nxnotify        nxpower         nxinfo          
+
+[1;33mPrograms in Bin are not listed for brevity[0m
+
+Type any program name to run it (searches /bin, then /sys/bin).
+
+[32mNXShell[0m:[34m/home[0m> nxinfo
+[C2] [ERROR] ELF: File not found: /bin/nxinfo
+AArch64 NexsOS1 V0.0.5.5
+uptime:     26485 ms (26 s)
+processes:  12
+resolution: 1280x800
+pid:        10
+cwd:        /home
+
+[32mNXShell[0m:[34m/home[0m> nxmemstat
+[C0] [ERROR] ELF: File not found: /bin/nxmemstat
+[H[J[1;34mNEXS System Monitor            uptime 35s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 7271 total   (~0/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 4611 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+
+[32mNXShell[0m:[34m/home[0m> nxp[H[J[1;34mNEXS System Monitor            uptime 36s
+r[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 7586 total   (~315/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 4643 calls (~32/s)   search ~4905 ns (max 1435008)
+kheap  : in-use 3440 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+oc
+[C1] [ERROR] ELF: File not found: /bin/nxproc
+[1;34mPID  NAME             STATE      PRIO CPU
+[0m--------------------------------------------
+[1;32m32000 idle             RUNNING    31     [38;5;0m0[0m[1;32m
+[0m[38;5;51m32001 idle             READY      31     [38;5;1m1[0m[38;5;51m
+[0m[38;5;51m32002 idle             READY      31     [38;5;2m2[0m[38;5;51m
+[0m[38;5;51m32003 idle             READY      31     [38;5;3m3[0m[38;5;51m
+[0m[1;32m1    nxinit           RUNNING    2      [H[J[38;5;2m2[0m[1;34m[1;32m
+[0m[90m2    /sys/bin/nxntfy_srv SLEEPING   2    NEXS System Monitor            uptime 37s
+[0m  [38;5;2m2[0m[90m
+[0m--------------------------------------------
+[90m3    /sys/bin/nxexec  SLEEPING   2    CPU    : 4 online   runnable 9   zombies 0
+  [38;5;2m2[0m[90m
+[0m[90m5    /sys/bin/nxui    SLEEPING   2    ctxsw  : 7774 total   (~188/s)
+  [38;5;3m3[0m[90mPMM    : free 5035 / 5120 MB   used 85 MB
+
+frag   : largest 4945 MB (1265974 pg)   runs 8
+[0malloc  : 4965 calls (~322/s)   search ~1406 ns (max 1435008)
+[90mkheap  : in-use 3440 KB  hi 4296 KB  live 84  pool 8192 KB
+6    /sys/bin/nxbar   SLEEPING   2    objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 9
+  [38;5;0m0[0m[90m
+[0m[90m7    /sys/bin/nxlauncher SLEEPING   2      [38;5;2m2[0m[90m
+[0m[1;32m8    /sys/bin/nxshell RUNNING    2      [38;5;1m1[0m[1;32m
+[0m[90m12   /sys/bin/nxmemstat SLEEPING   2      [38;5;0m0[0m[90m
+[0m[1;32m14   /sys/bin/nxproc  RUNNING    2      [38;5;3m3[0m[1;32m
+[0m
+[32mNXShell[0m:[34m/home[0m> [H[J[1;34mNEXS System Monitor            uptime 38s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 8111 total   (~337/s)
+nPMM    : free 5036 / 5120 MB   used 84 MB
+xfrag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 4965 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+wins
+[C3] [ERROR] ELF: File not found: /bin/nxwins
+[1;33mID   PID  STATE   TITLE[0m
+100  2  hidden  /sys/bin/nxntfy_srv
+101  5  shown  /sys/bin/nxui
+102  6  shown  /sys/bin/nxbar
+103  7  min  /sys/bin/nxlauncher
+104  8  focus  /sys/bin/nxshell
+105  12  shown  /sys/bin/nxmemstat
+
+[32mNXShell[0m:[34m/home[0m> [H[J[1;34mNEXS System Monitor            uptime 40s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 8356 total   (~245/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5287 calls (~322/s)   search ~4742 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+nxperm[H[J[1;34mNEXS System Monitor            uptime 41s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 8599 total   (~243/s)
+
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5287 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[C0] [ERROR] ELF: File not found: /bin/nxperm
+level: root
+can:   spawn files ipc windows registry
+
+[32mNXShell[0m:[34m/home[0m> [H[J[1;34mNEXS System Monitor            uptime 42s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 8914 total   (~315/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~322/s)   search ~2422 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 43s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 9257 total   (~343/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 44s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 9554 total   (~297/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 47s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 10373 total   (~257/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 48s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 10655 total   (~282/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 49s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 10988 total   (~333/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 51s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 11302 total   (~314/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 52s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 11684 total   (~382/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 54s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 12213 total   (~272/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 56s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 12821 total   (~293/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 57s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 13066 total   (~245/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 58s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 13342 total   (~276/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 59s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 13653 total   (~311/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3440 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 61s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 13992 total   (~339/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5609 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+nxproc
+[C2] [ERROR] ELF: File not found: /bin/nxproc
+[1;34mPID  NAME             STATE      PRIO CPU
+[0m--------------------------------------------
+[38;5;51m32000 idle             READY      31     [38;5;0m0[0m[38;5;51m
+[0m[38;5;51m32001 idle             READY      31     [38;5;1m1[0m[38;5;51m
+[0m[38;5;51m32002 idle             READY      31     [38;5;2m2[0m[38;5;51m
+[0m[38;5;51m32003 idle             READY      31     [38;5;3m3[0m[38;5;51m
+[0m[38;5;51m1    nxinit           READY      2      [38;5;0m0[0m[38;5;51m
+[0m[90m2    /sys/bin/nxntfy_srv SLEEPING   2      [38;5;1m1[H[J[0m[1;34mNEXS System Monitor            uptime 62s
+[0m[90m--------------------------------------------
+
+CPU    : 4 online   runnable 9   zombies 0
+[0mctxsw  : 14246 total   (~254/s)
+[90mPMM    : free 5035 / 5120 MB   used 85 MB
+3    /sys/bin/nxexec  SLEEPING   2    frag   : largest 4941 MB (1265149 pg)   runs 8
+ alloc  : 5931 calls (~322/s)   search ~6180 ns (max 1435008)
+ kheap  : in-use 3440 KB  hi 4296 KB  live 86  pool 8192 KB
+[38;5;2m2objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 9
+[0m[90m
+[0m[1;32m5    /sys/bin/nxui    RUNNING    2      [38;5;3m3[0m[1;32m
+[0m[1;32m6    /sys/bin/nxbar   RUNNING    2      [38;5;1m1[0m[1;32m
+[0m[90m7    /sys/bin/nxlauncher SLEEPING   2      [38;5;3m3[0m[90m
+[0m[1;32m8    /sys/bin/nxshell RUNNING    2      [38;5;2m2[0m[1;32m
+[0m[90m12   /sys/bin/nxmemstat SLEEPING   2      [38;5;1m1[0m[90m
+[0m[1;32m20   /sys/bin/nxproc  RUNNING    2      [38;5;0m0[0m[1;32m
+[0m
+[32mNXShell[0m:[34m/home[0m> [H[J[1;34mNEXS System Monitor            uptime 63s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 14453 total   (~207/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5931 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 64s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 14679 total   (~226/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5931 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 66s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 15211 total   (~303/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5931 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 70s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 16383 total   (~256/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5931 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 71s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 16669 total   (~286/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5931 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mnNEXS System Monitor            uptime 72s
+x[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 16993 total   (~324/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 5931 calls (~0/s)   search ~0 ns (max 1435008)
+wkheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+ins
+[C2] [ERROR] ELF: File not found: /bin/nxwins
+[1;33mID   PID  STATE   TITLE[0m
+100  2  hidden  /sys/bin/nxntfy_srv
+101  5  shown  /sys/bin/nxui
+102  6  shown  /sys/bin/nxbar
+103  7  min  /sys/bin/nxlauncher
+104  8  focus  /sys/bin/nxshell
+105  12  shown  /sys/bin/nxmemstat
+
+[32mNXShell[0m:[34m/home[0m> [H[J[1;34mNEXS System Monitor            uptime 78s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 18346 total   (~338/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 79s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 18605 total   (~259/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 84s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 20126 total   (~303/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 85s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 20473 total   (~347/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 86s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 20774 total   (~301/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 87s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 21115 total   (~341/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 88s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 21405 total   (~290/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 91s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 22031 total   (~353/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 92s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 22321 total   (~290/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 93s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 22614 total   (~293/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 95s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 23212 total   (~320/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 98s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 24071 total   (~294/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 99s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 24409 total   (~338/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3440 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 100s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 24690 total   (~281/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 101s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 24947 total   (~257/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 102s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 25245 total   (~298/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 104s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 25490 total   (~245/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3440 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 105s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 10   zombies 0
+ctxsw  : 25762 total   (~272/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3440 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 106s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 26083 total   (~321/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 107s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 26428 total   (~345/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[C2] [INFO] Compositor: Focus changed to PID 6 (Window 'nxbar')
+[H[J[1;34mNEXS System Monitor            uptime 108s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 26671 total   (~243/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 109s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 27028 total   (~357/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 110s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 27314 total   (~286/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 111s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 27632 total   (~318/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 112s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 27986 total   (~354/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 113s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 28329 total   (~343/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 114s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 28638 total   (~309/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 115s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 29031 total   (~393/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 117s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 29327 total   (~296/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 118s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 29668 total   (~341/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 119s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 29929 total   (~261/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 120s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 30283 total   (~354/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3440 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 121s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 30714 total   (~431/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 124s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 31601 total   (~293/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 125s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 31940 total   (~339/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 127s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 32213 total   (~273/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 128s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 32567 total   (~354/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 129s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 32903 total   (~336/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 130s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 10   zombies 0
+ctxsw  : 33212 total   (~309/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3440 KB  hi 4296 KB  live 84  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 131s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 33506 total   (~294/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 132s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 33724 total   (~218/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 133s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 34052 total   (~328/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 134s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 34408 total   (~356/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 135s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 34795 total   (~387/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 138s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 35402 total   (~301/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3440 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 139s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 35728 total   (~326/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 83  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 140s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 36045 total   (~317/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 141s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 36413 total   (~368/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 142s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 36735 total   (~322/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 143s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 37055 total   (~320/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[C1] [INFO] Compositor: Focus changed to PID 12 (Window 'NEXS System Monitor')
+[H[J[1;34mNEXS System Monitor            uptime 144s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 37399 total   (~344/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3439 KB  hi 4296 KB  live 82  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 145s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 37694 total   (~295/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 146s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 37973 total   (~279/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 147s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 38281 total   (~308/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 148s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 38474 total   (~193/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 98  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 150s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 38802 total   (~328/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 151s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 39051 total   (~249/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 153s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 39662 total   (~270/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 154s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 39945 total   (~283/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 155s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 40209 total   (~264/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 156s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 40609 total   (~400/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 158s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 41116 total   (~250/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 159s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 41476 total   (~360/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 162s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 42135 total   (~361/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 163s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 42409 total   (~274/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 165s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 43065 total   (~284/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 166s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 43372 total   (~307/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 167s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 43674 total   (~302/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 168s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 44054 total   (~380/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 169s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 44290 total   (~236/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 170s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 44598 total   (~308/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 98  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 172s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 44939 total   (~341/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 98  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 173s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 45272 total   (~333/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3444 KB  hi 4296 KB  live 98  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 174s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 45571 total   (~299/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 98  pool 8192 KB
+objs   : FILE 0  PROC 1  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 175s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 45898 total   (~327/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 176s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 46173 total   (~275/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 177s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 46515 total   (~342/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 98  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 178s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 46840 total   (~325/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 179s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 9   zombies 0
+ctxsw  : 47178 total   (~338/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3444 KB  hi 4296 KB  live 98  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 180s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 47447 total   (~269/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 181s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 5   zombies 0
+ctxsw  : 47683 total   (~236/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 185s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 48452 total   (~267/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 97  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 187s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 49130 total   (~326/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3441 KB  hi 4296 KB  live 98  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 188s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 8   zombies 0
+ctxsw  : 49453 total   (~323/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 109  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 189s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 49708 total   (~255/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 108  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 190s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 7   zombies 0
+ctxsw  : 50044 total   (~336/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 109  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[H[J[1;34mNEXS System Monitor            uptime 191s
+[0m--------------------------------------------
+CPU    : 4 online   runnable 6   zombies 0
+ctxsw  : 50343 total   (~299/s)
+PMM    : free 5036 / 5120 MB   used 84 MB
+frag   : largest 4946 MB (1266249 pg)   runs 7
+alloc  : 6253 calls (~0/s)   search ~0 ns (max 1435008)
+kheap  : in-use 3442 KB  hi 4296 KB  live 109  pool 8192 KB
+objs   : FILE 0  PROC 0  REGKEY 0  WINDOW 0  CONSOLE 8
+[C1] [INFO] Compositor: Close button -> request close of PID 12
+[C3] [INFO] Compositor: Focus changed to PID 8 (Window 'NXShell PID 8')
+nxwins
+[C2] [ERROR] ELF: File not found: /bin/nxwins
+[1;33mID   PID  STATE   TITLE[0m
+100  2  hidden  /sys/bin/nxntfy_srv
+101  5  shown  /sys/bin/nxui
+102  6  shown  /sys/bin/nxbar
+103  7  min  /sys/bin/nxlauncher
+104  8  focus  /sys/bin/nxshell
+
+[32mNXShell[0m:[34m/home[0m> nxwins focus 110 [1D [1D04
+[C0] [ERROR] ELF: File not found: /bin/nxwins
+nxwins: focused window 104
+
+[32mNXShell[0m:[34m/home[0m> nxfilem
+[C0] [ERROR] ELF: File not found: /bin/nxfilem
+
+[32mNXShell[0m:[34m/home[0m> [C3] [INFO] Compositor: Close button -> request close of PID 28
+nxwins focus 104
+[C1] [ERROR] ELF: File not found: /bin/nxwins
+nxwins: focused window 104
+
+[32mNXShell[0m:[34m/home[0m> nxpower -cli status
+[C3] [ERROR] ELF: File not found: /bin/nxpower
+power control: NOT available in this kernel build — see the "KNOWN GAP" note at the top of nxpower.c
+
+[32mNXShell[0m:[34m/home[0m> nxsettings -cli display
+[C3] [ERROR] ELF: File not found: /bin/nxsettings
+== Display ==
+resolution: 1280x800
+presets:    1280x720  720x1280  1366x768  768x1366  1600x900  900x1600  1920x1080  1080x1920  1280x800  800x1280  1440x900  900x1440  1680x1050  1050x1680  1504x1000  1000x1504
+(nxsettings -cli does not change resolution/zoom; use the GUI or 'nxres <w> <h>' / 'nxres zoom <pct>')
+
+[32mNXShell[0m:[34m/home[0m> nxsettings -cli system
+[C3] [ERROR] ELF: File not found: /bin/nxsettings
+AArch64 NexsOS1 V0.0.5.5
+uptime:     345290 ms (345 s)
+processes:  12
+resolution: 1280x800
+pid:        36
+cwd:        /home
+
+[32mNXShell[0m:[34m/home[0m> nxsettings -cli proc
+[C2] [ERROR] ELF: File not found: /bin/nxsettings
+== Processes ==
+[1;34mPID  NAME             STATE      PRIO CPU
+[0m--------------------------------------------
+[38;5;51m32000 idle             READY      31     [38;5;0m0[0m[38;5;51m
+[0m[38;5;51m32001 idle             READY      31     [38;5;1m1[0m[38;5;51m
+[0m[38;5;51m32002 idle             READY      31     [38;5;2m2[0m[38;5;51m
+[0m[38;5;51m32003 idle             READY      31     [38;5;3m3[0m[38;5;51m
+[0m[1;32m1    nxinit           RUNNING    2      [38;5;1m1[0m[1;32m
+[0m[90m2    /sys/bin/nxntfy_srv SLEEPING   2      [38;5;3m3[0m[90m
+[0m[90m3    /sys/bin/nxexec  SLEEPING   2      [38;5;2m2[0m[90m
+[0m[38;5;51m5    /sys/bin/nxui    READY      2      [38;5;3m3[0m[38;5;51m
+[0m[1;32m6    /sys/bin/nxbar   RUNNING    2      [38;5;0m0[0m[1;32m
+[0m[38;5;51m7    /sys/bin/nxlauncher READY      2      [38;5;0m0[0m[38;5;51m
+[0m[1;32m8    /sys/bin/nxshell RUNNING    2      [38;5;2m2[0m[1;32m
+[0m[1;32m38   /sys/bin/nxsettings RUNNING    2      [38;5;3m3[0m[1;32m
+[0m
+[32mNXShell[0m:[34m/home[0m> nxsettings -cli mem
+[C3] [ERROR] ELF: File not found: /bin/nxsettings
+== Memory ==
+pmm:    free 5037 / 5120 MB
+kheap:  in-use 2822 KB  hi 4844 KB  live 81
+sched:  cpus 4  runnable 10  zombies 0  ctxsw 96444
+objs:   FILE 0  PROC 1  REGKEY 0  WINDOW 0
+
+[32mNXShell[0m:[34m/home[0m> nxsettings -cli notify
+[C0] [ERROR] ELF: File not found: /bin/nxsettings
+== Notifications ==
+PID 4     [info][unread] EnvInit: Environment ready
+PID 1     [info][read  ] System: Boot Complete - NEXS
+
+[32mNXShell[0m:[34m/home[0m> nxres
+[C0] [ERROR] ELF: File not found: /bin/nxres
+nxres: current desktop 1280x800
+       style       minimal
+       theme       dark
+       background  blue
+
+usage: nxres <w> <h> | nxres zoom <pct> | nxres style|theme|bg <name>
+
+[32mNXShell[0m:[34m/home[0m> nxreg
+[C2] [ERROR] ELF: File not found: /bin/nxreg
+[H[J[1;34mKEY                      VALUE
+[0m----------------------------------------
+background.name          blue
+mouse.sensitivity        1.0
+srv.bar_pid              6
+srv.dock_pid             5
+srv.filem_pid            28
+srv.launcher_pid         7
+srv.notify_pid           2
+srv.shell_pid            8
+style.name               minimal
+sys.env.HOME             /home
+sys.env.PATH             /bin:/sys/bin
+sys.env.TMPDIR           /tmp
+sys.ntfy.log.0           4|0|U|EnvInit: Environment ready
+sys.ntfy.log.1           1|0|R|System: Boot Complete - NEXS
+sys.ntfy.panel_open      0
+system.arch              arm64
+system.boot_time         55
+system.env_ready         1
+system.hostname          NeXs
+system.os                AArch64 NexsOS1
+system.version           V0.0.5.5
+
+[32mNXShell[0m:[34m/home[0m> theme.color              dark
+nxproc
+[C1] [ERROR] ELF: File not found: /bin/nxproc
+[1;34mPID  NAME             STATE      PRIO CPU
+[0m--------------------------------------------
+[1;32m32000 idle             RUNNING    31     [38;5;0m0[0m[1;32m
+[0m[38;5;51m32001 idle             READY      31     [38;5;1m1[0m[38;5;51m
+[0m[38;5;51m32002 idle             READY      31     [38;5;2m2[0m[38;5;51m
+[0m[38;5;51m32003 idle             READY      31     [38;5;3m3[0m[38;5;51m
+[0m[1;32m1    nxinit           RUNNING    2      [38;5;2m2[0m[1;32m
+[0m[90m2    /sys/bin/nxntfy_srv SLEEPING   2      [38;5;2m2[0m[90m
+[0m[90m3    /sys/bin/nxexec  SLEEPING   2      [38;5;2m2c[0m[90m
+[0m[90m5    /sys/bin/nxui    SLEEPING   2      [38;5;0m0[0md[90m
+[0m[90m6    /sys/bin/nxbar   SLEEPING   2      [38;5;3m3[0m[90m
+[0m[90m7    /sys/bin/nxlauncher SLEEPING   2      [38;5;0m0[0m[90m
+[0m[1;32m8    /sys/bin/nxshell RUNNING    2      [38;5;1m1[0m[1;32m
+[0m[90m46   /sys/bin/nxreg   SLEEPING   2      [38;5;0m0[0m[90m
+[0m[1;32m48   /sys/bin/nxproc  RUNNING    2      [38;5;3m3[0m[1;32m
+[0m
+[32mNXShell[0m:[34m/home[0m>  ..
+Unknown command: /sys/bin/..
+
+[32mNXShell[0m:[34m/home[0m> cd..
+[C3] [ERROR] ELF: File not found: /bin/cd..
+[C3] [ERROR] ELF: File not found: /sys/bin/cd..
+Unknown command: /sys/bin/cd..
+
+[32mNXShell[0m:[34m/home[0m> cd ..
+
+[32mNXShell[0m:[34m/[0m> cd [1D [1Dls
+. .. home bin sbin etc var sys lib fonts tmp reg proc 
+
+[32mNXShell[0m:[34m/[0m> cd reg
+
+[32mNXShell[0m:[34m/reg[0m> ls
+background mouse srv style sys system theme
+
+[32mNXShell[0m:[34m/reg[0m> pwd
+/reg
+
+[32mNXShell[0m:[34m/reg[0m> ls /reg
+background mouse srv style sys system theme
+
+[32mNXShell[0m:[34m/reg[0m> cat /reg/system.ver
+I
+*** KERNEL PANIC n*s**
+truction abort at 0x0000000000000000, FAR=0x00000000[boot-p00000000
+hase: K3-userland]
+SSP: Stack Smash at 0xffff0000400a0ab4
+
+Backtrace (fp chain, max 24):
+--- Kernel Exception Context Dump ---
+Process: PID 32002
+SPSR_EL1: 0x0000000020000305
+ELR_EL1:  0x0000000000000000
+FAR_EL1:  0x0000000000000000
+ESR_EL1:  0x0000000086000004
+EC: 0x21, ISS: 0x4
+Frame: 0xffff0000408d30d0 (per-CPU fault stack), faulting SP: 0xffff0000447a2a20
+CRITICAL: Kernel jumped to NULL! Check exception vector table and function pointers.
+Stack at 0xffff0000408d30d0:
+  #0  ffff00004009d640 panic+0xe0
+  [0xffff0000408d30d0] 0xffff000043f09cd0
+  [0xffff0000408d30e0] 0x0001000000000000
+  [0xffff0000408d30f0] 0xffff000043f0a000
+  [0xffff0000408d3100] 0x0000000000001290
+  [0xffff0000408d3110] 0xffff0000409d9008
+  [0xffff0000408d3120] 0x0000000000000000
+  #1  ffff00004009d640 panic+0xe0
+  [0xffff0000408d3130] 0x0000000000000001
+  [0xffff0000408d3140] 0x0000000000000001
+
+System halted.
+X00: 0xffff000043f09cd0  X01: 0x0000000043285000
+X02: 0x0001000000000000  X03: 0x0000000000000040
+X04: 0xffff000043f0a000  X05: 0xffff0000447a3000
+X06: 0x0000000000001290  X07: 0x0000000000000001
+X08: 0xffff0000409d9008  X09: 0x0000000000000000
+X10: 0x0000000000000000  X11: 0x0000000000000001
+X12: 0x0000000000000001  X13: 0x66ffae88fba38000
+X14: 0x0000000000000001  X15: 0x000000000000003f
+X16: 0x0000000000000002  X17: 0x0000000000000000
+X18: 0x0000000000000000  X19: 0x0000000000000000
+X20: 0x0000000000000000  X21: 0x0000000000000000
+X22: 0x0000000000000000  X23: 0x0000000000000000
+X24: 0x0000000000000000  X25: 0x0000000000000000
+X26: 0x0000000000000000  X27: 0x0000000000000000
+X28: 0x0000000000000000  X29: 0x0000000000000000
+X30: 0x0000000000000000
+SP_EL0:  0x00000000c00ffda0
+-----------------------------
+Backtrace (fp chain, max 24):
+  #0  0000000000000000
+Stack raw @ffff0000408d30d0 (low->high; +sym = return addr):
+  ffff0000408d30d0: ffff000043f09cd0
+  ffff0000408d30d8: 0000000043285000
+  ffff0000408d30e0: 0001000000000000
+  ffff0000408d30e8: 0000000000000040
+  ffff0000408d30f0: ffff000043f0a000
+  ffff0000408d30f8: ffff0000447a3000
+  ffff0000408d3100: 0000000000001290
+  ffff0000408d3108: 0000000000000001
+  ffff0000408d3110: ffff0000409d9008
+  ffff0000408d3118: 0000000000000000
+  ffff0000408d3120: 0000000000000000
+  ffff0000408d3128: 0000000000000001
+  ffff0000408d3130: 0000000000000001
+  ffff0000408d3138: 66ffae88fba38000
+  ffff0000408d3140: 0000000000000001
+  ffff0000408d3148: 000000000000003f
+  ffff0000408d3150: 0000000000000002
+  ffff0000408d3158: 0000000000000000
+  ffff0000408d3160: 0000000000000000
+  ffff0000408d3168: 0000000000000000
+  ffff0000408d3170: 0000000000000000
+  ffff0000408d3178: 0000000000000000
+  ffff0000408d3180: 0000000000000000
+  ffff0000408d3188: 0000000000000000
+Call path (text words up the stack):
+
+
+*** KERNEL PANIC ***
+[boot-phase: K3-userland]
+Unrecoverable kernel exception
+Backtrace (fp chain, max 24):
+  #0  ffff00004009d640 panic+0xe0
+  #1  ffff00004009d640 panic+0xe0
+
+System halted.
+

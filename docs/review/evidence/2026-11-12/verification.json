@@ -1,0 +1,428 @@
+{
+  "kind": "development checkpoint; known failures retained",
+  "date": "2026-11-12",
+  "base_commit": "005aa876ba0a5627835495624e5e02add31aa246",
+  "guest": {
+    "amd64": {
+      "arch": "amd64",
+      "records": [
+        {
+          "name": "suite",
+          "command": "/sys/bin/nxtestrunner",
+          "capture_status": 1,
+          "host_seconds": 27.936915744969156,
+          "summaries": [
+            "done: 83/83 passed, 0 failure(s)",
+            "[captest] done: 83/83 passed, 0 failure(s)",
+            "[libctest] done: 29/29 passed, 0 failure(s)",
+            "[buffertest] done: 1/1 passed, 0 failure(s)",
+            "[gnulibtest] done: 38/38 passed, 0 failure(s)",
+            "[gnulibtest] done: 38/38 passed, 0 failure(s)",
+            "[coreutilstest] done: 41/50 passed, 9 failure(s)",
+            "[coreutilstest] done: 41/50 passed, 9 failure(s)",
+            "[luatest] done: 14/14 passed, 0 failure(s)",
+            "luatest] done: 14/14 passed, 0 failure(s)",
+            "Testing fd table on /home/shared/fdtest.fixture...",
+            "[fdtest] target /home/shared/fdtest.fixture",
+            "done: 0 failure(s)",
+            "[fdtest] done: 0 failure(s)",
+            "[writetest] done: 0 failure(s)",
+            "[capreg] done: 0 failure(s)",
+            "done: 0 failure(s)",
+            "[capipc] done: 0 failure(s)",
+            "capipc done: 0 failure(s)",
+            "[capkill] done: 0 failure(s)",
+            "done: 0 failure(s)",
+            "[TIMERDIAG] STRESS spawned=24 active_depth=32 target=16",
+            "[TIMERDIAG] STRESS DONE spawned=24 depth=32 remaining=0 status=PASS",
+            "[notifytest] done: 14/14 passed, 0 failure(s)",
+            "[notifytest] done: 14/14 passed, 0 failure(s)",
+            "[porttest] done: 3/3 passed, 0 failure(s)",
+            "[gfxbuffertest] done: 2/2 passed, 0 failure(s)",
+            "[simdtest] done: 1/1 passed, 0 failure(s)",
+            "[gfxalphatest] done: 1/1 passed, 0 failure(s)",
+            "[NXTEST] done: 17/18 passed, 1 failure(s)"
+          ]
+        },
+        {
+          "name": "fd-repeat",
+          "command": "/bin/fdtest",
+          "capture_status": 0,
+          "host_seconds": 1.6698622170370072,
+          "summaries": [
+            "Testing fd table on /home/shared/fdtest.fixture...",
+            "[fdtest] target /home/shared/fdtest.fixture",
+            "done: 0 failure(s)",
+            "[fdtest] done: 0 failure(s)"
+          ]
+        },
+        {
+          "name": "fixture-size",
+          "command": "/bin/wc -c /home/shared/fdtest.fixture",
+          "capture_status": 0,
+          "host_seconds": 3.7912517009535804,
+          "summaries": [
+            "/bin/wc -c /home/shared/fdtest.fixture",
+            "57 /home/shared/fdtest.fixture"
+          ]
+        },
+        {
+          "name": "timer-kill",
+          "command": "/bin/stress --dur 10 --seed 0xA11CE --interval 1 --fault 0 --timer-kill",
+          "capture_status": 0,
+          "host_seconds": 16.66264134296216,
+          "summaries": [
+            "[stress] start seed=0xa11ce dur=10s interval=1s fault=0% lanes=0x10",
+            "[stress] t=0s cycles=0 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=0 timer_killed=0 timer_completed=0 timer_errors=0 errs=0",
+            "[stress] t=1s cycles=14 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=14 timer_killed=13 timer_completed=1 timer_errors=0 errs=0",
+            "[stress] t=2s cycles=27 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=27 timer_killed=24 timer_completed=3 timer_errors=0 errs=0",
+            "[stress] t=3s cycles=42 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=42 timer_killed=35 timer_completed=7 timer_errors=0 errs=0",
+            "[stress] t=4s cycles=58 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=58 timer_killed=49 timer_completed=9 timer_errors=0 errs=0",
+            "[stress] t=5s cycles=71 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=71 timer_killed=60 timer_completed=11 timer_errors=0 errs=0",
+            "[stress] t=6s cycles=84 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=84 timer_killed=72 timer_completed=12 timer_errors=0 errs=0",
+            "[stress] t=7s cycles=97 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=97 timer_killed=83 timer_completed=14 timer_errors=0 errs=0",
+            "[stress] t=8s cycles=110 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=110 timer_killed=95 timer_completed=15 timer_errors=0 errs=0",
+            "[stress] t=9s cycles=122 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=122 timer_killed=106 timer_completed=16 timer_errors=0 errs=0",
+            "[stress] DONE cycles=134 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=134 timer_killed=117 timer_completed=17 timer_errors=0 errs=0 in 10s",
+            "[stress] TIMER-KILL PASS tests=134 killed=117 completed=17 errors=0",
+            "[stress] done: 1/1"
+          ]
+        },
+        {
+          "name": "timer-queue",
+          "command": "/sys/bin/nxtimerdiag --queue-stress",
+          "capture_status": 0,
+          "host_seconds": 6.061209147970658,
+          "summaries": [
+            "[TIMERDIAG] STRESS spawned=24 active_depth=32 target=16",
+            "[TIMERDIAG] STRESS DONE spawned=24 depth=32 remaining=0 status=PASS"
+          ]
+        },
+        {
+          "name": "timer-quiet",
+          "command": "/sys/bin/nxtimerdiag --quiet-probe",
+          "capture_status": 0,
+          "host_seconds": 9.16597545699915,
+          "summaries": [
+            "[TIMERDIAG] API=OS1_sleep n=80 min_ns=33343932 avg_ns=34637418 max_ns=40816111 late_10ms=0 late_50ms=0 late_250ms=0",
+            "[TIMERDIAG] API=nanosleep n=80 min_ns=33368160 avg_ns=34558117 max_ns=42566046 late_10ms=0 late_50ms=0 late_250ms=0",
+            "[TIMERDIAG] DONE elapsed_ns=5610955096 cpu_ns=112631261 failures=0"
+          ]
+        }
+      ],
+      "kernel_summary": [
+        "[KTEST] Completed. Summary: 32 PASSED, 0 FAILED"
+      ],
+      "canonical_suite_conclusions": [
+        "[NXTEST] done: 17/18 passed, 1 failure(s)",
+        "[NXTEST] done: 17/18 passed, 1 failure(s)"
+      ],
+      "serial_sha256": "f816ab273f694007c3053b570e7f3c1c9a80e2530519a0dc5657fc41ad9b4d7e",
+      "serial_path": "build/runtime/nxadb/amd64/iso-bios/serial.log",
+      "nxadb_status_note": "capture status is not guest exit status; full suite keeps its known Coreutils failure"
+    },
+    "aarch64": {
+      "arch": "aarch64",
+      "records": [
+        {
+          "name": "suite",
+          "command": "/sys/bin/nxtestrunner",
+          "capture_status": 1,
+          "host_seconds": 74.42938675900223,
+          "summaries": [
+            "done: 83/83 passed, 0 failure(s)",
+            "[captest] done: 83/83 passed, 0 failure(s)",
+            "[libctest] done: 29/29 passed, 0 failure(s)",
+            "[buffertest] done: 1/1 passed, 0 failure(s)",
+            "[gnulibtest] done: 38/38 passed, 0 failure(s)",
+            "[gnulibtest] done: 38/38 passed, 0 failure(s)",
+            "[coreutilstest] done: 41/50 passed, 9 failure(s)",
+            "[coreutilstest] done: 41/50 passed, 9 failure(s)",
+            "[luatest] done: 14/14 passed, 0 failure(s)",
+            "luatest] done: 14/14 passed, 0 failure(s)",
+            "Testing fd table on /home/shared/fdtest.fixture...",
+            "[fdtest] target /home/shared/fdtest.fixture",
+            "done: 0 failure(s)",
+            "[fdtest] done: 0 failure(s)",
+            "[writetest] done: 0 failure(s)",
+            "[capreg] done: 0 failure(s)",
+            "done: 0 failure(s)",
+            "[capipc] done: 0 failure(s)",
+            "capipc done: 0 failure(s)",
+            "[capkill] done: 0 failure(s)",
+            "done: 0 failure(s)",
+            "[TIMERDIAG] STRESS spawned=24 active_depth=30 target=16",
+            "[TIMERDIAG] STRESS DONE spawned=24 depth=30 remaining=0 status=PASS",
+            "[notifytest] done: 14/14 passed, 0 failure(s)",
+            "[notifytest] done: 14/14 passed, 0 failure(s)",
+            "[porttest] done: 3/3 passed, 0 failure(s)",
+            "[gfxbuffertest] done: 2/2 passed, 0 failure(s)",
+            "[simdtest] done: 1/1 passed, 0 failure(s)",
+            "[gfxalphatest] done: 1/1 passed, 0 failure(s)",
+            "[NXTEST] done: 17/18 passed, 1 failure(s)"
+          ]
+        },
+        {
+          "name": "fd-repeat",
+          "command": "/bin/fdtest",
+          "capture_status": 0,
+          "host_seconds": 1.8977402430027723,
+          "summaries": [
+            "Testing fd table on /home/shared/fdtest.fixture...",
+            "[fdtest] target /home/shared/fdtest.fixture",
+            "done: 0 failure(s)",
+            "[fdtest] done: 0 failure(s)"
+          ]
+        },
+        {
+          "name": "fixture-size",
+          "command": "/bin/wc -c /home/shared/fdtest.fixture",
+          "capture_status": 0,
+          "host_seconds": 4.095049759023823,
+          "summaries": [
+            "/bin/wc -c /home/shared/fdtest.fixture",
+            "57 /home/shared/fdtest.fixture"
+          ]
+        },
+        {
+          "name": "timer-kill",
+          "command": "/bin/stress --dur 10 --seed 0xA11CE --interval 1 --fault 0 --timer-kill",
+          "capture_status": 0,
+          "host_seconds": 16.858230321027804,
+          "summaries": [
+            "[stress] start seed=0xa11ce dur=10s interval=1s fault=0% lanes=0x10",
+            "[stress] t=0s cycles=0 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=0 timer_killed=0 timer_completed=0 timer_errors=0 errs=0",
+            "[stress] t=1s cycles=8 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=8 timer_killed=7 timer_completed=1 timer_errors=0 errs=0",
+            "[stress] t=2s cycles=15 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=15 timer_killed=14 timer_completed=1 timer_errors=0 errs=0",
+            "[stress] t=3s cycles=21 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=21 timer_killed=18 timer_completed=3 timer_errors=0 errs=0",
+            "[stress] t=4s cycles=29 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=29 timer_killed=26 timer_completed=3 timer_errors=0 errs=0",
+            "[stress] t=5s cycles=36 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=36 timer_killed=33 timer_completed=3 timer_errors=0 errs=0",
+            "[stress] t=6s cycles=42 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=42 timer_killed=38 timer_completed=4 timer_errors=0 errs=0",
+            "[stress] t=7s cycles=49 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=49 timer_killed=44 timer_completed=5 timer_errors=0 errs=0",
+            "[stress] t=8s cycles=56 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=56 timer_killed=51 timer_completed=5 timer_errors=0 errs=0",
+            "[stress] t=9s cycles=62 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=62 timer_killed=56 timer_completed=6 timer_errors=0 errs=0",
+            "[stress] DONE cycles=63 spawns=0 faults=0 allocs=0 files=0 guis=0 timer_tests=63 timer_killed=57 timer_completed=6 timer_errors=0 errs=0 in 10s",
+            "[stress] TIMER-KILL PASS tests=63 killed=57 completed=6 errors=0",
+            "[stress] done: 1/1"
+          ]
+        },
+        {
+          "name": "timer-queue",
+          "command": "/sys/bin/nxtimerdiag --queue-stress",
+          "capture_status": 0,
+          "host_seconds": 6.971784986031707,
+          "summaries": [
+            "[TIMERDIAG] STRESS spawned=24 active_depth=30 target=16",
+            "[TIMERDIAG] STRESS DONE spawned=24 depth=30 remaining=0 status=PASS"
+          ]
+        },
+        {
+          "name": "timer-quiet",
+          "command": "/sys/bin/nxtimerdiag --quiet-probe",
+          "capture_status": 0,
+          "host_seconds": 13.395004473044537,
+          "summaries": [
+            "[TIMERDIAG] API=OS1_sleep n=80 min_ns=33438000 avg_ns=57518923 max_ns=125590000 late_10ms=33 late_50ms=20 late_250ms=0",
+            "[TIMERDIAG] API=nanosleep n=80 min_ns=33482000 avg_ns=57507825 max_ns=119144000 late_10ms=31 late_50ms=19 late_250ms=0",
+            "[TIMERDIAG] DONE elapsed_ns=9402162000 cpu_ns=255657136 failures=0"
+          ]
+        }
+      ],
+      "kernel_summary": [
+        "[KTEST] Completed. Summary: 33 PASSED, 0 FAILED"
+      ],
+      "canonical_suite_conclusions": [
+        "[NXTEST] done: 17/18 passed, 1 failure(s)",
+        "[NXTEST] done: 17/18 passed, 1 failure(s)"
+      ],
+      "serial_sha256": "02f328387dbc4764812b034d18766d1ffb5697c951988a88a8471d774b071fdd",
+      "serial_path": "build/runtime/nxadb/aarch64/iso-uefi/serial.log",
+      "nxadb_status_note": "capture status is not guest exit status; full suite keeps its known Coreutils failure"
+    }
+  },
+  "port_iterations": {
+    "amd64": {
+      "after-owned": {
+        "source": "build/runs/addendum/amd64/after-owned/port-soak.json",
+        "sha256": "61f53214590c73a5e47f51e1e35c3ddc3a49dbafc5a57e431a1d420cc7447511",
+        "count": 100,
+        "all_groups_passed": true,
+        "max_phase_wake_ns": 37720416591
+      },
+      "after-rearm": {
+        "source": "build/runs/addendum/amd64/after-rearm/port-soak.json",
+        "sha256": "2f03caee95742b3dd9a626dd0da0c66c4ff1884e0846e62382e81265d1c93077",
+        "count": 100,
+        "all_groups_passed": true,
+        "max_phase_wake_ns": 37611343549
+      },
+      "per-round": {
+        "source": "build/runs/addendum/amd64/per-round/port-soak.json",
+        "sha256": "f3a4a8eaf191cd136706a04ed8fffe04e718906f48275b2f53e0d6d2473d676c",
+        "count": 30,
+        "all_groups_passed": true,
+        "max_phase_wake_ns": 35551987721,
+        "max_single_round_ns": 73920878
+      }
+    },
+    "aarch64": {
+      "after-owned": {
+        "source": "build/runs/addendum/aarch64/after-owned/port-soak.json",
+        "sha256": "28422dd5d539900434282f8e0efe3377984a50e49bdc7cd95421e0058ac0f110",
+        "count": 100,
+        "all_groups_passed": true,
+        "max_phase_wake_ns": 3808586992
+      },
+      "after-rearm": {
+        "source": "build/runs/addendum/aarch64/after-rearm/port-soak.json",
+        "sha256": "046648dd76fe6cfd74dd63d51724866728787ad85d976aa47014b48d15d3a423",
+        "count": 100,
+        "all_groups_passed": true,
+        "max_phase_wake_ns": 3655291008
+      },
+      "per-round": {
+        "source": "build/runs/addendum/aarch64/per-round/port-soak.json",
+        "sha256": "f0c53796e1c74ba911e4308f3ac17ff90430c5e537cd905abab017cc14edebad",
+        "count": 30,
+        "all_groups_passed": true,
+        "max_phase_wake_ns": 3760049008,
+        "max_single_round_ns": 113392992
+      }
+    }
+  },
+  "logs": [
+    {
+      "path": "/tmp/nexs-addendum-check-amd64.log",
+      "sha256": "7149f71d7ee76200bb5c08c7bd9778bdb9e897406c9dfd07604a16dfe290b2c3",
+      "tail": [
+        "\u2713 Target: x86_64-elf (amd64)",
+        "\u2713 CC: x86_64-elf-gcc (GCC) 16.1.0",
+        "\u2713 LD: GNU ld (GNU Binutils) 2.46.1",
+        "\u2713 QEMU: QEMU emulator version 11.1.1",
+        "\u2713 GRUB source pin: d38d6a1a9b79427848976f53d474392cd29c2a71",
+        "\u2713 GRUB targets: i386-pc + x86_64-efi are project-built"
+      ]
+    },
+    {
+      "path": "/tmp/nexs-addendum-check-aarch64.log",
+      "sha256": "89a5be75645fc3a44ede7353e1fca036ecbe79f4ed8c0a17bc845da5956ac029",
+      "tail": [
+        "\u2713 CC: aarch64-none-elf-gcc (GCC) 7.2.0",
+        "\u2713 LD: GNU ld (GNU Binutils) 2.29.1",
+        "\u2713 QEMU: QEMU emulator version 11.1.1",
+        "\u2713 GRUB source pin: d38d6a1a9b79427848976f53d474392cd29c2a71",
+        "\u2713 AArch64 UEFI firmware: {'mode': 'split', 'code': PosixPath('/usr/local/share/qemu/edk2-aarch64-code.fd'), 'vars': PosixPath('/usr/local/share/qemu/edk2-arm-vars.fd')}",
+        "\u2713 GRUB arm64-efi prerequisites ready (grub-mkimage is built by boot-iso)."
+      ]
+    },
+    {
+      "path": "/tmp/nexs-addendum-all-regressions.log",
+      "sha256": "0808e9b71438856d5aa7e5c97d5f402bccb5822ef9e54668ded3e7a0cbd6cdd6",
+      "tail": [
+        "OK",
+        ".",
+        "----------------------------------------------------------------------",
+        "Ran 1 test in 0.547s",
+        "",
+        "OK"
+      ]
+    },
+    {
+      "path": "/tmp/nexs-addendum-hal-final.log",
+      "sha256": "1471b569da25ed5b2ba8a81abd5a5d83e17108f0e90ead197f04d96fffc921c5",
+      "tail": [
+        "/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/tests/build/pci_test-sanitize",
+        "clang -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \\",
+        "\t  -Wall -Wextra -Werror -Wpedantic -I/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/include /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/core/device_name.c \\",
+        "\t  /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/tests/unit/device_name_test.c -o /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/tests/build/device_name_test-sanitize",
+        "/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/tests/build/device_name_test-sanitize",
+        "PASS: NX-HAL integrated ASan/UBSan"
+      ]
+    },
+    {
+      "path": "/tmp/nexs-addendum-layout-amd64.log",
+      "sha256": "3613a4c651c877d9bb2752adb31b2a8492e5f3f1580f136a5214527d74814ef8",
+      "tail": [
+        "PASS: 14 named services, 8 distinct server entrypoints, 7 SDK client modules, distinct machine/init/ROOT/command outputs and real rootfs ELF/manifest bytes"
+      ]
+    },
+    {
+      "path": "/tmp/nexs-addendum-layout-aarch64.log",
+      "sha256": "3613a4c651c877d9bb2752adb31b2a8492e5f3f1580f136a5214527d74814ef8",
+      "tail": [
+        "PASS: 14 named services, 8 distinct server entrypoints, 7 SDK client modules, distinct machine/init/ROOT/command outputs and real rootfs ELF/manifest bytes"
+      ]
+    },
+    {
+      "path": "/tmp/nexs-addendum-final-resize.log",
+      "sha256": "dc39b695bae9c5f3cc153b67967068bd0268d526742cb6756afd15b6e2e760f2",
+      "tail": [
+        "",
+        "RESIZE_ALIVE_AARCH64",
+        "",
+        "",
+        "",
+        "\u001b[32mNXShell\u001b[0m:\u001b[34m/home\u001b[0m> "
+      ]
+    },
+    {
+      "path": "/tmp/nexs-checkpoint-ui-host.log",
+      "sha256": "be0a66e9a267c26a28011f2d6b34fad6644f311273c0ebf602493b4ee3714f83",
+      "tail": [
+        "GFX chrome: geometry, scaled source, clipped rounded resize PASS",
+        "[gfxalphatest] straight/premultiplied alpha and 65536 pairs: PASS (0)",
+        "[gfxalphatest] done: 1/1 passed, 0 failure(s)"
+      ]
+    },
+    {
+      "path": "/tmp/nexs-checkpoint-palette.log",
+      "sha256": "66d6e314674f6e6ea71cf48674237688347597b068c9457453dcd6ce6dfe124b",
+      "tail": [
+        "....",
+        "----------------------------------------------------------------------",
+        "Ran 4 tests in 0.023s",
+        "",
+        "OK"
+      ]
+    },
+    {
+      "path": "/tmp/nexs-checkpoint-delta-tests.log",
+      "sha256": "f933df00e4e447915c9abfe7868c2572d79afc70877a15288a0b3a9ce74448ef",
+      "tail": [
+        "PASS: Power12 staged+unstaged+untracked delta, deletions and R10 blockers"
+      ]
+    }
+  ],
+  "submodule_pins": [
+    " d38d6a1a9b79427848976f53d474392cd29c2a71 boot/grub/upstream (grub-2.14)",
+    " 0e0d035247a583cdaf545305aa9f3d4dc346fb02 user/bin/base-nexs (V0.1.7-2-g0e0d035)",
+    " 1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4 user/bin/busybox (1_12_0-8278-g1a64f6a20)",
+    " 26a3a40600498b9687bd155713697c02f7f5ebd2 user/bin/coreutils (heads/nexsos-port)",
+    " d2cd8c1c5c08b2fc575db4eed238d2fea9755aae user/bin/doom (heads/nexsos-port)",
+    " 27c132fcacb14873c81259132f6baeb34f8bf770 user/bin/kilo (heads/nexsos-port)",
+    " 6eb2e4c32cc9e271856146df11ed3a5c2cf29234 user/lib/direct3d (wine-11.13)",
+    " de054f5dc8906dbac0054e113d7d4fd0430a3398 user/lib/gnulib (v1.0-3305-gde054f5dc8)",
+    " 97aa15e32617242e6d9f7de6f5ee654e0844fe38 user/lib/lua (heads/nexsos-por)",
+    " bccff41864cb1b051d5864ba664bdcaccb97e00a user/lib/musl (v1.2.6-1-gbccff418)",
+    " 742a20f48c59e8649533c84c4d49dd95b403f5da user/lib/opengl (mesa-25.0.7)",
+    " ce4fbcf9be388d514d02808a6becabe0988d7c8b user/lib/sdl (release-2.32.0-223-gce4fbcf9b)"
+  ],
+  "power12": {
+    "audit_ast.json": {
+      "findings": 5055,
+      "sha256": "5bb3c13efb6127e21ede2b09fc887c73c383bea2a60d3443fb12c237c348667d"
+    },
+    "audit_limits.json": {
+      "findings": 369,
+      "sha256": "94c004fa7815ed2b90f632a37658bf0bb4c88e3e303d04f6e2ad5dd34c3b961d"
+    },
+    "audit_build.json": {
+      "findings": 0,
+      "sha256": "9e1887c4d8cb815efc2a81ed21db399e9d6a13ec6ed0e18a4c489e9042dbb700"
+    },
+    "changed.json": {
+      "findings": 0,
+      "sha256": "ce22e7421ce9e1b06c9a8299fa8d70b5e78c1355e21d1b986074182d71066b38"
+    }
+  }
+}

@@ -755,3 +755,48 @@ applied on the spot, but it is still recorded.
 | — | tools/nxrun.sh | The fault detector greps `PANIC\|PAGE FAULT\|PROTECTION FAULT`, which matches amd64's **expected** `[FAULT] PAGE FAULT: … — terminating` from `/bin/crash` but not aarch64's `[FAULT] Data Abort (Lower EL): … — terminating`.  So running `crash` under the harness reports FAULT on one arch and ok on the other, for identical correct behaviour.  The right discriminator is an ORDERLY handled fault (`[FAULT] … — terminating`) versus `PANIC`.  Fix before the fault tests use the harness as a gate. | with the deferred fault tests |
 | — | ext4 / stdio | **The 4 KiB block-granularity trap, which cost two regressions.**  ext4 fetches — and for a write read-modify-writes — a WHOLE 4 KiB block for any partial access.  So unbuffered byte-at-a-time I/O touches one 4 KiB block PER BYTE: that, not the syscall count, is what made doom's savegame take minutes.  `FILE` therefore buffers BOTH directions at 4096 (= one block), and the direct fd path in `fread`/`fwrite` is for console and pipe streams ONLY (`path[0] == '\0'`).  **Never route a file stream around those buffers** — `a636e27` had to fix `fgetc`/`fputc`/`fputs` for doing exactly that. | standing note |
 | — | verification | `writetest` is OBSOLETE and must not be used as a verification tool.  `user/bin/base-nexs` is a submodule outside the build whose reference `lib.c` still calls the retired `_sys_file_read`: **do not delete it** — it is the canary proving R1's ABI break has consumers outside the tree, and making it link is the first test of dynamic linking in programme D. | standing note |
+
+
+---
+
+## 2026-11-03 cross-programme alignment — NG, device lifecycle and diagnostics
+
+This addendum does not change the historical programme ordering or claim its
+open tasks complete. The integrated implementation plan is
+`docs/architecture/NEXS-NG-INTEGRATED-IMPLEMENTATION-PLAN-2026-11-03.md`.
+
+- **Programme C diagnostics** now has a concrete implementation target:
+  `docs/architecture/NEXS-NG-DIAGNOSTICS-AND-TESTING.md`. In particular, the
+  UART channel must remain independent from GUI/compositor, QMP screenshots
+  must be inspectable, and boot logs must include the complete firmware-to-shell
+  path. The current nxadb QEMU session is headless (`display=none`) and does
+  not yet provide a screenshot command.
+- **Programme R remains the syscall/object migration authority.** Its R1/R2/R3/
+  R4/R5/R6 ordering and compatibility constraints are retained. Do not
+  parallelise window syscall retirement (R3) with a new surface ABI. The NG
+  crosswalk must explicitly cover legacy SYS_WINDOW/DISPLAY, SYS_REGISTRY,
+  PID-addressed SYS_SEND/RECV, SYS_KILL/WAIT, and the existing object verbs.
+- **Programme G5 / PIANO-DRIVER-MATURITY Fase 2** remains the source plan for
+  runtime hotplug. Current `hal_bus.c` is immutable after boot and is not
+  safe for runtime register/unregister. New device lifecycle design:
+  `docs/architecture/NEXS-NG-DEVICE-LIFECYCLE-AND-HOTPLUG.md`.
+- **Programme N / strict compiler gates:** `NX_STRICT=1` currently opts into
+  contract attributes; the default Makefile has strong warnings but does not
+  turn on every candidate diagnostic. The new plan evaluates flags one group
+  at a time and keeps host sanitizers separate from freestanding target flags.
+- **UEFI status:** AArch64 has an EFI chain and custom embedded-image stub;
+  AMD64 current boot ISO is BIOS GRUB. Do not describe UEFI as complete on both
+  architectures. Full boot-path evidence and BootInfo gaps are tracked by the
+  integrated plan and `BOOT-PROTOCOL-INVENTORY.md`.
+
+**Next work order:** finish baseline instrumentation + syscall/object/device
+inventories before changing runtime contracts. Both architectures remain
+mandatory at every runtime-change boundary. No commits without maintainer
+authorization.
+
+
+**Crosswalk 2026-11-03:** il dettaglio syscall legacy → object/registry/port è
+in `docs/architecture/SYSCALL-OBJECT-CAPABILITY-CROSSWALK-2026-11-03.md`.
+La migrazione grafica non può saltare R3 né introdurre una seconda famiglia di
+syscall. Il modello di hotplug è in
+`docs/architecture/NEXS-NG-DEVICE-LIFECYCLE-AND-HOTPLUG.md`.

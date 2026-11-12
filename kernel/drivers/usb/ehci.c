@@ -1,3 +1,4 @@
+#include <hal/core.h>
 /*
  * kernel/drivers/usb/ehci.c
  * EHCI (USB 2.0) host controller driver — polled.
@@ -11,14 +12,12 @@
  */
 
 #include <drivers/usb/usb.h>
-#include <drivers/pci.h>
 #include <kernel/driver.h>
 #include <kernel/hal.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/string.h>
 
-extern int arch_vmm_map_device(uint64_t base, uint64_t size);
 
 /* Capability registers (from MMIO base). */
 #define EHCI_CAPLENGTH 0x00 /* u8 */
@@ -348,7 +347,7 @@ static int ehci_probe(struct hal_device *dev) {
 
     uint64_t base = dev->base;
     if (!base) return -1;
-    arch_vmm_map_device(base, 0x1000);
+    hal_vmm_map_device(base, 0x1000);
     e->base = (volatile uint8_t *)phys_to_virt(base);
     uint8_t caplen = *(volatile uint8_t *)(e->base + EHCI_CAPLENGTH);
     e->op = e->base + caplen;

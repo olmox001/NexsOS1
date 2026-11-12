@@ -535,3 +535,28 @@ The first bootable NG milestone is deliberately smaller: both architectures
 boot, SMP works, address spaces and W^X work, capability IPC works, the v1
 syscall broker can start the unchanged init and shell, and the legacy source
 remains available for comparison.
+
+
+## 14. Graphics boundary clarification — 2026-11-03
+
+The authoritative graphics split and migration gates are specified in
+`docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.
+
+- `compositord`, window/scene policy, composition, rasterization, fonts,
+  terminal rendering and graphics API personalities run in ring-3 userland.
+- The kernel retains only capability-protected buffer/surface objects and
+  control mechanisms: allocation/import, metadata/bounds validation,
+  mapping, rights, pinning, lifetime, synchronization, commit sequencing,
+  revocation and controlled display hand-off.
+- A window is a compositor-owned policy object, not a kernel scene-graph
+  object. Legacy `OBJ_TYPE_WINDOW` remains a v1 compatibility proxy only.
+- Display/GPU drivers are userland services when the hardware resource model
+  permits; the kernel enforces MMIO/IRQ/DMA/IOMMU capabilities. The kernel
+  keeps a minimal serial/panic framebuffer path independent of userland.
+- The kernel surface manager MUST NOT contain pixel fill/blend/copy,
+  rasterization, font parsing, GL/D3D state or composition routines.
+
+This clarifies §3.1/§3.2, §8.3/§8.4 and §9: the kernel's graphics role is a
+resource/object manager and secure presentation broker, not a compositor.
+The legacy `kernel/graphics` implementation remains the compatibility
+baseline during NG bring-up; it is not the NG target architecture.

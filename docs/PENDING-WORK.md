@@ -145,10 +145,10 @@ namespace tree — vedi `docs/ASTRA.md` §7.1/§7.6.
 - Pushato come **non funzionante** (commit `dc80001`), su tua indicazione
   ("è da pushare ma non funziona, ci lavoreremo in seguito"). Da completare.
 
-## 9. compositor.c.new — protocollo video — **PARCHEGGIATO**
-- La modifica al protocollo video "non è ancora il momento di applicarla": resta parcheggiata
-  in `kernel/graphics/compositor.c.new` (il `.c` è stato riportato allo stato stabile).
-- **Cleanup pendente:** `kernel/graphics/compositor.c.old` è un backup da rimuovere quando non serve più.
+## 9. Alternate compositor source — **CHIUSO 2026-11-10**
+- Il vecchio `compositor.c.new` è stato confrontato con il sorgente canonico e rimosso.
+- Le routine terminali utili sono già in `kernel/graphics/term.c`; shadow/radius/Material
+  sono nel graphics/theme stack userland, coerente con DIR-02. Nessun backup sorgente resta.
 
 ## 10. Follow-up dei timer — **FOLLOW-UP**
 - **TIMER-UAF-02** (hardening, non difetto): far cancellare `sleep_timer` a `kernel_ipc_send`
@@ -231,4 +231,215 @@ Dettagli, log e misure: `docs/report/TIMER-SMP-DIAGNOSTIC-2026-11-03.md`.
 - Timer dopo il fix SMP: AMD64 OS1_sleep media 42.15 ms/max 84.32 ms; nanosleep 39.41/61.94 ms. AArch64 OS1_sleep 46.95/132.91 ms; nanosleep 49.25/121.63 ms. `get_time()` gap finale 1/0 ms, 0 regressioni e mismatch.
 - KTEST 8/8, timerdiag PASS, NXShell responsiva e faults=0 su entrambe. Soak NXShell di circa 60 s per arch completato con sei comandi distanziati; entrambi terminati con shell=yes e faults=0. VM arrestate.
 - Nuovi `GFX-TIMING`: `render_hold` 34.7–72.3 ms AMD64 e 40.7–130.0 ms AArch64. `compositor_render()` mantiene `compositor_lock` con IRQ locali disabilitati durante tutto il rendering sincrono; serve refactor con snapshot/ownership e gestione IRQ, non basta rimuovere irqsave.
+- **GFX-LEGACY-TERMINAL-01 — OPEN / INTERMITTENTE:** una clean AArch64 test-all del 2026-11-03 ha registrato SSP: Stack Smash al ritorno da `compositor_window_write()` (PID 8, dopo KTEST 11/11); simbolo ed epilogo verificati con addr2line/disassembly. Un run diagnostico successivo ha passato 30 s con faults=0: non è una chiusura. Il percorso `window_text_write → compositor_window_write → term_write → gl_draw_char` rasterizza mentre `compositor_lock` è acquisito con irqsave. La causa della sovrascrittura canary non è ancora provata. Ipotesi da discriminare: timer IRQ pending subito dopo irqrestore, perché kernel_timer_tick() può schedulare anche frame EL1. Auditare il context-switch e i vincoli pending_reenqueue senza presupporre che sia la causa. Non rimuovere irqsave né rilasciare la lock senza un protocollo di pin/lifetime e serializzazione terminale. Piano, evidenze e gate: `docs/report/GFX-LEGACY-TERMINAL-CONCURRENCY-2026-11-03.md`; chiudere come preflight GFX-NG-0 prima di GFX-NG-1.
 - `make ARCH={amd64,aarch64} all` e `boot-iso` sequenziali PASS anche dopo la modifica condivisa SMP. Restano stress combinato, riduzione critical section/jitter e bug POSIX `time()` ms/sec.
+
+
+## 15. Migrazione grafica in userland / surface manager kernel — **PARZIALE** · NEXS-NG
+
+**Stato corrente e punto di ripresa (2026-11-08):**
+[handoff verificato](report/GFX-USERLAND-HANDOFF-2026-11-08.md) e
+[catalogo delle 182 funzioni originali](architecture/GFX-KERNEL-FUNCTION-CATALOG.md).
+Il piano storico qui sotto va letto con l'aggiornamento di confine in
+`GRAPHICS-USERLAND-MIGRATION.md`: policy/lifecycle finestre e processi restano
+nel kernel; implementazioni di rendering e input passano in userland.
+
+Decisione architetturale 2026-11-03: compositor, window/scene policy e librerie
+grafiche devono essere servizi/librerie ring-3. Il kernel conserva soltanto il
+gestore capability di buffer/surface e il relativo controllo: memoria,
+metadati, validazione, mapping, diritti, lifetime, pinning, sincronizzazione,
+commit e hand-off sicuro alla presentazione. Nessun raster/compositing/GL/font
+nel kernel NG.
+
+- **Piano dettagliato:** `docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.
+- **Documenti allineati:** NEXS-NG-CORE-DESIGN, NEXS-NG-CLEANROOM, DIR-02,
+  DIR-07, graphics-port README/STATE. La vecchia frase "compositor nella HAL"
+  è esplicitamente superata per NG.
+- **Inventario sorgente:** `compositor.c` → `services/compositord` (da
+  spezzare in scene/window policy, input/event handling, frame scheduling e
+  composizione); `gl.c`, `draw2d.c`, `draw3d.c`, `font.c`, `chrome.c`,
+  `compositor_style.c`, `region.c`, `term.c` → userland; `surface.c`
+  va diviso tra gestione oggetti/mapping nel kernel e primitive pixel in
+  userland; driver GPU/display diventano servizi isolati con MMIO/IRQ/DMA
+  capability. Il kernel mantiene una piccola console panic indipendente.
+- **Punto critico:** il `gfx_surface` attuale è un wrapper di rendering
+  basato su `gl_surface`/puntatori, non un gestore di oggetti capability.
+  Non va semplicemente spostato in userland o rinominato: va sostituito nel
+  kernel NG da veri oggetti buffer/surface con lifetime e mapping verificabili.
+- **Ordine:** GFX-NG-0 inventario ABI/callers → GFX-NG-1 buffer/surface manager
+  nel tree parallelo `kernel-ng` → GFX-NG-2 display/GPU service minimo →
+  GFX-NG-3 compositord + broker ABI v1 → GFX-NG-4 librerie grafiche →
+  GFX-NG-5 accelerazione e stress.
+- **Vincolo di migrazione:** non spostare massivamente i file del kernel legacy
+  né interrompere il sistema attuale. La vecchia implementazione resta il
+  riferimento bootabile finché il nuovo kernel e la compatibilità ABI non
+  superano i gate G0–G6. Nessuna nuova syscall grafica ambientale; riusare
+  object/VM/port capabilities e aggiungere solo primitive indispensabili.
+- **Stato attuale (2026-11-08):** `nxcompositor` compone realmente i frame
+  in ring 3; `nxmoused` e `nxkeyboardd` sono processi separati avviati dopo
+  l'execution service e prima della UI. Rimossi renderer/tick e handler
+  puntatore inutilizzati del kernel; `SYS_COMPOSITOR_RENDER` resta un no-op
+  di compatibilità. Condivisi in userland geometria, disegno e hit test dei
+  pulsanti; ripristinata la barretta sul pulsante minimizza. Restano kernel
+  policy/storage finestre, raster terminale, librerie grafiche e GPU/display.
+  Mancano oggetti buffer/surface capability, mapping condivisi, piena parità
+  di chrome/resize/capture e l'intera matrice PS/2/VirtIO/USB/touch.
+  Immagini GRUB rigenerate: KTEST AMD64 11/11, AArch64 12/12; focus,
+  health soak 30 s, mouse minimizza/ripristina e tastiera verificati su entrambe.
+  Nessuna certificazione di migrazione completa o miglioramento prestazionale.
+- **Vincolo latenze (2026-11-08):** eliminare il pacing fisso di 33 ms nel
+  compositor e il polling con sleep di 5 ms nei due servizi input. Servono
+  attese su eventi e pacing del display, non costanti arbitrarie o busy loop.
+  La soglia di 250 ms del diagnostico non è un budget di accettazione delle
+  prestazioni. Distinzione tra stimolo del test e latenza misurata nel handoff.
+
+
+**Avanzamento GFX-NG-0 (2026-11-03):** primo inventario statico aggiunto
+in §10 di `GRAPHICS-USERLAND-MIGRATION.md`: syscall grafiche 200/202,
+210–215, 217–219, 253, 270–275; oggetti/capability esistenti; seam
+`os1_video_platform`; footprint sorgente (7.232 righe nel perimetro
+misurato); dipendenze principali e destinazioni. Non è ancora l'inventario
+semantico completo dei caller e dei flussi IRQ/input; nessun ABI buffer/surface
+è stato assegnato. L'incremento runtime descritto nello stato aggiornato
+estrae composizione e interpretazione input in servizi userland, ma non
+completa la parità dei componenti legacy né implementa il surface manager.
+
+
+## 16. NEXS-NG integrated hardening / boot / device / graphics programme — **DOCUMENTED, NOT IMPLEMENTED**
+
+Nuovi documenti di riferimento (2026-11-03):
+- `docs/architecture/NEXS-NG-INTEGRATED-IMPLEMENTATION-PLAN-2026-11-03.md`
+- `docs/architecture/NEXS-NG-DIAGNOSTICS-AND-TESTING.md`
+- `docs/architecture/NEXS-NG-DEVICE-LIFECYCLE-AND-HOTPLUG.md`
+- `docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`
+
+Punti emersi dall'audit:
+- ASTRA §7.10 descrive render in process context, non estrazione ring-3;
+  correzione aggiunta in ASTRA.
+- Object manager legacy: handle slot index, 32 slot, refcount, rights
+  attenuabili; generation/stale-handle model da verificare e formalizzare.
+- Programme R mantiene la sequenza R1/R1b/R2/R3/R4/R5/R6; la nuova migrazione
+  grafica deve integrarsi in R3, non duplicarlo.
+- `hal_bus.c` è registry statico boot-only (MAX 64); hotplug dinamico non
+  implementato. PIANO-DRIVER-MATURITY Fase 2 e Programme G5 restano la fonte
+  per il comportamento attach/detach.
+- **BOOT-1 FDT hardening completato:** parser bounded, reservation-map, `/reserved-memory` statico e DTB reservation; host gate 61/61 PASS sul DTB QEMU; clean build, boot GRUB BIOS AMD64 e GRUB arm64-efi AArch64, EFI x0/x1, legacy search, KTEST, shell/nxwins, soak 30 s e fault scan 0 verificati su entrambe le architetture. Restano fuori scope fuzzing continuo, discovery device generica e certificazione hardware.
+- AArch64 EFI stub è presente, AMD64 ISO attuale è BIOS GRUB: UEFI dual-arch
+  non è completo né certificato.
+- `nxadb.py` mantiene il default headless e supporta `--display default`; screenshot QMP, manifest, input e round-trip visuali sono stati implementati e verificati nei run documentati sotto.
+- Flag attuali sono già rigorosi; NX_STRICT è opzionale. Nuovi warning e
+  sanitizer saranno introdotti in profili misurabili, uno step per volta.
+
+**Sequenza:** baseline e strumenti → syscall/object/registry crosswalk +
+boot/FDT/device audit → hardening → device lifecycle → surface manager +
+diagnostica → display/compositor userland. Entrambe le arch obbligatorie.
+BOOT-1 è il primo hardening runtime del percorso legacy avviato da questo programma; le fasi NEXS-NG (object/device/surface manager) restano non implementate e vincolate ai gate successivi.
+
+
+**Crosswalk syscall/object completato come prima ricognizione:** vedere
+`docs/architecture/SYSCALL-OBJECT-CAPABILITY-CROSSWALK-2026-11-03.md`.
+Conferma: file POSIX già passa da FILE handles; registry mantiene SYS_REGISTRY
+diretto + REGKEY inutilizzato + /reg; PID IPC coesiste con PORT; kill/wait
+coesistono con PROCESS object; le window syscall restano collegate direttamente
+al compositor kernel. La sequenza R2–R5 resta vincolante.
+
+
+**Osservabilità reale implementata e provata:** `nxadb screenshot` ora
+cattura esplicitamente `nxgpu0/head 0`, valida PNG e scrive manifest;
+`nxadb mouse dx dy --click` controlla il puntatore; `nxadb start
+--display default` abilita finestra QEMU visibile; delay tastiera portato a
+75ms dopo test di perdita caratteri. Screenshot + command round-trip verificati
+su amd64 e aarch64; click launcher e nxsettings verificato su amd64. Artefatti
+in `build/runs/<arch>/`. Vedere
+`docs/architecture/NEXS-NG-DIAGNOSTICS-AND-TESTING.md`.
+
+
+**Audit hardware approfondito:** `pci.c` abilita BusMaster per ogni device
+prima del binding/DMA, mappa BAR con span fisso 128 KiB e non dimensiona BAR
+64-bit completi; USB core dichiara esplicitamente hotplug runtime come Fase 2
+non implementata; GPU registry non drena refcount su unregister. Il nuovo
+device manager non deve riutilizzare queste semantiche. BOOT-1 ora trasmette
+anche x1/DtbSpan nel percorso EFI AArch64 e normalizza il record BootInfo v1
+con `fdt_phys + fdt_size`; il record comune multi-arch e gli altri dati EFI
+restano lavoro futuro.
+
+
+**2026-11-03 — boot capture / RAM map / hardening baseline (pre-BOOT-1):** nxadb now keeps
+per-run UART/QEMU stdout/stderr and manifests, complete bootlog, screenshots,
+QMP input, and 30-second make test gates. AMD64 and AArch64 QEMU runs both pass
+KTEST 8/8, nxwins enumerate+focus, two screenshots and zero faults. Kernel
+default strict/warning gates expanded. BOOT-MEM logs distinguish usable sum,
+usable span and reserved descriptors. See
+docs/architecture/NEXS-NG-DIAGNOSTICS-AND-TESTING.md.
+
+**BOOT-1 — COMPLETATO (2026-11-03):** il handoff EFI conserva x1/DtbSpan;
+`fdt_init(base, available_length)` usa il parser bounded condiviso; reservation
+map, `/reserved-memory` statico e DTB entrano nei descrittori RESERVED del PMM.
+Il test host ASan/UBSan ha superato 61 controlli includendo il DTB QEMU reale
+(1 MiB, 4 CPU). Clean build AMD64+AArch64, ISO GRUB BIOS/arm64-efi, boot EFI
+AArch64, KTEST (10/10 AMD64, 11/11 AArch64), fallback legacy page-by-page,
+NXShell, nxwins focus, soak 30 s, screenshot 1280×800 e fault scan 0 sono PASS.
+Log completi e dettagli in `docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md` e
+`docs/report/logs/`. DEV-1/DEV-2/DIAG-1 restano le fasi successive e non sono
+state avviate da questo gate.
+
+
+## 17. BOOT-1 — DTB/FDT handoff, ricerca e ownership PMM (COMPLETATO)
+
+BOOT-1 è stato completato sul kernel legacy esistente: non rimuove Image+DTB/GRUB,
+non sostituisce Multiboot2/PVH su AMD64 e non avvia la migrazione a devmgr o ad
+altri servizi NEXS-NG.
+
+**Implementato e verificato:** handoff EFI AArch64 x0/x1; BootInfo v1; adapter
+legacy x1=0; parser FDT bounded; reservation map, /reserved-memory statico e
+DTB RESERVED; region union/overlap/hole handling nel PMM; usable-only VMM map;
+ricerca legacy page-by-page entro la finestra originaria da 1 GiB. Il test host
+è in `kernel/test/fdt_parser_test.c`; `make test-fdt` genera il DTB QEMU come
+input obbligatorio e ha superato 61 controlli ASan/UBSan. I test runtime sono
+PASS su AMD64 e AArch64, incluso il ramo legacy x1=0 esercitato da KTEST.
+
+**Restano fuori scope e aperti per fasi dedicate:** discovery generica device,
+interrupti e phandle; riserve dinamiche size-based; fuzzing continuo/libFuzzer;
+certificazione su hardware fisico. Non sono gate bloccanti per chiudere BOOT-1.
+
+Fonte di dettaglio e risultati: `docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.
+
+## 18. DEV-1 — Device discovery catalogue and lifecycle audit (AUDIT COMPLETATO, IMPLEMENTAZIONE NON AVVIATA)
+
+La ricognizione source-level è stata completata su HAL registry, driver binding,
+FDT parser, PCI AMD64/AArch64, USB HCD/core e GPU registry. Il report conserva
+i riferimenti e distingue codice legacy effettivo, decisioni architetturali
+NEXS-NG e lavoro ancora da implementare:
+
+`docs/report/DEV-1-DEVICE-DISCOVERY-AUDIT-2026-11-03.md`
+
+Conferme principali:
+- il parser FDT BOOT-1 non esporta ancora nodi device generici; ECAM, finestre
+  PCI, slot VirtIO-MMIO e IRQ AArch64 sono ancora configurati da costanti;
+- il registro HAL legacy è statico/append-only (64 elementi), senza remove,
+  generation o refcount; `hal_device_t` e `struct hal_device` sono due
+  descrittori distinti;
+- il matching driver legacy è una scansione esplicita chiamata da `usb_init`,
+  non un attach/hotplug runtime;
+- entrambi i percorsi PCI abilitano BusMaster prima del binding/DMA ownership;
+  BAR sizing/mapping non è ancora completo;
+- USB runtime disconnect/reconnect e GPU lifetime drain non sono implementati.
+
+**Sequenza DEV-1:** parser FDT generic node/property bounded → compatible,
+status, phandle e raw resource tuples → traduzione `reg` tramite `ranges`
+validati → decode interrupt parent/cells → host tests ASan/UBSan → confronto
+con le costanti QEMU-virt attuali. Il parser produce metadata non privilegiati:
+nessuna capability MMIO/IRQ/DMA viene concessa dalla discovery.
+
+DEV-2 (PCI resource ownership/BAR lifecycle) e DIAG-1 (snapshot/eventi device)
+restano gate distinti. USB hotplug, GPU refcount/quiescence e il servizio
+userland `devmgrd` non vanno accorpati alla modifica parser.
+
+
+## 19. Input-time SSP / kernel context fault (OPEN — 2026-11-04)
+
+Una sessione interattiva AArch64 ha riprodotto un panic mentre NXShell stava ancora ricevendo caratteri: lo screenshot prova che cat /reg/system.version non è stato eseguito. Non classificare il fault come VFS/registry read. La seriale riporta instruction abort a ELR/FAR zero, PID 32002 (idle CPU2 nella tabella nxproc) e SSP return address 0xffff0000400a0ab4, simbolizzato come sys_registry+0x3b4. Il ramo del syscall e il writer della corruzione non sono noti.
+
+Evidenze complete: docs/report/GFX-INPUT-SSP-FAULT-2026-11-04.md e docs/report/logs/GFX-runtime-fault-aarch64-20261104-001123/. È un evento distinto dal precedente SSP in compositor_window_write().
+
+**Prossimo gate:** aggiungere diagnostica SSP sicura con caller FP/LR e stack bounds, preservare il primo pt_regs, aggiungere trace per-CPU delle transizioni scheduler (prev/next, frame EL0/EL1, stack, pending_reenqueue/deferred reap) e trace input a sequenza limitata. Poi riprodurre digitazione QMP, focus/mouse e registry reads. Non modificare VFS/registry né togliere lock compositor prima di aver identificato il writer. Clean build e test-all AMD64+AArch64 dopo ogni fix.

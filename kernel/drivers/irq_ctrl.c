@@ -16,7 +16,7 @@
  *   - Must be called before any irq_register() call.
  */
 #include <kernel/drivers.h>
-#include <kernel/hal.h>
+#include <hal/core.h>
 #include <kernel/printk.h>
 
 /*
@@ -31,6 +31,6 @@
  * MMIO side effects: delegated to arch_irq_init().
  */
 void driver_irq_init(void) {
-    arch_irq_init();
+    hal_irq_controller_init();
     pr_info("%s", "IRQ driver initialized via HAL\n");
 }

@@ -40,7 +40,7 @@ static inline const char *nxperm_level_name(int level) {
  * This used to be a hand-maintained copy of the kernel's level_ceiling[]; a
  * copy is a drift bug waiting to happen, so it is now a thin alias. */
 static inline unsigned int nxperm_level_mask(int level) {
-  return caps_for_level(level);
+  return caps_default_for_level(level);
 }
 
 /* One capability bit -> a human service label. */
@@ -52,6 +52,7 @@ static const struct nxperm_cap NXPERM_CAPS[] = {
     {CAP_SPAWN, "spawn"},     {CAP_FS_WRITE, "files"},
     {CAP_IPC_ANY, "ipc"},     {CAP_WINDOW, "windows"},
     {CAP_REG_WRITE, "registry"},
+    {CAP_WINDOW_MANAGE, "window-manager"},
 };
 #define NXPERM_NCAPS (int)(sizeof(NXPERM_CAPS) / sizeof(NXPERM_CAPS[0]))
 

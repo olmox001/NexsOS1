@@ -410,7 +410,7 @@ int fm_open_with_kilo(fm_file_t *file) {
   argv[0] = argv0;
   argv[1] = argv1;
 
-  int pid = nxexec_spawn_hosted_argv(2, argv);
+  int pid = execsvc_launch_hosted(2, argv);
   if (pid <= 0) {
     fm_set_status_message("Failed to open with kilo");
     return pid;
@@ -452,7 +452,7 @@ int fm_open_file(fm_file_t *file) {
     argc = 2;
   }
 
-  int pid = nxexec_spawn_hosted_argv(argc, argv);
+  int pid = execsvc_launch_hosted(argc, argv);
   if (pid <= 0) {
     fm_set_status_message("Failed to launch");
     return pid;

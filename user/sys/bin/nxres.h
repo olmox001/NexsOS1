@@ -53,6 +53,7 @@
 #include <os1.h>
 #include <string.h>
 #include <style_names.h>
+#include <os1_material_colors.h>
 
 /* The well-known registry keys init.c publishes each singleton system
  * service's live pid under (register_service_pid).  srv.notify_pid is
@@ -147,15 +148,15 @@ static const unsigned int os1_bg_colors[] = {
     0xFF143060u, /* BG_BLUE          */
     0xFF8E44ADu, /* BG_MAGENTA       */
     0xFF2A9D8Fu, /* BG_CYAN          */
-    0xFFD8D8DCu, /* BG_WHITE         */
-    0xFF4A4A52u, /* BG_GRAY          */
+    OS1_MATERIAL_BG_WHITE, /* BG_WHITE         */
+    OS1_MATERIAL_BG_GRAY, /* BG_GRAY          */
     0xFFE8604Fu, /* BG_BRIGHT_RED    */
     0xFF52B788u, /* BG_BRIGHT_GREEN  */
     0xFFF2C94Cu, /* BG_BRIGHT_YELLOW */
     0xFF4A78C0u, /* BG_BRIGHT_BLUE   */
     0xFFB07CD1u, /* BG_BRIGHT_MAGENTA*/
     0xFF56C9C9u, /* BG_BRIGHT_CYAN   */
-    0xFFF5F5F7u, /* BG_BRIGHT_WHITE  */
+    OS1_MATERIAL_BG_BRIGHT_WHITE, /* BG_BRIGHT_WHITE  */
 };
 #define OS1_BG_COLORS_COUNT                                                    \
   (int)(sizeof(os1_bg_colors) / sizeof(os1_bg_colors[0]))

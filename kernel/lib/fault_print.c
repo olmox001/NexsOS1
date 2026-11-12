@@ -19,7 +19,7 @@
 #include <kernel/types.h>
 #include <stdarg.h>
 
-/* Fallback depth counter for when arch_cpu_info_fault_safe() returns NULL
+/* Fallback depth counter for when cpu_info_fault_safe() returns NULL
  * (early boot, corrupted GS base).  Global — a false "nested" positive across
  * two CPUs faulting simultaneously pre-init is acceptable: both halt cleanly. */
 static volatile uint32_t fault_depth_fallback;
@@ -64,14 +64,14 @@ void fault_printf(const char *fmt, ...) {
 }
 
 unsigned fault_enter(void) {
-  struct cpu_info *ci = arch_cpu_info_fault_safe();
+  struct cpu_info *ci = cpu_info_fault_safe();
   if (ci)
     return ++ci->in_fault;
   return __sync_add_and_fetch(&fault_depth_fallback, 1);
 }
 
 void fault_exit(void) {
-  struct cpu_info *ci = arch_cpu_info_fault_safe();
+  struct cpu_info *ci = cpu_info_fault_safe();
   if (ci) {
     if (ci->in_fault)
       ci->in_fault--;
@@ -82,6 +82,6 @@ void fault_exit(void) {
 }
 
 unsigned fault_depth(void) {
-  struct cpu_info *ci = arch_cpu_info_fault_safe();
+  struct cpu_info *ci = cpu_info_fault_safe();
   return ci ? ci->in_fault : fault_depth_fallback;
 }

@@ -2,17 +2,24 @@
  * kernel/kernel.c
  * Main kernel initialization and entry point
  */
-#include <drivers/keyboard.h>
+#include <drivers/input.h>
 #include <drivers/virtio_blk.h>
 #include <drivers/virtio_gpu.h>
 #include <kernel/arch.h>
+#include <kernel/boot_memory.h>
 #include <kernel/bootmodule.h>
 #include <kernel/bootphase.h>
+#include <kernel/object_boot.h>
 #include <kernel/buffer.h>
 #include <kernel/cpu.h>
 #include <kernel/drivers.h>
-#include <kernel/ext4.h>
 #include <kernel/fdt.h>
+#include <kernel/resource.h>
+#if HAL_BOOT_ABI_FDT
+#include <hal/boot_info.h>
+#include <hal/config.h>
+#endif
+#include <hal/time.h>
 #include <kernel/gpt.h>
 #include <kernel/graphics.h>
 #include <kernel/hal.h>
@@ -20,26 +27,21 @@
 #include <kernel/platform.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
-#include <kernel/procfs.h>
-#include <kernel/registry.h>
 #include <kernel/sched.h>
 #include <kernel/ssp.h>
 #include <kernel/string.h>
 #include <kernel/test.h>
+#include <kernel/timer.h>
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 
 /* Version */
 #define KERNEL_VERSION_MAJOR 0
 #define KERNEL_VERSION_MINOR 0
-#define KERNEL_VERSION_PATCH 5
-#define KERNEL_VERSION_BUILD 5
+#define KERNEL_VERSION_PATCH 6
+#define KERNEL_VERSION_BUILD 1
 
-#ifdef ARCH_AMD64
-#define KERNEL_NAME "AMD64 NexsOS1"
-#else
-#define KERNEL_NAME "AArch64 NexsOS1"
-#endif
+#define KERNEL_NAME "NX-Core/" HAL_PLATFORM_NAME
 
 /* External symbols */
 extern void secondary_cpu_entry(void); /* Assembly wrapper for AMD64 */
@@ -61,8 +63,10 @@ const char *boot_phase_name(enum boot_phase p) {
     return "K2-subsys";
   case BOOT_PHASE_K3_USERLAND:
     return "K3-userland";
-  default:
+  case BOOT_PHASE_RUNNING:
     return "running";
+  default:
+    return "unknown";
   }
 }
 
@@ -71,7 +75,6 @@ static void print_banner(void);
 static void init_memory(void);
 static void init_scheduler(void);
 static void init_compositor(void);
-static int spawn_init_process(void);
 
 /* FIX(NASA-01, Power of Ten Rule 4 — short functions): kernel_main() used to
  * be one ~110-line function covering K1 (hardware bring-up) through the
@@ -86,25 +89,91 @@ static int spawn_init_process(void);
 static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1);
 static void kernel_stage_k2_k3(void);
 
+#if HAL_BOOT_ABI_FDT
+static void validate_uefi_boot_info(const struct nxhal_boot_info *info) {
+  uint64_t bytes;
+
+  if (info->firmware_map_phys == 0U || info->firmware_map_record_count == 0U ||
+      info->firmware_map_record_size != NXHAL_UEFI_MEMORY_RECORD_SIZE ||
+      info->ebs_attempts == 0U ||
+      info->ebs_attempts > NXHAL_UEFI_EXIT_MAX_ATTEMPTS ||
+      info->map_growths > NXHAL_UEFI_MAP_MAX_GROWTHS || info->reserved0 != 0U)
+    panic("BootInfo: malformed UEFI memory-map handoff");
+  if (info->firmware_map_phys >= HAL_PHYS_MAP_LIMIT)
+    panic("BootInfo: UEFI map base outside physical map");
+  bytes = (uint64_t)info->firmware_map_record_count *
+          (uint64_t)info->firmware_map_record_size;
+  if (bytes > HAL_PHYS_MAP_LIMIT - info->firmware_map_phys)
+    panic("BootInfo: UEFI map span outside physical map");
+}
+
+static void validate_legacy_boot_info(const struct nxhal_boot_info *info) {
+  if (info->firmware_map_phys != 0U || info->firmware_map_record_count != 0U ||
+      info->firmware_map_record_size != 0U || info->ebs_attempts != 0U ||
+      info->map_growths != 0U || info->reserved0 != 0U)
+    panic("BootInfo: legacy handoff carried firmware-only fields");
+}
+
+static void validate_nxhal_boot_info(uint64_t boot_arg0, uint64_t boot_arg1) {
+  const struct nxhal_boot_info *info = &nxhal_boot_info;
+
+  if (info->magic != NXHAL_BOOT_INFO_MAGIC ||
+      info->version != NXHAL_BOOT_INFO_VERSION ||
+      info->size != NXHAL_BOOT_INFO_SIZE ||
+      info->source != NXHAL_BOOT_SOURCE_UNKNOWN || info->flags != 0U ||
+      info->fdt_phys != boot_arg0 || info->fdt_size != boot_arg1)
+    panic("BootInfo: invalid AArch64 NX-HAL handoff record");
+  if (boot_arg1 != 0U)
+    validate_uefi_boot_info(info);
+  else
+    validate_legacy_boot_info(info);
+}
+
+static void init_fdt_boot_handoff(uint64_t boot_arg0, uint64_t boot_arg1) {
+  size_t actual_fdt_size = 0;
+  int fdt_status;
+
+  validate_nxhal_boot_info(boot_arg0, boot_arg1);
+  nxhal_boot_info.source = boot_arg1 != 0U ? NXHAL_BOOT_SOURCE_AARCH64_EFI
+                                           : NXHAL_BOOT_SOURCE_LEGACY;
+  fdt_status = boot_arg1 != 0U
+                   ? fdt_init((uintptr_t)boot_arg0, (size_t)boot_arg1)
+                   : fdt_init_legacy((uintptr_t)boot_arg0, &actual_fdt_size);
+  if (fdt_status != FDT_PARSER_OK)
+    panic("FDT: validation failed status=%d base=0x%lx span=0x%lx", fdt_status,
+          boot_arg0, boot_arg1);
+  if (boot_arg1 == 0U && actual_fdt_size != boot_fdt_size)
+    panic("BootInfo: legacy DTB length mismatch handoff=0x%lx parsed=0x%lx",
+          (uint64_t)actual_fdt_size, boot_fdt_size);
+
+  nxhal_boot_info.fdt_phys = boot_fdt_ptr;
+  nxhal_boot_info.fdt_size = boot_fdt_size;
+  if (boot_arg1 != 0U)
+    nxhal_boot_info.flags =
+        NXHAL_BOOT_FLAG_FDT_SIZE_VALID | NXHAL_BOOT_FLAG_UEFI_MAP_VALID;
+  else if (boot_arg0 != 0U)
+    nxhal_boot_info.flags = NXHAL_BOOT_FLAG_LEGACY_TRUSTED_INPUT;
+  else
+    nxhal_boot_info.flags = NXHAL_BOOT_FLAG_LEGACY_SEARCH;
+  pr_info("BootInfo: source=%u DTB=0x%lx size=0x%lx flags=0x%x\n",
+          nxhal_boot_info.source, nxhal_boot_info.fdt_phys,
+          nxhal_boot_info.fdt_size, nxhal_boot_info.flags);
+  if (boot_arg1 != 0U)
+    pr_info("UEFI: map=0x%lx records=%u attempts=%u growths=%u\n",
+            nxhal_boot_info.firmware_map_phys,
+            nxhal_boot_info.firmware_map_record_count,
+            nxhal_boot_info.ebs_attempts, nxhal_boot_info.map_growths);
+}
+#endif
+
 /*
  * Kernel main entry point
  */
-/* Forward declaration for kernel_main */
-#ifdef ARCH_AMD64
-void kernel_main(uint64_t magic, uint64_t mbi_ptr);
-#else
-void kernel_main(uint64_t x0_arg);
-#endif
-extern void timer_init_percpu(void);
+/* Stable HAL handoff entry: provider assigns meaning to the two boot words. */
+void kernel_main(uint64_t boot_arg0, uint64_t boot_arg1);
 
-/* Kernel entry point - receives multiboot info pointer from bootloader */
-#ifdef ARCH_AMD64
-void kernel_main(uint64_t magic, uint64_t mbi_ptr) {
-  kernel_stage_k1_hardware(magic, mbi_ptr);
-#else
-void kernel_main(uint64_t x0_arg) {
-  kernel_stage_k1_hardware(x0_arg, 0);
-#endif
+void kernel_main(uint64_t boot_arg0, uint64_t boot_arg1) {
+  kernel_stage_k1_hardware(boot_arg0, boot_arg1);
   kernel_stage_k2_k3();
 }
 
@@ -113,64 +182,48 @@ void kernel_main(uint64_t x0_arg) {
  * (console, CPU exception/IDT state, IRQ controller, timer) to the point
  * where memory management and the scheduler can be initialized.
  *
- * @boot_arg0: amd64: multiboot magic (RDI). aarch64: x0 (device tree blob
- *             physical address).
- * @boot_arg1: amd64: multiboot info pointer (RSI). aarch64: unused (0).
+ * @boot_arg0: amd64: multiboot magic (RDI). aarch64: x0 (DTB physical base).
+ * @boot_arg1: amd64: multiboot info pointer (RSI). aarch64: x1 (validated DTB
+ *             available span; zero only for the explicit legacy adapter).
  *
  * Called exactly once, from kernel_main(), before kernel_stage_k2_k3().
  * Not reentrant; must run on the BSP with a valid boot stack and nothing
  * else concurrently touching arch/platform globals.
  */
 static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
-#ifdef ARCH_AMD64
+#if HAL_BOOT_ABI_MULTIBOOT2
   /* For AMD64, bootloader passes mb_magic via RDI, mb_info_ptr via RSI */
   extern uint64_t mb_info_ptr;
   extern uint64_t mb_magic;
   mb_info_ptr = boot_arg1;
   mb_magic = boot_arg0;
-#else
-  (void)boot_arg1;
 #endif
-  /* Initialize UART first for debug output */
+  /* Initialize UART first for debug output. */
   driver_console_init();
 
-#ifndef ARCH_AMD64
-  /* Ensure boot_fdt_ptr is set from the entry argument */
-  boot_fdt_ptr = boot_arg0;
-  /* aarch64: the device tree IS the device-discovery mechanism.  Without it
-   * nothing on the virtio-MMIO transport is found -- no block device, no
-   * input, no GPU -- and the failure would surface much later as a system that
-   * booted into a shell with no storage, which is nothing like "the DTB was
-   * not parsed". */
-  if (fdt_init(boot_fdt_ptr) != 0)
-    panic("FDT: no usable device tree at 0x%lx — no MMIO device can be "
-          "discovered on this platform",
-          (unsigned long)boot_fdt_ptr);
-  pr_info("Kernel: Entry x0 = 0x%lx\n", boot_arg0);
-#else
-  boot_fdt_ptr = 0;
-  /* amd64 has no device tree: devices come from PCI enumeration instead.  The
-   * scan is still attempted because a DTB in RAM would be usable if present,
-   * and NOT finding one is the EXPECTED answer here -- so it is reported as
-   * information, not dropped.  The same call is fatal on aarch64 above; that
-   * asymmetry is the point, and it is now stated instead of implied. */
-  if (fdt_init(0) != 0)
-    pr_info("%s", "FDT: no device tree found — expected on amd64, devices come "
-                  "from PCI enumeration\n");
-#endif
-
-  /* Print kernel banner */
+  /* Print kernel banner before the exception vectors are installed. */
   print_banner();
 
   /* Reseed the SSP stack canary from arch entropy before any deep call chain
-   * runs (LIB-SSP-01 / #71).  Safe here: kernel_main never returns through a
-   * canary-checked epilogue, so replacing the global guard mid-boot cannot
-   * trip a stale-canary check on a frame already on the stack. */
+   * runs (LIB-SSP-01 / #71). Safe here because kernel_main never returns
+   * through a canary-checked epilogue. */
   stack_guard_init();
 
   /* CPU initialization (exception vectors, per-CPU data) */
   pr_info("%s", "Initializing CPU...\n");
-  cpu_init();
+  hal_cpu_local_init();
+
+#if HAL_BOOT_ABI_FDT
+  init_fdt_boot_handoff(boot_arg0, boot_arg1);
+  pr_info("Kernel: Entry x0 = 0x%lx x1 = 0x%lx\n", boot_arg0, boot_arg1);
+#else
+  /* GRUB BIOS and GRUB UEFI both use the Multiboot2 x86 handoff.
+   * ACPI firmware tables and DTB are distinct discovery formats; do not
+   * fake an AMD64 DTB by probing an AArch64-only FDT parser.
+   * ACPI table interpretation remains a separate, explicit HAL task. */
+  pr_info("%s", "Boot discovery: AMD64 GRUB Multiboot2; PCI enabled, "
+                "ACPI table discovery not yet implemented; no DTB assumed\n");
+#endif
 
   /* Platform-specific hardware registration */
   arch_platform_early_init();
@@ -182,7 +235,8 @@ static void kernel_stage_k1_hardware(uint64_t boot_arg0, uint64_t boot_arg1) {
   /* System timer */
   pr_info("%s", "Initializing timer...\n");
   driver_timer_init();
-  timer_init_percpu();
+  if (nxhal_time_event_percpu_init(OS1LIBKERNEL_TIMER_HZ) != NXHAL_TIME_OK)
+    panic("%s", "TIME: BSP clockevent initialization failed");
 }
 
 /*
@@ -238,8 +292,8 @@ static void kernel_stage_k2_k3(void) {
    * load) no longer panics a healthy K1+K2: the kernel stays alive and
    * diagnosable on the UART (kernel-alone mode). */
   boot_phase_set(BOOT_PHASE_K3_USERLAND);
-  if (spawn_init_process() != 0)
-    pr_err("%s", "K3: userland failed to start — kernel-alone mode "
+  if (nx_object_bootstrap_launch() != 0)
+    pr_err("%s", "K3: bootstrap extension failed — kernel-alone mode "
                  "(K1+K2 healthy, no reboot; inspect via UART)\n");
 
   /* Enable interrupts on primary core */
@@ -301,23 +355,55 @@ static void init_memory(void) {
  * before init_memory_subsystems() (every K2 driver below allocates memory).
  */
 static void init_memory_core(void) {
-  /* Initialize physical memory manager with architecture-detected regions */
   size_t count = 0;
-  struct mem_region *regions = arch_platform_get_mem_regions(&count);
+  struct mem_region *regions;
 
-  /* Reserve a boot module (the release rootfs disk.img, loaded into RAM by
-   * GRUB) BEFORE the PMM is built, so it is never handed out as free RAM and
-   * the metadata is placed clear of it.  No-op when there is no module
-   * (aarch64, or the virtio-blk dev loop). */
-  {
-    uint64_t mb_base, mb_size;
-    if (arch_platform_get_boot_module(&mb_base, &mb_size) && count < 32) {
-      regions[count].base = mb_base;
-      regions[count].size = mb_size;
-      regions[count].type = MEM_REGION_RESERVED;
-      count++;
+  /* Freeze exactly one boot-memory snapshot. PMM, VMM and post-MM tests all
+   * consume this same map; EFI boots prefer the validated NX-HAL firmware map,
+   * while direct/legacy boots use the compatibility provider during migration.
+   */
+  boot_memory_init();
+  regions = boot_memory_regions(&count);
+  if (regions == NULL || count == 0U)
+    panic("%s", "BOOT-MEM: no validated boot-memory snapshot");
+
+  /* Emit the exact map consumed by PMM.  Report usable sum separately from
+   * highest-end span: address holes and reserved overlays are not RAM. */
+  uint64_t boot_usable_bytes = 0;
+  uint64_t boot_highest_usable_end = HAL_RAM_START;
+  uint64_t boot_highest_reserved_end = 0;
+  size_t boot_reserved_regions = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (regions[i].size > UINT64_MAX - regions[i].base)
+      panic("BOOT-MEM: region %zu overflows physical address space", i);
+    uint64_t end = regions[i].base + regions[i].size;
+    pr_info("BOOT-MEM: region[%zu] type=%u base=0x%lx size=0x%lx end=0x%lx\n",
+            i, (unsigned)regions[i].type, (unsigned long)regions[i].base,
+            (unsigned long)regions[i].size, (unsigned long)end);
+    if (regions[i].type == MEM_REGION_USABLE) {
+      if (end > boot_highest_usable_end)
+        boot_highest_usable_end = end;
+    } else {
+      boot_reserved_regions++;
+      if (end > boot_highest_reserved_end)
+        boot_highest_reserved_end = end;
     }
   }
+  if (boot_highest_usable_end <= HAL_RAM_START)
+    panic("%s", "BOOT-MEM: no usable RAM above architecture memory base");
+  boot_highest_usable_end &= ~((uint64_t)PAGE_SIZE - 1ULL);
+  boot_usable_bytes = pmm_calculate_usable_bytes(regions, count, HAL_RAM_START,
+                                                 boot_highest_usable_end);
+  if (boot_usable_bytes == 0)
+    panic("%s", "BOOT-MEM: usable RAM union is empty after page alignment");
+
+  pr_info("BOOT-MEM: regions=%zu usable=%lu MiB usable_span=%lu MiB "
+          "base=0x%lx reserved_descriptors=%zu highest_reserved_end=0x%lx\n",
+          count, (unsigned long)(boot_usable_bytes / (1024UL * 1024UL)),
+          (unsigned long)((boot_highest_usable_end - HAL_RAM_START) /
+                          (1024UL * 1024UL)),
+          (unsigned long)HAL_RAM_START, boot_reserved_regions,
+          (unsigned long)boot_highest_reserved_end);
 
   pmm_early_init(regions, count);
   pmm_init(regions, count);
@@ -328,9 +414,14 @@ static void init_memory_core(void) {
   /* Phase 2: Dynamic RAM-aware remapping */
   vmm_dynamic_remap();
 
+  /* Input queue core has no hardware dependency and is initialized before
+   * KTEST so queue semantics can be tested without live providers. */
+  OS1driver_input_core_init();
+
   /* Run unit tests now that PMM/VMM/kmalloc are live: memory tests (kmalloc
    * growth, vmm_protect) need real allocators, so the runner sits after the
    * MM bring-up instead of right after the banner. */
+  nx_buffer_init();
   ktest_run_all();
 
   /* K1→K2 boundary (S-ALIGN F9): memory/hardware is up; everything from
@@ -372,31 +463,17 @@ static void init_memory_subsystems(void) {
   buffer_init();
   pr_info("%s", "Buffer: Done.\n");
 
-  /* Mount the root filesystem: register providers, then probe partitions.
-   * Composition root (ASTRA): the wiring fs-driver → VFS happens here only;
-   * the rest of the kernel consumes the <kernel/vfs.h> contract. */
-  /* Composition root: if the only on-disk filesystem provider fails to
-   * register, the root mount below has nothing to mount WITH, and the symptom
-   * is an unbootable system reported as "no root filesystem" rather than as a
-   * registration that failed here. */
-  if (vfs_register_fs(&ext4_fs_ops) != 0)
-    panic("VFS: ext4 provider could not be registered — no root filesystem is "
-          "possible");
-  vfs_init();
-  pr_info("%s", "VFS: Done.\n");
+  /* Mount storage through the object provider, not through VFS calls
+   * embedded in the kernel's composition root. */
+  nx_object_storage_mount();
 
-  /* Initialize Keyboard */
-  keyboard_init();
+  /* Input providers depend on platform discovery and mounted storage. */
+  OS1driver_input_providers_init();
 
-  /* Initialize System Registry */
-  registry_init();
-  /* Mount it as the "/reg" file namespace (Plan 9-style): registry state is now
-   * reachable through the uniform VFS (e.g. cat /reg/system/hostname). */
-  registry_mount_vfs();
-  /* Mount /proc: live processes as TYPED capability objects in the namespace
-   * (open /proc/<pid> -> an OBJ_TYPE_PROCESS object). */
-  procfs_init();
-  pr_info("%s", "Registry: Initialized.\n");
+  /* Registry/object provider imports the on-image boot entry as a typed
+   * machine-owned registry node; no boot file path is parsed here. */
+  if (nx_object_registry_start() != 0)
+    pr_err("%s", "BOOT-OBJECT: initial registry unavailable; K3 will fail closed\n");
 
   /* Note: Slab allocator (kmalloc) is auto-initialized on first use. */
 }
@@ -434,37 +511,16 @@ static void init_compositor(void) {
 }
 
 /*
- * spawn_init_process (K3): create, load and enqueue PID1 (nx).
- * ROOT + explicit caps, NOT machine: PLVL_MACHINE is the machine's own
- * identity (B3 §3.1) — it would make PID1 unkillable and exempt from every
- * capability check and from the creator clamp for all its children.
- *
- * Returns 0 on success, -1 if userland could not be started — the caller
- * keeps the kernel alive (kernel-alone mode) instead of panicking: a
- * K3-only failure must not take down a healthy K1+K2.
- */
-static int spawn_init_process(void) {
-  pr_info("%s", "K3: Spawning First-Stage Init...\n");
-  struct process *nxinit =
-      process_create_caps("nxinit", PROC_PRIO_USER, PLVL_MACHINE, CAP_ALL);
-  if (nxinit && process_load_elf(nxinit, "/sbin/nxinit") == 0) {
-    pr_info("K3: Initialized PID %d (/sbin/nxinit)\n", nxinit->pid);
-    enqueue_task(nxinit);
-    return 0;
-  }
-  return -1;
-}
-
-/*
  * Secondary CPU entry point
  */
 void kernel_secondary_main(void) {
   uint32_t cpu = (uint32_t)hal_cpu_id();
 
   /* Initialize per-CPU state */
-  cpu_init();
+  hal_cpu_local_init();
   irq_init_percpu();
-  timer_init_percpu();
+  if (nxhal_time_event_percpu_init(OS1LIBKERNEL_TIMER_HZ) != NXHAL_TIME_OK)
+    panic("%s", "TIME: secondary clockevent initialization failed");
 
   /* SMP-IDLE-RACE (#169/#170): do NOT enable interrupts — which lets the timer
    * drive schedule() — until this CPU's idle task is visible.  schedule() picks

@@ -7,7 +7,7 @@ path, so a hand-written rule set would silently stop covering the boundary the
 moment a header is added.  This generator derives the rules from the actual
 inventory instead, so the gate cannot drift away from the tree:
 
-  * every file under include/api and include/abi becomes a rule forbidding the
+  * every file under system/include/api and system/include/contract becomes a rule forbidding the
     KERNEL from including it;
   * every .c under kernel/lib becomes a rule forbidding USERLAND from compiling
     it as a source.
@@ -22,7 +22,7 @@ rather than two means there is one place a violation has to get past.
 
 import os
 
-API_DIRS = ("include/api", "include/abi")
+API_DIRS = ("system/include/api", "system/include/contract")
 KERNEL_LIB = "kernel/lib"
 # TWO files, because the two directions must be checked against DIFFERENT
 # trees.  `#include <os1.h>` is a violation in kernel/ and entirely correct in
@@ -89,7 +89,7 @@ def main():
         out,
         "the KERNEL must not include a USERLAND header",
         incs,
-        "Enabled today by Makefile:101 giving the kernel -Iinclude/abi -Iinclude/api.",
+        "Userland headers are supplied by the NX-SDK under system/include.",
     )
     with open(OUT_KERNEL, "w") as f:
         f.write("\n".join(out) + "\n")

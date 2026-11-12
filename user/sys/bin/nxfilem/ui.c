@@ -697,7 +697,14 @@ int fm_ui_init(void) {
   if (win < 0)
     return -1;
   fm_state.window_id = win;
-  fm_gfx_init(win, ww, wh);
+  int initialized = fm_gfx_init(win, ww, wh);
+  if (initialized != 0) {
+    OS1_report_error("nxfilem.framebuffer_init", initialized);
+    fm_gfx_shutdown();
+    destroy_window(win);
+    fm_state.window_id = -1;
+    return -1;
+  }
 
   /* Self-register this pid as the live "srv.filem_pid" endpoint
    * (nxres.h's nxres_look_ping_targets) so an external style/theme/bg
@@ -723,14 +730,10 @@ void fm_ui_reinit_window(int ww, int wh) {
     ww = FM_MIN_WIN_W;
   if (wh < FM_MIN_WIN_H)
     wh = FM_MIN_WIN_H;
-  /* Keep the compositor's own window record in sync with the clamped size
-   * (nxlauncher.c's reinit_window() does the same) -- without this the
-   * compositor still thinks the window is the OLD size (stale w/h in
-   * OS1_window_enum(), stale hit-test/clip rect) even though we already
-   * reallocated our buffer to the new one. */
-  if (fm_state.window_id >= 0)
-    OS1_window_resize(fm_state.window_id, ww, wh);
-  fm_gfx_realloc(ww, wh);
+  /* WM presentation geometry was already changed via WINDOW object.
+   * Preserve the previous logical buffer on allocation/adoption failure. */
+  int rc = fm_gfx_realloc(ww, wh);
+  if (rc != 0) OS1_report_error("nxfilem.resize", rc);
 }
 
 static unsigned g_sig = 0xFFFFFFFFu;

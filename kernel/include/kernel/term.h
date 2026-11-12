@@ -35,7 +35,8 @@ struct terminal {
   uint32_t default_fg;    /* SGR-reset / default foreground                    */
   uint32_t bg_color;      /* default (window) background                       */
   uint32_t curr_bg_color; /* current ANSI background                          */
-  int bold;               /* SGR 1/22: bold ⇒ bright palette for 30-37         */
+  int bold;               /* SGR 1/22: bright palette for 30-37              */
+  int reverse;            /* SGR 7/27: swap displayed fg/bg, keep ANSI base */
   int saved_x, saved_y;   /* DECSC/DECRC (ESC[s / ESC[u) cursor save/restore   */
   int escape_state;       /* 0=normal, 1=saw ESC, 2=in CSI                     */
   char escape_buf[32];    /* CSI parameter bytes                               */

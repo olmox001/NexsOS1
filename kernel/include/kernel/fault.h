@@ -13,12 +13,12 @@
 #ifndef _KERNEL_FAULT_H
 #define _KERNEL_FAULT_H
 
+#include <hal/frame.h>
 #include <kernel/nx_contract.h>
 #include <stdarg.h>
 #include <kernel/types.h>
 
 struct cpu_info;
-struct pt_regs;
 
 /*
  * fault_printf / fault_vprintf - lock-free emergency console output.
@@ -54,7 +54,7 @@ void fault_exit(void);
 unsigned fault_depth(void);
 
 /*
- * arch_cpu_info_fault_safe - per-HAL: locate this CPU's cpu_info via a path
+ * cpu_info_fault_safe - per-HAL: locate this CPU's cpu_info via a path
  * with no faultable dependencies.
  *
  *   amd64:   reads the IA32_GS_BASE MSR (rdmsr — no memory access) and
@@ -65,7 +65,7 @@ unsigned fault_depth(void);
  *
  * Returns NULL when the structure cannot be determined safely.
  */
-struct cpu_info *arch_cpu_info_fault_safe(void);
+struct cpu_info *cpu_info_fault_safe(void);
 
 /*
  * arch_frame_on_fault_stack - aarch64 HAL: whether an exception frame lives
@@ -88,17 +88,17 @@ int arch_frame_on_fault_stack(const void *frame) NX_MUST_USE;
  * uniformly so the user-fault debug is identical across arches (DIR-06 HAL
  * conformance: the reporting lives HERE, not duplicated per arch).
  */
-struct pt_regs *fault_handle_user_or_panic(struct pt_regs *regs, int user_mode,
+hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
                                            uint64_t fault_addr, uint64_t fault_pc,
                                            const char *desc, uint64_t syndrome);
 
 /*
- * arch_uaccess_fault_fixup - per-HAL: release the arch_copy_{from,to}_user
+ * uaccess_fault_fixup - per-HAL: release the arch_copy_{from,to}_user
  * critical section after a fault inside the copy window (clear the per-CPU
  * uaccess_active flag, drop mm_lock / restore IRQ state where the arch holds
  * them).  Called only by fault_handle_user_or_panic on the uaccess path.
  */
-void arch_uaccess_fault_fixup(void);
+void uaccess_fault_fixup(void);
 
 /*
  * Symbolized frame-pointer backtrace (kernel/lib/backtrace.c, steps 11-12).

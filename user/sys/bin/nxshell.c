@@ -17,10 +17,12 @@
  * (compositor reflows the cell grid via term_resize).
  */
 #include "nxexec.h"
+#include <os1_tty.h>
 #include "nxjobs.h"
 #include "nxline.h"
 #include "nxperm.h"
 #include "nxres.h"
+#include <os1_material_colors.h>
 #include <fcntl.h>
 #include <input.h>
 #include <os1.h>
@@ -65,15 +67,11 @@ static void shell_redraw_accent(void);
 
 static void shell_load_colors(int light) {
   g_light = light;
-  if (light) {
-    g_col_bg = 0xFFF5F5F7u;
-    g_col_fg = 0xFF1C1C1Eu;
-    g_col_prompt = 0xFF007AFFu;
-  } else {
-    g_col_bg = 0xFF1A1A22u;
-    g_col_fg = 0xFFE0E0E0u;
-    g_col_prompt = 0xFF00FF88u;
-  }
+  struct os1_material_tty_palette palette =
+      os1_material_tty_palette(light);
+  g_col_bg = palette.text_background;
+  g_col_fg = palette.text_foreground;
+  g_col_prompt = palette.prompt;
 }
 
 static void shell_check_theme(void) {
@@ -95,8 +93,12 @@ static void shell_redraw_accent(void) {
 }
 
 static void shell_on_resize(int w, int h) {
-  if (my_window < 0 || w <= 0 || h <= 0)
-    return;
+  if (w <= 0 || h <= 0) return;
+  if (my_window < 0) {
+    g_win_w = w;
+    g_win_h = h;
+    return; /* nxttyd owns the actual pixel surface. */
+  }
   if (w < MIN_WIN_W)
     w = MIN_WIN_W;
   if (h < MIN_WIN_H)
@@ -140,8 +142,8 @@ static int spawn_search_args(int argc, char *argv[], char *out_path) {
       close(fds[i]);
     return -1;
   }
-  int pid = nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0,
-                                      redir, nredir);
+  int pid = execsvc_launch(argc, argv, EXECSVC_MODE_FOREGROUND,
+                           redir, nredir, out_path, SPAWN_PATH_MAX);
   /* The child owns its own dups now; drop our copies so the files close when
    * both sides are done (POSIX fork+dup2 lifecycle). */
   for (int i = 0; i < nfds; i++)
@@ -189,8 +191,8 @@ static int spawn_with_extra_redir(int argc, char *argv[], int extra_child_fd,
     redir[nredir].source_pid = 0; /* our own table */
     nredir++;
   }
-  int pid = nxexec_spawn_search_redir(argc, argv, out_path, /*detached=*/0,
-                                      redir, nredir);
+  int pid = execsvc_launch(argc, argv, EXECSVC_MODE_FOREGROUND,
+                           redir, nredir, out_path, SPAWN_PATH_MAX);
   for (int i = 0; i < nfds; i++)
     close(fds[i]); /* our own `>`/`2>` files; NOT the caller's pipe end */
   return pid;
@@ -601,7 +603,7 @@ static void run_command_line(char *line) {
     nxperm_mask_str(mask, m, (int)sizeof(m));
     printf("pid=%d level=%s caps=%s\n", get_pid(), nxperm_level_name(level), m);
   } else if (strcmp(cmd, "about") == 0) {
-    print("\n\033[1;36mNeXs OS V0.0.5.4\033[0m\n");
+    print("\n\033[1;36mNexsOS V0.0.6.1\033[0m\n");
     print("\033[33mGraphics:\033[0m Window Compositor + ANSI Terminal\n");
     print("\033[35mInput:\033[0m Interrupt-driven VirtIO Mouse/Keyboard\n");
     print("\033[32mLibrary:\033[0m POSIX-like userlib with printf support\n");
@@ -899,11 +901,54 @@ int main(int argc, char *argv[]) {
   int pid = get_pid();
 
   char cwd[128] = {0};
-  getcwd(cwd, sizeof(cwd));
-  if (strcmp(cwd, "/") == 0 || cwd[0] == '\0')
-    chdir("/home");
+  int cwd_status = getcwd(cwd, sizeof(cwd));
+  if (cwd_status != 0 || strcmp(cwd, "/") == 0 || cwd[0] == '\0') {
+    if (chdir("/home") != 0)
+      OS1_report_error("nxshell.initial_directory", -EIO);
+  }
 
   shell_load_colors(nxres_theme_is_light());
+
+  /* The session renderer owns the actual TTY window and receives this
+   * process's stdout through its PORT. Input remains the established
+   * IPC_TYPE_INPUT contract, forwarded by the terminal service. Avoid a
+   * second shell window/BLIT owner; the shell still owns its line editor,
+   * jobs, history, signals and command routing. */
+  const char *tty_session = getenv("NX_TTY_PORT");
+  int tty_hosted = tty_session != NULL && tty_session[0] != '\0';
+
+  /* The original NXShell always acquired a fresh graphical window.
+   * After userland TTY migration the inherited NX_TTY_PORT alone no longer
+   * proves that THIS shell is the child controlled by that terminal: an
+   * interactive shell launched as a shell job inherits the old environment.
+   * Compare the actual spawning parent with the per-session port owner.
+   * A different parent means a NEW interactive TTY session is needed.
+   * This is startup/session ownership, not command parser policy:
+   * all -c, redirections, pipelines and job control remain unchanged.
+   * The existing nxexec launcher classifies the single executable. */
+  if (tty_hosted) {
+    size_t prefix = sizeof(OS1_TTY_PORT_PREFIX) - 1U;
+    if (strncmp(tty_session, OS1_TTY_PORT_PREFIX, prefix) != 0) {
+      print("nxshell: invalid inherited terminal session\n");
+      return 1;
+    }
+    char *end = NULL;
+    long owner = strtol(tty_session + prefix, &end, 10);
+    pid_t parent = getppid();
+    if (owner <= 0 || owner > INT32_MAX || end == NULL || *end != '\0' ||
+        parent < 0) {
+      print("nxshell: cannot authenticate controlling terminal parent\n");
+      return 1;
+    }
+    if ((long)parent != owner) {
+      int launcher = execsvc_launch_hosted(argc, argv);
+      if (launcher <= 0) {
+        print("nxshell: failed to acquire an independent graphical session\n");
+        return 1;
+      }
+      return 0;
+    }
+  }
 
   {
     char pidbuf[16];
@@ -942,20 +987,25 @@ int main(int argc, char *argv[]) {
   if (wy < 0)
     wy = 100 + y_off;
 
-  my_window = create_window(wx, wy, g_win_w, g_win_h, title);
-  if (my_window <= 0) {
-    print("[NXShell] Error creating window\n");
-    exit(1);
+  if (!tty_hosted) {
+    /* Compatibility boot without nxttyd: still own a graphical shell.
+     * Print the initial prompt before drawing any custom pixels, because
+     * the current BLIT compatibility path marks a process self-rendered.
+     * The supervised session below does not use this legacy path. */
+    my_window = create_window(wx, wy, g_win_w, g_win_h, title);
+    if (my_window <= 0) {
+      print("[NXShell] Error creating window\n");
+      exit(1);
+    }
+    set_focus(get_pid());
   }
 
-  shell_redraw_accent();
-  set_focus(get_pid());
-
   print("\n[NXShell] TTY Window ");
-  print_hex(my_window);
+  if (tty_hosted) print("userland");
+  else print_hex(my_window);
   printf(" active (PID %d).\n", get_pid());
   print_prompt();
-  write(3, "NXShell> ", 7);
+  if (!tty_hosted) shell_redraw_accent();
 
   while (running) {
     shell_check_theme();

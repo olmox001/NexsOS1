@@ -29,11 +29,16 @@
 
 #include <kernel/nx_contract.h>
 #include <kernel/types.h>
+#include <kernel/resource.h>
 #include <kernel/vfs.h>
 #include <object.h> /* shared ABI: OBJ_TYPE_*, OS1_RIGHT_*, OS1_NS_* */
 
 #define NPROC_HANDLES 32
 #define OBJ_FILE_PATH_MAX 128
+
+/* Shared bounded creation backend. urequest is copied before use. */
+long kernel_spawn_owned(int owner_pid,
+    const struct os1_spawn_request_v1 *urequest) NX_MUST_USE;
 
 /* A kernel object: a refcounted, typed resource named only through handles.
  * Payloads for every type are kept inline (a kobject is small and kmalloc'd);
@@ -63,6 +68,8 @@ struct kobject {
    * IS a capability.  Heap-allocated (struct kport, kernel/core/object.c) for
    * the same reason as the pipe; NULL for non-port objects. */
   struct kport *port;
+  const struct nx_resource_ops *resource_ops;
+  void *resource_state;
 };
 
 /* A handle-table slot: a capability = (object, held rights). */

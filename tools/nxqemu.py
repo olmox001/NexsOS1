@@ -90,6 +90,66 @@ def find_qemu_efi_firmware() -> dict[str, Path | str]:
     )
 
 
+def find_qemu_x86_efi_firmware() -> dict[str, Path | str]:
+    """Find split OVMF/EDK2 pflash images for x86_64 QEMU."""
+    env_code = os.environ.get("NEXS_QEMU_X86_EFI_CODE")
+    env_vars = os.environ.get("NEXS_QEMU_X86_EFI_VARS")
+    code_candidates: list[Path] = []
+    vars_candidates: list[Path] = []
+
+    if env_code:
+        code_candidates.append(Path(env_code).expanduser())
+    if env_vars:
+        vars_candidates.append(Path(env_vars).expanduser())
+
+    for prefix in (
+        Path("/usr/local/share/qemu"),
+        Path("/opt/homebrew/share/qemu"),
+        Path("/usr/share/qemu"),
+    ):
+        code_candidates.extend(
+            (prefix / "edk2-x86_64-code.fd", prefix / "edk2-i386-code.fd")
+        )
+        vars_candidates.append(prefix / "edk2-i386-vars.fd")
+
+    for prefix in (
+        Path("/usr/share/OVMF"),
+        Path("/usr/share/edk2/ovmf"),
+        Path("/usr/share/edk2/x64"),
+    ):
+        code_candidates.extend(
+            (prefix / "OVMF_CODE.fd", prefix / "OVMF_CODE_4M.fd")
+        )
+        vars_candidates.extend(
+            (prefix / "OVMF_VARS.fd", prefix / "OVMF_VARS_4M.fd")
+        )
+
+    brew = shutil.which("brew")
+    if brew:
+        try:
+            prefix = Path(
+                subprocess.check_output([brew, "--prefix", "qemu"], text=True).strip()
+            )
+            code_candidates.extend(
+                (
+                    prefix / "share/qemu/edk2-x86_64-code.fd",
+                    prefix / "share/qemu/edk2-i386-code.fd",
+                )
+            )
+            vars_candidates.append(prefix / "share/qemu/edk2-i386-vars.fd")
+        except (subprocess.CalledProcessError, OSError):
+            pass
+
+    code = _first_file(code_candidates)
+    var_template = _first_file(vars_candidates)
+    if code and var_template:
+        return {"mode": "split", "code": code, "vars": var_template}
+    raise RuntimeError(
+        "AMD64 UEFI firmware not found. Install OVMF/EDK2 or set "
+        "NEXS_QEMU_X86_EFI_CODE and NEXS_QEMU_X86_EFI_VARS."
+    )
+
+
 def prepare_uefi_vars(firmware: dict[str, Path | str], destination: Path,
                       fresh: bool = True) -> Optional[Path]:
     if firmware.get("mode") != "split":
@@ -103,23 +163,57 @@ def prepare_uefi_vars(firmware: dict[str, Path | str], destination: Path,
 
 def build_qemu_command(
     arch: str,
-    iso: Path,
+    iso: Optional[Path],
     disk: Path,
     serial: str = "stdio",
     display: str = "default",
     qmp_socket: Optional[Path] = None,
     debug: bool = False,
     uefi_vars_file: Optional[Path] = None,
+    boot_mode: str = "iso",
+    kernel: Optional[Path] = None,
+    dtb: Optional[Path] = None,
+    firmware: str = "auto",
 ) -> list[str]:
     arch = arch.lower()
+    boot_mode = boot_mode.lower()
+    firmware = firmware.lower()
     if arch not in ("amd64", "aarch64"):
         raise ValueError(f"unsupported architecture: {arch}")
-    iso = iso.resolve()
+    if boot_mode not in ("iso", "direct"):
+        raise ValueError(f"unsupported boot mode: {boot_mode}")
+    if firmware not in ("auto", "bios", "uefi"):
+        raise ValueError(f"unsupported firmware mode: {firmware}")
+    if boot_mode == "direct" and firmware != "auto":
+        raise ValueError("firmware selection applies only to ISO boot mode")
+    if arch == "aarch64" and boot_mode == "iso" and firmware == "bios":
+        raise ValueError("AArch64 ISO boot requires UEFI firmware")
+
     disk = disk.resolve()
-    if not iso.is_file():
-        raise FileNotFoundError(f"GRUB boot ISO not found: {iso}; run make ARCH={arch} boot-iso")
     if not disk.is_file():
-        raise FileNotFoundError(f"root filesystem image not found: {disk}; run make ARCH={arch} disk")
+        raise FileNotFoundError(
+            f"root filesystem image not found: {disk}; run make ARCH={arch} disk"
+        )
+    if boot_mode == "iso":
+        if iso is None:
+            raise ValueError("GRUB ISO is required in iso mode")
+        iso = iso.resolve()
+        if not iso.is_file():
+            raise FileNotFoundError(
+                f"GRUB boot ISO not found: {iso}; run make ARCH={arch} boot-iso"
+            )
+    else:
+        if kernel is None:
+            raise ValueError("kernel image is required in direct mode")
+        kernel = kernel.resolve()
+        if not kernel.is_file():
+            raise FileNotFoundError(f"kernel image not found: {kernel}")
+        if arch == "aarch64":
+            if dtb is None:
+                raise ValueError("AArch64 direct mode requires a DTB")
+            dtb = dtb.resolve()
+            if not dtb.is_file():
+                raise FileNotFoundError(f"device tree not found: {dtb}")
 
     qemu_name = "qemu-system-x86_64" if arch == "amd64" else "qemu-system-aarch64"
     qemu = shutil.which(qemu_name)
@@ -129,36 +223,70 @@ def build_qemu_command(
     smp_count = int(os.environ.get("NEXS_QEMU_SMP", "4"))
     if not 1 <= smp_count <= 64:
         raise ValueError("NEXS_QEMU_SMP must be in [1, 64]")
-    cmd = [qemu, "-m", "5G", "-smp", str(smp_count), "-no-reboot", "-no-shutdown",
-           "-boot", "order=d"]
+    cmd = [qemu, "-m", "5G", "-smp", str(smp_count),
+           "-no-reboot", "-no-shutdown"]
+    if boot_mode == "iso":
+        cmd += ["-boot", "order=d"]
 
     if arch == "amd64":
-        cmd += ["-machine", "q35", "-cpu", "max"]
-        cmd += ["-cdrom", str(iso)]
+        amd64_cpu = os.environ.get("NEXS_QEMU_AMD64_CPU", "max").strip()
+        if not amd64_cpu:
+            raise ValueError("NEXS_QEMU_AMD64_CPU must not be empty")
+        cmd += ["-machine", "q35", "-cpu", amd64_cpu]
+        if boot_mode == "iso":
+            if firmware == "uefi":
+                x86_firmware = find_qemu_x86_efi_firmware()
+                if uefi_vars_file is None:
+                    uefi_vars_file = ROOT / "build/amd64/grub-uefi/vars.fd"
+                vars_path = prepare_uefi_vars(
+                    x86_firmware, uefi_vars_file, fresh=True
+                )
+                cmd += [
+                    "-drive",
+                    "if=pflash,format=raw,unit=0,readonly=on,"
+                    f"file={x86_firmware['code']}",
+                    "-drive",
+                    f"if=pflash,format=raw,unit=1,file={vars_path}",
+                ]
+            cmd += ["-cdrom", str(iso)]
+        else:
+            cmd += ["-kernel", str(kernel)]
         cmd += ["-device", "virtio-gpu-pci,id=nxgpu0",
                 "-device", "virtio-keyboard-pci,id=nxkbd0,display=nxgpu0",
-                "-device", "virtio-mouse-pci,id=nxmouse0,display=nxgpu0"]
-        cmd += ["-drive", f"if=none,file={disk},id=rootfs,format=raw",
+                "-device", "virtio-mouse-pci,id=nxmouse0,display=nxgpu0",
+                "-drive", f"if=none,file={disk},id=rootfs,format=raw",
                 "-device", "virtio-blk-pci,drive=rootfs"]
     else:
         cmd += ["-machine", "virt", "-cpu", "cortex-a57"]
-        firmware = find_qemu_efi_firmware()
-        if firmware["mode"] == "split":
-            if uefi_vars_file is None:
-                uefi_vars_file = ROOT / "build/aarch64/grub-efi/vars.fd"
-            vars_path = prepare_uefi_vars(firmware, uefi_vars_file, fresh=True)
-            cmd += ["-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={firmware['code']}",
-                    "-drive", f"if=pflash,format=raw,unit=1,file={vars_path}"]
+        if boot_mode == "iso":
+            aarch64_firmware = find_qemu_efi_firmware()
+            if aarch64_firmware["mode"] == "split":
+                if uefi_vars_file is None:
+                    uefi_vars_file = ROOT / "build/aarch64/grub-efi/vars.fd"
+                vars_path = prepare_uefi_vars(
+                    aarch64_firmware, uefi_vars_file, fresh=True
+                )
+                cmd += [
+                    "-drive",
+                    "if=pflash,format=raw,unit=0,readonly=on,"
+                    f"file={aarch64_firmware['code']}",
+                    "-drive",
+                    f"if=pflash,format=raw,unit=1,file={vars_path}",
+                ]
+            else:
+                cmd += ["-bios", str(aarch64_firmware["firmware"])]
         else:
-            cmd += ["-bios", str(firmware["firmware"])]
+            cmd += ["-kernel", str(kernel), "-dtb", str(dtb)]
         cmd += ["-device", "virtio-gpu-device,id=nxgpu0",
                 "-device", "virtio-keyboard-device,id=nxkbd0,display=nxgpu0",
-                "-device", "virtio-mouse-device,id=nxmouse0,display=nxgpu0"]
-        cmd += ["-drive", f"if=none,file={disk},id=rootfs,format=raw",
+                "-device", "virtio-mouse-device,id=nxmouse0,display=nxgpu0",
+                "-drive", f"if=none,file={disk},id=rootfs,format=raw",
                 "-device", "virtio-blk-device,drive=rootfs"]
-        cmd += ["-device", "virtio-scsi-device,id=scsi0",
-                "-drive", f"if=none,file={iso},id=cdrom,media=cdrom,format=raw",
-                "-device", "scsi-cd,drive=cdrom"]
+        if boot_mode == "iso":
+            cmd += ["-device", "virtio-scsi-device,id=scsi0",
+                    "-drive",
+                    f"if=none,file={iso},id=cdrom,media=cdrom,format=raw",
+                    "-device", "scsi-cd,drive=cdrom"]
 
     if serial == "none":
         cmd += ["-serial", "none"]
@@ -183,9 +311,15 @@ def build_qemu_command(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run NexsOS1 under QEMU via GRUB")
+    parser = argparse.ArgumentParser(description="Run NexsOS1 under QEMU")
     parser.add_argument("--arch", choices=("amd64", "aarch64"), required=True)
-    parser.add_argument("--iso", type=Path, required=True)
+    parser.add_argument("--boot-mode", choices=("iso", "direct"), default="iso")
+    parser.add_argument(
+        "--firmware", choices=("auto", "bios", "uefi"), default="auto"
+    )
+    parser.add_argument("--iso", type=Path)
+    parser.add_argument("--kernel", type=Path)
+    parser.add_argument("--dtb", type=Path)
     parser.add_argument("--disk", type=Path, required=True)
     parser.add_argument("--serial", default="stdio")
     parser.add_argument("--display", default="default")
@@ -195,9 +329,11 @@ def main() -> int:
     parser.add_argument("--print-command", action="store_true")
     args = parser.parse_args()
     try:
-        command = build_qemu_command(args.arch, args.iso, args.disk, args.serial,
-                                     args.display, args.qmp, args.debug,
-                                     args.uefi_vars)
+        command = build_qemu_command(
+            args.arch, args.iso, args.disk, args.serial, args.display,
+            args.qmp, args.debug, args.uefi_vars, args.boot_mode,
+            args.kernel, args.dtb, args.firmware,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"nxqemu: {exc}", file=sys.stderr)
         return 2

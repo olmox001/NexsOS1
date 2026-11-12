@@ -1,0 +1,284 @@
+{
+  "version": 1,
+  "constants": {
+    "OS1_TIME_ABI_VERSION": "UINT32_C(1)",
+    "OS1_TIMER_STATS_ABI_VERSION": "UINT32_C(4)",
+    "OS1_TIME_MAX_CPUS": "UINT32_C(64)",
+    "OS1_TIME_CPU_ONLINE": "UINT32_C(0x00000001)",
+    "OS1_TIME_CPU_ARMED": "UINT32_C(0x00000002)",
+    "OS1_TIME_CPU_SYNCHRONIZED": "UINT32_C(0x00000004)",
+    "OS1_TIME_OBJECT_SYSTEM": "\"system\"",
+    "OS1_TIME_OBJECT_STATS": "\"stats\""
+  },
+  "structs": [
+    {
+      "name": "os1_time_cpu_v1",
+      "size": 56,
+      "fields": [
+        {
+          "decl": "uint32_t cpu_id",
+          "member": "cpu_id",
+          "offset": 0
+        },
+        {
+          "decl": "uint32_t flags",
+          "member": "flags",
+          "offset": 4
+        },
+        {
+          "decl": "uint64_t sequence",
+          "member": "sequence",
+          "offset": 8
+        },
+        {
+          "decl": "uint64_t counter",
+          "member": "counter",
+          "offset": 16
+        },
+        {
+          "decl": "uint64_t monotonic_ns",
+          "member": "monotonic_ns",
+          "offset": 24
+        },
+        {
+          "decl": "uint64_t next_deadline_ns",
+          "member": "next_deadline_ns",
+          "offset": 32
+        },
+        {
+          "decl": "uint64_t tick_count",
+          "member": "tick_count",
+          "offset": 40
+        },
+        {
+          "decl": "uint64_t late_tick_count",
+          "member": "late_tick_count",
+          "offset": 48
+        }
+      ]
+    },
+    {
+      "name": "os1_time_snapshot_v1",
+      "size": 3632,
+      "fields": [
+        {
+          "decl": "uint32_t abi_version",
+          "member": "abi_version",
+          "offset": 0
+        },
+        {
+          "decl": "uint32_t struct_size",
+          "member": "struct_size",
+          "offset": 4
+        },
+        {
+          "decl": "uint32_t cpu_count",
+          "member": "cpu_count",
+          "offset": 8
+        },
+        {
+          "decl": "uint32_t cpu_record_size",
+          "member": "cpu_record_size",
+          "offset": 12
+        },
+        {
+          "decl": "uint64_t sequence",
+          "member": "sequence",
+          "offset": 16
+        },
+        {
+          "decl": "uint64_t monotonic_ns",
+          "member": "monotonic_ns",
+          "offset": 24
+        },
+        {
+          "decl": "uint64_t counter_frequency_hz",
+          "member": "counter_frequency_hz",
+          "offset": 32
+        },
+        {
+          "decl": "uint64_t scheduler_tick_hz",
+          "member": "scheduler_tick_hz",
+          "offset": 40
+        },
+        {
+          "decl": "struct os1_time_cpu_v1 cpu[OS1_TIME_MAX_CPUS]",
+          "member": "cpu",
+          "offset": 48
+        }
+      ]
+    },
+    {
+      "name": "os1_timer_cpu_stats_v4",
+      "size": 168,
+      "fields": [
+        {
+          "decl": "uint32_t cpu_id",
+          "member": "cpu_id",
+          "offset": 0
+        },
+        {
+          "decl": "uint32_t reserved",
+          "member": "reserved",
+          "offset": 4
+        },
+        {
+          "decl": "uint64_t arm_count",
+          "member": "arm_count",
+          "offset": 8
+        },
+        {
+          "decl": "uint64_t cancel_count",
+          "member": "cancel_count",
+          "offset": 16
+        },
+        {
+          "decl": "uint64_t fire_count",
+          "member": "fire_count",
+          "offset": 24
+        },
+        {
+          "decl": "uint64_t scan_count",
+          "member": "scan_count",
+          "offset": 32
+        },
+        {
+          "decl": "uint64_t scan_pass_count",
+          "member": "scan_pass_count",
+          "offset": 40
+        },
+        {
+          "decl": "uint32_t queue_depth",
+          "member": "queue_depth",
+          "offset": 48
+        },
+        {
+          "decl": "uint32_t queue_high_water",
+          "member": "queue_high_water",
+          "offset": 52
+        },
+        {
+          "decl": "uint32_t max_scan_per_pass",
+          "member": "max_scan_per_pass",
+          "offset": 56
+        },
+        {
+          "decl": "uint32_t max_fire_per_pass",
+          "member": "max_fire_per_pass",
+          "offset": 60
+        },
+        {
+          "decl": "uint64_t late_fire_count",
+          "member": "late_fire_count",
+          "offset": 64
+        },
+        {
+          "decl": "uint64_t fire_lateness_ns_total",
+          "member": "fire_lateness_ns_total",
+          "offset": 72
+        },
+        {
+          "decl": "uint64_t max_fire_lateness_ns",
+          "member": "max_fire_lateness_ns",
+          "offset": 80
+        },
+        {
+          "decl": "uint64_t clockevent_late_count",
+          "member": "clockevent_late_count",
+          "offset": 88
+        },
+        {
+          "decl": "uint64_t clockevent_lateness_ns_total",
+          "member": "clockevent_lateness_ns_total",
+          "offset": 96
+        },
+        {
+          "decl": "uint64_t max_clockevent_lateness_ns",
+          "member": "max_clockevent_lateness_ns",
+          "offset": 104
+        },
+        {
+          "decl": "uint64_t absolute_program_count",
+          "member": "absolute_program_count",
+          "offset": 112
+        },
+        {
+          "decl": "uint64_t irq_mask_interval_count",
+          "member": "irq_mask_interval_count",
+          "offset": 120
+        },
+        {
+          "decl": "uint64_t irq_mask_total_ns",
+          "member": "irq_mask_total_ns",
+          "offset": 128
+        },
+        {
+          "decl": "uint64_t irq_mask_max_ns",
+          "member": "irq_mask_max_ns",
+          "offset": 136
+        },
+        {
+          "decl": "uint64_t irq_mask_invalid_sample_count",
+          "member": "irq_mask_invalid_sample_count",
+          "offset": 144
+        },
+        {
+          "decl": "uint64_t irq_mask_active_ns",
+          "member": "irq_mask_active_ns",
+          "offset": 152
+        },
+        {
+          "decl": "uint32_t irq_mask_flags",
+          "member": "irq_mask_flags",
+          "offset": 160
+        },
+        {
+          "decl": "uint32_t reserved2",
+          "member": "reserved2",
+          "offset": 164
+        }
+      ]
+    },
+    {
+      "name": "os1_timer_stats_snapshot_v4",
+      "size": 10784,
+      "fields": [
+        {
+          "decl": "uint32_t abi_version",
+          "member": "abi_version",
+          "offset": 0
+        },
+        {
+          "decl": "uint32_t struct_size",
+          "member": "struct_size",
+          "offset": 4
+        },
+        {
+          "decl": "uint32_t cpu_count",
+          "member": "cpu_count",
+          "offset": 8
+        },
+        {
+          "decl": "uint32_t cpu_record_size",
+          "member": "cpu_record_size",
+          "offset": 12
+        },
+        {
+          "decl": "uint64_t sequence",
+          "member": "sequence",
+          "offset": 16
+        },
+        {
+          "decl": "uint64_t monotonic_ns",
+          "member": "monotonic_ns",
+          "offset": 24
+        },
+        {
+          "decl": "struct os1_timer_cpu_stats_v4 cpu[OS1_TIME_MAX_CPUS]",
+          "member": "cpu",
+          "offset": 32
+        }
+      ]
+    }
+  ]
+}

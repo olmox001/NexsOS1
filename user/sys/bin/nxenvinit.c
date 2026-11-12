@@ -81,6 +81,12 @@ static void registry_init_defaults(void) {
 
   /* --- Input --- */
   OS1_registry_set("mouse.sensitivity", "1.0");
+  /* mac19ita was the pre-migration default; userland keyboard policy reads
+   * this registry value instead of an irreversible hardcoded override. */
+  int keyboard_layout_status =
+      OS1_registry_set("keyboard.layout", "mac19ita");
+  if (keyboard_layout_status != 0)
+    OS1_report_error("nxenvinit.keyboard.layout", keyboard_layout_status);
 
   /* --- Environment: the MACHINE's defaults (Phase 17) ---
    * HOME    read by nxexec_resolve_path()'s '~' tier and nxlauncher.

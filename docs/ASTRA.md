@@ -523,11 +523,9 @@ second VFS-mounted typed-object namespace:
   `/proc/<pid>` reads go through the PROCESS object's `sys_object_read`, not a
   procfs-local formatter, so there is no side-channel around the capability
   model.
-- **Known stray file**: `kernel/include/kernel/registry.h.new` is an
-  unreferenced draft header left over from the migration (last touched
-  `749bed5`, missing `REG_OP_DEL`/`registry_del`/`registry_mount_vfs` that the
-  live `registry.h` has). Not wired into any build rule — safe to delete
-  whenever someone is in the area, not urgent.
+- **Obsolete draft closed (2026-11-10)**: `kernel/include/kernel/registry.h.new`
+  was removed after comparison with the canonical header confirmed it lacked
+  delete, virtual-authority, mount and MUST_USE contracts.
 
 ## 7.7 Notification model rework (§6.4, DIR-05) ✅ DONE (2026-07-02)
 
@@ -711,15 +709,10 @@ Also still open, verified 2026-07-02:
   (`input_poll_event`) is unified.
 - **DIR-02/DIR-07 remaining**: no system-driven desktop-resize broadcast to
   all windows (still per-window only, on `SYS_WINDOW_RESIZE`).
-- **Known stray files** (harmless, cleanup candidates): `kernel/graphics/
-  compositor.c.old` and `.c.new` (both last touched `8ad8c51`, unreferenced by
-  any build rule — kept deliberately as a "transform reference" per that
-  commit's message, see `docs/PENDING-WORK.md` item 9); `kernel/include/kernel/
-  registry.h.new` (§7.6, unreferenced draft).
-- `compositor_get_focus_pid()` — the dead-code cleanup `docs/PENDING-WORK.md`
-  item 3 asked for is **already done**: the live `kernel/graphics/compositor.c`
-  no longer defines it (only a comment at `compositor.c:934` explains its
-  removal); it survives only in the two stray `.old`/`.new` files above.
+- **Obsolete-source closure (2026-11-10)**: alternate compositor, registry and
+  shell sources were removed after comparison. Terminal CSI/SGR/caret logic is
+  canonical in `kernel/graphics/term.c`; Material/shadow decoration belongs to
+  `system/lib/gfx` + the ring-3 compositor. No alternate source remains.
 
 ## 7.12 Filesystem/libc stabilization batch (2026-07-16) ✅ DONE (runtime-verified aarch64)
 
@@ -763,3 +756,70 @@ mkdir) fixed the shared layers rather than the apps — no app-specific code:
   `docs/PIANO-LIBC-ASTRA-2026-07-16.md` for the plan and the userland
   restructuring macroplan (OS1lib_OS1/POSIX/LIBC split, services, nxauth,
   `.X` executable format, per-user partition VFS vision).
+
+
+---
+
+## 8. Status correction — compositor process context is not userland (2026-11-03)
+
+The historical title of §7.10 is ambiguous and must not be used as evidence
+that the compositor was extracted from the kernel. The 2026-07-12 change moved
+the render call out of timer IRQ context and made PID1 invoke
+`SYS_COMPOSITOR_RENDER` in process context. The implementation remains
+`kernel/graphics/compositor.c`, linked into the kernel by the Makefile; this is
+**kernel process context**, not ring-3 userland.
+
+Therefore:
+- IRQ-stack isolation: completed and regression-tested as described in §7.10.
+- Kernel compositor removal / ring-3 compositor service: **not completed**.
+- `nxui` is a userland window-server/dock service, not the compositor.
+- The NEXS-NG destination is `compositord` in userland, with kernel-only
+  buffer/surface capability management and secure presentation control.
+
+The current implementation plan is
+`docs/architecture/NEXS-NG-INTEGRATED-IMPLEMENTATION-PLAN-2026-11-03.md`;
+surface migration:
+`docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.
+
+
+## 7.13 Graphics boundary correction and next migration (2026-11-03)
+
+**Correction to §7.10 wording:** SCHED-STACK-ISO moved the compositor render
+call out of timer-IRQ context and into a normal process/syscall path. It did
+NOT move the compositor implementation or its graphics libraries into ring-3
+userland: compositor_render_internal(), window policy, surface pixel storage,
+GPU provider dispatch and drawing helpers are still kernel code. "Userspace"
+in the historical §7.10 title must not be read as "unprivileged userland
+service." The 2026-11-03 decision is to move compositor/window/scene policy,
+rasterizers, fonts, terminal rendering and graphics libraries into supervised
+ring-3 services/libraries. The kernel retains only capability-checked buffer
+and surface resource management, mappings, synchronization, generation,
+lifetime and commit/presentation control. See
+docs/architecture/GRAPHICS-USERLAND-MIGRATION.md (GFX-NG-0..5).
+
+ASTRA separation must also be enforced below the graphics stack:
+- ISA code owns register/exception/context-switch/cache primitives only.
+- platform discovery parses ACPI/FDT and emits typed resource descriptors.
+- bus enumeration owns PCI/USB/virtio discovery and resource assignment.
+- device drivers consume MMIO/PIO/DMA/IRQ capabilities and implement device
+  protocols; they do not call application syscalls.
+- protocol libraries implement VirtIO rings, USB transfers, HID reports, etc.
+- core services consume abstract device/event/queue contracts, not device IDs.
+- userland policy services own window/focus/desktop/input routing.
+
+IPC and MMIO are different trust boundaries. IPC is a message/queue protocol
+between protection domains; MMIO is a bounded device-memory capability with
+ordering/cache/IRQ/DMA rules. Do not route MMIO through an IPC-shaped API or
+allow arbitrary user services to map raw physical addresses.
+
+**BOOT-1 status (2026-11-03):** the AArch64 EFI handoff now preserves
+DtbSpan in x1 and the kernel uses a versioned 32-byte BootInfo v1 record.
+The legacy pointer-only loader path remains isolated in `fdt_init_legacy()`.
+A bounded parser now validates block/token/string/property bounds, reservation
+map, static `/reserved-memory`, memory regions and CPU nodes; the DTB itself
+is added to PMM RESERVED overlays. Host ASan/UBSan tests pass 61 checks against
+synthetic fixtures and the real QEMU DTB. Clean dual-architecture builds,
+runtime PMM/KTEST checks and separate AArch64 EFI boot verification remain
+open. FDT is not yet a complete device/interrupt catalogue; do not start
+dynamic device discovery until BOOT-1 runtime gates pass. See
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.

@@ -9,7 +9,7 @@
 
 NexsOS1 (codename **OS1**) is an educational and research hybrid-kernel operating system built from scratch. It boots on both ARM64 (AArch64) and x86-64 (AMD64) under QEMU, brings up Symmetric Multiprocessing (SMP), drives native **VirtIO** devices (GPU, input, block), mounts an **Ext4** root filesystem, composites overlapping windows in a custom graphical user interface, and executes user-space ELF binaries with an interactive **TTY shell**.
 
-> **Honesty note.** This README describes the *verified* state. For the complete, evidence-based picture — including bugs, gaps, and severity — see [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going* (a seL4-style, Plan 9-inspired Microkernel), see [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is licensed under **GPL v2** (see [`LICENSE.md`](LICENSE.md)).
+> **Honesty note.** The test matrix below records earlier verification and does not qualify the current local changes. The current incremental review and open failures are recorded in [`docs/review/INCREMENTAL-REVIEW-2026-11-12.md`](docs/review/INCREMENTAL-REVIEW-2026-11-12.md). For the complete, evidence-based picture — including bugs, gaps, and severity — see [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going* (a seL4-style, Plan 9-inspired Microkernel), see [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is licensed under **GPL v2** (see [`LICENSE.md`](LICENSE.md)).
 
 ---
 
@@ -29,15 +29,15 @@ NexsOS1 (codename **OS1**) is an educational and research hybrid-kernel operatin
 
 ## 🚀 Key Features
 
-*   **Architectural Abstraction Layer (HAL):** The HAL provides complete transparency to the kernel. There are no architecture-specific `#define` statements within the common kernel codebase, ensuring easy portability to other architectures.
+*   **Architectural Abstraction Layer (HAL):** The HAL provides architecture contracts and providers shared by the common kernel. Remaining architecture leakage and provider ownership are tracked in the architecture and review documents.
 *   **Secure Memory Paging:** Physical (zone-based PMM bitmap allocator) and Virtual Memory Managers handle paging. On AMD64, the system enforces the strict **$W \oplus X$ (Write or Execute)** security protocol (executable text is RX, read-only data is RO+NX, all other regions are RW+NX) alongside Higher-Half kernel mappings (`0xFFFF000000000000` on AArch64 via TTBR1, `0xFFFF800000000000` on AMD64), with cross-CPU TLB shootdown.
 *   **Preemptive SMP & Multiprocessing:** Preemptive O(1) SMP scheduler with per-CPU priority run-queues and work-stealing. Cores are initialized and managed by user-space idle tasks once primary boot completes. Multiple processes are cleanly distributed across cores, with full support for `child` creation, `kill` termination, and an `exec` utility managing terminal, graphical, and integrated terminal modes.
-*   **Capability-Based Security:** Syscalls and system resources are checked and restricted through a capabilities security model mapped to abstract user levels (`Machine`, `Root`, `User`, `Guest`). The only processes allowed to run at the highly privileged `Machine` level are `nxinit` (early init) and the idle tasks.
-*   **Graphics Stack & Window Compositor:** GPU abstraction, display drivers (`virtio-pci-device` and `virtio-gpu-device`), and the compositor are currently inside the kernel (rendering overlapping windows, drag, focus, and Z-order). The compositor processes individual application framebuffers rendered in userland. Supports custom themes and styles; all interface components are compiled as independent ELF binaries.
-*   **Isolated Userland & Release System:** The userland environment resides in a dedicated disk image (`disk.img`), allowing independent loading of the kernel and filesystem in QEMU for rapid testing. At boot, the kernel loads `disk.img` into a temporary RAM disk, and launches the `init` supervisor. `init` manages core services, respawning them automatically if they terminate. The release tool compiles a hybrid, bootable AMD64 ISO via GRUB.
+*   **Capability-Based Security:** Syscalls and system resources are checked and restricted through a capabilities security model mapped to abstract user levels (`Machine`, `Root`, `User`, `Guest`). The kernel starts `nxmanageDD` at `Machine` level; `nxinit` runs as its `Root` policy child. Kernel idle tasks also use machine authority.
+*   **Graphics Stack & Window Compositor:** A supervised ring-3 `nxcompositor` owns frame pacing, while the legacy renderer, scene/window policy and VirtIO display drivers still run in the kernel through the v1 compatibility ABI. Userland includes initial ARGB8888 raster primitives; capability-backed shared surfaces and full compositor extraction remain in progress. Supports custom themes and styles; interface components are compiled as independent ELF binaries.
+*   **Isolated Userland & Release System:** The userland environment resides in a dedicated disk image (`disk.img`), allowing independent loading of the kernel and filesystem in QEMU for rapid testing. At boot, the kernel loads `disk.img` into a temporary RAM disk, and launches the `init` supervisor. `nxinit` reads the boot manifest and registers services with `nxmanageDD`, which owns supervision and the declared restart policy. The release tool compiles a hybrid, bootable AMD64 ISO via GRUB.
 *   **Fault & Trace Isolation:** Recoverable fault handling with total vector coverage on both architectures. A userland application crash is isolated and never kills the kernel, leaving the shell and compositor running. Provides symbolized in-kernel backtraces (`.ksyms`) on dedicated fault stacks.
 *   **VFS & Ext4 File System:** Virtual File System (with mount tables and `fs_ops` providers) supporting Ext4 (extent-tree reads, legacy reads, INCOMPAT enforcement, and extended write paths) and GPT partition mapping with MBR fallback, and a buffer cache.
-*   **Coherent Syscall ABI:** Single unified syscall numbering (`include/api/syscall_nums.h`) compiled into both the kernel dispatcher and the userland stubs, returning negative `errno` values.
+*   **Coherent Syscall ABI:** Single unified syscall numbering (`system/include/contract/syscall_nums.h`) compiled into both the kernel dispatcher and the userland stubs, returning negative `errno` values.
 
 ---
 
@@ -88,8 +88,7 @@ Below are live captures demonstrating window compositor features, overlap handli
 </p>
 
 <p align="center">
-  <img width="90%" alt="Theme Showcase 1" alt="Screenshot 2026-07-14 alle 15 57 39" src="https://github.com/user-attachments/assets/ee0fca9f-f2b2-4b19-a09d-92506e72d7c1" />
- />
+  <img width="90%" alt="Screenshot 2026-07-14 alle 15 57 39" src="https://github.com/user-attachments/assets/ee0fca9f-f2b2-4b19-a09d-92506e72d7c1" />
 </p>
 
 ---
@@ -117,17 +116,21 @@ then installs/checks the host build dependencies and cross-toolchains:
 ./tools/setup-project.sh
 ```
 
-The setup is safe to re-run. It fails if a pinned dependency cannot be
-initialized; it does not silently continue with an incomplete userland.
-To initialize/check only the external source dependencies:
+Run this bootstrap once after cloning. It initializes the pinned recursive
+submodules and installs the complete host toolchain, including the GRUB ISO
+build tools used by nxadb/nxrun. Build and run targets never invoke setup
+scripts.
+
+For a read-only dependency verification later (without reinitializing
+submodules), use:
 
 ```bash
-make setup-deps
 make check-deps
 ```
 
-The submodule gitlinks, not the optional branch hints in `.gitmodules`, are
-the source of truth for dependency versions.
+make setup-deps is a manual recovery command only if the initial submodule
+checkout was skipped or incomplete. The submodule gitlinks, not the optional
+branch hints in .gitmodules, are the source of truth for dependency versions.
 
 ### 3. Verify the Installation
 Ensure the cross-compilers and emulators are available:
@@ -140,15 +143,34 @@ make check ARCH=amd64
 
 ## 💻 Compilation & Execution
 
-NexsOS1 uses a streamlined `Makefile` interface. To compile the bootloader, kernel, and userland disk image, and immediately boot them in QEMU, run:
+NexsOS1's normal developer run uses the same GRUB boot media as the
+interactive `nxadb`/`nxrun` tests and release path. This is the authoritative
+boot-chain test: AMD64 uses GRUB BIOS + Multiboot2; AArch64 uses GRUB arm64-efi,
+the project EFI handoff stub, and a bounded DTB handoff (`x0` address,
+`x1` validated size).
 
 ```bash
-# Build and run the ARM64 (AArch64) graphical system (Reference)
 make run ARCH=aarch64
-
-# Build and run the x86_64 (AMD64) graphical system
 make run ARCH=amd64
 ```
+
+The raw QEMU kernel-loader path is retained for low-level diagnostics only:
+
+```bash
+make run ARCH=aarch64 BOOT_MODE=direct
+make run ARCH=amd64 BOOT_MODE=direct
+# Equivalent compatibility targets: make run-direct ARCH=<arch>
+```
+
+Direct AArch64 loading supplies the DTB pointer in `x0` but has no explicit
+length register; it therefore exercises the documented legacy pointer-only
+adapter (`x1=0`), not the sized EFI handoff. Direct AMD64 loading also bypasses
+the GRUB Multiboot2 entry and must be treated as a separate diagnostic path,
+not as bootable installation media. Neither direct mode replaces GRUB boot
+verification.
+
+For a headless GRUB ISO run, add `RUN_DISPLAY=none` and
+`RUN_SERIAL=file:build/runs/run-ARCH.serial`.
 
 ### Additional Build Targets
 
@@ -157,9 +179,9 @@ make run ARCH=amd64
 | `make all ARCH=<arch>` | Compiles the operating system without launching QEMU. |
 | `make debug ARCH=<arch>` | Boots QEMU with GDB stub debugging enabled (`-s -S`). |
 | `make release VERSION=x.y` | Builds release-ready packages (e.g., hybrid, bootable AMD64 ISOs via GRUB). |
-| `make clean` | Wipes build outputs. Strongly recommended after userland changes in `user/` to make modifications effective. |
+| `make clean` | Removes architecture/GRUB build outputs while preserving the pinned source cache and diagnostic/runtime logs. |
 
-The official kernel API for userspace can be found inside `include/api/`, focusing primarily on `os1.h` and `object.h`.
+The official kernel API for userspace can be found inside `system/include/api/`, focusing primarily on `os1.h` and the corresponding `system/include/contract/object.h` contract.
 
 ---
 
@@ -167,63 +189,33 @@ The official kernel API for userspace can be found inside `include/api/`, focusi
 
 ```text
 .
-├── boot/                        # Stage 1 & Stage 2 bootloaders and linker scripts
-│   ├── aarch64/
-│   └── amd64/
-├── docs/                        # Technical documentation, specifications, and reports
-│   ├── LOGO/                    # Graphical assets and project logotypes
-│   ├── direction/               # Architectural plans, design mandates, and directions
-│   ├── graphics-port/           # Graphic system porting and validation logs
-│   ├── man/                     # System manuals and user references
-│   ├── report/                  # Performance, debugging, and analytical reports
-│   ├── review/
-│   │   └── analysis/            # Code reviews, bug taxonomy, and findings
-│   ├── screen/                  # Architectural screenshots and system captures
-│   └── userland-port/           # Guides and porting updates for the userspace
-├── include/
-│   └── api/                     # Public system API definitions for userland
-│       └── sys/                 # Native C library definitions (os1.h, object.h)
+├── boot/grub/                  # Pinned GRUB source and boot-media integration
+├── docs/                       # Architecture, reviews, reports and historical plans
 ├── kernel/
-│   ├── arch/                    # Architecture-specific abstraction layers
-│   │   ├── aarch64/             # ARM64 CPU setup, MMU page tables, GIC, PL011 drivers
-│   │   └── amd64/               # AMD64 CPU setup, APIC, IOAPIC, PIT, serial drivers
-│   ├── core/                    # Core kernel engine (Syscall dispatcher, device bus)
-│   ├── drivers/                 # Unified hardware drivers
-│   │   ├── block/               # Mass storage block drivers
-│   │   ├── gic/                 # ARM Interrupt Controllers
-│   │   ├── gpu/                 # GPU framebuffers and VirtIO screen devices
-│   │   ├── keyboard/            # Key input devices
-│   │   ├── pci/                 # Peripheral Component Interconnect bus driver
-│   │   ├── ps2/                 # Traditional PS/2 mouse and keyboard
-│   │   ├── timer/               # System clocks
-│   │   ├── uart/                # Serial logging interfaces
-│   │   ├── usb/                 # Universal Serial Bus (USB) driver stub
-│   │   └── virtio/              # Virtual I/O drivers (GPU, Block, Input)
-│   ├── fs/                      # Virtual File System (VFS) and Ext4 disk system
-│   ├── graphics/                # Compositor engine, TTF fonts, and window servers
-│   │   └── logo/
-│   ├── include/                 # Internal, private kernel headers
-│   ├── irq/                     # Global interrupt request dispatchers
-│   ├── lib/                     # In-kernel shared helper libraries (printf, kmalloc)
-│   ├── mm/                      # Memory management (Bitmap PMM, Virtual MM, Heap)
-│   └── sched/                   # Preemptive priority scheduler and ELF loader
-├── tools/
-│   ├── kernel_doctor/           # Technical debugging, tracing, and analysis suite
-│   └── mkdisk.c                 # Tool for packaging userland into an Ext4 disk image
-└── user/
-    ├── arch/                    # Architecture-specific runtime startup routines
-    │   ├── aarch64/
-    │   └── amd64/
-    ├── bin/                     # Standalone user applications and demos
-    │   ├── base-nexs/           # Native testing and compatibility tools
-    │   ├── busybox/             # Unix terminal utilities
-    │   ├── doom/                # Ported Doom engine
-    │   └── kilo/                # Ported ultra-lightweight text editor
-    ├── home/                    # System root home directory structure
-    │   └── Pictures/
-    └── sys/                     # Operating system critical subsystems
-        ├── bin/                 # Userland base services (init, shell, panel, dock)
-        └── lib/                 # Core shared library runtimes (libos1, libc-stubs)
+│   ├── HAL/                    # ISA adapters and hardware abstraction contracts
+│   ├── core/                   # Object manager, dispatch and kernel mechanisms
+│   ├── sched/                  # Process scheduling and lifecycle
+│   ├── mm/                     # Memory management
+│   ├── fs/                     # Existing filesystem/VFS providers
+│   ├── drivers/                # Device drivers (UART extraction from HAL pending)
+│   ├── resources/              # Capability resource providers
+│   ├── graphics/               # Remaining legacy window/terminal/font mechanisms
+│   └── user/extension/         # Machine-owned user-mode bootstrap extension
+├── system/
+│   ├── arch/                   # Architecture-specific SDK entry veneers
+│   ├── include/api/            # Public SDK and C/POSIX personality declarations
+│   ├── include/contract/       # SDK-facing versioned wire declarations
+│   └── lib/                    # Runtime, graphics, codecs and client extensions
+├── user/
+│   ├── sbin/                   # Root initialization policy
+│   ├── sys/boot/               # Installed boot entry and service manifest
+│   ├── sys/services/           # Supervised system daemons
+│   ├── sys/bin/                # System commands and graphical interfaces
+│   ├── bin/                    # Applications, tests and pinned upstream programs
+│   ├── lib/                    # Pinned external libraries
+│   ├── portability/            # Upstream adaptation layers
+│   └── home/                   # Initial user files and assets
+└── tools/                      # Build, contracts, Power12 and nxadb verification
 ```
 
 ---

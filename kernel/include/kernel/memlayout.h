@@ -32,21 +32,11 @@
 
 #include <kernel/types.h>
 
-#ifdef ARCH_AARCH64
-/* Higher half: TTBR1_EL1 range, T0SZ=T1SZ=16 (48-bit split).  The kernel
- * image is linked at KERNEL_VIRT_BASE + 0x40080000 (its load PA) and all
- * RAM/MMIO is direct-mapped at PA + KERNEL_VIRT_BASE via TTBR1; TTBR0 is
- * user-only (per-process tables). */
-#define KERNEL_VIRT_BASE 0xFFFF000000000000UL
-#elif defined(ARCH_AMD64)
-/* Higher half: PML4 index 256 onward.  The kernel image is linked at
- * KERNEL_VIRT_BASE + 2MB (loaded at PA 2MB; the low boot sections stay
- * at PA 1MB) and all RAM/MMIO is direct-mapped at PA + KERNEL_VIRT_BASE.
- * Process PML4s share the kernel half by copying entries 256..511. */
-#define KERNEL_VIRT_BASE 0xFFFF800000000000UL
-#else
-#error "memlayout.h: unknown architecture"
-#endif
+#include <hal/config.h>
+
+/* The selected HAL provider supplies the direct-map base.  Generic memory
+ * code knows the mapping contract, never the architecture that implements it. */
+#define KERNEL_VIRT_BASE HAL_DIRECT_MAP_BASE
 
 /* phys_to_virt - kernel virtual pointer for a physical address. */
 static inline void *phys_to_virt(uint64_t phys) {

@@ -10,15 +10,16 @@
  * ordering invariant and the ack handshake live here, once.
  *
  * The ack wait is bounded by wall time through the HAL timer contract
- * (arch_timer_get_count/_get_freq — the DIR-06 reference seam, same pattern as
+ * (NX-CORE monotonic deadline API — the DIR-06 reference seam, same pattern as
  * the panic watchdog in printk.c), replacing the per-arch nop-count/udelay
  * divergence.  The handshake variable is acquire/release-paired with
  * smp_ack_boot() so the secondary's per-CPU initialization writes are visible
  * to the BSP before the ack is (S-ALIGN F3).
  */
-#include <kernel/arch.h>
+#include <hal/core.h>
 #include <kernel/cpu.h>
 #include <kernel/printk.h>
+#include <kernel/timer.h>
 #include <kernel/types.h>
 
 /* The boot-ack handshake cell.  Written ONLY through smp_ack_boot() by the
@@ -42,9 +43,7 @@ void smp_ack_boot(uint32_t cpu) {
  * create it (NULL idle task -> context switch into NULL).
  *
  * cpu:       logical CPU id to start.
- * entry:     arch entry point handed to arch_cpu_wake_secondary (PSCI target /
- *            SIPI trampoline).
- * stack_top: top of the CPU's kernel stack (stacks descend), passed through
+ *  * stack_top: top of the CPU's kernel stack (stacks descend), passed through
  *            the arch wake contract.
  *
  * Returns 0 when the CPU acked, -1 if the arch wake call itself failed
@@ -53,7 +52,7 @@ void smp_ack_boot(uint32_t cpu) {
  * still schedules safely).  Failure POLICY (skip vs. abort the loop) stays
  * with the arch caller: only the mechanism is shared.
  */
-int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) {
+int smp_bringup_secondary(uint32_t cpu, void *stack_top) {
   /* Fresh handshake for this CPU (uniform: amd64 always reset, aarch64
    * relied on ids never repeating — resetting is correct for both). */
   __atomic_store_n(&cpu_boot_ack, 0u, __ATOMIC_RELAXED);
@@ -62,17 +61,18 @@ int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) {
   smp_create_idle_task(cpu);
 
   /* 2. Wake through the arch contract. */
-  if (arch_cpu_wake_secondary(cpu, entry, stack_top) != 0)
+  if (hal_smp_wake_secondary(cpu, stack_top) != 0)
     return -1;
 
-  /* 3. Bounded acquire-wait for the ack (~10 s wall time, generous for a
-   * slow hypervisor; the watchdog in printk.c uses the same timer seam). */
-  uint64_t freq = arch_timer_get_freq();
-  uint64_t deadline = arch_timer_get_count() + freq * 10ULL;
+  /* 3. Bounded acquire-wait in the Core monotonic domain. */
+  uint64_t deadline;
+  if (OS1libkernel_time_deadline_after_ns(
+          UINT64_C(10) * OS1LIBKERNEL_NSEC_PER_SEC, &deadline) != 0)
+    return -2;
   while (__atomic_load_n(&cpu_boot_ack, __ATOMIC_ACQUIRE) != cpu) {
-    if ((int64_t)(deadline - arch_timer_get_count()) <= 0)
+    if (OS1libkernel_time_deadline_reached(deadline))
       return -2;
-    arch_nop();
+    hal_cpu_nop();
   }
   return 0;
 }

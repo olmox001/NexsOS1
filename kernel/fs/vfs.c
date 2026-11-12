@@ -383,6 +383,23 @@ int vfs_write_allowed(const char *resolved_path) {
   if (proc_is_machine(current_process))
     return 0; /* machine identity: full filesystem authority */
 
+  /* Mounted object providers may carry stricter per-node authorization
+   * than the ordinary filesystem tree ACL. Delegation stays in fs_ops,
+   * NOT a special-case registry pathname in the generic VFS dispatcher.
+   * The provider performs its actual write/delete permission check too. */
+  const char *relative = NULL;
+  struct vfs_mount *authority_mount =
+      vfs_acquire(resolved_path, &relative);
+  if (authority_mount != NULL) {
+    if (authority_mount->ops->authorize_write != NULL) {
+      int authorized = authority_mount->ops->authorize_write(
+          authority_mount, relative);
+      vfs_release(authority_mount);
+      return authorized;
+    }
+    vfs_release(authority_mount);
+  }
+
   /* /tmp, /var/tmp: scratch space POSIX-style, world-writable (sticky-bit
    * convention).  coreutils/gnulib assume it's writable by anyone
    * (mktemp, mkstemp, sort/cp/mv temp files, etc.) — without this branch
@@ -426,8 +443,12 @@ int vfs_write_allowed(const char *resolved_path) {
    * on the tree already existing. */
   if (strncmp(resolved_path, "/sys/bin/", 9) == 0 ||
       strcmp(resolved_path, "/sys/bin") == 0 ||
+      strncmp(resolved_path, "/sys/services/", 14) == 0 ||
+      strcmp(resolved_path, "/sys/services") == 0 ||
       strncmp(resolved_path, "/sbin/", 6) == 0 ||
       strcmp(resolved_path, "/sbin") == 0 ||
+      strncmp(resolved_path, "/krnl/", 6) == 0 ||
+      strcmp(resolved_path, "/krnl") == 0 ||
       strncmp(resolved_path, "/system/", 8) == 0 ||
       strcmp(resolved_path, "/system") == 0) {
     pr_warn("vfs: PID %d denied write to machine-only path '%s'\n",
@@ -470,6 +491,16 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size,
   int rc = mnt->ops->write ? mnt->ops->write(mnt, rel, offset, buf, size) : -1;
   vfs_release(mnt);
   return rc;
+}
+
+int vfs_truncate(const char *path, uint64_t length) {
+  const char *relative;
+  struct vfs_mount *mount = vfs_acquire(path, &relative);
+  if (mount == NULL) return -ENOENT;
+  int result = mount->ops->truncate == NULL ? -ENOTSUP :
+      mount->ops->truncate(mount, relative, length);
+  vfs_release(mount);
+  return result;
 }
 
 /*

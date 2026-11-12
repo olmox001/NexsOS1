@@ -67,9 +67,14 @@ int main(void) {
   check(win, "cap_query-regkey", ok);
 
   /* 5. enumerate keys (LIB-REG-04): our key must appear */
-  memset(buf, 0, sizeof(buf));
-  int en = OS1_registry_enum(buf, sizeof(buf));
-  ok = en > 0 && contains(buf, "capreg.test") && contains(buf, "system.hostname");
+  /* Named services enlarge the actual registry; a 256-byte truncated
+   * enumeration is not evidence that a key is absent. Exercise the complete
+   * bounded 4096-byte native REG_OP_ENUM transaction and require both keys. */
+  char all_keys[4096] = {0};
+  int en = OS1_registry_enum(all_keys, sizeof(all_keys));
+  ok = en > 0 && en < (int)sizeof(all_keys) &&
+       contains(all_keys, "capreg.test") &&
+       contains(all_keys, "system.hostname");
   check(win, "registry-enum", ok);
 
   /* 6. namespace enumeration under a prefix (Phase 4.1 A1a): only matching keys
@@ -133,10 +138,10 @@ int main(void) {
   /* 10. FILE-object stat (Stage 4): OBJ_CTL_STAT reports the file size, matching
    * the path-based size probe — a FILE handle can now report its own size. */
   {
-    int hf = (int)OS1low_handle_create(OS1_NS_FS, "/etc/init.cfg",
+    int hf = (int)OS1low_handle_create(OS1_NS_FS, "/home/shared/fdtest.fixture",
                                        OS1_RIGHT_READ, OBJ_TYPE_FILE);
     long sz_obj = (hf >= 0) ? OS1_object_ctl(hf, OBJ_CTL_STAT, 0) : -1;
-    int sz_path = OS1_fs_read("/etc/init.cfg", 0, 0, 0); /* size probe */
+    int sz_path = OS1_fs_read("/home/shared/fdtest.fixture", 0, 0, 0); /* size probe */
     ok = hf >= 0 && sz_obj > 0 && sz_obj == (long)sz_path;
     check(win, "file-stat-object", ok);
     if (hf >= 0)

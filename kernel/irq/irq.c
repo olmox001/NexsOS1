@@ -112,6 +112,11 @@
  *           -Wmissing-prototypes; every non-static entry point is declared
  *           in irq.h.
  */
+#include <hal/core_protocol.h>
+#include <hal/diagnostic_protocol.h>
+#include <hal/irq.h>
+#include <hal/timer_protocol.h>
+#include <hal/time.h>
 #include <kernel/irq.h>
 #include <kernel/printk.h>
 #include <kernel/sched.h>
@@ -175,25 +180,6 @@ static struct {
  * register/unregister/dispatch across CPUs (IRQ-02). */
 static DEFINE_SPINLOCK(irq_table_lock);
 
-/* current_chip: pointer to the active irq_chip implementation.
- * Set once at boot via irq_register_chip(); never changed afterwards.
- * On aarch64: points to gic_chip (gic.c).
- * On amd64:   points to pic_chip (pic_pit.c) — but see IRQ-01 (resolved). */
-static struct irq_chip *current_chip = NULL;
-
-/*
- * irq_register_chip - register the platform interrupt controller.
- *
- * Must be called before irq_init().  Stores the chip pointer in current_chip
- * and logs its name.  Not thread-safe (called once from boot path only).
- *
- * Locking: none required; called before SMP is active.
- */
-void irq_register_chip(struct irq_chip *chip) {
-  current_chip = chip;
-  pr_info("IRQ: Registered chip %s\n", chip->name);
-}
-
 /*
  * irq_init - call the chip's global (distributor) initialisation hook.
  *
@@ -205,9 +191,7 @@ void irq_register_chip(struct irq_chip *chip) {
  * Locking: called from boot CPU before SMP; no concurrent access.
  */
 void irq_init(void) {
-  if (current_chip && current_chip->init) {
-    current_chip->init();
-  }
+  hal_irq_controller_global_init();
 }
 
 /*
@@ -221,9 +205,7 @@ void irq_init(void) {
  * Locking: operates only on per-CPU MMIO registers; no shared state.
  */
 void irq_init_percpu(void) {
-  if (current_chip && current_chip->init_percpu) {
-    current_chip->init_percpu();
-  }
+  hal_irq_controller_percpu_init();
 }
 
 /*
@@ -259,9 +241,7 @@ int irq_register(uint32_t irq, irq_handler_t handler, void *data) {
 
   spin_unlock_irqrestore(&irq_table_lock, flags);
 
-  if (current_chip && current_chip->enable) {
-    current_chip->enable(irq);
-  }
+  hal_irq_line_enable(irq);
 
   return 0;
 }
@@ -285,9 +265,7 @@ void irq_unregister(uint32_t irq) {
   if (irq >= MAX_IRQS)
     return;
 
-  if (current_chip && current_chip->disable) {
-    current_chip->disable(irq);
-  }
+  hal_irq_line_disable(irq);
 
   uint64_t flags;
   spin_lock_irqsave(&irq_table_lock, &flags);
@@ -309,9 +287,7 @@ void irq_unregister(uint32_t irq) {
  *          from any context as long as the MMIO window is valid.
  */
 void irq_enable(uint32_t irq) {
-  if (current_chip && current_chip->enable) {
-    current_chip->enable(irq);
-  }
+  hal_irq_line_enable(irq);
 }
 
 /*
@@ -325,9 +301,7 @@ void irq_enable(uint32_t irq) {
  * Locking: same as irq_enable; MMIO write is atomic at the register level.
  */
 void irq_disable(uint32_t irq) {
-  if (current_chip && current_chip->disable) {
-    current_chip->disable(irq);
-  }
+  hal_irq_line_disable(irq);
 }
 
 /*
@@ -345,16 +319,14 @@ void irq_disable(uint32_t irq) {
  * IRQ context: may be called from any context.
  */
 void irq_send_ipi_all(void) {
-  if (current_chip && current_chip->send_ipi_all) {
-    current_chip->send_ipi_all();
-  }
+  hal_irq_send_ipi_all();
 }
 
 /*
  * cpu_halt_from_ipi - halt this CPU after receiving a panic IPI (SGI0).
  *
  * Sets the global panic_flag, stops the arch timer (prevents further timer
- * IRQs on this core), and calls arch_cpu_halt() to enter an infinite WFI
+ * IRQs on this core), and calls hal_cpu_halt() to enter an infinite WFI
  * loop.  Called only from irq_handler() when irq == IRQ_PANIC_HALT_SGI.
  * Mirrors halt_ipi_handler() on the amd64/PIC path (pic_pit.c) — same
  * contract, one per arch because each arch's IPI delivery is different
@@ -365,13 +337,13 @@ void irq_send_ipi_all(void) {
  *          since all CPUs are being halted simultaneously and there is no
  *          "after" state to protect.
  * IRQ context: called from IRQ handler after chip->end(IRQ_PANIC_HALT_SGI);
- *              IRQs are effectively disabled by arch_cpu_halt() thereafter.
+ *              IRQs are effectively disabled by hal_cpu_halt() thereafter.
  */
 static void cpu_halt_from_ipi(void) {
   extern volatile int panic_flag;
   panic_flag = 1;
-  arch_timer_control(0);
-  arch_cpu_halt(); /* noreturn in practice: infinite WFI/HLT loop */
+  (void)nxhal_time_event_stop();
+  hal_cpu_halt(); /* noreturn in practice: infinite WFI/HLT loop */
 }
 
 /*
@@ -482,11 +454,11 @@ static inline void irq_run_registered_or_warn(uint32_t irq) {
  * Locking: runs with IRQs implicitly masked (exception entry).
  * IRQ context: YES — this IS the IRQ entry point on aarch64.
  */
-struct pt_regs *irq_handler(struct pt_regs *regs) {
-  struct pt_regs *ret_regs = regs;
+hal_frame_t *irq_handler(hal_frame_t *regs) {
+  hal_frame_t *ret_regs = regs;
   uint32_t iterations;
 
-  if (!current_chip)
+  if (!hal_irq_controller_available())
     return regs;
 
   for (iterations = 0; iterations < IRQ_ACK_LOOP_MAX; iterations++) {
@@ -495,7 +467,7 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
      * source-CPU field on aarch64) survive the round trip.  `intid`: the
      * bare interrupt ID — the only form used for comparisons or as a
      * irq_handlers[] table index. */
-    uint32_t irq_raw = current_chip->acknowledge();
+    uint32_t irq_raw = hal_irq_acknowledge();
     uint32_t intid = irq_raw & IRQ_INTID_MASK;
 
     if (intid == IRQ_SPURIOUS) /* Spurious or no more pending interrupts */
@@ -509,23 +481,32 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
 
     /* Panic-halt IPI: EOI then halt.  Does not return. */
     if (intid == IRQ_PANIC_HALT_SGI) {
-      current_chip->end(irq_raw);
+      hal_irq_end(irq_raw);
       cpu_halt_from_ipi();
       /* unreachable: cpu_halt_from_ipi() halts this core permanently */
+    }
+
+    /* Reschedule IPI is a fixed-function scheduler event, not a timer tick:
+     * do not advance timer accounting or fire software timers here. */
+    if (hal_irq_is_reschedule(intid)) {
+      ret_regs = nxhal_core_schedule(ret_regs);
+      hal_irq_end(irq_raw);
+      return ret_regs;
     }
 
     /* Scheduler tick (fixed-function; bypasses irq_handlers[] by design —
      * see the file-header invariants).  FIX(IRQ-03): IRQ_TIMER only. */
     if (intid == IRQ_TIMER) {
-      extern struct pt_regs *timer_handler(struct pt_regs * regs);
-
-      ret_regs = timer_handler(ret_regs);
-      current_chip->end(irq_raw);
+      ret_regs = nxhal_core_timer_tick(ret_regs);
+      uint64_t next_target = nxhal_timer_tick_current();
+      if (next_target == 0U)
+        nxhal_diag_error("%s", "IRQ: timer accounting returned no target\n");
+      hal_irq_end(irq_raw);
       return ret_regs;
     }
 
     irq_run_registered_or_warn(intid);
-    current_chip->end(irq_raw);
+    hal_irq_end(irq_raw);
   }
 
   if (iterations == IRQ_ACK_LOOP_MAX) {
@@ -567,7 +548,9 @@ struct pt_regs *irq_handler(struct pt_regs *regs) {
  *          the table read against concurrent register/unregister.
  * IRQ context: YES — called from the amd64 IDT handler.
  */
-struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs) {
+hal_frame_t *irq_dispatch(uint32_t irq, hal_frame_t *regs) {
+  if (hal_irq_is_reschedule(irq))
+    return nxhal_core_schedule(regs);
   irq_run_registered_or_warn(irq);
   return regs;
 }
@@ -583,7 +566,5 @@ struct pt_regs *irq_dispatch(uint32_t irq, struct pt_regs *regs) {
  * IRQ context: YES.
  */
 void irq_chip_end(uint32_t irq) {
-  if (current_chip && current_chip->end) {
-    current_chip->end(irq);
-  }
+  hal_irq_end(irq);
 }

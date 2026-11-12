@@ -41,3 +41,17 @@
    same header; keep device/context dispatch independent of the backend.
 5. Design the capability-owned GPU-context object before adding any new ABI
    number or hardware-accelerated path.
+
+
+## 2026-11-03 — compositor and graphics libraries move to userland
+
+Decision: NEXS-NG compositor/window policy and all raster/graphics API libraries
+run as ring-3 userland services/libraries. Kernel responsibility is restricted
+to capability-owned buffer/surface objects, backing-memory and mapping
+lifecycle, access rights, validation, pinning, synchronization and controlled
+presentation hand-off. No pixel rendering remains in the NG kernel.
+
+This supersedes the earlier graphics-port assumption that the compositor could
+remain a HAL component. The legacy kernel remains the reference implementation
+until the NG service and compatibility gates pass. Full migration sequence:
+`docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.

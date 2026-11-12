@@ -80,6 +80,15 @@ struct fs_ops {
               uint32_t size);
   int (*write)(struct vfs_mount *mnt, const char *path, uint64_t offset,
                const void *buf, uint32_t size);
+  /* Explicit length change, independent of write position. Optional; an
+   * unsupported provider must fail rather than simulate truncation. */
+  int (*truncate)(struct vfs_mount *mnt, const char *path, uint64_t length);
+  /* Optional provider authority contract for mounted object namespaces.
+   * The outer VFS gate still requires CAP_FS_WRITE; this callback supplies
+   * the object provider's own per-key capability policy. A NULL callback
+   * retains ordinary immutable filesystem tree ACLs. No VFS hardcoded
+   * registry path prefix or bypass of provider write/delete validation. */
+  int (*authorize_write)(struct vfs_mount *mnt, const char *path);
   int (*list)(struct vfs_mount *mnt, const char *path, char *buf,
               uint32_t size);
   /* unlink: remove the file/node at 'path' (provider may not support it:
@@ -154,6 +163,7 @@ int vfs_read_file(const char *path, void *buf, uint32_t size, uint64_t offset) N
 int vfs_write_allowed(const char *resolved_path) NX_MUST_USE;
 int vfs_write_file(const char *path, const void *buf, uint32_t size,
                    uint64_t offset) NX_MUST_USE;
+int vfs_truncate(const char *path, uint64_t length) NX_MUST_USE;
 int vfs_list_dir(const char *path, char *buf, uint32_t size) NX_MUST_USE;
 int vfs_unlink(const char *path) NX_MUST_USE; /* remove a file/node by path */
 /* vfs_create - create an empty file/dir at 'path' (VFS_TYPE_FILE/_DIR)

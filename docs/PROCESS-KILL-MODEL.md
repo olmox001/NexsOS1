@@ -81,6 +81,24 @@ for each descendant D of P (BFS over parent_pid):
   `__reparent_children`), they are NOT subtree-killed.
 - **Fault-kill** (a process that faulted) kills only the faulting process.
 
+### 2b. Return semantics
+
+The external `SYS_KILL`, `OBJ_CTL_KILL` and `OBJ_CTL_CLOSE` paths propagate the
+window-aware subtree result instead of unconditionally returning success:
+
+- `0`: every selected PID was terminated or had already exited during the
+  snapshot-to-execution interval. An already-reaped snapshot PID is a benign
+  race, not a termination failure.
+- `-ESRCH`: the explicit root PID was already gone when the subtree snapshot
+  was captured.
+- `-EPERM`: the explicit root is a protected machine-level process.
+- `-EAGAIN`: at least one selected victim remained live after its termination
+  attempt. The kernel emits a diagnostic identifying the incomplete subtree.
+
+`kill_process()` is a thin syscall veneer and returns these negative POSIX
+errors unchanged; callers must not interpret a zero return from the veneer
+unless the kernel subtree operation actually returned zero.
+
 ---
 
 ## 3. Existing mechanisms to reuse (do not reinvent)
@@ -219,8 +237,28 @@ drag/resize hit-test (`compositor_handle_click` / `compositor_update_mouse`);
 
 ## 6. Test plan (BOTH arches, every change)
 
-Headless harness (reuse `tools/run-stress.sh` mechanism; `tools/qmp_type.py
-<sock> "cmd"$'\n' <predelay>` types into the guest):
+Current headless harness (use checked-in tools only):
+
+- A genuinely clean two-architecture gate is `make clean && make -j1 test-all
+  TEST_DISPLAY=none`; `test-all` itself does not clean the tree.
+- Each architecture's `make test` runs GRUB boot, KTEST, NXWINS/focus, a
+  30-second guest-health soak, screenshots and (by default) a 10-second
+  `/bin/stress --timer-kill` lane. Override only the duration with
+  `TEST_TIMER_SECONDS=<seconds>`. NXADB requires the `stress=1/1` result
+  marker, which is emitted only when kill API checks, pending cancellation,
+  natural expiry and reaping all complete without errors.
+- For a focused workload, use `tools/nxadb.py --arch <arch> start --display
+  none`, `wait-for-shell`, then `shell '<guest command>'`; preserve the complete
+  UART and QEMU channels under `build/runtime/nxadb/` and `build/runs/`.
+  NXADB now detects an early QEMU exit (for example, a disk-image lock) instead
+  of waiting the full boot timeout, and includes UART plus QEMU stdout/stderr
+  tails in the error while preserving complete files on disk.
+- For a MEMSTAT time series, use `/sys/bin/nxmemstat --log <interval>
+  --run /bin/stress [args...]`. The ROOT logger remains alive after the USER
+  stress child exits, so capture `[stress] DONE` and the final MEMSTAT record
+  before stopping that QEMU instance.
+- Historical references to `tools/run-stress.sh` and `tools/qmp_type.py` are
+  not executable in this checkout; do not treat those paths as present.
 
 1. **Boot smoke** — 0 `PANIC|Unhandled|NESTED|Data abort`, reach Shell + Dock.
 2. **Spare windowed children** — `forkbomb` (own window) spawns ~30

@@ -483,7 +483,11 @@ struct image_plan {
 static void plan_extent_leaves(struct image_plan *plan, uint64_t data_blocks) {
   if (!use_extents || data_blocks <= 32)
     return; /* depth-0 root fits inline in i_block[] */
-  uint64_t extents = (data_blocks + 7) / 8; /* build_extent_tree's cap */
+  /* A group boundary splits a run even when its eight-block cap has not
+   * been reached. Reserve an upper bound including every possible split. */
+  uint64_t extents = (data_blocks + 7) / 8 +
+      (data_blocks + BLOCKS_PER_GROUP - GN_META_BLOCKS - 1) /
+          (BLOCKS_PER_GROUP - GN_META_BLOCKS);
   plan->extent_leaf_blocks += (extents + 339) / 340;
 }
 
@@ -683,9 +687,39 @@ void mark_inode_used(uint32_t inode) {
   free_inodes_count--;
 }
 
+/* Sequential allocation must skip the metadata already reserved in every
+ * group. Extents describe the resulting physical runs, not cursor arithmetic. */
+static uint32_t allocate_block(void) {
+  uint32_t group = next_free_block / BLOCKS_PER_GROUP;
+  uint32_t offset = next_free_block % BLOCKS_PER_GROUP;
+  if (group > 0 && offset < GN_META_BLOCKS)
+    next_free_block += GN_META_BLOCKS - offset;
+  uint32_t block = next_free_block++;
+  mark_block_used(block);
+  return block;
+}
+
+static uint32_t collect_extents(const uint32_t *blocks, uint32_t nblocks,
+                                struct ext4_extent *out) {
+  uint32_t count = 0;
+  uint32_t cap = nblocks > 32 ? 8 : 32768;
+  for (uint32_t i = 0; i < nblocks; i++) {
+    if (count > 0 && out[count - 1].ee_len < cap &&
+        blocks[i] == out[count - 1].ee_start_lo + out[count - 1].ee_len) {
+      out[count - 1].ee_len++;
+    } else {
+      out[count].ee_block = i;
+      out[count].ee_len = 1;
+      out[count].ee_start_lo = blocks[i];
+      count++;
+    }
+  }
+  return count;
+}
+
 /*
- * build_extent_tree - describe the contiguous run [first_block,
- * first_block+nblocks) as an extent tree rooted in i_block[].
+ * build_extent_tree - describe allocated data blocks as an extent tree
+ * rooted in i_block[], splitting runs at group metadata gaps.
  *
  * Extent length is capped at 8 blocks for files larger than 32 blocks so
  * big files (ELFs, the doom WAD) get enough extents to need a depth-1 tree
@@ -693,11 +727,11 @@ void mark_inode_used(uint32_t inode) {
  * code.  Small files stay depth 0 with a single inline extent.
  */
 void build_extent_tree(FILE *f, uint64_t partition_offset_bytes,
-                       struct ext4_inode *ino, uint32_t first_block,
+                       struct ext4_inode *ino, const uint32_t *blocks,
                        uint32_t nblocks, uint32_t *meta_blocks) {
   struct ext4_extent_header *eh = (struct ext4_extent_header *)ino->i_block;
-  uint32_t cap = (nblocks > 32) ? 8 : 32768;
-  uint32_t n_ext = (nblocks + cap - 1) / cap;
+  struct ext4_extent *runs = xmalloc((size_t)nblocks * sizeof(*runs));
+  uint32_t n_ext = collect_extents(blocks, nblocks, runs);
 
   ino->i_flags |= EXT4_EXTENTS_FL;
   eh->eh_magic = EXT4_EXT_MAGIC;
@@ -709,12 +743,8 @@ void build_extent_tree(FILE *f, uint64_t partition_offset_bytes,
     eh->eh_entries = n_ext;
     eh->eh_depth = 0;
     struct ext4_extent *ex = (struct ext4_extent *)(eh + 1);
-    for (uint32_t i = 0; i < n_ext; i++) {
-      ex[i].ee_block = i * cap;
-      ex[i].ee_len = (i == n_ext - 1) ? (nblocks - i * cap) : cap;
-      ex[i].ee_start_hi = 0;
-      ex[i].ee_start_lo = first_block + i * cap;
-    }
+    memcpy(ex, runs, (size_t)n_ext * sizeof(*runs));
+    free(runs);
     return;
   }
 
@@ -732,8 +762,7 @@ void build_extent_tree(FILE *f, uint64_t partition_offset_bytes,
 
   uint32_t ei = 0;
   for (uint32_t l = 0; l < n_leaf; l++) {
-    uint32_t leaf_blk = next_free_block++;
-    mark_block_used(leaf_blk);
+    uint32_t leaf_blk = allocate_block();
     (*meta_blocks)++;
 
     uint8_t *lb = xmalloc(EXT4_BLOCK_SIZE);
@@ -745,24 +774,21 @@ void build_extent_tree(FILE *f, uint64_t partition_offset_bytes,
     lh->eh_depth = 0;
     lh->eh_generation = 0;
 
-    ix[l].ei_block = ei * cap;
+    ix[l].ei_block = runs[ei].ee_block;
     ix[l].ei_leaf_lo = leaf_blk;
     ix[l].ei_leaf_hi = 0;
     ix[l].ei_unused = 0;
 
     struct ext4_extent *ex = (struct ext4_extent *)(lh + 1);
-    for (uint32_t k = 0; k < count; k++, ei++) {
-      ex[k].ee_block = ei * cap;
-      ex[k].ee_len = (ei == n_ext - 1) ? (nblocks - ei * cap) : cap;
-      ex[k].ee_start_hi = 0;
-      ex[k].ee_start_lo = first_block + ei * cap;
-    }
+    memcpy(ex, runs + ei, (size_t)count * sizeof(*runs));
+    ei += count;
 
     xseek(f, partition_offset_bytes + (uint64_t)leaf_blk * EXT4_BLOCK_SIZE,
           SEEK_SET);
     xwrite(lb, 1, EXT4_BLOCK_SIZE, f);
     free(lb);
   }
+  free(runs);
 }
 
 /*
@@ -818,15 +844,15 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
   uint32_t *indir2_subs[1024] = {NULL};
 
   if (use_extents) {
-    /* Extent layout: write the data as one contiguous run, then describe it
-     * with an extent tree in i_block[] (no indirect pointer blocks). A
+    /* Extent layout: retain the actual allocated blocks, then describe their
+     * runs in i_block[] (no indirect pointer blocks). A
      * zero-byte file has data_blocks == 0: skip straight to an empty extent
      * tree (build_extent_tree handles nblocks==0 as n_ext==0, zero entries)
-     * instead of writing a first_block that was never allocated. */
-    uint32_t first_block = next_free_block;
+     * without describing an unallocated block. */
+    uint32_t *blocks = xmalloc((size_t)data_blocks * sizeof(*blocks));
     for (uint32_t i = 0; i < data_blocks; i++) {
-      uint32_t b = next_free_block++;
-      mark_block_used(b);
+      uint32_t b = allocate_block();
+      blocks[i] = b;
       xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE,
             SEEK_SET);
       uint32_t to_write = (i == data_blocks - 1 && src_size % EXT4_BLOCK_SIZE)
@@ -834,8 +860,9 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
                               : EXT4_BLOCK_SIZE;
       xwrite(buf + i * EXT4_BLOCK_SIZE, 1, to_write, f);
     }
-    build_extent_tree(f, partition_offset_bytes, &file_inode, first_block,
+    build_extent_tree(f, partition_offset_bytes, &file_inode, blocks,
                       data_blocks, &total_meta_blocks);
+    free(blocks);
 
     file_inode.i_blocks_lo =
         (data_blocks + total_meta_blocks) * (EXT4_BLOCK_SIZE / 512);
@@ -849,8 +876,7 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
   }
 
   for (uint32_t i = 0; i < data_blocks; i++) {
-    uint32_t b = next_free_block++;
-    mark_block_used(b);
+    uint32_t b = allocate_block();
 
     /* Write data block */
     xseek(f, partition_offset_bytes + (uint64_t)b * EXT4_BLOCK_SIZE, SEEK_SET);
@@ -863,8 +889,7 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
       file_inode.i_block[i] = b;
     } else if (i < 12 + 1024) {
       if (!indir1) {
-        file_inode.i_block[12] = next_free_block++;
-        mark_block_used(file_inode.i_block[12]);
+        file_inode.i_block[12] = allocate_block();
         total_meta_blocks++;
         indir1 = xmalloc(EXT4_BLOCK_SIZE);
       }
@@ -875,14 +900,12 @@ void write_file_to_inode(FILE *f, uint64_t partition_offset_bytes,
       uint32_t sub_idx = d_idx % 1024;
 
       if (!indir2) {
-        file_inode.i_block[13] = next_free_block++;
-        mark_block_used(file_inode.i_block[13]);
+        file_inode.i_block[13] = allocate_block();
         total_meta_blocks++;
         indir2 = xmalloc(EXT4_BLOCK_SIZE);
       }
       if (!indir2_subs[master_idx]) {
-        indir2[master_idx] = next_free_block++;
-        mark_block_used(indir2[master_idx]);
+        indir2[master_idx] = allocate_block();
         total_meta_blocks++;
         indir2_subs[master_idx] = xmalloc(EXT4_BLOCK_SIZE);
       }
@@ -937,7 +960,7 @@ void write_directory_inode(FILE *f, uint64_t partition_offset_bytes,
   inode.i_blocks_lo = 8;
   if (use_extents) {
     uint32_t meta = 0;
-    build_extent_tree(f, partition_offset_bytes, &inode, data_block, 1, &meta);
+    build_extent_tree(f, partition_offset_bytes, &inode, &data_block, 1, &meta);
   } else {
     inode.i_block[0] = data_block;
   }
@@ -977,8 +1000,7 @@ void populate_directory(FILE *f, const char *host_path, uint32_t dir_inode,
   if (!dir)
     return;
 
-  uint32_t data_blk_num = next_free_block++;
-  mark_block_used(data_blk_num);
+  uint32_t data_blk_num = allocate_block();
   write_directory_inode(f, partition_offset_bytes, dir_inode, data_blk_num);
 
   uint8_t *dir_blk = xmalloc(EXT4_BLOCK_SIZE);

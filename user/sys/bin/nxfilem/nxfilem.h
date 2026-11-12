@@ -20,6 +20,7 @@
 #include <image.h>
 #include <input.h>
 #include <os1.h>
+#include <os1_gfx_buffer.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,7 +28,7 @@
 #include <time.h>
 
 #include "../nxassoc.h"
-#include "../nxexec.h"
+#include <execsvc.h>
 #include "../nxicon.h"
 #include "../nxres.h"
 
@@ -107,6 +108,12 @@ typedef struct {
 typedef struct {
   int window_id;
   int running;
+  /* Single owner of all mapped drawing memory: not a parallel heap buffer. */
+  struct os1_gfx_buffer framebuffer;
+  /* Prepared and retired mappings remain capability-owned until release
+   * succeeds; no local stack handle may become an orphan on failure. */
+  struct os1_gfx_buffer framebuffer_pending;
+  struct os1_gfx_buffer framebuffer_retired;
 
   char current_path[FM_PATH_MAX];
   char home_path[FM_PATH_MAX];
@@ -190,8 +197,9 @@ extern int fm_fb_w, fm_fb_h;
 extern int fm_win_id;
 extern struct font_ctx *fm_font;
 
-void fm_gfx_init(int win_id, int ww, int wh);
-void fm_gfx_realloc(int ww, int wh);
+int fm_gfx_init(int win_id, int ww, int wh);
+void fm_gfx_shutdown(void);
+int fm_gfx_realloc(int ww, int wh);
 void fm_fill_rect(int x, int y, int w, int h, uint32_t color);
 void fm_rrect(int x, int y, int w, int h, int r, uint32_t color);
 void fm_draw_text(int x, int y, const char *s, uint32_t color);

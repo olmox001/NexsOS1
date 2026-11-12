@@ -2,39 +2,32 @@
 #define _KERNEL_FDT_H
 
 #include <kernel/nx_contract.h>
-#include <kernel/types.h>
+#include <kernel/fdt_parser.h>
 #include <kernel/pmm.h>
+#include <kernel/types.h>
 
-#define FDT_MAGIC 0xd00dfeed
+/* Validated DTB physical location retained for early memory ownership. */
 extern uint64_t boot_fdt_ptr;
+extern uint64_t boot_fdt_size;
 
-struct fdt_header {
-    uint32_t magic;
-    uint32_t totalsize;
-    uint32_t off_dt_struct;
-    uint32_t off_dt_strings;
-    uint32_t off_mem_rsvmap;
-    uint32_t version;
-    uint32_t last_comp_version;
-    uint32_t boot_cpuid_phys;
-    uint32_t size_dt_strings;
-    uint32_t size_dt_struct;
-};
+/* Normal path: caller supplies a physical base and the mapped available span. */
+int fdt_init(uintptr_t base, size_t available_length) NX_MUST_USE;
 
-#define FDT_BEGIN_NODE 0x00000001
-#define FDT_END_NODE   0x00000002
-#define FDT_PROP       0x00000003
-#define FDT_NOP        0x00000004
-#define FDT_END        0x00000009
+/* Explicit compatibility adapter for loaders that provide only x0/DTB base.
+ * A non-zero pointer uses a trusted-loader, 16 MiB maximum-size assumption.
+ * A zero pointer searches the bounded legacy QEMU RAM window page by page. */
+int fdt_init_legacy(uintptr_t base, size_t *actual_length) NX_MUST_USE;
 
-struct fdt_reserve_entry {
-    uint64_t address;
-    uint64_t size;
-};
+/* Returns usable RAM plus RESERVED overlays (FDT reserve map, /reserved-memory,
+ * and the DTB allocation). FDT_PARSER_NO_MEMORY preserves reserved entries so
+ * the platform can invoke its explicit legacy RAM probe without losing them. */
+int fdt_get_mem_regions(struct mem_region *regions, size_t max_count,
+                        size_t *count) NX_MUST_USE;
 
-/* API */
-int fdt_init(uintptr_t fdt_addr) NX_MUST_USE;
-int fdt_get_mem_regions(struct mem_region *regions, size_t max_count, size_t *count) NX_MUST_USE;
 uint32_t fdt_count_cpus(void);
-uintptr_t fdt_find_in_memory(uintptr_t start, uintptr_t end);
+
+/* Bounded legacy search. Returns physical address and the validated DTB size. */
+uintptr_t fdt_find_in_memory(uintptr_t start, uintptr_t end,
+                             size_t *found_size) NX_MUST_USE;
+
 #endif /* _KERNEL_FDT_H */

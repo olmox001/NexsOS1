@@ -70,11 +70,10 @@ and graphics state** across a kernel-core recovery (see DIR-05), and matches the
 
 ## Status (2026-07-02)
 
-* **Done** — `compositor_get_focus_pid()` cleanup: confirmed actually removed
-  from `kernel/graphics/compositor.c` (only a comment at `compositor.c:934`
-  documents the removal); it survives only in the two stray reference files
-  `compositor.c.old`/`compositor.c.new` (unreferenced by any build rule, kept
-  deliberately as a transform reference per `docs/PENDING-WORK.md` item 9).
+* **Done** — `compositor_get_focus_pid()` cleanup: removed from the canonical
+  compositor. Historical alternate compositor sources were deleted on
+  2026-11-10 after terminal parsing was confirmed in `kernel/graphics/term.c`
+  and Material/shadow policy in the userland graphics/theme stack.
 * **Done** — `compositor_update_mouse` (`kernel/graphics/compositor.c:1356-1466`)
   was the last unlocked window-list mutator; it now takes `compositor_lock`,
   closing a drag/resize torn-write race (commit `492e5ec`).
@@ -82,3 +81,22 @@ and graphics state** across a kernel-core recovery (see DIR-05), and matches the
   instead of PID-derived addressing), `window_present`/`window_commit`, and
   compositor-as-HAL-component. No `kernel/hal`-level compositor placement exists
   in the source tree as of this date.
+
+
+## Architecture decision update — 2026-11-03 (supersedes HAL placement)
+
+The old §4 diagram ("compositor in the HAL") is **superseded** for NEXS-NG.
+The compositor is a ring-3 supervised userland service, not a kernel/HAL
+component. The scheduler has no compositor dependency.
+
+The kernel retains a deliberately narrow surface/buffer/control manager:
+capability-owned backing storage, validated surface metadata, safe mappings,
+rights, lifetime/pinning, synchronization, commit validation and controlled
+presentation hand-off. It performs no composition or pixel rasterization.
+Window geometry, z-order, focus, damage policy, frame pacing, vsync policy,
+decorations, cursor composition and animation belong to `compositord`.
+
+This is a stronger boundary than the original DIR-02 "compositor as HAL
+component" thesis. The legacy compositor remains in the current kernel only
+for compatibility until the parallel NG service stack passes its migration
+gates. See `docs/architecture/GRAPHICS-USERLAND-MIGRATION.md`.

@@ -6,11 +6,11 @@
  * allocation over two zones (DMA and Normal).  The allocator is split into two
  * phases:
  *
- *   pmm_early_init()  - probes the mem_region table supplied by the boot layer,
- *                        calculates the size of per-frame metadata, and places
- *                        the metadata (page_array + bitmaps) in the first
- *                        usable physical region above the kernel image.  The
- *                        MMU is NOT yet active at this point.
+ *   pmm_early_init()  - validates the boot memory map, calculates per-frame
+ *                        metadata sizes, and places page_array + bitmaps in
+ *                        the lowest usable interval above the kernel image
+ *                        that is already reachable through bootstrap tables.
+ *                        The bootstrap MMU is active; the full VMM map is not.
  *
  *   pmm_init()        - initialises the two zone descriptors, marks the kernel
  *                        image and PMM metadata as reserved, and reserves any
@@ -51,15 +51,16 @@
  *                                region; the boot log reports the real usable
  *                                sum next to the span.
  */
-#include <arch/arch.h>
+#include <hal/config.h>
 #include <kernel/memlayout.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
+#include <kernel/timer.h>
 
 /* Memory configuration from architecture */
-#define MEMORY_BASE ARCH_RAM_START
+#define MEMORY_BASE HAL_RAM_START
 #define DMA_ZONE_END (MEMORY_BASE + 0x1000000UL) /* 16MB for DMA zone */
 
 /* Forward declaration */
@@ -117,8 +118,8 @@ static uint64_t pmm_metadata_end_phys;
 /* --- Instrumentation counters (perf brief §1; surfaced via OS1_sys_stats).
  * Updated with relaxed atomics off the lock so the hot path pays only a single
  * fetch-and-add; *_max uses a racy compare (a lost update on a stat is benign).
- * search_ticks_* are raw arch_timer_get_count() ticks; the collector converts
- * to ns via timer_counts_to_ns().  These measure the bitmap-SEARCH cost only —
+ * search_ticks_* are validated NX-CORE clocksource counts; the collector
+ * converts them to ns via OS1libkernel_time_counts_to_ns(). These measure the bitmap-SEARCH cost only —
  * the fragmentation-sensitive part — not the memset/cache-clean tail. */
 static uint64_t stat_alloc_calls;
 static uint64_t stat_free_calls;
@@ -281,12 +282,15 @@ static void zone_init(struct zone *z, const char *name, uint64_t start_pfn,
  *
  * pmm_early_init - phase-1 PMM setup: discover RAM extent and place metadata.
  *
- * Called very early in boot, before the MMU is active and before any dynamic
- * allocation is possible.  Scans the mem_region table to determine the highest
- * usable physical address (clamped at 256 GB for metadata sanity), computes
- * the sizes of page_array, dma_bitmap, and normal_bitmap, and places them
- * contiguously in the first sufficiently large usable region at or above the
- * kernel image end (__kernel_end).
+ * Called during K1 after the boot MMU/direct map is active, but before PMM
+ * allocation and VMM reconfiguration. Scans the mem_region table to determine the highest
+ * usable physical end (rejecting extents beyond HAL_PHYS_MAP_LIMIT), computes the sizes
+ * of page_array, dma_bitmap, and normal_bitmap, and places them contiguously
+ * in the lowest sufficiently large usable interval above __kernel_end while
+ * avoiding all reserved overlays.
+ *
+ * No guessed RAM fallback is used: the platform must provide a validated map
+ * or complete its explicitly selected legacy page-probe path before calling.
  *
  * After this function returns:
  *   - page_array, dma_bitmap, normal_bitmap global pointers are valid.
@@ -300,112 +304,250 @@ static void zone_init(struct zone *z, const char *name, uint64_t start_pfn,
  *   regions - array of mem_region entries from the boot platform.
  *   count   - number of entries in 'regions'.
  *
- * NOTE(MM-PMM-07): All metadata pointers are derived from physical addresses
- * and used as C pointers directly, relying on the identity-map invariant.
+ * PA/VA: metadata physical addresses are converted through phys_to_virt();
+ * the active direct map is VA = PA + KERNEL_VIRT_BASE, not identity mapping.
+ */
+
+static uint64_t pmm_max_u64(uint64_t a, uint64_t b) {
+  return a > b ? a : b;
+}
+
+static uint64_t pmm_align_up_page(uint64_t value) {
+  const uint64_t mask = PAGE_SIZE - 1ULL;
+  if (value > UINT64_MAX - mask)
+    return UINT64_MAX;
+  return (value + mask) & ~mask;
+}
+
+/* Count the union of complete usable pages inside the PMM's physical span.
+ * The input table is not required to be sorted or disjoint. */
+uint64_t pmm_calculate_usable_bytes(struct mem_region *regions,
+                                    size_t count, uint64_t base,
+                                    uint64_t span_end) {
+  if (!regions || count == 0 || span_end <= base)
+    return 0;
+  uint64_t cursor = base;
+  uint64_t total = 0;
+
+  while (cursor < span_end) {
+    uint64_t covered_end = cursor;
+    uint64_t next_start = UINT64_MAX;
+
+    for (size_t i = 0; i < count; i++) {
+      if (regions[i].type != MEM_REGION_USABLE || regions[i].size == 0)
+        continue;
+      if (regions[i].base > UINT64_MAX - regions[i].size)
+        panic("PMM: overflowing usable region base=0x%lx size=0x%lx",
+              regions[i].base, regions[i].size);
+
+      uint64_t start = regions[i].base;
+      uint64_t end = start + regions[i].size;
+      if (end <= base || start >= span_end)
+        continue;
+      if (start < base)
+        start = base;
+      if (end > span_end)
+        end = span_end;
+
+      start = pmm_align_up_page(start);
+      end &= ~((uint64_t)PAGE_SIZE - 1ULL);
+      if (end <= start || end <= cursor)
+        continue;
+
+      if (start <= cursor) {
+        if (end > covered_end)
+          covered_end = end;
+      } else if (start < next_start) {
+        next_start = start;
+      }
+    }
+
+    if (covered_end > cursor) {
+      uint64_t segment = covered_end - cursor;
+      if (total > UINT64_MAX - segment)
+        panic("%s", "PMM: usable byte union overflow");
+      total += segment;
+      cursor = covered_end;
+    } else if (next_start != UINT64_MAX) {
+      cursor = next_start;
+    } else {
+      break;
+    }
+  }
+
+  return total;
+}
+
+/*
+ * pmm_early_init - phase-1 PMM setup: discover the physical span and place
+ * metadata in a complete usable-page interval above the kernel image and
+ * inside the bootstrap direct-map window (before VMM installs the full map).
+ *
+ * MEMORY_BASE is the first address represented by PFN zero. Physical address
+ * space below it is not part of the PMM and must never be counted as RAM.
+ * Non-contiguous usable intervals are retained as holes in the flat PFN span;
+ * pmm_init() reserves those holes before exposing allocations.
  */
 void pmm_early_init(struct mem_region *regions, size_t count) {
-  uint64_t mem_end = MEMORY_BASE;
-  uint64_t max_detected = 0;
+  if (!regions || count == 0)
+    panic("%s", "PMM: no boot memory-region table; refusing guessed RAM size");
 
-  /* 1. Discover total RAM.  max_detected = highest usable END address (the
-   * metadata span); usable_bytes = real RAM sum (MM-PMM-08 #117: with -m 5G
-   * QEMU amd64 splits RAM around the 3..4GB PCI hole, so span 6GB != RAM 5GB). */
-  uint64_t usable_bytes = 0;
-  if (regions && count > 0) {
-    for (size_t i = 0; i < count; i++) {
-      if (regions[i].type == MEM_REGION_USABLE) {
-        uint64_t end = regions[i].base + regions[i].size;
-        if (end > max_detected) max_detected = end;
-        if (end > MEMORY_BASE)
-          usable_bytes += end - (regions[i].base > MEMORY_BASE
-                                     ? regions[i].base
-                                     : MEMORY_BASE);
-      }
-    }
-  } else {
-    /* Fallback to 1GB if no regions provided */
-    max_detected = MEMORY_BASE + (1UL << 30);
-    usable_bytes = (1UL << 30);
-    pr_warn("%s", "PMM: No memory regions detected, falling back to 1GB\n");
-  }
-
-  /* Safety: clamp to 256GB for metadata sanity, but allow much more than 1GB */
-  if (max_detected > MEMORY_BASE + (256UL << 30)) {
-    max_detected = MEMORY_BASE + (256UL << 30);
-  }
-  
-  mem_end = max_detected;
-  total_pages = (mem_end - MEMORY_BASE) / PAGE_SIZE;
-  usable_pages = usable_bytes / PAGE_SIZE;
-  if (usable_pages > total_pages) usable_pages = total_pages;
-
-  /* 2. Calculate metadata sizes */
-  size_t page_array_size = total_pages * sizeof(struct page);
-  uint64_t dma_end_pfn = phys_to_pfn(DMA_ZONE_END - MEMORY_BASE);
-  size_t dma_bitmap_size = (dma_end_pfn + 63) / 64 * 8;
-  size_t normal_bitmap_size = (total_pages - dma_end_pfn + 63) / 64 * 8;
-  size_t total_metadata_size = PAGE_ALIGN(page_array_size + dma_bitmap_size + normal_bitmap_size);
-
-  /* 3. Find a place for metadata (must be in the first usable region) */
-  uintptr_t metadata_phys = 0;
+  uint64_t max_detected = MEMORY_BASE;
   for (size_t i = 0; i < count; i++) {
-    if (regions[i].type == MEM_REGION_USABLE && regions[i].size >= total_metadata_size) {
-      extern char __kernel_end[];
-      /* __kernel_end is a link-address (virtual) symbol; compare in the
-       * physical domain. */
-      uint64_t kernel_limit = PAGE_ALIGN(virt_to_phys(__kernel_end));
-      uint64_t target = regions[i].base;
-      if (target < kernel_limit) target = kernel_limit;
+    if (regions[i].type != MEM_REGION_USABLE || regions[i].size == 0)
+      continue;
+    if (regions[i].base > UINT64_MAX - regions[i].size)
+      panic("PMM: overflowing usable region base=0x%lx size=0x%lx",
+            regions[i].base, regions[i].size);
 
-      /* Must not land on any RESERVED region.  A GRUB boot module (the
-       * release rootfs) is loaded right after the kernel — exactly where
-       * the metadata wants to go — so bump 'target' past every reserved
-       * region it would overlap.  The table is unsorted, so iterate to a
-       * fixpoint. */
-      int bumped = 1;
-      while (bumped) {
-        bumped = 0;
-        for (size_t j = 0; j < count; j++) {
-          if (regions[j].type == MEM_REGION_USABLE)
-            continue;
-          uint64_t r_start = regions[j].base;
-          uint64_t r_end = PAGE_ALIGN(regions[j].base + regions[j].size);
-          if (target < r_end && target + total_metadata_size > r_start) {
-            target = r_end;
-            bumped = 1;
-          }
-        }
-      }
+    uint64_t end = regions[i].base + regions[i].size;
+    if (!hal_phys_range_valid(regions[i].base, end))
+      panic("PMM: usable region outside direct-map window "
+            "[0x%lx,0x%lx)", regions[i].base, end);
+    if (end > max_detected)
+      max_detected = end;
+  }
 
-      if (target + total_metadata_size <= regions[i].base + regions[i].size) {
-        metadata_phys = target;
+  if (max_detected <= MEMORY_BASE)
+    panic("PMM: no usable RAM above MEMORY_BASE=0x%lx", (uint64_t)MEMORY_BASE);
+
+  uint64_t span_limit = HAL_PHYS_MAP_LIMIT;
+  if (MEMORY_BASE >= span_limit)
+    panic("%s", "PMM: MEMORY_BASE is outside the architecture physical map");
+  if (max_detected > span_limit)
+    panic("PMM: usable RAM ends beyond direct-map limit 0x%lx", span_limit);
+
+  uint64_t mem_end = max_detected & ~((uint64_t)PAGE_SIZE - 1ULL);
+  if (mem_end <= MEMORY_BASE)
+    panic("%s", "PMM: usable span contains no complete page");
+
+  total_pages = (mem_end - MEMORY_BASE) / PAGE_SIZE;
+  uint64_t usable_bytes =
+      pmm_calculate_usable_bytes(regions, count, MEMORY_BASE, mem_end);
+  usable_pages = usable_bytes / PAGE_SIZE;
+  if (usable_pages == 0 || usable_pages > total_pages)
+    panic("PMM: invalid usable-page union (%lu pages, span %lu pages)",
+          usable_pages, total_pages);
+
+  /* 2. Calculate metadata sizes with checked size_t arithmetic. */
+  if (total_pages > (uint64_t)(SIZE_MAX / sizeof(struct page)))
+    panic("%s", "PMM: page descriptor array size overflows size_t");
+  size_t page_array_size = (size_t)total_pages * sizeof(struct page);
+
+  uint64_t dma_end_pfn = phys_to_pfn(DMA_ZONE_END - MEMORY_BASE);
+  if (dma_end_pfn > total_pages)
+    dma_end_pfn = total_pages;
+
+  uint64_t dma_words = (dma_end_pfn + 63ULL) / 64ULL;
+  uint64_t normal_pages = total_pages - dma_end_pfn;
+  uint64_t normal_words = (normal_pages + 63ULL) / 64ULL;
+  if (dma_words > (uint64_t)(SIZE_MAX / sizeof(uint64_t)) ||
+      normal_words > (uint64_t)(SIZE_MAX / sizeof(uint64_t)))
+    panic("%s", "PMM: bitmap size overflows size_t");
+
+  size_t dma_bitmap_size = (size_t)dma_words * sizeof(uint64_t);
+  size_t normal_bitmap_size = (size_t)normal_words * sizeof(uint64_t);
+  if (page_array_size > SIZE_MAX - dma_bitmap_size ||
+      page_array_size + dma_bitmap_size > SIZE_MAX - normal_bitmap_size)
+    panic("%s", "PMM: metadata size overflows size_t");
+
+  size_t raw_metadata_size =
+      page_array_size + dma_bitmap_size + normal_bitmap_size;
+  if (raw_metadata_size > SIZE_MAX - (PAGE_SIZE - 1U))
+    panic("%s", "PMM: metadata page alignment overflows size_t");
+  size_t total_metadata_size =
+      (raw_metadata_size + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
+
+  /* 3. Find the lowest complete usable interval that can contain metadata.
+   * The unsorted reservation overlays are applied to a fixpoint. */
+  extern char __kernel_end[];
+  uint64_t kernel_phys_end = virt_to_phys(__kernel_end);
+  uint64_t kernel_limit = pmm_align_up_page(kernel_phys_end);
+  if (kernel_limit == UINT64_MAX)
+    panic("%s", "PMM: kernel end alignment overflow");
+
+  uint64_t metadata_phys = UINT64_MAX;
+  for (size_t i = 0; i < count; i++) {
+    if (regions[i].type != MEM_REGION_USABLE || regions[i].size == 0)
+      continue;
+    if (regions[i].base > UINT64_MAX - regions[i].size)
+      panic("PMM: overflowing usable region base=0x%lx size=0x%lx",
+            regions[i].base, regions[i].size);
+
+    uint64_t region_start = regions[i].base;
+    uint64_t region_end = region_start + regions[i].size;
+    region_start = pmm_max_u64(region_start, MEMORY_BASE);
+    if (region_end > mem_end)
+      region_end = mem_end;
+    /* pmm_early_init touches metadata before VMM remaps all RAM. Restrict
+     * placement to memory already reachable through the bootstrap tables. */
+    if (region_start >= HAL_BOOTSTRAP_PHYS_MAP_LIMIT)
+      continue;
+    if (region_end > HAL_BOOTSTRAP_PHYS_MAP_LIMIT)
+      region_end = HAL_BOOTSTRAP_PHYS_MAP_LIMIT;
+
+    region_start = pmm_align_up_page(region_start);
+    region_end &= ~((uint64_t)PAGE_SIZE - 1ULL);
+    if (region_start == UINT64_MAX || region_end <= region_start)
+      continue;
+
+    uint64_t target = region_start > kernel_limit ? region_start : kernel_limit;
+    for (size_t pass = 0; pass <= count; pass++) {
+      if (target > UINT64_MAX - total_metadata_size)
+        break;
+      uint64_t target_end = target + total_metadata_size;
+      int bumped = 0;
+
+      for (size_t j = 0; j < count; j++) {
+        if (regions[j].type == MEM_REGION_USABLE || regions[j].size == 0)
+          continue;
+        if (regions[j].base > UINT64_MAX - regions[j].size)
+          panic("PMM: overflowing reserved region base=0x%lx size=0x%lx",
+                regions[j].base, regions[j].size);
+
+        uint64_t reserved_start = regions[j].base;
+        uint64_t reserved_end = reserved_start + regions[j].size;
+        if (reserved_end <= target || reserved_start >= target_end)
+          continue;
+
+        target = pmm_align_up_page(reserved_end);
+        if (target == UINT64_MAX)
+          break;
+        bumped = 1;
         break;
       }
+
+      if (target == UINT64_MAX)
+        break;
+      if (bumped)
+        continue;
+
+      if (target_end <= region_end && target < metadata_phys)
+        metadata_phys = target;
+      break;
     }
   }
 
-  if (!metadata_phys) {
-    panic("PMM: Failed to allocate metadata area (%lu KB needed)", total_metadata_size / 1024);
-  }
+  if (metadata_phys == UINT64_MAX)
+    panic("PMM: no usable interval can contain metadata (%lu KB needed)",
+          total_metadata_size / 1024U);
 
-  /* Physical end of the metadata, so vmm_init can ensure the bootstrap map
-   * covers it wherever it landed (a boot module can push it well past the
-   * kernel image). */
   pmm_metadata_end_phys = metadata_phys + total_metadata_size;
 
-  /* 4. Map pointers (kernel VAs via the direct map; identity while
-   * KERNEL_VIRT_BASE == 0) */
+  /* 4. Map metadata pointers through the architecture direct map. */
   page_array = (struct page *)phys_to_virt(metadata_phys);
   dma_bitmap = (uint64_t *)((uintptr_t)page_array + page_array_size);
   normal_bitmap = (uint64_t *)((uintptr_t)dma_bitmap + dma_bitmap_size);
 
-  /* 5. Zero out metadata */
+  /* 5. Zero out metadata. */
   memset(phys_to_virt(metadata_phys), 0, total_metadata_size);
-  
-  pr_info("PMM: Metadata initialized at 0x%lx (%lu KB)\n", metadata_phys, total_metadata_size / 1024);
-  pr_info("PMM: Usable RAM: %lu MB (address span %lu MB)\n",
-          usable_pages * PAGE_SIZE / (1024 * 1024),
-          (mem_end - MEMORY_BASE) / (1024 * 1024));
+
+  pr_info("PMM: Metadata initialized at 0x%lx (%lu KB)\n",
+          metadata_phys, total_metadata_size / 1024U);
+  pr_info("PMM: Usable RAM: %lu MB (address span %lu MB; MEMORY_BASE=0x%lx)\n",
+          usable_pages * PAGE_SIZE / (1024U * 1024U),
+          (mem_end - MEMORY_BASE) / (1024U * 1024U),
+          (uint64_t)MEMORY_BASE);
 }
 
 /* Helper to reserve a range */
@@ -416,9 +558,8 @@ void pmm_early_init(struct mem_region *regions, size_t count) {
  * global atomic free_pages counter.  Silently skips PFNs already reserved
  * or beyond total_pages.
  *
- * Called from pmm_init() to reserve the kernel image and PMM metadata pages.
- * Must not be called after the system is fully booted (not SMP-safe if
- * called concurrently with allocations outside the zone lock).
+ * Called from pmm_init() to reserve kernel/metadata pages, firmware and
+ * bootloader overlays, and PFN holes. Must not be called after SMP bring-up.
  */
 static void pmm_reserve_range(uint64_t start_pfn, uint64_t end_pfn) {
   for (uint64_t pfn = start_pfn; pfn < end_pfn; pfn++) {
@@ -441,14 +582,45 @@ static void pmm_reserve_range(uint64_t start_pfn, uint64_t end_pfn) {
   }
 }
 
+
+/* Reserve the intersection of a physical interval with the PMM's represented
+ * span. Start is rounded down and end up so partial edge pages are not freed.
+ * Regions below MEMORY_BASE or above the highest usable end are harmless. */
+static void pmm_reserve_phys_range(uint64_t base, uint64_t size) {
+  if (size == 0)
+    return;
+  if (base > UINT64_MAX - size)
+    panic("PMM: overflowing physical reservation base=0x%lx size=0x%lx",
+          base, size);
+
+  uint64_t span_start = MEMORY_BASE;
+  if (total_pages > (UINT64_MAX - span_start) / PAGE_SIZE)
+    panic("%s", "PMM: physical span end overflow");
+  uint64_t span_end = span_start + total_pages * PAGE_SIZE;
+  uint64_t range_end = base + size;
+
+  if (range_end <= span_start || base >= span_end)
+    return;
+
+  uint64_t clipped_start = base < span_start ? span_start : base;
+  uint64_t clipped_end = range_end > span_end ? span_end : range_end;
+  uint64_t start_pfn = (clipped_start - span_start) / PAGE_SIZE;
+  uint64_t end_offset = clipped_end - span_start;
+  uint64_t end_pfn = (end_offset + PAGE_SIZE - 1ULL) / PAGE_SIZE;
+  if (end_pfn > total_pages)
+    end_pfn = total_pages;
+  if (start_pfn < end_pfn)
+    pmm_reserve_range(start_pfn, end_pfn);
+}
+
 /*
  * Initialize PMM with memory regions
  *
  * pmm_init - phase-2 PMM setup: zone construction and page reservation.
  *
- * Initialises ZONE_DMA (PFN 0..dma_end_pfn-1) and ZONE_NORMAL
- * (dma_end_pfn..total_pages-1), then calls pmm_reserve_range() to mark the
- * kernel image, PMM metadata, and any non-usable bootloader regions.
+ * Initialises ZONE_DMA (the first 16 MiB above MEMORY_BASE) and ZONE_NORMAL
+ * (the remaining represented PFNs), then reserves kernel/metadata pages,
+ * all non-usable overlays, and every hole outside the usable-region union.
  *
  * If pmm_early_init() was not previously called (e.g. direct entry for
  * testing), pmm_init() calls it here, but this path is not the normal flow.
@@ -458,85 +630,95 @@ static void pmm_reserve_range(uint64_t start_pfn, uint64_t end_pfn) {
  * Locking: must be called single-threaded (before SMP init).
  */
 void pmm_init(struct mem_region *regions, size_t count) {
-  /* If early_init wasn't called, we are in trouble, but let's try to handle it */
-  if (!page_array) {
+  if (!page_array)
     pmm_early_init(regions, count);
-  }
+  if (!regions || count == 0 || total_pages == 0)
+    panic("%s", "PMM: pmm_init requires a validated non-empty region map");
 
   uint64_t dma_end_pfn = phys_to_pfn(DMA_ZONE_END - MEMORY_BASE);
+  if (dma_end_pfn > total_pages)
+    dma_end_pfn = total_pages;
   uint64_t normal_end_pfn = total_pages;
 
-  /* Initialize zones with our dynamic bitmaps */
   zone_init(&zones[ZONE_DMA], "DMA", 0, dma_end_pfn, dma_bitmap);
-  zone_init(&zones[ZONE_NORMAL], "Normal", dma_end_pfn, normal_end_pfn, normal_bitmap);
-
+  zone_init(&zones[ZONE_NORMAL], "Normal", dma_end_pfn, normal_end_pfn,
+            normal_bitmap);
   free_pages = zones[ZONE_DMA].free_pages + zones[ZONE_NORMAL].free_pages;
 
-  /* Mark kernel pages as reserved (image symbols are virtual; PFNs are
-   * physical — translate first). */
+  /* Reserve the kernel image and metadata using absolute physical intervals;
+   * the helper clips them to [MEMORY_BASE, MEMORY_BASE + total_pages*PAGE_SIZE). */
   extern char __kernel_start[], __kernel_end[];
-  uint64_t kernel_start_pfn = phys_to_pfn(virt_to_phys(__kernel_start) - MEMORY_BASE);
-  uint64_t kernel_end_pfn = phys_to_pfn(PAGE_ALIGN(virt_to_phys(__kernel_end)) - MEMORY_BASE);
+  uint64_t kernel_start_phys = virt_to_phys(__kernel_start);
+  uint64_t kernel_end_phys = virt_to_phys(__kernel_end);
+  if (kernel_end_phys <= kernel_start_phys)
+    panic("%s", "PMM: invalid kernel physical image interval");
+  pmm_reserve_phys_range(kernel_start_phys,
+                         kernel_end_phys - kernel_start_phys);
 
-  /* Also reserve the metadata itself! */
-  uint64_t metadata_start_pfn = phys_to_pfn(virt_to_phys(page_array) - MEMORY_BASE);
-  size_t page_array_size = total_pages * sizeof(struct page);
-  size_t dma_bitmap_size = (dma_end_pfn + 63) / 64 * 8;
-  size_t normal_bitmap_size = (total_pages - dma_end_pfn + 63) / 64 * 8;
-  uint64_t metadata_end_pfn = phys_to_pfn(PAGE_ALIGN(virt_to_phys(page_array) + page_array_size + dma_bitmap_size + normal_bitmap_size) - MEMORY_BASE);
+  uint64_t metadata_start_phys = virt_to_phys(page_array);
+  if (pmm_metadata_end_phys <= metadata_start_phys)
+    panic("%s", "PMM: invalid metadata physical interval");
+  pmm_reserve_phys_range(metadata_start_phys,
+                         pmm_metadata_end_phys - metadata_start_phys);
 
-  pmm_reserve_range(kernel_start_pfn, kernel_end_pfn);
-  pmm_reserve_range(metadata_start_pfn, metadata_end_pfn);
-
-  /* Mark other reserved regions from bootloader */
+  /* Apply reservation-map, /reserved-memory, DTB, firmware and boot-module
+   * overlays. The physical helper clips below-base and above-span entries. */
   for (size_t i = 0; i < count; i++) {
-    if (regions[i].type != MEM_REGION_USABLE) {
-        uint64_t start = phys_to_pfn(regions[i].base - MEMORY_BASE);
-        uint64_t end = phys_to_pfn(PAGE_ALIGN(regions[i].base + regions[i].size) - MEMORY_BASE);
-        pmm_reserve_range(start, end);
-    }
+    if (regions[i].type == MEM_REGION_USABLE || regions[i].size == 0)
+      continue;
+    pmm_reserve_phys_range(regions[i].base, regions[i].size);
   }
 
-  /* MM-PMM-08 (#117): total_pages spans up to the HIGHEST usable end address.
-   * Holes inside that span (amd64 PCI hole 3..4GB, VGA/BIOS 640KB..1MB) are
-   * usually ABSENT from the boot memmap — neither usable nor reserved — so
-   * the loop above never touches them and they would be handed out as RAM.
-   * Walk the usable regions in address order (pick-min, the table may be
-   * unsorted) and reserve every PFN they do not cover.  Rounding is
-   * conservative: partial pages at region edges are reserved. */
-  if (regions && count > 0) {
-    uint64_t cursor = MEMORY_BASE;
-    int done = 0;
-    while (!done) {
-      uint64_t next_base = (uint64_t)-1;
-      uint64_t next_end = 0;
-      for (size_t i = 0; i < count; i++) {
-        if (regions[i].type != MEM_REGION_USABLE) continue;
-        uint64_t base = regions[i].base;
-        uint64_t end = regions[i].base + regions[i].size;
-        if (end <= cursor) continue; /* already behind the cursor */
-        if (base < cursor) base = cursor;
-        if (base < next_base) {
-          next_base = base;
-          next_end = end;
-        }
+  /* Reserve every complete PFN not covered by the union of usable intervals.
+   * This preserves non-contiguous RAM while keeping the flat PFN bitmap model. */
+  uint64_t span_end = MEMORY_BASE + total_pages * PAGE_SIZE;
+  uint64_t cursor = MEMORY_BASE;
+  while (cursor < span_end) {
+    uint64_t next_start = UINT64_MAX;
+    uint64_t next_end = 0;
+
+    for (size_t i = 0; i < count; i++) {
+      if (regions[i].type != MEM_REGION_USABLE || regions[i].size == 0)
+        continue;
+      if (regions[i].base > UINT64_MAX - regions[i].size)
+        panic("PMM: overflowing usable region base=0x%lx size=0x%lx",
+              regions[i].base, regions[i].size);
+
+      uint64_t start = regions[i].base;
+      uint64_t end = start + regions[i].size;
+      start = pmm_max_u64(start, MEMORY_BASE);
+      if (end > span_end)
+        end = span_end;
+
+      start = pmm_align_up_page(start);
+      end &= ~((uint64_t)PAGE_SIZE - 1ULL);
+      if (start == UINT64_MAX || end <= cursor || end <= start)
+        continue;
+      if (start < cursor)
+        start = cursor;
+      if (start < next_start) {
+        next_start = start;
+        next_end = end;
       }
-      if (next_base == (uint64_t)-1) { /* no usable RAM past cursor */
-        next_base = MEMORY_BASE + total_pages * PAGE_SIZE;
-        done = 1;
-      }
-      if (next_base > cursor) {
-        pmm_reserve_range(phys_to_pfn(cursor - MEMORY_BASE),
-                          phys_to_pfn(PAGE_ALIGN(next_base) - MEMORY_BASE));
-      }
-      if (!done) cursor = next_end;
     }
+
+    if (next_start == UINT64_MAX) {
+      pmm_reserve_phys_range(cursor, span_end - cursor);
+      break;
+    }
+
+    if (next_start > cursor)
+      pmm_reserve_phys_range(cursor, next_start - cursor);
+
+    if (next_end <= cursor)
+      panic("%s", "PMM: usable-region union failed to advance");
+    cursor = next_end;
   }
 
-  pr_info("PMM: %lu MB usable, %lu MB free (span %lu MB; gaps reserved)\n",
-          usable_pages * PAGE_SIZE / (1024 * 1024),
-          free_pages * PAGE_SIZE / (1024 * 1024),
-          total_pages * PAGE_SIZE / (1024 * 1024));
+  pr_info("PMM: %lu MB usable, %lu MB free (span %lu MB; gaps/reservations excluded)\n",
+          usable_pages * PAGE_SIZE / (1024U * 1024U),
+          free_pages * PAGE_SIZE / (1024U * 1024U),
+          total_pages * PAGE_SIZE / (1024U * 1024U));
   pr_info("PMM: DMA zone: %lu pages, Normal zone: %lu pages\n",
           zones[ZONE_DMA].free_pages, zones[ZONE_NORMAL].free_pages);
 }
@@ -554,7 +736,7 @@ void pmm_init(struct mem_region *regions, size_t count) {
  *   - decrements z->free_pages (under lock) and global free_pages (atomic).
  *   - initialises struct page (flags=0, refcount=1).
  *   - zeroes the page data (memset), cleans the D-cache line, issues a full
- *     memory barrier (arch_mb).  This ensures DMA coherency for the caller.
+ *     memory barrier (hal_mb).  This ensures DMA coherency for the caller.
  *
  * Returns phys_to_virt(MEMORY_BASE + pfn_to_phys(abs_pfn)): the page's
  * kernel virtual address in the direct map (MM-PMM-07 resolved).
@@ -568,30 +750,32 @@ static void *zone_alloc_page(struct zone *z, int dma) {
   spin_lock_irqsave(&z->lock, &flags);
 
   uint64_t npages = z->end_pfn - z->start_pfn;
-  uint64_t search_t0 = arch_timer_get_count();
+  uint64_t search_t0 = OS1libkernel_time_counter_read();
   int64_t pfn = bitmap_find_free(z->bitmap, z->next_free_pfn, npages);
   if (pfn < 0) {
     /* Wrap around and search from the beginning */
     pfn = bitmap_find_free(z->bitmap, 0, z->next_free_pfn);
   }
-  uint64_t search_ticks = arch_timer_get_count() - search_t0;
+  uint64_t search_ticks = OS1libkernel_time_counter_read() - search_t0;
 
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
     return NULL;
   }
 
-  /* Update next_free_pfn for next caller */
-  z->next_free_pfn = (pfn + 1) % npages;
+  /* The negative sentinel was rejected above; the PFN is now zone-relative
+   * and non-negative.  Convert once to the bitmap's unsigned index type. */
+  uint64_t found_pfn = (uint64_t)pfn;
+  z->next_free_pfn = (found_pfn + 1) % npages;
 
-  bitmap_set(z->bitmap, pfn);
+  bitmap_set(z->bitmap, found_pfn);
   z->free_pages--;
 
   spin_unlock_irqrestore(&z->lock, flags);
 
   /* Convert to absolute PFN, then to the page's kernel virtual address
    * (direct map; identity while KERNEL_VIRT_BASE == 0). */
-  uint64_t abs_pfn = z->start_pfn + pfn;
+  uint64_t abs_pfn = z->start_pfn + found_pfn;
   struct page *pg = &page_array[abs_pfn];
   pg->flags = 0;
   pg->refcount = 1;
@@ -604,8 +788,8 @@ static void *zone_alloc_page(struct zone *z, int dma) {
      * vast majority (page tables, kernel stacks, struct process, user/sbrk
      * pages, kmalloc chunks) are CPU-only and skip the per-page DC CVAC loop +
      * full barrier, the dominant fixed cost on the spawn hot path. */
-    arch_cache_clean_range(addr, PAGE_SIZE);
-    arch_mb();
+    hal_cache_clean(addr, PAGE_SIZE);
+    hal_mb();
   }
 
   __sync_fetch_and_sub(&free_pages, 1);
@@ -673,7 +857,7 @@ void *pmm_alloc_page_dma(void) {
  * through this path.
  *
  * Like the single-page path, the returned memory is zeroed, cache-cleaned
- * (arch_cache_clean_range) and barrier-fenced (arch_mb) so a device can DMA
+ * (hal_cache_clean) and barrier-fenced (hal_mb) so a device can DMA
  * to/from it immediately (MM-PMM-02 resolved; pmm_alloc_aligned inherits the
  * guarantee since it carves from this function).
  *
@@ -694,25 +878,29 @@ static void *alloc_pages_impl(size_t count, int dma) {
 
   spin_lock_irqsave(&z->lock, &flags);
 
-  uint64_t search_t0 = arch_timer_get_count();
+  uint64_t search_t0 = OS1libkernel_time_counter_read();
   int64_t pfn =
       bitmap_find_contiguous(z->bitmap, 0, z->end_pfn - z->start_pfn, count);
-  uint64_t search_ticks = arch_timer_get_count() - search_t0;
+  uint64_t search_ticks = OS1libkernel_time_counter_read() - search_t0;
   if (pfn < 0) {
     spin_unlock_irqrestore(&z->lock, flags);
     return NULL;
   }
 
+  /* The negative sentinel was rejected above; convert the zone-relative
+   * start PFN once before using it as an unsigned bitmap/page-array index. */
+  uint64_t found_pfn = (uint64_t)pfn;
+
   /* Mark all pages as used */
   for (size_t i = 0; i < count; i++) {
-    bitmap_set(z->bitmap, pfn + i);
+    bitmap_set(z->bitmap, found_pfn + i);
   }
   z->free_pages -= count;
 
   spin_unlock_irqrestore(&z->lock, flags);
 
   /* Initialize pages */
-  uint64_t abs_pfn = z->start_pfn + pfn;
+  uint64_t abs_pfn = z->start_pfn + found_pfn;
   for (size_t i = 0; i < count; i++) {
     struct page *pg = &page_array[abs_pfn + i];
     pg->flags = 0;
@@ -723,8 +911,8 @@ static void *alloc_pages_impl(size_t count, int dma) {
   memset(addr, 0, PAGE_SIZE * count);
   if (dma) {
     /* DMA-coherency prep — only for device buffers (perf §3.1). */
-    arch_cache_clean_range(addr, PAGE_SIZE * count);
-    arch_mb();
+    hal_cache_clean(addr, PAGE_SIZE * count);
+    hal_mb();
   }
 
   __sync_fetch_and_sub(&free_pages, count);
@@ -757,8 +945,8 @@ void *pmm_alloc_pages_dma(size_t count) { return alloc_pages_impl(count, 1); }
  *   3. Atomically decrements struct page refcount; if still >0 after decrement,
  *      another reference exists (shared page) -- no free is performed.
  *   4. Acquires the zone lock; checks bitmap to detect double-free (panics).
- *   5. Clears the bitmap bit and increments zone->free_pages (under lock).
- *   6. Poisons the page with 0xCC to catch use-after-free dereferences.
+ *   5. Poisons the page before publishing it as free (under the zone lock).
+ *   6. Clears the bitmap bit and increments zone->free_pages (under lock).
  *   7. Increments global free_pages atomically.
  *
  * The double-free check (step 4) is done under the lock, which prevents the
@@ -771,7 +959,7 @@ void pmm_free_page(void *page) {
     return;
 
   uint64_t phys = virt_to_phys(page);
-#if ARCH_MEMORY_BASE > 0
+#if HAL_RAM_START > 0
   if (phys < MEMORY_BASE) {
     pr_err("PMM: Attempt to free invalid address %p (below MEMORY_BASE)\n",
            page);
@@ -815,13 +1003,15 @@ void pmm_free_page(void *page) {
     panic("PMM: Double free detected at %p (PFN %lu)", page, pfn);
   }
 
+  /* A cleared bit lets another CPU allocate and initialize this page as soon
+   * as the lock is released. Poison the fixed-size page before that transfer
+   * of ownership, never after a new allocator can be writing into it. */
+  if (memset(page, 0xCC, PAGE_SIZE) != page)
+    panic("PMM: page poison failed at %p", page);
   bitmap_clear(z->bitmap, zone_pfn);
   z->free_pages++;
 
   spin_unlock_irqrestore(&z->lock, flags);
-
-  /* Poison memory to catch use-after-free bugs */
-  memset(page, 0xCC, PAGE_SIZE);
 
   __sync_fetch_and_add(&free_pages, 1);
   __sync_fetch_and_add(&stat_free_calls, 1); /* perf brief §1 */
@@ -911,7 +1101,7 @@ void *pmm_alloc_aligned(size_t size, size_t align) {
  * 'phys' is a PHYSICAL address; pointer callers must virt_to_phys() first.
  */
 struct page *pmm_phys_to_page(uint64_t phys) {
-#if ARCH_MEMORY_BASE > 0
+#if HAL_RAM_START > 0
   if (phys < MEMORY_BASE)
     return NULL;
 #endif
@@ -926,14 +1116,32 @@ struct page *pmm_phys_to_page(uint64_t phys) {
  *
  * pmm_page_to_phys - return the physical address corresponding to a struct page.
  *
- * Computes pfn = page - page_array, then returns MEMORY_BASE + pfn_to_phys(pfn).
- * The caller is responsible for ensuring 'page' is a valid entry in page_array.
+ * Validates that 'page' is an aligned entry in page_array, then returns
+ * MEMORY_BASE + pfn_to_phys(pfn).  Returns physical zero for an invalid entry.
  *
  * The returned value is a PHYSICAL address; use phys_to_virt() to get a
  * dereferenceable pointer.
  */
 uint64_t pmm_page_to_phys(struct page *page) {
-  uint64_t pfn = page - page_array;
+  if (!page || !page_array)
+    return 0;
+
+  /* Use integer bounds before deriving the PFN: subtracting unrelated C
+   * pointers is undefined, and a negative ptrdiff_t must never become a
+   * huge unsigned frame number.  Physical zero is reserved and is the
+   * invalid sentinel for this legacy helper. */
+  uintptr_t base = (uintptr_t)page_array;
+  uintptr_t addr = (uintptr_t)page;
+  if (addr < base)
+    return 0;
+  uintptr_t offset = addr - base;
+  if (total_pages > UINTPTR_MAX / sizeof(*page))
+    return 0;
+  uintptr_t bytes = (uintptr_t)total_pages * sizeof(*page);
+  if (offset >= bytes || (offset % sizeof(*page)) != 0)
+    return 0;
+
+  uint64_t pfn = (uint64_t)(offset / sizeof(*page));
   return MEMORY_BASE + pfn_to_phys(pfn);
 }
 
@@ -995,8 +1203,8 @@ void pmm_dump_stats(void) {
 /*
  * pmm_get_counters - read the cumulative allocator counters (perf brief §1).
  *
- * search_ticks_* are raw arch_timer_get_count() ticks; the caller converts to
- * ns via timer_counts_to_ns().  All four out-params are optional (NULL-skip).
+ * search_ticks_* are validated NX-CORE clocksource counts; the caller converts
+ * them to ns via OS1libkernel_time_counts_to_ns(). All four out-params are optional.
  * Lock-free reads of relaxed atomics — values are a coherent-enough snapshot.
  */
 void pmm_get_counters(uint64_t *alloc_calls, uint64_t *free_calls,

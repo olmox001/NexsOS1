@@ -22,8 +22,9 @@
  *     interleave characters mid-line (FIX SMP-UART-01).
  *   - A per-CPU recursion guard (cpu->in_printk) detects recursive printk calls
  *     (e.g. from a fault handler that fires during printk).
- *   - panic() sets panic_flag atomically so other CPUs can halt via IPI, then
- *     prints and spins.
+ *   - panic() elects exactly one CPU owner, sets panic_flag, emits one
+ *     fault-safe transcript, stops the other CPUs, paints the panic screen
+ *     and enters the watchdog/reboot path.
  *
  * Invariants:
  *   - printk_lock is always acquired with IRQs saved (spin_lock_irqsave) so
@@ -40,6 +41,9 @@
  *                  vsnprintf with no dropped-message counter.
  */
 #include <drivers/uart.h>
+#include <drivers/input.h>
+#include <hal/time.h>
+#include <hal/nxpax.h>
 #include <kernel/arch.h>
 #include <kernel/bootphase.h>
 #include <kernel/cpu.h>
@@ -56,8 +60,10 @@
  * Initialized to KERN_INFO; may be adjusted at runtime. */
 int console_loglevel = KERN_INFO;
 
-/* Set by panic() to signal all CPUs to halt */
+/* Set by the first panic owner to stop every other CPU. */
 volatile int panic_flag = 0;
+#define PANIC_OWNER_UNCLAIMED (UINT32_MAX - 1u)
+static volatile uint32_t panic_owner_cpu = PANIC_OWNER_UNCLAIMED;
 
 /* vsnprintf is now in vsnprintf.c */
 
@@ -127,7 +133,26 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
  */
 static spinlock_t printk_lock = SPINLOCK_INIT;
 
-int vprintk(const char *fmt, va_list args) {
+/* Capture real recoverable diagnostics in NXPAX, including pr_warn/pr_err
+ * and HAL warning/error messages. No fault or panic is reclassified here.
+ * This path is called only after the normal formatter produced the text. */
+static void printk_nxpax_capture(const char *prefix, const char *fmt,
+                                 const char *emitted, int32_t cpu_id) {
+  const char *tag = prefix != NULL ? prefix : fmt;
+  uint32_t kind = 0U;
+
+  if (tag == NULL || emitted == NULL)
+    return;
+  if (strncmp(tag, "[WARN] ", 7U) == 0)
+    kind = NXHAL_NXPAX_KIND_DIAGNOSTIC_WARNING;
+  else if (strncmp(tag, "[ERROR] ", 8U) == 0)
+    kind = NXHAL_NXPAX_KIND_DIAGNOSTIC_ERROR;
+  if (kind != 0U)
+    (void)nxhal_nxpax_diagnostic(kind, emitted, cpu_id);
+}
+
+static int vprintk_prefixed(const char *message_prefix, const char *fmt,
+                             va_list args) {
   struct cpu_info *cpu = get_cpu_info();
   uint64_t flags;
   int len;
@@ -136,7 +161,14 @@ int vprintk(const char *fmt, va_list args) {
    * through uart_puts (driver lock = whole-message atomicity). */
   if (!cpu) {
     char buf[512];
-    len = vsnprintf(buf, sizeof(buf), fmt, args);
+    size_t prefix_len = message_prefix ? strlen(message_prefix) : 0U;
+    if (prefix_len >= sizeof(buf))
+      prefix_len = sizeof(buf) - 1U;
+    if (prefix_len != 0U)
+      memcpy(buf, message_prefix, prefix_len);
+    buf[prefix_len] = '\0';
+    len = vsnprintf(buf + prefix_len, sizeof(buf) - prefix_len, fmt, args);
+    printk_nxpax_capture(message_prefix, fmt, buf, -1);
     uart_puts("[BOOT] ");
     uart_puts(buf);
     return len;
@@ -158,9 +190,20 @@ int vprintk(const char *fmt, va_list args) {
   if (pfx < 0)
     pfx = 0;
 
-  /* Format the actual message after the prefix */
-  len = vsnprintf(cpu->printk_buf + pfx, sizeof(cpu->printk_buf) - pfx, fmt,
-                  args);
+  /* Optional severity prefix is part of the same atomic UART message. */
+  if (message_prefix != NULL) {
+    size_t message_prefix_len = strlen(message_prefix);
+    size_t available = sizeof(cpu->printk_buf) - (size_t)pfx;
+    if (message_prefix_len >= available)
+      message_prefix_len = available - 1U;
+    memcpy(cpu->printk_buf + pfx, message_prefix, message_prefix_len);
+    pfx += (int)message_prefix_len;
+    cpu->printk_buf[pfx] = '\0';
+  }
+
+  /* Format the actual message after the CPU/severity prefixes. */
+  len = vsnprintf(cpu->printk_buf + pfx, sizeof(cpu->printk_buf) - (size_t)pfx,
+                  fmt, args);
 
   if (len >= (int)(sizeof(cpu->printk_buf) - pfx - 1)) {
     cpu->printk_dropped++;
@@ -173,12 +216,25 @@ int vprintk(const char *fmt, va_list args) {
 
   /* One uart_puts for the whole line — driver's uart_lock is held for the
    * entire string, so other CPUs cannot interleave characters mid-message. */
+  printk_nxpax_capture(message_prefix, fmt, cpu->printk_buf,
+                       (int32_t)cpu->cpu_id);
   uart_puts(cpu->printk_buf);
 
   cpu->in_printk = 0;
   spin_unlock_irqrestore(&printk_lock, flags);
 
   return len;
+}
+
+int vprintk(const char *fmt, va_list args) {
+  return vprintk_prefixed(NULL, fmt, args);
+}
+
+int vprintk_level(int level, const char *message_prefix, const char *fmt,
+                  va_list args) {
+  if (console_loglevel < level)
+    return 0;
+  return vprintk_prefixed(message_prefix, fmt, args);
 }
 
 /*
@@ -218,7 +274,7 @@ int printk(const char *fmt, ...) {
  *   3. Prints "*** KERNEL PANIC ***" banner.
  *   4. Formats and prints the caller-supplied message via vprintk.
  *   5. Prints "System halted."
- *   6. Disables all exceptions (arch_local_irq_save_all) and spins forever.
+ *   6. Disables all exceptions (hal_irq_save_all) and spins forever.
  *   7. Marks the spin as unreachable for the compiler.
  *
  * Params:
@@ -230,66 +286,81 @@ int printk(const char *fmt, ...) {
  * when panic() is called, the first printk may spin briefly. Side effects: sets
  * panic_flag, sends IPI, halts all CPUs.
  */
-/* panic_reboot_after_grace - DIR-05 #139 watchdog: after the panic is shown
- * (UART
- * + red panic_screen), wait a readable grace (~10 s) then HARD-RESET so an
- * unattended machine self-recovers from a kernel fault.  IRQs stay masked; the
- * grace spins on the free-running hardware counter (it advances without
- * interrupts) — NOT arch_idle(), which would wfi/hlt forever with IRQs off.  If
- * the timer frequency is not up yet (very early boot) the grace is skipped and
- * we reset immediately.  arch_reboot() is __noreturn (resets, or halts if reset
- * does not take). */
-static void panic_reboot_after_grace(void) __noreturn;
-static void panic_reboot_after_grace(void) {
-  uint64_t f;
-  arch_local_irq_save_all(&f);
-  uint64_t freq = arch_timer_get_freq();
-  if (freq) {
-    uint64_t end = arch_timer_get_count() + freq * 10ULL; /* ~10 seconds */
-    while ((int64_t)(end - arch_timer_get_count()) > 0)
-      __asm__ __volatile__("" ::: "memory");
+#define PANIC_GRACE_SECONDS UINT64_C(10)
+#define PANIC_GRACE_POLL_BUDGET UINT64_C(250000000)
+
+static void panic_wait_clocksource_grace(void) {
+  struct nxhal_clocksource_v1 source;
+  uint64_t start;
+  uint64_t delta;
+
+  if (nxhal_time_clocksource_info(&source) != NXHAL_TIME_OK)
+    return;
+  if (source.frequency_hz > UINT64_MAX / PANIC_GRACE_SECONDS)
+    return;
+  delta = source.frequency_hz * PANIC_GRACE_SECONDS;
+  if (delta == 0U || delta > source.max_delta_counts)
+    return;
+  if (nxhal_time_counter_read(&start) != NXHAL_TIME_OK)
+    return;
+
+  for (uint64_t poll = 0U; poll < PANIC_GRACE_POLL_BUDGET; ++poll) {
+    uint64_t now;
+    if (nxhal_time_counter_read(&now) != NXHAL_TIME_OK)
+      return;
+    if ((now - start) >= delta)
+      return;
+    hal_cpu_nop();
   }
-  arch_reboot();
 }
 
-void panic(const char *fmt, ...) {
-  va_list args;
+static void panic_reboot_after_grace(void) __noreturn;
+static void panic_reboot_after_grace(void) {
+  uint64_t flags;
 
-  /* Signal all CPUs to stop BEFORE printing so no interleaving after this */
-  __sync_fetch_and_add(&panic_flag, 1);
+  hal_irq_save_all(&flags);
+  panic_wait_clocksource_grace();
+  hal_reboot();
+}
 
-  /* FIX(PANIC-LOCKFREE-01): panic() used to split into two paths — a
-   * lock-free one (fault_printf/fault_vprintf) when reached from inside a
-   * CPU exception handler, and an ordinary printk()/vprintk() path
-   * otherwise, on the reasoning that only the fault-handler case needed to
-   * survive a wedged CPU holding printk's locks.
-   *
-   * That reasoning does not hold: printk_lock and the driver's uart_lock
-   * are global, cross-CPU locks (kernel/lib/printk.c, kernel/drivers/uart/
-   * 16550.c). ANY CPU stuck while holding either — which is precisely the
-   * failure mode this function exists to report, whatever ordinary
-   * (non-exception) code path detects it and calls panic() — would block
-   * the "non-fault" branch forever inside printk()/vprintk(), turning what
-   * should have been a panic banner into a totally silent, undiagnosable
-   * full-system hang: the exact symptom this driver/scheduler audit was
-   * asked to rule out. fault_printf/fault_vprintf (kernel/fault.h) are
-   * lock-free by contract for exactly this reason; panic() now always uses
-   * them, regardless of whether it was reached from a CPU exception. Print
-   * BEFORE the cross-CPU quiesce IPI (matching the former fault-context
-   * ordering) so the banner still gets out even if the IPI mechanism
-   * itself is what is broken; the accepted trade is that another CPU's
-   * legitimate printk() output may interleave with it on the wire (see
-   * fault.h), which is strictly better than no output at all. */
-  fault_printf("\n\n*** KERNEL PANIC ***\n");
+void vpanic(const char *fmt, va_list args) {
+  struct cpu_info *cpu = cpu_info_fault_safe();
+  uint32_t cpu_id = cpu ? cpu->cpu_id : UINT32_MAX;
+
+  /* Exactly one CPU owns the fatal transcript.  Previously every concurrent
+   * panic caller incremented panic_flag and continued printing through the
+   * lock-free UART path; two CPUs could therefore interleave panic banners,
+   * register dumps and SSP messages, destroying the evidence.  A losing CPU
+   * halts immediately and never writes another byte.  The unclaimed sentinel
+   * differs from UINT32_MAX so an early-boot panic without cpu_info is still
+   * claimed exactly once. */
+  if (!__sync_bool_compare_and_swap(&panic_owner_cpu,
+                                    PANIC_OWNER_UNCLAIMED, cpu_id))
+    hal_cpu_halt();
+
+  __sync_lock_test_and_set(&panic_flag, 1);
+
+  /* fault_printf is lock-free and safe even if another CPU owns printk/uart
+   * locks.  Emit this first line before the quiesce IPI: if IPI delivery itself
+   * is broken, at least the owner and task pointers survive in the UART log. */
+  fault_printf("\n\n*** KERNEL PANIC CPU%u owner=%u ***\n", cpu_id,
+               cpu_id);
+  fault_printf("[panic-context] current=%p pending=%p migrate=%p deferred=%p\n",
+               cpu ? (void *)cpu->current_task : NULL,
+               cpu ? (void *)cpu->pending_stack_release : NULL,
+               cpu ? (void *)cpu->migration_inflight : NULL,
+               cpu ? (void *)cpu->deferred_free_proc : NULL);
+
+  /* Stop other CPUs before reading the lock-free diagnostic rings. */
+  irq_send_ipi_all();
+  sched_trace_dump();
+  OS1libkernel_input_trace_dump();
+
   fault_printf("[boot-phase: %s]\n", boot_phase_name(boot_phase_get()));
-  va_start(args, fmt);
   fault_vprintf(fmt, args);
-  va_end(args);
   fault_printf("\n");
   backtrace_here();
   fault_printf("\nSystem halted.\n");
-
-  irq_send_ipi_all();
 
   /* DIR-05 #139: paint the panic reason on the framebuffer too (no-UART
    * machines). fault_text() is the full transcript just tee'd through
@@ -299,5 +370,12 @@ void panic(const char *fmt, ...) {
   /* DIR-05 #139 watchdog: ~10 s grace to read the panic, then hard reset. */
   panic_reboot_after_grace();
 
+  __builtin_unreachable();
+}
+
+void panic(const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  vpanic(fmt, args);
   __builtin_unreachable();
 }

@@ -165,3 +165,84 @@ Entrambi i guest sono stati arrestati con `nxadb stop`; `nxadb status` conferma 
 ### Restano aperti
 
 La race di ack SMP è stata corretta e verificata su entrambe le architetture. Restano il refactor del compositor per evitare IRQ mascherati durante `compositor_render_internal()` (snapshot/ownership dei buffer e protezione dei mutatori), la riduzione del jitter del timer e lo stress combinato di applicazioni. Il soak di shell non equivale ancora allo stress combinato richiesto. Il bug POSIX `time()` millisecondi/secondi resta separato.
+
+## Audit aggiuntivo: terminal output e SSP — 2026-11-03
+
+L'audit del percorso legacy ha esteso il rilievo oltre compositor_render(): anche compositor_window_write() acquisisce compositor_lock con spin_lock_irqsave() e mantiene la lock durante term_write(), inclusi parsing ANSI, aggiornamento della griglia/caret e rasterizzazione dei glifi tramite font_lock. La lock globale protegge attualmente anche la lifetime della finestra e del buffer; non è corretto rimuoverla o rilasciarla prima del rendering senza un protocollo di pin/generation e serializzazione terminale.
+
+Una clean AArch64 test-all ha registrato un singolo SSP mismatch al ritorno da compositor_window_write() (PID 8, dopo KTEST 11/11); il simbolo/epilogo sono stati verificati con addr2line e disassembly. Il guasto non è stato riprodotto nei successivi run diagnostici; quindi il canary mismatch resta intermittente e la sua causa non è attribuita al lock hold. Non classificare il caso come risolto sulla base dei run passati.
+
+Ulteriore ipotesi da discriminare, non causa accertata: dopo spin_unlock_irqrestore() può arrivare un timer IRQ pendente; kernel_timer_tick() chiama schedule(regs) anche quando il frame interrotto è EL1. Va verificato il salvataggio/ripristino di frame EL1 e il protocollo pending_reenqueue rispetto al kernel stack sospeso. Non introdurre una disabilitazione globale della preemption come workaround.
+
+Piano, limiti dell'evidenza, ordine di correzione e gate: docs/report/GFX-LEGACY-TERMINAL-CONCURRENCY-2026-11-03.md. La correzione va integrata come preflight di GFX-NG-0 prima di GFX-NG-1; mantenere la compatibilità legacy e non sostituire superficialmente irqsave con spin_lock.
+
+
+
+
+## Nuovo fault interattivo AArch64 — 2026-11-04
+
+Durante test NXADB di input e shell, un secondo SSP panic è avvenuto mentre NXShell stava ancora ricevendo il comando cat /reg/system.version; lo screenshot mostra il comando incompleto, quindi non è stato eseguito alcun accesso VFS. Il return address SSP 0xffff0000400a0ab4 è nel check epilogue di sys_registry+0x3b4, ma l'operazione e il PID del chiamante non sono stati catturati. Il dump indica PID 32002 (idle CPU2 nella tabella processi), ELR_EL1=0, FAR_EL1=0, ESR_EL1=0x86000004, SPSR_EL1=0x20000305.
+
+La nuova evidenza non dimostra un difetto del registry: servizi concorrenti leggono/scrivono registry mentre il comando è ancora digitato. Il percorso input corrente traduce keymap/caratteri nel kernel e il timer IRQ può invocare schedule(regs) su frame EL1. La priorità è acquisire caller FP/LR, stack bounds, task/CPU, saved canary e transizioni scheduler prima di scegliere il sottosistema da correggere. Report e log integrali: docs/report/GFX-INPUT-SSP-FAULT-2026-11-04.md.
+
+## Callback timer, processo-kill e stress deterministico — 2026-11-05
+
+### Correzioni implementate
+
+- Il tick rimuove il timer dalla lista del CPU proprietario e porta `pending=false`,
+  ma mantiene pubblicato `cpu` per tutta la callback. La callback viene eseguita
+  sotto il relativo `timer_lock`; il proprietario torna a `-1` soltanto dopo il
+  ritorno della callback.
+- `timer_del()` legge atomicamente il proprietario, acquisisce il suo
+  `timer_lock`, ricontrolla l'ownership e rimuove il timer se ancora queued.
+  Se la callback è già partita, il lock la fa terminare prima del ritorno di
+  `timer_del()`. `timer_add()` passa sempre dalla cancellazione sincrona prima
+  del re-arm. `timer_pending()` descrive soltanto l'inserimento nella lista:
+  `false` non è una prova di quiescenza. I chiamanti devono serializzare
+  `timer_add()/timer_setup()` rispetto a `timer_del()`; una callback non deve
+  richiamare add/del sul timer protetto dallo stesso lock.
+- `SYS_KILL`, `OBJ_CTL_KILL` e `OBJ_CTL_CLOSE` propagano ora il risultato di
+  `process_kill_subtree()`. Durante l'esecuzione dello snapshot, un PID già
+  terminato viene riconosciuto tramite una nuova verifica sotto `sched_lock`:
+  non è una vittima ancora viva e non deve produrre un falso errore.
+  I risultati sono `0`, `-ESRCH`, `-EPERM` e `-EAGAIN` secondo il contratto in
+  `docs/PROCESS-KILL-MODEL.md`.
+- La lane `--timer-kill` di `user/bin/stress.c` verifica anche i risultati
+  `-EPERM` per PID 1 protetto e `-ESRCH` per PID inesistente. Per ogni child
+  `/bin/sleep 0.020` esegue prima `wait()`, poi decide se osservare la scadenza
+  naturale o chiedere la terminazione. Le latenze sono distribuite in tre
+  fasce deterministiche: 1–15 ms, 18–22 ms e 25–30 ms. Il gate richiede sia
+  terminazioni accettate sia scadenze naturali, nessun errore e il marker
+  `[stress] done: 1/1`.
+
+### Verifica riproducibile — 2026-11-05
+
+- Clean gate: `make clean && make -j1 test-all TEST_DISPLAY=none`, exit 0.
+  FDT host parser 61/61; KTEST AMD64 11/11 e AArch64 12/12; SMP 4/4 CPU;
+  NXShell/NXWINS, screenshot, soak di 30 s e scansione fault superati su
+  entrambe le architetture.
+- Gate integrato AMD64: `make -j1 ARCH=amd64 test`, `stress=1/1`,
+  218 test completati (168 kill accettati, 50 scadenze naturali), 0 errori,
+  0 fault.
+- Gate integrato AArch64: `make -j1 ARCH=aarch64 test`, `stress=1/1`,
+  101 test completati (83 kill accettati, 18 scadenze naturali), 0 errori,
+  0 fault.
+- `make check ARCH=amd64`, `make check ARCH=aarch64` e `git diff --check`
+  superati. `make lockcheck`: zero Rule-A; sette candidati Rule-B revisionati
+  nei percorsi `process_create_caps()` e `sys_sbrk()`. Le pagine liberate sono
+  rispettivamente allocazioni nuove del child/env e pagine heap user già
+  smappate; non sono il PCB né lo stack kernel del task corrente. I candidati
+  restano visibili nel report statico, non soppressi.
+- NXADB: un QEMU di prova ha mantenuto aperto il disco AMD64 in modalità
+  `-S`; il secondo avvio ha rilevato `QEMU-EXITED`, riportato il lock QEMU
+  entro circa 2 s e conservato UART/stdout/stderr completi su disco. Il test
+  non ha modificato né terminato sessioni QEMU dell'utente.
+- Il primo stress esplorativo, precedente alla propagazione dell'esito
+  `SYS_KILL`, aveva prodotto quattro diagnostiche `kill_subtree` non
+  classificabili dal chiamante. Il nuovo contratto e la verifica di liveness
+  eliminano quei falsi fallimenti; entrambi i gate successivi hanno
+  `timer_errors=0` e `errs=0`.
+
+Questa lane è una verifica mirata del lifetime timer/processo, non sostituisce
+lo stress multi-app ancora aperto (doom + demo3d + top + forkbomb). Il follow-up
+`TIMER-UAF-02` sui wake non-timer di `PROC_SLEEPING` resta separato e aperto.

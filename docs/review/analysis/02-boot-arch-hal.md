@@ -98,3 +98,33 @@ only wraps a `mov`.
   cause **confirmed** as DRV-VIRTIO-01 (64-bit BAR truncation, `pci.c:106` +
   `amd64/hal.c:26-27`), superseding my initial MMIO-range inference (now AMMU-07).
 - W^X, teardown leak, no TLB shootdown: **[static]** (source), consistent with MM doc.
+
+
+## Addendum BOOT-1 — AArch64 DTB boot contract (2026-11-03)
+
+This addendum supersedes the pointer-only FDT handoff description in this
+static review, while preserving the legacy boot path. The AArch64 EFI stub
+passes the validated DTB totalsize as the fourth argument to
+`nexs_efi_handoff`; the handoff now preserves it in x1 alongside the physical
+DTB address in x0. The entry records both in the 32-byte BootInfo v1 structure.
+After validation, the kernel stores the actual FDT totalsize in
+`boot_info.fdt_size`.
+
+The x1=0 Image/GRUB path remains supported by `fdt_init_legacy()`; a non-zero
+legacy pointer uses a bounded header-derived length, and a zero pointer uses
+the retained 1 GiB legacy search window with 4 KiB page probes and 8-byte
+candidate alignment. The candidate must pass the same bounded parser.
+
+The parser reads memory regions, reservation-map entries, static
+`/reserved-memory` and the DTB allocation. The DTB must lie inside a declared
+usable RAM region, or inside the RAM interval discovered by the explicitly
+QEMU-virt-only fallback when the FDT has no memory node. AMD64 continues using
+Multiboot2/PVH; its FDT stubs are intentional.
+
+Host validation: 61 ASan/UBSan checks PASS against fixtures and the generated
+QEMU DTB. BOOT-1 runtime verification completed 2026-11-03: clean builds,
+AMD64 GRUB BIOS boot (10/10 KTEST), AArch64 GRUB arm64-efi/UEFI boot (11/11
+KTEST, x1=1 MiB), legacy x1=0 search, PMM DTB reservation, NXShell, nxwins,
+30-second soak, screenshots and zero-fault scans. The separate AMD64 3–4 GiB
+PCI-hole audit and hardware certification remain open. See
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md` and `docs/report/logs/`.

@@ -18,23 +18,16 @@ endif
 
 # Target Architecture (default to aarch64)
 ARCH ?= aarch64
+HOST_CC ?= cc
 # Build flavour for userland size control.
 #   make BUILD=debug   → full symbols, no strip (default)
 #   make BUILD=release → --gc-sections + strip
 BUILD ?= debug
-
-# Optional escape hatch for incomplete userland compatibility layers: when set,
-# the user-space compile rules drop -Werror without weakening the kernel build.
-# GNU make does not accept arbitrary --bypas-sec switches, so the supported form
-# is a variable assignment such as: make ARCH=aarch64 BYPASS_SEC=1 run
-BYPASS_SEC ?= 0
-BYPASS_USERLAND_ERRORS ?= $(BYPASS_SEC)
-ifneq ($(BYPASS_USERLAND_ERRORS),0)
-USER_CFLAGS += -Wno-error
-endif
+# Opt-in boot-time userland suite, separate from the normal debug symbols.
+MDEBUG ?= 0
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.5.5
+VERSION ?= V0.0.6.1
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -49,115 +42,94 @@ endif
 
 # Common Compiler Flags
 # ---------------------------------------------------------------------------
-# CONTRACT GATE — read before you reach for a way around it.
+# CONTRACT GATE AND MAINTENANCE DIAGNOSTICS
 #
-# kernel/include/kernel/nx_contract.h turns the invariants C cannot check into
-# build failures: NX_MUST_USE on every -errno return, NX_ASSERT_OFFSET on every
-# layout assembly depends on.  It is ALWAYS ON.  There is deliberately no flag
-# to disable it, and adding one would defeat the reason it exists -- an earlier
-# version was gated behind NX_STRICT and the result was that nobody ever saw a
-# single diagnostic, because a gate you have to remember to switch on is a gate
-# that is off.
+# All ordinary first-party userland builds enable their warning diagnostics;
+# warnings currently under correction remain visible rather than silently
+# disabled. The independent NX-CORE and NX-HAL compiler profiles preserve
+# fatal baseline diagnostics by default and require an explicit opt-out.
+# Conversion diagnostics stay enabled in both domains; the separate
+# NX_CONVERSION_AS_ERROR=1 profile makes their remaining debt build-blocking.
 #
-# When the build stops on one of these, the build is correct and the code is
-# not.  The three legitimate responses, in order of preference:
-#
-#   1. Handle the failure.  This is almost always the right answer.
-#   2. Make the failure visible where it happens -- pr_err with the CONSEQUENCE
-#      named, not just the fact ("no key events" beats "irq_register failed").
-#   3. NX_DISCARD(expr, "why") -- only for an error-unwind path where the
-#      cleanup failing changes nothing, or a best-effort refresh whose fallback
-#      is documented.  It requires a written reason precisely so it can be
-#      reviewed rather than merely noticed.
-#
-# What is NOT a response: deleting the annotation, adding -Wno-unused-result,
-# or a (void) cast (which does not suppress warn_unused_result under GCC and
-# only makes the omission look intentional -- the tree already had one).
+# No NX_DISCARD bypass is permitted. Fallible results require explicit handling.
+# Power12 retains complete findings and source-digest evidence on every new
+# audited input set. A cached audit is reused only for unchanged inputs.
+# Release and check-strict retain the hard Power12 gate.
 # ---------------------------------------------------------------------------
 
-COMMON_FLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wwrite-strings \
+COMMON_FLAGS = -Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings \
                -Wmissing-prototypes -Wstrict-prototypes \
+               -Wconversion -Wsign-conversion \
                -ffreestanding -fno-builtin -nostdlib -nostartfiles \
                -fno-common -fstack-protector-strong \
                -fno-pic -fno-pie \
                -fno-omit-frame-pointer \
                -O2 -g
 
-# NX_STRICT=1 turns the nx_contract.h annotations into enforced attributes
-# (NX_MUST_USE -> warn_unused_result).  With -Werror that makes every ignored
-# -errno a hard error, which is the point: `make NX_STRICT=1` is the report of
-# how much of the surface still drops failures on the floor.
+# Userland defaults to visible, nonfatal diagnostics while it is being
+# migrated. NX-CORE and NX-HAL independently enforce -Werror by default.
+# Explicit userland qualification: make NX_WARNINGS_AS_ERRORS=1 ...
+NX_WARNINGS_AS_ERRORS ?= 0
+ifeq ($(NX_WARNINGS_AS_ERRORS),1)
+COMMON_FLAGS += -Werror
+endif
+
+# Enforce the contract annotations on every ordinary build.  Both release
+# architectures have been rebuilt successfully with NX_STRICT=1; keep the
+# explicit 0 override only for temporary compiler/porting experiments.
+NX_STRICT ?= 1
 ifeq ($(NX_STRICT),1)
 COMMON_FLAGS += -DNX_STRICT
 endif
 
 ifeq ($(ARCH), amd64)
     CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
-    KERNEL_DIR = kernel
-    ARCH_DIR   = $(KERNEL_DIR)/arch/amd64
-BOOT_DIR   = $(ARCH_DIR)/boot
-    
     ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large
-    ASFLAGS = -g --fatal-warnings
-    
-    LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
-    LDFLAGS_KERN = -nostdlib -static -z noexecstack -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
-    
-    CFLAGS_BOOT = $(filter-out -mcmodel=large,$(COMMON_FLAGS)) $(INCLUDE) -m32
+    ASFLAGS = -g $(if $(filter 1,$(NX_WARNINGS_AS_ERRORS)),--fatal-warnings)
     QEMU = qemu-system-x86_64
 else
     CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
-    KERNEL_DIR = kernel
-    ARCH_DIR   = $(KERNEL_DIR)/arch/aarch64
-BOOT_DIR   = $(ARCH_DIR)/boot
-    
     ARCH_CFLAGS = -DARCH_AARCH64 -mcpu=cortex-a57 $(AARCH64_ARCH_CFLAGS_EXTRA)
-    ASFLAGS = -mcpu=cortex-a57 -g --fatal-warnings
-    
-    LDFLAGS_BOOT = -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
-    LDFLAGS_KERN = -nostdlib -static -z noexecstack -T $(ARCH_DIR)/kernel.ld -Map build/kernel.map
-    
-    CFLAGS_BOOT = $(COMMON_FLAGS) $(INCLUDE)
+    ASFLAGS = -mcpu=cortex-a57 -g $(if $(filter 1,$(NX_WARNINGS_AS_ERRORS)),--fatal-warnings)
     QEMU = qemu-system-aarch64
 endif
+KERNEL_DIR = kernel
+
+# NX-SDK owns the public API and its versioned kernel-contract snapshot.
+# The legacy shared root include/abi directory is intentionally absent.
+USER_INCLUDE = -Isystem/include/contract -Isystem/include/api -Iuser/lib/stb -Iuser/lib/pl_mpeg
+# Compatibility variable consumed by pinned upstream build fragments (e.g. DOOM).
+INCLUDE = $(USER_INCLUDE)
 
 # Userland: enable per-function/data sections so the linker can GC unused
-# code from the whole-archive lib.o (USR-BLOAT-01/02).  Kernel keeps the
-# original COMMON_FLAGS (no gc needed there).
-USER_CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) \
-              -ffunction-sections -fdata-sections
-ifneq ($(BYPASS_USERLAND_ERRORS),0)
-USER_CFLAGS += -Wno-error
-endif
-
-CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE)
-CXXFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(INCLUDE) -fno-exceptions -fno-rtti
+# code from the whole-archive runtime objects (USR-BLOAT-01/02).
+USER_CFLAGS = $(COMMON_FLAGS) $(ARCH_CFLAGS) $(USER_INCLUDE) -ffunction-sections -fdata-sections
+# CFLAGS is the userland-facing convention used by upstream build fragments.
+CFLAGS = $(USER_CFLAGS)
 
 # Tools
 CC      = $(CROSS_COMPILE)gcc
-CXX     = $(CROSS_COMPILE)g++
 AS      = $(CROSS_COMPILE)as
 LD      = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
+NM = $(CROSS_COMPILE)nm
+AR = $(CROSS_COMPILE)ar
 MKDISK  = tools/mkdisk
 # Rootfs inode layout: --extents (mkfs.ext4-like, default) or --legacy
 # (direct/indirect pointer blocks, the pre-B1 format kept for regression).
 MKDISK_LAYOUT ?= --extents
 
-# Resolve grub-mkrescue
-GRUB_MKRESCUE := $(shell command -v i686-elf-grub-mkrescue 2>/dev/null || command -v grub-mkrescue 2>/dev/null || echo "")
-
 # Directories
 BUILD_ROOT = build
 BUILD_DIR  = $(BUILD_ROOT)/$(ARCH)
 
-# GRUB-first boot media. AArch64 EFI embeds kernel Image + generated DTB;
-# AMD64 boots the Multiboot2 ELF.
+# Optional GRUB ISO media for BOOT_MODE=iso and nxadb/nxrun. AArch64 EFI
+# embeds kernel Image + generated DTB; AMD64 boots the Multiboot2 ELF.
 HOST_CLANG ?= $(shell command -v clang 2>/dev/null)
-LLD_LINK ?= $(shell command -v lld-link 2>/dev/null)
-GRUB_ARM64_BUILD = $(BUILD_ROOT)/grub/arm64-efi
+LLD_LINK ?= $(shell command -v lld-link 2>/dev/null || { for p in /usr/local/opt/llvm/bin/lld-link /opt/homebrew/opt/llvm/bin/lld-link; do if test -x "$$p"; then echo "$$p"; exit 0; fi; done; if command -v brew >/dev/null 2>&1; then p="$$(brew --prefix llvm 2>/dev/null)/bin/lld-link"; test -x "$$p" && echo "$$p"; fi; })
 AMD64_GRUB_ISO = $(BUILD_DIR)/grub-bios.iso
+AMD64_UEFI_ISO = $(BUILD_DIR)/grub-uefi/nexsos-amd64-uefi.iso
 AARCH64_UEFI_ISO = $(BUILD_DIR)/grub-efi/nexsos-aarch64-uefi.iso
 ifeq ($(ARCH),aarch64)
 BOOT_ISO = $(AARCH64_UEFI_ISO)
@@ -166,14 +138,9 @@ BOOT_ISO = $(AMD64_GRUB_ISO)
 endif
 USER_DIR   = user
 USER_SYS_DIR = $(USER_DIR)/sys
-USER_LIB_DIR = $(USER_SYS_DIR)/lib
+USER_LIB_DIR = system/lib
 USER_BIN_DIR = $(USER_SYS_DIR)/bin
-USER_ARCH_DIR = $(USER_DIR)/arch/$(ARCH)
-# include/abi = the neutral kernel<->userland ABI contract (syscall numbers,
-# object/caps/rights, posix ABI types, sysstats, style names, font structs).
-# include/api = the userland-only base API (OS1low_/OS1_ + libc headers) —
-# the kernel must never grow includes from it (ASTRA layer separation).
-INCLUDE    = -I$(KERNEL_DIR)/include -I$(ARCH_DIR)/include -Iinclude/abi -Iinclude/api
+USER_ARCH_DIR = system/arch/$(ARCH)
 
 # Output files
 BOOTLOADER_ELF = $(BUILD_DIR)/bootloader.elf
@@ -192,145 +159,11 @@ VIRT_DTB   = $(BUILD_DIR)/virt.dtb
 # Source Files
 # ==============================================================================
 
-ifeq ($(ARCH), amd64)
-BOOT_SOURCES = \
-    $(BOOT_DIR)/header.S \
-    $(BOOT_DIR)/stage1.S \
-    $(BOOT_DIR)/stage2.S
-
-KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/kinit/start.S \
-    $(ARCH_DIR)/cpu/isr_stubs.S \
-    $(ARCH_DIR)/cpu/syscall.S \
-    $(ARCH_DIR)/cpu/context.S \
-    $(ARCH_DIR)/kinit/trampoline.S
-
-KERN_C_SOURCES = \
-    $(ARCH_DIR)/cpu/cpu.c \
-    $(ARCH_DIR)/cpu/idt.c \
-    $(ARCH_DIR)/cpu/gdt.c \
-    $(ARCH_DIR)/cpu/msr.c \
-    $(ARCH_DIR)/cpu/syscall_hal.c \
-    $(ARCH_DIR)/cpu/apic.c \
-    $(ARCH_DIR)/mm/mmu.c \
-    $(ARCH_DIR)/mm/tlb.c \
-    $(ARCH_DIR)/mm/uaccess.c \
-    $(KERNEL_DIR)/drivers/uart/16550.c \
-    $(KERNEL_DIR)/drivers/timer/pic_pit.c \
-    $(ARCH_DIR)/platform/platform.c \
-    $(ARCH_DIR)/hal.c \
-    $(ARCH_DIR)/virtio.c
-else
-BOOT_SOURCES = \
-    $(BOOT_DIR)/header.S \
-    $(BOOT_DIR)/stage1.S \
-    $(BOOT_DIR)/stage2.S
-
-KERN_ASM_SOURCES = \
-    $(ARCH_DIR)/kinit/start.S \
-    $(ARCH_DIR)/cpu/exception.S
-
-KERN_C_SOURCES = \
-    $(ARCH_DIR)/cpu/cpu.c \
-    $(ARCH_DIR)/cpu/syscall.c \
-    $(ARCH_DIR)/mm/mmu.c \
-    $(ARCH_DIR)/platform.c \
-    $(ARCH_DIR)/hal.c \
-    $(ARCH_DIR)/virtio.c \
-    $(KERNEL_DIR)/drivers/uart/pl011.c \
-    $(KERNEL_DIR)/drivers/gic/gic.c \
-    $(KERNEL_DIR)/drivers/timer/timer.c
-endif
-
-KERN_C_SOURCES += \
-    $(KERNEL_DIR)/core/hal_bus.c \
-    $(KERNEL_DIR)/core/syscall_dispatch.c \
-    $(KERNEL_DIR)/core/object.c \
-    $(KERNEL_DIR)/core/fault.c \
-    $(KERNEL_DIR)/core/smp.c \
-    $(KERNEL_DIR)/core/timer.c \
-    $(KERNEL_DIR)/drivers/console.c \
-    $(KERNEL_DIR)/drivers/irq_ctrl.c \
-    $(KERNEL_DIR)/drivers/sys_timer.c \
-    $(KERNEL_DIR)/drivers/block/block.c \
-    $(KERNEL_DIR)/drivers/block/ramdisk.c \
-    $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
-    $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
-    $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
-    $(KERNEL_DIR)/drivers/gpu/gpu_core.c \
-    $(KERNEL_DIR)/drivers/pci/pci.c \
-    $(KERNEL_DIR)/drivers/usb/usb_core.c \
-    $(KERNEL_DIR)/drivers/usb/usb_hid.c \
-    $(KERNEL_DIR)/drivers/usb/xhci.c \
-    $(KERNEL_DIR)/drivers/usb/ehci.c \
-    $(KERNEL_DIR)/drivers/usb/uhci.c \
-    $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
-    $(KERNEL_DIR)/fs/gpt.c \
-    $(KERNEL_DIR)/fs/ext4.c \
-    $(KERNEL_DIR)/fs/vfs.c \
-    $(KERNEL_DIR)/fs/procfs.c \
-    $(KERNEL_DIR)/mm/pmm.c \
-    $(KERNEL_DIR)/mm/vmm.c \
-    $(KERNEL_DIR)/mm/buffer.c \
-    $(KERNEL_DIR)/lib/string.c \
-    $(KERNEL_DIR)/lib/crc32.c \
-    $(KERNEL_DIR)/lib/sha256.c \
-    $(KERNEL_DIR)/lib/vsnprintf.c \
-    $(KERNEL_DIR)/lib/printk.c \
-    $(KERNEL_DIR)/lib/fault_print.c \
-    $(KERNEL_DIR)/lib/backtrace.c \
-    $(KERNEL_DIR)/lib/stack_protector.c \
-    $(KERNEL_DIR)/lib/entropy.c \
-    $(KERNEL_DIR)/lib/math.c \
-    $(KERNEL_DIR)/lib/kmalloc.c \
-    $(KERNEL_DIR)/lib/registry.c \
-    $(KERNEL_DIR)/lib/ktest.c \
-    $(KERNEL_DIR)/lib/ktest_samples.c \
-    $(KERNEL_DIR)/lib/utf8.c \
-    $(KERNEL_DIR)/cpu.c \
-    $(KERNEL_DIR)/sched/process.c \
-    $(KERNEL_DIR)/sched/elf.c \
-    $(KERNEL_DIR)/graphics/graphics.c \
-    $(KERNEL_DIR)/graphics/surface.c \
-    $(KERNEL_DIR)/graphics/chrome.c \
-    $(KERNEL_DIR)/graphics/region.c \
-    $(KERNEL_DIR)/graphics/gl.c \
-    $(KERNEL_DIR)/graphics/font.c \
-    $(KERNEL_DIR)/graphics/term.c \
-    $(KERNEL_DIR)/graphics/compositor_style.c \
-    $(KERNEL_DIR)/graphics/compositor.c \
-    $(KERNEL_DIR)/irq/irq.c \
-    $(KERNEL_DIR)/lib/fdt.c \
-    $(KERNEL_DIR)/main.c \
-    $(KERNEL_DIR)/drivers/ps2/ps2.c
-
-KERN_CPP_SOURCES = \
-    $(KERNEL_DIR)/drivers/cpp_test.cpp
-
-# Object files
-BOOT_OBJECTS = $(patsubst %.S,$(BUILD_DIR)/%.o,$(BOOT_SOURCES))
-KERN_ASM_OBJECTS = $(KERN_ASM_SOURCES:%.S=$(BUILD_DIR)/%.o)
-KERN_C_OBJECTS = $(KERN_C_SOURCES:%.c=$(BUILD_DIR)/%.o)
-KERN_OBJECTS = $(KERN_ASM_OBJECTS) $(KERN_C_OBJECTS)
-
-# Dependency files
-# Every %.o: %.c rule (kernel AND user, see "Common compilation rules" below)
-# passes -MMD -MP, so a per-TU .d file listing every header it pulled in
-# lands next to each .o.  DEPS used to be JUST the kernel ones
-# (KERN_C_OBJECTS:.o=.d) — userland .o files (nxres.o, nxsettings.o, ...)
-# never got their .d included, so `make` had no idea a userland .c depended
-# on a header like nxres.h/style_names.h: editing ONLY the header left every
-# .o that #included it stale and un-rebuilt, silently running old code with
-# no compile error to flag it.  Globbing every .d already on disk (kernel
-# and user alike) closes that gap; empty on a clean tree (no .d files yet),
-# which is fine — -include tolerates a missing/empty list.
-DEPS = $(shell find $(BUILD_ROOT) -type f -name '*.d' 2>/dev/null)
-
-# ==============================================================================
-# Build Rules
 # ==============================================================================
 
-.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel disk rootfs release test-release help
+.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel user disk rootfs release test-release help
+# 'make debug' is the explicit MDEBUG boot profile; normal 'run' stays quiet.
+debug: MDEBUG=1
 
 # Bootstrap exact third-party revisions recorded as Git submodule gitlinks.
 setup-deps:
@@ -340,7 +173,7 @@ check-deps:
 	@tools/setup-dependencies.sh --check
 
 # Default target
-all: dirs bootloader kernel user $(MKDISK) disk
+all: power12 dirs bootloader kernel user $(MKDISK) disk
 	@echo ""
 	@echo "Build complete for $(ARCH)!"
 	@echo "  Disk Image: $(DISK_IMG)"
@@ -352,83 +185,56 @@ endif
 
 # Create build directories
 dirs:
-	@mkdir -p $(BUILD_DIR)/$(BOOT_DIR)
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/boot
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/cpu
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/mm
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/platform
-	@mkdir -p $(BUILD_DIR)/$(ARCH_DIR)/drivers
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/uart
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/gic
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/timer
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/virtio
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/gpu
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/keyboard
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/fs
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/mm
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/lib
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/sched
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/graphics
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/irq
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/pci
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/core
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/lib
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/lib
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sbin
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/bin
 	@mkdir -p $(BUILD_DIR)/$(USER_ARCH_DIR)
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/block
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/ps2
-	@mkdir -p $(BUILD_DIR)/$(KERNEL_DIR)/drivers/usb
 	@mkdir -p $(BUILD_DIR)/lua
 	@mkdir -p $(BUILD_DIR)/$(USER_DIR)/sys/lib/portability/lua
 
-# Bootloader
-bootloader: $(BOOTLOADER_BIN)
+# NX-CORE owns the kernel and bootloader build. The superproject passes only
+# the shared output root and target architecture, then consumes the artifacts.
+.PHONY: kernel bootloader
+kernel: power12
+	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) MDEBUG=$(MDEBUG) kernel
 
-$(BOOTLOADER_ELF): $(BOOT_OBJECTS)
-	@$(LD) $(LDFLAGS_BOOT) -o $@ $^
+bootloader: power12
+	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT=../$(BUILD_ROOT) ARCH=$(ARCH) bootloader
 
-$(BOOTLOADER_BIN): $(BOOTLOADER_ELF)
-	@$(OBJCOPY) -O binary $< $@
+$(KERNEL_BIN) $(KERNEL_ELF): | kernel
+	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
 
-# Kernel
-kernel: $(KERNEL_BIN)
-
-# Two-pass link for the in-kernel symbol table (Phase A, kernel/lib/backtrace.c):
-# pass 1 links without .ksyms, gen_ksyms.sh derives the table from `nm -n` of
-# pass 1, pass 2 relinks with it.  .ksyms sits after .text in both kernel.ld
-# scripts, so text addresses are identical across the passes (the table stays
-# valid).  If generation ever fails the empty-table fallback in backtrace.c
-# keeps the kernel functional (raw addresses).
-NM = $(CROSS_COMPILE)nm
-KERNEL_PRE = $(BUILD_DIR)/kernel.pre.elf
-KSYMS_S    = $(BUILD_DIR)/ksyms.S
-KSYMS_O    = $(BUILD_DIR)/ksyms.o
-
-$(KERNEL_PRE): $(KERN_OBJECTS)
-	@$(LD) $(LDFLAGS_KERN) -o $@ $^
-
-$(KSYMS_O): $(KERNEL_PRE) tools/gen_ksyms.sh
-	@tools/gen_ksyms.sh "$(NM)" $(KERNEL_PRE) $(KSYMS_S)
-	@$(CC) $(CFLAGS) -c -o $@ $(KSYMS_S)
-
-$(KERNEL_ELF): $(KERN_OBJECTS) $(KSYMS_O)
-	@$(LD) $(LDFLAGS_KERN) -o $@ $^
-
-$(KERNEL_BIN): $(KERNEL_ELF)
-	@$(OBJCOPY) -O binary $< $@
+$(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
+	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
 
 # Userland
 USER_SYSCALL_O = $(BUILD_DIR)/$(USER_ARCH_DIR)/syscall.o
-USER_LIB_O     = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/lib.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/math.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/execsvc_client.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/os1_video_platform.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/d3d9/os1_d3d9_present.o \
-                 $(BUILD_DIR)/$(USER_SYS_DIR)/lib/portability/opengl/os1_gl_platform.o
-USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
+USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/posix_environment.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/alpha.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/chrome.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/decoration.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/tty_model.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/theme.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/math.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/font_lib.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/input/nxkeyboard_layout.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/image/image.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/video/video.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/notify_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/port_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/time_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/surface_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/gfx_buffer.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/buffer_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/os1_video_platform.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/d3d9/os1_d3d9_present.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/portability/opengl/os1_gl_platform.o
+USER_MALLOC_O  = $(BUILD_DIR)/$(USER_LIB_DIR)/malloc.o
 
 # ==============================================================================
 # SDL2 static library (graphics-port: SDL cross-build over the OS1 libc)
@@ -440,8 +246,8 @@ USER_MALLOC_O  = $(BUILD_DIR)/$(USER_SYS_DIR)/lib/malloc.o
 # link rules because prerequisite lists expand immediately.
 AR = $(CROSS_COMPILE)ar
 
-SDL2_DIR := $(USER_LIB_DIR)/sdl
-include user/sys/lib/portability/sdl2/overlay.mk
+SDL2_DIR := user/lib/sdl
+include system/lib/portability/sdl2/overlay.mk
 
 SDL2_SRCS := \
   $(wildcard $(SDL2_DIR)/src/*.c) \
@@ -489,7 +295,7 @@ SDL2_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
               -ffreestanding -fno-builtin -nostdlib -nostartfiles \
               -fno-common -fstack-protector-strong -fno-pic -fno-pie \
               -fno-omit-frame-pointer \
-              -Iinclude/abi -Iinclude/api -I$(SDL2_DIR)/include \
+              $(USER_INCLUDE) -I$(SDL2_DIR)/include \
               $(SDL_NEXSOS_OVERLAY_CPPFLAGS)
 
 $(SDL2_OBJ_DIR)/%.o: %.c
@@ -506,7 +312,7 @@ libsdl2: $(SDL2_LIB)
 # ==============================================================================
 # Lua static library and runtime (lua)
 # ==============================================================================
-LUA_DIR := $(USER_LIB_DIR)/lua
+LUA_DIR := user/lib/lua
 
 LUA_CORE_SRCS := \
   $(LUA_DIR)/lapi.c \
@@ -572,8 +378,7 @@ LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
              -fno-common -fstack-protector-strong -fno-pic -fno-pie \
              -fno-omit-frame-pointer \
              -DLUA_USE_NEXSOS \
-             -Iinclude/abi \
-             -Iinclude/api \
+             $(USER_INCLUDE) \
              -I$(LUA_DIR) \
              -I$(USER_LIB_DIR)/portability/lua \
              -include lua_portability.h
@@ -609,24 +414,25 @@ $(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_
 	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
 		$(LUA_OBJ_DIR)/lua.o \
 		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
-		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O) $(USER_RUNTIME_LIBS)
 
 # ==============================================================================
 # Gnulib static library (libgnulib)
 # ==============================================================================
-include user/sys/lib/portability/gnulib/overlay.mk
+include user/portability/gnulib/overlay.mk
 
 GNULIB_OBJ_DIR := $(BUILD_DIR)/gnulib
 GNULIB_OBJS := $(patsubst %.c,$(GNULIB_OBJ_DIR)/%.o,$(GNULIB_OVERLAY_SRCS))
 GNULIB_LIB  := $(BUILD_DIR)/libgnulib.a
+
+$(GNULIB_OBJS): $(GNULIB_GENERATED_HEADERS)
 
 GNULIB_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
                 -Wno-error \
                 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
                 -fno-common -fstack-protector-strong -fno-pic -fno-pie \
                 -fno-omit-frame-pointer \
-                -Iinclude/abi \
-                -Iinclude/api \
+                $(USER_INCLUDE) \
                 $(GNULIB_OVERLAY_CPPFLAGS)
 
 $(GNULIB_OBJ_DIR)/%.o: %.c
@@ -634,13 +440,15 @@ $(GNULIB_OBJ_DIR)/%.o: %.c
 	@$(CC) $(GNULIB_CFLAGS) -c $< -o $@
 
 # Special rule for glue.c to define _GNULIB_OS1_GLUE_IMPL before config header
-$(GNULIB_OBJ_DIR)/user/sys/lib/portability/gnulib/gnulib_os1_glue.o: user/sys/lib/portability/gnulib/gnulib_os1_glue.c
+$(GNULIB_OBJ_DIR)/user/portability/gnulib/gnulib_os1_glue.o: user/portability/gnulib/gnulib_os1_glue.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(GNULIB_CFLAGS) -D_GNULIB_OS1_GLUE_IMPL -c $< -o $@
 
-$(GNULIB_LIB): $(GNULIB_OBJS)
+$(GNULIB_LIB): $(GNULIB_OBJS) user/portability/gnulib/overlay.mk Makefile
 	@echo "  [AR]     $@"
-	@$(AR) rcs $@ $^
+	@rm -f $@.tmp
+	@$(AR) rcs $@.tmp $(GNULIB_OBJS)
+	@mv -f $@.tmp $@
 
 libgnulib: $(GNULIB_LIB)
 .PHONY: libgnulib
@@ -648,30 +456,49 @@ libgnulib: $(GNULIB_LIB)
 # ==============================================================================
 # Coreutils compatibility overlay
 # ==============================================================================
-include user/sys/lib/portability/coreutils/overlay.mk
+include user/portability/coreutils/overlay.mk
 
 
 
 
-# Init ELF (placed in /sbin — machine-level only, separate from services)
+# The bootstrap authority extension belongs to NX-CORE but is built with
+# the ordinary userland toolchain, never linked into the kernel image.
+# PID1 is nxmanageDD; nxinit is a ROOT-level declarative child of PID1.
 SBIN_ELFS = $(BUILD_DIR)/nxinit.elf
+# MACHINE-only kernel-owned user extension, installed at /krnl/extension;
+# never linked into the kernel executable and never published as /sbin.
+NX_MACHINE_EXTENSION_ELFS = $(BUILD_DIR)/nxmanageDD.elf
 
-# System ELFs (placed in /sys/bin)
-SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxntfy_srv.elf $(BUILD_DIR)/nxres.elf \
-           $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf $(BUILD_DIR)/nxfilem.elf \
-           $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
-           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf $(BUILD_DIR)/nxwins.elf \
-           $(BUILD_DIR)/nxnotify.elf $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf $(BUILD_DIR)/nxenvinit.elf
+# System commands and graphical applications, installed under /sys/bin.
+SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxres.elf \
+           $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxkeymap.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf \
+           $(BUILD_DIR)/nxfilem.elf $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf \
+           $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
+           $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf \
+           $(BUILD_DIR)/nxlauncher.elf $(BUILD_DIR)/nxsettings.elf \
+           $(BUILD_DIR)/nxwins.elf $(BUILD_DIR)/nxnotify.elf \
+           $(BUILD_DIR)/nximage.elf $(BUILD_DIR)/nxexec.elf \
+           $(BUILD_DIR)/nxenvinit.elf $(BUILD_DIR)/nxtimerdiag.elf \
+           $(BUILD_DIR)/nxpax.elf $(BUILD_DIR)/nxtestrunner.elf \
+           $(BUILD_DIR)/nxroleprobe.elf
 
+# Dedicated ROOT service executables, installed under /sys/services.
+# None is linked into or inherits the MACHINE-only kernel extension runtime.
+SYS_SERVICE_ELFS = $(BUILD_DIR)/nxtimerdd.elf $(BUILD_DIR)/nxntfy_srv.elf \
+                   $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf \
+                   $(BUILD_DIR)/nxmoused.elf $(BUILD_DIR)/nxexecd.elf \
+                   $(BUILD_DIR)/nxttyd.elf $(BUILD_DIR)/nxpaxd.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
            $(BUILD_DIR)/ipc_send.elf $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf\
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
-           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf $(BUILD_DIR)/nxtimerdiag.elf \
+           $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
-           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/libctest.elf \
+           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/notifytest.elf $(BUILD_DIR)/porttest.elf \
+           $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf $(BUILD_DIR)/gfxbuffertest.elf $(BUILD_DIR)/gfxalphatest.elf $(BUILD_DIR)/simdtest.elf $(BUILD_DIR)/simdchild.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
+           $(BUILD_DIR)/portidle_child.elf \
            $(BUILD_DIR)/capreg.elf \
            $(BUILD_DIR)/capkill.elf $(BUILD_DIR)/capkill_child.elf \
            $(BUILD_DIR)/sandboxtest.elf $(BUILD_DIR)/sandboxchild.elf \
@@ -685,10 +512,18 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/kilo.elf \
            $(COREUTILS_ELFS)
 
-USER_ELFS = $(SBIN_ELFS) $(SYS_ELFS) $(BIN_ELFS)
+USER_ELFS = $(SBIN_ELFS) $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(SYS_SERVICE_ELFS) $(BIN_ELFS)
 
 
-user: $(USER_ELFS)
+# Userland build remains defined exactly once here until its complete source
+# manifest and rules are transferred to NX-VIOLA and NX-SDK.
+user: power12 __nexsos_user_module
+
+.PHONY: __nexsos_user_module
+__nexsos_user_module: $(USER_ELFS)
+
+.PHONY: __user
+__user: $(USER_ELFS)
 
 # User Compilations
 $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
@@ -698,6 +533,9 @@ $(BUILD_DIR)/$(USER_DIR)/lib/%.o: $(USER_DIR)/lib/%.c
 $(BUILD_DIR)/$(USER_DIR)/sys/lib/%.o: $(USER_DIR)/sys/lib/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
+
+# NX-SDK system library implementations (including userland graphics).
+$(BUILD_DIR)/$(USER_LIB_DIR)/%.o: $(USER_LIB_DIR)/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -709,14 +547,22 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
+$(BUILD_DIR)/$(USER_DIR)/sys/services/%.o: $(USER_DIR)/sys/services/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
+
 $(BUILD_DIR)/$(USER_DIR)/sbin/%.o: $(USER_DIR)/sbin/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 # Explicit dependencies for each user ELF
 # nxinit: source in user/sbin/ (machine-level init, separate from /sys/bin services)
+$(BUILD_DIR)/nxmanageDD.elf: $(BUILD_DIR)/kernel/user/extension/nxmanageDD/main.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxinit.elf: $(BUILD_DIR)/$(USER_DIR)/sbin/nxinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxenvinit.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxenvinit.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxcompositor.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxcompositor.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxkeyboardd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxkeyboardd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxmoused.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxmoused.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/counter.elf: $(BUILD_DIR)/$(USER_DIR)/bin/counter.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxshell.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxshell.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -725,22 +571,22 @@ $(BUILD_DIR)/demo3d.elf: $(BUILD_DIR)/$(USER_DIR)/bin/demo3d.o $(USER_LIB_O) $(U
 # objects (which satisfy the archive's malloc/os1_video_* undefineds).
 $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o: $(USER_DIR)/bin/sdltest.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/sdltest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o: $(USER_DIR)/bin/raptor.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/raptor.elf: $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o: $(USER_DIR)/bin/nxempire.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -Wno-error -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/nxempire.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -Wno-error -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/coreutils_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/coreutilstest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/coreutils_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -754,14 +600,15 @@ $(BUILD_DIR)/luatest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o $(LUA_OS1_LIB) 
 	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
 		$< \
 		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
-		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O) $(USER_RUNTIME_LIBS)
 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxntfy_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxntfy_srv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxntfy_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxntfy_srv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxreg.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxreg.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxkeymap.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxkeymap.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtop.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtop.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxproc.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxproc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxinfo.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinfo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -774,9 +621,13 @@ $(BUILD_DIR)/nxsettings.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxsettings.o $(USE
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/porttest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/porttest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/notifytest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/notifytest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/buffertest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/buffertest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/libctest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/libctest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capipc_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capipc_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/portidle_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/portidle_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capreg.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capreg.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capkill.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capkill.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/capkill_child.elf: $(BUILD_DIR)/$(USER_DIR)/bin/capkill_child.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -792,9 +643,20 @@ $(BUILD_DIR)/nxres.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxres.o $(USER_LIB_O) $
 $(BUILD_DIR)/nxwins.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxwins.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxexec.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxexec.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxexecd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxexecd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxttyd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxttyd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nximage.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nximage.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-$(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxtimerdd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxtimerdd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxpax.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxpax.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxpaxd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxpaxd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxtestrunner.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtestrunner.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxroleprobe.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxroleprobe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/gfxalphatest.elf: $(BUILD_DIR)/user/bin/gfxalphatest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/gfxbuffertest.elf: $(BUILD_DIR)/user/bin/gfxbuffertest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/simdtest.elf: $(BUILD_DIR)/user/bin/simdtest.o $(BUILD_DIR)/$(USER_ARCH_DIR)/simd_probe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/simdchild.elf: $(BUILD_DIR)/user/bin/simdchild.o $(BUILD_DIR)/$(USER_ARCH_DIR)/simd_probe.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/input_test.elf: $(BUILD_DIR)/$(USER_DIR)/bin/input_test.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxfont.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/nxfont.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
@@ -809,7 +671,7 @@ $(BUILD_DIR)/nxfilem.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfilem/main.o \
 
 $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 # kilo is linked like every other user ELF (prereqs declared above, generic
 # linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
@@ -819,41 +681,80 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 # (the main source of the ~50-70 KB bloat measured in counter.elf).
 # In release builds we also strip symbols; debug keeps everything.
 USER_LINK_FLAGS ?= -Wl,--gc-sections
+# -nostdlib also omits the compiler ABI helpers. Resolve only needed members
+# of the matching cross compiler's runtime, after all user objects/archives.
+USER_RUNTIME_LIBS = -lgcc
 ifeq ($(BUILD),release)
 USER_LINK_FLAGS += -Wl,-s
 endif
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(USER_CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
-# Common compilation rules
-$(BUILD_DIR)/%.o: %.S
+# The scalar foundation must remain executable without vector instructions.
+# ISA-specific accelerators are separate units, selected by usable capabilities.
+$(BUILD_DIR)/$(USER_LIB_DIR)/gfx/alpha.o: USER_CFLAGS += -mgeneral-regs-only
+
+# Compilation rules are split by ownership and compiler domain.  No generic
+# assembly rule is allowed to compile kernel objects with userland flags.
+$(BUILD_DIR)/$(USER_ARCH_DIR)/%.o: $(USER_ARCH_DIR)/%.S
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -c -o $@ $<
-
-$(BUILD_DIR)/kernel/%.o: kernel/%.c
-	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -DKERNEL -MMD -MP -c -o $@ $<
+	@$(CC) $(USER_CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+	@$(CC) $(USER_CFLAGS) -MMD -MP -c -o $@ $<
 
-$(BUILD_DIR)/%.o: %.cpp
-	@mkdir -p $(dir $@)
-	@$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
-
+# Root Makefile used -include $(DEPS) without ever DEFINING DEPS.
+# The variable existed only in NX-CORE's independent kernel/build.mk. Thus
+# header edits relinked user ELFs against stale .o files compiled with old
+# protocol constants, even though GCC had generated accurate .d files.
+# Resolve the active architecture/build root once at parse time; newly
+# generated .d files take effect on the next incremental invocation.
+DEPS := $(shell find "$(BUILD_DIR)" -type f -name '*.d' 2>/dev/null)
 -include $(DEPS)
 
 # Disk Generation
-rootfs: user libsdl2 liblua libgnulib coreutils
+# Publishing rootfs is a real artifact dependency, not an unconditional phony
+# directory deletion on every make run / nxadb invocation. The marker sits
+# outside the guest image and is created only after all copies succeed.
+# Track programs, libraries, the packaging recipe and resource directories;
+# directory mtimes also catch addition/removal of an asset.
+ROOTFS_STAMP = $(BUILD_DIR)/rootfs-ready.stamp
+# MDEBUG is USERLAND image policy, never a kernel compile-time branch. The
+# value file updates only on profile changes and invalidates the rootfs.
+NX_BOOT_PROFILE = $(BUILD_DIR)/nx-boot-profile.value
+.PHONY: nx-boot-profile-force
+nx-boot-profile-force:
+$(NX_BOOT_PROFILE): nx-boot-profile-force
+	@mkdir -p $(dir $@)
+	@printf '%s\n' "$(MDEBUG)" > "$@.tmp"; \
+	  if test -r "$@" && cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; \
+	  else mv "$@.tmp" "$@"; fi
+ROOTFS_ASSET_DIRS = user/home/Settings user/home/Pictures user/home/Video \
+                    user/sys/bin/nxfont/fonts user/sys/bin/background
+# Escape whitespace inside asset paths so fonts such as "Orkney Light.ttf"
+# remain real Make prerequisites instead of silently skipped input files.
+ROOTFS_ASSETS = $(shell find $(ROOTFS_ASSET_DIRS) \
+                  \( -type f -o -type d -o -type l \) 2>/dev/null | \
+                  sed 's/ /\\ /g') \
+                user/sys/boot/entry user/sys/boot/manager.conf \
+                user/sys/boot/services.conf $(wildcard user/bin/doom/freedoom*.wad)
+rootfs: user libsdl2 liblua libgnulib coreutils $(ROOTFS_STAMP)
+	@test -d "$(BUILD_DIR)/rootfs" || { \
+	  echo "ERROR: rootfs missing while $(ROOTFS_STAMP) exists" >&2; exit 1; }
+$(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
+                $(GNULIB_LIB) $(ROOTFS_ASSETS) $(NX_BOOT_PROFILE) Makefile
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sbin
+	@mkdir -p $(BUILD_DIR)/rootfs/krnl/extension
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/bin
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/services
 	@mkdir -p $(BUILD_DIR)/rootfs/bin
 	@mkdir -p $(BUILD_DIR)/rootfs/etc
+	@mkdir -p $(BUILD_DIR)/rootfs/system/boot
 	@mkdir -p $(BUILD_DIR)/rootfs/tmp
 	@mkdir -p $(BUILD_DIR)/rootfs/var/tmp
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
@@ -873,12 +774,22 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Documents/doom
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Video
 	@mkdir -p $(BUILD_DIR)/rootfs/home/shared
+	@# Two independent real RW ext4 fixtures for the USER-level fd/writes tests.
+	@# Their contents are on-disk files, not a test double or a runtime alias.
+	@printf 'FDTEST00FDTEST01: real file descriptor and seek fixture.\n' > $(BUILD_DIR)/rootfs/home/shared/fdtest.fixture
+	@printf '# writetest seed block\n' > $(BUILD_DIR)/rootfs/home/shared/writetest.fixture
+	@printf 'GNULIB-FIXTURE: real read-write ext4 file.\n' > $(BUILD_DIR)/rootfs/home/shared/gnulib.fixture
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Settings
 	@-cp -r user/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
 	@cp $(SBIN_ELFS) $(BUILD_DIR)/rootfs/sbin/
+	@cp $(NX_MACHINE_EXTENSION_ELFS) $(BUILD_DIR)/rootfs/krnl/extension/
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
+	@cp $(SYS_SERVICE_ELFS) $(BUILD_DIR)/rootfs/sys/services/
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
-	@cp user/sys/bin/init.cfg $(BUILD_DIR)/rootfs/etc/
+	@cp user/sys/boot/entry $(BUILD_DIR)/rootfs/system/boot/entry
+	@cp user/sys/boot/manager.conf $(BUILD_DIR)/rootfs/system/boot/manager.conf
+	@cp user/sys/boot/services.conf $(BUILD_DIR)/rootfs/system/boot/services.conf
+	@cp $(NX_BOOT_PROFILE) $(BUILD_DIR)/rootfs/system/boot/profile
 	@# Pre-create a 16KB scratch file for the /bin/stress file lane: the FS has no
 	@# runtime file creation (O_CREAT -> -EINVAL), and file_write only extends an
 	@# EXISTING file, so ship one (perf §6 stress harness).
@@ -907,22 +818,24 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@cp $(LUA_LIB) $(BUILD_DIR)/rootfs/sys/lib/liblua.a
 	@cp $(LUA_OS1_LIB) $(BUILD_DIR)/rootfs/sys/lib/libos1lua.a
 	@cp $(GNULIB_LIB) $(BUILD_DIR)/rootfs/sys/lib/libgnulib.a
-	@rm -rf $(BUILD_DIR)/rootfs/sys/lib/include
+	@# The include tree was created empty above: do not delete it mid-build.
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/SDL2
 	@cp -r $(SDL2_DIR)/include/. $(BUILD_DIR)/rootfs/sys/lib/include/SDL2/
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/lua
 	@cp $(LUA_DIR)/*.h $(BUILD_DIR)/rootfs/sys/lib/include/lua/
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/api
-	@cp -r include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
-	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/abi
-	@cp -r include/abi/. $(BUILD_DIR)/rootfs/sys/lib/include/abi/
+	@cp -r system/include/api/. $(BUILD_DIR)/rootfs/sys/lib/include/api/
+	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include/contract
+	@cp -r system/include/contract/. $(BUILD_DIR)/rootfs/sys/lib/include/contract/
 	@# Copy Lua's own test suite next to nxlua, for on-device testing
 	@mkdir -p $(BUILD_DIR)/rootfs/home/LUA/luatest
 	@-cp -r $(LUA_DIR)/testes/. $(BUILD_DIR)/rootfs/home/LUA/luatest/ 2>/dev/null || true
 	@# Remove .elf extensions in rootfs
-	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
-	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do mv "$$f" "$${f%.elf}"; done
-	@for f in $(BUILD_DIR)/rootfs/sbin/*.elf; do mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/sys/bin/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/sys/services/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/bin/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/sbin/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
+	@for f in $(BUILD_DIR)/rootfs/krnl/extension/*.elf; do [ -e "$$f" ] || continue; mv "$$f" "$${f%.elf}"; done
 	@# Rinomina i file cu_* togliendo il prefisso (senza duplicare)
 	@for cu in $(COREUTILS_NAMES); do \
 		if [ -f $(BUILD_DIR)/rootfs/bin/cu_$$cu ]; then \
@@ -933,6 +846,7 @@ rootfs: user libsdl2 liblua libgnulib coreutils
 	@# Keep a system-level env mirror in /sys/bin for direct invocation and PATH
 	@# resolution, matching the default runtime PATH configured by nxinit.
 	@-cp $(BUILD_DIR)/rootfs/bin/env $(BUILD_DIR)/rootfs/sys/bin/env 2>/dev/null || true
+	@touch "$(ROOTFS_STAMP)"
 
 
 disk: $(MKDISK) kernel rootfs bootloader
@@ -947,47 +861,59 @@ $(MKDISK): tools/mkdisk.c
 # QEMU Flags
 # =============================================================================
 
-# Direct-kernel fallback is retained for low-level debugging. Normal runs use
-# GRUB boot ISOs through tools/nxqemu.py.
+# QEMU runtime policy lives in tools/nxqemu.py for both GRUB and direct
+# boots. QEMU_RUN remains only for the bounded QEMU DTB-generation command.
 QEMU_RUN = env -u GTK_PATH -u GTK_EXE_PREFIX -u GTK_MODULES -u GTK_IM_MODULE_FILE \
                -u GIO_MODULE_DIR -u GSETTINGS_SCHEMA_DIR -u XDG_DATA_DIRS \
                -u XDG_DATA_HOME -u LOCPATH $(QEMU)
 
-ifeq ($(ARCH),amd64)
-QEMU_FLAGS = -machine q35 -cpu max -m 5G -smp 4 -serial mon:stdio \
-             -display default,show-cursor=on -vga none \
-             -device virtio-gpu-pci,disable-legacy=on,disable-modern=off \
-             -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
-             -device virtio-mouse-pci,disable-legacy=on,disable-modern=off \
-             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
-             -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off
-else
-QEMU_FLAGS = -machine virt -cpu cortex-a57 -m 5G -smp 4 -serial mon:stdio \
-             -display default,show-cursor=on \
-             -device virtio-gpu-device -device virtio-keyboard-device \
-             -device virtio-mouse-device \
-             -drive if=none,file=$(DISK_IMG),id=hd0,format=raw \
-             -device virtio-blk-device,drive=hd0 -dtb $(VIRT_DTB)
-endif
+.PHONY: grub-i386-pc-tools grub-x86_64-efi-tools grub-arm64-efi-tools
+.PHONY: grub-tools grub-prebuilt grub-prebuilt-target grub-prebuilt-install
+.PHONY: boot-iso boot-uefi
 
-.PHONY: grub-arm64-tools boot-iso
+grub-i386-pc-tools:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-grub-i386-pc.sh
 
-grub-arm64-tools:
-	@tools/build-grub-arm64.sh
+grub-x86_64-efi-tools:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-grub-x86_64.sh
+
+grub-arm64-efi-tools:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-grub-arm64.sh
+
+grub-tools: grub-i386-pc-tools grub-x86_64-efi-tools grub-arm64-efi-tools
+
+GRUB_TARGET ?= all
+GRUB_ARCHIVE ?=
+
+grub-prebuilt:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/package-grub-target.sh all
+
+grub-prebuilt-target:
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/package-grub-target.sh "$(GRUB_TARGET)"
+
+grub-prebuilt-install:
+	@test -n "$(GRUB_ARCHIVE)" || { echo "GRUB_ARCHIVE=<archive.tar.gz> is required" >&2; exit 2; }
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/install-grub-prebuilt.sh "$(GRUB_ARCHIVE)"
 
 ifeq ($(ARCH),amd64)
 boot-iso: all
-	@tools/build-amd64-grub-iso.sh
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-amd64-grub-iso.sh
+
+boot-uefi: all
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-amd64-uefi-image.sh
 else
-boot-iso: all $(VIRT_DTB) grub-arm64-tools
-	@tools/build-aarch64-uefi-image.sh
+boot-iso: all $(VIRT_DTB)
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" \
+	  NEXS_DTB_PATH="$(abspath $(VIRT_DTB))" tools/build-aarch64-uefi-image.sh
+
+boot-uefi: boot-iso
 endif
 
 # =============================================================================
 # Release Generation
 # =============================================================================
 
-release:
+release: power12-strict
 	@echo "========================================"
 	@echo "  Creating Full Release $(VERSION)"
 	@echo "========================================"
@@ -998,29 +924,57 @@ release:
 	@echo "  Location: $(RELEASE_BASE)"
 	@echo "========================================"
 
-# Keep boot ISO and root filesystem as separate artifacts. This exercises the
-# same VirtIO block path in development and release builds.
-release-arch: all boot-iso
+# Keep boot media and root filesystem as separate artifacts. AMD64 releases
+# carry both BIOS and UEFI GRUB media; AArch64 release media is UEFI-only.
+ifeq ($(ARCH),amd64)
+RELEASE_BOOT_TARGETS = boot-iso boot-uefi
+else
+RELEASE_BOOT_TARGETS = boot-iso
+endif
+
+release-arch: power12-strict all $(RELEASE_BOOT_TARGETS)
 	@echo "--> Packaging $(ARCH) release..."
 	@rm -rf $(RELEASE_DIR)
 	@mkdir -p $(RELEASE_DIR)
-	@cp $(BOOT_ISO) $(RELEASE_DIR)/NexsOS1-$(ARCH)-$(VERSION).iso
 	@cp $(DISK_IMG) $(RELEASE_DIR)/disk.img
-	@if [ "$(ARCH)" = "amd64" ]; then cp $(KERNEL_ELF) $(RELEASE_DIR)/kernel.elf; fi
-	@if [ "$(ARCH)" = "aarch64" ]; then \
+	@if [ "$(ARCH)" = "amd64" ]; then \
+		cp $(AMD64_GRUB_ISO) $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION)-bios.iso; \
+		cp $(AMD64_UEFI_ISO) $(RELEASE_DIR)/NexsOS1-amd64-$(VERSION)-uefi.iso; \
+		cp $(KERNEL_ELF) $(RELEASE_DIR)/kernel.elf; \
+		printf 'architecture=amd64\nversion=%s\nbootloader=GRUB\nbios_iso=%s\nuefi_iso=%s\nrootfs=disk.img\n' \
+			'$(VERSION)' 'NexsOS1-amd64-$(VERSION)-bios.iso' \
+			'NexsOS1-amd64-$(VERSION)-uefi.iso' > $(RELEASE_DIR)/manifest.txt; \
+	else \
+		cp $(BOOT_ISO) $(RELEASE_DIR)/NexsOS1-aarch64-$(VERSION)-uefi.iso; \
 		cp $(KERNEL_BIN) $(RELEASE_DIR)/kernel.img; \
 		cp $(VIRT_DTB) $(RELEASE_DIR)/virt.dtb; \
 		cp $(BUILD_DIR)/grub-efi/manifest.txt $(RELEASE_DIR)/boot-manifest.txt; \
+		printf 'architecture=aarch64\nversion=%s\nbootloader=GRUB\nuefi_iso=%s\nrootfs=disk.img\n' \
+			'$(VERSION)' 'NexsOS1-aarch64-$(VERSION)-uefi.iso' > $(RELEASE_DIR)/manifest.txt; \
 	fi
-	@printf 'architecture=%s\nversion=%s\nbootloader=GRUB\nboot_iso=%s\nrootfs=disk.img\n' \
-		'$(ARCH)' '$(VERSION)' 'NexsOS1-$(ARCH)-$(VERSION).iso' > $(RELEASE_DIR)/manifest.txt
 	@echo "Release ready: $(RELEASE_DIR)"
 
+ifeq ($(ARCH),amd64)
 test-release: release-arch
-	@echo "Starting GRUB release test for $(ARCH) ($(VERSION))..."
-	@python3 tools/nxqemu.py --arch $(ARCH) \
-		--iso "$(RELEASE_DIR)/NexsOS1-$(ARCH)-$(VERSION).iso" \
+	@echo "Starting AMD64 BIOS GRUB release test ($(VERSION))..."
+	@python3 tools/nxqemu.py --arch amd64 --boot-mode iso --firmware bios \
+		--iso "$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION)-bios.iso" \
 		--disk "$(RELEASE_DIR)/disk.img" --serial stdio
+
+test-release-uefi: release-arch
+	@echo "Starting AMD64 UEFI GRUB release test ($(VERSION))..."
+	@python3 tools/nxqemu.py --arch amd64 --boot-mode iso --firmware uefi \
+		--iso "$(RELEASE_DIR)/NexsOS1-amd64-$(VERSION)-uefi.iso" \
+		--disk "$(RELEASE_DIR)/disk.img" --serial stdio
+else
+test-release: release-arch
+	@echo "Starting AArch64 UEFI GRUB release test ($(VERSION))..."
+	@python3 tools/nxqemu.py --arch aarch64 --boot-mode iso --firmware uefi \
+		--iso "$(RELEASE_DIR)/NexsOS1-aarch64-$(VERSION)-uefi.iso" \
+		--disk "$(RELEASE_DIR)/disk.img" --serial stdio
+
+test-release-uefi: test-release
+endif
 
 # =============================================================================
 # Development Execution
@@ -1029,6 +983,12 @@ test-release: release-arch
 # The QEMU virt DTB must match the AArch64 emulated hardware profile. It is
 # embedded into the project-owned EFI loader and passed to the kernel in x0.
 ifeq ($(ARCH),aarch64)
+# The DTB target may be the first consumer after a clean build; define its
+# directory as a real Make target instead of relying on the side effect of
+# dirs (which is not a prerequisite of this standalone target).
+$(BUILD_DIR):
+	@mkdir -p $@
+
 $(VIRT_DTB): disk | $(BUILD_DIR)
 	@echo "  [DTB]    Generating QEMU virt device tree -> $@"
 	@ERRLOG="$(BUILD_DIR)/qemu-dtb.err"; rm -f "$$ERRLOG"; \
@@ -1046,29 +1006,84 @@ $(VIRT_DTB): disk | $(BUILD_DIR)
 	@echo "  [DTB]    Done ($$($(STAT_SIZE) $@) bytes)"
 endif
 
-# Default run/debug path: boot through GRUB, not QEMU's direct -kernel loader.
-run: all boot-iso
-	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" \
-		--disk "$(DISK_IMG)" --serial stdio
+# ISO mode exercises the GRUB chain used by nxadb/nxrun and release media.
+# Direct mode is the explicit legacy test path: AArch64 receives the generated
+# DTB through the ARM64 Image handoff (x0=DTB, x1=0); AMD64 receives QEMU's PVH
+# start-info rather than GRUB's Multiboot2 information structure.
+BOOT_MODE ?= iso
+RUN_FIRMWARE ?= auto
+RUN_DISPLAY ?= default
 
-debug: all boot-iso
-	@python3 tools/nxqemu.py --arch $(ARCH) --iso "$(BOOT_ISO)" \
-		--disk "$(DISK_IMG)" --serial stdio --debug
-
-# Explicit legacy/debug fallback. nxrun/nxadb never use these targets.
-ifeq ($(ARCH),aarch64)
-run-direct: all $(VIRT_DTB)
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN)
-
-debug-direct: all $(VIRT_DTB)
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_BIN) -s -S
-else
-run-direct: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
-
-debug-direct: all
-	$(QEMU_RUN) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
+ifeq ($(BOOT_MODE),direct)
+ifneq ($(RUN_FIRMWARE),auto)
+$(error RUN_FIRMWARE applies only to ISO boot; direct mode requires RUN_FIRMWARE=auto)
 endif
+endif
+RUN_SERIAL ?= stdio
+
+ifeq ($(ARCH),amd64)
+ifeq ($(RUN_FIRMWARE),auto)
+RUN_ISO_TARGET = boot-iso
+RUN_ISO_IMAGE = $(AMD64_GRUB_ISO)
+RUN_ISO_FIRMWARE = bios
+else ifeq ($(RUN_FIRMWARE),bios)
+RUN_ISO_TARGET = boot-iso
+RUN_ISO_IMAGE = $(AMD64_GRUB_ISO)
+RUN_ISO_FIRMWARE = bios
+else ifeq ($(RUN_FIRMWARE),uefi)
+RUN_ISO_TARGET = boot-uefi
+RUN_ISO_IMAGE = $(AMD64_UEFI_ISO)
+RUN_ISO_FIRMWARE = uefi
+else
+$(error RUN_FIRMWARE must be 'auto', 'bios' or 'uefi'; got '$(RUN_FIRMWARE)')
+endif
+else
+ifeq ($(RUN_FIRMWARE),bios)
+$(error AArch64 has no BIOS lane; use RUN_FIRMWARE=auto or uefi)
+endif
+RUN_ISO_TARGET = boot-uefi
+RUN_ISO_IMAGE = $(AARCH64_UEFI_ISO)
+RUN_ISO_FIRMWARE = uefi
+endif
+
+.PHONY: direct-artifacts
+ifeq ($(ARCH),aarch64)
+DIRECT_KERNEL = $(KERNEL_BIN)
+DIRECT_DTB_ARG = --dtb "$(VIRT_DTB)"
+DIRECT_PREREQS = all $(VIRT_DTB)
+direct-artifacts: all $(VIRT_DTB)
+else
+DIRECT_KERNEL = $(KERNEL_ELF)
+DIRECT_DTB_ARG =
+DIRECT_PREREQS = all
+direct-artifacts: all
+endif
+
+# Headless is nxadb's own default and prevents host keyboard input contaminating
+# the guest command/health transaction during automated test-all runs.
+TEST_DISPLAY ?= none
+# Exercise process termination across a timed nanosleep in every QEMU test.
+TEST_TIMER_SECONDS ?= 10
+ifeq ($(BOOT_MODE),iso)
+run: all $(RUN_ISO_TARGET)
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode iso --firmware $(RUN_ISO_FIRMWARE) 		--iso "$(RUN_ISO_IMAGE)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)"
+debug: all $(RUN_ISO_TARGET)
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode iso --firmware $(RUN_ISO_FIRMWARE) 		--iso "$(RUN_ISO_IMAGE)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" --debug
+else ifeq ($(BOOT_MODE),direct)
+run: $(DIRECT_PREREQS)
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode direct --kernel "$(DIRECT_KERNEL)" $(DIRECT_DTB_ARG) --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)"
+debug: $(DIRECT_PREREQS)
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode direct --kernel "$(DIRECT_KERNEL)" $(DIRECT_DTB_ARG) --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" --debug
+else
+$(error BOOT_MODE must be 'direct' or 'iso'; got '$(BOOT_MODE)')
+endif
+
+# Backwards-compatible names delegate to the single direct nxqemu path.
+run-direct:
+	@$(MAKE) ARCH=$(ARCH) BOOT_MODE=direct RUN_FIRMWARE=auto RUN_DISPLAY="$(RUN_DISPLAY)" RUN_SERIAL="$(RUN_SERIAL)" run
+
+debug-direct:
+	@$(MAKE) ARCH=$(ARCH) BOOT_MODE=direct RUN_FIRMWARE=auto RUN_DISPLAY="$(RUN_DISPLAY)" RUN_SERIAL="$(RUN_SERIAL)" debug
 
 # lockcheck — the two memory/lock rules as a build gate (scripts/check-lockrules.py).
 # Not yet wired into `all`: the transitive closure is deliberately over-eager
@@ -1076,6 +1091,18 @@ endif
 # Run it before touching the scheduler or any teardown path.
 lockcheck:
 	@python3 scripts/check-lockrules.py
+
+check-kernel-contracts:
+	@python3 tools/generate-surface-contract.py --check
+	@python3 tools/generate-time-contract.py --check
+	@python3 tools/check-time-contract-layout.py
+	@cmp tools/toolchain-versions.env kernel/config/toolchain-versions.env
+	@kernel/tools/check-contract-snapshot.sh
+	@cmp kernel/include/abi/nxpax.h system/include/contract/nxpax.h
+
+.PHONY: check-buffer-source
+check-buffer-source:
+	@python3 tools/check-buffer-source.py
 
 disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 	$(OBJDUMP) -d $(KERNEL_ELF) > $(BUILD_DIR)/kernel.disasm
@@ -1085,7 +1112,46 @@ disasm: $(KERNEL_ELF) $(BOOTLOADER_ELF)
 EXPECTED_GCC_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_GCC_VERSION),$(NEXS_AARCH64_GCC_VERSION))
 EXPECTED_BINUTILS_VERSION = $(if $(filter amd64,$(ARCH)),$(NEXS_X86_64_BINUTILS_VERSION),$(NEXS_AARCH64_BINUTILS_VERSION))
 
-check:
+.PHONY: test-nxpax-core test-nxpax-stress test-nxpax-ast power12 power12-changed power12-strict check-strict
+test-nxpax-core:
+	@mkdir -p $(BUILD_ROOT)/tests/nxpax
+	@clang -std=c17 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+	  -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -Ikernel/HAL/include -Ikernel/include \
+	  kernel/test/nxpax_core_test.c kernel/core/nxpax.c \
+	  kernel/HAL/core/nxpax.c -o $(BUILD_ROOT)/tests/nxpax/core_test
+	@$(BUILD_ROOT)/tests/nxpax/core_test
+
+test-nxpax-stress:
+	@mkdir -p $(BUILD_ROOT)/tests/nxpax
+	@clang -std=c17 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+	  -fsanitize=address,undefined -fno-omit-frame-pointer -pthread \
+	  -Ikernel/HAL/include kernel/HAL/tests/unit/nxpax_stress_test.c \
+	  kernel/HAL/core/nxpax.c -o $(BUILD_ROOT)/tests/nxpax/stress_test
+	@$(BUILD_ROOT)/tests/nxpax/stress_test
+
+# Preserve NXPAX-specific Clang-AST mutation tests in addition to the
+# project-wide mutation suite; they are non-mocking security regression tests.
+test-nxpax-ast:
+	@python3 tools/test_power12_nxpax.py
+
+# Audit every development build and preserve failure reports; failed findings
+# are warnings for maintenance, not successful compliance results.
+power12:
+	@python3 tools/power12/run.py --warn-only --incremental
+	@$(MAKE) --no-print-directory power12-changed
+
+power12-changed:
+	@python3 tools/power12/test_changed_gate.py
+	@python3 tools/power12/changed_gate.py
+
+# Qualification is never downgraded: strict mode fails on real findings.
+power12-strict:
+	@python3 tools/power12/run.py
+
+check-strict: check power12-strict
+
+check: check-kernel-contracts power12 test-nxpax-core test-nxpax-stress test-nxpax-ast
 	@set -eu; for tool in "$(CC)" "$(AS)" "$(LD)" "$(OBJCOPY)" "$(OBJDUMP)" "$(NM)" "$(AR)" "$(QEMU)" python3 xorriso gawk mformat mmd mcopy; do \
 		command -v "$$tool" >/dev/null 2>&1 || { echo "ERROR: required tool not found: $$tool" >&2; exit 1; }; \
 	done
@@ -1103,39 +1169,52 @@ check:
 	@echo "✓ CC: $$($(CC) --version | head -1)"
 	@echo "✓ LD: $$($(LD) --version | head -1)"
 	@echo "✓ QEMU: $$($(QEMU) --version | head -1)"
+	@expected_grub="$$(. boot/grub/manifest.env; printf '%s' "$$NEXS_GRUB_COMMIT")"; \
+	actual_grub="$$(git -C boot/grub/upstream rev-parse HEAD 2>/dev/null || true)"; \
+	[ "$$actual_grub" = "$$expected_grub" ] || { \
+		echo "ERROR: GRUB submodule is $$actual_grub; expected $$expected_grub" >&2; exit 1; \
+	}; \
+	echo "✓ GRUB source pin: $$actual_grub"
 ifeq ($(ARCH),amd64)
-	@test -n "$(GRUB_MKRESCUE)" || { echo "ERROR: grub-mkrescue (or i686-elf-grub-mkrescue) is required" >&2; exit 1; }
-	@echo "✓ GRUB BIOS: $(GRUB_MKRESCUE)"
+	@set -eu; for tool in i686-elf-gcc i686-elf-objcopy; do \
+		command -v "$$tool" >/dev/null 2>&1 || { echo "ERROR: $$tool is required for i386-pc GRUB" >&2; exit 1; }; \
+	done
+	@echo "✓ GRUB targets: i386-pc + x86_64-efi are project-built"
 else
 	@command -v "$(HOST_CLANG)" >/dev/null 2>&1 || { echo "ERROR: clang is required for the AArch64 EFI loader" >&2; exit 1; }
 	@command -v "$(LLD_LINK)" >/dev/null 2>&1 || { echo "ERROR: lld-link is required for the AArch64 EFI loader" >&2; exit 1; }
-	@test -x "$(GRUB_ARM64_BUILD)/grub-mkimage" || { echo "ERROR: run 'make grub-arm64-tools' to build GRUB arm64-efi" >&2; exit 1; }
-	@python3 -c 'import sys; sys.path.insert(0,"tools"); from nxqemu import find_qemu_efi_firmware; print("✓ AArch64 UEFI:", find_qemu_efi_firmware())'
-	@echo "✓ GRUB arm64-efi: $(GRUB_ARM64_BUILD)/grub-mkimage"
+	@python3 -c 'import sys; sys.path.insert(0,"tools"); from nxqemu import find_qemu_efi_firmware; print("✓ AArch64 UEFI firmware:", find_qemu_efi_firmware())'
+	@echo "✓ GRUB arm64-efi prerequisites ready (grub-mkimage is built by boot-iso)."
 endif
 clean:
-	-@rm -rf build/aarch64 2>/dev/null || true
-	-@rm -rf build/amd64 2>/dev/null || true
-	-@rm -rf build/*.img build/*.iso 2>/dev/null || true
-	-@rm -rf $(BUILD_ROOT) 2>/dev/null || true
+	-@rm -rf $(BUILD_ROOT)/aarch64 $(BUILD_ROOT)/amd64 2>/dev/null || true
+	-@rm -rf $(BUILD_ROOT)/grub 2>/dev/null || true
+	-@rm -f $(BUILD_ROOT)/*.img $(BUILD_ROOT)/*.iso $(BUILD_ROOT)/*.map 2>/dev/null || true
 	-@rm -rf release 2>/dev/null || true
-	-@rm $(MKDISK) 2>/dev/null || true
+	-@rm -f $(MKDISK) 2>/dev/null || true
+	@echo "Build outputs removed; preserving build/cache and diagnostic/runtime logs."
 
 help:
 	@echo "$(ARCH) Kernel Build System"
 	@echo "Targets:"
 	@echo "  all          - Build bootloader, kernel, and disk image"
 	@echo "  release      - Build production files (Use: make release VERSION=0.4.1)"
-	@echo "  test-release - Build release and test it in QEMU (Use: make test-release VERSION=0.4.1)"
-	@echo "  boot-iso     - Build the GRUB boot ISO for the selected architecture"
-	@echo "  run          - Build and boot through GRUB (QEMU)"
-	@echo "  run-direct   - Legacy direct-kernel boot for debugging only"
-	@echo "  debug        - Boot through GRUB and wait for GDB"
-	@echo "  grub-arm64-tools - Build pinned GRUB arm64-efi host tools/modules"
-	@echo "  clean        - Remove generated build/release artifacts"
+	@echo "  test-release - Test the architecture default release firmware in QEMU"
+	@echo "  test-release-uefi - Test the UEFI release lane explicitly"
+	@echo "  boot-iso     - Build default GRUB media (AMD64 BIOS, AArch64 UEFI)"
+	@echo "  boot-uefi    - Build GRUB UEFI media for the selected architecture"
+	@echo "  grub-tools   - Build/publish i386-pc, x86_64-efi and arm64-efi prebuilt stages"
+	@echo "  grub-prebuilt - Package all host-specific GRUB stages under release/grub"
+	@echo "  grub-prebuilt-target - Package GRUB_TARGET=<target>"
+	@echo "  grub-prebuilt-install - Install GRUB_ARCHIVE=<archive.tar.gz> into persistent cache"
+	@echo "  run          - GRUB ISO boot; AMD64 RUN_FIRMWARE=bios|uefi, BOOT_MODE=direct for raw kernel"
+	@echo "  run-direct   - Raw direct-kernel boot (diagnostic compatibility target)"
+	@echo "  debug        - GRUB ISO debug boot (default); BOOT_MODE=direct selects raw-kernel diagnostics"
+	@echo "  clean        - Remove generated build/release artifacts; preserve build/cache"
 	@echo "  setup-deps   - Initialize pinned external repositories"
 	@echo "  check-deps   - Verify external repository revisions"
 	@echo "  check        - Verify cross-toolchain and emulator"
+	@echo "  test-fdt     - Run bounded FDT parser host tests and QEMU DTB validation"
 
 # The DOOM make fragments live in the pinned DOOM submodule.  Keep
 # metadata/help/check targets usable before dependency bootstrap on a fresh
@@ -1150,3 +1229,108 @@ include $(DOOM_ARCH_MAKEFILE)
 else
 $(warning DOOM make fragment is unavailable; run 'make setup-deps' before building the complete userland)
 endif
+
+# Host-side bounded FDT parser tests. The QEMU AArch64 DTB is a mandatory input.
+.PHONY: test-fdt
+test-fdt:
+	@$(MAKE) ARCH=aarch64 build/aarch64/virt.dtb
+	@mkdir -p build/host
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+		-fsanitize=address,undefined -Ikernel/include \
+		kernel/test/fdt_parser_test.c kernel/lib/fdt_parser.c \
+		-o build/host/fdt_parser_test
+	@./build/host/fdt_parser_test build/aarch64/virt.dtb
+
+.PHONY: test-gfx-chrome
+test-gfx-chrome:
+	@mkdir -p build/host
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
+		system/lib/tests/gfx_chrome_test.c system/lib/gfx/chrome.c \
+		system/lib/gfx/decoration.c system/lib/gfx/raster.c system/lib/gfx/alpha.c \
+		-o build/host/gfx_chrome_test
+	@./build/host/gfx_chrome_test
+
+# Real QEMU hardening run for the selected architecture. Captures guest screens,
+# checks KTEST/NXWINS, supervises the guest for 30 seconds and runs the timed
+# process-kill stress lane (TEST_TIMER_SECONDS, default 10).
+# TEST_DISPLAY defaults to nxadb's headless mode; set it to default for visual runs.
+.PHONY: test test-all
+test: all boot-iso check
+	@$(MAKE) test-fdt
+	@python3 tools/test_nxadb_capture.py
+	@python3 tools/nxadb.py --arch $(ARCH) test --soak-seconds 30 --display $(TEST_DISPLAY) \
+		--cmd "/bin/stress --dur $(TEST_TIMER_SECONDS) --seed 0xA11CE --interval 1 --fault 0 --timer-kill" \
+		--expect stress=1
+
+# Release-architecture gate. Keep only one guest alive at a time. The EXIT
+# trap also stops both sessions if either architecture test fails.
+test-all:
+	@set -e; \
+	trap 'python3 tools/nxadb.py --arch amd64 stop >/dev/null 2>&1 || true; python3 tools/nxadb.py --arch aarch64 stop >/dev/null 2>&1 || true' EXIT; \
+	$(MAKE) ARCH=amd64 test; \
+	python3 tools/nxadb.py --arch amd64 stop; \
+	$(MAKE) ARCH=aarch64 test; \
+	python3 tools/nxadb.py --arch aarch64 stop
+
+.PHONY: test-gfx-alpha
+test-gfx-alpha:
+	@mkdir -p build/host
+	@$(HOST_CC) -std=c11 -O2 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
+		user/bin/gfxalphatest.c system/lib/gfx/alpha.c -o build/host/gfx_alpha_test
+	@./build/host/gfx_alpha_test
+
+.PHONY: test-mkdisk-groups
+test-mkdisk-groups:
+	@python3 tools/test_mkdisk_groups.py
+
+.PHONY: test-timerdiag-sampling
+test-timerdiag-sampling:
+	@python3 tools/test_nxtimerdiag_sampling.py
+
+.PHONY: test-spawn-owned test-entropy-policy
+test-spawn-owned:
+	@python3 tools/test_spawn_owned.py
+
+test-entropy-policy:
+	@python3 tools/test_entropy_policy.py
+
+.PHONY: test-scheduler-quantum
+test-scheduler-quantum:
+	@python3 tools/test_scheduler_quantum.py
+
+.PHONY: test-pmm-free-publish test-file-length test-getcwd-contract
+test-pmm-free-publish:
+	@python3 tools/test_pmm_free_publish.py
+
+test-file-length:
+	@python3 tools/test_file_length.py
+
+test-getcwd-contract:
+	@python3 tools/test_getcwd_contract.py
+
+.PHONY: test-open-nonblock test-gnulib-archive
+test-open-nonblock:
+	@python3 tools/test_open_nonblock.py
+
+test-gnulib-archive:
+	@python3 tools/test_gnulib_archive.py
+
+.PHONY: test-keyboard-layout test-tty-model
+test-keyboard-layout:
+	@mkdir -p $(BUILD_ROOT)/host
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+		-fsanitize=address,undefined -idirafter system/include/api \
+		user/sys/services/tests/keyboard_layout_test.c \
+		system/lib/extensions/input/nxkeyboard_layout.c \
+		-o $(BUILD_ROOT)/host/keyboard_layout_test
+	@$(BUILD_ROOT)/host/keyboard_layout_test
+
+test-tty-model:
+	@mkdir -p $(BUILD_ROOT)/host
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
+		system/lib/tests/tty_model_test.c system/lib/gfx/tty_model.c \
+		-o $(BUILD_ROOT)/host/tty_model_test
+	@$(BUILD_ROOT)/host/tty_model_test

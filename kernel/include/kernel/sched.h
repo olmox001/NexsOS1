@@ -1,17 +1,17 @@
 #ifndef _KERNEL_SCHED_H
 #define _KERNEL_SCHED_H
 
-#include <drivers/timer.h>
+#include <kernel/timer.h>
 #include <kernel/list.h>
 #include <kernel/nx_contract.h>
 #include <kernel/spinlock.h>
 #include <kernel/types.h>
 #include <stdint.h>
-#pragma GCC optimize("O2")
 
 #define PROCESS_NAME_MAX 32
 #define STACK_SIZE 131072
 #define MAX_PRIO 32
+#define OS1LIBKERNEL_IPC_QUEUE_MAX 256U
 
 /* Process Info for Diagnostics */
 struct ps_info {
@@ -29,15 +29,15 @@ struct ipc_node {
 };
 
 /* Architecture-specific register frame layout */
-#include <arch/pt_regs.h>
+#include <hal/frame.h>
 
-/* Scheduler time-slice in ticks (HZ=100 -> 10ms/tick).  Lowered from 10 (100ms)
- * to 3 (30ms): the old quantum let a CPU-bound task hog a core for 100ms before
- * an interactive task could preempt it (a real responsiveness tax).  ASID/PCID-
- * tagged switches (perf §3) made context switches cheap, so the finer quantum's
- * extra switches are nearly free — better interactivity at negligible
- * throughput cost. */
-#define DEFAULT_QUANTUM 3
+/*
+ * Scheduler quantum is a time policy, not a timer-IRQ count. Keeping it in
+ * monotonic nanoseconds prevents a clockevent frequency change from silently
+ * changing scheduling policy (the former 3-tick value became 3 ms at 1 kHz).
+ */
+#define OS1LIBKERNEL_SCHED_QUANTUM_NS \
+  (UINT64_C(30) * OS1LIBKERNEL_NSEC_PER_MSEC)
 
 /* Wait Queue */
 struct wait_queue_head {
@@ -90,15 +90,16 @@ struct process {
    * MAX_PROCESSES live address spaces by construction (no generation/rollover
    * needed); 0 is reserved for the kernel/idle address space.  The HAL uses it
    * to switch address space WITHOUT a full TLB flush; teardown's
-   * arch_tlb_shootdown_all() clears the tag before its slot is recycled. */
+   * hal_tlb_shootdown_all() clears the tag before its slot is recycled. */
   uint16_t asid;
   uint64_t kernel_stack; /* Kernel stack top */
   uint64_t heap_start;   /* Base address of user heap */
   uint64_t heap_end;     /* Current end of user heap */
+  uint64_t shared_next_va; /* next reservation in the shared-memory arena */
   spinlock_t mm_lock;    /* Protects page table modifications */
 
   /* Context for switching */
-  struct pt_regs *context;
+  hal_frame_t *context;
 
   /* User Context (Initial) */
   uint64_t user_entry;
@@ -127,9 +128,11 @@ struct process {
                       * process reached the grave via KILL/fault, so a waiter can
                       * tell "Done (N)" from "Killed" (the NEXS stand-in for
                       * WIFEXITED vs WIFSIGNALED — there is no signal model). */
-  int priority;      /* 0 (High) - 31 (Low) */
-  int time_slice;    /* Ticks remaining */
-  int quantum_reset; /* Reset value */
+  uint8_t wait_consumed; /* sched_lock: exit status has already been collected. */
+  uint8_t creation_active; /* defer control until creation and syscall cleanup end */
+  uint8_t stop_pending; /* sched_lock: STOP requested during creation */
+  int priority; /* 0 (High) - 31 (Low) */
+  uint64_t quantum_deadline_ns; /* 0 until the task is selected to run */
 
   uint8_t level; /* privilege level (PLVL_*) — see the capability model below */
   uint32_t caps; /* capability mask (CAP_*); machine level bypasses checks */
@@ -188,35 +191,27 @@ struct process {
   struct wait_queue_head *wait_queue_ptr;
   struct wait_queue_head wait_queue;
 
-  /* Tier 3 timed sleep (docs/TIMER-MODEL.md §4): a per-process software timer,
-   * armed on the running core, wakes the process at the ABSOLUTE real-time
-   * deadline wake_ns (mono_ns base). The wheel fires on a coarse jiffies edge;
-   * the fine wake condition is mono_ns() >= wake_ns, so the process wakes at
-   * the right wall-clock instant even if ticks were dropped. 0 = not sleeping.
-   * cpu_time_counts: CPU time consumed by this process, accumulated in RAW
-   * hardware-counter units across context switches (a cheap subtraction in the
-   * scheduler hot path — no divide). Converted to ns only on read via
-   * timer_counts_to_ns() for os1_cpu_ns()/ps_info. */
+  /* Timed sleep uses an absolute monotonic-nanosecond deadline. The software
+   * timer itself is also keyed by nanoseconds; jiffies is no longer part of
+   * the wakeup correctness path. cpu_time_counts remains raw hardware-counter
+   * time and is converted only at the API boundary. */
   uint64_t wake_ns;
   uint64_t cpu_time_counts;
-  struct timer sleep_timer;
+  struct OS1libkernel_timer sleep_timer;
 
-  /* Yield-throttle anti-spin (per-process, docs/TIMER-MODEL.md §4): yield()
-   * calls within the current tick are counted in yield_count (for the tick
-   * yield_jiffy). Beyond YIELD_SPIN_BUDGET the process is busy-spinning on
-   * yield() rather than doing work and is put to sleep until the next tick via
-   * sleep_timer, so an unoptimised program cannot keep a core at 100% and
-   * freeze the system. */
-  uint64_t yield_jiffy;
+  /* Yield anti-spin budget is measured in monotonic scheduler windows rather
+   * than CPU0-owned jiffies, so every CPU observes the same time contract. */
+  uint64_t yield_window_ns;
   uint32_t yield_count;
 
   /* IPC state */
   int ipc_target_pid; /* PID we want to talk to (-1 for ANY) */
+  bool ipc_waiting; /* only legacy receive may be woken by legacy IPC send */
   struct ipc_message
       *ipc_msg; /* User-space pointer to message (for synchronous RECV) */
   struct list_head msg_queue; /* Buffered incoming messages */
   spinlock_t msg_lock;        /* Message queue protection */
-  int msg_count; /* SCHED-05: pending messages on msg_queue (flow control) */
+  uint32_t msg_count; /* pending messages on msg_queue, bounded by OS1LIBKERNEL_IPC_QUEUE_MAX */
 
   /* SMP state */
   int on_cpu; /* CPU ID running this process, -1 if none */
@@ -331,9 +326,9 @@ int proc_pid_is_privileged(int pid) NX_MUST_USE;
 int process_kill_allowed(struct process *caller, int target_pid) NX_MUST_USE;
 /* process_set_owner - set a process's LOGICAL parent (owner_pid), so a job
  * spawned BY a service still answers to the client that asked for it.  Only
- * reachable through OBJ_CTL_SETOWNER, which requires DESTROY on the target and
- * a privileged caller (it delegates authority).  0, or -ESRCH if either pid is
- * not live. */
+ * delegated through OBJ_CTL_SETOWNER or installed during owned creation.
+ * Both require explicit PROCESS authority and a privileged caller. Returns
+ * 0, or -ESRCH if either pid is not live. */
 int process_set_owner(int pid, int owner_pid) NX_MUST_USE;
 /* proc_get_lineage - spawning parent + LOGICAL owner of a pid (owner falls back
  * to parent when unset).  Lets userland follow inheritance across a service
@@ -363,20 +358,30 @@ void proc_env_free(struct process *p);
  * caller holds CAP_IPC_ANY, or target is the caller's parent or a
  * descendant.  Acquires sched_lock internally. */
 int process_ipc_allowed(struct process *caller, int target_pid) NX_MUST_USE;
+/* Generic FAMILY PORT acquisition test; checks the live owner/parent lineage
+ * under sched_lock without any ROOT/MACHINE override. */
+int proc_descends_from(int child_pid, int ancestor_pid) NX_MUST_USE;
 int process_terminate(int pid) NX_MUST_USE;
 /* dispatch_spawn finalization (SCHED-UAF Pitfall B): the creator calls one of
- * these AFTER process_load_elf_args (local IRQs off) to commit the new child
- * atomically against a concurrent kill.  finalize: if a kill was deferred
+ * these AFTER process_load_elf_args to commit the new child atomically under
+ * scheduler locks against a concurrent kill. finalize: if a kill was deferred
  * (kill_pending) release the child, else enqueue it.  abort: the ELF load
  * failed — release the half-built child. */
 void process_finalize_spawn(struct process *p);
+/* Creation stays preemptible, but kill/stop cannot abandon its allocations.
+ * finish is called after object pins and frontend storage have been released. */
+int process_creation_begin(void) NX_MUST_USE;
+hal_frame_t *process_creation_finish(hal_frame_t *frame) NX_MUST_USE;
 void process_abort_spawn(struct process *p);
 /* process_kill_subtree - window-aware EXTERNAL kill: terminate root_pid + its
  * WINDOWLESS descendants, SPARE windowed descendants + their subtrees
- * (docs/PROCESS-KILL-MODEL.md).  Used by window_request_close, OBJ_CTL_KILL/
+ * (docs/PROCESS-KILL-MODEL.md). Used by window_request_close, OBJ_CTL_KILL/
  * CLOSE and SYS_KILL of another process; self-exit/fault stay single-process.
+ * Returns 0 on completion (including snapshot PIDs already gone), -ESRCH if
+ * the explicit root is gone, -EPERM for a protected root, or -EAGAIN if a
+ * selected victim remains live after its termination attempt.
  */
-void process_kill_subtree(int root_pid);
+int process_kill_subtree(int root_pid);
 /* process_wait - reap-poll a process. Returns pid (reaped), -1 (still alive),
  * or -2 (not found). If out_code != NULL and the process is reaped, *out_code
  * receives its exit_code (raw). Non-blocking. */
@@ -395,17 +400,26 @@ extern int process_load_elf_args(struct process *proc, const char *path,
                                  int argc, char *const kargv[]);
 void start_user_process(struct process *proc);
 void process_init(void);
-struct pt_regs *schedule(struct pt_regs *regs);
+bool OS1libkernel_sched_quantum_due(uint64_t deadline_ns, uint64_t now_ns);
+hal_frame_t *OS1libkernel_sched_timer_tick(hal_frame_t *regs, uint64_t now_ns);
+hal_frame_t *schedule(hal_frame_t *regs);
+/* Fault-safe dump of the bounded per-CPU context-switch history. */
+void sched_trace_dump(void);
 
 /* Exception Handlers */
-struct pt_regs *syscall_handler(struct pt_regs *frame);
-struct pt_regs *irq_handler(struct pt_regs *frame);
-struct pt_regs *sync_handler(struct pt_regs *frame);
+hal_frame_t *syscall_handler(hal_frame_t *frame);
+hal_frame_t *irq_handler(hal_frame_t *frame);
+hal_frame_t *sync_handler(hal_frame_t *frame);
 
 /* API Declarations */
 void enqueue_task(struct process *p);
 void sleep_on(struct wait_queue_head *wq);
+int OS1libkernel_process_sleep_timer_arm(
+    struct process *process, struct OS1libkernel_timer *timer,
+    OS1libkernel_timer_callback_t callback, uint64_t deadline_ns);
+void OS1libkernel_process_sleep_timer_wake(struct process *process);
 void wake_up(struct wait_queue_head *wq);
+void wake_up_all(struct wait_queue_head *wq);
 
 /* Kernel service threads (ASTRA "every service is a process", kernel side).
  * kthread_create: runnable kernel thread at PROC_PRIO_SYSTEM (no user address

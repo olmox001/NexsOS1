@@ -1,7 +1,11 @@
 #ifndef _KERNEL_CPU_H
 #define _KERNEL_CPU_H
 
+#include <hal/limits.h>
+
 #ifndef __ASSEMBLER__
+#include <hal/frame.h>
+#include <hal/cpu_protocol.h>
 #include <kernel/nx_contract.h>
 #include <kernel/list.h>
 #include <kernel/spinlock.h>
@@ -21,10 +25,9 @@ struct cpu_info {
   uint64_t next_tick_target;
   uint64_t tick_error_acc;
   uint64_t tick_count;
-  /* Raw hardware-counter value at which the current task last started running on
-   * this CPU; schedule() charges (arch_timer_get_count() - sched_run_count) to
-   * the outgoing task's cpu_time_counts (Tier 3 per-process CPU time, converted
-   * to ns only on read — docs/TIMER-MODEL.md §4). */
+  /* NX-HAL clocksource count at which the current task last started running on
+   * this CPU. schedule() charges the validated counter delta to
+   * cpu_time_counts; conversion to nanoseconds happens at the API boundary. */
   uint64_t sched_run_count;
 
   /* Scheduler Local Data (Multicore Optimization) */
@@ -33,12 +36,12 @@ struct cpu_info {
   spinlock_t sched_lock; /* Local runqueue protection */
   struct process *idle_task;
 
-  /* Per-CPU software timer wheel (kernel/core/timer.c): each CPU fires its OWN
-   * timers in kernel_timer_tick against the global jiffies clock, so a process
-   * sleeping on this core is woken locally — no cross-CPU dependency, no global
-   * timer-lock contention. */
+  /* Per-CPU software timers (kernel/core/timer.c) use absolute monotonic
+   * nanosecond deadlines. Each CPU fires its own list locally; jiffies is only a
+   * derived compatibility counter and is not the timer correctness source. */
   struct list_head timer_list;
   spinlock_t timer_lock;
+  uint64_t timer_next_deadline_ns;
 
   char printk_buf[2048];
   char syscall_buf[2048];
@@ -63,48 +66,52 @@ struct cpu_info {
    * drained at the top of the next schedule() on this CPU, after we have
    * switched away from them. */
   struct process *deferred_free_proc;
-  /* SCHED-UAF (#169/#170): a task preempted on this CPU is held here for ONE
-   * schedule before going back on a runqueue.  If it were re-enqueued
-   * immediately, another CPU could work-steal and run it while THIS CPU is still
-   * executing on its kernel stack (the IRQ EOI + dispatch epilogue run on prev's
-   * stack AFTER schedule() returns, before the iretq switches away; the LAPIC EOI
-   * MMIO write widens that window on UTM).  Two CPUs on one stack smash the
-   * in-flight return frame.  Drained at the top of the next schedule() here,
-   * after this CPU has provably iretq'd off that stack — mirrors deferred_free. */
-  struct process *pending_reenqueue;
+  /* SCHED-UAF outgoing-stack pin: every non-idle task switched away from
+   * remains pinned here until the NEXT schedule() entry on this CPU. The
+   * interrupt/exception restore epilogue still runs on the outgoing stack
+   * after schedule() returns and only then installs the selected frame.
+   * Termination must treat this pointer as live; wake/continue paths may mark
+   * it READY but must not enqueue it while the pin is present. At the next
+   * schedule() entry (after the prior epilogue has switched stacks), release
+   * the pin: requeue READY, reap DEAD/ZOMBIE, leave SLEEPING/STOPPED parked. */
+  struct process *pending_stack_release;
+  /* Work-steal handoff pin. A stolen task is removed from the source runqueue
+   * before it can be published as current_task on this CPU.  Keeping it here
+   * closes that ownership gap for termination/reap validation. */
+  struct process *migration_inflight;
 };
 #endif
 
-#define MAX_CPUS 64
+#define MAX_CPUS NXHAL_CPU_LIMIT
 
 #ifndef __ASSEMBLER__
 /* API */
 extern struct cpu_info cpu_data[MAX_CPUS];
+extern uint32_t nr_cpus;
 struct cpu_info *get_cpu_info(void);
+struct cpu_info *cpu_info_fault_safe(void);
 void smp_create_idle_task(uint32_t cpu_id);
 
 /* Arch-neutral secondary bring-up (kernel/core/smp.c, B6 slice — S-ALIGN F8).
  * smp_bringup_secondary: idle-task-first (#169/#170) + arch wake + bounded
  * acquire-wait for the ack.  0 = online, -1 = wake failed, -2 = ack timeout.
  * smp_ack_boot: release-store ack, called by the secondary once initialized. */
-int smp_bringup_secondary(uint32_t cpu, void (*entry)(void), void *stack_top) NX_MUST_USE;
+int smp_bringup_secondary(uint32_t cpu, void *stack_top) NX_MUST_USE;
 void smp_ack_boot(uint32_t cpu);
 
 /* These are now provided by arch.h HAL macros/functions */
-#include <kernel/hal_unified.h>
+#include <hal/core.h>
 #include <kernel/arch.h>
 
 #define cpu_id() hal_cpu_id()
-#define cpu_init() arch_cpu_init()
 #define local_irq_enable() hal_irq_enable()
 #define local_irq_disable() hal_irq_disable()
 #define local_irq_save() hal_irq_save_val()
 #define local_irq_restore(flags) hal_irq_restore(flags)
-struct pt_regs; /* forward decl */
-struct pt_regs *serror_handler(struct pt_regs *frame);
+hal_frame_t *serror_handler(hal_frame_t *frame);
 /* aarch64 coverage handlers (exception.S, Phase A step 13) */
-struct pt_regs *fiq_handler(struct pt_regs *frame);
-struct pt_regs *aarch32_handler(struct pt_regs *frame);
+hal_frame_t *fiq_handler(hal_frame_t *frame);
+hal_frame_t *aarch32_handler(hal_frame_t *frame);
 #endif
 
 #endif /* _KERNEL_CPU_H */

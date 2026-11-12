@@ -3,11 +3,10 @@
  * VirtIO Input Device Driver (Keyboard/Mouse)
  * Full Virtqueue and Interrupt Implementation
  */
-#include <drivers/keyboard.h>
+#include <drivers/input.h>
 #include <drivers/virtio.h>
 #include <drivers/virtio_input.h>
 #include <kernel/arch.h>
-#include <kernel/graphics.h>
 #include <kernel/irq.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
@@ -15,21 +14,15 @@
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 
-#ifdef ARCH_AMD64
-#include <drivers/pci.h>
-#endif
-
-extern void compositor_update_mouse(int dx, int dy, int absolute);
 
 #define MAX_INPUT_DEVS 2
 #define INPUT_QSIZE 16
-
-void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value);
 
 struct virtio_input_dev {
   virtio_handle_t handle;
   uint32_t irq;
   int active;
+  int irq_handler_registered;
   int is_pci;
   struct vring_desc *desc;
   struct vring_avail *avail;
@@ -41,30 +34,25 @@ struct virtio_input_dev {
 static struct virtio_input_dev input_devs[MAX_INPUT_DEVS];
 static int input_dev_count = 0;
 
-/* Global Input Buffer (Shared by all devices) */
-#define INPUT_BUFFER_SIZE 256
-static struct virtio_input_event input_buffer[INPUT_BUFFER_SIZE];
-static volatile uint32_t input_head = 0;
-static volatile uint32_t input_tail = 0;
-
 /* Forward declarations */
 static void virtio_input_handler(uint32_t irq, void *data);
+
+/* One handler services every VirtIO input device sharing its IRQ.  The
+ * handler deliberately scans input_devs[] and filters by irq, so registering
+ * it again for a second device on the same line is both unnecessary and
+ * rejected by irq_register() as -EBUSY. */
+static int virtio_input_irq_has_handler(uint32_t irq) {
+  for (int i = 0; i < input_dev_count; i++) {
+    if (input_devs[i].irq == irq && input_devs[i].irq_handler_registered)
+      return 1;
+  }
+  return 0;
+}
 
 /* Helper macros / functions for transport abstraction */
 #define v_read32(dev, off) virtio_read_reg((dev)->handle, (off))
 #define v_write32(dev, off, val) virtio_write_reg((dev)->handle, (off), (val))
 #define v_notify(dev, q) virtio_notify((dev)->handle, (q))
-
-void virtio_input_add_event(uint16_t type, uint16_t code, int32_t value) {
-  uint32_t next = (input_head + 1) % INPUT_BUFFER_SIZE;
-  if (next == input_tail) {
-    input_tail = (input_tail + 1) % INPUT_BUFFER_SIZE;
-  }
-  input_buffer[input_head].type = type;
-  input_buffer[input_head].code = code;
-  input_buffer[input_head].value = value;
-  input_head = next;
-}
 
 static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   (void)is_pci;
@@ -75,6 +63,7 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   dev->handle = handle;
   dev->irq = irq;
   dev->active = 0;
+  dev->irq_handler_registered = 0;
 
   /* Reset */
   v_write32(dev, VIRTIO_MMIO_STATUS, 0);
@@ -133,27 +122,41 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
    * VGPU-DMA-02/VBLK-DMA-02: without this, whether the device's very
    * first read of this queue sees valid descriptors depends on unrelated
    * cache state on real hardware, and is always fine under QEMU/KVM. */
-  arch_cache_clean_range((void *)dev->desc, INPUT_QSIZE * sizeof(*dev->desc));
-  arch_cache_clean_range((void *)dev->avail, sizeof(*dev->avail));
-  arch_mb();
+  hal_cache_clean((void *)dev->desc, INPUT_QSIZE * sizeof(*dev->desc));
+  hal_cache_clean((void *)dev->avail, sizeof(*dev->avail));
+  hal_mb();
 
   /* Driver OK */
   v_write32(dev, VIRTIO_MMIO_STATUS,
             v_read32(dev, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_DRIVER_OK);
 
-  /* Register and Enable Interrupt */
-  /* A device whose IRQ line is not wired delivers nothing: no keystrokes, no
-   * mouse.  Dropping this made that look like a dead device rather than a
-   * failed registration. */
-  if (irq_register(irq, virtio_input_handler, dev) != 0)
-    pr_err("virtio-input: cannot register IRQ %u — this device will deliver no "
-           "events\n",
-           irq);
+  /* Register one handler per IRQ line.  virtio_input_handler() scans all
+   * active input devices on the acknowledged line, so keyboard and mouse may
+   * safely share one PCI INTx/GIC IRQ without a second irq_register() call. */
+  if (!virtio_input_irq_has_handler(irq)) {
+    if (irq_register(irq, virtio_input_handler, NULL) != 0) {
+      pr_err("virtio-input: cannot register IRQ %u; disabling provider\n",
+             irq);
+      v_write32(dev, VIRTIO_MMIO_STATUS, 0);
+      pmm_free_page(dev->events);
+      pmm_free_pages(dev->desc, 2);
+      dev->events = NULL;
+      dev->desc = NULL;
+      dev->avail = NULL;
+      dev->used = NULL;
+      input_dev_count--;
+      return;
+    }
+    dev->irq_handler_registered = 1;
+  } else {
+    pr_info("VirtIO-Input: sharing IRQ %u with existing input handler\n",
+            irq);
+  }
 
-  /* Notify device */
-  v_notify(dev, 0);
-
+  /* Publish the device before notifying it: an immediate interrupt must see
+   * active=1 when the shared handler scans input_devs[]. */
   dev->active = 1;
+  v_notify(dev, 0);
 }
 
 static void virtio_input_handler(uint32_t irq, void *data) {
@@ -180,7 +183,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
      * unrelated cache state, never reproducible under QEMU/KVM's emulated
      * (always-coherent) memory: exactly the "works only after moving the
      * mouse enough times" symptom this device's IRQ was implicated in. */
-    arch_cache_invalidate_range((void *)dev->used, sizeof(*dev->used));
+    hal_cache_invalidate((void *)dev->used, sizeof(*dev->used));
 
     while (dev->last_used_idx != dev->used->idx) {
       struct vring_used_elem *e =
@@ -191,13 +194,15 @@ static void virtio_input_handler(uint32_t irq, void *data) {
        * just wrote the actual event payload (type/code/value) into — a
        * separate cache line from dev->used, and just as capable of being
        * stale in this CPU's cache. */
-      arch_cache_invalidate_range((void *)&dev->events[id],
+      hal_cache_invalidate((void *)&dev->events[id],
                                   sizeof(dev->events[id]));
       struct virtio_input_event *evt = &dev->events[id];
 
       /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
        * EV_SYN -> repaint. Same path PS/2 and USB HID use now. */
-      input_report(evt->type, evt->code, evt->value);
+      OS1driver_input_publish(INPUT_PROVIDER_VIRTIO,
+                               (uint8_t)(INPUT_DEVICE_VIRTIO_BASE + i),
+                               evt->type, evt->code, evt->value);
 
       dev->avail->ring[dev->avail->idx % INPUT_QSIZE] = id;
       dev->avail->idx++;
@@ -209,13 +214,13 @@ static void virtio_input_handler(uint32_t irq, void *data) {
      * descriptor slots are free again (recycled just above); clean it so
      * those writes are actually visible to the device's next DMA read,
      * for the same reason as virtio_gpu.c's virtio_gpu_send()
-     * (VGPU-DMA-02) — arch_mb() alone does not push a dirty cache line
+     * (VGPU-DMA-02) — hal_mb() alone does not push a dirty cache line
      * out to physical RAM. Done once per IRQ, after the recycle loop,
      * instead of per-iteration: avail is only consumed by the device on
      * the v_notify() below, not before. */
     if (processed_count > 0) {
-      arch_cache_clean_range((void *)dev->avail, sizeof(*dev->avail));
-      arch_mb();
+      hal_cache_clean((void *)dev->avail, sizeof(*dev->avail));
+      hal_mb();
     }
 
     if (status != 0) {
@@ -249,12 +254,3 @@ void virtio_input_init(void) {
 }
 int virtio_input_get_dev_count(void) { return input_dev_count; }
 
-int virtio_input_poll(struct virtio_input_event *event) {
-  if (input_head == input_tail)
-    return 0;
-  *event = input_buffer[input_tail];
-  input_tail = (input_tail + 1) % INPUT_BUFFER_SIZE;
-  return 1;
-}
-
-int virtio_input_has_event(void) { return input_head != input_tail; }

@@ -6,7 +6,7 @@
  * syscall entry stub (aarch64: svc_handler / amd64: syscall entry in cpu.c)
  * calls kernel_syscall_dispatcher() with the saved register frame.  This
  * function reads the syscall number and arguments from the frame via the
- * pt_regs_* accessor macros (arch-agnostic) and dispatches to the appropriate
+ * hal_frame_* accessor macros (arch-agnostic) and dispatches to the appropriate
  * implementation.
  *
  * Role / layering:
@@ -18,10 +18,10 @@
  *
  * Key invariants:
  *   - All user pointers (arg0..arg5) must be validated via
- * arch_copy_*_from_user or arch_copy_string_from_user before being dereferenced
+ * arch_copy_*_from_user or hal_copy_string_from_user before being dereferenced
  * in the kernel.
  *   - Syscall implementations must not return directly; they write the return
- *     value via pt_regs_set_return() and fall through to "return frame", OR
+ *     value via hal_frame_set_return() and fall through to "return frame", OR
  *     they call schedule() and return its result (a different task's frame).
  *   - cpu->syscall_buf (a per-CPU scratch buffer) is used for path/title
  * copies; only one such copy is in flight per CPU at any time.
@@ -67,16 +67,19 @@
  *   _lseek + sys_handle_close).  There is no separate fd array.
  *
  * Known issues:
- *   ABI-07  (W2 BUG) SYS_SPAWN disables IRQs across process_create +
- *           process_load_elf, which may trigger blocking virtio/ext4 disk I/O.
+ *   ABI-07  creation now keeps path/argv state call-local and leaves IRQs
+ *           enabled across ELF I/O; the providers retain their own locks.
  *   GFX-FONT-01  (W4 SECURITY/BUG) SYS_SET_FONT: stores a raw user
  *           pointer into kernel globals; dereferenced in IRQ-context rendering
  *           (sys_set_font in graphics/font.c) → UAF / info-leak.
  */
-#include <arch/pt_regs.h>
-#include <drivers/keyboard.h>
+#include <hal/frame.h>
+#include <drivers/input.h>
+#include <graphics/gl.h>
+#include <kernel/gfx_surface.h>
 #include <kernel/cpu.h>
 #include <kernel/kmalloc.h>
+#include <kernel/graphics.h>
 #include <kernel/object.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
@@ -89,9 +92,9 @@
 
 /* Defined below (after sys_get_time); used by the SYS_NANOSLEEP dispatch case.
  */
-static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns);
+static hal_frame_t *sys_nanosleep(hal_frame_t *regs, uint64_t ns);
 /* Yield with per-process anti-spin throttle; used by the SYS_YIELD case. */
-static struct pt_regs *sys_yield(struct pt_regs *regs);
+static hal_frame_t *sys_yield(hal_frame_t *regs);
 
 /*
  * FIX(EXT4-07): upper bound for kmalloc'd bounce buffers whose size comes
@@ -116,10 +119,8 @@ extern void sys_exit(int status);
 extern long sys_get_time(void);
 long sys_clock_gettime(int clk);
 
-extern void graphics_draw_rect(int x, int y, int w, int h, uint32_t color);
-extern void compositor_render(void);
 extern int compositor_create_window(int x, int y, int w, int h,
-                                    const char *title, int pid);
+                                    const char *title, struct process *owner);
 extern void compositor_draw_rect(int window_id, int x, int y, int w, int h,
                                  uint32_t color, int caller_pid);
 extern void compositor_blit(int win_id, int x, int y, int w, int h,
@@ -145,6 +146,8 @@ int sys_set_font(void *data, size_t size);
  * `extern`s right here, which is why the two providers had nothing binding them
  * to the same semantics.  The contract now lives in one place. */
 #include <kernel/hal_uaccess.h>
+#include <os1_compositor.h>
+#include <os1_input.h>
 
 extern int keyboard_focus_pid;
 
@@ -153,11 +156,11 @@ extern int keyboard_focus_pid;
  *
  * Entry point called by the arch-specific svc/syscall handler immediately
  * after saving all user registers into 'frame'.  Reads syscall_num and up
- * to six arguments from frame via pt_regs_* accessors.
+ * to six arguments from frame via hal_frame_* accessors.
  *
  * Returns: a pt_regs* to restore.  In the common (non-blocking) case this is
  *          'frame' itself with the return value written via
- * pt_regs_set_return(). For blocking operations (EXIT/YIELD/IPC RECV and
+ * hal_frame_set_return(). For blocking operations (EXIT/YIELD/IPC RECV and
  * sometimes IPC SEND) this is the frame of the next scheduled process.
  *
  * Locking: no locks held on entry; individual cases may acquire
@@ -165,29 +168,32 @@ extern int keyboard_focus_pid;
  * IRQ context: no — syscalls run in kernel mode with IRQs enabled (normal
  *          exception-level transition on aarch64; ring 3->0 on amd64).
  *
- * NOTE(ABI-07): case 220 (SPAWN) calls arch_local_irq_disable() before
- *          process_create + process_load_elf, which may block on virtio I/O.
+ * Spawn path/argv copies are call-local across preemption during ELF I/O.
  */
-struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame);
+hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame);
 
 /* argv marshalling limits for SYS_SPAWN.  ELF_MAX_ARGS in elf.c must be >=
  * SPAWN_MAX_ARGS; SPAWN_ARG_LEN bounds each NUL-terminated argument. */
 #define SPAWN_MAX_ARGS 16
 #define SPAWN_ARG_LEN 128
 
-/* level_for_path - the capability PRESET a binary gets from its location in the
- * VFS (ASTRA per-path stratification, F1): a /sys/bin service runs at ROOT
- * (system authority — refined per service later), everything else (notably
- * /bin) at USER.  This is a CEILING + default, NOT an escalation:
+/* level_for_path - transitional capability preset from the executable VFS
+ * location. /sys/services and /sys/bin are ROOT system code; /sbin is MACHINE;
+ * /bin is USER.  Service capability manifests replace this path-derived policy
+ * in the object/capability migration.  This is a CEILING + default, not an
+ * escalation:
  * process_create_caps still clamps the child to no more privileged than its
  * creator, so a USER shell launching a /sys/bin binary does NOT gain root.
  * /sys/bin is also write- protected (object.c handle_create denies non-machine
  * writes under /sys,/bin), so the binaries backing this preset are immutable.
  */
 static uint8_t level_for_path(const char *path) {
-  if (path && strncmp(path, "/sbin/", 6) == 0)
+  if (path && (strncmp(path, "/sbin/", 6) == 0 ||
+               strncmp(path, "/krnl/extension/", 16) == 0))
     return PLVL_MACHINE;
   if (path && strncmp(path, "/sys/bin/", 9) == 0)
+    return PLVL_ROOT;
+  if (path && strncmp(path, "/sys/services/", 14) == 0)
     return PLVL_ROOT;
   return PLVL_USER;
 }
@@ -206,125 +212,176 @@ static uint8_t level_for_path(const char *path) {
  * path containing ".." (verified across the tree), so refusing them costs
  * nothing and makes level_for_path()'s prefix match sound. */
 static int spawn_path_is_sane(const char *path) {
-  if (!path || !path[0])
+  /* The ELF loader resolves VFS paths, not the raw privilege preset string.
+   * Only canonical absolute paths can carry a pathname security decision.
+   * Only the kernel-created PID1 machine extension may launch /sbin.
+   * ROOT/USER/GUEST and unrelated machine processes cannot create a second
+   * authority daemon or independently bootstrap init. */
+  if (path == NULL || path[0] != '/' || path[1] == '\0' || path[1] == '/')
     return 0;
-  for (const char *p = path; *p; p++)
-    if (p[0] == '.' && p[1] == '.' &&
-        (p == path || p[-1] == '/') && (p[2] == '/' || p[2] == '\0'))
-      return 0; /* a ".." path component */
-  return 1;
+  /* PID1 is the sole extension authority allowed to bootstrap an /sbin
+   * initializer. Other machine processes and all ROOT/USER/GUEST clients
+   * are denied before any child object is allocated. */
+  if ((strncmp(path, "/sbin/", 6U) == 0 ||
+       strncmp(path, "/krnl/extension/", 16U) == 0) &&
+      (current_process == NULL || current_process->pid != 1 ||
+       !proc_is_machine(current_process)))
+    return 0;
+  for (uint32_t i = 1U; i < 128U; ++i) {
+    char c = path[i];
+    if (c == '\0')
+      return 1;
+    if (c == '/' && (path[i + 1U] == '/' || path[i + 1U] == '\0'))
+      return 0;
+    if (c == '.' && path[i - 1U] == '/' &&
+        (path[i + 1U] == '/' || path[i + 1U] == '\0' ||
+         (path[i + 1U] == '.' &&
+          (path[i + 2U] == '/' || path[i + 2U] == '\0'))))
+      return 0;
+  }
+  return 0;
 }
 
-/* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
- *
- * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
- * across blocking virtio/ext4 disk I/O.  Pre-existing; kept verbatim so the
- * new capability path does not widen the critical section. */
+/* Common creation state is bounded and call-local. A logical owner is an
+ * explicit mechanism input; execution policy remains in the requesting service. */
+struct spawn_arguments { char *values[SPAWN_MAX_ARGS]; };
+struct spawn_options {
+  const char *path;
+  uint8_t level;
+  uint32_t caps, flags;
+  int use_caps, argc, nredir, owner_pid;
+  struct spawn_arguments arguments;
+  const struct spawn_redir *redirections;
+};
+
+static int spawn_redirect_one(struct process *child,
+                               const struct spawn_redir *redirect) {
+  if (redirect->source_pid == 0)
+    return process_redirect_child_fd(child, redirect->child_fd,
+                                      redirect->parent_fd);
+  if (!proc_is_privileged(current_process)) return -EPERM;
+  /* Existing PROC-REF-01 obligation: this legacy foreign-table path still
+   * needs a process lifetime pin. Do not allocate while holding sched_lock. */
+  struct process *source = process_find_by_pid(redirect->source_pid);
+  if (source == NULL) return -ESRCH;
+  return process_redirect_child_fd_from(source, child, redirect->child_fd,
+                                         redirect->parent_fd);
+}
+
+static int spawn_prepare(struct process *child,
+                           const struct spawn_options *options) {
+  if ((options->flags & SPAWN_FLAG_DETACHED) != 0U) child->ctty_win = -1;
+  if (options->owner_pid > 0) {
+    int assigned = process_set_owner((int)child->pid, options->owner_pid);
+    if (assigned != 0) return assigned;
+  }
+  for (int i = 0; i < SPAWN_MAX_REDIR && i < options->nredir; ++i) {
+    int redirected = spawn_redirect_one(child, &options->redirections[i]);
+    if (redirected != 0) return redirected;
+  }
+  return 0;
+}
+
+static long spawn_load_and_publish(struct process *child,
+                                    const struct spawn_options *options) {
+  int prepared = spawn_prepare(child, options);
+  if (prepared != 0) {
+    process_abort_spawn(child);
+    return prepared;
+  }
+  if (process_load_elf_args(child, options->path, options->argc,
+                            options->arguments.values) != 0) {
+    process_abort_spawn(child);
+    return -ENOENT;
+  }
+  long pid = (long)child->pid;
+  process_finalize_spawn(child);
+  return pid;
+}
+
+static long spawn_dispatch_options(struct spawn_options *options) {
+  if (!spawn_path_is_sane(options->path)) return -EINVAL;
+  int entered = process_creation_begin();
+  if (entered != 0) return entered;
+  uint8_t path_level = level_for_path(options->path);
+  if (!options->use_caps || options->level < path_level)
+    options->level = path_level;
+  /* PROC_CREATED cannot run and kill is deferred until finalize/abort.
+   * Creation and providers use their own short locks; ELF I/O must not hold
+   * this CPU's interrupts masked for the complete load. */
+  struct process *child = options->use_caps ?
+      process_create_caps(options->path, PROC_PRIO_USER, options->level,
+                            options->caps) :
+      process_create(options->path, PROC_PRIO_USER, options->level);
+  long result = child == NULL ? -EAGAIN : spawn_load_and_publish(child, options);
+  return result;
+}
+
 static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
                            int use_caps, int argc, char *const kargv[],
                            uint32_t flags, const struct spawn_redir *redir,
                            int nredir) {
-  /* ASTRA per-path preset (F1): plain spawn() takes the path's level;
-   * spawn_caps may only DROP privilege below it (a request more privileged than
-   * the path is capped to the path).  The creator-clamp in process_create_caps
-   * then forbids any escalation regardless. */
-  if (!spawn_path_is_sane(path))
-    return -EINVAL; /* SPAWN-LVL-01: no ".." — the preset must match the VFS */
+  struct spawn_options options = {
+      .path = path, .level = level, .caps = caps, .flags = flags,
+      .use_caps = use_caps, .argc = argc, .nredir = nredir,
+      .redirections = redir
+  };
+  for (int i = 0; i < SPAWN_MAX_ARGS && i < argc; ++i)
+    options.arguments.values[i] = kargv[i];
+  return spawn_dispatch_options(&options);
+}
 
-  uint8_t path_lvl = level_for_path(path);
-  if (!use_caps || level < path_lvl)
-    level = path_lvl;
+struct spawn_user_copy {
+  struct os1_spawn_request_v1 request;
+  struct spawn_options options;
+  char path[128];
+  char text[SPAWN_MAX_ARGS][SPAWN_ARG_LEN];
+  uint64_t pointers[SPAWN_MAX_ARGS];
+  struct spawn_redir redirections[SPAWN_MAX_REDIR];
+};
 
-  arch_local_irq_disable();
-  struct process *p =
-      use_caps ? process_create_caps(path, PROC_PRIO_USER, level, caps)
-               : process_create(path, PROC_PRIO_USER, level);
-  long ret;
-  if (p) {
-    /* nxexec model (#193): a DETACHED spawn declines being the child's
-     * controlling terminal — process_create inherited the spawner's window
-     * as ctty unconditionally; the flag opts out (launcher-style spawns).
-     * Safe here: the child is not yet enqueued/visible. */
-    if (flags & SPAWN_FLAG_DETACHED)
-      p->ctty_win = -1;
-    /* Phase 4: apply the spawner's fd redirections (shell `<`/`>`/`>>`/`2>`)
-     * into the child's handle table before it runs.  A bad source fd aborts the
-     * whole spawn — redirection is part of the child's promised environment. */
-    long rerr = 0;
-    for (int i = 0; i < nredir; i++) {
-      if (redir[i].source_pid == 0) {
-        /* Ordinary case: the fds belong to whoever called spawn. */
-        rerr = process_redirect_child_fd(p, redir[i].child_fd,
-                                         redir[i].parent_fd);
-      } else {
-        /* An execution SERVICE spawning on a client's behalf: the fds live in
-         * the CLIENT's table.  Reaching into another process's handle table is
-         * a system-service power, not an application one — same rule and same
-         * reasoning as OBJ_CTL_SETOWNER.  Without this gate any process could
-         * siphon descriptors out of any other simply by naming it here. */
-        if (!proc_is_privileged(current_process)) {
-          rerr = -EPERM;
-          break;
-        }
-        /*
-         * PROC-REF-01 is NOT closed here, deliberately — and the first attempt
-         * to close it introduced a worse bug than the one it fixed.
-         *
-         * That attempt held sched_lock across the lookup AND
-         * process_redirect_child_fd_from().  But that function ALLOCATES:
-         * handles_ensure() kmallocs the child's table and kobj_free() releases
-         * the displaced console handle.  Allocating under sched_lock creates
-         * the sched_lock -> pmm_lock/kmalloc_lock order that process.c states
-         * in writing "nothing else in this file establishes" — the same reason
-         * process_create_caps allocates the environment page BEFORE taking the
-         * lock.  With IRQs disabled, an idle core spinning inside the allocator
-         * while this CPU holds sched_lock and waits for it is a hard hang; that
-         * is the amd64 K3-userland panic (corrupted RSP, execution off into the
-         * stack).
-         *
-         * The other two PROC-REF-01 sites (sys_cap_grant, sys_port_send_caps)
-         * are safe because they were made ALLOCATION-FREE under the lock on
-         * purpose: both refuse a target with no handle table rather than
-         * creating one.  This path cannot be made allocation-free the same way
-         * — the child legitimately may need its table built.
-         *
-         * So this site keeps the narrow, pre-existing use-after-free window and
-         * waits for the real fix (a process pin/refcount), which is what
-         * PROC-REF-01 asks for.  A rare UAF is strictly better than a
-         * reproducible deadlock in the path every system() call takes.
-         */
-        struct process *src = process_find_by_pid(redir[i].source_pid);
-        if (!src)
-          rerr = -ESRCH;
-        else
-          rerr = process_redirect_child_fd_from(src, p, redir[i].child_fd,
-                                                redir[i].parent_fd);
-      }
-      if (rerr != 0)
-        break;
-    }
-    if (rerr != 0) {
-      process_abort_spawn(p);
-      arch_local_irq_enable();
-      return rerr;
-    }
-    if (process_load_elf_args(p, path, argc, kargv) == 0) {
-      /* SCHED-UAF Pitfall B: commit the child atomically against a concurrent
-       * kill.  Capture the pid first — process_finalize_spawn may RELEASE p (if
-       * a kill was deferred while the ELF loaded), so p must not be read after.
-       */
-      long pid = (long)p->pid;
-      process_finalize_spawn(p);
-      ret = pid;
-    } else {
-      process_abort_spawn(p); /* load failed: release the half-built child */
-      ret = -ENOENT;          /* path missing or unloadable ELF */
-    }
-  } else {
-    ret = -EAGAIN; /* quota hit or process table exhausted */
+static int spawn_copy_header(struct spawn_user_copy *copy,
+                              const struct os1_spawn_request_v1 *user) {
+  if (hal_copy_from_user(&copy->request, user, sizeof(copy->request)) != 0)
+    return -EFAULT;
+  const struct os1_spawn_request_v1 *request = &copy->request;
+  if (request->abi_version != OS1_SPAWN_REQUEST_VERSION ||
+      request->struct_size != sizeof(*request) || request->reserved != 0U ||
+      request->argc > SPAWN_MAX_ARGS || request->nredir > SPAWN_MAX_REDIR ||
+      (request->flags & ~(uint32_t)SPAWN_FLAGS_ALL) != 0U) return -EINVAL;
+  if (hal_copy_string_from_user(copy->path,
+      (const char *)(uintptr_t)request->path, sizeof(copy->path)) != 0)
+    return -EFAULT;
+  if (request->argc != 0U && hal_copy_from_user(copy->pointers,
+      (const void *)(uintptr_t)request->argv,
+      request->argc * sizeof(copy->pointers[0])) != 0) return -EFAULT;
+  if (request->nredir != 0U && hal_copy_from_user(copy->redirections,
+      (const void *)(uintptr_t)request->redirections,
+      request->nredir * sizeof(copy->redirections[0])) != 0) return -EFAULT;
+  copy->options.path = copy->path;
+  copy->options.level = PLVL_USER;
+  copy->options.argc = (int)request->argc;
+  copy->options.flags = request->flags;
+  copy->options.nredir = (int)request->nredir;
+  copy->options.redirections = copy->redirections;
+  return 0;
+}
+
+long kernel_spawn_owned(int owner_pid,
+    const struct os1_spawn_request_v1 *urequest) {
+  if (owner_pid <= 0 || !proc_is_privileged(current_process) ||
+      !proc_has_cap(current_process, CAP_SPAWN)) return -EPERM;
+  struct spawn_user_copy copy = {0};
+  int status = spawn_copy_header(&copy, urequest);
+  if (status != 0) return status;
+  for (uint32_t i = 0U; i < SPAWN_MAX_ARGS && i < copy.request.argc; ++i) {
+    if (hal_copy_string_from_user(copy.text[i],
+        (const char *)(uintptr_t)copy.pointers[i], SPAWN_ARG_LEN) != 0)
+      return -EFAULT;
+    copy.options.arguments.values[i] = copy.text[i];
   }
-  arch_local_irq_enable();
-  return ret;
+  copy.options.owner_pid = owner_pid;
+  return spawn_dispatch_options(&copy.options);
 }
 
 /* window_text_write - copy a user text buffer into a kmalloc bounce (no
@@ -386,7 +443,7 @@ long window_text_write(int win_id, const char *ubuf, size_t count) {
   char *k = kmalloc(count + 1);
   if (!k)
     return -ENOMEM;
-  if (arch_copy_from_user(k, ubuf, count) != 0) {
+  if (hal_copy_from_user(k, ubuf, count) != 0) {
     kfree(k);
     return -EFAULT;
   }
@@ -398,14 +455,14 @@ long window_text_write(int win_id, const char *ubuf, size_t count) {
   return (long)count;
 }
 
-struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
-  uint64_t syscall_num = pt_regs_syscall_num(frame);
-  uint64_t arg0 = pt_regs_arg(frame, 0);
-  uint64_t arg1 = pt_regs_arg(frame, 1);
-  uint64_t arg2 = pt_regs_arg(frame, 2);
-  uint64_t arg3 = pt_regs_arg(frame, 3);
-  uint64_t arg4 = pt_regs_arg(frame, 4);
-  uint64_t arg5 = pt_regs_arg(frame, 5);
+hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
+  uint64_t syscall_num = hal_frame_syscall_num(frame);
+  uint64_t arg0 = hal_frame_arg(frame, 0);
+  uint64_t arg1 = hal_frame_arg(frame, 1);
+  uint64_t arg2 = hal_frame_arg(frame, 2);
+  uint64_t arg3 = hal_frame_arg(frame, 3);
+  uint64_t arg4 = hal_frame_arg(frame, 4);
+  uint64_t arg5 = hal_frame_arg(frame, 5);
 
   switch (syscall_num) {
   case SYS_OPEN: {
@@ -425,19 +482,19 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * then does the resolve, the write-ACL re-check for a WRITE handle, and the
      * VFS open. */
     if (!current_process) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     int flags = (int)arg1;
     if (flags & ~(O_ACCMODE | O_CREAT | O_TRUNC | O_APPEND)) {
-      pt_regs_set_return(frame, -EINVAL);
+      hal_frame_set_return(frame, -EINVAL);
       break;
     }
     if (flags & (O_CREAT | O_TRUNC)) {
       char kpath[128];
-      if (arch_copy_string_from_user(kpath, (const char *)arg0, sizeof(kpath)) !=
+      if (hal_copy_string_from_user(kpath, (const char *)arg0, sizeof(kpath)) !=
           0) {
-        pt_regs_set_return(frame, -EFAULT);
+        hal_frame_set_return(frame, -EFAULT);
         break;
       }
       char resolved[128];
@@ -447,33 +504,24 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       long wperm;
       if (!exists && (flags & O_CREAT)) {
         if ((wperm = vfs_write_allowed(resolved)) != 0) {
-          pt_regs_set_return(frame, wperm);
+          hal_frame_set_return(frame, wperm);
           break;
         }
         if (vfs_create(resolved, VFS_TYPE_FILE) != 0) {
-          pt_regs_set_return(frame, -EIO);
+          hal_frame_set_return(frame, -EIO);
           break;
         }
       } else if (exists && (flags & O_TRUNC)) {
         if ((wperm = vfs_write_allowed(resolved)) != 0) {
-          pt_regs_set_return(frame, wperm);
+          hal_frame_set_return(frame, wperm);
           break;
         }
-        /* No vfs_truncate primitive: drop and recreate empty — same net effect
-         * as truncate-to-zero, reusing the create-on-write model. */
-        /* -ENOENT is the normal case (truncating a file that does not exist
-         * yet); anything else is a real failure that used to be swallowed, so
-         * an EACCES or EIO here became a silent "truncate succeeded". */
-        {
-          int ur = vfs_unlink(resolved);
-          if (ur != 0 && ur != -ENOENT) {
-            pt_regs_set_return(frame, ur);
-            break;
-          }
-        }
-        if (vfs_create(resolved, VFS_TYPE_FILE) != 0) {
-          pt_regs_set_return(frame, -EIO);
-          break;
+        /* Preserve inode identity and existing open handles. A length change
+         * is a provider operation, never unlink followed by recreation. */
+        int truncated = vfs_truncate(resolved, 0U);
+        if (truncated != 0) {
+          hal_frame_set_return(frame, truncated);
+          return frame;
         }
       }
       /* O_TRUNC on a missing file without O_CREAT: fall through — the open
@@ -483,17 +531,17 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
                       : ((flags & O_ACCMODE) == O_WRONLY)
                           ? OS1_RIGHT_WRITE
                           : (OS1_RIGHT_READ | OS1_RIGHT_WRITE);
-    pt_regs_set_return(frame, sys_handle_create(OS1_NS_FS, (const char *)arg0,
+    hal_frame_set_return(frame, sys_handle_create(OS1_NS_FS, (const char *)arg0,
                                                 rights, OBJ_TYPE_FILE));
   } break;
   case SYS_CLOSE:
     /* close(fd) ≡ drop the handle; frees the object at its last reference. */
-    pt_regs_set_return(frame, sys_handle_close((int)arg0));
+    hal_frame_set_return(frame, sys_handle_close((int)arg0));
     break;
   case SYS_LSEEK:
     /* lseek(fd, off, whence) ≡ reposition a FILE handle's shared offset; a
      * CONSOLE/stream handle returns -ESPIPE (handled in sys_object_lseek). */
-    pt_regs_set_return(frame,
+    hal_frame_set_return(frame,
                        sys_object_lseek((int)arg0, (long)arg1, (int)arg2));
     break;
   case SYS_READ: {
@@ -506,32 +554,32 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * the POSIX -EBADF. */
     long r = sys_object_read((int)arg0, (void *)arg1, (size_t)arg2);
     if (r == -EAGAIN && current_process) {
-      arch_local_irq_disable();
+      hal_irq_disable();
       current_process->ipc_target_pid = -1; /* wake on ANY message */
       current_process->state = PROC_SLEEPING;
-      arch_local_irq_enable();
-      pt_regs_retry_syscall(frame);
+      hal_irq_enable();
+      hal_frame_retry_syscall(frame);
       return schedule(frame);
     }
-    pt_regs_set_return(frame, (r == -EPERM) ? -EBADF : r);
+    hal_frame_set_return(frame, (r == -EPERM) ? -EBADF : r);
   } break;
   case SYS_WRITE: {
     /* write(fd, buf, n) ≡ OS1_object_write on the handle.  -EPERM (write of a
      * read-only handle, e.g. stdin) maps to the POSIX -EBADF. */
     long r = sys_object_write((int)arg0, (const void *)arg1, (size_t)arg2);
-    pt_regs_set_return(frame, (r == -EPERM) ? -EBADF : r);
+    hal_frame_set_return(frame, (r == -EPERM) ? -EBADF : r);
   } break;
   case SYS_EXIT:
     sys_exit((int)arg0);
     return schedule(frame);
   case SYS_GET_TIME:
-    pt_regs_set_return(frame, sys_get_time());
+    hal_frame_set_return(frame, sys_get_time());
     break;
   case SYS_CLOCK_GETTIME:
-    pt_regs_set_return(frame, sys_clock_gettime((int)arg0));
+    hal_frame_set_return(frame, sys_clock_gettime((int)arg0));
     break;
   case SYS_GETPID:
-    pt_regs_set_return(frame, sys_get_pid());
+    hal_frame_set_return(frame, sys_get_pid());
     break;
   case SYS_DRAW:
     /* Direct draw to the root framebuffer is a display effect: gated by
@@ -539,59 +587,65 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * ungated.  A capability-stripped worker without CAP_WINDOW cannot scribble
      * on the screen; machine bypasses. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
-    graphics_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3,
-                       (uint32_t)arg4);
-    pt_regs_set_return(frame, 0);
+    if (arg0 > UINT32_MAX || arg1 > UINT32_MAX ||
+        arg2 == 0U || arg2 > UINT32_MAX ||
+        arg3 == 0U || arg3 > UINT32_MAX) {
+      hal_frame_set_return(frame, -EINVAL);
+      break;
+    }
+    graphics_draw_rect((uint32_t)arg0, (uint32_t)arg1,
+                       (uint32_t)arg2, (uint32_t)arg3, (uint32_t)arg4);
+    hal_frame_set_return(frame, 0);
     break;
   case SYS_WINDOW_ENUM: {
     /* Read-only window enumeration → struct window_info[] (ASTRA §6.7); ungated
      * like SYS_GETPROCS.  The dock /sys/bin/nxui lays out its app list from it.
      */
     extern long sys_window_enum(struct window_info * ubuf, size_t max);
-    pt_regs_set_return(
+    hal_frame_set_return(
         frame, sys_window_enum((struct window_info *)arg0, (size_t)arg1));
     break;
   }
   case SYS_CREATE_WINDOW: {
     /* USR-SEC-03 #79: drawing a window needs CAP_WINDOW. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     /* SCHED-UAF: a process being torn down must not create a NEW window after
      * process_terminate already destroyed its windows — it would be orphaned
      * (owner dead -> un-closeable).  The killer sets ->dying before the
      * teardown. */
-    if (current_process->dying) {
-      pt_regs_set_return(frame, -EPERM);
+    if (__atomic_load_n(&current_process->dying, __ATOMIC_ACQUIRE)) {
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     struct cpu_info *cpu = get_cpu_info();
     char *k_title = cpu->syscall_buf;
-    if (arch_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
+    if (hal_copy_string_from_user(k_title, (const char *)arg4, 64) != 0) {
+      hal_frame_set_return(frame, -EFAULT);
       break;
     }
-    pt_regs_set_return(frame, compositor_create_window(
+    hal_frame_set_return(frame, compositor_create_window(
                                   (int)arg0, (int)arg1, (int)arg2, (int)arg3,
-                                  k_title, current_process->pid));
+                                  k_title, current_process));
   } break;
   case SYS_WINDOW_DRAW:
     compositor_draw_rect((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4,
-                         (uint32_t)arg5, current_process->pid);
-    pt_regs_set_return(frame, 0);
+                         (uint32_t)arg5, (int)current_process->pid);
+    hal_frame_set_return(frame, 0);
     break;
   case SYS_WINDOW_WRITE:
     /* write text to a window by id (#123) — needs CAP_WINDOW.  Replaces the
      * old fd>=100 overload on write(). */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
-    pt_regs_set_return(
+    hal_frame_set_return(
         frame, window_text_write((int)arg0, (const char *)arg1, (size_t)arg2));
     break;
   case SYS_WINDOW_OF_PID: {
@@ -600,7 +654,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * that opened its own window (#123).  No capability needed. */
     extern int compositor_get_window_by_pid(int pid);
     int w = compositor_get_window_by_pid((int)arg0);
-    pt_regs_set_return(frame, w > 0 ? w : 0);
+    hal_frame_set_return(frame, w > 0 ? w : 0);
     break;
   }
   case SYS_WINDOW_GRID: {
@@ -611,9 +665,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     extern int compositor_window_grid(int win_id, int *cols, int *rows);
     int cols = 0, rows = 0;
     if (compositor_window_grid((int)arg0, &cols, &rows) != 0)
-      pt_regs_set_return(frame, -EINVAL);
+      hal_frame_set_return(frame, -EINVAL);
     else
-      pt_regs_set_return(frame,
+      hal_frame_set_return(frame,
                          ((long)(cols & 0xFFFF) << 16) | (rows & 0xFFFF));
     break;
   }
@@ -622,14 +676,14 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     extern void compositor_get_size(int *w, int *h);
     int w = 0, h = 0;
     compositor_get_size(&w, &h);
-    pt_regs_set_return(frame, ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF));
+    hal_frame_set_return(frame, ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF));
     break;
   }
   case SYS_SET_DISPLAY_MODE: {
     /* GFX-DYN-01: change resolution at runtime; the desktop adapts.  A
      * system-level action → needs CAP_WINDOW. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     extern int gpu_set_mode(int w, int h);
@@ -641,25 +695,25 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
                                  (int)arg1); /* new zoom-100 reference */
       compositor_resize((int)arg0, (int)arg1);
     }
-    pt_regs_set_return(frame, r);
+    hal_frame_set_return(frame, r);
     break;
   }
   case SYS_WINDOW_RESIZE: {
     /* Resize a window's logical surface.  Needs CAP_WINDOW and ownership
      * (owner or machine), mirroring SYS_DESTROY_WINDOW's ABI-04 check. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     extern int compositor_window_owner(int window_id);
     extern int compositor_resize_window(int window_id, int w, int h);
     int owner = compositor_window_owner((int)arg0);
     if (owner >= 0 && owner != (int)current_process->pid &&
-        !proc_is_machine(current_process)) {
-      pt_regs_set_return(frame, -EPERM);
+        !proc_has_cap(current_process, CAP_WINDOW_MANAGE)) {
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
-    pt_regs_set_return(
+    hal_frame_set_return(
         frame, compositor_resize_window((int)arg0, (int)arg1, (int)arg2));
     break;
   }
@@ -669,7 +723,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * tick). Machine-level only.  Returns 1 if the desktop was resized, else 0.
      */
     if (!proc_is_machine(current_process)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     extern int gpu_poll_events(int *w, int *h);
@@ -682,9 +736,9 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
         compositor_set_native_mode(w, h);
         compositor_resize(w, h);
       }
-      pt_regs_set_return(frame, 1);
+      hal_frame_set_return(frame, 1);
     } else {
-      pt_regs_set_return(frame, 0);
+      hal_frame_set_return(frame, 0);
     }
     break;
   }
@@ -692,7 +746,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     /* Switch the compositor look (Style/Theme/Background).  Needs CAP_WINDOW.
      * arg0 = style id, arg1 = theme id, arg2 = bg id; pass -1 to keep. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     extern int compositor_set_style(int style_id);
@@ -734,17 +788,17 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
                      * reboot and then silently reverts, which is
                      * worse than failing now */
     }
-    pt_regs_set_return(frame, rc);
+    hal_frame_set_return(frame, rc);
     break;
   }
   case SYS_SET_ZOOM: {
     /* Desktop zoom percent (HiDPI/zoom, F2).  Needs CAP_WINDOW. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     extern int compositor_set_zoom(int percent);
-    pt_regs_set_return(frame, compositor_set_zoom((int)arg0));
+    hal_frame_set_return(frame, compositor_set_zoom((int)arg0));
     break;
   }
   case SYS_COMPOSITOR_RENDER:
@@ -754,27 +808,99 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * return promptly and the supervisor presents their damage on its next
      * frame. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
-    /* PID 1 (nxinit) is the sole compositor/input frame pump. All other
-     * CAP_WINDOW processes may submit window damage, but their flush() calls
-     * are hints: init's 33 ms supervisor loop presents the accumulated state.
-     * This prevents concurrent USB HCD polling, multi-consumer input dispatch,
-     * and N app processes contending on compositor_lock with IRQs masked. */
-    if (current_process->pid != 1) {
-      pt_regs_set_return(frame, 0);
+    /* Legacy flush is a compatibility hint; rendering is resource I/O. */
+    hal_frame_set_return(frame, 0);
+    break;
+  case SYS_WINDOW_SNAPSHOT: {
+    /* Legacy ABI acquisition gate. Native SDK clients use resource handles. */
+    if (!proc_has_cap(current_process, CAP_WINDOW) ||
+        !proc_is_privileged(current_process)) {
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
-    extern void usb_hid_poll(void);
-    usb_hid_poll();
-    input_drain();
-    compositor_render();
-    pt_regs_set_return(frame, 0);
+    hal_frame_set_return(
+        frame, compositor_window_snapshot(
+                   (struct os1_window_snapshot_v1 *)arg0));
+    break;
+  }
+  case SYS_DISPLAY_PRESENT: {
+    if (!proc_has_cap(current_process, CAP_WINDOW) ||
+        !proc_is_privileged(current_process)) {
+      hal_frame_set_return(frame, -EPERM);
+      break;
+    }
+    struct os1_compositor_present_v1 user_present;
+    if (hal_copy_from_user(&user_present, (const void *)arg0,
+                            sizeof(user_present)) != 0) {
+      hal_frame_set_return(frame, -EFAULT);
+      break;
+    }
+    if (user_present.abi_version != OS1_COMPOSITOR_ABI_V1 ||
+        user_present.struct_size < sizeof(user_present) ||
+        user_present.width <= 0 || user_present.height <= 0 ||
+        user_present.stride != user_present.width ||
+        !user_present.pixels) {
+      hal_frame_set_return(frame, -EINVAL);
+      break;
+    }
+    size_t pixel_count = (size_t)user_present.width *
+                         (size_t)user_present.height;
+    if (pixel_count / (size_t)user_present.width !=
+            (size_t)user_present.height ||
+        pixel_count > 16u * 1024u * 1024u ||
+        user_present.pixel_capacity < pixel_count) {
+      hal_frame_set_return(frame, -EINVAL);
+      break;
+    }
+    size_t bytes = pixel_count * sizeof(uint32_t);
+    uint32_t *pixels = (uint32_t *)kmalloc(bytes);
+    if (!pixels) {
+      hal_frame_set_return(frame, -ENOMEM);
+      break;
+    }
+    if (hal_copy_from_user(pixels, user_present.pixels, bytes) != 0) {
+      kfree(pixels);
+      hal_frame_set_return(frame, -EFAULT);
+      break;
+    }
+    int rc = graphics_present_argb8888(
+        pixels, user_present.width, user_present.height,
+        user_present.stride, user_present.pixel_capacity);
+    kfree(pixels);
+    hal_frame_set_return(frame, rc);
+    break;
+  }
+  case SYS_INPUT_RAW_READ: {
+    struct os1_raw_input_event_v1 event;
+    long result;
+    if (!proc_has_cap(current_process, CAP_WINDOW) ||
+        !proc_is_privileged(current_process)) {
+      hal_frame_set_return(frame, -EPERM);
+      break;
+    }
+    result = OS1libkernel_input_read_raw(&event, (unsigned)arg1,
+                                         (unsigned)arg2);
+    if (result > 0 &&
+        hal_copy_to_user((void *)arg0, &event, sizeof(event)) != 0)
+      result = -EFAULT;
+    hal_frame_set_return(frame, result);
+    break;
+  }
+  case SYS_WINDOW_MOVE:
+    if (!proc_has_cap(current_process, CAP_WINDOW) ||
+        !proc_has_cap(current_process, CAP_WINDOW_MANAGE)) {
+      hal_frame_set_return(frame, -EPERM);
+      break;
+    }
+    compositor_move_window((int)arg0, (int)arg1, (int)arg2);
+    hal_frame_set_return(frame, 0);
     break;
   case SYS_WINDOW_BLIT:
     compositor_blit((int)arg0, (int)arg1, (int)arg2, (int)arg3, (int)arg4,
-                    (const uint32_t *)arg5, current_process->pid);
+                    (const uint32_t *)arg5, (int)current_process->pid);
     /* This process now owns custom pixel content in a window's buffer —
      * see struct process.self_rendered (sched.h) for why the own-window-
      * first stdout path (window_text_write below) must stop drawing text
@@ -782,7 +908,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * above if the window is not this process's own (or init's), so
      * reaching here means the blit legitimately landed on OUR window. */
     current_process->self_rendered = 1;
-    pt_regs_set_return(frame, 0);
+    hal_frame_set_return(frame, 0);
     break;
   case SYS_WINDOW_SET_FLAGS: {
     /* Window flags (top-most / hide / click-through) are a property of the
@@ -794,11 +920,11 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     int fowner = compositor_window_owner((int)arg0);
     if (fowner >= 0 && fowner != (int)current_process->pid &&
         !proc_is_machine(current_process)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     compositor_set_window_flags((int)arg0, (int)arg1);
-    pt_regs_set_return(frame, 0);
+    hal_frame_set_return(frame, 0);
   } break;
   case SYS_DESTROY_WINDOW: {
     /* ABI-04: only the window's owner (or a system process) may destroy it.
@@ -808,33 +934,32 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     int owner = compositor_window_owner((int)arg0);
     if (owner >= 0 && owner != (int)current_process->pid &&
         !proc_is_machine(current_process)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     compositor_destroy_window((int)arg0);
-    pt_regs_set_return(frame, 0);
+    hal_frame_set_return(frame, 0);
   } break;
   case SYS_SBRK:
-    pt_regs_set_return(frame, sys_sbrk((intptr_t)arg0));
+    hal_frame_set_return(frame, sys_sbrk((intptr_t)arg0));
     break;
   case SYS_SPAWN: {
     /* USR-SEC-03 #79: spawning needs CAP_SPAWN.  A plain spawn yields a full
      * PLVL_USER child (clamped to the creator), preserving today's behaviour.
      */
     if (!proc_has_cap(current_process, CAP_SPAWN)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     /* #193 hardening: unknown spawn-flag bits are rejected, not ignored —
      * the spawn surface must fail closed on semantics it does not know. */
     if (((uint32_t)arg3 & ~(uint32_t)SPAWN_FLAGS_ALL) != 0) {
-      pt_regs_set_return(frame, -EINVAL);
+      hal_frame_set_return(frame, -EINVAL);
       break;
     }
-    struct cpu_info *cpu = get_cpu_info();
-    char *k_path = cpu->syscall_buf;
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
+    char k_path[128];
+    if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      hal_frame_set_return(frame, -EFAULT);
       break;
     }
     /* Optional argv vector: arg1 = argc, arg2 = user array of char* (#kilo).
@@ -845,24 +970,24 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       argc = 0;
     if (argc > SPAWN_MAX_ARGS)
       argc = SPAWN_MAX_ARGS;
-    char *kargv[SPAWN_MAX_ARGS];
+    char *kargv[SPAWN_MAX_ARGS] = {0};
     char *argv_store = NULL;
     if (argc > 0) {
       void *uptrs[SPAWN_MAX_ARGS];
-      if (arch_copy_from_user(uptrs, (const void *)arg2,
+      if (hal_copy_from_user(uptrs, (const void *)arg2,
                               (size_t)argc * sizeof(void *)) != 0) {
-        pt_regs_set_return(frame, -EFAULT);
+        hal_frame_set_return(frame, -EFAULT);
         break;
       }
       argv_store = kmalloc((size_t)argc * SPAWN_ARG_LEN);
       if (!argv_store) {
-        pt_regs_set_return(frame, -ENOMEM);
+        hal_frame_set_return(frame, -ENOMEM);
         break;
       }
       int bad = 0;
       for (int i = 0; i < argc; i++) {
         kargv[i] = argv_store + (size_t)i * SPAWN_ARG_LEN;
-        if (arch_copy_string_from_user(kargv[i], (const char *)uptrs[i],
+        if (hal_copy_string_from_user(kargv[i], (const char *)uptrs[i],
                                        SPAWN_ARG_LEN) != 0) {
           bad = 1;
           break;
@@ -870,7 +995,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       }
       if (bad) {
         kfree(argv_store);
-        pt_regs_set_return(frame, -EFAULT);
+        hal_frame_set_return(frame, -EFAULT);
         break;
       }
     }
@@ -878,22 +1003,22 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * array of struct spawn_redir, arg5 = count.  Copy them into kernel memory
      * so dispatch_spawn can dup the spawner's handles into the child.  Absent
      * (count 0) → today's behaviour exactly. */
-    struct spawn_redir kredir[SPAWN_MAX_REDIR];
+    struct spawn_redir kredir[SPAWN_MAX_REDIR] = {0};
     int nredir = (int)arg5;
     if (nredir < 0)
       nredir = 0;
     if (nredir > SPAWN_MAX_REDIR) {
       if (argv_store)
         kfree(argv_store);
-      pt_regs_set_return(frame, -EINVAL);
+      hal_frame_set_return(frame, -EINVAL);
       break;
     }
     if (nredir > 0 &&
-        arch_copy_from_user(kredir, (const void *)arg4,
+        hal_copy_from_user(kredir, (const void *)arg4,
                             (size_t)nredir * sizeof(struct spawn_redir)) != 0) {
       if (argv_store)
         kfree(argv_store);
-      pt_regs_set_return(frame, -EFAULT);
+      hal_frame_set_return(frame, -EFAULT);
       break;
     }
     /* arg3 = spawn-mode flags (SPAWN_FLAG_*, caps.h) — nxexec model #193. */
@@ -901,7 +1026,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
                                (uint32_t)arg3, kredir, nredir);
     if (argv_store)
       kfree(argv_store);
-    pt_regs_set_return(frame, sret);
+    hal_frame_set_return(frame, sret);
   } break;
   case SYS_SPAWN_CAPS: {
     /* spawn_caps(path, level, caps) — restricted spawn.  The requested level
@@ -909,21 +1034,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * privileged than the creator, never above the level ceiling, never more
      * than the creator holds). */
     if (!proc_has_cap(current_process, CAP_SPAWN)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     /* #193 hardening: same strict flag validation as SYS_SPAWN. */
     if (((uint32_t)arg3 & ~(uint32_t)SPAWN_FLAGS_ALL) != 0) {
-      pt_regs_set_return(frame, -EINVAL);
+      hal_frame_set_return(frame, -EINVAL);
       break;
     }
-    struct cpu_info *cpu = get_cpu_info();
-    char *k_path = cpu->syscall_buf;
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
+    char k_path[128];
+    if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      hal_frame_set_return(frame, -EFAULT);
       break;
     }
-    pt_regs_set_return(frame,
+    hal_frame_set_return(frame,
                        dispatch_spawn(k_path, (uint8_t)arg1, (uint32_t)arg2, 1,
                                       0, NULL, (uint32_t)arg3, NULL, 0));
   } break;
@@ -932,21 +1056,20 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * re-homed to a live ancestor at reap time, SCHED-DOS-02); SYSTEM/ROOT
      * may kill anything (process_terminate still protects SYSTEM targets). */
     if (!process_kill_allowed(current_process, (int)arg0)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     /* External kill of ANOTHER process is window-aware (kill the target + its
      * windowless/in-shell descendants, SPARE windowed apps —
      * PROCESS-KILL-MODEL). Killing SELF stays single-process, like exit. */
     if (current_process && (int)arg0 == (int)current_process->pid) {
-      pt_regs_set_return(frame, process_terminate((int)arg0));
+      hal_frame_set_return(frame, process_terminate((int)arg0));
     } else {
-      process_kill_subtree((int)arg0);
-      pt_regs_set_return(frame, 0);
+      hal_frame_set_return(frame, process_kill_subtree((int)arg0));
     }
     break;
   case SYS_GETPROCS:
-    pt_regs_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));
+    hal_frame_set_return(frame, sys_getprocs((void *)arg0, (size_t)arg1));
     break;
   case SYS_SYSSTATS:
     /* OS1_sys_stats(buf, buf_size): one os1_sysstats snapshot (perf §1).
@@ -954,10 +1077,10 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * /sys/bin/nxmemstat) may read the raw stats; USER apps go through the
      * service's exposed interface, never this syscall directly. */
     if (!current_process || current_process->level > PLVL_ROOT) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
-    pt_regs_set_return(frame, sys_sysstats((void *)arg0, (size_t)arg1));
+    hal_frame_set_return(frame, sys_sysstats((void *)arg0, (size_t)arg1));
     break;
   case SYS_GET_IDENTITY: {
     /* Read-only self-introspection: the caller's own privilege LEVEL and
@@ -967,7 +1090,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * raw capability bits to applications. */
     int lvl = current_process ? (int)current_process->level : PLVL_GUEST;
     unsigned int cps = current_process ? current_process->caps : 0u;
-    pt_regs_set_return(frame,
+    hal_frame_set_return(frame,
                        ((long)(lvl & 0xFF) << 16) | (long)(cps & 0xFFFF));
     break;
   }
@@ -981,7 +1104,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * yield-after-successful-send actually happens and the receiver gets
      * a chance to run immediately. */
     long rc = sys_ipc_send((int)arg0, (void *)arg1);
-    pt_regs_set_return(frame, rc);
+    hal_frame_set_return(frame, rc);
     if (rc == 0)
       return schedule(frame);
     break;
@@ -1001,18 +1124,18 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * amd64 has no such guard, which is why this check lives here, in the
      * shared dispatcher, rather than in one arch's entry path. */
     if (!current_process) {
-      pt_regs_set_return(frame, -ESRCH);
+      hal_frame_set_return(frame, -ESRCH);
       return schedule(frame);
     }
     long rc = sys_ipc_recv((int)arg0, (void *)arg1);
     if (rc == IPC_RECV_RETRY)
-      pt_regs_retry_syscall(frame); /* the LIVE frame — see sys_ipc_recv */
+      hal_frame_retry_syscall(frame); /* the LIVE frame — see sys_ipc_recv */
     else
-      pt_regs_set_return(frame, rc);
+      hal_frame_set_return(frame, rc);
     return schedule(frame);
   }
   case SYS_TRY_RECV:
-    pt_regs_set_return(frame, sys_ipc_try_recv((int)arg0, (void *)arg1));
+    hal_frame_set_return(frame, sys_ipc_try_recv((int)arg0, (void *)arg1));
     break;
   case SYS_SET_FOCUS:
     /* ABI-04 / USR-SEC-03 #79: claiming focus needs CAP_WINDOW; a process may
@@ -1020,12 +1143,12 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * set_focus(get_pid())); redirecting input to/from another PID — i.e.
      * keystroke stealing — needs machine level. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     if ((int)arg0 != (int)current_process->pid &&
         !proc_is_machine(current_process)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
     sched_set_focus_pid(
@@ -1035,7 +1158,7 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
       extern void compositor_focus_changed(int new_pid);
       compositor_focus_changed((int)arg0);
     }
-    pt_regs_set_return(frame, 0);
+    hal_frame_set_return(frame, 0);
     break;
   case SYS_WAIT: {
     /* Ambient wait, arg1 = OPTIONAL user int* for the exit status.
@@ -1053,12 +1176,12 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * only made the omission look deliberate.  A bad status pointer is -EFAULT
      * under POSIX, not a successful wait whose status silently never arrived. */
     if (arg1 && wr >= 0 &&
-        arch_copy_to_user((void *)arg1, &wcode, sizeof(wcode)) != 0)
+        hal_copy_to_user((void *)arg1, &wcode, sizeof(wcode)) != 0)
       wr = -EFAULT;
-    pt_regs_set_return(frame, wr);
+    hal_frame_set_return(frame, wr);
   } break;
   case SYS_REGISTRY:
-    pt_regs_set_return(frame, sys_registry((int)arg0, (const char *)arg1,
+    hal_frame_set_return(frame, sys_registry((int)arg0, (const char *)arg1,
                                            (char *)arg2, (size_t)arg3));
     break;
   case SYS_STAT: {
@@ -1088,26 +1211,26 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * ("cpu->syscall_buf is used for path/title copies; only one such copy is
      * in flight per CPU"), not on the kernel stack. */
     char *k_path = get_cpu_info()->syscall_buf;
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
+    if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      hal_frame_set_return(frame, -EFAULT);
       break;
     }
     char *resolved_path = k_path + 128; /* same 2 KiB scratch, second slot */
     vfs_resolve_path(k_path, resolved_path, 128);
     struct vfs_stat vst;
     if (vfs_stat(resolved_path, &vst) != 0) {
-      pt_regs_set_return(frame, -ENOENT);
+      hal_frame_set_return(frame, -ENOENT);
       break;
     }
     struct abi_stat ast;
     memset(&ast, 0, sizeof(ast));
     ast.size = vst.size;
     ast.type = vst.type; /* ABI_S_TYPE_* match VFS_TYPE_* by value */
-    if (arch_copy_to_user((void *)arg1, &ast, sizeof(ast)) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
+    if (hal_copy_to_user((void *)arg1, &ast, sizeof(ast)) != 0) {
+      hal_frame_set_return(frame, -EFAULT);
       break;
     }
-    pt_regs_set_return(frame, 0);
+    hal_frame_set_return(frame, 0);
   } break;
   case SYS_SET_FONT:
     /* Replacing the GLOBAL system font is a desktop-wide display change (it
@@ -1115,15 +1238,15 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
      * (CAP_WINDOW).  Previously ungated — any process could restyle the
      * desktop. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
-      pt_regs_set_return(frame, -EPERM);
+      hal_frame_set_return(frame, -EPERM);
       break;
     }
-    pt_regs_set_return(frame, sys_set_font((void *)arg0, (size_t)arg1));
+    hal_frame_set_return(frame, sys_set_font((void *)arg0, (size_t)arg1));
     break;
   case SYS_CHDIR: {
     char k_path[128];
-    if (arch_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
+    if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
+      hal_frame_set_return(frame, -EFAULT);
       break;
     }
     char resolved_path[128];
@@ -1132,26 +1255,32 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     /* Verify it exists and is a directory. */
     struct vfs_stat st;
     if (vfs_stat(resolved_path, &st) != 0) {
-      pt_regs_set_return(frame, -ENOENT);
+      hal_frame_set_return(frame, -ENOENT);
     } else if (st.type != VFS_TYPE_DIR) {
-      pt_regs_set_return(frame, -ENOTDIR);
+      hal_frame_set_return(frame, -ENOTDIR);
     } else {
       strncpy(current_process->cwd, resolved_path, 128);
-      pt_regs_set_return(frame, 0);
+      hal_frame_set_return(frame, 0);
     }
   } break;
   case SYS_GETCWD: {
-    size_t size = (size_t)arg1;
-    if (arch_copy_to_user((void *)arg0, current_process->cwd, size) != 0) {
-      pt_regs_set_return(frame, -EFAULT);
-    } else {
-      pt_regs_set_return(frame, 0);
-    }
-  } break;
+    /* Capacity is not a copy length: copying it leaked adjacent process
+     * fields for large buffers and falsely succeeded without a terminator
+     * for small ones. Export only the validated string including its NUL. */
+    size_t length = strnlen(current_process->cwd, sizeof(current_process->cwd));
+    long result = -EIO;
+    if (arg0 == 0U || arg1 == 0U) result = -EINVAL;
+    else if (length == sizeof(current_process->cwd)) result = -EIO;
+    else if ((size_t)arg1 <= length) result = -ERANGE;
+    else result = hal_copy_to_user((void *)arg0, current_process->cwd,
+                                   length + 1U) != 0 ? -EFAULT : 0;
+    hal_frame_set_return(frame, result);
+    return frame;
+  }
   case SYS_PORT_SEND_CAPS:
     /* port send carrying capabilities; see sys_port_send_caps() for why a
      * service found by NAME must not need its pid to receive rights. */
-    pt_regs_set_return(frame,
+    hal_frame_set_return(frame,
                        sys_port_send_caps((int)arg0, (const void *)arg1,
                                           (const int *)arg2, (int)arg3));
     break;
@@ -1159,226 +1288,131 @@ struct pt_regs *kernel_syscall_dispatcher(struct pt_regs *frame) {
     /* pipe(int fds[2]) → OBJ_TYPE_PIPE; installs read+write ends in the caller's
      * handle table (fds[0]=read, fds[1]=write).  The shell wires `cmd | cmd` by
      * dup'ing the ends into the children's fd 0/1 (the same spawn-redir path). */
-    pt_regs_set_return(frame, sys_pipe((int *)arg0));
+    hal_frame_set_return(frame, sys_pipe((int *)arg0));
     break;
   /* --- Object / capability ABI (ASTRA §6.1/6.2/6.5, kernel/object.h) ---
    * The real capability layer: unforgeable per-process handles to refcounted
    * kernel objects with separable/attenuable rights.  User pointers (path,
    * buf) are validated inside each backend via arch_copy_*_user. */
   case SYS_HANDLE_CREATE:
-    pt_regs_set_return(frame, sys_handle_create((int)arg0, (const char *)arg1,
+    hal_frame_set_return(frame, sys_handle_create((int)arg0, (const char *)arg1,
                                                 (uint32_t)arg2, (int)arg3));
     break;
   case SYS_HANDLE_DUP:
-    pt_regs_set_return(frame, sys_handle_dup((int)arg0, (uint32_t)arg1));
+    hal_frame_set_return(frame, sys_handle_dup((int)arg0, (uint32_t)arg1));
     break;
   case SYS_HANDLE_CLOSE:
-    pt_regs_set_return(frame, sys_handle_close((int)arg0));
+    hal_frame_set_return(frame, sys_handle_close((int)arg0));
     break;
   case SYS_CAP_QUERY:
-    pt_regs_set_return(frame, sys_cap_query((int)arg0));
+    hal_frame_set_return(frame, sys_cap_query((int)arg0));
     break;
   case SYS_CAP_GRANT:
-    pt_regs_set_return(frame,
+    hal_frame_set_return(frame,
                        sys_cap_grant((int)arg0, (int)arg1, (uint32_t)arg2));
     break;
   case SYS_OBJECT_READ:
-    pt_regs_set_return(frame,
+    hal_frame_set_return(frame,
                        sys_object_read((int)arg0, (void *)arg1, (size_t)arg2));
     break;
   case SYS_OBJECT_WRITE:
-    pt_regs_set_return(
+    hal_frame_set_return(
         frame, sys_object_write((int)arg0, (const void *)arg1, (size_t)arg2));
     break;
   case SYS_OBJECT_WAIT:
-    pt_regs_set_return(frame, sys_object_wait((int)arg0, (long)arg1));
+    hal_frame_set_return(frame, sys_object_wait((int)arg0, (long)arg1));
     break;
   case SYS_OBJECT_CTL:
-    pt_regs_set_return(frame, sys_object_ctl((int)arg0, (int)arg1, (long)arg2));
+    hal_frame_set_return(frame, sys_object_ctl((int)arg0, (int)arg1, (long)arg2));
     break;
   default:
     pr_warn("Unknown syscall: %ld\n", syscall_num);
-    pt_regs_set_return(frame, -ENOSYS);
+    hal_frame_set_return(frame, -ENOSYS);
     break;
   }
 
-  return frame;
+  return process_creation_finish(frame);
 }
 
 /*
- * sys_get_time - return monotonic time in milliseconds.
- *
- * Derived from mono_ns() (the real-time hardware-counter clock, docs/
- * TIMER-MODEL.md), so it is accurate on BOTH arches — amd64 no longer returns
- * the jiffies*1000 stub (ARCH-03 retired for the real-time path).
- *
- * Locking: none.  IRQ context: no.
+ * SYS_GET_TIME remains the compatibility millisecond view. New code uses the
+ * object/time ABI or SYS_CLOCK_GETTIME nanoseconds.
  */
-long sys_get_time(void) { return (long)(mono_ns() / 1000000ULL); }
+long sys_get_time(void) {
+  return (long)(OS1libkernel_time_monotonic_ns() / UINT64_C(1000000));
+}
 
-/*
- * sys_clock_gettime - Tier 3 userland clock (SYS_CLOCK_GETTIME).
- *
- * Returns a 64-bit nanosecond value directly (both arches return 64 bits):
- *   clk == 0 (MONOTONIC)  : mono_ns() — monotonic ns since boot.
- *   clk == 1 (PROCESS_CPU): the caller's consumed CPU time in real ns.
- * Any other clock id falls back to MONOTONIC. This is the minimal seL4-style
- * mechanism; POSIX clock_gettime() is built on top in <time.h>. Capability
- * timer OBJECTS (arm-and-notify) are issue #135.
- */
-long sys_clock_gettime(int clk) {
-  if (clk == 1) {
-    struct process *p = current_process;
-    return p ? (long)timer_counts_to_ns(p->cpu_time_counts) : 0;
+long sys_clock_gettime(int clock_id) {
+  if (clock_id == 1) {
+    struct process *process = current_process;
+    return process
+        ? (long)OS1libkernel_time_counts_to_ns(process->cpu_time_counts)
+        : 0;
   }
-  return (long)mono_ns();
+  return (long)OS1libkernel_time_monotonic_ns();
 }
 
-/* Global monotonic tick counter (drivers/timer.c / platform.c). */
-extern volatile uint64_t jiffies;
-
-/*
- * proc_sleep_wake - per-process sleep timer callback (fired by the owning
- * core's tick when the coarse deadline is reached). Makes the sleeper runnable
- * again; it will re-run sys_nanosleep (retry), test mono_ns() >= wake_ns, and
- * either return (deadline reached) or re-arm and sleep again (woken a tick
- * early). Runs under that CPU's timer_lock; enqueue_task takes only a per-CPU
- * sched_lock (lock order timer_lock > per-CPU sched_lock — no inversion).
- */
 static void proc_sleep_wake(void *data) {
-  struct process *p = (struct process *)data;
-  if (p && p->state == PROC_SLEEPING)
-    enqueue_task(p);
+  OS1libkernel_process_sleep_timer_wake((struct process *)data);
 }
 
-/*
- * sys_nanosleep - block the caller for `ns` nanoseconds (POSIX nanosleep core,
- * Tier 3 of docs/TIMER-MODEL.md).
- *
- * The deadline is stored as an ABSOLUTE real-time instant (p->wake_ns, mono_ns
- * base) on first entry, so the sleep recovers lost time: the per-CPU software
- * timer is only a coarse jiffies-edge trigger, and the precise wake condition
- * is mono_ns() >= wake_ns. Retry-based like the blocking read — re-entered on
- * each wakeup. If the coarse timer fires a tick early, mono_ns() is still short
- * of wake_ns, so we re-arm and sleep again; a genuine deadline returns 0.
- */
-static struct pt_regs *sys_nanosleep(struct pt_regs *regs, uint64_t ns) {
-  struct process *p = current_process;
-  if (!p || ns == 0) {
-    pt_regs_set_return(regs, 0);
-    return regs;
+static hal_frame_t *sys_nanosleep(hal_frame_t *frame, uint64_t ns) {
+  struct process *process = current_process;
+  uint64_t now;
+  int arm_status;
+
+  if (process == NULL || ns == 0U) {
+    hal_frame_set_return(frame, 0);
+    return frame;
   }
-  if (p->wake_ns == 0)
-    p->wake_ns = mono_ns() + ns; /* absolute real-time deadline */
-
-  uint64_t now = mono_ns();
-  if (now >= p->wake_ns) {
-    p->wake_ns = 0;
-    timer_del(&p->sleep_timer); /* cancel if somehow still pending */
-    pt_regs_set_return(regs, 0);
-    return regs;
-  }
-
-  /*
-   * SLEEP-WAKE-01: close the lost-wakeup window.
-   *
-   * The old order armed the timer while p was still RUNNING, then changed
-   * p->state to PROC_SLEEPING. If the owning CPU's tick fired in between,
-   * proc_sleep_wake() observed RUNNING and intentionally skipped enqueue_task;
-   * the caller then went to sleep with no timer left to wake it. This is
-   * observable as user processes (notably NXShell) accepting one input line
-   * and then remaining asleep at the next prompt.
-   *
-   * Mask local IRQs across the state transition and timer publication. The
-   * timer belongs to this CPU (timer_add uses get_cpu_info()), so its callback
-   * cannot run until schedule() has switched away with IRQs still masked.
-   */
-  arch_local_irq_disable();
-
-  now = mono_ns();
-  if (now >= p->wake_ns) {
-    p->wake_ns = 0;
-    timer_del(&p->sleep_timer);
-    arch_local_irq_enable();
-    pt_regs_set_return(regs, 0);
-    return regs;
-  }
-
-  p->state = PROC_SLEEPING;
-
-  /* (Re)arm the coarse wheel trigger at the deadline's tick. Rounding up by
-   * one tick keeps us from busy-spinning if mono_ns() is just shy of wake_ns. */
-  if (!timer_pending(&p->sleep_timer)) {
-    uint64_t ticks = (p->wake_ns - now + (NS_PER_TICK - 1)) / NS_PER_TICK;
-    if (ticks == 0)
-      ticks = 1;
-    timer_setup(&p->sleep_timer, proc_sleep_wake, p);
-    timer_add(&p->sleep_timer, jiffies + ticks);
-  }
-
-  pt_regs_retry_syscall(regs);
-  return schedule(regs);
-}
-
-/* YIELD_SPIN_BUDGET: how many yield() calls a process may make within a single
- * tick (10 ms at HZ=100) before it is treated as busy-spinning. A program doing
- * real work between yields never approaches this; a `while(1) yield()` spinner
- * (an unoptimised app, or an old-style poll loop) trips it and is descheduled
- * to the next tick, capping its duty cycle so it cannot keep a core at 100% and
- * freeze the system. The bounded focus boost (process.c) stops a focused
- * CPU-hog from STARVING others; this stops a yield-spinner from SATURATING a
- * core. */
-#define YIELD_SPIN_BUDGET 64
-
-/*
- * sys_yield - cooperative yield with a per-process anti-spin throttle
- * (SYS_YIELD, docs/TIMER-MODEL.md §4).
- *
- * Normally just reschedules (gives up the rest of the slice). But it counts
- * yields within the current tick; once a process exceeds YIELD_SPIN_BUDGET it
- * is busy-spinning on yield(), so instead of an immediate reschedule it is put
- * to sleep until the next tick via its per-process timer (sleep_timer) — the
- * same mechanism nanosleep uses. The spinner therefore relinquishes the core
- * for a full tick, dropping its CPU duty cycle to near zero. The counter resets
- * each tick (and after a throttle), so legitimate cooperative yielding is
- * untouched.
- *
- * Note: this does NOT touch wake_ns (the nanosleep deadline) — a process cannot
- * be both yielding and nanosleeping. On wake the yield() simply returns.
- */
-static struct pt_regs *sys_yield(struct pt_regs *regs) {
-  struct process *p = current_process;
-  if (!p)
-    return schedule(regs);
-
-  if (p->yield_jiffy != jiffies) {
-    p->yield_jiffy = jiffies;
-    p->yield_count = 0;
-  }
-
-  if (++p->yield_count > YIELD_SPIN_BUDGET) {
-    /* Busy-spinning on yield() this tick — throttle to a 1-tick per-process
-     * timed sleep. Reset the budget; it refills next tick on wake. */
-    p->yield_count = 0;
-    /* TIMER-UAF-01: only (re)arm when the per-process timer is NOT already
-     * queued — exactly like sys_nanosleep. The sleeper can have been
-     * force-woken by a non-timer path (kernel_ipc_send flips
-     * PROC_SLEEPING->READY WITHOUT cancelling sleep_timer, process.c) with its
-     * timer still linked; calling timer_setup()/INIT_LIST_HEAD on that
-     * still-linked node re-initialises a live list entry and corrupts the
-     * per-CPU timer_list, later faulting in kernel_timer_tick() as a double
-     * list_del. If it is already pending, the existing 1-tick trigger will wake
-     * us, so we just re-sleep. */
-    if (!timer_pending(&p->sleep_timer)) {
-      timer_setup(&p->sleep_timer, proc_sleep_wake, p);
-      timer_add(&p->sleep_timer, jiffies + 1);
+  now = OS1libkernel_time_monotonic_ns();
+  if (process->wake_ns == 0U) {
+    if (ns > UINT64_MAX - now) {
+      hal_frame_set_return(frame, -EINVAL);
+      return frame;
     }
-    arch_local_irq_disable();
-    p->state = PROC_SLEEPING;
-    arch_local_irq_enable();
+    process->wake_ns = now + ns;
   }
+  if (now >= process->wake_ns) {
+    process->wake_ns = 0U;
+    OS1libkernel_timer_cancel(&process->sleep_timer);
+    hal_frame_set_return(frame, 0);
+    return frame;
+  }
+  arm_status = OS1libkernel_process_sleep_timer_arm(
+      process, &process->sleep_timer, proc_sleep_wake, process->wake_ns);
+  if (arm_status < 0) {
+    hal_frame_set_return(frame, arm_status);
+    return frame;
+  }
+  hal_frame_retry_syscall(frame);
+  return schedule(frame);
+}
 
-  return schedule(regs);
+#define YIELD_SPIN_BUDGET 64U
+
+static hal_frame_t *sys_yield(hal_frame_t *frame) {
+  struct process *process = current_process;
+  uint64_t now;
+  uint64_t window;
+
+  if (process == NULL)
+    return schedule(frame);
+  now = OS1libkernel_time_monotonic_ns();
+  window = now - (now % OS1LIBKERNEL_NSEC_PER_TICK);
+  if (process->yield_window_ns != window) {
+    process->yield_window_ns = window;
+    process->yield_count = 0U;
+  }
+  ++process->yield_count;
+  if (process->yield_count > YIELD_SPIN_BUDGET) {
+    uint64_t deadline = window + OS1LIBKERNEL_NSEC_PER_TICK;
+    process->yield_count = 0U;
+    if (deadline > window)
+      (void)OS1libkernel_process_sleep_timer_arm(
+          process, &process->sleep_timer, proc_sleep_wake, deadline);
+  }
+  return schedule(frame);
 }
 
 /*
@@ -1415,7 +1449,7 @@ void sys_exit(int status) {
     /* Nothing to propagate to: the caller is exiting.  Reported so a failure
      * to tear down is visible instead of leaving a process that believes it
      * exited still in the pool. */
-    if (process_terminate(current_process->pid) != 0)
-      pr_err("exit: process_terminate(%d) failed\n", current_process->pid);
+    if (process_terminate((int)current_process->pid) != 0)
+      pr_err("exit: process_terminate(%d) failed\n", (int)current_process->pid);
   }
 }

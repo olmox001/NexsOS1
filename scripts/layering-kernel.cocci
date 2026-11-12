@@ -18,13 +18,23 @@
 
 // ---------------------------------------------------------------------------
 // the KERNEL must not include a USERLAND header
-// Enabled today by Makefile:101 giving the kernel -Iinclude/abi -Iinclude/api.
+// Userland headers are supplied by the NX-SDK under system/include.
 // ---------------------------------------------------------------------------
 
 @@
 @@
 
+- #include <alloca.h>
+
+@@
+@@
+
 - #include <assert.h>
+
+@@
+@@
+
+- #include <byteswap.h>
 
 @@
 @@
@@ -54,12 +64,27 @@
 @@
 @@
 
+- #include <error.h>
+
+@@
+@@
+
 - #include <execsvc.h>
 
 @@
 @@
 
 - #include <fcntl.h>
+
+@@
+@@
+
+- #include <float.h>
+
+@@
+@@
+
+- #include <fnmatch.h>
 
 @@
 @@
@@ -74,7 +99,22 @@
 @@
 @@
 
+- #include <getopt.h>
+
+@@
+@@
+
+- #include <glob.h>
+
+@@
+@@
+
 - #include <graphics.h>
+
+@@
+@@
+
+- #include <grp.h>
 
 @@
 @@
@@ -94,12 +134,27 @@
 @@
 @@
 
+- #include <langinfo.h>
+
+@@
+@@
+
 - #include <lib.h>
 
 @@
 @@
 
+- #include <locale.h>
+
+@@
+@@
+
 - #include <math.h>
+
+@@
+@@
+
+- #include <nx_abi.h>
 
 @@
 @@
@@ -114,12 +169,92 @@
 @@
 @@
 
+- #include <os1_buffer.h>
+
+@@
+@@
+
+- #include <os1_compositor.h>
+
+@@
+@@
+
+- #include <os1_d3d9_present.h>
+
+@@
+@@
+
+- #include <os1_gfx.h>
+
+@@
+@@
+
+- #include <os1_gl_platform.h>
+
+@@
+@@
+
+- #include <os1_input.h>
+
+@@
+@@
+
+- #include <os1_surface.h>
+
+@@
+@@
+
+- #include <os1_theme.h>
+
+@@
+@@
+
+- #include <os1_time.h>
+
+@@
+@@
+
+- #include <os1_time_service.h>
+
+@@
+@@
+
+- #include <os1_video_platform.h>
+
+@@
+@@
+
+- #include <os1vid.h>
+
+@@
+@@
+
 - #include <poll.h>
 
 @@
 @@
 
 - #include <posix_types.h>
+
+@@
+@@
+
+- #include <pwd.h>
+
+@@
+@@
+
+- #include <selinux/context.h>
+
+@@
+@@
+
+- #include <selinux/label.h>
+
+@@
+@@
+
+- #include <selinux/selinux.h>
 
 @@
 @@
@@ -134,17 +269,22 @@
 @@
 @@
 
-- #include <stb_easy_font.h>
-
-@@
-@@
-
-- #include <stb_image.h>
+- #include <stdbit.h>
 
 @@
 @@
 
 - #include <stdbool.h>
+
+@@
+@@
+
+- #include <stdckdint.h>
+
+@@
+@@
+
+- #include <stdcountof.h>
 
 @@
 @@
@@ -174,6 +314,11 @@
 @@
 @@
 
+- #include <surface.h>
+
+@@
+@@
+
 - #include <sys/ioctl.h>
 
 @@
@@ -184,12 +329,47 @@
 @@
 @@
 
+- #include <sys/random.h>
+
+@@
+@@
+
+- #include <sys/resource.h>
+
+@@
+@@
+
 - #include <sys/stat.h>
 
 @@
 @@
 
+- #include <sys/statfs.h>
+
+@@
+@@
+
+- #include <sys/statvfs.h>
+
+@@
+@@
+
+- #include <sys/time.h>
+
+@@
+@@
+
 - #include <sys/types.h>
+
+@@
+@@
+
+- #include <sys/uio.h>
+
+@@
+@@
+
+- #include <sys/utsname.h>
 
 @@
 @@
@@ -219,12 +399,37 @@
 @@
 @@
 
+- #include <uchar.h>
+
+@@
+@@
+
 - #include <unistd.h>
 
 @@
 @@
 
+- #include <wchar.h>
+
+@@
+@@
+
+- #include <wctype.h>
+
+@@
+@@
+
+- #include "../../../../include/api/alloca.h"
+
+@@
+@@
+
 - #include "../../../../include/api/assert.h"
+
+@@
+@@
+
+- #include "../../../../include/api/byteswap.h"
 
 @@
 @@
@@ -254,12 +459,27 @@
 @@
 @@
 
+- #include "../../../../include/api/error.h"
+
+@@
+@@
+
 - #include "../../../../include/api/execsvc.h"
 
 @@
 @@
 
 - #include "../../../../include/api/fcntl.h"
+
+@@
+@@
+
+- #include "../../../../include/api/float.h"
+
+@@
+@@
+
+- #include "../../../../include/api/fnmatch.h"
 
 @@
 @@
@@ -274,7 +494,22 @@
 @@
 @@
 
+- #include "../../../../include/api/getopt.h"
+
+@@
+@@
+
+- #include "../../../../include/api/glob.h"
+
+@@
+@@
+
 - #include "../../../../include/api/graphics.h"
+
+@@
+@@
+
+- #include "../../../../include/api/grp.h"
 
 @@
 @@
@@ -294,12 +529,27 @@
 @@
 @@
 
+- #include "../../../../include/api/langinfo.h"
+
+@@
+@@
+
 - #include "../../../../include/api/lib.h"
 
 @@
 @@
 
+- #include "../../../../include/api/locale.h"
+
+@@
+@@
+
 - #include "../../../../include/api/math.h"
+
+@@
+@@
+
+- #include "../../../../include/api/nx_abi.h"
 
 @@
 @@
@@ -314,12 +564,92 @@
 @@
 @@
 
+- #include "../../../../include/api/os1_buffer.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_compositor.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_d3d9_present.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_gfx.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_gl_platform.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_input.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_surface.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_theme.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_time.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_time_service.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1_video_platform.h"
+
+@@
+@@
+
+- #include "../../../../include/api/os1vid.h"
+
+@@
+@@
+
 - #include "../../../../include/api/poll.h"
 
 @@
 @@
 
 - #include "../../../../include/api/posix_types.h"
+
+@@
+@@
+
+- #include "../../../../include/api/pwd.h"
+
+@@
+@@
+
+- #include "../../../../include/api/selinux/context.h"
+
+@@
+@@
+
+- #include "../../../../include/api/selinux/label.h"
+
+@@
+@@
+
+- #include "../../../../include/api/selinux/selinux.h"
 
 @@
 @@
@@ -334,17 +664,22 @@
 @@
 @@
 
-- #include "../../../../include/api/stb_easy_font.h"
-
-@@
-@@
-
-- #include "../../../../include/api/stb_image.h"
+- #include "../../../../include/api/stdbit.h"
 
 @@
 @@
 
 - #include "../../../../include/api/stdbool.h"
+
+@@
+@@
+
+- #include "../../../../include/api/stdckdint.h"
+
+@@
+@@
+
+- #include "../../../../include/api/stdcountof.h"
 
 @@
 @@
@@ -374,6 +709,11 @@
 @@
 @@
 
+- #include "../../../../include/api/surface.h"
+
+@@
+@@
+
 - #include "../../../../include/api/sys/ioctl.h"
 
 @@
@@ -384,12 +724,47 @@
 @@
 @@
 
+- #include "../../../../include/api/sys/random.h"
+
+@@
+@@
+
+- #include "../../../../include/api/sys/resource.h"
+
+@@
+@@
+
 - #include "../../../../include/api/sys/stat.h"
 
 @@
 @@
 
+- #include "../../../../include/api/sys/statfs.h"
+
+@@
+@@
+
+- #include "../../../../include/api/sys/statvfs.h"
+
+@@
+@@
+
+- #include "../../../../include/api/sys/time.h"
+
+@@
+@@
+
 - #include "../../../../include/api/sys/types.h"
+
+@@
+@@
+
+- #include "../../../../include/api/sys/uio.h"
+
+@@
+@@
+
+- #include "../../../../include/api/sys/utsname.h"
 
 @@
 @@
@@ -419,12 +794,37 @@
 @@
 @@
 
+- #include "../../../../include/api/uchar.h"
+
+@@
+@@
+
 - #include "../../../../include/api/unistd.h"
 
 @@
 @@
 
+- #include "../../../../include/api/wchar.h"
+
+@@
+@@
+
+- #include "../../../../include/api/wctype.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/alloca.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/assert.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/byteswap.h"
 
 @@
 @@
@@ -454,12 +854,27 @@
 @@
 @@
 
+- #include "../../../../include/abi/error.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/execsvc.h"
 
 @@
 @@
 
 - #include "../../../../include/abi/fcntl.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/float.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/fnmatch.h"
 
 @@
 @@
@@ -474,7 +889,22 @@
 @@
 @@
 
+- #include "../../../../include/abi/getopt.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/glob.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/graphics.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/grp.h"
 
 @@
 @@
@@ -494,12 +924,27 @@
 @@
 @@
 
+- #include "../../../../include/abi/langinfo.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/lib.h"
 
 @@
 @@
 
+- #include "../../../../include/abi/locale.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/math.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/nx_abi.h"
 
 @@
 @@
@@ -514,12 +959,92 @@
 @@
 @@
 
+- #include "../../../../include/abi/os1_buffer.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_compositor.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_d3d9_present.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_gfx.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_gl_platform.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_input.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_surface.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_theme.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_time.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_time_service.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1_video_platform.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/os1vid.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/poll.h"
 
 @@
 @@
 
 - #include "../../../../include/abi/posix_types.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/pwd.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/selinux/context.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/selinux/label.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/selinux/selinux.h"
 
 @@
 @@
@@ -534,17 +1059,22 @@
 @@
 @@
 
-- #include "../../../../include/abi/stb_easy_font.h"
-
-@@
-@@
-
-- #include "../../../../include/abi/stb_image.h"
+- #include "../../../../include/abi/stdbit.h"
 
 @@
 @@
 
 - #include "../../../../include/abi/stdbool.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/stdckdint.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/stdcountof.h"
 
 @@
 @@
@@ -574,6 +1104,11 @@
 @@
 @@
 
+- #include "../../../../include/abi/surface.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/sys/ioctl.h"
 
 @@
@@ -584,12 +1119,47 @@
 @@
 @@
 
+- #include "../../../../include/abi/sys/random.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/sys/resource.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/sys/stat.h"
 
 @@
 @@
 
+- #include "../../../../include/abi/sys/statfs.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/sys/statvfs.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/sys/time.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/sys/types.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/sys/uio.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/sys/utsname.h"
 
 @@
 @@
@@ -619,4 +1189,19 @@
 @@
 @@
 
+- #include "../../../../include/abi/uchar.h"
+
+@@
+@@
+
 - #include "../../../../include/abi/unistd.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/wchar.h"
+
+@@
+@@
+
+- #include "../../../../include/abi/wctype.h"

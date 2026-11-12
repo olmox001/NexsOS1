@@ -1,0 +1,49 @@
+#ifndef NXEC_PREBOOT_HW_ACCESS_POLICY_H
+#define NXEC_PREBOOT_HW_ACCESS_POLICY_H
+
+#include <stdint.h>
+
+/* Preboot hardware discovery is deliberately read-only and metadata-only. */
+enum preboot_hw_domain {
+    PREBOOT_HW_DOMAIN_CPU_IDENTITY = 1,
+    PREBOOT_HW_DOMAIN_PCI_IDENTITY = 2,
+    PREBOOT_HW_DOMAIN_FIRMWARE_METADATA = 3,
+    PREBOOT_HW_DOMAIN_MMIO = 4,
+    PREBOOT_HW_DOMAIN_SMBUS = 5,
+    PREBOOT_HW_DOMAIN_PMBUS = 6,
+    PREBOOT_HW_DOMAIN_VOLTAGE_REGULATOR = 7,
+    PREBOOT_HW_DOMAIN_THERMAL_CONTROLLER = 8,
+    PREBOOT_HW_DOMAIN_POWER_CONTROLLER = 9
+};
+
+enum preboot_hw_operation {
+    PREBOOT_HW_OP_ENUMERATE = 1,
+    PREBOOT_HW_OP_READ_IDENTITY = 2,
+    PREBOOT_HW_OP_READ_FIRMWARE_METADATA = 3,
+    PREBOOT_HW_OP_READ_SENSOR = 4,
+    PREBOOT_HW_OP_WRITE_CONFIGURATION = 5,
+    PREBOOT_HW_OP_SET_VOLTAGE = 6,
+    PREBOOT_HW_OP_SET_VOLTAGE_OFFSET = 7,
+    PREBOOT_HW_OP_SET_CURRENT_LIMIT = 8,
+    PREBOOT_HW_OP_SET_POWER_LIMIT = 9,
+    PREBOOT_HW_OP_SET_CLOCK = 10,
+    PREBOOT_HW_OP_SET_FREQUENCY = 11,
+    PREBOOT_HW_OP_SET_FAN_DUTY = 12,
+    PREBOOT_HW_OP_SET_THERMAL_LIMIT = 13,
+    PREBOOT_HW_OP_ENABLE_DISABLE = 14,
+    PREBOOT_HW_OP_CLEAR_FAULT = 15,
+    PREBOOT_HW_OP_UNLOCK_CONTROLLER = 16,
+    PREBOOT_HW_OP_RESET = 17,
+    PREBOOT_HW_OP_FIRMWARE_UPDATE = 18
+};
+
+enum preboot_hw_access_decision {
+    PREBOOT_HW_ACCESS_DENY = 0,
+    PREBOOT_HW_ACCESS_ALLOW = 1
+};
+
+enum preboot_hw_access_decision preboot_hw_access_policy(
+    enum preboot_hw_domain domain,
+    enum preboot_hw_operation operation);
+
+#endif

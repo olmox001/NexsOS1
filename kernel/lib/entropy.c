@@ -1,44 +1,52 @@
 /*
- * kernel/lib/entropy.c
- * Unified best-effort entropy source.
+ * Unified early-boot entropy policy.
  *
- * ASTRA (docs/ASTRA.md §1 rule 5: "the HAL is the seam, and divergence is a
- * bug"): the policy here — prefer the hardware RNG, otherwise mix cycle-counter
- * jitter — is written once and drives both architectures identically over two
- * HAL primitives:
- *   - arch_hw_random()      (ISA: RNDR on AArch64 FEAT_RNG, RDRAND on AMD64)
- *   - arch_timer_get_count()(ISA: CNTVCT_EL0 / RDTSC, already a HAL contract)
- * No arch is named below; the only per-arch code is the thin ISA wrapper
- * arch_impl_hw_random in each kernel/arch/<arch>/include/arch/arch.h.
- *
- * Primary consumer: stack_guard_init() reseeds the SSP canary (LIB-SSP-01 / #71).
+ * The HAL entropy ABI deliberately separates architected hardware randomness
+ * from a changing early counter sample. The latter is entropy material only;
+ * it is not a runtime clocksource and carries no frequency/time semantics.
  */
-#include <kernel/arch.h>
+#include <hal/entropy.h>
 #include <kernel/entropy.h>
+
 #include <stdint.h>
 
-/* splitmix64 finalizer/step — a fast, well-distributed bit mixer. */
-static inline uint64_t splitmix64(uint64_t *state) {
-  uint64_t z = (*state += 0x9e3779b97f4a7c15ULL);
-  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
-  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
-  return z ^ (z >> 31);
+enum {
+  ENTROPY_HW_ATTEMPTS = 16,
+  ENTROPY_JITTER_SAMPLES = 8
+};
+
+static uint64_t splitmix64(uint64_t *state) {
+  uint64_t z = (*state += UINT64_C(0x9e3779b97f4a7c15));
+  z = (z ^ (z >> 30U)) * UINT64_C(0xbf58476d1ce4e5b9);
+  z = (z ^ (z >> 27U)) * UINT64_C(0x94d049bb133111eb);
+  return z ^ (z >> 31U);
+}
+
+static struct entropy_sample entropy_jitter_fallback(void) {
+  uint64_t state = (uint64_t)(uintptr_t)__builtin_return_address(0);
+  struct entropy_sample sample = {.source = ENTROPY_SOURCE_ADDRESS_MIX};
+
+  for (unsigned int index = 0U; index < ENTROPY_JITTER_SAMPLES; ++index) {
+    uint64_t jitter = 0U;
+    if (nxhal_entropy_jitter_sample(&jitter) == NXHAL_ENTROPY_OK) {
+      state ^= jitter;
+      sample.source = ENTROPY_SOURCE_COUNTER_MIX;
+    }
+    (void)splitmix64(&state);
+  }
+  sample.value = splitmix64(&state);
+  return sample;
+}
+
+struct entropy_sample entropy_sample_u64(void) {
+  for (unsigned int attempt = 0U; attempt < ENTROPY_HW_ATTEMPTS; ++attempt) {
+    uint64_t value = 0U;
+    if (nxhal_entropy_hardware_random(&value) == NXHAL_ENTROPY_OK)
+      return (struct entropy_sample){value, ENTROPY_SOURCE_ARCH_RNG};
+  }
+  return entropy_jitter_fallback();
 }
 
 uint64_t entropy_u64(void) {
-  /* Prefer the hardware RNG; tolerate a bounded number of transient failures. */
-  for (int i = 0; i < 16; i++) {
-    uint64_t hw;
-    if (arch_hw_random(&hw))
-      return hw;
-  }
-
-  /* Fallback: fold several cycle-counter samples (boot-time scheduling jitter)
-   * and a frame address through splitmix64. */
-  uint64_t state = (uint64_t)__builtin_return_address(0);
-  for (int i = 0; i < 8; i++) {
-    state ^= arch_timer_get_count();
-    (void)splitmix64(&state);
-  }
-  return splitmix64(&state);
+  return entropy_sample_u64().value;
 }

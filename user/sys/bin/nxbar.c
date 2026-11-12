@@ -144,7 +144,7 @@
 #include <os1.h>
 #include <string.h>
 
-#include "nxexec.h" /* nxexec_spawn_hosted() — same launch path nxlauncher's tiles use */
+#include <execsvc.h> /* nxexec_spawn_hosted() — same launch path nxlauncher's tiles use */
 #include "nxres.h" /* nxres_theme_is_light(), IPC_LOOK_PING_MAGIC (posix_types.h) — see palette below */
 
 #define BAR_H                                                                  \
@@ -965,10 +965,15 @@ static void handle_click(int mx, int my) {
   /* click landed inside an open panel */
   if (g_panel == PANEL_MENU) {
     int idx = (my - BAR_H) / MENU_ITEM_H;
-    if (idx == MENU_SETTINGS)
-      nxexec_spawn_hosted("/sys/bin/nxsettings");
-    else if (idx == MENU_POWER)
-      nxexec_spawn_hosted("/sys/bin/nxpower");
+    if (idx == MENU_SETTINGS) {
+      char *argv[1] = {(char *)"/sys/bin/nxsettings"};
+      int pid = execsvc_launch_hosted(1, argv);
+      if (pid <= 0) OS1_report_error("nxbar.settings_launch", pid);
+    } else if (idx == MENU_POWER) {
+      char *argv[1] = {(char *)"/sys/bin/nxpower"};
+      int pid = execsvc_launch_hosted(1, argv);
+      if (pid <= 0) OS1_report_error("nxbar.power_launch", pid);
+    }
     close_panel();
   } else if (g_panel == PANEL_NOTIFY) {
     /* read-only list today: any click inside it just dismisses it */
@@ -997,8 +1002,11 @@ int main(void) {
   if (sh <= 0)
     sh = 600;
 
-  nxbar_load_palette(nxres_theme_is_light());
-  g_col_xbtn_glyph = nxres_bg_color(); /* dipende dal background, NON dal
+  int last_light = nxres_theme_is_light();
+  unsigned int last_background = nxres_bg_color();
+  long last_look_poll = get_time();
+  nxbar_load_palette(last_light);
+  g_col_xbtn_glyph = last_background; /* dipende dal background, NON dal
                                         * tema — nxres_bg_color() legge
                                         * "background.name" e risolve via
                                         * os1_bg_colors (nxres.h) */
@@ -1018,6 +1026,23 @@ int main(void) {
     if (cw > 0 && ch > 0 && (cw != g_dsw || ch != g_dsh))
       bar_reinit(cw, ch);
 
+    /* Registry is the authoritative look state. Notifications are only
+     * accelerators: their mailbox delivery is best effort and can be lost
+     * while a saturated GUI/input queue is drained. Poll at a bounded rate
+     * so menu-bar color and background never remain stale indefinitely. */
+    long look_now = get_time();
+    if (look_now < last_look_poll || look_now - last_look_poll >= 250) {
+      int light = nxres_theme_is_light();
+      unsigned int background = nxres_bg_color();
+      last_look_poll = look_now;
+      if (light != last_light || background != last_background) {
+        last_light = light;
+        last_background = background;
+        nxbar_load_palette(light);
+        g_col_xbtn_glyph = background;
+        redraw(1);
+      }
+    }
     redraw(0);
 
     input_event_t ev;
@@ -1037,19 +1062,13 @@ int main(void) {
          * The ping covers ALL three look axes, so a background change
          * reloads the theme palette too — re-deriving the border is cheap
          * and keeps a single redraw path. */
-        nxbar_load_palette(nxres_theme_is_light());
-        g_col_xbtn_glyph = nxres_bg_color();
+        last_light = nxres_theme_is_light();
+        last_background = nxres_bg_color();
+        last_look_poll = get_time();
+        nxbar_load_palette(last_light);
+        g_col_xbtn_glyph = last_background;
         redraw(1);
       }
-    }
-
-    /* Phase 3: GC stale sys.proc.<pid> identity keys (dead detached apps) on a
-     * slow cadence — ~every 5 s, not every 33 ms frame. */
-    static long g_last_prune_ms = 0;
-    long now_ms = get_time();
-    if (now_ms - g_last_prune_ms > 5000) {
-      g_last_prune_ms = now_ms;
-      nxexec_prune_identities();
     }
 
     OS1_sleep(33); /* ~30 Hz, descheduled between ticks, like nxui */

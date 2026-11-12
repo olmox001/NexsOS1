@@ -22,7 +22,7 @@
  */
 #include <os1.h>
 
-#include "../sys/lib/portability/d3d9/os1_d3d9_present.h"
+#include <os1_d3d9_present.h>
 
 /* Fixed-point 16.16 format:
  *   FP_SHIFT = 16: lower 16 bits are the fractional part.

@@ -1,44 +1,64 @@
 # NEXS Legacy Boot Path Inventory and NG Boot Contract
 
-Status: inspected against the current Makefile and architecture entry sources.  
-Source baseline: b495da3a711e5af64dd826c29c6da4777c487074.
+Status: inspected against the current Makefile and HAL architecture entry sources.
+The 2026-11-09 qualification in §15 supersedes older statements that AMD64 UEFI
+was unavailable; historical sections retain their original evidence context.
 
-## 1. Actual boot path used by current targets
+## 1. Actual boot paths used by current targets
+
+The default `make run` path is GRUB ISO boot on both architectures, matching
+`nxadb`, `nxrun` and the release media. Raw QEMU kernel loading is retained
+only as an explicit diagnostic path (`BOOT_MODE=direct` or `run-direct`).
+Do not conflate the direct loader's register contract with the GRUB handoff.
 
 ### x86-64 / amd64
 
-- Build output: build/amd64/kernel.elf.
-- Development run: QEMU receives -kernel build/amd64/kernel.elf.
-- Release ISO: GRUB configuration uses multiboot2 /boot/kernel.elf.
-- Actual kernel entry: kernel/arch/amd64/kinit/start.S.
-- The entry object contains a Multiboot2 header with the entry-address header
-  tag and a Xen PVH note. It receives the Multiboot2 magic in EAX and the
-  information pointer in EBX, saves both, establishes low boot mappings and
-  enters the higher-half kernel.
-- The actual x86 kernel boot path is not kernel/arch/amd64/boot/boot.S.
+- Build output: `build/amd64/kernel.elf`.
+- Default `make run` firmware remains GRUB BIOS when
+  `RUN_FIRMWARE=auto`; an independently qualified GRUB x86_64-efi/OVMF lane is
+  selected with `RUN_FIRMWARE=uefi`. Releases carry both BIOS and UEFI media.
+  Both image paths enter the same Multiboot2 kernel ABI: magic in EAX and the
+  information pointer in EBX.
+- Actual kernel entry: `kernel/HAL/arch/amd64/kinit/start.S`.
+- The entry object contains a Multiboot2 header with the standard entry-address
+  header tag and a Xen PVH note. It saves the incoming boot registers,
+  establishes low boot mappings and enters the higher-half kernel.
+- Diagnostic direct boot: QEMU receives `-kernel build/amd64/kernel.elf`.
+  This bypasses GRUB. The captured direct-loader run reported
+  `Magic: 0x0`, unlike GRUB's `0x36d76289`; it is not evidence of the
+  Multiboot2 handoff and must be tracked separately.
+- The actual x86 kernel boot path is not `kernel/HAL/arch/amd64/boot/boot.S`.
 
 ### AArch64
 
-- Build output: build/aarch64/kernel.bin, produced from the linked ELF with
-  objcopy -O binary.
-- Development run: QEMU receives -M virt -cpu cortex-a57 -m 5G -smp 4,
-  the VirtIO GPU/input/block devices, -kernel build/aarch64/kernel.bin and
-  -dtb build/aarch64/virt.dtb.
-- The DTB is generated from the same QEMU machine configuration.
-- QEMU's AArch64 raw-kernel stub passes the DTB physical address in X0.
-- Actual kernel entry: kernel/arch/aarch64/kinit/start.S.
-- The entry accepts X0 as the DTB pointer, checks CurrentEL, and has EL3,
+- Build output: `build/aarch64/kernel.bin`, produced from the linked ELF with
+  `objcopy -O binary`.
+- Default development/release boot: GRUB arm64-efi ISO chainloads the
+  project-owned `nexsos-efi-loader.efi`, which loads the kernel and embedded
+  QEMU-generated DTB, validates the FDT span, exits boot services and passes
+  the DTB physical address in `x0` and validated available size in `x1`.
+- Actual kernel entry: `kernel/HAL/arch/aarch64/kinit/start.S`.
+- The entry preserves the handoff registers, checks CurrentEL, and has EL3,
   EL2 and EL1 transition paths before enabling the MMU and entering the
   higher-half kernel.
+- Diagnostic direct boot: QEMU receives `-kernel build/aarch64/kernel.bin`
+  and `-dtb build/aarch64/virt.dtb`. QEMU supplies the DTB pointer in `x0`
+  but not its available size in `x1`; the kernel therefore uses the explicitly
+  retained legacy pointer-only adapter. This does not exercise the sized EFI
+  handoff.
 
-The development targets are not using the separate bootloader.elf as the
-kernel loader. The current bootloader target builds a separate artifact from
-kernel/arch/<arch>/boot/header.S, stage1.S and stage2.S; it is included in
-make all but is not used by the run or release boot path described above.
+The separate `bootloader.elf`/`bootloader.bin` target is built from
+`kernel/HAL/arch/<arch>/boot/header.S`, `stage1.S` and `stage2.S`, but is not
+the loader used by GRUB ISO, default `make run`, `nxadb`, `nxrun` or release.
+The current `mkdisk` implementation explicitly accepts but ignores its
+bootloader/kernel arguments and creates a GPT root-filesystem image; that
+image is not independently bootable. The separate experimental bootloader
+sources contain protocol defects documented in §2 and must not be advertised
+as a working no-GRUB disk boot path.
 
 ## 2. Legacy boot code that must not be reused without repair
 
-- kernel/arch/amd64/boot/boot.S is not listed in BOOT_SOURCES and is not
+- kernel/HAL/arch/amd64/boot/boot.S is not listed in BOOT_SOURCES and is not
   compiled by the current Makefile.
 - The separate amd64 bootloader header.S declares an entry-address tag with
   type 5, while the Multiboot2 standard entry-address header tag is type 3.
@@ -69,10 +89,13 @@ W^X mappings.
 ### AArch64
 
 The actual kinit entry receives the DTB in X0, uses a temporary 4 KiB-granule
-translation setup, maps early device space and a broad RAM window, enables
-MMU/caches, and jumps to the higher half. The normal VMM later replaces the
-temporary translation tables. Secondary CPU startup uses PSCI CPU_ON and
-passes a per-CPU stack through context_id.
+translation setup, maps L1[0] as Device for [0,1 GiB) and L1[1..127] as Normal
+2 MiB blocks for [1 GiB,128 GiB), enables MMU/caches, and jumps to the higher
+half. This is a 128 GiB mapped physical window, not a 128 MiB RAM size and not
+proof that all mapped addresses contain RAM. The normal VMM later replaces
+the temporary translation tables with the discovered usable-memory map.
+Secondary CPU startup uses PSCI CPU_ON and passes a per-CPU stack through
+context_id.
 
 These mappings are bootstrap-only. NG must build a small, explicit early map
 from validated BootInfo memory and device ranges, then replace it with the
@@ -142,3 +165,255 @@ length; unknown mandatory versions fail closed with a diagnostic.
 - No broad bootstrap identity mapping survives normal VM initialization.
 - Boot logs record protocol, BootInfo version, memory map hash, CPU count,
   clocksource and selected early console.
+
+
+## 8. Runtime evidence and remaining UEFI work — 2026-11-03
+
+The current generated AArch64 ISO contains a UEFI El Torito entry (platform
+UEFI, `/boot/grub/efi.img`) and the QEMU firmware log
+`build/logs/qemu-aarch64-grub-efi-stub-final.log` is a complete successful
+chain for the recorded run:
+- EDK2/AAVMF firmware starts and selects the CD;
+- GRUB AA64 chainloads `nexsos-efi-loader.efi`;
+- `NEXSOS_EFI_STUB_START`;
+- `NEXSOS_KERNEL_IMAGE_LOADED`;
+- `NEXSOS_DTB_EMBEDDED`;
+- `NEXSOS_EXIT_BOOT_SERVICES`;
+- kernel validates FDT, brings up all four CPUs, starts init/services and reaches
+  `[Init] Entering supervisor loop`.
+
+The firmware log also contains non-fatal firmware diagnostics:
+`ArmTrngLib could not be correctly initialized`, TPM2 protocol unavailable,
+and an X64 image rejected by the AArch64 firmware before the successful CD
+boot option. These are recorded, not silently erased. The AArch64 UEFI QEMU
+path is therefore **boot-tested**, but the NG BootInfo/firmware contract is
+not complete.
+
+AMD64's current generated ISO reports only a BIOS El Torito entry
+(`/boot/grub/i386-pc/eltorito.img`). It boots through the legacy Multiboot2/
+GRUB BIOS path. There is no current AMD64 UEFI ISO/EFI loader in this target.
+
+### Remaining UEFI gaps (confirmed by source inspection)
+
+- The AArch64 stub embeds a QEMU-generated DTB; `NEXS_EFI_PREFER_FIRMWARE_DTB`
+  is 0, so the embedded blob is tried before firmware DTB.
+- EFI memory map is acquired only to call ExitBootServices; it is not copied
+  into a versioned BootInfo passed to the kernel.
+- EFI memory-map descriptor version/size and firmware reserved/runtime memory
+  policy are not exported to the normal memory manager.
+- GOP framebuffer mode/base/stride/pixel masks are not captured into BootInfo.
+- ACPI configuration table pointers (RSDP) and firmware DTB provenance/length
+  are not included in a common handoff object.
+- Fixed physical load address and assumptions about Image header TextOffset,
+  ImageSize and flags need to become validated BootInfo/load policy, not magic
+  constants shared only with this stub.
+- ExitBootServices retry exists, but failure diagnostics after losing console
+  access are limited; final map snapshot and exit status should be preserved
+  in a boot handoff/log buffer.
+- AMD64 UEFI adapter is absent; don't infer dual-arch UEFI support from the
+  AArch64 implementation.
+
+**Required next work:** design common BootInfo with explicit physical bounds,
+EFI map descriptors, ACPI/DTB pointers and framebuffer; implement an AMD64
+UEFI adapter; test AArch64 and AMD64 UEFI independently in OVMF/AAVMF. Preserve
+the current AArch64 UEFI and AMD64 BIOS boot paths as regression baselines until
+the new adapters pass.
+
+
+### FDT length hand-off gap
+
+The UEFI stub's private `validate_fdt(Address, Available, ...)` checks the
+FDT magic, totalsize and physical map ceiling before hand-off. However the
+handoff assembly passes only the DTB pointer in x0; the kernel calls
+`fdt_init(boot_fdt_ptr)` with no available-length argument. The kernel parser
+therefore cannot independently prove that every offset/token lies inside the
+blob. Non-UEFI AArch64 entry paths also do not inherit the EFI stub's initial
+header validation.
+
+The common BootInfo must carry `fdt_phys` AND `fdt_size`; the parser API must
+become `fdt_init(base, length)`. Keep the current pointer-only API only as a
+legacy adapter with an explicit trusted-boot assumption, then remove it when
+all boot protocols populate BootInfo. The stub's header-only validation is not
+a replacement for full kernel-side FDT validation.
+
+## 11. UEFI warning classification — external source check
+
+The EDK2 ArmTrngLib constructor prints the exact message
+"ArmTrngLib could not be correctly initialized" on its error path, but returns
+RETURN_SUCCESS after logging. It is therefore a non-fatal library initialization
+warning in this EDK2 implementation, not proof of a NEXS boot failure.
+Reference: https://bsdio.com/edk2/docs/master/_arm_trng_lib_8c_source.html
+
+The TPM/Tcg2 messages indicate that the firmware TPM protocol is not available;
+the current nxqemu AArch64 command does not configure a TPM device, so these
+messages are expected capability probes unless the QEMU machine profile is
+changed to include one.
+
+The X64-on-AARCH64 message and several Image start-failed statuses also appear
+in unrelated successful QEMU AArch64 UEFI boots using the same EDK2 build.
+This strongly suggests firmware boot-option/image probing rather than a NEXS
+EFI executable being rejected. It is not yet proven which boot entry generated
+each line for our ISO. Record the selected Boot#### entry and inspect EFI PE
+machine types before suppressing or reclassifying any line.
+Reference example (independent QEMU AArch64 boot transcript):
+https://github.com/tikoci/mikropkl/issues/11
+
+The NEXS-specific success criteria remain the explicit stub milestones, valid
+AArch64 PE/COFF EFI executable, successful ExitBootServices, valid bounded DTB
+handoff, and kernel reaching K3. Firmware warnings remain in the raw capture.
+
+## 12. Captured QEMU AArch64 UEFI run — 2026-11-03
+
+A fresh nxadb capture now preserves the full serial stream and confirms:
+- EDK2 2024-09-12 firmware starts Boot0001, explicitly identified as
+  "UEFI QEMU QEMU CD-ROM"; it then starts the NEXS ARM64 chainload stub.
+- NEXSOS_EFI_STUB_START, NEXSOS_KERNEL_IMAGE_LOADED,
+  NEXSOS_DTB_EMBEDDED and NEXSOS_EXIT_BOOT_SERVICES all appear in order.
+- Kernel enters at x0=0x17a5a6000 and parses FDT; AArch64 GICv2 and timer
+  initialize; 4 CPUs are brought online; PID1 and NXShell start.
+- The firmware warnings occur before the selected CD-ROM boot entry and do
+  not prevent the NEXS handoff. The x64 image probe is therefore not evidence
+  of the NEXS EFI loader having the wrong machine type.
+- The exact FDT memory input is one usable region [0x40000000,0x180000000),
+  5120 MiB. The new BOOT-MEM instrumentation logs its base, size and end.
+  PMM metadata lands at 0x40a49000 (41120 KiB), and PMM reports 5070 MiB free.
+- KTEST: 8 passed, 0 failed. NXShell input, nxwins enumeration and
+  focus of window 104 succeeded. QMP screenshots were verified at 1280x800
+  before and after a 30-second soak. Fault count remained zero.
+- GFX-TIMING still reports render_hold commonly around 45–85 ms on this
+  configuration; the soak did not produce a kernel fault, but the latency
+  remains a performance/IRQ-latency issue requiring separate diagnosis.
+
+Important newly confirmed PMM/FDT gap: kernel/lib/fdt.c explicitly documents
+that off_mem_rsvmap is not parsed and firmware-reserved ranges are not sent
+to PMM. The embedded DTB is placed near the top of the discovered RAM and
+the boot protocol currently passes only its address to the kernel, not DtbSpan.
+The memory region log is therefore an inventory of the usable-memory node,
+not a complete safe ownership map. Do not mark memory-map hardening complete.
+Next implementation must pass DTB address+size in BootInfo, validate every FDT
+offset/token/string against that bound, parse FDT reserve-map and reserved-memory
+nodes, and reserve the DTB itself before PMM can allocate any of its pages.
+
+## 13. AMD64 boot-map accounting — 2026-11-03
+
+The 5 GiB QEMU q35/BIOS run returns ten descriptors. Usable descriptors sum
+to 5119 MiB, with highest usable end 0x1c0000000, so the PMM address span is
+7168 MiB from base 0. Seven reserved descriptors include the conventional
+memory holes and a high MMIO aperture ending at 0x10000000000 (1 TiB).
+That last descriptor is NOT RAM and must not inflate the usable-RAM span.
+This exposed and corrected an error in the new diagnostic summary: it had
+initially computed span using the highest end of ALL descriptors, including
+reserved MMIO. It now reports usable_span from usable descriptors only and
+reports reserved descriptor count/highest reserved end separately.
+
+PMM reports 5119 MiB usable, 5051 MiB free, metadata at 0xcd5000 (57568 KiB).
+The 3–4 GiB region hole and all reserved descriptors remain visible in the
+per-region log; PMM reports a 7168 MiB span with gaps reserved.
+
+The corrected AMD64 kernel was rebuilt and booted in QEMU. KTEST 8/8,
+NXShell input, nxwins list and focus of window 104, two 1280x800 screenshots,
+30-second supervision, and zero fault matches all passed.
+## 14. BOOT-1 FDT handoff and memory ownership — 2026-11-03
+
+This section supersedes the historical pointer-only gap recorded in §§10 and 12.
+It describes the current implementation state, not a claim that the complete
+multi-architecture BootInfo/UEFI programme is finished.
+
+- AArch64 EFI now passes the validated DTB totalsize in x1; the entry preserves
+  x0/x1 in the 32-byte BootInfo v1 record. C validates the record, invokes
+  `fdt_init(base, available_length)`, then normalizes `fdt_size` to the actual
+  FDT totalsize. Legacy x1=0 remains supported through `fdt_init_legacy()`.
+- `kernel/lib/fdt_parser.c` is a bounded parser shared by memory-region and
+  CPU discovery. It validates header/block/token/string/property/reservation
+  bounds, static `/reserved-memory`, cell widths and structure depth. Dynamic
+  `size`/allocation-based reserved-memory nodes are explicitly rejected.
+- The legacy zero-pointer search preserves the existing 1 GiB window and now
+  probes 4 KiB pages, scans 8-byte-aligned candidates, and validates each
+  candidate's complete blob. AArch64 page probing uses an exact-LDR Data Abort
+  fixup.
+- The PMM input includes FDT reservation-map entries, static reserved-memory,
+  and the DTB itself. PMM counts the usable-region union, reserves all overlays
+  and address-space holes, and places metadata only in a suitable usable
+  interval. VMM maps only usable ranges within the architecture direct-map
+  ceiling.
+- The AArch64 bootstrap map in `start.S` covers the 128 GiB physical window
+  described in §3; it is not a claim that the full window is populated by RAM.
+  `ARCH_PHYS_MAP_LIMIT` is 128 GiB on AArch64 and 256 GiB on AMD64.
+- Host validation: `make test-fdt` compiles with ASan/UBSan and requires the
+  generated QEMU DTB. Last observed result: 61 checks PASS; QEMU DTB 1 MiB,
+  2 resulting regions (RAM + DTB reservation), 4 CPUs. Tests live under
+  `kernel/test/fdt_parser_test.c`.
+
+Runtime status: **PASS (2026-11-03)**. Clean builds completed on AMD64 and
+AArch64; `make test-all` exited 0. AMD64 booted the GRUB BIOS ISO (10/10 KTEST);
+AArch64 booted the GRUB arm64-efi UEFI ISO (11/11 KTEST), with BootInfo source=1
+and x1 carrying the 1 MiB DTB span. The AArch64 KTEST also invokes the legacy
+x1=0 adapter and confirms page-by-page search finds the real QEMU DTB at
+0x40000000 after removing its own synthetic fixture. Both architectures passed
+NXShell readiness, nxwins focus, 30-second soak, 1280x800 screenshot and
+zero-fault scan. Full logs: `docs/report/logs/`; implementation record:
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`. Fuzzing, dynamic reserved-memory,
+generic FDT device discovery, AMD64 UEFI and hardware certification remain
+separate future work.
+
+Detailed implementation and verification record:
+`docs/report/BOOT-1-FDT-HARDENING-2026-11-03.md`.
+
+Still outside BOOT-1: common AMD64+AArch64 BootInfo with EFI memory map/ACPI/
+framebuffer/modules, AMD64 UEFI adapter, generic FDT device/interrupt discovery,
+continuous fuzzing and real-hardware certification.
+
+## 15. GRUB source unification and five-lane boot qualification — 2026-11-09
+
+This section supersedes the older availability statements in §§10 and 14. It
+does not rewrite their historical evidence.
+
+GRUB source ownership is now singular: `boot/grub/upstream` is the pinned GNU
+GRUB 2.14 submodule at
+`d38d6a1a9b79427848976f53d474392cd29c2a71`. Project compatibility patches
+are applied only to a generated source cache; the submodule remains clean.
+One builder produces `i386-pc`, `x86_64-efi` and `arm64-efi`. Verified
+installed stages are fingerprinted under
+`build/cache/grub/prebuilt/<target>`, survive `make clean`, and can be
+packaged/installed with commit, pipeline, host and tree-hash verification.
+
+AMD64 now has two independent GRUB image lanes:
+
+- BIOS: `i386-pc` El Torito media, preserving the existing regression path.
+- UEFI: OVMF/EDK2 loads a GRUB `x86_64-efi` El Torito image. GRUB emits
+  `NEXSOS_GRUB_AMD64_UEFI_MULTIBOOT2` and enters the existing Multiboot2
+  kernel ABI with magic `0x36d76289`.
+- The AMD64 UEFI runtime explicitly reports no FDT, which is expected:
+  platform/device discovery remains PCI/ACPI-oriented and the boot path does
+  not acquire an AArch64-style DTB dependency.
+- The current UEFI/Multiboot2 memory handoff normalizes through the compatibility
+  platform map; the captured UEFI run reported 25 records versus 10 in the BIOS
+  run. A future native EFI-to-common-BootInfo adapter may replace that
+  compatibility normalization, but AMD64 UEFI boot support itself is no longer
+  absent.
+
+AArch64 continues to use GRUB `arm64-efi` to chainload the project EFI stub,
+which exits boot services and passes the validated DTB address+size to the
+kernel. Its generated ISO remains UEFI-only.
+
+Runtime acceptance is now five independent lanes. On 2026-11-09 each lane
+reached an interactive NXShell through `nxadb`, passed timer diagnostics,
+advancing counter heartbeat and post-heartbeat shell interaction, and produced
+zero detected kernel faults:
+
+- AMD64 GRUB-BIOS: 22 KTEST passed, 0 failed.
+- AMD64 GRUB-UEFI: 22 KTEST passed, 0 failed.
+- AMD64 direct kernel: 22 KTEST passed, 0 failed.
+- AArch64 GRUB-UEFI: 23 KTEST passed, 0 failed.
+- AArch64 direct kernel: 23 KTEST passed, 0 failed.
+
+The independent `make run` path was also executed for all five lanes and each
+reached `NXShell: Alive`. Runtime QEMU policy for GRUB and direct modes is now
+centralized in `tools/nxqemu.py`; the duplicate architecture-specific
+`QEMU_FLAGS` block was removed. The direct diagnostic path and GRUB image
+paths remain separate boot protocols even though they share one QEMU launcher.
+
+This qualification closes the prior “AMD64 UEFI unavailable” gap. It does not
+close the broader common BootInfo programme: ACPI/GOP/module normalization,
+full EFI descriptor semantics, generic firmware/device discovery and
+real-hardware qualification remain separate work.

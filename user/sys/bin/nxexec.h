@@ -133,27 +133,8 @@ static inline int nxexec_window_stable(int pid, int *last_win, int *stable) {
  * Internal quotes are preserved.
  */
 static inline const char *nxexec_strip_path_quotes(const char *name, char *out,
-                                                   size_t sz) {
-  if (!name || !out || sz == 0)
-    return name;
-
-  size_t len = strlen(name);
-
-  if (len >= 2 && ((name[0] == '"' && name[len - 1] == '"') ||
-                   (name[0] == '\'' && name[len - 1] == '\''))) {
-
-    len -= 2;
-
-    if (len >= sz)
-      len = sz - 1;
-
-    memcpy(out, name + 1, len);
-    out[len] = '\0';
-
-    return out;
-  }
-
-  return name;
+                                                   size_t size) {
+  return execsvc_strip_path_quotes(name, out, size);
 }
 
 /*
@@ -209,53 +190,8 @@ static inline void nxexec_unregister_identity(int pid) {
 static inline void nxexec_prune_identities(void) {}
 
 static inline int nxexec_resolve_path(const char *name, char *out_path,
-                                      size_t sz) {
-  if (!name || !*name || !out_path || sz == 0)
-    return -1;
-
-  char clean_name[NXEXEC_PATH_MAX];
-
-  name = nxexec_strip_path_quotes(name, clean_name, sizeof(clean_name));
-
-  if (name[0] == '/') { /* 1: root-assoluto */
-    snprintf(out_path, sz, "%s", name);
-    return 0;
-  }
-
-  if (name[0] == '~') { /* 2: home-relativo */
-    /* Dynamic: ask getenv("HOME") first (lib.c currently stubs it to
-     * NXEXEC_HOME_DIR itself, but that's an implementation detail of the
-     * stub, not a contract) and fall back to NXEXEC_HOME_DIR only if HOME
-     * is unset/empty — a real per-user HOME later becomes a getenv() change
-     * alone, no nxexec.h edit, no rebuild of every consumer (nxshell.c,
-     * nxlauncher.c, and whatever "standard for non-system programs" launch
-     * path follows this pattern next). */
-    const char *home = getenv("HOME");
-    if (!home || !*home)
-      home = NXEXEC_HOME_DIR;
-    if (name[1] == '\0')
-      snprintf(out_path, sz, "%s", home);
-    else if (name[1] == '/')
-      snprintf(out_path, sz, "%s%s", home, name + 1);
-    else
-      return -1; /* forma "~utente": non supportata, non c'è una pwdb
-                    multi-utente */
-    return 0;
-  }
-
-  if (strchr(name, '/')) { /* 3: process-vfs-relativo */
-    char cwd[NXEXEC_PATH_MAX];
-    if (getcwd(cwd, sizeof(cwd)) != 0)
-      snprintf(cwd, sizeof(cwd), "/"); /* fallback best-effort */
-    size_t cl = strlen(cwd);
-    if (cl > 0 && cwd[cl - 1] == '/')
-      snprintf(out_path, sz, "%s%s", cwd, name);
-    else
-      snprintf(out_path, sz, "%s/%s", cwd, name);
-    return 0;
-  }
-
-  return 1; /* 4: nome nudo -> il chiamante fa la ricerca /bin, /sys/bin */
+                                      size_t size) {
+  return execsvc_resolve_path(name, out_path, size);
 }
 
 /*
@@ -372,39 +308,8 @@ static inline int nxexec_wait_stopped_action(int pid) {
  */
 static inline int nxexec_spawn_search(int argc, char *argv[], char *out_path,
                                       int detached) {
-  long (*do_spawn)(const char *, int, char *const[]) =
-      detached ? OS1low_process_spawn_detached : OS1low_process_spawn;
-
-  /* Dequote ONCE, up front, and write the cleaned name back into argv[0] so
-   * it is used consistently for BOTH resolution and the bare-name /bin,
-   * /sys/bin search — and so the child sees a clean argv[0] (its progname).
-   * The previous code stripped quotes only inside nxexec_resolve_path()'s
-   * local buffer, then fell through to the bare-name branch still holding the
-   * quoted original, producing the "/bin/\"lua\"" not-found seen from
-   * os.execute('"lua" ...'). */
-  static char clean_name[NXEXEC_PATH_MAX];
-  argv[0] =
-      (char *)nxexec_strip_path_quotes(argv[0], clean_name, sizeof(clean_name));
-  const char *name = argv[0];
-
-  /* argv[0] = the RESOLVED path (Phase 9) — see nxexec_spawn_search_redir. */
-  int r = nxexec_resolve_path(name, out_path, NXEXEC_PATH_MAX);
-  if (r == 0) {
-    argv[0] = out_path;
-    return (int)do_spawn(out_path, argc, argv);
-  }
-  if (r < 0)
-    return -1; /* path malformato (es. "~utente") */
-
-  /* Nome nudo: ricerca /bin poi /sys/bin (ora sul nome ripulito). */
-  snprintf(out_path, NXEXEC_PATH_MAX, "/bin/%s", name);
-  argv[0] = out_path;
-  int pid = (int)do_spawn(out_path, argc, argv);
-  if (pid > 0)
-    return pid;
-  snprintf(out_path, NXEXEC_PATH_MAX, "/sys/bin/%s", name);
-  argv[0] = out_path;
-  return (int)do_spawn(out_path, argc, argv);
+  return execsvc_launch_search(argc, argv, out_path, NXEXEC_PATH_MAX,
+      detached ? SPAWN_FLAG_DETACHED : 0u, NULL, 0, 0);
 }
 
 /*
@@ -515,45 +420,27 @@ fail:
  * kernel dup'd them into the child).  nredir == 0 behaves exactly like
  * nxexec_spawn_search.  Returns the PID or <= 0 on failure.
  */
+/* Shared resolver/dispatcher. user_only is an execution-service safety
+ * boundary: the ROOT daemon can only launch USER-class executables from
+ * /bin; /sys system programs and MACHINE extensions require the caller's
+ * own authority, so clients fall back to direct capability-clamped spawn.
+ * The hosted command uses the exact same resolver with user_only=0. */
+static inline int nxexec_spawn_search_redir_scoped(int argc, char *argv[],
+                                                   char *out_path, int detached,
+                                                   const struct spawn_redir *redir,
+                                                   int nredir, int user_only) {
+  return execsvc_launch_search(argc, argv, out_path, NXEXEC_PATH_MAX,
+      detached ? SPAWN_FLAG_DETACHED : 0u, redir, nredir, user_only);
+}
+
+/* Command/launcher personality: same resolver with its own caller's
+ * privilege clamp; the privileged service alone chooses user_only=1. */
 static inline int nxexec_spawn_search_redir(int argc, char *argv[],
                                             char *out_path, int detached,
                                             const struct spawn_redir *redir,
                                             int nredir) {
-  unsigned int flags = detached ? SPAWN_FLAG_DETACHED : 0u;
-  static char clean_name[NXEXEC_PATH_MAX];
-  argv[0] =
-      (char *)nxexec_strip_path_quotes(argv[0], clean_name, sizeof(clean_name));
-  const char *name = argv[0];
-
-  /* The child's argv[0] is the RESOLVED path, not the bare name as typed
-   * (Phase 9, "esecuzione da path non diretto"): a program that re-executes
-   * itself from its own argv[0] — lua's test suite rebuilds every command as
-   * `"<progname>" ...` — must get a DIRECT path, or the re-execution depends on
-   * the search succeeding again.  It also makes the terminal path agree with
-   * the launcher path, which already passes an absolute path (progname was
-   * `/bin/lua` from the launcher but bare `lua` from the shell). */
-  int r = nxexec_resolve_path(name, out_path, NXEXEC_PATH_MAX);
-  if (r == 0) {
-    argv[0] = out_path;
-    return (int)OS1low_process_spawn_redir(out_path, argc, argv, flags, redir,
-                                           nredir);
-  }
-  if (r < 0)
-    return -1; /* malformed path (e.g. "~user") */
-
-  /* Bare name: search /bin then /sys/bin.  A failed candidate aborts its own
-   * half-built child (kernel process_abort_spawn) and drops the dup'd handle
-   * refs, so retrying the next path with the same redir list is safe. */
-  snprintf(out_path, NXEXEC_PATH_MAX, "/bin/%s", name);
-  argv[0] = out_path;
-  int pid = (int)OS1low_process_spawn_redir(out_path, argc, argv, flags, redir,
-                                            nredir);
-  if (pid > 0)
-    return pid;
-  snprintf(out_path, NXEXEC_PATH_MAX, "/sys/bin/%s", name);
-  argv[0] = out_path;
-  return (int)OS1low_process_spawn_redir(out_path, argc, argv, flags, redir,
-                                         nredir);
+  return nxexec_spawn_search_redir_scoped(
+      argc, argv, out_path, detached, redir, nredir, 0);
 }
 
 /*
@@ -615,7 +502,7 @@ static inline int nxexec_spawn_pipe_consumer(int argc, char *argv[],
  * never inherits the spawner as ctty (kernel-enforced, SPAWN_FLAG_DETACHED). */
 static inline int nxexec_spawn_detached(const char *path, int argc,
                                         char *const argv[]) {
-  return (int)OS1low_process_spawn_detached(path, argc, argv);
+  return execsvc_launch_explicit(path, argc, argv, SPAWN_FLAG_DETACHED, NULL, 0);
 }
 
 /*
@@ -631,10 +518,8 @@ static inline int nxexec_spawn_detached(const char *path, int argc,
  * spawned exactly once, by nxexec — no double execution.
  */
 static inline int nxexec_spawn_hosted(const char *path) {
-  char *argv[2];
-  argv[0] = (char *)"/sys/bin/nxexec";
-  argv[1] = (char *)path;
-  return (int)OS1low_process_spawn_detached("/sys/bin/nxexec", 2, argv);
+  char *argv[1] = {(char *)path};
+  return execsvc_launch_hosted(1, argv);
 }
 
 /* nxexec_spawn_hosted_argv - same as nxexec_spawn_hosted(), but with an
@@ -646,15 +531,7 @@ static inline int nxexec_spawn_hosted(const char *path) {
  * is the kernel-side cap the dispatcher clamps to).
  */
 static inline int nxexec_spawn_hosted_argv(int argc, char *argv[]) {
-  if (argc < 1 || !argv)
-    return -1;
-  if (argc + 1 > NXEXEC_ARGV_MAX)
-    return -1;
-  char *full[NXEXEC_ARGV_MAX];
-  full[0] = (char *)"/sys/bin/nxexec";
-  for (int i = 0; i < argc; i++)
-    full[i + 1] = argv[i];
-  return (int)OS1low_process_spawn_detached("/sys/bin/nxexec", argc + 1, full);
+  return execsvc_launch_hosted(argc, argv);
 }
 
 #endif /* _USER_NXEXEC_H */

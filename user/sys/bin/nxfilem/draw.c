@@ -8,28 +8,76 @@
  * circle mask test shared by every rounded shape.
  */
 #include "nxfilem.h"
+#include <errno.h>
 
 uint32_t *fm_fb;
 int fm_fb_w, fm_fb_h;
 int fm_win_id = -1;
 struct font_ctx *fm_font;
 
-void fm_gfx_init(int win_id, int ww, int wh) {
+int fm_gfx_init(int win_id, int ww, int wh) {
+  OS1_gfx_buffer_init(&fm_state.framebuffer);
+  OS1_gfx_buffer_init(&fm_state.framebuffer_pending);
+  OS1_gfx_buffer_init(&fm_state.framebuffer_retired);
+  if (win_id <= 0 || ww <= 0 || wh <= 0 ||
+      ww > 4096 || wh > 4096) return -EINVAL;
+  int rc = OS1_gfx_buffer_reserve(&fm_state.framebuffer,
+                                 (size_t)ww * (size_t)wh);
+  if (rc != 0) return rc;
+  uint32_t *pixels = fm_state.framebuffer.active.view.address;
+  if (!pixels) return -EIO;
+  struct font_ctx *font = font_load("/fonts/Rewir-Light.off");
+  if (!font) return -ENOENT;
   fm_win_id = win_id;
   fm_fb_w = ww;
   fm_fb_h = wh;
-  fm_fb = (uint32_t *)malloc((size_t)ww * (size_t)wh * 4u);
-  fm_font = font_load("/fonts/Rewir-Light.off");
+  fm_fb = pixels;
+  fm_font = font;
+  return 0;
 }
 
-void fm_gfx_realloc(int ww, int wh) {
-  uint32_t *nb = (uint32_t *)malloc((size_t)ww * (size_t)wh * 4u);
-  if (!nb)
-    return;
-  free(fm_fb);
-  fm_fb = nb;
+void fm_gfx_shutdown(void) {
+  int rc = OS1_gfx_buffer_release(&fm_state.framebuffer);
+  if (rc != 0) OS1_report_error("nxfilem.buffer_release", rc);
+  rc = OS1_gfx_buffer_release(&fm_state.framebuffer_pending);
+  if (rc != 0) OS1_report_error("nxfilem.pending_release", rc);
+  rc = OS1_gfx_buffer_release(&fm_state.framebuffer_retired);
+  if (rc != 0) OS1_report_error("nxfilem.retired_release", rc);
+  fm_fb = NULL;
+  fm_fb_w = 0;
+  fm_fb_h = 0;
+  fm_win_id = -1;
+  if (fm_font) font_free(fm_font);
+  fm_font = NULL;
+}
+
+/* The pending GFX capability is mapped before the owner changes its logical
+ * source extent. Both failed cleanup and retirement remain owned in fm_state. */
+int fm_gfx_realloc(int ww, int wh) {
+  if (ww < 1 || wh < 1 || ww > 4096 || wh > 4096 ||
+      (size_t)ww > (16U * 1024U * 1024U) / (size_t)wh)
+    return -EINVAL;
+  if (ww == fm_fb_w && wh == fm_fb_h) return 0;
+  int rc = OS1_gfx_buffer_release(&fm_state.framebuffer_retired);
+  if (rc != 0) return rc;
+  rc = OS1_gfx_buffer_release(&fm_state.framebuffer_pending);
+  if (rc != 0) return rc;
+  rc = OS1_gfx_buffer_reserve(&fm_state.framebuffer_pending,
+                             (size_t)ww * (size_t)wh);
+  if (rc != 0) return rc;
+  uint32_t *pixels = fm_state.framebuffer_pending.active.view.address;
+  if (!pixels) return -EIO;
+  rc = OS1_window_resize(fm_win_id, ww, wh);
+  if (rc != 0) return rc;
+  fm_state.framebuffer_retired = fm_state.framebuffer;
+  fm_state.framebuffer = fm_state.framebuffer_pending;
+  OS1_gfx_buffer_init(&fm_state.framebuffer_pending);
+  fm_fb = pixels;
   fm_fb_w = ww;
   fm_fb_h = wh;
+  rc = OS1_gfx_buffer_release(&fm_state.framebuffer_retired);
+  if (rc != 0) OS1_report_error("nxfilem.retire", rc);
+  return 0;
 }
 
 void fm_fill_rect(int x, int y, int w, int h, uint32_t color) {

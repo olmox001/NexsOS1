@@ -48,7 +48,7 @@
 #include <graphics/gl.h>
 #include <kernel/graphics.h>
 #include <kernel/types.h>
-#include <kernel/arch.h>      /* arch_copy_from_user (GFX-FONT-01) */
+#include <kernel/hal_uaccess.h> /* hal_copy_from_user (GFX-FONT-01) */
 #include <kernel/kmalloc.h>   /* kmalloc/kfree (GFX-FONT-01) */
 #include <kernel/spinlock.h>  /* font_lock (GFX-FONT-01) */
 #include <font.h>
@@ -425,7 +425,7 @@ int sys_set_font(void *data, size_t size) {
 
     /* 1. Copy + validate the header alone first (never deref the user pointer). */
     struct font_header h;
-    if (arch_copy_from_user(&h, data, sizeof(h)) != 0)
+    if (hal_copy_from_user(&h, data, sizeof(h)) != 0)
         return -1;
     if (h.magic != FONT_MAGIC)
         return -2;
@@ -446,7 +446,7 @@ int sys_set_font(void *data, size_t size) {
         return -1;
     struct font_state *ns = (struct font_state *)mem;
     uint8_t *kblob = mem + sizeof(struct font_state);
-    if (arch_copy_from_user(kblob, data, blob) != 0) {
+    if (hal_copy_from_user(kblob, data, blob) != 0) {
         kfree(mem);
         return -1;
     }

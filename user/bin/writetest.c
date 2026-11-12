@@ -3,7 +3,7 @@
  * Filesystem write-path test app.
  *
  * Exercises the three write modes the ext4 provider supports, against the
- * existing rootfs file init.cfg, and verifies each by reading back:
+ * existing writable rootfs file, and verifies each by reading back:
  *   1. overwrite at offset 0 (mapped block, no metadata change);
  *   2. append at EOF (extent image: depth-0 root extend/append;
  *      legacy image: direct-block allocation);
@@ -29,7 +29,7 @@ int main(void) {
     return 1;
   }
 
-  const char *path = "/etc/init.cfg";
+  const char *path = "/home/shared/writetest.fixture";
   char rbuf[64];
 
   printf_win(win_id, "Testing file writes on %s...\n", path);

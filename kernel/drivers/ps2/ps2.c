@@ -1,13 +1,12 @@
 /* kernel/drivers/ps2/ps2.c */
-#include <arch/arch.h> // ← Questo include inb/outb
-#include <drivers/keyboard.h>
+#include <hal/core.h>
+#include <drivers/input.h>
+#include <drivers/input_codes.h>
 #include <drivers/ps2.h>
-#include <drivers/virtio_input.h>
 #include <kernel/io_poll.h>
 #include <kernel/irq.h>
 #include <kernel/printk.h>
 
-#ifdef ARCH_AMD64
 
 /* The 8259 PIC remaps IRQ n -> IDT vector 32+n (pic_init).  irq_register(),
  * irq_dispatch() and pic_chip_enable() all key on the VECTOR, not the bare
@@ -19,13 +18,13 @@
  * naive wait would never progress. Bring-up must degrade, never block. */
 static int ps2_wait_write(void) {
   int ok;
-  poll_until(ok, !(inb(0x64) & 0x02), 100000);
+  poll_until(ok, !(hal_inb(0x64) & 0x02), 100000);
   return ok ? 0 : -1;
 }
 
 static int ps2_wait_read(void) {
   int ok;
-  poll_until(ok, inb(0x64) & 0x01, 100000);
+  poll_until(ok, hal_inb(0x64) & 0x01, 100000);
   return ok ? 0 : -1;
 }
 
@@ -33,21 +32,21 @@ static int ps2_wait_read(void) {
 static int ps2_read_data(uint8_t *out) {
   if (ps2_wait_read() != 0)
     return -1;
-  *out = inb(0x60);
+  *out = hal_inb(0x60);
   return 0;
 }
 
 static int ps2_write_cmd(uint8_t cmd) {
   if (ps2_wait_write() != 0)
     return -1;
-  outb(0x64, cmd);
+  hal_outb(0x64, cmd);
   return 0;
 }
 
 static int ps2_write_data(uint8_t data) {
   if (ps2_wait_write() != 0)
     return -1;
-  outb(0x60, data);
+  hal_outb(0x60, data);
   return 0;
 }
 
@@ -64,16 +63,80 @@ static uint8_t ps2_mouse_cmd(uint8_t cmd) {
 }
 
 /* ==================== KEYBOARD ==================== */
+static uint16_t ps2_set1_extended_code(uint8_t scan) {
+  switch (scan) {
+  case 0x1C: return KEY_KPENTER;
+  case 0x1D: return KEY_RIGHTCTRL;
+  case 0x35: return KEY_KPSLASH;
+  case 0x38: return KEY_RIGHTALT;
+  case 0x47: return KEY_HOME;
+  case 0x48: return KEY_UP;
+  case 0x49: return KEY_PAGEUP;
+  case 0x4B: return KEY_LEFT;
+  case 0x4D: return KEY_RIGHT;
+  case 0x4F: return KEY_END;
+  case 0x50: return KEY_DOWN;
+  case 0x51: return KEY_PAGEDOWN;
+  case 0x52: return KEY_INSERT;
+  case 0x53: return KEY_DELETE;
+  default: return KEY_RESERVED;
+  }
+}
+
+void ps2_keyboard_decoder_init(struct ps2_keyboard_decoder *decoder) {
+  if (decoder == NULL)
+    return;
+  decoder->extended = 0U;
+  decoder->e1_bytes_remaining = 0U;
+}
+
+int ps2_keyboard_decode_set1(struct ps2_keyboard_decoder *decoder,
+                             uint8_t byte, struct ps2_key_event *event) {
+  uint8_t scan;
+  uint16_t code;
+
+  if (decoder == NULL || event == NULL)
+    return -1;
+  if (decoder->e1_bytes_remaining != 0U) {
+    --decoder->e1_bytes_remaining;
+    return 0;
+  }
+  if (byte == UINT8_C(0xE1)) {
+    decoder->extended = 0U;
+    decoder->e1_bytes_remaining = 5U;
+    return 0;
+  }
+  if (byte == UINT8_C(0xE0)) {
+    decoder->extended = 1U;
+    return 0;
+  }
+
+  scan = byte & UINT8_C(0x7F);
+  code = decoder->extended != 0U ? ps2_set1_extended_code(scan) : scan;
+  decoder->extended = 0U;
+  if (code == KEY_RESERVED)
+    return 0;
+  event->code = code;
+  event->value = (byte & UINT8_C(0x80)) == 0U ? 1 : 0;
+  return 1;
+}
+
+static struct ps2_keyboard_decoder ps2_keyboard_decoder;
+
 static void ps2_keyboard_handler(uint32_t irq, void *data) {
+  struct ps2_key_event event;
+  uint8_t byte;
+
   (void)irq;
   (void)data;
-  uint8_t scancode = inb(0x60);
+  byte = hal_inb(0x60);
+  if (ps2_keyboard_decode_set1(&ps2_keyboard_decoder, byte, &event) != 1)
+    return;
 
-  uint16_t code = scancode & 0x7F;
-  int pressed = (scancode & 0x80) == 0;
-
-  input_report(EV_KEY, code, pressed ? 1 : 0);
-  input_report(EV_SYN, 0, 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_KEYBOARD,
+                           EV_KEY, event.code, event.value);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_KEYBOARD,
+                           EV_SYN, 0, 0);
 }
 
 /* ==================== MOUSE ==================== */
@@ -85,7 +148,7 @@ static void ps2_mouse_handler(uint32_t irq, void *data) {
   (void)irq;
   (void)data;
 
-  uint8_t byte = inb(0x60);
+  uint8_t byte = hal_inb(0x60);
 
   /* Packet resync: packet[0] (status) always has bit 3 set. If the byte we
    * expect as the first one doesn't, the stream is misaligned (a leftover init
@@ -101,102 +164,94 @@ static void ps2_mouse_handler(uint32_t irq, void *data) {
 
   uint8_t status = mouse_packet[0];
 
-  input_report(EV_KEY, BTN_LEFT, (status & 0x01) ? 1 : 0);
-  input_report(EV_KEY, BTN_RIGHT, (status & 0x02) ? 1 : 0);
-  input_report(EV_KEY, BTN_MIDDLE, (status & 0x04) ? 1 : 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_LEFT, (status & 0x01) ? 1 : 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_RIGHT, (status & 0x02) ? 1 : 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_KEY, BTN_MIDDLE, (status & 0x04) ? 1 : 0);
 
   /* Skip motion when the device flags an X/Y overflow — the deltas are bogus. */
   if (!(status & 0xC0)) {
     int dx = (int8_t)mouse_packet[1];
     int dy = -(int8_t)mouse_packet[2];
     if (dx)
-      input_report(EV_REL, REL_X, dx);
+      OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_X, dx);
     if (dy)
-      input_report(EV_REL, REL_Y, dy);
+      OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_Y, dy);
     if (mouse_has_wheel && mouse_packet[3] != 0)
-      input_report(EV_REL, REL_WHEEL, (int8_t)mouse_packet[3]);
+      OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_REL, REL_WHEEL, (int8_t)mouse_packet[3]);
   }
 
-  input_report(EV_SYN, 0, 0);
+  OS1driver_input_publish(INPUT_PROVIDER_PS2, INPUT_DEVICE_PS2_MOUSE, EV_SYN, 0, 0);
 }
 
-void ps2_init(void) {
-  pr_info("%s", "PS/2: Initializing controller...\n");
+static void ps2_flush_output(void) {
+  for (unsigned int i = 0U;
+       i < 16U && (hal_inb(0x64) & UINT8_C(0x01)) != 0U; ++i)
+    (void)hal_inb(0x60);
+}
 
-  /* Non-blocking presence gate. On machines without an 8042 (many amd64 VMs,
-   * e.g. UTM on Apple silicon) the status port floats to 0xFF; the old
-   * unbounded "while (inb(0x64) & 1) inb(0x60);" flush then spun forever and
-   * hung the boot. Detect the absent controller and skip cleanly. */
-  if (inb(0x64) == 0xFF) {
-    pr_info("%s", "PS/2: no controller present (0xFF) — skipping\n");
-    return;
+static int ps2_controller_setup(void) {
+  uint8_t response = 0U;
+  uint8_t config = 0U;
+
+  if (ps2_write_cmd(0xAD) != 0 || ps2_write_cmd(0xA7) != 0)
+    return -1;
+  ps2_flush_output();
+  if (ps2_write_cmd(0xAA) != 0 || ps2_read_data(&response) != 0 ||
+      response != UINT8_C(0x55)) {
+    pr_info("PS/2: self-test failed (0x%x) — skipping\n", response);
+    return -1;
   }
+  if (ps2_write_cmd(0x20) != 0 || ps2_read_data(&config) != 0)
+    return -1;
+  config |= UINT8_C(0x03);
+  if (ps2_write_cmd(0x60) != 0 || ps2_write_data(config) != 0)
+    return -1;
+  if (ps2_write_cmd(0xAE) != 0 || ps2_write_cmd(0xA8) != 0)
+    return -1;
+  return 0;
+}
 
-  ps2_write_cmd(0xAD); /* disable keyboard port during setup */
-  ps2_write_cmd(0xA7); /* disable mouse (AUX) port during setup */
+static void ps2_mouse_setup(void) {
+  uint8_t id = 0U;
 
-  /* Bounded output-buffer flush (this loop was the UTM hang). */
-  for (int i = 0; i < 16 && (inb(0x64) & 0x01); i++)
-    (void)inb(0x60);
-
-  /* Controller self-test: 0xAA must answer 0x55. Any other reply — or a read
-   * timeout — means there is no usable controller, so skip non-blocking. */
-  uint8_t resp = 0;
-  ps2_write_cmd(0xAA);
-  if (ps2_read_data(&resp) != 0 || resp != 0x55) {
-    pr_info("PS/2: self-test failed (0x%x) — skipping\n", resp);
-    return;
-  }
-
-  /* Read config byte, enable IRQs for both ports (bits 0,1), write it back. */
-  ps2_write_cmd(0x20);
-  uint8_t cfg = 0;
-  if (ps2_read_data(&cfg) != 0)
-    cfg = 0;
-  cfg |= 0x03;
-  ps2_write_cmd(0x60);
-  ps2_write_data(cfg);
-
-  ps2_write_cmd(0xAE); /* enable keyboard port */
-  ps2_write_cmd(0xA8); /* enable mouse (AUX) port */
-
-  /* Mouse setup — every byte goes through 0xD4 (ps2_mouse_cmd), or it would
-   * be delivered to the keyboard and the mouse would never report. */
-  ps2_mouse_cmd(0xF6); /* set defaults */
-  ps2_mouse_cmd(0xF4); /* enable data reporting */
-
-  /* IntelliMouse 3-button + wheel "magic knock": sample rates 200/100/80,
-   * then read the device id; 0x03 means the wheel is active. */
-  ps2_mouse_cmd(0xF3);
-  ps2_mouse_cmd(200);
-  ps2_mouse_cmd(0xF3);
-  ps2_mouse_cmd(100);
-  ps2_mouse_cmd(0xF3);
-  ps2_mouse_cmd(80);
-  ps2_mouse_cmd(0xF2); /* get device id: returns ACK ... */
-  uint8_t id = 0;
-  if (ps2_read_data(&id) == 0 && id == 0x03) { /* ... then the id byte */
+  mouse_has_wheel = 0;
+  (void)ps2_mouse_cmd(0xF6);
+  (void)ps2_mouse_cmd(0xF4);
+  (void)ps2_mouse_cmd(0xF3);
+  (void)ps2_mouse_cmd(200);
+  (void)ps2_mouse_cmd(0xF3);
+  (void)ps2_mouse_cmd(100);
+  (void)ps2_mouse_cmd(0xF3);
+  (void)ps2_mouse_cmd(80);
+  (void)ps2_mouse_cmd(0xF2);
+  if (ps2_read_data(&id) == 0 && id == UINT8_C(0x03)) {
     mouse_has_wheel = 1;
     pr_info("%s", "PS/2: Mouse with scroll wheel detected\n");
   }
+  ps2_flush_output();
+}
 
-  /* Drain bytes the mouse queued while we were configuring it so the IRQ handler
-   * starts on a packet boundary (the handler also resyncs on the status bit). */
-  for (int i = 0; i < 16 && (inb(0x64) & 0x01); i++)
-    (void)inb(0x60);
-
-  /* Register keyboard (IRQ 1) at vector 33 and mouse (IRQ 12) at vector 44. */
+static void ps2_register_irqs(void) {
   if (irq_register(PIC_VECTOR_BASE + 1, ps2_keyboard_handler, NULL) != 0)
     pr_err("%s", "ps2: cannot register the keyboard IRQ — no key events\n");
   if (irq_register(PIC_VECTOR_BASE + 12, ps2_mouse_handler, NULL) != 0)
     pr_err("%s", "ps2: cannot register the mouse IRQ — no pointer events\n");
-
-  pr_info("%s", "PS/2: Keyboard + Mouse ready (IRQ 1/12 -> vec 33/44)\n");
 }
 
-#else
-
-/* Stub per AArch64 */
-void ps2_init(void) { /* Do nothing on AArch64 */ }
-
-#endif
+void ps2_init(void) {
+  ps2_keyboard_decoder_init(&ps2_keyboard_decoder);
+  if (!hal_ioport_available()) {
+    pr_info("%s", "PS/2: HAL provider has no port-I/O transport — skipping\n");
+    return;
+  }
+  pr_info("%s", "PS/2: Initializing controller...\n");
+  if (hal_inb(0x64) == UINT8_C(0xFF)) {
+    pr_info("%s", "PS/2: no controller present (0xFF) — skipping\n");
+    return;
+  }
+  if (ps2_controller_setup() != 0)
+    return;
+  ps2_mouse_setup();
+  ps2_register_irqs();
+  pr_info("%s", "PS/2: Keyboard + Mouse ready (IRQ 1/12 -> vec 33/44)\n");
+}

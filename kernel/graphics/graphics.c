@@ -73,6 +73,31 @@ int graphics_screen_surface(struct gl_surface *out) {
   return 0;
 }
 
+/* Controlled full-frame hand-off used by the ring-3 compositor.  This kernel
+ * path validates the surface and delegates only the bounded presentation to
+ * the GPU provider; it performs no rasterization or window composition. */
+int graphics_present_argb8888(const uint32_t *pixels, int width, int height,
+                              int stride, size_t pixel_capacity) {
+  struct gl_surface screen;
+  if (!pixels || width <= 0 || height <= 0 || stride != width ||
+      graphics_screen_surface(&screen) != 0 || width != screen.width ||
+      height != screen.height)
+    return -EINVAL;
+  size_t required = (size_t)width * (size_t)height;
+  if (required / (size_t)width != (size_t)height ||
+      pixel_capacity < required)
+    return -EINVAL;
+  struct gl_surface frame = {
+      .width = width,
+      .height = height,
+      .stride = stride,
+      .buffer = (uint32_t *)pixels,
+      .capacity = pixel_capacity,
+  };
+  struct gfx_rect full = {.x = 0, .y = 0, .width = width, .height = height};
+  return gpu_present_surface(&frame, &full);
+}
+
 /*
  * graphics_draw_pixel - write a single pixel to the screen framebuffer.
  *
@@ -125,15 +150,15 @@ void graphics_clear(uint32_t color) {
  *
  * The system runs in single-buffered mode: there is no second framebuffer to
  * swap.  This function exists as an API hook for future double-buffered
- * support. Currently it only issues arch_mb() to ensure all preceding pixel
+ * support. Currently it only issues hal_mb() to ensure all preceding pixel
  * writes are visible to the GPU DMA engine before any following flush.
  *
- * Side effects: arch_mb() — a full store/load barrier on the current arch.
+ * Side effects: hal_mb() — a full store/load barrier on the current arch.
  * Locking: none required; barrier is inherently CPU-local.
  */
 void graphics_swap_buffers(void) {
   /* In single-buffered modes, this is a flush/barrier */
-  arch_mb();
+  hal_mb();
 }
 
 /*
