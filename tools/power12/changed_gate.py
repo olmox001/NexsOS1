@@ -34,13 +34,57 @@ def git(root: Path, *args: str) -> bytes:
     return result.stdout
 
 
+
+def exact_rename_destinations(root: Path) -> set[str]:
+    """Return only worktree destinations whose content is byte-identical to HEAD.
+
+    R100 is a path-only move. Any edited rename is intentionally absent and
+    remains in the delta audit.
+    """
+    raw = git(root, "diff", "HEAD", "--name-status", "-z", "-M100%",
+              "--diff-filter=R")
+    fields = raw.decode(errors="replace").split("\0")
+    result: set[str] = set()
+    index = 0
+    while index + 2 < len(fields):
+        status = fields[index]
+        old = fields[index + 1]
+        new = fields[index + 2]
+        if status == "R100" and old and new:
+            result.add(new)
+        index += 3
+    return result
+
 def changed_files(root: Path) -> tuple[dict[str, set[int]], dict[str, int]]:
-    """Compare against HEAD: worktree result includes both index and unstaged."""
-    tracked = git(root, "diff", "HEAD", "--name-only", "--no-renames",
-                  "--diff-filter=ACMRT", "-z").decode().split("\0")
-    untracked = git(root, "ls-files", "--others", "--exclude-standard",
-                    "-z").decode().split("\0")
-    paths = {name for name in tracked + untracked if name}
+    """Compare HEAD to worktree while preserving rename-aware line deltas."""
+    raw = git(root, "diff", "HEAD", "--name-status", "-z", "-M",
+              "--diff-filter=ACMRT")
+    fields = raw.decode(errors="replace").split("\0")
+    tracked: set[str] = set()
+    rename_sources: dict[str, str] = {}
+    pure_renames: set[str] = set()
+    index = 0
+    while index < len(fields) and fields[index]:
+        status = fields[index]
+        if status.startswith("R"):
+            if index + 2 >= len(fields):
+                break
+            old = fields[index + 1]
+            new = fields[index + 2]
+            tracked.add(new)
+            rename_sources[new] = old
+            if status == "R100":
+                pure_renames.add(new)
+            index += 3
+            continue
+        if index + 1 >= len(fields):
+            break
+        tracked.add(fields[index + 1])
+        index += 2
+    untracked = {name for name in git(root, "ls-files", "--others",
+                                      "--exclude-standard", "-z").decode().split("\0")
+                 if name}
+    paths = (tracked | untracked) - pure_renames
     lines: dict[str, set[int]] = {}
     deletions: dict[str, int] = {}
     for name in sorted(paths):
@@ -51,19 +95,23 @@ def changed_files(root: Path) -> tuple[dict[str, set[int]], dict[str, int]]:
             lines[name] = set(range(1, len(path.read_bytes().splitlines()) + 1))
             deletions[name] = 0
             continue
-        patch = git(root, "diff", "HEAD", "--unified=0", "--no-ext-diff",
-                    "--no-renames", "--", name).decode(errors="replace")
+        old = rename_sources.get(name)
+        args = ["diff", "HEAD", "--unified=0", "--no-ext-diff", "-M", "--"]
+        if old is not None:
+            args.extend([old, name])
+        else:
+            args.append(name)
+        patch = git(root, *args).decode(errors="replace")
         modified: set[int] = set()
         removed = 0
         for row in patch.splitlines():
             match = HUNK.match(row)
             if match:
-                start = int(match.group(1))
+                new_start = int(match.group(1))
                 size = int(match.group(2) or 1)
-                modified.update(range(start, start + size))
-                # Deletion-only hunks still change the enclosing function.
+                modified.update(range(new_start, new_start + size))
                 if size == 0:
-                    modified.add(max(1, start))
+                    modified.add(max(1, new_start))
             elif row.startswith("-") and not row.startswith("---"):
                 removed += 1
         lines[name] = modified
@@ -75,7 +123,7 @@ def owned(name: str, policy: dict) -> bool:
     return (not excluded(name, policy) and
             (any(name.startswith(x.rstrip("/") + "/")
                  for x in policy["source_roots"]) or
-             (name.startswith("user/bin/") and name.count("/") == 2)))
+             (name.startswith("user/NexsOS1-main/bin/") and name.count("/") == 3)))
 
 
 def limit_findings(path: Path, policy: dict) -> list[dict]:

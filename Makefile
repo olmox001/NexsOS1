@@ -98,7 +98,7 @@ NXSDK_DIR = system
 
 # NX-SDK owns the public API and its versioned kernel-contract snapshot.
 # The legacy shared root include/abi directory is intentionally absent.
-USER_INCLUDE = -I$(NXSDK_DIR)/include/contract -I$(NXSDK_DIR)/include/api -I$(NXSDK_DIR)/tools/include -Iuser/lib/stb -Iuser/lib/pl_mpeg
+USER_INCLUDE = -I$(NXSDK_DIR)/include/contract -I$(NXSDK_DIR)/include/api $(NXSDK_EXTENSION_INCLUDE_FLAGS) $(NXSDK_USERKIT_INCLUDE_FLAGS) $(USER_PROJECT_LIB_INCLUDE_FLAGS) -I$(NXSDK_DIR)/tools/include -Iuser/LIBEXTERNAL/stb -Iuser/LIBEXTERNAL/pl_mpeg
 # Compatibility variable consumed by pinned upstream build fragments (e.g. DOOM).
 INCLUDE = $(USER_INCLUDE)
 
@@ -142,9 +142,22 @@ BOOT_ISO = $(AARCH64_UEFI_ISO)
 else
 BOOT_ISO = $(AMD64_GRUB_ISO)
 endif
-USER_DIR   = user
-USER_SYS_DIR = $(USER_DIR)/sys
+USER_PROJECT ?= NexsOS1-main
+USER_DIR := user/$(USER_PROJECT)
+USER_SYS_DIR := $(USER_DIR)/sys
+USERKIT_DIR := user/USERKIT
+LIBEXTERNAL_DIR := user/LIBEXTERNAL
+USERKIT_BUILD_ROOT := $(abspath $(BUILD_ROOT))/userkit
+USERKIT_BUILD_DIR := $(USERKIT_BUILD_ROOT)/$(ARCH)/userkit
+include $(USERKIT_DIR)/catalog.mk
 USER_LIB_DIR = $(NXSDK_DIR)/lib
+USER_PROJECT_LIB_DIR := $(USER_DIR)/lib
+include $(USER_PROJECT_LIB_DIR)/catalog.mk
+USER_PROJECT_LIB_BUILD_ROOT := $(abspath $(BUILD_ROOT))/project-lib
+USER_PROJECT_LIB_BUILD_DIR := $(USER_PROJECT_LIB_BUILD_ROOT)/$(ARCH)/nexsos1-lib
+USER_PROJECT_LIB_ARCHIVE := $(USER_PROJECT_LIB_BUILD_DIR)/$(NEXSOS1_LIB_LINK_ARCHIVE)
+USER_PROJECT_LIB_GLOBAL_FILES := $(addprefix $(USER_PROJECT_LIB_BUILD_DIR)/,$(NEXSOS1_LIB_GLOBAL_ARCHIVES))
+USER_PROJECT_LIB_INCLUDE_FLAGS := $(addprefix -I$(USER_PROJECT_LIB_DIR)/,$(NEXSOS1_LIB_INCLUDE_REL))
 USER_BIN_DIR = $(USER_SYS_DIR)/bin
 USER_ARCH_DIR = $(NXSDK_DIR)/arch/$(ARCH)
 
@@ -155,6 +168,13 @@ KERNEL_ELF = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN = $(BUILD_DIR)/kernel.bin
 USER_ELF   = $(BUILD_DIR)/nxinit.elf
 DISK_IMG   = $(BUILD_DIR)/disk.img
+USER_IMAGE_DIR := $(BUILD_DIR)/user-images
+MAIN_USER_IMAGE := $(USER_IMAGE_DIR)/NexsOS1-main.img
+DEMO1_USER_IMAGE := $(USER_IMAGE_DIR)/demo1.img
+DEMO1_BUILD_ROOT := $(abspath $(BUILD_ROOT))/demo1
+DEMO1_ELF := $(DEMO1_BUILD_ROOT)/$(ARCH)/demo1/demo1shell.elf
+DEMO1_ROOTFS := $(BUILD_DIR)/rootfs-demo1
+DEMO1_ROOTFS_STAMP := $(BUILD_DIR)/rootfs-demo1-ready.stamp
 # AArch64 only: pre-generated QEMU virt DTB used to pass a valid x0 to the kernel.
 # QEMU does not set x0 for bare-metal ELF kernels (no Linux image magic), so we
 # generate the DTB for the exact machine config and pass it via -dtb.  QEMU then
@@ -221,8 +241,8 @@ $(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
 sdk:
 	+$(MAKE) -C $(NXSDK_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) \
 		NX_WARNINGS_AS_ERRORS=$(NX_WARNINGS_AS_ERRORS) NX_STRICT=$(NX_STRICT) \
-		STB_INCLUDE="$(abspath user/lib/stb)" \
-		PL_MPEG_INCLUDE="$(abspath user/lib/pl_mpeg)" module
+		STB_INCLUDE="$(abspath user/LIBEXTERNAL/stb)" \
+		PL_MPEG_INCLUDE="$(abspath user/LIBEXTERNAL/pl_mpeg)" module
 
 $(NXSDK_MODULE_OBJECTS): | sdk
 	@test -f "$@" || { echo "NX-SDK did not produce $@" >&2; exit 1; }
@@ -243,7 +263,7 @@ USER_MALLOC_O := $(NXSDK_MALLOC_OBJECT)
 # link rules because prerequisite lists expand immediately.
 AR = $(CROSS_COMPILE)ar
 
-SDL2_DIR := user/lib/sdl
+SDL2_DIR := user/LIBEXTERNAL/sdl
 include system/lib/portability/sdl2/overlay.mk
 
 SDL2_SRCS := \
@@ -309,7 +329,7 @@ libsdl2: $(SDL2_LIB)
 # ==============================================================================
 # Lua static library and runtime (lua)
 # ==============================================================================
-LUA_DIR := user/lib/lua
+LUA_DIR := user/LIBEXTERNAL/lua
 
 LUA_CORE_SRCS := \
   $(LUA_DIR)/lapi.c \
@@ -416,7 +436,7 @@ $(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_
 # ==============================================================================
 # Gnulib static library (libgnulib)
 # ==============================================================================
-include user/portability/gnulib/overlay.mk
+include user/NexsOS1-main/portability/gnulib/overlay.mk
 
 GNULIB_OBJ_DIR := $(BUILD_DIR)/gnulib
 GNULIB_OBJS := $(patsubst %.c,$(GNULIB_OBJ_DIR)/%.o,$(GNULIB_OVERLAY_SRCS))
@@ -437,11 +457,11 @@ $(GNULIB_OBJ_DIR)/%.o: %.c
 	@$(CC) $(GNULIB_CFLAGS) -c $< -o $@
 
 # Special rule for glue.c to define _GNULIB_OS1_GLUE_IMPL before config header
-$(GNULIB_OBJ_DIR)/user/portability/gnulib/gnulib_os1_glue.o: user/portability/gnulib/gnulib_os1_glue.c
+$(GNULIB_OBJ_DIR)/user/NexsOS1-main/portability/gnulib/gnulib_os1_glue.o: user/NexsOS1-main/portability/gnulib/gnulib_os1_glue.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(GNULIB_CFLAGS) -D_GNULIB_OS1_GLUE_IMPL -c $< -o $@
 
-$(GNULIB_LIB): $(GNULIB_OBJS) user/portability/gnulib/overlay.mk Makefile
+$(GNULIB_LIB): $(GNULIB_OBJS) user/NexsOS1-main/portability/gnulib/overlay.mk Makefile
 	@echo "  [AR]     $@"
 	@rm -f $@.tmp
 	@$(AR) rcs $@.tmp $(GNULIB_OBJS)
@@ -453,7 +473,7 @@ libgnulib: $(GNULIB_LIB)
 # ==============================================================================
 # Coreutils compatibility overlay
 # ==============================================================================
-include user/portability/coreutils/overlay.mk
+include user/NexsOS1-main/portability/coreutils/overlay.mk
 
 
 
@@ -461,29 +481,58 @@ include user/portability/coreutils/overlay.mk
 # The NexsOS userland owns the canonical first-party manifest.  The integration
 # repository supplies SDK object paths and adds external applications below.
 OBJ_DIR := $(BUILD_DIR)/$(USER_DIR)
-NEXS_USERLAND_SDK_LINK_INPUTS := $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+NEXS_USERLAND_SDK_LINK_INPUTS := $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O) $(USER_PROJECT_LIB_ARCHIVE)
 NEXS_USERLAND_SDK_SIMD_OBJECT := $(BUILD_DIR)/$(USER_ARCH_DIR)/simd_probe.o
-include user/userland.mk
+include $(USER_DIR)/userland.mk
 
-SBIN_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_SBIN_PROGRAMS)))
 NX_MACHINE_EXTENSION_ELFS := $(BUILD_DIR)/nxmanageDD.elf
 SYS_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_SYS_PROGRAMS) $(NEXS_USERLAND_COMPLEX_PROGRAMS) $(NEXS_USERLAND_MEDIA_PROGRAMS) $(NEXS_USERLAND_MEDIA_COMPLEX_PROGRAMS)))
-SYS_SERVICE_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_SERVICE_PROGRAMS)))
 NEXS_USERLAND_BIN_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_BIN_PROGRAMS) $(NEXS_USERLAND_ALIAS_PROGRAMS)))
 EXTERNAL_BIN_ELFS := $(BUILD_DIR)/sdltest.elf $(BUILD_DIR)/raptor.elf \
   $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf $(BUILD_DIR)/doom.elf \
   $(BUILD_DIR)/gnulibtest.elf $(BUILD_DIR)/luatest.elf $(BUILD_DIR)/kilo.elf \
   $(COREUTILS_ELFS)
 BIN_ELFS := $(NEXS_USERLAND_BIN_ELFS) $(EXTERNAL_BIN_ELFS)
-USER_ELFS := $(SBIN_ELFS) $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(SYS_SERVICE_ELFS) $(BIN_ELFS)
+USER_ELFS := $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(BIN_ELFS)
+USERKIT_MAIN_INIT_ELF := $(USERKIT_BUILD_DIR)/sbin/nxinit.elf
+USERKIT_DEMO_INIT_ELF := $(USERKIT_BUILD_DIR)/sbin/nxdemo1init.elf
+USERKIT_SBIN_ELFS := $(addprefix $(USERKIT_BUILD_DIR)/sbin/,$(addsuffix .elf,$(NEXS_USERKIT_SBIN_PROJECTS)))
+USERKIT_SERVICE_ELFS := $(addprefix $(USERKIT_BUILD_DIR)/services/,$(addsuffix .elf,$(NEXS_USERKIT_SERVICE_PROJECTS)))
+USERKIT_EXAMPLE_ELFS := $(addprefix $(USERKIT_BUILD_DIR)/services/,$(addsuffix .elf,$(NEXS_USERKIT_EXAMPLE_PROJECTS)))
+USERKIT_RUNTIME_TEST_ELFS := $(addprefix $(USERKIT_BUILD_DIR)/tests/test_,$(addsuffix .elf,$(NEXS_USERKIT_SERVICE_PROJECTS)))
+USERKIT_EXAMPLE_TEST_ELFS := $(addprefix $(USERKIT_BUILD_DIR)/tests/test_,$(addsuffix .elf,$(NEXS_USERKIT_EXAMPLE_PROJECTS)))
+DEMO1_USERKIT_SERVICE_PROJECTS := nxnotify_registry $(filter-out nxntfy_srv,$(NEXS_USERKIT_SERVICE_PROJECTS)) nxexample_echo
+DEMO1_USERKIT_SERVICE_ELFS := $(addprefix $(USERKIT_BUILD_DIR)/services/,$(addsuffix .elf,$(DEMO1_USERKIT_SERVICE_PROJECTS)))
+DEMO1_USERKIT_TEST_ELFS := $(addprefix $(USERKIT_BUILD_DIR)/tests/test_,$(addsuffix .elf,$(DEMO1_USERKIT_SERVICE_PROJECTS)))
+USERKIT_ELFS := $(USERKIT_SBIN_ELFS) $(USERKIT_SERVICE_ELFS) $(USERKIT_EXAMPLE_ELFS) $(USERKIT_RUNTIME_TEST_ELFS) $(USERKIT_EXAMPLE_TEST_ELFS)
 
-user: power12 sdk __nexsos_user_module
+.PHONY: userkit project-libs
+project-libs: sdk
+	+$(MAKE) -C "$(USER_PROJECT_LIB_DIR)" ARCH=$(ARCH) BUILD_ROOT="$(USER_PROJECT_LIB_BUILD_ROOT)" SDK_ROOT="$(abspath $(NXSDK_DIR))" check
+	@test -s "$(USER_PROJECT_LIB_ARCHIVE)"
+
+$(USER_PROJECT_LIB_ARCHIVE) $(USER_PROJECT_LIB_GLOBAL_FILES): | project-libs
+	@test -s "$@"
+
+userkit: sdk project-libs
+	+$(MAKE) -C $(USERKIT_DIR) ARCH=$(ARCH) BUILD_ROOT="$(USERKIT_BUILD_ROOT)" SDK_ROOT="$(abspath $(NXSDK_DIR))" \
+	  $(foreach provider,$(NEXSOS1_LIB_PROVIDER_KEYS),USERKIT_GLOBAL_LIBRARY_$(provider)="$(USER_PROJECT_LIB_BUILD_DIR)/$(NEXSOS1_LIB_PROVIDER_ARCHIVE_$(provider))") \
+	  check
+
+$(USERKIT_ELFS): | userkit
+	@test -f "$@" || { echo "NX-USERKIT did not produce $@" >&2; exit 1; }
+
+
+user: power12 sdk userkit __nexsos_user_module
 .PHONY: __nexsos_user_module __user
 __nexsos_user_module: $(USER_ELFS)
 __user: $(USER_ELFS)
 
-# NX-CORE owns and builds the MACHINE user-mode extension.
-$(BUILD_DIR)/nxmanageDD.elf:
+# NX-CORE owns and builds the MACHINE user-mode extension.  The root target
+# must carry the source/protocol prerequisites too: otherwise an existing ELF
+# suppresses the kernel sub-make and bypasses its generated dependency files.
+$(BUILD_DIR)/nxmanageDD.elf: $(KERNEL_DIR)/user/extension/nxmanageDD/main.c \
+                             $(NXSDK_DIR)/lib/extensions/USERKIT/manager/include/nxmanage.h
 	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) \
 	  NXSDK_ROOT="$(abspath $(NXSDK_DIR))" machine-extension
 	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
@@ -502,14 +551,6 @@ $(BUILD_DIR)/$(USER_DIR)/bin/%.o: $(USER_DIR)/bin/%.c
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
-	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
-
-$(BUILD_DIR)/$(USER_DIR)/sys/services/%.o: $(USER_DIR)/sys/services/%.c
-	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
-
-$(BUILD_DIR)/$(USER_DIR)/sbin/%.o: $(USER_DIR)/sbin/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -602,20 +643,21 @@ $(NX_BOOT_PROFILE): nx-boot-profile-force
 	@printf '%s\n' "$(MDEBUG)" > "$@.tmp"; \
 	  if test -r "$@" && cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; \
 	  else mv "$@.tmp" "$@"; fi
-ROOTFS_ASSET_DIRS = user/home/Settings user/home/Pictures user/home/Video \
-                    user/sys/bin/nxfont/fonts user/sys/bin/background
+ROOTFS_ASSET_DIRS = user/NexsOS1-main/home/Settings user/NexsOS1-main/home/Pictures user/NexsOS1-main/home/Video \
+                    user/NexsOS1-main/sys/bin/nxfont/fonts user/NexsOS1-main/sys/bin/background
 # Escape whitespace inside asset paths so fonts such as "Orkney Light.ttf"
 # remain real Make prerequisites instead of silently skipped input files.
 ROOTFS_ASSETS = $(shell find $(ROOTFS_ASSET_DIRS) \
                   \( -type f -o -type d -o -type l \) 2>/dev/null | \
                   sed 's/ /\\ /g') \
-                user/sys/boot/entry user/sys/boot/manager.conf \
-                user/sys/boot/services.conf $(wildcard user/bin/doom/freedoom*.wad)
+                user/NexsOS1-main/sys/boot/manager.conf \
+                user/NexsOS1-main/sys/boot/services.conf user/NexsOS1-main/sys/boot/libraries.conf user/NexsOS1-main/sys/boot/project \
+                $(wildcard user/NexsOS1-main/bin/doom/freedoom*.wad)
 rootfs: user libsdl2 liblua libgnulib coreutils $(ROOTFS_STAMP)
 	@test -d "$(BUILD_DIR)/rootfs" || { \
 	  echo "ERROR: rootfs missing while $(ROOTFS_STAMP) exists" >&2; exit 1; }
-$(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
-                $(GNULIB_LIB) $(ROOTFS_ASSETS) $(NX_BOOT_PROFILE) Makefile
+$(ROOTFS_STAMP): $(USER_ELFS) $(USERKIT_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
+                $(GNULIB_LIB) $(USER_PROJECT_LIB_GLOBAL_FILES) $(ROOTFS_ASSETS) $(NX_BOOT_PROFILE) Makefile
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sbin
 	@mkdir -p $(BUILD_DIR)/rootfs/krnl/extension
@@ -635,6 +677,9 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
 	@# .lua/.so modules live here — read-for-all, root-write-only (unlike
 	@# /home). ext4 has no runtime dir creation, so pre-create the tree.
 	@mkdir -p $(BUILD_DIR)/rootfs/lib/lua/5.4/lib
+	@set -eu; for f in $(USER_PROJECT_LIB_GLOBAL_FILES); do \
+	  name="$$(basename "$$f")"; cp "$$f" "$(BUILD_DIR)/rootfs/lib/$$name"; \
+	done
 	@mkdir -p  $(BUILD_DIR)/rootfs/sys/lib/include
 	@# /home: the ONLY user-writable tree (vfs_write_allowed tree ACL —
 	@# /sys/bin machine-only, every other tree root-only, guests confined to
@@ -649,35 +694,40 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
 	@printf '# writetest seed block\n' > $(BUILD_DIR)/rootfs/home/shared/writetest.fixture
 	@printf 'GNULIB-FIXTURE: real read-write ext4 file.\n' > $(BUILD_DIR)/rootfs/home/shared/gnulib.fixture
 	@mkdir -p $(BUILD_DIR)/rootfs/home/Settings
-	@-cp -r user/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
-	@cp $(SBIN_ELFS) $(BUILD_DIR)/rootfs/sbin/
+	@-cp -r user/NexsOS1-main/home/Settings/. $(BUILD_DIR)/rootfs/home/Settings/ 2>/dev/null || true
+	@cp $(USERKIT_MAIN_INIT_ELF) $(BUILD_DIR)/rootfs/sbin/nxinit
 	@cp $(NX_MACHINE_EXTENSION_ELFS) $(BUILD_DIR)/rootfs/krnl/extension/
 	@cp $(SYS_ELFS) $(BUILD_DIR)/rootfs/sys/bin/
-	@cp $(SYS_SERVICE_ELFS) $(BUILD_DIR)/rootfs/sys/services/
+	@cp $(USERKIT_SERVICE_ELFS) $(BUILD_DIR)/rootfs/sys/services/
+	@set -eu; for f in $(USERKIT_RUNTIME_TEST_ELFS); do \
+	  name="$$(basename "$$f" .elf)"; name="$${name#test_}"; \
+	  cp "$$f" "$(BUILD_DIR)/rootfs/sys/bin/nxtest_userkit_$$name"; \
+	done
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
-	@cp user/sys/boot/entry $(BUILD_DIR)/rootfs/system/boot/entry
-	@cp user/sys/boot/manager.conf $(BUILD_DIR)/rootfs/system/boot/manager.conf
-	@cp user/sys/boot/services.conf $(BUILD_DIR)/rootfs/system/boot/services.conf
+	@cp user/NexsOS1-main/sys/boot/manager.conf $(BUILD_DIR)/rootfs/system/boot/manager.conf
+	@cp user/NexsOS1-main/sys/boot/services.conf $(BUILD_DIR)/rootfs/system/boot/services.conf
+	@cp user/NexsOS1-main/sys/boot/libraries.conf $(BUILD_DIR)/rootfs/system/boot/libraries.conf
+	@cp user/NexsOS1-main/sys/boot/project $(BUILD_DIR)/rootfs/system/boot/project
 	@cp $(NX_BOOT_PROFILE) $(BUILD_DIR)/rootfs/system/boot/profile
 	@# Pre-create a 16KB scratch file for the /bin/stress file lane: the FS has no
 	@# runtime file creation (O_CREAT -> -EINVAL), and file_write only extends an
 	@# EXISTING file, so ship one (perf §6 stress harness).
 	@dd if=/dev/zero of=$(BUILD_DIR)/rootfs/etc/stress.tmp bs=1024 count=16 2>/dev/null
 	@# Copy essential WAD files to the root and /bin for engine detection
-	@-cp user/bin/doom/freedoom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/home/Pictures/icon/dark/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/dark/ 2>/dev/null || true
-	@-cp user/sys/bin/background/nxduck.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/bin/doom/freedoom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/home/Pictures/icon/dark/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/dark/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/sys/bin/background/nxduck.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
 	@# Dock/launcher tile icons (nxicon.h): both theme sets, so a runtime
 	@# theme flip never needs a rebuilt image — see nxicon.h's header comment.
-	@-cp user/home/Pictures/globe.png $(BUILD_DIR)/rootfs/home/Pictures/ 2>/dev/null || true
-	@-cp user/home/Pictures/background/nxduck.png $(BUILD_DIR)/rootfs/home/Pictures/background/ 2>/dev/null || true
-	@-cp user/home/Pictures/icon/light/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/light/ 2>/dev/null || true
-	@-cp user/home/Video/*.mpeg $(BUILD_DIR)/rootfs/home/Video/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/home/Pictures/globe.png $(BUILD_DIR)/rootfs/home/Pictures/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/home/Pictures/background/nxduck.png $(BUILD_DIR)/rootfs/home/Pictures/background/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/home/Pictures/icon/light/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/light/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/home/Video/*.mpeg $(BUILD_DIR)/rootfs/home/Video/ 2>/dev/null || true
 	@# doom savegames are runtime-created in /home/Documents/doom now; the
 	@mkdir -p $(BUILD_DIR)/rootfs/fonts
-	@-cp user/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
-	@-cp user/sys/bin/nxfont/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/sys/bin/nxfont/fonts/*.ttf $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
+	@-cp user/NexsOS1-main/sys/bin/nxfont/fonts/*.off $(BUILD_DIR)/rootfs/fonts/ 2>/dev/null || true
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib
 	@mkdir -p $(BUILD_DIR)/rootfs/sys/lib/include	
 	@# Ship the system libraries into /sys/lib. These are HARD copies (no
@@ -722,6 +772,59 @@ disk: $(MKDISK) kernel rootfs bootloader
 	@mkdir -p $(BUILD_DIR)
 	@./$(MKDISK) $(DISK_IMG) $(BOOTLOADER_BIN) $(KERNEL_BIN) $(BUILD_DIR)/rootfs $(MKDISK_LAYOUT)
 
+.PHONY: demo1-build demo1-rootfs main-user-image demo1-user-image user-images
+
+demo1-build: sdk
+	+$(MAKE) -C user/demo1 ARCH=$(ARCH) BUILD_ROOT="$(DEMO1_BUILD_ROOT)" \
+	  SDK_ROOT="$(abspath $(NXSDK_DIR))" check
+	@test -s "$(DEMO1_ELF)"
+
+$(DEMO1_ROOTFS_STAMP): demo1-build userkit $(NX_MACHINE_EXTENSION_ELFS) $(NX_BOOT_PROFILE) \
+                      user/demo1/sys/boot/manager.conf user/demo1/sys/boot/services.conf \
+                      user/demo1/sys/boot/libraries.conf user/demo1/sys/boot/project $(USER_PROJECT_LIB_GLOBAL_FILES) user/demo1/assets/fonts/Rewir-Light.off Makefile
+	@rm -rf "$(DEMO1_ROOTFS)"
+	@mkdir -p "$(DEMO1_ROOTFS)/sbin" "$(DEMO1_ROOTFS)/krnl/extension"
+	@mkdir -p "$(DEMO1_ROOTFS)/sys/bin" "$(DEMO1_ROOTFS)/sys/services"
+	@mkdir -p "$(DEMO1_ROOTFS)/system/boot" "$(DEMO1_ROOTFS)/lib"
+	@mkdir -p "$(DEMO1_ROOTFS)/fonts" "$(DEMO1_ROOTFS)/home" "$(DEMO1_ROOTFS)/tmp" "$(DEMO1_ROOTFS)/var/tmp"
+	@cp "$(USERKIT_DEMO_INIT_ELF)" "$(DEMO1_ROOTFS)/sbin/nxdemo1init"
+	@cp "$(NX_MACHINE_EXTENSION_ELFS)" "$(DEMO1_ROOTFS)/krnl/extension/nxmanageDD"
+	@cp "$(DEMO1_ELF)" "$(DEMO1_ROOTFS)/sys/bin/demo1shell"
+	@set -eu; for f in $(USER_PROJECT_LIB_GLOBAL_FILES); do \
+	  name="$$(basename "$$f")"; cp "$$f" "$(DEMO1_ROOTFS)/lib/$$name"; \
+	done
+	@set -eu; for f in $(DEMO1_USERKIT_SERVICE_ELFS); do \
+	  name="$$(basename "$$f" .elf)"; cp "$$f" "$(DEMO1_ROOTFS)/sys/services/$$name"; \
+	done
+	@set -eu; for f in $(DEMO1_USERKIT_TEST_ELFS); do \
+	  name="$$(basename "$$f" .elf)"; name="$${name#test_}"; \
+	  cp "$$f" "$(DEMO1_ROOTFS)/sys/bin/nxtest_userkit_$$name"; \
+	done
+	@cp user/demo1/sys/boot/manager.conf "$(DEMO1_ROOTFS)/system/boot/manager.conf"
+	@cp user/demo1/sys/boot/services.conf "$(DEMO1_ROOTFS)/system/boot/services.conf"
+	@cp user/demo1/sys/boot/libraries.conf "$(DEMO1_ROOTFS)/system/boot/libraries.conf"
+	@cp user/demo1/sys/boot/project "$(DEMO1_ROOTFS)/system/boot/project"
+	@cp "$(NX_BOOT_PROFILE)" "$(DEMO1_ROOTFS)/system/boot/profile"
+	@cp user/demo1/assets/fonts/Rewir-Light.off "$(DEMO1_ROOTFS)/fonts/Rewir-Light.off"
+	@touch "$@"
+
+demo1-rootfs: $(DEMO1_ROOTFS_STAMP)
+	@test -d "$(DEMO1_ROOTFS)"
+
+main-user-image: disk
+	@mkdir -p "$(USER_IMAGE_DIR)"
+	@cp "$(DISK_IMG)" "$(MAIN_USER_IMAGE)"
+
+demo1-user-image: $(MKDISK) kernel bootloader demo1-rootfs
+	@mkdir -p "$(USER_IMAGE_DIR)"
+	@./$(MKDISK) "$(DEMO1_USER_IMAGE)" "$(BOOTLOADER_BIN)" "$(KERNEL_BIN)" \
+	  "$(DEMO1_ROOTFS)" $(MKDISK_LAYOUT)
+
+user-images: main-user-image demo1-user-image
+	@python3 kernel/tools/user-project-catalog.py --catalog kernel/config/user-projects.conf list >/dev/null
+	@test -s "$(MAIN_USER_IMAGE)" -a -s "$(DEMO1_USER_IMAGE)"
+	@echo "User-project images ready: $(MAIN_USER_IMAGE) $(DEMO1_USER_IMAGE)"
+
 $(MKDISK): tools/mkdisk.c
 	@mkdir -p tools
 	@gcc -o $(MKDISK) tools/mkdisk.c
@@ -765,15 +868,21 @@ grub-prebuilt-install:
 	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/install-grub-prebuilt.sh "$(GRUB_ARCHIVE)"
 
 ifeq ($(ARCH),amd64)
-boot-iso: all
-	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" tools/build-amd64-grub-iso.sh
-
-boot-uefi: all
-	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" kernel/tools/build-amd64-uefi-image.sh
-else
-boot-iso: all $(VIRT_DTB)
+boot-iso: all user-images
 	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" \
-	  NEXS_DTB_PATH="$(abspath $(VIRT_DTB))" tools/build-aarch64-uefi-image.sh
+	  NEXS_USER_IMAGE_DIR="$(abspath $(USER_IMAGE_DIR))" \
+	  tools/build-amd64-grub-iso.sh
+
+boot-uefi: all user-images
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" \
+	  NEXS_USER_IMAGE_DIR="$(abspath $(USER_IMAGE_DIR))" \
+	  kernel/tools/build-amd64-uefi-image.sh
+else
+boot-iso: all user-images $(VIRT_DTB)
+	@NEXS_BUILD_ROOT="$(abspath $(BUILD_ROOT))" \
+	  NEXS_DTB_PATH="$(abspath $(VIRT_DTB))" \
+	  NEXS_USER_IMAGE_DIR="$(abspath $(USER_IMAGE_DIR))" \
+	  tools/build-aarch64-uefi-image.sh
 
 boot-uefi: boot-iso
 endif
@@ -889,6 +998,8 @@ $(error RUN_FIRMWARE applies only to ISO boot; direct mode requires RUN_FIRMWARE
 endif
 endif
 RUN_SERIAL ?= stdio
+RUN_QMP ?=
+RUN_QMP_ARG := $(if $(strip $(RUN_QMP)),--qmp "$(RUN_QMP)",)
 
 ifeq ($(ARCH),amd64)
 ifeq ($(RUN_FIRMWARE),auto)
@@ -935,14 +1046,14 @@ TEST_DISPLAY ?= none
 TEST_TIMER_SECONDS ?= 10
 ifeq ($(BOOT_MODE),iso)
 run: all $(RUN_ISO_TARGET)
-	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode iso --firmware $(RUN_ISO_FIRMWARE) 		--iso "$(RUN_ISO_IMAGE)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)"
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode iso --firmware $(RUN_ISO_FIRMWARE) 		--iso "$(RUN_ISO_IMAGE)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" $(RUN_QMP_ARG)
 debug: all $(RUN_ISO_TARGET)
-	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode iso --firmware $(RUN_ISO_FIRMWARE) 		--iso "$(RUN_ISO_IMAGE)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" --debug
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode iso --firmware $(RUN_ISO_FIRMWARE) 		--iso "$(RUN_ISO_IMAGE)" --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" $(RUN_QMP_ARG) --debug
 else ifeq ($(BOOT_MODE),direct)
 run: $(DIRECT_PREREQS)
-	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode direct --kernel "$(DIRECT_KERNEL)" $(DIRECT_DTB_ARG) --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)"
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode direct --kernel "$(DIRECT_KERNEL)" $(DIRECT_DTB_ARG) --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" $(RUN_QMP_ARG)
 debug: $(DIRECT_PREREQS)
-	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode direct --kernel "$(DIRECT_KERNEL)" $(DIRECT_DTB_ARG) --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" --debug
+	@python3 tools/nxqemu.py --arch $(ARCH) --boot-mode direct --kernel "$(DIRECT_KERNEL)" $(DIRECT_DTB_ARG) --disk "$(DISK_IMG)" --serial "$(RUN_SERIAL)" --display "$(RUN_DISPLAY)" $(RUN_QMP_ARG) --debug
 else
 $(error BOOT_MODE must be 'direct' or 'iso'; got '$(BOOT_MODE)')
 endif
@@ -1090,9 +1201,9 @@ help:
 # metadata/help/check targets usable before dependency bootstrap on a fresh
 # clone; setup-dependencies.sh initializes the exact gitlink revisions.
 ifeq ($(ARCH),aarch64)
-DOOM_ARCH_MAKEFILE := user/bin/doom/doom-nexs-aarch64.make
+DOOM_ARCH_MAKEFILE := user/NexsOS1-main/bin/doom/doom-nexs-aarch64.make
 else ifeq ($(ARCH),amd64)
-DOOM_ARCH_MAKEFILE := user/bin/doom/doom-nexs-amd64.make
+DOOM_ARCH_MAKEFILE := user/NexsOS1-main/bin/doom/doom-nexs-amd64.make
 endif
 ifneq ($(wildcard $(DOOM_ARCH_MAKEFILE)),)
 include $(DOOM_ARCH_MAKEFILE)
@@ -1148,7 +1259,7 @@ test-gfx-alpha:
 	@mkdir -p build/host
 	@$(HOST_CC) -std=c11 -O2 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
 		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
-		user/bin/gfxalphatest.c system/lib/gfx/alpha.c -o build/host/gfx_alpha_test
+		user/NexsOS1-main/bin/gfxalphatest.c system/lib/gfx/alpha.c -o build/host/gfx_alpha_test
 	@./build/host/gfx_alpha_test
 
 .PHONY: test-mkdisk-groups
@@ -1192,8 +1303,8 @@ test-keyboard-layout:
 	@mkdir -p $(BUILD_ROOT)/host
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wpedantic \
 		-fsanitize=address,undefined -idirafter system/include/api \
-		user/sys/services/tests/keyboard_layout_test.c \
-		system/lib/extensions/input/nxkeyboard_layout.c \
+		user/USERKIT/services/nxkeyboardd/tests/keyboard_layout_test.c \
+		system/lib/extensions/USERKIT/nxkeyboardd/layout.c \
 		-o $(BUILD_ROOT)/host/keyboard_layout_test
 	@$(BUILD_ROOT)/host/keyboard_layout_test
 
@@ -1201,6 +1312,6 @@ test-tty-model:
 	@mkdir -p $(BUILD_ROOT)/host
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wpedantic \
 		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
-		system/lib/tests/tty_model_test.c system/lib/gfx/tty_model.c \
+		system/lib/tests/tty_model_test.c system/lib/extensions/USERKIT/nxttyd/tty_model.c \
 		-o $(BUILD_ROOT)/host/tty_model_test
 	@$(BUILD_ROOT)/host/tty_model_test

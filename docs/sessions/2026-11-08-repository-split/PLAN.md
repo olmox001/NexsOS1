@@ -492,3 +492,12 @@ This amendment supersedes earlier ownership wording where it conflicts.
 - Acceptance requires direct SDK, standalone NX-CORE, standalone first-party
   userland, integrated superproject builds, and real nxadb shell interaction on
   amd64 and aarch64. Compilation alone is insufficient.
+
+## USERKIT and multi-project completion gate — 2026-11-12
+
+- Keep ordinary system programs and all `once` helpers out of USERKIT unless they implement an explicit NX-SDK service interface.
+- Keep each USERKIT service and `/sbin` implementation as an independent catalogued project with pre-build and runtime tests.
+- Keep server code exclusively in NX-USERKIT; NX-SDK owns public interfaces, reusable clients/models and project tooling only.
+- Keep generic icon/input/object/graphics extensions outside USERKIT and reference them as dependencies rather than duplicating them.
+- Use the NX-CORE project catalog to generate one boot medium containing `NexsOS1-main` and `demo1`; both use the same kernel and `nxmanageDD` while selecting different init/service manifests.
+- Acceptance is not compilation-only: run the real `make run` path and interact through nxadb on amd64 and aarch64, including init identity, base services, alternate demo service, example echo, timer diagnostics and the existing runtime suite.

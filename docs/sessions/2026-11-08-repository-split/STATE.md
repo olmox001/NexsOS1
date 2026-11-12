@@ -308,3 +308,11 @@ No project commit has been created by this pass.
   this split. Strict whole-tree Power12 qualification likewise remains open;
   the changed-file gate is clean, while the warn-only full audit retains the
   pre-existing project debt.
+
+## USERKIT / multi-user-project split checkpoint — 2026-11-12
+
+The monolithic `user/` ownership has been split in the working tree into `NexsOS1-main`, `LIBEXTERNAL`, NX-USERKIT, and `demo1`. Ordinary `sys/bin` programs and one-shot helpers remain in `NexsOS1-main`; only the eight existing contract-backed `sys/services` implementations moved into NX-USERKIT. `nxicon` and keyboard-layout code were checked against history and restored to generic NX-SDK `icon` and `input` extensions after an incorrect temporary USERKIT classification.
+
+NX-USERKIT now has a general `sbin/` catalog with `nxinit` and alternate `nxdemo1init`, plus `services/example` projects. SDK-owned USERKIT tooling performs catalog validation and strict Power12 audits without changing the project Power12/NXPaX rule set. Both architectures pass the USERKIT catalog, 17 Power12 mutation tests, build/limit/AST audits with zero USERKIT findings, and service/sbin/example compilation.
+
+NX-CORE owns `/krnl/extension/nxmanageDD` boot selection through `kernel/config/boot-entry.conf` and the firmware project catalog through `kernel/config/user-projects.conf`. Main and demo rootfs profiles use the same manager/kernel but different init/service catalogs. Interactive `make run` + nxadb acceptance remains the final gate for this checkpoint until recorded below.

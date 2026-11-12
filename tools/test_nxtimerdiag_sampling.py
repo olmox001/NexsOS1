@@ -110,7 +110,7 @@ class SamplingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='timer-sampling-', dir=host) as temp:
             work = Path(temp)
             override = os.environ.get('TIMERDIAG_BASELINE_SOURCE')
-            source = ROOT / 'user/sys/bin/nxtimerdiag.c'
+            source = ROOT / 'user/NexsOS1-main/sys/bin/nxtimerdiag.c'
             if override:
                 source = work / 'baseline.c'
                 source.write_bytes(Path(override).read_bytes())

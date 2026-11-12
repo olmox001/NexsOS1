@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from changed_gate import build_findings, changed_files
+from changed_gate import build_findings, changed_files, exact_rename_destinations
 
 
 def git(root: Path, *args: str) -> None:
@@ -60,6 +60,24 @@ def main() -> int:
         if not any(item["rule"] == "R10" for item in build_findings(makefile, root)):
             print("FAIL bypass flag ignored")
             return 6
+
+        # Exact path-only renames do not create new Power12 debt.
+        git(root, "reset", "--hard", "HEAD")
+        git(root, "clean", "-fd")
+        git(root, "mv", "kernel/timer.c", "kernel/timer_renamed.c")
+        renamed = exact_rename_destinations(root)
+        lines, _ = changed_files(root)
+        if "kernel/timer_renamed.c" not in renamed or "kernel/timer_renamed.c" in lines:
+            print(f"FAIL exact rename treated as content edit: renamed={renamed} lines={lines}")
+            return 7
+
+        # Any content edit after the rename must restore delta coverage.
+        moved = root / "kernel" / "timer_renamed.c"
+        moved.write_text("int a = 9;\nint b = 2;\nint c = 3;\n")
+        lines, _ = changed_files(root)
+        if lines.get("kernel/timer_renamed.c") != {1}:
+            print(f"FAIL edited rename did not preserve line delta: {lines}")
+            return 8
 
     print("PASS: Power12 staged+unstaged+untracked delta, deletions and R10 blockers")
     return 0

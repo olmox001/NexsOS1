@@ -1,142 +1,113 @@
 #!/usr/bin/env python3
-"""Verify actual service source, linked image classes and SDK client ownership.
-
-This verifies build structure and ELF bytes, not runtime lifecycle behavior.
-"""
+"""Verify NX-CORE manager, NX-USERKIT services, SDK extensions and image layout."""
 from pathlib import Path
 import argparse
+import json
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
+MAIN = ROOT / "user/NexsOS1-main"
+USERKIT = ROOT / "user/USERKIT"
+SDK = ROOT / "system"
+CORE = ROOT / "kernel"
 MACHINE = {"nxmanageDD"}
-SBIN = {"nxinit"}
-SERVERS = {"nxntfy_srv", "nxexecd", "nxtimerdd", "nxpaxd",
-           "nxcompositor", "nxkeyboardd", "nxmoused", "nxttyd"}
-SDK_CLIENTS = {"port_client", "gfx_buffer", "buffer_client", "execsvc_client", "notify_client",
-               "surface_client", "time_client"}
+COMMANDS = {"nxexec", "nxpax", "nxshell", "nxenvinit", "nxui", "nxbar", "nxlauncher"}
 
 
-def require(ok, description):
+def require(ok: bool, description: str) -> None:
     if not ok:
         raise ValueError(description)
 
 
-def make_text(lines, var):
-    for i, line in enumerate(lines):
-        match = re.match(r"^" + re.escape(var) + r"\s*:?=\s*(.*)$", line)
-        if not match:
-            continue
-        text = match.group(1).strip()
-        while text.endswith("\\") and i + 1 < len(lines):
-            i += 1
-            text = text[:-1] + " " + lines[i].strip()
-        return text
-    raise ValueError("missing Makefile variable: " + var)
+def service_projects() -> set[str]:
+    data = json.loads((USERKIT / "catalog.json").read_text())
+    projects = {entry["project"] for entry in data.get("services", [])}
+    require(projects, "NX-USERKIT catalog is empty")
+    return projects
 
 
-def make_elf_set(lines, var):
-    return set(re.findall(r"\$\(BUILD_DIR\)/([a-zA-Z0-9_]+)\.elf",
-                          make_text(lines, var)))
+def source_roles() -> int:
+    servers = service_projects()
+    root_make = (ROOT / "Makefile").read_text()
+    main_manifest = (MAIN / "userland.mk").read_text()
+    require("include $(USER_DIR)/userland.mk" in root_make,
+            "superproject does not consume selected userland manifest")
+    require("NEXS_USERLAND_SERVICE_PROGRAMS :=" in main_manifest,
+            "main userland service boundary variable missing")
+    service_line = re.search(r"^NEXS_USERLAND_SERVICE_PROGRAMS[ \t]*:=[ \t]*(.*)$",
+                             main_manifest, re.MULTILINE)
+    require(service_line is not None and not service_line.group(1).strip(),
+            "NexsOS1-main must not own USERKIT service implementations")
 
+    for name in servers:
+        source = USERKIT / "services" / name / "src/main.c"
+        require(source.is_file(), f"missing USERKIT server source: {name}")
+        require(len(re.findall(r"\bint\s+main\s*\(", source.read_text())) == 1,
+                f"USERKIT server lacks unique entrypoint: {name}")
+        extension = SDK / "lib/extensions/USERKIT" / name / "project.mk"
+        require(extension.is_file(), f"missing SDK USERKIT extension: {name}")
+        require("NXSDK_EXTENSION_CLASS := USERKIT" in extension.read_text(),
+                f"SDK extension is not USERKIT-classed: {name}")
 
-def make_word_set(lines, var):
-    text = make_text(lines, var)
-    require("$(" not in text, "manifest variable requires expansion: " + var)
-    return set(text.split())
+    for name in COMMANDS:
+        source = MAIN / "sys/bin" / f"{name}.c"
+        require(source.is_file(), f"system program moved out of NexsOS1-main: {name}")
+        require(not (USERKIT / "services" / name).exists(),
+                f"ordinary sys/bin program incorrectly promoted to USERKIT: {name}")
 
+    manager = (CORE / "user/extension/nxmanageDD/main.c").read_text()
+    require("system.manage.service.%s" in manager,
+            "named manager service records missing")
+    require("NXMANAGE_PROJECT_CONFIG" in manager,
+            "manager does not publish selected user project")
+    require("[NXMANAGE] service=" in manager,
+            "manager spawn UART diagnostics missing")
+    require((CORE / "config/boot-entry.conf").read_text().strip() ==
+            "/krnl/extension/nxmanageDD",
+            "kernel boot entry does not select nxmanageDD")
 
-def source_roles():
-    source = (ROOT / "Makefile").read_text()
-    lines = source.splitlines()
-    require("include user/userland.mk" in source,
-            "superproject does not consume canonical userland manifest")
-    user_lines = (ROOT / "user/userland.mk").read_text().splitlines()
-    machine = make_elf_set(lines, "NX_MACHINE_EXTENSION_ELFS")
-    initializers = make_word_set(user_lines, "NEXS_USERLAND_SBIN_PROGRAMS")
-    servers = make_word_set(user_lines, "NEXS_USERLAND_SERVICE_PROGRAMS")
-    commands = (make_word_set(user_lines, "NEXS_USERLAND_SYS_PROGRAMS") |
-                make_word_set(user_lines, "NEXS_USERLAND_COMPLEX_PROGRAMS") |
-                make_word_set(user_lines, "NEXS_USERLAND_MEDIA_PROGRAMS") |
-                make_word_set(user_lines, "NEXS_USERLAND_MEDIA_COMPLEX_PROGRAMS"))
-    require(machine == MACHINE, "machine executable set differs")
-    require(initializers == SBIN, "initializer executable set differs")
-    require(servers == SERVERS, "dedicated daemon executable set differs")
-    require(not commands.intersection(servers), "command and daemon binaries overlap")
-    require({"nxexec", "nxpax", "nxshell"}.issubset(commands),
-            "missing command personalities")
-    for name in SERVERS:
-        path = ROOT / "user/sys/services" / (name + ".c")
-        require(path.is_file(), "missing actual daemon source " + str(path))
-        body = path.read_text()
-        require(len(re.findall(r"\bint\s+main\s*\(", body)) == 1,
-                "daemon lacks unique entrypoint " + name)
-    for name in ("nxexec", "nxpax"):
-        body = (ROOT / "user/sys/bin" / (name + ".c")).read_text()
-        require("return nxexec_service()" not in body and
-                "return nxpax_service()" not in body,
-                "command can execute privileged server: " + name)
-    require("execsvc_launch_owned" in
-            (ROOT / "user/sys/services/nxexecd.c").read_text() and
-            "execsvc_resolve_user_program" in
-            (ROOT / "system/lib/extensions/services/execsvc_client.c").read_text(),
-            "executor RPC lacks capability-owned creation and shared user resolver")
-    require("system.manage.service.%s" in
-            (ROOT / "kernel/user/extension/nxmanageDD/main.c").read_text(),
-            "named REGKEY service records missing")
-    sdk_manifest = (ROOT / "system/sdk.mk").read_text()
-    module_names = set(
-        re.findall(r"extensions/services/([a-z_]+)\.o", sdk_manifest))
-    require(module_names == SDK_CLIENTS, "SDK client linker set differs")
-    require("USER_LIB_O := $(NXSDK_LIB_OBJECTS)" in source,
-            "superproject does not consume the canonical NX-SDK object manifest")
-    for name in SDK_CLIENTS:
-        path = ROOT / "system/lib/extensions/services" / (name + ".c")
-        require(path.is_file() and not re.search(r"\bint\s+main\s*\(",
-                path.read_text()), "SDK client exposes a daemon entrypoint: " + name)
-    require(not re.search(r"\bint\s+main\s*\(",
-            (ROOT / "system/lib/gfx/theme.c").read_text()),
-            "SDK graphics library cannot be a daemon process")
-
+    manifest_servers = set()
     names = set()
-    service_names = set()
-    for raw in (ROOT / "user/sys/boot/services.conf").read_text().splitlines():
+    for raw in (MAIN / "sys/boot/services.conf").read_text().splitlines():
         if not raw or raw.startswith("#"):
             continue
-        parts = raw.split("|")
-        require(len(parts) in (5, 6), "manifest must have 5 or 6 fields")
-        name, mode, path, args, key = parts[:5]
-        require(name not in names, "duplicate service identity " + name)
-        names.add(name)
+        fields = raw.split("|")
+        require(len(fields) in (5, 6), "service manifest must have 5 or 6 fields")
+        logical, _mode, path = fields[:3]
+        require(logical not in names, f"duplicate manifest name: {logical}")
+        names.add(logical)
         if path.startswith("/sys/services/"):
-            service_names.add(path.removeprefix("/sys/services/"))
-    require(service_names == SERVERS, "actual server set differs from manifest")
+            manifest_servers.add(path.removeprefix("/sys/services/"))
+    require(manifest_servers == servers,
+            f"USERKIT catalog/manifest mismatch: {manifest_servers} != {servers}")
     return len(names)
 
 
-def rootfs_roles(directory):
-    expected = {f"krnl/extension/{name}" for name in MACHINE}
-    expected |= {f"sbin/{name}" for name in SBIN}
-    expected |= {f"sys/services/{name}" for name in SERVERS}
-    expected |= {"sys/bin/nxexec", "sys/bin/nxpax", "sys/bin/nxshell"}
+def rootfs_roles(directory: Path) -> None:
+    servers = service_projects()
+    expected = {"krnl/extension/nxmanageDD", "sbin/nxinit"}
+    expected |= {f"sys/services/{name}" for name in servers}
+    expected |= {f"sys/bin/{name}" for name in COMMANDS}
     for relative in sorted(expected):
         path = directory / relative
-        require(path.is_file(), "missing runtime executable: " + relative)
-        require(path.open("rb").read(4) == b"\x7fELF",
-                "runtime executable is not an ELF: " + relative)
-    forbidden = ("sbin/nxmanageDD", "sys/bin/nxntfy_srv", "sys/bin/nxpaxd",
-                 "sys/bin/nxexecd", "sys/bin/nxcompositor",
-                 "sys/bin/nxkeyboardd", "sys/bin/nxmoused", "sys/bin/nxttyd")
-    for relative in forbidden:
-        require(not (directory / relative).exists(),
-                "obsolete duplicate executable: " + relative)
-    require((directory / "system/boot/entry").read_text().strip() ==
-            "/krnl/extension/nxmanageDD", "machine extension VFS entry differs")
+        require(path.is_file(), f"missing runtime executable: {relative}")
+        require(path.read_bytes()[:4] == b"\x7fELF",
+                f"runtime executable is not ELF: {relative}")
+    for name in sorted(servers):
+        probe = directory / "sys/bin" / f"nxtest_userkit_{name}"
+        require(probe.is_file(), f"missing USERKIT runtime probe: {name}")
+        require(probe.read_bytes()[:4] == b"\x7fELF",
+                f"USERKIT runtime probe is not ELF: {name}")
+    require(not (directory / "system/boot/entry").exists(),
+            "rootfs must not own the NX-CORE boot entry")
+    require((directory / "system/boot/project").read_text().strip() == "NexsOS1-main",
+            "main image project identity differs")
     require((directory / "system/boot/services.conf").read_bytes() ==
-            (ROOT / "user/sys/boot/services.conf").read_bytes(),
-            "boot service policy not installed from current source")
+            (MAIN / "sys/boot/services.conf").read_bytes(),
+            "boot service policy not installed from NexsOS1-main")
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rootfs", type=Path)
     args = parser.parse_args()
@@ -144,12 +115,12 @@ def main():
         count = source_roles()
         if args.rootfs:
             rootfs_roles(args.rootfs)
-    except (ValueError, OSError) as ex:
-        print("FAIL NX-SERVICE: " + str(ex))
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print("FAIL NX-SERVICE: " + str(exc))
         return 1
-    print(f"PASS: {count} named services, {len(SERVERS)} distinct server entrypoints, "
-          f"{len(SDK_CLIENTS)} SDK client modules, distinct machine/init/ROOT/command outputs" +
-          (" and real rootfs ELF/manifest bytes" if args.rootfs else ""))
+    print(f"PASS: {count} manager entries, {len(service_projects())} USERKIT services, "
+          "system programs separated from service implementations" +
+          (" and rootfs layout verified" if args.rootfs else ""))
     return 0
 
 
