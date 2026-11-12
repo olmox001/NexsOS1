@@ -81,9 +81,8 @@ static int timerd_reply_stats(int reply, int stats_handle) {
   published.cpu_count = wire.cpu_count;
   published.sequence = wire.sequence;
   published.monotonic_ns = wire.monotonic_ns;
-  for (uint32_t index = 0U; index < OS1_TIME_MAX_CPUS; ++index) {
-    if (index >= wire.cpu_count)
-      break;
+  for (uint32_t index = 0U; index < OS1_TIME_MAX_CPUS &&
+                             index < wire.cpu_count; ++index) {
     timerd_copy_cpu(&published.cpu[index], &wire.cpu[index]);
   }
   return timerd_write_full(reply, &published, sizeof(published));
@@ -124,13 +123,17 @@ static int timerd_claim(void) {
 static int timerd_serve_epoch(int port, int time_handle, int stats_handle) {
   for (uint32_t request = 0U; request < OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT;
        ++request) {
-    struct ipc_message message;
-    long received = OS1_object_read(port, &message, sizeof(message));
-    if (received != (long)sizeof(message))
-      return -1;
-    if (message.type == OS1_TIME_SERVICE_IPC_TYPE &&
-        timerd_handle_request(&message, time_handle, stats_handle) != 0)
-      return -1;
+    struct os1_port_packet packet;
+    int received = OS1_port_packet_receive(port, &packet, 0);
+    if (received != 0) return received;
+    if (packet.cap_count != 1U ||
+        packet.message.type != OS1_TIME_SERVICE_IPC_TYPE) {
+      int closed = OS1_port_packet_close_caps(&packet);
+      if (closed != 0) return closed;
+      continue;
+    }
+    int serviced = timerd_handle_request(&packet.message, time_handle, stats_handle);
+    if (serviced != 0) OS1_report_error("nxtimerdd.client_request", serviced);
   }
   return 0;
 }
@@ -143,17 +146,19 @@ int main(void) {
       OS1_report_error("nxtimerdd.time_open", time_handle);
     if (stats_handle < 0)
       OS1_report_error("nxtimerdd.stats_open", stats_handle);
-    if (time_handle >= 0)
-      (void)OS1low_handle_close(time_handle);
-    if (stats_handle >= 0)
-      (void)OS1low_handle_close(stats_handle);
+    if (time_handle >= 0 && OS1low_handle_close(time_handle) != 0)
+      OS1_report_error("nxtimerdd.failed_time_close", -EIO);
+    if (stats_handle >= 0 && OS1low_handle_close(stats_handle) != 0)
+      OS1_report_error("nxtimerdd.failed_stats_close", -EIO);
     return 1;
   }
   int port = timerd_claim();
   if (port < 0) {
     OS1_report_error("nxtimerdd.port_claim", port);
-    (void)OS1low_handle_close(stats_handle);
-    (void)OS1low_handle_close(time_handle);
+    if (OS1low_handle_close(stats_handle) != 0)
+      OS1_report_error("nxtimerdd.failed_stats_close", -EIO);
+    if (OS1low_handle_close(time_handle) != 0)
+      OS1_report_error("nxtimerdd.failed_time_close", -EIO);
     return 1;
   }
   /* Readiness is the successfully claimed authoritative service PORT. */

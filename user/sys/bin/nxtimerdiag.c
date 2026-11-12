@@ -35,6 +35,7 @@ struct sleep_stats {
 };
 
 struct diag_state {
+  int quiet;
   unsigned int failures;
   unsigned int get_time_regressions;
   unsigned int get_time_mismatches;
@@ -166,7 +167,7 @@ static int timer_stats_print_cpu(const char *phase,
            "event_late=%llu event_avg_ns=%llu event_max_ns=%llu "
            "abs_prog=%llu irq_off=%llu irq_avg_ns=%llu irq_max_ns=%llu "
            "irq_invalid=%llu irq_active_ns=%llu irq_flags=0x%x "
-           "max_scan=%u max_fire=%u\n",
+           "max_scan=%u max_fire=%u max_scope=since-boot\n",
            phase, cpu->cpu_id, cpu->queue_depth, cpu->queue_high_water,
            (unsigned long long)cpu->arm_count,
            (unsigned long long)cpu->cancel_count,
@@ -201,9 +202,8 @@ static int timer_stats_fetch_print(const char *phase,
              snapshot->cpu_count,
              (unsigned long long)snapshot->monotonic_ns) < 0)
     return -1;
-  for (uint32_t index = 0U; index < OS1_TIME_MAX_CPUS; ++index) {
-    if (index >= snapshot->cpu_count)
-      break;
+  for (uint32_t index = 0U;
+       index < OS1_TIME_MAX_CPUS && index < snapshot->cpu_count; ++index) {
     if (timer_stats_print_cpu(phase, &snapshot->cpu[index]) != 0)
       return -1;
   }
@@ -241,7 +241,7 @@ timer_stats_print_delta(const struct os1_time_service_timer_stats *before,
            "scan=%llu passes=%llu avg_scan_x1000=%llu late_fire=%llu "
            "avg_late_ns=%llu max_late_ns=%llu event_late=%llu "
            "event_avg_ns=%llu event_max_ns=%llu abs_prog=%llu "
-           "depth=%u high=%u\n",
+           "depth=%u high=%u max_scope=since-boot\n",
            right->cpu_id,
            (unsigned long long)timer_counter_delta(left->arm_count,
                                                    right->arm_count),
@@ -368,13 +368,15 @@ static void diag_sample(struct diag_state *state, unsigned int index) {
   const int is_posix = (int)(index & 1U);
   const char *api = is_posix != 0 ? "nanosleep" : "OS1_sleep";
   const int emit = index < 2U || (index & 31U) == 0U;
-  long before_ms = get_time();
-  uint64_t before_mono = os1_mono_ns();
-  uint64_t before_cpu = os1_cpu_ns();
   int sleep_rc;
 
-  if (emit != 0)
+  if (state->quiet == 0 && emit != 0)
     printf("[TIMERDIAG] PRE i=%u api=%s\n", index, api);
+  /* Output may block on the TTY/diagnostic transport. Start the measured
+   * interval after that output, immediately before the requested sleep. */
+  long before_ms = get_time();
+  uint64_t before_cpu = os1_cpu_ns();
+  uint64_t before_mono = os1_mono_ns();
   sleep_rc = diag_do_sleep(is_posix);
   diag_read_post_clocks(&post);
 
@@ -388,7 +390,7 @@ static void diag_sample(struct diag_state *state, unsigned int index) {
     status = "CLOCK_REGRESSION";
   diag_account(state, is_posix, elapsed, post.get_time_ms, post.after_mono,
                post.after_cpu, post.get_gap, status);
-  if (emit != 0 || status[0] != 'O')
+  if (state->quiet == 0 && (emit != 0 || status[0] != 'O'))
     printf("[TIMERDIAG] POST i=%u api=%s status=%s get_time_ms=%ld "
            "elapsed_ns=%llu cpu_delta_ns=%llu get_time_gap_ns=%llu "
            "libc_mono_gap_ns=%llu libc_cpu_gap_ns=%llu\n",
@@ -442,7 +444,7 @@ static unsigned int timer_stress_spawn(int *pids) {
   for (unsigned int index = 0U; index < TIMERDIAG_STRESS_CHILDREN; ++index) {
     int pid = spawn_args("/sys/bin/nxtimerdiag", 2, child_argv);
     if (pid <= 0)
-      break;
+      return spawned;
     pids[spawned] = pid;
     ++spawned;
   }
@@ -528,7 +530,7 @@ static int timer_stress_child(void) {
   return 0;
 }
 
-static int timer_probe(void) {
+static int timer_probe(int quiet) {
   static struct os1_time_service_timer_stats stats_before;
   static struct os1_time_service_timer_stats stats_after;
   struct diag_state state;
@@ -536,13 +538,14 @@ static int timer_probe(void) {
   int stats_before_status = timer_stats_fetch_print("before", &stats_before);
 
   diag_init(&state);
+  state.quiet = quiet;
   if (service_status != 0 || stats_before_status != 0)
     ++state.failures;
   printf("[TIMERDIAG] START samples=%u sleep_ms=%u get_time_ms=%ld "
-         "mono_ns=%llu cpu_ns=%llu\n",
+         "mono_ns=%llu cpu_ns=%llu quiet=%d\n",
          TIMERDIAG_SAMPLES, TIMERDIAG_SLEEP_MS, state.first_get_time,
          (unsigned long long)state.first_mono,
-         (unsigned long long)state.first_cpu);
+         (unsigned long long)state.first_cpu, quiet);
   for (unsigned int index = 0U; index < TIMERDIAG_SAMPLES; ++index)
     diag_sample(&state, index);
   int stats_after_status = timer_stats_fetch_print("after", &stats_after);
@@ -555,11 +558,14 @@ static int timer_probe(void) {
 
 int main(int argc, char *argv[]) {
   if (argc < 2 || strcmp(argv[1], "--probe") == 0)
-    return timer_probe();
+    return timer_probe(0);
+  if (strcmp(argv[1], "--quiet-probe") == 0)
+    return timer_probe(1);
   if (strcmp(argv[1], "--queue-stress") == 0)
     return timer_queue_stress();
   if (strcmp(argv[1], "--stress-child") == 0)
     return timer_stress_child();
-  printf("usage: nxtimerdiag [--probe|--queue-stress]\n");
+  if (printf("usage: nxtimerdiag [--probe|--quiet-probe|--queue-stress]\n") < 0)
+    return 1;
   return 2;
 }

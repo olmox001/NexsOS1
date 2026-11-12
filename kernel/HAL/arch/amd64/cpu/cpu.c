@@ -99,8 +99,8 @@ void nxhal_provider_cpu_local_init(void) {
   /* Enable SSE EARLY (Functions like memset might use XMM registers) */
   uint64_t cr0 = arch_isa_cr0();
   uint64_t cr4 = 0U;
-  cr0 &= ~(1 << 2); /* Clear EM (Emulation) */
-  cr0 |= (1 << 1);  /* Set MP (Monitor co-processor) */
+  cr0 &= ~((UINT64_C(1) << 2) | (UINT64_C(1) << 3)); /* EM/TS off */
+  cr0 |= (UINT64_C(1) << 1) | (UINT64_C(1) << 5); /* MP + native x87 errors */
   arch_isa_write_cr0(cr0);
 
   /* NOTE(CPU-AMD64-01): OSFXSR+OSXMMEXCPT enable fxsave/fxrstor and unmasked
@@ -108,6 +108,9 @@ void nxhal_provider_cpu_local_init(void) {
    * CR4.SMAP is intentionally NOT set here — uaccess.c's claim
    * of SMAP protection is therefore inaccurate (UACC-AMD64-01). */
   cr4 = arch_isa_cr4();
+  /* Entry frames save FXSAVE64 only. Never inherit firmware OSXSAVE enable
+   * state and thereby expose YMM/ZMM/other XCR0 state that we do not preserve. */
+  cr4 &= ~(UINT64_C(1) << 18); /* OSXSAVE */
   cr4 |= (1 << 9);  /* OSFXSR (OS support for fxsave/fxrstor) */
   cr4 |= (1 << 10); /* OSXMMEXCPT (OS support for unmasked simd fp exceptions) */
   arch_isa_write_cr4(cr4);

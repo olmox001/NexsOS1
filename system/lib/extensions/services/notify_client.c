@@ -11,6 +11,7 @@
  * sets errno and calls this policy through the public OS1_report_error seam.
  */
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,8 @@
  * `ctx` is a short tag: a subsystem ("vfs", "mmap") or "op path".
  */
 void OS1_report_error(const char *ctx, int err) {
+  if (err == INT_MIN)
+    return; /* No errno has this value; avoid signed negation overflow. */
   if (err < 0)
     err = -err;
   if (!ctx)
@@ -45,14 +48,14 @@ void OS1_report_error(const char *ctx, int err) {
   case ENOMEM:
   case ENOSPC:
   case EROFS:
-    OS1_notify_error(ctx, strerror(err));
-    break;
+    if (OS1_notify_error(ctx, strerror(err)) != 0) return;
+    return;
   case EACCES:
   case EPERM:
-    OS1_notify_warn(ctx, strerror(err));
-    break;
+    if (OS1_notify_warn(ctx, strerror(err)) != 0) return;
+    return;
   default:
-    break; /* normal control-flow error: no notification */
+    return; /* normal control-flow error: no notification */
   }
 }
 
@@ -63,15 +66,15 @@ static int notify_send(const char *title, const char *msg, int sev) {
   imsg.type = IPC_TYPE_NOTIFY;
   imsg.data1 = (uint64_t)sev;
   imsg.data2 = 0;
-  int i = 0;
+  size_t i = 0U;
   /* Pack "title: msg" into the 64-byte payload field.
    * 30-char limit for title leaves room for ": " and at least 32 msg chars. */
-  while (*title && i < 30)
-    imsg.payload[i++] = *title++;
+  for (; i < 30U && *title; ++i)
+    imsg.payload[i] = *title++;
   imsg.payload[i++] = ':';
   imsg.payload[i++] = ' ';
-  while (*msg && i < 63)
-    imsg.payload[i++] = *msg++;
+  for (; i < sizeof(imsg.payload) - 1U && *msg; ++i)
+    imsg.payload[i] = *msg++;
   imsg.payload[i] = '\0';
   /* Use the normal object PORT capability, never a mutable registry PID.
    * Kernel-stamped sender and bounded queue semantics are shared with the
@@ -85,7 +88,10 @@ static int notify_send(const char *title, const char *msg, int sev) {
       OS1_NS_PORT, OS1NX_PORT_NOTIFY, OS1_RIGHT_WRITE, OBJ_TYPE_PORT);
   if (port < 0)
     return (int)port;
-  long sent = OS1_object_write((int)port, &imsg, sizeof(imsg));
+  /* Empty-transfer PORT sends use the same authenticated bounded queue but
+   * return EAGAIN instead of sleeping behind a stalled notification broker.
+   * The raw SDK veneer deliberately avoids errno/report-error recursion. */
+  long sent = _sys_port_send_caps((int)port, &imsg, NULL, 0);
   long closed = OS1low_handle_close((int)port);
   if (sent != (long)sizeof(imsg))
     return sent < 0 ? (int)sent : -EIO;

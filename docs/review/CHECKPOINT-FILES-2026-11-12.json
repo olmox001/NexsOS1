@@ -1,0 +1,975 @@
+{
+  "date": "2026-11-12",
+  "base_commit": "005aa876ba0a5627835495624e5e02add31aa246",
+  "scope": "all local tracked edits and untracked source/documentation/evidence; generated ignored build outputs excluded",
+  "protocol": "CHECKPOINT-2026-11-12.md",
+  "manifest_self_hash": "excluded to avoid self-reference",
+  "files": [
+    {
+      "path": "Makefile",
+      "sha256": "f81b859f91dba3efe35c21c456067c57e73eaeaf035bc9c1f8d8fbf71a80d31d",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "README.md",
+      "sha256": "3ce880eca84985052a179061d865fe099848d09c09a834f5971788f8af9b6d9a",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/architecture/EXECSVC-COMMON-EXECUTION-CONTRACT.md",
+      "sha256": "0a1c8e7cf20efbc65f67aa818619cb50ad48d5a3285c740aa19e57546978691b",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/architecture/GFX-KERNEL-FUNCTION-CATALOG.md",
+      "sha256": "3d67a5513bed78a330be258161388d0c2c524df629a83c7960d23fe8f977459b",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/architecture/GRAPHICS-USERLAND-MIGRATION.md",
+      "sha256": "0f1dc49edc1914c154693816a3f49da7e3a876e84e4b25f8636aec763a007bb8",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/architecture/HAL-NXOLMO-ISA-STATE-CONVERGENCE-PLAN-2026-11-10.md",
+      "sha256": "5fbecbf2b732e537a2e0eb23e27d6165744783d0e27f807249a72daa989f4ba1",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/architecture/NXSERVICE-OWNERSHIP-AUDIT-2026-11-10.md",
+      "sha256": "1a5707ec4c36d481b7556c6036ef6eaec849ae5b14f6858398aa55bbea68ade3",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/review/ADDENDUM-TIMER-IPC-2026-11-12.md",
+      "sha256": "1a83faecc5455f27424f34a1ee94db570f81b87219bccfc3cc82d55f3c6c5254",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/review/CHECKPOINT-2026-11-12.md",
+      "sha256": "04eb8903df09e3b3d2413ea70b5cf728daa81964b4273e27fd78f1d8bc021d50",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/review/GRAPHICS-LIVE-CATALOG-2026-11-12.md",
+      "sha256": "595bfd6894c2ecad52cdc27b52306bb5744ae3d6a40370c73132108e12bd83a9",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/review/INCREMENTAL-REVIEW-2026-11-12.md",
+      "sha256": "f6dfa4603fd33030411809e246b2d383f0d9dcf40e9e6b789e17b7a71a7d7c9a",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/review/USERLAND-SYSTEM-CATALOG-2026-11-12.md",
+      "sha256": "fb8663a526cd44c464547a8630f4239aa8faf8e055e75964b304654bf70880db",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/review/evidence/2026-11-12/aarch64-resize.png",
+      "sha256": "876cd98ac5fcdcbbbf5a19c98d9b1d861d6102532e86ca72c7d9197508880a90",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/review/evidence/2026-11-12/amd64-resize.png",
+      "sha256": "95a8810cc7c2fdf729be39c994305a8e7c777e0ed4e01779aa956119c7f141d5",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "docs/review/evidence/2026-11-12/verification.json",
+      "sha256": "503eb3140cc2a55837b96a4698df33862cc7e8cb548e5a3c5496aeb883335505",
+      "area": "documentation/evidence",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reconcile historical claims with current maintainer request and exact source/runtime evidence"
+    },
+    {
+      "path": "kernel/HAL/arch/aarch64/cpu/cpu.c",
+      "sha256": "1f771d7c84a773f66c5e5b21f5181a46d7484044d421c99d909e8b745fb7974a",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/arch/aarch64/cpu/ioport.c",
+      "sha256": "98aef499b5f4022ba5050373d559721cf9af4bcf961aa005db5a93deb3c6bc5c",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/arch/amd64/cpu/cpu.c",
+      "sha256": "db0d82c906562e2db4a4ff4d0ffb4f1c8ebb1c35292bda73f2e6fa2b3e65207a",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/arch/amd64/cpu/idt.c",
+      "sha256": "e6baeb9253431d6513abbd02ec9fd02c07cdfe52ae72b94cea9b09b84b83ec3f",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/arch/amd64/cpu/ioport.c",
+      "sha256": "0739606d52e1902ea1484712f196cc876b56570e3fb896ed9d5523fa3a9c4308",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/arch/amd64/include/arch/arch.h",
+      "sha256": "f08bb2b798001e4aac704fca7ee709c9db46885442f89ae958707150da5c30a2",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/arch/amd64/include/arch/ioport.h",
+      "sha256": "c1c0952aeaeac796927d11116ce1333caf1577061816ff60c7ac2104ad6f6ba0",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/base/result.c",
+      "sha256": "e19ebff874095f862b2edddc93579815830618b588d62b0936747b0fce36daaa",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/base/status.c",
+      "sha256": "836466fd4610f7d87a4c8ad9c75ba307d7b9eaabf9eb9849d6fa6050cb974933",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/base/types.c",
+      "sha256": "7f21b9e751b12638a3bda2cd02bdfdbda3d2f84550f11ee17680344014596e43",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/core/core.c",
+      "sha256": "40b7997006b0f5963c73f9c3d617b556d9e5a7c025c9fac0d0bfe044de3ea2be",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/core/core_protocol.c",
+      "sha256": "a21d4bdc9f7fb770d327edb47d94604c6ccba073b00b3d30d681975eef6f8212",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/core/resource.c",
+      "sha256": "c2bcace846b4b6722e6a4eb59ee6ae4c22f4f902140c5a3019753dac7bb569db",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/docs/PLAN.md",
+      "sha256": "8260db6689f5640612062205c57547e2578fa30cf329761c43243b9f41964ca0",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/docs/STATE.md",
+      "sha256": "3e0be2b0bcd3a5a206aabc23d08aad8c60899c0a70a95a9d5c8d31da73b95bd2",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/include/nxolmo/base/result.h",
+      "sha256": "fd0c72a871b53684505a2bc9a7cf1a9ec23d4bb5d4eaa5c481265271e9c4d0c2",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/include/nxolmo/base/types.h",
+      "sha256": "bdeeaaee95d9b238b40b2250d20453e476e3cd3af18bed89c534d11c2105cdeb",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/sources.mk",
+      "sha256": "cddd4f1937b8227ed595df8bac19eb9a260e43b4b7eeeb643930b37de6334769",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/tests/Makefile",
+      "sha256": "4907fffe665c00e4a1cbf7eebcaf26ca746563992db7cc8f25bc242a2305fc3a",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/tests/unit/base_contract_test.c",
+      "sha256": "d76071dab4eebbf27a55fe5de48b255adf8a41ba304c7fc8fb96d6d24046cc63",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/tests/unit/ioport_aarch64_test.c",
+      "sha256": "50c0d97b6b75e8298257a70c7c874725ef7019418cdb925a0e484173997cb3b4",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/HAL/tests/unit/ioport_amd64_test.c",
+      "sha256": "d68d215309acec7ce2bda19a69df9a955b30dc37fbfd3e1e3db660ab947cd16f",
+      "area": "HAL/ISA/ASTRA",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "hardware matrix, context save, provider boundaries, bounded failure paths"
+    },
+    {
+      "path": "kernel/Makefile",
+      "sha256": "e2bd492151c5f9d1832c6b7c968fd36dc357b102f096c934f67a075641c13835",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/contracts/abi-snapshot.sha256",
+      "sha256": "174ff3ec9a3d984ece7718871f084bcf118ee675bf6cb8c49e2e509c60192a2a",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/core/fault.c",
+      "sha256": "5c39d0439cd81ee821fd4e7e0134ce6ad58be9f30869458b9fdda007f49f8aa1",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/core/object.c",
+      "sha256": "38915e28c3a0a1f6a7a78c1f40d53dc90cd0896d150ea0956941a2890840b628",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/core/syscall_dispatch.c",
+      "sha256": "b3c66bba6fc1c21d4ee42276cda54729b95415204890a1f5a197c7135ad74e4f",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/drivers/input/core.c",
+      "sha256": "b36e0ec48cbf1223568292f31c2b36748b14e5020a0d526cecc51b1fe3fb1d03",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/fs/ext4.c",
+      "sha256": "1b4ff99ae143af7fd90fc14321bc4771176dd2f870c9c885074460a37e6a8097",
+      "area": "memory/files",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "concurrency, ownership publication, offset bounds, provider resize and partial failures"
+    },
+    {
+      "path": "kernel/fs/vfs.c",
+      "sha256": "e7ebf0506195ddeae06a1654a6c8c999b13a2658ee1ead48c17c35044dbd3c6e",
+      "area": "memory/files",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "concurrency, ownership publication, offset bounds, provider resize and partial failures"
+    },
+    {
+      "path": "kernel/graphics/compositor.c",
+      "sha256": "a2fd03c37e2a63bb971f74e2b0d83cd1b26813a035ee376350d05e7134e7a42c",
+      "area": "graphics migration",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "live 115-function catalog; migrate policy to userland; atomic resize and lifetime"
+    },
+    {
+      "path": "kernel/graphics/compositor_style.c",
+      "sha256": "afcff39c4a23ac98341e2053d3386db7b767e195459b61674d4a03d972d1cba9",
+      "area": "graphics migration",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "live 115-function catalog; migrate policy to userland; atomic resize and lifetime"
+    },
+    {
+      "path": "kernel/graphics/term.c",
+      "sha256": "80c737aa21fa640ff9982248f4170bf3ba36553225e2a31bd31bfa1ba45e4ad4",
+      "area": "graphics migration",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "live 115-function catalog; migrate policy to userland; atomic resize and lifetime"
+    },
+    {
+      "path": "kernel/include/abi/caps.h",
+      "sha256": "a55081f0dcf0729613e1f07f3523c55de35b3de268b48411787ce508ced575bc",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/include/abi/object.h",
+      "sha256": "7bc81cc84d4ff1d97ddc3f9551c29f839ceca48f079a0ddff1b78b46a7a3b0ce",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/include/abi/posix_types.h",
+      "sha256": "74bf62e7149633891301a656b92231c64a304bb069150ed498183af8cb1ce3c4",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/include/kernel/entropy.h",
+      "sha256": "67827e94dc8927ad3de6aba88fd971e4ba2d96aa14ffe7bc9b571c4a81726327",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/include/kernel/graphics.h",
+      "sha256": "941939a014fb6ac24dc516f6ad7c55ccf7d3f7509778033265e5863f066760f3",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/include/kernel/object.h",
+      "sha256": "01dfd6533e7fe84aee8cb76508a252cec8635a1d28959af9dba0335b6690e0a2",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/include/kernel/sched.h",
+      "sha256": "b0c5a764fea54ccc5d029a105cc09ea5fe013ef245d7a2498ed443927c4a4354",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/include/kernel/term.h",
+      "sha256": "da716b31c7e14684a683040990228135adc81e9d72394c2e1438868c3034fc90",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/include/kernel/vfs.h",
+      "sha256": "97be386e99bb89c251b2dec9555cfaabfb0bf1ad13e22f0cec501179470db945",
+      "area": "memory/files",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "concurrency, ownership publication, offset bounds, provider resize and partial failures"
+    },
+    {
+      "path": "kernel/lib/entropy.c",
+      "sha256": "be710a266f882e704ca74d2c3529335ef595fe1d0c9830e04f782fe39f9408f2",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/lib/ktest_samples.c",
+      "sha256": "63b9e2220e7f1e16b23a467788e1f33a4730eaf57cbb8d79a5164ae97a599517",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/lib/registry.c",
+      "sha256": "0741ccd1aebf854ff45ff6814419b3c8a3c4a0b6807bf393706147004645beff",
+      "area": "memory/files",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "concurrency, ownership publication, offset bounds, provider resize and partial failures"
+    },
+    {
+      "path": "kernel/lib/stack_protector.c",
+      "sha256": "35223fef4cbc2b9b9c25ef7688f395191338bab2be9ef49a7693be3e1c7c5958",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/mm/pmm.c",
+      "sha256": "71478ff87c3c539ca64757d17b95d3df2728aad7e13109e59a57bc8fa65ac744",
+      "area": "memory/files",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "concurrency, ownership publication, offset bounds, provider resize and partial failures"
+    },
+    {
+      "path": "kernel/sched/elf.c",
+      "sha256": "553b557871d5ba4e6046c7e70b9eb7d9025d05c60e3be4e92e825fb2de96b5e5",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/sched/process.c",
+      "sha256": "bc85c9d179c50cacd6593fb8325aef022e2da8081d3d8e39a459f4daa44b3626",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "kernel/user/extension/nxmanageDD/main.c",
+      "sha256": "ab43f7afd592696b5e21b87430b7a240413717fe02dda00ac86302f303566ca5",
+      "area": "kernel/object/scheduler",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "lock ordering, process pins, capability provenance, scheduling and cancellation"
+    },
+    {
+      "path": "system/include/api/execsvc.h",
+      "sha256": "ce0cbd8657fd418627122b722885d94c688459ea2322491b97e663c99fb1c1ef",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/api/nxkeyboard_layout.h",
+      "sha256": "e5f9fc70d3212380ee50c703ddd0a972858f583ee2cc4f1ce0323de2d27c1cc5",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/api/nxmanage.h",
+      "sha256": "ac187a7dcc0a3db335936f51a2fcfe8469e1e16b053fd1b4b8aeb6990bb1dfb2",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/api/os1.h",
+      "sha256": "6eb69a366c32abb9c34d2be4470cad986746ff02f1b6e8438258b00dc5e1e5df",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/api/os1_tty.h",
+      "sha256": "f94d563e5061780cb9fa2f82dc6adf0e33f42b02530c832323a5de830e60bb71",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/api/unistd.h",
+      "sha256": "7478bf24a517c158cef100aa59a43b79af2f197228777f693fc0ef63ea13ee54",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/contract/caps.h",
+      "sha256": "a55081f0dcf0729613e1f07f3523c55de35b3de268b48411787ce508ced575bc",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/contract/object.h",
+      "sha256": "7bc81cc84d4ff1d97ddc3f9551c29f839ceca48f079a0ddff1b78b46a7a3b0ce",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/contract/os1_material_colors.h",
+      "sha256": "2b41eaf5df33bcc82e8ea8278230079a7100f08f2f983e703b2521efa25439bd",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/include/contract/posix_types.h",
+      "sha256": "74bf62e7149633891301a656b92231c64a304bb069150ed498183af8cb1ce3c4",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/lib/extensions/input/nxkeyboard_layout.c",
+      "sha256": "78027943c9a66975839914013145125186f024a965e5d0ce67c8694ae7400074",
+      "area": "SDK/extensions",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "protocol ownership, finite waits, surface/buffer generations, no duplicated service policy"
+    },
+    {
+      "path": "system/lib/extensions/services/README.md",
+      "sha256": "05598dd1e344a80e8396b0347c313ec8d54f2ef18b2cc4350c3ea15b0ba47771",
+      "area": "SDK/extensions",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "protocol ownership, finite waits, surface/buffer generations, no duplicated service policy"
+    },
+    {
+      "path": "system/lib/extensions/services/execsvc_client.c",
+      "sha256": "0cc89ba474033cf7a01fa7afc69981bcea71f4ffd51131a7cefe028b5c277d45",
+      "area": "SDK/extensions",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "protocol ownership, finite waits, surface/buffer generations, no duplicated service policy"
+    },
+    {
+      "path": "system/lib/extensions/services/notify_client.c",
+      "sha256": "6b1c237c835a988966559f77b169e3431195dff6fd90adabd6d6f3f9330e4f61",
+      "area": "SDK/extensions",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "protocol ownership, finite waits, surface/buffer generations, no duplicated service policy"
+    },
+    {
+      "path": "system/lib/extensions/services/port_client.c",
+      "sha256": "38a7ec10f7aa837e0d2e6a54e08d01647eb15db1e3d7f7c8d7917764f8a6a458",
+      "area": "SDK/extensions",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "protocol ownership, finite waits, surface/buffer generations, no duplicated service policy"
+    },
+    {
+      "path": "system/lib/gfx/theme.c",
+      "sha256": "43d850d3b6bc5b10ef17dd6240edbfeb2f7e279c75163d0f7993c1db68cf1415",
+      "area": "SDK/extensions",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "protocol ownership, finite waits, surface/buffer generations, no duplicated service policy"
+    },
+    {
+      "path": "system/lib/gfx/tty_model.c",
+      "sha256": "da79aa076d5f537329cf22f41789a0a3bf1c6dd58eb5ec6920c609413a58adfb",
+      "area": "SDK/extensions",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "protocol ownership, finite waits, surface/buffer generations, no duplicated service policy"
+    },
+    {
+      "path": "system/lib/lib.c",
+      "sha256": "dadfcff9a271f1a12f5cfacda61626ba0c097ba91a2b1143d95e907172f518c7",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/lib/math.c",
+      "sha256": "0fe697fc4daab1241e231765deea89e5edeab57f795a05fc173d35c7cfe7915c",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/lib/portability/os1_video_platform.c",
+      "sha256": "ca7cc1d31c25491235c23be752b587bdfd496fffa87e8d3d9b7728e89c31d8af",
+      "area": "SDK/extensions",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "protocol ownership, finite waits, surface/buffer generations, no duplicated service policy"
+    },
+    {
+      "path": "system/lib/tests/gfx_chrome_test.c",
+      "sha256": "60a20a36c1baba0913a500de76119f655d909523be93299f799f914cb1801f99",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/lib/tests/material_palette_contract_test.py",
+      "sha256": "8d578bc4cd35156f57237c2153c40c2da347fe5dca1df75181bd299dffa042e6",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "system/lib/tests/tty_model_test.c",
+      "sha256": "5af8724aadc8fcf0c2862f847c0940f17e6a134dc1acdb973fd82d24b2e423cd",
+      "area": "SDK/libc/contracts",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "shared ABI, error fidelity, descriptor semantics, unsupported-operation hardening"
+    },
+    {
+      "path": "tools/mkdisk.c",
+      "sha256": "e3eff2b9425db2632420fc30c06a4d3eb63e5730087f00db3795a3535267f213",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/power12/audit_ast.py",
+      "sha256": "d5f747a1b7dab90c890a7f07f3b93bad283a9dd934e859887c835aaf4d386111",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/power12/common.py",
+      "sha256": "314a392c9f89ebc16e3b3b3aec0f9b8bddf33077433c48d24aa7f4d24130715d",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/power12/policy.json",
+      "sha256": "ef71a407f7e095ed9715bd325be47056329de30c8e9cb56c211927afb80b87ec",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/power12/test_auditors.py",
+      "sha256": "935b03126411206ffab6971e70e319166ae94fd2f628725cb9d7e70b4aa2bd6a",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_entropy_policy.py",
+      "sha256": "fc364038507667cd5d1ee8f97a8e1c1f7cb63dae8a125b8f4d7ece8069047e1d",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_file_length.py",
+      "sha256": "5f4474aba4f9db5cb72917335e6eab9f5163a171f2ba3aef64bb6df9f78674d6",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_getcwd_contract.py",
+      "sha256": "a504ab27bc3fb79b8bc9b101e3ed3713fe926be885496d2f5b7a31301642c38c",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_mkdisk_groups.py",
+      "sha256": "d414a89b49482e352ddbc082bbaebe81cbfc6e05227e62c84d1c068b6be319bc",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_nxmanage_boot_manifest.py",
+      "sha256": "53e9d410dd6d0fb817fc78a6ca02b660046596cb3328ada425cb3248f44e1277",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_nxservice_layout.py",
+      "sha256": "9d33961306a5442db0ed26d149bef8fdb900267f2f513544b2bd7eb3c05786e6",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_nxtimerdiag_sampling.py",
+      "sha256": "0ef90f1a9ebab979262cf1df89cecb13c284b7e9ecd36265ba2e907d294b5f44",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_pmm_free_publish.py",
+      "sha256": "08f5e13b278295a0261c4ee0580cbf3ba674173ecebcf904377218a7f426abe0",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_scheduler_quantum.py",
+      "sha256": "aac131d70fced9dbc548eab9b6fd46af51927be215729cf130c6e9771ec5f3b9",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "tools/test_spawn_owned.py",
+      "sha256": "ca82e32b210cc2e5d10d80e6e722df8faaaed3a49cd595c697050465b793508d",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "user/bin/captest.c",
+      "sha256": "daaee5174b37ad7f9bc9ebab708d363a230df126bd6cdf3c18bfb0354c0f8314",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "user/bin/fdtest.c",
+      "sha256": "13b2d114f660f75fa430426535076b6d20899a91eeac92010c7791b4ab00ad17",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "user/bin/gfxbuffertest.c",
+      "sha256": "50e47810f5e654c04a934db2fd0ce5155641e07dabcb63058a7df779ac527997",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "user/bin/libctest.c",
+      "sha256": "9a211dbc48d488c5f95a4347a1ad119bf19d049aeb3d5421d2355b4c70efa4be",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "user/bin/notifytest.c",
+      "sha256": "1100ee4f4eb76a8f76fba63159993cbf15c555b0022d91930016ad3a285dda7b",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "user/bin/porttest.c",
+      "sha256": "eef713c0ce1de326821cf85268fedfa07725cfce25853d16965e71827edb2ed0",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "user/portability/coreutils/overlay.mk",
+      "sha256": "1102785287a6b6f35aeaf5dc0696280f5e60e8ff0221f6ce693ee5bc8a9761d3",
+      "area": "build/tests/portability",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "reproducibility, negative tests, actual nxadb behavior, preserve upstream modules and gates"
+    },
+    {
+      "path": "user/sbin/nxinit.c",
+      "sha256": "6aa3834bfc43c5e2ea58b06c6edd318ab72a210e128423abf88b145ba015ec53",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxbar.c",
+      "sha256": "f5a5eda30a4b71a2c8b9266d7a3981f5a8ae1450d332ece25c79eb85ec3212fd",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxenvinit.c",
+      "sha256": "3e812f79a2bd8cf3b9736f0a03687d2f7628b23a44537b90cba6904940d65d99",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxexec.c",
+      "sha256": "c80d202a8bc310463acaee9035b6132e91e4e2ca61004466160442fbbbe1d4cf",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxexec.h",
+      "sha256": "be7815f677550ab40768792b8cdabc8007510a4117b6a5340981be77010e4dbe",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxfilem/draw.c",
+      "sha256": "a3962ce3f4db16f864621822a286da7023eabb1cf3fd630d93b2cc2a6a9f8c34",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxfilem/fileops.c",
+      "sha256": "59c08696376a646bf58aa39bf55eb9489c8e9ffa1cd8e5a1355102293e54df9b",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxfilem/main.c",
+      "sha256": "ca94ece42faa285107d9151f97522fa231699b2375f47d124fbaf0879bc3efd0",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxfilem/nxfilem.h",
+      "sha256": "763e7919ff4687841e44222c6949cb37a2bc1dfd5e2d71fd580a5b9c21fd7caf",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxfilem/ui.c",
+      "sha256": "101ec976cce2f1454ab756627ac28b4d67786bf0640de9aa3693da1e366b3866",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxkeymap.c",
+      "sha256": "c4480bf4071d61e686ea7c0662899565fba56328e875a470988802b57d0c6423",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxlauncher.c",
+      "sha256": "fbfa7437de08955c23f2fa28851f1b06557d7927480944c3fba2d116e706aef4",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxperm.h",
+      "sha256": "50368e9d0cef2031c969a6356c9aaa29a9c20199ead4ae20eddf6c25b83d69a5",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxres.h",
+      "sha256": "73221760799b7e283f817d85fb123a21ca5886d3f92df4f72c4179b5f537f265",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxroleprobe.c",
+      "sha256": "8c12c8bb292b656b8bd2ef7433efffed962173b7e3e9578ba6a7e6027e315f80",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxshell.c",
+      "sha256": "c80fb4578ab6fe106b88ebf54019e2d91e1fff3115e7764ddba248dad50c6844",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxtestrunner.c",
+      "sha256": "d807930df3d57d76fb877fb3f0295dcafa8b1834304360ef1e4d0fb42ec32ef9",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/bin/nxtimerdiag.c",
+      "sha256": "a05744dc401e113a4152dbaf14fcc3fda018cf3b460a218ce8e1878c9d558c98",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/boot/services.conf",
+      "sha256": "9d14a9e3a8c77972f2ac96b95ee9d739cd3845f66b6ec61ea672e7ca16e02145",
+      "area": "frontends/boot",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "use public SDK, context delegation, manifest least privilege, GUI/TTY behavior"
+    },
+    {
+      "path": "user/sys/services/nxcompositor.c",
+      "sha256": "722d3ccf2ae8f66925cfcd7b7173ab87320c1783343bb638d96ad0d79c9b9002",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    },
+    {
+      "path": "user/sys/services/nxexecd.c",
+      "sha256": "08deb3c13bd686ca98efc17d85e038105fcced9acc51818ba965de5bf969deed",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    },
+    {
+      "path": "user/sys/services/nxkeyboardd.c",
+      "sha256": "6c7e9b091e12372c774f0b2af5d0b8becc69c54f7b2ce5901ce85ebbeedf2f61",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    },
+    {
+      "path": "user/sys/services/nxmoused.c",
+      "sha256": "b763d44fc506fbc0f40e3b43061f71ddb6c9fa2c4b35fff45e3433a641ecd4d4",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    },
+    {
+      "path": "user/sys/services/nxntfy_srv.c",
+      "sha256": "69edd5879215fcc92be77ffa2602474a76e02c6a2feed3321ef126465a412ef5",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    },
+    {
+      "path": "user/sys/services/nxpaxd.c",
+      "sha256": "cff2fef6439d7cfad74eeafbdf4f6b60d5603e33dac0bd859f1fb911a29bd0c8",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    },
+    {
+      "path": "user/sys/services/nxtimerdd.c",
+      "sha256": "9615e543b2af18286796ea0be7f5aba6e64c2a25f92468a3ce6861a8901e7c11",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    },
+    {
+      "path": "user/sys/services/nxttyd.c",
+      "sha256": "4e9f467fd2fa4fca82df6c6520f9d5762c4859ba0828b54f342b5a5a7a32b1c5",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    },
+    {
+      "path": "user/sys/services/tests/keyboard_layout_test.c",
+      "sha256": "82d1e9afa808fea4b3296aa2b05e6dae56d24ee6a99b5edec40fa26ae7490a2e",
+      "area": "services",
+      "status": "checkpoint included; full semantic qualification remains open",
+      "next_review": "one service at a time: authority, restart, input validation, cleanup, backpressure and timeout"
+    }
+  ]
+}

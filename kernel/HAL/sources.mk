@@ -23,6 +23,7 @@ HAL_C_SOURCES := \
     $(HAL_ARCH_DIR)/cpu/msr.c \
     $(HAL_ARCH_DIR)/cpu/syscall_hal.c \
     $(HAL_ARCH_DIR)/cpu/frame.c \
+    $(HAL_ARCH_DIR)/cpu/ioport.c \
     $(HAL_ARCH_DIR)/cpu/apic.c \
     $(HAL_ARCH_DIR)/mm/mmu.c \
     $(HAL_ARCH_DIR)/mm/tlb.c \
@@ -47,6 +48,7 @@ HAL_C_SOURCES := \
     $(HAL_ARCH_DIR)/cpu/cpu.c \
     $(HAL_ARCH_DIR)/cpu/syscall.c \
     $(HAL_ARCH_DIR)/cpu/frame.c \
+    $(HAL_ARCH_DIR)/cpu/ioport.c \
     $(HAL_ARCH_DIR)/mm/mmu.c \
     $(HAL_ARCH_DIR)/platform.c \
     $(HAL_ARCH_DIR)/boot_memory.c \
@@ -61,6 +63,9 @@ $(error HAL: unsupported ARCH $(ARCH))
 endif
 
 HAL_C_SOURCES += $(HAL_ROOT)/base/checked.c \
+                 $(HAL_ROOT)/base/types.c \
+                 $(HAL_ROOT)/base/result.c \
+                 $(HAL_ROOT)/base/status.c \
                  $(HAL_ROOT)/common/boot_memory_record.c \
                  $(HAL_ROOT)/core/core.c \
                  $(HAL_ROOT)/core/time.c \

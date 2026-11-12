@@ -331,6 +331,78 @@ KTEST_CASE(test_input_mouse_queue) {
                    &event, OS1_INPUT_ROLE_MOUSE, UINT32_C(99)), -EINVAL);
 }
 
+/* Queue loss must not leave a stuck mouse button: the consumer receives a
+ * genuine SYN_DROPPED marker, discards the partial frame, then resumes at
+ * the next device frame boundary. No assertion macros in these tests. */
+KTEST_CASE(test_input_mouse_overflow_resync) {
+    struct os1_raw_input_event_v1 event = {0};
+    OS1driver_input_core_init();
+    for (uint32_t step = 0U; step < UINT32_C(260); ++step)
+        OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xFA),
+                                EV_REL, REL_X, 1);
+    int rc = (int)OS1libkernel_input_read_raw(
+        &event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY);
+    if (rc != 1 || event.type != EV_SYN || event.code != 3U) {
+        printk("[KTEST] FAIL mouse ring overflow missing SYN_DROPPED\n");
+        ktest_test_failed = 1;
+        return;
+    }
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xFA),
+                            EV_SYN, 0, 0);
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xFA),
+                            EV_REL, REL_Y, 19);
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xFA),
+                            EV_SYN, 0, 0);
+    rc = (int)OS1libkernel_input_read_raw(
+        &event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY);
+    if (rc != 1 || event.type != EV_REL || event.code != REL_Y ||
+        event.value != 19) {
+        printk("[KTEST] FAIL mouse ring resync did not resume data\n");
+        ktest_test_failed = 1;
+        return;
+    }
+    rc = (int)OS1libkernel_input_read_raw(
+        &event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY);
+    if (rc != 1 || event.type != EV_SYN || event.code != 0U) {
+        printk("[KTEST] FAIL mouse ring recovery missing frame end\n");
+        ktest_test_failed = 1;
+    }
+}
+
+KTEST_CASE(test_input_mouse_syn_overflow_preserves_keyboard) {
+    struct os1_raw_input_event_v1 event = {0};
+    OS1driver_input_core_init();
+    for (uint32_t step = 0U; step < UINT32_C(255); ++step)
+        OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xFB),
+                                EV_REL, REL_X, 1);
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xFB),
+                            EV_SYN, 0, 0);
+    int rc = (int)OS1libkernel_input_read_raw(
+        &event, OS1_INPUT_ROLE_MOUSE, OS1_INPUT_READ_TRY);
+    if (rc != 1 || event.type != EV_SYN || event.code != 3U) {
+        printk("[KTEST] FAIL dropped SYN did not invalidate frame\n");
+        ktest_test_failed = 1;
+        return;
+    }
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xFC),
+                            EV_KEY, KEY_A, 1);
+    OS1driver_input_publish(INPUT_PROVIDER_LEGACY, UINT8_C(0xFC),
+                            EV_SYN, 0, 0);
+    rc = (int)OS1libkernel_input_read_raw(
+        &event, OS1_INPUT_ROLE_KEYBOARD, OS1_INPUT_READ_TRY);
+    if (rc != 1 || event.type != EV_KEY || event.code != KEY_A) {
+        printk("[KTEST] FAIL mouse overflow corrupted keyboard role\n");
+        ktest_test_failed = 1;
+        return;
+    }
+    rc = (int)OS1libkernel_input_read_raw(
+        &event, OS1_INPUT_ROLE_KEYBOARD, OS1_INPUT_READ_TRY);
+    if (rc != 1 || event.type != EV_SYN || event.code != 0U) {
+        printk("[KTEST] FAIL keyboard frame after mouse overflow\n");
+        ktest_test_failed = 1;
+    }
+}
+
 KTEST_CASE(test_ps2_set1_arrow_decode) {
     struct ps2_keyboard_decoder decoder;
     struct ps2_key_event event = {0};

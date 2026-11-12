@@ -343,3 +343,16 @@ clang-tidy/cppcheck, both kernel builds and ISO NXADB boot lanes pass,
 with 30/30 amd64 and 31/31 AArch64 KTEST and zero unexpected faults.
 Changed Power12 reports zero findings; global Power12 qualification and
 the other NXOLMO modules are OPEN.
+
+## 2026-11-10 — NXOLMO canonical identity and result foundation
+
+HAL now owns and links NXOLMO base/types, result and status. Real
+resource validation uses the canonical ID/ref validity and generation
+comparison after translating the public HAL wire ABI. Host/sanitizer,
+freestanding cross-link, static analysis, changed Power12 and QEMU
+guest boot ISO passes: 30/30 AMD64, 31/31 AArch64 KTEST, zero
+unexpected faults. Typed result/status functions are also compiled
+and tested, but runtime scope production integration is still OPEN.
+Host-based NXOLMO clock/cycle cannot be linked into kernel; integrate
+with the existing HAL clocksource and preserve not-ready semantics.
+See the full NXOLMO ISA convergence plan in docs/architecture.

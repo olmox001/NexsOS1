@@ -94,6 +94,7 @@
 #include <os1.h>
 #include <os1_gfx.h>
 #include <os1_surface.h>
+#include <os1_tty.h>
 #include <os1_video_platform.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -200,7 +201,72 @@ static long errno_ret(long r) { return errno_ret_ctx(r, NULL); }
 long read(int fd, char *buf, unsigned long count) {
   return errno_ret(_sys_read(fd, buf, count));
 }
+/* Userland TTY transport: a regular capability PORT, not a new syscall.
+ * The original FILE/PIPE descriptor always wins. Interactive sessions
+ * discover their own renderer through the process-local inherited environment
+ * prepared BEFORE spawning by nxttyd. A single process never serves two TTYs;
+ * each session has a distinct named capability and its own compositor window.
+ * No process can pick a destination by changing keyboard focus.
+ *
+ * Native window ownership takes precedence over an inherited TTY session.
+ * Kilo creates its own text window and still receives the parent's env:
+ * its ANSI stdout must reach the window's native compositor text surface,
+ * not disappear into the parent session's PORT. Window ownership is checked
+ * per write because a process may create/destroy windows over its lifetime.
+ * The native console branch preserves kernel self-rendered isolation. */
+static long tty_session_write(int fd, const char *buf, size_t count) {
+  static int checked, sender = -1;
+  static char name[64];
+  if (!checked) {
+    checked = 1;
+    if (OS1_env_get(OS1_TTY_ENV, name, sizeof(name)) != 0) name[0] = '\0';
+  }
+  if (name[0] == '\0' || (fd != 1 && fd != 2) || !isatty(fd))
+    return -ENODEV;
+  if (OS1_window_of_pid(getpid()) > 0) return -ENODEV;
+  if (sender < 0) {
+    long h = OS1low_handle_create(OS1_NS_PORT, name, OS1_RIGHT_WRITE,
+                                   OBJ_TYPE_PORT);
+    if (h < 0) return h;
+    sender = (int)h;
+  }
+  size_t done = 0U;
+  for (size_t frame = 0U; frame < 65536U; ++frame) {
+    if (done >= count) return (long)done;
+    struct ipc_message m = {0};
+    size_t chunk = count - done;
+    if (chunk > sizeof(m.payload)) chunk = sizeof(m.payload);
+    m.type = OS1_TTY_WRITE;
+    m.data1 = chunk;
+    if (memcpy(m.payload, buf + done, chunk) != m.payload) {
+      errno = EIO;
+      return done > 0U ? (long)done : -1;
+    }
+    long sent = -EAGAIN;
+    for (unsigned retry = 0U; retry < 128U && sent == -EAGAIN; ++retry) {
+      sent = OS1_object_write(sender, &m, sizeof(m));
+      if (sent == -EAGAIN) OS1_sleep(1);
+    }
+    if (sent != (long)sizeof(m)) {
+      if (sent == -EPIPE || sent == -EBADF || sent == -ENOENT) {
+        long closed = OS1low_handle_close(sender);
+        sender = -1;
+        if (closed != 0) errno = EIO;
+      }
+      errno = sent < 0 ? (int)-sent : EIO;
+      return done > 0U ? (long)done : -1;
+    }
+    done += chunk;
+  }
+  errno = EOVERFLOW;
+  return done > 0U ? (long)done : -1;
+}
+
 long write(int fd, const char *buf, size_t count) {
+  if (count > 0U && buf != NULL && (fd == 1 || fd == 2)) {
+    long result = tty_session_write(fd, buf, count);
+    if (result != -ENODEV) return result;
+  }
   return errno_ret(_sys_write(fd, buf, count));
 }
 long OS1_time_now(void) { return _sys_get_time(); }
@@ -593,6 +659,12 @@ int OS1_port_create_private(const char *name) {
       OS1_RIGHT_READ | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE |
       OS1_PORT_CREATE_PRIVATE, OBJ_TYPE_PORT);
 }
+int OS1_port_create_family(const char *name) {
+  return (int)OS1low_handle_create(
+      OS1_NS_PORT, name,
+      OS1_RIGHT_READ | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE |
+      OS1_PORT_CREATE_FAMILY, OBJ_TYPE_PORT);
+}
 int OS1_port_open(const char *name) {
   /* Public SEND acquisition grants only WRITE, not DUPLICATE or TRANSFER.
    * Clients don't need amplification rights; protocol handle delegation
@@ -666,8 +738,49 @@ long OS1_input_wait_mouse(struct os1_raw_input_event_v1 *event) {
   return OS1low_input_read_raw(event, OS1_INPUT_ROLE_MOUSE,
                                OS1_INPUT_READ_WAIT);
 }
+static int os1_window_geometry(int id, int a, int b, int command) {
+  if (id <= 0) return -EINVAL;
+  char idbuf[16];
+  int n = snprintf(idbuf, sizeof(idbuf), "%d", id);
+  if (n <= 0 || (size_t)n >= sizeof(idbuf)) return -EINVAL;
+  long handle = OS1low_handle_create(OS1_NS_WIN, idbuf,
+                                    OS1_RIGHT_WRITE, OBJ_TYPE_WINDOW);
+  if (handle < 0) return (int)handle;
+  uint64_t values = ((uint64_t)(uint32_t)a << 32) | (uint32_t)b;
+  long result = OS1_object_ctl((int)handle, command, (long)values);
+  long closed = OS1low_handle_close((int)handle);
+  if (result < 0) return (int)result;
+  return closed < 0 ? (int)closed : (int)result;
+}
+
 long OS1_window_move(int window_id, int x, int y) {
   return OS1_surface_move(window_id, x, y);
+}
+
+int OS1_window_present_resize(int window_id, int w, int h) {
+  if (w < 1 || h < 1 || w > 4096 || h > 4096) return -EINVAL;
+  struct os1_window_snapshot_v1 before = {
+      .abi_version = OS1_COMPOSITOR_ABI_V1,
+      .struct_size = sizeof(before), .id = window_id
+  };
+  long snap = OS1_window_snapshot(&before);
+  if (snap < 0) return (int)snap;
+  int result = os1_window_geometry(window_id, w, h, OBJ_CTL_WINDOW_PRESENT);
+  if (result != 0) return result;
+  if (before.draw_width == w && before.draw_height == h) return 0;
+  /* Policy and owner notifications stay in the user SDK, not in NX-CORE.
+   * The compositor service only renders the retained source at draw bounds. */
+  if (before.pid > 0) {
+    struct ipc_message changed = {0};
+    changed.type = IPC_TYPE_RESIZE;
+    changed.data1 = (uint64_t)w;
+    changed.data2 = (uint64_t)h;
+    long sent = OS1low_ipc_send(before.pid, &changed);
+    if (sent != 0)
+      OS1_report_error("window.present_resize_notify",
+                       (int)(sent < 0 ? sent : -EIO));
+  }
+  return 0;
 }
 
 /* System statistics snapshot (perf §1).  Forwards to the SYS_SYSSTATS stub,
@@ -768,7 +881,8 @@ void OS1_window_set_focus(int pid) {
   _sys_set_focus(pid);
 }
 int OS1_window_resize(int win_id, int w, int h) {
-  return os1_video_window_resize(win_id, w, h);
+  if (w < 1 || h < 1 || w > 4096 || h > 4096) return -EINVAL;
+  return os1_window_geometry(win_id, w, h, OBJ_CTL_WINDOW_RESIZE);
 }
 void OS1_gfx_draw(int x, int y, int w, int h, int color) {
   _sys_draw(x, y, w, h, color);
@@ -1003,12 +1117,16 @@ int set_font(void *data, size_t size) {
  * OBJ_CTL_SEEK(offset) → object_write → close.  OS1_RIGHT_CREATE gives
  * open(O_CREAT) semantics (a missing file is created behind the same
  * vfs_write_allowed seam the ambient path used), so creation keeps working;
- * a size==0 call is the create/truncate-empty idiom: the creation already
- * happened at handle_create, nothing to write. */
+ * offset zero retains this legacy helper's replacement contract through
+ * explicit OBJ_CTL_TRUNCATE. Normal descriptor writes remain positional. */
 int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
-  if (size < 0) {
+  if (size < 0 || offset < 0) {
     errno = EINVAL;
     return -EINVAL;
+  }
+  if (size > 0 && buf == NULL) {
+    errno = EFAULT;
+    return -EFAULT;
   }
   long h = OS1low_handle_create(
       OS1_NS_FS, path, OS1_RIGHT_WRITE | OS1_RIGHT_CREATE, OBJ_TYPE_FILE);
@@ -1018,13 +1136,12 @@ int OS1_fs_write(const char *path, const void *buf, int size, int offset) {
                      (int)h); /* surface EACCES/EIO; ENOENT stays silent */
     return (int)h;
   }
-  long w = 0;
-  if (size > 0) {
-    if (offset > 0)
-      OS1_object_ctl((int)h, OBJ_CTL_SEEK, offset);
-    w = OS1_object_write((int)h, buf, (unsigned long)size);
-  }
-  OS1low_handle_close((int)h);
+  long w = OS1_object_ctl((int)h,
+      offset == 0 ? OBJ_CTL_TRUNCATE : OBJ_CTL_SEEK, offset);
+  if (w >= 0)
+    w = size > 0 ? OS1_object_write((int)h, buf, (unsigned long)size) : 0;
+  long closed = OS1low_handle_close((int)h);
+  if (w >= 0 && closed < 0) w = closed;
   if (w < 0) {
     errno = (int)-w;
     OS1_report_error(path, (int)w);
@@ -1550,15 +1667,13 @@ FILE *fopen(const char *path, const char *mode) {
     errno = e; /* free() must not mask the open failure's errno */
     return NULL;
   }
-  /* Write mode truncates to empty NOW (POSIX "w"): unlink + zero-byte create,
+  /* Write mode truncates to empty NOW (POSIX "w"): explicit FILE control,
    * so the file both exists and is emptied before any fwrite — the old lazy
    * path left stale trailing bytes when overwriting a longer file. Append
    * mode ("a") creates-if-missing and starts the position at EOF. */
   if (mode[0] == 'w') {
-    /* Create-and-truncate in one call: a from-start write (offset 0) now
-     * truncates on the FS side (ext4_write), so a zero-byte write both
-     * materialises a missing file and empties an existing one — no unlink
-     * needed, and the inode (perms/links) is preserved instead of churned. */
+    /* The legacy path helper explicitly requests truncation even for a
+     * zero-byte replacement, preserving the existing inode and handles. */
     if (OS1_fs_write(path, "", 0, 0) < 0) {
       int e = errno;
       free(f);
@@ -2279,7 +2394,9 @@ int system(const char *command) {
    * execsvc_spawn() is NOT dead: captest exercises the protocol directly
    * ("exec service" section), so the daemon stays verified while it is off the
    * POSIX critical path.  Re-enable here — and nowhere else — once 9d lands. */
-  int pid = spawn_args(NXSHELL_PATH, 3, argv);
+  char resolved[EXECSVC_PATH_MAX];
+  int pid = execsvc_launch_search(3, argv, resolved, sizeof(resolved),
+                                  0u, NULL, 0, 0);
   if (pid <= 0) {
     errno = ENOENT;
     return -1;
@@ -3296,113 +3413,33 @@ int rename(const char *oldpath, const char *newpath) {
   return 0;
 }
 
-/*
- * truncate - set a file's length to exactly `length` (POSIX <unistd.h>).
- *
- * The NexsOS write model (PLAN-2026-07-17-STRATIFICATION.md Phase 1): a
- * from-start write (offset 0) IS the whole-file-replace/truncate primitive at
- * the FS layer (ext4_write), so this builds on it with no new kernel call:
- *   - length == 0        -> a zero-byte offset-0 write empties the file;
- *   - length <  size     -> re-write the first `length` bytes at offset 0,
- *                           which truncates the tail;
- *   - length >  size     -> zero-extend from the old EOF.
- * Explicit truncation for programs that don't go through fopen("w").
- * ftruncate(fd) needs an fd->path or an OBJ_CTL_TRUNCATE verb (a kernel
- * follow-up), so it is intentionally not provided yet rather than faked.
- */
+/* Length changes use the existing FILE capability operation. Provider errors
+ * stay visible; neither helper allocates a file-sized buffer or changes the
+ * descriptor position. The path wrapper owns only opening and closing. */
 int truncate(const char *path, long length) {
   if (length < 0) {
     errno = EINVAL;
     return -1;
   }
-  int size = OS1_fs_read(path, NULL, 0, 0); /* current size; errno on miss */
-  if (size < 0)
-    return -1;
-  if (length == (long)size)
-    return 0;
-  if (length == 0)
-    return OS1_fs_write(path, "", 0, 0) < 0 ? -1 : 0;
-  if (length < (long)size) {
-    char *buf = malloc((size_t)length);
-    if (!buf) {
-      errno = ENOMEM;
-      return -1;
-    }
-    int n = OS1_fs_read(path, buf, (int)length, 0);
-    int r = (n < 0 || OS1_fs_write(path, buf, n, 0) < 0) ? -1 : 0;
-    free(buf);
-    return r;
+  int fd = open(path, O_WRONLY);
+  if (fd < 0) return -1;
+  int result = ftruncate(fd, length);
+  int error = errno;
+  int closed = close(fd);
+  if (result != 0) {
+    errno = error;
+    return result;
   }
-  /* extend: zero-fill from the old EOF up to `length` */
-  {
-    long pad = length - (long)size;
-    char *z = calloc(1, (size_t)pad);
-    if (!z) {
-      errno = ENOMEM;
-      return -1;
-    }
-    int r = OS1_fs_write(path, z, (int)pad, size) < 0 ? -1 : 0;
-    free(z);
-    return r;
-  }
+  return closed;
 }
-/*
- * ftruncate - set an OPEN descriptor's file length (POSIX).  Closes the Phase 1
- * leftover ("ftruncate awaits an fd->path / OBJ_CTL_TRUNCATE kernel verb").
- *
- * Composed from the primitives rather than duplicating truncate()'s path-based
- * logic in the kernel:
- *   - shrink to N>0: read the first N bytes back, then rewrite them from offset
- *     0 — an offset-0 write REPLACES the whole file (the Phase 1 FS standard),
- *     so the rewrite IS the truncation;
- *   - shrink to 0: needs OBJ_CTL_TRUNCATE, because POSIX defines
- *     write(fd, buf, 0) as a NO-OP and so it cannot express "empty this file";
- *   - extend: zero-fill from the old EOF up to the new length.
- */
+
 int ftruncate(int fd, long length) {
   if (length < 0) {
     errno = EINVAL;
     return -1;
   }
-  long size = lseek(fd, 0, SEEK_END);
-  if (size < 0)
-    return -1;
-  if (length == size)
-    return 0;
-
-  if (length == 0)
-    return OS1_object_ctl(fd, OBJ_CTL_TRUNCATE, 0) < 0 ? -1 : 0;
-
-  if (length < size) {
-    char *buf = malloc((size_t)length);
-    if (!buf) {
-      errno = ENOMEM;
-      return -1;
-    }
-    int r = -1;
-    if (lseek(fd, 0, SEEK_SET) >= 0) {
-      long n = read(fd, buf, (unsigned long)length);
-      if (n >= 0 && lseek(fd, 0, SEEK_SET) >= 0 &&
-          write(fd, buf, (size_t)n) >= 0)
-        r = 0; /* offset-0 write replaced the file with n bytes */
-    }
-    free(buf);
-    return r;
-  }
-
-  { /* extend: zero-fill from the old EOF up to `length` */
-    long pad = length - size;
-    char *z = calloc(1, (size_t)pad);
-    if (!z) {
-      errno = ENOMEM;
-      return -1;
-    }
-    int r = (lseek(fd, size, SEEK_SET) >= 0 && write(fd, z, (size_t)pad) >= 0)
-                ? 0
-                : -1;
-    free(z);
-    return r;
-  }
+  long result = OS1_object_ctl(fd, OBJ_CTL_TRUNCATE, length);
+  return (int)errno_ret(result == -EPERM ? -EBADF : result);
 }
 
 /* puts: writes string + newline to fd 1, matching the standard POSIX contract.
@@ -4323,19 +4360,47 @@ int gettimeofday(struct timeval *tv, struct timezone *tz) {
 
 int lstat(const char *path, struct stat *buf) { return stat(path, buf); }
 
+/* POSIX descriptor metadata is an object query, NOT a seek. A console and
+ * a pipe are valid non-seekable descriptors; lseek(SEEK_END) must fail with
+ * ESPIPE on them, but their fstat() must succeed. Moving a FILE offset as a
+ * side effect of fstat() also violated the existing shared handle contract.
+ * Reuse the authoritative cap type and OBJ_CTL_STAT byte count. No kernel
+ * changes and no separate descriptor table. */
 int fstat(int fd, struct stat *buf) {
-  if (fd < 0 || !buf) {
+  if (fd < 0 || buf == NULL) {
     errno = EBADF;
     return -1;
   }
-  long size = lseek(fd, 0, SEEK_END);
-  if (size < 0) {
-    errno = EBADF;
+  long cap = OS1low_cap_query(fd);
+  if (cap < 0) {
+    errno = (int)-cap;
     return -1;
   }
-  memset(buf, 0, sizeof(*buf));
-  buf->st_mode = S_IFREG | 0644;
-  buf->st_size = size;
+  int type = (int)OS1_CAPQ_TYPE(cap);
+  if (memset(buf, 0, sizeof(*buf)) != buf) {
+    errno = EIO;
+    return -1;
+  }
+  if (type == OBJ_TYPE_FILE) {
+    long size = OS1_object_ctl(fd, OBJ_CTL_STAT, 0);
+    if (size < 0) {
+      errno = (int)-size;
+      return -1;
+    }
+    buf->st_mode = S_IFREG | 0644;
+    buf->st_size = (off_t)size;
+    buf->st_blksize = 4096;
+    buf->st_blocks = (blkcnt_t)(((uint64_t)size + 511U) / 512U);
+  } else if (type == OBJ_TYPE_CONSOLE) {
+    buf->st_mode = S_IFCHR | 0600;
+    buf->st_blksize = 64; /* bounded IPC payload; an I/O hint, not capacity */
+  } else if (type == OBJ_TYPE_PIPE) {
+    buf->st_mode = S_IFIFO | 0600;
+    buf->st_blksize = 4096;
+  } else {
+    errno = ENOTSUP;
+    return -1;
+  }
   buf->st_nlink = 1;
   return 0;
 }
@@ -4689,7 +4754,46 @@ uintmax_t strtoumax(const char *nptr, char **endptr, int base) {
 }
 
 /* ── Process / signal stubs ─────────────────────────────────────────── */
-pid_t getppid(void) { return 1; }
+/* Existing PROCESS object ABI returns the live mechanical parent.
+ * This is not the logical owner: the two relationships are intentionally
+ * separate, as nxexecd may transfer ownership without changing parentage.
+ * Read only our own process object; no extra kernel syscall or stored PID.
+ * A closed/reused PID cannot silently turn into the current parent. */
+pid_t getppid(void) {
+  char key[20], snapshot[256];
+  int keylen = snprintf(key, sizeof(key), "%d", getpid());
+  if (keylen <= 0 || (size_t)keylen >= sizeof(key)) {
+    errno = EOVERFLOW;
+    return -1;
+  }
+  long handle = OS1low_handle_create(OS1_NS_PROC, key, OS1_RIGHT_READ,
+                                     OBJ_TYPE_PROCESS);
+  if (handle < 0) {
+    errno = (int)-handle;
+    return -1;
+  }
+  long n = OS1_object_read((int)handle, snapshot, sizeof(snapshot) - 1U);
+  long closed = OS1low_handle_close((int)handle);
+  if (n <= 0 || n >= (long)sizeof(snapshot) || closed < 0) {
+    errno = n < 0 ? (int)-n : closed < 0 ? (int)-closed : EIO;
+    return -1;
+  }
+  snapshot[n] = '\0';
+  const char *prefix = strstr(snapshot, "\nparent=");
+  if (prefix == NULL) {
+    errno = EIO;
+    return -1;
+  }
+  char *end = NULL;
+  long parent = strtol(prefix + sizeof("\nparent=") - 1U, &end, 10);
+  if (end == prefix + sizeof("\nparent=") - 1U || end == NULL ||
+      (*end != '\n' && *end != '\0') ||
+      parent < 0 || parent > INT32_MAX) {
+    errno = EIO;
+    return -1;
+  }
+  return (pid_t)parent;
+}
 
 int kill(pid_t pid, int sig) {
   (void)pid;

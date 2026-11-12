@@ -239,3 +239,73 @@ runtime/budget, hardware token authority, canonical registry state,
 transaction WAL, buffers, block I/O, VFS/Ext4, 9P and ISA assembly rewrite.
 The six stage migration obligations remain open until their actual callers,
 security boundaries and system tests have been converted and verified.
+
+## NXOLMO base/types/result/status cutover — 2026-11-10
+
+HAL/base/{types,result,status}.c and the corresponding C-only
+HAL/include/nxolmo/base headers are now actual HAL link inputs. The
+reference worktree is unchanged; reference content hashes were
+recorded during source review. The typed status/result schema keeps
+the NXOLMO wire/ABI numeric values. Flags use explicitly unsigned
+bit masks after genuine clang-tidy signed-bitwise failures were fixed;
+no warnings, assertions or policy checks were disabled.
+
+Resource identity now converts only the unchanged public HAL
+resource-ref fields into a canonical nx_object_ref at the ABI seam.
+Validity, equality, object ID zero and generation validation are
+delegated to real nxolmo/base/types.c functions, replacing the
+hand-coded duplicate identity comparisons. There is one generation
+validation algorithm, not a parallel CSpace or registry.
+
+The complete base result/status functions are present and tested,
+but their public use by the future canonical operation/metrics
+runtime is a separate OPEN dependency. Do not claim that kernel
+process CSpace, encrypted tokens or registry ownership has migrated.
+
+Acceptance:
+* Both cross-ISA kernel compilation: PASS.
+* HAL full host suite PASS, including actual resource mutation tests,
+  base round-trip/version/invalid-flag/ABI cases, and zero fake cases.
+* HAL freestanding resource/base cross-link x86_64-elf/AArch64-none-elf:
+  PASS; HAL ASan/UBSan PASS; full clang-tidy and cppcheck PASS.
+* Incremental Power12: PASS 20 scoped files and zero findings; test
+  suite for changed gate PASS. Project-wide strict gate remains RED.
+* NXADB AMD64 ISO BIOS: PASS, 30/30 kernel tests, 0 faults,
+  shell/history/timerdiag/heartbeat and NXPAX probe.
+* NXADB AArch64 ISO UEFI: PASS, 31/31 kernel tests, 0 faults,
+  same guest probes. No other boot lane claimed.
+
+Logs: /tmp/halnx-base2-host-cross.log,
+ /tmp/halnx-base2-sanitize.log,
+ /tmp/halnx-base2-static.log,
+ /tmp/halnx-base2-delta.log,
+ /tmp/halnx-base2-guest-{amd64,aarch64}.log,
+ and build/h/runtime/nxadb/ serialized QEMU/UART logs.
+
+### Runtime integration prerequisite: one authoritative HAL clocksource
+
+NXOLMO's runtime/clock.c currently uses Mach/host CLOCK_MONOTONIC,
+while runtime/cycle_counter.c directly uses host X86 CPUID/RDTSCP.
+These are unsuitable as-is inside freestanding HAL or for AArch64.
+HAL/core/time.c already validates provider clocksource metadata and
+exposes nxhal_time_clocksource_info/nxhal_time_counter_read. Its
+not-ready/error semantics and frequency/mask/continuity must be
+preserved. Any NXOLMO runtime clock, cycle, budget or metrics cutover
+must derive genuine counters from that HAL provider and explicitly
+represent unknown cycles, unavailable time and wrap/frequency limits.
+No synthetic timestamps, extra clocksource, or unbounded polling.
+
+NXOLMO runtime/operation_catalog.c labels hardware validation op IDs
+0x00070001, 0x00070003, 0x00070004, 0x00070005 as OPEN contracts.
+They are not proven fixed formulas. The existing HAL resource report
+has real per-operation work steps with bounds 11/6/8/3 respectively.
+A full cutover must reconcile these actual report operations and
+R11/R12 provenance with the native catalog, then integrate actual
+budget status, work and cycle measurements. Do not claim an OPEN
+operation contract has a proven bound.
+
+Next: compare every runtime source/caller/ABI and HAL clock provider;
+implement an ISA-neutral validated counter and budget path with tests
+for source unavailable, CPU migration, wrap and timeout, then replace
+the report policy only after behavior tests on both guests. A
+metrics-only duplicate installed without real consumers is forbidden.

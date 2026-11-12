@@ -8,6 +8,7 @@
 /* AMD64 HAL Implementation Primitives */
 #include <hal/config.h>
 #include <arch/isa.h>
+#include <arch/ioport.h>
 
 /* --- Interrupt Control --- */
 static inline uint64_t arch_impl_irq_state_read(void) {
@@ -289,9 +290,6 @@ static inline void wrmsr(uint32_t msr, uint64_t val) {
   arch_isa_wrmsr(msr, val);
 }
 
-static inline void outb(uint16_t port, uint8_t val) {
-  __asm__ __volatile__("outb %0, %1" : : "a"(val), "Nd"(port));
-}
 
 /* arch_impl_reboot - reset the machine: the 0xCF9 reset-control register first,
  * then the 8042 keyboard-controller reset line as a fallback (DIR-05 #139
@@ -302,31 +300,10 @@ static inline void arch_impl_reboot(void) {
   outb(0x64, 0xFE);  /* 8042 pulse the CPU reset line (fallback) */
 }
 
-static inline uint8_t inb(uint16_t port) {
-  uint8_t val;
-  __asm__ __volatile__("inb %1, %0" : "=a"(val) : "Nd"(port));
-  return val;
-}
 
-static inline void outw(uint16_t port, uint16_t val) {
-  __asm__ __volatile__("outw %0, %1" : : "a"(val), "Nd"(port));
-}
 
-static inline uint16_t inw(uint16_t port) {
-  uint16_t val;
-  __asm__ __volatile__("inw %1, %0" : "=a"(val) : "Nd"(port));
-  return val;
-}
 
-static inline void outl(uint16_t port, uint32_t val) {
-  __asm__ __volatile__("outl %0, %1" : : "a"(val), "Nd"(port));
-}
 
-static inline uint32_t inl(uint16_t port) {
-  uint32_t val;
-  __asm__ __volatile__("inl %1, %0" : "=a"(val) : "Nd"(port));
-  return val;
-}
 
 static inline uint64_t arch_impl_get_fault_status(void) {
   return 0; /* x86 uses error code on stack */

@@ -67,7 +67,9 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
     argc = ELF_MAX_ARGS;
   struct vfs_node exe;
   if (vfs_open(path, &exe) != 0) {
-    pr_err("ELF: File not found: %s\n", path);
+    /* A resolver may try /bin before /sys/bin. The caller reports final
+     * resolution failure; an absent candidate is ordinary debug evidence. */
+    pr_debug("ELF: candidate not found: %s\n", path);
     return -1;
   }
 

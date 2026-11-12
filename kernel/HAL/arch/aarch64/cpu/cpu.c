@@ -149,7 +149,10 @@ void nxhal_provider_cpu_local_init(void) {
    * FPEN[21:20] == 0b11 disables the trap entirely; needed so that
    * exception.S can save/restore q0-q31 without faulting. */
   uint64_t cpacr = arch_impl_get_cpacr();
-  cpacr |= (3 << 20); /* FPEN bits [21:20] = 0b11 */
+  /* Current frames own Q0-Q31/FPSR/FPCR, not SVE Z/P/FFR or SME ZA state.
+   * Keep optional state trapped even if a preceding firmware enabled it. */
+  cpacr &= ~((UINT64_C(3) << 16) | (UINT64_C(3) << 24)); /* ZEN/SMEN */
+  cpacr |= (UINT64_C(3) << 20); /* FPEN bits [21:20] = 0b11 */
   arch_impl_set_cpacr(cpacr);
   arch_impl_mb();
   arch_impl_isb(); /* ensure CPACR change is visible before NEON use */

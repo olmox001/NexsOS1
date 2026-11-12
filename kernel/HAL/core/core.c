@@ -213,21 +213,3 @@ void hal_spin_unlock(volatile uint32_t *lock) { arch_impl_spin_unlock(lock); }
 int hal_spin_trylock(volatile uint32_t *lock) {
   return arch_impl_spin_trylock(lock);
 }
-
-#ifdef ARCH_AMD64
-int hal_ioport_available(void) { return 1; }
-uint8_t hal_inb(uint16_t port) { return inb(port); }
-uint16_t hal_inw(uint16_t port) { return inw(port); }
-uint32_t hal_inl(uint16_t port) { return inl(port); }
-void hal_outb(uint16_t port, uint8_t value) { outb(port, value); }
-void hal_outw(uint16_t port, uint16_t value) { outw(port, value); }
-void hal_outl(uint16_t port, uint32_t value) { outl(port, value); }
-#else
-int hal_ioport_available(void) { return 0; }
-uint8_t hal_inb(uint16_t port) { (void)port; return 0; }
-uint16_t hal_inw(uint16_t port) { (void)port; return 0; }
-uint32_t hal_inl(uint16_t port) { (void)port; return 0; }
-void hal_outb(uint16_t port, uint8_t value) { (void)port; (void)value; }
-void hal_outw(uint16_t port, uint16_t value) { (void)port; (void)value; }
-void hal_outl(uint16_t port, uint32_t value) { (void)port; (void)value; }
-#endif

@@ -23,6 +23,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <os1.h>
+#include <execsvc.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -490,6 +492,178 @@ static void t_mkdir_sets_errno(void) {
   ok(name);
 }
 
+/* Real-world stdio/console contract used by GNU coreutils cat:
+ * fstat(1) must identify a CONSOLE without trying lseek() on it. */
+static void t_fstat_console_type(void) {
+  const char *name = "coreutils/cat-fstat-console";
+  struct stat st;
+  CHECK(name, fstat(STDOUT_FILENO, &st) == 0,
+        "stdout is a valid object but fstat rejected it");
+  CHECK(name, S_ISCHR(st.st_mode),
+        "stdout is not described as a character stream");
+  CHECK(name, st.st_blksize > 0,
+        "console lacks an I/O size hint");
+  ok(name);
+}
+
+/* The pipe objects are distinct capability types and are not seekable.
+ * Both ends remain observable by fstat() while lseek() keeps ESPIPE. */
+static void t_fstat_pipe_type(void) {
+  const char *name = "coreutils/fstat-pipe-ends";
+  int fds[2] = {-1,-1};
+  CHECK(name, pipe(fds) == 0, "pipe allocation failed");
+  struct stat r = {0}, w = {0};
+  int a = fstat(fds[0], &r), b = fstat(fds[1], &w);
+  int c = close(fds[0]), e = close(fds[1]);
+  CHECK(name, a == 0 && b == 0, "valid pipe fstat failed");
+  CHECK(name, S_ISFIFO(r.st_mode) && S_ISFIFO(w.st_mode),
+        "pipe endpoints are not FIFO streams");
+  CHECK(name, c == 0 && e == 0, "pipe descriptor cleanup failed");
+  ok(name);
+}
+
+/* fstat(file) is an observational object metadata request. It must not
+ * change the handle's shared FILE offset, even though old libc used SEEK_END. */
+static void t_fstat_keeps_file_offset(void) {
+  const char *name = "libc/fstat-preserves-file-offset";
+  CHECK(name, write_file(TMP, "01234567", 8) == 0,
+        "fixture write failed");
+  int fd = open(TMP, O_RDONLY);
+  CHECK(name, fd >= 0, "file open failed");
+  long position = lseek(fd, 3, SEEK_SET);
+  struct stat st;
+  int rc = fstat(fd, &st);
+  long after = lseek(fd, 0, SEEK_CUR);
+  int closed = close(fd);
+  CHECK(name, position == 3 && rc == 0 && S_ISREG(st.st_mode),
+        "valid file metadata lookup failed");
+  CHECK(name, st.st_size == 8 && after == 3,
+        "fstat changed the shared file position or size");
+  CHECK(name, closed == 0, "file descriptor cleanup failed");
+  ok(name);
+}
+
+/* Actual parent and logical ownership are different concepts. This
+ * compares getppid() with the canonical read-only PROCESS object response,
+ * not a constant 1 or a guessed parent from the currently focused window. */
+static void t_getppid_matches_process_object(void) {
+  const char *name = "libc/getppid-process-object";
+  int parent = getppid(), self = getpid();
+  CHECK(name, parent > 0 && parent != self,
+        "parent is absent or aliases the process itself");
+  char key[20], snapshot[256];
+  int n = snprintf(key, sizeof(key), "%d", self);
+  CHECK(name, n > 0 && (size_t)n < sizeof(key), "PID format failed");
+  long fd = OS1low_handle_create(OS1_NS_PROC, key, OS1_RIGHT_READ,
+                                 OBJ_TYPE_PROCESS);
+  CHECK(name, fd >= 0, "cannot obtain read-only PROCESS capability");
+  long got = OS1_object_read((int)fd, snapshot, sizeof(snapshot)-1U);
+  long closed = OS1low_handle_close((int)fd);
+  CHECK(name, got > 0 && got < (long)sizeof(snapshot) && closed == 0,
+        "PROCESS metadata read or close failed");
+  snapshot[got] = '\0';
+  const char *line = strstr(snapshot, "\nparent=");
+  CHECK(name, line != NULL && atoi(line + sizeof("\nparent=")-1U) == parent,
+        "getppid disagrees with canonical process lineage");
+  ok(name);
+}
+
+/* Real SDK execution contract tests: exact resolution, rejection of invalid
+ * requests, and a complete native child spawn/wait through the public API. */
+static void t_execsvc_resolver(void) {
+  const char *name = "execsvc/shared-resolver";
+  char path[EXECSVC_PATH_MAX];
+  CHECK(name, execsvc_resolve_path("/bin/true", path, sizeof(path)) == 0 &&
+              strcmp(path, "/bin/true") == 0, "absolute path changed");
+  char cwd[EXECSVC_PATH_MAX], expected[EXECSVC_PATH_MAX];
+  CHECK(name, getcwd(cwd, sizeof(cwd)) == 0, "native getcwd status failed");
+  int n = snprintf(expected, sizeof(expected), "%s%s./true", cwd,
+                   cwd[strlen(cwd) - 1U] == '/' ? "" : "/");
+  CHECK(name, n > 0 && (size_t)n < sizeof(expected), "cwd fixture too long");
+  CHECK(name, execsvc_resolve_path("./true", path, sizeof(path)) == 0 &&
+              strcmp(path, expected) == 0, "relative path lost native cwd");
+  CHECK(name, getcwd(cwd, 1U) < 0, "undersized cwd buffer accepted");
+  CHECK(name, execsvc_resolve_path("true", path, sizeof(path)) == 1,
+        "bare executable not classified");
+  CHECK(name, execsvc_resolve_path("~other/hello", path, sizeof(path)) < 0,
+        "unsupported user expansion silently accepted");
+  CHECK(name, execsvc_resolve_path("/bin/true", path, 4U) < 0,
+        "truncated absolute path was accepted");
+  ok(name);
+}
+
+static void t_getcwd_bounds(void) {
+  const char *name = "native/getcwd-bounds";
+  unsigned char storage[256];
+  for (unsigned i = 0U; i < sizeof(storage); ++i) storage[i] = 0xa5U;
+  CHECK(name, getcwd((char *)storage, sizeof(storage)) == 0,
+        "large destination failed");
+  size_t length = strnlen((char *)storage, 128U);
+  CHECK(name, length > 0U && length < 128U, "cwd is unterminated");
+  for (size_t i = 0U; i < sizeof(storage); ++i)
+    CHECK(name, i <= length || storage[i] == 0xa5U,
+          "kernel copied bytes beyond cwd terminator");
+  CHECK(name, getcwd((char *)storage, 0U) == -EINVAL,
+        "zero capacity accepted");
+  CHECK(name, getcwd(NULL, sizeof(storage)) == -EINVAL,
+        "null destination accepted");
+  ok(name);
+}
+
+static void t_execsvc_foreground_child(void) {
+  const char *name = "execsvc/foreground-child";
+  char *argv[1] = {(char *)"true"};
+  char path[EXECSVC_PATH_MAX];
+  int pid = execsvc_launch(1, argv, EXECSVC_MODE_FOREGROUND, NULL, 0,
+                           path, sizeof(path));
+  CHECK(name, pid > 0 && strcmp(path, "/bin/true") == 0,
+        "shared resolver did not create the real child");
+  int status = 0, joined = 0;
+  for (int n = 0; n < 400 && joined == 0; ++n) {
+    joined = waitpid(pid, &status, WNOHANG);
+    if (joined == 0) OS1_sleep(10);
+  }
+  CHECK(name, joined == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        "child process did not exit cleanly through waitpid");
+  ok(name);
+}
+
+static void t_execsvc_modes_reject_invalid(void) {
+  const char *name = "execsvc/reject-invalid-mode";
+  char *argv[1] = {(char *)"/bin/hello"};
+  char path[EXECSVC_PATH_MAX];
+  int rc = execsvc_launch(1, argv, (enum execsvc_launch_mode)99,
+                          NULL, 0, path, sizeof(path));
+  CHECK(name, rc == -EINVAL, "invalid launch mode was accepted");
+  rc = execsvc_launch(1, argv, EXECSVC_MODE_HOSTED, NULL, 1,
+                       path, sizeof(path));
+  CHECK(name, rc == -EINVAL, "hosted launch accepted redirection");
+  ok(name);
+}
+
+static void t_long_double_runtime(void) {
+  const char *name = "compiler-runtime/long-double";
+  volatile double source = 1.5;
+  volatile long double a = (long double)source;
+  volatile long double b = 2.0L;
+  volatile long double sum = a + b, product = a * b;
+  volatile long double difference = b - a, quotient = product / b;
+  CHECK(name, (double)a == source && sum == 3.5L && product == 3.0L &&
+        difference == 0.5L && quotient == a, "conversion/arithmetic mismatch");
+  CHECK(name, a < b && a <= b && b > a && b >= a && a != b &&
+        !(a > b) && !(a >= b) && !(b < a) && !(b <= a),
+        "comparison helper ABI mismatch");
+  volatile unsigned long long integer = 0x100000003ULL;
+  volatile long double wide = (long double)integer;
+  CHECK(name, (unsigned long long)wide == integer,
+        "unsigned 64-bit conversion mismatch");
+  volatile long double zero = 0.0L;
+  volatile long double nan = zero / zero;
+  CHECK(name, nan != nan && !(nan == a) && !(nan < a) && !(nan > a) &&
+        !(nan <= a) && !(nan >= a), "unordered comparison mismatch");
+  ok(name);
+}
+
 int main(void) {
   printf("[libctest] stdio / POSIX-over-native conformance\n");
 
@@ -508,6 +682,14 @@ int main(void) {
 
   t_native_descriptor_roundtrip();
   t_native_positional_offset();
+  t_fstat_console_type();
+  t_fstat_pipe_type();
+  t_fstat_keeps_file_offset();
+  t_getppid_matches_process_object();
+  t_execsvc_resolver();
+  t_getcwd_bounds();
+  t_execsvc_foreground_child();
+  t_execsvc_modes_reject_invalid();
 
   t_stat_agrees_with_stream();
   t_stat_file_vs_dir();
@@ -516,6 +698,7 @@ int main(void) {
 
   t_unlink_reports_the_cause();
   t_mkdir_sets_errno();
+  t_long_double_runtime();
 
   OS1_fs_unlink(TMP);
   printf("[libctest] done: %d/%d passed, %d failure(s)\n", g_pass,

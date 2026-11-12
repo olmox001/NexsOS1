@@ -39,7 +39,7 @@ void os1_video_window_destroy(int window) { _sys_destroy_window(window); }
 int os1_video_window_resize(int window, int width, int height) {
   if (width <= 0 || height <= 0)
     return -EINVAL;
-  return _sys_window_resize(window, width, height);
+  return OS1_window_resize(window, width, height);
 }
 
 int os1_video_present_argb8888(int window, int x, int y, int width,

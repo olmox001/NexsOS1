@@ -12,6 +12,53 @@
     }                                                                          \
   } while (0)
 
+/* Exercise the REAL userland compositor raster against independent source
+ * and presentation sizes. The graphics client does not redraw in this case. */
+static int test_source_scales_without_cropping(void) {
+  uint32_t pixels[36], source_pixels[4] = {
+      0xff102030U, 0xff304050U, 0xff607080U, 0xff90a0b0U
+  };
+  struct os1_gfx_surface frame = {pixels, 6U, 6U, 6U, 36U};
+  struct os1_gfx_surface source = {source_pixels, 2U, 2U, 2U, 4U};
+  struct os1_gfx_rect box = {1, 1, 4, 4};
+  os1_gfx_clear(&frame, 0xff080808U);
+  os1_gfx_composite_rounded(&frame, &source, &box, 0, 0);
+  if (pixels[1U * 6U + 1U] != source_pixels[0] ||
+      pixels[2U * 6U + 2U] != source_pixels[0] ||
+      pixels[1U * 6U + 4U] != source_pixels[1] ||
+      pixels[4U * 6U + 1U] != source_pixels[2] ||
+      pixels[4U * 6U + 4U] != source_pixels[3]) return 1;
+  if (pixels[0] != 0xff080808U || pixels[35] != 0xff080808U)
+    return 2;
+  return 0;
+}
+
+/* Rounded corners and client pixels are separate: scaling the client source
+ * must not create a thick border or draw outside the destination viewport. */
+static int test_scaled_rounded_frame_bounds(void) {
+  uint32_t pixels[64], source_pixels[4] = {
+      0xff111111U, 0xff333333U, 0xff555555U, 0xff777777U
+  };
+  struct os1_gfx_surface frame = {pixels, 8U, 8U, 8U, 64U};
+  struct os1_gfx_surface source = {source_pixels, 2U, 2U, 2U, 4U};
+  struct os1_gfx_rect box = {1, 1, 6, 6};
+  os1_gfx_clear(&frame, 0xffaabbccU);
+  os1_gfx_composite_rounded(&frame, &source, &box, 0, 2);
+  if (pixels[0] != 0xffaabbccU || pixels[63] != 0xffaabbccU)
+    return 1;
+  if (pixels[3U * 8U + 3U] != source_pixels[0] ||
+      pixels[5U * 8U + 5U] != source_pixels[3])
+    return 2;
+  box.width = 3;
+  box.height = 3;
+  os1_gfx_clear(&frame, 0xffaabbccU);
+  os1_gfx_composite_rounded(&frame, &source, &box, 0, 1);
+  if (pixels[3U * 8U + 3U] == 0xffaabbccU ||
+      pixels[6U * 8U + 6U] != 0xffaabbccU)
+    return 3;
+  return 0;
+}
+
 int main(void) {
   static const int expected_size[3] = {16, 14, 14};
   for (int shape = 0; shape < 3; ++shape) {
@@ -88,6 +135,10 @@ int main(void) {
   CHECK(os1_gfx_surface_valid(&dest));
   dest.capacity = 59;
   CHECK(!os1_gfx_surface_valid(&dest));
-  puts("GFX chrome: geometry, both buttons, all shapes/sides, hit and tint PASS");
+  int scale = test_source_scales_without_cropping();
+  if (scale != 0) return 100 + scale;
+  int rounded = test_scaled_rounded_frame_bounds();
+  if (rounded != 0) return 200 + rounded;
+  if (puts("GFX chrome: geometry, scaled source, clipped rounded resize PASS") < 0) return 300;
   return 0;
 }

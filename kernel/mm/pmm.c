@@ -945,8 +945,8 @@ void *pmm_alloc_pages_dma(size_t count) { return alloc_pages_impl(count, 1); }
  *   3. Atomically decrements struct page refcount; if still >0 after decrement,
  *      another reference exists (shared page) -- no free is performed.
  *   4. Acquires the zone lock; checks bitmap to detect double-free (panics).
- *   5. Clears the bitmap bit and increments zone->free_pages (under lock).
- *   6. Poisons the page with 0xCC to catch use-after-free dereferences.
+ *   5. Poisons the page before publishing it as free (under the zone lock).
+ *   6. Clears the bitmap bit and increments zone->free_pages (under lock).
  *   7. Increments global free_pages atomically.
  *
  * The double-free check (step 4) is done under the lock, which prevents the
@@ -1003,13 +1003,15 @@ void pmm_free_page(void *page) {
     panic("PMM: Double free detected at %p (PFN %lu)", page, pfn);
   }
 
+  /* A cleared bit lets another CPU allocate and initialize this page as soon
+   * as the lock is released. Poison the fixed-size page before that transfer
+   * of ownership, never after a new allocator can be writing into it. */
+  if (memset(page, 0xCC, PAGE_SIZE) != page)
+    panic("PMM: page poison failed at %p", page);
   bitmap_clear(z->bitmap, zone_pfn);
   z->free_pages++;
 
   spin_unlock_irqrestore(&z->lock, flags);
-
-  /* Poison memory to catch use-after-free bugs */
-  memset(page, 0xCC, PAGE_SIZE);
 
   __sync_fetch_and_add(&free_pages, 1);
   __sync_fetch_and_add(&stat_free_calls, 1); /* perf brief §1 */

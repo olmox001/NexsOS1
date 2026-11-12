@@ -67,8 +67,8 @@
  *   _lseek + sys_handle_close).  There is no separate fd array.
  *
  * Known issues:
- *   ABI-07  (W2 BUG) SYS_SPAWN disables IRQs across process_create +
- *           process_load_elf, which may trigger blocking virtio/ext4 disk I/O.
+ *   ABI-07  creation now keeps path/argv state call-local and leaves IRQs
+ *           enabled across ELF I/O; the providers retain their own locks.
  *   GFX-FONT-01  (W4 SECURITY/BUG) SYS_SET_FONT: stores a raw user
  *           pointer into kernel globals; dereferenced in IRQ-context rendering
  *           (sys_set_font in graphics/font.c) → UAF / info-leak.
@@ -168,8 +168,7 @@ extern int keyboard_focus_pid;
  * IRQ context: no — syscalls run in kernel mode with IRQs enabled (normal
  *          exception-level transition on aarch64; ring 3->0 on amd64).
  *
- * NOTE(ABI-07): case 220 (SPAWN) calls hal_irq_disable() before
- *          process_create + process_load_elf, which may block on virtio I/O.
+ * Spawn path/argv copies are call-local across preemption during ELF I/O.
  */
 hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame);
 
@@ -243,116 +242,146 @@ static int spawn_path_is_sane(const char *path) {
   return 0;
 }
 
-/* dispatch_spawn - shared body for SYS_SPAWN and SYS_SPAWN_CAPS.
- *
- * NOTE(ABI-07): runs process_create + process_load_elf with IRQs disabled
- * across blocking virtio/ext4 disk I/O.  Pre-existing; kept verbatim so the
- * new capability path does not widen the critical section. */
+/* Common creation state is bounded and call-local. A logical owner is an
+ * explicit mechanism input; execution policy remains in the requesting service. */
+struct spawn_arguments { char *values[SPAWN_MAX_ARGS]; };
+struct spawn_options {
+  const char *path;
+  uint8_t level;
+  uint32_t caps, flags;
+  int use_caps, argc, nredir, owner_pid;
+  struct spawn_arguments arguments;
+  const struct spawn_redir *redirections;
+};
+
+static int spawn_redirect_one(struct process *child,
+                               const struct spawn_redir *redirect) {
+  if (redirect->source_pid == 0)
+    return process_redirect_child_fd(child, redirect->child_fd,
+                                      redirect->parent_fd);
+  if (!proc_is_privileged(current_process)) return -EPERM;
+  /* Existing PROC-REF-01 obligation: this legacy foreign-table path still
+   * needs a process lifetime pin. Do not allocate while holding sched_lock. */
+  struct process *source = process_find_by_pid(redirect->source_pid);
+  if (source == NULL) return -ESRCH;
+  return process_redirect_child_fd_from(source, child, redirect->child_fd,
+                                         redirect->parent_fd);
+}
+
+static int spawn_prepare(struct process *child,
+                           const struct spawn_options *options) {
+  if ((options->flags & SPAWN_FLAG_DETACHED) != 0U) child->ctty_win = -1;
+  if (options->owner_pid > 0) {
+    int assigned = process_set_owner((int)child->pid, options->owner_pid);
+    if (assigned != 0) return assigned;
+  }
+  for (int i = 0; i < SPAWN_MAX_REDIR && i < options->nredir; ++i) {
+    int redirected = spawn_redirect_one(child, &options->redirections[i]);
+    if (redirected != 0) return redirected;
+  }
+  return 0;
+}
+
+static long spawn_load_and_publish(struct process *child,
+                                    const struct spawn_options *options) {
+  int prepared = spawn_prepare(child, options);
+  if (prepared != 0) {
+    process_abort_spawn(child);
+    return prepared;
+  }
+  if (process_load_elf_args(child, options->path, options->argc,
+                            options->arguments.values) != 0) {
+    process_abort_spawn(child);
+    return -ENOENT;
+  }
+  long pid = (long)child->pid;
+  process_finalize_spawn(child);
+  return pid;
+}
+
+static long spawn_dispatch_options(struct spawn_options *options) {
+  if (!spawn_path_is_sane(options->path)) return -EINVAL;
+  int entered = process_creation_begin();
+  if (entered != 0) return entered;
+  uint8_t path_level = level_for_path(options->path);
+  if (!options->use_caps || options->level < path_level)
+    options->level = path_level;
+  /* PROC_CREATED cannot run and kill is deferred until finalize/abort.
+   * Creation and providers use their own short locks; ELF I/O must not hold
+   * this CPU's interrupts masked for the complete load. */
+  struct process *child = options->use_caps ?
+      process_create_caps(options->path, PROC_PRIO_USER, options->level,
+                            options->caps) :
+      process_create(options->path, PROC_PRIO_USER, options->level);
+  long result = child == NULL ? -EAGAIN : spawn_load_and_publish(child, options);
+  return result;
+}
+
 static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
                            int use_caps, int argc, char *const kargv[],
                            uint32_t flags, const struct spawn_redir *redir,
                            int nredir) {
-  /* ASTRA per-path preset (F1): plain spawn() takes the path's level;
-   * spawn_caps may only DROP privilege below it (a request more privileged than
-   * the path is capped to the path).  The creator-clamp in process_create_caps
-   * then forbids any escalation regardless. */
-  if (!spawn_path_is_sane(path))
-    return -EINVAL; /* SPAWN-LVL-01: no ".." — the preset must match the VFS */
+  struct spawn_options options = {
+      .path = path, .level = level, .caps = caps, .flags = flags,
+      .use_caps = use_caps, .argc = argc, .nredir = nredir,
+      .redirections = redir
+  };
+  for (int i = 0; i < SPAWN_MAX_ARGS && i < argc; ++i)
+    options.arguments.values[i] = kargv[i];
+  return spawn_dispatch_options(&options);
+}
 
-  uint8_t path_lvl = level_for_path(path);
-  if (!use_caps || level < path_lvl)
-    level = path_lvl;
+struct spawn_user_copy {
+  struct os1_spawn_request_v1 request;
+  struct spawn_options options;
+  char path[128];
+  char text[SPAWN_MAX_ARGS][SPAWN_ARG_LEN];
+  uint64_t pointers[SPAWN_MAX_ARGS];
+  struct spawn_redir redirections[SPAWN_MAX_REDIR];
+};
 
-  hal_irq_disable();
-  struct process *p =
-      use_caps ? process_create_caps(path, PROC_PRIO_USER, level, caps)
-               : process_create(path, PROC_PRIO_USER, level);
-  long ret;
-  if (p) {
-    /* nxexec model (#193): a DETACHED spawn declines being the child's
-     * controlling terminal — process_create inherited the spawner's window
-     * as ctty unconditionally; the flag opts out (launcher-style spawns).
-     * Safe here: the child is not yet enqueued/visible. */
-    if (flags & SPAWN_FLAG_DETACHED)
-      p->ctty_win = -1;
-    /* Phase 4: apply the spawner's fd redirections (shell `<`/`>`/`>>`/`2>`)
-     * into the child's handle table before it runs.  A bad source fd aborts the
-     * whole spawn — redirection is part of the child's promised environment. */
-    long rerr = 0;
-    for (int i = 0; i < nredir; i++) {
-      if (redir[i].source_pid == 0) {
-        /* Ordinary case: the fds belong to whoever called spawn. */
-        rerr = process_redirect_child_fd(p, redir[i].child_fd,
-                                         redir[i].parent_fd);
-      } else {
-        /* An execution SERVICE spawning on a client's behalf: the fds live in
-         * the CLIENT's table.  Reaching into another process's handle table is
-         * a system-service power, not an application one — same rule and same
-         * reasoning as OBJ_CTL_SETOWNER.  Without this gate any process could
-         * siphon descriptors out of any other simply by naming it here. */
-        if (!proc_is_privileged(current_process)) {
-          rerr = -EPERM;
-          break;
-        }
-        /*
-         * PROC-REF-01 is NOT closed here, deliberately — and the first attempt
-         * to close it introduced a worse bug than the one it fixed.
-         *
-         * That attempt held sched_lock across the lookup AND
-         * process_redirect_child_fd_from().  But that function ALLOCATES:
-         * handles_ensure() kmallocs the child's table and kobj_free() releases
-         * the displaced console handle.  Allocating under sched_lock creates
-         * the sched_lock -> pmm_lock/kmalloc_lock order that process.c states
-         * in writing "nothing else in this file establishes" — the same reason
-         * process_create_caps allocates the environment page BEFORE taking the
-         * lock.  With IRQs disabled, an idle core spinning inside the allocator
-         * while this CPU holds sched_lock and waits for it is a hard hang; that
-         * is the amd64 K3-userland panic (corrupted RSP, execution off into the
-         * stack).
-         *
-         * The other two PROC-REF-01 sites (sys_cap_grant, sys_port_send_caps)
-         * are safe because they were made ALLOCATION-FREE under the lock on
-         * purpose: both refuse a target with no handle table rather than
-         * creating one.  This path cannot be made allocation-free the same way
-         * — the child legitimately may need its table built.
-         *
-         * So this site keeps the narrow, pre-existing use-after-free window and
-         * waits for the real fix (a process pin/refcount), which is what
-         * PROC-REF-01 asks for.  A rare UAF is strictly better than a
-         * reproducible deadlock in the path every system() call takes.
-         */
-        struct process *src = process_find_by_pid(redir[i].source_pid);
-        if (!src)
-          rerr = -ESRCH;
-        else
-          rerr = process_redirect_child_fd_from(src, p, redir[i].child_fd,
-                                                redir[i].parent_fd);
-      }
-      if (rerr != 0)
-        break;
-    }
-    if (rerr != 0) {
-      process_abort_spawn(p);
-      hal_irq_enable();
-      return rerr;
-    }
-    if (process_load_elf_args(p, path, argc, kargv) == 0) {
-      /* SCHED-UAF Pitfall B: commit the child atomically against a concurrent
-       * kill.  Capture the pid first — process_finalize_spawn may RELEASE p (if
-       * a kill was deferred while the ELF loaded), so p must not be read after.
-       */
-      long pid = (long)p->pid;
-      process_finalize_spawn(p);
-      ret = pid;
-    } else {
-      process_abort_spawn(p); /* load failed: release the half-built child */
-      ret = -ENOENT;          /* path missing or unloadable ELF */
-    }
-  } else {
-    ret = -EAGAIN; /* quota hit or process table exhausted */
+static int spawn_copy_header(struct spawn_user_copy *copy,
+                              const struct os1_spawn_request_v1 *user) {
+  if (hal_copy_from_user(&copy->request, user, sizeof(copy->request)) != 0)
+    return -EFAULT;
+  const struct os1_spawn_request_v1 *request = &copy->request;
+  if (request->abi_version != OS1_SPAWN_REQUEST_VERSION ||
+      request->struct_size != sizeof(*request) || request->reserved != 0U ||
+      request->argc > SPAWN_MAX_ARGS || request->nredir > SPAWN_MAX_REDIR ||
+      (request->flags & ~(uint32_t)SPAWN_FLAGS_ALL) != 0U) return -EINVAL;
+  if (hal_copy_string_from_user(copy->path,
+      (const char *)(uintptr_t)request->path, sizeof(copy->path)) != 0)
+    return -EFAULT;
+  if (request->argc != 0U && hal_copy_from_user(copy->pointers,
+      (const void *)(uintptr_t)request->argv,
+      request->argc * sizeof(copy->pointers[0])) != 0) return -EFAULT;
+  if (request->nredir != 0U && hal_copy_from_user(copy->redirections,
+      (const void *)(uintptr_t)request->redirections,
+      request->nredir * sizeof(copy->redirections[0])) != 0) return -EFAULT;
+  copy->options.path = copy->path;
+  copy->options.level = PLVL_USER;
+  copy->options.argc = (int)request->argc;
+  copy->options.flags = request->flags;
+  copy->options.nredir = (int)request->nredir;
+  copy->options.redirections = copy->redirections;
+  return 0;
+}
+
+long kernel_spawn_owned(int owner_pid,
+    const struct os1_spawn_request_v1 *urequest) {
+  if (owner_pid <= 0 || !proc_is_privileged(current_process) ||
+      !proc_has_cap(current_process, CAP_SPAWN)) return -EPERM;
+  struct spawn_user_copy copy = {0};
+  int status = spawn_copy_header(&copy, urequest);
+  if (status != 0) return status;
+  for (uint32_t i = 0U; i < SPAWN_MAX_ARGS && i < copy.request.argc; ++i) {
+    if (hal_copy_string_from_user(copy.text[i],
+        (const char *)(uintptr_t)copy.pointers[i], SPAWN_ARG_LEN) != 0)
+      return -EFAULT;
+    copy.options.arguments.values[i] = copy.text[i];
   }
-  hal_irq_enable();
-  return ret;
+  copy.options.owner_pid = owner_pid;
+  return spawn_dispatch_options(&copy.options);
 }
 
 /* window_text_write - copy a user text buffer into a kmalloc bounce (no
@@ -487,21 +516,12 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
           hal_frame_set_return(frame, wperm);
           break;
         }
-        /* No vfs_truncate primitive: drop and recreate empty — same net effect
-         * as truncate-to-zero, reusing the create-on-write model. */
-        /* -ENOENT is the normal case (truncating a file that does not exist
-         * yet); anything else is a real failure that used to be swallowed, so
-         * an EACCES or EIO here became a silent "truncate succeeded". */
-        {
-          int ur = vfs_unlink(resolved);
-          if (ur != 0 && ur != -ENOENT) {
-            hal_frame_set_return(frame, ur);
-            break;
-          }
-        }
-        if (vfs_create(resolved, VFS_TYPE_FILE) != 0) {
-          hal_frame_set_return(frame, -EIO);
-          break;
+        /* Preserve inode identity and existing open handles. A length change
+         * is a provider operation, never unlink followed by recreation. */
+        int truncated = vfs_truncate(resolved, 0U);
+        if (truncated != 0) {
+          hal_frame_set_return(frame, truncated);
+          return frame;
         }
       }
       /* O_TRUNC on a missing file without O_CREAT: fall through — the open
@@ -689,7 +709,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     extern int compositor_resize_window(int window_id, int w, int h);
     int owner = compositor_window_owner((int)arg0);
     if (owner >= 0 && owner != (int)current_process->pid &&
-        !proc_is_machine(current_process)) {
+        !proc_has_cap(current_process, CAP_WINDOW_MANAGE)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
@@ -871,7 +891,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
   }
   case SYS_WINDOW_MOVE:
     if (!proc_has_cap(current_process, CAP_WINDOW) ||
-        !proc_is_privileged(current_process)) {
+        !proc_has_cap(current_process, CAP_WINDOW_MANAGE)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
@@ -937,8 +957,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       hal_frame_set_return(frame, -EINVAL);
       break;
     }
-    struct cpu_info *cpu = get_cpu_info();
-    char *k_path = cpu->syscall_buf;
+    char k_path[128];
     if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
@@ -951,7 +970,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       argc = 0;
     if (argc > SPAWN_MAX_ARGS)
       argc = SPAWN_MAX_ARGS;
-    char *kargv[SPAWN_MAX_ARGS];
+    char *kargv[SPAWN_MAX_ARGS] = {0};
     char *argv_store = NULL;
     if (argc > 0) {
       void *uptrs[SPAWN_MAX_ARGS];
@@ -984,7 +1003,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
      * array of struct spawn_redir, arg5 = count.  Copy them into kernel memory
      * so dispatch_spawn can dup the spawner's handles into the child.  Absent
      * (count 0) → today's behaviour exactly. */
-    struct spawn_redir kredir[SPAWN_MAX_REDIR];
+    struct spawn_redir kredir[SPAWN_MAX_REDIR] = {0};
     int nredir = (int)arg5;
     if (nredir < 0)
       nredir = 0;
@@ -1023,8 +1042,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       hal_frame_set_return(frame, -EINVAL);
       break;
     }
-    struct cpu_info *cpu = get_cpu_info();
-    char *k_path = cpu->syscall_buf;
+    char k_path[128];
     if (hal_copy_string_from_user(k_path, (const char *)arg0, 128) != 0) {
       hal_frame_set_return(frame, -EFAULT);
       break;
@@ -1246,13 +1264,19 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     }
   } break;
   case SYS_GETCWD: {
-    size_t size = (size_t)arg1;
-    if (hal_copy_to_user((void *)arg0, current_process->cwd, size) != 0) {
-      hal_frame_set_return(frame, -EFAULT);
-    } else {
-      hal_frame_set_return(frame, 0);
-    }
-  } break;
+    /* Capacity is not a copy length: copying it leaked adjacent process
+     * fields for large buffers and falsely succeeded without a terminator
+     * for small ones. Export only the validated string including its NUL. */
+    size_t length = strnlen(current_process->cwd, sizeof(current_process->cwd));
+    long result = -EIO;
+    if (arg0 == 0U || arg1 == 0U) result = -EINVAL;
+    else if (length == sizeof(current_process->cwd)) result = -EIO;
+    else if ((size_t)arg1 <= length) result = -ERANGE;
+    else result = hal_copy_to_user((void *)arg0, current_process->cwd,
+                                   length + 1U) != 0 ? -EFAULT : 0;
+    hal_frame_set_return(frame, result);
+    return frame;
+  }
   case SYS_PORT_SEND_CAPS:
     /* port send carrying capabilities; see sys_port_send_caps() for why a
      * service found by NAME must not need its pid to receive rights. */
@@ -1307,7 +1331,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     break;
   }
 
-  return frame;
+  return process_creation_finish(frame);
 }
 
 /*

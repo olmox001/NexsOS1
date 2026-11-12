@@ -493,6 +493,16 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size,
   return rc;
 }
 
+int vfs_truncate(const char *path, uint64_t length) {
+  const char *relative;
+  struct vfs_mount *mount = vfs_acquire(path, &relative);
+  if (mount == NULL) return -ENOENT;
+  int result = mount->ops->truncate == NULL ? -ENOTSUP :
+      mount->ops->truncate(mount, relative, length);
+  vfs_release(mount);
+  return result;
+}
+
 /*
  * vfs_list_dir - list a directory through the provider.
  * Returns the formatted length, -1 not found, -2 not a directory.

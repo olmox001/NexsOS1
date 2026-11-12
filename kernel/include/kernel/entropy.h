@@ -1,7 +1,22 @@
 #ifndef _KERNEL_ENTROPY_H
 #define _KERNEL_ENTROPY_H
 
-#include <kernel/types.h>
+#include <stdint.h>
+
+enum entropy_source {
+  ENTROPY_SOURCE_ARCH_RNG,
+  ENTROPY_SOURCE_COUNTER_MIX,
+  ENTROPY_SOURCE_ADDRESS_MIX
+};
+
+struct entropy_sample {
+  uint64_t value;
+  enum entropy_source source;
+};
+
+/* Source provenance is not an entropy estimate or a cryptographic guarantee.
+ * The early counter/address fallback has no qualified minimum strength. */
+struct entropy_sample entropy_sample_u64(void);
 
 /*
  * entropy_u64 - 64 bits of best-effort entropy, unified across architectures.

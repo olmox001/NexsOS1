@@ -11,6 +11,7 @@
 static void fm_cleanup(void) {
   if (fm_state.window_id >= 0)
     destroy_window(fm_state.window_id);
+  fm_gfx_shutdown();
 }
 
 int main(void) {

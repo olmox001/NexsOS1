@@ -27,6 +27,8 @@
 #define CAP_IPC_ANY (1u << 2)   /* SYS_SEND to non-relatives           */
 #define CAP_WINDOW (1u << 3)    /* SYS_CREATE_WINDOW + SET_FOCUS(self) */
 #define CAP_REG_WRITE (1u << 4) /* SYS_REGISTRY write op               */
+/* Explicitly delegated window-manager authority; not a default ROOT right. */
+#define CAP_WINDOW_MANAGE (1u << 5) /* move/resize other owners' windows */
 #define CAP_ALL                                                                \
   (CAP_SPAWN | CAP_FS_WRITE | CAP_IPC_ANY | CAP_WINDOW | CAP_REG_WRITE)
 
@@ -61,6 +63,7 @@ static inline unsigned int caps_for_level(int level) {
   switch (level) {
   case PLVL_MACHINE:
   case PLVL_ROOT:
+    return CAP_ALL | CAP_WINDOW_MANAGE;
   case PLVL_USER:
     return CAP_ALL;
   case PLVL_GUEST:
@@ -68,6 +71,12 @@ static inline unsigned int caps_for_level(int level) {
   default:
     return 0u;
   }
+}
+
+/* Ordinary launches do not inherit optional service-manager capabilities.
+ * caps_for_level is the maximum grantable mask; this is the default mask. */
+static inline unsigned int caps_default_for_level(int level) {
+  return caps_for_level(level) & ~CAP_WINDOW_MANAGE;
 }
 
 /* Spawn-mode flags (arg3 of SYS_SPAWN / SYS_SPAWN_CAPS) — the nxexec model

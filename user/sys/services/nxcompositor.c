@@ -49,13 +49,19 @@ static void consume_pointer_updates(struct compositor_state *owner) {
       owner->pointer_x = (int)(uint32_t)msg.data1;
       owner->pointer_y = (int)(uint32_t)msg.data2;
     } else if (msg.type == IPC_THEME_STYLE) {
-      int style_rc = os1_theme_set_style((int)(int64_t)msg.data1);
-      if (style_rc != 0)
-        OS1_report_error("nxcompositor.theme_style", style_rc);
-      else {
-        int palette_rc = os1_theme_set_palette((int)(int64_t)msg.data2);
-        if (palette_rc != 0)
-          OS1_report_error("nxcompositor.theme_palette", palette_rc);
+      /* -1 is the wire contract's KEEP sentinel, not an invalid style.
+       * A theme-only change must update the palette even when style stays. */
+      int style = (int)(int64_t)msg.data1;
+      int palette = (int)(int64_t)msg.data2;
+      if (style >= 0) {
+        int rc = os1_theme_set_style(style);
+        if (rc != 0)
+          OS1_report_error("nxcompositor.theme_style", rc);
+      }
+      if (palette >= 0) {
+        int rc = os1_theme_set_palette(palette);
+        if (rc != 0)
+          OS1_report_error("nxcompositor.theme_palette", rc);
       }
     } else if (msg.type == IPC_THEME_BACKGROUND) {
       int background_rc = os1_theme_set_background((int)(int64_t)msg.data1);

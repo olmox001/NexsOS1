@@ -1,6 +1,7 @@
 #include <hal/resource.h>
 #include <nxolmo/base/checked.h>
 #include <nxolmo/base/status.h>
+#include <nxolmo/base/types.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -25,18 +26,25 @@
 #define NXHAL_RANGE_WORK UINT64_C(8)
 #define NXHAL_DMA_WORK UINT64_C(11)
 
+/* Stable HAL ABI fields are converted to NXOLMO's canonical generation-aware
+ * identity exactly once at this transport boundary. */
+static nx_object_ref nxhal_ref_native(struct nxhal_object_ref ref) {
+  nx_object_ref native = {{ref.id_high, ref.id_low}, ref.generation};
+  return native;
+}
+
 static int nxhal_ref_valid(struct nxhal_object_ref ref) {
-  return (ref.id_high != 0U || ref.id_low != 0U) && ref.generation != 0U;
+  return nx_object_ref_is_valid(nxhal_ref_native(ref));
 }
 
 static int nxhal_ref_zero(struct nxhal_object_ref ref) {
-  return ref.id_high == 0U && ref.id_low == 0U && ref.generation == 0U;
+  nx_object_ref native = nxhal_ref_native(ref);
+  return nx_object_id_is_zero(native.id) && native.generation == 0U;
 }
 
 static int nxhal_ref_equal(struct nxhal_object_ref left,
                            struct nxhal_object_ref right) {
-  return left.id_high == right.id_high && left.id_low == right.id_low &&
-         left.generation == right.generation;
+  return nx_object_ref_equal(nxhal_ref_native(left), nxhal_ref_native(right));
 }
 
 static int nxhal_power_of_two(uint64_t value) {

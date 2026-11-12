@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MACHINE = {"nxmanageDD"}
 SBIN = {"nxinit"}
 SERVERS = {"nxntfy_srv", "nxexecd", "nxtimerdd", "nxpaxd",
-           "nxcompositor", "nxkeyboardd", "nxmoused"}
-SDK_CLIENTS = {"buffer_client", "execsvc_client", "notify_client",
+           "nxcompositor", "nxkeyboardd", "nxmoused", "nxttyd"}
+SDK_CLIENTS = {"port_client", "gfx_buffer", "buffer_client", "execsvc_client", "notify_client",
                "surface_client", "time_client"}
 
 
@@ -57,9 +57,11 @@ def source_roles():
         require("return nxexec_service()" not in body and
                 "return nxpax_service()" not in body,
                 "command can execute privileged server: " + name)
-    require("nxexec_spawn_search_redir_scoped" in
-            (ROOT / "user/sys/services/nxexecd.c").read_text(),
-            "executor RPC lacks restricted shared dispatcher")
+    require("execsvc_launch_owned" in
+            (ROOT / "user/sys/services/nxexecd.c").read_text() and
+            "execsvc_resolve_user_program" in
+            (ROOT / "system/lib/extensions/services/execsvc_client.c").read_text(),
+            "executor RPC lacks capability-owned creation and shared user resolver")
     require("system.manage.service.%s" in
             (ROOT / "kernel/user/extension/nxmanageDD/main.c").read_text(),
             "named REGKEY service records missing")
@@ -79,8 +81,8 @@ def source_roles():
         if not raw or raw.startswith("#"):
             continue
         parts = raw.split("|")
-        require(len(parts) == 5, "manifest must have 5 fields")
-        name, mode, path, args, key = parts
+        require(len(parts) in (5, 6), "manifest must have 5 or 6 fields")
+        name, mode, path, args, key = parts[:5]
         require(name not in names, "duplicate service identity " + name)
         names.add(name)
         if path.startswith("/sys/services/"):
@@ -101,7 +103,7 @@ def rootfs_roles(directory):
                 "runtime executable is not an ELF: " + relative)
     forbidden = ("sbin/nxmanageDD", "sys/bin/nxntfy_srv", "sys/bin/nxpaxd",
                  "sys/bin/nxexecd", "sys/bin/nxcompositor",
-                 "sys/bin/nxkeyboardd", "sys/bin/nxmoused")
+                 "sys/bin/nxkeyboardd", "sys/bin/nxmoused", "sys/bin/nxttyd")
     for relative in forbidden:
         require(not (directory / relative).exists(),
                 "obsolete duplicate executable: " + relative)
@@ -123,8 +125,8 @@ def main():
     except (ValueError, OSError) as ex:
         print("FAIL NX-SERVICE: " + str(ex))
         return 1
-    print(f"PASS: {count} named services, 7 distinct server entrypoints, "
-          "5 SDK client modules, distinct machine/init/ROOT/command outputs" +
+    print(f"PASS: {count} named services, {len(SERVERS)} distinct server entrypoints, "
+          f"{len(SDK_CLIENTS)} SDK client modules, distinct machine/init/ROOT/command outputs" +
           (" and real rootfs ELF/manifest bytes" if args.rootfs else ""))
     return 0
 

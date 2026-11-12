@@ -1,3 +1,10 @@
+> 2026-11-12 scope correction: this is a historical function inventory. [K]
+> records the former retention decision, not approval to keep window/desktop
+> policy in the kernel. The current maintainer requirement and cutover gates
+> are in GRAPHICS-USERLAND-MIGRATION.md. Original line numbers are provenance,
+> not current source locations; missing functions/files must be reconciled
+> against the live build manifest before moving or deleting code.
+
 # Graphics and compositor kernel function migration catalog
 
 **Purpose:** function-by-function source-of-truth for the graphics transition. A box is checked only after its implementation is in userland (or the kernel primitive is intentionally classified as retained) and the relevant behavior has a passing regression test. This is an inventory, not a completion claim.

@@ -145,28 +145,26 @@ static int nxpax_service(void) {
    * indefinitely suppressing UART streaming. Both loops are bounded. */
   uint64_t cursor = 0U;
   int status = 0;
-  for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
-    for (unsigned request = 0U; request < 32U; ++request) {
-      struct ipc_message message = {0};
-      long received = OS1_port_try_recv(port, &message);
-      if (received == -EAGAIN)
-        break;
-      if (received != (long)sizeof(message)) {
-        status = received < 0 ? (int)received : -EIO;
-        break;
-      }
-      nxpax_serve_request(&message, source);
+  for (uint64_t epoch = 0U; epoch < UINT64_MAX && status == 0; ++epoch) {
+    int received = 0;
+    for (unsigned request = 0U; request < 32U && received == 0 &&
+                               status == 0; ++request) {
+      struct os1_port_packet packet;
+      received = OS1_port_packet_receive(port, &packet, 1);
+      if (received == -EAGAIN) continue;
+      if (received != 0) { status = received; continue; }
+      if (packet.cap_count == 1U && packet.message.type == NXPAX_IPC_READ)
+        nxpax_serve_request(&packet.message, source);
+      else status = OS1_port_packet_close_caps(&packet);
     }
     if (status != 0) {
       OS1_report_error("nxpaxd.port_receive", status);
-      break;
     }
-    status = nxpax_uart_drain(source, &cursor);
+    if (status == 0) status = nxpax_uart_drain(source, &cursor);
     if (status != 0) {
       OS1_report_error("nxpaxd.uart_drain", status);
-      break;
     }
-    OS1_sleep(20);
+    if (status == 0) OS1_sleep(20);
   }
   long closed_port = OS1low_handle_close(port);
   long closed_source = OS1low_handle_close(source);

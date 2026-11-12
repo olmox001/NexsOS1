@@ -22,6 +22,8 @@ struct nxm_slot {
   char registry[40];
   int pid;
   uint32_t mode;
+  uint32_t caps; /* manifest-granted capability mask */
+  uint32_t auth_set;
   uint32_t generation;
   uint32_t backoff_ms;
   uint64_t started_ms;
@@ -136,8 +138,12 @@ static int nxm_unpack(const struct ipc_message *message,
 }
 
 static int nxm_spawn(const struct nxm_slot *slot) {
+  if (!slot->auth_set)
+    return -EPERM;
   if (slot->args[0] == '\0')
-    return (int)spawn_caps(slot->path, PLVL_ROOT, CAP_ALL);
+    return (int)spawn_caps(slot->path, PLVL_ROOT, slot->caps);
+  if (slot->caps != CAP_ALL)
+    return -EINVAL; /* argumentful capability-spawn needs an argv-aware API */
   char args[sizeof(slot->args)];
   for (unsigned i = 0U; i < sizeof(args); ++i)
     args[i] = slot->args[i];
@@ -218,6 +224,7 @@ static int nxm_start_slot(struct nxm_slot *slot, unsigned id, uint64_t now_ms) {
 static int nxm_matching(const struct nxm_slot *old,
                         const struct nxm_slot *candidate) {
   return old->mode == candidate->mode &&
+         old->caps == candidate->caps &&
          strcmp(old->path, candidate->path) == 0 &&
          strcmp(old->args, candidate->args) == 0 &&
          strcmp(old->registry, candidate->registry) == 0;
@@ -260,6 +267,23 @@ static int nxm_name(struct nxm_state *state,
   return 0;
 }
 
+/* The authenticated initializer selects a capability mask for each slot.
+ * NAME must precede AUTH; REGISTER consumes the immutable slot authority. */
+static int nxm_auth(struct nxm_state *state,
+                    const struct ipc_message *message) {
+  unsigned id = (unsigned)message->data1;
+  if (id >= NXMANAGE_SLOTS) return -EINVAL;
+  struct nxm_slot *slot = &state->slots[id];
+  if (!slot->named || slot->active) return -EPERM;
+  uint64_t requested = message->data2;
+  if (requested != CAP_ALL &&
+      requested != (CAP_ALL | CAP_WINDOW_MANAGE)) return -EPERM;
+  if (slot->auth_set && slot->caps != (uint32_t)requested) return -EPERM;
+  slot->caps = (uint32_t)requested;
+  slot->auth_set = 1U;
+  return 0;
+}
+
 static int nxm_register(struct nxm_state *state,
                         const struct ipc_message *message) {
   unsigned id = (unsigned)message->data1;
@@ -273,8 +297,10 @@ static int nxm_register(struct nxm_state *state,
   if (nxm_unpack(message, &candidate) != 0)
     return -EINVAL;
   struct nxm_slot *slot = &state->slots[id];
-  if (!slot->named)
+  if (!slot->named || !slot->auth_set)
     return -EPERM;
+  candidate.caps = slot->caps;
+  candidate.auth_set = slot->auth_set;
   for (unsigned i = 0U; i < NXMANAGE_NAME_MAX; ++i)
     candidate.name[i] = slot->name[i];
   candidate.named = 1;
@@ -366,6 +392,10 @@ static void nxm_drain(struct nxm_state *state, int port) {
       int status = nxm_name(state, &request);
       nxm_reply_kind(request.from, (unsigned)request.data1, status,
                      NXMANAGE_REP_NAME);
+    } else if (request.type == NXMANAGE_REQ_AUTH) {
+      int status = nxm_auth(state, &request);
+      nxm_reply_kind(request.from, (unsigned)request.data1, status,
+                     NXMANAGE_REP_AUTH);
     } else if (request.type == NXMANAGE_REQ_REGISTER) {
       int status = nxm_register(state, &request);
       if (status != 0)

@@ -87,6 +87,8 @@ int main(void) {
   int identity = OS1_identity(&level, &caps);
   int failed = nxrole_check("runtime identity is ROOT not MACHINE",
                             identity == 0 && level == PLVL_ROOT);
+  failed += nxrole_check("ROOT lacks window manager grant by default",
+      identity == 0 && (caps & CAP_WINDOW_MANAGE) == 0U);
   failed += nxrole_registry();
   failed += nxrole_process();
   failed += nxrole_ports();

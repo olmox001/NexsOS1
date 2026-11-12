@@ -53,7 +53,7 @@
 
 /* Protocol version: a client and a service built at different times must fail
  * LOUDLY rather than misread each other's layout. */
-#define EXECSVC_VERSION 2
+#define EXECSVC_VERSION 3
 
 /* ipc_message.type values for the rendezvous header. */
 #define EXECSVC_REQ_SPAWN 0x4558 /* 'EX': please execute; see field map below */
@@ -83,7 +83,7 @@
  * hybrid, so both mechanisms coexist without a protocol break.
  *
  *   GRANTED:   the client already delegated the handle with OS1low_cap_grant(),
- *              so `ref` indexes the SERVICE's own table.  Capability-correct:
+ *              so `ref` is an ordinal in the extra capabilities transferred in THIS packet.  Capability-correct:
  *              an explicit, per-handle delegation the client consented to.
  *              Costs a grant round-trip per fd.
  *
@@ -103,7 +103,7 @@
 struct execsvc_redir {
   int child_fd; /* slot in the CHILD (0=stdin, 1=stdout, 2=stderr, …) */
   int source;   /* EXECSVC_FD_* — how to interpret `ref`               */
-  int ref;      /* handle index, in the service's or the client's table */
+  int ref;      /* GRANTED: packet extra-cap ordinal; CLIENT_FD: client slot */
 };
 
 /* Hard ceiling the service enforces before reading a body.  Generous for real
@@ -140,5 +140,47 @@ struct execsvc_spawn_rep {
  * build change rather than another extraction).
  */
 int execsvc_spawn(int argc, char *const argv[], unsigned int flags);
+
+/* Common execution contract for applications, shells and service hosts.
+ * Local launch preserves the real calling process' ctty, parent, cwd, env
+ * and job-control rights. Brokered execsvc_spawn() remains a separate mode
+ * until those attributes can be delegated to the service without loss.
+ * These APIs use the same path resolver and redirection rules on both sides. */
+#define EXECSVC_LOCAL_ARG_MAX 16
+#define EXECSVC_HOME_DEFAULT "/home"
+struct execsvc_owned_launch {
+  int owner_handle, argc;
+  unsigned int flags;
+  int nredir;
+  const struct spawn_redir *redirections;
+  char *argv[EXECSVC_LOCAL_ARG_MAX];
+};
+int execsvc_resolve_user_program(const char *name, char *resolved, size_t capacity);
+int execsvc_launch_owned(const struct execsvc_owned_launch *launch,
+                         char *resolved, size_t capacity);
+const char *execsvc_strip_path_quotes(const char *name, char *out, size_t size);
+int execsvc_resolve_path(const char *name, char *out, size_t size);
+int execsvc_launch_explicit(const char *path, int argc, char *const argv[],
+                            unsigned int flags, const struct spawn_redir *redirs,
+                            int nredir);
+int execsvc_launch_search(int argc, char *argv[], char *resolved,
+                          size_t capacity, unsigned int flags,
+                          const struct spawn_redir *redirs, int nredir,
+                          int user_only);
+
+/* Programmer-facing launch choice, independent of the private nxexec UI.
+ * FOREGROUND: caller remains job/ctty owner; DETACHED: no inherited ctty;
+ * HOSTED: start /sys/bin/nxexec, whose TTY service supervises the command,
+ *         detects independent GUI windows and handles terminal output.
+ * Redirections require FOREGROUND or DETACHED (HOSTED rejects them). */
+enum execsvc_launch_mode {
+  EXECSVC_MODE_FOREGROUND = 0,
+  EXECSVC_MODE_DETACHED = 1,
+  EXECSVC_MODE_HOSTED = 2
+};
+int execsvc_launch_hosted(int argc, char *const argv[]);
+int execsvc_launch(int argc, char *argv[], enum execsvc_launch_mode mode,
+                   const struct spawn_redir *redirs, int nredir,
+                   char *resolved, size_t capacity);
 
 #endif /* _EXECSVC_H */

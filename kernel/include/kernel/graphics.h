@@ -69,6 +69,9 @@ void compositor_move_window(int window_id, int x, int y);
  * (reallocates the buffer, reflows the terminal).  Process context only.
  * Returns 0 on success, -1 on failure.  Backs SYS_WINDOW_RESIZE (GFX-DYN-01). */
 int compositor_resize_window(int window_id, int w, int h) NX_MUST_USE;
+/* Change only the presentation extent of the existing window object.
+ * The source pixels stay stable; nxcompositor (userland) scales them. */
+int compositor_set_window_draw_size(int id, int w, int h) NX_MUST_USE;
 void compositor_window_write(int win_id, const char *buf, size_t count);
 
 /* Protected drawing (with PID check) */

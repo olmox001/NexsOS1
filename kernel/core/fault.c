@@ -51,7 +51,7 @@ static void fault_notify_user(struct process *task, const char *desc) {
   m.from = task->pid; /* group the crash notification under the crashing process */
   m.type = IPC_TYPE_NOTIFY;
   m.data1 = 2; /* severity: error -> red popup (1 = warning/yellow, 0 = info) */
-  m.data2 = (uint64_t)task->pid;
+  m.data2 = 0U; /* Normal notification protocol; from already carries PID. */
   snprintf(m.payload, sizeof(m.payload), "%s crashed: %s", task->name, desc);
   /* DIR-05's contract is that a userland crash is VISIBLE, not that an IPC was
    * attempted.  Discarding the result satisfied the letter and lost the point:
@@ -63,6 +63,34 @@ static void fault_notify_user(struct process *task, const char *desc) {
     fault_printf("[FAULT] crash popup NOT delivered to the notify server "
                  "(pid %d): %s\n",
                  npid, m.payload);
+}
+
+static const int fault_debug_boot = NX_MDEBUG_BOOT;
+
+/* Bounded current-process instruction evidence for diagnostic boots. The
+ * architecture reports the vector separately; bytes distinguish an actual
+ * unsupported instruction from a stale/corrupted executable mapping. */
+static void fault_debug_instruction(struct process *task, uint64_t pc) {
+  uint8_t bytes[16];
+  if (!vmm_is_user_addr(pc) || !vmm_is_user_addr(pc + sizeof(bytes) - 1U)) return;
+  if (vmm_copy_from_user(bytes, (const void *)(uintptr_t)pc, sizeof(bytes)) != 0) {
+    fault_printf("[FAULT-BYTES] current instruction unavailable\n");
+    return;
+  }
+  uint64_t physical = task && task->page_table ?
+      vmm_get_phys(task->page_table, pc) : 0U;
+  fault_printf("[FAULT-BYTES] pc=0x%016lx phys=0x%016lx "
+               "%02x %02x %02x %02x %02x %02x %02x %02x "
+               "%02x %02x %02x %02x %02x %02x %02x %02x\n",
+               pc, physical,
+               (unsigned)bytes[0], (unsigned)bytes[1],
+               (unsigned)bytes[2], (unsigned)bytes[3],
+               (unsigned)bytes[4], (unsigned)bytes[5],
+               (unsigned)bytes[6], (unsigned)bytes[7],
+               (unsigned)bytes[8], (unsigned)bytes[9],
+               (unsigned)bytes[10], (unsigned)bytes[11],
+               (unsigned)bytes[12], (unsigned)bytes[13],
+               (unsigned)bytes[14], (unsigned)bytes[15]);
 }
 
 hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
@@ -83,6 +111,7 @@ hal_frame_t *fault_handle_user_or_panic(hal_frame_t *regs, int user_mode,
     fault_printf("\n[FAULT] %s%s: PID %d (%s) pc=0x%016lx addr=0x%016lx cause=0x%016lx — terminating\n",
                  desc, uaccess ? " (uaccess)" : "", task->pid, task->name,
                  fault_pc, fault_addr, syndrome);
+    if (user_mode && fault_debug_boot) fault_debug_instruction(task, fault_pc);
 
     if (uaccess) {
       /* Release the arch uaccess critical section (locks/IRQ state/flag);

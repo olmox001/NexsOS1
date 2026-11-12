@@ -70,6 +70,14 @@
  * MACHINE authority, and only a delegated SEND handle reaches userland.
  * The flag is stripped from installed rights and cannot be inherited. */
 #define OS1_PORT_CREATE_PRIVATE (1u << 8)
+/* A receiver may publish a FAMILY-scoped PORT. SEND acquisition is
+ * permitted only to live descendants of the receiver (following the same
+ * logical-owner precedence used by process authority). The SEND handle is
+ * the lasting authority; no receiver-side PID lookup is required and queued
+ * records remain deliverable after the sender exits. This acquisition-only
+ * flag is removed before installing the receiver handle. This is a generic
+ * PORT mechanism and does not assign any TTY/window/IPC policy to the kernel. */
+#define OS1_PORT_CREATE_FAMILY (1u << 9)
 
 /* Control verbs for OS1_object_ctl(handle, cmd, arg) — type-specific actions
  * on an object you hold a capability to (seL4: the right IS the authority). */
@@ -92,20 +100,26 @@
                              * authority (an ancestry walk) still reaches it.
                              * Privileged-only because it DELEGATES authority over
                              * a process — it is not a hint (ASTRA §6.5).       */
-#define OBJ_CTL_TRUNCATE 10 /* FILE: truncate to `arg` bytes (needs RIGHT_WRITE).  The
-                             * provider primitive is whole-file-replace (an offset-0
-                             * write REPLACES the file), so only arg == 0 (truncate to
-                             * empty) is expressible here — the case a POSIX
-                             * write(fd,...,0) CANNOT express, since that is a no-op.
-                             * Non-empty lengths are composed in libc's ftruncate()
-                             * (read the head back, rewrite it from offset 0) and never
-                             * reach the kernel; arg != 0 returns -EINVAL.    */
+#define OBJ_CTL_TRUNCATE 10 /* FILE: set length to nonnegative `arg` bytes;
+                             * WRITE required. Preserves descriptor position.
+                             * Growth exposes zero bytes; normal writes never
+                             * shrink. Provider limitations return errors. */
 #define OBJ_CTL_MKDIR    12 /* DIR: create the one-component name at user pointer
                              * `arg` (needs RIGHT_MUTATE).  The parent directory
                              * capability names the namespace being changed.      */
 /* PORT: non-blocking dequeue. arg is a user struct ipc_message*; READ right
  * required. Returns message bytes, -EAGAIN when empty, -EPIPE if closed. */
 #define OBJ_CTL_PORT_TRY_RECV 14
+/* PORT: identical dequeue with kernel-stamped capability-transfer metadata. */
+#define OBJ_CTL_PORT_TRY_RECV_PACKET 17
+/* PROCESS: create a child with this process as its logical owner before it
+ * becomes runnable. DESTROY plus privileged CAP_SPAWN required; arg points to
+ * a bounded versioned os1_spawn_request_v1. No suspended intermediate child. */
+#define OBJ_CTL_SPAWN_OWNED 18
+/* WINDOW: all geometry is capability-driven, not a new syscall.
+ * arg packs unsigned width/height or signed x/y into two 32-bit words. */
+#define OBJ_CTL_WINDOW_RESIZE 15 /* WRITE: owner adopts new logical pixels */
+#define OBJ_CTL_WINDOW_PRESENT 16 /* WRITE + manager grant: display bounds */
 #define OBJ_CTL_UNLINK   13 /* DIR: remove the one-component name at user pointer
                              * `arg` (needs RIGHT_MUTATE).  Recursive removal is
                              * deliberately a userland composition.              */

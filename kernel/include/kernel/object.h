@@ -36,6 +36,10 @@
 #define NPROC_HANDLES 32
 #define OBJ_FILE_PATH_MAX 128
 
+/* Shared bounded creation backend. urequest is copied before use. */
+long kernel_spawn_owned(int owner_pid,
+    const struct os1_spawn_request_v1 *urequest) NX_MUST_USE;
+
 /* A kernel object: a refcounted, typed resource named only through handles.
  * Payloads for every type are kept inline (a kobject is small and kmalloc'd);
  * `type` selects which fields are live. */

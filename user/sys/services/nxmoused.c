@@ -12,6 +12,7 @@
 #define EV_REL 2
 #define EV_ABS 3
 #define EV_SYN 0
+#define SYN_DROPPED 3
 #define REL_X 0
 #define REL_Y 1
 #define REL_WHEEL 8
@@ -182,7 +183,7 @@ static void button_event(struct nxmouse_state *state, unsigned code, int value) 
       return;
     if (state->px >= s.x + s.draw_width - 12 && state->py >= s.y + s.draw_height - 12) {
       state->resizing = s.id; state->resize_x = state->px; state->resize_y = state->py;
-      state->resize_w = s.width; state->resize_h = s.height;
+      state->resize_w = s.draw_width; state->resize_h = s.draw_height;
       return;
     }
     if (title && state->py < s.y && state->py >= s.y - title) {
@@ -220,9 +221,13 @@ static void mouse_sync(struct nxmouse_state *state,
         state->dragging = 0;
       }
     } else if (state->frame_motion && state->resizing && state->buttons[0]) {
-      long resized = OS1_window_resize(state->resizing,
-          state->resize_w + state->px - state->resize_x,
-          state->resize_h + state->py - state->resize_y);
+      int w = state->resize_w + state->px - state->resize_x;
+      int h = state->resize_h + state->py - state->resize_y;
+      if (w < 64) w = 64;
+      if (h < 64) h = 64;
+      if (w > 4096) w = 4096;
+      if (h > 4096) h = 4096;
+      long resized = OS1_window_present_resize(state->resizing, w, h);
       if (resized != 0) {
         OS1_report_error("nxmoused.window_resize",
                          (int)(resized < 0 ? resized : -EIO));
@@ -245,10 +250,39 @@ static void mouse_sync(struct nxmouse_state *state,
     state->frame_wheel = 0;
 }
 
+/* A kernel input-ring overflow invalidates the consumer's held-button and
+ * capture assumptions. Reset all device tracks and release routed buttons
+ * before accepting another frame. Kernel waits for EV_SYN per device. */
+static void mouse_reset_after_drop(struct nxmouse_state *state) {
+  for (unsigned button = 0U; button < 3U; ++button) {
+    if (state->buttons[button] != 0)
+      button_event(state, button == 0U ? BTN_LEFT :
+                   button == 1U ? BTN_RIGHT : BTN_MIDDLE, 0);
+    state->buttons[button] = 0;
+    state->capture[button] = 0;
+    state->button_holders[button] = 0U;
+  }
+  for (unsigned id = 0U; id < NX_MOUSE_MAX_DEVICES; ++id) {
+    for (unsigned button = 0U; button < 3U; ++button) {
+      state->device_buttons[id][button] = 0U;
+      state->pending_button[id][button] = 0U;
+      state->pending_value[id][button] = 0U;
+    }
+  }
+  state->dragging = 0;
+  state->resizing = 0;
+  state->frame_motion = 0;
+  state->frame_wheel = 0;
+}
+
 static void route_event(struct nxmouse_state *state, const struct os1_raw_input_event_v1 *e) {
   /* The wire device_id is uint8_t; every representable ID has a slot. */
   if (state == NULL || e == NULL) {
     OS1_report_error("nxmoused.route_event.null", -EFAULT);
+    return;
+  }
+  if (e->type == EV_SYN && e->code == SYN_DROPPED) {
+    mouse_reset_after_drop(state);
     return;
   }
   if (e->type == EV_KEY) {
@@ -267,9 +301,29 @@ static void route_event(struct nxmouse_state *state, const struct os1_raw_input_
     return;
   }
   if (e->type == EV_REL) {
-    if (e->code == REL_X) { state->px += e->value; state->frame_motion = 1; }
-    if (e->code == REL_Y) { state->py += e->value; state->frame_motion = 1; }
-    if (e->code == REL_WHEEL) state->frame_wheel += e->value;
+    /* Relative input is untrusted device data. A lagged/flooded queue can
+     * deliver large deltas: do not overflow signed cursor/wheel accumulators
+     * before clamp_pointer() runs on EV_SYN. Keep the bounded screen domain
+     * rather than wrapping to an unrelated point or drag target. */
+    if (e->code == REL_X || e->code == REL_Y) {
+      long d = OS1_display_info();
+      int limit = e->code == REL_X ? (int)((d >> 16) & 0xffff)
+                                  : (int)(d & 0xffff);
+      int *coordinate = e->code == REL_X ? &state->px : &state->py;
+      if (limit > 0) {
+        int64_t next = (int64_t)*coordinate + (int64_t)e->value;
+        if (next < 0) next = 0;
+        if (next >= limit) next = (int64_t)limit - 1;
+        *coordinate = (int)next;
+        state->frame_motion = 1;
+      }
+    }
+    if (e->code == REL_WHEEL) {
+      int64_t next = (int64_t)state->frame_wheel + (int64_t)e->value;
+      if (next > INT32_MAX) next = INT32_MAX;
+      if (next < INT32_MIN) next = INT32_MIN;
+      state->frame_wheel = (int)next;
+    }
   } else if (e->type == EV_ABS) {
     long d = OS1_display_info();
     int w = (int)((d >> 16) & 0xffff), h = (int)(d & 0xffff);
@@ -293,13 +347,19 @@ int main(void) {
         break;
       }
       if (control.type == IPC_THEME_STYLE) {
-        int style_rc = os1_theme_set_style((int)(int64_t)control.data1);
-        if (style_rc != 0)
-          OS1_report_error("nxmoused.theme_style", style_rc);
-        else {
-          int palette_rc = os1_theme_set_palette((int)(int64_t)control.data2);
-          if (palette_rc != 0)
-            OS1_report_error("nxmoused.theme_palette", palette_rc);
+        /* Theme-only messages carry style=-1 to preserve the current
+         * style. Do not reject the palette change on that sentinel. */
+        int style = (int)(int64_t)control.data1;
+        int palette = (int)(int64_t)control.data2;
+        if (style >= 0) {
+          int rc = os1_theme_set_style(style);
+          if (rc != 0)
+            OS1_report_error("nxmoused.theme_style", rc);
+        }
+        if (palette >= 0) {
+          int rc = os1_theme_set_palette(palette);
+          if (rc != 0)
+            OS1_report_error("nxmoused.theme_palette", rc);
         }
       } else if (control.type == IPC_THEME_BACKGROUND) {
         int background_rc = os1_theme_set_background((int)(int64_t)control.data1);

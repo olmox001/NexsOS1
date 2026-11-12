@@ -130,15 +130,15 @@ $(COREUTILS_OBJ_DIR)/uname-uname.o: $(COREUTILS_SRC_DIR)/uname.c
 
 
 $(BUILD_DIR)/cu_true.elf: $(COREUTILS_OBJ_DIR)/true.o $(COREUTILS_OBJ_DIR)/true-mode-true.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 $(BUILD_DIR)/cu_false.elf: $(COREUTILS_OBJ_DIR)/true.o $(COREUTILS_OBJ_DIR)/true-mode-false.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 $(BUILD_DIR)/cu_uname.elf: $(COREUTILS_OBJ_DIR)/uname.o $(COREUTILS_OBJ_DIR)/uname-mode.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 $(COREUTILS_OBJ_DIR)/set-fields.o: $(COREUTILS_SRC_DIR)/set-fields.c
@@ -162,33 +162,33 @@ $(COREUTILS_OBJ_DIR)/chown-chgrp.o: $(COREUTILS_SRC_DIR)/chown-chgrp.c
 
 
 $(BUILD_DIR)/cu_chown.elf: $(COREUTILS_OBJ_DIR)/chown.o $(COREUTILS_OBJ_DIR)/chown-core.o $(COREUTILS_OBJ_DIR)/chown-chown.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 $(BUILD_DIR)/cu_chgrp.elf: $(COREUTILS_OBJ_DIR)/chown.o $(COREUTILS_OBJ_DIR)/chown-core.o $(COREUTILS_OBJ_DIR)/chown-chgrp.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 $(BUILD_DIR)/cu_cut.elf: $(COREUTILS_OBJ_DIR)/cut.o $(COREUTILS_OBJ_DIR)/set-fields.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 $(BUILD_DIR)/cu_realpath.elf: $(COREUTILS_OBJ_DIR)/realpath.o $(COREUTILS_OBJ_DIR)/relpath.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 $(BUILD_DIR)/cu_expand.elf: $(COREUTILS_OBJ_DIR)/expand.o $(COREUTILS_OBJ_DIR)/expand-common.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 $(BUILD_DIR)/cu_unexpand.elf: $(COREUTILS_OBJ_DIR)/unexpand.o $(COREUTILS_OBJ_DIR)/expand-common.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 # Explicit rule generation for every single-file Coreutils applet
 define CU_ELF_RULE
 $$(BUILD_DIR)/cu_$(1).elf: $$(COREUTILS_OBJ_DIR)/$(1).o $$(COREUTILS_COMMON_OBJS) $$(COREUTILS_GL_LIB) $$(GNULIB_LIB) $$(USER_LIB_O) $$(USER_SYSCALL_O) $$(USER_MALLOC_O)
-	@$$(CC) $$(CFLAGS) $$(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $$@ $$^
+	@$$(CC) $$(CFLAGS) $$(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $$@ $$^ $$(USER_RUNTIME_LIBS)
 endef
 
 

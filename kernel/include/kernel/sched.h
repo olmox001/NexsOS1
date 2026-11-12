@@ -128,6 +128,9 @@ struct process {
                       * process reached the grave via KILL/fault, so a waiter can
                       * tell "Done (N)" from "Killed" (the NEXS stand-in for
                       * WIFEXITED vs WIFSIGNALED — there is no signal model). */
+  uint8_t wait_consumed; /* sched_lock: exit status has already been collected. */
+  uint8_t creation_active; /* defer control until creation and syscall cleanup end */
+  uint8_t stop_pending; /* sched_lock: STOP requested during creation */
   int priority; /* 0 (High) - 31 (Low) */
   uint64_t quantum_deadline_ns; /* 0 until the task is selected to run */
 
@@ -323,9 +326,9 @@ int proc_pid_is_privileged(int pid) NX_MUST_USE;
 int process_kill_allowed(struct process *caller, int target_pid) NX_MUST_USE;
 /* process_set_owner - set a process's LOGICAL parent (owner_pid), so a job
  * spawned BY a service still answers to the client that asked for it.  Only
- * reachable through OBJ_CTL_SETOWNER, which requires DESTROY on the target and
- * a privileged caller (it delegates authority).  0, or -ESRCH if either pid is
- * not live. */
+ * delegated through OBJ_CTL_SETOWNER or installed during owned creation.
+ * Both require explicit PROCESS authority and a privileged caller. Returns
+ * 0, or -ESRCH if either pid is not live. */
 int process_set_owner(int pid, int owner_pid) NX_MUST_USE;
 /* proc_get_lineage - spawning parent + LOGICAL owner of a pid (owner falls back
  * to parent when unset).  Lets userland follow inheritance across a service
@@ -355,13 +358,20 @@ void proc_env_free(struct process *p);
  * caller holds CAP_IPC_ANY, or target is the caller's parent or a
  * descendant.  Acquires sched_lock internally. */
 int process_ipc_allowed(struct process *caller, int target_pid) NX_MUST_USE;
+/* Generic FAMILY PORT acquisition test; checks the live owner/parent lineage
+ * under sched_lock without any ROOT/MACHINE override. */
+int proc_descends_from(int child_pid, int ancestor_pid) NX_MUST_USE;
 int process_terminate(int pid) NX_MUST_USE;
 /* dispatch_spawn finalization (SCHED-UAF Pitfall B): the creator calls one of
- * these AFTER process_load_elf_args (local IRQs off) to commit the new child
- * atomically against a concurrent kill.  finalize: if a kill was deferred
+ * these AFTER process_load_elf_args to commit the new child atomically under
+ * scheduler locks against a concurrent kill. finalize: if a kill was deferred
  * (kill_pending) release the child, else enqueue it.  abort: the ELF load
  * failed — release the half-built child. */
 void process_finalize_spawn(struct process *p);
+/* Creation stays preemptible, but kill/stop cannot abandon its allocations.
+ * finish is called after object pins and frontend storage have been released. */
+int process_creation_begin(void) NX_MUST_USE;
+hal_frame_t *process_creation_finish(hal_frame_t *frame) NX_MUST_USE;
 void process_abort_spawn(struct process *p);
 /* process_kill_subtree - window-aware EXTERNAL kill: terminate root_pid + its
  * WINDOWLESS descendants, SPARE windowed descendants + their subtrees

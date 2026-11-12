@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <os1.h>
 #include <string.h>
+#include <unistd.h>
 
 static int failures = 0;
 
@@ -30,6 +31,34 @@ static void check(int win_id, const char *name, int ok) {
   printf("[fdtest] %s: %s\n", name, ok ? "PASS" : "FAIL");
   if (!ok)
     failures++;
+}
+
+static int truncate_descriptor_test(void) {
+  const char *path = "/home/shared/fdtest.truncate";
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) return 1;
+  char bytes[10] = {0};
+  int result = write(fd, "0123456789", 10) == 10 ? 0 : 2;
+  if (result == 0 && (ftruncate(fd, 4) != 0 ||
+      lseek(fd, 0, SEEK_CUR) != 10 || file_read(path, bytes, 10, 0) != 4 ||
+      memcmp(bytes, "0123", 4) != 0)) result = 3;
+  if (result == 0 && (ftruncate(fd, 9) != 0 ||
+      lseek(fd, 0, SEEK_CUR) != 10 || file_read(path, bytes, 10, 0) != 9 ||
+      memcmp(bytes, "0123", 4) != 0)) result = 4;
+  for (unsigned i = 4U; i < 9U && result == 0; ++i)
+    if (bytes[i] != 0) result = 5;
+  if (result == 0 && (ftruncate(fd, 0) != 0 ||
+      lseek(fd, 0, SEEK_CUR) != 10 || ftruncate(fd, 9) != 0 ||
+      file_read(path, bytes, 10, 0) != 9)) result = 6;
+  for (unsigned i = 0U; i < 9U && result == 0; ++i)
+    if (bytes[i] != 0) result = 7;
+  if (close(fd) != 0) result = 8;
+  fd = open(path, O_RDONLY);
+  errno = 0;
+  if (fd < 0 || ftruncate(fd, 0) != -1 || errno != EBADF) result = 9;
+  if (fd >= 0 && close(fd) != 0) result = 10;
+  if (OS1_fs_unlink(path) != 0) result = 11;
+  return result;
 }
 
 int main(void) {
@@ -72,13 +101,16 @@ int main(void) {
       write(wfd, "FDTEST!!", 8);
       memset(c, 0, sizeof(c));
       ok = lseek(wfd, 0, SEEK_SET) == 0 && read(wfd, c, 8) == 8 &&
-           memcmp(c, "FDTEST!!", 8) == 0;
+           memcmp(c, "FDTEST!!", 8) == 0 &&
+           lseek(wfd, 0, SEEK_END) == size;
       /* restore the original bytes whatever happened */
       lseek(wfd, 0, SEEK_SET);
       write(wfd, orig, 8);
     }
   }
   check(win_id, "rdwr-write-readback", ok);
+  check(win_id, "truncate-writeonly-position-and-zero-tail",
+        truncate_descriptor_test() == 0);
 
   /* 4a. capability: /bin is read-only for user processes */
   errno = 0;

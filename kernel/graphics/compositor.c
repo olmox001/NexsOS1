@@ -236,7 +236,9 @@ _Static_assert(RESERVED_SYSTEM_SLOTS > 0 && RESERVED_SYSTEM_SLOTS < MAX_WINDOWS,
 /* Text                                                                       */
 /* ========================================================================= */
 
-#define COLOR_FG 0xFF212121
+/* Compatibility text windows share the ACTIVE palette with the native
+ * window theme, rather than assuming a dark glyph on a light surface. */
+#define COLOR_FG (compositor_theme_active()->title_text_active)
 #define COLOR_FG_SECONDARY 0xFF757575
 #define COLOR_FG_DISABLED 0xFFBDBDBD
 
@@ -345,6 +347,7 @@ struct window {
    * the logical surface to the draw rect (the app may keep drawing at its old
    * size while it reallocates → fluid resize).  0 means "same as logical". */
   int draw_w, draw_h;
+  int presentation_managed; /* Explicit WM extent survives delayed app adoption. */
   int z_order;
   int visible;
   int minimized; /* If true, sent to background by the user/WM (dock-
@@ -1399,11 +1402,38 @@ void compositor_move_window(int window_id, int x, int y) {
  * compositor_resize_window - resize a window's LOGICAL surface (GFX-DYN-01).
  *
  * Reallocates the window pixel buffer to w x h, reflows the embedded terminal
- * to the new cell grid, and resets the on-screen draw size to match (crisp,
- * non-scaled).  Allocation happens here, so this must be called from process
+ * to the new cell grid. Explicit window-manager presentation bounds remain
+ * authoritative while the application adopts logical pixels.  Allocation happens here, so this must be called from process
  * context (it backs SYS_WINDOW_RESIZE), never from an IRQ.  Returns 0 on
  * success, -1 on failure (the old surface is kept on failure).
  */
+
+/* WINDOW object presentation geometry. No pixel allocation or rendering.
+ * Holding the compositor lock serializes snapshot source and draw bounds. */
+int compositor_set_window_draw_size(int id, int w, int h) {
+  if (w < 1 || h < 1 || w > 4096 || h > 4096) return -EINVAL;
+  uint64_t flags;
+  int owner = -ESRCH;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  for (int i = 0; i < MAX_WINDOWS && owner == -ESRCH; ++i) {
+    struct window *win = &windows[i];
+    if (win->id != id) continue;
+    owner = win->pid;
+    win->presentation_managed = 1;
+    int old_w = win->draw_w > 0 ? win->draw_w : win->width;
+    int old_h = win->draw_h > 0 ? win->draw_h : win->height;
+    if (old_w != w || old_h != h) {
+      int title = compositor_titlebar_height();
+      expand_damage(win->x, win->y - title, old_w, old_h + title);
+      win->draw_w = w;
+      win->draw_h = h;
+      expand_damage(win->x, win->y - title, w, h + title);
+      compositor_dirty = 1;
+    }
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  return owner < 0 ? owner : 0;
+}
 
 int compositor_resize_window(int window_id, int w, int h) {
   if (w <= 0 || h <= 0 || w > 4096 || h > 4096)
@@ -1426,8 +1456,7 @@ int compositor_resize_window(int window_id, int w, int h) {
   /* No-op if already at this logical size: keeps the grip-resize release path
    * (which echoes an INPUT_TYPE_RESIZE) from looping when the app re-applies
    * the same size. */
-  if (win->width == w && win->height == h && win->draw_w == w &&
-      win->draw_h == h) {
+  if (win->width == w && win->height == h) {
     spin_unlock_irqrestore(&compositor_lock, flags);
     return 0;
   }
@@ -1448,11 +1477,14 @@ int compositor_resize_window(int window_id, int w, int h) {
                 old_dh + compositor_titlebar_height());
 
   uint32_t *obuf = win->buffer;
+  int follows_logical = !win->presentation_managed;
   win->buffer = nbuf;
   win->width = w;
   win->height = h;
-  win->draw_w = w; /* crisp: on-screen == new logical */
-  win->draw_h = h;
+  if (follows_logical) {
+    win->draw_w = w;
+    win->draw_h = h;
+  }
   win->has_alpha = ((win->bg_color >> 24) != 0xFF);
 
   /* Reflow the terminal to the new cell grid. */
@@ -1468,29 +1500,13 @@ int compositor_resize_window(int window_id, int w, int h) {
   expand_damage(win->x, win->y - compositor_titlebar_height(), w,
                 h + compositor_titlebar_height());
   compositor_dirty = 1;
-  int owner = win->pid;
   spin_unlock_irqrestore(&compositor_lock, flags);
-
   if (obuf)
     kfree(obuf);
-
-  /* Notify the owner of its new logical size (outside the lock: kernel_ipc_send
-   * takes sched_lock — never nest it under compositor_lock, cf. GFX-COMP-03).
-   */
-  if (owner > 0) {
-    struct ipc_message msg = {0};
-    msg.type = IPC_TYPE_RESIZE;
-    msg.data1 = (uint64_t)w;
-    msg.data2 = (uint64_t)h;
-    /* GFX-DYN-01: this message IS how a client learns its new logical size.
-     * Dropping it leaves the app drawing at the old dimensions against a
-     * surface that already changed -- visible as clipped or stretched output
-     * with nothing in the log to connect it to the resize. */
-    if (kernel_ipc_send(owner, &msg) != 0)
-      pr_err("compositor: resize notify to pid %d failed — it will keep "
-             "drawing at its previous size\n",
-             owner);
-  }
+  /* The owning application already requested this logical size. Echoing a
+   * resize here feeds stale dimensions back into the same mailbox alongside
+   * newer WM requests, causing repeated reallocations and resize oscillation.
+   * Only the userland WM publishes presentation-change requests to owners. */
   return 0;
 }
 

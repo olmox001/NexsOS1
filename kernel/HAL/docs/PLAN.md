@@ -98,3 +98,14 @@ Host, cross, sanitizers, static analysis and both ISA guest ISO lanes PASS.
 Next: audit and migrate NXOLMO base types/results, then runtime budget,
 metrics and authority/hardware resource grant enforcement, preserving one
 capability owner and actual device access through it.
+
+## NXOLMO base identity/result checkpoint — 2026-11-10
+
+The four native base implementation families (checked, types,
+result, status) are linked, with true runtime consumers for checked
+arithmetic and object identity and direct tests of result/status.
+Both ISO guests and full HAL host/cross/sanitize/static gates pass.
+Now perform the source-verified runtime clock, cycle, budget and
+operation metrics convergence using the selected HAL provider
+without importing host clocks. Full authority/CSpace and registry
+cutovers remain mandatory.

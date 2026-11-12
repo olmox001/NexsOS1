@@ -89,7 +89,7 @@ $(MDEBUG_CONFIG): mdebug-config-force
 	@printf '%s\n' "$(MDEBUG)" > "$@.tmp"; \
 	  if test -r "$@" && cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; \
 	  else mv "$@.tmp" "$@"; fi
-$(BUILD_DIR)/main.o: $(MDEBUG_CONFIG)
+$(BUILD_DIR)/main.o $(BUILD_DIR)/core/fault.o: $(MDEBUG_CONFIG)
 
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin

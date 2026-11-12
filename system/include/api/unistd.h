@@ -27,8 +27,8 @@
  * sbrk()            OS1low_vm_sbrk                      os1.h
  * pipe()            OS1low_pipe (SYS_PIPE, OBJ_TYPE_PIPE)   here
  * unlink()          OS1_fs_unlink (parent DIR capability)   here
- * truncate()        OS1_fs_read/OS1_fs_write (whole-file)   here
- * ftruncate()       lseek/read/write + OBJ_CTL_TRUNCATE     here
+ * truncate()        open/write capability + ftruncate      here
+ * ftruncate()       OBJ_CTL_TRUNCATE                       here
  * isatty()          OS1low_cap_query (type == CONSOLE)      here
  * getpid()          get_pid / OS1low_process_self           here
  * usleep()          SYS_NANOSLEEP (real timer sleep)        here
@@ -79,11 +79,9 @@ int isatty(int fd);
 /* getpid: POSIX name for the OS1 get_pid(). */
 int getpid(void);
 
-/* truncate/ftruncate: set a file's length exactly.  Built on the FS-layer
- * whole-file-replace primitive (an offset-0 write REPLACES the file — the
- * Phase 1 truncation standard); ftruncate reaches the same effect through an
- * open descriptor, using OBJ_CTL_TRUNCATE for the truncate-to-empty case that a
- * zero-length write cannot express (POSIX write(fd,...,0) is a no-op). */
+/* Explicit length change through a writable FILE capability. Does not move
+ * the descriptor position or require READ rights; growth exposes zero bytes.
+ * Normal descriptor writes, including at offset zero, preserve the tail. */
 int truncate(const char *path, long length);
 int ftruncate(int fd, long length);
 int fchdir(int fd);

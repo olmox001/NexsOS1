@@ -10,6 +10,7 @@
  * desktop dirty so the change shows immediately.
  */
 #include <os1_theme.h>
+#include <os1_material_colors.h>
 
 /* Built-in styles, indexed by STYLE_* ids. */
 static const os1_compositor_style_t styles[OS1_STYLE_COUNT] = {
@@ -93,19 +94,19 @@ static const os1_compositor_style_t styles[OS1_STYLE_COUNT] = {
 static const os1_compositor_theme_t themes[OS1_THEME_COUNT] = {
     /* OS1_THEME_LIGHT — the existing macOS-style palette (default; preserves the
      * current appearance exactly). */
-    [OS1_THEME_LIGHT] = {.win_bg = 0xFFFCFCFD,
-                     .title_active = 0xFFEFEFF4,
-                     .title_inactive = 0xFFE5E5EA,
-                     .title_text_active = 0xFF000000,
+    [OS1_THEME_LIGHT] = {.win_bg = OS1_MATERIAL_WINDOW_LIGHT,
+                     .title_active = 0xFFEBE9E4,
+                     .title_inactive = 0xFFE3E0DA,
+                     .title_text_active = OS1_MATERIAL_TEXT_LIGHT,
                      .title_text_inactive = 0xFF8E8E93,
                      .close_btn = 0xFFFF5F57,
                      .border = 0xFFD1D1D6,
                      .accent = 0xFF007AFF},
     /* OS1_THEME_DARK — dark palette. */
-    [OS1_THEME_DARK] = {.win_bg = 0xFFFCFCFD,
-                    .title_active = 0xFF2C2C2E,
-                    .title_inactive = 0xFF1F1F22,
-                    .title_text_active = 0xFFF2F2F7,
+    [OS1_THEME_DARK] = {.win_bg = OS1_MATERIAL_WINDOW_DARK,
+                    .title_active = 0xFF303238,
+                    .title_inactive = 0xFF282A30,
+                    .title_text_active = OS1_MATERIAL_TEXT_DARK,
                     .title_text_inactive = 0xFF8E8E93,
                     .close_btn = 0xFFFF5F57,
                     .border = 0xFF3A3A3C,
@@ -141,12 +142,12 @@ static const os1_compositor_background_t backgrounds[OS1_BG_COUNT] = {
     [OS1_BG_CYAN] = {.bg_color = 0xFF2A9D8F,
                  .bg_top = 0xFF228175,
                  .bg_bottom = 0xFF3DE4CF}, /* teal */
-    [OS1_BG_WHITE] = {.bg_color = 0xFFD8D8DC,
-                  .bg_top = 0xFFB1B1B4,
-                  .bg_bottom = 0xFFFFFFFF}, /* soft off-white */
-    [OS1_BG_GRAY] = {.bg_color = 0xFF4A4A52,
-                 .bg_top = 0xFF3D3D43,
-                 .bg_bottom = 0xFF6B6B77}, /* cool slate */
+    [OS1_BG_WHITE] = {.bg_color = OS1_MATERIAL_BG_WHITE,
+                  .bg_top = 0xFFDDDAD4,
+                  .bg_bottom = 0xFFF4F1E9}, /* warm off-white */
+    [OS1_BG_GRAY] = {.bg_color = OS1_MATERIAL_BG_GRAY,
+                 .bg_top = 0xFFACB0AE,
+                 .bg_bottom = 0xFFD5D7D2}, /* cool light gray */
     [OS1_BG_BRIGHT_RED] = {.bg_color = 0xFFE8604F,
                        .bg_top = 0xFFBE4F41,
                        .bg_bottom = 0xFFFF8B73}, /* coral */
@@ -166,9 +167,9 @@ static const os1_compositor_background_t backgrounds[OS1_BG_COUNT] = {
     [OS1_BG_BRIGHT_CYAN] = {.bg_color = 0xFF56C9C9,
                         .bg_top = 0xFF47A5A5,
                         .bg_bottom = 0xFF7DFFFF}, /* aqua */
-    [OS1_BG_BRIGHT_WHITE] = {.bg_color = 0xFFF5F5F7,
-                         .bg_top = 0xFFC9C9CB,
-                         .bg_bottom = 0xFFFFFFFF}, /* near white */
+    [OS1_BG_BRIGHT_WHITE] = {.bg_color = OS1_MATERIAL_BG_BRIGHT_WHITE,
+                         .bg_top = 0xFFE9E6DE,
+                         .bg_bottom = 0xFFFCFAF4}, /* creamy off-white */
 };
 
 static uint32_t theme_generation;

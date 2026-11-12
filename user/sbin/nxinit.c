@@ -124,11 +124,31 @@ static int nxinit_name(int port, unsigned slot, const char *name) {
   return nxinit_ack(slot, NXMANAGE_REP_NAME);
 }
 
+/* The immutable manifest grants optional rights at startup, not on use.
+ * Every slot authenticates its mask before becoming executable. */
+static int nxinit_auth(int port, unsigned slot, const char *authority) {
+  uint32_t caps = CAP_ALL;
+  if (authority[0] != '\0') {
+    if (strcmp(authority, "window-manage") != 0) return -EINVAL;
+    caps |= CAP_WINDOW_MANAGE;
+  }
+  struct ipc_message request = {0};
+  request.type = NXMANAGE_REQ_AUTH;
+  request.data1 = slot;
+  request.data2 = caps;
+  if (OS1_port_send(port, &request) != (long)sizeof(request))
+    return -EIO;
+  return nxinit_ack(slot, NXMANAGE_REP_AUTH);
+}
+
 static int nxinit_declare(int port, unsigned slot, uint32_t mode,
                           const char *name, const char *path,
-                          const char *args, const char *registry) {
+                          const char *args, const char *registry,
+                          const char *authority) {
   if (nxinit_name(port, slot, name) != 0)
     return -EPERM;
+  int allowed = nxinit_auth(port, slot, authority);
+  if (allowed != 0) return allowed;
   struct ipc_message message = {0};
   message.type = NXMANAGE_REQ_REGISTER;
   message.data1 = slot;
@@ -149,17 +169,17 @@ static int nxinit_declare(int port, unsigned slot, uint32_t mode,
  * The three separators are mandatory so malformed lines cannot silently
  * change the interpretation of executable paths or registry authority. */
 static int nxinit_line(int port, unsigned slot, char *line, int mdebug) {
-  char *field[5] = {line, NULL, NULL, NULL, NULL};
+  char *field[6] = {line, NULL, NULL, NULL, NULL, NULL};
   unsigned split = 1U;
   for (unsigned i = 0U; i < NXINIT_LINE_BYTES && line[i] != '\0'; ++i) {
     if (line[i] == '|') {
-      if (split >= 5U)
+      if (split >= 6U)
         return -EINVAL;
       line[i] = '\0';
       field[split++] = line + i + 1U;
     }
   }
-  if (split != 5U || field[2][0] != '/')
+  if ((split != 5U && split != 6U) || field[2][0] != '/')
     return -EINVAL;
   uint32_t mode = 0U;
   if (strcmp(field[1], "lock") == 0)
@@ -176,7 +196,8 @@ static int nxinit_line(int port, unsigned slot, char *line, int mdebug) {
     return -EINVAL;
   }
   int result = nxinit_declare(port, slot, mode,
-                              field[0], field[2], field[3], field[4]);
+                              field[0], field[2], field[3], field[4],
+                              split == 6U ? field[5] : "");
   if (result <= 0 && mode == NXMANAGE_MODE_ONCE)
     return -EIO; /* dependent services must not start after failed bootstrap */
   return result <= 0 ? 1 : 0; /* persistent lock can be retried by manager */

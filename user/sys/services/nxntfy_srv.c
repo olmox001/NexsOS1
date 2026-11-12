@@ -21,7 +21,8 @@
 #define NOTIFY_HEIGHT 56
 #define NOTIFY_RADIUS 10
 #define NOTIFY_PIXELS (NOTIFY_WIDTH * NOTIFY_HEIGHT)
-#define NOTIFY_POLL_MS 300
+#define NOTIFY_POLL_MS 20
+#define NOTIFY_BATCH 32U
 #define NOTIFY_TOP_GAP (7 + 26 + 4)
 #define WARN_DEDUP_MAX 16
 #define COL_ERROR_BG 0xD0FF3B30u
@@ -36,7 +37,8 @@ struct notify_state {
   int warn_pid[WARN_DEDUP_MAX];
   char warn_text[WARN_DEDUP_MAX][64];
   int warn_count, warn_evict;
-  int visible, ring_head, pending_slot, pending_from, pending_severity;
+  unsigned ring_head;
+  int visible, pending_slot, pending_from, pending_severity;
   long visible_since;
   char pending_text[56];
 };
@@ -95,10 +97,8 @@ static void notif_glyph(struct notify_state *s, int x, int y,
   uint8_t *bitmap = s->font->bitmap + glyph->data_offset;
   int sx = x + glyph->x0;
   int sy = y + s->font->header.ascent + glyph->y0;
-  for (int gy = 0; gy < NOTIFY_HEIGHT; ++gy) {
-    if (gy >= glyph->height) break;
-    for (int gx = 0; gx < NOTIFY_WIDTH; ++gx) {
-      if (gx >= glyph->width) break;
+  for (int gy = 0; gy < NOTIFY_HEIGHT && gy < glyph->height; ++gy) {
+    for (int gx = 0; gx < NOTIFY_WIDTH && gx < glyph->width; ++gx) {
       int px = sx + gx, py = sy + gy;
       if (px >= 0 && px < NOTIFY_WIDTH && py >= 0 &&
           py < NOTIFY_HEIGHT && bitmap[gy * glyph->width + gx] > 64)
@@ -113,12 +113,11 @@ static void notif_text(struct notify_state *s, int x, int y,
   size_t remaining = strnlen(text, 64U);
   const char *position = text;
   int cursor = x;
-  for (size_t step = 0U; step < 64U; ++step) {
-    if (remaining == 0U) break;
+  for (size_t step = 0U; step < 64U && remaining > 0U; ++step) {
     uint32_t codepoint = 0U;
     int consumed = utf8_decode(position, remaining, &codepoint);
     if (consumed <= 0) consumed = 1;
-    if ((size_t)consumed > remaining) break;
+    if ((size_t)consumed > remaining) return;
     notif_glyph(s, cursor, y, codepoint, color);
     int index = (int)codepoint - s->font->header.first_char;
     if (index >= 0 && index < s->font->header.num_chars)
@@ -130,8 +129,7 @@ static void notif_text(struct notify_state *s, int x, int y,
 
 static int notif_warn_duplicate(const struct notify_state *s, int pid,
                                 const char *text) {
-  for (int i = 0; i < WARN_DEDUP_MAX; ++i) {
-    if (i >= s->warn_count) break;
+  for (int i = 0; i < WARN_DEDUP_MAX && i < s->warn_count; ++i) {
     if (s->warn_pid[i] == pid)
       return strncmp(s->warn_text[i], text, sizeof(s->warn_text[i])) == 0;
   }
@@ -148,9 +146,9 @@ static void notif_copy_text(char destination[64], const char *text) {
 static void notif_warn_remember(struct notify_state *s, int pid,
                                 const char *text) {
   int slot = s->warn_count;
-  for (int i = 0; i < WARN_DEDUP_MAX; ++i) {
-    if (i >= s->warn_count) break;
-    if (s->warn_pid[i] == pid) { slot = i; break; }
+  for (int i = 0; i < WARN_DEDUP_MAX && i < s->warn_count &&
+                  slot == s->warn_count; ++i) {
+    if (s->warn_pid[i] == pid) slot = i;
   }
   if (slot >= s->warn_count) {
     if (s->warn_count < WARN_DEDUP_MAX) ++s->warn_count;
@@ -166,7 +164,7 @@ static void notif_warn_remember(struct notify_state *s, int pid,
 static int notif_window_resize(struct notify_state *s, int sw, int sh) {
   /* Fixed BSS-backed notification surface is process-owned. */
   if (s->pixels == NULL) return -EFAULT;
-  int x = sw - NOTIFY_WIDTH - 7;
+  int x = sw > NOTIFY_WIDTH + 7 ? sw - NOTIFY_WIDTH - 7 : 0;
   int y = NOTIFY_TOP_GAP;
   int replacement = create_window(x, y, NOTIFY_WIDTH, NOTIFY_HEIGHT,
                                   "nxntfy_srv");
@@ -180,9 +178,17 @@ static int notif_window_resize(struct notify_state *s, int sw, int sh) {
 }
 
 static int notif_receive(int port, struct ipc_message *message) {
-  long result = OS1_port_try_recv(port, message);
-  if (result == (long)sizeof(*message)) return 1;
-  if (result != -EAGAIN) return result < 0 ? (int)result : -EIO;
+  struct os1_port_packet packet;
+  int result = OS1_port_packet_receive(port, &packet, 1);
+  if (result == 0) {
+    if (packet.cap_count != 0U) {
+      int closed = OS1_port_packet_close_caps(&packet);
+      return closed != 0 ? closed : 0;
+    }
+    *message = packet.message;
+    return 1;
+  }
+  if (result != -EAGAIN) return result;
   /* Keep kernel fault notifications on the original process mailbox. */
   long legacy = OS1low_ipc_try_recv(-1, message);
   if (legacy == 0) return 1;
@@ -215,7 +221,9 @@ static int notif_show(struct notify_state *s,
     bg = COL_ERROR_BG; text = COL_SEV_TEXT;
     title = COL_SEV_TEXT; heading = "ERROR";
   }
-  if (!s->pixels || !s->font) return -ENOMEM;
+  if (!s->pixels) return -ENOMEM;
+  if (!s->font) return 0; /* Delivery/receipts survive a missing UI font. */
+  for (unsigned i = 0U; i < NOTIFY_PIXELS; ++i) s->pixels[i] = 0U;
   notif_rect(s, NOTIFY_RADIUS, bg);
   notif_text(s, 12, 10, heading, title);
   notif_text(s, 12, 30, message->payload, text);
@@ -238,6 +246,16 @@ static void notif_remember_receipt(struct notify_state *s, int slot,
   s->pending_text[index] = '\0';
 }
 
+/* Retire a popup before reusing its receipt slot. A later timeout must
+ * never overwrite a newer notification in the bounded registry ring. */
+static int notif_finish_receipt(struct notify_state *s) {
+  if (s->pending_slot < 0) return 0;
+  int result = notif_publish(s->pending_slot, s->pending_from,
+                             s->pending_severity, 'R', s->pending_text);
+  if (result == 0) s->pending_slot = -1;
+  return result;
+}
+
 static int notif_handle_message(struct notify_state *s,
                                 struct ipc_message *message) {
   if (message->type != IPC_TYPE_NOTIFY) return 0;
@@ -245,31 +263,28 @@ static int notif_handle_message(struct notify_state *s,
     notif_palette(s, nxres_theme_is_light());
     return 0;
   }
+  if (message->data1 > 2U || message->data2 != 0U) return 0;
   message->payload[sizeof(message->payload) - 1U] = '\0';
-  /* UART must record every received message independently of windows,
-   * warning de-duplication and the bounded GUI receipt registry. */
-  char uart_text[sizeof(message->payload)];
-  for (unsigned i = 0U; i < sizeof(uart_text); ++i) {
+  for (unsigned i = 0U; i < sizeof(message->payload); ++i) {
     unsigned char ch = (unsigned char)message->payload[i];
-    uart_text[i] = ch == 0U ? '\0' :
-                   (ch < 32U || ch == 127U) ? '?' : (char)ch;
+    if ((ch > 0U && ch < 32U) || ch == 127U) message->payload[i] = '?';
   }
-  const char *severity = message->data1 == 2U ? "ERROR" :
-                         message->data1 == 1U ? "WARN" : "INFO";
-  if (printf("[NXNOTIFY][%s] pid=%d %s\n",
-             severity, (int)message->from, uart_text) < 0)
-    return -EIO;
   int warning = message->data1 == 1U;
   if (warning && notif_warn_duplicate(s, (int)message->from,
                                       message->payload)) return 0;
-  if (warning) notif_warn_remember(s, (int)message->from, message->payload);
-  int shown = warning ? 0 : notif_show(s, message);
-  if (shown < 0) return shown;
-  int slot = s->ring_head & 0x0F;
+  int slot = (int)s->ring_head;
+  /* INFO/ERROR replace the popup; WARN can wrap and reuse its ring slot. */
+  if (!warning || slot == s->pending_slot) {
+    int finished = notif_finish_receipt(s);
+    if (finished != 0) return finished;
+  }
   int result = notif_publish(slot, (int)message->from,
                              (int)message->data1, 'U', message->payload);
   if (result != 0) return result;
-  ++s->ring_head;
+  s->ring_head = (s->ring_head + 1U) % 16U;
+  if (warning) notif_warn_remember(s, (int)message->from, message->payload);
+  int shown = warning ? 0 : notif_show(s, message);
+  if (shown < 0) return shown;
   if (shown > 0) notif_remember_receipt(s, slot, message);
   return 0;
 }
@@ -278,13 +293,7 @@ static int notif_hide_if_elapsed(struct notify_state *s) {
   if (!s->visible || get_time() - s->visible_since < 2000) return 0;
   set_window_flags(s->window, 1 | 4 | 8);
   s->visible = 0;
-  if (s->pending_slot >= 0) {
-    int saved = notif_publish(s->pending_slot, s->pending_from,
-                              s->pending_severity, 'R', s->pending_text);
-    if (saved != 0) return saved;
-    s->pending_slot = -1;
-  }
-  return 0;
+  return notif_finish_receipt(s);
 }
 
 static int notif_iteration(struct notify_state *s, int port) {
@@ -296,16 +305,19 @@ static int notif_iteration(struct notify_state *s, int port) {
     int resized = notif_window_resize(s, sw, sh);
     if (resized != 0) return resized;
   }
-  struct ipc_message message = {0};
-  int received = notif_receive(port, &message);
-  if (received < 0) return received;
-  if (received > 0) {
-    int handled = notif_handle_message(s, &message);
-    if (handled != 0) return handled;
+  int received = 1;
+  for (unsigned i = 0U; i < NOTIFY_BATCH && received > 0; ++i) {
+    struct ipc_message message = {0};
+    received = notif_receive(port, &message);
+    if (received < 0) return received;
+    if (received > 0) {
+      int handled = notif_handle_message(s, &message);
+      if (handled != 0) return handled;
+    }
   }
   int hidden = notif_hide_if_elapsed(s);
   if (hidden != 0) return hidden;
-  OS1_sleep(s->visible ? 100 : NOTIFY_POLL_MS);
+  OS1_sleep(NOTIFY_POLL_MS);
   return 0;
 }
 
@@ -316,7 +328,7 @@ int main(void) {
   struct notify_state state = {
       .pixels = frame, .window = -1, .pending_slot = -1};
   state.font = font_load("/fonts/Rewir-Light.off");
-  if (state.font == NULL) return notif_fail("font_load", -ENOENT);
+  /* Font failure degrades only popup rendering; the broker stays available. */
   notif_palette(&state, nxres_theme_is_light());
   long info = OS1_display_info();
   int sw = (int)((info >> 16) & 0xffff);
@@ -327,9 +339,8 @@ int main(void) {
   if (result == 0) {
     int port = OS1_port_create(OS1NX_PORT_NOTIFY);
     if (port >= 0) {
-      for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
+      for (uint64_t epoch = 0U; epoch < UINT64_MAX && result == 0; ++epoch) {
         result = notif_iteration(&state, port);
-        if (result != 0) break;
       }
       long closed = OS1low_handle_close(port);
       if (closed < 0 && result == 0) result = (int)closed;

@@ -58,6 +58,14 @@ class Power12MutationTests(unittest.TestCase):
         _, edges, _ = analyze_translation_unit(path, "amd64", self.policy)
         self.assertTrue(any(a == b == "f" for a, b, _ in edges), edges)
 
+    def test_loop_break_fails(self):
+        result = self.analyze("int f(void){for(int i=0;i<4;++i){if(i==2)break;}return 0;}\n")
+        self.assertTrue(self.has(result, "R1"), result)
+
+    def test_switch_break_fails(self):
+        result = self.analyze("int f(int x){switch(x){case 1:x=2;break;default:return 0;}return x;}\n")
+        self.assertTrue(self.has(result, "R1"), result)
+
     def test_unbounded_service_loop_fails(self):
         result = self.analyze("int f(void){for(;;){} return 0;}\n")
         self.assertTrue(self.has(result, "R2"), result)

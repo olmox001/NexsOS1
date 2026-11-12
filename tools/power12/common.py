@@ -76,7 +76,7 @@ def clang_args(rel: str, arch: str) -> list[str]:
         arch_define,
     ]
     if rel.startswith("kernel/") and arch != "host":
-        args += ["-DKERNEL"]
+        args += ["-DKERNEL", "-DNX_MDEBUG_BOOT=1"]
     # Host verification of HAL tests must use the same contract/header
     # dependencies as its compiled ISA-specific test executable. Omitting
     # Core ABI and provider includes made valid native-frame tests unparseable;

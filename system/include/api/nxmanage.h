@@ -11,13 +11,15 @@
 #define NXMANAGE_INIT_CONFIG "/system/boot/manager.conf"
 #define NXMANAGE_SERVICES_CONFIG "/system/boot/services.conf"
 #define NXMANAGE_PROFILE_CONFIG "/system/boot/profile"
-#define NXMANAGE_PROTO_VERSION UINT32_C(2)
+#define NXMANAGE_PROTO_VERSION UINT32_C(3)
 #define NXMANAGE_REQ_HELLO 0x4E584D00
 #define NXMANAGE_REP_HELLO 0x4E584D03
 #define NXMANAGE_REQ_REGISTER 0x4E584D01
 #define NXMANAGE_REP_REGISTER 0x4E584D02
 #define NXMANAGE_REQ_NAME 0x4E584D04
 #define NXMANAGE_REP_NAME 0x4E584D05
+#define NXMANAGE_REQ_AUTH 0x4E584D06
+#define NXMANAGE_REP_AUTH 0x4E584D07
 /* Bounded, unique service name; canonical registry key is
  * system.manage.service.<name>, whose value is one atomic generation record.
  * The service name travels as a separate authenticated PORT message so the
@@ -42,6 +44,9 @@ enum {
 };
 
 /* NAME requests carry one NUL-terminated canonical service name.
+ * AUTH follows NAME and precedes REGISTER; it carries the service capability
+ * mask selected by the protected manifest (CAP_ALL or CAP_ALL plus the
+ * optional CAP_WINDOW_MANAGE). Only the authenticated init may set it.
  * The request's payload is a sequence of three terminated strings:
  * absolute executable path, blank-separated bounded arguments (0-2),
  * optional srv.* registry key. Data1=slot, data2=mode.

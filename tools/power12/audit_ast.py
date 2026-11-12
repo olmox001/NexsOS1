@@ -358,8 +358,9 @@ def analyze_translation_unit(path: Path, arch: str, policy: dict):
                 continue
             kind = part.get("kind")
             pline = line_for(part, data) or line
-            if kind in ("GotoStmt", "IndirectGotoStmt"):
-                findings.append(finding("R1", rel, pline, name, "goto/indirect goto is forbidden", arch))
+            if kind in ("GotoStmt", "IndirectGotoStmt", "BreakStmt"):
+                findings.append(finding("R1", rel, pline, name,
+                                        "break/goto/indirect goto is forbidden", arch))
             if kind in LOOPS and not loop_proved(part):
                 findings.append(finding("R2", rel, pline, name,
                                         "loop upper bound/progress is not machine-proved", arch))

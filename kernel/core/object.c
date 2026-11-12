@@ -97,11 +97,12 @@ struct kpipe {
 #define PORT_NAME_MAX 32
 struct kport {
   struct ipc_message q[PORT_QUEUE_MAX];
+  uint32_t q_cap_count[PORT_QUEUE_MAX];
   uint32_t head, tail, count;
   int senders;   /* open handles holding the SEND right    */
   int receivers; /* open handles holding the RECEIVE right */
   int owner_pid;
-  int private_port; /* generic MACHINE-created, grant-only service endpoint */
+  int private_port; /* 0 public, 1 machine-only, 2 descendant-scoped */
   char name[PORT_NAME_MAX];
   struct wait_queue_head rq; /* receivers waiting for a message  */
   struct wait_queue_head wq; /* senders waiting for queue space  */
@@ -479,24 +480,41 @@ static int port_free_slot_locked(void) {
   return -1;
 }
 
+/* Acquire authority before receiving/writing, never retrospectively.
+ * Two short object_lock sections avoid a sched_lock/object_lock inversion:
+ * owner/scope are snapshotted, the process tree is checked under sched_lock,
+ * then both port identity and scope are revalidated before installing the
+ * sender's handle. A vanished/replaced port fails closed. */
 static long handle_create_port_sender(struct process *process, const char *name,
                                       uint32_t rights) {
   uint64_t flags;
   struct kobject *existing;
-  int handle;
-
+  int owner, scope, handle;
   spin_lock_irqsave(&object_lock, &flags);
   existing = port_find_locked(name);
   if (existing == NULL) {
     spin_unlock_irqrestore(&object_lock, flags);
     return -ENOENT;
   }
-  if (existing->port->private_port && !proc_is_machine(process)) {
-    spin_unlock_irqrestore(&object_lock, flags);
+  owner = existing->port->owner_pid;
+  scope = existing->port->private_port;
+  spin_unlock_irqrestore(&object_lock, flags);
+
+  if (scope == 1 && !proc_is_machine(process)) return -EPERM;
+  if (scope == 2 && !proc_descends_from((int)process->pid, owner))
     return -EPERM;
+
+  spin_lock_irqsave(&object_lock, &flags);
+  existing = port_find_locked(name);
+  if (existing == NULL) {
+    handle = -ENOENT;
+  } else if (existing->port->owner_pid != owner ||
+             existing->port->private_port != scope) {
+    handle = -EAGAIN;
+  } else {
+    handle = handle_install_locked(process, existing,
+                                    rights & ~OS1_RIGHT_READ);
   }
-  handle = handle_install_locked(process, existing,
-                                 rights & ~OS1_RIGHT_READ);
   spin_unlock_irqrestore(&object_lock, flags);
   return handle;
 }
@@ -676,6 +694,7 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
   char path[OBJ_FILE_PATH_MAX];
   int want_create;
   int private_port = (rights & OS1_PORT_CREATE_PRIVATE) != 0U;
+  int family_port = (rights & OS1_PORT_CREATE_FAMILY) != 0U;
 
   if (process == NULL)
     return -EPERM;
@@ -683,6 +702,9 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
                        (rights & OS1_RIGHT_READ) == 0U ||
                        !proc_is_machine(process)))
     return -EPERM;
+  if (family_port && (private_port || ns != OS1_NS_PORT ||
+                      (rights & OS1_RIGHT_READ) == 0U))
+    return -EINVAL;
   want_create = (rights & OS1_RIGHT_CREATE) != 0U;
   rights &= OS1_RIGHT_ALL;
   if (hal_copy_string_from_user(path, upath, sizeof(path)) != 0)
@@ -698,7 +720,8 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
   case OS1_NS_FS:
     return handle_create_fs(process, path, rights, want_create);
   case OS1_NS_PORT:
-    return handle_create_port(process, path, rights, private_port);
+    return handle_create_port(process, path, rights,
+                              private_port ? 1 : family_port ? 2 : 0);
   case OS1_NS_PROC:
     return handle_create_process(process, path, rights, type);
   case OS1_NS_REG:
@@ -1051,6 +1074,7 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
           ret = -EAGAIN; /* caller retries; blocking here would hold the lock */
         } else {
           kp->q[kp->tail] = m;
+          kp->q_cap_count[kp->tail] = (uint32_t)nfds;
           kp->tail = (kp->tail + 1) % PORT_QUEUE_MAX;
           kp->count++;
           ret = (long)sizeof(m);
@@ -1275,14 +1299,19 @@ static long object_read_process(const struct kobject *object, void *user_buffer,
 /* Shared dequeue for blocking and non-blocking port consumers. The message
  * remains in a bounded kernel ring and the sender PID is kernel-stamped.
  * Returns 1/0 or -EPIPE, with exactly one locked queue transition. */
-static int port_pop(struct kobject *object, struct ipc_message *message) {
+static int port_pop(struct kobject *object, struct os1_port_packet *packet) {
   struct kport *port = object->port;
   if (port == NULL)
     return -EIO;
   uint64_t flags;
   spin_lock_irqsave(&object_lock, &flags);
   if (port->count > 0U) {
-    *message = port->q[port->head];
+    *packet = (struct os1_port_packet){
+      .abi_version = OS1_PORT_PACKET_VERSION,
+      .struct_size = sizeof(*packet),
+      .cap_count = port->q_cap_count[port->head],
+      .message = port->q[port->head]
+    };
     port->head = (port->head + 1U) % PORT_QUEUE_MAX;
     --port->count;
     spin_unlock_irqrestore(&object_lock, flags);
@@ -1300,18 +1329,20 @@ static long object_read_port(struct kobject *object, void *user_buffer,
 
   if (port == NULL)
     return -EIO;
-  if (size < sizeof(struct ipc_message))
-    return -EINVAL;
+  if (size != sizeof(struct ipc_message) &&
+      size != sizeof(struct os1_port_packet)) return -EINVAL;
   /* Blocking service receive is an intentional kernel wait loop. kthread_block
    * sleeps until the queue predicate changes, so the loop does not busy-spin. */
   for (;;) {
-    struct ipc_message message;
-    int result = port_pop(object, &message);
+    struct os1_port_packet packet;
+    int result = port_pop(object, &packet);
     if (result < 0)
       return result;
     if (result > 0)
-      return hal_copy_to_user(user_buffer, &message, sizeof(message)) != 0
-          ? -EFAULT : (long)sizeof(message);
+      return hal_copy_to_user(user_buffer,
+          size == sizeof(packet) ? (const void *)&packet :
+                                   (const void *)&packet.message, size) != 0
+          ? -EFAULT : (long)size;
     kthread_block(&port->rq, port_readable_block, object);
   }
 }
@@ -1502,8 +1533,10 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
                      : -1;
     if (win_id <= 0 && current_process)
       win_id = current_process->ctty_win;
-    if (win_id <= 0 && keyboard_focus_pid > 0)
-      win_id = compositor_get_window_by_pid(keyboard_focus_pid);
+    /* Focus controls INPUT, never stdout authority. The userland nxttyd
+     * owns each graphical TTY; legacy console writes with no own window or
+     * inherited ctty remain diagnostic-only (UART mirror from the common
+     * writer), rather than corrupting the currently focused GUI surface. */
     ret = window_text_write(win_id, (const char *)ubuf, n);
   } else if (o->type == OBJ_TYPE_PORT) {
     /* Port SEND (needs the send right).  The handle's WRITE right IS the
@@ -1532,6 +1565,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
           }
           if (kp->count < PORT_QUEUE_MAX) {
             kp->q[kp->tail] = m;
+            kp->q_cap_count[kp->tail] = 0U;
             kp->tail = (kp->tail + 1) % PORT_QUEUE_MAX;
             kp->count++;
             spin_unlock_irqrestore(&object_lock, f2);
@@ -1644,20 +1678,34 @@ long sys_object_wait(int handle, long arg) {
  * delegation of the kill right; acquisition was gated at handle_create time).
  */
 long sys_object_ctl(int handle, int cmd, long arg) {
+  if (cmd == OBJ_CTL_SPAWN_OWNED) {
+    long error = 0;
+    struct kobject *owner = pin_handle(handle, OS1_RIGHT_DESTROY, &error);
+    if (owner == NULL) return error;
+    long result = owner->type == OBJ_TYPE_PROCESS ?
+        kernel_spawn_owned(owner->pid,
+            (const struct os1_spawn_request_v1 *)(uintptr_t)arg) : -EINVAL;
+    obj_unref(owner);
+    return result;
+  }
   /* A non-blocking read of the SAME buffered PORT queue used by blocking
    * receive. No new syscall and no polling inside the kernel. */
-  if (cmd == OBJ_CTL_PORT_TRY_RECV) {
+  if (cmd == OBJ_CTL_PORT_TRY_RECV || cmd == OBJ_CTL_PORT_TRY_RECV_PACKET) {
     long err = 0;
     struct kobject *object = pin_handle(handle, OS1_RIGHT_READ, &err);
     if (object == NULL)
       return err;
     long result = -EINVAL;
     if (object->type == OBJ_TYPE_PORT && arg != 0) {
-      struct ipc_message message;
-      int popped = port_pop(object, &message);
+      struct os1_port_packet packet;
+      int popped = port_pop(object, &packet);
+      size_t bytes = cmd == OBJ_CTL_PORT_TRY_RECV_PACKET ? sizeof(packet) :
+                                                        sizeof(packet.message);
+      const void *data = cmd == OBJ_CTL_PORT_TRY_RECV_PACKET ?
+          (const void *)&packet : (const void *)&packet.message;
       if (popped == 1)
-        result = hal_copy_to_user((void *)arg, &message, sizeof(message)) != 0
-                     ? -EFAULT : (long)sizeof(message);
+        result = hal_copy_to_user((void *)arg, data, bytes) != 0
+                     ? -EFAULT : (long)bytes;
       else
         result = popped == 0 ? -EAGAIN : popped;
     }
@@ -1743,6 +1791,33 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     return ret;
   }
 
+  /* WINDOW geometry: owner changes its logical framebuffer; the manager
+   * changes only display bounds (userland nxcompositor performs scaling).
+   * The manager privilege is required in addition to a WINDOW WRITE right. */
+  if (cmd == OBJ_CTL_WINDOW_RESIZE || cmd == OBJ_CTL_WINDOW_PRESENT) {
+    long err = 0;
+    struct kobject *o = pin_handle(handle, OS1_RIGHT_WRITE, &err);
+    if (!o) return err;
+    long ret = -EINVAL;
+    if (o->type == OBJ_TYPE_WINDOW) {
+      uint64_t packed = (uint64_t)(unsigned long)arg;
+      int high = (int)(int32_t)(uint32_t)(packed >> 32);
+      int low = (int)(int32_t)(uint32_t)packed;
+      int manager = proc_has_cap(current_process, CAP_WINDOW_MANAGE);
+      if (cmd != OBJ_CTL_WINDOW_RESIZE && !manager)
+        ret = -EPERM;
+      else if (cmd == OBJ_CTL_WINDOW_RESIZE &&
+               o->pid != (int)current_process->pid)
+        ret = -EPERM;
+      else if (cmd == OBJ_CTL_WINDOW_RESIZE)
+        ret = compositor_resize_window(o->window_id, high, low);
+      else if (cmd == OBJ_CTL_WINDOW_PRESENT)
+        ret = compositor_set_window_draw_size(o->window_id, high, low);
+    }
+    obj_unref(o);
+    return ret;
+  }
+
   /* FILE: seek the object's shared byte offset (F4 M4.5).  Positioning needs
    * only the handle itself (any FILE capability), so write-at-offset works on a
    * WRITE-only handle too.  arg = absolute offset; returns the new offset. */
@@ -1788,26 +1863,19 @@ long sys_object_ctl(int handle, int cmd, long arg) {
     return ret;
   }
 
-  /* FILE: truncate to empty through an open descriptor (Phase 1 leftover:
-   * ftruncate).  Needs OS1_RIGHT_WRITE — this destroys data, unlike SEEK.  The
-   * provider's primitive is whole-file-replace, so an offset-0 zero-length
-   * vfs_write_file() empties the file; this is the one truncation a POSIX
-   * write(fd,...,0) cannot express (that is defined as a no-op).  Non-empty
-   * lengths are composed in libc's ftruncate() and never arrive here. */
+  /* FILE: explicit length change through the existing WRITE capability.
+   * The descriptor position is preserved, including when it lies past EOF. */
   if (cmd == OBJ_CTL_TRUNCATE) {
     long err = 0;
     struct kobject *o = pin_handle(handle, OS1_RIGHT_WRITE, &err);
     if (!o)
       return err;
     long ret;
-    if (o->type != OBJ_TYPE_FILE || arg != 0) {
+    if (o->type != OBJ_TYPE_FILE || arg < 0) {
       ret = -EINVAL;
-    } else if (vfs_write_file(o->path, "", 0, 0) < 0) {
-      ret = -EIO;
     } else {
-      o->offset = 0;
-      object_refresh_cached_node(o);
-      ret = 0;
+      ret = vfs_truncate(o->path, (uint64_t)arg);
+      if (ret == 0) object_refresh_cached_node(o);
     }
     obj_unref(o);
     return ret;

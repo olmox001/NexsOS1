@@ -12,6 +12,10 @@
 #include <stdint.h>
 
 #define OS1_INPUT_RING_SIZE UINT32_C(256)
+#define OS1_INPUT_MOUSE_RESYNC UINT8_C(4)
+/* Evdev frame-loss marker: consumer must discard its previous button/drag
+ * state. The producer resumes a device only after its next EV_SYN boundary. */
+#define OS1_INPUT_SYN_DROPPED UINT16_C(3)
 #define OS1_INPUT_WAKE_KEYBOARD UINT32_C(1)
 #define OS1_INPUT_WAKE_MOUSE UINT32_C(2)
 
@@ -70,6 +74,31 @@ static int input_ring_push_locked(struct os1_input_event_internal *ring,
   return 1;
 }
 
+/* Loss of any event makes the entire mouse frame ambiguous. Discard the
+ * incomplete ring and publish exactly one synthetic resync marker; each
+ * provider/device then resumes only AFTER its next frame terminator. The
+ * userland pointer owner resets its button/capture state on that marker.
+ * All operations execute under input_ring_lock without allocation. */
+static void input_mouse_desync_locked(
+    const struct os1_input_event_internal *cause) {
+  uint32_t remaining = (mouse_head - mouse_tail) &
+                       (OS1_INPUT_RING_SIZE - 1U);
+  input_ring_dropped += (uint64_t)remaining;
+  mouse_head = 0U;
+  mouse_tail = 0U;
+  struct os1_input_event_internal marker = *cause;
+  marker.type = EV_SYN;
+  marker.code = OS1_INPUT_SYN_DROPPED;
+  marker.value = 0;
+  mouse_ring[mouse_head++] = marker;
+  /* One authoritative per-device state word: queue publisher bits and
+   * the loss/recovery marker share the existing input-frame owner. */
+  for (uint32_t id = 0U; id <= UINT8_MAX; ++id) {
+    input_frame_pending[id] &= (uint8_t)~OS1_INPUT_WAKE_MOUSE;
+    input_frame_pending[id] |= OS1_INPUT_MOUSE_RESYNC;
+  }
+}
+
 static int input_is_mouse_event(uint16_t type, uint16_t code) {
   return type == EV_REL || type == EV_ABS ||
          (type == EV_KEY &&
@@ -102,9 +131,19 @@ static unsigned input_publish_syn_locked(
       input_ring_push_locked(keyboard_ring, &keyboard_head, &keyboard_tail,
                              event) != 0)
     roles |= OS1_INPUT_WAKE_KEYBOARD;
-  if ((pending & OS1_INPUT_WAKE_MOUSE) != 0U &&
-      input_ring_push_locked(mouse_ring, &mouse_head, &mouse_tail, event) != 0)
-    roles |= OS1_INPUT_WAKE_MOUSE;
+  if ((pending & OS1_INPUT_MOUSE_RESYNC) != 0U) {
+    /* Do not publish the delimiter for a frame we intentionally discarded. */
+    input_frame_pending[event->device_id] &=
+        (uint8_t)~OS1_INPUT_MOUSE_RESYNC;
+  } else if ((pending & OS1_INPUT_WAKE_MOUSE) != 0U) {
+    if (input_ring_push_locked(mouse_ring, &mouse_head, &mouse_tail,
+                               event) != 0)
+      roles |= OS1_INPUT_WAKE_MOUSE;
+    else {
+      input_mouse_desync_locked(event);
+      roles |= OS1_INPUT_WAKE_MOUSE;
+    }
+  }
   input_frame_pending[event->device_id] = 0U;
   return roles;
 }
@@ -112,15 +151,20 @@ static unsigned input_publish_syn_locked(
 static unsigned input_publish_data_locked(
     const struct os1_input_event_internal *event) {
   if (input_is_mouse_event(event->type, event->code) != 0) {
+    if ((input_frame_pending[event->device_id] &
+         OS1_INPUT_MOUSE_RESYNC) != 0U)
+      return 0U;
     input_frame_pending[event->device_id] |= OS1_INPUT_WAKE_MOUSE;
-    return input_ring_push_locked(mouse_ring, &mouse_head, &mouse_tail, event)
-               ? OS1_INPUT_WAKE_MOUSE : 0U;
+    if (input_ring_push_locked(mouse_ring, &mouse_head, &mouse_tail,
+                               event) != 0)
+      return OS1_INPUT_WAKE_MOUSE;
+    input_mouse_desync_locked(event);
+    return OS1_INPUT_WAKE_MOUSE;
   }
   if (event->type == EV_KEY || event->type == EV_MSC)
     input_frame_pending[event->device_id] |= OS1_INPUT_WAKE_KEYBOARD;
   return input_ring_push_locked(keyboard_ring, &keyboard_head, &keyboard_tail,
-                                event)
-             ? OS1_INPUT_WAKE_KEYBOARD : 0U;
+                                event) != 0 ? OS1_INPUT_WAKE_KEYBOARD : 0U;
 }
 
 static void input_wake_roles(unsigned roles) {
@@ -242,7 +286,8 @@ void OS1driver_input_core_init(void) {
   mouse_tail = 0U;
   input_event_sequence = 0U;
   input_ring_dropped = 0U;
-  memset(input_frame_pending, 0, sizeof(input_frame_pending));
+  for (uint32_t id = 0U; id <= UINT8_MAX; ++id)
+    input_frame_pending[id] = 0U;
   INIT_LIST_HEAD(&keyboard_wait_queue.task_list);
   spin_lock_init(&keyboard_wait_queue.lock);
   INIT_LIST_HEAD(&mouse_wait_queue.task_list);

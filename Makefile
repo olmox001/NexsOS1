@@ -217,12 +217,15 @@ USER_LIB_O     = $(BUILD_DIR)/$(USER_LIB_DIR)/lib.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/raster.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/chrome.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/decoration.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/tty_model.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/gfx/theme.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/math.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/font_lib.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/input/nxkeyboard_layout.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/image/image.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/video/video.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/notify_client.o \
+                 $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/port_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/execsvc_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/time_client.o \
                  $(BUILD_DIR)/$(USER_LIB_DIR)/extensions/services/surface_client.o \
@@ -411,7 +414,7 @@ $(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_
 	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
 		$(LUA_OBJ_DIR)/lua.o \
 		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
-		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O) $(USER_RUNTIME_LIBS)
 
 # ==============================================================================
 # Gnulib static library (libgnulib)
@@ -466,7 +469,7 @@ NX_MACHINE_EXTENSION_ELFS = $(BUILD_DIR)/nxmanageDD.elf
 
 # System commands and graphical applications, installed under /sys/bin.
 SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxres.elf \
-           $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf \
+           $(BUILD_DIR)/nxreg.elf $(BUILD_DIR)/nxkeymap.elf $(BUILD_DIR)/nxfont.elf $(BUILD_DIR)/nxtop.elf \
            $(BUILD_DIR)/nxfilem.elf $(BUILD_DIR)/nxui.elf $(BUILD_DIR)/nxpower.elf \
            $(BUILD_DIR)/nxbar.elf $(BUILD_DIR)/nxproc.elf $(BUILD_DIR)/nxinfo.elf \
            $(BUILD_DIR)/nxperm.elf $(BUILD_DIR)/nxmemstat.elf \
@@ -482,7 +485,7 @@ SYS_ELFS = $(BUILD_DIR)/nxshell.elf $(BUILD_DIR)/nxres.elf \
 SYS_SERVICE_ELFS = $(BUILD_DIR)/nxtimerdd.elf $(BUILD_DIR)/nxntfy_srv.elf \
                    $(BUILD_DIR)/nxcompositor.elf $(BUILD_DIR)/nxkeyboardd.elf \
                    $(BUILD_DIR)/nxmoused.elf $(BUILD_DIR)/nxexecd.elf \
-                   $(BUILD_DIR)/nxpaxd.elf
+                   $(BUILD_DIR)/nxttyd.elf $(BUILD_DIR)/nxpaxd.elf
 
 # User ELFs (placed in /bin)
 BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest.elf  $(BUILD_DIR)/raptor.elf\
@@ -490,7 +493,7 @@ BIN_ELFS = $(BUILD_DIR)/counter.elf $(BUILD_DIR)/demo3d.elf $(BUILD_DIR)/sdltest
            $(BUILD_DIR)/ipc_recv.elf $(BUILD_DIR)/crash.elf $(BUILD_DIR)/writetest.elf \
            $(BUILD_DIR)/doom.elf $(BUILD_DIR)/input_test.elf $(BUILD_DIR)/nxtest.elf \
            $(BUILD_DIR)/fdtest.elf $(BUILD_DIR)/forkbomb.elf \
-           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/notifytest.elf \
+           $(BUILD_DIR)/captest.elf $(BUILD_DIR)/notifytest.elf $(BUILD_DIR)/porttest.elf \
            $(BUILD_DIR)/libctest.elf $(BUILD_DIR)/buffertest.elf $(BUILD_DIR)/gfxbuffertest.elf $(BUILD_DIR)/gfxalphatest.elf $(BUILD_DIR)/simdtest.elf $(BUILD_DIR)/simdchild.elf \
            $(BUILD_DIR)/capipc.elf $(BUILD_DIR)/capipc_child.elf \
            $(BUILD_DIR)/portidle_child.elf \
@@ -595,7 +598,7 @@ $(BUILD_DIR)/luatest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o $(LUA_OS1_LIB) 
 	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
 		$< \
 		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
-		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O) $(USER_RUNTIME_LIBS)
 
 $(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/ipc_send.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_send.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -603,6 +606,7 @@ $(BUILD_DIR)/ipc_recv.elf: $(BUILD_DIR)/$(USER_DIR)/bin/ipc_recv.o $(USER_LIB_O)
 $(BUILD_DIR)/nxntfy_srv.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxntfy_srv.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/crash.elf: $(BUILD_DIR)/$(USER_DIR)/bin/crash.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxreg.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxreg.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxkeymap.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxkeymap.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtop.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtop.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxproc.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxproc.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxinfo.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxinfo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -615,6 +619,7 @@ $(BUILD_DIR)/nxsettings.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxsettings.o $(USE
 $(BUILD_DIR)/writetest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/writetest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/fdtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/fdtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/captest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/captest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/porttest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/porttest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/notifytest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/notifytest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/buffertest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/buffertest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/libctest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/libctest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -637,6 +642,7 @@ $(BUILD_DIR)/nxwins.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxwins.o $(USER_LIB_O)
 $(BUILD_DIR)/nxnotify.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxnotify.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxexec.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxexec.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxexecd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxexecd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+$(BUILD_DIR)/nxttyd.elf: $(BUILD_DIR)/$(USER_DIR)/sys/services/nxttyd.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nximage.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nximage.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxtest.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 $(BUILD_DIR)/nxtimerdiag.elf: $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxtimerdiag.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -673,13 +679,16 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/nxfont/%.o: $(USER_DIR)/sys/bin/nxfont/%.c
 # (the main source of the ~50-70 KB bloat measured in counter.elf).
 # In release builds we also strip symbols; debug keeps everything.
 USER_LINK_FLAGS ?= -Wl,--gc-sections
+# -nostdlib also omits the compiler ABI helpers. Resolve only needed members
+# of the matching cross compiler's runtime, after all user objects/archives.
+USER_RUNTIME_LIBS = -lgcc
 ifeq ($(BUILD),release)
 USER_LINK_FLAGS += -Wl,-s
 endif
 
 # Linking rule for user ELFs
 $(BUILD_DIR)/%.elf:
-	@$(CC) $(USER_CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^
+	@$(CC) $(USER_CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ $^ $(USER_RUNTIME_LIBS)
 
 
 # The scalar foundation must remain executable without vector instructions.
@@ -1269,3 +1278,50 @@ test-gfx-alpha:
 		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
 		user/bin/gfxalphatest.c system/lib/gfx/alpha.c -o build/host/gfx_alpha_test
 	@./build/host/gfx_alpha_test
+
+.PHONY: test-mkdisk-groups
+test-mkdisk-groups:
+	@python3 tools/test_mkdisk_groups.py
+
+.PHONY: test-timerdiag-sampling
+test-timerdiag-sampling:
+	@python3 tools/test_nxtimerdiag_sampling.py
+
+.PHONY: test-spawn-owned test-entropy-policy
+test-spawn-owned:
+	@python3 tools/test_spawn_owned.py
+
+test-entropy-policy:
+	@python3 tools/test_entropy_policy.py
+
+.PHONY: test-scheduler-quantum
+test-scheduler-quantum:
+	@python3 tools/test_scheduler_quantum.py
+
+.PHONY: test-pmm-free-publish test-file-length test-getcwd-contract
+test-pmm-free-publish:
+	@python3 tools/test_pmm_free_publish.py
+
+test-file-length:
+	@python3 tools/test_file_length.py
+
+test-getcwd-contract:
+	@python3 tools/test_getcwd_contract.py
+
+.PHONY: test-keyboard-layout test-tty-model
+test-keyboard-layout:
+	@mkdir -p $(BUILD_ROOT)/host
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+		-fsanitize=address,undefined -idirafter system/include/api \
+		user/sys/services/tests/keyboard_layout_test.c \
+		system/lib/extensions/input/nxkeyboard_layout.c \
+		-o $(BUILD_ROOT)/host/keyboard_layout_test
+	@$(BUILD_ROOT)/host/keyboard_layout_test
+
+test-tty-model:
+	@mkdir -p $(BUILD_ROOT)/host
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
+		system/lib/tests/tty_model_test.c system/lib/gfx/tty_model.c \
+		-o $(BUILD_ROOT)/host/tty_model_test
+	@$(BUILD_ROOT)/host/tty_model_test

@@ -299,6 +299,28 @@ struct ipc_message {
   char payload[64];
 };
 
+/* Capability transfer provenance is transport metadata, never sender data.
+ * The original message remains unchanged; packet receives additionally expose
+ * the actual count installed by port_send_caps into leading payload ints. */
+#define OS1_SPAWN_REQUEST_VERSION 1U
+/* User addresses are fixed-width across the supported 64-bit architectures.
+ * The PROCESS capability identifies the owner; no owner PID is trusted here. */
+struct os1_spawn_request_v1 {
+  uint32_t abi_version, struct_size;
+  uint32_t argc, flags, nredir, reserved;
+  uint64_t path, argv, redirections;
+};
+
+#define OS1_PORT_PACKET_VERSION 1U
+#define OS1_PORT_CAPS_MAX 4U
+struct os1_port_packet {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t cap_count;
+  uint32_t reserved;
+  struct ipc_message message;
+};
+
 /*
  * The IPC wire format.  Every keystroke, pointer event, resize and notification
  * crosses this structure, and it is read by BOTH kernels and by userland's

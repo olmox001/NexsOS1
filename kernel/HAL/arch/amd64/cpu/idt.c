@@ -354,6 +354,8 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
       case 14: /* Page Fault (#PF) — CR2 holds faulting address */
         return amd64_page_fault_handler(regs);
       default: {
+        nxhal_fault_print("[AMD64-FAULT] vector=%lu err=0x%lx pc=0x%lx cs=0x%lx\n",
+                          regs->vec, regs->err, regs->rip, regs->cs);
         struct pt_regs *next =
             nxhal_fault_handle(regs, (regs->cs & 3) == 3, 0, regs->rip,
                                        "CPU EXCEPTION", regs->err);

@@ -30,7 +30,7 @@ program can be supervised without being a service-protocol implementation.
 
 ## System SDK modules audited
 
-All five translation units in system/lib/extensions/services are genuinely
+The original five client translation units in system/lib/extensions/services are
 client-side protocol implementations, not server processes (none defines
 an executable main function):
 
@@ -149,3 +149,15 @@ Root causes confirmed against the actual implementations:
 
 These corrections are awaiting fresh on-guest verification before they count
 as passes; the Power12 strict/delta gates remain independent.
+
+
+## Incremental review 2026-11-12
+
+The original inventory above is historical. The current build additionally has
+nxttyd under user/sys/services, gfx_buffer.c and port_client.c in SDK service
+extensions, and shared keyboard translation in extensions/input. Current exact
+ownership and outstanding obligations are in
+../review/USERLAND-SYSTEM-CATALOG-2026-11-12.md and
+../review/INCREMENTAL-REVIEW-2026-11-12.md. Compilation does not qualify the
+current changes: an AMD64 mdebug stress run exposed a context-restore panic
+under investigation, and Coreutils has real failing cases.

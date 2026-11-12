@@ -34,9 +34,16 @@ def main() -> int:
         if not raw or raw.startswith('#'):
             continue
         fields = raw.split('|')
-        if len(fields) != 5:
-            return fail(f'line {number}: expected five fields')
-        name, mode, path, arguments, key = fields
+        if len(fields) not in (5, 6):
+            return fail(f'line {number}: expected five or six fields')
+        name, mode, path, arguments, key = fields[:5]
+        authority = fields[5] if len(fields) == 6 else ''
+        if authority not in ('', 'window-manage'):
+            return fail(f'line {number}: unknown authority')
+        if authority and arguments:
+            return fail(f'line {number}: argv-aware capability spawn unavailable')
+        if authority and name != 'pointer':
+            return fail(f'line {number}: unexpected privileged service')
         if not re.fullmatch(r'[a-z][a-z0-9_-]{0,22}', name):
             return fail(f'line {number}: invalid canonical service name')
         if name in seen_names:
@@ -58,9 +65,11 @@ def main() -> int:
             return fail(f'line {number}: duplicate executable/args registration')
         seen.add(identity)
         records.append((name, mode, path, arguments, key))
+        if name == 'pointer' and authority != 'window-manage':
+            return fail('pointer service must explicitly receive window-manage at boot')
     if len(records) == 0 or len(records) > MAX_SLOTS:
         return fail(f'invalid slot count {len(records)}')
-    if ('shell', 'start', '/sys/bin/nxshell', '', '') not in records:
+    if ('shell', 'start', '/sys/services/nxttyd', '/sys/bin/nxshell', '') not in records:
         return fail('interactive shell must start once without deadline or respawn')
     if ('environment', 'once', '/sys/bin/nxenvinit', '', '') not in records:
         return fail('environment initializer must complete before dependents')
@@ -68,7 +77,7 @@ def main() -> int:
         return fail('headless mdebug suite is not declared as a separate one-shot')
     if ('roleprobe', 'debug', '/sys/bin/nxroleprobe', '', '') not in records:
         return fail('ROOT-capability regression program missing from mdebug')
-    if records.index(('environment', 'once', '/sys/bin/nxenvinit', '', '')) > records.index(('shell', 'start', '/sys/bin/nxshell', '', '')):
+    if records.index(('environment', 'once', '/sys/bin/nxenvinit', '', '')) > records.index(('shell', 'start', '/sys/services/nxttyd', '/sys/bin/nxshell', '')):
         return fail('environment initialization must precede the shell')
     core = (ROOT / 'kernel/main.c').read_text()
     for forbidden in ('/sbin/nxinit', 'nxmanageDD', 'nxtestrunner'):

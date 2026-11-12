@@ -952,12 +952,23 @@ static int regfs_authorize_write(struct vfs_mount *mnt, const char *path) {
   return 0;
 }
 
+static int regfs_truncate(struct vfs_mount *mount, const char *path,
+                           uint64_t length) {
+  if (length != 0U) return -ENOTSUP;
+  int allowed = regfs_authorize_write(mount, path);
+  if (allowed != 0) return allowed;
+  char key[MAX_KEY_LEN];
+  regfs_path_to_key(path, key, sizeof(key));
+  return registry_set(key, "", registry_caller_owner());
+}
+
 static const struct fs_ops regfs_ops = {
     .name = "regfs",
     .mount = regfs_mount,
     .open = regfs_open,
     .read = regfs_read,
     .write = regfs_write,
+    .truncate = regfs_truncate,
     .authorize_write = regfs_authorize_write,
     .create = regfs_create,
     .list = regfs_list,

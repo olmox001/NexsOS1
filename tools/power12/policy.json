@@ -79,7 +79,8 @@
     "kernel/HAL/include/hal/",
     "kernel/HAL/core/",
     "kernel/include/drivers/",
-    "kernel/drivers/"
+    "kernel/drivers/",
+    "system/lib/extensions/services/execsvc_client.c"
   ],
   "function_max_lines": 50,
   "audit_arches": [
@@ -186,6 +187,61 @@
       "kind": "wire_contract",
       "provenance": "system/include/api/os1_input.h: os1_raw_input_event_v1.device_id is uint8_t, exactly 256 representable values",
       "rationale": "index a per-device 3-button state array for every representable device_id (0..255) without narrowing or leaking global mutable state"
+    },
+    "system/include/api/os1_tty.h::OS1_TTY_COLS_MAX": {
+      "kind": "resource_budget",
+      "provenance": "1024px / 5px minimal validated Rewir cell width = 204 visible columns; capacity 256 bounds the reflow grid",
+      "rationale": "Fixed logical projection capacity, screen rows reconstructed from independent retained VT byte history"
+    },
+    "system/include/api/os1_tty.h::OS1_TTY_ROWS_MAX": {
+      "kind": "resource_budget",
+      "provenance": "768px / 8px minimal validated Rewir cell height = 96 visible rows; capacity 128 bounds the reflow grid",
+      "rationale": "Fixed visible row projection capacity, logical hard/soft lines regenerated from retained VT history"
+    },
+    "system/include/api/os1_tty.h::OS1_TTY_SURFACE_W_MAX": {
+      "kind": "visible-pixel-width",
+      "provenance": "Existing nxttyd TTY_MAX_PIXELS=1024x768 session design; width cap 1024 px",
+      "rationale": "Bound framebuffer width independently of text-cell storage"
+    },
+    "system/include/api/os1_tty.h::OS1_TTY_SURFACE_H_MAX": {
+      "kind": "visible-pixel-height",
+      "provenance": "Existing nxttyd TTY_MAX_PIXELS=1024x768 session design; height cap 768 px",
+      "rationale": "Bound framebuffer height independently of text-cell storage"
+    },
+    "system/include/api/os1_tty.h::OS1_TTY_CSI_MAX": {
+      "kind": "interface_compatibility",
+      "provenance": "kernel/include/kernel/term.h struct terminal escape_buf[32]",
+      "rationale": "retains the existing CSI parser's exact bounded escape buffer protocol"
+    },
+    "system/include/api/os1_tty.h::OS1_TTY_FEED_MAX": {
+      "kind": "operation_budget",
+      "provenance": "kernel/core/object.c OBJ_MAX_IO_BYTES and the session's 64-byte PORT record; 4096 bytes is an explicit 64-message batch ceiling",
+      "rationale": "bounds every VT parser write operation regardless of an untrusted caller byte count"
+    },
+    "user/sys/services/nxttyd.c::TTY_MAX_PIXELS": {
+      "kind": "resource_budget",
+      "provenance": "kernel/graphics/compositor.c 4096x4096 maximum window; session uses 1024x768 maximum guarded by TTY_MAX_PIXELS and its BSS array",
+      "rationale": "limits one session raster buffer to 3 MiB; explicitly less than kernel's window allocation cap"
+    },
+    "system/include/api/execsvc.h::EXECSVC_LOCAL_ARG_MAX": {
+      "kind": "kernel_spawn_argv_contract",
+      "provenance": "kernel/core/syscall_dispatch.c SPAWN_MAX_ARGS=16 and user/sys/bin/nxexec.h NXEXEC_ARGV_MAX=16",
+      "rationale": "The local execution and hosted-argv arrays must remain within the 16-entry kernel spawn syscall argument-vector limit; hosted reserves one entry for nxexec."
+    },
+    "system/include/api/os1_tty.h::OS1_TTY_HISTORY_BYTES": {
+      "kind": "bounded_terminal_scrollback",
+      "provenance": "16 x OS1_TTY_FEED_MAX(4096) bounded VT input blocks per retained session, independent of OS1_TTY_SURFACE_W_MAX/H_MAX",
+      "rationale": "64 KiB retained VT stream per session, in fixed userland memory; resize replays only this bound and a full-line-prefix rollover caps memory without pixel coupling"
+    },
+    "system/include/contract/posix_types.h::OS1_PORT_CAPS_MAX": {
+      "kind": "wire_contract",
+      "provenance": "sys_port_send_caps accepts at most four descriptors; 64-byte ipc payload has receiver-index prefix",
+      "rationale": "authenticates only handles installed with the received message, never arbitrary payload integers"
+    },
+    "kernel/include/abi/posix_types.h::OS1_PORT_CAPS_MAX": {
+      "kind": "wire_contract",
+      "provenance": "sys_port_send_caps accepts at most four descriptors; 64-byte ipc payload has receiver-index prefix",
+      "rationale": "authenticates only handles installed with the received message, never arbitrary payload integers"
     }
   },
   "operations": {
@@ -198,6 +254,66 @@
       "id": 14,
       "owner": "NX-CORE object capability PORT operation, shared kernel/SDK wire contract",
       "work_bound": "dequeue at most one 88-byte message from a 32-cell kernel PORT ring, -EAGAIN if empty"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_WINDOW_RESIZE": {
+      "id": 15,
+      "owner": "NX-CORE WINDOW object capability WRITE operation, own-window logical framebuffer adoption; SDK mirrors exact opcode",
+      "work_bound": "At most one window (<=4096 x 4096 pixels); actual owner only; preserves WM draw extent and notifies via existing IPC_TYPE_RESIZE"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_WINDOW_PRESENT": {
+      "id": 16,
+      "owner": "NX-CORE WINDOW object capability WRITE operation requiring separately delegated CAP_WINDOW_MANAGE; SDK mirrors exact opcode",
+      "work_bound": "At most one window geometry update (<=4096 x 4096), no framebuffer allocation; bounded damage and one existing owner IPC notification"
+    },
+    "system/include/contract/object.h::OBJ_CTL_WINDOW_RESIZE": {
+      "id": 15,
+      "owner": "NX-CORE WINDOW object capability WRITE operation, own-window logical framebuffer adoption; SDK mirrors exact opcode",
+      "work_bound": "At most one window (<=4096 x 4096 pixels); actual owner only; preserves WM draw extent and notifies via existing IPC_TYPE_RESIZE"
+    },
+    "system/include/contract/object.h::OBJ_CTL_WINDOW_PRESENT": {
+      "id": 16,
+      "owner": "NX-CORE WINDOW object capability WRITE operation requiring separately delegated CAP_WINDOW_MANAGE; SDK mirrors exact opcode",
+      "work_bound": "At most one window geometry update (<=4096 x 4096), no framebuffer allocation; bounded damage and one existing owner IPC notification"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_PORT_TRY_RECV_PACKET": {
+      "id": 17,
+      "owner": "capability PORT object transport",
+      "work_bound": "one bounded queue dequeue and one fixed-size packet copy"
+    },
+    "system/include/contract/object.h::OBJ_CTL_PORT_TRY_RECV_PACKET": {
+      "id": 17,
+      "owner": "capability PORT object transport",
+      "work_bound": "one bounded queue dequeue and one fixed-size packet copy"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_SPAWN_OWNED": {
+      "id": 18,
+      "owner": "NX-CORE PROCESS capability creation operation; shared kernel/SDK contract",
+      "work_bound": "one child, <=16 argv entries of <=128 bytes, <=8 redirections; DESTROY and privileged CAP_SPAWN; owner assigned while PROC_CREATED before finalize"
+    },
+    "kernel/include/abi/posix_types.h::OS1_SPAWN_REQUEST_VERSION": {
+      "id": 1,
+      "owner": "versioned 48-byte PROCESS creation request, owner supplied only by the pinned PROCESS capability",
+      "work_bound": "48-byte descriptor, argc<=16, nredir<=8, reserved==0, bounded deep copy before creation"
+    },
+    "system/include/contract/object.h::OBJ_CTL_SPAWN_OWNED": {
+      "id": 18,
+      "owner": "NX-CORE PROCESS capability creation operation; shared kernel/SDK contract",
+      "work_bound": "one child, <=16 argv entries of <=128 bytes, <=8 redirections; DESTROY and privileged CAP_SPAWN; owner assigned while PROC_CREATED before finalize"
+    },
+    "system/include/contract/posix_types.h::OS1_SPAWN_REQUEST_VERSION": {
+      "id": 1,
+      "owner": "versioned 48-byte PROCESS creation request, owner supplied only by the pinned PROCESS capability",
+      "work_bound": "48-byte descriptor, argc<=16, nredir<=8, reserved==0, bounded deep copy before creation"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_TRUNCATE": {
+      "id": 10,
+      "owner": "Existing NX-CORE FILE capability operation (ASTRA descriptor truncation); shared kernel/SDK contract",
+      "work_bound": "one WRITE-authorized FILE; nonnegative length, ext4 <= UINT32_MAX; growth at most UINT32_MAX/4096+1 bounded 4096-byte writes; descriptor position unchanged; provider errors preserved"
+    },
+    "system/include/contract/object.h::OBJ_CTL_TRUNCATE": {
+      "id": 10,
+      "owner": "Existing NX-CORE FILE capability operation (ASTRA descriptor truncation); shared kernel/SDK contract",
+      "work_bound": "one WRITE-authorized FILE; nonnegative length, ext4 <= UINT32_MAX; growth at most UINT32_MAX/4096+1 bounded 4096-byte writes; descriptor position unchanged; provider errors preserved"
     }
   }
 }

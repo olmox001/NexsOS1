@@ -7,7 +7,6 @@
  * explicit; a failed operation never gets rewritten to a successful reply.
  */
 #include <execsvc.h>
-#include "../bin/nxexec.h"
 #include <os1.h>
 #include <errno.h>
 #include <stdint.h>
@@ -27,6 +26,7 @@ struct execsvc_ctx {
   char *argv[EXECSVC_ARG_MAX];
   const char *cwd;
   int granted_count, redirection_count;
+  struct os1_port_packet *packet;
   struct execsvc_spawn_rep result;
 };
 
@@ -93,7 +93,7 @@ static int execsvc_decode_redirs(struct execsvc_ctx *ctx, unsigned *offset) {
   uint8_t *dest = (uint8_t *)ctx->granted;
   for (unsigned i = 0U; i < SPAWN_MAX_REDIR *
        sizeof(struct execsvc_redir); ++i) {
-    if (i >= bytes) break;
+    if (i >= bytes) continue;
     dest[i] = (uint8_t)ctx->body[i];
   }
   ctx->granted_count = ctx->hdr.nredir;
@@ -101,36 +101,35 @@ static int execsvc_decode_redirs(struct execsvc_ctx *ctx, unsigned *offset) {
   return 0;
 }
 
-static int execsvc_next_string(struct execsvc_ctx *ctx, unsigned *offset,
-                               const char **start) {
-  if (*offset >= ctx->hdr.body_len) return -EINVAL;
-  *start = ctx->body + *offset;
-  for (unsigned i = 0U; i < EXECSVC_BODY_MAX; ++i) {
-    if (*offset >= ctx->hdr.body_len) return -EINVAL;
-    if (ctx->body[(*offset)++] == '\0') return 0;
+static int execsvc_next_string(struct execsvc_ctx *ctx, unsigned offset) {
+  if (offset >= ctx->hdr.body_len) return -EINVAL;
+  for (unsigned i = 0U; i < EXECSVC_BODY_MAX &&
+                         offset + i < ctx->hdr.body_len; ++i) {
+    if (ctx->body[offset + i] == '\0') return (int)(offset + i + 1U);
   }
-  return -EOVERFLOW;
+  return -EINVAL;
 }
 
 static int execsvc_parse(struct execsvc_ctx *ctx) {
   unsigned offset = 0U;
   int rc = execsvc_decode_redirs(ctx, &offset);
   if (rc != 0) return rc;
-  rc = execsvc_next_string(ctx, &offset, &ctx->cwd);
-  if (rc != 0) return rc;
-  for (int i = 0; i < EXECSVC_ARG_MAX; ++i) {
-    if (i >= ctx->hdr.argc) break;
-    const char *arg = NULL;
-    rc = execsvc_next_string(ctx, &offset, &arg);
-    if (rc != 0) return rc;
-    ctx->argv[i] = (char *)arg;
+  int next = execsvc_next_string(ctx, offset);
+  if (next < 0) return next;
+  ctx->cwd = ctx->body + offset;
+  offset = (unsigned)next;
+  for (int i = 0; i < EXECSVC_ARG_MAX && i < ctx->hdr.argc; ++i) {
+    next = execsvc_next_string(ctx, offset);
+    if (next < 0) return next;
+    ctx->argv[i] = ctx->body + offset;
+    offset = (unsigned)next;
   }
   return offset == ctx->hdr.body_len ? 0 : -EINVAL;
 }
 
 static int execsvc_make_redirs(struct execsvc_ctx *ctx) {
   for (int i = 0; i < SPAWN_MAX_REDIR; ++i) {
-    if (i >= ctx->granted_count) break;
+    if (i >= ctx->granted_count) continue;
     struct execsvc_redir *item = &ctx->granted[i];
     struct spawn_redir *dst = &ctx->redirection[i];
     if (item->source != EXECSVC_FD_GRANTED &&
@@ -138,7 +137,13 @@ static int execsvc_make_redirs(struct execsvc_ctx *ctx) {
       return -EINVAL;
     if (item->ref < 0 || item->child_fd < 0) return -EBADF;
     dst->child_fd = item->child_fd;
-    dst->parent_fd = item->ref;
+    if (item->source == EXECSVC_FD_GRANTED) {
+      if ((unsigned)item->ref >= ctx->packet->cap_count - 2U) return -EBADF;
+      unsigned char *bytes = (unsigned char *)&dst->parent_fd;
+      size_t offset = (2U + (unsigned)item->ref) * sizeof(int);
+      for (unsigned j = 0U; j < sizeof(int); ++j)
+        bytes[j] = (unsigned char)ctx->packet->message.payload[offset + j];
+    } else dst->parent_fd = item->ref;
     dst->source_pid = item->source == EXECSVC_FD_GRANTED ? 0 :
                       ctx->requester;
     ++ctx->redirection_count;
@@ -146,67 +151,48 @@ static int execsvc_make_redirs(struct execsvc_ctx *ctx) {
   return 0;
 }
 
-static int execsvc_assign_owner(int pid, int requester) {
+static int execsvc_open_owner(int requester) {
   char key[16];
-  int n = snprintf(key, sizeof(key), "%d", pid);
+  int n = snprintf(key, sizeof(key), "%d", requester);
   if (n <= 0 || (size_t)n >= sizeof(key)) return -EOVERFLOW;
-  long handle = OS1low_handle_create(OS1_NS_PROC, key, OS1_RIGHT_DESTROY,
+  return (int)OS1low_handle_create(OS1_NS_PROC, key, OS1_RIGHT_DESTROY,
                                    OBJ_TYPE_PROCESS);
-  if (handle < 0) return (int)handle;
-  long assigned = OS1_object_ctl((int)handle, OBJ_CTL_SETOWNER, requester);
-  long closed = OS1low_handle_close((int)handle);
-  if (assigned != 0) return assigned < 0 ? (int)assigned : -EIO;
-  if (closed != 0) return closed < 0 ? (int)closed : -EIO;
-  return 0;
 }
 
 static int execsvc_run_spawn(struct execsvc_ctx *ctx) {
   int rc = execsvc_make_redirs(ctx);
   if (rc != 0) return rc;
-  int adopted = 0;
-  if (ctx->cwd[0]) {
-    if (chdir(ctx->cwd) != 0) return -errno;
-    adopted = 1;
+  int owner = execsvc_open_owner(ctx->requester);
+  if (owner < 0) return owner;
+  int adopted = ctx->cwd[0] != '\0';
+  if (adopted && chdir(ctx->cwd) != 0) {
+    int error = -errno;
+    if (OS1low_handle_close(owner) != 0)
+      OS1_report_error("nxexecd.owner_close", -EIO);
+    return error;
   }
-  char path[NXEXEC_PATH_MAX];
-  int pid = nxexec_spawn_search_redir_scoped(ctx->hdr.argc, ctx->argv,
-      path, (ctx->hdr.flags & SPAWN_FLAG_DETACHED) != 0,
-      ctx->redirection, ctx->redirection_count, 1);
-  if (adopted && chdir("/") != 0) return -EIO;
+  struct execsvc_owned_launch launch = {
+      .owner_handle = owner, .argc = ctx->hdr.argc,
+      .flags = ctx->hdr.flags, .nredir = ctx->redirection_count,
+      .redirections = ctx->redirection
+  };
+  for (int i = 0; i < EXECSVC_ARG_MAX && i < launch.argc; ++i)
+    launch.argv[i] = ctx->argv[i];
+  int pid = execsvc_launch_owned(&launch, ctx->result.resolved,
+                                  sizeof(ctx->result.resolved));
+  int restored = adopted ? chdir("/") : 0;
+  long closed = OS1low_handle_close(owner);
+  /* No cleanup error can undo an acknowledged child or justify executing
+   * the request again. Its owner was assigned before it became runnable. */
+  if (restored != 0) OS1_report_error("nxexecd.cwd_restore", -EIO);
+  if (closed != 0) OS1_report_error("nxexecd.owner_close", (int)closed);
   if (pid <= 0) return pid < 0 ? pid : -ENOENT;
-  rc = execsvc_assign_owner(pid, ctx->requester);
-  if (rc != 0) {
-    int killed = kill_process(pid);
-    if (killed < 0) OS1_report_error("nxexecd.orphan_rollback", killed);
-    return rc;
-  }
-  int n = snprintf(ctx->result.resolved, sizeof(ctx->result.resolved),
-                   "%s", path);
-  if (n <= 0 || (size_t)n >= sizeof(ctx->result.resolved)) {
-    int killed = kill_process(pid);
-    if (killed < 0) OS1_report_error("nxexecd.path_rollback", killed);
-    return -EOVERFLOW;
-  }
   ctx->result.owner_pid = ctx->requester;
   return pid;
 }
 
-static void execsvc_close_one(int handle, const char *phase) {
-  if (handle < 0) return;
-  if (close(handle) != 0) OS1_report_error(phase, errno);
-}
-
-static void execsvc_close_granted(struct execsvc_ctx *ctx) {
-  execsvc_close_one(ctx->request, "nxexecd.request_close");
-  execsvc_close_one(ctx->reply, "nxexecd.reply_close");
-  for (int i = 0; i < SPAWN_MAX_REDIR; ++i) {
-    if (i >= ctx->granted_count) break;
-    if (ctx->granted[i].source == EXECSVC_FD_GRANTED)
-      execsvc_close_one(ctx->granted[i].ref, "nxexecd.granted_close");
-  }
-}
-
-static void execsvc_handle_spawn(const struct ipc_message *message) {
+static void execsvc_handle_spawn(struct os1_port_packet *packet) {
+  const struct ipc_message *message = &packet->message;
   /* Resident server is single-threaded. The large bounded request body
    * persists in this process, not in its narrow syscall stack. */
   static struct execsvc_ctx ctx;
@@ -214,6 +200,7 @@ static void execsvc_handle_spawn(const struct ipc_message *message) {
   ctx.request = -1;
   ctx.reply = -1;
   ctx.requester = message->from;
+  ctx.packet = packet;
   ctx.result.version = EXECSVC_VERSION;
   ctx.result.pid = -EINVAL;
   int rc = execsvc_decode_handles(&ctx, message);
@@ -226,37 +213,33 @@ static void execsvc_handle_spawn(const struct ipc_message *message) {
     int written = execsvc_write_reply(ctx.reply, &ctx.result);
     if (written != 0) OS1_report_error("nxexecd.reply_write", written);
   }
-  execsvc_close_granted(&ctx);
+  int closed = OS1_port_packet_close_caps(packet);
+  if (closed != 0) OS1_report_error("nxexecd.request_caps_close", closed);
 }
 
 static int nxexec_service(void) {
   int port = -EEXIST;
-  for (unsigned attempt = 0U; attempt < EXECSVC_CLAIM_TRIES; ++attempt) {
+  for (unsigned attempt = 0U; attempt < EXECSVC_CLAIM_TRIES && port < 0; ++attempt) {
     port = OS1_port_create(OS1NX_PORT_EXEC);
-    if (port >= 0) break;
-    OS1_sleep(EXECSVC_CLAIM_WAIT_MS);
+    if (port < 0) OS1_sleep(EXECSVC_CLAIM_WAIT_MS);
   }
   if (port < 0) {
     OS1_report_error("nxexecd.port_claim", port);
     return 1;
   }
   int failed = 0;
-  for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {
-    struct ipc_message message;
-    long n = OS1_object_read(port, &message, sizeof(message));
-    if (n == 0) break;
-    if (n < 0) {
-      OS1_report_error("nxexecd.port_receive", (int)n);
-      OS1_sleep(20);
-      continue;
-    }
-    if (n != (long)sizeof(message)) {
-      OS1_report_error("nxexecd.protocol_frame", -EIO);
+  for (uint64_t epoch = 0U; epoch < UINT64_MAX && !failed; ++epoch) {
+    struct os1_port_packet packet;
+    int received = OS1_port_packet_receive(port, &packet, 0);
+    if (received != 0) {
+      OS1_report_error("nxexecd.port_receive", received);
       failed = 1;
-      break;
+    } else if (packet.message.type == EXECSVC_REQ_SPAWN &&
+               packet.cap_count >= 2U) execsvc_handle_spawn(&packet);
+    else {
+      int released = OS1_port_packet_close_caps(&packet);
+      if (released != 0) { failed = 1; OS1_report_error("nxexecd.reject_caps", released); }
     }
-    if (message.type == EXECSVC_REQ_SPAWN)
-      execsvc_handle_spawn(&message);
   }
   long closed = OS1low_handle_close(port);
   if (closed < 0) {

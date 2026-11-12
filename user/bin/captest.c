@@ -637,6 +637,11 @@ int main(void) {
        */
       int st2 = 0;
       check(win_id, "status-consumed-once", waitpid(pid, &st2, 0) != pid);
+      /* Collection while the corpse is still queued must also prevent the
+       * deferred reaper from publishing a second copy of the same status. */
+      OS1_sleep(150);
+      check(win_id, "status-stays-consumed-after-reap",
+            waitpid(pid, &st2, WNOHANG) == -1);
     }
   }
 

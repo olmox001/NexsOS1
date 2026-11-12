@@ -285,6 +285,9 @@ int OS1_window_grid(int win_id, int *cols, int *rows);
 void OS1_window_set_flags(int win_id, int flags);
 void OS1_window_set_focus(int pid);
 int OS1_window_resize(int win_id, int w, int h);
+/* Window manager: modify only presentation geometry. The owner keeps its
+ * logical pixel surface until ready to adopt the new dimensions. */
+int OS1_window_present_resize(int win_id, int w, int h);
 void OS1_gfx_draw(int x, int y, int w, int h, int color);
 void OS1_gfx_flush(void);
 void OS1_gfx_render(void);
@@ -436,6 +439,10 @@ int OS1_port_create(const char *name);
 /* Machine-authorized private PORT: SEND cannot be obtained by name from a
  * non-machine process. The owner delegates an attenuated SEND capability. */
 int OS1_port_create_private(const char *name);
+/* Generic family-owned PORT: only the publisher's live descendants can
+ * acquire a SEND capability. Already queued messages remain authorized even
+ * after a child exits; this is essential for short-lived CLI output. */
+int OS1_port_create_family(const char *name);
 /* OS1_port_open - acquire a SEND-only capability to an existing service port.
  * -ENOENT if no service published that name. */
 int OS1_port_open(const char *name);
@@ -454,6 +461,12 @@ long OS1_port_try_recv(int handle, struct ipc_message *msg);
  * remains capability-based and never needs the service pid. */
 long OS1_port_send_caps(int handle, struct ipc_message *msg, const int *fds,
                         int nfds);
+/* Returns 0 for a complete packet or negative errno. cap_count is stamped
+ * by the kernel; never decode/close payload handles without this evidence. */
+int OS1_port_packet_receive(int handle, struct os1_port_packet *packet,
+                             int nonblocking);
+int OS1_port_packet_close_caps(struct os1_port_packet *packet);
+
 long OS1_object_wait(int handle, long arg);
 long OS1_object_ctl(int handle, int cmd, long arg);
 

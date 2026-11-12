@@ -22,23 +22,31 @@ static uint64_t splitmix64(uint64_t *state) {
   return z ^ (z >> 31U);
 }
 
-static uint64_t entropy_jitter_fallback(void) {
+static struct entropy_sample entropy_jitter_fallback(void) {
   uint64_t state = (uint64_t)(uintptr_t)__builtin_return_address(0);
+  struct entropy_sample sample = {.source = ENTROPY_SOURCE_ADDRESS_MIX};
 
-  for (unsigned int sample = 0U; sample < ENTROPY_JITTER_SAMPLES; ++sample) {
+  for (unsigned int index = 0U; index < ENTROPY_JITTER_SAMPLES; ++index) {
     uint64_t jitter = 0U;
-    if (nxhal_entropy_jitter_sample(&jitter) == NXHAL_ENTROPY_OK)
+    if (nxhal_entropy_jitter_sample(&jitter) == NXHAL_ENTROPY_OK) {
       state ^= jitter;
+      sample.source = ENTROPY_SOURCE_COUNTER_MIX;
+    }
     (void)splitmix64(&state);
   }
-  return splitmix64(&state);
+  sample.value = splitmix64(&state);
+  return sample;
 }
 
-uint64_t entropy_u64(void) {
+struct entropy_sample entropy_sample_u64(void) {
   for (unsigned int attempt = 0U; attempt < ENTROPY_HW_ATTEMPTS; ++attempt) {
     uint64_t value = 0U;
     if (nxhal_entropy_hardware_random(&value) == NXHAL_ENTROPY_OK)
-      return value;
+      return (struct entropy_sample){value, ENTROPY_SOURCE_ARCH_RNG};
   }
   return entropy_jitter_fallback();
+}
+
+uint64_t entropy_u64(void) {
+  return entropy_sample_u64().value;
 }
