@@ -532,7 +532,9 @@ __user: $(USER_ELFS)
 # must carry the source/protocol prerequisites too: otherwise an existing ELF
 # suppresses the kernel sub-make and bypasses its generated dependency files.
 $(BUILD_DIR)/nxmanageDD.elf: $(KERNEL_DIR)/user/extension/nxmanageDD/main.c \
-                             $(NXSDK_DIR)/lib/extensions/USERKIT/manager/include/nxmanage.h
+                             $(NXSDK_DIR)/lib/extensions/USERKIT/manager/include/nxmanage.h \
+                             $(NXSDK_DIR)/lib/extensions/USERKIT/manager/include/nxsystem_image.h \
+                             $(NXSDK_DIR)/lib/extensions/USERKIT/manager/image_client.c
 	+$(MAKE) -C $(KERNEL_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) \
 	  NXSDK_ROOT="$(abspath $(NXSDK_DIR))" machine-extension
 	@test -f "$@" || { echo "NX-CORE did not produce $@" >&2; exit 1; }
@@ -651,6 +653,7 @@ ROOTFS_ASSETS = $(shell find $(ROOTFS_ASSET_DIRS) \
                   \( -type f -o -type d -o -type l \) 2>/dev/null | \
                   sed 's/ /\\ /g') \
                 user/NexsOS1-main/sys/boot/manager.conf \
+                user/NexsOS1-main/sys/boot/images.conf \
                 user/NexsOS1-main/sys/boot/services.conf user/NexsOS1-main/sys/boot/libraries.conf user/NexsOS1-main/sys/boot/project \
                 $(wildcard user/NexsOS1-main/bin/doom/freedoom*.wad)
 rootfs: user libsdl2 liblua libgnulib coreutils $(ROOTFS_STAMP)
@@ -705,6 +708,7 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(USERKIT_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_L
 	done
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
 	@cp user/NexsOS1-main/sys/boot/manager.conf $(BUILD_DIR)/rootfs/system/boot/manager.conf
+	@cp user/NexsOS1-main/sys/boot/images.conf $(BUILD_DIR)/rootfs/system/boot/images.conf
 	@cp user/NexsOS1-main/sys/boot/services.conf $(BUILD_DIR)/rootfs/system/boot/services.conf
 	@cp user/NexsOS1-main/sys/boot/libraries.conf $(BUILD_DIR)/rootfs/system/boot/libraries.conf
 	@cp user/NexsOS1-main/sys/boot/project $(BUILD_DIR)/rootfs/system/boot/project
@@ -780,8 +784,9 @@ demo1-build: sdk
 	@test -s "$(DEMO1_ELF)"
 
 $(DEMO1_ROOTFS_STAMP): demo1-build userkit $(NX_MACHINE_EXTENSION_ELFS) $(NX_BOOT_PROFILE) \
-                      user/demo1/sys/boot/manager.conf user/demo1/sys/boot/services.conf \
-                      user/demo1/sys/boot/libraries.conf user/demo1/sys/boot/project $(USER_PROJECT_LIB_GLOBAL_FILES) user/demo1/assets/fonts/Rewir-Light.off Makefile
+                      user/demo1/sys/boot/manager.conf user/demo1/sys/boot/images.conf \
+                      user/demo1/sys/boot/services.conf user/demo1/sys/boot/libraries.conf \
+                      user/demo1/sys/boot/project $(USER_PROJECT_LIB_GLOBAL_FILES) user/demo1/assets/fonts/Rewir-Light.off Makefile
 	@rm -rf "$(DEMO1_ROOTFS)"
 	@mkdir -p "$(DEMO1_ROOTFS)/sbin" "$(DEMO1_ROOTFS)/krnl/extension"
 	@mkdir -p "$(DEMO1_ROOTFS)/sys/bin" "$(DEMO1_ROOTFS)/sys/services"
@@ -801,6 +806,7 @@ $(DEMO1_ROOTFS_STAMP): demo1-build userkit $(NX_MACHINE_EXTENSION_ELFS) $(NX_BOO
 	  cp "$$f" "$(DEMO1_ROOTFS)/sys/bin/nxtest_userkit_$$name"; \
 	done
 	@cp user/demo1/sys/boot/manager.conf "$(DEMO1_ROOTFS)/system/boot/manager.conf"
+	@cp user/demo1/sys/boot/images.conf "$(DEMO1_ROOTFS)/system/boot/images.conf"
 	@cp user/demo1/sys/boot/services.conf "$(DEMO1_ROOTFS)/system/boot/services.conf"
 	@cp user/demo1/sys/boot/libraries.conf "$(DEMO1_ROOTFS)/system/boot/libraries.conf"
 	@cp user/demo1/sys/boot/project "$(DEMO1_ROOTFS)/system/boot/project"

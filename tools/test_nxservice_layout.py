@@ -58,13 +58,24 @@ def source_roles() -> int:
     manager = (CORE / "user/extension/nxmanageDD/main.c").read_text()
     require("system.manage.service.%s" in manager,
             "named manager service records missing")
-    require("NXMANAGE_PROJECT_CONFIG" in manager,
-            "manager does not publish selected user project")
+    require("NXMANAGE_PROJECT_CONFIG" not in manager and
+            "system.manage.current" not in manager,
+            "machine manager must not contain build-project identity")
     require("[NXMANAGE] service=" in manager,
             "manager spawn UART diagnostics missing")
     require((CORE / "config/boot-entry.conf").read_text().strip() ==
             "/krnl/extension/nxmanageDD",
             "kernel boot entry does not select nxmanageDD")
+
+    images = {}
+    for raw in (MAIN / "sys/boot/images.conf").read_text().splitlines():
+        if not raw or raw.startswith("#"):
+            continue
+        fields = raw.split("|")
+        require(len(fields) == 3, "image catalog must have 3 fields")
+        kind, image, path = fields
+        require(image not in images, f"duplicate system image: {image}")
+        images[image] = (kind, path)
 
     manifest_servers = set()
     names = set()
@@ -73,13 +84,18 @@ def source_roles() -> int:
             continue
         fields = raw.split("|")
         require(len(fields) in (5, 6), "service manifest must have 5 or 6 fields")
-        logical, _mode, path = fields[:3]
+        logical, _mode, image = fields[:3]
         require(logical not in names, f"duplicate manifest name: {logical}")
+        require(image in images and images[image][0] == "service",
+                f"manifest references unknown/non-service image: {image}")
         names.add(logical)
+        path = images[image][1]
         if path.startswith("/sys/services/"):
             manifest_servers.add(path.removeprefix("/sys/services/"))
     require(manifest_servers == servers,
             f"USERKIT catalog/manifest mismatch: {manifest_servers} != {servers}")
+    require("nxm_service_path" not in manager and "slot->path" not in manager,
+            "machine manager still interprets service filesystem paths")
     return len(names)
 
 
