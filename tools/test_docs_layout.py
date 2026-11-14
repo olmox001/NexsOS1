@@ -10,8 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 LEGACY = DOCS / "legacy"
-ACTIVE = DOCS / "session-1"
-ALLOWED_ROOT = {"README.md", "legacy", "session-1"}
+SESSION1 = DOCS / "session-1"
+ACTIVE = DOCS / "session-2"
+LEGACY_SOURCE_COMMIT = "5a1264c310b034e3fa574301731b0f933361aceb"
+ALLOWED_ROOT = {"README.md", "legacy", "session-1", "session-2"}
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
@@ -20,7 +22,7 @@ def git_bytes(*args: str) -> bytes:
 
 
 def old_doc_paths() -> list[str]:
-    return git_bytes("ls-tree", "-r", "--name-only", "HEAD", "docs").decode().splitlines()
+    return git_bytes("ls-tree", "-r", "--name-only", LEGACY_SOURCE_COMMIT, "docs").decode().splitlines()
 
 
 def check_root_layout(errors: list[str]) -> None:
@@ -40,7 +42,7 @@ def check_legacy_preservation(errors: list[str]) -> None:
         if not mapped.is_file():
             errors.append(f"missing migrated legacy file: {old}")
             continue
-        if git_bytes("show", f"HEAD:{old}") != mapped.read_bytes():
+        if git_bytes("show", f"{LEGACY_SOURCE_COMMIT}:{old}") != mapped.read_bytes():
             errors.append(f"legacy content changed: {old}")
 
 
@@ -73,7 +75,7 @@ def check_presstoai(errors: list[str]) -> None:
         errors.append(".presstoai.json contains no project docs paths")
         return
     for path in docs_paths:
-        if not path.startswith(("docs/legacy/", "docs/session-1/")):
+        if not path.startswith(("docs/legacy/", "docs/session-1/", "docs/session-2/")):
             errors.append(f"stale PressToAI docs path: {path}")
         elif not (ROOT / path).exists():
             errors.append(f"missing PressToAI indexed path: {path}")
@@ -110,7 +112,10 @@ def local_link_target(source: Path, raw: str) -> Path | None:
 
 
 def check_active_markdown_links(errors: list[str]) -> None:
-    sources = [ROOT / "README.md", DOCS / "README.md", *sorted(ACTIVE.glob("*.md"))]
+    sources = [
+        ROOT / "README.md", DOCS / "README.md",
+        *sorted(SESSION1.glob("*.md")), *sorted(ACTIVE.glob("*.md"))
+    ]
     for source in sources:
         text = source.read_text()
         for raw in MD_LINK_RE.findall(text):
@@ -122,15 +127,24 @@ def check_active_markdown_links(errors: list[str]) -> None:
 
 
 def check_required_active_docs(errors: list[str]) -> None:
-    required = {
+    required_session1 = {
         "README.md", "METHODOLOGY.md", "ARCHITECTURE.md",
-        "GPU-DEVICE-CENSUS.md", "REFERENCES.md", "PLAN.md", "OBJECTIVES.md", "STATE.md",
-        "ISSUES.md", "VERIFICATION.md", "LEGACY-MIGRATION.md",
+        "GPU-DEVICE-CENSUS.md", "REFERENCES.md", "PLAN.md", "OBJECTIVES.md",
+        "STATE.md", "ISSUES.md", "VERIFICATION.md", "LEGACY-MIGRATION.md",
+        "P2P-TRANSCRIPT.md",
     }
-    actual = {p.name for p in ACTIVE.glob("*.md")}
-    missing = sorted(required - actual)
-    if missing:
-        errors.append(f"missing active Session 1 docs: {missing}")
+    session1_actual = {p.name for p in SESSION1.glob("*.md")}
+    missing_session1 = sorted(required_session1 - session1_actual)
+    if missing_session1:
+        errors.append(f"missing Session 1 docs: {missing_session1}")
+
+    required_session2 = {
+        "README.md", "OBJECTIVES.md", "STATE.md", "ISSUES.md", "VERIFICATION.md",
+    }
+    session2_actual = {p.name for p in ACTIVE.glob("*.md")}
+    missing_session2 = sorted(required_session2 - session2_actual)
+    if missing_session2:
+        errors.append(f"missing active Session 2 docs: {missing_session2}")
 
 
 def main() -> int:
