@@ -534,30 +534,25 @@ static void redraw(int force) {
     int focused = (dflags[i] & WININFO_FOCUSED) ||
                   (!seen_focus && win[start + i].id == g_last_focus);
 
-    /* vttl[i] is the window's own title text (e.g. nxshell's is "NXShell PID
-     * 6", not "nxshell"), so this uses nxicon_classify() — the case-
-     * insensitive, prefix-matching, path-stripping classifier in nxicon.h —
-     * not nxicon_classify_path()'s exact match (that one is for
-     * nxlauncher's app-table entries, which are real basenames). */
-    /* Prefer the PROGRAM NAME over the window title: the title is the app's
-     * own, noisy text, the name is the canonical launch identity.  The title
-     * classifier stays as the fallback for a window whose pid is gone. */
+    /* Prefer the canonical executable identity whenever available.  That
+     * path uses the same exact nxicon classifier as nxlauncher.  Only legacy
+     * windows without a live published identity fall back to their noisier
+     * title ("NXShell PID 6", etc.) and prefix matching. */
     int app_id;
     if (is_launcher) {
       app_id = NXICON_LAUNCHER;
     } else {
-      /* Ask the (virtual, always-live) per-process view for the program name
-       * and classify THAT.  There is no icon key to consult: an icon is a
-       * property of the program, and the program name already carries it —
-       * nxicon_classify strips the path itself.  The intermediate
-       * `sys.appicon.<name>` key that 5b introduced mapped a name to itself,
-       * so it added a lookup and no information (17a). */
+      /* Ask the per-process view for the canonical executable identity.
+       * The launcher classifies this same identity with
+       * nxicon_classify_path(); use that exact classifier here so dock and
+       * launcher cannot choose different icons for the same program.  Window
+       * title prefix matching remains only the legacy fallback. */
       char idkey[64], idname[40];
       snprintf(idkey, sizeof(idkey), "sys.proc.%d.name", vpid[i]);
       if (OS1_registry_get(idkey, idname, sizeof(idname)) == 0 && idname[0])
-        app_id = nxicon_classify(idname);
+        app_id = nxicon_classify_path(idname);
       else
-        app_id = nxicon_classify(vttl[i]); /* fall back to the window title */
+        app_id = nxicon_classify(vttl[i]); /* legacy/title fallback */
     }
     os1_image_t *icon = nxicon_get(app_id, g_light, TILE);
 
