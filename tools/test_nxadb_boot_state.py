@@ -3,6 +3,7 @@
 from nxadb import (
     SHELL_PROMPT_SETTLE_SECONDS,
     _boot_nxtest_state,
+    _nxwins_focused_tty_window,
     _prompt_settle_state,
     boot_has_live_userland,
 )
@@ -59,6 +60,42 @@ def check_boot_nxtest_state() -> int:
     return 0
 
 
+def check_nxwins_tty_owner() -> int:
+    current = (
+        "ID  PID  STATE   GEOMETRY NAME\n"
+        "104  14  focus   pos=434,256 surface=640x432 "
+        "draw=640x432 /sys/services/nxttyd\n"
+    )
+    if _nxwins_focused_tty_window(current) != "104":
+        print("FAIL nxwins canonical nxttyd owner")
+        return 1
+
+    legacy = (
+        "ID  PID  STATE   GEOMETRY NAME\n"
+        "104  14  focus   pos=434,256 surface=640x432 "
+        "draw=640x432 /sys/bin/nxshell\n"
+    )
+    if _nxwins_focused_tty_window(legacy) is not None:
+        print("FAIL nxwins accepted legacy nxshell WINDOW owner")
+        return 1
+
+    not_focused = (
+        "ID  PID  STATE   GEOMETRY NAME\n"
+        "104  14  shown   pos=434,256 surface=640x432 "
+        "draw=640x432 /sys/services/nxttyd\n"
+    )
+    if _nxwins_focused_tty_window(not_focused) is not None:
+        print("FAIL nxwins accepted non-focused TTY")
+        return 1
+
+    if _nxwins_focused_tty_window(
+        "104  14  focus /sys/services/nxttyd\n"
+    ) is not None:
+        print("FAIL nxwins accepted output without structured header")
+        return 1
+    return 0
+
+
 def main() -> int:
     cases = (
         ("empty", "", False),
@@ -78,9 +115,12 @@ def main() -> int:
         return 1
     if check_boot_nxtest_state() != 0:
         return 1
+    if check_nxwins_tty_owner() != 0:
+        return 1
     print(
         f"PASS: {len(cases)} boot readiness cases + "
-        "4 prompt-settle cases + 3 boot-NXTEST states"
+        "4 prompt-settle cases + 3 boot-NXTEST states + "
+        "4 nxwins TTY-owner cases"
     )
     return 0
 

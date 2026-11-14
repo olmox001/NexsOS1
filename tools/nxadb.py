@@ -71,6 +71,24 @@ PROMPT_RE = re.compile(r"NXShell:[^\r\n]*>\s*", re.IGNORECASE)
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
+
+def _nxwins_focused_tty_window(text: str) -> Optional[str]:
+    """Return the focused TTY host window from nxwins structured output.
+
+    The graphical terminal is owned by nxttyd; nxshell is the hosted job
+    inside that terminal and therefore must not be used as the WINDOW owner
+    identity. Requiring the canonical service path catches regressions back to
+    the pre-execsvc/TTY ownership model instead of accepting either spelling.
+    """
+    clean = strip_ansi(text)
+    if not re.search(r"(?mi)^\s*ID\s+PID\s+STATE\b", clean):
+        return None
+    match = re.search(
+        r"(?mi)^\s*(\d+)\s+\d+\s+focus\s+.*\s/sys/services/nxttyd\s*$",
+        clean,
+    )
+    return match.group(1) if match else None
+
 # ---------------------------------------------------------------------------
 # QMP key mapping (full editing support)
 # ---------------------------------------------------------------------------
@@ -1330,18 +1348,13 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
                 session, "/sys/bin/nxwins", timeout=20
             )
             nxwins_text = strip_ansi(nxwins_output)
-            shell_window = re.search(
-                r"(?m)^\s*(\d+)\s+\d+\s+focus\s+.*nxshell",
-                nxwins_text, re.IGNORECASE,
-            )
-            # The shell may print a failed /bin lookup while resolving the
-            # canonical /sys/bin executable. Trust the actual structured list,
-            # not that incidental fallback diagnostic.
-            if "ID   PID  STATE" not in nxwins_text or not shell_window:
+            window_id = _nxwins_focused_tty_window(nxwins_text)
+            # The visible terminal WINDOW is owned by nxttyd. nxshell is a
+            # hosted job inside that TTY and is not a WINDOW owner.
+            if nxwins_code != 0 or window_id is None:
                 results.append(f"NXWINS-FAIL({nxwins_code})")
                 verdict = "FAIL"
             else:
-                window_id = shell_window.group(1)
                 focus_code, focus_output = run_shell_c(
                     session, f"/sys/bin/nxwins focus {window_id}", timeout=20
                 )
@@ -1372,11 +1385,8 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
                     session, "/sys/bin/nxwins", timeout=20
                 )
                 health_text = strip_ansi(health_output)
-                shell_row = re.search(
-                    r"(?m)^\s*\d+\s+\d+\s+focus\s+.*nxshell",
-                    health_text, re.IGNORECASE,
-                )
-                if health_code != 0 or "ID   PID  STATE" not in health_text or not shell_row:
+                tty_window = _nxwins_focused_tty_window(health_text)
+                if health_code != 0 or tty_window is None:
                     results.append(f"GUEST-HEALTH-FAIL({health_code})")
                     verdict = "FAULT"
                 else:
