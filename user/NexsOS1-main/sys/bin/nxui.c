@@ -653,13 +653,12 @@ int main(void) {
         return 0; /* another nxui is already up */
   }
 
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF);
-  int sh = (int)(di & 0xFFFF);
-  if (sw <= 0)
-    sw = 800;
-  if (sh <= 0)
-    sh = 600;
+  int sw = 0, sh = 0;
+  int display_status = OS1_display_get_size(&sw, &sh);
+  if (display_status != 0) {
+    OS1_report_error("nxui.display_size", display_status);
+    return 1;
+  }
 
   nxui_load_palette(nxres_theme_is_light());
 
@@ -678,9 +677,9 @@ int main(void) {
      * event-driven INPUT_TYPE_RESIZE path below is wired system-wide).
      * Compared against g_dsw/g_dsh (the DESKTOP size) — not g_sw, which is
      * now the dock's own narrower width. */
-    long d = OS1_display_info();
-    int cw = (int)((d >> 16) & 0xFFFF), ch = (int)(d & 0xFFFF);
-    if (cw > 0 && ch > 0 && (cw != g_dsw || ch != g_dsh))
+    int cw = 0, ch = 0;
+    if (OS1_display_get_size(&cw, &ch) == 0 &&
+        (cw != g_dsw || ch != g_dsh))
       dock_reinit(cw, ch);
 
     redraw(0);
@@ -730,10 +729,9 @@ int main(void) {
           redraw(1);
         }
       } else if (ev.type == INPUT_TYPE_RESIZE) {
-        /* event-driven adaptation: the system told us the geometry changed. */
-        long d2 = OS1_display_info();
-        int rw = (int)((d2 >> 16) & 0xFFFF), rh = (int)(d2 & 0xFFFF);
-        if (rw > 0 && rh > 0)
+        /* Event-driven adaptation uses the validated provider geometry. */
+        int rw = 0, rh = 0;
+        if (OS1_display_get_size(&rw, &rh) == 0)
           dock_reinit(rw, rh);
       } else if (ev.type == INPUT_TYPE_LOOK_CHANGED) {
         /* External style/theme/bg change (nxres_broadcast_look, nxres.h),

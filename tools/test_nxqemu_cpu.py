@@ -26,10 +26,13 @@ def build(disk: Path, iso: Path) -> list[str]:
     with patch.object(
         nxqemu.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"
     ):
-        return nxqemu.build_qemu_command(
-            "amd64", iso, disk, serial="none", display="none",
-            boot_mode="iso", firmware="bios"
-        )
+        with patch.object(
+            nxqemu, "qemu_native_display_size", return_value=(1280, 800)
+        ):
+            return nxqemu.build_qemu_command(
+                "amd64", iso, disk, serial="none", display="none",
+                boot_mode="iso", firmware="bios"
+            )
 
 
 def cpu_model(command: list[str]) -> str:

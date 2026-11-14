@@ -54,6 +54,7 @@
 #include <font_lib.h>
 #include <input.h>
 #include <os1.h>
+#include <os1_surface.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -129,44 +130,6 @@ static const char *nxs_state_str(char st) {
   return st == 'R' ? "read  " : "unread";
 }
 
-/* ================================================================
- *                        Shared: display presets
- * ================================================================ */
-struct nxs_res {
-  int w, h;
-};
-
-static const struct nxs_res NXS_RES_PRESETS[] = {
-
-    /* 16:9 - PC / TV / Android */
-    {1280, 720},
-    {720, 1280},
-
-    {1366, 768},
-    {768, 1366},
-
-    {1600, 900},
-    {900, 1600},
-
-    {1920, 1080},
-    {1080, 1920},
-
-    /* 16:10 - MacBook / laptop */
-    {1280, 800},
-    {800, 1280},
-
-    {1440, 900},
-    {900, 1440},
-
-    {1680, 1050},
-    {1050, 1680},
-
-    /* 3:2 - laptop moderni */
-    {1504, 1000},
-    {1000, 1504},
-};
-#define NXS_NRES (int)(sizeof(NXS_RES_PRESETS) / sizeof(NXS_RES_PRESETS[0]))
-
 /* Style/theme/bg name tables: the shared os1_style_names/os1_theme_names/
  * os1_bg_names (style_names.h, pulled in via nxres.h) — single source of
  * truth also used by nxres.c and the kernel's SYS_SET_STYLE registry
@@ -178,6 +141,65 @@ static const struct nxs_res NXS_RES_PRESETS[] = {
 #define NXS_BG os1_bg_names
 #define NXS_NBG OS1_BG_COUNT
 
+#define NXS_MODE_PAGE_SIZE 8U
+static const int NXS_SCALE_OPTIONS[] = {100, 125, 150, 175, 200, 250, 300, 400};
+#define NXS_SCALE_COUNT \
+  ((int)(sizeof(NXS_SCALE_OPTIONS) / sizeof(NXS_SCALE_OPTIONS[0])))
+
+static int nxs_mode_query(uint32_t index, struct os1_display_mode_v1 *mode) {
+  return (int)OS1_display_mode_query(index, mode);
+}
+
+static int nxs_current_mode(struct os1_display_mode_v1 *current) {
+  if (current == NULL)
+    return -EINVAL;
+  struct os1_display_mode_v1 mode;
+  if (nxs_mode_query(0U, &mode) != 0)
+    return -ENODEV;
+  uint32_t count = mode.count > OS1_DISPLAY_MODE_MAX
+                       ? OS1_DISPLAY_MODE_MAX
+                       : mode.count;
+  for (uint32_t i = 0U; i < count; ++i) {
+    if (i != 0U && nxs_mode_query(i, &mode) != 0)
+      return -EIO;
+    if (mode.flags & OS1_DISPLAY_MODE_CURRENT) {
+      *current = mode;
+      return 0;
+    }
+  }
+  return -ENODEV;
+}
+
+static int nxs_active_scale(void) {
+  struct os1_display_mode_v1 mode;
+  int logical_w = 0, logical_h = 0;
+  if (nxs_current_mode(&mode) != 0 ||
+      OS1_display_get_size(&logical_w, &logical_h) != 0 ||
+      logical_w <= 0 || logical_h <= 0)
+    return OS1_DISPLAY_ZOOM_DEFAULT_PERCENT;
+  int64_t scale = ((int64_t)mode.width * 100 + logical_w / 2) / logical_w;
+  if (scale < OS1_DISPLAY_ZOOM_MIN_PERCENT)
+    scale = OS1_DISPLAY_ZOOM_MIN_PERCENT;
+  if (scale > OS1_DISPLAY_ZOOM_MAX_PERCENT)
+    scale = OS1_DISPLAY_ZOOM_MAX_PERCENT;
+  return (int)scale;
+}
+
+static void nxs_mode_label(const struct os1_display_mode_v1 *mode,
+                           char *label, size_t capacity) {
+  if (mode == NULL || label == NULL || capacity == 0U)
+    return;
+  const char *preferred =
+      (mode->flags & OS1_DISPLAY_MODE_PREFERRED) ? " preferred" : "";
+  if (mode->refresh_millihz != 0U) {
+    snprintf(label, capacity, "%ux%u @ %u.%03u Hz%s", mode->width,
+             mode->height, mode->refresh_millihz / 1000U,
+             mode->refresh_millihz % 1000U, preferred);
+  } else {
+    snprintf(label, capacity, "%ux%u%s", mode->width, mode->height, preferred);
+  }
+}
+
 /* ================================================================
  *                              CLI mode
  * ================================================================ */
@@ -187,17 +209,33 @@ static int nxs_streq(const char *a, const char *b) {
 }
 
 static void cli_display(void) {
-  long di = OS1_display_info();
-  int w = (int)((di >> 16) & 0xFFFF);
-  int h = (int)(di & 0xFFFF);
+  int logical_w = 0, logical_h = 0;
   printf("== Display ==\n");
-  printf("resolution: %dx%d\n", w, h);
-  printf("presets:    ");
-  for (int i = 0; i < NXS_NRES; i++)
-    printf("%dx%d%s", NXS_RES_PRESETS[i].w, NXS_RES_PRESETS[i].h,
-           i + 1 < NXS_NRES ? "  " : "\n");
-  printf("(nxsettings -cli does not change resolution/zoom; use the GUI or "
-         "'nxres <w> <h>' / 'nxres zoom <pct>')\n");
+  int display_status = OS1_display_get_size(&logical_w, &logical_h);
+  if (display_status == 0)
+    printf("logical desktop: %dx%d\n", logical_w, logical_h);
+  else
+    printf("logical desktop: unavailable (%d)\n", display_status);
+
+  struct os1_display_mode_v1 mode;
+  if (nxs_mode_query(0U, &mode) != 0) {
+    printf("hardware modes: unavailable\n");
+    return;
+  }
+  uint32_t count = mode.count > OS1_DISPLAY_MODE_MAX
+                       ? OS1_DISPLAY_MODE_MAX
+                       : mode.count;
+  printf("hardware modes: %u, generation %llu\n", count,
+         (unsigned long long)mode.generation);
+  for (uint32_t i = 0U; i < count; ++i) {
+    if (i != 0U && nxs_mode_query(i, &mode) != 0)
+      break;
+    char label[96] = {0};
+    nxs_mode_label(&mode, label, sizeof(label));
+    printf("  %u: %s%s\n", i, label,
+           (mode.flags & OS1_DISPLAY_MODE_CURRENT) ? " [current]" : "");
+  }
+  printf("UI scale: %d%%\n", nxs_active_scale());
 }
 
 static void cli_style(void) {
@@ -350,10 +388,12 @@ static const char *SEC_LABELS[SEC_COUNT] = {
 enum nxs_action {
   ACT_NONE = 0,
   ACT_SECTION,
-  ACT_RES_PRESET,
-  ACT_ZOOM_DEC,
-  ACT_ZOOM_INC,
-  ACT_ZOOM_RESET,
+  ACT_MODE_MENU,
+  ACT_MODE_SELECT,
+  ACT_MODE_PAGE_PREV,
+  ACT_MODE_PAGE_NEXT,
+  ACT_SCALE_MENU,
+  ACT_SCALE_SELECT,
   ACT_STYLE,
   ACT_THEME,
   ACT_BACKGROUND,
@@ -367,7 +407,10 @@ static int g_win = -1;
 static struct font_ctx *g_font;
 
 static int g_section = SEC_DISPLAY;
-static int g_zoom_pct = 100; /* tracked locally; no getter exists */
+static int g_zoom_pct = OS1_DISPLAY_ZOOM_DEFAULT_PERCENT;
+static int g_mode_menu_open;
+static int g_scale_menu_open;
+static uint32_t g_mode_page;
 static int g_cur_style = -1; /* -1 = not set this session */
 static int g_cur_theme = -1;
 static int g_cur_bg = -1;
@@ -389,7 +432,7 @@ static uint32_t g_col_danger, g_col_danger_text;
 
 static void load_theme_colors(int is_light) {
   if (is_light) {
-    /* tema chiaro – toni ispirati al compositor light */
+    /* Light palette aligned with the compositor's light surface family. */
     g_col_bg = 0xFFF5F5F7;
     g_col_sidebar_bg = 0xFFE5E5EA;
     g_col_sidebar_sel = 0xFFD1D1D6;
@@ -402,7 +445,7 @@ static void load_theme_colors(int is_light) {
     g_col_danger = 0xFFFFD0D0;
     g_col_danger_text = 0xFF7A2A2A;
   } else {
-    /* tema scuro – palette originale */
+    /* Dark palette retained from the original settings surface. */
     g_col_bg = 0xFF1E1E24u;
     g_col_sidebar_bg = 0xFF17171Cu;
     g_col_sidebar_sel = 0xFF33333Du;
@@ -561,6 +604,70 @@ static void ui_button(int x, int y, int w, int h, const char *label, int action,
   add_btn(x, y, w, h, action, arg);
 }
 
+#define NXS_SELECT_W 320
+#define NXS_SELECT_H 28
+#define NXS_MENU_ROW_H 24
+
+static void render_menu_row(int x, int y, int w, const char *label,
+                            int action, long arg, int active) {
+  if (active)
+    fb_rrect(x + 1, y + 1, w - 2, NXS_MENU_ROW_H - 2, 4, g_col_sidebar_sel);
+  buf_draw_text(x + 10, y + 4, label, active ? g_col_accent : g_col_text);
+  add_btn(x, y, w, NXS_MENU_ROW_H, action, arg);
+}
+
+static void render_mode_dropdown(int x, int y) {
+  struct os1_display_mode_v1 head;
+  if (nxs_mode_query(0U, &head) != 0)
+    return;
+  uint32_t count = head.count > OS1_DISPLAY_MODE_MAX
+                       ? OS1_DISPLAY_MODE_MAX
+                       : head.count;
+  uint32_t pages =
+      (count + NXS_MODE_PAGE_SIZE - 1U) / NXS_MODE_PAGE_SIZE;
+  if (pages == 0U)
+    return;
+  if (g_mode_page >= pages)
+    g_mode_page = pages - 1U;
+  uint32_t start = g_mode_page * NXS_MODE_PAGE_SIZE;
+  uint32_t shown = count - start;
+  if (shown > NXS_MODE_PAGE_SIZE)
+    shown = NXS_MODE_PAGE_SIZE;
+  int footer = pages > 1U ? 2 : 0;
+  int height = ((int)shown + footer) * NXS_MENU_ROW_H;
+  fb_rrect(x, y, NXS_SELECT_W, height, 5, g_col_btn);
+  for (uint32_t row = 0U; row < shown; ++row) {
+    uint32_t index = start + row;
+    struct os1_display_mode_v1 mode;
+    if (nxs_mode_query(index, &mode) != 0)
+      continue;
+    char label[104] = {0};
+    nxs_mode_label(&mode, label, sizeof(label));
+    render_menu_row(x, y + (int)row * NXS_MENU_ROW_H, NXS_SELECT_W, label,
+                    ACT_MODE_SELECT, (long)index,
+                    (mode.flags & OS1_DISPLAY_MODE_CURRENT) != 0U);
+  }
+  if (pages > 1U) {
+    int row_y = y + (int)shown * NXS_MENU_ROW_H;
+    render_menu_row(x, row_y, NXS_SELECT_W, "< previous modes",
+                    ACT_MODE_PAGE_PREV, 0, 0);
+    render_menu_row(x, row_y + NXS_MENU_ROW_H, NXS_SELECT_W, "next modes >",
+                    ACT_MODE_PAGE_NEXT, 0, 0);
+  }
+}
+
+static void render_scale_dropdown(int x, int y) {
+  int height = NXS_SCALE_COUNT * NXS_MENU_ROW_H;
+  fb_rrect(x, y, NXS_SELECT_W, height, 5, g_col_btn);
+  for (int i = 0; i < NXS_SCALE_COUNT; ++i) {
+    char label[32];
+    snprintf(label, sizeof(label), "%d%%", NXS_SCALE_OPTIONS[i]);
+    render_menu_row(x, y + i * NXS_MENU_ROW_H, NXS_SELECT_W, label,
+                    ACT_SCALE_SELECT, NXS_SCALE_OPTIONS[i],
+                    g_zoom_pct == NXS_SCALE_OPTIONS[i]);
+  }
+}
+
 /* ============================================================
  *                       Section renderers
  * ============================================================ */
@@ -578,60 +685,44 @@ static void render_sidebar(void) {
   }
 }
 
-static void render_resolution_menu(int cx, int *y, int current_w,
-                                   int current_h) {
-  int bx = cx;
-  int btn_w = 92;
-  int btn_h = 28;
-  int gap = 8;
-  int row_h = 34;
-  int max_x = g_ww - PAD;
-
-  ui_text(cx, y, "Presets:", g_col_text_dim);
-
-  for (int i = 0; i < NXS_NRES; i++) {
-    char lbl[24];
-
-    snprintf(lbl, sizeof(lbl), "%dx%d", NXS_RES_PRESETS[i].w,
-             NXS_RES_PRESETS[i].h);
-
-    if (bx + btn_w > max_x) {
-      bx = cx;
-      *y += row_h;
-    }
-
-    int active = (current_w == NXS_RES_PRESETS[i].w &&
-                  current_h == NXS_RES_PRESETS[i].h);
-
-    ui_button(bx, *y, btn_w, btn_h, lbl, ACT_RES_PRESET, i, active);
-
-    bx += btn_w + gap;
-  }
-
-  *y += row_h;
-}
-
 static void render_display(void) {
   int cx = CONTENT_X, y = PAD;
+  char line[128];
   ui_text(cx, &y, "Display", g_col_accent);
   y += 6;
 
-  long di = OS1_display_info();
-  int w = (int)((di >> 16) & 0xFFFF), h = (int)(di & 0xFFFF);
-  char line[128];
-  snprintf(line, sizeof(line), "Current resolution: %dx%d", w, h);
+  int logical_w = 0, logical_h = 0;
+  if (OS1_display_get_size(&logical_w, &logical_h) == 0)
+    snprintf(line, sizeof(line), "Logical desktop: %dx%d", logical_w, logical_h);
+  else
+    snprintf(line, sizeof(line), "Logical desktop: unavailable");
   ui_text(cx, &y, line, g_col_text);
-  y += 6;
+  y += 8;
 
-  render_resolution_menu(cx, &y, w, h);
-  y += 6;
+  struct os1_display_mode_v1 current;
+  char mode_label[104] = "Hardware modes unavailable";
+  if (nxs_current_mode(&current) == 0)
+    nxs_mode_label(&current, mode_label, sizeof(mode_label));
+  ui_text(cx, &y, "Hardware output mode", g_col_text_dim);
+  int mode_button_y = y;
+  ui_button(cx, mode_button_y, NXS_SELECT_W, NXS_SELECT_H, mode_label,
+            ACT_MODE_MENU, 0, g_mode_menu_open);
+  y += NXS_SELECT_H + 14;
 
-  snprintf(line, sizeof(line), "Zoom: %d%%", g_zoom_pct);
-  ui_text(cx, &y, line, g_col_text);
-  ui_button(cx, y, 54, 28, "-10%", ACT_ZOOM_DEC, 0, 0);
-  ui_button(cx + 62, y, 70, 28, "Reset", ACT_ZOOM_RESET, 0, 0);
-  ui_button(cx + 140, y, 54, 28, "+10%", ACT_ZOOM_INC, 0, 0);
-  y += 40;
+  g_zoom_pct = nxs_active_scale();
+  snprintf(line, sizeof(line), "%d%%", g_zoom_pct);
+  ui_text(cx, &y, "UI scale / DPI", g_col_text_dim);
+  int scale_button_y = y;
+  ui_button(cx, scale_button_y, NXS_SELECT_W, NXS_SELECT_H, line,
+            ACT_SCALE_MENU, 0, g_scale_menu_open);
+  y += NXS_SELECT_H + 12;
+  ui_text(cx, &y, "Scale changes the logical desktop; hardware mode is unchanged.",
+          g_col_text_dim);
+
+  if (g_mode_menu_open)
+    render_mode_dropdown(cx, mode_button_y + NXS_SELECT_H + 2);
+  if (g_scale_menu_open)
+    render_scale_dropdown(cx, scale_button_y + NXS_SELECT_H + 2);
 }
 
 static void render_style(void) {
@@ -906,27 +997,57 @@ static void dispatch(int action, long arg) {
   switch (action) {
   case ACT_SECTION:
     g_section = (int)arg;
+    g_mode_menu_open = 0;
+    g_scale_menu_open = 0;
     break;
-  case ACT_RES_PRESET:
-    if (arg >= 0 && arg < NXS_NRES)
-      OS1_display_set_mode(NXS_RES_PRESETS[arg].w, NXS_RES_PRESETS[arg].h);
+  case ACT_MODE_MENU:
+    g_mode_menu_open = !g_mode_menu_open;
+    g_scale_menu_open = 0;
     break;
-  case ACT_ZOOM_DEC:
-    g_zoom_pct -= 10;
-    if (g_zoom_pct < 50)
-      g_zoom_pct = 50;
-    OS1_display_set_zoom(g_zoom_pct);
+  case ACT_MODE_SELECT: {
+    if (arg < 0 || (unsigned long)arg >= OS1_DISPLAY_MODE_MAX)
+      break;
+    struct os1_display_mode_v1 mode;
+    int queried = nxs_mode_query((uint32_t)arg, &mode);
+    int status = queried == 0
+                     ? (int)OS1_display_mode_set((uint32_t)arg, mode.generation)
+                     : queried;
+    if (status != 0)
+      OS1_report_error("nxsettings.display_mode", status);
+    g_mode_menu_open = 0;
     break;
-  case ACT_ZOOM_INC:
-    g_zoom_pct += 10;
-    if (g_zoom_pct > 300)
-      g_zoom_pct = 300;
-    OS1_display_set_zoom(g_zoom_pct);
+  }
+  case ACT_MODE_PAGE_PREV:
+    if (g_mode_page > 0U)
+      --g_mode_page;
     break;
-  case ACT_ZOOM_RESET:
-    g_zoom_pct = 100;
-    OS1_display_set_zoom(g_zoom_pct);
+  case ACT_MODE_PAGE_NEXT: {
+    struct os1_display_mode_v1 head;
+    if (nxs_mode_query(0U, &head) == 0) {
+      uint32_t count = head.count > OS1_DISPLAY_MODE_MAX
+                           ? OS1_DISPLAY_MODE_MAX
+                           : head.count;
+      uint32_t pages =
+          (count + NXS_MODE_PAGE_SIZE - 1U) / NXS_MODE_PAGE_SIZE;
+      if (pages > 0U && g_mode_page + 1U < pages)
+        ++g_mode_page;
+    }
     break;
+  }
+  case ACT_SCALE_MENU:
+    g_scale_menu_open = !g_scale_menu_open;
+    g_mode_menu_open = 0;
+    break;
+  case ACT_SCALE_SELECT: {
+    int percent = (int)arg;
+    int status = OS1_display_set_zoom(percent);
+    if (status == 0)
+      g_zoom_pct = percent;
+    else
+      OS1_report_error("nxsettings.ui_scale", status);
+    g_scale_menu_open = 0;
+    break;
+  }
   case ACT_STYLE:
     if (arg >= 0 && arg < NXS_NSTYLES) {
       g_cur_style = (int)arg;
@@ -937,9 +1058,9 @@ static void dispatch(int action, long arg) {
     if (arg >= 0 && arg < NXS_NTHEMES) {
       g_cur_theme = (int)arg;
       nxres_set_theme(NXS_THEMES[arg]);
-      /* aggiorna la palette dell'interfaccia */
+      /* Refresh the settings palette after the theme change. */
       load_theme_colors(
-          g_cur_theme == 0 ? 1 : 0); /* 0=light, 1=dark nel registro */
+          g_cur_theme == 0 ? 1 : 0); /* Registry order: 0=light, 1=dark. */
     }
     break;
   case ACT_BACKGROUND:
@@ -965,6 +1086,8 @@ static void handle_click(int mx, int my) {
       return;
     }
   }
+  g_mode_menu_open = 0;
+  g_scale_menu_open = 0;
 }
 
 static void reinit_window(int ww, int wh) {
@@ -984,13 +1107,12 @@ static void reinit_window(int ww, int wh) {
 static int main_gui(void) {
   g_font = font_load("/fonts/Rewir-Light.off");
 
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF);
-  int sh = (int)(di & 0xFFFF);
-  if (sw <= 0)
-    sw = 800;
-  if (sh <= 0)
-    sh = 600;
+  int sw = 0, sh = 0;
+  int display_status = OS1_display_get_size(&sw, &sh);
+  if (display_status != 0) {
+    OS1_report_error("nxsettings.display_size", display_status);
+    return 1;
+  }
 
   int ww = (sw * 7) / 10;
   int wh = (sh * 7) / 10;
@@ -1029,16 +1151,15 @@ static int main_gui(void) {
     OS1_registry_set("srv.settings_pid", pidbuf);
   }
 
-  /* Carica il tema corrente (nxres_theme_is_light: getter canonico condiviso,
-   * nxres.h) — il registro è scritto sia dal kernel (SYS_SET_STYLE) sia da
-   * nxres_set_theme() dopo un cambio riuscito. */
+  /* Load the current theme through the shared nxres_theme_is_light() getter.
+   * The registry is updated by the common look/theme path after a successful
+   * change. */
   int theme_light = nxres_theme_is_light();
   load_theme_colors(theme_light);
-  /* Imposta g_cur_theme di conseguenza (0=light, 1=dark nell'array NXS_THEMES)
-   */
+  /* Mirror the current theme in the local selection state. */
   g_cur_theme = theme_light ? 0 : 1;
-  /* Idem per style/background, cosi la selezione evidenziata nella sezione
-   * Style & Theme rispecchia lo stato realmente applicato fin dall'apertura. */
+  /* Mirror style/background too so the highlighted selection represents the
+   * state that is actually active when the window opens. */
   {
     char buf[32] = {0};
     if (nxres_get_style(buf, sizeof(buf)) == 0)

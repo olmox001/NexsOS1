@@ -636,7 +636,7 @@ static void set_window_height(int extra_h) {
 static void bar_reinit(int sw, int sh) {
   g_dsw = sw;
   g_dsh = sh;
-  int bw = (sw > 0 ? sw : 800) - 2 * BAR_MARGIN_SIDE;
+  int bw = sw - 2 * BAR_MARGIN_SIDE;
   if (bw < BAR_MIN_W)
     bw = BAR_MIN_W;
   g_bw = bw;
@@ -1009,13 +1009,12 @@ int main(void) {
 
   g_font = font_load("/fonts/Rewir-Light.off");
 
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF);
-  int sh = (int)(di & 0xFFFF);
-  if (sw <= 0)
-    sw = 800;
-  if (sh <= 0)
-    sh = 600;
+  int sw = 0, sh = 0;
+  int display_status = OS1_display_get_size(&sw, &sh);
+  if (display_status != 0) {
+    OS1_report_error("nxbar.display_size", display_status);
+    return 1;
+  }
 
   int last_light = nxres_theme_is_light();
   unsigned int last_background = nxres_bg_color();
@@ -1036,9 +1035,9 @@ int main(void) {
   redraw(1);
 
   for (;;) {
-    long d = OS1_display_info();
-    int cw = (int)((d >> 16) & 0xFFFF), ch = (int)(d & 0xFFFF);
-    if (cw > 0 && ch > 0 && (cw != g_dsw || ch != g_dsh))
+    int cw = 0, ch = 0;
+    if (OS1_display_get_size(&cw, &ch) == 0 &&
+        (cw != g_dsw || ch != g_dsh))
       bar_reinit(cw, ch);
 
     /* Registry is the authoritative look state. Notifications are only
@@ -1066,9 +1065,8 @@ int main(void) {
           ev.mouse.state == KEY_PRESSED) {
         handle_click(ev.mouse.x, ev.mouse.y);
       } else if (ev.type == INPUT_TYPE_RESIZE) {
-        long d2 = OS1_display_info();
-        int rw = (int)((d2 >> 16) & 0xFFFF), rh = (int)(d2 & 0xFFFF);
-        if (rw > 0 && rh > 0)
+        int rw = 0, rh = 0;
+        if (OS1_display_get_size(&rw, &rh) == 0)
           bar_reinit(rw, rh);
       } else if (ev.type == INPUT_TYPE_LOOK_CHANGED) {
         /* External style/theme/bg change (nxres_broadcast_look, nxres.h),
