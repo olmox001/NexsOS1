@@ -134,6 +134,15 @@ class P2PProtocolTests(unittest.TestCase):
         self.assertLessEqual(len(display), 19)
         self.assertGreaterEqual(move_left, 0)
 
+    def test_role_colors_are_stable(self):
+        agent = self.module.colorize_role("agent", "message")
+        user = self.module.colorize_role("user", "message")
+        other = self.module.colorize_role("system", "message")
+
+        self.assertEqual(agent, "\x1b[31mmessage\x1b[0m")
+        self.assertEqual(user, "\x1b[32mmessage\x1b[0m")
+        self.assertEqual(other, "message")
+
     def test_text_and_session_bounds_reject_invalid_input(self):
         with self.assertRaises(ValueError):
             self.module.validate_session("../escape")

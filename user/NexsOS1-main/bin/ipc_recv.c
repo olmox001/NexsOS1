@@ -14,10 +14,12 @@ int main(void) {
   {
     char pid_buf[16];
     int pid = get_pid();
+    if (pid < 0)
+      return 1;
     int n = 0;
     char rev[16];
     do {
-      rev[n++] = '0' + (pid % 10);
+      rev[n++] = (char)('0' + (pid % 10));
       pid /= 10;
     } while (pid > 0 && n < 15);
     for (int j = 0; j < n; j++)

@@ -302,7 +302,7 @@ Only after that analysis should code be implemented.
 
 ### Development target
 
-Current project version: **0.0.6.2**.
+Current project version: **0.0.6.4**.
 
 The objective is to establish a reliable method for reaching **0.1.0.0** without repeatedly destabilizing the tree.
 

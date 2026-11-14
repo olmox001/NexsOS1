@@ -2,20 +2,27 @@
 
 ## Ownership
 
-The integrated user tree is split into four independent ownership domains:
+The integrated user tree is split into five independent ownership domains:
 
 - `user/NexsOS1-main`: the ordinary NexsOS first-party userland. System programs such as `nxshell`, `nxui`, `nxbar`, `nxlauncher` and one-shot helpers such as `nxenvinit` remain here. Being supervised by `nxmanageDD` does not make a program a USERKIT service.
-- `user/LIBEXTERNAL`: third-party/upstream user libraries and source dependencies. These remain superproject-owned and keep their existing upstream gitlinks.
+- `user/BINEXTERNAL`: read-only third-party/upstream **program** repositories. The current catalog contains base-nexs, BusyBox, Coreutils, DOOM and Kilo. Image-selected programs remain user programs and are installed under `/bin`; external source ownership never moves them into `/sys/bin`.
+- `user/LIBEXTERNAL`: read-only third-party/upstream **library/source** repositories. These remain superproject-owned and keep their upstream gitlinks.
 - `user/USERKIT`: NX-USERKIT service and `/sbin` projects. A project belongs here only when it implements a system service/interface exposed through NX-SDK, or is an authenticated `/sbin` bootstrap project.
 - `user/demo1`: an independent minimal user project used to prove that a different init and different service implementations can boot from the same installation media.
 
-NX-USERKIT is a separate repository. `NexsOS1-main`, `LIBEXTERNAL`, and `demo1` remain owned by the superproject.
+NX-USERKIT is a separate repository. `NexsOS1-main`, `BINEXTERNAL`, `LIBEXTERNAL`, and `demo1` remain coordinated by the superproject.
 
 ## SDK interface plane
 
 USERKIT server implementations are never copied into NX-SDK. NX-SDK owns only public interface headers, reusable client/model code, extension metadata, and reusable project tooling under `system/lib/extensions/USERKIT` and `system/tools/userkit`.
 
 Generic facilities are not reclassified as USERKIT merely because a USERKIT daemon uses them. `nxicon.h` is owned by `system/lib/extensions/icon`; `nxkeyboard_layout.h` and its implementation are owned by `system/lib/extensions/input`; object/graphics adapters remain under their generic extension directories. USERKIT project metadata may depend on those contracts without duplicating them.
+
+## External providers and portability
+
+`BINEXTERNAL` and `LIBEXTERNAL` repositories are imports, not writable homes for NexsOS glue. `user/BINEXTERNAL/catalog.mk` records external program source paths, image participation, `/bin` placement and internal/external library dependencies. `user/LIBEXTERNAL/catalog.mk` records external library/source providers.
+
+Reusable portability belongs at the lowest shared first-party layer. For example, common Gnulib adaptation is owned by NX-SDK under `system/lib/portability/gnulib`, while Coreutils-only glue remains in `user/NexsOS1-main/portability/coreutils`. Program-specific patches such as Kilo hardening are applied to build-tree copies by the project portability layer so the imported gitlink remains clean. This layered rule prevents duplicate implementations and keeps NexsOS1-main independent of external source ownership.
 
 ## Service and sbin projects
 

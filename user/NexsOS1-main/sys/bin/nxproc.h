@@ -55,7 +55,15 @@ static inline int nxproc_snapshot(struct ps_info *out, int max) {
     return 0;
   if (max > NXPROC_MAX)
     max = NXPROC_MAX;
-  return _sys_get_procs(out, (size_t)max);
+  long count = _sys_get_procs(out, (size_t)max);
+  if (count < 0) {
+    if (count < -2147483647L - 1L)
+      return -EIO;
+    return (int)count;
+  }
+  if (count > (long)max)
+    return -EIO;
+  return (int)count;
 }
 
 /*
@@ -177,12 +185,12 @@ static inline const char *nxproc_cpu_color(int cpu) {
   char tmp[3];
   int t = 0;
   if (v >= 100)
-    tmp[t++] = '0' + (v / 100);
+    tmp[t++] = (char)('0' + (v / 100));
   v %= 100;
   if (v >= 10 || t > 0)
-    tmp[t++] = '0' + (v / 10);
+    tmp[t++] = (char)('0' + (v / 10));
   v %= 10;
-  tmp[t++] = '0' + v;
+  tmp[t++] = (char)('0' + v);
   for (int i = 0; i < t; i++)
     p[n++] = tmp[i];
   p[n++] = 'm';
@@ -209,20 +217,20 @@ static inline void nxproc_render_rows(int win_id, const struct ps_info *procs,
      * a runnable-but-not-currently-running process stays distinct from
      * RUNNING (2, bold green).  ZOMBIE is muted brown; DEAD dim red. */
     const char *state_color;
-    int state_len;
     if (procs[i].state == 2) {              /* RUNNING */
-      state_color = "\033[1;32m"; state_len = 7;
+      state_color = "\033[1;32m";
     } else if (procs[i].state == 6) {       /* READY */
-      state_color = "\033[38;5;51m"; state_len = 10;
+      state_color = "\033[38;5;51m";
     } else if (procs[i].state == 3) {       /* SLEEPING */
-      state_color = "\033[90m"; state_len = 5;
+      state_color = "\033[90m";
     } else if (procs[i].state == 4) {       /* ZOMBIE */
-      state_color = "\033[38;5;130m"; state_len = 11;
+      state_color = "\033[38;5;130m";
     } else if (procs[i].state == 5) {       /* DEAD */
-      state_color = "\033[31m"; state_len = 5;
+      state_color = "\033[31m";
     } else {                                 /* CREATED=1 or anything else */
-      state_color = "\033[37m"; state_len = 5;
+      state_color = "\033[37m";
     }
+    unsigned long state_len = (unsigned long)strlen(state_color);
 
     /* Identity columns in the STATE colour. */
     _sys_window_write(win_id, state_color, state_len);

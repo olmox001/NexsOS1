@@ -29,11 +29,7 @@
     "kernel/external/",
     "kernel/HAL/tests/build/",
     "user/LIBEXTERNAL/",
-    "user/NexsOS1-main/bin/base-nexs/",
-    "user/NexsOS1-main/bin/busybox/",
-    "user/NexsOS1-main/bin/coreutils/",
-    "user/NexsOS1-main/bin/doom/",
-    "user/NexsOS1-main/bin/kilo/"
+    "user/BINEXTERNAL/"
   ],
   "stale_suffixes": [
     ".c.new",

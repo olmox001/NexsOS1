@@ -22,3 +22,15 @@ in full, verify current interfaces/callers/tests, implement through the canonica
 mechanism, add a test for any observed behavior the suite did not previously
 detect, verify on the required architecture/runtime matrix, update documentation,
 then stage only that verified block.
+
+## Historical closure
+
+Session 1 is frozen at its committed boundary. Its documentation transcript is
+an English operational translation through message #77; the exact raw journal
+remains unchanged in `.git/p2p-dc/history.jsonl`. Session 2 continues the
+translated operational record under `../session-2/` from message #78 onward.
+
+The version mismatch recorded by Session 1 (`0.0.6.2` owner baseline versus
+`V0.0.6.3` build metadata) is intentionally preserved here as historical
+state. It was resolved only after the Session 2 dual-architecture qualification,
+when the active project metadata advanced coherently to `0.0.6.4`.

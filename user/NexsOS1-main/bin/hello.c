@@ -498,8 +498,8 @@ int main(void) {
           }
         }
         if (mouseDown) {
-          camYaw += (mx - lastMX) * 0.008f;
-          camPitch += (my - lastMY) * 0.008f;
+          camYaw += (float)(mx - lastMX) * 0.008f;
+          camPitch += (float)(my - lastMY) * 0.008f;
           camPitch = clampf(camPitch, -1.4f, 1.4f);
           lastMX = mx;
           lastMY = my;
@@ -511,7 +511,14 @@ int main(void) {
     int w, h;
     size_t pitch_bytes;
     uint32_t *pixels = os1_gl_surface_buffer(surf, &w, &h, &pitch_bytes);
-    int pitch_px = (int)(pitch_bytes / sizeof(uint32_t));
+    size_t pitch_px_size = pitch_bytes / sizeof(uint32_t);
+    if (!pixels || w <= 0 || h <= 0 ||
+        pitch_bytes % sizeof(uint32_t) != 0U ||
+        pitch_px_size > 2147483647U) {
+      os1_gl_surface_destroy(surf);
+      return 1;
+    }
+    int pitch_px = (int)pitch_px_size;
 
     /* Per-frame constants */
     vec3 ro = make_vec3(0.0f, 0.0f, -camDist);
@@ -527,11 +534,12 @@ int main(void) {
     float aspect = (float)w / (float)h;
 
     for (int y = 0; y < h; y++) {
-      float qy = 1.0f - y / (float)h; /* 1 = top, 0 = bottom (shader UV) */
-      float v = (y / (float)h) * 2.0f - 1.0f;
+      float qy =
+          1.0f - (float)y / (float)h; /* 1 = top, 0 = bottom (shader UV) */
+      float v = ((float)y / (float)h) * 2.0f - 1.0f;
       for (int x = 0; x < w; x++) {
-        float qx = x / (float)w;
-        float u = (x / (float)w) * 2.0f - 1.0f;
+        float qx = (float)x / (float)w;
+        float u = ((float)x / (float)w) * 2.0f - 1.0f;
         u *= aspect;
 
         vec3 rd = vnormalize(

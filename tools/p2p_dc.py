@@ -52,6 +52,10 @@ MAX_SESSION_LEN = 64
 MAX_NAME_LEN = 64
 POLL_SECONDS = 0.10
 
+ANSI_RED = "\x1b[31m"
+ANSI_GREEN = "\x1b[32m"
+ANSI_RESET = "\x1b[0m"
+
 SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -375,12 +379,19 @@ def safe_display(text: object) -> str:
     return json.dumps(text, ensure_ascii=False)
 
 
+def colorize_role(role: str, message: str) -> str:
+    color = ANSI_RED if role.lower() == "agent" else ANSI_GREEN if role.lower() == "user" else ""
+    return f"{color}{message}{ANSI_RESET}" if color else message
+
+
 def print_record(prefix: str, record: dict[str, object]) -> None:
     session = record.get("session", "?")
     seq = record.get("seq", "?")
-    role = str(record.get("role", "?")).upper()
+    role_value = str(record.get("role", "?"))
+    role = role_value.upper()
     body = safe_display(record.get("text", ""))
-    print(f"{prefix}[{session}][#{seq}][{role}] {body}", flush=True)
+    message = f"{prefix}[{session}][#{seq}][{role}] {body}"
+    print(colorize_role(role_value, message), flush=True)
 
 
 def peer_frames(peer: Peer, chunk: bytes) -> tuple[list[dict[str, object]], bool]:
@@ -778,14 +789,16 @@ def format_client_frame(frame: dict[str, object]) -> Optional[str]:
         record = frame.get("record")
         if not isinstance(record, dict):
             return "[protocol error: malformed record]"
-        role = str(record.get("role", "?")).upper()
+        role_value = str(record.get("role", "?"))
+        role = role_value.upper()
         seq = record.get("seq", "?")
         session = record.get("session", "?")
         tag = "history" if frame_type == "history" else "live"
-        return (
+        message = (
             f"[{tag}][{session}][#{seq}][{role}] "
             f"{record.get('text', '')}"
         )
+        return colorize_role(role_value, message)
     if frame_type == "welcome":
         return (
             f"[connected] session={frame.get('session')} "
@@ -940,10 +953,8 @@ def user_console(session: str, name: str) -> int:
                         sys.stdout.write("\r\x1b[2K")
                         sys.stdout.flush()
                         if value and not value.startswith("/"):
-                            print(
-                                f"[you][{session}] {safe_display(value)}",
-                                flush=True,
-                            )
+                            message = f"[you][{session}] {safe_display(value)}"
+                            print(colorize_role("user", message), flush=True)
                         try:
                             should_quit, _ = handle_client_command(
                                 client, value, session

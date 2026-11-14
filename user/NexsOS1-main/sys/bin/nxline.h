@@ -146,16 +146,18 @@ static inline void nxline_save_history(struct nxline *nl) {
   if (!nl->hist_path[0])
     return;
   char buf[NXLINE_HIST_MAX * NXLINE_MAX];
-  int n = 0;
+  size_t n = 0U;
   for (int i = 0; i < nl->hist_count; i++) {
-    int l = (int)strlen(nl->history[i]);
-    if (n + l + 1 >= (int)sizeof(buf))
+    size_t l = strlen(nl->history[i]);
+    if (l >= sizeof(buf) - n)
       break;
     memcpy(buf + n, nl->history[i], l);
     n += l;
     buf[n++] = '\n';
   }
-  OS1_fs_write(nl->hist_path, buf, n, 0);
+  /* The bounded history buffer is 16 KiB, so this conversion is guaranteed
+   * representable by the current OS1_fs_write(int size) contract. */
+  (void)OS1_fs_write(nl->hist_path, buf, (int)n, 0);
 }
 
 /* nxline_history_add - push a finished command onto the ring (dropping the
@@ -222,10 +224,16 @@ static inline void nxline_repaint_inline(struct nxline *nl) {
 
 /* ---------------- editing operations ---------------- */
 
+static inline int nxline_indices_valid(const struct nxline *nl) {
+  return nl != NULL && nl->len >= 0 && nl->len < NXLINE_MAX &&
+         nl->cursor >= 0 && nl->cursor <= nl->len;
+}
+
 static inline void nxline_insert_char(struct nxline *nl, char c) {
-  if (nl->len >= NXLINE_MAX - 1)
+  if (!nxline_indices_valid(nl) || nl->len >= NXLINE_MAX - 1)
     return;
-  memmove(&nl->buf[nl->cursor + 1], &nl->buf[nl->cursor], nl->len - nl->cursor);
+  size_t tail = (size_t)(nl->len - nl->cursor);
+  memmove(&nl->buf[nl->cursor + 1], &nl->buf[nl->cursor], tail);
   nl->buf[nl->cursor] = c;
   nl->len++;
   nl->buf[nl->len] = '\0';
@@ -235,9 +243,10 @@ static inline void nxline_insert_char(struct nxline *nl, char c) {
 }
 
 static inline void nxline_delete_before(struct nxline *nl) { /* Backspace */
-  if (nl->cursor == 0)
+  if (!nxline_indices_valid(nl) || nl->cursor == 0)
     return;
-  memmove(&nl->buf[nl->cursor - 1], &nl->buf[nl->cursor], nl->len - nl->cursor);
+  size_t tail = (size_t)(nl->len - nl->cursor);
+  memmove(&nl->buf[nl->cursor - 1], &nl->buf[nl->cursor], tail);
   nl->cursor--;
   nl->len--;
   nl->buf[nl->len] = '\0';
@@ -248,10 +257,10 @@ static inline void nxline_delete_before(struct nxline *nl) { /* Backspace */
 }
 
 static inline void nxline_delete_at(struct nxline *nl) { /* Delete (forward) */
-  if (nl->cursor >= nl->len)
+  if (!nxline_indices_valid(nl) || nl->cursor >= nl->len)
     return;
-  memmove(&nl->buf[nl->cursor], &nl->buf[nl->cursor + 1],
-          nl->len - nl->cursor - 1);
+  size_t tail = (size_t)(nl->len - nl->cursor - 1);
+  memmove(&nl->buf[nl->cursor], &nl->buf[nl->cursor + 1], tail);
   nl->len--;
   nl->buf[nl->len] = '\0';
   print(&nl->buf[nl->cursor]);
@@ -377,9 +386,12 @@ static inline int nxline_word_start(struct nxline *nl) {
 static inline void nxline_complete(struct nxline *nl) {
   int ws = nxline_word_start(nl);
   char word[NXLINE_MAX];
-  int wl = nl->cursor - ws;
-  if (wl <= 0 || wl >= NXLINE_MAX)
+  if (!nxline_indices_valid(nl) || ws < 0 || ws > nl->cursor)
     return;
+  int wl_int = nl->cursor - ws;
+  if (wl_int <= 0 || wl_int >= NXLINE_MAX)
+    return;
+  size_t wl = (size_t)wl_int;
   memcpy(word, &nl->buf[ws], wl);
   word[wl] = '\0';
 

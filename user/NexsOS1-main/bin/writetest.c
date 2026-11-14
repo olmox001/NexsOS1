@@ -36,37 +36,40 @@ int main(void) {
   printf("[writetest] target %s\n", path);
 
   /* 1. Overwrite at offset 0 (block already mapped). */
-  const char *t1 = "# writetest overwrite\n";
-  int n = file_write(path, t1, strlen(t1), 0);
-  int ok = (n == (int)strlen(t1));
+  const char t1[] = "# writetest overwrite\n";
+  const int t1_len = (int)(sizeof(t1) - 1U);
+  int n = file_write(path, t1, t1_len, 0);
+  int ok = (n == t1_len);
   if (ok) {
     memset(rbuf, 0, sizeof(rbuf));
-    ok = file_read(path, rbuf, strlen(t1), 0) == (int)strlen(t1) &&
-         strncmp(rbuf, t1, strlen(t1)) == 0;
+    ok = file_read(path, rbuf, t1_len, 0) == t1_len &&
+         strncmp(rbuf, t1, sizeof(t1) - 1U) == 0;
   }
   check(win_id, "overwrite@0", ok);
 
   /* 2. Append at EOF (extends the file: new size = old size + marker). */
   int size = file_read(path, NULL, 0, 0);
-  const char *t2 = "APPEND-OK";
-  ok = size > 0 && file_write(path, t2, strlen(t2), size) == (int)strlen(t2);
+  const char t2[] = "APPEND-OK";
+  const int t2_len = (int)(sizeof(t2) - 1U);
+  ok = size > 0 && file_write(path, t2, t2_len, size) == t2_len;
   if (ok) {
     memset(rbuf, 0, sizeof(rbuf));
-    ok = file_read(path, rbuf, strlen(t2), size) == (int)strlen(t2) &&
-         strncmp(rbuf, t2, strlen(t2)) == 0 &&
-         file_read(path, NULL, 0, 0) == size + (int)strlen(t2);
+    ok = file_read(path, rbuf, t2_len, size) == t2_len &&
+         strncmp(rbuf, t2, sizeof(t2) - 1U) == 0 &&
+         file_read(path, NULL, 0, 0) == size + t2_len;
   }
   check(win_id, "append@EOF", ok);
 
   /* 3. Sparse far write at block 12 (49152): hole in between, then the
    *    block past it.  Exercises extent append after a gap on the extents
    *    image and single-indirect allocation on the legacy image. */
-  const char *t3 = "FARBLOCK";
-  ok = file_write(path, t3, strlen(t3), 49152) == (int)strlen(t3);
+  const char t3[] = "FARBLOCK";
+  const int t3_len = (int)(sizeof(t3) - 1U);
+  ok = file_write(path, t3, t3_len, 49152) == t3_len;
   if (ok) {
     memset(rbuf, 0xAA, sizeof(rbuf));
-    ok = file_read(path, rbuf, strlen(t3), 49152) == (int)strlen(t3) &&
-         strncmp(rbuf, t3, strlen(t3)) == 0;
+    ok = file_read(path, rbuf, t3_len, 49152) == t3_len &&
+         strncmp(rbuf, t3, sizeof(t3) - 1U) == 0;
   }
   if (ok) {
     /* The hole (offset 8192, block 2) must read back as zeros. */

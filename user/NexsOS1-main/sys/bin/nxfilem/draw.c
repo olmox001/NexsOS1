@@ -185,12 +185,18 @@ void fm_draw_text(int x, int y, const char *s, uint32_t color) {
       rem--;
       continue;
     }
+    size_t step = (size_t)consumed;
+    if (step > rem) {
+      ++p;
+      --rem;
+      continue;
+    }
     fm_draw_glyph(cursor, y, cp, color);
     int idx = (int)cp - fm_font->header.first_char;
     if (idx >= 0 && idx < fm_font->header.num_chars)
       cursor += fm_font->glyphs[idx].advance;
-    p += consumed;
-    rem -= consumed;
+    p += step;
+    rem -= step;
   }
 }
 
@@ -208,7 +214,7 @@ void fm_draw_icon(int x, int y, int size, int icon_id, int light,
   for (int j = 0; j < size; j++) {
     for (int i = 0; i < size; i++) {
       uint32_t src = icon->pixels[j * size + i];
-      uint8_t alpha = (src >> 24) & 0xFF;
+      uint32_t alpha = (src >> 24) & UINT32_C(0xFF);
       if (alpha == 0)
         continue;
       int px = x + i, py = y + j;
@@ -221,9 +227,13 @@ void fm_draw_icon(int x, int y, int size, int icon_id, int light,
       uint32_t dst = fm_fb[py * fm_fb_w + px];
       uint32_t dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
       uint32_t sr = (src >> 16) & 0xFF, sg = (src >> 8) & 0xFF, sb = src & 0xFF;
-      uint32_t out_r = (sr * alpha + dr * (255 - alpha)) / 255;
-      uint32_t out_g = (sg * alpha + dg * (255 - alpha)) / 255;
-      uint32_t out_b = (sb * alpha + db * (255 - alpha)) / 255;
+      uint32_t inverse = UINT32_C(255) - alpha;
+      uint32_t out_r =
+          (sr * alpha + dr * inverse) / UINT32_C(255);
+      uint32_t out_g =
+          (sg * alpha + dg * inverse) / UINT32_C(255);
+      uint32_t out_b =
+          (sb * alpha + db * inverse) / UINT32_C(255);
       fm_fb[py * fm_fb_w + px] =
           0xFF000000u | (out_r << 16) | (out_g << 8) | out_b;
     }

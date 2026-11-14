@@ -212,14 +212,11 @@ SDK installation is componentized so tool updates do not require reinstalling th
 │   ├── tools/                  # Versioned cross-toolchain/build development tooling
 │   └── lib/                    # Runtime, graphics, codecs and client extensions
 ├── user/
-│   ├── sbin/                   # Root initialization policy
-│   ├── sys/boot/               # Installed boot entry and service manifest
-│   ├── sys/services/           # Supervised system daemons
-│   ├── sys/bin/                # System commands and graphical interfaces
-│   ├── bin/                    # Applications, tests and pinned upstream programs
-│   ├── lib/                    # Pinned external libraries
-│   ├── portability/            # Upstream adaptation layers
-│   └── home/                   # Initial user files and assets
+│   ├── NexsOS1-main/           # First-party user project, apps, assets and project-specific portability
+│   ├── BINEXTERNAL/            # Read-only imported external programs + dependency catalog
+│   ├── LIBEXTERNAL/            # Read-only imported external libraries/source providers + catalog
+│   ├── USERKIT/                # NX-USERKIT services and privileged /sbin projects
+│   └── demo1/                  # Independent alternate user project / init-service selection
 └── tools/                      # Integration orchestration, Power12 and nxadb acceptance
 ```
 

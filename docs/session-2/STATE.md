@@ -1,68 +1,155 @@
 # Session 2 State — 2026-11-14
 
-## Checkpoint
+## Closing checkpoint
 
-Branches: umbrella `DEV-Resurrection`; NX-CORE/NX-SDK/NX-USERKIT `main`.
+Release candidate: **0.0.6.4**.
 
-Session 1 committed baseline:
-- umbrella `1d866b0c2009df097ead21d7d69a789b13fbd6ca`
-- NX-CORE `97fb5edd387b627dc38e63df6f4f2604d502a826`
-- NX-SDK `3d0791ee619e3ffc14de0fcdbe912af593e64a6b`
-- NX-USERKIT `c974c07e6832d84a786a5957e6eb3ce843bd8b95`
+Branches remain:
+- umbrella: `DEV-Resurrection`
+- NX-CORE: `main`
+- NX-SDK: `main`
+- NX-USERKIT: `main`
 
-Session 2 NX-CORE hardening commit:
-- `fab9d33 build: make kernel and HAL warnings fatal by default`
+Session 1 remains the historical split-repository baseline. Session 2 hardened the
+compiler policy, SDK/userland portability, external-source boundaries and
+runtime qualification without changing the object/capability architecture.
 
-## Kernel/HAL warning policy
+The verified implementation freeze was pushed in dependency order before this
+documentation/version closure:
+- NX-SDK hardening: `e9895c6`, followed by release metadata `534aa0a`.
+- NX-USERKIT hardening: `116fbfb`.
+- NX-CORE machine-extension hardening: `47096a9`.
 
-Default kernel/HAL builds retain all enabled warning classes, including
-`-Wconversion` and `-Wsign-conversion`, and make them fatal through the
-single `NX_WARNINGS_AS_ERRORS=1` policy. Assembler warnings and kernel/boot
-linker warnings are fatal. This is compile-time policy only; it introduces no
-runtime panic/blocking behavior.
+The umbrella closure records those gitlinks together with the verified userland
+hardening, external catalogs, release metadata and English documentation. The
+post-freeze EDID/multi-output work remains outside this closure until its own
+runtime qualification completes.
 
-Concrete findings were repaired instead of suppressed across USB/VirtIO,
-GPT/ext4, scheduler/ELF, allocation/formatting/logging, graphics/terminal code
-and AMD64 HAL.
+## Repository ownership
+
+The verified user tree is now split into explicit ownership domains:
+
+- `user/NexsOS1-main`: first-party NexsOS user programs and project-specific
+  portability glue.
+- `user/BINEXTERNAL`: read-only imported external **program** repositories.
+  Current gitlinks are base-nexs, BusyBox, Coreutils, DOOM and Kilo. Programs
+  selected for the NexsOS image are installed in `/bin`, never `/sys/bin`.
+- `user/LIBEXTERNAL`: read-only imported external **library/source** repositories.
+- `user/USERKIT`: system services and privileged bootstrap projects.
+- `user/demo1`: independent alternate user project used to prove common
+  kernel/SDK/USERKIT project selection.
+
+`user/BINEXTERNAL/catalog.mk` declares source paths, image participation,
+VFS placement and library dependencies. `user/LIBEXTERNAL/catalog.mk`
+provides the matching library-source catalog. Imported repositories remain
+clean; NexsOS adaptations live in portability layers.
+
+Common Gnulib portability is owned by NX-SDK under
+`system/lib/portability/gnulib`. Coreutils-specific glue remains under
+`user/NexsOS1-main/portability/coreutils`. Kilo hardening is applied from the
+project portability layer to a build-tree copy, leaving the imported Kilo
+repository untouched.
+
+## Compiler hardening
+
+NX-CORE and HAL retain strict warnings-as-errors by default. Session 2 extended
+the same default posture through NX-SDK and NX-USERKIT and removed first-party
+warning debt encountered by the integrated NexsOS1-main build.
+
+External source warnings are not hidden as if they did not exist. Vendor
+translation units compile through the external-warning wrapper: a failing
+external compile prints its full diagnostics; successful vendor warnings are
+captured and summarized separately from first-party Werror diagnostics.
+
+Latest integrated summaries:
+- AArch64: 558 warning lines across 123 external-source files.
+- AMD64: 517 warning lines across 125 external-source files.
+
+These counts are external debt, not first-party warnings accepted by weakening
+the strict build.
+
+## SDK contracts and portability
+
+NX-SDK contract snapshots pass at:
+- ABI revision r2
+- API revision r3
+- USERKIT revision r2
+
+The API r3 snapshot includes the hardened string declarations. STB is classified
+under the SDK external-source tree instead of a first-party include directory.
+
+The shared Gnulib provider now generates target headers from the imported
+Gnulib source and owns the common NexsOS compatibility layer. FTS is explicitly
+**not** claimed functional in this checkpoint: `fts_stub.c` returns `ENOSYS`
+for traversal operations. A real FTS implementation requires completion of the
+SDK fd-relative directory model and is deferred to the next portability gate.
+
+## NXPaX
+
+NXPaX remains enabled across HAL, kernel and userland. No disable macro or build
+switch was found.
+
+Verified production-linked tests:
+- NXPaX core test: PASS.
+- stress: 1 writer / 1,000,000 events: PASS.
+- stress: 2 writers / 2,000,000 concurrent events: PASS.
+- boot userland `11nxtest_nxpax`: PASS on both architectures.
+
+Further NXPaX development is intentionally deferred to the next gate.
 
 ## Runtime qualification
 
-AArch64 UEFI clean standard gate:
-- nxadb full display gate PASS
+### AArch64 UEFI
+
+Clean `make run ARCH=aarch64`:
+- boot runner: 18/19
+- only failure: the known Coreutils 42/50 portability baseline
+- all other boot tests PASS
+
+nxadb display gate:
+- `BOOT-NXTEST=DONE`
+- shell interaction/history PASS
+- timer diagnostic PASS
+- counter heartbeat PASS
 - KTEST 38/0
 - faults 0
-- shell/history/timer/counter PASS
 - `pwd` -> `/home`
 - `nxproc` PASS
-- screenshot 1280x800
+- screenshot: 1280x800
 
-AMD64 BIOS clean standard gate:
-- nxadb full display gate PASS
+The shell icon is now correctly classified as the console/terminal icon even
+when the graphical TTY window is owned by `nxttyd`.
+
+### AMD64 BIOS
+
+Clean `make run ARCH=amd64`:
+- boot runner: 18/19
+- only failure: the same Coreutils 42/50 baseline
+- all other boot tests PASS
+
+nxadb display gate:
+- `BOOT-NXTEST=DONE`
+- shell interaction/history PASS
+- timer diagnostic PASS
+- counter heartbeat PASS
 - KTEST 37/0
 - faults 0
-- shell/history/timer/counter PASS
 - `pwd` -> `/home`
 - `nxproc` PASS
-- screenshot 1280x800
 
-Architecture-specific KTEST totals differ; both have zero failures.
+The initial AMD64 BIOS scanout is currently 640x480. This is not a compositor
+resize failure: VirtIO-GPU reports a 640x480 initial scanout through
+`GET_DISPLAY_INFO`. Manual `nxres 1280 800` succeeds, zoom 200% produces
+640x400 with native 1280x800, zoom 100% restores 1280x800, and both light/dark
+themes render at 1280x800. Preferred-mode discovery at boot is tracked as an
+open display issue.
 
-## Userland debt outside this checkpoint
+## Power12 next gate
 
-The boot runner remains 18/19 because `04nxtest_coreutils` is 42/50. The
-owner explicitly excluded this pre-existing userland portability debt from the
-kernel/HAL staging criterion. It remains tracked in `ISSUES.md`.
+Full-project Power12 remains reporting/non-blocking in this checkpoint. The next
+hardening phase starts only after review of the current test methodology and
+missing suites. Strict-rule activation then proceeds progressively:
+1. HAL
+2. kernel
 
-## Power12
-
-No Power12 off-switch exists. Full-project Power12 remains reporting/non-
-blocking. Existing modified-file blocking scopes remain except that the next
-policy block must stop blocking changes under `user/NexsOS1-main` while still
-reporting findings. Future full strict qualification is intended first for
-kernel + HAL.
-
-## GRUB
-
-`kernel/external/grub` is excluded only from the generic NX-CORE/HAL
-architecture-leak scan. GRUB is owned code and requires a separate
-target-appropriate quality gate.
+No Power12 gate is silently promoted by this Session 2 closure.

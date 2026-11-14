@@ -228,7 +228,7 @@ static void fb_rrect_px(int x, int y, int w, int h, int r, uint32_t c,
       }
 
       if (img) {
-        uint8_t alpha = (src >> 24) & 0xFF;
+        uint32_t alpha = (src >> 24) & UINT32_C(0xFF);
         if (alpha == 0)
           continue;
 
@@ -245,9 +245,13 @@ static void fb_rrect_px(int x, int y, int w, int h, int r, uint32_t c,
           uint32_t sg = (src >> 8) & 0xFF;
           uint32_t sb = src & 0xFF;
 
-          uint32_t out_r = (sr * alpha + dr * (255 - alpha)) / 255;
-          uint32_t out_g = (sg * alpha + dg * (255 - alpha)) / 255;
-          uint32_t out_b = (sb * alpha + db * (255 - alpha)) / 255;
+          uint32_t inverse = UINT32_C(255) - alpha;
+          uint32_t out_r =
+              (sr * alpha + dr * inverse) / UINT32_C(255);
+          uint32_t out_g =
+              (sg * alpha + dg * inverse) / UINT32_C(255);
+          uint32_t out_b =
+              (sb * alpha + db * inverse) / UINT32_C(255);
 
           g_fb[py * g_sw + px] =
               (0xFF000000u) | (out_r << 16) | (out_g << 8) | out_b;
@@ -549,10 +553,13 @@ static void redraw(int force) {
        * title prefix matching remains only the legacy fallback. */
       char idkey[64], idname[40];
       snprintf(idkey, sizeof(idkey), "sys.proc.%d.name", vpid[i]);
-      if (OS1_registry_get(idkey, idname, sizeof(idname)) == 0 && idname[0])
+      if (OS1_registry_get(idkey, idname, sizeof(idname)) == 0 && idname[0]) {
         app_id = nxicon_classify_path(idname);
-      else
+        if (app_id == NXICON_UNKNOWN)
+          app_id = nxicon_classify(vttl[i]);
+      } else {
         app_id = nxicon_classify(vttl[i]); /* legacy/title fallback */
+      }
     }
     os1_image_t *icon = nxicon_get(app_id, g_light, TILE);
 

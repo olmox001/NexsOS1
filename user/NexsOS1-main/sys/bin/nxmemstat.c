@@ -64,7 +64,7 @@ static int cmd_log(unsigned long interval_s, int drive_argc, char *const drive_a
     if (nxmemstat_snapshot(&s) > 0) {
       char line[256];
       unsigned long t = (unsigned long)((os1_mono_ns() - start) / 1000000000ULL);
-      nxmemstat_csv_line(line, (int)sizeof(line), &s, t);
+      nxmemstat_csv_line(line, sizeof(line), &s, t);
       print(line);
     }
     OS1_sleep((int)(interval_s * 1000UL));

@@ -9,15 +9,15 @@
 	url = https://github.com/olmox001/NX-USERKIT.git
 	branch = main
 [submodule "user/bin/base-nexs"]
-	path = user/NexsOS1-main/bin/base-nexs
+	path = user/BINEXTERNAL/base-nexs
 	url = https://github.com/olmox001/base-nexs.git
 	branch = os1-support
 [submodule "user/bin/kilo"]
-	path = user/NexsOS1-main/bin/kilo
+	path = user/BINEXTERNAL/kilo
 	url = https://github.com/olmox001/kilo.git
 	branch = nexsos-port
 [submodule "user/bin/doom"]
-	path = user/NexsOS1-main/bin/doom
+	path = user/BINEXTERNAL/doom
 	url = https://github.com/olmox001/doomgeneric.git
 	branch = nexsos-port
 [submodule "user/lib/sdl"]
@@ -41,7 +41,7 @@
 	url = https://github.com/olmox001/musl.git
 	branch = nexsos-port
 [submodule "user/bin/busybox"]
-	path = user/NexsOS1-main/bin/busybox
+	path = user/BINEXTERNAL/busybox
 	url = https://github.com/olmox001/busybox.git
 	branch = nexsos-port
 [submodule "user/lib/gnulib"]
@@ -49,6 +49,6 @@
 	url = https://github.com/olmox001/gnulib.git
 	branch = nexsos-port
 [submodule "user/bin/coreutils"]
-	path = user/NexsOS1-main/bin/coreutils
+	path = user/BINEXTERNAL/coreutils
 	url = https://github.com/olmox001/coreutils_NexsOS1.git
 	branch = nexsos-port

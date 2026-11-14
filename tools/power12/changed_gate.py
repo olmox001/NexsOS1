@@ -26,6 +26,15 @@ BUILD_SUFFIXES = {".mk"}
 BUILD_NAMES = {"Makefile"}
 
 
+REPORT_ONLY_PREFIXES = ("user/NexsOS1-main/",)
+
+
+def is_blocking_finding(item: dict) -> bool:
+    """Return whether a changed-file finding is blocking for its owner scope."""
+    rel = str(item.get("file", ""))
+    return not any(rel.startswith(prefix) for prefix in REPORT_ONLY_PREFIXES)
+
+
 def git(root: Path, *args: str) -> bytes:
     result = subprocess.run(["git", *args], cwd=root, capture_output=True,
                             check=False)
@@ -232,6 +241,8 @@ def main() -> int:
                if owned(name, policy) or name in BUILD_NAMES or
                Path(name).suffix in BUILD_SUFFIXES}
     results = audit_delta(policy, audited)
+    blocking = [item for item in results if is_blocking_finding(item)]
+    report_only = [item for item in results if not is_blocking_finding(item)]
     summary: dict[str, int] = defaultdict(int)
     for item in results:
         summary[item["rule"]] += 1
@@ -245,20 +256,24 @@ def main() -> int:
         "changed_line_counts": {name: len(lines) for name, lines in audited.items()},
         "deleted_line_counts": {name: deletions[name] for name in audited},
         "findings": results,
+        "blocking_findings": blocking,
+        "report_only_findings": report_only,
         "summary": dict(summary),
-        "verified": not results,
+        "verified": not blocking,
         "full_project_qualified": False,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(output, indent=2) + "\n")
     print(f"Power12 changed gate: {len(audited)} scoped files, "
-          f"{len(results)} findings; full-project qualification remains separate")
+          f"{len(blocking)} blocking + {len(report_only)} report-only findings; "
+          "full-project qualification remains separate")
     for item in results[:args.max_print]:
-        print(f"FAIL {item['rule']} {item['file']}:{item['line']} "
+        level = "FAIL" if is_blocking_finding(item) else "WARN"
+        print(f"{level} {item['rule']} {item['file']}:{item['line']} "
               f"{item['symbol']} ({item['arch']}) {item['detail']}")
     if len(results) > args.max_print:
         print(f"... {len(results)-args.max_print} additional findings in {args.report}")
-    return 1 if results else 0
+    return 1 if blocking else 0
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@
 #include <string.h>
 
 #define STB_TRUETYPE_IMPLEMENTATION
-#include "../system/tools/include/stb_truetype.h"
+#include "../system/external/stb/stb_truetype.h"
 
 int main(int argc, char **argv) {
     if (argc < 4) {

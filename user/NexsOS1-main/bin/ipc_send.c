@@ -13,7 +13,7 @@ int main(void) {
   msg.data1 = 0xDEADBEEF;
   msg.data2 = 0xCAFEBABE;
   for (int i = 0; i < 63; i++) {
-    msg.payload[i] = 'A' + (i % 26);
+    msg.payload[i] = (char)('A' + (i % 26));
   }
   msg.payload[63] = '\0';
 

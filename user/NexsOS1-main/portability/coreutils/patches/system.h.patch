@@ -1,5 +1,5 @@
---- a/user/bin/coreutils/src/system.h
-+++ b/user/bin/coreutils/src/system.h
+--- a/user/BINEXTERNAL/coreutils/src/system.h
++++ b/user/BINEXTERNAL/coreutils/src/system.h
 @@
 -/* Return whether the buffer consists entirely of NULs.
 -   Based on memeqzero in CCAN by Rusty Russell under CC0 (Public domain).  */
@@ -14,4 +14,4 @@
 + */
 +
 +/* The actual declaration is provided by the portability layer compatibility
-+   headers and the Gnulib glue layer, not by user/bin/coreutils/src/system.h. */
++   headers and the Gnulib glue layer, not by user/BINEXTERNAL/coreutils/src/system.h. */

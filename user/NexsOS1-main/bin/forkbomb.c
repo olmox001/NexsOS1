@@ -9,14 +9,15 @@
 
 /* Helper locale per convertire interi in stringa nello stack */
 static void local_itoa(int n, char *s) {
-  int i, sign;
-  if ((sign = n) < 0)
-    n = -n;
-  i = 0;
+  int i = 0;
+  int negative = n < 0;
+  unsigned int value =
+      negative ? UINT32_C(0) - (unsigned int)n : (unsigned int)n;
   do {
-    s[i++] = n % 10 + '0';
-  } while ((n /= 10) > 0);
-  if (sign < 0)
+    s[i++] = (char)('0' + (value % UINT32_C(10)));
+    value /= UINT32_C(10);
+  } while (value > 0U);
+  if (negative)
     s[i++] = '-';
   s[i] = '\0';
   for (int j = 0, k = i - 1; j < k; j++, k--) {
@@ -26,10 +27,10 @@ static void local_itoa(int n, char *s) {
   }
 }
 
-static int local_strlen(const char *s) {
-  int len = 0;
+static size_t local_strlen(const char *s) {
+  size_t len = 0U;
   while (s[len] != '\0')
-    len++;
+    ++len;
   return len;
 }
 

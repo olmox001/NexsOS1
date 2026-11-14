@@ -46,6 +46,15 @@
  * will drive, exercised here end to end. */
 static unsigned int *framebuffer;
 
+static int fixed_scan_x(long long value) {
+  long long whole = value >> FP_SHIFT;
+  if (whole < -2147483647LL - 1LL)
+    return -2147483647 - 1;
+  if (whole > 2147483647LL)
+    return 2147483647;
+  return (int)whole;
+}
+
 /* vec3_t: a 3D point in fixed-point 16.16 space.
  * All arithmetic on these values uses fixmul() for multiplication and
  * right-shifts for division by powers of two. */
@@ -208,8 +217,8 @@ static void fill_triangle(int x1, int y1, int x2, int y2, int x3, int y3,
     long long dy12 = y2 - y1;
     long long step12 = dy12 ? (dx12 << 16) / dy12 : 0;
     for (int y = y1; y < y2; y++) {
-      int cx1 = curx1 >> 16;
-      int cx2 = curx2 >> 16;
+      int cx1 = fixed_scan_x(curx1);
+      int cx2 = fixed_scan_x(curx2);
       if (cx1 > cx2) {
         int t = cx1;
         cx1 = cx2;
@@ -235,8 +244,8 @@ static void fill_triangle(int x1, int y1, int x2, int y2, int x3, int y3,
     long long dy23 = y3 - y2;
     long long step23 = dy23 ? (dx23 << 16) / dy23 : 0;
     for (int y = y2; y <= y3; y++) {
-      int cx1 = curx1 >> 16;
-      int cx2 = curx2 >> 16;
+      int cx1 = fixed_scan_x(curx1);
+      int cx2 = fixed_scan_x(curx2);
       if (cx1 > cx2) {
         int t = cx1;
         cx1 = cx2;
@@ -354,11 +363,13 @@ int main(void) {
           intensity = 0;
 
         /* Applicazione intensità Flat Shading sul colore base */
-        unsigned int base = face_colors[i];
-        int r = ((base >> 16) & 0xFF) * intensity / 255;
-        int g = ((base >> 8) & 0xFF) * intensity / 255;
-        int b = (base & 0xFF) * intensity / 255;
-        unsigned int shaded = 0xFF000000 | (r << 16) | (g << 8) | b;
+        uint32_t base = face_colors[i];
+        uint32_t shade = (uint32_t)intensity;
+        uint32_t r = ((base >> 16) & UINT32_C(0xFF)) * shade / UINT32_C(255);
+        uint32_t g = ((base >> 8) & UINT32_C(0xFF)) * shade / UINT32_C(255);
+        uint32_t b = (base & UINT32_C(0xFF)) * shade / UINT32_C(255);
+        uint32_t shaded =
+            UINT32_C(0xFF000000) | (r << 16) | (g << 8) | b;
 
         int s0x = sx[faces[i][0]], s0y = sy[faces[i][0]];
         int s1x = sx[faces[i][1]], s1y = sy[faces[i][1]];

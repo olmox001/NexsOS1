@@ -27,7 +27,7 @@ BUILD ?= debug
 MDEBUG ?= 0
 
 # Release Versioning (default V9.9.9)
-VERSION ?= V0.0.6.3
+VERSION ?= V0.0.6.4
 RELEASE_BASE = release/$(VERSION)
 RELEASE_DIR = $(RELEASE_BASE)/$(ARCH)
 
@@ -66,10 +66,9 @@ COMMON_FLAGS = -Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings \
                -fno-omit-frame-pointer \
                -O2 -g
 
-# Userland defaults to visible, nonfatal diagnostics while it is being
-# migrated. NX-CORE and NX-HAL independently enforce -Werror by default.
-# Explicit userland qualification: make NX_WARNINGS_AS_ERRORS=1 ...
-NX_WARNINGS_AS_ERRORS ?= 0
+# First-party kernel, SDK and userland warnings are blocking by default.
+# External vendor translation units use their dedicated non-blocking wrapper.
+NX_WARNINGS_AS_ERRORS ?= 1
 ifeq ($(NX_WARNINGS_AS_ERRORS),1)
 COMMON_FLAGS += -Werror
 endif
@@ -84,7 +83,7 @@ endif
 
 ifeq ($(ARCH), amd64)
     CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
-    ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large
+    ARCH_CFLAGS = -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wa,--noexecstack
     ASFLAGS = -g $(if $(filter 1,$(NX_WARNINGS_AS_ERRORS)),--fatal-warnings)
     QEMU = qemu-system-x86_64
 else
@@ -98,7 +97,7 @@ NXSDK_DIR = system
 
 # NX-SDK owns the public API and its versioned kernel-contract snapshot.
 # The legacy shared root include/abi directory is intentionally absent.
-USER_INCLUDE = -I$(NXSDK_DIR)/include/contract -I$(NXSDK_DIR)/include/api $(NXSDK_EXTENSION_INCLUDE_FLAGS) $(NXSDK_USERKIT_INCLUDE_FLAGS) $(USER_PROJECT_LIB_INCLUDE_FLAGS) -I$(NXSDK_DIR)/tools/include -Iuser/LIBEXTERNAL/stb -Iuser/LIBEXTERNAL/pl_mpeg
+USER_INCLUDE = -I$(NXSDK_DIR)/include/contract -I$(NXSDK_DIR)/include/api $(NXSDK_EXTENSION_INCLUDE_FLAGS) $(NXSDK_USERKIT_INCLUDE_FLAGS) $(USER_PROJECT_LIB_INCLUDE_FLAGS) -isystem $(NXSDK_DIR)/external/stb -isystem $(NEXS_LIBEXTERNAL_DIR_stb) -isystem $(NEXS_LIBEXTERNAL_DIR_pl_mpeg)
 # Compatibility variable consumed by pinned upstream build fragments (e.g. DOOM).
 INCLUDE = $(USER_INCLUDE)
 
@@ -147,6 +146,9 @@ USER_DIR := user/$(USER_PROJECT)
 USER_SYS_DIR := $(USER_DIR)/sys
 USERKIT_DIR := user/USERKIT
 LIBEXTERNAL_DIR := user/LIBEXTERNAL
+include $(LIBEXTERNAL_DIR)/catalog.mk
+BINEXTERNAL_DIR := user/BINEXTERNAL
+include $(BINEXTERNAL_DIR)/catalog.mk
 USERKIT_BUILD_ROOT := $(abspath $(BUILD_ROOT))/userkit
 USERKIT_BUILD_DIR := $(USERKIT_BUILD_ROOT)/$(ARCH)/userkit
 include $(USERKIT_DIR)/catalog.mk
@@ -187,7 +189,7 @@ VIRT_DTB   = $(BUILD_DIR)/virt.dtb
 
 # ==============================================================================
 
-.PHONY: all clean run run-direct debug disasm check check-deps setup-deps dirs bootloader kernel sdk user disk rootfs release test-release help
+.PHONY: all clean run run-direct debug disasm check check-deps check-external-catalog setup-deps dirs bootloader kernel sdk user disk rootfs release test-release help
 # 'make debug' is the explicit MDEBUG boot profile; normal 'run' stays quiet.
 debug: MDEBUG=1
 
@@ -197,6 +199,14 @@ setup-deps:
 
 check-deps:
 	@tools/setup-dependencies.sh --check
+
+check-external-catalog:
+	@set -eu; \
+	$(foreach p,$(NEXS_BINEXTERNAL_PROJECTS),test -d "$(NEXS_BINEXTERNAL_DIR_$(p))" || { echo "[catalog] missing BINEXTERNAL project: $(p)" >&2; exit 1; }; test "$(NEXS_BINEXTERNAL_VFS_DIR_$(p))" = "/bin" || { echo "[catalog] $(p) must install under /bin" >&2; exit 1; };) \
+	$(foreach p,$(NEXS_BINEXTERNAL_IMAGE_PROJECTS),test "$(NEXS_BINEXTERNAL_COMPAT_$(p))" = "integrated" || { echo "[catalog] $(p) is selected for the image but not integrated" >&2; exit 1; }; test -f "$(NEXS_BINEXTERNAL_PROVIDER_$(p))" || { echo "[catalog] missing provider for $(p)" >&2; exit 1; }; test -n "$(NEXS_BINEXTERNAL_INTERNAL_LIBS_$(p))" || { echo "[catalog] $(p) has no internal-library declaration" >&2; exit 1; };) \
+	$(foreach p,$(NEXS_BINEXTERNAL_IMAGE_PROJECTS),$(foreach l,$(filter-out none,$(NEXS_BINEXTERNAL_EXTERNAL_LIBS_$(p))),$(if $(filter $(l),$(NEXS_LIBEXTERNAL_PROJECTS)),,echo "[catalog] $(p) references unknown external library $(l)" >&2; exit 1;))) \
+	true
+	@echo "[catalog] BINEXTERNAL providers and library dependencies: PASS"
 
 # Default target
 all: power12 dirs bootloader kernel user $(MKDISK) disk
@@ -241,8 +251,8 @@ $(BOOTLOADER_BIN) $(BOOTLOADER_ELF): | bootloader
 sdk:
 	+$(MAKE) -C $(NXSDK_DIR) BUILD_ROOT="$(abspath $(BUILD_ROOT))" ARCH=$(ARCH) \
 		NX_WARNINGS_AS_ERRORS=$(NX_WARNINGS_AS_ERRORS) NX_STRICT=$(NX_STRICT) \
-		STB_INCLUDE="$(abspath user/LIBEXTERNAL/stb)" \
-		PL_MPEG_INCLUDE="$(abspath user/LIBEXTERNAL/pl_mpeg)" module
+		STB_INCLUDE="$(abspath $(NEXS_LIBEXTERNAL_DIR_stb))" \
+		PL_MPEG_INCLUDE="$(abspath $(NEXS_LIBEXTERNAL_DIR_pl_mpeg))" module
 
 $(NXSDK_MODULE_OBJECTS): | sdk
 	@test -f "$@" || { echo "NX-SDK did not produce $@" >&2; exit 1; }
@@ -263,7 +273,7 @@ USER_MALLOC_O := $(NXSDK_MALLOC_OBJECT)
 # link rules because prerequisite lists expand immediately.
 AR = $(CROSS_COMPILE)ar
 
-SDL2_DIR := user/LIBEXTERNAL/sdl
+SDL2_DIR := $(NEXS_LIBEXTERNAL_DIR_sdl)
 include system/lib/portability/sdl2/overlay.mk
 
 SDL2_SRCS := \
@@ -301,23 +311,27 @@ SDL2_OBJ_DIR := $(BUILD_DIR)/sdl2
 SDL2_OBJS := $(patsubst %.c,$(SDL2_OBJ_DIR)/%.o,$(SDL2_SRCS))
 SDL2_LIB  := $(BUILD_DIR)/libSDL2.a
 
-# SDL cannot build under the kernel's -Werror/-Wpedantic regime; codegen and
-# freestanding flags stay identical to userland objects so the archive links
-# into OS1 apps.  GCC>=14 permerrors are demoted for SDL's own fallback code
-# (Uint64* vs unsigned long long* in SDL_string.c is benign on both LP64
-# targets); the SDL tree is never edited.
-SDL2_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
-              -Wno-error=incompatible-pointer-types \
-              -Wno-error=implicit-function-declaration \
+# Upstream SDL is external: warnings remain enabled but do not inherit
+# first-party Werror. NexsOS-owned SDL portability sources use USER_CFLAGS and
+# therefore remain strict. Successful vendor diagnostics are captured per
+# object and summarized once after the complete user module is built.
+SDL2_VENDOR_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall -Wextra \
               -ffreestanding -fno-builtin -nostdlib -nostartfiles \
               -fno-common -fstack-protector-strong -fno-pic -fno-pie \
-              -fno-omit-frame-pointer \
-              $(USER_INCLUDE) -I$(SDL2_DIR)/include \
+              -fno-omit-frame-pointer -DSDL_NEXSOS_VENDOR \
+              $(USER_INCLUDE) -isystem $(SDL2_DIR)/include \
               $(SDL_NEXSOS_OVERLAY_CPPFLAGS)
+SDL2_PORT_CFLAGS = $(USER_CFLAGS) -isystem $(SDL2_DIR)/include \
+              $(SDL_NEXSOS_OVERLAY_CPPFLAGS)
+
+$(SDL2_OBJ_DIR)/system/lib/portability/sdl2/%.o: system/lib/portability/sdl2/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(SDL2_PORT_CFLAGS) -c $< -o $@
 
 $(SDL2_OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(SDL2_CFLAGS) -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- \
+	  $(CC) $(SDL2_VENDOR_CFLAGS) -c $< -o $@
 
 $(SDL2_LIB): $(SDL2_OBJS)
 	@echo "  [AR]     $@"
@@ -329,7 +343,7 @@ libsdl2: $(SDL2_LIB)
 # ==============================================================================
 # Lua static library and runtime (lua)
 # ==============================================================================
-LUA_DIR := user/LIBEXTERNAL/lua
+LUA_DIR := $(NEXS_LIBEXTERNAL_DIR_lua)
 
 LUA_CORE_SRCS := \
   $(LUA_DIR)/lapi.c \
@@ -389,28 +403,28 @@ LUA_OS1_LIB := $(BUILD_DIR)/libos1lua.a
 # as -DLUA_PATH_DEFAULT=\"...;...\" here: Make forwards the \" verbatim, the
 # shell reads it as a literal quote (not a delimiter), and the unquoted ';'
 # then split the gcc line into pieces ("no input files" + bogus commands).
-LUA_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
-             -Wno-error \
+LUA_VENDOR_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall -Wextra \
              -ffreestanding -fno-builtin -nostdlib -nostartfiles \
              -fno-common -fstack-protector-strong -fno-pic -fno-pie \
-             -fno-omit-frame-pointer \
-             -DLUA_USE_NEXSOS \
-             $(USER_INCLUDE) \
-             -I$(LUA_DIR) \
-             -I$(USER_LIB_DIR)/portability/lua \
+             -fno-omit-frame-pointer -DLUA_USE_NEXSOS -DLUA_NEXSOS_VENDOR \
+             $(USER_INCLUDE) -I$(LUA_DIR) \
+             -I$(USER_LIB_DIR)/portability/lua -include lua_portability.h
+LUA_PORT_CFLAGS = $(USER_CFLAGS) -DLUA_USE_NEXSOS \
+             -I$(LUA_DIR) -I$(USER_LIB_DIR)/portability/lua \
              -include lua_portability.h
 
 $(LUA_OBJ_DIR)/%.o: $(LUA_DIR)/%.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
-	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- \
+	  $(CC) $(LUA_VENDOR_CFLAGS) -c $< -o $@
 
 $(LUA_PORT_OBJ): $(LUA_PORT_SRCS) $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
-	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+	@$(CC) $(LUA_PORT_CFLAGS) -c $< -o $@
 
 $(LUA_OS1_OBJ): $(LUA_OS1_SRCS) $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
-	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+	@$(CC) $(LUA_PORT_CFLAGS) -c $< -o $@
 
 $(LUA_LIB): $(LUA_CORE_OBJS) $(LUA_PORT_OBJ)
 	@echo "  [AR]     $@"
@@ -425,7 +439,8 @@ liblua: $(LUA_LIB) $(LUA_OS1_LIB)
 
 $(LUA_OBJ_DIR)/lua.o: $(LUA_DIR)/lua.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
-	@$(CC) $(LUA_CFLAGS) -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- \
+	  $(CC) $(LUA_VENDOR_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 	@$(CC) $(CFLAGS) $(USER_LINK_FLAGS) -Wl,-Ttext=0x80000000 -e _start -o $@ \
@@ -436,7 +451,10 @@ $(BUILD_DIR)/lua.elf: $(LUA_OBJ_DIR)/lua.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_
 # ==============================================================================
 # Gnulib static library (libgnulib)
 # ==============================================================================
-include user/NexsOS1-main/portability/gnulib/overlay.mk
+# NX-SDK owns the portability implementation; the superproject supplies only
+# the pinned upstream source location from the LIBEXTERNAL catalog.
+GNULIB_SOURCE := $(NEXS_LIBEXTERNAL_DIR_gnulib)
+include $(NEXS_LIBEXTERNAL_PROVIDER_gnulib)
 
 GNULIB_OBJ_DIR := $(BUILD_DIR)/gnulib
 GNULIB_OBJS := $(patsubst %.c,$(GNULIB_OBJ_DIR)/%.o,$(GNULIB_OVERLAY_SRCS))
@@ -444,24 +462,31 @@ GNULIB_LIB  := $(BUILD_DIR)/libgnulib.a
 
 $(GNULIB_OBJS): $(GNULIB_GENERATED_HEADERS)
 
-GNULIB_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall \
-                -Wno-error \
+# Upstream Gnulib sources keep their vendor warning policy. NexsOS
+# portability sources are first-party and compile under USER_CFLAGS/Werror.
+GNULIB_VENDOR_CFLAGS = $(ARCH_CFLAGS) -O2 -g -Wall -Wextra \
                 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
                 -fno-common -fstack-protector-strong -fno-pic -fno-pie \
-                -fno-omit-frame-pointer \
+                -fno-omit-frame-pointer -DNEXSOS_EXTERNAL_VENDOR \
                 $(USER_INCLUDE) \
                 $(GNULIB_OVERLAY_CPPFLAGS)
+GNULIB_PORT_CFLAGS = $(USER_CFLAGS) $(GNULIB_OVERLAY_CPPFLAGS)
 
 $(GNULIB_OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(GNULIB_CFLAGS) -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- \
+	  $(CC) $(GNULIB_VENDOR_CFLAGS) -c $< -o $@
 
-# Special rule for glue.c to define _GNULIB_OS1_GLUE_IMPL before config header
-$(GNULIB_OBJ_DIR)/user/NexsOS1-main/portability/gnulib/gnulib_os1_glue.o: user/NexsOS1-main/portability/gnulib/gnulib_os1_glue.c
+$(GNULIB_OBJ_DIR)/system/lib/portability/gnulib/%.o: system/lib/portability/gnulib/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(GNULIB_CFLAGS) -D_GNULIB_OS1_GLUE_IMPL -c $< -o $@
+	@$(CC) $(GNULIB_PORT_CFLAGS) -c $< -o $@
 
-$(GNULIB_LIB): $(GNULIB_OBJS) user/NexsOS1-main/portability/gnulib/overlay.mk Makefile
+# glue.c must define _GNULIB_OS1_GLUE_IMPL before the config header.
+$(GNULIB_OBJ_DIR)/system/lib/portability/gnulib/gnulib_os1_glue.o: system/lib/portability/gnulib/gnulib_os1_glue.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(GNULIB_PORT_CFLAGS) -D_GNULIB_OS1_GLUE_IMPL -c $< -o $@
+
+$(GNULIB_LIB): $(GNULIB_OBJS) $(NEXS_LIBEXTERNAL_PROVIDER_gnulib) Makefile
 	@echo "  [AR]     $@"
 	@rm -f $@.tmp
 	@$(AR) rcs $@.tmp $(GNULIB_OBJS)
@@ -473,7 +498,8 @@ libgnulib: $(GNULIB_LIB)
 # ==============================================================================
 # Coreutils compatibility overlay
 # ==============================================================================
-include user/NexsOS1-main/portability/coreutils/overlay.mk
+include $(NEXS_BINEXTERNAL_PROVIDER_coreutils)
+include $(NEXS_BINEXTERNAL_PROVIDER_kilo)
 
 
 
@@ -526,7 +552,9 @@ $(USERKIT_ELFS): | userkit
 user: power12 sdk userkit __nexsos_user_module
 .PHONY: __nexsos_user_module __user
 __nexsos_user_module: $(USER_ELFS)
+	@python3 tools/summarize_external_warnings.py "$(BUILD_DIR)"
 __user: $(USER_ELFS)
+	@python3 tools/summarize_external_warnings.py "$(BUILD_DIR)"
 
 # NX-CORE owns and builds the MACHINE user-mode extension.  The root target
 # must carry the source/protocol prerequisites too: otherwise an existing ELF
@@ -559,27 +587,27 @@ $(BUILD_DIR)/$(USER_DIR)/sys/bin/%.o: $(USER_DIR)/sys/bin/%.c
 # objects (which satisfy the archive's malloc/os1_video_* undefineds).
 $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o: $(USER_DIR)/bin/sdltest.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -isystem $(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/sdltest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/sdltest.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o: $(USER_DIR)/bin/raptor.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -isystem $(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/raptor.elf: $(BUILD_DIR)/$(USER_DIR)/bin/raptor.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o: $(USER_DIR)/bin/nxempire.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -I$(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -isystem $(SDL2_DIR)/include $(SDL_NEXSOS_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/nxempire.elf: $(BUILD_DIR)/$(USER_DIR)/bin/nxempire.o $(SDL2_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -I$(GNULIB_PORT_DIR) -I$(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -I$(GNULIB_PORT_DIR) -isystem $(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o: $(USER_DIR)/bin/luatest.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
-	@$(CC) $(USER_CFLAGS) -I$(LUA_DIR) -I$(USER_LIB_DIR)/portability/lua -include lua_portability.h -MMD -MP -c $< -o $@
+	@$(CC) $(USER_CFLAGS) -isystem $(LUA_DIR) -I$(USER_LIB_DIR)/portability/lua -include lua_portability.h -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/luatest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o $(LUA_OS1_LIB) $(LUA_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 	@echo "  [LD]     $@"
@@ -587,10 +615,6 @@ $(BUILD_DIR)/luatest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o $(LUA_OS1_LIB) 
 		$< \
 		-Wl,--start-group $(LUA_LIB) $(LUA_OS1_LIB) -Wl,--end-group \
 		$(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O) $(USER_RUNTIME_LIBS)
-
-$(BUILD_DIR)/kilo.elf: $(BUILD_DIR)/$(USER_DIR)/bin/kilo/kilo.o $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
-# kilo is linked like every other user ELF (prereqs declared above, generic
-# linking rule below). Its object is built via the $(USER_DIR)/bin/%.o pattern.
 
 # Userland link flags.
 # --gc-sections drops unused functions/data from the whole-linked lib.o
@@ -617,13 +641,13 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -MMD -MP -c -o $@ $<
 
-# Root Makefile used -include $(DEPS) without ever DEFINING DEPS.
-# The variable existed only in NX-CORE's independent kernel/build.mk. Thus
-# header edits relinked user ELFs against stale .o files compiled with old
-# protocol constants, even though GCC had generated accurate .d files.
-# Resolve the active architecture/build root once at parse time; newly
-# generated .d files take effect on the next incremental invocation.
-DEPS := $(shell find "$(BUILD_DIR)" -type f -name '*.d' 2>/dev/null)
+# The superproject owns dependency files only for translation units it
+# compiles itself under user/<project>. NX-SDK and NX-CORE generate .d files
+# from different working directories; including those here makes relative
+# prerequisites such as "lib/lib.c" resolve against the superproject and can
+# break an otherwise valid incremental build. Each nested repository consumes
+# its own dependency files in its own Makefile.
+DEPS := $(shell find "$(BUILD_DIR)/$(USER_DIR)" -type f -name '*.d' 2>/dev/null)
 -include $(DEPS)
 
 # Disk Generation
@@ -652,7 +676,7 @@ ROOTFS_ASSETS = $(shell find $(ROOTFS_ASSET_DIRS) \
                   sed 's/ /\\ /g') \
                 user/NexsOS1-main/sys/boot/manager.conf \
                 user/NexsOS1-main/sys/boot/services.conf user/NexsOS1-main/sys/boot/project \
-                $(wildcard user/NexsOS1-main/bin/doom/freedoom*.wad)
+                $(wildcard $(NEXS_BINEXTERNAL_DIR_doom)/freedoom*.wad)
 rootfs: user libsdl2 liblua libgnulib coreutils $(ROOTFS_STAMP)
 	@test -d "$(BUILD_DIR)/rootfs" || { \
 	  echo "ERROR: rootfs missing while $(ROOTFS_STAMP) exists" >&2; exit 1; }
@@ -713,8 +737,8 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(USERKIT_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_L
 	@# EXISTING file, so ship one (perf §6 stress harness).
 	@dd if=/dev/zero of=$(BUILD_DIR)/rootfs/etc/stress.tmp bs=1024 count=16 2>/dev/null
 	@# Copy essential WAD files to the root and /bin for engine detection
-	@-cp user/NexsOS1-main/bin/doom/freedoom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
-	@-cp user/NexsOS1-main/bin/doom/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp $(NEXS_BINEXTERNAL_DIR_doom)/freedoom1.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
+	@-cp $(NEXS_BINEXTERNAL_DIR_doom)/freedoom2.wad $(BUILD_DIR)/rootfs/bin/ 2>/dev/null || true
 	@-cp user/NexsOS1-main/home/Pictures/icon/dark/*.png $(BUILD_DIR)/rootfs/home/Pictures/icon/dark/ 2>/dev/null || true
 	@-cp user/NexsOS1-main/sys/bin/background/nxduck.png $(BUILD_DIR)/rootfs/sys/bin/background/ 2>/dev/null || true
 	@# Dock/launcher tile icons (nxicon.h): both theme sets, so a runtime
@@ -1196,18 +1220,13 @@ help:
 	@echo "  check        - Verify cross-toolchain and emulator"
 	@echo "  test-fdt     - Run bounded FDT parser host tests and QEMU DTB validation"
 
-# The DOOM make fragments live in the pinned DOOM submodule.  Keep
-# metadata/help/check targets usable before dependency bootstrap on a fresh
-# clone; setup-dependencies.sh initializes the exact gitlink revisions.
-ifeq ($(ARCH),aarch64)
-DOOM_ARCH_MAKEFILE := user/NexsOS1-main/bin/doom/doom-nexs-aarch64.make
-else ifeq ($(ARCH),amd64)
-DOOM_ARCH_MAKEFILE := user/NexsOS1-main/bin/doom/doom-nexs-amd64.make
-endif
-ifneq ($(wildcard $(DOOM_ARCH_MAKEFILE)),)
-include $(DOOM_ARCH_MAKEFILE)
+# DOOM is a pinned external binary project. NexsOS-specific build policy lives
+# in the first-party provider selected by the BINEXTERNAL catalog, so the
+# vendor tree remains independent of NexsOS1-main.
+ifneq ($(wildcard $(NEXS_BINEXTERNAL_DIR_doom)/doomgeneric.c),)
+include $(NEXS_BINEXTERNAL_PROVIDER_doom)
 else
-$(warning DOOM make fragment is unavailable; run 'make setup-deps' before building the complete userland)
+$(warning DOOM submodule is unavailable; run 'make setup-deps' before building the complete userland)
 endif
 
 # Host-side bounded FDT parser tests. The QEMU AArch64 DTB is a mandatory input.

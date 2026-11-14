@@ -436,12 +436,18 @@ static void buf_draw_text(int x, int y, const char *s, uint32_t color) {
       rem--;
       continue;
     }
+    size_t step = (size_t)consumed;
+    if (step > rem) {
+      ++p;
+      --rem;
+      continue;
+    }
     buf_draw_glyph(cursor, y, cp, color);
     int idx = (int)cp - g_font->header.first_char;
     if (idx >= 0 && idx < g_font->header.num_chars)
       cursor += g_font->glyphs[idx].advance;
-    p += consumed;
-    rem -= consumed;
+    p += step;
+    rem -= step;
   }
 }
 
@@ -467,7 +473,7 @@ static void civil_from_days(long z, int *y, int *m, int *d) {
   *d = (int)dd;
 }
 
-static void format_datetime(char *buf, int n) {
+static void format_datetime(char *buf, size_t n) {
   static const char *WD[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
   long t = OS1_time_now();
 
@@ -596,7 +602,16 @@ static void set_window_height(int extra_h) {
   int wh = BAR_H + (extra_h > 0 ? extra_h : 0);
   if (wh == g_wh && g_win >= 0)
     return;
-  uint32_t *nb = (uint32_t *)malloc((size_t)g_bw * wh * 4);
+  if (g_bw <= 0 || wh <= 0)
+    return;
+  size_t width = (size_t)g_bw;
+  size_t height = (size_t)wh;
+  if (width > (size_t)-1 / height)
+    return;
+  size_t pixels = width * height;
+  if (pixels > (size_t)-1 / sizeof(uint32_t))
+    return;
+  uint32_t *nb = (uint32_t *)malloc(pixels * sizeof(uint32_t));
   if (nb) {
     free(g_fb);
     g_fb = nb;

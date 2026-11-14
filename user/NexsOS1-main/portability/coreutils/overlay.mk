@@ -1,24 +1,40 @@
 # user/NexsOS1-main/portability/coreutils/overlay.mk
-# Coreutils build integration for NexsOS1
+# Coreutils portability layer over the imported BINEXTERNAL source.
 
 
 COREUTILS_PORT_DIR := user/NexsOS1-main/portability/coreutils
-COREUTILS_DIR      := user/NexsOS1-main/bin/coreutils
+COREUTILS_DIR      := $(NEXS_BINEXTERNAL_DIR_coreutils)
 COREUTILS_SRC_DIR  := $(COREUTILS_DIR)/src
+COREUTILS_GENERATED_DIR := $(BUILD_DIR)/coreutils-generated
+COREUTILS_PRIMES_H := $(COREUTILS_GENERATED_DIR)/primes.h
 
 
 COREUTILS_CONFIG   := $(COREUTILS_PORT_DIR)/coreutils_config_nexsos.h
-COREUTILS_CFLAGS   := $(ARCH_CFLAGS) -O2 -g -Wall -Wextra -Wpedantic \
+# Coreutils itself is a vendor gitlink. Preserve its diagnostics without
+# blocking the NexsOS build; our portability/glue layer remains Werror-strict.
+COREUTILS_VENDOR_CFLAGS := $(ARCH_CFLAGS) -O2 -g -Wall -Wextra -Wpedantic \
                       -ffreestanding -fno-builtin -nostdlib -nostartfiles \
                       -fno-common -fstack-protector-strong -fno-pic -fno-pie \
-                      -fno-omit-frame-pointer \
+                      -fno-omit-frame-pointer -DNEXSOS_EXTERNAL_VENDOR \
                       $(USER_INCLUDE) \
+                      -I$(COREUTILS_GENERATED_DIR) \
+                      -I$(GNULIB_GEN_INC_DIR) \
                       -I$(COREUTILS_PORT_DIR) \
                       -I$(GNULIB_PORT_DIR) \
-                      -I$(GNULIB_DIR)/lib \
-                      -I$(COREUTILS_DIR)/src \
-                      -I$(COREUTILS_DIR)/lib \
-                      -I$(COREUTILS_DIR)/gl/lib \
+                      -isystem $(GNULIB_DIR)/lib \
+                      -isystem $(COREUTILS_DIR)/src \
+                      -isystem $(COREUTILS_DIR)/lib \
+                      -isystem $(COREUTILS_DIR)/gl/lib \
+                      -include $(COREUTILS_CONFIG)
+COREUTILS_PORT_CFLAGS := $(USER_CFLAGS) \
+                      -I$(COREUTILS_GENERATED_DIR) \
+                      -I$(GNULIB_GEN_INC_DIR) \
+                      -I$(COREUTILS_PORT_DIR) \
+                      -I$(GNULIB_PORT_DIR) \
+                      -isystem $(GNULIB_DIR)/lib \
+                      -isystem $(COREUTILS_DIR)/src \
+                      -isystem $(COREUTILS_DIR)/lib \
+                      -isystem $(COREUTILS_DIR)/gl/lib \
                       -include $(COREUTILS_CONFIG)
 
 
@@ -57,10 +73,21 @@ COREUTILS_GNULIB_SRCS := \
 COREUTILS_GNULIB_OBJ_DIR := $(BUILD_DIR)/coreutils-gnulib
 COREUTILS_GNULIB_OBJS := $(patsubst %.c,$(COREUTILS_GNULIB_OBJ_DIR)/%.o,$(COREUTILS_GNULIB_SRCS))
 COREUTILS_GL_LIB := $(BUILD_DIR)/libcoreutils-gnulib.a
+COREUTILS_PROGRAM_OBJS := $(patsubst %,$(COREUTILS_OBJ_DIR)/%.o,$(COREUTILS_NAMES)) \
+  $(COREUTILS_COMMON_OBJS) $(COREUTILS_OBJ_DIR)/true-true.o \
+  $(COREUTILS_OBJ_DIR)/true-mode-true.o $(COREUTILS_OBJ_DIR)/true-mode-false.o \
+  $(COREUTILS_OBJ_DIR)/uname-mode.o $(COREUTILS_OBJ_DIR)/uname-uname.o \
+  $(COREUTILS_OBJ_DIR)/set-fields.o $(COREUTILS_OBJ_DIR)/chown-core.o \
+  $(COREUTILS_OBJ_DIR)/chown-chown.o $(COREUTILS_OBJ_DIR)/chown-chgrp.o
+
+# The SDK Gnulib portability layer generates target headers (including fts_.h)
+# into the build tree.  Every Coreutils translation unit consumes that single
+# generated-header provider; no copy is kept in NexsOS1-main or the vendor tree.
+$(COREUTILS_GNULIB_OBJS) $(COREUTILS_PROGRAM_OBJS): | $(GNULIB_GENERATED_HEADERS)
 
 $(COREUTILS_GNULIB_OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -MMD -MP -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- $(CC) $(COREUTILS_VENDOR_CFLAGS) -MMD -MP -c $< -o $@
 
 $(COREUTILS_GL_LIB): $(COREUTILS_GNULIB_OBJS)
 	@echo "  [AR]     $@"
@@ -70,13 +97,15 @@ $(COREUTILS_GL_LIB): $(COREUTILS_GNULIB_OBJS)
 
 
 # ---------------------------------------------------------------------------
-# Generate primes.h (required by factor.c)
+# Generate primes.h (required by factor.c) outside the external gitlink.
+# The source submodule stays read-only; factor.c finds this build-owned header
+# through COREUTILS_GENERATED_DIR before its generated dependency is compiled.
 # Uses the HOST compiler (cc), not the cross-compiler.
 # ---------------------------------------------------------------------------
-$(COREUTILS_SRC_DIR)/primes.h: $(COREUTILS_SRC_DIR)/make-prime-list.c
+$(COREUTILS_PRIMES_H): $(COREUTILS_SRC_DIR)/make-prime-list.c
 	@echo "  [GEN]    $@"
 	@set -eu; \
-	  mkdir -p $(BUILD_DIR); \
+	  mkdir -p "$(COREUTILS_GENERATED_DIR)"; \
 	  generator="$(BUILD_DIR)/make-prime-list"; \
 	  output="$@.tmp"; \
 	  trap 'rm -f "$$generator" "$$output"' EXIT; \
@@ -85,47 +114,46 @@ $(COREUTILS_SRC_DIR)/primes.h: $(COREUTILS_SRC_DIR)/make-prime-list.c
 	  chmod a-w "$$output"; \
 	  mv -f "$$output" "$@"
 
-
-# Make factor.o depend on the generated header
-$(COREUTILS_OBJ_DIR)/factor.o: $(COREUTILS_SRC_DIR)/primes.h
+# Make factor.o depend on the build-owned generated header.
+$(COREUTILS_OBJ_DIR)/factor.o: $(COREUTILS_PRIMES_H)
 
 
 # Pattern rule for Coreutils port glue objects
 $(COREUTILS_OBJ_DIR)/%.o: $(COREUTILS_PORT_DIR)/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -MMD -MP -c $< -o $@
+	@$(CC) $(COREUTILS_PORT_CFLAGS) -MMD -MP -c $< -o $@
 
 
 # Pattern rule for Coreutils upstream objects
 $(COREUTILS_OBJ_DIR)/%.o: $(COREUTILS_SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -MMD -MP -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- $(CC) $(COREUTILS_VENDOR_CFLAGS) -MMD -MP -c $< -o $@
 
 
 # Special multi-part / aliased applets
 $(COREUTILS_OBJ_DIR)/true-true.o: $(COREUTILS_SRC_DIR)/true.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -DA_TRUE -MMD -MP -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- $(CC) $(COREUTILS_VENDOR_CFLAGS) -DA_TRUE -MMD -MP -c $< -o $@
 
 
 $(COREUTILS_OBJ_DIR)/true-mode-true.o:
 	@mkdir -p $(dir $@)
-	@echo "int true_mode = 0;" | $(CC) $(COREUTILS_CFLAGS) -x c -c - -o $@
+	@echo "int true_mode = 0;" | $(CC) $(COREUTILS_PORT_CFLAGS) -x c -c - -o $@
 
 
 $(COREUTILS_OBJ_DIR)/true-mode-false.o:
 	@mkdir -p $(dir $@)
-	@echo "int true_mode = 1;" | $(CC) $(COREUTILS_CFLAGS) -x c -c - -o $@
+	@echo "int true_mode = 1;" | $(CC) $(COREUTILS_PORT_CFLAGS) -x c -c - -o $@
 
 
 $(COREUTILS_OBJ_DIR)/uname-mode.o: $(COREUTILS_SRC_DIR)/uname.h
 	@mkdir -p $(dir $@)
-	@printf '#include "uname.h"\nenum uname_modes uname_mode = UNAME_UNAME;\n' | $(CC) $(COREUTILS_CFLAGS) -x c -c - -o $@
+	@printf '#include "uname.h"\nenum uname_modes uname_mode = UNAME_UNAME;\n' | $(CC) $(COREUTILS_PORT_CFLAGS) -x c -c - -o $@
 
 
 $(COREUTILS_OBJ_DIR)/uname-uname.o: $(COREUTILS_SRC_DIR)/uname.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -MMD -MP -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- $(CC) $(COREUTILS_VENDOR_CFLAGS) -MMD -MP -c $< -o $@
 
 
 $(BUILD_DIR)/cu_true.elf: $(COREUTILS_OBJ_DIR)/true.o $(COREUTILS_OBJ_DIR)/true-mode-true.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -142,22 +170,22 @@ $(BUILD_DIR)/cu_uname.elf: $(COREUTILS_OBJ_DIR)/uname.o $(COREUTILS_OBJ_DIR)/una
 
 $(COREUTILS_OBJ_DIR)/set-fields.o: $(COREUTILS_SRC_DIR)/set-fields.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -MMD -MP -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- $(CC) $(COREUTILS_VENDOR_CFLAGS) -MMD -MP -c $< -o $@
 
 
 $(COREUTILS_OBJ_DIR)/chown-core.o: $(COREUTILS_SRC_DIR)/chown-core.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -MMD -MP -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- $(CC) $(COREUTILS_VENDOR_CFLAGS) -MMD -MP -c $< -o $@
 
 
 $(COREUTILS_OBJ_DIR)/chown-chown.o: $(COREUTILS_SRC_DIR)/chown-chown.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -MMD -MP -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- $(CC) $(COREUTILS_VENDOR_CFLAGS) -MMD -MP -c $< -o $@
 
 
 $(COREUTILS_OBJ_DIR)/chown-chgrp.o: $(COREUTILS_SRC_DIR)/chown-chgrp.c
 	@mkdir -p $(dir $@)
-	@$(CC) $(COREUTILS_CFLAGS) -MMD -MP -c $< -o $@
+	@tools/external-compile.sh "$@.external-warnings" -- $(CC) $(COREUTILS_VENDOR_CFLAGS) -MMD -MP -c $< -o $@
 
 
 $(BUILD_DIR)/cu_chown.elf: $(COREUTILS_OBJ_DIR)/chown.o $(COREUTILS_OBJ_DIR)/chown-core.o $(COREUTILS_OBJ_DIR)/chown-chown.o $(COREUTILS_COMMON_OBJS) $(COREUTILS_GL_LIB) $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
@@ -196,8 +224,3 @@ $(foreach app,$(filter-out true false uname chown chgrp cut realpath,$(COREUTILS
 
 coreutils: $(COREUTILS_ELFS)
 .PHONY: coreutils
-
-# Preserve all warnings by default; escalate only on explicit qualification.
-ifeq ($(NX_WARNINGS_AS_ERRORS),1)
-COREUTILS_CFLAGS += -Werror
-endif

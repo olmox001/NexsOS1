@@ -130,11 +130,7 @@ static const int TRAIN_TIME[B_COUNT][U_COUNT] = {
 };
 
 /* Building build costs */
-static const int BCOST_FOOD[B_COUNT] = {0, 0, 0, 0};
 static const int BCOST_WOOD[B_COUNT] = {100, 30, 150, 60};
-static const int BCOST_GOLD[B_COUNT] = {0, 0, 0, 0};
-static const int BCOST_STONE[B_COUNT] = {0, 0, 0, 0};
-static const int BCOST_TIME[B_COUNT] = {300, 120, 240, 80};
 
 /* Pop provided by TC=5, House=5, Barracks=0, Farm=0 */
 static const int BPOP[B_COUNT] = {5, 5, 0, 0};
@@ -267,20 +263,6 @@ static int pop_cap[2]; /* max population */
 /* Helpers                                                                  */
 /* ---------------------------------------------------------------------- */
 static int tile_idx(int x, int y) { return y * MAP_W + x; }
-
-static int tile_at(int px, int py) {
-  int tx = px / TILE, ty = py / TILE;
-  if (tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H)
-    return -1;
-  return tile_idx(tx, ty);
-}
-
-static int walkable(int tx, int ty) {
-  if (tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H)
-    return 0;
-  Tile *t = &map[tile_idx(tx, ty)];
-  return t->terrain != T_WATER;
-}
 
 static int dist2(int x1, int y1, int x2, int y2) {
   int dx = x1 - x2, dy = y1 - y2;
@@ -1115,12 +1097,10 @@ static void ai_update(void) {
       else
         military++;
     }
-    int house_count = 0, barracks_count = 0;
+    int barracks_count = 0;
     for (int i = 0; i < MAX_B; i++) {
       if (!blds[i].active || blds[i].owner != owner || blds[i].state != BS_DONE)
         continue;
-      if (blds[i].type == B_HOUSE)
-        house_count++;
       if (blds[i].type == B_BARRACKS)
         barracks_count++;
     }
@@ -1272,8 +1252,6 @@ static void ai_update(void) {
         }
       }
       if (target_b >= 0) {
-        int bx = (blds[target_b].tx + blds[target_b].sw / 2) * TILE;
-        int by = (blds[target_b].ty + blds[target_b].sh / 2) * TILE;
         for (int i = 0; i < MAX_U; i++) {
           if (!units[i].active || units[i].owner != owner)
             continue;
@@ -1354,10 +1332,19 @@ static void render_terrain(SDL_Surface *s) {
       int sx = tx * TILE - cam_x;
       int sy = ty * TILE - cam_y + TOP_H;
       const Uint8 *c = TCOLOR[t->terrain];
-      /* Add slight variation */
-      Uint8 variation = (Uint8)((tx * 7 + ty * 13) % 16) - 8;
-      fill_rect(s, sx, sy, TILE, TILE, (Uint8)(c[0] + variation),
-                (Uint8)(c[1] + variation), (Uint8)(c[2] + variation));
+      /* Add a small signed colour delta. Keeping the delta signed avoids
+       * the former Uint8 wrap where -8 became 248. */
+      int variation = ((tx * 7 + ty * 13) % 16) - 8;
+      int vr = (int)c[0] + variation;
+      int vg = (int)c[1] + variation;
+      int vb = (int)c[2] + variation;
+      if (vr < 0) vr = 0;
+      if (vg < 0) vg = 0;
+      if (vb < 0) vb = 0;
+      if (vr > 255) vr = 255;
+      if (vg > 255) vg = 255;
+      if (vb > 255) vb = 255;
+      fill_rect(s, sx, sy, TILE, TILE, (Uint8)vr, (Uint8)vg, (Uint8)vb);
 
       /* Draw resource indicators */
       if (t->terrain == T_FOREST && t->res_amt > 0) {
@@ -1595,12 +1582,8 @@ static void render_hud(SDL_Surface *s) {
   /* Resource number display using simple 3x5 pixel digits */
   /* We'll use a helper that draws a number at a given position */
 
-  /* Game time */
-  {
-    int mins = game_time / 60;
-    /* Simple clock display */
-    fill_rect(s, WIN_W - 80, 6, 70, 18, 30, 30, 40);
-  }
+  /* Game-time panel; digits are rendered by the HUD number pass below. */
+  fill_rect(s, WIN_W - 80, 6, 70, 18, 30, 30, 40);
 
   /* Notification */
   if (notif_timer > 0) {
@@ -1640,7 +1623,7 @@ static void draw_num(SDL_Surface *s, int val, int x, int y, Uint8 r, Uint8 g,
   } else {
     int v = val;
     while (v > 0 && n < 7) {
-      buf[n++] = '0' + (v % 10);
+      buf[n++] = (char)('0' + (v % 10));
       v /= 10;
     }
     /* Reverse */
@@ -2183,9 +2166,6 @@ int main(void) {
   int running = 1;
   const Uint8 *keys = SDL_GetKeyboardState(NULL);
 
-  Uint64 last_sec = SDL_GetTicks64();
-  int fps_frames = 0;
-
   while (running) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -2400,14 +2380,6 @@ int main(void) {
           running = 0;
         }
       }
-    }
-
-    /* FPS counter */
-    fps_frames++;
-    Uint64 now = SDL_GetTicks64();
-    if (now - last_sec >= 1000) {
-      last_sec = now;
-      fps_frames = 0;
     }
 
     SDL_Delay(16); /* ~60 FPS */

@@ -3,7 +3,7 @@
    modifying the second-repository sources directly.
 
    Keep the relevant compatibility snippet here, mirroring the upstream source
-   while preserving the original files in user/bin/coreutils untouched.
+   while preserving the original files in user/BINEXTERNAL/coreutils untouched.
 
    Required compatibility declaration:
    int memeq(const void *a, const void *b, size_t n);

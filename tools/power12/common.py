@@ -96,7 +96,7 @@ def clang_args(rel: str, arch: str) -> list[str]:
     include_dirs = [
         "kernel/HAL", "kernel/HAL/include", arch_inc,
         "kernel/include", "kernel/include/abi", "kernel/include/api",
-        "system/include/contract", "system/include/api", "system/tools/include",
+        "system/include/contract", "system/include/api", "system/external/stb",
         "system/lib/extensions/icon/include", "system/lib/extensions/input/include",
         "system/lib/extensions/look/include",
         "system/lib/extensions/USERKIT/manager/include",
@@ -111,18 +111,18 @@ def clang_args(rel: str, arch: str) -> list[str]:
         "system/lib/extensions/USERKIT/example/nxexample_echo/include",
         "user/LIBEXTERNAL/stb", "user/LIBEXTERNAL/pl_mpeg", "user/LIBEXTERNAL/sdl/include",
         "user/LIBEXTERNAL/lua", "system/lib/portability/lua",
-        "user/NexsOS1-main/portability/coreutils", "user/NexsOS1-main/portability/gnulib",
-        "user/LIBEXTERNAL/gnulib/lib", "user/NexsOS1-main/bin/coreutils/gnulib/lib",
+        "user/NexsOS1-main/portability/coreutils", "system/lib/portability/gnulib",
+        "user/LIBEXTERNAL/gnulib/lib", "user/BINEXTERNAL/coreutils/gnulib/lib",
         *project_include_dirs(),
     ]
     for item in include_dirs:
         args += ["-I", str(ROOT / item)]
-    if rel == "user/NexsOS1-main/bin/gnulibtest.c" or rel.startswith("user/NexsOS1-main/portability/gnulib/"):
+    if rel == "user/NexsOS1-main/bin/gnulibtest.c" or rel.startswith("system/lib/portability/gnulib/"):
         args += [
             "-D__NEXSOS__", "-DFLEXIBLE_ARRAY_MEMBER=",
-            "-include", str(ROOT / "user/NexsOS1-main/portability/gnulib/gnulib_config_nexsos.h"),
+            "-include", str(ROOT / "system/lib/portability/gnulib/gnulib_config_nexsos.h"),
         ]
-    if rel == "user/NexsOS1-main/portability/gnulib/gnulib_os1_glue.c":
+    if rel == "system/lib/portability/gnulib/gnulib_os1_glue.c":
         # This translation unit intentionally owns the externally linked
         # memeq; the production Makefile compiles it with the same define.
         # Without it the forced Gnulib config header declares a second

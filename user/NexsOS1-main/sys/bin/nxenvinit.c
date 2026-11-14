@@ -149,11 +149,12 @@ static void nx_mkdir_p(const char *path) {
   for (char *p = buf + 1; *p; p++) {
     if (*p == '/') {
       *p = '\0';
-      int h =
+      long handle =
           OS1low_handle_create(OS1_NS_FS, buf, OS1_RIGHT_MUTATE, OBJ_TYPE_FILE);
-      if (h >= 0) {
-        OS1_object_ctl(h, OBJ_CTL_MKDIR, (long)(p + 1));
-        OS1low_handle_close(h);
+      if (handle >= 0 && handle <= 2147483647L) {
+        int h = (int)handle;
+        (void)OS1_object_ctl(h, OBJ_CTL_MKDIR, (long)(p + 1));
+        (void)OS1low_handle_close(h);
       }
       *p = '/';
     }
@@ -161,16 +162,17 @@ static void nx_mkdir_p(const char *path) {
   const char *slash = strrchr(buf, '/');
   if (slash && slash[1]) {
     char parent[256];
-    int plen = slash - buf;
-    if (plen == 0)
-      plen = 1;
+    size_t plen = (size_t)(slash - buf);
+    if (plen == 0U)
+      plen = 1U;
     memcpy(parent, buf, plen);
     parent[plen] = '\0';
-    int h = OS1low_handle_create(OS1_NS_FS, parent, OS1_RIGHT_MUTATE,
-                                 OBJ_TYPE_FILE);
-    if (h >= 0) {
-      OS1_object_ctl(h, OBJ_CTL_MKDIR, (long)(slash + 1));
-      OS1low_handle_close(h);
+    long handle = OS1low_handle_create(OS1_NS_FS, parent, OS1_RIGHT_MUTATE,
+                                       OBJ_TYPE_FILE);
+    if (handle >= 0 && handle <= 2147483647L) {
+      int h = (int)handle;
+      (void)OS1_object_ctl(h, OBJ_CTL_MKDIR, (long)(slash + 1));
+      (void)OS1low_handle_close(h);
     }
   }
 }

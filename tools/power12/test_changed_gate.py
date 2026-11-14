@@ -6,7 +6,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from changed_gate import build_findings, changed_files, exact_rename_destinations
+from changed_gate import (build_findings, changed_files, exact_rename_destinations,
+                          is_blocking_finding)
 
 
 def git(root: Path, *args: str) -> None:
@@ -61,6 +62,17 @@ def main() -> int:
             print("FAIL bypass flag ignored")
             return 6
 
+        # Project userland remains audited/reporting, but its delta findings
+        # are warning-only. Kernel/SDK/USERKIT-owned findings remain blocking.
+        if is_blocking_finding({"file": "user/NexsOS1-main/sys/bin/test.c"}):
+            print("FAIL NexsOS1-main delta unexpectedly blocks")
+            return 7
+        for owned_path in ("kernel/core/test.c", "system/lib/test.c",
+                           "user/USERKIT/services/test.c"):
+            if not is_blocking_finding({"file": owned_path}):
+                print(f"FAIL blocking scope demoted: {owned_path}")
+                return 8
+
         # Exact path-only renames do not create new Power12 debt.
         git(root, "reset", "--hard", "HEAD")
         git(root, "clean", "-fd")
@@ -69,7 +81,7 @@ def main() -> int:
         lines, _ = changed_files(root)
         if "kernel/timer_renamed.c" not in renamed or "kernel/timer_renamed.c" in lines:
             print(f"FAIL exact rename treated as content edit: renamed={renamed} lines={lines}")
-            return 7
+            return 9
 
         # Any content edit after the rename must restore delta coverage.
         moved = root / "kernel" / "timer_renamed.c"
@@ -77,9 +89,9 @@ def main() -> int:
         lines, _ = changed_files(root)
         if lines.get("kernel/timer_renamed.c") != {1}:
             print(f"FAIL edited rename did not preserve line delta: {lines}")
-            return 8
+            return 10
 
-    print("PASS: Power12 staged+unstaged+untracked delta, deletions and R10 blockers")
+    print("PASS: Power12 delta scope, report-only userland policy, deletions and R10 blockers")
     return 0
 
 

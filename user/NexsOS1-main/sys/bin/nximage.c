@@ -80,12 +80,18 @@ static void buf_draw_text(int x, int y, const char *s, uint32_t color) {
       rem--;
       continue;
     }
+    size_t step = (size_t)consumed;
+    if (step > rem) {
+      ++p;
+      --rem;
+      continue;
+    }
     buf_draw_glyph(cursor, y, cp, color);
     int idx = (int)cp - g_font->header.first_char;
     if (idx >= 0 && idx < g_font->header.num_chars)
       cursor += g_font->glyphs[idx].advance;
-    p += consumed;
-    rem -= consumed;
+    p += step;
+    rem -= step;
   }
 }
 

@@ -1,0 +1,511 @@
+diff --git a/kilo.c b/kilo.c
+index 4cab8ac..bd0ea16 100644
+--- a/kilo.c
++++ b/kilo.c
+@@ -75,6 +75,8 @@
+
+ #include <input.h>
+ #include <os1.h>
++#include <limits.h>
++#include <stddef.h>
+ #include <stdarg.h>
+ #include <stdint.h>
+ #include <stdio.h>
+@@ -147,8 +149,8 @@ struct editorSyntax {
+ /* This structure represents a single line of the file we are editing. */
+ typedef struct erow {
+   int idx;           /* Row index in the file, zero-based. */
+-  int size;          /* Size of the row, excluding the null term. */
+-  int rsize;         /* Size of the rendered row. */
++  size_t size;       /* Size of the row, excluding the null term. */
++  size_t rsize;      /* Size of the rendered row. */
+   char *chars;       /* Row content. */
+   char *render;      /* Row content "rendered" for screen (for TABs). */
+   unsigned char *hl; /* Syntax highlight type for each character in render.*/
+@@ -342,7 +344,8 @@ static void editorUpdateSyntax(erow *row) {
+   if (E.syntax == NULL)
+     return; /* No syntax, everything is HL_NORMAL. */
+
+-  int i, prev_sep, in_string, in_comment;
++  size_t i;
++  int prev_sep, in_string, in_comment;
+   char *p;
+   const char **keywords = E.syntax->keywords;
+   char *scs = E.syntax->singleline_comment_start;
+@@ -369,7 +372,8 @@ static void editorUpdateSyntax(erow *row) {
+     /* Handle // comments. */
+     if (prev_sep && *p == scs[0] && *(p + 1) == scs[1]) {
+       /* From here to end is a comment */
+-      memset(row->hl + i, HL_COMMENT, row->size - i);
++      if (i < row->rsize)
++        memset(row->hl + i, HL_COMMENT, row->rsize - i);
+       return;
+     }
+
+@@ -448,8 +452,8 @@ static void editorUpdateSyntax(erow *row) {
+     if (prev_sep) {
+       int j;
+       for (j = 0; keywords[j]; j++) {
+-        int klen = strlen(keywords[j]);
+-        int kw2 = keywords[j][klen - 1] == '|';
++        size_t klen = strlen(keywords[j]);
++        int kw2 = keywords[j][klen - 1U] == '|';
+         if (kw2)
+           klen--;
+
+@@ -511,7 +515,7 @@ static void editorSelectSyntaxHighlight(char *filename) {
+     unsigned int i = 0;
+     while (s->filematch[i]) {
+       char *p;
+-      int patlen = strlen(s->filematch[i]);
++      size_t patlen = strlen(s->filematch[i]);
+       if ((p = strstr(filename, s->filematch[i])) != NULL) {
+         if (s->filematch[i][0] != '.' || p[patlen] == '\0') {
+           E.syntax = s;
+@@ -527,8 +531,8 @@ static void editorSelectSyntaxHighlight(char *filename) {
+
+ /* Update the rendered version and the syntax highlight of a row. */
+ static void editorUpdateRow(erow *row) {
+-  unsigned int tabs = 0, nonprint = 0;
+-  int j, idx;
++  size_t tabs = 0U, nonprint = 0U;
++  size_t j, idx;
+
+   /* Create a version of the row we can directly print on the screen,
+    * respecting tabs, substituting non printable characters with '?'. */
+@@ -537,14 +541,23 @@ static void editorUpdateRow(erow *row) {
+     if (row->chars[j] == TAB)
+       tabs++;
+
+-  unsigned long long allocsize =
+-      (unsigned long long)row->size + tabs * 8 + nonprint * 9 + 1;
+-  if (allocsize > UINT32_MAX) {
++  if (row->size > (size_t)INT_MAX) {
+     printf("Some line of the edited file is too long for kilo\n");
+     exit(1);
+   }
++  uint64_t allocsize =
++      (uint64_t)row->size + (uint64_t)tabs * UINT64_C(8) +
++      (uint64_t)nonprint * UINT64_C(9) + UINT64_C(1);
++  if (allocsize > UINT32_MAX) {
++    printf("Some rendered line is too long for kilo\n");
++    exit(1);
++  }
+
+-  row->render = malloc(row->size + tabs * 8 + nonprint * 9 + 1);
++  row->render = malloc((size_t)allocsize);
++  if (!row->render) {
++    printf("Out of memory rendering a kilo row\n");
++    exit(1);
++  }
+   idx = 0;
+   for (j = 0; j < row->size; j++) {
+     if (row->chars[j] == TAB) {
+@@ -565,11 +578,16 @@ static void editorUpdateRow(erow *row) {
+ /* Insert a row at the specified position, shifting the other rows on the bottom
+  * if required. */
+ static void editorInsertRow(int at, const char *s, size_t len) {
+-  if (at > E.numrows)
++  if (at < 0 || at > E.numrows || len > (size_t)INT_MAX)
++    return;
++  size_t new_count = (size_t)E.numrows + 1U;
++  erow *new_rows = realloc(E.row, sizeof(erow) * new_count);
++  if (!new_rows)
+     return;
+-  E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
++  E.row = new_rows;
+   if (at != E.numrows) {
+-    memmove(E.row + at + 1, E.row + at, sizeof(E.row[0]) * (E.numrows - at));
++    size_t moved = (size_t)(E.numrows - at);
++    memmove(E.row + at + 1, E.row + at, sizeof(E.row[0]) * moved);
+     for (int j = at + 1; j <= E.numrows; j++)
+       E.row[j].idx++;
+   }
+@@ -603,7 +621,8 @@ static void editorDelRow(int at) {
+     return;
+   row = E.row + at;
+   editorFreeRow(row);
+-  memmove(E.row + at, E.row + at + 1, sizeof(E.row[0]) * (E.numrows - at - 1));
++  size_t moved = (size_t)(E.numrows - at - 1);
++  memmove(E.row + at, E.row + at + 1, sizeof(E.row[0]) * moved);
+   for (int j = at; j < E.numrows - 1; j++)
+     E.row[j].idx++;
+   E.numrows--;
+@@ -614,57 +633,76 @@ static void editorDelRow(int at) {
+  * Returns the pointer to the heap-allocated string and populate the
+  * integer pointed by 'buflen' with the size of the string, escluding
+  * the final nulterm. */
+-static char *editorRowsToString(int *buflen) {
+-  char *buf = NULL, *p;
+-  int totlen = 0;
+-  int j;
+-
+-  /* Compute count of bytes */
+-  for (j = 0; j < E.numrows; j++)
+-    totlen += E.row[j].size + 1; /* +1 is for "\n" at end of every row */
++static char *editorRowsToString(size_t *buflen) {
++  if (!buflen)
++    return NULL;
++
++  size_t totlen = 0U;
++  for (int j = 0; j < E.numrows; ++j) {
++    if (E.row[j].size > (size_t)-1 - totlen - 1U)
++      return NULL;
++    totlen += E.row[j].size + 1U;
++  }
++  if (totlen == (size_t)-1)
++    return NULL;
+   *buflen = totlen;
+-  totlen++; /* Also make space for nulterm */
+
+-  p = buf = malloc(totlen);
+-  for (j = 0; j < E.numrows; j++) {
+-    memcpy(p, E.row[j].chars, E.row[j].size);
+-    p += E.row[j].size;
+-    *p = '\n';
+-    p++;
++  char *buf = malloc(totlen + 1U);
++  if (!buf)
++    return NULL;
++  char *out = buf;
++  for (int j = 0; j < E.numrows; ++j) {
++    memcpy(out, E.row[j].chars, E.row[j].size);
++    out += E.row[j].size;
++    *out++ = '\n';
+   }
+-  *p = '\0';
++  *out = '\0';
+   return buf;
+ }
+
+ /* Insert a character at the specified position in a row, moving the remaining
+  * chars on the right if needed. */
+ static void editorRowInsertChar(erow *row, int at, int c) {
+-  if (at > row->size) {
+-    /* Pad the string with spaces if the insert location is outside the
+-     * current length by more than a single character. */
+-    int padlen = at - row->size;
+-    /* In the next line +2 means: new char and null term. */
+-    row->chars = realloc(row->chars, row->size + padlen + 2);
++  if (!row || at < 0 || at >= INT_MAX || c < 0 || c > UCHAR_MAX ||
++      row->size > (size_t)INT_MAX)
++    return;
++
++  size_t pos = (size_t)at;
++  size_t new_size = pos > row->size ? pos + 1U : row->size + 1U;
++  if (new_size > (size_t)INT_MAX)
++    return;
++
++  char *grown = realloc(row->chars, new_size + 1U);
++  if (!grown)
++    return;
++  row->chars = grown;
++
++  if (pos > row->size) {
++    size_t padlen = pos - row->size;
+     memset(row->chars + row->size, ' ', padlen);
+-    row->chars[row->size + padlen + 1] = '\0';
+-    row->size += padlen + 1;
+   } else {
+-    /* If we are in the middle of the string just make space for 1 new
+-     * char plus the (already existing) null term. */
+-    row->chars = realloc(row->chars, row->size + 2);
+-    memmove(row->chars + at + 1, row->chars + at, row->size - at + 1);
+-    row->size++;
++    memmove(row->chars + pos + 1U, row->chars + pos,
++            row->size - pos + 1U);
+   }
+-  row->chars[at] = c;
++  row->size = new_size;
++  row->chars[pos] = (char)(unsigned char)c;
++  row->chars[row->size] = '\0';
+   editorUpdateRow(row);
+   E.dirty++;
+ }
+
+ /* Append the string 's' at the end of a row */
+ static void editorRowAppendString(erow *row, char *s, size_t len) {
+-  row->chars = realloc(row->chars, row->size + len + 1);
++  if (!row || !s || row->size > (size_t)INT_MAX ||
++      len > (size_t)INT_MAX - row->size)
++    return;
++  size_t new_size = row->size + len;
++  char *grown = realloc(row->chars, new_size + 1U);
++  if (!grown)
++    return;
++  row->chars = grown;
+   memcpy(row->chars + row->size, s, len);
+-  row->size += len;
++  row->size = new_size;
+   row->chars[row->size] = '\0';
+   editorUpdateRow(row);
+   E.dirty++;
+@@ -672,11 +710,14 @@ static void editorRowAppendString(erow *row, char *s, size_t len) {
+
+ /* Delete the character at offset 'at' from the specified row. */
+ static void editorRowDelChar(erow *row, int at) {
+-  if (row->size <= at)
++  if (!row || at < 0)
+     return;
+-  memmove(row->chars + at, row->chars + at + 1, row->size - at);
+-  editorUpdateRow(row);
++  size_t pos = (size_t)at;
++  if (pos >= row->size)
++    return;
++  memmove(row->chars + pos, row->chars + pos + 1U, row->size - pos);
+   row->size--;
++  editorUpdateRow(row);
+   E.dirty++;
+ }
+
+@@ -717,16 +758,20 @@ static void editorInsertNewline(void) {
+   }
+   /* If the cursor is over the current line size, we want to conceptually
+    * think it's just over the last character. */
+-  if (filecol >= row->size)
+-    filecol = row->size;
++  if (filecol < 0)
++    filecol = 0;
++  size_t split = (size_t)filecol;
++  if (split > row->size)
++    split = row->size;
++  filecol = (int)split;
+   if (filecol == 0) {
+-    editorInsertRow(filerow, "", 0);
++    editorInsertRow(filerow, "", 0U);
+   } else {
+     /* We are in the middle of a line. Split it between two rows. */
+-    editorInsertRow(filerow + 1, row->chars + filecol, row->size - filecol);
++    editorInsertRow(filerow + 1, row->chars + split, row->size - split);
+     row = &E.row[filerow];
+-    row->chars[filecol] = '\0';
+-    row->size = filecol;
++    row->chars[split] = '\0';
++    row->size = split;
+     editorUpdateRow(row);
+   }
+ fixcursor:
+@@ -750,7 +795,7 @@ static void editorDelChar(void) {
+   if (filecol == 0) {
+     /* Handle the case of column 0, we need to move the current line
+      * on the right of the previous one. */
+-    filecol = E.row[filerow - 1].size;
++    filecol = (int)E.row[filerow - 1].size;
+     editorRowAppendString(&E.row[filerow - 1], row->chars, row->size);
+     editorDelRow(filerow);
+     row = NULL;
+@@ -867,21 +912,24 @@ static int editorOpen(char *filename) {
+  * whole create-or-overwrite.  (open(O_CREAT|O_TRUNC) is kernel-supported now
+  * too, but the positional whole-file write is simpler here.) */
+ static int editorSave(void) {
+-  int len;
++  size_t len = 0U;
+   char *buf = editorRowsToString(&len);
+-  if (!buf)
+-    return 1; /* OOM assembling the buffer: nothing safe to write */
++  if (!buf || len > (size_t)INT_MAX) {
++    free(buf);
++    return 1;
++  }
+
+-  int written = file_write(E.filename, buf, len, 0);
++  int write_len = (int)len;
++  int written = file_write(E.filename, buf, write_len, 0);
+   free(buf);
+
+-  if (written < 0 || written != len) {
++  if (written < 0 || written != write_len) {
+     editorSetStatusMessage("Can't save! I/O error (%d)", written);
+     return 1;
+   }
+
+   E.dirty = 0;
+-  editorSetStatusMessage("%d bytes written on disk", len);
++  editorSetStatusMessage("%lu bytes written on disk", (unsigned long)len);
+   return 0;
+ }
+
+@@ -893,19 +941,24 @@ static int editorSave(void) {
+  * output in a single call, to avoid flickering effects. */
+ struct abuf {
+   char *b;
+-  int len;
++  size_t len;
+ };
+
+-#define ABUF_INIT {NULL, 0}
++#define ABUF_INIT {NULL, 0U}
+
+ static void abAppend(struct abuf *ab, const char *s, int len) {
+-  char *new = realloc(ab->b, ab->len + len);
+-
+-  if (new == NULL)
++  if (!ab || !s || len <= 0)
++    return;
++  size_t add = (size_t)len;
++  if (add > (size_t)-1 - ab->len)
++    return;
++  size_t new_len = ab->len + add;
++  char *new_buf = realloc(ab->b, new_len);
++  if (!new_buf)
+     return;
+-  memcpy(new + ab->len, s, len);
+-  ab->b = new;
+-  ab->len += len;
++  memcpy(new_buf + ab->len, s, add);
++  ab->b = new_buf;
++  ab->len = new_len;
+ }
+
+ static void abFree(struct abuf *ab) { free(ab->b); }
+@@ -950,20 +1003,27 @@ static void editorRefreshScreen(void) {
+
+     r = &E.row[filerow];
+
+-    int len = r->rsize - E.coloff;
++    size_t coloff = E.coloff > 0 ? (size_t)E.coloff : 0U;
++    size_t available = coloff < r->rsize ? r->rsize - coloff : 0U;
++    int len = 0;
++    if (E.screencols > 0 && available > 0U) {
++      size_t visible = available;
++      if (visible > (size_t)E.screencols)
++        visible = (size_t)E.screencols;
++      len = (int)visible;
++    }
+     int current_color = -1;
+     if (len > 0) {
+-      if (len > E.screencols)
+-        len = E.screencols;
+-      char *c = r->render + E.coloff;
+-      unsigned char *hl = r->hl + E.coloff;
++      char *c = r->render + coloff;
++      unsigned char *hl = r->hl + coloff;
+       int j;
+       for (j = 0; j < len; j++) {
+         if (hl[j] == HL_NONPRINT) {
+           char sym;
+           abAppend(&ab, "\x1b[7m", 4);
+-          if (c[j] <= 26)
+-            sym = '@' + c[j];
++          unsigned char byte = (unsigned char)c[j];
++          if (byte <= 26U)
++            sym = (char)('@' + byte);
+           else
+             sym = '?';
+           abAppend(&ab, &sym, 1);
+@@ -1015,9 +1075,16 @@ static void editorRefreshScreen(void) {
+
+   /* Second row depends on E.statusmsg and the status message update time. */
+   abAppend(&ab, "\x1b[0K", 4);
+-  int msglen = strlen(E.statusmsg);
+-  if (msglen && OS1_time_now() - E.statusmsg_time < 5000)
+-    abAppend(&ab, E.statusmsg, msglen <= E.screencols ? msglen : E.screencols);
++  size_t msglen = strlen(E.statusmsg);
++  if (msglen > 0U && OS1_time_now() - E.statusmsg_time < 5000) {
++    size_t visible = msglen;
++    if (E.screencols <= 0)
++      visible = 0U;
++    else if (visible > (size_t)E.screencols)
++      visible = (size_t)E.screencols;
++    if (visible > 0U)
++      abAppend(&ab, E.statusmsg, (int)visible);
++  }
+
+   /* Put cursor at its current position. Note that the horizontal position
+    * at which the cursor is displayed may be different compared to 'E.cx'
+@@ -1028,13 +1095,15 @@ static void editorRefreshScreen(void) {
+   erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+   if (row) {
+     for (j = E.coloff; j < (E.cx + E.coloff); j++) {
+-      if (j < row->size && row->chars[j] == TAB)
++      if (j >= 0 && (size_t)j < row->size && row->chars[j] == TAB)
+         cx += 7 - ((cx) % 8);
+       cx++;
+     }
+   }
+   snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, cx);
+-  abAppend(&ab, buf, strlen(buf));
++  size_t cursor_seq_len = strlen(buf);
++  if (cursor_seq_len <= (size_t)INT_MAX)
++    abAppend(&ab, buf, (int)cursor_seq_len);
+   abAppend(&ab, "\x1b[?25h", 6); /* Show cursor. */
+   write(STDOUT_FILENO, ab.b, ab.len);
+   abFree(&ab);
+@@ -1103,7 +1172,7 @@ static void editorFind(int fd) {
+       find_next = -1;
+     } else if (isprint(c)) {
+       if (qlen < KILO_QUERY_LEN) {
+-        query[qlen++] = c;
++        query[qlen++] = (char)(unsigned char)c;
+         query[qlen] = '\0';
+         last_match = -1;
+       }
+@@ -1125,7 +1194,12 @@ static void editorFind(int fd) {
+           current = 0;
+         match = strstr(E.row[current].render, query);
+         if (match) {
+-          match_offset = match - E.row[current].render;
++          ptrdiff_t delta = match - E.row[current].render;
++          if (delta < 0 || delta > INT_MAX) {
++            match = NULL;
++            continue;
++          }
++          match_offset = (int)delta;
+           break;
+         }
+       }
+@@ -1141,7 +1215,7 @@ static void editorFind(int fd) {
+           saved_hl_line = current;
+           saved_hl = malloc(row->rsize);
+           memcpy(saved_hl, row->hl, row->rsize);
+-          memset(row->hl + match_offset, HL_MATCH, qlen);
++          memset(row->hl + match_offset, HL_MATCH, (size_t)qlen);
+         }
+         E.cy = 0;
+         E.cx = match_offset;
+@@ -1164,8 +1238,10 @@ static void editorFind(int fd) {
+ static void editorMoveCursor(int key) {
+   int filerow = E.rowoff + E.cy;
+   int filecol = E.coloff + E.cx;
+-  int rowlen;
++  int rowlen = 0;
+   erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
++  if (row)
++    rowlen = (int)row->size;
+
+   switch (key) {
+   case ARROW_LEFT:
+@@ -1175,7 +1251,7 @@ static void editorMoveCursor(int key) {
+       } else {
+         if (filerow > 0) {
+           E.cy--;
+-          E.cx = E.row[filerow - 1].size;
++          E.cx = (int)E.row[filerow - 1].size;
+           if (E.cx > E.screencols - 1) {
+             E.coloff = E.cx - E.screencols + 1;
+             E.cx = E.screencols - 1;
+@@ -1187,13 +1263,13 @@ static void editorMoveCursor(int key) {
+     }
+     break;
+   case ARROW_RIGHT:
+-    if (row && filecol < row->size) {
++    if (row && filecol < rowlen) {
+       if (E.cx == E.screencols - 1) {
+         E.coloff++;
+       } else {
+         E.cx += 1;
+       }
+-    } else if (row && filecol == row->size) {
++    } else if (row && filecol == rowlen) {
+       E.cx = 0;
+       E.coloff = 0;
+       if (E.cy == E.screenrows - 1) {
+@@ -1225,7 +1301,7 @@ static void editorMoveCursor(int key) {
+   filerow = E.rowoff + E.cy;
+   filecol = E.coloff + E.cx;
+   row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+-  rowlen = row ? row->size : 0;
++  rowlen = row ? (int)row->size : 0;
+   if (filecol > rowlen) {
+     E.cx -= filecol - rowlen;
+     if (E.cx < 0) {

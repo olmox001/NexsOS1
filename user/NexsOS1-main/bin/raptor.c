@@ -128,9 +128,15 @@ static unsigned int rng_next(void) {
 }
 
 static int rng_range(int lo, int hi) {
-  if (hi <= lo)
+  long long lo64 = (long long)lo;
+  long long hi64 = (long long)hi;
+  if (hi64 <= lo64)
     return lo;
-  return lo + (int)(rng_next() % (unsigned)(hi - lo + 1));
+  long long span = hi64 - lo64 + 1LL;
+  unsigned long long offset =
+      (unsigned long long)rng_next() % (unsigned long long)span;
+  long long result = (long long)lo + (long long)offset;
+  return (int)result; /* result is mathematically bounded by [lo, hi]. */
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1410,7 +1416,9 @@ static void render(SDL_Surface *surf) {
 
 int main(void) {
   int pid = get_pid();
-  rng_state = (unsigned int)get_time() ^ (unsigned int)(pid * 2654435761u);
+  unsigned int pid_seed = pid >= 0 ? (unsigned int)pid : 0U;
+  rng_state =
+      (unsigned int)get_time() ^ (pid_seed * UINT32_C(2654435761));
   if (rng_state == 0)
     rng_state = 0x9e3779b9u;
 
@@ -1479,7 +1487,7 @@ int main(void) {
         if (sc == SDL_SCANCODE_R && state == STATE_GAMEOVER)
           restart_edge = 1;
         if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_5)
-          weapon_select = sc - SDL_SCANCODE_1;
+          weapon_select = (int)sc - (int)SDL_SCANCODE_1;
       }
     }
     if (!running)

@@ -32,7 +32,6 @@
  *                  dominated by stb_truetype + stb_image in lib.o and DWARF.
  */
 #include <font.h>
-#include <font.h> /* NOTE(USR-FONTMAN-02): duplicate include; harmless with guards */
 #include <os1.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -169,6 +168,12 @@ int main(int argc, char **argv) {
 
   const char *path = argv[1];
   int size = atoi(argv[2]);
+  /* font_header stores size in uint16_t while per-glyph dimensions are uint8_t.
+   * Bound the requested raster height so every later narrowing can be proven. */
+  if (size <= 0 || size > 255) {
+    printf("FontMan: size must be in 1..255 pixels\n");
+    return 1;
+  }
 
   printf("FontMan: Loading %s at size %d...\n", path, size);
 
@@ -178,12 +183,26 @@ int main(int argc, char **argv) {
     printf("Error: Could not open font file %s\n", path);
     return 1;
   }
-  fseek(fp, 0, SEEK_END);
+  if (fseek(fp, 0, SEEK_END) != 0) {
+    fclose(fp);
+    return 1;
+  }
   long ttf_size = ftell(fp);
-  fseek(fp, 0, SEEK_SET);
-
-  unsigned char *ttf_buffer = malloc(ttf_size);
-  fread(ttf_buffer, 1, ttf_size, fp);
+  if (ttf_size <= 0 || fseek(fp, 0, SEEK_SET) != 0) {
+    fclose(fp);
+    return 1;
+  }
+  size_t ttf_bytes = (size_t)ttf_size;
+  unsigned char *ttf_buffer = (unsigned char *)malloc(ttf_bytes);
+  if (!ttf_buffer) {
+    fclose(fp);
+    return 1;
+  }
+  if (fread(ttf_buffer, 1U, ttf_bytes, fp) != ttf_bytes) {
+    fclose(fp);
+    free(ttf_buffer);
+    return 1;
+  }
   fclose(fp);
 
   /* Initialise stb_truetype font parser.
@@ -193,84 +212,163 @@ int main(int argc, char **argv) {
   if (!stbtt_InitFont(&font, ttf_buffer,
                       stbtt_GetFontOffsetForIndex(ttf_buffer, 0))) {
     printf("Error: stbtt_InitFont failed\n");
+    free(ttf_buffer);
     return 1;
   }
 
-  int first_char = 32;
-  int num_chars = 224; /* Covers codepoints 32 (space) through 255 */
+  const int first_char = 32;
+  const size_t num_chars = 224U; /* Covers codepoints 32 through 255. */
 
   struct font_glyph_info *glyphs =
-      malloc(sizeof(struct font_glyph_info) * num_chars);
-  /* Start with 64KB bitmap capacity; doubled each time a glyph would overflow.
-   */
-  uint32_t bitmap_capacity = 64 * 1024;
-  uint8_t *bitmap = malloc(bitmap_capacity);
-  uint32_t bitmap_offset = 0; /* Current write position in the bitmap buffer */
+      (struct font_glyph_info *)malloc(sizeof(*glyphs) * num_chars);
+  /* Start with 64 KiB and keep byte accounting in size_t until the on-disk
+   * uint32_t boundary is committed. */
+  size_t bitmap_capacity = 64U * 1024U;
+  uint8_t *bitmap = (uint8_t *)malloc(bitmap_capacity);
+  size_t bitmap_offset = 0U;
+  if (!glyphs || !bitmap) {
+    free(glyphs);
+    free(bitmap);
+    free(ttf_buffer);
+    return 1;
+  }
 
   /* Compute scale factor so the font renders at the requested pixel height. */
   float scale = stbtt_ScaleForPixelHeight(&font, (float)size);
   int ascent, descent, lineGap;
   stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
 
-  for (int i = 0; i < num_chars; i++) {
-    int codepoint = first_char + i;
+  for (size_t i = 0U; i < num_chars; ++i) {
+    int codepoint = first_char + (int)i;
     int w, h, xoff, yoff;
     /* Rasterise one glyph; pixels is a heap-allocated alpha bitmap. */
     unsigned char *pixels = stbtt_GetCodepointBitmap(&font, 0, scale, codepoint,
                                                      &w, &h, &xoff, &yoff);
+    if (w < 0 || h < 0 || w > 255 || h > 255 ||
+        xoff < -32768 || xoff > 32767 || yoff < -32768 || yoff > 32767) {
+      if (pixels)
+        stbtt_FreeBitmap(pixels, NULL);
+      free(bitmap);
+      free(glyphs);
+      free(ttf_buffer);
+      return 1;
+    }
 
-    /* Grow bitmap buffer if this glyph would overflow it.
-     * NOTE: realloc here can trigger the userland malloc coalesce path.
-     * No overflow guard on bitmap_capacity*2 (no check for wrap). */
-    if (bitmap_offset + (w * h) > bitmap_capacity) {
-      bitmap_capacity *= 2;
-      bitmap = realloc(bitmap, bitmap_capacity);
+    size_t glyph_bytes = (size_t)w * (size_t)h;
+    if (glyph_bytes > (size_t)-1 - bitmap_offset) {
+      if (pixels)
+        stbtt_FreeBitmap(pixels, NULL);
+      free(bitmap);
+      free(glyphs);
+      free(ttf_buffer);
+      return 1;
+    }
+    size_t required = bitmap_offset + glyph_bytes;
+    size_t old_capacity = bitmap_capacity;
+    for (unsigned grow = 0U;
+         required > bitmap_capacity && grow < 16U; ++grow) {
+      if (bitmap_capacity > (size_t)-1 / 2U)
+        break;
+      bitmap_capacity *= 2U;
+    }
+    if (required > bitmap_capacity || bitmap_capacity > UINT32_MAX) {
+      if (pixels)
+        stbtt_FreeBitmap(pixels, NULL);
+      free(bitmap);
+      free(glyphs);
+      free(ttf_buffer);
+      return 1;
+    }
+    if (bitmap_capacity != old_capacity) {
+      uint8_t *grown = (uint8_t *)realloc(bitmap, bitmap_capacity);
+      if (!grown) {
+        if (pixels)
+          stbtt_FreeBitmap(pixels, NULL);
+        free(bitmap);
+        free(glyphs);
+        free(ttf_buffer);
+        return 1;
+      }
+      bitmap = grown;
     }
 
     int advance;
     stbtt_GetCodepointHMetrics(&font, codepoint, &advance, NULL);
+    float scaled_advance = (float)advance * scale;
+    if (scaled_advance < -32768.0f || scaled_advance > 32767.0f) {
+      if (pixels)
+        stbtt_FreeBitmap(pixels, NULL);
+      free(bitmap);
+      free(glyphs);
+      free(ttf_buffer);
+      return 1;
+    }
 
-    /* Fill glyph metrics; advance is scaled from font units to pixels. */
     glyphs[i].x0 = (int16_t)xoff;
     glyphs[i].y0 = (int16_t)yoff;
     glyphs[i].width = (uint8_t)w;
     glyphs[i].height = (uint8_t)h;
-    glyphs[i].advance = (int16_t)(advance * scale);
-    glyphs[i].data_offset = bitmap_offset;
+    glyphs[i].advance = (int16_t)scaled_advance;
+    glyphs[i].data_offset = (uint32_t)bitmap_offset;
 
     if (pixels) {
-      memcpy(bitmap + bitmap_offset, pixels, w * h);
+      memcpy(bitmap + bitmap_offset, pixels, glyph_bytes);
       stbtt_FreeBitmap(pixels, NULL);
-      bitmap_offset += (w * h);
+      bitmap_offset = required;
     }
   }
 
   /* Prepare font_header; descent is stored as a positive value. */
+  float scaled_ascent = (float)ascent * scale;
+  float scaled_descent = -(float)descent * scale;
+  if (scaled_ascent < 0.0f || scaled_ascent > 65535.0f ||
+      scaled_descent < 0.0f || scaled_descent > 65535.0f ||
+      bitmap_offset > UINT32_MAX) {
+    free(bitmap);
+    free(glyphs);
+    free(ttf_buffer);
+    return 1;
+  }
+
   struct font_header header;
   header.magic = FONT_MAGIC;
   header.size = (uint16_t)size;
   header.first_char = (uint16_t)first_char;
   header.num_chars = (uint16_t)num_chars;
-  header.ascent = (uint16_t)(ascent * scale);
-  header.descent =
-      (uint16_t)(-descent * scale); /* descent is negative in font units */
-  header.bitmap_size = bitmap_offset;
+  header.ascent = (uint16_t)scaled_ascent;
+  header.descent = (uint16_t)scaled_descent;
+  header.bitmap_size = (uint32_t)bitmap_offset;
 
   /* Pack everything into a single contiguous buffer:
    *   [ font_header ][ font_glyph_info * num_chars ][ raw alpha bitmap ]
    * final_data is passed to the kernel and MUST remain allocated (see
    * USR-FONTMAN-01). */
-  size_t total_size = sizeof(header) +
-                      (sizeof(struct font_glyph_info) * num_chars) +
-                      bitmap_offset;
+  size_t glyph_table_bytes = sizeof(struct font_glyph_info) * num_chars;
+  if (glyph_table_bytes > (size_t)-1 - sizeof(header) ||
+      bitmap_offset > (size_t)-1 - sizeof(header) - glyph_table_bytes) {
+    free(bitmap);
+    free(glyphs);
+    free(ttf_buffer);
+    return 1;
+  }
+  size_t total_size = sizeof(header) + glyph_table_bytes + bitmap_offset;
   void *final_data = malloc(total_size);
+  if (!final_data) {
+    free(bitmap);
+    free(glyphs);
+    free(ttf_buffer);
+    return 1;
+  }
 
   uint8_t *ptr = (uint8_t *)final_data;
   memcpy(ptr, &header, sizeof(header));
   ptr += sizeof(header);
-  memcpy(ptr, glyphs, sizeof(struct font_glyph_info) * num_chars);
-  ptr += sizeof(struct font_glyph_info) * num_chars;
+  memcpy(ptr, glyphs, glyph_table_bytes);
+  ptr += glyph_table_bytes;
   memcpy(ptr, bitmap, bitmap_offset);
+  free(bitmap);
+  free(glyphs);
+  free(ttf_buffer);
 
   printf("FontMan: Packed font size %zu bytes. Calling set_font...\n",
          total_size);

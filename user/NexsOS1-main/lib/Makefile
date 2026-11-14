@@ -12,7 +12,7 @@ include $(NXSDK_ROOT)/config/userkit-paths.mk
 include catalog.mk
 ifeq ($(ARCH),amd64)
   CROSS_COMPILE ?= $(NEXS_X86_64_TARGET)-
-  ARCH_CFLAGS := -DARCH_AMD64 -mno-red-zone -mcmodel=large
+  ARCH_CFLAGS := -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wa,--noexecstack
 else ifeq ($(ARCH),aarch64)
   CROSS_COMPILE ?= $(NEXS_AARCH64_TARGET)-
   ARCH_CFLAGS := -DARCH_AARCH64 -mcpu=cortex-a57

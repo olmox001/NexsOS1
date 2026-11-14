@@ -665,20 +665,34 @@ int main(void) {
         /* Build a variable-size request: header + [redir][cwd\0][argv\0...]. */
         struct execsvc_spawn_hdr hdr;
         char body[256];
-        unsigned int off = 0;
+        size_t off = 0U;
         const char *a0 = "/bin/lua", *a1 = "-e", *a2 = "os.exit(0)";
+        size_t a0_len = strlen(a0) + 1U;
+        size_t a1_len = strlen(a1) + 1U;
+        size_t a2_len = strlen(a2) + 1U;
         memset(&hdr, 0, sizeof(hdr));
         hdr.version = EXECSVC_VERSION;
         hdr.argc = 3;
         hdr.nredir = 0;
         body[off++] = '\0'; /* cwd: empty */
-        memcpy(body + off, a0, strlen(a0) + 1);
-        off += strlen(a0) + 1;
-        memcpy(body + off, a1, strlen(a1) + 1);
-        off += strlen(a1) + 1;
-        memcpy(body + off, a2, strlen(a2) + 1);
-        off += strlen(a2) + 1;
-        hdr.body_len = off;
+        if (a0_len > sizeof(body) - off ||
+            a1_len > sizeof(body) - off - a0_len ||
+            a2_len > sizeof(body) - off - a0_len - a1_len) {
+          check(win_id, "exec-request-body-bounded", 0);
+          close(reqp[0]);
+          close(reqp[1]);
+          close(repp[0]);
+          close(repp[1]);
+          (void)OS1low_handle_close(svc);
+          return failures ? 1 : 0;
+        }
+        memcpy(body + off, a0, a0_len);
+        off += a0_len;
+        memcpy(body + off, a1, a1_len);
+        off += a1_len;
+        memcpy(body + off, a2, a2_len);
+        off += a2_len;
+        hdr.body_len = (unsigned int)off;
 
         struct ipc_message m;
         memset(&m, 0, sizeof(m));

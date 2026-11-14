@@ -163,7 +163,7 @@ static inline int nxmemstat_render_if_changed(int win_id,
 /* nxmemstat_csv_line - format one MEMSTAT CSV record (headless --log mode),
  * matching tools/analyze_drift.py's column order.  't_s' is seconds since the
  * logger started; 'cycles' is not known to the service, emitted as 0. */
-static inline int nxmemstat_csv_line(char *buf, int size,
+static inline int nxmemstat_csv_line(char *buf, size_t size,
                                      const struct os1_sysstats *s,
                                      unsigned long t_s) {
   return snprintf(
