@@ -30,7 +30,7 @@ def run(cmd: list[str], cwd: Path | None = None) -> str:
 
 
 def upstream_programs(repo_root: Path) -> set[str]:
-    coreutils_dir = repo_root / "user" / "bin" / "coreutils"
+    coreutils_dir = repo_root / "user" / "BINEXTERNAL" / "coreutils"
     if not coreutils_dir.is_dir():
         raise FileNotFoundError(f"missing coreutils source tree: {coreutils_dir}")
     script = coreutils_dir / "build-aux" / "gen-lists-of-programs.sh"

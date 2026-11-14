@@ -4,13 +4,17 @@
   "source_roots": [
     "kernel",
     "system",
-    "user/sbin",
-    "user/sys",
-    "user/portability"
+    "user/NexsOS1-main/sys",
+    "user/NexsOS1-main/portability",
+    "user/NexsOS1-main/bin",
+    "user/USERKIT/services",
+    "user/USERKIT/sbin",
+    "user/USERKIT/tests",
+    "user/demo1"
   ],
   "first_party_root_globs": [
-    "user/bin/*.c",
-    "user/bin/*.h"
+    "user/NexsOS1-main/bin/*.c",
+    "user/NexsOS1-main/bin/*.h"
   ],
   "extensions": [
     ".c",
@@ -24,12 +28,8 @@
     "kernel/HAL/references/",
     "kernel/external/",
     "kernel/HAL/tests/build/",
-    "user/lib/",
-    "user/bin/base-nexs/",
-    "user/bin/busybox/",
-    "user/bin/coreutils/",
-    "user/bin/doom/",
-    "user/bin/kilo/"
+    "user/LIBEXTERNAL/",
+    "user/BINEXTERNAL/"
   ],
   "stale_suffixes": [
     ".c.new",
@@ -81,7 +81,7 @@
     "kernel/HAL/core/",
     "kernel/include/drivers/",
     "kernel/drivers/",
-    "system/lib/extensions/services/execsvc_client.c"
+    "system/lib/extensions/USERKIT/nxexecd/client.c"
   ],
   "function_max_lines": 50,
   "audit_arches": [
@@ -89,47 +89,47 @@
     "aarch64"
   ],
   "limits": {
-    "system/include/api/os1_time_service.h::OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT": {
+    "system/lib/extensions/USERKIT/nxtimerdd/include/os1_time_service.h::OS1_TIME_SERVICE_EPOCH_REQUEST_LIMIT": {
       "kind": "security_policy",
       "provenance": "supervised service generation policy",
       "rationale": "bounds requests handled by one nxtimerdd process generation before nxinit rotates the service"
     },
-    "user/sys/services/nxtimerdd.c::TIMERD_MAX_REPLY": {
+    "user/USERKIT/services/nxtimerdd/src/main.c::TIMERD_MAX_REPLY": {
       "kind": "wire_contract",
       "provenance": "sizeof(struct os1_time_service_timer_stats)",
       "rationale": "largest TIME service response defined by the generated TIME ABI contract"
     },
-    "user/sys/services/nxtimerdd.c::TIMERD_CLAIM_TRIES": {
+    "user/USERKIT/services/nxtimerdd/src/main.c::TIMERD_CLAIM_TRIES": {
       "kind": "service_restart_policy",
       "provenance": "nxinit supervised named-port handover window",
       "rationale": "bounds name-claim retries after a prior service receiver is being torn down"
     },
-    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_CHILDREN": {
+    "user/NexsOS1-main/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_CHILDREN": {
       "kind": "resource_budget",
       "provenance": "kernel MAX_PROCS_PER_PARENT=32; diagnostic uses 24",
       "rationale": "keeps eight child slots of per-parent quota outside the stress swarm"
     },
-    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_MIN_ACTIVE": {
+    "user/NexsOS1-main/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_MIN_ACTIVE": {
       "kind": "test_acceptance",
       "provenance": "16 of 24 requested stress children",
       "rationale": "requires at least two thirds of requested sleepers to be concurrently armed"
     },
-    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_CHILD_SLEEP_MS": {
+    "user/NexsOS1-main/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_CHILD_SLEEP_MS": {
       "kind": "test_window",
       "provenance": "1500 ms diagnostic sleeper lifetime",
       "rationale": "keeps child timers armed long enough for bounded spawn and stats sampling on emulated aarch64"
     },
-    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_ARM_POLLS": {
+    "user/NexsOS1-main/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_ARM_POLLS": {
       "kind": "test_timeout",
       "provenance": "40 polls at TIMERDIAG_STRESS_POLL_MS",
       "rationale": "bounds concurrent-arm observation to 400 ms"
     },
-    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_REAP_POLLS": {
+    "user/NexsOS1-main/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_REAP_POLLS": {
       "kind": "test_timeout",
       "provenance": "400 polls at TIMERDIAG_STRESS_POLL_MS",
       "rationale": "bounds child reap observation to 4 seconds"
     },
-    "user/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_POLL_MS": {
+    "user/NexsOS1-main/sys/bin/nxtimerdiag.c::TIMERDIAG_STRESS_POLL_MS": {
       "kind": "test_quantum",
       "provenance": "10 ms diagnostic polling quantum",
       "rationale": "limits observation overhead while preserving a finite stress timeout"
@@ -139,12 +139,12 @@
       "provenance": "NX-CORE kernel/include/abi/sched ABI process pool count 64; dynamic CPU idle band separate",
       "rationale": "public process inventory and userland test resource budgeting use the same bound"
     },
-    "user/sys/bin/nxtestrunner.c::NXTEST_POLL_LIMIT": {
+    "user/NexsOS1-main/sys/bin/nxtestrunner.c::NXTEST_POLL_LIMIT": {
       "kind": "test_timeout",
       "provenance": "6000 x NXTEST_POLL_MS=20ms, at most 120s for each real child",
       "rationale": "failed or hung userland test must fail and be killed, not falsely count as pass"
     },
-    "user/sys/bin/nxtestrunner.c::NXTEST_REAP_LIMIT": {
+    "user/NexsOS1-main/sys/bin/nxtestrunner.c::NXTEST_REAP_LIMIT": {
       "kind": "test_timeout",
       "provenance": "20 x NXTEST_POLL_MS=20ms, 400ms bounded post-kill reap",
       "rationale": "failed child teardown is reported without indefinite waiting"
@@ -154,82 +154,82 @@
       "provenance": "96-byte immutable bootstrap executable path from verified on-image registry import",
       "rationale": "bounds K3 object key resolution and executable-name validation before machine process creation"
     },
-    "system/include/api/nxmanage.h::NXMANAGE_NAME_MAX": {
+    "system/lib/extensions/USERKIT/manager/include/nxmanage.h::NXMANAGE_NAME_MAX": {
       "kind": "service_registry_contract",
       "provenance": "maximum 23 service-name bytes plus terminator in 64-byte service metadata PORT payload",
       "rationale": "bounds canonical system.manage.service.<name> registry names below kernel MAX_KEY_LEN=64"
     },
-    "system/include/api/nxpax_service.h::NXPAX_MAX_PROBE": {
+    "system/lib/extensions/USERKIT/nxpaxd/include/nxpax_service.h::NXPAX_MAX_PROBE": {
       "kind": "wire_contract",
       "provenance": "OS1_NXPAX_MAX_WINDOW_RECORDS in nxpax.h",
       "rationale": "bounds exactly the NXPAX ABI historical reader window"
     },
-    "user/sys/services/nxcompositor.c::NXCOMPOSITOR_MAX_WINDOWS": {
+    "user/USERKIT/services/nxcompositor/src/main.c::NXCOMPOSITOR_MAX_WINDOWS": {
       "kind": "screen_resource_contract",
       "provenance": "existing window enumeration ABI maximum of 40",
       "rationale": "bounds per-frame window snapshots in user compositor"
     },
-    "user/sys/services/nxcompositor.c::NXCOMPOSITOR_MAX_PIXELS": {
+    "user/USERKIT/services/nxcompositor/src/main.c::NXCOMPOSITOR_MAX_PIXELS": {
       "kind": "screen_resource_contract",
       "provenance": "16 Mi pixel present/snapshot buffer validation in original compositor",
       "rationale": "bounds userland allocation and composition to 64 MiB per buffer"
     },
-    "user/sys/services/nxmoused.c::MAX_WINDOWS": {
+    "user/USERKIT/services/nxmoused/src/main.c::MAX_WINDOWS": {
       "kind": "screen_resource_contract",
       "provenance": "40 legacy window enumeration entries",
       "rationale": "bounded pointer hit-test snapshot scan"
     },
-    "user/sys/services/nxntfy_srv.c::WARN_DEDUP_MAX": {
+    "user/USERKIT/services/nxntfy_srv/src/main.c::WARN_DEDUP_MAX": {
       "kind": "notification_policy",
       "provenance": "existing fixed warning deduplication store, 16 entries",
       "rationale": "bounds deduplicated notification state without unbounded userland growth"
     },
-    "user/sys/services/nxmoused.c::NX_MOUSE_MAX_DEVICES": {
+    "user/USERKIT/services/nxmoused/src/main.c::NX_MOUSE_MAX_DEVICES": {
       "kind": "wire_contract",
       "provenance": "system/include/api/os1_input.h: os1_raw_input_event_v1.device_id is uint8_t, exactly 256 representable values",
       "rationale": "index a per-device 3-button state array for every representable device_id (0..255) without narrowing or leaking global mutable state"
     },
-    "system/include/api/os1_tty.h::OS1_TTY_COLS_MAX": {
+    "system/lib/extensions/USERKIT/nxttyd/include/tty_model.h::OS1_TTY_COLS_MAX": {
       "kind": "resource_budget",
       "provenance": "1024px / 5px minimal validated Rewir cell width = 204 visible columns; capacity 256 bounds the reflow grid",
       "rationale": "Fixed logical projection capacity, screen rows reconstructed from independent retained VT byte history"
     },
-    "system/include/api/os1_tty.h::OS1_TTY_ROWS_MAX": {
+    "system/lib/extensions/USERKIT/nxttyd/include/tty_model.h::OS1_TTY_ROWS_MAX": {
       "kind": "resource_budget",
       "provenance": "768px / 8px minimal validated Rewir cell height = 96 visible rows; capacity 128 bounds the reflow grid",
       "rationale": "Fixed visible row projection capacity, logical hard/soft lines regenerated from retained VT history"
     },
-    "system/include/api/os1_tty.h::OS1_TTY_SURFACE_W_MAX": {
+    "system/lib/extensions/USERKIT/nxttyd/include/tty_model.h::OS1_TTY_SURFACE_W_MAX": {
       "kind": "visible-pixel-width",
       "provenance": "Existing nxttyd TTY_MAX_PIXELS=1024x768 session design; width cap 1024 px",
       "rationale": "Bound framebuffer width independently of text-cell storage"
     },
-    "system/include/api/os1_tty.h::OS1_TTY_SURFACE_H_MAX": {
+    "system/lib/extensions/USERKIT/nxttyd/include/tty_model.h::OS1_TTY_SURFACE_H_MAX": {
       "kind": "visible-pixel-height",
       "provenance": "Existing nxttyd TTY_MAX_PIXELS=1024x768 session design; height cap 768 px",
       "rationale": "Bound framebuffer height independently of text-cell storage"
     },
-    "system/include/api/os1_tty.h::OS1_TTY_CSI_MAX": {
+    "system/lib/extensions/USERKIT/nxttyd/include/tty_model.h::OS1_TTY_CSI_MAX": {
       "kind": "interface_compatibility",
       "provenance": "kernel/include/kernel/term.h struct terminal escape_buf[32]",
       "rationale": "retains the existing CSI parser's exact bounded escape buffer protocol"
     },
-    "system/include/api/os1_tty.h::OS1_TTY_FEED_MAX": {
+    "system/lib/extensions/USERKIT/nxttyd/include/tty_model.h::OS1_TTY_FEED_MAX": {
       "kind": "operation_budget",
       "provenance": "kernel/core/object.c OBJ_MAX_IO_BYTES and the session's 64-byte PORT record; 4096 bytes is an explicit 64-message batch ceiling",
       "rationale": "bounds every VT parser write operation regardless of an untrusted caller byte count"
     },
-    "user/sys/services/nxttyd.c::TTY_MAX_PIXELS": {
+    "user/USERKIT/services/nxttyd/src/main.c::TTY_MAX_PIXELS": {
       "kind": "resource_budget",
       "provenance": "kernel/graphics/compositor.c 4096x4096 maximum window; session uses 1024x768 maximum guarded by TTY_MAX_PIXELS and its BSS array",
       "rationale": "limits one session raster buffer to 3 MiB; explicitly less than kernel's window allocation cap"
     },
-    "system/include/api/execsvc.h::EXECSVC_LOCAL_ARG_MAX": {
+    "system/lib/extensions/USERKIT/nxexecd/include/execsvc.h::EXECSVC_LOCAL_ARG_MAX": {
       "kind": "kernel_spawn_argv_contract",
-      "provenance": "kernel/core/syscall_dispatch.c SPAWN_MAX_ARGS=16 and user/sys/bin/nxexec.h NXEXEC_ARGV_MAX=16",
+      "provenance": "kernel/core/syscall_dispatch.c SPAWN_MAX_ARGS=16 and system/lib/extensions/USERKIT/nxexecd/include/nxexec.h NXEXEC_ARGV_MAX=16",
       "rationale": "The local execution and hosted-argv arrays must remain within the 16-entry kernel spawn syscall argument-vector limit; hosted reserves one entry for nxexec."
     },
-    "system/include/api/os1_tty.h::OS1_TTY_HISTORY_BYTES": {
+    "system/lib/extensions/USERKIT/nxttyd/include/tty_model.h::OS1_TTY_HISTORY_BYTES": {
       "kind": "bounded_terminal_scrollback",
       "provenance": "16 x OS1_TTY_FEED_MAX(4096) bounded VT input blocks per retained session, independent of OS1_TTY_SURFACE_W_MAX/H_MAX",
       "rationale": "64 KiB retained VT stream per session, in fixed userland memory; resize replays only this bound and a full-line-prefix rollover caps memory without pixel coupling"

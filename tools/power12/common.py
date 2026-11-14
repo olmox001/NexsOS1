@@ -57,6 +57,18 @@ def source_arches(rel: str, policy: dict) -> list[str]:
     # real cross-builds remain the architecture-specific R10 evidence.
     return ["amd64"]
 
+def project_include_dirs() -> list[str]:
+    catalog = ROOT / "user/NexsOS1-main/lib/catalog.mk"
+    prefix = "NEXSOS1_LIB_INCLUDE_REL :="
+    if not catalog.is_file():
+        return []
+    for raw in catalog.read_text(errors="replace").splitlines():
+        line = raw.strip()
+        if line.startswith(prefix):
+            values = line[len(prefix):].strip().split()
+            return [f"user/NexsOS1-main/lib/{value}" for value in values]
+    return []
+
 def clang_args(rel: str, arch: str) -> list[str]:
     if arch == "host":
         target_args = []
@@ -84,29 +96,42 @@ def clang_args(rel: str, arch: str) -> list[str]:
     include_dirs = [
         "kernel/HAL", "kernel/HAL/include", arch_inc,
         "kernel/include", "kernel/include/abi", "kernel/include/api",
-        "system/include/contract", "system/include/api", "system/tools/include",
-        "user/lib/stb", "user/lib/pl_mpeg", "user/lib/sdl/include",
-        "user/lib/lua", "user/lib/portability/lua",
-        "user/portability/coreutils", "user/portability/gnulib",
-        "user/lib/gnulib/lib", "user/bin/coreutils/gnulib/lib",
+        "system/include/contract", "system/include/api", "system/external/stb",
+        "system/lib/extensions/icon/include", "system/lib/extensions/input/include",
+        "system/lib/extensions/look/include",
+        "system/lib/extensions/USERKIT/manager/include",
+        "system/lib/extensions/USERKIT/nxexecd/include",
+        "system/lib/extensions/USERKIT/nxntfy_srv/include",
+        "system/lib/extensions/USERKIT/nxpaxd/include",
+        "system/lib/extensions/USERKIT/nxtimerdd/include",
+        "system/lib/extensions/USERKIT/nxttyd/include",
+        "system/lib/extensions/USERKIT/sbin/common/include",
+        "system/lib/extensions/USERKIT/sbin/nxinit/include",
+        "system/lib/extensions/USERKIT/sbin/nxdemo1init/include",
+        "system/lib/extensions/USERKIT/example/nxexample_echo/include",
+        "user/LIBEXTERNAL/stb", "user/LIBEXTERNAL/pl_mpeg", "user/LIBEXTERNAL/sdl/include",
+        "user/LIBEXTERNAL/lua", "system/lib/portability/lua",
+        "user/NexsOS1-main/portability/coreutils", "system/lib/portability/gnulib",
+        "user/LIBEXTERNAL/gnulib/lib", "user/BINEXTERNAL/coreutils/gnulib/lib",
+        *project_include_dirs(),
     ]
     for item in include_dirs:
         args += ["-I", str(ROOT / item)]
-    if rel == "user/bin/gnulibtest.c" or rel.startswith("user/portability/gnulib/"):
+    if rel == "user/NexsOS1-main/bin/gnulibtest.c" or rel.startswith("system/lib/portability/gnulib/"):
         args += [
             "-D__NEXSOS__", "-DFLEXIBLE_ARRAY_MEMBER=",
-            "-include", str(ROOT / "user/portability/gnulib/gnulib_config_nexsos.h"),
+            "-include", str(ROOT / "system/lib/portability/gnulib/gnulib_config_nexsos.h"),
         ]
-    if rel == "user/portability/gnulib/gnulib_os1_glue.c":
+    if rel == "system/lib/portability/gnulib/gnulib_os1_glue.c":
         # This translation unit intentionally owns the externally linked
         # memeq; the production Makefile compiles it with the same define.
         # Without it the forced Gnulib config header declares a second
         # static inline memeq and AST analysis reports a false parse failure.
         args += ["-D_GNULIB_OS1_GLUE_IMPL"]
-    if rel.startswith("user/portability/coreutils/"):
+    if rel.startswith("user/NexsOS1-main/portability/coreutils/"):
         args += [
             "-include",
-            str(ROOT / "user/portability/coreutils/coreutils_config_nexsos.h"),
+            str(ROOT / "user/NexsOS1-main/portability/coreutils/coreutils_config_nexsos.h"),
         ]
     return args
 

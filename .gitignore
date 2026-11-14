@@ -1,4 +1,4 @@
-docs/Andrew-S.-Tanenbaum-OperatingSystems-Design-and-Implementation.pdf
+docs/legacy/Andrew-S.-Tanenbaum-OperatingSystems-Design-and-Implementation.pdf
 *.DS_Store
 *.o
 build/*
@@ -16,10 +16,11 @@ NexsOS1_full4ai.txt
 tools/__pycache__/nxadb.cpython-314.pyc
 tools/__pycache__/nxqemu.cpython-314.pyc
 tools/__pycache__/nxrun.cpython-314.pyc
-docs/report/logs
+docs/legacy/report/logs
 kernel/HAL/build/
 kernel/HAL/tests/build/
 kernel/HAL/references/
 *.pyc
 user/home/Pictures/icon.zip
 .git
+user/NexsOS1-main/home/Pictures/icon.zip

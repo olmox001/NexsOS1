@@ -20,7 +20,7 @@ SOURCES = (
     "kernel/HAL/core/nxpax.c",
     "kernel/core/nxpax.c",
     "kernel/resources/nxpax.c",
-    "user/sys/bin/nxpax.c",
+    "user/NexsOS1-main/sys/bin/nxpax.c",
 )
 INCLUDES = (
     "kernel/HAL", "kernel/HAL/include", "kernel/HAL/arch/amd64/include",

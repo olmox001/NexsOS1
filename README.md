@@ -9,7 +9,7 @@
 
 NexsOS1 (codename **OS1**) is an educational and research hybrid-kernel operating system built from scratch. It boots on both ARM64 (AArch64) and x86-64 (AMD64) under QEMU, brings up Symmetric Multiprocessing (SMP), drives native **VirtIO** devices (GPU, input, block), mounts an **Ext4** root filesystem, composites overlapping windows in a custom graphical user interface, and executes user-space ELF binaries with an interactive **TTY shell**.
 
-> **Honesty note.** The test matrix below records earlier verification and does not qualify the current local changes. The current incremental review and open failures are recorded in [`docs/review/INCREMENTAL-REVIEW-2026-11-12.md`](docs/review/INCREMENTAL-REVIEW-2026-11-12.md). For the complete, evidence-based picture — including bugs, gaps, and severity — see [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going* (a seL4-style, Plan 9-inspired Microkernel), see [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is licensed under **GPL v2** (see [`LICENSE.md`](LICENSE.md)).
+> **Honesty note.** The test matrix below records earlier verification and does not qualify the current local changes. The current incremental review and open failures are recorded in [`docs/legacy/review/INCREMENTAL-REVIEW-2026-11-12.md`](docs/legacy/review/INCREMENTAL-REVIEW-2026-11-12.md). For the complete, evidence-based picture — including bugs, gaps, and severity — see [`docs/legacy/review/REVIEW.md`](docs/legacy/review/REVIEW.md). For where the project is *going* (a seL4-style, Plan 9-inspired Microkernel), see [`docs/legacy/PROJECT_CHARTER.md`](docs/legacy/PROJECT_CHARTER.md). This project is licensed under **GPL v2** (see [`LICENSE.md`](LICENSE.md)).
 
 ---
 
@@ -193,7 +193,7 @@ SDK installation is componentized so tool updates do not require reinstalling th
 
 ```text
 .
-├── docs/                       # Architecture, reviews, reports and historical plans
+├── docs/legacy/                       # Architecture, reviews, reports and historical plans
 ├── kernel/                     # NX-CORE pinned Git submodule
 │   ├── external/grub/          # Pinned external GRUB source used by NX-CORE boot media
 │   ├── HAL/                    # ISA adapters and hardware abstraction contracts
@@ -212,14 +212,11 @@ SDK installation is componentized so tool updates do not require reinstalling th
 │   ├── tools/                  # Versioned cross-toolchain/build development tooling
 │   └── lib/                    # Runtime, graphics, codecs and client extensions
 ├── user/
-│   ├── sbin/                   # Root initialization policy
-│   ├── sys/boot/               # Installed boot entry and service manifest
-│   ├── sys/services/           # Supervised system daemons
-│   ├── sys/bin/                # System commands and graphical interfaces
-│   ├── bin/                    # Applications, tests and pinned upstream programs
-│   ├── lib/                    # Pinned external libraries
-│   ├── portability/            # Upstream adaptation layers
-│   └── home/                   # Initial user files and assets
+│   ├── NexsOS1-main/           # First-party user project, apps, assets and project-specific portability
+│   ├── BINEXTERNAL/            # Read-only imported external programs + dependency catalog
+│   ├── LIBEXTERNAL/            # Read-only imported external libraries/source providers + catalog
+│   ├── USERKIT/                # NX-USERKIT services and privileged /sbin projects
+│   └── demo1/                  # Independent alternate user project / init-service selection
 └── tools/                      # Integration orchestration, Power12 and nxadb acceptance
 ```
 
@@ -322,7 +319,7 @@ Technical choices are made democratically:
 
 ## 🎨 Graphics Portability
 
-The OpenGL, D3D9, and SDL2 port program, its ASTRA boundary, and validation log reside in [`docs/graphics-port/`](docs/graphics-port/README.md).
+The OpenGL, D3D9, and SDL2 port program, its ASTRA boundary, and validation log reside in [`docs/legacy/graphics-port/`](docs/legacy/graphics-port/README.md).
 
 ---
 

@@ -1,50 +1,54 @@
-[submodule "user/bin/base-nexs"]
-	path = user/bin/base-nexs
-	url = https://github.com/olmox001/base-nexs.git
-	branch = os1-support
-[submodule "user/bin/kilo"]
-	path = user/bin/kilo
-	url = https://github.com/olmox001/kilo.git
-	branch = nexsos-port
-[submodule "user/bin/doom"]
-	path = user/bin/doom
-	url = https://github.com/olmox001/doomgeneric.git
-	branch = nexsos-port
-[submodule "user/lib/sdl"]
-	path = user/lib/sdl
-	url = https://github.com/olmox001/SDL.git
-	branch = nexsos-port-sdl2
-[submodule "user/lib/opengl"]
-	path = user/lib/opengl
-	url = https://github.com/olmox001/mesa.git
-	branch = nexsos-port-opengl
-[submodule "user/lib/direct3d"]
-	path = user/lib/direct3d
-	url = https://github.com/olmox001/wine.git
-	branch = nexsos-port-d3d9
-[submodule "user/lib/lua"]
-	path = user/lib/lua
-	url = https://github.com/olmox001/nxlua.git
-	branch = nexsos-por
-[submodule "user/lib/musl"]
-	path = user/lib/musl
-	url = https://github.com/olmox001/musl.git
-	branch = nexsos-port
-[submodule "user/bin/busybox"]
-	path = user/bin/busybox
-	url = https://github.com/olmox001/busybox.git
-	branch = nexsos-port
-[submodule "user/lib/gnulib"]
-	path = user/lib/gnulib
-	url = https://github.com/olmox001/gnulib.git
-	branch = nexsos-port
-[submodule "user/bin/coreutils"]
-	path = user/bin/coreutils
-	url = https://github.com/olmox001/coreutils_NexsOS1.git
-	branch = nexsos-port
 [submodule "kernel"]
 	path = kernel
 	url = https://github.com/olmox001/NX-CORE.git
 [submodule "system"]
 	path = system
 	url = https://github.com/olmox001/NX-SDK.git
+[submodule "user/USERKIT"]
+	path = user/USERKIT
+	url = https://github.com/olmox001/NX-USERKIT.git
+	branch = main
+[submodule "user/bin/base-nexs"]
+	path = user/BINEXTERNAL/base-nexs
+	url = https://github.com/olmox001/base-nexs.git
+	branch = os1-support
+[submodule "user/bin/kilo"]
+	path = user/BINEXTERNAL/kilo
+	url = https://github.com/olmox001/kilo.git
+	branch = nexsos-port
+[submodule "user/bin/doom"]
+	path = user/BINEXTERNAL/doom
+	url = https://github.com/olmox001/doomgeneric.git
+	branch = nexsos-port
+[submodule "user/lib/sdl"]
+	path = user/LIBEXTERNAL/sdl
+	url = https://github.com/olmox001/SDL.git
+	branch = nexsos-port-sdl2
+[submodule "user/lib/opengl"]
+	path = user/LIBEXTERNAL/opengl
+	url = https://github.com/olmox001/mesa.git
+	branch = nexsos-port-opengl
+[submodule "user/lib/direct3d"]
+	path = user/LIBEXTERNAL/direct3d
+	url = https://github.com/olmox001/wine.git
+	branch = nexsos-port-d3d9
+[submodule "user/lib/lua"]
+	path = user/LIBEXTERNAL/lua
+	url = https://github.com/olmox001/nxlua.git
+	branch = nexsos-por
+[submodule "user/lib/musl"]
+	path = user/LIBEXTERNAL/musl
+	url = https://github.com/olmox001/musl.git
+	branch = nexsos-port
+[submodule "user/bin/busybox"]
+	path = user/BINEXTERNAL/busybox
+	url = https://github.com/olmox001/busybox.git
+	branch = nexsos-port
+[submodule "user/lib/gnulib"]
+	path = user/LIBEXTERNAL/gnulib
+	url = https://github.com/olmox001/gnulib.git
+	branch = nexsos-port
+[submodule "user/bin/coreutils"]
+	path = user/BINEXTERNAL/coreutils
+	url = https://github.com/olmox001/coreutils_NexsOS1.git
+	branch = nexsos-port
