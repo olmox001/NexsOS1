@@ -28,7 +28,7 @@ int main(int argc, const struct nxkeymap_argv *argv) {
     print("nxkeymap: unsupported layout\n");
     return 2;
   }
-  const char *name = layout == NEXSOS1_KBD_US ? "us" : NEXSOS1_KBD_DEFAULT;
+  const char *name = layout == NXS_KBD_US ? "us" : NXS_KBD_DEFAULT;
   int rc = OS1_registry_set(OS1_KEYBOARD_LAYOUT_REGISTRY_KEY, name);
   if (rc != 0) {
     OS1_report_error("nxkeymap.permission", rc);

@@ -1,0 +1,314 @@
+[H[J[1;1H[H[J[1;1H  Booting `NexsOS1 AMD64'
+
+CEFG[C0] [INFO] Console driver initialized
+[C0] 
+[C0] ========================================
+[C0]  AMD64 NexsOS1 v0.0.5.5
+[C0] ========================================
+[C0] 
+[C0] [INFO] SSP: stack canary reseeded from arch entropy
+[C0] [INFO] Initializing CPU...
+[C0] [INFO] CPU: PCID-tagged TLB disabled (flush-on-switch) (pcid=0 invpcid=0)
+[C0] [INFO] CPU: Initializing GDT...
+[C0] [INFO] GDT: Loading GDTR...
+[C0] [INFO] GDT: Loading TSS...
+[C0] [INFO] GDT: Done
+[C0] [INFO] CPU: Initializing IDT...
+[C0] [INFO] CPU: Initializing Syscall...
+[C0] [INFO] AMD64 MSR SYSCALL configured
+[C0] [INFO] CPU: Initializing LAPIC...
+[C0] [INFO] AMD64: LAPIC 0 initialized at 0xfee00000
+[C0] [INFO] AMD64 CPU 0 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C0] [INFO] FDT: no device tree found — expected on amd64, devices come from PCI enumeration
+[C0] [INFO] AMD64 Platform Initialization (Magic: 0x36d76289, Info: 0x1f9830)
+[C0] [INFO] IRQ: Registered chip 8259 PIC
+[C0] [INFO] PIC Initialized and remapped to 32-47.
+[C0] [INFO] Initializing IRQ...
+[C0] [INFO] IRQ: Registered chip 8259 PIC
+[C0] [INFO] PIC Initialized and remapped to 32-47.
+[C0] [INFO] IRQ driver initialized via HAL
+[C0] [INFO] Initializing timer...
+[C0] [INFO] HAL: Initializing global timer state (LAPIC calibration)
+[C0] [INFO] TSC: WARNING — invariant TSC not advertised (CPUID 80000007 EDX[8]=0); using shared BSP calibration anyway
+[C0] [INFO] TSC: Calibrating against PIT...
+[C0] [INFO] TSC: Calibrated: 2399239200 Hz (2399 MHz)
+[C0] [INFO] LAPIC: Calibrating timer against PIT...
+[C0] [INFO] LAPIC: Timer calibrated: 62462 ticks per ms
+[C0] [INFO] Timer driver initialized via HAL
+[C0] [INFO] LAPIC: CPU 0 timer started at 1000 Hz (62462 ticks/interval)
+[C0] [INFO] Initializing memory...
+[C0] [INFO] BOOT-MEM: region[0] type=1 base=0x0 size=0x9fc00 end=0x9fc00
+[C0] [INFO] BOOT-MEM: region[1] type=2 base=0x9fc00 size=0x400 end=0xa0000
+[C0] [INFO] BOOT-MEM: region[2] type=2 base=0xf0000 size=0x10000 end=0x100000
+[C0] [INFO] BOOT-MEM: region[3] type=1 base=0x100000 size=0x7fedc000 end=0x7ffdc000
+[C0] [INFO] BOOT-MEM: region[4] type=2 base=0x7ffdc000 size=0x24000 end=0x80000000
+[C0] [INFO] BOOT-MEM: region[5] type=2 base=0xb0000000 size=0x10000000 end=0xc0000000
+[C0] [INFO] BOOT-MEM: region[6] type=2 base=0xfed1c000 size=0x4000 end=0xfed20000
+[C0] [INFO] BOOT-MEM: region[7] type=2 base=0xfffc0000 size=0x40000 end=0x100000000
+[C0] [INFO] BOOT-MEM: region[8] type=1 base=0x100000000 size=0xc0000000 end=0x1c0000000
+[C0] [INFO] BOOT-MEM: region[9] type=2 base=0xfd00000000 size=0x300000000 end=0x10000000000
+[C0] [INFO] BOOT-MEM: regions=10 usable=5119 MiB usable_span=7168 MiB base=0x0 reserved_descriptors=7 highest_reserved_end=0x10000000000
+[C0] [INFO] PMM: Metadata initialized at 0xcfb000 (57568 KB)
+[C0] [INFO] PMM: Usable RAM: 5119 MB (address span 7168 MB; MEMORY_BASE=0x0)
+[C0] [INFO] PMM: 5119 MB usable, 5051 MB free (span 7168 MB; gaps/reservations excluded)
+[C0] [INFO] PMM: DMA zone: 159 pages, Normal zone: 1292969 pages
+[C0] [INFO] VMM: Initializing MMU (Phase 1: Bootstrap)...
+[C0] [INFO] VMM: bootstrap usable region[0] 0x0-0x9f000 (0 MiB)
+[C0] [INFO] VMM: bootstrap usable region[3] 0x100000-0x7ffdc000 (2046 MiB)
+[C0] [INFO] VMM: bootstrap usable region[8] 0x100000000-0x1c0000000 (3072 MiB)
+[C0] [INFO] AMD64 VMM: Switched to kernel PGD at 0x0000000004533000
+[C0] [INFO] AMD64 TLB: shootdown IPI registered on vector 0xfd
+[C0] [INFO] AMD64 VMM: Mapping RAM 0x0 - 0x9fc00
+[C0] [INFO] AMD64 VMM: Mapping RAM 0x100000 - 0x7ffdc000
+[C0] [INFO] AMD64 VMM: Mapping RAM 0x100000000 - 0x1c0000000
+[C0] [INFO] VMM: Bootstrap complete; usable intervals mapped without holes.
+[C0] [INFO] VMM: Performing RAM-aware dynamic remapping...
+[C0] [INFO] VMM: dynamic usable region[0] 0x0-0x9f000 (0 MiB)
+[C0] [INFO] VMM: dynamic usable region[3] 0x100000-0x7ffdc000 (2046 MiB)
+[C0] [INFO] VMM: dynamic usable region[8] 0x100000000-0x1c0000000 (3072 MiB)
+[C0] [INFO] VMM: Dynamic remapping successful. All discovered RAM is now accessible.
+[C0] 
+[KTEST] Starting Kernel Unit Tests (11 cases found)...
+[C0] [KTEST] Running: test_vmm_protect... [C0] PASS
+[C0] [KTEST] Running: test_kmalloc_growth... [C0] [INFO] kmalloc: Initialized bucket allocator. Chunk: 4 MB at 0xffff800004572000 (growable)
+[C0] [INFO] kmalloc: heap grown to 8 MB (new chunk at 0xffff800004972000)
+[C0] PASS
+[C0] [KTEST] Running: test_vfs_mount_lifecycle... [C0] [INFO] VFS: mounted ktestfs at /ktestfs
+[C0] [INFO] VFS: unmounted ktestfs from /ktestfs
+[C0] PASS
+[C0] [KTEST] Running: test_gfx_chrome_contract... [C0] PASS
+[C0] [KTEST] Running: test_gfx_surface_contract... [C0] PASS
+[C0] [KTEST] Running: test_amd64_pci_hole_reserved... [C0] PASS
+[C0] [KTEST] Running: test_pmm_region_union... [C0] PASS
+[C0] [KTEST] Running: test_timer_rearm_cancel... [C0] PASS
+[C0] [KTEST] Running: test_math_basic... [C0] PASS
+[C0] [KTEST] Running: test_string_compare... [C0] PASS
+[C0] [KTEST] Running: test_string_length... [C0] PASS
+[C0] [KTEST] Completed. Summary: 11 PASSED, 0 FAILED
+
+[C0] [INFO] HAL: Initializing Bus Manager...
+[C0] [INFO] HAL: Scanning PCI Bus...
+[C0] [INFO] HAL: Registered device 'PCI-8086:29c0' (Bus=1, ID=8086:29c0, Class=06:00:00, Base=0x0, IRQ=32)
+[C0] [INFO] HAL: Registered device 'PCI-1234:1111' (Bus=1, ID=1234:1111, Class=03:00:00, Base=0xfd000000, IRQ=32)
+[C0] [INFO] HAL: Registered device 'PCI-8086:10d3' (Bus=1, ID=8086:10d3, Class=02:00:00, Base=0xfeb80000, IRQ=43)
+[C0] [INFO] HAL: Registered device 'VirtIO-4176' (Bus=1, ID=1af4:0010, Class=03:80:00, Base=0xc000000000, IRQ=43)
+[C0] [INFO] HAL: Registered device 'VirtIO-4178' (Bus=1, ID=1af4:0012, Class=09:00:00, Base=0xc000004000, IRQ=42)
+[C0] [INFO] HAL: Registered device 'VirtIO-4178' (Bus=1, ID=1af4:0012, Class=09:02:00, Base=0xc000008000, IRQ=42)
+[C0] [INFO] HAL: Registered device 'VirtIO-4097' (Bus=1, ID=1af4:0002, Class=01:00:00, Base=0xc000, IRQ=43)
+[C0] [INFO] HAL: Registered device 'PCI-8086:2918' (Bus=1, ID=8086:2918, Class=06:01:00, Base=0x0, IRQ=32)
+[C0] [INFO] VirtIO: Found Modern device (PCI) at Common=0xc000000000, ISR=0xc000001000, ID 16
+[C0] [INFO] VirtIO: Found Modern device (PCI) at Common=0xc000004000, ISR=0xc000005000, ID 18
+[C0] [INFO] VirtIO: Found Modern device (PCI) at Common=0xc000008000, ISR=0xc000009000, ID 18
+[C0] [INFO] VirtIO: Found Legacy device (PCI) at 0xc000, ID 2
+[C0] [INFO] VirtIO: Probing for block device...
+[C0] [INFO] VirtIO: Found Block Device (IRQ 43)
+[C0] [INFO] VirtIO: Version 1
+[C0] [INFO] VirtIO: Legacy PCI block features offered=79007e54 accepted=00000000
+[C0] [INFO] VirtIO: Legacy PCI queue 0 fixed size=256 (requested=16)
+[C0] [INFO] VirtIO: Block queue layout qsize=256 pages=3 avail_off=4096 used_off=8192
+[C0] [INFO] VirtIO: Setting Legacy PFN 0x4d72 for queue 0 at 0xc000
+[C0] [INFO] VirtIO: Block Device Initialized successfully
+[C0] [INFO] block: active backend 'virtio-blk'
+[C0] [INFO] VirtIO-GPU: Probing...
+[C0] [INFO] VirtIO-GPU: Found device (IRQ 43)
+[C0] [INFO] VirtIO-GPU: host display 1280x800
+[C0] [INFO] GPU: Primary device set to VirtIO-GPU
+[C0] [INFO] GPU: Registered VirtIO-GPU
+[C0] [INFO] VirtIO-GPU: Done.
+[C0] [INFO] Graphics: Initialized via HAL (1280x800)
+[C0] [INFO] Partition: Initializing...
+[C0] [INFO] GPT: Valid signature found. Entries: 128 @ LBA 2
+[C0] [INFO] GPT: Partition 0: Start=34, Size=1048576 sectors
+[C0] [INFO] GPT: Found 1 partitions
+[C0] [INFO] GPT: Done.
+[C0] [INFO] BufferCache: Initializing...
+[C0] [INFO] Buffer: Done.
+[C0] [INFO] Ext4: 4 block group(s), 32768 blocks/group
+[C0] [INFO] Ext4: Mounted. Vol=, Inodes=1024, features incompat=0x42
+[C0] [INFO] VFS: mounted ext4 on partition 0 as /
+[C0] [INFO] VFS: Done.
+[C0] [INFO] Input: Initializing input subsystem...
+[C0] [INFO] VirtIO-Input: Probing devices...
+[C0] [INFO] PIC: Unmasking IRQ 2
+[C0] [INFO] VirtIO-Input: sharing IRQ 42 with existing input handler
+[C0] [INFO] VirtIO-Input: 2 input device(s) initialized
+[C0] [INFO] USB: Initializing host controllers...
+[C0] [INFO] PS/2: Initializing controller...
+[C0] [INFO] PS/2: Mouse with scroll wheel detected
+[C0] [INFO] PIC: Unmasking IRQ 1
+[C0] [INFO] PIC: Unmasking IRQ 4
+[C0] [INFO] PS/2: Keyboard + Mouse ready (IRQ 1/12 -> vec 33/44)
+[C0] [INFO] Keyboard: Raw input providers initialized
+[C0] [INFO] Registry: Initialized with 10 default keys (namespace tree).
+[C0] [INFO] VFS: mounted regfs at /reg
+[C0] [INFO] VFS: mounted procfs at /proc
+[C0] [INFO] Registry: Initialized.
+[C0] [INFO] Initializing processes...
+[C0] [INFO] Process: Initializing scheduler subsystem...
+[C0] [INFO] Process: limit 128 (pool 128, kstack 128KB, 8 reserved for SYSTEM/ROOT, 32 children max per user process)
+[C0] [INFO] Initializing scheduler...
+[C0] [INFO] Scheduler: Initializing...
+[C0] [INFO] Waking secondary CPUs...
+[C0] [INFO] AMD64: Initializing SMP (BSP ID: 0)
+[C0] [INFO] AMD64: CPUID reports 4 logical processors
+[C0] [INFO] AMD64: Starting SMP initialization for 4 potential cores
+S[C1] [INFO] CPU: Initializing GDT...
+[C1] [INFO] GDT: Loading GDTR...
+[C0] [INFO] AMD64: Sent INIT-SIPI-SIPI to CPU 1
+[C1] [INFO] GDT: Loading TSS...
+[C1] [INFO] GDT: Done
+[C1] [INFO] CPU: Initializing IDT...
+[C1] [INFO] CPU: Initializing Syscall...
+[C1] [INFO] AMD64 MSR SYSCALL configured
+[C1] [INFO] CPU: Initializing LAPIC...
+[C1] [INFO] AMD64: LAPIC 1 initialized at 0xfee00000
+[C1] [INFO] AMD64 CPU 1 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C1] [INFO] CPU: Initializing GDT...
+[C1] [INFO] GDT: Loading GDTR...
+[C1] [INFO] GDT: Loading TSS...
+[C1] [INFO] GDT: Done
+[C1] [INFO] CPU: Initializing IDT...
+[C1] [INFO] CPU: Initializing Syscall...
+[C1] [INFO] AMD64 MSR SYSCALL configured
+[C1] [INFO] CPU: Initializing LAPIC...
+[C1] [INFO] AMD64: LAPIC 1 initialized at 0xfee00000
+[C1] [INFO] AMD64 CPU 1 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C1] [INFO] LAPIC: CPU 1 timer started at 1000 Hz (62462 ticks/interval)
+[C1] [INFO] Secondary CPU 1 online and ready
+[C0] [INFO] AMD64: CPU 1 is online
+[C0] [INFO] AMD64: Sent INIT-SIPI-SIPI to CPU 2S
+[C2] [INFO] CPU: Initializing GDT...
+[C2] [INFO] GDT: Loading GDTR...
+[C2] [INFO] GDT: Loading TSS...
+[C2] [INFO] GDT: Done
+[C2] [INFO] CPU: Initializing IDT...
+[C2] [INFO] CPU: Initializing Syscall...
+[C2] [INFO] AMD64 MSR SYSCALL configured
+[C2] [INFO] CPU: Initializing LAPIC...
+[C2] [INFO] AMD64: LAPIC 2 initialized at 0xfee00000
+[C2] [INFO] AMD64 CPU 2 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C2] [INFO] CPU: Initializing GDT...
+[C2] [INFO] GDT: Loading GDTR...
+[C2] [INFO] GDT: Loading TSS...
+[C2] [INFO] GDT: Done
+[C2] [INFO] CPU: Initializing IDT...
+[C2] [INFO] CPU: Initializing Syscall...
+[C2] [INFO] AMD64 MSR SYSCALL configured
+[C2] [INFO] CPU: Initializing LAPIC...
+[C2] [INFO] AMD64: LAPIC 2 initialized at 0xfee00000
+[C2] [INFO] AMD64 CPU 2 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C2] [INFO] LAPIC: CPU 2 timer started at 1000 Hz (62462 ticks/interval)
+[C2] [INFO] Secondary CPU 2 online and ready
+[C0] [INFO] AMD64: CPU 2 is online
+S[C0] [INFO] AMD64: Sent INIT-SIPI-SIPI to CPU 3
+[C3] [INFO] CPU: Initializing GDT...
+[C3] [INFO] GDT: Loading GDTR...
+[C3] [INFO] GDT: Loading TSS...
+[C3] [INFO] GDT: Done
+[C3] [INFO] CPU: Initializing IDT...
+[C3] [INFO] CPU: Initializing Syscall...
+[C3] [INFO] AMD64 MSR SYSCALL configured
+[C3] [INFO] CPU: Initializing LAPIC...
+[C3] [INFO] AMD64: LAPIC 3 initialized at 0xfee00000
+[C3] [INFO] AMD64 CPU 3 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C3] [INFO] CPU: Initializing GDT...
+[C3] [INFO] GDT: Loading GDTR...
+[C3] [INFO] GDT: Loading TSS...
+[C3] [INFO] GDT: Done
+[C3] [INFO] CPU: Initializing IDT...
+[C3] [INFO] CPU: Initializing Syscall...
+[C3] [INFO] AMD64 MSR SYSCALL configured
+[C3] [INFO] CPU: Initializing LAPIC...
+[C3] [INFO] AMD64: LAPIC 3 initialized at 0xfee00000
+[C3] [INFO] AMD64 CPU 3 initialized (GDT, IDT, Syscall, SSE, GS enabled)
+[C3] [INFO] LAPIC: CPU 3 timer started at 1000 Hz (62462 ticks/interval)
+[C3] [INFO] Secondary CPU 3 online and ready
+[C0] [INFO] AMD64: CPU 3 is online
+[C0] [INFO] Initializing compositor...
+[C0] [INFO] Compositor: Initializing...
+[C0] [INFO] Compositor: Window manager initialized (1280x800)
+[C0] [INFO] K3: Spawning First-Stage Init...
+[C0] [INFO] K3: Initialized PID 1 (/sbin/nxinit)
+[C0] [INFO] Enabling interrupts...
+[Init] System Initialization Starting...
+[Init] Spawning Notification Server...
+[Init] Notification Server started (PID 2)
+[Init] Spawning Execution Service (nxexec --service)...
+[Notify] Server started (PID 2)
+[Init] Execution Service started (PID 3)
+[Init] Running environment bootstrap (nxenvinit)...
+nxexec: execution service listening on OS1nx_exec
+[EnvInit] Initialising system environment...
+[EnvInit] Registry defaults initialised.
+[EnvInit] Created /etc/utmp (identity: root)
+[EnvInit] Environment initialised.
+[Init] Environment bootstrap complete.
+[Init] Spawning userland compositor (nxcompositor)...
+[nxcompositor] ring-3 scene compositor started
+[Init] nxcompositor started (PID 5)
+[Init] Spawning keyboard service (nxkeyboardd)...
+[nxkeyboardd] ring-3 keyboard service started
+[Init] nxkeyboardd started (PID 6)
+[Init] Spawning mouse service (nxmoused)...
+[nxmoused] ring-3 pointer service started
+[Init] nxmoused started (PID 7)
+[Init] Spawning Dock (nxui)...
+[Init] Dock started (PID 8)
+[Init] Spawning Top Bar (nxbar)...
+[Init] nxbar started (PID 9)
+[Init] Spawning Launcher (nxlauncher)...
+[Init] Launcher started (PID 10)
+[Init] Spawning Nxshell...
+[Init] NXShell started (PID 11)
+[Init] Entering supervisor loop
+NXShell: Alive
+
+[NXShell] TTY Window 0x0000000000000068 active (PID 11).
+
+[32mNXShell[0m:[34m/home[0m> /sys/bin/nxwins
+[1;33mID   PID  STATE   TITLE[0m
+100  2  shown  /sys/bin/nxntfy_srv
+101  8  shown  /sys/bin/nxui
+102  9  shown  /sys/bin/nxbar
+103  10  min  /sys/bin/nxlauncher
+104  11  focus  /sys/bin/nxshell
+
+[32mNXShell[0m:[34m/home[0m> /sys/bin/nxwins focus 104
+nxwins: focused window 104
+
+[32mNXShell[0m:[34m/home[0m> /sys/bin/nxwins
+[1;33mID   PID  STATE   TITLE[0m
+100  2  hidden  /sys/bin/nxntfy_srv
+101  8  shown  /sys/bin/nxui
+102  9  shown  /sys/bin/nxbar
+103  10  min  /sys/bin/nxlauncher
+104  11  focus  /sys/bin/nxshell
+
+[32mNXShell[0m:[34m/home[0m> /sys/bin/nxwins
+[1;33mID   PID  STATE   TITLE[0m
+100  2  hidden  /sys/bin/nxntfy_srv
+101  8  shown  /sys/bin/nxui
+102  9  shown  /sys/bin/nxbar
+103  10  min  /sys/bin/nxlauncher
+104  11  focus  /sys/bin/nxshell
+
+[32mNXShell[0m:[34m/home[0m> /bin/nxtimerdiag
+[TIMERDIAG] START samples=160 sleep_ms=33 get_time_ms=220682 mono_ns=220682520601 cpu_ns=347862
+[TIMERDIAG] PRE i=0 api=OS1_sleep
+[TIMERDIAG] POST i=0 api=OS1_sleep status=OK get_time_ms=220745 elapsed_ns=44592170 cpu_delta_ns=195145 get_time_gap_ns=120104 libc_mono_gap_ns=111631 libc_cpu_gap_ns=0
+[TIMERDIAG] PRE i=1 api=nanosleep
+[TIMERDIAG] POST i=1 api=nanosleep status=OK get_time_ms=220818 elapsed_ns=40683499 cpu_delta_ns=618861 get_time_gap_ns=415866 libc_mono_gap_ns=11878 libc_cpu_gap_ns=0
+[TIMERDIAG] PRE i=32 api=OS1_sleep
+[TIMERDIAG] POST i=32 api=OS1_sleep status=OK get_time_ms=222054 elapsed_ns=34104710 cpu_delta_ns=208495 get_time_gap_ns=146686 libc_mono_gap_ns=17102 libc_cpu_gap_ns=0
+[TIMERDIAG] PRE i=64 api=OS1_sleep
+[TIMERDIAG] POST i=64 api=OS1_sleep status=OK get_time_ms=223186 elapsed_ns=33191997 cpu_delta_ns=112948 get_time_gap_ns=427411 libc_mono_gap_ns=11411 libc_cpu_gap_ns=0
+[TIMERDIAG] PRE i=96 api=OS1_sleep
+[TIMERDIAG] POST i=96 api=OS1_sleep status=OK get_time_ms=224323 elapsed_ns=42735775 cpu_delta_ns=66508 get_time_gap_ns=74974 libc_mono_gap_ns=14148 libc_cpu_gap_ns=0
+[TIMERDIAG] PRE i=128 api=OS1_sleep
+[TIMERDIAG] POST i=128 api=OS1_sleep status=OK get_time_ms=225611 elapsed_ns=46808705 cpu_delta_ns=89698 get_time_gap_ns=102939 libc_mono_gap_ns=11748 libc_cpu_gap_ns=0
+[TIMERDIAG] API=OS1_sleep n=80 min_ns=33069327 avg_ns=37338824 max_ns=54713045 late_10ms=14 late_50ms=0 late_250ms=0
+[TIMERDIAG] API=nanosleep n=80 min_ns=33088402 avg_ns=37336313 max_ns=52642277 late_10ms=15 late_50ms=0 late_250ms=0
+[TIMERDIAG] GET_TIME start_ms=220682 end_ms=226812 delta_ms=6130 mono_delta_ms=6129 max_sample_gap_ns=984423 regressions=0 mismatches=0 elapsed_gap_ms=1
+[TIMERDIAG] DONE elapsed_ns=6129558463 cpu_ns=169272751 failures=0
+
+[32mNXShell[0m:[34m/home[0m> 

@@ -3,24 +3,26 @@
  *
  * Windowed scheduler/timer liveness probe.
  *
- * The process updates a compositor window, sleeps for 100 ms and emits a UART
- * heartbeat every ten iterations. Each heartbeat includes both the frame
- * counter and the monotonic millisecond clock so nxadb can distinguish task
- * progress from a guest that merely remains alive.
+ * The process updates a compositor window, sleeps for 100 ms and emits a
+ * compact diagnostic heartbeat every five seconds. Each heartbeat includes
+ * frame, monotonic time and elapsed time since the prior heartbeat so nxadb can
+ * distinguish forward progress from a guest that merely remains alive without
+ * flooding the TTY/UART diagnostic stream.
  */
 #include <os1.h>
 
 enum {
   COUNTER_SLEEP_MS = 100,
-  COUNTER_HEARTBEAT_FRAMES = 10
+  COUNTER_HEARTBEAT_FRAMES = 50
 };
 
 static void counter_heartbeat(int frame) {
-  print("[COUNTER] frame=");
-  print_hex(frame);
-  print(" mono_ms=");
-  print_hex(get_time());
-  print("\n");
+  static long previous_ms;
+  long now_ms = get_time();
+  long delta_ms = previous_ms > 0 ? now_ms - previous_ms : 0;
+  printf("[COUNTER] frame=%d mono_ms=%ld delta_ms=%ld\n",
+         frame, now_ms, delta_ms);
+  previous_ms = now_ms;
 }
 
 int main(void) {
@@ -28,7 +30,9 @@ int main(void) {
   int frame = 0;
   int win;
 
-  print("[COUNTER] START\n");
+  printf("[COUNTER] START pid=%d frame_ms=%d heartbeat_ms=%d\n",
+         get_pid(), COUNTER_SLEEP_MS,
+         COUNTER_SLEEP_MS * COUNTER_HEARTBEAT_FRAMES);
   sprintf(title, "Counter PID %d", get_pid());
   win = create_window(700, 50, 200, 100, title);
   if (win <= 0) {

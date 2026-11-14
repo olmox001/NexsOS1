@@ -1,3 +1,13 @@
+[submodule "kernel"]
+	path = kernel
+	url = https://github.com/olmox001/NX-CORE.git
+[submodule "system"]
+	path = system
+	url = https://github.com/olmox001/NX-SDK.git
+[submodule "user/USERKIT"]
+	path = user/USERKIT
+	url = https://github.com/olmox001/NX-USERKIT.git
+	branch = main
 [submodule "user/bin/base-nexs"]
 	path = user/NexsOS1-main/bin/base-nexs
 	url = https://github.com/olmox001/base-nexs.git
@@ -42,13 +52,3 @@
 	path = user/NexsOS1-main/bin/coreutils
 	url = https://github.com/olmox001/coreutils_NexsOS1.git
 	branch = nexsos-port
-[submodule "kernel"]
-	path = kernel
-	url = https://github.com/olmox001/NX-CORE.git
-[submodule "system"]
-	path = system
-	url = https://github.com/olmox001/NX-SDK.git
-[submodule "user/USERKIT"]
-	path = user/USERKIT
-	url = https://github.com/olmox001/NX-USERKIT.git
-	branch = main

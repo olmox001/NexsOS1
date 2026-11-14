@@ -5,28 +5,28 @@
  * user/sys/bin/nxexec.h
  * NEXS stratified process-LAUNCH helper (ASTRA service layer) — issue #193.
  *
- * THE single place that encodes HOW a process is launched, separated out of
- * nxshell/nxlauncher (which used to each hand-roll a divergent copy).  Two
- * launch modes, matching the maintainer's standalone-vs-needs-shell model:
+ * Shared execution POLICY above execsvc's base process-ownership API.
+ * It is intentionally separate from both terminal hosting and job control:
  *
- *   FOREGROUND (needs-shell, terminal-attached) — nxexec_run_foreground():
- *     the spawner IS the child's controlling terminal (default ctty
- *     inheritance).  Runtime window detection decides the outcome: the child
- *     opens its OWN window -> it detaches (graphical app, lives
- *     independently, managed via nxwins/dock); it stays windowless -> it runs
- *     as a shell job (stdout in the spawner's window, Ctrl-C kills it, the
- *     spawner blocks until it exits).
+ *   EXECUTION — execsvc chooses ordinary foreground inheritance or a detached
+ *     process relationship and resolves/spawns the executable once.
  *
- *   DETACHED (standalone, launcher-style) — nxexec_spawn_detached():
- *     the child does NOT inherit the spawner as ctty (SPAWN_FLAG_DETACHED,
- *     kernel-enforced).  A windowed child behaves identically (own-window
- *     stdout).  A windowless child fails CLOSED (no output surface) instead
- *     of silently writing into the launcher's soon-minimized window as if the
- *     launcher were a shell — the #193 bug.
+ *   TTY/CLI HOSTING — nxttyd owns the capability-backed terminal surface and
+ *     NX_TTY_PORT transport when a caller without a controlling terminal needs
+ *     to host a CLI. nxexec composes that service for launcher/nxfilem-style
+ *     callers; it is not a third base execution mode.
+ *
+ *   JOB CONTROL — nxjobs extends foreground execution for interactive shells.
+ *     It tracks background/stopped jobs and applies STOP/CONT/foreground wait
+ *     through process capabilities. TTY hosting does not own shell job state.
+ *
+ * Runtime window classification is shared by all callers: a stable graphical
+ * child owns its GUI lifecycle while retaining the appropriate inherited or
+ * headless debug TTY; a terminal child remains hosted by its TTY.
  *
  * Lifecycle note: windowless children die with their parent (the kill model
  * is already window-aware, process_kill_subtree spares windowed subtrees —
- * docs/PROCESS-KILL-MODEL.md), which completes the maintainer's policy:
+ * docs/legacy/PROCESS-KILL-MODEL.md), which completes the maintainer's policy:
  * "crea una finestra? gestione window; altrimenti figlio, chiuso col padre".
  *
  * SECURITY MODEL: no ambient checks of its own (the nxproc.h pattern) —
@@ -59,7 +59,7 @@
 /* A child is treated as "windowed" (a GUI app that should detach) only if it
  * owns the SAME window id across this many consecutive polls.  A transient
  * create/destroy churn — stress's --gui lane opens back-to-back windows with
- * DIFFERENT ids (docs/PROCESS-KILL-MODEL.md §5) — never accumulates a stable
+ * DIFFERENT ids (docs/legacy/PROCESS-KILL-MODEL.md §5) — never accumulates a stable
  * count, so it is correctly hosted as a terminal program instead of being
  * mistaken for a persistent GUI app and wrongly detached.  ~6 polls x ~15ms
  * = ~90ms of an unchanging window; a real app holds its window far longer,
@@ -439,11 +439,13 @@ static inline int nxexec_spawn_detached(const char *path, int argc,
  * is spawned DETACHED (the launcher never becomes anyone's ctty); nxexec then
  * opens a terminal window, spawns PATH as its own child (becoming its ctty),
  * and decides at runtime:
- *   - PATH opens its own window   -> nxexec closes, PATH runs independently;
- *   - PATH is windowless          -> nxexec's terminal shows PATH's output,
- *     stays readable, and closes on the user's Enter (or a timeout);
- * closing nxexec's window kills the child (kernel subtree kill).  The job is
- * spawned exactly once, by nxexec — no double execution.
+ *   - PATH becomes a stable graphical app -> the TTY window stays hidden but
+ *     its capability PORT/history remains alive as PATH's diagnostic buffer
+ *     until PATH exits;
+ *   - PATH remains terminal-style -> nxexec's terminal shows PATH's output,
+ *     stays readable, and closes on the user's Enter (or a timeout).
+ * Closing a visible hosted terminal kills the child (kernel subtree kill).
+ * The job is spawned exactly once, by nxexec — no double execution.
  */
 static inline int nxexec_spawn_hosted(const char *path) {
   char *argv[1] = {(char *)path};

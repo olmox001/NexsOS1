@@ -21,8 +21,10 @@ int main(int argc, char *argv[]) {
    * a windowless job. nxfilem registers this PID as a viewer and prunes it
    * with wait(); exiting immediately made the viewer disappear from its
    * supervision list while its graphical TTY and child were still alive.
-   * For GUI children, nxttyd's debounced classification exits promptly and
-   * this launcher then exits too, preserving detached GUI independence.
+   * For GUI children, nxttyd's debounced classification keeps its hidden
+   * TTY PORT/history alive as the child diagnostic buffer while the GUI owns
+   * the visible window. This launcher therefore remains the bounded supervisor
+   * until that child exits; it never creates a second visible terminal.
    * No alternate spawn/resolver path or special treatment of app names. */
   int status = 0;
   for (uint64_t epoch = 0U; epoch < UINT64_MAX; ++epoch) {

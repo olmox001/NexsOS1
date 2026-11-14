@@ -1,7 +1,7 @@
 /*
  * NXTEST: real, fail-closed userland regression orchestrator.
  *
- * PID1 starts this ONLY through a separate nxshell -c in mdebug mode.
+ * PID1 starts this through an asynchronous nxttyd-owned boot TTY.
  * Every case is an actual ELF with actual kernel process/exit semantics.
  * Timeouts, signal exits, missing status and failed launch are all failures.
  * Interactive/destructive applications remain separate catalog lanes.
@@ -43,6 +43,8 @@ static const struct nx_test_case cases[] = {
     {"15nxtest_gfxbuffer", "/bin/gfxbuffertest", NULL, 2000U},
     {"16nxtest_simd", "/bin/simdtest", NULL, 2000U},
     {"17nxtest_gfxalpha", "/bin/gfxalphatest", NULL, 2000U},
+    /* Appended to preserve every existing stable case ID. */
+    {"18nxtest_timerprobe", "/sys/bin/nxtimerdiag", "--probe", 2000U},
 };
 
 static int nx_test_report(const struct nx_test_case *test, const char *state,
@@ -116,7 +118,7 @@ int main(void) {
   const uint32_t count = (uint32_t)(sizeof(cases) / sizeof(cases[0]));
   uint32_t passed = 0U;
   uint32_t failed = 0U;
-  if (printf("[NXTEST] real userland suite started in isolated mdebug shell\n") < 0)
+  if (printf("[NXTEST] real userland suite started in isolated boot TTY\n") < 0)
     return 1;
   for (uint32_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     int result = nx_test_run(&cases[i]);

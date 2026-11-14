@@ -43,7 +43,7 @@
 #endif
 
 /* App identity an icon is drawn for.  NXICON_UNKNOWN is a real, drawable icon
- * (the generic "unknown app" glyph, backed by fallback.png) — not to be
+ * (the generic "unknown app" glyph, backed by empty.png) — not to be
  * confused with nxicon_get() returning NULL, which means "no icon available
  * at all, use the classic flat tile".
  *
@@ -53,10 +53,23 @@
  *   - NXICON_MEMSTAT's binary is nxmemstat, but its icon is nxmeminfo.png.
  *   - NXICON_TEXTEDIT's binary is kilo (the editor from user/bin), but its
  *     icon is textedit.png — there is no "kilo.png".
- * Programs with no matching asset (nxbar, nxinit, nxproc, nxres, nxwins,
- * nxexec, nxnotify, nxntfy_srv, demo3d, and the test/stress binaries in
- * user/bin) simply aren't listed here and fall through to NXICON_UNKNOWN
- * via nxicon_classify*(), same as always. */
+ * ICON POLICY: an icon is optional, never required.  Nothing may depend on a
+ * program having one — an unmapped program gets NXICON_UNKNOWN (the preset
+ * fallback glyph), and a missing asset gets NULL (classic flat tile).  Visible
+ * apps AND system/diagnostic tools (even CLI ones) are mapped:
+ *   apps:     the launcher/dock apps above, nxnotify (bell), nxempire
+ *             (gamepad, like doom/raptor), demo3d (mesh), lua (nxscript.png),
+ *             kilo (textedit).
+ *   tools:    nxres (expand), nxkeymap (number), nxproc (rows), nxwins
+ *             (maximize), nxenvinit (modifier), nxtimerdiag (clock),
+ *             nxpax (archive), nxtestrunner and nxtest_userkit_* (notifOk),
+ *             nxroleprobe (search), nxfont (curve).
+ *   unmapped on purpose (-> NXICON_UNKNOWN):
+ *     - hidden from the launcher: nxbar, nxui, nxexec, env, nxinit, nxntfy_srv;
+ *     - examples/tests/helpers in /bin: counter, hello, sdltest, input_test,
+ *       ipc_send/ipc_recv, forkbomb, *test, crash, stress, cap*, sandbox*, ...;
+ *     - the 51 Coreutils applets and the other external test suites.
+ * Add a program here only if it is a real, user-facing app. */
 #define NXICON_LAUNCHER 0
 #define NXICON_SHELL 1
 #define NXICON_FILEM 2
@@ -87,9 +100,145 @@
 #define NXICON_FILE_EXECUTABLE 23
 #define NXICON_FILE_GENERIC 24
 #define NXICON_UNKNOWN 25
-#define NXICON_COUNT 26
-/* Still not wired: nxscript.png (no program named nxscript yet — likely
- * meant for a future scripting app, distinct from file_script.png above). */
+#define NXICON_NXSCRIPT 26
+/* HydroGlass catalog (system m5 + UI m8): one id per asset, NXICON_G_<NAME>,
+ * file = /home/Pictures/icon/{dark,light}/<name>.png (dark = coloured, light =
+ * grey).  The legacy ids above (app/filetype ids) now point at these same
+ * files; resolve any asset by file name with nxicon_find(). */
+#define NXICON_G_ANIMATION 27
+#define NXICON_G_ARCHIVE 28
+#define NXICON_G_ARMATURE 29
+#define NXICON_G_ARRAY 30
+#define NXICON_G_ARROW 31
+#define NXICON_G_ARROWRIGHT 32
+#define NXICON_G_BATTERY_000 33
+#define NXICON_G_BATTERY_010 34
+#define NXICON_G_BATTERY_020 35
+#define NXICON_G_BATTERY_030 36
+#define NXICON_G_BATTERY_040 37
+#define NXICON_G_BATTERY_050 38
+#define NXICON_G_BATTERY_060 39
+#define NXICON_G_BATTERY_070 40
+#define NXICON_G_BATTERY_080 41
+#define NXICON_G_BATTERY_090 42
+#define NXICON_G_BATTERY_100 43
+#define NXICON_G_BELL 44
+#define NXICON_G_DELETE 45
+#define NXICON_G_CAMERA 46
+#define NXICON_G_CAMERA_OFF 47
+#define NXICON_G_PADLOCK 48
+#define NXICON_G_PADLOCK_OPEN 49
+#define NXICON_G_DIRECTORY 50
+#define NXICON_G_CYLINDER 51
+#define NXICON_G_CIRCLE 52
+#define NXICON_G_CLOUD 53
+#define NXICON_G_COLUMNS 54
+#define NXICON_G_CONE 55
+#define NXICON_G_CONSOLE 56
+#define NXICON_G_CONSTRAINT 57
+#define NXICON_G_GRID 58
+#define NXICON_G_CURVE 59
+#define NXICON_G_DOCUMENT 60
+#define NXICON_G_EASE_AUTO 61
+#define NXICON_G_EASE_IN 62
+#define NXICON_G_EASE_INOUT 63
+#define NXICON_G_EASE_OUT 64
+#define NXICON_G_EMPTY 65
+#define NXICON_G_EXPAND 66
+#define NXICON_G_FALLOFF_CONSTANT 67
+#define NXICON_G_FALLOFF_CUSTOM 68
+#define NXICON_G_FALLOFF_LINEAR 69
+#define NXICON_G_FALLOFF_ROOT 70
+#define NXICON_G_FALLOFF_SHARP 71
+#define NXICON_G_FALLOFF_SMOOTHER 72
+#define NXICON_G_FALLOFF_SPHERE 73
+#define NXICON_G_ROWS 74
+#define NXICON_G_FILTER 75
+#define NXICON_G_FOLDER 76
+#define NXICON_G_PHOTO 77
+#define NXICON_G_GAMEPAD 78
+#define NXICON_G_GEAR 79
+#define NXICON_G_RECORD 80
+#define NXICON_G_SAVE 81
+#define NXICON_G_HANDLE_ALIGNED 82
+#define NXICON_G_HANDLE_AUTO 83
+#define NXICON_G_HANDLE_AUTOCLAMPED 84
+#define NXICON_G_HANDLE_FLAT 85
+#define NXICON_G_HANDLE_FREE 86
+#define NXICON_G_HANDLE_VECTOR 87
+#define NXICON_G_HIDDEN 88
+#define NXICON_G_HITBOX 89
+#define NXICON_G_HOME 90
+#define NXICON_G_EQUALS 91
+#define NXICON_G_INSTANCE 92
+#define NXICON_G_INTERP_BACK 93
+#define NXICON_G_INTERP_BEZIER 94
+#define NXICON_G_INTERP_BOUNCE 95
+#define NXICON_G_INTERP_CIRC 96
+#define NXICON_G_INTERP_CONSTANT 97
+#define NXICON_G_INTERP_CUBIC 98
+#define NXICON_G_INTERP_ELASTIC 99
+#define NXICON_G_INTERP_EXPO 100
+#define NXICON_G_INTERP_LINEAR 101
+#define NXICON_G_INTERP_QUAD 102
+#define NXICON_G_INTERP_QUART 103
+#define NXICON_G_INTERP_QUINT 104
+#define NXICON_G_INTERP_SINE 105
+#define NXICON_G_KEYFRAME 106
+#define NXICON_G_LIBRARY 107
+#define NXICON_G_LIGHT 108
+#define NXICON_G_CLEAR_Z 109
+#define NXICON_G_LINE 110
+#define NXICON_G_LIST 111
+#define NXICON_G_LOCK 112
+#define NXICON_G_LOCK_OPEN 113
+#define NXICON_G_MAIL 114
+#define NXICON_G_PLUS 115
+#define NXICON_G_MATERIAL 116
+#define NXICON_G_MAXIMIZE 117
+#define NXICON_G_MINUS 118
+#define NXICON_G_MESH 119
+#define NXICON_G_MINIMIZE 120
+#define NXICON_G_MIRROR 121
+#define NXICON_G_MODIFIER 122
+#define NXICON_G_MONITOR 123
+#define NXICON_G_FOG 124
+#define NXICON_G_NORMALCUSTOM 125
+#define NXICON_G_NORMALFACE 126
+#define NXICON_G_NORMALVERTEX 127
+#define NXICON_G_NOTIFERROR 128
+#define NXICON_G_NOTIFOK 129
+#define NXICON_G_NUMBER 130
+#define NXICON_G_OBJECT 131
+#define NXICON_G_PIVOTACTIVE 132
+#define NXICON_G_PIVOTCURSOR 133
+#define NXICON_G_PIVOTINDIVIDUAL 134
+#define NXICON_G_PIVOTMEDIAN 135
+#define NXICON_G_PLANE 136
+#define NXICON_G_POWER 137
+#define NXICON_G_PREFAB 138
+#define NXICON_G_CROP 139
+#define NXICON_G_CLOCK 140
+#define NXICON_G_SCRIPT 141
+#define NXICON_G_SEARCH 142
+#define NXICON_G_SELEDGE 143
+#define NXICON_G_SELFACE 144
+#define NXICON_G_SELVERTEX 145
+#define NXICON_G_SELECTION 146
+#define NXICON_G_SNAP 147
+#define NXICON_G_SOUND 148
+#define NXICON_G_SPEAKER_0 149
+#define NXICON_G_SPEAKER_1 150
+#define NXICON_G_SPEAKER_2 151
+#define NXICON_G_SPEAKER_3 152
+#define NXICON_G_TEXTURE 153
+#define NXICON_G_TOMATO 154
+#define NXICON_G_TRASH 155
+#define NXICON_G_VIDEO 156
+#define NXICON_G_VISIBLE 157
+#define NXICON_COUNT 158
+/* NXICON_NXSCRIPT (26): reserved for a future scripting app (no such program
+ * yet); uses script.png, same as the per-filetype html/c icons. */
 
 #define NXICON_THEME_DARK 0
 #define NXICON_THEME_LIGHT 1
@@ -97,61 +246,325 @@
 static const char *const nxicon_paths[2][NXICON_COUNT] = {
     /* dark */
     {
-        "/home/Pictures/icon/dark/nxlauncher.png",
-        "/home/Pictures/icon/dark/nxshell.png",
-        "/home/Pictures/icon/dark/nxfile.png",
-        "/home/Pictures/icon/dark/nximage.png",
-        "/home/Pictures/icon/dark/nxinfo.png",
-        "/home/Pictures/icon/dark/nxmeminfo.png",
-        "/home/Pictures/icon/dark/nxperm.png",
-        "/home/Pictures/icon/dark/nxpower.png",
-        "/home/Pictures/icon/dark/nxreg.png",
-        "/home/Pictures/icon/dark/nxsettings.png",
-        "/home/Pictures/icon/dark/nxtop.png",
-        "/home/Pictures/icon/dark/doom.png",
-        "/home/Pictures/icon/dark/raptor.png",
-        "/home/Pictures/icon/dark/textedit.png",
+        "/home/Pictures/icon/dark/grid.png",
+        "/home/Pictures/icon/dark/console.png",
+        "/home/Pictures/icon/dark/directory.png",
+        "/home/Pictures/icon/dark/photo.png",
+        "/home/Pictures/icon/dark/monitor.png",
+        "/home/Pictures/icon/dark/columns.png",
+        "/home/Pictures/icon/dark/padlock.png",
+        "/home/Pictures/icon/dark/power.png",
+        "/home/Pictures/icon/dark/library.png",
+        "/home/Pictures/icon/dark/gear.png",
+        "/home/Pictures/icon/dark/list.png",
+        "/home/Pictures/icon/dark/gamepad.png",
+        "/home/Pictures/icon/dark/gamepad.png",
+        "/home/Pictures/icon/dark/document.png",
         "/home/Pictures/icon/dark/folder.png",
-        "/home/Pictures/icon/dark/file_c.png",
-        "/home/Pictures/icon/dark/file_text.png",
-        "/home/Pictures/icon/dark/file_config.png",
-        "/home/Pictures/icon/dark/file_html.png",
-        "/home/Pictures/icon/dark/file_script.png",
-        "/home/Pictures/icon/dark/file_image.png",
-        "/home/Pictures/icon/dark/file_video.png",
-        "/home/Pictures/icon/dark/file_binary.png",
-        "/home/Pictures/icon/dark/file_executable.png",
-        "/home/Pictures/icon/dark/file_generic.png",
-        "/home/Pictures/icon/dark/fallback.png",
+        "/home/Pictures/icon/dark/script.png",
+        "/home/Pictures/icon/dark/list.png",
+        "/home/Pictures/icon/dark/modifier.png",
+        "/home/Pictures/icon/dark/script.png",
+        "/home/Pictures/icon/dark/console.png",
+        "/home/Pictures/icon/dark/photo.png",
+        "/home/Pictures/icon/dark/video.png",
+        "/home/Pictures/icon/dark/cylinder.png",
+        "/home/Pictures/icon/dark/animation.png",
+        "/home/Pictures/icon/dark/document.png",
+        "/home/Pictures/icon/dark/empty.png",
+        "/home/Pictures/icon/dark/script.png",
+        "/home/Pictures/icon/dark/animation.png",
+        "/home/Pictures/icon/dark/archive.png",
+        "/home/Pictures/icon/dark/armature.png",
+        "/home/Pictures/icon/dark/array.png",
+        "/home/Pictures/icon/dark/arrow.png",
+        "/home/Pictures/icon/dark/arrowRight.png",
+        "/home/Pictures/icon/dark/battery_000.png",
+        "/home/Pictures/icon/dark/battery_010.png",
+        "/home/Pictures/icon/dark/battery_020.png",
+        "/home/Pictures/icon/dark/battery_030.png",
+        "/home/Pictures/icon/dark/battery_040.png",
+        "/home/Pictures/icon/dark/battery_050.png",
+        "/home/Pictures/icon/dark/battery_060.png",
+        "/home/Pictures/icon/dark/battery_070.png",
+        "/home/Pictures/icon/dark/battery_080.png",
+        "/home/Pictures/icon/dark/battery_090.png",
+        "/home/Pictures/icon/dark/battery_100.png",
+        "/home/Pictures/icon/dark/bell.png",
+        "/home/Pictures/icon/dark/delete.png",
+        "/home/Pictures/icon/dark/camera.png",
+        "/home/Pictures/icon/dark/camera_off.png",
+        "/home/Pictures/icon/dark/padlock.png",
+        "/home/Pictures/icon/dark/padlock_open.png",
+        "/home/Pictures/icon/dark/directory.png",
+        "/home/Pictures/icon/dark/cylinder.png",
+        "/home/Pictures/icon/dark/circle.png",
+        "/home/Pictures/icon/dark/cloud.png",
+        "/home/Pictures/icon/dark/columns.png",
+        "/home/Pictures/icon/dark/cone.png",
+        "/home/Pictures/icon/dark/console.png",
+        "/home/Pictures/icon/dark/constraint.png",
+        "/home/Pictures/icon/dark/grid.png",
+        "/home/Pictures/icon/dark/curve.png",
+        "/home/Pictures/icon/dark/document.png",
+        "/home/Pictures/icon/dark/ease_auto.png",
+        "/home/Pictures/icon/dark/ease_in.png",
+        "/home/Pictures/icon/dark/ease_inout.png",
+        "/home/Pictures/icon/dark/ease_out.png",
+        "/home/Pictures/icon/dark/empty.png",
+        "/home/Pictures/icon/dark/expand.png",
+        "/home/Pictures/icon/dark/falloff_constant.png",
+        "/home/Pictures/icon/dark/falloff_custom.png",
+        "/home/Pictures/icon/dark/falloff_linear.png",
+        "/home/Pictures/icon/dark/falloff_root.png",
+        "/home/Pictures/icon/dark/falloff_sharp.png",
+        "/home/Pictures/icon/dark/falloff_smoother.png",
+        "/home/Pictures/icon/dark/falloff_sphere.png",
+        "/home/Pictures/icon/dark/rows.png",
+        "/home/Pictures/icon/dark/filter.png",
+        "/home/Pictures/icon/dark/folder.png",
+        "/home/Pictures/icon/dark/photo.png",
+        "/home/Pictures/icon/dark/gamepad.png",
+        "/home/Pictures/icon/dark/gear.png",
+        "/home/Pictures/icon/dark/record.png",
+        "/home/Pictures/icon/dark/save.png",
+        "/home/Pictures/icon/dark/handle_aligned.png",
+        "/home/Pictures/icon/dark/handle_auto.png",
+        "/home/Pictures/icon/dark/handle_autoclamped.png",
+        "/home/Pictures/icon/dark/handle_flat.png",
+        "/home/Pictures/icon/dark/handle_free.png",
+        "/home/Pictures/icon/dark/handle_vector.png",
+        "/home/Pictures/icon/dark/hidden.png",
+        "/home/Pictures/icon/dark/hitbox.png",
+        "/home/Pictures/icon/dark/home.png",
+        "/home/Pictures/icon/dark/equals.png",
+        "/home/Pictures/icon/dark/instance.png",
+        "/home/Pictures/icon/dark/interp_back.png",
+        "/home/Pictures/icon/dark/interp_bezier.png",
+        "/home/Pictures/icon/dark/interp_bounce.png",
+        "/home/Pictures/icon/dark/interp_circ.png",
+        "/home/Pictures/icon/dark/interp_constant.png",
+        "/home/Pictures/icon/dark/interp_cubic.png",
+        "/home/Pictures/icon/dark/interp_elastic.png",
+        "/home/Pictures/icon/dark/interp_expo.png",
+        "/home/Pictures/icon/dark/interp_linear.png",
+        "/home/Pictures/icon/dark/interp_quad.png",
+        "/home/Pictures/icon/dark/interp_quart.png",
+        "/home/Pictures/icon/dark/interp_quint.png",
+        "/home/Pictures/icon/dark/interp_sine.png",
+        "/home/Pictures/icon/dark/keyframe.png",
+        "/home/Pictures/icon/dark/library.png",
+        "/home/Pictures/icon/dark/light.png",
+        "/home/Pictures/icon/dark/clear_z.png",
+        "/home/Pictures/icon/dark/line.png",
+        "/home/Pictures/icon/dark/list.png",
+        "/home/Pictures/icon/dark/lock.png",
+        "/home/Pictures/icon/dark/lock_open.png",
+        "/home/Pictures/icon/dark/mail.png",
+        "/home/Pictures/icon/dark/plus.png",
+        "/home/Pictures/icon/dark/material.png",
+        "/home/Pictures/icon/dark/maximize.png",
+        "/home/Pictures/icon/dark/minus.png",
+        "/home/Pictures/icon/dark/mesh.png",
+        "/home/Pictures/icon/dark/minimize.png",
+        "/home/Pictures/icon/dark/mirror.png",
+        "/home/Pictures/icon/dark/modifier.png",
+        "/home/Pictures/icon/dark/monitor.png",
+        "/home/Pictures/icon/dark/fog.png",
+        "/home/Pictures/icon/dark/normalCustom.png",
+        "/home/Pictures/icon/dark/normalFace.png",
+        "/home/Pictures/icon/dark/normalVertex.png",
+        "/home/Pictures/icon/dark/notifError.png",
+        "/home/Pictures/icon/dark/notifOk.png",
+        "/home/Pictures/icon/dark/number.png",
+        "/home/Pictures/icon/dark/object.png",
+        "/home/Pictures/icon/dark/pivotActive.png",
+        "/home/Pictures/icon/dark/pivotCursor.png",
+        "/home/Pictures/icon/dark/pivotIndividual.png",
+        "/home/Pictures/icon/dark/pivotMedian.png",
+        "/home/Pictures/icon/dark/plane.png",
+        "/home/Pictures/icon/dark/power.png",
+        "/home/Pictures/icon/dark/prefab.png",
+        "/home/Pictures/icon/dark/crop.png",
+        "/home/Pictures/icon/dark/clock.png",
+        "/home/Pictures/icon/dark/script.png",
+        "/home/Pictures/icon/dark/search.png",
+        "/home/Pictures/icon/dark/selEdge.png",
+        "/home/Pictures/icon/dark/selFace.png",
+        "/home/Pictures/icon/dark/selVertex.png",
+        "/home/Pictures/icon/dark/selection.png",
+        "/home/Pictures/icon/dark/snap.png",
+        "/home/Pictures/icon/dark/sound.png",
+        "/home/Pictures/icon/dark/speaker_0.png",
+        "/home/Pictures/icon/dark/speaker_1.png",
+        "/home/Pictures/icon/dark/speaker_2.png",
+        "/home/Pictures/icon/dark/speaker_3.png",
+        "/home/Pictures/icon/dark/texture.png",
+        "/home/Pictures/icon/dark/tomato.png",
+        "/home/Pictures/icon/dark/trash.png",
+        "/home/Pictures/icon/dark/video.png",
+        "/home/Pictures/icon/dark/visible.png",
     },
     /* light */
     {
-        "/home/Pictures/icon/light/nxlauncher.png",
-        "/home/Pictures/icon/light/nxshell.png",
-        "/home/Pictures/icon/light/nxfile.png",
-        "/home/Pictures/icon/light/nximage.png",
-        "/home/Pictures/icon/light/nxinfo.png",
-        "/home/Pictures/icon/light/nxmeminfo.png",
-        "/home/Pictures/icon/light/nxperm.png",
-        "/home/Pictures/icon/light/nxpower.png",
-        "/home/Pictures/icon/light/nxreg.png",
-        "/home/Pictures/icon/light/nxsettings.png",
-        "/home/Pictures/icon/light/nxtop.png",
-        "/home/Pictures/icon/light/doom.png",
-        "/home/Pictures/icon/light/raptor.png",
-        "/home/Pictures/icon/light/textedit.png",
+        "/home/Pictures/icon/light/grid.png",
+        "/home/Pictures/icon/light/console.png",
+        "/home/Pictures/icon/light/directory.png",
+        "/home/Pictures/icon/light/photo.png",
+        "/home/Pictures/icon/light/monitor.png",
+        "/home/Pictures/icon/light/columns.png",
+        "/home/Pictures/icon/light/padlock.png",
+        "/home/Pictures/icon/light/power.png",
+        "/home/Pictures/icon/light/library.png",
+        "/home/Pictures/icon/light/gear.png",
+        "/home/Pictures/icon/light/list.png",
+        "/home/Pictures/icon/light/gamepad.png",
+        "/home/Pictures/icon/light/gamepad.png",
+        "/home/Pictures/icon/light/document.png",
         "/home/Pictures/icon/light/folder.png",
-        "/home/Pictures/icon/light/file_c.png",
-        "/home/Pictures/icon/light/file_text.png",
-        "/home/Pictures/icon/light/file_config.png",
-        "/home/Pictures/icon/light/file_html.png",
-        "/home/Pictures/icon/light/file_script.png",
-        "/home/Pictures/icon/light/file_image.png",
-        "/home/Pictures/icon/light/file_video.png",
-        "/home/Pictures/icon/light/file_binary.png",
-        "/home/Pictures/icon/light/file_executable.png",
-        "/home/Pictures/icon/light/file_generic.png",
-        "/home/Pictures/icon/light/fallback.png",
+        "/home/Pictures/icon/light/script.png",
+        "/home/Pictures/icon/light/list.png",
+        "/home/Pictures/icon/light/modifier.png",
+        "/home/Pictures/icon/light/script.png",
+        "/home/Pictures/icon/light/console.png",
+        "/home/Pictures/icon/light/photo.png",
+        "/home/Pictures/icon/light/video.png",
+        "/home/Pictures/icon/light/cylinder.png",
+        "/home/Pictures/icon/light/animation.png",
+        "/home/Pictures/icon/light/document.png",
+        "/home/Pictures/icon/light/empty.png",
+        "/home/Pictures/icon/light/script.png",
+        "/home/Pictures/icon/light/animation.png",
+        "/home/Pictures/icon/light/archive.png",
+        "/home/Pictures/icon/light/armature.png",
+        "/home/Pictures/icon/light/array.png",
+        "/home/Pictures/icon/light/arrow.png",
+        "/home/Pictures/icon/light/arrowRight.png",
+        "/home/Pictures/icon/light/battery_000.png",
+        "/home/Pictures/icon/light/battery_010.png",
+        "/home/Pictures/icon/light/battery_020.png",
+        "/home/Pictures/icon/light/battery_030.png",
+        "/home/Pictures/icon/light/battery_040.png",
+        "/home/Pictures/icon/light/battery_050.png",
+        "/home/Pictures/icon/light/battery_060.png",
+        "/home/Pictures/icon/light/battery_070.png",
+        "/home/Pictures/icon/light/battery_080.png",
+        "/home/Pictures/icon/light/battery_090.png",
+        "/home/Pictures/icon/light/battery_100.png",
+        "/home/Pictures/icon/light/bell.png",
+        "/home/Pictures/icon/light/delete.png",
+        "/home/Pictures/icon/light/camera.png",
+        "/home/Pictures/icon/light/camera_off.png",
+        "/home/Pictures/icon/light/padlock.png",
+        "/home/Pictures/icon/light/padlock_open.png",
+        "/home/Pictures/icon/light/directory.png",
+        "/home/Pictures/icon/light/cylinder.png",
+        "/home/Pictures/icon/light/circle.png",
+        "/home/Pictures/icon/light/cloud.png",
+        "/home/Pictures/icon/light/columns.png",
+        "/home/Pictures/icon/light/cone.png",
+        "/home/Pictures/icon/light/console.png",
+        "/home/Pictures/icon/light/constraint.png",
+        "/home/Pictures/icon/light/grid.png",
+        "/home/Pictures/icon/light/curve.png",
+        "/home/Pictures/icon/light/document.png",
+        "/home/Pictures/icon/light/ease_auto.png",
+        "/home/Pictures/icon/light/ease_in.png",
+        "/home/Pictures/icon/light/ease_inout.png",
+        "/home/Pictures/icon/light/ease_out.png",
+        "/home/Pictures/icon/light/empty.png",
+        "/home/Pictures/icon/light/expand.png",
+        "/home/Pictures/icon/light/falloff_constant.png",
+        "/home/Pictures/icon/light/falloff_custom.png",
+        "/home/Pictures/icon/light/falloff_linear.png",
+        "/home/Pictures/icon/light/falloff_root.png",
+        "/home/Pictures/icon/light/falloff_sharp.png",
+        "/home/Pictures/icon/light/falloff_smoother.png",
+        "/home/Pictures/icon/light/falloff_sphere.png",
+        "/home/Pictures/icon/light/rows.png",
+        "/home/Pictures/icon/light/filter.png",
+        "/home/Pictures/icon/light/folder.png",
+        "/home/Pictures/icon/light/photo.png",
+        "/home/Pictures/icon/light/gamepad.png",
+        "/home/Pictures/icon/light/gear.png",
+        "/home/Pictures/icon/light/record.png",
+        "/home/Pictures/icon/light/save.png",
+        "/home/Pictures/icon/light/handle_aligned.png",
+        "/home/Pictures/icon/light/handle_auto.png",
+        "/home/Pictures/icon/light/handle_autoclamped.png",
+        "/home/Pictures/icon/light/handle_flat.png",
+        "/home/Pictures/icon/light/handle_free.png",
+        "/home/Pictures/icon/light/handle_vector.png",
+        "/home/Pictures/icon/light/hidden.png",
+        "/home/Pictures/icon/light/hitbox.png",
+        "/home/Pictures/icon/light/home.png",
+        "/home/Pictures/icon/light/equals.png",
+        "/home/Pictures/icon/light/instance.png",
+        "/home/Pictures/icon/light/interp_back.png",
+        "/home/Pictures/icon/light/interp_bezier.png",
+        "/home/Pictures/icon/light/interp_bounce.png",
+        "/home/Pictures/icon/light/interp_circ.png",
+        "/home/Pictures/icon/light/interp_constant.png",
+        "/home/Pictures/icon/light/interp_cubic.png",
+        "/home/Pictures/icon/light/interp_elastic.png",
+        "/home/Pictures/icon/light/interp_expo.png",
+        "/home/Pictures/icon/light/interp_linear.png",
+        "/home/Pictures/icon/light/interp_quad.png",
+        "/home/Pictures/icon/light/interp_quart.png",
+        "/home/Pictures/icon/light/interp_quint.png",
+        "/home/Pictures/icon/light/interp_sine.png",
+        "/home/Pictures/icon/light/keyframe.png",
+        "/home/Pictures/icon/light/library.png",
+        "/home/Pictures/icon/light/light.png",
+        "/home/Pictures/icon/light/clear_z.png",
+        "/home/Pictures/icon/light/line.png",
+        "/home/Pictures/icon/light/list.png",
+        "/home/Pictures/icon/light/lock.png",
+        "/home/Pictures/icon/light/lock_open.png",
+        "/home/Pictures/icon/light/mail.png",
+        "/home/Pictures/icon/light/plus.png",
+        "/home/Pictures/icon/light/material.png",
+        "/home/Pictures/icon/light/maximize.png",
+        "/home/Pictures/icon/light/minus.png",
+        "/home/Pictures/icon/light/mesh.png",
+        "/home/Pictures/icon/light/minimize.png",
+        "/home/Pictures/icon/light/mirror.png",
+        "/home/Pictures/icon/light/modifier.png",
+        "/home/Pictures/icon/light/monitor.png",
+        "/home/Pictures/icon/light/fog.png",
+        "/home/Pictures/icon/light/normalCustom.png",
+        "/home/Pictures/icon/light/normalFace.png",
+        "/home/Pictures/icon/light/normalVertex.png",
+        "/home/Pictures/icon/light/notifError.png",
+        "/home/Pictures/icon/light/notifOk.png",
+        "/home/Pictures/icon/light/number.png",
+        "/home/Pictures/icon/light/object.png",
+        "/home/Pictures/icon/light/pivotActive.png",
+        "/home/Pictures/icon/light/pivotCursor.png",
+        "/home/Pictures/icon/light/pivotIndividual.png",
+        "/home/Pictures/icon/light/pivotMedian.png",
+        "/home/Pictures/icon/light/plane.png",
+        "/home/Pictures/icon/light/power.png",
+        "/home/Pictures/icon/light/prefab.png",
+        "/home/Pictures/icon/light/crop.png",
+        "/home/Pictures/icon/light/clock.png",
+        "/home/Pictures/icon/light/script.png",
+        "/home/Pictures/icon/light/search.png",
+        "/home/Pictures/icon/light/selEdge.png",
+        "/home/Pictures/icon/light/selFace.png",
+        "/home/Pictures/icon/light/selVertex.png",
+        "/home/Pictures/icon/light/selection.png",
+        "/home/Pictures/icon/light/snap.png",
+        "/home/Pictures/icon/light/sound.png",
+        "/home/Pictures/icon/light/speaker_0.png",
+        "/home/Pictures/icon/light/speaker_1.png",
+        "/home/Pictures/icon/light/speaker_2.png",
+        "/home/Pictures/icon/light/speaker_3.png",
+        "/home/Pictures/icon/light/texture.png",
+        "/home/Pictures/icon/light/tomato.png",
+        "/home/Pictures/icon/light/trash.png",
+        "/home/Pictures/icon/light/video.png",
+        "/home/Pictures/icon/light/visible.png",
     },
 };
 
@@ -244,6 +657,39 @@ static inline int nxicon_classify(const char *title) {
     return NXICON_RAPTOR;
   if (nxicon_ci_prefix(base, "kilo"))
     return NXICON_TEXTEDIT;
+  if (nxicon_ci_prefix(base, "nxscript"))
+    return NXICON_NXSCRIPT;
+  if (nxicon_ci_prefix(base, "nxnotify"))
+    return NXICON_G_BELL;
+  if (nxicon_ci_prefix(base, "nxempire"))
+    return NXICON_G_GAMEPAD;
+  if (nxicon_ci_prefix(base, "demo3d"))
+    return NXICON_G_MESH;
+  if (nxicon_ci_prefix(base, "nxres"))
+    return NXICON_G_EXPAND;
+  if (nxicon_ci_prefix(base, "nxkeymap"))
+    return NXICON_G_NUMBER;
+  if (nxicon_ci_prefix(base, "nxproc"))
+    return NXICON_G_ROWS;
+  if (nxicon_ci_prefix(base, "nxwins"))
+    return NXICON_G_MAXIMIZE;
+  if (nxicon_ci_prefix(base, "nxenvinit"))
+    return NXICON_G_MODIFIER;
+  if (nxicon_ci_prefix(base, "nxtimerdiag"))
+    return NXICON_G_CLOCK;
+  if (nxicon_ci_prefix(base, "nxpax"))
+    return NXICON_G_ARCHIVE;
+  if (nxicon_ci_prefix(base, "nxtestrunner"))
+    return NXICON_G_NOTIFOK;
+  if (nxicon_ci_prefix(base, "nxroleprobe"))
+    return NXICON_G_SEARCH;
+  if (nxicon_ci_prefix(base, "nxfont"))
+    return NXICON_G_CURVE;
+  if (nxicon_ci_prefix(base, "nxtest_userkit_"))
+    return NXICON_G_NOTIFOK;
+  /* "lua" deliberately NOT prefix-matched here: it would also catch "luatest"
+   * (a test suite, no icon).  lua is mapped by exact name in
+   * nxicon_classify_path() only. */
   return NXICON_UNKNOWN;
 }
 
@@ -285,6 +731,38 @@ static inline int nxicon_classify_path(const char *path) {
     return NXICON_RAPTOR;
   if (strcmp(base, "kilo") == 0)
     return NXICON_TEXTEDIT;
+  if (strcmp(base, "nxscript") == 0)
+    return NXICON_NXSCRIPT;
+  if (strcmp(base, "nxnotify") == 0)
+    return NXICON_G_BELL;
+  if (strcmp(base, "nxempire") == 0)
+    return NXICON_G_GAMEPAD;
+  if (strcmp(base, "demo3d") == 0)
+    return NXICON_G_MESH;
+  if (strcmp(base, "lua") == 0)
+    return NXICON_NXSCRIPT;
+  if (strcmp(base, "nxres") == 0)
+    return NXICON_G_EXPAND;
+  if (strcmp(base, "nxkeymap") == 0)
+    return NXICON_G_NUMBER;
+  if (strcmp(base, "nxproc") == 0)
+    return NXICON_G_ROWS;
+  if (strcmp(base, "nxwins") == 0)
+    return NXICON_G_MAXIMIZE;
+  if (strcmp(base, "nxenvinit") == 0)
+    return NXICON_G_MODIFIER;
+  if (strcmp(base, "nxtimerdiag") == 0)
+    return NXICON_G_CLOCK;
+  if (strcmp(base, "nxpax") == 0)
+    return NXICON_G_ARCHIVE;
+  if (strcmp(base, "nxtestrunner") == 0)
+    return NXICON_G_NOTIFOK;
+  if (strcmp(base, "nxroleprobe") == 0)
+    return NXICON_G_SEARCH;
+  if (strcmp(base, "nxfont") == 0)
+    return NXICON_G_CURVE;
+  if (nxicon_ci_prefix(base, "nxtest_userkit_"))
+    return NXICON_G_NOTIFOK;
   return NXICON_UNKNOWN;
 }
 
@@ -348,6 +826,30 @@ static inline int nxicon_classify_file(const char *name, int is_dir) {
   return NXICON_FILE_GENERIC;
 }
 
+/*
+ * nxicon_find - icon id for an asset file name without directory/extension
+ * (e.g. "gear", "battery_050", "padlock"), searching the HydroGlass catalog
+ * (ids from 27 up).  Returns NXICON_UNKNOWN if not found.  Linear scan: resolve
+ * once and keep the id, don't call per frame.  Manual loop on purpose (minimal
+ * libc here, see nxicon_ci_prefix).
+ */
+static inline int nxicon_find(const char *name) {
+  if (!name)
+    return NXICON_UNKNOWN;
+  for (int i = 27; i < NXICON_COUNT; i++) {
+    const char *p = strrchr(nxicon_paths[NXICON_THEME_DARK][i], '/');
+    p = p ? p + 1 : nxicon_paths[NXICON_THEME_DARK][i];
+    const char *q = name;
+    while (*q && *p == *q) {
+      p++;
+      q++;
+    }
+    if (!*q && strcmp(p, ".png") == 0)
+      return i;
+  }
+  return NXICON_UNKNOWN;
+}
+
 /* nxicon_reset_cache - drop every cached scaled icon and retry flag (both
  * themes).  Only needed if the tile size itself changes (a future DPI/zoom
  * feature); a plain theme flip does NOT need this, since both themes are
@@ -382,7 +884,7 @@ static inline os1_image_t *nxicon_get(int app_id, int light, int tile_size) {
   if (nxicon_tile_size != tile_size)
     nxicon_reset_cache(); /* size changed since the cache was built: rebuild
                            * lazily, one icon at a time, as each is next
-                           * requested — not an eager reload of all fifteen. */
+                           * requested — not an eager reload of all of them. */
   nxicon_tile_size = tile_size;
 
   int theme = light ? NXICON_THEME_LIGHT : NXICON_THEME_DARK;

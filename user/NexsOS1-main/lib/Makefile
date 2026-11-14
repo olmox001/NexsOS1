@@ -32,29 +32,16 @@ CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings \
   -ffreestanding -fno-builtin -nostdlib -nostartfiles -fno-common \
   -fstack-protector-strong -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g \
   $(ARCH_CFLAGS) $(INCLUDE_FLAGS)
-KEYBOARD_OBJ := $(OBJ_DIR)/keyboard-layout/nxkeyboard_layout.o
-KEYBOARD_ARCHIVE := $(BUILD_DIR)/libnexsos1-keyboard-layout.a
 AGGREGATE_ARCHIVE := $(BUILD_DIR)/libnexsos1.a
 .PHONY: all check clean info
-all: $(KEYBOARD_ARCHIVE) $(AGGREGATE_ARCHIVE)
-$(KEYBOARD_OBJ): keyboard-layout/src/nxkeyboard_layout.c
-	@mkdir -p "$(dir $@)"
-	@$(CC) $(CFLAGS) -MMD -MP -c "$<" -o "$@"
-$(KEYBOARD_ARCHIVE): $(KEYBOARD_OBJ)
-	@mkdir -p "$(dir $@)"; rm -f "$@.tmp"; $(AR) rcs "$@.tmp" $(KEYBOARD_OBJ); mv "$@.tmp" "$@"
-$(AGGREGATE_ARCHIVE): $(KEYBOARD_OBJ)
-	@mkdir -p "$(dir $@)"; rm -f "$@.tmp"; $(AR) rcs "$@.tmp" $(KEYBOARD_OBJ); mv "$@.tmp" "$@"
+all: $(AGGREGATE_ARCHIVE)
+$(AGGREGATE_ARCHIVE):
+	@mkdir -p "$(dir $@)"; rm -f "$@.tmp"; $(AR) rcs "$@.tmp"; mv "$@.tmp" "$@"
 check: all
-	@mkdir -p "$(BUILD_DIR)/host-tests"
-	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
-	  -Ikeyboard-layout/include -I$(NXSDK_ROOT)/lib/extensions/input/include \
-	  keyboard-layout/src/nxkeyboard_layout.c keyboard-layout/tests/keyboard_layout_test.c \
-	  -o "$(BUILD_DIR)/host-tests/keyboard_layout_test"
-	@"$(BUILD_DIR)/host-tests/keyboard_layout_test"
 	@for header in look/include/nxres.h icon/include/nxicon.h exec-policy/include/nxexec.h; do test -s "$$header" || exit 1; done
 	@echo "nexsos1-lib $(ARCH) check passed"
 info:
-	@printf 'archive=%s\nkeyboard_archive=%s\n' '$(AGGREGATE_ARCHIVE)' '$(KEYBOARD_ARCHIVE)'
+	@printf 'archive=%s\n' '$(AGGREGATE_ARCHIVE)'
 DEPS := $(shell find "$(OBJ_DIR)" -type f -name '*.d' 2>/dev/null)
 -include $(DEPS)
 clean:

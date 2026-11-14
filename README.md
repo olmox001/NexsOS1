@@ -9,7 +9,7 @@
 
 NexsOS1 (codename **OS1**) is an educational and research hybrid-kernel operating system built from scratch. It boots on both ARM64 (AArch64) and x86-64 (AMD64) under QEMU, brings up Symmetric Multiprocessing (SMP), drives native **VirtIO** devices (GPU, input, block), mounts an **Ext4** root filesystem, composites overlapping windows in a custom graphical user interface, and executes user-space ELF binaries with an interactive **TTY shell**.
 
-> **Honesty note.** The test matrix below records earlier verification and does not qualify the current local changes. The current incremental review and open failures are recorded in [`docs/review/INCREMENTAL-REVIEW-2026-11-12.md`](docs/review/INCREMENTAL-REVIEW-2026-11-12.md). For the complete, evidence-based picture — including bugs, gaps, and severity — see [`docs/review/REVIEW.md`](docs/review/REVIEW.md). For where the project is *going* (a seL4-style, Plan 9-inspired Microkernel), see [`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md). This project is licensed under **GPL v2** (see [`LICENSE.md`](LICENSE.md)).
+> **Honesty note.** The test matrix below records earlier verification and does not qualify the current local changes. The current incremental review and open failures are recorded in [`docs/legacy/review/INCREMENTAL-REVIEW-2026-11-12.md`](docs/legacy/review/INCREMENTAL-REVIEW-2026-11-12.md). For the complete, evidence-based picture — including bugs, gaps, and severity — see [`docs/legacy/review/REVIEW.md`](docs/legacy/review/REVIEW.md). For where the project is *going* (a seL4-style, Plan 9-inspired Microkernel), see [`docs/legacy/PROJECT_CHARTER.md`](docs/legacy/PROJECT_CHARTER.md). This project is licensed under **GPL v2** (see [`LICENSE.md`](LICENSE.md)).
 
 ---
 
@@ -193,7 +193,7 @@ SDK installation is componentized so tool updates do not require reinstalling th
 
 ```text
 .
-├── docs/                       # Architecture, reviews, reports and historical plans
+├── docs/legacy/                       # Architecture, reviews, reports and historical plans
 ├── kernel/                     # NX-CORE pinned Git submodule
 │   ├── external/grub/          # Pinned external GRUB source used by NX-CORE boot media
 │   ├── HAL/                    # ISA adapters and hardware abstraction contracts
@@ -322,7 +322,7 @@ Technical choices are made democratically:
 
 ## 🎨 Graphics Portability
 
-The OpenGL, D3D9, and SDL2 port program, its ASTRA boundary, and validation log reside in [`docs/graphics-port/`](docs/graphics-port/README.md).
+The OpenGL, D3D9, and SDL2 port program, its ASTRA boundary, and validation log reside in [`docs/legacy/graphics-port/`](docs/legacy/graphics-port/README.md).
 
 ---
 

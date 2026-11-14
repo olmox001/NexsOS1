@@ -45,327 +45,327 @@
       "selected": true
     },
     {
-      "path": "docs/ASTRA.md",
+      "path": "docs/legacy/ASTRA.md",
       "selected": true
     },
     {
-      "path": "docs/B3-POLISH-QUEUE.md",
+      "path": "docs/legacy/B3-POLISH-QUEUE.md",
       "selected": false
     },
     {
-      "path": "docs/B3-SANDBOX-PLAN.md",
+      "path": "docs/legacy/B3-SANDBOX-PLAN.md",
       "selected": false
     },
     {
-      "path": "docs/DESIGN-2026-07-18-NXEXEC-DAEMON.md",
+      "path": "docs/legacy/DESIGN-2026-07-18-NXEXEC-DAEMON.md",
       "selected": true
     },
     {
-      "path": "docs/DESIGN-PERSISTENCE-INSTALL.md",
+      "path": "docs/legacy/DESIGN-PERSISTENCE-INSTALL.md",
       "selected": false
     },
     {
-      "path": "docs/FUTURE_DRIVER_EXPANSION_PLAN.md",
+      "path": "docs/legacy/FUTURE_DRIVER_EXPANSION_PLAN.md",
       "selected": false
     },
     {
-      "path": "docs/FUTURE_NETWORK_IMPLEMENTATION.md",
+      "path": "docs/legacy/FUTURE_NETWORK_IMPLEMENTATION.md",
       "selected": false
     },
     {
-      "path": "docs/HANDOFF-2026-07-18.md",
+      "path": "docs/legacy/HANDOFF-2026-07-18.md",
       "selected": false
     },
     {
-      "path": "docs/LOGO/NexsOS1_LOGO_duck.nxtimg",
+      "path": "docs/legacy/LOGO/NexsOS1_LOGO_duck.nxtimg",
       "selected": false
     },
     {
-      "path": "docs/LOGO/NexsOS1_LOGO_main.nxtimg",
+      "path": "docs/legacy/LOGO/NexsOS1_LOGO_main.nxtimg",
       "selected": false
     },
     {
-      "path": "docs/LOGO/NexsOS1_LOGO_nexs.nxtimg",
+      "path": "docs/legacy/LOGO/NexsOS1_LOGO_nexs.nxtimg",
       "selected": false
     },
     {
-      "path": "docs/MANUAL.md",
+      "path": "docs/legacy/MANUAL.md",
       "selected": false
     },
     {
-      "path": "docs/MICROSCOPE-RELEASE-STORAGE.md",
+      "path": "docs/legacy/MICROSCOPE-RELEASE-STORAGE.md",
       "selected": false
     },
     {
-      "path": "docs/PENDING-WORK.md",
+      "path": "docs/legacy/PENDING-WORK.md",
       "selected": false
     },
     {
-      "path": "docs/PHASE-B-PLAN.md",
+      "path": "docs/legacy/PHASE-B-PLAN.md",
       "selected": false
     },
     {
-      "path": "docs/PIANO-DRIVER-MATURITY.md",
+      "path": "docs/legacy/PIANO-DRIVER-MATURITY.md",
       "selected": false
     },
     {
-      "path": "docs/PIANO-LIBC-ASTRA-2026-07-16.md",
+      "path": "docs/legacy/PIANO-LIBC-ASTRA-2026-07-16.md",
       "selected": true
     },
     {
-      "path": "docs/PLAN-2026-07-17-STRATIFICATION.md",
+      "path": "docs/legacy/PLAN-2026-07-17-STRATIFICATION.md",
       "selected": true
     },
     {
-      "path": "docs/PLAN-2026-07-23-HARDENING-SDK-RUST.md",
+      "path": "docs/legacy/PLAN-2026-07-23-HARDENING-SDK-RUST.md",
       "selected": true
     },
     {
-      "path": "docs/PROCESS-KILL-MODEL.md",
+      "path": "docs/legacy/PROCESS-KILL-MODEL.md",
       "selected": true
     },
     {
-      "path": "docs/PROJECT_CHARTER.md",
+      "path": "docs/legacy/PROJECT_CHARTER.md",
       "selected": true
     },
     {
-      "path": "docs/R0-CENSUS-LIB-SPLIT.md",
+      "path": "docs/legacy/R0-CENSUS-LIB-SPLIT.md",
       "selected": false
     },
     {
-      "path": "docs/ROADMAP-ASTRA-SERVERIZATION.md",
+      "path": "docs/legacy/ROADMAP-ASTRA-SERVERIZATION.md",
       "selected": false
     },
     {
-      "path": "docs/TIMER-MODEL.md",
+      "path": "docs/legacy/TIMER-MODEL.md",
       "selected": false
     },
     {
-      "path": "docs/compositor_vulnerability_analysis.md",
+      "path": "docs/legacy/compositor_vulnerability_analysis.md",
       "selected": false
     },
     {
-      "path": "docs/coreutils-port-audit.md",
+      "path": "docs/legacy/coreutils-port-audit.md",
       "selected": false
     },
     {
-      "path": "docs/direction/DIR-01-naming-and-objects.md",
+      "path": "docs/legacy/direction/DIR-01-naming-and-objects.md",
       "selected": false
     },
     {
-      "path": "docs/direction/DIR-02-compositor-decoupling.md",
+      "path": "docs/legacy/direction/DIR-02-compositor-decoupling.md",
       "selected": false
     },
     {
-      "path": "docs/direction/DIR-03-unified-events.md",
+      "path": "docs/legacy/direction/DIR-03-unified-events.md",
       "selected": false
     },
     {
-      "path": "docs/direction/DIR-04-capabilities-and-services.md",
+      "path": "docs/legacy/direction/DIR-04-capabilities-and-services.md",
       "selected": false
     },
     {
-      "path": "docs/direction/DIR-05-fault-recovery-and-debugger.md",
+      "path": "docs/legacy/direction/DIR-05-fault-recovery-and-debugger.md",
       "selected": false
     },
     {
-      "path": "docs/direction/DIR-06-hal-conformance.md",
+      "path": "docs/legacy/direction/DIR-06-hal-conformance.md",
       "selected": false
     },
     {
-      "path": "docs/direction/DIR-07-display-surface-resize.md",
+      "path": "docs/legacy/direction/DIR-07-display-surface-resize.md",
       "selected": false
     },
     {
-      "path": "docs/direction/README.md",
+      "path": "docs/legacy/direction/README.md",
       "selected": false
     },
     {
-      "path": "docs/fault-handling-backtrace-review.txt",
+      "path": "docs/legacy/fault-handling-backtrace-review.txt",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-chrome-primitives-increment.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-chrome-primitives-increment.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-d3d9-present-backend.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-d3d9-present-backend.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-gpu-context-object-design.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-gpu-context-object-design.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-input-architecture-design.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-input-architecture-design.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-mouse-button-delivery-fix.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-mouse-button-delivery-fix.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-sdl2-input-increment.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-sdl2-input-increment.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-sdl2-overlay-and-submodule-forks.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-sdl2-overlay-and-submodule-forks.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-sdl2-resize-handling.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-sdl2-resize-handling.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-sdl2-runtime-bringup.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-sdl2-runtime-bringup.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-11-sdl2-timer-backend.md",
+      "path": "docs/legacy/graphics-port/2026-07-11-sdl2-timer-backend.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-12-gpu-contract-and-gl-client-plan.md",
+      "path": "docs/legacy/graphics-port/2026-07-12-gpu-contract-and-gl-client-plan.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/2026-07-12-opengl-front-opened.md",
+      "path": "docs/legacy/graphics-port/2026-07-12-opengl-front-opened.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/README.md",
+      "path": "docs/legacy/graphics-port/README.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/STATE.md",
+      "path": "docs/legacy/graphics-port/STATE.md",
       "selected": false
     },
     {
-      "path": "docs/graphics-port/VALIDATION.md",
+      "path": "docs/legacy/graphics-port/VALIDATION.md",
       "selected": false
     },
     {
-      "path": "docs/libkernel_vulnerabilty.md",
+      "path": "docs/legacy/libkernel_vulnerabilty.md",
       "selected": false
     },
     {
-      "path": "docs/man/Manuale_Completo_del_C_e_dell_abi_NexsOS1.md",
+      "path": "docs/legacy/man/Manuale_Completo_del_C_e_dell_abi_NexsOS1.md",
       "selected": false
     },
     {
-      "path": "docs/report/2026-07-16-RIEPILOGO-BLOCCO.md",
+      "path": "docs/legacy/report/2026-07-16-RIEPILOGO-BLOCCO.md",
       "selected": false
     },
     {
-      "path": "docs/report/2026-07-16-libc-fs-batch.md",
+      "path": "docs/legacy/report/2026-07-16-libc-fs-batch.md",
       "selected": false
     },
     {
-      "path": "docs/report/AUDIT-KERNEL-2026-07-02.md",
+      "path": "docs/legacy/report/AUDIT-KERNEL-2026-07-02.md",
       "selected": false
     },
     {
-      "path": "docs/report/AUDIT-USERLAND-2026-07-02.md",
+      "path": "docs/legacy/report/AUDIT-USERLAND-2026-07-02.md",
       "selected": false
     },
     {
-      "path": "docs/report/KTHREAD-STATUS.md",
+      "path": "docs/legacy/report/KTHREAD-STATUS.md",
       "selected": false
     },
     {
-      "path": "docs/report/POSTMORTEM-2026-07-10-phase1B-derail.md",
+      "path": "docs/legacy/report/POSTMORTEM-2026-07-10-phase1B-derail.md",
       "selected": false
     },
     {
-      "path": "docs/report/S-ALIGN-STATO-2026-07-03.md",
+      "path": "docs/legacy/report/S-ALIGN-STATO-2026-07-03.md",
       "selected": false
     },
     {
-      "path": "docs/report/S-STAB-2026-07-12-render-isolation-and-notify-panel.md",
+      "path": "docs/legacy/report/S-STAB-2026-07-12-render-isolation-and-notify-panel.md",
       "selected": false
     },
     {
-      "path": "docs/report/SMP_AMD64_STABILIZATION_REPORT.md",
+      "path": "docs/legacy/report/SMP_AMD64_STABILIZATION_REPORT.md",
       "selected": false
     },
     {
-      "path": "docs/report/TIMER-UAF-01-CERTIFIED-FIX.md",
+      "path": "docs/legacy/report/TIMER-UAF-01-CERTIFIED-FIX.md",
       "selected": false
     },
     {
-      "path": "docs/report/final_report_boot_stabilization.md",
+      "path": "docs/legacy/report/final_report_boot_stabilization.md",
       "selected": false
     },
     {
-      "path": "docs/review/HANDOFF.md",
+      "path": "docs/legacy/review/HANDOFF.md",
       "selected": false
     },
     {
-      "path": "docs/review/REVIEW.md",
+      "path": "docs/legacy/review/REVIEW.md",
       "selected": false
     },
     {
-      "path": "docs/review/TAXONOMY.md",
+      "path": "docs/legacy/review/TAXONOMY.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/01-mm-memory-management.md",
+      "path": "docs/legacy/review/analysis/01-mm-memory-management.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/02-boot-arch-hal.md",
+      "path": "docs/legacy/review/analysis/02-boot-arch-hal.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/03-arch-cpu-exceptions.md",
+      "path": "docs/legacy/review/analysis/03-arch-cpu-exceptions.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/04-drivers-irq.md",
+      "path": "docs/legacy/review/analysis/04-drivers-irq.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/05-fs.md",
+      "path": "docs/legacy/review/analysis/05-fs.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/06-graphics.md",
+      "path": "docs/legacy/review/analysis/06-graphics.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/07-lib-headers.md",
+      "path": "docs/legacy/review/analysis/07-lib-headers.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/08-userland.md",
+      "path": "docs/legacy/review/analysis/08-userland.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/09-sched-process-ipc-abi.md",
+      "path": "docs/legacy/review/analysis/09-sched-process-ipc-abi.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/10-addendum-2026-06-11-sched-uaf-followup.md",
+      "path": "docs/legacy/review/analysis/10-addendum-2026-06-11-sched-uaf-followup.md",
       "selected": false
     },
     {
-      "path": "docs/review/analysis/11-addendum-2026-06-11-external-trace-triage.md",
+      "path": "docs/legacy/review/analysis/11-addendum-2026-06-11-external-trace-triage.md",
       "selected": false
     },
     {
-      "path": "docs/userland-port/2026-07-12-home-acl-and-abstraction-review.md",
+      "path": "docs/legacy/userland-port/2026-07-12-home-acl-and-abstraction-review.md",
       "selected": false
     },
     {
-      "path": "docs/userland-port/2026-07-12-musl-busybox-and-vfs-review.md",
+      "path": "docs/legacy/userland-port/2026-07-12-musl-busybox-and-vfs-review.md",
       "selected": false
     },
     {
-      "path": "docs/userland-port/2026-07-12-strict-home-acl-and-savegames.md",
+      "path": "docs/legacy/userland-port/2026-07-12-strict-home-acl-and-savegames.md",
       "selected": false
     },
     {
-      "path": "docs/userland-port/PLAN.md",
+      "path": "docs/legacy/userland-port/PLAN.md",
       "selected": false
     },
     {

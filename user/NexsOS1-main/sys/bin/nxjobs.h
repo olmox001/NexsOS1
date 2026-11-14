@@ -364,9 +364,10 @@ static inline int nxjobs_resolve(struct nxjobs *j, const char *arg) {
   return __nxjobs_match(j, arg, 0);
 }
 
-/* nxjobs_stop - suspend a job (Ctrl-Z / `stop %N`): kernel PROC_STOPPED via
- * OS1_process_stop, then mark it Stopped so `jobs` reflects it and `bg`/`fg`
- * can resume it (Phase 2 — a real stopped state exists now). */
+/* nxjobs_stop - suspend a tracked job through the same PROCESS capability
+ * operation used by the foreground Ctrl-Z path.  NXShell currently exposes
+ * suspension through Ctrl-Z; this helper keeps the state transition reusable
+ * without inventing a separate execution or TTY policy. */
 static inline int nxjobs_stop(struct nxjobs *j, int slot) {
   if (slot < 0 || slot >= NXJOBS_MAX || !j->slot[slot].in_use)
     return -1;

@@ -67,15 +67,12 @@ def source_roles() -> int:
             "/krnl/extension/nxmanageDD",
             "kernel boot entry does not select nxmanageDD")
 
-    images = {}
-    for raw in (MAIN / "sys/boot/images.conf").read_text().splitlines():
-        if not raw or raw.startswith("#"):
-            continue
-        fields = raw.split("|")
-        require(len(fields) == 3, "image catalog must have 3 fields")
-        kind, image, path = fields
-        require(image not in images, f"duplicate system image: {image}")
-        images[image] = (kind, path)
+    require(not (MAIN / "sys/boot/images.conf").exists(),
+            "duplicate executable image catalog is forbidden")
+    for forbidden in ("file_read(", "nxsystem_image", "NXMANAGE_LIBRARY",
+                      "NXMANAGE_PROJECT", "system.manage.current"):
+        require(forbidden not in manager,
+                f"machine manager contains forbidden policy/storage reference: {forbidden}")
 
     manifest_servers = set()
     names = set()
@@ -83,19 +80,16 @@ def source_roles() -> int:
         if not raw or raw.startswith("#"):
             continue
         fields = raw.split("|")
-        require(len(fields) in (5, 6), "service manifest must have 5 or 6 fields")
-        logical, _mode, image = fields[:3]
-        require(logical not in names, f"duplicate manifest name: {logical}")
-        require(image in images and images[image][0] == "service",
-                f"manifest references unknown/non-service image: {image}")
+        require(len(fields) in (5, 6), "startup declaration must have 5 or 6 fields")
+        logical, _mode, executable = fields[:3]
+        require(logical not in names, f"duplicate startup name: {logical}")
+        require(re.fullmatch(r"/sys/(?:bin|services)/[A-Za-z0-9_-]+", executable)
+                is not None, f"invalid startup executable: {executable}")
         names.add(logical)
-        path = images[image][1]
-        if path.startswith("/sys/services/"):
-            manifest_servers.add(path.removeprefix("/sys/services/"))
+        if executable.startswith("/sys/services/"):
+            manifest_servers.add(executable.removeprefix("/sys/services/"))
     require(manifest_servers == servers,
-            f"USERKIT catalog/manifest mismatch: {manifest_servers} != {servers}")
-    require("nxm_service_path" not in manager and "slot->path" not in manager,
-            "machine manager still interprets service filesystem paths")
+            f"USERKIT build/startup mismatch: {manifest_servers} != {servers}")
     return len(names)
 
 
@@ -116,6 +110,8 @@ def rootfs_roles(directory: Path) -> None:
                 f"USERKIT runtime probe is not ELF: {name}")
     require(not (directory / "system/boot/entry").exists(),
             "rootfs must not own the NX-CORE boot entry")
+    require(not (directory / "system/boot/images.conf").exists(),
+            "rootfs must not contain a duplicate executable catalog")
     require((directory / "system/boot/project").read_text().strip() == "NexsOS1-main",
             "main image project identity differs")
     require((directory / "system/boot/services.conf").read_bytes() ==

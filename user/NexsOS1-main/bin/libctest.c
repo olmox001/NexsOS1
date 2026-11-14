@@ -635,9 +635,8 @@ static void t_execsvc_modes_reject_invalid(void) {
   int rc = execsvc_launch(1, argv, (enum execsvc_launch_mode)99,
                           NULL, 0, path, sizeof(path));
   CHECK(name, rc == -EINVAL, "invalid launch mode was accepted");
-  rc = execsvc_launch(1, argv, EXECSVC_MODE_HOSTED, NULL, 1,
-                       path, sizeof(path));
-  CHECK(name, rc == -EINVAL, "hosted launch accepted redirection");
+  rc = execsvc_launch_hosted(0, NULL);
+  CHECK(name, rc == -EINVAL, "hosted TTY composition accepted invalid argv");
   ok(name);
 }
 

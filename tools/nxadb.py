@@ -33,12 +33,16 @@ DEFAULT_ARCH = os.environ.get("ARCH", "aarch64")
 QMP_INPUT_DISPLAY = "nxgpu0"
 SESSION_LOCK_TIMEOUT = 60.0
 COUNTER_FRAME_SLEEP_MS = 100
-COUNTER_HEARTBEAT_FRAMES = 10
+COUNTER_HEARTBEAT_FRAMES = 50
 COUNTER_HEARTBEAT_BUDGET_MULTIPLIER = 3
 COUNTER_HEARTBEAT_TIMEOUT = (
     COUNTER_FRAME_SLEEP_MS * COUNTER_HEARTBEAT_FRAMES *
     COUNTER_HEARTBEAT_BUDGET_MULTIPLIER / 1000.0
 )
+SHELL_PROMPT_SETTLE_SECONDS = 0.75
+BOOT_NXTEST_DISCOVERY_SECONDS = 5.0
+BOOT_NXTEST_TIMEOUT_SECONDS = 180.0
+BOOT_NXTEST_DISMISS_SETTLE_SECONDS = 0.50
 MUTATING_COMMANDS = {"start", "stop", "restart", "shell", "ls", "cat",
                      "push", "pull", "test", "screenshot", "mouse"}
 
@@ -683,22 +687,37 @@ def wait_for_boot(session: Session, timeout: int = 90) -> bool:
     return False
 
 
+def _prompt_settle_state(
+    text: str, prompt_since: Optional[float], now: float
+) -> Tuple[bool, Optional[float]]:
+    """Require a continuously visible prompt before injecting QMP input."""
+    if not PROMPT_RE.search(text):
+        return False, None
+    if prompt_since is None:
+        return False, now
+    return now - prompt_since >= SHELL_PROMPT_SETTLE_SECONDS, prompt_since
+
+
 def wait_for_shell(session: Session, timeout: int = 50) -> bool:
-    """Wait for the actual interactive prompt, not merely the early init log."""
+    """Wait for a stable interactive prompt, not merely the early init log."""
     print("[nxadb] waiting for NXShell prompt...", end="", flush=True)
     started = False
-    t0 = time.time()
-    while time.time() - t0 < timeout:
+    prompt_since: Optional[float] = None
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
         text = strip_ansi(session.log_text())
         if SHELL_ALIVE_RE.search(text):
             started = True
-        if PROMPT_RE.search(text):
+        ready, prompt_since = _prompt_settle_state(
+            text, prompt_since, time.monotonic()
+        )
+        if ready:
             print(" ready")
             return True
         if FAULT_RE.search(text):
             print(" FAULT")
             return False
-        if time.time() - t0 >= 1.5 and not session.process_matches(session.pid()):
+        if time.monotonic() - t0 >= 1.5 and not session.process_matches(session.pid()):
             print(" QEMU-EXITED")
             return False
         time.sleep(0.35)
@@ -1136,6 +1155,53 @@ def _shell_navigation_probe(session: Session) -> Tuple[bool, str]:
     return marker in repeated_lines, repeated
 
 
+def _boot_nxtest_state(text: str) -> str:
+    clean = strip_ansi(text)
+    if re.search(r"\[NXTEST\]\s+done:", clean, re.IGNORECASE):
+        return "done"
+    if re.search(
+        r"\[NXTEST\]\s+real userland suite started", clean, re.IGNORECASE
+    ):
+        return "running"
+    return "absent"
+
+
+def _dismiss_boot_nxtest_tty(session: Session) -> None:
+    """Close the completed boot-test TTY through its normal Enter lifecycle."""
+    if not session.is_running():
+        return
+    qmp_special(session.qmp_sock, "ret")
+    time.sleep(BOOT_NXTEST_DISMISS_SETTLE_SECONDS)
+
+
+def _wait_for_boot_nxtest(session: Session) -> Tuple[bool, str]:
+    discovery_deadline = time.monotonic() + BOOT_NXTEST_DISCOVERY_SECONDS
+    state = _boot_nxtest_state(session.log_text())
+    while state == "absent" and time.monotonic() < discovery_deadline:
+        live = session.log_text()
+        if FAULT_RE.search(live) or not session.is_running():
+            return False, "fault"
+        time.sleep(0.10)
+        state = _boot_nxtest_state(session.log_text())
+    if state == "absent":
+        return True, state
+    if state == "done":
+        _dismiss_boot_nxtest_tty(session)
+        return True, state
+
+    deadline = time.monotonic() + BOOT_NXTEST_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        live = session.log_text()
+        if FAULT_RE.search(live) or not session.is_running():
+            return False, "fault"
+        state = _boot_nxtest_state(live)
+        if state == "done":
+            _dismiss_boot_nxtest_tty(session)
+            return True, state
+        time.sleep(0.20)
+    return False, "timeout"
+
+
 def _run_timerdiag(session: Session) -> Tuple[bool, str]:
     code, output = run_shell_c(session, "/sys/bin/nxtimerdiag --probe", timeout=45)
     clean = strip_ansi(output)
@@ -1149,8 +1215,10 @@ def _run_timerdiag(session: Session) -> Tuple[bool, str]:
 def _counter_heartbeat_count(text: str) -> int:
     clean = strip_ansi(text)
     current = re.findall(
-        r"(?m)^\s*\[COUNTER\]\s+frame=0x[0-9a-fA-F]+\s+"
-        r"mono_ms=0x[0-9a-fA-F]+\s*$",
+        r"(?m)^\s*\[COUNTER\]\s+"
+        r"frame=(?:0x[0-9a-fA-F]+|[0-9]+)\s+"
+        r"mono_ms=(?:0x[0-9a-fA-F]+|[0-9]+)"
+        r"(?:\s+delta_ms=[0-9]+)?\s*$",
         clean,
     )
     legacy = re.findall(r"(?m)^\s*Count:\s*0x[0-9a-fA-F]+\s*$", clean)
@@ -1197,12 +1265,18 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
 
         verdict = "ok"
         results: List[str] = []
-        healthy, _ = _shell_health_probe(session)
-        if healthy:
-            results.append("SHELL-INTERACTION=PASS")
-        else:
-            results.append("SHELL-INTERACTION=FAIL")
+        boot_tests_ok, boot_tests_state = _wait_for_boot_nxtest(session)
+        results.append(f"BOOT-NXTEST={boot_tests_state.upper()}")
+        if not boot_tests_ok:
             verdict = "FAULT"
+
+        if verdict != "FAULT":
+            healthy, _ = _shell_health_probe(session)
+            if healthy:
+                results.append("SHELL-INTERACTION=PASS")
+            else:
+                results.append("SHELL-INTERACTION=FAIL")
+                verdict = "FAULT"
 
         if verdict != "FAULT":
             navigation_ok, _ = _shell_navigation_probe(session)
