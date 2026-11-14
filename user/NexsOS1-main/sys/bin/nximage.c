@@ -33,8 +33,8 @@ static int g_wh;
 static os1_image_t *g_scaled;
 static int g_scaled_zoom;
 static int g_zoom = 1000;
-static int g_screen_w = 800;
-static int g_screen_h = 600;
+static int g_screen_w = 0;
+static int g_screen_h = 0;
 
 static struct font_ctx *g_font;
 
@@ -101,12 +101,14 @@ static int streq(const char *a, const char *b) {
 
 static int top_bar_h(void) { return g_bar_hidden ? HIDE_LINE_H : TOOLBAR_H; }
 
-static void update_screen_size(void) {
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF);
-  int sh = (int)(di & 0xFFFF);
-  g_screen_w = sw > 0 ? sw : 800;
-  g_screen_h = sh > 0 ? sh : 600;
+static int update_screen_size(void) {
+  int sw = 0, sh = 0;
+  int result = OS1_display_get_size(&sw, &sh);
+  if (result != 0)
+    return result;
+  g_screen_w = sw;
+  g_screen_h = sh;
+  return 0;
 }
 
 static void clear_scaled(void) {
@@ -398,7 +400,11 @@ static int handle_toolbar_click(int win, const os1_image_t *img, int mx,
 }
 
 static int run_window(const char *path, os1_image_t *img) {
-  update_screen_size();
+  int display_status = update_screen_size();
+  if (display_status != 0) {
+    OS1_report_error("nximage.display_size", display_status);
+    return 1;
+  }
 
   int fit_w = 0, fit_h = 0;
   int max_w = (g_screen_w * 9) / 10 - PAD * 2;
@@ -649,7 +655,12 @@ static int run_video(const char *path) {
     return 1;
   }
 
-  update_screen_size();
+  int display_status = update_screen_size();
+  if (display_status != 0) {
+    OS1_report_error("nximage.display_size", display_status);
+    os1vid_close(v);
+    return 1;
+  }
   int max_w = (g_screen_w * 9) / 10;
   int max_h = (g_screen_h * 8) / 10;
 

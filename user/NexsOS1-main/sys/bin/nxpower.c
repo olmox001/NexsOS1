@@ -280,10 +280,12 @@ static void handle_click(int my) {
 static int main_gui(void) {
   g_font = font_load("/fonts/Rewir-Light.off");
 
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF), sh = (int)((di) & 0xFFFF);
-  if (sw <= 0) sw = 800;
-  if (sh <= 0) sh = 600;
+  int sw = 0, sh = 0;
+  int display_status = OS1_display_get_size(&sw, &sh);
+  if (display_status != 0) {
+    OS1_report_error("nxpower.display_size", display_status);
+    return 1;
+  }
   int wx = (sw - WIN_W) / 2, wy = (sh - WIN_H) / 2;
 
   g_fb = (uint32_t *)malloc((size_t)WIN_W * WIN_H * 4);

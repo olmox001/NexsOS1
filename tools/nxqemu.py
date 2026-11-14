@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,67 @@ def clean_qemu_environment() -> dict[str, str]:
     ):
         env.pop(key, None)
     return env
+
+
+def _qemu_gpu_property_defaults(qemu: str, device: str) -> tuple[int, int]:
+    """Read the virtual monitor defaults from the selected QEMU GPU provider."""
+    result = subprocess.run(
+        [qemu, "-device", f"{device},help"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=clean_qemu_environment(),
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(
+            f"cannot query {device} display defaults from {qemu}: {detail}"
+        )
+    help_text = result.stdout + result.stderr
+
+    def property_default(name: str) -> int:
+        pattern = re.compile(
+            rf"(?m)^\s*{re.escape(name)}=<[^>]+>.*"
+            rf"\(default:\s*([0-9]+)\)\s*$"
+        )
+        match = pattern.search(help_text)
+        if not match:
+            raise RuntimeError(
+                f"{device} does not advertise a {name} default"
+            )
+        return int(match.group(1))
+
+    return property_default("xres"), property_default("yres")
+
+
+def _display_dimension(name: str, explicit: Optional[int], fallback: int) -> int:
+    value = explicit
+    if value is None:
+        raw = os.environ.get(name)
+        if raw is not None:
+            try:
+                value = int(raw)
+            except ValueError as exc:
+                raise ValueError(f"{name} must be an integer") from exc
+    if value is None:
+        value = fallback
+    if not 1 <= value <= 8192:
+        raise ValueError(f"{name} must be in [1, 8192]")
+    return value
+
+
+def qemu_native_display_size(
+    qemu: str,
+    device: str,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+) -> tuple[int, int]:
+    """Resolve the configured virtual monitor size without guest hard-coding."""
+    default_width, default_height = _qemu_gpu_property_defaults(qemu, device)
+    return (
+        _display_dimension("NEXS_QEMU_DISPLAY_WIDTH", width, default_width),
+        _display_dimension("NEXS_QEMU_DISPLAY_HEIGHT", height, default_height),
+    )
 
 
 def _first_file(paths: list[Path]) -> Optional[Path]:
@@ -174,6 +236,8 @@ def build_qemu_command(
     kernel: Optional[Path] = None,
     dtb: Optional[Path] = None,
     firmware: str = "auto",
+    display_width: Optional[int] = None,
+    display_height: Optional[int] = None,
 ) -> list[str]:
     arch = arch.lower()
     boot_mode = boot_mode.lower()
@@ -251,7 +315,12 @@ def build_qemu_command(
             cmd += ["-cdrom", str(iso)]
         else:
             cmd += ["-kernel", str(kernel)]
-        cmd += ["-device", "virtio-gpu-pci,id=nxgpu0",
+        gpu_width, gpu_height = qemu_native_display_size(
+            qemu, "virtio-gpu-pci", display_width, display_height
+        )
+        cmd += [
+                "-device",
+                f"virtio-gpu-pci,id=nxgpu0,xres={gpu_width},yres={gpu_height}",
                 "-device", "virtio-keyboard-pci,id=nxkbd0,display=nxgpu0",
                 "-device", "virtio-mouse-pci,id=nxmouse0,display=nxgpu0",
                 "-drive", f"if=none,file={disk},id=rootfs,format=raw",
@@ -277,7 +346,12 @@ def build_qemu_command(
                 cmd += ["-bios", str(aarch64_firmware["firmware"])]
         else:
             cmd += ["-kernel", str(kernel), "-dtb", str(dtb)]
-        cmd += ["-device", "virtio-gpu-device,id=nxgpu0",
+        gpu_width, gpu_height = qemu_native_display_size(
+            qemu, "virtio-gpu-device", display_width, display_height
+        )
+        cmd += [
+                "-device",
+                f"virtio-gpu-device,id=nxgpu0,xres={gpu_width},yres={gpu_height}",
                 "-device", "virtio-keyboard-device,id=nxkbd0,display=nxgpu0",
                 "-device", "virtio-mouse-device,id=nxmouse0,display=nxgpu0",
                 "-drive", f"if=none,file={disk},id=rootfs,format=raw",
@@ -323,6 +397,8 @@ def main() -> int:
     parser.add_argument("--disk", type=Path, required=True)
     parser.add_argument("--serial", default="stdio")
     parser.add_argument("--display", default="default")
+    parser.add_argument("--display-width", type=int)
+    parser.add_argument("--display-height", type=int)
     parser.add_argument("--qmp", type=Path)
     parser.add_argument("--uefi-vars", type=Path)
     parser.add_argument("--debug", action="store_true")
@@ -333,6 +409,7 @@ def main() -> int:
             args.arch, args.iso, args.disk, args.serial, args.display,
             args.qmp, args.debug, args.uefi_vars, args.boot_mode,
             args.kernel, args.dtb, args.firmware,
+            args.display_width, args.display_height,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"nxqemu: {exc}", file=sys.stderr)

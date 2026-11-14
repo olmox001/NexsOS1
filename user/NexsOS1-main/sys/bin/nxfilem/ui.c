@@ -673,13 +673,10 @@ static unsigned compute_signature(void) {
 /* ============================== Public API ============================== */
 
 int fm_ui_init(void) {
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF);
-  int sh = (int)(di & 0xFFFF);
-  if (sw <= 0)
-    sw = 800;
-  if (sh <= 0)
-    sh = 600;
+  int sw = 0, sh = 0;
+  int display_status = OS1_display_get_size(&sw, &sh);
+  if (display_status != 0)
+    return display_status;
 
   int ww = (sw * 7) / 10;
   int wh = (sh * 7) / 10;

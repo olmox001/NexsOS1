@@ -959,13 +959,12 @@ int main(int argc, char *argv[]) {
   char title[32];
   snprintf(title, sizeof(title), "NXShell PID %d", pid);
 
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF);
-  int sh = (int)(di & 0xFFFF);
-  if (sw <= 0)
-    sw = 800;
-  if (sh <= 0)
-    sh = 600;
+  int sw = 0, sh = 0;
+  int display_status = OS1_display_get_size(&sw, &sh);
+  if (display_status != 0) {
+    OS1_report_error("nxshell.display_size", display_status);
+    return 1;
+  }
 
   g_win_w = (sw * 3) / 5;
   g_win_h = (sh * 11) / 20;

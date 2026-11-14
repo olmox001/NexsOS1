@@ -1192,6 +1192,7 @@ else
 endif
 clean:
 	-@rm -rf $(BUILD_ROOT)/aarch64 $(BUILD_ROOT)/amd64 2>/dev/null || true
+	-@rm -rf $(BUILD_ROOT)/sdk-machine 2>/dev/null || true
 	-@rm -rf $(BUILD_ROOT)/grub 2>/dev/null || true
 	-@rm -f $(BUILD_ROOT)/*.img $(BUILD_ROOT)/*.iso $(BUILD_ROOT)/*.map 2>/dev/null || true
 	-@rm -rf release 2>/dev/null || true

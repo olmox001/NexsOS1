@@ -1171,13 +1171,12 @@ int main(void) {
   g_page = 0;
   g_pages = 1;
 
-  long di = OS1_display_info();
-  int sw = (int)((di >> 16) & 0xFFFF);
-  int sh = (int)(di & 0xFFFF);
-  if (sw <= 0)
-    sw = 800;
-  if (sh <= 0)
-    sh = 600;
+  int sw = 0, sh = 0;
+  int display_status = OS1_display_get_size(&sw, &sh);
+  if (display_status != 0) {
+    OS1_report_error("nxlauncher.display_size", display_status);
+    return 1;
+  }
   g_dsw = sw;
   g_dsh = sh;
 
@@ -1203,9 +1202,9 @@ int main(void) {
 
   reinit_window(ww, wh);
   for (;;) {
-    long d = OS1_display_info();
-    int cw = (int)((d >> 16) & 0xFFFF), ch = (int)(d & 0xFFFF);
-    if (cw > 0 && ch > 0 && (cw != g_dsw || ch != g_dsh)) {
+    int cw = 0, ch = 0;
+    if (OS1_display_get_size(&cw, &ch) == 0 &&
+        (cw != g_dsw || ch != g_dsh)) {
       g_dsw = cw;
       g_dsh = ch;
     }

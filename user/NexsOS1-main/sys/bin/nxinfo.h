@@ -74,15 +74,20 @@ static inline int nxinfo_proc_count(void) {
  * w/out, h/out: optional out-params; either may be NULL if the caller only
  *               wants the other dimension (or just the side effect of probing).
  *
- * Thin wrapper over OS1_display_info(), which returns the packed value
- * ((w << 16) | h).  Unpacks the two 16-bit fields into *w and *h.
+ * Thin wrapper over the validated NX-SDK display geometry helper.
+ * Invalid provider state is reported as zero dimensions instead of inventing
+ * a desktop resolution.
  */
 static inline void nxinfo_display(int *w, int *h) {
-  long info = OS1_display_info();
+  int width = 0, height = 0;
+  if (OS1_display_get_size(&width, &height) != 0) {
+    width = 0;
+    height = 0;
+  }
   if (w)
-    *w = (int)((info >> 16) & 0xFFFF);
+    *w = width;
   if (h)
-    *h = (int)(info & 0xFFFF);
+    *h = height;
 }
 
 /*
