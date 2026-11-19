@@ -258,6 +258,26 @@
       "kind": "visual_effect_budget",
       "provenance": "LIBGRAPHICS theme.c built-in shadows are 0..6 pixels; 24 is the approved maximum software shadow kernel width",
       "rationale": "limit shadow sampling to at most 24 taps per boundary pixel regardless of caller-supplied style"
+    },
+    "system/lib/lib.c::OS1_POLL_MAX_FDS": {
+      "kind": "resource_budget",
+      "provenance": "NX-CORE kernel/include/kernel/object.h NPROC_HANDLES=32; each process can hold at most 32 active capability handles",
+      "rationale": "bound POSIX poll readiness enumeration to actual per-process handle table capacity"
+    },
+    "system/lib/lib.c::OS1_POLL_QUANTUM_MS": {
+      "kind": "test_quantum",
+      "provenance": "OS1_sleep native monotonic timer in milliseconds, 10 ms is the bounded userland scheduler service poll interval",
+      "rationale": "avoid spin polling while supporting deadline-driven readiness without kernel blocking"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_DUP_MIN": {
+      "kind": "wire_contract",
+      "provenance": "OBJ_CTL_DUP_MIN=21 is the registered PROCESS/handle object opcode; the actual minimum FD bound is NPROC_HANDLES=32 and is checked dynamically",
+      "rationale": "R12 recognizes the MIN suffix in the operation name, but its value is a versioned capability opcode, not a resource size; the min FD is a caller argument separately validated against the real process table"
+    },
+    "system/include/contract/object.h::OBJ_CTL_DUP_MIN": {
+      "kind": "wire_contract",
+      "provenance": "OBJ_CTL_DUP_MIN=21 is the registered PROCESS/handle object opcode; the actual minimum FD bound is NPROC_HANDLES=32 and is checked dynamically",
+      "rationale": "R12 recognizes the MIN suffix in the operation name, but its value is a versioned capability opcode, not a resource size; the min FD is a caller argument separately validated against the real process table"
     }
   },
   "operations": {
@@ -330,6 +350,56 @@
       "id": 10,
       "owner": "Existing NX-CORE FILE capability operation (ASTRA descriptor truncation); shared kernel/SDK contract",
       "work_bound": "one WRITE-authorized FILE; nonnegative length, ext4 <= UINT32_MAX; growth at most UINT32_MAX/4096+1 bounded 4096-byte writes; descriptor position unchanged; provider errors preserved"
+    },
+    "kernel/include/abi/posix_types.h::OS1_SPAWN_REQUEST_AUTH_VERSION": {
+      "id": 2,
+      "owner": "NX-CORE PROCESS capability-backed versioned spawn request mirrored by NX-SDK",
+      "work_bound": "56-byte request, <=16 arguments of <=128 bytes, <=8 redirections, one child with explicit attenuated mask; privileged DESTROY authority and creator monotonicity enforced"
+    },
+    "system/include/contract/posix_types.h::OS1_SPAWN_REQUEST_AUTH_VERSION": {
+      "id": 2,
+      "owner": "NX-CORE PROCESS capability-backed versioned spawn request mirrored by NX-SDK",
+      "work_bound": "56-byte request, <=16 arguments of <=128 bytes, <=8 redirections, one child with explicit attenuated mask; privileged DESTROY authority and creator monotonicity enforced"
+    },
+    "system/include/contract/object.h::OBJ_CTL_PIPE_STATUS": {
+      "id": 19,
+      "owner": "NX-CORE PIPE object readiness query shared with NX-SDK poll and pipe consumers",
+      "work_bound": "single PIPE handle pin, one bounded state snapshot under object_lock, 24-byte guest memory transfer; no blocking"
+    },
+    "system/include/contract/object.h::OS1_PIPE_STATUS_VERSION": {
+      "id": 1,
+      "owner": "versioned NX-CORE/NX-SDK PIPE object status report ABI",
+      "work_bound": "fixed 24 bytes, no queue drain, no allocation or wait"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_PIPE_STATUS": {
+      "id": 19,
+      "owner": "NX-CORE PIPE object readiness query shared with NX-SDK poll and pipe consumers",
+      "work_bound": "single PIPE handle pin, one bounded state snapshot under object_lock, 24-byte guest memory transfer; no blocking"
+    },
+    "kernel/include/abi/object.h::OS1_PIPE_STATUS_VERSION": {
+      "id": 1,
+      "owner": "versioned NX-CORE/NX-SDK PIPE object status report ABI",
+      "work_bound": "fixed 24 bytes, no queue drain, no allocation or wait"
+    },
+    "system/include/contract/object.h::OBJ_CTL_DUP_TO": {
+      "id": 20,
+      "owner": "NX-CORE per-process capability duplicate operation, NX-SDK POSIX dup/dup2/fcntl adapter",
+      "work_bound": "one source and destination in 32-slot handle table; replaces destination under object_lock, refcount+endpoint wake outside lock, no extra authority"
+    },
+    "system/include/contract/object.h::OBJ_CTL_DUP_MIN": {
+      "id": 21,
+      "owner": "NX-CORE per-process capability duplicate operation, NX-SDK POSIX dup/dup2/fcntl adapter",
+      "work_bound": "one source and bounded scan of 32-slot handle table; copies only held rights with DUPLICATE, never overwrites an occupied handle"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_DUP_TO": {
+      "id": 20,
+      "owner": "NX-CORE per-process capability duplicate operation, NX-SDK POSIX dup/dup2/fcntl adapter",
+      "work_bound": "one source and destination in 32-slot handle table; replaces destination under object_lock, refcount+endpoint wake outside lock, no extra authority"
+    },
+    "kernel/include/abi/object.h::OBJ_CTL_DUP_MIN": {
+      "id": 21,
+      "owner": "NX-CORE per-process capability duplicate operation, NX-SDK POSIX dup/dup2/fcntl adapter",
+      "work_bound": "one source and bounded scan of 32-slot handle table; copies only held rights with DUPLICATE, never overwrites an occupied handle"
     }
   }
 }

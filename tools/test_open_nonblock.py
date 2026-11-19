@@ -13,10 +13,16 @@ from common import clang_ast, source_definitions
 
 PREFIX = r'''
 #include <stdint.h>
+#include <string.h>
 #include <errno.h>
 static int native_result = 7, native_calls, queries, closes, seeks;
 static long query_result, close_result;
 static int observed_flags;
+static long OS1low_handle_create(int ns, const char *path, uint32_t rights, int type) {
+    if (ns != OS1_NS_RESOURCE || strcmp(path, OS1_RESOURCE_NULL) != 0 ||
+        type != OBJ_TYPE_RESOURCE) return -EINVAL;
+    return rights == (OS1_RIGHT_READ | OS1_RIGHT_DUPLICATE) ? 7 : -EPERM;
+}
 static long _sys_open(const char *path, int flags) {
     (void)path; ++native_calls; observed_flags = flags;
     if (flags & ~(O_ACCMODE | O_CREAT | O_TRUNC | O_APPEND)) return -EINVAL;
@@ -60,6 +66,9 @@ int main(void) {
     if (tested_open("process", O_RDONLY) != 7 || queries || closes) return 8;
     reset();
     if (tested_open("file", O_WRONLY | O_APPEND | O_NONBLOCK) != 7 || seeks != 1 || closes) return 9;
+    reset();
+    if (tested_open("/dev/null", O_RDONLY | O_NONBLOCK) != 7 || native_calls) return 10;
+    if (tested_open("/dev/null", O_RDONLY | O_TRUNC) != -1 || errno != ENOTSUP) return 11;
     return 0;
 }
 '''
@@ -83,6 +92,8 @@ class OpenNonblockTests(unittest.TestCase):
             code = '\n'.join(raw[n['range']['begin']['offset']:n['range']['end']['offset'] + n['range']['end']['tokLen']].decode() for n in nodes)
             constants = []
             wanted = {'O_RDONLY','O_WRONLY','O_RDWR','O_CREAT','O_TRUNC','O_APPEND','O_NONBLOCK','O_ACCMODE','SEEK_END','OBJ_TYPE_FILE','OBJ_TYPE_PROCESS','OS1_CAPQ_TYPE(v)'}
+            wanted.update({'OS1_RIGHT_DUPLICATE', 'OS1_RIGHT_READ', 'OS1_RIGHT_WRITE',
+                           'OS1_NS_RESOURCE', 'OS1_RESOURCE_NULL', 'OBJ_TYPE_RESOURCE'})
             for path in ('system/include/api/fcntl.h','system/include/contract/posix_types.h','system/include/contract/object.h'):
                 for line in (ROOT / path).read_text().splitlines():
                     parts = line.split()

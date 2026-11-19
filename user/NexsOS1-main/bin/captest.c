@@ -26,6 +26,7 @@
 #include <execsvc.h> /* execution-service protocol (Phase 9 section below) */
 #include <fcntl.h>
 #include <os1.h>
+#include <os1_surface.h>
 #include <nxmanage.h>
 #include <stdio.h>
 #include <stdlib.h> /* getenv/setenv/unsetenv (Phase 17 section) */
@@ -67,6 +68,20 @@ int main(void) {
 
   printf_win(win_id, "Object/capability tests...\n");
   printf("[captest] start (OS1 native object/capability ABI)\n");
+
+  /* Raw device rings are reserved for supervised input routers. A normal
+   * graphical app still receives keyboard input via its own focused IPC
+   * queue, with no raw input authority or per-app manifest entry. */
+  long direct_keyboard = OS1low_handle_create(
+      OS1_NS_RESOURCE, OS1_RESOURCE_KEYBOARD, OS1_RIGHT_READ,
+      OBJ_TYPE_RESOURCE);
+  long direct_pointer = OS1low_handle_create(
+      OS1_NS_RESOURCE, OS1_RESOURCE_POINTER, OS1_RIGHT_READ,
+      OBJ_TYPE_RESOURCE);
+  check(win_id, "deny-ordinary-app-raw-keyboard", direct_keyboard == -EPERM);
+  check(win_id, "deny-ordinary-app-raw-pointer", direct_pointer == -EPERM);
+  if (direct_keyboard >= 0) OS1low_handle_close((int)direct_keyboard);
+  if (direct_pointer >= 0) OS1low_handle_close((int)direct_pointer);
 
   /* PID1 is created exclusively by the kernel. Neither normal spawn nor
    * spawn_caps may execute /sbin as USER, ROOT or a requested MACHINE child.

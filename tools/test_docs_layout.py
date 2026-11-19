@@ -14,7 +14,7 @@ SESSION1 = DOCS / "session-1"
 SESSION2 = DOCS / "session-2"
 ACTIVE = DOCS / "session-3"
 LEGACY_SOURCE_COMMIT = "5a1264c310b034e3fa574301731b0f933361aceb"
-ALLOWED_ROOT = {"README.md", "legacy", "session-1", "session-2", "session-3"}
+ALLOWED_ROOT = {"README.md", "legacy", "session-1", "session-2", "session-3", "session-4"}
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
@@ -76,7 +76,7 @@ def check_presstoai(errors: list[str]) -> None:
         errors.append(".presstoai.json contains no project docs paths")
         return
     for path in docs_paths:
-        if not path.startswith(("docs/legacy/", "docs/session-1/", "docs/session-2/", "docs/session-3/")):
+        if not path.startswith(("docs/legacy/", "docs/session-1/", "docs/session-2/", "docs/session-3/", "docs/session-4/")):
             errors.append(f"stale PressToAI docs path: {path}")
         elif not (ROOT / path).exists():
             errors.append(f"missing PressToAI indexed path: {path}")
@@ -116,7 +116,7 @@ def check_active_markdown_links(errors: list[str]) -> None:
     sources = [
         ROOT / "README.md", DOCS / "README.md",
         *sorted(SESSION1.glob("*.md")), *sorted(SESSION2.glob("*.md")),
-        *sorted(ACTIVE.glob("*.md"))
+        *sorted(ACTIVE.glob("*.md")), *sorted((DOCS / "session-4").glob("*.md"))
     ]
     for source in sources:
         text = source.read_text()

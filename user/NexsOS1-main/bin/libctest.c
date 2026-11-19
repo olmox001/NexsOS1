@@ -688,6 +688,58 @@ static void t_allocator_size_overflow(void) {
   ok(name);
 }
 
+/* Security regression: the SDK must not falsely announce that an
+ * unsupported principal/owner change occurred. This test is a negative
+ * conformance check; it does NOT claim multiuser has been implemented. */
+static void t_identity_changes_fail_closed(void) {
+  const char *name = "identity/no-fake-credentials";
+  errno = 0;
+  CHECK(name, setuid(1) == -1 && errno == ENOTSUP,
+        "setuid fabricated successful principal change");
+  errno = 0;
+  CHECK(name, seteuid(0) == -1 && errno == ENOTSUP,
+        "seteuid fabricated verified identity");
+  errno = 0;
+  CHECK(name, setgid(1) == -1 && errno == ENOTSUP,
+        "setgid fabricated successful group change");
+  errno = 0;
+  CHECK(name, setegid(0) == -1 && errno == ENOTSUP,
+        "setegid fabricated verified group");
+  errno = 0;
+  CHECK(name, setreuid(0, 1) == -1 && errno == ENOTSUP,
+        "setreuid fabricated credential update");
+  errno = 0;
+  CHECK(name, setregid(0, 1) == -1 && errno == ENOTSUP,
+        "setregid fabricated group update");
+  gid_t groups[2] = {7, 9};
+  errno = 0;
+  CHECK(name, getgroups(2, groups) == -1 && errno == ENOTSUP &&
+        groups[0] == 7 && groups[1] == 9,
+        "getgroups fabricated group membership");
+  errno = 0;
+  CHECK(name, getgroups(-1, groups) == -1 && errno == EINVAL,
+        "getgroups accepted a negative array size");
+  ok(name);
+}
+
+static void t_owner_changes_fail_closed(void) {
+  const char *name = "vfs/no-fake-owner-change";
+  errno = 0;
+  CHECK(name, chown("/home", 1, 1) == -1 && errno == ENOTSUP,
+        "chown fabricated a VFS owner update");
+  errno = 0;
+  CHECK(name, lchown("/home", 1, 1) == -1 && errno == ENOTSUP,
+        "lchown fabricated a VFS owner update");
+  errno = 0;
+  CHECK(name, fchown(0, 1, 1) == -1 && errno == ENOTSUP,
+        "fchown fabricated a VFS owner update");
+  errno = 0;
+  CHECK(name, fchownat(AT_FDCWD, "/home", 1, 1, 0) == -1 &&
+        errno == ENOTSUP,
+        "fchownat fabricated a VFS owner update");
+  ok(name);
+}
+
 int main(void) {
   printf("[libctest] stdio / POSIX-over-native conformance\n");
 
@@ -725,6 +777,8 @@ int main(void) {
   t_long_double_runtime();
   t_gnulib_zero_alloc();
   t_allocator_size_overflow();
+  t_identity_changes_fail_closed();
+  t_owner_changes_fail_closed();
 
   OS1_fs_unlink(TMP);
   printf("[libctest] done: %d/%d passed, %d failure(s)\n", g_pass,

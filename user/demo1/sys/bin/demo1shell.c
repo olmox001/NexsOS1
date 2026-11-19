@@ -8,7 +8,7 @@ enum { DEMO_LINE_MAX = 96, DEMO_SERVICE_COUNT = 9 };
 
 static const char *const demo_services[DEMO_SERVICE_COUNT] = {
     "notify", "exec", "timer", "pax", "compositor",
-    "keyboard", "pointer", "echo", "shell"};
+    "keyboard", "pointer", "echo", "terminal"};
 
 static void demo_emit(const char *format, ...) {
   va_list args;

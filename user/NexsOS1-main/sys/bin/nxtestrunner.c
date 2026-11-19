@@ -46,6 +46,8 @@ static const struct nx_test_case cases[] = {
     /* Appended to preserve every existing stable case ID. */
     {"18nxtest_timerprobe", "/sys/bin/nxtimerdiag", "--probe", 2000U},
     {"19nxtest_gfxcontrol", "/sys/bin/gfxcontroltest", NULL, 4000U},
+    /* Original GNU source, not an SDK-authored reimplementation. */
+    {"20nxtest_gnulib_upstream_isblank", "/bin/gnulib-upstream-isblank", NULL, 2000U},
 };
 
 static int nx_test_report(const struct nx_test_case *test, const char *state,

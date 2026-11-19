@@ -6,6 +6,7 @@ current governance, architecture and repository-split baseline.
 
 - `../README-LLM.md` — owner directive and persistent LLM governance.
 - [Session 3 review and qualification](session-3/README.md)
+- [Session 4: ASTRA multiuser/security, service authority and GNU qualification](session-4/README.md)
 - [Session 3 verified state](session-3/STATE.md), [verification](session-3/VERIFICATION.md), and [issues](session-3/ISSUES.md)
 - [Generic surface layout plugin protocol](session-3/SURFACE-LAYOUT-PLUGINS.md)
 - `session-2/README.md` — Session 2 index and closure rules.

@@ -33,9 +33,13 @@ int main(void) {
     OS1_sleep(1);
   }
   struct ipc_message result = {0};
-  result.type = 1;
+  /* A generic delegated WRITE can send the handshake reply. Keyboard
+   * input requires input authority even through the same PROCESS handle. */
+  result.type = IPC_TYPE_INPUT;
+  long input_rc = handle >= 0 ? OS1_object_write(handle, &result, sizeof(result)) : -EBADF;
+  result.type = CAPIPC_GRANT_REPLY;
   result.data1 = CAPIPC_MAGIC;
-  int sent = handle >= 0 &&
+  int sent = handle >= 0 && input_rc == -EPERM &&
              OS1_object_write(handle, &result, sizeof(result)) == 0;
   printf("[capipc] child delegated send %s (handle=%d)\n",
          sent ? "OK" : "FAILED", handle);

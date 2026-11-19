@@ -218,11 +218,8 @@ static inline int nxexec_run_foreground_ex(int pid, int *out_status) {
      * prompt, indistinguishable from a hang. Ctrl-C stays a local kill
      * instead of being forwarded, matching the existing job-control model.
      *
-     * No termios/cooked-mode layer exists anywhere in this OS - every
-     * reader echoes its OWN input explicitly (nxshell.c's read(0,...) loop
-     * is the reference). We still hold the window/focus while hosting, so
-     * echo has to happen here too, in the same style, or the cursor never
-     * advances even though the child is receiving every keystroke. */
+     * The receiving program owns echo. Relaying printable or editing
+     * keys must not write another copy into its output stream. */
     struct ipc_message m;
     if (try_recv(-1, &m) == 0 && m.type == IPC_TYPE_INPUT && m.data2 != 0) {
       char c = m.payload[0];
@@ -243,13 +240,8 @@ static inline int nxexec_run_foreground_ex(int pid, int *out_status) {
         }
         /* stop refused (e.g. windowed/own-terminal child): relay as a key */
       }
-      send(pid, &m);
-      if (c == '\n' || c == '\r')
-        print("\r\n");
-      else if (c == '\b' || c == 127)
-        print("\b \b");
-      else if (c >= 32 && c < 127)
-        print(m.payload);
+      int sent = send(pid, &m);
+      if (sent < 0) OS1_report_error("foreground.input", sent);
     }
     OS1_sleep(15); /* time base for the debounce; keeps Ctrl-C responsive */
   }

@@ -8,6 +8,7 @@
 #include <nxres.h>
 #include <os1.h>
 #include <os1_surface.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -62,35 +63,67 @@ static int run_command(const char *path, const char *a, const char *b,
   return wait_child(spawn_args(argv[0], argc, argv), expected_exit);
 }
 
-/* Observe the same privileged commands a desktop user invokes. Their bounded
- * reports fit in a single pipe (32 mode rows, or one inspected window).
- * The test process retains ordinary application rights throughout. */
-enum { REPORT_BYTES = 4096 };
+/* Observe the real CLI output while its producer is still active. Waiting
+ * for exit before reading used to deadlock if the pipe filled or its EOF
+ * lagged process wait/reap on an SMP guest. The native PIPE status capability
+ * now drives poll; no fabricated readiness, infinite read or test bypass. */
+enum { REPORT_BYTES = 4096, REPORT_POLL_STEPS = 1000 };
+/* A producer can exit while the parent still has data in the PIPE; reaping
+ * and draining must advance concurrently, not in a serial wait chain. */
+static int capture_drain(int reader, int child,
+                         char report[REPORT_BYTES], size_t *used) {
+  int exited = 0;
+  for (unsigned step = 0U; step < REPORT_POLL_STEPS; ++step) {
+    if (exited == 0) {
+      int child_status = 0;
+      int completed = waitpid(child, &child_status, WNOHANG);
+      if (completed < 0) return -1;
+      if (completed == child) {
+        if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0)
+          return -1;
+        exited = 1;
+      }
+    }
+    struct pollfd item = {.fd = reader, .events = POLLIN};
+    int ready = poll(&item, 1U, 10);
+    if (ready < 0 || (item.revents & (POLLNVAL | POLLERR)) != 0)
+      return -1;
+    if ((item.revents & POLLIN) != 0) {
+      if (*used >= REPORT_BYTES - 1U) return -1;
+      long count = read(reader, report + *used, REPORT_BYTES - 1U - *used);
+      if (count < 0) return -1;
+      if (count == 0 && exited != 0) return 0;
+      if (count > 0) *used += (size_t)count;
+    } else if (exited != 0 && (item.revents & POLLHUP) != 0) {
+      return 0;
+    }
+  }
+  return -1; /* bounded genuine timeout */
+}
+
 static int capture_report(const char *path, const char *verb, const char *arg,
                           char report[REPORT_BYTES]) {
-  int ends[2];
+  int ends[2] = {-1, -1};
   if (pipe(ends) != 0) return -1;
   struct spawn_redir redirect = {.child_fd = 1, .parent_fd = ends[1]};
   char *argv[] = {(char *)path, (char *)verb, (char *)arg};
   long pid = OS1low_process_spawn_redir(path, arg == NULL ? 2 : 3, argv,
                                          0U, &redirect, 1);
   int closed_writer = close(ends[1]);
-  int status = wait_child((int)pid, 0);
   size_t used = 0U;
-  if (closed_writer == 0 && status == 0) {
-    for (size_t step = 0U; step < REPORT_BYTES && used < REPORT_BYTES-1U; ++step) {
-      long got = read(ends[0], report + used, REPORT_BYTES-1U-used);
-      if (got <= 0) {
-        status = got == 0 ? 0 : -1;
-        break;
-      }
-      used += (size_t)got;
+  int drained = pid > 0 && closed_writer == 0 ?
+                capture_drain(ends[0], (int)pid, report, &used) : -1;
+  if (drained != 0 && pid > 0) {
+    int killed = kill_process((int)pid);
+    if (killed == 0) {
+      int reaped = reap_after_kill((int)pid);
+      if (reaped != 0) OS1_report_error("gfxcontrol.capture_reap", -EIO);
     }
   }
   report[used] = '\0';
   int closed_reader = close(ends[0]);
-  return closed_writer == 0 && closed_reader == 0 && status == 0 &&
-         used > 0U && used < REPORT_BYTES-1U ? 0 : -1;
+  return closed_writer == 0 && closed_reader == 0 && drained == 0 &&
+         used > 0U && used < REPORT_BYTES - 1U ? 0 : -1;
 }
 
 static int observe_mode(const struct os1_display_mode_v1 *original,
@@ -259,7 +292,22 @@ static int test_zoom_contract(void) {
   int after_w = 0, after_h = 0;
   if (OS1_display_get_size(&after_w, &after_h) != 0)
     return 7;
-  if (after_w != logical_w || after_h != logical_h) return 8;
+  if (after_w != logical_w || after_h != logical_h) {
+    struct os1_display_workspace_v1 workspace;
+    long snapshot = OS1_display_workspace_query(&workspace);
+    int recorded = printf(
+           "[gfxcontroltest] zoom mismatch expected=%dx%d actual=%dx%d "
+           "workspace_status=%ld mode=%u zoom=%u base=%ux%u physical=%ux%u\n",
+           logical_w, logical_h, after_w, after_h, snapshot,
+           snapshot == 0 ? workspace.mode : 0U,
+           snapshot == 0 ? workspace.zoom_percent : 0U,
+           snapshot == 0 ? workspace.base_width : 0U,
+           snapshot == 0 ? workspace.base_height : 0U,
+           snapshot == 0 ? workspace.physical_width : 0U,
+           snapshot == 0 ? workspace.physical_height : 0U);
+    if (recorded < 0) OS1_report_error("gfxcontrol.zoom_mismatch", -EIO);
+    return 8;
+  }
   return test_zoom_steps();
 }
 
@@ -312,15 +360,27 @@ static int test_look_property(enum look_kind kind, const char *verb,
 
 static int inspect_window(struct os1_window_snapshot_v1 *snapshot) {
   char id[16], report[REPORT_BYTES], state[16];
-  if (snprintf(id, sizeof(id), "%d", snapshot->id) <= 0 ||
-      capture_report("/sys/bin/nxwins", "inspect", id, report) != 0)
+  if (snprintf(id, sizeof(id), "%d", snapshot->id) <= 0)
     return -1;
+  int captured = capture_report("/sys/bin/nxwins", "inspect", id, report);
+  if (captured != 0) {
+    int written = printf("[gfxcontroltest] nxwins inspect capture failed id=%d rc=%d\n",
+                         snapshot->id, captured);
+    if (written < 0) OS1_report_error("gfxcontrol.inspect_capture", -EIO);
+    return -1;
+  }
   int observed_id = 0;
   int fields = sscanf(report, "%d %d %15s pos=%d,%d surface=%dx%d draw=%dx%d",
       &observed_id, &snapshot->pid, state, &snapshot->x, &snapshot->y,
       &snapshot->width, &snapshot->height, &snapshot->draw_width, &snapshot->draw_height);
   if (fields != 9 || observed_id != snapshot->id || snapshot->width <= 0 ||
-      snapshot->height <= 0) return -1;
+      snapshot->height <= 0) {
+    int written = printf(
+        "[gfxcontroltest] nxwins inspect parse failed id=%d seen=%d fields=%d "
+        "report=%.150s\n", snapshot->id, observed_id, fields, report);
+    if (written < 0) OS1_report_error("gfxcontrol.inspect_parse", -EIO);
+    return -1;
+  }
   snapshot->flags = strcmp(state, "focus") == 0 ? WININFO_FOCUSED : 0U;
   return 0;
 }

@@ -44,7 +44,7 @@ int main(void) {
   /* CAP_IPC_ANY: messaging a non-relative (init, PID 1 — an ancestor above
    * our parent, so neither parent nor descendant) is denied. */
   struct ipc_message m;
-  m.type = 1;
+  m.type = IPC_TYPE_RAW;
   m.data1 = 0;
   m.data2 = 0;
   m.payload[0] = '\0';

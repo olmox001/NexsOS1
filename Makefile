@@ -519,7 +519,7 @@ SYS_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_SYS_PROGR
 NEXS_USERLAND_BIN_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USERLAND_BIN_PROGRAMS) $(NEXS_USERLAND_ALIAS_PROGRAMS)))
 EXTERNAL_BIN_ELFS := $(BUILD_DIR)/sdltest.elf $(BUILD_DIR)/raptor.elf \
   $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf $(BUILD_DIR)/doom.elf \
-  $(BUILD_DIR)/gnulibtest.elf $(BUILD_DIR)/luatest.elf $(BUILD_DIR)/kilo.elf \
+  $(BUILD_DIR)/gnulibtest.elf $(BUILD_DIR)/gnulib-upstream-isblank.elf $(BUILD_DIR)/luatest.elf $(BUILD_DIR)/kilo.elf \
   $(COREUTILS_ELFS)
 BIN_ELFS := $(NEXS_USERLAND_BIN_ELFS) $(EXTERNAL_BIN_ELFS)
 USER_ELFS := $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(BIN_ELFS)
@@ -607,6 +607,13 @@ $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o: $(USER_DIR)/bin/gnulibtest.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(USER_CFLAGS) -I$(GNULIB_PORT_DIR) -isystem $(GNULIB_DIR)/lib $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
 $(BUILD_DIR)/gnulibtest.elf: $(BUILD_DIR)/$(USER_DIR)/bin/gnulibtest.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
+
+# Compile the ORIGINAL pinned upstream Gnulib test, unchanged, against the
+# target SDK and real Gnulib archive. This is not a host-libc substitute.
+$(BUILD_DIR)/gnulib-upstream-isblank.o: $(GNULIB_DIR)/tests/test-isblank.c $(GNULIB_PORT_DIR)/gnulib_config_nexsos.h $(GNULIB_GENERATED_HEADERS)
+	@mkdir -p $(dir $@)
+	@$(CC) $(ARCH_CFLAGS) $(USER_INCLUDE) -ffreestanding -fno-builtin -nostdlib -nostartfiles -O2 -g -Wall -Wextra -Wconversion -Wsign-conversion -ffunction-sections -fdata-sections -I$(GNULIB_PORT_DIR) -isystem $(GNULIB_DIR)/lib -I$(GNULIB_DIR)/tests $(GNULIB_OVERLAY_CPPFLAGS) -MMD -MP -c $< -o $@
+$(BUILD_DIR)/gnulib-upstream-isblank.elf: $(BUILD_DIR)/gnulib-upstream-isblank.o $(GNULIB_LIB) $(USER_LIB_O) $(USER_SYSCALL_O) $(USER_MALLOC_O)
 
 $(BUILD_DIR)/$(USER_DIR)/bin/luatest.o: $(USER_DIR)/bin/luatest.c $(LUA_PORT_HDR)
 	@mkdir -p $(dir $@)
@@ -1158,7 +1165,7 @@ power12-strict:
 
 check-strict: check power12-strict
 
-check: check-kernel-contracts power12 test-nxpax-core test-nxpax-stress test-nxpax-ast
+check: check-kernel-contracts power12 test-nxpax-core test-nxpax-stress test-nxpax-ast test-spawn-owned test-service-manifest-caps test-input-authority test-pipe-status test-handle-dup test-null-resource
 	@set -eu; for tool in "$(CC)" "$(AS)" "$(LD)" "$(OBJCOPY)" "$(OBJDUMP)" "$(NM)" "$(AR)" "$(QEMU)" python3 xorriso gawk mformat mmd mcopy; do \
 		command -v "$$tool" >/dev/null 2>&1 || { echo "ERROR: required tool not found: $$tool" >&2; exit 1; }; \
 	done
@@ -1296,9 +1303,32 @@ test-mkdisk-groups:
 test-timerdiag-sampling:
 	@python3 tools/test_nxtimerdiag_sampling.py
 
-.PHONY: test-spawn-owned test-entropy-policy
+.PHONY: test-spawn-owned test-service-manifest-caps test-entropy-policy
 test-spawn-owned:
 	@python3 tools/test_spawn_owned.py
+
+test-service-manifest-caps:
+	@python3 tools/test_service_manifest_caps.py
+
+.PHONY: test-input-authority
+test-input-authority:
+	@python3 tools/test_input_authority.py
+
+# Requires an already-running graphical QEMU guest and its UART log.
+.PHONY: test-input-interactive
+test-input-interactive:
+	@python3 tools/test_qmp_input_e2e.py --arch $(ARCH) --qmp "$(QMP_SOCKET)" --uart "$(UART_LOG)" --screenshot "$(INPUT_SCREENSHOT)"
+
+.PHONY: test-pipe-status test-handle-dup
+test-pipe-status:
+	@python3 tools/test_pipe_status.py
+
+test-handle-dup:
+	@python3 tools/test_handle_dup.py
+
+.PHONY: test-null-resource
+test-null-resource:
+	@python3 tools/test_null_resource.py
 
 test-entropy-policy:
 	@python3 tools/test_entropy_policy.py

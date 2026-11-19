@@ -4,6 +4,7 @@
  */
 
 #include "coreutils_os1_glue.h"
+#include <canon-host.h>
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
@@ -36,6 +37,14 @@ int coreutils_os1_uname(struct os1_utsname *buf) {
   buf->machine[sizeof(buf->machine) - 1] = '\0';
 
   return 0;
+}
+
+/* The target has no DNS resolver. GNU who uses the recorded utmp host
+ * when canonicalization is unavailable. */
+char *canon_host(const char *host) {
+  (void)host;
+  errno = ENOTSUP;
+  return NULL;
 }
 
 int posix2_version(void) { return 200809; }

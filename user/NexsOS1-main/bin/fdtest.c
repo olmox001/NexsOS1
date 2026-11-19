@@ -21,6 +21,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <os1.h>
+#include <poll.h>
+#include <sys/wait.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -92,6 +94,217 @@ static int nonblock_type_denial(void) {
   return fd == -1 && error == ENOTSUP ? 0 : 3;
 }
 
+/* Real guest PIPE readiness: no fake poll return, no loss of bytes, no
+ * falsely hidden EOF. Runs through kernel capability table and PIPE ops. */
+static int pipe_poll_real_test(void) {
+  int fds[2] = {-1, -1};
+  if (pipe(fds) != 0) return 1;
+  struct os1_pipe_status_v1 state = {
+      .abi_version = OS1_PIPE_STATUS_VERSION, .struct_size = sizeof(state)
+  };
+  int failure = OS1_object_ctl(fds[0], OBJ_CTL_PIPE_STATUS,
+                               (long)(uintptr_t)&state) != 0 ||
+                state.available != 0U || state.readers != 1U ||
+                state.writers != 1U ? 2 : 0;
+  struct pollfd reader = {.fd = fds[0], .events = POLLIN};
+  struct pollfd writer = {.fd = fds[1], .events = POLLOUT};
+  if (failure == 0 && (poll(&reader, 1U, 0) != 0 ||
+      poll(&writer, 1U, 0) != 1 ||
+      (writer.revents & POLLOUT) == 0)) failure = 3;
+  if (failure == 0 && write(fds[1], "abc", 3) != 3) failure = 4;
+  if (failure == 0 && (poll(&reader, 1U, 0) != 1 ||
+      (reader.revents & POLLIN) == 0)) failure = 5;
+  char bytes[4] = {0};
+  if (failure == 0 && (read(fds[0], bytes, 3) != 3 ||
+      memcmp(bytes, "abc", 3) != 0)) failure = 6;
+  if (close(fds[1]) != 0) failure = 7;
+  if (failure == 0 && (poll(&reader, 1U, 0) != 1 ||
+      (reader.revents & POLLHUP) == 0 ||
+      (reader.revents & POLLIN) == 0 ||
+      read(fds[0], bytes, 1) != 0)) failure = 8;
+  if (close(fds[0]) != 0) failure = 9;
+  return failure;
+}
+
+/* Negative query and poll validation against REAL invalid and stale handles. */
+static int pipe_poll_denial_test(void) {
+  int fds[2] = {-1, -1};
+  if (pipe(fds) != 0) return 1;
+  struct os1_pipe_status_v1 state = {
+      .abi_version = OS1_PIPE_STATUS_VERSION + 1U,
+      .struct_size = sizeof(state)
+  };
+  int failed = OS1_object_ctl(fds[0], OBJ_CTL_PIPE_STATUS,
+                              (long)(uintptr_t)&state) != -EINVAL ? 2 : 0;
+  state.abi_version = OS1_PIPE_STATUS_VERSION;
+  state.struct_size = 0U;
+  if (failed == 0 && OS1_object_ctl(fds[0], OBJ_CTL_PIPE_STATUS,
+                                  (long)(uintptr_t)&state) != -EINVAL)
+    failed = 3;
+  state.struct_size = sizeof(state);
+  if (failed == 0 && OS1_object_ctl(fds[0], OBJ_CTL_PIPE_STATUS,
+                                  0L) != -EFAULT)
+    failed = 4;
+  if (close(fds[1]) != 0 || close(fds[0]) != 0) failed = 5;
+  struct pollfd invalid = {.fd = fds[0], .events = POLLIN};
+  if (failed == 0 && (poll(&invalid, 1U, 0) != 1 ||
+      (invalid.revents & POLLNVAL) == 0)) failed = 6;
+  errno = 0;
+  if (failed == 0 && (poll(NULL, 1U, 0) != -1 || errno != EINVAL))
+    failed = 7;
+  return failed;
+}
+
+/* POSIX aliases share one real capability, not the previous numeric shim. */
+static int fd_dup_shared_pipe_test(void) {
+  int fd = dup(1);
+  if (fd < 3 || fd == 1) return 1;
+  long original = OS1low_cap_query(1);
+  long copy = OS1low_cap_query(fd);
+  if (original < 0 || copy < 0 ||
+      OS1_CAPQ_TYPE(copy) != OBJ_TYPE_CONSOLE ||
+      (OS1_CAPQ_RIGHTS(copy) & OS1_RIGHT_WRITE) == 0U) return 2;
+  if (close(fd) != 0 || OS1low_cap_query(1) < 0) return 3;
+  int pipefd[2] = {-1, -1};
+  if (pipe(pipefd) != 0) return 4;
+  int writer = dup(pipefd[1]);
+  if (writer < 3 || writer == pipefd[1]) return 5;
+  if (close(pipefd[1]) != 0 || write(writer, "xy", 2) != 2)
+    return 6;
+  char buffer[3] = {0};
+  if (read(pipefd[0], buffer, 2) != 2 ||
+      memcmp(buffer, "xy", 2) != 0) return 7;
+  if (close(writer) != 0 || read(pipefd[0], buffer, 1) != 0)
+    return 8;
+  if (close(pipefd[0]) != 0) return 9;
+  return 0;
+}
+
+/* dup2 replaces the EXACT destination; F_DUPFD respects the minimum and
+ * neither operation may impersonate a foreign fd or fabricate success. */
+static int fd_dup2_and_fcntl_test(void) {
+  const char *path = "/home/shared/fdtest.duptarget";
+  int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+  if (fd < 3) return 1;
+  int pipefd[2] = {-1, -1};
+  if (pipe(pipefd) != 0) return 2;
+  int high = fcntl(pipefd[1], F_DUPFD, 15);
+  if (high < 15 || high >= 32) return 3;
+  if (dup2(pipefd[1], fd) != fd ||
+      OS1_CAPQ_TYPE(OS1low_cap_query(fd)) != OBJ_TYPE_PIPE)
+    return 4;
+  if (dup2(fd, fd) != fd) return 5;
+  if (close(pipefd[1]) != 0 || close(high) != 0) return 6;
+  if (write(fd, "ok", 2) != 2) return 7;
+  char data[3] = {0};
+  if (read(pipefd[0], data, 2) != 2 ||
+      memcmp(data, "ok", 2) != 0) return 8;
+  errno = 0;
+  if (dup2(-1, fd) != -1 || errno != EBADF) return 9;
+  errno = 0;
+  if (fcntl(fd, F_DUPFD, -1) != -1 || errno != EINVAL)
+    return 10;
+  errno = 0;
+  if (fcntl(fd, F_GETFL) != -1 || errno != ENOTSUP)
+    return 11;
+  if (close(fd) != 0 || close(pipefd[0]) != 0) return 12;
+  if (OS1_fs_unlink(path) != 0) return 13;
+  return 0;
+}
+
+/* /dev/null is not an ext4 regular file. It must be an actual capability
+ * resource: read EOF, discard writes, duplicate through the same fd table. */
+static int fd_null_resource_test(void) {
+  int input = open("/dev/null", O_RDONLY);
+  if (input < 0) return 1;
+  char marker[4] = {'a','b','c','d'};
+  if (read(input, marker, sizeof(marker)) != 0 ||
+      marker[0] != 'a') return 2;
+  if (close(input) != 0) return 3;
+  int sink = open("/dev/null", O_WRONLY);
+  if (sink < 0 || OS1_CAPQ_TYPE(OS1low_cap_query(sink)) !=
+      OBJ_TYPE_RESOURCE) return 4;
+  if (write(sink, "discarded", 9) != 9) return 5;
+  int copy = dup(sink);
+  if (copy < 0 || close(sink) != 0) return 6;
+  if (write(copy, "xyz", 3) != 3 || close(copy) != 0)
+    return 7;
+  return 0;
+}
+
+/* The NULL provider does not treat a normal file-create request as a
+ * success, and rejects invented rights like DESTROY. */
+static int fd_null_denials_test(void) {
+  errno = 0;
+  int fd = open("/dev/null", O_WRONLY | O_CREAT);
+  if (fd >= 0 || errno != ENOTSUP) return 1;
+  errno = 0;
+  fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+  if (fd >= 0 || errno != ENOTSUP) return 2;
+  long cap = OS1low_handle_create(OS1_NS_RESOURCE, OS1_RESOURCE_NULL,
+                                  OS1_RIGHT_DESTROY, OBJ_TYPE_RESOURCE);
+  if (cap != -EINVAL) return 3;
+  cap = OS1low_handle_create(OS1_NS_RESOURCE, OS1_RESOURCE_NULL,
+                             OS1_RIGHT_READ, OBJ_TYPE_RESOURCE);
+  if (cap < 0) return 4;
+  if (OS1_object_read((int)cap, NULL, 0) != 0 ||
+      OS1low_handle_close((int)cap) != 0) return 5;
+  return 0;
+}
+
+/* A pipe's last writer must close at the CHILD'S EXIT, not only after the
+ * parent collects/reaps its process. Test both payload+EOF and empty EOF. */
+static int fd_pipe_child_exit_test(int with_data) {
+  int ends[2] = {-1, -1};
+  if (pipe(ends) != 0) return 1;
+  struct spawn_redir output = {.child_fd = 1, .parent_fd = ends[1]};
+  char executable_echo[] = "/bin/echo";
+  char executable_true[] = "/bin/true";
+  char text[] = "pipe-child-exit";
+  char *program = with_data != 0 ? executable_echo : executable_true;
+  char *args[] = {program, text};
+  long child = OS1low_process_spawn_redir(program,
+                  with_data ? 2 : 1, args, 0U, &output, 1);
+  if (close(ends[1]) != 0 || child <= 0) {
+    if (ends[0] >= 0) close(ends[0]);
+    return 2;
+  }
+  char output_buf[64] = {0};
+  size_t total = 0U;
+  int eof = 0;
+  for (unsigned i = 0U; i < 400U && eof == 0; ++i) {
+    struct pollfd event = {.fd = ends[0], .events = POLLIN};
+    int ready = poll(&event, 1U, 10);
+    if (ready < 0 || (event.revents & (POLLERR | POLLNVAL)) != 0)
+      return 3;
+    if ((event.revents & POLLIN) != 0) {
+      if (total >= sizeof(output_buf) - 1U) return 4;
+      long n = read(ends[0], output_buf + total,
+                    sizeof(output_buf) - 1U - total);
+      if (n < 0) return 5;
+      if (n == 0) eof = 1;
+      if (n > 0) total += (size_t)n;
+    } else if ((event.revents & POLLHUP) != 0) {
+      eof = 1;
+    }
+  }
+  if (close(ends[0]) != 0 || eof == 0) return 6;
+  int status = 0;
+  int exited = 0;
+  for (unsigned j = 0U; j < 200U && exited == 0; ++j) {
+    int got = waitpid((int)child, &status, WNOHANG);
+    if (got == (int)child) exited = 1;
+    else if (got < 0) return 7;
+    else OS1_sleep(10);
+  }
+  if (exited == 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    return 8;
+  if (with_data != 0 && (total < 15U ||
+      strstr(output_buf, "pipe-child-exit") == NULL)) return 9;
+  if (with_data == 0 && total != 0U) return 10;
+  return 0;
+}
+
 int main(void) {
   int win_id = create_window(120, 120, 400, 300, "FD Test");
   if (win_id < 0)
@@ -122,6 +335,17 @@ int main(void) {
        memcmp(a, c, 8) == 0 && lseek(fd, 0, SEEK_END) == size && size > 0;
   check(win_id, "lseek-rewind+end", ok);
 
+  /* Independent descriptor slots share the same open file offset. */
+  int copy = dup(fd);
+  int target = open(path, O_RDONLY);
+  ok = copy >= 0 && target >= 0 && dup2(copy, target) == target &&
+       lseek(fd, 0, SEEK_SET) == 0 && read(copy, c, 8) == 8 &&
+       memcmp(a, c, 8) == 0 && read(target, c, 8) == 8 &&
+       memcmp(b, c, 8) == 0 && lseek(fd, 0, SEEK_CUR) == 16;
+  if (target >= 0) close(target);
+  if (copy >= 0) close(copy);
+  check(win_id, "dup-and-dup2-share-file-position", ok);
+
   /* 3. read-write fd: overwrite, read back, restore */
   int wfd = open(path, O_RDWR);
   ok = wfd >= 3 && wfd != fd;
@@ -144,6 +368,22 @@ int main(void) {
         truncate_descriptor_test() == 0);
   check(win_id, "nonblock-file-read-write-and-truncate", nonblock_file_test() == 0);
   check(win_id, "nonblock-process-refused", nonblock_type_denial() == 0);
+  check(win_id, "pipe-poll-readable-writable-eof",
+        pipe_poll_real_test() == 0);
+  check(win_id, "pipe-poll-invalid-version-and-stale",
+        pipe_poll_denial_test() == 0);
+  check(win_id, "real-dup-stdio-and-shared-pipe",
+        fd_dup_shared_pipe_test() == 0);
+  check(win_id, "real-dup2-target-and-fcntl-minimum",
+        fd_dup2_and_fcntl_test() == 0);
+  check(win_id, "native-null-resource-EOF-and-sink",
+        fd_null_resource_test() == 0);
+  check(win_id, "native-null-resource-authority-denials",
+        fd_null_denials_test() == 0);
+  check(win_id, "pipe-child-exit-drains-and-signals-EOF",
+        fd_pipe_child_exit_test(1) == 0);
+  check(win_id, "pipe-child-no-output-signals-EOF",
+        fd_pipe_child_exit_test(0) == 0);
 
   /* 4a. capability: /bin is read-only for user processes */
   errno = 0;
