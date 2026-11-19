@@ -209,7 +209,7 @@ check-external-catalog:
 	@echo "[catalog] BINEXTERNAL providers and library dependencies: PASS"
 
 # Default target
-all: power12 dirs bootloader kernel user $(MKDISK) disk
+all: power12 dirs kernel user disk
 	@echo ""
 	@echo "Build complete for $(ARCH)!"
 	@echo "  Disk Image: $(DISK_IMG)"
@@ -460,7 +460,10 @@ GNULIB_OBJ_DIR := $(BUILD_DIR)/gnulib
 GNULIB_OBJS := $(patsubst %.c,$(GNULIB_OBJ_DIR)/%.o,$(GNULIB_OVERLAY_SRCS))
 GNULIB_LIB  := $(BUILD_DIR)/libgnulib.a
 
-$(GNULIB_OBJS): $(GNULIB_GENERATED_HEADERS)
+# All overlay translation units force-include this configuration (and vendor
+# sources may branch on its feature probes). Rebuild the real objects when
+# the ABI/portability contract changes, on either architecture.
+$(GNULIB_OBJS): $(GNULIB_GENERATED_HEADERS) $(GNULIB_PORT_DIR)/gnulib_config_nexsos.h
 
 # Upstream Gnulib sources keep their vendor warning policy. NexsOS
 # portability sources are first-party and compile under USER_CFLAGS/Werror.
@@ -791,9 +794,9 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(USERKIT_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_L
 	@touch "$(ROOTFS_STAMP)"
 
 
-disk: $(MKDISK) kernel rootfs bootloader
+disk: $(MKDISK) rootfs
 	@mkdir -p $(BUILD_DIR)
-	@./$(MKDISK) $(DISK_IMG) $(BOOTLOADER_BIN) $(KERNEL_BIN) $(BUILD_DIR)/rootfs $(MKDISK_LAYOUT)
+	@./$(MKDISK) "$(DISK_IMG)" "$(BUILD_DIR)/rootfs" $(MKDISK_LAYOUT)
 
 .PHONY: demo1-build demo1-rootfs main-user-image demo1-user-image user-images
 
@@ -838,9 +841,9 @@ main-user-image: disk
 	@mkdir -p "$(USER_IMAGE_DIR)"
 	@cp "$(DISK_IMG)" "$(MAIN_USER_IMAGE)"
 
-demo1-user-image: $(MKDISK) kernel bootloader demo1-rootfs
+demo1-user-image: $(MKDISK) demo1-rootfs
 	@mkdir -p "$(USER_IMAGE_DIR)"
-	@./$(MKDISK) "$(DEMO1_USER_IMAGE)" "$(BOOTLOADER_BIN)" "$(KERNEL_BIN)" \
+	@./$(MKDISK) "$(DEMO1_USER_IMAGE)" \
 	  "$(DEMO1_ROOTFS)" $(MKDISK_LAYOUT)
 
 user-images: main-user-image demo1-user-image
@@ -1202,7 +1205,7 @@ clean:
 help:
 	@echo "$(ARCH) Kernel Build System"
 	@echo "Targets:"
-	@echo "  all          - Build bootloader, kernel, and disk image"
+	@echo "  all          - Build the kernel, userland and root filesystem image"
 	@echo "  release      - Build production files (Use: make release VERSION=0.4.1)"
 	@echo "  test-release - Test the architecture default release firmware in QEMU"
 	@echo "  test-release-uefi - Test the UEFI release lane explicitly"
@@ -1246,8 +1249,12 @@ test-gfx-chrome:
 	@mkdir -p build/host
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
 		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
-		system/lib/tests/gfx_chrome_test.c system/lib/gfx/chrome.c \
-		system/lib/gfx/decoration.c system/lib/gfx/raster.c system/lib/gfx/alpha.c \
+		-Isystem/lib/extensions/LIBGRAPHICS/include \
+		system/lib/tests/gfx_chrome_test.c \
+		system/lib/extensions/LIBGRAPHICS/chrome.c \
+		system/lib/extensions/LIBGRAPHICS/decoration.c \
+		system/lib/extensions/LIBGRAPHICS/theme.c \
+		system/lib/gfx/raster.c system/lib/gfx/alpha.c \
 		-o build/host/gfx_chrome_test
 	@./build/host/gfx_chrome_test
 
@@ -1331,6 +1338,8 @@ test-tty-model:
 	@mkdir -p $(BUILD_ROOT)/host
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Wpedantic \
 		-fsanitize=address,undefined -idirafter system/include/api -idirafter system/include/contract \
-		system/lib/tests/tty_model_test.c system/lib/extensions/USERKIT/nxttyd/tty_model.c \
+		-Isystem/lib/extensions/USERKIT/nxttyd/include \
+		user/USERKIT/services/nxttyd/tests/tty_model_test.c \
+		user/USERKIT/services/nxttyd/lib/tty_model.c \
 		-o $(BUILD_ROOT)/host/tty_model_test
 	@$(BUILD_ROOT)/host/tty_model_test

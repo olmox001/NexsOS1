@@ -11,9 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 LEGACY = DOCS / "legacy"
 SESSION1 = DOCS / "session-1"
-ACTIVE = DOCS / "session-2"
+SESSION2 = DOCS / "session-2"
+ACTIVE = DOCS / "session-3"
 LEGACY_SOURCE_COMMIT = "5a1264c310b034e3fa574301731b0f933361aceb"
-ALLOWED_ROOT = {"README.md", "legacy", "session-1", "session-2"}
+ALLOWED_ROOT = {"README.md", "legacy", "session-1", "session-2", "session-3"}
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
@@ -26,7 +27,7 @@ def old_doc_paths() -> list[str]:
 
 
 def check_root_layout(errors: list[str]) -> None:
-    actual = {p.name for p in DOCS.iterdir()}
+    actual = {p.name for p in DOCS.iterdir() if p.name != ".DS_Store"}
     if actual != ALLOWED_ROOT:
         errors.append(
             f"docs root mismatch: expected {sorted(ALLOWED_ROOT)}, got {sorted(actual)}"
@@ -75,7 +76,7 @@ def check_presstoai(errors: list[str]) -> None:
         errors.append(".presstoai.json contains no project docs paths")
         return
     for path in docs_paths:
-        if not path.startswith(("docs/legacy/", "docs/session-1/", "docs/session-2/")):
+        if not path.startswith(("docs/legacy/", "docs/session-1/", "docs/session-2/", "docs/session-3/")):
             errors.append(f"stale PressToAI docs path: {path}")
         elif not (ROOT / path).exists():
             errors.append(f"missing PressToAI indexed path: {path}")
@@ -114,7 +115,8 @@ def local_link_target(source: Path, raw: str) -> Path | None:
 def check_active_markdown_links(errors: list[str]) -> None:
     sources = [
         ROOT / "README.md", DOCS / "README.md",
-        *sorted(SESSION1.glob("*.md")), *sorted(ACTIVE.glob("*.md"))
+        *sorted(SESSION1.glob("*.md")), *sorted(SESSION2.glob("*.md")),
+        *sorted(ACTIVE.glob("*.md"))
     ]
     for source in sources:
         text = source.read_text()
@@ -141,8 +143,10 @@ def check_required_active_docs(errors: list[str]) -> None:
     required_session2 = {
         "README.md", "OBJECTIVES.md", "STATE.md", "ISSUES.md", "VERIFICATION.md",
     }
-    session2_actual = {p.name for p in ACTIVE.glob("*.md")}
+    session2_actual = {p.name for p in SESSION2.glob("*.md")}
     missing_session2 = sorted(required_session2 - session2_actual)
+    if not (ACTIVE / "README.md").is_file():
+        errors.append("missing Session 3 review")
     if missing_session2:
         errors.append(f"missing active Session 2 docs: {missing_session2}")
 

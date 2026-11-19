@@ -171,18 +171,10 @@ static int nxs_current_mode(struct os1_display_mode_v1 *current) {
 }
 
 static int nxs_active_scale(void) {
-  struct os1_display_mode_v1 mode;
-  int logical_w = 0, logical_h = 0;
-  if (nxs_current_mode(&mode) != 0 ||
-      OS1_display_get_size(&logical_w, &logical_h) != 0 ||
-      logical_w <= 0 || logical_h <= 0)
+  struct os1_display_workspace_v1 workspace;
+  if (OS1_display_workspace_query(&workspace) != 0)
     return OS1_DISPLAY_ZOOM_DEFAULT_PERCENT;
-  int64_t scale = ((int64_t)mode.width * 100 + logical_w / 2) / logical_w;
-  if (scale < OS1_DISPLAY_ZOOM_MIN_PERCENT)
-    scale = OS1_DISPLAY_ZOOM_MIN_PERCENT;
-  if (scale > OS1_DISPLAY_ZOOM_MAX_PERCENT)
-    scale = OS1_DISPLAY_ZOOM_MAX_PERCENT;
-  return (int)scale;
+  return (int)workspace.zoom_percent;
 }
 
 static void nxs_mode_label(const struct os1_display_mode_v1 *mode,
@@ -235,7 +227,11 @@ static void cli_display(void) {
     printf("  %u: %s%s\n", i, label,
            (mode.flags & OS1_DISPLAY_MODE_CURRENT) ? " [current]" : "");
   }
-  printf("UI scale: %d%%\n", nxs_active_scale());
+  struct os1_display_workspace_v1 workspace;
+  if (OS1_display_workspace_query(&workspace) == 0)
+    printf("Logical policy: %s base %ux%u zoom %u%%\n",
+           workspace.mode == OS1_DISPLAY_WORKSPACE_AUTO ? "auto" : "manual",
+           workspace.base_width, workspace.base_height, workspace.zoom_percent);
 }
 
 static void cli_style(void) {
@@ -392,6 +388,12 @@ enum nxs_action {
   ACT_MODE_SELECT,
   ACT_MODE_PAGE_PREV,
   ACT_MODE_PAGE_NEXT,
+  ACT_LOGICAL_AUTO,
+  ACT_LOGICAL_MANUAL,
+  ACT_LOGICAL_MENU,
+  ACT_LOGICAL_SELECT,
+  ACT_LOGICAL_PREV,
+  ACT_LOGICAL_NEXT,
   ACT_SCALE_MENU,
   ACT_SCALE_SELECT,
   ACT_STYLE,
@@ -403,6 +405,7 @@ enum nxs_action {
 /* ------------------------- Window state --------------------------- */
 static uint32_t *g_fb;
 static int g_ww, g_wh;
+static int g_display_w, g_display_h;
 static int g_win = -1;
 static struct font_ctx *g_font;
 
@@ -410,7 +413,9 @@ static int g_section = SEC_DISPLAY;
 static int g_zoom_pct = OS1_DISPLAY_ZOOM_DEFAULT_PERCENT;
 static int g_mode_menu_open;
 static int g_scale_menu_open;
+static int g_logical_menu_open;
 static uint32_t g_mode_page;
+static uint32_t g_logical_page;
 static int g_cur_style = -1; /* -1 = not set this session */
 static int g_cur_theme = -1;
 static int g_cur_bg = -1;
@@ -423,6 +428,7 @@ static int g_cur_bg = -1;
 #define CONTENT_X (SIDEBAR_W + PAD)
 #define MIN_WIN_W 520
 #define MIN_WIN_H 380
+#define NXS_GFX_MAX_DIM 4096
 
 /* ------------------------- Dynamic palette -------------------------- */
 static uint32_t g_col_bg, g_col_sidebar_bg, g_col_sidebar_sel;
@@ -656,15 +662,95 @@ static void render_mode_dropdown(int x, int y) {
   }
 }
 
+static void render_logical_dropdown(int x, int y,
+                                    const struct os1_display_workspace_v1 *workspace) {
+  struct os1_display_mode_v1 head;
+  if (nxs_mode_query(0U, &head) != 0) return;
+  uint32_t count = head.count > OS1_DISPLAY_MODE_MAX
+                       ? OS1_DISPLAY_MODE_MAX : head.count;
+  uint32_t pages = (count + NXS_MODE_PAGE_SIZE - 1U) / NXS_MODE_PAGE_SIZE;
+  if (pages == 0U) return;
+  if (g_logical_page >= pages) g_logical_page = pages - 1U;
+  uint32_t start = g_logical_page * NXS_MODE_PAGE_SIZE;
+  uint32_t shown = count - start;
+  if (shown > NXS_MODE_PAGE_SIZE) shown = NXS_MODE_PAGE_SIZE;
+  int cell_w = NXS_SELECT_W / 2;
+  int rows = ((int)shown + 1) / 2;
+  int extra = pages > 1U ? 1 : 0;
+  fb_rrect(x, y, NXS_SELECT_W, (rows + extra) * NXS_MENU_ROW_H, 5, g_col_btn);
+  for (uint32_t row = 0U; row < NXS_MODE_PAGE_SIZE && row < shown; ++row) {
+    struct os1_display_mode_v1 mode;
+    if (nxs_mode_query(start + row, &mode) != 0) continue;
+    char label[32];
+    int written = snprintf(label, sizeof(label), "%ux%u", mode.width, mode.height);
+    if (written <= 0) continue;
+    int px = x + (int)(row % 2U) * cell_w;
+    int py = y + (int)(row / 2U) * NXS_MENU_ROW_H;
+    render_menu_row(px, py, cell_w, label, ACT_LOGICAL_SELECT,
+                    (long)(start + row),
+                    workspace->mode == OS1_DISPLAY_WORKSPACE_MANUAL &&
+                    workspace->base_width == mode.width &&
+                    workspace->base_height == mode.height);
+  }
+  if (extra != 0) {
+    int py = y + rows * NXS_MENU_ROW_H;
+    render_menu_row(x, py, cell_w, "< previous", ACT_LOGICAL_PREV, 0, 0);
+    render_menu_row(x + cell_w, py, cell_w, "next >", ACT_LOGICAL_NEXT, 0, 0);
+  }
+}
+
 static void render_scale_dropdown(int x, int y) {
-  int height = NXS_SCALE_COUNT * NXS_MENU_ROW_H;
-  fb_rrect(x, y, NXS_SELECT_W, height, 5, g_col_btn);
+  /* Two columns instead of eight vertical rows: at 300/400 percent the
+   * logical desktop can be shorter than the original 192px dropdown.
+   * All low zoom choices must remain hit-testable to escape that state. */
+  const int columns = 2;
+  const int rows = (NXS_SCALE_COUNT + columns - 1) / columns;
+  const int cell_w = NXS_SELECT_W / columns;
+  fb_rrect(x, y, NXS_SELECT_W, rows * NXS_MENU_ROW_H, 5, g_col_btn);
   for (int i = 0; i < NXS_SCALE_COUNT; ++i) {
     char label[32];
+    int row = i / columns, column = i % columns;
     snprintf(label, sizeof(label), "%d%%", NXS_SCALE_OPTIONS[i]);
-    render_menu_row(x, y + i * NXS_MENU_ROW_H, NXS_SELECT_W, label,
-                    ACT_SCALE_SELECT, NXS_SCALE_OPTIONS[i],
+    render_menu_row(x + column * cell_w, y + row * NXS_MENU_ROW_H,
+                    cell_w, label, ACT_SCALE_SELECT, NXS_SCALE_OPTIONS[i],
                     g_zoom_pct == NXS_SCALE_OPTIONS[i]);
+  }
+}
+
+/* Low-resolution recovery view. At high UI zoom the logical desktop may
+ * be only 160x120: full sidebar and 320px selectors cannot be hit. Always
+ * expose every supported zoom choice directly, in a bounded 3x3 grid. */
+static void render_compact_zoom(void) {
+  int active = nxs_active_scale();
+  char title[48];
+  int text = snprintf(title, sizeof(title), "UI zoom %d%%", active);
+  if (text > 0) buf_draw_text(5, 4, title, g_col_accent);
+  const int columns = 3;
+  const int margin = 4;
+  const int gap = 2;
+  const int cell_w = (g_ww - 2 * margin - 2 * gap) / columns;
+  const int row_height = 21;
+  if (cell_w < 28) return;
+  for (int i = 0; i < NXS_SCALE_COUNT; ++i) {
+    char label[20];
+    int written = snprintf(label, sizeof(label), "%d%%", NXS_SCALE_OPTIONS[i]);
+    if (written <= 0) continue;
+    int column = i % columns;
+    int row = i / columns;
+    ui_button(margin + column * (cell_w + gap),
+              24 + row * row_height, cell_w, row_height - 1,
+              label, ACT_SCALE_SELECT, NXS_SCALE_OPTIONS[i],
+              active == NXS_SCALE_OPTIONS[i]);
+  }
+  if (g_wh >= 122) {
+    struct os1_display_workspace_v1 workspace;
+    if (OS1_display_workspace_query(&workspace) == 0) {
+      char desc[64];
+      int written = snprintf(desc, sizeof(desc), "%s %ux%u",
+          workspace.mode == OS1_DISPLAY_WORKSPACE_AUTO ? "Auto" : "Manual",
+          workspace.base_width, workspace.base_height);
+      if (written > 0) buf_draw_text(5, 99, desc, g_col_text_dim);
+    }
   }
 }
 
@@ -687,42 +773,56 @@ static void render_sidebar(void) {
 
 static void render_display(void) {
   int cx = CONTENT_X, y = PAD;
-  char line[128];
+  char label[128];
+  struct os1_display_workspace_v1 workspace;
+  int status = (int)OS1_display_workspace_query(&workspace);
   ui_text(cx, &y, "Display", g_col_accent);
-  y += 6;
-
-  int logical_w = 0, logical_h = 0;
-  if (OS1_display_get_size(&logical_w, &logical_h) == 0)
-    snprintf(line, sizeof(line), "Logical desktop: %dx%d", logical_w, logical_h);
-  else
-    snprintf(line, sizeof(line), "Logical desktop: unavailable");
-  ui_text(cx, &y, line, g_col_text);
-  y += 8;
-
-  struct os1_display_mode_v1 current;
+  if (status == 0) {
+    (void)snprintf(label, sizeof(label), "Desktop: %ux%u logical",
+                   workspace.logical_width, workspace.logical_height);
+    ui_text(cx, &y, label, g_col_text);
+  } else {
+    ui_text(cx, &y, "Desktop unavailable", g_col_text_dim);
+  }
+  ui_text(cx, &y, "Physical output", g_col_text_dim);
+  struct os1_display_mode_v1 physical;
   char mode_label[104] = "Hardware modes unavailable";
-  if (nxs_current_mode(&current) == 0)
-    nxs_mode_label(&current, mode_label, sizeof(mode_label));
-  ui_text(cx, &y, "Hardware output mode", g_col_text_dim);
-  int mode_button_y = y;
-  ui_button(cx, mode_button_y, NXS_SELECT_W, NXS_SELECT_H, mode_label,
+  if (nxs_current_mode(&physical) == 0)
+    nxs_mode_label(&physical, mode_label, sizeof(mode_label));
+  int mode_y = y;
+  ui_button(cx, y, NXS_SELECT_W, NXS_SELECT_H, mode_label,
             ACT_MODE_MENU, 0, g_mode_menu_open);
-  y += NXS_SELECT_H + 14;
+  y += NXS_SELECT_H + 7;
 
-  g_zoom_pct = nxs_active_scale();
-  snprintf(line, sizeof(line), "%d%%", g_zoom_pct);
-  ui_text(cx, &y, "UI scale / DPI", g_col_text_dim);
-  int scale_button_y = y;
-  ui_button(cx, scale_button_y, NXS_SELECT_W, NXS_SELECT_H, line,
+  ui_text(cx, &y, "Logical desktop - base resolution", g_col_text_dim);
+  int half = (NXS_SELECT_W - 4) / 2;
+  ui_button(cx, y, half, NXS_SELECT_H, "Auto (hardware)",
+            ACT_LOGICAL_AUTO, 0,
+            status == 0 && workspace.mode == OS1_DISPLAY_WORKSPACE_AUTO);
+  ui_button(cx + half + 4, y, half, NXS_SELECT_H, "Manual",
+            ACT_LOGICAL_MANUAL, 0,
+            status == 0 && workspace.mode == OS1_DISPLAY_WORKSPACE_MANUAL);
+  y += NXS_SELECT_H + 4;
+  int logical_y = y;
+  if (status == 0) {
+    (void)snprintf(label, sizeof(label), "%ux%u base (choose size)",
+                   workspace.base_width, workspace.base_height);
+    ui_button(cx, y, NXS_SELECT_W, NXS_SELECT_H, label,
+              ACT_LOGICAL_MENU, 0, g_logical_menu_open);
+  }
+  y += NXS_SELECT_H + 7;
+
+  ui_text(cx, &y, "Zoom / UI scale (independent)", g_col_text_dim);
+  g_zoom_pct = status == 0 ? (int)workspace.zoom_percent : 100;
+  (void)snprintf(label, sizeof(label), "%d%%", g_zoom_pct);
+  int scale_y = y;
+  ui_button(cx, y, NXS_SELECT_W, NXS_SELECT_H, label,
             ACT_SCALE_MENU, 0, g_scale_menu_open);
-  y += NXS_SELECT_H + 12;
-  ui_text(cx, &y, "Scale changes the logical desktop; hardware mode is unchanged.",
-          g_col_text_dim);
-
-  if (g_mode_menu_open)
-    render_mode_dropdown(cx, mode_button_y + NXS_SELECT_H + 2);
+  if (g_mode_menu_open) render_mode_dropdown(cx, mode_y + NXS_SELECT_H + 2);
+  if (g_logical_menu_open && status == 0)
+    render_logical_dropdown(cx, logical_y + NXS_SELECT_H + 2, &workspace);
   if (g_scale_menu_open)
-    render_scale_dropdown(cx, scale_button_y + NXS_SELECT_H + 2);
+    render_scale_dropdown(cx, scale_y + NXS_SELECT_H + 2);
 }
 
 static void render_style(void) {
@@ -965,6 +1065,12 @@ static void render_notify(void) {
 static void redraw(void) {
   fb_rrect(0, 0, g_ww, g_wh, 0, g_col_bg);
   g_btn_n = 0;
+  if (g_ww < CONTENT_X + NXS_SELECT_W + PAD || g_wh < 220) {
+    /* The compact recovery UI is useful even if the active sidebar page was
+     * changed just before entering a high-zoom desktop. */
+    render_compact_zoom();
+    return;
+  }
   render_sidebar();
   switch (g_section) {
   case SEC_DISPLAY:
@@ -999,10 +1105,12 @@ static void dispatch(int action, long arg) {
     g_section = (int)arg;
     g_mode_menu_open = 0;
     g_scale_menu_open = 0;
+    g_logical_menu_open = 0;
     break;
   case ACT_MODE_MENU:
     g_mode_menu_open = !g_mode_menu_open;
     g_scale_menu_open = 0;
+    g_logical_menu_open = 0;
     break;
   case ACT_MODE_SELECT: {
     if (arg < 0 || (unsigned long)arg >= OS1_DISPLAY_MODE_MAX)
@@ -1034,9 +1142,60 @@ static void dispatch(int action, long arg) {
     }
     break;
   }
+  case ACT_LOGICAL_AUTO:
+  case ACT_LOGICAL_MANUAL: {
+    struct os1_display_workspace_v1 state;
+    int queried = (int)OS1_display_workspace_query(&state);
+    if (queried != 0) {
+      OS1_report_error("nxsettings.workspace_read", queried);
+      break;
+    }
+    uint32_t mode = action == ACT_LOGICAL_AUTO ? OS1_DISPLAY_WORKSPACE_AUTO
+                                              : OS1_DISPLAY_WORKSPACE_MANUAL;
+    uint32_t width = mode == OS1_DISPLAY_WORKSPACE_MANUAL ?
+                         state.base_width : 0U;
+    uint32_t height = mode == OS1_DISPLAY_WORKSPACE_MANUAL ?
+                          state.base_height : 0U;
+    int changed = (int)OS1_display_workspace_set(
+        mode, width, height, state.zoom_percent);
+    if (changed != 0) OS1_report_error("nxsettings.workspace_mode", changed);
+    g_logical_menu_open = 0;
+    break;
+  }
+  case ACT_LOGICAL_MENU:
+    g_logical_menu_open = !g_logical_menu_open;
+    g_mode_menu_open = 0;
+    g_scale_menu_open = 0;
+    break;
+  case ACT_LOGICAL_SELECT: {
+    if (arg < 0 || arg >= (long)OS1_DISPLAY_MODE_MAX) break;
+    struct os1_display_mode_v1 mode;
+    struct os1_display_workspace_v1 state;
+    int result = nxs_mode_query((uint32_t)arg, &mode);
+    if (result == 0) result = (int)OS1_display_workspace_query(&state);
+    if (result == 0)
+      result = (int)OS1_display_workspace_set(OS1_DISPLAY_WORKSPACE_MANUAL,
+                                             mode.width, mode.height,
+                                             state.zoom_percent);
+    if (result != 0) OS1_report_error("nxsettings.workspace_manual", result);
+    g_logical_menu_open = 0;
+    break;
+  }
+  case ACT_LOGICAL_PREV:
+    if (g_logical_page > 0U) --g_logical_page;
+    break;
+  case ACT_LOGICAL_NEXT: {
+    struct os1_display_mode_v1 head;
+    if (nxs_mode_query(0U, &head) == 0 &&
+        g_logical_page + 1U <
+        (head.count + NXS_MODE_PAGE_SIZE - 1U) / NXS_MODE_PAGE_SIZE)
+      ++g_logical_page;
+    break;
+  }
   case ACT_SCALE_MENU:
     g_scale_menu_open = !g_scale_menu_open;
     g_mode_menu_open = 0;
+    g_logical_menu_open = 0;
     break;
   case ACT_SCALE_SELECT: {
     int percent = (int)arg;
@@ -1088,20 +1247,77 @@ static void handle_click(int mx, int my) {
   }
   g_mode_menu_open = 0;
   g_scale_menu_open = 0;
+  g_logical_menu_open = 0;
+}
+
+/* Size policy is expressed in logical pixels and constrained by the current
+ * desktop. Normal desktop keeps its full UI; zoomed desktop favors recovery. */
+static void nxs_target_size(int sw, int sh, int *ww, int *wh) {
+  int w = (sw * 7) / 10, h = (sh * 7) / 10;
+  if (w > 760) w = 760;
+  if (h > 520) h = 520;
+  if (w < MIN_WIN_W) w = MIN_WIN_W;
+  if (h < MIN_WIN_H) h = MIN_WIN_H;
+  if (sw > 8 && w > sw - 8) w = sw - 8;
+  if (sh > 28 && h > sh - 28) h = sh - 28;
+  *ww = w;
+  *wh = h;
+}
+
+static int nxs_replace_framebuffer(int ww, int wh) {
+  if (ww <= 0 || wh <= 0 || ww > NXS_GFX_MAX_DIM ||
+      wh > NXS_GFX_MAX_DIM || (size_t)ww > SIZE_MAX / sizeof(uint32_t) /
+                                        (size_t)wh)
+    return -EINVAL;
+  if (ww == g_ww && wh == g_wh) return 0;
+  uint32_t *replacement = (uint32_t *)malloc((size_t)ww * (size_t)wh *
+                                              sizeof(uint32_t));
+  if (replacement == NULL) return -ENOMEM;
+  uint32_t *old = g_fb;
+  g_fb = replacement;
+  g_ww = ww;
+  g_wh = wh;
+  free(old);
+  return 0;
 }
 
 static void reinit_window(int ww, int wh) {
-  if (ww < MIN_WIN_W)
-    ww = MIN_WIN_W;
-  if (wh < MIN_WIN_H)
-    wh = MIN_WIN_H;
-  uint32_t *nb = (uint32_t *)malloc((size_t)ww * (size_t)wh * 4u);
-  if (nb) {
+  int replaced = nxs_replace_framebuffer(ww, wh);
+  if (replaced != 0) OS1_report_error("nxsettings.resize_buffer", replaced);
+}
+
+/* A zoom change modifies the logical desktop, not the GPU scanout. Refit the
+ * already-open settings window so all recovery controls remain clickable. */
+static void nxs_fit_display(void) {
+  int sw = 0, sh = 0;
+  if (OS1_display_get_size(&sw, &sh) != 0 || sw <= 0 || sh <= 0 ||
+      (sw == g_display_w && sh == g_display_h)) return;
+  g_display_w = sw;
+  g_display_h = sh;
+  int ww = 0, wh = 0;
+  nxs_target_size(sw, sh, &ww, &wh);
+  if (ww <= 0 || wh <= 0) return;
+  if (ww != g_ww || wh != g_wh) {
+    uint32_t *replacement = (uint32_t *)malloc(
+        (size_t)ww * (size_t)wh * sizeof(uint32_t));
+    if (replacement == NULL) {
+      OS1_report_error("nxsettings.fit_alloc", -ENOMEM);
+      return;
+    }
+    int resized = OS1_window_resize(g_win, ww, wh);
+    if (resized != 0) {
+      free(replacement);
+      OS1_report_error("nxsettings.fit_resize", resized);
+      return;
+    }
     free(g_fb);
-    g_fb = nb;
+    g_fb = replacement;
+    g_ww = ww;
+    g_wh = wh;
   }
-  g_ww = ww;
-  g_wh = wh;
+  /* Positioning is controlled by nxmoused's window-manager capability.
+   * The compositor clamps this owner window on display geometry changes;
+   * settings must not request manager authority just to expose zoom recovery. */
 }
 
 static int main_gui(void) {
@@ -1114,16 +1330,11 @@ static int main_gui(void) {
     return 1;
   }
 
-  int ww = (sw * 7) / 10;
-  int wh = (sh * 7) / 10;
-  if (ww > 760)
-    ww = 760;
-  if (wh > 520)
-    wh = 520;
-  if (ww < MIN_WIN_W)
-    ww = MIN_WIN_W;
-  if (wh < MIN_WIN_H)
-    wh = MIN_WIN_H;
+  int ww = 0, wh = 0;
+  nxs_target_size(sw, sh, &ww, &wh);
+  if (ww <= 0 || wh <= 0) return 1;
+  g_display_w = sw;
+  g_display_h = sh;
   int wx = (sw - ww) / 2, wy = (sh - wh) / 2;
 
   g_fb = (uint32_t *)malloc((size_t)ww * (size_t)wh * 4u);
@@ -1169,6 +1380,7 @@ static int main_gui(void) {
   }
 
   for (;;) {
+    nxs_fit_display();
     redraw();
     window_blit(g_win, 0, 0, g_ww, g_wh, g_fb);
     /* SCHED-STACK-ISO: init pumps the compositor via flush(); blit marks

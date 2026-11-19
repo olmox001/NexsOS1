@@ -89,7 +89,7 @@ def main() -> int:
         return fail("startup declaration is empty")
 
     required = {
-        ("shell", "start", "/sys/services/nxttyd", "--shell /sys/bin/nxshell", ""),
+        ("shell", "start", "/sys/services/nxttyd", "/sys/bin/nxshell", ""),
         ("environment", "once", "/sys/bin/nxenvinit", "", ""),
         ("tests", "async", "/sys/services/nxttyd", "/sys/bin/nxtestrunner", ""),
         ("roleprobe", "debug", "/sys/bin/nxroleprobe", "", ""),

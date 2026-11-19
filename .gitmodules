@@ -1,13 +1,15 @@
 [submodule "kernel"]
 	path = kernel
 	url = https://github.com/olmox001/NX-CORE.git
+	branch = SPERIMENTAL-LINUX
 [submodule "system"]
 	path = system
 	url = https://github.com/olmox001/NX-SDK.git
+	branch = SPERIMENTAL-LINUX
 [submodule "user/USERKIT"]
 	path = user/USERKIT
 	url = https://github.com/olmox001/NX-USERKIT.git
-	branch = main
+	branch = SPERIMENTAL-LINUX
 [submodule "user/bin/base-nexs"]
 	path = user/BINEXTERNAL/base-nexs
 	url = https://github.com/olmox001/base-nexs.git

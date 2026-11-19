@@ -48,9 +48,12 @@ def check_boot_nxtest_state() -> int:
         (
             "done",
             "[NXTEST] real userland suite started in isolated boot TTY\n"
-            "[NXTEST] done: 18/19 passed, 1 failure(s)",
+            "[NXTEST] done: 19/19 passed, 0 failure(s)",
             "done",
         ),
+        ("partial", "[NXTEST] done: 18/19 passed, 1 failure(s)", "failed"),
+        ("zero", "[NXTEST] done: 0/0 passed, 0 failure(s)", "failed"),
+        ("inconsistent", "[NXTEST] done: 19/19 passed, 1 failure(s)", "failed"),
     )
     for name, log, expected in cases:
         actual = _boot_nxtest_state(log)
@@ -119,7 +122,7 @@ def main() -> int:
         return 1
     print(
         f"PASS: {len(cases)} boot readiness cases + "
-        "4 prompt-settle cases + 3 boot-NXTEST states + "
+        "4 prompt-settle cases + 6 boot-NXTEST cases + "
         "4 nxwins TTY-owner cases"
     )
     return 0

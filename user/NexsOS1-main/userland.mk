@@ -4,7 +4,7 @@ NEXS_USERLAND_SBIN_PROGRAMS :=
 NEXS_USERLAND_SYS_PROGRAMS := \
   nxshell nxres nxreg nxkeymap nxtop nxpower nxbar nxproc nxinfo nxperm \
   nxmemstat nxsettings nxwins nxnotify nxexec nxenvinit nxtimerdiag \
-  nxpax nxtestrunner nxroleprobe
+  nxpax nxtestrunner nxroleprobe gfxcontroltest
 NEXS_USERLAND_SERVICE_PROGRAMS :=
 NEXS_USERLAND_BIN_PROGRAMS := \
   counter demo3d ipc_send ipc_recv crash writetest input_test nxtest fdtest \

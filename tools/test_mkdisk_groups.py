@@ -119,7 +119,9 @@ class GroupBoundaryTests(unittest.TestCase):
 
     def verify_layout(self, layout):
         path = self.work / f'{layout}.img'
-        subprocess.run([str(self.binary), str(path), '-', '-', str(self.root),
+        # Exercise both the rootfs-only CLI and the historical invocation.
+        legacy_args = ['-', '-'] if layout == 'legacy' else []
+        subprocess.run([str(self.binary), str(path), *legacy_args, str(self.root),
                         f'--{layout}'], check=True, stdout=subprocess.DEVNULL)
         image = Image(path)
         try:

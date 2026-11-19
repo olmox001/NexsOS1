@@ -171,3 +171,16 @@ The current ordered backlog is:
 9. only then stage the complete next coherent phase;
 10. progressively promote Power12 rules, HAL first and kernel second, after each
     scope is fully qualified.
+
+## Post-release handoff, #314–640
+
+| Messages | Development record and disposition |
+| --- | --- |
+| 314–461 | The owner requested distinct normal and fault boot assets, display mode discovery, a userland scale policy and separate output and rendering roles. Owner reports included AMD64 resize and incorrectly scaled initial desktops. Commit 24640fa records the subsequent graphics integration. |
+| 462–550 | Work moved to the remaining kernel graphics callers, SDK graphics ownership and runtime readiness. The discussion retained a minimal kernel emergency display, NXPaX and the existing terminal path. Reports of black frames, incorrect workspace geometry and overlapping bars require image evidence. Commit f8b6a1f updates readiness checks. |
+| 551–633 | The owner reported double input in a second shell, mouse degradation and black output. The review rejected coupling the object layer to UART or a device driver and removing emergency paths before equivalent behavior exists. Power12 coverage across nested repositories was questioned. |
+| 634–640 | An agent recorded a recovery to the staged baseline. A later display experiment reported a physical mode commit with unchanged logical workspace. A proposed shell-side TTY claim was superseded. The current nxttyd assigns its spawned child as controller and forwards input. Message 640 ends during an AMD64 rebuild. Earlier screenshots for the rejected claim cannot qualify its replacement. |
+
+Git and source inspection on 2026-11-19 confirm the two umbrella commits,
+the staged display notification and the TTY routing change. Runtime results in
+these messages remain historical reports. Current verification belongs to Session 3.

@@ -917,38 +917,11 @@ int main(int argc, char *argv[]) {
   const char *tty_session = getenv("NX_TTY_PORT");
   int tty_hosted = tty_session != NULL && tty_session[0] != '\0';
 
-  /* The original NXShell always acquired a fresh graphical window.
-   * After userland TTY migration the inherited NX_TTY_PORT alone no longer
-   * proves that THIS shell is the child controlled by that terminal: an
-   * interactive shell launched as a shell job inherits the old environment.
-   * Compare the actual spawning parent with the per-session port owner.
-   * A different parent means a NEW interactive TTY session is needed.
-   * This is startup/session ownership, not command parser policy:
-   * all -c, redirections, pipelines and job control remain unchanged.
-   * The existing nxexec launcher classifies the single executable. */
-  if (tty_hosted) {
-    size_t prefix = sizeof(OS1_TTY_PORT_PREFIX) - 1U;
-    if (strncmp(tty_session, OS1_TTY_PORT_PREFIX, prefix) != 0) {
-      print("nxshell: invalid inherited terminal session\n");
-      return 1;
-    }
-    char *end = NULL;
-    long owner = strtol(tty_session + prefix, &end, 10);
-    pid_t parent = getppid();
-    if (owner <= 0 || owner > INT32_MAX || end == NULL || *end != '\0' ||
-        parent < 0) {
-      print("nxshell: cannot authenticate controlling terminal parent\n");
-      return 1;
-    }
-    if ((long)parent != owner) {
-      int launcher = execsvc_launch_hosted(argc, argv);
-      if (launcher <= 0) {
-        print("nxshell: failed to acquire an independent graphical session\n");
-        return 1;
-      }
-      return 0;
-    }
-  }
+  /* Session ownership belongs to nxttyd. A shell started by a terminal
+   * service is that session's controller; a shell started as a foreground
+   * child inherits the same TTY and is reached through its parent's normal
+   * job-control forwarding. NXShell never creates, claims or authenticates a
+   * terminal session itself. */
 
   {
     char pidbuf[16];

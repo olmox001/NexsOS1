@@ -243,6 +243,21 @@
       "kind": "wire_contract",
       "provenance": "sys_port_send_caps accepts at most four descriptors; 64-byte ipc payload has receiver-index prefix",
       "rationale": "authenticates only handles installed with the received message, never arbitrary payload integers"
+    },
+    "system/lib/extensions/LIBGRAPHICS/decoration.c::DECORATION_MAX_DIMENSION": {
+      "kind": "raster_geometry_guard",
+      "provenance": "LIBGRAPHICS decoration.c checks content width/height <= 8192, framebuffer provider accepts at most 16M pixels; rounded alpha helpers also inspect the bounded shadow envelope",
+      "rationale": "16K per axis is an explicit over-limit rejection and static loop ceiling, not a requested QEMU video mode; no invalid content can expand iteration beyond this ceiling"
+    },
+    "system/lib/extensions/LIBGRAPHICS/decoration.c::DECORATION_MAX_RADIUS": {
+      "kind": "visual_geometry_guard",
+      "provenance": "system/include/api/os1_theme.h border_radius and built-in LIBGRAPHICS theme.c presets (up to 12); 64 protects corner raster work above the preset range",
+      "rationale": "bound antialias coverage to a finite 64px corner policy even for malformed custom styles"
+    },
+    "system/lib/extensions/LIBGRAPHICS/decoration.c::DECORATION_MAX_SHADOW": {
+      "kind": "visual_effect_budget",
+      "provenance": "LIBGRAPHICS theme.c built-in shadows are 0..6 pixels; 24 is the approved maximum software shadow kernel width",
+      "rationale": "limit shadow sampling to at most 24 taps per boundary pixel regardless of caller-supplied style"
     }
   },
   "operations": {

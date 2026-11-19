@@ -149,13 +149,15 @@ class SpawnOwnedTests(unittest.TestCase):
                 baseline.write_bytes(Path(os.environ['SPAWN_BASELINE_SOURCE']).read_bytes())
                 source = baseline
             header = ROOT / 'kernel/include/abi/posix_types.h'
-            define = next(line for line in header.read_text().splitlines() if
-                          line.startswith('#define OS1_SPAWN_REQUEST_VERSION '))
+            contract_lines = header.read_text().splitlines()
+            defines_contract = [next(line for line in contract_lines if
+                line.startswith('#define ' + name + ' ')) for name in
+                ('OS1_SPAWN_REQUEST_VERSION', 'OS1_SPAWN_PATH_MAX')]
             descriptor = fragment(header, set(), {'os1_spawn_request_v1'})
             defines = [line for line in source.read_text().splitlines() if
                        line.startswith('#define SPAWN_MAX_ARGS ') or
                        line.startswith('#define SPAWN_ARG_LEN ')]
-            code = PREFIX + '\n' + define + '\n' + descriptor + '\n'
+            code = PREFIX + '\n' + '\n'.join(defines_contract) + '\n' + descriptor + '\n'
             code += '\n'.join(defines) + '\n' + fragment(source, FUNCTIONS, RECORDS) + SUFFIX
             fixture = work / 'fixture.c'; fixture.write_text(code)
             binary = work / 'fixture'

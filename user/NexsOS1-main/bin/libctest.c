@@ -663,6 +663,31 @@ static void t_long_double_runtime(void) {
   ok(name);
 }
 
+/* Gnulib calls xinmalloc(0, ...) when a real UTMP file contains no active
+ * sessions. A NULL return is legal ISO C but is interpreted as OOM by GNU's
+ * checked allocator. Verify the selected SDK contract with real allocations. */
+static void t_gnulib_zero_alloc(void) {
+  const char *name = "allocator/gnulib-zero-array";
+  void *ptr = malloc(0U);
+  CHECK(name, ptr != NULL, "malloc(0) reported allocation failure");
+  memset(ptr, 0x5a, 1U);
+  free(ptr);
+  void *array = calloc(0U, sizeof(void *));
+  CHECK(name, array != NULL, "calloc(0, element) reported allocation failure");
+  free(array);
+  ok(name);
+}
+
+static void t_allocator_size_overflow(void) {
+  const char *name = "allocator/reject-size-overflow";
+  volatile size_t maximum = (size_t)-1;
+  void *large = malloc(maximum);
+  CHECK(name, large == NULL, "malloc wrapped its boundary-tag allocation");
+  void *product = calloc(maximum, 2U);
+  CHECK(name, product == NULL, "calloc accepted a wrapped element product");
+  ok(name);
+}
+
 int main(void) {
   printf("[libctest] stdio / POSIX-over-native conformance\n");
 
@@ -698,6 +723,8 @@ int main(void) {
   t_unlink_reports_the_cause();
   t_mkdir_sets_errno();
   t_long_double_runtime();
+  t_gnulib_zero_alloc();
+  t_allocator_size_overflow();
 
   OS1_fs_unlink(TMP);
   printf("[libctest] done: %d/%d passed, %d failure(s)\n", g_pass,

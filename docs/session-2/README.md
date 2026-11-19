@@ -23,3 +23,13 @@ strict qualification from HAL to kernel.
 After any context loss, read `.git/p2p-dc/RECOVERY.md`,
 `.git/p2p-dc/history.jsonl`, Desktop Commander history and Git state before
 modifying files.
+
+## Closure on 2026-11-19
+
+The release freeze is umbrella `2a6326f`. Graphics integration followed in
+`24640fa` and runtime readiness checks in `f8b6a1f`. The final P2P handoff
+ends at #640. The test counts in VERIFICATION.md describe the release freeze.
+[Session 3](../session-3/README.md) owns qualification of the later index.
+
+The [release ownership guide](USERKIT-AND-USER-PROJECTS.md) preserves the
+0.0.6.4 update that had been written into the frozen legacy copy.

@@ -63,7 +63,10 @@ int main(int argc, char **argv) {
         { "seq", "seq 1 3", 0 },
         { "basename2", "basename /system/boot/services.conf", 0 },
         { "dirname2", "dirname /system/boot/services.conf", 0 },
-        { "readlink", "readlink /bin/echo", 0 },
+        /* /bin/echo is an ELF regular file, not a symlink. POSIX readlink
+         * must reject it; a separate positive symlink test belongs to the
+         * future VFS symbolic-link implementation (currently unsupported). */
+        { "readlink_regular_rejected", "readlink /bin/echo", 1 },
         { "realpath", "realpath /bin/echo", 0 },
         { "tty", "tty", 0 },
         { "expr", "expr 10 + 20", 0 },

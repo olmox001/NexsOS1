@@ -1262,16 +1262,23 @@ void write_ext4_partition(FILE *f, uint64_t start_lba, uint64_t size_sectors,
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 5) {
-    fprintf(stderr,
-            "Usage: %s <img.img> <boot.bin> <kernel.bin> <root_dir> "
-            "[--legacy|--extents]\n",
+  /* Older callers supplied two unused loader paths before the root. */
+  int root_arg = argc == 5 || argc == 6 ? 4 : 2;
+  if (argc != root_arg + 1 && argc != root_arg + 2) {
+    fprintf(stderr, "Usage: %s <image> <root_dir> [--legacy|--extents]\n",
             argv[0]);
     return 1;
   }
-  const char *boot_path = argv[2], *kern_path = argv[3], *root_dir = argv[4];
-  if (argc > 5 && strcmp(argv[5], "--legacy") == 0)
-    use_extents = 0;
+  const char *root_dir = argv[root_arg];
+  if (argc == root_arg + 2) {
+    const char *layout = argv[root_arg + 1];
+    if (strcmp(layout, "--legacy") == 0)
+      use_extents = 0;
+    else if (strcmp(layout, "--extents") != 0) {
+      fprintf(stderr, "mkdisk: unknown inode layout %s\n", layout);
+      return 1;
+    }
+  }
   printf("mkdisk: inode layout = %s\n",
          use_extents ? "extents" : "legacy (indirect blocks)");
   uint64_t partition_blocks = plan_partition_blocks(root_dir);
@@ -1314,12 +1321,7 @@ int main(int argc, char *argv[]) {
    * — vfs_init() mounts the first partition any driver accepts, so a second
    * ext4 could silently become "/".
    *
-   * boot_path/kern_path stay accepted-and-ignored for Makefile compatibility;
-   * the KERNEL partition returns as P1 A/B in the same step that gives it a
-   * reader.
    */
-  (void)boot_path;
-  (void)kern_path;
 
   struct part_spec {
     struct guid type;

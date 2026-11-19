@@ -17,7 +17,7 @@ include $(SDK_ROOT)/config/userkit-paths.mk
 
 ifeq ($(ARCH),amd64)
   CROSS_COMPILE ?= $(NEXS_X86_64_TARGET)-
-  ARCH_CFLAGS := -DARCH_AMD64 -mno-red-zone -mcmodel=large
+  ARCH_CFLAGS := -DARCH_AMD64 -mno-red-zone -mcmodel=large -Wa,--noexecstack
 else ifeq ($(ARCH),aarch64)
   CROSS_COMPILE ?= $(NEXS_AARCH64_TARGET)-
   ARCH_CFLAGS := -DARCH_AARCH64 -mcpu=cortex-a57
@@ -44,6 +44,8 @@ ifeq ($(SDK_SOURCE_MODE),1)
   NXSDK_OUTPUT_NAMESPACE := system
   include $(SDK_ROOT)/sdk.mk
   DEMO_SDK_LINK_INPUTS := $(NXSDK_CORE_LIB_OBJECTS) $(NXSDK_MALLOC_OBJECT) $(NXSDK_SYSCALL_OBJECT)
+  $(DEMO_SDK_LINK_INPUTS): | sdk
+	@test -s "$@"
   .PHONY: sdk
   sdk:
 	+$(MAKE) -C $(SDK_ROOT) ARCH=$(ARCH) BUILD_ROOT="$(SDK_BUILD_ROOT)" core
