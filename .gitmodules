@@ -53,4 +53,4 @@
 [submodule "user/bin/coreutils"]
 	path = user/BINEXTERNAL/coreutils
 	url = https://github.com/olmox001/coreutils_NexsOS1.git
-	branch = nexsos-port
+	branch = SPERIMENTAL-LINUX

@@ -21,27 +21,20 @@ git -C "$ROOT" rev-parse --show-toplevel >/dev/null 2>&1 || {
   exit 1
 }
 
-repair_coreutils_submodule_metadata() {
-  # This fork was moved out of the monorepo, but its nested .gitmodules still
-  # names gnulib by the old monorepo path. The actual gitlink is ./gnulib.
-  # Repair only this metadata path; no Coreutils source files are changed.
-  [ -f "$COREUTILS/.gitmodules" ] || return 0
-  if git -C "$COREUTILS" ls-tree HEAD gnulib | grep -q '^160000 '; then
-    local key="submodule.user/sys/lib/gnulib.path"
-    local current
-    current="$(git -C "$COREUTILS" config -f .gitmodules --get "$key" || true)"
-    case "$current" in
-      gnulib) ;;
-      user/sys/lib/gnulib)
-        echo "[deps] Repairing Coreutils nested gnulib path metadata."
-        git -C "$COREUTILS" config -f .gitmodules "$key" gnulib
-        ;;
-      *)
-        echo "[deps] ERROR: unexpected Coreutils gnulib path '$current'." >&2
-        exit 1
-        ;;
-    esac
-  fi
+verify_vendored_coreutils_gnulib() {
+  # Gnulib is bundled in the Coreutils SPERIMENTAL-LINUX tree, not a submodule.
+  [ -d "$COREUTILS/gnulib" ] && [ -f "$COREUTILS/gnulib/gnulib-tool" ] || {
+    echo "[deps] ERROR: vendored Coreutils Gnulib files are missing." >&2
+    exit 1
+  }
+  [ ! -e "$COREUTILS/gnulib/.git" ] && [ ! -e "$COREUTILS/.gitmodules" ] || {
+    echo "[deps] ERROR: old Coreutils Gnulib submodule metadata remains." >&2
+    exit 1
+  }
+  git -C "$COREUTILS" ls-tree HEAD -- gnulib | grep -q '^040000 tree ' || {
+    echo "[deps] ERROR: Coreutils Gnulib must be a tracked source directory." >&2
+    exit 1
+  }
 }
 
 materialize_incomplete_submodule_checkouts() {
@@ -93,21 +86,15 @@ case "$MODE" in
     git -C "$ROOT" submodule sync
     echo "[deps] Checking out top-level dependencies at exact gitlink revisions..."
     git -C "$ROOT" submodule update --init --checkout
-    repair_coreutils_submodule_metadata
     echo "[deps] Synchronizing and checking out recursive dependencies..."
     git -C "$ROOT" submodule sync --recursive
     git -C "$ROOT" submodule update --init --recursive --checkout
     materialize_incomplete_submodule_checkouts
     verify_materialized_submodule_checkouts
+    verify_vendored_coreutils_gnulib
     ;;
   --check)
-    if [ -f "$COREUTILS/.gitmodules" ] && git -C "$COREUTILS" ls-tree HEAD gnulib | grep -q '^160000 '; then
-      current="$(git -C "$COREUTILS" config -f .gitmodules --get submodule.user/sys/lib/gnulib.path || true)"
-      [ "$current" = "gnulib" ] || {
-        echo "[deps] ERROR: Coreutils nested gnulib metadata is not repaired." >&2
-        exit 1
-      }
-    fi
+    verify_vendored_coreutils_gnulib
     verify_materialized_submodule_checkouts
     ;;
   *)
