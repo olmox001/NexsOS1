@@ -158,6 +158,14 @@ def owned(name: str, policy: dict) -> bool:
              (name.startswith("user/NexsOS1-main/bin/") and name.count("/") == 3)))
 
 
+def audited_path(name: str, policy: dict) -> bool:
+    """Exclude external trees for both sources and build fragments."""
+    if excluded(name, policy):
+        return False
+    return (owned(name, policy) or Path(name).name in BUILD_NAMES or
+            Path(name).suffix in BUILD_SUFFIXES)
+
+
 def limit_findings(path: Path, policy: dict) -> list[dict]:
     result = []
     rel = relpath(path)
@@ -214,6 +222,8 @@ def audit_delta(policy: dict, changed: dict[str, set[int]]) -> list[dict]:
     definitions = []
     modified_functions: dict[tuple[str, str], set[str]] = {}
     for rel, changed_lines in sorted(changed.items()):
+        if excluded(rel, policy):
+            continue
         path = ROOT / rel
         if path.suffix in SOURCES and owned(rel, policy):
             candidates = preprocess_findings(path, policy) + limit_findings(path, policy)
@@ -261,8 +271,7 @@ def main() -> int:
     policy = load_policy()
     changed, deletions = workspace_changes(ROOT, policy)
     audited = {name: lines for name, lines in changed.items()
-               if owned(name, policy) or Path(name).name in BUILD_NAMES or
-               Path(name).suffix in BUILD_SUFFIXES}
+               if audited_path(name, policy)}
     results = audit_delta(policy, audited)
     blocking = [item for item in results if is_blocking_finding(item)]
     report_only = [item for item in results if not is_blocking_finding(item)]

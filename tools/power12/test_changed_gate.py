@@ -6,8 +6,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from changed_gate import (build_findings, changed_files, exact_rename_destinations,
+from changed_gate import (audit_delta, audited_path, build_findings,
+                          changed_files, exact_rename_destinations,
                           is_blocking_finding, workspace_changes)
+from common import load_policy
 
 
 def git(root: Path, *args: str) -> None:
@@ -72,6 +74,29 @@ def main() -> int:
             if not is_blocking_finding({"file": owned_path}):
                 print(f"FAIL blocking scope demoted: {owned_path}")
                 return 8
+
+        # External Linux and GRUB files must be excluded even when named
+        # Makefile or *.mk. First-party kernel/HAL files stay in scope.
+        policy = load_policy()
+        external_paths = (
+            "kernel/external/linux/Makefile",
+            "kernel/external/linux/drivers/net/Makefile",
+            "kernel/external/linux/kernel/Kbuild.mk",
+            "kernel/external/linux/kernel/sched/core.c",
+            "kernel/external/grub/Makefile",
+        )
+        for external in external_paths:
+            if audited_path(external, policy):
+                print(f"FAIL external source included in Power12: {external}")
+                return 12
+        if audit_delta(policy, {path: {1} for path in external_paths}):
+            print("FAIL external source produced Power12 findings")
+            return 13
+        for first_party in ("kernel/Makefile", "kernel/HAL/core/nxpax.c",
+                            "kernel/core/object.c", "system/Makefile"):
+            if not audited_path(first_party, policy):
+                print(f"FAIL first-party Power12 scope lost: {first_party}")
+                return 14
 
         # Exact path-only renames do not create new Power12 debt.
         git(root, "reset", "--hard", "HEAD")
