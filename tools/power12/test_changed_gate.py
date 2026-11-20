@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from changed_gate import (build_findings, changed_files, exact_rename_destinations,
-                          is_blocking_finding)
+                          is_blocking_finding, workspace_changes)
 
 
 def git(root: Path, *args: str) -> None:
@@ -90,6 +90,28 @@ def main() -> int:
         if lines.get("kernel/timer_renamed.c") != {1}:
             print(f"FAIL edited rename did not preserve line delta: {lines}")
             return 10
+
+        # A gitlink may advance, then receive staged and untracked edits.
+        child = root / "system"
+        child.mkdir()
+        git(child, "init", "-q")
+        git(child, "config", "user.name", "SDK fixture")
+        git(child, "config", "user.email", "sdk@invalid.example")
+        header = child / "api.h"
+        header.write_text("int one;\nint two;\n")
+        git(child, "add", ".")
+        git(child, "commit", "-qm", "SDK baseline")
+        git(root, "add", "system")
+        git(root, "commit", "-qm", "pin SDK")
+        header.write_text("int three;\nint two;\n")
+        git(child, "commit", "-qam", "SDK advance")
+        header.write_text("int three;\nint four;\n")
+        git(child, "add", "api.h")
+        (child / "new.c").write_text("int five;\n")
+        lines, _ = workspace_changes(root, {"source_roots": ["system"]})
+        if lines.get("system/api.h") != {1, 2} or lines.get("system/new.c") != {1}:
+            print(f"FAIL nested SDK changes relative to pinned revision: {lines}")
+            return 11
 
     print("PASS: Power12 delta scope, report-only userland policy, deletions and R10 blockers")
     return 0

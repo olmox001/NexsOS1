@@ -36,6 +36,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <utmp.h>
 
 #define NX_ENV_READY_KEY "system.env_ready"
 
@@ -103,33 +104,6 @@ static void registry_init_defaults(void) {
   printf("[EnvInit] Registry defaults initialised.\n");
 }
 
-#define UT_LINESIZE 32
-#define UT_NAMESIZE 32
-#define UT_HOSTSIZE 256
-
-struct exit_status {
-  short e_termination;
-  short e_exit;
-};
-
-struct nx_timeval {
-  time_t tv_sec;
-  long tv_usec;
-};
-
-struct utmp {
-  short ut_type;
-  pid_t ut_pid;
-  char ut_line[UT_LINESIZE];
-  char ut_id[4];
-  char ut_user[UT_NAMESIZE];
-  char ut_host[UT_HOSTSIZE];
-  struct exit_status ut_exit;
-  long ut_session;
-  struct nx_timeval ut_tv;
-  int32_t ut_addr_v6[4];
-  char ut_pad[20];
-};
 
 static int nx_path_exists(const char *path) {
   struct stat st;
@@ -198,7 +172,7 @@ static int create_utmp_file(void) {
   struct utmp rec;
   memset(&rec, 0, sizeof(rec));
 
-  rec.ut_type = 7; /* USER_PROCESS */
+  rec.ut_type = USER_PROCESS;
   rec.ut_pid = get_pid();
   strncpy(rec.ut_line, "tty1", sizeof(rec.ut_line) - 1);
   strncpy(rec.ut_id, "tty1", sizeof(rec.ut_id) - 1);

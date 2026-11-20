@@ -18,9 +18,9 @@
  * every successful change (any caller, not just nxres) — see
  * kernel/lib/registry.c registry_caller_owner() for why a ROOT-level service
  * changing the look does not get its write rejected as "not the owner".
- * The registry mirror here is kept as a second write for callers running
- * against a kernel build that predates that mirror; it is idempotent
- * (same value) against a kernel that already wrote it.
+ * Do not duplicate those writes in the calling process: registry keys
+ * belong to the system and the second write fails ownership checks with
+ * EACCES, generating misleading permission warnings and NXPAX events.
  *
  * Change propagation: a successful nxres_set_*() posts through the EXISTING
  * async notification transport — send()/IPC_TYPE_NOTIFY, the exact
@@ -73,10 +73,6 @@ static const char *const nxres_look_ping_targets[] = {
      * creation (see fm_ui_init in ui.c) so an external style/theme/bg change
      * repaints its already-open window instead of only the next launch. */
     "srv.filem_pid",
-    /* nxshell self-registers srv.shell_pid on window creation (nxshell.c);
-     * last-opened shell wins if several are open — others still track theme
-     * via the per-loop nxres_theme_is_light() poll in the shell event loop. */
-    "srv.shell_pid",
 };
 #define NXRES_LOOK_PING_NTARGETS                                               \
   (int)(sizeof(nxres_look_ping_targets) / sizeof(nxres_look_ping_targets[0]))
@@ -198,16 +194,16 @@ static inline int nxres_name_to_id(const char *name, const char *const *list,
 }
 
 /* nxres_set_style/theme/background - resolve 'name' against the shared
- * tables, apply it via SYS_SET_STYLE (OS1_display_set_style/background),
- * and mirror the name into the registry on success.  Returns 0 on success,
- * -1 for an unknown name, -2 if the syscall itself failed. */
+ * tables and apply through the existing OS1_display_set_style/background.
+ * The kernel operation atomically publishes the accepted preset as a system-
+ * owned registry value; this userland helper only sends look notifications.
+ * Returns 0 on success, -1 for an unknown name, -2 if the operation failed. */
 static inline int nxres_set_style(const char *name) {
   int id = nxres_name_to_id(name, os1_style_names, OS1_STYLE_COUNT);
   if (id < 0)
     return -1;
   if (OS1_display_set_style(id, -1) != 0)
     return -2;
-  OS1_registry_set("style.name", os1_style_names[id]);
   notify("Style", os1_style_names[id]);
   nxres_broadcast_look();
   return 0;
@@ -218,7 +214,6 @@ static inline int nxres_set_theme(const char *name) {
     return -1;
   if (OS1_display_set_style(-1, id) != 0)
     return -2;
-  OS1_registry_set("theme.color", os1_theme_names[id]);
   notify("Theme", os1_theme_names[id]);
   nxres_broadcast_look();
   return 0;
@@ -229,7 +224,6 @@ static inline int nxres_set_background(const char *name) {
     return -1;
   if (OS1_display_set_background(id) != 0)
     return -2;
-  OS1_registry_set("background.name", os1_bg_names[id]);
   notify("Background", os1_bg_names[id]);
   nxres_broadcast_look();
   return 0;

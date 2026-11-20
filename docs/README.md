@@ -1,10 +1,14 @@
 # NexsOS1 active documentation
 
-Session 2 is the closing development documentation namespace for release
-0.0.6.4. Session 1 is the committed historical checkpoint that established the
+Session 3 is active. Session 2 records the 0.0.6.4 release and its subsequent
+graphics and TTY handoff. Session 1 is the committed historical checkpoint that established the
 current governance, architecture and repository-split baseline.
 
 - `../README-LLM.md` — owner directive and persistent LLM governance.
+- [Session 3 review and qualification](session-3/README.md)
+- [Session 4: ASTRA multiuser/security, service authority and GNU qualification](session-4/README.md)
+- [Session 3 verified state](session-3/STATE.md), [verification](session-3/VERIFICATION.md), and [issues](session-3/ISSUES.md)
+- [Generic surface layout plugin protocol](session-3/SURFACE-LAYOUT-PLUGINS.md)
 - `session-2/README.md` — Session 2 index and closure rules.
 - `session-2/OBJECTIVES.md` — objective/status register.
 - `session-2/STATE.md` — verified current repository/runtime state.

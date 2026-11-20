@@ -2,7 +2,7 @@
 
 ## Checkout and Git
 
-- Root: `/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1`
+- Root: `$NEXSOS1_ROOT`
 - Host: macOS 26.5.2, Intel x86_64.
 - Branch: `DEV-Resurrection`.
 - HEAD: `9f09f2e`, aligned with `origin/DEV-Resurrection` at inspection.
@@ -161,7 +161,7 @@ Read-only inspection and documentation correction only. No source migration, Git
 
 ## Live checkout reconciliation — 2026-11-08
 
-A fresh read of the requested checkout at `/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1` found:
+A fresh read of the requested checkout at `$NEXSOS1_ROOT` found:
 
 - HEAD is `f2aa85a8ca94be0ab8e4ea391506748f53034a34` (`DEV-Resurrection`), aligned with `origin/DEV-Resurrection`.
 - The checkout has active staged and unstaged graphics/ABI changes and a modified Coreutils gitlink. These pre-existing changes are preserved; this repository-split pass does not edit the compositor, graphics ABI, or their Makefile hunks.

@@ -11,9 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 LEGACY = DOCS / "legacy"
 SESSION1 = DOCS / "session-1"
-ACTIVE = DOCS / "session-2"
+SESSION2 = DOCS / "session-2"
+ACTIVE = DOCS / "session-3"
 LEGACY_SOURCE_COMMIT = "5a1264c310b034e3fa574301731b0f933361aceb"
-ALLOWED_ROOT = {"README.md", "legacy", "session-1", "session-2"}
+ALLOWED_ROOT = {"README.md", "legacy", "session-1", "session-2", "session-3", "session-4"}
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
@@ -26,11 +27,26 @@ def old_doc_paths() -> list[str]:
 
 
 def check_root_layout(errors: list[str]) -> None:
-    actual = {p.name for p in DOCS.iterdir()}
+    actual = {p.name for p in DOCS.iterdir() if p.name != ".DS_Store"}
     if actual != ALLOWED_ROOT:
         errors.append(
             f"docs root mismatch: expected {sorted(ALLOWED_ROOT)}, got {sorted(actual)}"
         )
+
+
+# Legacy evidence is immutable except for the exact, deterministic redaction
+# of a developer-specific absolute workspace prefix. All other bytes still
+# need to match the original Git history, independently of the current index.
+PRIVATE_ROOTS = (
+    (re.compile(rb"/Users/[^/\r\n]+/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1"), b"$NEXSOS1_ROOT"),
+    (re.compile(rb"/Users/[^/\r\n]+/Documents/github/NexsOS1/NexsOS1"), b"$NEXSOS1_ROOT"),
+)
+
+
+def sanitized_legacy_bytes(content: bytes) -> bytes:
+    for pattern, replacement in PRIVATE_ROOTS:
+        content = pattern.sub(replacement, content)
+    return content
 
 
 def check_legacy_preservation(errors: list[str]) -> None:
@@ -42,8 +58,10 @@ def check_legacy_preservation(errors: list[str]) -> None:
         if not mapped.is_file():
             errors.append(f"missing migrated legacy file: {old}")
             continue
-        if git_bytes("show", f"{LEGACY_SOURCE_COMMIT}:{old}") != mapped.read_bytes():
-            errors.append(f"legacy content changed: {old}")
+        original = git_bytes("show", f"{LEGACY_SOURCE_COMMIT}:{old}")
+        actual = mapped.read_bytes()
+        if sanitized_legacy_bytes(original) != actual:
+            errors.append(f"legacy content changed beyond private path redaction: {old}")
 
 
 def check_index_migration(errors: list[str]) -> None:
@@ -75,7 +93,7 @@ def check_presstoai(errors: list[str]) -> None:
         errors.append(".presstoai.json contains no project docs paths")
         return
     for path in docs_paths:
-        if not path.startswith(("docs/legacy/", "docs/session-1/", "docs/session-2/")):
+        if not path.startswith(("docs/legacy/", "docs/session-1/", "docs/session-2/", "docs/session-3/", "docs/session-4/")):
             errors.append(f"stale PressToAI docs path: {path}")
         elif not (ROOT / path).exists():
             errors.append(f"missing PressToAI indexed path: {path}")
@@ -114,7 +132,8 @@ def local_link_target(source: Path, raw: str) -> Path | None:
 def check_active_markdown_links(errors: list[str]) -> None:
     sources = [
         ROOT / "README.md", DOCS / "README.md",
-        *sorted(SESSION1.glob("*.md")), *sorted(ACTIVE.glob("*.md"))
+        *sorted(SESSION1.glob("*.md")), *sorted(SESSION2.glob("*.md")),
+        *sorted(ACTIVE.glob("*.md")), *sorted((DOCS / "session-4").glob("*.md"))
     ]
     for source in sources:
         text = source.read_text()
@@ -141,8 +160,10 @@ def check_required_active_docs(errors: list[str]) -> None:
     required_session2 = {
         "README.md", "OBJECTIVES.md", "STATE.md", "ISSUES.md", "VERIFICATION.md",
     }
-    session2_actual = {p.name for p in ACTIVE.glob("*.md")}
+    session2_actual = {p.name for p in SESSION2.glob("*.md")}
     missing_session2 = sorted(required_session2 - session2_actual)
+    if not (ACTIVE / "README.md").is_file():
+        errors.append("missing Session 3 review")
     if missing_session2:
         errors.append(f"missing active Session 2 docs: {missing_session2}")
 

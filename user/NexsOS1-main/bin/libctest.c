@@ -663,6 +663,83 @@ static void t_long_double_runtime(void) {
   ok(name);
 }
 
+/* Gnulib calls xinmalloc(0, ...) when a real UTMP file contains no active
+ * sessions. A NULL return is legal ISO C but is interpreted as OOM by GNU's
+ * checked allocator. Verify the selected SDK contract with real allocations. */
+static void t_gnulib_zero_alloc(void) {
+  const char *name = "allocator/gnulib-zero-array";
+  void *ptr = malloc(0U);
+  CHECK(name, ptr != NULL, "malloc(0) reported allocation failure");
+  memset(ptr, 0x5a, 1U);
+  free(ptr);
+  void *array = calloc(0U, sizeof(void *));
+  CHECK(name, array != NULL, "calloc(0, element) reported allocation failure");
+  free(array);
+  ok(name);
+}
+
+static void t_allocator_size_overflow(void) {
+  const char *name = "allocator/reject-size-overflow";
+  volatile size_t maximum = (size_t)-1;
+  void *large = malloc(maximum);
+  CHECK(name, large == NULL, "malloc wrapped its boundary-tag allocation");
+  void *product = calloc(maximum, 2U);
+  CHECK(name, product == NULL, "calloc accepted a wrapped element product");
+  ok(name);
+}
+
+/* Security regression: the SDK must not falsely announce that an
+ * unsupported principal/owner change occurred. This test is a negative
+ * conformance check; it does NOT claim multiuser has been implemented. */
+static void t_identity_changes_fail_closed(void) {
+  const char *name = "identity/no-fake-credentials";
+  errno = 0;
+  CHECK(name, setuid(1) == -1 && errno == ENOTSUP,
+        "setuid fabricated successful principal change");
+  errno = 0;
+  CHECK(name, seteuid(0) == -1 && errno == ENOTSUP,
+        "seteuid fabricated verified identity");
+  errno = 0;
+  CHECK(name, setgid(1) == -1 && errno == ENOTSUP,
+        "setgid fabricated successful group change");
+  errno = 0;
+  CHECK(name, setegid(0) == -1 && errno == ENOTSUP,
+        "setegid fabricated verified group");
+  errno = 0;
+  CHECK(name, setreuid(0, 1) == -1 && errno == ENOTSUP,
+        "setreuid fabricated credential update");
+  errno = 0;
+  CHECK(name, setregid(0, 1) == -1 && errno == ENOTSUP,
+        "setregid fabricated group update");
+  gid_t groups[2] = {7, 9};
+  errno = 0;
+  CHECK(name, getgroups(2, groups) == -1 && errno == ENOTSUP &&
+        groups[0] == 7 && groups[1] == 9,
+        "getgroups fabricated group membership");
+  errno = 0;
+  CHECK(name, getgroups(-1, groups) == -1 && errno == EINVAL,
+        "getgroups accepted a negative array size");
+  ok(name);
+}
+
+static void t_owner_changes_fail_closed(void) {
+  const char *name = "vfs/no-fake-owner-change";
+  errno = 0;
+  CHECK(name, chown("/home", 1, 1) == -1 && errno == ENOTSUP,
+        "chown fabricated a VFS owner update");
+  errno = 0;
+  CHECK(name, lchown("/home", 1, 1) == -1 && errno == ENOTSUP,
+        "lchown fabricated a VFS owner update");
+  errno = 0;
+  CHECK(name, fchown(0, 1, 1) == -1 && errno == ENOTSUP,
+        "fchown fabricated a VFS owner update");
+  errno = 0;
+  CHECK(name, fchownat(AT_FDCWD, "/home", 1, 1, 0) == -1 &&
+        errno == ENOTSUP,
+        "fchownat fabricated a VFS owner update");
+  ok(name);
+}
+
 int main(void) {
   printf("[libctest] stdio / POSIX-over-native conformance\n");
 
@@ -698,6 +775,10 @@ int main(void) {
   t_unlink_reports_the_cause();
   t_mkdir_sets_errno();
   t_long_double_runtime();
+  t_gnulib_zero_alloc();
+  t_allocator_size_overflow();
+  t_identity_changes_fail_closed();
+  t_owner_changes_fail_closed();
 
   OS1_fs_unlink(TMP);
   printf("[libctest] done: %d/%d passed, %d failure(s)\n", g_pass,

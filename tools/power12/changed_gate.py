@@ -64,9 +64,9 @@ def exact_rename_destinations(root: Path) -> set[str]:
         index += 3
     return result
 
-def changed_files(root: Path) -> tuple[dict[str, set[int]], dict[str, int]]:
+def changed_files(root: Path, baseline: str = "HEAD") -> tuple[dict[str, set[int]], dict[str, int]]:
     """Compare HEAD to worktree while preserving rename-aware line deltas."""
-    raw = git(root, "diff", "HEAD", "--name-status", "-z", "-M",
+    raw = git(root, "diff", baseline, "--name-status", "-z", "-M",
               "--diff-filter=ACMRT")
     fields = raw.decode(errors="replace").split("\0")
     tracked: set[str] = set()
@@ -105,7 +105,7 @@ def changed_files(root: Path) -> tuple[dict[str, set[int]], dict[str, int]]:
             deletions[name] = 0
             continue
         old = rename_sources.get(name)
-        args = ["diff", "HEAD", "--unified=0", "--no-ext-diff", "-M", "--"]
+        args = ["diff", baseline, "--unified=0", "--no-ext-diff", "-M", "--"]
         if old is not None:
             args.extend([old, name])
         else:
@@ -126,6 +126,29 @@ def changed_files(root: Path) -> tuple[dict[str, set[int]], dict[str, int]]:
         lines[name] = modified
         deletions[name] = removed
     return lines, deletions
+
+
+def workspace_changes(root: Path, policy: dict) -> tuple[dict[str, set[int]], dict[str, int]]:
+    """Include checkout edits and gitlink advances against the umbrella baseline."""
+    changed, deletions = changed_files(root)
+    entries = git(root, "ls-tree", "-rz", "HEAD").split(b"\0")
+    for entry in filter(None, entries):
+        header, path = entry.split(b"\t", 1)
+        mode, _, revision = header.split()
+        prefix = path.decode()
+        if mode != b"160000" or not any(
+                scope == prefix or scope.startswith(prefix + "/")
+                for scope in policy["source_roots"]):
+            continue
+        checkout = root / prefix
+        if not (checkout / ".git").exists():
+            raise RuntimeError(f"missing owned Git checkout: {prefix}")
+        nested, removed = changed_files(checkout, revision.decode())
+        for name, lines in nested.items():
+            key = f"{prefix}/{name}"
+            changed[key] = lines
+            deletions[key] = removed[name]
+    return changed, deletions
 
 
 def owned(name: str, policy: dict) -> bool:
@@ -215,7 +238,7 @@ def audit_delta(policy: dict, changed: dict[str, set[int]]) -> list[dict]:
                                  for a, b, line in local_edges)
                     definitions.extend((rel, arch, name, line)
                                        for name, line in local_defs)
-        elif rel in BUILD_NAMES or path.suffix in BUILD_SUFFIXES:
+        elif path.name in BUILD_NAMES or path.suffix in BUILD_SUFFIXES:
             for item in build_findings(path):
                 if item["line"] in changed_lines:
                     report.append(item)
@@ -236,9 +259,9 @@ def main() -> int:
     parser.add_argument("--max-print", type=int, default=80)
     args = parser.parse_args()
     policy = load_policy()
-    changed, deletions = changed_files(ROOT)
+    changed, deletions = workspace_changes(ROOT, policy)
     audited = {name: lines for name, lines in changed.items()
-               if owned(name, policy) or name in BUILD_NAMES or
+               if owned(name, policy) or Path(name).name in BUILD_NAMES or
                Path(name).suffix in BUILD_SUFFIXES}
     results = audit_delta(policy, audited)
     blocking = [item for item in results if is_blocking_finding(item)]

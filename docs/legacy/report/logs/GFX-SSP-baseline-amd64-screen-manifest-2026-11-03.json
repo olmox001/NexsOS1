@@ -6,5 +6,5 @@
   "image": "build/runs/amd64/amd64-20261103-222008-793489000.png",
   "raw_ppm": "build/runs/amd64/amd64-20261103-222008-793489000.ppm",
   "serial_log": "build/runtime/nxadb/amd64/serial.log",
-  "dimensions": "/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runs/amd64/amd64-20261103-222008-793489000.png\n  pixelWidth: 1280\n  pixelHeight: 800"
+  "dimensions": "$NEXSOS1_ROOT/build/runs/amd64/amd64-20261103-222008-793489000.png\n  pixelWidth: 1280\n  pixelHeight: 800"
 }

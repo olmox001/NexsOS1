@@ -98,6 +98,7 @@ def clang_args(rel: str, arch: str) -> list[str]:
         "kernel/include", "kernel/include/abi", "kernel/include/api",
         "system/include/contract", "system/include/api", "system/external/stb",
         "system/lib/extensions/icon/include", "system/lib/extensions/input/include",
+        "system/lib/extensions/LIBGRAPHICS/include",
         "system/lib/extensions/look/include",
         "system/lib/extensions/USERKIT/manager/include",
         "system/lib/extensions/USERKIT/nxexecd/include",
@@ -115,6 +116,8 @@ def clang_args(rel: str, arch: str) -> list[str]:
         "user/LIBEXTERNAL/gnulib/lib", "user/BINEXTERNAL/coreutils/gnulib/lib",
         *project_include_dirs(),
     ]
+    if rel.startswith("user/USERKIT/"):
+        include_dirs.append("user/USERKIT/tests/runtime")
     for item in include_dirs:
         args += ["-I", str(ROOT / item)]
     if rel == "user/NexsOS1-main/bin/gnulibtest.c" or rel.startswith("system/lib/portability/gnulib/"):

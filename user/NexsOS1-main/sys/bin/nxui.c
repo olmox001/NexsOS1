@@ -59,6 +59,7 @@
  */
 #include <input.h>
 #include <os1.h>
+#include <os1_surface.h>
 #include <string.h>
 
 #include <nxicon.h> /* nxicon_get()/nxicon_classify() — dock tile icons (GFX-NXUI-02) */
@@ -344,32 +345,50 @@ static void fb_icon_border(int x, int y, int w, int h, int r, int light) {
   }
 }
 
-/* dock_reinit - (re)create the dock window + buffer for a sw x sh DESKTOP,
- * pinned to the bottom but inset by DOCK_MARGIN_SIDE/_BOTTOM on every side.
- * Used at start and on a resolution change (there is no userland window-move
- * primitive yet, so recreating at the new origin is the simplest correct
- * adaptation). */
-static void dock_reinit(int sw, int sh) {
+/* A dock is an ordinary userland overlay plugin. The surface keeps its
+ * window identity during resize: allocation and layout must both succeed
+ * before the new framebuffer/geometry is published. The provider pins the
+ * bottom anchor across display transitions, even if this task is descheduled. */
+static int dock_reinit(int sw, int sh) {
+  if (sw < 64 || sh < DOCK_H + DOCK_MARGIN_BOTTOM || sw > 8192)
+    return -EINVAL;
+  int dw = sw - 2 * DOCK_MARGIN_SIDE;
+  if (dw > 4096) dw = 4096; /* Current legacy surface pixel-cap contract. */
+  if (dw > sw) dw = sw;
+  if (dw < 1) return -ERANGE;
+  if (g_win >= 0 && g_dsw == sw && g_dsh == sh && g_sw == dw)
+    return 0;
+
+  uint32_t *next = (uint32_t *)malloc((size_t)dw * DOCK_H * sizeof(uint32_t));
+  if (next == NULL) return -ENOMEM;
+  int id = g_win;
+  int created = 0;
+  if (id < 0) {
+    id = create_window(0, 0, dw, DOCK_H, "nxui");
+    if (id < 0) {
+      free(next);
+      return id;
+    }
+    created = 1;
+  }
+  long applied = OS1_surface_layout_apply(
+      id, OS1_SURFACE_LAYOUT_ANCHOR_BOTTOM,
+      OS1_SURFACE_LAYOUT_LAYER_OVERLAY, 10U, DOCK_MARGIN_BOTTOM,
+      DOCK_H, (unsigned)dw, DOCK_H);
+  if (applied != 0) {
+    if (created) destroy_window(id);
+    free(next);
+    return (int)applied;
+  }
+  uint32_t *old = g_fb;
+  g_fb = next;
+  g_win = id;
+  g_sw = dw;
   g_dsw = sw;
   g_dsh = sh;
-
-  int dw = sw - 2 * DOCK_MARGIN_SIDE;
-  if (dw < TILE + 2 * MARGIN) /* never collapse below one tile's worth */
-    dw = TILE + 2 * MARGIN;
-  g_sw = dw;
-
-  uint32_t *nb = (uint32_t *)malloc((size_t)g_sw * DOCK_H * 4);
-  if (nb) {
-    free(g_fb);
-    g_fb = nb;
-  }
-  if (g_win >= 0)
-    destroy_window(g_win);
-  g_win = create_window(DOCK_MARGIN_SIDE, sh - DOCK_H - DOCK_MARGIN_BOTTOM,
-                        g_sw, DOCK_H, "nxui");
-  if (g_win >= 0)
-    set_window_flags(g_win, 1); /* top_most → chromeless, always-on-top */
-  g_sig = 0;                    /* force a redraw at the new size */
+  g_sig = 0;
+  free(old);
+  return 0;
 }
 
 /* redraw - enumerate windows, page the list to fit the dock, and blit it —
@@ -662,13 +681,14 @@ int main(void) {
 
   nxui_load_palette(nxres_theme_is_light());
 
-  g_fb = (uint32_t *)malloc((size_t)sw * DOCK_H * 4);
-  if (!g_fb)
-    return 1;
+  g_fb = NULL;
+  g_sw = 0;
   g_win = -1;
-  dock_reinit(sw, sh);
-  if (g_win < 0)
+  int dock_ready = dock_reinit(sw, sh);
+  if (dock_ready != 0) {
+    OS1_report_error("nxui.surface_plugin", dock_ready);
     return 1;
+  }
 
   redraw(1); /* force the first paint */
 
@@ -679,8 +699,10 @@ int main(void) {
      * now the dock's own narrower width. */
     int cw = 0, ch = 0;
     if (OS1_display_get_size(&cw, &ch) == 0 &&
-        (cw != g_dsw || ch != g_dsh))
-      dock_reinit(cw, ch);
+        (cw != g_dsw || ch != g_dsh)) {
+      int adapted = dock_reinit(cw, ch);
+      if (adapted != 0) OS1_report_error("nxui.layout_resize", adapted);
+    }
 
     redraw(0);
 
@@ -731,8 +753,12 @@ int main(void) {
       } else if (ev.type == INPUT_TYPE_RESIZE) {
         /* Event-driven adaptation uses the validated provider geometry. */
         int rw = 0, rh = 0;
-        if (OS1_display_get_size(&rw, &rh) == 0)
-          dock_reinit(rw, rh);
+        if (OS1_display_get_size(&rw, &rh) == 0 &&
+            (rw != g_dsw || rh != g_dsh)) {
+          int adapted = dock_reinit(rw, rh);
+          if (adapted != 0)
+            OS1_report_error("nxui.layout_event", adapted);
+        }
       } else if (ev.type == INPUT_TYPE_LOOK_CHANGED) {
         /* External style/theme/bg change (nxres_broadcast_look, nxres.h),
          * surfaced through this SAME input_poll_event() loop — see nxres.h's

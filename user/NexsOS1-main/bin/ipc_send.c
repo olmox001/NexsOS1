@@ -9,7 +9,7 @@ int main(void) {
   /* init flush() presents; window_draw marks damage. */
 
   struct ipc_message msg;
-  msg.type = 1;
+  msg.type = IPC_TYPE_RAW;
   msg.data1 = 0xDEADBEEF;
   msg.data2 = 0xCAFEBABE;
   for (int i = 0; i < 63; i++) {

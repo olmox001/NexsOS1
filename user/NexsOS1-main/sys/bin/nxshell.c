@@ -1,28 +1,9 @@
-/*
- * user/sys/bin/nxshell.c
- * Interactive Graphical Shell
- *
- * Creates a compositor window that acts as a TTY.  Keyboard input arrives as
- * IPC and is drained through input_poll_event() (the same path nxui/nxsettings
- * use for resize and compositor-look notifications).  Commands are tokenized
- * in place and dispatched from a small builtin table; anything else is resolved
- * against /bin then /sys/bin via nxexec_spawn_search().
- *
- * Theme: palette follows nxres_theme_is_light() (nxres.h), refreshed on
- * INPUT_TYPE_LOOK_CHANGED (nxres_broadcast_look) and on a cheap per-loop poll
- * so every open shell instance tracks external theme changes even when more
- * than one is running.
- *
- * Resize: INPUT_TYPE_RESIZE -> OS1_window_resize() for a crisp terminal surface
- * (compositor reflows the cell grid via term_resize).
- */
+/* Interactive command interpreter. USERKIT provides its per-launch window,
+ * terminal model, input routing, theme and resize handling. */
 #include <nxexec.h>
-#include <os1_tty.h>
 #include "nxjobs.h"
 #include "nxline.h"
 #include "nxperm.h"
-#include <nxres.h>
-#include <os1_material_colors.h>
 #include <fcntl.h>
 #include <input.h>
 #include <os1.h>
@@ -30,18 +11,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CMD_MAX NXLINE_MAX
-#define SPAWN_PATH_MAX NXEXEC_PATH_MAX
-#define MAX_ARGV 16
-#define MIN_WIN_W 320
-#define MIN_WIN_H 240
 #define NXSHELL_HISTORY_PATH "/home/.nxshell_history"
 
-static int my_window = -1;
-static int running = 1;
-static int g_win_w = 640;
-static int g_win_h = 480;
-static int g_light = -1;
 
 static struct nxline g_line;
 static struct nxjobs g_jobs;
@@ -57,58 +28,6 @@ print_prompt_only(void); /* fwd decl: used as nxline's repaint hook */
 static void nxline_prompt_hook(void *ctx) {
   (void)ctx;
   print_prompt_only();
-}
-
-static uint32_t g_col_bg;
-static uint32_t g_col_fg;
-static uint32_t g_col_prompt;
-
-static void shell_redraw_accent(void);
-
-static void shell_load_colors(int light) {
-  g_light = light;
-  struct os1_material_tty_palette palette =
-      os1_material_tty_palette(light);
-  g_col_bg = palette.text_background;
-  g_col_fg = palette.text_foreground;
-  g_col_prompt = palette.prompt;
-}
-
-static void shell_check_theme(void) {
-  int light = nxres_theme_is_light();
-  if (light != g_light) {
-    shell_load_colors(light);
-    shell_redraw_accent();
-  }
-}
-
-static void shell_redraw_accent(void) {
-  if (my_window < 0)
-    return;
-  window_draw(my_window, 0, 0, g_win_w, 2, g_col_prompt);
-  /* SCHED-STACK-ISO: init drives the heavy compositor render via flush()
-   * (~30 FPS).  window_draw() already marks damage dirty; calling
-   * compositor_render() here nested the full chrome/region render on the
-   * shell's kernel stack and could clobber frame locals before present. */
-}
-
-static void shell_on_resize(int w, int h) {
-  if (w <= 0 || h <= 0) return;
-  if (my_window < 0) {
-    g_win_w = w;
-    g_win_h = h;
-    return; /* nxttyd owns the actual pixel surface. */
-  }
-  if (w < MIN_WIN_W)
-    w = MIN_WIN_W;
-  if (h < MIN_WIN_H)
-    h = MIN_WIN_H;
-  if (w == g_win_w && h == g_win_h)
-    return;
-  OS1_window_resize(my_window, w, h);
-  g_win_w = w;
-  g_win_h = h;
-  shell_redraw_accent();
 }
 
 /* Quote-aware tokenization lives in the libc (lib.c cmdline_split), shared
@@ -143,7 +62,7 @@ static int spawn_search_args(int argc, char *argv[], char *out_path) {
     return -1;
   }
   int pid = execsvc_launch(argc, argv, EXECSVC_MODE_FOREGROUND,
-                           redir, nredir, out_path, SPAWN_PATH_MAX);
+                           redir, nredir, out_path, NXEXEC_PATH_MAX);
   /* The child owns its own dups now; drop our copies so the files close when
    * both sides are done (POSIX fork+dup2 lifecycle). */
   for (int i = 0; i < nfds; i++)
@@ -192,22 +111,31 @@ static int spawn_with_extra_redir(int argc, char *argv[], int extra_child_fd,
     nredir++;
   }
   int pid = execsvc_launch(argc, argv, EXECSVC_MODE_FOREGROUND,
-                           redir, nredir, out_path, SPAWN_PATH_MAX);
+                           redir, nredir, out_path, NXEXEC_PATH_MAX);
   for (int i = 0; i < nfds; i++)
     close(fds[i]); /* our own `>`/`2>` files; NOT the caller's pipe end */
   return pid;
 }
 
-/*
- * run_pipeline - execute `LHS | RHS` (a single pipe, ASTRA OBJ_TYPE_PIPE).  The
- * RHS is the foreground stage; the LHS produces into the pipe.  Two producer
- * kinds are handled:
- *   - the `echo` BUILTIN: the shell writes its output straight into the pipe;
- *   - any other (SPAWNED) command: spawned with its stdout → the pipe
- * write-end. Each stage still honours its own `>`/`2>` redirections.  If the
- * kernel cannot make a pipe, fall back to a temp file for the echo case
- * (increment-1 redirection) so the common `echo ... | cmd` still works.
- */
+/* Use the same redirection parser for the echo builtin and its pipe stage. */
+static int shell_echo(int argc, char *argv[], int output) {
+  struct spawn_redir redir[SPAWN_MAX_REDIR];
+  int fds[SPAWN_MAX_REDIR], nredir = 0, nfds = 0;
+  int rc = nxexec_strip_redirections(&argc, argv, redir, &nredir, fds, &nfds);
+  for (int i = 0; i < SPAWN_MAX_REDIR && i < nredir; ++i)
+    if (redir[i].child_fd == 1) output = redir[i].parent_fd;
+  for (int i = 1; i < EXECSVC_LOCAL_ARG_MAX && i < argc && rc == 0; ++i) {
+    size_t length = strlen(argv[i]);
+    if (i > 1 && write(output, " ", 1) != 1) rc = -EIO;
+    if (rc == 0 && write(output, argv[i], length) != (long)length) rc = -EIO;
+  }
+  if (rc == 0 && write(output, "\n", 1) != 1) rc = -EIO;
+  for (int i = 0; i < SPAWN_MAX_REDIR && i < nfds; ++i)
+    if (close(fds[i]) < 0 && rc == 0) rc = -EIO;
+  if (rc != 0) OS1_report_error("nxshell.echo", rc);
+  return rc;
+}
+
 static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
   argv[pipe_idx] = 0; /* terminate the LHS argv in place */
   int lhs_argc = pipe_idx;
@@ -219,48 +147,12 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
   }
   int lhs_is_echo = (strcmp(argv[0], "echo") == 0);
 
-  /* Start the consumer on a fresh pipe (executor policy).  A failure here is
-   * the ONLY thing that selects the temp-file fallback — we no longer create a
-   * probe pipe just to test the waters, which leaked one pipe per pipeline. */
-  char rpath[SPAWN_PATH_MAX];
+  char rpath[NXEXEC_PATH_MAX];
   int wfd = -1;
   int rpid = nxexec_spawn_pipe_consumer(rhs_argc, rhs_argv, rpath, &wfd);
   if (rpid <= 0) {
-    /* No pipe/consumer: temp-file fallback for the echo producer. */
-    if (!lhs_is_echo) {
-      print("nxshell: cannot create pipe\n");
-      return;
-    }
-    const char *tmp = "/home/.nxpipe";
-    char buf[CMD_MAX];
-    int n = 0;
-    for (int i = 1; i < lhs_argc && n < (int)sizeof(buf) - 1; i++) {
-      if (i > 1 && n < (int)sizeof(buf) - 1)
-        buf[n++] = ' ';
-      for (const char *p = argv[i]; *p && n < (int)sizeof(buf) - 1; p++)
-        buf[n++] = *p;
-    }
-    if (n < (int)sizeof(buf))
-      buf[n++] = '\n';
-    if (OS1_fs_write(tmp, buf, n, 0) < 0) {
-      printf("nxshell: cannot stage pipe temp %s\n", tmp);
-      return;
-    }
-    int tfd = open(tmp, O_RDONLY);
-    if (tfd < 0) {
-      OS1_fs_unlink(tmp);
-      return;
-    }
-    char tpath[SPAWN_PATH_MAX];
-    int tpid = spawn_with_extra_redir(rhs_argc, rhs_argv, 0, tfd, tpath);
-    close(tfd);
-    if (tpid > 0) {
-      run_fg_job(tpid, rhs_argv[0]);
-    } else {
-      g_last_status = 127; /* POSIX: command not found */
-      printf("Unknown command: %s\n", rhs_argv[0]);
-    }
-    OS1_fs_unlink(tmp);
+    g_last_status = 1;
+    print("nxshell: cannot start pipe consumer\n");
     return;
   }
 
@@ -269,16 +161,9 @@ static void run_pipeline(int pipe_idx, int argc, char *argv[], int background) {
   int lpid = -1;
   if (rpid > 0 && wfd >= 0) {
     if (lhs_is_echo) {
-      /* Builtin producer: the shell writes the output itself — there is no
-       * process to give the write end to. */
-      for (int i = 1; i < lhs_argc; i++) {
-        if (i > 1)
-          write(wfd, " ", 1);
-        write(wfd, argv[i], strlen(argv[i]));
-      }
-      write(wfd, "\n", 1);
+      if (shell_echo(lhs_argc, argv, wfd) != 0) g_last_status = 1;
     } else {
-      char lpath[SPAWN_PATH_MAX];
+      char lpath[NXEXEC_PATH_MAX];
       lpid = spawn_with_extra_redir(lhs_argc, argv, 1, wfd, lpath);
     }
   }
@@ -418,8 +303,8 @@ static void print_prompt(void) {
  * to run or skip, and it owns g_last_status for that unit.
  */
 static void run_command_line(char *line) {
-  char *argv[MAX_ARGV];
-  int argc = tokenize(line, argv, MAX_ARGV);
+  char *argv[EXECSVC_LOCAL_ARG_MAX];
+  int argc = tokenize(line, argv, EXECSVC_LOCAL_ARG_MAX);
   if (argc == 0)
     return;
 
@@ -453,7 +338,6 @@ static void run_command_line(char *line) {
     cmd_help();
   } else if (strcmp(cmd, "clear") == 0) {
     print("\033[2J\033[H");
-    shell_redraw_accent();
   } else if (strcmp(cmd, "time") == 0 || strcmp(cmd, "uptime") == 0) {
     printf("Uptime: %d seconds (%ld ms)\n", (int)(get_time() / 1000),
            get_time());
@@ -496,12 +380,7 @@ static void run_command_line(char *line) {
       }
     }
   } else if (strcmp(cmd, "echo") == 0) {
-    for (int i = 1; i < argc; i++) {
-      if (i > 1)
-        print(" ");
-      print(argv[i]);
-    }
-    print("\n");
+    g_last_status = shell_echo(argc, argv, 1) == 0 ? 0 : 1;
   } else if (strcmp(cmd, "rm") == 0 || strcmp(cmd, "unlink") == 0) {
     if (argc < 2) {
       print("usage: rm <path>\n");
@@ -610,7 +489,6 @@ static void run_command_line(char *line) {
     print("\nSystem reported: OK\n");
   } else if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0) {
     print("Exiting NXShell...\n");
-    running = 0;
     exit(0);
   } else if (strcmp(cmd, "jobs") == 0) {
     nxjobs_poll(&g_jobs);
@@ -705,7 +583,7 @@ static void run_command_line(char *line) {
     if (argc < 2) {
       print("usage: exec <program> [args...]\n");
     } else {
-      char path[SPAWN_PATH_MAX];
+      char path[NXEXEC_PATH_MAX];
       int pid = spawn_search_args(argc - 1, &argv[1], path);
       if (pid <= 0) {
         g_last_status = 127; /* POSIX: command not found */
@@ -718,7 +596,7 @@ static void run_command_line(char *line) {
       }
     }
   } else {
-    char path[SPAWN_PATH_MAX];
+    char path[NXEXEC_PATH_MAX];
     int pid = spawn_search_args(argc, argv, path);
     if (pid <= 0) {
       g_last_status = 127; /* POSIX: command not found */
@@ -813,7 +691,7 @@ static void process_command(void) {
   if (g_line.len == 0)
     return;
 
-  char line[CMD_MAX];
+  char line[NXLINE_MAX];
   strncpy(line, g_line.buf, sizeof(line) - 1);
   line[sizeof(line) - 1] = '\0';
 
@@ -829,7 +707,7 @@ static void process_command(void) {
     return;
   }
 
-  for (int i = 0; i < nseg && running; i++) {
+  for (int i = 0; i < SEQ_MAX && i < nseg; i++) {
     /* g_last_status is the shell's $?: run_fg_job() maintains it, and the
      * builtins set it on failure.  Short-circuiting reads it BEFORE the
      * segment runs, so a skipped segment leaves the chain's status intact —
@@ -853,17 +731,14 @@ static void shell_handle_key(unsigned char key, uint16_t scancode) {
   if (r == NXLINE_SUBMIT) {
     print("\r\n");
     process_command(); /* reads g_line.buf, then calls nxline_reset() */
-    if (running)
-      print_prompt();
+    print_prompt();
   } else if (r == NXLINE_EOF) {
     /* Ctrl-D on an empty line: same contract as typing "exit". */
     print("\r\n");
     print("Exiting NXShell...\n");
-    running = 0;
     exit(0);
   } else if (r == NXLINE_CLEAR_SCREEN) {
     print("\033[2J\033[H");
-    shell_redraw_accent();
     print_prompt_only();
     nxline_repaint_inline(&g_line);
   }
@@ -895,10 +770,15 @@ int main(int argc, char *argv[]) {
     return g_last_status;
   }
 
+  int terminal = execsvc_open_terminal("/sys/bin/nxshell");
+  if (terminal < 0) {
+    OS1_report_error("nxshell.open_terminal", terminal);
+    return 1;
+  }
+  if (terminal > 0) return 0;
   nxline_load_history(&g_line);
 
   print("NXShell: Alive\n");
-  int pid = get_pid();
 
   char cwd[128] = {0};
   int cwd_status = getcwd(cwd, sizeof(cwd));
@@ -907,118 +787,17 @@ int main(int argc, char *argv[]) {
       OS1_report_error("nxshell.initial_directory", -EIO);
   }
 
-  shell_load_colors(nxres_theme_is_light());
-
-  /* The session renderer owns the actual TTY window and receives this
-   * process's stdout through its PORT. Input remains the established
-   * IPC_TYPE_INPUT contract, forwarded by the terminal service. Avoid a
-   * second shell window/BLIT owner; the shell still owns its line editor,
-   * jobs, history, signals and command routing. */
-  const char *tty_session = getenv("NX_TTY_PORT");
-  int tty_hosted = tty_session != NULL && tty_session[0] != '\0';
-
-  /* The original NXShell always acquired a fresh graphical window.
-   * After userland TTY migration the inherited NX_TTY_PORT alone no longer
-   * proves that THIS shell is the child controlled by that terminal: an
-   * interactive shell launched as a shell job inherits the old environment.
-   * Compare the actual spawning parent with the per-session port owner.
-   * A different parent means a NEW interactive TTY session is needed.
-   * This is startup/session ownership, not command parser policy:
-   * all -c, redirections, pipelines and job control remain unchanged.
-   * The existing nxexec launcher classifies the single executable. */
-  if (tty_hosted) {
-    size_t prefix = sizeof(OS1_TTY_PORT_PREFIX) - 1U;
-    if (strncmp(tty_session, OS1_TTY_PORT_PREFIX, prefix) != 0) {
-      print("nxshell: invalid inherited terminal session\n");
-      return 1;
-    }
-    char *end = NULL;
-    long owner = strtol(tty_session + prefix, &end, 10);
-    pid_t parent = getppid();
-    if (owner <= 0 || owner > INT32_MAX || end == NULL || *end != '\0' ||
-        parent < 0) {
-      print("nxshell: cannot authenticate controlling terminal parent\n");
-      return 1;
-    }
-    if ((long)parent != owner) {
-      int launcher = execsvc_launch_hosted(argc, argv);
-      if (launcher <= 0) {
-        print("nxshell: failed to acquire an independent graphical session\n");
-        return 1;
-      }
-      return 0;
-    }
-  }
-
-  {
-    char pidbuf[16];
-    snprintf(pidbuf, sizeof(pidbuf), "%d", pid);
-    OS1_registry_set("srv.shell_pid", pidbuf);
-  }
-
-  char title[32];
-  snprintf(title, sizeof(title), "NXShell PID %d", pid);
-
-  int sw = 0, sh = 0;
-  int display_status = OS1_display_get_size(&sw, &sh);
-  if (display_status != 0) {
-    OS1_report_error("nxshell.display_size", display_status);
+  if (printf("\n[NXShell] TTY Window userland active (PID %d).\n", get_pid()) < 0)
     return 1;
-  }
-
-  g_win_w = (sw * 3) / 5;
-  g_win_h = (sh * 11) / 20;
-  if (g_win_w > 800)
-    g_win_w = 800;
-  if (g_win_h > 560)
-    g_win_h = 560;
-  if (g_win_w < MIN_WIN_W)
-    g_win_w = MIN_WIN_W;
-  if (g_win_h < MIN_WIN_H)
-    g_win_h = MIN_WIN_H;
-
-  int x_off = (pid * 40) % 200;
-  int y_off = (pid * 40) % 200;
-  int wx = (sw - g_win_w) / 2 + x_off;
-  int wy = (sh - g_win_h) / 2 + y_off;
-  if (wx < 0)
-    wx = 100 + x_off;
-  if (wy < 0)
-    wy = 100 + y_off;
-
-  if (!tty_hosted) {
-    /* Compatibility boot without nxttyd: still own a graphical shell.
-     * Print the initial prompt before drawing any custom pixels, because
-     * the current BLIT compatibility path marks a process self-rendered.
-     * The supervised session below does not use this legacy path. */
-    my_window = create_window(wx, wy, g_win_w, g_win_h, title);
-    if (my_window <= 0) {
-      print("[NXShell] Error creating window\n");
-      exit(1);
-    }
-    set_focus(get_pid());
-  }
-
-  print("\n[NXShell] TTY Window ");
-  if (tty_hosted)
-    print("userland");
-  else
-    print_hex((unsigned long)(unsigned int)my_window);
-  printf(" active (PID %d).\n", get_pid());
   print_prompt();
-  if (!tty_hosted) shell_redraw_accent();
 
-  while (running) {
-    shell_check_theme();
+  for (uint64_t tick = 0U; tick < UINT64_MAX; ++tick) {
     nxjobs_poll(&g_jobs);
 
     input_event_t ev;
-    while (input_poll_event(&ev) == 1) {
-      if (ev.type == INPUT_TYPE_RESIZE)
-        shell_on_resize(ev.resize.w, ev.resize.h);
-      else if (ev.type == INPUT_TYPE_LOOK_CHANGED)
-        shell_check_theme();
-      else if (ev.type == INPUT_TYPE_KEYBOARD &&
+    /* Bound one polling turn so job reaping progresses under key repeat. */
+    for (unsigned event = 0U; event < 16U && input_poll_event(&ev) == 1; ++event) {
+      if (ev.type == INPUT_TYPE_KEYBOARD &&
                ev.keyboard.state == KEY_PRESSED)
         shell_handle_key(ev.keyboard.key, ev.keyboard.scancode);
     }

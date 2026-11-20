@@ -1175,8 +1175,13 @@ def _shell_navigation_probe(session: Session) -> Tuple[bool, str]:
 
 def _boot_nxtest_state(text: str) -> str:
     clean = strip_ansi(text)
-    if re.search(r"\[NXTEST\]\s+done:", clean, re.IGNORECASE):
-        return "done"
+    summary = re.search(
+        r"\[NXTEST\]\s+done:\s*(\d+)/(\d+) passed, (\d+) failure\(s\)",
+        clean, re.IGNORECASE,
+    )
+    if summary:
+        passed, total, failures = map(int, summary.groups())
+        return "done" if total > 0 and passed == total and failures == 0 else "failed"
     if re.search(
         r"\[NXTEST\]\s+real userland suite started", clean, re.IGNORECASE
     ):
@@ -1203,9 +1208,9 @@ def _wait_for_boot_nxtest(session: Session) -> Tuple[bool, str]:
         state = _boot_nxtest_state(session.log_text())
     if state == "absent":
         return True, state
-    if state == "done":
+    if state in ("done", "failed"):
         _dismiss_boot_nxtest_tty(session)
-        return True, state
+        return state == "done", state
 
     deadline = time.monotonic() + BOOT_NXTEST_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -1213,9 +1218,9 @@ def _wait_for_boot_nxtest(session: Session) -> Tuple[bool, str]:
         if FAULT_RE.search(live) or not session.is_running():
             return False, "fault"
         state = _boot_nxtest_state(live)
-        if state == "done":
+        if state in ("done", "failed"):
             _dismiss_boot_nxtest_tty(session)
-            return True, state
+            return state == "done", state
         time.sleep(0.20)
     return False, "timeout"
 
@@ -1286,7 +1291,7 @@ def cmd_test(session: Session, cmds: List[str], expect: List[str], runs: int,
         boot_tests_ok, boot_tests_state = _wait_for_boot_nxtest(session)
         results.append(f"BOOT-NXTEST={boot_tests_state.upper()}")
         if not boot_tests_ok:
-            verdict = "FAULT"
+            verdict = "FAIL" if boot_tests_state == "failed" else "FAULT"
 
         if verdict != "FAULT":
             healthy, _ = _shell_health_probe(session)

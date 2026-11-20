@@ -142,6 +142,7 @@
 #include <font_lib.h>
 #include <input.h>
 #include <os1.h>
+#include <os1_surface.h>
 #include <string.h>
 
 #include <execsvc.h> /* nxexec_spawn_hosted() — same launch path nxlauncher's tiles use */
@@ -594,57 +595,77 @@ static int g_notify_panel_x; /* X position of notification panel */
 
 enum { MENU_SETTINGS = 0, MENU_POWER = 1 };
 
-/* set_window_height - grow/shrink the bar's own window to exactly
- * BAR_H + extra_h (see "Dropdown model" in the header comment). Reuses the
- * destroy+recreate-at-new-size idiom nxui's dock_reinit already uses on a
- * resolution change, so this is a proven technique, not a new one. */
-static void set_window_height(int extra_h) {
-  int wh = BAR_H + (extra_h > 0 ? extra_h : 0);
-  if (wh == g_wh && g_win >= 0)
-    return;
-  if (g_bw <= 0 || wh <= 0)
-    return;
-  size_t width = (size_t)g_bw;
-  size_t height = (size_t)wh;
-  if (width > (size_t)-1 / height)
-    return;
-  size_t pixels = width * height;
-  if (pixels > (size_t)-1 / sizeof(uint32_t))
-    return;
-  uint32_t *nb = (uint32_t *)malloc(pixels * sizeof(uint32_t));
-  if (nb) {
-    free(g_fb);
-    g_fb = nb;
+/* Apply a surface plugin layout, without destroying/recreating the window.
+ * The strip reserves BAR_H only, while optional dropdown pixels overlap the
+ * ordinary workspace. Resize and placement share the capability resource;
+ * a failed resize retains the old window and the still-valid old framebuffer. */
+static int bar_surface_update(int bw, int wh) {
+  if (bw <= 0 || wh <= 0 || bw > 4096 || wh > 4096 ||
+      (size_t)bw > (size_t)-1 / (size_t)wh / sizeof(uint32_t))
+    return -EINVAL;
+  if (g_win >= 0 && g_bw == bw && g_wh == wh) return 0;
+  uint32_t *next = (uint32_t *)malloc((size_t)bw * (size_t)wh *
+                                       sizeof(uint32_t));
+  if (next == NULL) return -ENOMEM;
+  int id = g_win, created = 0;
+  if (id < 0) {
+    id = create_window(0, 0, bw, wh, "nxbar");
+    if (id < 0) {
+      free(next);
+      return id;
+    }
+    created = 1;
   }
+  long applied = OS1_surface_layout_apply(
+      id, OS1_SURFACE_LAYOUT_ANCHOR_TOP,
+      OS1_SURFACE_LAYOUT_LAYER_OVERLAY, 20U, BAR_MARGIN_TOP,
+      BAR_H, (unsigned)bw, (unsigned)wh);
+  if (applied != 0) {
+    if (created) destroy_window(id);
+    free(next);
+    return (int)applied;
+  }
+  uint32_t *old = g_fb;
+  g_fb = next;
+  g_win = id;
+  g_bw = bw;
   g_wh = wh;
-  if (g_win >= 0)
-    destroy_window(g_win);
-  /* GFX-NXBAR-04: inset from the top/side edges like nxui's dock_reinit,
-   * instead of flush at (0,0). The compositor's reservation (see
-   * compositor.c FIX(GFX-COMP-RESERVE-01)) is geometry-based, not "y must be
-   * 0", so this stays correctly reserved. */
-  g_win = create_window(BAR_MARGIN_SIDE, BAR_MARGIN_TOP, g_bw, g_wh, "nxbar");
-  if (g_win >= 0)
-    set_window_flags(g_win, 1); /* top_most, chromeless — see nxui's dock */
-  g_sig = 0;                    /* force a repaint at the new size */
+  g_sig = 0;
+  free(old);
+  return 0;
 }
 
-/* bar_reinit - (re)create for a new DESKTOP width (or first start).
- * Keeps whatever panel is currently open at its own height. Insets the bar's
- * own width from the desktop width by BAR_MARGIN_SIDE on each side, same as
- * nxui's dock_reinit computes g_sw from DOCK_MARGIN_SIDE (GFX-NXBAR-04). */
+/* Open panels do not reserve the entire popover in the workarea. Their drawn
+ * extent is bounded by the current logical desktop and stays top-anchored. */
+static void set_window_height(int extra_h) {
+  int wh = BAR_H + (extra_h > 0 ? extra_h : 0);
+  int limit = g_dsh - BAR_MARGIN_TOP;
+  if (limit < BAR_H) limit = BAR_H;
+  if (wh > limit) wh = limit;
+  int result = bar_surface_update(g_bw, wh);
+  if (result != 0) OS1_report_error("nxbar.surface_resize", result);
+}
+
+/* Reconfigure the same surface on every successful mode transition. The
+ * width is clamped to the source-pixel ABI limit without exceeding the
+ * detected desktop width: compact mode handles genuinely small displays. */
 static void bar_reinit(int sw, int sh) {
-  g_dsw = sw;
-  g_dsh = sh;
+  if (sw <= 0 || sh < BAR_H + BAR_MARGIN_TOP) return;
   int bw = sw - 2 * BAR_MARGIN_SIDE;
-  if (bw < BAR_MIN_W)
-    bw = BAR_MIN_W;
-  g_bw = bw;
-  int extra = (g_panel == PANEL_MENU)     ? MENU_H
-              : (g_panel == PANEL_NOTIFY) ? g_notify_panel_h
-                                          : 0;
-  g_wh = 0; /* force set_window_height to always (re)create at the new width */
-  set_window_height(extra);
+  if (bw > 4096) bw = 4096;
+  if (bw <= 0) bw = sw;
+  int extra = (g_panel == PANEL_MENU) ? MENU_H :
+              (g_panel == PANEL_NOTIFY) ? g_notify_panel_h : 0;
+  int wh = BAR_H + (extra > 0 ? extra : 0);
+  int limit = sh - BAR_MARGIN_TOP;
+  if (wh > limit) wh = limit;
+  int result = bar_surface_update(bw, wh);
+  if (result == 0) {
+    g_dsw = sw;
+    g_dsh = sh;
+  } else {
+    OS1_report_error("nxbar.layout_resize", result);
+  }
 }
 
 static void close_panel(void) {
@@ -981,12 +1002,10 @@ static void handle_click(int mx, int my) {
   if (g_panel == PANEL_MENU) {
     int idx = (my - BAR_H) / MENU_ITEM_H;
     if (idx == MENU_SETTINGS) {
-      char *argv[1] = {(char *)"/sys/bin/nxsettings"};
-      int pid = execsvc_launch_hosted(1, argv);
+      int pid = execsvc_launch_system_gui("/sys/bin/nxsettings");
       if (pid <= 0) OS1_report_error("nxbar.settings_launch", pid);
     } else if (idx == MENU_POWER) {
-      char *argv[1] = {(char *)"/sys/bin/nxpower"};
-      int pid = execsvc_launch_hosted(1, argv);
+      int pid = execsvc_launch_system_gui("/sys/bin/nxpower");
       if (pid <= 0) OS1_report_error("nxbar.power_launch", pid);
     }
     close_panel();
@@ -1027,10 +1046,10 @@ int main(void) {
 
   g_fb = NULL;
   g_win = -1;
+  g_bw = 0;
   g_wh = 0;
   bar_reinit(sw, sh);
-  if (g_win < 0)
-    return 1;
+  if (g_win < 0) return 1;
 
   redraw(1);
 
@@ -1066,7 +1085,8 @@ int main(void) {
         handle_click(ev.mouse.x, ev.mouse.y);
       } else if (ev.type == INPUT_TYPE_RESIZE) {
         int rw = 0, rh = 0;
-        if (OS1_display_get_size(&rw, &rh) == 0)
+        if (OS1_display_get_size(&rw, &rh) == 0 &&
+            (rw != g_dsw || rh != g_dsh))
           bar_reinit(rw, rh);
       } else if (ev.type == INPUT_TYPE_LOOK_CHANGED) {
         /* External style/theme/bg change (nxres_broadcast_look, nxres.h),

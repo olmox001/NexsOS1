@@ -9,16 +9,26 @@ NAME = re.compile(r"[a-z][a-z0-9_-]{0,22}\Z")
 EXECUTABLE = re.compile(r"/sys/(?:bin|services)/[A-Za-z0-9_-]+\Z")
 
 
+def valid_authority(authority: str) -> bool:
+    if not authority.startswith("caps:"):
+        return False
+    tokens = authority[5:].split(",")
+    allowed = {"spawn", "fs-write", "ipc-any", "window", "registry-write",
+               "window-manage", "keyboard-raw", "pointer-raw"}
+    return tokens == ["none"] or (set(tokens) <= allowed and
+                                  len(tokens) == len(set(tokens)))
+
+
 def validate(lines: list[str]) -> bool:
     names: set[str] = set()
     for raw in lines:
         if not raw or raw.startswith("#"):
             continue
         fields = raw.split("|")
-        if len(fields) not in (5, 6):
+        if len(fields) != 6:
             return False
         name, mode, executable, args, key = fields[:5]
-        authority = fields[5] if len(fields) == 6 else ""
+        authority = fields[5]
         if not NAME.fullmatch(name) or name in names:
             return False
         names.add(name)
@@ -26,7 +36,7 @@ def validate(lines: list[str]) -> bool:
             return False
         if not EXECUTABLE.fullmatch(executable):
             return False
-        if authority not in ("", "window-manage"):
+        if not valid_authority(authority):
             return False
         if len(args.split()) > 2 or len(executable) + len(args) + len(key) + 3 > 64:
             return False
@@ -42,12 +52,12 @@ def main() -> int:
     idx = baseline[0]
     samples = (
         CONT[idx],
-        "forged|lock|../evil||",
-        "forged|lock|/tmp/evil||",
-        "a" * 40 + "|lock|/sys/bin/nxshell||",
-        "forged|lock|/sys/bin/nxshell|a b c|",
-        "forged|lock|/sys/bin/nxshell|" + "a" * 65 + "|",
-        "forged|lock|/sys/bin/nxshell||||",
+        "forged|lock|../evil||caps:none",
+        "forged|lock|/tmp/evil||caps:none",
+        "a" * 40 + "|lock|/sys/bin/nxshell||caps:none",
+        "forged|lock|/sys/bin/nxshell|a b c||caps:none",
+        "forged|lock|/sys/bin/nxshell|" + "a" * 65 + "||caps:none",
+        "forged|lock|/sys/bin/nxshell||||caps:none",
     )
     if any(validate(CONT + [malformed]) for malformed in samples):
         return 1

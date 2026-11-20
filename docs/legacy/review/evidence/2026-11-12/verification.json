@@ -331,11 +331,11 @@
       "path": "/tmp/nexs-addendum-hal-final.log",
       "sha256": "1471b569da25ed5b2ba8a81abd5a5d83e17108f0e90ead197f04d96fffc921c5",
       "tail": [
-        "/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/tests/build/pci_test-sanitize",
+        "$NEXSOS1_ROOT/kernel/HAL/tests/build/pci_test-sanitize",
         "clang -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \\",
-        "\t  -Wall -Wextra -Werror -Wpedantic -I/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/include /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/core/device_name.c \\",
-        "\t  /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/tests/unit/device_name_test.c -o /Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/tests/build/device_name_test-sanitize",
-        "/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/kernel/HAL/tests/build/device_name_test-sanitize",
+        "\t  -Wall -Wextra -Werror -Wpedantic -I$NEXSOS1_ROOT/kernel/HAL/include $NEXSOS1_ROOT/kernel/HAL/core/device_name.c \\",
+        "\t  $NEXSOS1_ROOT/kernel/HAL/tests/unit/device_name_test.c -o $NEXSOS1_ROOT/kernel/HAL/tests/build/device_name_test-sanitize",
+        "$NEXSOS1_ROOT/kernel/HAL/tests/build/device_name_test-sanitize",
         "PASS: NX-HAL integrated ASan/UBSan"
       ]
     },

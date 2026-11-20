@@ -22,7 +22,7 @@ need_manifest = [
     "keyboard|lock|/sys/services/nxkeyboardd",
     "pointer|lock|/sys/services/nxmoused",
     "echo|lock|/sys/services/nxexample_echo",
-    "shell|start|/sys/services/nxttyd|--shell /sys/bin/demo1shell",
+    "terminal|start|/sys/services/nxttyd|/sys/bin/demo1shell|",
 ]
 
 missing = [x for x in need_source if x not in source]

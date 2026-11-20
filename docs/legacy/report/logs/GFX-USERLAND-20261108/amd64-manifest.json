@@ -1,7 +1,7 @@
 {
   "pid": 55739,
   "arch": "amd64",
-  "qmp_socket": "/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/q/amd64.sock",
+  "qmp_socket": "$NEXSOS1_ROOT/build/q/amd64.sock",
   "qemu": "/usr/local/bin/qemu-system-x86_64",
   "display": "none",
   "started_utc": "2026-11-08T15:12:58Z",
@@ -20,7 +20,7 @@
     "-cpu",
     "max",
     "-cdrom",
-    "/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/amd64/grub-bios.iso",
+    "$NEXSOS1_ROOT/build/amd64/grub-bios.iso",
     "-device",
     "virtio-gpu-pci,id=nxgpu0",
     "-device",
@@ -28,15 +28,15 @@
     "-device",
     "virtio-mouse-pci,id=nxmouse0,display=nxgpu0",
     "-drive",
-    "if=none,file=/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/amd64/disk.img,id=rootfs,format=raw",
+    "if=none,file=$NEXSOS1_ROOT/build/amd64/disk.img,id=rootfs,format=raw",
     "-device",
     "virtio-blk-pci,drive=rootfs",
     "-serial",
-    "file:/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/runtime/nxadb/amd64/serial.log",
+    "file:$NEXSOS1_ROOT/build/runtime/nxadb/amd64/serial.log",
     "-display",
     "none",
     "-qmp",
-    "unix:/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1/build/q/amd64.sock,server=on,wait=off"
+    "unix:$NEXSOS1_ROOT/build/q/amd64.sock,server=on,wait=off"
   ],
   "logs": {
     "serial": "build/runtime/nxadb/amd64/serial.log",

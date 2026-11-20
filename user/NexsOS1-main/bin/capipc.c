@@ -63,7 +63,8 @@ int main(void) {
     else
       OS1_sleep(1);
   }
-  int t4 = signal_ok && got && msg.from == (int)child &&
+  int t4 = signal_ok && got && msg.type == CAPIPC_GRANT_REPLY &&
+           msg.from == (int)child &&
            (unsigned int)msg.data1 == CAPIPC_MAGIC;
   printf("[capipc] recv-via-delegated-cap: %s (from=%d data1=0x%x)\n",
          t4 ? "PASS" : "FAIL", msg.from, (unsigned int)msg.data1);

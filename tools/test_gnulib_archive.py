@@ -15,7 +15,7 @@ class GnulibArchiveTests(unittest.TestCase):
             objects = []
             for name in ('active', 'obsolete_fallback'):
                 source = work / (name + '.c')
-                source.write_text('int ' + name + '(void) { return 0; }\n')
+                source.write_text('int ' + name + '(void);\nint ' + name + '(void) { return 0; }\n')
                 obj = work / (name + '.o')
                 subprocess.run(['cc','-c',str(source),'-o',str(obj)],check=True)
                 objects.append(obj)
@@ -28,7 +28,10 @@ class GnulibArchiveTests(unittest.TestCase):
                 'GNULIB_OBJS='+str(objects[0]),str(archive)],cwd=ROOT,
                 capture_output=True,text=True,check=False)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            members=subprocess.check_output(['ar','t',str(archive)],text=True).splitlines()
+            entries=subprocess.check_output(['ar','t',str(archive)],text=True).splitlines()
+            # macOS ranlib exposes __.SYMDEF SORTED as an archive member;
+            # it is index metadata, not a retained compiled provider object.
+            members=[entry for entry in entries if not entry.startswith('__.SYMDEF')]
             self.assertEqual(members,['active.o'], 'ar rcs on the old archive retains a removed provider')
             self.assertFalse(archive.with_suffix('.a.tmp').exists())
 

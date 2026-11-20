@@ -3,6 +3,7 @@
 from pathlib import Path
 import json
 import re
+from test_nxmanage_service_names import valid_authority
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_CONFIG = ROOT / "kernel/config"
@@ -51,16 +52,15 @@ def main() -> int:
         if not raw or raw.startswith("#"):
             continue
         fields = raw.split("|")
-        if len(fields) not in (5, 6):
-            return fail(f"line {number}: expected five or six fields")
-        name, mode, executable, arguments, key = fields[:5]
-        authority = fields[5] if len(fields) == 6 else ""
-        if authority not in ("", "window-manage"):
-            return fail(f"line {number}: unknown authority")
-        if authority and arguments:
-            return fail(f"line {number}: argv-aware capability spawn unavailable")
-        if authority and name != "pointer":
-            return fail(f"line {number}: unexpected privileged service")
+        if len(fields) != 6:
+            return fail(f"line {number}: expected six fields")
+        name, mode, executable, arguments, key, authority = fields
+        if not valid_authority(authority):
+            return fail(f"line {number}: invalid capability mask")
+        rights = set(authority[5:].split(","))
+        managers = {"compositor", "desktop", "pointer"}
+        if ("window-manage" in rights) != (name in managers):
+            return fail(f"line {number}: unexpected window management authority")
         if not re.fullmatch(r"[a-z][a-z0-9_-]*", name) or name in seen_names:
             return fail(f"line {number}: invalid/duplicate canonical name")
         seen_names.add(name)
@@ -80,8 +80,7 @@ def main() -> int:
             return fail(f"line {number}: duplicate executable/args declaration")
         seen_exec.add(identity)
         records.append((name, mode, executable, arguments, key))
-        if name == "pointer" and authority != "window-manage":
-            return fail("pointer service must explicitly receive window-manage")
+
 
     if manifest_userkit != userkit_projects:
         return fail("startup USERKIT service set differs from NX-USERKIT build set")
@@ -89,7 +88,7 @@ def main() -> int:
         return fail("startup declaration is empty")
 
     required = {
-        ("shell", "start", "/sys/services/nxttyd", "--shell /sys/bin/nxshell", ""),
+        ("terminal", "start", "/sys/services/nxttyd", "/sys/bin/nxshell", ""),
         ("environment", "once", "/sys/bin/nxenvinit", "", ""),
         ("tests", "async", "/sys/services/nxttyd", "/sys/bin/nxtestrunner", ""),
         ("roleprobe", "debug", "/sys/bin/nxroleprobe", "", ""),

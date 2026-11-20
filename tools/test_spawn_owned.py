@@ -24,6 +24,7 @@ static struct process *current_process = &creator;
 static int privileged = 1, has_spawn = 1, irqs_enabled = 1;
 static int created, assigned, loaded, published, aborted, owner_alive = 1;
 static int load_fails, violation;
+static uint32_t last_caps; static uint8_t last_level;
 static int proc_is_machine(const struct process *p) { return p && p->pid == 1; }
 static int proc_is_privileged(const struct process *p) { (void)p; return privileged; }
 static int proc_has_cap(const struct process *p, uint32_t cap) { (void)p; (void)cap; return has_spawn; }
@@ -35,7 +36,8 @@ static struct process *process_create(const char *path, int priority, uint8_t le
     ++created; child = (struct process){123, 9, 0}; return &child;
 }
 static struct process *process_create_caps(const char *path, int priority, uint8_t level, uint32_t caps) {
-    (void)caps; return process_create(path, priority, level);
+    last_caps = caps; last_level = level;
+    return process_create(path, priority, level);
 }
 static int process_set_owner(int pid, int owner) {
     if (pid != 123 || published || loaded) violation = 1;
@@ -45,10 +47,9 @@ static int process_set_owner(int pid, int owner) {
 static int process_redirect_child_fd(struct process *p, int child_fd, int parent_fd) {
     (void)p; (void)child_fd; (void)parent_fd; return 0;
 }
-static int process_redirect_child_fd_from(struct process *s, struct process *p, int child_fd, int parent_fd) {
-    (void)s; return process_redirect_child_fd(p, child_fd, parent_fd);
+static int process_redirect_child_fd_from(int source_pid, struct process *p, int child_fd, int parent_fd) {
+    (void)source_pid; return process_redirect_child_fd(p, child_fd, parent_fd);
 }
-static struct process *process_find_by_pid(int pid) { (void)pid; return NULL; }
 static int process_load_elf_args(struct process *p, const char *path, int argc, char *const argv[]) {
     if (!irqs_enabled || p->owner_pid != 77 || !assigned || strcmp(path, "/bin/true") || argc != 1 || strcmp(argv[0], "/bin/true")) violation = 1;
     ++loaded; return load_fails ? -1 : 0;
@@ -80,6 +81,7 @@ SUFFIX = r'''
 static void reset(void) {
     created = assigned = loaded = published = aborted = load_fails = violation = 0;
     privileged = has_spawn = irqs_enabled = owner_alive = 1;
+    last_caps = 0U; last_level = 0U;
 }
 int main(void) {
     uint64_t argv[1] = {(uint64_t)(uintptr_t)"/bin/true"};
@@ -112,6 +114,34 @@ int main(void) {
     if (kernel_spawn_owned(77, &request) != -EFAULT || created) return 11;
     request.nredir = 0; request.abi_version = OS1_SPAWN_REQUEST_VERSION + 1;
     if (kernel_spawn_owned(77, &request) != -EINVAL || created) return 12;
+    request.abi_version = OS1_SPAWN_REQUEST_VERSION;
+    struct os1_spawn_request_v2 authorized = {
+        .base = request,
+        .level = PLVL_USER,
+        .caps = CAP_WINDOW
+    };
+    authorized.base.abi_version = OS1_SPAWN_REQUEST_AUTH_VERSION;
+    authorized.base.struct_size = sizeof(authorized);
+    reset();
+    if (kernel_spawn_owned(77, &authorized.base) != 123 ||
+        violation || published != 1 || last_level != PLVL_USER ||
+        last_caps != CAP_WINDOW) return 13;
+    reset();
+    authorized.caps = UINT32_MAX;
+    if (kernel_spawn_owned(77, &authorized.base) != -EINVAL || created)
+        return 14;
+    authorized.caps = CAP_WINDOW;
+    authorized.level = PLVL_COUNT;
+    if (kernel_spawn_owned(77, &authorized.base) != -EINVAL || created)
+        return 15;
+    authorized.level = PLVL_USER;
+    authorized.base.reserved = 1;
+    if (kernel_spawn_owned(77, &authorized.base) != -EINVAL || created)
+        return 16;
+    authorized.base.reserved = 0;
+    authorized.base.abi_version = 99;
+    if (kernel_spawn_owned(77, &authorized.base) != -EINVAL || created)
+        return 17;
     return 0;
 }
 '''
@@ -149,13 +179,17 @@ class SpawnOwnedTests(unittest.TestCase):
                 baseline.write_bytes(Path(os.environ['SPAWN_BASELINE_SOURCE']).read_bytes())
                 source = baseline
             header = ROOT / 'kernel/include/abi/posix_types.h'
-            define = next(line for line in header.read_text().splitlines() if
-                          line.startswith('#define OS1_SPAWN_REQUEST_VERSION '))
-            descriptor = fragment(header, set(), {'os1_spawn_request_v1'})
+            contract_lines = header.read_text().splitlines()
+            defines_contract = [next(line for line in contract_lines if
+                line.startswith('#define ' + name + ' ')) for name in
+                ('OS1_SPAWN_REQUEST_VERSION', 'OS1_SPAWN_REQUEST_AUTH_VERSION',
+                 'OS1_SPAWN_PATH_MAX')]
+            descriptor = fragment(header, set(),
+                {'os1_spawn_request_v1', 'os1_spawn_request_v2'})
             defines = [line for line in source.read_text().splitlines() if
                        line.startswith('#define SPAWN_MAX_ARGS ') or
                        line.startswith('#define SPAWN_ARG_LEN ')]
-            code = PREFIX + '\n' + define + '\n' + descriptor + '\n'
+            code = PREFIX + '\n' + '\n'.join(defines_contract) + '\n' + descriptor + '\n'
             code += '\n'.join(defines) + '\n' + fragment(source, FUNCTIONS, RECORDS) + SUFFIX
             fixture = work / 'fixture.c'; fixture.write_text(code)
             binary = work / 'fixture'

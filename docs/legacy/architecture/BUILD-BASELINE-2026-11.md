@@ -6,7 +6,7 @@
 - Baseline commit before this work: `b495da3a711e5af64dd826c29c6da4777c487074`
 - Host used: macOS Intel, `Darwin x86_64`
 - QEMU: 11.1.1
-- Working directory: `/Users/shsh/Documents/github/NexsOS1/NexsOS1-Resurrection/NexsOS1`
+- Working directory: `$NEXSOS1_ROOT`
 
 ## Bootstrap
 

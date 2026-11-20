@@ -119,9 +119,13 @@ static int find_mode(int width, int height, uint32_t *index) {
 }
 
 static void print_status(void) {
-  int width = 0, height = 0;
-  if (OS1_display_get_size(&width, &height) == 0)
-    printf("nxres: logical desktop %dx%d\n", width, height);
+  struct os1_display_workspace_v1 workspace;
+  if (OS1_display_workspace_query(&workspace) == 0) {
+    printf("nxres: logical desktop %ux%u (%s, base %ux%u, zoom %u%%)\n",
+           workspace.logical_width, workspace.logical_height,
+           workspace.mode == OS1_DISPLAY_WORKSPACE_AUTO ? "auto" : "manual",
+           workspace.base_width, workspace.base_height, workspace.zoom_percent);
+  }
   struct os1_display_mode_v1 mode;
   if (query_catalog_head(&mode) == 0) {
     uint32_t count = mode.count > OS1_DISPLAY_MODE_MAX
@@ -170,6 +174,7 @@ static int set_named_property(const char *kind, const char *value) {
 
 static void print_usage(void) {
   printf("usage: nxres | nxres modes | nxres mode <index> | nxres <w> <h>\n");
+  printf("       nxres logical auto | nxres logical <width> <height>\n");
   printf("       nxres zoom <pct> | nxres style|theme|bg <name>\n");
 }
 
@@ -187,6 +192,35 @@ int main(int argc, char **argv) {
     int index = 0;
     if (parse_uint_arg(argv[2], (int)OS1_DISPLAY_MODE_MAX - 1, &index) == 0)
       return set_mode_index((uint32_t)index);
+  }
+
+  if (argc >= 3 && strncmp(argv[1], "logical", 8) == 0) {
+    struct os1_display_workspace_v1 workspace;
+    int queried = (int)OS1_display_workspace_query(&workspace);
+    if (queried != 0) return 1;
+    uint32_t mode = OS1_DISPLAY_WORKSPACE_AUTO;
+    int width = 0, height = 0;
+    if (strncmp(argv[2], "auto", 5) != 0) {
+      mode = OS1_DISPLAY_WORKSPACE_MANUAL;
+      if (argc != 4 || parse_uint_arg(argv[2], 8192, &width) != 0 ||
+          parse_uint_arg(argv[3], 8192, &height) != 0) return 1;
+    }
+    int result = (int)OS1_display_workspace_set(mode, (uint32_t)width,
+                           (uint32_t)height, workspace.zoom_percent);
+    if (result != 0) {
+      printf("nxres: logical desktop rejected (%d)\n", result);
+      return 1;
+    }
+    struct os1_display_workspace_v1 applied;
+    if (OS1_display_workspace_query(&applied) != 0) {
+      printf("nxres: logical policy changed; readback unavailable\n");
+      return 1;
+    }
+    printf("nxres: logical %s base %ux%u -> %ux%u (zoom %u%%)\n",
+           applied.mode == OS1_DISPLAY_WORKSPACE_AUTO ? "auto" : "manual",
+           applied.base_width, applied.base_height, applied.logical_width,
+           applied.logical_height, applied.zoom_percent);
+    return 0;
   }
 
   if (argc >= 3 && strncmp(argv[1], "zoom", 5) == 0) {
