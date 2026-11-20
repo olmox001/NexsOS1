@@ -7,8 +7,8 @@
 NEXS_BINEXTERNAL_ROOT ?= user/BINEXTERNAL
 
 NEXS_BINEXTERNAL_PROJECTS := base_nexs busybox coreutils doom kilo
-NEXS_BINEXTERNAL_IMAGE_PROJECTS := coreutils doom kilo
-NEXS_BINEXTERNAL_REFERENCE_PROJECTS := base_nexs busybox
+NEXS_BINEXTERNAL_IMAGE_PROJECTS := base_nexs coreutils doom kilo
+NEXS_BINEXTERNAL_REFERENCE_PROJECTS := busybox
 
 NEXS_BINEXTERNAL_DIR_base_nexs := $(NEXS_BINEXTERNAL_ROOT)/base-nexs
 NEXS_BINEXTERNAL_DIR_busybox := $(NEXS_BINEXTERNAL_ROOT)/busybox
@@ -18,6 +18,7 @@ NEXS_BINEXTERNAL_DIR_kilo := $(NEXS_BINEXTERNAL_ROOT)/kilo
 
 # First-party provider manifests own NexsOS-specific build/portability policy.
 # Vendor trees remain source providers and are not coupled to NexsOS1-main.
+NEXS_BINEXTERNAL_PROVIDER_base_nexs := user/NexsOS1-main/portability/base_nexs/provider.mk
 NEXS_BINEXTERNAL_PROVIDER_coreutils := user/NexsOS1-main/portability/coreutils/overlay.mk
 NEXS_BINEXTERNAL_PROVIDER_doom := user/NexsOS1-main/portability/doom/doom.mk
 NEXS_BINEXTERNAL_PROVIDER_kilo := user/NexsOS1-main/portability/kilo/provider.mk
@@ -31,8 +32,8 @@ NEXS_BINEXTERNAL_VFS_DIR_kilo := /bin
 # Compatibility declarations. "nxsdk-runtime" means the canonical NX-SDK
 # libc/runtime object manifest consumed by the superproject. External names
 # must resolve through user/LIBEXTERNAL/catalog.mk.
-NEXS_BINEXTERNAL_COMPAT_base_nexs := reference-only
-NEXS_BINEXTERNAL_INTERNAL_LIBS_base_nexs := none
+NEXS_BINEXTERNAL_COMPAT_base_nexs := integrated
+NEXS_BINEXTERNAL_INTERNAL_LIBS_base_nexs := nxsdk-runtime
 NEXS_BINEXTERNAL_EXTERNAL_LIBS_base_nexs := none
 
 NEXS_BINEXTERNAL_COMPAT_busybox := reference-only

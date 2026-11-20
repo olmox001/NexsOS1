@@ -501,6 +501,7 @@ libgnulib: $(GNULIB_LIB)
 # ==============================================================================
 # Coreutils compatibility overlay
 # ==============================================================================
+include $(NEXS_BINEXTERNAL_PROVIDER_base_nexs)
 include $(NEXS_BINEXTERNAL_PROVIDER_coreutils)
 include $(NEXS_BINEXTERNAL_PROVIDER_kilo)
 
@@ -520,7 +521,7 @@ NEXS_USERLAND_BIN_ELFS := $(addprefix $(BUILD_DIR)/,$(addsuffix .elf,$(NEXS_USER
 EXTERNAL_BIN_ELFS := $(BUILD_DIR)/sdltest.elf $(BUILD_DIR)/raptor.elf \
   $(BUILD_DIR)/lua.elf $(BUILD_DIR)/nxempire.elf $(BUILD_DIR)/doom.elf \
   $(BUILD_DIR)/gnulibtest.elf $(BUILD_DIR)/gnulib-upstream-isblank.elf $(BUILD_DIR)/luatest.elf $(BUILD_DIR)/kilo.elf \
-  $(COREUTILS_ELFS)
+  $(COREUTILS_ELFS) $(NEXS_BASE_NEXS_ELF)
 BIN_ELFS := $(NEXS_USERLAND_BIN_ELFS) $(EXTERNAL_BIN_ELFS)
 USER_ELFS := $(NX_MACHINE_EXTENSION_ELFS) $(SYS_ELFS) $(BIN_ELFS)
 USERKIT_MAIN_INIT_ELF := $(USERKIT_BUILD_DIR)/sbin/nxinit.elf
@@ -691,7 +692,8 @@ rootfs: user libsdl2 liblua libgnulib coreutils $(ROOTFS_STAMP)
 	@test -d "$(BUILD_DIR)/rootfs" || { \
 	  echo "ERROR: rootfs missing while $(ROOTFS_STAMP) exists" >&2; exit 1; }
 $(ROOTFS_STAMP): $(USER_ELFS) $(USERKIT_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_LIB) \
-                $(GNULIB_LIB) $(USER_PROJECT_LIB_GLOBAL_FILES) $(ROOTFS_ASSETS) $(NX_BOOT_PROFILE) Makefile
+                $(GNULIB_LIB) $(USER_PROJECT_LIB_GLOBAL_FILES) $(ROOTFS_ASSETS) \
+                $(NEXS_BASE_NEXS_DATA_INPUTS) $(NX_BOOT_PROFILE) Makefile
 	@rm -rf $(BUILD_DIR)/rootfs
 	@mkdir -p $(BUILD_DIR)/rootfs/sbin
 	@mkdir -p $(BUILD_DIR)/rootfs/krnl/extension
@@ -738,6 +740,25 @@ $(ROOTFS_STAMP): $(USER_ELFS) $(USERKIT_ELFS) $(SDL2_LIB) $(LUA_LIB) $(LUA_OS1_L
 	  cp "$$f" "$(BUILD_DIR)/rootfs/sys/bin/nxtest_userkit_$$name"; \
 	done
 	@cp $(BIN_ELFS) $(BUILD_DIR)/rootfs/bin/
+	@# Base-NEXS native runtime and full source catalog in the real OS1 ext4.
+	@# Keep /bin executable-only; user script sources live in /home, and the
+	@# reusable NEXS runtime/service modules and C headers/SDK archive in /lib.
+	@mkdir -p $(BUILD_DIR)/rootfs/home/nxscript/examples
+	@cp -R $(NEXS_BASE_NEXS_DIR)/example/. $(BUILD_DIR)/rootfs/home/nxscript/examples/
+	@mkdir -p $(BUILD_DIR)/rootfs/lib/nxscript/services
+	@cp -R $(NEXS_BASE_NEXS_DIR)/services/. $(BUILD_DIR)/rootfs/lib/nxscript/services/
+	@mkdir -p $(BUILD_DIR)/rootfs/lib/nxscript/modules
+	@cp -R $(NEXS_BASE_NEXS_DIR)/modules/. $(BUILD_DIR)/rootfs/lib/nxscript/modules/
+	@mkdir -p $(BUILD_DIR)/rootfs/lib/nxscript/include
+	@cp -R $(NEXS_BASE_NEXS_DIR)/include/. $(BUILD_DIR)/rootfs/lib/nxscript/include/
+	@set -eu; for mod in core registry lang runtime sys compiler hal kernel; do \
+	  if test -d "$(NEXS_BASE_NEXS_DIR)/$$mod/include"; then \
+	    mkdir -p "$(BUILD_DIR)/rootfs/lib/nxscript/include/$$mod"; \
+	    cp -R "$(NEXS_BASE_NEXS_DIR)/$$mod/include/." "$(BUILD_DIR)/rootfs/lib/nxscript/include/$$mod/"; \
+	  fi; \
+	done
+	@mkdir -p $(BUILD_DIR)/rootfs/lib/nxscript/lib
+	@cp $(NEXS_BASE_NEXS_SDK_ARCHIVE) $(BUILD_DIR)/rootfs/lib/nxscript/lib/
 	@cp user/NexsOS1-main/sys/boot/manager.conf $(BUILD_DIR)/rootfs/system/boot/manager.conf
 	@cp user/NexsOS1-main/sys/boot/services.conf $(BUILD_DIR)/rootfs/system/boot/services.conf
 	@cp user/NexsOS1-main/sys/boot/project $(BUILD_DIR)/rootfs/system/boot/project

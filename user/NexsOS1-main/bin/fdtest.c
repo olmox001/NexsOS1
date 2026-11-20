@@ -305,7 +305,149 @@ static int fd_pipe_child_exit_test(int with_data) {
   return 0;
 }
 
-int main(void) {
+/* Test the real POSIX fd=0 CONSOLE path, separately from raw keyboard and
+ * focus ownership. Parent-to-own-child IPC_INPUT is permitted by the existing
+ * input authority policy; no CAP_KEYBOARD_RAW, machine role or grant needed.
+ *
+ * The key's hardware code is deliberately distinct from the translated UTF8
+ * payload. The child must read 'x', never the HID/virtual keycode. */
+/* Manual GUI/nxadb foreground transport check. Unlike the parent-child
+ * synthetic regression this observes actual keyboard service -> nxttyd ->
+ * nxshell -> foreground child -> POSIX read(0), with no extra grants.
+ * Invoke as /bin/fdtest --console-manual-probe; press z in its TTY. */
+static int fd_console_manual_probe(void) {
+  int terminal = isatty(STDIN_FILENO);
+  if (printf("[fdtest][manual-tty] ready pid=%d parent=%d isatty=%d\n",
+             get_pid(), getppid(), terminal) < 0)
+    return 30;
+  if (!terminal) return 31;
+  for (unsigned i = 0U; i < 10000U; ++i) {
+    char character = 0;
+    errno = 0;
+    long length = read(STDIN_FILENO, &character, 1U);
+    if (length == 1) {
+      int valid = character == 'z';
+      if (printf("[fdtest][manual-tty] byte=%u expected=%u %s\n",
+                 (unsigned int)(unsigned char)character, (unsigned int)'z',
+                 valid ? "PASS" : "FAIL") < 0) return 32;
+      return valid ? 0 : 33;
+    }
+    if (length != -1 || (errno != EAGAIN && errno != EINTR)) {
+      if (printf("[fdtest][manual-tty] read=%ld errno=%d FAIL\n",
+                 length, errno) < 0) return 34;
+      return 35;
+    }
+    OS1_sleep(1);
+  }
+  return 36;
+}
+
+static int fd_console_input_child(void) {
+  if (!isatty(STDIN_FILENO)) return 11;
+  for (unsigned step = 0U; step < 2000U; ++step) {
+    char character = 0;
+    errno = 0;
+    long got = read(STDIN_FILENO, &character, 1);
+    if (got == 1) {
+      int ok = character == 'x';
+      int reported = printf(
+          "[fdtest][console-child] read=%d char=%u expected=%u %s\n",
+          (int)got, (unsigned int)(unsigned char)character,
+          (unsigned int)'x', ok ? "PASS" : "FAIL");
+      return reported < 0 ? 15 : (ok ? 0 : 12);
+    }
+    if (got != -1 || (errno != EAGAIN && errno != EINTR))
+      return 13;
+    OS1_sleep(1);
+  }
+  return 14;
+}
+
+/* A single event must survive two one-byte object reads, or one two-byte
+ * POSIX read. Testing the actual process-scoped console capability catches
+ * UTF-8 continuation loss without any raw keyboard grants. */
+static int fd_console_utf8_child(int bulk) {
+  char bytes[2] = {0, 0};
+  if (!isatty(STDIN_FILENO)) return 21;
+  if (bulk) {
+    long count = read(STDIN_FILENO, bytes, 2U);
+    return count == 2 && (unsigned char)bytes[0] == 0xC3U &&
+           (unsigned char)bytes[1] == 0xA0U ? 0 : 22;
+  }
+  unsigned have = 0U;
+  for (unsigned attempt = 0U; attempt < 500U && have < 2U; ++attempt) {
+    long count = OS1_object_read(STDIN_FILENO, bytes + have, 1U);
+    if (count == 1) ++have;
+    else if (count != -EAGAIN) return 23;
+    if (have < 2U) OS1_sleep(1);
+  }
+  return have == 2U && (unsigned char)bytes[0] == 0xC3U &&
+         (unsigned char)bytes[1] == 0xA0U ? 0 : 24;
+}
+
+static int fd_console_send_and_wait(int child, struct ipc_message *message) {
+  int delivered = 0;
+  for (unsigned attempt = 0U; attempt < 40U && !delivered; ++attempt) {
+    long sent = OS1low_ipc_send(child, message);
+    if (sent == 0) delivered = 1;
+    else OS1_sleep(1);
+  }
+  if (!delivered)
+    return kill_process(child) >= 0 ? 2 : 6;
+  for (unsigned step = 0U; step < 300U; ++step) {
+    int status = 0;
+    int wait = waitpid(child, &status, WNOHANG);
+    if (wait == child)
+      return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : 3;
+    if (wait < 0) return 4;
+    OS1_sleep(10);
+  }
+  return kill_process(child) >= 0 ? 5 : 6;
+}
+
+static int fd_console_utf8_transport_test(int bulk) {
+  char child_path[] = "/bin/fdtest";
+  char mode_bulk[] = "--console-utf8-bulk-child";
+  char mode_bytes[] = "--console-utf8-byte-child";
+  char *args[] = {child_path, bulk ? mode_bulk : mode_bytes, NULL};
+  int child = spawn_args(child_path, 2, args);
+  if (child <= 0) return 1;
+  struct ipc_message key = {0};
+  key.type = IPC_TYPE_INPUT;
+  key.data1 = 40U;
+  key.data2 = 1U;
+  key.payload[0] = (char)0xC3U;
+  key.payload[1] = (char)0xA0U;
+  return fd_console_send_and_wait(child, &key);
+}
+
+static int fd_console_input_transport_test(int delay_ms) {
+  char child_path[] = "/bin/fdtest";
+  char mode[] = "--console-read-child";
+  char *args[] = {child_path, mode, NULL};
+  int child = spawn_args(child_path, 2, args);
+  if (child <= 0) return 1;
+  /* A delayed send exercises wakeup of a child already blocked in read(0).
+   * An immediate send only proves that the queue can retain a character. */
+  if (delay_ms > 0) OS1_sleep(delay_ms);
+  struct ipc_message key = {0};
+  key.type = IPC_TYPE_INPUT;
+  key.data1 = UINT64_C(0x04); /* hardware keycode intentionally not ASCII */
+  key.data2 = 1U;
+  key.payload[0] = 'x';
+  return fd_console_send_and_wait(child, &key);
+}
+
+int main(int argc, char *argv[]) {
+  if (argc == 2 && strcmp(argv[1], "--console-manual-probe") == 0)
+    return fd_console_manual_probe();
+  if (argc == 2 && strcmp(argv[1], "--console-read-child") == 0)
+    return fd_console_input_child();
+  if (argc == 2 && strcmp(argv[1], "--console-utf8-bulk-child") == 0)
+    return fd_console_utf8_child(1);
+  if (argc == 2 && strcmp(argv[1], "--console-utf8-byte-child") == 0)
+    return fd_console_utf8_child(0);
+
   int win_id = create_window(120, 120, 400, 300, "FD Test");
   if (win_id < 0)
     return 1;
@@ -384,6 +526,12 @@ int main(void) {
         fd_pipe_child_exit_test(1) == 0);
   check(win_id, "pipe-child-no-output-signals-EOF",
         fd_pipe_child_exit_test(0) == 0);
+  check(win_id, "console-read-utf8-not-keycode",
+        fd_console_input_transport_test(0) == 0);
+  check(win_id, "console-read-wakes-blocked-child",
+        fd_console_input_transport_test(150) == 0);
+  check(win_id, "console-read-utf8-bulk", fd_console_utf8_transport_test(1) == 0);
+  check(win_id, "console-read-utf8-bytewise", fd_console_utf8_transport_test(0) == 0);
 
   /* 4a. capability: /bin is read-only for user processes */
   errno = 0;
