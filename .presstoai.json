@@ -649,179 +649,179 @@
       "selected": false
     },
     {
-      "path": "kernel/arch/aarch64/boot/header.S",
+      "path": "kernel/HAL/host/arch/aarch64/boot/header.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/boot/linker.ld",
+      "path": "kernel/HAL/host/arch/aarch64/boot/linker.ld",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/boot/stage1.S",
+      "path": "kernel/HAL/host/arch/aarch64/boot/stage1.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/boot/stage2.S",
+      "path": "kernel/HAL/host/arch/aarch64/boot/stage2.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/cpu/cpu.c",
+      "path": "kernel/HAL/host/arch/aarch64/cpu/cpu.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/cpu/exception.S",
+      "path": "kernel/HAL/host/arch/aarch64/cpu/exception.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/cpu/syscall.c",
+      "path": "kernel/HAL/host/arch/aarch64/cpu/syscall.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/hal.c",
+      "path": "kernel/HAL/host/arch/aarch64/hal.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/include/arch/arch.h",
+      "path": "kernel/HAL/host/arch/aarch64/include/arch/arch.h",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/include/arch/platform.h",
+      "path": "kernel/HAL/host/arch/aarch64/include/arch/platform.h",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/include/arch/pt_regs.h",
+      "path": "kernel/HAL/host/arch/aarch64/include/arch/pt_regs.h",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/kernel.ld",
+      "path": "kernel/HAL/host/arch/aarch64/kernel.ld",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/kinit/start.S",
+      "path": "kernel/HAL/host/arch/aarch64/kinit/start.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/mm/mmu.c",
+      "path": "kernel/HAL/host/arch/aarch64/mm/mmu.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/platform.c",
+      "path": "kernel/HAL/host/arch/aarch64/platform.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/aarch64/virtio.c",
+      "path": "kernel/HAL/host/arch/aarch64/virtio.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/boot/boot.S",
+      "path": "kernel/HAL/host/arch/amd64/boot/boot.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/boot/header.S",
+      "path": "kernel/HAL/host/arch/amd64/boot/header.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/boot/linker.ld",
+      "path": "kernel/HAL/host/arch/amd64/boot/linker.ld",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/boot/stage1.S",
+      "path": "kernel/HAL/host/arch/amd64/boot/stage1.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/boot/stage2.S",
+      "path": "kernel/HAL/host/arch/amd64/boot/stage2.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/apic.c",
+      "path": "kernel/HAL/host/arch/amd64/cpu/apic.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/context.S",
+      "path": "kernel/HAL/host/arch/amd64/cpu/context.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/cpu.c",
+      "path": "kernel/HAL/host/arch/amd64/cpu/cpu.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/gdt.c",
+      "path": "kernel/HAL/host/arch/amd64/cpu/gdt.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/gdt_defs.h",
+      "path": "kernel/HAL/host/arch/amd64/cpu/gdt_defs.h",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/idt.c",
+      "path": "kernel/HAL/host/arch/amd64/cpu/idt.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/isr_stubs.S",
+      "path": "kernel/HAL/host/arch/amd64/cpu/isr_stubs.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/msr.c",
+      "path": "kernel/HAL/host/arch/amd64/cpu/msr.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/syscall.S",
+      "path": "kernel/HAL/host/arch/amd64/cpu/syscall.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/cpu/syscall_hal.c",
+      "path": "kernel/HAL/host/arch/amd64/cpu/syscall_hal.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/hal.c",
+      "path": "kernel/HAL/host/arch/amd64/hal.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/include/arch/amd64_internal.h",
+      "path": "kernel/HAL/host/arch/amd64/include/arch/amd64_internal.h",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/include/arch/arch.h",
+      "path": "kernel/HAL/host/arch/amd64/include/arch/arch.h",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/include/arch/platform.h",
+      "path": "kernel/HAL/host/arch/amd64/include/arch/platform.h",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/include/arch/pt_regs.h",
+      "path": "kernel/HAL/host/arch/amd64/include/arch/pt_regs.h",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/kernel.ld",
+      "path": "kernel/HAL/host/arch/amd64/kernel.ld",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/kinit/start.S",
+      "path": "kernel/HAL/host/arch/amd64/kinit/start.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/kinit/trampoline.S",
+      "path": "kernel/HAL/host/arch/amd64/kinit/trampoline.S",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/mm/mmu.c",
+      "path": "kernel/HAL/host/arch/amd64/mm/mmu.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/mm/tlb.c",
+      "path": "kernel/HAL/host/arch/amd64/mm/tlb.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/mm/uaccess.c",
+      "path": "kernel/HAL/host/arch/amd64/mm/uaccess.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/platform/platform.c",
+      "path": "kernel/HAL/host/arch/amd64/platform/platform.c",
       "selected": true
     },
     {
-      "path": "kernel/arch/amd64/virtio.c",
+      "path": "kernel/HAL/host/arch/amd64/virtio.c",
       "selected": true
     },
     {

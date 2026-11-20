@@ -474,9 +474,9 @@ def resolve_local_dups(root, macros, actions, dry, backup):
     """
     # ─ GDT ───────────────────────────────────────────────────────────────────
     GDT_NAMES = ['GDT_KERN_CODE','GDT_KERN_DATA','GDT_USER_CODE','GDT_USER_DATA']
-    gdt_c = absp('kernel/arch/amd64/cpu/gdt.c', root)
-    msr_c = absp('kernel/arch/amd64/cpu/msr.c', root)
-    gdt_h = absp('kernel/arch/amd64/cpu/gdt_defs.h', root)
+    gdt_c = absp('kernel/HAL/host/arch/amd64/cpu/gdt.c', root)
+    msr_c = absp('kernel/HAL/host/arch/amd64/cpu/msr.c', root)
+    gdt_h = absp('kernel/HAL/host/arch/amd64/cpu/gdt_defs.h', root)
     if os.path.exists(gdt_c) and os.path.exists(msr_c):
         relevant = [n for n in GDT_NAMES if n in macros]
         if relevant:
@@ -489,7 +489,7 @@ def resolve_local_dups(root, macros, actions, dry, backup):
             for n in GDT_NAMES:
                 hdr += f'#define {n} {vals.get(n,"??")}\n'
             write_file(gdt_h, hdr, dry, backup)
-            actions.append({'strategy':'GDT_HEADER','file':'kernel/arch/amd64/cpu/gdt_defs.h'})
+            actions.append({'strategy':'GDT_HEADER','file':'kernel/HAL/host/arch/amd64/cpu/gdt_defs.h'})
             for fp, fc in [(gdt_c, gc), (msr_c, read_file(msr_c))]:
                 new = remove_defines(fc, relevant)
                 new = ensure_include(new, 'gdt_defs.h')
@@ -512,7 +512,7 @@ def resolve_local_dups(root, macros, actions, dry, backup):
     VIRT_NAMES = ['VIRTIO_MMIO_BASE','VIRTIO_MMIO_STRIDE','VIRTIO_COUNT',
                   'VRING_DESC_F_NEXT','VRING_DESC_F_WRITE','VRING_DESC_F_INDIRECT']
     virtio_h = absp('kernel/include/drivers/virtio.h', root)
-    for vfp in ['kernel/arch/aarch64/virtio.c','kernel/arch/aarch64/hal.c']:
+    for vfp in ['kernel/HAL/host/arch/aarch64/virtio.c','kernel/HAL/host/arch/aarch64/hal.c']:
         vabs = absp(vfp, root)
         if not os.path.exists(vabs): continue
         content = read_file(vabs)
@@ -526,39 +526,39 @@ def resolve_local_dups(root, macros, actions, dry, backup):
     # ─ MULTIBOOT2 ────────────────────────────────────────────────────────────
     MB2_NAMES = ['MB2_TAG_TYPE_END','MB2_TAG_TYPE_MMAP','MB2_TAG_TYPE_BASIC_MEMINFO']
     mb2_h = absp('kernel/include/kernel/multiboot2.h', root)
-    platform_c = absp('kernel/arch/amd64/platform/platform.c', root)
+    platform_c = absp('kernel/HAL/host/arch/amd64/platform/platform.c', root)
     if os.path.exists(mb2_h) and os.path.exists(platform_c):
         content = read_file(platform_c)
         new = remove_defines(content, [n for n in MB2_NAMES if n in macros])
         inc = os.path.relpath(mb2_h, os.path.dirname(platform_c)).replace('\\','/')
         new = ensure_include(new, inc)
         if new != content:
-            actions.append({'strategy':'MB2','file':'kernel/arch/amd64/platform/platform.c'})
+            actions.append({'strategy':'MB2','file':'kernel/HAL/host/arch/amd64/platform/platform.c'})
             write_file(platform_c, new, dry, backup)
 
     # ─ PIT ───────────────────────────────────────────────────────────────────
     PIT_NAMES = ['PIT_CH0','PIT_CMD']
-    apic_c = absp('kernel/arch/amd64/cpu/apic.c', root)
+    apic_c = absp('kernel/HAL/host/arch/amd64/cpu/apic.c', root)
     if os.path.exists(apic_c):
         content = read_file(apic_c)
         new = content
         for name in [n for n in PIT_NAMES if n in macros and macros[n]['kind']=='DUPLICATE']:
             new = add_ifndef(new, name)
         if new != content:
-            actions.append({'strategy':'PIT_GUARD','file':'kernel/arch/amd64/cpu/apic.c'})
+            actions.append({'strategy':'PIT_GUARD','file':'kernel/HAL/host/arch/amd64/cpu/apic.c'})
             write_file(apic_c, new, dry, backup)
 
     # ─ PAGE_* ────────────────────────────────────────────────────────────────
     PAGE_NAMES = ['PAGE_SIZE','PAGE_SHIFT','PAGE_MASK']
     pmm_h  = absp('kernel/include/kernel/pmm.h', root)
-    mmu_c  = absp('kernel/arch/amd64/mm/mmu.c', root)
+    mmu_c  = absp('kernel/HAL/host/arch/amd64/mm/mmu.c', root)
     if os.path.exists(pmm_h) and os.path.exists(mmu_c):
         content = read_file(mmu_c)
         new = remove_defines(content, [n for n in PAGE_NAMES if n in macros])
         inc = os.path.relpath(pmm_h, os.path.dirname(mmu_c)).replace('\\','/')
         new = ensure_include(new, inc)
         if new != content:
-            actions.append({'strategy':'PAGE_DEDUP','file':'kernel/arch/amd64/mm/mmu.c'})
+            actions.append({'strategy':'PAGE_DEDUP','file':'kernel/HAL/host/arch/amd64/mm/mmu.c'})
             write_file(mmu_c, new, dry, backup)
 
     # ─ SECTOR_SIZE ───────────────────────────────────────────────────────────

@@ -73,15 +73,15 @@ def clang_args(rel: str, arch: str) -> list[str]:
     if arch == "host":
         target_args = []
         arch_define = "-DARCH_AMD64"
-        arch_inc = "kernel/HAL/arch/amd64/include"
+        arch_inc = "kernel/HAL/host/arch/amd64/include"
     elif arch == "amd64":
         target_args = ["--target=x86_64-unknown-none-elf"]
         arch_define = "-DARCH_AMD64"
-        arch_inc = "kernel/HAL/arch/amd64/include"
+        arch_inc = "kernel/HAL/host/arch/amd64/include"
     else:
         target_args = ["--target=aarch64-unknown-none-elf"]
         arch_define = "-DARCH_AARCH64"
-        arch_inc = "kernel/HAL/arch/aarch64/include"
+        arch_inc = "kernel/HAL/host/arch/aarch64/include"
     args = [
         "clang", *target_args, "-std=gnu17", "-ffreestanding",
         "-fno-builtin", "-Wno-unknown-warning-option", "-Wno-unused-command-line-argument",

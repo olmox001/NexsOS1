@@ -10,7 +10,7 @@ not a claim that the target architecture is already implemented.
 
 - `kernel/HAL/core/pci.c` provides the shared PCI config/BAR/enumeration
   implementation and publishes normalized devices.
-- `kernel/HAL/arch/amd64/hal.c` still contains a separate AMD64 PCI scan and
+- `kernel/HAL/host/arch/amd64/hal.c` still contains a separate AMD64 PCI scan and
   command-register enable path.
 - AArch64 platform discovery currently includes QEMU-virt-specific ECAM/MMIO
   window assumptions; these are migration debt, not the target platform model.
@@ -57,7 +57,7 @@ The pre-Session-1 shared PCI path enabled command bits with `command | 7`
 during enumeration, granting BusMaster/DMA before driver ownership.
 
 The same unsafe policy still exists independently in
-`kernel/HAL/arch/amd64/hal.c`. Therefore the first generic PCI block is only a
+`kernel/HAL/host/arch/amd64/hal.c`. Therefore the first generic PCI block is only a
 partial hardening step; AMD64 is not yet globally DMA-safe.
 
 ### Driver lifecycle

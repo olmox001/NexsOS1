@@ -95,7 +95,7 @@ Owner directive and root Makefile disagree. Resolve explicitly before release/ve
 ### S1-DEV-001 — AMD64 PCI path still grants BusMaster during enumeration
 
 The shared PCI core now clears BusMaster at discovery, but
-`kernel/HAL/arch/amd64/hal.c` independently retains `command | 7`.
+`kernel/HAL/host/arch/amd64/hal.c` independently retains `command | 7`.
 VirtIO PCI therefore still inherits DMA authority before explicit driver claim
 on AMD64. Next bounded device-safety block must replace this duplicate and add
 explicit VirtIO DMA acquire/release plus failure cleanup.

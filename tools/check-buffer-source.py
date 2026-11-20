@@ -11,7 +11,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ("kernel/resources/buffer.c",
-           "system/lib/extensions/services/buffer_client.c")
+           "system/lib/extensions/object/buffer_client.c")
 HEAP = {"malloc", "calloc", "realloc", "free", "kmalloc", "kfree",
         "aligned_alloc", "posix_memalign"}
 
@@ -28,11 +28,12 @@ def check_source(source, architecture):
     flags = ["clang", f"--target={target}", "-std=c11", "-ffreestanding",
              "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-Wconversion",
              "-Wsign-conversion", "-Xclang", "-ast-dump=json", "-fsyntax-only"]
-    includes = ["system/include/api", "system/include/contract"]
+    includes = ["system/include/api", "system/include/contract",
+                "system/lib/extensions/USERKIT/nxntfy_srv/include"]
     if kernel:
         flags += [f"-DARCH_{architecture.upper()}", "-DKERNEL"]
         includes = ["kernel/include", "kernel/include/abi", "kernel/include/api",
-                    "kernel/HAL/include", f"kernel/HAL/arch/{architecture}/include"]
+                    "kernel/HAL/include", f"kernel/HAL/host/arch/{architecture}/include"]
     flags += [f"-I{path}" for path in includes]
     run = subprocess.run(flags + [source], cwd=ROOT, capture_output=True, text=True)
     if run.returncode:
